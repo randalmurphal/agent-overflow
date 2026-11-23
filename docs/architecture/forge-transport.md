@@ -779,8 +779,8 @@ run past it offers no retry; a PR's rollup does not, so no request is
 added and GitHub's refusal ("created over a month ago") reads as the run
 being too old. A retried job is a new job under a new id on both forges,
 and the old one drops out of the read; the log view follows the new
-attempt with `git.FindCIJobRetry` (and `findCIJobRetry` in
-`ciSubject.svelte.ts`, the same rule) only when the old job is gone from
+attempt with `findCIJobRetry` in `ciSubject.svelte.ts` (`git.FindCIJobRetry`
+states the same rule for the Go tests) only when the old job is gone from
 the read, the read is the old job's pipeline (the same GitLab pipeline id,
 or the same GitHub workflow run), and exactly one job of the same stage
 and name has a higher id.

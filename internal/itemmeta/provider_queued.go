@@ -3,8 +3,11 @@ package itemmeta
 import "encoding/json"
 
 // providerQueuedKey marks a user_text row whose message the PROVIDER's
-// own queue has taken ownership of — today, a Codex `thread/queue/add`
-// on an app-server >= 0.148.
+// own queue has taken ownership of: a Codex `thread/queue/add` on an
+// app-server >= 0.148. This app no longer queues that way (mid-turn
+// messages go to `turn/steer`), so the rows that carry the marker are ones
+// an earlier version wrote; the readers below still serve them, and the
+// writers exist for the tests that seed such rows.
 //
 // It exists because that ownership outlives every in-process record of
 // it. Once the add is accepted the message is durable in codex's own
@@ -59,9 +62,8 @@ const providerQueuedKey = "providerQueued"
 const providerQueueHandoffKey = "providerQueueHandoff"
 
 // MarkProviderQueued returns raw with the provider-queued marker set
-// and the handover recorded as PROVEN. Used where the row's ownership
-// is established before it is written — the resume-side re-arm of a row
-// a `thread/queue/list` just named.
+// and the handover recorded as PROVEN, as an earlier version wrote it
+// where the row's ownership was established before it was written.
 //
 // An empty meta becomes a one-key object. Malformed meta is an error —
 // the caller is about to persist the row that IS the ownership record
@@ -71,26 +73,12 @@ func MarkProviderQueued(raw string) (string, error) {
 }
 
 // MarkProviderQueueHandoff returns raw marked provider-queued with the
-// handover still unproven. This is what the dispatcher stamps BEFORE
+// handover still unproven, as an earlier version stamped it BEFORE
 // `thread/queue/add`.
 func MarkProviderQueueHandoff(raw string) (string, error) {
 	return mergeKeys(raw, map[string]any{
 		providerQueuedKey:       true,
 		providerQueueHandoffKey: true,
-	})
-}
-
-// ConfirmProviderQueueHandoff returns raw with the handover proven:
-// the provider acked the add (or a list read it back), so the row is
-// the provider's and a later absence from the queue means it ran.
-//
-// Written as an explicit `false` rather than a delete so the row still
-// states which of the two answers it carries, and so a merge that
-// races it cannot resurrect the unproven state by re-adding the key.
-func ConfirmProviderQueueHandoff(raw string) (string, error) {
-	return mergeKeys(raw, map[string]any{
-		providerQueuedKey:       true,
-		providerQueueHandoffKey: false,
 	})
 }
 

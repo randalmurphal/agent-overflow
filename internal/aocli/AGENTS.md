@@ -7,7 +7,8 @@ the binary.
 
 ## Entry points
 
-- `Commands()` is the single dispatch table for CLI verbs. `serve` and
+- `topLevelCommands` is the single dispatch table for CLI verbs; `IsCommand`
+  answers from it for the app binary and `Commands()` lists it. `serve` and
   `supervise` boot the application and remain root entry points rather than CLI
   rows.
 - `service` manages the host through `internal/serviceinstall` and must not

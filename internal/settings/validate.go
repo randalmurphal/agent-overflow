@@ -799,8 +799,8 @@ func allowedTextGenerationEfforts(provider string) map[string]struct{} {
 // error messages order the set through joinAllowedValues — the MEMBERSHIP is
 // the contract.
 //
-// Exported for TestTextGenerationEffortsMatchTheProviderSets in the root
-// package, the only place that can see both this copy and
+// Exported for TestTextGenerationEffortsMatchTheProviderSets in
+// internal/app, a place that can see both this copy and
 // provider.ReasoningEffortsForProvider: internal/settings must not import
 // internal/provider (cycle), so the tables above are duplicates, and this is
 // the same arrangement ReservedProviderEnvNames uses for the env deny-list.

@@ -77,7 +77,7 @@ const providerEnvReservedPrefix = "AO_"
 // dropped at spawn time looks like a bug in the feature.
 //
 // Cross-checked against provider.ReservedEnvNames by
-// TestReservedEnvNamesMatchTheProviderPins (root package): internal/settings
+// TestReservedEnvNamesMatchTheProviderPins (internal/app): internal/settings
 // must not import internal/provider, so the two lists are kept honest — in both
 // directions — by a test that can see both, the same arrangement the
 // reasoning-effort tables use.
@@ -206,7 +206,7 @@ func RedactProviderEnvVars(vars []ProviderEnvVar) []ProviderEnvVar {
 // (upper-case, unordered). It does NOT include the AO_ prefix rule, which is a
 // prefix rather than a name — ValidateProviderEnvVarName enforces both.
 //
-// Exported for the root-package test that cross-checks this list against
+// Exported for the internal/app test that cross-checks this list against
 // provider.ReservedEnvNames in both directions; that test is what keeps the
 // duplication honest, since this package must not import internal/provider.
 func ReservedProviderEnvNames(providerName string) []string {

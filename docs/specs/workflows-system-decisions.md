@@ -965,7 +965,7 @@ verdict it now is, with what the first attempt got wrong.
   nothing shipped, nothing installed, and no `PATH` ever contained, so
   every `ao run start …` an agent typed answered "command not found".
   The whole D15 surface existed and was unreachable. It is deleted.
-  `main.go` now matches `os.Args[1]` against `aocli.Commands()` and hands
+  `main.go` now matches `os.Args[1]` with `aocli.IsCommand` and hands
   the argv to `aocli.Run`: `agent-overflow run start <id>`,
   `agent-overflow workflow list`. The verb set is exported from the
   package's own dispatch table rather than restated in `main`, because a

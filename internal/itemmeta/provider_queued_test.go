@@ -27,9 +27,10 @@ func TestProviderQueueHandoffSeparatesAnUnprovenAddFromADispatchedOne(t *testing
 		t.Error("an unproven hand-off does not read as pending; nothing could ever tell it from a dispatched row")
 	}
 
-	proven, err := ConfirmProviderQueueHandoff(unproven)
+	// An earlier version confirmed the hand-off with an explicit false.
+	proven, err := mergeKeys(unproven, map[string]any{providerQueueHandoffKey: false})
 	if err != nil {
-		t.Fatalf("ConfirmProviderQueueHandoff: %v", err)
+		t.Fatalf("confirm the hand-off: %v", err)
 	}
 	if !IsProviderQueued(proven) {
 		t.Error("confirming the hand-off dropped the provider-queued marker")
