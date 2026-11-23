@@ -47,12 +47,7 @@ type benchComparison struct {
 // and silence is the one answer a gate must never give: a headless run
 // whose page answered nothing produced zero comparisons and exited 0,
 // which is a green light for a bench that measured nothing at all.
-func compareToBaseline(current map[string]benchAggregate, baseline benchBaseline) ([]benchComparison, []string) {
-	comparisons, unmeasured, _ := compareToBaselineDetailed(current, baseline)
-	return comparisons, unmeasured
-}
-
-func compareToBaselineDetailed(current map[string]benchAggregate, baseline benchBaseline) (out []benchComparison, unmeasured, unmeasuredBudgeted []string) {
+func compareToBaseline(current map[string]benchAggregate, baseline benchBaseline) (out []benchComparison, unmeasured, unmeasuredBudgeted []string) {
 	tolerances := map[string]benchTolerance{}
 	for name, agg := range baseline.Aggregate {
 		value := agg.P50

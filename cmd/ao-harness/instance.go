@@ -305,14 +305,3 @@ func (e *env) withClient(ctx context.Context, fn func(client *harnessclient.Clie
 	defer client.Close()
 	return fn(client, t, bs)
 }
-
-// call is the one-shot shape most commands want: attach, invoke, print.
-func (e *env) call(ctx context.Context, method string, params ...any) error {
-	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
-		result, err := client.Call(ctx, method, params...)
-		if err != nil {
-			return err
-		}
-		return e.writeRawJSON(result)
-	})
-}

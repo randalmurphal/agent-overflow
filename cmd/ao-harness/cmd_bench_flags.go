@@ -267,12 +267,6 @@ func finishManagedBenchWithCleanup(sup *harnessrun.Supervisor, ctx context.Conte
 	return cause
 }
 
-func runBenchDirect(e *env, args []string) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	return runBenchDirectContext(ctx, e, args)
-}
-
 func runBenchDirectContext(ctx context.Context, e *env, args []string) error {
 	opts, rest, err := parseBenchOptions(e, args)
 	if err != nil {
@@ -405,7 +399,7 @@ func runBenchDirectContext(ctx context.Context, e *env, args []string) error {
 	if baseline == nil {
 		return nil
 	}
-	comparisons, unmeasured, unbudgeted := compareToBaselineDetailed(document.Aggregate, *baseline)
+	comparisons, unmeasured, unbudgeted := compareToBaseline(document.Aggregate, *baseline)
 	e.progressf("\n%s", renderBenchComparison(comparisons, unmeasured, unbudgeted, *opts.baselineFile))
 	return benchGateVerdict(comparisons, unbudgeted, *opts.baselineFile)
 }

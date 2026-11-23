@@ -8,65 +8,50 @@ import (
 	"time"
 )
 
-func activeReadinessView() (uiViewport, []string) {
+func activeMountView() (uiViewport, []string) {
 	ids := []string{"thread-1", "thread-2", "thread-3", "thread-4", "thread-5", "thread-6"}
 	view := uiViewport{Settled: true, Panes: make([]uiPane, 0, len(ids))}
 	for i, id := range ids {
-		pane := uiPane{
+		view.Panes = append(view.Panes, uiPane{
 			PaneID:   "pane-" + id,
 			ThreadID: id,
 			Rect:     uiRect{X: float64(i), Y: 0, W: 100, H: 100},
-		}
-		if i < benchActiveStreamCount {
-			pane.Rows = []uiRow{{Role: "assistant", Status: "streaming", InViewport: true, TextLength: 10, Rect: uiRect{Y: 10, H: 20}}}
-		}
-		view.Panes = append(view.Panes, pane)
+		})
 	}
 	return view, ids
 }
 
-func TestValidateActivePaneReadinessRequiresExactShape(t *testing.T) {
-	view, ids := activeReadinessView()
-	got, err := validateActivePaneReadiness(view, ids)
-	if err != nil {
+func TestValidateActivePaneMountRequiresExactShape(t *testing.T) {
+	view, ids := activeMountView()
+	if err := validateActivePaneMount(view, ids); err != nil {
 		t.Fatal(err)
-	}
-	if len(got.PaneIDs) != 6 || len(got.ActiveThreadIDs) != 4 || len(got.InactiveThreadIDs) != 2 {
-		t.Fatalf("readiness = %+v", got)
 	}
 
 	view.Panes[0].PaneID = view.Panes[1].PaneID
-	if _, err := validateActivePaneReadiness(view, ids); err == nil || !strings.Contains(err.Error(), "duplicate") {
+	if err := validateActivePaneMount(view, ids); err == nil || !strings.Contains(err.Error(), "invalid pane") {
 		t.Fatalf("duplicate pane ID error = %v", err)
+	}
+
+	view, ids = activeMountView()
+	view.Panes = view.Panes[:5]
+	if err := validateActivePaneMount(view, ids); err == nil || !strings.Contains(err.Error(), "want exactly 6") {
+		t.Fatalf("missing pane error = %v", err)
 	}
 }
 
-func TestValidateActivePaneReadinessRequiresSettledViewport(t *testing.T) {
-	view, ids := activeReadinessView()
+func TestValidateActivePaneMountRequiresSettledViewport(t *testing.T) {
+	view, ids := activeMountView()
 	view.Settled = false
-	if _, err := validateActivePaneReadiness(view, ids); err == nil || !strings.Contains(err.Error(), "not settled") {
+	if err := validateActivePaneMount(view, ids); err == nil || !strings.Contains(err.Error(), "not settled") {
 		t.Fatalf("unsettled viewport error = %v", err)
 	}
 }
 
-func TestValidateActivePaneReadinessRejectsClippedAndInactiveStreamingRows(t *testing.T) {
-	view, ids := activeReadinessView()
-	view.Panes[0].Rows[0].Rect.Y = 90
-	if _, err := validateActivePaneReadiness(view, ids); err == nil || !strings.Contains(err.Error(), "clipped") {
-		t.Fatalf("clipped row error = %v", err)
-	}
-	view, ids = activeReadinessView()
-	view.Panes[4].Rows = []uiRow{{Role: "assistant", Status: "streaming", InViewport: true}}
-	if _, err := validateActivePaneReadiness(view, ids); err == nil || !strings.Contains(err.Error(), "inactive") {
-		t.Fatalf("inactive row error = %v", err)
-	}
-}
-
-func TestValidateActivePaneReadinessRejectsInvisibleInactivePane(t *testing.T) {
-	view, ids := activeReadinessView()
+func TestValidateActivePaneMountRejectsInvisiblePane(t *testing.T) {
+	view, ids := activeMountView()
 	view.Panes[5].Rect.H = 0
-	if _, err := validateActivePaneReadiness(view, ids); err == nil || !strings.Contains(err.Error(), "no visible geometry") {
-		t.Fatalf("invisible inactive pane error = %v", err)
+	if err := validateActivePaneMount(view, ids); err == nil || !strings.Contains(err.Error(), "invalid pane") {
+		t.Fatalf("invisible pane error = %v", err)
 	}
 }
 

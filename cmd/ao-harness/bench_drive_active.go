@@ -305,10 +305,6 @@ func collectActiveBenchProgress(
 	return sample, nil
 }
 
-func queryBenchElement(ctx context.Context, run *benchRun, selector string, includeScroll bool) (benchElementAnswer, error) {
-	return queryBenchElementDeadlineSafe(ctx, run, selector, includeScroll)
-}
-
 func activeBenchSelector(threadID, descendant string) (string, error) {
 	if !benchThreadIDPattern.MatchString(threadID) {
 		return "", fmt.Errorf("thread id %q cannot be embedded in a harness selector", threadID)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/harnessclient"
@@ -41,26 +40,6 @@ func bootstrapForTarget(t target) (harnessclient.Bootstrap, error) {
 		return harnessclient.Bootstrap{}, fmt.Errorf("bootstrap identity does not match selected instance %q: %w", t.ID, err)
 	}
 	return bs, nil
-}
-
-func confirmInstancePID(dataDir string, pid int) error {
-	bs, err := harnessclient.ReadInstanceFile(dataDir)
-	if err != nil {
-		return fmt.Errorf("the registry names pid %d but %s claims no instance (%v); refusing to signal a pid nothing confirms (`ao-harness list` prunes the row)", pid, dataDir, err)
-	}
-	if bs.PID != pid {
-		return fmt.Errorf("the registry names pid %d but %s names pid %d; refusing to signal a pid the data root does not claim", pid, dataDir, bs.PID)
-	}
-	if err := bs.ValidateFor(filepath.Dir(dataDir), dataDir); err != nil {
-		return fmt.Errorf("identity mismatch: %w", err)
-	}
-	if bs.PIDNamespace != "" && bs.PIDNamespace != instanceinfo.CurrentPIDNamespace() {
-		return nil
-	}
-	if err := verifyBootstrapProcess(bs); err != nil {
-		return fmt.Errorf("refusing to signal pid %d: %w", pid, err)
-	}
-	return nil
 }
 
 func confirmInstanceRow(row instanceinfo.Row) error {
