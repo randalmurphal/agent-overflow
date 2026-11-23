@@ -114,11 +114,12 @@ separate events and never settle a newer execution. Legacy waits and terminal
 notifications retain their own typed completion evidence. See the
 [immutable agent history contract](../specs/agent-visibility.md#immutable-agent-history).
 
-Every non-root Codex provider thread is quarantined at the session boundary.
-Until a V1 spawn completion or V2 started activity maps it to a spawn item,
-its notifications and server requests are quarantined with bounded storage
-and an ownership deadline; expired server requests are rejected rather than
-stalling the provider indefinitely. Known child turn
+Every non-root Codex provider thread is held on the shared connection until a
+V1 spawn completion or V2 started activity maps it to a spawn item; a session
+that receives a frame for a thread it does not own hands it to the same queue.
+The queue has bounds and an ownership deadline: expired server requests are
+rejected rather than stalling the provider indefinitely, and expired
+notifications are dropped and logged. Known child turn
 lifecycle and thread-wide state never enter the parent projection; only
 transcript-bearing events cross with `ParentToolUseID`. The same rule applies
 recursively when a child spawns a grandchild.

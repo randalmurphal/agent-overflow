@@ -750,24 +750,32 @@ activity always precedes the spawn's `function_call_output` response item
 with no typed activity behind it is therefore a refusal or error, and the
 session renders it as its own result row; mock fixtures must keep that order.
 V2 core creates and starts the child before emitting `subAgentActivity`, so
-the child's `thread/started`, `turn/started`, or transcript deltas can arrive
-first. The session adapter must quarantine every unmapped non-root provider
-thread and replay it only after this typed ownership edge arrives. Falling
-through to the AO root is forbidden: child turn starts reset root stream
-counters, and child turn completions falsely close the root round. The
-quarantine has per-thread, total-count, byte, and thread-id bounds. If typed
-ownership does not arrive within ten seconds, queued approvals are rejected,
-the child events are dropped, and one visible session warning is emitted.
-The quarantined `thread/started` display metadata is cached separately so the
-event remains unroutable while its nickname can still enrich the spawn row on
-first paint once ownership arrives.
+the child's `turn/started` or transcript deltas can arrive first. The
+app-server sends no `thread/started` for a spawned child: it announces only a
+`thread/start`, a `thread/fork`, and (before 0.169) a detached `review/start`
+(`app-server/src/request_processors/thread_processor.rs` and
+`turn_processor.rs`, read at `rust-v0.143.0`, `rust-v0.162.1` and
+`rust-v0.169.0`). A child's frames therefore carry only its `threadId`, which
+names no root.
 
-Live `thread/started` includes a `sessionId` shared by a root and its descendants.
-When it differs from the active root's session ID and no known parent or typed
-spawn links the thread to that root, the adapter discards its wire events and
-rejects its pending requests without a child-routing warning. Missing identity
-continues through quarantine. Historical `thread/read` metadata is not used for
-this filter: legacy resumed subagent records can carry their own session ID.
+The shared connection (`internal/provider/codex/conn.go`) holds every frame
+of an unmapped non-root provider thread and replays it to the session whose
+typed ownership edge claims the thread. A session that receives such a frame
+by another route hands it to the same queue. Falling through to the AO root
+is forbidden: child turn starts reset root stream counters, and child turn
+completions falsely close the root round. The queue has per-thread,
+total-count, byte, and thread-id bounds, shared by every session on the
+connection. If typed ownership does not arrive within ten seconds, held
+approvals are rejected, the held notifications are dropped, and the
+connection logs the thread, both counts, and the sessions on the connection.
+Nothing is shown on a thread, since a held frame does not name its root.
+A held `thread/started`'s display metadata is cached by the session it was
+routed to, so its nickname can still enrich the spawn row on first paint once
+ownership arrives.
+
+`thread/started` includes a `sessionId` shared by a root and its descendants.
+The connection routes a `thread/started` by that `sessionId` or by its
+`parentThreadId` to the session that owns either.
 
 This rule is recursive. A `subAgentActivity kind:"started"` received on a
 known child thread creates a nested edge from that child's spawn item to the

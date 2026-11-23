@@ -44,8 +44,10 @@ reversible. An unclaimed `turn/started` is adopted as active with origin
 ## Routing and collaboration
 
 Notification routing resolves identity and ownership before classification.
-Hold unknown-child notifications and requests in the bounded pending queue
-until ownership resolves, and reject them when its deadline expires. Child
+The connection holds unknown-child notifications and requests in its one
+bounded queue until a spawn claims the thread, and rejects or drops them when
+the deadline expires; a session hands any unowned frame it receives to that
+queue and never keeps one of its own. Child
 token usage may be re-scoped to the root; child lifecycle and content must not
 mutate root turn state.
 
