@@ -361,8 +361,13 @@ func (m *Manager) UpdateProviderCredentials(providerName string, generation uint
 	return threadIDs
 }
 
+// RecordActivity stamps a provider event on the session it came from. It
+// holds the lock idle removal holds (TakeIdle), so an event either lands
+// before the removal's check and keeps its session, or finds it gone.
 func (m *Manager) RecordActivity(threadID, sessionToken string, kind provider.EventKind, content string, now time.Time) {
-	entry, ok := m.Get(threadID)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry, ok := m.sessions[threadID]
 	if !ok || entry.Token != sessionToken || entry.Liveness == nil {
 		return
 	}

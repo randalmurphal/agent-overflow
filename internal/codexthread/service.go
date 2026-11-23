@@ -21,8 +21,11 @@ type Deps struct {
 	IsShuttingDown func() bool
 	ShutdownError  error
 	Session        func(threadID string) (LiveSession, bool)
-	Store          *store.Store
-	Emit           func(eventchan.Channel, any)
+	// LockThread takes the thread's action lock, which a session restart
+	// holds from its stop through its start.
+	LockThread func(ctx context.Context, threadID string) (unlock func(), err error)
+	Store      *store.Store
+	Emit       func(eventchan.Channel, any)
 }
 
 // Service owns Codex provider-thread reconciliation and cumulative-cost reads.
