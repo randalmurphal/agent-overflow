@@ -2,13 +2,12 @@
 // Agents list until it rests, under the compact layout
 // (docs/specs/standing-agents.md, "Owned workers"). The body is
 // agents-tray-worker-lifetime-helpers.ts.
-import { test } from './fixtures.js';
 import type { ProviderName } from './thread-tools-helpers.js';
-import { runWorkerLifetimeOnShortWindows } from './agents-tray-worker-lifetime-helpers.js';
+import { runWorkerLifetime, test } from './agents-tray-worker-lifetime-helpers.js';
 
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
-  test(`${provider}: a worker that replies and keeps working stays open until it rests, on a phone`, async ({ page }) => {
+  test(`${provider}: a worker that replies and keeps working stays open until it rests, on a phone`, async ({ harness, page }) => {
     test.setTimeout(180_000);
-    await runWorkerLifetimeOnShortWindows(page, provider, 'compact');
+    await runWorkerLifetime(harness, page, provider, 'compact');
   });
 }

@@ -193,15 +193,13 @@ test('with this computer\'s assistants off, an assistant\'s worker on the other 
     const held = await awaitGate(there, 'paused-owner-hold', work.path);
 
     // Assistants off here: the worker's approval stays the assistant's. It
-    // waits in the assistant's queue, the person there is not asked, and
-    // the assistant is not woken while the setting is off: an app-written
-    // message for a paused assistant's thread waits in its queue, which
-    // starts no session for it.
+    // waits in the assistant's queue and the person there is not asked. An
+    // app-written message for a paused assistant's thread waits in its queue
+    // and starts no session for it until assistants are on; that the
+    // dispatch met the pause and the switch, not a late wake, started the
+    // session is internal/app's TestAMessageForAPausedAssistantWaitsForAssistants,
+    // which drains the dispatcher between the two.
     await here.rpc('UpdateSettings', { assistantsEnabled: false });
-    const wokenWhileOff = here.watchEvents<HarnessMockEventData>(
-      'harness:mock',
-      (ev) => ev.report.kind === 'user_input' && ev.cwd === assistant.home && (ev.report.input ?? '').includes('Paused owner worker'),
-    );
     const waiting = () => {
       const db = new DatabaseSync(join(here.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
       try {
@@ -219,7 +217,6 @@ test('with this computer\'s assistants off, an assistant\'s worker on the other 
     };
     await expect.poll(holder, { timeout: 30_000 }).toBe(assistant.thread);
     await expect.poll(waiting, { timeout: 30_000, message: 'the approval\'s wake waits in the paused assistant\'s queue' }).toBe(1);
-    expect(wokenWhileOff.count(), 'the paused assistant was woken for its worker\'s approval').toBe(0);
     expect(await holder(), 'the approval left the paused assistant').toBe(assistant.thread);
 
     // Assistants on: the assistant is woken for the approval that waited.

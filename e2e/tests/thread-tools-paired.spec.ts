@@ -55,6 +55,7 @@ import { launchFrontendClient } from './frontend-client-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { centerInTimeline } from './standing-agent-home-contents-helpers.js';
 import { capture, captureAgentMessage } from './wake-rows-helpers.js';
+import { laterMessage } from './standing-agent-wake-helpers.js';
 import type { ProviderOptionRow } from './thread-tools-helpers.js';
 import { backgroundShellSteps, heldSendIds, openPast, pastRow, pastTotal } from './agents-tray-helpers.js';
 import { toolResultLine, toolUseLine } from './agent-visibility-helpers.js';
@@ -1279,13 +1280,12 @@ test('the Agents segment nests a spawn on the other computer and its Stop cascad
   await expect.poll(async () => (await remote.rpc<{ status: string }[]>('ListLiveBackgroundTasks', spawn.value!.thread_id))
     .filter((item) => item.status === 'running').length).toBe(0);
   await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('stopped', { timeout: 60_000 });
-  // A later message to the child is the barrier: a wake for the stopped
-  // grandchild would reach the child's session before it.
-  await childWoken.expectNoneThrough(async () => {
-    const answered = awaitTurnCompleted(remote, spawn.value!.thread_id);
-    await remote.rpc('SendMessage', spawn.value!.thread_id, 'one more thing', null);
-    await answered;
-  }, 'the child took a turn for the agent the person stopped');
+  // A later message to the child, read by its session, is the barrier: a
+  // wake for the stopped grandchild would reach the child's session before it.
+  await childWoken.expectNoneThrough(
+    () => laterMessage(remote, spawn.value!.thread_id, child.path),
+    'the child took a turn for the agent the person stopped',
+  );
 });
 
 // A worker there replied and keeps working, then its computer stops

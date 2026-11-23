@@ -109,7 +109,7 @@ for (const forge of ['github', 'gitlab'] as Forge[]) {
     if (forge === 'github') await notice.screenshot({ path: testInfo.outputPath('merged-notice-removed.png') });
 
     // Settled once: the repository is not read again.
-    await expectNoMoreStateReads(harness, control);
+    await expectNoMoreStateReads(harness, control, POLL_MS);
     await expect(notice).toHaveCount(1);
     await expectEveryForgeCallHandled(harness);
     await expect(errorToasts(page)).toHaveCount(0);
@@ -153,7 +153,7 @@ test('a PR on the project root\'s branch is never tracked, and its merge removes
   await expect(page.getByTestId('chat-header-pr-badge')).toBeVisible({ timeout: 30_000 });
 
   await movePR(harness, fixture, {}, [{ ...rootPR, state: 'merged', mergedAt: new Date().toISOString() }]);
-  await expectNoMoreStateReads(harness, control);
+  await expectNoMoreStateReads(harness, control, POLL_MS);
   expect(trackedRow(harness, rootId), 'a thread in the project root was tracked').toBeUndefined();
   expect(await stateReads(harness, control)).toBe(0);
   expect(await samePath((await threadRow(harness, rootId)).workspacePath, fixture.root)).toBe(true);
@@ -171,7 +171,7 @@ test('an old merged PR found by the branch name is never adopted', async ({ harn
   await lookUpPR(harness, fixture);
   await harness.open(page);
   await openThread(page, 'Reused name');
-  await expectNoMoreStateReads(harness, control);
+  await expectNoMoreStateReads(harness, control, POLL_MS);
   expect(trackedRow(harness, threadId)).toBeUndefined();
   expect(await stateReads(harness, control)).toBe(0);
   await expectWorktreeKept(harness, threadId, fixture);
@@ -191,7 +191,7 @@ test('a PR closed without merging leaves the worktree and is no longer read', as
   const row = await expectHandled(harness, threadId, 'closed');
   expect(row.merged_at).toBe(0);
   await expectWorktreeKept(harness, threadId, fixture);
-  await expectNoMoreStateReads(harness, control);
+  await expectNoMoreStateReads(harness, control, POLL_MS);
 
   await openThread(page, 'Closed work');
   await expect(page.getByTestId('env-picker-trigger')).toHaveText(basename(fixture.worktreePath));
@@ -222,7 +222,7 @@ test('uncommitted changes keep the merged PR\'s worktree with one warning notice
   await expectWorktreeKept(harness, threadId, fixture);
 
   // Later polls neither read it again nor repeat the notice.
-  await expectNoMoreStateReads(harness, control);
+  await expectNoMoreStateReads(harness, control, POLL_MS);
   await expect(notice).toHaveCount(1);
   await expect(page.getByTestId('env-picker-trigger')).toHaveText(basename(fixture.worktreePath));
   await expectEveryForgeCallHandled(harness);
@@ -251,7 +251,7 @@ test('a clean worktree git will never remove is kept and told once with no path'
   await expect(kept).toHaveText('PR #14 merged. Kept worktree refused-branch: it has submodules.');
   await expect(kept).toHaveClass(/text-warning/);
   await expectWorktreeKept(harness, threadId, fixture);
-  await expectNoMoreStateReads(harness, control);
+  await expectNoMoreStateReads(harness, control, POLL_MS);
   await expect(kept).toHaveCount(1);
   await expectEveryForgeCallHandled(harness);
 });
@@ -292,7 +292,7 @@ for (const forge of ['github', 'gitlab'] as Forge[]) {
     // The fork's PR merges: nothing is read and nothing happens.
     await movePR(harness, fixture, { ...fork, state: 'merged', mergedAt: new Date().toISOString() });
     await lookUpPR(harness, fixture);
-    await expectNoMoreStateReads(harness, control);
+    await expectNoMoreStateReads(harness, control, POLL_MS);
     expect(await stateReads(harness, control)).toBe(0);
     expect(trackedRow(harness, threadId)).toBeUndefined();
     await expectWorktreeKept(harness, threadId, fixture);
@@ -345,7 +345,7 @@ test('a thread that left its worktree before the merge is not moved and gets no 
   await mergePR(harness, fixture);
 
   // Nothing is read for it, and the worktree it left stays.
-  await expectNoMoreStateReads(harness, control);
+  await expectNoMoreStateReads(harness, control, POLL_MS);
   expect(await stateReads(harness, control)).toBe(before);
   expect(existsSync(fixture.worktreePath)).toBe(true);
   expect(await samePath((await threadRow(harness, threadId)).workspacePath, fixture.root)).toBe(true);
@@ -411,7 +411,7 @@ test('a turn running when the PR merges delays the cleanup until it ends', async
   await expect.poll(() => trackedRow(harness, threadId)?.merged_at ?? 0).toBeGreaterThan(0);
   // Polls go on (the control's two reads), the turn still runs and the
   // worktree stays.
-  await expectNoMoreStateReads(harness, control);
+  await expectNoMoreStateReads(harness, control, POLL_MS);
   expect(trackedRow(harness, threadId)?.handled_at).toBe(0);
   await expectWorktreeKept(harness, threadId, fixture);
 

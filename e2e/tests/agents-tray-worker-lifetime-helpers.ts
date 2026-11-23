@@ -12,7 +12,7 @@
 // because a window still holds it.
 import type { Page } from '@playwright/test';
 
-import { expect, type SeedResult } from './fixtures.js';
+import { HARNESS_WORKER_TIMEOUT_MS, expect, test as base, type SeedResult } from './fixtures.js';
 import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import {
   FOOTER_TOKEN_PATTERN,
@@ -33,16 +33,17 @@ const REPLY = 'The deploy started; I am watching it.';
 // window (threadAgentSettledWindow), both over before the next read.
 const PAST_WINDOWS = harnessTiming({ 'agent-row-linger': '1ms', 'agent-settled-window': '1ms' });
 
-/** Runs the lifetime on a backend of its own whose windows are over at once. */
-export async function runWorkerLifetimeOnShortWindows(page: Page, provider: ProviderName, layout: Layout): Promise<void> {
-  const harness = await launchHarness({ env: PAST_WINDOWS });
-  try {
-    await runWorkerLifetime(harness, page, provider, layout);
-  } finally {
-    await page.close();
-    await harness.close();
-  }
-}
+/** The gate's fixtures over a worker backend whose windows are over at once. */
+export const test = base.extend<object, { harnessWorker: HarnessApp }>({
+  harnessWorker: [
+    async ({}, use) => {
+      const app = await launchHarness({ env: PAST_WINDOWS });
+      await use(app);
+      await app.close();
+    },
+    { scope: 'worker', timeout: HARNESS_WORKER_TIMEOUT_MS },
+  ],
+});
 
 /** The thread list: under compact, back out of a shown thread. */
 async function showList(page: Page, layout: Layout): Promise<void> {
@@ -51,7 +52,7 @@ async function showList(page: Page, layout: Layout): Promise<void> {
   if (await back.count()) await back.tap();
 }
 
-async function runWorkerLifetime(harness: HarnessApp, page: Page, provider: ProviderName, layout: Layout): Promise<void> {
+export async function runWorkerLifetime(harness: HarnessApp, page: Page, provider: ProviderName, layout: Layout): Promise<void> {
   const tag = `agents-lifetime-${provider}-${layout}`;
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [

@@ -437,8 +437,9 @@ export async function clearForgeRefusal(harness: HarnessApp, route: string): Pro
   await harness.rpc('HarnessForgeRefuse', { route, status: 0 });
 }
 
-export async function forgeInvocations(harness: HarnessApp): Promise<ForgeInvocation[]> {
-  const log = await harness.rpc<{ invocations: ForgeInvocation[] }>('HarnessForgeInvocations', 0);
+/** The fake's recorded invocations, oldest first: all of them, or those after the `since` sequence number. */
+export async function forgeInvocations(harness: HarnessApp, since = 0): Promise<ForgeInvocation[]> {
+  const log = await harness.rpc<{ invocations: ForgeInvocation[] }>('HarnessForgeInvocations', since);
   return log.invocations;
 }
 

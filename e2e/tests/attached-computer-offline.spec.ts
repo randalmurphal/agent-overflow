@@ -18,6 +18,7 @@ import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js
 import { headlessPairing } from './headless-pairing-helpers.js';
 import type { SeedResult } from './fixtures.js';
 import { expectProjectsMenuSays, watchProjectsQuiet } from './sidebar-quiet-helpers.js';
+import { callsInFlight, methodIdByName } from './offhost-helpers.js';
 
 // The unreachable settle (UNREACHABLE_SETTLE_MS). Ten seconds keeps the
 // window the dial ceiling below was sized for: the outage is watched from
@@ -48,12 +49,42 @@ function collect(page: Page): () => Counts {
   };
 }
 
+const TRIGGER = 'provider:background_tasks_changed';
+
+/**
+ * The open pane's refresh as the page runs it: each time a page socket
+ * receives the trigger, the workspace activity read the page sends after it
+ * and its answer. Installed before the page opens, so it sees every socket.
+ */
+function refreshesAfterTrigger(page: Page): () => number {
+  const method = methodIdByName('GetWorkspaceActivity');
+  let triggered = false;
+  const asked = new Set<string>();
+  let answered = 0;
+  page.on('websocket', (socket) => {
+    socket.on('framereceived', ({ payload }) => {
+      if (typeof payload !== 'string') return;
+      if (payload.includes(`"${TRIGGER}"`)) triggered = true;
+      if (!payload.startsWith('{"type":"rpc"')) return;
+      if (asked.delete(String((JSON.parse(payload) as { id?: string }).id))) answered++;
+    });
+    socket.on('framesent', ({ payload }) => {
+      if (!triggered || typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
+      const sent = JSON.parse(payload) as { id?: string; methodId?: number };
+      if (sent.methodId === method) asked.add(String(sent.id));
+    });
+  });
+  return () => answered;
+}
+
 test('an offline paired computer logs once per outage and a draft pane is never routed', async ({ page }) => {
   test.setTimeout(240_000);
   page.setDefaultTimeout(15_000);
   let home: HarnessApp | undefined;
   let remote: HarnessApp | undefined;
   const drain = collect(page);
+  const refreshed = refreshesAfterTrigger(page);
+  const inFlight = callsInFlight(page);
   try {
     home = await launchHarness({ env: harnessTiming({ 'unreachable-settle': `${SETTLE_MS}ms` }) });
     remote = await launchHarness();
@@ -92,10 +123,19 @@ test('an offline paired computer logs once per outage and a draft pane is never 
       // No control on the thread says the laptop refused this device.
       await expect(page.getByTestId('thread-title-regenerate')).not.toHaveAttribute('title', 'Not granted to this device');
     };
-    // The tray's own refresh trigger for the open thread.
+    // The open pane's refresh trigger, done once the page has read the
+    // workspace again after receiving it, so whatever that refresh logs is
+    // in before the console is drained.
     const poke = async () => {
-      await home!.rpc('HarnessEmit', 'provider:background_tasks_changed', { threadId });
-      await expect.poll(() => home!.countEvents('provider:background_tasks_changed')).toBeGreaterThan(0);
+      const before = refreshed();
+      await home!.rpc('HarnessEmit', TRIGGER, { threadId });
+      await expect.poll(refreshed, { message: 'the page did not refresh the open pane on its trigger' }).toBeGreaterThan(before);
+    };
+    // A draft pane reads nothing on that trigger, so its reads are done once
+    // every call the page made opening it is answered: a call that routed
+    // its placeholder id would have failed, and logged, by then.
+    const draftSettled = async () => {
+      await expect.poll(inFlight, { message: 'the draft pane\'s reads did not finish' }).toBe(0);
     };
 
     await home.open(page);
@@ -111,11 +151,11 @@ test('an offline paired computer logs once per outage and a draft pane is never 
       .filter({ hasText: project }).getByTestId('project-item-new-thread').click();
     await newDraftIn('local-project');
     await expect(page.getByLabel('Message Input')).toBeVisible();
-    await poke();
+    await draftSettled();
     expect(drain()).toEqual({ preparationFailed: 0, ensureConnected: 0, ownerUnknown: 0, http503: 0, socketFailed: 0, errors: [] });
     await newDraftIn('laptop-project');
     await expect(page.getByTestId('workspace-diff-counts')).toHaveText(/^\+1\s*-1$/);
-    await poke();
+    await draftSettled();
     expect(drain()).toEqual({ preparationFailed: 0, ensureConnected: 0, ownerUnknown: 0, http503: 0, socketFailed: 0, errors: [] });
     await openLocal();
     drain();
@@ -136,8 +176,8 @@ test('an offline paired computer logs once per outage and a draft pane is never 
       dimmedAfter = Date.now() - outageStart;
       await poke();
     });
+    // The watch saw the row dim, so it was sampling the section's changes.
     expect(quiet).toEqual({ samples: expect.any(Number), statusLines: [], animations: [], dimmed: 1 });
-    expect(quiet.samples).toBeGreaterThanOrEqual(15);
     expect(dimmedAfter, 'the row dimmed before the settle time').toBeGreaterThanOrEqual(SETTLE_MS);
     const outage = drain();
     expect(outage.http503).toBeGreaterThanOrEqual(2);

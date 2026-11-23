@@ -19,6 +19,7 @@ import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../sr
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { advanceGate, awaitGate, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 import { backgroundShellSteps } from './agents-tray-helpers.js';
+import { laterMessage } from './standing-agent-wake-helpers.js';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -320,13 +321,12 @@ test('the Agents segment nests a spawn two computers away and its Stop cascades 
   await childInterrupted;
   await grandInterrupted;
   await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('stopped', { timeout: 60_000 });
-  // A later message to the child is the barrier: a wake for the stopped
-  // grandchild would reach the child's session before it.
-  await childWoken.expectNoneThrough(async () => {
-    const answered = awaitTurnCompleted(studio, spawn.value!.thread_id);
-    await studio.rpc('SendMessage', spawn.value!.thread_id, 'one more thing', null);
-    await answered;
-  }, 'the child took a turn for the agent the person stopped');
+  // A later message to the child, read by its session, is the barrier: a
+  // wake for the stopped grandchild would reach the child's session before it.
+  await childWoken.expectNoneThrough(
+    () => laterMessage(studio, spawn.value!.thread_id, child.path),
+    'the child took a turn for the agent the person stopped',
+  );
 });
 
 /** A thread on the computer that holds it: its placement and archive state, null once it is gone. */

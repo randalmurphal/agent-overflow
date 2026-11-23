@@ -131,6 +131,8 @@ echo "the report while the start was held"
     // The wake is recorded delivered when it is queued, while its start is
     // still held.
     await expect.poll(() => dbWake(dataDir, thread, 'once')?.last_outcome, { timeout: 15_000 }).toBe('delivered');
+    // The send goes in while the start is held at its handshake.
+    const held = await awaitGate(harness, 'held-start', home);
 
     const sending = Date.now();
     const sent = await threadSend(dataDir, [thread, 'deploy 10 is done']);
@@ -150,7 +152,7 @@ echo "the report while the start was held"
     expect(countInputs(harness, home, 'Message sent from outside Agent Overflow')).toBe(0);
 
     // The start goes on; both reach the session.
-    await advanceGate(harness, (await awaitGate(harness, 'held-start', home)).mockId, 'held-start');
+    await advanceGate(harness, held.mockId, 'held-start');
     const wake = await wakeInput(harness, home, 'Watch "once" reported.', 90_000);
     expect(wake.report.input).toContain('"the report while the start was held"');
     const outside = await wakeInput(harness, home, 'Message sent from outside Agent Overflow', 90_000);

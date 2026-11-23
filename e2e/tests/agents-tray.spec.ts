@@ -29,6 +29,7 @@ import type { HarnessApp } from '../src/harness.js';
 import { rename } from 'node:fs/promises';
 import { advanceGate, awaitGate, awaitMockInput, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
 import { capture } from './wake-rows-helpers.js';
+import { laterMessage } from './standing-agent-wake-helpers.js';
 import { scrollTimelineToTop } from './standing-agent-home-contents-helpers.js';
 import {
   CHILD,
@@ -173,11 +174,10 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await setScenario(harness, tree.childPath, threadToolsScenario({
       name: `agents-${provider}-child-again`, provider, echoUserMessage: true, turns: [{ text: 'Back on it.' }],
     }));
-    await childWoken.expectNoneThrough(async () => {
-      const answered = awaitTurnCompleted(harness, started.child);
-      await harness.rpc('SendMessage', started.child, 'one more thing', null);
-      await answered;
-    }, 'the child took a turn for the agent the person stopped');
+    await childWoken.expectNoneThrough(
+      () => laterMessage(harness, started.child, tree.childPath),
+      'the child took a turn for the agent the person stopped',
+    );
     await expect.poll(() => sessionLive(harness, started.child), { timeout: 30_000 }).toBe(true);
   });
 

@@ -489,10 +489,10 @@ async function giveBackCaller(app: () => HarnessApp, remote: HarnessApp, provide
       };
       const watch = conn
         .prepare(
-          `SELECT confirmed_at IS NOT NULL AS confirmed, wake_attempts AS attempts, next_check AS nextCheck FROM remote_watches WHERE request_id = ?`,
+          `SELECT confirmed_at IS NOT NULL AS confirmed, wake_attempts AS attempts FROM remote_watches WHERE request_id = ?`,
         )
-        .get(requestId) as { confirmed: number; attempts: number; nextCheck: number };
-      return { answer: request.confirmed, completion: watch.confirmed, attempts: watch.attempts, nextCheck: watch.nextCheck };
+        .get(requestId) as { confirmed: number; attempts: number };
+      return { answer: request.confirmed, completion: watch.confirmed, attempts: watch.attempts };
     } finally {
       conn.close();
     }
@@ -598,21 +598,17 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       // never retracts it), so this one is not waited for.
       const died = Date.now();
       await harness.rpc('HarnessMockCommand', completionMock, { type: 'exit', code: 1 });
-      // The watch is pending again with its first redelivery booked one rung
-      // of the wake retry ladder out, and the watcher, which polls every two
-      // seconds, leaves it alone until then.
-      await expect.poll(() => ({ watch: g.state().watch, attempts: g.marks().attempts }), { timeout: 30_000 }).toEqual({
-        watch: 'pending',
-        attempts: 1,
-      });
-      const booked = g.marks().nextCheck;
-      expect(booked).toBeGreaterThanOrEqual(died + WAKE_RETRY_MS);
-      expect(booked).toBeLessThanOrEqual(Date.now() + WAKE_RETRY_MS);
-      // Then it is delivered once to the session the watcher starts, not
-      // before the booked moment, and the echo confirms it.
+      // The watch goes pending again with its first redelivery booked one
+      // rung of the wake retry ladder out, and the watcher, which polls every
+      // two seconds, leaves it alone until then. It is delivered once to the
+      // session the watcher starts, and the echo confirms it. The rung count
+      // stays on the row through the delivery; the booked moment does not
+      // (the watcher's check of the job books its next one), so the
+      // redelivery is held to the rung itself.
       await expect.poll(() => countInputs(harness, g.callerPath, g.completion), { timeout: 60_000 }).toBe(2);
+      expect(g.marks().attempts, 'the redelivery was booked on another rung of the ladder').toBe(1);
       const [, redelivered] = harness.eventTimes('harness:mock', inputWith(g.callerPath, g.completion));
-      expect(redelivered, 'the watcher delivered the completion before its booked moment').toBeGreaterThanOrEqual(booked);
+      expect(redelivered, 'the watcher delivered the completion short of one rung').toBeGreaterThanOrEqual(died + WAKE_RETRY_MS);
       const third = harness.watchEvents('harness:mock', inputWith(g.callerPath, g.completion));
       await awaitTurnCompleted(harness, g.caller);
       expect(g.state()).toEqual({ request: { delivered: 0, how: '', notify: 0 }, watch: 'queued', draft: '', rows: 0 });
@@ -1375,6 +1371,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
+      // Every delivery from the Stop on is counted, however soon it comes.
+      const deliveries = harness.watchEvents('harness:mock', inputWith(cwd, completion));
       await harness.rpc('StopSession', thread);
       // Back at its watch, or already queued again by the watcher's next
       // pass; never queued with nothing left to deliver it.
@@ -1389,13 +1387,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const input = await wakeInput(harness, cwd, completion, 30_000);
       expect(input.report.input).toContain('Remote job finished on Build box: nightly build');
       expect(input.report.input).toContain('build 812 finished: green');
-      const again = harness.watchEvents('harness:mock', inputWith(cwd, completion));
       await awaitTurnCompleted(harness, thread);
       // Queued, the watch is out of the watcher's due list; a delivery
       // already on its way reaches the session before a later message.
       expect(queued()).toEqual([]);
       expect(watch()).toBe('queued');
-      await again.expectNoneThrough(() => laterMessage(harness, thread, cwd), 'the completion was delivered again');
+      await deliveries.expectExactlyThrough(1, () => laterMessage(harness, thread, cwd), 'the completion was not delivered once');
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Remote builder', { exact: true }).click();
@@ -1538,19 +1535,20 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
+      // Every delivery from the unarchive on is counted, however soon it comes.
+      const deliveries = harness.watchEvents(
+        'harness:mock',
+        (ev: HarnessMockEventData) => inputWith(cwd, `request_id: ${build}`)(ev) || inputWith(cwd, `request_id: ${soak}`)(ev),
+      );
       await harness.rpc('UnarchiveThread', thread);
       const input = await wakeInput(harness, cwd, `request_id: ${build}`);
       expect(input.report.input).toContain('Remote job finished on Build box: nightly build');
       expect(input.report.input).toContain('build 812 finished: green');
-      const again = harness.watchEvents(
-        'harness:mock',
-        (ev: HarnessMockEventData) => inputWith(cwd, `request_id: ${build}`)(ev) || inputWith(cwd, `request_id: ${soak}`)(ev),
-      );
       await awaitTurnCompleted(harness, thread);
       expect(countInputs(harness, cwd, `request_id: ${soak}`)).toBe(0);
       expect(queued()).toEqual([]);
       expect(watch(build).notification).toBe('queued');
-      await again.expectNoneThrough(() => laterMessage(harness, thread, cwd), 'a remote job reached the thread again');
+      await deliveries.expectExactlyThrough(1, () => laterMessage(harness, thread, cwd), 'the finished job did not reach the thread once');
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Nightly checks', { exact: true }).click();

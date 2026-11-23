@@ -240,12 +240,21 @@ async function timelineSettled(page: import('@playwright/test').Page, frames: nu
   }), { frames, capMs });
 }
 
-// A blank that persists into the settled state: the rows and scroll held
-// still for timelineSettled's frames, so the last frame is what stays on
-// screen.
-function endsBlank(samples: FrameSample[]): boolean {
-  const last = samples.at(-1);
-  return !last || last.visibleNodes === 0 || last.hidden;
+// Resolves once the sampler's latest frame paints rows, or once the blank
+// that frame is part of has lasted the limit, so a blank that persists into
+// the settled state is a run longer than the limit, and one hidden frame at
+// the boundary is a run of one frame.
+async function blankResolved(page: import('@playwright/test').Page): Promise<void> {
+  await page.waitForFunction((limit) => {
+    const frames = (window as unknown as { __aoFrames: FrameSample[] }).__aoFrames;
+    const blank = (s: FrameSample) => s.visibleNodes === 0 || s.hidden;
+    const last = frames.at(-1);
+    if (!last) return false;
+    if (!blank(last)) return true;
+    let start = frames.length - 1;
+    while (start > 0 && blank(frames[start - 1])) start--;
+    return last.t - frames[start].t >= limit;
+  }, BLANK_LIMIT_MS, { timeout: BLANK_LIMIT_MS + 10_000 });
 }
 
 function longestBlankRun(samples: FrameSample[]): { ms: number; at: FrameSample | null } {
@@ -328,6 +337,7 @@ for (const order of ['send-during-compaction', 'send-after-boundary'] as const) 
     try {
       await expect(page.getByText('Confirming two facts before writing the plan.', { exact: true })).toBeVisible({ timeout: 20_000 });
       await timelineSettled(page, 12);
+      await blankResolved(page);
     } finally {
       samples = await collectSamples(page);
       const blank = longestBlankRun(samples);
@@ -336,7 +346,6 @@ for (const order of ['send-during-compaction', 'send-after-boundary'] as const) 
     await page.screenshot({ path: `test-results/flush-compact-${order}.png`, fullPage: false });
     const blank = longestBlankRun(samples);
     expect(blank.ms, `timeline painted no rows for ${Math.round(blank.ms)}ms starting at ${JSON.stringify(blank.at)}`).toBeLessThan(BLANK_LIMIT_MS);
-    expect(endsBlank(samples), `the settled timeline paints no rows: ${JSON.stringify(samples.at(-1))}`).toBe(false);
     await expect(page.getByText(QUEUED, { exact: true })).toHaveCount(1);
   });
 }
@@ -546,11 +555,11 @@ test.describe('mid-loop consumption', () => {
       await harness.waitForEvent('provider:turn_completed', (d: any) => d.threadId === caller, 30_000);
       notShown ??= await shown('All done after the compaction.', 20_000);
       if (notShown) await timelineSettled(page, 12);
+      await blankResolved(page);
 
       const samples = await collectSamples(page);
       const blank = longestBlankRun(samples);
       expect(blank.ms, `timeline painted no rows for ${Math.round(blank.ms)}ms starting at ${JSON.stringify(blank.at)}`).toBeLessThan(BLANK_LIMIT_MS);
-      expect(endsBlank(samples), `the settled timeline paints no rows: ${JSON.stringify(samples.at(-1))}`).toBe(false);
       if (notShown) throw notShown;
       expect((await consumedRows()).length).toBe(1);
     });

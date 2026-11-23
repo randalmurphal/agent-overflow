@@ -14,9 +14,13 @@ export interface ProjectsQuiet {
 }
 
 /**
- * Sample the Projects section on every frame while `through` runs, and
- * return what was seen once it settles. `through` is the barrier that ends
- * the watch: an event the page shows after the moment a status line, an
+ * Sample the Projects section at every change of the page and every
+ * animation start while `through` runs, and return what was seen once it
+ * settles. A status line, an animation or a dimmed row starts with a DOM
+ * change or an animation event, so this sees each one without sampling
+ * every frame: a page clock run of a minute costs as many samples as the
+ * page changed, not one per frame. `through` is the barrier that ends the
+ * watch: an event the page shows after the moment a status line, an
  * animation or a dimmed row would have appeared. The pointer moves off the
  * sidebar first and the hover transitions that starts are waited out, so
  * what remains is what the page runs on its own.
@@ -31,12 +35,11 @@ export async function watchProjectsQuiet(page: Page, through: () => Promise<unkn
   await page.evaluate(() => {
     const probe = {
       seen: { samples: 0, statusLines: [] as string[], animations: [] as string[], dimmed: 0 },
-      stopped: false,
+      stop: () => {},
       error: '',
     };
     (window as unknown as { __projectsQuiet: typeof probe }).__projectsQuiet = probe;
     const sample = () => {
-      if (probe.stopped) return;
       const section = document.querySelector('[data-testid="sidebar-projects-section"]');
       if (section === null) {
         probe.error = 'the Projects section is not mounted';
@@ -57,14 +60,28 @@ export async function watchProjectsQuiet(page: Page, through: () => Promise<unkn
         if (!seen.animations.includes(text)) seen.animations.push(text);
       }
       seen.dimmed = Math.max(seen.dimmed, section.querySelectorAll('[data-machine-unreachable="true"]').length);
-      requestAnimationFrame(sample);
+    };
+    // A script animation a change starts (a Svelte transition) begins in the
+    // frame after it, so a change is sampled again then.
+    let frame = 0;
+    const changed = () => {
+      sample();
+      if (frame === 0) frame = requestAnimationFrame(() => { frame = 0; sample(); });
+    };
+    const observer = new MutationObserver(changed);
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+    for (const type of ['animationstart', 'transitionrun']) document.addEventListener(type, sample, true);
+    probe.stop = () => {
+      observer.disconnect();
+      if (frame !== 0) cancelAnimationFrame(frame);
+      for (const type of ['animationstart', 'transitionrun']) document.removeEventListener(type, sample, true);
     };
     sample();
   });
   const stop = () => page.evaluate(() => {
-    const p = (window as unknown as { __projectsQuiet: { seen: ProjectsQuiet; stopped: boolean; error: string } }).__projectsQuiet;
-    p.stopped = true;
-    return p;
+    const p = (window as unknown as { __projectsQuiet: { seen: ProjectsQuiet; stop(): void; error: string } }).__projectsQuiet;
+    p.stop();
+    return { seen: p.seen, error: p.error };
   });
   try {
     await through();
@@ -76,6 +93,20 @@ export async function watchProjectsQuiet(page: Page, through: () => Promise<unkn
   const probe = await stop();
   if (probe.error !== '') throw new Error(probe.error);
   return probe.seen;
+}
+
+/**
+ * Run the reconnect attempt this page's banner counts down to: wait for the
+ * countdown, the ladder's armed attempt, and move the page clock to it. The
+ * banner rounds the wait up to whole seconds, so the move reaches the
+ * attempt and stops short of the one after it, which the ladder arms only
+ * once this one fails. The page clock must be installed.
+ */
+export async function runNextReconnect(page: Page): Promise<void> {
+  const countdown = page.getByTestId('transport-status-banner').getByText(/^Reconnecting in \d+s/);
+  await expect(countdown).toBeVisible();
+  const seconds = Number(/(\d+)s/.exec(await countdown.innerText())![1]);
+  await page.clock.fastForward(seconds * 1000);
 }
 
 /**

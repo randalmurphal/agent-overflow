@@ -463,6 +463,14 @@ async function eraseWithDeleteHeld(harness: HarnessApp, page: Page, hold: Awaite
   return { input, original };
 }
 
+/**
+ * Longer than the composer's save debounce (composerDraft.svelte.ts
+ * DEFAULT_DEBOUNCE_MS, half a second), and short of the transport's
+ * thirty-second silence verdict, so moving a page clock this far runs every
+ * save a page still had due and nothing else of the connection.
+ */
+const PAST_DRAFT_DEBOUNCE_MS = 5_000;
+
 test('typing again while the erased draft is being deleted keeps every character in the replacement thread', async ({
   harness,
   page,
@@ -477,7 +485,7 @@ test('typing again while the erased draft is being deleted keeps every character
   await input.pressSequentially('typed again');
   // The hold outlasts the composer's save debounce, so the new text's save
   // falls due while the reply is outstanding.
-  await page.clock.fastForward(1500);
+  await page.clock.fastForward(PAST_DRAFT_DEBOUNCE_MS);
   hold.release();
 
   await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
@@ -515,23 +523,42 @@ test('text typed during the erased draft’s delete and left by opening another 
   await expect(input).toHaveValue('typed then left');
 });
 
-/** A page whose draft saves for one thread reach the server only when released. */
+/**
+ * A page whose draft saves for one thread reach the server only once
+ * released; after that every frame passes. `inFlight` counts the page's
+ * calls the route has seen and the server has not answered, held ones
+ * included, so a drain of it also waits for a save the route still holds.
+ */
 async function holdDraftSaves(page: Page, threadId: () => string) {
   const saveMethod = methodIdByName('SaveDraft');
   const held: Array<() => void> = [];
+  const open = new Set<string>();
+  let holding = true;
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     const server = socket.connectToServer();
     socket.onMessage((message) => {
-      const frame = JSON.parse(String(message)) as { type?: string; methodId?: number; params?: unknown[] };
-      if (frame.type === 'rpc' && frame.methodId === saveMethod && threadId() && frame.params?.[0] === threadId()) {
+      const frame = JSON.parse(String(message)) as { type?: string; id?: string; methodId?: number; params?: unknown[] };
+      if (frame.type === 'rpc') open.add(String(frame.id));
+      if (holding && frame.type === 'rpc' && frame.methodId === saveMethod && threadId() && frame.params?.[0] === threadId()) {
         held.push(() => server.send(message));
         return;
       }
       server.send(message);
     });
-    server.onMessage((message) => socket.send(message));
+    server.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as { type?: string; id?: string };
+      if (frame.type === 'rpc') open.delete(String(frame.id));
+      socket.send(message);
+    });
   });
-  return { count: () => held.length, release: () => held.splice(0).forEach((send) => send()) };
+  return {
+    count: () => held.length,
+    inFlight: () => open.size,
+    release: () => {
+      holding = false;
+      held.splice(0).forEach((send) => send());
+    },
+  };
 }
 
 // Other screens on the same new thread keep typing while this one erases it.
@@ -549,7 +576,7 @@ test('text typed on other screens into a new thread this screen erases ends in a
     const screens = await Promise.all(others.map(async (context) => {
       const other = await context.newPage();
       await other.clock.install();
-      return { page: other, saves: await holdDraftSaves(other, () => shared), calls: callsInFlight(other) };
+      return { page: other, saves: await holdDraftSaves(other, () => shared) };
     }));
     await page.clock.install();
     const calls = callsInFlight(page);
@@ -582,9 +609,10 @@ test('text typed on other screens into a new thread this screen erases ends in a
     await expect(page.getByLabel('Message Input')).toHaveValue('');
     await expect(errorToasts(page)).toHaveCount(0);
     // Nothing a page still had due makes another thread: every debounce has
-    // run and every call it made is answered.
-    for (const view of [page, ...screens.map((screen) => screen.page)]) await view.clock.fastForward(1500);
-    await expect.poll(() => calls() + screens.reduce((sum, screen) => sum + screen.calls(), 0)).toBe(0);
+    // run, and every call it made, which the route saw by the time the clock
+    // move returned, is answered.
+    for (const view of [page, ...screens.map((screen) => screen.page)]) await view.clock.fastForward(PAST_DRAFT_DEBOUNCE_MS);
+    await expect.poll(() => calls() + screens.reduce((sum, screen) => sum + screen.saves.inFlight(), 0)).toBe(0);
     expect((await threadRows(harness)).length).toBe(2);
   } finally {
     await Promise.all(others.map((context) => context.close()));

@@ -161,20 +161,41 @@ export async function stateReads(harness: HarnessApp, control?: ReadControl): Pr
 }
 
 /**
- * Prove the cleanup no longer reads anything but the control: two polls
- * read the control, each a full interval after the last, and nothing else
- * was read meanwhile. A repository still tracked would have come due in
- * the same polls.
+ * Prove the cleanup no longer reads anything but the control, through a
+ * pass that would have read the settled pull request had it still been
+ * tracked. A repository's read comes due a poll interval (`pollMs`, the
+ * harness's merged-pr-poll) after the pass that last read it
+ * (mergedPRPoll), and the read that settled a pull request was its last.
+ * Every pass reads the control, one at a time, so the control read after
+ * the first one at or past that moment belongs to a pass that began after
+ * it: that pass visits every repository still tracked. The fake's history
+ * is read from a cursor, not again from the start.
  */
-export async function expectNoMoreStateReads(harness: HarnessApp, control: ReadControl): Promise<void> {
+export async function expectNoMoreStateReads(harness: HarnessApp, control: ReadControl, pollMs: number): Promise<void> {
   // Tracked once the cleanup handles observations, which it does from the
   // first client's catalog reads on (startMergedPRCleanup).
   await expectTracked(harness, control.threadId, 900);
-  const before = await stateReads(harness, control);
-  const controlReads = async () => (await forgeInvocations(harness)).filter((call) => readsControl(call, control)).length;
-  const polled = await controlReads();
-  await expect.poll(controlReads, { timeout: 15_000, message: 'the cleanup stopped polling' }).toBeGreaterThanOrEqual(polled + 2);
-  expect(await stateReads(harness, control), 'the cleanup kept reading a pull request it had settled').toBe(before);
+  const history = await forgeInvocations(harness);
+  let cursor = history.at(-1)?.seq ?? 0;
+  const lastRead = history.filter((call) => isStateRead(call) && !readsControl(call, control)).at(-1);
+  const due = (lastRead ? Date.parse(lastRead.at) : Date.now()) + pollMs;
+  let pastDue: number | undefined;
+  let passed = false;
+  const reread: string[] = [];
+  await expect.poll(async () => {
+    for (const call of await forgeInvocations(harness, cursor)) {
+      cursor = call.seq;
+      if (isStateRead(call) && !readsControl(call, control)) reread.push(`${call.via === 'http' ? `${call.path} ${call.operation ?? ''}` : call.route}`);
+      if (!readsControl(call, control)) continue;
+      if (pastDue === undefined) {
+        if (Date.parse(call.at) >= due) pastDue = call.seq;
+      } else {
+        passed = true;
+      }
+    }
+    return passed || reread.length > 0;
+  }, { timeout: 15_000, message: 'no cleanup pass came due for the settled pull request' }).toBe(true);
+  expect(reread, 'the cleanup kept reading a pull request it had settled').toEqual([]);
 }
 
 /** The timeline notices of the open thread whose text mentions `text`. */

@@ -680,12 +680,13 @@ export function definePreviewGatewaySuite(surface: PreviewSurface): void {
         // An external preview has its own browser grant: once the app's
         // last remote connection goes, a discovery tick with no reader
         // releases the idle listeners (internal/app
-        // TestStoppingTheScanReleasesThePreviewListeners), and a live
-        // browser grant keeps them all (internal/transport
+        // TestStoppingTheScanReleasesThePreviewListeners), and the app's
+        // idle tick keeps them all while a browser grant lives (internal/app
+        // TestAnIdleTickKeepsTheListenersOfALiveBrowserGrant; the grant's
+        // expiry boundaries are internal/transport
         // TestIdlePreviewRetentionFollowsTicketsAndBrowserGrants, on a fake
-        // clock with the expiry boundaries). A tick with no reader changes
-        // nothing a request can see while the grant lives, so the request
-        // below follows the phone's leaving at once.
+        // clock). The tick has no effect a request can see while the grant
+        // lives, so the request below follows the phone's leaving at once.
         await phone.goto('about:blank');
 
         // The path and query, byte for byte, and the Host the upstream
