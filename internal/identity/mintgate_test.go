@@ -22,12 +22,15 @@ import (
 // each carries the device gate at the point of the write:
 //
 //   - store.CreateSession — the device predicate is inside the INSERT;
+//   - store.CompletePairingRedemption - the same INSERT, inside the
+//     transaction that names the pending session on its link;
 //   - store.EnsureLocalSession - inside its serialized initialization transaction;
-//   - store.ActivateSession - inside the UPDATE;
+//   - store.ConfirmRedeemedPairing - the activation UPDATE's predicate, inside
+//     the confirmation's transaction;
 //   - store.RotateRefreshSecret — session/device predicates inside the durable transaction;
-//   - signClaims — reached only through Mint (which must then survive
-//     CreateSession) or accessTokensFor (which takes the device ROW and refuses
-//     a revoked one).
+//   - signClaims — reached only through newSession (whose row must then
+//     survive CreateSession or CompletePairingRedemption) or accessTokensFor
+//     (which takes the device ROW and refuses a revoked one).
 //
 // So a new mint path built from these operations inherits the refusal. This test
 // fails when one of them is called from somewhere new, which is the moment
@@ -39,11 +42,12 @@ import (
 // for a device the owner revoked.
 func TestEveryCredentialProducingCallGoesThroughAChokepoint(t *testing.T) {
 	chokepoints := map[string][]string{
-		"CreateSession":       {"Sessions.Mint"},
-		"EnsureLocalSession":  {"Sessions.EnsureLocalChannelSession"},
-		"ActivateSession":     {"Sessions.confirmPairing"},
-		"RotateRefreshSecret": {"Sessions.Refresh"},
-		"signClaims":          {"Sessions.Mint", "Sessions.accessTokensFor"},
+		"CreateSession":             {"Sessions.Mint"},
+		"CompletePairingRedemption": {"Sessions.mintPendingSession"},
+		"EnsureLocalSession":        {"Sessions.EnsureLocalChannelSession"},
+		"ConfirmRedeemedPairing":    {"Sessions.confirmPairing"},
+		"RotateRefreshSecret":       {"Sessions.Refresh"},
+		"signClaims":                {"Sessions.accessTokensFor", "Sessions.newSession"},
 	}
 	found := map[string][]string{}
 	for name, callers := range callersInPackage(t) {

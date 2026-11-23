@@ -99,7 +99,7 @@ func (s *Store) diagnoseDeviceRefusal(deviceID string) error {
 	return ErrDeviceRevoked
 }
 
-// ActivateSession stamps the moment a session became presentable, which is
+// activateSession stamps the moment a session became presentable, which is
 // the moment the owner confirmed the pairing verification number. Reports
 // whether it moved: a second confirmation keeps the first stamp, so the
 // log records when access actually began.
@@ -114,11 +114,11 @@ func (s *Store) diagnoseDeviceRefusal(deviceID string) error {
 // inert row into a live credential, and it is in the statement rather than
 // in front of it so a revocation cannot land between the check and the
 // write.
-func (s *Store) ActivateSession(sessionID string, at, expiresAt int64) (bool, error) {
+func activateSession(db sqlExecutor, sessionID string, at, expiresAt int64) (bool, error) {
 	if at == 0 {
 		return false, fmt.Errorf("%w: session activation stamp", ErrIdentityFieldRequired)
 	}
-	result, err := s.db.Exec(
+	result, err := db.Exec(
 		`UPDATE sessions SET activated_at = ?, expires_at = ?
 		 WHERE id = ? AND activated_at IS NULL AND revoked_at IS NULL AND expires_at > ?
 		   AND device_id IN (SELECT id FROM devices WHERE revoked_at IS NULL)`,

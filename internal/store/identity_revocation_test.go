@@ -113,7 +113,7 @@ func TestActivateAndExtendRefuseARevokedDevice(t *testing.T) {
 		t.Fatalf("stage the stragglers: %v", err)
 	}
 
-	moved, err := s.ActivateSession("sess-pending", 2500, 9000)
+	moved, err := activateSession(s.db, "sess-pending", 2500, 9000)
 	if err != nil {
 		t.Fatalf("ActivateSession: %v", err)
 	}

@@ -61,6 +61,9 @@ func (g *gate) wait() {
 
 func (g *gate) open() { g.once.Do(func() { close(g.release) }) }
 
+// admitted admits every window.
+func admitted(Snapshot) error { return nil }
+
 func mintOf(id string) func(string) (Invitation, error) {
 	return func(string) (Invitation, error) { return Invitation{LinkID: id, URL: "https://host/#" + id}, nil }
 }
@@ -183,7 +186,7 @@ func TestFailedCancellationStaysRefusedAndBlocksTheNextWindow(t *testing.T) {
 	if confirmed(t, b, "first") || !b.Refuses("first") {
 		t.Fatal("a closed window's invitation was confirmable while its cancellation failed")
 	}
-	if _, err := b.Open(mintOf("second")); !errors.Is(err, errStorage) {
+	if _, err := b.Open(mintOf("second"), admitted); !errors.Is(err, errStorage) {
 		t.Fatalf("open with an unfinished cancellation = %v, want the storage error", err)
 	}
 	if b.Snapshot("").Open {
@@ -215,7 +218,7 @@ func TestFailedCancellationStaysRefusedAndBlocksTheNextWindow(t *testing.T) {
 }
 
 // A cancellation that failed after its window was removed is retried by the
-// window's own timer, the wait doubling each time, until it is durable, and
+// book's retry timer, the wait doubling each time, until it is durable, and
 // the retries end there.
 func TestAFailedCancellationRetriesItselfUntilDurable(t *testing.T) {
 	l := newLedger()
@@ -247,13 +250,13 @@ func TestADurableCloseEndsTheRetrySchedule(t *testing.T) {
 	b := NewBook(l.cancel, time.Hour)
 	w := openWindow(t, b, mintOf("retried"))
 	handshake(t, b, newClient(t))
-	b.mu.Lock()
-	timer := b.window.timer
-	b.mu.Unlock()
 	l.fail(true)
 	if err := b.Close(w.WindowID); !errors.Is(err, errStorage) {
 		t.Fatalf("close = %v, want the storage error", err)
 	}
+	b.mu.Lock()
+	timer := b.retryTimer
+	b.mu.Unlock()
 	l.fail(false)
 	if err := b.Close(w.WindowID); err != nil {
 		t.Fatal(err)
@@ -267,7 +270,7 @@ func TestADurableCloseEndsTheRetrySchedule(t *testing.T) {
 func TestExpiryRetiresTheInvitation(t *testing.T) {
 	l := newLedger()
 	b := NewBook(l.cancel, time.Hour)
-	w, err := b.open(mintOf("expiring"), time.Second)
+	w, err := b.open(mintOf("expiring"), admitted, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +352,7 @@ func TestAnApprovalAdmittedBeforeTheDeadlineCompletesAfterIt(t *testing.T) {
 		default:
 		}
 	}
-	w, err := b.open(mintOf("approved"), time.Second)
+	w, err := b.open(mintOf("approved"), admitted, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +407,7 @@ func TestAReplacementWaitsForAnEarlierCloseToFinish(t *testing.T) {
 	}
 	opened := make(chan error, 1)
 	go func() {
-		w, err := b.Open(mintOf("next"))
+		w, err := b.Open(mintOf("next"), admitted)
 		if err == nil {
 			_ = b.Close(w.WindowID)
 		}
@@ -487,7 +490,7 @@ func TestTheAdmittedRevealsRouteReachesTheMint(t *testing.T) {
 }
 
 // A book refuses to be built without a cancel, and a window without a mint
-// replaces nothing.
+// or an admission replaces nothing.
 func TestTheBookRequiresItsCallbacks(t *testing.T) {
 	func() {
 		defer func() {
@@ -499,10 +502,172 @@ func TestTheBookRequiresItsCallbacks(t *testing.T) {
 	}()
 	b := settledBook()
 	w := openWindow(t, b, mintOf("kept"))
-	if _, err := b.Open(nil); err == nil {
+	if _, err := b.Open(nil, admitted); err == nil {
 		t.Fatal("Open accepted a nil mint")
+	}
+	if _, err := b.Open(mintOf("unadmitted"), nil); err == nil {
+		t.Fatal("Open accepted a nil admission")
 	}
 	if !b.Snapshot(w.WindowID).Open {
 		t.Fatal("a refused open replaced the open window")
+	}
+}
+
+// A window is invisible until its admission returns, and one whose admission
+// refuses never becomes visible; the window it replaces is closed either way.
+func TestAWindowIsVisibleOnlyOnceAdmitted(t *testing.T) {
+	l := newLedger()
+	b := NewBook(l.cancel, time.Hour)
+	old := openWindow(t, b, mintOf("old"))
+	handshake(t, b, newClient(t))
+	refused := errors.New("not admitted")
+	var seen Snapshot
+	_, err := b.Open(mintOf("new"), func(w Snapshot) error {
+		seen = w
+		if b.Snapshot("").Open {
+			return errors.New("a window was visible during an admission")
+		}
+		if _, err := b.Begin(newClient(t).Commitment()); !errors.Is(err, ErrClosed) {
+			return errors.New("a requester reached a window not yet admitted")
+		}
+		return refused
+	})
+	if !errors.Is(err, refused) {
+		t.Fatalf("an open whose admission refused = %v, want the refusal", err)
+	}
+	if seen.WindowID == "" || b.Snapshot("").Open {
+		t.Fatalf("an unadmitted window became visible (admitted %+v)", seen)
+	}
+	if b.Snapshot(old.WindowID).Open || l.count("old") != 1 {
+		t.Fatal("the replaced window was not retired")
+	}
+	w, err := b.Open(mintOf("next"), func(w Snapshot) error { seen = w; return nil })
+	if err != nil || w != seen || !b.Snapshot(w.WindowID).Open {
+		t.Fatalf("an admitted open = %+v %v, admitted %+v", w, err, seen)
+	}
+	t.Cleanup(func() { _ = b.Close(w.WindowID) })
+}
+
+// Stop retires the open window and its invitation, then refuses opens and
+// closes and leaves no retry armed; an unfinished cancellation is answered.
+func TestStopRetiresTheWindowAndEndsEveryRetry(t *testing.T) {
+	l := newLedger()
+	b := NewBook(l.cancel, 5*time.Millisecond)
+	w := openWindow(t, b, mintOf("stopped"))
+	handshake(t, b, newClient(t))
+	l.fail(true)
+	if err := b.Close(w.WindowID); !errors.Is(err, errStorage) {
+		t.Fatalf("close = %v, want the storage error", err)
+	}
+	waitFor(t, "a retry", func() bool { return l.count("stopped") >= 2 })
+	if err := b.Stop(); !errors.Is(err, errStorage) {
+		t.Fatalf("stop with an unfinished cancellation = %v, want the storage error", err)
+	}
+	if !b.Refuses("stopped") {
+		t.Fatal("stop released an invitation whose cancellation is unfinished")
+	}
+	b.mu.Lock()
+	timer := b.retryTimer
+	b.mu.Unlock()
+	if timer.Stop() {
+		t.Fatal("a retry stayed armed after stop")
+	}
+	n := l.count("stopped")
+	if _, err := b.Open(mintOf("after"), admitted); !errors.Is(err, ErrStopped) {
+		t.Fatalf("open after stop = %v, want ErrStopped", err)
+	}
+	if err := b.Close(w.WindowID); !errors.Is(err, ErrStopped) {
+		t.Fatalf("close after stop = %v, want ErrStopped", err)
+	}
+	// A retry that fired before stop and took turn after it issues nothing.
+	b.retryPending()
+	if got := l.count("stopped"); got != n {
+		t.Fatalf("a stopped book issued %d more cancellation statements", got-n)
+	}
+}
+
+// Stop retires an open window's invitation durably when it can.
+func TestStopRetiresTheOpenWindow(t *testing.T) {
+	l := newLedger()
+	b := NewBook(l.cancel, time.Hour)
+	w := openWindow(t, b, mintOf("open"))
+	handshake(t, b, newClient(t))
+	if err := b.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if b.Snapshot(w.WindowID).Open || l.count("open") != 1 || b.pendingLink() != "" {
+		t.Fatalf("stop left the window open or its invitation unretired (%d statements)", l.count("open"))
+	}
+	b.mu.Lock()
+	kept := b.window
+	b.mu.Unlock()
+	if kept != nil {
+		t.Fatal("stop kept a window")
+	}
+}
+
+// A removal waits for a Read, so the standing a Read hands out holds for
+// everything read inside it.
+func TestARemovalWaitsForARead(t *testing.T) {
+	b := NewBook(newLedger().cancel, time.Hour)
+	w := openWindow(t, b, mintOf("read"))
+	handshake(t, b, newClient(t))
+	removalWaits := make(chan struct{}, 1)
+	b.settle.waiting = func() {
+		select {
+		case removalWaits <- struct{}{}:
+		default:
+		}
+	}
+	reading, release := newGate(), newGate()
+	t.Cleanup(release.open)
+	var standing Standing
+	read := make(chan error, 1)
+	go func() {
+		read <- b.Read(func(s Standing) error { standing = s; reading.open(); release.wait(); return nil })
+	}()
+	<-reading.release
+	closed := make(chan error, 1)
+	go func() { closed <- b.Close(w.WindowID) }()
+	select {
+	case <-removalWaits:
+	case err := <-closed:
+		t.Fatalf("the window was removed during a read (close = %v)", err)
+	}
+	release.open()
+	if err := <-read; err != nil {
+		t.Fatal(err)
+	}
+	if standing.Refuses("read") || standing.Window().LinkID != "read" {
+		t.Fatalf("the read's standing = %+v, want the open window's live invitation", standing)
+	}
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A Read during an unfinished retirement refuses that invitation, and one
+// after it finished no longer names it.
+func TestAReadRefusesAnUnfinishedRetirement(t *testing.T) {
+	l := newLedger()
+	b := NewBook(l.cancel, time.Hour)
+	w := openWindow(t, b, mintOf("retiring"))
+	handshake(t, b, newClient(t))
+	l.fail(true)
+	if err := b.Close(w.WindowID); !errors.Is(err, errStorage) {
+		t.Fatalf("close = %v, want the storage error", err)
+	}
+	var during, after Standing
+	_ = b.Read(func(s Standing) error { during = s; return nil })
+	if !during.Refuses("retiring") || during.Window().Open {
+		t.Fatalf("a read during the retirement = %+v, want it refused and no window", during)
+	}
+	l.fail(false)
+	if err := b.Close(w.WindowID); err != nil {
+		t.Fatal(err)
+	}
+	_ = b.Read(func(s Standing) error { after = s; return nil })
+	if after.Refuses("retiring") {
+		t.Fatal("a durable retirement is still refused by the book")
 	}
 }

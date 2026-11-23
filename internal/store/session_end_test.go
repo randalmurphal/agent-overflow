@@ -40,7 +40,7 @@ func TestEndingADevicesLastSessionReleasesItsLinks(t *testing.T) {
 				if _, err := s.RedeemPairingLink(hash, 1100, introKey(i)); err != nil {
 					t.Fatal(err)
 				}
-				if err := s.AttachPairingRedemption(link.ID, session.DeviceID, session.ID); err != nil {
+				if err := attachPairingRedemption(s.db, link.ID, session.DeviceID, session.ID); err != nil {
 					t.Fatal(err)
 				}
 			},

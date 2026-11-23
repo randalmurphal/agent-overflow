@@ -14,6 +14,7 @@ func approvedOwnPair(t *testing.T) (*Store, PairingLink) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
 	session := newTestSession("own-session", owner, device, key, 9000)
+	session.ActivatedAt = 0
 	if e := s.CreateSession(session); e != nil {
 		t.Fatal(e)
 	}
@@ -24,17 +25,14 @@ func approvedOwnPair(t *testing.T) (*Store, PairingLink) {
 	if _, e := s.RedeemPairingLink([]byte("hash-own"), 2000, ownKey()); e != nil {
 		t.Fatal(e)
 	}
-	if e := s.AttachPairingRedemption(link.ID, device.ID, session.ID); e != nil {
+	if e := attachPairingRedemption(s.db, link.ID, device.ID, session.ID); e != nil {
 		t.Fatal(e)
 	}
-	if e := s.PrepareOwnPairing(link.ID); e != nil {
-		t.Fatal(e)
-	}
-	link, e := s.ConfirmPairingLink(link.ID, 2100)
+	confirmed, e := s.ConfirmRedeemedPairing(link.ID, 2100, 9000)
 	if e != nil {
 		t.Fatal(e)
 	}
-	return s, link
+	return s, confirmed.Link
 }
 func TestOwnAdmissionRecoveryCannotRestoreLaterRemoval(t *testing.T) {
 	s, link := approvedOwnPair(t)

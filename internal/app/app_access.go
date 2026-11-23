@@ -247,21 +247,36 @@ func (a *App) mintDevicePairingPurpose(deviceClass, access, networkChoice, purpo
 //ao:scope access:admin
 //ao:route home
 func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
-	state, err := a.accessState()
+	var link store.PairingLink
+	var standing pairbootstrap.Standing
+	var sessions *identity.Sessions
+	var now int64
+	err := a.readPairingStanding(func(st pairbootstrap.Standing, s *identity.Sessions) error {
+		standing, sessions, now = st, s, s.Now()
+		var err error
+		link, err = s.PairingLink(linkID)
+		return err
+	})
 	if err != nil {
 		return PairingStatusView{}, err
 	}
-	link, number, err := state.sessions.PairingStatus(linkID)
-	if err != nil {
-		return PairingStatusView{}, err
+	view := PairingStatusView{
+		LinkID:      link.ID,
+		State:       pairingState(link, now, standing),
+		DeviceLabel: a.pairedDeviceLabel(link),
+		ExpiresAtMs: pairingDeadline(link),
 	}
-	return PairingStatusView{
-		LinkID:             link.ID,
-		State:              a.pairingState(link, state.sessions.Now()),
-		VerificationNumber: a.computerPairingNumber(link.ID, number),
-		DeviceLabel:        a.pairedDeviceLabel(link),
-		ExpiresAtMs:        pairingDeadline(link),
-	}, nil
+	// Digits are compared only while a redemption waits for the owner; a
+	// settled pairing shows none, so no surface reads digits the requester
+	// never saw.
+	if view.State == pairingStateRedeemed {
+		number, err := sessions.PairingNumber(link)
+		if err != nil {
+			return PairingStatusView{}, err
+		}
+		view.VerificationNumber = computerPairingNumber(link.ID, number, standing)
+	}
+	return view, nil
 }
 
 // ConfirmDevicePairing activates the session a redemption created, after
@@ -566,29 +581,38 @@ func survivedRevocation(session store.Session, now int64) bool {
 	return session.DeviceRevokedAt > 0 && session.RevokedAt == 0 && !session.Expired(now)
 }
 
-// pendingPairings lists the links the owner can still act on.
+// pendingPairings lists the links the owner can still act on. The links are
+// read once, with the book's standing, inside one book Read; numbers and
+// labels are derived after it.
 func (a *App) pendingPairings(state *identityState, now int64) ([]PendingPairing, error) {
-	links, err := a.store.ListPairingLinksForUser(state.owner.ID, accessAuditLimit)
+	var links []store.PairingLink
+	var standing pairbootstrap.Standing
+	err := a.readPairingStanding(func(st pairbootstrap.Standing, _ *identity.Sessions) error {
+		standing = st
+		var err error
+		links, err = a.store.ListPairingLinksForUser(state.owner.ID, accessAuditLimit)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("access: list pairing links: %w", err)
 	}
 	var out []PendingPairing
 	for _, link := range links {
-		if standing := a.pairingState(link, now); standing != pairingStatePending && standing != pairingStateRedeemed {
+		if s := pairingState(link, now, standing); s != pairingStatePending && s != pairingStateRedeemed {
 			continue
 		}
 		view := PendingPairing{
 			LinkID:      link.ID,
 			CreatedAtMs: link.CreatedAt,
 			ExpiresAtMs: pairingDeadline(link),
-			Redeemed:    link.Redeemed(),
+			Redeemed:    link.Ready(),
 		}
-		if link.Redeemed() {
+		if link.Ready() {
 			number, err := state.sessions.VerificationNumber(link.ID, link.KeyThumbprint)
 			if err != nil {
 				return nil, fmt.Errorf("access: derive verification number for %s: %w", link.ID, err)
 			}
-			view.VerificationNumber = a.computerPairingNumber(link.ID, number)
+			view.VerificationNumber = computerPairingNumber(link.ID, number, standing)
 			view.DeviceLabel = a.pairedDeviceLabel(link)
 		}
 		out = append(out, view)
@@ -615,22 +639,24 @@ func (a *App) pairedDeviceLabel(link store.PairingLink) string {
 //
 // A computer pairing window's invitation the book refuses is canceled
 // whatever its row says: its window is gone and its cancellation is still
-// unfinished, so nothing can approve it.
+// unfinished, so nothing can approve it. standing must be read together
+// with link (readPairingStanding).
 //
 // The order is the contract. Settled first, because confirmed and
-// canceled are terminal and outlive every window. Redeemed BEFORE
-// expired, because a redeemed link deliberately outlives its own
-// five-minute window: redemption mints the session with the confirmation
-// window (identity.PairingConfirmWindow), and reporting "expired" while
-// the owner still has minutes to match the number would take away the
-// step the exchange is waiting on.
-func (a *App) pairingState(link store.PairingLink, now int64) string {
+// canceled are terminal and outlive every window. Ready BEFORE expired,
+// because a redeemed link deliberately outlives its own five-minute
+// window: redemption mints the session with the confirmation window
+// (identity.PairingConfirmWindow), and reporting "expired" while the owner
+// still has minutes to match the number would take away the step the
+// exchange is waiting on. A link spent but not yet naming its session is
+// still pending: there is nothing to approve yet.
+func pairingState(link store.PairingLink, now int64, standing pairbootstrap.Standing) string {
 	switch {
 	case link.ConfirmedAt != 0:
 		return pairingStateConfirmed
-	case link.CanceledAt != 0 || a.computerPairingRefuses(link.ID):
+	case link.CanceledAt != 0 || standing.Refuses(link.ID):
 		return pairingStateCanceled
-	case link.Redeemed():
+	case link.Ready():
 		if pairingDeadline(link) <= now {
 			return pairingStateExpired
 		}

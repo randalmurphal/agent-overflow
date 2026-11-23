@@ -36,7 +36,7 @@ func TestRetirePendingPairingsRollsBackIfLinkRetirementFails(t *testing.T) {
 	if _, err := s.RedeemPairingLink([]byte("hash"), 2000, "key"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AttachPairingRedemption(link.ID, device.ID, session.ID); err != nil {
+	if err := attachPairingRedemption(s.db, link.ID, device.ID, session.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.Exec(`CREATE TRIGGER reject_pairing_retirement BEFORE UPDATE OF canceled_at ON pairing_links BEGIN SELECT RAISE(ABORT, 'test failure'); END`); err != nil {
@@ -101,7 +101,7 @@ func TestPairingLinkRedemptionIsSingleUse(t *testing.T) {
 	if first.KeyThumbprint != "thumb-a" {
 		t.Fatalf("redemption did not record the key: %+v", first)
 	}
-	if err := s.AttachPairingRedemption("link-1", "dev-a", "sess-a"); err != nil {
+	if err := attachPairingRedemption(s.db, "link-1", "dev-a", "sess-a"); err != nil {
 		t.Fatalf("AttachPairingRedemption: %v", err)
 	}
 	if !first.Redeemed() {
@@ -183,24 +183,37 @@ func (s *Store) mustRedeemErr(t *testing.T, hash []byte) error {
 	return err
 }
 
-func TestConfirmPairingLinkRequiresARedemptionAndHappensOnce(t *testing.T) {
-	s, owner, _ := seedOwnerDevice(t)
+func TestConfirmRedeemedPairingRequiresAnAttachedRedemptionAndHappensOnce(t *testing.T) {
+	s, owner, device := seedOwnerDevice(t)
+	key := seedSigningKey(t, s)
 	seedPairingLink(t, s, owner, []byte("hash-1"), 9000)
 
-	if _, err := s.ConfirmPairingLink("link-1", 2500); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.ConfirmRedeemedPairing("link-1", 2500, 900000); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("confirming an unredeemed link err = %v, want sql.ErrNoRows", err)
 	}
 	if _, err := s.RedeemPairingLink([]byte("hash-1"), 2000, "thumb"); err != nil {
 		t.Fatalf("RedeemPairingLink: %v", err)
 	}
-	confirmed, err := s.ConfirmPairingLink("link-1", 2500)
-	if err != nil {
-		t.Fatalf("ConfirmPairingLink: %v", err)
+	// Spent, but no session attached yet: there is nothing to admit.
+	if _, err := s.ConfirmRedeemedPairing("link-1", 2500, 900000); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("confirming a redemption with no session err = %v, want sql.ErrNoRows", err)
 	}
-	if confirmed.ConfirmedAt != 2500 || !confirmed.Settled() {
+	pending := newTestSession("sess-pending", owner, device, key, 9000)
+	pending.ActivatedAt = 0
+	if err := s.CompletePairingRedemption(PairingRedemption{LinkID: "link-1", Session: pending}); err != nil {
+		t.Fatalf("CompletePairingRedemption: %v", err)
+	}
+	confirmed, err := s.ConfirmRedeemedPairing("link-1", 2500, 900000)
+	if err != nil {
+		t.Fatalf("ConfirmRedeemedPairing: %v", err)
+	}
+	if confirmed.Link.ConfirmedAt != 2500 || !confirmed.Link.Settled() {
 		t.Fatalf("confirmation did not settle the link: %+v", confirmed)
 	}
-	if _, err := s.ConfirmPairingLink("link-1", 3000); !errors.Is(err, sql.ErrNoRows) {
+	if session, err := s.GetSession(pending.ID); err != nil || session.ActivatedAt != 2500 || session.ExpiresAt != 900000 {
+		t.Fatalf("confirmation did not activate the session with its access window (%+v, %v)", session, err)
+	}
+	if _, err := s.ConfirmRedeemedPairing("link-1", 3000, 900000); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("second confirmation err = %v, want sql.ErrNoRows", err)
 	}
 	after, _ := s.GetPairingLink("link-1")
@@ -219,7 +232,7 @@ func TestCancelPairingLinkWorksAfterRedemption(t *testing.T) {
 	if _, err := s.RedeemPairingLink([]byte("hash-1"), 2000, "thumb"); err != nil {
 		t.Fatalf("RedeemPairingLink: %v", err)
 	}
-	if err := s.AttachPairingRedemption("link-1", "dev", "sess"); err != nil {
+	if err := attachPairingRedemption(s.db, "link-1", "dev", "sess"); err != nil {
 		t.Fatalf("AttachPairingRedemption: %v", err)
 	}
 	canceled, err := s.CancelPairingLink("link-1", 2600)
@@ -229,7 +242,7 @@ func TestCancelPairingLinkWorksAfterRedemption(t *testing.T) {
 	if canceled.Link.SessionID != "sess" {
 		t.Fatalf("cancel lost the session the redemption created: %+v", canceled)
 	}
-	if _, err := s.ConfirmPairingLink("link-1", 2700); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.ConfirmRedeemedPairing("link-1", 2700, 900000); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatal("a canceled link accepted a confirmation")
 	}
 }
@@ -249,7 +262,7 @@ func TestCancelPairingLinkEndsItsPendingSessionInTheSameTransaction(t *testing.T
 	if _, err := s.RedeemPairingLink([]byte("hash-1"), 2000, "thumb"); err != nil {
 		t.Fatalf("RedeemPairingLink: %v", err)
 	}
-	if err := s.AttachPairingRedemption("link-1", device.ID, pending.ID); err != nil {
+	if err := attachPairingRedemption(s.db, "link-1", device.ID, pending.ID); err != nil {
 		t.Fatalf("AttachPairingRedemption: %v", err)
 	}
 	mustExec(t, s.db, `CREATE TRIGGER reject_session_revoke BEFORE UPDATE OF revoked_at ON sessions BEGIN SELECT RAISE(ABORT, 'test revocation failure'); END`)
@@ -568,7 +581,7 @@ func TestSessionActivationGatesLiveness(t *testing.T) {
 	if len(live) != 0 {
 		t.Fatalf("ListLiveSessions returned %d unconfirmed rows", len(live))
 	}
-	moved, err := s.ActivateSession("sess-pending", 3000, 950000)
+	moved, err := activateSession(s.db, "sess-pending", 3000, 950000)
 	if err != nil {
 		t.Fatalf("ActivateSession: %v", err)
 	}
@@ -579,7 +592,7 @@ func TestSessionActivationGatesLiveness(t *testing.T) {
 	if !read.Live(3500) || read.ExpiresAt != 950000 {
 		t.Fatalf("activation did not open the window: %+v", read)
 	}
-	if again, _ := s.ActivateSession("sess-pending", 4000, 999999); again {
+	if again, _ := activateSession(s.db, "sess-pending", 4000, 999999); again {
 		t.Fatal("a second activation moved the stamp")
 	}
 }
@@ -595,7 +608,7 @@ func TestActivateSessionRefusesARevokedRow(t *testing.T) {
 	if _, _, err := s.RevokeSession("sess-pending", 2000); err != nil {
 		t.Fatalf("RevokeSession: %v", err)
 	}
-	moved, err := s.ActivateSession("sess-pending", 3000, 950000)
+	moved, err := activateSession(s.db, "sess-pending", 3000, 950000)
 	if err != nil {
 		t.Fatalf("ActivateSession: %v", err)
 	}
@@ -666,16 +679,16 @@ func TestAttachPairingRedemptionHappensOnce(t *testing.T) {
 	s, owner, _ := seedOwnerDevice(t)
 	seedPairingLink(t, s, owner, []byte("hash-1"), 9000)
 
-	if err := s.AttachPairingRedemption("link-1", "dev", "sess"); !errors.Is(err, sql.ErrNoRows) {
+	if err := attachPairingRedemption(s.db, "link-1", "dev", "sess"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("attaching to an unredeemed link err = %v, want sql.ErrNoRows", err)
 	}
 	if _, err := s.RedeemPairingLink([]byte("hash-1"), 2000, "thumb"); err != nil {
 		t.Fatalf("RedeemPairingLink: %v", err)
 	}
-	if err := s.AttachPairingRedemption("link-1", "dev", "sess"); err != nil {
+	if err := attachPairingRedemption(s.db, "link-1", "dev", "sess"); err != nil {
 		t.Fatalf("AttachPairingRedemption: %v", err)
 	}
-	if err := s.AttachPairingRedemption("link-1", "other-dev", "other-sess"); !errors.Is(err, sql.ErrNoRows) {
+	if err := attachPairingRedemption(s.db, "link-1", "other-dev", "other-sess"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("second attach err = %v, want sql.ErrNoRows", err)
 	}
 	link, _ := s.GetPairingLink("link-1")

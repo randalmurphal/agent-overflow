@@ -60,15 +60,26 @@ func openTestWindow(t *testing.T, a *App) pairbootstrap.Snapshot {
 	view, err := book.Open(func(route string) (pairbootstrap.Invitation, error) {
 		invite, err := a.mintDevicePairing("browser", "full", "")
 		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
-	})
+	}, admitTestWindow(a))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.mu.Lock()
-	s.windowID = view.WindowID
-	s.mu.Unlock()
 	t.Cleanup(func() { _ = book.Close(view.WindowID) })
 	return view
+}
+
+// admitTestWindow is the admission of a window a test installs directly: it
+// becomes the host's window, shown on the host's current LAN address, owned
+// by no connection.
+func admitTestWindow(a *App) func(pairbootstrap.Snapshot) error {
+	address, _ := a.publishComputerRoutes().pairing.on("lan")
+	return func(w pairbootstrap.Snapshot) error {
+		s := &a.computerPairing
+		s.mu.Lock()
+		s.windowID, s.choice, s.address = w.WindowID, "lan", address
+		s.mu.Unlock()
+		return nil
+	}
 }
 
 const rejectPairingCancel = `CREATE TRIGGER reject_pairing_cancel BEFORE UPDATE OF canceled_at ON pairing_links BEGIN SELECT RAISE(ABORT, 'test cancellation failure'); END`
@@ -83,11 +94,12 @@ func rejectCancellations(t *testing.T, path string) (restore func()) {
 
 // cancellationLedger counts the cancellation statements the app's book
 // issues per invitation. hold, when set before the book is used, runs
-// before each statement.
+// before each statement, and after once the statement has returned.
 type cancellationLedger struct {
 	mu    sync.Mutex
 	calls map[string]int
 	hold  func(linkID string)
+	after func(linkID string)
 }
 
 // countCancellations installs the host's book with its production cancel
@@ -100,12 +112,16 @@ func countCancellations(a *App) *cancellationLedger {
 	s.book = pairbootstrap.NewBook(func(id string) error {
 		l.mu.Lock()
 		l.calls[id]++
-		hold := l.hold
+		hold, after := l.hold, l.after
 		l.mu.Unlock()
 		if hold != nil {
 			hold(id)
 		}
-		return a.cancelComputerPairingLink(id)
+		err := a.cancelComputerPairingLink(id)
+		if after != nil {
+			after(id)
+		}
+		return err
 	}, time.Hour)
 	s.mu.Unlock()
 	return l
@@ -437,7 +453,7 @@ func computerPairingHost(t *testing.T) (*App, string) {
 	}
 	a.nativeNetwork.seen = true
 	a.nativeNetwork.addresses = []string{fmt.Sprintf("https://192.168.1.55:%d", portFromAddr(srv.Addr()))}
-	t.Cleanup(a.closeComputerPairing)
+	t.Cleanup(a.stopComputerPairing)
 	return a, path
 }
 

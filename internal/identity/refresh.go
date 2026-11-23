@@ -364,28 +364,42 @@ func (s *Sessions) verifyDeviceProof(thumbprint string, presented DeviceProof) R
 //     credential worthless is that every consult re-asks (Sessions.Live).
 //     Refusing here is what stops one being HANDED OUT in the first place.
 func (s *Sessions) issueFor(session store.Session, device store.Device, now int64) (TokenSet, error) {
+	tokens, grant, err := s.newTokens(session, device, now)
+	if err != nil {
+		return TokenSet{}, err
+	}
+	if grant.Hash != nil {
+		if _, err := s.store.CreateRefreshSecret(session.ID, grant.Hash, grant.CreatedAt, grant.ExpiresAt); err != nil {
+			return TokenSet{}, err
+		}
+	}
+	return tokens, nil
+}
+
+// newTokens signs session's credential pair and returns the refresh secret
+// the caller must write before handing the pair out: issueFor, or a pairing
+// redemption together with its session. A device class that does not renew
+// gets no secret and a zero grant.
+func (s *Sessions) newTokens(session store.Session, device store.Device, now int64) (TokenSet, store.RefreshGrant, error) {
 	if session.BindingClass == string(BindingLoopbackOnly) {
-		return TokenSet{}, fmt.Errorf("identity: local sessions cannot issue renewable credentials")
+		return TokenSet{}, store.RefreshGrant{}, fmt.Errorf("identity: local sessions cannot issue renewable credentials")
 	}
 	tokens, err := s.accessTokensFor(session, device, now)
 	if err != nil {
-		return TokenSet{}, err
+		return TokenSet{}, store.RefreshGrant{}, err
 	}
 	policy := RenewablePolicyFor(DeviceClass(device.Class))
 	if !policy.Renewable() {
-		return tokens, nil
+		return tokens, store.RefreshGrant{}, nil
 	}
 	secret, digest, err := newRefreshSecret()
 	if err != nil {
-		return TokenSet{}, err
+		return TokenSet{}, store.RefreshGrant{}, err
 	}
 	refreshExpiry := now + policy.Refresh.Milliseconds()
-	if _, err := s.store.CreateRefreshSecret(session.ID, digest[:], now, refreshExpiry); err != nil {
-		return TokenSet{}, err
-	}
 	tokens.RefreshSecret = secret
 	tokens.RefreshExpiresAtMillis = refreshExpiry
-	return tokens, nil
+	return tokens, store.RefreshGrant{Hash: digest[:], CreatedAt: now, ExpiresAt: refreshExpiry}, nil
 }
 
 // accessTokensFor signs the access half for already persisted session state.

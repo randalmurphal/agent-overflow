@@ -51,8 +51,8 @@ independently matching digits. There is no new session type or alternate
 authorization path. One requester may occupy a window; replacing it requires
 an explicit owner action, preventing silent replacement or unlimited guesses.
 
-Owner connection loss, cancellation and listener-affecting network settings
-changes retire the window and its unfinished invitation. Expiry is the
+Owner connection loss, cancellation, a move of the address the window shows
+and shutdown retire the window and its unfinished invitation. Expiry is the
 bootstrap book's own timer, which cancels the invitation. The deadline is
 checked when an approval is admitted: an approval admitted before it
 completes even if its write lands after, and reads confirmed. The LAN
@@ -60,15 +60,28 @@ advertisement lingers only until the dialog closes, and an expired window
 answers `open:false`, which discovery discards. `pairbootstrap.Book` owns that
 retirement: a window's invitation is refused confirmation, and shown to the
 owner as canceled, from the moment the window is removed until its
-cancellation is durable. A cancellation ends the invitation and the pending
-session its redemption created in one store transaction. A close answers with
+cancellation is durable. Owner status reads the invitation's row inside the
+book's `Read`, so it never interleaves with a retirement. A close answers with
 its own invitation's cancellation result; a refused cancellation is retried by
-the window's timer on a doubling schedule, by the next open and by a close of
-that window, and no window opens while one is unfinished. An open publishes
-its window only if no listener change ran since it chose the window's
-address. Startup retires unfinished pairings in one
-store transaction because an ephemeral comparison cannot survive a restart.
-Confirmed devices retain their existing sessions and renewal policy.
+the book on a doubling schedule, by the next open and by a close of that
+window, and no window opens while one is unfinished. Shutdown stops the book
+before the store closes: no retry outlives it, and startup retires what it
+left unfinished.
+
+The address publication (`publishComputerRoutes`) owns the address each
+pairing network resolves to. A settings rebind, a Windows launcher report and
+the launcher's loss each publish right after the move, and a publication
+retires a window whose address it no longer resolves to. An open reads the
+publication once and becomes visible only if nothing was published since.
+
+Each step of the invitation's store state is one transaction: a redemption's
+pending session, refresh secret and the link naming them; a confirmation's
+link, session activation and personal membership; a cancellation's link and
+pending session. A confirmation that can no longer admit its device cancels
+the invitation instead, and the owner is told it was not completed. Startup
+retires unfinished pairings in one store transaction because an ephemeral
+comparison cannot survive a restart. Confirmed devices retain their existing
+sessions and renewal policy.
 
 ## Own devices
 

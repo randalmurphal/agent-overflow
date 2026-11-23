@@ -68,6 +68,10 @@ type PairingLink struct {
 // Redeemed reports whether a device has presented this link.
 func (p PairingLink) Redeemed() bool { return p.RedeemedAt != 0 }
 
+// Ready reports whether a redeemed link names the session its redemption
+// created, which is the one state an owner's confirmation can complete.
+func (p PairingLink) Ready() bool { return p.RedeemedAt != 0 && p.SessionID != "" }
+
 // Settled reports whether the link's outcome is decided — confirmed or
 // canceled. A settled link answers no further call.
 func (p PairingLink) Settled() bool { return p.ConfirmedAt != 0 || p.CanceledAt != 0 }
@@ -147,7 +151,7 @@ func (s *Store) CreatePairingLink(link PairingLink, tokenHash []byte) error {
 // closes.
 //
 // The thumbprint is written here and the device and session by
-// AttachPairingRedemption afterwards, because those two rows do not exist
+// CompletePairingRedemption afterwards, because those two rows do not exist
 // yet: what the link's user id and device class admit is only readable from
 // the row this statement returns. Spending the link FIRST is the deliberate
 // order — a second presentation must be refused even while the first is
@@ -176,17 +180,69 @@ func (s *Store) RedeemPairingLink(tokenHash []byte, at int64, keyThumbprint stri
 	return link, nil
 }
 
-// AttachPairingRedemption records the device and session a redemption
+// PairingRedemption is what a redemption produced for its spent link: the
+// unactivated session, and the refresh secret issued with it.
+type PairingRedemption struct {
+	LinkID string
+	// Session is the pending session, on the redeeming device's row; its
+	// ActivatedAt is zero.
+	Session Session
+	// Refresh is the session's first renewal credential; a nil Hash issues
+	// none, for a device class that does not renew.
+	Refresh RefreshGrant
+}
+
+// RefreshGrant is a refresh secret to write: the hash of the secret only the
+// caller saw, and its window.
+type RefreshGrant struct {
+	Hash      []byte
+	CreatedAt int64
+	ExpiresAt int64
+}
+
+// CompletePairingRedemption writes the session a redemption produced, its
+// refresh secret, and the link naming both, in one transaction. A link that
+// is no longer redeemed and unsettled, or that already names a redemption,
+// writes nothing: a pending session never exists without the link that
+// names it, and a cancellation that reached the spent link first leaves no
+// session behind. sql.ErrNoRows reports that refusal.
+func (s *Store) CompletePairingRedemption(r PairingRedemption) error {
+	if r.Session.ActivatedAt != 0 {
+		return fmt.Errorf("store: complete pairing redemption: session %s is already activated", r.Session.ID)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: complete pairing redemption: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := createSession(tx, r.Session); err != nil {
+		return fmt.Errorf("store: complete pairing redemption: %w", err)
+	}
+	if r.Refresh.Hash != nil {
+		if _, err := insertRefreshSecret(tx, r.Session.ID, r.Refresh.Hash, r.Refresh.CreatedAt, r.Refresh.ExpiresAt); err != nil {
+			return fmt.Errorf("store: complete pairing redemption: %w", err)
+		}
+	}
+	if err := attachPairingRedemption(tx, r.LinkID, r.Session.DeviceID, r.Session.ID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: complete pairing redemption: commit: %w", err)
+	}
+	return nil
+}
+
+// attachPairingRedemption records the device and session a redemption
 // produced. Scoped to a redeemed, unsettled link that does not already name
 // one, so a second call cannot re-point a link at different rows.
-func (s *Store) AttachPairingRedemption(linkID, deviceID, sessionID string) error {
+func attachPairingRedemption(db sqlExecutor, linkID, deviceID, sessionID string) error {
 	switch {
 	case strings.TrimSpace(deviceID) == "":
 		return fmt.Errorf("%w: pairing redemption device id", ErrIdentityFieldRequired)
 	case strings.TrimSpace(sessionID) == "":
 		return fmt.Errorf("%w: pairing redemption session id", ErrIdentityFieldRequired)
 	}
-	result, err := s.db.Exec(
+	result, err := db.Exec(
 		`UPDATE pairing_links SET device_id = ?, session_id = ?
 		  WHERE id = ? AND redeemed_at IS NOT NULL AND device_id = '' AND session_id = ''
 		    AND confirmed_at IS NULL AND canceled_at IS NULL`,
@@ -197,24 +253,98 @@ func (s *Store) AttachPairingRedemption(linkID, deviceID, sessionID string) erro
 	return requireRowsAffected(result, "store: attach pairing redemption")
 }
 
-// ConfirmPairingLink records the owner matching the verification number,
-// returning the row. Scoped to a redeemed, unsettled link: confirming one
-// nobody has redeemed would activate a session that does not exist, and
-// re-confirming a settled one would let a second decision overwrite the
-// first.
-func (s *Store) ConfirmPairingLink(id string, at int64) (PairingLink, error) {
-	link, err := scanPairingLink(s.db.QueryRow(
-		`UPDATE pairing_links SET confirmed_at = ?
-		  WHERE id = ? AND redeemed_at IS NOT NULL
-		    AND confirmed_at IS NULL AND canceled_at IS NULL
-		 RETURNING `+pairingLinkColumns, at, id))
+// ErrPairingIncomplete reports a confirmation that could not admit its
+// device: the link was cancelled and its session revoked instead.
+var ErrPairingIncomplete = errors.New("store: the pairing could not be completed")
+
+// PairingConfirmation is what one ConfirmRedeemedPairing settled.
+type PairingConfirmation struct {
+	// Link is the confirmed link.
+	Link PairingLink
+	// Canceled is what an incomplete confirmation cancelled instead.
+	Canceled PairingCancellation
+}
+
+// ConfirmRedeemedPairing records the owner matching the verification number
+// and admits the device, in one transaction: the link is confirmed, its
+// session activated with accessExpiresAt, and a personal pairing's
+// membership admitted, or none of it is. Scoped to a redeemed link that
+// names its session and is unsettled; sql.ErrNoRows otherwise.
+//
+// A session that can no longer be activated (revoked, lapsed, or its device
+// revoked) or a membership that is no longer admissible cannot be completed
+// by a retry, so the same transaction cancels the link and revokes the
+// session instead, and the call answers ErrPairingIncomplete with what that
+// ended. Any other failure rolls back, leaving the link as it was.
+func (s *Store) ConfirmRedeemedPairing(id string, at, accessExpiresAt int64) (PairingConfirmation, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return PairingConfirmation{}, fmt.Errorf("store: confirm pairing: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := prepareOwnPairing(tx, id); err != nil {
+		return PairingConfirmation{}, err
+	}
+	link, err := scanPairingLink(tx.QueryRow(
+		`SELECT `+pairingLinkColumns+` FROM pairing_links
+		  WHERE id = ? AND redeemed_at IS NOT NULL AND session_id <> ''
+		    AND confirmed_at IS NULL AND canceled_at IS NULL`, id))
 	if errors.Is(err, sql.ErrNoRows) {
-		return PairingLink{}, err
+		return PairingConfirmation{}, err
 	}
 	if err != nil {
-		return PairingLink{}, fmt.Errorf("store: confirm pairing link: %w", err)
+		return PairingConfirmation{}, fmt.Errorf("store: confirm pairing: %w", err)
 	}
-	return link, nil
+	if _, err := tx.Exec(`SAVEPOINT confirm_pairing`); err != nil {
+		return PairingConfirmation{}, fmt.Errorf("store: confirm pairing: %w", err)
+	}
+	confirmed, refusal, err := admitPairingTx(tx, link, at, accessExpiresAt)
+	if err != nil {
+		return PairingConfirmation{}, err
+	}
+	if refusal != nil {
+		if _, err := tx.Exec(`ROLLBACK TO confirm_pairing`); err != nil {
+			return PairingConfirmation{}, fmt.Errorf("store: confirm pairing: %w", err)
+		}
+		canceled, err := cancelPairingLinkTx(tx, id, at)
+		if err != nil {
+			return PairingConfirmation{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return PairingConfirmation{}, fmt.Errorf("store: confirm pairing: commit the cancellation: %w", err)
+		}
+		return PairingConfirmation{Canceled: canceled}, fmt.Errorf("%w: %v", ErrPairingIncomplete, refusal)
+	}
+	if err := tx.Commit(); err != nil {
+		return PairingConfirmation{}, fmt.Errorf("store: confirm pairing: commit: %w", err)
+	}
+	return PairingConfirmation{Link: confirmed}, nil
+}
+
+// admitPairingTx activates link's session, confirms link and admits its
+// membership. refusal says why the device cannot be admitted; err is a
+// failure to write.
+func admitPairingTx(tx *sql.Tx, link PairingLink, at, accessExpiresAt int64) (confirmed PairingLink, refusal, err error) {
+	moved, err := activateSession(tx, link.SessionID, at, accessExpiresAt)
+	if err != nil {
+		return PairingLink{}, nil, err
+	}
+	if !moved {
+		return PairingLink{}, errors.New("its session or device was revoked or expired"), nil
+	}
+	confirmed, err = scanPairingLink(tx.QueryRow(
+		`UPDATE pairing_links SET confirmed_at = ? WHERE id = ?
+		 RETURNING `+pairingLinkColumns, at, link.ID))
+	if err != nil {
+		return PairingLink{}, nil, fmt.Errorf("store: confirm pairing link: %w", err)
+	}
+	if err := admitOwnPairingTx(tx, confirmed); err != nil {
+		if errors.Is(err, ErrOwnAdmissionRefused) {
+			return PairingLink{}, err, nil
+		}
+		return PairingLink{}, nil, err
+	}
+	return confirmed, nil, nil
 }
 
 // CancelPairingLink records the owner refusing a link — the verification
@@ -236,6 +366,18 @@ func (s *Store) CancelPairingLink(id string, at int64) (PairingCancellation, err
 		return PairingCancellation{}, fmt.Errorf("store: cancel pairing link: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	out, err := cancelPairingLinkTx(tx, id, at)
+	if err != nil {
+		return PairingCancellation{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return PairingCancellation{}, fmt.Errorf("store: cancel pairing link: commit: %w", err)
+	}
+	return out, nil
+}
+
+// cancelPairingLinkTx is CancelPairingLink's statements, in tx.
+func cancelPairingLinkTx(tx *sql.Tx, id string, at int64) (PairingCancellation, error) {
 	link, err := scanPairingLink(tx.QueryRow(
 		`UPDATE pairing_links SET canceled_at = ?
 		  WHERE id = ? AND confirmed_at IS NULL AND canceled_at IS NULL
@@ -253,9 +395,6 @@ func (s *Store) CancelPairingLink(id string, at int64) (PairingCancellation, err
 			return PairingCancellation{}, fmt.Errorf("store: cancel pairing link: revoke its pending session: %w", err)
 		}
 		out.SessionRevoked, out.Released = len(ids) > 0, released
-	}
-	if err := tx.Commit(); err != nil {
-		return PairingCancellation{}, fmt.Errorf("store: cancel pairing link: commit: %w", err)
 	}
 	return out, nil
 }
@@ -369,6 +508,10 @@ func scanPairingLink(sc interface{ Scan(...any) error }) (PairingLink, error) {
 // minted here; the hash is the caller's, because only the caller ever sees
 // the secret.
 func (s *Store) CreateRefreshSecret(sessionID string, secretHash []byte, createdAt, expiresAt int64) (RefreshSecret, error) {
+	return insertRefreshSecret(s.db, sessionID, secretHash, createdAt, expiresAt)
+}
+
+func insertRefreshSecret(db sqlExecutor, sessionID string, secretHash []byte, createdAt, expiresAt int64) (RefreshSecret, error) {
 	switch {
 	case strings.TrimSpace(sessionID) == "":
 		return RefreshSecret{}, fmt.Errorf("%w: refresh secret session id", ErrIdentityFieldRequired)
@@ -384,7 +527,7 @@ func (s *Store) CreateRefreshSecret(sessionID string, secretHash []byte, created
 		CreatedAt: createdAt,
 		ExpiresAt: expiresAt,
 	}
-	if _, err := s.db.Exec(
+	if _, err := db.Exec(
 		`INSERT INTO refresh_secrets (id, session_id, secret_hash, created_at,
 			expires_at, consumed_at, consumed_by)
 		 VALUES (?, ?, ?, ?, ?, NULL, '')`,

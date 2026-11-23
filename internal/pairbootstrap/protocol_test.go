@@ -62,7 +62,7 @@ func startBook(t *testing.T) (*Book, Snapshot) {
 // openWindow opens a window that the test closes when it ends.
 func openWindow(t *testing.T, b *Book, mint func(string) (Invitation, error)) Snapshot {
 	t.Helper()
-	s, err := b.Open(mint)
+	s, err := b.Open(mint, admitted)
 	if err != nil {
 		t.Fatal(err)
 	}

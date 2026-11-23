@@ -191,7 +191,7 @@ func TestPairingLinkExpires(t *testing.T) {
 // TestUnconfirmedSessionExpiresWithTheConfirmationWindow — a credential
 // nobody confirmed must not sit presentable-once-confirmed forever.
 func TestUnconfirmedSessionExpiresWithTheConfirmationWindow(t *testing.T) {
-	sessions, _, c, owner, _ := newFixture(t)
+	sessions, st, c, owner, _ := newFixture(t)
 	link := mustMintLink(t, sessions, owner)
 	redemption := mustRedeem(t, sessions, link.Token, "thumb-phone")
 
@@ -199,8 +199,17 @@ func TestUnconfirmedSessionExpiresWithTheConfirmationWindow(t *testing.T) {
 	if _, reason := sessions.Verify(redemption.Tokens.Credential); reason != ReasonExpiredSession {
 		t.Fatalf("lapsed unconfirmed credential = %s, want expired_session", reason)
 	}
-	if _, err := sessions.ConfirmPairing(redemption.PairingID); !errors.Is(err, ErrPairingRefused) {
-		t.Fatalf("confirming a lapsed pairing err = %v, want ErrPairingRefused", err)
+	// The confirmation cannot complete, so it settles the pairing instead:
+	// the link reads canceled and the credential is revoked.
+	if _, err := sessions.ConfirmPairing(redemption.PairingID); !errors.Is(err, ErrPairingNotCompleted) {
+		t.Fatalf("confirming a lapsed pairing err = %v, want ErrPairingNotCompleted", err)
+	}
+	if read, err := sessions.PairingLink(redemption.PairingID); err != nil || read.CanceledAt == 0 || read.ConfirmedAt != 0 {
+		t.Fatalf("a lapsed pairing after its confirmation = %+v (%v), want canceled", read, err)
+	}
+	read, _ := sessions.PairingLink(redemption.PairingID)
+	if session, err := st.GetSession(read.SessionID); err != nil || session.RevokedAt == 0 {
+		t.Fatalf("a lapsed pairing's session after its confirmation = %+v (%v), want revoked", session, err)
 	}
 }
 
@@ -231,9 +240,13 @@ func TestVerificationNumberIsKeyedToTheDeviceThatRedeemed(t *testing.T) {
 	link := mustMintLink(t, sessions, owner)
 	redemption := mustRedeem(t, sessions, link.Token, "thumb-phone")
 
-	_, shown, err := sessions.PairingStatus(redemption.PairingID)
+	read, err := sessions.PairingLink(redemption.PairingID)
 	if err != nil {
-		t.Fatalf("PairingStatus: %v", err)
+		t.Fatalf("PairingLink: %v", err)
+	}
+	shown, err := sessions.PairingNumber(read)
+	if err != nil {
+		t.Fatalf("PairingNumber: %v", err)
 	}
 	if shown != redemption.VerificationNumber {
 		t.Fatalf("minting surface shows %q, device shows %q; the two must agree",
@@ -495,5 +508,17 @@ func TestPairingAuditTrailNamesEveryStep(t *testing.T) {
 		if !seen[string(want)] {
 			t.Fatalf("the credential log carries no %q entry: %v", want, seen)
 		}
+	}
+}
+
+// A pending session is written only with the link naming it, so Mint, which
+// writes a session alone, refuses to make one.
+func TestMintRefusesAPendingSession(t *testing.T) {
+	sessions, _, _, owner, device := newFixture(t)
+	if _, _, err := sessions.Mint(MintRequest{
+		UserID: owner.ID, DeviceID: device.ID, BindingClass: BindingDeviceBound,
+		Scopes: []Scope{ScopeThreadsRead}, TTL: time.Minute, AwaitConfirmation: true,
+	}); err == nil {
+		t.Fatal("Mint wrote a pending session with no link naming it")
 	}
 }

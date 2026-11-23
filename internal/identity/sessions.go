@@ -193,15 +193,17 @@ type MintRequest struct {
 	// nothing but an explicit revocation can ever end, and this is the
 	// short-lived half of the access-token/refresh pair (§4).
 	TTL time.Duration
-	// AwaitConfirmation mints the session UNACTIVATED: the row and the
+	// AwaitConfirmation builds the session UNACTIVATED: the row and the
 	// credential both exist, and neither admits anything until Confirm
 	// stamps `sessions.activated_at`.
 	//
-	// Set only by pairing redemption. The credential is handed to the new
-	// device immediately so it can simply keep trying while the owner
-	// checks the verification number, rather than holding a second secret
-	// to poll with — the confirmation gate lives on the row, where one
-	// predicate covers every presentation path.
+	// Set only by pairing redemption, which writes the row together with
+	// the link naming it (store.CompletePairingRedemption); Mint refuses
+	// it. The credential is handed to the new device immediately so it can
+	// simply keep trying while the owner checks the verification number,
+	// rather than holding a second secret to poll with — the confirmation
+	// gate lives on the row, where one predicate covers every presentation
+	// path.
 	AwaitConfirmation bool
 }
 
@@ -218,6 +220,23 @@ type MintRequest struct {
 // A revoked device therefore fails the write itself, so a mint path added
 // later inherits the refusal instead of having to restate it.
 func (s *Sessions) Mint(req MintRequest) (store.Session, string, error) {
+	if req.AwaitConfirmation {
+		return store.Session{}, "", fmt.Errorf("identity: a pending session is written only with its pairing link")
+	}
+	session, credential, err := s.newSession(req)
+	if err != nil {
+		return store.Session{}, "", err
+	}
+	if err := s.store.CreateSession(session); err != nil {
+		return store.Session{}, "", fmt.Errorf("identity: mint session: %w", err)
+	}
+	s.auditMinted(session)
+	return session, credential, nil
+}
+
+// newSession builds and signs the session req describes, which the caller
+// writes: Mint, or a pairing redemption together with its link.
+func (s *Sessions) newSession(req MintRequest) (store.Session, string, error) {
 	if !req.BindingClass.Valid() {
 		return store.Session{}, "", fmt.Errorf("identity: %q is not a declared binding class", string(req.BindingClass))
 	}
@@ -260,16 +279,16 @@ func (s *Sessions) Mint(req MintRequest) (store.Session, string, error) {
 	if err != nil {
 		return store.Session{}, "", err
 	}
-	if err := s.store.CreateSession(session); err != nil {
-		return store.Session{}, "", fmt.Errorf("identity: mint session: %w", err)
-	}
 	s.rememberKey(key)
+	return session, credential, nil
+}
+
+func (s *Sessions) auditMinted(session store.Session) {
 	s.audit(store.AuthAuditEntry{
 		Event: string(AuditSessionMinted), Outcome: store.AuthAuditOutcomeAllowed,
 		UserID: session.UserID, DeviceID: session.DeviceID, SessionID: session.ID,
 		Detail: session.BindingClass,
 	})
-	return session, credential, nil
 }
 
 // Verify checks a presented credential and returns the session it admits.

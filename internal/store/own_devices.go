@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 )
 
@@ -179,8 +180,23 @@ func (s *Store) AdmitOwnPairing(link PairingLink) error {
 		return e
 	}
 	defer tx.Rollback()
+	if e = admitOwnPairingTx(tx, link); e != nil {
+		return e
+	}
+	return tx.Commit()
+}
+
+// ErrOwnAdmissionRefused reports a personal pairing whose membership is no
+// longer admissible; a retry cannot change that answer.
+var ErrOwnAdmissionRefused = errors.New("store: personal pairing admission refused")
+
+// admitOwnPairingTx is AdmitOwnPairing's statements, in tx.
+func admitOwnPairingTx(tx *sql.Tx, link PairingLink) error {
+	if link.Purpose == "" {
+		return nil
+	}
 	var confirmed int64
-	e = tx.QueryRow(`SELECT confirmed_at FROM pairing_links WHERE id=? AND confirmed_at IS NOT NULL AND canceled_at IS NULL`, link.ID).Scan(&confirmed)
+	e := tx.QueryRow(`SELECT confirmed_at FROM pairing_links WHERE id=? AND confirmed_at IS NOT NULL AND canceled_at IS NULL`, link.ID).Scan(&confirmed)
 	if e != nil {
 		return e
 	}
@@ -202,7 +218,7 @@ func (s *Store) AdmitOwnPairing(link PairingLink) error {
 	}
 	if link.Purpose == "own-introduction" {
 		if m.Removed || m.Generation != link.MemberGeneration {
-			return errors.New("own-device introduction is no longer authorized")
+			return fmt.Errorf("%w: own-device introduction is no longer authorized", ErrOwnAdmissionRefused)
 		}
 		var active int
 		e = tx.QueryRow(`SELECT count(*) FROM own_devices WHERE key_thumbprint=? AND removed=0`, link.SponsorKey).Scan(&active)
@@ -210,7 +226,7 @@ func (s *Store) AdmitOwnPairing(link PairingLink) error {
 			return e
 		}
 		if active != 1 {
-			return errors.New("own-device sponsor was removed")
+			return fmt.Errorf("%w: own-device sponsor was removed", ErrOwnAdmissionRefused)
 		}
 	} else {
 		if m.KeyThumbprint == "" {
@@ -219,7 +235,7 @@ func (s *Store) AdmitOwnPairing(link PairingLink) error {
 				return e
 			}
 			if count >= owndevices.MaxMembers {
-				return errors.New("too many own devices")
+				return fmt.Errorf("%w: too many own devices", ErrOwnAdmissionRefused)
 			}
 			m = owndevices.Member{KeyThumbprint: link.KeyThumbprint, Generation: 1}
 			if e = tx.QueryRow(`SELECT label,class FROM devices WHERE id=?`, link.DeviceID).Scan(&m.Name, &m.DeviceClass); e != nil {
@@ -227,7 +243,7 @@ func (s *Store) AdmitOwnPairing(link PairingLink) error {
 			}
 		}
 		if link.MemberGeneration < 1 || m.Generation > link.MemberGeneration || (m.Removed && m.Generation >= link.MemberGeneration) {
-			return errors.New("personal pairing admission was superseded")
+			return fmt.Errorf("%w: personal pairing admission was superseded", ErrOwnAdmissionRefused)
 		}
 		m.Generation = link.MemberGeneration
 		m.Removed = false
@@ -236,10 +252,7 @@ func (s *Store) AdmitOwnPairing(link PairingLink) error {
 		}
 	}
 	_, e = tx.Exec(`INSERT INTO own_device_sessions(session_id,key_thumbprint,generation) VALUES(?,?,?)`, link.SessionID, link.KeyThumbprint, m.Generation)
-	if e != nil {
-		return e
-	}
-	return tx.Commit()
+	return e
 }
 
 func (s *Store) PairingLinkByTokenHash(hash []byte) (PairingLink, error) {
@@ -270,10 +283,10 @@ func (s *Store) RetireOwnIntroductions(key string, at int64) (ids, released []st
 	return ids, released, nil
 }
 
-// PrepareOwnPairing freezes the generation authorized by this human approval.
+// prepareOwnPairing freezes the generation authorized by this human approval.
 // Crash recovery may finish that admission, never invent a newer restoration.
-func (s *Store) PrepareOwnPairing(id string) error {
-	_, e := s.db.Exec(`UPDATE pairing_links SET member_generation=COALESCE((SELECT generation+removed FROM own_devices WHERE key_thumbprint=pairing_links.key_thumbprint),1) WHERE id=? AND purpose='own-device' AND confirmed_at IS NULL AND canceled_at IS NULL`, id)
+func prepareOwnPairing(db sqlExecutor, id string) error {
+	_, e := db.Exec(`UPDATE pairing_links SET member_generation=COALESCE((SELECT generation+removed FROM own_devices WHERE key_thumbprint=pairing_links.key_thumbprint),1) WHERE id=? AND purpose='own-device' AND confirmed_at IS NULL AND canceled_at IS NULL`, id)
 	return e
 }
 func (s *Store) IncompleteOwnAdmissions() ([]PairingLink, error) {
