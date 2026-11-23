@@ -141,9 +141,29 @@ func (l *orderLock) Lock() {
 
 func (l *orderLock) Unlock() { l.mu.Unlock() }
 
-// NewBook returns a book whose cancel makes one invitation's cancellation
-// durable, answering nil when the invitation is already settled. retry is the
-// first wait before the book retries a failed cancellation itself.
+// Settled marks err, cancel's refusal of an invitation the store had already
+// settled, as durable: the book retries nothing for it, and an owner's
+// CancelLink answers it as it is.
+func Settled(err error) error { return settledError{err} }
+
+type settledError struct{ err error }
+
+func (e settledError) Error() string { return e.err.Error() }
+func (e settledError) Unwrap() error { return e.err }
+
+// durable is err with a settled refusal read as the durable answer it is.
+func durable(err error) error {
+	if errors.As(err, new(settledError)) {
+		return nil
+	}
+	return err
+}
+
+// NewBook returns a book whose cancel is the one store decision for one
+// invitation: nil when it canceled the invitation, a Settled refusal when the
+// store had already settled it, and any other error when it failed and can be
+// retried. retry is the first wait before the book retries a failed
+// cancellation itself.
 func NewBook(cancel func(linkID string) error, retry time.Duration) *Book {
 	if cancel == nil {
 		panic("pairbootstrap: a book needs a cancel")
@@ -183,7 +203,7 @@ func (b *Book) open(mint func(route string) (Invitation, error), admit func(Snap
 	if old != nil {
 		b.removeInTurn(old.view.WindowID)
 	}
-	if err := b.retireInTurn("", true); err != nil {
+	if err := durable(b.retireInTurn("", true)); err != nil {
 		return Snapshot{}, err
 	}
 	w := &window{mint: mint, view: Snapshot{Open: true, WindowID: encode(random(16)), ExpiresAtMs: time.Now().Add(ttl).UnixMilli()}}
@@ -221,7 +241,7 @@ func (b *Book) Close(windowID string) error {
 		return ErrStopped
 	}
 	b.removeInTurn(windowID)
-	return b.retireInTurn(windowID, false)
+	return durable(b.retireInTurn(windowID, false))
 }
 
 // Stop retires the open window and tries its invitation's cancellation once,
@@ -243,7 +263,7 @@ func (b *Book) Stop() error {
 	if w != nil {
 		b.removeInTurn(w.view.WindowID)
 	}
-	err := b.retireInTurn("", true)
+	err := durable(b.retireInTurn("", true))
 	b.mu.Lock()
 	b.stopped, b.stopErr = true, err
 	if b.retryTimer != nil {
@@ -275,10 +295,12 @@ func (b *Book) Expire(windowID string) {
 // the caller can end what it attached to that window. A mint in flight is
 // joined first, so a link it is about to publish is found in its window.
 // A link the book still has pending is retired as the book would. Every
-// answer is other's decision for the link, run with the book's turn held, so
-// an already settled link's refusal reaches the caller; an empty id matches
-// no window. The wait is bounded by that one mint.
-func (b *Book) CancelLink(linkID string, other func(linkID string) error) (windowID string, err error) {
+// answer is the one cancel the book makes for the link, run with the book's
+// turn held: the book's record and the caller's answer both come from it, so
+// an already settled link's refusal reaches the caller and a failure keeps
+// the record for the retry. An empty id matches no window. The wait is
+// bounded by that one mint.
+func (b *Book) CancelLink(linkID string) (windowID string, err error) {
 	b.turn.Lock()
 	defer b.turn.Unlock()
 	b.mu.Lock()
@@ -309,24 +331,12 @@ func (b *Book) CancelLink(linkID string, other func(linkID string) error) (windo
 	switch {
 	case windowID != "":
 		b.removeInTurn(windowID)
-		return windowID, b.decideInTurn(windowID, linkID, other)
+		return windowID, b.retireInTurn(windowID, false)
 	case pending != "":
-		return "", b.decideInTurn(pending, linkID, other)
+		return "", b.retireInTurn(pending, false)
 	default:
-		return "", other(linkID)
+		return "", b.cancel(linkID)
 	}
-}
-
-// decideInTurn answers an owner's cancel of the link windowID minted with
-// other's decision for it (an approved link refuses its cancel), then
-// retires it as the book would, which settles the book's record whichever
-// way other decided. The caller holds turn.
-func (b *Book) decideInTurn(windowID, linkID string, other func(string) error) error {
-	err := other(linkID)
-	if retired := b.retireInTurn(windowID, false); err == nil {
-		err = retired
-	}
-	return err
 }
 
 // Stopped reports whether Stop has run.
@@ -375,9 +385,10 @@ func (b *Book) pendLocked(windowID, linkID string) {
 }
 
 // retireInTurn issues one cancellation statement for the pending invitation
-// when it is windowID's, or whosever it is when every is set. A durable
-// cancellation clears it; a failure keeps it and, once its window is
-// removed, schedules the retry timer. The caller holds turn.
+// when it is windowID's, or whosever it is when every is set, and answers
+// cancel's outcome. A durable outcome (canceled, or a Settled refusal)
+// clears it; a failure keeps it and, once its window is removed, schedules
+// the retry timer. The caller holds turn.
 func (b *Book) retireInTurn(windowID string, every bool) error {
 	b.mu.Lock()
 	p := b.pending
@@ -390,7 +401,7 @@ func (b *Book) retireInTurn(windowID string, every bool) error {
 	defer b.mu.Unlock()
 	removed := b.window == nil || b.window.view.WindowID != p.windowID
 	switch {
-	case err == nil:
+	case durable(err) == nil:
 		b.pending = nil
 		if b.retryTimer != nil {
 			b.retryTimer.Stop()

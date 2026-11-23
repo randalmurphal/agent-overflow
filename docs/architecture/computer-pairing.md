@@ -72,7 +72,10 @@ A window's invitation is redeemed and confirmed only while the book admits it:
 `Book.Admit` holds the book from its check to the store commit, and identity
 reaches it through `identity.PairingGate`, so an invitation the book refuses is
 never spent. Cancel on the Devices list goes through the book, which retires the
-window that minted the invitation. The digits the owner sees for a window's
+window that minted the invitation. The book makes one cancellation for the
+link, and the owner's answer and the book's record both come from it: a link
+the store had already settled answers refused and leaves nothing pending, and
+a failure answers the failure and stays pending for the retry. The digits the owner sees for a window's
 invitation are the window's own: the invitation's row carries a mark
 (`pairing_links.bootstrap`) written at mint, and for a marked row the owner sees
 the window's digits while the window holds the invitation, and none otherwise.
@@ -89,13 +92,17 @@ shows, the certificate pin that address presents, and whether its LAN
 responders run and on which LAN address) refuses that window at once
 (`Book.Expire`), under the lock that moves the serial, then closes it, which
 waits for the window's LAN responders to finish starting; a route change that
-leaves those alone keeps the window. A window the publication refuses while
-the book is still admitting it is installed already expired. An open checks
-that its network has an address, closes the previous window, checks the
-network, the owner's connection and shutdown again, runs a personal open's
-enrollment, and is admitted inside the book's open against the publication as
-it stands then, showing the address read there. A
-personal open's enrollment is left behind when the network loses its address,
+leaves those alone keeps the window. A reveal mints the invitation for the
+network the requester arrived on, which may differ from the window's; once
+that mint starts, the window also depends on that network's address and pin.
+A window the publication refuses while the book is still admitting it is
+installed already expired. An open checks that its network has an address,
+closes the previous window, publishes (closing any window that publication
+retires), checks shutdown, and reads last the network's address as published
+and the owner's connection, with nothing that waits between them and a
+personal open's enrollment. It is then admitted inside the book's open against
+the publication as it stands then, showing the address read there. A personal
+open's enrollment is left behind when the network loses its address,
 the owner's connection ends, or the app shuts down while that enrollment runs,
 or when the enrollment (`enableOwnDevices`) itself fails partway; every earlier
 failure changes no enrollment, registration or membership generation.
@@ -109,7 +116,8 @@ activated one. A confirmation that can no longer admit its device, including
 one revoked or removed, cancels the invitation instead, and the owner is told
 it was not completed. Startup retires unfinished pairings in one store
 transaction because an ephemeral comparison cannot survive a restart, and
-revokes the never-activated session of a confirmed link. Confirmed devices
+revokes every never-activated session a link names in one sweep that starts
+from those sessions (`idx_pairing_links_session`). Confirmed devices
 retain their existing sessions and renewal policy.
 
 ## Own devices

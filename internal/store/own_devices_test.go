@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -235,5 +236,34 @@ func TestStartupRetiresALinkWhoseScopesItCannotRead(t *testing.T) {
 	}
 	if session, err := s.GetSession(pending.ID); err != nil || session.RevokedAt != 3000 {
 		t.Fatalf("its pending session = %+v (%v), want revoked", session, err)
+	}
+}
+
+// Startup's one sweep of pending sessions starts from the sessions never
+// activated and finds each one's link through the index, so a store's
+// settled link history is not read: the plan searches pairing_links and
+// never scans it, and the sweep still revokes the pending session.
+func TestStartupSweepReadsNoSettledLinkHistory(t *testing.T) {
+	s, owner, device := seedOwnerDevice(t)
+	key := seedSigningKey(t, s)
+	mustExec(t, s.db, `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 2000)
+		INSERT INTO pairing_links (id, user_id, token_hash, scopes, binding_class, device_class, created_at, expires_at, redeemed_at, confirmed_at, session_id)
+		SELECT 'settled-' || i, ?, randomblob(32), '[]', 'device-bound', 'desktop', 1000, 9000, 1500, 1600, 'gone-' || i FROM n`, owner.ID)
+	link := PairingLink{ID: "pending", UserID: owner.ID, Scopes: []string{"threads:read"}, BindingClass: "device-bound", DeviceClass: "desktop", CreatedAt: 1000, ExpiresAt: 9000}
+	if err := s.CreatePairingLink(link, []byte("hash-pending")); err != nil {
+		t.Fatal(err)
+	}
+	_, pending := redeemOnto(t, s, []byte("hash-pending"), 2000, newTestSession("sess-pending", owner, device, key, 9000))
+	mustExec(t, s.db, `ANALYZE`)
+	plan := queryPlanText(t, s.db, `EXPLAIN QUERY PLAN UPDATE sessions SET revoked_at = 1
+		WHERE revoked_at IS NULL AND (`+pendingLinkSessionsSQL+`) RETURNING id, device_id`)
+	if !strings.Contains(plan, "SEARCH l USING COVERING INDEX idx_pairing_links_session") || strings.Contains(plan, "SCAN pairing_links") || strings.Contains(plan, "SCAN l") {
+		t.Fatalf("startup's sweep reads the link history:\n%s", plan)
+	}
+	if err := s.RetirePendingPairings(3000); err != nil {
+		t.Fatal(err)
+	}
+	if session, err := s.GetSession(pending.ID); err != nil || session.RevokedAt != 3000 {
+		t.Fatalf("the pending session = %+v (%v), want revoked", session, err)
 	}
 }

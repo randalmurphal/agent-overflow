@@ -380,6 +380,19 @@ async function stageFixtures(rig: Sandbox, s: Staged): Promise<void> {
     ${link('pl-confirmed-pending', ', device_id, session_id, redeemed_at, confirmed_at', `, '${local.device}', 'sess-confirmed-pending', ${now}, ${now}`)}
     ${session('sess-canceled-pending', later)}
     ${link('pl-canceled-pending', ', device_id, session_id, redeemed_at, canceled_at', `, '${local.device}', 'sess-canceled-pending', ${now}, ${now}`)}
+    -- device-session-ended: a device whose only session is a canceled
+    -- link's pending one, holding the link of a settled spawn to the draft
+    -- thread, which that link owns, and the nudge it sent there.
+    INSERT INTO devices (id, user_id, label, class, platform, channel, created_at, last_seen_at)
+      VALUES ('dev-pending-only', '${local.user}', 'Phone', 'phone', 'ios', '', ${now}, 0);
+    INSERT INTO sessions (id, user_id, device_id, binding_class, scopes, signing_key_id, created_at, expires_at)
+      VALUES ('sess-pending-only', '${local.user}', 'dev-pending-only', 'device-bound', '[]', '${local.key}', ${now}, ${later});
+    ${link('pl-pending-only', ', device_id, session_id, redeemed_at, canceled_at', `, 'dev-pending-only', 'sess-pending-only', ${now}, ${now}`)}
+    INSERT INTO thread_request_receipts (token, owner_device_id, kind, target_thread_id, state, created_at, updated_at, spawn_link, track_spawn)
+      VALUES ('rcpt-spawn-linked', 'dev-pending-only', 'spawn', '${s.draftId}', 'finished', ${now}, ${now}, 1, 1);
+    INSERT INTO thread_receipt_nudges (token, link_token, target_thread_id, started_at, run_open, run_base_tool_calls, run_base_tokens, run_base_turn_ms, ended_at)
+      VALUES ('nudge-spawn-linked', 'rcpt-spawn-linked', '${s.draftId}', ${now}, 0, 0, 0, 0, ${now});
+    UPDATE threads SET placement = 'owned' WHERE id = '${s.draftId}';
     INSERT INTO own_devices (key_thumbprint, member, generation, removed)
       VALUES ('${MEMBER_KEY}', '{"keyThumbprint":"${MEMBER_KEY}","name":"Laptop","routes":[],"generation":1,"removed":false}', 1, 0);
     ${link('pl-member', ', device_id, key_thumbprint, session_id, confirmed_at, purpose, member_generation',
@@ -492,7 +505,11 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       'local-session-scopes sessions': 1,
       'own-admission-members own_devices': 1,
       'own-admission-revocations sessions': 1,
-      'pending-link-sessions sessions': 2,
+      'pending-link-sessions sessions': 3,
+      'ended-device-spawn-links thread_request_receipts': 1,
+      'ended-device-nudges thread_receipt_nudges': 1,
+      'ended-device-spawn-revisions spawn_revisions': 1,
+      'ended-device-placements threads': 1,
       'expired-sessions sessions': 1,
       'expired-refresh-secrets refresh_secrets': 1,
       'expired-pairing-links pairing_links': 1,
@@ -567,6 +584,14 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       { rule: 'own-admission-members', table: 'own_devices', sql: `UPDATE own_devices SET removed = 1 WHERE key_thumbprint = '${MEMBER_KEY}'` },
       { rule: 'own-admission-revocations', table: 'sessions', sql: `UPDATE sessions SET scopes = '["edited"]' WHERE id = 'sess-refused'` },
       { rule: 'pending-link-sessions', table: 'sessions', sql: `UPDATE sessions SET scopes = '["edited"]' WHERE id = 'sess-confirmed-pending'` },
+      { rule: 'ended-device-spawn-links', table: 'thread_request_receipts',
+        sql: `UPDATE thread_request_receipts SET source_thread_title = 'edited' WHERE token = 'rcpt-spawn-linked'` },
+      { rule: 'ended-device-nudges', table: 'thread_receipt_nudges',
+        sql: `INSERT INTO thread_receipt_nudges (token, link_token, target_thread_id, started_at, run_open, run_base_tool_calls, run_base_tokens, run_base_turn_ms, ended_at)
+          SELECT token, link_token, target_thread_id, started_at + 1, run_open, run_base_tool_calls, run_base_tokens, run_base_turn_ms, ended_at FROM snap.thread_receipt_nudges` },
+      { rule: 'ended-device-spawn-revisions', table: 'spawn_revisions',
+        sql: `INSERT INTO spawn_revisions (revision, owner_device_id, token, target, end) SELECT revision, owner_device_id, token, target, 'gone' FROM snap.spawn_revisions` },
+      { rule: 'ended-device-placements', table: 'threads', sql: `UPDATE threads SET title = 'edited' WHERE id = '${staged.draftId}'` },
       { rule: 'expired-sessions', table: 'sessions', sql: `DELETE FROM sessions WHERE id = 'sess-live'` },
       { rule: 'expired-refresh-secrets', table: 'refresh_secrets', sql: `DELETE FROM refresh_secrets WHERE id = 'rs-live'` },
       { rule: 'expired-pairing-links', table: 'pairing_links', sql: `DELETE FROM pairing_links WHERE id = 'pl-member'` },

@@ -2,6 +2,8 @@ package pairbootstrap
 
 import (
 	"errors"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 )
@@ -135,9 +137,30 @@ func TestTheLastWindowsLinkOutlivesItsWindow(t *testing.T) {
 	}
 }
 
+// scripted is a cancel that answers its calls with answers in order, the
+// last one repeating, and records the links it was asked for.
+type scripted struct {
+	mu      sync.Mutex
+	answers []error
+	asked   []string
+}
+
+func (s *scripted) cancel(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.asked = append(s.asked, id)
+	return s.answers[min(len(s.asked), len(s.answers))-1]
+}
+
+func (s *scripted) calls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.asked)
+}
+
 // CancelLink retires the open window that minted the link, joining a mint in
-// flight first so a link it is about to publish is found in its window. The
-// caller's cancel decides the answer for every link.
+// flight first so a link it is about to publish is found in its window. Any
+// other link is canceled directly; every answer is the book's one cancel.
 func TestCancelLinkRetiresTheWindowThatMintedIt(t *testing.T) {
 	l := newLedger()
 	b := NewBook(l.cancel, time.Hour)
@@ -147,12 +170,10 @@ func TestCancelLinkRetiresTheWindowThatMintedIt(t *testing.T) {
 		err    error
 	}
 	done := make(chan canceled, 1)
-	var decided []string
-	other := func(id string) error { decided = append(decided, id); return nil }
 	// The mint is released only once CancelLink waits for it.
 	b.joining = g.open
 	go func() {
-		id, err := b.CancelLink("in-flight", other)
+		id, err := b.CancelLink("in-flight")
 		done <- canceled{id, err}
 	}()
 	got := <-done
@@ -162,31 +183,102 @@ func TestCancelLinkRetiresTheWindowThatMintedIt(t *testing.T) {
 	if err := <-revealed; err != nil {
 		t.Fatal(err)
 	}
-	if b.Snapshot(w.WindowID).Open || l.count("in-flight") != 1 || len(decided) != 1 {
-		t.Fatalf("after CancelLink the window is open (%v), has %d statements, or the caller decided %v", b.Snapshot(w.WindowID).Open, l.count("in-flight"), decided)
+	if b.Snapshot(w.WindowID).Open || l.count("in-flight") != 1 {
+		t.Fatalf("after CancelLink the window is open (%v) or has %d statements, want one", b.Snapshot(w.WindowID).Open, l.count("in-flight"))
 	}
-	var asked string
-	id, err := b.CancelLink("ordinary", func(id string) error { asked = id; return errStorage })
-	if id != "" || !errors.Is(err, errStorage) || asked != "ordinary" {
-		t.Fatalf("CancelLink of another link = (%q, %v), asked %q; want the caller's cancel and its answer", id, err, asked)
+	l.fail(true)
+	id, err := b.CancelLink("ordinary")
+	if id != "" || !errors.Is(err, errStorage) || l.count("ordinary") != 1 {
+		t.Fatalf("CancelLink of another link = (%q, %v) with %d statements, want its one cancel's answer", id, err, l.count("ordinary"))
 	}
 }
 
 // An empty link id matches no window: a window still waiting for a
-// requester, whose link is empty, stays open, and the caller's cancel
-// answers for the id.
+// requester, whose link is empty, stays open, and the cancel answers for the
+// id.
 func TestCancelLinkOfAnEmptyIDLeavesAWaitingWindowOpen(t *testing.T) {
-	l := newLedger()
-	b := NewBook(l.cancel, time.Hour)
+	refused := Settled(errors.New("unknown link"))
+	s := &scripted{answers: []error{refused}}
+	b := NewBook(s.cancel, time.Hour)
 	w := openWindow(t, b, mintOf("unrevealed"))
-	var asked []string
-	id, err := b.CancelLink("", func(id string) error { asked = append(asked, id); return errStorage })
-	if id != "" || !errors.Is(err, errStorage) || len(asked) != 1 || asked[0] != "" {
-		t.Fatalf("CancelLink(\"\") = (%q, %v), asked %q; want the caller's refusal of the empty id", id, err, asked)
+	id, err := b.CancelLink("")
+	if asked := s.calls(); id != "" || !errors.Is(err, refused) || len(asked) != 1 || asked[0] != "" {
+		t.Fatalf("CancelLink(\"\") = (%q, %v), asked %q; want the refusal of the empty id", id, err, asked)
 	}
 	if !b.Snapshot(w.WindowID).Open {
 		t.Fatal("CancelLink(\"\") closed a window waiting for a requester")
 	}
+}
+
+// An owner's cancel of a window's link is one cancellation, whose outcome is
+// both the owner's answer and the book's record: one that commits answers
+// success with nothing left pending, whatever a second statement would have
+// answered; one that fails answers the failure and keeps the record for the
+// retry, whatever a second statement would have answered.
+func TestCancelLinkIsOneCancellationForTheAnswerAndTheRecord(t *testing.T) {
+	for name, tc := range map[string]struct {
+		answers []error
+		want    error
+		pending bool
+	}{
+		"the cancellation commits":   {answers: []error{nil, errStorage}, want: nil, pending: false},
+		"the cancellation fails":     {answers: []error{errStorage, nil}, want: errStorage, pending: true},
+		"the link was settled first": {answers: []error{Settled(errSettledFirst), errStorage}, want: errSettledFirst, pending: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := &scripted{answers: tc.answers}
+			b := NewBook(s.cancel, time.Hour)
+			w := openWindow(t, b, mintOf("owned"))
+			handshake(t, b, newClient(t))
+			id, err := b.CancelLink("owned")
+			if id != w.WindowID || !errors.Is(err, tc.want) || (tc.want == nil && err != nil) {
+				t.Fatalf("CancelLink = (%q, %v), want the window and %v", id, err, tc.want)
+			}
+			if asked := s.calls(); len(asked) != 1 {
+				t.Fatalf("the cancel asked the store %d times (%q), want once", len(asked), asked)
+			}
+			if b.Snapshot(w.WindowID).Open || b.Refuses("owned") != tc.pending {
+				t.Fatalf("after the cancel the window is open (%v) or its record pending is %v, want %v", b.Snapshot(w.WindowID).Open, b.Refuses("owned"), tc.pending)
+			}
+		})
+	}
+}
+
+var errSettledFirst = errors.New("already approved")
+
+// A cancel of a link the book still has pending is that pending record's
+// one cancellation: its answer is the owner's, and it settles the record.
+func TestCancelLinkOfAPendingLinkAnswersItsCancellation(t *testing.T) {
+	s := &scripted{answers: []error{errStorage, Settled(errSettledFirst), errStorage}}
+	b := NewBook(s.cancel, time.Hour)
+	w := openWindow(t, b, mintOf("pending"))
+	handshake(t, b, newClient(t))
+	if err := b.Close(w.WindowID); !errors.Is(err, errStorage) {
+		t.Fatalf("the close with a failing retirement = %v, want the storage error", err)
+	}
+	id, err := b.CancelLink("pending")
+	if id != "" || !errors.Is(err, errSettledFirst) || len(s.calls()) != 2 {
+		t.Fatalf("CancelLink of a pending link = (%q, %v) after %d statements, want the settled refusal from one more", id, err, len(s.calls()))
+	}
+	if b.Refuses("pending") {
+		t.Fatal("the pending record survived a settled answer")
+	}
+}
+
+// A settled refusal is durable for every retirement: a close answers it as
+// success, and an open after it opens.
+func TestASettledRefusalIsADurableRetirement(t *testing.T) {
+	s := &scripted{answers: []error{Settled(errSettledFirst)}}
+	b := NewBook(s.cancel, time.Hour)
+	w := openWindow(t, b, mintOf("settled"))
+	handshake(t, b, newClient(t))
+	if err := b.Close(w.WindowID); err != nil {
+		t.Fatalf("closing a window whose link was settled first = %v, want nil", err)
+	}
+	if b.Refuses("settled") {
+		t.Fatal("a settled link stayed pending")
+	}
+	openWindow(t, b, mintOf("next"))
 }
 
 // A held link is admitted only while the open, unexpired window holds it:
@@ -206,44 +298,5 @@ func TestAdmitOfAHeldLinkNeedsTheWindowThatHoldsIt(t *testing.T) {
 	ran = false
 	if err := b.Admit("held", true, func() error { ran = true; return nil }); !errors.Is(err, ErrClosed) || ran {
 		t.Fatalf("Admit of an expired window's link = %v (ran %v), want ErrClosed", err, ran)
-	}
-}
-
-// The caller's refusal of a window's link (one already approved) is the
-// answer, and the window is retired all the same.
-func TestCancelLinkAnswersTheCallersRefusalAndRetiresTheWindow(t *testing.T) {
-	l := newLedger()
-	b := NewBook(l.cancel, time.Hour)
-	w := openWindow(t, b, mintOf("approved"))
-	handshake(t, b, newClient(t))
-	refused := errors.New("already approved")
-	id, err := b.CancelLink("approved", func(string) error { return refused })
-	if id != w.WindowID || !errors.Is(err, refused) {
-		t.Fatalf("CancelLink of an approved link = (%q, %v), want its window and the refusal", id, err)
-	}
-	if b.Snapshot(w.WindowID).Open || b.Refuses("approved") {
-		t.Fatal("the window stayed open, or its record pending, after the refused cancel")
-	}
-}
-
-// A cancel of a link the book still has pending answers the caller's
-// decision too, and settles the book's record once the retirement succeeds.
-func TestCancelLinkOfAPendingLinkAnswersTheCallersDecision(t *testing.T) {
-	l := newLedger()
-	b := NewBook(l.cancel, time.Hour)
-	w := openWindow(t, b, mintOf("pending"))
-	handshake(t, b, newClient(t))
-	l.fail(true)
-	if err := b.Close(w.WindowID); !errors.Is(err, errStorage) {
-		t.Fatalf("the close with a failing retirement = %v, want the storage error", err)
-	}
-	l.fail(false)
-	refused := errors.New("already settled")
-	id, err := b.CancelLink("pending", func(string) error { return refused })
-	if id != "" || !errors.Is(err, refused) {
-		t.Fatalf("CancelLink of a pending link = (%q, %v), want the caller's decision", id, err)
-	}
-	if b.Refuses("pending") {
-		t.Fatal("the pending record survived a retirement that succeeded")
 	}
 }

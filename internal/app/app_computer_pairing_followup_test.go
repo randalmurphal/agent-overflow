@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -248,23 +249,53 @@ func TestComputerPairingAMarkedInvitationNoWindowHoldsIsRefused(t *testing.T) {
 }
 
 // An own-device open whose network loses its address, or whose connection
-// ends, while the open waits for the previous window's retirement enrolls
-// nothing: both are checked again right before the enrollment.
+// ends, while the open waits for the previous window's retirement or for
+// the publication after it enrolls nothing: both are read last, right before
+// the enrollment.
 func TestAnOwnPairingOpenThatChangesWhileWaitingEnrollsNothing(t *testing.T) {
+	withdraw := func(a *App) {
+		s := &a.nativeNetwork
+		s.mu.Lock()
+		s.addresses = nil
+		s.mu.Unlock()
+	}
 	for name, change := range map[string]func(*App, *transport.ConnState){
-		"the network loses its address": func(a *App, _ *transport.ConnState) {
-			s := &a.nativeNetwork
-			s.mu.Lock()
-			s.addresses = nil
-			s.mu.Unlock()
+		"the network loses its address": func(a *App, _ *transport.ConnState) { withdraw(a) },
+		"the connection ends":           func(_ *App, conn *transport.ConnState) { conn.RunCleanups() },
+		"the connection ends during the publication": func(a *App, conn *transport.ConnState) {
+			onNextPublication(a, conn.RunCleanups)
 		},
-		"the connection ends": func(_ *App, conn *transport.ConnState) { conn.RunCleanups() },
+		// The moved address makes the open's publication retire the previous
+		// window; the withdrawal, published as every move is, lands while
+		// that publication closes it.
+		"the address is withdrawn while the publication closes the previous window": func(a *App, _ *transport.ConnState) {
+			moveNativeAddress(a, "192.168.1.62")
+			onNextPublication(a, func() {
+				withdraw(a)
+				a.publishComputerRoutes()
+			})
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			ownOpenThatChangesWhileWaiting(t, change)
 		})
 	}
+}
+
+// onNextPublication runs f once, in the next publication, after it has
+// chosen the window to retire and released its lock and before it closes
+// that window. A publication f runs itself passes straight through.
+func onNextPublication(a *App, f func()) {
+	var ran atomic.Bool
+	state := &a.computerRoutesPublished
+	state.mu.Lock()
+	state.chosen = func() {
+		if ran.CompareAndSwap(false, true) {
+			f()
+		}
+	}
+	state.mu.Unlock()
 }
 
 func ownOpenThatChangesWhileWaiting(t *testing.T, change func(*App, *transport.ConnState)) {
@@ -301,5 +332,61 @@ func ownOpenThatChangesWhileWaiting(t *testing.T, change func(*App, *transport.C
 	}
 	if _, err := a.backends.OwnIdentity(); !errors.Is(err, deviceclient.ErrNoDeviceKey) {
 		t.Fatalf("this computer's own identity = %v, want none enrolled", err)
+	}
+}
+
+// A LAN window whose invitation a reveal through Tailscale started minting
+// depends on Tailscale from then on: a publication that removes Tailscale
+// retires it, where before that reveal it did not.
+func TestComputerPairingAWindowDependsOnTheRouteItsInvitationUses(t *testing.T) {
+	a := &App{}
+	p := &a.computerRoutesPublished
+	reached := pairingAddresses{lan: "https://192.168.1.55:4000", tailnet: "https://host.tail.ts.net", lanPin: "pin"}
+	gone := reached
+	gone.tailnet, gone.tailnetErr = "", "connect this computer to Tailscale with HTTPS enabled before pairing"
+	p.pairing, p.serial = reached, 1
+	p.window = admittedPairingWindow{id: "lan-window", serial: 1, choice: "lan", terms: p.termsLocked("lan")}
+	p.pairing, p.serial = gone, 2
+	if p.retiresLocked(p.window) {
+		t.Fatal("Tailscale leaving retired a LAN window no reveal reached through it")
+	}
+	p.pairing, p.serial = reached, 1
+	if err := a.mintingComputerPairingWindow("another-window", "tailnet"); !errors.Is(err, pairbootstrap.ErrClosed) {
+		t.Fatalf("minting for a window the publication does not record = %v, want pairbootstrap.ErrClosed", err)
+	}
+	if err := a.mintingComputerPairingWindow("lan-window", "tailnet"); err != nil {
+		t.Fatal(err)
+	}
+	p.pairing, p.serial = gone, 2
+	if !p.retiresLocked(p.window) {
+		t.Fatal("Tailscale leaving kept a LAN window whose invitation was minted for Tailscale")
+	}
+}
+
+// A reveal records, before its mint, the route it arrived on as one the
+// window depends on.
+func TestComputerPairingARevealRecordsItsRoute(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	a, _ := computerPairingHost(t)
+	window, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, ch := beginOnBook(t, a.computerPairingBook())
+	r, err := c.Reveal(ch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This host has no Tailscale, so the mint fails after the record.
+	if _, err := a.computerPairingBook().Reveal(ch.ID, r, "tailnet"); err == nil {
+		t.Fatal("a reveal through Tailscale minted on a host without it")
+	}
+	state := &a.computerRoutesPublished
+	state.mu.Lock()
+	recorded := state.window
+	state.mu.Unlock()
+	if recorded.id != window.ID || recorded.minted != "tailnet" {
+		t.Fatalf("the publication's window = %+v, want %s depending on tailnet", recorded, window.ID)
 	}
 }

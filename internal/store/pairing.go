@@ -578,14 +578,13 @@ type pairingCancellations struct {
 	revoked, released []string
 }
 
-// cancelPairingLinksTx is the one writer of pairing_links.canceled_at. It
-// stamps every uncanceled link where selects and, in the same transaction,
-// revokes each such link's session that was never activated, so a canceled
-// link never leaves a pending session behind. Both are set statements; no
-// link row is read. An activated session is not this statement's: a link
-// canceled after its session was admitted (an own-device introduction its
-// device never renewed) leaves the decision to end that session to its
-// caller.
+// cancelPairingLinksTx stamps every uncanceled link where selects
+// (stampPairingLinksTx) and, in the same transaction, revokes each such
+// link's session that was never activated, so a canceled link never leaves
+// a pending session behind. Both are set statements; no link row is read.
+// An activated session is not this statement's: a link canceled after its
+// session was admitted (an own-device introduction its device never
+// renewed) leaves the decision to end that session to its caller.
 func cancelPairingLinksTx(tx *sql.Tx, at int64, where string, args ...any) (pairingCancellations, error) {
 	var out pairingCancellations
 	var err error
@@ -595,16 +594,32 @@ func cancelPairingLinksTx(tx *sql.Tx, at int64, where string, args ...any) (pair
 	if err != nil {
 		return out, fmt.Errorf("store: cancel pairing links: revoke their pending sessions: %w", err)
 	}
+	out.links, err = stampPairingLinksTx(tx, at, where, args...)
+	return out, err
+}
+
+// stampPairingLinksTx is the one writer of pairing_links.canceled_at: it
+// stamps every uncanceled link where selects and counts them. Its caller
+// revokes those links' pending sessions in the same transaction.
+func stampPairingLinksTx(tx *sql.Tx, at int64, where string, args ...any) (int64, error) {
 	result, err := tx.Exec(`UPDATE pairing_links SET canceled_at = ?
 		  WHERE canceled_at IS NULL AND (`+where+`)`, append([]any{at}, args...)...)
 	if err != nil {
-		return out, fmt.Errorf("store: cancel pairing links: %w", err)
+		return 0, fmt.Errorf("store: cancel pairing links: %w", err)
 	}
-	if out.links, err = result.RowsAffected(); err != nil {
-		return out, fmt.Errorf("store: cancel pairing links: rows affected: %w", err)
+	links, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: cancel pairing links: rows affected: %w", err)
 	}
-	return out, nil
+	return links, nil
 }
+
+// pendingLinkSessionsSQL selects, over sessions, every unactivated session
+// some link names, whatever the link's stamps. It starts from the sessions,
+// so a store's settled link history is read only for the few sessions never
+// activated.
+const pendingLinkSessionsSQL = `activated_at IS NULL
+	AND EXISTS (SELECT 1 FROM pairing_links l WHERE l.session_id = sessions.id)`
 
 // PairingCancellation is what one CancelPairingLink ended.
 type PairingCancellation struct {
@@ -622,19 +637,20 @@ type PairingCancellation struct {
 // session a link names that was never activated ends the same way, whatever
 // the link's stamps (an older build confirmed or canceled the link and
 // stopped before settling its session): it is revoked and the device pairs
-// again. An activated session is outside both statements.
+// again. That one sweep (pendingLinkSessionsSQL) covers the pending session
+// of every link it stamps, in the same transaction. An activated session is
+// outside it.
 func (s *Store) RetirePendingPairings(at int64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("store: retire pending pairings: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := cancelPairingLinksTx(tx, at, `confirmed_at IS NULL`); err != nil {
-		return fmt.Errorf("store: retire pending pairings: %w", err)
+	if _, _, err := endSessionsTx(tx, revokeSessions, at, nil, pendingLinkSessionsSQL); err != nil {
+		return fmt.Errorf("store: retire pending pairings: revoke the unactivated sessions of links: %w", err)
 	}
-	if _, _, err := endSessionsTx(tx, revokeSessions, at, nil, `activated_at IS NULL
-		AND id IN (SELECT session_id FROM pairing_links WHERE session_id <> '')`); err != nil {
-		return fmt.Errorf("store: retire pending pairings: revoke the unactivated sessions of settled links: %w", err)
+	if _, err := stampPairingLinksTx(tx, at, `confirmed_at IS NULL`); err != nil {
+		return fmt.Errorf("store: retire pending pairings: %w", err)
 	}
 	return tx.Commit()
 }

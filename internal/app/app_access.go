@@ -308,20 +308,17 @@ func (a *App) ConfirmDevicePairing(linkID string) error {
 // CancelDevicePairing refuses a link and revokes whatever a redemption
 // already created — the number did not match, or the link was minted by
 // mistake. Every owner cancellation goes through the computer pairing book
-// (Book.CancelLink): a link a window minted retires that window, with its
-// LAN responders, and any other is canceled directly.
+// (Book.CancelLink), whose one cancellation (cancelComputerPairingLink)
+// answers it: a link a window minted retires that window, with its LAN
+// responders, and any other is canceled directly.
 //
 //ao:scope access:admin
 //ao:route home
 func (a *App) CancelDevicePairing(linkID string) error {
-	state, err := a.accessState()
-	if err != nil {
+	if _, err := a.accessState(); err != nil {
 		return err
 	}
-	windowID, err := a.computerPairingBook().CancelLink(linkID, func(id string) error {
-		_, err := state.sessions.CancelPairing(id)
-		return err
-	})
+	windowID, err := a.computerPairingBook().CancelLink(linkID)
 	if windowID != "" {
 		a.endComputerPairingAdvertisement(windowID)
 	}

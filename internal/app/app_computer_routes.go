@@ -48,6 +48,22 @@ type admittedPairingWindow struct {
 	book   *pairbootstrap.Book
 	choice string
 	terms  pairingWindowTerms
+	// minted is the network a reveal mints the window's invitation for,
+	// which may differ from choice, and mintedTerms what that invitation
+	// depends on; "" until a reveal starts minting.
+	minted      string
+	mintedTerms pairingWindowTerms
+}
+
+// retiresLocked reports whether this publication retires w: w was admitted
+// under an earlier serial and what it depends on changed, which is its own
+// network's terms and, once a reveal started minting, the terms of the
+// network its invitation uses. The caller holds mu.
+func (p *computerRoutesPublication) retiresLocked(w admittedPairingWindow) bool {
+	if w.id == "" || w.serial >= p.serial {
+		return false
+	}
+	return w.terms != p.termsLocked(w.choice) || (w.minted != "" && w.mintedTerms != p.termsLocked(w.minted))
 }
 
 // pairingWindowTerms is what a pairing window on one network depends on: the
@@ -137,7 +153,7 @@ func (a *App) publishComputerRoutes() publishedNetwork {
 	}
 	published := publishedNetwork{serial: state.serial, pairing: pairing, advertise: state.advertise}
 	retired := state.window
-	if retired.id != "" && retired.serial < state.serial && retired.terms != state.termsLocked(retired.choice) {
+	if state.retiresLocked(retired) {
 		state.window = admittedPairingWindow{}
 		retired.book.Expire(retired.id)
 	} else {
@@ -191,6 +207,31 @@ func (a *App) admitComputerPairingWindow(book *pairbootstrap.Book, windowID, cho
 	}
 	state.window = admittedPairingWindow{id: windowID, serial: state.serial, book: book, choice: choice, terms: state.termsLocked(choice)}
 	return address, state.advertise, nil
+}
+
+// publishedPairingAddress is the address a window opened on choice shows
+// under the current publication, or why choice has none, read as an
+// admission reads it.
+func (a *App) publishedPairingAddress(choice string) (string, error) {
+	state := &a.computerRoutesPublished
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.pairing.on(choice)
+}
+
+// mintingComputerPairingWindow records, before windowID's invitation is
+// minted for route, that the window depends on route's terms from now on, so
+// a publication that changes them retires it. A window this publication no
+// longer records was retired, and mints nothing.
+func (a *App) mintingComputerPairingWindow(windowID, route string) error {
+	state := &a.computerRoutesPublished
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if windowID == "" || state.window.id != windowID {
+		return pairbootstrap.ErrClosed
+	}
+	state.window.minted, state.window.mintedTerms = route, state.termsLocked(route)
+	return nil
 }
 
 // GetComputerRoutes refreshes this computer's public addresses over an already

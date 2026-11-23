@@ -139,26 +139,33 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 	if err := a.closeComputerPairingWindow(previous); err != nil {
 		return ComputerPairingWindow{}, err
 	}
-	if !conn.Bound(computerPairingCleanupKey) {
-		return ComputerPairingWindow{}, transport.ErrConnectionClosing
-	}
-	if _, err := a.publishComputerRoutes().pairing.on(networkChoice); err != nil {
-		return ComputerPairingWindow{}, err
-	}
+	// The publication, and the close of any window it retires, run first;
+	// the last reads before prepare are the current terms and the
+	// connection, with nothing between them and prepare that waits.
+	a.publishComputerRoutes()
 	if book.Stopped() {
 		return ComputerPairingWindow{}, pairbootstrap.ErrStopped
+	}
+	if _, err := a.publishedPairingAddress(networkChoice); err != nil {
+		return ComputerPairingWindow{}, err
+	}
+	if !conn.Bound(computerPairingCleanupKey) {
+		return ComputerPairingWindow{}, transport.ErrConnectionClosing
 	}
 	if prepare != nil {
 		if err := prepare(); err != nil {
 			return ComputerPairingWindow{}, err
 		}
 	}
-	var address string
+	var address, windowID string
 	var advertise bool
 	view, err := book.Open(func(route string) (pairbootstrap.Invitation, error) {
 		// route is the listener the admitted reveal arrived on, which the
 		// HTTP adapter names. Both enabled routes enroll the same host; no
-		// pin crosses listeners.
+		// pin crosses listeners. The window depends on that route from here.
+		if err := a.mintingComputerPairingWindow(windowID, route); err != nil {
+			return pairbootstrap.Invitation{}, err
+		}
 		invite, err := a.mintDevicePairingPurpose("desktop", access, route, purpose, true)
 		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
 	}, func(w pairbootstrap.Snapshot) error {
@@ -176,6 +183,9 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 		if address, advertise, err = a.admitComputerPairingWindow(book, w.WindowID, networkChoice); err != nil {
 			return err
 		}
+		// The mint reads windowID only once the book installs this window,
+		// after this returns.
+		windowID = w.WindowID
 		state.windowID, state.owner, state.discoveryError = w.WindowID, conn, ""
 		state.advertising = nil
 		if advertise {
@@ -321,18 +331,19 @@ func (a *App) stopComputerPairing() {
 }
 
 // cancelComputerPairingLink is the book's cancel callback, one cancellation
-// statement per call. A link already settled is durable. Every failure is
-// logged here, since the book's expiry has no caller to answer.
+// statement per call. The store's refusal of a link already settled (or
+// unknown) is durable, and is what an owner's cancel answers. Every failure
+// is logged here, since the book's expiry has no caller to answer.
 func (a *App) cancelComputerPairingLink(id string) error {
 	state, err := a.accessState()
 	if err == nil {
 		_, err = state.sessions.CancelPairing(id)
 	}
 	if errors.Is(err, identity.ErrPairingRefused) {
-		return nil
+		return pairbootstrap.Settled(err)
 	}
 	if err != nil {
-		log.Printf("nearby pairing: cancel unfinished invitation %s: %v", id, err)
+		log.Printf("pairing: cancel invitation %s: %v", id, err)
 	}
 	return err
 }

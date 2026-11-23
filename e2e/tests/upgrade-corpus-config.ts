@@ -198,6 +198,12 @@ const incompleteOwnAdmission = (x: string) => `${x}.purpose <> '' AND ${x}.confi
   AND ${x}.session_id NOT IN (SELECT session_id FROM mig.own_device_sessions)
   AND ${x}.session_id IN (SELECT id FROM mig.sessions WHERE revoked_at IS NULL)`;
 /**
+ * The device `device` held an unrevoked session the boot ended and holds
+ * none after it: a device store.endSessionsTx finds unreachable.
+ */
+const deviceLostItsLastSession = (device: string) => `EXISTS (SELECT 1 FROM mig.sessions k WHERE k.device_id = ${device} AND k.revoked_at IS NULL)
+  AND NOT EXISTS (SELECT 1 FROM main.sessions k WHERE k.device_id = ${device} AND k.revoked_at IS NULL)`;
+/**
  * Whether `json` is a JSON array, and the array or an empty one, so
  * json_each never reads a corrupt value. CASE keeps the JSON functions
  * from running on one: SQLite may evaluate both sides of an AND.
@@ -517,6 +523,31 @@ export const recoveryRules: RecoveryRule[] = [
     rows: `s.activated_at IS NULL AND s.revoked_at IS NULL
       AND s.id IN (SELECT l.session_id FROM mig.pairing_links l WHERE l.session_id <> '')`,
     columns: ['revoked_at'], to: 'b.revoked_at IS NOT NULL',
+  },
+  // A device the session ends above leave with no unrevoked session is
+  // unreachable: the end (store.endSessionsTx) releases its spawn links and
+  // forgets its spawn changes in the same transaction.
+  {
+    name: 'ended-device-spawn-links', writer: 'store.endSessionsTx (releaseSpawnLinksTx), for the session ends above',
+    table: 'thread_request_receipts', rows: deviceLostItsLastSession('s.owner_device_id'),
+    columns: ['spawn_link', 'track_spawn', 'updated_at', 'run_open', 'run_tool_calls', 'run_tokens', 'run_turn_ms'],
+    to: 'b.spawn_link = 0 AND b.track_spawn = 0',
+  },
+  {
+    name: 'ended-device-nudges', writer: 'store.endSessionsTx, for the session ends above', table: 'thread_receipt_nudges',
+    rows: `EXISTS (SELECT 1 FROM mig.thread_request_receipts r WHERE r.token = s.link_token AND ${deviceLostItsLastSession('r.owner_device_id')})`,
+    removes: true,
+  },
+  {
+    name: 'ended-device-spawn-revisions', writer: 'store.endSessionsTx, for the session ends above', table: 'spawn_revisions',
+    rows: deviceLostItsLastSession('s.owner_device_id'), removes: true,
+  },
+  {
+    // The released link's thread goes standalone (trg_thread_placement_link_gone).
+    name: 'ended-device-placements', writer: 'store.endSessionsTx (releaseSpawnLinksTx), for the session ends above', table: 'threads',
+    rows: `s.placement = 'owned' AND EXISTS (SELECT 1 FROM mig.thread_request_receipts r
+      WHERE r.target_thread_id = s.id AND r.spawn_link = 1 AND ${deviceLostItsLastSession('r.owner_device_id')})`,
+    columns: ['placement'], to: "b.placement = 'standalone'",
   },
   {
     name: 'expired-sessions', writer: 'identity.(*Sessions).PruneCredentials (store.DeleteSessionsExpiredBefore)', table: 'sessions',
