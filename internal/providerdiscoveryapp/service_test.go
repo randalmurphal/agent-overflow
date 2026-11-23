@@ -191,6 +191,38 @@ func TestCodexProbePublishesAdoptedSnapshotOnlyOnMiss(t *testing.T) {
 	}
 }
 
+// The identity probe hands its reading's resets to the runner, which records
+// them on the account it adopts (provideraccountapp.ProbeRequest).
+func TestCodexProbeHandsItsResetsToTheAdoptingRunner(t *testing.T) {
+	credits := &codex.ResetCredits{AvailableCount: 1}
+	var handed *codex.ResetCredits
+	var read bool
+	service := New(Deps{
+		Reaper:         procutiltest.Reaper(),
+		ProviderBinary: func(string) string { return "/mock/codex" },
+		Selection:      func(string) AccountSelection { return AccountSelection{} },
+		ProbeKey:       testProbeKey,
+		RunAccountProbe: func(request AccountProbeRequest) (provider.AccountInfo, error) {
+			info, err := request.Probe(context.Background())
+			if request.ResetCredits != nil {
+				handed, read = request.ResetCredits()
+			}
+			return info, err
+		},
+		CodexProbe: codexProbeFor(codex.ProbeConfig{Reaper: procutiltest.Reaper()}),
+		ProbeCodex: func(_ context.Context, cfg codex.ProbeConfig) (provider.AccountInfo, error) {
+			cfg.OnResetCredits(credits)
+			return provider.AccountInfo{Email: "person@example.com"}, nil
+		},
+	}, testCaches())
+	if _, err := service.ProbeCodexAccount(); err != nil {
+		t.Fatal(err)
+	}
+	if !read || handed != credits {
+		t.Fatalf("runner got resets %+v (read=%v), want the probe's", handed, read)
+	}
+}
+
 func TestCustomEnvChangeInvalidatesOldAndNewIdentities(t *testing.T) {
 	settingsService := settings.NewService(t.TempDir())
 	caches := testCaches()

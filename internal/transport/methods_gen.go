@@ -175,6 +175,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "FinishLiveDictation", ID: 3774452621, Scope: "threads:operate", Route: "selected"},                                               // main.App.FinishLiveDictation
 	{Name: "FinishPasskeyRegistration", ID: 1601396603, Scope: "access:admin", Route: "home", Remote: true},                                  // main.App.FinishPasskeyRegistration
 	{Name: "FinishPasskeyStepUp", ID: 1569276637, Scope: "session", Route: "home"},                                                           // main.App.FinishPasskeyStepUp
+	{Name: "FinishProviderAccountReset", ID: 3520335973, Scope: "access:admin", Route: "home", Budget: 1 * time.Minute},                      // main.App.FinishProviderAccountReset
 	{Name: "ForgetAccessDevice", ID: 516065248, Scope: "access:admin", Route: "home"},                                                        // main.App.ForgetAccessDevice
 	{Name: "ForgetTailnetNode", ID: 767560289, Scope: "host", Route: "home"},                                                                 // main.App.ForgetTailnetNode
 	{Name: "ForkSideChat", ID: 2246569884, Scope: "threads:operate", Route: "thread", Budget: 2 * time.Minute},                               // main.App.ForkSideChat
@@ -535,6 +536,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetWindowBackgroundColor", ID: 3648660014, Scope: "host", Route: "home"},                                                         // main.App.SetWindowBackgroundColor
 	{Name: "SetWorkspaceMcpServerEnabled", ID: 2181574220, Scope: "settings:write", Route: "selected", StepUp: true},                         // main.App.SetWorkspaceMcpServerEnabled
 	{Name: "ShutdownBackend", ID: 2115861089, Scope: "host", Route: "home"},                                                                  // main.App.ShutdownBackend
+	{Name: "SpendProviderAccountReset", ID: 1201673152, Scope: "access:admin", Route: "home", Budget: 1 * time.Minute},                       // main.App.SpendProviderAccountReset
 	{Name: "StartCodexReview", ID: 1913732562, Scope: "threads:operate", Route: "thread"},                                                    // main.App.StartCodexReview
 	{Name: "StartNextAssistantThread", ID: 4173453878, Scope: "threads:autonomy", Route: "thread"},                                           // main.App.StartNextAssistantThread
 	{Name: "StartProviderLogin", ID: 1484798083, Scope: "access:admin", Route: "home"},                                                       // main.App.StartProviderLogin

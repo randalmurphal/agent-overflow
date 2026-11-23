@@ -432,6 +432,12 @@ export function setupEventListeners(): () => void {
     applyProviderAccountsChanged(backend);
     applyDictationSourcesChanged(backend);
   });
+  // provider:account_listing — only what a card shows moved (its usage
+  // resets, an unconfirmed reset), not the set: the listing is read again and
+  // nothing that follows the set is dropped.
+  const cancelProviderAccountListing = wailsEventOn('provider:account_listing', (_evt, origin) => {
+    applyProviderAccountsChanged(backendKeyForOrigin(origin.backendId));
+  });
   // review:comments-changed — one inline review comment SET moved: a plan's
   // (keyed by plan item) or a diff review's (keyed by scope + source key).
   const cancelReviewComments = wailsEventOn<ReviewCommentsChangedEvent>(
@@ -873,6 +879,7 @@ export function setupEventListeners(): () => void {
     cancelKeybindingsUpdated();
     cancelNewThreadDefaults();
     cancelProviderAccountsChanged();
+    cancelProviderAccountListing();
     cancelReviewComments();
     cancelSessionDied();
     cancelTodoUpdate();

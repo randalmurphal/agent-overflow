@@ -13,6 +13,8 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/mcpapp"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/providerupdate"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
@@ -70,6 +72,9 @@ var methodServerBounds = map[string]time.Duration{
 	"GetProviderUpdateNotes": 2 * providerupdate.NotesTimeout,
 	// A by-tag resolve or another check holds the updater for one check.
 	"CheckForUpdate": 2 * appupdate.UpdaterCheckTimeout,
+	// The spend and the reading after it, then the credential commit.
+	"SpendProviderAccountReset":  provideraccountapp.ResetSendCutoff + codex.ResetSettleTimeout + 5*time.Second,
+	"FinishProviderAccountReset": provideraccountapp.ResetSendCutoff + codex.ResetSettleTimeout + 5*time.Second,
 	// `gh pr create` or `glab mr create`, which pushes and so runs the
 	// pre-push hook, then the open-PR lookup.
 	"GitCreatePR": hooked + transport.DefaultMethodBudget,

@@ -34,6 +34,10 @@ type AccountProbeRequest struct {
 	// AfterAdopt runs once the runner has accepted and cached the identity,
 	// before it emits `provider:account` for it.
 	AfterAdopt func(provideraccounts.Account)
+	// ResetCredits, for a Codex probe, returns the resets the probe's
+	// rate-limit answer named and whether that answer arrived; the runner
+	// records them on the account it adopts (provideraccountapp.ProbeRequest).
+	ResetCredits func() (*codex.ResetCredits, bool)
 }
 
 // Deps names the root capabilities used by provider discovery. Provider-

@@ -691,6 +691,9 @@ func (h *Harness) HarnessReset() (err error) {
 	if err := h.resetProviderUpdates(); err != nil {
 		return err
 	}
+	if err := h.resetCodexResetCredits(); err != nil {
+		return err
+	}
 	if replayer != nil {
 		replayer.Stop()
 	}

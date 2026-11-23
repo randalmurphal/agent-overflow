@@ -52,6 +52,10 @@ type Account struct {
 	RefreshTokenExpiresAt int64                        `json:"refreshTokenExpiresAt,omitempty"`
 	AddedAt               int64                        `json:"addedAt"`
 	RateLimits            *provider.RateLimitsSnapshot `json:"rateLimits,omitempty"`
+	// UsageResets is the resets the account's last reading named, for the
+	// card to offer; nil before any reading spoke about them. SetUsageResets
+	// is its only writer, and every other write of the row carries it over.
+	UsageResets *UsageResets `json:"usageResets,omitempty"`
 	// OrgNameReported is write intent, never stored state: the write carries
 	// a provider answer whose blank OrgName means "no organization name"
 	// (provider.AccountInfo.OrgNameReported), so it clears the saved one
@@ -131,6 +135,10 @@ type ProviderState struct {
 	// selectAccount is the one writer of the selection and keeps it true to
 	// that.
 	AutoSelected bool `json:"autoSelected,omitempty"`
+	// PendingResets holds each account's unsettled usage-reset spend
+	// (PendingReset says what ends one). Backend state: a key is no business
+	// of a client's. Remove forgets it.
+	PendingResets map[string]PendingReset `json:"pendingResets,omitempty"`
 }
 
 // selectAccount makes accountID the selection and records whether
@@ -325,9 +333,14 @@ func (s *Store) upsertAndActivate(
 		if account.RateLimits == nil {
 			account.RateLimits = existing.RateLimits
 		}
+		account.UsageResets = existing.UsageResets
 		account.RefreshTokenExpiresAt = mergeRefreshTokenExpiry(account, existing)
-	} else if account.AddedAt == 0 {
-		account.AddedAt = now
+	} else {
+		// SetUsageResets is the only writer of a row's list.
+		account.UsageResets = nil
+		if account.AddedAt == 0 {
+			account.AddedAt = now
+		}
 	}
 	for i := range state.Accounts {
 		if i != index && conflictsWithSaved(account, state.Accounts[i]) {
@@ -395,6 +408,8 @@ func (s *Store) Add(account Account) (Account, error) {
 	if account.AddedAt == 0 {
 		account.AddedAt = time.Now().UnixMilli()
 	}
+	// SetUsageResets is the only writer of a row's list.
+	account.UsageResets = nil
 	state.Accounts = append(state.Accounts, cloneAccount(account))
 	s.state.Providers[account.Provider] = state
 	if err := s.saveLocked(); err != nil {
@@ -575,6 +590,9 @@ func (s *Store) Remove(providerName, accountID, replacementAccountID string) err
 	if len(state.AutoSwitchOff) == 0 {
 		state.AutoSwitchOff = nil
 	}
+	// And the unsettled reset spend: its key belongs to this account's
+	// resets, which an account added later does not hold.
+	delete(state.PendingResets, accountID)
 	s.state.Providers[providerName] = state
 	if err := s.saveLocked(); err != nil {
 		restoreProviderState(s.state.Providers, providerName, previous, existed)
@@ -622,6 +640,7 @@ func (s *Store) UpdateMetadata(account Account) (Account, error) {
 	}
 	account.AddedAt = existing.AddedAt
 	account.RateLimits = existing.RateLimits
+	account.UsageResets = existing.UsageResets
 	account.RefreshTokenExpiresAt = mergeRefreshTokenExpiry(account, existing)
 	account.OrgNameReported = false
 	if account == existing {
@@ -916,6 +935,7 @@ func cloneProviderState(state ProviderState) ProviderState {
 	state.Accounts = cloneAccounts(state.Accounts)
 	state.ClaudeCatalogs = cloneClaudeCatalogs(state.ClaudeCatalogs)
 	state.AutoSwitchOff = maps.Clone(state.AutoSwitchOff)
+	state.PendingResets = clonePendingResets(state.PendingResets)
 	return state
 }
 
@@ -949,6 +969,7 @@ func cloneAccount(account Account) Account {
 		copy := cloneSnapshot(*account.RateLimits)
 		account.RateLimits = &copy
 	}
+	account.UsageResets = cloneUsageResets(account.UsageResets)
 	return account
 }
 
