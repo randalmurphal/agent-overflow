@@ -7,9 +7,10 @@
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 
-function waitingScenario(provider: 'claude' | 'codex', startupDelayMs = 0) {
+/** With `startupGate`, the session the replacement starts holds before its first frame until the gate is advanced. */
+function waitingScenario(provider: 'claude' | 'codex', startupGate?: string) {
   return {
-    version: 1, name: `revert-presentation-${provider}`, provider, startupDelayMs,
+    version: 1, name: `revert-presentation-${provider}`, provider, ...(startupGate ? { startupGate } : {}),
     turns: [{ steps: [
       ...(provider === 'codex' ? [{ emit: { lines: [JSON.stringify({
         jsonrpc: '2.0', method: 'turn/started',
@@ -46,7 +47,7 @@ for (const provider of ['claude', 'codex'] as const) {
       });
       server.onMessage(message => socket.send(message));
     });
-    await harness.rpc('HarnessSetScenario' , { scenario: waitingScenario(provider, 2000) });
+    await harness.rpc('HarnessSetScenario' , { scenario: waitingScenario(provider, 'held-start') });
     const threadId = await seed(harness, provider);
     await harness.open(page);
     await page.getByTestId('thread-row-title').filter({ hasText: `Revert ${provider}` }).click();
@@ -77,6 +78,11 @@ for (const provider of ['claude', 'codex'] as const) {
       requestAnimationFrame(sample);
     });
     release!();
+    // The session the replacement starts holds before its first frame, so
+    // the sampled frames span a start still under way; then it starts.
+    const held = await harness.waitForEvent<{ mockId: string; report: { kind: string; detail?: string } }>(
+      'harness:mock', (ev) => ev.report.kind === 'waiting_signal' && ev.report.detail === 'held-start');
+    await harness.rpc('HarnessMockCommand', held.mockId, { type: 'advance', name: 'held-start' });
     await expect(page.getByText('Replacement question', { exact: true })).toBeVisible();
     await expect(editor).toHaveCount(0);
     await expect(page.getByText('Later answer', { exact: true })).toHaveCount(0);

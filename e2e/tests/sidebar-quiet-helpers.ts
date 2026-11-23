@@ -14,23 +14,35 @@ export interface ProjectsQuiet {
 }
 
 /**
- * Sample the Projects section every 250ms for `ms`. The pointer moves off
- * the sidebar first and the hover transitions that starts are waited out,
- * so what remains is what the page runs on its own.
+ * Sample the Projects section on every frame while `through` runs, and
+ * return what was seen once it settles. `through` is the barrier that ends
+ * the watch: an event the page shows after the moment a status line, an
+ * animation or a dimmed row would have appeared. The pointer moves off the
+ * sidebar first and the hover transitions that starts are waited out, so
+ * what remains is what the page runs on its own.
  */
-export async function watchProjectsQuiet(page: Page, ms: number): Promise<ProjectsQuiet> {
+export async function watchProjectsQuiet(page: Page, through: () => Promise<unknown>): Promise<ProjectsQuiet> {
   const viewport = page.viewportSize();
   if (viewport === null) throw new Error('the page has no viewport');
   await page.mouse.move(viewport.width - 2, viewport.height - 2);
   await page.evaluate(() => Promise.all(
     document.getAnimations().filter((a) => a instanceof CSSTransition).map((a) => a.finished.catch(() => undefined)),
   ));
-  return page.evaluate(async (duration) => {
-    const seen = { samples: 0, statusLines: [] as string[], animations: [] as string[], dimmed: 0 };
-    const end = performance.now() + duration;
-    while (performance.now() < end) {
+  await page.evaluate(() => {
+    const probe = {
+      seen: { samples: 0, statusLines: [] as string[], animations: [] as string[], dimmed: 0 },
+      stopped: false,
+      error: '',
+    };
+    (window as unknown as { __projectsQuiet: typeof probe }).__projectsQuiet = probe;
+    const sample = () => {
+      if (probe.stopped) return;
       const section = document.querySelector('[data-testid="sidebar-projects-section"]');
-      if (section === null) throw new Error('the Projects section is not mounted');
+      if (section === null) {
+        probe.error = 'the Projects section is not mounted';
+        return;
+      }
+      const seen = probe.seen;
       seen.samples++;
       for (const line of section.querySelectorAll('[data-testid="sidebar-catalog-status"] > *')) {
         const text = `${line.getAttribute('data-backend')}: ${line.textContent?.trim()}`;
@@ -45,10 +57,25 @@ export async function watchProjectsQuiet(page: Page, ms: number): Promise<Projec
         if (!seen.animations.includes(text)) seen.animations.push(text);
       }
       seen.dimmed = Math.max(seen.dimmed, section.querySelectorAll('[data-machine-unreachable="true"]').length);
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-    return seen;
-  }, ms);
+      requestAnimationFrame(sample);
+    };
+    sample();
+  });
+  const stop = () => page.evaluate(() => {
+    const p = (window as unknown as { __projectsQuiet: { seen: ProjectsQuiet; stopped: boolean; error: string } }).__projectsQuiet;
+    p.stopped = true;
+    return p;
+  });
+  try {
+    await through();
+  } catch (error) {
+    // The barrier's failure is the result; a page it took down cannot stop.
+    await stop().catch(() => undefined);
+    throw error;
+  }
+  const probe = await stop();
+  if (probe.error !== '') throw new Error(probe.error);
+  return probe.seen;
 }
 
 /**

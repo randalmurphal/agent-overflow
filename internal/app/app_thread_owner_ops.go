@@ -484,13 +484,13 @@ const ownerOpInlineFanOut = 8
 
 // ownerOpReach bounds a door's attempts at what it owes, together: the
 // wait a person sees before the door reports. A pane's listing of a paired
-// computer has the same bound (threadAgentPeerListTimeout); a test may set
+// computer has the same bound (threadAgentPeerBound.list); a test may set
 // another (ownerOpReachOverride).
 func (a *App) ownerOpReach() time.Duration {
 	if a.ownerOpReachOverride > 0 {
 		return a.ownerOpReachOverride
 	}
-	return threadAgentPeerListTimeout
+	return a.threadAgentPeers.bound.list()
 }
 
 // ownerOpTargets reads the spawns ops are owed for, for a report to name

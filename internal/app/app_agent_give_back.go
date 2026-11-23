@@ -101,7 +101,7 @@ func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
 			gaveUp := false
 			if m.ended {
 				paced = func(attempts int64) store.CompletionReturn {
-					back := completionRedelivery(time.Now(), attempts)
+					back := a.completionRedelivery(time.Now(), attempts)
 					gaveUp = back.Issue != ""
 					return back
 				}
@@ -199,11 +199,11 @@ func (a *App) giveBackUnconfirmedAtBoot() {
 // attempts earlier ones, on the thread request wake retry's ladder
 // (retryUndeliveredThreadWakes): each return books the next delivery
 // further out, and the one after the last attempt gives it up.
-func completionRedelivery(now time.Time, attempts int64) store.CompletionReturn {
+func (a *App) completionRedelivery(now time.Time, attempts int64) store.CompletionReturn {
 	if attempts >= threadWakeRetryAttempts {
 		return store.CompletionReturn{Issue: fmt.Sprintf(
 			"Not delivered: the conversation's session ended %d times before the agent took this completion in.", attempts+1)}
 	}
 	attempts++
-	return store.CompletionReturn{NextCheck: now.Add(threadWakeRetryDelay(attempts)).UnixMilli(), Attempts: attempts}
+	return store.CompletionReturn{NextCheck: now.Add(a.threadWakeRetryDelay(attempts)).UnixMilli(), Attempts: attempts}
 }

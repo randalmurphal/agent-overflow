@@ -158,7 +158,16 @@ test('cancels and joins monitors when an action fails', async ({ page }) => {
     monitors: [{ id: 'status', target: { testId: 'status' }, durationMs: 1_000, intervalMs: 10 }],
   })).rejects.toThrow('exactly one');
   const last = runner.ui.lastObservations();
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // A monitor of the same cadence, run after the failure, is the barrier:
+  // once it has observed three times, a monitor the failed run left going
+  // would have observed again too.
+  const control = new FunctionalFlowRunner(ownPage(page));
+  await control.run({
+    v: 1,
+    id: 'cancel-monitor-control',
+    actions: [],
+    monitors: [{ id: 'status', target: { testId: 'status' }, durationMs: 30, intervalMs: 10 }],
+  });
   expect(runner.ui.lastObservations()).toEqual(last);
 });
 
@@ -222,13 +231,8 @@ test('drives pointer, wheel and viewport input without page evaluation', async (
 
 test('selects a registered monitor and persists owned heartbeat evidence', async ({ harness, page }) => {
   await harness.open(page);
-  const deadline = Date.now() + 10_000;
   let pageID = '';
-  while (Date.now() < deadline && pageID === '') {
-    pageID = new URL(page.url()).searchParams.get('pageId')?.trim() ?? '';
-    if (pageID === '') await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  expect(pageID).not.toBe('');
+  await expect.poll(() => (pageID = new URL(page.url()).searchParams.get('pageId')?.trim() ?? ''), { timeout: 10_000, intervals: [25] }).not.toBe('');
   const runner = new FunctionalFlowRunner(ownPage(page), [], {
     runId: 'flow-owned',
     compatibilityLeg: 'functional',

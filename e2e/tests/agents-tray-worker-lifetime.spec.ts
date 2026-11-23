@@ -3,11 +3,11 @@
 // workers"). The body is agents-tray-worker-lifetime-helpers.ts.
 import { test } from './fixtures.js';
 import type { ProviderName } from './thread-tools-helpers.js';
-import { runWorkerLifetime } from './agents-tray-worker-lifetime-helpers.js';
+import { runWorkerLifetimeOnShortWindows } from './agents-tray-worker-lifetime-helpers.js';
 
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
-  test(`${provider}: a worker that replies and keeps working stays open until it rests`, async ({ harness, page }) => {
+  test(`${provider}: a worker that replies and keeps working stays open until it rests`, async ({ page }) => {
     test.setTimeout(180_000);
-    await runWorkerLifetime(harness, page, provider, 'desktop');
+    await runWorkerLifetimeOnShortWindows(page, provider, 'desktop');
   });
 }

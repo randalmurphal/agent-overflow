@@ -64,6 +64,10 @@ type Bootstrap struct {
 	// CDP consumers require it in addition to the origin, so another page on
 	// the same debugger endpoint cannot be mistaken for this instance.
 	PageMarker string `json:"pageMarker,omitempty"`
+	// HarnessTiming is the harness boot's frontend timer overrides
+	// (Config.FrontendTiming), in milliseconds by name. Served only with
+	// Harness; frontend/src/lib/transport/harnessMode.ts reads it.
+	HarnessTiming map[string]int64 `json:"harnessTiming,omitempty"`
 	// BackendID and ReplicaGeneration identify the backend's history
 	// store for the client-side thread replica
 	// (docs/architecture/thread-replica-sync.md §3.3): the first keys the
@@ -346,6 +350,11 @@ type Config struct {
 	// Test knob, like KeepaliveInterval: only a harness boot sets it
 	// (diagenv.HarnessTiming).
 	WatermarkInterval time.Duration
+	// FrontendTiming is the frontend timer overrides a harness boot serves
+	// in its bootstrap manifest (Bootstrap.HarnessTiming), in milliseconds
+	// by diagenv.HarnessTiming name. New refuses it without Harness, so no
+	// other boot can put a page into shortened timing.
+	FrontendTiming map[string]int64
 	// CoalesceWindow overrides DefaultCoalesceWindow. Zero defaults to it.
 	// Test knob, like KeepaliveInterval.
 	CoalesceWindow time.Duration
@@ -669,6 +678,14 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.Port < 0 || cfg.Port > 65535 {
 		return nil, fmt.Errorf("transport: Config.Port %d out of range", cfg.Port)
+	}
+	if len(cfg.FrontendTiming) > 0 && !cfg.Harness {
+		return nil, fmt.Errorf("transport: Config.FrontendTiming is served only by a harness boot (Config.Harness)")
+	}
+	for name, ms := range cfg.FrontendTiming {
+		if ms <= 0 {
+			return nil, fmt.Errorf("transport: Config.FrontendTiming %s needs a positive duration, got %dms", name, ms)
+		}
 	}
 	if cfg.HTTPReadHeaderTimeout == 0 {
 		cfg.HTTPReadHeaderTimeout = 10 * time.Second
@@ -1981,6 +1998,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		Harness:           s.cfg.Harness,
 		HostWindow:        s.hostWindow(r, pageAuthed, windowAuthed),
 		PageMarker:        s.cfg.PageMarker,
+		HarnessTiming:     s.cfg.FrontendTiming,
 		BackendID:         backendID,
 		BackendName:       s.backendName(),
 		ReplicaGeneration: replicaGeneration,

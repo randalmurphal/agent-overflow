@@ -37,12 +37,12 @@ func TestTheLauncherStopsTheSuiteOnSIGTERM(t *testing.T) {
 		t.Fatal(err)
 	}
 	pids := filepath.Join(dir, "suite.pids")
-	// pnpm runs both the typecheck and the suite; the fake suite leaves a
+	// pnpm runs the typecheck, the wait rules and the suite; the fake suite leaves a
 	// descendant behind it and waits.
 	bin := filepath.Join(dir, "bin")
 	mockexec.WriteIn(t, bin, "pnpm", `#!/bin/sh
 case "$*" in
-  *tsc*) exit 0 ;;
+  *tsc*|*check-waits*) exit 0 ;;
 esac
 sleep 300 &
 echo "$$ $!" > "$AO_TEST_SUITE_PIDS"

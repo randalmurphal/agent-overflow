@@ -191,8 +191,12 @@ const FACTS_WAITING = 'Tailing the build log.';
 const FACTS_ANSWER = 'The build is green.';
 const FACTS_SHELL = /tail -f build\.log|tail the build log/;
 const FACTS_READ = /cat build\.log/;
-/** How long a test leaves a worker between turns to see its runtime stand still. */
-const IDLE_MS = 2_500;
+/**
+ * How far the page clock moves on with a worker between turns to see its
+ * runtime stand still: well past a tick of its elapsed time, short of the
+ * thirty seconds the socket's staleness check would read as a dead link.
+ */
+const IDLE_MS = 20_000;
 
 /** A row's runtime as AgentTrayRow writes it (formatElapsed). */
 function ranFor(ms: number): string {
@@ -290,11 +294,15 @@ async function expectRuntimeRunning(row: Locator): Promise<void> {
   await expect(elapsed).not.toHaveText(before ?? '', { timeout: 5_000 });
 }
 
-/** The row's runtime stands still while its worker is between turns. */
+/**
+ * The row's runtime stands still while its worker is between turns:
+ * IDLE_MS of the page clock moves nothing. The page clock must have been
+ * installed before the page opened.
+ */
 async function expectRuntimeIdle(page: Page, row: Locator): Promise<void> {
   const elapsed = row.getByTestId('agent-tray-row-elapsed');
   const before = await elapsed.textContent();
-  await page.waitForTimeout(IDLE_MS);
+  await page.clock.runFor(IDLE_MS);
   await expect(elapsed).toHaveText(before ?? '');
 }
 
@@ -345,7 +353,9 @@ export async function runHeldWorkerFacts(harness: HarnessApp, page: Page, provid
   const start = await awaitGate(harness, 'facts-start', workerP.path);
 
   // The rail is mounted before the worker does anything: every count below
-  // reaches it as a frame of the open row.
+  // reaches it as a frame of the open row. The page clock runs as the real
+  // one does until expectRuntimeIdle moves it on.
+  await page.clock.install();
   await harness.open(page);
   await openAgents(page, LEAD);
   const row = openAgentRow(page, token);
@@ -418,12 +428,13 @@ export async function runHeldWorkerFacts(harness: HarnessApp, page: Page, provid
   await expect(past.getByTestId('agent-tray-row-tools')).toHaveText('3 tools');
   await expect(past.getByTestId('agent-tray-row-tokens')).toHaveText('3.0k tokens');
   await expect(past.getByTestId('agent-tray-row-activity')).toHaveCount(0);
-  // Its runtime is its turns' time, the time between them left out.
+  // Its runtime is its turns' time; that the time between them is left out
+  // is internal/app TestAWorkerRowsRuntimeIsItsTurnsTime.
   const settled = await listedPastRow(harness, lead, token);
   expect(settled).toMatchObject({ toolCalls: 3, tokens: 3000 });
   expect(settled!.turnOpen ?? false).toBe(false);
   expect(settled!.runtimeMs ?? 0).toBeGreaterThan(0);
-  expect(settled!.runtimeMs!, 'the time between its turns is not runtime').toBeLessThan(span - IDLE_MS);
+  expect(settled!.runtimeMs!).toBeLessThan(span);
   await expect(past.getByTestId('agent-tray-row-elapsed')).toHaveAttribute('title', ranFor(settled!.runtimeMs!));
 }
 

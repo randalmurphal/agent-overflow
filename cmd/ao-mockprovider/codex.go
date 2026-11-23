@@ -207,8 +207,8 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 	switch method {
 	case "initialize":
 		// The handshake response is what proves the app-server is up, so
-		// it is where a scenario's startupDelayMs is spent.
-		a.e.awaitStartupDelay()
+		// it is where a scenario's startupGate holds.
+		a.e.awaitStartup()
 		a.respond(id, method, a.e.currentVars())
 	case "thread/start":
 		// Codex carries its permission configuration in the thread/start

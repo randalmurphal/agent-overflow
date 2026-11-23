@@ -153,6 +153,9 @@ test.describe.serial('remote device lifecycle', () => {
 
     phoneContext = await browser.newContext();
     phone = await phoneContext.newPage();
+    // The phone's clock runs as the real one does; the ladder's silence
+    // below is shown by moving it on.
+    await phone.clock.install();
     surfaced = await instrument(phone);
   });
 
@@ -280,8 +283,9 @@ test.describe.serial('remote device lifecycle', () => {
     const publishedByThen = surfaced.transportStatuses.length;
 
     // Stopped, not slow. A ladder still running republishes within
-    // RECONNECT_INITIAL_MS; nothing is published across this window.
-    await phone.waitForTimeout(LADDER_SILENCE_MS);
+    // RECONNECT_INITIAL_MS; nothing is published across this window of the
+    // page clock, whose timers it runs.
+    await phone.clock.runFor(LADDER_SILENCE_MS);
     expect(
       surfaced.transportStatuses.slice(publishedByThen),
       'a latched client must not re-enter the reconnect ladder',

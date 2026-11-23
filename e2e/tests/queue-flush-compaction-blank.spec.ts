@@ -240,6 +240,14 @@ async function timelineSettled(page: import('@playwright/test').Page, frames: nu
   }), { frames, capMs });
 }
 
+// A blank that persists into the settled state: the rows and scroll held
+// still for timelineSettled's frames, so the last frame is what stays on
+// screen.
+function endsBlank(samples: FrameSample[]): boolean {
+  const last = samples.at(-1);
+  return !last || last.visibleNodes === 0 || last.hidden;
+}
+
 function longestBlankRun(samples: FrameSample[]): { ms: number; at: FrameSample | null } {
   let best = 0;
   let bestAt: FrameSample | null = null;
@@ -320,8 +328,6 @@ for (const order of ['send-during-compaction', 'send-after-boundary'] as const) 
     try {
       await expect(page.getByText('Confirming two facts before writing the plan.', { exact: true })).toBeVisible({ timeout: 20_000 });
       await timelineSettled(page, 12);
-      // A blank that persists into the settled state runs past the limit.
-      await page.waitForTimeout(BLANK_LIMIT_MS + 200);
     } finally {
       samples = await collectSamples(page);
       const blank = longestBlankRun(samples);
@@ -330,6 +336,7 @@ for (const order of ['send-during-compaction', 'send-after-boundary'] as const) 
     await page.screenshot({ path: `test-results/flush-compact-${order}.png`, fullPage: false });
     const blank = longestBlankRun(samples);
     expect(blank.ms, `timeline painted no rows for ${Math.round(blank.ms)}ms starting at ${JSON.stringify(blank.at)}`).toBeLessThan(BLANK_LIMIT_MS);
+    expect(endsBlank(samples), `the settled timeline paints no rows: ${JSON.stringify(samples.at(-1))}`).toBe(false);
     await expect(page.getByText(QUEUED, { exact: true })).toHaveCount(1);
   });
 }
@@ -339,10 +346,13 @@ for (const order of ['send-during-compaction', 'send-after-boundary'] as const) 
 // animation frame. A message queued behind a blocking tool, typed in the
 // composer or replied by another thread, is consumed into the running turn
 // at a later tool boundary. The rows that arrive with it reach the
-// virtualizer while other frame owners still read its geometry.
-const MID_LOOP_BLOCKS = 110;
+// virtualizer while other frame owners still read its geometry. Twenty
+// blocks and a two-second compaction are enough trail: with 40e240793's
+// virtualizer fix reverted the composer variant paints no rows for about
+// thirty seconds at this size, as it does at five times it.
+const MID_LOOP_BLOCKS = 20;
 const MID_LOOP_PACE_MS = 60;
-const MID_LOOP_SILENCE_MS = 8_000;
+const MID_LOOP_SILENCE_MS = 2_000;
 const MID_LOOP_QUEUED = 'Composer queued: also check the unpaired case.';
 
 // A whole (unstreamed) assistant block: the activity is not about streamed
@@ -431,8 +441,8 @@ function midLoopScenario(name: string, source: MidLoopSource, targetId: string):
 interface ListedItem { id: string; kind: string; summary?: string; meta?: string }
 
 // Each variant streams MID_LOOP_BLOCKS activity blocks at the pace the
-// reveal trails, so one takes close to two minutes. Parallel mode lets a
-// worker take each variant instead of one worker running both in turn.
+// reveal trails. Parallel mode lets a worker take each variant instead of
+// one worker running both in turn.
 test.describe('mid-loop consumption', () => {
   test.describe.configure({ mode: 'parallel' });
   for (const source of ['composer', 'agent'] as const) {
@@ -535,12 +545,12 @@ test.describe('mid-loop consumption', () => {
       await advance(harness, callerMock, 'finish');
       await harness.waitForEvent('provider:turn_completed', (d: any) => d.threadId === caller, 30_000);
       notShown ??= await shown('All done after the compaction.', 20_000);
-      // A blank that persists into the settled state runs past the limit.
-      await page.waitForTimeout(BLANK_LIMIT_MS + 200);
+      if (notShown) await timelineSettled(page, 12);
 
       const samples = await collectSamples(page);
       const blank = longestBlankRun(samples);
       expect(blank.ms, `timeline painted no rows for ${Math.round(blank.ms)}ms starting at ${JSON.stringify(blank.at)}`).toBeLessThan(BLANK_LIMIT_MS);
+      expect(endsBlank(samples), `the settled timeline paints no rows: ${JSON.stringify(samples.at(-1))}`).toBe(false);
       if (notShown) throw notShown;
       expect((await consumedRows()).length).toBe(1);
     });

@@ -15,7 +15,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import {
   expectEveryForgeCallHandled,
@@ -83,7 +83,7 @@ async function movePullHead(harness: HarnessApp, repo: ForgeRepo, file: string):
 }
 
 async function launch(): Promise<HarnessApp> {
-  return launchHarness({ env: { AO_HARNESS_TIMING: [...HARNESS_TIMING.split(','), 'pr-update=2s'].join(',') } });
+  return launchHarness({ env: harnessTiming({ 'pr-update': '2s' }) });
 }
 
 test('a PR whose commits the checkout has loads with origin unreachable', async ({ page }) => {

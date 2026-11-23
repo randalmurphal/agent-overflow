@@ -146,7 +146,7 @@ func (a *App) runOwnerPeer(ctx context.Context, id string, p *ownerPeer) {
 			timer.Stop()
 		case <-timer.C:
 		}
-		delay = min(2*delay, threadAgentPeerBackoffMax)
+		delay = min(2*delay, a.threadAgentPeers.bound.backoffMax())
 	}
 }
 

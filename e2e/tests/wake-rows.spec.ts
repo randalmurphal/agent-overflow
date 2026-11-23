@@ -247,7 +247,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await harness.rpc('StopSession', agent.thread);
       await setScenario(harness, agent.home, {
         ...threadToolsScenario({ name: `wake-lost-slow-${provider}`, provider, turns: [{ text: 'unreached' }] }),
-        startupDelayMs: 30_000,
+        startupGate: 'held-start',
       });
     }
     await harness.open(page);

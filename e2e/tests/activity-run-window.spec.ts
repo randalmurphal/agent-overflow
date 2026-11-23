@@ -504,8 +504,11 @@ test('a live run a switch-back sync ships mid-run counts the members it gained d
   await advance(harness, mockId, 'grow');
   await waitForGate(harness, 'hold');
   await expect.poll(() => sawLastMember).toBe(true);
-  // The item stream flushes within a frame or 50ms of the last event.
-  await page.waitForTimeout(300);
+  // The item stream flushes within a frame or 50ms of the last event:
+  // four frames later it has.
+  await page.evaluate(async () => {
+    for (let frame = 0; frame < 4; frame += 1) await new Promise(requestAnimationFrame);
+  });
   heldSyncId = '';
   sendToPage(heldAnswer);
 

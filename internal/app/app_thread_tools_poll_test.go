@@ -314,12 +314,12 @@ func TestUndeliverableWakeBacksOffAndIsAbandoned(t *testing.T) {
 		t.Fatalf("first retry booked at %s, want %s", delays[0], threadWakeRetryBase)
 	}
 	for i := 1; i < len(delays); i++ {
-		if delays[i] < delays[i-1] || delays[i] > threadWakeRetryCap+time.Second {
+		if delays[i] < delays[i-1] || delays[i] > threadWakeRetryBase*threadWakeRetryCeiling+time.Second {
 			t.Fatalf("retry delays did not back off within the ceiling: %v", delays)
 		}
 	}
-	if (delays[len(delays)-1] - threadWakeRetryCap).Abs() > time.Second {
-		t.Fatalf("last retry booked at %s, want the %s ceiling", delays[len(delays)-1], threadWakeRetryCap)
+	if (delays[len(delays)-1] - threadWakeRetryBase*threadWakeRetryCeiling).Abs() > time.Second {
+		t.Fatalf("last retry booked at %s, want the %s ceiling", delays[len(delays)-1], threadWakeRetryBase*threadWakeRetryCeiling)
 	}
 
 	// Every attempt is spent. The next pass gives up rather than retrying

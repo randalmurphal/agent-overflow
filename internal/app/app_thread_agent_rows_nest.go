@@ -70,7 +70,7 @@ func (a *App) remoteAgentAnswers(ctx context.Context, remote []threadAgentRemote
 	if peers == threadAgentPeersLive {
 		runBounded(len(ask), threadAgentPeerListsInFlight, func(n int) {
 			i := ask[n]
-			call, cancel := context.WithTimeout(ctx, threadAgentPeerServeTimeout)
+			call, cancel := context.WithTimeout(ctx, a.threadAgentPeers.bound.serve())
 			defer cancel()
 			// The levels its rows may still use, none at the bound: there the
 			// answer is the thread's state alone, and that computer asks

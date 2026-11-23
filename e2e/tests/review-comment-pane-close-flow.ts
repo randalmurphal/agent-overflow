@@ -49,6 +49,9 @@ async function openCompanion(page: Page, compact: boolean, fromSidebar: boolean)
 export async function failAfterPaneCloses(harness: HarnessApp, page: Page, compact: boolean, outcome: 'refused' | 'lost'): Promise<void> {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(harness.url).origin });
   await seedPull(harness, FORGE, `pane-close-${compact ? 'compact' : 'desktop'}-${outcome}`, TITLE);
+  // The page clock runs as the real one does; a toast's lifetime is crossed
+  // below by moving it on.
+  await page.clock.install();
   await harness.open(page);
   const route = ROUTES[FORGE].lineComment;
   let review = await openCompanion(page, compact, true);
@@ -87,7 +90,7 @@ export async function failAfterPaneCloses(harness: HarnessApp, page: Page, compa
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(TEXT);
   await expect(toast).toHaveCount(1);
   // Held past an ordinary toast's lifetime: the property under test is time.
-  await page.waitForTimeout(DEFAULT_TOAST_MS + 1_000);
+  await page.clock.fastForward(DEFAULT_TOAST_MS + 1_000);
   await expect(toast).toHaveCount(1);
 
   // The review opened again has a fresh editor on that line.

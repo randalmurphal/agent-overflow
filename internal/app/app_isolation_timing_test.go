@@ -1,75 +1,57 @@
 package app
 
 import (
-	"context"
 	"testing"
 	"time"
-
-	"github.com/google/uuid"
 )
 
-// TestIsolationTimingReachesThreadPollAndTransferJobs: the intervals a
-// harness boot shortens through ConfigureIsolation are the ones the request
-// poller schedules with and the transfer scheduler retries with. A parked
-// call never polls slower than the shortened cadence.
-func TestIsolationTimingReachesThreadPollAndTransferJobs(t *testing.T) {
-	t.Parallel()
-	const poll = 300 * time.Millisecond
-	const retry = 40 * time.Millisecond
-	f := newRequestFixture(t)
-	const prRetry = 25 * time.Millisecond
-	const ciLive, ciFollow = 70 * time.Millisecond, 35 * time.Millisecond
-	ConfigureIsolation(f.app, IsolationConfig{
-		ThreadRequestPoll: poll, TransferPendingRetry: retry,
-		PRUpdateRetryBase: prRetry, PRCILiveInterval: ciLive, PRCIFollowInterval: ciFollow,
-	})
-	if got := f.app.prUpdateRetryBase(); got != prRetry {
-		t.Fatalf("pr update retry base = %s, want %s", got, prRetry)
+// The product bounds a harness knob replaces stay what they were, and a
+// knob moves every bound derived from it together.
+func TestThreadAgentPeerBoundDerivesEveryPeerBound(t *testing.T) {
+	product := threadAgentPeerBound(0)
+	if got := [4]time.Duration{product.list(), product.serve(), product.backoffFirst(), product.backoffMax()}; got != [4]time.Duration{
+		5 * time.Second, 2500 * time.Millisecond, 5 * time.Second, time.Minute,
+	} {
+		t.Fatalf("product peer bounds = %v; want 5s list, 2.5s serve, 5s first backoff, 1m ceiling", got)
 	}
-	if got := f.app.prCILiveInterval(); got != ciLive {
-		t.Fatalf("pr ci live interval = %s, want %s", got, ciLive)
+	short := threadAgentPeerBound(time.Second)
+	if got := [4]time.Duration{short.list(), short.serve(), short.backoffFirst(), short.backoffMax()}; got != [4]time.Duration{
+		time.Second, 500 * time.Millisecond, time.Second, 12 * time.Second,
+	} {
+		t.Fatalf("1s peer bounds = %v; want each scaled with the listing bound", got)
 	}
-	if got := f.app.prCIFollowInterval(); got != ciFollow {
-		t.Fatalf("pr ci follow interval = %s, want %s", got, ciFollow)
-	}
-	computer := uuid.NewString()
-
-	open := f.seedRemoteRequest(t, computer)
-	if delay := f.scheduleDelay(t, open); !delay.is(poll) {
-		t.Fatalf("open request rescheduled in %s, want %s", delay, poll)
-	}
-	_, _, end := f.app.beginWait(context.Background(), threadRequestWait{}, []string{open})
-	if delay := f.app.threadPollDelay(open); delay != poll {
-		t.Fatalf("parked request cadence = %s, want the shortened %s", delay, poll)
-	}
-	end()
-
-	settled := f.seedRemoteRequest(t, computer)
-	now := time.Now()
-	f.settleRemote(t, settled, now, now.Add(threadLateReplyWindow))
-	if delay := f.scheduleDelay(t, settled); !delay.is(2 * poll) {
-		t.Fatalf("settled request rescheduled in %s, want %s", delay, 2*poll)
-	}
-
-	if err := f.app.startThreadTransfers(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(f.app.transfers.close)
-	if got := f.app.transfers.live.Load().jobs.PendingRetry(); got != retry {
-		t.Fatalf("transfer pending retry = %s, want %s", got, retry)
+	a := &App{}
+	a.threadAgentPeers.bound = short
+	if got := a.ownerOpReach(); got != time.Second {
+		t.Fatalf("owner op reach = %v; want the listing bound", got)
 	}
 }
 
-// TestIsolationReachesTheOlderOwnerOpsPeer: a harness boot's older-peer
-// switch is what the owner operation door reads.
-func TestIsolationReachesTheOlderOwnerOpsPeer(t *testing.T) {
-	t.Parallel()
-	f := newRequestFixture(t)
-	if f.app.ownerOpsOmitted {
-		t.Fatal("an unconfigured app has owner ops omitted")
+func TestThreadWakeRetryDelayScalesWithItsBase(t *testing.T) {
+	ladder := func(a *App) []time.Duration {
+		var out []time.Duration
+		for attempts := int64(1); attempts <= threadWakeRetryAttempts; attempts++ {
+			out = append(out, a.threadWakeRetryDelay(attempts))
+		}
+		return out
 	}
-	ConfigureIsolation(f.app, IsolationConfig{OmitOwnerOps: true})
-	if !f.app.ownerOpsOmitted {
-		t.Fatal("the older owner operations peer was not configured")
+	product := ladder(&App{})
+	if product[0] != 30*time.Second || product[len(product)-1] != 10*time.Minute {
+		t.Fatalf("product wake retry ladder = %v; want 30s up to a 10m ceiling", product)
+	}
+	short := ladder(&App{wakeRetryBaseOverride: 2 * time.Second})
+	for i := range product {
+		if short[i]*15 != product[i] {
+			t.Fatalf("2s wake retry ladder = %v; want the product ladder %v scaled by 2/30", short, product)
+		}
+	}
+}
+
+func TestAgentSettledWindowSpan(t *testing.T) {
+	if got := (&App{}).agentSettledWindowSpan(); got != 30*time.Second {
+		t.Fatalf("product settled window = %v; want 30s", got)
+	}
+	if got := (&App{agentSettledWindowOverride: time.Second}).agentSettledWindowSpan(); got != time.Second {
+		t.Fatalf("settled window with a 1s override = %v", got)
 	}
 }

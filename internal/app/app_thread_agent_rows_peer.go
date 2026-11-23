@@ -53,12 +53,34 @@ const (
 const (
 	threadAgentPeerListTimeout = 5 * time.Second
 	threadAgentPeerStopTimeout = 45 * time.Second
-	// threadAgentPeerServeTimeout bounds the listing an agent_rows answer
-	// reads from a computer further on: the computer that asked gives the
-	// whole answer threadAgentPeerListTimeout, and a computer that does not
-	// answer there must not use it all up.
-	threadAgentPeerServeTimeout = threadAgentPeerListTimeout / 2
 )
+
+// threadAgentPeerBound is the listing bound in force: zero is
+// threadAgentPeerListTimeout, and an isolated test boot may set another
+// (IsolationConfig.PeerListTimeout). Every bound that follows from the
+// listing bound is derived here, so a test that shortens one shortens them
+// together.
+type threadAgentPeerBound time.Duration
+
+// list bounds a forwarded listing.
+func (b threadAgentPeerBound) list() time.Duration {
+	if b > 0 {
+		return time.Duration(b)
+	}
+	return threadAgentPeerListTimeout
+}
+
+// serve bounds the listing an agent_rows answer reads from a computer
+// further on: the computer that asked gives the whole answer list(), and a
+// computer that does not answer there must not use it all up.
+func (b threadAgentPeerBound) serve() time.Duration { return b.list() / 2 }
+
+// backoffFirst and backoffMax pace the asking of a computer whose call
+// timed out: it waits backoffFirst before it is asked again, doubling on
+// each timeout up to backoffMax (a minute at the product bound), until it
+// answers.
+func (b threadAgentPeerBound) backoffFirst() time.Duration { return b.list() }
+func (b threadAgentPeerBound) backoffMax() time.Duration   { return 12 * b.list() }
 
 // threadAgentPeerArgs are the forwarded Agents tools' arguments.
 type threadAgentPeerArgs struct {
@@ -121,7 +143,7 @@ func (a *App) callThreadAgentPeer(ctx context.Context, method, computerID, sourc
 	if err != nil {
 		return attachedbackends.PeerRead{}, fmt.Errorf("encode %s: %w", method, err)
 	}
-	tool, timeout := threadAgentPeerRows, threadAgentPeerListTimeout
+	tool, timeout := threadAgentPeerRows, a.threadAgentPeers.bound.list()
 	if method == "ThreadToolCall" {
 		tool, timeout = threadAgentPeerStop, threadAgentPeerStopTimeout
 	}

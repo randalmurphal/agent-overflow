@@ -31,16 +31,14 @@ const (
 	// spawns waiting to be asked. The oldest answer goes first; a spawn
 	// still listed is asked again.
 	threadAgentPeerCacheLimit = 256
-	// A computer whose call timed out waits threadAgentPeerBackoffFirst
-	// before it is asked again, doubling on each timeout up to
-	// threadAgentPeerBackoffMax, until it answers.
-	threadAgentPeerBackoffFirst = threadAgentPeerListTimeout
-	threadAgentPeerBackoffMax   = time.Minute
 )
 
 // threadAgentPeerCache is the last agent_rows answer for each remote spawn,
 // by the spawn's token, and the asking of them.
 type threadAgentPeerCache struct {
+	// bound is the listing bound and the backoff derived from it. Set once
+	// before Start (IsolationConfig.PeerListTimeout).
+	bound   threadAgentPeerBound
 	mu      sync.Mutex
 	entries map[string]*threadAgentPeerEntry
 	// waiting is the spawns to ask about, oldest first; queued holds
@@ -407,10 +405,10 @@ func (c *threadAgentPeerCache) noteBackoffLocked(computer string, err error) {
 		// outage lengthens the backoff once.
 		backoff := c.backoff[computer]
 		if backoff.next == 0 {
-			backoff.next = threadAgentPeerBackoffFirst
+			backoff.next = c.bound.backoffFirst()
 		}
 		backoff.until = time.Now().Add(backoff.next)
-		backoff.next = min(2*backoff.next, threadAgentPeerBackoffMax)
+		backoff.next = min(2*backoff.next, c.bound.backoffMax())
 		c.backoff[computer] = backoff
 	}
 }

@@ -31,7 +31,7 @@ func TestAKilledLauncherEndsTheSuite(t *testing.T) {
 	bin := filepath.Join(dir, "bin")
 	mockexec.WriteIn(t, bin, "pnpm", `#!/bin/sh
 case "$*" in
-  *tsc*) exit 0 ;;
+  *tsc*|*check-waits*) exit 0 ;;
 esac
 sleep 300 &
 child=$!

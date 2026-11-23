@@ -603,6 +603,9 @@ test('a refresh whose group answer is late moves the rows once, when it lands', 
     });
   });
   await page.addInitScript(recordSidebar);
+  // The page clock runs as the real one does; the read deadline below is
+  // crossed by moving it on.
+  await page.clock.install();
   await harness.open(page);
   await expect(page.locator('[data-sidebar-thread-id]')).toHaveCount(3);
   await nextFrames(page, 2);
@@ -617,7 +620,7 @@ test('a refresh whose group answer is late moves the rows once, when it lands', 
   await expect.poll(() => heldReplies.length).toBeGreaterThan(0);
   // The deadline passing is what this case is about: the thread answer is
   // in, the group answer is not, and the page has given up waiting on time.
-  await page.evaluate((ms) => new Promise((resolve) => setTimeout(resolve, ms)), READ_DEADLINE_MS + 500);
+  await page.clock.fastForward(READ_DEADLINE_MS + 500);
   await nextFrames(page, 2);
   const held = (await sidebarRecord(page)).frames.slice(listedAt);
   expect(arrangements(held)).toEqual(initial);

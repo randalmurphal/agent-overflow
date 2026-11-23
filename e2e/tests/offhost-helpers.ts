@@ -474,6 +474,28 @@ export function methodIdByName(name: string): number {
   throw new Error(`no bound method named ${name} in the generated bindings`);
 }
 
+/**
+ * How many of the page's calls (only `method`'s, when given) are asked and
+ * not yet answered, counted from now on. A poll of it reaching zero is the
+ * barrier that every call a page timer started has landed.
+ */
+export function callsInFlight(page: Page, method?: string): () => number {
+  const methodId = method === undefined ? undefined : methodIdByName(method);
+  const open = new Set<string>();
+  page.on('websocket', (socket) => {
+    socket.on('framesent', ({ payload }) => {
+      if (typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
+      const sent = JSON.parse(payload) as { id?: string; methodId?: number };
+      if (methodId === undefined || sent.methodId === methodId) open.add(String(sent.id));
+    });
+    socket.on('framereceived', ({ payload }) => {
+      if (typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
+      open.delete(String((JSON.parse(payload) as { id?: string }).id));
+    });
+  });
+  return () => open.size;
+}
+
 // ---------------------------------------------------------------------
 // Page instrumentation: what a person would have SEEN.
 // ---------------------------------------------------------------------

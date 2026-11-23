@@ -67,6 +67,7 @@ import { homeWsUrl } from './homeEndpoint';
 import { refreshGrantedScopes } from './scopes';
 import { randomId } from '../utils/randomId';
 import { ReplayBuffer } from './replayBuffer';
+import { harnessInterval } from './harnessMode';
 import { parseBootFailures, sameBootFailures, type BootFailure } from './bootFailures';
 import {
   BackendStartingError,
@@ -1845,7 +1846,7 @@ export class WSClient {
     // resume path refreshes lastFrameAt before verdicts resume.
     if (documentHidden() || this.lease === 'background') return;
     if (!this.ws || this.ws.readyState !== WS_OPEN) return;
-    if (this.replayBuffer && Date.now() - this.replayStartedAt >= REPLAY_TIMEOUT_MS) {
+    if (this.replayBuffer && Date.now() - this.replayStartedAt >= harnessInterval('replay-timeout', REPLAY_TIMEOUT_MS)) {
       this.diagnosticsSink?.('transport: replay did not complete; forcing reconnect');
       console.warn('wsClient: replay did not complete; forcing reconnect');
       this.forceReconnect('replay did not complete');

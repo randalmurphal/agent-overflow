@@ -2293,6 +2293,47 @@ func TestServer_BootstrapAnnouncesHarnessMode(t *testing.T) {
 	}
 }
 
+// TestServer_BootstrapServesFrontendTimingOnlyInHarnessMode: a harness boot
+// serves its frontend timer overrides; a harness or soak boot with none
+// serves no field, and no other boot can be configured to serve one.
+func TestServer_BootstrapServesFrontendTimingOnlyInHarnessMode(t *testing.T) {
+	timed := newServerFixtureWith(t, func(cfg *Config) {
+		cfg.Harness = true
+		cfg.FrontendTiming = map[string]int64{"unreachable-settle": 2000}
+	})
+	if got := bootstrapDoc(t, timed).HarnessTiming; len(got) != 1 || got["unreachable-settle"] != 2000 {
+		t.Fatalf("harness manifest timing = %v, want unreachable-settle 2000", got)
+	}
+
+	for name, cfg := range map[string]func(*Config){
+		"ordinary": func(*Config) {},
+		"soak":     func(cfg *Config) { cfg.Harness = true },
+	} {
+		f := newServerFixtureWith(t, cfg)
+		resp := getBootstrap(t, f.srv.Addr())
+		var raw map[string]json.RawMessage
+		err := json.NewDecoder(resp.Body).Decode(&raw)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("%s: decode manifest: %v", name, err)
+		}
+		if timing, ok := raw["harnessTiming"]; ok {
+			t.Errorf("%s boot served harnessTiming %s", name, timing)
+		}
+	}
+
+	for name, cfg := range map[string]Config{
+		"without harness":  {FrontendTiming: map[string]int64{"replay-timeout": 3000}},
+		"nonpositive time": {Harness: true, FrontendTiming: map[string]int64{"replay-timeout": 0}},
+	} {
+		cfg.Dispatcher = NewDispatcher()
+		cfg.EventBus = NewEventBus(20)
+		if _, err := New(cfg); err == nil {
+			t.Errorf("New accepted frontend timing %s", name)
+		}
+	}
+}
+
 func bootstrapDoc(t *testing.T, f *serverFixture) Bootstrap {
 	t.Helper()
 	resp := getBootstrap(t, f.srv.Addr())

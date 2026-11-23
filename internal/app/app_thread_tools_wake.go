@@ -246,7 +246,7 @@ func (a *App) claimThreadWakeRetry(row store.ThreadRequest, owed []bool, now tim
 	}
 	attempts := row.WakeAttempts + 1
 	booked, err := a.store.ScheduleThreadRequestWake(row.Token,
-		now.Add(threadWakeRetryDelay(attempts)).UnixMilli(), attempts)
+		now.Add(a.threadWakeRetryDelay(attempts)).UnixMilli(), attempts)
 	if err != nil {
 		logThreadRequestSweep("schedule the wake retry for "+row.Token, err)
 		return nil, false
@@ -295,25 +295,33 @@ func undeliveredThreadWakes(row store.ThreadRequest) []bool {
 }
 
 // threadWakeRetryDelay doubles the base delay for each attempt already made,
-// up to the ceiling.
-func threadWakeRetryDelay(attempts int64) time.Duration {
-	delay := threadWakeRetryBase
+// up to the ceiling. The base is threadWakeRetryBase, or the one an isolated
+// test boot set (IsolationConfig.ThreadWakeRetryBase); the ceiling is
+// threadWakeRetryCeiling times the base either way.
+func (a *App) threadWakeRetryDelay(attempts int64) time.Duration {
+	base := threadWakeRetryBase
+	if a.wakeRetryBaseOverride > 0 {
+		base = a.wakeRetryBaseOverride
+	}
+	ceiling := base * threadWakeRetryCeiling
+	delay := base
 	for range attempts - 1 {
 		delay *= 2
-		if delay >= threadWakeRetryCap {
-			return threadWakeRetryCap
+		if delay >= ceiling {
+			return ceiling
 		}
 	}
 	return delay
 }
 
-// threadWakeRetryBase, threadWakeRetryCap and threadWakeRetryAttempts pace
-// and bound the retry; threadRequestWakeRetryBatch bounds one pass. This is
-// a recovery net behind a delivery that normally happens with the
-// settlement, so it is slow and it ends.
+// threadWakeRetryBase, threadWakeRetryCeiling (the cap, as a multiple of the
+// base: ten minutes) and threadWakeRetryAttempts pace and bound the retry;
+// threadRequestWakeRetryBatch bounds one pass. This is a recovery net behind
+// a delivery that normally happens with the settlement, so it is slow and it
+// ends.
 const (
 	threadWakeRetryBase         = 30 * time.Second
-	threadWakeRetryCap          = 10 * time.Minute
+	threadWakeRetryCeiling      = 20
 	threadWakeRetryAttempts     = 8
 	threadRequestWakeRetryBatch = 32
 )

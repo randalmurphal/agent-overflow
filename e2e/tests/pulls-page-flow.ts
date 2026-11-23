@@ -31,7 +31,7 @@ import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import type { Locator, Page, TestInfo } from '@playwright/test';
 
-import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import {
   clearForgeRefusal,
@@ -138,7 +138,7 @@ export async function seedProjects(harness: HarnessApp): Promise<Seeded> {
 export function launchPullsHarness(): Promise<HarnessApp> {
   // The list pump's product cadence is 45 s; the activity and refusal
   // steps wait for a tick.
-  return launchHarness({ env: { AO_HARNESS_TIMING: [...HARNESS_TIMING.split(','), 'pr-update=1s'].join(',') } });
+  return launchHarness({ env: harnessTiming({ 'pr-update': '1s' }) });
 }
 
 export function row(page: Page, number: number): Locator {

@@ -20,6 +20,7 @@ import { clearPairedSession, redeemPairing } from './deviceSession';
 import { __resetPageHostForTest, isHostWindow } from './pageHost';
 import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
 import { fetchBackendManifest } from './manifestBackends';
+import { __resetHarnessModeForTest, harnessInterval } from './harnessMode';
 import { BackendStartingError, STARTUP_REPORT_LIMIT_BYTES } from './startupProgress';
 
 describe('isLoopbackHostname', () => {
@@ -164,6 +165,7 @@ describe('defaultBootstrap', () => {
   afterEach(() => {
     setPageSearch('');
     __resetPageHostForTest();
+    __resetHarnessModeForTest();
     vi.unstubAllGlobals();
   });
 
@@ -231,6 +233,29 @@ describe('defaultBootstrap', () => {
     vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS })));
     await defaultBootstrap();
     expect(isHostWindow()).toBe(false);
+  });
+
+  // Only a manifest that says harness can shorten a frontend timer; an
+  // ordinary or soak boot's manifest that carried timing anyway is ignored.
+  it('reads harness timing only from a harness manifest', async () => {
+    const timing = { 'unreachable-settle': 2000, 'replay-timeout': 3000 };
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harnessTiming: timing })));
+    await defaultBootstrap();
+    expect(harnessInterval('unreachable-settle', 30_000)).toBe(30_000);
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harness: true, harnessTiming: timing })));
+    await defaultBootstrap();
+    expect(harnessInterval('unreachable-settle', 30_000)).toBe(2000);
+    expect(harnessInterval('replay-timeout', 60_000)).toBe(3000);
+    expect(harnessInterval('agent-row-linger', 8_000)).toBe(8_000);
+  });
+
+  it('refuses harness timing this build cannot read', async () => {
+    for (const harnessTiming of [{ 'some-timer': 10 }, { 'replay-timeout': 0 }, { 'replay-timeout': '3s' }, [1]]) {
+      __resetHarnessModeForTest();
+      vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harness: true, harnessTiming })));
+      await expect(defaultBootstrap()).rejects.toThrow(/harnessTiming/);
+      expect(harnessInterval('replay-timeout', 60_000)).toBe(60_000);
+    }
   });
 
   // A page whose window this application owns is handed its ticket by

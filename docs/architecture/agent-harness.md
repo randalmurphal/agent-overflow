@@ -549,10 +549,13 @@ in `e2e/src` is the spec-side await.
 An `mcpCall` does not pace an unbounded `repeat`: it answers as fast as
 the server does.
 
-Scenario-level knobs sit beside the step lists. `startupDelayMs`
-delays the first frame that proves the provider is up (Claude's first
-`system/init`, Codex's `initialize` response), once per process and
-capped at 30s, so the app's cold-start window is drivable. `exitDelayMs`
+Scenario-level knobs sit beside the step lists. `startupGate` holds
+the first frame that proves the provider is up (Claude's first
+`system/init`, Codex's `initialize` response) behind a named gate, once
+per process, so the app's cold-start window is drivable: it reports
+`waiting_signal` with the gate's name and an advance naming it releases
+it, as a `waitSignal` step is; a gate nothing releases holds until the
+app stops the process. `exitDelayMs`
 holds the process after the app closes its stdin, capped at 2.5s (below
 the app's close grace), so the window while a session shuts down is
 drivable. `providerVersion`

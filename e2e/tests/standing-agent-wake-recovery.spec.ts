@@ -106,7 +106,7 @@ echo "the only report"
         await harness.rpc('StopSession', thread);
         await setScenario(harness, home, {
           ...threadToolsScenario({ name, provider, turns: [{ text: 'unreached' }] }),
-          startupDelayMs: 30_000,
+          startupGate: 'held-start',
         });
       };
       let mockId: string;
@@ -343,7 +343,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       if (provider === 'claude') {
         await setScenario(harness, home, {
           ...threadToolsScenario({ name: `wakes-joined-held-${provider}`, provider, turns: [{ text: 'unreached' }] }),
-          startupDelayMs: 30_000,
+          startupGate: 'held-start',
         });
       } else {
         await setScenario(

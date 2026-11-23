@@ -22,12 +22,14 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { test, expect, type SeedResult } from './fixtures.js';
-import { launchHarness, type HarnessApp } from '../src/harness.js';
+import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { startTogether } from './launch-helpers.js';
 import { pairBuildBox } from './build-box-helpers.js';
 import { agentsBody, openAgents } from './agents-tray-helpers.js';
 import { captureAgentMessage } from './wake-rows-helpers.js';
 import {
+  advanceGate,
+  awaitGate,
   awaitToolAnswer,
   awaitTurnCompleted,
   setScenario,
@@ -42,6 +44,7 @@ import {
   startBreaker,
   dbWake,
   wakeInput,
+  laterMessage,
   countInputs,
   threadSend,
   wakeBubble,
@@ -61,7 +64,6 @@ import {
 test('codex: a wake and an outside send are accepted while the session they need is slow to start', async ({ page }) => {
   test.setTimeout(150_000);
   const provider = 'codex';
-  const HOLD_MS = 20_000;
   const harness = await launchHarness();
   try {
     const dataDir = harness.bootstrap.dataDir;
@@ -111,7 +113,7 @@ echo "the report while the start was held"
         turns: [{ text: 'Noted.' }, { text: 'Noted.' }, { text: 'Noted.' }],
         afterTurns: 'silent',
       }),
-      startupDelayMs: HOLD_MS,
+      startupGate: 'held-start',
     });
     const queued = () => {
       const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
@@ -125,7 +127,6 @@ echo "the report while the start was held"
         db.close();
       }
     };
-    const released = Date.now();
     await writeFile(join(home, 'once.release'), '');
     // The wake is recorded delivered when it is queued, while its start is
     // still held.
@@ -148,11 +149,12 @@ echo "the report while the start was held"
     expect(countInputs(harness, home, 'Watch "once" reported.')).toBe(0);
     expect(countInputs(harness, home, 'Message sent from outside Agent Overflow')).toBe(0);
 
+    // The start goes on; both reach the session.
+    await advanceGate(harness, (await awaitGate(harness, 'held-start', home)).mockId, 'held-start');
     const wake = await wakeInput(harness, home, 'Watch "once" reported.', 90_000);
     expect(wake.report.input).toContain('"the report while the start was held"');
     const outside = await wakeInput(harness, home, 'Message sent from outside Agent Overflow', 90_000);
     expect(outside.report.input).toContain('"deploy 10 is done"');
-    expect(Date.now() - released).toBeGreaterThanOrEqual(HOLD_MS);
     await expect.poll(queued, { timeout: 30_000 }).toEqual([]);
     expect(dbWake(dataDir, thread, 'once')!.last_outcome).toBe('delivered');
 
@@ -800,16 +802,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await expect.poll(queued, { timeout: 15_000 }).toEqual(['remote-completion']);
       expect(watch()).toBe('queued');
 
-      // Archived: the completion goes back to its watch, and the watcher
-      // leaves it there while the thread stays archived.
+      // Archived: the completion goes back to its watch, which waits for
+      // the unarchive. The watcher's due query skipping an archived
+      // thread's watches is internal/store's
+      // TestWithdrawnRemoteCompletionIsOwedAgainOnceItsThreadIsUnarchived.
       await harness.rpc('ArchiveThread', thread);
       await expect.poll(queued, { timeout: 15_000 }).toEqual([]);
-      expect(watch()).toBe('pending');
-      // Six seconds of the watcher's normal pace, then the same state. No
-      // signal marks a watcher pass over this row, so this shows nothing came
-      // back in that time, not that a given number of passes saw the row.
-      await new Promise((resolve) => setTimeout(resolve, 6_000));
-      expect(queued()).toEqual([]);
       expect(watch()).toBe('pending');
       expect(countInputs(harness, cwd, completion)).toBe(0);
 
@@ -939,28 +937,31 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await expect(incoming).toHaveAttribute('data-kind', 'wake');
 
       // Stopped, it is dismissed on its watch, not handed back: nothing is
-      // queued and the row stays gone six seconds later. No signal marks a
-      // watcher pass over this row, so the wait shows nothing came back in
-      // that time, not that a given number of passes saw the row.
+      // queued, and a dismissed watch is out of the watcher's due list
+      // (internal/store remoteWatchCheckable).
       await incoming.getByTestId('agent-incoming-row-stop').click();
       await expect(page.getByTestId('toast').filter({ hasText: /Withdrew .* before this thread's agent read it\./ })).toBeVisible({ timeout: 30_000 });
       await expect(incoming).toHaveCount(0);
       expect(queued()).toEqual([]);
       expect(watch()).toEqual({ notification: 'dismissed', wake_issue: 'The user withdrew it from the queue before the agent read it.' });
-      await new Promise((resolve) => setTimeout(resolve, 6_000));
-      expect(queued()).toEqual([]);
-      expect(watch().notification).toBe('dismissed');
-      await expect(incoming).toHaveCount(0);
 
-      // A mended start still never receives it, and remote_jobs keeps the result.
+      // A mended start still never receives it, and remote_jobs keeps the
+      // result. The person's message after the start is the barrier: a
+      // completion queued for the thread reaches the session before it.
       await b.mend();
       await setScenario(harness, cwd, threadToolsScenario({
         name: `remote-stopped-mended-${provider}`, provider, echoUserMessage: true, turns: [{ text: 'Nothing to read.' }], afterTurns: 'silent',
       }));
-      await harness.rpc('StartSession', thread);
-      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      const delivered = harness.watchEvents<HarnessMockEventData>(
+        'harness:mock',
+        (ev) => ev.report.kind === 'user_input' && ev.cwd === cwd && (ev.report.input ?? '').includes(completion),
+      );
+      await delivered.expectNoneThrough(async () => {
+        await harness.rpc('StartSession', thread);
+        await laterMessage(harness, thread, cwd, 'anything new from the build box?');
+      }, 'the dismissed completion reached the mended session');
       expect(queued()).toEqual([]);
-      expect(countInputs(harness, cwd, completion)).toBe(0);
+      await expect(incoming).toHaveCount(0);
       const jobs = await harness.rpc<{ requestId: string; notification: string; receipt: { state: string } }[]>('ListThreadRemoteCommands', thread);
       const job = jobs.find((j) => j.requestId === requestId);
       expect(job?.notification).toBe('dismissed');

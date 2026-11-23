@@ -139,7 +139,10 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const childInterrupted = mockInterrupt(harness, tree.childPath);
     const grandInterrupted = mockInterrupt(harness, tree.grandPath);
     const leadWoken = awaitMockInput(harness, { cwd: tree.leadPath, includes: [started.childToken, USER_STOP] });
-    const childWoken = awaitMockInput(harness, { cwd: tree.childPath, includes: [started.grandToken], timeoutMs: 20_000 }).then(() => true, () => false);
+    const childWoken = harness.watchEvents<{ cwd: string; report: { kind: string; input?: string } }>(
+      'harness:mock',
+      (ev) => ev.report.kind === 'user_input' && ev.cwd === tree.childPath && (ev.report.input ?? '').includes(started.grandToken),
+    );
     await child.getByTestId('agent-tray-row-stop').click();
     await expect(page.getByTestId('toast-message').filter({ hasText: `Stopped ${CHILD}` }))
       .toHaveText(`Stopped ${CHILD}: its turn, 1 background task and 1 agent of its own.`, { timeout: 30_000 });
@@ -163,16 +166,18 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(Date.now() - settledAt, 'the settled row lingered').toBeGreaterThan(5_000);
     // The segment stays for Past, which holds the send and the stopped child.
     await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText('2');
-    expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
     // The child is at rest: its session ended with its shell, and nothing
-    // brought it back. A later message starts it again and is answered.
+    // brought it back. A later message starts it again and is answered; a
+    // wake for the stopped grandchild would have reached the child first.
     expect(await sessionLive(harness, started.child), 'the stopped child came back').toBe(false);
     await setScenario(harness, tree.childPath, threadToolsScenario({
       name: `agents-${provider}-child-again`, provider, echoUserMessage: true, turns: [{ text: 'Back on it.' }],
     }));
-    const answered = awaitTurnCompleted(harness, started.child);
-    await harness.rpc('SendMessage', started.child, 'one more thing', null);
-    await answered;
+    await childWoken.expectNoneThrough(async () => {
+      const answered = awaitTurnCompleted(harness, started.child);
+      await harness.rpc('SendMessage', started.child, 'one more thing', null);
+      await answered;
+    }, 'the child took a turn for the agent the person stopped');
     await expect.poll(() => sessionLive(harness, started.child), { timeout: 30_000 }).toBe(true);
   });
 

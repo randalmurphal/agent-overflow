@@ -682,8 +682,8 @@ func TestThreadAgentPeerRefreshesDoNotQueueBehindAStalledComputer(t *testing.T) 
 	a.threadAgentPeers.mu.Lock()
 	backoff := a.threadAgentPeers.backoff[pair.computer]
 	a.threadAgentPeers.mu.Unlock()
-	if until := time.Until(backoff.until); until <= 0 || until > threadAgentPeerBackoffFirst {
-		t.Fatalf("backoff ends in %v; want within %v", until, threadAgentPeerBackoffFirst)
+	if until := time.Until(backoff.until); until <= 0 || until > threadAgentPeerBound(0).backoffFirst() {
+		t.Fatalf("backoff ends in %v; want within %v", until, threadAgentPeerBound(0).backoffFirst())
 	}
 }
 

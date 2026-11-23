@@ -13,18 +13,13 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   Each backend's dev-server scan is scoped to the launching worker's process
   tree and its own, so a fake dev server must listen in the worker or a
   descendant of it. Every launch passes `HARNESS_TIMING`
-  (`diagenv.HarnessTiming`), which shortens product cadences a spec should
-  not wait out (pairing probe, thread poll, transfer retry, PR update retry,
-  PR CI live, follow and log wait polls, the shortest loop or watch interval,
-  how long a watch keeps failing before it notifies, and the gap between two
-  usage probes of one provider); a spec that needs another value,
-  the PR update poll cadence (`pr-update`), the merged-PR cleanup poll
-  (`merged-pr-poll`), the first retry of a failed open-PR lookup
-  (`pr-lookup-retry`), a shortened idle-session reaper (`idle-reap`,
-  `idle-reap-sweep`, `wakeup-grace`), a longer remote-job watcher cadence
-  (`remote-watch-poll`), a shorter provider event drain stall bound
-  (`drain-stall`) or a usage poll tick no test reaches, so only its own
-  readings arrive (`usage-poll`), passes its own through `env`.
+  (`diagenv.HarnessTiming`): product intervals no spec is about, shortened.
+  Every knob, Go or frontend, is one row of `harnessTimers`
+  (`main_harness.go`), which the parser, the App's isolation and the
+  bootstrap manifest all read; a frontend timer reaches the page through
+  `harnessInterval` (`frontend/src/lib/transport/harnessMode.ts`). A spec
+  that needs another value passes `env: harnessTiming({ name: '500ms' })`,
+  which replaces the default of that name; an unknown name fails the launch.
 - `src/product-process.ts` starts every product binary (`bin/agent-overflow`
   and the `bin/ao-*` tools): `productBinary`, `spawnProduct`, `execProduct`,
   and `writeProductScript` for a launch a product process makes, such as a
@@ -115,8 +110,11 @@ WebKit without the Android emulator. See
 [mobile browser validation](../docs/references/mobile-browser-testing.md) for
 coverage boundaries, real visibility events and the real-phone check.
 
-Manual specs and boundary probes are evidence tools, not automatic gates. Keep
-their opt-in environment checks and report exactly which mode ran. Freeze
+Manual specs (`*.manual.spec.ts`, run with
+`bin/ao-harness-e2e --config=playwright.manual.config.ts tests/<spec>`), the
+boundary probes among them, are evidence tools, not automatic gates; an
+opt-in instrument is a manual spec, not a gate spec that skips. Keep their
+opt-in environment checks and report exactly which mode ran. Freeze
 reproduction fixtures may contain real conversations: generate them from a
 read-only database connection into a gitignored path and never commit them.
 
@@ -190,7 +188,16 @@ binaries.
 ## Writing specs
 
 - Assert the user-visible result and the production state or wire boundary that
-  caused it. Do not rely on arbitrary sleeps.
+  caused it.
+- Never sleep or wait for a timeout to pass; `scripts/check-waits.ts` fails the
+  run on `waitForTimeout`, a timer-resolved promise, or a wait whose timeout is
+  turned into a value. A product timer the spec crosses gets a
+  `harnessTimers` knob, or the page clock (`page.clock`) when it lives in
+  the page alone; a settle polls its condition; an absence ends at a barrier
+  through `HarnessApp.watchEvents`, an action ordered after the moment the
+  event would have fired. A mock start held for a spec uses the scenario's
+  `startupGate`. A spec about a timer's length scales its bounds with the
+  knob it sets.
 - Use unique IDs and await specific events so parallel workers cannot satisfy
   each other's assertions.
 - Register event waits before triggering operations that may complete inside an

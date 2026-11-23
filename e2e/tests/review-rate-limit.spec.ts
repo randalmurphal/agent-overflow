@@ -11,7 +11,7 @@
 import { randomBytes } from 'node:crypto';
 
 import type { Page } from '@playwright/test';
-import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import {
   expectEveryForgeCallHandled,
@@ -26,7 +26,7 @@ const TITLE = 'Rate limit thread';
 const JOB_ID = 7_301;
 
 async function withHarness(page: Page, run: (harness: HarnessApp) => Promise<void>): Promise<void> {
-  const harness = await launchHarness({ env: { AO_HARNESS_TIMING: `${HARNESS_TIMING},pr-update=1s` } });
+  const harness = await launchHarness({ env: harnessTiming({ 'pr-update': '1s' }) });
   try {
     await run(harness);
   } finally {

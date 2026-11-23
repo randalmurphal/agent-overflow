@@ -36,6 +36,13 @@ interface WireEvent {
  * One mock progress report, exactly as it rides a `harness:mock` bus
  * event (internal/harness/control.Report).
  */
+/** A count of matching events from `HarnessApp.watchEvents` on. */
+export interface EventWatch {
+  count(): number;
+  /** Run `barrier`; fail with `message` when a match arrived before it finished. */
+  expectNoneThrough(barrier: () => Promise<unknown>, message: string): Promise<void>;
+}
+
 export interface HarnessMockReport {
   kind: string;
   turn?: number;
@@ -422,13 +429,39 @@ export class HarnessApp {
   }
 
   /**
-   * Count events seen on a channel, consumed or not.
-   *
-   * The absence half of an event assertion: `waitForEvent` can only prove
-   * something happened, and a test that needs to prove something did NOT
-   * happen has to read the log directly rather than wait on a timeout. Pair
-   * it with a barrier that guarantees the backend is past the point where
-   * the event would have fired.
+   * The absence half of an event assertion. Call it before the action that
+   * could cause the event: from then on it counts every event on `channel`
+   * matching `predicate`, consumed or not. `expectNoneThrough` runs a
+   * barrier, an action whose own effect is ordered after the moment the
+   * event would have fired (a later message through the same queue, a turn
+   * that can only start once the thread is idle), and fails when a match
+   * arrived before the barrier finished. A wait that has to time out cannot
+   * prove absence; a barrier can, and this is the only way to ask.
+   */
+  watchEvents<T = unknown>(channel: string, predicate?: (data: T) => boolean): EventWatch {
+    const seen: unknown[] = [];
+    const waiter = (ev: WireEvent) => {
+      if (ev.channel === channel && (!predicate || predicate(ev.data as T))) seen.push(ev.data);
+    };
+    this.eventWaiters.add(waiter);
+    return {
+      count: () => seen.length,
+      expectNoneThrough: async (barrier, message) => {
+        try {
+          await barrier();
+        } finally {
+          this.eventWaiters.delete(waiter);
+        }
+        if (seen.length > 0) {
+          throw new Error(`${message}: ${seen.length} ${channel} event(s) arrived before the barrier finished, first ${JSON.stringify(seen[0]).slice(0, 500)}`);
+        }
+      },
+    };
+  }
+
+  /**
+   * Count remembered events on a channel, consumed or not. To prove an
+   * event did not happen, use `watchEvents` with a barrier.
    */
   countEvents<T = unknown>(channel: string, predicate?: (data: T) => boolean): number {
     return this.eventLog.filter(

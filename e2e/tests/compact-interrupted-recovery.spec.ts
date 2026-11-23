@@ -3,21 +3,28 @@
 // The real watchdog must restore the watched timeline and active-turn state
 // without a reload, duplicate send, lost draft, or borrowing the other thread.
 import { expect, test, type WebSocketRoute } from '@playwright/test';
-import { launchHarness } from '../src/harness.js';
+import { harnessTiming, launchHarness } from '../src/harness.js';
 import {
   RESULT_LINE, advance, claudeScenario, emit, seedAgentThread, startMock, textLines, waitForGate,
 } from './agent-visibility-helpers.js';
 import { confirmOnHost, instrument, mintInvite, nonLoopbackIPv4, redeemOnScreen } from './offhost-helpers.js';
 import { COMPACT_SURFACE } from './preview-gateway-helpers.js';
 
+// The replay deadline (REPLAY_TIMEOUT_MS, a minute in the product), long
+// enough for the thread switch and the send below to happen inside the
+// stall. The watchdog reads it on its ten-second staleness tick, so the
+// forced reconnect lands between this and ten seconds later. The product
+// length and the tick's verdict are wsClient.test.ts's.
+const REPLAY_MS = 10_000;
+
 test('interrupted then stalled replay recovers a changed thread and an accepted send', async ({ page }) => {
   test.skip(nonLoopbackIPv4() === null, 'requires a LAN interface for a paired browser');
-  // Uses the production 60s replay deadline, not a test-only timing override.
   test.setTimeout(120_000);
-  const harness = await launchHarness();
+  const harness = await launchHarness({ env: harnessTiming({ 'replay-timeout': `${REPLAY_MS}ms` }) });
   let fault: 'none' | 'interrupt' | 'stall' | 'recovered' = 'none';
   let connection: { page: WebSocketRoute; server: WebSocketRoute } | undefined;
   let stalled = false;
+  let stalledAt = 0;
   let completedRecovery = false;
   let interrupted = 0;
   let trafficWhileStalled = 0;
@@ -47,6 +54,7 @@ test('interrupted then stalled replay recovers a changed thread and an accepted 
       }
       if (frame.type === 'replay' && mode === 'stall') {
         stalled = true;
+        stalledAt = Date.now();
         fault = 'recovered';
         return;
       }
@@ -100,7 +108,8 @@ test('interrupted then stalled replay recovers a changed thread and an accepted 
       .toBe('Keep the next message.');
     expect(completedRecovery).toBe(false);
 
-    await expect.poll(() => completedRecovery, { timeout: 80_000 }).toBe(true);
+    await expect.poll(() => completedRecovery, { timeout: REPLAY_MS + 20_000 }).toBe(true);
+    expect(Date.now() - stalledAt, 'the stalled replay was retired before its deadline').toBeGreaterThanOrEqual(REPLAY_MS);
     expect(trafficWhileStalled).toBeGreaterThan(0);
     expect(recoveredWatch).toContain(second);
     expect(recoveredWatch).not.toContain(first);

@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import type { Locator, Page } from '@playwright/test';
 
 import { expect, test, type SeedResult } from './fixtures.js';
@@ -70,7 +70,7 @@ async function openReview(page: Page, compact: boolean): Promise<Locator> {
 export function reviewConflictsFlow({ compact }: { compact: boolean }): void {
   test('View conflicts merges with the target branch as it is now', async ({ page }) => {
     test.setTimeout(90_000);
-    const harness = await launchHarness({ env: { AO_HARNESS_TIMING: [...HARNESS_TIMING.split(','), 'pr-update=2s'].join(',') } });
+    const harness = await launchHarness({ env: harnessTiming({ 'pr-update': '2s' }) });
     try {
       const seed = await harness.rpc<SeedResult>('HarnessSeed', {
         projects: [

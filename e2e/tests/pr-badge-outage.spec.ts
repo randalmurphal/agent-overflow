@@ -12,7 +12,7 @@
 import { randomBytes } from 'node:crypto';
 
 import type { Page } from '@playwright/test';
-import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import {
   expectEveryForgeCallHandled,
@@ -134,7 +134,7 @@ for (const forge of ['github', 'gitlab'] as const) {
   const labels = LABELS[forge];
 
   test(`a ${forge} ${labels.noun} the app could not look up appears on its own once the forge answers`, async ({ page }) => {
-    const harness = await launchHarness({ env: { AO_HARNESS_TIMING: `${HARNESS_TIMING},pr-lookup-retry=300ms` } });
+    const harness = await launchHarness({ env: harnessTiming({ 'pr-lookup-retry': '300ms' }) });
     try {
       // Offline before the app ever asks: there is no last known PR to show.
       await setForgeOffline(harness, true);

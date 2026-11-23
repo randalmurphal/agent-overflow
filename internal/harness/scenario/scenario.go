@@ -60,17 +60,16 @@ type Scenario struct {
 	// works under repeatLast rather than only for the first turn.
 	AfterTurns string `json:"afterTurns,omitempty"`
 
-	// StartupDelayMs makes the app's COLD-START window drivable: the
-	// adapter sleeps this long before writing the first frame that proves
-	// the provider is up — Claude's first per-turn `system/init`, Codex's
-	// `initialize` response. Once per process, not per turn: the thing
-	// under test is a slow provider launch, not slow turns.
+	// StartupGate makes the app's COLD-START window drivable: the adapter
+	// holds the first frame that proves the provider is up (Claude's first
+	// per-turn `system/init`, Codex's `initialize` response) behind a gate
+	// of this name, reported as waiting_signal and released by an advance
+	// naming it, as a waitSignal step is. Once per process, not per turn:
+	// the thing under test is a slow provider launch, not slow turns. A
+	// gate nothing releases holds until the app stops the process.
 	//
-	// Zero (the default) is no delay at all. Capped at MaxStartupDelayMs;
-	// a scenario asking for more is a typo, and a mock that sleeps past
-	// the app's own spawn timeout tests the timeout rather than the
-	// window.
-	StartupDelayMs int `json:"startupDelayMs,omitempty"`
+	// Empty (the default) holds nothing.
+	StartupGate string `json:"startupGate,omitempty"`
 
 	// ExitDelayMs makes the app's SHUTDOWN window drivable: after the app
 	// closes stdin the adapter sleeps this long before exiting, as a real
@@ -462,12 +461,6 @@ func (v Vars) Substitute(line string) string {
 	return out
 }
 
-// MaxStartupDelayMs caps Scenario.StartupDelayMs at 30 seconds. The
-// knob exists to drive the app's cold-start WINDOW; a delay longer than
-// any spawn timeout the app applies stops testing the window and starts
-// testing the timeout, which is a different scenario and should say so.
-const MaxStartupDelayMs = 30_000
-
 // MaxExitDelayMs caps Scenario.ExitDelayMs below the 3s the app waits for a
 // provider to exit after closing its stdin before it signals the process.
 const MaxExitDelayMs = 2_500
@@ -506,8 +499,8 @@ func (s *Scenario) Validate() error {
 	if !afterTurnsModes[s.AfterTurns] {
 		return fmt.Errorf("scenario %q: afterTurns %q must be repeatLast, silent, or exit", s.Name, s.AfterTurns)
 	}
-	if s.StartupDelayMs < 0 || s.StartupDelayMs > MaxStartupDelayMs {
-		return fmt.Errorf("scenario %q: startupDelayMs %d must be between 0 and %d", s.Name, s.StartupDelayMs, MaxStartupDelayMs)
+	if strings.TrimSpace(s.StartupGate) != s.StartupGate {
+		return fmt.Errorf("scenario %q: startupGate %q has surrounding space", s.Name, s.StartupGate)
 	}
 	if s.ExitDelayMs < 0 || s.ExitDelayMs > MaxExitDelayMs {
 		return fmt.Errorf("scenario %q: exitDelayMs %d must be between 0 and %d", s.Name, s.ExitDelayMs, MaxExitDelayMs)

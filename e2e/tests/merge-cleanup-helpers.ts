@@ -4,17 +4,18 @@
 // or merge request, the row the backend tracks it in, and the forge state a
 // merge or close moves to. Git runs as the harness's own user.
 
+import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
 
-import { HARNESS_TIMING, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, type HarnessApp } from '../src/harness.js';
 import { expect } from './fixtures.js';
-import { forgeInvocations, publishBranch, seedForge, type ForgePull, type ForgeRepo } from './forge-helpers.js';
+import { forgeInvocations, publishBranch, seedForge, type ForgeInvocation, type ForgePull, type ForgeRepo } from './forge-helpers.js';
 import { attachWorktree, seedWorktreeProject } from './worktree-removal-helpers.js';
 
 /** The harness timing with the cleanup's per-repository poll at `poll`. */
-export const mergePollTiming = (poll: string) => `${HARNESS_TIMING},merged-pr-poll=${poll}`;
+export const mergePollTiming = (poll: string) => harnessTiming({ 'merged-pr-poll': poll });
 
 export type Forge = 'github' | 'gitlab';
 
@@ -40,14 +41,14 @@ export const prLabel = (forge: Forge, number: number) => (forge === 'gitlab' ? `
  */
 export async function seedMergeFixture(
   harness: HarnessApp,
-  opts: { forge: Forge; name: string; titles: string[]; branch: string; number: number },
+  opts: { forge: Forge; name: string; titles: string[]; branch: string; number: number; nodeId?: string },
 ): Promise<MergeFixture> {
   const project = await seedWorktreeProject(harness, opts.name, opts.titles, [opts.branch]);
   const bound = await attachWorktree(harness, project.threadIds[0], opts.branch);
   const repo: ForgeRepo = {
     forge: opts.forge,
     project: opts.forge === 'github' ? `acme/${opts.name}` : `grp/${opts.name}`,
-    pulls: [{ number: opts.number, title: `Merge ${opts.name}`, headRef: opts.branch, baseRef: 'main' }],
+    pulls: [{ number: opts.number, title: `Merge ${opts.name}`, headRef: opts.branch, baseRef: 'main', ...(opts.nodeId ? { nodeId: opts.nodeId } : {}) }],
   };
   await publishBranch(harness, bound.worktreePath!, repo, opts.branch);
   return {
@@ -126,22 +127,54 @@ export async function movePR(harness: HarnessApp, fixture: MergeFixture, pull: P
 export const mergePR = (harness: HarnessApp, fixture: MergeFixture, at = new Date()) =>
   movePR(harness, fixture, { state: 'merged', mergedAt: at.toISOString() });
 
-/** The batched state reads the backend made of the fake forge. */
-export async function stateReads(harness: HarnessApp): Promise<number> {
-  return (await forgeInvocations(harness)).filter(
-    (call) => call.via === 'http' && (call.operation === 'PRStates' || (call.route === 'glab api merge request list' && call.path.includes('iids'))),
-  ).length;
+/** A GitHub open PR every cleanup poll reads, in a repository of its own. */
+export interface ReadControl {
+  nodeId: string;
+  threadId: string;
+}
+
+const isStateRead = (call: ForgeInvocation) =>
+  call.via === 'http' && (call.operation === 'PRStates' || (call.route === 'glab api merge request list' && call.path.includes('iids')));
+
+const readsControl = (call: ForgeInvocation, control: ReadControl) =>
+  call.via === 'http' && call.operation === 'PRStates' && ((call.variables?.ids as string[] | undefined) ?? []).includes(control.nodeId);
+
+/**
+ * Seeds the control: an open PR, looked up, that the cleanup tracks and then
+ * reads in one request of its own on every poll, one per repository, so
+ * its reads mark the polls that ran. `expectNoMoreStateReads` and
+ * `stateReads` leave its reads out.
+ */
+export async function seedReadControl(harness: HarnessApp): Promise<ReadControl> {
+  const tag = randomUUID().slice(0, 8);
+  const nodeId = `PR_ao_read_control_${tag}`;
+  const control = await seedMergeFixture(harness, {
+    forge: 'github', name: `merge-read-control-${tag}`, titles: ['Read control'], branch: 'read-control', number: 900, nodeId,
+  });
+  await lookUpPR(harness, control);
+  return { nodeId, threadId: control.threadIds[0] };
+}
+
+/** The state reads the backend made of the fake forge, the control's left out. */
+export async function stateReads(harness: HarnessApp, control?: ReadControl): Promise<number> {
+  return (await forgeInvocations(harness)).filter((call) => isStateRead(call) && !(control && readsControl(call, control))).length;
 }
 
 /**
- * Prove no read is made for a while: the cleanup polls every `pollMs`, so
- * four polls' time with no new read means it stopped asking. An absence has
- * no event to wait for.
+ * Prove the cleanup no longer reads anything but the control: two polls
+ * read the control, each a full interval after the last, and nothing else
+ * was read meanwhile. A repository still tracked would have come due in
+ * the same polls.
  */
-export async function expectNoMoreStateReads(harness: HarnessApp, pollMs: number): Promise<void> {
-  const before = await stateReads(harness);
-  await new Promise((resolve) => setTimeout(resolve, pollMs * 4 + 500));
-  expect(await stateReads(harness), 'the cleanup kept reading a pull request it had settled').toBe(before);
+export async function expectNoMoreStateReads(harness: HarnessApp, control: ReadControl): Promise<void> {
+  // Tracked once the cleanup handles observations, which it does from the
+  // first client's catalog reads on (startMergedPRCleanup).
+  await expectTracked(harness, control.threadId, 900);
+  const before = await stateReads(harness, control);
+  const controlReads = async () => (await forgeInvocations(harness)).filter((call) => readsControl(call, control)).length;
+  const polled = await controlReads();
+  await expect.poll(controlReads, { timeout: 15_000, message: 'the cleanup stopped polling' }).toBeGreaterThanOrEqual(polled + 2);
+  expect(await stateReads(harness, control), 'the cleanup kept reading a pull request it had settled').toBe(before);
 }
 
 /** The timeline notices of the open thread whose text mentions `text`. */

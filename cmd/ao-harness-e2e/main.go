@@ -125,6 +125,23 @@ func run(args []string, stdout, stderr *os.File) int {
 		fmt.Fprintln(stderr, "ao-harness-e2e: run E2E TypeScript check:", err)
 		return 1
 	}
+	// The gate's wait rules (e2e/src/wait-scan.ts): no sleep and no wait
+	// that passes by timing out. A source read, so it fails every run and
+	// every CI shard in about a second rather than one spec's worker
+	// minutes in.
+	waits := exec.Command("pnpm", "exec", "node", "scripts/check-waits.ts")
+	waits.Dir = testDir
+	waits.Stdout = stdout
+	waits.Stderr = stderr
+	if err := waits.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			fmt.Fprintln(stderr, "ao-harness-e2e: E2E wait rules failed; fix the findings above")
+			return exitErr.ExitCode()
+		}
+		fmt.Fprintln(stderr, "ao-harness-e2e: run E2E wait rules:", err)
+		return 1
+	}
 	isolate := needsIsolation(opts.hostNetwork, netisolate.Inside())
 	if isolate {
 		if err := netisolate.Check(stderr); err != nil {

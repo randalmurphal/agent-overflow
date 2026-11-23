@@ -9,13 +9,19 @@
 // dial cadence itself: the browser logs every refused request, so the
 // ladder's rungs are what bounds the console during an outage. The screen
 // is as quiet: the closed Projects section gains no status line and runs no
-// animation through the retries, the computer's rows dim only after thirty
-// seconds down, and the Projects menu names its state.
+// animation through the retries, the computer's rows dim only once it has
+// been down the settle time (thirty seconds in the product, shortened
+// here), and the Projects menu names its state.
 import { test, expect, type Page } from '@playwright/test';
-import { launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import type { SeedResult } from './fixtures.js';
 import { expectProjectsMenuSays, watchProjectsQuiet } from './sidebar-quiet-helpers.js';
+
+// The unreachable settle (UNREACHABLE_SETTLE_MS). Ten seconds keeps the
+// window the dial ceiling below was sized for: the outage is watched from
+// the drop until the row dims.
+const SETTLE_MS = 10_000;
 
 interface Entry { type: string; text: string }
 
@@ -48,7 +54,7 @@ test('an offline paired computer logs once per outage and a draft pane is never 
   let remote: HarnessApp | undefined;
   const drain = collect(page);
   try {
-    home = await launchHarness();
+    home = await launchHarness({ env: harnessTiming({ 'unreachable-settle': `${SETTLE_MS}ms` }) });
     remote = await launchHarness();
     const pairing = await headlessPairing(remote);
     try {
@@ -115,16 +121,23 @@ test('an offline paired computer logs once per outage and a draft pane is never 
 
     // The laptop goes away. The ladder keeps dialing through the proxy,
     // which refuses the upgrade while the manifest is cached and answers
-    // 503 once it is refetched. Ten seconds holds several climbing attempts
-    // (250ms doubling), enough to show that only the first refetch is
-    // reported, and that the Projects section stays as it was through
-    // them: no status line, nothing animating, and the laptop's row not yet
-    // dimmed.
+    // 503 once it is refetched. The settle time holds several climbing
+    // attempts (250ms doubling), enough to show that only the first refetch
+    // is reported, and that the Projects section stays as it was through
+    // them: no status line and nothing animating, until the laptop's row
+    // dims, the settle time down without a break, and after, through a
+    // refresh of the open thread.
     const outageStart = Date.now();
+    let dimmedAfter = 0;
     await remote.stop();
-    const quiet = await watchProjectsQuiet(page, 10_000);
-    expect(quiet).toEqual({ samples: expect.any(Number), statusLines: [], animations: [], dimmed: 0 });
+    const quiet = await watchProjectsQuiet(page, async () => {
+      await expect(laptopRow).toHaveAttribute('data-machine-unreachable', 'true', { timeout: SETTLE_MS + 10_000 });
+      dimmedAfter = Date.now() - outageStart;
+      await poke();
+    });
+    expect(quiet).toEqual({ samples: expect.any(Number), statusLines: [], animations: [], dimmed: 1 });
     expect(quiet.samples).toBeGreaterThanOrEqual(15);
+    expect(dimmedAfter, 'the row dimmed before the settle time').toBeGreaterThanOrEqual(SETTLE_MS);
     const outage = drain();
     expect(outage.http503).toBeGreaterThanOrEqual(2);
     // Each dial is a browser-native console line, so the ladder's cadence
@@ -134,12 +147,8 @@ test('an offline paired computer logs once per outage and a draft pane is never 
     expect(outage.http503 + outage.socketFailed).toBeLessThanOrEqual(12);
     expect(outage).toMatchObject({ preparationFailed: 1, ensureConnected: 0, ownerUnknown: 0, errors: [] });
 
-    // Thirty seconds down without a break, the laptop's row dims. The
-    // Projects menu is where the laptop's state is said.
-    await expect(laptopRow).toHaveAttribute('data-machine-unreachable', 'true', { timeout: 40_000 });
-    expect(Date.now() - outageStart).toBeGreaterThanOrEqual(30_000);
+    // The Projects menu is where the laptop's state is said.
     await expectProjectsMenuSays(page, /Offline/);
-    expect(await watchProjectsQuiet(page, 1_000)).toMatchObject({ statusLines: [], animations: [] });
     // Its thread, opened now, says the laptop is offline.
     await expectLaptopThreadSaysOffline();
     await openLocal();
@@ -147,17 +156,19 @@ test('an offline paired computer logs once per outage and a draft pane is never 
 
     // A reload boots every store against the offline computer: one line
     // for its first failed dial, none per subscriber or per list read. The
-    // laptop has not connected in this window, so its row dims thirty
-    // seconds after the window began watching it, and the section stays
-    // quiet meanwhile.
+    // laptop has not connected in this window, so its row dims the settle
+    // time after the window began watching it, and the section stays quiet
+    // meanwhile. The window starts watching while the reload loads, before
+    // the clock below starts.
     await page.reload();
     const bootStart = Date.now();
     await openLocal();
-    const booted = await watchProjectsQuiet(page, 10_000);
-    expect(booted).toMatchObject({ statusLines: [], animations: [], dimmed: 0 });
-    await expect(laptopRow).toHaveAttribute('data-machine-unreachable', 'true', { timeout: 40_000 });
-    expect(Date.now() - bootStart).toBeGreaterThanOrEqual(25_000);
-    await poke();
+    const booted = await watchProjectsQuiet(page, async () => {
+      await expect(laptopRow).toHaveAttribute('data-machine-unreachable', 'true', { timeout: SETTLE_MS + 10_000 });
+      expect(Date.now() - bootStart, 'the row dimmed well before the settle time').toBeGreaterThanOrEqual(SETTLE_MS - 5_000);
+      await poke();
+    });
+    expect(booted).toMatchObject({ statusLines: [], animations: [], dimmed: 1 });
     const boot = drain();
     expect(boot.http503).toBeGreaterThanOrEqual(1);
     expect(boot).toMatchObject({ preparationFailed: 1, ensureConnected: 0, ownerUnknown: 0, errors: [] });

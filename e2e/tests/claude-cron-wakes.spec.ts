@@ -23,7 +23,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { Page, TestInfo } from '@playwright/test';
-import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test } from './fixtures.js';
 import {
   type ScenarioStep,
@@ -65,10 +65,10 @@ function capture(file: string, from: number, to: number): string[] {
 
 async function withHarness(
   page: Page,
-  timing: string,
+  timing: Record<string, string>,
   run: (harness: HarnessApp) => Promise<void>,
 ): Promise<void> {
-  const harness = await launchHarness({ env: { AO_HARNESS_TIMING: timing } });
+  const harness = await launchHarness({ env: harnessTiming(timing) });
   try {
     await run(harness);
   } finally {
@@ -128,7 +128,7 @@ test('an armed recurring cron job keeps its session alive until CronDelete relea
   test.setTimeout(120_000);
   // The session is a reap candidate after 3s idle; the sweep runs twice a
   // second. Every assertion below is about the cron record, not the cadence.
-  await withHarness(page, `${HARNESS_TIMING},idle-reap=3s,idle-reap-sweep=500ms`, async (harness) => {
+  await withHarness(page, { 'idle-reap': '3s', 'idle-reap-sweep': '500ms' }, async (harness) => {
     await harness.rpc('HarnessSetScenario', {
       scenario: claudeTurnsScenario('cron-reap', [
         [
@@ -146,11 +146,21 @@ test('an armed recurring cron job keeps its session alive until CronDelete relea
     const threadId = await seedAgentThread(harness, 'cron-reap', 'Cron reap');
     await openThread(harness, page, 'Cron reap');
     const mockId = await startMock(harness, threadId);
-    const exited = () =>
+    const exitsOf = (id: string) => () =>
       harness.countEvents<{ mockId: string; report: { kind: string } }>(
         'harness:mock',
-        (ev) => ev.mockId === mockId && ev.report.kind === 'exiting',
+        (ev) => ev.mockId === id && ev.report.kind === 'exiting',
       );
+    const exited = exitsOf(mockId);
+    // The barrier for "not reaped": a session with no job, started idle
+    // after the cron session last did anything, is reaped by sweeps that
+    // would have reaped the cron session too.
+    let controls = 0;
+    const reapAnIdleControl = async () => {
+      controls += 1;
+      const control = await seedAgentThread(harness, `cron-reap-control-${controls}`, `Idle control ${controls}`);
+      await expect.poll(exitsOf(await startMock(harness, control)), { timeout: 15_000 }).toBe(1);
+    };
 
     await harness.rpc('SendMessage', threadId, 'Schedule the cron job.', null);
     await expect(replyRow(page, SCHEDULED_REPLY)).toBeVisible();
@@ -161,14 +171,14 @@ test('an armed recurring cron job keeps its session alive until CronDelete relea
     // half below still runs when this fails.
     await expect.configure({ soft: true }).poll(() => updateWorkReason(harness), { message: 'a recurring job held a service update' }).toBe('');
 
-    // Several sweeps past the idle threshold with the job armed.
-    await page.waitForTimeout(10_000);
+    // Sweeps past the idle threshold with the job armed.
+    await reapAnIdleControl();
     expect(exited(), 'the session holding an armed recurring job was reaped').toBe(0);
 
     // The fire reaches the live session.
     await advance(harness, mockId, 'fire');
     await expect(replyRow(page, 'CRON-FIRED')).toBeVisible();
-    await page.waitForTimeout(5_000);
+    await reapAnIdleControl();
     expect(exited(), 'the session was reaped after its job fired').toBe(0);
 
     // CronDelete releases the job; the next sweeps reap the idle session.
@@ -179,7 +189,7 @@ test('an armed recurring cron job keeps its session alive until CronDelete relea
 });
 
 test('a cron fire renders as a scheduled turn with its prompt', async ({ page }, testInfo) => {
-  await withHarness(page, HARNESS_TIMING, async (harness) => {
+  await withHarness(page, {}, async (harness) => {
     await harness.rpc('HarnessSetScenario', {
       scenario: claudeTurnsScenario('cron-fire', [
         [
@@ -210,7 +220,7 @@ test('a cron fire renders as a scheduled turn with its prompt', async ({ page },
 });
 
 test('a cron fire held through a busy turn renders after that turn as a scheduled turn', async ({ page }, testInfo) => {
-  await withHarness(page, HARNESS_TIMING, async (harness) => {
+  await withHarness(page, {}, async (harness) => {
     await harness.rpc('HarnessSetScenario', {
       scenario: claudeTurnsScenario('cron-held', [
         // /loop 1m: CronCreate "*/1 * * * *".
@@ -265,7 +275,7 @@ function armScheduleTurn(n: number, completes = true): ScenarioStep {
 
 test('a CLI that exits by itself takes its scheduled wakeup and one-shot job with it', async ({ page }) => {
   test.setTimeout(90_000);
-  await withHarness(page, HARNESS_TIMING, async (harness) => {
+  await withHarness(page, {}, async (harness) => {
     const scheduleFor = (n: number, completes = true) =>
       harness.rpc('HarnessSetScenario', { scenario: claudeTurnsScenario(`exit-schedule-${n}`, [[armScheduleTurn(n, completes)]]) });
     const exitCleanly = (mockId: string) => harness.rpc('HarnessMockCommand', mockId, { type: 'exit', code: 0 });
@@ -366,7 +376,7 @@ function wakeMirror(uuid: string, body: string): string {
 test('a background completion and a Monitor event that wake an idle session each show one notice of what woke it', async ({ page }, testInfo) => {
   const buildSummary = `Background command "${BUILD_DESC}" completed (exit code 0)`;
   const watchEvent = 'ERROR deploy step 3 failed: connection refused';
-  await withHarness(page, HARNESS_TIMING, async (harness) => {
+  await withHarness(page, {}, async (harness) => {
     await harness.rpc('HarnessSetScenario', {
       scenario: claudeTurnsScenario('idle-wake', [
         [

@@ -44,6 +44,7 @@ import { HarnessApp } from './harness-app.ts';
 export type { HarnessBootstrap, HarnessLaunchRecord, LaunchOptions } from './harness-types.ts';
 export { HarnessApp } from './harness-app.ts';
 export type {
+  EventWatch,
   HarnessMockReport,
   HarnessMockEventData,
   McpResultFilter,
@@ -57,9 +58,21 @@ const BOOTSTRAP_PREFIX = '__AO_HARNESS__:';
 // in internal/diagenv): no spec is about these cadences, and waiting them out
 // dominated suite time. The pairing probe stays inside the credential
 // routes' per-peer budget (internal/transport/ratelimit.go). A spec that
-// needs product timing, or a further interval, passes its own
-// AO_HARNESS_TIMING in `env`.
+// needs product timing passes an empty AO_HARNESS_TIMING in `env`; one that
+// needs a further interval passes `harnessTiming({...})`.
 export const HARNESS_TIMING = 'pairing-probe=500ms,thread-poll=250ms,transfer-retry=250ms,pr-update-retry=250ms,pr-ci-live=250ms,pr-ci-follow=250ms,pr-ci-log-wait=500ms,wake-floor=1s,watch-failure-window=3s,usage-probe-gap=250ms';
+
+/**
+ * The AO_HARNESS_TIMING launch environment with `overrides` over
+ * HARNESS_TIMING, as Go durations by entry name: an override replaces the
+ * default of its name. main_harness.go harnessTimers is the one list of
+ * names, and the launch fails on a name it does not hold.
+ */
+export function harnessTiming(overrides: Record<string, string>): { AO_HARNESS_TIMING: string } {
+  const entries = new Map(HARNESS_TIMING.split(',').map((entry) => entry.split('=') as [string, string]));
+  for (const [name, value] of Object.entries(overrides)) entries.set(name, value);
+  return { AO_HARNESS_TIMING: [...entries].map(([name, value]) => `${name}=${value}`).join(',') };
+}
 
 // macOS exposes /var and /tmp as root-owned aliases under /private. Normalize
 // only those system prefixes; resolving arbitrary descendants would follow a

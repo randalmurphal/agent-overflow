@@ -517,6 +517,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// (app.IsolationConfig.OmitAgentMessageRunMembers).
 		OmitAgentMessageRunMembers: opts.HarnessReceiver != nil && opts.HarnessOlderComputer,
 		WatermarkInterval:          opts.HarnessTiming.Watermark,
+		FrontendTiming:             opts.HarnessTiming.Frontend,
 		// Late-bound for the same reason: the store opens during
 		// ServiceStartup, after this config is built. The transport only
 		// ever sees two strings.

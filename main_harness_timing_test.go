@@ -2,22 +2,29 @@ package main
 
 import (
 	"os"
+	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	appservice "agent-overflow/internal/app"
 )
 
 func TestParseHarnessTiming(t *testing.T) {
-	got, err := parseHarnessTiming(" pairing-probe=500ms, watermark=1s ,thread-poll=250ms,transfer-retry=100ms,pr-update=2s,pr-update-retry=20ms,pr-ci-live=30ms,pr-ci-follow=15ms,pr-ci-log-wait=40ms,merged-pr-poll=300ms,pr-lookup-retry=600ms,idle-reap=3s,idle-reap-sweep=500ms,wakeup-grace=2s,wake-floor=1s,watch-failure-window=3s,remote-watch-poll=90s,drain-stall=750ms,usage-probe-gap=700ms,usage-poll=2h,")
+	got, err := parseHarnessTiming(" pairing-probe=500ms, watermark=1s ,thread-poll=250ms,wake-retry=2s,unreachable-settle=3s,replay-timeout=4s,")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := harnessTiming{PairingProbe: 500 * time.Millisecond, Watermark: time.Second, ThreadPoll: 250 * time.Millisecond, TransferRetry: 100 * time.Millisecond, PRUpdate: 2 * time.Second, PRUpdateRetry: 20 * time.Millisecond, PRCILive: 30 * time.Millisecond, PRCIFollow: 15 * time.Millisecond, PRCILogWait: 40 * time.Millisecond, MergedPRPoll: 300 * time.Millisecond, PRLookupRetry: 600 * time.Millisecond, IdleReap: 3 * time.Second, IdleReapSweep: 500 * time.Millisecond, WakeupGrace: 2 * time.Second, WakeFloor: time.Second, WatchFailureWindow: 3 * time.Second, RemoteWatchPoll: 90 * time.Second, DrainStall: 750 * time.Millisecond, UsageProbeGap: 700 * time.Millisecond, UsagePoll: 2 * time.Hour}
-	if got != want {
+	var want harnessTiming
+	want.PairingProbe, want.Watermark = 500*time.Millisecond, time.Second
+	want.Isolation.ThreadRequestPoll, want.Isolation.ThreadWakeRetryBase = 250*time.Millisecond, 2*time.Second
+	want.Frontend = map[string]int64{"unreachable-settle": 3000, "replay-timeout": 4000}
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parsed %+v, want %+v", got, want)
 	}
-	if got, err := parseHarnessTiming(""); err != nil || got != (harnessTiming{}) {
+	if got, err := parseHarnessTiming(""); err != nil || !reflect.DeepEqual(got, harnessTiming{}) {
 		t.Fatalf("empty value = %+v, %v; want the product timing", got, err)
 	}
 	for _, bad := range []string{
@@ -28,6 +35,7 @@ func TestParseHarnessTiming(t *testing.T) {
 		"pairing-probe=-1s",
 		"probe=1s",
 		"watermark=1s,watermark=2s",
+		"replay-timeout=1s,replay-timeout=2s",
 	} {
 		if _, err := parseHarnessTiming(bad); err == nil {
 			t.Errorf("parseHarnessTiming(%q) accepted a malformed value", bad)
@@ -55,36 +63,34 @@ func TestHarnessTimingOnlyInHarnessBoot(t *testing.T) {
 			}
 		}
 	}
+	// Only the harness boot hands its timing to the transport: a --soak, a
+	// desktop or a served boot leaves it zero, so its manifest serves no
+	// frontend timing.
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		sets := regexp.MustCompile(`\bHarnessTiming:\s`).MatchString(readRootSource(t, name))
+		if sets != (name == "main_harness.go") {
+			t.Errorf("%s sets bootTransportOptions.HarnessTiming: %v", name, sets)
+		}
+	}
 	// The parsed value reaches each owner: the App's isolation pins, and the
 	// transport and attached-computer manager bootTransport builds.
 	for file, wirings := range map[string][]string{
 		"main_harness.go": {
 			`isolation\.Timing = timing`,
 			`HarnessTiming:\s+timing,`,
-			`ThreadRequestPoll:\s+opts\.Timing\.ThreadPoll,`,
-			`TransferPendingRetry:\s+opts\.Timing\.TransferRetry,`,
-			`PRUpdateInterval:\s+opts\.Timing\.PRUpdate,`,
-			`PRUpdateRetryBase:\s+opts\.Timing\.PRUpdateRetry,`,
-			`PRCILiveInterval:\s+opts\.Timing\.PRCILive,`,
-			`PRCIFollowInterval:\s+opts\.Timing\.PRCIFollow,`,
-			`PRCILogWaitInterval:\s+opts\.Timing\.PRCILogWait,`,
-			`IdleReapThreshold:\s+opts\.Timing\.IdleReap,`,
-			`IdleReapInterval:\s+opts\.Timing\.IdleReapSweep,`,
-			`WakeupReapGrace:\s+opts\.Timing\.WakeupGrace,`,
-			`AgentWakeFloor:\s+opts\.Timing\.WakeFloor,`,
-			`RemoteWatchPoll:\s+opts\.Timing\.RemoteWatchPoll,`,
-			`ProviderEventDrainStall:\s+opts\.Timing\.DrainStall,`,
-			`MergedPRPollInterval:\s+opts\.Timing\.MergedPRPoll,`,
-			`PRLookupRetryBase:\s+opts\.Timing\.PRLookupRetry,`,
-			`UsageProbeGap:\s+opts\.Timing\.UsageProbeGap,`,
-			`UsagePollInterval:\s+opts\.Timing\.UsagePoll,`,
-			`OmitOwnerOps:\s+opts\.OlderComputer,`,
-			`OmitAgentMessageRunMembers:\s+opts\.OlderComputer,`,
+			`config := opts\.Timing\.Isolation`,
+			`config\.OmitOwnerOps = opts\.OlderComputer`,
+			`config\.OmitAgentMessageRunMembers = opts\.OlderComputer`,
 			`isolation\.OlderComputer = envTruthy\(os\.Getenv\(diagenv\.HarnessOlderComputer\)\)`,
 			`HarnessOlderComputer:\s+isolation\.OlderComputer,`,
 		},
 		"main.go": {
 			`WatermarkInterval:\s+opts\.HarnessTiming\.Watermark,`,
+			`FrontendTiming:\s+opts\.HarnessTiming\.Frontend,`,
 			`bootAttachedBackends\(opts\.HarnessTiming\.PairingProbe\)`,
 			`manager\.SetActivationProbe\(activationProbe\)`,
 			`if opts\.HarnessOlderComputer \{\s+appOptions\.Skip, appOptions\.Reshape = olderComputerSurface\(\)`,
@@ -97,5 +103,87 @@ func TestHarnessTimingOnlyInHarnessBoot(t *testing.T) {
 				t.Errorf("%s no longer hands on the harness timing (%s)", file, wiring)
 			}
 		}
+	}
+}
+
+// Every harness timer reaches exactly one owner, and no other timer's: a
+// timer the boot hands on, one field of the App's isolation, or the page's
+// manifest entry of its name. Set alone, each changes that and nothing else.
+func TestEveryHarnessTimerReachesOneOwner(t *testing.T) {
+	const sentinel = 7 * time.Millisecond
+	durations := func(config appservice.IsolationConfig) []string {
+		var set []string
+		v := reflect.ValueOf(config)
+		for i := range v.NumField() {
+			if d, ok := v.Field(i).Interface().(time.Duration); ok && d == sentinel {
+				set = append(set, v.Type().Field(i).Name)
+			}
+		}
+		return set
+	}
+	owners := map[string]string{}
+	for _, timer := range harnessTimers {
+		timing, err := parseHarnessTiming(timer.name + "=7ms")
+		if err != nil {
+			t.Fatalf("%s: %v", timer.name, err)
+		}
+		isolated := durations(isolationConfig(harnessPaths{}, isolationOptions{Timing: timing}))
+		booted := 0
+		if timing.PairingProbe == sentinel {
+			booted++
+		}
+		if timing.Watermark == sentinel {
+			booted++
+		}
+		paged := 0
+		if timing.Frontend[timer.name] == sentinel.Milliseconds() {
+			paged = len(timing.Frontend)
+		}
+		if n := len(isolated) + booted + paged; n != 1 {
+			t.Errorf("%s reaches %d owners (isolation %v, boot %d, page %d); want one", timer.name, n, isolated, booted, paged)
+			continue
+		}
+		owner := "page " + timer.name
+		switch {
+		case len(isolated) == 1:
+			owner = isolated[0]
+		case timing.PairingProbe == sentinel:
+			owner = "PairingProbe"
+		case timing.Watermark == sentinel:
+			owner = "Watermark"
+		}
+		if other, taken := owners[owner]; taken {
+			t.Errorf("%s and %s both set %s", other, timer.name, owner)
+		}
+		owners[owner] = timer.name
+	}
+}
+
+// The page names the same timers the boot serves it: an entry the page
+// does not name fails its manifest, and one the boot does not serve never
+// moves the page's timer.
+func TestFrontendTimersMatchThePage(t *testing.T) {
+	var served []string
+	for _, timer := range harnessTimers {
+		if timer.field == nil {
+			served = append(served, timer.name)
+		}
+	}
+	source, err := os.ReadFile("frontend/src/lib/transport/harnessMode.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := regexp.MustCompile(`(?s)const FRONTEND_TIMERS[^\[]*\[(.*?)\]`).FindSubmatch(source)
+	if list == nil {
+		t.Fatal("harnessMode.ts no longer declares FRONTEND_TIMERS")
+	}
+	var named []string
+	for _, m := range regexp.MustCompile(`'([a-z-]+)'`).FindAllSubmatch(list[1], -1) {
+		named = append(named, string(m[1]))
+	}
+	slices.Sort(served)
+	slices.Sort(named)
+	if !slices.Equal(served, named) {
+		t.Fatalf("the boot serves the page %v; harnessMode.ts FRONTEND_TIMERS names %v", served, named)
 	}
 }

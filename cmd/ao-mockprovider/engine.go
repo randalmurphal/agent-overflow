@@ -118,21 +118,29 @@ type engine struct {
 
 	turnCh chan int
 
-	// startupDelay fires once, immediately before the adapter writes the
-	// first frame proving the provider is up. sync.Once rather than a
-	// flag because both adapters call it from their stdin goroutine while
-	// the engine goroutine is already running.
-	startupDelay sync.Once
+	// startup holds once, immediately before the adapter writes the first
+	// frame proving the provider is up. sync.Once rather than a flag
+	// because both adapters call it from their stdin goroutine while the
+	// engine goroutine is already running.
+	startup sync.Once
 }
 
-// awaitStartupDelay blocks for the scenario's startupDelayMs the FIRST
-// time an adapter is about to announce itself, and returns immediately
-// every time after. See scenario.Scenario.StartupDelayMs.
-func (e *engine) awaitStartupDelay() {
-	e.startupDelay.Do(func() {
-		if e.sc.StartupDelayMs > 0 {
-			log.Printf("startupDelayMs: holding the first provider frame for %dms", e.sc.StartupDelayMs)
-			sleepMs(e.sc.StartupDelayMs)
+// awaitStartup holds behind the scenario's startupGate the FIRST time an
+// adapter is about to announce itself, and returns immediately every time
+// after. See scenario.Scenario.StartupGate.
+func (e *engine) awaitStartup() {
+	e.startup.Do(func() {
+		name := e.sc.StartupGate
+		if name == "" {
+			return
+		}
+		e.mu.Lock()
+		turn := e.currentTurnLocked()
+		e.mu.Unlock()
+		log.Printf("startupGate: holding the first provider frame behind %q", name)
+		e.rep.report(control.Report{Kind: control.ReportWaitingSignal, Turn: turn, Detail: name})
+		if ch := e.openGate(turn, name); ch != nil {
+			<-ch
 		}
 	})
 }

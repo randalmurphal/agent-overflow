@@ -14,7 +14,7 @@ import type { Browser, Page } from '@playwright/test';
 import { realpath } from 'node:fs/promises';
 import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
-import { methodIdByName } from './offhost-helpers.js';
+import { callsInFlight, methodIdByName } from './offhost-helpers.js';
 
 const PROJECT = 'draft-worktree-app';
 /** Committed by the fixture and left unchecked-out, so a worktree can attach it. */
@@ -469,12 +469,15 @@ test('typing again while the erased draft is being deleted keeps every character
 }) => {
   await seedProject(harness);
   const hold = await holdDeleteReply(page);
+  // The page clock runs as the real one does; the save debounce is crossed
+  // below by moving it on.
+  await page.clock.install();
   const { input, original } = await eraseWithDeleteHeld(harness, page, hold);
 
   await input.pressSequentially('typed again');
   // The hold outlasts the composer's save debounce, so the new text's save
   // falls due while the reply is outstanding.
-  await page.waitForTimeout(1500);
+  await page.clock.fastForward(1500);
   hold.release();
 
   await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
@@ -541,10 +544,15 @@ test('text typed on other screens into a new thread this screen erases ends in a
   let shared = '';
   const others = await Promise.all([browser.newContext(), browser.newContext()]);
   try {
+    // Every page's clock runs as the real one does; the end moves them all
+    // on past the save debounce.
     const screens = await Promise.all(others.map(async (context) => {
       const other = await context.newPage();
-      return { page: other, saves: await holdDraftSaves(other, () => shared) };
+      await other.clock.install();
+      return { page: other, saves: await holdDraftSaves(other, () => shared), calls: callsInFlight(other) };
     }));
+    await page.clock.install();
+    const calls = callsInFlight(page);
     await openFreshDraft(harness, page);
     await page.getByLabel('Message Input').fill('half a thought');
     await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
@@ -573,7 +581,10 @@ test('text typed on other screens into a new thread this screen erases ends in a
     }
     await expect(page.getByLabel('Message Input')).toHaveValue('');
     await expect(errorToasts(page)).toHaveCount(0);
-    await page.waitForTimeout(500);
+    // Nothing a page still had due makes another thread: every debounce has
+    // run and every call it made is answered.
+    for (const view of [page, ...screens.map((screen) => screen.page)]) await view.clock.fastForward(1500);
+    await expect.poll(() => calls() + screens.reduce((sum, screen) => sum + screen.calls(), 0)).toBe(0);
     expect((await threadRows(harness)).length).toBe(2);
   } finally {
     await Promise.all(others.map((context) => context.close()));

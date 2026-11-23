@@ -23,6 +23,21 @@
 
 let harness = false;
 let pageMarker = '';
+
+/**
+ * The frontend timers a harness boot may shorten, by their
+ * AO_HARNESS_TIMING names: the page rows of main_harness.go `harnessTimers`,
+ * which TestFrontendTimersMatchThePage holds to this set. Each one's product
+ * constant stays the default; its owner reads it through `harnessInterval`
+ * when it arms.
+ */
+export type HarnessFrontendTimer = 'unreachable-settle' | 'agent-row-linger' | 'replay-timeout';
+const FRONTEND_TIMERS: ReadonlySet<string> = new Set<HarnessFrontendTimer>([
+  'unreachable-settle',
+  'agent-row-linger',
+  'replay-timeout',
+]);
+let timing: ReadonlyMap<HarnessFrontendTimer, number> = new Map();
 const waiting = new Set<() => void>();
 
 /** Whether this session is attached to a --harness / --soak backend. */
@@ -49,6 +64,37 @@ export function setHarnessSessionFromBootstrap(value: boolean): void {
 }
 
 
+/**
+ * The harness boot's override for `timer`, or `productMs`. Only a manifest
+ * that says harness carries overrides (internal/transport Config.FrontendTiming),
+ * so an ordinary boot always answers the product value.
+ */
+export function harnessInterval(timer: HarnessFrontendTimer, productMs: number): number {
+  return timing.get(timer) ?? productMs;
+}
+
+// Called by bootstrap.ts with the validated manifest's harness bit and its
+// `harnessTiming`. Timing without the harness bit is ignored: only a harness
+// boot may shorten a product timer. Latches like the harness bit, so a
+// refetched manifest cannot move a timer an owner already armed with. An
+// entry this build does not name, or a duration that is not a positive
+// number, is a defect in the boot that served it and throws.
+export function setHarnessTimingFromBootstrap(isHarness: boolean, value: unknown): void {
+  if (!isHarness || value === undefined || timing.size > 0) return;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`bootstrap harnessTiming is not an object: ${JSON.stringify(value)}`);
+  }
+  const next = new Map<HarnessFrontendTimer, number>();
+  for (const [name, ms] of Object.entries(value)) {
+    if (!FRONTEND_TIMERS.has(name)) throw new Error(`bootstrap harnessTiming names an unknown timer ${JSON.stringify(name)}`);
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) {
+      throw new Error(`bootstrap harnessTiming ${name} needs a positive duration, got ${JSON.stringify(ms)}`);
+    }
+    next.set(name as HarnessFrontendTimer, ms);
+  }
+  timing = next;
+}
+
 export function setHarnessPageMarkerFromBootstrap(value: unknown): void {
   if (typeof value === 'string' && value !== '') pageMarker = value;
 }
@@ -74,5 +120,6 @@ export function whenHarnessSession(arm: () => void): () => void {
 export function __resetHarnessModeForTest(): void {
   harness = false;
   pageMarker = '';
+  timing = new Map();
   waiting.clear();
 }

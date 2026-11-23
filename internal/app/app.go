@@ -1010,6 +1010,14 @@ type App struct {
 	// running job (IsolationConfig.RemoteWatchPoll). Zero keeps the
 	// product cadence.
 	remoteWatchPoll time.Duration
+	// wakeRetryBaseOverride replaces the first wake retry wait
+	// (IsolationConfig.ThreadWakeRetryBase); read through
+	// threadWakeRetryDelay. Zero keeps the product wait.
+	wakeRetryBaseOverride time.Duration
+	// agentSettledWindowOverride replaces how long a settled request stays in an
+	// Agents listing (IsolationConfig.AgentSettledWindow); read through
+	// agentSettledWindowSpan. Zero keeps the product window.
+	agentSettledWindowOverride time.Duration
 	// idleReap holds an isolated test boot's idle-session reaper timing
 	// (IsolationConfig). Zero fields keep the product values.
 	idleReap idleReapTiming

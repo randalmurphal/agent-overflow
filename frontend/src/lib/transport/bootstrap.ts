@@ -25,7 +25,7 @@ import {
   readBackendDescriptors,
   setBackendManifestFetcher,
 } from './manifestBackends';
-import { setHarnessPageMarkerFromBootstrap, setHarnessSessionFromBootstrap } from './harnessMode';
+import { setHarnessPageMarkerFromBootstrap, setHarnessSessionFromBootstrap, setHarnessTimingFromBootstrap } from './harnessMode';
 import { setPasskeysAvailableFromBootstrap } from './passkey';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 import { clampString } from './frames';
@@ -177,6 +177,12 @@ export interface Bootstrap {
    * ./harnessMode.ts.
    */
   harness?: boolean;
+  /**
+   * A harness boot's frontend timer overrides in milliseconds, by
+   * AO_HARNESS_TIMING name (./harnessMode.ts `harnessInterval`). Read only
+   * with `harness`.
+   */
+  harnessTiming?: unknown;
   /** This page is the host's own window (./pageHost.ts isHostWindow). */
   hostWindow?: boolean;
   pageMarker?: string;
@@ -365,6 +371,7 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
   // The harness bridge registers its page synchronously when this latch
   // flips. Publish the marker first so that first-load registration cannot
   // race with the waiter callback.
+  setHarnessTimingFromBootstrap(data.harness === true, data.harnessTiming);
   setHarnessSessionFromBootstrap(data.harness === true);
   // Re-validated on every manifest resolution, which is what makes a
   // mid-session generation re-mint (a restored backend) observable on

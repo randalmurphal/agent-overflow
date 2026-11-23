@@ -116,6 +116,18 @@ type IsolationConfig struct {
 	// asserts what the readings it sets did can keep the poll from taking
 	// one of its own in between. Zero keeps the product tick.
 	UsagePollInterval time.Duration
+	// ThreadWakeRetryBase replaces threadWakeRetryBase, the first wait
+	// before an undelivered wake is tried again; the ceiling keeps its
+	// product ratio (threadWakeRetryDelay). Zero keeps the product wait.
+	ThreadWakeRetryBase time.Duration
+	// AgentSettledWindow replaces threadAgentSettledWindow, how long a
+	// settled request stays in an Agents listing. Zero keeps the product
+	// window.
+	AgentSettledWindow time.Duration
+	// PeerListTimeout replaces threadAgentPeerListTimeout, the bound on a
+	// forwarded Agents listing, and with it every bound derived from it
+	// (threadAgentPeerBound). Zero keeps the product bound.
+	PeerListTimeout time.Duration
 	// OmitOwnerOps makes this computer answer agent_owner_op as a build
 	// before owner operations does, an unknown write call, so a paired
 	// spawner's archive or delete names it as running an older version.
@@ -170,6 +182,9 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.agentWakes.floorOverride = config.AgentWakeFloor
 	a.agentWakes.failures.windowOverride = config.AgentWatchFailureWindow
 	a.remoteWatchPoll = config.RemoteWatchPoll
+	a.wakeRetryBaseOverride = config.ThreadWakeRetryBase
+	a.agentSettledWindowOverride = config.AgentSettledWindow
+	a.threadAgentPeers.bound = threadAgentPeerBound(config.PeerListTimeout)
 	a.providerEvents.drainStall = config.ProviderEventDrainStall
 	a.mergedPRs.interval = config.MergedPRPollInterval
 	// The mock provider's credential carries a mock bearer. The Claude usage

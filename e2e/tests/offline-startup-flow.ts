@@ -51,8 +51,9 @@ export function offlineStartupFlow(): void {
       }).observe(document, { subtree: true, childList: true });
     });
     const answers = socketAnswers();
+    let refused = 0;
     await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
-      if (!online) { void socket.close({ code: 1012, reason: 'test offline launch' }); return; }
+      if (!online) { refused += 1; void socket.close({ code: 1012, reason: 'test offline launch' }); return; }
       answers.connect(socket);
     });
     try {
@@ -78,8 +79,10 @@ export function offlineStartupFlow(): void {
       await expect(page.getByTestId('thread-row')).toHaveCount(1);
       // The banner says the computer is unreachable and carries Retry, so
       // the Projects section adds no line and runs nothing through the
-      // ladder's attempts.
-      expect(await watchProjectsQuiet(page, 6_000)).toMatchObject({ statusLines: [], animations: [] });
+      // ladder's next two attempts.
+      const dialed = refused;
+      expect(await watchProjectsQuiet(page, () => expect.poll(() => refused, { timeout: 30_000 }).toBeGreaterThanOrEqual(dialed + 2)))
+        .toMatchObject({ statusLines: [], animations: [] });
       await expect(page.getByTestId('transport-status-retry')).toBeVisible();
       expect(toasts).toEqual([]);
       const answered = answers.count();

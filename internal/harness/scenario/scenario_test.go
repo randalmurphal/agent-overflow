@@ -147,23 +147,20 @@ func TestRepeatFixturePathsAreCollected(t *testing.T) {
 	}
 }
 
-// TestStartupDelayValidation: the field is a deliberate stall, so its
-// bounds are what stop a typo (a stray zero, a negative) from becoming a
-// harness run that looks hung rather than slow.
-func TestStartupDelayValidation(t *testing.T) {
-	doc := func(ms string) string {
-		return `{"version":1,"name":"x","provider":"claude","startupDelayMs":` + ms +
-			`,"turns":[{"steps":[{"delayMs":1}]}]}`
+// TestStartupGateValidation: a gate named with stray space could never be
+// released by the advance a spec sends.
+func TestStartupGateValidation(t *testing.T) {
+	doc := func(gate string) string {
+		return `{"version":1,"name":"x","provider":"claude","startupGate":"` + gate +
+			`","turns":[{"steps":[{"delayMs":1}]}]}`
 	}
-	for _, ms := range []string{"0", "1", "30000"} {
-		if _, err := Parse([]byte(doc(ms))); err != nil {
-			t.Errorf("startupDelayMs %s was rejected: %v", ms, err)
+	for _, gate := range []string{"", "held-start"} {
+		if _, err := Parse([]byte(doc(gate))); err != nil {
+			t.Errorf("startupGate %q was rejected: %v", gate, err)
 		}
 	}
-	for _, ms := range []string{"-1", "30001", "600000"} {
-		if _, err := Parse([]byte(doc(ms))); err == nil {
-			t.Errorf("startupDelayMs %s was accepted; the cap is %d", ms, MaxStartupDelayMs)
-		}
+	if _, err := Parse([]byte(doc(" held"))); err == nil {
+		t.Errorf("startupGate with surrounding space was accepted")
 	}
 }
 
@@ -238,8 +235,8 @@ func TestNewFieldsDefaultToOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if s.StartupDelayMs != 0 || s.ProviderVersion != "" {
-		t.Fatalf("scenario defaults changed: startupDelayMs=%d providerVersion=%q", s.StartupDelayMs, s.ProviderVersion)
+	if s.StartupGate != "" || s.ProviderVersion != "" {
+		t.Fatalf("scenario defaults changed: startupGate=%q providerVersion=%q", s.StartupGate, s.ProviderVersion)
 	}
 	for _, turn := range s.Turns {
 		for _, st := range turn.Steps {
