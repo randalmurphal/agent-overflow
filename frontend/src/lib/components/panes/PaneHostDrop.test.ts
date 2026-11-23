@@ -630,6 +630,25 @@ describe('PaneHost drag and drop', () => {
     expect(getPromotedPaneId()).toBeNull();
   });
 
+  // Another window's drag starts nowhere this document hears: its first
+  // dragover over the strip is the first this strip learns of it.
+  for (const [what, type] of [
+    ['a thread row', THREAD_ROW_DRAG_MIME],
+    ['a tool', TOOL_PANE_DRAG_MIME],
+  ] as const) {
+    it(`${what} dragged in from another window demotes a promoted pane; a drag that places nothing leaves it`, async () => {
+      const { pane } = renderTwoPanes();
+      promotePane('right');
+      await tick();
+      const text = { types: ['text/plain'], getData: () => '' } as unknown as DataTransfer;
+      await dispatchDrag(pane('right'), 'dragover', text, 600);
+      expect(getPromotedPaneId()).toBe('right');
+      const foreign = { types: [type], dropEffect: 'none', getData: () => '' } as unknown as DataTransfer;
+      await dispatchDrag(pane('right'), 'dragover', foreign, 600);
+      expect(getPromotedPaneId()).toBeNull();
+    });
+  }
+
   it('resolves a drop slot from a promoted pane\'s placeholder, not its section', async () => {
     const { rendered, pane } = renderTwoPanes();
     promotePane('right');

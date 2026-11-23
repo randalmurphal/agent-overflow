@@ -21,7 +21,8 @@ import {
 } from './browserCompanion.svelte';
 import { addressFocusIntent, armAddressFocus, settleAddressFocus, takeAddressFocus } from './browserAddressFocus.svelte';
 import { closeCompanion, companionForSource, installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
-import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
+import { getPromotedPaneId, promotePane, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
+import { REVEAL_PANE_EVENT } from './eventNames';
 import { createPane, focusPane, getPane, resetPanesForTest } from './panes.svelte';
 import { makeThread } from '../../test/helpers/chat';
 import { attachBrowserPaneForTest, pageIdForTest, paneForTest } from '../../test/helpers/browserPane';
@@ -190,6 +191,68 @@ describe('the chat header browser button', () => {
     expect(act).toHaveBeenCalledTimes(1);
     expect(act.mock.calls[0][1]).toMatchObject({ kind: 'hide' });
     expect(companionForSource('main', 'browser')).toBeNull();
+  });
+
+  // A maximized pane is the user's; only the user's own press or link
+  // brings a pane out from under it.
+  describe('while a pane is maximized', () => {
+    let reveals: string[] = [];
+    const onReveal = (event: Event): void => {
+      reveals.push((event as CustomEvent<{ paneId: string }>).detail.paneId);
+    };
+    beforeEach(() => {
+      reveals = [];
+      window.addEventListener(REVEAL_PANE_EVENT, onReveal);
+    });
+    afterEach(() => window.removeEventListener(REVEAL_PANE_EVENT, onReveal));
+
+    it('a state from the agent opens the pane without revealing it; with none maximized it reveals', () => {
+      promotePane('main');
+      applyBrowserCompanionState(shown(1) as never);
+      expect(companionForSource('main', 'browser')).not.toBeNull();
+      expect(reveals).toEqual([]);
+      expect(getPromotedPaneId()).toBe('main');
+
+      applyBrowserCompanionState(none(2) as never);
+      expect(companionForSource('main', 'browser')).toBeNull();
+      resetPaneLayoutForTest();
+      setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
+      applyBrowserCompanionState(shown(3) as never);
+      expect(reveals).toEqual(['browser-main']);
+    });
+
+    it('the header press on a pane under the maximized one shows it rather than closing it', async () => {
+      applyBrowserCompanionState(shown(1) as never);
+      promotePane('main');
+      reveals = [];
+      expect(browserHeaderIntent('thread-browser').kind).toBe('show');
+      expect(browserHeaderButton('thread-browser')).toMatchObject({ rendered: true, pressed: false });
+      const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => shown(2)));
+      await runBrowserHeaderIntent(browserHeaderIntent('thread-browser'));
+      expect(kinds(act)).toEqual(['show-browser']);
+      expect(companionForSource('main', 'browser')).not.toBeNull();
+      expect(reveals).toEqual(['browser-main']);
+    });
+
+    it('a link opened in the thread\'s browser reveals its pane; a refused one does not', async () => {
+      applyBrowserCompanionState(shown(1) as never);
+      promotePane('main');
+      reveals = [];
+      setBindingMock('BrowserCompanionDo', vi.fn(async () => { throw new Error('refused'); }));
+      expect(await openBrowserTab('thread-browser', { address: 'https://example.com/' })).not.toBeNull();
+      expect(reveals).toEqual([]);
+      setBindingMock('BrowserCompanionDo', vi.fn(async () => shown(2)));
+      expect(await openBrowserTab('thread-browser', { address: 'https://example.com/' })).toBeNull();
+      expect(reveals).toEqual(['browser-main']);
+    });
+
+    it('a press or link on a pane already on screen reveals nothing more', async () => {
+      applyBrowserCompanionState(shown(1) as never);
+      reveals = [];
+      setBindingMock('BrowserCompanionDo', vi.fn(async () => shown(2)));
+      expect(await openBrowserTab('thread-browser', { address: 'https://example.com/' })).toBeNull();
+      expect(reveals).toEqual([]);
+    });
   });
 
   // The tab the show opened is named in the answer, and its address bar
