@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -364,8 +365,18 @@ func (a *App) startSession(ctx context.Context, threadID string) error {
 }
 
 // startRegisteredSession is startSession that also returns the session the
-// start registered.
+// start registered. It is the one door every start goes through, so it names
+// the failed step once: "start session: <cause>". Nothing below it adds the
+// prefix, and its callers do not add it again.
 func (a *App) startRegisteredSession(ctx context.Context, threadID string) (session, error) {
+	sess, err := a.startRegisteredSessionOnce(ctx, threadID)
+	if err != nil {
+		return session{}, fmt.Errorf("start session: %w", err)
+	}
+	return sess, nil
+}
+
+func (a *App) startRegisteredSessionOnce(ctx context.Context, threadID string) (session, error) {
 	if a.shuttingDown.Load() {
 		return session{}, ErrShuttingDown
 	}

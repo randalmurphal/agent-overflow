@@ -220,14 +220,12 @@ func TestCodexVersionRefusalReachesTheThreadOnSend(t *testing.T) {
 	}
 	found := false
 	for _, item := range items {
-		// Both the send and the start name the failed step; the refusal's
-		// own message follows them.
-		if item.Kind == "error" && item.Summary == "Failed to send: start session: start session: "+want {
+		if item.Kind == "error" && item.Summary == "Failed to send: start session: "+want {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("no error row reads %q: %+v", "Failed to send: start session: start session: "+want, items)
+		t.Fatalf("no error row reads %q: %+v", "Failed to send: start session: "+want, items)
 	}
 	if _, ok := app.sessionRuntime.Get(thread.ID); ok {
 		t.Fatal("a refused send left a session registered")

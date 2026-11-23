@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -109,12 +110,12 @@ func TestStartSessionRefusesAWorkspaceOutsideTheIsolatedRoot(t *testing.T) {
 		Token:    "keep-me",
 	})
 
-	err := app.startSessionNow(thread.ID)
+	err := app.startSession(context.Background(), thread.ID)
 	if err == nil {
-		t.Fatal("startSessionNow() spawned a session in a workspace outside the harness data root")
+		t.Fatal("startSession() spawned a session in a workspace outside the harness data root")
 	}
-	if !strings.Contains(err.Error(), "start session:") || !strings.Contains(err.Error(), "outside the harness data root") {
-		t.Fatalf("startSessionNow() error = %v, want the harness-root refusal on the start-session path", err)
+	if !strings.HasPrefix(err.Error(), "start session: ") || !strings.Contains(err.Error(), "outside the harness data root") {
+		t.Fatalf("startSession() error = %v, want the harness-root refusal on the start-session path", err)
 	}
 	existing, ok := app.sessionManager().get(thread.ID)
 	if !ok || existing.Token != "keep-me" {
@@ -145,10 +146,10 @@ func TestStartSessionRefusesAWorkspaceThatIsGone(t *testing.T) {
 		Token:    "keep-me",
 	})
 
-	err := app.startSessionNow(thread.ID)
+	err := app.startSession(context.Background(), thread.ID)
 	want := "start session: workspace " + gone + " no longer exists"
 	if err == nil || err.Error() != want {
-		t.Fatalf("startSessionNow() error = %v, want %q", err, want)
+		t.Fatalf("startSession() error = %v, want %q", err, want)
 	}
 	existing, ok := app.sessionManager().get(thread.ID)
 	if !ok || existing.Token != "keep-me" {

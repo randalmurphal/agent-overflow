@@ -178,7 +178,7 @@ func (a *App) startSessionNow(threadID string) error {
 	}
 	t, err := a.store.GetThread(threadID)
 	if err != nil {
-		return fmt.Errorf("start session: %w", err)
+		return err
 	}
 	if err := a.store.CheckThreadExecutionAccess(t); err != nil {
 		return err
@@ -186,7 +186,7 @@ func (a *App) startSessionNow(threadID string) error {
 	sanitized := a.sanitizeThreadModelSettings(t)
 	if !chatmodel.SameModelFields(t, sanitized) {
 		if err := a.store.UpdateThreadModelSettings(threadID, t.Provider, sanitized.ModelSettings()); err != nil {
-			return fmt.Errorf("start session: persist live model settings: %w", err)
+			return fmt.Errorf("persist live model settings: %w", err)
 		}
 		a.announceThread(triage.ThreadActionFull, threadID)
 		t = sanitized
@@ -203,17 +203,17 @@ func (a *App) startSessionNow(threadID string) error {
 
 	opts, err := a.buildSessionOptions(t)
 	if err != nil {
-		return fmt.Errorf("start session: %w", err)
+		return err
 	}
 	// Before anything is torn down, so a refused start leaves the existing
 	// session running (app_isolated_workspace.go).
 	if err := a.requireIsolatedWorkspace(opts.WorkDir); err != nil {
-		return fmt.Errorf("start session: %w", err)
+		return err
 	}
 	// Also before the transcript is settled under the workspace, which would
 	// otherwise report its own failure for a directory that is gone.
 	if err := requireWorkspaceDir(opts.WorkDir); err != nil {
-		return fmt.Errorf("start session: %w", err)
+		return err
 	}
 	// Spawn-only, and the one place the settings-level override is decided
 	// for this session. The resolution travels to ensureClaudeMemoryDir
@@ -222,22 +222,22 @@ func (a *App) startSessionNow(threadID string) error {
 	// disagree.
 	promptOverride, err := a.applySettingsOwnedAxes(t, &opts)
 	if err != nil {
-		return fmt.Errorf("start session: %w", err)
+		return err
 	}
 	// The thread's sub-thread place fixes, for this session's life, whether
 	// it has thread_spawn and its provider's own subagents.
 	place, err := a.subThreadPlaceOf(threadID)
 	if err != nil {
-		return fmt.Errorf("start session: %w", err)
+		return err
 	}
 	withoutNativeSubagents(&opts, t.Provider, place)
 	// Before anything is torn down: an assistant whose transcript the
 	// provider cleaned up continues in a new thread instead.
 	if err := a.requireAssistantSession(t, opts); err != nil {
-		return fmt.Errorf("start session: %w", err)
+		return err
 	}
 	if err := a.stopExistingSessionLocked(threadID); err != nil {
-		return fmt.Errorf("start session: %w", err)
+		return err
 	}
 	// The transcript must sit under the workspace's project slug before
 	// `--resume` runs from that cwd. The CLI relocates it itself when it
@@ -263,11 +263,11 @@ func (a *App) startSessionNow(threadID string) error {
 	if t.Provider == string(provider.Claude) && opts.ForkSession && t.PendingForkResumeAt != "" {
 		projectsDir, err := a.claudeProjectsDir()
 		if err != nil {
-			return fmt.Errorf("start session: %w", err)
+			return err
 		}
 		cursor, err := resolveClaudeForkResumeAt(projectsDir, opts.Resume, opts.WorkDir, t.PendingForkResumeAt)
 		if err != nil {
-			return fmt.Errorf("start session: resolve fork resume cursor: %w", err)
+			return fmt.Errorf("resolve fork resume cursor: %w", err)
 		}
 		opts.ResumeAt = cursor
 	}
@@ -301,21 +301,21 @@ func (a *App) startSessionNow(threadID string) error {
 	}()
 	browserServers, err := a.browserMCPConfigForThread(t, sessionToken)
 	if err != nil {
-		return fmt.Errorf("start session: register browser tools: %w", err)
+		return fmt.Errorf("register browser tools: %w", err)
 	}
 
 	remoteRevision := a.remoteMCP.revision.Load()
 	remoteServers, err := a.remoteMCPConfigForThread(t, sessionToken)
 	if err != nil {
-		return fmt.Errorf("start session: register remote tools: %w", err)
+		return fmt.Errorf("register remote tools: %w", err)
 	}
 	threadServers, err := a.threadMCPConfigForThread(t, sessionToken, place)
 	if err != nil {
-		return fmt.Errorf("start session: register thread tools: %w", err)
+		return fmt.Errorf("register thread tools: %w", err)
 	}
 	workflowServers, err := a.workflowMCPConfigForThread(t, sessionToken)
 	if err != nil {
-		return fmt.Errorf("start session: register workflow tools: %w", err)
+		return fmt.Errorf("register workflow tools: %w", err)
 	}
 	if browserServers == nil {
 		browserServers = map[string]any{}
@@ -343,13 +343,13 @@ func (a *App) startSessionNow(threadID string) error {
 	// persisted for resume, while old live turns and PTYs leave the tray.
 	if t.Provider == string(provider.Codex) {
 		if err := a.retireCodexBackgroundRuntime(threadID); err != nil {
-			return fmt.Errorf("start session: %w", err)
+			return err
 		}
 	}
 
 	agent, err := a.readStandingAgentSession(t)
 	if err != nil {
-		return fmt.Errorf("start session: %w", err)
+		return err
 	}
 	// A read-only session refuses every write, so its memory comes
 	// without the write rules; claude-tui leaves approvals to the
@@ -357,7 +357,7 @@ func (a *App) startSessionNow(threadID string) error {
 	readOnly := opts.RuntimeMode == provider.RuntimeReadOnly && provider.CapabilitiesForProvider(t.Provider).EnforcesRuntimeMode
 	mem, err := a.readSessionMemory(t, agent.Agent, opts.Resume != "", readOnly)
 	if err != nil {
-		return fmt.Errorf("start session: %w", err)
+		return err
 	}
 	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, agent, mem, place, onEvent)
 	if err != nil {
@@ -369,7 +369,7 @@ func (a *App) startSessionNow(threadID string) error {
 		// The start failed for its own reason; the memory that could not be
 		// read is still news the user needs before the next attempt.
 		a.reportSessionMemory(threadID, mem)
-		return fmt.Errorf("start session: %w", err)
+		return err
 	}
 
 	if mem.Hook != nil {

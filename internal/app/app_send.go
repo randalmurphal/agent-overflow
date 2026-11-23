@@ -744,7 +744,7 @@ func (a *App) sendMessageLocked(
 	if opts.onUserMessageReady != nil {
 		if _, live := a.sessionManager().get(threadID); !live {
 			if err := a.startSession(ctx, threadID); err != nil {
-				return store.Item{}, fmt.Errorf("send message: start session: %w", err)
+				return store.Item{}, fmt.Errorf("send message: %w", err)
 			}
 		}
 	}
@@ -881,7 +881,7 @@ func (a *App) sendMessageLocked(
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		if startErr := a.startSession(ctx, threadID); startErr != nil {
-			err = fmt.Errorf("start session: %w", startErr)
+			err = startErr
 			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
 			// The handoff that start set off puts the person's text in the
 			// new thread's composer, so the client keeps it out of this
