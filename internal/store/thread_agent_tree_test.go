@@ -751,9 +751,9 @@ func referenceAgentTree(t *testing.T, s *Store, root string, depth int) []string
 
 // The listing matches the walk it replaced on random forests of spawns,
 // each thread reached by at most one, with sends between any threads and
-// settled rows, and lists every request once. The graphs share one store:
-// no request joins two of them, so each listing also passes over the rows
-// of every graph before it.
+// settled rows, lists every request once, and leaves the stored marks
+// equal to the walk's. The graphs share one store: no request joins two of
+// them, so each listing also passes over the rows of every graph before it.
 func TestListThreadAgentTreeMatchesTheWalkOnRandomForests(t *testing.T) {
 	t.Parallel()
 	random := rand.New(rand.NewPCG(7, 155))
@@ -832,10 +832,12 @@ func TestListThreadAgentTreeMatchesTheWalkOnRandomForests(t *testing.T) {
 				t.Fatalf("graph %d depth %d named %v:\n got %v\nwant %v", graph, depth, named.Tokens, got, wantNamed)
 			}
 		}
-		// The reads above write nothing, so one check of the marks covers
-		// the graph.
-		assertAgentTreeMarks(t, s.db, fmt.Sprintf("graph %d", graph))
 	}
+	// The reads write nothing and no request joins two graphs, so the
+	// stored marks of every graph are checked once, against the walk over
+	// the whole store, after the last is seeded. A mark is named by its
+	// token, which names its graph.
+	assertAgentTreeMarks(t, s.db, "every graph")
 }
 
 // Below a spawn whose run ended, a worker's row shows only what that run
