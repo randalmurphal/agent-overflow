@@ -1077,40 +1077,6 @@ func TestUpdateContextWindowInvalid(t *testing.T) {
 	}
 }
 
-func TestUpdateProviderValid(t *testing.T) {
-	s := newTestStore(t)
-	proj := newTestProject(t, s, "proj-prov", "/tmp/prov")
-
-	thr := makeThread("thread-prov", "claude")
-	thr.ProjectID = proj.ID
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("CreateThread(): %v", err)
-	}
-
-	if err := s.UpdateProvider(thr.ID, "codex"); err != nil {
-		t.Fatalf("UpdateProvider(codex): %v", err)
-	}
-	got, _ := s.GetThread(thr.ID)
-	if got.Provider != "codex" {
-		t.Fatalf("Provider = %q, want codex", got.Provider)
-	}
-}
-
-func TestUpdateProviderInvalid(t *testing.T) {
-	s := newTestStore(t)
-	proj := newTestProject(t, s, "proj-prov-bad", "/tmp/pb")
-
-	thr := makeThread("thread-prov-bad", "claude")
-	thr.ProjectID = proj.ID
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("CreateThread(): %v", err)
-	}
-
-	if err := s.UpdateProvider(thr.ID, "bing"); !errors.Is(err, ErrInvalidProvider) {
-		t.Fatalf("UpdateProvider(bing) = %v, want ErrInvalidProvider", err)
-	}
-}
-
 func TestUpdateBranchForWorkspacePersists(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-branch", "/tmp/branch")

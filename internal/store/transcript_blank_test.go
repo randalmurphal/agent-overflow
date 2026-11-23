@@ -209,9 +209,7 @@ func TestBlankLegacyTranscriptBatchRechecksTheSelection(t *testing.T) {
 	if err != nil || len(listed) != 2 {
 		t.Fatalf("listed = %+v, %v; want both payloads", listed, err)
 	}
-	if err := s.UpdateProvider("switched", "codex"); err != nil {
-		t.Fatal(err)
-	}
+	mustExec(t, s.db, `UPDATE threads SET provider = 'codex' WHERE id = 'switched'`)
 	mustExec(t, s.db, `UPDATE payloads SET meta = '{"outputFileState":"pending"}' WHERE thread_id = 'claude' AND id = 'p-agent'`)
 
 	count, bytes, err := s.blankLegacyTranscriptBatch(listed)

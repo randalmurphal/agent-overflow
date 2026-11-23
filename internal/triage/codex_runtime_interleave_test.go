@@ -13,10 +13,7 @@ func TestCodexRuntimeActivityPreservesProviderMessage(t *testing.T) {
 			for _, scope := range []string{"", "agent-1"} {
 				t.Run(activity+"/"+stream+"/"+scope, func(t *testing.T) {
 					router, st, _ := newTestRouter(t)
-					createTestThread(t, st, "t1")
-					if err := st.UpdateProvider("t1", "codex"); err != nil {
-						t.Fatal(err)
-					}
+					createTestThreadWithProvider(t, st, "t1", "codex")
 					seedOpenTurn(t, router, st, "t1", 0)
 					deltaKind, itemKind := provider.EventTextDelta, itemKindAssistantText
 					if stream == "thinking" {

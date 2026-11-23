@@ -579,13 +579,18 @@ func storedTodo(t *testing.T, st *store.Store, threadID string) (store.ThreadLiv
 
 func createTestThread(t *testing.T, st *store.Store, id string) {
 	t.Helper()
+	createTestThreadWithProvider(t, st, id, "claude")
+}
+
+func createTestThreadWithProvider(t *testing.T, st *store.Store, id, providerName string) {
+	t.Helper()
 	ensureTriageProject(t, st)
 	now := time.Now().UnixMilli()
 	err := st.CreateThread(store.Thread{
 		ID:            id,
 		ProjectID:     triageTestProjectID,
 		Title:         "Test",
-		Provider:      "claude",
+		Provider:      providerName,
 		WorkspacePath: "/tmp",
 		CreatedAt:     now,
 		UpdatedAt:     now,

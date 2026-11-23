@@ -15,10 +15,7 @@ import (
 
 func createCodexBackgroundTestThread(t *testing.T, st *store.Store, id string) {
 	t.Helper()
-	createTestThread(t, st, id)
-	if err := st.UpdateProvider(id, "codex"); err != nil {
-		t.Fatalf("set provider: %v", err)
-	}
+	createTestThreadWithProvider(t, st, id, "codex")
 }
 
 func buildUnifiedExecStartMeta(t *testing.T, processID, command string) json.RawMessage {

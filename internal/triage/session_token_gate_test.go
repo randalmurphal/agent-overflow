@@ -183,7 +183,7 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 			return state != nil && state.unifiedExec["exec-1"] != nil
 		}},
 		{"codex live tray", "codex subagent status", func(t *testing.T, r *Router, token string) {
-			if err := r.store.UpdateProvider(threadID, "codex"); err != nil {
+			if err := r.store.UpdateThreadModelSettings(threadID, "claude", store.ThreadModelSettings{Provider: "codex"}); err != nil {
 				t.Fatal(err)
 			}
 			seedCodexSpawnCard(t, r, r.store, threadID, "spawn-1", "child-1")
@@ -199,7 +199,7 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 			return state == nil || state.spawnAgent["spawn-1"] == nil
 		}},
 		{"codex live tray", "codex child terminal", func(t *testing.T, r *Router, token string) {
-			if err := r.store.UpdateProvider(threadID, "codex"); err != nil {
+			if err := r.store.UpdateThreadModelSettings(threadID, "claude", store.ThreadModelSettings{Provider: "codex"}); err != nil {
 				t.Fatal(err)
 			}
 			seedCodexSpawnCard(t, r, r.store, threadID, "spawn-1", "child-1")

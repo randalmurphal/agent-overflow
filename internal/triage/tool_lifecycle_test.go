@@ -240,10 +240,7 @@ func TestToolStartSplitsAssistantTextAroundVisibleToolRow(t *testing.T) {
 
 func TestCodexCompletionOnlyToolBetweenCompletedMessages(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	if err := st.UpdateProvider("t1", "codex"); err != nil {
-		t.Fatalf("set provider: %v", err)
-	}
+	createTestThreadWithProvider(t, st, "t1", "codex")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -976,10 +973,7 @@ func TestToolCompletionWithoutContentDoesNotAttachEmptyPayload(t *testing.T) {
 
 func TestToolCompletionMergesCodexWaitAgentMeta(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	if err := st.UpdateProvider("t1", "codex"); err != nil {
-		t.Fatalf("set provider: %v", err)
-	}
+	createTestThreadWithProvider(t, st, "t1", "codex")
 
 	startMeta, _ := json.Marshal(map[string]any{
 		"toolName": "wait_agent",
@@ -1031,10 +1025,7 @@ func TestToolCompletionMergesCodexWaitAgentMeta(t *testing.T) {
 
 func TestToolCompletionPreservesCodexWaitStartReceiversSeparatelyOnReplay(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	if err := st.UpdateProvider("t1", "codex"); err != nil {
-		t.Fatalf("set provider: %v", err)
-	}
+	createTestThreadWithProvider(t, st, "t1", "codex")
 
 	startMeta, _ := json.Marshal(map[string]any{
 		"toolName": "wait_agent",
@@ -1093,10 +1084,7 @@ func TestToolCompletionPreservesCodexWaitStartReceiversSeparatelyOnReplay(t *tes
 
 func TestCodexWaitStartSnapshotsActiveReceiversWhenWireTargetsAreMissing(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	if err := st.UpdateProvider("t1", "codex"); err != nil {
-		t.Fatalf("set provider: %v", err)
-	}
+	createTestThreadWithProvider(t, st, "t1", "codex")
 
 	seedLaunch := func(id, parentID, meta string, itemIndex int) {
 		t.Helper()
@@ -1191,10 +1179,7 @@ func TestCodexWaitStartSnapshotsActiveReceiversWhenWireTargetsAreMissing(t *test
 
 func TestCodexWaitStartDoesNotOverwriteExplicitReceiverTargets(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	if err := st.UpdateProvider("t1", "codex"); err != nil {
-		t.Fatalf("set provider: %v", err)
-	}
+	createTestThreadWithProvider(t, st, "t1", "codex")
 	if err := st.InsertItem(store.Item{
 		ID: "spawn-active", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0,
 		Kind: itemKindToolCall, Role: "assistant", Status: statusCompleted,
@@ -1447,10 +1432,7 @@ func TestSubagentModelMergesIntoItemMetaWithoutClobber(t *testing.T) {
 
 func TestCodexSpawnLabelMetaUpdatePreservesFullReceiverList(t *testing.T) {
 	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	if err := st.UpdateProvider("t1", "codex"); err != nil {
-		t.Fatalf("set provider: %v", err)
-	}
+	createTestThreadWithProvider(t, st, "t1", "codex")
 
 	startMeta, _ := json.Marshal(map[string]any{
 		"toolName": "collab_agent",
