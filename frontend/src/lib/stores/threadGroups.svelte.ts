@@ -1,5 +1,5 @@
 import { invalidateReplicaCatalog } from '../replica/session';
-import { computerCatalogWriter, resetCatalogWritesForTest } from './computerCatalogWriter';
+import { computerCatalogWriter } from './computerCatalogWriter';
 import { computerCatalog, retainUnavailableComputerRows, type CatalogPart, type ComputerRows } from './computerRows';
 import { settleCatalogAnswers } from './catalogLoad.svelte';
 import { forgetThreadGroup, noteThreadGroup, threadGroupBackend } from '../transport/entityIndex';
@@ -199,7 +199,6 @@ export function consumePendingGroupRename(groupId: string): boolean {
 
 /** Test helper: drops every row and the bucket cache. */
 export function resetThreadGroupsForTest(): void {
-  resetCatalogWritesForTest();
   threadGroups = [];
   bucketSource = null;
   buckets = new Map();

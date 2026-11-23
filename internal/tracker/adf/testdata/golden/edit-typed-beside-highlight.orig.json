@@ -1,0 +1,31 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Note: "
+        },
+        {
+          "type": "text",
+          "text": "urgent",
+          "marks": [
+            {
+              "type": "backgroundColor",
+              "attrs": {
+                "color": "#fedec8"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": " today."
+        }
+      ]
+    }
+  ]
+}

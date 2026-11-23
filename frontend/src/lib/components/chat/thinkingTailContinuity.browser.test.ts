@@ -22,6 +22,7 @@ import '../../../app.css';
 import { tick } from 'svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { wait } from '../../../test/helpers/browserFrames';
+import { seededFraction } from '../../../test/helpers/seededRandom';
 import {
   mountTimeline,
   setupTimelineHarness,
@@ -121,13 +122,6 @@ const SHORT_THINKS = [
 const LIST_THINK =
   'Options:\n- a\n- b\n- c\n- d\n\nok\n\nok\n\nPick one:\n1. x\n2. y\n3. z\n4. w\nDone.';
 
-function seededRandom(seed: number): () => number {
-  let s = seed >>> 0;
-  return () => {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    return s / 0x100000000;
-  };
-}
 
 function chunk(text: string, rnd: () => number, min: number, max: number): string[] {
   const out: string[] = [];
@@ -288,7 +282,7 @@ async function runScenario(s: Scenario): Promise<Frame[]> {
     }
   })();
 
-  const rnd = seededRandom(s.seed);
+  const rnd = seededFraction(s.seed);
   const msPerChar = 1000 / s.wireCps;
   for (let k = 0; k < s.thinks.length; k += 1) {
     const id = k === 0 ? firstThink : `th${k}`;

@@ -235,7 +235,7 @@ has none, so the `go-lint` job also runs it alone over the whole tree
 (`make go-lint-exhaustive`): a constant added to an enum fails at every
 switch that does not name it. The target reaches every Go file its host
 compiles in two passes, one with no build tag and one with `nogui`,
-`noremote` and `providersmoke` together
+`noremote`, `providersmoke` and `linearlive` together
 (`TestExhaustiveLintPassesReachEveryFile` fails for a file no pass
 compiles), then lints the Windows
 launcher's packages as Windows compiles them. The macOS job runs the linter

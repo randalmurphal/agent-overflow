@@ -4,15 +4,14 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import ComposerToolbar from './ComposerToolbar.svelte';
 import { createThreadPane, type ThreadPane } from '../../../stores/thread.svelte';
 import {
-  resetForTest as resetProviderAccounts,
   setProviderAccount,
 } from '../../../stores/accountInfo.svelte';
 import {
-  resetForTest as resetRateLimits,
   setProviderRateLimits,
 } from '../../../stores/rateLimitsInfo.svelte';
 import { makeItem } from '../../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../../test/helpers/modelCatalog';
 import { ThreadMCPServer } from '../../../stores/bindings';
 import { refreshMcpServers } from '../../../stores/mcpServers.svelte';
 import type { Thread } from '../../../types/models';
@@ -112,8 +111,8 @@ describe('<ComposerToolbar>', () => {
   let restoreDimensions: (() => void) | undefined;
 
   beforeEach(() => {
-    resetBindingMocks();
-    resetProviderAccounts();
+    // The composer loads its provider's model list.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     const frame = vi.spyOn(window, 'requestAnimationFrame')
       .mockImplementation((callback: FrameRequestCallback) => {
         callback(0);
@@ -127,7 +126,6 @@ describe('<ComposerToolbar>', () => {
   });
 
   afterEach(() => {
-    resetProviderAccounts();
     restoreDimensions?.();
     restoreDimensions = undefined;
     restoreAnimationFrame?.();
@@ -185,7 +183,6 @@ describe('<ComposerToolbar>', () => {
     const effortTrigger = getByTestId('composer-effort-trigger');
     expect(effortTrigger.closest('[data-composer-toolbar-pickers]')).not.toBeNull();
     expect(effortTrigger).toHaveAttribute('aria-expanded', 'false');
-
     await fireEvent.click(getByTestId('composer-pickers-rollup'));
     expect(queryByRole('menuitem', { name: 'Model…' })).toBeNull();
     await fireEvent.click(getByRole('menuitem', { name: /^Effort…/ }));
@@ -402,13 +399,8 @@ describe('<ComposerToolbar>', () => {
 
 describe('<ComposerToolbar> usage rings', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetProviderAccounts();
-    resetRateLimits();
-  });
-  afterEach(() => {
-    resetProviderAccounts();
-    resetRateLimits();
+    // The composer loads its provider's model list.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   });
 
   const resetsAt = Math.floor(Date.now() / 1000) + 86400;
@@ -508,7 +500,10 @@ describe('<ComposerToolbar> usage rings', () => {
 // Outside the suite above, whose synchronous animation frames spin the
 // popover's anchor tracking.
 describe('<ComposerToolbar> context meter', () => {
-  beforeEach(resetBindingMocks);
+  beforeEach(() => {
+    // The composer loads its provider's model list.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
+  });
 
   // The exact breakdown reads the thread's live session. A draft placeholder
   // has none, so only the materialized row offers it.

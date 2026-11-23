@@ -1,18 +1,14 @@
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import ProposedPlanReviewSurface from './ProposedPlanReviewSurface.svelte';
 import type { ProposedPlanComment } from '../../types/models';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 
 describe('<ProposedPlanReviewSurface>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
 
   afterEach(() => {
     cleanup();
-    resetBindingMocks();
     resetToLocalPage();
     window.getSelection()?.removeAllRanges();
   });

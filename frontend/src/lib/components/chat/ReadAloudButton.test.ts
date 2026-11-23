@@ -15,12 +15,11 @@ import {
   readAloud,
   readAloudPhase,
   readAloudPosition,
-  resetReadAloudForTest,
   useOpenAIEngineForTest,
   watchReadAloudVoices,
 } from '../../stores/readAloud.svelte';
 import { reloadReadAloudPreferencesForTest, setReadAloudPreference } from '../../stores/readAloudPreferences.svelte';
-import { refreshReadAloudSource, resetReadAloudSourcesForTest } from '../../stores/readAloudSource.svelte';
+import { refreshReadAloudSource } from '../../stores/readAloudSource.svelte';
 
 // Three sections, split by headings; the device reads them as 2, 1 and 3 sentences.
 const REPLY = '## One\n\nFirst part here.\n\n## Two\n\n## Three\n\nLast part. Really last.';
@@ -40,8 +39,6 @@ describe('<ReadAloudButton>', () => {
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
     setReadAloudPreference('enabled', true);
-    resetReadAloudForTest();
-    resetReadAloudSourcesForTest();
     device = fakeSpeechEngine();
     watchReadAloudVoices(device.engine);
     clips = fakeClipEngines();
@@ -52,8 +49,6 @@ describe('<ReadAloudButton>', () => {
   });
 
   afterEach(() => {
-    resetReadAloudForTest();
-    resetReadAloudSourcesForTest();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
   });

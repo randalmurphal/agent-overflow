@@ -67,7 +67,7 @@ type ciActionTarget struct {
 func (a *App) RunPRCIAction(ctx context.Context, subscriptionID string, req CIActionRequest) (CIActionResult, error) {
 	return a.runCIAction(ctx, req, func() (ciActionTarget, bool) {
 		handle, ok := a.prUpdates.handles[subscriptionID]
-		if !ok || handle.pump.dead {
+		if !ok || handle.pump.DeadLocked() {
 			return ciActionTarget{}, false
 		}
 		pr := handle.pump.pr
@@ -83,7 +83,7 @@ func (a *App) RunPRCIAction(ctx context.Context, subscriptionID string, req CIAc
 func (a *App) RunPipelineAction(ctx context.Context, subscriptionID string, req CIActionRequest) (CIActionResult, error) {
 	return a.runCIAction(ctx, req, func() (ciActionTarget, bool) {
 		handle, ok := a.prUpdates.pipelineHandles[subscriptionID]
-		if !ok || handle.pump.dead {
+		if !ok || handle.pump.DeadLocked() {
 			return ciActionTarget{}, false
 		}
 		return ciActionTarget{phase: &handle.pump.ciPhase, core: &handle.pump.pumpCore}, true
@@ -241,7 +241,7 @@ func (a *App) refreshCIAfterAction(ctx context.Context, target ciActionTarget, r
 		}
 		return false
 	})
-	if err := a.requestPump(ctx, target.core, &prPumpRequest{ci: true}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) && !errors.Is(err, context.Canceled) {
+	if err := target.core.Request(ctx, prPumpRequest{ci: true}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) && !errors.Is(err, context.Canceled) {
 		log.Printf("pr updates: ci refresh after an action failed for %s: %v", target.phase.name(), err)
 	}
 	a.prUpdates.mu.Lock()
@@ -261,7 +261,7 @@ func (a *App) pollCIPumpsShowing(repo gitops.RepoReference, skip *pumpCore, acte
 	a.prUpdates.mu.Lock()
 	var cores []*pumpCore
 	for _, pump := range a.prUpdates.pumps {
-		if !pump.dead && match(&pump.pumpCore, &pump.ciPhase) {
+		if !pump.DeadLocked() && match(&pump.pumpCore, &pump.ciPhase) {
 			cores = append(cores, &pump.pumpCore)
 			if acted {
 				pump.actedAt = now
@@ -269,7 +269,7 @@ func (a *App) pollCIPumpsShowing(repo gitops.RepoReference, skip *pumpCore, acte
 		}
 	}
 	for _, pump := range a.prUpdates.pipelines {
-		if !pump.dead && match(&pump.pumpCore, &pump.ciPhase) {
+		if !pump.DeadLocked() && match(&pump.pumpCore, &pump.ciPhase) {
 			cores = append(cores, &pump.pumpCore)
 			if acted {
 				pump.actedAt = now
@@ -279,7 +279,7 @@ func (a *App) pollCIPumpsShowing(repo gitops.RepoReference, skip *pumpCore, acte
 	a.prUpdates.mu.Unlock()
 	for _, core := range cores {
 		a.prUpdates.wg.Go(func() {
-			if err := a.requestPump(a.lifeCtx(), core, &prPumpRequest{ci: true}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) && !errors.Is(err, ErrShuttingDown) && !errors.Is(err, context.Canceled) {
+			if err := core.Request(a.lifeCtx(), prPumpRequest{ci: true}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) && !errors.Is(err, ErrShuttingDown) && !errors.Is(err, context.Canceled) {
 				log.Printf("pr updates: ci refresh of a pipeline another caller changed failed: %v", err)
 			}
 		})

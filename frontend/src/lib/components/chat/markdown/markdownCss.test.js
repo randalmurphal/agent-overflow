@@ -1,8 +1,6 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { SHORT_CODESPAN_CLASS } from '../../../markdown/render/codespan';
-
-const appCss = readFileSync('src/app.css', 'utf8');
+import appCss from '../../../../app.css?raw';
 
 describe('markdown CSS', () => {
   it('wraps markdown code spans and code blocks instead of scrolling horizontally', () => {

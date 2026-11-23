@@ -28,7 +28,6 @@ setupTimelineHarness();
 
 afterEach(() => {
   document.documentElement.style.removeProperty('font-size');
-  resetSettingsForTest();
 });
 
 describe('timeline user-message overflow measurement', () => {

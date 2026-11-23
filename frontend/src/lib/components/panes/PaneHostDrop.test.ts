@@ -33,7 +33,6 @@ import { resetSettingsForTest } from '../../stores/settings.svelte';
 import { installThreadSwitchMocks, makeThread } from '../../../test/helpers/chat';
 import { prependThread } from '../../stores/threads.svelte';
 import { airspaceSurfaces } from '../../utils/paneAirspace.svelte';
-import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import {
   beginThreadRowDrag,
   endThreadRowDrag,
@@ -68,7 +67,6 @@ describe('PaneHost drag and drop', () => {
     cleanup();
     endThreadRowDrag();
     vi.restoreAllMocks();
-    resetBindingMocks();
     resetAll();
     vi.unstubAllGlobals();
   });

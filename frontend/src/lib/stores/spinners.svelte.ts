@@ -183,8 +183,7 @@ export function installWorkingSpriteReadiness(): () => void {
 
 /** Test seam: drop the entry and the hold, as a fresh module load would. */
 export function __resetCustomSpinnersForTest(): void {
+  store.resetForTest();
   hold?.release();
   hold = null;
-  store.suspend();
-  store.resetAll();
 }

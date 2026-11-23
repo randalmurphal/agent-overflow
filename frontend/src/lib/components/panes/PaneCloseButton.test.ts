@@ -9,17 +9,14 @@
 // from wherever the user was working. These tests lock both stops and the
 // destroy.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import PaneCloseButtonHarness from './PaneCloseButtonHarness.svelte';
-import { getPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { getPane, registerPaneForTest } from '../../stores/panes.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 
 describe('<PaneCloseButton>', () => {
-  beforeEach(() => {
-    resetPanesForTest();
-  });
 
   it('stops focusin and pointerdown from reaching the pane focus handlers', async () => {
     const onAncestorFocusIn = vi.fn();

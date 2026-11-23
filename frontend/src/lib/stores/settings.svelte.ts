@@ -13,7 +13,7 @@ import { attachedBackends, backendById, onBackendDetached, withBackendTarget } f
 import { backendDisplayName, getAttachedBackends } from './attachedBackends.svelte';
 import {
   frontendPreferences, seedFrontendPreferences, updateFrontendPreferences,
-  isFrontendPreference, resetFrontendPreferencesForTest, validatedFrontendPreferences,
+  isFrontendPreference, validatedFrontendPreferences,
 } from './frontendPreferences.svelte';
 
 type PendingPatch = { patch: Partial<Settings> };
@@ -315,7 +315,6 @@ export function applySettingsSnapshot(
 
 export function resetSettingsForTest(): void {
   generation++;
-  resetFrontendPreferencesForTest();
   computers.reset();
   projections.clear();
   queues.clear();

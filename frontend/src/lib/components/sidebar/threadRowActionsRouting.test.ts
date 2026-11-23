@@ -5,9 +5,9 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Call } from '../../transport/runtime';
 import { wsClient, type WSClient } from '../../transport/wsClient';
-import { __attachBackendForTest, __resetBackendsForTest } from '../../transport/backends';
+import { __attachBackendForTest } from '../../transport/backends';
 import { HOME_DESCRIPTOR } from '../../transport/manifestBackends';
-import { __resetEntityIndexForTest, forgetThread, noteThread } from '../../transport/entityIndex';
+import { forgetThread, noteThread } from '../../transport/entityIndex';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { makeThread } from '../../../test/helpers/chat';
@@ -30,16 +30,12 @@ function client(callByID: WSClient['callByID']): WSClient {
 }
 
 beforeEach(() => {
-  __resetBackendsForTest();
-  __resetEntityIndexForTest();
   for (const toast of getToasts()) removeToast(toast.id);
   setBindingMock('ArchiveThread', (id: unknown) => Call.ByID(ARCHIVE_THREAD, id));
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
-  __resetBackendsForTest();
-  __resetEntityIndexForTest();
   __attachBackendForTest(HOME_DESCRIPTOR, wsClient);
 });
 

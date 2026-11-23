@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/svelte';
+import { describe, expect, it } from 'vitest';
+import { render, waitFor } from '@testing-library/svelte';
 import CommitFilePreview from './CommitFilePreview.svelte';
-import { resetBindingMocks, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { normalizedTextContent } from '../../../test/helpers/textContent';
 import type { CommitFile, WorkspaceRef } from '../../types/git';
 import type { EntityScopeGrant } from '../../transport/scopes';
@@ -14,11 +14,6 @@ function mount(grant: EntityScopeGrant) {
   const view = render(CommitFilePreview, { props: { workspace: WORKSPACE, backend: '', file: FILE, grant } });
   return { diff, preview: () => normalizedTextContent(view.getByTestId('commit-file-preview')) };
 }
-
-afterEach(() => {
-  cleanup();
-  resetBindingMocks();
-});
 
 // The preview body says why it shows no patch, and reads nothing it may not.
 describe('CommitFilePreview without the files:read grant', () => {

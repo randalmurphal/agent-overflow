@@ -1,9 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import McpElicitationPanel from './McpElicitationPanel.svelte';
 import { ApprovalResponse } from '../../../stores/bindings';
 import type { ApprovalRequest } from '../../../types/events';
-import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../../test/mocks/bindings-app';
 
 // Typed resolver so .mock.calls[0][0] is ApprovalResponse, not undefined.
 function makeResolver(
@@ -16,10 +16,6 @@ function makeResolver(
 // Composer approval elicitation suite; these tests exercise the panel in
 // isolation so regressions here don't silently coast on the dispatcher
 // wrapping it.
-
-beforeEach(() => {
-  resetBindingMocks();
-});
 
 function formApproval(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
   return {

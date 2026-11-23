@@ -3,14 +3,12 @@ import { fireEvent, render, waitFor } from "@testing-library/svelte";
 import ToolCallCard from "./ToolCallCard.svelte";
 import { buildPane, makeItem, makeThread } from "../../../test/helpers/chat";
 import {
-  resetBindingMocks,
   setBindingMock,
-} from "../../../test/mocks/bindings-app";
+} from '../../../test/mocks/bindings-app';
 import { codexSubagentReceiverLabels } from "../../utils/subagentLaunch";
 import { resetProposedPlanCacheForTests } from "../../stores/proposedPlans.svelte";
 
 beforeEach(() => {
-  resetBindingMocks();
   // buildPane seeds the module-level plan cache, and only the latest plan in
   // it offers "Open in plan sidebar". A previous case's plans on the same
   // thread would demote this case's plan.

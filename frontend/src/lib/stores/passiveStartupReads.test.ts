@@ -1,18 +1,16 @@
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { ReadDeadlineError } from '../utils/readBeforeDeadline';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { resetStagedBackends } from '../../test/helpers/backends';
 import { loadSidebarCatalogs } from './sidebarCatalogs';
 import { loadSettings } from './settings.svelte';
 import { getKeybindingRules, loadKeybindings, resyncKeybindings, saveKeybindings, setKeybindingsForTest } from './keybindings.svelte';
-import { getToasts, resetToastsForTest } from './toast.svelte';
+import { getToasts } from './toast.svelte';
 import { checkProviderUpdates, loadProviderUpdates, providerUpdatesLoadError } from './providerUpdates.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 
-beforeEach(() => { resetStagedBackends(); resetToastsForTest(); });
-afterEach(() => { resetStagedBackends(); vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); });
 
 it.each([
   new DisconnectedError('transport unreachable'),

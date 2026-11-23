@@ -1,11 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import ThreadActionConfirmationHost from './ThreadActionConfirmationHost.svelte';
 import {
   requestThreadActionConfirmation,
-  resetThreadActionConfirmationsForTest,
 } from '../../stores/threadActionConfirmations.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeThread } from '../../../test/helpers/chat';
 
 function ctxFor(overrides: Parameters<typeof makeThread>[0]) {
@@ -17,13 +16,6 @@ function ctxFor(overrides: Parameters<typeof makeThread>[0]) {
     reportError: vi.fn(),
   };
 }
-
-beforeEach(() => {
-  resetBindingMocks();
-  resetThreadActionConfirmationsForTest();
-});
-
-afterEach(() => resetThreadActionConfirmationsForTest());
 
 describe('<ThreadActionConfirmationHost>', () => {
   // The delete keeps the worktree, so the confirmation says nothing of it

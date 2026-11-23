@@ -123,6 +123,15 @@ export interface EntityStore<T, Ctx = void> {
    * states the connection banner already explains.
    */
   suspend(): void;
+  /**
+   * Test seam: drop every entry and lift any suspension, as a fresh module
+   * load would. Every run's signal aborts, so what the sources installed
+   * locally goes, and no cleanup runs: the test backend that held the
+   * resources is reset with the store, so a release would reach the next
+   * test's mocks. A holder that kept its attachment reads an entry the store
+   * no longer has, and its release does nothing.
+   */
+  resetForTest(): void;
   /** Enumerate live keys (diagnostics/tests). */
   keys(): string[];
 }
@@ -137,10 +146,13 @@ export interface EntityStoreConfig<T, Ctx> {
   /**
    * Acquire backend resources for key. Called on 0→1 refcount and on
    * invalidate / retry / resetAll. Must deliver observations via the
-   * provided apply/fail. Returns a cleanup that releases whatever it
-   * acquired — it is called on 1→0, suspend, resetAll, and before a
+   * provided apply/fail. Returns a cleanup that releases what the backend
+   * holds for it — it is called on 1→0, suspend, resetAll, and before a
    * re-source, INCLUDING when the entry was torn down while source() was
-   * still in flight (in which case nothing it applied is kept).
+   * still in flight (in which case nothing it applied is kept). What a run
+   * installs locally (an alias, a handle, a listener) it removes when
+   * `signal` aborts, which every teardown does, a test reset included; a
+   * test reset runs no cleanup.
    *
    * getCtx() returns the ctx of any currently-live attacher: a source that
    * needs e.g. a threadId to issue an RPC uses it and must tolerate the ctx
@@ -284,6 +296,9 @@ export function createEntityStore<T, Ctx = void>(
   // a plain Map read cannot register that dependency.
   const entries = new SvelteMap<string, EntityEntry<T, Ctx>>();
   let suspended = false;
+  // Bumped by resetForTest: a source that resolves after it belongs to a
+  // test backend that no longer exists, so its release is dropped too.
+  let testResets = 0;
   let nextAttachId = 0;
   let stopWatching: (() => void) | null = null;
 
@@ -425,11 +440,10 @@ export function createEntityStore<T, Ctx = void>(
     console.error(`${config.name}: ${entry.key}:`, err);
   }
 
-  // Ends the entry's current life: cancels a pending retry, invalidates any
-  // in-flight source and its callbacks, and releases the acquired resource.
-  // Leaves value/error alone — callers decide whether the observation
-  // survives the teardown (a re-source keeps it; a release drops it).
-  function teardown(entry: EntityEntry<T, Ctx>): void {
+  // Ends the entry's current life: cancels a pending retry and invalidates
+  // any in-flight source and its callbacks. Returns the acquired resource's
+  // release, which the caller runs or, in a test reset, drops.
+  function endLife(entry: EntityEntry<T, Ctx>): (() => void | Promise<void>) | null {
     entry.generation += 1;
     entry.sourcing = false;
     entry.abort?.abort();
@@ -441,7 +455,14 @@ export function createEntityStore<T, Ctx = void>(
     entry.retryDelayMs = DEFAULT_RETRY.initialMs;
     const cleanup = entry.cleanup;
     entry.cleanup = null;
-    void runCleanup(entry, cleanup);
+    return cleanup;
+  }
+
+  // endLife, then release the acquired resource. Leaves value/error alone —
+  // callers decide whether the observation survives the teardown (a
+  // re-source keeps it; a release drops it).
+  function teardown(entry: EntityEntry<T, Ctx>): void {
+    void runCleanup(entry, endLife(entry));
   }
 
   // Drop a pending retry and put the curve back at the bottom.
@@ -482,6 +503,7 @@ export function createEntityStore<T, Ctx = void>(
   function startSource(entry: EntityEntry<T, Ctx>): void {
     if (isSuspended(entry) || entry.sourcing) return;
     const generation = entry.generation;
+    const testReset = testResets;
     entry.sourcing = true;
     const controller = new AbortController();
     entry.abort = controller;
@@ -521,7 +543,9 @@ export function createEntityStore<T, Ctx = void>(
           // Torn down (or re-sourced) while source() was in flight: the
           // resource it just acquired belongs to nobody. Release it here —
           // teardown had nothing to release at the time — and apply nothing.
-          await runCleanup(entry, cleanup);
+          // After a test reset the backend that holds it is gone with the
+          // test, so nothing is released.
+          if (testReset === testResets) await runCleanup(entry, cleanup);
           return;
         }
         entry.sourcing = false;
@@ -662,6 +686,17 @@ export function createEntityStore<T, Ctx = void>(
         entry.value = null;
         entry.error = null;
         if (!retained(entry)) dropEntry(entry);
+      }
+    },
+
+    resetForTest() {
+      suspended = false;
+      testResets += 1;
+      for (const entry of snapshotEntries()) {
+        endLife(entry);
+        entry.value = null;
+        entry.error = null;
+        dropEntry(entry);
       }
     },
 

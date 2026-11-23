@@ -3,11 +3,10 @@ import { clearCommandRegistry, getCommand, offeredCommands, runCommand, type Com
 import { isBrowserPaneFocused, registerBrowserCommands, browserPaneReservesChord } from './browserCommands.svelte';
 import {
   applyBrowserCompanionState,
-  resetBrowserCompanionForTest,
 } from './browserCompanion.svelte';
 import { addressFocusIntent, registerBrowserAddressBar } from './browserAddressFocus.svelte';
-import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';
-import { createPane, focusPane, getFocusedPaneId, resetPanesForTest } from './panes.svelte';
+import { installCompanionPanes, openCompanion } from './companionPanes.svelte';
+import { createPane, focusPane, getFocusedPaneId } from './panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { dispatchKey, resetKeybindingsStore, setKeybindingsForTest } from './keybindings.svelte';
 import { makeCommandContext } from './builtinCommands.svelte';
@@ -47,10 +46,7 @@ describe('browser commands', () => {
     seq = 0;
     clearCommandRegistry();
     resetKeybindingsStore();
-    resetBrowserCompanionForTest();
-    resetCompanionPanesForTest();
     resetPaneLayoutForTest();
-    resetPanesForTest();
     installCompanionPanes();
     setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 600 }]);
     createPane('main').replaceThread(makeThread({ id: THREAD }));
@@ -62,10 +58,7 @@ describe('browser commands', () => {
   });
 
   afterEach(() => {
-    resetBrowserCompanionForTest();
-    resetCompanionPanesForTest();
     resetPaneLayoutForTest();
-    resetPanesForTest();
     resetKeybindingsStore();
   });
 

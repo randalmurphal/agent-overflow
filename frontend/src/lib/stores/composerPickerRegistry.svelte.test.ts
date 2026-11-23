@@ -1,11 +1,10 @@
 import { flushSync } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   composerPickerSelectionLabel,
   isAnyComposerPickerOpen,
   registerComposerPicker,
   registerComposerPickerFallbackAnchor,
-  resetComposerPickerRegistryForTest,
   resolvePickerAnchor,
   toggleComposerPicker,
   type ComposerPickerHandle,
@@ -38,8 +37,6 @@ function makeHandle(): {
 }
 
 describe('composerPickerRegistry', () => {
-  beforeEach(() => resetComposerPickerRegistryForTest());
-  afterEach(() => resetComposerPickerRegistryForTest());
 
   it('reacts to selection, registration, and cleanup without leaking across panes', () => {
     let label = $state('High');
@@ -184,7 +181,6 @@ describe('composerPickerRegistry', () => {
 // trigger, which has no geometry: it hangs from the roll-up instead.
 describe('resolvePickerAnchor', () => {
   afterEach(() => {
-    resetComposerPickerRegistryForTest();
     document.body.innerHTML = '';
   });
 

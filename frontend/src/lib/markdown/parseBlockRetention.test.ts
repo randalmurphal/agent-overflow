@@ -1,88 +1,16 @@
-import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
-
-const markedModuleUrl = pathToFileURL(
-  resolve(
-    import.meta.dirname,
-    './parser/index.ts',
-  ),
-).href;
+import { runNodeWorkload } from '../../test/helpers/nodeWorkload';
+import { parseBlockRetentionWorkload } from './parseBlockRetention.workload';
 
 // The workload runs in a bare `node --expose-gc` subprocess, because the
-// measurement is a whole-heap delta and vitest's own heap is not quiet. Node
-// strips the types itself, but it resolves specifiers the way Node does: the
-// parser's internal imports are extensionless (`moduleResolution: bundler`),
-// so the subprocess registers a resolve hook that retries with `.ts`, then
-// with `/index.ts`. Nothing else in the app loads this tree outside Vite.
-//
-// The retry is unconditional for a relative specifier: a "does it already
-// have an extension" test on the string cannot tell `./x.ts` from module
-// names that carry a dot (`./parseBlocks.cache`), and guessing wrong makes
-// the subprocess die with ERR_MODULE_NOT_FOUND in a test about heap bytes.
-const workload = `
-import nodeModule from 'node:module';
-nodeModule.registerHooks({
-  resolve(specifier, context, next) {
-    if (specifier.startsWith('.')) {
-      try { return next(specifier + '.ts', context); } catch {}
-      try { return next(specifier, context); } catch {}
-      return next(specifier + '/index.ts', context);
-    }
-    return next(specifier, context);
-  },
-});
-
-// Dynamic, because a static import is hoisted above the hook registration.
-const {
-  createMaterializedProvenAppend,
-  createParseBlocksCache,
-  createProvenAppend,
-  parseBlocks,
-  updateParseBlockStringMaterialization,
-} = await import(${JSON.stringify(markedModuleUrl)});
-
-for (let index = 0; index < 4; index++) globalThis.gc();
-const before = process.memoryUsage().heapUsed;
-const cache = createParseBlocksCache();
-if (process.env.AO_FULL_PARSE_WINDOW === '1') cache.source.retainFrom = () => {};
-let source = '';
-for (let index = 0; index < 800; index++) {
-  const marker = index === 0 ? 'AO_PARSE_BLOCK_RETENTION ' : '';
-  const delta = marker +
-    'Paragraph ' + String(index).padStart(4, '0') +
-    ' keeps enough parser content to produce a non-trivial backing string while streaming.\\n\\n';
-  const append = process.env.AO_CHAIN_PARSE_SOURCE === '1'
-    ? createProvenAppend(source, delta)
-    : createMaterializedProvenAppend(source, [delta]);
-  source = append.next;
-  parseBlocks(source, [], cache, append);
-  if (process.env.AO_DETACH_PARSE_BLOCKS === '1') {
-    updateParseBlockStringMaterialization(cache, true);
-  }
-}
-globalThis.__aoParseBlockRetention = { cache, source };
-for (let index = 0; index < 4; index++) globalThis.gc();
-// Read before touching process.stdout, whose first use builds the stream.
-const retained = process.memoryUsage().heapUsed - before;
-process.stdout.write(String(retained));
-`;
+// measurement is a whole-heap delta and vitest's own heap is not quiet.
 
 function retainedHeapBytes(detach: boolean, chainedSource = false, fullWindow = false): number {
-  const output = execFileSync(
-    process.execPath,
-    ['--expose-gc', '--input-type=module', '--eval', workload],
-    {
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        AO_DETACH_PARSE_BLOCKS: detach ? '1' : '0',
-        AO_CHAIN_PARSE_SOURCE: chainedSource ? '1' : '0',
-        AO_FULL_PARSE_WINDOW: fullWindow ? '1' : '0',
-      },
-    },
-  );
+  const output = runNodeWorkload(parseBlockRetentionWorkload, {
+    AO_DETACH_PARSE_BLOCKS: detach ? '1' : '0',
+    AO_CHAIN_PARSE_SOURCE: chainedSource ? '1' : '0',
+    AO_FULL_PARSE_WINDOW: fullWindow ? '1' : '0',
+  });
   const bytes = Number(output);
   if (!Number.isFinite(bytes)) {
     throw new Error(`parse-block retention subprocess returned ${JSON.stringify(output)}`);

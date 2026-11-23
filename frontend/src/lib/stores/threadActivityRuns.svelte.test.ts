@@ -4,7 +4,6 @@ import type { ActivityRunNode } from '../utils/subagentGrouping';
 import { revealActivityRunItem } from '../utils/activityRunWindow';
 import {
   createThreadActivityRuns,
-  resetActivityRunAnchorReportsForTest,
 } from './threadActivityRuns.svelte';
 import type { PaneScrollController } from './threadPaneShared';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
@@ -981,7 +980,6 @@ describe('window-anchor guard', () => {
 
   beforeEach(() => {
     // The once-per-run report ledger is module state.
-    resetActivityRunAnchorReportsForTest();
   });
 
   function fixture() {

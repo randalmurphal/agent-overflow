@@ -7,6 +7,7 @@ import {
   typographySignature,
   updateSetting,
 } from './settings.svelte';
+import { resetFrontendPreferencesForTest } from './frontendPreferences.svelte';
 import type { Settings } from '../types/settings';
 import { setBindingMock, getBindingMock } from '../../test/mocks/bindings-app';
 import { makeSettings } from '../../test/helpers/settings';
@@ -22,7 +23,6 @@ const FULL_SETTINGS: Settings = makeSettings({
 
 describe('settings store', () => {
   beforeEach(async () => {
-    resetSettingsForTest();
     setBindingMock('GetSettings', async () => FULL_SETTINGS);
     setBindingMock('UpdateSettings', async () => FULL_SETTINGS);
     await loadSettings();
@@ -64,6 +64,7 @@ describe('settings store', () => {
 
     it('merges the first GetSettings result over defaults for migration', async () => {
       localStorage.clear();
+      resetFrontendPreferencesForTest();
       resetSettingsForTest();
       setBindingMock('GetSettings', async () => ({
         timestampFormat: '24-hour',

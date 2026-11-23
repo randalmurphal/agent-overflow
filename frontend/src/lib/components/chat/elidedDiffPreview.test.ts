@@ -16,8 +16,6 @@ import { makeSettings } from '../../../test/helpers/settings';
 import { resetSettingsForTest } from '../../stores/settings.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import type { Item, ToolResultMeta } from '../../types/models';
-import { resetDiffSpanCacheForTest } from '../../utils/diffSpanCache.svelte';
-import { __resetItemProjectionSourceCacheForTest } from '../../utils/itemProjectionSource.svelte';
 import DiffFileStack from './DiffFileStack.svelte';
 
 const PATCH_A = [
@@ -85,9 +83,6 @@ function mockRecoveryRoute(): ReturnType<typeof setBindingMock> {
 }
 
 beforeEach(async () => {
-  resetDiffSpanCacheForTest();
-  __resetItemProjectionSourceCacheForTest();
-  resetSettingsForTest();
   // The shipped default. It is also what makes the projection ask for no
   // previews in the first place, so it is the case that matters.
   setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews: true }));

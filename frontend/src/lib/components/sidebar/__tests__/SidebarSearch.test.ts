@@ -11,7 +11,6 @@ import {
   setKeybindingsForTest,
   UNBOUND_CHORD,
 } from '../../../stores/keybindings.svelte';
-import { resetKeyboardModifiersForTest } from '../../../stores/keyboardModifiers.svelte';
 
 const FOCUS_SEARCH_ROW = {
   key: 'mod+/',
@@ -31,14 +30,12 @@ async function holdModifier(): Promise<void> {
 describe('<SidebarSearch>', () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    resetKeyboardModifiersForTest();
     setThreadFilterQuery('');
     resetKeybindingsStore();
     setKeybindingsForTest([FOCUS_SEARCH_ROW]);
   });
 
   afterEach(() => {
-    resetKeyboardModifiersForTest();
     vi.useRealTimers();
   });
 

@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { beforeEach, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
-import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/svelte';
+import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import '../../../app.css';
 import SystemStatsFooter from '../sidebar/SystemStatsFooter.svelte';
 import UsageModal from './UsageModal.svelte';
-import { stageBackend, resetStagedBackends } from '../../../test/helpers/backends';
+import { stageBackend } from '../../../test/helpers/backends';
 import { __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
 import { setSystemStats, resetForTest } from '../../stores/systemStats.svelte';
 import { resetTelemetryForTest, setTelemetrySelection } from '../../stores/telemetryComputers.svelte';
@@ -12,7 +12,6 @@ import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { UsageBucket } from '../../stores/bindings';
 
 beforeEach(() => { resetTelemetryForTest(); resetForTest(); __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null }); });
-afterEach(() => { cleanup(); resetTelemetryForTest(); resetStagedBackends(); resetForTest(); });
 
 it.each([360, 1280])('fits multiple named computer stats and usage filters at %ipx', async (width) => {
   await page.viewport(width, 800);

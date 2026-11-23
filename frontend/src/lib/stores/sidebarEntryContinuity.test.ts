@@ -1,6 +1,6 @@
 // Which earlier row a sidebar entry continues, and the disclosure that
 // follows it when the key it is persisted under moves.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
 import {
   entryExpanded,
@@ -17,21 +17,19 @@ import {
   syncSidebarEntryDisclosureFromAppStorage,
   type SidebarEntryGroup,
 } from './sidebarEntryContinuity.svelte';
-import { resetSidebarForTest } from './sidebar.svelte';
 import {
   addProjectLocal,
   deleteProjectLocal,
   projectEntryKey,
   removeProjectLocal,
-  resetProjectsForTest,
   updateProjectLocal,
 } from './projects.svelte';
 import { buildSidebarEntries } from '../components/sidebar/sidebarEntries';
-import { __resetEntityIndexForTest, noteProject } from '../transport/entityIndex';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { noteProject } from '../transport/entityIndex';
+import { stageBackend } from '../../test/helpers/backends';
 import { listCatalogTreesForTest, resetSidebarCatalogsForTest } from './sidebarCatalogs';
 import { appStorageGet, hydrateAppStorage, resetAppStorageForTest } from './appStorage';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { THREAD_PREVIEW_LIMIT } from '../utils/sidebarThreadLimits';
 import { getThreadListVisibleLimit } from './sidebar.svelte';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
@@ -69,21 +67,9 @@ function persistedCollapsed(): string[] {
 }
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  resetSidebarForTest();
-  resetProjectsForTest();
-  __resetEntityIndexForTest();
-  resetStagedBackends();
   stageBackend({ id: 'laptop', backendId: 'laptop-id', name: 'Laptop' });
   listCatalogTreesForTest();
   settle();
-});
-
-afterEach(() => {
-  resetProjectsForTest();
-  resetSidebarForTest();
-  __resetEntityIndexForTest();
-  resetStagedBackends();
 });
 
 describe('a row whose key moves', () => {
@@ -511,9 +497,6 @@ describe('revealProject', () => {
 // The records the fold and the show-more limit are kept in, which nothing
 // else can name.
 describe('the records it keeps', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
 
   it('opens an entry until the user folds it, and persists only the folds', () => {
     expect(entryRecordForTest('p1').expanded).toBe(true);

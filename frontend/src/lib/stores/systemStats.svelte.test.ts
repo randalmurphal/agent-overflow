@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { detachBackend } from '../transport/backends';
 
 import {
@@ -10,10 +10,6 @@ import {
 } from './systemStats.svelte';
 
 describe('systemStats store', () => {
-  afterEach(() => {
-    resetForTest();
-    resetStagedBackends();
-  });
 
   it('keeps each computer’s samples separate and drops a removed computer', () => {
     stageBackend({ id: 'gpu' });

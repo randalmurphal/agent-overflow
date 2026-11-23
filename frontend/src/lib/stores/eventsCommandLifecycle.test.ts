@@ -1,9 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { applyCommandLifecycle } from './eventsQueue';
 import {
   getFlushedForThread,
   markItemsFlushed,
-  resetForTest,
 } from './sendQueue.svelte';
 
 function seedFlushed(): void {
@@ -13,9 +12,6 @@ function seedFlushed(): void {
 }
 
 describe('applyCommandLifecycle', () => {
-  beforeEach(() => {
-    resetForTest();
-  });
 
   // The baseline every consumer must render correctly: an older Claude
   // CLI (or a Codex thread) emits no lifecycle frames at all.

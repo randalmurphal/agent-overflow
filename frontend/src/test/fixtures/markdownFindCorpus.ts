@@ -3,6 +3,8 @@
 // vectors (threadFindText.browser.test.ts, findCandidateVectors.json) hold the
 // store's candidates to the runs they project.
 
+import { seededFraction } from '../helpers/seededRandom';
+
 export const HEX = '0123456789abcdef0123456789abcdef';
 export const CORPUS = [
   'Plain words, and a sentence.',
@@ -118,7 +120,7 @@ export function findCandidateCombinations(): string[] {
   const join = (pieces: readonly string[]) => pieces.map((piece, at) => `k${at} ${piece}`).join(' ') + ` k${pieces.length}`;
   const sources: string[] = [];
   for (const first of PIECES) for (const second of PIECES) sources.push(join([first, second]));
-  const next = random(7);
+  const next = seededFraction(7);
   for (let i = 0; i < 300; i++) {
     const pieces = Array.from({ length: 3 + Math.floor(next() * 3) }, () => PIECES[Math.floor(next() * PIECES.length)]);
     sources.push(WRAPS[Math.floor(next() * WRAPS.length)](join(pieces)));
@@ -127,19 +129,8 @@ export function findCandidateCombinations(): string[] {
 }
 
 // Random comments of real markdown and HTML.
-function random(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 export function generatedMarkdown(seed: number): string {
-  const next = random(seed);
+  const next = seededFraction(seed);
   const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)];
   const words = () => Array.from({ length: 1 + Math.floor(next() * 4) }, () => pick(['needle', 'word', 'Needle', 'x', 'needleneedle'])).join(' ');
   const open = () => (next() < 0.5 ? ' open' : '');

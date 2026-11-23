@@ -1,6 +1,6 @@
-import { cleanup, render, waitFor } from '@testing-library/svelte';
+import { render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 // Regression: the terminal drawer is a lazy `import()`. On a COLD first open
 // per session the real (in-flow, `shrink-0`, 120–320px) drawer mounts a few
@@ -36,10 +36,6 @@ function makeSurface() {
     settleAfterAsyncMount: vi.fn(),
   };
 }
-
-afterEach(() => {
-  cleanup();
-});
 
 describe('LazyThreadTerminalDrawer cold-open scroll settle', () => {
   it('re-settles the scroll controller after the drawer mounts on cold open, but not on a warm reopen', async () => {

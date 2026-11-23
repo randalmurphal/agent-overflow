@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { fnv1a32 } from '../utils/fnv1a';
-import { __resetSpinnerPickForTest, assembleVerbPool, pickFromPool, stableTurnKey } from './pick';
+import { assembleVerbPool, pickFromPool, stableTurnKey } from './pick';
 
 describe('fnv1a32', () => {
   it('is deterministic and spreads distinct inputs', () => {
@@ -58,7 +58,6 @@ describe('assembleVerbPool', () => {
 });
 
 describe('stableTurnKey', () => {
-  beforeEach(() => __resetSpinnerPickForTest());
 
   it('a turn with no bridge keys on its own id and holds it', () => {
     expect(stableTurnKey('t1', 'turn-9')).toBe('turn-9');

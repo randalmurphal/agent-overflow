@@ -13,7 +13,7 @@
 // settings and THIS page's focus, and acts on the answer.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { emitWailsEvent, resetWailsMocks } from '../../test/mocks/wailsio-runtime';
+import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { loadSettingsFixture } from '../../test/helpers/settingsFixture';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { makeSettings } from '../../test/helpers/settings';
@@ -167,7 +167,6 @@ describe('the remote browser notification presenter', () => {
     // would otherwise leave a live subscription for the next one.
     stopBrowserNotificationPresenter();
     vi.unstubAllGlobals();
-    resetWailsMocks();
   });
 
   it('raises a silent notification and plays the cue for a live send', async () => {

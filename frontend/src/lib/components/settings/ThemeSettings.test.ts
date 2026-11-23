@@ -4,10 +4,9 @@ import ThemeSettings from './ThemeSettings.svelte';
 import {
   getAppearanceThemes,
   loadAppearance,
-  resetAppearanceForTest,
   setAppearance,
 } from '../../stores/appearance.svelte';
-import { applyTheme, resetThemeApplyForTest } from '../../theme/themeApply.svelte';
+import { applyTheme } from '../../theme/themeApply.svelte';
 import { BUILTIN_UI_THEME_ID, BUILTIN_CODE_THEME_ID } from '../../theme/builtins';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 
@@ -31,16 +30,12 @@ function optionIds(select: HTMLElement): string[] {
 
 beforeEach(() => {
   localStorage.clear();
-  resetAppearanceForTest();
-  resetThemeApplyForTest();
   setBindingMock('SetAppearance', async () => undefined);
   seed([]);
 });
 
 afterEach(() => {
   localStorage.clear();
-  resetAppearanceForTest();
-  resetThemeApplyForTest();
 });
 
 describe('<ThemeSettings> — controls', () => {

@@ -28,19 +28,16 @@ import {
   applyProviderAccountSignIn,
   applyProviderAccountAutoSwitch,
   setProviderAccountAutoSwitch,
-  resetForTest as resetProviderAccounts,
   switchProviderAccount,
 } from './providerAccounts.svelte';
 import {
   getProviderAccount,
-  resetForTest as resetAccountInfo,
 } from './accountInfo.svelte';
 import {
   getProviderRateLimits,
-  resetForTest as resetRateLimits,
 } from './rateLimitsInfo.svelte';
 import { getToasts, removeToast } from './toast.svelte';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { __resetScopesForTest, setCarriedSessionScopes, setPageGrantsFromBootstrap } from '../transport/scopes';
 import { getPinnedBackend } from '../transport/backends';
 import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../test/helpers/backends';
@@ -64,17 +61,10 @@ function toastMessages(): string[] {
 
 beforeEach(() => {
   for (const toast of getToasts()) removeToast(toast.id);
-  resetBindingMocks();
-  resetProviderAccounts();
-  resetAccountInfo();
-  resetRateLimits();
 });
 
 afterEach(() => {
   __setTransportHelloForTest(null);
-  resetProviderAccounts();
-  resetAccountInfo();
-  resetRateLimits();
 });
 
 // The startup hydrate and the transport-gap recovery both call into this
@@ -975,10 +965,6 @@ describe('applyProviderAccountAutoSwitch', () => {
     fromLabel: 'a@x.com',
     toLabel: 'b@y.com',
     ...overrides,
-  });
-
-  afterEach(() => {
-    resetStagedBackends();
   });
 
   it('names both accounts and the limit that caused the switch', () => {

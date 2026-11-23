@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 
 import UsageChip from './UsageChip.svelte';
@@ -39,10 +39,6 @@ function modelBucket(overrides: Partial<UsageBucket> = {}): UsageBucket {
 }
 
 describe('<UsageChip>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetUsageRefreshForTest();
-  });
 
   it('renders nothing when the thread has no usage yet', async () => {
     const pane = await buildPane(makeThread());
@@ -246,7 +242,6 @@ describe('<UsageChip>', () => {
   });
 });
 
-
 it('refreshes the chip and open model breakdown on reported progress without clearing context', async () => {
   const pane = await buildPane(makeThread());
   let output = 500;
@@ -286,7 +281,6 @@ it('preserves known totals and displays a failed refresh', async () => {
   applyUsageEvent({ action: 'progress', threadId: pane.threadId!, error: 'Reported usage could not be saved.' });
   await waitFor(() => expect(trigger.title).toBe('Reported usage could not be saved.'));
 });
-
 
 it('labels a Codex thread estimate in the popover', async () => {
   resetBindingMocks();

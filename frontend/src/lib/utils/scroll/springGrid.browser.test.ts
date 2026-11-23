@@ -5,7 +5,6 @@ import { SpringMotion } from './motion';
 
 const originalZoom = document.documentElement.style.zoom;
 afterEach(() => {
-  __resetSpringFrameBatcherForTest();
   vi.restoreAllMocks();
   document.documentElement.style.zoom = originalZoom;
   window.dispatchEvent(new Event('resize'));

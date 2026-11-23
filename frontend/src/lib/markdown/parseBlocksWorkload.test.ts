@@ -1,5 +1,4 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import activeStream from '../../../../internal/harness/scenario/library/bench-active-stream.json?raw';
 import { describe, expect, it } from 'vitest';
 import {
   createParseBlocksCache,
@@ -72,13 +71,7 @@ function observingCache(metrics: LexMetrics): ParseBlocksCache {
 }
 
 function activeStreamText(iterations: number): string {
-  const scenarioPath = resolve(
-    process.cwd(),
-    '../internal/harness/scenario/library/bench-active-stream.json',
-  );
-  const scenario = JSON.parse(
-    readFileSync(scenarioPath, 'utf8'),
-  ) as ActiveStreamScenario;
+  const scenario = JSON.parse(activeStream) as ActiveStreamScenario;
   const repeat = scenario.turns[0]?.steps.find((step) => step.repeat)?.repeat;
   const lines = repeat?.steps.find((step) => step.emit)?.emit?.lines;
   if (!lines) throw new Error('active stream scenario has no repeating emit lines');

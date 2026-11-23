@@ -1,16 +1,14 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   cancelBackgroundKillConfirmationForThread,
   confirmBackgroundKill,
   pendingBackgroundKillConfirmation,
-  resetForTest,
   resolveBackgroundKillConfirmation,
 } from './backgroundKillConfirmation.svelte';
 
 const agent = { launchItemId: 'tu-a', description: 'gate watcher', runState: 'parked' as const, transcriptRootId: 'tu-a' };
 
 describe('backgroundKillConfirmation', () => {
-  afterEach(() => resetForTest());
 
   it('holds one question and answers it', async () => {
     expect(pendingBackgroundKillConfirmation()).toBeNull();

@@ -4,9 +4,8 @@ import { fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ForgeAttachmentChatHarness from './ForgeAttachmentChatHarness.svelte';
 import ImageMenuHost from './ImageMenuHost.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { __reportImageBoxForTest, __resetImageTiersForTest } from '../../utils/imageTiers';
-import { __resetMediaBlobCacheForTest } from '../../utils/mediaBlobCache';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { __reportImageBoxForTest } from '../../utils/imageTiers';
 import type { ForgeAttachmentSource } from '../../utils/forgeAttachments';
 
 // Forge media a PR template writes INSIDE an HTML wrapper. There is no
@@ -16,10 +15,12 @@ import type { ForgeAttachmentSource } from '../../utils/forgeAttachments';
 // static serializer (which must bail for an html token), a streaming one
 // through the component tree.
 
-vi.mock('../../transport/deviceSession', () => ({
+vi.mock('../../transport/deviceSession', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../transport/deviceSession')>()),
   fetchPairedComputer: async () => new Response('bytes', { status: 200 }),
 }));
-vi.mock('../../transport/backends', () => ({
+vi.mock('../../transport/backends', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../transport/backends')>()),
   withBackendTarget: <T>(_backend: string, run: () => T): T => run(),
 }));
 
@@ -60,9 +61,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  __resetMediaBlobCacheForTest();
-  __resetImageTiersForTest();
-  resetBindingMocks();
   vi.restoreAllMocks();
 });
 

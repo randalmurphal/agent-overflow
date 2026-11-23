@@ -7,7 +7,7 @@
 // would be a revoked blob: dead <img>, the "image.png placeholder"
 // symptom from the 2026-08-22 agent-pane incident).
 import { flushSync } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createAttachmentPreviews,
@@ -18,7 +18,7 @@ import {
 } from './attachmentPreview.svelte';
 import { attachmentImageMenuTag } from './imageMenuActions';
 import type { AttachmentPreviewSource } from './userMessageMeta';
-import { resetBindingMocks, setAttachmentThumbnailMock, setBindingMock } from '../../test/mocks/bindings-app';
+import { setAttachmentThumbnailMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { mockAttachmentDownload, TEST_PNG_BYTES } from '../../test/mocks/attachmentTransfer';
 
 const ATTACHMENT: AttachmentPreviewSource = {
@@ -58,16 +58,11 @@ const ORIGINAL_SIZES: Record<string, { width: number; height: number }> = {
 };
 
 beforeEach(() => {
-  resetBindingMocks();
   loads = 0;
   setAttachmentThumbnailMock((_threadId, attachmentId) => {
     loads += 1;
     return ORIGINAL_SIZES[attachmentId] ?? {};
   });
-});
-
-afterEach(() => {
-  resetBindingMocks();
 });
 
 describe('createAttachmentPreviews with a cache', () => {

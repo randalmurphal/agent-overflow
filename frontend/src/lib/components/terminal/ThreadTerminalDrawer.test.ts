@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, cleanup, waitFor } from '@testing-library/svelte';
+import { render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadTerminalDrawer from './ThreadTerminalDrawer.svelte';
-import { getThreadTerminalState, resetThreadTerminalStatesForTest } from './terminalStore.svelte';
+import { getThreadTerminalState } from './terminalStore.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { setupEventListeners } from '../../stores/events';
-import { emitWailsEvent, wailsListenerCount, resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
+import { emitWailsEvent, wailsListenerCount } from '../../../test/mocks/wailsio-runtime';
 
 // --- Mock layer --- //
 // We control the Wails bindings here; the event bus is the global @wailsio/
@@ -145,8 +145,6 @@ async function answerTerminalList(): Promise<void> {
 
 beforeEach(async () => {
   callLog.length = 0;
-  resetThreadTerminalStatesForTest();
-  resetWailsMocks();
   cleanupEvents = setupEventListeners();
   const bindings = await import('../../stores/bindings');
   (bindings.OpenTerminal as unknown as { mockImplementation: (fn: unknown) => void }).mockImplementation(
@@ -158,7 +156,6 @@ beforeEach(async () => {
 afterEach(() => {
   cleanupEvents?.();
   cleanupEvents = null;
-  cleanup();
 });
 
 describe('ThreadTerminalDrawer', () => {

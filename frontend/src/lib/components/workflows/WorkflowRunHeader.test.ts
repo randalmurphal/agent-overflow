@@ -27,9 +27,8 @@ import type { WorkItem } from '../../types/workflow';
 import {
   attachWorkflowRunMap,
   peekWorkflowRunMap,
-  __resetWorkflowRunMapStoreForTest,
 } from '../../stores/workflowRunMap.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 /** Every run here is a wave of one campaign, so they all carry its skeleton. */
 function run(itemId: string, over: Partial<WorkflowRunMapRun> = {}): WorkflowRunMapRun {
@@ -82,16 +81,12 @@ async function loadMap(view: WorkflowRunMapView): Promise<() => void> {
 let release: (() => void) | null = null;
 
 beforeEach(() => {
-  resetBindingMocks();
-  __resetWorkflowRunMapStoreForTest();
   setBindingMock('GetThread', async () => null);
 });
 
 afterEach(() => {
   release?.();
   release = null;
-  __resetWorkflowRunMapStoreForTest();
-  resetBindingMocks();
 });
 
 /** Structurally typed: only the one query this file reads is required. */
@@ -101,12 +96,15 @@ function hint(view: { getByTestId: (id: string) => HTMLElement }): string {
 
 describe('WorkflowRunHeader position', () => {
   it('falls back to the frozen phase counter while no map view is loaded', () => {
+    // The map's read has not answered.
+    setBindingMock('WorkflowGetRunMap', () => new Promise(() => {}));
     const view = render(WorkflowRunHeader, { item: item(), costUsd: 0 });
     expect(peekWorkflowRunMap('wave-1')).toBeNull();
     expect(hint(view)).toContain('phase 1/3');
   });
 
   it('says nothing about position when there is no counter either', () => {
+    setBindingMock('WorkflowGetRunMap', () => new Promise(() => {}));
     const view = render(WorkflowRunHeader, {
       item: item({ phaseCount: 0, currentPhaseOrdinal: 0 }),
       costUsd: 0,

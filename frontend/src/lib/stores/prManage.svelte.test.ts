@@ -16,7 +16,7 @@ import { flushSync } from 'svelte';
 import { createPRManageState, type PRManageHost, type PRManageView } from './prManage.svelte';
 import { createReviewPRIdentity } from './reviewPRIdentity.svelte';
 import { PICKER_SEARCH_DEBOUNCE_MS } from './prManagePicker.svelte';
-import { getToasts, resetToastsForTest } from './toast.svelte';
+import { getToasts } from './toast.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { TransportError } from '../transport/wsClient';
 import type { PRCandidates } from '../types/models';
@@ -72,7 +72,6 @@ let view: PRManageView;
 let host: ReturnType<typeof makeHost>['host'];
 
 beforeEach(() => {
-  resetToastsForTest();
   const made = makeHost();
   host = made.host;
   cleanup.push($effect.root(() => {

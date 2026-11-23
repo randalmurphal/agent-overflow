@@ -1,11 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { stageBackend, resetStagedBackends, REMOTE_BACKEND_UUID } from '../../test/helpers/backends';
-import { setSelectedBackend, __resetSelectedBackendForTest } from './selectedBackend.svelte';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { stageBackend, REMOTE_BACKEND_UUID } from '../../test/helpers/backends';
+import { setSelectedBackend } from './selectedBackend.svelte';
 import { resetTelemetryForTest, selectedTelemetryComputers, setTelemetrySelection, telemetrySelection, toggleTelemetryComputer } from './telemetryComputers.svelte';
 import { detachBackend } from '../transport/backends';
 
 beforeEach(resetTelemetryForTest);
-afterEach(() => { resetTelemetryForTest(); resetStagedBackends(); __resetSelectedBackendForTest(); });
 
 describe('telemetry computer choices', () => {
   it('defaults usage to all computers and system stats to the local host, independent of thread selection', () => {

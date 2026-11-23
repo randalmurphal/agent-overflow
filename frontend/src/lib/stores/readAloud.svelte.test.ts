@@ -69,14 +69,12 @@ describe('read-aloud', () => {
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
     setReadAloudPreference('enabled', true);
-    resetReadAloudForTest();
     fake = fakeEngine();
     watchReadAloudVoices(fake.engine);
     await settle();
   });
 
   afterEach(() => {
-    resetReadAloudForTest();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
     vi.restoreAllMocks();

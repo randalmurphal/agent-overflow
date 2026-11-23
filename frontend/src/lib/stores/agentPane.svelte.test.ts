@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  __resetAgentPaneStateForTest,
   agentScopeForPane,
   agentStateForPane,
   disposeAgentStateForPane,
@@ -10,7 +9,6 @@ import {
 import {
   companionForSource,
   installCompanionPanes,
-  resetCompanionPanesForTest,
 } from './companionPanes.svelte';
 import {
   getPaneLayoutItems,
@@ -18,7 +16,7 @@ import {
   setPaneLayoutItemsForTest,
   type PaneLayoutItem,
 } from './paneLayout.svelte';
-import { createPane, destroyPane, resetPanesForTest } from './panes.svelte';
+import { createPane, destroyPane } from './panes.svelte';
 
 function threadItem(paneId: string): PaneLayoutItem {
   return { id: paneId, paneId, kind: 'thread', widthPx: 560 };
@@ -29,18 +27,12 @@ function labels(sourcePaneId: string, threadId = 'thread-1'): string[] {
 }
 
 beforeEach(() => {
-  resetPanesForTest();
-  resetCompanionPanesForTest();
   resetPaneLayoutForTest();
-  __resetAgentPaneStateForTest();
   installCompanionPanes();
   setPaneLayoutItemsForTest([threadItem('main'), threadItem('right')]);
 });
 
 afterEach(() => {
-  __resetAgentPaneStateForTest();
-  resetCompanionPanesForTest();
-  resetPanesForTest();
   resetPaneLayoutForTest();
 });
 

@@ -2,13 +2,12 @@
 // the one writer keeps it. fake-indexeddb is installed here; the listing
 // rules without a replica are in ./catalogLoad.svelte.test.ts, and two
 // windows over one replica in ./sidebarKeptTreeWindows.test.ts.
-import { installFakeIndexedDB } from '../../test/helpers/fakeIndexedDB';
+import { elapse, fakeTimeoutsBesideIndexedDB, installFakeIndexedDB } from '../../test/helpers/fakeIndexedDB';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { resetStagedBackends } from '../../test/helpers/backends';
 import { makeThread } from '../../test/helpers/chat';
 import { HOME_BACKEND } from '../transport/backends';
-import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
+import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { rememberIdentity } from '../transport/rememberedIdentity';
 import { __resetEntityIndexForTest } from '../transport/entityIndex';
 import { DisconnectedError } from '../transport/wsClient';
@@ -50,9 +49,6 @@ function forgetSession(): void {
 beforeEach(async () => {
   for (const list of LISTS) setBindingMock(list, offline);
   await __replicaSweepForTest();
-  __resetReplicaForTest();
-  __resetBackendIdentityForTest();
-  resetStagedBackends();
   localStorage.clear();
   for (const { name } of await indexedDB.databases()) {
     if (name) await new Promise<void>((resolve) => { const drop = indexedDB.deleteDatabase(name); drop.onsuccess = () => resolve(); });
@@ -60,12 +56,13 @@ beforeEach(async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   forgetSession();
   vi.spyOn(console, 'error').mockImplementation(() => {});
+  // The writer's spacing passes on the fake clock.
+  fakeTimeoutsBesideIndexedDB();
 });
 afterEach(async () => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   await __replicaSweepForTest();
-  __resetReplicaForTest();
-  resetStagedBackends();
 });
 
 /** This computer is awake: its identity is known and its replica takes writes. */
@@ -176,7 +173,7 @@ describe('an asleep computer at startup', () => {
     // The answer alone is no tree: the session does not list it beside the kept rows.
     expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
     expect(getProjects().map((row) => row.project.id).sort()).toEqual(['p1', 'p2']);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await elapse(50);
     expect(await storedIds()).toEqual({ projects: ['p1'], threads: ['t1'], groups: ['g1'] });
 
     await reopenAsleep();
@@ -220,7 +217,7 @@ describe('the one writer of a computer\'s kept catalogs', () => {
   it('lands none of a tree IndexedDB fails and tries it again, with a change pushed since', async () => {
     await connect();
     await answerTree();
-    await new Promise((resolve) => setTimeout(resolve, CATALOG_WRITE_SPACING_MS + 50));
+    await elapse(CATALOG_WRITE_SPACING_MS + 50);
     const put = IDBObjectStore.prototype.put;
     let failing = true;
     vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, value, key) {
@@ -232,14 +229,16 @@ describe('the one writer of a computer\'s kept catalogs', () => {
     });
     setBindingMock('ListProjects', async () => [project('p1'), project('p2')]);
     await loadSidebarCatalogs();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await elapse(50);
     expect(failing).toBe(false);
     expect(await storedIds()).toEqual({ projects: ['p1'], threads: ['t1'], groups: ['g1'] });
 
     listProjectLocal(project('p3').project);
+    // Within three spacings, as the waitFor below runs the clock a second more.
+    await elapse(2 * CATALOG_WRITE_SPACING_MS);
     await vi.waitFor(async () => {
       expect((await storedIds()).projects?.sort()).toEqual(['p1', 'p2', 'p3']);
-    }, { timeout: CATALOG_WRITE_SPACING_MS * 3 });
+    });
   });
 
   it('holds its tree when another window replaced a stamp during the round, and the older tree stays readable', async () => {
@@ -257,7 +256,7 @@ describe('the one writer of a computer\'s kept catalogs', () => {
 
     answer([makeThread({ id: 't1', projectId: 'p1' }), makeThread({ id: 't2', projectId: 'p1' })]);
     await round;
-    await new Promise((resolve) => setTimeout(resolve, CATALOG_WRITE_SPACING_MS + 50));
+    await elapse(CATALOG_WRITE_SPACING_MS + 50);
     expect(await storedIds()).toEqual({ projects: ['p1'], threads: ['t1', 't9'], groups: ['g1'] });
 
     await reopenAsleep();
@@ -286,10 +285,12 @@ describe('the one writer of a computer\'s kept catalogs', () => {
     await reopening;
     // The records still hold the first round's rows, the thread record under
     // the stamp the deletion replaced; the tree is written again under the new one.
+    // Within three spacings, as the waitFor below runs the clock a second more.
+    await elapse(2 * CATALOG_WRITE_SPACING_MS);
     await vi.waitFor(async () => {
       expect((await record('threads'))?.stamp).toBe(replicaCatalogStamp(HOME_BACKEND, 'threads'));
       expect(await storedIds()).toEqual({ projects: ['p1'], threads: ['t1'], groups: ['g1'] });
-    }, { timeout: CATALOG_WRITE_SPACING_MS * 3 });
+    });
 
     await reopenAsleep();
     expect(await listAsleep()).toBe(true);

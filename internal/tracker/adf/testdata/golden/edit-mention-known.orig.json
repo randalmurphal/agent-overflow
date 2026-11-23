@@ -1,0 +1,23 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "acc-user3",
+            "text": "@User 3",
+            "accessLevel": ""
+          }
+        },
+        {
+          "type": "text",
+          "text": " owns this."
+        }
+      ]
+    }
+  ]
+}

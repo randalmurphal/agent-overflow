@@ -1,4 +1,4 @@
-import { stageBackend, resetStagedBackends, REMOTE_BACKEND_UUID } from '../../test/helpers/backends';
+import { stageBackend, REMOTE_BACKEND_UUID } from '../../test/helpers/backends';
 import { setCarriedSessionScopes } from '../transport/scopes';
 import { takePinnedBackend } from '../transport/backends';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -63,7 +63,6 @@ function attach(t: MCPTarget): EntityAttachment<ThreadMCPServer[]> {
 
 afterEach(() => {
   for (const handle of held.splice(0)) handle.release();
-  resetStagedBackends();
 });
 
 describe('needsEphemeralRefresh', () => {
@@ -589,7 +588,6 @@ describe('mcpServers store — transport gap', () => {
     expect(list).toHaveBeenCalledTimes(1);
   });
 });
-
 
 it('keeps identically named MCP servers and their connection lifecycles on their own computers', async () => {
   const remote = stageBackend();

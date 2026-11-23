@@ -1,9 +1,8 @@
 import { fireEvent, within } from '@testing-library/dom';
 import { flushSync, mount, tick, unmount } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SvelteSet } from 'svelte/reactivity';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
-import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
 import ReviewCILogView from './ReviewCILogView.svelte';
 import { formatTimeOfDay } from '../../utils/format';
 import type { ForgeFailure } from '../../utils/forgeFailure';
@@ -87,10 +86,6 @@ async function wheelUp(el: HTMLElement, at: { top: number }, to: number): Promis
 }
 
 const mounted: { app: object; host: HTMLElement }[] = [];
-
-beforeEach(() => {
-  resetScrollIntentModuleStateForTest();
-});
 
 afterEach(() => {
   for (const { app, host } of mounted.splice(0)) {

@@ -11,7 +11,6 @@ import '../../../app.css';
 import TerminalSurface from './TerminalSurface.svelte';
 import {
   getThreadTerminalState,
-  resetThreadTerminalStatesForTest,
   terminalStateKeyForPane,
 } from './terminalStore.svelte';
 import { terminalFindKey } from './terminalFind.svelte';
@@ -19,7 +18,6 @@ import type { ThreadTerminalSurfaceContext } from './terminalDrawerTypes';
 import {
   closePaneFind,
   getPaneFindProvider,
-  resetPaneFindForTest,
   setPaneFindQuery,
 } from '../../stores/paneFind.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
@@ -54,8 +52,6 @@ function surface(): ThreadTerminalSurfaceContext {
 }
 
 beforeEach(async () => {
-  resetThreadTerminalStatesForTest();
-  resetPaneFindForTest();
   setPaneLayoutItemsForTest([{ id: PANE, paneId: PANE, kind: 'thread', widthPx: 640 }]);
   setBindingMock('WriteTerminal', async () => {});
   setBindingMock('ResizeTerminal', async () => {});
@@ -86,9 +82,7 @@ afterEach(() => {
   if (component) unmount(component);
   component = null;
   term = null;
-  resetPaneFindForTest();
   resetPaneLayoutForTest();
-  resetThreadTerminalStatesForTest();
   document.body.replaceChildren();
 });
 

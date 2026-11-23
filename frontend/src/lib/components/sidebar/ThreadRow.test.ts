@@ -5,7 +5,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadRow from './ThreadRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { listPanes, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { listPanes, registerPaneForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
@@ -38,16 +38,14 @@ import { emitItemEventUpsert, installThreadSwitchMocks } from '../../../test/hel
 import { endThreadRowDrag, THREAD_ROW_DRAG_MIME, threadDragPayloadForEvent } from '../../utils/threadDragPayload';
 import {
   REMOTE_BACKEND_UUID,
-  resetStagedBackends,
   stageBackend,
 } from '../../../test/helpers/backends';
-import { __resetEntityIndexForTest, noteProject, noteThread } from '../../transport/entityIndex';
-import { resetProjectsForTest } from '../../stores/projects.svelte';
+import { noteProject, noteThread } from '../../transport/entityIndex';
 import { UNREACHABLE_SETTLE_MS } from '../../stores/transportStatus.svelte';
-import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
+import { setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { resetSidebarForTest, setShowProviderIcons } from '../../stores/sidebar.svelte';
-import { refreshThreadWorkerSummaries, resetThreadWorkerSummariesForTest } from '../../stores/threadWorkerSummaries.svelte';
+import { refreshThreadWorkerSummaries } from '../../stores/threadWorkerSummaries.svelte';
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
@@ -161,13 +159,11 @@ function makeDataTransfer(): DataTransfer {
 
 describe('<ThreadRow> archive action', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await loadSidebarCatalogs();
     resetKeybindingsStore();
-    resetKeyboardModifiersForTest();
   });
 
   it('shows the archive action (and no delete X) for a chat thread', async () => {
@@ -181,13 +177,11 @@ describe('<ThreadRow> archive action', () => {
 
 describe('<ThreadRow> open / focused marker', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await loadSidebarCatalogs();
     resetKeybindingsStore();
-    resetKeyboardModifiersForTest();
   });
 
   it('marks open when mounted in a non-focused pane, open + focused in the focused one', async () => {
@@ -229,13 +223,11 @@ describe('<ThreadRow> inline actions without threads:operate', () => {
   const INERT = 'Not granted to this device';
 
   beforeEach(async () => {
-    resetPanesForTest();
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await loadSidebarCatalogs();
     resetKeybindingsStore();
-    resetKeyboardModifiersForTest();
     await pairViewOnly();
   });
 
@@ -295,12 +287,10 @@ describe('<ThreadRow> terminal delete action', () => {
   // itself (StopSession → DeleteThread → store/pane cleanup) is shared with
   // the right-click Delete path and already covered there.
   beforeEach(async () => {
-    resetPanesForTest();
     resetPaneLayoutForTest();
     setBindingMock('ListThreads', async () => []);
     await loadSidebarCatalogs();
     resetKeybindingsStore();
-    resetKeyboardModifiersForTest();
     // Best-effort stop the (sentinel-provider) session before delete.
     setBindingMock('StopSession', async () => {});
   });
@@ -383,7 +373,6 @@ describe('<ThreadRow> terminal delete action', () => {
 
 describe('<ThreadRow> leading mode icon', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     resetPaneLayoutForTest();
     await primeSettings();
   });
@@ -415,7 +404,6 @@ describe('<ThreadRow> leading mode icon', () => {
 
 describe('<ThreadRow> drag source', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
@@ -497,7 +485,6 @@ describe('<ThreadRow> drag source', () => {
 
 describe('<ThreadRow> title tooltip', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     await primeSettings();
   });
 
@@ -524,7 +511,6 @@ describe('<ThreadRow> title tooltip', () => {
 
 describe('<ThreadRow> timestamp label', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     await primeSettings();
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-17T18:00:00.000Z'));
@@ -573,7 +559,6 @@ describe('<ThreadRow> timestamp label', () => {
 
 describe('<ThreadRow> fork lineage affordance', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await loadSidebarCatalogs();
@@ -692,7 +677,6 @@ describe('<ThreadRow> fork lineage affordance', () => {
 // does: Enter on keydown and not on repeat, Space on keyup.
 describe('<ThreadRow> keyboard activation', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('SwitchThread', async () => {});
@@ -799,7 +783,6 @@ describe('<ThreadRow> keyboard activation', () => {
 
 describe('<ThreadRow> worktree metadata', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await loadSidebarCatalogs();
@@ -886,6 +869,7 @@ describe('<ThreadRow> worktree metadata', () => {
       id: 'worktree-thread',
       worktreePath: '/tmp/agent-overflow-worktrees/feature-demo',
     });
+    installThreadSwitchMocks(thread);
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
 
@@ -950,7 +934,6 @@ describe('<ThreadRow> attention flag', () => {
 
 describe('<ThreadRow> pin affordance placement', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await loadSidebarCatalogs();
@@ -1065,7 +1048,6 @@ describe('<ThreadRow> hover-action reveal trigger', () => {
   // Tailwind CSS (the stylesheet isn't loaded in unit tests), so this asserts
   // the class contract — the same proxy the pin-placement tests above use.
   beforeEach(async () => {
-    resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await loadSidebarCatalogs();
@@ -1115,11 +1097,9 @@ describe('<ThreadRow> hover-action reveal trigger', () => {
 
 describe('<ThreadRow> live status dot', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await loadSidebarCatalogs();
-    resetThreadStatuses();
   });
 
   it('renders no dot at all when the thread is idle and read', () => {
@@ -1460,7 +1440,6 @@ describe('<ThreadRow> live status dot', () => {
 
 describe('<ThreadRow> row chrome', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await loadSidebarCatalogs();
@@ -1519,7 +1498,6 @@ describe('<ThreadRow> row chrome', () => {
 
 describe('<ThreadRow> context menu dismissal', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await loadSidebarCatalogs();
@@ -1545,7 +1523,6 @@ describe('<ThreadRow> context menu dismissal', () => {
 
 describe('<ThreadRow> status is visual only', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await loadSidebarCatalogs();
@@ -1588,21 +1565,15 @@ describe('<ThreadRow> on an unreachable machine', () => {
   // does: the page's own outage is the transport banner's job. A shorter
   // drop changes nothing on the row.
   beforeEach(async () => {
-    resetPanesForTest();
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await loadSidebarCatalogs();
     resetKeybindingsStore();
-    resetKeyboardModifiersForTest();
-    resetStagedBackends();
-    __resetEntityIndexForTest();
     vi.useFakeTimers();
   });
 
   afterEach(() => {
-    resetStagedBackends();
-    __resetEntityIndexForTest();
     vi.useRealTimers();
   });
 
@@ -1682,25 +1653,12 @@ describe('<ThreadRow> machine chip', () => {
   const HOME_UUID = '11111111-2222-4333-8444-555555555555';
 
   beforeEach(async () => {
-    resetPanesForTest();
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await loadSidebarCatalogs();
     resetKeybindingsStore();
-    resetKeyboardModifiersForTest();
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    resetProjectsForTest();
-    __resetBackendIdentityForTest();
     setBackendIdentityFromBootstrap(HOME_UUID, 1, 'Desk');
-  });
-
-  afterEach(() => {
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    resetProjectsForTest();
-    __resetBackendIdentityForTest();
   });
 
   async function seedRepoOnBothMachines(): Promise<void> {
@@ -1808,13 +1766,11 @@ describe('<ThreadRow> compact layout', () => {
   // not drag (Android starts a drag on a held draggable, which would fight
   // the long press).
   beforeEach(async () => {
-    resetPanesForTest();
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
     await loadSidebarCatalogs();
     resetKeybindingsStore();
-    resetKeyboardModifiersForTest();
     setCompactLayoutForTest(true);
   });
 
@@ -1897,8 +1853,6 @@ describe('<ThreadRow> fork preparation', () => {
 
 describe('<ThreadRow> standing agent variant', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetSidebarForTest();
     await primeSettings();
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
   });
@@ -1939,9 +1893,6 @@ describe('<ThreadRow> standing agent variant', () => {
 // those waiting on the user, each saying what it counts.
 describe('<ThreadRow> worker counts', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetSidebarForTest();
-    resetThreadWorkerSummariesForTest();
     await primeSettings();
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
   });

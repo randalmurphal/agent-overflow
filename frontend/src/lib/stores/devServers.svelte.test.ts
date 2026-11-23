@@ -4,10 +4,9 @@
 // that reconcile against the next frame rather than optimistically.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import {
   emitWailsEvent,
-  resetWailsMocks,
   wailsListenerCount,
 } from '../../test/mocks/wailsio-runtime';
 import {
@@ -26,7 +25,6 @@ import {
 import { SCOPES } from '../transport/scopes';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { TransportError } from '../transport/wsClient';
-import { __resetScopesForTest } from '../transport/scopes';
 import type { DevServer, DevServerList } from './bindings';
 import {
   allowPreviewPort,
@@ -44,7 +42,6 @@ import {
   previewRewriteKey,
   previewRouted,
   previewSignature,
-  resetDevServersForTest,
   sharedPreviewPorts,
 } from './devServers.svelte';
 import { forgetThread, noteThread } from '../transport/entityIndex';
@@ -77,19 +74,12 @@ const LAPTOP_HELLO = {
 
 describe('devServers store', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetWailsMocks();
-    resetDevServersForTest();
-    resetStagedBackends();
     resetToLocalPage();
   });
 
   afterEach(() => {
-    resetDevServersForTest();
-    resetStagedBackends();
     revokeBackendScopes('laptop');
     resetToLocalPage();
-    __resetScopesForTest();
   });
 
   describe('the passive load', () => {

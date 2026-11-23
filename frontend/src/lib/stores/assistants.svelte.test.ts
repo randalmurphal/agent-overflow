@@ -2,22 +2,20 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { assistantDisplayName, sameAssistantName } from './assistants.svelte';
 import nameFolds from '../../../../internal/store/testdata/assistant_name_folds.json';
 import { replaceAllThreads } from './threads.svelte';
-import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
+import { noteThread } from '../transport/entityIndex';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { makeThread } from '../../test/helpers/chat';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 
 // An assistant's name is unique per computer; two attached computers may each
 // hold it, and both rows then name their computer (docs/specs/standing-agents.md,
 // "Sidebar").
 describe('assistantDisplayName', () => {
   beforeEach(() => {
-    __resetEntityIndexForTest();
     stageBackend({ id: 'laptop', name: 'Laptop' });
   });
   afterEach(() => {
     replaceAllThreads([]);
-    resetStagedBackends();
   });
 
   it('suffixes both computers while the same name is on two, and only then', () => {

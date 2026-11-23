@@ -8,7 +8,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  __resetHomeEndpointForTest,
   forgetBackendEndpoint,
   backendTransferUrl,
   hasHomeEndpoint,
@@ -26,12 +25,10 @@ import {
 const ENDPOINT = 'https://desk.tail-scale.ts.net:7777';
 
 beforeEach(() => {
-  __resetHomeEndpointForTest();
   localStorage.clear();
 });
 
 afterEach(() => {
-  __resetHomeEndpointForTest();
   localStorage.clear();
 });
 
@@ -197,7 +194,6 @@ describe('the shell door', () => {
     vi.resetModules();
   });
 });
-
 
 describe('attachment transfer boundaries', () => {
   it.each([

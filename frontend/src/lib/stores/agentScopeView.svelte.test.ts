@@ -2,15 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAgentScopeView, type AgentScopeView } from './agentScopeView.svelte';
 import { createThreadPane } from './thread.svelte';
 import { installTimelineScopeCapability, installPaneMocks, makeItem, makeThread } from '../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { applyItemStreamEvent, flushItemEventQueue } from './eventsItemStream';
 import { applyTimelineMutation } from './timelineSurfaces';
-import { setThreadScrollSnapshot, clearThreadScrollSnapshotsForTest } from '../utils/threadScrollSnapshots';
+import { setThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { setBackendIdentityFromBootstrap, __resetBackendIdentityForTest } from '../transport/backendIdentity';
 import { cursorFromItem } from './threadItems';
 import type { Item } from '../types/models';
 import { ActivityRunStub, type PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
-import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { registerPaneForTest } from './panes.svelte';
 import { ACTIVE_TIMELINE_WINDOW_MAX_ITEMS, ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS } from './threadPaneShared';
 
 const threadId = 'scope-thread';
@@ -42,10 +42,8 @@ async function open(pane: Awaited<ReturnType<typeof setup>>, toolsOnly = false, 
 function push(item: Item) { applyItemStreamEvent({ action: 'upsert', threadId, item }); flushItemEventQueue(); }
 beforeEach(() => {
   installTimelineScopeCapability();
-  resetBindingMocks();
-  clearThreadScrollSnapshotsForTest();
 });
-afterEach(() => { for (const view of views.splice(0)) view.dispose(); resetPanesForTest(); });
+afterEach(() => { for (const view of views.splice(0)) view.dispose(); });
 
 describe('live subagent children', () => {
   it('reach the agent pane and an expanded card while the thread window keeps no state for them', async () => {

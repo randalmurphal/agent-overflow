@@ -1,6 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
-import MessageSearch from './MessageSearch.svelte';
+import MessageSearch, { MESSAGE_SEARCH_DEBOUNCE_MS } from './MessageSearch.svelte';
 import { createThreadPane, type ThreadPane } from '../../stores/thread.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
@@ -23,6 +23,18 @@ beforeEach(async () => {
   setBindingMock('ListItems', async () => []);
   setBindingMock('ListRecentTurns', async () => []);
 });
+
+// Types each value into the search box in turn, then passes the search's
+// debounce on a fake clock, so the query runs without the real wait.
+async function typeQuery(input: HTMLElement, ...values: string[]): Promise<void> {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    for (const value of values) await fireEvent.input(input, { target: { value } });
+    await vi.advanceTimersByTimeAsync(MESSAGE_SEARCH_DEBOUNCE_MS);
+  } finally {
+    vi.useRealTimers();
+  }
+}
 
 function makePane() {
   return createThreadPane();
@@ -86,7 +98,7 @@ describe('<MessageSearch> — visibility & idle state', () => {
     setBindingMock('SearchThreadMessages', async () => []);
     const pane = makePane();
     const { getByTestId, rerender } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'stale' } });
+    await typeQuery(getByTestId('message-search-input'), 'stale');
     await rerender({ open: false, pane, onClose: vi.fn() });
     await rerender({ open: true, pane, onClose: vi.fn() });
     expect((getByTestId('message-search-input') as HTMLInputElement).value).toBe('');
@@ -100,7 +112,7 @@ describe('<MessageSearch> — search behavior', () => {
     const search = setBindingMock('SearchThreadMessages', async () => []);
     const pane = makePane();
     const { getByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'bug' } });
+    await typeQuery(getByTestId('message-search-input'), 'bug');
     await waitFor(() => expect(search).toHaveBeenCalled());
     expect(search.mock.calls[0]).toEqual(['bug', 50]);
   });
@@ -112,7 +124,7 @@ describe('<MessageSearch> — search behavior', () => {
     ]);
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'q' } });
+    await typeQuery(getByTestId('message-search-input'), 'q');
     await findByTestId('message-search-hit-t1-title');
     expect(getByTestId('message-search-hit-t1-title').textContent).toContain('First');
     expect(getByTestId('message-search-hit-t1-title').textContent).toMatch(/title/);
@@ -127,7 +139,7 @@ describe('<MessageSearch> — search behavior', () => {
     ]);
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'ÉCOLE' } });
+    await typeQuery(getByTestId('message-search-input'), 'ÉCOLE');
     const row = await findByTestId('message-search-hit-t1-i1');
     expect([...row.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual(['ÉCOLE', 'École']);
   });
@@ -144,9 +156,9 @@ describe('<MessageSearch> — search behavior', () => {
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
     const input = getByTestId('message-search-input');
-    await fireEvent.input(input, { target: { value: 'alpha' } });
+    await typeQuery(input, 'alpha');
     const row = await findByTestId('message-search-hit-t1-title');
-    await fireEvent.input(input, { target: { value: 'beta' } });
+    await typeQuery(input, 'beta');
     await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
     expect([...row.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual(['alpha']);
     release([hit({ threadId: 't1', threadTitle: 'alpha beta', matchType: 'title', itemId: '' })]);
@@ -157,7 +169,7 @@ describe('<MessageSearch> — search behavior', () => {
     setBindingMock('SearchThreadMessages', async () => []);
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'xyzzy' } });
+    await typeQuery(getByTestId('message-search-input'), 'xyzzy');
     const empty = await findByTestId('message-search-empty');
     expect(empty.textContent).toContain('xyzzy');
   });
@@ -168,7 +180,7 @@ describe('<MessageSearch> — search behavior', () => {
     });
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'q' } });
+    await typeQuery(getByTestId('message-search-input'), 'q');
     const err = await findByTestId('message-search-error');
     expect(err.textContent).toMatch(/db is down/);
   });
@@ -191,9 +203,9 @@ describe('<MessageSearch> — search behavior', () => {
     const pane = makePane();
     const { getByTestId, findByTestId, queryByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
     const input = getByTestId('message-search-input');
-    await fireEvent.input(input, { target: { value: 'one' } });
+    await typeQuery(input, 'one');
     await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
-    await fireEvent.input(input, { target: { value: 'two' } });
+    await typeQuery(input, 'two');
     await findByTestId('message-search-hit-t-new-title');
     // Now release the slow first response. It should NOT replace what we see.
     releaseFirst([hit({ threadId: 't-old', threadTitle: 'Older', matchType: 'title', itemId: '' })]);
@@ -214,7 +226,7 @@ describe('<MessageSearch> — keyboard navigation', () => {
     ]);
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
+    await typeQuery(getByTestId('message-search-input'), 'x');
     await findByTestId('message-search-hit-t1-title');
     // Arrow keys are caught at the dialog body level so the input keeps
     // receiving letter keystrokes. Escape is the backdrop's contract.
@@ -242,7 +254,7 @@ describe('<MessageSearch> — keyboard navigation', () => {
     const onClose = vi.fn();
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
+    await typeQuery(getByTestId('message-search-input'), 'x');
     await findByTestId('message-search-hit-t1-title');
     const body = getByTestId('message-search');
     // Default is first hit. Enter opens it.
@@ -261,7 +273,7 @@ describe('<MessageSearch> — keyboard navigation', () => {
     const onClose = vi.fn();
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
+    await typeQuery(getByTestId('message-search-input'), 'x');
     await findByTestId('message-search-hit-ime1-title');
     const body = getByTestId('message-search');
 
@@ -284,7 +296,7 @@ describe('<MessageSearch> — keyboard navigation', () => {
     const onClose = vi.fn();
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
+    await typeQuery(getByTestId('message-search-input'), 'x');
     await findByTestId('message-search-hit-t1-title');
     const body = getByTestId('message-search');
     await fireEvent.keyDown(body, { key: 'ArrowDown' });
@@ -304,7 +316,7 @@ describe('<MessageSearch> — interactions', () => {
     const onClose = vi.fn();
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
+    await typeQuery(getByTestId('message-search-input'), 'x');
     const btn = await findByTestId('message-search-hit-t1-title');
     await fireEvent.click(btn);
     await waitFor(() => expect(onClose).toHaveBeenCalled());
@@ -325,7 +337,7 @@ describe('<MessageSearch> — interactions', () => {
     const spy = vi.spyOn(pane, 'requestScrollToItem');
 
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'q' } });
+    await typeQuery(getByTestId('message-search-input'), 'q');
     await fireEvent.click(await findByTestId('message-search-hit-t1-item-xyz'));
 
     await waitFor(() => expect(spy).toHaveBeenCalledWith('item-xyz'));
@@ -343,7 +355,7 @@ describe('<MessageSearch> — interactions', () => {
     const spy = vi.spyOn(pane, 'requestScrollToItem');
 
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'q' } });
+    await typeQuery(getByTestId('message-search-input'), 'q');
     await fireEvent.click(await findByTestId('message-search-hit-t1-title'));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
 
@@ -359,7 +371,7 @@ describe('<MessageSearch> — interactions', () => {
     const onClose = vi.fn();
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
+    await typeQuery(getByTestId('message-search-input'), 'x');
     await fireEvent.click(await findByTestId('message-search-hit-t-missing-title'));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     // The pane switched to a minimal shape with the right id.
@@ -401,7 +413,7 @@ describe('<MessageSearch> — highlight', () => {
     ]);
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'release' } });
+    await typeQuery(getByTestId('message-search-input'), 'release');
     const row = await findByTestId('message-search-hit-t1-title');
     const marks = row.querySelectorAll('mark');
     expect(marks.length).toBeGreaterThan(0);
@@ -414,7 +426,7 @@ describe('<MessageSearch> — highlight', () => {
     ]);
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'bug' } });
+    await typeQuery(getByTestId('message-search-input'), 'bug');
     const row = await findByTestId('message-search-hit-t1-i1');
     const marks = row.querySelectorAll('mark');
     expect(marks.length).toBeGreaterThan(0);
@@ -432,7 +444,7 @@ describe('<MessageSearch> — provider rendering', () => {
     ]);
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'one' } });
+    await typeQuery(getByTestId('message-search-input'), 'one');
     const claudeRow = await findByTestId('message-search-hit-t-c-title');
     const codexRow = await findByTestId('message-search-hit-t-x-title');
     // The badge's visible character is right next to the title.
@@ -449,7 +461,7 @@ describe('<MessageSearch> scope', () => {
     const scoped = setBindingMock('SearchThreadItems', async () => []);
     const { getByTestId } = renderSearch({ open: true, pane: threadPaneStub('thr-1') });
     expect(getByTestId('message-search-input').getAttribute('aria-label')).toBe('Search messages');
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'seconds' } });
+    await typeQuery(getByTestId('message-search-input'), 'seconds');
     await waitFor(() => expect(global).toHaveBeenCalled());
     expect(scoped).not.toHaveBeenCalled();
   });
@@ -494,10 +506,7 @@ describe('<MessageSearch> — debounce', () => {
     const pane = makePane();
     const { getByTestId } = renderSearch({ open: true, pane });
     const input = getByTestId('message-search-input');
-    await fireEvent.input(input, { target: { value: 's' } });
-    await fireEvent.input(input, { target: { value: 'se' } });
-    await fireEvent.input(input, { target: { value: 'sec' } });
-    await fireEvent.input(input, { target: { value: 'seconds' } });
+    await typeQuery(input, 's', 'se', 'sec', 'seconds');
     await waitFor(() => expect(search).toHaveBeenCalled());
     // One scan for the settled value, not one per keystroke.
     expect(search).toHaveBeenCalledTimes(1);
@@ -513,7 +522,7 @@ describe('<MessageSearch> — assistants turned on or off', () => {
     const search = setBindingMock('SearchThreadMessages', async () => []);
     try {
       const { getByTestId } = renderSearch({ open: true, pane: makePane() });
-      await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'deploy' } });
+      await typeQuery(getByTestId('message-search-input'), 'deploy');
       await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
       applySettingsSnapshot(makeSettings({ assistantsEnabled: false }), 'laptop');
       await waitFor(() => expect(search).toHaveBeenCalledTimes(2));

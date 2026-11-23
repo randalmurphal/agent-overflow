@@ -1,6 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { importUnavailableLabel } from './importUnavailable';
-import { __resetParseJsonObjectCacheForTest } from './parseJsonObject';
 
 // Terminal period: this lands in the same slot as the sibling empty
 // messages ("No stored payload for this tool result."), which all have one.
@@ -9,10 +8,6 @@ const LABEL = 'Not available from import.';
 function withMeta(meta: unknown): { meta?: string } {
   return { meta: typeof meta === 'string' ? meta : JSON.stringify(meta) };
 }
-
-beforeEach(() => {
-  __resetParseJsonObjectCacheForTest();
-});
 
 describe('importUnavailableLabel', () => {
   it('returns null when the item is not an import casualty', () => {

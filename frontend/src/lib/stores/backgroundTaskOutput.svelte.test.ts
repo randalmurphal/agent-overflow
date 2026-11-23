@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { tick } from 'svelte';
 import {
-  __resetBackgroundTaskOutputForTest,
   applyBackgroundTaskOutputFrame,
   attachBackgroundTaskOutput,
   backgroundTaskOutputKeys,
@@ -12,7 +11,7 @@ import { applyBackgroundTaskOutputEvent } from './eventsBackgroundTaskOutput';
 import { applyTransportGap } from './eventsTransportGap';
 import { __setTransportStatusForTest } from './transportStatus.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
+import { noteThread } from '../transport/entityIndex';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import type { BackgroundTaskOutputEvent } from '../types/events';
 
@@ -40,8 +39,6 @@ function frame(overrides: Partial<BackgroundTaskOutputEvent>): BackgroundTaskOut
 }
 
 beforeEach(() => {
-  __resetBackgroundTaskOutputForTest();
-  __resetEntityIndexForTest();
   noteThread(THREAD, HOME_BACKEND);
   __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
 });

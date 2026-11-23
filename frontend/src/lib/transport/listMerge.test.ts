@@ -6,7 +6,7 @@
 // and `stores/projects.svelte.ts` call the generated binding and nothing
 // else — the fan-out happens under them, in `Call.ByID` — so the test that
 // proves it has to go through the same door they do.
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { homeClient } = vi.hoisted(() => ({
   homeClient: {
@@ -14,6 +14,7 @@ const { homeClient } = vi.hoisted(() => ({
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn(() => () => undefined),
     installStepUpProver: vi.fn(),
+    setDiagnosticsSink: vi.fn(),
     setWatchedThreads: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onReplay: vi.fn(() => () => undefined),
@@ -24,7 +25,8 @@ const { homeClient } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('./wsClient', () => ({
+vi.mock('./wsClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./wsClient')>()),
   wsClient: homeClient,
   DisconnectedError: class extends Error {},
   TransportError: class extends Error {},
@@ -35,13 +37,11 @@ vi.mock('./wsClient', () => ({
 
 import {
   __attachBackendForTest,
-  __resetBackendsForTest,
   HOME_BACKEND,
   backendById,
 } from './backends';
 import { HOME_DESCRIPTOR } from './manifestBackends';
 import {
-  __resetEntityIndexForTest,
   projectBackend,
   threadBackend,
 } from './entityIndex';
@@ -60,6 +60,7 @@ function fakeClient(): FakeClient {
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn(() => () => undefined),
     installStepUpProver: vi.fn(),
+    setDiagnosticsSink: vi.fn(),
     setWatchedThreads: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onReplay: vi.fn(() => () => undefined),
@@ -87,18 +88,11 @@ function attachRemote(): FakeClient {
 
 beforeEach(() => {
   __attachBackendForTest(HOME_DESCRIPTOR, homeClient as never);
-  __resetBackendsForTest();
-  __resetEntityIndexForTest();
   for (const fn of Object.values(homeClient)) (fn as { mockReset?: () => void }).mockReset?.();
   homeClient.getStatus.mockReturnValue({ status: 'connected', nextAttemptAt: null });
   homeClient.onStatusChange.mockReturnValue(() => undefined);
   homeClient.onReplay.mockReturnValue(() => undefined);
   homeClient.subscribe.mockReturnValue(() => undefined);
-});
-
-afterEach(() => {
-  __resetBackendsForTest();
-  __resetEntityIndexForTest();
 });
 
 describe('the unified sidebar list', () => {

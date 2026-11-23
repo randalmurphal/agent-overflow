@@ -7,9 +7,9 @@ import AgentDigestTimeline from './AgentDigestTimeline.svelte';
 import { groupItemsBySubagent } from '../../utils/subagentGrouping';
 import { installTimelineScopeCapability, installPaneMocks, makeItem, makeThread } from '../../../test/helpers/chat';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { registerPaneForTest } from '../../stores/panes.svelte';
 import { applyItemStreamEvent, flushItemEventQueue } from '../../stores/eventsItemStream';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import type { Item } from '../../types/models';
@@ -29,12 +29,10 @@ const push = (item: Item) => { applyItemStreamEvent({ action: 'upsert', threadId
 
 beforeEach(async () => {
   installTimelineScopeCapability();
-  resetBindingMocks();
-  resetPanesForTest();
   setBindingMock('GetSettings', async () => makeSettings({ activityRunDefault: 'expanded' }));
   await loadSettings();
 });
-afterEach(() => { cleanup(); resetPanesForTest(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 it('regroups on structural changes only', async () => {
   const rows = [tool('t1', 1), tool('t2', 2), tool('t3', 3)];

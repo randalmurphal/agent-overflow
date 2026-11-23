@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
-import { resetPaneFindForTest } from './paneFind.svelte';
 import {
   THREAD_FIND_DEBOUNCE_MS,
   THREAD_FIND_LIMIT,
@@ -67,7 +66,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  resetPaneFindForTest();
   vi.useRealTimers();
   __setTransportHelloForTest(null);
 });

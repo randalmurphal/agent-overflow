@@ -9,13 +9,13 @@ import { tick } from 'svelte';
 import ProjectsSection from './ProjectsSection.svelte';
 import SidebarDeviceFilter from './SidebarDeviceFilter.svelte';
 import { stageNoRemoteBuild } from '../../../test/helpers/buildVariant';
-import { stageBackend, resetStagedBackends } from '../../../test/helpers/backends';
+import { stageBackend } from '../../../test/helpers/backends';
 import { setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { noteProject, noteThread } from '../../transport/entityIndex';
-import { addProjectLocal, updateProjectLocal, resetProjectsForTest, touchProjectActivity } from '../../stores/projects.svelte';
+import { addProjectLocal, updateProjectLocal, touchProjectActivity } from '../../stores/projects.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
 import { listCatalogTreesForTest, loadSidebarCatalogs, resetSidebarCatalogsForTest } from '../../stores/sidebarCatalogs';
-import { upsertThreadGroup, resetThreadGroupsForTest } from '../../stores/threadGroups.svelte';
+import { upsertThreadGroup } from '../../stores/threadGroups.svelte';
 import { showAllSidebarDevices, setSidebarDeviceVisible, sidebarDevices } from '../../stores/sidebarDevices.svelte';
 import { setProjectSortMode } from '../../stores/sidebar.svelte';
 import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
@@ -29,11 +29,11 @@ function thread(id: string, projectId: string, groupId?: string): Thread {
   return { id, projectId, groupId, title: id, provider: 'claude', model: 'claude-sonnet-4-6', workspacePath: '/repo', projectPath: '/repo', createdAt: 1, updatedAt: 1, archived: false, pinnedAt: groupId ? undefined : 1 };
 }
 beforeEach(() => {
-  resetStagedBackends(); resetProjectsForTest(); resetThreadGroupsForTest(); replaceAllThreads([]);
+  replaceAllThreads([]);
   showAllSidebarDevices(); setThreadFilterQuery('');
   setBackendIdentityFromBootstrap('local-id', 'gen', 'Mac');
 });
-afterEach(() => { setCompactLayoutForTest(false); showAllSidebarDevices(); resetStagedBackends(); });
+afterEach(() => { setCompactLayoutForTest(false); showAllSidebarDevices(); });
 
 for (const compact of [false, true]) it(`filters merged projects and search without changing the open thread or execution target (${compact ? 'phone' : 'desktop'})`, async () => {
   setCompactLayoutForTest(compact);

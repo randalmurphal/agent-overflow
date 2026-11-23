@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import DevicesSection from './DevicesSection.svelte';
-import { setBindingMock, getBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import { setRunMode, resetRunMode } from '../../../test/runMode';
 import { getToasts } from '../../stores/toast.svelte';
 import { __setTransportHelloForTest, __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
@@ -32,7 +32,7 @@ interface MockDevice {
 // The observe tier, as the backend grants it for a `view-only` link
 // (internal/transport/scopes.go). Spelled out rather than imported so the
 // fixture states what the wire carries.
-const OBSERVE: string[] = ['threads:read', 'files:read', 'settings:read'];
+const OBSERVE: string[] = ['threads:read', 'files:read', 'settings:read', 'tracker:read'];
 
 function overview(overrides: {
   devices?: MockDevice[];
@@ -74,7 +74,6 @@ const PHONE: MockDevice = {
 
 describe('<DevicesSection>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     resetRunMode();
     setBindingMock('GetNetworkSettings', async () => ({ bindAll: false, url: '', token: '' }));
     // The passkeys block mounts inside the granted branch and loads its
@@ -84,7 +83,6 @@ describe('<DevicesSection>', () => {
   });
 
   afterEach(() => {
-    resetBindingMocks();
     resetRunMode();
     __setTransportHelloForTest(null);
   });
@@ -347,7 +345,6 @@ describe('<DevicesSection>', () => {
 describe('<DevicesSection> pending-pairing poll', () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    resetBindingMocks();
     resetRunMode();
     setBindingMock('GetNetworkSettings', async () => ({ bindAll: false, url: '', token: '' }));
     setBindingMock('ListPasskeys', async () => []);
@@ -355,7 +352,6 @@ describe('<DevicesSection> pending-pairing poll', () => {
 
   afterEach(() => {
     __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null } as TransportStatusSnapshot);
-    resetBindingMocks();
     resetRunMode();
     vi.useRealTimers();
   });

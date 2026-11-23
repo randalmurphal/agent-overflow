@@ -1,9 +1,9 @@
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import PipelineView from './PipelineView.svelte';
 import type { PipelineRowView } from './pipelineRowView';
 import { createCISubjectState } from '../../stores/ciSubject.svelte';
-import { __resetPipelineCIForTest, attachPipelineCI } from '../../stores/pipelineCI.svelte';
+import { attachPipelineCI } from '../../stores/pipelineCI.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { RepoRef } from '../../utils/prReference';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -51,10 +51,6 @@ function mountView() {
   const view = render(PipelineView, { row: ROW, ci });
   return { view, ci, hold, follows };
 }
-
-afterEach(() => {
-  __resetPipelineCIForTest();
-});
 
 describe('<PipelineView>', () => {
   it('names the pipeline by its ref, id, live status and commit, and links it on the forge', async () => {

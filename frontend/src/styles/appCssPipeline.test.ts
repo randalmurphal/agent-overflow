@@ -7,7 +7,7 @@
 // The same pass must leave spacing utilities as literal lengths rather than
 // `var(--spacing)` (app.css `@theme inline`) and keep the icon rule free of
 // a per-element custom property (app.css mask-icon rule).
-import { readFileSync } from 'node:fs';
+import appCss from '../app.css?raw';
 import path from 'node:path';
 import { compile, optimize } from '@tailwindcss/node';
 import { describe, expect, it } from 'vitest';
@@ -74,7 +74,7 @@ function leafRules(css: string): LeafRule[] {
 }
 
 async function emittedCss(candidates: string[]): Promise<string> {
-  const compiler = await compile(readFileSync(appCssPath, 'utf8'), {
+  const compiler = await compile(appCss, {
     base: srcDir,
     from: appCssPath,
     onDependency: () => {},

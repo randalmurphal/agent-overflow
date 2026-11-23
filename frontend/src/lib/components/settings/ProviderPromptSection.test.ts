@@ -4,7 +4,6 @@ import ProviderPromptSection from './ProviderPromptSection.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import {
   ensureProviderModels,
-  resetProviderModelsForTest,
 } from '../../stores/providerModels.svelte';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
@@ -66,9 +65,6 @@ const ENTRY = (over: Partial<PromptOverride> = {}): PromptOverride => ({
 });
 
 describe('<ProviderPromptSection>', () => {
-  beforeEach(() => {
-    resetProviderModelsForTest();
-  });
 
   it('renders the configured entries with their file, switch, and models', async () => {
     await seed({
@@ -229,9 +225,6 @@ describe('<ProviderPromptSection>', () => {
 });
 
 describe('<ProviderPromptSection> placeholder legend', () => {
-  beforeEach(() => {
-    resetProviderModelsForTest();
-  });
 
   it('lists every placeholder as a read-only reference', async () => {
     await seed({ claudePromptOverrides: [ENTRY()] });
@@ -258,7 +251,6 @@ describe('<ProviderPromptSection> placeholder legend', () => {
 
 describe('<ProviderPromptSection> prompt file', () => {
   beforeEach(() => {
-    resetProviderModelsForTest();
     setPageGrantsFromBootstrap(false);
   });
 

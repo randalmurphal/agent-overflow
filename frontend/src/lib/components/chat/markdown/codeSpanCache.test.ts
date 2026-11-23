@@ -11,7 +11,6 @@ import {
   getCachedBlockSpansByIdentity,
   requestBlockSpans,
   requestBlockSpansByIdentity,
-  resetCodeSpanCacheForTest,
   seedFinalBlockSpans,
   __codeSpanCacheStatsForTest,
 } from './codeSpanCache';
@@ -21,7 +20,6 @@ function result(runs: number[]) {
 }
 
 beforeEach(() => {
-  resetCodeSpanCacheForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
 });

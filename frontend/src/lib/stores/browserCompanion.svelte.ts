@@ -21,7 +21,6 @@ import { isCompactLayout } from './layoutMode.svelte';
 import { createSequenceGate } from './snapshotStream';
 import { onWatchedThreadsComposed } from './watchedThreads';
 import { getTransportHelloFor } from './transportStatus.svelte';
-import { resetBrowserAddressFocusForTest } from './browserAddressFocus.svelte';
 import { getSettings } from './settings.svelte';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { userFacingError } from '../utils/userFacingError';
@@ -46,7 +45,7 @@ import { addErrorToast } from './toast.svelte';
 // (browserActions.ts), the host rect reports (browserPaneRectReports.ts),
 // the page keyboard focus intent (browserPageFocus.ts) and the chords
 // pressed in a page (browserPageChords.ts). Address bar focus
-// is a leaf it imports (browserAddressFocus.svelte.ts).
+// keeps its own state (browserAddressFocus.svelte.ts).
 
 /** The backend's id of one pane mount, minted from BrowserCompanionPaneAttach's answer. */
 export type BrowserMountId = string & { readonly __brand: 'BrowserMountId' };
@@ -659,8 +658,6 @@ export function resetBrowserCompanionForTest(): void {
   snapshots.reset();
   findCleanupErrors.reset();
   actionErrors.reset();
-  resetBrowserAddressFocusForTest();
   stateReads.clear();
-  store.suspend();
-  store.resetAll();
+  store.resetForTest();
 }

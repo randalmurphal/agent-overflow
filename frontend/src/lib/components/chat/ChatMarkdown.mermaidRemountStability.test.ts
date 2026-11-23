@@ -1,7 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 import {
-  __resetRenderedHeightCachesForTest,
   readMermaidRenderedHeight,
   writeMermaidRenderedHeight,
 } from './markdown/renderedHeightCache';
@@ -38,7 +37,6 @@ afterAll(() => {
 
 afterEach(() => {
   resetRenderedHeightTestOverrides();
-  __resetRenderedHeightCachesForTest();
 });
 
 describe('<ChatMarkdown> mermaid host: cached min-height emitted on mount', () => {

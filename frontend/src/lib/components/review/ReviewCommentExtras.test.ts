@@ -8,6 +8,7 @@ import ReviewSentCommentActions from './ReviewSentCommentActions.svelte';
 import ReviewSuggestionStatus, { suggestionStatus } from './ReviewSuggestionStatus.svelte';
 import { createEditorPreviews } from '../../stores/reviewEditorPreview.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { ReviewSuggestions } from '../../stores/reviewSuggestions.svelte';
 import type { ReviewReactions } from '../../stores/reviewReactions.svelte';
@@ -235,6 +236,8 @@ describe('a suggestion\'s footer', () => {
 
 describe('an editor\'s Preview', () => {
   it('shows the rendered body in place of the text, and returns the caret after a remount', async () => {
+    // The preview parses the body's suggestion blocks: it has none.
+    setBindingMock('ParseCommentSuggestions', async () => []);
     let body = 'Some **bold** text.';
     const previews = createEditorPreviews(() => new Set(['editor:1']), HOME_BACKEND);
     const props = {

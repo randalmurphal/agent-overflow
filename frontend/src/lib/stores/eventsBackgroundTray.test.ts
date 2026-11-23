@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { setupEventListeners } from './events';
 import { onBackgroundTrayEvent } from './eventsBackgroundTray';
-import { resetBindingMocks } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import type { BackgroundTrayEvent } from '../types/events';
 
@@ -10,7 +9,6 @@ let received: BackgroundTrayEvent[] = [];
 let unsubscribe: (() => void) | null = null;
 
 beforeEach(() => {
-  resetBindingMocks();
   received = [];
   unsubscribe = onBackgroundTrayEvent((evt) => received.push(evt));
   cleanupEvents = setupEventListeners();

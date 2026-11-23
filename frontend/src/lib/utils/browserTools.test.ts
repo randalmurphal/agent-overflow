@@ -1,7 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   REMOTE_BACKEND_UUID,
-  resetStagedBackends,
   stageBackend,
 } from '../../test/helpers/backends';
 import { HOME_BACKEND } from '../transport/backendKey';
@@ -16,7 +15,6 @@ describe('browser tools', () => {
   });
 
   describe('asking a machine', () => {
-    afterEach(() => resetStagedBackends());
 
     it('answers false for a machine that has not said hello', () => {
       stageBackend();

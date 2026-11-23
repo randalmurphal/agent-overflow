@@ -3,10 +3,8 @@ import { render, screen, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import RateLimitMeter from './RateLimitMeter.svelte';
 import {
-  resetForTest as resetRateLimitsInfoForTest,
   setProviderRateLimits,
 } from '../../stores/rateLimitsInfo.svelte';
-import { resetForTest as resetAccountInfoForTest } from '../../stores/accountInfo.svelte';
 
 const NOW_MS = 1_700_000_000_000;
 const NOW_SEC = Math.floor(NOW_MS / 1000);
@@ -15,13 +13,9 @@ describe('<RateLimitMeter> reactivity', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW_MS);
-    resetAccountInfoForTest();
-    resetRateLimitsInfoForTest();
   });
   afterEach(() => {
     vi.useRealTimers();
-    resetAccountInfoForTest();
-    resetRateLimitsInfoForTest();
   });
 
   it('reflects setProviderRateLimits called AFTER render', async () => {

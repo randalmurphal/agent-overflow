@@ -1,6 +1,6 @@
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import BrowserDownloadsControlHarness from './BrowserDownloadsControlHarness.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
@@ -36,7 +36,6 @@ describe('<BrowserDownloadsControl>', () => {
     // An action answers with the state the pane already has.
     act = setBindingMock('BrowserCompanionDo', vi.fn(async () => last));
   });
-  afterEach(() => resetBrowserCompanionForTest());
 
   it('is absent until the thread has a download', async () => {
     seed([]);

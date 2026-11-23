@@ -10,11 +10,13 @@
   interface Props {
     review: Pick<ReviewPaneState, 'draftEditBodyFor' | 'setDraftEditBody' | 'updateComment' | 'deleteComment'>;
     replies: readonly DiffReviewComment[];
+    /** Their thread's file; absent for replies whose thread is gone. */
+    path?: string;
     /** On the diff row, where find paints them; not in the Conversation. */
     findable?: boolean;
   }
 
-  let { review, replies, findable = false }: Props = $props();
+  let { review, replies, path, findable = false }: Props = $props();
 </script>
 
 {#if replies.length > 0}
@@ -22,6 +24,7 @@
     {#each replies as reply (reply.id)}
       <ReviewCommentThread
         comment={reply}
+        {path}
         editBody={review.draftEditBodyFor(reply.id)}
         onEditBodyChange={(commentId, body) => review.setDraftEditBody(commentId, body)}
         onUpdate={(commentId, body) => review.updateComment(commentId, body)}

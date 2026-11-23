@@ -3,7 +3,6 @@ import { __resetClientLeaseForTest, onClientLeaseChange, setClientLease } from '
 import { wsClient } from './wsClient';
 
 afterEach(() => {
-  __resetClientLeaseForTest();
   vi.restoreAllMocks();
 });
 

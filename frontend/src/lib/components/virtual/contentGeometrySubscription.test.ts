@@ -26,7 +26,6 @@ import {
   createUseStickToBottomController,
   type UseStickToBottomController,
 } from '../../utils/scroll/index.svelte';
-import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
 import { MockResizeObserver, stubGeometry, type Geometry } from '../../utils/scroll/testGeometry';
 
 const ROW_PX = 100;
@@ -133,7 +132,6 @@ describe('TimelineVirtualizer content-geometry subscription', () => {
   }
 
   beforeEach(() => {
-    resetScrollIntentModuleStateForTest();
     MockResizeObserver.instances = [];
     originalRO = globalThis.ResizeObserver;
     (globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver =

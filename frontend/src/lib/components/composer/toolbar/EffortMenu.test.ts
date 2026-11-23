@@ -6,9 +6,8 @@ import type { Thread } from "../../../types/models";
 import type { ModelCatalog } from "../../../types/settings";
 import {
   getBindingMock,
-  resetBindingMocks,
   setBindingMock,
-} from "../../../../test/mocks/bindings-app";
+} from '../../../../test/mocks/bindings-app';
 import {
   ensureProviderModels,
   invalidateProviderModels,
@@ -21,8 +20,7 @@ import {
 import { modelCatalog } from "../../../../test/helpers/modelCatalog";
 import {
   applyFastModeState,
-  resetForTest as resetFastModeStateForTest,
-} from "../../../stores/fastModeState.svelte";
+} from '../../../stores/fastModeState.svelte';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return makeBaseThread({
@@ -47,9 +45,6 @@ function triggerText(getByTestId: (id: string) => HTMLElement): string {
 
 describe("<EffortMenu>", () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetProviderModelsForTest();
-    resetFastModeStateForTest();
     setBindingMock("GetModelsForProvider", async () => modelCatalog([], "shipped"));
   });
 

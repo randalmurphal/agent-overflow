@@ -5,14 +5,12 @@ import {
   materializeWorktreeIntentOnThread,
   type PaneForIntentApply,
   prepareThreadWorktreeIntent,
-  resetWorktreeIntentMaterializeForTest,
 } from './worktreeIntentMaterialize';
 import {
   enterCreateBranchMode,
   isWorktreeIntentApplying,
   LOCAL_BASE_SENTINEL,
   migrateWorktreeIntent,
-  resetForTest as resetWorktreeIntent,
   setNewBranchBase,
   setAttachBranch,
   setNewBranchName,
@@ -20,15 +18,13 @@ import {
   worktreeIntentForThread,
 } from './worktreeIntent.svelte';
 import {
-  __resetGitStatusStoreForTest,
   __seedGitStatusForTest,
   peekGitStatus,
 } from './gitStatusStore.svelte';
-import { getToasts, resetToastsForTest } from './toast.svelte';
+import { getToasts } from './toast.svelte';
 import type { GitStatus } from '../types/git';
 import {
   getBindingMock,
-  resetBindingMocks,
   setBindingMock,
 } from '../../test/mocks/bindings-app';
 import { makeThread } from '../../test/helpers/chat';
@@ -93,11 +89,6 @@ function placeholderPane(placeholder: Thread, created: Thread | null) {
 
 describe('worktree intent materialization', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetWorktreeIntent();
-    resetWorktreeIntentMaterializeForTest();
-    __resetGitStatusStoreForTest();
-    resetToastsForTest();
     setBindingMock('UpdateThreadBranch', async () => []);
   });
 

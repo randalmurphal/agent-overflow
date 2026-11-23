@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { BrowserCompanionEvent, BrowserDownload } from './bindings';
-import { applyBrowserCompanionState, resetBrowserCompanionForTest } from './browserCompanion.svelte';
+import { applyBrowserCompanionState } from './browserCompanion.svelte';
 import {
   announceBrowserDownload,
   downloadProgressStep,
@@ -39,13 +39,7 @@ const hello = (launchId: string): TransportHello => ({
 const showInFolder = () => getToasts()[0]?.action?.label;
 
 describe('browser downloads', () => {
-  beforeEach(() => {
-    resetBrowserCompanionForTest();
-    resetToastsForTest();
-  });
   afterEach(() => {
-    resetToastsForTest();
-    resetBrowserCompanionForTest();
     setHostWindowFromBootstrap(true);
     __setTransportHelloForTest(null);
   });

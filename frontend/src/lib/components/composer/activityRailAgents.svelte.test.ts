@@ -11,7 +11,7 @@ import { setupEventListeners } from '../../stores/events';
 import type { ThreadAgentRow } from '../../stores/bindings';
 import type { UserMessageOriginWake } from '../../utils/userMessageMeta';
 import { ReportDescriptor } from '../../../../bindings/agent-overflow/internal/agentmeta/models';
-import { replaceQueueForThread, resetForTest as resetSendQueue, type QueueItem } from '../../stores/sendQueue.svelte';
+import { replaceQueueForThread, type QueueItem } from '../../stores/sendQueue.svelte';
 import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
 
 vi.mock('../../utils/frontendErrorCapture', async (importOriginal) => ({
@@ -40,7 +40,6 @@ describe('agents controller', () => {
     stopEvents = () => {};
     vi.useRealTimers();
     vi.restoreAllMocks();
-    resetSendQueue();
   });
 
   async function mountAgents(rows: ThreadAgentRow[], hidden = false) {

@@ -6,12 +6,10 @@ import {
   getExistingThreadTerminalState,
   getThreadTerminalState,
   notifyTerminalFocus,
-  resetTerminalFocusForTest,
-  resetThreadTerminalStatesForTest,
 } from '../components/terminal/terminalStore.svelte';
-import { createPane, getPane, resetPanesForTest } from './panes.svelte';
+import { createPane, getPane } from './panes.svelte';
 import type { ThreadPane } from './thread.svelte';
-import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import type { Thread } from '../types/models';
 import type { TerminalSessionSummary } from '../types/terminal';
@@ -79,10 +77,6 @@ let cleanupEvents: (() => void) | null = null;
 let deleteThread: ReturnType<typeof setBindingMock>;
 
 beforeEach(async () => {
-  resetThreadTerminalStatesForTest();
-  resetPanesForTest();
-  resetTerminalFocusForTest();
-  resetBindingMocks();
   // Reset the threads store to a known-empty baseline.
   setBindingMock('ListThreads', async () => []);
   await loadSidebarCatalogs();

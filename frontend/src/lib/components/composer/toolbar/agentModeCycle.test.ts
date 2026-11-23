@@ -3,7 +3,7 @@ import { currentAgentMode, cycleAgentMode } from './agentModeCycle';
 import { createThreadPane, type ThreadPane } from '../../../stores/thread.svelte';
 import type { Thread } from '../../../types/models';
 import { makeThread } from '../../../../test/helpers/chat';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../../test/mocks/bindings-app';
 
 function paneWith(mode: Thread['mode']): ThreadPane {
   const pane = createThreadPane({ paneId: 'main' });
@@ -12,7 +12,6 @@ function paneWith(mode: Thread['mode']): ThreadPane {
 }
 
 beforeEach(() => {
-  resetBindingMocks();
   setBindingMock('UpdateThreadMode', async (id: unknown, mode: unknown) =>
     makeThread({ id: id as string, mode: mode as Thread['mode'] }));
 });

@@ -21,15 +21,8 @@
 // bundle through the real server and fails on any CSP violation the page
 // reports.
 
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-
-const html = readFileSync(
-  resolve(dirname(fileURLToPath(import.meta.url)), '../index.html'),
-  'utf8',
-);
+import html from '../index.html?raw';
 
 /** Every `<script …>` open tag in the document, with its attributes. */
 function scriptTags(): string[] {

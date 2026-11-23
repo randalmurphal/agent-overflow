@@ -3,12 +3,11 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { updateSetting } from '../../stores/settings.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { windowDigest } from '../../stores/threadWindowDigest';
 import type { ActivityRunStub } from '../../../../bindings/agent-overflow/internal/store/models';
 import { makeSettings } from '../../../test/helpers/settings';
-import { clearThreadScrollSnapshotsForTest } from '../../utils/threadScrollSnapshots';
 import { ACTIVITY_RUN_CAP_CSS } from '../../utils/activityRunClip';
 import { __setSmoothingClockForTest } from '../../stores/thread.svelte';
 import type { SmoothingClock } from '../../markdown/smoothing/PerItemSmoother';
@@ -125,8 +124,6 @@ async function flushJump(): Promise<void> {
 
 describe('<ActivityRun>', () => {
   beforeEach(async () => {
-    resetBindingMocks();
-    clearThreadScrollSnapshotsForTest();
     // This suite's baseline is an EXPANDED run: the shipped default now
     // collapses, and the cases about that seed 'collapsed' themselves.
     setBindingMock('GetSettings', async () => makeSettings({ activityRunDefault: 'expanded' }));

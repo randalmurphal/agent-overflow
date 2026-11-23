@@ -1,5 +1,4 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import productionSnapshot from './__fixtures__/subagentGroupingProductionSnapshot.json?raw';
 import { describe, expect, it } from 'vitest';
 import {
   decoratedSubagentAggregates,
@@ -3084,14 +3083,8 @@ describe('groupItemsBySubagent — immutable completion cards across repeated ex
 // here because the freeze was a SHAPE — 14 launches with 2-4 durable
 // completion deliveries each — that no hand-written fixture had.
 describe('groupItemsBySubagent — production snapshot shape', () => {
-  // Read from disk rather than imported: the fixture is test input, not a
-  // module, and nothing should pull 200 items into the app's build graph.
-  const snapshot = JSON.parse(
-    readFileSync(
-      join(process.cwd(), 'src/lib/utils/__fixtures__/subagentGroupingProductionSnapshot.json'),
-      'utf8',
-    ),
-  ) as Item[];
+  // Parsed fresh from its text, so no test can change another's copy.
+  const snapshot = JSON.parse(productionSnapshot) as Item[];
 
   /**
    * Duplicate keys WITHIN one rendered list, which is the only scope that

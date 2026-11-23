@@ -39,17 +39,26 @@ class FakeSmoothingClock implements SmoothingClock {
   }
 }
 
-const ITERATIONS = 36;
+// Two panes share every module-level cache the reveal and the Markdown
+// pipeline hold; more panes stream the same text on the same clock and add
+// only repetition. Twelve sections build a reveal backlog the completion
+// lands in.
+const PANES = 2;
+const ITERATIONS = 12;
 const WIRE_INTERVAL_MS = 175;
 
 function frameInterval(frame: number): number {
   // A long interval makes the smoother catch up several reveal units before
   // Svelte's next flush, which is the transition most likely to expose stale
-  // parser or direct-DOM state. The ordinary 16ms step keeps this exhaustive
-  // four-pane unit test bounded; the WebView benchmark covers the 165Hz clock.
-  if (frame > 0 && frame % 375 === 0) return 110;
+  // parser or direct-DOM state. Every 125th frame is one, so the catch-ups
+  // land at a different point of a section each time (a section is about
+  // 98 frames of wire). The ordinary 16ms step keeps this unit test bounded;
+  // the WebView benchmark covers the 165Hz clock.
+  if (frame > 0 && frame % 125 === 0) return 110;
   return 16;
 }
+
+const MARKER = /Visible progress marker (\d+)\./g;
 
 function iterationDeltas(iteration: number): string[] {
   return [
@@ -88,7 +97,7 @@ describe('assistant streaming Markdown sustained workload', () => {
       pane: Awaited<ReturnType<typeof buildPane>>;
       view: { container: HTMLElement };
     }> = [];
-    for (let index = 0; index < 4; index++) {
+    for (let index = 0; index < PANES; index++) {
       const threadId = `sustained-markdown-thread-${index}`;
       const item = makeItem({
         id: 'text:1:0',
@@ -114,6 +123,9 @@ describe('assistant streaming Markdown sustained workload', () => {
       (_, iteration) => iterationDeltas(iteration),
     ).flat();
     const expectedSource = wireDeltas.join('');
+    // Where each progress marker ends in the source, in order.
+    const markerEnds = Array.from(expectedSource.matchAll(MARKER), (match) => match.index + match[0].length);
+    expect(markerEnds).toHaveLength(ITERATIONS);
     const priorTextLengths = panes.map(() => 0);
     const priorSources = panes.map(() => '');
     const maxDrops = panes.map(() => 0);
@@ -203,12 +215,10 @@ describe('assistant streaming Markdown sustained workload', () => {
           `pane ${index} frame ${frame} source length ${current.length}`,
         ).toEqual(expectedCode.texts);
 
-        for (let marker = 0; marker < ITERATIONS; marker++) {
-          const markerText = `Visible progress marker ${marker}.`;
-          if (current.includes(markerText)) {
-            expect(bodyText, `pane ${index} lost ${markerText} at frame ${frame}`)
-              .toContain(markerText);
-          }
+        // Every marker the revealed source holds is on screen.
+        const shown = new Set(Array.from(bodyText.matchAll(MARKER), (match) => Number(match[1])));
+        for (let marker = 0; marker < ITERATIONS && markerEnds[marker] <= current.length; marker++) {
+          expect(shown.has(marker), `pane ${index} lost marker ${marker} at frame ${frame}`).toBe(true);
         }
         const textLength = bodyText.length;
         maxDrops[index] = Math.max(maxDrops[index], priorTextLengths[index] - textLength);
@@ -239,9 +249,5 @@ describe('assistant streaming Markdown sustained workload', () => {
       }
     }
     expect(completionSent).toBe(true);
-    // ~37s of deterministic CPU on an idle core; the 60s budget failed at
-    // ~1.6x suite-wide worker contention (2026-08-30). The hang tripwire is
-    // the frame cap above, so the wall budget only guards a wedged runtime
-    // and gets contention-sized headroom rather than a tight perf bound.
-  }, 240_000);
+  });
 });

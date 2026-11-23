@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { tick, flushSync } from 'svelte';
-import { render, cleanup } from '@testing-library/svelte';
+import { cleanup, render } from '@testing-library/svelte';
 // Real production cascade so `max-h-[3lh]`, `text-[0.75rem]`, `leading-relaxed`
 // and `whitespace-pre-wrap` resolve to the same geometry the app ships. The
 // browser project compiles tailwind against app.css (see vitest.config.ts).

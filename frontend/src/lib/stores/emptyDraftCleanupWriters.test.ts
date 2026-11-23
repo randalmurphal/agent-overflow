@@ -3,7 +3,6 @@
 // thread (no RPC naming the deleted id), the kept thread otherwise.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
-import { resetPanesForTest } from './panes.svelte';
 import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import {
   applyThreadContextWindow,
@@ -98,7 +97,6 @@ const writers: Array<[string, RowRpc, (pane: ThreadPane) => Promise<unknown>]> =
 
 beforeEach(() => {
   installThreadPaneTestEnv();
-  resetPanesForTest();
   for (const [name, impl] of Object.entries(rowRpc)) setBindingMock(name as RowRpc, impl as never);
   setBindingMock('UpdateNewThreadDefaults', async (input: Partial<Thread>) => ({ ...input }));
 });

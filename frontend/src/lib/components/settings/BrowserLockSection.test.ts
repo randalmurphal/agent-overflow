@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import BrowserLockSection from './BrowserLockSection.svelte';
-import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import { browserLock, installBrowserLock } from '../../stores/browserLock.svelte';
 import { setPasskeysAvailableFromBootstrap } from '../../transport/passkey';
@@ -11,7 +11,6 @@ let dispose: (() => void) | undefined;
 const originalCredentials = Object.getOwnPropertyDescriptor(navigator, 'credentials');
 beforeEach(() => {
   localStorage.clear();
-  resetBindingMocks();
   resetToLocalPage();
   setPasskeysAvailableFromBootstrap(false);
 });

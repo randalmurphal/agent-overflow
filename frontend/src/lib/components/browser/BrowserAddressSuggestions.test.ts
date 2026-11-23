@@ -2,7 +2,7 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import BrowserAddressBarPaneHarness from './BrowserAddressBarPaneHarness.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
 import { resetDevServersForTest } from '../../stores/devServers.svelte';
 import { airspaceSurfaces, resetAirspaceForTest } from '../../utils/paneAirspace.svelte';
@@ -10,10 +10,9 @@ import { makeCommandContext } from '../../stores/builtinCommands.svelte';
 import { attachBrowserPaneForTest, paneForTest } from '../../../test/helpers/browserPane';
 import { actInPane, openBrowserTab } from '../../stores/browserActions';
 import { browserAction } from '../../stores/browserActionWire';
-import { resetFocusIntentForTest } from '../../utils/focusIntent';
 import { forgetBackendEntities, forgetThread, noteThread } from '../../transport/entityIndex';
 import { HOME_BACKEND } from '../../transport/backendKey';
-import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { stageBackend } from '../../../test/helpers/backends';
 
 const THREAD = 'thread-1';
 
@@ -86,13 +85,6 @@ describe('<BrowserAddressSuggestions>', () => {
     seed();
     // The list reads from the pane's attachment, as a mounted pane has one.
     await attachBrowserPaneForTest(THREAD, 'mount-1');
-  });
-  afterEach(() => {
-    resetBrowserCompanionForTest();
-    resetDevServersForTest();
-    resetBindingMocks();
-    resetAirspaceForTest();
-    resetFocusIntentForTest();
   });
 
   it('reads the recent addresses and dev servers on focus and offers them for typed text', async () => {
@@ -590,7 +582,6 @@ describe('<BrowserAddressSuggestions>', () => {
     afterEach(() => {
       forgetThread(THREAD);
       forgetBackendEntities('remote');
-      resetStagedBackends();
     });
 
     it('reads no recent address and shows none', async () => {

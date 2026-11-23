@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/pump"
 )
 
 // The CI phase every pump that shows a pipeline owns: the PR pump's head
@@ -87,16 +88,15 @@ func (p *ciPhase) name() string {
 	return "pr=" + p.prKey
 }
 
-// prPumpRequest is work an RPC hands a pump goroutine: poll the snapshot
-// (a PR pump after a merge action), the pipeline (ci) and fetch these
-// jobs' logs now, paused or not. done closes once the poll ran; err is the
-// pipeline poll's failure when ci was asked.
+// prPumpRequest is work an RPC hands a pump goroutine through its core's
+// Request: poll the snapshot (a PR pump after a merge action), the
+// pipeline (ci) and fetch these jobs' logs now, paused or not. The request
+// answers once the poll ran, with the pipeline poll's failure when ci was
+// asked.
 type prPumpRequest struct {
 	snapshot bool
 	ci       bool
 	jobIDs   []string
-	done     chan struct{}
-	err      error
 }
 
 func (a *App) ciLogStreams(repo gitops.RepoReference) bool {
@@ -142,7 +142,7 @@ func (a *App) ciInterval(phase *ciPhase) time.Duration {
 	defer a.prUpdates.mu.Unlock()
 	if phase.ciFail.rateLimited() {
 		phase.retryDelay = 0
-		return heldUntil(phase.ciFail.release)
+		return pump.HeldUntil(phase.ciFail.release)
 	}
 	if phase.ciFail.failing() {
 		if phase.retryDelay == 0 {
@@ -162,7 +162,7 @@ func (a *App) ciInterval(phase *ciPhase) time.Duration {
 	for _, follow := range phase.follows {
 		switch {
 		case follow.fail.rateLimited():
-			consider(heldUntil(follow.fail.release))
+			consider(pump.HeldUntil(follow.fail.release))
 		case follow.downloading:
 			consider(a.prCIFollowInterval())
 		case follow.pendingFinal && follow.finalAttempts < prCILogFinalAttempts:
@@ -219,7 +219,7 @@ type ciPollResult struct {
 // critical section the poll starts in, once it is going ahead.
 func (a *App) pollCIPhase(ctx context.Context, phase *ciPhase, before func()) (ciPollResult, bool) {
 	a.prUpdates.mu.Lock()
-	if phase.core.dead || (!forgeapi.IsInteractive(ctx) && time.Now().Before(phase.ciFail.release)) {
+	if phase.core.DeadLocked() || (!forgeapi.IsInteractive(ctx) && time.Now().Before(phase.ciFail.release)) {
 		a.prUpdates.mu.Unlock()
 		return ciPollResult{}, false
 	}
@@ -245,7 +245,7 @@ func (a *App) pollCIPhase(ctx context.Context, phase *ciPhase, before func()) (c
 		encoded, err = json.Marshal(pipeline)
 		if err == nil {
 			a.prUpdates.mu.Lock()
-			if phase.core.dead {
+			if phase.core.DeadLocked() {
 				a.prUpdates.mu.Unlock()
 				return ciPollResult{}, false
 			}
@@ -271,7 +271,7 @@ func (a *App) pollCIPhase(ctx context.Context, phase *ciPhase, before func()) (c
 	}
 	fail := phase.failure(err)
 	a.prUpdates.mu.Lock()
-	if phase.core.dead {
+	if phase.core.DeadLocked() {
 		a.prUpdates.mu.Unlock()
 		return ciPollResult{}, false
 	}
@@ -305,12 +305,12 @@ func (a *App) runCIPhase(ctx context.Context, phase *ciPhase, forced map[string]
 }
 
 // servePumpRequest runs on the pump goroutine: polls what the request asks
-// for and emits what changed, then reports the pipeline poll's active
-// failure when the request asked for one. runSnapshot is nil for a pump
-// with no snapshot. The polls run under the pump's context, marked
-// interactive: a person asked for them.
-func (a *App) servePumpRequest(phase *ciPhase, req *prPumpRequest, runSnapshot func(ctx context.Context), runCI func(ctx context.Context, forced map[string]bool, pollPipeline bool)) {
-	ctx := forgeapi.WithInteractive(phase.core.ctx)
+// for and emits what changed, then returns the pipeline poll's active
+// failure when the request asked for one, the request's answer.
+// runSnapshot is nil for a pump with no snapshot. The polls run under the
+// pump's context, marked interactive: a person asked for them.
+func (a *App) servePumpRequest(phase *ciPhase, req prPumpRequest, runSnapshot func(ctx context.Context), runCI func(ctx context.Context, forced map[string]bool, pollPipeline bool)) error {
+	ctx := forgeapi.WithInteractive(phase.core.Context())
 	if req.snapshot && runSnapshot != nil {
 		runSnapshot(ctx)
 	}
@@ -320,12 +320,13 @@ func (a *App) servePumpRequest(phase *ciPhase, req *prPumpRequest, runSnapshot f
 	}
 	// A moved snapshot marks the pipeline dirty; runCI polls it then.
 	runCI(ctx, forced, req.ci)
-	if req.ci {
-		a.prUpdates.mu.Lock()
-		if phase.ciFail.failing() {
-			req.err = errors.New(phase.ciFail.wire)
-		}
-		a.prUpdates.mu.Unlock()
+	if !req.ci {
+		return nil
 	}
-	close(req.done)
+	a.prUpdates.mu.Lock()
+	defer a.prUpdates.mu.Unlock()
+	if phase.ciFail.failing() {
+		return errors.New(phase.ciFail.wire)
+	}
+	return nil
 }

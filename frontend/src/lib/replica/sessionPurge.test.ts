@@ -8,7 +8,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   __replicaEnabledForTest,
   __replicaSweepForTest,
-  __resetReplicaForTest,
   getReplicaWindow,
   initReplica,
   purgeReplicaDatabases,
@@ -70,7 +69,6 @@ function freshBackendId(): string {
 
 describe('replica database purge', () => {
   beforeEach(async () => {
-    __resetReplicaForTest();
     for (const name of await databaseNames()) {
       await new Promise((resolve) => {
         const request = indexedDB.deleteDatabase(name);

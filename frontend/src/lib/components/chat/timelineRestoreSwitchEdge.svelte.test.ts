@@ -19,11 +19,9 @@ import {
   createUseStickToBottomController,
   type UseStickToBottomController,
 } from '../../utils/scroll/index.svelte';
-import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
 import { MockResizeObserver, stubGeometry, type Geometry } from '../../utils/scroll/testGeometry';
 import { createTimelineRestore, type TimelineRestore } from './timelineRestore.svelte';
 import {
-  clearThreadScrollSnapshotsForTest,
   getThreadScrollSnapshot,
   setThreadScrollSnapshot,
 } from '../../utils/threadScrollSnapshots';
@@ -161,8 +159,6 @@ describe('timeline restore switch edges', () => {
   let harness: Harness | undefined;
 
   beforeEach(() => {
-    resetScrollIntentModuleStateForTest();
-    clearThreadScrollSnapshotsForTest();
     MockResizeObserver.instances = [];
     originalRO = globalThis.ResizeObserver;
     (globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver =

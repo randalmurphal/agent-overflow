@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ensureForgeAttachmentClickDelegate,
-  __resetForgeAttachmentDelegateForTest,
 } from './markdownEnhance';
 import { buildForgeAttachmentHref } from './forgeAttachments';
 import { PATH_LINK_HREF_PREFIX } from './pathLinkExtension';
@@ -30,11 +29,9 @@ function mountAnchor(href: string): HTMLAnchorElement {
 describe('ensureForgeAttachmentClickDelegate', () => {
   beforeEach(() => {
     open.mockReset();
-    __resetForgeAttachmentDelegateForTest();
   });
   afterEach(() => {
     document.body.innerHTML = '';
-    __resetForgeAttachmentDelegateForTest();
   });
 
   it('runs the attachment action instead of navigating to the custom scheme', () => {

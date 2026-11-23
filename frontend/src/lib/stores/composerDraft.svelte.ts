@@ -21,7 +21,6 @@ import {
   DraftThreadDeletedError,
   markDraftThreadDeleted,
   rememberDraftSnapshot,
-  resetComposerDraftSnapshotStateForTest,
   queueDraftSave,
   queueDraftThreadCleanup,
   unsavedDraftSnapshot,
@@ -80,10 +79,6 @@ export type EmptyThreadCleanup =
    * contested; the failure has been reported.
    */
   | { outcome: 'unknown'; unsaved: ComposerDraftSnapshot | null };
-
-export function resetComposerDraftSnapshotsForTest(): void {
-  resetComposerDraftSnapshotStateForTest();
-}
 
 /**
  * Per-thread composer draft state. One instance manages its own timers and

@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import WSLSection, { resetWSLSectionCache } from './WSLSection.svelte';
-import { setBindingMock, getBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import { setRunMode, resetRunMode } from '../../../test/runMode';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 
@@ -19,14 +19,12 @@ const FIXTURE_DISTROS: DistroRow[] = [
 
 describe('<WSLSection>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     resetRunMode();
     resetWSLSectionCache();
     for (const toast of [...getToasts()]) removeToast(toast.id);
   });
 
   afterEach(() => {
-    resetBindingMocks();
     resetRunMode();
     resetWSLSectionCache();
     for (const toast of [...getToasts()]) removeToast(toast.id);

@@ -8,16 +8,15 @@ import { tick } from 'svelte';
 import ActivityRailHost from '../../../test/mocks/ActivityRailTestHost.svelte';
 import type { UserInputRequest } from '../../types/events';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { getSettings, resetSettingsForTest } from '../../stores/settings.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { getSettings } from '../../stores/settings.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
-import { resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
 import { applyCompactingState, resetForTest as resetCompactingState } from '../../stores/compactingState.svelte';
 import { BUILTIN_SPINNER_VERBS } from '../../spinners/builtinVerbs';
 import { BUILTIN_SPRITES } from '../../spinners/catalog';
 import { __resetCustomSpinnersForTest } from '../../stores/spinners.svelte';
-import { resetForTest as resetSendQueue, replaceQueueForThread } from '../../stores/sendQueue.svelte';
-import { __resetActivityRailUiPrefsForTest, __resetLiveTodoUiPrefsForTest, LIVE_TODO_AUTOHIDE_MS } from '../../stores/liveTodoState.svelte';
+import { replaceQueueForThread } from '../../stores/sendQueue.svelte';
+import { LIVE_TODO_AUTOHIDE_MS } from '../../stores/liveTodoState.svelte';
 import type { QueueItem } from '../../stores/sendQueue.svelte';
 import { applyItemStreamEvent, flushItemEventQueue } from '../../stores/eventsItemStream';
 import { applyBackgroundTrayEvent } from '../../stores/eventsBackgroundTray';
@@ -58,11 +57,6 @@ function enqueueSimple(threadId: string, message: string): void {
 
 describe('<ActivityRail>', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetThreadStatuses();
-    resetSendQueue();
-    __resetLiveTodoUiPrefsForTest();
-    __resetActivityRailUiPrefsForTest();
     for (const toast of Array.from(getToasts())) removeToast(toast.id);
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     // No agents: an unanswered read would show the Agents segment's error.
@@ -76,7 +70,6 @@ describe('<ActivityRail>', () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    resetSettingsForTest();
     setCompactLayoutForTest(false);
   });
 

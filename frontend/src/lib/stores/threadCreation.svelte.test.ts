@@ -10,21 +10,20 @@ import {
   switchDraftProject,
   resolveDraftTargetProject,
 } from './threadCreation.svelte';
-import { upsertThreadGroup, resetThreadGroupsForTest, applyThreadGroupUpdated } from './threadGroups.svelte';
-import { isGroupExpanded, toggleGroup, resetSidebarForTest } from './sidebar.svelte';
+import { upsertThreadGroup, applyThreadGroupUpdated } from './threadGroups.svelte';
+import { isGroupExpanded, toggleGroup } from './sidebar.svelte';
 import * as projectTargets from './projectTargets';
 import { createThreadPane } from './thread.svelte';
 import {
   addProjectLocal,
-  resetProjectsForTest,
 } from './projects.svelte';
 import { getPaneLayoutItems, resetPaneLayoutForTest } from './paneLayout.svelte';
 import { getCompactScreen, setCompactLayoutForTest, showCompactList } from './layoutMode.svelte';
 import { focusPane, getFocusedPaneId, registerPaneForTest } from './panes.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
-import { __resetEntityIndexForTest, noteProject } from '../transport/entityIndex';
+import { stageBackend } from '../../test/helpers/backends';
+import { noteProject } from '../transport/entityIndex';
 import { takePinnedBackend } from '../transport/backends';
 import { HOME_BACKEND } from '../transport/backendKey';
 import type { ThreadDefaults } from './bindings';
@@ -88,9 +87,6 @@ function deferred<T>(): {
 }
 
 describe('resolveDraftTargetProject', () => {
-  beforeEach(() => {
-    resetProjectsForTest();
-  });
 
   it('uses the focused pane thread project when one is present', () => {
     addProjectLocal(makeProject({ id: 'project-2', path: '/tmp/p2', name: 'Project Two' }));
@@ -148,9 +144,6 @@ describe('resolveDraftTargetProject', () => {
 
 describe('openDraftThreadForProject', () => {
   beforeEach(() => {
-    resetThreadGroupsForTest();
-    resetSidebarForTest();
-    resetProjectsForTest();
     resetPaneLayoutForTest();
   });
 
@@ -383,10 +376,6 @@ describe('openDraftThreadForProject', () => {
   describe('with a project no computer is known to own', () => {
     const diagnostics = installDiagnosticsCapture();
     beforeEach(() => stageBackend());
-    afterEach(() => {
-      resetStagedBackends();
-      __resetEntityIndexForTest();
-    });
 
     it('opens the placeholder without asking any computer for its defaults', async () => {
       const project = makeProject();

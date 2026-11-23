@@ -1,20 +1,18 @@
 import { buildSendOptions } from '../../utils/sendOptions';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dispatchSend } from './composerSend';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { SourceProposedPlan, Thread } from '../../types/models';
-import { resetForTest as resetWorktreeIntent } from '../../stores/worktreeIntent.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { makeSettings } from '../../../test/helpers/settings';
 import { DisconnectedError, TransportError } from '../../transport/wsClient';
 import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 import { projectTurnStarted } from '../../stores/threadStatuses.svelte';
-import { resetDirectSendsForTest, runInterrupt } from '../../stores/threadInterrupt.svelte';
-import { isThreadInterruptPending, resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
+import { runInterrupt } from '../../stores/threadInterrupt.svelte';
+import { isThreadInterruptPending } from '../../stores/threadInterruptState.svelte';
 import {
   hasPendingUnsentMessageConfirmation,
-  resetUnsentMessageConfirmationForTest,
   resolveUnsentMessageConfirmation,
 } from '../../stores/unsentMessageConfirmation.svelte';
 
@@ -47,14 +45,11 @@ function sendOptions(threadId = 'thread-1') {
 
 describe('dispatchSend', () => {
   beforeEach(async () => {
-    resetBindingMocks();
-    resetWorktreeIntent();
     replaceAllThreads([]);
     setBindingMock('GetSettings', async () => makeSettings());
     await loadSettings();
   });
   afterEach(() => {
-    resetUnsentMessageConfirmationForTest();
     vi.restoreAllMocks();
   });
 
@@ -300,10 +295,6 @@ describe('dispatchSend', () => {
   // A Stop pressed before the send answers waits for the answer, then stops
   // the turn: the message is sent, then interrupted, never cancelled.
   describe('a Stop pressed while the send is unanswered', () => {
-    beforeEach(() => {
-      resetThreadInterruptStateForTest();
-      resetDirectSendsForTest();
-    });
 
     function stopPane() {
       return { threadId: 'thread-1', setGeneralError: vi.fn(), setSendInFlight: vi.fn() };

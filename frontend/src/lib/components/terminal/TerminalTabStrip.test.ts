@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import TerminalTabStrip from './TerminalTabStrip.svelte';
@@ -37,8 +37,6 @@ function handleWithTabs(...ids: string[]): ThreadTerminalStateHandle {
 }
 
 const noop = () => {};
-
-afterEach(() => cleanup());
 
 describe('TerminalTabStrip refresh affordance', () => {
   it('renders the refresh button and invokes onRefresh on click when a terminal is open', async () => {

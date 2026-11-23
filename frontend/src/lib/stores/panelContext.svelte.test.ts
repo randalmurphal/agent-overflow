@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { makePanelContext } from './panelContext.svelte';
 import { createThreadPane } from './thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { registerPaneForTest } from './panes.svelte';
 import {
   resetPaneLayoutForTest,
   setPaneLayoutItemsForTest,
@@ -10,15 +10,12 @@ import {
 import {
   installCompanionPanes,
   isCompanionOpen,
-  resetCompanionPanesForTest,
 } from './companionPanes.svelte';
 import {
-  __resetAgentPaneStateForTest,
   agentScopeForPane,
   agentStateForPane,
 } from './agentPane.svelte';
 import { installPaneMocks, makeItem, makeThread } from '../../test/helpers/chat';
-import { resetBindingMocks } from '../../test/mocks/bindings-app';
 
 async function mountedPane(items = [makeItem({ id: 'item-1' })]) {
   installPaneMocks(items);
@@ -30,18 +27,11 @@ async function mountedPane(items = [makeItem({ id: 'item-1' })]) {
 }
 
 beforeEach(() => {
-  resetBindingMocks();
-  resetPanesForTest();
-  resetCompanionPanesForTest();
   resetPaneLayoutForTest();
-  __resetAgentPaneStateForTest();
   installCompanionPanes();
 });
 
 afterEach(() => {
-  __resetAgentPaneStateForTest();
-  resetCompanionPanesForTest();
-  resetPanesForTest();
   resetPaneLayoutForTest();
 });
 

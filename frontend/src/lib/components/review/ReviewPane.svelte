@@ -179,7 +179,7 @@
   );
   const EMPTY_COUNTS: CommentCounts = { byFile: new Map(), tally: { unresolved: 0, drafts: 0, total: 0 } };
   const commentCounts = $derived(
-    review ? countReviewComments({ prThreads: review.prThreads, drafts: review.drafts }) : EMPTY_COUNTS,
+    review ? countReviewComments(review.commentIndex) : EMPTY_COUNTS,
   );
   // The picked commit or run, when the list holds it (branch and pr scope).
   const selectedAt = $derived(commitSelectionIndexes(review?.commits ?? [], review?.selectedCommits ?? null));

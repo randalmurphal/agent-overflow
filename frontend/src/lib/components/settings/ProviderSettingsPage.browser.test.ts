@@ -10,7 +10,6 @@ import { seedSettingsPages } from '../../../test/helpers/settingsPages';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
-import { resetProviderUpdatesForTest } from '../../stores/providerUpdates.svelte';
 import { listenProviderUpdates } from '../../../test/helpers/providerUpdates';
 
 function status(overrides: Record<string, unknown> = {}) {
@@ -34,7 +33,6 @@ beforeEach(async () => {
 afterEach(() => {
   cleanup();
   host.remove();
-  resetProviderUpdatesForTest();
   setCompactLayoutForTest(false);
 });
 

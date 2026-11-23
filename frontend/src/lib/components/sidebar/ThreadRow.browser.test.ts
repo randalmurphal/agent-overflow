@@ -6,10 +6,10 @@ import '../../../app.css';
 import ThreadRow from './ThreadRow.svelte';
 import ThreadGroupRow from './ThreadGroupRow.svelte';
 import SidebarSettings from '../settings/SidebarSettings.svelte';
-import { resetSidebarForTest, setShowProviderIcons } from '../../stores/sidebar.svelte';
+import { setShowProviderIcons } from '../../stores/sidebar.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
-import { resetSettingsForTest, updateSetting } from '../../stores/settings.svelte';
-import { resetKeyboardModifiersForTest, subscribeJumpHints, trackSidebarJumpRows } from '../../stores/keyboardModifiers.svelte';
+import { updateSetting } from '../../stores/settings.svelte';
+import { subscribeJumpHints, trackSidebarJumpRows } from '../../stores/keyboardModifiers.svelte';
 import { resetKeybindingsStore, setKeybindingsForTest } from '../../stores/keybindings.svelte';
 import { isMacPlatform } from '../../utils/platform';
 import type { Thread } from '../../types/models';
@@ -21,16 +21,12 @@ const thread: Thread = {
 };
 
 beforeEach(() => {
-  resetSettingsForTest();
-  resetSidebarForTest();
-  resetKeyboardModifiersForTest();
   resetKeybindingsStore();
   document.documentElement.style.fontSize = '16px';
 });
 
 afterEach(() => {
   setCompactLayoutForTest(false);
-  resetKeyboardModifiersForTest();
   resetKeybindingsStore();
   document.documentElement.style.removeProperty('font-size');
 });

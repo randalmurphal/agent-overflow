@@ -6,13 +6,11 @@ import NewAssistantDialog from './NewAssistantDialog.svelte';
 import { closeNewAssistantDialog, getNewAssistantRequest, openNewAssistantDialog } from '../../stores/newAssistant.svelte';
 import { setSelectedBackend } from '../../stores/selectedBackend.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
-import { resetProjectsForTest } from '../../stores/projects.svelte';
 import { getThreads } from '../../stores/threads.svelte';
 import { applyThreadUpdated } from '../../stores/eventsThreadRows';
-import { createPane, destroyPane, ensureMainPane, findPaneShowingThread, getPane, resetPanesForTest } from '../../stores/panes.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { createPane, destroyPane, ensureMainPane, findPaneShowingThread, getPane } from '../../stores/panes.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeThread } from '../../../test/helpers/chat';
-import { __resetEntityIndexForTest } from '../../transport/entityIndex';
 import { TransportError } from '../../transport/wsClient';
 import type { Project } from '../../types/models';
 import { applySettingsSnapshot, resetSettingsForTest } from '../../stores/settings.svelte';
@@ -25,10 +23,6 @@ function project(id: string, name: string): Project {
 
 describe('<NewAssistantDialog>', () => {
   beforeEach(async () => {
-    resetBindingMocks();
-    resetProjectsForTest();
-    resetPanesForTest();
-    __resetEntityIndexForTest();
     setBindingMock('ListProjects', async () => [
       { project: project('p1', 'Alpha'), threadCount: 0 },
       { project: project('p2', 'Beta'), threadCount: 0 },

@@ -11,6 +11,29 @@ function rawBytes(hex: string): Uint8Array {
 }
 
 describe('the fake review diff backend', () => {
+  it.each([
+    ['a Uint8Array', (text: string) => new TextEncoder().encode(text)],
+    // Buffer#slice is a view of the same memory.
+    ['a Node Buffer', (text: string) => Buffer.from(text)],
+  ])('serves its own copy of %s, and each reply its own objects', (_name, encode) => {
+    const bytes = encode('one\ntwo\nthree\n');
+    const diff = fakeDiff(bytes);
+    bytes.fill(0x78);
+    expect(diff.length).toBe(14);
+    expect(Object.values(diff).some((value) => value instanceof Uint8Array)).toBe(false);
+    const first = diff.read(0, 4);
+    expect(first.data).toBe('one\n');
+    first.key!.hash = 0;
+    first.key!.units = 0;
+    first.data = 'changed';
+    const again = diff.read(0, 4);
+    expect(again).not.toBe(first);
+    expect(again.data).toBe('one\n');
+    expect(again.key).toEqual(fakeDiff('one\ntwo\nthree\n').read(0, 4).key);
+    // The next read's key continues from the first read's, untouched.
+    expect(diff.read(4, 4).key).toEqual(fakeDiff('one\ntwo\nthree\n').read(4, 4).key);
+  });
+
   it('cuts a read where the backend does', () => {
     expect(cutVectors.length).toBeGreaterThan(0);
     for (const vector of cutVectors) {

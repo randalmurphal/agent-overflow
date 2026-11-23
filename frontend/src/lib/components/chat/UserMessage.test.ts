@@ -2,12 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { makeItem, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import {
   projectTurnCompleted,
   projectTurnStarted,
-  resetForTest as resetThreadStatuses,
 } from '../../stores/threadStatuses.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
@@ -25,8 +24,6 @@ import { closeImageLightbox, imageLightbox } from '../../stores/imageLightbox.sv
 describe('<UserMessage>', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resetBindingMocks();
-    resetThreadStatuses();
     // GetAttachmentThumbnail is the inline-grid path (small bytes from the
     // SQLite thumbnail cache, still an RPC); the modal lightbox path is a
     // ticketed HTTP transfer of the original bytes. Stub both so tests
@@ -37,7 +34,6 @@ describe('<UserMessage>', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    resetThreadStatuses();
     closeImageLightbox();
     delete (navigator as { clipboard?: unknown }).clipboard;
   });

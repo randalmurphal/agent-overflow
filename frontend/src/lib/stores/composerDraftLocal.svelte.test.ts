@@ -8,7 +8,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
   createComposerDraftStore,
-  resetComposerDraftSnapshotsForTest,
 } from './composerDraft.svelte';
 import { getRememberedDraftSnapshot } from './composerDraftSnapshots';
 import type { Attachment } from '../types/attachment';
@@ -74,7 +73,6 @@ describe('composerDraft store — persistence: none', () => {
   let bindings: ReturnType<typeof draftBindings>;
 
   beforeEach(() => {
-    resetComposerDraftSnapshotsForTest();
     bindings = draftBindings();
   });
 

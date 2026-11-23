@@ -6,7 +6,6 @@ import {
   coldLoadSwitchStart,
   coldLoadSyncStatus,
   coldLoadWarmEdge,
-  __resetColdLoadTraceForTest,
 } from './coldLoadTrace';
 import { clearUiRenderTrace, getUiRenderTraceRecords, setUiRenderTraceEnabled } from './uiRenderTrace';
 
@@ -29,13 +28,11 @@ describe('coldLoadTrace', () => {
     vi.spyOn(performance, 'now').mockImplementation(() => mockNow);
     setUiRenderTraceEnabled(true);
     clearUiRenderTrace();
-    __resetColdLoadTraceForTest();
   });
 
   afterEach(() => {
     setUiRenderTraceEnabled(false);
     clearUiRenderTrace();
-    __resetColdLoadTraceForTest();
     vi.restoreAllMocks();
   });
 

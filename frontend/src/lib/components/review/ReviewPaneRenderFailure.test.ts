@@ -8,14 +8,10 @@ import { render, waitFor } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ReviewPane from './ReviewPane.svelte';
 import { makeStubPanelContext } from '../../../test/helpers/panelContext';
-import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
-import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
-import { resetAppStorageForTest } from '../../stores/appStorage';
 import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { commitList } from '../../../test/helpers/commitList';
 import {
   frontendErrorCaptureStateForTest,
-  resetFrontendErrorCaptureForTest,
 } from '../../utils/frontendErrorCapture';
 
 vi.mock('./ReviewDiffBody.svelte', async () => ({
@@ -33,10 +29,6 @@ const patch = [
 ].join('\n');
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  __resetReviewPaneStateForTest();
-  resetDiffReviewCommentsForTest();
-  resetFrontendErrorCaptureForTest();
   setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: '/repo' }));
   setBindingMock('GetGitStatus', async () => ({}));
   setReviewDiffMock('OpenWorkspaceDiff', async () => patch);

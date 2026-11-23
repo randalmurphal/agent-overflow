@@ -17,8 +17,8 @@ import {
   validateWsUrl,
 } from './bootstrap';
 import { clearPairedSession, redeemPairing } from './deviceSession';
-import { __resetPageHostForTest, isHostWindow } from './pageHost';
-import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
+import { isHostWindow } from './pageHost';
+import { setHomeEndpoint } from './homeEndpoint';
 import { fetchBackendManifest } from './manifestBackends';
 import { BackendStartingError, STARTUP_REPORT_LIMIT_BYTES } from './startupProgress';
 
@@ -163,7 +163,6 @@ describe('defaultBootstrap', () => {
 
   afterEach(() => {
     setPageSearch('');
-    __resetPageHostForTest();
     vi.unstubAllGlobals();
   });
 
@@ -427,6 +426,13 @@ describe('defaultBootstrap', () => {
 
   it('fails an attached backend\'s manifest fetch that never answers', async () => {
     vi.useFakeTimers();
+    // AbortSignal.timeout runs on a timer fake timers do not reach; the
+    // same signal on setTimeout runs on the fake clock.
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException('The operation timed out.', 'TimeoutError')), ms);
+      return controller.signal;
+    });
     try {
       vi.stubGlobal('fetch', vi.fn((_input: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
@@ -438,8 +444,11 @@ describe('defaultBootstrap', () => {
       await vi.advanceTimersByTimeAsync(BACKEND_MANIFEST_TIMEOUT_MS - 1);
       expect(settled).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
       expect(await result).toMatchObject({ name: 'TimeoutError' });
+      expect(timeout).toHaveBeenCalledWith(BACKEND_MANIFEST_TIMEOUT_MS);
     } finally {
+      timeout.mockRestore();
       vi.useRealTimers();
     }
   });
@@ -487,10 +496,8 @@ describe('defaultBootstrap under a shell origin', () => {
   const ENDPOINT = 'https://desk.tail-scale.ts.net:7777';
 
   afterEach(() => {
-    __resetHomeEndpointForTest();
     // defaultBootstrap memoises whether a webview hosts the page; a later
     // case that sets ?host=webview must not read this case's answer.
-    __resetPageHostForTest();
     vi.unstubAllGlobals();
   });
 

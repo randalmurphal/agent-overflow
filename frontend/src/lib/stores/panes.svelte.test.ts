@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createPane,
   addPaneThreadMountedObserver,
@@ -25,7 +25,6 @@ import {
   openThreadInPane,
   panesShowingThread,
   registerPaneForTest,
-  resetPanesForTest,
   revealPane,
   syncThread,
 } from './panes.svelte';
@@ -42,7 +41,7 @@ import {
   resetPaneLayoutForTest,
   setPaneLayoutItemsForTest,
 } from './paneLayout.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { Thread } from '../types/models';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
@@ -74,13 +73,8 @@ function mockThreadSwitch(thread: Thread): void {
 describe('panes store', () => {
   beforeEach(() => {
     // Module state is shared across tests; drain between cases.
-    resetPanesForTest();
     resetPaneLayoutForTest();
     setBindingMock('AutoResumeThread', async () => {});
-  });
-
-  afterEach(() => {
-    resetBindingMocks();
   });
 
   describe('getMainPane()', () => {

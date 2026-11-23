@@ -21,6 +21,7 @@
 // string in isolation) — that pre-existing upstream property is out of
 // scope here.
 import { describe, expect, it, vi } from 'vitest';
+import { seededRandom } from '../../test/helpers/seededRandom';
 import { expectCleanTransitions } from '../../test/helpers/transitions';
 import { describeFirstDivergence } from '../../test/helpers/firstDivergence';
 import {
@@ -213,14 +214,8 @@ const CHUNKINGS: Array<{ name: string; sizes: (docLen: number) => number[] }> = 
   {
     name: 'seeded random 3..80',
     sizes: () => {
-      // Deterministic LCG so failures reproduce.
-      let s = 42;
-      const out: number[] = [];
-      for (let i = 0; i < 4096; i++) {
-        s = (s * 1103515245 + 12345) % 2147483648;
-        out.push(3 + (s % 78));
-      }
-      return out;
+      const random = seededRandom(42);
+      return Array.from({ length: 4096 }, () => 3 + random(78));
     },
   },
 ];
@@ -1006,27 +1001,22 @@ describe('parseBlocks trailing-block descent', () => {
 });
 
 describe('open-fence append differential fuzz', () => {
-  const nextRandom = (state: { value: number }): number => {
-    state.value = (Math.imul(state.value, 1_664_525) + 1_013_904_223) >>> 0;
-    return state.value;
-  };
-
   const makeFenceDoc = (index: number): string => {
-    const state = { value: (0x9e37_79b9 ^ index) >>> 0 };
+    const random = seededRandom(0x9e37_79b9 ^ index);
     const char = index % 2 === 0 ? '`' : '~';
-    const length = 3 + (nextRandom(state) % 6);
+    const length = 3 + random(6);
     const fence = char.repeat(length);
     const lines = [`${' '.repeat(index % 4)}${fence}${char === '`' ? 'ts title=x' : 'python title=x'}`];
-    const lineCount = 3 + (nextRandom(state) % 10);
+    const lineCount = 3 + random(10);
     for (let line = 0; line < lineCount; line++) {
-      const shape = nextRandom(state) % 7;
+      const shape = random(7);
       if (shape === 0) lines.push(`${char.repeat(Math.max(1, length - 1))}`);
-      else if (shape === 1) lines.push(`${' '.repeat(nextRandom(state) % 4)}${char.repeat(length)}x`);
+      else if (shape === 1) lines.push(`${' '.repeat(random(4))}${char.repeat(length)}x`);
       else if (shape === 2) lines.push(`${char === '`' ? '~' : '`'}`.repeat(length + 2));
       else if (shape === 3) lines.push(`const emoji_${line} = "😀";`);
       else if (shape === 4) lines.push(`  nested ${char.repeat(2)} literal ${line}`);
       else if (shape === 5) lines.push('');
-      else lines.push(`value_${line} = compute(${nextRandom(state) % 10_000})`);
+      else lines.push(`value_${line} = compute(${random(10_000)})`);
     }
     if (index % 3 !== 0) {
       const trailing = index % 4 === 0
@@ -1034,7 +1024,7 @@ describe('open-fence append differential fuzz', () => {
         : index % 4 === 1
           ? '\t '
           : '';
-      lines.push(`${' '.repeat(nextRandom(state) % 4)}${char.repeat(length + (index % 2))}${trailing}`);
+      lines.push(`${' '.repeat(random(4))}${char.repeat(length + (index % 2))}${trailing}`);
       lines.push('');
       lines.push(`paragraph after fence ${index}`);
     }
@@ -1047,11 +1037,11 @@ describe('open-fence append differential fuzz', () => {
       const source = makeFenceDoc(index);
       const blockCache = createParseBlocksCache();
       const lexCache = createIncrementalLexCache();
-      const state = { value: (0xa511_e9b3 ^ index) >>> 0 };
+      const random = seededRandom(0xa511_e9b3 ^ index);
       let previous = '';
       let offset = 0;
       while (offset < source.length) {
-        offset = Math.min(source.length, offset + 1 + (nextRandom(state) % 17));
+        offset = Math.min(source.length, offset + 1 + random(17));
         const prefix = source.slice(0, offset);
         const append = createProvenAppend(
           previous,

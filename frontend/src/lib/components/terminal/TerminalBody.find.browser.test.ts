@@ -13,7 +13,6 @@ import {
   getPaneFindProvider,
   openPaneFind,
   registerPaneFindProvider,
-  resetPaneFindForTest,
   setPaneFindQuery,
 } from '../../stores/paneFind.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -56,7 +55,6 @@ function replayLines(): string[] {
 }
 
 beforeEach(() => {
-  resetPaneFindForTest();
   setBindingMock('WriteTerminal', async () => {});
   setBindingMock('ResizeTerminal', async () => {});
 });
@@ -64,7 +62,6 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
-  resetPaneFindForTest();
   document.body.replaceChildren();
 });
 

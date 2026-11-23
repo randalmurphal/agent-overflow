@@ -9,17 +9,14 @@ import PaneFindBar from '../components/panes/PaneFindBar.svelte';
 import { createThreadPane } from './thread.svelte';
 import {
   isSidebarCollapsed,
-  resetSidebarLayoutForTest,
   setSidebarCollapsed,
 } from './sidebarLayout.svelte';
 import { resetSidebarCursorStore, setSidebarCursorForTest } from './sidebarCursor.svelte';
 import { getCompactScreen, noteCompactPaneShown, setCompactLayoutForTest, showCompactList, showCompactThread } from './layoutMode.svelte';
 import { companionForSource, installCompanionPanes, isCompanionOpen, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';import { stepBack } from '../utils/stepBack';
-import { resetAppStorageForTest } from './appStorage';
 import {
   getActiveTurn,
   projectSendStarted,
-  resetForTest as resetThreadStatuses,
 } from './threadStatuses.svelte';
 import { makeCommandContext, overlayBesidePalette, registerBuiltinCommands } from './builtinCommands.svelte';
 import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../test/helpers/scopes';
@@ -35,7 +32,7 @@ import {
 } from './commandRegistry.svelte';
 import { registerAirspaceSurface, resetAirspaceForTest } from '../utils/paneAirspace.svelte';
 import { closePalette, openPalette } from './palette.svelte';
-import { focusPane, getFocusedPaneId, registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { focusPane, getFocusedPaneId, registerPaneForTest } from './panes.svelte';
 import { PANE_NAV_COMMAND_IDS, TERMINAL_ESCAPE_COMMAND_IDS } from './paneNavCommands';
 import { getPaneLayoutItems, getPromotedPaneId, promotePane, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { applyBrowserCompanionState, resetBrowserCompanionForTest } from './browserCompanion.svelte';
@@ -57,7 +54,6 @@ import {
   paneFindListKey,
   paneFindRegionKey,
   registerPaneFindProvider,
-  resetPaneFindForTest,
   setPaneFindBarFocused,
   type PaneFindProvider,
 } from './paneFind.svelte';
@@ -73,26 +69,23 @@ import { closeAccountSwitcher, isAccountSwitcherOpen } from './accountSwitcher.s
 import { setPageGrantsFromBootstrap } from '../transport/scopes';
 import {
   notifyTerminalFocus,
-  resetTerminalFocusForTest,
   getThreadTerminalState,
   resetThreadTerminalStatesForTest,
   terminalStateKeyForPane,
 } from '../components/terminal/terminalStore.svelte';
-import { setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
 import { attachBrowserPaneForTest } from '../../test/helpers/browserPane';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import {
   getPendingThreadActionConfirmation,
-  resetThreadActionConfirmationsForTest,
 } from './threadActionConfirmations.svelte';
-import { getSettings, loadSettings, resetSettingsForTest } from './settings.svelte';
+import { getSettings, loadSettings } from './settings.svelte';
 import {
   getWorkflowsOverlayTop,
   pushWorkflowRunDetail,
-  resetWorkflowsOverlayForTest,
 } from './workflowsOverlay.svelte';
-import { isToolOpen, openTool, registerToolDetailProbe, resetToolPanesForTest } from './toolPanes.svelte';
+import { isToolOpen, openTool, registerToolDetailProbe } from './toolPanes.svelte';
 import { registerPullsBackHandler } from './pullsCommands.svelte';
 import {
   getSettingsSection,
@@ -103,7 +96,6 @@ import {
 import { openTerminalThread } from './threadCreation.svelte';
 import {
   registerPaneTitleRename,
-  resetPaneTitleRenameForTest,
 } from './paneTitleRename';
 import type { Project, Thread } from '../types/models';
 import type { TerminalSessionSummary } from '../types/terminal';
@@ -191,10 +183,6 @@ function installPromptMock(): {
 }
 
 describe('makeCommandContext', () => {
-  beforeEach(() => {
-    resetTerminalFocusForTest();
-    resetThreadStatuses();
-  });
 
   // --- Bug D5 regression ---
   it('terminalFocus is false when no terminal is focused', () => {
@@ -274,6 +262,8 @@ describe('review.toggle command', () => {
 
   it('toggles the review companion on the command context pane', () => {
     const pane = readyPane({ projectId: 'project-1' });
+    // Opening review reads the workspace diff: no changes.
+    setReviewDiffMock('OpenWorkspaceDiff', () => '');
     setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     registerFixtureCommands(pane);
 
@@ -654,11 +644,6 @@ describe('git push and pull commands', () => {
 describe('thread rename command', () => {
   beforeEach(() => {
     clearCommandRegistry();
-    resetPaneTitleRenameForTest();
-  });
-
-  afterEach(() => {
-    resetPaneTitleRenameForTest();
   });
 
   it('opens the rename editor registered for the command target pane', () => {
@@ -707,8 +692,6 @@ describe('thread rename command', () => {
 describe('thread archive/delete command safety', () => {
   beforeEach(() => {
     clearCommandRegistry();
-    resetThreadActionConfirmationsForTest();
-    resetSettingsForTest();
   });
 
   it('routes thread.archive through the confirmation flow before archiving', () => {
@@ -757,7 +740,6 @@ describe('thread archive/delete command safety', () => {
 describe('terminal.newPane command', () => {
   beforeEach(() => {
     clearCommandRegistry();
-    resetTerminalFocusForTest();
     vi.mocked(openTerminalThread).mockClear();
   });
 
@@ -826,8 +808,6 @@ describe('terminal tab management commands', () => {
 
   beforeEach(() => {
     clearCommandRegistry();
-    resetTerminalFocusForTest();
-    resetThreadTerminalStatesForTest();
   });
 
   it('newTab/closeTab/nextTab/prevTab/clear are registered, editableReachable, and enabled under terminalFocus', () => {
@@ -1071,8 +1051,6 @@ describe('find.in-pane command', () => {
   beforeEach(() => {
     clearCommandRegistry();
     closeMessageSearch();
-    resetPaneFindForTest();
-    resetPanesForTest();
     setPaneLayoutItemsForTest([
       { id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 },
       { id: 'b', paneId: 'b', kind: 'thread', widthPx: 600 },
@@ -1080,11 +1058,8 @@ describe('find.in-pane command', () => {
   });
 
   afterEach(() => {
-    resetPaneFindForTest();
     resetPaneLayoutForTest();
     resetKeybindingsStore();
-    resetAirspaceForTest();
-    resetSettingsOverlayForTest();
     document.body.replaceChildren();
   });
 
@@ -1465,9 +1440,6 @@ describe('find.in-pane over pane regions', () => {
 
   beforeEach(() => {
     clearCommandRegistry();
-    resetPaneFindForTest();
-    resetPanesForTest();
-    resetToolPanesForTest();
     setPaneLayoutItemsForTest([{ id: PULLS, paneId: PULLS, kind: 'pulls', widthPx: 900 }]);
     setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
   });
@@ -1477,7 +1449,6 @@ describe('find.in-pane over pane regions', () => {
     releases = [];
     setCompactLayoutForTest(false);
     showCompactList();
-    resetPaneFindForTest();
     resetPaneLayoutForTest();
     resetKeybindingsStore();
     document.body.replaceChildren();
@@ -1592,8 +1563,6 @@ describe('pane find under compact', () => {
 
   beforeEach(() => {
     clearCommandRegistry();
-    resetPaneFindForTest();
-    resetPanesForTest();
     resetCompanionPanesForTest();
     installCompanionPanes();
     setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 412 }]);
@@ -1606,7 +1575,6 @@ describe('pane find under compact', () => {
     setCompactLayoutForTest(false);
     showCompactList();
     resetCompanionPanesForTest();
-    resetPaneFindForTest();
     resetPaneLayoutForTest();
     resetKeybindingsStore();
     document.body.replaceChildren();
@@ -2047,8 +2015,7 @@ describe('thread.fork command', () => {
     const continuity = await import('./sidebarEntryContinuity.svelte');
     continuity.setEntryExpanded('project-fork', false);
 
-    setBindingMock('ListItems', async () => []);
-    setBindingMock('SwitchThread', async () => ({
+    const forked = {
       id: 'fork-1',
       title: 'Test thread (fork)',
       provider: 'claude',
@@ -2060,23 +2027,15 @@ describe('thread.fork command', () => {
       createdAt: 1,
       updatedAt: 1,
       archived: false,
-    }));
+    };
+    setBindingMock('ListItems', async () => []);
+    setBindingMock('SwitchThread', async () => forked);
+    // The new thread is auto-pinned.
+    setBindingMock('PinThread', async () => forked);
 
     const pane = readyPane({ projectId: 'project-fork' });
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 123 });
-    setBindingMock('ForkThread', async () => ({
-      id: 'fork-1',
-      title: 'Test thread (fork)',
-      provider: 'claude',
-      projectId: 'project-fork',
-      workspacePath: '/tmp',
-      projectPath: '/tmp',
-      mode: 'chat',
-      model: 'claude-sonnet-4-6',
-      createdAt: 1,
-      updatedAt: 1,
-      archived: false,
-    }));
+    setBindingMock('ForkThread', async () => forked);
 
     registerFixtureCommands(pane);
     const command = getCommand('thread.fork');
@@ -2100,7 +2059,6 @@ describe('thread.fork command', () => {
 describe('terminal.toggle command', () => {
   beforeEach(() => {
     clearCommandRegistry();
-    resetTerminalFocusForTest();
   });
 
   it('opens the terminal drawer and latches a focus request when closed', () => {
@@ -2311,7 +2269,6 @@ function placeholderPane(
 describe('thread-bound commands on placeholders', () => {
   beforeEach(() => {
     clearCommandRegistry();
-    resetThreadStatuses();
   });
 
   it('terminal.toggle on a placeholder opens without creating a thread', () => {
@@ -2431,7 +2388,6 @@ describe('pane navigation into a terminal pane', () => {
 
   beforeEach(() => {
     clearCommandRegistry();
-    resetPanesForTest();
     resetPaneLayoutForTest();
   });
 
@@ -2684,8 +2640,6 @@ describe('sidebar.toggle command', () => {
 
   beforeEach(() => {
     clearCommandRegistry();
-    resetAppStorageForTest();
-    resetSidebarLayoutForTest();
     resetSidebarCursorStore();
   });
 
@@ -2775,17 +2729,11 @@ describe('sidebar.toggle command', () => {
 describe('settings commands', () => {
   beforeEach(() => {
     clearCommandRegistry();
-    resetWorkflowsOverlayForTest();
-    resetSettingsOverlayForTest();
-    resetToolPanesForTest();
-    resetPanesForTest();
     setPaneLayoutItemsForTest([]);
     registerBuiltinCommands(makeBuiltinHooks());
   });
 
   afterEach(() => {
-    resetToolPanesForTest();
-    resetPanesForTest();
     resetPaneLayoutForTest();
   });
 
@@ -2844,15 +2792,10 @@ describe('settings commands', () => {
 describe('tool pane command flags', () => {
   beforeEach(() => {
     clearCommandRegistry();
-    resetWorkflowsOverlayForTest();
-    resetToolPanesForTest();
-    resetPanesForTest();
     setPaneLayoutItemsForTest([]);
   });
 
   afterEach(() => {
-    resetToolPanesForTest();
-    resetPanesForTest();
     resetPaneLayoutForTest();
   });
 
@@ -2915,12 +2858,10 @@ describe('tool pane command flags', () => {
 describe('sound.toggleMute command', () => {
   beforeEach(() => {
     clearCommandRegistry();
-    resetSettingsForTest();
     registerBuiltinCommands(makeBuiltinHooks());
   });
 
   afterEach(() => {
-    resetSettingsForTest();
     resetToLocalPage();
   });
 

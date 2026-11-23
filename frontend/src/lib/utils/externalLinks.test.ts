@@ -13,16 +13,14 @@ import {
 } from './externalLinks';
 import { buildPathLinkHref } from './pathLinkExtension';
 import { buildForgeAttachmentHref } from './forgeAttachments';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { resetRunMode, setRunMode } from '../../test/runMode';
 import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from '../../test/helpers/scopes';
-import { __resetScopesForTest } from '../transport/scopes';
 import { setHostWindowFromBootstrap } from '../transport/pageHost';
-import { resetBrowserCompanionForTest } from '../stores/browserCompanion.svelte';
-import { getToasts, resetToastsForTest } from '../stores/toast.svelte';
-import { noteThread, __resetEntityIndexForTest } from '../transport/entityIndex';
+import { getToasts } from '../stores/toast.svelte';
+import { noteThread } from '../transport/entityIndex';
 import { __setTransportHelloForTest } from '../stores/transportStatus.svelte';
-import { applySettingsSnapshot, resetSettingsForTest } from '../stores/settings.svelte';
+import { applySettingsSnapshot } from '../stores/settings.svelte';
 import { setCompactLayoutForTest } from '../stores/layoutMode.svelte';
 
 describe('safeExternalURL', () => {
@@ -84,7 +82,6 @@ describe('handleExternalURL', () => {
   let originalOpen: typeof window.open;
 
   beforeEach(() => {
-    resetBindingMocks();
     resetRunMode();
     originalOpen = window.open;
     window.open = vi.fn();
@@ -207,7 +204,6 @@ describe('installExternalLinkDelegate', () => {
   let originalOpen: typeof window.open;
 
   beforeEach(() => {
-    resetBindingMocks();
     resetRunMode();
     originalOpen = window.open;
     window.open = vi.fn();
@@ -352,7 +348,6 @@ describe('the delegate’s preview branches', () => {
     el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
 
   beforeEach(() => {
-    resetBindingMocks();
     resetRunMode();
     resetToLocalPage();
     originalOpen = window.open;
@@ -371,7 +366,6 @@ describe('the delegate’s preview branches', () => {
     window.open = originalOpen;
     resetRunMode();
     resetToLocalPage();
-    __resetScopesForTest();
     document.body.innerHTML = '';
   });
 
@@ -486,12 +480,8 @@ describe('mod+click on an ordinary external link', () => {
   };
 
   beforeEach(() => {
-    resetBindingMocks();
     resetRunMode();
     resetToLocalPage();
-    resetBrowserCompanionForTest();
-    resetToastsForTest();
-    __resetEntityIndexForTest();
     originalOpen = window.open;
     window.open = vi.fn();
     document.body.innerHTML = '';
@@ -506,14 +496,10 @@ describe('mod+click on an ordinary external link', () => {
     cleanup();
     cleanup = () => {};
     __setTransportHelloForTest(null);
-    resetSettingsForTest();
     setCompactLayoutForTest(false);
-    resetBrowserCompanionForTest();
-    __resetEntityIndexForTest();
     window.open = originalOpen;
     resetRunMode();
     resetToLocalPage();
-    __resetScopesForTest();
     document.body.innerHTML = '';
   });
 

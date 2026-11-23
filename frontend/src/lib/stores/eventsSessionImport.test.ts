@@ -16,7 +16,6 @@ import {
   getSessionImportRun,
   isSessionImportOpen as isRunSurfaceOpen,
   openSessionImport,
-  resetSessionImportForTest,
   startImport,
 } from './sessionImport.svelte';
 import { getToasts, removeToast } from './toast.svelte';
@@ -48,14 +47,12 @@ function toastMessages(): string[] {
 }
 
 beforeEach(() => {
-  resetSessionImportForTest();
   for (const toast of [...getToasts()]) removeToast(toast.id);
   setBindingMock('ListThreads', async () => []);
   setBindingMock('ListProjects', async () => []);
 });
 
 afterEach(() => {
-  resetSessionImportForTest();
   for (const toast of [...getToasts()]) removeToast(toast.id);
   vi.restoreAllMocks();
 });

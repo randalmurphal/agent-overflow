@@ -1,16 +1,12 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import UnsentMessageConfirmationHost from './UnsentMessageConfirmationHost.svelte';
 import {
   confirmUnsentMessageRestore,
-  resetUnsentMessageConfirmationForTest,
 } from '../../stores/unsentMessageConfirmation.svelte';
 
 describe('<UnsentMessageConfirmationHost>', () => {
-  afterEach(() => {
-    resetUnsentMessageConfirmationForTest();
-  });
 
   it('renders nothing until a send asks', async () => {
     const { queryByText } = render(UnsentMessageConfirmationHost);

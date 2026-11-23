@@ -1,0 +1,2 @@
+line 1: replaced a block that had a status lozenge; those are now plain
+refused: line 1: the status lozenge [DONE] is still in the Markdown, but the edit would lose it

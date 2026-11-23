@@ -44,13 +44,11 @@ function makeRow(threadId: string, eligible = true): HTMLElement {
 describe('keyboardModifiers store', () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    resetKeyboardModifiersForTest();
     document.body.innerHTML = '';
     trackSidebarJumpRows(document.body);
   });
 
   afterEach(() => {
-    resetKeyboardModifiersForTest();
     vi.useRealTimers();
     document.body.innerHTML = '';
   });

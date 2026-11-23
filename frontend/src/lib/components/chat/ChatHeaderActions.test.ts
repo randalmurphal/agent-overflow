@@ -7,17 +7,15 @@ import { applySettingsSnapshot } from '../../stores/settings.svelte';
 import { makeSettings } from '../../../test/helpers/settings';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 import { setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { resetEditorsForTest } from '../../stores/editors.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
-import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
-import { closeCompanion, companionForSource, installCompanionPanes, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
+import { applyBrowserCompanionState } from '../../stores/browserCompanion.svelte';
+import { closeCompanion, companionForSource, installCompanionPanes } from '../../stores/companionPanes.svelte';
 import type { GitStatus } from '../../types/git';
 import type { Project, Thread } from '../../types/models';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock, getBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { commitList } from '../../../test/helpers/commitList';
 import { __setTransportHelloForTest, __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
@@ -114,8 +112,6 @@ function installSubscribeMock(initial: GitStatus, id = 'sub-1', cwd = WORKSPACE)
 
 describe('<ChatHeaderActions> badge gating', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetEditorsForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     setBindingMock('UpdateThreadBranch', async () => makeThread());
@@ -157,6 +153,8 @@ describe('<ChatHeaderActions> badge gating', () => {
 
   it('clicking the workspace +/- opens review on the workspace scope', async () => {
     const pane = await buildPane();
+    // Opening review reads the workspace diff: no changes.
+    setReviewDiffMock('OpenWorkspaceDiff', () => '');
     setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     installSubscribeMock(status({ insertions: 2, deletions: 0 }));
     const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
@@ -195,8 +193,6 @@ describe('<ChatHeaderActions> badge gating', () => {
 
 describe('<ChatHeaderActions> subscription effect', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetEditorsForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     setBindingMock('UpdateThreadBranch', async () => makeThread());
@@ -384,10 +380,10 @@ describe('<ChatHeaderActions> compact header menu', () => {
   // header; compact rolls the same actions into one menu. No command
   // palette button: the phone has no chords for it to stand in for.
   beforeEach(async () => {
-    resetPanesForTest();
-    resetEditorsForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    // The observed branch is persisted; the rows already agree, so none change.
+    setBindingMock('UpdateThreadBranch', async () => []);
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     await loadSettings();
@@ -462,10 +458,10 @@ describe('<ChatHeaderActions> terminal controls without terminal:operate', () =>
   const INERT = 'Not granted to this device';
 
   beforeEach(async () => {
-    resetPanesForTest();
-    resetEditorsForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    // The observed branch is persisted; the rows already agree, so none change.
+    setBindingMock('UpdateThreadBranch', async () => []);
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     await loadSettings();
@@ -527,10 +523,10 @@ describe('<ChatHeaderActions> terminal controls without terminal:operate', () =>
 // they are on.
 describe('<ChatHeaderActions> New Thread, Same Assistant with assistants off', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetEditorsForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    // The observed branch is persisted; the rows already agree, so none change.
+    setBindingMock('UpdateThreadBranch', async () => []);
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     await loadSettings();
@@ -584,13 +580,11 @@ describe('<ChatHeaderActions> browser toggle', () => {
   const shown = (seq: number) => ({ kind: 'state', threadId: THREAD, activePageId: 'page-1', visible: true, pages: [tab], seq });
 
   beforeEach(async () => {
-    resetPanesForTest();
-    resetEditorsForTest();
-    resetBrowserCompanionForTest();
-    resetCompanionPanesForTest();
     installCompanionPanes();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    // The observed branch is persisted; the rows already agree, so none change.
+    setBindingMock('UpdateThreadBranch', async () => []);
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     setBindingMock('BrowserCompanionThreadState', async () => shown(1));
@@ -606,8 +600,6 @@ describe('<ChatHeaderActions> browser toggle', () => {
   afterEach(() => {
     __setTransportHelloForTest(null);
     setCompactLayoutForTest(false);
-    resetBrowserCompanionForTest();
-    resetCompanionPanesForTest();
   });
 
   // Pressed is what the layout presents, not the session's visibility.

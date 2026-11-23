@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { mockLocalImage } from '../../test/mocks/attachmentTransfer';
 import { TransferUnavailableError } from '../transport/attachmentTransfer';
 import { getPinnedBackend } from '../transport/backends';
@@ -9,7 +9,6 @@ import {
   localImageCacheKey,
   localImageFailureReason,
 } from './localImageCache';
-import { __resetMediaBlobCacheForTest } from './mediaBlobCache';
 
 // A reply whose ticket the route has never seen, so presenting it is the
 // same 404 a spent or expired ticket answers.
@@ -27,8 +26,6 @@ describe('the local image cache', () => {
   });
 
   afterEach(() => {
-    __resetMediaBlobCacheForTest();
-    resetBindingMocks();
     vi.restoreAllMocks();
   });
 
@@ -178,8 +175,6 @@ describe('the local image cache', () => {
 
 describe('the local image original', () => {
   afterEach(() => {
-    __resetMediaBlobCacheForTest();
-    resetBindingMocks();
     vi.restoreAllMocks();
   });
 

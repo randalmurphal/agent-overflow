@@ -1,11 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   airspaceIntersects,
   airspaceRevision,
   airspaceSurface,
   airspaceSurfaces,
   registerAirspaceSurface,
-  resetAirspaceForTest,
 } from './paneAirspace.svelte';
 
 function surfaceAt(left: number, top: number, width: number, height: number): HTMLElement {
@@ -28,7 +27,6 @@ function surfaceAt(left: number, top: number, width: number, height: number): HT
 const paneRect = { left: 100, top: 100, right: 500, bottom: 400 };
 
 describe('paneAirspace', () => {
-  afterEach(() => resetAirspaceForTest());
 
   it('registers and releases surfaces, surviving a second engagement', () => {
     const el = surfaceAt(0, 0, 50, 50);

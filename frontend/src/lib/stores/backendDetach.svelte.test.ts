@@ -8,13 +8,11 @@ import { deferred } from '../../test/helpers/providerAccounts';
 
 import {
   __attachBackendForTest,
-  __resetBackendsForTest,
   detachBackend,
   takePinnedBackend,
   type BackendDescriptor,
 } from '../transport/backends';
 import {
-  __resetEntityIndexForTest,
   noteProject,
   noteThread,
   noteThreadGroup,
@@ -24,10 +22,9 @@ import { getThreads, prependThread, removeThread } from './threads.svelte';
 import { loadSidebarCatalogs } from './sidebarCatalogs';
 import { setupEventListeners } from './events';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
-import { addProjectLocal, getProjects, resetProjectsForTest } from './projects.svelte';
+import { addProjectLocal, getProjects } from './projects.svelte';
 import {
   getThreadGroups,
-  resetThreadGroupsForTest,
   upsertThreadGroup,
 } from './threadGroups.svelte';
 import {
@@ -40,11 +37,10 @@ import {
 } from './panes.svelte';
 import { getCompactScreen, setCompactLayoutForTest } from './layoutMode.svelte';
 import {
-  __resetSelectedBackendForTest,
   selectedBackend,
   setPaneBackend,
 } from './selectedBackend.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { getToasts } from './toast.svelte';
 import { __sendsPendingOrderForTest, applySendsPendingFrame, getActiveTurn, getThreadStatus, projectTurnStarted } from './threadStatuses.svelte';
 import {
@@ -139,14 +135,7 @@ function makeGroup(id: string, projectId: string): ThreadGroup {
 }
 
 beforeEach(() => {
-  resetBindingMocks();
-  __resetBackendsForTest();
-  __resetEntityIndexForTest();
-  __resetSelectedBackendForTest();
-  resetPanesForTest();
-  resetThreadGroupsForTest();
   for (const t of getThreads()) removeThread(t.id);
-  resetProjectsForTest();
 });
 
 describe('a backend detaching', () => {

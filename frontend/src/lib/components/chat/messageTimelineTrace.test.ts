@@ -1,8 +1,7 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SRC_ROOT } from '../../../test/sourceScan';
-import { cleanup, render } from '@testing-library/svelte';
+import traceSource from './messageTimelineTrace.ts?raw';
+import diagnosticsSource from './timelineDiagnostics.ts?raw';
+import { render } from '@testing-library/svelte';
 import {
   clearUiRenderTrace,
   getUiRenderTraceRecords,
@@ -12,7 +11,6 @@ import { REASONING_TAIL_SELECTOR, startTimelineRowResizeTrace } from './messageT
 import ThinkingBlock from './ThinkingBlock.svelte';
 import CompactionReasoning from './CompactionReasoning.svelte';
 import { makeItem } from '../../../test/helpers/chat';
-import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 
 // Drift guard for the reasoning-tail jump oracle. The oracle is silent=healthy:
 // `startReasoningTailJumpTrace` finds bodies via REASONING_TAIL_SELECTOR, so a
@@ -23,8 +21,6 @@ import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 // Defined before the ResizeObserver-overriding suite below so it runs against
 // the pristine happy-dom environment (matching ThinkingBlock.test.ts).
 describe('REASONING_TAIL_SELECTOR drift guard', () => {
-  beforeEach(() => resetBindingMocks());
-  afterEach(() => cleanup());
 
   it('matches the body ThinkingBlock renders', () => {
     const { container } = render(ThinkingBlock, {
@@ -299,11 +295,8 @@ describe('messageTimelineTrace', () => {
 // element-keyed collection in the trace modules, and the WeakRef guard pins
 // the one handle cache in timelineDiagnostics the same snapshot caught.
 describe('probe retention tripwire', () => {
-  const read = (name: string): string =>
-    readFileSync(join(SRC_ROOT, 'lib', 'components', 'chat', name), 'utf8');
-
   it('messageTimelineTrace holds no strong element-keyed collections (frame-local `changed` excepted)', () => {
-    const src = read('messageTimelineTrace.ts');
+    const src = traceSource;
     const offenders = [...src.matchAll(/new (?:Map|Set)<(?:HTML|SVG)?Element\b[^>]*>/g)]
       .map((m) => ({ match: m[0], line: src.slice(0, m.index).split('\n').length }))
       // The margin probe's per-frame `changed` map lives only for one RO
@@ -313,7 +306,7 @@ describe('probe retention tripwire', () => {
   });
 
   it('timelineDiagnostics holds the listRef dedup cache through a WeakRef', () => {
-    const src = read('timelineDiagnostics.ts');
+    const src = diagnosticsSource;
     expect(src).toMatch(/lastListRefBind:\s*\{\s*\n?\s*listRef:\s*WeakRef</);
     expect(src).not.toMatch(/listRef:\s*TimelineVirtualizerHandle \| undefined;/);
   });

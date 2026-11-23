@@ -7,8 +7,8 @@ import UsageFooter from '../UsageFooter.svelte';
 import '../../usage/UsageModal.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { UsageBucket } from '../../../stores/bindings';
-import { cycleUsagePeriod, getUsagePeriod, resetUsagePeriodForTest } from '../../../stores/usagePeriod.svelte';
-import { bumpUsageRefresh, resetUsageRefreshForTest } from '../../../stores/usageRefresh.svelte';
+import { cycleUsagePeriod, getUsagePeriod } from '../../../stores/usagePeriod.svelte';
+import { bumpUsageRefresh } from '../../../stores/usageRefresh.svelte';
 import { flushSync } from 'svelte';
 
 const STORAGE_KEY = 'agent-overflow:usage:period';
@@ -30,8 +30,6 @@ function providerBucket(provider: string, overrides: Partial<UsageBucket> = {}):
 
 describe('<UsageFooter>', () => {
   beforeEach(() => {
-    resetUsagePeriodForTest();
-    resetUsageRefreshForTest();
     // Cycling the period writes through to Go settings; keep the RPC a
     // no-op here — persistence itself is covered by the store's tests.
     setBindingMock('UpdateSettings', async () => null);

@@ -1,10 +1,9 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import BranchPruneDialog from './BranchPruneDialog.svelte';
 import {
   getBindingMock,
-  resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 
@@ -40,9 +39,6 @@ function renderDialog() {
 }
 
 describe('<BranchPruneDialog>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
 
   it('pre-checks safe rows only and counts them in the confirm button', async () => {
     setBindingMock('GitListBranchPruneCandidates', async () => ({

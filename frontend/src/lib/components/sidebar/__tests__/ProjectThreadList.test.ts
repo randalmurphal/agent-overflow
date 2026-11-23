@@ -2,11 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import ProjectThreadList from '../../../../test/helpers/ProjectThreadListOfEntry.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from '../../../stores/panes.svelte';
+import { registerPaneForTest } from '../../../stores/panes.svelte';
 import type { Thread, ThreadGroup } from '../../../types/models';
 import { loadSettingsFixture as loadSettings } from '../../../../test/helpers/settingsFixture';
-import { resetThreadGroupsForTest } from '../../../stores/threadGroups.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { normalizedTextContent } from '../../../../test/helpers/textContent';
 import {
   beginThreadRowDrag,
@@ -16,10 +15,8 @@ import {
   type ThreadDragPayload,
   threadDragPayloadForEvent,
 } from '../../../utils/threadDragPayload';
-import { resetSidebarForTest } from '../../../stores/sidebar.svelte';
 import { replaceAllThreads, touchThreadActivity } from '../../../stores/threads.svelte';
 import { tick } from 'svelte';
-import { resetForTest as resetThreadStatuses } from '../../../stores/threadStatuses.svelte';
 
 function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -38,11 +35,6 @@ function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
 }
 
 describe('<ProjectThreadList>', () => {
-  beforeEach(() => {
-    resetPanesForTest();
-    resetSidebarForTest();
-    resetThreadStatuses();
-  });
 
   it('shows a "+ New Thread" empty-state button when threads is empty, and no other', () => {
     const pane = createThreadPane();
@@ -332,11 +324,6 @@ describe('<ProjectThreadList>', () => {
 
 describe('<ProjectThreadList> thread groups', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetSidebarForTest();
-    resetThreadStatuses();
-    resetThreadGroupsForTest();
-    resetBindingMocks();
     endThreadRowDrag();
     replaceAllThreads([]);
     setBindingMock('GetSettings', async () => null);

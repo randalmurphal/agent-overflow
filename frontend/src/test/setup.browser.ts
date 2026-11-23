@@ -5,40 +5,25 @@
 // those shims belong here; importing them would paper over the real
 // engine the project exists to exercise.
 //
-// What browser tests DO share with the unit suite is module-level state:
-// panes built via `test/helpers/chat.ts#buildPane` register binding mocks
-// and write into caches that deliberately survive thread switches. Without
-// these resets, one test's thread snapshot / item cache / active turn
-// leaks into the next as "already warm" or "still streaming" state.
-import { afterEach, beforeAll, beforeEach } from 'vitest';
+// Module-level state between tests is reset by the registry, as in the
+// happy-dom projects (config/testResets.ts). What stays here is the
+// browser's own posture: real storage, fonts and the page focus outlive a
+// test.
+import { resetRegistry } from './resetRegistry';
+import { beforeAll, beforeEach } from 'vitest';
+import { cleanup } from '@testing-library/svelte';
 import { SHIPPED_FONT_FACES } from '../fonts';
 import './helpers/firstDivergence';
-import { cleanup } from '@testing-library/svelte';
-import { resetWailsMocks } from './mocks/wailsio-runtime';
-import { resetBindingMocks, setBindingMock } from './mocks/bindings-app';
-import { resetPanesForTest } from '../lib/stores/panes.svelte';
-import { resetAttachmentTransferMocks } from './mocks/attachmentTransfer';
-import { setPageGrantsFromBootstrap } from '../lib/transport/scopes';
-import { setHostWindowFromBootstrap } from '../lib/transport/pageHost';
-import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/threadStatuses.svelte';
-import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
-import { clearThreadScrollSnapshotsForTest } from '../lib/utils/threadScrollSnapshots';
-import { resetReviewScrollPositionsForTest } from '../lib/components/review/reviewScroll';
-import { clearAllThreadSizePriorsForTest } from '../lib/utils/virtual/priors';
 import { resetFrontendPreferencesForTest } from '../lib/stores/frontendPreferences.svelte';
 import { resetClientDeviceNameForTest } from '../lib/stores/clientDeviceName.svelte';
 import { writeFrontendValue } from '../lib/stores/frontendStorage';
-import { __resetSizePriorsStorageForTest } from '../lib/utils/virtual/priorsStorage';
-import { resetTelemetryFooterShapesForTest } from '../lib/stores/telemetryFooterShape.svelte';
+import { installWaitForBackoff } from './waitForBackoff';
 
-function installBrowserTraceSinks(): void {
-  // uiRenderTrace is compiled in under MODE==='test' and flushes on a real
-  // 500ms timer, which browser tests actually reach (unit tests finish before
-  // it fires). Default the sink bindings to no-ops so any traced code path
-  // doesn't spam "called without a mock" warnings; tests can override.
-  setBindingMock('AppendUIRenderTraceBatch', async () => '');
-  setBindingMock('BookmarkUIRenderTrace', async () => '');
-}
+// The browser project pre-bundles testing-library, so its module carries no
+// registration of its own; hand its cleanup to the registry under the same key.
+resetRegistry.loaded('@testing-library/svelte/src/pure.js', { cleanup }, []);
+
+installWaitForBackoff();
 
 // Layout assertions measure text. Without the app's own faces they would
 // measure whatever fallback font the host has installed, which differs by
@@ -50,54 +35,16 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  // The page focus outlives a test and its file's frame. The app reads it
+  // (document.hasFocus() in VirtualList's focus keeping, the clipboard and
+  // screen presence), so each test starts with its frame focused, whatever
+  // a prior test or file left focused.
+  window.focus();
+  if (!document.hasFocus()) throw new Error('setup.browser.ts: window.focus() did not give the test frame the page focus');
   // Real browser storage survives between files; backend settings only seed
   // missing preferences and cannot undo a prior fixture's local UI choices.
   writeFrontendValue('preferences', {});
   resetFrontendPreferencesForTest({});
   writeFrontendValue('device-name', null);
   resetClientDeviceNameForTest();
-  installBrowserTraceSinks();
-  // Same pin as setup.ts: with no bootstrap fetch nothing resolves the
-  // page's grants, and scopes.ts THROWS in test mode on a pre-resolution
-  // read outside a reactive context (the 2026-09-03 idle-trim tripwire).
-  // Pin the embedded webview's answer; a test exercising a narrower
-  // session sets its own.
-  setHostWindowFromBootstrap(true);
-  setPageGrantsFromBootstrap(false);
-});
-
-afterEach(() => {
-  // Unmounts components rendered through @testing-library. Tests that
-  // mount() manually (the prevailing browser-suite pattern) keep owning
-  // their own unmount in a local afterEach.
-  cleanup();
-  // The review pane remembers scroll positions per subject for the
-  // session in module state, saved at unmount. Clear them after cleanup
-  // so a jump in one test does not restore into the next test's mount.
-  resetReviewScrollPositionsForTest();
-  // Same as setup.ts: clear registered panes and their timers before the
-  // binding mocks they would call are reset.
-  resetPanesForTest();
-  resetWailsMocks();
-  resetBindingMocks();
-  resetAttachmentTransferMocks();
-  // A trace flush timer can outlive the component that scheduled it. Keep
-  // the browser project's documented no-op sink installed across the gap
-  // between this teardown and the next test's beforeEach.
-  installBrowserTraceSinks();
-  // Global active-turn registry backing getActiveTurn(); a leaked live
-  // turn makes the next test's timeline believe a stream is in flight.
-  resetThreadStatusesForTest();
-  // Per-thread caches that survive switchThread by design: items snapshot
-  // LRU, scroll position snapshots, and the measured-size priors. Stale
-  // entries let a later test skip its mocked load or replay another
-  // test's row geometry.
-  clearThreadItemCacheForTest();
-  clearThreadScrollSnapshotsForTest();
-  clearAllThreadSizePriorsForTest();
-  // Real localStorage persists across tests in the same Chromium context
-  // (unlike happy-dom's per-file in-memory shim), so also cancel any
-  // pending debounced flush and wipe the size-priors keys it wrote.
-  __resetSizePriorsStorageForTest();
-  resetTelemetryFooterShapesForTest();
 });

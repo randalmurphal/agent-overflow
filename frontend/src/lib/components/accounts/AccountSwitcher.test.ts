@@ -1,18 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import AccountSwitcher from './AccountSwitcher.svelte';
-import {
-  resetForTest as resetProviderAccounts,
-} from '../../stores/providerAccounts.svelte';
-import { resetForTest as resetAccountInfo } from '../../stores/accountInfo.svelte';
-import { resetForTest as resetRateLimits } from '../../stores/rateLimitsInfo.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import {
   getSettingsSection,
   isSettingsOpen,
   resetSettingsOverlayForTest,
 } from '../../stores/settingsOverlay.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { account } from '../../../test/helpers/providerAccounts';
 import type { ManagedProviderAccount } from '../../stores/bindings';
 
@@ -24,17 +19,10 @@ const LISTING: ManagedProviderAccount[] = [
 
 beforeEach(() => {
   for (const toast of getToasts()) removeToast(toast.id);
-  resetBindingMocks();
-  resetProviderAccounts();
-  resetAccountInfo();
-  resetRateLimits();
   setBindingMock('ListProviderAccounts', async () => LISTING);
 });
 
 afterEach(() => {
-  resetProviderAccounts();
-  resetAccountInfo();
-  resetRateLimits();
   vi.restoreAllMocks();
 });
 
@@ -203,6 +191,8 @@ describe('<AccountSwitcher> — selection', () => {
 
   it('refreshes one account’s usage without leaving the picker', async () => {
     const refreshMock = setBindingMock('RefreshProviderAccountUsage', async () => undefined);
+    // The refresh then probes who the account is.
+    setBindingMock('RecheckClaudeAccount', async () => ({}));
     const onClose = vi.fn();
     const { findByTestId } = render(AccountSwitcher, { open: true, onClose });
 
@@ -275,6 +265,8 @@ describe('<AccountSwitcher> — keyboard', () => {
     // would eat the focused button's own activation.
     const switchMock = setBindingMock('SwitchProviderAccount', async () => undefined);
     const refreshMock = setBindingMock('RefreshProviderAccountUsage', async () => undefined);
+    // The refresh then probes who the account is.
+    setBindingMock('RecheckCodexAccount', async () => ({}));
     const { findByTestId, getByTestId } = render(AccountSwitcher, {
       open: true,
       onClose: () => {},

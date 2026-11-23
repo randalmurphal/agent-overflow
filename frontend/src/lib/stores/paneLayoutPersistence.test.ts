@@ -43,7 +43,7 @@ import {
 } from './appStorage';
 import { installPaneMocks, makeItem } from '../../test/helpers/chat';
 import { setHostWindowFromBootstrap } from '../transport/pageHost';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 
 const LEGACY_KEY = 'agentOverflowPaneLayout';
 
@@ -148,20 +148,12 @@ describe('pane layout persistence', () => {
 
   beforeEach(async () => {
     localStorage.removeItem(LEGACY_KEY);
-    resetBindingMocks();
-    resetAppStorageForTest();
-    resetPanesForTest();
-    resetCompanionPanesForTest();
-    __resetAgentPaneStateForTest();
     resetPaneLayoutForTest();
     installPaneLayoutPersistence();
     await installUIStateMock();
   });
 
   afterEach(() => {
-    resetPaneLayoutPersistenceForTest();
-    __resetAgentPaneStateForTest();
-    resetCompanionPanesForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });

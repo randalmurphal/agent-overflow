@@ -3,7 +3,7 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import RemoteJobTrayRow from './RemoteJobTrayRow.svelte';
 import ActivityRailBackgroundBody from './ActivityRailBackgroundBody.svelte';
 import { makeItem } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { deriveTrayTasks, trayRemoteJob } from '../../utils/backgroundTray';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
@@ -25,7 +25,6 @@ const chunk = { text: 'epoch 10 complete', error: '', offset: 100, nextOffset: 1
 
 describe('remote jobs in the background tray', () => {
   beforeEach(() => {
-    resetBindingMocks();
     for (const toast of [...getToasts()]) removeToast(toast.id);
   });
   afterEach(resetStagedBackends);

@@ -18,6 +18,8 @@
     "test": "vitest run --project unit --project unit-isolated",
     "test:watch": "vitest --project unit --project unit-isolated",
     "test:browser": "vitest run --project browser",
+    "test:affected": "node scripts/vitest-changed.mjs unit",
+    "test:browser:affected": "node scripts/vitest-changed.mjs browser",
     "test:manual": "vitest run --project manual",
     "test:ui": "vitest --ui",
     "generate:theme-reference": "node scripts/generate-theme-reference.mjs"

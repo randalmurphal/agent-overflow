@@ -25,7 +25,7 @@ import {
 } from '../../stores/keybindings.svelte';
 import { projectTurnStarted, setThreadStatus } from '../../stores/threadStatuses.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { setBindingMock, resetBindingMocks, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import {
   addProjectLocal,
   resetProjectsForTest,
@@ -40,7 +40,7 @@ import {
 } from '../../stores/threadTitleGeneration.svelte';
 import type { Project, Thread } from '../../types/models';
 import { setCompactLayoutForTest, getCompactScreen, showCompactThread } from '../../stores/layoutMode.svelte';
-import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
+import { buildPane as buildRegisteredPane, installThreadSwitchMocks, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { noteThread } from '../../transport/entityIndex';
@@ -76,6 +76,12 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     projectId: 'project-1',
     ...overrides,
   });
+}
+
+/** Switches `pane` to `thread`, with the backend answering the switch. */
+async function switchTo(pane: ReturnType<typeof createThreadPane>, thread: Thread): Promise<void> {
+  installThreadSwitchMocks(thread);
+  await pane.switchThread(thread);
 }
 
 async function buildPane(thread: Thread = makeThread()) {
@@ -230,6 +236,8 @@ describe('<ChatHeader>', () => {
 
   it('toggles the review pane via the Diffs button', async () => {
     const pane = await buildPane();
+    // Opening review reads the workspace diff: no changes.
+    setReviewDiffMock('OpenWorkspaceDiff', () => '');
     setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     const { getByTestId } = render(ChatHeader, { props: { pane } });
     await tick();
@@ -398,7 +406,7 @@ describe('<ChatHeader>', () => {
   it('renders a close button that destroys the pane', async () => {
     // Explicit paneId so destroyPane(pane.paneId) matches the registry key.
     const pane = createThreadPane({ paneId: 'to-close' });
-    await pane.switchThread(makeThread({ id: 'close-thread', title: 'Closes' }));
+    await switchTo(pane, makeThread({ id: 'close-thread', title: 'Closes' }));
     registerPaneForTest('to-close', pane);
     setPaneLayoutItemsForTest([
       { id: 'main-item', paneId: 'main', kind: 'thread', widthPx: 1 },
@@ -416,7 +424,7 @@ describe('<ChatHeader>', () => {
   // is more than one pane to tell apart and never in compact layout.
   async function renderTwoPaneHeader(): Promise<{ focused: ReturnType<typeof createThreadPane>; other: ReturnType<typeof createThreadPane> }> {
     const focused = createThreadPane({ paneId: 'main' });
-    await focused.switchThread(makeThread({ id: 'focused-thread', title: 'Focused' }));
+    await switchTo(focused, makeThread({ id: 'focused-thread', title: 'Focused' }));
     const other = createThreadPane({ paneId: 'other' });
     other.replaceThread(makeThread({ id: 'other-thread', title: 'Other' }));
     registerPaneForTest('main', focused);
@@ -468,7 +476,7 @@ describe('<ChatHeader>', () => {
 
   it('omits the line when the strip holds a single pane', async () => {
     const pane = createThreadPane({ paneId: 'main' });
-    await pane.switchThread(makeThread({ id: 'solo-thread', title: 'Solo' }));
+    await switchTo(pane, makeThread({ id: 'solo-thread', title: 'Solo' }));
     registerPaneForTest('main', pane);
     setPaneLayoutItemsForTest([
       { id: 'main-item', paneId: 'main', kind: 'thread', widthPx: 1 },
@@ -528,7 +536,7 @@ describe('<ChatHeader>', () => {
 
   it('shows no attention line on a lone pane', async () => {
     const pane = createThreadPane({ paneId: 'main' });
-    await pane.switchThread(makeThread({ id: 'lone-thread', title: 'Lone' }));
+    await switchTo(pane, makeThread({ id: 'lone-thread', title: 'Lone' }));
     registerPaneForTest('main', pane);
     setPaneLayoutItemsForTest([{ id: 'main-item', paneId: 'main', kind: 'thread', widthPx: 1 }]);
     setThreadStatus('lone-thread', 'pending-approval');
@@ -726,7 +734,7 @@ describe('<ChatHeader> under compact', () => {
 
   it('shows a back button that returns to the list, and no close button', async () => {
     const pane = createThreadPane({ paneId: 'main' });
-    await pane.switchThread(makeThread({ id: 'compact-thread', title: 'Compact' }));
+    await switchTo(pane, makeThread({ id: 'compact-thread', title: 'Compact' }));
     registerPaneForTest('main', pane);
     setPaneLayoutItemsForTest([{ id: 'main-item', paneId: 'main', kind: 'thread', widthPx: 1 }]);
     showCompactThread();
@@ -755,6 +763,11 @@ describe('<ChatHeader> under compact', () => {
     setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     setBindingMock('GitListBranches', async () => []);
     setBindingMock('GitListWorktrees', async () => []);
+    // Opening the branch picker fetches stale remotes first; these are fresh.
+    setBindingMock('GitMaybeFetchRemotes', async () => false);
+    // The worktree picker's Open-in-editor control loads the editor catalog.
+    setBindingMock('ListAvailableEditors', async () => []);
+    setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     const now = Date.now();
     addProjectLocal({
       id: 'project-1',
@@ -851,7 +864,7 @@ describe('<ChatHeader> under compact', () => {
   it('full layout has no back button', async () => {
     setCompactLayoutForTest(false);
     const pane = createThreadPane({ paneId: 'main' });
-    await pane.switchThread(makeThread({ id: 'full-thread', title: 'Full' }));
+    await switchTo(pane, makeThread({ id: 'full-thread', title: 'Full' }));
     registerPaneForTest('main', pane);
     setPaneLayoutItemsForTest([{ id: 'main-item', paneId: 'main', kind: 'thread', widthPx: 1 }]);
     const { queryByTestId } = render(ChatHeader, { props: { pane } });

@@ -3,13 +3,12 @@ import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import { FakeSmoothingClock, installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import { __setSmoothingClockForTest } from './threadPaneShared';
 import { applyItemStreamEvent, flushItemEventQueue, resetItemEventQueue } from './eventsItemStream';
-import { resetPanesForTest } from './panes.svelte';
 import { getSettings } from './settings.svelte';
+import { SEEDS, seededRandom } from '../../test/helpers/seededRandom';
 
 beforeEach(installThreadPaneTestEnv);
 afterEach(() => {
   resetItemEventQueue();
-  resetPanesForTest();
   __setSmoothingClockForTest(undefined);
   getSettings().lowPowerMode = false;
   getSettings().streamingEnabled = true;
@@ -17,14 +16,10 @@ afterEach(() => {
 
 // Replay the same valid stream under different chunk, flush, and frame
 // schedules. The oracle describes observable behavior, not smoother internals.
-it.each(Array.from({ length: 24 }, (_, seed) => seed + 1))(
+it.each(Array.from({ length: SEEDS }, (_, seed) => seed + 1))(
   'preserves text, ordering and resource lifetime under delivery schedule %i',
   async (seed) => {
-    let randomState = seed;
-    const random = (bound: number) => {
-      randomState = (Math.imul(randomState, 1664525) + 1013904223) >>> 0;
-      return randomState % bound;
-    };
+    const random = seededRandom(seed);
     const clock = new FakeSmoothingClock();
     __setSmoothingClockForTest(clock);
     getSettings().lowPowerMode = seed % 4 === 0;

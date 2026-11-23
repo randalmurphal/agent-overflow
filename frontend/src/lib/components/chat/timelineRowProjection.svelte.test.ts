@@ -17,7 +17,7 @@ import { ActivityRunStub } from '../../../../bindings/agent-overflow/internal/st
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   installAgentMessageRunMembersCapability,
   installTimelineScopeCapability,
@@ -100,7 +100,6 @@ function agentLaunch(id: string, itemIndex: number) {
 describe('timeline row projection window edges', () => {
   beforeEach(async () => {
     installTimelineScopeCapability();
-    resetBindingMocks();
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
   });
@@ -133,7 +132,6 @@ describe('timeline row projection window edges', () => {
 
 describe('timeline row projection reactivity', () => {
   beforeEach(async () => {
-    resetBindingMocks();
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
   });
@@ -374,7 +372,6 @@ it('forms a detached completion card before expanding or loading the old launch'
     projection.dispose();
   }
 });
-
 
 it('reclassifies a leading notification from the authoritative run window without an item change', async () => {
   const pane = await buildPane(undefined, [

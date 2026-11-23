@@ -78,7 +78,6 @@ function fakeListRef(nodes: readonly TimelineNode[], sizes: number[]): TimelineV
 
 beforeEach(() => {
   typography = DEFAULT_TYPOGRAPHY;
-  clearAllThreadSizePriorsForTest();
   setSizePriorsStorageAdapter(undefined);
 });
 

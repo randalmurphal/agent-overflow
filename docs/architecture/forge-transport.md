@@ -650,7 +650,7 @@ span many runs, so `ReadPR` leaves its `ID` empty.
 list pump of a backend; its handle calls (`SetPRListActive`,
 `RefreshPRList`, `UnsubscribePRList`) route home and the caller pins
 them to the computer whose subscribe answered, as the PR pump's. The pump
-shares the PR pump's core (`app_pump_core.go`): refcounted handles bound
+shares the PR pump's core (`internal/pump`, bound in `app_pump_core.go`): refcounted handles bound
 to their connections, paused while every handle is hidden, frames stamped
 from the shared PR update sequence. The subscribe answers at once: with
 the pump's last frame when one runs, else with the snapshot assembled

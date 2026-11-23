@@ -2,12 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import AddProjectModal from '../AddProjectModal.svelte';
-import { resetProjectsForTest } from '../../../stores/projects.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { addComputerProject, projectAtComputerPath } from '../../../stores/computerProjects';
-import { noteProject, __resetEntityIndexForTest } from '../../../transport/entityIndex';
+import { noteProject } from '../../../transport/entityIndex';
 import { takePinnedBackend } from '../../../transport/backends';
-import { getToasts, resetToastsForTest } from '../../../stores/toast.svelte';
+import { getToasts } from '../../../stores/toast.svelte';
 
 // Flush the focus-trap + effect queue so the modal is fully mounted and
 // the browser has kicked off its initial BrowseDirectory.
@@ -42,9 +41,6 @@ function mockBrowseDirectory(
 
 describe('<AddProjectModal>', () => {
   beforeEach(() => {
-    resetProjectsForTest();
-    __resetEntityIndexForTest();
-    resetToastsForTest();
     mockBrowseDirectory();
   });
 

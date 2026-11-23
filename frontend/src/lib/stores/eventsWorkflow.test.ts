@@ -1,10 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { getToasts, removeToast } from './toast.svelte';
-import { applyWorkflowErrorEvent, resetWorkflowEventStateForTest } from './eventsWorkflow';
+import { applyWorkflowErrorEvent } from './eventsWorkflow';
 
 describe('workflow event fan-out', () => {
   beforeEach(() => {
-    resetWorkflowEventStateForTest();
     for (const toast of getToasts()) removeToast(toast.id);
   });
 

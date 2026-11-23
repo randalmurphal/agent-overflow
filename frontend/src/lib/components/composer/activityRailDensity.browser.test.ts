@@ -6,17 +6,13 @@ import ActivityRailHost from '../../../test/mocks/ActivityRailTestHost.svelte';
 import { buildPane, makeItem } from '../../../test/helpers/chat';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { UsageBucket } from '../../stores/bindings';
-import { resetSettingsForTest } from '../../stores/settings.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
-import { __resetCustomSpinnersForTest } from '../../stores/spinners.svelte';
 import { updateFrontendPreferences } from '../../stores/frontendPreferences.svelte';
 import { BUILTIN_SPRITES } from '../../spinners/catalog';
 import { raf } from '../../../test/helpers/browserFrames';
 
 afterEach(() => {
   setCompactLayoutForTest(false);
-  resetSettingsForTest();
-  __resetCustomSpinnersForTest();
 });
 
 it('protects both controls and holds the row height across sprites, widths and layout changes', async () => {

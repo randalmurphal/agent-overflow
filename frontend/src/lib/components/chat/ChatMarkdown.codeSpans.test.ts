@@ -5,22 +5,20 @@ import ChatMarkdown from './ChatMarkdown.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
 import { resetCodeSpanCacheForTest } from './markdown/codeSpanCache';
-import { isCodeBlockUnwrapped, resetCodeWrapStateForTest } from './markdown/codeWrapState';
+import { isCodeBlockUnwrapped } from './markdown/codeWrapState';
 import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';
 import {
-  __resetStreamdownCodeHostForTest,
   __streamdownCodeHostStatsForTest,
 } from './markdown/StreamdownCodeHost.svelte';
 import { createProvenAppend } from '../../markdown';
 import {
   TextLineChain,
   applyLiveCode,
-  resetLiveCodeSpansForTest,
   type HighlightLiveCodeEvent,
 } from './markdown/liveCodeSpans.svelte';
 import { contentKey } from '../../utils/fnv1a';
 import { __resetAnimationFrameCoordinatorForTest } from '../../utils/animationFrameBatcher';
-import { ensureSyntaxClassNames, resetSyntaxClassNamesForTest } from '../../utils/syntaxSpans';
+import { ensureSyntaxClassNames } from '../../utils/syntaxSpans';
 
 // Integration coverage for the backend-span code-block host
 // (StreamdownCodeHost + codeSpanCache) mounted through a real
@@ -41,11 +39,6 @@ function keywordSpans() {
 }
 
 beforeEach(() => {
-  resetCodeSpanCacheForTest();
-  resetLiveCodeSpansForTest();
-  resetCodeWrapStateForTest();
-  __resetStreamdownCodeHostForTest();
-  resetSyntaxClassNamesForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword', 'string']);
 });
@@ -84,7 +77,6 @@ function keywordText(container: HTMLElement): string[] {
   return Array.from(container.querySelectorAll('.syntax-keyword'), (el) => el.textContent ?? '');
 }
 
-import { resetShellRunsForTest } from '../../stores/shellCommands.svelte';
 import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 
@@ -525,7 +517,6 @@ describe('<ChatMarkdown> code-block spans', () => {
     }
 
     afterEach(() => {
-      resetShellRunsForTest();
       document.querySelectorAll('[data-ui-surface="chat"]').forEach((node) => node.remove());
     });
 

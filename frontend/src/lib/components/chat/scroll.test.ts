@@ -19,11 +19,12 @@
 //   - Composer-height CSS variable propagation through the chat column.
 //   - Reserved-slot banner height stability across mount/unmount.
 
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { buildPane, installPaneMocks, makeItem, makeThread } from '../../../test/helpers/chat';
 import { createThreadPane } from '../../stores/thread.svelte';
 import type { Item } from '../../types/models';
@@ -36,7 +37,6 @@ import {
   setThreadScrollSnapshot,
 } from '../../utils/threadScrollSnapshots';
 import {
-  clearAllThreadSizePriorsForTest,
   peekThreadSizePriorsForTest,
   setThreadSizePriors,
   type SizePriorsEntry,
@@ -159,16 +159,13 @@ function watchStickNotifications(pane: ThreadPane): {
 
 beforeEach(async () => {
   createdStickControllers.length = 0;
-  resetBindingMocks();
-  clearThreadScrollSnapshotsForTest();
-  clearAllThreadSizePriorsForTest();
+  // The composer loads its provider's model list.
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
+  // The composer reads its thread's saved draft and attachments: none.
+  setBindingMock('GetDraft', async (threadId: string) => ({ threadId, content: '', attachmentIds: [], terminalChips: [], updatedAt: 0 }));
+  setBindingMock('ListAttachments', async () => []);
   setBindingMock('GetSettings', async () => null);
   await loadSettings();
-});
-
-afterEach(() => {
-  clearThreadScrollSnapshotsForTest();
-  clearAllThreadSizePriorsForTest();
 });
 
 describe('scroll integration — per-thread snapshot save/restore', () => {

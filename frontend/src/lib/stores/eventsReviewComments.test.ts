@@ -8,9 +8,8 @@ import {
 import {
   getDiffReviewComments,
   refreshDiffReviewComments,
-  resetDiffReviewCommentsForTest,
 } from './diffReviewComments.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { DiffReviewComment, ProposedPlanComment } from '../types/models';
 
 // Inline review comments used to persist and answer their own caller only: a
@@ -54,14 +53,11 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
-  resetBindingMocks();
   resetProposedPlanCacheForTests();
-  resetDiffReviewCommentsForTest();
 });
 
 afterEach(() => {
   resetProposedPlanCacheForTests();
-  resetDiffReviewCommentsForTest();
 });
 
 describe('applyReviewCommentsChanged — plan comments', () => {

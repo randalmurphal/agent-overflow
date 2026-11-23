@@ -31,6 +31,7 @@
 // rather than staying here: the marked-alert lexer-retention and consumed-raw
 // bugs this driver found are pinned by `alertBlockquote.test.ts`.
 
+// oxlint-disable-next-line no-restricted-imports -- reads an operator's local corpus, which is never committed and may be absent
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';

@@ -76,12 +76,12 @@ interface GitStatusEvent {
 // `git:status` frame by cwd alone would paint one machine's status onto the
 // other's header — silently, and only ever on a client attached to both.
 //
-// The owner stamp is what makes the map safe under re-sourcing. A superseded
-// run (invalidate, reconnect, retry) resolves LATE and then runs its own
-// cleanup; without ownership that cleanup deletes the alias the live run
-// installed, and the key goes on holding a subscription whose `git:status`
-// pushes route nowhere — a header frozen at whatever it last saw, healed
-// only by a full re-attach.
+// The owner stamp is what makes the map safe under re-sourcing. A run
+// removes its alias when it is aborted (invalidate, reconnect, retry,
+// release); the stamp keeps that removal from deleting an alias a later run
+// installed, which would leave the key holding a subscription whose
+// `git:status` pushes route nowhere — a header frozen at whatever it last
+// saw, healed only by a full re-attach.
 type AliasOwner = symbol;
 const localKeysByCwd = new Map<string, Map<string, AliasOwner>>();
 
@@ -193,17 +193,17 @@ const store = createEntityStore<GitStatus, GitStatusCtx>({
         GitStatusSubscribe(workspace),
       )) as GitStatusSubscriptionResult;
       const cwdKey = composeWorkspaceKey(backend, result.cwd);
-      // Only a run that is still the live one may claim the alias or apply;
-      // a superseded run's cleanup then finds an owner that is not its own
-      // and leaves the live routing alone.
+      // Only a run that is still the live one may claim the alias or apply.
+      // The alias is local routing, so it goes when the run is aborted, a
+      // test reset included; the cleanup releases the subscription.
       if (!signal.aborted) {
         addAlias(cwdKey, key, owner);
+        signal.addEventListener('abort', () => removeAlias(cwdKey, key, owner), { once: true });
         applyStatus(key, result.status as GitStatus);
         const kept = keptFramesByBackend.get(backend)?.get(cwdKey);
         if (kept) applyStatus(key, kept);
       }
       return async () => {
-        removeAlias(cwdKey, key, owner);
         try {
           // A subscription id is meaningful only on the connection that
           // minted it, and nothing in the id says which that was — hence the
@@ -222,7 +222,7 @@ const store = createEntityStore<GitStatus, GitStatusCtx>({
   },
   onApply: (key, value, prev) => {
     lastApplyByKey.set(key, ++applySequence);
-    if (!value.isRepo) return;
+    if (!value.isRepo || applyingSeed) return;
     const branch = value.branch ?? '';
     // First observation for a key always writes: the thread rows' cached
     // branch may predate anything this session saw. That costs one UPDATE
@@ -518,6 +518,9 @@ export function resyncGitStatusAfterGap(backend: BackendKey = HOME_BACKEND): voi
 // all; __resetGitStatusStoreForTest releases it and lifts the suspension.
 const testHolds = new Map<string, EntityAttachment<GitStatus>>();
 let seedingForTest = false;
+// Set while a test seeds a status: a seed is not a backend observation, so
+// it starts no branch write.
+let applyingSeed = false;
 
 /**
  * A seed may be written with a bare PATH, which reads as "the workspace at
@@ -561,7 +564,12 @@ function assertAttachableWhileSeeding(key: string): void {
 export function __seedGitStatusForTest(key: string, status: GitStatus): void {
   const held = seedKey(key);
   ensureTestHold(held);
-  applyStatus(held, { ...status });
+  applyingSeed = true;
+  try {
+    applyStatus(held, { ...status });
+  } finally {
+    applyingSeed = false;
+  }
 }
 
 export function __seedGitStatusErrorForTest(key: string, message: string): void {
@@ -574,19 +582,14 @@ export function __seedGitStatusErrorForTest(key: string, message: string): void 
  * Test seam: drop every entry, alias, and queued write, as a fresh module
  * load would, and re-arm the `git:status` listener (the shared wails-runtime
  * mock clears every subscriber between tests, and this module registers at
- * load time — which happens once per file).
- *
- * suspend() releases every unheld entry; resetAll() then lifts the
- * suspension. An entry that survives both is one a test attached and never
- * released — resetAll re-sources it against the next test's binding mocks,
- * which is exactly the noise that should make the leak findable.
+ * load time — which happens once per file). Calls no backend: the test
+ * holds' releases come after the drop and do nothing.
  */
 export function __resetGitStatusStoreForTest(): void {
+  store.resetForTest();
   for (const hold of testHolds.values()) hold.release();
   testHolds.clear();
   seedingForTest = false;
-  store.suspend();
-  store.resetAll();
   localKeysByCwd.clear();
   queuedBranchByWorkspace.clear();
   branchPersistRunning = false;

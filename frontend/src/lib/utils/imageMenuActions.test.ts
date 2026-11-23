@@ -19,11 +19,17 @@ import { buildForgeAttachmentHref, parseForgeAttachmentHref } from './forgeAttac
 import type { ResolvedForgeAttachment } from './forgeAttachmentCache';
 import { buildLocalImageHref } from './pathLinkExtension';
 import { getPinnedBackend } from '../transport/backends';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { mockAttachmentDownload, mockLocalImage } from '../../test/mocks/attachmentTransfer';
 
 const nativeShell = vi.hoisted(() => ({ value: false }));
 const webviewHosted = vi.hoisted(() => ({ value: false }));
+// Back to the desktop page before the between-test steps reset the
+// computers, which attach the page's own by what the platform says.
+afterEach(() => {
+  nativeShell.value = false;
+  webviewHosted.value = false;
+});
 const scopes = vi.hoisted(() => ({ host: false, write: true, git: true, files: true }));
 const forgeCache = vi.hoisted(() => ({ acquire: vi.fn(), release: vi.fn(), original: vi.fn() }));
 const openForge = vi.hoisted(() => vi.fn(async () => {}));
@@ -56,7 +62,8 @@ vi.mock('./forgeAttachmentCache', async (importOriginal) => ({
   acquirePaintedForgeAttachment: (...args: unknown[]) => forgeCache.acquire(...args),
   fetchForgeAttachmentBytes: (...args: unknown[]) => forgeCache.original(...args),
 }));
-vi.mock('./forgeAttachmentActions', () => ({
+vi.mock('./forgeAttachmentActions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./forgeAttachmentActions')>()),
   openForgeAttachment: (...args: unknown[]) => openForge(...(args as [])),
 }));
 vi.mock('../stores/toast.svelte', () => ({
@@ -134,7 +141,6 @@ describe('copying an attachment image', () => {
     setClipboard(originalClipboard);
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
-    resetBindingMocks();
   });
 
   it('fetches the original bytes and re-encodes a non-PNG before writing', async () => {
@@ -190,7 +196,6 @@ describe('saving an attachment image', () => {
     scopes.write = true;
     toasts.length = 0;
     toastErrors.length = 0;
-    resetBindingMocks();
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -462,14 +467,12 @@ describe('local images', () => {
     scopes.files = true;
     toasts.length = 0;
     toastErrors.length = 0;
-    resetBindingMocks();
   });
   afterEach(() => {
     setClipboard(originalClipboard);
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
-    resetBindingMocks();
     document.body.innerHTML = '';
   });
 

@@ -12,7 +12,6 @@ import {
   type TransportStatusSnapshot,
 } from './wsClient';
 import { BackendStartingError, type StartupProgress } from './startupProgress';
-import { __resetRunModeForTest } from './runMode';
 import { FakeCtor, MockWebSocket } from '../../test/helpers/mockWebSocket';
 
 const manifest = { wsUrl: 'ws://example/ws', token: 'test-token' };
@@ -35,13 +34,11 @@ describe('WSClient against a starting backend', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    __resetRunModeForTest();
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
   });
 
   afterEach(() => {
-    __resetRunModeForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });

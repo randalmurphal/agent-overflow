@@ -5,7 +5,7 @@
 // which fall back, and which tone each carries.
 
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import {
   applyThreadImportUpdatesAction,
@@ -43,7 +43,6 @@ function toasts(): Array<{ type: string; message: string }> {
 }
 
 beforeEach(() => {
-  resetBindingMocks();
   for (const toast of [...getToasts()]) removeToast(toast.id);
   // refreshSidebarProjections runs for real on the apply path.
   setBindingMock('ListThreads', async () => []);

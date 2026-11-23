@@ -16,7 +16,6 @@ import {
   pauseReadAloud,
   readAloudPosition,
   replyReadingKey,
-  resetReadAloudForTest,
   stopReadAloud,
   watchReadAloudVoices,
 } from '../../stores/readAloud.svelte';
@@ -69,7 +68,6 @@ describe('<ReadAloudSections>', () => {
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
     setReadAloudPreference('enabled', true);
-    resetReadAloudForTest();
     device = fakeSpeechEngine();
     watchReadAloudVoices(device.engine);
     FakeResizeObserver.live.clear();
@@ -91,7 +89,6 @@ describe('<ReadAloudSections>', () => {
   });
 
   afterEach(() => {
-    resetReadAloudForTest();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
     vi.restoreAllMocks();

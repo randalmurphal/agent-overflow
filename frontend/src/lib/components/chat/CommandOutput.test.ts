@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import CommandOutput from './CommandOutput.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -50,10 +50,6 @@ function expectBefore(left: Element, right: Element) {
 describe('<CommandOutput>', () => {
   beforeEach(() => {
     resetBindingMocks();
-  });
-
-  afterEach(() => {
-    cleanup();
   });
 
   it('prefers the description while retaining the command on hover and the lazy expanded output', async () => {
@@ -806,8 +802,6 @@ describe('<CommandOutput>', () => {
 
       afterEach(() => {
         forgetThread(THREAD);
-        resetDevServersForTest();
-        resetStagedBackends();
       });
 
       it('offers the chip once that machine says the port is live and shared', async () => {
@@ -968,7 +962,6 @@ describe('<CommandOutput> background button (agent-visibility)', () => {
   beforeEach(() => {
     resetBindingMocks();
   });
-  afterEach(() => cleanup());
 
   // Minimal pane: canBackground only asks for presence; the expansion
   // registry is exercised through the pane branch.

@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { describe, expect, it } from 'vitest';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import CompactionDivider from './CompactionDivider.svelte';
 import { makeItem } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 function compactionItem(overrides = {}) {
   return makeItem({
@@ -15,13 +15,6 @@ function compactionItem(overrides = {}) {
 }
 
 describe('<CompactionDivider>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
-
-  afterEach(() => {
-    cleanup();
-  });
 
   it('renders a plain, non-interactive divider when no summary payload is linked', () => {
     // Headless claude / Codex boundaries carry no committed summary, so the row

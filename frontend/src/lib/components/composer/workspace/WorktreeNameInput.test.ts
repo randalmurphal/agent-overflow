@@ -1,23 +1,20 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import WorktreeNameInput from './WorktreeNameInput.svelte';
 import {
   getBindingMock,
-  resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 import {
   enterCreateBranchMode,
-  resetForTest as resetWorktreeIntent,
   setNewBranchName,
   setThreadEnvMode,
   worktreeIntentForThread,
 } from '../../../stores/worktreeIntent.svelte';
-import { resetWorktreeIntentMaterializeForTest } from '../../../stores/worktreeIntentMaterialize';
 import { buildPane, makeThread } from '../../../../test/helpers/chat';
 import { idleWorkspaceActivity, makeWorkspaceLock } from '../../../../test/helpers/workspaceLock';
-import { __resetGitStatusStoreForTest, __seedGitStatusForTest } from '../../../stores/gitStatusStore.svelte';
+import { __seedGitStatusForTest } from '../../../stores/gitStatusStore.svelte';
 
 // Workspace interaction materializes a draft before this component can apply
 // anything. Draft and committed rows therefore use the same thread-scoped
@@ -43,12 +40,6 @@ async function buildWorktreePane(overrides: Record<string, unknown> = {}) {
 }
 
 describe('<WorktreeNameInput>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetWorktreeIntent();
-    resetWorktreeIntentMaterializeForTest();
-    __resetGitStatusStoreForTest();
-  });
 
   it('renders nothing without a staged intent', async () => {
     const pane = await buildWorktreePane();
@@ -120,6 +111,8 @@ describe('<WorktreeNameInput>', () => {
       workspacePath: '/repo',
       branch: 'feat/enter',
     }));
+    // Then it reads the thread's row on the new branch.
+    setBindingMock('GetThread', async () => ({ ...pane.thread, branch: 'feat/enter' }));
 
     const { getByTestId } = render(WorktreeNameInput, {
       props: { pane, workspaceLock: makeWorkspaceLock() },

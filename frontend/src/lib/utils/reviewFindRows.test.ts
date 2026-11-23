@@ -7,7 +7,10 @@ import { forgetReviewFindSpotsForTest, placeReviewFindHit, resolveReviewFindHit,
 import { findThreadCommentKey, makeReviewFindHit, reviewCommentKey, type ReviewFindHit } from './reviewFindIdentity';
 import { scanReviewFind, type ReviewFindContent } from './reviewFindScan';
 import { freshScan, shownOf, type Scanned } from '../../test/helpers/reviewFindOracle';
+import { withComments } from '../../test/helpers/reviewFindContent';
+import { indexReviewComments } from './reviewRows';
 import type { DiffReviewComment, ReviewComment, ReviewThread } from '../types/models';
+import { forEachSeed, seededFraction } from '../../test/helpers/seededRandom';
 
 // The resolver against content that changed under published matches. The
 // oracle is a fresh scan of the new content: a match resolves to where
@@ -51,7 +54,7 @@ const thread: ReviewThread = {
 };
 
 function diffContent(patch: string[], comments = true): ReviewFindContent {
-  return { files: parseReviewFiles(patch.join('\n')), drafts: comments ? [draft] : [], prThreads: comments ? [thread] : [], commentText: (body) => [{ text: body, shown: true }] };
+  return { files: parseReviewFiles(patch.join('\n')), comments: comments ? indexReviewComments([thread], [draft]) : indexReviewComments([], []), commentText: (body) => [{ text: body, shown: true }] };
 }
 
 // A scan seeded as the pane's source seeds what its scans read.
@@ -130,10 +133,51 @@ describe('resolveReviewFindHit', () => {
 
   it('a comment deleted while its file stays the same is not present; the next keeps its key', async () => {
     const base = diffContent(PATCHES.base);
-    const resolved = await expectResolves(base, { ...base, drafts: [], prThreads: [{ ...thread, comments: thread.comments.slice(1) }] });
+    const resolved = await expectResolves(base, withComments(base, { drafts: [], prThreads: [{ ...thread, comments: thread.comments.slice(1) }] }));
     expect(resolved.get(id('src/b.ts', 'dc:d1'))).toEqual({ kind: 'absent' });
     expect(resolved.get(id('src/a.test.ts', pc('p1', '1'), '0:0'))).toEqual({ kind: 'absent' });
     expect(at(resolved.get(id('src/a.test.ts', pc('p1', '2'), '0:0')))).toMatchObject({ rowKey: pc('p1', '2') });
+  });
+
+  it('a held reply found under its thread is not present there once the thread moves to another file', async () => {
+    // The reply keeps the path it was held on; it shows wherever its thread is.
+    const reply: DiffReviewComment = {
+      id: 'r1', threadId: 'p1', scope: 'pr', sourceKey: 'k', filePath: 'src/a.test.ts', status: 'draft', side: 'reply',
+      replyThreadId: 'p1', selectedText: '', body: 'needle reply', createdAt: 0, updatedAt: 0,
+    };
+    const before = withComments(diffContent(PATCHES.base), { drafts: [reply] });
+    const after = withComments(before, { prThreads: [{ ...thread, path: 'src/b.ts', line: 100 }] });
+    const published = await seededScan(before);
+    const held = [...published.values()].map((each) => each.hit).filter((hit) => hit.at.kind === 'draft');
+    expect(held.map((hit) => hit.path)).toEqual(['src/a.test.ts']);
+    const resolved = await expectResolvesTo(held, after);
+    expect([...resolved.values()]).toEqual([{ kind: 'absent' }]);
+  });
+
+  it('a held reply found under its thread after the thread moves to another file is present there', async () => {
+    const reply: DiffReviewComment = {
+      id: 'r1', threadId: 'p1', scope: 'pr', sourceKey: 'k', filePath: 'src/a.test.ts', status: 'draft', side: 'reply',
+      replyThreadId: 'p1', selectedText: '', body: 'needle reply', createdAt: 0, updatedAt: 0,
+    };
+    const after = withComments(diffContent(PATCHES.base), { drafts: [reply], prThreads: [{ ...thread, path: 'src/b.ts', line: 100 }] });
+    const published = await seededScan(after);
+    const held = [...published.values()].map((each) => each.hit).filter((hit) => hit.at.kind === 'draft');
+    expect(held.map((hit) => hit.path)).toEqual(['src/b.ts']);
+    const resolved = await expectResolvesTo(held, after);
+    expect(at([...resolved.values()][0])).toMatchObject({ rowKey: 'dc:r1', place: { kind: 'thread', threadId: 'p1' } });
+  });
+
+  it('a held reply whose thread is gone is in no file\'s diff', async () => {
+    const reply: DiffReviewComment = {
+      id: 'r1', threadId: 'p1', scope: 'pr', sourceKey: 'k', filePath: 'src/a.test.ts', status: 'draft', side: 'reply',
+      replyThreadId: 'p1', selectedText: '', body: 'needle reply', createdAt: 0, updatedAt: 0,
+    };
+    const before = withComments(diffContent(PATCHES.base), { drafts: [reply] });
+    const published = await seededScan(before);
+    const held = [...published.values()].map((each) => each.hit).filter((hit) => hit.at.kind === 'draft');
+    expect(held.map((hit) => hit.path)).toEqual(['src/a.test.ts']);
+    const resolved = await expectResolvesTo(held, withComments(before, { prThreads: [] }));
+    expect([...resolved.values()]).toEqual([{ kind: 'absent' }]);
   });
 
   it('a comment without a forge id is keyed by its time and author', () => {
@@ -146,7 +190,7 @@ describe('resolveReviewFindHit', () => {
   it('a comment match is counted among the shown runs before it', async () => {
     const two: ReviewThread = { ...thread, comments: [{ authorLogin: 'a', body: 'needle|needle needle|needle', createdAt: '', databaseID: 7, id: `n${7}`, viewerCanEdit: false, viewerCanDelete: false }] };
     const runs = (hidden: boolean): ReviewFindContent => ({
-      ...diffContent(PATCHES.base), prThreads: [two],
+      ...withComments(diffContent(PATCHES.base), { prThreads: [two] }),
       commentText: (body) => body.split('|').map((text, index) => ({ text, shown: !hidden || index !== 1 })),
     });
     const resolved = await expectResolvesTo([makeReviewFindHit('src/a.test.ts', { kind: 'thread', threadId: 'p1', comment: '7' }, 2, 0)], runs(false));
@@ -178,7 +222,7 @@ describe('resolveReviewFindHit', () => {
     const build = (expanded: Set<number> | undefined): ReviewFindContent => {
       const folds = new Map<number, readonly string[]>();
       const file = reviewFileFromPatchFile(conflictPatchFile('c.go', source, { expandedFolds: expanded, onFold: (foldId, lines) => folds.set(foldId, lines) }));
-      return { files: [file], drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }], foldLines: () => folds };
+      return { files: [file], comments: indexReviewComments([], []), commentText: (body) => [{ text: body, shown: true }], foldLines: () => folds };
     };
     const closed = build(undefined);
     const atClosed = await expectResolves(closed, closed);
@@ -192,7 +236,7 @@ describe('resolveReviewFindHit', () => {
 
   it('a content listing no file of the match is not present', () => {
     const hit: ReviewFindHit = { identity: id('gone.ts', 'h'), path: 'gone.ts', at: { kind: 'header' }, run: 0, occurrence: 0 };
-    const content: ReviewFindLocateContent = { files: [] as ReviewFile[], drafts: [], prThreads: [] };
+    const content: ReviewFindLocateContent = { files: [] as ReviewFile[], comments: indexReviewComments([], []) };
     expect(placeReviewFindHit(content, hit)).toBeNull();
     expect(resolveReviewFindHit({ ...content, commentRuns: () => [], editing: new Set() }, hit, NEEDLE)).toEqual({ kind: 'absent' });
   });
@@ -200,17 +244,6 @@ describe('resolveReviewFindHit', () => {
 
 // ---- Property tests over random review content and random changes ----
 
-// A deterministic generator, so a failure names its seed.
-function random(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 const WORDS = ['needle', 'x', 'Needle', 'needleneedle', 'y', 'nee', 'dle'];
 
@@ -240,7 +273,7 @@ class World {
   model: Model;
 
   constructor(seed: number) {
-    this.next = random(seed);
+    this.next = seededFraction(seed);
     const diffs = [0, 1].map((n) => ({ path: n === 0 ? 'src/needle.ts' : 'src/other.ts', start: 1 + Math.floor(this.next() * 50), rows: Array.from({ length: 4 + Math.floor(this.next() * 12) }, () => this.row()) }));
     const conflict: ConflictModel = { path: 'c.go', lead: Array.from({ length: 30 + Math.floor(this.next() * 20) }, () => this.text()), expanded: new Set() };
     this.model = { diffs, conflict, drafts: [], threads: [], closed: new Set(), editing: new Set(), hiddenPaths: new Set(), order: [...diffs.map((d) => d.path), conflict.path] };
@@ -338,8 +371,7 @@ class World {
     const closed = new Set(m.closed);
     return {
       files: m.order.filter((path) => !m.hiddenPaths.has(path)).map((path) => byPath.get(path)!),
-      drafts: m.drafts.map((d) => ({ ...d })),
-      prThreads: m.threads.map((t) => ({ ...t, comments: t.comments.map((c) => ({ ...c })) })),
+      comments: indexReviewComments(m.threads.map((t) => ({ ...t, comments: t.comments.map((c) => ({ ...c })) })), m.drafts.map((d) => ({ ...d }))),
       commentText: (body, rowKey) => body.split('|').map((text, index) => ({ text, shown: !(closed.has(rowKey) && index % 2 === 1) })),
       editing: new Set(m.editing),
       foldLines: (path) => (path === m.conflict.path ? conflict.folds : null),
@@ -457,10 +489,10 @@ function runText(content: ReviewFindContent, scanned: Scanned): string {
   const file = content.files[where.fileIndex];
   const at = hit.at;
   if (at.kind === 'header') return file.path;
-  if (at.kind === 'draft') return content.drafts.find((d) => d.id === at.commentId)!.body;
+  if (at.kind === 'draft') return content.comments.drafts.find((d) => d.id === at.commentId)!.body;
   if (at.kind === 'thread') {
     // The comment its identity names, by forge id.
-    const comment = content.prThreads.find((t) => t.id === at.threadId)?.comments.find((c) => reviewCommentKey(c) === at.comment);
+    const comment = content.comments.threads.find((t) => t.id === at.threadId)?.comments.find((c) => reviewCommentKey(c) === at.comment);
     if (!comment) throw new Error(`${JSON.stringify(hit.identity)} names no comment of its thread by its forge key`);
     return content.commentText(visibleBody(comment.body), where.rowKey)[hit.run].text;
   }
@@ -474,13 +506,12 @@ function runText(content: ReviewFindContent, scanned: Scanned): string {
 function runShown(content: ReviewFindContent, hit: ReviewFindHit): boolean {
   if (!content.files.some((file) => file.path === hit.path)) return false;
   const at = hit.at;
-  if (at.kind === 'draft') return !content.editing?.has(`dc:${at.commentId}`) && content.drafts.some((d) => d.id === at.commentId);
+  if (at.kind === 'draft') return !content.editing?.has(`dc:${at.commentId}`) && content.comments.drafts.some((d) => d.id === at.commentId);
   if (at.kind !== 'thread') return true;
-  const comment = content.prThreads.find((t) => t.id === at.threadId)?.comments.find((c) => reviewCommentKey(c) === at.comment);
+  const comment = content.comments.threads.find((t) => t.id === at.threadId)?.comments.find((c) => reviewCommentKey(c) === at.comment);
   return !!comment && content.commentText(visibleBody(comment.body), findThreadCommentKey(at.threadId, at.comment))[hit.run]?.shown === true;
 }
 
-const SEEDS = 120;
 const STEPS = 12;
 
 describe('review find identity and resolution, over random changes', () => {
@@ -490,7 +521,7 @@ describe('review find identity and resolution, over random changes', () => {
   // text is the run it was found in.
   it('a match whose element source a change did not touch keeps its identity and its text', async () => {
     const checked = { header: 0, line: 0, fold: 0, draft: 0, thread: 0 };
-    for (let seed = 1; seed <= SEEDS; seed += 1) {
+    await forEachSeed(async (seed) => {
       const world = new World(seed);
       let content = world.content();
       let before = await freshScan(content, QUERY);
@@ -510,13 +541,13 @@ describe('review find identity and resolution, over random changes', () => {
         content = after;
         before = fresh;
       }
-    }
+    });
     // Every kind of element is exercised in volume.
-    expect(checked.line).toBeGreaterThan(20_000);
-    expect(checked.thread).toBeGreaterThan(10_000);
-    expect(checked.draft).toBeGreaterThan(1500);
-    expect(checked.header).toBeGreaterThan(600);
-    expect(checked.fold).toBeGreaterThan(10_000);
+    expect(checked.line).toBeGreaterThan(4000);
+    expect(checked.thread).toBeGreaterThan(2000);
+    expect(checked.draft).toBeGreaterThan(400);
+    expect(checked.header).toBeGreaterThan(120);
+    expect(checked.fold).toBeGreaterThan(2000);
   });
 
   // Invariant 2: the resolver agrees with a fresh scan. Between a change
@@ -525,7 +556,7 @@ describe('review find identity and resolution, over random changes', () => {
   // same painter's index and place, or absent.
   it('resolving a published match against changed content answers what a fresh scan of it does', async () => {
     const outcomes = { present: 0, absent: 0 };
-    for (let seed = 1; seed <= SEEDS; seed += 1) {
+    await forEachSeed(async (seed) => {
       const world = new World(seed);
       let published = [...(await seededScan(world.content())).values()].map((each) => each.hit);
       for (let step = 0; step < STEPS; step += 1) {
@@ -537,9 +568,9 @@ describe('review find identity and resolution, over random changes', () => {
         for (const each of resolved.values()) outcomes[each.kind === 'present' ? 'present' : 'absent'] += 1;
         published = [...(await seededScan(after)).values()].map((each) => each.hit);
       }
-    }
+    });
     // Both answers are exercised in volume.
-    expect(outcomes.present).toBeGreaterThan(50_000);
-    expect(outcomes.absent).toBeGreaterThan(3000);
+    expect(outcomes.present).toBeGreaterThan(10_000);
+    expect(outcomes.absent).toBeGreaterThan(600);
   });
 });

@@ -159,7 +159,7 @@ func (a *App) prefetchPRList(ctx context.Context) (int, error) {
 	// it started loses the copy to it, and one that starts after takes it
 	// back.
 	a.prUpdates.mu.Lock()
-	running := a.prUpdates.list != nil && !a.prUpdates.list.dead
+	running := a.prUpdates.list != nil && !a.prUpdates.list.DeadLocked()
 	var writer prListWriter
 	if !running {
 		a.prUpdates.listGen++

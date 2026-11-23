@@ -1,4 +1,19 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "ignorePatterns": ["bindings/**", "dist/**", "node_modules/**"]
+  "ignorePatterns": ["bindings/**", "dist/**", "node_modules/**"],
+  "overrides": [
+    {
+      "files": ["src/**/*.test.ts", "src/**/*.test.js", "src/**/*.spec.ts", "src/**/*.spec.js", "src/**/*.manual.ts", "src/test/**"],
+      "rules": {
+        "no-restricted-imports": ["error", {
+          "paths": [
+            { "name": "node:fs", "message": "Read a repository file through an import (`?raw`, JSON, `import.meta.glob`) so `vitest --changed` selects this test when the file changes." },
+            { "name": "node:fs/promises", "message": "Read a repository file through an import (`?raw`, JSON, `import.meta.glob`) so `vitest --changed` selects this test when the file changes." },
+            { "name": "fs", "message": "Read a repository file through an import (`?raw`, JSON, `import.meta.glob`) so `vitest --changed` selects this test when the file changes." },
+            { "name": "fs/promises", "message": "Read a repository file through an import (`?raw`, JSON, `import.meta.glob`) so `vitest --changed` selects this test when the file changes." }
+          ]
+        }]
+      }
+    }
+  ]
 }

@@ -1,6 +1,6 @@
 import { flushSync } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { answerAsV0019 } from '../../test/helpers/olderComputer';
 import {
   ensureAgentWakes,
@@ -8,7 +8,6 @@ import {
   getAgentWakeRows,
   getThreadWakeListing,
   refreshAgentWakes,
-  resetThreadWakesForTest,
   retainThreadWakes,
   threadWakesRetentionForTest,
 } from './threadWakes.svelte';
@@ -17,7 +16,7 @@ import { replaceAllThreads } from './threads.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { detachBackend, takePinnedBackend } from '../transport/backends';
 import { noteThread } from '../transport/entityIndex';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import type { Thread } from '../types/models';
 import type { ThreadWakeRow, ThreadWakes } from './bindings';
 
@@ -38,9 +37,6 @@ async function flush(): Promise<void> {
 
 describe('thread wakes store', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetStagedBackends();
-    resetThreadWakesForTest();
     replaceAllThreads([thread('agent', { agentId: 'agent' }), thread('plain')]);
   });
 

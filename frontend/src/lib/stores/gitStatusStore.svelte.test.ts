@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { tick } from 'svelte';
 import { createThreadPane } from './thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { registerPaneForTest } from './panes.svelte';
 import {
   __resetGitStatusStoreForTest,
   __seedGitStatusForTest,
@@ -16,7 +16,7 @@ import type { GitStatus, WorkspaceRef } from '../types/git';
 import type { Thread } from '../types/models';
 import { composeWorkspaceKey, workspaceKeyForThread } from '../utils/workspaceKey';
 import { HOME_BACKEND } from '../transport/backendKey';
-import { __resetEntityIndexForTest, noteProject, noteThread } from '../transport/entityIndex';
+import { noteProject, noteThread } from '../transport/entityIndex';
 import { __attachBackendForTest, detachBackend, takePinnedBackend } from '../transport/backends';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
@@ -124,9 +124,7 @@ function installSubscribeMock(initial: GitStatus, id = 'sub-1', cwd = CWD) {
 }
 
 beforeEach(() => {
-  resetPanesForTest();
   setBindingMock('UpdateThreadBranch', async () => [makeThread({ branch: 'main' })]);
-  __resetEntityIndexForTest();
 });
 
 describe('gitStatusStore — workspace keying', () => {
@@ -589,6 +587,14 @@ describe('gitStatusStore — observed branch reconciliation', () => {
       expect(paneB.thread?.branch).toBe('feature/shared');
     });
     a.release();
+  });
+
+  it('persists nothing for a status a test seeds, which no backend observed', async () => {
+    buildPane(makeThread({ branch: 'main' }));
+    const updateBranch = setBindingMock('UpdateThreadBranch', async () => []);
+    __seedGitStatusForTest(WORKSPACE, status({ branch: 'feature/seeded' }));
+    await flush();
+    expect(updateBranch).not.toHaveBeenCalled();
   });
 
   it('does not re-persist when a push carries the same branch, and never for a non-repo', async () => {

@@ -3,14 +3,13 @@ import { fireEvent, render } from '@testing-library/svelte';
 import SidebarSettings from './SidebarSettings.svelte';
 import ProjectSortMenu from '../sidebar/ProjectSortMenu.svelte';
 import { getSettings } from '../../stores/settings.svelte';
-import { getProjectSortMode, getShowProviderIcons, resetSidebarForTest } from '../../stores/sidebar.svelte';
+import { getProjectSortMode, getShowProviderIcons } from '../../stores/sidebar.svelte';
 import { loadSettingsFixture } from '../../../test/helpers/settingsFixture';
 import { makeSettings } from '../../../test/helpers/settings';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { readFrontendValue } from '../../stores/frontendStorage';
 
 beforeEach(async () => {
-  resetSidebarForTest();
   setBindingMock('GetSettings', async () => makeSettings({ autoPinNewThreads: false }));
   setBindingMock('UpdateSettings', async () => makeSettings());
   await loadSettingsFixture();

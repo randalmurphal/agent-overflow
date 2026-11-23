@@ -1,15 +1,13 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
-import { __resetEntityIndexForTest, noteProject, noteThread, noteWorkflowItem } from './entityIndex';
-import { __resetScopesForTest, setCarriedSessionScopes } from './scopes';
+import { noteProject, noteThread, noteWorkflowItem } from './entityIndex';
+import { setCarriedSessionScopes } from './scopes';
 import {
   projectHasScope, projectScopeGrant, threadHasScope, threadScopeGrant, workflowItemHasScope, workflowItemScopeGrant,
 } from './entityScopes';
 import { draftPlaceholderId } from '../stores/draftPlaceholderId';
 
 beforeEach(() => {
-  __resetEntityIndexForTest();
-  __resetScopesForTest();
   setCarriedSessionScopes('writable', ['threads:operate', 'attachments:write', 'threads:autonomy', 'git:operate']);
   setCarriedSessionScopes('readonly', ['threads:read']);
 });

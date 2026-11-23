@@ -10,7 +10,7 @@ vi.mock('./transportRecovery', async (importOriginal) => ({
   },
 }));
 import { flushSync } from 'svelte';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { noteThread, noteProject } from '../transport/entityIndex';
 import { takePinnedBackend } from '../transport/backends';
@@ -20,7 +20,7 @@ import { setTelemetrySelection, resetTelemetryForTest } from './telemetryCompute
 
 let release = () => {};
 beforeEach(resetTelemetryForTest);
-afterEach(() => { release(); vi.useRealTimers(); resetTelemetryForTest(); resetStagedBackends(); });
+afterEach(() => { release(); vi.useRealTimers(); });
 async function flush() { flushSync(); await Promise.resolve(); await Promise.resolve(); flushSync(); }
 
 it('aggregates only selected online hosts and exposes offline/failed hosts as partial results', async () => {
@@ -87,7 +87,6 @@ it('queries a known project only on its owner and preserves historical project l
   await flush();
   expect(targets).toEqual(['', 'gpu']);
 });
-
 
 it('serializes sustained progress without discarding each slow answer and detaches cleanly', async () => {
   vi.useFakeTimers();

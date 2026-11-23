@@ -17,12 +17,11 @@ import {
   attachBrowserCompanion,
   browserActionError,
   browserThreadState,
-  resetBrowserCompanionForTest,
 } from './browserCompanion.svelte';
 import { addressFocusIntent, armAddressFocus, settleAddressFocus, takeAddressFocus } from './browserAddressFocus.svelte';
-import { closeCompanion, companionForSource, installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
+import { closeCompanion, companionForSource, installCompanionPanes } from './companionPanes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
-import { createPane, focusPane, getPane, resetPanesForTest } from './panes.svelte';
+import { createPane, focusPane, getPane } from './panes.svelte';
 import { makeThread } from '../../test/helpers/chat';
 import { attachBrowserPaneForTest, pageIdForTest, paneForTest } from '../../test/helpers/browserPane';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -30,9 +29,9 @@ import { getToasts, resetToastsForTest } from './toast.svelte';
 import { canPresentNativeBrowser, canUseNativeBrowser } from './browserCompanion.svelte';
 import { forgetBackendEntities, forgetThread, noteThread } from '../transport/entityIndex';
 import { HOME_BACKEND } from '../transport/backendKey';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { setCompactLayoutForTest } from './layoutMode.svelte';
-import { applySettingsSnapshot, resetSettingsForTest } from './settings.svelte';
+import { applySettingsSnapshot } from './settings.svelte';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { makeSettings } from '../../test/helpers/settings';
 
@@ -49,17 +48,13 @@ const page = (url: string, title: string) => ({ id: 'page-1', url, title, canGoB
 
 describe('the chat header browser button', () => {
   beforeEach(() => {
-    resetBrowserCompanionForTest();
-    resetCompanionPanesForTest();
     resetPaneLayoutForTest();
-    resetPanesForTest();
     installCompanionPanes();
     setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
     createPane('main').replaceThread(makeThread({ id: 'thread-browser' }));
     enableBrowser();
   });
   afterEach(() => {
-    resetSettingsForTest();
     __setTransportHelloForTest(null);
   });
 
@@ -287,10 +282,7 @@ describe('the chat header browser button', () => {
 
 describe('pane.close on a browser companion', () => {
   beforeEach(() => {
-    resetBrowserCompanionForTest();
-    resetCompanionPanesForTest();
     resetPaneLayoutForTest();
-    resetPanesForTest();
     installCompanionPanes();
     setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
     createPane('main').replaceThread(makeThread({ id: 'thread-browser' }));
@@ -522,11 +514,7 @@ describe('a thread whose ownership two computers claim', () => {
   };
 
   beforeEach(() => {
-    resetBrowserCompanionForTest();
-    resetToastsForTest();
-    resetCompanionPanesForTest();
     resetPaneLayoutForTest();
-    resetPanesForTest();
     installCompanionPanes();
     stageBackend({ id: 'remote', backendId: 'remote' });
     noteThread(THREAD, HOME_BACKEND, 4);
@@ -536,9 +524,6 @@ describe('a thread whose ownership two computers claim', () => {
   afterEach(() => {
     forgetThread(THREAD);
     forgetBackendEntities('remote');
-    resetStagedBackends();
-    resetBrowserCompanionForTest();
-    resetToastsForTest();
   });
 
   it('offers no browser and sends no action, even with the home claim first', async () => {
@@ -570,18 +555,10 @@ describe('opening a browser tab', () => {
   });
 
   beforeEach(() => {
-    resetBrowserCompanionForTest();
-    resetToastsForTest();
-    resetCompanionPanesForTest();
     resetPaneLayoutForTest();
-    resetPanesForTest();
     installCompanionPanes();
     setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
     createPane('main').replaceThread(makeThread({ id: THREAD }));
-  });
-  afterEach(() => {
-    resetBrowserCompanionForTest();
-    resetToastsForTest();
   });
 
   it('opens the pane from no tab with the creating tab, then names the tab for focus', async () => {
@@ -708,10 +685,7 @@ describe('numbering the user\'s tab selections', () => {
   let mounts: string[];
 
   beforeEach(() => {
-    resetBrowserCompanionForTest();
-    resetCompanionPanesForTest();
     resetPaneLayoutForTest();
-    resetPanesForTest();
     installCompanionPanes();
     setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
     createPane('main').replaceThread(makeThread({ id: THREAD }));
@@ -730,7 +704,6 @@ describe('numbering the user\'s tab selections', () => {
   });
   afterEach(() => {
     for (const answer of answers.splice(0)) answer();
-    resetBrowserCompanionForTest();
   });
 
   const order = (action: Action) => ({ kind: action.kind, mount: action.mount ?? '', select: action.select ?? 0 });

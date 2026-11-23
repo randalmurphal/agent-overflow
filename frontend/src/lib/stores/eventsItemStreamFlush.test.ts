@@ -20,7 +20,6 @@ import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import { activityRunProse, activityRunRow, activityRunStub } from '../../test/helpers/activityRuns';
 import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import { applyItemStreamEvent, flushItemEventQueue, resetItemEventQueue } from './eventsItemStream';
-import { resetPanesForTest } from './panes.svelte';
 import { registerTimelineSurface, type TimelineMutation } from './timelineSurfaces';
 import type { Item } from '../types/models';
 import type { ItemStreamEvent } from '../types/events';
@@ -28,7 +27,6 @@ import type { ItemStreamEvent } from '../types/events';
 beforeEach(installThreadPaneTestEnv);
 afterEach(() => {
   resetItemEventQueue();
-  resetPanesForTest();
 });
 
 const threadId = 't';

@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { stageBackend } from '../../test/helpers/backends';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { deferred } from '../../test/helpers/providerAccounts';
 import { takePinnedBackend, detachBackend } from '../transport/backends';
-import { __resetEntityIndexForTest, currentThreadRow, noteThread, projectBackend, resolveThreadBackend } from '../transport/entityIndex';
-import { addProjectLocal, getProjects, isLoaded, resetProjectsForTest } from './projects.svelte';
+import { currentThreadRow, noteThread, projectBackend, resolveThreadBackend } from '../transport/entityIndex';
+import { addProjectLocal, getProjects, isLoaded } from './projects.svelte';
 import { getToasts } from './toast.svelte';
 import { loadSidebarCatalogs } from './sidebarCatalogs';
 import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
@@ -18,8 +18,7 @@ function row(id: string): ProjectWithCounts {
   return { project: { id, name: id, path: '/same/path', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false,
     repositoryID: 'github:github.com:123' }, threadCount: 0, lastActive: 0 };
 }
-beforeEach(() => { resetStagedBackends(); resetProjectsForTest(); __resetEntityIndexForTest(); });
-afterEach(() => { resetStagedBackends(); vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); });
 
 describe('unavailable computer catalogs', () => {
   it.each([false, true])('admits only the newest owner of a moved thread (home owns it: %s)', async (homeOwns) => {

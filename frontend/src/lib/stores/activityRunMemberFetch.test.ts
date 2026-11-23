@@ -3,8 +3,8 @@ import { createActivityRunMemberFetch } from './activityRunMemberFetch';
 import { foldPageStub, noteRefusedRow } from './activityRunStubs';
 import type { ActivityRunRecords } from './activityRunStubs';
 import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
-import { noteThread, __resetEntityIndexForTest } from '../transport/entityIndex';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { noteThread } from '../transport/entityIndex';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -27,8 +27,8 @@ function fixture() {
   });
   return { records, record, stub, fetcher, reloadWindow, onStubApplied, reportFailure };
 }
-beforeEach(() => { resetBindingMocks(); __resetEntityIndexForTest(); vi.useFakeTimers(); });
-afterEach(() => { __resetEntityIndexForTest(); vi.useRealTimers(); });
+beforeEach(() => { vi.useFakeTimers(); });
+afterEach(() => { vi.useRealTimers(); });
 
 it('does not turn a failed background refresh into an automatic retry loop', async () => {
   const f = fixture();

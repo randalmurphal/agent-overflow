@@ -1,11 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { getCachedBlockSpans, resetCodeSpanCacheForTest } from '../components/chat/markdown/codeSpanCache';
+import { getCachedBlockSpans } from '../components/chat/markdown/codeSpanCache';
 import {
   __diffSpanCacheStatsForTest,
   evictDiffSpansForThread,
   getSpansForLine,
-  resetDiffSpanCacheForTest,
 } from './diffSpanCache.svelte';
 import { contentKey } from './fnv1a';
 import { parsePatchFiles } from './patchFiles';
@@ -13,7 +12,6 @@ import { ingestPersistedCodeSpans, ingestPersistedPatchSpans } from './persisted
 import {
   ensureHighlightSchemaVersion,
   ensureSyntaxClassNames,
-  resetSyntaxClassNamesForTest,
 } from './syntaxSpans';
 
 const HV = 'hv-test';
@@ -45,9 +43,6 @@ async function warmTables(): Promise<void> {
 }
 
 beforeEach(() => {
-  resetCodeSpanCacheForTest();
-  resetDiffSpanCacheForTest();
-  resetSyntaxClassNamesForTest();
   setBindingMock('HighlightSchemaVersion', async () => HV);
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
 });

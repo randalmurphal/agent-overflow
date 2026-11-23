@@ -1,0 +1,50 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Intro"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "The "
+        },
+        {
+          "type": "text",
+          "text": "total was written",
+          "marks": [
+            {
+              "type": "annotation",
+              "attrs": {
+                "id": "c0ffee00-1111-2222-3333-444455556666",
+                "annotationType": "inlineComment"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": " by Bob."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "End"
+        }
+      ]
+    }
+  ]
+}

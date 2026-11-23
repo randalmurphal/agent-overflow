@@ -2,10 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { tick } from 'svelte';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import Sidebar from '../Sidebar.svelte';
-import { resetAppStorageForTest } from '../../../stores/appStorage';
 import {
   isSidebarCollapsed,
-  resetSidebarLayoutForTest,
   setSidebarCollapsed,
   setSidebarWidth,
 } from '../../../stores/sidebarLayout.svelte';
@@ -16,20 +14,12 @@ import {
 } from '../../../stores/keybindings.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import {
-  resetSidebarForTest,
-} from '../../../stores/sidebar.svelte';
-import {
   projectTurnStarted,
-  resetForTest as resetThreadStatuses,
 } from '../../../stores/threadStatuses.svelte';
 import { listCatalogTreesForTest, loadSidebarCatalogs } from '../../../stores/sidebarCatalogs';
 
-import {
-  resetProjectsForTest,
-} from '../../../stores/projects.svelte';
 import type { Project, ProjectWithCounts, Thread } from '../../../types/models';
 import {
-  resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 import { entryRecordForTest, setEntryExpanded } from '../../../stores/sidebarEntryContinuity.svelte';
@@ -74,11 +64,6 @@ function thread(id: string, overrides: Partial<Thread> = {}): Thread {
 
 describe('<Sidebar>', () => {
   beforeEach(() => {
-    resetSidebarForTest();
-    resetSidebarLayoutForTest();
-    resetThreadStatuses();
-    resetProjectsForTest();
-    resetBindingMocks();
     setBindingMock('ListRecentTurns', async () => []);
   });
 
@@ -137,11 +122,6 @@ describe('<Sidebar>', () => {
 
 describe('<Sidebar> collapse toggle', () => {
   beforeEach(() => {
-    resetSidebarForTest();
-    resetProjectsForTest();
-    resetBindingMocks();
-    resetAppStorageForTest();
-    resetSidebarLayoutForTest();
     resetKeybindingsStore();
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
