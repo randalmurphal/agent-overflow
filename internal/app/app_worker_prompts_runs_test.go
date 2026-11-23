@@ -210,8 +210,15 @@ func testWorkerPromptsByRun(t *testing.T, placement string) {
 			if !owned || c.toSpawner {
 				return
 			}
-			// The row reads the prompt as it is routed now.
+			// The row reads the prompt as it is routed now. waitUntil's
+			// timeout names no state, so a failed test logs the rows it
+			// last read.
 			var rows []ThreadAgentRow
+			t.Cleanup(func() {
+				if t.Failed() {
+					t.Logf("the middle thread's rows when the test ended: %+v", rows)
+				}
+			})
 			waitUntil(t, 10*time.Second, func() bool {
 				listing, err := app.ListThreadAgentRows(context.Background(), middle.ID)
 				if err != nil {
