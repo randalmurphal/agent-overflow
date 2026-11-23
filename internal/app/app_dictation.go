@@ -65,7 +65,7 @@ func (a *App) dictationSubscriptionOn() bool {
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) BeginDictation(ctx context.Context, mimeType string) (string, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -82,14 +82,16 @@ func (a *App) BeginDictation(ctx context.Context, mimeType string) (string, erro
 	if err != nil {
 		return "", dictationSwitchedOff(err)
 	}
-	key := dictationCleanupKey(id)
-	if err := conn.bindRelease(key, func() { a.dictationRecordings().Cancel(id) }); err != nil {
+	recordings := a.dictationRecordings()
+	tie, err := conn.Bind(dictationCleanupKey(id), func() { recordings.Cancel(id) })
+	if err != nil {
+		recordings.Cancel(id)
 		return "", fmt.Errorf("dictation: %w", err)
 	}
 	// The connection owns the recording until the recording is released,
 	// however that happens.
-	if !a.dictationRecordings().OnRelease(id, func() { conn.state.UnbindCleanup(key) }) {
-		conn.state.UnbindCleanup(key)
+	if !recordings.OnRelease(id, tie.Untie) {
+		tie.Untie()
 		return "", dictation.ErrUnknownRecording
 	}
 	return id, nil
@@ -210,7 +212,7 @@ func dictationCleanupKey(recordingID string) string {
 // open, answering unknown as if it were gone. A call that came over no
 // connection owns none: one cannot open a recording.
 func ownsConnectionResource(ctx context.Context, cleanupKey string, unknown error) error {
-	if transport.ConnStateFromContext(ctx).HasCleanup(cleanupKey) {
+	if transport.ConnStateFromContext(ctx).Bound(cleanupKey) {
 		return nil
 	}
 	return unknown

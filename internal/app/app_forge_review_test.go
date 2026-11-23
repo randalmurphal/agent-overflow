@@ -406,7 +406,7 @@ func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	ref, start, err := app.createPRUpdatePump(testPR, winner.PRKey, loser, encoded, prForgeFailure{})
+	ref, start, err := app.createPRUpdatePump(testPR, winner.PRKey, loser, encoded, prForgeFailure{}, testConnection(t, connCtx(t)))
 	if err != nil {
 		t.Fatalf("createPRUpdatePump: %v", err)
 	}
@@ -462,30 +462,30 @@ func TestSubscribePRUpdatesReleasesOnConnectionClose(t *testing.T) {
 	app.prUpdates.wg.Wait()
 }
 
-// TestUnsubscribePRUpdatesUnbindsItsConnectionTie: see checkByIDTie.
-func TestUnsubscribePRUpdatesUnbindsItsConnectionTie(t *testing.T) {
-	t.Parallel()
+// prUpdatesConnectionTie is SubscribePRUpdates' row of connectionTieChecks:
+// a handle on the PR's pump, released by any caller.
+func prUpdatesConnectionTie(t *testing.T) connectionTie {
 	app := NewApp()
 	stubPRCIFetch(app)
 	app.prUpdates.interval = time.Hour
 	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
-	var prKey string
-	checkByIDTie(t, byIDTie{
-		subscribe: func(ctx context.Context) (string, error) {
+	t.Cleanup(app.closePRUpdatePumps)
+	return connectionTie{
+		open: func(ctx context.Context) (string, error) {
 			sub, err := app.SubscribePRUpdates(ctx, testPR)
-			prKey = sub.PRKey
 			return sub.ID, err
 		},
-		unsubscribe: app.UnsubscribePRUpdates,
-		key:         prUpdatesCleanupKey,
-		live: func(string) bool {
-			_, _, _, present := prPumpState(app, prKey)
-			return present
+		held: func() int {
+			app.prUpdates.mu.Lock()
+			defer app.prUpdates.mu.Unlock()
+			return len(app.prUpdates.handles)
 		},
-	})
-	app.prUpdates.wg.Wait()
+		release:   app.UnsubscribePRUpdates,
+		anyCaller: true,
+		key:       prUpdatesCleanupKey,
+	}
 }
 
 func TestPRUpdatePollingPausesWhileInactiveAndCatchesUpOnResume(t *testing.T) {

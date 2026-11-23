@@ -355,7 +355,7 @@ func TestLiveDictationBelongsToItsConnection(t *testing.T) {
 	if _, err := app.AppendLiveDictation(owner, id, 1, tenthOfASecond); !errors.Is(err, dictation.ErrUnknownLiveSession) {
 		t.Fatalf("the session outlived its connection: %v", err)
 	}
-	if ownerState.HasCleanup(liveDictationCleanupKey(id)) {
+	if ownerState.Bound(liveDictationCleanupKey(id)) {
 		t.Fatal("the dropped session's cleanup is still bound")
 	}
 }
@@ -370,7 +370,7 @@ func TestAFinishedLiveDictationLeavesNoCleanupBehind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.HasCleanup(liveDictationCleanupKey(id)) {
+	if !state.Bound(liveDictationCleanupKey(id)) {
 		t.Fatal("an open session has no cleanup bound")
 	}
 	if _, err := app.AppendLiveDictation(ctx, id, 0, tenthOfASecond); err != nil {
@@ -379,7 +379,20 @@ func TestAFinishedLiveDictationLeavesNoCleanupBehind(t *testing.T) {
 	if _, err := app.FinishLiveDictation(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	if state.HasCleanup(liveDictationCleanupKey(id)) {
+	if state.Bound(liveDictationCleanupKey(id)) {
 		t.Fatal("a finished session's cleanup is still bound")
+	}
+}
+
+// liveDictationConnectionTie is BeginLiveDictation's row of
+// connectionTieChecks: a live session, which only its own connection
+// cancels.
+func liveDictationConnectionTie(t *testing.T) connectionTie {
+	app := newLiveDictationTestApp(t, liveTestKey)
+	return connectionTie{
+		open:    app.BeginLiveDictation,
+		held:    func() int { return app.liveDictations().Sessions() },
+		release: app.CancelLiveDictation,
+		key:     liveDictationCleanupKey,
 	}
 }

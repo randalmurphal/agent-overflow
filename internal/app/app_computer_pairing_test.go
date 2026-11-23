@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -234,9 +235,13 @@ func TestComputerPairingRestartRetiresLostComparisonButKeepsExistingDevice(t *te
 	}
 }
 
-func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
-	t.Parallel()
-	remotetest.Require(t)
+// computerPairingHost is a host OpenComputerPairing opens windows on: an
+// identity, a listener bound to every interface, LAN sharing on, and a
+// synthetic native ingress backed by that listener, which keeps the test
+// independent of physical interfaces and suppresses multicast on Open. It
+// answers the store's path too.
+func computerPairingHost(t *testing.T) (*App, string) {
+	t.Helper()
 	a, path := newTestAppWithStorePath(t)
 	if err := a.initIdentity("backend-under-test"); err != nil {
 		t.Fatal(err)
@@ -254,10 +259,42 @@ func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
 	if _, err := a.settings.SetNetwork(settings.NetworkSettings{BindAll: true}); err != nil {
 		t.Fatal(err)
 	}
-	// A synthetic native ingress backed by a LAN listener keeps this test
-	// independent of physical interfaces and suppresses multicast on Open.
 	a.nativeNetwork.seen = true
 	a.nativeNetwork.addresses = []string{fmt.Sprintf("https://192.168.1.55:%d", portFromAddr(srv.Addr()))}
+	t.Cleanup(a.closeComputerPairing)
+	return a, path
+}
+
+// computerPairingConnectionTie is an OpenComputerPairing method's row of
+// connectionTieChecks: the window, which any caller closes by its id; the
+// connection binds one release for its life. setup, when set, prepares
+// what the method needs beyond the host.
+func computerPairingConnectionTie(t *testing.T, setup func(*testing.T, *App), open func(*App, context.Context) (ComputerPairingWindow, error)) connectionTie {
+	remotetest.Require(t)
+	a, _ := computerPairingHost(t)
+	if setup != nil {
+		setup(t, a)
+	}
+	return connectionTie{
+		open: func(ctx context.Context) (string, error) {
+			window, err := open(a, ctx)
+			return window.ID, err
+		},
+		held: func() int {
+			if a.computerPairingOpen() {
+				return 1
+			}
+			return 0
+		},
+		release:   func(_ context.Context, id string) error { return a.CloseComputerPairing(id) },
+		anyCaller: true,
+	}
+}
+
+func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	a, path := computerPairingHost(t)
 	s := &a.computerPairing
 	s.book = pairbootstrap.NewBook(func(id string) { _ = a.CancelDevicePairing(id) })
 	w := s.book.Open(func() (pairbootstrap.Invitation, error) {
@@ -436,5 +473,68 @@ func TestComputerPairingReportsDiscoveryFailureOnTheWindow(t *testing.T) {
 	}
 	if status, _ := a.ComputerPairingStatus(w.ID); status.State != "expired" || status.DiscoveryError != "" {
 		t.Fatalf("closed window reports %+v", status)
+	}
+}
+
+// Try Again closes the window and opens its replacement at once. A close
+// that matched its window and stalled before retiring that window's link
+// retires only that link once it resumes, never the link the replacement
+// minted meanwhile.
+func TestComputerPairingCloseRacingItsReplacementKeepsTheReplacementsLink(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	b := newPairedBackend(t)
+	a := b.app
+	s := &a.computerPairing
+	mint := func() (pairbootstrap.Invitation, error) {
+		invite, err := a.mintDevicePairing("browser", "full", "")
+		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
+	}
+	stalled, resume := make(chan struct{}), make(chan struct{})
+	var stall sync.Once
+	book := pairbootstrap.NewBook(func(id string) {
+		// The close of the first window stalls in the book's cancel of
+		// its link, after it matched the window.
+		stall.Do(func() {
+			close(stalled)
+			<-resume
+		})
+		a.cancelComputerPairingLink(id)
+	})
+	first := book.Open(mint)
+	s.mu.Lock()
+	s.book, s.windowID = book, first.WindowID
+	s.mu.Unlock()
+	firstInvite, _ := exchangeComputerPairing(t, b)
+
+	closed := make(chan error, 1)
+	go func() { closed <- a.CloseComputerPairing(first.WindowID) }()
+	<-stalled
+	// The replacement opens while the close stalls, as openComputerPairing
+	// does: retire the old window and its fenced link, open the next one,
+	// and a device takes its invitation.
+	a.closeComputerPairingWindow(first.WindowID)
+	if err := a.retireComputerPairingLink(); err != nil {
+		t.Fatal(err)
+	}
+	second := book.Open(mint)
+	t.Cleanup(func() { book.Close(second.WindowID) })
+	s.mu.Lock()
+	s.windowID = second.WindowID
+	s.mu.Unlock()
+	secondInvite, _ := exchangeComputerPairing(t, b)
+	close(resume)
+	if err := <-closed; err != nil {
+		t.Fatalf("close of the first window: %v", err)
+	}
+
+	if link, err := a.store.GetPairingLink(firstInvite.LinkID); err != nil || link.CanceledAt == 0 {
+		t.Fatal("the first window's invitation was not retired", err)
+	}
+	if link, err := a.store.GetPairingLink(secondInvite.LinkID); err != nil || link.CanceledAt != 0 {
+		t.Fatal("the first window's close retired the replacement's invitation", err)
+	}
+	if status, err := a.ComputerPairingStatus(second.WindowID); err != nil || status.State != "verifying" {
+		t.Fatalf("the replacement window = %+v, %v; want it verifying its device", status, err)
 	}
 }

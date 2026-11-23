@@ -36,7 +36,7 @@ func (a *App) reviewWorkspace(action string, ws WorkspaceRef) (string, error) {
 //
 //ao:scope files:read
 func (a *App) OpenWorkspaceDiff(ctx context.Context, ws WorkspaceRef, ignoreWhitespace bool) (ReviewDiffOpened, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
@@ -63,7 +63,7 @@ func (a *App) OpenWorkspaceDiff(ctx context.Context, ws WorkspaceRef, ignoreWhit
 //
 //ao:scope files:read
 func (a *App) OpenBranchBaseDiff(ctx context.Context, ws WorkspaceRef, baseBranch string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
@@ -152,7 +152,7 @@ func (a *App) ListRecentCommits(ws WorkspaceRef) ([]BranchCommit, error) {
 //
 //ao:scope files:read
 func (a *App) OpenCommitDiff(ctx context.Context, ws WorkspaceRef, sha string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}

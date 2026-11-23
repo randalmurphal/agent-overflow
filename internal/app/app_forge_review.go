@@ -201,6 +201,9 @@ type prUpdateReference struct {
 // would then decrement — and eventually tear down — a pump it never
 // referenced.
 type prUpdateHandle struct {
+	// tie binds the handle's release to the connection that subscribed;
+	// every removal of the handle unties it.
+	tie  transport.Tie
 	pump *prUpdatePump
 	// ref is the handle on the pump core: its visibility vote and release.
 	ref *pump.Handle[prPumpRequest]
@@ -237,7 +240,7 @@ func (a *App) GetPRDetail(ctx context.Context, pr gitops.PRReference) (gitops.PR
 //
 //ao:scope git:operate
 func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
@@ -276,7 +279,7 @@ func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.P
 //
 //ao:scope git:operate
 func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, firstSHA, lastSHA string, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
@@ -491,7 +494,7 @@ func (a *App) SetPRThreadResolved(ctx context.Context, pr gitops.PRReference, th
 //ao:scope git:operate
 //ao:route selected
 func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PRUpdateSubscriptionResult, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return PRUpdateSubscriptionResult{}, err
 	}
@@ -506,7 +509,7 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 	// Join first, and REFUSE first: both are decided before any forge call,
 	// so neither an ordinary second pane nor a caller past the handle cap
 	// spawns a process.
-	ref, joined, err := a.joinPRUpdatePump(prKey)
+	ref, joined, err := a.joinPRUpdatePump(prKey, conn)
 	if err != nil {
 		return PRUpdateSubscriptionResult{}, err
 	}
@@ -535,17 +538,13 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 		} else if encoded, err = encodePRUpdateSnapshot(fetched); err != nil {
 			return PRUpdateSubscriptionResult{}, err
 		}
-		ref, start, err = a.createPRUpdatePump(pr, prKey, fetched, encoded, fail)
+		ref, start, err = a.createPRUpdatePump(pr, prKey, fetched, encoded, fail, conn)
 		if err != nil {
 			return PRUpdateSubscriptionResult{}, err
 		}
 	}
 	if start != nil {
 		a.prUpdates.wg.Go(func() { a.pumpPRUpdates(start) })
-	}
-
-	if err := conn.bindRelease(prUpdatesCleanupKey(ref.id), func() { a.unsubscribePRUpdates(ref.id) }); err != nil {
-		return PRUpdateSubscriptionResult{}, fmt.Errorf("pr updates: %w", err)
 	}
 
 	return PRUpdateSubscriptionResult{
@@ -574,7 +573,7 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 // is one, and hands back ITS snapshot. joined=false means the caller must
 // fetch and create one. The handle cap is enforced here so a refusal costs
 // nothing.
-func (a *App) joinPRUpdatePump(prKey string) (ref prUpdateReference, joined bool, err error) {
+func (a *App) joinPRUpdatePump(prKey string, conn *transport.ConnState) (ref prUpdateReference, joined bool, err error) {
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
 	a.ensurePRUpdateMapsLocked()
@@ -585,7 +584,8 @@ func (a *App) joinPRUpdatePump(prKey string) (ref prUpdateReference, joined bool
 	if pump == nil {
 		return prUpdateReference{}, false, nil
 	}
-	return a.takePRUpdateReferenceLocked(pump), true, nil
+	ref, err = a.takePRUpdateReferenceLocked(pump, conn)
+	return ref, err == nil, err
 }
 
 // createPRUpdatePump registers a pump seeded with the caller's fetch. The
@@ -601,6 +601,7 @@ func (a *App) createPRUpdatePump(
 	snapshot prUpdateSnapshot,
 	encoded []byte,
 	fail prForgeFailure,
+	conn *transport.ConnState,
 ) (ref prUpdateReference, start *prUpdatePump, err error) {
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
@@ -609,7 +610,8 @@ func (a *App) createPRUpdatePump(
 		return prUpdateReference{}, nil, ErrTooManyPRUpdateSubscriptions
 	}
 	if existing := a.livePRUpdatePumpLocked(prKey); existing != nil {
-		return a.takePRUpdateReferenceLocked(existing), nil, nil
+		ref, err = a.takePRUpdateReferenceLocked(existing, conn)
+		return ref, nil, err
 	}
 	pump := &prUpdatePump{
 		prKey:        prKey,
@@ -629,8 +631,13 @@ func (a *App) createPRUpdatePump(
 		},
 		failure: func(err error) prForgeFailure { return a.newPRForgeFailure(pr, err) },
 	}
+	// The caller's handle comes first: a connection that is closing takes
+	// none, and then no pump is published for it either.
+	if ref, err = a.takePRUpdateReferenceLocked(pump, conn); err != nil {
+		return prUpdateReference{}, nil, err
+	}
 	a.prUpdates.pumps[prKey] = pump
-	return a.takePRUpdateReferenceLocked(pump), pump, nil
+	return ref, pump, nil
 }
 
 // nextPRUpdateSeqLocked stamps the next pump state. Callers hold
@@ -670,9 +677,17 @@ func (a *App) livePRUpdatePumpLocked(prKey string) *prUpdatePump {
 // says otherwise, so a pump paused by the last hidden client resumes for it
 // — and resuming nudges the loop, or the poll this subscriber is waiting
 // for waits out a whole tick that the pause already made it miss.
-func (a *App) takePRUpdateReferenceLocked(pump *prUpdatePump) prUpdateReference {
+//
+// The handle is tied to conn as it is published, so the connection's end
+// finds it however soon it comes; a connection that is closing gets no
+// handle.
+func (a *App) takePRUpdateReferenceLocked(pump *prUpdatePump, conn *transport.ConnState) (prUpdateReference, error) {
 	id := uuid.NewString()
-	a.prUpdates.handles[id] = &prUpdateHandle{pump: pump, ref: pump.TakeLocked()}
+	tie, err := conn.Bind(prUpdatesCleanupKey(id), func() { a.unsubscribePRUpdates(id) })
+	if err != nil {
+		return prUpdateReference{}, fmt.Errorf("pr updates: %w", err)
+	}
+	a.prUpdates.handles[id] = &prUpdateHandle{tie: tie, pump: pump, ref: pump.TakeLocked()}
 	ref := prUpdateReference{
 		id:       id,
 		snapshot: pump.lastSnapshot,
@@ -684,13 +699,15 @@ func (a *App) takePRUpdateReferenceLocked(pump *prUpdatePump) prUpdateReference 
 		ci := pump.ci
 		ref.ci = &ci
 	}
-	return ref
+	return ref, nil
 }
 
+// UnsubscribePRUpdates releases a subscription, from whichever connection
+// asks; the connection that subscribed is untied with the handle.
+//
 //ao:scope git:operate
 //ao:route home
 func (a *App) UnsubscribePRUpdates(ctx context.Context, subscriptionID string) error {
-	transport.ConnStateFromContext(ctx).UnbindCleanup(prUpdatesCleanupKey(subscriptionID))
 	a.unsubscribePRUpdates(subscriptionID)
 	return nil
 }
@@ -974,6 +991,7 @@ func (a *App) unsubscribePRUpdates(id string) {
 		return
 	}
 	delete(a.prUpdates.handles, id)
+	handle.tie.Untie()
 	pump := handle.pump
 	releaseFollowsLocked(&pump.ciPhase, handle.follows)
 	handle.follows = nil
@@ -1016,6 +1034,7 @@ func (a *App) dropPRUpdatePump(pump *prUpdatePump) {
 			releaseFollowsLocked(&pump.ciPhase, handle.follows)
 			handle.follows = nil
 			delete(a.prUpdates.handles, id)
+			handle.tie.Untie()
 		}
 	}
 }

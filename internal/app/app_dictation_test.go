@@ -182,7 +182,7 @@ func TestCancelDictationReleasesTheRecording(t *testing.T) {
 	if err := app.CancelDictation(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	if app.dictationRecordings().Open() != 0 || state.HasCleanup(dictationCleanupKey(id)) {
+	if app.dictationRecordings().Open() != 0 || state.Bound(dictationCleanupKey(id)) {
 		t.Fatal("a cancelled recording is still held")
 	}
 	if _, err := app.FinishDictation(ctx, id, 0); !errors.Is(err, dictation.ErrUnknownRecording) {
@@ -636,5 +636,17 @@ func TestARefusedTranscriptionRefreshesNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(ran); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the Codex CLI ran a refresh for a 403 (stat err = %v)", err)
+	}
+}
+
+// dictationConnectionTie is BeginDictation's row of connectionTieChecks: a
+// recording, which only its own connection cancels.
+func dictationConnectionTie(t *testing.T) connectionTie {
+	app := newDictationTestApp(t, "fresh")
+	return connectionTie{
+		open:    func(ctx context.Context) (string, error) { return app.BeginDictation(ctx, "audio/webm") },
+		held:    func() int { return app.dictationRecordings().Open() },
+		release: app.CancelDictation,
+		key:     dictationCleanupKey,
 	}
 }

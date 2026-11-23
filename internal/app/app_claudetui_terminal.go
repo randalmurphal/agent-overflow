@@ -30,7 +30,7 @@ import (
 // session restarted. It is also what keeps two clients apart — a second pane
 // attaching takes nothing from the first, and detaching gives back only its
 // own. A call that came over no connection cannot attach
-// (callerConnection).
+// (transport.CallerConnection).
 
 // ProviderTerminalHandle is what attaching to a provider PTY returns: the
 // terminal id (for routing output + replay) plus its current summary (winsize)
@@ -67,42 +67,34 @@ type providerTerminalKey struct {
 type providerTerminalAttachments struct {
 	mu       sync.Mutex
 	byCaller map[providerTerminalKey]*claudetui.TerminalAttachment
-	// armed holds every connection that has a cleanup registered with it.
-	// One cleanup per connection for its lifetime, releasing whatever claims
-	// it holds when it runs: registering one per attach would leave a pane
-	// that remounts across its socket's life holding a closure per remount.
-	armed map[*transport.ConnState]struct{}
 }
 
+// providerTerminalsCleanupKey names the one release each connection binds
+// for its lifetime, which gives back whatever claims it holds when it runs:
+// binding one per attach would leave a pane that remounts across its
+// socket's life holding a closure per remount. Binding is keyed, so the
+// connection's first attach binds it and the rest find it bound.
+const providerTerminalsCleanupKey = "provider-terminals"
+
 // put stores this caller's attachment, returning the one it displaced so the
-// caller can release it. A displaced claim means the same connection attached
-// twice to one thread without detaching (a pane remounting across a reconnect),
-// and leaving the old one armed would hold its lease forever.
-func (p *providerTerminalAttachments) put(key providerTerminalKey, attachment *claudetui.TerminalAttachment) *claudetui.TerminalAttachment {
+// caller can release it, with the connection tied in the same critical
+// section, so the connection's end finds the claim however soon it comes.
+// A displaced claim means the same connection attached twice to one thread
+// without detaching (a pane remounting across a reconnect), and leaving the
+// old one armed would hold its lease forever. A connection that is closing
+// stores nothing.
+func (p *providerTerminalAttachments) put(key providerTerminalKey, attachment *claudetui.TerminalAttachment, releaseAll func()) (*claudetui.TerminalAttachment, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if _, err := key.conn.Bind(providerTerminalsCleanupKey, releaseAll); err != nil {
+		return nil, err
+	}
 	if p.byCaller == nil {
 		p.byCaller = make(map[providerTerminalKey]*claudetui.TerminalAttachment, 1)
 	}
 	prior := p.byCaller[key]
 	p.byCaller[key] = attachment
-	return prior
-}
-
-// arm reports whether conn still needs a cleanup registered, marking it armed
-// when so. Marking and asking are one step so two attaches racing on one
-// connection register exactly one cleanup between them.
-func (p *providerTerminalAttachments) arm(conn *transport.ConnState) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if _, done := p.armed[conn]; done {
-		return false
-	}
-	if p.armed == nil {
-		p.armed = make(map[*transport.ConnState]struct{}, 1)
-	}
-	p.armed[conn] = struct{}{}
-	return true
+	return prior, nil
 }
 
 // get returns this caller's live attachment, or nil when it has none.
@@ -126,12 +118,10 @@ func (p *providerTerminalAttachments) take(key providerTerminalKey) *claudetui.T
 	return attachment
 }
 
-// takeAll removes every claim conn holds and forgets that it was armed, so a
-// connection object reused after its cleanup ran (tests) can arm again.
+// takeAll removes every claim conn holds.
 func (p *providerTerminalAttachments) takeAll(conn *transport.ConnState) []*claudetui.TerminalAttachment {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	delete(p.armed, conn)
 	var taken []*claudetui.TerminalAttachment
 	for key, attachment := range p.byCaller {
 		if key.conn == conn {
@@ -172,7 +162,7 @@ func (a *App) releaseProviderTerminalsFor(conn *transport.ConnState) {
 //ao:scope terminal:operate
 //ao:callerbound
 func (a *App) ProviderTerminalAttach(ctx context.Context, threadID string) (ProviderTerminalHandle, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return ProviderTerminalHandle{}, err
 	}
@@ -191,13 +181,13 @@ func (a *App) ProviderTerminalAttach(ctx context.Context, threadID string) (Prov
 	if err != nil {
 		return ProviderTerminalHandle{}, err
 	}
-	key := providerTerminalKey{conn: conn.state, threadID: threadID}
-	a.providerTerminals.put(key, attachment).Release()
-	if a.providerTerminals.arm(conn.state) {
-		if err := conn.registerRelease(func() { a.releaseProviderTerminalsFor(conn.state) }); err != nil {
-			return ProviderTerminalHandle{}, fmt.Errorf("provider terminal: %w", err)
-		}
+	key := providerTerminalKey{conn: conn, threadID: threadID}
+	prior, err := a.providerTerminals.put(key, attachment, func() { a.releaseProviderTerminalsFor(conn) })
+	if err != nil {
+		attachment.Release()
+		return ProviderTerminalHandle{}, fmt.Errorf("provider terminal: %w", err)
 	}
+	prior.Release()
 	return ProviderTerminalHandle{
 		TerminalID: summary.TerminalID,
 		ThreadID:   threadID,

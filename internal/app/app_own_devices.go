@@ -294,7 +294,7 @@ func (a *App) MintOwnDevicePairingOnNetwork(ctx context.Context, deviceClass, ne
 //ao:stepup
 //ao:remote
 func (a *App) OpenOwnComputerPairing(ctx context.Context, networkChoice string) (ComputerPairingWindow, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return ComputerPairingWindow{}, err
 	}

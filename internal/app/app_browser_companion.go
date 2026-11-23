@@ -126,34 +126,45 @@ func (a *App) BrowserCompanionThreadState(threadID string) (appbrowser.Companion
 //ao:scope host
 //ao:route home
 func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (appbrowser.CompanionSubscription, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return appbrowser.CompanionSubscription{}, err
 	}
-	if a.browser.manager == nil {
+	manager := a.browser.manager
+	if manager == nil {
 		return appbrowser.CompanionSubscription{}, fmt.Errorf("browser manager unavailable")
 	}
-	if !conn.state.HostWindow() {
+	if !conn.HostWindow() {
 		return appbrowser.CompanionSubscription{}, errBrowserPaneNotHostWindow
 	}
 	caller, err := a.browserCaller(threadID)
 	if err != nil {
 		return appbrowser.CompanionSubscription{}, err
 	}
-	result, err := a.browser.manager.AttachPane(caller)
+	result, err := manager.AttachPane(caller)
 	if err != nil {
 		return appbrowser.CompanionSubscription{}, err
 	}
-	if err := conn.bindRelease(companionPaneCleanupKey(result.ID), func() { a.browser.manager.DetachPane(appbrowser.MountID(result.ID)) }); err != nil {
+	mount := appbrowser.MountID(result.ID)
+	tie, err := conn.Bind(companionPaneCleanupKey(result.ID), func() { manager.DetachPane(mount) })
+	if err != nil {
+		manager.DetachPane(mount)
 		return appbrowser.CompanionSubscription{}, fmt.Errorf("browser: %w", err)
+	}
+	// The connection holds the mount until it is detached, by whichever
+	// connection asks.
+	if !manager.OnDetach(mount, tie.Untie) {
+		tie.Untie()
 	}
 	return result, nil
 }
 
+// BrowserCompanionPaneDetach releases a pane mount; the connection that
+// attached it is untied (browser.Manager.OnDetach).
+//
 //ao:scope host
 //ao:route home
 func (a *App) BrowserCompanionPaneDetach(ctx context.Context, paneID string) error {
-	transport.ConnStateFromContext(ctx).UnbindCleanup(companionPaneCleanupKey(paneID))
 	if a.browser.manager != nil {
 		a.browser.manager.DetachPane(appbrowser.MountID(paneID))
 	}

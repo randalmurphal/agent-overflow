@@ -83,7 +83,7 @@ type harnessUIBridge struct {
 	seq         uint64
 	waiters     map[string]harnessUIWaiter
 	pages       map[string]HarnessPageIdentity
-	pageOwners  map[string]*transport.ConnState
+	pageTies    map[string]transport.Tie
 	pageChanged chan struct{}
 }
 
@@ -105,24 +105,34 @@ func (b *harnessUIBridge) register() (string, chan json.RawMessage) {
 	return id, ch
 }
 
+// registerPage records a page for the connection that registered it, tied
+// to that connection in the same critical section, so its end removes the
+// page. A page that registers again (its socket reconnected) moves to the
+// new connection and unties the old one.
 func (b *harnessUIBridge) registerPage(identity HarnessPageIdentity, owner *transport.ConnState) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.pages == nil {
-		b.pages = make(map[string]HarnessPageIdentity, 1)
+	existing, exists := b.pages[identity.PageID]
+	if exists && existing != identity {
+		return fmt.Errorf("frontend page %q is already registered", identity.PageID)
 	}
-	if b.pageOwners == nil {
-		b.pageOwners = make(map[string]*transport.ConnState, 1)
+	tie, err := owner.Bind("harness-page:"+identity.PageID, func() { b.unregisterPage(identity.PageID, owner) })
+	if err != nil {
+		return fmt.Errorf("frontend page %q: %w", identity.PageID, err)
 	}
-	if existing, exists := b.pages[identity.PageID]; exists {
-		if existing != identity {
-			return fmt.Errorf("frontend page %q is already registered", identity.PageID)
+	if exists {
+		if previous := b.pageTies[identity.PageID]; !previous.HeldBy(owner) {
+			previous.Untie()
 		}
-		b.pageOwners[identity.PageID] = owner
+		b.pageTies[identity.PageID] = tie
 		return nil
 	}
+	if b.pages == nil {
+		b.pages = make(map[string]HarnessPageIdentity, 1)
+		b.pageTies = make(map[string]transport.Tie, 1)
+	}
 	b.pages[identity.PageID] = identity
-	b.pageOwners[identity.PageID] = owner
+	b.pageTies[identity.PageID] = tie
 	if b.pageChanged != nil {
 		close(b.pageChanged)
 	}
@@ -130,14 +140,18 @@ func (b *harnessUIBridge) registerPage(identity HarnessPageIdentity, owner *tran
 	return nil
 }
 
+// unregisterPage removes a page its connection still holds: a release from
+// the connection the page moved away from removes nothing.
 func (b *harnessUIBridge) unregisterPage(pageID string, owner *transport.ConnState) {
 	b.mu.Lock()
-	if owner != nil && b.pageOwners[pageID] != owner {
+	tie, ok := b.pageTies[pageID]
+	if !ok || !tie.HeldBy(owner) {
 		b.mu.Unlock()
 		return
 	}
+	tie.Untie()
 	delete(b.pages, pageID)
-	delete(b.pageOwners, pageID)
+	delete(b.pageTies, pageID)
 	if b.pageChanged != nil {
 		close(b.pageChanged)
 	}
@@ -260,9 +274,14 @@ func (h *Harness) HarnessUIQuery(spec json.RawMessage) (json.RawMessage, error) 
 
 // HarnessRegisterPage authenticates and records one frontend page. The page
 // id is immutable for its load and is removed when its transport connection
-// closes. A marker from another harness instance cannot register, even when
-// both instances share one browser debugger endpoint.
+// closes, so a call that came over no connection is refused: nothing would
+// remove the page. A marker from another harness instance cannot register,
+// even when both instances share one browser debugger endpoint.
 func (h *Harness) HarnessRegisterPage(ctx context.Context, pageID, marker, origin string) (HarnessPageIdentity, error) {
+	conn, err := transport.CallerConnection(ctx)
+	if err != nil {
+		return HarnessPageIdentity{}, err
+	}
 	pageID = strings.TrimSpace(pageID)
 	marker = strings.TrimSpace(marker)
 	origin = strings.TrimSpace(origin)
@@ -283,15 +302,8 @@ func (h *Harness) HarnessRegisterPage(ctx context.Context, pageID, marker, origi
 		return HarnessPageIdentity{}, fmt.Errorf("frontend page origin %q does not match this harness origin", origin)
 	}
 	identity := HarnessPageIdentity{PageID: pageID, Marker: marker, Origin: origin}
-	state := transport.ConnStateFromContext(ctx)
-	if err := h.ui.registerPage(identity, state); err != nil {
+	if err := h.ui.registerPage(identity, conn); err != nil {
 		return HarnessPageIdentity{}, err
-	}
-	if state != nil {
-		if !state.RegisterCleanup(func() { h.ui.unregisterPage(pageID, state) }) {
-			h.ui.unregisterPage(pageID, state)
-			return HarnessPageIdentity{}, fmt.Errorf("frontend page connection is closing")
-		}
 	}
 	return identity, nil
 }

@@ -229,25 +229,26 @@ func TestPipelineFollowsFetchLogsUnderThePipelineKey(t *testing.T) {
 	}
 }
 
-func TestUnsubscribePipelineUnbindsItsConnectionTie(t *testing.T) {
-	t.Parallel()
+// pipelineConnectionTie is SubscribePipeline's row of connectionTieChecks:
+// a handle on the pipeline's pump, released by any caller.
+func pipelineConnectionTie(t *testing.T) connectionTie {
 	f := newPipelineFixture(t)
 	f.publish(pipelineWith(gitops.CIStatusSuccess), nil)
-	checkByIDTie(t, byIDTie{
-		subscribe: func(ctx context.Context) (string, error) {
+	t.Cleanup(f.app.closePRUpdatePumps)
+	return connectionTie{
+		open: func(ctx context.Context) (string, error) {
 			sub, err := f.app.SubscribePipeline(ctx, testPR.Repository(), "41")
 			return sub.ID, err
 		},
-		unsubscribe: f.app.UnsubscribePipeline,
-		key:         pipelineCleanupKey,
-		live: func(id string) bool {
+		held: func() int {
 			f.app.prUpdates.mu.Lock()
 			defer f.app.prUpdates.mu.Unlock()
-			_, ok := f.app.prUpdates.pipelineHandles[id]
-			return ok
+			return len(f.app.prUpdates.pipelineHandles)
 		},
-	})
-	f.app.prUpdates.wg.Wait()
+		release:   f.app.UnsubscribePipeline,
+		anyCaller: true,
+		key:       pipelineCleanupKey,
+	}
 }
 
 // The stage summaries: bounded, names and statuses only, and one failed

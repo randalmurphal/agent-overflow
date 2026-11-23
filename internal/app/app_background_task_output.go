@@ -77,26 +77,33 @@ func (s *appBackgroundTaskOutputState) has(watchID string) bool {
 
 type backgroundTaskOutputBinding struct {
 	threadID string
-	state    *transport.ConnState
+	tie      transport.Tie
 }
 
-// bindWatch records a watch bound to state's cleanup.
-func (s *appBackgroundTaskOutputState) bindWatch(watchID, threadID string, state *transport.ConnState) {
+// bindWatch records a watch for conn, tied to conn as it is recorded, so
+// the connection's end finds the record however soon it comes. A
+// connection that is closing gets no record.
+func (s *appBackgroundTaskOutputState) bindWatch(watchID, threadID string, conn *transport.ConnState, release func()) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	tie, err := conn.Bind(backgroundTaskOutputCleanupKey(watchID), release)
+	if err != nil {
+		return err
+	}
 	if s.bindings == nil {
 		s.bindings = make(map[string]backgroundTaskOutputBinding)
 	}
-	s.bindings[watchID] = backgroundTaskOutputBinding{threadID: threadID, state: state}
+	s.bindings[watchID] = backgroundTaskOutputBinding{threadID: threadID, tie: tie}
+	return nil
 }
 
-// unbindWatch drops the record of watchID and unbinds its cleanup, when
+// unbindWatch drops the record of watchID and unties its connection, when
 // the record exists and, if a caller is named, was made by that caller
 // for threadID. It reports whether the record was dropped.
 func (s *appBackgroundTaskOutputState) unbindWatch(watchID, threadID string, caller *transport.ConnState) bool {
 	s.mu.Lock()
 	binding, ok := s.bindings[watchID]
-	if ok && caller != nil && (binding.state != caller || binding.threadID != threadID) {
+	if ok && caller != nil && (!binding.tie.HeldBy(caller) || binding.threadID != threadID) {
 		ok = false
 	}
 	if ok {
@@ -104,13 +111,14 @@ func (s *appBackgroundTaskOutputState) unbindWatch(watchID, threadID string, cal
 	}
 	s.mu.Unlock()
 	if ok {
-		binding.state.UnbindCleanup(backgroundTaskOutputCleanupKey(watchID))
+		binding.tie.Untie()
 	}
 	return ok
 }
 
 // backgroundTaskTailer builds the tailer on first use. Its frames leave
-// through a.emit like every other event.
+// through a.emit like every other event. Nil once shutdown closed the
+// tailer (closeBackgroundTaskTailer).
 func (a *App) backgroundTaskTailer() *tasktail.Tailer {
 	a.taskOutput.once.Do(func() {
 		a.taskOutput.tailer.Store(tasktail.New(tasktail.Config{
@@ -158,7 +166,7 @@ func (a *App) closeBackgroundTaskTailer() {
 //ao:scope threads:read
 //ao:callerbound
 func (a *App) WatchBackgroundTaskOutput(ctx context.Context, threadID, launchItemID string) (tasktail.Snapshot, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return tasktail.Snapshot{}, err
 	}
@@ -213,22 +221,24 @@ func (a *App) WatchBackgroundTaskOutput(ctx context.Context, threadID, launchIte
 		return tasktail.Snapshot{Ended: true}, nil
 	}
 
-	owner := backgroundTaskOutputOwner(conn.state)
+	owner := backgroundTaskOutputOwner(conn)
 	watchID, err := tasktail.NewWatchID()
 	if err != nil {
 		return tasktail.Snapshot{}, fmt.Errorf("background task output: %w", err)
 	}
 	tailer := a.backgroundTaskTailer()
-	// The record and the cleanup come first, under an id the tailer does
-	// not know yet: a drop the tailer reports (the task ending under the
-	// seed read) then always finds the record to unbind.
-	if err := conn.bindRelease(backgroundTaskOutputCleanupKey(watchID), func() {
+	if tailer == nil {
+		return tasktail.Snapshot{}, ErrShuttingDown
+	}
+	// The record and its tie come first, under an id the tailer does not
+	// know yet: a drop the tailer reports (the task ending under the seed
+	// read) then always finds the record to unbind.
+	if err := a.taskOutput.bindWatch(watchID, threadID, conn, func() {
 		a.taskOutput.unbindWatch(watchID, "", nil)
 		tailer.Release(threadID, watchID, owner)
 	}); err != nil {
 		return tasktail.Snapshot{}, fmt.Errorf("background task output: %w", err)
 	}
-	a.taskOutput.bindWatch(watchID, threadID, conn.state)
 	snapshot, err := tailer.Watch(threadID, launchItemID, path, owner, watchID)
 	if err != nil {
 		a.taskOutput.unbindWatch(watchID, "", nil)
@@ -278,12 +288,18 @@ func (a *App) UnwatchBackgroundTaskOutput(ctx context.Context, threadID, watchID
 	}
 	// The binding is this connection's record of the watch, dropped only
 	// by the connection that made it, for the thread it was made on: a
-	// release that cannot land (wrong thread) leaves the watch and its
-	// cleanup, and the connection's end still releases it. The tailer's
-	// own release may already have nothing to do: a task that ended took
-	// its watches with it, and the binding still goes.
-	a.taskOutput.unbindWatch(watchID, threadID, state)
-	a.backgroundTaskTailer().Release(threadID, watchID, backgroundTaskOutputOwner(state))
+	// release that cannot land (wrong thread, another connection's, or no
+	// such watch) releases nothing, and the connection's end still
+	// releases the watch. The tailer's own release may already have
+	// nothing to do: a task that ended took its watches with it, and the
+	// binding still goes. A watch was bound only through a built tailer,
+	// so an unwatch never builds one.
+	if !a.taskOutput.unbindWatch(watchID, threadID, state) {
+		return nil
+	}
+	if tailer := a.taskOutput.tailer.Load(); tailer != nil {
+		tailer.Release(threadID, watchID, backgroundTaskOutputOwner(state))
+	}
 	return nil
 }
 

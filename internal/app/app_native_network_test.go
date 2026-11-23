@@ -309,3 +309,27 @@ func TestNativeNetworkDoesNotAdvertiseAnExplicitLoopbackListener(t *testing.T) {
 		t.Fatalf("actual loopback bind did not override stale ready report: %+v", status)
 	}
 }
+
+// nativeNetworkConnectionTie is GetNativeNetworkConfig's row of
+// connectionTieChecks: the launcher's ownership of native ingress, which
+// only the connection's end gives up; the connection binds one release
+// for its life.
+func nativeNetworkConnectionTie(t *testing.T) connectionTie {
+	a := identityApp(t)
+	a.SetTransportServer(startTestTransportServer(t))
+	return connectionTie{
+		open: func(ctx context.Context) (string, error) {
+			_, err := a.GetNativeNetworkConfig(ctx)
+			return "", err
+		},
+		held: func() int {
+			s := &a.nativeNetwork
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.owner != nil {
+				return 1
+			}
+			return 0
+		},
+	}
+}

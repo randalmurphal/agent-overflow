@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/dictation"
 	"agent-overflow/internal/openai"
 	"agent-overflow/internal/openaikey"
+	"agent-overflow/internal/transport"
 )
 
 // Live dictation: with Settings > Voice's OpenAI API switch on and a key in
@@ -68,7 +69,7 @@ func (a *App) liveDictationOptions() openai.LiveTranscriptionOptions {
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) BeginLiveDictation(ctx context.Context) (string, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -101,14 +102,15 @@ func (a *App) BeginLiveDictation(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	key := liveDictationCleanupKey(id)
-	if err := conn.bindRelease(key, func() { sessions.Cancel(id) }); err != nil {
+	tie, err := conn.Bind(liveDictationCleanupKey(id), func() { sessions.Cancel(id) })
+	if err != nil {
+		sessions.Cancel(id)
 		return "", fmt.Errorf("dictation: %w", err)
 	}
 	// The connection owns the session until it is released, however that
 	// happens.
-	if err := sessions.OnRelease(id, func() { conn.state.UnbindCleanup(key) }); err != nil {
-		conn.state.UnbindCleanup(key)
+	if err := sessions.OnRelease(id, tie.Untie); err != nil {
+		tie.Untie()
 		return "", err
 	}
 	return id, nil

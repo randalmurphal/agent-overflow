@@ -71,7 +71,7 @@ func New(deps Deps) *Service {
 		shuttingDownError:      deps.ShuttingDownError,
 		status: statusState{
 			pumps:   make(map[string]*statusPump),
-			handles: make(map[string]*statusPump),
+			handles: make(map[string]*statusHandle),
 		},
 	}
 	core.SetRemoteSignInObserver(s.refreshRepositoryStatus)

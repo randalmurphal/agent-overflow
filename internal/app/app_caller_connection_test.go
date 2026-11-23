@@ -42,11 +42,11 @@ func connCtx(t testing.TB) context.Context {
 	return ctx
 }
 
-// testCallerConn is the callerConn of ctx's connection, for a test that
-// calls below the bound method.
-func testCallerConn(t testing.TB, ctx context.Context) callerConn {
+// testConnection is ctx's connection, for a test that calls below the
+// bound method.
+func testConnection(t testing.TB, ctx context.Context) *transport.ConnState {
 	t.Helper()
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,8 +63,9 @@ type connectionRefusal struct {
 
 func ignoreResult[T any](_ T, err error) error { return err }
 
-// callerConnectionRefusals is every method that opens with callerConnection
-// (TestArmingMethodsAreTiedToTheirConnection keeps the two lists equal).
+// callerConnectionRefusals is every method that opens with
+// transport.CallerConnection (TestArmingMethodsAreTiedToTheirConnection
+// keeps the lists equal).
 var callerConnectionRefusals = map[string]connectionRefusal{
 	"SubscribePRUpdates": {
 		call: func(a *App, ctx context.Context) error {
@@ -107,7 +108,7 @@ var callerConnectionRefusals = map[string]connectionRefusal{
 		call: func(a *App, ctx context.Context) error {
 			return ignoreResult(a.ProviderTerminalAttach(ctx, "thread"))
 		},
-		created: func(a *App) bool { return a.providerTerminals.byCaller != nil || a.providerTerminals.armed != nil },
+		created: func(a *App) bool { return a.providerTerminals.byCaller != nil },
 	},
 	"WatchBackgroundTaskOutput": {
 		call: func(a *App, ctx context.Context) error {
@@ -118,7 +119,7 @@ var callerConnectionRefusals = map[string]connectionRefusal{
 	"GetNativeNetworkConfig": {
 		call: func(a *App, ctx context.Context) error { return ignoreResult(a.GetNativeNetworkConfig(ctx)) },
 		created: func(a *App) bool {
-			return a.nativeNetwork.seen || a.nativeNetwork.owner != nil || a.nativeNetwork.armed != nil
+			return a.nativeNetwork.seen || a.nativeNetwork.owner != nil
 		},
 	},
 	"OpenComputerPairing": {
@@ -188,7 +189,7 @@ var callerConnectionRefusals = map[string]connectionRefusal{
 }
 
 func computerPairingCreated(a *App) bool {
-	return a.computerPairing.book != nil || a.computerPairing.windowID != "" || a.computerPairing.armed != nil
+	return a.computerPairing.book != nil || a.computerPairing.windowID != ""
 }
 
 func reviewDiffCreated(a *App) bool {
@@ -220,59 +221,11 @@ func TestArmingMethodsRefuseACallWithNoConnection(t *testing.T) {
 				}()
 				return refusal.call(a, context.Background())
 			}()
-			if !errors.Is(err, errNoCallerConnection) {
-				t.Fatalf("%s with no connection: err = %v, want errNoCallerConnection", name, err)
+			if !errors.Is(err, transport.ErrNoConnection) {
+				t.Fatalf("%s with no connection: err = %v, want transport.ErrNoConnection", name, err)
 			}
 			if refusal.created != nil && refusal.created(a) {
 				t.Fatalf("%s with no connection created what it arms", name)
-			}
-		})
-	}
-}
-
-// The tie releases with the connection, and at once when the connection is
-// already closing, failing the call.
-func TestCallerConnectionTiesReleaseToTheConnection(t *testing.T) {
-	t.Parallel()
-	if _, err := callerConnection(context.Background()); !errors.Is(err, errNoCallerConnection) {
-		t.Fatalf("callerConnection with no connection: err = %v", err)
-	}
-	for _, tie := range []struct {
-		name string
-		tie  func(callerConn, func()) error
-	}{
-		{"bindRelease", func(conn callerConn, release func()) error { return conn.bindRelease("key", release) }},
-		{"registerRelease", func(conn callerConn, release func()) error { return conn.registerRelease(release) }},
-	} {
-		t.Run(tie.name, func(t *testing.T) {
-			t.Parallel()
-			ctx, state := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
-			conn, err := callerConnection(ctx)
-			if err != nil || conn.state != state {
-				t.Fatalf("callerConnection = %v, %v; want the call's connection", conn.state, err)
-			}
-			released := 0
-			if err := tie.tie(conn, func() { released++ }); err != nil {
-				t.Fatalf("tie on an open connection: %v", err)
-			}
-			if released != 0 {
-				t.Fatal("the tie released on an open connection")
-			}
-			state.RunCleanups()
-			if released != 1 {
-				t.Fatalf("the connection's end released %d times, want 1", released)
-			}
-
-			late := 0
-			if err := tie.tie(conn, func() { late++ }); !errors.Is(err, errCallerConnectionClosing) {
-				t.Fatalf("tie on a closed connection: err = %v, want errCallerConnectionClosing", err)
-			}
-			if late != 1 {
-				t.Fatalf("a tie refused by a closed connection released %d times, want 1 at once", late)
-			}
-			state.RunCleanups()
-			if late != 1 {
-				t.Fatal("a refused tie was kept and released again")
 			}
 		})
 	}

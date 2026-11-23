@@ -54,7 +54,7 @@ func TestSubscribeReplacesDeadPumpWithoutDroppingSuccessor(t *testing.T) {
 	}
 	service.status.mu.Lock()
 	fresh := service.status.pumps[first.Cwd]
-	held := service.status.handles[second.ID]
+	held := service.status.handles[second.ID].pump
 	service.status.mu.Unlock()
 	if fresh == dying || held != fresh {
 		t.Fatalf("second subscription did not take a fresh pump")
@@ -63,7 +63,7 @@ func TestSubscribeReplacesDeadPumpWithoutDroppingSuccessor(t *testing.T) {
 	service.dropStatusPump(dying)
 	service.status.mu.Lock()
 	stillMapped := service.status.pumps[first.Cwd]
-	stillHeld := service.status.handles[second.ID]
+	stillHeld := service.status.handles[second.ID].pump
 	_, staleHeld := service.status.handles[first.ID]
 	service.status.mu.Unlock()
 	if stillMapped != fresh || stillHeld != fresh || staleHeld {

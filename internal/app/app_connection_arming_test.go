@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/transport"
 )
@@ -22,17 +24,14 @@ import (
 // rules over every non-test file of the package:
 //
 //   - An exported *App method whose name says it arms (armWords) opens with
-//     `conn, err := callerConnection(ctx)`, so a call that came over no
-//     connection is refused before anything is armed or spent.
-//   - callerConnection is called only that way, as the first statement of a
-//     bound method. Every such method reaches callerConn.bindRelease or
-//     callerConn.registerRelease, where its release is tied, and has a row
-//     in callerConnectionRefusals, which shows its refusal.
-//   - Nothing else ties a release to a connection: BindCleanup and
-//     RegisterCleanup are called only by those two, or by a function in
-//     directTieFunctions with its reason.
-//   - A method whose name says it releases (releaseWords) reads its own
-//     call's connection, so a release by id answers for whose it is.
+//     `conn, err := transport.CallerConnection(ctx)`, so a call that came
+//     over no connection is refused before anything is armed or spent.
+//   - transport.CallerConnection is called only that way, as the first
+//     statement of a bound method; what it calls takes the connection.
+//   - Every such method has a row in callerConnectionRefusals, which shows
+//     its refusal on an App with nothing behind it, and one in
+//     connectionTieChecks, which TestArmedResourcesFollowTheirConnection
+//     runs against the real resource (checkConnectionTie).
 //
 // Reaching the connection needs a leading ctx context.Context, which the
 // Wails generator strips from the TS bindings, so following the rules
@@ -48,18 +47,6 @@ var armWords = []string{
 	"Acquire",
 	"Hold",
 	"TakeControl",
-}
-
-// releaseWords put a method under the release rule. A release by id is
-// where "from anywhere" is most often written by accident, so each one
-// answers for whose resource it gives back.
-var releaseWords = []string{
-	"Detach",
-	"Unsubscribe",
-	"Unwatch",
-	"Release",
-	"ReleaseControl",
-	"SetControl",
 }
 
 // notPerConnectionMethods are the methods a word names but no rule applies
@@ -80,18 +67,7 @@ var notPerConnectionMethods = map[string]string{
 	"OpenPRThread":              "creates a thread row, which outlives every connection",
 	"OpenTerminal":              "starts a terminal of the thread; every client shows it, and CloseTerminal or the thread's end closes it",
 	"ThreadToolWatch":           "answers one forwarded thread_status wait and holds nothing once it returns",
-	"ReleaseReadAloudTicket":    "gives back a read-aloud section, which MintReadAloudTicket binds to no connection: an unspent one expires with its 30 s ticket, and its synthesis ends with the fetch request that runs it",
 }
-
-// directTieFunctions tie a release to a connection without callerConn,
-// keyed "Receiver.method" or "function", with the reason the helper's
-// release-at-once does not fit.
-var directTieFunctions = map[string]string{
-	"ownerActivity.watchLocked": "re-points one device's activity log at the latest connection under the revocation lock; the release takes that lock, and a connection already closing is tied to nothing, so there is nothing to release at once",
-}
-
-// tieMethods are the callerConn methods that tie a release.
-var tieMethods = map[string]bool{"bindRelease": true, "registerRelease": true}
 
 func TestArmingMethodsAreTiedToTheirConnection(t *testing.T) {
 	t.Parallel()
@@ -105,55 +81,41 @@ func TestArmingMethodsAreTiedToTheirConnection(t *testing.T) {
 			if word, ok := nameWord(name, armWords); ok {
 				seen[name] = true
 				if _, exempt := notPerConnectionMethods[name]; !exempt && !opensWithCallerConnection(fn) {
-					t.Errorf("%s: %s arms a per-client resource (%q) and does not open with `conn, err := callerConnection(ctx)`: "+
-						"take a leading ctx, call it first and tie the release with conn.bindRelease or conn.registerRelease, "+
-						"or add it to notPerConnectionMethods with the reason it holds nothing per connection", position, name, word)
-				}
-			} else if word, ok := nameWord(name, releaseWords); ok {
-				seen[name] = true
-				if _, exempt := notPerConnectionMethods[name]; !exempt && !pkg.reaches(fn, isConnStateRead) {
-					t.Errorf("%s: %s releases a per-client resource (%q) without reading its call's connection "+
-						"(transport.ConnStateFromContext): unbind the release on that connection, or add it to "+
-						"notPerConnectionMethods with the reason it is not per connection", position, name, word)
+					t.Errorf("%s: %s arms a per-client resource (%q) and does not open with "+
+						"`conn, err := transport.CallerConnection(ctx)`: take a leading ctx, call it first and tie "+
+						"the release with conn.Bind where the resource is published, or add it to "+
+						"notPerConnectionMethods with the reason it holds nothing per connection", position, name, word)
 				}
 			}
 		}
-		if callsIdent(fn.Body, "callerConnection") && name != "callerConnection" {
-			if !isAppMethod(fn) || !fn.Name.IsExported() || !opensWithCallerConnection(fn) {
-				t.Errorf("%s: %s calls callerConnection other than as a bound method's first statement, "+
-					"`conn, err := callerConnection(ctx)`; a callee takes the callerConn instead, "+
-					"so the refusal comes before anything is armed or spent", position, funcKey(fn))
-				continue
-			}
-			openers[name] = true
-			if !pkg.reaches(fn, isTie) {
-				t.Errorf("%s: %s takes the caller's connection and never ties a release to it "+
-					"(conn.bindRelease or conn.registerRelease)", position, name)
-			}
-		}
-		if _, direct := directTieFunctions[funcKey(fn)]; direct || isTieMethod(fn) {
+		if !callsCallerConnection(fn.Body) {
 			continue
 		}
-		ast.Inspect(fn.Body, func(node ast.Node) bool {
-			if call, ok := node.(*ast.CallExpr); ok {
-				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "BindCleanup" || sel.Sel.Name == "RegisterCleanup") {
-					t.Errorf("%s: %s calls %s directly; tie the release through callerConn.bindRelease or "+
-						"registerRelease, which release at once when the connection is closing, or add it to "+
-						"directTieFunctions with the reason that does not fit", pkg.fset.Position(call.Pos()), funcKey(fn), sel.Sel.Name)
-				}
-			}
-			return true
-		})
+		if !isAppMethod(fn) || !fn.Name.IsExported() || !opensWithCallerConnection(fn) {
+			t.Errorf("%s: %s calls transport.CallerConnection other than as a bound method's first statement, "+
+				"`conn, err := transport.CallerConnection(ctx)`; a callee takes the connection instead, "+
+				"so the refusal comes before anything is armed or spent", position, funcKey(fn))
+			continue
+		}
+		openers[name] = true
 	}
 
-	for name := range openers {
-		if _, ok := callerConnectionRefusals[name]; !ok {
-			t.Errorf("%s calls callerConnection and has no row in callerConnectionRefusals, the test that shows its refusal", name)
+	for _, table := range []struct {
+		name string
+		rows map[string]bool
+	}{
+		{"callerConnectionRefusals, which shows its refusal", methodNames(callerConnectionRefusals)},
+		{"connectionTieChecks, which shows its tie on the real resource", methodNames(connectionTieChecks)},
+	} {
+		for name := range openers {
+			if !table.rows[name] {
+				t.Errorf("%s opens with transport.CallerConnection and has no row in %s", name, table.name)
+			}
 		}
-	}
-	for name := range callerConnectionRefusals {
-		if !openers[name] {
-			t.Errorf("callerConnectionRefusals names %s, which does not open with callerConnection", name)
+		for name := range table.rows {
+			if !openers[name] {
+				t.Errorf("%s names %s, which does not open with transport.CallerConnection", table.name, name)
+			}
 		}
 	}
 	// An exemption for a name that is gone, or no longer carries a word, is
@@ -165,15 +127,18 @@ func TestArmingMethodsAreTiedToTheirConnection(t *testing.T) {
 			stale = append(stale, name)
 		}
 	}
-	for key := range directTieFunctions {
-		if !pkg.declared(key) {
-			stale = append(stale, key)
-		}
-	}
 	sort.Strings(stale)
 	for _, name := range stale {
 		t.Errorf("an exemption names %s, which is no longer a method under the rule", name)
 	}
+}
+
+func methodNames[V any](m map[string]V) map[string]bool {
+	out := make(map[string]bool, len(m))
+	for key := range m {
+		out[key] = true
+	}
+	return out
 }
 
 // appPackageDecl is one function or method of the package with where it is
@@ -183,12 +148,9 @@ type appPackageDecl struct {
 	position token.Position
 }
 
-// appPackage is the non-test source of internal/app, indexed by the name a
-// call site spells each function with.
+// appPackage is the non-test source of internal/app.
 type appPackage struct {
-	fset   *token.FileSet
-	decls  []appPackageDecl
-	byName map[string][]*ast.FuncDecl
+	decls []appPackageDecl
 }
 
 func parseAppPackage(t *testing.T) *appPackage {
@@ -197,114 +159,52 @@ func parseAppPackage(t *testing.T) *appPackage {
 	if err != nil {
 		t.Fatalf("read internal/app: %v", err)
 	}
-	pkg := &appPackage{fset: token.NewFileSet(), byName: map[string][]*ast.FuncDecl{}}
+	fset := token.NewFileSet()
+	pkg := &appPackage{}
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
 		path := filepath.Join("internal/app", name)
-		parsed, err := parser.ParseFile(pkg.fset, path, nil, parser.SkipObjectResolution)
+		parsed, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}
 		for _, decl := range parsed.Decls {
 			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
-				pkg.decls = append(pkg.decls, appPackageDecl{fn: fn, position: pkg.fset.Position(fn.Pos())})
-				pkg.byName[fn.Name.Name] = append(pkg.byName[fn.Name.Name], fn)
+				pkg.decls = append(pkg.decls, appPackageDecl{fn: fn, position: fset.Position(fn.Pos())})
 			}
 		}
 	}
 	return pkg
 }
 
-// declared reports whether a function or method has key's funcKey.
-func (p *appPackage) declared(key string) bool {
-	for _, decl := range p.decls {
-		if funcKey(decl.fn) == key {
-			return true
-		}
-	}
-	return false
-}
-
-// reaches reports whether fn, or a package function it calls, makes a call
-// that found accepts. Calls resolve by name, so a method name two types
-// share reaches both: the walk over-reports, never misses.
-func (p *appPackage) reaches(fn *ast.FuncDecl, found func(*ast.CallExpr) bool) bool {
-	visited := map[*ast.FuncDecl]bool{}
-	queue := []*ast.FuncDecl{fn}
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		if visited[current] {
-			continue
-		}
-		visited[current] = true
-		hit := false
-		ast.Inspect(current.Body, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if hit || !ok {
-				return !hit
-			}
-			if found(call) {
-				hit = true
-				return false
-			}
-			var name string
-			switch fun := call.Fun.(type) {
-			case *ast.SelectorExpr:
-				name = fun.Sel.Name
-			case *ast.Ident:
-				name = fun.Name
-			}
-			queue = append(queue, p.byName[name]...)
-			return true
-		})
-		if hit {
-			return true
-		}
-	}
-	return false
-}
-
-// isConnStateRead is a call of transport.ConnStateFromContext.
-func isConnStateRead(call *ast.CallExpr) bool {
+// isCallerConnection is a call of transport.CallerConnection.
+func isCallerConnection(call *ast.CallExpr) bool {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return false
 	}
 	pkg, ok := sel.X.(*ast.Ident)
-	return ok && pkg.Name == "transport" && sel.Sel.Name == "ConnStateFromContext"
+	return ok && pkg.Name == "transport" && sel.Sel.Name == "CallerConnection"
 }
 
-// isTie is a call of a callerConn tie method, or of a function that ties
-// directly.
-func isTie(call *ast.CallExpr) bool {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	if tieMethods[sel.Sel.Name] {
-		return true
-	}
-	for key := range directTieFunctions {
-		if strings.HasSuffix(key, "."+sel.Sel.Name) {
-			return true
+// callsCallerConnection reports whether body calls transport.CallerConnection.
+func callsCallerConnection(body *ast.BlockStmt) bool {
+	found := false
+	ast.Inspect(body, func(node ast.Node) bool {
+		if call, ok := node.(*ast.CallExpr); ok && isCallerConnection(call) {
+			found = true
 		}
-	}
-	return false
-}
-
-// isTieMethod reports whether fn is one of callerConn's tie methods, the
-// only callers of BindCleanup and RegisterCleanup the rule admits.
-func isTieMethod(fn *ast.FuncDecl) bool {
-	return tieMethods[fn.Name.Name] && receiverName(fn) == "callerConn"
+		return !found
+	})
+	return found
 }
 
 // opensWithCallerConnection reports whether fn's first statement is
-// `conn, err := callerConnection(ctx)` on its own leading parameter, with
-// the error kept.
+// `conn, err := transport.CallerConnection(ctx)` on its own leading
+// parameter, with the error kept.
 func opensWithCallerConnection(fn *ast.FuncDecl) bool {
 	if len(fn.Body.List) == 0 || fn.Type.Params == nil || len(fn.Type.Params.List) == 0 || len(fn.Type.Params.List[0].Names) == 0 {
 		return false
@@ -317,29 +217,11 @@ func opensWithCallerConnection(fn *ast.FuncDecl) bool {
 		return false
 	}
 	call, ok := assign.Rhs[0].(*ast.CallExpr)
-	if !ok || len(call.Args) != 1 {
-		return false
-	}
-	callee, ok := call.Fun.(*ast.Ident)
-	if !ok || callee.Name != "callerConnection" {
+	if !ok || len(call.Args) != 1 || !isCallerConnection(call) {
 		return false
 	}
 	arg, ok := call.Args[0].(*ast.Ident)
 	return ok && arg.Name == fn.Type.Params.List[0].Names[0].Name
-}
-
-// callsIdent reports whether body calls the package function name.
-func callsIdent(body *ast.BlockStmt, name string) bool {
-	found := false
-	ast.Inspect(body, func(node ast.Node) bool {
-		if call, ok := node.(*ast.CallExpr); ok {
-			if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == name {
-				found = true
-			}
-		}
-		return !found
-	})
-	return found
 }
 
 // funcKey names fn as "Receiver.method", or by its name for a function.
@@ -401,48 +283,197 @@ func isAppMethod(fn *ast.FuncDecl) bool {
 	return ok && ident.Name == "App"
 }
 
-// byIDTie is a subscription the client can also end by id.
-type byIDTie struct {
-	subscribe   func(context.Context) (id string, err error)
-	unsubscribe func(ctx context.Context, id string) error
-	key         func(id string) string
-	live        func(id string) bool
-	// principal is the connection the subscribe runs on; zero for most.
+// connectionTie is one arming method driven against the real resource it
+// arms, for checkConnectionTie.
+type connectionTie struct {
+	// open arms one resource on ctx's connection and answers the id its
+	// release names ("" when it has none).
+	open func(ctx context.Context) (string, error)
+	// held counts the resources of this kind that exist: the resource
+	// itself (a pump handle, a mount, a recording, a claim, a window),
+	// never a record of its tie.
+	held func() int
+	// release gives the resource back by id from ctx's connection; nil
+	// when the client has no release by id.
+	release func(ctx context.Context, id string) error
+	// anyCaller is whether the release lands from any connection; when
+	// false, only the opening connection's release does.
+	anyCaller bool
+	// key is the key the resource's release is bound under; nil for a
+	// release a connection binds once for its life.
+	key func(id string) string
+	// principal is the connection every open runs on; zero for most.
 	principal transport.ConnPrincipal
 }
 
-// checkByIDTie proves that the subscribe binds its release to the connection
-// under the subscription's key and that the unsubscribe removes what is bound
-// there, so a long-lived connection keeps no cleanup per subscription it ever
-// made.
-func checkByIDTie(t *testing.T, tie byIDTie) {
+// connectionTieChecks drive every method that opens with
+// transport.CallerConnection against its real resource
+// (TestArmingMethodsAreTiedToTheirConnection keeps the lists equal). Each
+// builds its own App.
+var connectionTieChecks = map[string]func(*testing.T) connectionTie{
+	"SubscribePRUpdates":         prUpdatesConnectionTie,
+	"SubscribePRList":            prListConnectionTie,
+	"SubscribePipeline":          pipelineConnectionTie,
+	"GitStatusSubscribe":         gitStatusConnectionTie,
+	"BrowserCompanionPaneAttach": companionPaneConnectionTie,
+	"BeginDictation":             dictationConnectionTie,
+	"BeginLiveDictation":         liveDictationConnectionTie,
+	"ProviderTerminalAttach":     providerTerminalConnectionTie,
+	"WatchBackgroundTaskOutput":  backgroundTaskOutputConnectionTie,
+	"GetNativeNetworkConfig":     nativeNetworkConnectionTie,
+	"OpenComputerPairing": func(t *testing.T) connectionTie {
+		return computerPairingConnectionTie(t, nil, func(a *App, ctx context.Context) (ComputerPairingWindow, error) {
+			return a.OpenComputerPairing(ctx, "lan", "full")
+		})
+	},
+	"OpenOwnComputerPairing": func(t *testing.T) connectionTie {
+		// Own devices keep their pairings in the attached-backends store.
+		attach := func(t *testing.T, a *App) {
+			manager, err := newTestBackends(t, t.TempDir(), "Host", "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			SetAttachedBackends(a, manager)
+		}
+		return computerPairingConnectionTie(t, attach, func(a *App, ctx context.Context) (ComputerPairingWindow, error) {
+			return a.OpenOwnComputerPairing(ctx, "lan")
+		})
+	},
+	"OpenPRDiff": func(t *testing.T) connectionTie {
+		return gitReviewDiffConnectionTie(t, func(a *App, ctx context.Context, f reviewDiffTieFixture) (ReviewDiffOpened, error) {
+			return a.OpenPRDiff(ctx, f.ref, prRef(), f.rev, false, false)
+		})
+	},
+	"OpenPRCommitDiff": func(t *testing.T) connectionTie {
+		return gitReviewDiffConnectionTie(t, func(a *App, ctx context.Context, f reviewDiffTieFixture) (ReviewDiffOpened, error) {
+			return a.OpenPRCommitDiff(ctx, f.ref, prRef(), f.rev, f.rev.HeadSHA, f.rev.HeadSHA, false, false)
+		})
+	},
+	"OpenCommitFileDiff": func(t *testing.T) connectionTie {
+		return gitReviewDiffConnectionTie(t, func(a *App, ctx context.Context, f reviewDiffTieFixture) (ReviewDiffOpened, error) {
+			return a.OpenCommitFileDiff(ctx, f.ref, []string{reviewDiffTieUncommitted})
+		})
+	},
+	"OpenWorkspaceDiff": func(t *testing.T) connectionTie {
+		return gitReviewDiffConnectionTie(t, func(a *App, ctx context.Context, f reviewDiffTieFixture) (ReviewDiffOpened, error) {
+			return a.OpenWorkspaceDiff(ctx, f.ref, false)
+		})
+	},
+	"OpenBranchBaseDiff": func(t *testing.T) connectionTie {
+		return gitReviewDiffConnectionTie(t, func(a *App, ctx context.Context, f reviewDiffTieFixture) (ReviewDiffOpened, error) {
+			return a.OpenBranchBaseDiff(ctx, f.ref, "main", false)
+		})
+	},
+	"OpenCommitDiff": func(t *testing.T) connectionTie {
+		return gitReviewDiffConnectionTie(t, func(a *App, ctx context.Context, f reviewDiffTieFixture) (ReviewDiffOpened, error) {
+			return a.OpenCommitDiff(ctx, f.ref, f.rev.HeadSHA, false)
+		})
+	},
+	"OpenEditDiff": func(t *testing.T) connectionTie {
+		return editsReviewDiffConnectionTie(t, func(a *App, ctx context.Context, threadID string) (ReviewDiffOpened, error) {
+			return a.OpenEditDiff(ctx, threadID, "edit-0")
+		})
+	},
+	"OpenTurnEditsDiff": func(t *testing.T) connectionTie {
+		return editsReviewDiffConnectionTie(t, func(a *App, ctx context.Context, threadID string) (ReviewDiffOpened, error) {
+			return a.OpenTurnEditsDiff(ctx, threadID, 1)
+		})
+	},
+	"ThreadOwnerChanges": ownerChangesConnectionTie,
+}
+
+// TestArmedResourcesFollowTheirConnection runs checkConnectionTie over
+// every arming method's real resource.
+func TestArmedResourcesFollowTheirConnection(t *testing.T) {
+	t.Parallel()
+	names := make([]string, 0, len(connectionTieChecks))
+	for name := range connectionTieChecks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			checkConnectionTie(t, connectionTieChecks[name](t))
+		})
+	}
+}
+
+// checkConnectionTie proves, on the real resource, the three things a tie
+// owes its connection:
+//
+//   - the connection's end releases what it armed;
+//   - a release by id unties the connection that opened it, so a
+//     long-lived connection keeps no release per resource it ever held,
+//     and, unless any caller may release, another connection's release
+//     lands on nothing;
+//   - an open on a connection that is already closing fails with
+//     transport.ErrConnectionClosing and leaves nothing armed by the time
+//     it returns.
+func checkConnectionTie(t *testing.T, tie connectionTie) {
 	t.Helper()
-	ctx, state := transport.WithConnState(context.Background(), tie.principal)
-	id, err := tie.subscribe(ctx)
-	if err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-	state.UnbindCleanup(tie.key(id))
-	state.RunCleanups()
-	if !tie.live(id) {
-		t.Fatal("the connection's end released a subscription whose key was unbound: its tie is bound elsewhere")
-	}
-	if err := tie.unsubscribe(ctx, id); err != nil {
-		t.Fatalf("unsubscribe: %v", err)
+	base := tie.held()
+	open := func(ctx context.Context) string {
+		t.Helper()
+		id, err := tie.open(ctx)
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		if got := tie.held(); got != base+1 {
+			t.Fatalf("an open holds %d resources, want %d", got, base+1)
+		}
+		return id
 	}
 
-	ctx, state = transport.WithConnState(context.Background(), tie.principal)
-	if id, err = tie.subscribe(ctx); err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-	if !state.BindCleanup(tie.key(id), func() { t.Error("the unsubscribe left a cleanup bound under its key") }) {
-		t.Fatal("bind refused on an open connection")
-	}
-	if err := tie.unsubscribe(ctx, id); err != nil {
-		t.Fatalf("unsubscribe: %v", err)
-	}
-	if tie.live(id) {
-		t.Fatal("the unsubscribe did not release the subscription")
-	}
+	ctx, state := newTestConnection(t, tie.principal)
+	open(ctx)
 	state.RunCleanups()
+	awaitHeld(t, tie, base, "after the connection that opened it ended")
+
+	if tie.release != nil {
+		ctx, state = newTestConnection(t, tie.principal)
+		id := open(ctx)
+		other, _ := newTestConnection(t, tie.principal)
+		releaser := ctx
+		if tie.anyCaller {
+			releaser = other
+		} else {
+			// Its answer is the method's own (unknown, or nothing); what
+			// matters is that it released nothing.
+			_ = tie.release(other, id)
+			if got := tie.held(); got != base+1 || (tie.key != nil && !state.Bound(tie.key(id))) {
+				t.Fatalf("another connection's release landed: %d held, want %d", got, base+1)
+			}
+		}
+		if err := tie.release(releaser, id); err != nil {
+			t.Fatalf("release: %v", err)
+		}
+		awaitHeld(t, tie, base, "after its release")
+		if tie.key != nil && state.Bound(tie.key(id)) {
+			t.Fatal("the connection that opened a released resource still holds its release")
+		}
+		state.RunCleanups()
+	}
+
+	ctx, state = newTestConnection(t, tie.principal)
+	state.RunCleanups()
+	if _, err := tie.open(ctx); !errors.Is(err, transport.ErrConnectionClosing) {
+		t.Fatalf("an open on a closing connection = %v, want transport.ErrConnectionClosing", err)
+	}
+	if got := tie.held(); got != base {
+		t.Fatalf("an open refused by a closing connection left %d held, want %d at once", got, base)
+	}
+}
+
+// awaitHeld waits for held to come to want: a release that removes files
+// runs in the background (holdReviewDiff).
+func awaitHeld(t *testing.T, tie connectionTie, want int, when string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for tie.held() != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d held %s, want %d", tie.held(), when, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }

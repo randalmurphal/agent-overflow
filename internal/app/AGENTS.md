@@ -104,14 +104,17 @@ when its row later saves, when `DismissUnsavedThreadRows` names it, or with
 the thread (`app_unsaved_rows.go`).
 
 A method that arms a connection-owned resource opens with
-`conn, err := callerConnection(ctx)`, which refuses a call that came over no
-connection before anything is armed or spent, and ties the release with
-`conn.registerRelease`. A resource the client can also release by id ties
-with `conn.bindRelease` instead, and its release method unbinds the same key
-on its call's connection. Both release at once and fail the call when
-teardown already began (`app_caller_connection.go`). Update
-`TestArmingMethodsAreTiedToTheirConnection` only when a method truly does not
-own a per-connection resource.
+`conn, err := transport.CallerConnection(ctx)`, which refuses a call that
+came over no connection before anything is armed or spent. It ties the
+release with `conn.Bind` inside the critical section that publishes the
+resource, so a release that runs at once finds it, and the resource's
+record keeps the `transport.Tie`: every removal of the record, by id from
+any caller or on the resource's own end, unties the connection that holds
+it. A refused tie publishes nothing; a resource another package published
+first is released before the call fails. Each such method has a row in
+`connectionTieChecks`, which proves those behaviors on the real resource;
+update `TestArmingMethodsAreTiedToTheirConnection` only when a method truly
+does not own a per-connection resource.
 
 ## Transaction rules
 

@@ -154,6 +154,9 @@ type paneMount struct {
 	// order admits the numbered tab commands made in the mount in the
 	// user's order (selection.go).
 	order *turnorder.Order
+	// onDetach runs, outside the lock, once the mount is detached
+	// (OnDetach).
+	onDetach func()
 }
 
 // mountLocked answers the pane mount id when it is attached to the thread
@@ -196,6 +199,27 @@ func (m *Manager) AttachPane(caller Caller) (CompanionSubscription, error) {
 	return CompanionSubscription{ID: string(id), State: state}, nil
 }
 
+// OnDetach sets what runs once the mount is detached, such as releasing
+// its connection's cleanup. False when it is already gone.
+func (m *Manager) OnDetach(id MountID, f func()) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	mount, ok := m.panes[id]
+	if ok {
+		mount.onDetach = f
+		m.panes[id] = mount
+	}
+	return ok
+}
+
+// MountedPanesForTesting reports how many pane mounts are attached, for
+// root tests of the mount's connection tie.
+func (m *Manager) MountedPanesForTesting() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.panes)
+}
+
 // DetachPane releases one pane mount. The presentation sync runs so an engine
 // with a presented native view hides it rather than painting over whatever
 // replaced the pane. A mount that remains for the thread becomes the
@@ -224,6 +248,9 @@ func (m *Manager) DetachPane(id MountID) {
 		}
 	}
 	m.mu.Unlock()
+	if ok && mount.onDetach != nil {
+		mount.onDetach()
+	}
 	for _, p := range recolor {
 		m.applyPageBase(p)
 	}

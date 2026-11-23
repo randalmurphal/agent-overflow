@@ -30,8 +30,16 @@ type statusPump struct {
 type statusState struct {
 	mu      sync.Mutex
 	pumps   map[string]*statusPump
-	handles map[string]*statusPump
+	handles map[string]*statusHandle
 	wg      sync.WaitGroup
+}
+
+// statusHandle is one caller's reference on a pump.
+type statusHandle struct {
+	pump *statusPump
+	// onRelease runs, outside the lock, once the handle is gone, however
+	// it goes (OnRelease).
+	onRelease func()
 }
 
 // Subscribe begins one workspace-keyed status stream and returns its initial
@@ -83,7 +91,7 @@ func (s *Service) Subscribe(ctx context.Context, ref WorkspaceRef) (StatusSubscr
 		pump = &statusPump{cwd: cwd, sub: sub, done: make(chan struct{}), refs: 1}
 		s.status.pumps[cwd] = pump
 	}
-	s.status.handles[id] = pump
+	s.status.handles[id] = &statusHandle{pump: pump}
 	s.status.mu.Unlock()
 
 	if shared {
@@ -94,15 +102,28 @@ func (s *Service) Subscribe(ctx context.Context, ref WorkspaceRef) (StatusSubscr
 	return StatusSubscription{ID: id, Cwd: cwd, Status: initial}, nil
 }
 
+// OnRelease sets what runs once the handle is gone, however it goes: its
+// Unsubscribe, or its pump's end. False when it is already gone.
+func (s *Service) OnRelease(id string, f func()) bool {
+	s.status.mu.Lock()
+	defer s.status.mu.Unlock()
+	handle, ok := s.status.handles[id]
+	if ok {
+		handle.onRelease = f
+	}
+	return ok
+}
+
 // Unsubscribe releases one caller handle. Unknown and repeated ids are no-ops.
 func (s *Service) Unsubscribe(id string) {
 	s.status.mu.Lock()
-	pump, ok := s.status.handles[id]
+	handle, ok := s.status.handles[id]
 	if !ok {
 		s.status.mu.Unlock()
 		return
 	}
 	delete(s.status.handles, id)
+	pump := handle.pump
 	pump.refs--
 	var teardown *statusPump
 	if pump.refs <= 0 {
@@ -112,6 +133,9 @@ func (s *Service) Unsubscribe(id string) {
 		}
 	}
 	s.status.mu.Unlock()
+	if handle.onRelease != nil {
+		handle.onRelease()
+	}
 	if teardown == nil {
 		return
 	}
@@ -148,15 +172,22 @@ func (s *Service) pumpStatus(pump *statusPump) {
 
 func (s *Service) dropStatusPump(pump *statusPump) {
 	s.status.mu.Lock()
-	defer s.status.mu.Unlock()
 	pump.dead = true
 	if s.status.pumps[pump.cwd] == pump {
 		delete(s.status.pumps, pump.cwd)
 	}
-	for id, held := range s.status.handles {
-		if held == pump {
+	var released []func()
+	for id, handle := range s.status.handles {
+		if handle.pump == pump {
 			delete(s.status.handles, id)
+			if handle.onRelease != nil {
+				released = append(released, handle.onRelease)
+			}
 		}
+	}
+	s.status.mu.Unlock()
+	for _, release := range released {
+		release()
 	}
 }
 

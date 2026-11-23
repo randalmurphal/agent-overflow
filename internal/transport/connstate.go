@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"log"
 	"slices"
 	"sync"
@@ -9,11 +10,11 @@ import (
 
 // ConnState carries per-connection scratch space that survives the
 // lifetime of one WebSocket: from upgrade until the connection closes
-// (cleanly or otherwise). Its current job is to let RPC handlers
-// register cleanup callbacks that fire when the underlying connection
-// goes away — the canonical use case is releasing long-lived
-// subscriptions (gitwatch, future event streams) so a dropped client
-// does not leak server-side resources.
+// (cleanly or otherwise). Its current job is to let RPC handlers bind
+// releases that run when the underlying connection goes away (Bind) —
+// the canonical use case is releasing long-lived subscriptions
+// (gitwatch, future event streams) so a dropped client does not leak
+// server-side resources.
 //
 // It also carries the connection's ConnPrincipal — the durable session it
 // presented and which screen is on the other end — for handlers that
@@ -36,8 +37,7 @@ type ConnState struct {
 	principal ConnPrincipal
 }
 
-// connCleanup is one callback registered to run when the connection ends.
-// key is empty unless BindCleanup registered it.
+// connCleanup is one release bound to run when the connection ends.
 type connCleanup struct {
 	key string
 	fn  func()
@@ -162,48 +162,97 @@ func SessionFromContext(ctx context.Context) string {
 // ConnStateFromContext extracts the per-connection ConnState if one was
 // installed by the transport. Returns nil when the call came over no
 // connection (a unit test, a background task, the Wails runtime route).
-// The principal readers above treat nil as anonymous. A handler that arms a
-// resource for its connection refuses a nil state instead of arming what
-// nothing would release (internal/app callerConnection).
+// The principal readers above treat nil as anonymous. A handler that ties
+// a release to its connection takes the connection from CallerConnection
+// instead, which refuses a call that came over none.
 func ConnStateFromContext(ctx context.Context) *ConnState {
 	state, _ := ctx.Value(connStateKey{}).(*ConnState)
 	return state
 }
 
-// RegisterCleanup adds fn to the list of callbacks that will run when
-// the connection ends. Returns true if registered, false if the
-// connection is already closing — in which case the caller should run
-// fn itself (or no-op, depending on semantics) since the cleanup pass
-// has already started or finished.
+// ErrNoConnection refuses a call that would tie a release to its
+// connection when it came over none: nothing would ever run the release.
+var ErrNoConnection = errors.New("this call opens something for its client connection to release, and it came over no connection")
+
+// ErrConnectionClosing refuses a tie to a connection whose cleanup pass
+// has begun: the release would never run.
+var ErrConnectionClosing = errors.New("the connection closed while this call was opening something for it")
+
+// CallerConnection answers the connection ctx's call came over, or
+// ErrNoConnection when it came over none. A handler that arms a resource
+// for its client calls it first, so a call nothing would release is
+// refused before anything is armed or spent.
+func CallerConnection(ctx context.Context) (*ConnState, error) {
+	state := ConnStateFromContext(ctx)
+	if state == nil {
+		return nil, ErrNoConnection
+	}
+	return state, nil
+}
+
+// Tie is one release bound to a connection under a key. The resource's
+// record keeps it, so whoever removes the record, by id from any caller or
+// on the resource's own end, unties the connection that holds it. The zero
+// Tie is bound to nothing.
+type Tie struct {
+	conn *ConnState
+	key  string
+}
+
+// Bind ties release to the connection under key: the connection's end
+// runs it once, unless the Tie it answers is untied first. A key names one
+// release for the connection's life, so binding a key that is already
+// bound keeps the first release and answers a Tie to it. Bind refuses with
+// ErrNoConnection on a nil ConnState and with ErrConnectionClosing once the
+// cleanup pass has begun, and binds nothing either way.
 //
-// fn must not block — connection teardown waits for it.
-func (c *ConnState) RegisterCleanup(fn func()) bool {
-	return c.register("", fn)
-}
-
-// BindCleanup is RegisterCleanup for a resource the client can also release
-// by id before the connection ends. key names the resource; its release
-// method passes the same key to UnbindCleanup on its call's connection, so a
-// long-lived connection does not keep a callback per resource it ever held.
-func (c *ConnState) BindCleanup(key string, fn func()) bool {
-	return c.register(key, fn)
-}
-
-// UnbindCleanup removes the callbacks BindCleanup registered under key. It
-// does nothing without a connection or once the cleanup pass has begun.
-func (c *ConnState) UnbindCleanup(key string) {
-	if c == nil || key == "" {
-		return
+// Call it inside the critical section that publishes the resource, so a
+// release that runs at once finds what it releases. release may take the
+// resource's own lock, never c's, and must not block: connection teardown
+// waits for it.
+func (c *ConnState) Bind(key string, release func()) (Tie, error) {
+	if key == "" || release == nil {
+		return Tie{}, errors.New("transport: a tie needs a key and a release")
+	}
+	if c == nil {
+		return Tie{}, ErrNoConnection
 	}
 	c.mu.Lock()
-	c.cleanups = slices.DeleteFunc(c.cleanups, func(cleanup connCleanup) bool { return cleanup.key == key })
+	defer c.mu.Unlock()
+	if c.closed {
+		return Tie{}, ErrConnectionClosing
+	}
+	if !slices.ContainsFunc(c.cleanups, func(cleanup connCleanup) bool { return cleanup.key == key }) {
+		c.cleanups = append(c.cleanups, connCleanup{key: key, fn: release})
+	}
+	return Tie{conn: c, key: key}, nil
+}
+
+// Untie removes the tie's release from its connection, so a long-lived
+// connection keeps no release for a resource that is gone. Idempotent; it
+// does nothing for the zero Tie or once the cleanup pass has begun.
+func (t Tie) Untie() {
+	if t.conn == nil {
+		return
+	}
+	c := t.conn
+	c.mu.Lock()
+	c.cleanups = slices.DeleteFunc(c.cleanups, func(cleanup connCleanup) bool { return cleanup.key == t.key })
 	c.mu.Unlock()
 }
 
-// HasCleanup reports whether a callback BindCleanup registered under key
-// is still bound. False without a connection or once the cleanup pass has
-// begun.
-func (c *ConnState) HasCleanup(key string) bool {
+// HeldBy reports whether the tie binds to conn, which is what makes the
+// resource conn's client's. False for the zero Tie and for a nil conn.
+func (t Tie) HeldBy(conn *ConnState) bool {
+	return t.conn != nil && t.conn == conn
+}
+
+// Conn is the connection the tie binds to, nil for the zero Tie.
+func (t Tie) Conn() *ConnState { return t.conn }
+
+// Bound reports whether a release is still bound under key. False without
+// a connection or once the cleanup pass has begun.
+func (c *ConnState) Bound(key string) bool {
 	if c == nil || key == "" {
 		return false
 	}
@@ -212,24 +261,26 @@ func (c *ConnState) HasCleanup(key string) bool {
 	return slices.ContainsFunc(c.cleanups, func(cleanup connCleanup) bool { return cleanup.key == key })
 }
 
-func (c *ConnState) register(key string, fn func()) bool {
-	if fn == nil {
-		return false
+// BoundKeys answers the keys releases are bound under, in binding order:
+// what the connection's end would release now.
+func (c *ConnState) BoundKeys() []string {
+	if c == nil {
+		return nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
-		return false
+	keys := make([]string, 0, len(c.cleanups))
+	for _, cleanup := range c.cleanups {
+		keys = append(keys, cleanup.key)
 	}
-	c.cleanups = append(c.cleanups, connCleanup{key: key, fn: fn})
-	return true
+	return keys
 }
 
-// RunCleanups executes every registered callback in LIFO order. Called
-// once by the connection handler when the WS shuts down. Subsequent
-// RegisterCleanup calls return false (they belong to a connection that
-// is already gone). Recovers panics so one badly-behaved cleanup can't
-// abort the rest. Idempotent: a second call is a no-op.
+// RunCleanups executes every bound release in LIFO order. Called once by
+// the connection handler when the WS shuts down. Later Binds refuse with
+// ErrConnectionClosing (they belong to a connection that is already gone).
+// Recovers panics so one badly-behaved release can't abort the rest.
+// Idempotent: a second call is a no-op.
 func (c *ConnState) RunCleanups() {
 	c.mu.Lock()
 	if c.closed {

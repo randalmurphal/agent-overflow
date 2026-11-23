@@ -69,6 +69,7 @@ type pipelinePump struct {
 // pipelineHandle is one caller's reference on a pipeline pump, as
 // prUpdateHandle is on a PR pump.
 type pipelineHandle struct {
+	tie     transport.Tie
 	pump    *pipelinePump
 	ref     *pump.Handle[prPumpRequest]
 	follows map[string]bool
@@ -99,7 +100,7 @@ func (a *App) fetchPipeline(ctx context.Context, repo gitops.RepoReference, id s
 //ao:scope git:operate
 //ao:route selected
 func (a *App) SubscribePipeline(ctx context.Context, repo gitops.RepoReference, id string) (PipelineSubscriptionResult, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return PipelineSubscriptionResult{}, err
 	}
@@ -113,7 +114,7 @@ func (a *App) SubscribePipeline(ctx context.Context, repo gitops.RepoReference, 
 		return PipelineSubscriptionResult{}, fmt.Errorf("pipeline id: %w", err)
 	}
 	key := pipelineKey(repo, id)
-	result, joined, err := a.joinPipelinePump(key)
+	result, joined, err := a.joinPipelinePump(key, conn)
 	if err != nil {
 		return PipelineSubscriptionResult{}, err
 	}
@@ -123,16 +124,13 @@ func (a *App) SubscribePipeline(ctx context.Context, repo gitops.RepoReference, 
 			return PipelineSubscriptionResult{}, readErr
 		}
 		var start *pipelinePump
-		result, start, err = a.createPipelinePump(repo, id, key, pipeline, readErr)
+		result, start, err = a.createPipelinePump(repo, id, key, pipeline, readErr, conn)
 		if err != nil {
 			return PipelineSubscriptionResult{}, err
 		}
 		if start != nil {
 			a.prUpdates.wg.Go(func() { a.pumpPipeline(start) })
 		}
-	}
-	if err := conn.bindRelease(pipelineCleanupKey(result.ID), func() { a.unsubscribePipeline(result.ID) }); err != nil {
-		return PipelineSubscriptionResult{}, fmt.Errorf("pipelines: %w", err)
 	}
 	return result, nil
 }
@@ -154,7 +152,7 @@ func (a *App) livePipelinePumpLocked(key string) *pipelinePump {
 	return pump
 }
 
-func (a *App) joinPipelinePump(key string) (PipelineSubscriptionResult, bool, error) {
+func (a *App) joinPipelinePump(key string, conn *transport.ConnState) (PipelineSubscriptionResult, bool, error) {
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
 	a.ensurePipelineMapsLocked()
@@ -165,13 +163,14 @@ func (a *App) joinPipelinePump(key string) (PipelineSubscriptionResult, bool, er
 	if pump == nil {
 		return PipelineSubscriptionResult{}, false, nil
 	}
-	return a.takePipelineReferenceLocked(pump), true, nil
+	result, err := a.takePipelineReferenceLocked(pump, conn)
+	return result, err == nil, err
 }
 
 // createPipelinePump registers a pump seeded with the caller's read, or
 // joins one created meanwhile, which wins: its subscribers must all start
 // from its state. start is the pump whose goroutine the caller launches.
-func (a *App) createPipelinePump(repo gitops.RepoReference, id, key string, pipeline gitops.CIPipeline, readErr error) (PipelineSubscriptionResult, *pipelinePump, error) {
+func (a *App) createPipelinePump(repo gitops.RepoReference, id, key string, pipeline gitops.CIPipeline, readErr error, conn *transport.ConnState) (PipelineSubscriptionResult, *pipelinePump, error) {
 	var fail prForgeFailure
 	var encoded []byte
 	if readErr != nil {
@@ -190,7 +189,8 @@ func (a *App) createPipelinePump(repo gitops.RepoReference, id, key string, pipe
 		return PipelineSubscriptionResult{}, nil, ErrTooManyPipelineSubscriptions
 	}
 	if existing := a.livePipelinePumpLocked(key); existing != nil {
-		return a.takePipelineReferenceLocked(existing), nil, nil
+		result, err := a.takePipelineReferenceLocked(existing, conn)
+		return result, nil, err
 	}
 	pump := &pipelinePump{key: key, repo: repo, id: id, pumpCore: a.newPumpCore()}
 	pump.ciPhase = ciPhase{
@@ -207,13 +207,25 @@ func (a *App) createPipelinePump(repo gitops.RepoReference, id, key string, pipe
 		pump.ci, pump.ciKnown, pump.ciLast = pipeline, true, encoded
 	}
 	pump.seq = a.nextPRUpdateSeqLocked()
+	// The caller's handle comes first: a connection that is closing takes
+	// none, and then no pump is published for it either.
+	result, err := a.takePipelineReferenceLocked(pump, conn)
+	if err != nil {
+		return PipelineSubscriptionResult{}, nil, err
+	}
 	a.prUpdates.pipelines[key] = pump
-	return a.takePipelineReferenceLocked(pump), pump, nil
+	return result, pump, nil
 }
 
-func (a *App) takePipelineReferenceLocked(pump *pipelinePump) PipelineSubscriptionResult {
+// takePipelineReferenceLocked registers one handle against pump, tied to
+// conn as it is published (takePRUpdateReferenceLocked).
+func (a *App) takePipelineReferenceLocked(pump *pipelinePump, conn *transport.ConnState) (PipelineSubscriptionResult, error) {
 	id := uuid.NewString()
-	a.prUpdates.pipelineHandles[id] = &pipelineHandle{pump: pump, ref: pump.TakeLocked()}
+	tie, err := conn.Bind(pipelineCleanupKey(id), func() { a.unsubscribePipeline(id) })
+	if err != nil {
+		return PipelineSubscriptionResult{}, fmt.Errorf("pipelines: %w", err)
+	}
+	a.prUpdates.pipelineHandles[id] = &pipelineHandle{tie: tie, pump: pump, ref: pump.TakeLocked()}
 	result := PipelineSubscriptionResult{
 		ID:        id,
 		Key:       pump.key,
@@ -227,7 +239,7 @@ func (a *App) takePipelineReferenceLocked(pump *pipelinePump) PipelineSubscripti
 		pipeline := pump.ci
 		result.Pipeline = &pipeline
 	}
-	return result
+	return result, nil
 }
 
 // SetPipelineActive reports whether one subscriber currently shows its
@@ -295,10 +307,12 @@ func (a *App) RefreshPipeline(ctx context.Context, subscriptionID string) error 
 	return pump.Request(ctx, prPumpRequest{ci: true})
 }
 
+// UnsubscribePipeline releases a subscription, from whichever connection
+// asks; the connection that subscribed is untied with the handle.
+//
 //ao:scope git:operate
 //ao:route home
 func (a *App) UnsubscribePipeline(ctx context.Context, subscriptionID string) error {
-	transport.ConnStateFromContext(ctx).UnbindCleanup(pipelineCleanupKey(subscriptionID))
 	a.unsubscribePipeline(subscriptionID)
 	return nil
 }
@@ -313,6 +327,7 @@ func (a *App) unsubscribePipeline(id string) {
 		return
 	}
 	delete(a.prUpdates.pipelineHandles, id)
+	handle.tie.Untie()
 	pump := handle.pump
 	releaseFollowsLocked(&pump.ciPhase, handle.follows)
 	handle.follows = nil
@@ -337,6 +352,7 @@ func (a *App) dropPipelinePump(pump *pipelinePump) {
 			releaseFollowsLocked(&pump.ciPhase, handle.follows)
 			handle.follows = nil
 			delete(a.prUpdates.pipelineHandles, id)
+			handle.tie.Untie()
 		}
 	}
 }

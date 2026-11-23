@@ -232,27 +232,56 @@ func TestGitStatusSubscribeReleasesOnConnectionClose(t *testing.T) {
 	}
 }
 
-// TestGitStatusUnsubscribeUnbindsItsConnectionTie: see checkByIDTie.
-func TestGitStatusUnsubscribeUnbindsItsConnectionTie(t *testing.T) {
-	t.Parallel()
+// gitStatusConnectionTie is GitStatusSubscribe's row of
+// connectionTieChecks: a handle on the workspace's status pump, released
+// by any caller.
+func gitStatusConnectionTie(t *testing.T) connectionTie {
 	app := newTestAppWithStore(t)
 	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
 	installGitWatchForTest(t, app, stub)
 	thread := makeWorkspaceThread(t, app, "thread-sub-tie")
-	var cwd string
-	checkByIDTie(t, byIDTie{
-		subscribe: func(ctx context.Context) (string, error) {
+	return connectionTie{
+		open: func(ctx context.Context) (string, error) {
 			res, err := app.GitStatusSubscribe(ctx, workspaceRefForThread(thread))
-			cwd = res.Cwd
 			return res.ID, err
 		},
-		unsubscribe: app.GitStatusUnsubscribe,
-		key:         gitStatusCleanupKey,
-		live: func(string) bool {
-			_, present := gitWatchPumpRefs(app, cwd)
-			return present
+		held: func() int {
+			_, handles := app.gitApplication().StatusPumpCountsForTesting()
+			return handles
 		},
-	})
+		release:   app.GitStatusUnsubscribe,
+		anyCaller: true,
+		key:       gitStatusCleanupKey,
+	}
+}
+
+// A subscription whose watcher stops is gone, and so is its tie: the
+// connection that opened it keeps no release for a stream that ended.
+func TestGitStatusSubscriptionWhoseWatcherStopsUntiesItsConnection(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
+	installGitWatchForTest(t, app, stub)
+	thread := makeWorkspaceThread(t, app, "thread-sub-watcher-stops")
+	ctx, state := newTestConnection(t, transport.ConnPrincipal{})
+	res, err := app.GitStatusSubscribe(ctx, workspaceRefForThread(thread))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Bound(gitStatusCleanupKey(res.ID)) {
+		t.Fatal("the subscription is not tied to its connection")
+	}
+	app.gitWatch.Close()
+	deadline := time.Now().Add(10 * time.Second)
+	for state.Bound(gitStatusCleanupKey(res.ID)) {
+		if time.Now().After(deadline) {
+			t.Fatal("a subscription whose watcher stopped left its release bound")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, handles := app.gitApplication().StatusPumpCountsForTesting(); handles != 0 {
+		t.Fatalf("%d handles outlived their watcher", handles)
+	}
 }
 
 func TestGitStatusSubscribeFailsOnUnknownProject(t *testing.T) {

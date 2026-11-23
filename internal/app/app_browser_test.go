@@ -235,9 +235,10 @@ func TestBrowserMCPRowSeparatesPreferenceFromSettings(t *testing.T) {
 	}
 }
 
-// TestBrowserCompanionPaneDetachUnbindsItsConnectionTie: see checkByIDTie.
-func TestBrowserCompanionPaneDetachUnbindsItsConnectionTie(t *testing.T) {
-	t.Parallel()
+// companionPaneConnectionTie is BrowserCompanionPaneAttach's row of
+// connectionTieChecks: a pane mount, which only the host's window makes
+// and any caller detaches.
+func companionPaneConnectionTie(t *testing.T) connectionTie {
 	app := newTestAppWithStore(t)
 	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
 	app.browser.manager = manager
@@ -250,16 +251,17 @@ func TestBrowserCompanionPaneDetachUnbindsItsConnectionTie(t *testing.T) {
 	if _, err := manager.NewPage(t.Context(), access); err != nil {
 		t.Fatalf("open page: %v", err)
 	}
-	checkByIDTie(t, byIDTie{
-		subscribe: func(ctx context.Context) (string, error) {
+	return connectionTie{
+		open: func(ctx context.Context) (string, error) {
 			pane, err := app.BrowserCompanionPaneAttach(ctx, thread.ID)
 			return pane.ID, err
 		},
-		unsubscribe: app.BrowserCompanionPaneDetach,
-		key:         companionPaneCleanupKey,
-		live:        func(id string) bool { return manager.SetPaneRect(appbrowser.MountID(id), appbrowser.PaneRect{}) == nil },
-		principal:   transport.ConnPrincipal{HostWindow: true},
-	})
+		held:      manager.MountedPanesForTesting,
+		release:   app.BrowserCompanionPaneDetach,
+		anyCaller: true,
+		key:       companionPaneCleanupKey,
+		principal: transport.ConnPrincipal{HostWindow: true},
+	}
 }
 
 // Only the host's own window mounts a browser pane: the native view lives
@@ -293,7 +295,7 @@ func TestBrowserCompanionPaneAttachIsTheHostWindowsAlone(t *testing.T) {
 			ctx, _ := transport.WithConnState(t.Context(), transport.ConnPrincipal{})
 			return ctx
 		}, errBrowserPaneNotHostWindow},
-		{"a call over no connection", func() context.Context { return t.Context() }, errNoCallerConnection},
+		{"a call over no connection", func() context.Context { return t.Context() }, transport.ErrNoConnection},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pane, err := app.BrowserCompanionPaneAttach(tc.ctx(), thread.ID)

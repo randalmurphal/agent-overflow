@@ -127,7 +127,7 @@ func (a *App) ListCommitFiles(ctx context.Context, ws WorkspaceRef) (CommitFiles
 //
 //ao:scope files:read
 func (a *App) OpenCommitFileDiff(ctx context.Context, ws WorkspaceRef, paths []string) (ReviewDiffOpened, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}

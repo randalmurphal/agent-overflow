@@ -151,7 +151,7 @@ func (a *App) ListThreadEditDiffs(threadID string) (EditDiffList, error) {
 //ao:scope threads:read
 //ao:callerbound
 func (a *App) OpenEditDiff(ctx context.Context, threadID string, payloadID string) (ReviewDiffOpened, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
@@ -176,7 +176,7 @@ func (a *App) OpenEditDiff(ctx context.Context, threadID string, payloadID strin
 //ao:scope threads:read
 //ao:callerbound
 func (a *App) OpenTurnEditsDiff(ctx context.Context, threadID string, turnIndex int) (ReviewDiffOpened, error) {
-	conn, err := callerConnection(ctx)
+	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
@@ -194,7 +194,7 @@ func (a *App) OpenTurnEditsDiff(ctx context.Context, threadID string, turnIndex 
 	return a.openEditsDiff(ctx, conn, action, threadID, payloadIDs)
 }
 
-func (a *App) openEditsDiff(ctx context.Context, conn callerConn, action, threadID string, payloadIDs []string) (ReviewDiffOpened, error) {
+func (a *App) openEditsDiff(ctx context.Context, conn *transport.ConnState, action, threadID string, payloadIDs []string) (ReviewDiffOpened, error) {
 	diff, err := newEditsDiff(ctx, a.store, threadID, payloadIDs)
 	if err != nil {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, err)

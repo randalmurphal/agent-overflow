@@ -68,11 +68,11 @@ func TestShutdownClosesHeldReviewDiffs(t *testing.T) {
 	if n := snapshotEntries(t, app); n != 0 {
 		t.Fatalf("%d snapshots left after shutdown", n)
 	}
-	if record, _ := app.reviewDiffFiles.reserve("/w", nil, transport.ScopeFilesRead, func() {}); record != nil {
+	if record, _, err := app.reviewDiffFiles.reserve("/w", testConnection(t, connCtx(t)), transport.ScopeFilesRead, func() {}); record != nil || !errors.Is(err, ErrShuttingDown) {
 		t.Fatal("a file record was reserved after shutdown")
 	}
 	late := &closingReviewDiff{}
-	if _, err := app.holdReviewDiff(testCallerConn(t, connCtx(t)), late, transport.ScopeFilesRead); !errors.Is(err, ErrShuttingDown) {
+	if _, err := app.holdReviewDiff(testConnection(t, connCtx(t)), late, transport.ScopeFilesRead); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("hold after shutdown: err = %v, want ErrShuttingDown", err)
 	}
 }
@@ -102,7 +102,7 @@ func TestCloseReviewDiffsReportsACloseFailureAndRefusesNewHandles(t *testing.T) 
 	app := newReviewDiffTestApp(t)
 	failure := errors.New("snapshot not removed")
 	held := &closingReviewDiff{err: failure}
-	if _, err := app.holdReviewDiff(testCallerConn(t, connCtx(t)), held, transport.ScopeFilesRead); err != nil {
+	if _, err := app.holdReviewDiff(testConnection(t, connCtx(t)), held, transport.ScopeFilesRead); err != nil {
 		t.Fatalf("holdReviewDiff: %v", err)
 	}
 	if err := app.closeReviewDiffs(); !errors.Is(err, failure) {
@@ -113,7 +113,7 @@ func TestCloseReviewDiffsReportsACloseFailureAndRefusesNewHandles(t *testing.T) 
 	}
 
 	late := &closingReviewDiff{}
-	if _, err := app.holdReviewDiff(testCallerConn(t, connCtx(t)), late, transport.ScopeFilesRead); !errors.Is(err, ErrShuttingDown) {
+	if _, err := app.holdReviewDiff(testConnection(t, connCtx(t)), late, transport.ScopeFilesRead); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("hold after shutdown closed the diffs: err = %v, want ErrShuttingDown", err)
 	}
 	if n := late.closes.Load(); n != 1 {
@@ -134,7 +134,7 @@ func TestCloseReviewDiffsWaitsForACloseAConnectionStarted(t *testing.T) {
 	app := newReviewDiffTestApp(t)
 	ctx, conn := reviewDiffConn(t)
 	diff := &closingReviewDiff{entered: make(chan struct{}), release: make(chan struct{})}
-	if _, err := app.holdReviewDiff(testCallerConn(t, ctx), diff, transport.ScopeFilesRead); err != nil {
+	if _, err := app.holdReviewDiff(testConnection(t, ctx), diff, transport.ScopeFilesRead); err != nil {
 		t.Fatalf("holdReviewDiff: %v", err)
 	}
 	conn.RunCleanups()
