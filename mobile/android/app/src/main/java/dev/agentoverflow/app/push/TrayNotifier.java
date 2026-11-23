@@ -118,7 +118,7 @@ final class TrayNotifier {
 
     /**
      * The tray tag for one moment: {@code <backend>|<id>}, mirroring
-     * {@code push.TrayTag} and {@code pushTag} in
+     * {@code pushTag} in
      * {@code stores/pushPresenter.svelte.ts}.
      *
      * <p>Namespaced by BACKEND because a phone is paired with several and

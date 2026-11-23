@@ -15,14 +15,9 @@ const (
 var invalidBranchChars = regexp.MustCompile(`[^a-z0-9_-]+`)
 var invalidBranchNameChars = regexp.MustCompile(`[^A-Za-z0-9_/-]+`)
 
-// BuildTemporaryWorktreeBranchName creates the default temporary branch
-// shape used until the first user turn can rename it descriptively.
-func BuildTemporaryWorktreeBranchName() string {
-	return BuildTemporaryWorktreeBranchNameWithPrefix(AutoWorktreeBranchPrefix)
-}
-
-// BuildTemporaryWorktreeBranchNameWithPrefix creates a flat, prefixed
-// temporary branch name.
+// BuildTemporaryWorktreeBranchNameWithPrefix creates the flat, prefixed
+// temporary branch name used until the first user turn can rename it
+// descriptively.
 func BuildTemporaryWorktreeBranchNameWithPrefix(prefix string) string {
 	prefix = normalizeWorktreeBranchPrefix(prefix)
 	var token [4]byte
@@ -30,12 +25,6 @@ func BuildTemporaryWorktreeBranchNameWithPrefix(prefix string) string {
 		return prefix + "00000000"
 	}
 	return prefix + hex.EncodeToString(token[:])
-}
-
-// IsTemporaryWorktreeBranch reports whether branch still has the temporary
-// default placeholder shape.
-func IsTemporaryWorktreeBranch(branch string) bool {
-	return IsTemporaryWorktreeBranchWithPrefix(branch, AutoWorktreeBranchPrefix)
 }
 
 // IsTemporaryWorktreeBranchWithPrefix reports whether branch is a temporary
@@ -58,12 +47,6 @@ func IsTemporaryWorktreeBranchWithPrefix(branch, prefix string) bool {
 	return true
 }
 
-// BuildGeneratedWorktreeBranchName normalizes a raw branch fragment into the
-// default prefixed form used for descriptive worktree branches.
-func BuildGeneratedWorktreeBranchName(raw string) string {
-	return BuildGeneratedWorktreeBranchNameWithPrefix(raw, AutoWorktreeBranchPrefix)
-}
-
 // BuildGeneratedWorktreeBranchNameWithPrefix normalizes a raw branch fragment
 // into the configured prefixed form used for descriptive worktree branches.
 func BuildGeneratedWorktreeBranchNameWithPrefix(raw, prefix string) string {
@@ -76,12 +59,12 @@ func BuildGeneratedWorktreeBranchNameWithPrefix(raw, prefix string) string {
 
 // BranchFragmentFromUserMessage extracts a branch-fragment-ready short
 // title from the first user message of a worktree thread. The returned
-// string is the raw input to `BuildGeneratedWorktreeBranchName*` — it
+// string is the raw input to `BuildGeneratedWorktreeBranchNameWithPrefix` — it
 // has been line-clipped to the first line, sentence-clipped to the
 // first sentence-ending punctuation, whitespace-collapsed, and falls
 // back to `autoBranchFallback` ("update") on empty input. Further
 // sanitation (lowercase, forbidden chars, length cap, prefix wrap) is
-// the caller's job via `BuildGeneratedWorktreeBranchName*`.
+// the caller's job via `BuildGeneratedWorktreeBranchNameWithPrefix`.
 func BranchFragmentFromUserMessage(content string) string {
 	title := strings.TrimSpace(content)
 	if title == "" {

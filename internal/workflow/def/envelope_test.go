@@ -36,7 +36,7 @@ func TestEnvelopeSchemaObeysProviderStrictMode(t *testing.T) {
 			AdditionalProperties: &closed,
 		}}},
 	}}
-	encoded, err := EnvelopeSchema(phase)
+	encoded, err := PhaseEnvelope(phase).Schema()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestEnvelopeSchemaWidensOptionalObjectProperty(t *testing.T) {
 			Required:   []string{"kept"},
 		}},
 	}}
-	encoded, err := EnvelopeSchema(phase)
+	encoded, err := PhaseEnvelope(phase).Schema()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestEnvelopeSchemaMakesOptionalEnumNullable(t *testing.T) {
 	phase := Phase{ID: "enum", Outputs: map[string]Variable{
 		"verdict": {Schema: JSONSchema{Type: "string", Enum: []any{"yes", "no"}}, Optional: true},
 	}}
-	encoded, err := EnvelopeSchema(phase)
+	encoded, err := PhaseEnvelope(phase).Schema()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,11 +97,11 @@ func TestEnvelopeSchemaMakesOptionalEnumNullable(t *testing.T) {
 }
 
 func TestEnvelopeSchemaUsesBindingShapeAndIsDeterministic(t *testing.T) {
-	one, err := EnvelopeSchema(envelopePhase())
+	one, err := PhaseEnvelope(envelopePhase()).Schema()
 	if err != nil {
 		t.Fatal(err)
 	}
-	two, err := EnvelopeSchema(envelopePhase())
+	two, err := PhaseEnvelope(envelopePhase()).Schema()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestEnvelopeSchemaUsesBindingShapeAndIsDeterministic(t *testing.T) {
 
 func TestValidateEnvelope(t *testing.T) {
 	valid := `{"status":"done","outputs":{"count":2,"note":null},"question":null,"reason":null}`
-	if err := ValidateEnvelope(envelopePhase(), []byte(valid)); err != nil {
+	if err := PhaseEnvelope(envelopePhase()).Validate([]byte(valid)); err != nil {
 		t.Fatalf("valid envelope: %v", err)
 	}
 	cases := []struct{ name, payload, want string }{
@@ -147,14 +147,14 @@ func TestValidateEnvelope(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateEnvelope(envelopePhase(), []byte(tc.payload))
+			err := PhaseEnvelope(envelopePhase()).Validate([]byte(tc.payload))
 			var validationErr *EnvelopeValidationError
 			if !errors.As(err, &validationErr) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want typed error containing %q", err, tc.want)
 			}
 		})
 	}
-	if err := ValidateEnvelope(envelopePhase(), []byte(valid), 8); err == nil || !strings.Contains(err.Error(), "write large content to a file") {
+	if err := PhaseEnvelope(envelopePhase()).Validate([]byte(valid), 8); err == nil || !strings.Contains(err.Error(), "write large content to a file") {
 		t.Fatalf("size cap error = %v", err)
 	}
 }
@@ -182,10 +182,10 @@ func TestValidateEnvelopeTreatsAbsentControlFieldsAsTheirNullMeaning(t *testing.
 		"absent reason under a stuck":              {controlOnly, `{"status":"stuck"}`, "$.reason: must be a non-empty string when status is stuck"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			err := ValidateEnvelope(testCase.phase, []byte(testCase.payload))
+			err := PhaseEnvelope(testCase.phase).Validate([]byte(testCase.payload))
 			if testCase.want == "" {
 				if err != nil {
-					t.Fatalf("ValidateEnvelope(%s) = %v, want it accepted", testCase.payload, err)
+					t.Fatalf("Validate(%s) = %v, want it accepted", testCase.payload, err)
 				}
 				return
 			}
@@ -246,13 +246,13 @@ func TestValidateEnvelopeReadsAbsenceExactlyAsNull(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			absent := message(ValidateEnvelope(testCase.phase, []byte(testCase.absent)))
-			nulled := message(ValidateEnvelope(testCase.phase, []byte(testCase.nulled)))
+			absent := message(PhaseEnvelope(testCase.phase).Validate([]byte(testCase.absent)))
+			nulled := message(PhaseEnvelope(testCase.phase).Validate([]byte(testCase.nulled)))
 			if absent != nulled {
 				t.Fatalf("absent = %q, explicit null = %q; the two are one statement", absent, nulled)
 			}
 			if (absent != "") != testCase.fails {
-				t.Fatalf("ValidateEnvelope(%s) = %q, want fails = %v", testCase.absent, absent, testCase.fails)
+				t.Fatalf("Validate(%s) = %q, want fails = %v", testCase.absent, absent, testCase.fails)
 			}
 		})
 	}
@@ -269,13 +269,13 @@ func TestValidateEnvelopeAcceptsNarrativeOnEveryStatus(t *testing.T) {
 		"absent":   `{"status":"done","outputs":{"count":2,"note":null},"question":null,"reason":null}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := ValidateEnvelope(envelopePhase(), []byte(payload)); err != nil {
-				t.Fatalf("ValidateEnvelope(%s) = %v", payload, err)
+			if err := PhaseEnvelope(envelopePhase()).Validate([]byte(payload)); err != nil {
+				t.Fatalf("Validate(%s) = %v", payload, err)
 			}
 		})
 	}
 	notAString := `{"status":"done","outputs":{"count":2,"note":null},"question":null,"reason":null,"narrative":7}`
-	if err := ValidateEnvelope(envelopePhase(), []byte(notAString)); err == nil ||
+	if err := PhaseEnvelope(envelopePhase()).Validate([]byte(notAString)); err == nil ||
 		!strings.Contains(err.Error(), "$.narrative: must be a string or null") {
 		t.Fatalf("non-string narrative error = %v", err)
 	}
@@ -284,7 +284,7 @@ func TestValidateEnvelopeAcceptsNarrativeOnEveryStatus(t *testing.T) {
 // The generated schema must carry the field as required-but-nullable, which is
 // the only optional strict mode has, and must still satisfy providerschema.
 func TestEnvelopeSchemaCarriesTheNarrativeField(t *testing.T) {
-	encoded, err := EnvelopeSchema(envelopePhase())
+	encoded, err := PhaseEnvelope(envelopePhase()).Schema()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,16 +305,16 @@ func TestEnvelopeSchemaCarriesTheNarrativeField(t *testing.T) {
 	}
 	// An output may still be named `narrative`: outputs nest, so the two names
 	// live in different objects and can never collide.
-	nested, err := EnvelopeSchema(Phase{ID: "nest", Outputs: map[string]Variable{
+	nested, err := PhaseEnvelope(Phase{ID: "nest", Outputs: map[string]Variable{
 		EnvelopeNarrativeField: {Schema: JSONSchema{Type: "string"}},
-	}})
+	}}).Schema()
 	if err != nil {
 		t.Fatal(err)
 	}
 	payload := `{"status":"done","outputs":{"narrative":"a deliverable"},"question":null,"reason":null,"narrative":"an account"}`
-	if err := ValidateEnvelope(Phase{ID: "nest", Outputs: map[string]Variable{
+	if err := PhaseEnvelope(Phase{ID: "nest", Outputs: map[string]Variable{
 		EnvelopeNarrativeField: {Schema: JSONSchema{Type: "string"}},
-	}}, []byte(payload)); err != nil {
+	}}).Validate([]byte(payload)); err != nil {
 		t.Fatalf("an output named %q collided with the control field: %v (schema %s)", EnvelopeNarrativeField, err, nested)
 	}
 }
@@ -332,7 +332,7 @@ func TestSplitEnvelopeNarrative(t *testing.T) {
 	if strings.Contains(string(stripped), "narrative") || !strings.Contains(string(stripped), `"count":2`) {
 		t.Fatalf("stripped envelope = %s", stripped)
 	}
-	if err := ValidateEnvelope(envelopePhase(), []byte(
+	if err := PhaseEnvelope(envelopePhase()).Validate([]byte(
 		`{"status":"done","outputs":{"count":2,"note":null},"question":null,"reason":null}`,
 	)); err != nil {
 		t.Fatalf("a stripped envelope must still validate: %v", err)
@@ -395,7 +395,7 @@ func TestValidateEnvelopeRejectsNullRequiredNestedProperty(t *testing.T) {
 		}},
 	}}
 	payload := `{"status":"done","outputs":{"result":{"detail":null}},"question":null,"reason":null}`
-	if err := ValidateEnvelope(phase, []byte(payload)); err == nil || !strings.Contains(err.Error(), "is required") {
+	if err := PhaseEnvelope(phase).Validate([]byte(payload)); err == nil || !strings.Contains(err.Error(), "is required") {
 		t.Fatalf("nested required null error = %v", err)
 	}
 }
@@ -418,7 +418,7 @@ func TestValidateEnvelopeAcceptsNullOptionalNestedProperty(t *testing.T) {
 		}},
 	}}
 	payload := `{"status":"done","outputs":{"result":{"detail":"ok","note":null}},"question":null,"reason":null}`
-	if err := ValidateEnvelope(phase, []byte(payload)); err != nil {
+	if err := PhaseEnvelope(phase).Validate([]byte(payload)); err != nil {
 		t.Fatalf("nested optional null error = %v", err)
 	}
 }

@@ -199,17 +199,3 @@ func (r Reason) String() string {
 
 // Refused reports whether this reason denies a presentation.
 func (r Reason) Refused() bool { return r != ReasonNone }
-
-// ReasonFromCode resolves a wire spelling back to its constant. The false
-// answer is for a code from a newer backend than this build knows.
-func ReasonFromCode(code string) (Reason, bool) {
-	if code == "" {
-		return ReasonNone, true
-	}
-	for ordinal, candidate := range reasonCodes {
-		if candidate == code {
-			return Reason(ordinal), true
-		}
-	}
-	return ReasonMalformedProof, false
-}

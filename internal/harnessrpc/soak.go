@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 
 	"agent-overflow/internal/harness"
-	"agent-overflow/internal/harness/scenario"
 )
 
 // SoakConfig is the fixture and scenario vocabulary of the soak rig. Root
@@ -117,17 +116,4 @@ func ensureSoakThreads(receiver *Harness, config SoakConfig) (string, error) {
 		return "", fmt.Errorf("seed soak fixtures: unexpected result %+v", result)
 	}
 	return result.Projects[0].ThreadIDs[1], nil
-}
-
-// ValidateSoakScenario proves the named embedded scenario exists and is a
-// Claude script before the delayed autopilot needs it.
-func ValidateSoakScenario(name string) error {
-	_, definition, err := scenario.LoadLibrary(name)
-	if err != nil {
-		return err
-	}
-	if definition.Provider != scenario.ProviderClaude {
-		return fmt.Errorf("scenario %q is a %s script, want claude", name, definition.Provider)
-	}
-	return nil
 }

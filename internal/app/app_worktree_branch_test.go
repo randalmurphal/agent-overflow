@@ -117,7 +117,7 @@ func TestMaybeRenameTemporaryWorktreeBranchSkipsNonWorktreeThread(t *testing.T) 
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-no-worktree")
-	thread.Branch = gitops.BuildTemporaryWorktreeBranchName()
+	thread.Branch = gitops.BuildTemporaryWorktreeBranchNameWithPrefix(gitops.AutoWorktreeBranchPrefix)
 	// WorktreePath intentionally empty; this is not a worktree thread.
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -202,7 +202,7 @@ func TestMaybeRenameTemporaryWorktreeBranchGeneratorErrorIsNonFatal(t *testing.T
 		t.Fatalf("GetThread() error = %v", err)
 	}
 	originalBranch := stored.Branch
-	if !gitops.IsTemporaryWorktreeBranch(originalBranch) {
+	if !gitops.IsTemporaryWorktreeBranchWithPrefix(originalBranch, gitops.AutoWorktreeBranchPrefix) {
 		t.Fatalf("seed branch %q is not temporary", originalBranch)
 	}
 
@@ -246,7 +246,7 @@ func TestMaybeRenameTemporaryWorktreeBranchFallsBackOnEmptyMessage(t *testing.T)
 	}
 
 	// Leaving generateBranchNameFn nil exercises the
-	// branchNameFromUserMessage → BuildGeneratedWorktreeBranchName path.
+	// branchNameFromUserMessage → BuildGeneratedWorktreeBranchNameWithPrefix path.
 	app.maybeRenameTemporaryWorktreeBranch(thread.ID, "   \t\n")
 
 	stored, err := app.store.GetThread(thread.ID)

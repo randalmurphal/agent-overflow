@@ -353,24 +353,3 @@ func ParseSprintIDs(s string) ([]int64, error) {
 	slices.Sort(out)
 	return slices.Compact(out), nil
 }
-
-// FieldChange is one change to one field, with when and who.
-type FieldChange struct {
-	When   time.Time
-	Author *User
-	Item   ChangeItem
-}
-
-// FieldChanges picks the changes to the field with fieldID (an estimate's
-// field ID, say) from entries, in their order.
-func FieldChanges(entries []ChangeEntry, fieldID string) []FieldChange {
-	var out []FieldChange
-	for _, e := range entries {
-		for _, it := range e.Items {
-			if it.FieldID == fieldID {
-				out = append(out, FieldChange{When: e.Created, Author: e.Author, Item: it})
-			}
-		}
-	}
-	return out
-}

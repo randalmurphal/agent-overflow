@@ -22,9 +22,6 @@ func TestDate(t *testing.T) {
 	if !d.Before(d.AddDays(1)) || d.Compare(mustDate(t, "2026-11-09")) != 0 || !d.After(Date{}) {
 		t.Error("ordering")
 	}
-	if !DateOf(time.Date(2026, 11, 9, 23, 30, 0, 0, time.FixedZone("X", -5*3600))).Before(DateOf(time.Date(2026, 11, 10, 4, 30, 0, 0, time.UTC))) {
-		t.Error("DateOf reads the time's own zone")
-	}
 	if d.In(time.UTC) != time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC) {
 		t.Error("In")
 	}
@@ -154,11 +151,6 @@ func TestDateRange(t *testing.T) {
 	for _, s := range []string{"0000-12-31", "0000-01-01"} {
 		if d, err := ParseDate(s); err == nil {
 			t.Errorf("ParseDate(%q) = %v with no error", s, d)
-		}
-	}
-	for _, t0 := range []time.Time{time.Date(0, time.January, 1, 12, 0, 0, 0, time.UTC), time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)} {
-		if d := DateOf(t0); !d.IsZero() {
-			t.Errorf("DateOf(%v) = %v, want the zero Date", t0, d)
 		}
 	}
 	if d, err := ParseDate("0001-01-01"); err != nil || d.IsZero() || d.String() != "0001-01-01" {

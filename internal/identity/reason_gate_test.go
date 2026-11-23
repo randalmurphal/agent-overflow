@@ -56,7 +56,7 @@ func TestReasonOrdinalsAreContiguous(t *testing.T) {
 }
 
 // TestReasonCodesAreUniqueAndWireShaped — two constants sharing a code
-// would make ReasonFromCode lossy, and a code with prose or capitals in
+// would make the code ambiguous, and a code with prose or capitals in
 // it would not survive being a stable token in a log, an audit row, and a
 // client bundle at once.
 func TestReasonCodesAreUniqueAndWireShaped(t *testing.T) {
@@ -74,32 +74,6 @@ func TestReasonCodesAreUniqueAndWireShaped(t *testing.T) {
 			t.Fatalf("%s and %s share the code %q", prior, reason, code)
 		}
 		seen[code] = reason
-	}
-}
-
-func TestReasonRoundTripsThroughItsCode(t *testing.T) {
-	for ordinal := range reasonCodes {
-		reason := Reason(ordinal)
-		got, known := ReasonFromCode(reason.Code())
-		if !known {
-			t.Fatalf("%s did not round trip: code %q is unknown", reason, reason.Code())
-		}
-		if got != reason {
-			t.Fatalf("%s round tripped to %s", reason, got)
-		}
-	}
-}
-
-// TestUnknownCodeIsRefusedRatherThanAdmitted — a code from a newer
-// backend than this build knows must not resolve to the admitted value.
-// That is the one mistranslation with no visible symptom.
-func TestUnknownCodeIsRefusedRatherThanAdmitted(t *testing.T) {
-	got, known := ReasonFromCode("reason_from_a_later_phase")
-	if known {
-		t.Fatal("an unknown code reported itself as known")
-	}
-	if !got.Refused() {
-		t.Fatalf("an unknown code resolved to %s, which admits the presentation", got)
 	}
 }
 

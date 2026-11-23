@@ -320,7 +320,7 @@ func PromptSuffix(context PromptContext) (string, error) {
 		return "", fmt.Errorf("workflow prompt suffix: %w", err)
 	}
 	writeGuidanceSection(&prompt, context.Guidance)
-	// The branch rules below are enforced by def.ValidateEnvelope but cannot be
+	// The branch rules below are enforced by def.EnvelopeContract.Validate but cannot be
 	// expressed in the schema itself (discriminated unions are not portable
 	// across providers — D2a), so they have to be stated. Without them both
 	// providers routinely attach a courtesy `reason` to a done envelope, which

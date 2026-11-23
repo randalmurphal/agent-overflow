@@ -29,8 +29,8 @@ writes the three-field map at its own call site.
 
 - `client.go`: the package doc, `Dial`, `Call` / `CallInto`, `Subscribe`,
   the read loop, `ProtocolError`, and `ReadLimit`.
-- `targets.go`: `ParseEndpoint`, `ListTargets`, `SelectPageTarget`, and
-  `Attach` (the three composed).
+- `targets.go`: `ParseEndpoint`, `ListTargets`, the page selection, and
+  `Attach` / `AttachForPage` (the three composed).
 
 ## Protocol constraints
 
@@ -44,7 +44,7 @@ exists to make, and the failure reads as a protocol error rather than as
 
 ## Target selection
 
-`SelectPageTarget` resolves only an attachable page whose URL is on the exact
+`Attach` resolves only an attachable page whose URL is on the exact
 ORIGIN and carries the authenticated per-instance page marker. A page with no
 `webSocketDebuggerUrl` is one another debugger client already holds, and is
 reported as such, because "no page target" is the wrong diagnosis for it.

@@ -2,10 +2,10 @@ package adf
 
 import "strings"
 
-// PlainText returns the text of doc without formatting: one line per
-// paragraph, heading or list item, table cells separated by tabs.
-// Mentions, statuses, emoji, dates and smart links contribute their
-// visible text.
+// PlainText returns the text of doc without formatting, the tests' reading
+// of what a document says: one line per paragraph, heading or list item,
+// table cells separated by tabs. Mentions, statuses, emoji, dates and smart
+// links contribute their visible text.
 func PlainText(doc *Node) string {
 	if doc == nil {
 		return ""

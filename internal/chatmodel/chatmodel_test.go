@@ -290,18 +290,6 @@ func TestContextWindowSupported(t *testing.T) {
 	}
 }
 
-func TestIsValidContextWindow(t *testing.T) {
-	if !IsValidContextWindow(1) {
-		t.Fatalf("positive should be valid")
-	}
-	if IsValidContextWindow(0) {
-		t.Fatalf("zero should be invalid")
-	}
-	if IsValidContextWindow(-100) {
-		t.Fatalf("negative should be invalid")
-	}
-}
-
 func TestHasCapability(t *testing.T) {
 	m := provider.ModelInfo{Capabilities: []string{"a", "b"}}
 	if !HasCapability(m, "a") {

@@ -1935,7 +1935,7 @@ on a spent reject budget silently destroyed the gate's still-declared approve.
 
 - **D44. Post-validation owes literal presence to `status` alone.** The
   generated envelope schema lists every control key in `required` because
-  provider strict mode demands it, but `ValidateEnvelope` also judges
+  provider strict mode demands it, but `EnvelopeContract.Validate` also judges
   envelopes the tool driver reads from disk, hand-written by scripts that
   never saw that schema. Requiring the keys literally made `"question": null,
   "reason": null` boilerplate whose omission converted a successful merge
