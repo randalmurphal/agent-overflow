@@ -28,7 +28,7 @@
 // sampled ~1/12, but spring.tick is a bounded caller — only snap
 // callers need to be seen, and those are always recorded).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { seededFraction } from '../../../test/helpers/seededRandom';
+import { SEEDS, seededFraction } from '../../../test/helpers/seededRandom';
 import {
   createUseStickToBottomController,
   type UseStickToBottomController,
@@ -501,7 +501,7 @@ describe('scroll interleavings — ops × states frame invariants', () => {
   // restore-snap clears it; claims stay production-gated so an escaped
   // sequence keeps its escape) and verified against the controller at
   // drain start.
-  const FUZZ_SEEDS = Array.from({ length: 25 }, (_, i) => ({ seed: i + 1 }));
+  const FUZZ_SEEDS = Array.from({ length: SEEDS }, (_, i) => ({ seed: i + 1 }));
 
   it.each(FUZZ_SEEDS)('random op sequence, seed $seed', async ({ seed }) => {
     const rng = seededFraction(seed);
