@@ -53,7 +53,9 @@ an explicit owner action, preventing silent replacement or unlimited guesses.
 
 Owner connection loss, cancellation and listener-affecting network settings
 changes retire the window and its unfinished invitation. Expiry is the
-bootstrap book's own timer, which cancels the invitation; the LAN
+bootstrap book's own timer, which cancels the invitation. The deadline is
+checked when an approval is admitted: an approval admitted before it
+completes even if its write lands after, and reads confirmed. The LAN
 advertisement lingers only until the dialog closes, and an expired window
 answers `open:false`, which discovery discards. `pairbootstrap.Book` owns that
 retirement: a window's invitation is refused confirmation, and shown to the

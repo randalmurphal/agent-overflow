@@ -262,7 +262,15 @@ func TestComputerPairingRealTLSRequiresOwnerSASAndKeepsConfirmedSession(t *testi
 	if err := b.app.CloseComputerPairing(window.WindowID); err != nil {
 		t.Fatal(err)
 	}
-	// Closing the setup window must not revoke the now-confirmed device.
+	// Closing the setup window, as its expiry does, must not revoke the
+	// now-confirmed device: the cancellation it issues changes nothing of the
+	// confirmed link, which still reads confirmed.
+	if status, err := b.app.DevicePairingStatus(invite.LinkID); err != nil || status.State != "confirmed" {
+		t.Fatalf("a confirmed pairing after its window closed reads %+v (%v), want confirmed", status, err)
+	}
+	if link, err := b.app.store.GetPairingLink(invite.LinkID); err != nil || link.ConfirmedAt == 0 || link.CanceledAt != 0 {
+		t.Fatalf("a confirmed pairing after its window closed is %+v (%v), want confirmed and not canceled", link, err)
+	}
 	conn := dialPaired(t, ctx, client)
 	defer conn.CloseNow()
 	projects := callOverWS(t, ctx, conn, "ListProjects")

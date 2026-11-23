@@ -335,6 +335,54 @@ func TestARemovalWaitsForARunningConfirmation(t *testing.T) {
 	}
 }
 
+// The deadline is checked when an approval is admitted. An approval admitted
+// before it completes though its write runs past it: the window's real
+// expiry waits for the write, and only then issues its one cancellation,
+// which the settled link answers as done.
+func TestAnApprovalAdmittedBeforeTheDeadlineCompletesAfterIt(t *testing.T) {
+	l := newLedger()
+	b := NewBook(l.cancel, time.Hour)
+	expiryWaits := make(chan struct{}, 1)
+	b.settle.waiting = func() {
+		select {
+		case expiryWaits <- struct{}{}:
+		default:
+		}
+	}
+	w, err := b.open(mintOf("approved"), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close(w.WindowID) })
+	handshake(t, b, newClient(t))
+	var wroteAfterDeadline bool
+	err = b.Confirm("approved", func() error {
+		// The write is held until the window's own timer has fired and is
+		// waiting to remove the window.
+		select {
+		case <-expiryWaits:
+		case <-time.After(30 * time.Second):
+			return errors.New("the window's expiry never came")
+		}
+		if l.count("approved") != 0 {
+			return errors.New("the expiry cancelled the invitation while its approval was writing")
+		}
+		wroteAfterDeadline = time.Now().UnixMilli() >= w.ExpiresAtMs
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("an approval admitted before the deadline = %v, want it to complete", err)
+	}
+	if !wroteAfterDeadline {
+		t.Fatal("the approval's write did not run past the deadline")
+	}
+	waitFor(t, "the expiry's cancellation", func() bool { return l.count("approved") == 1 })
+	waitFor(t, "the expiry to finish", func() bool { return b.pendingLink() == "" })
+	if b.Snapshot(w.WindowID).Open {
+		t.Fatal("the window stayed open past its expiry")
+	}
+}
+
 // A replacement waits for an earlier close that is still joining its
 // window's mint, so it sees the late invitation and opens nothing while
 // that cancellation fails.
