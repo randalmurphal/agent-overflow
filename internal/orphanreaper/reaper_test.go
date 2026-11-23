@@ -30,8 +30,7 @@ func recordSidecar(t *testing.T, input string) (calls []string, stderr string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := sidecarCommand(control, 7*time.Second)
-	cmd.Stdin = strings.NewReader(`kill() { echo "kill $*" >&4; }; sleep() { echo "sleep $*" >&4; }` + "\n" + sidecarScript)
+	cmd := sidecarCommand(control, scriptPipe(t, `kill() { echo "kill $*" >&4; }; sleep() { echo "sleep $*" >&4; }`+"\n"+sidecarScript), 7*time.Second)
 	cmd.ExtraFiles = append(cmd.ExtraFiles, record) // fd 4
 	var errOut bytes.Buffer
 	cmd.Stderr = &errOut
@@ -81,8 +80,7 @@ func TestSidecarKillsWhenTheShellExitsAtTheGrace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := sidecarCommand(control, 7*time.Second)
-	cmd.Stdin = strings.NewReader(`kill() { echo "kill $*"; }; sleep() { exit 254; }` + "\n" + sidecarScript)
+	cmd := sidecarCommand(control, scriptPipe(t, `kill() { echo "kill $*"; }; sleep() { exit 254; }`+"\n"+sidecarScript), 7*time.Second)
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Start(); err != nil {
@@ -140,7 +138,7 @@ func TestSidecarKillsRealGroupsOnParentEOF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sidecar := sidecarCommand(control, time.Second)
+	sidecar := sidecarCommand(control, scriptPipe(t, sidecarScript), time.Second)
 	if err := sidecar.Start(); err != nil {
 		t.Fatalf("start sidecar: %v", err)
 	}
@@ -197,7 +195,7 @@ func TestSidecarIgnoresFunctionsExportedInTheEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sidecar := sidecarCommand(control, time.Second)
+	sidecar := sidecarCommand(control, scriptPipe(t, sidecarScript), time.Second)
 	if err := sidecar.Start(); err != nil {
 		t.Fatalf("start sidecar: %v", err)
 	}
@@ -219,6 +217,21 @@ func TestSidecarIgnoresFunctionsExportedInTheEnvironment(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("an exported kill function replaced the sidecar's kill")
 	}
+}
+
+// scriptPipe is text loaded for a sidecar's stdin, closed with the test.
+func scriptPipe(t *testing.T, text string) *os.File {
+	t.Helper()
+	script, err := loadedPipe(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := script.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return script
 }
 
 // startGroup starts script under sh as the leader of its own process group,

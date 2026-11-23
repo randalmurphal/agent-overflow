@@ -22,9 +22,12 @@ the recording backend's child. A start time that differs means the pid was
 reused, and that process is left alone. The registry is the backstop for a
 sidecar that died with the backend.
 
-The sidecar hears of a group just after its leader forks, and the registry
-records it after that. A backend that dies in between leaves the group to the
-sidecar; one that dies before the sidecar hears leaves it running.
+The sidecar's script is in a pipe the backend fills and closes before the
+sidecar starts, so once the sidecar is running it needs nothing more from the
+backend. The sidecar hears of a group just after its leader forks, and the
+registry records it after that. A backend that dies in between leaves the
+group to the sidecar; one that dies before the sidecar hears leaves it
+running.
 
 Signalling only a group's leader is not enough: Linux's parent-death signal
 reaches the leader, and a shell leader exits while what it started (`npm run
