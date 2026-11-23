@@ -15,7 +15,7 @@ import {
 } from './_helpers';
 import { setBindingMock } from '../mocks/bindings-app';
 import { openSettingsOverlay } from '../../lib/stores/settingsOverlay.svelte';
-import { openAccountSwitcher } from '../../lib/stores/accountSwitcher.svelte';
+import { toggleAccountSwitcher } from '../../lib/stores/accountSwitcher.svelte';
 import {
   registerCommand,
   type CommandContext,
@@ -285,7 +285,7 @@ describe('App integration — overlay modal flags', () => {
     const keybindings = await import('../../lib/stores/keybindings.svelte');
     await keybindings.loadKeybindings();
 
-    openAccountSwitcher();
+    toggleAccountSwitcher();
     await flush();
 
     expect(await captureAppFlags()).toMatchObject({

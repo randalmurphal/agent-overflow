@@ -21,8 +21,3 @@ export function closePalette(): void {
   open = false;
   targetPaneId = null;
 }
-
-export function togglePalette(paneId: string | null = null): void {
-  if (open) closePalette();
-  else openPalette(paneId);
-}

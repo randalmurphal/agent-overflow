@@ -1,5 +1,5 @@
-// Four near-identical open/close stores — palette, cheatSheet,
-// messageSearch, accountSwitcher — share a single test file because the shape
+// Near-identical open/close stores — palette, cheatSheet, messageSearch,
+// threadPicker, accountSwitcher — share a single test file because the shape
 // is identical and duplicating one test file per store is just noise.
 
 import { describe, expect, it, beforeEach } from 'vitest';
@@ -7,24 +7,25 @@ import {
   closeCheatSheet,
   isCheatSheetOpen,
   openCheatSheet,
-  toggleCheatSheet,
 } from './cheatSheet.svelte';
 import {
   closeMessageSearch,
   isMessageSearchOpen,
   openMessageSearch,
-  toggleMessageSearch,
 } from './messageSearch.svelte';
 import {
   closePalette,
   isPaletteOpen,
   openPalette,
-  togglePalette,
 } from './palette.svelte';
+import {
+  closeThreadPicker,
+  isThreadPickerOpen,
+  openThreadPicker,
+} from './threadPicker.svelte';
 import {
   closeAccountSwitcher,
   isAccountSwitcherOpen,
-  openAccountSwitcher,
   toggleAccountSwitcher,
 } from './accountSwitcher.svelte';
 
@@ -34,30 +35,26 @@ describe.each([
     isOpen: isCheatSheetOpen,
     open: openCheatSheet,
     close: closeCheatSheet,
-    toggle: toggleCheatSheet,
   },
   {
     name: 'messageSearch',
     isOpen: isMessageSearchOpen,
     open: openMessageSearch,
     close: closeMessageSearch,
-    toggle: toggleMessageSearch,
   },
   {
     name: 'palette',
     isOpen: isPaletteOpen,
     open: openPalette,
     close: closePalette,
-    toggle: togglePalette,
   },
   {
-    name: 'accountSwitcher',
-    isOpen: isAccountSwitcherOpen,
-    open: openAccountSwitcher,
-    close: closeAccountSwitcher,
-    toggle: toggleAccountSwitcher,
+    name: 'threadPicker',
+    isOpen: isThreadPickerOpen,
+    open: openThreadPicker,
+    close: closeThreadPicker,
   },
-])('$name store', ({ isOpen, open, close, toggle }) => {
+])('$name store', ({ isOpen, open, close }) => {
   beforeEach(() => {
     // Each store is module-scoped singleton state — reset to closed
     // before each test so leftover state from other tests (or from the
@@ -80,13 +77,6 @@ describe.each([
     expect(isOpen()).toBe(false);
   });
 
-  it('toggle() cycles', () => {
-    toggle();
-    expect(isOpen()).toBe(true);
-    toggle();
-    expect(isOpen()).toBe(false);
-  });
-
   it('open() is idempotent', () => {
     open();
     open();
@@ -97,5 +87,25 @@ describe.each([
     close();
     close();
     expect(isOpen()).toBe(false);
+  });
+});
+
+describe('accountSwitcher store', () => {
+  beforeEach(() => {
+    closeAccountSwitcher();
+  });
+
+  it('starts closed', () => {
+    expect(isAccountSwitcherOpen()).toBe(false);
+  });
+
+  it('toggle() cycles and close() closes', () => {
+    toggleAccountSwitcher();
+    expect(isAccountSwitcherOpen()).toBe(true);
+    toggleAccountSwitcher();
+    expect(isAccountSwitcherOpen()).toBe(false);
+    toggleAccountSwitcher();
+    closeAccountSwitcher();
+    expect(isAccountSwitcherOpen()).toBe(false);
   });
 });

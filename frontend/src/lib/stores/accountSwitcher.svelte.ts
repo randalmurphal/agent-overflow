@@ -10,10 +10,6 @@ export function isAccountSwitcherOpen(): boolean {
   return open;
 }
 
-export function openAccountSwitcher(): void {
-  open = true;
-}
-
 export function closeAccountSwitcher(): void {
   open = false;
 }
