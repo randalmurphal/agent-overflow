@@ -252,8 +252,8 @@ func (r *run) lifetime(board tracker.BoardID) (int64, error) {
 
 func (r *run) finish() { r.stop() }
 
-// window is the start of the history window now.
-func (r *run) window() time.Time { return r.s.now().Add(-HistoryWindow) }
+// window is the start of the history window now (Service.window).
+func (r *run) window() time.Time { return r.s.window() }
 
 // readAt is the time a read begins, taken before its request, from the
 // service's one counter of read begins (Service.readAtNext).

@@ -71,7 +71,7 @@ func accountProvider(t *testing.T, budget map[string]int) (*accountSite, tracker
 		t.Fatal(err)
 	}
 	t.Cleanup(c.Close)
-	p, err := New(Options{Jira: c, Site: "https://example.atlassian.net"})
+	p, err := New(Options{Jira: c, Site: "https://example.atlassian.net", SprintsFrom: allSprints})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,7 +3,6 @@ package store
 import (
 	"errors"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -224,15 +223,10 @@ func TestWriteMirrorRowsRefusesInvalidPages(t *testing.T) {
 	if _, err := s.WriteMirrorRowPage(root, currentPage(s, root, webPage("13", webRow("10001", 5, "a"))), nil); !errors.Is(err, ErrTrackerCacheUnlisted) {
 		t.Fatalf("rows of an unlisted board: %v", err)
 	}
-	tooMany := webRow("10001", 5, "a")
-	for i := range mirrorMaxCardSprints + 1 {
-		tooMany.Card.Sprints = append(tooMany.Card.Sprints, strings.Repeat("s", i+1))
-	}
 	for name, page := range map[string]MirrorRowPage{
 		"no board":         {Rows: []MirrorRow{webRow("10001", 5, "a")}, ReadAt: 1},
 		"no read time":     {BoardID: "10", Rows: []MirrorRow{webRow("10001", 5, "a")}},
 		"too many rows":    webPage("10", mirrorRows(20000, mirrorMaxPageRows+1, "a")...),
-		"too many sprints": webPage("10", tooMany),
 		"no key":           webPage("10", MirrorRow{Card: MirrorCard{IssueID: "10001", UpdatedAt: 5}}),
 		"no update time":   webPage("10", webRow("10001", 0, "a")),
 		"issue twice":      webPage("10", webRow("10001", 5, "a"), webRow("10001", 6, "b")),

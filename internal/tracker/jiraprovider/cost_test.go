@@ -26,7 +26,7 @@ func TestRequestCost(t *testing.T) {
 	p := r.p
 	ctx := t.Context()
 	now := r.clock.Now()
-	window := now.Add(-180 * 24 * time.Hour)
+	window := now.Add(-scenarioWindow)
 
 	r.measure("Identity", func() error { _, err := p.Identity(ctx); return err })
 	r.measure("Projects", func() error { _, err := p.Projects(ctx); return err })

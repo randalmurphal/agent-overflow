@@ -334,7 +334,12 @@ For each board some app project lists:
 - its sprints that are active or future, and those closed inside the
   history window (180 days);
 - its issues that are not done, those done inside the window, and those in
-  a kept sprint;
+  a kept sprint, each with its memberships of the sprints a board keeps:
+  a Jira card leaves out the sprints that closed before the window, which
+  an issue carried through many sprints still names
+  (`jiraprovider.Options.SprintsFrom`), and the store takes any number
+  of memberships, and of users and statuses in a write's catalog, a
+  fixed number to a statement;
 - every status, sprint, estimate and assignee change the tracker recorded
   for those issues. What a sprint started with is rebuilt from changes made
   before it started, so changes are not cut at the window; they go when

@@ -242,7 +242,7 @@ func tempoProvider(t *testing.T, f *jiratest.Server) (*tempotest.Server, *Provid
 		t.Fatal(err)
 	}
 	t.Cleanup(tc.Close)
-	p, err := New(Options{Jira: jc, Tempo: tc, Site: "https://example.atlassian.net"})
+	p, err := New(Options{Jira: jc, Tempo: tc, Site: "https://example.atlassian.net", SprintsFrom: allSprints})
 	if err != nil {
 		t.Fatal(err)
 	}

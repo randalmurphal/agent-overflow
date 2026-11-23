@@ -42,6 +42,13 @@ func TestFakeDetailCardIsTheReadCard(t *testing.T) {
 				site.Issues[0].Changelog = []trackerfake.JiraChange{{ID: "20001", Author: "acc-user1", Created: day.Add(time.Hour),
 					Items: []trackerfake.JiraChangeItem{{FieldID: "labels", Field: "labels", FieldType: "jira", FromString: &from, ToString: &to}}}}
 				site.Issues[1].Status, site.Issues[1].Resolution, site.Issues[1].Resolved = "10002", "Done", day.Add(time.Hour)
+				// A sprint that closed before the history window, which no
+				// board keeps: the issue carried through it names it, and its
+				// cards do not (Service.window).
+				old := at.Add(-HistoryWindow - 24*time.Hour)
+				site.Sprints = append(site.Sprints, trackerfake.JiraSprint{ID: 90, Board: 1, Name: "Sprint 0", State: "closed",
+					Start: old.Add(-14 * 24 * time.Hour), End: old, Complete: old})
+				site.Issues[0].Sprints = []int64{90, 1}
 				site.Issues = append(site.Issues, trackerfake.JiraIssue{ID: "10104", Key: "WEB-4", Project: "WEB", Type: "10000",
 					Summary: "The epic", Status: "10000", Created: day, Updated: day})
 				return trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}
@@ -117,6 +124,9 @@ func TestFakeDetailCardIsTheReadCard(t *testing.T) {
 				parent = parent || got.ParentID != ""
 				labelled = labelled || len(d.Card.Labels) > 0
 				sprinted = sprinted || len(got.Sprints) > 0
+				if slices.Contains(got.Sprints, "90") {
+					t.Errorf("issue %s names sprint 90, which closed before the history window", d.Card.ID)
+				}
 				resolved = resolved || got.ResolvedAt > 0
 				relabelled = relabelled || slices.ContainsFunc(d.History, func(e tracker.Event) bool { return strings.EqualFold(e.Field, "labels") })
 			}

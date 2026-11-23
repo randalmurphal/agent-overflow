@@ -208,11 +208,6 @@ func TestReplaceMirrorStructureRefusesInvalidReads(t *testing.T) {
 				st.Columns[0].Statuses = append(st.Columns[0].Statuses, fmt.Sprint(i))
 			}
 		},
-		"too many users": func(st *MirrorStructure) {
-			for i := range mirrorMaxCatalog {
-				st.Catalog.Users = append(st.Catalog.Users, MirrorUser{ID: fmt.Sprint("acc-", i)})
-			}
-		},
 		"sprint repeated":      func(st *MirrorStructure) { st.Sprints[1].ID = st.Sprints[0].ID },
 		"sprint without ID":    func(st *MirrorStructure) { st.Sprints[0].ID = "" },
 		"sprint state":         func(st *MirrorStructure) { st.Sprints[0].State = 4 },

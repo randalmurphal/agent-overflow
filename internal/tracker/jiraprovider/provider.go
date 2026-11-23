@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/jira"
@@ -40,14 +41,20 @@ type Options struct {
 	// Site is the site's address, such as https://example.atlassian.net,
 	// which an issue's URL starts with. Required.
 	Site string
+	// SprintsFrom is when the window of sprints a reader keeps starts now:
+	// a card names the active and future sprints of its issue and the
+	// closed ones that closed at or after it, the sprints a board keeps
+	// (Structure's window). Required.
+	SprintsFrom func() time.Time
 }
 
 // Provider is one Jira Cloud connection's tracker. It is safe for
 // concurrent use.
 type Provider struct {
-	jira   *jira.Client
-	origin string
-	time   tracker.TimeTracker
+	jira        *jira.Client
+	origin      string
+	time        tracker.TimeTracker
+	sprintsFrom func() time.Time
 }
 
 var (
@@ -59,14 +66,14 @@ var (
 // New builds a Provider. It refuses a missing Jira client and a Site that
 // is not an http or https origin.
 func New(opts Options) (*Provider, error) {
-	if opts.Jira == nil {
-		return nil, errors.New("jiraprovider: Options.Jira is required")
+	if opts.Jira == nil || opts.SprintsFrom == nil {
+		return nil, errors.New("jiraprovider: Options.Jira and Options.SprintsFrom are required")
 	}
 	origin, err := siteOrigin(opts.Site)
 	if err != nil {
 		return nil, err
 	}
-	p := &Provider{jira: opts.Jira, origin: origin}
+	p := &Provider{jira: opts.Jira, origin: origin, sprintsFrom: opts.SprintsFrom}
 	if opts.Tempo != nil {
 		p.time = &tempoTime{jira: opts.Jira, tempo: opts.Tempo}
 	} else {

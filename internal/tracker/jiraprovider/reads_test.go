@@ -16,14 +16,14 @@ func TestNewChecksOptions(t *testing.T) {
 	f := jiratest.NewServer(t)
 	c := newJira(t, f)
 	for _, site := range []string{"", "example.atlassian.net", "ftp://example.atlassian.net", "https://example.atlassian.net/jira", "https://u@example.atlassian.net", "https://example.atlassian.net?x=1"} {
-		if _, err := New(Options{Jira: c, Site: site}); err == nil {
+		if _, err := New(Options{Jira: c, Site: site, SprintsFrom: allSprints}); err == nil {
 			t.Errorf("site %q was taken", site)
 		}
 	}
 	if _, err := New(Options{Site: "https://example.atlassian.net"}); err == nil {
 		t.Error("a Provider without a Jira client")
 	}
-	p, err := New(Options{Jira: c, Site: "https://example.atlassian.net/"})
+	p, err := New(Options{Jira: c, Site: "https://example.atlassian.net/", SprintsFrom: allSprints})
 	if err != nil || p.origin != "https://example.atlassian.net" {
 		t.Fatalf("got %v %v", p, err)
 	}

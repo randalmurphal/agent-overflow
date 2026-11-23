@@ -160,7 +160,7 @@ func reachTempo(arg string, jc *jira.Client) *tempo.Client {
 }
 
 func reachJiraProvider(arg string, jc *jira.Client, tc *tempo.Client) {
-	p, err := jiraprovider.New(jiraprovider.Options{Jira: jc, Tempo: tc, Site: arg})
+	p, err := jiraprovider.New(jiraprovider.Options{Jira: jc, Tempo: tc, Site: arg, SprintsFrom: time.Now})
 	check(err)
 	keepMethods(arg, p)
 }

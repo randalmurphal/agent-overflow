@@ -123,6 +123,7 @@ const mirrorMarksSQL = `SELECT coalesce(group_concat(kind || ':' || ref_id || ii
 // the sprint again a row naming it makes the board due; a mark no row
 // names any more stays until the board's drain removes it.
 func TestMirrorUnexplainedReferencesStopMakingTheStructureDue(t *testing.T) {
+	const cardSprints = 50
 	s, jira, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	odd := webRow("10001", 5, "a", "99")
@@ -147,8 +148,8 @@ func TestMirrorUnexplainedReferencesStopMakingTheStructureDue(t *testing.T) {
 	var many []MirrorRow
 	for r := range 6 {
 		var sprints []string
-		for i := range mirrorMaxCardSprints {
-			sprints = append(sprints, fmt.Sprint(1000+r*mirrorMaxCardSprints+i))
+		for i := range cardSprints {
+			sprints = append(sprints, fmt.Sprint(1000+r*cardSprints+i))
 		}
 		many = append(many, webRow(fmt.Sprint(10100+r), 5, "m", sprints...))
 	}
@@ -199,25 +200,26 @@ func TestMirrorUnexplainedReferencesStopMakingTheStructureDue(t *testing.T) {
 // 4,000 unexplained marks or 8,000 (both deep enough that the indexes have
 // the same height).
 func TestMirrorMarksStayWithinAChunk(t *testing.T) {
+	const cardSprints = 50
 	pages := map[int][2]int{}
 	for _, cards := range []int{80, 160} {
 		s, _, root := newMirror(t)
 		mustReplaceStructure(t, s, root, webStructure(), true)
 		for r := range cards {
 			var sprints []string
-			for i := range mirrorMaxCardSprints {
-				sprints = append(sprints, fmt.Sprint(5000+r*mirrorMaxCardSprints+i))
+			for i := range cardSprints {
+				sprints = append(sprints, fmt.Sprint(5000+r*cardSprints+i))
 			}
 			writeDuePage(t, s, root, 2, webRow(fmt.Sprint(10100+r), 5, "m", sprints...))
 		}
 		recorder := recordMirrorWrites(t, s)
 		replaceDueStructure(t, s, root, 3, true)
 		most, transactions := recorder.mostMarksInATransaction()
-		if want := (cards*mirrorMaxCardSprints + clearMirrorChunk - 1) / clearMirrorChunk; most > clearMirrorChunk || transactions != want {
+		if want := (cards*cardSprints + clearMirrorChunk - 1) / clearMirrorChunk; most > clearMirrorChunk || transactions != want {
 			t.Fatalf("%d marks made unexplained: at most %d in one of %d transactions; want at most %d in %d",
-				cards*mirrorMaxCardSprints, most, transactions, clearMirrorChunk, want)
+				cards*cardSprints, most, transactions, clearMirrorChunk, want)
 		}
-		assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_board_unexplained WHERE named_at = 0`, fmt.Sprint(cards*mirrorMaxCardSprints))
+		assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_board_unexplained WHERE named_at = 0`, fmt.Sprint(cards*cardSprints))
 		recorder.reset()
 		page := storePageAccessesForTest(t, s, "page", func() error {
 			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10002", 5, "b", "24")}, ReadAt: 4}), nil)

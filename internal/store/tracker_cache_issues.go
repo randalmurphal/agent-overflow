@@ -8,12 +8,15 @@ import (
 	"strings"
 )
 
-// Bounds of one write of cards or rows. A card's sprints bound what
-// replacing them deletes; a page's rows and missing issues bound the rows
-// it adds and removes.
+// Bounds of one write of cards or rows. A page's rows and missing issues
+// bound the rows it adds and removes. A card names any number of sprints;
+// one statement of the sprint statements takes the cards of at most
+// mirrorSprintChunk memberships, or a single card of more
+// (mirrorSprintGroups), so the work of one statement is bounded by the
+// chunk or by one card's memberships.
 const (
-	mirrorMaxCardSprints = 50
-	mirrorMaxPageRows    = 500
+	mirrorSprintChunk = 1000
+	mirrorMaxPageRows = 500
 )
 
 // MirrorCard is an issue as a board or backlog row draws it, the same on
@@ -106,9 +109,6 @@ func newMirrorCardRow(c MirrorCard) mirrorCardRow {
 func (c MirrorCard) check() error {
 	if c.IssueID == "" || c.Key == "" || c.UpdatedAt <= 0 || c.CreatedAt < 0 || c.ResolvedAt < 0 {
 		return fmt.Errorf("%w: card %q needs an ID, a key and an update time", ErrInvalidTrackerCache, c.IssueID)
-	}
-	if len(c.Sprints) > mirrorMaxCardSprints {
-		return fmt.Errorf("%w: card %s names %d sprints, over %d", ErrInvalidTrackerCache, c.IssueID, len(c.Sprints), mirrorMaxCardSprints)
 	}
 	seen := make(map[string]bool, len(c.Sprints))
 	for _, sprint := range c.Sprints {
@@ -346,18 +346,31 @@ type mirrorCardsStored struct {
 func storeMirrorCardsTx(tx *sql.Tx, statements mirrorCardStatements, rootID int64, cards []mirrorCardRow, encoded string, readAt int64,
 	advancing []string, filter ...any) (out mirrorCardsStored, err error) {
 	args := append([]any{rootID, encoded, readAt}, filter...)
-	var stored []string
-	for i, step := range []struct{ what, query string }{
-		{"upsert cards", statements.upsert}, {"remove card sprints", statements.leave}, {"add card sprints", statements.join},
-	} {
-		ids, err := queryIDs(tx, step.query, args...)
-		if err != nil {
-			return mirrorCardsStored{}, fmt.Errorf("%s: %w", step.what, err)
+	stored, err := queryIDs(tx, statements.upsert, args...)
+	if err != nil {
+		return mirrorCardsStored{}, fmt.Errorf("upsert cards: %w", err)
+	}
+	out.changed = append(out.changed, stored...)
+	groups := mirrorSprintGroups(cards)
+	encodedOf := func(group []mirrorCardRow) (string, error) {
+		if len(groups) == 1 {
+			return encoded, nil
 		}
-		if i == 0 {
-			stored = ids
+		return encodeMirrorJSON(group)
+	}
+	for _, group := range groups {
+		if args[1], err = encodedOf(group); err != nil {
+			return mirrorCardsStored{}, err
 		}
-		out.changed = append(out.changed, ids...)
+		for _, step := range []struct{ what, query string }{
+			{"remove card sprints", statements.leave}, {"add card sprints", statements.join},
+		} {
+			ids, err := queryIDs(tx, step.query, args...)
+			if err != nil {
+				return mirrorCardsStored{}, fmt.Errorf("%s: %w", step.what, err)
+			}
+			out.changed = append(out.changed, ids...)
+		}
 	}
 	slices.Sort(stored)
 	slices.Sort(out.changed)
@@ -377,17 +390,36 @@ func storeMirrorCardsTx(tx *sql.Tx, statements mirrorCardStatements, rootID int6
 			return mirrorCardsStored{}, fmt.Errorf("record the cards' read: %w", err)
 		}
 	}
-	refs, err := encodeMirrorJSON(mirrorCardRefsOf(cards))
-	if err != nil {
-		return mirrorCardsStored{}, err
-	}
-	args[1] = refs
-	if out.marked, err = queryIDs(tx, statements.mark, args...); err != nil {
-		return mirrorCardsStored{}, fmt.Errorf("mark lacking references: %w", err)
+	for _, group := range groups {
+		if args[1], err = encodeMirrorJSON(mirrorCardRefsOf(group)); err != nil {
+			return mirrorCardsStored{}, err
+		}
+		marked, err := queryIDs(tx, statements.mark, args...)
+		if err != nil {
+			return mirrorCardsStored{}, fmt.Errorf("mark lacking references: %w", err)
+		}
+		out.marked = append(out.marked, marked...)
 	}
 	slices.Sort(out.marked)
 	out.marked = slices.Compact(out.marked)
 	return out, nil
+}
+
+// mirrorSprintGroups splits cards, in order, into the groups the sprint
+// and mark statements take one at a time: each of at most
+// mirrorSprintChunk sprint memberships, or one card of more. A write of
+// cards of fewer memberships, every board page in practice, is one group.
+func mirrorSprintGroups(cards []mirrorCardRow) [][]mirrorCardRow {
+	var groups [][]mirrorCardRow
+	start, n := 0, 0
+	for i, c := range cards {
+		if i > start && n+len(c.Sprints) > mirrorSprintChunk {
+			groups = append(groups, cards[start:i])
+			start, n = i, 0
+		}
+		n += len(c.Sprints)
+	}
+	return append(groups, cards[start:])
 }
 
 // UpsertMirrorCards stores cards read with no board (issues linked to

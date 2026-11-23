@@ -34,7 +34,9 @@ const (
 	mirrorMaxColumns        = 50
 	mirrorMaxColumnStatuses = 200
 	mirrorMaxSprints        = 250
-	mirrorMaxCatalog        = 500
+	// mirrorCatalogChunk is the most users or statuses one catalog
+	// statement takes; a catalog names any number (upsertMirrorCatalogTx).
+	mirrorCatalogChunk = 500
 )
 
 // MirrorUser is a tracker user; Data is the rest of it.
@@ -108,9 +110,6 @@ type MirrorStructure struct {
 }
 
 func (c MirrorCatalog) check() error {
-	if len(c.Users) > mirrorMaxCatalog || len(c.Statuses) > mirrorMaxCatalog {
-		return fmt.Errorf("%w: a catalog names %d users and %d statuses, over %d", ErrInvalidTrackerCache, len(c.Users), len(c.Statuses), mirrorMaxCatalog)
-	}
 	users := make(map[string]bool, len(c.Users))
 	for _, u := range c.Users {
 		if u.ID == "" || users[u.ID] {

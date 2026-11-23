@@ -27,6 +27,11 @@ import (
 // issues, and where a board's first delta walk starts.
 const HistoryWindow = 180 * 24 * time.Hour
 
+// window is the start of the history window now: the closed sprints a
+// board keeps (Provider.Structure) and a Jira card names
+// (jiraprovider.Options.SprintsFrom) closed at or after it.
+func (s *Service) window() time.Time { return s.now().Add(-HistoryWindow) }
+
 // MirrorStore is the mirror accessors the service uses.
 type MirrorStore interface {
 	GetOrCreateMirrorRoot(connectionID string) (int64, bool, error)

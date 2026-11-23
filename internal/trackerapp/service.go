@@ -196,19 +196,22 @@ func New(deps Deps) (*Service, error) {
 	// time.Since reads the monotonic clock of mono, which deps.Now's value
 	// may not carry.
 	mono, wall := time.Now(), deps.Now()
-	return &Service{
+	s := &Service{
 		store: deps.Store, changed: deps.Changed, credentialsDir: deps.CredentialsDir,
 		origin: deps.Origin, version: deps.Version, now: deps.Now, life: deps.Life,
 		steady: func() time.Time { return wall.Add(time.Since(mono)) }, steadyFrom: wall.UnixMilli(),
 		digestKey: key,
 		clients:   map[string]*clients{}, problems: map[string]Failure{},
 		locks: map[lockKey]*scopeLock{}, holds: map[string]*connHold{},
-		makeProvider: buildProvider,
-		logf:         log.Printf,
-		emitBoard:    deps.EmitBoard, emitIssue: deps.EmitIssue, settled: deps.Settled,
+		logf:      log.Printf,
+		emitBoard: deps.EmitBoard, emitIssue: deps.EmitIssue, settled: deps.Settled,
 		clientConnected: deps.ClientConnected, loopFailed: deps.LoopFailed, cadence: deps.Cadence.withDefaults(),
 		digestSeed: maphash.MakeSeed(), session: int64(binary.LittleEndian.Uint64(session[:]) >> 1),
-	}, nil
+	}
+	s.makeProvider = func(row store.TrackerConnection, c, tempo *clients) (tracker.Provider, error) {
+		return buildProvider(row, c, tempo, s.window)
+	}
+	return s, nil
 }
 
 // Stop stops every pump and the linked loop, which cancels their ticks in

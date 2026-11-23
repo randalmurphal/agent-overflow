@@ -104,7 +104,7 @@ func TestRefusalDetails(t *testing.T) {
 func TestClosedClientIsNotSent(t *testing.T) {
 	f, _ := newSite(t)
 	c := newJira(t, f)
-	p, err := New(Options{Jira: c, Site: "https://example.atlassian.net"})
+	p, err := New(Options{Jira: c, Site: "https://example.atlassian.net", SprintsFrom: allSprints})
 	if err != nil {
 		t.Fatal(err)
 	}
