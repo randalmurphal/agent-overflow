@@ -126,11 +126,12 @@ export default defineConfig({
     // one runs everything: the frontend's lockfile (dependency versions), its
     // TypeScript config (transform options), and the files this config
     // loads, all of which live in src/test/config/ (the transforms and the
-    // between-test contract). They are this directory's own, not another
-    // package's in the repository. Vitest's defaults cover package.json and
-    // this file.
+    // between-test contract), with its package.json and this config. They
+    // are this directory's own: Vitest's defaults match any package.json and
+    // config in the repository, so e2e/package.json would run every file.
     forceRerunTriggers: [
-      ...configDefaults.forceRerunTriggers,
+      resolve(import.meta.dirname, 'package.json'),
+      resolve(import.meta.dirname, '{vitest,vite}.config.*'),
       resolve(import.meta.dirname, 'pnpm-lock.yaml'),
       resolve(import.meta.dirname, 'tsconfig*.json'),
       resolve(import.meta.dirname, 'src/test/config/**'),

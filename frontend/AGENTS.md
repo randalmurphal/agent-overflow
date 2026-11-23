@@ -9,6 +9,13 @@ not check `.svelte` files or component props. Before completion run
 Playwright specs that cover the changed behavior (root Validation). There is no
 repository formatter; preserve the surrounding style.
 
+Run the tests a change can affect with `../bin/ao-netns pnpm run test:affected
+<base>` (the unit projects) and `../bin/ao-netns pnpm run test:browser:affected
+<base>` (the browser project), where `<base>` is the branch the change goes
+into, such as `origin/main`. They run `vitest --changed <base>`, or the
+projects whole when the diff removes a file a test reads
+(`scripts/vitest-changed.mjs`).
+
 ## Navigation
 
 Area guides own the contracts for
