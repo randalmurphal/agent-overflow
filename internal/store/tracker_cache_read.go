@@ -19,10 +19,6 @@ type MirrorRead struct{ at int64 }
 // At is the read's begin time in Unix milliseconds on the root's clock.
 func (r MirrorRead) At() int64 { return r.at }
 
-// mirrorReadAt is the read that began at at: the package's own tests and
-// the store's reads of what it stored.
-func mirrorReadAt(at int64) MirrorRead { return MirrorRead{at: at} }
-
 // mirrorReadLease is how far past the newest read it began a root's lease
 // reaches (BeginMirrorRead).
 const mirrorReadLease = 60_000

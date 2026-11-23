@@ -6,6 +6,11 @@ import (
 	"testing"
 )
 
+// mirrorReadAt is the read that began at at, for the package's tests of
+// what a write does with a given read time. No production build has it:
+// only BeginMirrorRead makes a read there.
+func mirrorReadAt(at int64) MirrorRead { return MirrorRead{at: at} }
+
 // beginRead is BeginMirrorRead that fails the test on an error.
 func beginRead(t *testing.T, s *Store, root, now int64) MirrorRead {
 	t.Helper()
