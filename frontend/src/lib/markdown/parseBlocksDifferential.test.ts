@@ -301,6 +301,24 @@ describe('parseBlocks append differential', () => {
     expect(result.paths).toContain('table-line-append');
   });
 
+  // The table's raw carries the blank line after its last row, so the next
+  // append lands on the table's record; a `|` line there opens a new table.
+  it.each([
+    ['LF', '\n'],
+    ['CRLF', '\r\n'],
+  ])('starts a second table after a blank line, not another row of the first (%s)', (_label, eol) => {
+    const first = `| a | b |${eol}| --- | --- |${eol}| 1 | 2 |${eol}${eol}`;
+    const document = `${first}| c | d |${eol}| --- | --- |`;
+    const cache = createParseBlocksCache();
+    let previous = '';
+    for (const prefix of [first, `${first}| c`, document]) {
+      const actual = parseBlocks(prefix, [], cache, createProvenAppend(previous, prefix.slice(previous.length)));
+      expect(actual).toEqualWithFirstDivergence(parseBlocks(prefix, []));
+      previous = prefix;
+    }
+    expect(parseBlocks(`${first}| c`)).toEqual([first, '| c']);
+  });
+
   it.each([
     ['task items', '- [ ] pending\n- [x] done\n- final item'],
     ['loose items', '- first\n\n  continuation\n\n- second\n\n  more'],

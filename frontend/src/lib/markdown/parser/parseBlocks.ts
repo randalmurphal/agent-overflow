@@ -41,6 +41,9 @@ import { parseListSource } from './extensions/list';
 import { parseTableBlockSource } from './extensions/tableSource';
 import { parseBlockquoteSource } from './extensions/blockquoteSource';
 const INITIAL_HEADING = /^ {0,3}#{1,6}(?:[ \t]+|$)/;
+// A blank line: a line ending, optional spaces or tabs, then another line
+// ending. A CR that begins a CRLF is not a line ending of its own.
+const BLANK_LINE = /(?:\r\n|\n|\r(?!\n))[ \t]*(?:\r\n|\n|\r)/;
 // Seeds a boundary without a Lexer, so only where no alignment is in force:
 // its list geometry does not stop at a closer.
 const initialBlockToken = (markdown: string, extensions: Extension[], alignStart: Alignment): BlockToken | null => {
@@ -175,10 +178,15 @@ const parseBlocksCached = (
                 cache.lastPath = t.kind === 'paragraph' ? 'paragraph-append' : 'line-block-append';
                 return cache.blocks;
             }
+            // The delta extends the table's last line, or after a row's line
+            // ending starts the next row. The table grammar admits no blank
+            // line, so one in the raw is the tokenizer's trailing blank
+            // line: what follows it opens a new block.
             if (t.kind === 'table-line' &&
                 blockStart === t.blockStart &&
                 priorRaw.length >= t.prefixLen &&
                 !/[\r\n]/.test(appendDelta) &&
+                !BLANK_LINE.test(priorRaw) &&
                 (!/[\r\n]$/.test(priorRaw) || /^ {0,3}\|/.test(appendDelta)) &&
                 !extensions.some(({ level, applyInBlockParsing }) => level === 'block' && applyInBlockParsing)) {
                 const blockAppend = createProvenAppend(priorRaw, appendDelta);
