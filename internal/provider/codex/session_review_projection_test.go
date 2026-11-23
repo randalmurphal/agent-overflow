@@ -10,7 +10,6 @@ import (
 func newReviewProjectionSession(events *[]provider.ProviderEvent) *Session {
 	s := &Session{
 		threadID: "ao-thread",
-		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(event provider.ProviderEvent) {
 			*events = append(*events, event)
 		},

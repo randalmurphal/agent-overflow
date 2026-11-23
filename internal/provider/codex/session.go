@@ -310,7 +310,6 @@ type sessionRawToolCallState struct {
 // comment), the atomics that exist to stay out of that order, and the
 // registered observers. See Close for which groups are session-scoped.
 type Session struct {
-	proc     *provider.Process
 	ctx      context.Context
 	threadID string // our internal thread ID
 	workDir  string // absolute workspace cwd used for project-scoped config/read
@@ -380,7 +379,6 @@ type Session struct {
 	// the key comes off the wire. Guarded by mu.
 	unclaimedNotifications           map[string]struct{}
 	unclaimedNotificationsOverflowed bool
-	nextID                           atomic.Int64
 	// LOCK ORDER: controlMu → mu → childLifecycleMu → eventMu. Take them
 	// in that order or not at all; nothing in this package takes them in the
 	// reverse direction. controlMu serializes history-sensitive root and child
@@ -407,7 +405,7 @@ type Session struct {
 	// session state while the app layer runs.
 	//
 	// codexThreadID, appServerVersion, threadHistoryMode, pendingRevert,
-	// revertEpoch, threadQueueNative, closing and nextID are atomics precisely
+	// revertEpoch, threadQueueNative and closing are atomics precisely
 	// so their readers never have to enter this order at all.
 	// settingsWireMu precedes mu and never nests with controlMu.
 	// It orders snapshots and pipe writes, not response waits.
@@ -415,11 +413,9 @@ type Session struct {
 	settingsSync       settingsSyncState
 	controlMu          sync.Mutex
 	mu                 sync.Mutex
-	pending            map[int64]chan json.RawMessage
 	onEvent            func(provider.ProviderEvent)
 	eventMu            sync.Mutex
 	dynamicToolHandler DynamicToolHandler
-	cancel             context.CancelFunc
 	closing            atomic.Bool
 	readDone           chan struct{}
 	// approvals is the outstanding-interactive-request ledger: which
@@ -1035,31 +1031,15 @@ func (s *Session) ForgetMCPStartupState(name string) {
 // PID returns the OS process id (and process-group id) of the Codex
 // app-server subprocess, or 0 when no process is live.
 func (s *Session) PID() int {
-	if s.conn != nil {
-		return s.conn.PID()
-	}
-	if s.proc == nil {
-		return 0
-	}
-	return s.proc.PID()
+	return s.conn.PID()
 }
 
 // Connection returns the underlying app-server connection backing this session.
 func (s *Session) Connection() provider.Connection {
-	if s == nil {
+	if s == nil || s.conn == nil {
 		return nil
 	}
-	if s.conn != nil {
-		return s.conn
-	}
-	if s.proc == nil {
-		return nil
-	}
-	return provider.FuncConnection{
-		PIDFn:   s.PID,
-		DoneCh:  s.readDone,
-		CloseFn: s.Close,
-	}
+	return s.conn
 }
 
 // OwnedProcesses returns this session's process root and workspace for dev-server attribution.
@@ -1072,7 +1052,7 @@ func (s *Session) OwnedProcesses() []provider.OwnedProcess {
 }
 
 func (s *Session) hasTransport() bool {
-	return s != nil && (s.conn != nil || s.proc != nil)
+	return s != nil && s.conn != nil
 }
 
 func (s *Session) finishReadDone() {
@@ -1136,17 +1116,6 @@ func (s *Session) Close() error {
 		if s.readDone != nil {
 			<-s.readDone
 		}
-	default:
-		s.clearPendingApprovals()
-		if s.proc != nil {
-			err = s.proc.Close()
-		}
-		if s.cancel != nil {
-			s.cancel()
-		}
-		if s.readDone != nil {
-			<-s.readDone
-		}
 	}
 
 	s.rolloutObserverWG.Wait()
@@ -1160,11 +1129,6 @@ func (s *Session) Close() error {
 	// them later from being forgotten here —
 	// TestCloseReleasesSessionScopedState pins that, and lists the state this
 	// deliberately leaves alone.
-	//
-	// We deliberately leave s.pending as an empty map (readLoop already
-	// drained it) — a late sendRequest caller would otherwise panic writing to
-	// a nil map; the existing WriteLine-on-closed-proc path handles shutdown
-	// cleanly.
 	s.mu.Lock()
 	deferredChildEvents := 0
 	for _, queued := range s.childRouting.deferredChildWireEvents {

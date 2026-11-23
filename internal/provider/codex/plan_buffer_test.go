@@ -17,9 +17,7 @@ func TestSessionBuffersPlanDeltaUntilCompletion(t *testing.T) {
 		`{"jsonrpc":"2.0","method":"item/completed","params":{"turnId":"turn-plan","item":{"id":"plan-1","type":"plan"}}}`,
 	}
 	for _, line := range lines {
-		if err := s.proc.WriteLine([]byte(line)); err != nil {
-			t.Fatalf("write line: %v", err)
-		}
+		feed(t, s, []byte(line))
 	}
 
 	var got provider.ProviderEvent
@@ -48,9 +46,7 @@ func TestSessionPrefersCompletedPlanContentOverBufferedDelta(t *testing.T) {
 		`{"jsonrpc":"2.0","method":"item/completed","params":{"turnId":"turn-plan","item":{"id":"plan-1","type":"plan","text":"# Final plan"}}}`,
 	}
 	for _, line := range lines {
-		if err := s.proc.WriteLine([]byte(line)); err != nil {
-			t.Fatalf("write line: %v", err)
-		}
+		feed(t, s, []byte(line))
 	}
 
 	var got provider.ProviderEvent

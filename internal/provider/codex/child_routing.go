@@ -287,12 +287,7 @@ func (s *Session) expireDeferredChildWireEvents(providerThreadID string) {
 
 func (s *Session) drainDeferredChildWireEvents(providerThreadIDs ...string) {
 	for _, providerThreadID := range providerThreadIDs {
-		var needsFlush bool
-		if s.conn != nil {
-			if s.conn.registerChildRoute(providerThreadID, s) {
-				needsFlush = true
-			}
-		}
+		needsFlush := s.conn.registerChildRoute(providerThreadID, s)
 		// Enqueue session-quarantined child frames through enqueueEarlyFrames
 		// (never through enqueueFrameIfPending's backpressure wait) so a
 		// re-entrant drain inside flushEarlyFrames can never wait on itself.

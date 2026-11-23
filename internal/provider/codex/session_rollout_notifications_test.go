@@ -92,19 +92,14 @@ func TestRolloutSubagentNotificationLineEmitsWithoutProviderMapping(t *testing.T
 func TestRolloutAndRawSubagentNotificationDedupes(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{
-				"child-done": "call-collab-1",
-			},
+	s := fixtureSession(t, "parent-thread", "parent-provider-thread", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{
+			"child-done": "call-collab-1",
 		},
 	}
-	s.setRootThreadID("parent-provider-thread")
 
 	rawLine := rawUserSubagentNotificationLineForThread(t, "parent-provider-thread", map[string]any{
 		"agent_path": "child-done",
@@ -112,7 +107,7 @@ func TestRolloutAndRawSubagentNotificationDedupes(t *testing.T) {
 			"completed": "detached child finished",
 		},
 	})
-	s.dispatchLine(rawLine)
+	feed(t, s, rawLine)
 	s.emitSubagentNotificationsFromRolloutLine(rolloutUserSubagentNotificationLine(t, "child-done", map[string]any{
 		"completed": "detached child finished",
 	}))
@@ -359,7 +354,7 @@ func TestSpawnObservedMidSessionArmsRolloutTail(t *testing.T) {
 	if rolloutTailStarted(s) {
 		t.Fatal("rollout tail armed before any spawn was observed")
 	}
-	s.dispatchLine(subAgentActivityStartedLine(t, providerThreadID, "call-collab-1", "child-thread-9"))
+	feed(t, s, subAgentActivityStartedLine(t, providerThreadID, "call-collab-1", "child-thread-9"))
 	if !rolloutTailStarted(s) {
 		t.Fatal("a spawn observed on the wire did not arm the rollout tail")
 	}
@@ -382,9 +377,7 @@ func TestRolloutTailIsNeverArmedOnAFreshThread(t *testing.T) {
 	s := &Session{
 		threadID: testThread,
 		ctx:      ctx,
-		cancel:   cancel,
 		readDone: make(chan struct{}),
-		pending:  make(map[int64]chan json.RawMessage),
 		onEvent:  func(evt provider.ProviderEvent) { events <- evt },
 	}
 	s.setRootThreadID("fresh-provider-thread")
@@ -575,15 +568,10 @@ func rolloutTailStarted(s *Session) bool {
 func newUnarmedRolloutTailSession(t *testing.T, providerThreadID, rollout string, events chan provider.ProviderEvent) *Session {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Session{
-		threadID: testThread,
-		ctx:      ctx,
-		cancel:   cancel,
-		readDone: make(chan struct{}),
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  func(evt provider.ProviderEvent) { events <- evt },
-	}
-	s.setRootThreadID(providerThreadID)
+	fx := newConnFixture(t)
+	answerChildProfileReads(fx)
+	s := fx.session(testThread, providerThreadID, func(evt provider.ProviderEvent) { events <- evt })
+	s.ctx = ctx
 	s.prepareRolloutSubagentNotificationTail(rollout)
 	t.Cleanup(func() {
 		cancel()

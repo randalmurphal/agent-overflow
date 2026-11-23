@@ -12,124 +12,72 @@ import (
 
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestSendTurnStartFormat(t *testing.T) {
 	t.Parallel()
-	s, eventCh := newTestCodexSession(t)
+	fx := newConnFixture(t)
+	s := fx.session(testThread, "codex-thread-1", nil)
 
-	// Call the actual Send method, which issues a turn/start JSON-RPC request.
-	// With the cat-backed session the request echoes back as a server request
-	// (has both id and method), handleServerRequest sees "turn/start" as unknown
-	// and returns a JSON-RPC error which becomes the sendRequest response.
-	// Send returns an error from the RPC layer, which is expected here.
-	_ = s.Send(context.Background(), "hello", provider.SendOptions{})
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- s.Send(context.Background(), "hello", provider.SendOptions{})
+	}()
 
-	// Drain the event channel: the echoed server request triggers
-	// writeErrorResponse, whose echo arrives as a response (routed to pending).
-	// The original turn/start echo may also produce events.
-	// Verify the session didn't panic and readLoop is healthy by writing
-	// a known notification that produces a deterministic event.
-	if err := s.writeNotification("turn/started", map[string]any{
-		"turn": map[string]any{"id": "turn-after-send"},
-	}); err != nil {
-		t.Fatalf("writeNotification: %v", err)
+	frame := fx.nextRequest("turn/start")
+	params, _ := frame["params"].(map[string]any)
+	if params["threadId"] != "codex-thread-1" {
+		t.Errorf("turn/start threadId = %v, want codex-thread-1", params["threadId"])
 	}
+	input, _ := params["input"].([]any)
+	first, _ := firstOrNil(input).(map[string]any)
+	if first["type"] != "text" || first["text"] != "hello" {
+		t.Errorf("turn/start input = %v, want one text item \"hello\"", params["input"])
+	}
+	fx.respond(int64(frame["id"].(float64)), map[string]any{"turn": map[string]any{"id": "turn-1"}})
+	if err := <-sendDone; err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+}
 
-	evt := codexWaitEvent(t, eventCh)
-	// Skip any stale events from the Send echo chain.
-	for evt.TurnID != "turn-after-send" {
-		evt = codexWaitEvent(t, eventCh)
+func firstOrNil(items []any) any {
+	if len(items) == 0 {
+		return nil
 	}
-	if evt.Kind != provider.EventTurnStart {
-		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventTurnStart)
-	}
+	return items[0]
 }
 
 // TestTurnStartEmittedExactlyOncePerTurn exercises Bug B6: one user
 // turn must produce exactly one EventTurnStart. Pre-fix, Send's RPC
-// response emitter and dispatchLine's turn/started notification path
-// both fired. We use a silent subprocess (sleep) so Send's request
-// write does NOT echo back — this gives us a stable window to inject
-// the RPC response via the pending channel without racing cat's echo
-// of the request.
+// response emitter and the turn/started notification path both fired.
 func TestTurnStartEmittedExactlyOncePerTurn(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args:   []string{"-c", "cat > /dev/null"},
-	})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-	t.Cleanup(func() { proc.Close() })
-
+	fx := newConnFixture(t)
 	eventCh := make(chan provider.ProviderEvent, 100)
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			eventCh <- evt
-		},
-		cancel: cancel,
-	}
-	s.setRootThreadID("ctx-thread")
-	go s.readLoop()
+	s := fx.session(testThread, "ctx-thread", func(evt provider.ProviderEvent) {
+		eventCh <- evt
+	})
 
 	sendDone := make(chan error, 1)
 	go func() {
 		sendDone <- s.Send(context.Background(), "hi", provider.SendOptions{})
 	}()
-
-	// Poll until Send has registered its pending channel, then inject a
-	// successful result. The silent subprocess never echoes anything so
-	// the pending channel is quiet until we write to it.
-	var ch chan json.RawMessage
-	var rpcID int64
-	deadline := time.After(3 * time.Second)
-pollPending:
-	for {
-		select {
-		case <-deadline:
-			t.Fatal("Send never registered a pending RPC id")
-		default:
-		}
-		s.mu.Lock()
-		for id, c := range s.pending {
-			rpcID = id
-			ch = c
-			s.mu.Unlock()
-			break pollPending
-		}
-		s.mu.Unlock()
-		time.Sleep(2 * time.Millisecond)
-	}
-	rpcResp := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"turn":{"id":"turn-42"}}}`, rpcID)
-	ch <- json.RawMessage(rpcResp)
+	fx.respond(int64(fx.nextRequest("turn/start")["id"].(float64)), map[string]any{"turn": map[string]any{"id": "turn-42"}})
 
 	select {
 	case err := <-sendDone:
 		if err != nil {
 			t.Fatalf("Send: %v", err)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(fixtureWait):
 		t.Fatal("Send did not return")
 	}
 
-	// Fire the turn/started notification via a direct dispatchLine
-	// call — the subprocess is silent so we can't rely on readLoop to
-	// pick up a stdin-written line.
-	notifLine := []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-42"}}}`)
-	s.dispatchLine(notifLine)
+	fx.feed([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"ctx-thread","turn":{"id":"turn-42"}}}`))
 	// The completion is emitted after any turn start either path produced,
 	// so it bounds the drain without waiting out a quiet period.
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-42","status":"completed"}}}`))
+	fx.feed([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"ctx-thread","turn":{"id":"turn-42","status":"completed"}}}`))
 
 	turnStarts := countTurnStartsUntilComplete(t, eventCh, "turn-42")
 	if turnStarts != 1 {
@@ -146,15 +94,12 @@ func TestTurnStartOnlyNotificationStillEmits(t *testing.T) {
 	s, eventCh := newTestCodexSession(t)
 
 	// Only the notification — no RPC response at all.
-	notif := `{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-99"}}}`
-	if err := s.proc.WriteLine([]byte(notif)); err != nil {
-		t.Fatalf("write notif: %v", err)
-	}
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-99"}}}`))
 
 	var got provider.ProviderEvent
 	select {
 	case got = <-eventCh:
-	case <-time.After(2 * time.Second):
+	default:
 		t.Fatal("no event emitted from lone notification")
 	}
 	if got.Kind != provider.EventTurnStart {
@@ -172,18 +117,11 @@ func TestTurnStartIdempotentOnDuplicateNotification(t *testing.T) {
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	notif := `{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-dup"}}}`
+	notif := `{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-dup"}}}`
 	for i := 0; i < 2; i++ {
-		if err := s.proc.WriteLine([]byte(notif)); err != nil {
-			t.Fatalf("write notif %d: %v", i, err)
-		}
+		feed(t, s, []byte(notif))
 	}
-
-	// The read loop handles lines in order, so the completion bounds the drain.
-	completed := `{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-dup","status":"completed"}}}`
-	if err := s.proc.WriteLine([]byte(completed)); err != nil {
-		t.Fatalf("write completion: %v", err)
-	}
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"codex-thread-1","turn":{"id":"turn-dup","status":"completed"}}}`))
 
 	count := countTurnStartsUntilComplete(t, eventCh, "turn-dup")
 	if count != 1 {
@@ -196,7 +134,7 @@ func TestTurnStartIdempotentOnDuplicateNotification(t *testing.T) {
 func countTurnStartsUntilComplete(t *testing.T, eventCh <-chan provider.ProviderEvent, turnID string) int {
 	t.Helper()
 	count := 0
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(fixtureWait)
 	for {
 		select {
 		case evt := <-eventCh:
@@ -215,20 +153,40 @@ func countTurnStartsUntilComplete(t *testing.T, eventCh <-chan provider.Provider
 	}
 }
 
-func TestCodexSend(t *testing.T) {
+// Send returns the app-server's turn/start refusal to its caller.
+func TestCodexSendReturnsTurnStartError(t *testing.T) {
 	t.Parallel()
-	s, _ := newTestCodexSession(t)
+	fx := newConnFixture(t)
+	s := fx.session(testThread, "codex-thread-1", nil)
 
-	// Send calls sendRequest("turn/start"). With cat, this goes through the
-	// echo cycle and returns an error (unknown method). Send propagates it.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- s.Send(context.Background(), "hello world", provider.SendOptions{})
+	}()
+	fx.respondError(int64(fx.nextRequest("turn/start")["id"].(float64)), -32600, "turn refused")
 
-	err := s.Send(ctx, "hello world", provider.SendOptions{})
-	// Expected to fail because cat echo + handleServerRequest produces error response.
-	if err == nil {
-		t.Fatal("expected error from Send via cat echo")
+	if err := <-sendDone; err == nil || !strings.Contains(err.Error(), "turn refused") {
+		t.Fatalf("Send error = %v, want the turn/start refusal", err)
 	}
+}
+
+// interruptFrame runs Interrupt on a fixture session, answers its
+// turn/interrupt, and returns the request's params.
+func interruptFrame(t *testing.T, activeTurnID string) map[string]any {
+	t.Helper()
+	fx := newConnFixture(t)
+	s := fx.session(testThread, "codex-thread-1", nil)
+	s.turn.activeTurnID = activeTurnID
+
+	done := make(chan error, 1)
+	go func() { done <- s.Interrupt(context.Background()) }()
+	frame := fx.nextRequest("turn/interrupt")
+	fx.respond(int64(frame["id"].(float64)), map[string]any{})
+	if err := <-done; err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	params, _ := frame["params"].(map[string]any)
+	return params
 }
 
 func TestCodexInterruptStartupSendsEmptyTurnID(t *testing.T) {
@@ -239,151 +197,23 @@ func TestCodexInterruptStartupSendsEmptyTurnID(t *testing.T) {
 	// non-empty activeTurnID; just send the RPC and let upstream
 	// handle the dispatch-window case. See
 	// codex-rs/app-server/src/codex_message_processor.rs:7790-7849.
-	capturePath := t.TempDir() + "/request.json"
-	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args: []string{"-c", `
-			IFS= read -r line || exit 1
-			printf '%s\n' "$line" > "$CAPTURE_PATH"
-			printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'
-		`},
-		Env: map[string]string{"CAPTURE_PATH": capturePath},
-	})
-	if err != nil {
-		t.Fatalf("spawn recorder: %v", err)
+	params := interruptFrame(t, "")
+	if params["threadId"] != "codex-thread-1" {
+		t.Fatalf("threadId = %v, want codex-thread-1", params["threadId"])
 	}
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		// activeTurnID intentionally left empty — this is the
-		// dispatch window case.
-		pending: make(map[int64]chan json.RawMessage),
-		onEvent: func(provider.ProviderEvent) {},
-		cancel:  cancel,
+	if turnID, _ := params["turnId"].(string); turnID != "" {
+		t.Fatalf("turnId = %q, want empty (startup interrupt sentinel)", turnID)
 	}
-	s.setRootThreadID("codex-thread-1")
-	go s.readLoop()
-	t.Cleanup(func() {
-		cancel()
-		_ = proc.Close()
-	})
-
-	interruptCtx, interruptCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer interruptCancel()
-	if err := s.Interrupt(interruptCtx); err != nil {
-		t.Fatalf("Interrupt during dispatch window: %v", err)
-	}
-
-	data, err := os.ReadFile(capturePath)
-	if err != nil {
-		t.Fatalf("read captured request: %v", err)
-	}
-	var frame struct {
-		Method string `json:"method"`
-		Params struct {
-			ThreadID string `json:"threadId"`
-			TurnID   string `json:"turnId"`
-		} `json:"params"`
-	}
-	if err := json.Unmarshal(data, &frame); err != nil {
-		t.Fatalf("unmarshal captured request: %v", err)
-	}
-	if frame.Method != "turn/interrupt" {
-		t.Fatalf("method = %q, want turn/interrupt", frame.Method)
-	}
-	if frame.Params.ThreadID != "codex-thread-1" {
-		t.Fatalf("threadId = %q, want codex-thread-1", frame.Params.ThreadID)
-	}
-	if frame.Params.TurnID != "" {
-		t.Fatalf("turnId = %q, want empty (startup interrupt sentinel)", frame.Params.TurnID)
-	}
-}
-
-func TestCodexInterruptWithActiveTurn(t *testing.T) {
-	t.Parallel()
-	s, _ := newTestCodexSession(t)
-
-	// Simulate turn/started by setting activeTurnID.
-	s.mu.Lock()
-	s.turn.activeTurnID = "turn-1"
-	s.mu.Unlock()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// Just verify Interrupt attempts the RPC — actual response is
-	// noise from cat's echo behaviour. The startup-interrupt path is
-	// covered separately by TestCodexInterruptStartupSendsEmptyTurnID.
-	_ = s.Interrupt(ctx)
 }
 
 func TestCodexInterruptSendsThreadAndTurnID(t *testing.T) {
 	t.Parallel()
-	capturePath := t.TempDir() + "/request.json"
-	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args: []string{"-c", `
-			IFS= read -r line || exit 1
-			printf '%s\n' "$line" > "$CAPTURE_PATH"
-			printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'
-		`},
-		Env: map[string]string{"CAPTURE_PATH": capturePath},
-	})
-	if err != nil {
-		t.Fatalf("spawn recorder: %v", err)
+	params := interruptFrame(t, "turn-1")
+	if params["threadId"] != "codex-thread-1" {
+		t.Fatalf("params.threadId = %v, want codex-thread-1", params["threadId"])
 	}
-
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  func(provider.ProviderEvent) {},
-		cancel:   cancel,
-		turn: sessionTurnState{
-			activeTurnID: "turn-1",
-		},
-	}
-	s.setRootThreadID("codex-thread-1")
-	go s.readLoop()
-
-	t.Cleanup(func() {
-		cancel()
-		_ = proc.Close()
-	})
-
-	interruptCtx, interruptCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer interruptCancel()
-
-	if err := s.Interrupt(interruptCtx); err != nil {
-		t.Fatalf("interrupt: %v", err)
-	}
-
-	data, err := os.ReadFile(capturePath)
-	if err != nil {
-		t.Fatalf("read captured request: %v", err)
-	}
-
-	var frame struct {
-		Method string `json:"method"`
-		Params struct {
-			ThreadID string `json:"threadId"`
-			TurnID   string `json:"turnId"`
-		} `json:"params"`
-	}
-	if err := json.Unmarshal(data, &frame); err != nil {
-		t.Fatalf("unmarshal captured request: %v", err)
-	}
-
-	if frame.Method != "turn/interrupt" {
-		t.Fatalf("method = %q, want turn/interrupt", frame.Method)
-	}
-	if frame.Params.ThreadID != "codex-thread-1" {
-		t.Fatalf("params.threadId = %q, want codex-thread-1", frame.Params.ThreadID)
-	}
-	if frame.Params.TurnID != "turn-1" {
-		t.Fatalf("params.turnId = %q, want turn-1", frame.Params.TurnID)
+	if params["turnId"] != "turn-1" {
+		t.Fatalf("params.turnId = %v, want turn-1", params["turnId"])
 	}
 }
 

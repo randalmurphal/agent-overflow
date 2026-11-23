@@ -13,7 +13,6 @@ import (
 
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -102,29 +101,11 @@ func TestSendBindsOutputSchemaAcrossTurnStartOrdering(t *testing.T) {
 			name = "notification before response"
 		}
 		t.Run(name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			t.Cleanup(cancel)
-			proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-				Binary: "sh",
-				Args:   []string{"-c", "cat > /dev/null"},
-			})
-			if err != nil {
-				t.Fatalf("spawn: %v", err)
-			}
-			t.Cleanup(func() { _ = proc.Close() })
-
 			eventCh := make(chan provider.ProviderEvent, 16)
-			session := &Session{
-				proc:     proc,
-				threadID: testThread,
-				pending:  make(map[int64]chan json.RawMessage),
-				onEvent: func(event provider.ProviderEvent) {
-					eventCh <- event
-				},
-				cancel: cancel,
-			}
-			session.setRootThreadID("provider-thread")
-			go session.readLoop()
+			fx := newConnFixture(t)
+			session := fx.session(testThread, "provider-thread", func(event provider.ProviderEvent) {
+				eventCh <- event
+			})
 
 			sendDone := make(chan error, 1)
 			go func() {
@@ -132,31 +113,13 @@ func TestSendBindsOutputSchemaAcrossTurnStartOrdering(t *testing.T) {
 					OutputSchema: json.RawMessage(`{"type":"object"}`),
 				})
 			}()
-
-			var responseCh chan json.RawMessage
-			var requestID int64
-			deadline := time.Now().Add(3 * time.Second)
-			for responseCh == nil && time.Now().Before(deadline) {
-				session.mu.Lock()
-				for id, ch := range session.pending {
-					requestID = id
-					responseCh = ch
-					break
-				}
-				session.mu.Unlock()
-				if responseCh == nil {
-					time.Sleep(2 * time.Millisecond)
-				}
-			}
-			if responseCh == nil {
-				t.Fatal("Send never registered a pending turn/start request")
-			}
+			requestID := int64(fx.nextRequest("turn/start")["id"].(float64))
 
 			turnStarted := []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"provider-thread","turn":{"id":"turn-1"}}}`)
 			if notificationFirst {
-				session.dispatchLine(turnStarted)
+				feed(t, session, turnStarted)
 			}
-			responseCh <- json.RawMessage(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"turn":{"id":"turn-1"}}}`, requestID))
+			fx.respond(requestID, map[string]any{"turn": map[string]any{"id": "turn-1"}})
 			select {
 			case err := <-sendDone:
 				if err != nil {
@@ -166,11 +129,11 @@ func TestSendBindsOutputSchemaAcrossTurnStartOrdering(t *testing.T) {
 				t.Fatal("Send did not return")
 			}
 			if !notificationFirst {
-				session.dispatchLine(turnStarted)
+				feed(t, session, turnStarted)
 			}
 
-			session.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-thread","turnId":"turn-1","item":{"id":"message-1","type":"agentMessage","text":"{\"status\":\"done\"}"}}}`))
-			session.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"provider-thread","turn":{"id":"turn-1","status":"completed"}}}`))
+			feed(t, session, []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-thread","turnId":"turn-1","item":{"id":"message-1","type":"agentMessage","text":"{\"status\":\"done\"}"}}}`))
+			feed(t, session, []byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"provider-thread","turn":{"id":"turn-1","status":"completed"}}}`))
 
 			deadlineCh := time.After(3 * time.Second)
 			for {

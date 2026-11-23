@@ -4,13 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 )
 
 // backgroundTerminalTestTimeout bounds every wait in this file. Generous
@@ -32,47 +30,19 @@ type backgroundTerminalRequestFrame struct {
 	} `json:"params"`
 }
 
-// newCapturingSession builds an in-process Session whose subprocess is a
-// plain `cat` into capturePath, so every request frame we write lands on
-// disk while responses are injected straight into the pending channel.
-// Same shape as the CleanBackgroundTerminals in-process tests, plus the
-// capture file.
-func newCapturingSession(t *testing.T, codexThreadID string) (*Session, string) {
+// newCapturingSession attaches a session to a fixture connection as a resume
+// of codexThreadID; the fixture holds every frame the session writes.
+func newCapturingSession(t *testing.T, codexThreadID string) (*Session, *connFixture) {
 	t.Helper()
-	capturePath := t.TempDir() + "/requests.ndjson"
-	procCtx, cancelProc := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(procCtx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args:   []string{"-c", fmt.Sprintf("cat > %q", capturePath)},
-	})
-	if err != nil {
-		t.Fatalf("spawn capture process: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := proc.Close(); err != nil {
-			t.Errorf("close capture process: %v", err)
-		}
-		cancelProc()
-	})
-
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  func(provider.ProviderEvent) {},
-		cancel:   cancelProc,
-	}
-	s.setRootThreadID(codexThreadID)
-	go s.readLoop()
-	return s, capturePath
+	fx := newConnFixture(t)
+	return fx.session(testThread, codexThreadID, nil), fx
 }
 
-// waitForCapturedFrames polls the capture file until it holds at least
-// count decodable frames, then decodes them into the background-terminal
-// shape.
-func waitForCapturedFrames(t *testing.T, path string, count int, within time.Duration) []backgroundTerminalRequestFrame {
+// waitForCapturedFrames waits until the session wrote at least count frames
+// and decodes them into the background-terminal shape.
+func waitForCapturedFrames(t *testing.T, fx *connFixture, count int) []backgroundTerminalRequestFrame {
 	t.Helper()
-	raw := waitForCapturedRawFrames(t, path, count, within)
+	raw := waitForCapturedRawFrames(t, fx, count)
 	frames := make([]backgroundTerminalRequestFrame, 0, len(raw))
 	for _, line := range raw {
 		var frame backgroundTerminalRequestFrame
@@ -84,89 +54,41 @@ func waitForCapturedFrames(t *testing.T, path string, count int, within time.Dur
 	return frames
 }
 
-// waitForCapturedRawFrames polls the capture file until it holds at least
-// count JSON lines. `cat` copies our writes asynchronously, so a frame can
-// trail the pending-channel registration by a scheduling slice.
-func waitForCapturedRawFrames(t *testing.T, path string, count int, within time.Duration) []json.RawMessage {
+// waitForCapturedRawFrames waits until the session wrote at least count
+// frames and returns every frame written so far.
+func waitForCapturedRawFrames(t *testing.T, fx *connFixture, count int) []json.RawMessage {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
-		frames := readCapturedRawFrames(t, path)
-		if len(frames) >= count {
-			return frames
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %d captured frames, got %d", count, len(frames))
-			return nil
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	return rawFrames(fx.written(count))
 }
 
-// readCapturedRawFrames returns every complete JSON line written so far.
-// A missing file reads as zero frames — that is the state before the first
-// write, not a failure.
-func readCapturedRawFrames(t *testing.T, path string) []json.RawMessage {
+// readCapturedRawFrames returns every frame the session wrote so far.
+func readCapturedRawFrames(t *testing.T, fx *connFixture) []json.RawMessage {
 	t.Helper()
-	raw, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatalf("read captured requests: %v", err)
-	}
-	var frames []json.RawMessage
-	for _, line := range strings.Split(string(raw), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		if !json.Valid([]byte(line)) {
-			continue
-		}
-		frames = append(frames, json.RawMessage(line))
+	return rawFrames(fx.written(0))
+}
+
+func rawFrames(lines [][]byte) []json.RawMessage {
+	frames := make([]json.RawMessage, len(lines))
+	for i, line := range lines {
+		frames[i] = line
 	}
 	return frames
 }
 
-// pendingAnswerer answers in-flight requests one at a time. It tracks the
-// ids it has already served so a paginating caller's second request is
-// matched to a genuinely new pending entry — waitForPending returns an
-// arbitrary map member, so answering twice without this would re-serve
-// the first (already-drained) channel and hang the second request.
+// pendingAnswerer answers the session's requests in the order it wrote them.
 type pendingAnswerer struct {
-	session *Session
-	served  map[int64]struct{}
+	fx *connFixture
 }
 
-func newPendingAnswerer(s *Session) *pendingAnswerer {
-	return &pendingAnswerer{session: s, served: map[int64]struct{}{}}
+func newPendingAnswerer(t *testing.T, s *Session) *pendingAnswerer {
+	t.Helper()
+	return &pendingAnswerer{fx: fixtureFor(t, s)}
 }
 
-// answer injects a JSON-RPC result body for the next unserved in-flight
-// request.
+// answer sends result (raw JSON) for the next unanswered request.
 func (p *pendingAnswerer) answer(t *testing.T, result string) {
 	t.Helper()
-	ch, rpcID := p.next(t, backgroundTerminalTestTimeout)
-	ch <- json.RawMessage(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":%s}`, rpcID, result))
-}
-
-func (p *pendingAnswerer) next(t *testing.T, within time.Duration) (chan json.RawMessage, int64) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
-		p.session.mu.Lock()
-		for id, ch := range p.session.pending {
-			if _, done := p.served[id]; done {
-				continue
-			}
-			p.served[id] = struct{}{}
-			p.session.mu.Unlock()
-			return ch, id
-		}
-		p.session.mu.Unlock()
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for a new pending request registration")
-			return nil, 0
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	p.fx.answerNext(result)
 }
 
 // TestSession_ListBackgroundTerminals_DecodesEveryWireField drives one
@@ -178,7 +100,7 @@ func (p *pendingAnswerer) next(t *testing.T, within time.Duration) (chan json.Ra
 // never sent.
 func TestSession_ListBackgroundTerminals_DecodesEveryWireField(t *testing.T) {
 	t.Parallel()
-	s, capturePath := newCapturingSession(t, "codex-thread-list")
+	s, fx := newCapturingSession(t, "codex-thread-list")
 
 	type listResult struct {
 		terminals []BackgroundTerminal
@@ -190,7 +112,7 @@ func TestSession_ListBackgroundTerminals_DecodesEveryWireField(t *testing.T) {
 		done <- listResult{terminals: terminals, err: err}
 	}()
 
-	newPendingAnswerer(s).answer(t, `{"data":[
+	fx.answerNext(`{"data":[
 		{"itemId":"item-1","processId":"42","command":"pnpm dev","cwd":"/repo",
 		 "osPid":98765,"cpuPercent":12.5,"rssKb":204800},
 		{"itemId":"item-2","processId":"43","command":"tail -f log","cwd":"/repo",
@@ -225,7 +147,7 @@ func TestSession_ListBackgroundTerminals_DecodesEveryWireField(t *testing.T) {
 		t.Errorf("null host metrics must decode as nil, got %+v", second)
 	}
 
-	frames := waitForCapturedFrames(t, capturePath, 1, backgroundTerminalTestTimeout)
+	frames := waitForCapturedFrames(t, fx, 1)
 	if frames[0].Method != "thread/backgroundTerminals/list" {
 		t.Errorf("method = %q, want thread/backgroundTerminals/list", frames[0].Method)
 	}
@@ -242,7 +164,7 @@ func TestSession_ListBackgroundTerminals_DecodesEveryWireField(t *testing.T) {
 // and the caller must see both pages concatenated in order.
 func TestSession_ListBackgroundTerminals_FollowsCursor(t *testing.T) {
 	t.Parallel()
-	s, capturePath := newCapturingSession(t, "codex-thread-pages")
+	s, fx := newCapturingSession(t, "codex-thread-pages")
 
 	done := make(chan []BackgroundTerminal, 1)
 	errCh := make(chan error, 1)
@@ -255,9 +177,8 @@ func TestSession_ListBackgroundTerminals_FollowsCursor(t *testing.T) {
 		done <- terminals
 	}()
 
-	answerer := newPendingAnswerer(s)
-	answerer.answer(t, `{"data":[{"itemId":"a","processId":"1","command":"one","cwd":"/w"}],"nextCursor":"page-2"}`)
-	answerer.answer(t, `{"data":[{"itemId":"b","processId":"2","command":"two","cwd":"/w"}],"nextCursor":null}`)
+	fx.answerNext(`{"data":[{"itemId":"a","processId":"1","command":"one","cwd":"/w"}],"nextCursor":"page-2"}`)
+	fx.answerNext(`{"data":[{"itemId":"b","processId":"2","command":"two","cwd":"/w"}],"nextCursor":null}`)
 
 	select {
 	case err := <-errCh:
@@ -270,7 +191,7 @@ func TestSession_ListBackgroundTerminals_FollowsCursor(t *testing.T) {
 		t.Fatal("ListBackgroundTerminals never returned")
 	}
 
-	frames := waitForCapturedFrames(t, capturePath, 2, backgroundTerminalTestTimeout)
+	frames := waitForCapturedFrames(t, fx, 2)
 	if frames[0].Params.Cursor != nil {
 		t.Errorf("first page must omit cursor, got %q", *frames[0].Params.Cursor)
 	}
@@ -285,7 +206,7 @@ func TestSession_ListBackgroundTerminals_FollowsCursor(t *testing.T) {
 // app-server; the contract is a loud error instead.
 func TestSession_ListBackgroundTerminals_RepeatedCursorFailsLoudly(t *testing.T) {
 	t.Parallel()
-	s, _ := newCapturingSession(t, "codex-thread-stuck")
+	s, fx := newCapturingSession(t, "codex-thread-stuck")
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -293,9 +214,8 @@ func TestSession_ListBackgroundTerminals_RepeatedCursorFailsLoudly(t *testing.T)
 		errCh <- err
 	}()
 
-	answerer := newPendingAnswerer(s)
-	answerer.answer(t, `{"data":[],"nextCursor":"stuck"}`)
-	answerer.answer(t, `{"data":[],"nextCursor":"stuck"}`)
+	fx.answerNext(`{"data":[],"nextCursor":"stuck"}`)
+	fx.answerNext(`{"data":[],"nextCursor":"stuck"}`)
 
 	select {
 	case err := <-errCh:
@@ -325,7 +245,7 @@ func TestSession_TerminateBackgroundTerminal_RoundTrip(t *testing.T) {
 		{name: "no matching process", result: `{"terminated":false}`, wantKilled: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, capturePath := newCapturingSession(t, "codex-thread-term")
+			s, fx := newCapturingSession(t, "codex-thread-term")
 
 			type terminateResult struct {
 				killed bool
@@ -337,7 +257,7 @@ func TestSession_TerminateBackgroundTerminal_RoundTrip(t *testing.T) {
 				done <- terminateResult{killed: killed, err: err}
 			}()
 
-			newPendingAnswerer(s).answer(t, tc.result)
+			fx.answerNext(tc.result)
 
 			got := <-done
 			if got.err != nil {
@@ -347,7 +267,7 @@ func TestSession_TerminateBackgroundTerminal_RoundTrip(t *testing.T) {
 				t.Errorf("terminated = %v, want %v", got.killed, tc.wantKilled)
 			}
 
-			frames := waitForCapturedFrames(t, capturePath, 1, backgroundTerminalTestTimeout)
+			frames := waitForCapturedFrames(t, fx, 1)
 			if frames[0].Method != "thread/backgroundTerminals/terminate" {
 				t.Errorf("method = %q, want thread/backgroundTerminals/terminate", frames[0].Method)
 			}
@@ -370,7 +290,7 @@ func TestSession_TerminateBackgroundTerminal_RoundTrip(t *testing.T) {
 // the client-side bug.
 func TestSession_TerminateBackgroundTerminal_RejectsBlankProcessID(t *testing.T) {
 	t.Parallel()
-	s, capturePath := newCapturingSession(t, "codex-thread-blank")
+	s, fx := newCapturingSession(t, "codex-thread-blank")
 
 	for _, processID := range []string{"", "   "} {
 		killed, err := s.TerminateBackgroundTerminal(context.Background(), processID)
@@ -385,8 +305,8 @@ func TestSession_TerminateBackgroundTerminal_RejectsBlankProcessID(t *testing.T)
 		}
 	}
 
-	if raw, err := os.ReadFile(capturePath); err == nil && strings.TrimSpace(string(raw)) != "" {
-		t.Errorf("blank process id must not reach the wire, captured: %s", string(raw))
+	if frames := readCapturedRawFrames(t, fx); len(frames) != 0 {
+		t.Errorf("blank process id must not reach the wire, captured: %s", frames)
 	}
 }
 
@@ -398,7 +318,6 @@ func TestSession_BackgroundTerminalRPCs_RequireThreadID(t *testing.T) {
 	t.Parallel()
 	s := &Session{
 		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
 		onEvent:  func(provider.ProviderEvent) {},
 	}
 
@@ -418,7 +337,7 @@ func TestSession_BackgroundTerminalRPCs_RequireThreadID(t *testing.T) {
 // as "the process was already gone".
 func TestSession_TerminateBackgroundTerminal_ErrorResponse(t *testing.T) {
 	t.Parallel()
-	s, _ := newCapturingSession(t, "codex-thread-term-err")
+	s, fx := newCapturingSession(t, "codex-thread-term-err")
 
 	type terminateResult struct {
 		killed bool
@@ -430,11 +349,11 @@ func TestSession_TerminateBackgroundTerminal_ErrorResponse(t *testing.T) {
 		done <- terminateResult{killed: killed, err: err}
 	}()
 
-	ch, rpcID := waitForPending(t, s, backgroundTerminalTestTimeout)
-	ch <- json.RawMessage(fmt.Sprintf(
+	rpcID := fx.claimRequest()
+	fx.feed([]byte(fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":%d,"error":{"code":-32600,"message":"Invalid request: missing field `+"`processId`"+`"}}`,
 		rpcID,
-	))
+	)))
 
 	select {
 	case got := <-done:

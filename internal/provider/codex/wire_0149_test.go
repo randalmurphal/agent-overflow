@@ -58,7 +58,7 @@ func TestAgentMessageDeliveryRidesOnTheBlockMeta(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, events := externalTurnTestSession(t, "codex-thread-1")
 			line := `{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"codex-thread-1","turnId":"turn-1","item":` + tc.item + `}}`
-			s.dispatchLine([]byte(line))
+			feed(t, s, []byte(line))
 
 			var block *provider.ProviderEvent
 			for i := range *events {
@@ -115,7 +115,7 @@ func TestNonBlockingUserInputIsLoggedNotAdapted(t *testing.T) {
 	// the events and the log line are what this asserts.
 	line := []byte(`{"jsonrpc":"2.0","id":7,"method":"item/tool/requestUserInput","params":{"threadId":"codex-thread-1","turnId":"turn-1","itemId":"item-1","isBlocking":false,"questions":[{"id":"q1","prompt":"Which branch?"}]}}`)
 
-	logged := captureLog(t, func() { s.dispatchLine(line) })
+	logged := captureLog(t, func() { feed(t, s, line) })
 
 	if !strings.Contains(logged, "isBlocking=false") {
 		t.Errorf("expected the non-blocking case to be logged, got %q", logged)

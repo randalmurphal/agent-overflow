@@ -1,15 +1,10 @@
 package codex
 
 import (
-	"context"
-	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
 	"unsafe"
-
-	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 )
 
 // sessionScopedStateGroups are the Session field groups whose contents describe
@@ -37,19 +32,7 @@ var sessionScopedStateGroups = []string{
 // both the groups and the then-prose exclusions list (2026-08-25, finding 10).
 func TestCloseReleasesSessionScopedState(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	// `cat` is a stand-in process, never a provider CLI: Close needs a real
-	// *provider.Process to close and this test must not spawn codex.
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		cancel:   cancel,
-	}
+	s := fixtureSession(t, testThread, "", nil)
 
 	session := reflect.ValueOf(s).Elem()
 	for _, name := range sessionScopedStateGroups {
@@ -100,7 +83,6 @@ var sessionCloseFieldDispositions = map[string]string{
 	"childLifecycleRevision": "cleared by Close under childLifecycleMu; asserted inline",
 
 	// Deliberately kept, bounded maps.
-	"pending":                    "kept as an EMPTY map so a late sendRequest does not panic writing to nil; see Close",
 	"unclaimedNotifications":     "bounded by maxUnclaimedNotificationMethods; kept — clearing is a behavior change",
 	"reportedForeignSubmissions": "bounded by maxReportedForeignSubmissions; kept",
 	"planBuffersByItemID":        "bounded by maxPlanDeltaBuffers; kept",
@@ -128,9 +110,7 @@ var sessionCloseFieldDispositions = map[string]string{
 	"releaseConnOnce": "guards releaseConn idempotency",
 	"readDoneOnce":    "guards readDone channel close idempotency",
 	"teardownEmitted": "guards single EmitTeardownStatusWithMeta delivery",
-	"proc":            "process handle; Close closes it",
 	"ctx":             "lifecycle context",
-	"cancel":          "lifecycle cancel; Close calls it",
 	"closing":         "the Close latch itself",
 	"readDone":        "read-loop join channel; Close waits on it",
 	"threadID":        "identity",
@@ -145,7 +125,6 @@ var sessionCloseFieldDispositions = map[string]string{
 	"developerInstructionsComposed": "bounded thread-level text composed once at start, like " +
 		"developerInstructions",
 	"binary":         "identity",
-	"nextID":         "request-id counter",
 	"controlMu":      "root control-operation lock",
 	"settingsWireMu": "settings and turn pipe-write ordering lock",
 	"settingsSync":   "one joined worker, cleared pending flags, and a closed admission gate",

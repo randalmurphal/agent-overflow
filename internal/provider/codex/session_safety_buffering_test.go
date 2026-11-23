@@ -35,7 +35,7 @@ func TestSafetyBufferingRaisesOneNoticePerTurn(t *testing.T) {
 	s, events := externalTurnTestSession(t, "codex-thread-1")
 
 	for range 500 {
-		s.dispatchLine(safetyBufferingLine("turn-1", true))
+		feed(t, s, safetyBufferingLine("turn-1", true))
 	}
 	notices := safetyBufferingNotices(*events)
 	if len(notices) != 1 {
@@ -46,7 +46,7 @@ func TestSafetyBufferingRaisesOneNoticePerTurn(t *testing.T) {
 	}
 
 	for range 3 {
-		s.dispatchLine(safetyBufferingLine("turn-2", true))
+		feed(t, s, safetyBufferingLine("turn-2", true))
 	}
 	notices = safetyBufferingNotices(*events)
 	if len(notices) != 2 || notices[1].TurnID != "turn-2" {
@@ -59,10 +59,10 @@ func TestSafetyBufferingHiddenSignalDoesNotSpendTheNotice(t *testing.T) {
 	t.Parallel()
 	s, events := externalTurnTestSession(t, "codex-thread-1")
 
-	s.dispatchLine(safetyBufferingLine("turn-1", false))
-	s.dispatchLine(safetyBufferingLine("turn-1", true))
-	s.dispatchLine(safetyBufferingLine("turn-1", false))
-	s.dispatchLine(safetyBufferingLine("turn-1", true))
+	feed(t, s, safetyBufferingLine("turn-1", false))
+	feed(t, s, safetyBufferingLine("turn-1", true))
+	feed(t, s, safetyBufferingLine("turn-1", false))
+	feed(t, s, safetyBufferingLine("turn-1", true))
 
 	if notices := safetyBufferingNotices(*events); len(notices) != 1 {
 		t.Fatalf("got %d notices, want 1", len(notices))
@@ -75,7 +75,7 @@ func TestSafetyBufferingWithoutTurnIDRaisesOneNotice(t *testing.T) {
 	s, events := externalTurnTestSession(t, "codex-thread-1")
 
 	for range 3 {
-		s.dispatchLine(safetyBufferingLine("", true))
+		feed(t, s, safetyBufferingLine("", true))
 	}
 	if notices := safetyBufferingNotices(*events); len(notices) != 1 {
 		t.Fatalf("got %d notices, want 1", len(notices))

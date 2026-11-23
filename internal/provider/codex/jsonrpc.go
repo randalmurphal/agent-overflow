@@ -9,13 +9,9 @@ import (
 	"time"
 )
 
-// sendRequest sends a JSON-RPC request and waits for a response. On
-// timeout or context cancellation we remove the pending entry
-// atomically with the lock, then drop the buffered response (if any)
-// so the channel does not leak a record that no one will read. A
-// response that arrives AFTER we delete the pending entry is dropped
-// by dispatchLine's default branch — we cannot leak a late response
-// once the pending entry is gone.
+// sendRequest writes a JSON-RPC request on the session's connection and
+// waits for its response; the connection owns correlation, the timeout and
+// dropping a response that arrives after the wait ended.
 func (s *Session) sendRequest(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	wait, err := s.startRequest(method, params)
 	if err != nil {
@@ -27,95 +23,7 @@ func (s *Session) sendRequest(ctx context.Context, method string, params any) (j
 // startRequest separates ordered pipe writes from response waits. The caller
 // must invoke the returned function exactly once to settle the pending request.
 func (s *Session) startRequest(method string, params any) (func(context.Context) (json.RawMessage, error), error) {
-	if s.conn != nil {
-		return s.conn.startRequestWithTimeout(method, params, s.requestTimeoutOverride)
-	}
-	id := s.nextID.Add(1)
-
-	ch := make(chan json.RawMessage, 1)
-	s.mu.Lock()
-	s.pending[id] = ch
-	s.mu.Unlock()
-
-	// abandon removes the pending entry under the lock and drains the
-	// buffered response (if any) so a late write from dispatchLine
-	// lands in a channel nobody is holding. Called exactly once by
-	// whichever branch of the select below runs — we don't use a
-	// defer so the drain happens BEFORE we return rather than after,
-	// which eliminates the window where a late response can land in
-	// the buffer-1 channel unobserved.
-	abandon := func() {
-		s.mu.Lock()
-		delete(s.pending, id)
-		s.mu.Unlock()
-		select {
-		case <-ch:
-		default:
-		}
-	}
-
-	msg := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"method":  method,
-	}
-	if params != nil {
-		msg["params"] = params
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		abandon()
-		return nil, fmt.Errorf("codex: marshal request: %w", err)
-	}
-
-	if err := s.proc.WriteLine(data); err != nil {
-		abandon()
-		return nil, err
-	}
-
-	return func(ctx context.Context) (json.RawMessage, error) {
-		select {
-		case <-ctx.Done():
-			abandon()
-			return nil, ctx.Err()
-		case resp, ok := <-ch:
-			// The happy path also needs to clear the pending entry. We do
-			// it here rather than via defer so abandon's lock pattern is
-			// the single source of truth.
-			s.mu.Lock()
-			delete(s.pending, id)
-			s.mu.Unlock()
-			if !ok {
-				return nil, fmt.Errorf("codex: %s: session stopped before request completed", method)
-			}
-			var rpcResp struct {
-				Error *struct {
-					Code    int             `json:"code"`
-					Message string          `json:"message"`
-					Data    json.RawMessage `json:"data,omitempty"`
-				} `json:"error,omitempty"`
-				Result json.RawMessage `json:"result,omitempty"`
-			}
-			if err := json.Unmarshal(resp, &rpcResp); err == nil {
-				if rpcResp.Error != nil {
-					return nil, &RPCError{
-						Method:  method,
-						Code:    rpcResp.Error.Code,
-						Message: rpcResp.Error.Message,
-						Data:    rpcResp.Error.Data,
-					}
-				}
-				if len(rpcResp.Result) > 0 {
-					return rpcResp.Result, nil
-				}
-			}
-			return resp, nil
-		case <-time.After(s.requestTimeout()):
-			abandon()
-			return nil, &RequestTimeoutError{Method: method}
-		}
-	}, nil
+	return s.conn.startRequestWithTimeout(method, params, s.requestTimeoutOverride)
 }
 
 // RPCError is a JSON-RPC error response from the Codex app-server, kept
@@ -372,17 +280,6 @@ func IsAmbiguousTurnStartTimeout(err error) bool {
 // response. Overridable by tests via Session.requestTimeoutOverride.
 const defaultRequestTimeout = 30 * time.Second
 
-// requestTimeout returns the active JSON-RPC response timeout. Tests set
-// a much shorter value via the unexported requestTimeoutOverride field
-// so they can exercise the timeout + late-response path without waiting
-// 30 seconds.
-func (s *Session) requestTimeout() time.Duration {
-	if s.requestTimeoutOverride > 0 {
-		return s.requestTimeoutOverride
-	}
-	return defaultRequestTimeout
-}
-
 // writeErrorResponse sends a JSON-RPC error response with the given code and message.
 func (s *Session) writeErrorResponse(id int64, code int, message string) error {
 	return s.writeErrorResponseWithData(id, code, message, nil)
@@ -397,26 +294,7 @@ func (s *Session) writeErrorResponse(id int64, code int, message string) error {
 // 2447 for exec approval, 2494 for user input, 2603 for MCP
 // elicitation, 2680 for permissions).
 func (s *Session) writeErrorResponseWithData(id int64, code int, message string, data any) error {
-	if s.conn != nil {
-		return s.conn.writeErrorResponseWithData(id, code, message, data)
-	}
-	errFields := map[string]any{
-		"code":    code,
-		"message": message,
-	}
-	if data != nil {
-		errFields["data"] = data
-	}
-	msg := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"error":   errFields,
-	}
-	encoded, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("codex: marshal error response: %w", err)
-	}
-	return s.proc.WriteLine(encoded)
+	return s.conn.writeErrorResponseWithData(id, code, message, data)
 }
 
 // codexTurnTransitionReason is the magic string Codex's app-server
@@ -435,17 +313,5 @@ const codexTurnTransitionReason = "turnTransition"
 
 // writeResponse sends a JSON-RPC response (to server requests like approvals).
 func (s *Session) writeResponse(id int64, result any) error {
-	if s.conn != nil {
-		return s.conn.writeResponse(id, result)
-	}
-	msg := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"result":  result,
-	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("codex: marshal response: %w", err)
-	}
-	return s.proc.WriteLine(data)
+	return s.conn.writeResponse(id, result)
 }

@@ -3,8 +3,6 @@ package codex
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -12,39 +10,21 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 )
+
+// answerChildProfileReads answers every child profile read, a metadata-only
+// thread/resume, with the child thread and no profile.
+func answerChildProfileReads(fx *connFixture) {
+	fx.answer("thread/resume", func(params json.RawMessage) any {
+		return map[string]any{"thread": map[string]any{"id": readNestedString(params, "threadId")}}
+	})
+}
 
 func newMultiAgentV2RoutingSession(t *testing.T, onEvent func(provider.ProviderEvent)) *Session {
 	t.Helper()
-	s := &Session{
-		threadID:            "ao-thread",
-		onEvent:             onEvent,
-		planBuffersByItemID: make(map[string]*planBuffer),
-		planBuffersByTurnID: make(map[string]*planBuffer),
-		collab: sessionCollabState{
-			childParentByThread:       make(map[string]string),
-			childParentByAgentPath:    make(map[string]string),
-			childThreadByAgentPath:    make(map[string]string),
-			childPathOwnerLive:        make(map[string]bool),
-			agentPathByThread:         make(map[string]string),
-			agentMetaByThread:         make(map[string]collabReceiverMeta),
-			subagentNotificationDedup: make(map[subagentNotificationDedupKey]struct{}),
-		},
-		childRouting: sessionChildRoutingState{
-			deferredChildWireEvents: make(map[string][]deferredChildWireEvent),
-			deferredChildDeadlines:  make(map[string]*time.Timer),
-		},
-		collabHistory: sessionCollabHistoryState{
-			generation: 1,
-			visited:    make(map[string]uint64),
-		},
-		rawCalls: sessionRawToolCallState{
-			byID:                  make(map[string]rawToolCall),
-			waitReceiverIDsByCall: make(map[string][]string),
-		},
-	}
-	s.setRootThreadID("root-provider-thread")
+	fx := newConnFixture(t)
+	answerChildProfileReads(fx)
+	s := fx.session("ao-thread", "root-provider-thread", onEvent)
 	t.Cleanup(func() {
 		s.mu.Lock()
 		for _, timer := range s.childRouting.deferredChildDeadlines {
@@ -179,15 +159,15 @@ func TestMultiAgentV2InterruptedActivityPairEmitsOnlyStatus(t *testing.T) {
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
 	})
-	s.dispatchLine(v2ActivityNotification("item/started", "root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
-	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
+	feed(t, s, v2ActivityNotification("item/started", "root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
+	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
 	if len(events) != 2 || events[0].Kind != provider.EventToolStart || events[1].Kind != provider.EventToolComplete {
 		t.Fatalf("spawn pair events = %+v, want exactly the synthesized start/complete", events)
 	}
 	events = nil
 
-	s.dispatchLine(v2ActivityNotification("item/started", "root-provider-thread", "root-turn", "interrupt-call", "interrupted", "child-a", "/root/reviewer"))
-	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "interrupt-call", "interrupted", "child-a", "/root/reviewer"))
+	feed(t, s, v2ActivityNotification("item/started", "root-provider-thread", "root-turn", "interrupt-call", "interrupted", "child-a", "/root/reviewer"))
+	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "interrupt-call", "interrupted", "child-a", "/root/reviewer"))
 
 	if len(events) != 2 {
 		t.Fatalf("interrupt events = %+v, want status and interruption activity", events)
@@ -205,9 +185,9 @@ func TestMultiAgentV2StartedNormalizesAndMapsChild(t *testing.T) {
 	})
 	s.turnConfig.model = "gpt-5.4"
 	s.turnConfig.reasoningEffort = "high"
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-a","agentNickname":"Socrates","source":{"subAgent":{"threadSpawn":{"parentThreadId":"root-provider-thread","agentPath":"/root/reviewer"}}}}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-a","agentNickname":"Socrates","source":{"subAgent":{"threadSpawn":{"parentThreadId":"root-provider-thread","agentPath":"/root/reviewer"}}}}}}`))
 
-	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
+	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
 
 	if got := s.parentToolUseForProviderThread("child-a"); got != "spawn-a" {
 		t.Fatalf("child ownership = %q, want spawn-a", got)
@@ -261,6 +241,9 @@ func TestMultiAgentV2NestedSpawnDoesNotInheritSourceAgentProfile(t *testing.T) {
 	if !s.registerChildOwnership("root-provider-thread", "child-a", "/root/reviewer", "spawn-a") {
 		t.Fatal("register source child ownership")
 	}
+	// The dispatch path drains after recording ownership, which routes the
+	// child's frames to this session on the connection.
+	s.drainDeferredChildWireEvents("child-a")
 	s.rememberCollabReceiverMeta(collabReceiverMeta{
 		ThreadID:        "child-a",
 		Model:           "gpt-child",
@@ -268,7 +251,7 @@ func TestMultiAgentV2NestedSpawnDoesNotInheritSourceAgentProfile(t *testing.T) {
 		ProfileKnown:    true,
 	})
 
-	s.dispatchLine(v2ActivityLine("child-a", "child-turn", "spawn-b", "started", "grandchild-b", "/root/reviewer/worker"))
+	feed(t, s, v2ActivityLine("child-a", "child-turn", "spawn-b", "started", "grandchild-b", "/root/reviewer/worker"))
 
 	if len(events) != 2 {
 		t.Fatalf("events = %+v, want nested tool start and completion", events)
@@ -297,14 +280,14 @@ func TestMultiAgentV2NestedChildrenNeverEnterParentLifecycle(t *testing.T) {
 	})
 
 	// The child starts and streams before the root's spawn activity arrives.
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-a","source":{"subAgent":{"threadSpawn":{"parentThreadId":"root-provider-thread","agentPath":"/root/reviewer"}}}}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-a","turn":{"id":"child-turn","status":"inProgress"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"child-a","turnId":"child-turn","itemId":"child-text","delta":"child output"}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-a","source":{"subAgent":{"threadSpawn":{"parentThreadId":"root-provider-thread","agentPath":"/root/reviewer"}}}}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-a","turn":{"id":"child-turn","status":"inProgress"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"child-a","turnId":"child-turn","itemId":"child-text","delta":"child output"}}`))
 	if len(events) != 0 {
 		t.Fatalf("unowned child events leaked: %+v", events)
 	}
 
-	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
+	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
 	if len(events) != 4 || events[2].Kind != provider.EventSubagentStatus || events[3].Kind != provider.EventTextDelta || events[3].ParentToolUseID != "spawn-a" {
 		t.Fatalf("root child replay = %+v", events)
 	}
@@ -312,13 +295,13 @@ func TestMultiAgentV2NestedChildrenNeverEnterParentLifecycle(t *testing.T) {
 	// A grandchild can win the same race. Its ownership activity is emitted
 	// on child-a and therefore nests under spawn-a; the grandchild transcript
 	// nests under the new spawn-b card, never the AO main scope.
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"grandchild-b","turn":{"id":"grandchild-turn","status":"inProgress"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"grandchild-b","turnId":"grandchild-turn","itemId":"grandchild-text","delta":"grandchild output"}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"grandchild-b","turn":{"id":"grandchild-turn","status":"inProgress"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"grandchild-b","turnId":"grandchild-turn","itemId":"grandchild-text","delta":"grandchild output"}}`))
 	if len(events) != 4 {
 		t.Fatalf("unowned grandchild events leaked: %+v", events)
 	}
 
-	s.dispatchLine(v2ActivityLine("child-a", "child-turn", "spawn-b", "started", "grandchild-b", "/root/reviewer/deep_review"))
+	feed(t, s, v2ActivityLine("child-a", "child-turn", "spawn-b", "started", "grandchild-b", "/root/reviewer/deep_review"))
 	if got := s.parentToolUseForProviderThread("grandchild-b"); got != "spawn-b" {
 		t.Fatalf("grandchild ownership = %q, want spawn-b", got)
 	}
@@ -346,11 +329,11 @@ func TestMultiAgentV2ChildCompletionAndInterruptAreScopedStatuses(t *testing.T) 
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
 	})
-	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
+	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
 	events = nil
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"child-a","turn":{"id":"child-turn","status":"completed","error":null}}}`))
-	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "interrupt-call", "interrupted", "child-a", "/root/reviewer"))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"child-a","turn":{"id":"child-turn","status":"completed","error":null}}}`))
+	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "interrupt-call", "interrupted", "child-a", "/root/reviewer"))
 
 	if len(events) != 3 {
 		t.Fatalf("terminal events = %+v", events)
@@ -368,11 +351,11 @@ func TestMultiAgentV2InteractionDoesNotExposeEncryptedRawMessage(t *testing.T) {
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
 	})
-	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
+	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
 	events = nil
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"type":"function_call","namespace":"collaboration","name":"followup_task","call_id":"followup-a","arguments":"{\"target\":\"/root/reviewer\",\"message\":\"gAAAA-encrypted\"}"}}}`))
-	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "followup-a", "interacted", "child-a", "/root/reviewer"))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"type":"function_call","namespace":"collaboration","name":"followup_task","call_id":"followup-a","arguments":"{\"target\":\"/root/reviewer\",\"message\":\"gAAAA-encrypted\"}"}}}`))
+	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "followup-a", "interacted", "child-a", "/root/reviewer"))
 
 	if len(events) != 1 || events[0].Kind != provider.EventToolComplete || events[0].ItemType != "send_input" {
 		t.Fatalf("interaction events = %+v", events)
@@ -403,10 +386,10 @@ func TestMultiAgentV2CompletedActivitySettlesTheExistingLaunch(t *testing.T) {
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
 	})
-	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
+	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
 	events = nil
 
-	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "subagent-completed-child-a", "completed", "child-a", "/root/reviewer"))
+	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "subagent-completed-child-a", "completed", "child-a", "/root/reviewer"))
 	if len(events) != 1 {
 		t.Fatalf("completed activity events = %+v", events)
 	}
@@ -426,8 +409,8 @@ func TestMultiAgentV2SpawnDoesNotExposeEncryptedRawMessage(t *testing.T) {
 		events = append(events, event)
 	})
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"type":"function_call","namespace":"collaboration","name":"spawn_agent","call_id":"spawn-a","arguments":"{\"task_name\":\"reviewer\",\"message\":\"gAAAA-encrypted\"}"}}}`))
-	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"type":"function_call","namespace":"collaboration","name":"spawn_agent","call_id":"spawn-a","arguments":"{\"task_name\":\"reviewer\",\"message\":\"gAAAA-encrypted\"}"}}}`))
+	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
 
 	if len(events) != 2 {
 		t.Fatalf("events = %+v, want tool start and completion", events)
@@ -453,25 +436,25 @@ func TestMultiAgentV2ChildThreadWideEventsAreSuppressedAndErrorsAreNonFatal(t *t
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
 	})
-	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
+	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
 	events = nil
 
 	// A child's token usage is no longer dropped: it is re-emitted as a
 	// SCOPED progress tick (never EventTokenUsage, never the parent
 	// meter). See TestDispatchLineChildTokenUsageBecomesScopedProgress.
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"child-a","tokenUsage":{"last":{"totalTokens":5,"inputTokens":4,"outputTokens":1},"total":{"totalTokens":5,"inputTokens":4,"outputTokens":1},"modelContextWindow":100}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"child-a","tokenUsage":{"last":{"totalTokens":5,"inputTokens":4,"outputTokens":1},"total":{"totalTokens":5,"inputTokens":4,"outputTokens":1},"modelContextWindow":100}}}`))
 	if len(events) != 1 || events[0].Kind != provider.EventSubagentProgress || events[0].ItemID != "spawn-a" {
 		t.Fatalf("child token usage = %+v, want one scoped progress tick", events)
 	}
 	events = nil
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"child-a","turnId":"child-turn","item":{"id":"child-user","type":"userMessage","content":[{"type":"text","text":"child prompt"}]}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"model/rerouted","params":{"threadId":"child-a","toModel":"other-model"}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"child-a","turnId":"child-turn","item":{"id":"child-user","type":"userMessage","content":[{"type":"text","text":"child prompt"}]}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"model/rerouted","params":{"threadId":"child-a","toModel":"other-model"}}`))
 	if len(events) != 0 {
 		t.Fatalf("child thread-wide events leaked: %+v", events)
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"error","params":{"threadId":"child-a","willRetry":false,"error":{"message":"child failed"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"error","params":{"threadId":"child-a","willRetry":false,"error":{"message":"child failed"}}}`))
 	if len(events) != 2 || events[0].Kind != provider.EventError || events[1].Kind != provider.EventSubagentStatus {
 		t.Fatalf("child error events = %+v", events)
 	}
@@ -499,7 +482,7 @@ func TestMultiAgentV2DeferredChildApprovalDrainsAfterOwnership(t *testing.T) {
 		t.Fatalf("unowned child approval leaked: %+v", events)
 	}
 
-	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
+	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
 	if len(events) != 3 || events[2].Kind != provider.EventApprovalRequest || events[2].ParentToolUseID != "spawn-a" {
 		t.Fatalf("deferred child approval did not drain under spawn: %+v", events)
 	}
@@ -511,11 +494,11 @@ func TestMultiAgentV2RawExecResultStaysInAOThreadAndChildScope(t *testing.T) {
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
 	})
-	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
+	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
 	events = nil
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"child-a","turnId":"child-turn","item":{"type":"function_call","name":"exec_command","call_id":"cmd-child","arguments":"{\"cmd\":\"sleep 10\"}"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"child-a","turnId":"child-turn","item":{"type":"function_call_output","call_id":"cmd-child","output":"Process running with session ID 42\nOutput:\n"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"child-a","turnId":"child-turn","item":{"type":"function_call","name":"exec_command","call_id":"cmd-child","arguments":"{\"cmd\":\"sleep 10\"}"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"child-a","turnId":"child-turn","item":{"type":"function_call_output","call_id":"cmd-child","output":"Process running with session ID 42\nOutput:\n"}}}`))
 
 	if len(events) != 1 {
 		t.Fatalf("raw child events = %+v", events)
@@ -609,13 +592,13 @@ func TestMultiAgentV2PathReuseDrainsBufferedChildCompletion(t *testing.T) {
 		t.Fatal("register historical child ownership")
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-new","turn":{"id":"child-turn","status":"inProgress"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"child-new","turn":{"id":"child-turn","status":"completed","error":null}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-new","turn":{"id":"child-turn","status":"inProgress"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"child-new","turn":{"id":"child-turn","status":"completed","error":null}}}`))
 	if len(events) != 0 {
 		t.Fatalf("unowned child lifecycle leaked before spawn: %+v", events)
 	}
 
-	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-new", "started", "child-new", "/root/review"))
+	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "spawn-new", "started", "child-new", "/root/review"))
 	if len(events) != 4 {
 		t.Fatalf("events after reused-path spawn = %+v", events)
 	}
@@ -657,7 +640,7 @@ func TestMultiAgentV2QuarantineExpiryDropsUnownedNotifications(t *testing.T) {
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
 	})
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"unknown-child","agentNickname":"Orphan"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"unknown-child","agentNickname":"Orphan"}}}`))
 	if len(s.collabReceiverMetadataForThreads([]string{"unknown-child"})) != 1 {
 		t.Fatal("accepted quarantine did not retain child display metadata")
 	}
@@ -687,7 +670,7 @@ func TestMultiAgentV2RejectedQuarantineDoesNotCacheMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal notification: %v", err)
 	}
-	s.dispatchLine(line)
+	feed(t, s, line)
 	if len(s.collabReceiverMetadataForThreads([]string{providerThreadID})) != 0 {
 		t.Fatal("rejected quarantine retained child display metadata")
 	}
@@ -757,37 +740,10 @@ func TestCollabResumeOwnershipRecoveryHasNoTotalChildLimit(t *testing.T) {
 
 func TestReadCollabThreadSnapshotLoadsOnlyLatestTurnStatus(t *testing.T) {
 	t.Parallel()
-	capturePath := filepath.Join(t.TempDir(), "requests.jsonl")
-	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args: []string{"-c", `
-			while IFS= read -r line; do
-				printf '%s\n' "$line" >> "$CAPTURE_PATH"
-				id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-				if printf '%s' "$line" | grep -q '"method":"thread/read"'; then
-					printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"child-a","status":{"type":"idle"}}}}\n' "$id"
-				elif printf '%s' "$line" | grep -q '"method":"thread/turns/list"'; then
-					printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"id":"turn-a","status":"completed","itemsView":"notLoaded"}]}}\n' "$id"
-				fi
-			done
-		`},
-		Env: map[string]string{"CAPTURE_PATH": capturePath},
-	})
-	if err != nil {
-		t.Fatalf("spawn snapshot server: %v", err)
-	}
-	s := &Session{
-		proc:    proc,
-		ctx:     ctx,
-		pending: make(map[int64]chan json.RawMessage),
-		cancel:  cancel,
-	}
-	go s.readLoop()
-	t.Cleanup(func() {
-		cancel()
-		_ = proc.Close()
-	})
+	fx := newConnFixture(t)
+	s := fx.session("parent-thread", "parent-provider-thread", nil)
+	fx.answer("thread/read", `{"thread":{"id":"child-a","status":{"type":"idle"}}}`)
+	fx.answer("thread/turns/list", `{"data":[{"id":"turn-a","status":"completed","itemsView":"notLoaded"}]}`)
 
 	snapshot, err := s.readCollabThreadSnapshot(context.Background(), "child-a")
 	if err != nil {
@@ -797,13 +753,9 @@ func TestReadCollabThreadSnapshotLoadsOnlyLatestTurnStatus(t *testing.T) {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
 
-	captured, err := os.ReadFile(capturePath)
-	if err != nil {
-		t.Fatalf("read captured requests: %v", err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(captured)), "\n")
+	lines := fx.written(2)
 	if len(lines) != 2 {
-		t.Fatalf("request count = %d, want metadata plus one turn-status page: %s", len(lines), captured)
+		t.Fatalf("request count = %d, want metadata plus one turn-status page: %s", len(lines), lines)
 	}
 	var readRequest struct {
 		Method string `json:"method"`
@@ -811,7 +763,7 @@ func TestReadCollabThreadSnapshotLoadsOnlyLatestTurnStatus(t *testing.T) {
 			IncludeTurns *bool `json:"includeTurns"`
 		} `json:"params"`
 	}
-	if err := json.Unmarshal([]byte(lines[0]), &readRequest); err != nil {
+	if err := json.Unmarshal(lines[0], &readRequest); err != nil {
 		t.Fatalf("decode thread/read: %v", err)
 	}
 	if readRequest.Method != "thread/read" || readRequest.Params.IncludeTurns == nil || *readRequest.Params.IncludeTurns {
@@ -825,7 +777,7 @@ func TestReadCollabThreadSnapshotLoadsOnlyLatestTurnStatus(t *testing.T) {
 			ItemsView     string `json:"itemsView"`
 		} `json:"params"`
 	}
-	if err := json.Unmarshal([]byte(lines[1]), &turnsRequest); err != nil {
+	if err := json.Unmarshal(lines[1], &turnsRequest); err != nil {
 		t.Fatalf("decode thread/turns/list: %v", err)
 	}
 	if turnsRequest.Method != threadTurnsListMethod || turnsRequest.Params.Limit != 1 ||
@@ -931,7 +883,8 @@ func TestCollabHistoryTerminalReconciliationRejectsStaleAndMismatchedSnapshots(t
 	if !s.registerChildOwnership("root-provider-thread", "child-a", "/root/review", "spawn-a") {
 		t.Fatal("register child ownership")
 	}
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-a","turn":{"id":"turn-b","status":"inProgress"}}}`))
+	s.drainDeferredChildWireEvents("child-a")
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-a","turn":{"id":"turn-b","status":"inProgress"}}}`))
 	events = nil
 	if _, err := s.reconcileCollabHistoryTerminal(job, completed, revisionBeforeRead); err != nil {
 		t.Fatalf("reconcile stale snapshot: %v", err)

@@ -48,10 +48,21 @@ type ConnConfig struct {
 // with the optional Codex threadId carried on the notification.
 type ConnMCPOAuthCompletedHandler func(threadID, serverName string, success bool, errorMessage string)
 
+// connTransport is the line pipe a Conn drives: the app-server's stdio
+// (*provider.Process) in production, an in-memory pipe in tests.
+type connTransport interface {
+	WriteLine(data []byte) error
+	ReadLine() ([]byte, error)
+	Close() error
+	PID() int
+	StderrTail() string
+	provider.ExitWaiter
+}
+
 // Conn owns one live `codex app-server` subprocess, its JSON-RPC framing,
 // request correlation, initialize handshake, and multi-session frame routing.
 type Conn struct {
-	proc   *provider.Process
+	proc   connTransport
 	cancel context.CancelFunc
 	binary string
 	done   chan struct{}
@@ -127,12 +138,7 @@ func Dial(ctx context.Context, cfg ConnConfig) (*Conn, error) {
 		_ = c.Close()
 		return nil, fmt.Errorf("codex: initialize handshake failed: %w", err)
 	}
-	// A response that carries no parseable version leaves the version empty,
-	// which every gate reads as "too old": fail closed, since the cost of
-	// guessing wrong is a JSON-RPC error on every attempt.
-	version := parseAppServerVersion(readNestedString(initResp, "userAgent"))
-	c.appServerVersion.Store(&version)
-	c.threadQueueNative.Store(provider.CodexCLIVersionAtLeast(version, threadQueueMinimumCodexVersion))
+	c.recordInitialize(initResp)
 
 	if err := c.writeNotification("initialized", nil); err != nil {
 		_ = c.Close()
@@ -141,7 +147,17 @@ func Dial(ctx context.Context, cfg ConnConfig) (*Conn, error) {
 	return c, nil
 }
 
-func newConnWithProcess(proc *provider.Process, cancel context.CancelFunc, binary string) *Conn {
+// recordInitialize keeps what the initialize response states about the
+// app-server. A response that carries no parseable version leaves the version
+// empty, which every gate reads as "too old": fail closed, since the cost of
+// guessing wrong is a JSON-RPC error on every attempt.
+func (c *Conn) recordInitialize(initResp json.RawMessage) {
+	version := parseAppServerVersion(readNestedString(initResp, "userAgent"))
+	c.appServerVersion.Store(&version)
+	c.threadQueueNative.Store(provider.CodexCLIVersionAtLeast(version, threadQueueMinimumCodexVersion))
+}
+
+func newConnWithProcess(proc connTransport, cancel context.CancelFunc, binary string) *Conn {
 	return &Conn{
 		proc:                   proc,
 		cancel:                 cancel,
@@ -325,11 +341,65 @@ func (c *Conn) open(
 		}
 	}
 
+	s := c.newSession(ctx, threadID, cfg, onEvent, ownsConn, releaseConn, sessionStart)
+
+	// Register session before sending thread/start or thread/resume so early
+	// notifications route to it immediately.
+	startingFresh := c.registerSession(s, cfg.ResumeThreadID)
+
+	if cfg.ResumeThreadID != "" && cfg.BeforeResume != nil {
+		cfg.BeforeResume(s)
+	}
+
+	if err := s.startOrResumeThread(ctx, cfg); err != nil {
+		if startingFresh {
+			c.routesMu.Lock()
+			if c.starting == s {
+				c.starting = nil
+			}
+			c.routesMu.Unlock()
+			c.startMu.Unlock()
+		}
+		c.detachSession(s, s.rootThreadID(), s.rootSessionID(), nil)
+		if ownsConn {
+			_ = c.Close()
+		} else if releaseConn != nil {
+			s.releaseConnOnce.Do(releaseConn)
+		}
+		return nil, err
+	}
+
+	c.bindSessionRoot(s, startingFresh)
+
+	meta, _ := json.Marshal(provider.SessionInfo{
+		SessionID: s.rootThreadID(),
+		Model:     cfg.Model,
+		CWD:       cfg.WorkDir,
+	})
+	s.emitEvent(provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  threadID,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
+	return s, nil
+}
+
+// newSession builds the Session that open attaches: every map the session
+// writes is allocated and the connection's version facts are copied in.
+func (c *Conn) newSession(
+	ctx context.Context,
+	threadID string,
+	cfg Config,
+	onEvent func(provider.ProviderEvent),
+	ownsConn bool,
+	releaseConn func(),
+	sessionStart *provider.SessionStartDelivery,
+) *Session {
 	s := &Session{
 		conn:        c,
 		ownsConn:    ownsConn,
 		releaseConn: releaseConn,
-		proc:        c.proc,
 		ctx:         ctx,
 		threadID:    threadID,
 		workDir:     cfg.WorkDir,
@@ -346,7 +416,6 @@ func (c *Conn) open(
 		},
 		writableRoots:   slices.Clone(cfg.WritableRoots),
 		nativeMemoryOff: cfg.NativeMemoryOff,
-		pending:         make(map[int64]chan json.RawMessage),
 		onEvent:         onEvent,
 		sessionStart:    sessionStart,
 		readDone:        make(chan struct{}),
@@ -392,9 +461,15 @@ func (c *Conn) open(
 		s.setRootThreadID(cfg.ResumeThreadID)
 	}
 
-	// Register session before sending thread/start or thread/resume so early
-	// notifications route to it immediately.
-	startingFresh := cfg.ResumeThreadID == ""
+	return s
+}
+
+// registerSession makes s a route on this connection before its thread/start
+// or thread/resume is written, so frames that arrive first reach it. A fresh
+// start (no resumeThreadID) holds startMu until bindSessionRoot, which makes
+// s the one starting session. It reports whether s is starting fresh.
+func (c *Conn) registerSession(s *Session, resumeThreadID string) bool {
+	startingFresh := resumeThreadID == ""
 	if startingFresh {
 		c.startMu.Lock()
 	}
@@ -403,36 +478,17 @@ func (c *Conn) open(
 	if startingFresh {
 		c.starting = s
 	} else {
-		c.byThread[cfg.ResumeThreadID] = s
+		c.byThread[resumeThreadID] = s
 	}
 	c.routesMu.Unlock()
 
-	clearStarting := func() {
-		if startingFresh {
-			c.routesMu.Lock()
-			if c.starting == s {
-				c.starting = nil
-			}
-			c.routesMu.Unlock()
-			c.startMu.Unlock()
-		}
-	}
+	return startingFresh
+}
 
-	if cfg.ResumeThreadID != "" && cfg.BeforeResume != nil {
-		cfg.BeforeResume(s)
-	}
-
-	if err := s.startOrResumeThread(ctx, cfg); err != nil {
-		clearStarting()
-		c.detachSession(s, s.rootThreadID(), s.rootSessionID(), nil)
-		if ownsConn {
-			_ = c.Close()
-		} else if releaseConn != nil {
-			s.releaseConnOnce.Do(releaseConn)
-		}
-		return nil, err
-	}
-
+// bindSessionRoot routes s by the root thread and session ids its start or
+// resume established, ends a fresh start's hold on startMu, and delivers the
+// root's frames that arrived before the route existed.
+func (c *Conn) bindSessionRoot(s *Session, startingFresh bool) {
 	rootID := s.rootThreadID()
 	rootSessID := s.rootSessionID()
 	var hasEarlyFrames bool
@@ -461,19 +517,6 @@ func (c *Conn) open(
 	if hasEarlyFrames {
 		s.flushEarlyFrames()
 	}
-
-	meta, _ := json.Marshal(provider.SessionInfo{
-		SessionID: rootID,
-		Model:     cfg.Model,
-		CWD:       cfg.WorkDir,
-	})
-	s.emitEvent(provider.ProviderEvent{
-		Kind:      provider.EventInit,
-		ThreadID:  threadID,
-		Meta:      meta,
-		Timestamp: time.Now(),
-	})
-	return s, nil
 }
 
 func (c *Conn) requestTimeout() time.Duration {

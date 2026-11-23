@@ -28,7 +28,7 @@ func TestDispatchMCPOAuthCompletion_FiresHandler(t *testing.T) {
 	})
 
 	line := []byte(`{"jsonrpc":"2.0","method":"mcpServer/oauthLogin/completed","params":{"name":"linear","success":true}}`)
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	if len(got) != 1 {
 		t.Fatalf("handler fired %d times, want 1", len(got))
@@ -50,7 +50,7 @@ func TestDispatchMCPOAuthCompletion_PropagatesFailure(t *testing.T) {
 	})
 
 	line := []byte(`{"jsonrpc":"2.0","method":"mcpServer/oauthLogin/completed","params":{"name":"github","success":false,"error":"user cancelled"}}`)
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	if gotName != "github" || gotSuccess || gotErr != "user cancelled" {
 		t.Fatalf("got name=%q success=%v err=%q", gotName, gotSuccess, gotErr)
@@ -62,7 +62,7 @@ func TestDispatchMCPOAuthCompletion_NoHandlerIsNoop(t *testing.T) {
 	s := newMCPTestSession(t, nil)
 
 	line := []byte(`{"jsonrpc":"2.0","method":"mcpServer/oauthLogin/completed","params":{"name":"linear","success":true}}`)
-	s.dispatchLine(line)
+	feed(t, s, line)
 }
 
 // TestSession_ListMCPServerStatuses_ThreadScopedRoundTrip drives the
@@ -156,7 +156,7 @@ func TestDispatchMCPStartupUpdate_FiresHandler(t *testing.T) {
 		`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"broken","status":"failed","error":"timeout"}}`,
 	}
 	for _, line := range cases {
-		s.dispatchLine([]byte(line))
+		feed(t, s, []byte(line))
 	}
 
 	if len(got) != 2 {
@@ -174,7 +174,7 @@ func TestDispatchMCPStartupUpdate_NoHandlerIsNoop(t *testing.T) {
 	t.Parallel()
 	s := newMCPTestSession(t, nil)
 	line := []byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"github","status":"ready"}}`)
-	s.dispatchLine(line)
+	feed(t, s, line)
 }
 
 func TestDispatchMCPStartupUpdate_MissingNameIsDropped(t *testing.T) {
@@ -183,7 +183,7 @@ func TestDispatchMCPStartupUpdate_MissingNameIsDropped(t *testing.T) {
 	s := newMCPTestSession(t, func(provider.ProviderEvent) {})
 	s.SetMCPStartupUpdateHandler(func(MCPStartupUpdate) { called = true })
 	line := []byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"status":"ready"}}`)
-	s.dispatchLine(line)
+	feed(t, s, line)
 	if called {
 		t.Fatalf("handler must not fire when name is missing")
 	}
@@ -204,7 +204,7 @@ func TestDispatchMCPStartupUpdate_RetainsStatePerServer(t *testing.T) {
 		`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"github","status":"failed","error":"boom"}}`,
 		`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"github","status":"ready"}}`,
 	} {
-		s.dispatchLine([]byte(line))
+		feed(t, s, []byte(line))
 	}
 
 	states := s.MCPStartupStates()
@@ -228,7 +228,7 @@ func TestDispatchMCPStartupUpdate_RetainsStatePerServer(t *testing.T) {
 func TestDispatchMCPStartupUpdate_RetainsWithoutHandler(t *testing.T) {
 	t.Parallel()
 	s := newMCPTestSession(t, nil)
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"atlassian","status":"failed","error":"invalid_grant"}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"atlassian","status":"failed","error":"invalid_grant"}}`))
 
 	states := s.MCPStartupStates()
 	if got := states["atlassian"]; got.State != "failed" || got.Error != "invalid_grant" {
@@ -239,7 +239,7 @@ func TestDispatchMCPStartupUpdate_RetainsWithoutHandler(t *testing.T) {
 func TestDispatchMCPStartupUpdate_MissingNameIsNotRetained(t *testing.T) {
 	t.Parallel()
 	s := newMCPTestSession(t, nil)
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"status":"ready"}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"status":"ready"}}`))
 	if states := s.MCPStartupStates(); len(states) != 0 {
 		t.Fatalf("retained %+v, want nothing for a nameless update", states)
 	}
@@ -250,7 +250,7 @@ func TestDispatchMCPStartupUpdate_MissingNameIsNotRetained(t *testing.T) {
 func TestMCPStartupStates_ReturnsACopy(t *testing.T) {
 	t.Parallel()
 	s := newMCPTestSession(t, nil)
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"atlassian","status":"failed","error":"invalid_grant"}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"atlassian","status":"failed","error":"invalid_grant"}}`))
 
 	first := s.MCPStartupStates()
 	delete(first, "atlassian")
@@ -274,13 +274,13 @@ func TestForgetMCPStartupState(t *testing.T) {
 	failedLine := []byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"atlassian","status":"failed","error":"invalid_grant"}}`)
 
 	s.ForgetMCPStartupState("atlassian") // nothing retained yet — must not panic
-	s.dispatchLine(failedLine)
+	feed(t, s, failedLine)
 	s.ForgetMCPStartupState("atlassian")
 	if states := s.MCPStartupStates(); len(states) != 0 {
 		t.Fatalf("retained %+v after forget, want nothing", states)
 	}
 
-	s.dispatchLine(failedLine)
+	feed(t, s, failedLine)
 	if got := s.MCPStartupStates()["atlassian"]; got.State != "failed" {
 		t.Fatalf("retained %+v after re-dispatch, want the failed update back", got)
 	}
@@ -302,7 +302,7 @@ func TestDispatchMCPStartupUpdate_RetentionBounds(t *testing.T) {
 	s.SetMCPStartupUpdateHandler(func(u MCPStartupUpdate) { handled = append(handled, u.Name) })
 
 	longName := strings.Repeat("n", mcpStartupNameMaxBytes+1)
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"` + longName + `","status":"failed"}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"`+longName+`","status":"failed"}}`))
 	if len(handled) != 0 {
 		t.Fatalf("oversized name reached the handler: %v", handled)
 	}
@@ -312,7 +312,7 @@ func TestDispatchMCPStartupUpdate_RetentionBounds(t *testing.T) {
 
 	// 'é' is two bytes; build an error whose cap lands mid-rune.
 	longErr := strings.Repeat("é", mcpStartupErrorMaxBytes/2) + "xx"
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"atlassian","status":"failed","error":"` + longErr + `"}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"atlassian","status":"failed","error":"`+longErr+`"}}`))
 	got := s.MCPStartupStates()["atlassian"].Error
 	if len(got) > mcpStartupErrorMaxBytes {
 		t.Fatalf("retained error is %d bytes, cap is %d", len(got), mcpStartupErrorMaxBytes)
@@ -322,15 +322,15 @@ func TestDispatchMCPStartupUpdate_RetentionBounds(t *testing.T) {
 	}
 
 	for i := 0; len(s.MCPStartupStates()) < mcpStartupStateMaxEntries; i++ {
-		s.dispatchLine([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"srv-%d","status":"starting"}}`, i)))
+		feed(t, s, []byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"srv-%d","status":"starting"}}`, i)))
 	}
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"one-too-many","status":"failed"}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"one-too-many","status":"failed"}}`))
 	if _, ok := s.MCPStartupStates()["one-too-many"]; ok {
 		t.Fatalf("full map admitted a new name")
 	}
 	// A known name still updates at the cap — a chatty peer must not be
 	// able to freeze real lifecycle state out.
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"atlassian","status":"ready"}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"atlassian","status":"ready"}}`))
 	if got := s.MCPStartupStates()["atlassian"]; got.State != "ready" {
 		t.Fatalf("known name at cap retained %+v, want the ready update", got)
 	}
@@ -345,7 +345,7 @@ func TestDispatchMCPOAuthCompletion_MissingNameIsDropped(t *testing.T) {
 	})
 
 	line := []byte(`{"jsonrpc":"2.0","method":"mcpServer/oauthLogin/completed","params":{"success":true}}`)
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	if called {
 		t.Fatalf("handler must not fire when name is missing")
@@ -360,17 +360,13 @@ func newMCPTestSession(t *testing.T, onEvent func(provider.ProviderEvent)) *Sess
 	t.Helper()
 	if onEvent == nil {
 		onEvent = func(evt provider.ProviderEvent) {
-			t.Fatalf("mcp dispatch must not flow through onEvent; got %+v", evt)
+			// The connection's teardown reports the session's end; only
+			// MCP dispatch is held to this rule.
+			if evt.Kind == provider.EventSessionStatus {
+				return
+			}
+			t.Errorf("mcp dispatch must not flow through onEvent; got %+v", evt)
 		}
 	}
-	return &Session{
-		threadID: "thread-1",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  onEvent,
-		collab: sessionCollabState{
-			childParentByThread:    map[string]string{},
-			childParentByAgentPath: map[string]string{},
-			agentPathByThread:      map[string]string{},
-		},
-	}
+	return fixtureSession(t, "thread-1", "", onEvent)
 }

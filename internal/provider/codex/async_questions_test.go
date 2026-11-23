@@ -35,7 +35,7 @@ func TestUserInputWaitsWithoutTimeoutUntilExplicitResolution(t *testing.T) {
 		t.Run(blocking, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				s, events := externalTurnTestSession(t, "native")
-				s.dispatchLine([]byte(`{"jsonrpc":"2.0","id":7,"method":"item/tool/requestUserInput","params":{"threadId":"native","turnId":"turn","itemId":"ask","isBlocking":` + blocking + `,"autoResolutionMs":1,"questions":[{"id":"q","question":"Which?","header":"Scope"}]}}`))
+				feed(t, s, []byte(`{"jsonrpc":"2.0","id":7,"method":"item/tool/requestUserInput","params":{"threadId":"native","turnId":"turn","itemId":"ask","isBlocking":`+blocking+`,"autoResolutionMs":1,"questions":[{"id":"q","question":"Which?","header":"Scope"}]}}`))
 				time.Sleep(24 * time.Hour)
 				for _, event := range *events {
 					if event.Kind == provider.EventUserInputResolved {
@@ -54,14 +54,14 @@ func TestProviderResolvedQuestionClosesOnlyItsOwnRequest(t *testing.T) {
 	t.Parallel()
 	s, events := externalTurnTestSession(t, "native")
 	request := func(id string) {
-		s.dispatchLine([]byte(`{"jsonrpc":"2.0","id":` + id + `,"method":"item/tool/requestUserInput","params":{"threadId":"native","turnId":"turn","itemId":"ask-` + id + `","questions":[{"id":"q","question":"Which?","header":"Scope"}]}}`))
+		feed(t, s, []byte(`{"jsonrpc":"2.0","id":`+id+`,"method":"item/tool/requestUserInput","params":{"threadId":"native","turnId":"turn","itemId":"ask-`+id+`","questions":[{"id":"q","question":"Which?","header":"Scope"}]}}`))
 	}
 	request("7")
 	request("8")
 	*events = nil
 	resolved := []byte(`{"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"native","requestId":7}}`)
-	s.dispatchLine(resolved)
-	s.dispatchLine(resolved)
+	feed(t, s, resolved)
+	feed(t, s, resolved)
 	if len(*events) != 1 || (*events)[0].Kind != provider.EventUserInputResolved || (*events)[0].ItemID != "7" {
 		t.Fatalf("resolved request emitted wrong or duplicate event: %+v", *events)
 	}
@@ -78,7 +78,7 @@ func TestProviderResolvedQuestionClosesOnlyItsOwnRequest(t *testing.T) {
 		t.Fatal("reused request ID was not answerable")
 	}
 	*events = nil
-	s.dispatchLine(resolved)
+	feed(t, s, resolved)
 	if len(*events) != 0 {
 		t.Fatalf("own answer was resolved twice: %+v", *events)
 	}

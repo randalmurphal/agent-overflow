@@ -10,21 +10,17 @@ import (
 func TestDispatchLineSubagentNotificationUsesAgentPathMapping(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread:    make(map[string]string),
-			childParentByAgentPath: map[string]string{"/root/researcher": "call-collab-1"},
-			agentPathByThread:      make(map[string]string),
-		},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread:    make(map[string]string),
+		childParentByAgentPath: map[string]string{"/root/researcher": "call-collab-1"},
+		agentPathByThread:      make(map[string]string),
 	}
 
 	line := []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_path\":\"/root/researcher\",\"status\":{\"completed\":\"done\"}}</subagent_notification>"}]}}}`)
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	for _, evt := range events {
 		if evt.Kind != provider.EventSubagentNotification {
@@ -311,21 +307,17 @@ func TestExtractSubagentNotificationsFromUserMessage_NonTextContent(t *testing.T
 func TestDispatchLineSubagentNotificationEmitsEvent(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-done": "call-collab-1"},
-		},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{"child-done": "call-collab-1"},
 	}
 
 	// Shape mirrors the userMessage item/completed frame Codex core
 	// emits after a detached child agent reaches a terminal state.
 	line := []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_path\":\"child-done\",\"status\":\"completed\"}</subagent_notification>"}]}}}`)
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	var notif *provider.ProviderEvent
 	for i := range events {
@@ -356,19 +348,14 @@ func TestDispatchLineSubagentNotificationEmitsEvent(t *testing.T) {
 func TestDispatchLineRawInterAgentSubagentNotificationEmitsEvent(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByAgentPath: map[string]string{
-				"/root/researcher": "call-collab-1",
-			},
+	s := fixtureSession(t, "parent-thread", "parent-provider-thread", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByAgentPath: map[string]string{
+			"/root/researcher": "call-collab-1",
 		},
 	}
-	s.setRootThreadID("parent-provider-thread")
 
 	line := rawInterAgentSubagentNotificationLineForThread(t, "parent-provider-thread", map[string]any{
 		"agent_path": "/root/researcher",
@@ -376,7 +363,7 @@ func TestDispatchLineRawInterAgentSubagentNotificationEmitsEvent(t *testing.T) {
 			"completed": "No findings.",
 		},
 	})
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	var notif *provider.ProviderEvent
 	for i := range events {
@@ -413,25 +400,20 @@ func TestDispatchLineRawInterAgentSubagentNotificationEmitsEvent(t *testing.T) {
 func TestDispatchLineRawInterAgentSubagentNotificationWithoutPhaseIgnored(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByAgentPath: map[string]string{
-				"/root/researcher": "call-collab-1",
-			},
+	s := fixtureSession(t, "parent-thread", "parent-provider-thread", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByAgentPath: map[string]string{
+			"/root/researcher": "call-collab-1",
 		},
 	}
-	s.setRootThreadID("parent-provider-thread")
 
 	line := rawInterAgentSubagentNotificationLineForThreadAndPhase(t, "parent-provider-thread", "", map[string]any{
 		"agent_path": "/root/researcher",
 		"status":     "completed",
 	})
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	for _, evt := range events {
 		if evt.Kind == provider.EventSubagentNotification {
@@ -443,16 +425,12 @@ func TestDispatchLineRawInterAgentSubagentNotificationWithoutPhaseIgnored(t *tes
 func TestDispatchLineRawInterAgentSubagentNotificationMixedContentIgnored(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByAgentPath: map[string]string{
-				"/root/researcher": "call-collab-1",
-			},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByAgentPath: map[string]string{
+			"/root/researcher": "call-collab-1",
 		},
 	}
 
@@ -460,7 +438,7 @@ func TestDispatchLineRawInterAgentSubagentNotificationMixedContentIgnored(t *tes
 		"agent_path": "/root/researcher",
 		"status":     "completed",
 	}))
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	for _, evt := range events {
 		if evt.Kind == provider.EventSubagentNotification {
@@ -472,16 +450,12 @@ func TestDispatchLineRawInterAgentSubagentNotificationMixedContentIgnored(t *tes
 func TestDispatchLineRawInterAgentSubagentNotificationAuthorMismatchIgnored(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByAgentPath: map[string]string{
-				"/root/other": "call-collab-1",
-			},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByAgentPath: map[string]string{
+			"/root/other": "call-collab-1",
 		},
 	}
 
@@ -489,7 +463,7 @@ func TestDispatchLineRawInterAgentSubagentNotificationAuthorMismatchIgnored(t *t
 		"agent_path": "/root/other",
 		"status":     "completed",
 	})
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	for _, evt := range events {
 		if evt.Kind == provider.EventSubagentNotification {
@@ -501,28 +475,23 @@ func TestDispatchLineRawInterAgentSubagentNotificationAuthorMismatchIgnored(t *t
 func TestDispatchLineRawInterAgentSubagentNotificationFromChildThreadIgnored(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
+	s := fixtureSession(t, "parent-thread", "parent-provider-thread", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{
+			"child-provider-thread": "call-collab-1",
 		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{
-				"child-provider-thread": "call-collab-1",
-			},
-			childParentByAgentPath: map[string]string{
-				"/root/researcher": "call-collab-1",
-			},
+		childParentByAgentPath: map[string]string{
+			"/root/researcher": "call-collab-1",
 		},
 	}
-	s.setRootThreadID("parent-provider-thread")
 
 	line := rawInterAgentSubagentNotificationLineForThread(t, "child-provider-thread", map[string]any{
 		"agent_path": "/root/researcher",
 		"status":     "completed",
 	})
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	for _, evt := range events {
 		if evt.Kind == provider.EventSubagentNotification {
@@ -534,16 +503,12 @@ func TestDispatchLineRawInterAgentSubagentNotificationFromChildThreadIgnored(t *
 func TestDispatchLineRawUserSubagentNotificationMixedContentIgnored(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{
-				"child-done": "call-collab-1",
-			},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{
+			"child-done": "call-collab-1",
 		},
 	}
 
@@ -551,7 +516,7 @@ func TestDispatchLineRawUserSubagentNotificationMixedContentIgnored(t *testing.T
 		"agent_path": "child-done",
 		"status":     "completed",
 	}))
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	for _, evt := range events {
 		if evt.Kind == provider.EventSubagentNotification {
@@ -565,16 +530,12 @@ func TestDispatchLineRawUserSubagentNotificationWrongBlockTypeIgnored(t *testing
 	for _, blockType := range []string{"output_text", "text"} {
 		t.Run(blockType, func(t *testing.T) {
 			var events []provider.ProviderEvent
-			s := &Session{
-				threadID: "parent-thread",
-				pending:  make(map[int64]chan json.RawMessage),
-				onEvent: func(evt provider.ProviderEvent) {
-					events = append(events, evt)
-				},
-				collab: sessionCollabState{
-					childParentByThread: map[string]string{
-						"child-done": "call-collab-1",
-					},
+			s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+				events = append(events, evt)
+			})
+			s.collab = sessionCollabState{
+				childParentByThread: map[string]string{
+					"child-done": "call-collab-1",
 				},
 			}
 
@@ -582,7 +543,7 @@ func TestDispatchLineRawUserSubagentNotificationWrongBlockTypeIgnored(t *testing
 				"agent_path": "child-done",
 				"status":     "completed",
 			}))
-			s.dispatchLine(line)
+			feed(t, s, line)
 
 			for _, evt := range events {
 				if evt.Kind == provider.EventSubagentNotification {
@@ -598,16 +559,12 @@ func TestDispatchLineRawInterAgentSubagentNotificationWrongBlockTypeIgnored(t *t
 	for _, blockType := range []string{"input_text", "text"} {
 		t.Run(blockType, func(t *testing.T) {
 			var events []provider.ProviderEvent
-			s := &Session{
-				threadID: "parent-thread",
-				pending:  make(map[int64]chan json.RawMessage),
-				onEvent: func(evt provider.ProviderEvent) {
-					events = append(events, evt)
-				},
-				collab: sessionCollabState{
-					childParentByAgentPath: map[string]string{
-						"/root/researcher": "call-collab-1",
-					},
+			s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+				events = append(events, evt)
+			})
+			s.collab = sessionCollabState{
+				childParentByAgentPath: map[string]string{
+					"/root/researcher": "call-collab-1",
 				},
 			}
 
@@ -615,7 +572,7 @@ func TestDispatchLineRawInterAgentSubagentNotificationWrongBlockTypeIgnored(t *t
 				"agent_path": "/root/researcher",
 				"status":     "completed",
 			}), blockType)
-			s.dispatchLine(line)
+			feed(t, s, line)
 
 			for _, evt := range events {
 				if evt.Kind == provider.EventSubagentNotification {
@@ -629,16 +586,12 @@ func TestDispatchLineRawInterAgentSubagentNotificationWrongBlockTypeIgnored(t *t
 func TestDispatchLineRawAssistantMessageDoesNotEmitSubagentNotification(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-	}
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
 
 	line := rawMessageLine(t, "plain assistant commentary")
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	if len(events) != 0 {
 		t.Fatalf("ordinary raw assistant message should stay non-visual, got %+v", events)
@@ -648,19 +601,15 @@ func TestDispatchLineRawAssistantMessageDoesNotEmitSubagentNotification(t *testi
 func TestDispatchLineSubagentNotificationCarrierDoesNotEmitUserTextWhenMapped(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-done": "call-collab-1"},
-		},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{"child-done": "call-collab-1"},
 	}
 
 	line := []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_path\":\"child-done\",\"status\":\"completed\"}</subagent_notification>"}]}}}`)
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	var sawNotification bool
 	for _, evt := range events {
@@ -681,19 +630,15 @@ func TestDispatchLineSubagentNotificationCarrierDoesNotEmitUserTextWhenMapped(t 
 func TestDispatchLineSubagentNotificationMixedContentKeepsUserText(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-done": "call-collab-1"},
-		},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{"child-done": "call-collab-1"},
 	}
 
 	line := []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"keep this text\n<subagent_notification>{\"agent_path\":\"child-done\",\"status\":\"completed\"}</subagent_notification>"}]}}}`)
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	var sawNotification bool
 	var sawUserText bool
@@ -715,19 +660,12 @@ func TestDispatchLineSubagentNotificationMixedContentKeepsUserText(t *testing.T)
 func TestDispatchLineSubagentNotificationUnmappedCarrierKeepsUserText(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: make(map[string]string),
-		},
-	}
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
 
 	line := []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_path\":\"child-done\",\"status\":\"completed\"}</subagent_notification>"}]}}}`)
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	var sawUserText bool
 	for _, evt := range events {
@@ -751,22 +689,18 @@ func TestDispatchLineSubagentNotificationUnmappedCarrierKeepsUserText(t *testing
 func TestDispatchLineSubagentNotificationMultipleTagsEmitOnce(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{
-				"child-1": "call-collab-1",
-				"child-2": "call-collab-2",
-			},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{
+			"child-1": "call-collab-1",
+			"child-2": "call-collab-2",
 		},
 	}
 
 	line := []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_path\":\"child-1\",\"status\":\"completed\"}</subagent_notification>\n<subagent_notification>{\"agent_path\":\"child-2\",\"status\":\"errored\"}</subagent_notification>"}]}}}`)
-	s.dispatchLine(line)
+	feed(t, s, line)
 
 	var agents []string
 	for _, evt := range events {

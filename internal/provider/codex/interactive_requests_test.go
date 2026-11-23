@@ -4,20 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 )
 
 func TestApprovalResponseResolvesPendingCodex(t *testing.T) {
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
-	s.dispatchLine(line)
+	line := []byte(`{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"codex-thread-1","command":"ls"}}`)
+	feed(t, s, line)
 
 	for {
 		select {
@@ -49,8 +47,8 @@ func TestCodexCloseResolvesPendingApprovalAsLost(t *testing.T) {
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":9,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
-	s.dispatchLine(line)
+	line := []byte(`{"jsonrpc":"2.0","id":9,"method":"item/commandExecution/requestApproval","params":{"threadId":"codex-thread-1","command":"ls"}}`)
+	feed(t, s, line)
 
 	for {
 		select {
@@ -107,8 +105,8 @@ func TestCodexInterruptDrainsPendingApproval(t *testing.T) {
 	s.turn.activeTurnID = "turn-1"
 	s.mu.Unlock()
 
-	line := []byte(`{"jsonrpc":"2.0","id":11,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
-	s.dispatchLine(line)
+	line := []byte(`{"jsonrpc":"2.0","id":11,"method":"item/commandExecution/requestApproval","params":{"threadId":"codex-thread-1","command":"ls"}}`)
+	feed(t, s, line)
 
 	// Drain incoming events until we see the approval request.
 	for {
@@ -122,12 +120,10 @@ func TestCodexInterruptDrainsPendingApproval(t *testing.T) {
 		}
 	}
 interrupt:
-	// Interrupt itself returns an error (cat echoes our request back
-	// as a server-request shape, which falls to the default error case
-	// — fine for this test). The drain runs regardless.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = s.Interrupt(ctx)
+	fixtureFor(t, s).answer("turn/interrupt", `{}`)
+	if err := s.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
 
 	deadline := time.After(2 * time.Second)
 	for {
@@ -168,8 +164,8 @@ func TestCodexInterruptDrainsPendingUserInput(t *testing.T) {
 	s.turn.activeTurnID = "turn-1"
 	s.mu.Unlock()
 
-	line := []byte(`{"jsonrpc":"2.0","id":12,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
-	s.dispatchLine(line)
+	line := []byte(`{"jsonrpc":"2.0","id":12,"method":"item/tool/requestUserInput","params":{"threadId":"codex-thread-1","questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
+	feed(t, s, line)
 
 	for {
 		select {
@@ -182,9 +178,10 @@ func TestCodexInterruptDrainsPendingUserInput(t *testing.T) {
 		}
 	}
 interrupt:
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = s.Interrupt(ctx)
+	fixtureFor(t, s).answer("turn/interrupt", `{}`)
+	if err := s.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
 
 	deadline := time.After(2 * time.Second)
 	for {
@@ -228,8 +225,8 @@ func TestCodexCloseDrainsPendingUserInputWithAnswers(t *testing.T) {
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":13,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
-	s.dispatchLine(line)
+	line := []byte(`{"jsonrpc":"2.0","id":13,"method":"item/tool/requestUserInput","params":{"threadId":"codex-thread-1","questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
+	feed(t, s, line)
 
 	for {
 		select {
@@ -284,17 +281,15 @@ func TestCodexProviderExitResolvesPendingUserInputAsLost(t *testing.T) {
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":14,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
-	s.dispatchLine(line)
+	line := []byte(`{"jsonrpc":"2.0","id":14,"method":"item/tool/requestUserInput","params":{"threadId":"codex-thread-1","questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
+	feed(t, s, line)
 
 	evt := codexWaitEvent(t, eventCh)
 	if evt.Kind != provider.EventUserInputRequest {
 		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventUserInputRequest)
 	}
 
-	if err := s.proc.Close(); err != nil {
-		t.Fatalf("close provider process: %v", err)
-	}
+	fixtureFor(t, s).exitAppServer()
 
 	deadline := time.After(2 * time.Second)
 	for {
@@ -329,33 +324,8 @@ func TestCodexProviderExitResolvesPendingUserInputAsLost(t *testing.T) {
 // error" and (for MCP elicitation) pick the wrong action.
 func TestCodexDrainWritesTurnTransitionError(t *testing.T) {
 	t.Parallel()
-	capturePath := t.TempDir() + "/wire.jsonl"
-	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args: []string{"-c", `
-			while IFS= read -r line; do
-				printf '%s\n' "$line" >> "$CAPTURE_PATH"
-			done
-		`},
-		Env: map[string]string{"CAPTURE_PATH": capturePath},
-	})
-	if err != nil {
-		t.Fatalf("spawn capture sh: %v", err)
-	}
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  func(provider.ProviderEvent) {},
-		cancel:   cancel,
-	}
-	s.setRootThreadID("codex-thread-1")
-	go s.readLoop()
-	t.Cleanup(func() {
-		cancel()
-		_ = proc.Close()
-	})
+	fx := newConnFixture(t)
+	s := fx.session(testThread, "codex-thread-1", nil)
 
 	// Seed a pending approval (rpcID 99) so the drain has something
 	// to write a response for.
@@ -363,19 +333,7 @@ func TestCodexDrainWritesTurnTransitionError(t *testing.T) {
 
 	s.drainPendingApprovals("cancel", false, true)
 
-	// Give the capture script a moment to flush, then read.
-	deadline := time.Now().Add(2 * time.Second)
-	var data []byte
-	for time.Now().Before(deadline) {
-		data, _ = os.ReadFile(capturePath)
-		if len(data) > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if len(data) == 0 {
-		t.Fatalf("no wire bytes captured")
-	}
+	data := fx.written(1)[0]
 	var frame struct {
 		ID    int64 `json:"id"`
 		Error struct {

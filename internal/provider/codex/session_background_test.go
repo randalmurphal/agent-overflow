@@ -11,7 +11,6 @@ import (
 
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -104,39 +103,15 @@ done
 // and avoids any flakes from subprocess ordering.
 func TestSession_CleanBackgroundTerminals_ErrorResponse(t *testing.T) {
 	t.Parallel()
-	procCtx, cancelProc := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(procCtx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		// No trailing sleep so Close() exits cleanly once stdin closes —
-		// keeps the test under a second rather than parking in
-		// shutdownGrace.
-		Args: []string{"-c", "cat > /dev/null"},
-	})
-	if err != nil {
-		t.Fatalf("spawn quiet process: %v", err)
-	}
-	t.Cleanup(func() {
-		cancelProc()
-		_ = proc.Close()
-	})
-
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  func(provider.ProviderEvent) {},
-		cancel:   cancelProc,
-	}
-	s.setRootThreadID("codex-thread-bg-err")
-	go s.readLoop()
+	fx := newConnFixture(t)
+	s := fx.session(testThread, "codex-thread-bg-err", nil)
 
 	cleanDone := make(chan error, 1)
 	go func() {
 		cleanDone <- s.CleanBackgroundTerminals(context.Background())
 	}()
 
-	ch, rpcID := waitForPending(t, s, 3*time.Second)
-	ch <- json.RawMessage(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"error":{"code":-32603,"message":"thread not found"}}`, rpcID))
+	fx.respondError(fx.claimRequest(), -32603, "thread not found")
 
 	select {
 	case err := <-cleanDone:
@@ -157,38 +132,16 @@ func TestSession_CleanBackgroundTerminals_ErrorResponse(t *testing.T) {
 // The pre-cancel variant exercises the fast path; elapsed time must be
 // far below the 30s request timeout.
 func TestSession_CleanBackgroundTerminals_ContextCanceled(t *testing.T) {
-	procCtx, cancelProc := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(procCtx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		// No trailing sleep — as soon as stdin closes the shell exits,
-		// so proc.Close() doesn't stall in shutdownGrace. We only need
-		// the subprocess alive during the single WriteLine call below.
-		Args: []string{"-c", "cat > /dev/null"},
-	})
-	if err != nil {
-		t.Fatalf("spawn quiet process: %v", err)
-	}
-	t.Cleanup(func() {
-		cancelProc()
-		_ = proc.Close()
-	})
-
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  func(provider.ProviderEvent) {},
-		cancel:   cancelProc,
-	}
-	s.setRootThreadID("codex-thread-bg-cancel")
-	go s.readLoop()
+	fx := newConnFixture(t)
+	s := fx.session(testThread, "codex-thread-bg-cancel", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel BEFORE the call so sendRequest sees ctx.Done immediately
 
 	start := time.Now()
-	err = s.CleanBackgroundTerminals(ctx)
+	err := s.CleanBackgroundTerminals(ctx)
 	elapsed := time.Since(start)
+	fx.claimRequest()
 
 	if err == nil {
 		t.Fatal("CleanBackgroundTerminals: expected context-canceled error, got nil")
@@ -213,28 +166,8 @@ func TestSession_CleanBackgroundTerminals_ContextCanceled(t *testing.T) {
 // dropped the ctx.Done branch would sit on the full 30s request
 // timeout instead.
 func TestSession_CleanBackgroundTerminals_MidWaitCancel(t *testing.T) {
-	procCtx, cancelProc := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(procCtx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args:   []string{"-c", "cat > /dev/null"},
-	})
-	if err != nil {
-		t.Fatalf("spawn quiet process: %v", err)
-	}
-	t.Cleanup(func() {
-		cancelProc()
-		_ = proc.Close()
-	})
-
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  func(provider.ProviderEvent) {},
-		cancel:   cancelProc,
-	}
-	s.setRootThreadID("codex-thread-bg-midcancel")
-	go s.readLoop()
+	fx := newConnFixture(t)
+	s := fx.session(testThread, "codex-thread-bg-midcancel", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -246,7 +179,7 @@ func TestSession_CleanBackgroundTerminals_MidWaitCancel(t *testing.T) {
 
 	// Wait until sendRequest has parked on a pending-channel — proves
 	// the frame hit the wire and we're mid-wait, not mid-WriteLine.
-	_, _ = waitForPending(t, s, 3*time.Second)
+	fx.claimRequest()
 
 	// Now cancel. The pending select must observe ctx.Done and
 	// unblock; the 30s deadline never fires.
@@ -266,28 +199,5 @@ func TestSession_CleanBackgroundTerminals_MidWaitCancel(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("CleanBackgroundTerminals never returned after mid-wait ctx cancel (regression: ctx.Done arm missing)")
-	}
-}
-
-// waitForPending blocks until exactly one pending request is registered
-// on s and returns its channel + id. Used by tests that drive the
-// pending channel directly instead of through a subprocess echo.
-func waitForPending(t *testing.T, s *Session, within time.Duration) (chan json.RawMessage, int64) {
-	t.Helper()
-	deadline := time.After(within)
-	for {
-		select {
-		case <-deadline:
-			t.Fatal("timed out waiting for pending request registration")
-			return nil, 0
-		default:
-		}
-		s.mu.Lock()
-		for id, c := range s.pending {
-			s.mu.Unlock()
-			return c, id
-		}
-		s.mu.Unlock()
-		time.Sleep(2 * time.Millisecond)
 	}
 }

@@ -1,13 +1,10 @@
 package codex
 
 import (
-	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 )
 
 func TestCodexThreadIDAccessor(t *testing.T) {
@@ -20,30 +17,15 @@ func TestCodexThreadIDAccessor(t *testing.T) {
 
 func TestCodexCloseWaitsForDisconnectedHandler(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-
 	disconnected := make(chan struct{})
 	release := make(chan struct{})
 	closeReturned := make(chan struct{})
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
-				close(disconnected)
-				<-release
-			}
-		},
-		cancel:   cancel,
-		readDone: make(chan struct{}),
-	}
-	s.setRootThreadID("test")
-	go s.readLoop()
+	s := fixtureSession(t, testThread, "test", func(evt provider.ProviderEvent) {
+		if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
+			close(disconnected)
+			<-release
+		}
+	})
 
 	go func() {
 		_ = s.Close()

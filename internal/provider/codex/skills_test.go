@@ -201,7 +201,7 @@ func TestSkillsListParamsRoundTripToTheWireShape(t *testing.T) {
 
 func TestSessionListSkillsSendsTheWireFrameAndDecodesTheReply(t *testing.T) {
 	t.Parallel()
-	s, capturePath := newCapturingSession(t, "codex-thread-skills")
+	s, fx := newCapturingSession(t, "codex-thread-skills")
 
 	type result struct {
 		entries []struct {
@@ -228,7 +228,7 @@ func TestSessionListSkillsSendsTheWireFrameAndDecodesTheReply(t *testing.T) {
 		done <- out
 	}()
 
-	newPendingAnswerer(s).answer(t, `{"data":[{"cwd":"/repo","skills":[
+	newPendingAnswerer(t, s).answer(t, `{"data":[{"cwd":"/repo","skills":[
 		{"name":"code-review","description":"d","path":"/p/SKILL.md","scope":"repo","enabled":true}
 	],"errors":[]}]}`)
 
@@ -241,7 +241,7 @@ func TestSessionListSkillsSendsTheWireFrameAndDecodesTheReply(t *testing.T) {
 		t.Fatalf("ListSkills = %+v", got.entries)
 	}
 
-	frames := waitForCapturedRawFrames(t, capturePath, 1, backgroundTerminalTestTimeout)
+	frames := waitForCapturedRawFrames(t, fx, 1)
 	var frame struct {
 		Method string `json:"method"`
 		Params struct {
@@ -271,14 +271,14 @@ func TestSessionListSkillsSendsTheWireFrameAndDecodesTheReply(t *testing.T) {
 
 func TestSessionListSkillsRejectsBadCwdsBeforeWriting(t *testing.T) {
 	t.Parallel()
-	s, capturePath := newCapturingSession(t, "codex-thread-skills-guard")
+	s, fx := newCapturingSession(t, "codex-thread-skills-guard")
 	if _, err := s.ListSkills(context.Background(), nil, false); err == nil {
 		t.Fatal("ListSkills with no cwds must fail")
 	}
 	if _, err := s.ListSkills(context.Background(), []string{"rel"}, false); err == nil {
 		t.Fatal("ListSkills with a relative cwd must fail")
 	}
-	if frames := readCapturedRawFrames(t, capturePath); len(frames) != 0 {
+	if frames := readCapturedRawFrames(t, fx); len(frames) != 0 {
 		t.Fatalf("rejected requests still wrote %d frames", len(frames))
 	}
 }

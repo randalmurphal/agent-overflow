@@ -114,19 +114,14 @@ func TestRolloutInterAgentCommunicationEmitsCompletionAtMailboxDelivery(t *testi
 func TestDispatchRawAgentMessageRoutesRootAndDedupesDurableRecord(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "thread-1",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  func(event provider.ProviderEvent) { events = append(events, event) },
-		collab: sessionCollabState{
-			childParentByAgentPath: map[string]string{
-				"/root/review_perf": "spawn-1",
-			},
+	s := fixtureSession(t, "thread-1", "root-provider-thread", func(event provider.ProviderEvent) { events = append(events, event) })
+	s.collab = sessionCollabState{
+		childParentByAgentPath: map[string]string{
+			"/root/review_perf": "spawn-1",
 		},
 	}
-	s.setRootThreadID("root-provider-thread")
 	item := `{"type":"agent_message","author":"/root/review_perf","recipient":"/root","content":[{"type":"input_text","text":"Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/review_perf\nPayload:\nDelivered once."}],"internal_chat_message_metadata_passthrough":{"turn_id":"child-turn-1"}}`
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"root-provider-thread","item":` + item + `}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"root-provider-thread","item":`+item+`}}`))
 	if len(events) != 1 || events[0].Kind != provider.EventSubagentNotification {
 		t.Fatalf("root raw events = %+v", events)
 	}
@@ -135,7 +130,7 @@ func TestDispatchRawAgentMessageRoutesRootAndDedupesDurableRecord(t *testing.T) 
 	if s.emitSubagentNotificationsFromRolloutLine(durable) {
 		t.Fatal("raw and durable forms of the same delivery must dedupe")
 	}
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"child-provider-thread","item":` + item + `}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"child-provider-thread","item":`+item+`}}`))
 	if len(events) != 1 {
 		t.Fatalf("child-thread delivery leaked onto root: %+v", events)
 	}

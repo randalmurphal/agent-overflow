@@ -110,7 +110,7 @@ func startReviewForTurnAsync(t *testing.T, s *Session, target ReviewTarget) (*pe
 		started, err := s.StartReviewForTurn(context.Background(), target, ReviewRunOptions{TurnIndex: 3})
 		done <- reviewStartResult{started: started, err: err}
 	}()
-	answerer := newPendingAnswerer(s)
+	answerer := newPendingAnswerer(t, s)
 	answerer.answer(t, `{"config":{}}`)
 	return answerer, done
 }
@@ -120,9 +120,9 @@ type reviewStartResult struct {
 	err     error
 }
 
-func decodeReviewStartFrame(t *testing.T, capturePath string) (string, map[string]json.RawMessage) {
+func decodeReviewStartFrame(t *testing.T, fx *connFixture) (string, map[string]json.RawMessage) {
 	t.Helper()
-	frames := waitForCapturedRawFrames(t, capturePath, 2, backgroundTerminalTestTimeout)
+	frames := waitForCapturedRawFrames(t, fx, 2)
 	var frame struct {
 		Method string                     `json:"method"`
 		Params map[string]json.RawMessage `json:"params"`
@@ -138,7 +138,7 @@ func decodeReviewStartFrame(t *testing.T, capturePath string) (string, map[strin
 // removed every other value.
 func TestStartReviewForTurnSendsTheWireFrameWithoutDelivery(t *testing.T) {
 	t.Parallel()
-	s, capturePath := newCapturingSession(t, "codex-thread-review")
+	s, fx := newCapturingSession(t, "codex-thread-review")
 	target, err := ReviewBaseBranch("main")
 	if err != nil {
 		t.Fatalf("ReviewBaseBranch: %v", err)
@@ -157,7 +157,7 @@ func TestStartReviewForTurnSendsTheWireFrameWithoutDelivery(t *testing.T) {
 		t.Errorf("started = %+v, want %+v", got.started, want)
 	}
 
-	method, params := decodeReviewStartFrame(t, capturePath)
+	method, params := decodeReviewStartFrame(t, fx)
 	if method != reviewStartMethod {
 		t.Errorf("method = %q, want %q", method, reviewStartMethod)
 	}
@@ -206,12 +206,12 @@ func TestStartReviewForTurnRefusesMissingReviewThreadID(t *testing.T) {
 
 func TestStartReviewForTurnValidatesBeforeWriting(t *testing.T) {
 	t.Parallel()
-	s, capturePath := newCapturingSession(t, "codex-thread-guard")
+	s, fx := newCapturingSession(t, "codex-thread-guard")
 
 	if _, err := s.StartReviewForTurn(context.Background(), ReviewTarget{}, ReviewRunOptions{}); err == nil {
 		t.Fatal("StartReviewForTurn with an unset target must fail")
 	}
-	if frames := readCapturedRawFrames(t, capturePath); len(frames) != 0 {
+	if frames := readCapturedRawFrames(t, fx); len(frames) != 0 {
 		t.Fatalf("rejected request still wrote %d frames", len(frames))
 	}
 	s.mu.Lock()
@@ -223,7 +223,9 @@ func TestStartReviewForTurnValidatesBeforeWriting(t *testing.T) {
 
 	// A session that never completed its handshake has no thread id to
 	// name; the RPC must say so rather than sending an empty threadId.
-	bare := &Session{threadID: testThread, pending: map[int64]chan json.RawMessage{}}
+	bare := &Session{
+		threadID: testThread,
+	}
 	if _, err := bare.StartReviewForTurn(context.Background(), ReviewUncommittedChanges(), ReviewRunOptions{}); err == nil {
 		t.Fatal("StartReviewForTurn without a thread id must fail")
 	}
@@ -234,16 +236,16 @@ func TestStartReviewForTurnValidatesBeforeWriting(t *testing.T) {
 
 func TestCompactThreadSendsTheWireFrame(t *testing.T) {
 	t.Parallel()
-	s, capturePath := newCapturingSession(t, "codex-thread-compact")
+	s, fx := newCapturingSession(t, "codex-thread-compact")
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- s.CompactThread(context.Background()) }()
-	newPendingAnswerer(s).answer(t, `{}`)
+	newPendingAnswerer(t, s).answer(t, `{}`)
 	if err := <-errCh; err != nil {
 		t.Fatalf("CompactThread: %v", err)
 	}
 
-	frames := waitForCapturedRawFrames(t, capturePath, 1, backgroundTerminalTestTimeout)
+	frames := waitForCapturedRawFrames(t, fx, 1)
 	var frame struct {
 		Method string `json:"method"`
 		Params struct {

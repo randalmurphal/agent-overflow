@@ -3,44 +3,19 @@ package codex
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"reflect"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 )
 
 func TestReadChildThreadProfileUsesMetadataOnlyResume(t *testing.T) {
 	t.Parallel()
-	capturePath := t.TempDir() + "/request.json"
-	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args: []string{"-c", `
-			IFS= read -r line || exit 1
-			printf '%s\n' "$line" > "$CAPTURE_PATH"
-			id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-			printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"child-1","agentNickname":"Euler","agentRole":"reviewer"},"model":"gpt-5.6-luna","reasoningEffort":"low"}}\n' "$id"
-		`},
-		Env: map[string]string{"CAPTURE_PATH": capturePath},
-	})
-	if err != nil {
-		t.Fatalf("spawn capture process: %v", err)
-	}
-	s := &Session{
-		proc:    proc,
-		ctx:     ctx,
-		pending: make(map[int64]chan json.RawMessage),
-		cancel:  cancel,
-	}
-	go s.readLoop()
-	t.Cleanup(func() {
-		cancel()
-		_ = proc.Close()
-	})
+	ctx := context.Background()
+	fx := newConnFixture(t)
+	s := fx.session("parent-thread", "parent-provider-thread", nil)
+	fx.answer("thread/resume", `{"thread":{"id":"child-1","agentNickname":"Euler","agentRole":"reviewer"},"model":"gpt-5.6-luna","reasoningEffort":"low"}`)
 
 	meta, err := s.readChildThreadProfileOnce(ctx, "child-1")
 	if err != nil {
@@ -51,10 +26,7 @@ func TestReadChildThreadProfileUsesMetadataOnlyResume(t *testing.T) {
 		t.Fatalf("profile = %+v", meta)
 	}
 
-	data, err := os.ReadFile(capturePath)
-	if err != nil {
-		t.Fatalf("read captured request: %v", err)
-	}
+	data := fx.written(1)[0]
 	var frame struct {
 		Method string         `json:"method"`
 		Params map[string]any `json:"params"`
@@ -73,41 +45,18 @@ func TestReadChildThreadProfileUsesMetadataOnlyResume(t *testing.T) {
 
 func TestScheduledChildProfileReplacesUnknownSpawnProfile(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args:   []string{"-c", "cat > /dev/null"},
-	})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
 	events := make(chan provider.ProviderEvent, 1)
-	s := &Session{
-		proc:                proc,
-		ctx:                 ctx,
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		collabMetadataReads: make(chan struct{}, 1),
-		onEvent: func(event provider.ProviderEvent) {
-			events <- event
-		},
-		cancel: cancel,
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-1": "spawn-1"},
-			agentMetaByThread:   make(map[string]collabReceiverMeta),
-		},
-	}
-	t.Cleanup(func() {
-		cancel()
-		_ = proc.Close()
+	fx := newConnFixture(t)
+	s := fx.session("parent-thread", "parent-provider-thread", func(event provider.ProviderEvent) {
+		events <- event
 	})
+	s.collab.childParentByThread["child-1"] = "spawn-1"
 
 	s.scheduleCollabProfileRead("child-1", "spawn-1", collabLaunchMeta{
 		AgentPath:         "/root/reviewer",
 		ReceiverThreadIDs: []string{"child-1"},
 	})
-	pending, rpcID := waitForPending(t, s, 3*time.Second)
-	pending <- json.RawMessage(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"thread":{"id":"child-1"},"model":"gpt-5.6-luna","reasoningEffort":"xhigh"}}`, rpcID))
+	fx.answerNext(`{"thread":{"id":"child-1"},"model":"gpt-5.6-luna","reasoningEffort":"xhigh"}`)
 
 	var event provider.ProviderEvent
 	select {

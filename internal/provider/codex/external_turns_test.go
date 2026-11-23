@@ -15,14 +15,9 @@ import (
 func externalTurnTestSession(t *testing.T, codexThreadID string) (*Session, *[]provider.ProviderEvent) {
 	t.Helper()
 	events := &[]provider.ProviderEvent{}
-	s := &Session{
-		threadID: "ao-thread-1",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			*events = append(*events, evt)
-		},
-	}
-	s.setRootThreadID(codexThreadID)
+	s := fixtureSession(t, "ao-thread-1", codexThreadID, func(evt provider.ProviderEvent) {
+		*events = append(*events, evt)
+	})
 	return s, events
 }
 
@@ -48,8 +43,8 @@ func TestExternalTurnIsAdoptedAndMarked(t *testing.T) {
 	s, events := externalTurnTestSession(t, "codex-thread-1")
 
 	logged := captureLog(t, func() {
-		s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-ext-1"}}}`))
-		s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"codex-thread-1","turnId":"turn-ext-1","item":{"id":"item-1","type":"userMessage","content":[{"type":"text","text":"run the tests"}]}}}`))
+		feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-ext-1"}}}`))
+		feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"codex-thread-1","turnId":"turn-ext-1","item":{"id":"item-1","type":"userMessage","content":[{"type":"text","text":"run the tests"}]}}}`))
 	})
 
 	if len(*events) != 2 {
@@ -100,9 +95,9 @@ func TestLocallyStartedTurnIsNotMarked(t *testing.T) {
 	s, events := externalTurnTestSession(t, "codex-thread-1")
 
 	s.beginLocalTurnStart() // Send, just before writing turn/start.
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-local-1"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-local-1"}}}`))
 	s.bindLocalTurnStart("turn-local-1") // the response, landing second.
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"codex-thread-1","turnId":"turn-local-1","item":{"id":"item-1","type":"userMessage","content":[{"type":"text","text":"hello"}]}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"codex-thread-1","turnId":"turn-local-1","item":{"id":"item-1","type":"userMessage","content":[{"type":"text","text":"hello"}]}}}`))
 
 	if len(*events) != 2 {
 		t.Fatalf("expected turn start + user text, got %+v", *events)
@@ -147,11 +142,11 @@ func TestTurnOriginIsForgottenOnCompletion(t *testing.T) {
 	t.Parallel()
 	s, _ := externalTurnTestSession(t, "codex-thread-1")
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-ext-1"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-ext-1"}}}`))
 	if !s.turnIsExternal("turn-ext-1") {
 		t.Fatal("turn-ext-1 not recorded as external")
 	}
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"codex-thread-1","turn":{"id":"turn-ext-1","status":"completed"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"codex-thread-1","turn":{"id":"turn-ext-1","status":"completed"}}}`))
 
 	s.mu.Lock()
 	tracked := len(s.origins.byTurn)
@@ -193,7 +188,7 @@ func TestThreadQueueChangedRaisesANotice(t *testing.T) {
 	t.Parallel()
 	s, events := externalTurnTestSession(t, "codex-thread-1")
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/queue/changed","params":{"threadId":"codex-thread-1"}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/queue/changed","params":{"threadId":"codex-thread-1"}}`))
 
 	if len(*events) != 1 {
 		t.Fatalf("expected 1 notification, got %+v", *events)
@@ -224,7 +219,7 @@ func TestStrictReviewRequiredRaisesAWarning(t *testing.T) {
 	t.Parallel()
 	s, events := externalTurnTestSession(t, "codex-thread-1")
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"autoApprovalReview/strictReviewRequired","params":{"threadId":"codex-thread-1","turnId":"turn-1","startedAtMs":1700000000000}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"autoApprovalReview/strictReviewRequired","params":{"threadId":"codex-thread-1","turnId":"turn-1","startedAtMs":1700000000000}}`))
 
 	if len(*events) != 1 {
 		t.Fatalf("expected 1 notification, got %+v", *events)
@@ -326,13 +321,13 @@ func TestTurnAdoptionIsDecidedAtTurnStarted(t *testing.T) {
 	t.Run("an unclaimed turn/started is external immediately", func(t *testing.T) {
 		s, events := externalTurnTestSession(t, "codex-thread-1")
 
-		s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-ext"}}}`))
+		feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-ext"}}}`))
 		if !s.turnIsExternal("turn-ext") {
 			t.Fatal("turn/started left the origin undecided; nothing later can decide it now")
 		}
 		// An echo carrying a client id nobody in this session minted changes
 		// nothing — the answer was already recorded.
-		s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"codex-thread-1","turnId":"turn-ext","item":{"id":"item-1","type":"userMessage","clientId":"user:4:flush:1","content":[{"type":"text","text":"hi"}]}}}`))
+		feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"codex-thread-1","turnId":"turn-ext","item":{"id":"item-1","type":"userMessage","clientId":"user:4:flush:1","content":[{"type":"text","text":"hi"}]}}}`))
 
 		if len(*events) != 2 {
 			t.Fatalf("expected turn start + user text, got %+v", *events)
@@ -348,10 +343,10 @@ func TestTurnAdoptionIsDecidedAtTurnStarted(t *testing.T) {
 		s, events := externalTurnTestSession(t, "codex-thread-1")
 
 		s.beginLocalTurnStart()
-		s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-mine"}}}`))
+		feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-mine"}}}`))
 		s.bindLocalTurnStart("turn-mine")
 		// A client id this session never sent, on a turn it definitely started.
-		s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"codex-thread-1","turnId":"turn-mine","item":{"id":"item-1","type":"userMessage","clientId":"0199e3a1-0000-7000-8000-000000000001","content":[{"type":"text","text":"hi"}]}}}`))
+		feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"codex-thread-1","turnId":"turn-mine","item":{"id":"item-1","type":"userMessage","clientId":"0199e3a1-0000-7000-8000-000000000001","content":[{"type":"text","text":"hi"}]}}}`))
 
 		if len(*events) != 2 {
 			t.Fatalf("expected turn start + user text, got %+v", *events)

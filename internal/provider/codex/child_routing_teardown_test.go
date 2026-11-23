@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -107,9 +108,12 @@ func TestDeferredChildDeadlineIsJoinedByCollabAsyncWG(t *testing.T) {
 
 	emitting := make(chan struct{})
 	release := make(chan struct{})
+	var first sync.Once
 	s := newMultiAgentV2RoutingSession(t, func(provider.ProviderEvent) {
-		close(emitting)
-		<-release
+		first.Do(func() {
+			close(emitting)
+			<-release
+		})
 	})
 	deferOneChildNotification(t, s, "child-thread")
 
