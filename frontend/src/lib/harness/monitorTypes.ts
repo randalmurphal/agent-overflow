@@ -36,8 +36,7 @@ export type MonitorCapability =
   | 'input'
   | 'scroll'
   | 'semantic-dom'
-  | 'focus'
-  | 'parser-boundary';
+  | 'focus';
 
 export const MONITOR_CAPABILITIES: readonly MonitorCapability[] = [
   'animation-frame',
@@ -50,7 +49,6 @@ export const MONITOR_CAPABILITIES: readonly MonitorCapability[] = [
   'scroll',
   'semantic-dom',
   'focus',
-  'parser-boundary',
 ];
 
 export const MONITOR_COMPATIBILITY_LEGS: readonly MonitorCompatibilityLeg[] = [
@@ -70,8 +68,6 @@ export type MonitorProbeKind =
   | 'scroll'
   | 'layout-shift'
   | 'animation'
-  | 'source'
-  | 'parser'
   | 'semantic-dom'
   | 'focus-clipping-settledness';
 
@@ -86,12 +82,6 @@ export interface MonitorProbeResult {
   readonly available: boolean;
   readonly value?: unknown;
   readonly error?: string;
-}
-
-export interface SourceMonitorSignal {
-  readonly cursor: number;
-  readonly rewinds?: number;
-  readonly parserBoundaries?: number;
 }
 
 export interface MonitorProbeReader {

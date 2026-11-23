@@ -2,7 +2,6 @@ import type {
   MonitorContext,
   MonitorInstance,
   MonitorSpec,
-  SourceMonitorSignal,
 } from './monitorTypes';
 
 interface EntryLike extends PerformanceEntry {
@@ -24,21 +23,6 @@ interface HostState {
   rafId: number | null;
   stopped: boolean;
   refresh?: () => void;
-}
-
-type SourceAdapter = { read: () => SourceMonitorSignal };
-
-/** Installs an owned source/parser adapter for provider-side evidence. */
-export function installSourceMonitorAdapter(read: () => SourceMonitorSignal): () => void {
-  const host = globalThis as { __aoMonitorSourceSignals?: SourceAdapter };
-  const previous = host.__aoMonitorSourceSignals;
-  const adapter: SourceAdapter = { read };
-  host.__aoMonitorSourceSignals = adapter;
-  return () => {
-    if (host.__aoMonitorSourceSignals !== adapter) return;
-    if (previous) host.__aoMonitorSourceSignals = previous;
-    else delete host.__aoMonitorSourceSignals;
-  };
 }
 
 /**
@@ -74,9 +58,6 @@ export function createBuiltinMonitor(spec: MonitorSpec, context: MonitorContext)
       break;
     case 'focus-clipping-settledness':
       armFocusClippingSettledness(state);
-      break;
-    case 'parser-boundary':
-      armParserBoundary(state);
       break;
   }
   return {
@@ -299,35 +280,6 @@ function armFocusClippingSettledness(state: HostState): void {
     observer?.disconnect();
     document.removeEventListener('focusin', recordFocus);
   });
-}
-
-function armParserBoundary(state: HostState): void {
-  const source = (globalThis as { __aoMonitorSourceSignals?: { read: () => SourceMonitorSignal } }).__aoMonitorSourceSignals;
-  if (!source || typeof source.read !== 'function') {
-    state.context.fail('parser-boundary source adapter is unavailable');
-    return;
-  }
-  let lastCursor: number | null = null;
-  let lastBoundary: number | null = null;
-  const sample = (): void => {
-    try {
-      const signal = source.read();
-      if (!signal || typeof signal !== 'object' || !Number.isFinite(signal.cursor)) throw new Error('source signal has no finite cursor');
-      const boundaries = signal.parserBoundaries;
-      if (boundaries === undefined || !Number.isFinite(boundaries)) throw new Error('parser signal has no finite boundary count');
-      if (boundaries < 0) throw new Error('source signal has an invalid parser boundary count');
-      if (lastCursor !== null && signal.cursor < lastCursor) increment(state, 'rewinds');
-      if (lastBoundary !== null && boundaries < lastBoundary) increment(state, 'parserBoundaryRewinds');
-      lastBoundary = boundaries;
-      lastCursor = signal.cursor;
-      state.values['parser-boundary'] = signal;
-      increment(state, 'sourceSamples');
-    } catch (error) {
-      state.context.fail(`parser-boundary source adapter failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-  sample();
-  state.refresh = sample;
 }
 
 function summary(state: HostState, atMs: number): Record<string, unknown> {

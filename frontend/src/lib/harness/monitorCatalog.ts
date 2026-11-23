@@ -12,7 +12,6 @@ export function builtinMonitorSpecs(): readonly MonitorSpec[] {
     browserBuiltin('scroll-response', 'Scroll response', 'Measures scroll input and visual response.', 'instrumented-renderer', 'event-listener', ['scroll', 'animation-frame']),
     browserBuiltin('layout-shift', 'Layout shift', 'Records cumulative layout shift entries.', 'instrumented-renderer', 'performance-observer', ['performance:layout-shift']),
     browserBuiltin('animation-continuity', 'Animation continuity', 'Checks animation progress across frames.', 'instrumented-renderer', 'animation-frame', ['animation-frame']),
-    sourceBuiltin('parser-boundary', 'Parser boundary', 'Checks parser progress at chunk boundaries.', ['parser-boundary']),
     browserBuiltin('semantic-dom-stability', 'Semantic DOM stability', 'Checks semantic row identity and mount stability.', 'functional', 'dom-observer', ['dom', 'semantic-dom']),
     browserBuiltin('focus-clipping-settledness', 'Focus, clipping and settledness', 'Checks focus ownership, clipping and post-mutation settling.', 'functional', 'layout-read', ['dom', 'focus']),
   ];
@@ -27,10 +26,5 @@ function browserBuiltin(
   requires: readonly MonitorCapability[],
 ): MonitorSpec {
   const spec = { v: 1 as const, id, title, description, compatibilityLeg, perturbation, requires };
-  return { ...spec, create: (context) => createBuiltinMonitor(spec, context)! };
-}
-
-function sourceBuiltin(id: string, title: string, description: string, requires: readonly MonitorCapability[]): MonitorSpec {
-  const spec = { v: 1 as const, id, title, description, compatibilityLeg: 'provider-source' as const, perturbation: 'source-instrumentation' as const, requires };
   return { ...spec, create: (context) => createBuiltinMonitor(spec, context)! };
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createBuiltinMonitor, installSourceMonitorAdapter } from './monitorHosts';
+import { createBuiltinMonitor } from './monitorHosts';
 import type { MonitorCapability, MonitorContext, MonitorSpec } from './monitorTypes';
 
 const contexts: MonitorContext[] = [];
@@ -167,29 +167,4 @@ describe('browser monitor hosts', () => {
     expect(summary.cumulativeLayoutShift).toBe(0.25);
   });
 
-  it('counts cursor and parser boundary rewinds from the source adapter', () => {
-    let cursor = 4;
-    const removeSource = installSourceMonitorAdapter(() => ({ cursor, parserBoundaries: cursor }));
-    const source = context('parser-boundary', ['parser-boundary']);
-    const sourceHost = createBuiltinMonitor(spec('parser-boundary', ['parser-boundary']), source.context)!;
-    cursor = 2;
-    sourceHost.heartbeat?.(10);
-    const sourceSummary = sourceHost.stop?.(20) as { 'parser-boundary': { cursor: number }; counts: { rewinds: number; parserBoundaryRewinds: number } };
-    expect(sourceSummary['parser-boundary'].cursor).toBe(2);
-    expect(sourceSummary.counts.rewinds).toBe(1);
-    expect(sourceSummary.counts.parserBoundaryRewinds).toBe(1);
-    expect(source.errors).toEqual([]);
-    removeSource();
-  });
-
-  it('restores a previous adapter after nested replacement cleanup', () => {
-    const removeFirst = installSourceMonitorAdapter(() => ({ cursor: 1, parserBoundaries: 1 }));
-    const removeSecond = installSourceMonitorAdapter(() => ({ cursor: 2, parserBoundaries: 2 }));
-    removeSecond();
-    const source = context('parser-boundary', ['parser-boundary']);
-    const host = createBuiltinMonitor(spec('parser-boundary', ['parser-boundary']), source.context)!;
-    const summary = host.stop?.(10) as { 'parser-boundary': { cursor: number } };
-    expect(summary['parser-boundary'].cursor).toBe(1);
-    removeFirst();
-  });
 });
