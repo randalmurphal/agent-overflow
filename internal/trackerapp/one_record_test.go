@@ -273,10 +273,11 @@ func TestACommittedTicketChangeOutlivesALaterFailure(t *testing.T) {
 // After a restore emptied the mirror, the first run that makes its new
 // root keeps every live ticket again, one whose keep failed before it
 // included, before any read of a ticket; and the next automatic round
-// stores the bodies of the open tickets again.
+// stores the bodies of the open tickets again. The refused ticket's own
+// retry is an hour away, so the keeps counted are the restore's alone.
 func TestARestoredMirrorStoresTheOpenTicketsBodiesAtTheNextRound(t *testing.T) {
 	t.Parallel()
-	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
+	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour, RetryBase: time.Hour})
 	keeps := &keepsMade{Store: s.st, refuse: "10104"}
 	s.svc.store = keeps
 	s.openTicket(t, conn, "10105")
@@ -786,7 +787,7 @@ func TestARenameWithNoIssueUpdateShowsOnTheOpenTicket(t *testing.T) {
 	m.p.set(func(p *scripted) {
 		p.detail = func(tracker.IssueID) (tracker.Detail, error) {
 			d := detailOfCard(seededCard())
-			d.Catalog.Users = []tracker.User{user1, user2}
+			d.Users = []tracker.User{user1, user2}
 			return d, nil
 		}
 	})
