@@ -60,9 +60,13 @@ export function installTestInfoReader(read: () => TestInfo): void {
   readTestInfo = read;
 }
 
-/** The watches one test made, which the gate fixture ends with the test. */
+/**
+ * The watches and waits one test made, which the gate fixture ends with the
+ * test: neither counts, consumes, nor times out into the next test.
+ */
 export class EventWatchScope {
   private readonly ends = new Set<() => void>();
+  private readonly waits = new Map<() => void, string>();
 
   /** Holds a watch's end until the scope ends. */
   hold(end: () => void): void {
@@ -74,11 +78,29 @@ export class EventWatchScope {
     this.ends.delete(end);
   }
 
-  /** Ends every watch the scope holds; the running test's scope also closes. */
-  end(): void {
+  /** Holds the cancel of a pending wait on `channel` until it settles or the scope ends. */
+  holdWait(cancel: () => void, channel: string): void {
+    this.waits.set(cancel, channel);
+  }
+
+  /** Lets go of a wait that settled. */
+  releaseWait(cancel: () => void): void {
+    this.waits.delete(cancel);
+  }
+
+  /**
+   * Ends every watch the scope holds and cancels every wait still pending,
+   * whose promises then never settle; the running test's scope also closes.
+   * Returns the channel of each wait it cancelled.
+   */
+  end(): string[] {
     for (const end of this.ends) end();
     this.ends.clear();
+    const cancelled = [...this.waits.values()];
+    for (const cancel of this.waits.keys()) cancel();
+    this.waits.clear();
     if (watchScope === this) watchScope = undefined;
+    return cancelled;
   }
 }
 
@@ -99,6 +121,52 @@ export function openEventWatchScope(): EventWatchScope {
 export function currentEventWatchScope(): EventWatchScope {
   if (!watchScope) throw new Error('watchEvents is scoped to a test by tests/base-test.ts; import test from there or from tests/fixtures.ts');
   return watchScope;
+}
+
+/**
+ * The first event in `log`, or handed to `waiters` later, on `channel` and
+ * matching `predicate` that no wait has consumed; it consumes it. The
+ * mechanism behind `HarnessApp.waitForEvent`. Inside a test it is held by
+ * the test's scope, so a wait the test never reached the await of, because
+ * an action before it failed, is cancelled at the test's end instead of
+ * timing out into a later test; outside a test (`scope` undefined) its
+ * caller owns it.
+ */
+export function waitForEventIn<T = unknown>(
+  scope: EventWatchScope | undefined,
+  log: readonly WireEvent[],
+  waiters: Set<(ev: WireEvent) => void>,
+  channel: string,
+  predicate: ((data: T) => boolean) | undefined,
+  timeoutMs: number,
+): Promise<T> {
+  const matches = (ev: WireEvent) =>
+    !ev.consumed && ev.channel === channel && (!predicate || predicate(ev.data as T));
+  const seen = log.find(matches);
+  if (seen) {
+    seen.consumed = true;
+    return Promise.resolve(seen.data as T);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const cancel = () => {
+      clearTimeout(timer);
+      waiters.delete(waiter);
+      scope?.releaseWait(cancel);
+    };
+    const timer = setTimeout(() => {
+      cancel();
+      const recent = log.slice(-20).map((e) => e.channel).join(', ');
+      reject(new Error(`timeout waiting for ${channel} event after ${timeoutMs}ms (recent channels: ${recent})`));
+    }, timeoutMs);
+    const waiter = (ev: WireEvent) => {
+      if (!matches(ev)) return;
+      ev.consumed = true;
+      cancel();
+      resolve(ev.data as T);
+    };
+    waiters.add(waiter);
+    scope?.holdWait(cancel, channel);
+  });
 }
 
 /**
@@ -509,35 +577,7 @@ export class HarnessApp {
     predicate?: (data: T) => boolean,
     timeoutMs = 15_000,
   ): Promise<T> {
-    const matches = (ev: WireEvent) =>
-      !ev.consumed && ev.channel === channel && (!predicate || predicate(ev.data as T));
-    const seen = this.eventLog.find(matches);
-    if (seen) {
-      seen.consumed = true;
-      return seen.data as T;
-    }
-    return await new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.eventWaiters.delete(waiter);
-        const recent = this.eventLog
-          .slice(-20)
-          .map((e) => e.channel)
-          .join(', ');
-        reject(
-          new Error(
-            `timeout waiting for ${channel} event after ${timeoutMs}ms (recent channels: ${recent})`,
-          ),
-        );
-      }, timeoutMs);
-      const waiter = (ev: WireEvent) => {
-        if (!matches(ev)) return;
-        ev.consumed = true;
-        clearTimeout(timer);
-        this.eventWaiters.delete(waiter);
-        resolve(ev.data as T);
-      };
-      this.eventWaiters.add(waiter);
-    });
+    return await waitForEventIn(watchScope, this.eventLog, this.eventWaiters, channel, predicate, timeoutMs);
   }
 
   /**

@@ -24,7 +24,10 @@ function banPageSleep(page: Page): void {
 }
 
 interface TestFixtures {
-  /** Ends every HarnessApp.watchEvents watch the test made, at its end. */
+  /**
+   * Ends every HarnessApp.watchEvents watch and cancels every
+   * HarnessApp.waitForEvent wait the test made, at its end.
+   */
   eventWatches: void;
   /**
    * When the test fails, attaches a `stalled page` report for each page open
@@ -47,14 +50,20 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   ],
   // A watch counts events for the test that made it; one the test never
   // asserted on, or abandoned at a failure, ends here rather than counting
-  // into the next test.
+  // into the next test. A wait still pending here was abandoned: by a
+  // failure before its await, which stands as the test's error, or by a
+  // test that never awaited it, which fails here.
   eventWatches: [
-    async ({}, use) => {
+    async ({}, use, testInfo) => {
       const scope = openEventWatchScope();
+      let pending: string[] = [];
       try {
         await use();
       } finally {
-        scope.end();
+        pending = scope.end();
+      }
+      if (pending.length > 0 && testInfo.errors.length === 0) {
+        throw new Error(`the test ended without awaiting its event wait on ${pending.join(', ')}`);
       }
     },
     { auto: true, box: true },

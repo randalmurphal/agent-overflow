@@ -48,6 +48,7 @@ export {
   HarnessApp,
   installTestInfoReader,
   openEventWatchScope,
+  waitForEventIn,
   watchEventsIn,
 } from './harness-app.ts';
 export type {

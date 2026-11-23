@@ -215,7 +215,8 @@ binaries.
 - Use unique IDs and await specific events so parallel workers cannot satisfy
   each other's assertions.
 - Register event waits before triggering operations that may complete inside an
-  RPC round trip.
+  RPC round trip. A wait the test has not awaited when it ends is cancelled
+  there, and fails a test that had no other error.
 - Close pages, browser contexts, clients, child processes, forwards, and temp
   roots through fixture-owned teardown, including failure paths.
 - A UI geometry or animation claim requires real Chromium or the shell WebView;
