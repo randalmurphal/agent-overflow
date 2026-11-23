@@ -77,7 +77,7 @@ func newPRHistory(t *testing.T) prHistory {
 
 func rangePatch(t *testing.T, h prHistory, first, last string) (string, error) {
 	t.Helper()
-	diff, err := OpenCommitRangeDiff(context.Background(), h.repo, h.base, h.c4, first, last, Options{})
+	diff, err := diffOf(Options{})(CommitRangeSides(context.Background(), h.repo, h.base, h.c4, first, last))
 	return openAndRead(t, diff, err)
 }
 
@@ -109,7 +109,7 @@ func TestCommitRangeDiffIsTheTwoTreeDiffOfItsEnds(t *testing.T) {
 			t.Parallel()
 			patch, err := rangePatch(t, h, tc.first, tc.last)
 			if err != nil {
-				t.Fatalf("OpenCommitRangeDiff: %v", err)
+				t.Fatalf("CommitRangeSides: %v", err)
 			}
 			if want := twoTreePatch(t, h.repo, tc.old, tc.last); patch != want {
 				t.Fatalf("patch:\n%s\nwant git diff of the ends:\n%s", patch, want)
@@ -174,7 +174,7 @@ func TestCommitRangeAllowsTheOnlyCommit(t *testing.T) {
 	base := headSHA(t, repo)
 	commitFile(t, repo, "only.txt", "only\n", "only")
 	only := headSHA(t, repo)
-	diff, err := OpenCommitRangeDiff(context.Background(), repo, base, only, only, only, Options{})
+	diff, err := diffOf(Options{})(CommitRangeSides(context.Background(), repo, base, only, only, only))
 	patch, err := openAndRead(t, diff, err)
 	if err != nil || !strings.Contains(patch, "+only") {
 		t.Fatalf("patch = %q, err = %v", patch, err)
@@ -207,7 +207,7 @@ func TestCommitRangeOverAMergeOfTheBaseShowsTheMergedBaseChanges(t *testing.T) {
 	testutil.RunGit(t, repo, "add", "after.txt")
 	head := commitAt(t, repo, "after", 4)
 
-	diff, err := OpenCommitRangeDiff(context.Background(), repo, base, head, merge, head, Options{})
+	diff, err := diffOf(Options{})(CommitRangeSides(context.Background(), repo, base, head, merge, head))
 	patch, err := openAndRead(t, diff, err)
 	if err != nil {
 		t.Fatal(err)

@@ -145,14 +145,6 @@ func (c *Credential) Token() string { return c.token }
 // its own, so opening one URL never invalidates another.
 func (c *Credential) MintPageTicket() (string, error) { return c.tickets.mint("") }
 
-// consumeTicket removes ticket from the outstanding set, reporting
-// whether it was there. A ticket answers exactly one exchange: a URL
-// that already bought its cookie cannot buy a second one.
-func (c *Credential) consumeTicket(ticket string) bool {
-	_, ok := c.tickets.consume(ticket)
-	return ok
-}
-
 // Authenticate reports whether r carries a valid credential for this
 // launch. It is the single validation path: the cookie a browser was
 // issued, or the session token a non-browser client presents as a

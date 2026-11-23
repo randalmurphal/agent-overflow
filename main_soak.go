@@ -269,10 +269,3 @@ func soakHarnessConfig() harnessrpc.SoakConfig {
 		Prompt:            soakPrompt,
 	}
 }
-
-// soakScenarioIsShipped is referenced by the soak's own test to prove the
-// named scenario exists in the embedded library — a rename there would
-// otherwise only surface as a failed arm hours into a run.
-func soakScenarioIsShipped() error {
-	return harnessrpc.ValidateSoakScenario(soakScenarioName)
-}

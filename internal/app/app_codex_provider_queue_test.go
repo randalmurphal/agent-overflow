@@ -372,24 +372,16 @@ func providerQueueReconcileThread(t *testing.T, app *App, name string) store.Thr
 }
 
 // markedQueueRowMeta returns the meta the retired provider-queue dispatch
-// stamped on its row: proven when the add was acked, unproven when it was not.
-// Only a legacy row on disk carries either one — nothing in this build writes
-// them — which is exactly what the sunset has to recognise.
+// stamped on its row, as it sits in the database: proven when the add was
+// acked, unproven when it was not. Only a legacy row on disk carries either
+// one — nothing in this build writes them — which is exactly what the
+// sunset has to recognise.
 func markedQueueRowMeta(t *testing.T, proven bool) string {
 	t.Helper()
-	var (
-		meta string
-		err  error
-	)
 	if proven {
-		meta, err = itemmeta.MarkProviderQueued("")
-	} else {
-		meta, err = itemmeta.MarkProviderQueueHandoff("")
+		return `{"providerQueued":true}`
 	}
-	if err != nil {
-		t.Fatalf("mark provider-queued meta: %v", err)
-	}
-	return meta
+	return `{"providerQueued":true,"providerQueueHandoff":true}`
 }
 
 // codexUserEcho feeds triage the `item/completed userMessage` a Codex turn

@@ -44,7 +44,7 @@ func TestSynthesizedToolEnvelopeCarriesTheExitStatus(t *testing.T) {
 		}
 		// The whole point: a required authored output must fail here so the
 		// phase parks instead of advancing on a fabricated contract.
-		if err := def.ValidateEnvelope(phase, payload); err == nil {
+		if err := def.PhaseEnvelope(phase).Validate(payload); err == nil {
 			t.Fatal("synthesized envelope satisfied a phase declaring a required output")
 		}
 	}

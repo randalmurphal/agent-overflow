@@ -145,7 +145,7 @@ func TestBuildArgs_PerCatalogEditor(t *testing.T) {
 		"subl": {"/tmp/foo.go:12:3"},
 		"zed":  {"/tmp/foo.go:12:3"},
 	}
-	for _, ed := range EditorCatalog() {
+	for _, ed := range editorCatalog {
 		expected, ok := want[ed.ID]
 		if !ok {
 			t.Errorf("catalog editor %q has no expected argv in this table — add it with a reference to its CLI docs", ed.ID)

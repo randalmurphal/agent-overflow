@@ -119,3 +119,6 @@ func TestStallErrorRoundsTheQuietTime(t *testing.T) {
 		}
 	}
 }
+
+// Window is the watch's window.
+func (w *StallWatch) Window() time.Duration { return w.window }

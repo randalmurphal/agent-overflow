@@ -145,10 +145,6 @@ func canonicalSafetyPath(path string) (string, error) {
 	return filepath.Join(parent, filepath.Base(abs)), nil
 }
 
-func directoryBytes(root string) (int64, error) {
-	return directoryBytesContext(context.Background(), root)
-}
-
 func directoryBytesContext(ctx context.Context, root string) (int64, error) {
 	var total int64
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {

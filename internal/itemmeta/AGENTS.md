@@ -12,8 +12,8 @@ Route changes by contract:
   migration fixups.
 - `transfer.go` and `transfer_codex.go` rewrite only structured ownership
   and provider identities during conversation transfer.
-- `promoted_at_interrupt.go`, `provider_queued.go`, and
-  `codex_runtime.go` own typed lifecycle markers and transition decoding.
+- `promoted_at_interrupt.go` and `provider_queued.go` own typed lifecycle
+  markers and transition decoding.
 - `import.go` owns import provenance and unavailable-payload markers.
 
 Targeted rewrites preserve unknown fields, prose, unrelated provider values,

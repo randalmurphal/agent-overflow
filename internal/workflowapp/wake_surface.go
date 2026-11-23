@@ -248,7 +248,7 @@ func (s *Service) composeWorkflowWake(item store.WorkItem, descendant *wakeDesce
 		// in the tree as a statement about a run that is still waiting. Same
 		// reasoning as `input.Run.Reason` two branches up: the descendant's own
 		// attempt outputs are already on the message as AttemptOutputs.
-		outputs, err := workflowNamedOutputs(item.Snapshot, timeline)
+		outputs, err := NamedOutputs(item.Snapshot, timeline)
 		if err != nil {
 			return composedWake{}, fmt.Errorf("read declared outputs: %w", err)
 		}

@@ -197,7 +197,7 @@ func TestListCommitsRangeToExplicitHeadSHA(t *testing.T) {
 	}
 }
 
-func TestOpenCommitDiffRegularCommit(t *testing.T) {
+func TestCommitDiffRegularCommit(t *testing.T) {
 	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "a.txt", "one\n", "add a")
@@ -216,7 +216,7 @@ func TestOpenCommitDiffRegularCommit(t *testing.T) {
 	}
 }
 
-func TestOpenCommitDiffRootCommit(t *testing.T) {
+func TestCommitDiffRootCommit(t *testing.T) {
 	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	root, _, _, err := runGit(context.Background(), repo, nil, false, "rev-list", "--max-parents=0", "HEAD")
@@ -233,7 +233,7 @@ func TestOpenCommitDiffRootCommit(t *testing.T) {
 	}
 }
 
-func TestOpenCommitDiffMergeCommitUsesFirstParent(t *testing.T) {
+func TestCommitDiffMergeCommitUsesFirstParent(t *testing.T) {
 	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
@@ -255,7 +255,7 @@ func TestOpenCommitDiffMergeCommitUsesFirstParent(t *testing.T) {
 	}
 }
 
-func TestOpenCommitDiffRejectsNonSHA(t *testing.T) {
+func TestCommitDiffRejectsNonSHA(t *testing.T) {
 	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	for _, sha := range []string{"", "HEAD", "main", "--all", "zzzzzzzz"} {

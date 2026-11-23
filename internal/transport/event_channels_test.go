@@ -337,3 +337,9 @@ func TestNotificationChannelsReachRemoteButStayHostProduced(t *testing.T) {
 			"any session granted %[1]q could now steer every attached client's pane focus", got)
 	}
 }
+
+// channelAudience is the audience the registry answers for channel.
+func channelAudience(channel string) Audience {
+	policy, _ := policyForChannel(channel)
+	return policy.Audience
+}

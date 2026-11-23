@@ -156,13 +156,6 @@ func (q *pageEndQueue) run(handle ids.PageHandle) {
 	}
 }
 
-// adoptPopup announces popup and adopts it in the caller's goroutine.
-func (m *Manager) adoptPopup(popup enginePopup) {
-	if m.announcePopup(popup) {
-		m.runAdoption(popup)
-	}
-}
-
 // announcePopup registers popup's admission and answers false for a popup
 // reported before.
 func (m *Manager) announcePopup(popup enginePopup) bool {

@@ -1,8 +1,8 @@
 /**
  * The tag one presented notification is known by: `<backendId>|<id>`.
  *
- * ONE SPELLING, THREE PRESENTERS. `push.TrayTag` and `TrayNotifier.tagFor`
- * compose the same string on the phone, the phone's wire presenter uses it
+ * ONE SPELLING, THREE PRESENTERS. `TrayNotifier.tagFor` composes the same
+ * string on the phone, the phone's wire presenter uses it
  * (`stores/pushPresenter.svelte.ts`) and so does the remote browser's
  * (`stores/browserNotificationPresenter.svelte.ts`). It is what makes a later
  * state change REPLACE a notification and a retraction cancel exactly it, and

@@ -394,8 +394,7 @@ function findCIJob(pipeline: CIPipeline | null, jobId: string): { stageName: str
  * pipeline (GitLab: the same pipeline id; GitHub: a job of old's
  * workflow run, which a re-run keeps); and exactly one job of the same
  * stage and name has an id above old's. A new commit's pipeline, or two
- * jobs that share a name, is not a retry. git.FindCIJobRetry is the same
- * rule.
+ * jobs that share a name, is not a retry.
  */
 export function findCIJobRetry(pipeline: CIPipeline | null, oldPipelineId: string, stageName: string, old: CIJob): { stageName: string; job: CIJob } | null {
   const oldId = numericId(old.id);

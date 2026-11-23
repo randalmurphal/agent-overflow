@@ -114,7 +114,7 @@ func (a *App) resolveTextGenerationConfig(ctx context.Context) (textgen.Config, 
 
 // resolveTextGenerationConfigFor builds a textgen.Config for an explicit
 // provider name, used by the Layer 2 retry path to construct the alternate
-// provider's config without re-running PickAvailableProvider. Returns ok=false
+// provider's config without re-running PickAvailableProviderOrdered. Returns ok=false
 // when the alternate's binary doesn't resolve on PATH, or when it lists no
 // model of its text-generation family, which is logged — the caller must
 // NOT attempt the run in that case.

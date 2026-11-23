@@ -21,6 +21,7 @@ All non-main Go packages live under `internal/`. Root `main*.go` and
 | Application services and their boundaries | [Application composition](../docs/architecture/root-decomposition.md) |
 | Repository/worktree lookup and operations | [gitroot/](gitroot/AGENTS.md), [git/](git/AGENTS.md), [gitapp/](gitapp/AGENTS.md), `worktreewatch/` (registry watch for removals made outside the app), `gitenv/` (the no-credential-prompt environment every git child gets) |
 | Forge HTTP transport: tokens, rate gates, ETags, isolation | `forgeapi/`; contract in [forge-transport.md](../docs/architecture/forge-transport.md) |
+| Debounced filesystem watch loop: debounce, emit, close | `fswatch/` (package comment); its users are `assetwatch/` and `workflowdefs/` |
 | Polling pump core: handles, pause while hidden, request hand-off, retry schedule | `pump/` (package comment) |
 | Issue tracker clients: Jira, Tempo, Linear, their HTTP transport and the ADF converter | `tracker/` (package comments); contract in [tracker-clients.md](../docs/architecture/tracker-clients.md); what is built on them in [tracker-backend.md](../docs/architecture/tracker-backend.md) |
 | Tracker connections, their key files, clients and providers | `trackerapp/` (package comment), `app/app_tracker*.go`; design in [tracker-backend.md](../docs/architecture/tracker-backend.md) |

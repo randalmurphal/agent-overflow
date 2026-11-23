@@ -268,7 +268,3 @@ func ownedGroupAliveOS(pgid int) bool {
 	// live for ownership and lease-reuse purposes.
 	return processGroupHasLiveMember(pgid)
 }
-
-func ownedProcessGroupAlive(pid int) bool {
-	return ownedGroupAliveProbe(pid)
-}

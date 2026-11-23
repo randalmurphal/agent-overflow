@@ -58,9 +58,6 @@ func NewStallWatch(window time.Duration, now time.Time) *StallWatch {
 	return &StallWatch{window: window, lastProgress: now, lastAlive: now}
 }
 
-// Window is the watch's window.
-func (w *StallWatch) Window() time.Duration { return w.window }
-
 // Report records p, received at now, and reports whether it was progress:
 // the first report, or one whose UpdatedAt changed.
 func (w *StallWatch) Report(p Progress, now time.Time) (progressed bool) {

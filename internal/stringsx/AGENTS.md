@@ -2,8 +2,7 @@
 
 Small, dependency-free string helpers shared across packages. Keep functions general, allocation-conscious, and explicit about byte versus rune limits.
 
-`Clip` is byte-oriented and may split UTF-8. Use `ClipRunes` or `TailRunes` when
-text must retain rune boundaries. `SkipANSIEscape` returns just past a recognized
+`ClipRunes` and `TailRunes` cut on rune boundaries. `SkipANSIEscape` returns just past a recognized
 escape and resumes after the ESC on an unterminated CSI or OSC so it does not
 swallow following text. `FoldForFind` is the find bar's match rule (the CI log
 search and a pane's thread find); the frontend's `foldFindText` implements it

@@ -1000,8 +1000,9 @@ func (s *Store) MaxItemIndexForTurn(threadID string, turnIndex int) (int, bool, 
 
 // ListUnclaimedProviderQueuedUserItemIDs returns the ids of this thread's
 // `user_text` rows whose message the PROVIDER's own queue took ownership of
-// (`itemmeta.MarkProviderQueued`, a Codex `thread/queue/add` on an app-server
-// >= 0.148) and that no provider echo has claimed yet.
+// (`itemmeta.IsProviderQueued`: a Codex `thread/queue/add` on an app-server
+// >= 0.148, which an earlier version made) and that no provider echo has
+// claimed yet.
 //
 // The pair of conditions is the whole definition of "still with the provider":
 // the marker is permanent by design (nothing clears it when the message

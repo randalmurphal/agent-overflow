@@ -772,7 +772,7 @@ endif
 # semantics stay uniform (nothing implies the autopilot).
 #
 # The -soak suffix mirrors the binary's own windowed-soak default
-# (instanceinfo.SoakDataRootFor): the soak autopilot refuses a data dir
+# (instanceinfo.DefaultSoakDataRoot): the soak autopilot refuses a data dir
 # holding threads it did not seed, so it cannot share the harness root.
 ifeq ($(shell uname -s),Darwin)
 soak-window: harness-build

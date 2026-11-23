@@ -318,3 +318,6 @@ func TestNewNormalizesTheDomain(t *testing.T) {
 		t.Fatalf("Domain() = %q, want the trimmed lower-cased spelling", issuer.Domain())
 	}
 }
+
+// Domain is the name this issuer orders for, normalized.
+func (i *Issuer) Domain() string { return i.domain }

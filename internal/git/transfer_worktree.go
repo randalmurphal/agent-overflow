@@ -295,7 +295,8 @@ func (c *Core) PublishTransferWorktree(ctx context.Context, plan TransferWorktre
 		if err := c.verifyTransferWorktreeFingerprint(ctx, plan, plan.Stage); err != nil {
 			return err
 		}
-		if err := atomicfile.RenameNoReplace(plan.Stage, plan.Path); err != nil {
+		// A directory is never published by a link, so no name is left over.
+		if _, err := atomicfile.RenameNoReplace(plan.Stage, plan.Path); err != nil {
 			return err
 		}
 	} else if !errors.Is(stageErr, fs.ErrNotExist) {

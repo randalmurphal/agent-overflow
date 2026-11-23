@@ -137,7 +137,7 @@ func TestIgnoreWhitespacePassesDashWToGit(t *testing.T) {
 		run  func(t *testing.T, repo string, opts Options)
 	}{
 		{
-			name: "OpenWorktreeDiff",
+			name: "WorktreeSides",
 			run: func(t *testing.T, repo string, opts Options) {
 				if _, err := worktreePatch(t, repo, opts); err != nil {
 					t.Fatalf("worktreePatch: %v", err)
@@ -145,7 +145,7 @@ func TestIgnoreWhitespacePassesDashWToGit(t *testing.T) {
 			},
 		},
 		{
-			name: "OpenBranchBaseDiff",
+			name: "BranchBaseSides",
 			run: func(t *testing.T, repo string, opts Options) {
 				if _, err := branchBasePatch(t, repo, "main", opts); err != nil {
 					t.Fatalf("branchBasePatch: %v", err)
@@ -153,7 +153,7 @@ func TestIgnoreWhitespacePassesDashWToGit(t *testing.T) {
 			},
 		},
 		{
-			name: "OpenCommitDiff",
+			name: "CommitSides",
 			run: func(t *testing.T, repo string, opts Options) {
 				if _, err := commitPatch(t, repo, headSHA(t, repo), opts); err != nil {
 					t.Fatalf("commitPatch: %v", err)
@@ -161,11 +161,11 @@ func TestIgnoreWhitespacePassesDashWToGit(t *testing.T) {
 			},
 		},
 		{
-			name: "OpenMergeBaseDiff",
+			name: "MergeBaseSides",
 			run: func(t *testing.T, repo string, opts Options) {
-				diff, err := OpenMergeBaseDiff(context.Background(), repo, "main~1", headSHA(t, repo), opts)
+				diff, err := diffOf(opts)(MergeBaseSides(context.Background(), repo, "main~1", headSHA(t, repo)))
 				if _, err := openAndRead(t, diff, err); err != nil {
-					t.Fatalf("OpenMergeBaseDiff: %v", err)
+					t.Fatalf("MergeBaseSides: %v", err)
 				}
 			},
 		},

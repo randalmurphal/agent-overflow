@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"agent-overflow/internal/spinner"
+	"agent-overflow/internal/fswatch"
 )
 
 const spinnerDebounce = 250 * time.Millisecond
@@ -18,11 +18,7 @@ type SpinnerWatcher struct {
 
 // NewSpinnerWatcher arms a production spinners-directory watcher.
 func NewSpinnerWatcher(dir string, emit func()) (*SpinnerWatcher, error) {
-	return newSpinnerWatcher(dir, spinnerDebounce, emit)
-}
-
-func newSpinnerWatcher(dir string, debounce time.Duration, emit func()) (*SpinnerWatcher, error) {
-	core, err := newWatcher("spinner watcher", dir, debounce, spinnerFileRelevant, emit)
+	core, err := newWatcher("spinner watcher", dir, spinnerFileRelevant, fswatch.Config{Debounce: spinnerDebounce, Emit: emit}, fswatch.FromWatcher)
 	if err != nil {
 		return nil, err
 	}
@@ -36,14 +32,9 @@ func (w *SpinnerWatcher) Close() error {
 	return w.core.Close()
 }
 
-func (w *SpinnerWatcher) relevant(path string) bool {
-	return w != nil && w.core != nil && relevantInDir(w.core.dir, path, spinnerFileRelevant)
-}
-
+// spinnerFileRelevant admits both halves of a sprite. The generated
+// reference page is a .md file, so the extension keeps it out.
 func spinnerFileRelevant(name string) bool {
 	extension := strings.ToLower(filepath.Ext(name))
-	if extension != ".png" && extension != ".json" {
-		return false
-	}
-	return !strings.EqualFold(name, spinner.ReferenceFileName)
+	return extension == ".png" || extension == ".json"
 }

@@ -52,13 +52,8 @@ func TestDataRootForFlattensWindowsSpellings(t *testing.T) {
 func TestSoakRootIsDistinctFromTheHarnessRoot(t *testing.T) {
 	// The soak autopilot refuses a data dir holding threads it did not
 	// seed, so a checkout's soak and harness instances cannot share one.
-	harness := DataRootFor("/a/b")
-	soak := SoakDataRootFor("/a/b")
-	if harness == soak {
+	if DefaultSoakDataRoot() == DefaultDataRoot() {
 		t.Fatal("soak root equals the harness root")
-	}
-	if soak != harness+SoakSuffix {
-		t.Fatalf("SoakDataRootFor = %q, want %q", soak, harness+SoakSuffix)
 	}
 	if DefaultSoakDataRoot() != DefaultDataRoot()+SoakSuffix {
 		t.Fatalf("DefaultSoakDataRoot = %q, want %q", DefaultSoakDataRoot(), DefaultDataRoot()+SoakSuffix)

@@ -1188,3 +1188,10 @@ func cachedFactKeys() []string {
 	}
 	return keys
 }
+
+// held reports the entries and estimated bytes the cache holds.
+func (c *factCache[V]) held() (entries int, bytes int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lru.Len(), c.bytes
+}

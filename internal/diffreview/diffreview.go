@@ -209,12 +209,3 @@ func CommentLine(comment store.DiffReviewComment) int {
 	}
 	return 0
 }
-
-// IDsOf projects a comment slice into its ID list, preserving order.
-func IDsOf(comments []store.DiffReviewComment) []string {
-	ids := make([]string, 0, len(comments))
-	for _, comment := range comments {
-		ids = append(ids, comment.ID)
-	}
-	return ids
-}

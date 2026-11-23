@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/fswatch"
 	"agent-overflow/internal/theme"
 )
 
@@ -22,11 +23,7 @@ type ThemeWatcher struct {
 
 // NewThemeWatcher arms a production themes-directory watcher.
 func NewThemeWatcher(dir string, emit func()) (*ThemeWatcher, error) {
-	return newThemeWatcher(dir, themeDebounce, emit)
-}
-
-func newThemeWatcher(dir string, debounce time.Duration, emit func()) (*ThemeWatcher, error) {
-	core, err := newWatcher("theme watcher", dir, debounce, themeFileRelevant, emit)
+	core, err := newWatcher("theme watcher", dir, themeFileRelevant, fswatch.Config{Debounce: themeDebounce, Emit: emit}, fswatch.FromWatcher)
 	if err != nil {
 		return nil, err
 	}
@@ -47,10 +44,6 @@ func (w *ThemeWatcher) Close() error {
 		return nil
 	}
 	return w.core.Close()
-}
-
-func (w *ThemeWatcher) relevant(path string) bool {
-	return w != nil && w.core != nil && relevantInDir(w.core.dir, path, themeFileRelevant)
 }
 
 func themeFileRelevant(name string) bool {

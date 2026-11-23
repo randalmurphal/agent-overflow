@@ -57,16 +57,3 @@ const (
 var MethodRoutes = []MethodRoute{
 	RouteThread, RouteProject, RouteWorkspace, RouteHome, RouteSelected, RouteAll,
 }
-
-// Valid reports whether r is a declared route. `methodgen` refuses an
-// annotation naming anything else and refuses to emit a table with an
-// unrouted method in it, so a valid generated table cannot carry an
-// invalid route; this answers the question for hand-built values.
-func (r MethodRoute) Valid() bool {
-	for _, known := range MethodRoutes {
-		if known == r {
-			return true
-		}
-	}
-	return false
-}

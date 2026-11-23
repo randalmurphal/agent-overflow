@@ -199,7 +199,3 @@ func Run(ctx context.Context, opts RunOptions, runner Runner, progress func(Repo
 	}
 	return report, nil
 }
-
-func WriteReport(path string, report Report) error {
-	return writeReport(path, report)
-}

@@ -52,9 +52,9 @@ func TestPhaseOutputsAddsSystemOutputsOnlyForToolPhases(t *testing.T) {
 }
 
 func TestEnvelopeSchemaForToolPhaseIsProviderLegal(t *testing.T) {
-	schema, err := EnvelopeSchema(toolPhase(map[string]Variable{
+	schema, err := PhaseEnvelope(toolPhase(map[string]Variable{
 		"report": {Schema: JSONSchema{Type: "string"}, Optional: true},
-	}))
+	})).Schema()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,15 +83,15 @@ func TestEnvelopeSchemaForToolPhaseIsProviderLegal(t *testing.T) {
 func TestValidateEnvelopeAcceptsSynthesizedToolResultAndRejectsMissingAuthoredOutputs(t *testing.T) {
 	synthesized := []byte(`{"status":"done","outputs":{"passed":false,"exit-code":2},"question":null,"reason":null}`)
 
-	if err := ValidateEnvelope(toolPhase(nil), synthesized); err != nil {
+	if err := PhaseEnvelope(toolPhase(nil)).Validate(synthesized); err != nil {
 		t.Fatalf("synthesized envelope rejected: %v", err)
 	}
 
 	// The exit status cannot invent an authored output, so a command that
 	// declares one must write its own envelope.
-	err := ValidateEnvelope(toolPhase(map[string]Variable{
+	err := PhaseEnvelope(toolPhase(map[string]Variable{
 		"report": {Schema: JSONSchema{Type: "string"}},
-	}), synthesized)
+	})).Validate(synthesized)
 	var validation *EnvelopeValidationError
 	if !errors.As(err, &validation) {
 		t.Fatalf("declared output missing from synthesized envelope: err = %v", err)
@@ -103,15 +103,15 @@ func TestValidateEnvelopeAcceptsSynthesizedToolResultAndRejectsMissingAuthoredOu
 	// A written envelope may fill the same outputs, and the system outputs
 	// remain part of the contract it has to satisfy.
 	written := []byte(`{"status":"done","outputs":{"passed":true,"exit-code":0,"report":"green"},"question":null,"reason":null}`)
-	if err := ValidateEnvelope(toolPhase(map[string]Variable{
+	if err := PhaseEnvelope(toolPhase(map[string]Variable{
 		"report": {Schema: JSONSchema{Type: "string"}},
-	}), written); err != nil {
+	})).Validate(written); err != nil {
 		t.Fatalf("written envelope rejected: %v", err)
 	}
 	missingSystem := []byte(`{"status":"done","outputs":{"report":"green"},"question":null,"reason":null}`)
-	if err := ValidateEnvelope(toolPhase(map[string]Variable{
+	if err := PhaseEnvelope(toolPhase(map[string]Variable{
 		"report": {Schema: JSONSchema{Type: "string"}},
-	}), missingSystem); err == nil {
+	})).Validate(missingSystem); err == nil {
 		t.Fatal("written envelope omitted the system outputs and passed validation")
 	}
 }

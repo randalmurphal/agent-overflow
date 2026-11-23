@@ -150,7 +150,7 @@ func TestParseRawNumstatRejectsMalformedOutput(t *testing.T) {
 	}
 }
 
-func TestOpenWorktreeFilesDiffReadsOnlyTheNamedPaths(t *testing.T) {
+func TestWorktreeFilesDiffReadsOnlyTheNamedPaths(t *testing.T) {
 	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, "old.txt", "one\ntwo\nthree\nfour\n", "add old")
@@ -162,7 +162,7 @@ func TestOpenWorktreeFilesDiffReadsOnlyTheNamedPaths(t *testing.T) {
 	}
 	read := func(paths ...string) string {
 		t.Helper()
-		diff, err := OpenWorktreeFilesDiff(context.Background(), repo, t.TempDir(), paths, Options{})
+		diff, err := diffOf(Options{})(WorktreeFilesSides(context.Background(), repo, t.TempDir(), paths))
 		patch, err := openAndRead(t, diff, err)
 		if err != nil {
 			t.Fatalf("read %v: %v", paths, err)
@@ -178,10 +178,10 @@ func TestOpenWorktreeFilesDiffReadsOnlyTheNamedPaths(t *testing.T) {
 	if !strings.Contains(rename, "rename from old.txt") || !strings.Contains(rename, "rename to renamed.txt") {
 		t.Fatalf("expected one rename, got:\n%s", rename)
 	}
-	if _, err := OpenWorktreeFilesDiff(context.Background(), repo, t.TempDir(), nil, Options{}); err == nil {
+	if _, err := diffOf(Options{})(WorktreeFilesSides(context.Background(), repo, t.TempDir(), nil)); err == nil {
 		t.Fatal("opened a diff of no paths")
 	}
-	if _, err := OpenWorktreeFilesDiff(context.Background(), repo, t.TempDir(), []string{""}, Options{}); err == nil {
+	if _, err := diffOf(Options{})(WorktreeFilesSides(context.Background(), repo, t.TempDir(), []string{""})); err == nil {
 		t.Fatal("opened a diff of an empty path")
 	}
 }

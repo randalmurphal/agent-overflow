@@ -53,6 +53,17 @@ func joinChunks(chunks []Chunk) string {
 }
 
 // openAndRead opens a diff, reads it whole and closes it.
+// diffOf opens the diff of the sides a constructor answered, with opts, as
+// the app does (Sides.OpenDiff); the constructor's error passes through.
+func diffOf(opts Options) func(*Sides, error) (*Diff, error) {
+	return func(sides *Sides, err error) (*Diff, error) {
+		if err != nil {
+			return nil, err
+		}
+		return sides.OpenDiff(opts), nil
+	}
+}
+
 func openAndRead(t *testing.T, diff *Diff, err error) (string, error) {
 	t.Helper()
 	if err != nil {
@@ -75,19 +86,19 @@ func closeDiff(t *testing.T, diff *Diff) {
 
 func worktreePatch(t *testing.T, repo string, opts Options) (string, error) {
 	t.Helper()
-	diff, err := OpenWorktreeDiff(context.Background(), repo, t.TempDir(), opts)
+	diff, err := diffOf(opts)(WorktreeSides(context.Background(), repo, t.TempDir()))
 	return openAndRead(t, diff, err)
 }
 
 func branchBasePatch(t *testing.T, repo, base string, opts Options) (string, error) {
 	t.Helper()
-	diff, err := OpenBranchBaseDiff(context.Background(), repo, t.TempDir(), base, opts)
+	diff, err := diffOf(opts)(BranchBaseSides(context.Background(), repo, t.TempDir(), base))
 	return openAndRead(t, diff, err)
 }
 
 func commitPatch(t *testing.T, repo, sha string, opts Options) (string, error) {
 	t.Helper()
-	diff, err := OpenCommitDiff(context.Background(), repo, sha, opts)
+	diff, err := diffOf(opts)(CommitSides(context.Background(), repo, sha))
 	return openAndRead(t, diff, err)
 }
 
@@ -123,9 +134,9 @@ func TestDiffChunksReassembleTheWholePatchAtAnyChunkSize(t *testing.T) {
 	}
 
 	for _, chunkBytes := range []int{MinChunkBytes, 100_000, MaxChunkBytes} {
-		diff, err := OpenCommitDiff(context.Background(), repo, commit, Options{})
+		diff, err := diffOf(Options{})(CommitSides(context.Background(), repo, commit))
 		if err != nil {
-			t.Fatalf("OpenCommitDiff: %v", err)
+			t.Fatalf("CommitSides: %v", err)
 		}
 		chunks, err := readDiff(t, diff, chunkBytes)
 		closeDiff(t, diff)
@@ -153,9 +164,9 @@ func TestDiffSplitsALongLineBetweenCharacters(t *testing.T) {
 	// a byte-count cut lands inside a character unless the reader backs off.
 	line := strings.Repeat("é€", 3*MinChunkBytes/5) + "\n"
 	writeFile(t, repo, "wide.txt", line)
-	diff, err := OpenWorktreeDiff(context.Background(), repo, t.TempDir(), Options{})
+	diff, err := diffOf(Options{})(WorktreeSides(context.Background(), repo, t.TempDir()))
 	if err != nil {
-		t.Fatalf("OpenWorktreeDiff: %v", err)
+		t.Fatalf("WorktreeSides: %v", err)
 	}
 	defer closeDiff(t, diff)
 	chunks, err := readDiff(t, diff, MinChunkBytes)
@@ -181,9 +192,9 @@ func TestDiffRereadsReturnTheSnapshotAfterTheWorktreeAndHeadMove(t *testing.T) {
 	commitFile(t, repo, "big.txt", numberedLines("old ", 20000), "add big")
 	writeFile(t, repo, "big.txt", numberedLines("new ", 20000))
 	snapshotRoot := t.TempDir()
-	diff, err := OpenWorktreeDiff(context.Background(), repo, snapshotRoot, Options{})
+	diff, err := diffOf(Options{})(WorktreeSides(context.Background(), repo, snapshotRoot))
 	if err != nil {
-		t.Fatalf("OpenWorktreeDiff: %v", err)
+		t.Fatalf("WorktreeSides: %v", err)
 	}
 	defer closeDiff(t, diff)
 	first, err := readDiff(t, diff, MinChunkBytes)
@@ -220,9 +231,9 @@ func TestDiffRereadRefusesBytesThatNoLongerMatch(t *testing.T) {
 		lines[i] = "changed\n"
 	}
 	writeFile(t, repo, "big.txt", strings.Join(lines, ""))
-	diff, err := OpenWorktreeDiff(context.Background(), repo, t.TempDir(), Options{})
+	diff, err := diffOf(Options{})(WorktreeSides(context.Background(), repo, t.TempDir()))
 	if err != nil {
-		t.Fatalf("OpenWorktreeDiff: %v", err)
+		t.Fatalf("WorktreeSides: %v", err)
 	}
 	defer closeDiff(t, diff)
 	first, err := readDiff(t, diff, MinChunkBytes)
@@ -245,9 +256,9 @@ func TestDiffReadRefusesAnOffsetNoReadEndedAt(t *testing.T) {
 	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	writeFile(t, repo, "README.txt", "hello\nedited\n")
-	diff, err := OpenWorktreeDiff(context.Background(), repo, t.TempDir(), Options{})
+	diff, err := diffOf(Options{})(WorktreeSides(context.Background(), repo, t.TempDir()))
 	if err != nil {
-		t.Fatalf("OpenWorktreeDiff: %v", err)
+		t.Fatalf("WorktreeSides: %v", err)
 	}
 	defer closeDiff(t, diff)
 	if _, err := diff.Read(context.Background(), 3, MinChunkBytes); err == nil {
@@ -270,9 +281,9 @@ func TestDiffIdleStreamEndsAndTheNextReadResumes(t *testing.T) {
 
 	repo := testutil.InitGitRepo(t)
 	writeFile(t, repo, "big.txt", numberedLines("line ", 20000))
-	diff, err := OpenWorktreeDiff(context.Background(), repo, t.TempDir(), Options{})
+	diff, err := diffOf(Options{})(WorktreeSides(context.Background(), repo, t.TempDir()))
 	if err != nil {
-		t.Fatalf("OpenWorktreeDiff: %v", err)
+		t.Fatalf("WorktreeSides: %v", err)
 	}
 	defer closeDiff(t, diff)
 	first, err := diff.Read(context.Background(), 0, MinChunkBytes)
@@ -388,9 +399,9 @@ func TestWorktreeDiffCloseRemovesItsSnapshot(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	writeFile(t, repo, "new.txt", "brand new\n")
 	root := t.TempDir()
-	diff, err := OpenWorktreeDiff(context.Background(), repo, root, Options{})
+	diff, err := diffOf(Options{})(WorktreeSides(context.Background(), repo, root))
 	if err != nil {
-		t.Fatalf("OpenWorktreeDiff: %v", err)
+		t.Fatalf("WorktreeSides: %v", err)
 	}
 	if entries, _ := os.ReadDir(root); len(entries) != 1 {
 		t.Fatalf("snapshot root holds %d entries while open, want 1", len(entries))
@@ -414,9 +425,9 @@ func TestDiffStreamsACompressiblePatchWithoutHoldingIt(t *testing.T) {
 	const lines = 3_000_000
 	writeFile(t, repo, "zeros.txt", strings.Repeat("0000000000\n", lines))
 	root := t.TempDir()
-	diff, err := OpenWorktreeDiff(context.Background(), repo, root, Options{})
+	diff, err := diffOf(Options{})(WorktreeSides(context.Background(), repo, root))
 	if err != nil {
-		t.Fatalf("OpenWorktreeDiff: %v", err)
+		t.Fatalf("WorktreeSides: %v", err)
 	}
 	defer closeDiff(t, diff)
 
@@ -495,7 +506,7 @@ func TestPatchShapeIgnoresDiffConfiguration(t *testing.T) {
 	}
 }
 
-func TestOpenMergeBaseDiffShowsOnlyTheHeadSideOfTheMergeBase(t *testing.T) {
+func TestMergeBaseDiffShowsOnlyTheHeadSideOfTheMergeBase(t *testing.T) {
 	t.Parallel()
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-q", "-b", "feature")
@@ -504,18 +515,18 @@ func TestOpenMergeBaseDiffShowsOnlyTheHeadSideOfTheMergeBase(t *testing.T) {
 	testutil.RunGit(t, repo, "checkout", "-q", "main")
 	commitFile(t, repo, "main.txt", "moved on\n", "main moves")
 
-	diff, err := OpenMergeBaseDiff(context.Background(), repo, "main", head, Options{})
+	diff, err := diffOf(Options{})(MergeBaseSides(context.Background(), repo, "main", head))
 	patch, err := openAndRead(t, diff, err)
 	if err != nil {
-		t.Fatalf("OpenMergeBaseDiff: %v", err)
+		t.Fatalf("MergeBaseSides: %v", err)
 	}
 	if !strings.Contains(patch, "+feature work") || strings.Contains(patch, "moved on") {
 		t.Fatalf("want only the feature side of the merge base:\n%s", patch)
 	}
-	if _, err := OpenMergeBaseDiff(context.Background(), repo, "main", "HEAD", Options{}); err == nil {
+	if _, err := diffOf(Options{})(MergeBaseSides(context.Background(), repo, "main", "HEAD")); err == nil {
 		t.Fatal("a head that is not an OID must be refused")
 	}
-	if _, err := OpenMergeBaseDiff(context.Background(), repo, "--output=x", head, Options{}); err == nil {
+	if _, err := diffOf(Options{})(MergeBaseSides(context.Background(), repo, "--output=x", head)); err == nil {
 		t.Fatal("a flag-shaped base must be refused")
 	}
 }

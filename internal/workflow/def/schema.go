@@ -197,7 +197,7 @@ func validateJSONValue(schema JSONSchema, value any, path string) []string {
 				// properties arrive as null rather than absent because strict
 				// mode makes providers emit every declared key, so null is how
 				// they spell "absent" — matching how optional top-level outputs
-				// are read in ValidateEnvelope.
+				// are read in EnvelopeContract.Validate.
 				continue
 			}
 			errors = append(errors, validateJSONValue(property, child, path+"."+name)...)

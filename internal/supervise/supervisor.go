@@ -197,9 +197,6 @@ func (s *Supervisor) endUpdate(outcome string, err error) {
 	u.phases.Summary(s.config.Now().Sub(u.started), fields...)
 }
 
-// Layout exposes where this supervisor keeps its state.
-func (s *Supervisor) Layout() Layout { return s.layout }
-
 // Run supervises until the child exits on its own or the context is cancelled.
 //
 // The returned error is the child's: a supervisor whose backend exited

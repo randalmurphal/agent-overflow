@@ -97,12 +97,6 @@ func RouteMessage(document, seq uint64, route bool) string {
 	return routeMessage + strconv.FormatUint(document, 10) + ":" + strconv.FormatUint(seq, 10) + ":" + answer
 }
 
-// ReloadAppMessage is the message document document posts when a chord the
-// window handed over ran nothing there.
-func ReloadAppMessage(document uint64) string {
-	return reloadAppMessage + strconv.FormatUint(document, 10)
-}
-
 // Bindings returns bindings with its Ctrl/Cmd+R routed through c. The
 // original reload is kept for when the SPA does not take the chord.
 func (c *PageChords) Bindings(bindings map[string]func(application.Window)) map[string]func(application.Window) {

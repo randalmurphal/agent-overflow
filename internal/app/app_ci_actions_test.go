@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -185,7 +186,9 @@ func TestCIActionUnconfirmedWriteIsFollowed(t *testing.T) {
 		t.Fatalf("a lost answer = %v", err)
 	}
 	pipeline, seq := pipelineState(app, sub.ID)
-	if result.Seq == 0 || result.Seq != seq || gitops.FindCIJobRetry(pipeline, "40", "test", *old) == nil {
+	retries := jobsNamed(pipeline, "test", old.Name)
+	if result.Seq == 0 || result.Seq != seq || gitops.FindCIJob(pipeline, old.ID) != nil || len(retries) != 1 ||
+		!idAbove(t, retries[0].ID, old.ID) || pipeline.ID == "" || pipeline.ID != sub.Pipeline.ID {
 		t.Fatalf("after the lost answer: seq %d (pump %d), pipeline %+v", result.Seq, seq, pipeline)
 	}
 	app.prUpdates.mu.Lock()
@@ -254,6 +257,36 @@ func forgeRoutes(engine *forgefake.Engine) []string {
 	return routes
 }
 
+// jobsNamed returns the jobs of stage in pipeline that are named name.
+func jobsNamed(pipeline gitops.CIPipeline, stage, name string) []gitops.CIJob {
+	var jobs []gitops.CIJob
+	for _, s := range pipeline.Stages {
+		if s.Name != stage {
+			continue
+		}
+		for _, job := range s.Jobs {
+			if job.Name == name {
+				jobs = append(jobs, job)
+			}
+		}
+	}
+	return jobs
+}
+
+// idAbove reports whether the decimal job id id is above old.
+func idAbove(t *testing.T, id, old string) bool {
+	t.Helper()
+	n, err := strconv.ParseUint(id, 10, 64)
+	if err != nil {
+		t.Fatalf("job id %q: %v", id, err)
+	}
+	o, err := strconv.ParseUint(old, 10, 64)
+	if err != nil {
+		t.Fatalf("job id %q: %v", old, err)
+	}
+	return n > o
+}
+
 func countRoute(engine *forgefake.Engine, route string) int {
 	n := 0
 	for _, inv := range engine.Invocations(0).Invocations {
@@ -290,9 +323,14 @@ func TestCIActionsSettleOnThePumpsPoll(t *testing.T) {
 			t.Fatalf("%s retry: %v", tc.repo.Forge, err)
 		}
 		pipeline, seq := pipelineState(app, sub.ID)
-		retry := gitops.FindCIJobRetry(pipeline, tc.finished, tc.stage, *old)
-		if retry == nil || retry.Status != gitops.CIStatusPending || result.Seq != seq || result.Seq <= sub.Seq || countRoute(engine, tc.retryRoute) != 1 {
-			t.Fatalf("%s after the retry: seq %d (pump %d, subscribe %d), retry %+v, routes %v", tc.repo.Forge, result.Seq, seq, sub.Seq, retry, forgeRoutes(engine))
+		// The forge's answer: the failed job left the read, and its stage
+		// holds one job of its name, the pending attempt under a higher id,
+		// in the same workflow run (GitHub) or the same pipeline (GitLab).
+		retries := jobsNamed(pipeline, tc.stage, old.Name)
+		if gitops.FindCIJob(pipeline, old.ID) != nil || len(retries) != 1 || retries[0].Status != gitops.CIStatusPending || retries[0].RunID != old.RunID ||
+			!idAbove(t, retries[0].ID, old.ID) || (tc.repo.Forge == "gitlab" && (pipeline.ID == "" || pipeline.ID != sub.Pipeline.ID)) ||
+			result.Seq != seq || result.Seq <= sub.Seq || countRoute(engine, tc.retryRoute) != 1 {
+			t.Fatalf("%s after the retry: seq %d (pump %d, subscribe %d), jobs %+v, routes %v", tc.repo.Forge, result.Seq, seq, sub.Seq, retries, forgeRoutes(engine))
 		}
 
 		live := subscribeCIPipeline(t, app, tc.repo, tc.running)

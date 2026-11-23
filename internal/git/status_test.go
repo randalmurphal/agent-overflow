@@ -1191,7 +1191,7 @@ func untrackedOracle(t *testing.T, repo string) int {
 // (frontend/src/lib/utils/patchFiles.ts): a hunk body's '+'/'-' lines are
 // additions/deletions whatever follows the prefix, and a line outside every
 // body counts by its prefix unless it is a '+++'/'---' file header. This is
-// how the diff panel turns gitdiff.OpenWorktreeDiff's unified patch into the
+// how the diff panel turns gitdiff.WorktreeSides's unified patch into the
 // +/- totals it displays.
 func countPatchAddsDels(patch string) (insertions, deletions int) {
 	var body unidiff.Body
@@ -1215,7 +1215,7 @@ func countPatchAddsDels(patch string) (insertions, deletions int) {
 }
 
 // panelWorkspaceTotal computes the insertions/deletions the diff panel displays
-// for the workspace by replicating gitdiff.OpenWorktreeDiff's exact git commands
+// for the workspace by replicating gitdiff.WorktreeSides's exact git commands
 // (tracked patch vs HEAD + a per-untracked-file --no-index patch) and parsing
 // them the way the frontend does (countPatchAddsDels). It is a deliberately
 // different code path from the badge (which uses --numstat + countAddedLines),

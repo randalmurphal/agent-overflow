@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/fswatch"
 )
 
 const soundDebounce = 250 * time.Millisecond
@@ -16,11 +18,7 @@ type SoundWatcher struct {
 
 // NewSoundWatcher arms a production sounds-directory watcher.
 func NewSoundWatcher(dir string, emit func()) (*SoundWatcher, error) {
-	return newSoundWatcher(dir, soundDebounce, emit)
-}
-
-func newSoundWatcher(dir string, debounce time.Duration, emit func()) (*SoundWatcher, error) {
-	core, err := newWatcher("sound watcher", dir, debounce, soundFileRelevant, emit)
+	core, err := newWatcher("sound watcher", dir, soundFileRelevant, fswatch.Config{Debounce: soundDebounce, Emit: emit}, fswatch.FromWatcher)
 	if err != nil {
 		return nil, err
 	}
@@ -48,13 +46,8 @@ func (w *SoundWatcher) Close() error {
 	return w.core.Close()
 }
 
-func (w *SoundWatcher) relevant(path string) bool {
-	return w != nil && w.core != nil && relevantInDir(w.core.dir, path, soundFileRelevant)
-}
-
 // soundFileRelevant admits cue files only. The seeded reference page is not
-// one, so it needs no exclusion by name the way themes' schema and spinners'
-// SPINNERS.md do.
+// one, so it needs no exclusion by name the way themes' schema does.
 func soundFileRelevant(name string) bool {
 	return strings.EqualFold(filepath.Ext(name), ".wav")
 }

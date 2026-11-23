@@ -115,17 +115,6 @@ func WorktreeChanges(ctx context.Context, workspace, tempRoot string) (files []C
 	return snapshot.Changes(ctx)
 }
 
-// OpenWorktreeFilesDiff is OpenWorktreeDiff limited to the given paths, each
-// matched literally (WorktreeFilesSides). The returned diff owns its
-// snapshot.
-func OpenWorktreeFilesDiff(ctx context.Context, workspace, tempRoot string, paths []string, opts Options) (*Diff, error) {
-	sides, err := WorktreeFilesSides(ctx, workspace, tempRoot, paths)
-	if err != nil {
-		return nil, err
-	}
-	return sides.OpenDiff(opts), nil
-}
-
 func validatePaths(paths []string) error {
 	if len(paths) == 0 {
 		return errors.New("gitdiff: at least one path is required")
