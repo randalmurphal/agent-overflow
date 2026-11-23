@@ -92,20 +92,34 @@ func (l *loopbackServer) leave() {
 }
 
 // stop closes the listener and lets active requests finish for stopGrace.
-// Past it, it cancels their contexts and closes their connections, and
-// reports that once. It returns after every handler that entered has
-// returned and the serve goroutine has ended, so nothing it served can touch
-// the session afterwards. Safe to call once.
+// Past it, it cancels their contexts and closes every connection still
+// open. It reports a cut-off, once, only when a handler had entered and was
+// still running at the grace: a connection that never got a request to a
+// handler (one that sent no headers) is closed without a report. It returns
+// after every handler that entered has returned and the serve goroutine has
+// ended, so nothing it served can touch the session afterwards. Safe to call
+// once.
 func (l *loopbackServer) stop() error {
 	ctx, cancel := context.WithTimeout(context.Background(), stopGrace)
 	defer cancel()
 	err := l.server.Shutdown(ctx)
-	if err != nil {
-		l.cancel()
-		err = fmt.Errorf("%s: requests still active after %s were cut off: %w", l.name, stopGrace, errors.Join(err, l.server.Close()))
-	}
 	l.mu.Lock()
 	l.closing = true
+	cutOff := l.active > 0
+	l.mu.Unlock()
+	if err != nil {
+		l.cancel()
+		closeErr := l.server.Close()
+		switch {
+		case cutOff:
+			err = fmt.Errorf("%s: requests still active after %s were cut off: %w", l.name, stopGrace, errors.Join(err, closeErr))
+		case closeErr != nil:
+			err = fmt.Errorf("%s: close connections: %w", l.name, closeErr)
+		default:
+			err = nil
+		}
+	}
+	l.mu.Lock()
 	for l.active > 0 {
 		l.idle.Wait()
 	}

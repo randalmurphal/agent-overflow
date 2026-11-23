@@ -270,12 +270,24 @@ func toolStartIDs(events []provider.ProviderEvent) []string {
 	return out
 }
 
-// assertReleased checks everything a live session holds is gone: both
-// listeners refuse connections, their serve goroutines and the feed loop
-// have returned, the session is complete, the parser forgot its state and
-// both prompt files are removed.
+// waitDone waits for the session to complete, which follows the teardown
+// pair's emission: a test woken by "disconnected" must wait for it.
+func waitDone(t *testing.T, s *Session) {
+	t.Helper()
+	select {
+	case <-s.Connection().Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the session did not complete")
+	}
+}
+
+// assertReleased waits for the session to complete, then checks everything
+// a live session holds is gone: both listeners refuse connections, their
+// serve goroutines and the feed loop have returned, the parser forgot its
+// state and both prompt files are removed.
 func assertReleased(t *testing.T, s *Session, promptDir string) {
 	t.Helper()
+	waitDone(t, s)
 	for _, addr := range []string{addrOf(s.gateway.baseURL()), addrOf(s.relay.url())} {
 		if dialable(addr) {
 			t.Errorf("listener %s still accepts connections", addr)
@@ -289,9 +301,6 @@ func assertReleased(t *testing.T, s *Session, promptDir string) {
 		if !closed(ch) {
 			t.Errorf("%s has not returned", name)
 		}
-	}
-	if !closed(s.Connection().Done()) {
-		t.Error("the session is not complete")
 	}
 	if parserHoldsState(s.parser) {
 		t.Error("parser state was not released")
@@ -358,10 +367,16 @@ func TestASelfExitReleasesTheSession(t *testing.T) {
 	}
 }
 
+// toolResultEnvelope is a hook completion for id, as the relay feeds it.
+func toolResultEnvelope(id string) json.RawMessage {
+	return json.RawMessage(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":"done"}]}}`)
+}
+
 // Envelopes the feed accepted before the process ended are all parsed and
 // emitted, in order, before the teardown pair: here the parser goroutine is
 // held on an earlier event while 20 more wait in the feed and the process
-// exits.
+// exits. A completion whose start never came, which the reorder holds, is
+// released before the pair too.
 func TestASelfExitParsesTheFeedBacklog(t *testing.T) {
 	rec := newExitRecorder()
 	held := newGate()
@@ -371,6 +386,7 @@ func TestASelfExitParsesTheFeedBacklog(t *testing.T) {
 	want := []string{"toolu_0"}
 	s.feedEnvelope(toolUseEnvelope("toolu_0"))
 	held.waitReached(t)
+	s.feedEnvelope(toolResultEnvelope("toolu_orphan"))
 	for i := 1; i <= 20; i++ {
 		id := fmt.Sprintf("toolu_%d", i)
 		want = append(want, id)
@@ -386,6 +402,15 @@ func TestASelfExitParsesTheFeedBacklog(t *testing.T) {
 	assertLastIsDisconnected(t, events)
 	if got := toolStartIDs(events); !slices.Equal(got, want) {
 		t.Fatalf("tool starts = %v, want %v", got, want)
+	}
+	var completed []string
+	for _, e := range events {
+		if e.Kind == provider.EventToolComplete {
+			completed = append(completed, e.ItemID)
+		}
+	}
+	if !slices.Equal(completed, []string{"toolu_orphan"}) {
+		t.Fatalf("tool completions = %v, want [toolu_orphan]", completed)
 	}
 }
 
@@ -442,7 +467,11 @@ func stalledGatewaySession(t *testing.T, ctx context.Context, rec *exitRecorder)
 			_ = resp.Body.Close()
 		}
 	}()
-	<-upstream.arrived
+	select {
+	case <-upstream.arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the gateway never forwarded the request upstream")
+	}
 	return s, upstream, answered
 }
 
@@ -511,6 +540,113 @@ func TestTheWatchersFailedReleaseReachesTheThread(t *testing.T) {
 	}
 	if err := s.Close(); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Close after the watcher = %v, want the release's error", err)
+	}
+}
+
+// The losing order of the context watcher against a self-exit: the watcher
+// has claimed the end (closing, as its closeFrom sets it) and not yet
+// reached the release when the process exits, so the exit callback runs
+// the teardown. The test stands in for the watcher stopped right after its
+// claim. Nobody awaits the result, so the error still reaches the thread,
+// and the host's claim keeps "error" out of the pair.
+func TestAnExitAfterTheWatchersClaimStillReportsTheRelease(t *testing.T) {
+	rec := newExitRecorder()
+	s, _, _ := stalledGatewaySession(t, context.Background(), rec)
+	s.mu.Lock()
+	s.closing = true
+	s.mu.Unlock()
+	endProcess(t, s)
+	rec.waitDisconnected(t)
+	waitDone(t, s)
+	want := []string{
+		string(provider.EventError) + ":release the session: claudetui gateway: " + cutOff,
+		string(provider.EventSessionStatus) + ":disconnected",
+	}
+	if got := eventLines(rec.snapshot()); !slices.Equal(got, want) {
+		t.Fatalf("events = %q, want %q", got, want)
+	}
+}
+
+// A Close that arrives while a self-exit's teardown runs receives the
+// teardown's error, so the thread does not get it as well.
+func TestACloseDuringASelfExitsReleaseReceivesItsError(t *testing.T) {
+	rec := newExitRecorder()
+	s, _, _ := stalledGatewaySession(t, context.Background(), rec)
+	endProcess(t, s)
+	// The exit callback's teardown is in the gateway's stop, held by the
+	// stalled request for the 2 s grace.
+	waitRefused(t, addrOf(s.gateway.baseURL()))
+	if err := s.Close(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close = %v, want the release's error", err)
+	}
+	want := []string{
+		string(provider.EventSessionStatus) + ":error",
+		string(provider.EventSessionStatus) + ":disconnected",
+	}
+	if got := eventLines(rec.snapshot()); !slices.Equal(got, want) {
+		t.Fatalf("events = %q, want %q", got, want)
+	}
+}
+
+// A request whose body is still arriving when the grace ends is cut off and
+// reported once, as a cut-off: the body read the forced close wakes is the
+// stop's doing, not a read failure.
+func TestAPartialRequestBodyIsReportedOnceAsCutOff(t *testing.T) {
+	rec := newExitRecorder()
+	s := newTestSession(t, context.Background(), tuiExitConfig(t, readLineScript("exit 0"), t.TempDir()), rec)
+	conn, err := net.Dial("tcp", addrOf(s.gateway.baseURL()))
+	if err != nil {
+		t.Fatalf("dial the gateway: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := io.WriteString(conn, "POST /v1/messages HTTP/1.1\r\nHost: gateway\r\nContent-Length: 100\r\n\r\n{\"partial\":"); err != nil {
+		t.Fatalf("write the partial request: %v", err)
+	}
+	waitParked(t, "IO wait", "agent-overflow/internal/provider/claudetui.(*gateway).handle(", 1, nil)
+
+	endProcess(t, s)
+	rec.waitDisconnected(t)
+	waitDone(t, s)
+	want := []string{
+		string(provider.EventError) + ":release the session: claudetui gateway: " + cutOff,
+		string(provider.EventSessionStatus) + ":error",
+		string(provider.EventSessionStatus) + ":disconnected",
+	}
+	if got := eventLines(rec.snapshot()); !slices.Equal(got, want) {
+		t.Fatalf("events = %q, want %q", got, want)
+	}
+}
+
+// A connection that has sent no request holds the stop for its grace, but
+// no request was cut off: the stop closes it without a report or an error.
+func TestAConnectionWithoutARequestClosesQuietly(t *testing.T) {
+	rec := newExitRecorder()
+	s := newTestSession(t, context.Background(), tuiExitConfig(t, readLineScript("exit 0"), t.TempDir()), rec)
+	conn, err := net.Dial("tcp", addrOf(s.gateway.baseURL()))
+	if err != nil {
+		t.Fatalf("dial the gateway: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	// The server has accepted it and waits for its headers.
+	waitParked(t, "IO wait", "net/http.(*conn).readRequest(", 1, nil)
+
+	endProcess(t, s)
+	rec.waitDisconnected(t)
+	waitDone(t, s)
+	want := []string{
+		string(provider.EventSessionStatus) + ":error",
+		string(provider.EventSessionStatus) + ":disconnected",
+	}
+	if got := eventLines(rec.snapshot()); !slices.Equal(got, want) {
+		t.Fatalf("events = %q, want %q", got, want)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close = %v, want nil", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	var timeout net.Error
+	if _, err := conn.Read(make([]byte, 1)); err == nil || errors.As(err, &timeout) && timeout.Timeout() {
+		t.Fatalf("read the connection after the stop = %v, want it closed", err)
 	}
 }
 
@@ -732,11 +868,6 @@ func TestTheContextWatcherClosesTheSession(t *testing.T) {
 	s := newTestSession(t, ctx, tuiExitConfig(t, readLineScript(""), promptDir), rec)
 	cancel()
 	rec.waitDisconnected(t)
-	select {
-	case <-s.Connection().Done():
-	case <-time.After(10 * time.Second):
-		t.Fatal("the session did not complete")
-	}
 	assertReleased(t, s, promptDir)
 	if got := statusEvents(rec.snapshot()); !slices.Equal(got, []string{"disconnected"}) {
 		t.Fatalf("statuses = %v, want [disconnected]", got)

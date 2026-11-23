@@ -39,18 +39,6 @@ func (s *Session) readLoop() {
 		// read loops cannot drift on the signal triage gates its synthesized
 		// turn-complete on. See provider.EmitTeardownStatus.
 		provider.EmitTeardownStatus(s.onEvent, s.threadID, s.proc, s.closing.Load())
-
-		// The end of the output is not the end of the process: a CLI that
-		// closes stdout early may still be starting up and read its prompt
-		// files. Done closes once the leader has exited and its group was
-		// settled, a bound the process enforces (provider.Process), and Close
-		// makes it close. Here rather than in Close, so a process that ends
-		// on its own releases them too; Close waits for readDone.
-		<-s.proc.Done()
-		RemoveSystemPromptFile(s.systemPromptPath)
-		RemoveSystemPromptFile(s.appendSystemPromptPath)
-		// The read loop is the parser's only driver.
-		s.parser.Close()
 	}()
 
 	for {

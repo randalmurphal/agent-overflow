@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -171,65 +170,14 @@ func TestNewSessionRemovesBothPromptFilesWhenTheSpawnFails(t *testing.T) {
 	}
 }
 
-// A process that ends on its own, cleanly, with an error code, or killed,
-// removes its prompt files with nobody calling Close. They are written to
-// SystemPromptDir, which the app empties at boot for a backend that died
-// before any removal, and never to the shared temp directory.
-func TestASelfExitRemovesThePromptFiles(t *testing.T) {
+// A process that dies without Close cannot remove its prompt files. They
+// must then be in SystemPromptDir, which the app empties at boot, and never
+// in the shared temp directory, where nothing would remove them.
+func TestKilledSessionLeavesItsPromptFilesOnlyInTheSystemPromptDir(t *testing.T) {
 	sharedTemp := t.TempDir()
 	t.Setenv("TMPDIR", sharedTemp)
-	for name, ending := range map[string]string{
-		"exit 0": "exit 0",
-		"exit 3": "exit 3",
-		"killed": "kill -9 $$",
-	} {
-		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
-			// The script ends once it reads a line, so the files exist
-			// until the test lets it end.
-			binary := mockexec.Write(t, t.TempDir()+"/claude", "#!/bin/sh\nread line\n"+ending+"\n")
-			s, err := NewSession(context.Background(), testThread, Config{
-				Reaper:             procutiltest.Reaper(),
-				Retention:          UserHomeRetention(0),
-				Binary:             binary,
-				SystemPrompt:       "REPLACEMENT",
-				AppendSystemPrompt: "APPENDED GUIDE",
-				SystemPromptDir:    dir,
-			}, func(provider.ProviderEvent) {})
-			if err != nil {
-				t.Fatalf("NewSession: %v", err)
-			}
-			t.Cleanup(func() { _ = s.Close() })
-			if left := promptFilesIn(t, dir); len(left) != 2 {
-				t.Fatalf("prompt files in SystemPromptDir = %v, want both", left)
-			}
-			if left := promptFilesIn(t, sharedTemp); len(left) > 0 {
-				t.Fatalf("prompt files in the shared temp directory: %v", left)
-			}
-
-			if err := s.proc.WriteLine([]byte("go")); err != nil {
-				t.Fatalf("write the line: %v", err)
-			}
-			select {
-			case <-s.readDone:
-			case <-time.After(10 * time.Second):
-				t.Fatal("read loop did not end after the process ended")
-			}
-			if left := promptFilesIn(t, dir); len(left) > 0 {
-				t.Fatalf("prompt files in SystemPromptDir after the process ended = %v, want none", left)
-			}
-		})
-	}
-}
-
-// A CLI that closes its stdout while it runs on, as one still starting up
-// might, keeps its prompt files: the session's end comes at the end of its
-// output, the files go only once the process is gone.
-func TestPromptFilesOutliveAClosedStdoutUntilTheProcessEnds(t *testing.T) {
 	dir := t.TempDir()
-	binary := mockexec.Write(t, t.TempDir()+"/claude", "#!/bin/sh\nexec >&-\nread line\nexit 0\n")
-	disconnected := make(chan struct{})
-	var once sync.Once
+	binary := writeArgvRecordingClaude(t, t.TempDir()+"/argv.txt")
 	s, err := NewSession(context.Background(), testThread, Config{
 		Reaper:             procutiltest.Reaper(),
 		Retention:          UserHomeRetention(0),
@@ -237,34 +185,30 @@ func TestPromptFilesOutliveAClosedStdoutUntilTheProcessEnds(t *testing.T) {
 		SystemPrompt:       "REPLACEMENT",
 		AppendSystemPrompt: "APPENDED GUIDE",
 		SystemPromptDir:    dir,
-	}, func(evt provider.ProviderEvent) {
-		if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
-			once.Do(func() { close(disconnected) })
-		}
-	})
+	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 
-	select {
-	case <-disconnected:
-	case <-time.After(10 * time.Second):
-		t.Fatal("no \"disconnected\" after the CLI closed its stdout")
+	proc, err := os.FindProcess(s.PID())
+	if err != nil {
+		t.Fatalf("find session process: %v", err)
 	}
-	if left := promptFilesIn(t, dir); len(left) != 2 {
-		t.Fatalf("prompt files with the process still running = %v, want both", left)
-	}
-	if err := s.proc.WriteLine([]byte("go")); err != nil {
-		t.Fatalf("write the line: %v", err)
+	if err := proc.Kill(); err != nil {
+		t.Fatalf("kill session process: %v", err)
 	}
 	select {
 	case <-s.readDone:
 	case <-time.After(10 * time.Second):
-		t.Fatal("read loop did not end after the process ended")
+		t.Fatal("read loop did not end after the process was killed")
 	}
-	if left := promptFilesIn(t, dir); len(left) > 0 {
-		t.Fatalf("prompt files after the process ended = %v, want none", left)
+
+	if left := promptFilesIn(t, sharedTemp); len(left) > 0 {
+		t.Fatalf("prompt files in the shared temp directory: %v", left)
+	}
+	if left := promptFilesIn(t, dir); len(left) != 2 {
+		t.Fatalf("prompt files in SystemPromptDir after the kill = %v, want both", left)
 	}
 }
 

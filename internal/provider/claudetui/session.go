@@ -117,7 +117,13 @@ type Session struct {
 	mu        sync.Mutex
 	sessionID string
 	pid       int
-	closing   bool
+	// closing means the host asked for the end (Close or the context
+	// watcher), so the teardown pair carries no "error".
+	closing bool
+	// awaited means a Close caller is waiting for the teardown's result. Set
+	// only by Close, before it releases. A teardown error is posted on the
+	// thread exactly when nobody awaits it once the teardown has run.
+	awaited bool
 	// launched is term.Open's success, set by NewSession before it returns
 	// or starts the context watcher. A launched PTY ends with onPTYExit,
 	// which signals completed; the exit path never reads launched, and every
@@ -297,12 +303,12 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 }
 
 // watchContext tears the session down if the spawn context is cancelled,
-// exiting cleanly once the session ends otherwise. Nobody waits on this
-// Close, so its teardown posts its error on the thread.
+// exiting cleanly once the session ends otherwise. It awaits no result, so
+// unless a Close caller does, the teardown posts its error on the thread.
 func (s *Session) watchContext(ctx context.Context) {
 	select {
 	case <-ctx.Done():
-		_ = s.closeFrom(true)
+		_ = s.closeFrom(false)
 	case <-s.completed:
 	}
 }
@@ -573,19 +579,22 @@ func (s *Session) SessionID() string {
 // failed Open starts no output goroutine, so there is no onPTYExit to wait
 // for; launched is false and the teardown's return completes the session.
 func (s *Session) Close() error {
-	return s.closeFrom(false)
+	return s.closeFrom(true)
 }
 
-// closeFrom is Close for a caller that may have nobody waiting on it: with
-// report set, the teardown posts its error on the thread.
-func (s *Session) closeFrom(report bool) error {
+// closeFrom is the host's end of the session; awaited says the caller
+// receives the teardown's result.
+func (s *Session) closeFrom(awaited bool) error {
 	s.mu.Lock()
 	first := !s.closing
 	s.closing = true
+	if awaited {
+		s.awaited = true
+	}
 	launched := s.launched
 	s.mu.Unlock()
 	if first {
-		s.release(report)
+		s.release()
 		if !launched {
 			close(s.completed)
 		}
@@ -595,13 +604,20 @@ func (s *Session) closeFrom(report bool) error {
 }
 
 // release runs teardown once; a caller that arrives while another runs it
-// waits for that run. With report set on the run that does the work, a
-// teardown error is posted on the thread before the run returns, so it
-// precedes the teardown pair. The error is read by Close after completed.
-func (s *Session) release(report bool) {
+// waits for that run. Whichever ending runs it, a teardown error that no
+// Close caller awaits by then is posted on the thread before the run
+// returns, so it precedes the teardown pair. Close reads the error after
+// completed.
+func (s *Session) release() {
 	s.teardownOnce.Do(func() {
 		s.teardownErr = s.teardown()
-		if s.teardownErr != nil && report {
+		if s.teardownErr == nil {
+			return
+		}
+		s.mu.Lock()
+		awaited := s.awaited
+		s.mu.Unlock()
+		if !awaited {
 			s.emitNonFatalError(fmt.Sprintf("release the session: %v", s.teardownErr))
 		}
 	})
@@ -704,9 +720,8 @@ func (s *Session) onPTYExit(threadID, terminalID string, status terminal.ExitSta
 	// The process is gone, so the session releases what it held for it
 	// whether or not Close asked; while another ending runs the release this
 	// waits for it. The release returns with every other source of events
-	// joined, so nothing follows "disconnected". A self-exit has no caller
-	// waiting for the release's error, so the thread gets it.
-	s.release(!closing)
+	// joined, so nothing follows "disconnected".
+	s.release()
 
 	// Same two events, same order, same reason as both stdio read loops —
 	// only the meta source differs (a PTY exit status, not a subprocess

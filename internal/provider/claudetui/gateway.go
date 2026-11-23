@@ -166,7 +166,11 @@ func (g *gateway) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, "read request body", http.StatusBadGateway)
-		g.onError(fmt.Errorf("claudetui gateway: read request: %w", err))
+		// As in stream: a canceled inbound context means the client went
+		// away or the gateway is stopping, not a gateway fault.
+		if r.Context().Err() == nil {
+			g.onError(fmt.Errorf("claudetui gateway: read request: %w", err))
+		}
 		return
 	}
 	_ = r.Body.Close()

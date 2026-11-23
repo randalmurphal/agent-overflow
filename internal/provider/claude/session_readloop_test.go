@@ -3,14 +3,11 @@ package claude
 import (
 	"context"
 	"encoding/json"
-	"sync"
 	"testing"
 	"time"
 
-	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/providertest"
-	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestReadLoopDispatchesTextDelta(t *testing.T) {
@@ -99,49 +96,6 @@ func TestReadLoopEmitsDisconnectedOnExit(t *testing.T) {
 		case <-timeout:
 			t.Fatal("timeout waiting for disconnected event")
 		}
-	}
-}
-
-// A process that ends on its own releases the parser's state with nobody
-// calling Close.
-func TestASelfExitReleasesTheParser(t *testing.T) {
-	toolUse := `{"type":"assistant","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-x","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]}}`
-	binary := mockexec.Write(t, t.TempDir()+"/claude", "#!/bin/sh\nprintf '%s\\n' '"+toolUse+"'\nread line\nexit 0\n")
-	started := make(chan struct{})
-	var once sync.Once
-	s, err := NewSession(context.Background(), testThread, Config{
-		Reaper:    procutiltest.Reaper(),
-		Retention: UserHomeRetention(0),
-		Binary:    binary,
-	}, func(evt provider.ProviderEvent) {
-		if evt.Kind == provider.EventToolStart {
-			once.Do(func() { close(started) })
-		}
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-
-	select {
-	case <-started:
-	case <-time.After(10 * time.Second):
-		t.Fatal("no tool start for the tool_use")
-	}
-	holds := func() bool { return s.parser.toolUseNames.current != nil || s.parser.toolUseNames.previous != nil }
-	if !holds() {
-		t.Fatal("parser holds no state after a tool_use")
-	}
-	if err := s.proc.WriteLine([]byte("go")); err != nil {
-		t.Fatalf("write the line: %v", err)
-	}
-	select {
-	case <-s.readDone:
-	case <-time.After(10 * time.Second):
-		t.Fatal("read loop did not end after the process ended")
-	}
-	if holds() {
-		t.Fatal("parser state was not released after the process ended")
 	}
 }
 

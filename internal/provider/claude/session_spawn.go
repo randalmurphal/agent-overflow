@@ -432,10 +432,9 @@ func withClaudeSessionEnvDefaults(env map[string]string, disableTodoReminders bo
 //     it; the file is 0600 (os.CreateTemp's mode) and readable only by the
 //     user running AO.
 //
-// The caller owns removal: the live session's end, whether Close or the
-// CLI's own exit ends it, and RemoveSystemPromptFile on every failed-spawn
-// path. Neither runs when the owning process is killed, crashes or abandons
-// a session at shutdown, so dir must not be the
+// The caller owns removal: Close for a live session, RemoveSystemPromptFile
+// on every failed-spawn path. Neither runs when the owning process is
+// killed, crashes or abandons a session at shutdown, so dir must not be the
 // shared temp directory, where such a file would stay until the machine
 // cleans it. The app passes a directory under its data root and empties it
 // at boot (internal/app/app_claude_prompt_dir.go).
