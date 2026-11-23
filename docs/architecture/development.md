@@ -52,9 +52,9 @@ with a per-thread allocator (v1.62.0 and v1.63.0 pin v1.80.1); once one
 does, measure one process of each package again, and remove the split if
 the lock is gone. A bucket's command line is the same however many run
 at once, so its cached result holds at any count. A fully cached run
-costs more split: 43.7 s against 28.6 s for one `go test` per package,
-on four cores, since each split package's test binary is still linked
-once, by the `go test -list` that reads its names.
+costs more split: 33.0 s and 32.5 s against 31.7 s and 29.9 s for one
+`go test` per package, on four cores, since each split package's test
+binary is still linked once, by the `go test -list` that reads its names.
 
 As many buckets run at once as the
 [harness memory governor](../../internal/harness/governor/AGENTS.md)
