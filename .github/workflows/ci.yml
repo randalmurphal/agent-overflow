@@ -32,8 +32,15 @@ concurrency:
 # namespace and the dummy link module reach the host kernel. Every container
 # runs with an init process so orphaned children are reaped; the runner's
 # own PID 1 in a container never reaps, which leaves zombies the process
-# group sweeps would otherwise wait on. The CI result job is the one check
-# branch protection requires.
+# group sweeps would otherwise wait on.
+#
+# The toolchain job publishes the run's plan (scripts/ci-suites.mjs): every
+# other job, each true or false. Each job's `if` reads its own key, and the
+# CI result job fails unless every job the plan selected succeeded and
+# every one it excluded was skipped (scripts/ci-suites.test.mjs holds this
+# file to that shape). A job that saves caches needs actions: write, which
+# its save's retire uses on a push (scripts/ci-cache.mjs); a permission
+# cannot depend on the event, and no step uses it on a pull request.
 jobs:
   toolchain:
     name: Toolchain image and suites
@@ -44,12 +51,7 @@ jobs:
       packages: write
     outputs:
       image: ${{ steps.image.outputs.image }}
-      go-checks: ${{ steps.suites.outputs.go-checks }}
-      go-lint: ${{ steps.suites.outputs.go-lint }}
-      frontend: ${{ steps.suites.outputs.frontend }}
-      vitest: ${{ steps.suites.outputs.vitest }}
-      e2e: ${{ steps.suites.outputs.e2e }}
-      upgrade-lineage: ${{ steps.suites.outputs.upgrade-lineage }}
+      plan: ${{ steps.plan.outputs.plan }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/toolchain-image
@@ -59,31 +61,36 @@ jobs:
           # the jobs on the newest main image.
           push: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
           token: ${{ github.token }}
-      # A pull request runs the suites its changed paths can reach; a push
-      # or a manual run runs every one.
-      - name: Choose the suites
-        id: suites
+      # A pull request runs the jobs its changed paths can reach; a push
+      # or a manual run runs every suite (scripts/ci-suites.mjs names the
+      # jobs each event leaves out).
+      - name: Plan the run
+        id: plan
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
             scripts/ci-change.sh "$RUNNER_TEMP/change"
-            node scripts/ci-suites.mjs "$RUNNER_TEMP/change/paths" > "$RUNNER_TEMP/suites"
+            node scripts/ci-suites.mjs plan "$GITHUB_EVENT_NAME" "$RUNNER_TEMP/change/paths" > "$RUNNER_TEMP/plan"
           else
-            node scripts/ci-suites.mjs --all > "$RUNNER_TEMP/suites"
+            node scripts/ci-suites.mjs plan "$GITHUB_EVENT_NAME" > "$RUNNER_TEMP/plan"
           fi
-          cat "$RUNNER_TEMP/suites" >> "$GITHUB_OUTPUT"
-          { echo '```'; cat "$RUNNER_TEMP/suites"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/plan" >> "$GITHUB_OUTPUT"
+          { echo '```'; cat "$RUNNER_TEMP/plan"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
   # The Linux Go checks share one job: each needs the same toolchain and
   # frontend bundle, which cost more than the checks themselves.
   go-checks:
     name: gofmt, go mod tidy, go vet, go build and bindings
     needs: toolchain
-    if: needs.toolchain.outputs.go-checks == 'true'
+    if: fromJSON(needs.toolchain.outputs.plan || '{}')['go-checks']
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      actions: write
     container:
       image: ${{ needs.toolchain.outputs.image }}
       credentials:
@@ -113,9 +120,13 @@ jobs:
   build-macos:
     name: Go build (macOS)
     needs: toolchain
-    if: needs.toolchain.outputs.go-lint == 'true'
+    if: fromJSON(needs.toolchain.outputs.plan || '{}')['build-macos']
     runs-on: macos-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -141,9 +152,13 @@ jobs:
   go-lint:
     name: golangci-lint (new issues) and govulncheck
     needs: toolchain
-    if: needs.toolchain.outputs.go-lint == 'true'
+    if: fromJSON(needs.toolchain.outputs.plan || '{}')['go-lint']
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      actions: write
     container:
       image: ${{ needs.toolchain.outputs.image }}
       credentials:
@@ -187,7 +202,7 @@ jobs:
   frontend:
     name: svelte-check, build and oxlint
     needs: toolchain
-    if: needs.toolchain.outputs.frontend == 'true'
+    if: fromJSON(needs.toolchain.outputs.plan || '{}')['frontend']
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
@@ -225,8 +240,11 @@ jobs:
 
   # Four shards: internal/store is the longest package by far, app and
   # triage are the next two, and the rest fits beside them. The noremote
-  # shard runs the packages whose own code the noremote tag changes
-  # (make go-test-noremote). Every shard runs on every change: the Go test
+  # shard runs, compiled with -tags noremote, every package whose test
+  # binary the tag changes (make go-test-noremote: 79 of 263 packages,
+  # store and app among them). Only the shards whose packages link the root
+  # package, which embeds frontend/dist, or compile it (the triage
+  # tripwire's go list -export) set up the bundle. Every shard runs on every change: the Go test
   # cache, restored from main, reports a package whose code, dependencies
   # and the files its tests read are unchanged as (cached). Those files'
   # times are set from their content first (scripts/ci-stable-mtimes.mjs),
@@ -234,8 +252,13 @@ jobs:
   go-test:
     name: Go tests (${{ matrix.shard }})
     needs: toolchain
+    if: fromJSON(needs.toolchain.outputs.plan || '{}')['go-test']
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: read
+      actions: write
     container:
       image: ${{ needs.toolchain.outputs.image }}
       credentials:
@@ -249,15 +272,19 @@ jobs:
           - shard: store
             packages: ./internal/store/...
             exclude: ""
+            bundle: "false"
           - shard: app-triage
             packages: . ./internal/app/... ./internal/triage/...
             exclude: ""
+            bundle: "true"
           - shard: rest
             packages: . ./cmd/... ./internal/...
             exclude: ^agent-overflow(/internal/(store|app|triage)(/.*)?)?$
+            bundle: "false"
           - shard: noremote
             packages: ""
             exclude: ""
+            bundle: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -265,12 +292,12 @@ jobs:
           go: "true"
           gtk: "true"
           node: "true"
-          frontend-dist: "true"
+          frontend-dist: ${{ matrix.bundle }}
           netns: "true"
           cache-name: test-${{ matrix.shard }}
       - run: make netns-tool
       - name: Give the checkout content-derived times
-        run: node scripts/ci-stable-mtimes.mjs
+        run: node scripts/ci-stable-mtimes.mjs stamp "$RUNNER_TEMP/stamped.json"
       - name: Go tests
         if: matrix.shard != 'noremote'
         run: make go-test GO_TEST_PKGS="${{ matrix.packages }}" GO_TEST_EXCLUDE="${{ matrix.exclude }}"
@@ -282,15 +309,19 @@ jobs:
         run: make script-tests
       - name: Name what the tests wrote inside the checkout
         if: always()
-        run: node scripts/ci-stable-mtimes.mjs --moved
+        run: node scripts/ci-stable-mtimes.mjs moved "$RUNNER_TEMP/stamped.json"
       - uses: ./.github/actions/cache-save
 
   vitest:
     name: Vitest (${{ matrix.project }})
     needs: toolchain
-    if: needs.toolchain.outputs.vitest == 'true'
+    if: fromJSON(needs.toolchain.outputs.plan || '{}')['vitest']
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      actions: write
     container:
       image: ${{ needs.toolchain.outputs.image }}
       credentials:
@@ -318,15 +349,23 @@ jobs:
       - run: make vitest-${{ matrix.project }}
       - uses: ./.github/actions/cache-save
 
-  # One build of everything the Playwright suite and the upgrade lineage
-  # check run, which the shards download: a shard compiles no Go and runs
-  # no vite. tar keeps the executable bits an artifact would drop.
+  # One build of everything a Playwright run reads besides the browsers
+  # (cmd/ao-harness-e2e/run-inputs.mk): the binaries, the frontend/dist
+  # they embed, and the suite's typecheck record, which the shards and the
+  # upgrade lineage check download. A shard compiles no Go, runs no vite and
+  # no tsc. tar keeps the executable bits an artifact would drop. The
+  # artifact lives 7 days: re-running failed jobs reuses it and does not
+  # rerun this job, so a re-run after that must re-run all jobs.
   harness-build:
     name: Harness build
     needs: toolchain
-    if: needs.toolchain.outputs.e2e == 'true' || (needs.toolchain.outputs.upgrade-lineage == 'true' && github.event_name != 'push')
+    if: fromJSON(needs.toolchain.outputs.plan || '{}')['harness-build']
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      actions: write
     container:
       image: ${{ needs.toolchain.outputs.image }}
       credentials:
@@ -341,26 +380,30 @@ jobs:
           gtk: "true"
           node: "true"
           frontend-deps: "true"
+          e2e-deps: "true"
           cache-name: harness
       - run: make harness-build
-      - name: Pack the harness binaries
-        run: tar --zstd -cf "$RUNNER_TEMP/harness-bin.tar.zst" bin
+      - name: Typecheck the Playwright suite once for every shard
+        run: bin/ao-harness-e2e --typecheck
+      - name: Pack what a Playwright run reads
+        run: tar --zstd -cf "$RUNNER_TEMP/harness-bin.tar.zst" bin frontend/dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: harness-bin
           path: ${{ runner.temp }}/harness-bin.tar.zst
           if-no-files-found: error
           compression-level: 0
-          retention-days: 1
+          retention-days: 7
       - uses: ./.github/actions/cache-save
 
-  # A shard runs bin/ao-harness-e2e from the harness build: the suite's
-  # typecheck and Playwright from e2e/node_modules, and the browsers the
-  # image carries, inside the isolated network namespace.
+  # A shard runs bin/ao-harness-e2e from the harness build, Playwright from
+  # e2e/node_modules, and the browsers run-inputs.mk declares: the image
+  # carries all but the regular Chromium build, which make e2e-browsers
+  # installs. The launcher's preflight names any input that is missing.
   e2e:
     name: Playwright harness suite (shard ${{ matrix.shard }} of 8)
     needs: [toolchain, harness-build]
-    if: needs.toolchain.outputs.e2e == 'true'
+    if: fromJSON(needs.toolchain.outputs.plan || '{}')['e2e']
     runs-on: ubuntu-latest
     timeout-minutes: 45
     container:
@@ -374,18 +417,26 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
+      # First, so a re-run whose artifact has expired fails in seconds.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: harness
+        continue-on-error: true
+        with:
+          name: harness-bin
+          path: ${{ runner.temp }}
+      - name: Require the harness build
+        if: steps.harness.outcome != 'success'
+        run: |
+          echo "::error title=Harness build missing::This run's harness-bin artifact is gone (it lives 7 days) or was never uploaded. Re-running failed jobs does not rebuild it: re-run all jobs."
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
           node: "true"
           e2e-deps: "true"
-          browsers: chromium webkit
           netns: "true"
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: harness-bin
-          path: ${{ runner.temp }}
-      - name: Unpack the harness binaries
+      - run: make e2e-browsers
+      - name: Unpack the harness build
         run: tar --zstd -xf "$RUNNER_TEMP/harness-bin.tar.zst"
       - run: bin/ao-harness-e2e --shard=${{ matrix.shard }}/8
         env:
@@ -402,15 +453,16 @@ jobs:
           retention-days: 7
 
   # The release upgrade check against the newest release's published corpus,
-  # for the changes that can break a migration or the check itself
-  # (scripts/ci-suites.mjs). The per-PR schema coverage gate is a spec in
+  # on a pull request whose changes can break a migration or the check
+  # itself and on a manual run, never on a push to main, which repeats its
+  # pull request (scripts/ci-suites.mjs). The per-PR schema coverage gate is a spec in
   # the Playwright suite; this job is the lineage leg
   # (docs/architecture/release-upgrade-check.md). It runs the script `make
   # release-upgrade-check` runs, on the harness build's binaries.
   upgrade-lineage:
     name: Upgrade lineage check
     needs: [toolchain, harness-build]
-    if: github.event_name != 'push' && needs.toolchain.outputs.upgrade-lineage == 'true'
+    if: fromJSON(needs.toolchain.outputs.plan || '{}')['upgrade-lineage']
     runs-on: ubuntu-latest
     timeout-minutes: 40
     container:
@@ -420,18 +472,25 @@ jobs:
         password: ${{ github.token }}
       options: --init --privileged -v /lib/modules:/lib/modules:ro
     steps:
+      # First, so a re-run whose artifact has expired fails in seconds.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: harness
+        continue-on-error: true
+        with:
+          name: harness-bin
+          path: ${{ runner.temp }}
+      - name: Require the harness build
+        if: steps.harness.outcome != 'success'
+        run: |
+          echo "::error title=Harness build missing::This run's harness-bin artifact is gone (it lives 7 days) or was never uploaded. Re-running failed jobs does not rebuild it: re-run all jobs."
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
           node: "true"
           e2e-deps: "true"
-          browsers: chromium
           netns: "true"
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: harness-bin
-          path: ${{ runner.temp }}
-      - name: Unpack the harness binaries
+      - name: Unpack the harness build
         run: tar --zstd -xf "$RUNNER_TEMP/harness-bin.tar.zst"
       - name: Migrate the newest release's corpus with this build
         env:
@@ -456,20 +515,22 @@ jobs:
 
   dependency-review:
     name: Dependency review
-    if: github.event_name == 'pull_request'
+    needs: toolchain
+    if: fromJSON(needs.toolchain.outputs.plan || '{}')['dependency-review']
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
 
-  # After a push's jobs have saved their caches: one entry per cache name,
-  # and a failure once they pass the budget under GitHub's 10 GB cap
+  # After a push's jobs saved their caches, each retiring its own slot's
+  # previous entry: retires what those could not and the legacy key shapes,
+  # and fails once the caches pass the budget under GitHub's 10 GB cap
   # (scripts/ci-cache-cleanup.mjs).
   cache-cleanup:
     name: Actions cache cleanup
-    needs: [go-checks, build-macos, go-lint, go-test, vitest, harness-build]
-    if: always() && github.event_name == 'push'
+    needs: [toolchain, go-checks, build-macos, go-lint, go-test, vitest, harness-build]
+    if: always() && fromJSON(needs.toolchain.outputs.plan || '{}')['cache-cleanup']
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -481,9 +542,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/ci-cache-cleanup.mjs
 
-  # The one check branch protection requires. A job the toolchain job's
-  # suite choice skipped counts as passed; one that failed or was cancelled
-  # fails this check.
+  # The check the branch ruleset is to require (docs/architecture/
+  # development.md names the change): it passes only when every job ran as
+  # the plan says (scripts/ci-suites.mjs verdict).
   ci-result:
     name: CI result
     needs: [toolchain, go-checks, build-macos, go-lint, frontend, go-test, vitest, harness-build, e2e, upgrade-lineage, dependency-review, cache-cleanup]
@@ -491,13 +552,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - env:
+          PLAN: ${{ needs.toolchain.outputs.plan }}
           NEEDS: ${{ toJSON(needs) }}
-        run: |
-          set -euo pipefail
-          failed=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "\(.key): \(.value.result)"' <<< "$NEEDS")
-          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
-          if [[ -n "$failed" ]]; then
-            echo "::error title=CI result::$(tr '\n' ' ' <<< "$failed")"
-            exit 1
-          fi
+        run: node scripts/ci-suites.mjs verdict

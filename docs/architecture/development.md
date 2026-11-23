@@ -112,26 +112,49 @@ of the real-provider smoke tests.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every pull request and push to `main`.
-Every step calls a Make target, or a binary `make harness-build` built, so
-the local command is the same check. The `toolchain` job also decides which
-suites a pull request runs from the paths it changes
-(`scripts/ci-suites.mjs`, which holds the rules); a push or a manual run
-runs every suite. The jobs are one Linux job for `fmt-check`, `tidy-check`,
-`go-vet`, `go-build`, `provider-smoke-compile` and `bindings-check`, a
-macOS `go-build` and `exhaustive` pass, one job for `go-lint`,
-`go-lint-exhaustive` and `go-vuln`, the frontend job (`check`, `build`,
-`frontend-lint`), `go-test` in three shards by package weight
+`.github/workflows/ci.yml` runs on every pull request, push to `main` and
+manual run. Every step calls a Make target, or a binary `make
+harness-build` built, so the local command is the same check. The
+`toolchain` job publishes the run's plan (`scripts/ci-suites.mjs`, which
+holds the rules): every other job, true or false. A pull request runs the
+jobs its changed paths can reach, plus dependency review. A push to `main`
+runs every job but the upgrade lineage check, which its pull request ran,
+and then `cache-cleanup`. A manual run runs every job but dependency review
+and `cache-cleanup`. The jobs are one Linux job for `fmt-check`,
+`tidy-check`, `go-vet`, `go-build`, `provider-smoke-compile` and
+`bindings-check`, a macOS `go-build` and `exhaustive` pass, one job for
+`go-lint`, `go-lint-exhaustive` and `go-vuln`, the frontend job (`check`,
+`build`, `frontend-lint`), `go-test` in three shards by package weight
 (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`) plus `make go-test-noremote`, the
 Vitest projects as `make vitest-unit` and `make vitest-browser`, and one
-`make harness-build` whose binaries eight Playwright shards run with
+`make harness-build` whose output eight Playwright shards run with
 `bin/ao-harness-e2e --shard=N/8` and three workers each
 (`AO_E2E_WORKERS`). `upgrade-lineage` runs `scripts/release-upgrade-check.sh`
 on the same binaries when the change reaches the store, the check or the
 version ([release upgrade check](release-upgrade-check.md)). The `rest`
-shard also runs `make script-tests`. `CI result` passes when no job failed
-or was cancelled; it is the check branch protection requires, so a skipped
-suite or a renamed job needs no change to that repository setting.
+shard also runs `make script-tests`. `CI result` passes only when every
+job the plan selected succeeded and every job it excluded was skipped, so
+a selected job that was skipped fails the run.
+
+`cmd/ao-harness-e2e/run-inputs.mk` declares what a Playwright run needs:
+the binaries, the test binaries of the packages the suite runs, and the
+browsers of each kind of run. The Makefile, the toolchain image and the
+plan read it, and `bin/ao-harness-e2e` checks it before a run: a missing
+binary, a `frontend/dist` other than the one the binaries embed, or a
+missing browser fails in seconds and is named. The launcher typechecks the
+suite and records the pass in `bin/`; a run whose suite and the files tsc
+read are unchanged skips the check. The harness build typechecks once and
+uploads `bin/` and `frontend/dist`, kept 7 days, so no shard compiles,
+bundles or typechecks. Re-running failed jobs reuses the run's artifact,
+so after 7 days a shard fails at its first step and says to re-run all
+jobs. The image carries the headless shell and WebKit; each Playwright
+shard installs the regular Chromium build with `make e2e-browsers`, which
+saves every other Linux job pulling it in the image.
+
+The branch ruleset requires `CI result` alone. Moving a repository from
+per-job required checks to it is a step of this migration in the
+repository's settings: remove the old required checks and add `CI result`.
+
 The Linux jobs run in the toolchain image, `ghcr.io/<repo>/ci-toolchain`,
 built from `ci/Dockerfile`: Go, Node, pnpm, the GTK headers, the Playwright
 browsers with their OS libraries (Chromium as the headless shell the
@@ -153,13 +176,22 @@ that fallback until it merges. `toolchain-image.yml` publishes on pushes to
 image, module cache and package store. The macOS job runs on the bare
 runner; the setup action installs its toolchains from the same pins.
 
-Every job restores its caches and only a push to `main` saves them, through
-`.github/actions/cache-save` as the job's last step: the Go build cache of
-its slot, cut to the entries that job used (`scripts/ci-go-cache.mjs`), and
-off the image the Go module cache and the pnpm store. A pull request
-restores the newest `main` entry of each slot. A job whose Go build embeds
-the frontend bundle restores `frontend/dist` by the hash of `frontend/`,
-and installs and builds it only when no `main` run built that tree. The Go test cache then
+Every job restores its caches and only a push to `main` saves them,
+through `.github/actions/cache-save` as the job's last step.
+`scripts/ci-cache.mjs` owns the cache list: every key starts with
+`ao-ci-`, and the script resolves each key and path once for both the
+restore and the save. The Go build cache has one slot per job; a pull
+request restores the newest `main` entry of its slot, and a push saves the
+entries that job used (`scripts/ci-go-cache.mjs`). Off the image a job
+also caches the Go module cache and the pnpm store. Each save then retires
+its slot's entries from before the run, so the jobs that save need
+`actions: write`; GitHub grants a job's permissions for every event, and
+only a push uses this one. The jobs that compile the root package, which
+embeds `frontend/dist`, restore the bundle keyed by the git tree of
+`frontend/`. When `frontend/` matches a tree `main` has built, the job
+skips the install and the build; otherwise it builds as before. The `store`
+and `rest` Go test shards neither compile nor link the root package, so
+they set up no bundle. The Go test cache then
 reports a package as `(cached)` when its code, its dependencies and the
 files its tests read are unchanged; `scripts/ci-stable-mtimes.mjs` sets the
 checkout's file times from content first, since Go compares a read file by
@@ -167,13 +199,17 @@ size and time. A test that lists a directory also depends on its entries'
 times, so `make go-test` neither rewrites an unchanged tool in `bin/` nor
 lets a Go command run `git status`, which touches `.git`; a test walks the
 tree with `reporoot.Walk`, which leaves out build output, and writes nowhere
-inside the checkout; each Go test shard ends by naming any stamped path that
-changed (`ci-stable-mtimes.mjs --moved`). The root package, `cmd/ao-netns` and
-`internal/netisolate` rerun on every run: their tests read
+inside the checkout (`netisolate.DiskDir` is the run's scratch directory on
+disk); each Go test shard ends by naming any stamped path that changed or
+was removed (`ci-stable-mtimes.mjs moved`). The root package, `cmd/ao-netns`
+and `internal/netisolate` rerun on every run: their tests read
 `AO_NETISOLATE_NS`, which names the run's own network namespace.
-`cache-cleanup` keeps one entry per cache name after a push
-and fails when they pass 8 GB of GitHub's 10 GB
-(`scripts/ci-cache-cleanup.mjs`). `codeql.yml` scans Go and
+`make go-test-noremote` runs, with `-tags noremote`, every package whose
+test binary the tag changes ([noremote build](noremote-build.md#testing)).
+`cache-cleanup` retires what a save's retire could not and the key shapes
+this pipeline used before `ao-ci-`, never another key, and fails when the
+caches, this pipeline's and others' counted apart, pass 8 GB of GitHub's
+10 GB (`scripts/ci-cache-cleanup.mjs`). `codeql.yml` scans Go and
 TypeScript; `dependabot.yml` opens only security updates for Go, npm,
 Gradle and actions; `dependency-review-action` checks pull request
 dependency changes.
