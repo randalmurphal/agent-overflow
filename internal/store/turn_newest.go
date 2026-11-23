@@ -11,11 +11,12 @@ import "strconv"
 // interruption is what that write recorded (stop_reason 'interrupted'),
 // never inferred from a live provider round having ended.
 //
-// The row stays open when nothing will settle it at runtime: its settle
-// write failed, the boot sweep failed, or a start was refused after it
-// wrote the row. It reads as running until the next boot's sweep records it
-// as interrupted, as GetActiveTurn reads it for send placement and revert,
-// so a wait on that thread runs to its timeout.
+// The row stays open when its settle write failed, the boot sweep failed,
+// or a start was refused after it wrote the row. It reads as running until
+// a later end of the turn saves or the next boot's sweep records it as
+// interrupted, as GetActiveTurn reads it for send placement and revert, so
+// a wait on that thread runs to its timeout. Triage tells the user of a
+// failed settle write (triage/unsaved_rows.go).
 
 // newestTurnSQL selects expr from thread's newest turn row, one probe of
 // turns_thread_index; NULL when the thread has no turn. expr reads the row
