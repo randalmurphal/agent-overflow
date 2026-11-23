@@ -7,7 +7,8 @@
 //
 // Module-level state between tests is reset by the registry, as in the
 // happy-dom projects (config/testResets.ts). What stays here is the
-// browser's own posture: real storage and fonts outlive a test.
+// browser's own posture: real storage, fonts and the page focus outlive a
+// test.
 import { resetRegistry } from './resetRegistry';
 import { beforeAll, beforeEach } from 'vitest';
 import { cleanup } from '@testing-library/svelte';
@@ -34,6 +35,12 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  // The page focus outlives a test and its file's frame. The app reads it
+  // (document.hasFocus() in VirtualList's focus keeping, the clipboard and
+  // screen presence), so each test starts with its frame focused, whatever
+  // a prior test or file left focused.
+  window.focus();
+  if (!document.hasFocus()) throw new Error('setup.browser.ts: window.focus() did not give the test frame the page focus');
   // Real browser storage survives between files; backend settings only seed
   // missing preferences and cannot undo a prior fixture's local UI choices.
   writeFrontendValue('preferences', {});

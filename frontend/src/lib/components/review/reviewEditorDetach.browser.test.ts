@@ -269,7 +269,6 @@ function pagePoint(element: Element): { x: number; y: number } {
 // A real press on `from` released on `to`: a mouse down, a move and a
 // release, which makes no click on `from`.
 async function pressAndRelease(from: Element, to: Element): Promise<void> {
-  window.focus();
   // Clear of the sticky file bar.
   from.scrollIntoView({ block: 'center' });
   await frames(1);
@@ -285,7 +284,6 @@ async function pressAndRelease(from: Element, to: Element): Promise<void> {
 
 // A real touch on `element` that the browser cancels (pointercancel).
 async function touchCancelled(element: Element): Promise<void> {
-  window.focus();
   const session = cdp();
   const { x, y } = pagePoint(element);
   await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
