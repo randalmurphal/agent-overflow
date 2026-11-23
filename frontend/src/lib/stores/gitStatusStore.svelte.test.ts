@@ -591,6 +591,14 @@ describe('gitStatusStore — observed branch reconciliation', () => {
     a.release();
   });
 
+  it('persists nothing for a status a test seeds, which no backend observed', async () => {
+    buildPane(makeThread({ branch: 'main' }));
+    const updateBranch = setBindingMock('UpdateThreadBranch', async () => []);
+    __seedGitStatusForTest(WORKSPACE, status({ branch: 'feature/seeded' }));
+    await flush();
+    expect(updateBranch).not.toHaveBeenCalled();
+  });
+
   it('does not re-persist when a push carries the same branch, and never for a non-repo', async () => {
     buildPane(makeThread({ branch: 'main' }));
     installSubscribeMock(status({ branch: 'main' }));

@@ -222,7 +222,7 @@ const store = createEntityStore<GitStatus, GitStatusCtx>({
   },
   onApply: (key, value, prev) => {
     lastApplyByKey.set(key, ++applySequence);
-    if (!value.isRepo) return;
+    if (!value.isRepo || applyingSeed) return;
     const branch = value.branch ?? '';
     // First observation for a key always writes: the thread rows' cached
     // branch may predate anything this session saw. That costs one UPDATE
@@ -518,6 +518,9 @@ export function resyncGitStatusAfterGap(backend: BackendKey = HOME_BACKEND): voi
 // all; __resetGitStatusStoreForTest releases it and lifts the suspension.
 const testHolds = new Map<string, EntityAttachment<GitStatus>>();
 let seedingForTest = false;
+// Set while a test seeds a status: a seed is not a backend observation, so
+// it starts no branch write.
+let applyingSeed = false;
 
 /**
  * A seed may be written with a bare PATH, which reads as "the workspace at
@@ -561,7 +564,12 @@ function assertAttachableWhileSeeding(key: string): void {
 export function __seedGitStatusForTest(key: string, status: GitStatus): void {
   const held = seedKey(key);
   ensureTestHold(held);
-  applyStatus(held, { ...status });
+  applyingSeed = true;
+  try {
+    applyStatus(held, { ...status });
+  } finally {
+    applyingSeed = false;
+  }
 }
 
 export function __seedGitStatusErrorForTest(key: string, message: string): void {
