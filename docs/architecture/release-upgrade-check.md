@@ -75,6 +75,9 @@ needs: rows of every feature that existed when they were written. Because
 they are written after the candidate's migrations ran, a top-up step proves
 the next release's migrations of its tables, not the candidate's; a table
 the previous corpus left empty is proved for this release only by a clone.
+Every step returns with the turns it started at rest, which `topUp` checks
+after each step (`assertAtRest`), so no mid-turn row reaches the gate or the
+archive; the loops, watches and runs it leaves armed or open are not turns.
 
 The coverage gate, `e2e/tests/upgrade-corpus-coverage.spec.ts` in `make e2e`,
 holds the seed and the top-up to the schema on every pull request: it
@@ -85,7 +88,7 @@ carries, unless `coverageAllowlist` in `upgrade-corpus-config.ts` declares
 it with the reason it cannot be reached (a paired device, a second backend,
 a provider home to import, a scenario the library lacks). An entry that has
 become covered, or that names something the schema no longer has, fails the
-gate as stale, so the list cannot rot. The gate also fails on a mock
+gate as stale, naming the first rows that carry it, so the list cannot rot. The gate also fails on a mock
 scenario that is neither a top-up turn nor excluded with a reason. A
 schema or scenario change therefore lands with the top-up step or the
 config entry that keeps the corpus representative; the failure names which.

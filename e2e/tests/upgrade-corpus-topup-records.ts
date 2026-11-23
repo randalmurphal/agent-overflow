@@ -12,7 +12,7 @@ import type { SeedResult } from './fixtures.js';
 import { publishBranch, type ForgeRepo } from './forge-helpers.js';
 import { pairOwnDevice } from './headless-pairing-helpers.js';
 import { trackedRow } from './merge-cleanup-helpers.js';
-import { FOOTER_TOKEN_PATTERN, THREAD_TOOLS_SERVER, awaitToolAnswer, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
+import { FOOTER_TOKEN_PATTERN, THREAD_TOOLS_SERVER, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 
 const TURN_TIMEOUT_MS = 120_000;
 
@@ -275,6 +275,11 @@ export async function writePeerSpawns(harness: HarnessApp, version: string, nonc
       if (answer.isError || !answer.value) throw new Error(`top-up: the paired spawn whose run ${run} was refused: ${answer.text}`);
       workers.push(answer.value.thread_id);
     }
+    // The open run is recorded at the spawn, so the receipts alone do not
+    // say the Codex worker's turn has ended. The harness log keeps a turn
+    // that ended before its spawn answered; taking each here also keeps the
+    // nudges' wait below from matching a spawn's turn.
+    for (const worker of workers) await awaitTurnCompleted(harness, worker, TURN_TIMEOUT_MS);
     await expect.poll(() => receiptRuns(harness, workers), {
       message: "top-up: the paired spawns' receipts never recorded two ended runs and one open run",
       timeout: TURN_TIMEOUT_MS,
@@ -295,8 +300,12 @@ export async function writePeerSpawns(harness: HarnessApp, version: string, nonc
   const [ended, , nudged] = workers;
   await harness.rpc('StopSession', ended);
   await harness.rpc('StartSession', ended);
+  // The open nudge run is recorded when the message is taken, so the
+  // receipts alone do not say the second worker's turn has ended.
+  const nudgesAnswered = Promise.all([ended, nudged].map((worker) => awaitTurnCompleted(harness, worker, TURN_TIMEOUT_MS)));
   await harness.rpc('SendMessage', ended, 'Check the notes once more.', null);
   await harness.rpc('SendMessage', nudged, 'Keep an eye on the notes.', null);
+  await nudgesAnswered;
   await expect.poll(() => receiptNudges(harness, [ended, nudged]), {
     message: "top-up: the paired spawns' links never kept one ended and one open nudge run",
     timeout: TURN_TIMEOUT_MS,

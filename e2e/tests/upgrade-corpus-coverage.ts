@@ -14,6 +14,8 @@ export interface SchemaColumn {
   name: string;
   /** The default as SQL text (pragma_table_info.dflt_value), null when the column has none. */
   dflt: string | null;
+  /** The column's position in the primary key, from 1; 0 when it is not in it. */
+  pk: number;
 }
 
 export interface SchemaTable {
@@ -30,15 +32,15 @@ export async function readSchema(dbPath: string): Promise<SchemaTable[]> {
   const tables = await dbQuery<{ name: string; sql: string }>(dbPath,
     `SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`);
   const virtual = tables.filter((row) => /^CREATE VIRTUAL TABLE/i.test(row.sql)).map((row) => row.name);
-  const columns = await dbQuery<{ table: string; column: string; dflt: string | null }>(dbPath, `
-    SELECT m.name AS "table", p.name AS "column", p.dflt_value AS dflt
+  const columns = await dbQuery<{ table: string; column: string; dflt: string | null; pk: number }>(dbPath, `
+    SELECT m.name AS "table", p.name AS "column", p.dflt_value AS dflt, p.pk AS pk
       FROM sqlite_master m JOIN pragma_table_info(m.name) p
      WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'
      ORDER BY m.name, p.cid`);
   return tables
     .filter((row) => !virtual.some((v) => row.name.startsWith(`${v}_`)))
     .map((row) => {
-      const own = columns.filter((c) => c.table === row.name).map((c) => ({ name: c.column, dflt: c.dflt }));
+      const own = columns.filter((c) => c.table === row.name).map((c) => ({ name: c.column, dflt: c.dflt, pk: c.pk }));
       const isVirtual = virtual.includes(row.name);
       return { name: row.name, virtual: isVirtual, columns: isVirtual ? [] : own, checks: enumeratedChecks(row.sql, own.map((c) => c.name)) };
     });
@@ -64,18 +66,24 @@ export interface Coverage {
   columns: Record<string, number>;
   /** `table.column=value` to the rows carrying that CHECK value. */
   values: Record<string, number>;
+  /**
+   * An allowlisted `table.column` or `table.column=value` the store writes
+   * after all, to the first rows that carry it, so the failure names them.
+   */
+  carriers: Record<string, string[]>;
 }
 
-export async function measureCoverage(dbPath: string, schema: SchemaTable[]): Promise<Coverage> {
-  const coverage: Coverage = { rows: {}, columns: {}, values: {} };
+/**
+ * measureCoverage counts what `dbPath` holds of `schema`, and reads the
+ * rows that carry each column or value of `allowlist` the store writes.
+ */
+export async function measureCoverage(dbPath: string, schema: SchemaTable[], allowlist: CoverageAllowance[]): Promise<Coverage> {
+  const coverage: Coverage = { rows: {}, columns: {}, values: {}, carriers: {} };
   for (const table of schema) {
     const terms = [`COUNT(*) AS "rows"`];
     for (const column of table.columns) {
       const q = `"${column.name}"`;
-      const nonDefault = column.dflt === null
-        ? `${q} IS NOT NULL AND ${q} != ''`
-        : `${q} IS NOT NULL AND ${q} IS NOT (${column.dflt}) AND ${q} != ''`;
-      terms.push(`COALESCE(SUM(${nonDefault}), 0) AS "c:${column.name}"`);
+      terms.push(`COALESCE(SUM(${nonDefaultSQL(column)}), 0) AS "c:${column.name}"`);
       for (const value of table.checks[column.name] ?? []) {
         terms.push(`COALESCE(SUM(${q} = ${sqlLiteral(value)}), 0) AS "v:${column.name}=${value}"`);
       }
@@ -87,7 +95,41 @@ export async function measureCoverage(dbPath: string, schema: SchemaTable[]): Pr
       else if (key.startsWith('v:')) coverage.values[`${table.name}.${key.slice(2)}`] = n;
     }
   }
+  for (const entry of allowlist) {
+    const table = schema.find((t) => t.name === entry.table);
+    if (!table) continue;
+    for (const name of entry.columns ?? []) {
+      const column = table.columns.find((c) => c.name === name);
+      const key = `${table.name}.${name}`;
+      if (column && coverage.columns[key] > 0) coverage.carriers[key] = await carriers(dbPath, table, nonDefaultSQL(column));
+    }
+    for (const [name, list] of Object.entries(entry.values ?? {})) {
+      for (const value of list) {
+        const key = `${table.name}.${name}=${value}`;
+        if (coverage.values[key] > 0) coverage.carriers[key] = await carriers(dbPath, table, `"${name}" = ${sqlLiteral(value)}`);
+      }
+    }
+  }
   return coverage;
+}
+
+/** The SQL that holds where `column` is set to a non-default, non-empty value. */
+function nonDefaultSQL(column: SchemaColumn): string {
+  const q = `"${column.name}"`;
+  return column.dflt === null
+    ? `${q} IS NOT NULL AND ${q} != ''`
+    : `${q} IS NOT NULL AND ${q} IS NOT (${column.dflt}) AND ${q} != ''`;
+}
+
+/** The first rows of `table` where `where` holds, each by its primary key and, when it has one, its thread's title. */
+async function carriers(dbPath: string, table: SchemaTable, where: string): Promise<string[]> {
+  const key = table.columns.filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name);
+  const named = key.length > 0 ? key : ['rowid'];
+  const thread = table.columns.some((c) => c.name === 'thread_id') && table.name !== 'threads'
+    ? `, (SELECT title FROM threads WHERE id = t.thread_id) AS "thread title"` : '';
+  const rows = await dbQuery<Record<string, unknown>>(dbPath,
+    `SELECT ${named.map((c) => `t."${c}"`).join(', ')}${thread} FROM "${table.name}" AS t WHERE ${where} LIMIT 3`);
+  return rows.map((row) => Object.entries(row).map(([column, value]) => `${column} ${JSON.stringify(value)}`).join(', '));
 }
 
 function sqlLiteral(value: string | number): string {
@@ -126,14 +168,14 @@ export function assertCoverage(schema: SchemaTable[], coverage: Coverage, allowl
     for (const column of entry.columns ?? []) {
       const key = `${entry.table}.${column}`;
       if (!table.columns.some((c) => c.name === column)) stale.push(`${key}: the schema has no such column; remove it from the entry`);
-      else if (coverage.columns[key] > 0) stale.push(`${key}: the store writes it now; remove it from the entry`);
+      else if (coverage.columns[key] > 0) stale.push(`${key}: the store writes it now; remove it from the entry${carriedBy(coverage, key)}`);
       columns.add(key);
     }
     for (const [column, list] of Object.entries(entry.values ?? {})) {
       for (const value of list) {
         const key = `${entry.table}.${column}=${value}`;
         if (!(table.checks[column] ?? []).includes(value)) stale.push(`${key}: the schema no longer enumerates it; remove it from the entry`);
-        else if (coverage.values[key] > 0) stale.push(`${key}: the store writes it now; remove it from the entry`);
+        else if (coverage.values[key] > 0) stale.push(`${key}: the store writes it now; remove it from the entry${carriedBy(coverage, key)}`);
         values.add(key);
       }
     }
@@ -166,6 +208,12 @@ export function assertCoverage(schema: SchemaTable[], coverage: Coverage, allowl
     throw new Error(lines.join('\n'));
   }
   return { uncovered, stale };
+}
+
+/** The rows that carry `key`, as the failure quotes them. */
+function carriedBy(coverage: Coverage, key: string): string {
+  const rows = coverage.carriers[key] ?? [];
+  return rows.length === 0 ? '' : `; it is on ${rows.map((row) => `(${row})`).join(', ')}`;
 }
 
 /**

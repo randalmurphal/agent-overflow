@@ -6,6 +6,7 @@
 // per library scenario in topUpScenarios, driven through the mock provider
 // the way a user's turn runs, then the sidebar and workflow operations.
 import { execFileSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { expect } from '@playwright/test';
@@ -72,17 +73,25 @@ interface ApprovalEvent {
  */
 export async function topUp(harness: HarnessApp, version: string): Promise<TopUp> {
   const ms: Record<string, number> = {};
+  // Every step returns with the turns it started at rest (assertAtRest).
+  // A thread the store held before the top-up is not one of its own: in
+  // the release check a loop an earlier top-up armed can wake it.
+  const inherited = storeThreads(harness);
+  const step = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
+    const done = await timed(run);
+    ms[name] = done.ms;
+    await assertAtRest(harness, name, inherited);
+    return done.value;
+  };
   const library = await harness.rpc<{ library: LibraryEntry[] }>('HarnessListScenarios');
   const providers = new Map(library.library.map((entry) => [entry.name, entry.provider]));
 
   // One project per candidate version, reused when a run at the same
   // version already made it (a re-run, or a pull request before the
   // version bump).
-  const project = await timed(() => ensureTopUpProject(harness, version));
-  ms.project = project.ms;
-  const unverified = await timed(() => ensureUnverifiedProject(harness, version));
-  ms.unverifiedProject = unverified.ms;
-  const { projectId } = project.value;
+  const project = await step('project', () => ensureTopUpProject(harness, version));
+  const unverified = await step('unverifiedProject', () => ensureUnverifiedProject(harness, version));
+  const { projectId } = project;
   const nonce = randomBytes(3).toString('hex');
 
   const scenarioThreads: Record<string, string> = {};
@@ -91,13 +100,12 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     const provider = providers.get(scenario.name);
     if (!provider) throw new Error(`topUpScenarios names ${scenario.name}, which the library does not have`);
     const key = scenario.approve === 'deny' ? `${scenario.name}:deny` : scenario.name;
-    const turn = await timed(() => runScenarioTurn(harness, projectId, scenario, provider, version));
-    ms[`turn:${key}`] = turn.ms;
-    scenarioThreads[key] = turn.value;
-    threadIds.push(turn.value);
+    const thread = await step(`turn:${key}`, () => runScenarioTurn(harness, projectId, scenario, provider, version));
+    scenarioThreads[key] = thread;
+    threadIds.push(thread);
   }
 
-  const sidebar = await timed(async () => {
+  await step('sidebar', async () => {
     for (const forked of ['tool-call', 'file-edit-diff']) {
       const fork = await harness.rpc<{ id: string }>('ForkThread', scenarioThreads[forked], null);
       threadIds.push(fork.id);
@@ -307,12 +315,10 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
       threadIds.push(thread.id);
     }
   });
-  ms.sidebar = sidebar.ms;
 
-  const reviews = await timed(() => writeReviewDrafts(harness, scenarioThreads['codex-revert-paginated'], version, nonce));
-  ms.reviews = reviews.ms;
+  await step('reviews', () => writeReviewDrafts(harness, scenarioThreads['codex-revert-paginated'], version, nonce));
 
-  const workflow = await timed(async () => {
+  const workItemId = await step('workflow', async () => {
     const done = [{ steps: [{ emit: { lines: [doneResult({ complete: true })] } }] }];
     await setClaudeScenario(harness, 'topup-workflow', done);
     const item = await startWorkflow(harness, projectId, 'topup-flow', `Top-up run v${version}`);
@@ -339,9 +345,8 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await awaitWorkflowState(harness, 'cancelled run', stepped.id, 'cancelled');
     return item.id;
   });
-  ms.workflow = workflow.ms;
 
-  const projects = await timed(async () => {
+  await step('projects', async () => {
     await harness.rpc('SetProjectWorktreeSetup', projectId, { copy: ['README.md'], run: [['true']], timeout: '1m' });
     const archived = await seedWorkflowProject(harness, `topup-archived-v${version}-${nonce}`, [], [], '', { 'README.md': '# archived\n' });
     await harness.rpc('RenameProject', archived.projectId, `Top-up archived v${version}`);
@@ -349,24 +354,18 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await harness.rpc('ArchiveProject', archived.projectId);
     return archived.projectId;
   });
-  ms.projects = projects.ms;
 
-  const requests = await timed(() => writeThreadRequests(harness, version, nonce));
-  ms.threadRequests = requests.ms;
-  threadIds.push(...requests.value);
-
-  const peerSpawns = await timed(() => writePeerSpawns(harness, version, nonce));
-  ms.peerSpawns = peerSpawns.ms;
-  threadIds.push(...peerSpawns.value.threadIds);
+  threadIds.push(...await step('threadRequests', () => writeThreadRequests(harness, version, nonce)));
+  threadIds.push(...(await step('peerSpawns', () => writePeerSpawns(harness, version, nonce))).threadIds);
 
   // Workflow runs add a thread per phase beside the threads listed here,
   // so the thread counts are floors. The thread-request and peer-spawn
   // projects are new on every run.
   const growth: CensusGrowth = {
-    exact: { projects: (project.value.created ? 1 : 0) + (unverified.value.created ? 1 : 0) + 2, archivedProjects: 1, pinned: 2, groups: 1 },
+    exact: { projects: (project.created ? 1 : 0) + (unverified.created ? 1 : 0) + 2, archivedProjects: 1, pinned: 2, groups: 1 },
     atLeast: { threads: threadIds.length - 1, archived: 1 },
   };
-  return { projectId, growth, threadIds, scenarioThreads, workItemId: workflow.value, ms };
+  return { projectId, growth, threadIds, scenarioThreads, workItemId, ms };
 }
 
 /** The chat-bar settings the top-up's draft threads carry, one thread each. */
@@ -479,4 +478,69 @@ async function runScenarioTurn(
     { message: `${scenario.name}: the turn did not come to rest`, timeout: TURN_TIMEOUT_MS },
   ).toBeFalsy();
   return thread.id;
+}
+
+interface LiveActivity {
+  threadId: string;
+  activeTurn?: { turnId?: string };
+  sendsPending?: boolean;
+  approvalRequestIds: string[];
+  userInputRequestIds: string[];
+  compactingSinceUnixMs?: number;
+}
+
+/** The ids of the threads in `harness`'s store. */
+function storeThreads(harness: HarnessApp): Set<string> {
+  const database = new DatabaseSync(path.join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+  try {
+    return new Set((database.prepare('SELECT id FROM threads').all() as Array<{ id: string }>).map((row) => row.id));
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * assertAtRest fails unless no turn runs in a thread of the top-up's, any
+ * thread of `harness`'s store but the `inherited` ones: none has a live
+ * turn, a send waiting for one, or a request waiting on the person, none
+ * has an open turn row, and none has a row streaming, running or parked
+ * but a background tool call. Each step waits for the turns it starts, and
+ * runs this when it returns, so a step that returns while a turn of its
+ * own still runs fails here, naming the step and the thread, instead of
+ * leaving a mid-turn row for whatever reads the store next. The loops,
+ * watches and runs the top-up leaves armed or open on purpose are not
+ * turns.
+ */
+async function assertAtRest(harness: HarnessApp, step: string, inherited: Set<string>): Promise<void> {
+  const own = (row: { threadId?: string; thread_id?: string }) => !inherited.has(row.threadId ?? row.thread_id ?? '');
+  const live = (await harness.rpc<LiveActivity[]>('ListThreadLiveActivity')).filter(own);
+  const database = new DatabaseSync(path.join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+  try {
+    const title = (threadId: string) =>
+      (database.prepare('SELECT title FROM threads WHERE id = ?').get(threadId) as { title: string } | undefined)?.title ?? '(no row)';
+    const running: string[] = [];
+    for (const row of live) {
+      const what = [
+        row.activeTurn ? `turn ${row.activeTurn.turnId ?? ''} is live` : '',
+        row.sendsPending ? 'a send waits for its turn' : '',
+        row.approvalRequestIds.length > 0 ? `${row.approvalRequestIds.length} approval(s) wait` : '',
+        row.userInputRequestIds.length > 0 ? `${row.userInputRequestIds.length} question(s) wait` : '',
+        row.compactingSinceUnixMs ? 'it is compacting' : '',
+      ].filter(Boolean);
+      if (what.length > 0) running.push(`"${title(row.threadId)}" (${row.threadId}): ${what.join(', ')}`);
+    }
+    const open = (database.prepare(`SELECT thread_id, turn_index FROM turns WHERE completed_at IS NULL ORDER BY thread_id, turn_index`)
+      .all() as Array<{ thread_id: string; turn_index: number }>).filter(own);
+    for (const row of open) running.push(`"${title(row.thread_id)}" (${row.thread_id}): turn ${row.turn_index} is open in the store`);
+    const rows = (database.prepare(`SELECT thread_id, id, kind, status FROM items
+        WHERE status IN ('streaming', 'running', 'parked') AND NOT (kind = 'tool_call' AND is_background = 1)
+        ORDER BY thread_id, turn_index, item_index`).all() as Array<{ thread_id: string; id: string; kind: string; status: string }>).filter(own);
+    for (const row of rows) running.push(`"${title(row.thread_id)}" (${row.thread_id}): ${row.kind} row ${row.id} is ${row.status}`);
+    if (running.length > 0) {
+      throw new Error(`top-up step ${step} returned while ${running.length} thing(s) still run; it waits for each turn it starts to end:\n` +
+        running.map((line) => `  - ${line}`).join('\n'));
+    }
+  } finally {
+    database.close();
+  }
 }
