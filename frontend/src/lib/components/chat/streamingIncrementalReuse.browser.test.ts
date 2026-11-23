@@ -13,7 +13,7 @@
 import { describe, expect, it, onTestFinished } from 'vitest';
 import '../../../app.css';
 import { makeItem } from '../../../test/helpers/chat';
-import { raf, wait } from '../../../test/helpers/browserFrames';
+import { raf, revealWithoutWaitingForFrames, wait } from '../../../test/helpers/browserFrames';
 import { captureResizeObserverLoopErrors } from '../../../test/helpers/resizeObserverLoopErrors';
 import {
   SEED_COUNT,
@@ -96,6 +96,7 @@ describe('streaming incremental token reuse (real timeline × Chromium)', () => 
       onTestFinished(resizeObserverErrors.stop);
       const { itemId, finalText } = testCase;
       const threadId = `thread-${itemId}`;
+      const reveal = revealWithoutWaitingForFrames();
       const { pane, scrollEl } = await mountTimeline(
         threadId,
         seedTimelineItems(threadId, SEED_PROSE),
@@ -109,7 +110,7 @@ describe('streaming incremental token reuse (real timeline × Chromium)', () => 
         kind: 'assistant_text', role: 'assistant', status: 'streaming',
         summary: '', createdAt: turnIndex, updatedAt: turnIndex,
       }));
-      // Fat burst: the wire completes quickly, the smoother drains for ~10s.
+      // Fat burst: the wire completes quickly, the smoother drains for many ticks.
       for (let off = 0, b = 0; off < finalText.length; off += 900, b++) {
         pane.applyItemDelta({
           threadId, itemId, kind: 'assistant_text',
@@ -146,21 +147,18 @@ describe('streaming incremental token reuse (real timeline × Chromium)', () => 
 
       // Track identity and text through the rest of the drain. The unit is
       // sealed (well behind the live tail), so its element must be the SAME
-      // node with the SAME text on every sample until the stream settles.
+      // node with the SAME text after every reveal tick until the stream
+      // settles.
       let samples = 0;
-      while (performance.now() < deadline) {
-        const revealed = pane.getItemById(itemId)?.summary.length ?? 0;
-        if (revealed >= finalText.length) break;
-        const current = units()[testCase.observeIndex];
-        expect(current, `sealed unit replaced at sample ${samples}`).toBe(observed);
-        expect(
-          observed.textContent,
-          `sealed unit text changed at sample ${samples}`,
-        ).toBe(observedText);
+      const changes: string[] = [];
+      reveal.onTick(() => {
+        if ((pane.getItemById(itemId)?.summary.length ?? 0) >= finalText.length) return;
+        if (units()[testCase.observeIndex] !== observed) changes.push(`sealed unit replaced at sample ${samples}`);
+        else if (observed.textContent !== observedText) changes.push(`sealed unit text changed at sample ${samples}`);
         samples += 1;
-        await raf();
-        await raf();
-      }
+      });
+      while (performance.now() < deadline && (pane.getItemById(itemId)?.summary.length ?? 0) < finalText.length) await raf();
+      expect(changes.slice(0, 1)).toEqual([]);
       expect(
         pane.getItemById(itemId)?.summary.length,
         'stream must fully reveal',
