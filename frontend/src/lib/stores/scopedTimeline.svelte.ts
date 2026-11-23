@@ -10,6 +10,7 @@ import { createThreadItemStreamApply } from './threadItemStreamApply';
 import { createThreadPaneScroll } from './threadPaneScroll.svelte';
 import { activityRunDefaultCollapsed, activityRunWindowRows } from './activityRunPrefs.svelte';
 import { timelinePageShape, nowForLiveContent } from './threadPaneShared';
+import { threadActivityRunRule } from './activityRunRule';
 import { attachTimelineWindow, type WindowObservation } from './timelineWindowResource.svelte';
 import { registerTimelineSurface, type TimelineMutation } from './timelineSurfaces';
 import { refreshWatchedThreads } from './watchedThreads';
@@ -92,6 +93,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     windowVerified: () => !loading, scrollController: () => scroll.controller, items: getItems,
     windowBounds: () => ({ oldest: window.oldestLoadedCursor, newest: window.newestLoadedCursor }),
     threadId: () => disposed ? null : thread.id, selection: () => selection,
+    activityRunRule: () => threadActivityRunRule(thread.id),
     pageShape: timelinePageShape, mountRunMembers: window.mountActivityRunMembers,
     reloadWindow: () => refresh(),
     reportFetchFailure: (message, error, silent) => {
@@ -259,7 +261,8 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
       else next.delete(id);
     }
     const { items, refusals } = runs.admitCarriedRows(
-      [...next.values()].sort(compareItemsByTimelinePosition), page.items as Item[], page.runs);
+      [...next.values()].sort(compareItemsByTimelinePosition), page.items as Item[],
+      { rule: page.activityRunRule, stubs: page.runs });
     for (const { item } of refusals) next.delete(item.id);
     installTimelineItems(items, {
       disposeDropped: true, afterCommit: () => {

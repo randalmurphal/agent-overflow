@@ -31,6 +31,9 @@ func (s *Session) readLoop() {
 		// waiting, resolve it as lost so the frontend prompt does not linger.
 		s.clearPendingApprovals()
 
+		// A start still waiting for init ends with the process.
+		s.start.exited(s.proc, s.closing.Load())
+
 		// The abnormal-exit "error" (host did not initiate this close) plus
 		// the unconditional "disconnected" — shared with codex so the two
 		// read loops cannot drift on the signal triage gates its synthesized
@@ -120,6 +123,9 @@ func (s *Session) readLoop() {
 		}
 
 		for _, evt := range events {
+			// Before onEvent, so a caller waiting on the start never depends
+			// on how the host handles the frame.
+			evt = s.start.observe(evt)
 			if evt.Kind == provider.EventInit && evt.Meta != nil {
 				var info provider.SessionInfo
 				if json.Unmarshal(evt.Meta, &info) == nil {

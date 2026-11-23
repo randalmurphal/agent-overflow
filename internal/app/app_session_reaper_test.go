@@ -353,6 +353,168 @@ func TestReapIdleSessionsSkipsRunningBackgroundItems(t *testing.T) {
 	}
 }
 
+// A background launch keeps `status='running'` after it stops being live:
+// the store's live flag says it left. The reaper keeps a session for the
+// launches a stop would kill, and closes one whose launches all left.
+func TestReapIdleSessionsReadsBackgroundLiveness(t *testing.T) {
+	t.Parallel()
+	const taskID = "task-1"
+	launch := func(id string) store.Item {
+		return store.Item{
+			ID: id, TurnIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running",
+			IsBackground: true, Summary: "Agent: build", ToolName: "Agent", Meta: `{"task_id":"` + taskID + `"}`,
+		}
+	}
+	stop := func(id, launchID, status string) store.Item {
+		return store.Item{
+			ID: id, TurnIndex: 1, Kind: "tool_completion", Role: "assistant", Status: status,
+			IsBackground: true, CompletionOf: launchID, Summary: "Agent: build", ToolName: "Agent",
+			Meta: `{"task_id":"` + taskID + `"}`,
+		}
+	}
+	cases := []struct {
+		name string
+		rows []store.Item
+		// leave marks the launches no longer live, as the app does.
+		leave    func(t *testing.T, s *store.Store, threadID string)
+		wantReap bool
+	}{
+		{
+			name:     "an agent parked on its command is live",
+			rows:     []store.Item{launch("launch"), stop("parked", "launch", store.ItemStatusParked)},
+			wantReap: false,
+		},
+		{
+			name: "a parked run a resume retired, whose resumed run ended",
+			rows: []store.Item{
+				launch("launch"), stop("parked", "launch", store.ItemStatusParked),
+				launch("carrier"), stop("ended", "carrier", "completed"),
+			},
+			leave: func(t *testing.T, s *store.Store, threadID string) {
+				retired, err := s.RetireParkedAgentLaunches(threadID, taskID, "carrier")
+				if err != nil || len(retired) != 1 || retired[0] != "launch" {
+					t.Fatalf("retire the parked launch = %v, %v; want the launch", retired, err)
+				}
+			},
+			wantReap: true,
+		},
+		{
+			name: "a launch a revert's cleanup marked inactive",
+			rows: []store.Item{launch("launch")},
+			leave: func(t *testing.T, s *store.Store, threadID string) {
+				if n, err := s.MarkLiveBackgroundToolCallsInactive(threadID, time.Now().UnixMilli()); err != nil || n != 1 {
+					t.Fatalf("mark the launch inactive = %d, %v; want 1", n, err)
+				}
+			},
+			wantReap: true,
+		},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			thread := testThread(fmt.Sprintf("thread-bg-liveness-%d", i))
+			thread.Provider = string(provider.Claude)
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread: %v", err)
+			}
+			for _, row := range tc.rows {
+				row.ThreadID = thread.ID
+				if _, err := app.store.AppendItem(row); err != nil {
+					t.Fatalf("seed %s: %v", row.ID, err)
+				}
+			}
+			if tc.leave != nil {
+				tc.leave(t, app.store, thread.ID)
+			}
+
+			now := time.Now()
+			app.sessionManager().put(thread.ID, session{
+				Provider: string(provider.Claude),
+				Token:    "tok",
+				Liveness: newSessionLiveness(now.Add(-idleReapThreshold - time.Minute)),
+			})
+			app.reapIdleSessions(now)
+
+			if _, present := app.sessionManager().get(thread.ID); present == tc.wantReap {
+				t.Fatalf("session present = %v, want reaped = %v", present, tc.wantReap)
+			}
+		})
+	}
+}
+
+// A Codex command that outlives its turn exists only in the router: no
+// items row says it runs. The reaper keeps its session all the same, and
+// closes it once the command ends.
+func TestReapIdleSessionsSkipsCodexWorkOnlyTheRouterHolds(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	thread := testThread("thread-bg-router-only")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	seedSettledCodexUnifiedExecTracker(t, app, thread.ID)
+
+	now := time.Now()
+	app.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Codex),
+		Token:    "tok",
+		Liveness: newSessionLiveness(now.Add(-idleReapThreshold - time.Minute)),
+	})
+	app.reapIdleSessions(now)
+
+	if _, present := app.sessionManager().get(thread.ID); !present {
+		t.Fatal("session with a running Codex command was reaped")
+	}
+
+	completeMeta, err := json.Marshal(map[string]any{
+		"source": "unifiedExecStartup", "item_status": "completed",
+		"process_id": "pid-live", "command": "pnpm run dev",
+	})
+	if err != nil {
+		t.Fatalf("marshal the command's completion: %v", err)
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: thread.ID, ItemID: "cmd-live",
+		ItemType: "commandExecution", TurnID: thread.ID + ":turn", Meta: completeMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool complete: %v", err)
+	}
+	if n := app.triage.CountLiveCodexBackgroundTasks(thread.ID); n != 0 {
+		t.Fatalf("router-held Codex tasks after the command ended = %d, want 0", n)
+	}
+	app.reapIdleSessions(now)
+
+	if _, present := app.sessionManager().get(thread.ID); present {
+		t.Fatal("session was kept after its Codex command ended")
+	}
+}
+
+// seedSettledCodexUnifiedExecTracker leaves threadID with one running Codex
+// command that only the router holds and no open turn, so that command is
+// the one thing a gate on ending the session can see.
+func seedSettledCodexUnifiedExecTracker(t *testing.T, app *App, threadID string) {
+	t.Helper()
+	seedCodexUnifiedExecTracker(t, app, threadID, "cmd-live", "pid-live", "pnpm run dev")
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: threadID, TurnID: threadID + ":turn",
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+	if app.triage.HasInFlightTurnOrRound(threadID) || app.triage.HasPendingWork(threadID) {
+		t.Fatal("precondition: the thread still has a turn or pending work")
+	}
+	if n, err := app.store.CountLiveRunningBackgroundToolCalls(threadID); err != nil || n != 0 {
+		t.Fatalf("precondition: stored live launches = %d, %v; want 0", n, err)
+	}
+	if n := app.triage.CountLiveCodexBackgroundTasks(threadID); n != 1 {
+		t.Fatalf("precondition: router-held Codex tasks = %d, want 1", n)
+	}
+}
+
 // A failed store check must preserve the session rather than authorize eviction.
 func TestReapIdleSessionsSkipsOnStoreError(t *testing.T) {
 	t.Parallel()

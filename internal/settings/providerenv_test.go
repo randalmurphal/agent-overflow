@@ -123,7 +123,7 @@ func TestSetProviderEnvVarRejectsReservedNames(t *testing.T) {
 		{"claude", "CLAUDE_CODE_AUTO_COMPACT_WINDOW"},
 		// Reserved for the resume-cursor mirror's benefit, not because AO
 		// sets it: under this variable the CLI drops rows the mirror still
-		// counts on, and the thread fails to resume at all.
+		// counts on, and a pinned fork's first start fails.
 		{"claude", "CLAUDE_CODE_RESUME_INTERRUPTED_TURN"},
 		{"claude-tui", "CLAUDE_CODE_RESUME_INTERRUPTED_TURN"},
 		{"claude", "AO_TOKEN"},

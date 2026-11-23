@@ -1022,15 +1022,12 @@ func TestReplayUpdatesToEventsCompletesInlineTerminalToolCalls(t *testing.T) {
 	events := ReplayUpdatesToEvents(updates, DefaultFlavor{Kind: provider.Agy})
 	var starts, completes, cmdOuts int
 	for _, ev := range events {
-		switch ev.Kind {
-		case provider.EventToolStart:
+		if ev.Kind == provider.EventToolStart {
 			starts++
-		case provider.EventToolComplete:
+		} else if ev.Kind == provider.EventToolComplete {
 			completes++
-		case provider.EventCommandOutput:
-			if ev.Content == "ok\n" {
-				cmdOuts++
-			}
+		} else if ev.Kind == provider.EventCommandOutput && ev.Content == "ok\n" {
+			cmdOuts++
 		}
 	}
 	if starts != 1 || completes != 1 || cmdOuts != 1 {

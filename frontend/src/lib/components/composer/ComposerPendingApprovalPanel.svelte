@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { ControlAccess } from '../../transport/scopes';
   import { scale } from 'svelte/transition';
   import type { ApprovalRequest } from '../../types/events';
   import { ApprovalResponse } from '../../stores/bindings';
@@ -13,22 +14,23 @@
     onResolve: (response: ApprovalResponse) => Promise<void>;
     onError: (message: string, err?: unknown) => void;
     /**
-     * This session was not granted `approvals:respond`. The panel still
-     * renders — the request is what explains why the turn is parked — and
-     * its buttons go inert. Distinct from `responding`, which the sub-panels
-     * also read as "primary button is loading": an ungranted control is
-     * disabled, never spinning.
+     * Whether an answer can reach the thread's computer (composerAccess.ts
+     * `respond`). Otherwise the panel still renders — the request is what
+     * explains why the turn is parked — and its buttons go inert, saying
+     * why. Distinct from `responding`, which the sub-panels also read as
+     * "primary button is loading": an inert control is disabled, never
+     * spinning.
      */
-    ungranted?: boolean;
+    access?: ControlAccess;
   }
 
-  let { approval, count, onResolve, onError, ungranted = false }: Props = $props();
+  let { approval, count, onResolve, onError, access = 'granted' }: Props = $props();
   let responding = $state(false);
 
   const summary = $derived(approval.description || approval.title || approval.toolName || 'Approval required');
 
   async function resolve(response: ApprovalResponse): Promise<void> {
-    if (responding || ungranted) return;
+    if (responding || access !== 'granted') return;
     responding = true;
     // The answer is for the prompt shown here, not whichever is open under
     // its request id when it lands.
@@ -67,10 +69,10 @@
   </div>
 
   {#if approval.kind === 'permission' && approval.permissions}
-    <PermissionPanel {approval} onResolve={resolve} {responding} {ungranted} />
+    <PermissionPanel {approval} onResolve={resolve} {responding} {access} />
   {:else if approval.kind === 'mcp-elicitation' && approval.elicitation}
-    <McpElicitationPanel {approval} onResolve={resolve} onError={onError} responding={responding} {ungranted} />
+    <McpElicitationPanel {approval} onResolve={resolve} onError={onError} responding={responding} {access} />
   {:else}
-    <ToolApprovalPanel {approval} onResolve={resolve} {responding} {ungranted} />
+    <ToolApprovalPanel {approval} onResolve={resolve} {responding} {access} />
   {/if}
 </section>

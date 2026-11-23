@@ -3,9 +3,11 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -342,7 +344,7 @@ func TestReadReviewDiffRequiresTheScopeItsOpenRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newEditsDiff() error = %v", err)
 	}
-	id, err := app.holdReviewDiff(ctx, diff, transport.ScopeFilesRead)
+	id, err := app.holdReviewDiff(testConnection(t, ctx), diff, transport.ScopeFilesRead)
 	if err != nil {
 		t.Fatalf("holdReviewDiff() error = %v", err)
 	}
@@ -376,5 +378,198 @@ func TestReadReviewDiffOfAClosedDiffIsNotOpen(t *testing.T) {
 	}
 	if _, err := app.ReadReviewDiff(ctx, opened.ID, opened.Chunk.NextOffset, 1<<20); !errors.Is(err, ErrReviewDiffNotFound) {
 		t.Fatalf("read of a closed diff: err = %v, want ErrReviewDiffNotFound", err)
+	}
+}
+
+// reviewDiffTieFixture is a repository the git-backed Open*Diff rows of
+// connectionTieChecks all open a diff of: a feature branch one commit off
+// main, with an uncommitted file.
+type reviewDiffTieFixture struct {
+	ref WorkspaceRef
+	rev gitops.PRRevision
+}
+
+const reviewDiffTieUncommitted = "uncommitted.txt"
+
+// gitReviewDiffConnectionTie is a git-backed Open*Diff method's row of
+// connectionTieChecks: the files record every such open keeps for its
+// connection, which nothing but the connection or eviction removes. The
+// diffs it opens fit their first chunk, so no handle is held.
+func gitReviewDiffConnectionTie(t *testing.T, open func(*App, context.Context, reviewDiffTieFixture) (ReviewDiffOpened, error)) connectionTie {
+	app := newReviewDiffTestApp(t)
+	t.Cleanup(func() {
+		app.closeReviewDiffRecords()
+		if err := app.closeReviewDiffs(); err != nil {
+			t.Error(err)
+		}
+	})
+	h := newImageHistory(t)
+	writeRepoBytes(t, h.repo, reviewDiffTieUncommitted, []byte("not committed\n"))
+	fixture := reviewDiffTieFixture{
+		ref: testWorkspaceRef(t, app, h.repo),
+		rev: gitops.PRRevision{BaseRef: "main", BaseSHA: h.base, HeadSHA: h.head},
+	}
+	return connectionTie{
+		open: func(ctx context.Context) (string, error) {
+			opened, err := open(app, ctx, fixture)
+			if err == nil && opened.ID != "" {
+				t.Fatal("the fixture's diff should fit its first chunk")
+			}
+			return opened.FilesHandle, err
+		},
+		held: func() int { return app.reviewDiffFiles.len() + openReviewDiffCount(app) },
+	}
+}
+
+// editsReviewDiffConnectionTie is an edits Open*Diff method's row of
+// connectionTieChecks: a diff too long for its first chunk, held under a
+// handle only its own connection releases.
+func editsReviewDiffConnectionTie(t *testing.T, open func(*App, context.Context, string) (ReviewDiffOpened, error)) connectionTie {
+	app := newReviewDiffTestApp(t)
+	t.Cleanup(func() {
+		if err := app.closeReviewDiffs(); err != nil {
+			t.Error(err)
+		}
+	})
+	threadID := seedEditPayloads(t, app, 1, generatedPatch("big.go", 60000))
+	return connectionTie{
+		open: func(ctx context.Context) (string, error) {
+			opened, err := open(app, ctx, threadID)
+			if err == nil && opened.ID == "" {
+				t.Fatal("the fixture's diff should be held past its first chunk")
+			}
+			return opened.ID, err
+		},
+		held:    func() int { return openReviewDiffCount(app) },
+		release: app.ReleaseReviewDiff,
+		key:     reviewDiffCleanupKey,
+	}
+}
+
+// closeCountingDiff is a held diff that counts its closes and fails them
+// with errClosingDiff.
+type closeCountingDiff struct {
+	reviewDiffReader
+	closes atomic.Int32
+}
+
+var errClosingDiff = errors.New("closing the diff failed")
+
+func (d *closeCountingDiff) Close() error {
+	d.closes.Add(1)
+	return errClosingDiff
+}
+
+// A diff whose hold is refused, on a connection that is closing or on none
+// at all, is closed before the refusal returns, its close's failure joins
+// the refusal, and nothing is held: the refusal does not hand the close to
+// a release that runs later.
+func TestARefusedHoldClosesTheDiffBeforeItReturns(t *testing.T) {
+	t.Parallel()
+	closing, state := newTestConnection(t, transport.ConnPrincipal{})
+	state.RunCleanups()
+	for _, tc := range []struct {
+		name string
+		conn *transport.ConnState
+		want error
+	}{
+		{"a closing connection", testConnection(t, closing), transport.ErrConnectionClosing},
+		{"no connection", nil, transport.ErrNoConnection},
+	} {
+		app := newReviewDiffTestApp(t)
+		diff := &closeCountingDiff{}
+		_, err := app.holdReviewDiff(tc.conn, diff, transport.ScopeFilesRead)
+		if !errors.Is(err, tc.want) || !errors.Is(err, errClosingDiff) {
+			t.Fatalf("%s: hold = %v, want %v joined with the close's failure", tc.name, err, tc.want)
+		}
+		if got := diff.closes.Load(); got != 1 {
+			t.Fatalf("%s: the refused diff was closed %d times by the time the refusal returned, want 1", tc.name, got)
+		}
+		if n := openReviewDiffCount(app); n != 0 {
+			t.Fatalf("%s: a refused hold left %d diffs held", tc.name, n)
+		}
+	}
+}
+
+// A record is tied to its connection from the moment it is reserved, so an
+// eviction that lands before its open finishes unties what it removes,
+// and a record evicted from under its open leaves nothing bound.
+func TestAReviewDiffRecordIsTiedWhenItIsReserved(t *testing.T) {
+	t.Parallel()
+	ctx, state := newTestConnection(t, transport.ConnPrincipal{})
+	conn := testConnection(t, ctx)
+	records := &reviewDiffRecords{}
+	first, _, err := records.reserve("/w", conn, transport.ScopeFilesRead, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Bound(reviewDiffFilesCleanupKey(first.id)) {
+		t.Fatal("a reserved record is not tied to its connection yet")
+	}
+	close(first.done)
+	var evicted []*reviewDiffRecord
+	for range maxReviewDiffRecords {
+		record, pushed, err := records.reserve("/w", conn, transport.ScopeFilesRead, func() {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		close(record.done)
+		evicted = append(evicted, pushed...)
+	}
+	if len(evicted) != 1 || evicted[0] != first {
+		t.Fatalf("evicted %d records, want the first", len(evicted))
+	}
+	stopReviewDiffRecords(evicted...)
+	if state.Bound(reviewDiffFilesCleanupKey(first.id)) {
+		t.Fatal("an evicted record left its release bound on its connection")
+	}
+	none, _, err := records.reserve("/w", nil, transport.ScopeFilesRead, func() {})
+	if !errors.Is(err, transport.ErrNoConnection) || none != nil {
+		t.Fatalf("reserve with no connection = %v, %v; want ErrNoConnection and no record", none, err)
+	}
+	if n := records.len(); n != maxReviewDiffRecords {
+		t.Fatalf("%d records after a refused reserve, want %d", n, maxReviewDiffRecords)
+	}
+}
+
+// An open refused after its record was reserved (the handle cap is
+// reached) removes the record and leaves nothing bound on its connection.
+func TestAnOpenRefusedAfterItsRecordLeavesNothingTied(t *testing.T) {
+	t.Parallel()
+	app := newReviewDiffTestApp(t)
+	t.Cleanup(app.closeReviewDiffRecords)
+	ref, _ := largeWorkspace(t, app)
+	app.reviewDiffs.diffs = make(map[string]*openReviewDiff, maxReviewDiffHandles)
+	for i := range maxReviewDiffHandles {
+		app.reviewDiffs.diffs[fmt.Sprint("held-", i)] = &openReviewDiff{}
+	}
+	t.Cleanup(func() { app.reviewDiffs.diffs = nil })
+	ctx, state := newTestConnection(t, transport.ConnPrincipal{})
+	// The handle registry's lock holds the open at its hold, after its
+	// record was reserved, so the record's tie is seen before the refusal
+	// rolls it back: the rollback is proven only if there was a release.
+	app.reviewDiffs.mu.Lock()
+	refused := make(chan error, 1)
+	go func() {
+		_, err := app.OpenWorkspaceDiff(ctx, ref, false)
+		refused <- err
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(state.BoundKeys()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	tied := state.BoundKeys()
+	app.reviewDiffs.mu.Unlock()
+	if err := <-refused; !errors.Is(err, ErrTooManyReviewDiffs) {
+		t.Fatalf("open past the handle cap = %v, want ErrTooManyReviewDiffs", err)
+	}
+	if len(tied) != 1 {
+		t.Fatalf("the open's reserved record had %d releases bound before its refusal, want 1: %v", len(tied), tied)
+	}
+	if n := app.reviewDiffFiles.len(); n != 0 {
+		t.Fatalf("the refused open left %d records", n)
+	}
+	if keys := state.BoundKeys(); len(keys) != 0 {
+		t.Fatalf("the refused open left releases bound on its connection: %v", keys)
 	}
 }

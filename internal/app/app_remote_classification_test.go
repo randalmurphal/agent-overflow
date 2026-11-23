@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/transport"
@@ -146,7 +145,7 @@ func TestRemoteToolsAreNeverOfferedWithoutRemoteAccess(t *testing.T) {
 	t.Cleanup(func() { _ = a.ServiceShutdown() })
 	backends := t.TempDir()
 	var err error
-	if a.backends, err = attachedbackends.New(backends, "source", "test"); err != nil {
+	if a.backends, err = newTestBackends(t, backends, "source", "test"); err != nil {
 		t.Fatal(err)
 	}
 	peer := deviceclient.Session{BackendID: uuid.NewString(), SessionID: "test", Credential: "test", Endpoint: "https://127.0.0.1:1"}

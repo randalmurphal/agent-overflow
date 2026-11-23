@@ -3,8 +3,8 @@ import { companionSubjectKey } from './companionSubject';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
-import { threadHasScope } from '../transport/entityScopes';
-import { hasScope } from '../transport/scopes';
+import { threadHasScope, threadScopeGrant } from '../transport/entityScopes';
+import { hasScope, scopeGrant, type EntityScopeGrant } from '../transport/scopes';
 import {
   createPRDiffReviewComment,
   deletePRDiffReviewComment,
@@ -141,6 +141,7 @@ import {
   type PRRef,
 } from '../utils/prReference';
 import { prRevision, type PRRevision } from '../utils/prRevision';
+import { noteForgeFactsRevision, reloadForgeFacts } from './forgeFacts.svelte';
 import {
   applyContextExpansion,
   expansionFetchRange,
@@ -223,10 +224,10 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
    * stays `pr`, there is no chat to send to, and drafts post as a PR
    * review. */
   readonly pinned: boolean;
-  /** The session holds the grant the comment writes need on this
+  /** Whether the session holds the grant the comment writes need on this
    * review's computer: `threads:operate` for a thread's drafts,
    * `git:operate` for a pinned review's forge submission. */
-  readonly commentsGranted: boolean;
+  readonly commentsGrant: EntityScopeGrant;
   /** Line comments have a home here: the thread row, or for a pinned
    * review the PR's full diff (a picked commit's line numbers would
    * misanchor against the head diff, and there is no agent to send them to). */
@@ -235,6 +236,8 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
   readonly backend: BackendKey;
   readonly baseBranch: string | null;
   readonly prRef: PRRef | null;
+  /** The PR store's key for the PR on screen; null outside the PR scope. */
+  readonly prEntityKey: string | null;
   readonly prScopeLabel: string | null;
   readonly sourceKey: string;
   /** The loaded diff's files in tree order. A load into an empty pane
@@ -1527,8 +1530,8 @@ export function createReviewPaneState(
     if (pinnedDraftKey !== null) return getPRDiffReviewComments(pinnedDraftKey, scope, sourceKey);
     return threadId === null ? EMPTY_COMMENTS : getDiffReviewComments(threadId, scope, sourceKey);
   });
-  const commentsGranted = $derived(
-    pinned ? hasScope('git:operate', backend) : threadHasScope('threads:operate', threadId, workspace.projectId),
+  const commentsGrant = $derived(
+    pinned ? scopeGrant('git:operate', backend) : threadScopeGrant('threads:operate', threadId, workspace.projectId),
   );
   const canDraftComments = $derived(pinned ? scope === 'pr' && (selectedCommitSHA === null || headRange) : threadId !== null);
   const drafts = $derived(comments.filter((comment) => comment.status === 'draft'));
@@ -1552,9 +1555,9 @@ export function createReviewPaneState(
     entityKey: () => prEntityKey,
     launch: () => backendLaunch,
     updateFailing: () => prUpdateError !== null,
-    forgeGranted: () => (pinned ? hasScope('git:operate', backend) : threadHasScope('git:operate', threadId, workspace.projectId)),
+    forgeGrant: () => (pinned ? scopeGrant('git:operate', backend) : threadScopeGrant('git:operate', threadId, workspace.projectId)),
     prWithheld: () => mergeWithheldReason,
-    canDraft: () => canDraftComments && commentsGranted,
+    canDraft: () => canDraftComments && commentsGrant === 'granted',
     drafts: () => drafts,
     threads: () => prThreads,
     threadsLoaded: () => prSnapshot !== null,
@@ -1764,7 +1767,7 @@ export function createReviewPaneState(
     const key = computerPRKey(ref);
     if (prAttachment?.key === key) return prAttachment;
     releasePR();
-    prAttachment = attachPR(key, { ref });
+    prAttachment = attachPR(key, { ref, workspace });
     return prAttachment;
   }
 
@@ -2150,6 +2153,8 @@ export function createReviewPaneState(
         // loaded, and without a switch to a different PR being compared
         // against a head that was never its own.
         loadedPRHead = { key: loadingPRKey, revision: loaded.prRevision };
+        // The commits the PR's bodies name are read at this revision.
+        noteForgeFactsRevision(loadingPRKey, workspace, loaded.prRevision);
       }
       // The files, patch key and selection are already updated above, so
       // the derived reflects this load — no need to re-derive by hand.
@@ -3202,6 +3207,9 @@ export function createReviewPaneState(
   let explicitReadOwed = false;
   async function refreshPRThreads(opts?: { explicit?: boolean }): Promise<void> {
     if (scope !== 'pr' || !prRef) return;
+    // The reader's refresh (the Conversation's, or a reload of the diff)
+    // asks the forge again for every fact the PR's bodies hold.
+    if (opts?.explicit) reloadForgeFacts(computerPRKey(prRef));
     if (opts?.explicit && !explicitReadOwed) {
       explicitReadOwed = true;
       conversation.beginExplicitRead();
@@ -3684,11 +3692,12 @@ export function createReviewPaneState(
     rowId,
     get scope() { return scope; },
     pinned: pinned !== null,
-    get commentsGranted() { return commentsGranted; },
+    get commentsGrant() { return commentsGrant; },
     get canDraftComments() { return canDraftComments; },
     backend,
     get baseBranch() { return baseBranch; },
     get prRef() { return prRef; },
+    get prEntityKey() { return prEntityKey; },
     get prScopeLabel() { return prRef ? prScopeLabel(prRef) : null; },
     get sourceKey() { return sourceKey; },
     get files() { return files; },

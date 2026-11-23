@@ -396,6 +396,7 @@ func (DefaultFlavor) ClassifyPermission(threadID, turnID, requestID string, req 
 			return PermissionClassification{Action: PermissionAutoAllow, OptionID: allowAnyOpt}
 		}
 		return PermissionClassification{Action: PermissionAutoDeny, OptionID: denyOpt}
+	case PolicyPrompt:
 	}
 
 	toolName := strings.TrimSpace(req.ToolCall.Name)

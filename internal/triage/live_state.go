@@ -71,9 +71,8 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 		return snapshot
 	}
 
-	if st.currentRoundOpen {
-		activeCopy := st.currentRound
-		snapshot.ActiveTurn = &activeCopy
+	if round, ok := st.liveRoundLocked(); ok {
+		snapshot.ActiveTurn = &round
 	}
 
 	snapshot.EffectiveModel = st.effectiveModel
@@ -186,8 +185,7 @@ func (r *Router) LiveActivitySnapshot() []ThreadLiveActivity {
 			continue
 		}
 		entry := ThreadLiveActivity{ThreadID: threadID, CompactingSinceUnixMs: st.compactingSince}
-		if st.currentRoundOpen {
-			round := st.currentRound
+		if round, ok := st.liveRoundLocked(); ok {
 			entry.ActiveTurn = &round
 		}
 		route := func(requestID string, to *provider.PromptRoute) {

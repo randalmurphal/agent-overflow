@@ -24,10 +24,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// A conversation copied here with a question still unanswered waits on it
-// from the moment it lands: the frame its installation sends reconciles its
-// questions, with no restart and no edit of the question.
-func TestATransferredConversationOpensItsUnansweredQuestion(t *testing.T) {
+// A conversation copied here with a question still unanswered brings it as
+// the person's: this run did not record it, so the reconcile its
+// installation's frame queues opens no prompt for it, while as an
+// unanswered question it keeps the copy from rest and is listed for the
+// person to answer.
+func TestATransferredConversationsUnansweredQuestionIsThePersons(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	source, destination := transferTestBackend(t), transferTestBackend(t)
@@ -83,12 +85,16 @@ func TestATransferredConversationOpensItsUnansweredQuestion(t *testing.T) {
 	if err := destination.drainWorkerPrompts(ctx, 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if detail, route, asking := destination.asyncQuestionBlocked(intent.TargetThreadID); !asking || detail != "Which scope?" || route != nil {
-		t.Fatalf("the copy asks %q of %q (%v), want its question open and the person's", detail, promptRouteTitle(route), asking)
+	if detail, route, asking := destination.asyncQuestionBlocked(intent.TargetThreadID); asking {
+		t.Fatalf("the copy asks %q of %q, want its question the person's and not open", detail, promptRouteTitle(route))
 	}
 	state, err := (threadToolsApp{app: destination}).threadStateNow(ctx, intent.TargetThreadID)
+	// As an unanswered question it still keeps the copy from rest.
 	if err != nil || state.State != threadtools.StateAwaitingInput {
 		t.Fatalf("thread_status of the copy = %+v, %v; want it awaiting input", state, err)
+	}
+	if questions, err := destination.store.ListAsyncQuestions(intent.TargetThreadID, ""); err != nil || len(questions) != 1 || questions[0].State != "unanswered" {
+		t.Fatalf("the copy's questions = %+v, %v; want the question unanswered for the person", questions, err)
 	}
 }
 
@@ -112,7 +118,7 @@ func openWorkerRegistrations(a *App, workerID string) []string {
 func TestAnArchiveDuringTheFirstReconcileClosesWhatItOpened(t *testing.T) {
 	t.Parallel()
 	f := newAsyncQuestionFixture(t, "async-archive-race", store.PlacementOwned)
-	// Recorded with nothing in memory, as a restart leaves it.
+	// Recorded without its change frame, so the reconcile below is its first.
 	if _, err := f.app.store.RecordAsyncQuestions(store.Item{
 		ID: "question:ask", ThreadID: f.worker.ID, Kind: "assistant_text", Role: "assistant", Status: "completed",
 		Meta: `{"delivery":"async","questions":[{"title":"Which scope?"}]}`,
@@ -129,7 +135,7 @@ func TestAnArchiveDuringTheFirstReconcileClosesWhatItOpened(t *testing.T) {
 			})
 		}
 	}
-	f.app.seedAsyncQuestionPrompts()
+	f.app.syncAsyncQuestionPrompts(f.worker.ID)
 	<-read
 	if _, err := f.app.ArchiveThread(f.worker.ID); err != nil {
 		close(resume)

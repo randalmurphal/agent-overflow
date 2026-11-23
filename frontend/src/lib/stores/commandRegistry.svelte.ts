@@ -139,6 +139,13 @@ export interface CommandFlags {
    * largest execute-tier surface, so most thread commands gate on it.
    */
   threadsOperate: boolean;
+  /**
+   * Whether the active thread's computer can be called now
+   * (`threadMachineCallable`). The Stop gates on it: an interrupt sent to an
+   * unreachable computer would clear the working state here while the turn
+   * runs on there.
+   */
+  threadCallable: boolean;
   /** Whether this session holds `terminal:operate` (PTYs, worktree setup). */
   terminalOperate: boolean;
   /** Whether this session holds `git:operate` (commit, push, pull, PR, ship). */

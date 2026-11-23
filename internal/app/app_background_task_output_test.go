@@ -80,6 +80,14 @@ func TestWatchBackgroundTaskOutputIsOwnedByItsConnection(t *testing.T) {
 	if got := tailer.Watching(); got != 1 {
 		t.Fatalf("another connection's release must not land; watching %d", got)
 	}
+	// Nor a call that came over no connection: it leaves the watch and the
+	// owner's record of it.
+	if err := app.UnwatchBackgroundTaskOutput(context.Background(), "thread-tail-owner", snap.WatchID); err != nil {
+		t.Fatalf("unwatch with no connection: %v", err)
+	}
+	if got := tailer.Watching(); got != 1 || !app.taskOutput.has(snap.WatchID) {
+		t.Fatalf("a release with no connection landed; watching %d, record kept %v", got, app.taskOutput.has(snap.WatchID))
+	}
 	if err := app.UnwatchBackgroundTaskOutput(ctxA, "thread-tail-owner", snap.WatchID); err != nil {
 		t.Fatalf("unwatch: %v", err)
 	}
@@ -157,7 +165,7 @@ func TestUnwatchOnAnotherThreadKeepsTheConnectionCleanup(t *testing.T) {
 	if got := tailer.Watching(); got != 1 {
 		t.Fatalf("a release naming another thread releases nothing; watching %d", got)
 	}
-	if !state.HasCleanup(backgroundTaskOutputCleanupKey(snap.WatchID)) {
+	if !state.Bound(backgroundTaskOutputCleanupKey(snap.WatchID)) {
 		t.Fatal("a release naming another thread leaves the connection's cleanup bound")
 	}
 	state.RunCleanups()
@@ -192,14 +200,14 @@ func TestWatchBindingsGoWithTheTaskOrTheUnwatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	keyA := backgroundTaskOutputCleanupKey(snapA.WatchID)
-	if !state.HasCleanup(keyA) {
+	if !state.Bound(keyA) {
 		t.Fatal("the watch binds a cleanup on its connection")
 	}
 	tailer.EndLaunch("thread-tail-end", "launch-ea")
 	if err := app.UnwatchBackgroundTaskOutput(ctx, "thread-tail-end", snapA.WatchID); err != nil {
 		t.Fatal(err)
 	}
-	if state.HasCleanup(keyA) {
+	if state.Bound(keyA) {
 		t.Fatal("after the task ended, the page's unwatch must still drop the connection's cleanup")
 	}
 
@@ -210,7 +218,7 @@ func TestWatchBindingsGoWithTheTaskOrTheUnwatch(t *testing.T) {
 	}
 	keyB := backgroundTaskOutputCleanupKey(snapB.WatchID)
 	tailer.EndLaunch("thread-tail-end", "launch-eb")
-	if state.HasCleanup(keyB) {
+	if state.Bound(keyB) {
 		t.Fatal("the task's end drops the cleanup of a watch it took")
 	}
 	app.taskOutput.mu.Lock()
@@ -271,7 +279,7 @@ func TestWatchEndedWhileOpeningHoldsNoCleanup(t *testing.T) {
 	if acquired == "" {
 		t.Fatal("the hook did not run")
 	}
-	if state.HasCleanup(backgroundTaskOutputCleanupKey(acquired)) {
+	if state.Bound(backgroundTaskOutputCleanupKey(acquired)) {
 		t.Fatal("a watch the task's end took must leave no connection cleanup")
 	}
 	if app.taskOutput.has(acquired) {
@@ -318,9 +326,9 @@ func TestWatchReadFailedWhileOpeningShowsTheFailure(t *testing.T) {
 	if acquired == "" {
 		t.Fatal("the hook did not run")
 	}
-	if state.HasCleanup(backgroundTaskOutputCleanupKey(acquired)) || app.taskOutput.has(acquired) || tailer.Watching() != 0 {
+	if state.Bound(backgroundTaskOutputCleanupKey(acquired)) || app.taskOutput.has(acquired) || tailer.Watching() != 0 {
 		t.Fatalf("a failed read leaves nothing bound: cleanup %v record %v watching %d",
-			state.HasCleanup(backgroundTaskOutputCleanupKey(acquired)), app.taskOutput.has(acquired), tailer.Watching())
+			state.Bound(backgroundTaskOutputCleanupKey(acquired)), app.taskOutput.has(acquired), tailer.Watching())
 	}
 	if snap.WatchID != acquired || snap.Ended || snap.Error != "" {
 		t.Fatalf("the reply is the seed under its id: %+v", snap)
@@ -349,5 +357,49 @@ func TestWatchRefusedByTheTailerBindsNothing(t *testing.T) {
 	app.taskOutput.mu.Unlock()
 	if records != 0 {
 		t.Fatalf("%d records for a refused watch", records)
+	}
+}
+
+// backgroundTaskOutputConnectionTie is WatchBackgroundTaskOutput's row of
+// connectionTieChecks: a follow of the task's file, which only its own
+// connection unwatches.
+func backgroundTaskOutputConnectionTie(t *testing.T) connectionTie {
+	app := newTestAppWithStore(t)
+	t.Cleanup(app.closeBackgroundTaskTailer)
+	path := writeTaskOutput(t, t.TempDir(), "task-tie.output", "line 1\n")
+	seedTaskOutputThread(t, app, "thread-tail-tie", "launch-tie", `{"task_id":"task-tie","output_file":"`+path+`"}`)
+	return connectionTie{
+		open: func(ctx context.Context) (string, error) {
+			snap, err := app.WatchBackgroundTaskOutput(ctx, "thread-tail-tie", "launch-tie")
+			return snap.WatchID, err
+		},
+		held: func() int {
+			if tailer := app.taskOutput.tailer.Load(); tailer != nil {
+				return tailer.Watching()
+			}
+			return 0
+		},
+		release: func(ctx context.Context, id string) error {
+			return app.UnwatchBackgroundTaskOutput(ctx, "thread-tail-tie", id)
+		},
+		key: backgroundTaskOutputCleanupKey,
+	}
+}
+
+// An unwatch that names no watch of the caller's builds nothing: the tail
+// follower starts with the first watch, and a release of a watch nobody
+// opened, or one after shutdown closed the follower, must not start it.
+func TestUnwatchOfNoWatchBuildsNoTailer(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	if err := app.UnwatchBackgroundTaskOutput(connCtx(t), "thread", "watch-nobody-opened"); err != nil {
+		t.Fatalf("unwatch of an unknown watch: %v", err)
+	}
+	if app.taskOutput.tailer.Load() != nil {
+		t.Fatal("an unwatch of an unknown watch built the tail follower")
+	}
+	app.closeBackgroundTaskTailer()
+	if err := app.UnwatchBackgroundTaskOutput(connCtx(t), "thread", "watch-nobody-opened"); err != nil {
+		t.Fatalf("unwatch after shutdown: %v", err)
 	}
 }

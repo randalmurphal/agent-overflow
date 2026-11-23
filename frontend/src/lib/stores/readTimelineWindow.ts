@@ -24,7 +24,7 @@ export async function readTimelineWindow(
   const response = await withBackendTarget(backend, () => SyncThreadWindow(threadId, {
     anchorItemId: followingTail ? '' : anchor || window.newestLoadedCursor?.itemId || '',
     itemBudget: SLICE_AROUND_ITEM_BUDGET, haveEpoch: -1, haveRev: -1,
-    ...shape, selection, haveWindow: held ?? undefined,
+    ...shape, selection, haveWindow: held ?? undefined, heldRule: runs.windowReadRule(),
   }));
   if (!current()) return response;
   observeBackendGeneration(response.generation, backend);

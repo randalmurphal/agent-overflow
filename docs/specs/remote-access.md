@@ -119,9 +119,13 @@ Rules:
   root-caused: the app mounted on redial REQUEST, not readiness —
   `redialAfterPairing` now retires the pre-pairing socket detached
   (its close settles only its own attempt) and resolves when the
-  transport is usable, bounded at 5s; `main.ts` awaits it. Ungranted
-  tooltip vocabulary is "Not granted to this device"; "Local only"
-  survives only on host-presence gates. Adjudicated against retier:
+  transport is usable, bounded at 5s; `main.ts` awaits it. An inert
+  control's reason comes from `grantBlockedTitle`
+  (`frontend/src/lib/transport/scopeRefusal.ts`) and the three-way
+  grant: "Not granted to this device" only for a known refusal, "Unavailable
+  until this computer connects" while that computer's grant has not
+  arrived in this window; "Local only" survives only on host-presence
+  gates. Adjudicated against retier:
   `GetThreadLiveState` stays threads:operate — its snapshot embeds
   queued drafts and pending approvals, both above read tier; a
   view-only thread open hydrates from the threads:read channels.
@@ -593,7 +597,7 @@ class is enforced at presentation.
 
 ## 5. Authorization
 
-### Two enforcement tiers, twelve grantable labels
+### Two enforcement tiers, fourteen grantable labels
 
 Scope names are the audit vocabulary; the enforced boundary is
 **observe vs. execute**, crossed with binding class (§2). Two more
@@ -615,6 +619,8 @@ the floor (its own tier below observe — wave 7b, §6), and `host`
 | `settings:read` | observe | settings and preference reads: settings snapshot, keybindings, themes, spinners, chat-bar favorites (added wave 6b — the original ten could not spell a settings read) |
 | `settings:write` | execute | user/device-tier settings; host-tier and the step-up set are excluded |
 | `access:admin` | execute | device list/revoke, audit read; **minting and network changes additionally require step-up** |
+| `tracker:read` | observe | issue tracker connection reads: site, account, verified identity, key file state and last problem, never the token |
+| `tracker:operate` | execute | adding, renaming, turning on and off, verifying and removing tracker connections, recording a token's expiry; editing a key file and opening a token page are `host` |
 | `session` | floor (not a grant) | any named live session: the per-argument methods — the settings patch (per-key tiers), `GetUIState` (own bucket only), review-diff handle reads (the opening method's scope, re-checked per read) |
 
 Rationale for the splits: answering an approval authorizes host command
@@ -1021,7 +1027,7 @@ Alongside it, §5's per-device narrowing became real at the mint
 surface: `MintDevicePairing(deviceClass, access)` with `full` (empty
 means full — the parameter was appended to an existing call) or
 `view-only`, resolving to `identity.ObserveScopes`
-(threads:read/files:read/settings:read, pinned to transport's observe
+(threads:read/files:read/settings:read/tracker:read, pinned to transport's observe
 tier by test); an undeclared level is refused, never widened, and the
 grant set is fixed at mint. The pairing modal offers the choice as a
 two-option control defaulting to Full access.
@@ -2857,10 +2863,15 @@ surfaces in exactly three places:
   thread (§7).
 - **Reachability is ambient, not modal.** Per-backend status lives
   where the backend is chosen: the composer's machine picker dims an
-  unreachable entry in place, and Settings → Systems carries the
-  detail. Threads on an unreachable backend dim and stay readable
-  from the replica. The full-width transport banner is reserved for
-  the visible thread's own backend dropping.
+  unreachable entry in place, the sidebar's Projects menu names each
+  computer's state, and Settings → Systems carries the detail. Threads
+  on a backend that has been unreachable for 30 seconds without a break
+  dim and stay readable from the replica; a shorter drop changes
+  nothing on them. The full-width transport banner is reserved for
+  the visible thread's own backend dropping. For a paired backend it
+  shows only once the drop has lasted the same 30 seconds, says when the
+  backend was last reached without a countdown, and leaves on reconnect;
+  the composer says at once that a message cannot be sent.
 
 Ruled 2026-09-01 (user), phase 7 UI: the machine picker is one more
 dropdown in the composer's existing project / worktree / branch strip,

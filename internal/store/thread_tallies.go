@@ -46,6 +46,13 @@ import (
 // not reported there), and the time since it started. Each read is a probe of the tally,
 // the pending rows and the open turn per thread, whatever the thread's
 // size. The row cascades with its thread.
+//
+// The migration's count reads items through two covering index scans and
+// no table row: the tool calls from idx_items_top_level, whose predicate
+// the arm states so the planner can use it, and the turns that ran a
+// nested row from idx_items_parent (ledgerOwnSpendSQL). Without either the
+// planner reads every row from the table
+// (TestThreadTalliesMigrationReadsCoveringIndexes).
 var threadTalliesV155SQL = `
 CREATE TABLE thread_tallies (
     thread_id  TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
@@ -58,16 +65,17 @@ CREATE TABLE thread_tallies (
 INSERT INTO thread_tallies (thread_id, tool_calls, tokens, turn_ms)
 SELECT thread_id, SUM(tool_calls), SUM(tokens), SUM(turn_ms) FROM (
     SELECT i.thread_id, COUNT(*) AS tool_calls, 0 AS tokens, 0 AS turn_ms FROM items i
-     WHERE i.kind = 'tool_call' AND i.parent_id = '' AND ` + threadOwnTurnSQL("i") + `
+     WHERE i.kind = 'tool_call' AND i.parent_id = '' AND NOT (i.kind = 'notification' AND i.tool_name = 'plan_update')
+       AND ` + threadOwnTurnSQL("i") + `
      GROUP BY i.thread_id
     UNION ALL
     SELECT l.thread_id, 0, SUM(` + usageSpendSQLPlain + `), 0 FROM usage_ledger l
      WHERE l.thread_id IN (SELECT id FROM threads) AND ` + ledgerOwnSpendSQL("l") + `
      GROUP BY l.thread_id
     UNION ALL
-    SELECT i.thread_id, 0, 0, SUM(MAX(0, i.completed_at - i.started_at)) FROM turns i
-     WHERE i.completed_at IS NOT NULL AND ` + threadOwnTurnSQL("i") + `
-     GROUP BY i.thread_id
+    SELECT t.thread_id, 0, 0, SUM(MAX(0, t.completed_at - t.started_at)) FROM turns t
+     WHERE t.completed_at IS NOT NULL AND ` + threadOwnTurnSQL("t") + `
+     GROUP BY t.thread_id
 ) GROUP BY thread_id;
 `
 
@@ -76,11 +84,18 @@ SELECT thread_id, SUM(tool_calls), SUM(tokens), SUM(turn_ms) FROM (
 // row is when its turn ran no native subagent, whose usage Claude's
 // modelUsage includes and which the turn's items show as rows nested under
 // its launch. A Claude turn that ran one recorded no parent-only figure, so
-// the migration counts none of it.
+// the migration counts none of it. The turns that ran one are listed once,
+// from the distinct turns of the nested rows, and each ledger row probes
+// that list by its turn id; a turn without an id stays out of it, as a
+// NULL would make NOT IN unknown for every row. The list names
+// idx_items_parent: without sqlite_stat1 the planner takes the distinct
+// turns in the order idx_items_thread_turn_item_unique gives and reads each
+// row from the table.
 func ledgerOwnSpendSQL(alias string) string {
-	return `(` + alias + `.provider <> 'claude' OR NOT EXISTS (SELECT 1 FROM turns t
-	           JOIN items n ON n.thread_id = t.thread_id AND n.turn_index = t.turn_index AND n.parent_id <> ''
-	          WHERE t.turn_id = ` + alias + `.turn_id))`
+	return `(` + alias + `.provider <> 'claude' OR ` + alias + `.turn_id NOT IN (SELECT t.turn_id
+	           FROM (SELECT DISTINCT n.thread_id, n.turn_index FROM items n INDEXED BY idx_items_parent WHERE n.parent_id <> '') AS nested
+	          CROSS JOIN turns t ON t.thread_id = nested.thread_id AND t.turn_index = nested.turn_index
+	          WHERE t.turn_id IS NOT NULL))`
 }
 
 // threadOwnTurnSQL is whether the row alias names, of a thread's items or
@@ -139,7 +154,8 @@ func addOwnSpendTx(tx *sql.Tx, spend OwnSpend) error {
 // whether a turn runs now, whose time grows from the read on, and
 // TurnStartedAt that turn's start as this computer recorded it: which turn
 // it is, so a reader can tell a later read of the same open turn from one
-// of the next.
+// of the next. The turn is the thread's newest row while it is open
+// (turn_newest.go).
 type ThreadTally struct {
 	ToolCalls     int64
 	Tokens        int64
@@ -148,20 +164,20 @@ type ThreadTally struct {
 	TurnStartedAt int64
 }
 
-// threadTallyColumnsSQL is the five columns of the tally of the thread id
-// names, tool calls, tokens, runtime, whether a turn runs and when it
-// started, with now in
-// milliseconds as the parameter now names: one probe of thread_tallies, one
-// of the running turn's usage_pending rows and one of its open turn.
-func threadTallyColumnsSQL(id, now string) string {
-	open := `(SELECT started_at FROM turns WHERE thread_id = ` + id + ` AND completed_at IS NULL ORDER BY turn_index DESC LIMIT 1)`
-	return `COALESCE((SELECT tool_calls FROM thread_tallies WHERE thread_id = ` + id + `), 0),
-		COALESCE((SELECT tokens FROM thread_tallies WHERE thread_id = ` + id + `), 0)
-		+ COALESCE((SELECT SUM(` + usageSpendSQLPlain + `) FROM usage_pending WHERE thread_id = ` + id + `), 0),
-		COALESCE((SELECT turn_ms FROM thread_tallies WHERE thread_id = ` + id + `), 0)
-		+ COALESCE(MAX(0, ` + now + ` - ` + open + `), 0),
-		` + open + ` IS NOT NULL,
-		COALESCE(` + open + `, 0)`
+// threadTallySQL is the tally of the thread id names, with now in
+// milliseconds as the parameter now names: five columns (tool calls,
+// tokens, runtime, whether a turn runs and when it started) and the join
+// they read the running turn through, which the caller puts in its FROM
+// clause after the table id names a column of. One probe of thread_tallies
+// per column that reads it, one of the running turn's usage_pending rows,
+// and one of the newest turn row (newestOpenTurnJoinSQL).
+func threadTallySQL(id, now string) (columns, join string) {
+	const open = "tally_open"
+	figures := tallyFiguresSpanSQL(id, `MAX(0, `+now+` - `+open+`.started_at)`)
+	columns = figures[0] + `, ` + figures[1] + `, ` + figures[2] + `,
+		` + open + `.turn_id IS NOT NULL,
+		COALESCE(` + open + `.started_at, 0)`
+	return columns, newestOpenTurnJoinSQL(id, open)
 }
 
 // ThreadTallies reads the tallies of threadIDs at now, keyed by thread; a
@@ -175,8 +191,9 @@ func (s *Store) ThreadTallies(threadIDs []string, now time.Time) (map[string]Thr
 	if err != nil {
 		return nil, fmt.Errorf("store: read thread tallies: %w", err)
 	}
-	rows, err := s.reader().Query(`SELECT ids.value, `+threadTallyColumnsSQL("ids.value", "?2")+`
-		  FROM (SELECT DISTINCT value FROM json_each(?1)) AS ids`, string(ids), now.UnixMilli())
+	columns, join := threadTallySQL("ids.value", "?2")
+	rows, err := s.reader().Query(`SELECT ids.value, `+columns+`
+		  FROM (SELECT DISTINCT value FROM json_each(?1)) AS ids `+join, string(ids), now.UnixMilli())
 	if err != nil {
 		return nil, fmt.Errorf("store: read thread tallies: %w", err)
 	}

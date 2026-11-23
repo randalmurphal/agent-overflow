@@ -313,10 +313,6 @@ type harnessTiming struct {
 	// UsagePoll is the usage poll's tick while a provider has a turn in
 	// flight or completed one (app.IsolationConfig.UsagePollInterval).
 	UsagePoll time.Duration
-	// PromptLease is how long a worker's prompt stays routed to its spawner
-	// on a paired computer without that computer saying it holds it
-	// (app.IsolationConfig.WorkerPromptLease).
-	PromptLease time.Duration
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -345,7 +341,6 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 		"drain-stall":          &timing.DrainStall,
 		"usage-probe-gap":      &timing.UsageProbeGap,
 		"usage-poll":           &timing.UsagePoll,
-		"prompt-lease":         &timing.PromptLease,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -406,14 +401,14 @@ type isolationOptions struct {
 func olderComputerSurface() (absent map[string]bool, reshape map[string]func(json.RawMessage) (json.RawMessage, error)) {
 	absent = map[string]bool{}
 	for _, name := range []string{
-		"CancelThreadWake", "CheckAgentProfiles", "CreateAssistant", "DeleteThreads",
-		"GetDeleteDependents", "GetNativeMemoryStatus", "GetStandingAgent",
+		"AgentRosterSeeds", "CancelThreadWake", "CheckAgentProfiles", "CreateAssistant", "DeleteThreads",
+		"FinishProviderAccountReset", "GetDeleteDependents", "GetGitBlobImage", "GetNativeMemoryStatus", "GetStandingAgent",
 		"GetThreadAgentRows", "GetThreadRequestStates", "GetThreadWakeDetail",
 		"GetThreadWorkerSummary", "ListAssistantPastThreads", "ListStandingAgentWakes",
 		"ListThreadAgentRows", "ListThreadPastAgentRows", "ListThreadRecurringJobs",
-		"ListThreadWakes", "ListThreadWorkerSummaries", "MarkThreadsRead",
-		"SendExternalThreadMessage", "SetAssistantProjects", "SetThreadPlacement",
-		"StartNextAssistantThread", "StopThreadAgentIncoming", "StopThreadAgentRows",
+		"ListThreadWakes", "ListThreadWorkerSummaries", "MarkThreadsRead", "ResolveForgeFacts",
+		"SaveGitBlobImage", "SendExternalThreadMessage", "SetAssistantProjects", "SetThreadPlacement",
+		"SpendProviderAccountReset", "StartNextAssistantThread", "StopThreadAgentIncoming", "StopThreadAgentRows",
 		"StopThreadAgentRow", "ThreadToolWatch", "WakeThreadWakeNow", "WorkflowPauseItemAndEndSessions",
 	} {
 		absent[name] = true
@@ -519,8 +514,11 @@ func isolationConfig(paths harnessPaths, opts isolationOptions) appservice.Isola
 		ProviderEventDrainStall: opts.Timing.DrainStall,
 		UsageProbeGap:           opts.Timing.UsageProbeGap,
 		UsagePollInterval:       opts.Timing.UsagePoll,
-		WorkerPromptLease:       opts.Timing.PromptLease,
 		OmitOwnerOps:            opts.OlderComputer,
+		// v0.0.19 groups agent messages by the absorbed rule and never
+		// reads agentMessageMembers; bootTransport leaves the capability
+		// out of its hello for the same boot.
+		OmitAgentMessageRunMembers: opts.OlderComputer,
 	}
 }
 

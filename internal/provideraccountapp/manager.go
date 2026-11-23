@@ -47,6 +47,16 @@ type AccountSink interface {
 	// spend an RPC per probe, and one that never re-lists (the state before
 	// this existed) misses a removal entirely.
 	PublishAccountsChanged(providerName string)
+	// PublishListingChanged says a saved card's listing changed in what only
+	// ListProviderAccounts carries (its usage resets) while the set of
+	// accounts stayed the same, so clients re-list and nothing that follows
+	// the set (auto-switch's sign-in results) is forgotten.
+	PublishListingChanged(providerName string)
+	// PublishLimitsReset says a usage reset of the account landed and the
+	// reading after it was recorded, so refusals the account earned before
+	// it no longer describe it. A reset whose reading did not land is not
+	// published.
+	PublishLimitsReset(providerName, accountID string)
 	PublishUsageError(providerName, accountID string, err error)
 	PublishLogin(state LoginState)
 	// PublishSignIn names the account a login landed on and what it did to
@@ -109,6 +119,24 @@ type Manager struct {
 	loginStates map[string]LoginState
 	// loginSeq numbers every stored sign-in state (LoginState.Seq).
 	loginSeq uint64
+
+	// resetLockWaitOverride replaces ResetLockWait in focused tests.
+	resetLockWaitOverride time.Duration
+	// resetSendCutoffOverride replaces ResetSendCutoff in focused tests.
+	resetSendCutoffOverride time.Duration
+	// resetAdmitted, when set in focused tests, runs as a spend's admission
+	// ends, after a fresh spend's record is written.
+	resetAdmitted func()
+	// resetNotes is the last note codexResetReading logged per Codex
+	// account, so each is logged once per change. Guarded by mu.
+	resetNotes map[string]string
+}
+
+func (m *Manager) resetLockWait() time.Duration {
+	if m.resetLockWaitOverride > 0 {
+		return m.resetLockWaitOverride
+	}
+	return ResetLockWait
 }
 
 // NewManager constructs an unattached manager. Attach installs the two stores
@@ -138,6 +166,9 @@ func (m *Manager) Attach(store *provideraccounts.Store, credentials *provideracc
 	m.store = store
 	m.credentials = credentials
 	m.auditPath = auditPath
+	if store != nil {
+		store.GuardSelection(m.refuseSelectionWithLiveUses)
+	}
 	return nil
 }
 
@@ -179,9 +210,14 @@ func (m *Manager) providerBinaryPath(providerName string) string {
 
 // reconcileLock is one provider's reconcile mutex. A caller bounded by a
 // context waits for it with LockContext; the zero value is unlocked.
+//
+// It also holds the provider's credential uses (credentialuse.go): a holder
+// that changes the selected account ends them first (selectionChanging), and
+// Unlock admits uses again, so no change outlives the hold it was made in.
 type reconcileLock struct {
 	once sync.Once
 	sem  chan struct{}
+	uses credentialUses
 }
 
 func (l *reconcileLock) slot() chan struct{} {
@@ -205,6 +241,7 @@ func (l *reconcileLock) LockContext(ctx context.Context) error {
 }
 
 func (l *reconcileLock) Unlock() {
+	l.uses.endChange()
 	select {
 	case <-l.slot():
 	default:
@@ -282,13 +319,14 @@ func (m *Manager) ActiveAccount(providerName string) (provideraccounts.Account, 
 	return m.store.Active(providerName, time.Now())
 }
 
-// Generation returns the current provider credential generation.
+// Generation returns the current provider credential generation. It is one
+// value the store reads under its own lock, so it takes no Manager lock: a
+// credential use checks its admission with it while a selection change that
+// holds mu waits for that use to end.
 func (m *Manager) Generation(providerName string) uint64 {
 	if m == nil || m.store == nil {
 		return 0
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
 	return m.store.Generation(providerName)
 }
 

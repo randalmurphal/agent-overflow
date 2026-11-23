@@ -360,11 +360,12 @@ func TestEveryClaudeLaunchCarriesTheRetentionWindow(t *testing.T) {
 		}
 		return resolver(workDir).CleanupPeriodDays()
 	}
-	textgenAlternate, ok := app.resolveTextGenerationConfigFor(string(provider.Claude))
+	claudeReportsModels(app)
+	textgenAlternate, ok := app.resolveTextGenerationConfigFor(context.Background(), string(provider.Claude))
 	if !ok {
 		t.Fatal("resolveTextGenerationConfigFor did not resolve the mock Claude binary")
 	}
-	textgenPreferred := app.resolveTextGenerationConfig()
+	textgenPreferred := textGenConfig(t, app)
 	if textgenPreferred.Provider != string(provider.Claude) {
 		t.Fatalf("text generation chose %q, want claude", textgenPreferred.Provider)
 	}

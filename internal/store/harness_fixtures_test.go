@@ -399,6 +399,9 @@ func downgradeSchema(t *testing.T, db, ref *sql.DB, version int) {
 	// Dependents first on the way down, tables first on the way up.
 	down := []string{"trigger", "view", "index", "table"}
 	for _, kind := range down {
+		if kind == "table" {
+			dropTablesChildrenFirst(t, db, have, want)
+		}
 		for key, o := range have {
 			if o.Type != kind {
 				continue
@@ -452,6 +455,44 @@ func downgradeSchema(t *testing.T, db, ref *sql.DB, version int) {
 	}
 	if n := countRowsDB(t, db, `SELECT count(*) FROM pragma_foreign_key_check`); n != 0 {
 		t.Fatalf("%d foreign key violations after the downgrade", n)
+	}
+}
+
+// dropTablesChildrenFirst drops the tables of have that want lacks, each
+// before the tables it references, and removes them from have. Dropping a
+// parent first deletes its rows, and the cascade into a child fails when
+// another table that child references is already gone.
+func dropTablesChildrenFirst(t *testing.T, db *sql.DB, have, want map[string]schemaObject) {
+	t.Helper()
+	var left []string
+	for key, o := range have {
+		if _, kept := want[key]; o.Type == "table" && !kept {
+			left = append(left, o.Name)
+		}
+	}
+	slices.Sort(left)
+	for len(left) > 0 {
+		var referenced []string
+		for _, child := range left {
+			parents, err := queryIDs(db, `SELECT "table" FROM pragma_foreign_key_list(?) WHERE "table" <> ?`, child, child)
+			if err != nil {
+				t.Fatal(err)
+			}
+			referenced = append(referenced, parents...)
+		}
+		var next []string
+		for _, name := range left {
+			if slices.Contains(referenced, name) {
+				next = append(next, name)
+				continue
+			}
+			mustExec(t, db, fmt.Sprintf(`DROP TABLE "%s"`, name))
+			delete(have, "table "+name)
+		}
+		if len(next) == len(left) {
+			t.Fatalf("tables %v reference each other; the fixture cannot drop them", left)
+		}
+		left = next
 	}
 }
 

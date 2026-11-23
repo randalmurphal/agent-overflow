@@ -35,11 +35,17 @@ type AccountProbeRequest struct {
 	// AfterAdopt runs once the runner has accepted and cached the identity,
 	// before it emits `provider:account` for it.
 	AfterAdopt func(provideraccounts.Account)
+	// ResetCredits, for a Codex probe, returns the resets the probe's
+	// rate-limit answer named and whether that answer arrived; the runner
+	// records them on the account it adopts (provideraccountapp.ProbeRequest).
+	ResetCredits func() (*codex.ResetCredits, bool)
 }
 
 // Deps names the root capabilities used by provider discovery. Provider-
 // specific probe constructors remain separate so Claude and Codex transactions
 // cannot accidentally collapse into a lowest-common-denominator abstraction.
+// ClaudeProbe and CodexProbe return a canonical account probe's cache key and
+// the configuration it runs with, from one read of the settings.
 type Deps struct {
 	// Reaper ends a model-list process if the backend dies first.
 	Reaper                     procutil.Reaper
@@ -50,8 +56,8 @@ type Deps struct {
 	ProbeKey                   func(providerName, binary, accountID string) provider.ProbeCacheKey
 	ProbeKeyForEnv             func(binary, accountID string, customEnv map[string]string) provider.ProbeCacheKey
 	RunAccountProbe            func(AccountProbeRequest) (provider.AccountInfo, error)
-	ClaudeConfig               func(binary string) claude.ProbeConfig
-	CodexConfig                func(binary string) codex.ProbeConfig
+	ClaudeProbe                func(binary, accountID string) (provider.ProbeCacheKey, claude.ProbeConfig)
+	CodexProbe                 func(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig)
 	AgyConfig                  func(binary string) agy.ProbeConfig
 	EmitStatus                 func(providerstatus.Event)
 	EmitRateLimits             func(provider.RateLimitsSnapshot)
@@ -62,10 +68,11 @@ type Deps struct {
 	CheckClaudeTransferAccount func(context.Context, string) error
 	CheckCodexTransferAccount  func(context.Context, string) error
 	CheckAgyTransferAccount    func(context.Context, string) error
-	// RememberClaudeCatalog persists one account's probe-reported model
-	// answer so the next cold start serves the enriched picker before its
-	// own probe lands. Optional: a focused test may leave it nil.
-	RememberClaudeCatalog func(accountID string, snapshot claudemodels.Snapshot)
+	// RememberClaudeCatalog persists the model answer of the probe identity
+	// key (its adopted account included) so the next cold start serves the
+	// enriched picker before its own probe lands. Optional: a focused test
+	// may leave it nil.
+	RememberClaudeCatalog func(key provider.ProbeCacheKey, snapshot claudemodels.Snapshot)
 	// ProbeAgyModels performs a live zero-token model catalog probe against
 	// the given Antigravity binary (borrowing a pooled *acp.Conn when live).
 	ProbeAgyModels func(ctx context.Context, binary string) ([]provider.ModelInfo, error)

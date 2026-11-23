@@ -317,8 +317,8 @@ round's **background carrier**.
   path, with no special-casing needed there.
 
 Why: the idle-session reaper (`app_session_reaper.go`) keeps a quiet
-session alive only while `ListRunningBackgroundToolCalls` is
-non-empty. The ORIGINAL launch already has its round-1 sibling once
+session alive only while `CountLiveRunningBackgroundToolCalls` is
+above zero. The ORIGINAL launch already has its round-1 sibling once
 round 1 completes, so it can never satisfy that predicate again. If
 nothing else is backgrounded, a quiet resumed agent would get its
 whole session reaped mid-run without the carrier. The original launch
@@ -832,11 +832,23 @@ does not stop the boot: it is reported as a failed boot phase, which
 every client shows ([startup readiness](transport.md#startup-readiness)),
 and the next start runs it again.
 
-Post-sweep, a `completed_at=null` row during an app run means
-genuinely live provider work. The durable "interrupted" signal that
-survives restarts is `stop_reason='interrupted'`; the sidebar's boot
-pill (`Thread.HasIncompleteTurn`) covers both encodings: an unseen
-in-flight turn, or an unseen settled-interrupted turn.
+Post-sweep, a thread's newest `completed_at=null` row during an app run
+means genuinely live provider work, and every durable reader reads it
+as running (`Thread.HasOpenTurn`, `GetActiveTurn`, the rest sources).
+The row is open until `UpdateTurnCompleted` settles it. The live round
+outlasts that write: triage takes the round when the completion
+arrives and reports it as the ending round in both live-state
+snapshots while the turn's end is written, so a reader sees the turn
+running throughout. The round ends right before
+`provider:turn_completed` goes out, so what that frame starts (a
+worker's reassessment, a wait's read) finds it ended. The durable
+"interrupted" signal that survives restarts is
+`stop_reason='interrupted'`, the only thing the sidebar's boot pill
+(`Thread.HasIncompleteTurn`) reads: an unseen settled interruption.
+
+When the write of a turn's end fails, or the boot sweep fails, the row
+stays open with nothing running its turn, and it reads as running until
+a later boot's sweep records it as interrupted.
 
 The frontend still shows no active-turn spinner for any of this
 (spinner requires a live `activeTurn` push, not a DB row), and we do
@@ -1168,7 +1180,8 @@ working indicator clears and the user gets actionable copy:
    `expect_turn_complete` opt-in (Codex doesn't follow up with a
    `result` envelope), so the synthetic truncated turn-complete fires.
 5. **Error `result` with no open round and no open turn** (pre-init
-   startup failure, e.g. an unusable `--resume-session-at` cursor, where
+   startup failure, e.g. a pinned fork start's unusable
+   `--resume-session-at` cursor, where
    the process emits only the error result and lingers):
    `handleTurnComplete`'s orphan branch persists an error item
    attributed to the first pending send that has not opened a turn (the send that
@@ -1181,8 +1194,10 @@ working indicator clears and the user gets actionable copy:
    writes nothing (`claimOrphanError`). The app layer additionally
    reaps the never-inited session (`teardownDeadPreInitSession`,
    Claude-only, since the lingering-process failure mode is the Claude
-   CLI's; token- and epoch-guarded so a racing user retry's
-   replacement session is never torn down) after restoring any queued
+   CLI's; run whole under the thread action lock and token- and
+   epoch-guarded, so a racing user retry's replacement session is never
+   torn down and a caller tearing the session down under the lock
+   finishes before the reaper starts) after restoring any queued
    sends to the composer draft, so the next send lazy-starts fresh;
    recovery is a manual retry: the failure mode is deterministic, so
    auto-retry would loop silently. The error-item upsert is the single

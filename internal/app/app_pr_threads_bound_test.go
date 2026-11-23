@@ -62,7 +62,7 @@ func TestThreadsTruncatedReachesThePane(t *testing.T) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: pr.Number, HeadSHA: "head"}, ThreadsTruncated: sentence.Load().(string)}, nil
 	}
 	events := capturePRUpdates(t, app)
-	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}

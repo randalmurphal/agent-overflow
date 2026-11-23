@@ -1,5 +1,6 @@
 // The image menu host: which elements raise it (every attachment image
-// surface, never a file chip, and a local image an agent wrote as a path),
+// surface, never a file chip, a local image an agent wrote as a path, and a
+// file of a PR's repository its body shows),
 // what its rows call, and how it behaves over the lightbox, which must
 // survive every way the menu closes.
 
@@ -8,19 +9,28 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { mockAttachmentDownload, mockLocalImage } from '../../../test/mocks/attachmentTransfer';
+import { mockAttachmentDownload, mockGitBlobImage, mockLocalImage } from '../../../test/mocks/attachmentTransfer';
+import { __resetForgeFactsForTest, noteForgeFactsWorkspace } from '../../stores/forgeFacts.svelte';
+import { buildRepositoryImageHref, type RepositoryImageClaim } from '../../utils/repositoryImageHref';
+import { installLongPressContextMenu, LONG_PRESS_HOLD_MS } from '../../utils/longPressContextMenu';
+import { prKey } from '../../utils/prReference';
+import { composeWorkspaceKey } from '../../utils/workspaceKey';
+import RepositoryImageHost from './markdown/RepositoryImageHost.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { Attachment } from '../../types/attachment';
 import type { ImagePreviewItem } from '../../utils/attachmentPreview.svelte';
+import type { ScopeGrant } from '../../transport/scopes';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { closeImageLightbox, imageLightbox } from '../../stores/imageLightbox.svelte';
 import {
   attachmentImageMenuTag,
-  canSaveMenuImage,
+  saveMenuImageGrant,
   copyLocalImageMarkdown,
   copyLocalImagePath,
   copyMenuImage,
+  copyRepositoryImagePath,
   localImageMenuTag,
+  repositoryImageMenuTag,
   saveMenuImage,
   saveMenuImageLabel,
 } from '../../utils/imageMenuActions';
@@ -39,8 +49,9 @@ vi.mock('../../utils/imageMenuActions', async (importOriginal) => ({
   copyMenuImage: vi.fn(async () => {}),
   copyLocalImagePath: vi.fn(async () => {}),
   copyLocalImageMarkdown: vi.fn(async () => {}),
+  copyRepositoryImagePath: vi.fn(async () => {}),
   saveMenuImage: vi.fn(async () => {}),
-  canSaveMenuImage: vi.fn(() => true),
+  saveMenuImageGrant: vi.fn((): ScopeGrant => 'granted'),
   saveMenuImageLabel: vi.fn(() => 'Save Image'),
 }));
 
@@ -125,7 +136,7 @@ describe('<ImageMenuHost>', () => {
     vi.mocked(copyLocalImagePath).mockReset().mockResolvedValue(undefined);
     vi.mocked(copyLocalImageMarkdown).mockReset().mockResolvedValue(undefined);
     vi.mocked(saveMenuImage).mockReset().mockResolvedValue(undefined);
-    vi.mocked(canSaveMenuImage).mockReset().mockReturnValue(true);
+    vi.mocked(saveMenuImageGrant).mockReset().mockReturnValue('granted');
     vi.mocked(saveMenuImageLabel).mockReset().mockReturnValue('Save Image');
     for (const t of Array.from(getToasts())) removeToast(t.id);
   });
@@ -245,7 +256,7 @@ describe('<ImageMenuHost>', () => {
     });
 
     it('Save is inert and says why when this device may not write there', async () => {
-      vi.mocked(canSaveMenuImage).mockReturnValue(false);
+      vi.mocked(saveMenuImageGrant).mockReturnValue('refused');
       await openOnTile();
       const save = item('Save Image');
       expect(save.getAttribute('aria-disabled')).toBe('true');
@@ -326,7 +337,7 @@ describe('<ImageMenuHost>', () => {
       await rightClick(document.querySelector('img')!);
       await fireEvent.click(item('Save Image'));
       expect(saveMenuImage).toHaveBeenCalledWith(LOCAL);
-      expect(canSaveMenuImage).toHaveBeenCalledWith(LOCAL);
+      expect(saveMenuImageGrant).toHaveBeenCalledWith(LOCAL);
     });
 
     // HOME is the empty key: the attribute is present and empty, which the
@@ -362,6 +373,105 @@ describe('<ImageMenuHost>', () => {
       expect(rows()).toEqual(['Copy Image', 'Copy Path', 'Copy Markdown', 'Save Image']);
       item('Copy Markdown').dispatchEvent(new MouseEvent('click', { bubbles: true }));
       expect(copyLocalImageMarkdown).toHaveBeenCalledWith(expected);
+    });
+  });
+
+  describe('on a repository image', () => {
+    const PR = { forge: 'github' as const, host: 'github.com', namespace: 'acme', repo: 'widget', number: 4 };
+    const CLAIM: RepositoryImageClaim = {
+      state: 'found',
+      backend: 'gpu',
+      pr: PR,
+      commit: 'a'.repeat(40),
+      path: 'docs/diagram.png',
+      oid: 'c'.repeat(40),
+      width: 400,
+      height: 300,
+      fluid: false,
+      browserUrl: `https://github.com/acme/widget/blob/${'a'.repeat(40)}/docs/diagram.png`,
+    };
+    const HREF = buildRepositoryImageHref(CLAIM);
+    const REPOSITORY = { kind: 'repository', image: CLAIM };
+
+    function tagged(): HTMLImageElement {
+      const host = document.createElement('span');
+      for (const [name, value] of Object.entries(repositoryImageMenuTag(HREF))) host.setAttribute(name, value);
+      const img = document.createElement('img');
+      host.appendChild(img);
+      document.body.appendChild(host);
+      return img;
+    }
+
+    afterEach(() => {
+      closeImageLightbox();
+      __resetMediaBlobCacheForTest();
+      __resetImageTiersForTest();
+      __resetForgeFactsForTest();
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    it('offers Copy Path between Copy Image and Save Image, and hands the claim to each row', async () => {
+      render(ImageMenuHost);
+      const img = tagged();
+      await rightClick(img);
+      expect(rows()).toEqual(['Copy Image', 'Copy Path', 'Save Image']);
+      item('Copy Path').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      // Reached inside the click, before anything is awaited.
+      expect(copyRepositoryImagePath).toHaveBeenCalledWith(CLAIM);
+      await tick();
+      expect(menu()).toBeNull();
+      await rightClick(img);
+      item('Copy Image').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(copyMenuImage).toHaveBeenCalledWith(REPOSITORY);
+      await rightClick(img);
+      await fireEvent.click(item('Save Image'));
+      expect(saveMenuImage).toHaveBeenCalledWith(REPOSITORY);
+      expect(saveMenuImageGrant).toHaveBeenCalledWith(REPOSITORY);
+      expect(saveMenuImageLabel).toHaveBeenCalledWith(REPOSITORY);
+      expect(copyLocalImagePath).not.toHaveBeenCalled();
+    });
+
+    it('opens on a long press, through the shared bridge', async () => {
+      vi.useFakeTimers();
+      const dispose = installLongPressContextMenu({ isActive: () => true });
+      try {
+        render(ImageMenuHost);
+        const img = tagged();
+        img.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'touch', isPrimary: true, button: 0, clientX: 20, clientY: 20 }));
+        vi.advanceTimersByTime(LONG_PRESS_HOLD_MS);
+        img.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'touch', isPrimary: true }));
+        await tick();
+        expect(rows()).toEqual(['Copy Image', 'Copy Path', 'Save Image']);
+      } finally {
+        dispose();
+      }
+    });
+
+    it('opens on the image the review paints and on its lightbox picture', async () => {
+      vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:repo-image');
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+      noteForgeFactsWorkspace(composeWorkspaceKey('gpu', prKey(PR)), { backend: 'gpu', path: '/work/widget' } as never);
+      mockGitBlobImage(() => ({ mimeType: 'image/png', width: 400, height: 300 }));
+      render(ImageMenuHost);
+      const { container } = render(RepositoryImageHost, {
+        props: { token: { type: 'image', raw: '![diagram](docs/diagram.png)', href: HREF, title: null, text: 'diagram', tokens: [] } },
+      });
+      __reportImageBoxForTest(800);
+      await waitFor(() => expect(container.querySelector('img[src="blob:repo-image"]')).not.toBeNull());
+      const painted = container.querySelector('img')!;
+      await rightClick(painted);
+      expect(rows()).toEqual(['Copy Image', 'Copy Path', 'Save Image']);
+      item('Copy Path').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(copyRepositoryImagePath).toHaveBeenCalledWith(CLAIM);
+      await tick();
+
+      await fireEvent.click(painted);
+      const preview = imageLightbox();
+      expect(preview).not.toBeNull();
+      const view = render(ExpandedImageDialog, { props: { preview: preview!, onClose: vi.fn() } });
+      await rightClick(view.getByRole('img', { name: 'diagram.png' }));
+      expect(rows()).toEqual(['Copy Image', 'Copy Path', 'Save Image']);
     });
   });
 

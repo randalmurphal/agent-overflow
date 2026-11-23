@@ -53,6 +53,9 @@ type SyncThreadWindowRequest struct {
 	// bounds, MaxBytes to itemWindowMaxBytes.
 	RunWindowRows int `json:"runWindowRows,omitempty"`
 	MaxBytes      int `json:"maxBytes,omitempty"`
+	// AgentMessageMembers is PageShape.AgentMessageMembers: the run
+	// membership rule the page is grouped by.
+	AgentMessageMembers bool `json:"agentMessageMembers,omitempty"`
 	// HaveWindow describes the ROWS the caller already holds, and is nil
 	// when it holds none. It is the answer to the case the stamps cannot
 	// serve: a turn on the open thread moves the thread's rev, so the
@@ -105,7 +108,7 @@ func (a *App) SyncThreadWindow(callerCtx context.Context, threadID string, req S
 		clampSliceItemBudget(req.ItemBudget), shape.RunWindowRows, store.HistoryStamp{
 			Rev:   req.HaveRev,
 			Epoch: req.HaveEpoch,
-		}, req.HaveWindow, req.Selection)
+		}, req.HaveWindow, req.Selection, a.activityRunRule(shape))
 	if err != nil {
 		return SyncThreadWindowResponse{}, normalizeThreadWindowSyncError(ctx, err)
 	}
@@ -141,9 +144,10 @@ func (a *App) SyncThreadWindow(callerCtx context.Context, threadID string, req S
 // form is.
 func (r SyncThreadWindowRequest) shape() PageShape {
 	return PageShape{
-		InlinePreviews: r.InlinePreviews,
-		RunWindowRows:  r.RunWindowRows,
-		MaxBytes:       r.MaxBytes,
+		InlinePreviews:      r.InlinePreviews,
+		RunWindowRows:       r.RunWindowRows,
+		MaxBytes:            r.MaxBytes,
+		AgentMessageMembers: r.AgentMessageMembers,
 	}.normalize()
 }
 

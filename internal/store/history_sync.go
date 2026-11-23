@@ -248,7 +248,8 @@ func (s *Store) ThreadHistoryStamp(threadID string) (HistoryStamp, bool, error) 
 // (`:memory:`, non-WAL) `reader()` IS the writer, so the transaction
 // serializes with flush writes like any other read there.
 // `runWindowRows` sizes the page exactly as it sizes ListThreadSliceAround's:
-// the two return the same window and must therefore compose it identically.
+// the two return the same window and must therefore compose it identically,
+// and `rule` groups its agent messages as the caller does.
 //
 // `held` describes the rows the caller already has, and is nil when it has
 // none. It is the second way to earn `fresh`: when the stamps do not match
@@ -256,13 +257,16 @@ func (s *Store) ThreadHistoryStamp(threadID string) (HistoryStamp, bool, error) 
 // page-less and the returned stamp attests the caller's own rows. That is
 // what keeps a reopen after a turn on the same thread free, where a stamp
 // the turn invalidated cannot.
-func (s *Store) SyncThreadWindow(ctx context.Context, threadID, anchorItemID string, itemBudget, runWindowRows int, have HistoryStamp, held *HeldWindow, selection TimelineSelection) (ThreadWindowSync, error) {
+func (s *Store) SyncThreadWindow(ctx context.Context, threadID, anchorItemID string, itemBudget, runWindowRows int, have HistoryStamp, held *HeldWindow, selection TimelineSelection, rule ActivityRunRule) (ThreadWindowSync, error) {
+	if err := rule.validate(); err != nil {
+		return ThreadWindowSync{}, err
+	}
 	return historyReadSnapshot(ctx, s, "sync thread window", func(q sqlQueryer) (ThreadWindowSync, error) {
-		return s.syncThreadWindow(q, threadID, anchorItemID, itemBudget, runWindowRows, have, held, selection)
+		return s.syncThreadWindow(q, threadID, anchorItemID, itemBudget, runWindowRows, have, held, selection, rule)
 	})
 }
 
-func (s *Store) syncThreadWindow(q sqlQueryer, threadID, anchorItemID string, itemBudget, runWindowRows int, have HistoryStamp, held *HeldWindow, selection TimelineSelection) (ThreadWindowSync, error) {
+func (s *Store) syncThreadWindow(q sqlQueryer, threadID, anchorItemID string, itemBudget, runWindowRows int, have HistoryStamp, held *HeldWindow, selection TimelineSelection, rule ActivityRunRule) (ThreadWindowSync, error) {
 	stamp, found, err := readHistoryStampTx(q, threadID)
 	if err != nil {
 		return ThreadWindowSync{}, err
@@ -313,7 +317,7 @@ func (s *Store) syncThreadWindow(q sqlQueryer, threadID, anchorItemID string, it
 		}
 	}
 
-	page, err := s.listThreadSliceAround(q, threadID, anchorItemID, itemBudget, runWindowRows, scope)
+	page, err := s.listThreadSliceAround(q, threadID, anchorItemID, itemBudget, runWindowRows, scope, rule)
 	if err != nil {
 		return ThreadWindowSync{}, err
 	}

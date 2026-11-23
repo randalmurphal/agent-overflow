@@ -13,20 +13,26 @@
   //     with the user's `gh`/`glab` login on the computer that owns the PR
   //     and rendered by what the bytes turned out to be, which is why it
   //     owns its own host rather than being an <img> branch here.
+  //   - A file of the PR's repository the parse claimed
+  //     (`agent-overflow:repo-image?nonce=…`, utils/repositoryImageHref.ts):
+  //     its own host paints it from the local git object store.
   //   - An http(s) or `data:image/…` src the URL gate approved: rendered
-  //     directly.
+  //     directly, as a player when the parse marked the image playable
+  //     (`media`, markdown/parser/extensions/mediaImages.ts).
   //   - Anything else the gate approved for a bare <Streamdown> but this
   //     host does not paint: reported, never silently dropped.
   //
   // A decode failure (`onerror`) is reported the same way as a fetch
   // failure, so a corrupt or mislabeled file never leaves a blank gap.
-  import type { Tokens } from '../../../markdown';
+  import { imageSizeOf, type MediaImageToken, type Tokens } from '../../../markdown';
   import type { BackendKey } from '../../../transport/backendKey';
   import { localImageMenuTag } from '../../../utils/imageMenuActions';
-  import { localMarkdownImageSource } from '../../../utils/markdownImageSource';
+  import { claimedInLink, localMarkdownImageSource } from '../../../utils/markdownImageSource';
   import { parseLocalImageHref } from '../../../utils/pathLinkExtension';
   import { parseForgeAttachmentHref } from '../../../utils/forgeAttachments';
   import ForgeAttachmentHost from './ForgeAttachmentHost.svelte';
+  import RepositoryImageHost from './RepositoryImageHost.svelte';
+  import { parseRepositoryImageHref } from '../../../utils/repositoryImageHref';
   import MarkdownImage from './MarkdownImage.svelte';
 
   let {
@@ -34,7 +40,7 @@
     src: approvedSrc,
     backend,
   }: {
-    token: Tokens.Image;
+    token: Tokens.Image & MediaImageToken;
     src: string;
     /** The computer a local image is read from: the thread's machine. */
     backend: BackendKey;
@@ -44,7 +50,8 @@
   // same image, and must not restart the fetch.
   const href = $derived(token.href);
   const forge = $derived(parseForgeAttachmentHref(href) !== null);
-  const local = $derived(forge ? null : parseLocalImageHref(href));
+  const repository = $derived(!forge && parseRepositoryImageHref(href) !== null);
+  const local = $derived(forge || repository ? null : parseLocalImageHref(href));
   const source = $derived(
     local ? localMarkdownImageSource(backend, local, localImageMenuTag({ backend, href, alt: token.text })) : null,
   );
@@ -56,15 +63,15 @@
   $effect(() => {
     // A forge attachment and a local image belong to their own renderers;
     // this effect must not claim either as an unpaintable scheme.
-    if (forge || local) return;
+    if (forge || repository || local) return;
     const direct = approvedSrc;
     reason = '';
-    if (/^(?:https?:|data:image\/)/i.test(direct)) {
+    if (token.media ? /^https?:/i.test(direct) : /^(?:https?:|data:image\/)/i.test(direct)) {
       directSrc = direct;
       error = '';
     } else {
       directSrc = '';
-      error = `This surface does not display ${direct.split(':', 1)[0]}: images`;
+      error = `This surface does not display ${direct.split(':', 1)[0]}: ${token.media ?? 'image'}s`;
     }
   });
 
@@ -72,24 +79,91 @@
   // only defer the paint of a row the virtualizer has already decided to
   // show; an http(s) src keeps it.
   const lazy = $derived(/^https?:/i.test(directSrc) ? 'lazy' : undefined);
+  const size = $derived(imageSizeOf(token));
 
   function handleDecodeError(): void {
     directSrc = '';
-    error = 'The file is not an image this browser can decode';
+    error = `The file is not ${token.media ? 'media' : 'an image'} this browser can decode`;
     reason = 'cannot decode';
   }
 </script>
 
 {#if forge}
   <ForgeAttachmentHost {token} />
+{:else if repository}
+  <RepositoryImageHost {token} />
 {:else if source}
-  <MarkdownImage {source} alt={token.text} markdownImageSrc={local?.sourceHref || undefined} />
+  <MarkdownImage
+    {source}
+    alt={token.text}
+    title={token.title ?? undefined}
+    markdownImageSrc={local?.sourceHref || undefined}
+    {size}
+    linked={claimedInLink(token)}
+  />
+{:else if directSrc && token.media === 'video'}
+  <!-- A player has no text: `data-find-skip` makes it end find's run, as
+       the image it was written as does. -->
+  <span
+    data-streamdown-media="video"
+    data-find-skip
+    class="my-4 mx-auto block w-fit max-w-full"
+    style:width={size.wrapper}
+    style:float={size.float}
+    style:vertical-align={size.verticalAlign}
+    style:margin-inline={size.marginInline}
+  >
+    <!-- svelte-ignore a11y_media_has_caption -->
+    <video
+      class="max-w-full rounded-lg"
+      style:width={size.width}
+      style:height={size.height}
+      style:aspect-ratio={size.aspectRatio}
+      src={directSrc}
+      title={token.title ?? undefined}
+      aria-label={token.text || undefined}
+      controls
+      playsinline
+      preload="metadata"
+      onerror={handleDecodeError}
+    ></video>
+  </span>
+{:else if directSrc && token.media === 'audio'}
+  <span
+    data-streamdown-media="audio"
+    data-find-skip
+    class="my-2 block w-fit max-w-full"
+    style:float={size.float}
+    style:vertical-align={size.verticalAlign}
+    style:margin-inline={size.marginInline}
+  >
+    <audio
+      class="max-w-full"
+      src={directSrc}
+      title={token.title ?? undefined}
+      aria-label={token.text || undefined}
+      controls
+      preload="metadata"
+      onerror={handleDecodeError}
+    ></audio>
+  </span>
 {:else if directSrc}
-  <span data-streamdown-image class="group relative my-4 mx-auto block w-fit max-w-full">
+  <span
+    data-streamdown-image
+    class="group relative my-4 mx-auto block w-fit max-w-full"
+    style:width={size.wrapper}
+    style:float={size.float}
+    style:vertical-align={size.verticalAlign}
+    style:margin-inline={size.marginInline}
+  >
     <img
       class="max-w-full rounded-lg"
       src={directSrc}
       alt={token.text}
+      title={token.title ?? undefined}
+      style:width={size.width}
+      style:height={size.height}
+      style:aspect-ratio={size.aspectRatio}
       loading={lazy}
       onerror={handleDecodeError}
     />

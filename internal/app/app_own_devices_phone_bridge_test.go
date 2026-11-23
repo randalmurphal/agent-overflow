@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
@@ -13,6 +12,7 @@ import (
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/owndevices"
+	"agent-overflow/internal/testutil"
 	"github.com/google/uuid"
 )
 
@@ -34,14 +34,14 @@ func TestOwnDevicePhoneBridgesTwoPreviouslySeparateHosts(t *testing.T) {
 			}
 		}
 	}
-	phone, err := attachedbackends.New(t.TempDir(), "Phone", "android")
+	phone, err := newTestBackends(t, t.TempDir(), "Phone", "android")
 	if err != nil {
 		t.Fatal(err)
 	}
 	phone.SetNetwork(nil, dialOwnFixture)
 	pairOwnConnection(t, a, phone, true)
 	pairOwnConnection(t, b, phone, true)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	var first, second owndevices.List
 	if err := phone.CallOwnDevice(ctx, a.id, "ListOwnDevices", &first); err != nil {
@@ -139,7 +139,7 @@ func TestOwnIntroductionSelectsReachableRouteBeforeRedemption(t *testing.T) {
 	pairOwnConnection(t, b, a.app.backends, true)
 	// Initial confirmed carrier admits A and establishes both public identities.
 	var catalog owndevices.List
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	if err := a.app.backends.CallOwnDevice(ctx, b.id, "ListOwnDevices", &catalog); err != nil {
 		t.Fatal(err)

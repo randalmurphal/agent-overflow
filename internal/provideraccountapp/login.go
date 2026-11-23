@@ -116,6 +116,11 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 			reconcileMu.Unlock()
 		}
 	}()
+	// A sign-in selects its account only when none is selected; signing in
+	// to the selected one keeps the account and its uses.
+	if _, hasCurrent := m.store.Active(providerName, time.Now()); !hasCurrent {
+		m.selectionChanging(providerName)
+	}
 	if err := m.reconcileExternalProviderAccountWithMutexHeld(m.context(), providerName); err != nil {
 		return ManagedAccount{}, fmt.Errorf(
 			"check current %s account before activation: %w",

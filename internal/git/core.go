@@ -235,6 +235,24 @@ type Core struct {
 	// `git worktree add`. Nil in production; tests set it to hold one
 	// checkout there while another runs.
 	beforeWorktreeAdd func(path string)
+
+	// localFacts holds the commit:, image: and lines: facts by workspace
+	// and resolved key, and blobImages each image blob's classification
+	// or parsed LFS pointer by blob id, each local LFS object's
+	// classification by its sha256, size and file time, and each workspace's LFS
+	// store directory (local_facts.go, local_lfs.go). Each is bounded and
+	// evicts the least recently used.
+	localFacts *factCache[ForgeFact]
+	blobImages *factCache[BlobImage]
+	// beforeFactGit runs before each git command of the facts reads with
+	// its arguments, and beforeLFSObjectRead before a lookup opens a local
+	// LFS object to read its header, with its path. lfsObjectClosed
+	// answers the outcome of closing an LFS object a read opened, given
+	// the close's. Nil in production; tests count the first two and fail
+	// closes with the third.
+	beforeFactGit       func(args []string)
+	beforeLFSObjectRead func(path string)
+	lfsObjectClosed     func(err error) error
 }
 
 type prCacheEntry struct {
@@ -328,9 +346,10 @@ func NewCore(opts ...CoreOption) *Core {
 		nowFn:                 time.Now,
 	}
 	core.fetchFn = core.fetchOriginQuiet
+	core.localFacts, core.blobImages = newLocalFactCaches()
 	core.forges = map[string]Forge{
-		"github": &githubForge{core: core},
-		"gitlab": &gitlabForge{core: core},
+		"github": &githubForge{core: core, facts: newForgeFactCache()},
+		"gitlab": &gitlabForge{core: core, facts: newForgeFactCache()},
 	}
 	for _, opt := range opts {
 		opt(core)

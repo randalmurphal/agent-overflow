@@ -84,6 +84,8 @@ type providerEventQueues struct {
 	// stalls holds the release of each thread whose worker a harness spec
 	// stalled (app_provider_event_stall.go). Guarded by mu.
 	stalls map[string]chan struct{}
+	// stallAcquire overrides providerEventStallAcquire when non-zero.
+	stallAcquire time.Duration
 }
 
 type queuedProviderEvent struct {

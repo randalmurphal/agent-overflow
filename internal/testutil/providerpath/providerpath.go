@@ -6,9 +6,9 @@
 // process and which tests are running; then it exits 127 and the run fails
 // with that evidence.
 //
-// The package depends only on the standard library so any package with
-// provider spawn code can use it from TestMain, including the packages the
-// shared fixtures import.
+// The package depends only on the standard library and small internal
+// packages that do too, so any package with provider spawn code can use it
+// from TestMain, including the packages the shared fixtures import.
 package providerpath
 
 import (
@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/ownedtemp"
 	"agent-overflow/internal/stringsx"
 )
 
@@ -81,44 +82,62 @@ const shellName = "login-shell"
 // so the sync cannot reorder it. It also starts the watcher that captures
 // the stacks behind each attempt. The returned check, called after m.Run,
 // stops the watcher, reports every attempt with its evidence and removes the
-// directory. On Windows, where the poison cannot be a shell script, Install
+// directory, and those of test processes that exited without their check
+// (ownedtemp). On Windows, where the poison cannot be a shell script, Install
 // changes nothing.
 func Install() (check func() error, err error) {
 	if runtime.GOOS == "windows" {
 		return func() error { return nil }, nil
 	}
-	dir, err := os.MkdirTemp("", "agent-overflow-provider-path-")
+	sweepDirsOfExitedProcesses()
+	dir, release, err := ownedtemp.Make("", dirPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("create poisoned provider PATH: %w", err)
 	}
 	if err := os.Mkdir(filepath.Join(dir, ackDirName), 0o755); err != nil {
-		return nil, errors.Join(fmt.Errorf("create poison ack directory: %w", err), os.RemoveAll(dir))
+		return nil, errors.Join(fmt.Errorf("create poison ack directory: %w", err), release())
 	}
 	for _, name := range Names {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(poisonScript(dir)), 0o755); err != nil {
-			return nil, errors.Join(fmt.Errorf("write poisoned %s: %w", name, err), os.RemoveAll(dir))
+			return nil, errors.Join(fmt.Errorf("write poisoned %s: %w", name, err), release())
 		}
 	}
 	shell := filepath.Join(dir, shellName)
 	if err := os.WriteFile(shell, []byte(standInShell), 0o755); err != nil {
-		return nil, errors.Join(fmt.Errorf("write stand-in shell: %w", err), os.RemoveAll(dir))
+		return nil, errors.Join(fmt.Errorf("write stand-in shell: %w", err), release())
 	}
 	if err := os.Setenv("SHELL", shell); err != nil {
-		return nil, errors.Join(fmt.Errorf("set SHELL: %w", err), os.RemoveAll(dir))
+		return nil, errors.Join(fmt.Errorf("set SHELL: %w", err), release())
 	}
 	path := dir
 	if existing := os.Getenv("PATH"); existing != "" {
 		path += string(os.PathListSeparator) + existing
 	}
 	if err := os.Setenv("PATH", path); err != nil {
-		return nil, errors.Join(fmt.Errorf("set PATH: %w", err), os.RemoveAll(dir))
+		return nil, errors.Join(fmt.Errorf("set PATH: %w", err), release())
 	}
 	w := startWatcher(dir)
 	return func() error {
 		attempts, watchErr := w.stop()
-		removeErr := os.RemoveAll(dir)
+		removeErr := release()
+		// Helper processes this binary started and killed, or that ended
+		// in os.Exit, made directories of their own.
+		sweepDirsOfExitedProcesses()
 		return errors.Join(watchErr, attemptsError(attempts), removeErr)
 	}, nil
+}
+
+// dirPrefix names the poisoned PATH directories, one per test process.
+const dirPrefix = "agent-overflow-provider-path-"
+
+// sweepDirsOfExitedProcesses removes the poisoned PATH directories of test
+// processes that are gone without their check: killed, timed out, or a
+// helper process that ended in os.Exit. A failure is reported, not fatal:
+// it leaves a directory, not a wrong result.
+func sweepDirsOfExitedProcesses() {
+	if err := ownedtemp.Sweep("", dirPrefix); err != nil {
+		fmt.Fprintln(os.Stderr, "providerpath: remove the directories of exited test processes:", err)
+	}
 }
 
 // poisonScript records the attempt with what can name the test: the

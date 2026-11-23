@@ -261,7 +261,10 @@ func TestHTTPSExchangeAndNoRedirect(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	hc := NewHTTPClient(nil)
+	hc, err := NewHTTPClient(nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer hc.CloseIdleConnections()
 	if _, sas, err := Exchange(context.Background(), hc, server.URL, "Laptop", "darwin"); err != nil || sas != b.Snapshot("").VerificationNumber {
 		t.Fatal("real TLS exchange failed", err)

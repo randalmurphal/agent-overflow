@@ -389,7 +389,7 @@ func TestPRCILogFollowsAreRefcountedAndReleasedWithTheHandle(t *testing.T) {
 	f.setLog("7", "ok\n", nil)
 	sub := f.subscribe(t)
 	awaitCIEvent(t, f.ciEvents, "pipeline frame")
-	other, err := f.app.SubscribePRUpdates(context.Background(), testPR)
+	other, err := f.app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("second subscribe: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestPRCILogFollowPinsItsLogInTheCache(t *testing.T) {
 	}
 
 	// A pump that died on its own releases its handles' follows.
-	other, err := f.app.SubscribePRUpdates(context.Background(), testPR)
+	other, err := f.app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("second subscribe: %v", err)
 	}

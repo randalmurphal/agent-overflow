@@ -53,10 +53,11 @@ func (s *Store) OpenThreadRequestTokensOn(computerID string) ([]string, error) {
 // them with OpenThreadRequestTokensOn) settle `errored` with
 // end.RequestAnswer, their wakes disarmed when end.Disarm is set; every
 // request there leaves the poll and owes no acknowledgement, its answer
-// kept; every command not known to have finished is recorded as finished
-// with an unknown outcome, so its thread is told once and its watch can
-// leave; no cancel is owed there any more; and every record there that
-// kept no name for the computer takes end.ComputerName.
+// kept; every run there ends with nothing more counted; every command not
+// known to have finished is recorded as finished with an unknown outcome,
+// so its thread is told once and its watch can leave; no cancel is owed
+// there any more; and every record there that kept no name for the
+// computer takes end.ComputerName.
 func (s *Store) EndPairing(computerID string, open []string, end PairingEnd) (_ PairingEnded, err error) {
 	action := fmt.Sprintf("store: end the pairing with %s", computerID)
 	settlement := ThreadRequestSettlement{
@@ -86,6 +87,13 @@ func (s *Store) EndPairing(computerID string, open []string, end PairingEnd) (_ 
 		  WHERE target_computer_id = `+textParam("?1")+` AND settled_at IS NOT NULL AND (polling = 1 OR ack_owed > 0)`,
 		computerID, nowMillis()); err != nil {
 		return PairingEnded{}, fmt.Errorf("%s: retire its requests: %w", action, err)
+	}
+	// No answer will end a run there now: each ends here with nothing more
+	// counted, a nudge's among them.
+	runs, err := endRunsTx(tx, `target_computer_id = `+textParam("?1"),
+		[3]string{"run_base_tool_calls", "run_base_tokens", "run_base_turn_ms"}, computerID)
+	if err != nil {
+		return PairingEnded{}, fmt.Errorf("%s: end its runs: %w", action, err)
 	}
 	if end.ComputerName != "" {
 		if _, err := tx.Exec(`UPDATE thread_requests SET target_computer_name = ?2
@@ -131,6 +139,7 @@ func (s *Store) EndPairing(computerID string, open []string, end PairingEnd) (_ 
 	for _, request := range ended.Settled {
 		s.noteThreadRequestChanged(ThreadRequestChange{Token: request.Token})
 	}
+	s.noteRunsEnded(runs)
 	return ended, nil
 }
 

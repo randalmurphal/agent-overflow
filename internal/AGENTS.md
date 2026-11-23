@@ -15,12 +15,15 @@ All non-main Go packages live under `internal/`. Root `main*.go` and
 | SQLite queries, migrations, restore and pruning | [store/](store/AGENTS.md) |
 | HTTP/WebSocket calls, events and connection policy | [transport/](transport/AGENTS.md) |
 | Sign-in, pairing and session permissions | [identity/](identity/AGENTS.md) |
-| Connected computers and profiles | [deviceclient/](deviceclient/AGENTS.md), [computerroute/](computerroute/AGENTS.md) |
+| Connected computers and profiles | [deviceclient/](deviceclient/AGENTS.md), [computerroute/](computerroute/AGENTS.md), `attachedbackends/` (a computer's pairing state and its one transaction: `computer_state.go`; enrollments: `enrollment.go`) |
 | Conversation move/copy | [threadtransfer/](threadtransfer/AGENTS.md) |
 | Workflow definitions and execution | [workflow/def/](workflow/def/AGENTS.md), [workflow/engine/](workflow/engine/AGENTS.md) |
 | Application services and their boundaries | [Application composition](../docs/architecture/root-decomposition.md) |
 | Repository/worktree lookup and operations | [gitroot/](gitroot/AGENTS.md), [git/](git/AGENTS.md), [gitapp/](gitapp/AGENTS.md), `worktreewatch/` (registry watch for removals made outside the app), `gitenv/` (the no-credential-prompt environment every git child gets) |
 | Forge HTTP transport: tokens, rate gates, ETags, isolation | `forgeapi/`; contract in [forge-transport.md](../docs/architecture/forge-transport.md) |
+| Polling pump core: handles, pause while hidden, request hand-off, retry schedule | `pump/` (package comment) |
+| Issue tracker clients: Jira, Tempo, Linear, their HTTP transport and the ADF converter | `tracker/` (package comments); contract in [tracker-clients.md](../docs/architecture/tracker-clients.md); what is built on them in [tracker-backend.md](../docs/architecture/tracker-backend.md) |
+| Tracker connections, their key files, clients and providers | `trackerapp/` (package comment), `app/app_tracker*.go`; design in [tracker-backend.md](../docs/architecture/tracker-backend.md) |
 | CI job logs on disk: download, line index, sections, reads | `cilog/` (package comment); the review pane's use in [review-pane-design.md](../docs/architecture/review-pane-design.md) |
 | Browser engines and thread browser tools | [browser/](browser/AGENTS.md) |
 | Agent thread tools and `/side-chat` | [threadtools/](threadtools/AGENTS.md), `app/app_thread_tools*.go`; contract in [agent-thread-tools.md](../docs/specs/agent-thread-tools.md) |

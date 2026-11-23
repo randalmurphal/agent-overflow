@@ -55,6 +55,13 @@ export class AgentProfile {
      */
     "useFor": string;
     "provider": string;
+
+    /**
+     * Model is an exact model ID, or a family named without a version
+     * (`claude-opus`, `gpt-sol`) that runs the newest model of it the
+     * target computer lists. The provider's grammar decides which it is
+     * (internal/provider/modelfamily.go), so nothing here reads it.
+     */
     "model": string;
     "effort": string;
     "runtimeMode": string;
@@ -1030,9 +1037,10 @@ export class Settings {
     "textGenerationProvider": string;
 
     /**
-     * TextGenerationModel is the model id the text-generation CLI uses.
-     * Empty string means "use the per-provider default" (codex ->
-     * gpt-6-luna, claude -> claude-haiku-5-5). We avoid forcing a
+     * TextGenerationModel is the model id the text-generation CLI uses,
+     * passed as written. Empty string means "use the per-provider
+     * default": the newest model the computer lists of the provider's
+     * TextGenerationDefaultFamily (gpt-luna, claude-haiku). We avoid forcing a
      * concrete default on the field itself because the right model
      * depends on which provider is selected, and a cross-provider
      * default would be wrong half the time.

@@ -73,15 +73,27 @@ Mechanism in
 
 ## Startup
 
-- A boot never shows an empty catalog. Until a computer's threads and
-  projects have answered, the sidebar shows a loading row for it, naming its
-  boot phase while it is starting, or its error with Retry. The empty-list
-  message appears only once both have loaded; rows already held stay visible.
+- A boot never shows an empty catalog while a computer may still answer.
+  Until this computer's threads and projects have answered, the sidebar shows
+  a loading row for it, naming its boot phase while it is starting, or its
+  error with Retry, while a load can make progress; while this computer is
+  unreachable the row is gone, since the banner says so and carries Retry.
+  The empty-list message appears once every visible computer has loaded or
+  been unreachable for 30 seconds; rows already held stay visible.
+- A paired computer's connection and load state show only in the Projects
+  menu, one plain line per computer: connected, connecting, offline with when
+  it was last reached, or the reason its lists could not load with Retry.
+  With the menu closed, the Projects section shows nothing about a paired
+  computer but its rows, so one that is off or keeps dropping adds no line,
+  spinner or color there. Its thread rows dim, and its banner shows, only
+  after it has been unreachable for 30 seconds without a break, and both
+  clear when it is reached; the composer in one of its threads says at once
+  that a message cannot be sent (ruling 2026-11-21).
 - A computer's projects, the threads under them and their groups list in the
   sidebar as one set, with no exception. A computer that has never listed a
-  complete tree shows only its error row with Retry: no project header, no
-  project row and no New Thread button. A computer that has listed one keeps
-  that tree, with the error row beside it while a read fails. Nothing from a
+  complete tree shows no project header, no project row and no New Thread
+  button, only its error with Retry. A computer that has listed one keeps
+  that tree, with its error beside it while a read fails. Nothing from a
   failing attempt reaches the sidebar. A complete tree is all three catalogs
   answered in one round, or, for a computer whose reads all fail, the last
   tree it answered together plus the changes pushed since. The replica
@@ -372,12 +384,23 @@ Mechanism in
   it. Threads selected together are one delete per computer. Placement
   is organization only: the spawn record, the reply path and the read
   mark on an answer do not change. An assistant row never joins a group.
+- The sidebar row is the only thing that changes whose a spawned thread
+  is (owner ruling 2026-11-19,
+  [owned workers](specs/standing-agents.md#owned-workers)). An owned
+  worker is its spawner's sub-agent in every run: a message the person or
+  another thread sends it is a nudge, whose work is one run of the
+  spawner's row, holds the spawner and delivers it nothing at its end; its
+  prompts go to the spawner whoever started the run, and one the spawner
+  cannot take now waits for it, never for the person. A worker with a
+  sidebar row is the spawner's only in a run the spawner started. Each
+  rule applies as the placement stands when the thing happens.
 - Ownership crosses paired computers (owner rulings 2026-11-17,
   [standing agents](specs/standing-agents.md#owned-workers)): a worker a
   thread spawns on another computer is owned there through the receipt's
   link, with no sidebar row in any window. Its prompts go to the spawner,
-  pulled by the spawner's computer, and reach the person there when the
-  spawner's computer has not said it holds them for two minutes. The
+  pulled by the spawner's computer, by the rule of a local worker's (the
+  sidebar row decides it): in every run while the link owns it, and with
+  a sidebar row in a run the spawner started. The
   spawner's computer owes it the spawner's archive and delete, and that
   computer admits them through its own archive and delete. An archive or
   delete that computer refuses or cannot receive stands here, is named as
@@ -528,7 +551,9 @@ Mechanism in
   agent message stay user-role on the wire and
   `user_text` rows in the store, and render as a folded agent row naming
   the sender, never as the user bubble; their footer is shown as facts,
-  never raw. They are not navigator ticks, composer recall or send-queue
+  never raw. Such a row is the thread tools' traffic and an activity-run
+  member as a tool row is, wherever it lands, alone a run of one; the
+  person's messages end a run (ruling 2026-11-19). They are not navigator ticks, composer recall or send-queue
   preview entries, and the thread tools label them `agent` with their
   sender. A Claude join holding the person's composer message stays the
   person's, and so do a workflow phase prompt, which is a phase thread's
@@ -625,6 +650,18 @@ Mechanism in
   (`opus`, `sonnet`) is refused as input with the offered IDs, and a Codex
   slug is passed as written for Codex to judge. An alias the CLI reports back
   is read only through its own model list (`internal/provider/AGENTS.md`).
+  An agent profile's model and `thread_spawn` `model` also accept a family
+  named without a version (`claude-opus`, `gpt-sol`), which runs the newest
+  model of it the target computer lists, by a version rule AO states per
+  provider; a slug the computer offers as written is that model (ruling
+  2026-11-21). The seeded profiles name families, and text generation
+  with no model set runs the newest of its default family (`claude-haiku`,
+  `gpt-luna`) the computer lists. On Claude that list is the CLI's report
+  for the account in use, live or restored for it; the list another account
+  on the binary reported does not count. Text generation waits for it as long
+  as the account probe that makes it may take (`claude.DefaultProbeTimeout`),
+  then fails saying Claude has not reported its models, and the other
+  provider is tried.
 - A sign-in in Agent Overflow never switches accounts: it renews the saved
   account its login belongs to or adds a new one at the bottom. Only the
   first account on a machine becomes active by signing in. Saved accounts
@@ -834,8 +871,10 @@ and anti-changes that live only here:
   mode for unattended work.
 - Agent profiles (2026-11-16): the person's roster of named agents, each
   with a use-for line, is how a thread picks another agent. A spawn
-  still inherits by default. The guide names only the profiles this
-  computer runs; use-for lines and choosing notes are in
+  still inherits by default. The guide names every profile whose
+  provider this computer offers and checks no model, because it is fixed
+  when the session starts; `thread_options` and the spawn check the model
+  and refuse with the reason. Use-for lines and choosing notes are in
   `thread_options`, paid for only by a thread that is choosing. A
   profile, note or listing never points at a provider the computer does
   not run: availability is the provider switch plus a binary that
@@ -892,6 +931,24 @@ and anti-changes that live only here:
   every built-in theme; they are not dimmed to the hint tier, and the
   title is not enlarged. Opening a thread on the phone never focuses the
   composer; the keyboard rises only on a tap into the input.
+- Chat header actions menu (2026-11-19): the drawer terminal, a new
+  terminal pane, find in thread, title regeneration and open-in-editor (one
+  row per installed editor, the default first) are rows of the Thread
+  actions menu at the end of the cluster, on desktop and on the phone. Find
+  in thread opens that pane's own find bar (the `find.in-pane` chord's);
+  the search across every thread is a row on the phone only, which has no
+  chord for it. A desktop row names its command's chord. A draft has no
+  title regeneration row, and the phone offers a new terminal pane only
+  for a thread in a project, whose sidebar section is its way back to that
+  pane. The desktop
+  cluster keeps the PR and diff badges, git, and the assistant,
+  take-control and browser buttons; the phone keeps the diff badge and the
+  assistant button, and its menu also carries review, the PR, take-control
+  and git. A regeneration in flight shows a spinner beside the title on
+  both layouts. On desktop the project crumb shows its whole name (to a
+  14rem cap) or is left out under a 36rem header; the title is what
+  truncates, to a floor of 8rem or its own width, and the cluster takes a
+  second row only past that floor.
 - Phone menus (2026-09-13): every popover and context menu opens where it
   was tapped, anchored to its control or to the pressed point and clamped
   into the viewport. No bottom-sheet menus; the earlier sheet default is
@@ -1006,6 +1063,61 @@ and anti-changes that live only here:
   `<details>` body), which PR templates use routinely. Do not
   reintroduce direct third-party `<img>` fetches for private forge
   assets, and do not hide a reference the browser could open.
+- A PR/MR body or comment reads in the review pane as it reads on its
+  forge, by that forge's own grammar; a form one forge leaves as text
+  stays text on its surface. Both: HTML wrappers around Markdown (text
+  on an HTML block's own lines, up to the first blank line, is HTML, so
+  Markdown syntax there is literal), `<details>` in a quote or alert,
+  safe inline tags, entity references,
+  images in their line at their authored size and placement, emoji
+  shortcodes, `~` strikethrough, color chips, `` $`…`$ `` and `math`
+  fence math, `$$…$$` as display math, CommonMark list numbering, issue, PR/MR, commit, mention
+  and email references checked against the forge in one batched lookup
+  per PR update, before a body mounts (a target the forge says does not
+  exist is text, a found one carries its title; while the answer is out
+  or could not be had the reference links by shape, so only shapes that
+  cannot be prose link; a found answer is not asked for again until the
+  user reloads the PR), an image that names a file of the PR's own
+  repository (a relative path, or a blob or raw URL at the head branch,
+  the base branch or a commit) read from the local git objects at that
+  commit and boxed at its final size from the first paint (a Git LFS
+  pointer shows its object when the local LFS store has it; otherwise it
+  says so and links to the forge, and nothing is fetched; an SVG with
+  only a ratio fills its line, as a browser lays it out), relative
+  links resolved to the forge however the link is written, a numbered
+  footnotes section, and heading
+  anchors with `#name` jumps that stay inside the body clicked. GitHub:
+  a single newline is a line break, an alert needs its marker alone on
+  the first line of a top-level quote, a bare `ftp://` URL is text,
+  a `<picture>` source or `#gh-*-mode-only` image follows the app's
+  light or dark theme, and a bare permalink to lines of the PR's own
+  repository at a full commit id shows those lines, read from the local
+  git objects. GitLab: a label reference as a chip in the label's
+  colors, decided from the project's label list (its first 1,000
+  labels or 256 KiB of them, read once per project; past that a title is
+  looked up on its own; asked again ten minutes after its answer only while a body names
+  a label it lacks, which is text until then), milestone, snippet and
+  epic references,
+  the `{width=… height=…}` list, playable video and audio images,
+  inline diff as a highlight, `>>>` quotes, front matter, `[~]` and table-cell tasks,
+  description lists, JSON tables, titled alerts, `[[_TOC_]]`, and a
+  bare URL that ends before an unbalanced `}` or `]`. One
+  allowlist per forge decides which HTML elements and attributes
+  survive, in a paragraph and in an HTML block alike: an element off it
+  shows its text without the element, and scripts, styles, svg and
+  iframes show nothing. Text inside an HTML block gets the same emoji,
+  references, relative links and jump anchors as a paragraph. Agent
+  chat's own constructs (`:term:` lists, `^sup^`, `[center]`,
+  citations, MDX) are text on a forge surface. Agent chat renders no
+  HTML and keeps its own grammar (typed list numbers, `~` subscript,
+  italic quotes, footnote popovers). On every surface: reference-style
+  links resolve across the whole message, a link inside a link leaves
+  only the inner one linked, a fence's language is the first word of
+  its info string, a table column takes its authored alignment, a
+  block quote written left of a list item's content ends the list, an
+  authored image never loads from the app's own origin, and a formula
+  or diagram that cannot be drawn shows its source. Mechanism:
+  `frontend/src/lib/markdown/AGENTS.md`.
 - Forge reads and writes go directly over HTTPS with the token of the
   user's `gh`/`glab` login, read from the CLI at runtime and held in memory
   only: never on disk, in settings, in logs, in argv or environment, in

@@ -22,7 +22,9 @@ import {
   resetForTest as resetThreadStatuses,
 } from './threadStatuses.svelte';
 import { makeCommandContext, overlayBesidePalette, registerBuiltinCommands } from './builtinCommands.svelte';
-import { pairViewOnly, resetToLocalPage } from '../../test/helpers/scopes';
+import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../test/helpers/scopes';
+import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
 import {
   clearCommandRegistry,
   getCommand,
@@ -312,6 +314,29 @@ describe('thread.interrupt command', () => {
 
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 123 });
     expect(isCommandEnabled('thread.interrupt', makeCommandContext(pane, {}))).toBe(true);
+  });
+
+  // Esc and the palette's Stop would cancel the prompt and clear the working
+  // state here while the turn runs on: an unreachable computer gets neither.
+  it('is disabled while the thread\'s computer cannot be reached, whatever its grant', async () => {
+    const laptop = stageBackend({ name: 'Laptop' });
+    try {
+      await grantBackendScopes('laptop', ['threads:read', 'threads:operate', 'approvals:respond']);
+      noteThread('thread-1', 'laptop', 0);
+      const pane = readyPane();
+      registerFixtureCommands(pane);
+      pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 123 });
+      expect(isCommandEnabled('thread.interrupt', makeCommandContext(pane, {}))).toBe(true);
+      laptop.setStatus('reconnecting');
+      expect(makeCommandContext(pane, {}).flags.threadCallable).toBe(false);
+      expect(isCommandEnabled('thread.interrupt', makeCommandContext(pane, {}))).toBe(false);
+      laptop.setStatus('connected');
+      expect(isCommandEnabled('thread.interrupt', makeCommandContext(pane, {}))).toBe(true);
+    } finally {
+      revokeBackendScopes('laptop');
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+    }
   });
 
   it('calls InterruptTurn for the active thread', async () => {

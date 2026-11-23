@@ -17,7 +17,7 @@
  * | `incrementalLex.merge.ts` | list/table tail splicing + token reuse       |
  * | `incompleteMarkdown.ts`   | the streaming-tail completers                |
  */
-export { lex, lexFootnoteDefinitions } from './lexer';
+export { lex, lexCapture, lexFootnoteDefinitions, markedForgeGrammar } from './lexer';
 export type { Extension, GenericToken, StreamdownToken } from './lexer';
 export { Lexer } from './engine';
 export type { LexerOptions, Token, Tokens, TokensList } from './engine';
@@ -33,6 +33,8 @@ export type {
   MdxToken,
   DetailsToken,
   DetailsSummaryToken,
+  HtmlInlineToken,
+  HtmlRegionToken,
   TableToken,
   THead,
   TBody,
@@ -55,7 +57,8 @@ export {
   createParseBlocksCache,
   updateParseBlockStringMaterialization
 } from './parseBlocks.cache';
-export { alignmentAfter, isAlignmentMarkerBlock, topLevelShape } from './extensions/align';
+export { topLevelShape } from './extensions/align';
+export { fenceLanguage } from './fenceLanguage';
 export type { Alignment } from './extensions/align';
 export type {
   ParseBlocksCache,
@@ -69,3 +72,7 @@ export type {
   IncrementalLexObserver,
   IncrementalLexPath
 } from './incrementalLex.cache';
+export { createDocumentContextCache, documentContextOf, headingSlug, mayNeedDocumentContext } from './documentContext';
+export type { DocumentContext, DocumentContextCache } from './documentContext';
+export { factDenied, readFact, readingFor, renderUnder, sameScopeReads } from './documentScope';
+export type { DocumentForge, DocumentReading, DocumentScope, ForgeFactReader, ForgeFactState } from './documentScope';

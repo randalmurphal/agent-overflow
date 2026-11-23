@@ -21,7 +21,8 @@
   import { formatCountdownSpan, formatTimeOfDay } from '../../utils/format';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
-  import { TRAY_WRITE_UNGRANTED, trayWriteGranted } from './trayWrites';
+  import { trayWriteGrant } from './trayWrites';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import Icon from '../primitives/Icon.svelte';
   import TranscriptDisclosureHeader from '../chat/TranscriptDisclosureHeader.svelte';
   import CopyFooter from '../chat/CopyFooter.svelte';
@@ -83,7 +84,7 @@
       : running ? 'Already running' : '',
   );
 
-  let granted = $derived(trayWriteGranted({ threadId }));
+  let grant = $derived(trayWriteGrant({ threadId }));
   let waking = $state(false);
   let cancelling = $state(false);
 
@@ -166,8 +167,8 @@
       type="button"
       class={actionClasses}
       onclick={wakeNow}
-      disabled={waking || cancelling || wakeOff !== '' || !granted}
-      title={granted ? wakeOff || undefined : TRAY_WRITE_UNGRANTED}
+      disabled={waking || cancelling || wakeOff !== '' || grant !== 'granted'}
+      title={grantBlockedTitle(grant) ?? (wakeOff || undefined)}
       aria-label={`Wake now: ${row.label}`}
       data-testid="wake-tray-row-wake-now"
     >{waking ? 'Waking…' : 'Wake now'}</button>
@@ -175,8 +176,8 @@
       type="button"
       class={actionClasses}
       onclick={cancel}
-      disabled={cancelling || !granted}
-      title={granted ? undefined : TRAY_WRITE_UNGRANTED}
+      disabled={cancelling || grant !== 'granted'}
+      title={grantBlockedTitle(grant)}
       aria-label={`Cancel: ${row.label}`}
       data-testid="wake-tray-row-cancel"
     >{cancelling ? 'Cancelling…' : 'Cancel'}</button>

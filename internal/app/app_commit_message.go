@@ -61,8 +61,7 @@ func (a *App) GenerateCommitMessage(ws WorkspaceRef, selection CommitSelection) 
 	}
 
 	prompt := commitmsg.BuildPrompt(summary, patch, a.gitCore().CurrentBranch(workspace), a.commitMessageStyleGuidance(workspace))
-	primary := a.resolveTextGenerationConfig()
-	return runTextGenWithFallback(a, primary, commitmsg.Timeout, func(cfg textgen.Config, deadline time.Time) (GeneratedCommitMessage, error) {
+	return runTextGenWithFallback(a.lifeCtx(), a, commitmsg.Timeout, func(cfg textgen.Config, deadline time.Time) (GeneratedCommitMessage, error) {
 		return a.runCommitMessageOnce(cfg, workspace, prompt, deadline)
 	})
 }

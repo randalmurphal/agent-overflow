@@ -45,15 +45,75 @@ const codexAccountReadTimeout = 8 * time.Second
 // per-thread action lock and the join on somebody else's in-flight start.
 // Once the spawn itself begins it runs to completion.
 func (a *App) startSessionTakingLock(ctx context.Context, threadID string) error {
+	_, err := a.startRegisteredSessionTakingLock(ctx, threadID)
+	return err
+}
+
+func (a *App) startRegisteredSessionTakingLock(ctx context.Context, threadID string) (session, error) {
 	if a.shuttingDown.Load() {
-		return ErrShuttingDown
+		return session{}, ErrShuttingDown
 	}
 	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
 	if err != nil {
-		return fmt.Errorf("start session for thread %s: %w", threadID, err)
+		return session{}, fmt.Errorf("start session for thread %s: %w", threadID, err)
 	}
 	defer unlock()
-	return a.startSession(ctx, threadID)
+	return a.startRegisteredSession(ctx, threadID)
+}
+
+// ensureProvenSession leaves the thread with a session whose provider proved
+// it holds the conversation the thread continues, or with none. Under the
+// thread action lock it proves the session registered for the thread, or,
+// when none is, calls beforeStart, starts one and proves the session that
+// start registered. It reports whether it started the session. A
+// beforeStart error is returned as it is and nothing is started.
+//
+// The proof is the provider's report of how that process's start ended
+// (sessionruntime.Entry.AwaitStart); nothing is read from the provider's
+// transcript. The lock is held until the proof returns, so no send, steer,
+// revert's resend or queued flush, each of which takes the lock, reaches the
+// process first: Claude's content check is valid only before the first
+// input. The commands AO writes on its own (live config, peer rename) do not
+// take the lock, and the provider reports one that lands first as content
+// unproven. A claude-tui session reports no start outcome and is accepted
+// while it lives. ctx bounds the wait for the lock and the proof; the workflow
+// runner's start deadline is what bounds them there
+// (internal/workflowhost/start_watchdog.go).
+//
+// A session it cannot prove is torn down as a dead pre-init session, under
+// the same lock, so it leaves no session registered and its queued messages
+// go back to the composer before a flush can send them; a close that fails
+// is returned instead of the proof's outcome, since a process may outlive it.
+func (a *App) ensureProvenSession(ctx context.Context, threadID string, beforeStart func() error) (bool, error) {
+	if a.shuttingDown.Load() {
+		return false, ErrShuttingDown
+	}
+	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
+	if err != nil {
+		return false, fmt.Errorf("prove the session of thread %s: %w", threadID, err)
+	}
+	defer unlock()
+	proving, registered := a.sessionManager().get(threadID)
+	if registered && proving.ClaudeTUI != nil {
+		return false, nil
+	}
+	if !registered {
+		if err := beforeStart(); err != nil {
+			return false, err
+		}
+		proving, err = a.startRegisteredSession(ctx, threadID)
+		if err != nil {
+			return false, err
+		}
+	}
+	outcome := proving.AwaitStart(ctx)
+	if outcome == nil {
+		return !registered, nil
+	}
+	if err := a.teardownDeadPreInitSessionLocked(threadID, proving.Token); err != nil {
+		return false, fmt.Errorf("start of thread %s failed (%v), and %w", threadID, outcome, err)
+	}
+	return false, outcome
 }
 
 // buildSessionOptions composes the provider-agnostic SessionOptions bundle
@@ -189,43 +249,34 @@ func (a *App) startSessionNow(threadID string) error {
 		a.settleClaudeTranscriptForWorkspace(t)
 	}
 
-	// Resolve the resume cursor only after the prior session is fully
-	// stopped: Close blocks on the read loop, and the CLI can append
-	// final transcript rows right up to exit. Scanning before the stop
-	// could pick a leaf from a file the dying process is still extending.
+	// An ordinary Claude resume passes no cursor: the CLI picks its own
+	// default leaf and applies its own resume filters, so it never
+	// rejects the start over a leaf AO chose.
 	//
-	// A fork start resolves against the SOURCE session instead
-	// (opts.Resume IS the source ref while PendingForkRef is pending),
-	// and only when the fork stored a pin: a pinned lazy fork must cut
-	// where its timeline was cut, so an unresolvable pin FAILS the
-	// start rather than falling back to the source's current tail —
-	// spawning unpinned there silently snapshots whatever the source
-	// has streamed since the fork (the 2026-08-22 skew incident). An
-	// unpinned fork (idle source at fork time) keeps the CLI's own
-	// tail-cut semantics.
-	if t.Provider == string(provider.Claude) && opts.Resume != "" {
+	// A pinned fork start resolves its stored pin against the SOURCE
+	// session (opts.Resume is the source ref while PendingForkRef is
+	// pending). A pinned lazy fork must cut where its timeline was cut,
+	// so an unresolvable pin fails the start rather than falling back to
+	// the source's current tail, which would hand the fork whatever the
+	// source streamed since the fork. An unpinned fork (idle source at
+	// fork time) keeps the CLI's own tail cut.
+	if t.Provider == string(provider.Claude) && opts.ForkSession && t.PendingForkResumeAt != "" {
 		projectsDir, err := a.claudeProjectsDir()
 		if err != nil {
 			return fmt.Errorf("start session: %w", err)
 		}
-		if opts.ForkSession {
-			if t.PendingForkResumeAt != "" {
-				cursor, err := resolveClaudeForkResumeAt(projectsDir, opts.Resume, opts.WorkDir, t.PendingForkResumeAt)
-				if err != nil {
-					return fmt.Errorf("start session: resolve fork resume cursor: %w", err)
-				}
-				opts.ResumeAt = cursor
-			}
-		} else {
-			opts.ResumeAt = resolveClaudeResumeAt(projectsDir, opts.Resume, opts.WorkDir)
+		cursor, err := resolveClaudeForkResumeAt(projectsDir, opts.Resume, opts.WorkDir, t.PendingForkResumeAt)
+		if err != nil {
+			return fmt.Errorf("start session: resolve fork resume cursor: %w", err)
 		}
+		opts.ResumeAt = cursor
 	}
 
 	// Commit the thread to this session in triage BEFORE spawning. A
 	// prior StopSession left the stopped-thread marker set, and the
 	// replacement session can emit before any wire proof-of-life lands:
 	// Codex emits EventInit synchronously inside NewSession, and a
-	// Claude process that dies during startup (unusable
+	// Claude process that dies during startup (a fork start's unusable
 	// --resume-session-at cursor) emits its only diagnostics pre-init.
 	// From here triage admits only this session's frames, so a prior
 	// session's frames that stopExistingSessionLocked's drain left
@@ -364,26 +415,10 @@ func (a *App) startSessionNow(threadID string) error {
 	// user-perceivable. The pattern mirrors probeStartupProviderStatuses
 	// in ServiceStartup.
 	if newSess.Codex != nil && opts.Resume != "" {
-		go a.reconcileCodexAfterStart(threadID)
+		go a.reconcileCodexAfterStart(threadID, newSess)
 	}
 
 	return nil
-}
-
-// resolveClaudeResumeAt picks the --resume-session-at cursor for a
-// Claude session resume from the branch-aware file scan: the deepest row
-// on the session file's active parentUuid branch that survives the CLI's
-// resume filters, never an unresolved server-tool row. Claude hard-fails
-// resume on an off-branch uuid pre-init (invariant 28), which is why the
-// scan, not a wire-derived leaf, decides. Scan failure resumes with no
-// cursor at all (claude's own default-leaf semantics).
-func resolveClaudeResumeAt(projectsDir, sessionRef, workDir string) string {
-	state, err := claude.ScanSessionLeaf(projectsDir, sessionRef, workDir)
-	if err != nil {
-		log.Printf("start session: scan Claude session leaf %s: %v", sessionRef, err)
-		return ""
-	}
-	return state.CanonicalLeafUUID
 }
 
 // claudeForkPinRetries / claudeForkPinBackoff bound the wait for a fork
@@ -1361,49 +1396,58 @@ func (a *App) codexResendAfterInterrupt(
 	}
 }
 
-// teardownDeadPreInitSession reaps a session that reported a hard error
-// result before ever reaching init: it cannot serve sends (the resume
-// cursor it was launched with is unusable) and would otherwise linger
-// alive forever — Claude does not exit after a failed
-// --resume-session-at validation. The orphan error item persisted by
-// triage is the user-facing surface; this teardown stops the useless
-// process, hands any queued sends back to the composer draft, and
-// sweeps the failed send's pending state so the next send lazy-starts
-// fresh.
+// teardownDeadPreInitSession reaps a session whose start failed before
+// it initialized: the provider reported a startup failure
+// (provider.IsStartupFailure; for example a fork start's resume cursor is
+// unusable, or the conversation to resume is gone), or a caller that
+// waited on the start could not prove it (ensureProvenSession). It
+// cannot serve sends and could otherwise linger alive forever: Claude
+// does not exit after a failed --resume-session-at validation. The orphan
+// error item persisted by triage is the user-facing surface; this
+// teardown stops the useless process, hands any queued sends back to the
+// composer draft, and sweeps the failed send's pending state so the next
+// send lazy-starts fresh. It returns the close's failure.
 //
-// Runs on its own goroutine (see sessionEventHandler) because the
-// caller is the thread's event worker and closing the session drains
-// that worker's queue.
-// Two guards keep it from harming a user retry that races in:
+// The teardown runs whole under the thread action lock: lock, unregister
+// by token, restore the queue, close. Whoever holds the lock owns it. The
+// event handler's reaper runs it on its own goroutine (see
+// sessionEventHandler), since its caller is the thread's event worker and
+// the close drains that worker's queue; it waits for the lock, so a caller
+// already tearing the session down under the lock (ensureProvenSession)
+// does all of it and returns the close's result, and the reaper then finds
+// the token gone and does nothing. Holding the lock across the close cannot
+// deadlock: the event worker never waits on it.
 //
-//   - The token-guarded unregister means a retry that already replaced
-//     this session in the registry makes the teardown a no-op.
-//   - The triage epoch, captured BEFORE the unregister, covers the
-//     longer window after a successful unregister: a retry's start path
-//     calls MarkThreadActive (bumping the epoch) and then spawns for
-//     potentially seconds before re-registering, during which a
-//     registry check proves nothing. The queue restore and the triage
-//     cleanup both run only while the epoch is unchanged, so a live
-//     replacement is never re-stopped and never has its queue drained.
-//     (The epoch probe before the restore and the restore itself are
-//     adjacent calls, not one atomic section — but a reactivation
-//     squeezing between them would have to finish MarkThreadActive
-//     within microseconds of passing the probe AND have new queue
-//     state to lose, which requires a full spawn that takes orders of
-//     magnitude longer. CleanupThreadIfEpoch's sweep re-checks under
-//     the router lock, so the destructive path is strictly guarded.)
+// Two guards keep it from harming a start that replaces the session:
+//
+//   - The token-guarded unregister makes the teardown a no-op once a start
+//     replaced this session in the registry. A start that holds the action
+//     lock does that, or has not begun, before the teardown gets the lock.
+//   - The triage epoch, captured before the unregister, covers a start that
+//     does not take the action lock (a workflow takeover's restart): its
+//     MarkThreadActive bumps the epoch before it spawns, and the queue
+//     restore and the triage cleanup run only while the epoch is unchanged.
+//     CleanupThreadIfEpoch rechecks under the router lock.
 //
 // Not routed through teardownAndCloseSession: that helper's
 // unconditional CleanupThread is exactly what must not run here once a
 // replacement has claimed the thread.
-func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
+func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) error {
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+	return a.teardownDeadPreInitSessionLocked(threadID, sessionToken)
+}
+
+// teardownDeadPreInitSessionLocked is teardownDeadPreInitSession for a
+// caller that holds the thread action lock.
+func (a *App) teardownDeadPreInitSessionLocked(threadID, sessionToken string) error {
 	var epoch uint64
 	if a.triage != nil {
 		epoch = a.triage.ThreadEpoch(threadID)
 	}
 	sess, ok := a.sessionManager().unregister(threadID, sessionToken)
 	if !ok {
-		return
+		return nil
 	}
 	a.emitProviderSessionDisconnected(threadID, sess.Provider)
 	if a.triage != nil {
@@ -1412,7 +1456,7 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 		// without the restore the user's queued text would vanish.
 		var requeued []triage.UnconfirmedFlushItem
 		if a.triage.ThreadEpoch(threadID) == epoch {
-			requeued = a.restoreUnconfirmedQueueOnSessionDeath(threadID)
+			requeued = a.restoreUnconfirmedQueueLocked(threadID)
 		}
 		if !a.triage.CleanupThreadIfEpoch(threadID, epoch) {
 			log.Printf("app: skipped triage cleanup for thread %s — a replacement session reactivated it mid-teardown", threadID)
@@ -1433,9 +1477,16 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 			}
 		}
 	}
-	if err := a.closeProviderSession(threadID, sess); err != nil {
-		log.Printf("app: teardown dead pre-init session for thread %s: %v", threadID, err)
+	var err error
+	if a.closeProviderSessionFn != nil {
+		err = a.closeProviderSessionFn(threadID)
+	} else {
+		err = a.closeProviderSession(threadID, sess)
 	}
+	if err != nil {
+		return fmt.Errorf("teardown dead pre-init session for thread %s: %w", threadID, err)
+	}
+	return nil
 }
 
 // teardownAndCloseSession runs the per-thread triage cleanup

@@ -60,7 +60,7 @@ func TestStatusAnswersArePublishedThroughTheWorkspaceStream(t *testing.T) {
 			events := make(chan StatusEvent, 16)
 			service := newStatusTestService(t, watch, func(event StatusEvent) { events <- event })
 			ref := WorkspaceRef{ProjectID: "project"}
-			sub, err := service.Subscribe(t.Context(), ref)
+			sub, err := service.Subscribe(t.Context(), ref, untiedStatus)
 			if err != nil {
 				t.Fatalf("Subscribe: %v", err)
 			}

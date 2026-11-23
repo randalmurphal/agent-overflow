@@ -154,6 +154,7 @@ func TestWatchSubagentLiveTranscriptEndToEnd(t *testing.T) {
 	)
 	for i := range events {
 		evt := events[i]
+		//exhaustive:ignore test inspects only the subagent lifecycle event kinds it asserts
 		switch evt.Kind {
 		case provider.EventToolStart:
 			if evt.ItemID == "tool-sub-1" && evt.ParentToolUseID == "" {
@@ -190,6 +191,7 @@ func TestWatchSubagentLiveTranscriptEndToEnd(t *testing.T) {
 		case provider.EventBackgroundTaskNotification:
 			copyEvt := evt
 			gotNotif = &copyEvt
+		default:
 		}
 	}
 

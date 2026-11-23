@@ -99,7 +99,7 @@ type prCILogOutcome struct {
 func (a *App) pollCILogs(ctx context.Context, phase *ciPhase, forced map[string]bool) []PRCILogEvent {
 	now := time.Now()
 	a.prUpdates.mu.Lock()
-	if phase.core.dead || len(phase.follows) == 0 {
+	if phase.core.DeadLocked() || len(phase.follows) == 0 {
 		a.prUpdates.mu.Unlock()
 		return nil
 	}
@@ -128,7 +128,7 @@ func (a *App) pollCILogs(ctx context.Context, phase *ciPhase, forced map[string]
 	var events []PRCILogEvent
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
-	if phase.core.dead {
+	if phase.core.DeadLocked() {
 		return nil
 	}
 	for _, out := range outcomes {
@@ -288,7 +288,7 @@ func dropFollowLocked(phase *ciPhase, jobID string) {
 func (a *App) setPRCILogFollows(ctx context.Context, subscriptionID string, jobIDs []string) (PRCILogFollowResult, error) {
 	return a.setCILogFollows(ctx, jobIDs, func() (*ciPhase, *map[string]bool, bool) {
 		handle, ok := a.prUpdates.handles[subscriptionID]
-		if !ok || handle.pump.dead {
+		if !ok || handle.pump.DeadLocked() {
 			return nil, nil, false
 		}
 		return &handle.pump.ciPhase, &handle.follows, true
@@ -354,7 +354,7 @@ func (a *App) setCILogFollows(ctx context.Context, jobIDs []string, lookup func(
 	if len(jobIDs) == 0 {
 		return result, nil
 	}
-	if err := a.requestPump(ctx, phase.core, &prPumpRequest{jobIDs: jobIDs}); err != nil {
+	if err := phase.core.Request(ctx, prPumpRequest{jobIDs: jobIDs}); err != nil {
 		return PRCILogFollowResult{}, err
 	}
 	a.prUpdates.mu.Lock()

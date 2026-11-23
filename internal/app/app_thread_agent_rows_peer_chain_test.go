@@ -17,7 +17,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -155,11 +154,11 @@ func newAgentChain(t *testing.T, n int) *agentChain {
 		c.ids, c.projects = append(c.ids, id), append(c.projects, project)
 	}
 	for i := range n - 1 {
-		manager, err := attachedbackends.New(t.TempDir(), fmt.Sprintf("computer %d", i), "test")
+		manager, err := newTestBackends(t, t.TempDir(), fmt.Sprintf("computer %d", i), "test")
 		if err != nil {
 			t.Fatalf("attachedbackends.New: %v", err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 		invite, _ := c.wires[i+1].mintLink(t, "full")
 		peer, err := manager.Add(ctx, invite.URL)
 		if err != nil {
@@ -327,24 +326,14 @@ func TestAForwardedListingKeepsTheLastAnswerOfAComputerFurtherOn(t *testing.T) {
 			release := installChainLink(t, c.apps[1])
 			installMockClaudeTurns(t, c.apps[2], [][]string{{
 				mockClaudeInitLine,
-				`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"The release is staged."}]}}`,
-				`{"type":"result","subtype":"success","is_error":false}`,
-			}, {
-				mockClaudeInitLine,
-				`{"type":"assistant","message":{"id":"msg-2","role":"assistant","content":[{"type":"text","text":"releasing"}]}}`,
+				`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"releasing"}]}}`,
 			}})
 			c.spawnAlong(t, 0, "watch the release")
 			c.spawnAlong(t, 1, "stage the release")
 			release()
-			// Its worker's own spawn settles first: B's thread rests once
-			// the thread it started on C does.
-			c.settle(t, 1)
-			c.settle(t, 0)
-			c.atRest(t, 0, 2)
-			// The worker on C is continued there, and asks for an approval.
-			if err := c.apps[2].SendMessage(context.Background(), c.threads[1], "now run it", nil); err != nil {
-				t.Fatalf("SendMessage there: %v", err)
-			}
+			// The worker on C, still in its spawn's run, asks the person
+			// for an approval: these computers route no prompt to a
+			// spawner.
 			waitUntil(t, 10*time.Second, func() bool {
 				return threadToolsLiveState(c.apps[2].triage.LiveStateSnapshotForThread(c.threads[1])).ActiveTurn
 			})

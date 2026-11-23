@@ -1,12 +1,12 @@
 package orphanreaper
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -31,32 +31,92 @@ type Client struct {
 // fd 3 and returns a Client holding the write end. Go marks the write end
 // close-on-exec, so it never leaks into the provider subprocesses spawned
 // later — the parent stays the pipe's sole writer, which is what makes EOF
-// a reliable parent-death signal.
+// a reliable parent-death signal. The sidecar holds its whole script when
+// Spawn returns (startSidecar), so it guards the parent from that moment.
 func Spawn() (*Client, error) {
 	r, w, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("orphanreaper: pipe: %w", err)
 	}
 	cmd := sidecarCommand(r, killGracePeriod)
-	if err := cmd.Start(); err != nil {
-		r.Close()
-		w.Close()
-		return nil, fmt.Errorf("orphanreaper: start sidecar: %w", err)
+	startErr := startSidecar(cmd, sidecarScript)
+	// The child holds its own copy of the read end now, or never started;
+	// drop ours so the pipe has exactly one reader (child) and one writer
+	// (this parent).
+	closeErr := r.Close()
+	if startErr != nil {
+		return nil, errors.Join(fmt.Errorf("orphanreaper: start sidecar: %w", startErr), closeErr, w.Close())
 	}
-	// The child holds its own copy of the read end now; drop ours so the
-	// pipe has exactly one reader (child) and one writer (this parent).
-	r.Close()
+	if closeErr != nil {
+		// The sidecar runs and guards this process; only the fd leaks.
+		log.Printf("orphanreaper: close this process's copy of the control pipe's read end: %v", closeErr)
+	}
 	return &Client{cmd: cmd, w: w}, nil
 }
 
-// sidecarCommand builds the sidecar process: sidecarScript under /bin/sh,
-// with control on fd 3 and the SIGTERM→SIGKILL grace in whole seconds. The
-// script arrives on stdin, so the command line reads
+// scriptHandoff bounds the write of the sidecar's script. The shell reads
+// its script as soon as it runs, so only a shell that never runs waits it out.
+const scriptHandoff = 10 * time.Second
+
+// startSidecar starts cmd, a sidecarCommand, and returns once the shell
+// holds all of script. The shell is handed script as one brace group
+// (braceGroup), so it runs none of it until it has read all of it.
+func startSidecar(cmd *exec.Cmd, script string) error {
+	return handScript(cmd, braceGroup(script), scriptHandoff)
+}
+
+// braceGroup is script as one compound command. A shell given only part of
+// it, because the parent died while writing it, meets a syntax error and
+// runs nothing; given script bare, it would run every whole command before
+// the cut, which near the script's end signals the watched groups at once.
+func braceGroup(script string) string {
+	return "{\n" + script + "\n}\n"
+}
+
+// handScript starts cmd and returns once its stdin holds all of text and
+// has ended, or fails within bound. The write is made here, by the caller's
+// own goroutine: a Stdin that is not a file would be copied to the shell by
+// a goroutine exec starts after the shell, and a parent killed before that
+// goroutine ran would leave the sidecar an empty script, so it would exit at
+// once and reap nothing. The shell reads while this writes, so the pipe's
+// buffer does not bound the text. When the handoff fails, the process is
+// ended and waited for.
+func handScript(cmd *exec.Cmd, text string, bound time.Duration) error {
+	stdin, feed, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("script pipe: %w", err)
+	}
+	cmd.Stdin = stdin
+	if err := cmd.Start(); err != nil {
+		return errors.Join(err, stdin.Close(), feed.Close())
+	}
+	err = stdin.Close()
+	if err == nil {
+		err = feed.SetWriteDeadline(time.Now().Add(bound))
+	}
+	if err == nil {
+		_, err = feed.WriteString(text)
+	}
+	if err = errors.Join(err, feed.Close()); err == nil {
+		return nil
+	}
+	err = errors.Join(fmt.Errorf("hand the sidecar its script: %w", err), cmd.Process.Kill())
+	// Its exit by that kill is the expected outcome, not a failure.
+	if waitErr := cmd.Wait(); waitErr != nil {
+		if _, exited := errors.AsType[*exec.ExitError](waitErr); !exited {
+			err = errors.Join(err, waitErr)
+		}
+	}
+	return err
+}
+
+// sidecarCommand builds the sidecar process, which startSidecar starts: the
+// shell reads its script from stdin, with control on fd 3 and the
+// SIGTERM→SIGKILL grace in whole seconds, so the command line reads
 // `/bin/sh -s agent-overflow-reaper 2`.
 func sidecarCommand(control *os.File, grace time.Duration) *exec.Cmd {
 	seconds := strconv.Itoa(int(grace / time.Second))
 	cmd := exec.Command("/bin/sh", "-s", SidecarName, seconds)
-	cmd.Stdin = strings.NewReader(sidecarScript)
 	cmd.ExtraFiles = []*os.File{control} // lands as fd 3, which sidecarScript reads
 	cmd.Stderr = os.Stderr               // surface the sidecar's diagnostics
 	// Only PATH, which finds sleep: a shell that imports functions from its

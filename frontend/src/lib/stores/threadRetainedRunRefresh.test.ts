@@ -7,6 +7,8 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import { ActivityRunStub, PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 import type { ThreadPane } from './thread.svelte';
 import type { Item } from '../types/models';
+import { AGENT_MESSAGE_MEMBERS_RULE } from '../utils/activityRunSpans';
+import { requestActivityRunRule } from './activityRunRule';
 
 const shape = { runWindowRows: 30, inlinePreviews: false, maxBytes: 524288 };
 const row = (i: number, overrides: Partial<Item> = {}) => makeItem({ id: `r${i}`, threadId: 't',
@@ -19,11 +21,12 @@ function run(first: number, last: number, loadedFirst: number, loadedLast: numbe
     memberCount: last - first + 1, unshippedBefore: loadedFirst - first, unshippedAfter: last - loadedLast,
     unshippedDigest: '0000000000000000' });
 }
+/** A page read under the rule the reads after it ask for. */
 function page(items: Item[], runs: ActivityRunStub[]) {
-  return new PagedItems({ items, runs,
+  return Object.assign(new PagedItems({ items, runs,
     oldestCursor: runs.length ? cursor(runs[0].firstItemIndex) : cursor(items[0]?.itemIndex ?? 0),
     newestCursor: runs.length ? cursor(runs.at(-1)!.lastItemIndex) : cursor(items.at(-1)?.itemIndex ?? 0),
-    hasMoreOlder: false, hasMoreNewer: false, oldestTurnIndex: 0, newestTurnIndex: 0 });
+    hasMoreOlder: false, hasMoreNewer: false, oldestTurnIndex: 0, newestTurnIndex: 0 }), { activityRunRule: requestActivityRunRule('t') });
 }
 const rows = (first: number, count: number) => Array.from({ length: count }, (_, i) => row(first + i));
 let pane: ThreadPane;
@@ -33,9 +36,9 @@ afterEach(() => pane.clear());
 it('keeps unchanged and default-sized windows free of extra reads', async () => {
   const read = setBindingMock('ListItemsBeforeCursor', async () => { throw new Error('unnecessary read'); });
   const fresh = page(rows(70, 30), [run(0, 99, 70, 99)]);
-  expect(await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(rows(60, 30)), shape, () => true)).toBe(fresh);
+  expect(await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(rows(60, 30), AGENT_MESSAGE_MEMBERS_RULE), shape, () => true)).toBe(fresh);
   const whole = page(rows(0, 100), [run(0, 99, 0, 99)]);
-  expect(await refreshRetainedRunWindows('t', whole, groupActivityRunSpans(rows(0, 100)), shape, () => true)).toBe(whole);
+  expect(await refreshRetainedRunWindows('t', whole, groupActivityRunSpans(rows(0, 100), AGENT_MESSAGE_MEMBERS_RULE), shape, () => true)).toBe(whole);
   expect(read).not.toHaveBeenCalled();
 });
 
@@ -53,7 +56,7 @@ it('walks shipped cursors across a run larger than one response and restates the
     expect(request).toMatchObject({ loadedFirstItemId: 'r0', loadedLastItemId: 'r649', limit: 0 });
     return { items: [], stub: run(0, 649, 0, 649) };
   });
-  const result = await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(all), shape, () => true);
+  const result = await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(all, AGENT_MESSAGE_MEMBERS_RULE), shape, () => true);
   expect(result.items.map(item => item.id)).toEqual(all.map(item => item.id));
   expect(result.runs).toEqual([run(0, 649, 0, 649)]);
   expect(read).toHaveBeenCalledTimes(4);
@@ -71,7 +74,7 @@ it('keeps a new live tail member when refreshing an overlapping retained run', a
     expect(request).toMatchObject({ loadedFirstItemId: 'r0', loadedLastItemId: 'r39' });
     return { items: [], stub: run(0, 39, 0, 39) };
   });
-  const result = await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(all.slice(0, 39)), shape, () => true);
+  const result = await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(all.slice(0, 39), AGENT_MESSAGE_MEMBERS_RULE), shape, () => true);
   expect(result.items.map(item => item.id)).toEqual(all.map(item => item.id));
   expect(result.runs).toEqual([run(0, 39, 0, 39)]);
   expect(read).toHaveBeenCalledOnce();
@@ -80,14 +83,14 @@ it('keeps a new live tail member when refreshing an overlapping retained run', a
 it('keeps the fresh tail without rereading a disjoint old span while following', async () => {
   const fresh = page(rows(70, 30), [run(0, 99, 70, 99)]);
   const read = setBindingMock('ListItemsBeforeCursor', async () => { throw new Error('old span reread'); });
-  const result = await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(rows(0, 39)), shape, () => true, {}, true);
+  const result = await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(rows(0, 39), AGENT_MESSAGE_MEMBERS_RULE), shape, () => true, {}, true);
   expect(result).toBe(fresh);
   expect(read).not.toHaveBeenCalled();
 });
 
 it('retains a reader-pinned old span when the fresh tail is disjoint', async () => {
   const fresh = page(rows(70, 30), [run(0, 99, 70, 99)]);
-  const previous = groupActivityRunSpans(rows(0, 30)).map(span => ({ ...span, readerPinned: true }));
+  const previous = groupActivityRunSpans(rows(0, 30), AGENT_MESSAGE_MEMBERS_RULE).map(span => ({ ...span, readerPinned: true }));
   setBindingMock('ListItemsBeforeCursor', async () => page(rows(0, 30), [run(0, 99, 0, 29)]));
   setBindingMock('ListActivityRunMembers', async () => ({ items: [], stub: run(0, 99, 0, 29) }));
   const result = await refreshRetainedRunWindows('t', fresh, previous, shape, () => true, {}, true);
@@ -97,7 +100,7 @@ it('retains a reader-pinned old span when the fresh tail is disjoint', async () 
 
 it('does not advance a reader-pinned window onto a nearby new member', async () => {
   const fresh = page(rows(1, 30), [run(0, 30, 1, 30)]);
-  const previous = groupActivityRunSpans(rows(0, 30)).map(span => ({ ...span, readerPinned: true }));
+  const previous = groupActivityRunSpans(rows(0, 30), AGENT_MESSAGE_MEMBERS_RULE).map(span => ({ ...span, readerPinned: true }));
   setBindingMock('ListItemsBeforeCursor', async (_thread, before: { itemIndex: number }) => {
     expect(before.itemIndex).toBe(30);
     return page(rows(0, 30), [run(0, 30, 0, 29)]);
@@ -121,7 +124,7 @@ it('re-reads a run split by prose and removes a deleted member', async () => {
   });
   setBindingMock('ListActivityRunMembers', async (_thread, request: { runFirstItemId: string }) => ({ items: [],
     stub: request.runFirstItemId === 'r0' ? run(0, 33, 0, 33) : run(36, 69, 36, 69) }));
-  const result = await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(previous), shape, () => true);
+  const result = await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(previous, AGENT_MESSAGE_MEMBERS_RULE), shape, () => true);
   expect(result.items.map(item => item.id)).toEqual([...left, middle, ...right].map(item => item.id));
   expect(result.items.some(item => item.id === 'r34')).toBe(false);
   expect(result.runs).toHaveLength(2);
@@ -133,7 +136,7 @@ it('combines retained ranges when two runs joined', async () => {
   const fresh = page(all.slice(-30), [run(0, 69, 40, 69)]);
   const read = setBindingMock('ListItemsBeforeCursor', async () => page(all, [run(0, 69, 0, 69)]));
   setBindingMock('ListActivityRunMembers', async () => ({ items: [], stub: run(0, 69, 0, 69) }));
-  const result = await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(previous), shape, () => true);
+  const result = await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(previous, AGENT_MESSAGE_MEMBERS_RULE), shape, () => true);
   expect(result.items.map(item => item.id)).toEqual(all.map(item => item.id));
   expect(read).toHaveBeenCalledOnce();
 });
@@ -143,14 +146,14 @@ it('discards cancelled reads without starting follow-up requests', async () => {
   let current = true;
   setBindingMock('ListItemsBeforeCursor', async () => { current = false; return page(rows(0, 50), [run(0, 49, 0, 49)]); });
   const restate = setBindingMock('ListActivityRunMembers', async () => { throw new Error('late request'); });
-  expect(await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(rows(0, 50)), shape, () => current)).toBe(fresh);
+  expect(await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(rows(0, 50), AGENT_MESSAGE_MEMBERS_RULE), shape, () => current)).toBe(fresh);
   expect(restate).not.toHaveBeenCalled();
 });
 
 it('rejects a non-advancing cursor response without looping', async () => {
   const fresh = page(rows(20, 30), [run(0, 49, 20, 49)]);
   const read = setBindingMock('ListItemsBeforeCursor', async () => page([row(50)], [run(0, 50, 50, 50)]));
-  await expect(refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(rows(0, 50)), shape, () => true)).rejects.toThrow('did not advance');
+  await expect(refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(rows(0, 50), AGENT_MESSAGE_MEMBERS_RULE), shape, () => true)).rejects.toThrow('did not advance');
   expect(read).toHaveBeenCalledOnce();
 });
 
@@ -158,7 +161,7 @@ it('rejects a span changed during its reads without publishing partial history',
   const fresh = page(rows(20, 30), [run(0, 49, 20, 49)]);
   setBindingMock('ListItemsBeforeCursor', async () => page(rows(0, 50), [run(0, 49, 0, 49)]));
   setBindingMock('ListActivityRunMembers', async () => ({ items: [], stub: { ...run(0, 49, 0, 49), memberCount: 51 } }));
-  await expect(refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(rows(0, 50)), shape, () => true)).rejects.toThrow('changed during refresh');
+  await expect(refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(rows(0, 50), AGENT_MESSAGE_MEMBERS_RULE), shape, () => true)).rejects.toThrow('changed during refresh');
   expect(fresh.items).toHaveLength(30);
 });
 
@@ -166,7 +169,7 @@ it('does not repeatedly merge the accumulated window when byte limits produce sm
   let reads = 0;
   const all = rows(0, 120).map((item, index) => ({ ...item, get id() { reads += 1; return `r${index}`; } }));
   const fresh = page(all.slice(-30), [run(0, 119, 90, 119)]);
-  const previous = groupActivityRunSpans(all);
+  const previous = groupActivityRunSpans(all, AGENT_MESSAGE_MEMBERS_RULE);
   setBindingMock('ListItemsBeforeCursor', async (_thread, before: { itemIndex: number }) => {
     const index = before.itemIndex - 1;
     return page([all[index]], [run(0, 119, index, index)]);

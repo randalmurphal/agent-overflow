@@ -37,14 +37,15 @@ import {
   togglePanePromotion,
 } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
-import { closePaneFind, hasPaneFindBarFocus, hasPaneFindProvider, isPaneFindOpen, openPaneFind, paneFindRegionElement, paneFindTarget, paneOfFindKey } from './paneFind.svelte';
-import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
+import { closePaneFind, hasPaneFindBarFocus, hasPaneFindProvider, isPaneFindOpen, paneFindTarget } from './paneFind.svelte';
+import { openPaneFindForReader } from '../utils/paneFindSeed';
 import { closePaneById } from './companionPanes.svelte';
 import { closeFocusedBrowserTab, isBrowserAddressUnavailable, isBrowserClosedTabMissing, isBrowserPaneUnattached } from './browserActions';
 import { isReplayingBrowserPageChord } from './browserPageChords';
 import { carryCaretIntoPane, isEditingFocusedIn } from '../components/panes/paneComposerFocus';
 import { navigateToAdjacentPane } from '../components/panes/paneNavigation';
 import { getThreadById } from './threads.svelte';
+import { threadMachineCallable } from './attachedBackends.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
 import {
   archiveThreadAction,
@@ -462,7 +463,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.interrupt',
     label: 'Thread: Interrupt Turn',
     icon: '■',
-    when: 'hasActiveThread && threadsOperate && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen',
+    when: 'hasActiveThread && threadsOperate && threadCallable && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen',
     editableReachable: true,
     run: (ctx) => {
       // Industry-pattern interrupt: clear UI state synchronously,
@@ -741,13 +742,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     editableReachable: true,
     run: () => {
       const key = paneFindTarget(paneCommandTarget());
-      if (!key || !hasPaneFindProvider(key)) return;
-      const root = paneFindRegionElement(key) ?? paneElement(paneOfFindKey(key));
-      const active = typeof document === 'undefined' ? null : document.activeElement;
-      openPaneFind(key, {
-        seed: root ? findSeedIn(root) : '',
-        returnFocus: active instanceof HTMLElement && !isInFindBar(active) ? active : null,
-      });
+      if (key) openPaneFindForReader(key);
     },
   });
 
@@ -1211,6 +1206,7 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     approvalPending: pane ? pane.pendingApprovals.length > 0 : false,
     anyModalOpen: false,
     hasActiveThread: thread !== null,
+    threadCallable: thread !== null && threadMachineCallable(thread.id, thread.projectId),
     turnActive: getActiveTurn(pane?.threadId ?? null) !== null,
     sendInFlight: isSendInFlight(pane?.threadId ?? null, pane?.sendInFlight ?? false),
     hasPendingPrompt: pane ? pane.pendingApprovals.length > 0 || pane.pendingUserInputs.length > 0 : false,

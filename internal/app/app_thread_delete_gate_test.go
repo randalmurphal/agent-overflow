@@ -280,7 +280,7 @@ func TestACommitEndsEveryStartWaitingForIt(t *testing.T) {
 		t.Fatal("starts still waited for the decision after the delete committed")
 	}
 	nothingWaits(t, f.app)
-	if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
+	if n := len(settledUserEnvelopes(t, f.stdin)); n != 0 {
 		t.Fatalf("the committed family's provider was written %d messages", n)
 	}
 	if _, live := f.app.sessionManager().get(worker.ID); live {
@@ -317,7 +317,7 @@ func TestShutdownEndsTheStartsWaitingForADecision(t *testing.T) {
 		f.app.appCancel()
 		nothingWaits(t, f.app)
 	})
-	if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
+	if n := len(settledUserEnvelopes(t, f.stdin)); n != 0 {
 		t.Fatalf("the provider was written %d messages", n)
 	}
 	if _, live := f.app.sessionManager().get(worker.ID); live {
@@ -591,7 +591,7 @@ func TestAClaimNoDeleteDecidesEndsTheStart(t *testing.T) {
 	f.app.fireDueThreadReminders(time.Now())
 	awaitQueuedWake(t, f.app, worker.ID, threadWakeSendID(token))
 	nothingWaits(t, f.app)
-	if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
+	if n := len(settledUserEnvelopes(t, f.stdin)); n != 0 {
 		t.Fatalf("the provider was written %d messages", n)
 	}
 	f.app.agentNoticeWork.mu.Lock()

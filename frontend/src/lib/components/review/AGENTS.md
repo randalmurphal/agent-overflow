@@ -24,7 +24,7 @@ PR stores; components own presentation and interaction.
   requests page). A pinned review's workspace is the project root, its
   scope stays `pr`, and its PR, computer and `git:operate` check are the
   ones it was opened with, never the owner pane's git status, thread or
-  composer. Its gates read the state (`pinned`, `commentsGranted`,
+  composer. Its gates read the state (`pinned`, `commentsGrant`,
   `canDraftComments`), not `ctx`: no scope selector, Edits, Send to chat
   or agent target. Its drafts have no thread row, so they are the PR's
   (`stores/prDiffReviewComments.svelte.ts`, persisted under the PR on its
@@ -137,7 +137,10 @@ PR stores; components own presentation and interaction.
 - `ReviewPane` publishes `FORGE_ATTACHMENT_SOURCE_CONTEXT`
   (`components/chat/markdown/forgeAttachmentContext.ts`) for its whole subtree;
   every `ChatMarkdown` under it renders forge-hosted attachments through
-  `utils/forgeAttachments.ts`. Do not pass the PR source as a prop.
+  `utils/forgeAttachments.ts` and links the forge's references, mentions
+  and relative links through `utils/forgeReferenceExtension.ts`, by the
+  PR's facts the source carries (`stores/forgeFacts.svelte.ts`). Do not
+  pass the PR source as a prop.
 - A diff is read whole into compact storage and its text is held within the
   patch memory budget. Render evicted text as placeholders and read exact text
   through `whenResident`; see

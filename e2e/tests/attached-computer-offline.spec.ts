@@ -7,11 +7,16 @@
 // outage logging, computerRows' fan-out skip, the ActivityRail draft guard
 // and the draft's workspace key against the real backend proxy, and the
 // dial cadence itself: the browser logs every refused request, so the
-// ladder's rungs are what bounds the console during an outage.
-import { test, expect, type Page } from '@playwright/test';
+// ladder's rungs are what bounds the console during an outage. The screen
+// is as quiet: the closed Projects section gains no status line and runs no
+// animation through the retries, the computer's rows dim only after thirty
+// seconds down, and the Projects menu names its state.
+import { type Locator, type Page } from '@playwright/test';
+import { test, expect } from './base-test.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import type { SeedResult } from './fixtures.js';
+import { expectProjectsMenuSays, watchProjectsQuiet } from './sidebar-quiet-helpers.js';
 
 interface Entry { type: string; text: string }
 
@@ -38,7 +43,7 @@ function collect(page: Page): () => Counts {
 }
 
 test('an offline paired computer logs once per outage and a draft pane is never routed', async ({ page }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(240_000);
   page.setDefaultTimeout(15_000);
   let home: HarnessApp | undefined;
   let remote: HarnessApp | undefined;
@@ -63,9 +68,36 @@ test('an offline paired computer logs once per outage and a draft pane is never 
     }] });
     const localRow = page.getByTestId('thread-row').filter({ hasText: 'Local conversation' }).first();
     const laptopRow = page.getByTestId('thread-row').filter({ hasText: 'Laptop conversation' }).first();
+    // The Regenerate title row of the open thread's header menu, read while
+    // the menu is open. Opened from the keyboard: the offline banner lies
+    // over the header's controls.
+    const withRegenerateRow = async (check: (row: Locator) => Promise<void>) => {
+      await page.getByTestId('chat-header-more').focus();
+      await page.keyboard.press('Enter');
+      await check(page.locator('[data-popover]').getByRole('menuitem', { name: 'Regenerate title' }));
+      await page.keyboard.press('Escape');
+      await expect(page.locator('[data-popover]')).toHaveCount(0);
+    };
     const openLocal = async () => {
       await localRow.click();
       await expect(page.getByTestId('message-timeline-scroll')).toBeVisible();
+    };
+    // A thread on the laptop, opened once the drop has lasted the settle
+    // time: the banner says the laptop is offline, with no countdown, and
+    // so does the composer, which takes no message.
+    const expectLaptopThreadSaysOffline = async () => {
+      await laptopRow.click();
+      const banner = page.getByTestId('transport-status-banner');
+      await expect(banner).toContainText('Offline');
+      await expect(banner).not.toContainText('Reconnecting in');
+      const input = page.getByLabel('Message Input');
+      await expect(input).toBeDisabled();
+      await expect(input).toHaveAttribute('placeholder', / is offline$/);
+      // No control on the thread says the laptop refused this device.
+      await withRegenerateRow(async (row) => {
+        await expect(row).toHaveCount(1);
+        await expect(row).not.toHaveAttribute('title', 'Not granted to this device');
+      });
     };
     // The tray's own refresh trigger for the open thread.
     const poke = async () => {
@@ -95,15 +127,18 @@ test('an offline paired computer logs once per outage and a draft pane is never 
     await openLocal();
     drain();
 
-    // The laptop goes away. The sidebar dims its thread once the socket
-    // is gone; the ladder then keeps dialing through the proxy, which
-    // refuses the upgrade while the manifest is cached and answers 503
-    // once it is refetched. Ten seconds holds several climbing attempts
+    // The laptop goes away. The ladder keeps dialing through the proxy,
+    // which refuses the upgrade while the manifest is cached and answers
+    // 503 once it is refetched. Ten seconds holds several climbing attempts
     // (250ms doubling), enough to show that only the first refetch is
-    // reported.
+    // reported, and that the Projects section stays as it was through
+    // them: no status line, nothing animating, and the laptop's row not yet
+    // dimmed.
+    const outageStart = Date.now();
     await remote.stop();
-    await expect(laptopRow).toHaveAttribute('data-machine-unreachable', 'true');
-    await page.waitForTimeout(10_000);
+    const quiet = await watchProjectsQuiet(page, 10_000);
+    expect(quiet).toEqual({ samples: expect.any(Number), statusLines: [], animations: [], dimmed: 0 });
+    expect(quiet.samples).toBeGreaterThanOrEqual(15);
     const outage = drain();
     expect(outage.http503).toBeGreaterThanOrEqual(2);
     // Each dial is a browser-native console line, so the ladder's cadence
@@ -113,15 +148,42 @@ test('an offline paired computer logs once per outage and a draft pane is never 
     expect(outage.http503 + outage.socketFailed).toBeLessThanOrEqual(12);
     expect(outage).toMatchObject({ preparationFailed: 1, ensureConnected: 0, ownerUnknown: 0, errors: [] });
 
-    // A reload boots every store against the offline computer: one line
-    // for its first failed dial, none per subscriber or per list read.
-    await page.reload();
+    // Thirty seconds down without a break, the laptop's row dims. The
+    // Projects menu is where the laptop's state is said.
+    await expect(laptopRow).toHaveAttribute('data-machine-unreachable', 'true', { timeout: 40_000 });
+    expect(Date.now() - outageStart).toBeGreaterThanOrEqual(30_000);
+    await expectProjectsMenuSays(page, /Offline/);
+    expect(await watchProjectsQuiet(page, 1_000)).toMatchObject({ statusLines: [], animations: [] });
+    // Its thread, opened now, says the laptop is offline.
+    await expectLaptopThreadSaysOffline();
     await openLocal();
-    await expect(laptopRow).toHaveAttribute('data-machine-unreachable', 'true');
+    drain();
+
+    // A reload boots every store against the offline computer: one line
+    // for its first failed dial, none per subscriber or per list read. The
+    // laptop has not connected in this window, so its row dims thirty
+    // seconds after the window began watching it, and the section stays
+    // quiet meanwhile.
+    await page.reload();
+    const bootStart = Date.now();
+    await openLocal();
+    const booted = await watchProjectsQuiet(page, 10_000);
+    expect(booted).toMatchObject({ statusLines: [], animations: [], dimmed: 0 });
+    await expect(laptopRow).toHaveAttribute('data-machine-unreachable', 'true', { timeout: 40_000 });
+    expect(Date.now() - bootStart).toBeGreaterThanOrEqual(25_000);
     await poke();
     const boot = drain();
     expect(boot.http503).toBeGreaterThanOrEqual(1);
     expect(boot).toMatchObject({ preparationFailed: 1, ensureConnected: 0, ownerUnknown: 0, errors: [] });
+
+    // The same after the reload, where this window has never heard the
+    // laptop's grant: still offline, never "read-only", and a control that
+    // grant switches off says the laptop has to connect.
+    await expectLaptopThreadSaysOffline();
+    await withRegenerateRow(async (row) => {
+      await expect(row).toBeDisabled();
+      await expect(row).toHaveAttribute('title', 'Unavailable until this computer connects');
+    });
   } finally {
     await page.close();
     await remote?.close();

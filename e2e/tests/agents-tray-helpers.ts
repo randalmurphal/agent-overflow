@@ -4,9 +4,9 @@
 // shell, a grandchild held on an approval, the row locators, and reads of
 // the request ledger, and the Past list's locators (agents-tray-past.spec.ts
 // too). seedLeadWithWorker is the companion pane specs' one
-// assistant with one held worker. seedPastWithAsk, seedAssistantWithHelper
-// and failAgentReads set up the Past, helper and failed-read cases the
-// desktop and compact specs share.
+// assistant with one held worker. seedPastWithAsk, seedSettledWorkers,
+// seedAssistantWithHelper and failAgentReads set up the Past, paging,
+// helper and failed-read cases the desktop and compact specs share.
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Locator, Page } from '@playwright/test';
@@ -260,6 +260,17 @@ export function pastRow(page: Page, token: string): Locator {
   return pastList(page).locator(`[data-testid="agent-tray-row"][data-token="${token}"]`);
 }
 
+/** The Past toggle's count sits right after the word Past, not at the row's far edge. */
+export async function expectPastCountBesideLabel(page: Page): Promise<void> {
+  const toggle = pastToggle(page);
+  const label = (await toggle.getByText('Past', { exact: true }).boundingBox())!;
+  const count = (await toggle.getByTestId('activity-rail-agents-past-count').boundingBox())!;
+  const row = (await toggle.boundingBox())!;
+  expect(count.x, 'count after the label').toBeGreaterThanOrEqual(label.x + label.width);
+  expect(count.x - (label.x + label.width), 'count beside the label').toBeLessThanOrEqual(12);
+  expect(row.x + row.width - (count.x + count.width), 'count off the right edge').toBeGreaterThan(row.width / 2);
+}
+
 /** Expands Past and waits for its first page. */
 export async function openPast(page: Page): Promise<Locator> {
   const toggle = pastToggle(page);
@@ -424,6 +435,38 @@ export async function seedPastWithAsk(harness: HarnessApp, provider: ProviderNam
 }
 
 /** What seedAssistantWithHelper made. */
+/**
+ * A lead thread whose one turn spawns `count` workers that each finish at
+ * once, waited on until Past counts them all.
+ */
+export async function seedSettledWorkers(harness: HarnessApp, provider: ProviderName, tag: string, count: number): Promise<string> {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      { name: `${tag}-lead`, repo: {}, threads: [{ title: LEAD, provider }] },
+      { name: `${tag}-workers`, repo: {}, threads: [] },
+    ],
+  });
+  const [leadP, workersP] = seed.projects;
+  const lead = leadP.threadIds[0];
+  await setScenario(harness, workersP.path, threadToolsScenario({ name: `${tag}-workers`, provider, turns: [{ text: 'Done.' }], afterTurns: 'repeatLast' }));
+  await setScenario(harness, leadP.path, threadToolsScenario({
+    name: `${tag}-lead`, provider, echoUserMessage: true,
+    turns: [
+      { steps: Array.from({ length: count }, (_, index) => ({
+        call: { tool: 'thread_spawn', args: { prompt: `Do part ${index + 1}.`, title: `Worker ${index + 1}`, project_id: workersP.projectId, provider, notify: true } },
+      })), text: 'Started the parts.' },
+      { text: 'Noted.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+  await harness.rpc('StartSession', lead);
+  await harness.rpc('SendMessage', lead, 'split the work', null);
+  await awaitTurnCompleted(harness, lead);
+  expect(ledgerRequests(harness, lead).map((r) => r.kind)).toEqual(Array(count).fill('spawn'));
+  await expect.poll(() => pastTotal(harness, lead), { timeout: 90_000 }).toBe(count);
+  return lead;
+}
+
 export interface AssistantWithHelper {
   lead: string;
   home: string;

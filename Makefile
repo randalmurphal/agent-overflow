@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen forge-schemas go-lint go-lint-exhaustive go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
+.PHONY: help ao-harness-docs methodgen forge-schemas linear-schema go-lint go-lint-exhaustive go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -19,7 +19,7 @@ help:
 		'Release: make release-upgrade-check [PREVIOUS_RELEASE=vX.Y.Z] [RELEASE_UPGRADE_BOOTSTRAP=1 RELEASE_UPGRADE_SCALE=0.02] [RELEASE_UPGRADE_ARCHIVE_OUT=FILE] [RELEASE_UPGRADE_CORPUS=/data-root]' \
 		'Import:  make import-corpus-smoke AO_IMPORT_CORPUS_CLAUDE=/copy AO_IMPORT_CORPUS_CODEX=/copy' \
 		'Docs:    make ao-harness-docs' \
-		'Codegen: make methodgen | make forge-schemas'
+		'Codegen: make methodgen | make forge-schemas | make linear-schema'
 
 ao-harness-docs:
 	go generate ./cmd/ao-harness
@@ -39,6 +39,13 @@ methodgen:
 # fetch them.
 forge-schemas:
 	go run ./internal/git/forgeschema/refresh
+
+# Refresh Linear's public GraphQL schema that internal/tracker/linear's
+# documents are checked against (linearschema/schema.graphql). It fetches
+# the published SDL on the host network with no key; review the diff,
+# then commit it. Tests never fetch it.
+linear-schema:
+	go run ./internal/tracker/linear/refresh
 
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
 # wired through this Makefile: frontend UI render tracing, raw provider
@@ -84,6 +91,21 @@ WSL_BUILD_MODE ?= build
 WSL_VERSION ?= $(VERSION)
 
 GO_PACKAGE_ROOTS := . ./cmd/... ./internal/...
+
+# Builds and tests run at the lowest CPU priority, so they yield to the
+# developer's running app and its provider CLIs. make renices itself once
+# while it reads this file; every recipe and everything it starts inherits
+# the priority. A make whose goals launch an app for the developer to use
+# keeps normal priority; its sub-makes that only build are lowered. Where
+# renice fails the build still runs, and says so once.
+NICE_EXEMPT_GOALS := dev dev-wsl launch-wsl harness-wsl perf-wsl soak harness harness-window soak-window
+ifeq ($(filter $(NICE_EXEMPT_GOALS),$(MAKECMDGOALS))$(AO_RENICE_FAILED),)
+AO_RENICE_ERROR := $(shell renice 19 -p $$PPID 2>&1 >/dev/null || echo "exit $$?")
+ifneq ($(AO_RENICE_ERROR),)
+$(warning could not lower make to nice 19 ($(AO_RENICE_ERROR)); running at normal priority)
+export AO_RENICE_FAILED := 1
+endif
+endif
 
 # Every Go command under make builds with -trimpath. The compiler then leaves
 # the checkout's directory out of a package's build cache key, so worktrees
@@ -142,8 +164,8 @@ endif
 # The `noremote` passes compile the variant without remote access
 # (internal/buildvariant): the desktop half the noremote harness binary
 # uses, the nogui half its WSL payload ships, and its Windows launcher.
-go-build:
-	@set -e; \
+go-build: gocache-trim-tool
+	@set -e; $(gocache-trim-around); \
 	packages=$$(go list -f '{{if or .GoFiles .CgoFiles}}{{.ImportPath}}{{end}}' $(GO_PACKAGE_ROOTS) | sed '/^$$/d'); \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
 	go build $$packages; \
@@ -159,7 +181,8 @@ go-build:
 # Every test runs inside the isolated network namespace (loopback plus a
 # private LAN, no route off it; internal/netisolate), so a test that binds
 # every interface or dials out reaches nothing beyond the namespace in any
-# WSL networking mode. `go test` itself runs under bin/ao-netns rather than
+# WSL networking mode, and its temp files land in a private RAM directory
+# that goes with the namespace. `go test` itself runs under bin/ao-netns rather than
 # through `-exec`, which would disable the test cache. go-prefetch fetches,
 # on the host network first, what every package of the module and its tests
 # import plus the module's tools, since a test may run `go tool wails3` and
@@ -179,16 +202,39 @@ GO_TEST_FLAGS ?=
 netns-tool:
 	go build -o bin/ao-netns ./cmd/ao-netns
 
+# gocache-trim caps the Go build cache (cmd/ao-gocache-trim; off in CI).
+# go-build, go-test and test-race run a pass before their build or test and
+# another when it ends, whatever its status (gocache-trim-around). There a
+# failed pass prints its error and the target goes on, since a cache
+# problem says nothing about the build or the tests, while an invalid
+# AO_GOCACHE_MAX_GIB fails the target, since it leaves the cache uncapped.
+# `make gocache-trim` fails on either.
+GOCACHE_TRIM := $(CURDIR)/bin/ao-gocache-trim
+gocache-trim-tool:
+	@[ -n "$$CI" ] || go build -o bin/ao-gocache-trim ./cmd/ao-gocache-trim
+
+gocache-trim: gocache-trim-tool
+	@[ -n "$$CI" ] || $(GOCACHE_TRIM)
+
+# gocache-trim-around opens a recipe's shell: it runs a pass now and traps
+# the shell's exit to run one after, keeping the recipe's exit status
+# unless that pass fails.
+gocache-trim-pass = { [ -n "$$CI" ] || $(GOCACHE_TRIM) -warn; }
+gocache-trim-around = $(gocache-trim-pass); trap 'status=$$?; $(gocache-trim-pass) || status=$$?; exit $$status' EXIT
+
 # GO_TEST_EXCLUDE is an extended regexp over import paths to leave out,
 # for CI shards that run the heavy packages on their own runners.
+# The timeout is 30m rather than go's 10m: at nice 19 on a loaded host
+# ./internal/app alone runs past 10 minutes. A -timeout in GO_TEST_FLAGS
+# replaces it.
 GO_TEST_EXCLUDE ?=
-go-test: netns-tool
-	@set -e; \
+go-test: netns-tool gocache-trim-tool
+	@set -e; $(gocache-trim-around); \
 	packages=$$(go list $(GO_TEST_PKGS)); \
 	if [ -n "$(GO_TEST_EXCLUDE)" ]; then packages=$$(printf '%s\n' $$packages | grep -vE '$(GO_TEST_EXCLUDE)' || true); fi; \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
 	$(call go-prefetch,$(GO_PACKAGE_ROOTS)); \
-	$(NETNS) go test $(GO_TEST_FLAGS) $$packages
+	$(NETNS) go test -timeout 30m $(GO_TEST_FLAGS) $$packages
 
 # Static checks. Each is one CI job (.github/workflows/ci.yml) and runs the
 # same way here. go-lint runs golangci-lint at the pinned version, installed
@@ -224,7 +270,7 @@ go-lint: $(GOLANGCI_LINT_BUILD)
 GO_LINT_EXHAUSTIVE = $(GOLANGCI_LINT) run --timeout 20m --enable-only exhaustive
 go-lint-exhaustive: $(GOLANGCI_LINT_BUILD)
 	$(GO_LINT_EXHAUSTIVE) ./...
-	$(GO_LINT_EXHAUSTIVE) --build-tags nogui,noremote,providersmoke ./...
+	$(GO_LINT_EXHAUSTIVE) --build-tags nogui,noremote,providersmoke,linearlive ./...
 	@set -e; for tags in "" noremote; do \
 		packages=$$(GOOS=windows CGO_ENABLED=0 go list -deps -tags "$$tags" ./cmd/agent-overflow-windows | sed -n 's|^agent-overflow/|./|p'); \
 		if [ -z "$$packages" ]; then echo "ERROR: no packages found for the Windows launcher"; exit 1; fi; \
@@ -293,8 +339,9 @@ frontend-lint: $(FRONTEND_DEPS)
 # timeout stays 1800s for deadlock protection on loaded hosts —
 # tighten only if you've measured headroom.
 RACE_PKGS := ./internal/transport/... ./internal/triage/... ./internal/provider/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... ./internal/browser/... ./internal/app/... .
-test-race: netns-tool
-	$(call go-prefetch,$(GO_PACKAGE_ROOTS))
+test-race: netns-tool gocache-trim-tool
+	@set -e; $(gocache-trim-around); \
+	$(call go-prefetch,$(GO_PACKAGE_ROOTS)); \
 	$(NETNS) go test -race -timeout 1800s $(RACE_PKGS)
 
 # provider-smoke is the real-provider gate: it drives one trivial workflow

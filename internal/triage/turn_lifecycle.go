@@ -465,6 +465,12 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		defer func() {
 			event := r.buildRoundCompletedEvent(evt, round.TurnID, emitIndex, now, meta)
 			event.Quiet = quiet
+			// The round ends before its announcement, so whatever the
+			// announcement starts (a worker's reassessment, a wait's
+			// read) finds it ended. The settle writes are done by now,
+			// so a reader between the two reads the turn as its row
+			// does.
+			r.endRound(evt.ThreadID, round.TurnID)
 			r.emit(eventchan.ProviderTurnCompleted, event)
 		}()
 	}
@@ -472,7 +478,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// Orphan error result: an error turn-complete with no open round, no
 	// open turn, and no prior settlement means the provider failed before
 	// the turn machinery ever engaged — e.g. Claude dying pre-init when
-	// its --resume-session-at cursor is unusable (the resulting
+	// a fork start's --resume-session-at cursor is unusable (the resulting
 	// result{error_during_execution} is the only wire output such a
 	// session ever produces). There is no round to emit and no turns row
 	// to settle, so without this branch the error reaches nothing the
@@ -909,6 +915,12 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 		if head, ok := r.peekPendingSendHead(evt.ThreadID); ok && head.TurnIndex == turnIndex {
 			log.Printf("triage: turn %s/%d settled without a stop reason before its send %s was echoed", evt.ThreadID, turnIndex, head.AOItemID)
 		}
+	}
+	r.mu.Lock()
+	gate := r.turnSettleGate
+	r.mu.Unlock()
+	if gate != nil {
+		gate(evt.ThreadID)
 	}
 	settled := true
 	if err := r.store.UpdateTurnCompleted(fields.logicalTurnID, now, fields.stopReason, fields.assistantMessageID, usageJSON, fields.errorMessage); err != nil {
@@ -1738,7 +1750,28 @@ func (r *Router) takeOpenRound(threadID, sessionToken string) (ActiveTurnSnapsho
 	round := st.currentRound
 	st.currentRound = ActiveTurnSnapshot{}
 	st.currentRoundOpen = false
+	st.endingRound, st.endingRoundSet = round, true
 	return round, true
+}
+
+// endRound clears the ending round once the turn's settle writes are done,
+// right before its provider:turn_completed, unless a later round took the
+// slot.
+func (r *Router) endRound(threadID, roundID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st := r.threadStateIfPresent(threadID); st != nil && st.endingRoundSet && st.endingRound.TurnID == roundID {
+		st.endingRound, st.endingRoundSet = ActiveTurnSnapshot{}, false
+	}
+}
+
+// liveRoundLocked is the round the live-state snapshots report: the open
+// round, else the one whose end is not announced yet. Caller holds r.mu.
+func (st *threadState) liveRoundLocked() (ActiveTurnSnapshot, bool) {
+	if st.currentRoundOpen {
+		return st.currentRound, true
+	}
+	return st.endingRound, st.endingRoundSet
 }
 
 // openRoundID returns the active round id for threadID without
@@ -2478,7 +2511,7 @@ func (r *Router) SessionCurrent(threadID, sessionToken string) bool {
 // ones Handle admits. The host calls this from the session-start path
 // BEFORE spawning the new subprocess. It must not wait for a wire
 // signal, because a session that dies during startup (e.g. Claude
-// rejecting --resume-session-at pre-init) emits its only diagnostics
+// rejecting a fork start's --resume-session-at pre-init) emits its only diagnostics
 // before anything init-like, and those must route. No stale frame passes
 // the gate after this call: every provider frame carries the token of
 // the session that produced it, and a frame of any earlier session no

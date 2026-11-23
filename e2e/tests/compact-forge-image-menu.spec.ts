@@ -2,7 +2,8 @@
 // a long press on an image the MR body wraps in `<p align="center">` opens
 // Copy Image / Save Image, Copy puts the PNG on the clipboard and Save
 // writes the forge's bytes into this boot's downloads directory; an SVG
-// saves byte for byte.
+// saves byte for byte. A file of the MR's own repository the body shows by
+// its path opens the same menu with Copy Path, and Save writes the blob.
 //
 // The phone reaches the PR scope from a checkout whose branch has an open
 // MR: the chat header's Thread actions menu carries the MR row. The seeded
@@ -21,6 +22,7 @@ import {
   expectEveryForgeCallHandled,
   forgeInvocations,
   publishPullRequest,
+  solidPNG,
 } from './forge-helpers.js';
 import { plainScenario } from './thread-tools-helpers.js';
 import { longPress } from './touch-helpers.js';
@@ -52,7 +54,9 @@ test('a long press on a forge image in the review pane opens its menu, and Copy 
   const secret = { png: randomBytes(16).toString('hex'), svg: randomBytes(16).toString('hex') };
   // Unique names: the downloads directory outlives the per-test reset.
   const tag = randomBytes(4).toString('hex');
-  const name = { png: `phone-${tag}.png`, svg: `phone-flow-${tag}.svg` };
+  const name = { png: `phone-${tag}.png`, svg: `phone-flow-${tag}.svg`, repo: `repo-${tag}.png` };
+  const repoPath = `docs/${name.repo}`;
+  const repoBytes = solidPNG(40, 30, [30, 120, 200]);
   await publishPullRequest(harness, seed.projects[0].path, {
     forge: 'gitlab',
     project,
@@ -62,14 +66,15 @@ test('a long press on a forge image in the review pane opens its menu, and Copy 
         title: 'Phone images',
         body:
           `<p align="center"><img src="/uploads/${secret.png}/${name.png}" alt="Centered shot"></p>\n\n` +
-          `![Flow diagram](/uploads/${secret.svg}/${name.svg})\n`,
+          `![Flow diagram](/uploads/${secret.svg}/${name.svg})\n\n` +
+          `![Repo shot](${repoPath})\n`,
       },
     ],
     attachments: [
       { secret: secret.png, filename: name.png, contentType: 'image/png', base64: PNG_BASE64 },
       { secret: secret.svg, filename: name.svg, contentType: 'image/svg+xml', text: SVG },
     ],
-  });
+  }, { commits: [{ message: 'add shot', files: { [repoPath]: repoBytes } }] });
 
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], {
     origin: new URL(harness.url).origin,
@@ -123,6 +128,19 @@ test('a long press on a forge image in the review pane opens its menu, and Copy 
   await imageMenu.getByRole('menuitem', { name: 'Save Image' }).tap();
   await expect(page.getByTestId('toast').filter({ hasText: path.join(downloads, name.svg) })).toBeVisible();
   expect(await readFile(path.join(downloads, name.svg), 'utf8')).toBe(SVG);
+
+  // A file of the MR's repository, read from the checkout's object store.
+  const repoShot = description.getByRole('img', { name: 'Repo shot' });
+  await expect.poll(() => repoShot.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(40);
+  await longPress(page, repoShot, imageMenu);
+  await expect(imageMenu.getByRole('menuitem')).toHaveText(['Copy Image', 'Copy Path', 'Save Image']);
+  await imageMenu.getByRole('menuitem', { name: 'Copy Path' }).tap();
+  await expect(page.getByTestId('toast').filter({ hasText: 'Path copied' })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(repoPath);
+  await longPress(page, repoShot, imageMenu);
+  await imageMenu.getByRole('menuitem', { name: 'Save Image' }).tap();
+  await expect(page.getByTestId('toast').filter({ hasText: path.join(downloads, name.repo) })).toBeVisible();
+  expect(new Uint8Array(await readFile(path.join(downloads, name.repo)))).toEqual(repoBytes);
 
   const calls = await forgeInvocations(harness);
   expect(calls.some((call) => call.route === 'glab api merge request list')).toBe(true);

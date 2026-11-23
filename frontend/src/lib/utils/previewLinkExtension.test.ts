@@ -31,12 +31,13 @@ function lex(text: string, extension = buildPreviewLinkExtension(target())) {
     gfm: true,
     extensions: {
       block: [],
-      inline: [extension.tokenizer],
+      inline: [],
       childTokens: {},
       renderers: {},
       startBlock: [],
       startInline: [],
     },
+    destinations: [extension.destination],
   } as never);
   return lexer.lex(text);
 }
@@ -94,6 +95,8 @@ describe('what the preview rewrite claims', () => {
     ['a markdown link', 'see [the app](http://localhost:5173/x) now'],
     ['a bare autolink', 'see http://localhost:5173/x now'],
     ['a pointy autolink', 'see <http://localhost:5173/x> now'],
+    ['a reference link', 'see [the app][app] now\n\n[app]: http://localhost:5173/x'],
+    ['a shortcut reference link', 'see [the app] now\n\n[the app]: http://localhost:5173/x'],
   ])('claims %s', (_name, source) => {
     const link = onlyLink(source);
     expect(link.preview?.state).toBe('open');

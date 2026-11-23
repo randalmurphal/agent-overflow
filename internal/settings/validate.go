@@ -25,6 +25,17 @@ var (
 		"codex":  {},
 		"agy":    {},
 	}
+	// textGenerationDefaultFamilies are the model families text generation
+	// runs the newest listed model of when TextGenerationModel is blank
+	// (provider.ResolveModel), per provider it runs on. Both are the
+	// cheapest, fastest tier: the runs are short structured outputs
+	// (titles, commit messages), not reasoning work. The frontend reads
+	// them from the generated defaults module.
+	textGenerationDefaultFamilies = map[string]string{
+		"claude": "claude-haiku",
+		"codex":  "gpt-luna",
+		"agy":    "gemini-4-hydrogen",
+	}
 	// Text-generation efforts are provider-specific. Claude has no "none",
 	// "minimal", or "ultra". Duplicated here to keep internal/settings
 	// dependency-free of the provider package.
@@ -104,6 +115,14 @@ var (
 		"system":    {},
 	}
 )
+
+// TextGenerationDefaultFamily is the model family text generation on
+// providerName runs the newest listed model of when TextGenerationModel is
+// blank, and false for a provider text generation does not run on.
+func TextGenerationDefaultFamily(providerName string) (string, bool) {
+	family, ok := textGenerationDefaultFamilies[providerName]
+	return family, ok
+}
 
 func validateSettings(current Settings) (Settings, error) {
 	current.TimestampFormat = strings.TrimSpace(current.TimestampFormat)

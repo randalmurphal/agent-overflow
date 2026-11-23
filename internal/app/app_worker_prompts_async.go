@@ -25,9 +25,19 @@ import (
 // of where an open question goes is kept here. Triage's RoutedTo lives in a
 // thread's live state, which a session's end drops whole
 // (triage.cleanupThread), and an async question outlives its session in
-// async_questions: it stays open until it is answered or dismissed, and
-// survives a restart, when the boot routes it again
-// (seedAsyncQuestionPrompts).
+// async_questions: it stays open until it is answered or dismissed.
+//
+// The record is this run's: a question not recorded by this run of the app
+// is the person's, as every question was before a spawner could take one.
+// The store marks each question with the run that recorded it and says
+// whether that is this one (store.AsyncQuestionGroup.AskedThisRun); a time
+// cannot say it, since the wall clock can be set during a run. No reconcile
+// opens such a question, so it is put to no agent, notifies nobody and is
+// not what its thread waits on, and the boot reads nothing. The mark never
+// changes and a fork copies it, so an answer or a return that leaves some
+// of an item's questions open leaves them the person's too, and a fork's
+// copy of one is the person's. A question that arrives by transfer carries
+// no mark. The person answers it in the thread as any question.
 //
 // The record follows the store, not the other way round: every change to a
 // thread's questions emits provider:async_questions_changed, a revert emits
@@ -83,8 +93,8 @@ type asyncQuestionPrompt struct {
 
 // syncAsyncQuestionPrompts queues a reconcile of threadID's async question
 // prompts with its questions as the store has them. Once shutdown has
-// begun it queues none: the next boot routes what is open
-// (seedAsyncQuestionPrompts).
+// begun it queues none: what is open then is the person's after the
+// restart.
 func (a *App) syncAsyncQuestionPrompts(threadID string) {
 	if threadID == "" || a.shuttingDown.Load() {
 		return
@@ -102,22 +112,6 @@ func (a *App) adoptAsyncQuestionPrompts(threadID string) {
 		return
 	}
 	a.workerPrompts.run(func() { a.reconcileAsyncQuestions(threadID, true) })
-}
-
-// seedAsyncQuestionPrompts routes, at boot, the async questions a restart
-// left open: one read of the threads that have one, then a reconcile of
-// each. A prompt wake the app quit with still queued was discarded with the
-// restore (discardAgentWakeAtBoot); the reconcile queues a fresh one under
-// a new token.
-func (a *App) seedAsyncQuestionPrompts() {
-	ids, err := a.store.ThreadsWithUnansweredAsyncQuestions()
-	if err != nil {
-		log.Printf("worker prompts: read the threads with open async questions: %v", err)
-		return
-	}
-	for _, id := range ids {
-		a.syncAsyncQuestionPrompts(id)
-	}
 }
 
 // reconcileAsyncQuestions announces what changed in threadID's open async
@@ -186,7 +180,8 @@ func (a *App) reconcileAsyncQuestions(threadID string, adopt bool) {
 
 // openAsyncQuestions reads threadID's unanswered async questions, by item,
 // as the prompts they make, unrouted, in one store read: none for a thread
-// that is gone, moved away or archived.
+// that is gone, moved away or archived, and none for an item this run of
+// the app did not record, which is the person's.
 func (a *App) openAsyncQuestions(threadID string) (map[string]asyncQuestionPrompt, error) {
 	groups, err := a.store.UnansweredAsyncQuestions(threadID)
 	if err != nil {
@@ -194,6 +189,11 @@ func (a *App) openAsyncQuestions(threadID string) (map[string]asyncQuestionPromp
 	}
 	open := make(map[string]asyncQuestionPrompt, len(groups))
 	for _, group := range groups {
+		if !group.AskedThisRun {
+			continue
+		}
+		// An item's rows share the item's time, which orders its prompts.
+		asked := group.Questions[0].CreatedAt
 		request := provider.UserInputRequest{
 			RequestID: group.ItemID, ThreadID: threadID, Occurrence: provider.PromptOccurrence(group.Revision),
 		}
@@ -204,7 +204,7 @@ func (a *App) openAsyncQuestions(threadID string) (map[string]asyncQuestionPromp
 			}
 			request.Questions = append(request.Questions, question)
 		}
-		open[group.ItemID] = asyncQuestionPrompt{request: request, asked: group.Questions[0].CreatedAt}
+		open[group.ItemID] = asyncQuestionPrompt{request: request, asked: asked}
 	}
 	return open, nil
 }
@@ -323,6 +323,62 @@ func (a *App) rerouteAsyncQuestions(from string, refs []triage.PromptRef, reject
 	return len(moved)
 }
 
+// routeAsyncQuestionsAgain is routeWorkerPromptsAgain for workerID's async
+// question prompts: each whose route the router now changes moves, a
+// person's only when fromPerson, and one that moved to the person settles
+// the registration its agent held and withdraws that wake, a hold for a
+// paired computer included. It returns how many moved.
+func (a *App) routeAsyncQuestionsAgain(workerID string, fromPerson bool) int {
+	routes := &a.workerPrompts.async
+	routes.mu.Lock()
+	var refs []triage.PromptRef
+	for key, prompt := range routes.open {
+		if key.workerID == workerID {
+			refs = append(refs, triage.PromptRef{ThreadID: workerID, RequestID: key.requestID, Occurrence: prompt.request.Occurrence})
+		}
+	}
+	routes.mu.Unlock()
+	if len(refs) == 0 {
+		return 0
+	}
+	// Read outside the routes' lock: the answering state has its own.
+	answering := map[triage.PromptRef]bool{}
+	for _, ref := range refs {
+		if a.workerPromptAnswering(ref) {
+			answering[ref] = true
+		}
+	}
+	to := a.routeWorkerPrompt(workerID)
+	sameRoute := func(x, y *provider.PromptRoute) bool {
+		return (x == nil) == (y == nil) && (x == nil || (x.ThreadID == y.ThreadID && x.ComputerID == y.ComputerID))
+	}
+	var moved []asyncQuestionPrompt
+	routes.mu.Lock()
+	for key, prompt := range routes.open {
+		if key.workerID != workerID || sameRoute(prompt.route, to) || (prompt.route == nil && !fromPerson) {
+			continue
+		}
+		if answering[triage.PromptRef{ThreadID: workerID, RequestID: key.requestID, Occurrence: prompt.request.Occurrence}] {
+			continue
+		}
+		prompt.route = to
+		routes.open[key] = prompt
+		moved = append(moved, prompt)
+	}
+	routes.mu.Unlock()
+	for _, prompt := range moved {
+		request := prompt.request
+		if prompt.route == nil {
+			a.settleWorkerPrompt(workerID, request.RequestID, request.Occurrence)
+		}
+		a.announceAsyncQuestion(prompt)
+	}
+	if len(moved) > 0 {
+		a.noteWorkerLiveness(workerID)
+	}
+	return len(moved)
+}
+
 // asyncQuestionBlocked says what threadID's open async questions ask, for
 // threadWaitingOn: the first question of its earliest prompt and the route
 // it took, nil when it is the person's. Found is false when it has none
@@ -384,7 +440,9 @@ func isWorkerAnswer(sendID string) bool {
 // boot.
 //
 // Returned by the app or a failure, the questions go where the worker's
-// questions route now, the spawner when it can take them. Withdrawn by a
+// questions route now, the spawner when it can take them, unless this run
+// did not record them, as for those the boot returns: they are the
+// person's. Withdrawn by a
 // person (byPerson), who overruled the agent, they go to the person, as a
 // hand-back does: each item is marked with the revision the return leaves
 // it at, inside the return's transaction, so a reconcile that reads the

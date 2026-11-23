@@ -8,11 +8,10 @@ import (
 	"log"
 	"time"
 
-	"github.com/google/uuid"
-
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/pump"
 	"agent-overflow/internal/transport"
 )
 
@@ -68,8 +67,9 @@ type pipelinePump struct {
 // pipelineHandle is one caller's reference on a pipeline pump, as
 // prUpdateHandle is on a PR pump.
 type pipelineHandle struct {
+	tie     transport.Tie
 	pump    *pipelinePump
-	active  bool
+	ref     *pump.Handle[prPumpRequest]
 	follows map[string]bool
 }
 
@@ -98,6 +98,10 @@ func (a *App) fetchPipeline(ctx context.Context, repo gitops.RepoReference, id s
 //ao:scope git:operate
 //ao:route selected
 func (a *App) SubscribePipeline(ctx context.Context, repo gitops.RepoReference, id string) (PipelineSubscriptionResult, error) {
+	conn, err := transport.CallerConnection(ctx)
+	if err != nil {
+		return PipelineSubscriptionResult{}, err
+	}
 	if a.shuttingDown.Load() {
 		return PipelineSubscriptionResult{}, ErrShuttingDown
 	}
@@ -108,7 +112,7 @@ func (a *App) SubscribePipeline(ctx context.Context, repo gitops.RepoReference, 
 		return PipelineSubscriptionResult{}, fmt.Errorf("pipeline id: %w", err)
 	}
 	key := pipelineKey(repo, id)
-	result, joined, err := a.joinPipelinePump(key)
+	result, joined, err := a.joinPipelinePump(key, conn)
 	if err != nil {
 		return PipelineSubscriptionResult{}, err
 	}
@@ -118,18 +122,12 @@ func (a *App) SubscribePipeline(ctx context.Context, repo gitops.RepoReference, 
 			return PipelineSubscriptionResult{}, readErr
 		}
 		var start *pipelinePump
-		result, start, err = a.createPipelinePump(repo, id, key, pipeline, readErr)
+		result, start, err = a.createPipelinePump(repo, id, key, pipeline, readErr, conn)
 		if err != nil {
 			return PipelineSubscriptionResult{}, err
 		}
 		if start != nil {
 			a.prUpdates.wg.Go(func() { a.pumpPipeline(start) })
-		}
-	}
-	if state := transport.ConnStateFromContext(ctx); state != nil {
-		if !state.BindCleanup(pipelineCleanupKey(result.ID), func() { a.unsubscribePipeline(result.ID) }) {
-			a.unsubscribePipeline(result.ID)
-			return PipelineSubscriptionResult{}, errors.New("pipelines: connection closing")
 		}
 	}
 	return result, nil
@@ -146,13 +144,13 @@ func (a *App) ensurePipelineMapsLocked() {
 
 func (a *App) livePipelinePumpLocked(key string) *pipelinePump {
 	pump, ok := a.prUpdates.pipelines[key]
-	if !ok || pump.dead {
+	if !ok || pump.DeadLocked() {
 		return nil
 	}
 	return pump
 }
 
-func (a *App) joinPipelinePump(key string) (PipelineSubscriptionResult, bool, error) {
+func (a *App) joinPipelinePump(key string, conn *transport.ConnState) (PipelineSubscriptionResult, bool, error) {
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
 	a.ensurePipelineMapsLocked()
@@ -163,13 +161,17 @@ func (a *App) joinPipelinePump(key string) (PipelineSubscriptionResult, bool, er
 	if pump == nil {
 		return PipelineSubscriptionResult{}, false, nil
 	}
-	return a.takePipelineReferenceLocked(pump), true, nil
+	handle, err := bindPumpHandle(conn, "pipelines", pipelineCleanupKey, a.unsubscribePipeline)
+	if err != nil {
+		return PipelineSubscriptionResult{}, false, err
+	}
+	return a.takePipelineReferenceLocked(pump, handle), true, nil
 }
 
 // createPipelinePump registers a pump seeded with the caller's read, or
 // joins one created meanwhile, which wins: its subscribers must all start
 // from its state. start is the pump whose goroutine the caller launches.
-func (a *App) createPipelinePump(repo gitops.RepoReference, id, key string, pipeline gitops.CIPipeline, readErr error) (PipelineSubscriptionResult, *pipelinePump, error) {
+func (a *App) createPipelinePump(repo gitops.RepoReference, id, key string, pipeline gitops.CIPipeline, readErr error, conn *transport.ConnState) (PipelineSubscriptionResult, *pipelinePump, error) {
 	var fail prForgeFailure
 	var encoded []byte
 	if readErr != nil {
@@ -187,8 +189,14 @@ func (a *App) createPipelinePump(repo gitops.RepoReference, id, key string, pipe
 	if len(a.prUpdates.pipelineHandles) >= maxPRUpdateHandles {
 		return PipelineSubscriptionResult{}, nil, ErrTooManyPipelineSubscriptions
 	}
+	// The caller's handle comes first: a connection that is closing takes
+	// none, and then no pump is made or published for it either.
+	handle, err := bindPumpHandle(conn, "pipelines", pipelineCleanupKey, a.unsubscribePipeline)
+	if err != nil {
+		return PipelineSubscriptionResult{}, nil, err
+	}
 	if existing := a.livePipelinePumpLocked(key); existing != nil {
-		return a.takePipelineReferenceLocked(existing), nil, nil
+		return a.takePipelineReferenceLocked(existing, handle), nil, nil
 	}
 	pump := &pipelinePump{key: key, repo: repo, id: id, pumpCore: a.newPumpCore()}
 	pump.ciPhase = ciPhase{
@@ -205,14 +213,16 @@ func (a *App) createPipelinePump(repo gitops.RepoReference, id, key string, pipe
 		pump.ci, pump.ciKnown, pump.ciLast = pipeline, true, encoded
 	}
 	pump.seq = a.nextPRUpdateSeqLocked()
+	result := a.takePipelineReferenceLocked(pump, handle)
 	a.prUpdates.pipelines[key] = pump
-	return a.takePipelineReferenceLocked(pump), pump, nil
+	return result, pump, nil
 }
 
-func (a *App) takePipelineReferenceLocked(pump *pipelinePump) PipelineSubscriptionResult {
-	id := uuid.NewString()
-	pump.takeLocked()
-	a.prUpdates.pipelineHandles[id] = &pipelineHandle{pump: pump, active: true}
+// takePipelineReferenceLocked registers one handle against pump, tied to
+// its connection in the same critical section (bindPumpHandle).
+func (a *App) takePipelineReferenceLocked(pump *pipelinePump, handle pumpHandle) PipelineSubscriptionResult {
+	id := handle.id
+	a.prUpdates.pipelineHandles[id] = &pipelineHandle{tie: handle.tie, pump: pump, ref: pump.TakeLocked()}
 	result := PipelineSubscriptionResult{
 		ID:        id,
 		Key:       pump.key,
@@ -238,16 +248,10 @@ func (a *App) takePipelineReferenceLocked(pump *pipelinePump) PipelineSubscripti
 func (a *App) SetPipelineActive(ctx context.Context, subscriptionID string, active bool) error {
 	a.prUpdates.mu.Lock()
 	handle, ok := a.prUpdates.pipelineHandles[subscriptionID]
-	if !ok || handle.active == active || handle.pump.dead {
-		a.prUpdates.mu.Unlock()
-		return nil
+	if ok {
+		handle.ref.VoteLocked(active)
 	}
-	handle.active = active
-	resumed := handle.pump.voteLocked(active)
 	a.prUpdates.mu.Unlock()
-	if resumed {
-		handle.pump.wakeUp()
-	}
 	return nil
 }
 
@@ -272,7 +276,7 @@ func (a *App) SetPipelineFollows(ctx context.Context, subscriptionID string, job
 	}
 	return a.setCILogFollows(ctx, jobIDs, func() (*ciPhase, *map[string]bool, bool) {
 		handle, ok := a.prUpdates.pipelineHandles[subscriptionID]
-		if !ok || handle.pump.dead {
+		if !ok || handle.pump.DeadLocked() {
 			return nil, nil, false
 		}
 		return &handle.pump.ciPhase, &handle.follows, true
@@ -291,19 +295,21 @@ func (a *App) RefreshPipeline(ctx context.Context, subscriptionID string) error 
 	}
 	a.prUpdates.mu.Lock()
 	handle, ok := a.prUpdates.pipelineHandles[subscriptionID]
-	if !ok || handle.pump.dead {
+	if !ok || handle.pump.DeadLocked() {
 		a.prUpdates.mu.Unlock()
 		return errPRUpdatesUnknownSubscription
 	}
 	pump := handle.pump
 	a.prUpdates.mu.Unlock()
-	return a.requestPump(ctx, &pump.pumpCore, &prPumpRequest{ci: true})
+	return pump.Request(ctx, prPumpRequest{ci: true})
 }
 
+// UnsubscribePipeline releases a subscription, from whichever connection
+// asks; the connection that subscribed is untied with the handle.
+//
 //ao:scope git:operate
 //ao:route home
 func (a *App) UnsubscribePipeline(ctx context.Context, subscriptionID string) error {
-	transport.ConnStateFromContext(ctx).UnbindCleanup(pipelineCleanupKey(subscriptionID))
 	a.unsubscribePipeline(subscriptionID)
 	return nil
 }
@@ -318,29 +324,23 @@ func (a *App) unsubscribePipeline(id string) {
 		return
 	}
 	delete(a.prUpdates.pipelineHandles, id)
+	handle.tie.Untie()
 	pump := handle.pump
 	releaseFollowsLocked(&pump.ciPhase, handle.follows)
 	handle.follows = nil
-	var teardown *pipelinePump
-	if pump.releaseLocked(handle.active) {
-		teardown = pump
-		if a.prUpdates.pipelines[pump.key] == pump {
-			delete(a.prUpdates.pipelines, pump.key)
-		}
+	if handle.ref.ReleaseLocked() && a.prUpdates.pipelines[pump.key] == pump {
+		delete(a.prUpdates.pipelines, pump.key)
 	}
 	a.prUpdates.mu.Unlock()
-	if teardown != nil {
-		teardown.stop()
-	}
 }
 
-// dropPipelinePump removes a pump whose goroutine exited on its own, with
-// every handle on it.
+// dropPipelinePump stops a pump whose goroutine exited on its own and
+// removes it with every handle on it; a request still waiting on it is
+// refused.
 func (a *App) dropPipelinePump(pump *pipelinePump) {
-	pump.cancel()
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
-	pump.dead = true
+	pump.StopLocked()
 	if a.prUpdates.pipelines[pump.key] == pump {
 		delete(a.prUpdates.pipelines, pump.key)
 	}
@@ -349,6 +349,7 @@ func (a *App) dropPipelinePump(pump *pipelinePump) {
 			releaseFollowsLocked(&pump.ciPhase, handle.follows)
 			handle.follows = nil
 			delete(a.prUpdates.pipelineHandles, id)
+			handle.tie.Untie()
 		}
 	}
 }
@@ -366,15 +367,11 @@ func (a *App) closePipelinePumps() {
 		a.unsubscribePipeline(id)
 	}
 	a.prUpdates.mu.Lock()
-	orphans := make([]*pipelinePump, 0, len(a.prUpdates.pipelines))
 	for key, pump := range a.prUpdates.pipelines {
 		delete(a.prUpdates.pipelines, key)
-		orphans = append(orphans, pump)
+		pump.StopLocked()
 	}
 	a.prUpdates.mu.Unlock()
-	for _, pump := range orphans {
-		pump.stop()
-	}
 }
 
 // pollPipeline polls the pipeline and words a change as its frame.
@@ -428,31 +425,31 @@ func (a *App) pumpPipeline(pump *pipelinePump) {
 	arm(a.ciInterval(&pump.ciPhase))
 	for {
 		select {
-		case <-pump.done:
+		case <-pump.Done():
 			return
-		case <-pump.ctx.Done():
+		case <-pump.Context().Done():
 			return
-		case req := <-pump.requests:
-			a.servePumpRequest(&pump.ciPhase, req, nil, run)
+		case req := <-pump.Requests():
+			req.Finish(a.servePumpRequest(&pump.ciPhase, req.Body(), nil, run))
 		case <-ciTick:
-			if pump.paused.Load() {
+			if pump.Paused() {
 				missed, ciTick = true, nil
 				continue
 			}
-			run(pump.ctx, nil, true)
+			run(pump.Context(), nil, true)
 		case <-ticker.C:
-			if pump.paused.Load() {
+			if pump.Paused() {
 				missed = true
 				continue
 			}
 			// A background read before a rate limit's release asks nothing
 			// (pollCIPhase); the phase's timer is armed for the release.
-			run(pump.ctx, nil, true)
-		case <-pump.wake:
-			if pump.paused.Load() || !missed {
+			run(pump.Context(), nil, true)
+		case <-pump.Wake():
+			if pump.Paused() || !missed {
 				continue
 			}
-			run(pump.ctx, nil, true)
+			run(pump.Context(), nil, true)
 		}
 	}
 }

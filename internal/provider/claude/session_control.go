@@ -158,29 +158,9 @@ func (s *Session) SetInteractionMode(ctx context.Context, mode provider.Interact
 // per-success side effects (e.g. setPermissionMode caching the new
 // mode).
 func (s *Session) sendControlRequest(ctx context.Context, opName string, request map[string]any) (*controlResponseResult, error) {
-	requestID := s.allocateControlRequestID()
-	ch := make(chan *controlResponseResult, 1)
-	pending := pendingControlRequest{ch: ch, isInterrupt: request["subtype"] == "interrupt"}
-	if request["subtype"] == "stop_task" {
-		pending.stopTaskID, _ = request["task_id"].(string)
-	}
-	if !s.registerControlRequest(requestID, pending) {
-		return nil, fmt.Errorf("claude: %s: session closing", opName)
-	}
-
-	msg := map[string]any{
-		"type":       "control_request",
-		"request_id": requestID,
-		"request":    request,
-	}
-	data, err := json.Marshal(msg)
+	requestID, ch, err := s.writeControlRequest(opName, request)
 	if err != nil {
-		s.releaseControlRequest(requestID)
-		return nil, fmt.Errorf("claude: marshal %s: %w", opName, err)
-	}
-	if err := s.proc.WriteLine(data); err != nil {
-		s.releaseControlRequest(requestID)
-		return nil, fmt.Errorf("claude: write %s: %w", opName, err)
+		return nil, err
 	}
 
 	subtype, _ := request["subtype"].(string)
@@ -219,6 +199,38 @@ func (s *Session) sendControlRequest(ctx context.Context, opName string, request
 			return res, nil
 		}
 	}
+}
+
+// writeControlRequest registers a pending response for a new request id and
+// writes the request. The read loop delivers the matching control_response
+// on the returned channel, or closes it when the session closes; the caller
+// releases the id if it stops waiting first.
+func (s *Session) writeControlRequest(opName string, request map[string]any) (string, chan *controlResponseResult, error) {
+	requestID := s.allocateControlRequestID()
+	ch := make(chan *controlResponseResult, 1)
+	pending := pendingControlRequest{ch: ch, isInterrupt: request["subtype"] == "interrupt"}
+	if request["subtype"] == "stop_task" {
+		pending.stopTaskID, _ = request["task_id"].(string)
+	}
+	if !s.registerControlRequest(requestID, pending) {
+		return "", nil, fmt.Errorf("claude: %s: session closing", opName)
+	}
+
+	msg := map[string]any{
+		"type":       "control_request",
+		"request_id": requestID,
+		"request":    request,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		s.releaseControlRequest(requestID)
+		return "", nil, fmt.Errorf("claude: marshal %s: %w", opName, err)
+	}
+	if err := s.proc.WriteLine(data); err != nil {
+		s.releaseControlRequest(requestID)
+		return "", nil, fmt.Errorf("claude: write %s: %w", opName, err)
+	}
+	return requestID, ch, nil
 }
 
 // controlRequestTimeoutFor is the one place a control request's silence
@@ -419,6 +431,7 @@ func (s *Session) handleControlResponseLine(line []byte) {
 		res.errMsg = fmt.Sprintf("unexpected control_response subtype %q", raw.Response.Subtype)
 	}
 
+	s.start.answered()
 	pending, delivered := s.deliverControlResponse(requestID, res)
 	if !delivered {
 		log.Printf("claude: control_response with no pending request_id %q (subtype=%s)", requestID, raw.Response.Subtype)

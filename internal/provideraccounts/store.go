@@ -52,6 +52,10 @@ type Account struct {
 	RefreshTokenExpiresAt int64                        `json:"refreshTokenExpiresAt,omitempty"`
 	AddedAt               int64                        `json:"addedAt"`
 	RateLimits            *provider.RateLimitsSnapshot `json:"rateLimits,omitempty"`
+	// UsageResets is the resets the account's last reading named, for the
+	// card to offer; nil before any reading spoke about them. SetUsageResets
+	// is its only writer, and every other write of the row carries it over.
+	UsageResets *UsageResets `json:"usageResets,omitempty"`
 	// OrgNameReported is write intent, never stored state: the write carries
 	// a provider answer whose blank OrgName means "no organization name"
 	// (provider.AccountInfo.OrgNameReported), so it clears the saved one
@@ -69,10 +73,16 @@ type Account struct {
 // event to every client for data the picker already reads from
 // GetModelsForProvider. It lives beside the accounts instead, keyed by id.
 type ClaudeCatalogRecord struct {
+	// Binary, WorkDir and EnvFingerprint are the probe identity that
+	// answered (provider.ProbeCacheKey, ProbeKey below), the account apart.
 	// Binary is the configured path (Settings.ClaudeBinaryPath as the app
-	// resolves it), which is also the ProbeCacheKey dimension the catalog is
-	// keyed and dropped by.
-	Binary string `json:"binary"`
+	// resolves it), which is also the dimension the catalog is dropped by.
+	// A record is served only under the identity it names, so an answer
+	// captured under another custom environment is never seeded as this
+	// one's.
+	Binary         string `json:"binary"`
+	WorkDir        string `json:"workDir"`
+	EnvFingerprint string `json:"envFingerprint,omitempty"`
 	// ResolvedPath is Binary after LookPath and EvalSymlinks, with Size and
 	// ModUnixNano describing that file. Together they are the same identity
 	// the provider-binary watcher compares, so an in-place upgrade under an
@@ -87,6 +97,18 @@ type ClaudeCatalogRecord struct {
 	// which survives a wire that omits it.
 	Wire    []claude.WireModel   `json:"wire"`
 	Learned []provider.ModelInfo `json:"learned,omitempty"`
+}
+
+// ClaudeCatalogRecordFor is the record of a probe that answered as key,
+// before the binary's resolved file is stamped on it.
+func ClaudeCatalogRecordFor(key provider.ProbeCacheKey) ClaudeCatalogRecord {
+	return ClaudeCatalogRecord{Binary: key.Binary, WorkDir: key.WorkDir, EnvFingerprint: key.EnvFingerprint}
+}
+
+// ProbeKey is the probe identity that produced the record, filed under
+// accountID.
+func (r ClaudeCatalogRecord) ProbeKey(accountID string) provider.ProbeCacheKey {
+	return provider.ProbeCacheKey{Binary: r.Binary, AccountID: accountID, WorkDir: r.WorkDir, EnvFingerprint: r.EnvFingerprint}
 }
 
 // ProviderState is the persisted account set and current selection for one
@@ -113,6 +135,10 @@ type ProviderState struct {
 	// selectAccount is the one writer of the selection and keeps it true to
 	// that.
 	AutoSelected bool `json:"autoSelected,omitempty"`
+	// PendingResets holds each account's unsettled usage-reset spend
+	// (PendingReset says what ends one). Backend state: a key is no business
+	// of a client's. Remove forgets it.
+	PendingResets map[string]PendingReset `json:"pendingResets,omitempty"`
 }
 
 // selectAccount makes accountID the selection and records whether
@@ -146,6 +172,29 @@ type Store struct {
 	mu    sync.RWMutex
 	path  string
 	state persistedState
+	// guard, when set, may refuse a write that changes a provider's selected
+	// account (GuardSelection).
+	guard func(providerName, from, to string) error
+}
+
+// GuardSelection has every write that changes a provider's selected account
+// ask guard first, under the store's lock; an error refuses the write and is
+// its error. The account manager sets it once, before the store is shared.
+func (s *Store) GuardSelection(guard func(providerName, from, to string) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.guard = guard
+}
+
+// selectLocked is selectAccount behind the guard: it reports whether the
+// selection changed, or the guard's refusal. The caller holds mu.
+func (s *Store) selectLocked(providerName string, state *ProviderState, accountID string, auto bool) (bool, error) {
+	if state.ActiveAccountID != accountID && s.guard != nil {
+		if err := s.guard(providerName, state.ActiveAccountID, accountID); err != nil {
+			return false, err
+		}
+	}
+	return state.selectAccount(accountID, auto), nil
 }
 
 func NewStore(configDir string) (*Store, error) {
@@ -284,9 +333,14 @@ func (s *Store) upsertAndActivate(
 		if account.RateLimits == nil {
 			account.RateLimits = existing.RateLimits
 		}
+		account.UsageResets = existing.UsageResets
 		account.RefreshTokenExpiresAt = mergeRefreshTokenExpiry(account, existing)
-	} else if account.AddedAt == 0 {
-		account.AddedAt = now
+	} else {
+		// SetUsageResets is the only writer of a row's list.
+		account.UsageResets = nil
+		if account.AddedAt == 0 {
+			account.AddedAt = now
+		}
 	}
 	for i := range state.Accounts {
 		if i != index && conflictsWithSaved(account, state.Accounts[i]) {
@@ -304,7 +358,11 @@ func (s *Store) upsertAndActivate(
 	} else {
 		state.Accounts = append(state.Accounts, cloneAccount(account))
 	}
-	if state.selectAccount(account.ID, false) || credentialChanged {
+	selected, err := s.selectLocked(account.Provider, &state, account.ID, false)
+	if err != nil {
+		return Account{}, err
+	}
+	if selected || credentialChanged {
 		state.Generation++
 	}
 	s.state.Providers[account.Provider] = state
@@ -350,6 +408,8 @@ func (s *Store) Add(account Account) (Account, error) {
 	if account.AddedAt == 0 {
 		account.AddedAt = time.Now().UnixMilli()
 	}
+	// SetUsageResets is the only writer of a row's list.
+	account.UsageResets = nil
 	state.Accounts = append(state.Accounts, cloneAccount(account))
 	s.state.Providers[account.Provider] = state
 	if err := s.saveLocked(); err != nil {
@@ -415,7 +475,11 @@ func (s *Store) activate(providerName, accountID string, auto bool) (Account, er
 		if state.Accounts[i].ID != accountID {
 			continue
 		}
-		if state.selectAccount(accountID, auto) {
+		selected, err := s.selectLocked(providerName, &state, accountID, auto)
+		if err != nil {
+			return Account{}, err
+		}
+		if selected {
 			state.Generation++
 		}
 		s.state.Providers[providerName] = state
@@ -506,7 +570,9 @@ func (s *Store) Remove(providerName, accountID, replacementAccountID string) err
 				providerName,
 			)
 		}
-		state.selectAccount(replacementAccountID, false)
+		if _, err := s.selectLocked(providerName, &state, replacementAccountID, false); err != nil {
+			return err
+		}
 		state.Generation++
 	}
 
@@ -524,6 +590,9 @@ func (s *Store) Remove(providerName, accountID, replacementAccountID string) err
 	if len(state.AutoSwitchOff) == 0 {
 		state.AutoSwitchOff = nil
 	}
+	// And the unsettled reset spend: its key belongs to this account's
+	// resets, which an account added later does not hold.
+	delete(state.PendingResets, accountID)
 	s.state.Providers[providerName] = state
 	if err := s.saveLocked(); err != nil {
 		restoreProviderState(s.state.Providers, providerName, previous, existed)
@@ -571,6 +640,7 @@ func (s *Store) UpdateMetadata(account Account) (Account, error) {
 	}
 	account.AddedAt = existing.AddedAt
 	account.RateLimits = existing.RateLimits
+	account.UsageResets = existing.UsageResets
 	account.RefreshTokenExpiresAt = mergeRefreshTokenExpiry(account, existing)
 	account.OrgNameReported = false
 	if account == existing {
@@ -865,6 +935,7 @@ func cloneProviderState(state ProviderState) ProviderState {
 	state.Accounts = cloneAccounts(state.Accounts)
 	state.ClaudeCatalogs = cloneClaudeCatalogs(state.ClaudeCatalogs)
 	state.AutoSwitchOff = maps.Clone(state.AutoSwitchOff)
+	state.PendingResets = clonePendingResets(state.PendingResets)
 	return state
 }
 
@@ -898,6 +969,7 @@ func cloneAccount(account Account) Account {
 		copy := cloneSnapshot(*account.RateLimits)
 		account.RateLimits = &copy
 	}
+	account.UsageResets = cloneUsageResets(account.UsageResets)
 	return account
 }
 

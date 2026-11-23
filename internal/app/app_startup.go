@@ -830,6 +830,9 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	}
 	a.workspaceFiles = workspacefiles.NewSearcher(workspacefiles.Config{})
 	a.configDir = dbDir
+	if err := a.initTrackers(); err != nil {
+		return err
+	}
 	// The request ledger: settle what the last run left open, then watch
 	// every thread's turn ends for the receipts bound to them. Both need the
 	// store and the data directory, and neither may run before the flush

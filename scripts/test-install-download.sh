@@ -1,9 +1,12 @@
 #!/usr/bin/env sh
+# shellcheck disable=SC2006 # backquotes after the handlers: main_shell_signals_unix_test.go
 set -eu
 
 ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-TMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
+TMP_PREFIX=${TMPDIR:-/tmp}/ao-test-install-download.$$.
+trap 'rm -rf "$TMP_PREFIX"*' EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+TMP_DIR=`mktemp -d "${TMP_PREFIX}XXXXXX"`
 
 make_fake_release() {
 	dir=$1
@@ -55,7 +58,7 @@ assert_fails() {
 # These are synthetic amd64 Linux/WSL artifacts. Simulate their target
 # architecture so the packaging test runs on an Apple Silicon build host too;
 # the installer's real architecture check must remain enabled in production.
-real_uname=$(command -v uname)
+real_uname=`command -v uname`
 mkdir -p "$TMP_DIR/tools"
 cat > "$TMP_DIR/tools/uname" <<'EOF'
 #!/usr/bin/env sh
@@ -113,7 +116,7 @@ noremote_dir=$TMP_DIR/release-noremote
 make_fake_noremote_release "$noremote_dir"
 
 echo "==> WSL noremote download dry-run"
-noremote_out=$(run_wsl_install --wsl --noremote --download --source "$noremote_dir" --dry-run)
+noremote_out=`run_wsl_install --wsl --noremote --download --source "$noremote_dir" --dry-run`
 printf '%s\n' "$noremote_out" | grep -q 'agent-overflow-wsl-noremote-amd64.exe' || {
 	echo "ERROR: --noremote did not install the noremote launcher" >&2
 	printf '%s\n' "$noremote_out" >&2
@@ -125,7 +128,7 @@ if printf '%s\n' "$noremote_out" | grep -q 'agent-overflow-wsl-amd64.exe'; then
 fi
 
 echo "==> WSL standard download does not take the noremote launcher"
-standard_out=$(run_wsl_install --wsl --download --source "$release_dir" --dry-run)
+standard_out=`run_wsl_install --wsl --download --source "$release_dir" --dry-run`
 if printf '%s\n' "$standard_out" | grep -q 'noremote'; then
 	echo "ERROR: the standard install named the noremote launcher" >&2
 	exit 1
@@ -219,7 +222,8 @@ run_gitlab_install() {
 	PATH="$glab_bin:$PATH" TMPDIR="$gitlab_tmp" \
 		AO_TEST_GLAB_LOG="$glab_log" AO_TEST_GLAB_RELEASES="$glab_releases" AO_TEST_GLAB_LATEST=v0.0.2 \
 		run_wsl_install "$@" || status=$?
-	if [ -n "$(ls -A "$gitlab_tmp")" ]; then
+	left=`ls -A "$gitlab_tmp"`
+	if [ -n "$left" ]; then
 		echo "ERROR: the installer left files behind:" >&2
 		ls -A "$gitlab_tmp" >&2
 		exit 1
@@ -228,27 +232,33 @@ run_gitlab_install() {
 }
 
 echo "==> WSL noremote from a GitLab project's latest release"
-gitlab_out=$(run_gitlab_install --wsl --noremote --source "$gitlab_source" --dry-run)
+gitlab_out=`run_gitlab_install --wsl --noremote --source "$gitlab_source" --dry-run`
 printf '%s\n' "$gitlab_out" | grep -q 'agent-overflow-wsl-noremote-amd64.exe' || {
 	echo "ERROR: the gitlab: source did not install the noremote launcher" >&2
 	printf '%s\n' "$gitlab_out" >&2
 	exit 1
 }
-[ "$(grep -c '^api ' "$glab_log")" -eq 1 ] || { echo "ERROR: the latest release was not resolved exactly once" >&2; cat "$glab_log" >&2; exit 1; }
-[ "$(grep -c '^release download v0.0.2 ' "$glab_log")" -eq 2 ] || { echo "ERROR: the files did not both come from the latest release" >&2; cat "$glab_log" >&2; exit 1; }
+count=`grep -c '^api ' "$glab_log" || true`
+[ "$count" -eq 1 ] || { echo "ERROR: the latest release was not resolved exactly once" >&2; cat "$glab_log" >&2; exit 1; }
+count=`grep -c '^release download v0.0.2 ' "$glab_log" || true`
+[ "$count" -eq 2 ] || { echo "ERROR: the files did not both come from the latest release" >&2; cat "$glab_log" >&2; exit 1; }
 
 echo "==> WSL noremote from a GitLab release named by --version"
 run_gitlab_install --wsl --noremote --source "$gitlab_source" --version 0.0.1 --dry-run >/dev/null
 ! grep -q '^api ' "$glab_log" || { echo "ERROR: --version still looked up the latest release" >&2; exit 1; }
-[ "$(grep -c '^release download v0.0.1 ' "$glab_log")" -eq 2 ] || { echo "ERROR: --version 0.0.1 did not download v0.0.1" >&2; cat "$glab_log" >&2; exit 1; }
+count=`grep -c '^release download v0.0.1 ' "$glab_log" || true`
+[ "$count" -eq 2 ] || { echo "ERROR: --version 0.0.1 did not download v0.0.1" >&2; cat "$glab_log" >&2; exit 1; }
 
 echo "==> WSL noremote with the installer piped from glab"
-gitlab_piped=$(PATH="$glab_bin:$PATH" AO_TEST_GLAB_LOG="$glab_log" AO_TEST_GLAB_RELEASES="$glab_releases" AO_TEST_GLAB_LATEST=v0.0.2 \
-	WSL_DISTRO_NAME=TestDistro \
-	AO_INSTALL_CMD_EXE="$fake_bin/cmd.exe" \
-	AO_INSTALL_APPDATA="C:\\Users\\Test\\AppData\\Roaming" \
-	AO_INSTALL_WSLPATH="$fake_bin/wslpath" \
-	sh -s -- --wsl --noremote --source "$gitlab_source" --dry-run < "$ROOT_DIR/scripts/install.sh")
+run_piped_install() {
+	PATH="$glab_bin:$PATH" AO_TEST_GLAB_LOG="$glab_log" AO_TEST_GLAB_RELEASES="$glab_releases" AO_TEST_GLAB_LATEST=v0.0.2 \
+		WSL_DISTRO_NAME=TestDistro \
+		AO_INSTALL_CMD_EXE="$fake_bin/cmd.exe" \
+		AO_INSTALL_APPDATA="C:\\Users\\Test\\AppData\\Roaming" \
+		AO_INSTALL_WSLPATH="$fake_bin/wslpath" \
+		sh -s -- --wsl --noremote --source "$gitlab_source" --dry-run < "$ROOT_DIR/scripts/install.sh"
+}
+gitlab_piped=`run_piped_install`
 printf '%s\n' "$gitlab_piped" | grep -q 'agent-overflow-wsl-noremote-amd64.exe' || {
 	echo "ERROR: the piped installer did not install the noremote launcher" >&2
 	printf '%s\n' "$gitlab_piped" >&2
@@ -288,11 +298,13 @@ echo "==> gitlab: source without glab fails"
 no_glab_bin=$TMP_DIR/no-glab-bin
 mkdir -p "$no_glab_bin"
 for tool in sh dirname mktemp rm; do
-	ln -s "$(command -v "$tool")" "$no_glab_bin/$tool"
+	tool_path=`command -v "$tool"`
+	ln -s "$tool_path" "$no_glab_bin/$tool"
 done
 ln -s "$TMP_DIR/tools/uname" "$no_glab_bin/uname"
 no_glab_err=$TMP_DIR/no-glab.err
-if PATH="$no_glab_bin" WSL_DISTRO_NAME=TestDistro "$(command -v sh)" "$ROOT_DIR/scripts/install.sh" \
+sh_path=`command -v sh`
+if PATH="$no_glab_bin" WSL_DISTRO_NAME=TestDistro "$sh_path" "$ROOT_DIR/scripts/install.sh" \
 	--wsl --noremote --source "$gitlab_source" --dry-run >/dev/null 2>"$no_glab_err"; then
 	echo "ERROR: a gitlab: source without glab succeeded" >&2
 	exit 1

@@ -204,7 +204,8 @@ func (h *harnessHost) BrowserScreenshot(threadID, pageID string) (_ []byte, err 
 	}
 	manager := h.app.browser.manager
 	previous := manager.CompanionState(access.Caller())
-	mount, err := manager.AttachPane(access.Caller())
+	// Untied: the deferred restore below detaches it before this returns.
+	mount, err := manager.AttachPane(access.Caller(), nil)
 	if err != nil {
 		return nil, err
 	}

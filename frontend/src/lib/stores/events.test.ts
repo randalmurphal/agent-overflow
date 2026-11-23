@@ -48,6 +48,7 @@ import {
 } from '../../test/helpers/chat';
 import type { ProviderStatusEvent } from '../types/events';
 import type { Item, ProjectWithCounts } from '../types/models';
+import { AGENT_MESSAGES_ABSORBED_RULE } from '../utils/activityRunSpans';
 
 function providerStatusEvent(overrides: Partial<ProviderStatusEvent> = {}): ProviderStatusEvent {
   return {
@@ -368,7 +369,7 @@ describe('setupEventListeners', () => {
       newestLoadedTurnIndex: 0,
       hasMoreHistory: false,
       hasMoreNewer: false,
-      latestSettledTurn: null,
+      latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
     });
     cacheModule.threadItemCache.set('thread-other', {
       items: [makeItem({ id: 'cached-other', threadId: 'thread-other' })],
@@ -376,7 +377,7 @@ describe('setupEventListeners', () => {
       newestLoadedTurnIndex: 0,
       hasMoreHistory: false,
       hasMoreNewer: false,
-      latestSettledTurn: null,
+      latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
     });
     expect(cacheModule.threadItemCache.size).toBe(2);
 
@@ -423,7 +424,7 @@ describe('setupEventListeners', () => {
       newestLoadedTurnIndex: 0,
       hasMoreHistory: false,
       hasMoreNewer: false,
-      latestSettledTurn: null,
+      latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
     });
     cacheModule.threadItemCache.set('thread-a', snapshot('thread-a'));
     cacheModule.threadItemCache.set('thread-closed', snapshot('thread-closed'));
@@ -470,7 +471,7 @@ describe('setupEventListeners', () => {
       newestLoadedTurnIndex: 0,
       hasMoreHistory: false,
       hasMoreNewer: false,
-      latestSettledTurn: null,
+      latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
     });
 
     emitWailsEvent('provider:item_event', {
@@ -3135,6 +3136,24 @@ describe('setupEventListeners', () => {
 
     expect(accountInfo.getProviderAccount('claude')).toBeNull();
     accountInfo.resetForTest();
+  });
+
+  // A card's resets changing re-reads the listing and nothing that follows the
+  // saved set: provider:accounts_changed also re-asks dictation.
+  it('re-lists accounts on provider:account_listing without the set change effects', async () => {
+    const dictation = await import('./dictation.svelte');
+    const sources = setBindingMock('DictationSources', async () => ({ live: false, subscription: false, chatGPTSignIn: false }));
+    await dictation.refreshDictationSources(HOME_BACKEND);
+    const list = setBindingMock('ListProviderAccounts', async () => []);
+    const asked = sources.mock.calls.length;
+
+    emitWailsEvent('provider:account_listing', null);
+    await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+    expect(sources.mock.calls.length).toBe(asked);
+
+    emitWailsEvent('provider:accounts_changed', null);
+    await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(sources.mock.calls.length).toBe(asked + 1));
   });
 
   it('clears retired account limits from provider:usage', async () => {

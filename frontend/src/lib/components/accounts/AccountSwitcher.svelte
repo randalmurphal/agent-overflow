@@ -19,6 +19,7 @@
   import IconButton from '../primitives/IconButton.svelte';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import ProviderAccountLimits from '../shared/ProviderAccountLimits.svelte';
+  import ProviderAccountResets from '../settings/ProviderAccountResets.svelte';
   import ProviderLoginFlow from './ProviderLoginFlow.svelte';
   import { SETTINGS_PROVIDERS } from '../settings/fields';
   import type { ManagedProviderAccount } from '../../stores/bindings';
@@ -41,7 +42,7 @@
   import { getProviderRateLimits } from '../../stores/rateLimitsInfo.svelte';
   import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
   import { standaloneProvidersWithFeature } from '../../providers/catalog';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
   import type { ProviderID } from '../../types/providers';
   import { isImeComposingEvent } from '../../utils/imeComposition';
 
@@ -116,7 +117,7 @@
   // browser can reach this effect before the bootstrap manifest resolves the
   // answer, and a refused RPC would surface as a raw failure toast.
   $effect(() => {
-    if (!open || !hasScope('access:admin', backend)) return;
+    if (!open || scopeGrant('access:admin', backend) !== 'granted') return;
     activeIndex = 0;
     void loadProviderAccounts(backend);
     requestAnimationFrame(() => listEl?.focus());
@@ -245,7 +246,7 @@
                 {@const loginExpiry = providerAccountLoginExpiry(account)}
                 <li
                   class={[
-                    'rounded-[var(--radius-field)] px-2 py-1.5 transition-colors',
+                    'rounded-[var(--radius-field)] px-2 py-1.5 [--card-pad-bottom:0.375rem] transition-colors',
                     activeIndex === row.index ? 'bg-accent/10' : 'hover:bg-surface-2/30',
                   ].join(' ')}
                   data-testid="account-switcher-row-{account.id}"
@@ -330,7 +331,10 @@
                       </IconButton>
                     </div>
                   </div>
-                  <ProviderAccountLimits {limits} />
+                  {#snippet resets()}
+                    <ProviderAccountResets {account} {backend} admin={true} {credentialOpInFlight} />
+                  {/snippet}
+                  <ProviderAccountLimits {limits} lineEnd={group.provider === 'codex' ? resets : undefined} />
                 </li>
               {/each}
             </ul>

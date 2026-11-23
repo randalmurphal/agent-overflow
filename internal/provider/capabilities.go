@@ -12,7 +12,7 @@ const (
 	// the zero-token account probe's `initialize` response reports. The wire
 	// ENRICHES (capability flags) and EXTENDS (models we don't ship yet) the
 	// lookup list and decides which rows pickers offer; rows it omits stay for
-	// capability lookup, marked Unlisted. See internal/claudemodels.
+	// capability lookup, marked ProviderUnlisted. See internal/claudemodels.
 	ClaudeProbeEnrichedCatalog ModelCatalogSource = "claude_probe"
 	// ACPLiveModelCatalog — discovered live over ACP configOptions (zero-token
 	// probe on the live or ephemeral ACP connection).

@@ -614,11 +614,15 @@ Five trigger families ride `items`:
 A background `tool_call` remains `status = 'running'`; its terminal state is a
 sibling row whose `completion_of` names the launch. The stored liveness flag
 allows partial indexes to select genuinely live launches without a correlated
-subquery. Tray display includes nested work by background ancestry, while queue
-and reaper gates intentionally consider top-level work. The count a stop
-confirms (`CountLiveRunningBackgroundToolCalls`) includes nested launches, which
-a session stop kills and an agent's end does not settle. These are separate
-queries with separate semantics.
+subquery. A launch that left the live set without an ending sibling (a revert's
+cleanup, a parked run a resume retired) keeps `status = 'running'`, so every
+liveness read includes the flag. Tray display includes nested work by background
+ancestry, while the queue gate intentionally considers top-level work. The count
+of what ending the session would lose (`CountLiveRunningBackgroundToolCalls`,
+the stored half of the count a stop confirms and the idle reaper gates on)
+includes nested launches,
+which a session stop kills and an agent's end does not settle. These are
+separate queries with separate semantics.
 
 ## Writes and events
 

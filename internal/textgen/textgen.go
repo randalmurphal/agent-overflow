@@ -15,9 +15,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
@@ -35,16 +35,6 @@ const (
 	// JSON object but small enough that a misbehaving CLI can't OOM us.
 	JSONOutputLimit = 256 * 1024
 
-	// DefaultCodexModel / DefaultClaudeModel are the per-provider model
-	// defaults used when settings leaves them blank. Both deliberately
-	// pick the cheapest/fastest tier — textgen runs are short structured
-	// outputs (titles, commit messages), not reasoning work.
-	DefaultCodexModel  = "gpt-6-luna"
-	DefaultClaudeModel = "claude-haiku-5-5"
-	// FallbackClaudeModel replaces DefaultClaudeModel when the installed
-	// Claude CLI has not listed it: a CLI older than the model cannot
-	// shape its thinking request.
-	FallbackClaudeModel = "claude-haiku-4-5"
 	// DefaultAgyModel is the default Antigravity model for short structured
 	// text generation runs.
 	DefaultAgyModel = "gemini-4-hydrogen"
@@ -90,8 +80,8 @@ func PickAvailableProviderOrdered(
 // unchanged — the caller decides whether to error out.
 //
 // The two-provider universe is hardcoded here, matching the rest of the
-// codebase (DefaultCodexModel / DefaultClaudeModel above, the explicit
-// switches in app_text_generation.go). Adding a third provider would mean
+// codebase (settings.TextGenerationDefaultFamily, the explicit switches in
+// app_text_generation.go). Adding a third provider would mean
 // rewriting these explicit branches rather than threading a registry.
 func PickAvailableProvider(
 	preferred, claudeBinary, codexBinary string,
@@ -147,12 +137,14 @@ type Config struct {
 	// sweep, so it carries what a session in that workspace does
 	// (claude/retention.go). A Claude run refuses to start without it.
 	ClaudeRetention func(workspace string) claude.Retention
-	Exec            CLIExecutor
+	// Admit holds the CLI's whole run against state the caller read while
+	// building this config (CLISpec.Admit).
+	Admit Admission
+	Exec  CLIExecutor
 }
 
 // CLIExecutor is the seam tests use to stub out Codex/Claude CLI
-// invocations. Production wires it to ExecCLI, which shells out via
-// exec.CommandContext.
+// invocations. Production wires it to ExecCLI with the app's reaper.
 type CLIExecutor func(ctx context.Context, spec CLISpec) (CLIResult, error)
 
 // CLISpec captures everything needed to invoke a provider CLI for short
@@ -172,7 +164,17 @@ type CLISpec struct {
 	// UnsetEnv names inherited variables removed from the child's
 	// environment.
 	UnsetEnv []string
+	// Admit, when set, runs immediately before the process starts. The
+	// process starts only if it returns nil, and release runs once no
+	// process of the run's group is left, or once its start failed:
+	// whatever Admit holds is held for the whole run.
+	Admit Admission
 }
+
+// Admission admits one CLI run. ctx is the run's, so a wait inside the
+// admission ends with the run's budget. stop ends the admitted run: the
+// process is signalled as a cancelled run is, and the run returns cause.
+type Admission func(ctx context.Context, stop func(cause error)) (release func(), err error)
 
 // CLIResult is the observable outcome of a provider-CLI invocation.
 // ExitCode 0 indicates success.
@@ -182,58 +184,86 @@ type CLIResult struct {
 	ExitCode int
 }
 
-// ExecCLI shells out with the provided args, wires stdin from the
-// prompt string, and captures stdout/stderr into strings. An
-// exec.ExitError is normalised into a non-error return with the exit
-// code so callers branch on it cleanly.
-func ExecCLI(ctx context.Context, spec CLISpec) (CLIResult, error) {
-	cmd := exec.CommandContext(ctx, spec.Binary, spec.Args...)
-	cmd.Dir = spec.Cwd
-	cmd.Stdin = strings.NewReader(spec.Stdin)
-	// TERM first, KILL only after a grace window — never exec's default
-	// instant SIGKILL. This CLI runs a real turn in the provider's canonical
-	// home, so it can be driving the CLI's own OAuth refresh when the budget
-	// expires or the user cancels; Anthropic retires the previous refresh
-	// token the moment the token endpoint answers, so a SIGKILL landing
-	// between that answer and the CLI's write to disk destroys the login with
-	// no copy anywhere. SIGTERM lets it finish the write and exit.
-	cmd.Cancel = func() error {
-		// Best-effort: a platform that cannot deliver SIGTERM still gets the
-		// WaitDelay kill below.
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		return nil
-	}
-	cmd.WaitDelay = 2 * time.Second
-	// Unconditional: with no overrides this is the inherited environment
-	// scrubbed of the AppImage launch artifacts, which a provider CLI must not
-	// resolve its own runtime against. Gating it on len(spec.Env) would leave
-	// the override-free callers — the ones that look most like a plain inherit
-	// — as the only spawns without the shared rule.
-	cmd.Env = provider.BuildEnvironment(spec.Env, spec.UnsetEnv...)
-
+// ExecCLI runs the CLI as its own process group, watched by reaper, with the
+// prompt on stdin, and captures stdout and stderr into strings. An
+// exec.ExitError is normalised into a non-error return with the exit code so
+// callers branch on it cleanly.
+//
+// The run is the whole group: a cancel, a deadline or the admission's stop
+// signals every process in it, and the run returns, releasing its
+// admission, only once none is left. SIGTERM comes first and SIGKILL only
+// after stopGrace, never exec's instant SIGKILL to the leader alone. This CLI
+// runs a real turn in the provider's canonical home, so it can be driving the
+// CLI's own OAuth refresh when the budget expires or the user cancels;
+// Anthropic retires the previous refresh token the moment the token endpoint
+// answers, so a SIGKILL landing between that answer and the CLI's write to
+// disk destroys the login with no copy anywhere. SIGTERM lets it finish the
+// write and exit. A wrapper script or a helper the CLI started is stopped
+// with it, so nothing of the run keeps using the credential after the
+// release.
+func ExecCLI(ctx context.Context, reaper procutil.Reaper, spec CLISpec) (CLIResult, error) {
+	ctx, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
 	stdout := newCappedOutput(ProcessOutputLimit)
 	stderr := newCappedOutput(ProcessOutputLimit)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
+	var outcome procutil.GroupOutcome
+	err := runAdmitted(ctx, spec.Admit, stop, func() error {
+		var err error
+		outcome, err = procutil.RunGroup(ctx, reaper, procutil.GroupCommand{
+			Dir: spec.Cwd,
+			// Unconditional: with no overrides this is the inherited
+			// environment scrubbed of the AppImage launch artifacts, which a
+			// provider CLI must not resolve its own runtime against.
+			Env:            provider.BuildEnvironment(spec.Env, spec.UnsetEnv...),
+			Argv:           append([]string{spec.Binary}, spec.Args...),
+			Stdin:          strings.NewReader(spec.Stdin),
+			Output:         &stdout,
+			Stderr:         &stderr,
+			TerminateGrace: stopGrace,
+		})
+		return err
+	})
 	result := CLIResult{
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
 	}
-
+	survived := errors.Is(err, procutil.ErrGroupSurvived)
 	if ctx.Err() != nil {
-		return result, ctx.Err()
+		// The caller's cancel or deadline, or the admission's stop.
+		if survived {
+			return result, errors.Join(context.Cause(ctx), err)
+		}
+		return result, context.Cause(ctx)
 	}
-
-	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok && !survived {
 		result.ExitCode = exitErr.ExitCode()
-		return result, nil
+		err = nil
 	}
 	if err != nil {
 		return result, err
 	}
+	if err := outcome.OutputErr(); err != nil {
+		return result, fmt.Errorf("%s output did not arrive whole: %w", filepath.Base(spec.Binary), err)
+	}
 	return result, nil
+}
+
+// stopGrace is how long a stopped run's group gets between SIGTERM and
+// SIGKILL.
+const stopGrace = 2 * time.Second
+
+// runAdmitted runs run once admit allows it, releasing what admit holds once
+// run has returned, which is once the process group is gone, or once its
+// start failed. stop cancels ctx, the context run runs under.
+func runAdmitted(ctx context.Context, admit Admission, stop func(error), run func() error) error {
+	if admit != nil {
+		release, err := admit(ctx, stop)
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
+	return run()
 }
 
 type cappedOutput struct {
@@ -446,6 +476,7 @@ func RunCodex(
 		// AO owns Codex's home: the run authenticates from the one every
 		// other Codex launch uses.
 		UnsetEnv: []string{"CODEX_HOME"},
+		Admit:    cfg.Admit,
 	})
 	if err != nil {
 		return nil, TranslateCLINotFound("codex", timeout, err)
@@ -509,6 +540,7 @@ func RunClaude(
 		// The run uses the config home every other Claude launch uses, the
 		// one its retention period was resolved against.
 		UnsetEnv: line.UnsetEnv(),
+		Admit:    cfg.Admit,
 	})
 	if err != nil {
 		return nil, TranslateCLINotFound("claude", timeout, err)

@@ -2312,7 +2312,7 @@ func (s *Session) handlePermissionRequest(rpcID json.RawMessage, req RequestPerm
 			Timestamp: time.Now(),
 		})
 
-	default:
+	case PermissionAskUser:
 		s.mu.Lock()
 		s.pendingPerms[requestID] = pendingPermission{
 			rpcID:       append(json.RawMessage(nil), rpcID...),

@@ -68,7 +68,11 @@ func (m *Manager) providerCustomEnv(providerName string) map[string]string {
 // Returns nil when both sides are empty so probes keep their "inherit the
 // process environment" fast path.
 func (m *Manager) providerProbeEnv(providerName string, pins map[string]string) map[string]string {
-	custom := m.providerCustomEnv(providerName)
+	return probeEnvWith(m.providerCustomEnv(providerName), pins)
+}
+
+// probeEnvWith is providerProbeEnv for a custom environment already read.
+func probeEnvWith(custom, pins map[string]string) map[string]string {
 	if len(custom) == 0 && len(pins) == 0 {
 		return nil
 	}
@@ -125,10 +129,16 @@ func (m *Manager) providerLoginEnv(providerName string, pins map[string]string) 
 // failure this feature must not have, because an ANTHROPIC_BASE_URL that
 // changes which backend answers must change who the probe reports.
 func (m *Manager) claudeProbeConfig(binary string, pins map[string]string) claude.ProbeConfig {
+	return m.claudeProbeConfigWith(binary, m.providerCustomEnv(string(provider.Claude)), pins)
+}
+
+// claudeProbeConfigWith is claudeProbeConfig for a custom environment
+// already read.
+func (m *Manager) claudeProbeConfigWith(binary string, custom, pins map[string]string) claude.ProbeConfig {
 	return claude.ProbeConfig{
 		Binary:         binary,
 		WorkDir:        providerProbeWorkDir(),
-		Env:            m.providerProbeEnv(string(provider.Claude), pins),
+		Env:            probeEnvWith(custom, pins),
 		Reaper:         m.deps.Reaper,
 		ReadCredential: m.claudeProbeCredentialReader(pins),
 		// Sent to a probe of an isolated home too, where it has nothing to
@@ -149,6 +159,16 @@ func (m *Manager) claudeRetention(workDir string) claude.Retention {
 // ClaudeProbeConfig constructs the canonical account probe configuration.
 func (m *Manager) ClaudeProbeConfig(binary string, pins map[string]string) claude.ProbeConfig {
 	return m.claudeProbeConfig(binary, pins)
+}
+
+// ClaudeAccountProbe is a canonical Claude account probe of accountID: the
+// cache key its answer is filed under and the configuration it runs with,
+// built from one read of the custom environment. A probe that waits for the
+// reconcile lock through an edit of that environment runs, and files its
+// answer, under the one it was started with.
+func (m *Manager) ClaudeAccountProbe(binary, accountID string) (provider.ProbeCacheKey, claude.ProbeConfig) {
+	custom := m.providerCustomEnv(string(provider.Claude))
+	return providerProbeCacheKeyForAccountEnv(binary, accountID, custom), m.claudeProbeConfigWith(binary, custom, nil)
 }
 
 // claudeProbeCredentialReader hands the probe a read-only view of the
@@ -192,10 +212,16 @@ func (m *Manager) claudeProbeCredentialReader(pins map[string]string) func() ([]
 
 // codexProbeConfig is the Codex counterpart to claudeProbeConfig.
 func (m *Manager) codexProbeConfig(binary string, pins map[string]string) codex.ProbeConfig {
+	return m.codexProbeConfigWith(binary, m.providerCustomEnv(string(provider.Codex)), pins)
+}
+
+// codexProbeConfigWith is codexProbeConfig for a custom environment already
+// read.
+func (m *Manager) codexProbeConfigWith(binary string, custom, pins map[string]string) codex.ProbeConfig {
 	return codex.ProbeConfig{
 		Binary:  binary,
 		WorkDir: providerProbeWorkDir(),
-		Env:     m.providerProbeEnv(string(provider.Codex), pins),
+		Env:     probeEnvWith(custom, pins),
 		Reaper:  m.deps.Reaper,
 	}
 }
@@ -203,6 +229,12 @@ func (m *Manager) codexProbeConfig(binary string, pins map[string]string) codex.
 // CodexProbeConfig constructs the canonical account probe configuration.
 func (m *Manager) CodexProbeConfig(binary string, pins map[string]string) codex.ProbeConfig {
 	return m.codexProbeConfig(binary, pins)
+}
+
+// CodexAccountProbe is ClaudeAccountProbe for Codex.
+func (m *Manager) CodexAccountProbe(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig) {
+	custom := m.providerCustomEnv(string(provider.Codex))
+	return providerProbeCacheKeyForAccountEnv(binary, accountID, custom), m.codexProbeConfigWith(binary, custom, nil)
 }
 
 func (m *Manager) agyProbeConfig(binary, geminiDir, appDataSubdir string, pins map[string]string) agy.ProbeConfig {

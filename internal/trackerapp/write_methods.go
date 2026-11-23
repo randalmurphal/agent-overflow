@@ -1,0 +1,268 @@
+package trackerapp
+
+import (
+	"context"
+	"fmt"
+
+	"agent-overflow/internal/tracker"
+)
+
+// The writes, one method per provider write, each on connection id
+// through Service.write: the outcomes as the tracker answered them, with
+// what the mirror could not be refreshed with beside them. A request the
+// conversion refuses fails with ErrInvalidRequest before anything is read
+// or sent; a connection that is off, removed or a Tempo connection fails
+// with ErrDisabled, ErrNotFound or ErrNoProvider; a provider that answers
+// with a result it may not fails with ErrBadResult. Every other outcome,
+// a refusal included, is in the view.
+
+// call1 is a writeOp of the provider write w with in.
+func call1[T any](in T, w func(tracker.Provider, context.Context, T) tracker.Result) writeOp {
+	return writeOp{call: func(ctx context.Context, p tracker.Provider) tracker.Result { return w(p, ctx, in) }}
+}
+
+// Create makes an issue from a section of in.Board. The issue made is read
+// through that board; a create of unknown outcome is reported as that and
+// not retried, and the board's tick runs at once (through its pump when
+// one is live), since an issue it brings in is the only evidence.
+func (s *Service) Create(ctx context.Context, id string, in CreateRequest) (WriteView, error) {
+	m, err := in.model()
+	if err != nil {
+		return WriteView{}, err
+	}
+	op := call1(m, tracker.Provider.Create)
+	op.board = tracker.BoardID(in.Board)
+	return s.write(ctx, id, op)
+}
+
+// Edit changes fields of an issue.
+func (s *Service) Edit(ctx context.Context, id string, in EditRequest) (WriteView, error) {
+	m, err := in.model()
+	if err != nil {
+		return WriteView{}, err
+	}
+	return s.write(ctx, id, call1(m, tracker.Provider.Edit))
+}
+
+// Move moves an issue to the status of one of its moves.
+func (s *Service) Move(ctx context.Context, id string, in MoveRequest) (WriteView, error) {
+	m, err := in.model()
+	if err != nil {
+		return WriteView{}, err
+	}
+	return s.write(ctx, id, call1(m, tracker.Provider.Move))
+}
+
+// SetEstimate sets an issue's estimate on a board.
+func (s *Service) SetEstimate(ctx context.Context, id string, in EstimateRequest) (WriteView, error) {
+	return s.write(ctx, id, call1(in.model(), tracker.Provider.SetEstimate))
+}
+
+// Rank places issues between two neighbors on a board, a part per issue.
+func (s *Service) Rank(ctx context.Context, id string, in RankRequest) (WriteView, error) {
+	return s.write(ctx, id, call1(in.model(), tracker.Provider.Rank))
+}
+
+// MoveToSprint moves issues into a sprint or to a board's backlog, a part
+// per issue.
+func (s *Service) MoveToSprint(ctx context.Context, id string, in SprintMoveRequest) (WriteView, error) {
+	return s.write(ctx, id, call1(in.model(), tracker.Provider.MoveToSprint))
+}
+
+// CreateSprint makes a future sprint on a board.
+func (s *Service) CreateSprint(ctx context.Context, id string, in SprintRequest) (WriteView, error) {
+	return s.write(ctx, id, call1(in.model(), tracker.Provider.CreateSprint))
+}
+
+// StartSprint starts a future sprint.
+func (s *Service) StartSprint(ctx context.Context, id string, in SprintStartRequest) (WriteView, error) {
+	return s.write(ctx, id, call1(in.model(), tracker.Provider.StartSprint))
+}
+
+// CompleteSprint closes an active sprint once its unfinished issues
+// moved, a part per issue moved and one for the close.
+func (s *Service) CompleteSprint(ctx context.Context, id string, in SprintCompleteRequest) (WriteView, error) {
+	return s.write(ctx, id, call1(in.model(), tracker.Provider.CompleteSprint))
+}
+
+// EditSprint changes a sprint's name, goal or dates.
+func (s *Service) EditSprint(ctx context.Context, id string, in SprintEditRequest) (WriteView, error) {
+	return s.write(ctx, id, call1(in.model(), tracker.Provider.EditSprint))
+}
+
+// AddComment adds a comment to an issue.
+func (s *Service) AddComment(ctx context.Context, id string, in CommentRequest) (WriteView, error) {
+	m, err := in.model()
+	if err != nil {
+		return WriteView{}, err
+	}
+	return s.write(ctx, id, call1(m, tracker.Provider.AddComment))
+}
+
+// EditComment replaces a comment's body.
+func (s *Service) EditComment(ctx context.Context, id string, in CommentEditRequest) (WriteView, error) {
+	return s.write(ctx, id, call1(in.model(), tracker.Provider.EditComment))
+}
+
+// DeleteComment deletes a comment.
+func (s *Service) DeleteComment(ctx context.Context, id string, in CommentDeleteRequest) (WriteView, error) {
+	return s.write(ctx, id, call1(in.model(), tracker.Provider.DeleteComment))
+}
+
+// Link links two issues.
+func (s *Service) Link(ctx context.Context, id string, in LinkRequest) (WriteView, error) {
+	return s.write(ctx, id, call1(in.model(), tracker.Provider.Link))
+}
+
+// Unlink removes one link between two issues.
+func (s *Service) Unlink(ctx context.Context, id string, in UnlinkRequest) (WriteView, error) {
+	return s.write(ctx, id, call1(in.model(), tracker.Provider.Unlink))
+}
+
+// Attach uploads files to an issue as one part. Each file's Content is
+// read once, during the call; the caller closes it after.
+func (s *Service) Attach(ctx context.Context, id string, issue string, files []tracker.File) (WriteView, error) {
+	return s.write(ctx, id, call1(tracker.AttachInput{Issue: tracker.IssueID(issue), Files: files}, tracker.Provider.Attach))
+}
+
+// timeCall is a writeOp of the time tracker's write w about issue, refused
+// with ReasonUnsupported on a tracker with no time tracking.
+func timeCall[T any](issue tracker.IssueID, in T, w func(tracker.TimeTracker, context.Context, T) tracker.Result) writeOp {
+	return writeOp{call: func(ctx context.Context, p tracker.Provider) tracker.Result {
+		tt := p.Time()
+		if tt == nil {
+			return tracker.Refuse(tracker.StepWorklog, tracker.Refusal{Reason: tracker.ReasonUnsupported,
+				Message: "this tracker has no time tracking", Err: tracker.ErrUnsupported}, issue)
+		}
+		return w(tt, ctx, in)
+	}}
+}
+
+// AddWorklog logs time on an issue as the credential's own user.
+func (s *Service) AddWorklog(ctx context.Context, id string, in WorklogRequest) (WriteView, error) {
+	m, err := in.model()
+	if err != nil {
+		return WriteView{}, err
+	}
+	return s.write(ctx, id, timeCall(m.Issue, m, tracker.TimeTracker.AddWorklog))
+}
+
+// EditWorklog changes a worklog, as read, on its issue.
+func (s *Service) EditWorklog(ctx context.Context, id string, in WorklogEditRequest) (WriteView, error) {
+	m, err := in.model()
+	if err != nil {
+		return WriteView{}, err
+	}
+	return s.write(ctx, id, timeCall(m.From.Issue, m, tracker.TimeTracker.EditWorklog))
+}
+
+// DeleteWorklog deletes a worklog, as read.
+func (s *Service) DeleteWorklog(ctx context.Context, id string, in WorklogDeleteRequest) (WriteView, error) {
+	m, err := in.model()
+	if err != nil {
+		return WriteView{}, err
+	}
+	return s.write(ctx, id, timeCall(m.From.Issue, m, tracker.TimeTracker.DeleteWorklog))
+}
+
+// WorklogDays is an author's worklogs of a range of days, by day and ID,
+// as the mirror holds them; More reports that the range holds more than
+// one read returns. Failure is why a refresh could not read them from the
+// tracker: they are then as the mirror held them before.
+type WorklogDays struct {
+	Worklogs []WorklogView `json:"worklogs"`
+	More     bool          `json:"more,omitempty"`
+	Failure  *FailureView  `json:"failure,omitempty"`
+}
+
+// Worklogs is author's worklogs on connection id whose day is from to to
+// (YYYY-MM-DD, both included) as the mirror holds them, with no tracker
+// call. RefreshWorklogs reads them from the tracker first.
+func (s *Service) Worklogs(id, author, from, to string) (WorklogDays, error) {
+	if _, _, err := worklogRange(author, from, to); err != nil {
+		return WorklogDays{}, err
+	}
+	root, err := s.readRoot(id)
+	if err != nil {
+		return WorklogDays{}, err
+	}
+	defer s.leave()
+	return s.mirroredWorklogs(root, author, from, to)
+}
+
+// RefreshWorklogs reads author's worklogs on connection id whose day is
+// from to to, at most worklogSpan days, from the connection's time
+// tracker through the worklogs resource (Service.write with no write),
+// makes them the mirror's, and returns them as the mirror then holds
+// them. A read that failed is settled as the connection's problem and
+// returned as the answer's Failure. A connection with no time tracking
+// is refused with an error wrapping tracker.ErrUnsupported.
+func (s *Service) RefreshWorklogs(ctx context.Context, id, author, from, to string) (WorklogDays, error) {
+	first, last, err := worklogRange(author, from, to)
+	if err != nil {
+		return WorklogDays{}, err
+	}
+	if daysBetween(first, last) >= worklogSpan {
+		return WorklogDays{}, fmt.Errorf("%w: a worklog refresh reads at most %d days", ErrInvalidRequest, worklogSpan)
+	}
+	n := daysBetween(first, last)
+	days := make([]tracker.Resource, 0, n+1)
+	for i := range n + 1 {
+		d, err := tracker.DateOf(dayTime(first).AddDate(0, 0, i))
+		if err != nil {
+			return WorklogDays{}, fmt.Errorf("%w: %w", ErrInvalidRequest, err)
+		}
+		days = append(days, tracker.WorklogsOf(tracker.UserID(author), d))
+	}
+	view, err := s.write(ctx, id, writeOp{also: days, unable: func(p tracker.Provider) error {
+		if p.Time() == nil {
+			return fmt.Errorf("trackerapp: connection %s has no time tracking: %w", id, tracker.ErrUnsupported)
+		}
+		return nil
+	}})
+	switch {
+	case err != nil:
+		return WorklogDays{}, err
+	case view.Ended:
+		return WorklogDays{}, fmt.Errorf("%w: %s was turned off while its worklogs were read", ErrDisabled, id)
+	}
+	out, err := s.Worklogs(id, author, from, to)
+	if err == nil && len(view.Stale) > 0 {
+		f := view.Stale[0].Failure
+		out.Failure = &f
+	}
+	return out, err
+}
+
+// mirroredWorklogs reads author's worklogs from to to from root.
+func (s *Service) mirroredWorklogs(root int64, author, from, to string) (WorklogDays, error) {
+	logs, more, err := s.store.ListMirrorWorklogs(root, author, from, to)
+	if err != nil {
+		return WorklogDays{}, fmt.Errorf("trackerapp: read the worklogs of %s: %w", author, err)
+	}
+	out := WorklogDays{Worklogs: make([]WorklogView, 0, len(logs)), More: more}
+	for _, m := range logs {
+		w, err := worklogOf(m)
+		if err != nil {
+			return WorklogDays{}, err
+		}
+		out.Worklogs = append(out.Worklogs, worklogView(w))
+	}
+	return out, nil
+}
+
+// worklogRange checks an author's days from to to.
+func worklogRange(author, from, to string) (tracker.Date, tracker.Date, error) {
+	first, err := parseDay(from)
+	if err != nil {
+		return tracker.Date{}, tracker.Date{}, err
+	}
+	last, err := parseDay(to)
+	if err != nil {
+		return tracker.Date{}, tracker.Date{}, err
+	}
+	if author == "" || last.Compare(first) < 0 {
+		return tracker.Date{}, tracker.Date{}, fmt.Errorf("%w: worklogs are read for an author, from a day to one no earlier", ErrInvalidRequest)
+	}
+	return first, last, nil
+}

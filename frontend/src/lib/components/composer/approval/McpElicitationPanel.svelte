@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { grantBlockedTitle } from '../../../transport/scopeRefusal';
+  import type { ControlAccess } from '../../../transport/scopes';
   import { onMount } from 'svelte';
   import type { ApprovalRequest } from '../../../types/events';
   import { ApprovalResponse, ElicitationResolution } from '../../../stores/bindings';
@@ -21,11 +23,13 @@
     onResolve: (response: ApprovalResponse) => Promise<void>;
     onError: (message: string, err?: unknown) => void;
     responding?: boolean;
-    /** Ungranted `approvals:respond`: every action is inert, never loading. */
-    ungranted?: boolean;
+    /** Whether an answer can reach the computer (`approvals:respond`); otherwise every action is inert, never loading, and says why. */
+    access?: ControlAccess;
   }
 
-  let { approval, onResolve, onError, responding = false, ungranted = false }: Props = $props();
+  let { approval, onResolve, onError, responding = false, access = 'granted' }: Props = $props();
+  let ungranted = $derived(access !== 'granted');
+  let blocked = $derived(grantBlockedTitle(access));
   let actionRow: HTMLDivElement | undefined = $state(undefined);
 
   // Schema arrives once per approval — parse once up front and reuse.
@@ -290,13 +294,13 @@
     tabindex="0"
     onkeydown={(event) => focusApprovalActionFromKey(event, actionRow)}
   >
-    <Button variant="secondary" size="sm" onclick={cancel} testId="elicitation-cancel" disabled={responding || ungranted}>
+    <Button variant="secondary" size="sm" onclick={cancel} testId="elicitation-cancel" disabled={responding || ungranted} title={blocked}>
       {#snippet children()}Cancel{/snippet}
     </Button>
-    <Button variant="danger-outline" size="sm" onclick={decline} testId="elicitation-decline" disabled={responding || ungranted}>
+    <Button variant="danger-outline" size="sm" onclick={decline} testId="elicitation-decline" disabled={responding || ungranted} title={blocked}>
       {#snippet children()}Decline{/snippet}
     </Button>
-    <Button variant="primary" size="sm" onclick={accept} testId="elicitation-accept" disabled={ungranted} loading={!ungranted && responding}>
+    <Button variant="primary" size="sm" onclick={accept} testId="elicitation-accept" disabled={ungranted} title={blocked} loading={!ungranted && responding}>
       {#snippet children()}Accept{/snippet}
     </Button>
   </div>

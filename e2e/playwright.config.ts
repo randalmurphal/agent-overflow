@@ -65,7 +65,9 @@ export default defineConfig({
     {
       name: 'mobile-webkit',
       use: { ...devices['iPhone 13'] },
-      testMatch: /[\\/]compact-browser-lock\.spec\.ts$/,
+      // The stalled-page capture spec runs its WebKit case here, the one
+      // project whose hosts provide WebKit.
+      testMatch: [/[\\/]compact-browser-lock\.spec\.ts$/, /[\\/]stalled-page-capture\.spec\.ts$/],
       grepInvert: /@chromium-lifecycle/,
     },
   ],

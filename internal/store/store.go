@@ -90,6 +90,9 @@ type Store struct {
 	// deferredMu serializes the runs that advance the deferred migration
 	// watermark. See DeferredMigration.
 	deferredMu sync.Mutex
+	// mirrorCleanup serializes FinishMirrorCleanup runs
+	// (tracker_cache_cleanup.go).
+	mirrorCleanup sync.Mutex
 	// cards holds the subagent card accumulators between flushes
 	// (subagent_card.go).
 	cards subagentCards
@@ -103,6 +106,12 @@ type Store struct {
 	threadRequestChanged atomic.Pointer[func(ThreadRequestChange)]
 	// agentRecordDeleted is the function OnAgentRecordDeleted set, or nil.
 	agentRecordDeleted atomic.Pointer[func(home string)]
+	// run is this open's run identity, random and never empty: an async
+	// question this Store records carries it (async_questions.run_id), and
+	// one whose mark differs was recorded before this run of the app
+	// (AsyncQuestionGroup.AskedThisRun). Every open is a new run, as a
+	// restart is; production opens one Store per process.
+	run string
 	// agentStopPageReadForTest, set only by tests before the store is
 	// shared, runs in ListThreadAgentStopRows after each full page, so a
 	// test can write a request between two of its pages.
@@ -159,27 +168,36 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 		return nil, fmt.Errorf("store: open database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-
-	if opts.RefusePendingMigrations {
-		if err := refusePendingMigrations(db); err != nil {
-			db.Close()
-			return nil, err
+	// failed closes the writer of an open that cannot finish and joins a
+	// failed close into the open's error.
+	failed := func(err error) (*Store, error) {
+		if closeErr := db.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("store: close the database after a failed open: %w", closeErr))
 		}
-	}
-	if err := runMigrationsContext(ctx, db, pragmas, opts.OnMigration); err != nil {
-		db.Close()
-		// The refusal is already the sentence the boot failure shows.
-		if tooNew := (*SchemaTooNewError)(nil); errors.As(err, &tooNew) {
-			return nil, err
-		}
-		return nil, fmt.Errorf("store: run migrations: %w", err)
-	}
-	if err := ensureStoreIdentity(db); err != nil {
-		db.Close()
 		return nil, err
 	}
 
-	s := &Store{db: db, path: dbPath, gate: gate, writes: writes, committed: committed}
+	if opts.RefusePendingMigrations {
+		if err := refusePendingMigrations(db); err != nil {
+			return failed(err)
+		}
+	}
+	if err := runMigrationsContext(ctx, db, pragmas, opts.OnMigration); err != nil {
+		// The refusal is already the sentence the boot failure shows.
+		if tooNew := (*SchemaTooNewError)(nil); errors.As(err, &tooNew) {
+			return failed(err)
+		}
+		return failed(fmt.Errorf("store: run migrations: %w", err))
+	}
+	if err := ensureStoreIdentity(db); err != nil {
+		return failed(err)
+	}
+
+	run, err := newRunID()
+	if err != nil {
+		return failed(err)
+	}
+	s := &Store{db: db, path: dbPath, gate: gate, writes: writes, committed: committed, run: run}
 
 	// Reclaim the WAL file before anything can read from it. Every other
 	// checkpoint the app runs is PASSIVE, which recycles WAL pages for
@@ -191,12 +209,12 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 	// structurally free, since the read pool is not open yet and no RPC has
 	// been served. Failure is logged, never fatal: an oversized WAL is a
 	// disk-space problem, not a reason to refuse to start.
+	checkpointed := time.Now()
 	bootCheckpoint, bootErr := s.TruncateCheckpoint()
-	s.logCheckpoint("boot", bootCheckpoint, bootErr)
+	s.logCheckpoint("boot", checkpointed, bootCheckpoint, bootErr)
 
 	if read, err := openReadPool(db, dbPath, gate); err != nil {
-		db.Close()
-		return nil, err
+		return failed(err)
 	} else {
 		s.read = read
 	}
@@ -245,14 +263,20 @@ func openReadPool(db *sql.DB, dbPath string, gate *connGate) (*sql.DB, error) {
 	read.SetMaxIdleConns(readPoolConns)
 	var probe int
 	if err := read.QueryRow("SELECT 1").Scan(&probe); err != nil {
-		read.Close()
-		return nil, fmt.Errorf("store: read pool probe: %w", err)
+		return nil, errors.Join(fmt.Errorf("store: read pool probe: %w", err), closeFailedReadPool(read))
 	}
 	if err := verifyConnPragmas(read, readerConnPragmas); err != nil {
-		read.Close()
-		return nil, err
+		return nil, errors.Join(err, closeFailedReadPool(read))
 	}
 	return read, nil
+}
+
+// closeFailedReadPool closes a read pool openReadPool refused.
+func closeFailedReadPool(read *sql.DB) error {
+	if err := read.Close(); err != nil {
+		return fmt.Errorf("store: close the refused read pool: %w", err)
+	}
+	return nil
 }
 
 // reader returns the pool read-only accessors run their queries on:
@@ -394,8 +418,9 @@ func (s *Store) Close() error {
 			errs = append(errs, fmt.Errorf("store: close read pool: %w", err))
 		}
 	}
+	checkpointed := time.Now()
 	closeCheckpoint, checkpointErr := s.TruncateCheckpoint()
-	s.logCheckpoint("close", closeCheckpoint, checkpointErr)
+	s.logCheckpoint("close", checkpointed, closeCheckpoint, checkpointErr)
 	if err := s.db.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("store: close writer: %w", err))
 	}
@@ -450,16 +475,20 @@ func (s *Store) TruncateCheckpoint() (CheckpointResult, error) {
 	return res, nil
 }
 
-// logCheckpoint reports a TruncateCheckpoint outcome at a lifecycle
-// moment where the caller has decided not to fail on it. Both failure
-// shapes are visible: an error, and the silent one where SQLite answered
-// with busy=1 and reclaimed nothing.
-func (s *Store) logCheckpoint(moment string, res CheckpointResult, err error) {
+// logCheckpoint reports a TruncateCheckpoint that began at started, at a
+// lifecycle moment where the caller has decided not to fail on it. Both
+// failure shapes are visible: an error, and the silent one where SQLite
+// answered with busy=1 and reclaimed nothing. Every outcome says how long
+// it took: an update's trial waits on both.
+func (s *Store) logCheckpoint(moment string, started time.Time, res CheckpointResult, err error) {
+	took := time.Since(started).Round(time.Millisecond)
 	switch {
 	case err != nil:
-		log.Printf("store: %s WAL checkpoint: %v", moment, err)
+		log.Printf("store: %s WAL checkpoint failed duration=%s: %v", moment, took, err)
 	case res.Busy:
-		log.Printf("store: %s WAL checkpoint blocked by an open read; %d frames left in the WAL", moment, res.WALFrames)
+		log.Printf("store: %s WAL checkpoint blocked by an open read duration=%s; %d frames left in the WAL", moment, took, res.WALFrames)
+	default:
+		log.Printf("store: %s WAL checkpoint duration=%s frames=%d", moment, took, res.Checkpointed)
 	}
 }
 
@@ -663,15 +692,18 @@ type Thread struct {
 	// true when the latest assistant proposed plan is completed and has
 	// not been implemented yet. It is not a persisted threads column.
 	HasActionableProposedPlan bool `json:"hasActionableProposedPlan"`
-	// HasIncompleteTurn is derived from the newest unseen turn row: an
-	// in-flight turn (completed_at=NULL) whose start the user hasn't
-	// seen, or a settled stop_reason='interrupted' turn whose end the
-	// user hasn't seen (boot-swept crashes land here —
-	// RecoverCrashedTurns settles NULL rows as interrupted before the
-	// frontend ever loads). Either way the sidebar should show
-	// Interrupted, not live Working. It is not a persisted threads
-	// column.
+	// HasIncompleteTurn is derived from the newest turn row: it settled
+	// with stop_reason='interrupted' (an interrupt, a provider's death, or
+	// a crash RecoverCrashedTurns settled at boot) after the user last read
+	// the thread. An open row is never this (turn_newest.go). It is not a
+	// persisted threads column.
 	HasIncompleteTurn bool `json:"hasIncompleteTurn"`
+	// HasOpenTurn is derived from the newest turn row: it is still in
+	// flight (completed_at=NULL), a running turn until its settle
+	// (turn_newest.go). The frontend learns a
+	// running turn from its live events instead. It is not a persisted
+	// threads column.
+	HasOpenTurn bool `json:"-"`
 	// HasFailedTurn is derived from the newest turn: it is true when that
 	// turn settled with stop_reason='error' or when an `error` item was
 	// persisted at or after its index (orphan errors have no turn row of

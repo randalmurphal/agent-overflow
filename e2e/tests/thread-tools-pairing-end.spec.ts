@@ -14,9 +14,9 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { test, expect } from '@playwright/test';
+import { test, expect } from './base-test.js';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
-import { headlessPairing } from './headless-pairing-helpers.js';
+import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { solePairedDevice } from './offhost-helpers.js';
 import { openAgents, openPast, pastRow } from './agents-tray-helpers.js';
@@ -27,6 +27,8 @@ test.describe.configure({ mode: 'serial' });
 let home: HarnessApp;
 let remote: HarnessApp;
 let remoteID = '';
+/** This computer's id on the other one, from the reverse connection. */
+let homeID = '';
 let homeDataDir = '';
 
 test.beforeAll(async () => {
@@ -41,6 +43,12 @@ test.beforeAll(async () => {
     pairing.close();
   }
   await home.rpc('RenameBackend', remoteID, 'GPU computer');
+  // Own-device enrollment introduces the reverse connection after this
+  // computer first reaches that one, so it arrives after the confirm.
+  await connectedAfterConfirm({ home, remote }, (wait) => expect
+    .poll(async () => (await remote.rpc<Array<{ id: string }>>('ListAgentComputers')).length, wait)
+    .toBe(1));
+  [{ id: homeID }] = await remote.rpc<Array<{ id: string }>>('ListAgentComputers');
   await enableRemoteCommands();
 });
 
@@ -128,7 +136,6 @@ test('a late reply the other computer dropped before it was collected reads as e
   // A late reply arrived there an hour ago, while this computer was away,
   // and its hold ran out before this computer asked again: the late reply's
   // revision, then the retention pass's expiry (ExpireThreadRequestAnswers).
-  const [{ id: homeID }] = await remote.rpc<Array<{ id: string }>>('ListAgentComputers');
   expect(await home.stop()).toBe(true);
   const arrived = Date.now() - 3_600_000;
   const db = new DatabaseSync(storePath(remote));
@@ -223,7 +230,9 @@ test('a command running when the computer is paired again finishes under the new
   await home.open(page);
   await page.getByTestId('thread-row-title').getByText('Replaced builder', { exact: true }).click();
   const timeline = page.getByRole('log', { name: 'Message History' });
-  await expect(timeline.getByTestId('agent-message-sender').getByText(`release build on ${live.name}`, { exact: true })).toBeVisible();
+  // The completion is a run of its own, named in its collapsed header; the
+  // call that started the job is in the run before it.
+  await expect(timeline.getByTestId('activity-run-header-message-sender').getByText(`release build on ${live.name}`, { exact: true })).toBeVisible();
   await timeline.getByRole('button', { name: /Expand 1 activity row/ }).click();
   const card = timeline.getByTestId('tool-call-card').filter({ hasText: 'build.release' }).first();
   await expect(card.locator('[data-machine]').first()).toHaveText(`(${live.name})`);

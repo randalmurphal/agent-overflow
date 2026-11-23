@@ -1,0 +1,48 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Build is "
+        },
+        {
+          "type": "status",
+          "attrs": {
+            "text": "DONE",
+            "color": "green",
+            "localId": "s1"
+          }
+        },
+        {
+          "type": "text",
+          "text": " and the docs are "
+        },
+        {
+          "type": "status",
+          "attrs": {
+            "text": "DONE",
+            "color": "purple",
+            "localId": "s2"
+          }
+        },
+        {
+          "type": "text",
+          "text": " today."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Second paragraph stays."
+        }
+      ]
+    }
+  ]
+}

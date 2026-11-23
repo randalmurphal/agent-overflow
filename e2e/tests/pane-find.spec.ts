@@ -14,8 +14,10 @@
 // turn the count follows streamed text, and Escape from the transcript or
 // the composer closes the find before a further Escape interrupts. mod+f
 // opens nothing behind the settings overlay or the command palette, and the
-// palette's Find in Pane opens the bar. mod+shift+f still opens the
-// dialog, which has no thread mode. Compact Back: compact-pane-find.spec.ts. Unit and component coverage: paneFind.svelte.test.ts,
+// palette's Find in Pane opens the bar. The chat header menu's Find in
+// thread row names the chord and opens its pane's bar seeded with the
+// composer selection, and Escape returns focus to the menu button. mod+shift+f
+// still opens the dialog, which has no thread mode. Compact Back: compact-pane-find.spec.ts. Unit and component coverage: paneFind.svelte.test.ts,
 // threadFind.svelte.test.ts, PaneFindBar.test.ts, findHighlights.browser.test.ts,
 // threadFindText.browser.test.ts.
 import type { Page } from '@playwright/test';
@@ -321,6 +323,49 @@ test('mod+f in the command palette opens no find behind it; picking Find in Pane
   await expect(input).toHaveCount(0);
   await expect(page.getByTestId('pane-find-bar')).toBeVisible();
   await expect(page.getByTestId('pane-find-input')).toBeFocused();
+});
+
+test('the header menu\'s Find in thread opens that pane\'s bar, seeded with the composer selection', async ({ harness, page }) => {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'pane-find-menu', repo: {}, threads: [
+      { title: 'Menu thread', provider: 'claude', turns: [{ userText: 'Hello', items: [{ kind: 'assistant_text', summary: 'menu-needle answer' }] }] },
+      { title: 'Other thread', provider: 'claude', turns: [{ userText: 'Other', items: [{ kind: 'assistant_text', summary: 'Nothing to find here.' }] }] },
+    ] }],
+  });
+  const [menuId, otherId] = seed.projects[0].threadIds;
+  await harness.open(page);
+  await page.locator(`[data-sidebar-thread-id="${menuId}"]`).click();
+  await page.locator(`[data-sidebar-thread-id="${otherId}"]`).click({ modifiers: ['ControlOrMeta'] });
+  const panes = page.locator('section[data-pane-kind="thread"]');
+  await expect(panes).toHaveCount(2);
+  const menuPane = panes.filter({ has: page.locator(`[data-thread-id="${menuId}"]`) });
+  const otherPane = panes.filter({ has: page.locator(`[data-thread-id="${otherId}"]`) });
+
+  // A word selected in the composer seeds the find, as it does for mod+f,
+  // though the press on the menu takes focus from it first.
+  const composer = menuPane.getByLabel('Message Input');
+  await composer.click();
+  await page.keyboard.type('menu-needle');
+  await page.keyboard.press('ControlOrMeta+a');
+
+  const button = menuPane.getByTestId('chat-header-more');
+  await button.click();
+  const row = page.getByRole('menu', { name: 'Thread actions' }).getByRole('menuitem', { name: 'Find in thread' });
+  await expect(row).toContainText(/(Ctrl\+|⌘)F\s*$/);
+  await expect(page.getByRole('menuitem', { name: 'Search messages' })).toHaveCount(0);
+  await row.click();
+
+  const bar = menuPane.getByTestId('pane-find-bar');
+  await expect(bar).toBeVisible();
+  await expect(menuPane.getByTestId('pane-find-input')).toBeFocused();
+  await expect(menuPane.getByTestId('pane-find-input')).toHaveValue('menu-needle');
+  await expect(otherPane.getByTestId('pane-find-bar')).toHaveCount(0);
+  await expect(page.getByTestId('message-search')).toHaveCount(0);
+  await expect(bar.getByTestId('pane-find-count')).toHaveText('1/1');
+
+  await page.keyboard.press('Escape');
+  await expect(bar).toHaveCount(0);
+  await expect(button).toBeFocused();
 });
 
 test('mod+shift+f still opens the cross-thread search dialog, with no thread mode', async ({ harness, page }) => {

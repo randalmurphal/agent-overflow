@@ -148,8 +148,11 @@ export class ActivityRunMembers {
 export class ActivityRunStub {
     /**
      * FirstItemID and LastItemID are the run's physical edges. A run is
-     * identified by FirstItemID: runs grow only at their newer end, so
-     * the first member is stable for the life of the window.
+     * identified by FirstItemID. Runs grow at their newer end; the one
+     * row that can join ahead of the first member is an agent message
+     * placed at the head of its turn under AgentMessagesAreMembers, after
+     * which a call naming the old first member is refused as stale
+     * (ErrActivityRunStale).
      */
     "firstItemId": string;
     "lastItemId": string;
@@ -2035,14 +2038,11 @@ export class Thread {
     "hasActionableProposedPlan": boolean;
 
     /**
-     * HasIncompleteTurn is derived from the newest unseen turn row: an
-     * in-flight turn (completed_at=NULL) whose start the user hasn't
-     * seen, or a settled stop_reason='interrupted' turn whose end the
-     * user hasn't seen (boot-swept crashes land here —
-     * RecoverCrashedTurns settles NULL rows as interrupted before the
-     * frontend ever loads). Either way the sidebar should show
-     * Interrupted, not live Working. It is not a persisted threads
-     * column.
+     * HasIncompleteTurn is derived from the newest turn row: it settled
+     * with stop_reason='interrupted' (an interrupt, a provider's death, or
+     * a crash RecoverCrashedTurns settled at boot) after the user last read
+     * the thread. An open row is never this (turn_newest.go). It is not a
+     * persisted threads column.
      */
     "hasIncompleteTurn": boolean;
 

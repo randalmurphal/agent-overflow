@@ -25,6 +25,8 @@ type Session struct {
 	cancel   context.CancelFunc
 	closing  atomic.Bool
 	readDone chan struct{}
+	// start is how this process's start ended (AwaitStart).
+	start *startOutcome
 	// lostWrites holds a system/session_writes_lost the CLI sent, for the
 	// app to report after the process ends (TakeLostWritesError).
 	lostWrites lostWrites
@@ -221,8 +223,9 @@ type Session struct {
 	controlRequestSeq uint64
 }
 
-// NewSession spawns a Claude CLI process and starts the stdout reader goroutine.
-// The init event arrives after the first Send() call, not on spawn.
+// NewSession spawns a Claude CLI process and starts the stdout reader
+// goroutine. It returns once the process is launched; AwaitStart reports
+// whether the start reached its conversation.
 func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(provider.ProviderEvent)) (*Session, error) {
 	if onEvent == nil {
 		return nil, fmt.Errorf("claude: onEvent callback is required")
@@ -279,6 +282,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		onEvent:                  onEvent,
 		cancel:                   cancel,
 		readDone:                 make(chan struct{}),
+		start:                    newStartOutcome(cfg),
 		parser:                   NewParser(),
 		leafTracker:              newClaudeLeafTracker(cfg.ResumeAt),
 		allowsBypassPermissions:  slices.Contains(cfg.PermissionFlags, "--allow-dangerously-skip-permissions"),
@@ -316,7 +320,9 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 }
 
 // CanonicalLeafUUID returns the latest settled top-level Claude transcript
-// UUID observed by this live session.
+// UUID observed by this live session. A start with Config.ResumeAt seeds it
+// with that cursor; any other start reports "" until the process emits its
+// first top-level row.
 func (s *Session) CanonicalLeafUUID() string {
 	if s == nil || s.leafTracker == nil {
 		return ""

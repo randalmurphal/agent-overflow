@@ -24,7 +24,7 @@ import { projectBackend } from '../transport/entityIndex';
 import { threadClaimant, threadOwner } from '../transport/threadOwner';
 import { hasScope } from '../transport/scopes';
 import { relativeTime } from '../utils/format';
-import { getTransportStatusFor } from './transportStatus.svelte';
+import { backendUnreachableSettled, getTransportStatusFor } from './transportStatus.svelte';
 import { onFrontendValueChanged, readFrontendValue, writeFrontendValue } from './frontendStorage';
 
 const NICKNAMES_KEY = 'computer-nicknames';
@@ -214,11 +214,36 @@ export function threadMachineUnreachable(threadId: string, projectId: string | n
 }
 
 /**
- * The display name of a thread's machine while it is unreachable
- * (`threadMachineUnreachable`), or null while it can be reached.
+ * Whether an action on a thread may call the computer it runs on now: the
+ * composer's actions (composerAccess.ts) and the Stop that Esc or the
+ * palette sends. False while that computer cannot be reached, except this
+ * page's own backend on a client with no other computer: its outage is the
+ * transport banner's to explain, and its composer stays live.
+ */
+export function threadMachineCallable(threadId: string, projectId: string | null | undefined): boolean {
+  const machine = threadMachine(threadId, projectId);
+  if (backendReachable(machine)) return true;
+  return list.length < 2 && machine === HOME_BACKEND && hasScope('host');
+}
+
+/**
+ * Whether a thread's machine has been unreachable long enough for its rows
+ * to say so (`backendUnreachableSettled`), on a client with several
+ * computers. Thread rows and pickers dim and relabel by this, so a spotty
+ * connection does not flip them; the open thread's composer asks
+ * `threadMachineUnreachable`, which answers at once.
+ */
+export function threadMachineUnreachableSettled(threadId: string, projectId: string | null | undefined): boolean {
+  if (list.length < 2) return false;
+  return backendUnreachableSettled(threadMachine(threadId, projectId));
+}
+
+/**
+ * The display name of a thread's machine once its rows say it is
+ * unreachable (`threadMachineUnreachableSettled`), or null otherwise.
  */
 export function unreachableThreadMachineName(threadId: string, projectId: string | null | undefined): string | null {
-  if (!threadMachineUnreachable(threadId, projectId)) return null;
+  if (!threadMachineUnreachableSettled(threadId, projectId)) return null;
   const entry = attachedBackendEntry(threadMachine(threadId, projectId));
   return entry ? backendDisplayName(entry) : '';
 }

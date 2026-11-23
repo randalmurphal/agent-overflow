@@ -14,6 +14,12 @@ type recordingAccountSink struct {
 	signIns []SignIn
 	// changed is the provider of each PublishAccountsChanged.
 	changed []string
+	// listings is the provider of each PublishListingChanged.
+	listings []string
+	// limitsReset is the account of each PublishLimitsReset.
+	limitsReset []string
+	// onListing, when set, runs at each PublishListingChanged.
+	onListing func()
 }
 
 func (s *recordingAccountSink) PublishAccount(string, provideraccounts.Account, provider.AccountInfo, uint64) {
@@ -23,6 +29,17 @@ func (s *recordingAccountSink) PublishCleared(string, uint64) { s.events = appen
 func (s *recordingAccountSink) PublishAccountsChanged(providerName string) {
 	s.events = append(s.events, "changed")
 	s.changed = append(s.changed, providerName)
+}
+func (s *recordingAccountSink) PublishListingChanged(providerName string) {
+	s.events = append(s.events, "listing")
+	s.listings = append(s.listings, providerName)
+	if s.onListing != nil {
+		s.onListing()
+	}
+}
+func (s *recordingAccountSink) PublishLimitsReset(_, accountID string) {
+	s.events = append(s.events, "limits-reset")
+	s.limitsReset = append(s.limitsReset, accountID)
 }
 func (s *recordingAccountSink) PublishUsageError(string, string, error) {
 	s.events = append(s.events, "usage-error")

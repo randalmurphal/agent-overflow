@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const createMigrationVersionsTableSQL = `CREATE TABLE IF NOT EXISTS migration_versions (
@@ -1772,7 +1773,11 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 		},
 	},
 	{Version: remoteOwnershipMigrationVersion, Name: "remote_ownership", SQL: remoteOwnershipV158SQL},
-	{Version: widenProviderChecksMigrationVersion, Name: "widen_provider_checks", SQL: widenProviderChecksV159SQL, Rebuild: true},
+	{Version: requestRunsMigrationVersion, Name: "request_runs", SQL: requestRunsV159SQL},
+	{Version: asyncQuestionRunMigrationVersion, Name: "async_question_run", SQL: asyncQuestionRunV160SQL},
+	{Version: receiptNudgeRunsMigrationVersion, Name: "receipt_nudge_runs", SQL: receiptNudgeRunsV161SQL},
+	{Version: trackerMigrationVersion, Name: "tracker", SQL: trackerV162SQL},
+	{Version: widenProviderChecksMigrationVersion, Name: "widen_provider_checks", SQL: widenProviderChecksV163SQL, Rebuild: true},
 }
 
 // MigrationStep describes one pending migration as it begins, or a
@@ -2099,8 +2104,10 @@ func applyMigration(db *sql.DB, m Migration) error {
 // applyMigrationContext runs m in one transaction bound to ctx. A Fix
 // runs its statements without ctx, so cancellation takes effect at the
 // next statement that carries it.
-func applyMigrationContext(ctx context.Context, db *sql.DB, m Migration) error {
+func applyMigrationContext(ctx context.Context, db *sql.DB, m Migration) (err error) {
 	log.Printf("store: applying migration v%d: %s", m.Version, m.Name)
+	started := time.Now()
+	defer func() { logDuration(fmt.Sprintf("migration v%d", m.Version), "applied", started, err) }()
 	if strings.TrimSpace(m.SQL) == "" && m.Fix == nil {
 		return fmt.Errorf("migration v%d (%s) has neither SQL nor Fix", m.Version, m.Name)
 	}
@@ -2132,9 +2139,23 @@ func applyMigrationContext(ctx context.Context, db *sql.DB, m Migration) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration v%d: %w", m.Version, err)
 	}
-
-	log.Printf("store: migration v%d applied", m.Version)
 	return nil
+}
+
+// logDuration logs how long subject took, followed by done when it
+// succeeded, and that it failed with err otherwise. An in-app update's
+// trial runs the migrations, and these lines say where its time went
+// (docs/specs/app-update.md, "What an update logs").
+func logDuration(subject, done string, started time.Time, err error) {
+	took := time.Since(started).Round(time.Millisecond)
+	if err != nil {
+		log.Printf("store: %s failed duration=%s: %v", subject, took, err)
+		return
+	}
+	if done != "" {
+		subject += " " + done
+	}
+	log.Printf("store: %s duration=%s", subject, took)
 }
 
 func addThreadPRRefColumn(tx *sql.Tx) error {
@@ -2172,7 +2193,7 @@ func applyRebuildMigrationContext(ctx context.Context, db *sql.DB, m Migration) 
 // the foreign key check, so a boot waiting on a long rebuild names what
 // is running. Restoring foreign_keys ignores ctx so a cancelled rebuild
 // still hands its connection back with enforcement on.
-func applyRebuildMigrationSteps(ctx context.Context, db *sql.DB, m Migration, activity func(string)) error {
+func applyRebuildMigrationSteps(ctx context.Context, db *sql.DB, m Migration, activity func(string)) (err error) {
 	// Refuse rather than run the Fix: this path used to ignore it
 	// silently, so a rebuild that also needed a Go-side data pass would
 	// record itself as applied with half its work never done — a forward-
@@ -2186,6 +2207,8 @@ func applyRebuildMigrationSteps(ctx context.Context, db *sql.DB, m Migration, ac
 		return fmt.Errorf("migration v%d (%s): a Rebuild migration cannot carry a Fix; split the data fixup into its own migration", m.Version, m.Name)
 	}
 	log.Printf("store: applying rebuild migration v%d: %s", m.Version, m.Name)
+	started := time.Now()
+	defer func() { logDuration(fmt.Sprintf("rebuild migration v%d", m.Version), "applied", started, err) }()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("pin connection for rebuild v%d: %w", m.Version, err)
@@ -2226,7 +2249,10 @@ func applyRebuildMigrationSteps(ctx context.Context, db *sql.DB, m Migration, ac
 	if activity != nil {
 		activity("checking foreign keys")
 	}
-	if err := assertForeignKeysIntact(ctx, tx); err != nil {
+	checked := time.Now()
+	err = assertForeignKeysIntact(ctx, tx)
+	logDuration(fmt.Sprintf("rebuild migration v%d foreign key check", m.Version), "", checked, err)
+	if err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("rebuild v%d (%s): %w", m.Version, m.Name, err)
 	}
@@ -2240,32 +2266,5 @@ func applyRebuildMigrationSteps(ctx context.Context, db *sql.DB, m Migration, ac
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit rebuild v%d: %w", m.Version, err)
 	}
-
-	log.Printf("store: rebuild migration v%d applied", m.Version)
 	return nil
-}
-
-// assertForeignKeysIntact runs PRAGMA foreign_key_check and returns an error
-// if any row references a missing parent. After a rebuild that copies ids
-// verbatim this is always clean; the check is cheap insurance that turns a
-// botched rebuild (which would otherwise silently strand child rows) into a
-// loud migration failure + rollback. foreign_key_check works regardless of
-// whether enforcement is currently enabled.
-func assertForeignKeysIntact(ctx context.Context, tx *sql.Tx) error {
-	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
-	if err != nil {
-		return fmt.Errorf("foreign_key_check: %w", err)
-	}
-	defer rows.Close()
-	if rows.Next() {
-		// Columns: child table, child rowid, referenced table, fk index.
-		var table, referred sql.NullString
-		var rowid, fkid sql.NullInt64
-		if err := rows.Scan(&table, &rowid, &referred, &fkid); err != nil {
-			return fmt.Errorf("foreign_key_check scan: %w", err)
-		}
-		return fmt.Errorf("foreign key violation after rebuild: table %q row %d references missing %q",
-			table.String, rowid.Int64, referred.String)
-	}
-	return rows.Err()
 }

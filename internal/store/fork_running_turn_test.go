@@ -64,6 +64,74 @@ func TestPointerForkOwnsTheSourcesUnsettledTurns(t *testing.T) {
 	}
 }
 
+// TestForkTurnCopiesAreSettled: an open turn row reads as a running turn,
+// so no copy of a turn row may put one where a person or a tool reads it.
+// The rows a fork reads of its source are settled (the fork owns settled
+// copies of the rest), so a holder that takes them (the source's revert)
+// and the fork's own copy of them (the fork's revert) are settled too,
+// while the source still runs two turns.
+func TestForkTurnCopiesAreSettled(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "src")
+	for i := range 3 {
+		if err := insertCarded(s, Item{ID: fmt.Sprintf("u%d", i), ThreadID: "src", TurnIndex: i, Kind: "user_text", Role: "user", Status: "completed", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.InsertTurn(Turn{TurnID: fmt.Sprintf("src:%d", i), ThreadID: "src", TurnIndex: i, StartedAt: int64(i + 1)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := insertCarded(s, Item{ID: "a1", ThreadID: "src", TurnIndex: 1, ItemIndex: 1, Kind: "assistant_text", Role: "assistant", Status: "completed", CreatedAt: 2, UpdatedAt: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateTurnCompleted("src:1", 3, "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	mustPointerFork(t, s, "src", "fork", ForkCut{})
+	openRows := func(where string) (open, all int) {
+		t.Helper()
+		if err := s.reader().QueryRow(`SELECT COUNT(*) FILTER (WHERE turns.completed_at IS NULL), COUNT(*)
+			  FROM turns JOIN threads ON threads.id = turns.thread_id WHERE `+where).Scan(&open, &all); err != nil {
+			t.Fatal(err)
+		}
+		return open, all
+	}
+	wantForkSettled := func(what string) {
+		t.Helper()
+		if open, _ := openRows(`threads.id = 'fork'`); open != 0 {
+			t.Fatalf("%s: the fork holds %d open turn rows", what, open)
+		}
+		fork, err := s.GetThread("fork")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fork.HasOpenTurn {
+			t.Fatalf("%s: the fork reads as running", what)
+		}
+	}
+	wantForkSettled("forked")
+
+	if _, _, err := s.DeleteConversationFromTurn("src", 1); err != nil {
+		t.Fatalf("revert the source: %v", err)
+	}
+	open, held := openRows(`threads.mode = 'holder'`)
+	if held == 0 || open != 0 {
+		t.Fatalf("holder turn rows: %d open of %d; want some, all settled", open, held)
+	}
+	if open, _ := openRows(`threads.id = 'src'`); open != 1 {
+		t.Fatalf("the source runs %d turns, want turn 0 still open", open)
+	}
+
+	// A revert inside inherited turn 1 gives the fork its own row of it.
+	if _, _, err := s.DeleteConversationFromItem("fork", "a1"); err != nil {
+		t.Fatalf("revert the fork: %v", err)
+	}
+	if turn, found, err := s.GetTurnByThreadIndex("fork", 1); err != nil || !found || turn.TurnID != "fork:1" {
+		t.Fatalf("fork turn 1 = %+v, found %v, %v; want the fork's own copy", turn, found, err)
+	}
+	wantForkSettled("the fork reverted")
+}
+
 // TestPointerForkOfARunningTurnOwnsItsRows: a fork of a source that is
 // still running the cut turn owns a copy of that turn's rows, so the
 // writes the source's provider still makes to them (a queued message's

@@ -296,6 +296,21 @@ describe('<MachinePicker>', () => {
       expect(laptop.textContent).not.toContain('View only');
     });
 
+    // A connected computer whose grant has not reached this window is not a
+    // refusal: the row waits, and says what it waits for.
+    it('holds a connected computer whose grant has not arrived, without calling it view only', async () => {
+      stageBackend();
+      revokeBackendScopes('laptop');
+      await seedProjects([makeProject()]);
+      const pane = buildPlaceholderPane();
+      const { getByTestId, findByRole } = render(MachinePicker, { props: { pane } });
+      await fireEvent.click(getByTestId('machine-picker-trigger'));
+      const laptop = await findByRole('menuitem', { name: /Laptop/ });
+      expect(laptop).toHaveAttribute('aria-disabled', 'true');
+      expect(laptop.textContent).not.toContain('View only');
+      expect(laptop.getAttribute('title')).toBe('Unavailable until this computer connects');
+    });
+
     it('says nothing about a machine that has them', async () => {
       stageBackend({
         hello: {

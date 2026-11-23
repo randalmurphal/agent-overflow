@@ -38,7 +38,7 @@ func TestReadProcessWorkCountsCPUAndStorage(t *testing.T) {
 		}
 	}
 
-	f, err := os.Create(filepath.Join(t.TempDir(), "work"))
+	f, err := os.Create(filepath.Join(storageDir(t), "work"))
 	if err != nil {
 		t.Fatal(err)
 	}

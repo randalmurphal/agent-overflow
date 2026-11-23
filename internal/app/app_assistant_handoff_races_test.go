@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 
 	"github.com/google/uuid"
@@ -32,13 +32,13 @@ func TestAJobOverAPairedDestinationFollowsTwoHandOffs(t *testing.T) {
 	remotetest.Require(t)
 	backend := newPairedBackend(t)
 	source := identityApp(t)
-	manager, err := attachedbackends.New(t.TempDir(), "workhorse", "linux")
+	manager, err := newTestBackends(t, t.TempDir(), "workhorse", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
 	source.backends = manager
 	invite, _ := backend.mintLink(t, "full")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	attached, err := manager.Add(ctx, invite.URL)
 	if err != nil {

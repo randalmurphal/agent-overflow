@@ -2,7 +2,8 @@
   /**
    * Right-click (long-press on the phone) menu for images: Copy Image and
    * Save Image, on a thread's image attachments, on forge images in PR and
-   * MR bodies and comments, and on images an agent wrote as a local path,
+   * MR bodies and comments, on files of a PR's repository its body shows,
+   * which add Copy Path, and on images an agent wrote as a local path,
    * which add Copy Path and Copy Markdown (`utils/imageMenuActions.ts`).
    *
    * Mounted once from `App.svelte`, built like `DiagramInteractionHost`:
@@ -23,11 +24,13 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import {
-    canSaveMenuImage,
+    saveMenuImageGrant,
     copyLocalImageMarkdown,
     copyLocalImagePath,
     copyMenuImage,
+    copyRepositoryImagePath,
     saveMenuImage,
     saveMenuImageLabel,
     taggedMenuImage,
@@ -45,7 +48,7 @@
   };
 
   let menu = $state<MenuState | null>(null);
-  const saveGranted = $derived(menu ? canSaveMenuImage(menu.target) : true);
+  const saveGrant = $derived(menu ? saveMenuImageGrant(menu.target) : 'granted');
   const saveLabel = $derived(menu ? saveMenuImageLabel(menu.target) : 'Save Image');
 
   // Set by a press outside a menu raised over a dialog; spent by the click
@@ -105,8 +108,10 @@
   // The clipboard write is reached before the first await, inside the
   // click; the outcome is reported by the action.
   function copyPath(): void {
-    if (menu?.target.kind !== 'local') return;
-    void copyLocalImagePath(menu.target);
+    const target = menu?.target;
+    if (target?.kind === 'local') void copyLocalImagePath(target);
+    else if (target?.kind === 'repository') void copyRepositoryImagePath(target.image);
+    else return;
     close();
   }
 
@@ -189,11 +194,13 @@
     {#if menu.target.kind === 'local'}
       <MenuItem label="Copy Path" onSelect={copyPath} />
       <MenuItem label="Copy Markdown" onSelect={copyMarkdown} />
+    {:else if menu.target.kind === 'repository'}
+      <MenuItem label="Copy Path" onSelect={copyPath} />
     {/if}
     <MenuItem
       label={saveLabel}
-      disabled={!saveGranted}
-      title={saveGranted ? undefined : 'Not granted to this device'}
+      disabled={saveGrant !== 'granted'}
+      title={grantBlockedTitle(saveGrant)}
       onSelect={saveImage}
     />
   </ContextMenu>

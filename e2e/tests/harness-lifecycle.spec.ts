@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Duplex } from 'node:stream';
-import { test, expect } from '@playwright/test';
+import { test, expect } from './base-test.js';
 import { HARNESS_TIMING, launchHarness, type HarnessLaunchRecord } from '../src/harness.js';
 import { HarnessApp } from '../src/harness-app.js';
 import { BackendConsoleLog } from '../src/harness-console-log.js';

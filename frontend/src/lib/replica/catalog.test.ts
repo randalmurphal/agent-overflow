@@ -18,6 +18,7 @@ import type { ReplicaBody } from './envelope';
 import type { CatalogKind, CatalogRowCache, CatalogRows } from './catalog';
 import { currentCatalogStamp, observedCatalogStamp, resetCatalogStampsForTest } from './catalogStamp';
 import * as idb from './idb';
+import { AGENT_MESSAGES_ABSORBED_RULE } from '../utils/activityRunSpans';
 
 installFakeIndexedDB();
 
@@ -46,7 +47,7 @@ const project: ProjectWithCounts = { project: { id: 'project', name: 'repo', pat
   sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 };
 const other: ProjectWithCounts = { ...project, project: { ...project.project, id: 'other', name: 'other' } };
 const body: ReplicaBody = { epoch: 1, rev: 1, savedAt: 1000, items: [], oldestCursor: null,
-  newestCursor: null, hasMoreOlder: false, hasMoreNewer: false, latestSettledTurn: null, runs: [] };
+  newestCursor: null, hasMoreOlder: false, hasMoreNewer: false, latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE, runs: [] };
 
 beforeEach(async () => {
   await __replicaSweepForTest();

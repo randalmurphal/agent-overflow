@@ -34,8 +34,9 @@
 	// (utils/pathLinkExtension.ts). `classifyLinkHref` is shared with
 	// staticHtml.ts so the two renderers agree; see markdown/AGENTS.md
 	// § URL and HTML boundary. Same rule in Image.svelte for `src`.
+	// A forge body's `#name` links jump within the body (url.ts `fragment`).
 	const linkClass = $derived(
-		classifyLinkHref(token.href, streamdown.allowedLinkPrefixes ?? [])
+		classifyLinkHref(token.href, streamdown.allowedLinkPrefixes ?? [], !!streamdown.document?.forge)
 	);
 	const transformedUrl = $derived(linkClass.kind === 'anchor' ? linkClass.href : null);
 	// A blocked link's tag is the policy's verdict, not the message's text:
@@ -51,7 +52,15 @@
 	const preview = $derived(previewOfToken(token));
 </script>
 
-{#if preview && transformedUrl}
+{#if linkClass.kind === 'fragment'}
+	<a
+		data-streamdown-link={id}
+		data-md-fragment=""
+		class={streamdown.theme.link.base}
+		href={linkClass.href}
+		title={token.title ?? undefined}
+	>{@render children()}</a>
+{:else if preview && transformedUrl}
 	<a
 		data-streamdown-link={id}
 		class={previewAnchorClass(streamdown.theme.link.base)}

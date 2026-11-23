@@ -320,14 +320,14 @@ func TestWorktreeBlobIDsAreTheBytesOnDisk(t *testing.T) {
 	}
 }
 
-func TestHasFilterReadsTheFilterAttribute(t *testing.T) {
+func TestFilterReadsTheFilterAttribute(t *testing.T) {
 	t.Parallel()
 	repo := testutil.InitGitRepo(t)
-	commitFile(t, repo, ".gitattributes", "*.png filter=lfs diff=lfs merge=lfs -text\nplain.png -filter\n", "attributes")
+	commitFile(t, repo, ".gitattributes", "*.png filter=lfs diff=lfs merge=lfs -text\nplain.png -filter\n*.gif filter=crypt\nbare.svg filter\n", "attributes")
 	sides := OpenedSides(repo, Pin{Old: headSHA(t, repo)})
-	for path, want := range map[string]bool{"a.png": true, "dir/b.png": true, "plain.png": false, "c.svg": false} {
-		if got, err := sides.HasFilter(context.Background(), path); err != nil || got != want {
-			t.Errorf("HasFilter(%s) = %v, %v; want %v", path, got, err, want)
+	for path, want := range map[string]string{"a.png": "lfs", "dir/b.png": "lfs", "plain.png": "", "c.svg": "", "d.gif": "crypt", "bare.svg": "set"} {
+		if got, err := sides.Filter(context.Background(), path); err != nil || got != want {
+			t.Errorf("Filter(%s) = %q, %v; want %q", path, got, err, want)
 		}
 	}
 }
@@ -345,6 +345,41 @@ func TestIsLFSPointer(t *testing.T) {
 	} {
 		if IsLFSPointer([]byte(data)) {
 			t.Errorf("%s is taken for a pointer", name)
+		}
+	}
+}
+
+// Only the spec's three-line v1 pointer parses; anything else is not a
+// pointer whose object is the file.
+func TestParseLFSPointer(t *testing.T) {
+	t.Parallel()
+	oid := strings.Repeat("ab", 32)
+	head := "version https://git-lfs.github.com/spec/v1\n"
+	got, ok := ParseLFSPointer([]byte(head + "oid sha256:" + oid + "\nsize 12345\n"))
+	if !ok || got != (LFSPointer{OID: oid, Size: 12345}) {
+		t.Fatalf("ParseLFSPointer = %+v, %v", got, ok)
+	}
+	if got, ok := ParseLFSPointer([]byte(head + "oid sha256:" + oid + "\nsize 0\n")); !ok || got.Size != 0 {
+		t.Fatalf("an empty object = %+v, %v", got, ok)
+	}
+	for name, data := range map[string]string{
+		"uppercase hex":     head + "oid sha256:" + strings.ToUpper(oid) + "\nsize 1\n",
+		"short oid":         head + "oid sha256:" + oid[:63] + "\nsize 1\n",
+		"another hash":      head + "oid sha512:" + oid + "\nsize 1\n",
+		"leading zero":      head + "oid sha256:" + oid + "\nsize 01\n",
+		"signed size":       head + "oid sha256:" + oid + "\nsize +1\n",
+		"negative size":     head + "oid sha256:" + oid + "\nsize -1\n",
+		"size overflow":     head + "oid sha256:" + oid + "\nsize 99999999999999999999\n",
+		"no final newline":  head + "oid sha256:" + oid + "\nsize 1",
+		"missing size":      head + "oid sha256:" + oid + "\n",
+		"an extension":      head + "ext-0-foo sha256:" + oid + "\noid sha256:" + oid + "\nsize 1\n",
+		"a trailing key":    head + "oid sha256:" + oid + "\nsize 1\nx-key y\n",
+		"carriage returns":  "version https://git-lfs.github.com/spec/v1\r\noid sha256:" + oid + "\r\nsize 1\r\n",
+		"another prefix":    "version https://example.com/spec/v1\noid sha256:" + oid + "\nsize 1\n",
+		"keys out of order": head + "size 1\noid sha256:" + oid + "\n",
+	} {
+		if got, ok := ParseLFSPointer([]byte(data)); ok {
+			t.Errorf("%s parsed as %+v", name, got)
 		}
 	}
 }

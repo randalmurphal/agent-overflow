@@ -16,7 +16,8 @@
 // entry's object URL is revoked, because a blob URL pins its data for as
 // long as it lives. An entry a mounted host is still displaying is
 // RETAINED and skipped by eviction: revoking underneath a playing <video>
-// stops it mid-frame.
+// stops it mid-frame. Its last release runs eviction again when the cache
+// is over either limit.
 //
 // A failure is not a memoized answer: the next mount, or the retry the
 // user triggers by reopening the thread, fetches again.
@@ -38,11 +39,19 @@ export interface ImageSize {
    * Pixel size an <img> renders at before its bytes decode (its `width`
    * and `height` attributes), so a remount reserves the box in the same
    * frame it mounts. From the file header when the backend could read it,
-   * else what the first <img> to decode it measured (rememberDecodedSize);
-   * 0 until either.
+   * else, for a raster image, what the first <img> to decode it measured
+   * (rememberDecodedSize); 0 until either, and always for an svg the
+   * backend did not size.
    */
   width: number;
   height: number;
+  /**
+   * The image has no pixel size, only a ratio (an svg with only a
+   * viewBox): `width` and `height` are the ratio's terms, never pixels,
+   * and the browser sizes the image from its container. Absent from a
+   * computer that predates it, whose answer for such an image is 0x0.
+   */
+  fluid?: boolean;
 }
 
 export interface MediaHandle<V extends MediaBytes> {
@@ -53,8 +62,29 @@ export interface MediaHandle<V extends MediaBytes> {
    */
   readonly settled: V | undefined;
   value: Promise<V>;
+  /**
+   * The pixel size the image will paint at, once the load knows it: from
+   * the answer that mints the byte transfer, before any byte arrives, so
+   * a host reserves the box while the bytes cross. Undefined when the load
+   * never learns one (not an image, a size the header does not give, a
+   * failure).
+   */
+  sized: Promise<ImageSize | undefined>;
   /** Releases this holder's retention; safe to call more than once. */
   release: () => void;
+}
+
+/** What a load reports before it settles: the size it will paint at. */
+export type MediaSizeSink = (size: ImageSize) => void;
+
+/** The size an image's `<img>` box takes from a mint answer: the
+ * original's when known, else the served variant's (MarkdownImage.svelte);
+ * a fluid answer's ratio (it is served as itself) marked fluid. */
+export function paintedSize(answer: { width: number; height: number; originalWidth: number; originalHeight: number; fluid?: boolean }): ImageSize {
+  const size = answer.originalWidth > 0 && answer.originalHeight > 0
+    ? { width: answer.originalWidth, height: answer.originalHeight }
+    : { width: answer.width, height: answer.height };
+  return answer.fluid === true ? { ...size, fluid: true } : size;
 }
 
 /** Total decoded bytes the cache may pin at once. */
@@ -67,6 +97,7 @@ let maxEntries = MEDIA_CACHE_MAX_ENTRIES;
 
 interface CacheEntry {
   value: Promise<MediaBytes>;
+  sized: Promise<ImageSize | undefined>;
   settled: MediaBytes | undefined;
   /** Object URL to revoke on eviction; '' for a data URL or before settle. */
   objectURL: string;
@@ -90,7 +121,7 @@ let cachedBytes = 0;
  */
 export function acquireMediaBlob<V extends MediaBytes>(
   key: string,
-  load: () => Promise<V>,
+  load: (sized: MediaSizeSink) => Promise<V>,
 ): MediaHandle<V> {
   let entry = entries.get(key);
   if (entry) {
@@ -98,16 +129,25 @@ export function acquireMediaBlob<V extends MediaBytes>(
     entries.delete(key);
     entries.set(key, entry);
   } else {
+    let size: ((size: ImageSize | undefined) => void) | null = null;
     const created: CacheEntry = {
       value: undefined as unknown as Promise<MediaBytes>,
+      sized: new Promise((resolve) => {
+        size = resolve;
+      }),
       settled: undefined,
       objectURL: '',
       bytes: 0,
       retained: 0,
       discarded: false,
     };
-    created.value = load().then(
+    const answerSize = (known: ImageSize | undefined) => {
+      size?.(known && known.width > 0 && known.height > 0 ? (known.fluid ? { width: known.width, height: known.height, fluid: true } : { width: known.width, height: known.height }) : undefined);
+      size = null;
+    };
+    created.value = load(answerSize).then(
       (resolved) => {
+        answerSize(undefined);
         // The entry may already have been dropped by a reset between the
         // request and its reply; only account for one still in the map.
         if (created.discarded) {
@@ -130,6 +170,7 @@ export function acquireMediaBlob<V extends MediaBytes>(
         return resolved;
       },
       (err: unknown) => {
+        answerSize(undefined);
         if (entries.get(key) === created) entries.delete(key);
         throw err;
       },
@@ -145,11 +186,19 @@ export function acquireMediaBlob<V extends MediaBytes>(
       return held.settled as V | undefined;
     },
     value: held.value as Promise<V>,
+    sized: held.sized,
     release() {
       if (released) return;
       released = true;
       held.retained = Math.max(0, held.retained - 1);
-      if (held.discarded && held.retained === 0 && held.objectURL) revoke(held.objectURL);
+      if (held.retained > 0) return;
+      if (held.discarded) {
+        if (held.objectURL) revoke(held.objectURL);
+      } else if (overBudget()) {
+        // The last holder of an entry eviction skipped while it was held:
+        // it is evictable now, and nothing else may settle to evict it.
+        evict();
+      }
     },
   };
 }
@@ -176,17 +225,37 @@ export function discardMediaBlobs(prefix: string): void {
   }
 }
 
+/** What the cache holds now: entries, the bytes they count against the
+ * budget, the holders retaining them, entries still loading, and the
+ * object URLs it owns. */
+export function mediaBlobCacheStats(): { entries: number; bytes: number; retained: number; loading: number; objectURLs: number } {
+  let retained = 0;
+  let loading = 0;
+  let objectURLs = 0;
+  for (const entry of entries.values()) {
+    retained += entry.retained;
+    if (entry.settled === undefined) loading++;
+    if (entry.objectURL) objectURLs++;
+  }
+  return { entries: entries.size, bytes: cachedBytes, retained, loading, objectURLs };
+}
+
 /** The keys the cache holds, least recently used first. */
 export function __mediaBlobCacheKeysForTest(): string[] {
   return [...entries.keys()];
 }
 
 /**
- * Records the size an <img> decoded for a value whose header the backend
- * could not read, so the next mount of the same bytes reserves the box.
+ * Records the size an <img> decoded for a raster value whose header the
+ * backend could not read, so the next mount of the same bytes reserves the
+ * box. An svg's is never recorded: one with no pixel size decodes at the
+ * browser's default object size (300x150, or 150 high at its viewBox's
+ * ratio), not a size of its own, so an unknown svg stays unknown and
+ * every mount lays it out as the first did.
  */
-export function rememberDecodedSize(size: ImageSize, img: HTMLImageElement): void {
+export function rememberDecodedSize(size: ImageSize & { mimeType: string }, img: HTMLImageElement): void {
   if (size.width > 0 && size.height > 0) return;
+  if (SVG_MIME.test(size.mimeType)) return;
   if (img.naturalWidth > 0 && img.naturalHeight > 0) {
     size.width = img.naturalWidth;
     size.height = img.naturalHeight;
@@ -215,9 +284,16 @@ export function __setMediaBlobCacheLimitsForTest(limits: { maxBytes?: number; ma
   maxEntries = limits.maxEntries ?? MEDIA_CACHE_MAX_ENTRIES;
 }
 
+function overBudget(): boolean {
+  return cachedBytes > maxBytes || entries.size > maxEntries;
+}
+
+/** Drops unretained entries, least recently used first, until the cache
+ * is within both limits or only retained entries remain. Runs when an
+ * entry settles and when an entry's last holder releases it. */
 function evict(): void {
   for (const [key, entry] of entries) {
-    if (cachedBytes <= maxBytes && entries.size <= maxEntries) return;
+    if (!overBudget()) return;
     if (entry.retained > 0) continue;
     drop(key, entry);
   }
@@ -235,6 +311,8 @@ function revoke(url: string): void {
   if (typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(url);
 }
 
+const SVG_MIME = /^image\/svg\+xml\b/i;
+
 /**
  * SVG becomes a `data:` URL; everything else an object URL.
  *
@@ -246,7 +324,7 @@ function revoke(url: string): void {
  * a base64 string a third larger than the file.
  */
 export async function objectOrDataUrl(blob: Blob, mimeType: string): Promise<string> {
-  const svg = /^image\/svg\+xml\b/i.test(mimeType);
+  const svg = SVG_MIME.test(mimeType);
   if (!svg && typeof URL.createObjectURL === 'function') {
     return URL.createObjectURL(blob);
   }

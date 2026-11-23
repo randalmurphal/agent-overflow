@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { projectHasScope } from '../../transport/entityScopes';
+  import { projectScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   // Popover-anchored Rename / Archive / Delete menu for a project row.
   // Extracted from ProjectItem.svelte so that file stays close to the
   // <= 250-line target. The confirm dialogs for Archive / Delete live
@@ -44,7 +45,7 @@
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
-  import { hasScope } from '../../transport/scopes';
+  import { allOfGrants, hasScope } from '../../transport/scopes';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { newThreadGroupInProject } from './threadGroupActions';
   import { assistantsOn } from '../../stores/assistants.svelte';
@@ -71,15 +72,16 @@
   // The menu outlives a gesture: a second right-click on the row replaces
   // the target. What the menu DISPLAYS follows the current one; an action
   // takes the one in hand when it starts and never reads the prop again.
-  let newAssistantUngranted = $derived(!projectHasScope('threads:autonomy', target.id));
+  let newAssistantGrant = $derived(projectScopeGrant('threads:autonomy', target.id));
   let compact = $derived(isCompactLayout());
   // The same gates the header's own controls use: visible, inert, and saying why.
   // Rename, New Group, Archive and Delete all ride `threads:operate`; Delete
   // first asks ProjectDeletionPreview, which rides `git:operate`.
-  let operateUngranted = $derived(!projectHasScope('threads:operate', target.id));
-  let deleteUngranted = $derived(operateUngranted || !projectHasScope('git:operate', target.id));
-  let ungrantedTitle = $derived(operateUngranted ? 'Not granted to this device' : undefined);
-  let newTerminalUngranted = $derived(!projectHasScope('terminal:operate', target.id));
+  let operateGrant = $derived(projectScopeGrant('threads:operate', target.id));
+  let operateUngranted = $derived(operateGrant !== 'granted');
+  let deleteGrant = $derived(allOfGrants([operateGrant, projectScopeGrant('git:operate', target.id)]));
+  let ungrantedTitle = $derived(grantBlockedTitle(operateGrant));
+  let newTerminalGrant = $derived(projectScopeGrant('terminal:operate', target.id));
   // The one gated entry here opens an editor on the host desktop.
   let noHost = $derived(!hasScope('host', target.backend));
 
@@ -199,8 +201,8 @@
           />
           <MenuItem
             label="New Terminal"
-            disabled={newTerminalUngranted}
-            title={newTerminalUngranted ? 'Not granted to this device' : undefined}
+            disabled={newTerminalGrant !== 'granted'}
+            title={grantBlockedTitle(newTerminalGrant)}
             onSelect={() => {
               onClose();
               onNewTerminal?.();
@@ -210,8 +212,8 @@
         {#if assistantsOn(target.backend)}
           <MenuItem
             label="New Assistant…"
-            disabled={newAssistantUngranted}
-            title={newAssistantUngranted ? 'Not granted to this device' : undefined}
+            disabled={newAssistantGrant !== 'granted'}
+            title={grantBlockedTitle(newAssistantGrant)}
             onSelect={() => {
               onClose();
               onNewAssistant?.();
@@ -259,8 +261,8 @@
         <MenuItem
           label="Delete Project"
           variant="danger"
-          disabled={deleteUngranted}
-          title={deleteUngranted ? 'Not granted to this device' : undefined}
+          disabled={deleteGrant !== 'granted'}
+          title={grantBlockedTitle(deleteGrant)}
           onSelect={() => {
             onClose();
             void startDelete();

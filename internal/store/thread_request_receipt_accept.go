@@ -54,7 +54,11 @@ func (s *Store) AcceptLocalThreadRequest(request ThreadRequest, receipt ThreadRe
 		return ThreadRequestReceipt{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := insertThreadRequestTx(tx, request); err != nil {
+	if request.Kind == ThreadRequestSpawn && request.RunBase == nil {
+		// The spawn's run is its thread's first: it starts from nothing.
+		request.RunBase = &RunFigures{}
+	}
+	if err := insertThreadRequestTx(tx, request, request.Kind == ThreadRequestSend); err != nil {
 		return ThreadRequestReceipt{}, err
 	}
 	stored, err := scanThreadReceipt(tx.QueryRow(insertThreadReceiptSQL+` RETURNING `+threadReceiptColumns, receipt.insertArgs()...))
@@ -145,14 +149,18 @@ const openReceiptSQL = `state IN ('` + ThreadReceiptAccepted + `', '` + ThreadRe
 // (endSessionsTx), so a revocation that committed after the request was
 // authenticated and before this insert leaves a plain receipt, and its
 // thread a sidebar row, as the release would. A revocation after the insert
-// releases the link it finds (endSessionsTx), named or not.
+// releases the link it finds (endSessionsTx), named or not. A paired
+// computer's request that waits for its worker's rest, a spawn or a send
+// from the thread whose spawn made the worker, starts its run here
+// (receiptRunStartSQL).
 const insertThreadReceiptSQL = `INSERT INTO thread_request_receipts (
     token, owner_device_id, source_computer_id, source_computer_name,
     source_thread_id, source_thread_title, kind, target_thread_id,
-    message_item_id, turn_id, state, created_at, updated_at, spawn_link, owner_seen_at, track_spawn
+    message_item_id, turn_id, state, created_at, updated_at, spawn_link, owner_seen_at, track_spawn, run_open
  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
     ?14 AND EXISTS (SELECT 1 FROM sessions WHERE sessions.device_id = ?2 AND sessions.revoked_at IS NULL), ?15,
-    ?16 AND EXISTS (SELECT 1 FROM sessions WHERE sessions.device_id = ?2 AND sessions.revoked_at IS NULL))`
+    ?16 AND EXISTS (SELECT 1 FROM sessions WHERE sessions.device_id = ?2 AND sessions.revoked_at IS NULL),
+    ` + receiptRunStartSQL + `)`
 
 // insertArgs writes a link as seen by its owner when it was made.
 func (r ThreadRequestReceipt) insertArgs() []any {

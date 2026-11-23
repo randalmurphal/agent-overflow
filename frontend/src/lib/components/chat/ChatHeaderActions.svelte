@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { threadMachine } from '../../stores/attachedBackends.svelte';
-  // Right-aligned action cluster for the chat header. Split out of
-  // ChatHeader.svelte (which kept it under the file-size budget and gave the
-  // shared git-status subscription a single home).
+  // Right-aligned action cluster for the chat header, and the home of the
+  // pane's git-status subscription.
   //
-  // Cluster order: [ PR#123 ] [ +X −Y ] [ Open ] [ git ] [ term ]
+  // Desktop: [ PR#123 ] [ +X −Y ] [ git ] [ next thread ] [ take control ]
+  // [ browser ] [ menu ]. Compact: [ +X −Y ] [ next thread ] [ menu ], with
+  // the rest as rows of the menu (ChatHeaderMenu).
   //
   // This component is the pane's attacher on the shared, workspace-keyed
   // git-status store (stores/gitStatusStore.svelte.ts). GitActionsControl and
@@ -12,46 +12,26 @@
   // is a view onto the same entry — so two panes on one worktree share one
   // subscription and can never show different Commit/Push state.
   import { untrack } from 'svelte';
-  import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import Globe from '@lucide/svelte/icons/globe';
-  import Ellipsis from '@lucide/svelte/icons/ellipsis';
-  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import SquarePen from '@lucide/svelte/icons/square-pen';
   import { nextAssistantThreadAction } from '../sidebar/threadRowActions';
   import { assistantsOn, threadComputer } from '../../stores/assistants.svelte';
   import { openThreadFromNavigation } from '../../stores/panes.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { getProject, getProjectLabelText } from '../../stores/projects.svelte';
-  import { addErrorToast, addToast } from '../../stores/toast.svelte';
-  import { chordHintForCommand, chordHintSuffix } from '../../stores/keybindings.svelte';
-  import { runTerminalToggle } from '../terminal/terminalToggle';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
-  import { hasScope } from '../../transport/scopes';
-  import { threadHasScope } from '../../transport/entityScopes';
-  import { openInEditor } from '../../stores/openInEditor';
-  import { errString } from '../../utils/errors';
-  import { forgeLabels } from '../../utils/forgeLabels';
-  import { handleExternalURL, safeExternalURL } from '../../utils/externalLinks';
-  import { restorePickerFocus } from '../panes/paneComposerFocus';
-  import type { PopoverCloseReason } from '../../utils/popoverOwnership';
-  import Popover from '../primitives/Popover.svelte';
-  import Menu from '../primitives/Menu.svelte';
-  import MenuItem from '../primitives/MenuItem.svelte';
-  import MenuDivider from '../primitives/MenuDivider.svelte';
-  import { openTerminalThread } from '../../stores/threadCreation.svelte';
-  import { openMessageSearch } from '../../stores/messageSearch.svelte';
-  import { openReviewCompanion, reviewSubjectForPane } from '../../stores/reviewPane.svelte';
+  import { chordHintForCommand } from '../../stores/keybindings.svelte';
+  import { threadScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { attachGitStatus } from '../../stores/gitStatusStore.svelte';
   import { workspaceKeyForThread } from '../../utils/workspaceKey';
   import GitActionsControl from '../git/GitActionsControl.svelte';
   import PrBadge from '../git/PrBadge.svelte';
   import WorkspaceDiffBadge from '../git/WorkspaceDiffBadge.svelte';
-  import OpenInEditorControl from './OpenInEditorControl.svelte';
-  import { createThreadTitleRegenerate } from './threadTitleRegenerate.svelte';
+  import ChatHeaderMenu from './ChatHeaderMenu.svelte';
+  import { openPrReview, takeControlState, toggleTakeControl, toggleWorkspaceReview } from './headerPaneActions';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
-  import { isCompanionOpen, toggleCompanion } from '../../stores/companionPanes.svelte';
   import {
     browserPresentationWanted,
     hydrateBrowserCompanionState,
@@ -61,12 +41,14 @@
 
   let { pane }: { pane: ThreadPane } = $props();
 
+  let compact = $derived(isCompactLayout());
+
   // New Thread, Same Assistant (docs/specs/standing-agents.md, "Next
   // thread"): on an assistant's current thread, desktop and compact, while
   // its computer has assistants on.
   let isAssistant = $derived(Boolean(pane.thread?.agentId) && !pane.thread?.archived && pane.threadId !== null && assistantsOn(threadComputer(pane.threadId)));
   // StartNextAssistantThread rides threads:autonomy.
-  let nextThreadUngranted = $derived(!threadHasScope('threads:autonomy', pane.threadId, pane.thread?.projectId));
+  let nextThreadGrant = $derived(threadScopeGrant('threads:autonomy', pane.threadId, pane.thread?.projectId));
   function startNextAssistantThread(): void {
     const thread = pane.thread;
     if (!thread) return;
@@ -78,25 +60,12 @@
       reportError: (message, err) => pane.setGeneralError(message, err),
     });
   }
-  let compact = $derived(isCompactLayout());
-  // Under compact the title's regenerate glyph has no row to sit on, so
-  // the action is a row of the menu instead (same state, same run).
-  const regenerate = createThreadTitleRegenerate(() => pane);
 
-  // Take-control is a claude-tui-only affordance: it opens a paired terminal
-  // pane mirroring the live TUI session. Absent for other providers (an
-  // unsupported control should not be shown rather than shown-and-disabled).
-  let isClaudeTui = $derived(pane.thread?.provider === 'claude-tui');
-  let takeControlOpen = $derived(isCompanionOpen(pane.paneId, 'take-control'));
+  // Take control: a button on the desktop, a row of the menu under compact,
+  // both from one definition (takeControlState).
+  let takeControl = $derived(takeControlState(pane));
 
-  let terminalToggleSuffix = $derived(chordHintSuffix('terminal.toggle'));
   let reviewToggleChord = $derived(chordHintForCommand('diff.panel.toggle'));
-  // The drawer terminal, a fresh terminal thread and the take-control
-  // mirror all open a PTY on the thread's computer under `terminal:operate`:
-  // the same gate the palette's terminal.toggle command reads. Inert with a
-  // reason rather than absent, like every other ungranted control.
-  let terminalUngranted = $derived(!threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId));
-  let terminalUngrantedTitle = $derived(terminalUngranted ? 'Not granted to this device' : undefined);
 
   // Attach deps as $derived primitives so the effect re-runs only when the
   // values actually change — pane.replaceThread() fires for unrelated metadata
@@ -135,35 +104,6 @@
     return () => attachment.release();
   });
 
-  // Project lookup for the badge. The projects store is a singleton;
-  // undefined is fine (we just don't render the badge). projectId is derived as
-  // a primitive first so the badge lookup only re-runs when the id actually
-  // changes — pane.replaceThread() mints a fresh thread object on every row
-  // sync (activity touches, status patches, the turn-boundary usage
-  // converge), but the id string is value-equal, so the $derived
-  // short-circuits (same guard the subscription deps above use).
-  let projectId = $derived(pane.thread?.projectId ?? null);
-  let projectBadge = $derived.by(() => {
-    if (!projectId) return null;
-    const project = getProject(projectId);
-    if (!project) return null;
-    return {
-      name: getProjectLabelText(project.project.id) || project.project.name,
-      path: project.project.path,
-    };
-  });
-
-  // Take control mirrors the thread's running session, which a draft
-  // placeholder does not have yet: the press asks for the thread to be
-  // started first.
-  async function ensureThreadThenToggle(toggle: () => void): Promise<void> {
-    if (!pane.threadId) {
-      addToast('info', 'Start the thread before opening this panel.');
-      return;
-    }
-    toggle();
-  }
-
   // The browser chip: how it renders and what a press means are one answer
   // (browserHeaderButton), its intent chosen from what it shows. The
   // hydration read fills in what the ephemeral `browser:companion-state`
@@ -182,225 +122,62 @@
     if (!browserWanted) return;
     untrack(() => reconcileBrowserCompanionForPane(pane.paneId, threadId));
   });
-
-  // Plain click on the PR badge opens the companion review pane on the PR
-  // scope; mod+click falls through to the external forge link. False (no
-  // subject yet — e.g. a pane still materializing) also falls through.
-  function openPrReview(): boolean {
-    const subject = reviewSubjectForPane(pane);
-    if (!subject) return false;
-    void openReviewCompanion(pane.paneId, subject, { scope: 'pr', userInitiated: true });
-    return true;
-  }
-
-  function toggleWorkspaceReview(): void {
-    if (pane.showReviewPane) {
-      pane.setShowReviewPane(false);
-      return;
-    }
-    const subject = reviewSubjectForPane(pane);
-    if (!subject) return;
-    void openReviewCompanion(pane.paneId, subject, { scope: 'workspace', userInitiated: true });
-  }
-
-  // Compact keeps the diff badge visible and rolls other actions into a menu.
-  // It drops from the button it was tapped on, not as a
-  // bottom sheet: a header control's menu belongs where the finger is
-  // (owner ruling, 2026-09-04), and the bottom of the screen is where
-  // the composer's own sheets rise from. Every row is the same handler
-  // the desktop control runs; the rows only exist where the control
-  // would. The git rows are GitActionsControl's own menu, opened from
-  // here (`openMenu`) so its dialogs live outside this menu and survive
-  // its close.
-  let showMore = $state(false);
-  let moreTriggerEl: HTMLElement | undefined = $state(undefined);
-  let gitControl: GitActionsControl | undefined = $state(undefined);
-  let onHost = $derived(hasScope('host', threadMachine(pane.threadId ?? '', pane.thread?.projectId)));
-  let gitStatus = $derived(pane.gitStatus.status);
-  let gitAvailable = $derived(
-    hasWorkspace && (pane.gitStatus.statusError !== null || (gitStatus?.isRepo ?? false)),
-  );
-  let prHref = $derived(safeExternalURL(gitStatus?.openPrUrl));
-  let prLabel = $derived.by(() => {
-    const labels = forgeLabels(gitStatus?.forge);
-    return gitStatus?.openPrNumber
-      ? `${labels.noun} ${labels.numberSigil}${gitStatus.openPrNumber}`
-      : labels.noun;
-  });
-  let diffSuffix = $derived(`+${gitStatus?.insertions ?? 0} −${gitStatus?.deletions ?? 0}`);
-
-  function closeMore(reason?: PopoverCloseReason): void {
-    showMore = false;
-    restorePickerFocus(reason, { triggerEl: moreTriggerEl });
-  }
-
-  function pick(action: () => void): void {
-    showMore = false;
-    action();
-  }
-
-  async function openProjectInEditor(): Promise<void> {
-    if (!projectBadge) return;
-    try {
-      await openInEditor(threadMachine(pane.threadId ?? '', pane.thread?.projectId), projectBadge.path, 0, 0, '', '');
-    } catch (err) {
-      addErrorToast(errString(err), err);
-    }
-  }
 </script>
 
-<!-- Right cluster: wraps, doesn't disappear, at narrow widths. Visible on
-     placeholders too — the caller's `pane.thread` gate already filters out
-     "no thread at all" panes, and the subcomponents self-gate on
+<!-- Visible on placeholders too: the caller's `pane.thread` gate already
+     filters out "no thread at all" panes, and the subcomponents self-gate on
      `pane.workspace` (git and review) or `pane.threadId` (the pieces whose
-     subject genuinely is a persisted row). -->
-{#snippet nextThreadButton()}
-  <Button
-    variant="secondary"
-    size="xs"
-    disabled={nextThreadUngranted}
-    ariaLabel="New Thread, Same Assistant"
-    title={nextThreadUngranted ? 'Not granted to this device' : 'New Thread, Same Assistant'}
-    onclick={startNextAssistantThread}
-    testId="chat-header-next-thread"
-    class="shrink-0 w-6 compact:w-9 px-0"
-  >
-    {#snippet children()}
-      <Icon icon={SquarePen} size={12} strokeWidth={2} class="opacity-90" />
-    {/snippet}
-  </Button>
-{/snippet}
-
-{#if compact}
-  <div class="ml-auto flex items-center gap-2 shrink-0">
-    {#if hasWorkspace}
-      <WorkspaceDiffBadge status={pane.gitStatus.status} pressed={pane.showReviewPane} chord={null} onActivate={toggleWorkspaceReview} />
-    {/if}
-    {#if isAssistant}
-      {@render nextThreadButton()}
-    {/if}
-    <!-- Inside the cluster: without its split button the control still
-         shows its status error and its sign-in warning. -->
-    <GitActionsControl {pane} trigger={false} menuAnchor={moreTriggerEl} bind:this={gitControl} />
-    <div bind:this={moreTriggerEl}>
-    <Button
-      variant="secondary"
-      size="xs"
-      pressed={showMore}
-      ariaLabel="Thread actions"
-      title="Thread actions"
-      onclick={() => (showMore = !showMore)}
-      testId="chat-header-more"
-      class="shrink-0 w-6 compact:w-9 px-0"
-    >
-      {#snippet children()}
-        <Icon icon={Ellipsis} size={12} strokeWidth={2} class="opacity-90" />
-      {/snippet}
-    </Button>
-    </div>
-  </div>
-  <Popover
-    anchor={moreTriggerEl}
-    open={showMore}
-    onClose={closeMore}
-    placement="bottom-end"
-    role="none"
-  >
-    {#snippet children()}
-      <Menu ariaLabel="Thread actions" onClose={closeMore}>
-        {#if hasWorkspace}
-          <MenuItem
-            label="Review changes"
-            suffix={diffSuffix}
-            checked={pane.showReviewPane}
-            onSelect={() => pick(toggleWorkspaceReview)}
-          />
-        {/if}
-        {#if prHref}
-          <MenuItem
-            label={prLabel}
-            onSelect={() => pick(() => {
-              if (!openPrReview() && prHref) void handleExternalURL(prHref);
-            })}
-          />
-        {/if}
-        <MenuItem
-          label="Terminal"
-          checked={pane.showTerminal}
-          disabled={terminalUngranted}
-          title={terminalUngrantedTitle}
-          onSelect={() => pick(() => runTerminalToggle(pane))}
-        />
-        <MenuItem
-          label="Search messages"
-          onSelect={() => pick(() => openMessageSearch(pane.paneId))}
-        />
-        <MenuItem
-          label="Regenerate title"
-          disabled={regenerate.pending || regenerate.ungranted}
-          title={regenerate.title}
-          onSelect={() => pick(() => regenerate.run())}
-        >
-          {#snippet icon()}
-            <Icon icon={RefreshCw} size={12} strokeWidth={2} class={regenerate.pending ? 'animate-spin' : ''} />
-          {/snippet}
-        </MenuItem>
-        {#if isClaudeTui}
-          <MenuItem
-            label="Take control"
-            checked={takeControlOpen}
-            disabled={terminalUngranted}
-            title={terminalUngrantedTitle}
-            onSelect={() => pick(() => void ensureThreadThenToggle(() => toggleCompanion(pane.paneId, 'take-control')))}
-          />
-        {/if}
-        <!-- No Browser row: the companion is a native view on the host, which
-             the compact screen never shows (docs/specs/remote-access.md,
-             "Hidden on the phone"), and the store never opens it there. -->
-        {#if projectBadge && onHost}
-          <MenuItem label="Open in editor" onSelect={() => pick(() => void openProjectInEditor())} />
-        {/if}
-        {#if gitAvailable}
-          <MenuDivider />
-          <MenuItem label="Git actions…" onSelect={() => pick(() => gitControl?.openMenu())} />
-        {/if}
-      </Menu>
-    {/snippet}
-  </Popover>
-{:else}
-<div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end @max-[36rem]/chat-header:shrink @max-[36rem]/chat-header:min-w-0">
-  <PrBadge status={pane.gitStatus.status} onOpenReview={openPrReview} />
+     subject genuinely is a persisted row). The cluster never shrinks: the
+     header moves it to a second row when the title is at its floor, and
+     only a pane narrower than the cluster itself wraps it. -->
+<div class="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1.5 compact:flex-nowrap compact:gap-2">
+  {#if !compact}
+    <!-- Plain click opens the companion review pane on the PR scope;
+         mod+click, or a pane with no review subject yet, falls through to
+         the external forge link. -->
+    <PrBadge status={pane.gitStatus.status} onOpenReview={() => openPrReview(pane)} />
+  {/if}
   {#if hasWorkspace}
     <WorkspaceDiffBadge
       status={pane.gitStatus.status}
       pressed={pane.showReviewPane}
-      chord={reviewToggleChord}
-      onActivate={toggleWorkspaceReview}
+      chord={compact ? null : reviewToggleChord}
+      onActivate={() => toggleWorkspaceReview(pane)}
     />
   {/if}
 
-  {#if projectBadge}
-    <OpenInEditorControl backend={threadMachine(pane.threadId ?? '', pane.thread?.projectId)} path={projectBadge.path} name={projectBadge.name} />
+  {#if !compact}
+    <GitActionsControl {pane} />
   {/if}
-
-  <GitActionsControl {pane} />
 
   {#if isAssistant}
-    {@render nextThreadButton()}
-  {/if}
-
-  {#if isClaudeTui}
-    <!-- Take-control: opens a paired terminal pane to the right that mirrors
-         this claude-tui session's live PTY. The terminal-green Claude glyph
-         ties the button to the TUI provider. Toggles the paired pane. -->
     <Button
       variant="secondary"
       size="xs"
-      pressed={takeControlOpen}
-      disabled={terminalUngranted}
+      disabled={nextThreadGrant !== 'granted'}
+      ariaLabel="New Thread, Same Assistant"
+      title={grantBlockedTitle(nextThreadGrant) ?? 'New Thread, Same Assistant'}
+      onclick={startNextAssistantThread}
+      testId="chat-header-next-thread"
+      class="shrink-0 w-6 compact:w-9 px-0"
+    >
+      {#snippet children()}
+        <Icon icon={SquarePen} size={12} strokeWidth={2} class="opacity-90" />
+      {/snippet}
+    </Button>
+  {/if}
+
+  {#if !compact && takeControl.offered}
+    <!-- The terminal-green Claude glyph ties the button to the TUI
+         provider. -->
+    <Button
+      variant="secondary"
+      size="xs"
+      pressed={takeControl.open}
+      disabled={takeControl.grant !== 'granted'}
       ariaLabel="Toggle take-control terminal"
-      title={terminalUngrantedTitle ?? 'Take control — open the live Claude TUI terminal'}
-      onclick={() => void ensureThreadThenToggle(() => toggleCompanion(pane.paneId, 'take-control'))}
+      title={grantBlockedTitle(takeControl.grant) ?? 'Take control — open the live Claude TUI terminal'}
+      onclick={() => toggleTakeControl(pane)}
       testId="take-control-toggle"
       class="shrink-0 w-6 compact:w-9 px-0"
     >
@@ -410,13 +187,14 @@
     </Button>
   {/if}
 
-  {#if browserButton.rendered}
+  {#if !compact && browserButton.rendered}
     {@const intent = browserButton.intent}
-    <!-- Browser companion toggle, on the desktop only (compact has no
-         browser row). Pressed while the pane is in the layout, and a press
-         then hides it; otherwise a press shows the tabs, or opens the pane
-         on a new tab when there are none. Closing the pane never closes the
-         pages. -->
+    <!-- Browser companion toggle, on the desktop only (the compact menu has
+         no browser row). Pressed while the pane is in the layout and on
+         screen, and a press then hides it; otherwise a press shows the
+         tabs, or opens the pane on a new tab when there are none, and
+         brings it out from under a maximized pane. Closing the pane never
+         closes the pages. -->
     <Button
       variant="secondary"
       size="xs"
@@ -433,37 +211,5 @@
     </Button>
   {/if}
 
-  <!-- Plain click shares runTerminalToggle with the mod+` chord
-       (terminal.toggle) so opening focuses the terminal and closing hands
-       focus back to the composer. Ctrl/Cmd-click instead opens a FRESH
-       terminal in a new pane (rooted at this thread's workspace) — the same
-       gesture the sidebar uses for "open in new pane", and the mod+shift+~
-       chord's pointer twin. -->
-  <Button
-    variant="secondary"
-    size="xs"
-    pressed={pane.showTerminal}
-    disabled={terminalUngranted}
-    ariaLabel="Toggle Terminal"
-    title={terminalUngrantedTitle ?? `Toggle Terminal${terminalToggleSuffix}`}
-    onclick={(e) => {
-      if (terminalUngranted) return;
-      if (e.metaKey || e.ctrlKey) {
-        void openTerminalThread({
-          projectId: pane.thread?.projectId,
-          cwd: pane.thread?.workspacePath,
-        });
-      } else {
-        runTerminalToggle(pane);
-      }
-    }}
-    testId="terminal-toggle"
-    class="shrink-0 w-6 compact:w-9 px-0"
-  >
-    {#snippet children()}
-      <Icon icon={SquareTerminal} size={12} strokeWidth={2} class="opacity-90" />
-    {/snippet}
-  </Button>
-
+  <ChatHeaderMenu {pane} />
 </div>
-{/if}

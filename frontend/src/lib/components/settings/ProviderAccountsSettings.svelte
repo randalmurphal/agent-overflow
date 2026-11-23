@@ -1,6 +1,7 @@
 <script lang="ts">
   import { settingsComputer } from './settingsComputer';
-  const { backend, hasScope } = settingsComputer();
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
+  const { backend, scopeGrant } = settingsComputer();
   // The Accounts section of a provider's settings page. The account
   // logic itself lives in stores/providerAccounts.svelte.ts — shared with the
   // account-switcher picker, so a switch made in either surface is the same
@@ -17,6 +18,7 @@
   import IconButton from '../primitives/IconButton.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import ProviderAccountLimits from '../shared/ProviderAccountLimits.svelte';
+  import ProviderAccountResets from './ProviderAccountResets.svelte';
   import ProviderLoginFlow from '../accounts/ProviderLoginFlow.svelte';
   import type { ManagedProviderAccount } from '../../stores/bindings';
   import {
@@ -52,8 +54,9 @@
   // Every credential write here (StartProviderLogin, SwitchProviderAccount,
   // RefreshProviderAccountUsage, RemoveProviderAccount) rides `access:admin`
   // on this computer. The cards still list; their controls go inert.
-  let admin = $derived(hasScope('access:admin'));
-  let ungrantedTitle = $derived(admin ? undefined : 'Not granted to this device');
+  let adminGrant = $derived(scopeGrant('access:admin'));
+  let admin = $derived(adminGrant === 'granted');
+  let ungrantedTitle = $derived(grantBlockedTitle(adminGrant));
   let accounts = $derived(getProviderAccountsFor(provider, backend));
   let loading = $derived(isProviderAccountsLoading(backend));
   let actions = $derived(getProviderAccountActions(provider, backend));
@@ -381,7 +384,7 @@
         {@const held = drag?.moving === true && drag.from === index}
         {@const offset = cardOffset(index)}
         <div
-          class="relative rounded-[var(--radius-field)] border px-3 py-2.5 {account.needsLogin
+          class="relative rounded-[var(--radius-field)] border px-3 py-2.5 [--card-pad-bottom:0.625rem] {account.needsLogin
             ? 'border-warning/40 bg-surface-0'
             : account.active
               ? 'border-accent/45 bg-accent/5'
@@ -552,7 +555,10 @@
             </div>
           </div>
 
-          <ProviderAccountLimits {limits} />
+          {#snippet resets()}
+            <ProviderAccountResets {account} {backend} {admin} {credentialOpInFlight} {ungrantedTitle} />
+          {/snippet}
+          <ProviderAccountLimits {limits} lineEnd={provider === 'codex' ? resets : undefined} />
         </div>
       {/each}
     </div>

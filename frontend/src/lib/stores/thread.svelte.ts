@@ -80,6 +80,7 @@ import {
   normalizeContextWindowForThread,
   seedContextWindow,
 } from './threadContextWindow';
+import { threadActivityRunRule } from './activityRunRule';
 import {
   nowForLiveContent,
   timelinePageShape,
@@ -346,6 +347,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     items: getItems,
     windowBounds: () => ({ oldest: timelineWindow.oldestLoadedCursor, newest: timelineWindow.newestLoadedCursor }),
     threadId: () => thread?.id ?? null,
+    activityRunRule: () => threadActivityRunRule(thread?.id),
     pageShape: timelinePageShape,
     // Fetched run members are top-level rows INSIDE the window's range,
     // so they go through the wholesale replacement chokepoint rather than

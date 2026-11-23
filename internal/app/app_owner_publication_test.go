@@ -18,10 +18,12 @@ func TestOwnerSeesNestedLoopOnlyAfterStateCanServeIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	local := newThreadRequestToken()
-	if err := pair.dest.store.InsertThreadRequest(store.ThreadRequest{
+	row := store.ThreadRequest{
 		Token: local, Kind: store.ThreadRequestSpawn, CallerThreadID: remoteWorker,
 		TargetThreadID: child.ID, State: store.ThreadRequestRunning,
-	}); err != nil {
+	}
+	seedSpawnRun(pair.dest, &row)
+	if err := pair.dest.store.InsertThreadRequest(row); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pair.dest.store.SettleThreadRequest(local, store.ThreadRequestOpenStates(),

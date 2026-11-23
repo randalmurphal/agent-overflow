@@ -6,10 +6,10 @@ import (
 	"time"
 
 	"agent-overflow/internal/appidentity"
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
+	"agent-overflow/internal/testutil"
 )
 
 func TestGoCarrierPublishesDeviceNameThroughAuthenticatedAppRPC(t *testing.T) {
@@ -22,12 +22,12 @@ func TestGoCarrierPublishesDeviceNameThroughAuthenticatedAppRPC(t *testing.T) {
 	if err := name.Set("Original"); err != nil {
 		t.Fatal(err)
 	}
-	manager, err := attachedbackends.New(profile, "Original", "linux")
+	manager, err := newTestBackends(t, profile, "Original", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
 	manager.SetLabelGetter(name.Get)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	if _, err := manager.Add(ctx, invite.URL); err != nil {
 		t.Fatal(err)

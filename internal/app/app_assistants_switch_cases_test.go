@@ -94,7 +94,7 @@ func TestTurningAssistantsOnWaitsForADeleteThatClaimedAWaitingThread(t *testing.
 			decided(t, done, refuse)
 			if !refuse {
 				nothingWaits(t, a)
-				if n := len(recordedUserEnvelopes(t, sent)); n != 0 {
+				if n := len(settledUserEnvelopes(t, sent)); n != 0 {
 					t.Fatalf("the committed thread's provider was written %d messages", n)
 				}
 				return

@@ -9,6 +9,7 @@ import {
 } from '../stores/threadActivityRuns.svelte';
 import type { Item } from '../types/models';
 import { makeItem } from '../../test/helpers/chat';
+import { AGENT_MESSAGE_MEMBERS_RULE } from './activityRunSpans';
 
 // The activity run's window anchor rests on an unwritten cross-file contract:
 //
@@ -135,6 +136,7 @@ function capturingIdentity(): {
   rows(): readonly (readonly string[])[];
 } {
   const real = createThreadActivityRuns({
+    activityRunRule: () => AGENT_MESSAGE_MEMBERS_RULE,
     defaultCollapsed: () => false,
     windowRows: () => 30,
     windowVerified: () => true,
@@ -164,6 +166,7 @@ function capturingIdentity(): {
 function projectRun(nodes: TimelineNode[], registry: ThreadActivityRuns): ActivityRunNode {
   const grouped = groupActivityRuns(nodes, {
     identity: registry,
+    rule: AGENT_MESSAGE_MEMBERS_RULE,
     getItem: () => undefined,
     withheld: [],
     windowReachesTail: true,

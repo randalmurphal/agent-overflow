@@ -18,6 +18,7 @@
   } from '../../providers/catalog';
   import SettingsField from './SettingsField.svelte';
   import { INPUT_CLASS, SELECT_CLASS } from './styles';
+  import { TEXT_GENERATION_DEFAULT_FAMILIES } from '../../generated/settingsDefaults';
 
   const PROVIDERS: ProviderDefinition[] = standaloneProvidersWithFeature('textGeneration').map((provider) =>
     getProviderDefinition(provider),
@@ -33,8 +34,8 @@
   let textGenerationEffortOptions = $derived(
     getProviderDefinition(settings.textGenerationProvider).textGenerationEffortOptions,
   );
-  let textGenerationDefaultModel = $derived(
-    getProviderDefinition(settings.textGenerationProvider).textGenerationDefaultModel,
+  let textGenerationDefaultFamily = $derived(
+    TEXT_GENERATION_DEFAULT_FAMILIES[settings.textGenerationProvider],
   );
 
   function isTextGenerationEffortAllowed(
@@ -96,7 +97,7 @@
       value={settings.textGenerationModel}
       onchange={(e) =>
         updateSetting('textGenerationModel', (e.target as HTMLInputElement).value)}
-      placeholder={`Default: ${textGenerationDefaultModel}`}
+      placeholder={`Default: newest ${textGenerationDefaultFamily}`}
       class="{INPUT_CLASS} max-w-[16rem]"
     />
   </SettingsField>

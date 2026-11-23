@@ -3,7 +3,8 @@
   import { untrack } from 'svelte';
   import { attachAsyncQuestions, attachAsyncQuestionDraft, dismissAsyncQuestion, questionKey, type AsyncQuestion, type AsyncQuestionDraft } from '../../stores/asyncQuestions.svelte';
   import type { EntityAttachment } from '../../stores/entityStore.svelte';
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { errString } from '../../utils/errors';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import Button from '../primitives/Button.svelte';
@@ -18,7 +19,7 @@
   $effect(() => {
     const id = threadId;
     resource = null; draft = null;
-    if (!threadHasScope('threads:read', id) || threadBackend(id) === undefined) return;
+    if (threadScopeGrant('threads:read', id) !== 'granted' || threadBackend(id) === undefined) return;
     const attachment = attachAsyncQuestions(id);
     resource = attachment;
     let releaseDraft: (() => void) | undefined;
@@ -36,7 +37,9 @@
   let activeIndex = $derived(active ? unanswered.indexOf(active) : -1);
   let answer = $derived(active && draft ? draft.answers[questionKey(active)] ?? '' : '');
   let answeredCount = $derived(unanswered.filter(q => draft?.answers[questionKey(q)]?.trim()).length);
-  let permitted = $derived(threadHasScope('threads:operate', threadId));
+  let grant = $derived(threadScopeGrant('threads:operate', threadId));
+  let permitted = $derived(grant === 'granted');
+  let blocked = $derived(grantBlockedTitle(grant));
   let disabled = $derived(!permitted || !draft || (active ? draft.isPending(active) : false));
   let sendDisabled = $derived(!permitted || !draft || draft.sending || (!answeredCount && !draft.retrying));
   function change(value: string) {
@@ -81,13 +84,13 @@
         <div class="flex flex-wrap items-center gap-2">
           <Button size="sm" disabled={activeIndex <= 0} onclick={() => navigate(activeIndex - 1)}>Previous</Button>
           <Button size="sm" disabled={activeIndex >= unanswered.length - 1} onclick={() => navigate(activeIndex + 1)}>Next</Button>
-          <Button size="sm" {disabled} onclick={dismiss}>Dismiss question</Button>
-          <Button size="sm" disabled={sendDisabled} onclick={submit}>
+          <Button size="sm" {disabled} title={blocked} onclick={dismiss}>Dismiss question</Button>
+          <Button size="sm" disabled={sendDisabled} title={blocked} onclick={submit}>
             {draft?.retrying ? 'Retry sending answers' : `Send answered (${answeredCount})`}
           </Button>
         </div>
       {:else if draft?.retrying}
-        <Button size="sm" disabled={sendDisabled} onclick={submit}>Retry sending answers</Button>
+        <Button size="sm" disabled={sendDisabled} title={blocked} onclick={submit}>Retry sending answers</Button>
       {/if}
       {#if rows.some(q => q.state === 'submitted')}<p class="mt-2 text-xs text-fg-muted">Answers submitted; waiting for delivery.</p>{/if}
       {#if rows.some(q => q.state === 'restored')}<p class="mt-2 text-xs text-fg-muted">Unsent answers were restored to the message composer.</p>{/if}

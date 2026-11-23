@@ -19,6 +19,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/forgeapi"
+	"agent-overflow/internal/selfupdate"
 
 	"github.com/wailsapp/wails/v3/pkg/updater"
 )
@@ -384,6 +385,17 @@ func TestGitLabProviderServesTheLatestCheckAndDownload(t *testing.T) {
 	if err := a.updater.handle.DownloadAndInstall(context.Background()); err != nil {
 		t.Fatalf("DownloadAndInstall: %v", err)
 	}
+	// Nothing installs this download, which is what removes it otherwise.
+	t.Cleanup(func() {
+		folder, ok := selfupdate.FrameworkDownloadFolder(a.updater.handle.DownloadedPath(), os.TempDir())
+		if !ok {
+			t.Errorf("download %s is not in a framework download folder", a.updater.handle.DownloadedPath())
+			return
+		}
+		if err := os.RemoveAll(folder); err != nil {
+			t.Errorf("remove the framework's download: %v", err)
+		}
+	})
 	staged, err := os.ReadFile(a.updater.handle.DownloadedPath())
 	if err != nil {
 		t.Fatalf("read the framework's download: %v", err)
@@ -672,8 +684,8 @@ func TestGitLabMissingGlabIsReported(t *testing.T) {
 
 func TestParseGitLabProject(t *testing.T) {
 	valid := map[string]gitlabSource{
-		"gitlab.com/fortressinfosec/agent-overflow": {host: "gitlab.com", project: "fortressinfosec/agent-overflow"},
-		"GitLab.Example.com/a/b_c/d.e":              {host: "gitlab.example.com", project: "a/b_c/d.e"},
+		"gitlab.com/example-group/agent-overflow": {host: "gitlab.com", project: "example-group/agent-overflow"},
+		"GitLab.Example.com/a/b_c/d.e":            {host: "gitlab.example.com", project: "a/b_c/d.e"},
 	}
 	for raw, want := range valid {
 		got, err := parseGitLabProject(raw)

@@ -77,14 +77,23 @@ func (a *App) ensureProviderAccountSelectionReadyForSendLocked(
 		if thread.Provider == string(provider.Agy) {
 			label = "Antigravity"
 		}
-		if sess.Liveness != nil && sess.Liveness.ActiveTurns.Load() > 0 {
+		// The checks below read triage, which trails the wire by the events
+		// still queued for it: a whole turn that started a command can be
+		// waiting there. Handle what was read before deciding.
+		if err := a.providerEvents.drain(thread.ID); err != nil {
+			return fmt.Errorf("switch %s account for this thread: its provider events are still being handled: %w", label, err)
+		}
+		// The session's own counter follows the wire, so it leads triage
+		// for a turn that is ending and trails it for one that is starting.
+		if (sess.Liveness != nil && sess.Liveness.ActiveTurns.Load() > 0) ||
+			(a.triage != nil && a.triage.HasInFlightTurnOrRound(thread.ID)) {
 			return fmt.Errorf("%s account switch is pending for this thread until its active turn finishes", label)
 		}
-		running, err := a.store.ListRunningBackgroundToolCalls(thread.ID)
+		running, err := a.hasRunningBackgroundTasks(thread.ID)
 		if err != nil {
 			return fmt.Errorf("check %s background work before account switch: %w", label, err)
 		}
-		if len(running) > 0 {
+		if running {
 			return fmt.Errorf("%s account switch is pending for this thread until its background work finishes", label)
 		}
 		if err := a.reconnectSessionLocked(context.Background(), thread.ID); err != nil {

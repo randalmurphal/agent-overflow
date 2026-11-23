@@ -74,24 +74,50 @@ type Manager struct {
 	// activationProbe is how often a pending pairing asks whether it was
 	// confirmed (SetActivationProbe). Zero keeps deviceclient's interval.
 	activationProbe time.Duration
+	// pairingBound is what each pairing step asks for its bound when it
+	// starts (SetPairingBound). Nil keeps each step's product bound.
+	pairingBound func() (time.Duration, error)
 
 	// The profile lock serializes replacement. Release mu before waiting on a
 	// carrier fence. A fenced observation consumes already-resolved manager data.
+	//
+	// Every holder of a profile lock is bounded: it reads and writes local
+	// files and nothing else. Nothing under it waits on a context or the
+	// network; redemptions, route probes, rotations and activation waits run
+	// with it released. That is why Remove, retireOwnProfile and
+	// SetAgentAccess may wait for it without a context.
+	// TestNothingUnderAProfileLockWaitsOnAContext enforces it.
 	mu       sync.Mutex
 	carriers map[string]*carrier
+	// enrollments is the one pairing link being spent per computer
+	// (enrollment). Remove cancels the one for the computer it forgets; an
+	// introduction, Rename and RepairAddress wait for it (awaitEnrollment).
+	enrollments map[string]*enrollment
 	// verdicts holds, per computer whose last pairing it ended with its
 	// verdict (endSession), the name that pairing gave it, until a pairing
 	// replaces it or the end of its work takes it (TakeVerdict).
 	verdicts map[string]string
 	profiles *keyedlock.Registry
+	// sharedFiles is this process's lock on each shared pairing file, keyed
+	// by the file's lock name (computer_state.go).
+	sharedFiles *keyedlock.Registry
+	// buildCarrier builds a carrier over a client (newCarrier); a test
+	// makes it fail.
+	buildCarrier func(*deviceclient.Client, string) (*carrier, error)
+	// releaseFault is joined to every transaction's error (transact); a test
+	// sets it to stand for locks that fail to release after the transition
+	// ran, which deviceclient's own tests inject at the release itself.
+	releaseFault error
 	// closed refuses new carriers once Close has begun, and renewals joins
 	// the renewal goroutine each carrier runs.
 	closed   bool
 	renewals sync.WaitGroup
-	// life ends at Close. Work that outlives the call that started it,
-	// such as an enrollment past its redemption, runs on it.
+	// life ends when shutdown begins (BeginClose), with errShuttingDown as
+	// its cause. Network waits the manager owns end with it: rotations
+	// (deviceclient.WithLifetime), a redemption not yet sent, and the
+	// lookups and syncs that run on it.
 	life    context.Context
-	endLife context.CancelFunc
+	endLife context.CancelCauseFunc
 }
 
 // ErrClosed answers a carrier asked for after Close.
@@ -112,8 +138,10 @@ func New(dir, label, platform string) (*Manager, error) {
 	if dir == "" {
 		return nil, errors.New("attachedbackends: a device profile directory is required")
 	}
-	life, endLife := context.WithCancel(context.Background())
-	return &Manager{dir: dir, label: label, platform: platform, carriers: map[string]*carrier{}, verdicts: map[string]string{}, profiles: keyedlock.New(), life: life, endLife: endLife}, nil
+	life, endLife := context.WithCancelCause(context.Background())
+	return &Manager{dir: dir, label: label, platform: platform, carriers: map[string]*carrier{}, enrollments: map[string]*enrollment{},
+		verdicts: map[string]string{}, profiles: keyedlock.New(), sharedFiles: keyedlock.New(), buildCarrier: newCarrier,
+		life: life, endLife: endLife}, nil
 }
 
 // Attached implements transport.AttachedBackends.
@@ -153,8 +181,8 @@ func (m *Manager) Carrier(ctx context.Context, id string) transport.BackendCarri
 }
 
 // carrier resolves the live hop for one profile, building it on first use.
-// It waits for a change to the profile in progress (a pairing or an
-// introduction, which can hold it for minutes) only as long as ctx lasts.
+// It waits for a change to the profile in progress (an enrollment's save,
+// a removal) only as long as ctx lasts.
 func (m *Manager) carrier(ctx context.Context, id string) (*carrier, error) {
 	unlock, err := m.profiles.LockCtx(ctx, id)
 	if err != nil {
@@ -162,18 +190,21 @@ func (m *Manager) carrier(ctx context.Context, id string) (*carrier, error) {
 	}
 	defer unlock()
 	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
+	closed, held := m.closed, m.carriers[id]
+	m.mu.Unlock()
+	if closed {
 		return nil, ErrClosed
 	}
-	held := m.carriers[id]
+	// The client is asked outside the manager mutex, which is a leaf
+	// (computer_state.go). Every writer of id's cache entry holds the
+	// profile lock held here, except Close, which empties the cache.
 	if held != nil && !held.client.Retired() {
-		m.mu.Unlock()
 		return held, nil
 	}
-	delete(m.carriers, id)
-	m.mu.Unlock()
 	if held != nil {
+		m.mu.Lock()
+		delete(m.carriers, id)
+		m.mu.Unlock()
 		held.leave(errPairingReplaced)
 	}
 	session, err := deviceclient.LoadSession(m.dir, id)
@@ -184,7 +215,7 @@ func (m *Manager) carrier(ctx context.Context, id string) (*carrier, error) {
 	if err != nil {
 		return nil, err
 	}
-	built, err := newCarrier(client, id)
+	built, err := m.buildCarrier(client, id)
 	if err != nil {
 		return nil, err
 	}
@@ -221,13 +252,32 @@ func (m *Manager) wire(built *carrier, id string) {
 	built.keepRenewed(id, &m.renewals)
 }
 
+// BeginClose is the start of shutdown: it ends the network waits the
+// manager owns, so a caller still running returns promptly, and leaves
+// carriers and their cached connections to Close. It ends every rotation in
+// flight except a legacy exchange already sent, cancels every
+// introduction's enrollment, ends the steps of a pairing or introduction
+// before its redemption, and keeps any redemption not yet sent from being
+// sent. A person's pairing whose redemption has been sent finishes and is
+// saved, bounded by the HTTP timeout (pairingByPerson). BeginClose is
+// idempotent; Close calls it.
+func (m *Manager) BeginClose() {
+	m.endLife(errShuttingDown)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, e := range m.enrollments {
+		if e.purpose == introductionByPeer {
+			m.cancelEnrollmentLocked(e, errShuttingDown)
+		}
+	}
+}
+
 // Close stops every carrier's session renewal and waits for it to end,
-// including a rotation already sent, which runs to completion so its
-// successor is saved. Later carrier requests fail with ErrClosed. Carriers
+// after BeginClose. Later carrier requests fail with ErrClosed. Carriers
 // already handed out keep their sessions; only the renewal stops. Close is
 // idempotent.
 func (m *Manager) Close() {
-	m.endLife()
+	m.BeginClose()
 	m.mu.Lock()
 	m.closed = true
 	held := make([]*carrier, 0, len(m.carriers))
@@ -243,30 +293,6 @@ func (m *Manager) Close() {
 	for _, c := range held {
 		c.client.WaitRenewal()
 	}
-}
-
-// endSession is the verdict path: the far side stopped honouring one
-// pairing for good. deviceclient has already dropped the refused session
-// file and retired the owner; what is left is this process's cache and the
-// people watching it. The carrier leaves so nothing keeps answering for a
-// session that is gone, its agent opt-in goes the way a removal takes it,
-// and the observer retires the row. A carrier a newer pairing has already
-// replaced is not the cached one, and nothing here touches it. The verdict
-// is kept, with the name the pairing gave the computer, for TakeVerdict.
-func (m *Manager) endSession(id string, held *carrier) {
-	m.mu.Lock()
-	current := m.carriers[id] == held
-	if current {
-		delete(m.carriers, id)
-		m.verdicts[id] = strings.Join(strings.Fields(displayName(held.client.Session())), " ")
-	}
-	m.mu.Unlock()
-	if !current {
-		return
-	}
-	held.leave(errPairingEnded)
-	_ = m.writeAgentAccess(id, false)
-	m.notifyChanged(SetChange{Action: SetRemoved, ID: id, Reason: RemovedByComputer})
 }
 
 // TakeVerdict reports whether the last pairing this installation held with
@@ -379,7 +405,14 @@ type Attachment struct {
 // between here and the page. So the two halves are split: this call
 // answers the number a person has to compare, and Await runs the wait on
 // its own and reports the outcome as an event.
+//
+// The redemption is an enrollment (enroll): it runs detached from ctx,
+// Forget cancels it, and a second pairing with the same computer is refused
+// while it is in flight. The steps before it spend nothing and also end
+// when shutdown begins.
 func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, error) {
+	ctx, stop := m.untilShutdown(ctx)
+	defer stop()
 	link, err := deviceclient.DecodeLink(pairingLink)
 	comparison := ""
 	addressPairing := err != nil && !strings.Contains(pairingLink, "#")
@@ -388,17 +421,20 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 		if nameErr != nil {
 			return Attachment{}, nameErr
 		}
-		hc := pairbootstrap.NewHTTPClient(m.dial)
+		hc, clientErr := m.nearbyClient()
+		if clientErr != nil {
+			return Attachment{}, clientErr
+		}
 		defer hc.CloseIdleConnections()
 		// Public metadata may refuse redundant setup, never authorize it.
 		// Check before occupying the other computer's pairing window, and
-		// check again under the profile lock after the sealed exchange.
+		// check again after the sealed exchange (admitEnrollment).
 		if info, inspectErr := inspectComputer(ctx, hc, pairingLink); inspectErr == nil {
 			if m.selfID != nil && info.BackendID == m.selfID() {
 				return Attachment{}, errors.New("this is the computer you are already using")
 			}
 			if _, savedErr := deviceclient.LoadSession(m.dir, info.BackendID); savedErr == nil {
-				return Attachment{}, errors.New("this computer is already connected; use its existing connection")
+				return Attachment{}, errAlreadyConnected
 			}
 		}
 		invite, number, exchangeErr := pairbootstrap.Exchange(ctx, hc, pairingLink, label, m.platform)
@@ -414,30 +450,13 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 	if m.selfID != nil && link.BackendID == m.selfID() {
 		return Attachment{}, errors.New("this is the computer you are already using")
 	}
-	unlock, err := m.profiles.LockCtx(ctx, link.BackendID)
+	attachment, _, err := m.enroll(ctx, link, pairingByPerson, addressPairing)
+	if err != nil && attachment.ID == "" {
+		return Attachment{}, err
+	}
 	if err != nil {
-		return Attachment{}, err
-	}
-	defer unlock()
-	if addressPairing {
-		if _, savedErr := deviceclient.LoadSession(m.dir, link.BackendID); savedErr == nil {
-			return Attachment{}, errors.New("this computer is already connected; use its existing connection")
-		}
-	}
-	// An explicit pairing is a new grant. Do not revive an old agent opt-in
-	// after revocation or an incomplete pairing; the explicit enable follows
-	// it. This clearing belongs to THIS path only — own-device enrollment
-	// shares addLinkLocked and must not clobber a live opt-in when it upgrades
-	// an already-paired computer to a group session.
-	if err := m.writeAgentAccess(link.BackendID, false); err != nil {
-		return Attachment{}, err
-	}
-	attachment, err := m.addLinkLocked(ctx, link)
-	if err != nil {
-		return Attachment{}, err
-	}
-	if err := m.excludeOwnDevice(link.BackendID, false); err != nil {
-		return Attachment{}, err
+		// Saved, so the attachment finishes the operation; a lock really stuck fails this computer's next transition at its lock wait.
+		log.Printf("attachedbackends: the pairing with %s is saved and its locks did not release: %v", attachment.ID, err)
 	}
 	if comparison != "" {
 		attachment.VerificationNumber = comparison
@@ -445,46 +464,15 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 	return attachment, nil
 }
 
-// Caller holds the destination profile lock across one enrollment. It installs
-// the pairing session and nothing more — the agent-command opt-in is a separate
-// grant this primitive never touches, so own-device re-enrollment preserves it.
-func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (Attachment, error) {
-	m.mu.Lock()
-	old := m.carriers[link.BackendID]
-	delete(m.carriers, link.BackendID)
-	m.mu.Unlock()
-	if old != nil {
-		old.leave(errPairingReplaced)
-		old.client.Retire()
+// untilShutdown is ctx, ended also when shutdown begins (BeginClose), for
+// a caller's network work that spends nothing.
+func (m *Manager) untilShutdown(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	stop := context.AfterFunc(m.life, func() { cancel(errShuttingDown) })
+	return ctx, func() {
+		stop()
+		cancel(nil)
 	}
-	label, err := m.localLabel()
-	if err != nil {
-		return Attachment{}, err
-	}
-	client, pairing, err := deviceclient.Pair(ctx, m.dir, link, label, m.platform, m.clientOptions()...)
-	if err != nil {
-		return Attachment{}, err
-	}
-	built, err := newCarrier(client, link.BackendID)
-	if err != nil {
-		return Attachment{}, err
-	}
-	m.mu.Lock()
-	// A re-pairing with a machine already attached replaces the carrier,
-	// because the session behind the old one was just superseded. After
-	// Close the pairing stays on disk and nothing is cached or renewed.
-	if !m.closed {
-		m.wire(built, link.BackendID)
-		m.carriers[link.BackendID] = built
-	}
-	delete(m.verdicts, link.BackendID)
-	m.mu.Unlock()
-	return Attachment{
-		ID:                 link.BackendID,
-		Name:               displayName(client.Session()),
-		Endpoint:           link.Endpoint,
-		VerificationNumber: pairing.VerificationNumber,
-	}, nil
 }
 
 // Await blocks until the owner of the far machine confirms the number,
@@ -508,66 +496,20 @@ func (m *Manager) Await(ctx context.Context, id string) error {
 	return nil
 }
 
-// Remove forgets one machine. The device key survives: it names this
-// DEVICE, and the far side adopts its row by thumbprint if this
-// installation ever pairs with it again.
-func (m *Manager) Remove(id string) error {
-	unlock := m.profiles.Lock(id)
-	defer unlock()
-	if err := m.excludeOwnDevice(id, true); err != nil {
-		return err
-	}
-	if err := m.forgetLocked(id); err != nil {
-		// The pairing stays, so neither does its exclusion.
-		return errors.Join(err, m.excludeOwnDevice(id, false))
-	}
-	m.notifyChanged(SetChange{Action: SetRemoved, ID: id})
-	return nil
-}
-
-// forgetLocked drops one profile; the caller holds its profile lock. The
-// live owner, when there is one, deletes the pairing it still owns under
-// the session transaction fence and retires, so a renewal already in flight
-// cannot write the credential back. It leaves the cache before that call
-// rather than during it: m.mu is not held across the OS lock, and the
-// caller's profile lock is what keeps a second owner from being built from
-// the file in the meantime. A removal that failed retires the old owner
-// all the same, so the retry that rebuilds a carrier never has two, and
-// gives back the agent opt-in it took, since the pairing stays.
-func (m *Manager) forgetLocked(id string) error {
-	access, err := m.AgentAccess()
-	if err != nil {
-		return err
-	}
-	if err := m.writeAgentAccess(id, false); err != nil {
-		return err
-	}
-	m.mu.Lock()
-	held := m.carriers[id]
-	delete(m.carriers, id)
-	m.mu.Unlock()
-	if held == nil {
-		err = deviceclient.ForgetSession(m.dir, id)
-	} else {
-		held.leave(errPairingForgotten)
-		if err = held.client.Forget(); err != nil {
-			held.client.Retire()
-		}
-	}
-	if err != nil && access[id] {
-		return errors.Join(err, m.writeAgentAccess(id, true))
-	}
-	return err
-}
-
 // Rename sets the owner's own label for one machine, or clears it when
 // the nickname is empty.
 //
 // Written through the live client rather than straight to the file,
 // because a rotation is replacing that same file whenever the credential
 // comes due — and a rename that raced one would either lose the nickname
-// or roll the credential back.
+// or roll the credential back. A rename during a pairing or introduction
+// with the computer waits for it (awaitEnrollment) and applies to the
+// pairing it leaves, since a person's re-pairing clears the stored nickname
+// (commitEnrollment). That wait ends when shutdown begins.
 func (m *Manager) Rename(id, nickname string) error {
+	if _, err := m.awaitEnrollment(m.life, id); err != nil {
+		return err
+	}
 	held, err := m.carrier(m.life, id)
 	if err != nil {
 		return err
@@ -581,7 +523,15 @@ func (m *Manager) Rename(id, nickname string) error {
 
 // RepairAddress adds a verified replacement address to an
 // existing pairing. The live client owns the profile write and route change.
+// A repair during a pairing or introduction with the computer waits for it,
+// as Rename does; that wait also ends with ctx.
 func (m *Manager) RepairAddress(ctx context.Context, id, endpoint string) (string, error) {
+	wait, stop := m.untilShutdown(ctx)
+	_, err := m.awaitEnrollment(wait, id)
+	stop()
+	if err != nil {
+		return "", err
+	}
 	held, err := m.carrier(ctx, id)
 	if err != nil {
 		return "", err
@@ -798,8 +748,45 @@ func (m *Manager) SetLabelGetter(get func() (string, error)) { m.labelGetter = g
 // (deviceclient.WithProbeInterval).
 func (m *Manager) SetActivationProbe(interval time.Duration) { m.activationProbe = interval }
 
+// SetPairingBound sets, before serving requests, what each pairing step
+// this manager takes with another computer asks for its bound when it
+// starts: spending an invitation (deviceclient.WithRedemptionBound), a
+// nearby-pairing exchange (pairbootstrap.NewHTTPClient) and one peer's
+// part of an own-device pass, which pairs its introductions
+// (ownPeerTimeout). An error or a non-positive answer fails that step with
+// it. Nil keeps each product bound, and nothing after a pairing (renewal,
+// socket tickets) is affected. Only a test calls it, with the time its run
+// has left (testutil.StepBudget): the computers it pairs with run in its
+// process, where a crowded machine can hold a step past its product bound.
+func (m *Manager) SetPairingBound(bound func() (time.Duration, error)) { m.pairingBound = bound }
+
+// stepBound is the bound of a pairing step that starts now: product, or
+// what SetPairingBound's function answers.
+func (m *Manager) stepBound(product time.Duration) (time.Duration, error) {
+	if m.pairingBound == nil {
+		return product, nil
+	}
+	bound, err := m.pairingBound()
+	if err != nil {
+		return 0, fmt.Errorf("attachedbackends: this pairing step has no bound: %w", err)
+	}
+	if bound <= 0 {
+		return 0, fmt.Errorf("attachedbackends: this pairing step's bound %v is not positive", bound)
+	}
+	return bound, nil
+}
+
+// nearbyClient is the client of a nearby-pairing exchange that starts now.
+func (m *Manager) nearbyClient() (*http.Client, error) {
+	bound, err := m.stepBound(0) // Zero is pairbootstrap's own bound.
+	if err != nil {
+		return nil, err
+	}
+	return pairbootstrap.NewHTTPClient(m.dial, bound)
+}
+
 func (m *Manager) clientOptions() []deviceclient.Option {
-	return []deviceclient.Option{deviceclient.WithDialContext(m.dial), deviceclient.WithProbeInterval(m.activationProbe)}
+	return []deviceclient.Option{deviceclient.WithDialContext(m.dial), deviceclient.WithProbeInterval(m.activationProbe), deviceclient.WithLifetime(m.life)}
 }
 func (m *Manager) localLabel() (string, error) {
 	if m.labelGetter != nil {

@@ -16,7 +16,7 @@
   import { providerMemory, watchProviderMemory } from '../../stores/providerMemory.svelte';
   import { computerHasSetting, getSettings } from '../../stores/settings.svelte';
   import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
   import type { Thread } from '../../types/models';
 
   let { thread }: { thread: Thread | null } = $props();
@@ -34,7 +34,7 @@
   );
 
   $effect(() => {
-    if (!never || backend === null || !hasScope('settings:read', backend)) return;
+    if (!never || backend === null || scopeGrant('settings:read', backend) !== 'granted') return;
     return watchProviderMemory(backend);
   });
 

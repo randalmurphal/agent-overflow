@@ -1,6 +1,7 @@
 <script lang="ts">
   import { settingsComputer } from './settingsComputer';
-  const { hasScope, backend } = settingsComputer();
+  const { scopeGrant, backend } = settingsComputer();
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { onMount } from 'svelte';
   // EditorSection: settings panel for the open-in-editor preference.
   // The Go-side catalog returns every editor it knows about
@@ -30,8 +31,11 @@
   import { SECTION_PROSE_CLASS } from './styles';
   import Button from '../primitives/Button.svelte';
 
-  let localOnly = $derived(!hasScope('settings:read'));
-  let canWrite = $derived(hasScope('settings:write'));
+  let readGrant = $derived(scopeGrant('settings:read'));
+  let localOnly = $derived(readGrant !== 'granted');
+  let writeGrant = $derived(scopeGrant('settings:write'));
+  let canWrite = $derived(writeGrant === 'granted');
+  let writeBlocked = $derived(grantBlockedTitle(writeGrant));
 
   let editors = $derived(getEditors(backend));
   let preference = $derived(getEditorPreference(backend));
@@ -70,7 +74,7 @@
 {#if localOnly}
   <section data-testid="editor-section-clientmode">
     <SettingsCallout>
-      This connection does not have permission to read this computer’s editor settings.
+      {readGrant === 'refused' ? 'This connection does not have permission to read this computer’s editor settings.' : grantBlockedTitle(readGrant)}
     </SettingsCallout>
   </section>
 {:else}
@@ -135,6 +139,7 @@
             value=""
             checked={preference === ''}
             disabled={saving || !canWrite}
+            title={writeBlocked}
             onchange={() => void selectEditor('')}
             class="accent-accent"
           />
@@ -156,6 +161,7 @@
               value={editor.id}
               checked={preference === editor.id}
               {disabled}
+              title={writeBlocked}
               onchange={() => void selectEditor(editor.id)}
               class="accent-accent"
             />

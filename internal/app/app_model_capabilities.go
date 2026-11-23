@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/chatmodel"
+	"agent-overflow/internal/claudemodels"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -188,15 +189,17 @@ func (a *App) validateModelChoice(providerName, model string) error {
 
 // savedFastModeStands reports whether a fast-mode choice made earlier is
 // kept on the model. A new choice must pass supportsFastModeForModel. A saved
-// one passes the same check, and also stands while the Claude CLI has
-// reported nothing: which Claude models run fast is known only from its
-// reported model list, live or restored at boot.
+// one passes the same check, and also stands while the Claude CLI of the
+// account in use has reported nothing: which Claude models run fast is known
+// only from that account's reported model list, live or restored at boot,
+// and not from the list another account on the binary reported.
 func (a *App) savedFastModeStands(providerName, model string) bool {
-	// The provenance is read before the lookup, so a report that lands in
+	// The backing is read before the lookup, so a report that lands in
 	// between is judged by a lookup at least as new.
-	if provider.CapabilitiesForProvider(providerName).ModelCatalog == provider.ClaudeProbeEnrichedCatalog &&
-		a.providerDiscoveryService().ClaudeCatalog(providerName).Provenance != provider.CatalogProbed {
-		return true
+	if provider.CapabilitiesForProvider(providerName).ModelCatalog == provider.ClaudeProbeEnrichedCatalog {
+		if _, backing := a.providerDiscoveryService().ClaudeAccountCatalog(providerName); backing != claudemodels.BackedByIdentity {
+			return true
+		}
 	}
 	return a.supportsFastModeForModel(providerName, model)
 }
@@ -215,6 +218,7 @@ func (a *App) modelInfoForProvider(providerName, model string) (info provider.Mo
 		if candidate, ok := a.providerDiscoveryService().KnownAgyModel(a.providerBinaryPath(providerName), model); ok {
 			return candidate, true
 		}
+	case provider.StaticModelCatalog, provider.ClaudeProbeEnrichedCatalog:
 	}
 	return a.modelInfoWithoutLiveCodex(providerName, model)
 }

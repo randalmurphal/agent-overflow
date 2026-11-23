@@ -24,7 +24,13 @@ packages. Test-specific setup stays beside the test that owns it.
   that skips login startup files, so a shell sync cannot reorder PATH. Every
   test package that links a provider spawn package installs it;
   `TestEveryTestBinaryThatCanStartAProviderInstallsThePoison` fails one that
-  does not. Standard library only, like `mockexec/`.
+  does not. It imports only the standard library and internal packages
+  that do too.
+- A per-process directory a shared fixture makes in TestMain (the poison,
+  store templates, the detached home) is an `internal/ownedtemp`
+  directory, swept again after the run, so one left by a killed test
+  binary or a helper process that ended in `os.Exit` does not outlive the
+  next run.
 - `helperproc/` ties a helper process to the test binary that started it
   (`Tie`, `Hold`), so a helper that stands in for a backend ends when that
   binary is killed or times out, and its temporary files land in its test's
@@ -32,6 +38,12 @@ packages. Test-specific setup stays beside the test that owns it.
   temporary directory for one itself. Standard library only.
 - `deadline.go` is a context whose deadline the test ends at a chosen
   moment, for code that acts on a deadline without racing a real clock.
+- `waitbudget.go` is the one budget for a test's wait on work the code under
+  test does not bound itself: two minutes, cut short to end 10 s before go
+  test's timeout, and a failure once that is gone. `WaitBudget` is for a
+  wait the test goroutine runs; `StepBudget` is asked when a step of the
+  code under test starts, from any goroutine, for the test's pairing steps.
+  A new wait of that kind uses one of them in place of a duration of its own.
 - `git.go` creates local repositories and local bare origins. No helper here
   reaches a network, and its git commands do not read the user's global
   config: a fixture that commits sets its own identity.

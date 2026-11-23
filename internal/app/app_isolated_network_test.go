@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"testing"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/nativenetwork"
 	"agent-overflow/internal/nearby"
@@ -104,7 +103,7 @@ func TestLoopbackReachSendsNoMulticast(t *testing.T) {
 			t.Fatalf("pairing link on %q is %q, want one on %s", choice, page, origin)
 		}
 	}
-	w, err := a.OpenComputerPairing(context.Background(), "lan", "full")
+	w, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +125,7 @@ func TestLoopbackReachSendsNoMulticast(t *testing.T) {
 		t.Fatal("a loopback reach started the multicast responders")
 	}
 
-	manager, err := attachedbackends.New(t.TempDir(), "Host", "test")
+	manager, err := newTestBackends(t, t.TempDir(), "Host", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +134,7 @@ func TestLoopbackReachSendsNoMulticast(t *testing.T) {
 		t.Fatalf("DiscoverComputers error = %v, want %v", err, nearby.ErrIsolated)
 	}
 
-	cfg, err := a.GetNativeNetworkConfig(context.Background())
+	cfg, err := a.GetNativeNetworkConfig(connCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}

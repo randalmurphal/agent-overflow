@@ -36,7 +36,10 @@ type Team struct {
 type Label struct {
 	Name  string `json:"name"`
 	Color string `json:"color,omitempty"`
-	ID    string `json:"id,omitempty"`
+	// TextColor is the label's text color, "#rrggbb"; by default white
+	// on a dark Color and #1f1e24 on a light one, as GitLab derives it.
+	TextColor string `json:"textColor,omitempty"`
+	ID        string `json:"id,omitempty"`
 }
 
 // ViewerCan overrides what the viewer may do on a pull, each nil field
@@ -139,6 +142,20 @@ func (e *Engine) gitlabAtLeast(host string, release [2]int) bool {
 	return v[0] > release[0] || (v[0] == release[0] && v[1] >= release[1])
 }
 
+// labelTextColor is the text color of a label of color: white on a dark
+// color, #1f1e24 on a light one, by luma.
+func labelTextColor(color string) string {
+	rgb, err := strconv.ParseUint(strings.TrimPrefix(color, "#"), 16, 32)
+	if err != nil || len(color) != 7 {
+		return "#1f1e24"
+	}
+	r, g, b := float64(rgb>>16&0xff), float64(rgb>>8&0xff), float64(rgb&0xff)
+	if 0.299*r+0.587*g+0.114*b < 128 {
+		return "#ffffff"
+	}
+	return "#1f1e24"
+}
+
 // githubAssigneesMax is how many assignees GitHub keeps.
 const githubAssigneesMax = 10
 
@@ -182,6 +199,7 @@ func (r *Repo) normalizeManage(ids *idSource) error {
 			return fmt.Errorf("labels[%d]: a name is required", i)
 		}
 		label.Color = strings.ToLower(defaultString(label.Color, "#ededed"))
+		label.TextColor = strings.ToLower(defaultString(label.TextColor, labelTextColor(label.Color)))
 		if label.ID == "" {
 			label.ID = "LA_ao" + strconv.FormatInt(ids.next(), 10)
 			if r.Forge == "gitlab" {

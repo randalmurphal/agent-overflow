@@ -23,9 +23,15 @@ func fable(pct float64, reset int64) provider.RateLimitEntry {
 	return provider.RateLimitEntry{LimitID: "weekly_scoped:fable", LimitName: "Fable", UsedPercent: pct, WindowMins: 10080, ResetsAt: reset}
 }
 
+// codexLimit is Codex's provider-wide 5-hour window.
+func codexLimit(pct float64, reset int64) provider.RateLimitEntry {
+	return provider.RateLimitEntry{LimitID: "codex", UsedPercent: pct, WindowMins: 300, ResetsAt: reset}
+}
+
 const (
 	opusModel  = "claude-opus-4-8[1m]"
 	fableModel = "claude-fable-5-2"
+	codexModel = "gpt-5.5"
 )
 
 func TestProviderWide(t *testing.T) {

@@ -80,16 +80,15 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 	row := request.ThreadRequest
 	settled := threadRequestSettled(row)
 	local := row.TargetComputerID == "" && row.TargetThreadID != ""
-	// A spawn's worker is read whatever its request's state: one that
-	// settled is open while the thread it made is not at rest, by its own
-	// state or, waiting on them, by its workers'. A remote spawn's own
-	// state is its computer's answer (nestPeerAgentRows).
+	// A spawn's worker is read whatever its request's state, until its run
+	// ended: one that settled is open while the thread it made is not at
+	// rest, by its own state or, waiting on them, by its workers'. Once
+	// the worker rested after it, what the worker does later is not this
+	// row's (app_thread_agent_rows_runs.go). A remote spawn's own state is
+	// its computer's answer (nestPeerAgentRows).
 	var rest workerRest
-	if local && row.Kind == store.ThreadRequestSpawn {
+	if local && row.Kind == store.ThreadRequestSpawn && !row.RunEnded() {
 		rest = v.app.liveWorkerUnrest(row)
-	}
-	if rest.unrest == "" && request.TargetOpen {
-		rest.unrest = workerWaiting
 	}
 	if rest.unrest == "" && local && !settled && v.app.restHeld(row.TargetThreadID, row.Token) {
 		// A request held for its thread's rest, a send to the caller's own
@@ -99,12 +98,27 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 			rest.unrest = workerWaiting
 		}
 	}
+	if rest.unrest == "" && (local || settled) && row.Kind == store.ThreadRequestSend && row.RunOpen() && row.TargetThreadID != "" {
+		// A send to the caller's own worker shows the worker's state while
+		// the run it started or joined is open, as a spawn's row does, and
+		// is open while it is: the worker's state here, or as its computer
+		// last reported it once the send settled.
+		if local {
+			rest = v.app.liveThreadRest(row.TargetThreadID)
+		} else {
+			rest = v.app.remoteRunWorker(row)
+		}
+	}
 	if rest.unrest == "" && !local && !settled && row.TargetThreadID != "" {
 		// So does one a paired computer holds for its thread's rest, as
 		// that computer last reported it.
 		if line := v.app.remoteRequestBlocked(row.Token).waitingOn; line != "" {
 			rest = workerRest{unrest: workerWaiting, detail: line}
 		}
+	}
+	if rest.unrest == "" && request.TargetOpen {
+		// Nothing of its own, and open work below it: it waits on that.
+		rest.unrest = workerWaiting
 	}
 	worker := rest.unrest
 	live := !settled || worker != ""
@@ -129,6 +143,9 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 		Depth: request.Depth, NestedHidden: request.NestedHidden,
 		RestUnreported: row.RestUnreported, LateReplyExpiredAt: state.LateReplyExpiredAt,
 	}
+	if row.Nudge {
+		out.Kind = threadAgentKindNudge
+	}
 	if row.Kind == store.ThreadRequestAsk {
 		// The copy that answers an ask is the worker: the row opens it while
 		// it runs. Once the ask settles the copy is deleted, and the row
@@ -149,14 +166,30 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 	}
 	if name, ok := names[row.TargetThreadID]; ok && local {
 		out.Provider = name.Provider
-		if row.Kind == store.ThreadRequestSpawn {
+		if row.Kind == store.ThreadRequestSpawn || row.RunBase != nil {
+			// A tracked send went to a thread its caller spawned: its row
+			// stands for that worker as the spawn's does.
 			out.Placement, out.Archived = name.Placement, name.Archived
-			// What the thread it made did, read with its name.
+			// What the thread did in the request's run, read with its name.
 			tally := name.Tally
-			out.ToolCalls, out.Tokens, out.RuntimeMs, out.TurnOpen = tally.ToolCalls, tally.Tokens, tally.RuntimeMs, tally.Running
-			if tally.Running {
-				out.TurnStartedAt = tally.TurnStartedAt
-			}
+			out.runFigures(row, threadAgentFigures{
+				toolCalls: tally.ToolCalls, tokens: tally.Tokens, runtimeMs: tally.RuntimeMs,
+				turnOpen: tally.Running, turnStartedAt: tally.TurnStartedAt,
+			})
+		}
+	}
+	if !local && !v.counts && row.Kind == store.ThreadRequestSend && row.RunBase != nil && row.TargetThreadID != "" {
+		// A send's run on a paired computer's worker counts from what that
+		// computer reported when the run began (peerSpawnReport reads a
+		// spawn's).
+		answer, ok := v.app.remoteRunAnswer(row)
+		if ok {
+			out.Placement, out.Archived = answer.listing.Placement, answer.listing.Archived
+		}
+		if row.RunTotal != nil {
+			out.runFigures(row, threadAgentFigures{})
+		} else if ok {
+			out.runFigures(row, peerFigures(answer.listing))
 		}
 	}
 	if asked, ok := names[row.OriginThreadID]; ok && local && row.Kind == store.ThreadRequestAsk {

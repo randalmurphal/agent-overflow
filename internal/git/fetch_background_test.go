@@ -92,9 +92,25 @@ func TestBackgroundFetchSingleFlightsConcurrentCallers(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for the first fetch to start")
 	}
-	// The second caller must be inside Do (joined or blocked) before the
-	// first completes; give it a moment and then release both.
-	time.Sleep(50 * time.Millisecond)
+	// The second caller must have joined the flight before the first
+	// completes: one that arrives after it finds the fetch fresh and
+	// reports none. It reads the repository first, so wait for it.
+	key, err := core.CommonDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(time.Millisecond) {
+		core.fetchFlight.mu.Lock()
+		flight := core.fetchFlight.flights[key]
+		joined := flight != nil && flight.waiters == 2
+		core.fetchFlight.mu.Unlock()
+		if joined {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the second caller to join the fetch")
+		}
+	}
 	close(release)
 	wg.Wait()
 

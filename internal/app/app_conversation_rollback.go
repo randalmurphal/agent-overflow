@@ -211,6 +211,8 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 			return revertedConversationCut{}, fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
 		}
 		return revertedConversationCut{KeptAnchorTurnItemIDs: keptAnchorTurnItemIDs, Stamp: stamp}, nil
+	case provider.RollbackNone:
+		return cut, fmt.Errorf("%s: provider %q has no rollback granularity", args.errorPrefix, args.thread.Provider)
 	default:
 		return cut, fmt.Errorf("%s: provider %q has no rollback granularity", args.errorPrefix, args.thread.Provider)
 	}

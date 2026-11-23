@@ -127,8 +127,9 @@ func (s *Store) SetThreadPlacement(threadIDs []string, placement string) ([]Thre
 	if err != nil {
 		return nil, err
 	}
+	var ended []endedRun
 	for _, id := range ids {
-		if _, err := setThreadPlacementTx(tx, id, placement); err != nil {
+		if _, err := setThreadPlacementTx(tx, id, placement, &ended); err != nil {
 			return nil, err
 		}
 	}
@@ -141,6 +142,7 @@ func (s *Store) SetThreadPlacement(threadIDs []string, placement string) ([]Thre
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("store: commit thread placement: %w", err)
 	}
+	s.noteRunsEnded(ended)
 	return moves, nil
 }
 
@@ -159,8 +161,10 @@ func unplaceableThreadSQL(a string) string {
 }
 
 // setThreadPlacementTx writes one thread's owned or standalone placement
-// in the caller's transaction and reports whether the row changed.
-func setThreadPlacementTx(tx *sql.Tx, threadID, placement string) (bool, error) {
+// in the caller's transaction and reports whether the row changed. A
+// worker given a sidebar row ends its nudges' runs (endNudgeRunsTx), added
+// to ended, which the caller reports once it commits.
+func setThreadPlacementTx(tx *sql.Tx, threadID, placement string, ended *[]endedRun) (bool, error) {
 	switch placement {
 	case PlacementOwned, PlacementStandalone:
 	case PlacementGrouped:
@@ -212,7 +216,16 @@ func setThreadPlacementTx(tx *sql.Tx, threadID, placement string) (bool, error) 
 	if err != nil {
 		return false, fmt.Errorf("store: set placement of %s: %w", threadID, err)
 	}
-	return rowsChanged(result, "store: set placement of "+threadID)
+	changed, err := rowsChanged(result, "store: set placement of "+threadID)
+	if err != nil || !changed || placement == PlacementOwned {
+		return changed, err
+	}
+	runs, err := endNudgeRunsTx(tx, threadID)
+	if err != nil {
+		return false, fmt.Errorf("store: end the nudge runs on %s: %w", threadID, err)
+	}
+	*ended = append(*ended, runs...)
+	return true, nil
 }
 
 // ownSpawnedThreadTx makes the thread a spawn just named owned, in the

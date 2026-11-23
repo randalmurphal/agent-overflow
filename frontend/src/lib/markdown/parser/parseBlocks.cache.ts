@@ -26,6 +26,7 @@ export const createParseBlocksCache = (observeLex?: ParseBlocksLexObserver): Par
     content: '',
     source: new ParseBlockSource(),
     extKey: null,
+    aligns: true,
     alignStart: null,
     alignAfter: [],
     raws: [],
@@ -40,6 +41,8 @@ export const createParseBlocksCache = (observeLex?: ParseBlocksLexObserver): Par
     trailingBlock: null,
     lastBlockAppend: undefined,
     lastPath: 'none',
+    generation: 0,
+    changedFrom: 0,
     observeLex
 });
 export const truncateParseBlocksCache = (cache: ParseBlocksCache, rawLength: number): void => {
@@ -51,6 +54,7 @@ export const truncateParseBlocksCache = (cache: ParseBlocksCache, rawLength: num
             break;
         }
     }
+    cache.changedFrom = Math.min(cache.changedFrom, rawLength);
     cache.raws.length = rawLength;
     cache.alignAfter.length = rawLength;
     cache.keep.length = rawLength;
@@ -62,9 +66,10 @@ export const truncateParseBlocksCache = (cache: ParseBlocksCache, rawLength: num
 };
 export const appendParseBlockRaw = (cache: ParseBlocksCache, raw: string, keep: boolean, start: number): number => {
     const rawIndex = cache.raws.length;
+    cache.changedFrom = Math.min(cache.changedFrom, rawIndex);
     cache.rawStarts.push(start);
     cache.raws.push(raw);
-    cache.alignAfter.push(alignmentAfter(raw, alignmentBefore(cache, rawIndex)));
+    cache.alignAfter.push(alignAfterRaw(cache, raw, rawIndex));
     cache.keep.push(keep);
     if (keep) {
         const blockIndex = cache.blocks.length;
@@ -80,9 +85,10 @@ export const appendParseBlockRaw = (cache: ParseBlocksCache, raw: string, keep: 
 };
 export const replaceParseBlockRaw = (cache: ParseBlocksCache, rawIndex: number, raw: string): void => {
     const previous = cache.raws[rawIndex];
+    cache.changedFrom = Math.min(cache.changedFrom, rawIndex);
     cache.raws[rawIndex] = raw;
     // Only the trailing raw is replaced, and never a marker's.
-    cache.alignAfter[rawIndex] = alignmentAfter(raw, alignmentBefore(cache, rawIndex));
+    cache.alignAfter[rawIndex] = alignAfterRaw(cache, raw, rawIndex);
     const blockIndex = cache.blockIndexes[rawIndex];
     if (blockIndex >= 0) {
         cache.blocks[blockIndex] = raw;
@@ -92,6 +98,8 @@ export const replaceParseBlockRaw = (cache: ParseBlocksCache, rawIndex: number, 
     for (let i = rawIndex + 1; i < cache.rawStarts.length; i++)
         cache.rawStarts[i] += lengthDelta;
 };
+const alignAfterRaw = (cache: ParseBlocksCache, raw: string, rawIndex: number): Alignment =>
+    cache.aligns ? alignmentAfter(raw, alignmentBefore(cache, rawIndex)) : null;
 /** The alignment in force at the end of the last parsed source. */
 export const alignmentAtEnd = (cache: ParseBlocksCache): Alignment =>
     alignmentBefore(cache, cache.raws.length);
@@ -106,7 +114,7 @@ export const blockAlignment = (cache: ParseBlocksCache, blockIndex: number): Ali
     const rawIndex = cache.blockRawIndexes[blockIndex];
     const before = alignmentBefore(cache, rawIndex);
     const block = cache.raws[rawIndex];
-    return isAlignmentMarkerBlock(block, before) ? 'marker' : before;
+    return cache.aligns && isAlignmentMarkerBlock(block, before) ? 'marker' : before;
 };
 /**
  * Detach every published block from marked's full-document input string.
@@ -314,6 +322,9 @@ export type ParseBlocksCache = {
     source: ParseBlockSource;
     /** block-level custom extensions used to build the cached block boundaries */
     extKey: Extension[] | null;
+    /** whether `[center]` markers align: false under a forge's grammar
+     * (`usesChatGrammar`) */
+    aligns: boolean;
     /** the alignment in force at offset 0 (extensions/align.ts) */
     alignStart: Alignment;
     /** parallel to raws: the alignment in force after each token */
@@ -381,6 +392,11 @@ export type ParseBlocksCache = {
     } | null;
     /** proven append applied to the last rendered block by the latest call */
     lastBlockAppend?: ProvenAppend;
+    /** counts parses; with `changedFrom`, what changed since a given one */
+    generation: number;
+    /** the first raw index the latest parse changed: every raw before it is
+     * the previous parse's, unchanged; `raws.length` when none changed */
+    changedFrom: number;
     /** debug breadcrumb for the latest parseBlocks path */
     lastPath: 'none' | 'unchanged' | 'full' | 'initial-boundary' | 'append-tail' | 'paragraph-append' | 'line-block-append' | 'list-line-append' | 'table-line-append' | 'list-descent' | 'table-descent' | 'fence-append';
     /** optional diagnostic observer invoked for each marked block-lexer call */

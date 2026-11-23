@@ -33,6 +33,20 @@ func testProbeKey(_ string, binary, accountID string) provider.ProbeCacheKey {
 	return provider.ProbeCacheKey{Binary: binary, AccountID: accountID, WorkDir: "/tmp"}
 }
 
+// claudeProbeFor is a ClaudeProbe dep that runs cfg under testProbeKey.
+func claudeProbeFor(cfg claude.ProbeConfig) func(binary, accountID string) (provider.ProbeCacheKey, claude.ProbeConfig) {
+	return func(binary, accountID string) (provider.ProbeCacheKey, claude.ProbeConfig) {
+		return testProbeKey(string(provider.Claude), binary, accountID), cfg
+	}
+}
+
+// codexProbeFor is claudeProbeFor for Codex.
+func codexProbeFor(cfg codex.ProbeConfig) func(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig) {
+	return func(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig) {
+		return testProbeKey(string(provider.Codex), binary, accountID), cfg
+	}
+}
+
 func cachedProbeRunner(request AccountProbeRequest) (provider.AccountInfo, error) {
 	if cached, ok := request.Cache.Get(request.Key); ok {
 		return cached, nil
@@ -58,7 +72,7 @@ func TestClaudeProbeCachesAndRecheckInvalidates(t *testing.T) {
 		Selection:       func(string) AccountSelection { return AccountSelection{AccountID: "account"} },
 		ProbeKey:        testProbeKey,
 		RunAccountProbe: cachedProbeRunner,
-		ClaudeConfig:    func(string) claude.ProbeConfig { return claude.ProbeConfig{Reaper: procutiltest.Reaper()} },
+		ClaudeProbe:     claudeProbeFor(claude.ProbeConfig{Reaper: procutiltest.Reaper()}),
 		ProbeClaude: func(context.Context, claude.ProbeConfig) (provider.AccountInfo, error) {
 			call := calls.Add(1)
 			return provider.AccountInfo{SubscriptionType: string(rune('0' + call))}, nil
@@ -108,7 +122,7 @@ func TestClaudeProbeCommitsWireCatalogInAfterAdopt(t *testing.T) {
 			enrichedAfterAdopt = hasModel(catalogModels(key), "claude-newthing-1")
 			return info, nil
 		},
-		ClaudeConfig: func(string) claude.ProbeConfig { return claude.ProbeConfig{Reaper: procutiltest.Reaper()} },
+		ClaudeProbe: claudeProbeFor(claude.ProbeConfig{Reaper: procutiltest.Reaper()}),
 		ProbeClaude: func(_ context.Context, cfg claude.ProbeConfig) (provider.AccountInfo, error) {
 			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1", DisplayName: "Newthing"}}, nil)
 			return provider.AccountInfo{SubscriptionType: "max"}, nil
@@ -149,7 +163,7 @@ func TestCodexProbePublishesAdoptedSnapshotOnlyOnMiss(t *testing.T) {
 		Selection:       func(string) AccountSelection { return AccountSelection{} },
 		ProbeKey:        testProbeKey,
 		RunAccountProbe: cachedProbeRunner,
-		CodexConfig:     func(string) codex.ProbeConfig { return codex.ProbeConfig{Reaper: procutiltest.Reaper()} },
+		CodexProbe:      codexProbeFor(codex.ProbeConfig{Reaper: procutiltest.Reaper()}),
 		ProbeCodex: func(_ context.Context, cfg codex.ProbeConfig) (provider.AccountInfo, error) {
 			calls.Add(1)
 			cfg.OnSnapshot(provider.RateLimitsSnapshot{
@@ -174,6 +188,38 @@ func TestCodexProbePublishesAdoptedSnapshotOnlyOnMiss(t *testing.T) {
 	}
 	if published[0].AccountID != "adopted-account" || published[0].Limits[0].UsedPercent != 42 {
 		t.Fatalf("published snapshot = %+v", published[0])
+	}
+}
+
+// The identity probe hands its reading's resets to the runner, which records
+// them on the account it adopts (provideraccountapp.ProbeRequest).
+func TestCodexProbeHandsItsResetsToTheAdoptingRunner(t *testing.T) {
+	credits := &codex.ResetCredits{AvailableCount: 1}
+	var handed *codex.ResetCredits
+	var read bool
+	service := New(Deps{
+		Reaper:         procutiltest.Reaper(),
+		ProviderBinary: func(string) string { return "/mock/codex" },
+		Selection:      func(string) AccountSelection { return AccountSelection{} },
+		ProbeKey:       testProbeKey,
+		RunAccountProbe: func(request AccountProbeRequest) (provider.AccountInfo, error) {
+			info, err := request.Probe(context.Background())
+			if request.ResetCredits != nil {
+				handed, read = request.ResetCredits()
+			}
+			return info, err
+		},
+		CodexProbe: codexProbeFor(codex.ProbeConfig{Reaper: procutiltest.Reaper()}),
+		ProbeCodex: func(_ context.Context, cfg codex.ProbeConfig) (provider.AccountInfo, error) {
+			cfg.OnResetCredits(credits)
+			return provider.AccountInfo{Email: "person@example.com"}, nil
+		},
+	}, testCaches())
+	if _, err := service.ProbeCodexAccount(); err != nil {
+		t.Fatal(err)
+	}
+	if !read || handed != credits {
+		t.Fatalf("runner got resets %+v (read=%v), want the probe's", handed, read)
 	}
 }
 
@@ -370,12 +416,14 @@ func TestModelsForProviderReportsCodexLive(t *testing.T) {
 func TestClaudeProbePersistsTheCommittedCatalog(t *testing.T) {
 	claudecatalog.Reset()
 	t.Cleanup(claudecatalog.Reset)
-	key := testProbeKey("", "/mock/claude", "account")
-	// A model an earlier probe of this binary taught the catalog, which this
-	// probe's wire omits.
+	// The probe starts under "account" and adopts "adopted-account"
+	// (cachedProbeRunner).
+	adopted := testProbeKey("", "/mock/claude", "adopted-account")
+	// A model an earlier probe of the adopted identity taught the catalog,
+	// which this probe's wire omits.
 	var earlier claudecatalog.ModelCapture
 	earlier.Capture([]claude.WireModel{{Value: "claude-oldthing-1"}}, nil)
-	earlier.Store(key)
+	earlier.Store(adopted)
 
 	var gotAccountID string
 	var got claudemodels.Snapshot
@@ -386,14 +434,14 @@ func TestClaudeProbePersistsTheCommittedCatalog(t *testing.T) {
 		Selection:       func(string) AccountSelection { return AccountSelection{AccountID: "account"} },
 		ProbeKey:        testProbeKey,
 		RunAccountProbe: cachedProbeRunner,
-		ClaudeConfig:    func(string) claude.ProbeConfig { return claude.ProbeConfig{Reaper: procutiltest.Reaper()} },
+		ClaudeProbe:     claudeProbeFor(claude.ProbeConfig{Reaper: procutiltest.Reaper()}),
 		ProbeClaude: func(_ context.Context, cfg claude.ProbeConfig) (provider.AccountInfo, error) {
 			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
 			return provider.AccountInfo{SubscriptionType: "max"}, nil
 		},
-		RememberClaudeCatalog: func(accountID string, snapshot claudemodels.Snapshot) {
+		RememberClaudeCatalog: func(key provider.ProbeCacheKey, snapshot claudemodels.Snapshot) {
 			calls++
-			gotAccountID = accountID
+			gotAccountID = key.AccountID
 			got = snapshot
 		},
 	}, testCaches())
@@ -416,6 +464,13 @@ func TestClaudeProbePersistsTheCommittedCatalog(t *testing.T) {
 	if !hasModel(got.Learned, "claude-newthing-1") || !hasModel(got.Learned, "claude-oldthing-1") {
 		t.Errorf("persisted learned = %v, want both the new and the retained model", got.Learned)
 	}
+	// The live entry is filed under the same identity as the record.
+	if live, ok := claudecatalog.Export(adopted); !ok || !hasModel(live.Learned, "claude-newthing-1") {
+		t.Errorf("live entry for the adopted account = %+v (ok=%v), want this probe's answer", live, ok)
+	}
+	if _, ok := claudecatalog.Export(testProbeKey("", "/mock/claude", "account")); ok {
+		t.Error("the probe filed a live entry under the selection it started from")
+	}
 }
 
 // A nil dep is a supported wiring (focused tests, and any boot where account
@@ -429,7 +484,7 @@ func TestClaudeProbeWithoutPersistenceDepStillProbes(t *testing.T) {
 		Selection:       func(string) AccountSelection { return AccountSelection{AccountID: "account"} },
 		ProbeKey:        testProbeKey,
 		RunAccountProbe: cachedProbeRunner,
-		ClaudeConfig:    func(string) claude.ProbeConfig { return claude.ProbeConfig{Reaper: procutiltest.Reaper()} },
+		ClaudeProbe:     claudeProbeFor(claude.ProbeConfig{Reaper: procutiltest.Reaper()}),
 		ProbeClaude: func(_ context.Context, cfg claude.ProbeConfig) (provider.AccountInfo, error) {
 			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
 			return provider.AccountInfo{SubscriptionType: "max"}, nil
@@ -464,13 +519,13 @@ func TestClaudeProbePersistsUnderTheSelectionWhenAdoptionIsEmpty(t *testing.T) {
 			request.AfterAdopt(provideraccounts.Account{})
 			return info, nil
 		},
-		ClaudeConfig: func(string) claude.ProbeConfig { return claude.ProbeConfig{Reaper: procutiltest.Reaper()} },
+		ClaudeProbe: claudeProbeFor(claude.ProbeConfig{Reaper: procutiltest.Reaper()}),
 		ProbeClaude: func(_ context.Context, cfg claude.ProbeConfig) (provider.AccountInfo, error) {
 			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
 			return provider.AccountInfo{SubscriptionType: "max"}, nil
 		},
-		RememberClaudeCatalog: func(accountID string, _ claudemodels.Snapshot) {
-			gotAccountID = accountID
+		RememberClaudeCatalog: func(key provider.ProbeCacheKey, _ claudemodels.Snapshot) {
+			gotAccountID = key.AccountID
 		},
 	}, testCaches())
 
@@ -479,5 +534,103 @@ func TestClaudeProbePersistsUnderTheSelectionWhenAdoptionIsEmpty(t *testing.T) {
 	}
 	if gotAccountID != "selected" {
 		t.Errorf("account id = %q, want the selected account", gotAccountID)
+	}
+}
+
+// A probe's answer belongs to the identity that produced it. The custom
+// environment is read once, when the probe starts: an edit that lands while
+// the probe waits for the account lock does not change what it runs with,
+// and an edit that lands while it runs must not file the old environment's
+// models under the new one's key, where the next caller would take them as
+// that environment's own report.
+func TestAClaudeProbeFilesItsAnswerUnderTheEnvironmentItRanIn(t *testing.T) {
+	claudecatalog.Reset()
+	t.Cleanup(claudecatalog.Reset)
+	env := "E1"
+	var ranWith string
+	var remembered provider.ProbeCacheKey
+	service := New(Deps{
+		Reaper:         procutiltest.Reaper(),
+		ProviderBinary: func(string) string { return "/mock/claude" },
+		Selection:      func(string) AccountSelection { return AccountSelection{AccountID: "account"} },
+		ProbeKey:       testProbeKey,
+		RunAccountProbe: func(request AccountProbeRequest) (provider.AccountInfo, error) {
+			// The person edits the provider environment while the probe
+			// waits for the account lock.
+			env = "E1.5"
+			info, err := request.Probe(context.Background())
+			if err != nil {
+				return provider.AccountInfo{}, err
+			}
+			request.AfterAdopt(provideraccounts.Account{ID: "adopted"})
+			return info, nil
+		},
+		ClaudeProbe: func(binary, accountID string) (provider.ProbeCacheKey, claude.ProbeConfig) {
+			return provider.ProbeCacheKey{Binary: binary, AccountID: accountID, WorkDir: "/tmp", EnvFingerprint: env},
+				claude.ProbeConfig{Reaper: procutiltest.Reaper(), Env: map[string]string{"ENV": env}}
+		},
+		ProbeClaude: func(_ context.Context, cfg claude.ProbeConfig) (provider.AccountInfo, error) {
+			ranWith = cfg.Env["ENV"]
+			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
+			// And again while the probe runs.
+			env = "E2"
+			return provider.AccountInfo{SubscriptionType: "max"}, nil
+		},
+		RememberClaudeCatalog: func(key provider.ProbeCacheKey, _ claudemodels.Snapshot) { remembered = key },
+	}, testCaches())
+
+	if _, err := service.ProbeClaudeAccount(); err != nil {
+		t.Fatal(err)
+	}
+	if ranWith != "E1" {
+		t.Errorf("the probe ran with environment %q, want E1, the one its key names", ranWith)
+	}
+	ran := provider.ProbeCacheKey{Binary: "/mock/claude", AccountID: "adopted", WorkDir: "/tmp", EnvFingerprint: "E1"}
+	if _, ok := claudecatalog.Export(ran); !ok {
+		t.Error("no live entry under the environment the probe ran in")
+	}
+	for _, edit := range []string{"E1.5", "E2"} {
+		edited := ran
+		edited.EnvFingerprint = edit
+		if _, ok := claudecatalog.Export(edited); ok {
+			t.Errorf("the probe filed its answer under the environment %s, edited after it started", edit)
+		}
+	}
+	if remembered != ran {
+		t.Errorf("persisted under %+v, want the identity that ran %+v", remembered, ran)
+	}
+}
+
+// A Codex probe likewise runs with the environment its cache key names, when
+// the environment is edited while it waits for the account lock.
+func TestACodexProbeRunsWithTheEnvironmentItsKeyNames(t *testing.T) {
+	env := "E1"
+	var ranWith string
+	var cachedUnder provider.ProbeCacheKey
+	service := New(Deps{
+		Reaper:         procutiltest.Reaper(),
+		ProviderBinary: func(string) string { return "/mock/codex" },
+		Selection:      func(string) AccountSelection { return AccountSelection{AccountID: "account"} },
+		ProbeKey:       testProbeKey,
+		RunAccountProbe: func(request AccountProbeRequest) (provider.AccountInfo, error) {
+			env = "E2"
+			cachedUnder = request.Key
+			return request.Probe(context.Background())
+		},
+		CodexProbe: func(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig) {
+			return provider.ProbeCacheKey{Binary: binary, AccountID: accountID, WorkDir: "/tmp", EnvFingerprint: env},
+				codex.ProbeConfig{Reaper: procutiltest.Reaper(), Env: map[string]string{"ENV": env}}
+		},
+		ProbeCodex: func(_ context.Context, cfg codex.ProbeConfig) (provider.AccountInfo, error) {
+			ranWith = cfg.Env["ENV"]
+			return provider.AccountInfo{Email: "codex@example.com"}, nil
+		},
+	}, testCaches())
+
+	if _, err := service.ProbeCodexAccount(); err != nil {
+		t.Fatal(err)
+	}
+	if ranWith != "E1" || cachedUnder.EnvFingerprint != "E1" {
+		t.Fatalf("the probe ran with %q and is cached under %q, want both E1", ranWith, cachedUnder.EnvFingerprint)
 	}
 }

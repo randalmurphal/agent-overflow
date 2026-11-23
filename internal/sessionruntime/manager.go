@@ -15,6 +15,10 @@ import (
 type Start struct {
 	Done chan struct{}
 	Err  error
+	// Registered is the session the start registered (Put), kept for its
+	// leader and joiners after the registry has moved on: a session that
+	// fails before it initializes can be unregistered before Done closes.
+	Registered Entry
 }
 
 type ClaudeMCPSession struct {
@@ -171,6 +175,9 @@ func (m *Manager) Put(threadID string, entry Entry) {
 		m.purgeClaudeLiveConfigState(displaced.Token)
 	}
 	m.sessions[threadID] = entry
+	if start := m.starting[threadID]; start != nil {
+		start.Registered = entry
+	}
 	m.mu.Unlock()
 }
 
@@ -312,8 +319,13 @@ func (m *Manager) UpdateProviderCredentials(providerName string, generation uint
 	return threadIDs
 }
 
+// RecordActivity stamps a provider event on the session it came from. It
+// holds the lock idle removal holds (TakeIdle), so an event either lands
+// before the removal's check and keeps its session, or finds it gone.
 func (m *Manager) RecordActivity(threadID, sessionToken string, kind provider.EventKind, content string, now time.Time) {
-	entry, ok := m.Get(threadID)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry, ok := m.sessions[threadID]
 	if !ok || entry.Token != sessionToken || entry.Liveness == nil {
 		return
 	}

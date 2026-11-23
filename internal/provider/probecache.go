@@ -43,6 +43,16 @@ type ProbeCacheKey struct {
 	EnvFingerprint string
 }
 
+// WithAccount is the same probe's identity filed under accountID. The
+// account a probe adopts is the one dimension that may differ from the one it
+// started under; every other dimension is what produced the answer, so a key
+// rebuilt from settings after the probe could name an environment that never
+// answered.
+func (k ProbeCacheKey) WithAccount(accountID string) ProbeCacheKey {
+	k.AccountID = accountID
+	return k
+}
+
 // String renders the map key. NUL separators because no path, binary, or
 // account id can contain one, so no two distinct keys can collide by
 // concatenation. Every field is written verbatim — an empty AccountID

@@ -46,8 +46,10 @@ backend opener, which re-validates against the same list
 copies identical) and refuses `file:` separately because the Windows
 shell opener executes a file URL's target. The webview itself never
 navigates: the delegate calls `preventDefault` on every openable anchor.
-Images accept `http(s)`, `data:image/`, the nonce-prefixed local image
-scheme, and the nonce-prefixed forge-attachment scheme; a path-shaped
+Images accept `http(s)` off the app's own origin (an authored image
+never makes the app request itself), `data:image/`, the nonce-prefixed
+local image scheme, and the nonce-prefixed forge-attachment scheme, in
+Markdown and in embedded HTML alike; a path-shaped
 src on a surface with a workspace is rewritten to the local image scheme
 during parsing and the bytes come from the thread's machine over the
 transport (`GetLocalImage`, route `selected`, `files:read`, then the

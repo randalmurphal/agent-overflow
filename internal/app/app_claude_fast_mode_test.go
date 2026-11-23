@@ -207,6 +207,31 @@ func TestClaudeFastModeWithoutAReport(t *testing.T) {
 	}
 }
 
+// After an account switch, a saved fast setting stands until the account
+// now in use reports: the picker shows what another account on the same
+// binary reported, and which models run fast is that account's answer, not
+// this one's.
+func TestASavedClaudeFastSettingStandsUntilTheSwitchedAccountReports(t *testing.T) {
+	// Serial: seeds the process-wide Claude model report.
+	f := newFastModeFixture(t)
+	other := f.app.claudeProbeModelKey()
+	other.AccountID += "-before-the-switch"
+	capture := claudecatalog.ModelCapture{}
+	capture.Capture([]claude.WireModel{{Value: reportedSlowModel}}, nil)
+	capture.Store(other)
+	if got := f.app.providerDiscoveryService().ClaudeCatalog(string(provider.Claude)).Provenance; got != provider.CatalogProbed {
+		t.Fatalf("the picker's provenance is %q under the other account's list, want probed", got)
+	}
+
+	if !f.keptBySanitize(reportedSlowModel) {
+		t.Error("sanitize cleared a saved fast flag on another account's list")
+	}
+	storeFastModeReport(t, f.app)
+	if f.keptBySanitize(reportedSlowModel) {
+		t.Error("this account's report does not mark the model fast, and sanitize kept the flag")
+	}
+}
+
 // Once the CLI has reported, fast mode is offered, kept and launched exactly
 // on the models the report marks fast.
 func TestClaudeFastModeFollowsTheReport(t *testing.T) {

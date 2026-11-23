@@ -102,7 +102,7 @@ func TestReactionsUnavailableReachesThePane(t *testing.T) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: pr.Number, HeadSHA: "head"}, ReactionsUnavailable: sentence.Load().(string)}, nil
 	}
 	events := capturePRUpdates(t, app)
-	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}

@@ -2,13 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DOWNLOAD_URL_LIFETIME_MS } from './blobDownload';
 import {
   attachmentImageMenuTag,
-  canSaveMenuImage,
+  saveMenuImageGrant,
   copyLocalImageMarkdown,
   copyLocalImagePath,
   copyMenuImage,
+  copyRepositoryImagePath,
   downloadName,
   forgeImageMenuTag,
   localImageMenuTag,
+  repositoryImageMenuTag,
   saveMenuImage,
   saveMenuImageLabel,
   taggedMenuImage,
@@ -20,7 +22,16 @@ import type { ResolvedForgeAttachment } from './forgeAttachmentCache';
 import { buildLocalImageHref } from './pathLinkExtension';
 import { getPinnedBackend } from '../transport/backends';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { mockAttachmentDownload, mockLocalImage } from '../../test/mocks/attachmentTransfer';
+import { mockAttachmentDownload, mockGitBlobImage, mockLocalImage } from '../../test/mocks/attachmentTransfer';
+import { answerAsV0019 } from '../../test/helpers/olderComputer';
+import { buildRepositoryImageHref, type RepositoryImageClaim } from './repositoryImageHref';
+import { acquireRepositoryImage, repositoryImageCacheKey } from './repositoryImages';
+import { __resetForgeFactsForTest, noteForgeFactsWorkspace } from '../stores/forgeFacts.svelte';
+import { __resetImageTiersForTest, fullSizeMaxWidth, rememberImageTier } from './imageTiers';
+import { __resetMediaBlobCacheForTest } from './mediaBlobCache';
+import { prKey } from './prReference';
+import { composeWorkspaceKey } from './workspaceKey';
+import type { WorkspaceRef } from '../types/git';
 
 const nativeShell = vi.hoisted(() => ({ value: false }));
 const webviewHosted = vi.hoisted(() => ({ value: false }));
@@ -28,6 +39,7 @@ const scopes = vi.hoisted(() => ({ host: false, write: true, git: true, files: t
 const forgeCache = vi.hoisted(() => ({ acquire: vi.fn(), release: vi.fn(), original: vi.fn() }));
 const openForge = vi.hoisted(() => vi.fn(async () => {}));
 const toasts = vi.hoisted(() => [] as Array<[string, string]>);
+const openedExternally = vi.hoisted(() => [] as string[]);
 const toastErrors = vi.hoisted(() => [] as unknown[]);
 
 vi.mock('../native/platform', async (importOriginal) => ({
@@ -38,16 +50,18 @@ vi.mock('../transport/pageHost', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../transport/pageHost')>()),
   isWebviewHosted: () => webviewHosted.value,
 }));
+const scopeHeld = vi.hoisted(() => (scope: string) =>
+  scope === 'host'
+    ? scopes.host
+    : scope === 'attachments:write'
+      ? scopes.write
+      : scope === 'files:read'
+        ? scopes.files
+        : scope === 'git:operate' && scopes.git);
 vi.mock('../transport/scopes', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../transport/scopes')>()),
-  hasScope: (scope: string) =>
-    scope === 'host'
-      ? scopes.host
-      : scope === 'attachments:write'
-        ? scopes.write
-        : scope === 'files:read'
-          ? scopes.files
-          : scope === 'git:operate' && scopes.git,
+  hasScope: scopeHeld,
+  scopeGrant: (scope: string) => (scopeHeld(scope) ? 'granted' : 'refused'),
 }));
 vi.mock('./forgeAttachmentCache', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./forgeAttachmentCache')>()),
@@ -56,6 +70,13 @@ vi.mock('./forgeAttachmentCache', async (importOriginal) => ({
 }));
 vi.mock('./forgeAttachmentActions', () => ({
   openForgeAttachment: (...args: unknown[]) => openForge(...(args as [])),
+}));
+vi.mock('./externalLinks', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./externalLinks')>()),
+  handleExternalURL: async (url: string) => {
+    openedExternally.push(url);
+    return true;
+  },
 }));
 vi.mock('../stores/toast.svelte', () => ({
   addToast: (kind: string, message: string) => {
@@ -294,12 +315,12 @@ describe('whether this page may save', () => {
   it('needs attachments:write only where the backend writes the file', () => {
     // Connected browser: a download reads through the same route the
     // lightbox does, so no write grant is involved.
-    expect(canSaveMenuImage(REF)).toBe(true);
+    expect(saveMenuImageGrant(REF)).toBe('granted');
     // Phone shell or webview on another computer: the backend writes.
     nativeShell.value = true;
-    expect(canSaveMenuImage(REF)).toBe(false);
+    expect(saveMenuImageGrant(REF)).toBe('refused');
     scopes.write = true;
-    expect(canSaveMenuImage(REF)).toBe(true);
+    expect(saveMenuImageGrant(REF)).toBe('granted');
   });
 });
 
@@ -413,12 +434,12 @@ describe('forge images', () => {
   it('needs git:operate only where the owning computer writes the file', () => {
     scopes.git = false;
     // Connected browser: an ordinary download of the bytes already held.
-    expect(canSaveMenuImage(FORGE)).toBe(true);
+    expect(saveMenuImageGrant(FORGE)).toBe('granted');
     // On the owning computer: SaveForgeAttachment, which is git:operate.
     scopes.host = true;
-    expect(canSaveMenuImage(FORGE)).toBe(false);
+    expect(saveMenuImageGrant(FORGE)).toBe('refused');
     scopes.git = true;
-    expect(canSaveMenuImage(FORGE)).toBe(true);
+    expect(saveMenuImageGrant(FORGE)).toBe('granted');
   });
 
   it('says Open on the forge where the action opens the browser instead of saving', () => {
@@ -427,7 +448,7 @@ describe('forge images', () => {
     expect(saveMenuImageLabel(FORGE)).toBe('Open on GitHub');
     // Opening a page needs no grant.
     scopes.git = false;
-    expect(canSaveMenuImage(FORGE)).toBe(true);
+    expect(saveMenuImageGrant(FORGE)).toBe('granted');
     // A thread attachment has no forge page: its save is always a save.
     expect(saveMenuImageLabel(REF)).toBe('Save Image');
   });
@@ -688,18 +709,229 @@ describe('local images', () => {
     it('needs files:read only where the owning computer writes the file', () => {
       scopes.files = false;
       // Connected browser: a download reads through the route the timeline does.
-      expect(canSaveMenuImage(LOCAL)).toBe(true);
+      expect(saveMenuImageGrant(LOCAL)).toBe('granted');
       // On the owning computer: SaveLocalImage, which is files:read.
       scopes.host = true;
-      expect(canSaveMenuImage(LOCAL)).toBe(false);
+      expect(saveMenuImageGrant(LOCAL)).toBe('refused');
       scopes.files = true;
-      expect(canSaveMenuImage(LOCAL)).toBe(true);
+      expect(saveMenuImageGrant(LOCAL)).toBe('granted');
     });
 
     it('is always labelled Save Image: a local file has no page to open instead', () => {
       expect(saveMenuImageLabel(LOCAL)).toBe('Save Image');
       nativeShell.value = true;
       expect(saveMenuImageLabel(LOCAL)).toBe('Save Image');
+    });
+  });
+});
+
+describe('repository images', () => {
+  const originalClipboard = navigator.clipboard;
+  const PR = { forge: 'github' as const, host: 'github.com', namespace: 'acme', repo: 'widget', number: 4 };
+  const WORKSPACE = { backend: 'gpu', path: '/work/widget' } as unknown as WorkspaceRef;
+  const OID = 'c'.repeat(40);
+  const CLAIM: RepositoryImageClaim = {
+    state: 'found',
+    backend: 'gpu',
+    pr: PR,
+    commit: 'a'.repeat(40),
+    path: 'docs/a shot.png',
+    oid: OID,
+    width: 640,
+    height: 480,
+    fluid: false,
+    browserUrl: `https://github.com/acme/widget/blob/${'a'.repeat(40)}/docs/a%20shot.png`,
+  };
+  const HREF = buildRepositoryImageHref(CLAIM);
+  const REPOSITORY: ImageMenuTarget = { kind: 'repository', image: CLAIM };
+
+  function tagged(tag: Record<string, string>): HTMLElement {
+    const host = document.createElement('span');
+    for (const [name, value] of Object.entries(tag)) host.setAttribute(name, value);
+    host.appendChild(document.createElement('img'));
+    return host;
+  }
+
+  function pngClipboard(): Blob[] {
+    const written: Blob[] = [];
+    setClipboard({
+      write: vi.fn(async (items: ClipboardItem[]) => {
+        written.push(await items[0].getType('image/png'));
+      }),
+    });
+    return written;
+  }
+
+  beforeEach(() => {
+    nativeShell.value = false;
+    webviewHosted.value = false;
+    scopes.host = false;
+    scopes.files = true;
+    toasts.length = 0;
+    toastErrors.length = 0;
+    openedExternally.length = 0;
+    resetBindingMocks();
+    noteForgeFactsWorkspace(composeWorkspaceKey('gpu', prKey(PR)), WORKSPACE);
+  });
+  afterEach(() => {
+    setClipboard(originalClipboard);
+    __resetMediaBlobCacheForTest();
+    __resetImageTiersForTest();
+    __resetForgeFactsForTest();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    resetBindingMocks();
+    document.body.innerHTML = '';
+  });
+
+  describe('the tag', () => {
+    it('round-trips the claim the parse built', () => {
+      const host = tagged(repositoryImageMenuTag(HREF));
+      expect(taggedMenuImage(host.firstElementChild)).toEqual({ element: host, target: REPOSITORY });
+    });
+
+    it('refuses an href this page did not mint, and a claim with no bytes', () => {
+      const forged = HREF.replace(/nonce=[^&]+/, 'nonce=not-this-page');
+      expect(taggedMenuImage(tagged(repositoryImageMenuTag(forged)))).toBeNull();
+      for (const state of ['lfs', 'absent', 'pending'] as const) {
+        const href = buildRepositoryImageHref({ ...CLAIM, state, oid: '', width: 0, height: 0 });
+        expect(taggedMenuImage(tagged(repositoryImageMenuTag(href))), state).toBeNull();
+      }
+      // A forge tag naming a repository href is read as a forge image, and refused.
+      expect(taggedMenuImage(tagged(forgeImageMenuTag(HREF)))).toBeNull();
+    });
+  });
+
+  describe('Copy Image', () => {
+    it('copies the bytes the page holds when they are the original, with no second read', async () => {
+      const mint = mockGitBlobImage(() => ({ blob: new Blob(['full-size'], { type: 'image/png' }) }));
+      const painted = acquireRepositoryImage(CLAIM, 0);
+      await painted.value;
+      const written = pngClipboard();
+      const copy = copyMenuImage(REPOSITORY);
+      // Reached before anything is awaited, inside the click's task.
+      expect(navigator.clipboard.write).toHaveBeenCalledTimes(1);
+      await copy;
+      expect(mint).toHaveBeenCalledTimes(1);
+      expect(await written[0].text()).toBe('full-size');
+      painted.release();
+    });
+
+    it('fetches the original behind a display-size derivative', async () => {
+      const mint = mockGitBlobImage((_ws, _oid, maxWidth) => ({
+        blob: new Blob([maxWidth === 720 ? 'small' : 'full-size'], { type: 'image/png' }),
+        derived: maxWidth === 720,
+      }));
+      rememberImageTier(repositoryImageCacheKey('gpu', PR, OID), 720);
+      const painted = acquireRepositoryImage(CLAIM, 720);
+      await painted.value;
+      const written = pngClipboard();
+      await copyMenuImage(REPOSITORY);
+      expect(mint.mock.calls).toEqual([
+        [WORKSPACE, OID, 720],
+        [WORKSPACE, OID, fullSizeMaxWidth()],
+      ]);
+      expect(await written[0].text()).toBe('full-size');
+      painted.release();
+    });
+  });
+
+  it('copies the repository path as the claim names it', async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    setClipboard({ writeText });
+    const copy = copyRepositoryImagePath(CLAIM);
+    expect(writeText).toHaveBeenCalledWith('docs/a shot.png');
+    await copy;
+    expect(toasts).toEqual([['success', 'Path copied']]);
+  });
+
+  describe('Save Image', () => {
+    it("has the PR's computer write the blob into Downloads when this page is on it", async () => {
+      scopes.host = true;
+      const pins: Array<string | null> = [];
+      const save = setBindingMock('SaveGitBlobImage', async () => {
+        pins.push(getPinnedBackend());
+        return '/home/u/Downloads/a shot.png';
+      });
+      await saveMenuImage(REPOSITORY);
+      expect(save).toHaveBeenCalledWith(WORKSPACE, OID, 'a shot.png');
+      expect(pins).toEqual(['gpu']);
+      expect(toasts).toEqual([['success', 'Saved to /home/u/Downloads/a shot.png']]);
+    });
+
+    it('opens the file on the forge from a webview or the phone, and says so', async () => {
+      const save = setBindingMock('SaveGitBlobImage', async () => '/unused');
+      for (const shell of ['webview', 'phone'] as const) {
+        webviewHosted.value = shell === 'webview';
+        nativeShell.value = shell === 'phone';
+        expect(saveMenuImageLabel(REPOSITORY)).toBe('Open on GitHub');
+        const gitlab: ImageMenuTarget = { kind: 'repository', image: { ...CLAIM, pr: { ...PR, forge: 'gitlab', host: 'gitlab.com' } } };
+        expect(saveMenuImageLabel(gitlab)).toBe('Open on GitLab');
+        await saveMenuImage(REPOSITORY);
+      }
+      expect(openedExternally).toEqual([CLAIM.browserUrl, CLAIM.browserUrl]);
+      expect(save).not.toHaveBeenCalled();
+      expect(toasts).toEqual([]);
+    });
+
+    it("downloads the blob's original under the file's name in a connected browser", async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout'] });
+      const mint = mockGitBlobImage(() => ({ blob: new Blob(['full-size'], { type: 'image/png' }) }));
+      const save = setBindingMock('SaveGitBlobImage', async () => '/unused');
+      const created: Blob[] = [];
+      vi.spyOn(URL, 'createObjectURL').mockImplementation((blob) => {
+        created.push(blob as Blob);
+        return 'blob:download-repo';
+      });
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+      const clicks: Array<[string, string]> = [];
+      vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+        clicks.push([this.getAttribute('href') ?? '', this.getAttribute('download') ?? '']);
+      });
+      expect(saveMenuImageLabel(REPOSITORY)).toBe('Save Image');
+      await saveMenuImage(REPOSITORY);
+      expect(save).not.toHaveBeenCalled();
+      expect(mint).toHaveBeenCalledWith(WORKSPACE, OID, 0);
+      expect(await created[0].text()).toBe('full-size');
+      expect(clicks).toEqual([['blob:download-repo', 'a shot.png']]);
+      expect(toasts).toEqual([]);
+    });
+
+    it('surfaces a refused save, a failed download and a computer too old to save', async () => {
+      scopes.host = true;
+      setBindingMock('SaveGitBlobImage', async () => {
+        throw new Error('save git blob image: a Git LFS pointer');
+      });
+      await saveMenuImage(REPOSITORY);
+      scopes.host = false;
+      mockGitBlobImage(() => {
+        throw new Error('read git blob image: no such blob in this repository');
+      });
+      await saveMenuImage(REPOSITORY);
+      scopes.host = true;
+      answerAsV0019();
+      await saveMenuImage(REPOSITORY);
+      expect(toasts).toEqual([
+        ['error', 'save git blob image: a Git LFS pointer'],
+        ['error', 'read git blob image: no such blob in this repository'],
+        ['error', 'That computer runs an older version, which cannot save images from its repository.'],
+      ]);
+      expect(toastErrors).toHaveLength(3);
+    });
+
+    it('needs files:read only where the owning computer writes the file', () => {
+      scopes.files = false;
+      expect(saveMenuImageGrant(REPOSITORY)).toBe('granted');
+      scopes.host = true;
+      expect(saveMenuImageGrant(REPOSITORY)).toBe('refused');
+      scopes.files = true;
+      expect(saveMenuImageGrant(REPOSITORY)).toBe('granted');
+      // Opening the forge page needs no grant.
+      scopes.files = false;
+      scopes.host = false;
+      nativeShell.value = true;
+      expect(saveMenuImageGrant(REPOSITORY)).toBe('granted');
     });
   });
 });

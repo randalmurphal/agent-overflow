@@ -2,16 +2,18 @@
   // The agent roster: the profiles a thread spawns by name, the notes it
   // reads when choosing, and how deep sub-threads may go
   // (internal/settings/agentroster.go). Each list is edited in its own
-  // draft (rosterDraft.ts) and saved whole when a control commits (change,
+  // draft and saved whole when a control commits (change,
   // not input), and only when every entry passes the checks the backend
   // makes, so a half-typed name never reaches the agents. An entry that
   // fails a check keeps what was typed and says why beside it. While an
   // entry is marked as changed elsewhere too, its list is not saved until
   // the person answers the mark with Save mine or the other version. A
-  // computer on a release before the roster gets none of it.
+  // computer on a release before the roster gets none of it. Every change
+  // to the drafts, the checks and Restore goes through one owner
+  // (rosterEditor.svelte.ts), which orders them.
   import { onMount, untrack } from 'svelte';
   import { settingsComputer } from './settingsComputer';
-  import { computerHasSetting } from '../../stores/settings.svelte';
+  import { computerHasSetting, olderComputerNote, settingsComputerName } from '../../stores/settings.svelte';
   import SettingsOlderComputer from './SettingsOlderComputer.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
@@ -30,23 +32,11 @@
     MAX_PROFILE_USE_FOR_CHARS,
     noteProblems,
     profileProblems,
-    trimNote,
-    trimProfile,
   } from './agentRoster';
-  import {
-    DraftRevision,
-    draftOf,
-    keepMine,
-    markSaved,
-    marked,
-    reconcile,
-    takeTheirs,
-    unsaved,
-    type Draft,
-  } from './rosterDraft';
-  import { SETTINGS_DEFAULTS } from '../../generated/settingsDefaults';
-  import { CheckAgentProfiles } from '../../stores/bindings';
-  import type { AgentNote, AgentNoteWhen, AgentProfile } from '../../types/settings';
+  import { RosterEditor, checkKey, type ProfileCheck, type Roster } from './rosterEditor.svelte';
+  import { AgentRosterSeeds, CheckAgentProfiles } from '../../stores/bindings';
+  import { addErrorToast } from '../../stores/toast.svelte';
+  import type { AgentNoteWhen, AgentProfile } from '../../types/settings';
 
   const { backend, getSettings, updateSetting, updateSettingsPatch, call } = settingsComputer();
   let settings = $derived(getSettings());
@@ -81,158 +71,68 @@
   ];
   const LEVELS = [1, 2, 3, 4];
 
-  // A profile's saved counterpart, when it changed elsewhere too: the one
-  // with its name, which is unique in the list.
-  const sameProfile = (origin: AgentProfile, entry: AgentProfile) =>
-    origin.name.toLowerCase() === entry.name.toLowerCase();
+  /**
+   * What this computer makes of each profile, with a problem on each
+   * family it cannot run because it predates model families: one with no
+   * check of its own (CheckAgentProfiles answers null), or one whose check
+   * finds the family missing and that has no AgentRosterSeeds. Such a
+   * computer reads a family as an exact model ID it does not offer. Which
+   * models are families is read from this window's own computer, which
+   * owns the version rules; a profile the computer runs as written is left
+   * alone. Throws when a lookup the answer needs fails or has no answer.
+   */
+  async function profileChecks(list: AgentProfile[]): Promise<ProfileCheck[]> {
+    const there = (await call(() => CheckAgentProfiles(list))) as ProfileCheck[] | null;
+    if (there !== null && !there.some((result) => result?.missing)) return there;
+    if (there !== null && (await call(() => AgentRosterSeeds())) !== null) return there;
+    const families = (await CheckAgentProfiles(list)) as ProfileCheck[] | null;
+    if (families === null) throw new Error("this window's computer cannot tell which models are families.");
+    const lacks = olderComputerNote(backend, 'model families');
+    return list.map((_, index) => {
+      const result = there?.[index] ?? {};
+      if (!families[index]?.family) return result;
+      if (there === null) return { ...result, problem: lacks };
+      return result.missing ? { ...result, problem: `${lacks} ${result.missing}` } : result;
+    });
+  }
 
-  // Each list follows its own saved value: a save from here (the store
-  // shows it at once, and puts back the saved list with its error toast
-  // when the backend refuses it) or one made elsewhere. What is dirty here
-  // stays (rosterDraft.ts reconcile).
-  let profiles = $state<Draft<AgentProfile>>(draftOf(getSettings().agentProfiles));
-  let notes = $state<Draft<AgentNote>>(draftOf(getSettings().agentNotes));
-  let followedProfiles = JSON.stringify(getSettings().agentProfiles);
-  let followedNotes = JSON.stringify(getSettings().agentNotes);
-  const profilesRevision = new DraftRevision();
-  const notesRevision = new DraftRevision();
+  const editor = new RosterEditor({
+    saved: () => getSettings(),
+    check: profileChecks,
+    checkFailure: (err) => {
+      const reason = err instanceof Error ? err.message : String(err);
+      return `Could not check the profiles against ${settingsComputerName(backend) || 'this computer'}: ${reason} A change to them is not saved until the check answers.`;
+    },
+    seeds: async () => (await call(() => AgentRosterSeeds())) as Roster | null,
+    noSeeds: () => olderComputerNote(backend, 'starting roster of its own to restore'),
+    seedsFailed: (err) => addErrorToast('Could not read the starting roster', err),
+    write: (patch) => updateSettingsPatch(patch),
+  });
+
+  // Each list follows its own saved value: a save from here, a save made
+  // elsewhere, or the store putting back the saved list after it refused
+  // one. The owner tells this page's own write apart.
   $effect(() => {
     const saved = settings.agentProfiles;
-    const key = JSON.stringify(saved);
-    if (key === followedProfiles) return;
-    followedProfiles = key;
-    untrack(() => {
-      const dropped = profilesRevision.replace();
-      profiles = reconcile($state.snapshot(profiles) as Draft<AgentProfile>, saved, trimProfile, sameProfile);
-      void checkProfiles(saved.map(trimProfile));
-      // The save the change dropped writes the reconciled draft instead.
-      if (dropped) void saveProfiles();
-    });
+    untrack(() => editor.follow('profiles', saved));
   });
   $effect(() => {
     const saved = settings.agentNotes;
-    const key = JSON.stringify(saved);
-    if (key === followedNotes) return;
-    followedNotes = key;
-    untrack(() => {
-      notesRevision.replace();
-      notes = reconcile($state.snapshot(notes) as Draft<AgentNote>, saved, trimNote);
-    });
+    untrack(() => editor.follow('notes', saved));
   });
 
-  let profileErrors = $derived(profileProblems(profiles.entries.map((entry) => entry.value)));
-  let noteErrors = $derived(noteProblems(notes.entries.map((entry) => entry.value)));
+  let profileErrors = $derived(profileProblems(editor.profiles.entries.map((entry) => entry.value)));
+  let noteErrors = $derived(noteProblems(editor.notes.entries.map((entry) => entry.value)));
 
-  // What this computer makes of each profile's provider, model and effort
-  // (CheckAgentProfiles): a problem blocks the save, a missing provider or
-  // model is a note. Keyed by those three, so an entry shows the check of
-  // what it holds and nothing while that is unchecked.
-  type ProfileCheck = { problem?: string; missing?: string };
-  let checks = $state<Record<string, ProfileCheck>>({});
-  const checkKey = (profile: AgentProfile) => JSON.stringify([profile.provider, profile.model.trim(), profile.effort]);
-
-  /**
-   * Checks `list` and records the results; false when a profile cannot
-   * run, null when the computer could not check (an older one, or the call
-   * failed), so the save goes ahead and UpdateSettings decides.
-   */
-  async function checkProfiles(list: AgentProfile[]): Promise<boolean | null> {
-    let results: ProfileCheck[];
-    try {
-      const answer = await call(() => CheckAgentProfiles(list));
-      // An older computer has no check (bindings.ts, CheckAgentProfiles).
-      if (answer === null) return null;
-      results = answer as ProfileCheck[];
-    } catch (err) {
-      console.warn('Could not check the agent profiles against this computer:', err);
-      return null;
-    }
-    const next = { ...checks };
-    list.forEach((profile, index) => {
-      next[checkKey(profile)] = results[index] ?? {};
-    });
-    checks = next;
-    return results.every((result) => !result?.problem);
-  }
-
-  // A list with an entry marked as changed elsewhere too is not saved: a
-  // field the person leaves keeps its draft, and the save waits for them
-  // to keep theirs or take the other version on every marked entry.
-  async function saveProfiles(): Promise<void> {
-    if (profileErrors.size > 0 || marked(profiles)) return;
-    const revision = profilesRevision.beginSave();
-    const entries = [...profiles.entries];
-    const sent = entries.map((entry) => trimProfile($state.snapshot(entry.value) as AgentProfile));
-    const runnable = await checkProfiles(sent);
-    if (!profilesRevision.finishSave(revision) || runnable === false) return;
-    markSaved(profiles, entries, sent);
-    void updateSetting('agentProfiles', sent);
-  }
-  function saveNotes(): void {
-    if (noteErrors.size > 0 || marked(notes)) return;
-    const revision = notesRevision.beginSave();
-    const entries = [...notes.entries];
-    const sent = entries.map((entry) => trimNote($state.snapshot(entry.value) as AgentNote));
-    if (!notesRevision.finishSave(revision)) return;
-    markSaved(notes, entries, sent);
-    void updateSetting('agentNotes', sent);
-  }
-
-  // The two answers to a mark. Taking the other version replaces the draft,
-  // dropping a save still checking it; either one saves what the list
-  // holds unsaved once nothing marked is left.
-  function keepMineProfile(index: number): void {
-    keepMine(profiles, index);
-    void saveProfiles();
-  }
-  function takeTheirsProfile(index: number): void {
-    profilesRevision.replace();
-    takeTheirs(profiles, index);
-    if (unsaved(profiles, trimProfile)) void saveProfiles();
-  }
-  function keepMineNote(index: number): void {
-    keepMine(notes, index);
-    saveNotes();
-  }
-  function takeTheirsNote(index: number): void {
-    notesRevision.replace();
-    takeTheirs(notes, index);
-    if (unsaved(notes, trimNote)) saveNotes();
-  }
-  function addProfile(): void {
-    profiles.entries.push({
-      value: { name: '', useFor: '', provider: '', model: '', effort: '', runtimeMode: '', instructions: '' },
-      origin: null,
-    });
-  }
-  function deleteProfile(index: number): void {
-    const [entry] = profiles.entries.splice(index, 1);
-    if (entry?.origin) profiles.removed.push(entry.origin);
-    void saveProfiles();
-  }
-  function addNote(): void {
-    notes.entries.push({ value: { text: '', when: '' }, origin: null });
-  }
-  function deleteNote(index: number): void {
-    const [entry] = notes.entries.splice(index, 1);
-    if (entry?.origin) notes.removed.push(entry.origin);
-    saveNotes();
-  }
-  function restore(): void {
-    const shippedProfiles = SETTINGS_DEFAULTS.agentProfiles as AgentProfile[];
-    const shippedNotes = SETTINGS_DEFAULTS.agentNotes as AgentNote[];
-    profilesRevision.replace();
-    notesRevision.replace();
-    profiles = draftOf(shippedProfiles);
-    notes = draftOf(shippedNotes);
-    void updateSettingsPatch({
-      agentProfiles: shippedProfiles.map((profile) => ({ ...profile })),
-      agentNotes: shippedNotes.map((note) => ({ ...note })),
-    });
+  const inputValue = (e: Event) => (e.target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value;
+  function chooseProfile(index: number, patch: Partial<AgentProfile>): void {
+    editor.editProfile(index, patch);
+    editor.commit('profiles');
   }
 
   onMount(() => {
-    if (!older) void checkProfiles(getSettings().agentProfiles.map(trimProfile));
+    if (!older) editor.mount();
+    return () => editor.close();
   });
 </script>
 
@@ -296,12 +196,15 @@
       data-settings-label="Profiles"
       data-testid="agent-profiles-list"
     >
-      {#if profiles.entries.length === 0}
+      {#if editor.checkFailure}
+        <p class="text-[0.71875rem] text-error" role="alert" data-testid="agent-profiles-check-failure">{editor.checkFailure}</p>
+      {/if}
+      {#if editor.profiles.entries.length === 0}
         <p class="text-[0.71875rem] text-fg-hint">No profiles. Threads spawn with their own provider and model.</p>
       {/if}
-      {#each profiles.entries as entry, index (index)}
+      {#each editor.profiles.entries as entry, index (index)}
         {@const profile = entry.value}
-        {@const check = checks[checkKey(profile)]}
+        {@const check = editor.checks[checkKey(profile)]}
         {@const error = profileErrors.get(index) ?? check?.problem}
         <div
           class="flex flex-col gap-2 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1/30 p-3"
@@ -315,8 +218,9 @@
               type="text"
               placeholder="Name"
               maxlength={MAX_PROFILE_NAME_CHARS}
-              bind:value={entry.value.name}
-              onchange={() => void saveProfiles()}
+              value={profile.name}
+              oninput={(e) => editor.editProfile(index, { name: inputValue(e) })}
+              onchange={() => editor.commit('profiles')}
               aria-invalid={error !== undefined}
               class="{INPUT_CLASS} max-w-[10rem] font-medium"
             />
@@ -325,10 +229,7 @@
               id="agent-profile-provider-{index}"
               title="Provider"
               value={profile.provider}
-              onchange={(e) => {
-                entry.value.provider = (e.target as HTMLSelectElement).value as AgentProfile['provider'];
-                void saveProfiles();
-              }}
+              onchange={(e) => chooseProfile(index, { provider: inputValue(e) as AgentProfile['provider'] })}
               class={SELECT_CLASS}
             >
               {#each PROVIDERS as option (option.value)}
@@ -340,9 +241,11 @@
               id="agent-profile-model-{index}"
               type="text"
               placeholder="Inherit model"
+              title="A model ID, or a family without a version, such as claude-opus or gpt-sol, which runs the newest model of it a computer lists"
               maxlength={MAX_PROFILE_MODEL_CHARS}
-              bind:value={entry.value.model}
-              onchange={() => void saveProfiles()}
+              value={profile.model}
+              oninput={(e) => editor.editProfile(index, { model: inputValue(e) })}
+              onchange={() => editor.commit('profiles')}
               class="{INPUT_CLASS} max-w-[12rem] font-mono"
             />
             <label class="sr-only" for="agent-profile-effort-{index}">Effort</label>
@@ -350,10 +253,7 @@
               id="agent-profile-effort-{index}"
               title="Effort"
               value={profile.effort}
-              onchange={(e) => {
-                entry.value.effort = (e.target as HTMLSelectElement).value as AgentProfile['effort'];
-                void saveProfiles();
-              }}
+              onchange={(e) => chooseProfile(index, { effort: inputValue(e) as AgentProfile['effort'] })}
               class={SELECT_CLASS}
             >
               {#each EFFORTS as option (option.value)}
@@ -365,10 +265,7 @@
               id="agent-profile-mode-{index}"
               title="Runtime mode"
               value={profile.runtimeMode}
-              onchange={(e) => {
-                entry.value.runtimeMode = (e.target as HTMLSelectElement).value as AgentProfile['runtimeMode'];
-                void saveProfiles();
-              }}
+              onchange={(e) => chooseProfile(index, { runtimeMode: inputValue(e) as AgentProfile['runtimeMode'] })}
               class={SELECT_CLASS}
             >
               {#each MODES as option (option.value)}
@@ -379,7 +276,7 @@
               type="button"
               class="{GHOST_BUTTON_CLASS} ml-auto"
               aria-label={`Delete ${profile.name || 'this profile'}`}
-              onclick={() => deleteProfile(index)}
+              onclick={() => editor.remove('profiles', index)}
             >
               Delete
             </button>
@@ -389,14 +286,25 @@
               {`${check.missing} Threads here are not offered this profile; a paired computer that runs it still offers it.`}
             </p>
           {/if}
+          {#if check?.runs && check.runs !== profile.model.trim() && !error}
+            <p class="text-[0.71875rem] text-fg-muted" data-testid="agent-profile-runs">
+              {`Runs ${check.runs} here, the newest ${profile.model.trim()} model this computer lists.`}
+            </p>
+          {/if}
+          {#if check?.unreadable?.length && !error}
+            <p class="text-[0.71875rem] text-fg-muted" data-testid="agent-profile-unreadable">
+              {`Also listed here, but never run for a family: ${check.unreadable.join(', ')}. Agent Overflow cannot read their version.`}
+            </p>
+          {/if}
           <label class="flex flex-col gap-1 text-[0.71875rem] text-fg-muted">
             Use for
             <textarea
               rows={2}
               maxlength={MAX_PROFILE_USE_FOR_CHARS}
               placeholder="What this agent is good at, what it costs, and what not to use it for."
-              bind:value={entry.value.useFor}
-              onchange={() => void saveProfiles()}
+              value={profile.useFor}
+              oninput={(e) => editor.editProfile(index, { useFor: inputValue(e) })}
+              onchange={() => editor.commit('profiles')}
               class="{INPUT_CLASS} resize-y"
             ></textarea>
           </label>
@@ -404,8 +312,9 @@
             Instructions, appended to the sub-thread's system prompt (optional)
             <textarea
               rows={2}
-              bind:value={entry.value.instructions}
-              onchange={() => void saveProfiles()}
+              value={profile.instructions}
+              oninput={(e) => editor.editProfile(index, { instructions: inputValue(e) })}
+              onchange={() => editor.commit('profiles')}
               class="{INPUT_CLASS} resize-y"
             ></textarea>
           </label>
@@ -413,8 +322,8 @@
             {@render changedElsewhere(
               'agent-profile-conflict',
               entry.theirs !== null,
-              () => keepMineProfile(index),
-              () => takeTheirsProfile(index),
+              () => editor.keepMine('profiles', index),
+              () => editor.takeTheirs('profiles', index),
             )}
           {/if}
           {#if error}
@@ -426,8 +335,8 @@
         <button
           type="button"
           class={SECONDARY_BUTTON_CLASS}
-          disabled={profiles.entries.length >= MAX_AGENT_PROFILES}
-          onclick={addProfile}
+          disabled={editor.profiles.entries.length >= MAX_AGENT_PROFILES}
+          onclick={() => editor.addProfile()}
         >
           Add profile
         </button>
@@ -446,7 +355,7 @@
       data-settings-label="Choosing notes"
       data-testid="agent-notes-list"
     >
-      {#each notes.entries as entry, index (index)}
+      {#each editor.notes.entries as entry, index (index)}
         {@const note = entry.value}
         {@const error = noteErrors.get(index)}
         <div class="flex flex-col gap-2" data-testid="agent-note">
@@ -455,8 +364,9 @@
             id="agent-note-text-{index}"
             rows={3}
             maxlength={MAX_AGENT_NOTE_CHARS}
-            bind:value={entry.value.text}
-            onchange={saveNotes}
+            value={note.text}
+            oninput={(e) => editor.editNote(index, { text: inputValue(e) })}
+            onchange={() => editor.commit('notes')}
             aria-invalid={error !== undefined}
             class="{INPUT_CLASS} resize-y"
           ></textarea>
@@ -466,8 +376,8 @@
               id="agent-note-when-{index}"
               value={note.when}
               onchange={(e) => {
-                entry.value.when = (e.target as HTMLSelectElement).value as AgentNoteWhen;
-                saveNotes();
+                editor.editNote(index, { when: inputValue(e) as AgentNoteWhen });
+                editor.commit('notes');
               }}
               class="{SELECT_CLASS} min-w-0 flex-1 truncate"
             >
@@ -475,7 +385,7 @@
                 <option value={option.value}>{option.label}</option>
               {/each}
             </select>
-            <button type="button" class="{GHOST_BUTTON_CLASS} ml-auto" onclick={() => deleteNote(index)}>
+            <button type="button" class="{GHOST_BUTTON_CLASS} ml-auto" onclick={() => editor.remove('notes', index)}>
               Delete
             </button>
           </div>
@@ -483,8 +393,8 @@
             {@render changedElsewhere(
               'agent-note-conflict',
               entry.theirs !== null,
-              () => keepMineNote(index),
-              () => takeTheirsNote(index),
+              () => editor.keepMine('notes', index),
+              () => editor.takeTheirs('notes', index),
             )}
           {/if}
           {#if error}
@@ -496,8 +406,8 @@
         <button
           type="button"
           class={SECONDARY_BUTTON_CLASS}
-          disabled={notes.entries.length >= MAX_AGENT_NOTES}
-          onclick={addNote}
+          disabled={editor.notes.entries.length >= MAX_AGENT_NOTES}
+          onclick={() => editor.addNote()}
         >
           Add note
         </button>
@@ -512,10 +422,13 @@
         label="Restore the starting roster"
         hint="Replace the profiles and notes with the ones the app ships with. Your edits to them are lost."
       >
-        <button type="button" class={SECONDARY_BUTTON_CLASS} onclick={restore} data-testid="agent-profiles-restore">
+        <button type="button" class={SECONDARY_BUTTON_CLASS} onclick={() => void editor.restore()} data-testid="agent-profiles-restore">
           Restore
         </button>
       </SettingsField>
+      {#if editor.restoreRefusal}
+        <p class="text-[0.71875rem] text-error" role="alert" data-testid="agent-profiles-restore-refusal">{editor.restoreRefusal}</p>
+      {/if}
     </div>
   </section>
   {/if}

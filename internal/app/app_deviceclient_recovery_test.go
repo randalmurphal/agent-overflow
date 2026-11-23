@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/servercert"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 )
 
@@ -42,10 +43,10 @@ func testLostCommittedRenewal(t *testing.T, switchRoute bool) {
 		advertised.Store([]computerroute.Route{alternatePairedListener(t, backend)})
 	}
 	invite, link := backend.mintLink(t, string(identity.PairingAccessFull))
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testutil.WaitBudget(t))
 	defer cancel()
 	dir := t.TempDir()
-	client, _, err := deviceclient.Pair(ctx, dir, link, "recovery test", "linux")
+	client, _, err := pairTestDevice(t, dir, link, "recovery test", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}

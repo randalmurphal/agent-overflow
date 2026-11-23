@@ -23,10 +23,11 @@ import { Lexer } from './parser/engine';
 import { describe, expect, it } from 'vitest';
 import { lex } from './index';
 import { markedAlert } from './parser/extensions/alert';
+import { EMBEDDED_HTML_EXTENSIONS } from './parser/extensions/embeddedHtml';
 
 /** Run the extension's tokenizer the way marked's block loop does. */
 const tokenizeBlockquote = (src: string) =>
-  markedAlert.tokenizer.call({ lexer: new Lexer({ gfm: true }) }, src, []);
+  markedAlert.tokenizer!.call({ lexer: new Lexer({ gfm: true }) }, src, []);
 
 describe('marked-alert raw is the consumed prefix', () => {
   // Both shapes came out of a fuzz over blockquote-flavoured sources; each
@@ -109,6 +110,104 @@ describe('marked-alert raw is the consumed prefix', () => {
     expect(token?.type).toBe('alert');
     expect(token?.variant).toBe('warning');
     expect(token?.text).toBe('Mind the gap.');
+  });
+});
+
+// A quote's body is lexed by the active lexer through the engine's blockquote
+// rule: a block extension claims a run that spans blank quoted lines as it
+// does outside a quote, and a lazy line stays where the engine puts it.
+describe('a quoted body is lexed by the active lexer', () => {
+  type Node = { type: string; raw?: string; text?: string; tokens?: Node[] };
+  const kinds = (tokens: Node[] | undefined) => (tokens ?? []).filter((token) => token.type !== 'space').map((token) => token.type);
+  const DETAILS = '<details>\n> <summary>More</summary>\n>\n> - one\n> - two\n>\n> </details>';
+
+  it('keeps a <details> run whole inside a quote', () => {
+    const [quote] = lex(`> before\n>\n> ${DETAILS}\n>\n> after\n`, EMBEDDED_HTML_EXTENSIONS) as Node[];
+    expect(quote.type).toBe('blockquote');
+    expect(kinds(quote.tokens)).toEqual(['paragraph', 'details', 'paragraph']);
+    const details = quote.tokens?.find((token) => token.type === 'details');
+    expect(kinds(details?.tokens)).toEqual(['detailsSummary', 'list']);
+  });
+
+  it('keeps a <details> run whole inside an alert, the marker stripped', () => {
+    const [alert] = lex(`> [!NOTE]\n> Processing.\n>\n> ${DETAILS}\n`, EMBEDDED_HTML_EXTENSIONS) as Node[];
+    expect(alert.type).toBe('alert');
+    expect(kinds(alert.tokens)).toEqual(['paragraph', 'details']);
+    expect(alert.tokens?.[0].text).toBe('Processing.');
+    const details = alert.tokens?.find((token) => token.type === 'details');
+    expect(kinds(details?.tokens)).toEqual(['detailsSummary', 'list']);
+  });
+
+  it('keeps display math whole across a blank quoted line', () => {
+    const [quote] = lex('> $$\n> x = 1\n>\n> y = 2\n> $$\n') as Node[];
+    expect(kinds(quote.tokens)).toEqual(['math']);
+  });
+
+  it('keeps every block of a quoted body', () => {
+    // One child per body block, none dropped: a paragraph, a list and code.
+    const [quote] = lex('> lead\n>\n> - a\n> - b\n>\n> ```\n> code\n> ```\n') as Node[];
+    expect(kinds(quote.tokens)).toEqual(['paragraph', 'list', 'code']);
+  });
+
+  it('keeps a lazy line after a non-paragraph as its own block', () => {
+    // The html block ends at the quote's last `>` line; lexing the body as
+    // one string would hand `y` to it.
+    for (const source of ['> x\n> <div>\ny', '> [!NOTE]\n> x\n> <div>\ny']) {
+      const [quote] = lex(source) as Node[];
+      expect(quote.raw).toBe(source);
+      expect(quote.tokens?.map((token) => [token.type, token.raw])).toEqual([
+        ['paragraph', 'x\n'],
+        ['html', '<div>'],
+        ['paragraph', 'y']
+      ]);
+    }
+  });
+
+  it('builds a lazily continued nested list or quote through its extension', () => {
+    // The list extension's token carries `tokens`; the engine's own carries `items`.
+    const [inList] = lex('> - a\nb') as Node[];
+    expect(inList.tokens?.[0]).toMatchObject({ type: 'list', raw: '- a\nb' });
+    expect(inList.tokens?.[0].tokens?.map((token) => token.type)).toEqual(['list_item']);
+    expect(inList.tokens?.[0]).not.toHaveProperty('items');
+
+    const [inAlert] = lex('> [!TIP] Title\n> - a\nb\n\nout') as Node[];
+    expect(inAlert).toMatchObject({ type: 'alert', raw: '> [!TIP] Title\n> - a\nb' });
+    expect(inAlert.tokens?.[1].tokens?.map((token) => token.type)).toEqual(['list_item']);
+
+    const [outer] = lex('> > [!WARNING]\n> > in\nlazy') as Node[];
+    expect(outer.tokens).toHaveLength(1);
+    expect(outer.tokens?.[0]).toMatchObject({ type: 'alert', raw: '> [!WARNING]\n> in\nlazy' });
+    expect(outer.tokens?.[0].tokens?.map((token) => token.text)).toEqual(['in\nlazy']);
+  });
+});
+
+describe('an alert marker', () => {
+  type Node = { type: string; raw?: string; text?: string; tokens?: Node[] };
+  const children = (source: string) => {
+    const [alert, ...after] = lex(source) as Node[];
+    return { alert, after, blocks: alert.tokens?.map((token) => [token.type, token.text]) };
+  };
+
+  it('goes once, whatever its case, and leaves the body as authored', () => {
+    const { alert, blocks } = children('> [!note] same line [!NOTE] again\n>\n>     indented');
+    expect(alert.type).toBe('alert');
+    expect(blocks).toEqual([
+      ['paragraph', 'same line [!NOTE] again'],
+      ['code', 'indented']
+    ]);
+  });
+
+  it('on a line of its own leaves the next line first, quoted or lazy', () => {
+    expect(children('> [!NOTE]\n> body').blocks).toEqual([['paragraph', 'body']]);
+    expect(children('> [!NOTE]\nlazy').blocks).toEqual([['paragraph', 'lazy']]);
+    expect(children('> [!NOTE]\n>\n> body').blocks).toEqual([['paragraph', 'body']]);
+    expect(children('> [!NOTE]').blocks).toEqual([]);
+  });
+
+  it('reports the consumed source when the quote ends before the match does', () => {
+    const { alert, after } = children('> [!CAUTION]\n> ```\n> code\nafter');
+    expect(alert).toMatchObject({ type: 'alert', raw: '> [!CAUTION]\n> ```\n> code\n' });
+    expect(after.map((token) => [token.type, token.raw])).toEqual([['paragraph', 'after']]);
   });
 });
 

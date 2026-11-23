@@ -43,6 +43,12 @@ type computerOptions struct {
 	// the thread's system prompt; a computer that predates them leaves it
 	// out, and a spawn carrying instructions there is refused.
 	SpawnInstructions bool `json:"spawn_instructions,omitempty"`
+	// ModelFamilies says this computer reads a spawn's model as its
+	// provider's version rule does, so it resolves a family itself, from
+	// the catalog read that creates the thread. A computer that predates
+	// families leaves it out and receives the exact model the caller
+	// resolved against its list (checkSpawnChoice).
+	ModelFamilies bool `json:"model_families,omitempty"`
 	// UnlistedModels carries each provider's Unlisted models to a caller
 	// asking through its pairing, keyed by provider: they resolve a
 	// profile there but are never listed. Only a forwarded answer has it,
@@ -206,7 +212,7 @@ func (c *session) optionsOne(ctx context.Context, computer Computer, local bool,
 	}
 	if args.What == "" || args.What == OptionsModels {
 		row.Providers, row.RuntimeModes = catalog.Providers, RuntimeModeOptions()
-		row.SpawnInstructions = true
+		row.SpawnInstructions, row.ModelFamilies = true, true
 		if row.Providers == nil {
 			row.Providers = []ProviderOption{}
 		}

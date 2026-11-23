@@ -20,6 +20,12 @@ and `ClaudeCatalog`.
 one place a keyed sibling map is forgotten. A new one deletes its entry there
 too.
 
+`Account.UsageResets` is the reset list the card offers, written only by
+`SetUsageResets`, `BeginResetSpend` and `SettleResetSpend`; every other row
+write carries it over, and an inserted row starts without one. An account's
+unsettled spend, with its key, lives beside the rows in
+`ProviderState.PendingResets`; `PendingReset` states what ends one.
+
 A saved catalog is bound to the binary identity that produced it. It is
 metadata, not a promise: a consumer serves it only while the configured path
 and the resolved file, size and mtime still match.

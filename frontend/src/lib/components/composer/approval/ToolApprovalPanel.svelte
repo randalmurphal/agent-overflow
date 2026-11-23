@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { grantBlockedTitle } from '../../../transport/scopeRefusal';
+  import type { ControlAccess } from '../../../transport/scopes';
   import { onMount } from 'svelte';
   import type { ApprovalRequest } from '../../../types/events';
   import { ApprovalResponse } from '../../../stores/bindings';
@@ -18,11 +20,13 @@
     onResolve: (response: ApprovalResponse) => Promise<void>;
     onError?: (message: string, err?: unknown) => void;
     responding?: boolean;
-    /** Ungranted `approvals:respond`: every action is inert, never loading. */
-    ungranted?: boolean;
+    /** Whether an answer can reach the computer (`approvals:respond`); otherwise every action is inert, never loading, and says why. */
+    access?: ControlAccess;
   }
 
-  let { approval, onResolve, onError, responding = false, ungranted = false }: Props = $props();
+  let { approval, onResolve, onError, responding = false, access = 'granted' }: Props = $props();
+  let ungranted = $derived(access !== 'granted');
+  let blocked = $derived(grantBlockedTitle(access));
   let actionRow: HTMLDivElement | undefined = $state(undefined);
 
   type DecisionAction = {
@@ -239,15 +243,15 @@
   onkeydown={(event) => focusApprovalActionFromKey(event, actionRow)}
 >
   {#if editable && !editing}
-    <Button variant="secondary" size="sm" onclick={openEdit} testId="approval-edit-toggle" disabled={responding || ungranted}>
+    <Button variant="secondary" size="sm" onclick={openEdit} testId="approval-edit-toggle" disabled={responding || ungranted} title={blocked}>
       {#snippet children()}Edit input…{/snippet}
     </Button>
   {/if}
   {#if editing}
-    <Button variant="danger-ghost" size="sm" onclick={() => respond(decisionAction('cancel', 0)!)} testId="approval-cancel" disabled={responding || ungranted}>
+    <Button variant="danger-ghost" size="sm" onclick={() => respond(decisionAction('cancel', 0)!)} testId="approval-cancel" disabled={responding || ungranted} title={blocked}>
       {#snippet children()}Cancel turn{/snippet}
     </Button>
-    <Button variant="danger-outline" size="sm" onclick={() => respond(decisionAction('decline', 0)!)} testId="approval-deny" disabled={responding || ungranted}>
+    <Button variant="danger-outline" size="sm" onclick={() => respond(decisionAction('decline', 0)!)} testId="approval-deny" disabled={responding || ungranted} title={blocked}>
       {#snippet children()}Decline{/snippet}
     </Button>
     <Button
@@ -255,7 +259,7 @@
       size="sm"
       onclick={allowWithEdits}
       testId="approval-allow-with-edits"
-      disabled={ungranted}
+      disabled={ungranted} title={blocked}
       loading={!ungranted && responding}
     >
       {#snippet children()}Allow with edits{/snippet}
@@ -267,7 +271,7 @@
         size="sm"
         onclick={() => respond(action)}
         testId={action.testId}
-        disabled={ungranted || (responding && action.variant !== 'primary')}
+        disabled={ungranted || (responding && action.variant !== 'primary')} title={blocked}
         loading={!ungranted && responding && action.variant === 'primary'}
       >
         {#snippet children()}{action.label}{/snippet}

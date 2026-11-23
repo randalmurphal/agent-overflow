@@ -51,7 +51,7 @@ func newPipelineFixture(t *testing.T) *pipelineFixture {
 
 func (f *pipelineFixture) subscribe(t *testing.T, id string) PipelineSubscriptionResult {
 	t.Helper()
-	sub, err := f.app.SubscribePipeline(context.Background(), testPR.Repository(), id)
+	sub, err := f.app.SubscribePipeline(connCtx(t), testPR.Repository(), id)
 	if err != nil {
 		t.Fatalf("SubscribePipeline: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestPipelinePumpIsSharedPerPipelineAndReadsOnSubscribe(t *testing.T) {
 	f := newPipelineFixture(t)
 	f.publish(pipelineWith(gitops.CIStatusSuccess, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusSuccess}), nil)
 
-	if _, err := f.app.SubscribePipeline(context.Background(), testPR.Repository(), "../1"); err == nil {
+	if _, err := f.app.SubscribePipeline(connCtx(t), testPR.Repository(), "../1"); err == nil {
 		t.Fatal("a pipeline id that is no id was accepted")
 	}
 	a := f.subscribe(t, "41")
@@ -229,25 +229,30 @@ func TestPipelineFollowsFetchLogsUnderThePipelineKey(t *testing.T) {
 	}
 }
 
-func TestUnsubscribePipelineUnbindsItsConnectionTie(t *testing.T) {
-	t.Parallel()
+// pipelineConnectionTie is SubscribePipeline's row of connectionTieChecks:
+// a handle on the pipeline's pump, released by any caller.
+func pipelineConnectionTie(t *testing.T) connectionTie {
 	f := newPipelineFixture(t)
 	f.publish(pipelineWith(gitops.CIStatusSuccess), nil)
-	checkByIDTie(t, byIDTie{
-		subscribe: func(ctx context.Context) (string, error) {
+	lifetime := newCountedLifetime()
+	f.app.appCtx = lifetime
+	t.Cleanup(f.app.closePRUpdatePumps)
+	return connectionTie{
+		open: func(ctx context.Context) (string, error) {
 			sub, err := f.app.SubscribePipeline(ctx, testPR.Repository(), "41")
 			return sub.ID, err
 		},
-		unsubscribe: f.app.UnsubscribePipeline,
-		key:         pipelineCleanupKey,
-		live: func(id string) bool {
+		// The handle and its pump's lifetime context.
+		held: func() int {
 			f.app.prUpdates.mu.Lock()
 			defer f.app.prUpdates.mu.Unlock()
-			_, ok := f.app.prUpdates.pipelineHandles[id]
-			return ok
+			return len(f.app.prUpdates.pipelineHandles) + lifetime.count()
 		},
-	})
-	f.app.prUpdates.wg.Wait()
+		unit:      2,
+		release:   f.app.UnsubscribePipeline,
+		anyCaller: true,
+		key:       pipelineCleanupKey,
+	}
 }
 
 // The stage summaries: bounded, names and statuses only, and one failed

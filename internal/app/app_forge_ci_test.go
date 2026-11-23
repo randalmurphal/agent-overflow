@@ -204,7 +204,7 @@ func (f *prCIFixture) lastStepsFor() []string {
 
 func (f *prCIFixture) subscribe(t *testing.T) PRUpdateSubscriptionResult {
 	t.Helper()
-	sub, err := f.app.SubscribePRUpdates(context.Background(), testPR)
+	sub, err := f.app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}
@@ -287,7 +287,7 @@ func settlePumps(t *testing.T, app *App) {
 	app.prUpdates.mu.Unlock()
 	for _, core := range cores {
 		// A pump that stopped runs no turn.
-		if err := app.requestPump(t.Context(), core, &prPumpRequest{}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) {
+		if err := core.Request(t.Context(), prPumpRequest{}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) {
 			t.Fatalf("settle the pumps: %v", err)
 		}
 	}
@@ -313,7 +313,7 @@ func TestPRCIPollsOnStartEmitsOnChangeAndServesJoiners(t *testing.T) {
 	// Terminal pipeline: no further CI polls.
 	expectCountHolds(t, &f.ciFetches, "terminal pipeline kept polling")
 
-	joiner, err := f.app.SubscribePRUpdates(context.Background(), testPR)
+	joiner, err := f.app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("join: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestPRCIFetchFailureIsEmittedOnceAndCleared(t *testing.T) {
 		t.Fatalf("duplicate failure re-emitted: %+v", again)
 	default:
 	}
-	joiner, err := f.app.SubscribePRUpdates(context.Background(), testPR)
+	joiner, err := f.app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("join: %v", err)
 	}
@@ -606,7 +606,7 @@ func TestPRPumpCancelsItsForgeCallWhenTheLastSubscriberLeaves(t *testing.T) {
 	streams := true
 	app.prUpdates.ciLogStreams = &streams
 
-	sub, err := app.SubscribePRUpdates(t.Context(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}
@@ -632,7 +632,7 @@ func TestSubscribePRUpdatesAbandonedCallCreatesNoPump(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
 	stubPRCIFetch(app)
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(connCtx(t))
 	app.prUpdates.fetchFn = func(fetchCtx context.Context, _ gitops.PRReference) (prUpdateSnapshot, error) {
 		cancel()
 		<-fetchCtx.Done()
@@ -670,7 +670,7 @@ func TestSubscribePRUpdatesMarksOnlyTheFirstFetchInteractive(t *testing.T) {
 	}
 	app.prUpdates.ciLogStreamFn = emptyCILogStream
 
-	sub, err := app.SubscribePRUpdates(t.Context(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}

@@ -57,6 +57,7 @@ import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
 import { onBackendRecovery } from './transportRecovery';
 import { backendById } from '../transport/backends';
 import { __resetManifestBackendsForTest, manifestBackendDescriptors } from '../transport/manifestBackends';
+import { AGENT_MESSAGES_ABSORBED_RULE } from '../utils/activityRunSpans';
 
 it('starts a gap snapshot after older queued replay mutations settle', async () => {
   resetPanesForTest();
@@ -79,7 +80,7 @@ function snapshot(threadId: string, stamp: ThreadHistoryStamp): ThreadItemSnapsh
     newestLoadedTurnIndex: 0,
     hasMoreHistory: false,
     hasMoreNewer: false,
-    latestSettledTurn: null,
+    latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
     historyStamp: stamp,
   };
 }

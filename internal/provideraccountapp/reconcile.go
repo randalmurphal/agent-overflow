@@ -268,6 +268,12 @@ func (m *Manager) reconcileObservedAccountLocked(
 		target.ID = uuid.NewString()
 		target.Provider = providerName
 	}
+	if !hasActive || target.ID != active.ID {
+		// The observed login is another account's: its adoption moves the
+		// selection. A use that writes a refreshed login as it ends fails the
+		// stability check below, and the next reconciliation reads it.
+		m.selectionChanging(providerName)
+	}
 	var previous []byte
 	if found {
 		// Only classifies the outcome: a slot that cannot be read is treated

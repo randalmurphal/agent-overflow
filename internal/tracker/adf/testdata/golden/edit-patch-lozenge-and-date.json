@@ -1,0 +1,53 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Intro"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Build "
+        },
+        {
+          "type": "status",
+          "attrs": {
+            "color": "red",
+            "localId": "st-1",
+            "style": "bold",
+            "text": "DONE"
+          }
+        },
+        {
+          "type": "text",
+          "text": " on "
+        },
+        {
+          "type": "date",
+          "attrs": {
+            "localId": "d-1",
+            "timestamp": "1792627200000"
+          }
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "End"
+        }
+      ]
+    }
+  ]
+}

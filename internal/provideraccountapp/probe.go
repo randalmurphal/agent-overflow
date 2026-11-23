@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"log"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
 )
 
@@ -33,6 +36,12 @@ type ProbeRequest struct {
 	// AfterAdopt runs once the identity is accepted and cached, before the
 	// `provider:account` emit for it.
 	AfterAdopt func(provideraccounts.Account)
+	// ResetCredits, for a Codex probe, returns the resets its rate-limit
+	// answer named and whether that answer arrived. When the probe adopts an
+	// account it reported a login for, they are recorded on that account in
+	// the adopting step, under the reconcile lock, through the usage
+	// refresh's writer.
+	ResetCredits func() (*codex.ResetCredits, bool)
 	// Validate runs on a fresh identity/credential pair under the reconcile
 	// lock. Admission checks must never be satisfied by a display cache hit.
 	Validate func(provider.AccountInfo, *provideraccounts.CredentialSnapshot) error
@@ -97,7 +106,11 @@ func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) 
 		reconcileMu.Unlock()
 		return provider.AccountInfo{}, err
 	}
+	resetsChanged := m.recordAdoptedResetCredits(r, account, info)
 	reconcileMu.Unlock()
+	if resetsChanged {
+		m.emitProviderAccountListingChanged(r.ProviderName)
+	}
 	if r.Cache != nil {
 		r.Cache.Set(r.Key, info)
 	}
@@ -113,6 +126,28 @@ func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) 
 		m.applySelection(r.ProviderName, move.generation, move.previousID, move.accountID)
 	}
 	return info, nil
+}
+
+// recordAdoptedResetCredits records the resets an identity probe's reading
+// named on the account it adopted, when the probe reported that login. A
+// failed write leaves the adoption standing and is logged. Caller holds the
+// reconcile lock and not mu.
+func (m *Manager) recordAdoptedResetCredits(r ProbeRequest, account provideraccounts.Account, info provider.AccountInfo) bool {
+	if r.ResetCredits == nil || r.ProviderName != string(provider.Codex) ||
+		account.ID == "" || strings.TrimSpace(info.Email) == "" {
+		return false
+	}
+	credits, read := r.ResetCredits()
+	if !read {
+		return false
+	}
+	m.mu.Lock()
+	changed, err := m.recordCodexUsageResetsLocked(account.ID, credits, "")
+	m.mu.Unlock()
+	if err != nil {
+		log.Printf("provideraccountapp: codex account %s: %v", account.ID, err)
+	}
+	return changed
 }
 
 // emitUnauthenticatedIfNoLogin raises the "run `claude login`" banner only
@@ -336,6 +371,12 @@ func (m *Manager) PublishAccountIfCurrent(
 func (m *Manager) emitProviderAccountsChanged(providerName string) {
 	if m.deps.Accounts != nil {
 		m.deps.Accounts.PublishAccountsChanged(providerName)
+	}
+}
+
+func (m *Manager) emitProviderAccountListingChanged(providerName string) {
+	if m.deps.Accounts != nil {
+		m.deps.Accounts.PublishListingChanged(providerName)
 	}
 }
 

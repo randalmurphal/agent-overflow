@@ -32,6 +32,7 @@ import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
   DisconnectedError,
   TransportError,
+  isTransportOutage,
   wsClient,
   type TransportHello,
   type TransportStatusSnapshot,
@@ -82,7 +83,53 @@ const helloEdgeListeners = new Set<BackendHelloListener>();
 type BackendStatusListener = (backend: BackendKey, status: TransportStatusSnapshot) => void;
 const backendStatusListeners = new Set<BackendStatusListener>();
 
+// Whether each attached computer has been in an outage
+// (`isTransportOutage`) for UNREACHABLE_SETTLE_MS without a break. A
+// computer that answered and is still starting is not in one, and neither
+// is a first connect still in flight; either clears the count. Everything that shows a computer as unreachable without
+// being asked waits for it: the rows that dim or relabel its threads, a
+// paired computer's banner, and the Projects list, which stops waiting for
+// that computer's lists before it says it is empty. So a connection that
+// drops for a moment, or keeps dropping and coming back, changes nothing on
+// screen. The composer does not wait: a message cannot be sent the moment
+// the computer is unreachable.
+//
+// Thirty seconds is the reconnect ladder's own measure of a connection
+// that held (BACKOFF_RESET_AFTER_MS) and its longest wait between attempts
+// to a remote computer (RECONNECT_MAX_REMOTE_MS).
+export const UNREACHABLE_SETTLE_MS = 30_000;
+const unreachableSettled = createKeyedSignalRegistry<boolean>(false);
+const settleTimers = new Map<BackendKey, ReturnType<typeof setTimeout>>();
+
+function trackReachability(id: BackendKey, next: TransportStatusSnapshot): void {
+  if (!isTransportOutage(next.status)) {
+    forgetReachability(id);
+    return;
+  }
+  if (settleTimers.has(id) || unreachableSettled.get(id)) return;
+  settleTimers.set(id, setTimeout(() => {
+    settleTimers.delete(id);
+    unreachableSettled.set(id, true);
+  }, UNREACHABLE_SETTLE_MS));
+}
+
+function forgetReachability(id: BackendKey): void {
+  const timer = settleTimers.get(id);
+  if (timer !== undefined) clearTimeout(timer);
+  settleTimers.delete(id);
+  unreachableSettled.set(id, false);
+}
+
+/**
+ * Whether `backendId` has been unreachable for UNREACHABLE_SETTLE_MS without
+ * a break. Reactive on that computer's box alone.
+ */
+export function backendUnreachableSettled(backendId: BackendKey): boolean {
+  return unreachableSettled.get(backendId);
+}
+
 function publishBackendStatus(id: BackendKey, next: TransportStatusSnapshot): void {
+  trackReachability(id, next);
   const previous = statusByBackend.get(id);
   statusByBackend.set(id, next);
   if (previous.status === next.status) return;
@@ -136,6 +183,8 @@ function syncBackendStatusSubscriptions(): void {
     cancel();
     backendStatusSubscriptions.delete(id);
     publishBackendStatus(id, DISCONNECTED);
+    forgetReachability(id);
+    unreachableSettled.drop(id);
     statusByBackend.drop(id);
     helloByBackend.drop(id);
     publishHello(id, null);
@@ -422,6 +471,9 @@ export function redialAfterSignIn(): Promise<void> {
 export function resetTransportStatusForTest(): void {
   for (const cancel of backendStatusSubscriptions.values()) cancel();
   backendStatusSubscriptions.clear();
+  for (const timer of settleTimers.values()) clearTimeout(timer);
+  settleTimers.clear();
+  unreachableSettled.reset();
   statusByBackend.reset();
   helloByBackend.reset();
   helloEdgeListeners.clear();

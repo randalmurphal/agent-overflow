@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
 )
 
 var (
@@ -169,12 +170,12 @@ func prListProject(t *testing.T, snapshot PRListSnapshot, projectID string) Proj
 func prListPumpLive(app *App) bool {
 	app.prUpdates.mu.Lock()
 	defer app.prUpdates.mu.Unlock()
-	return app.prUpdates.list != nil && !app.prUpdates.list.dead
+	return app.prUpdates.list != nil && !app.prUpdates.list.DeadLocked()
 }
 
 func subscribePRList(t *testing.T, app *App) PRListSubscriptionResult {
 	t.Helper()
-	sub, err := app.SubscribePRList(context.Background())
+	sub, err := app.SubscribePRList(connCtx(t))
 	if err != nil {
 		t.Fatalf("SubscribePRList: %v", err)
 	}
@@ -263,7 +264,7 @@ func TestPRListSubscribeAnswersFromTheStoreBeforeAnyForgeCall(t *testing.T) {
 	events := capturePRList(t, app)
 	answered := make(chan PRListSubscriptionResult, 1)
 	go func() {
-		sub, err := app.SubscribePRList(context.Background())
+		sub, err := app.SubscribePRList(connCtx(t))
 		if err != nil {
 			t.Errorf("SubscribePRList: %v", err)
 		}
@@ -419,7 +420,7 @@ func TestPRListPumpHoldsNothingAfterTheLastUnsubscribe(t *testing.T) {
 		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, nil)}
 	})
 	events := capturePRList(t, app)
-	sub, err := app.SubscribePRList(context.Background())
+	sub, err := app.SubscribePRList(connCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -774,26 +775,79 @@ func TestPRListPrefetchWritesTheStoreAndSkipsWhenFresh(t *testing.T) {
 	}
 }
 
-func TestUnsubscribePRListUnbindsItsConnectionTie(t *testing.T) {
+// prListConnectionTie is SubscribePRList's row of connectionTieChecks: a
+// handle on the list pump, released by any caller.
+func prListConnectionTie(t *testing.T) connectionTie {
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	newPRListFake(t, app)
+	t.Cleanup(app.closePRUpdatePumps)
+	return connectionTie{
+		open: func(ctx context.Context) (string, error) {
+			sub, err := app.SubscribePRList(ctx)
+			return sub.ID, err
+		},
+		held: func() int {
+			app.prUpdates.mu.Lock()
+			defer app.prUpdates.mu.Unlock()
+			return len(app.prUpdates.listHandles)
+		},
+		release:   app.UnsubscribePRList,
+		anyCaller: true,
+		key:       prListCleanupKey,
+	}
+}
+
+// A subscribe whose stored snapshot cannot be read fails, and leaves
+// neither the handle it took nor its tie on the connection.
+func TestSubscribePRListThatFailsItsStoredReadLeavesNothingTied(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.prUpdates.interval = time.Hour
 	newPRListFake(t, app)
-	checkByIDTie(t, byIDTie{
-		subscribe: func(ctx context.Context) (string, error) {
-			sub, err := app.SubscribePRList(ctx)
-			return sub.ID, err
-		},
-		unsubscribe: app.UnsubscribePRList,
-		key:         prListCleanupKey,
-		live: func(id string) bool {
+	t.Cleanup(app.closePRUpdatePumps)
+	conn, state := newTestConnection(t, transport.ConnPrincipal{})
+	ctx, cancel := context.WithCancel(conn)
+	defer cancel()
+	// The stored read starts once the handle is taken: it notes the
+	// handle and gives up there, as a call its client abandoned does.
+	// The pump the subscribe starts reads the projects too, later.
+	var once sync.Once
+	var taken []string
+	tiedDuringRead := false
+	projects := app.prUpdates.listProjectsFn
+	app.prUpdates.listProjectsFn = func(ctx context.Context) ([]ForgeProject, error) {
+		once.Do(func() {
 			app.prUpdates.mu.Lock()
-			defer app.prUpdates.mu.Unlock()
-			_, ok := app.prUpdates.listHandles[id]
-			return ok
-		},
-	})
-	app.prUpdates.wg.Wait()
+			for id := range app.prUpdates.listHandles {
+				taken = append(taken, id)
+			}
+			app.prUpdates.mu.Unlock()
+			tiedDuringRead = len(taken) == 1 && state.Bound(prListCleanupKey(taken[0]))
+			cancel()
+		})
+		return projects(ctx)
+	}
+	if _, err := app.SubscribePRList(ctx); err == nil {
+		t.Fatal("a subscribe whose stored read failed succeeded")
+	}
+	if len(taken) != 1 {
+		t.Fatalf("the subscribe held %d handles during its stored read, want 1", len(taken))
+	}
+	// The rollback below is only proven if there was a release to roll
+	// back: the handle was tied while the read ran.
+	if !tiedDuringRead {
+		t.Fatal("the handle was not tied to its connection while its stored read ran")
+	}
+	app.prUpdates.mu.Lock()
+	handles := len(app.prUpdates.listHandles)
+	app.prUpdates.mu.Unlock()
+	if handles != 0 {
+		t.Fatalf("the failed subscribe left %d handles", handles)
+	}
+	if state.Bound(prListCleanupKey(taken[0])) {
+		t.Fatal("the failed subscribe left its release bound on its connection")
+	}
 }
 
 // A prefetch whose read is still in flight when a pump starts loses the
@@ -939,7 +993,7 @@ func TestPRListStoppedPumpLosesTheCopyToAPrefetch(t *testing.T) {
 		}
 		prefetched <- stored
 	}
-	sub, err := app.SubscribePRList(context.Background())
+	sub, err := app.SubscribePRList(connCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -987,7 +1041,7 @@ func TestPRListStoppedPumpStoresNothing(t *testing.T) {
 			close(left)
 		}
 	}
-	sub, err := app.SubscribePRList(context.Background())
+	sub, err := app.SubscribePRList(connCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}

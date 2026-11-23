@@ -16,7 +16,7 @@
   import { untrack } from 'svelte';
   import { GetProviderStatuses } from '../../stores/bindings';
   import { HOST_TIER_REASON, settingsComputer } from './settingsComputer';
-  const { getSettings, updateSetting, call, backend, hostTierWritable, hasScope } = settingsComputer();
+  const { getSettings, updateSetting, call, backend, hostTierWritable, scopeGrant } = settingsComputer();
   import {
     checkProviderUpdates,
     openProviderUpdateNotes,
@@ -124,7 +124,7 @@
 
   // Provider CLI updates (stores/providerUpdates.svelte.ts). Every update
   // RPC is `access:admin`, so without it the page offers none of this.
-  let admin = $derived(hasScope('access:admin'));
+  let admin = $derived(scopeGrant('access:admin') === 'granted');
   let update = $derived(admin ? providerUpdate(provider, backend) : null);
   let notesOffered = $derived(update !== null && update.available && update.latestVersion !== '');
   let checkFailure = $derived(admin ? update?.checkError || providerUpdatesLoadError(backend) : '');

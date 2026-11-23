@@ -165,6 +165,7 @@ func (p *threadProjector) thread(thread store.Thread) threadtools.Thread {
 		Assistant:     p.assistant(thread),
 		SpawnedBy:     thread.SpawnedByThreadID,
 
+		HasOpenTurn:               thread.HasOpenTurn,
 		HasIncompleteTurn:         thread.HasIncompleteTurn,
 		HasFailedTurn:             thread.HasFailedTurn,
 		HasActionableProposedPlan: thread.HasActionableProposedPlan,
@@ -520,11 +521,21 @@ func (t threadToolsApp) remoteDestination(computerID string) bool {
 	return computerID != self
 }
 
+// threadToolsProviders are the providers a thread tool spawn can run on,
+// in the order thread_options and the guide list them.
+var threadToolsProviders = func() []string {
+	kinds := provider.StandaloneProviders()
+	out := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		out = append(out, string(k))
+	}
+	return out
+}()
+
 // Catalog answers thread_options from the catalogs the app already keeps.
 func (t threadToolsApp) Catalog(ctx context.Context, q threadtools.CatalogQuery) (threadtools.Catalog, error) {
 	catalog := threadtools.Catalog{Reachable: true, OS: threadToolsOS()}
-	for _, kind := range provider.StandaloneProviders() {
-		name := string(kind)
+	for _, name := range threadToolsProviders {
 		if q.What == threadtools.OptionsProjects || q.What == threadtools.OptionsGroups {
 			break
 		}
@@ -560,13 +571,18 @@ func (t threadToolsApp) Catalog(ctx context.Context, q threadtools.CatalogQuery)
 }
 
 // providerOption answers thread_options for one provider: the models it
-// offers a new thread, and apart from them (Unlisted) the ones it still runs
+// offers a new thread, and apart from them (ProviderUnlisted) the ones it still runs
 // for a thread already on them, which a spawn resolves against too.
 func (t threadToolsApp) providerOption(name string) (threadtools.ProviderOption, error) {
-	models, err := t.app.GetModelsForProvider(name)
+	models, err := t.app.modelCatalog(name)
 	if err != nil {
 		return threadtools.ProviderOption{}, err
 	}
+	return providerOptionOf(name, models), nil
+}
+
+// providerOptionOf is one provider's model catalog as thread tools read it.
+func providerOptionOf(name string, models provider.ModelCatalog) threadtools.ProviderOption {
 	option := threadtools.ProviderOption{ID: name, Name: threadToolsProviderName(name), Models: []threadtools.ModelOption{}}
 	for _, model := range models.Models {
 		entry := threadtools.ModelOption{Slug: model.Slug, Name: model.Name, Source: string(models.Provenance)}
@@ -581,14 +597,14 @@ func (t threadToolsApp) providerOption(name string) (threadtools.ProviderOption,
 				entry.ContextWindow = window.Tokens
 			}
 		}
-		if model.Unlisted {
+		if model.ProviderUnlisted {
 			option.Unlisted = append(option.Unlisted, entry)
 			continue
 		}
 		option.Models = append(option.Models, entry)
 	}
 	for _, model := range models.Models {
-		if model.IsDefault && !model.Unlisted {
+		if model.IsDefault && !model.ProviderUnlisted {
 			option.DefaultModel = model.Slug
 			break
 		}
@@ -596,7 +612,7 @@ func (t threadToolsApp) providerOption(name string) (threadtools.ProviderOption,
 	if option.DefaultModel == "" && len(option.Models) > 0 {
 		option.DefaultModel = option.Models[0].Slug
 	}
-	return option, nil
+	return option
 }
 
 func threadToolsProviderName(name string) string {

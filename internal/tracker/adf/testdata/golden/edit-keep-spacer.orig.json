@@ -1,0 +1,12 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {"type": "paragraph", "attrs": {"localId": "s0"}},
+    {"type": "paragraph", "content": [{"type": "text", "text": "first"}]},
+    {"type": "paragraph", "attrs": {"localId": "s1"}},
+    {"type": "paragraph", "content": [{"type": "text", "text": "second"}]},
+    {"type": "paragraph", "attrs": {"localId": "s2"}},
+    {"type": "paragraph", "content": [{"type": "text", "text": "third"}]}
+  ]
+}

@@ -45,14 +45,14 @@
 
   let { keyProblem }: { keyProblem: string } = $props();
 
-  const { backend, hasScope, getSettings, updateSetting, hostTierWritable } = settingsComputer();
+  const { backend, getSettings, updateSetting, hostTierWritable, scopeGrant } = settingsComputer();
 
   const SAMPLE_KEY = 'settings-sample';
   const PREVIEW_KEY = 'settings-preview:';
   const SAMPLE = 'This is how replies will sound when they are read aloud.';
 
   let settings = $derived(getSettings());
-  let granted = $derived(hasScope('threads:operate'));
+  let granted = $derived(scopeGrant('threads:operate') === 'granted');
   let hostWritable = $derived(hostTierWritable());
 
   // The store asks nothing without permission and re-asks when it is granted.

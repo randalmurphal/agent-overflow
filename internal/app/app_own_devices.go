@@ -294,13 +294,16 @@ func (a *App) MintOwnDevicePairingOnNetwork(ctx context.Context, deviceClass, ne
 //ao:stepup
 //ao:remote
 func (a *App) OpenOwnComputerPairing(ctx context.Context, networkChoice string) (ComputerPairingWindow, error) {
+	conn, err := transport.CallerConnection(ctx)
+	if err != nil {
+		return ComputerPairingWindow{}, err
+	}
 	if err := a.ownPairingAdmin(ctx); err != nil {
 		return ComputerPairingWindow{}, err
 	}
-	if e := a.enableOwnDevices(); e != nil {
-		return ComputerPairingWindow{}, e
-	}
-	return a.openComputerPairing(ctx, networkChoice, "full", "own-device")
+	// Own devices are enabled, which persists, only once the window's
+	// arguments are valid and its caller admitted (openComputerPairing).
+	return a.openComputerPairing(conn, networkChoice, "full", "own-device", a.enableOwnDevices)
 }
 
 //ao:scope session
@@ -384,6 +387,7 @@ func (a *App) IntroduceOwnDevice(ctx context.Context, targetBackendID string) (P
 //ao:scope session
 //ao:route home
 //ao:remote
+//ao:callerbound
 func (a *App) AcceptOwnDeviceIntroduction(ctx context.Context, link string) error {
 	_, e := a.ownCaller(ctx)
 	if e != nil {
@@ -416,9 +420,11 @@ func (a *App) AcceptOwnDeviceIntroduction(ctx context.Context, link string) erro
 	// The session and key remain owned by the local manager. The target enforces
 	// the exact recipient key before spending the invitation.
 	// The manager publishes the new profile on backend:set-changed itself,
-	// before reconciliation sees it as present.
+	// before reconciliation sees it as present. A profile saved whose
+	// acknowledging rotation failed is still a new connection here, and the
+	// caller still hears the failure.
 	added, e := a.backends.AcceptOwnDeviceIntroduction(ctx, link, routes)
-	if e == nil && added {
+	if added {
 		NotifyOwnDevices(a)
 	}
 	return e

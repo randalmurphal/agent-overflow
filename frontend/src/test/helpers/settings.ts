@@ -26,8 +26,9 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     agyCustomEnv: [...SETTINGS_DEFAULTS.agyCustomEnv],
     spinnerCustomVerbs: [...SETTINGS_DEFAULTS.spinnerCustomVerbs],
     spinnerDisabledAnimations: [...SETTINGS_DEFAULTS.spinnerDisabledAnimations],
-    agentProfiles: SETTINGS_DEFAULTS.agentProfiles.map((profile) => ({ ...profile })),
-    agentNotes: SETTINGS_DEFAULTS.agentNotes.map((note) => ({ ...note })),
+    // A computer's roster is its own settings answer; none is assumed.
+    agentProfiles: [],
+    agentNotes: [],
     ...overrides,
   };
 }

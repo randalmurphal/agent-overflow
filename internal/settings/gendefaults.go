@@ -77,7 +77,12 @@ func FrontendDefaultsSource() string {
 	b.WriteString("// leaves undefined are on the generator's deny-list, not missing by accident.\n\n")
 	b.WriteString("import type { Settings } from '../types/settings';\n\n")
 	b.WriteString("export const SETTINGS_DEFAULTS = ")
-	b.WriteString(emitStruct(reflect.ValueOf(DefaultSettings), "", frontendDefaultsDenied))
+	// A computer's starting roster is its own, read through the app's
+	// AgentRosterSeeds, and the settings answer of every release with a
+	// roster names it, so the frontend holds no copy of the seeds.
+	shipped := DefaultSettings
+	shipped.AgentProfiles, shipped.AgentNotes = nil, nil
+	b.WriteString(emitStruct(reflect.ValueOf(shipped), "", frontendDefaultsDenied))
 	b.WriteString(" satisfies Settings;\n")
 	b.WriteString("\n// Frontend-owned preferences. Backend persistence remains a migration/notification mirror.\n")
 	b.WriteString("export const FRONTEND_SETTINGS_KEYS = [\n")
@@ -107,6 +112,10 @@ func FrontendDefaultsSource() string {
 		b.WriteString("  " + strconv.Quote(key) + ",\n")
 	}
 	b.WriteString("] as const;\n")
+	families, _ := json.Marshal(textGenerationDefaultFamilies)
+	b.WriteString("\n// The model family text generation runs the newest listed model of when\n")
+	b.WriteString("// textGenerationModel is blank, per provider (settings.TextGenerationDefaultFamily).\n")
+	fmt.Fprintf(&b, "export const TEXT_GENERATION_DEFAULT_FAMILIES: Readonly<Record<string, string>> = %s;\n", families)
 
 	emitFrontendConstraints(&b)
 	return b.String()

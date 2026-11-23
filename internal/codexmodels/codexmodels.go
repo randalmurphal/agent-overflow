@@ -102,22 +102,13 @@ func (c *Cache) Get(ctx context.Context, binary string, reaper procutil.Reaper) 
 		c.mu.Unlock()
 		return models, e.err
 	}
-	if existing, ok := c.inflight[binary]; ok {
-		done := existing.done
-		c.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-done:
-			return provider.CloneModels(existing.models), existing.err
-		}
+	l, joined := c.inflight[binary]
+	if !joined {
+		l = &load{done: make(chan struct{})}
+		c.inflight[binary] = l
+		go c.run(context.WithoutCancel(ctx), binary, reaper, l)
 	}
-
-	l := &load{done: make(chan struct{})}
-	c.inflight[binary] = l
 	c.mu.Unlock()
-
-	go c.run(context.WithoutCancel(ctx), binary, reaper, l)
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()

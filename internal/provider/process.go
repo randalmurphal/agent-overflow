@@ -62,6 +62,8 @@ type Process struct {
 	threadID         string
 	provider         string
 	stderrTail       *stderrTee
+	// stderrDrained closes when the stderr drain reached EOF.
+	stderrDrained chan struct{}
 	// killOnce guards the one-shot kill triggered on oversized lines so
 	// concurrent ReadLine failures (should never happen but defense in
 	// depth) do not double-signal the process group.
@@ -172,6 +174,7 @@ func Spawn(ctx context.Context, lifetime Lifetime, cfg SpawnConfig) (*Process, e
 	}
 	cmd.Stderr = stderrWrite
 	stderrTail := &stderrTee{}
+	stderrDrained := make(chan struct{})
 
 	if err := cmd.Start(); err != nil {
 		stdoutRead.Close()
@@ -199,6 +202,7 @@ func Spawn(ctx context.Context, lifetime Lifetime, cfg SpawnConfig) (*Process, e
 	// descendants), which may be after cmd.Wait returns — that's fine,
 	// the goroutine holds no Process state beyond the tee.
 	go func() {
+		defer close(stderrDrained)
 		defer stderrRead.Close()
 		buf := make([]byte, 4096)
 		for {
@@ -225,6 +229,7 @@ func Spawn(ctx context.Context, lifetime Lifetime, cfg SpawnConfig) (*Process, e
 		stdout:           reader,
 		stdoutFile:       stdoutRead,
 		stderrTail:       stderrTail,
+		stderrDrained:    stderrDrained,
 		done:             make(chan struct{}),
 		eventLogger:      cfg.EventLogger,
 		eventLogRedactor: cfg.EventLogRedactor,
@@ -503,9 +508,20 @@ func (p *Process) PID() int {
 // wrote, bounded by stderrTailCap. Raw bytes — callers that put this
 // in user-facing text MUST route it through SanitizeChildStderr (see
 // ProcessExitInfo's security note).
+//
+// It is read after the process exited, so it first waits for the drain to
+// take what the process wrote, at most stderrDrainWait: a descendant that
+// inherited the fd can hold stderr open past the exit.
 func (p *Process) StderrTail() string {
+	select {
+	case <-p.stderrDrained:
+	case <-time.After(stderrDrainWait):
+	}
 	return p.stderrTail.Tail()
 }
+
+// stderrDrainWait matches WaitProcessExitErr's reap wait.
+const stderrDrainWait = 100 * time.Millisecond
 
 // stderrTailCap bounds the retained stderr tail. 2 KB holds a typical
 // CLI startup error (arg parse failure, missing module, ENOENT) with

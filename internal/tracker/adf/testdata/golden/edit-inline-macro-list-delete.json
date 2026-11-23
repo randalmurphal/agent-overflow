@@ -1,0 +1,69 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "second "
+                },
+                {
+                  "type": "inlineExtension",
+                  "attrs": {
+                    "extensionKey": "jira",
+                    "extensionType": "com.atlassian.confluence.macro.core",
+                    "localId": "i-2",
+                    "parameters": {
+                      "macroParams": {
+                        "key": {
+                          "value": "WEB-2"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "third "
+                },
+                {
+                  "type": "inlineExtension",
+                  "attrs": {
+                    "extensionKey": "jira",
+                    "extensionType": "com.atlassian.confluence.macro.core",
+                    "localId": "i-3",
+                    "parameters": {
+                      "macroParams": {
+                        "key": {
+                          "value": "WEB-3"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -162,8 +162,8 @@ our own code.
   restarts, reverts and provider round-trips, and never clears
   `threads.live_todo` on those paths. A resume re-emits NO task events,
   so AO learns task state only from live `TaskCreate` / `TaskUpdate` or
-  its own `threads.live_todo`. `--resume-session-at` (the crash-repair
-  path) is untested.
+  its own `threads.live_todo`. `--resume-session-at`, which AO passes
+  only on a pinned fork start, is untested.
 - **Background commands stop at their timeout in headless sessions
   (≥2.1.285)**: a non-interactive session (not the desktop or VS Code
   entrypoint; `claude mcp serve` opts out; server flag

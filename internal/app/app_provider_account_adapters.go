@@ -164,6 +164,19 @@ func (s providerAccountEventSink) PublishAccountsChanged(providerName string) {
 	s.app.accountSwitch().AccountsChanged(provider.UsageProviderFamily(providerName))
 }
 
+// PublishListingChanged is a refetch nudge for a change only the listing
+// carries (a card's usage resets or unsettled spend). It has its own channel
+// so a client re-reads the listing and nothing that follows the saved set:
+// not auto-switch's sign-in results, the Claude command catalogs or the
+// dictation sources.
+func (s providerAccountEventSink) PublishListingChanged(string) {
+	s.app.emit(eventchan.ProviderAccountListing, nil)
+}
+
+func (s providerAccountEventSink) PublishLimitsReset(providerName, accountID string) {
+	s.app.accountSwitch().LimitsReset(provider.UsageProviderFamily(providerName), accountID)
+}
+
 func (s providerAccountEventSink) PublishSignIn(signIn provideraccountapp.SignIn) {
 	s.app.emit(eventchan.ProviderAccountSignIn, signIn)
 }

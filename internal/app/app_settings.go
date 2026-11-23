@@ -6,6 +6,7 @@ import (
 	"log"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/editor"
@@ -274,7 +275,9 @@ func patchTouchesLiveClaudeAxis(patch map[string]any) bool {
 }
 
 // GetModelsForProvider returns the known model registry for the given
-// provider, with the provenance of the answer.
+// provider, with the provenance of the answer, as the model picker shows
+// it: modelCatalog with the rows pickers leave out marked Unlisted, which
+// reads the usage ledger (markPickerUnlisted).
 //
 // Each provider's catalog source is declared by its Capabilities, not by a
 // name check here: Codex's list comes live off `model/list` (one CLI spawn,
@@ -290,12 +293,59 @@ func patchTouchesLiveClaudeAxis(patch map[string]any) bool {
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) GetModelsForProvider(providerName string) (provider.ModelCatalog, error) {
+	catalog, err := a.modelCatalog(providerName)
+	if err != nil {
+		return catalog, err
+	}
+	a.markPickerUnlisted(&catalog)
+	return catalog, nil
+}
+
+// modelCatalog is the provider's own answer: what it lists, and apart from
+// it (ProviderUnlisted) what this computer still runs for threads already on
+// it.
+// Agent profiles, spawns and text generation resolve a model family from
+// it; it reads no usage ledger.
+func (a *App) modelCatalog(providerName string) (provider.ModelCatalog, error) {
 	catalog, err := a.providerDiscoveryService().ModelsForProvider(context.Background(), providerName)
 	if err != nil {
 		return catalog, err
 	}
-	a.listRecentlyUsedModels(&catalog)
+	a.unreadableModels.report(providerName, catalog.Models)
 	return catalog, nil
+}
+
+// unreadableModelLog remembers, per provider, the listed models its version
+// rule could not read (provider.UnreadableModels) when it last logged, so a
+// change in that set is logged once and not on every catalog read. Such a
+// model never runs for a family; the settings page names it beside each
+// family profile.
+type unreadableModelLog struct {
+	mu   sync.Mutex
+	last map[string]string
+}
+
+func (l *unreadableModelLog) report(providerName string, models []provider.ModelInfo) {
+	listed := make([]string, 0, len(models))
+	for _, model := range models {
+		if !model.ProviderUnlisted {
+			listed = append(listed, model.Slug)
+		}
+	}
+	unreadable := provider.UnreadableModels(providerName, listed)
+	key := strings.Join(unreadable, ", ")
+	l.mu.Lock()
+	changed := l.last[providerName] != key
+	if changed {
+		if l.last == nil {
+			l.last = map[string]string{}
+		}
+		l.last[providerName] = key
+	}
+	l.mu.Unlock()
+	if changed && key != "" {
+		log.Printf("model catalog: %s lists %s, which its version rule cannot read, so no model family runs them", providerName, key)
+	}
 }
 
 // recentModelUseWindow is how long a model that ran keeps its picker row after
@@ -305,11 +355,12 @@ func (a *App) GetModelsForProvider(providerName string) (provider.ModelCatalog, 
 // provider refuses reports the error in the timeline.
 const recentModelUseWindow = 7 * 24 * time.Hour
 
-// listRecentlyUsedModels clears Unlisted on catalog rows whose model recorded
-// usage within recentModelUseWindow. When the ledger cannot be read every row
-// is listed, so a store failure never hides a model the user can run.
-func (a *App) listRecentlyUsedModels(catalog *provider.ModelCatalog) {
-	if !slices.ContainsFunc(catalog.Models, func(m provider.ModelInfo) bool { return m.Unlisted }) {
+// markPickerUnlisted marks Unlisted the catalog rows the provider does not
+// list (ProviderUnlisted) whose model recorded no usage within
+// recentModelUseWindow. When the ledger cannot be read no row is marked,
+// so a store failure never hides a model the user can run.
+func (a *App) markPickerUnlisted(catalog *provider.ModelCatalog) {
+	if !slices.ContainsFunc(catalog.Models, func(m provider.ModelInfo) bool { return m.ProviderUnlisted }) {
 		return
 	}
 	// Only the Claude catalog carries Unlisted rows; the two Claude
@@ -330,9 +381,7 @@ func (a *App) listRecentlyUsedModels(catalog *provider.ModelCatalog) {
 		used[provider.NormalizeModelSlug(family[0], model)] = true
 	}
 	for i := range catalog.Models {
-		if err != nil || used[catalog.Models[i].Slug] {
-			catalog.Models[i].Unlisted = false
-		}
+		catalog.Models[i].Unlisted = catalog.Models[i].ProviderUnlisted && err == nil && !used[catalog.Models[i].Slug]
 	}
 }
 

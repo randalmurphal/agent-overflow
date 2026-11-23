@@ -156,6 +156,15 @@ type threadState struct {
 	// "user-typed prompt is in flight."
 	currentRound     ActiveTurnSnapshot
 	currentRoundOpen bool
+	// endingRound is the round handleTurnComplete took (takeOpenRound)
+	// while it writes the turn's end: provider:turn_completed follows the
+	// settle writes. The live-state snapshots report it as the active
+	// round (liveRoundLocked), so a snapshot taken while the turn's end is
+	// written reads the turn running, as the push stream does. endRound
+	// clears it right before the announcement. The claim of the round
+	// stays takeOpenRound's.
+	endingRound    ActiveTurnSnapshot
+	endingRoundSet bool
 
 	// tasks is the per-thread mirror of the Claude Task* family task
 	// list. Survives any number of Parser recreations within the process
@@ -455,7 +464,7 @@ type threadIdentity struct {
 	// leave orphan rows on the stopped thread (Bug B5). Cleared ONLY by
 	// the host's session-start path via MarkThreadActive — never by a wire
 	// event. A session that dies before emitting anything recognizable
-	// (e.g. Claude failing its --resume-session-at validation pre-init)
+	// (e.g. Claude failing a fork start's --resume-session-at validation pre-init)
 	// must still have its error results routed, so the host declares the
 	// thread active when it commits to a replacement session rather than
 	// waiting for proof of life from the wire. Host-synthesized events

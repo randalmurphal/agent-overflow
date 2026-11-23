@@ -956,16 +956,19 @@ var Routes = []Route{
 		Credential: CredTransferTicket,
 		Posture:    PostureOpaqueMedia,
 		Why: "One local image rendered markdown references by path, " +
-			"or one side of a review diff file (GetReviewDiffImage, " +
-			"GetEditDiffImage, files:read), streamed. These used to ride base64 inside a single RPC " +
+			"one side of a review diff file (GetReviewDiffImage, " +
+			"GetEditDiffImage, files:read), or an image blob of a " +
+			"workspace's repository by its id (GetGitBlobImage, " +
+			"files:read), streamed. These used to ride base64 inside a single RPC " +
 			"answer, the cost the attachment download route exists to " +
 			"remove, and could not be served smaller than the file. The " +
 			"backend that owns the thread gates the path through the " +
 			"editor-link gate, proves by signature that the bytes are an " +
 			"image a browser displays, and holds either the file's " +
 			"identity (path, size, modification time), a display-size " +
-			"derivative, or a review diff side's bytes read at the " +
-			"diff's pinned sides, under an opaque cache id; the files:read call " +
+			"derivative, a review diff side's bytes read at the " +
+			"diff's pinned sides, or a blob's bytes or derivative, " +
+			"under an opaque cache id; the files:read call " +
 			"that did that mints the ticket. Admission is the same " +
 			"single-use, subject-bound ticket its siblings use, from a " +
 			"book of its own so no other route's ticket is spendable " +

@@ -276,7 +276,7 @@ func TestPointerForkServesIdleSourceStamps(t *testing.T) {
 	window := func(threadID string) int {
 		t.Helper()
 		return walkStatements(rec.capture(func() {
-			if _, err := s.SyncThreadWindow(context.Background(), threadID, "", 200, 30, UnknownHistoryStamp(), nil, TimelineSelection{}); err != nil {
+			if _, err := s.SyncThreadWindow(context.Background(), threadID, "", 200, 30, UnknownHistoryStamp(), nil, TimelineSelection{}, AgentMessagesAreMembers); err != nil {
 				t.Fatal(err)
 			}
 		}))

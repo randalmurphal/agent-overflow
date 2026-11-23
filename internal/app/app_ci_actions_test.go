@@ -124,7 +124,7 @@ func TestCIActionsReserveTheRunsTheyReach(t *testing.T) {
 		})
 	})
 	pr := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "runs", Number: 9}
-	sub, err := app.SubscribePRUpdates(context.Background(), pr)
+	sub, err := app.SubscribePRUpdates(connCtx(t), pr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestCIArtifactsGoneClearsTheFlag(t *testing.T) {
 
 func subscribeCIPipeline(t *testing.T, app *App, repo gitops.RepoReference, id string) PipelineSubscriptionResult {
 	t.Helper()
-	sub, err := app.SubscribePipeline(context.Background(), repo, id)
+	sub, err := app.SubscribePipeline(connCtx(t), repo, id)
 	if err != nil || sub.Pipeline == nil {
 		t.Fatalf("SubscribePipeline(%s) = %+v, %v", id, sub, err)
 	}
@@ -390,7 +390,7 @@ func TestCIActionFromThePRReachesThePipelinePump(t *testing.T) {
 	t.Parallel()
 	app, _ := newCIActionsApp(t, ciActionsRepos())
 	pr := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "acts", Number: 3}
-	sub, err := app.SubscribePRUpdates(context.Background(), pr)
+	sub, err := app.SubscribePRUpdates(connCtx(t), pr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +497,7 @@ func TestCIPhaseRetriesAFailedCapabilityRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	pr := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "runs", Number: 9}
-	sub, err := app.SubscribePRUpdates(context.Background(), pr)
+	sub, err := app.SubscribePRUpdates(connCtx(t), pr)
 	if err != nil {
 		t.Fatal(err)
 	}

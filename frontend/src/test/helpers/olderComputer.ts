@@ -11,13 +11,15 @@ import { makeSettings } from './settings';
 
 /** The App methods this build has and v0.0.19 does not. */
 export const METHODS_AFTER_V0_0_19 = [
-  'CancelThreadWake', 'CheckAgentProfiles', 'CreateAssistant', 'DeleteThreads',
-  'GetDeleteDependents', 'GetNativeMemoryStatus', 'GetStandingAgent',
+  'AgentRosterSeeds', 'CancelThreadWake', 'CheckAgentProfiles', 'CreateAssistant', 'DeleteThreads',
+  'FinishProviderAccountReset',
+  'GetDeleteDependents', 'GetGitBlobImage', 'GetNativeMemoryStatus', 'GetStandingAgent',
   'GetThreadAgentRows', 'GetThreadRequestStates', 'GetThreadWakeDetail',
   'GetThreadWorkerSummary', 'ListAssistantPastThreads', 'ListStandingAgentWakes',
   'ListThreadAgentRows', 'ListThreadPastAgentRows', 'ListThreadRecurringJobs',
-  'ListThreadWakes', 'ListThreadWorkerSummaries', 'MarkThreadsRead',
-  'SendExternalThreadMessage', 'SetAssistantProjects', 'SetThreadPlacement',
+  'ListThreadWakes', 'ListThreadWorkerSummaries', 'MarkThreadsRead', 'ResolveForgeFacts',
+  'SaveGitBlobImage', 'SendExternalThreadMessage', 'SetAssistantProjects', 'SetThreadPlacement',
+  'SpendProviderAccountReset',
   'StartNextAssistantThread', 'StopThreadAgentIncoming', 'StopThreadAgentRows',
   'StopThreadAgentRow', 'ThreadToolWatch', 'WakeThreadWakeNow', 'WorkflowPauseItemAndEndSessions',
 ] as const;
