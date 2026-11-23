@@ -60,11 +60,21 @@ describe('registration', () => {
     );
   });
 
-  it('passes every export of a module testResets.ts names', () => {
-    const line = registration('src/test/helpers/backends.ts', 'export function resetStagedBackends() {}\nexport function stageBackend() {}');
+  it('passes only the exports a step calls and the resets that run by name', () => {
+    const key = 'src/lib/stores/transportStatus.svelte.ts';
+    const line = registration(key, [
+      'export function __setTransportStatusForTest(status) {}',
+      'export function resetTransportStatusForTest() {}',
+      'export function resetOtherForTest() {}',
+      'export function transportStatus() {}',
+    ].join('\n'));
     const seen: unknown[] = [];
-    evaluate(line!, { resetStagedBackends: 1, stageBackend: 2 }, { loaded: (...args: unknown[]) => seen.push(args) });
-    expect(seen).toEqual([['src/test/helpers/backends.ts', { resetStagedBackends: 1, stageBackend: 2 }, []]]);
+    evaluate(line!, { __setTransportStatusForTest: 1, resetTransportStatusForTest: 2, resetOtherForTest: 3, transportStatus: 4 }, {
+      loaded: (...args: unknown[]) => seen.push(args),
+    });
+    // The step's export, and the reset that runs by name; not the reset
+    // listed as not run between tests, nor the module's other exports.
+    expect(seen).toEqual([[key, { resetOtherForTest: 3, __setTransportStatusForTest: 1 }, ['resetOtherForTest']]]);
   });
 
   it('rejects a reset that calls another module\'s reset', () => {

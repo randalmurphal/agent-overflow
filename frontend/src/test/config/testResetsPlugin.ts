@@ -5,7 +5,7 @@
 // edge to the test setup and a test file selects only what it imports.
 import { relative, sep } from 'node:path';
 import { parseAst, type Plugin } from 'vite';
-import { namedExports, RESET_NAME, RESET_REGISTRY_KEY } from './testResets.ts';
+import { namedExports, RESET_NAME, RESET_REGISTRY_KEY, stepExports } from './testResets.ts';
 
 type Node = { type: string; [key: string]: unknown };
 
@@ -59,6 +59,7 @@ function references(node: unknown, names: ReadonlySet<string>): string | null {
  * null when the module has nothing to register. */
 export function registration(key: string, code: string): string | null {
   const named = namedExports().get(key);
+  const steps = stepExports().get(key) ?? new Set<string>();
   const packaged = !key.startsWith('src/');
   if (named === undefined && (packaged || !RESET_TEXT.test(code))) return null;
   const program = parseAst(code) as unknown as { body: Node[] };
@@ -107,11 +108,11 @@ export function registration(key: string, code: string): string | null {
     }
   }
   const auto = resets.filter((name) =>
-    !requiresArgument(functionOf(declared.get(exported.get(name)!), declared, name)));
+    !named?.has(name) && !requiresArgument(functionOf(declared.get(exported.get(name)!), declared, name)));
   for (const name of named ?? []) {
     if (!exported.has(name)) throw new Error(`testResets.ts names ${name} in ${key}, which does not export it`);
   }
-  const passed = named === undefined ? auto : [...exported.keys()];
+  const passed = [...new Set([...auto, ...steps])];
   if (passed.length === 0) return null;
   const members = passed.map((name) => `${JSON.stringify(name)}: ${exported.get(name)}`).join(', ');
   const missing = `the test reset registry is not installed: the setup file must import src/test/resetRegistry.ts before ${key} loads`;

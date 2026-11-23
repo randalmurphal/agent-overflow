@@ -51,12 +51,14 @@ export type Step = {
   readonly module: string;
   readonly name: string;
   /** Calls the export, for one that takes arguments. Without it the export
-   * is called with none. */
-  readonly run?: (module: never) => unknown;
+   * is called with none. It receives that export only. */
+  readonly run?: (fn: never) => unknown;
 };
 
-function step<M>(module: string, name: keyof M & string, run?: (module: M) => unknown): Step {
-  return { module, name, run: run as Step['run'] };
+function step(module: string, name: string): Step;
+function step<M, K extends keyof M & string>(module: string, name: K, run: (fn: M[K]) => unknown): Step;
+function step(module: string, name: string, run?: (fn: never) => unknown): Step {
+  return { module, name, run };
 }
 
 /** Run before every test, for the modules loaded by then: the state the app
@@ -69,13 +71,13 @@ export const POSTURE: readonly Step[] = [
   step('src/lib/stores/sidebarEntryContinuity.svelte.ts', 'startSidebarEntryContinuity'),
   // With no transport the status snapshot is `disconnected`, which suspends
   // every connection-gated store. A test that cares about an outage drives it.
-  step<typeof TransportStatus>('src/lib/stores/transportStatus.svelte.ts', '__setTransportStatusForTest', (m) =>
-    m.__setTransportStatusForTest({ status: 'connected', nextAttemptAt: null })),
+  step<typeof TransportStatus, '__setTransportStatusForTest'>('src/lib/stores/transportStatus.svelte.ts', '__setTransportStatusForTest', (set) =>
+    set({ status: 'connected', nextAttemptAt: null })),
   // With no bootstrap fetch nothing resolves the page's grants, and scopes.ts
   // throws in test mode on a read before they resolve. Pin the embedded
   // webview's answer: the owner's own screen, every scope.
-  step<typeof PageHost>('src/lib/transport/pageHost.ts', 'setHostWindowFromBootstrap', (m) => m.setHostWindowFromBootstrap(true)),
-  step<typeof Scopes>('src/lib/transport/scopes.ts', 'setPageGrantsFromBootstrap', (m) => m.setPageGrantsFromBootstrap(false)),
+  step<typeof PageHost, 'setHostWindowFromBootstrap'>('src/lib/transport/pageHost.ts', 'setHostWindowFromBootstrap', (set) => set(true)),
+  step<typeof Scopes, 'setPageGrantsFromBootstrap'>('src/lib/transport/scopes.ts', 'setPageGrantsFromBootstrap', (set) => set(false)),
   // Git status re-sources whatever is attached when the transport pin
   // above lands, so its reset follows the pin.
   step('src/lib/stores/gitStatusStore.svelte.ts', '__resetGitStatusStoreForTest'),
@@ -115,20 +117,26 @@ export const NOT_BETWEEN_TESTS: Readonly<Record<string, string>> = {
   'src/lib/transport/backendClock.ts#resetBackendClocksForTest': 'drops the clock each backend entry registers when it is made; the home entry outlives the between-test steps and does not register again',
 };
 
-/** Every module this file names, with the exports it names. */
-export function namedExports(): Map<string, Set<string>> {
+function byModule(ids: Iterable<readonly [string, string]>): Map<string, Set<string>> {
   const named = new Map<string, Set<string>>();
-  for (const entry of [...POSTURE, ...FIRST]) {
-    if (entry === STORAGE) continue;
-    const names = named.get(entry.module) ?? new Set<string>();
-    names.add(entry.name);
-    named.set(entry.module, names);
-  }
-  for (const id of Object.keys(NOT_BETWEEN_TESTS)) {
-    const [module, name] = id.split('#');
+  for (const [module, name] of ids) {
     const names = named.get(module) ?? new Set<string>();
     names.add(name);
     named.set(module, names);
   }
   return named;
+}
+
+/** Every module POSTURE and FIRST name, with the exports they call. */
+export function stepExports(): Map<string, Set<string>> {
+  return byModule([...POSTURE, ...FIRST].flatMap((entry) => (entry === STORAGE ? [] : [[entry.module, entry.name] as const])));
+}
+
+/** Every module this file names, with the exports it names: the step
+ * exports and those that do not run between tests. None runs by name. */
+export function namedExports(): Map<string, Set<string>> {
+  return byModule([
+    ...[...stepExports()].flatMap(([module, names]) => [...names].map((name) => [module, name] as const)),
+    ...Object.keys(NOT_BETWEEN_TESTS).map((id) => id.split('#') as [string, string]),
+  ]);
 }

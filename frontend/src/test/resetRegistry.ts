@@ -4,7 +4,7 @@
 // file imports no app module. Import this first in a setup file: a module
 // that loads before it fails its registration.
 import { afterEach, beforeEach } from 'vitest';
-import { FIRST, POSTURE, RESET_REGISTRY_KEY, STORAGE, namedExports, type Exports, type Step } from './config/testResets';
+import { FIRST, POSTURE, RESET_REGISTRY_KEY, STORAGE, type Exports, type Step } from './config/testResets';
 
 type Loaded = { readonly key: string; readonly exports: Exports; readonly auto: readonly string[] };
 
@@ -14,12 +14,10 @@ export type ResetRegistry = {
   keys(): string[];
 };
 
-const NAMED = namedExports();
-
 function call(entry: Step, exports: Exports): unknown {
   const fn = exports[entry.name];
   if (typeof fn !== 'function') throw new Error(`${entry.module} exports ${entry.name}, which is not a function`);
-  return entry.run === undefined ? fn() : (entry.run as (module: Exports) => unknown)(exports);
+  return entry.run === undefined ? fn() : (entry.run as (fn: unknown) => unknown)(fn);
 }
 
 function wipeStorage(): void {
@@ -65,11 +63,10 @@ function install(): ResetRegistry {
     const errors: unknown[] = [];
     await runSteps(FIRST, errors);
     const ran = new Set<unknown>();
-    for (const { key, exports, auto } of [...modules]) {
-      const named = NAMED.get(key);
+    for (const { exports, auto } of [...modules]) {
       for (const name of auto) {
         const fn = exports[name] as () => unknown;
-        if (named?.has(name) || ran.has(fn)) continue;
+        if (ran.has(fn)) continue;
         ran.add(fn);
         try {
           await fn();
