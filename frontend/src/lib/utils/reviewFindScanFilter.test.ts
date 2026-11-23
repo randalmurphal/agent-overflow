@@ -7,7 +7,7 @@ import { PatchParser, parseReviewFiles, reviewFileFromPatchFile, type ReviewFile
 import { PatchStore } from './patchStore';
 import { BLOCK_LINES, CLOCK_ROWS, scanReviewFind, type ReviewFindContent } from './reviewFindScan';
 import { collectScan, findContent, findDraft as draft, findThread as thread } from '../../test/helpers/reviewFindContent';
-import { seededRandom as random } from '../../test/helpers/seededRandom';
+import { forEachSeed, seededRandom as random } from '../../test/helpers/seededRandom';
 import { fakeDiff, streamPatch } from '../../test/helpers/streamedPatch';
 import type { DiffReviewComment, ReviewThread } from '../types/models';
 
@@ -194,11 +194,10 @@ describe('scanReviewFind filtered by blocks of text', () => {
     const forms = ['resident', 'streamed', 'sparse'] as const;
     let compared = 0;
     let prefixOnly = 0;
-    // Each defect these rounds have caught fails from round 0 or 1, and a
-    // defect in the path for a line over the block size fails every round
-    // that holds one (0, 8 and 16: one of each form). More rounds only
-    // repeat them.
-    for (let round = 0; round < 18; round += 1) {
+    // Every eighth round holds lines over the block size, so the rounds
+    // hold one of each form (0, 8 and 16).
+    await forEachSeed(async (seed) => {
+      const round = seed - 1;
       const next = random(1000 + round);
       const form = forms[round % forms.length];
       const patch = randomPatch(next, round % 8 === 0, form === 'sparse');
@@ -251,7 +250,7 @@ describe('scanReviewFind filtered by blocks of text', () => {
           }).length;
         }
       }
-    }
+    });
     expect(compared).toBeGreaterThan(150);
     // The prefix flagged lines the whole needle does not match.
     expect(prefixOnly).toBeGreaterThan(20);

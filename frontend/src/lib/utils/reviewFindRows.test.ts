@@ -8,6 +8,7 @@ import { findThreadCommentKey, makeReviewFindHit, reviewCommentKey, type ReviewF
 import { scanReviewFind, type ReviewFindContent } from './reviewFindScan';
 import { freshScan, shownOf, type Scanned } from '../../test/helpers/reviewFindOracle';
 import type { DiffReviewComment, ReviewComment, ReviewThread } from '../types/models';
+import { forEachSeed, seededFraction } from '../../test/helpers/seededRandom';
 
 // The resolver against content that changed under published matches. The
 // oracle is a fresh scan of the new content: a match resolves to where
@@ -200,17 +201,6 @@ describe('resolveReviewFindHit', () => {
 
 // ---- Property tests over random review content and random changes ----
 
-// A deterministic generator, so a failure names its seed.
-function random(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 const WORDS = ['needle', 'x', 'Needle', 'needleneedle', 'y', 'nee', 'dle'];
 
@@ -240,7 +230,7 @@ class World {
   model: Model;
 
   constructor(seed: number) {
-    this.next = random(seed);
+    this.next = seededFraction(seed);
     const diffs = [0, 1].map((n) => ({ path: n === 0 ? 'src/needle.ts' : 'src/other.ts', start: 1 + Math.floor(this.next() * 50), rows: Array.from({ length: 4 + Math.floor(this.next() * 12) }, () => this.row()) }));
     const conflict: ConflictModel = { path: 'c.go', lead: Array.from({ length: 30 + Math.floor(this.next() * 20) }, () => this.text()), expanded: new Set() };
     this.model = { diffs, conflict, drafts: [], threads: [], closed: new Set(), editing: new Set(), hiddenPaths: new Set(), order: [...diffs.map((d) => d.path), conflict.path] };
@@ -480,10 +470,6 @@ function runShown(content: ReviewFindContent, hit: ReviewFindHit): boolean {
   return !!comment && content.commentText(visibleBody(comment.body), findThreadCommentKey(at.threadId, at.comment))[hit.run]?.shown === true;
 }
 
-// Each defect these worlds have caught (a fold line off by one, a marker's
-// run, a hidden comment run, a draft open in its editor) fails within the
-// first 6 seeds and again in at least 4 of these 24; more only repeat them.
-const SEEDS = 24;
 const STEPS = 12;
 
 describe('review find identity and resolution, over random changes', () => {
@@ -493,7 +479,7 @@ describe('review find identity and resolution, over random changes', () => {
   // text is the run it was found in.
   it('a match whose element source a change did not touch keeps its identity and its text', async () => {
     const checked = { header: 0, line: 0, fold: 0, draft: 0, thread: 0 };
-    for (let seed = 1; seed <= SEEDS; seed += 1) {
+    await forEachSeed(async (seed) => {
       const world = new World(seed);
       let content = world.content();
       let before = await freshScan(content, QUERY);
@@ -513,7 +499,7 @@ describe('review find identity and resolution, over random changes', () => {
         content = after;
         before = fresh;
       }
-    }
+    });
     // Every kind of element is exercised in volume.
     expect(checked.line).toBeGreaterThan(4000);
     expect(checked.thread).toBeGreaterThan(2000);
@@ -528,7 +514,7 @@ describe('review find identity and resolution, over random changes', () => {
   // same painter's index and place, or absent.
   it('resolving a published match against changed content answers what a fresh scan of it does', async () => {
     const outcomes = { present: 0, absent: 0 };
-    for (let seed = 1; seed <= SEEDS; seed += 1) {
+    await forEachSeed(async (seed) => {
       const world = new World(seed);
       let published = [...(await seededScan(world.content())).values()].map((each) => each.hit);
       for (let step = 0; step < STEPS; step += 1) {
@@ -540,7 +526,7 @@ describe('review find identity and resolution, over random changes', () => {
         for (const each of resolved.values()) outcomes[each.kind === 'present' ? 'present' : 'absent'] += 1;
         published = [...(await seededScan(after)).values()].map((each) => each.hit);
       }
-    }
+    });
     // Both answers are exercised in volume.
     expect(outcomes.present).toBeGreaterThan(10_000);
     expect(outcomes.absent).toBeGreaterThan(600);

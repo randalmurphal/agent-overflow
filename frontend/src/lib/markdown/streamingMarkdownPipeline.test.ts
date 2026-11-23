@@ -13,6 +13,7 @@ import {
 } from './index';
 import { StreamingBoundarySplitter } from './boundary';
 import { expectedStreamingFenceTexts } from '../../test/helpers/streamingFenceOracle';
+import { seededRandom } from '../../test/helpers/seededRandom';
 
 function workloadSection(iteration: number): string {
   return [
@@ -110,11 +111,8 @@ function prefixEnds(source: string, sizes: readonly number[]): number[] {
 
 function seededSizes(seed: number, count: number): number[] {
   const sizes: number[] = [];
-  let state = seed >>> 0;
-  for (let index = 0; index < count; index++) {
-    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
-    sizes.push(1 + (state % 96));
-  }
+  const next = seededRandom(seed);
+  for (let index = 0; index < count; index++) sizes.push(1 + next(96));
   return sizes;
 }
 

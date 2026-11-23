@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { seededRandom } from '../../../../test/helpers/seededRandom';
 import { createProvenAppend } from '../../../markdown';
 import { RawJsonFenceFormatter, isRawJsonSource } from './rawJsonFence';
 
@@ -53,31 +54,27 @@ const ENVELOPE_PRETTY = [
 ].join('\n');
 
 function randomJsonRoots(seed: number, count: number): unknown[] {
-  let state = seed >>> 0;
-  const random = (): number => {
-    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
-    return state;
-  };
+  const random = seededRandom(seed);
   const scalar = (): null | boolean | number | string => {
-    switch (random() % 4) {
+    switch (random(4)) {
       case 0: return null;
-      case 1: return (random() & 1) === 1;
-      case 2: return ((random() % 2_000_001) - 1_000_000) / 100;
+      case 1: return random(2) === 1;
+      case 2: return ((random(2_000_001)) - 1_000_000) / 100;
       default: return [
         'plain', 'quote " slash \\', 'line\nfeed', 'café 漢字 😀',
         '{}[],:`_*', '', 'tabs\tand\rreturns',
-      ][random() % 7];
+      ][random(7)];
     }
   };
   const value = (depth: number): unknown => {
-    if (depth === 0 || random() % 3 === 0) return scalar();
-    if ((random() & 1) === 0) {
-      return Array.from({ length: random() % 5 }, () => value(depth - 1));
+    if (depth === 0 || random(3) === 0) return scalar();
+    if (random(2) === 0) {
+      return Array.from({ length: random(5) }, () => value(depth - 1));
     }
     const object: Record<string, unknown> = {};
     const keys = ['alpha', 'b"eta', 'slash\\key', 'unicode-漢', 'empty'];
-    for (let index = 0, length = random() % 5; index < length; index++) {
-      object[`${keys[random() % keys.length]}-${index}`] = value(depth - 1);
+    for (let index = 0, length = random(5); index < length; index++) {
+      object[`${keys[random(keys.length)]}-${index}`] = value(depth - 1);
     }
     return object;
   };
@@ -86,13 +83,13 @@ function randomJsonRoots(seed: number, count: number): unknown[] {
   for (let index = 0; index < count; index++) {
     // Object roots are always classified. Array roots start with a string,
     // object, array, or are empty, matching the intentional citation guard.
-    if ((random() & 1) === 0) {
+    if (random(2) === 0) {
       roots.push({ root: value(4), index });
     } else {
-      const first = [String(index), { index }, [index]][random() % 3];
-      roots.push(random() % 5 === 0
+      const first = [String(index), { index }, [index]][random(3)];
+      roots.push(random(5) === 0
         ? []
-        : [first, ...Array.from({ length: random() % 5 }, () => value(3))]);
+        : [first, ...Array.from({ length: random(5) }, () => value(3))]);
     }
   }
   return roots;
