@@ -21,8 +21,8 @@ import (
 func noEnv(string) (string, bool) { return "", false }
 
 func inSession(name string) (string, bool) {
-	if name == aocli.EnvEndpoint {
-		return "http://127.0.0.1:41234", true
+	if name == aocli.EnvInSession {
+		return "1", true
 	}
 	return "", false
 }
@@ -48,7 +48,7 @@ func TestDecideEntry(t *testing.T) {
 		{name: "an unknown verb inside a session is refused", args: []string{"frobnicate"}, lookupEnv: inSession, want: entryRefuse},
 		{name: "an unknown flag inside a session is refused", args: []string{"--help"}, lookupEnv: inSession, want: entryRefuse},
 		// A developer running `make e2e` from inside an agent session inherits
-		// AO_ENDPOINT. The harness must still boot, or the suite becomes
+		// AO_IN_SESSION. The harness must still boot, or the suite becomes
 		// unrunnable from the place it is most often run.
 		{name: "harness mode inside a session still boots", args: []string{"--harness", "--data-dir", "/tmp/x"}, lookupEnv: inSession, want: entryBoot},
 		{name: "connect mode inside a session still boots", args: []string{"--connect", "ws://host:1/?token=t"}, lookupEnv: inSession, want: entryBoot},
@@ -68,13 +68,13 @@ func TestDecideEntry(t *testing.T) {
 		// unknown argument and takes the ordinary path.
 		{name: "a word starting with serve is not the verb", args: []string{"serveall"}, lookupEnv: noEnv, want: entryBoot},
 		{name: "serve is only the verb in first position", args: []string{"--listen", "0.0.0.0:1", "serve"}, lookupEnv: noEnv, want: entryBoot},
-		// An empty AO_ENDPOINT is not a session: a broken injection must not
+		// An empty AO_IN_SESSION is not a session: a broken injection must not
 		// make the app unlaunchable.
 		{
-			name: "an empty endpoint is not a session",
+			name: "an empty session marker is not a session",
 			args: nil,
 			lookupEnv: func(name string) (string, bool) {
-				if name == aocli.EnvEndpoint {
+				if name == aocli.EnvInSession {
 					return "  ", true
 				}
 				return "", false

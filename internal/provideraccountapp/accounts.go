@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
@@ -50,7 +51,7 @@ func (m *Manager) ListProviderAccounts() ([]ManagedAccount, error) {
 	m.mu.RLock()
 	now := time.Now()
 	var out []ManagedAccount
-	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+	for _, providerName := range ManagedAccountProviders {
 		active, hasActive := m.store.Active(providerName, now)
 		generation := m.store.Generation(providerName)
 		for _, account := range m.store.List(providerName, now) {
@@ -675,6 +676,9 @@ func (m *Manager) probeProviderAccountAtHome(providerName, binary, home string) 
 			binary,
 			map[string]string{"CODEX_HOME": home},
 		))
+	case string(provider.Agy):
+		geminiDir, appDataSubdir := splitAgyEphemeralHome(home)
+		return agy.ProbeAccount(m.context(), m.agyProbeConfig(binary, geminiDir, appDataSubdir, nil))
 	default:
 		return provider.AccountInfo{}, fmt.Errorf("unsupported provider %q", providerName)
 	}

@@ -31,7 +31,7 @@ import (
 )
 
 // Names are the provider executables poisoned on PATH.
-var Names = []string{"claude", "codex"}
+var Names = []string{"claude", "codex", "agy"}
 
 const (
 	// recordName is the file each poisoned executable appends its attempt to.

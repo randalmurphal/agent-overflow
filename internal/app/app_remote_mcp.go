@@ -46,7 +46,7 @@ func (a *App) remoteMCPServer() *threadmcp.Server[remoteMCPAccess] {
 }
 
 func (a *App) remoteMCPConfigForThread(thread store.Thread, sessionToken string) (map[string]any, error) {
-	if a.backends == nil || (thread.Provider != string(provider.Claude) && thread.Provider != string(provider.Codex)) {
+	if a.backends == nil || !provider.CapabilitiesForProvider(thread.Provider).SupportsAppManagedMCP {
 		return nil, nil
 	}
 	scope, ok, err := a.deriveCallerScope(thread)
@@ -397,7 +397,7 @@ var remoteToolDefinitions = []map[string]any{
 }
 
 func (a *App) withRemoteMCPRow(thread store.Thread, rows []ThreadMCPServer, live bool) []ThreadMCPServer {
-	if a.backends == nil || (thread.Provider != string(provider.Claude) && thread.Provider != string(provider.Codex)) {
+	if a.backends == nil || !provider.CapabilitiesForProvider(thread.Provider).SupportsAppManagedMCP {
 		return rows
 	}
 	if len(a.remoteMCPTools(remoteMCPAccess{ThreadID: thread.ID})) == 0 {

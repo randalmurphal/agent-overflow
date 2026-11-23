@@ -4,7 +4,7 @@
      Source: frontend/src/lib/theme/tokenRegistry.ts + the app stylesheets.
      Regenerate: cd frontend && node scripts/generate-theme-reference.mjs -->
 
-Every color this app paints, and the name a theme file calls it by. 87 tokens: 48 in `colors`, 21 in `syntax`, 16 in `ansi`, 2 in `code`.
+Every color this app paints, and the name a theme file calls it by. 88 tokens: 49 in `colors`, 21 in `syntax`, 16 in `ansi`, 2 in `code`.
 
 ## Where theme files live
 
@@ -140,6 +140,7 @@ whatever base the mode has).
 | `provider-codex` | Codex provider identity. Brand-locked by default. | `oklch(0.72 0.15 55)` | `oklch(0.58 0.16 55)` |
 | `provider-claude` | Claude provider identity. Brand-locked by default, with no separate light value. | `#d97757` | — |
 | `provider-claude-tui` | claude-tui provider identity: the phosphor green of a CRT terminal. | `oklch(0.82 0.2 145)` | `oklch(0.55 0.16 145)` |
+| `provider-agy` | Antigravity provider identity. | `oklch(0.72 0.16 255)` | `oklch(0.52 0.17 255)` |
 | `overlay` | Backdrop dimming app chrome behind a modal or sheet. Varies with the mode. | `oklch(0 0 0 / 60%)` | `oklch(0.22 0.01 255 / 28%)` |
 | `scrim` | Chrome painted over USER MEDIA (lightbox grounds, thumbnail badges). Stored opaque and consumed at partial alpha; mode-invariant by default. | `oklch(0 0 0)` | — |
 | `scrim-fg` | Foreground of the media-overlay pair. Stored opaque and consumed at partial alpha; mode-invariant by default. | `oklch(1 0 0)` | — |

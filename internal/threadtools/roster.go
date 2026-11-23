@@ -250,6 +250,8 @@ func providerLabel(id string) string {
 		return "Claude Code"
 	case "codex":
 		return "Codex"
+	case "agy":
+		return "Antigravity"
 	case "":
 		return "no provider"
 	}

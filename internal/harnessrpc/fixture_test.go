@@ -110,7 +110,6 @@ func (h *testHost) ConnectedClients() (int, bool) {
 	}
 	return h.eventBus.SubscriberCount(), true
 }
-func (h *testHost) SessionEnv(string) map[string]string { return nil }
 func (h *testHost) ListVisibleThreads() ([]store.Thread, error) {
 	return h.store.ListThreads()
 }
@@ -224,9 +223,10 @@ func (h *testHost) ClearUIState() error {
 func (h *testHost) ResetSessionImporter() {}
 func (h *testHost) DropReviewDiffImages() { h.droppedImages++ }
 
-func (h *testHost) ResetForgeCaches()     { h.forgeCachesReset++ }
-func (h *testHost) ResetProviderUsage()   { h.usageReset++ }
-func (h *testHost) CancelProviderLogins() { h.loginsCancelled++ }
+func (h *testHost) ResetForgeCaches()               { h.forgeCachesReset++ }
+func (h *testHost) ResetProviderUsage()             { h.usageReset++ }
+func (h *testHost) ResetProviderConnections() error { return nil }
+func (h *testHost) CancelProviderLogins()           { h.loginsCancelled++ }
 
 func (h *testHost) RunBackgroundFetchPass(context.Context) { h.fetchPasses++ }
 

@@ -118,6 +118,8 @@ type Service struct {
 	claudeGate     *usageProbeGate
 	codexGateOnce  sync.Once
 	codexGate      *usageProbeGate
+	agyGateOnce    sync.Once
+	agyGate        *usageProbeGate
 
 	// work joins the poll loops, requested readings and trailing gate runs.
 	workMu     sync.Mutex

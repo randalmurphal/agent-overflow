@@ -407,10 +407,15 @@ func (a *App) devServerOwners() []devscan.Owner {
 	var owners []devscan.Owner
 	if a.sessionRuntime != nil {
 		for _, process := range a.sessionRuntime.ThreadProcesses() {
+			pgid := process.PGID
+			if pgid <= 0 {
+				pgid = process.PID
+			}
 			owners = append(owners, devscan.Owner{
 				ThreadID: process.ThreadID,
 				PID:      process.PID,
-				PGID:     process.PID,
+				PGID:     pgid,
+				WorkDir:  process.WorkDir,
 			})
 		}
 	}

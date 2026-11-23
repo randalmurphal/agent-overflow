@@ -69,7 +69,7 @@ func browserConfigFromSettings(current settings.Settings) appbrowser.Config {
 }
 
 func (a *App) browserMCPConfigForThread(thread store.Thread, sessionToken string) (map[string]any, error) {
-	if thread.Provider != string(provider.Claude) && thread.Provider != string(provider.Codex) {
+	if !provider.CapabilitiesForProvider(thread.Provider).SupportsAppManagedMCP {
 		return nil, nil
 	}
 	if a.browser.mcp == nil {

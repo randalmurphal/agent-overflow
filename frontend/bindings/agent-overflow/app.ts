@@ -4427,6 +4427,16 @@ export function PreviewNotificationSound(event: string): $CancellablePromise<voi
 }
 
 /**
+ * ProbeAgyAccount runs the zero-token Antigravity identity/tier probe and
+ * caches the answer per binary/account/environment.
+ */
+export function ProbeAgyAccount(): $CancellablePromise<provider$0.AccountInfo> {
+    return $Call.ByID(633322787).then(($result: any) => {
+        return $$createType220($result);
+    });
+}
+
+/**
  * ProbeClaudeAccount spawns a short-lived Claude CLI subprocess (via
  * the SDK initialize handshake) and returns the authenticated account
  * metadata. Results are cached per binary path for 5 minutes. Zero
@@ -4669,6 +4679,16 @@ export function ReadShellAttachmentOutput(threadID: string, attachmentID: string
 export function ReadThreadRemoteLog(threadID: string, computerID: string, requestID: string, offset: number, maxBytes: number): $CancellablePromise<app$0.RemoteLogChunk> {
     return $Call.ByID(2424974671, threadID, computerID, requestID, offset, maxBytes).then(($result: any) => {
         return $$createType228($result);
+    });
+}
+
+/**
+ * RecheckAgyAccount evicts the cached Antigravity identity for the configured
+ * binary and re-runs ProbeAgyAccount.
+ */
+export function RecheckAgyAccount(): $CancellablePromise<provider$0.AccountInfo> {
+    return $Call.ByID(4079519754).then(($result: any) => {
+        return $$createType220($result);
     });
 }
 

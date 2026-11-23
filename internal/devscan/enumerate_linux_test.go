@@ -216,6 +216,24 @@ func TestEnumerateRecordsTheWholeParentChain(t *testing.T) {
 	}
 }
 
+func TestEnumerateReadsListenerCWD(t *testing.T) {
+	f := newProcFixture(t)
+	f.listenRow(false, hexLoopbackV4, portDev, 400)
+	f.process(t, 500, 300, 300, "vite", 400)
+	if err := os.Symlink("/work/repo/frontend", filepath.Join(f.root, "500", "cwd")); err != nil {
+		t.Fatalf("symlink cwd: %v", err)
+	}
+	root := f.write(t)
+
+	listeners, _, err := enumerateListeners(root)
+	if err != nil {
+		t.Fatalf("enumerate: %v", err)
+	}
+	if len(listeners) != 1 || listeners[0].CWD != "/work/repo/frontend" {
+		t.Fatalf("listeners = %+v, want CWD /work/repo/frontend", listeners)
+	}
+}
+
 func TestParseHexAddr(t *testing.T) {
 	for _, tc := range []struct {
 		cell string

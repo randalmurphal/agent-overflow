@@ -12,6 +12,7 @@ type Provider string
 const (
 	ProviderClaude Provider = "claude"
 	ProviderCodex  Provider = "codex"
+	ProviderAgy    Provider = "agy"
 )
 
 // Status is the normalized state every MCP server resolves to,

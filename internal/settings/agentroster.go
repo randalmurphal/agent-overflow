@@ -78,7 +78,7 @@ const (
 )
 
 var (
-	agentProfileProviders = map[string]struct{}{"": {}, "claude": {}, "codex": {}}
+	agentProfileProviders = map[string]struct{}{"": {}, "claude": {}, "codex": {}, "agy": {}}
 	agentProfileEfforts   = map[string]struct{}{
 		"": {}, "none": {}, "minimal": {}, "low": {}, "medium": {}, "high": {}, "xhigh": {}, "max": {}, "ultra": {},
 	}

@@ -76,9 +76,7 @@ func (a *App) workflowToolsServer() *workflowtools.Server {
 // unit with the tools its grants and access admit. A projectless thread has no
 // project to run workflows in and gets none.
 func (a *App) workflowMCPConfigForThread(thread store.Thread, sessionToken string) (map[string]any, error) {
-	switch thread.Provider {
-	case string(provider.Claude), string(provider.ClaudeTUI), string(provider.Codex):
-	default:
+	if !provider.CapabilitiesForProvider(thread.Provider).SupportsWorkflowMCP {
 		return nil, nil
 	}
 	scope, ok, err := a.workflowCallerScope(thread)
@@ -139,9 +137,7 @@ func (a *App) callWorkflowMCP(w http.ResponseWriter, ctx context.Context, req th
 // part of every project session rather than a per-conversation choice, so the
 // row carries no toggle.
 func (a *App) withWorkflowMCPRow(thread store.Thread, rows []ThreadMCPServer, live bool) []ThreadMCPServer {
-	switch thread.Provider {
-	case string(provider.Claude), string(provider.ClaudeTUI), string(provider.Codex):
-	default:
+	if !provider.CapabilitiesForProvider(thread.Provider).SupportsWorkflowMCP {
 		return rows
 	}
 	if _, ok, err := a.workflowCallerScope(thread); err != nil || !ok {

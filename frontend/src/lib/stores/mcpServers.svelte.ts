@@ -105,6 +105,7 @@ export interface MCPTarget extends MCPCtx {
 // error the user cannot act on is worse than an empty menu.
 function mcpEntityKey(provider: string, workspacePath: string): string | null {
   if (provider === 'codex') return MCP_CODEX_KEY;
+  if (provider === 'agy') return 'agy';
   if (provider !== 'claude') return null;
   return workspacePath === '' ? null : `claude:${workspacePath}`;
 }

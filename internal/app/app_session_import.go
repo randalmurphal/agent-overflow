@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/sessionimport"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/triage"
@@ -332,7 +334,7 @@ func (a *App) sessionImportDeps() (sessionimport.Deps, error) {
 		}
 		home = resolved
 	}
-	return sessionimport.Deps{
+	deps := sessionimport.Deps{
 		Store:             a.store,
 		ClaudeProjectsDir: providerHomeIfPresent(filepath.Join(home, ".claude", "projects")),
 		CodexHome:         providerHomeIfPresent(filepath.Join(home, ".codex")),
@@ -340,7 +342,16 @@ func (a *App) sessionImportDeps() (sessionimport.Deps, error) {
 		// row broadcast (importedRowBroadcast) also lists it ahead of its
 		// threads for clients that missed that frame.
 		EnsureProject: a.ensureProjectForWorkspace,
-	}, nil
+	}
+	if agyDir := providerHomeIfPresent(filepath.Join(home, ".gemini", "antigravity-cli")); agyDir != "" {
+		deps.AgyListSessions = func(ctx context.Context) ([]sessionimport.AgySessionSummary, error) {
+			return a.listAgyImportSessions(ctx, agyDir)
+		}
+		deps.AgyReplaySession = func(ctx context.Context, sessionID, workDir string) ([]provider.ProviderEvent, error) {
+			return a.replayAgyImportSession(ctx, agyDir, sessionID, workDir)
+		}
+	}
+	return deps, nil
 }
 
 // providerHomeIfPresent returns path when it is a directory, else "" — which

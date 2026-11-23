@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/closer"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
@@ -232,6 +233,7 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 	// Tail anchors were normalized above. Pin idle sources too: they may
 	// receive another turn before the fork's first send.
 	timing.next("checkpoint")
+	var agyCutMaxIdx *int
 	if atTurnIndex == nil && source.Provider == string(provider.Claude) {
 		cut, err := a.captureClaudeMidTurnCut(source)
 		if err != nil {
@@ -241,6 +243,15 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 			return store.Thread{}, fmt.Errorf("fork thread: source thread %q has no resumable Claude session", source.ID)
 		}
 		midTurnCut = &cut
+	} else if atTurnIndex == nil && source.Provider == string(provider.Agy) && source.SessionRef != "" {
+		// Pin the native Antigravity step ceiling BEFORE CreatePointerFork so a
+		// streaming turn completing between pointer commit and DB clone cannot
+		// hand the fork an assistant answer absent from its visible timeline.
+		maxIdx, err := agy.ReadForkCheckpoint(a.agyAppDataDir(), source.SessionRef)
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("fork thread: capture agy checkpoint: %w", err)
+		}
+		agyCutMaxIdx = &maxIdx
 	}
 
 	timing.next("origin")
@@ -307,7 +318,7 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 	timing.next("provider")
-	resume, err := a.resolveForkResumeState(ctx, source, atTurnIndex, midTurnCut, opts.Lineage)
+	resume, err := a.resolveForkResumeState(ctx, source, fork.ID, atTurnIndex, midTurnCut, agyCutMaxIdx, opts.Lineage)
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}

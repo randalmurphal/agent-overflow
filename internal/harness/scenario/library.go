@@ -30,6 +30,7 @@ type LibraryEntry struct {
 var defaultScenarioByProvider = map[string]string{
 	ProviderClaude: "streaming-text",
 	ProviderCodex:  "codex-basic",
+	ProviderAgy:    "agy-basic",
 }
 
 // DefaultName returns the zero-config scenario name for a protocol.

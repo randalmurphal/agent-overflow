@@ -518,7 +518,7 @@ func (s *Store) listRecoverableClaudeBackgroundLaunches(threadID string) ([]Item
 		   FROM items
 		   JOIN threads ON threads.id = items.thread_id
 		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id` + servedItemJoin + `
-		  WHERE threads.provider IN ('claude', 'claude-tui')
+		  WHERE threads.provider IN ('claude', 'claude-tui', 'agy')
 		    AND items.kind = 'tool_call'
 		    AND items.status = 'running'
 		    AND items.is_background = 1

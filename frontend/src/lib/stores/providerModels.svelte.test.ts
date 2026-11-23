@@ -127,6 +127,7 @@ describe('provider model catalog', () => {
       claudeEnabled: true,
       codexEnabled: false,
       claudeTuiEnabled: true,
+      agyEnabled: false,
     });
 
     expect(getModels).toHaveBeenCalledOnce();
@@ -149,6 +150,7 @@ describe('provider model catalog', () => {
       claudeEnabled: false,
       codexEnabled: false,
       claudeTuiEnabled: true,
+      agyEnabled: false,
     });
 
     expect(getModels).not.toHaveBeenCalled();
@@ -168,6 +170,7 @@ describe('provider model catalog', () => {
       claudeEnabled: false,
       codexEnabled: true,
       claudeTuiEnabled: false,
+      agyEnabled: false,
     });
 
     expect(getModels).toHaveBeenCalledOnce();
@@ -215,6 +218,7 @@ describe('provider model catalog', () => {
       claudeEnabled: false,
       codexEnabled: true,
       claudeTuiEnabled: false,
+      agyEnabled: false,
     })).resolves.toBeUndefined();
 
     expect(warn).toHaveBeenCalledWith(

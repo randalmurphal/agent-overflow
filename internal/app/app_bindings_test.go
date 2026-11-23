@@ -1187,6 +1187,13 @@ func newTestAppAtStorePath(t *testing.T, dbPath string) *App {
 	// Cleanups run last first: the cancel releases a notice's session
 	// start waiting on a thread lock, and the join lands it before the
 	// store closes.
+	t.Cleanup(func() {
+		if app.sessionRuntime != nil {
+			if err := app.sessionRuntime.Connections().CloseAll(); err != nil {
+				t.Errorf("close provider connections: %v", err)
+			}
+		}
+	})
 	t.Cleanup(app.waitAgentNoticeWork)
 	t.Cleanup(app.appCancel)
 	joinBackgroundWorkAtCleanup(t, app)

@@ -136,7 +136,7 @@ func TestProviderLeafBindingsAllocateWireSlices(t *testing.T) {
 func TestTextGenerationEffortsMatchTheProviderSets(t *testing.T) {
 	t.Parallel()
 	// Text generation is gated to these two; claude-tui is never routed here.
-	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+	for _, providerName := range []string{string(provider.Claude), string(provider.Codex), string(provider.Agy)} {
 		t.Run(providerName, func(t *testing.T) {
 			canonical := provider.ReasoningEffortsForProvider(providerName)
 			allowed := settings.AllowedTextGenerationEfforts(providerName)

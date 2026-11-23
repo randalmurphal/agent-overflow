@@ -263,6 +263,9 @@ func (m *Manager) runStableAccountProbe(
 					return provider.AccountInfo{}, nil, err
 				}
 			}
+			if providerName == string(provider.Agy) && afterPresent {
+				info = m.identifyAgyCredential(start, info, after.Bytes())
+			}
 			if !afterPresent {
 				return info, nil, nil
 			}

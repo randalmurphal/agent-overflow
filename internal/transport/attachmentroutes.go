@@ -211,7 +211,7 @@ type AttachmentUpload struct {
 // AttachmentTransfer is the narrow app-side surface behind the two byte
 // routes. The app satisfies it with an adapter over its attachment store;
 // this package never learns what an attachment row is, the same direction
-// and the same reason as AuthEndpoints and ScopedTokens.
+// and the same reason as AuthEndpoints: transport stays store-free.
 //
 // StoreAttachment answers raw JSON rather than a typed row for the reason
 // PasskeyChallenge.Options is raw: the created row's shape belongs to

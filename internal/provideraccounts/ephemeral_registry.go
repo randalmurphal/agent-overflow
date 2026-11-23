@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -47,7 +46,7 @@ const unleasedEntryGrace = time.Hour
 
 // ephemeralProviders are the providers whose temporary homes the registry
 // covers, in sweep order.
-var ephemeralProviders = []string{"claude", "codex"}
+var ephemeralProviders = []string{"claude", "codex", "agy"}
 
 // ephemeralHomePrefix is the os.MkdirTemp prefix newEphemeralHome uses for
 // one provider's homes. The sweep refuses to act on any recorded path
@@ -521,8 +520,8 @@ func (c *Credentials) chainAdvances(providerName string, current, next []byte) b
 // path sweepable.
 func (c *Credentials) removeEphemeralRemnants(providerName, configHome string) error {
 	var errs []error
-	if runtime.GOOS == "darwin" && providerName == "claude" {
-		if err := c.keychain.remove(configHome, false); err != nil {
+	if kc, ok := c.keychainFor(providerName); ok {
+		if err := kc.remove(configHome, false); err != nil {
 			errs = append(errs, err)
 		}
 	}

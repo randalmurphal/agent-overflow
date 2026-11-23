@@ -60,6 +60,7 @@
   } from '../../utils/claudeSubagentLabel';
   import {
     claudeThreadSubagentEffortLabel,
+    subagentEffortLabel,
   } from '../../utils/subagentEffort';
   import { joinLabelParts } from '../../utils/effortLabels';
   import {
@@ -161,10 +162,15 @@
       ? carrierIdentity.effortAlternatives
       : deriveClaudeSubagentEffortAlternatives(agentInputObject, displayMeta, agentToolName),
   );
+  let effectiveProvider = $derived<'claude' | 'agy'>(
+    pane?.thread?.provider === 'agy' || displayMeta?.provider === 'agy' ? 'agy' : 'claude',
+  );
   // "Opus 4.7 · xHigh": the model and the effort it runs at, in one affix.
   let modelLabel = $derived(joinLabelParts(
-    model ? displayModelLabel('claude', model) : '',
-    claudeThreadSubagentEffortLabel(effectiveDisplayItem.threadId, pane?.thread?.projectId, model, effort, effortAlternatives),
+    model ? displayModelLabel(effectiveProvider, model) : '',
+    effectiveProvider === 'claude'
+      ? claudeThreadSubagentEffortLabel(effectiveDisplayItem.threadId, pane?.thread?.projectId, model, effort, effortAlternatives)
+      : subagentEffortLabel('agy', effort, undefined),
   ));
   let description = $derived(
     carrierIdentity ? carrierIdentity.description : deriveClaudeSubagentDescription(agentInputObject),
