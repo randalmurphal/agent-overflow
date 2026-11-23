@@ -1099,19 +1099,24 @@ logged once with its operation and no titles.
 |---|---|---|
 | Forge keys not held | 1 `ForgeFacts8`, `ForgeFacts32` or `ForgeFacts128` per 128 keys | 1 `ForgeFacts4`, `ForgeFacts16` or `ForgeFacts32` per 32 keys, and beside them 1 `ForgeFactsLabels` per 100 labels of each `labels:` key (at most 10) |
 | Every forge key held | none, or with `fresh` as if none were held | none, or with `fresh` as if none were held |
-| Local keys not held | 1 `git rev-list --objects --missing=print` per commit a path key names, per 200 paths or 64 KiB of paths (4 commits at a time), 1 `git cat-file --batch-check` for every commit and every path whose object is local, 1 `git cat-file --batch` for the commits' subjects and the lines' blobs (streamed), 1 header read per image blob the blob image cache does not hold (stopped after at most 1 MiB, 4 at a time), 1 lstat per LFS pointer blob (an `image:` key through a pointer is never held) and a header read of its object when it is present and its header is not held, 1 `git config` for `lfs.storage` per workspace per 10 minutes when a key reaches a pointer, 1 `git ls-tree` per 200 paths or 64 KiB of paths of a commit with a path the walk did not find local | same |
+| Local keys not held | To learn what is local without fetching: 1 `git rev-list --no-walk` when a key names a full commit id, 1 `git ls-tree` per local commit a path key names, and 1 `git rev-list --objects --missing=print` per commit with a blob to read (every `lines:` key's, and an `image:` key's the blob image cache does not hold), the last two per 200 paths or 64 KiB of paths, 4 commits at a time. Then 1 `git cat-file --batch-check` for the commits and the blobs that are local, 1 `git cat-file --batch` for the commits' subjects and the lines' blobs (streamed), 1 header read per image blob the blob image cache does not hold (stopped after at most 1 MiB, 4 at a time), 1 lstat per LFS pointer blob (an `image:` key through a pointer is never held) and a header read of its object when it is present and its header is not held, 1 `git config` for `lfs.storage` per workspace per 10 minutes when a key reaches a pointer | same |
 | Every local key held | no git; with `fresh`, a held abbreviated `commit:` is read as if not held | same |
 
-In a partial clone a path whose blob is not local is `unavailable`,
+In a partial clone a commit or a blob that is not local is `unavailable`,
 never fetched. Every git read sets `GIT_NO_LAZY_FETCH=1` and an empty
 `GIT_ALLOW_PROTOCOL`, which refuses every transport on a git that does
-not know the first. `cat-file` is asked for a path only when the walk
-(`rev-list --missing=print` over the commit's tree, which fetches on no
-git) found its object local: asked for a promised object that is not,
-git 2.43 as Ubuntu 24.04 ships it tries the fetch, is refused, and dies
-with the whole batch-check. A path that names a directory lists what is
-under it; a listing past 4 MiB fails the commit's walk, and its paths
-answer `unavailable`.
+not know the first. `cat-file` is asked only for an abbreviated commit
+id, which resolves among local objects alone, and for objects the reads
+of `local_residency.go` found local, which fetch on no git: asked for a
+promised object that is not local, git 2.43 as Ubuntu 24.04 ships it
+tries the fetch, is refused, and dies with the whole batch-check. A path
+answers as its own entry in its commit's tree: a directory or a
+submodule is `absent`, and only a blob's path is walked. Whether a blob
+is local is decided by its id, so two paths of one blob answer alike. A
+listing past 4 MiB fails that commit's read, and its paths answer
+`unavailable`. `Core.BlobImage` asks `cat-file` for its one blob
+directly: on such a git a promised blob that is not local fails that
+read alone.
 
 A pointer's object is read from the local LFS store only, never through
 git-lfs or the network (`local_lfs.go`): the store is `lfs.storage`

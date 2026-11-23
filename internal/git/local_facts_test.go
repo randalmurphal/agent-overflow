@@ -208,11 +208,11 @@ func TestLocalFactsAnswerEveryKind(t *testing.T) {
 		}
 	}
 	runs := calls.take()
-	// One walk per commit a path key names, one batch-check, one batch
-	// read, one header read per blob an image
-	// key names, one config read for the LFS pointer's store, and one
-	// ls-tree per commit with a path the batch-check called missing.
-	if want := []string{"cat-file --batch", "cat-file --batch-check=%(objectname) %(objecttype) %(objectsize)", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "config -z", "ls-tree -z", "ls-tree -z", "rev-list --objects", "rev-list --objects", "rev-list --objects"}; !slices.Equal(runs, want) {
+	// One read of the local commits, one ls-tree and one walk per local
+	// commit a path key names, one batch-check, one batch read, one header
+	// read per blob an image key names, and one config read for the LFS
+	// pointer's store.
+	if want := []string{"cat-file --batch", batchCheckRun, "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "config -z", entriesRun, entriesRun, commitsRun, walkRun, walkRun}; !slices.Equal(runs, want) {
 		t.Fatalf("git runs = %q\nwant %q", runs, want)
 	}
 
@@ -227,8 +227,11 @@ func TestLocalFactsAnswerEveryKind(t *testing.T) {
 			t.Errorf("cached %s = %+v", w.Key, again[w.Key])
 		}
 	}
-	if runs, want := calls.take(), []string{"cat-file --batch-check=%(objectname) %(objecttype) %(objectsize)", "rev-list --objects", "rev-list --objects"}; !slices.Equal(runs, want) {
-		t.Fatalf("the cached call ran %q, want only the walks and the batch-check of the unavailable keys", runs)
+	// The unavailable keys are read again (an abbreviation's batch-check,
+	// a commit that is not local), and the LFS pointer's object is looked
+	// up again: its commit and its entry, its blob's record being held.
+	if runs, want := calls.take(), []string{batchCheckRun, entriesRun, commitsRun}; !slices.Equal(runs, want) {
+		t.Fatalf("the cached call ran %q, want %q", runs, want)
 	}
 }
 
@@ -298,8 +301,8 @@ func TestLocalFactsOneBatchCheckPerCall(t *testing.T) {
 			checks++
 		}
 	}
-	if checks != 1 || len(runs) != 3 {
-		t.Fatalf("%d keys ran %q, want one walk, one batch-check and one batch read", len(keys), runs)
+	if checks != 1 || len(runs) != 5 {
+		t.Fatalf("%d keys ran %q, want the three reads of what is local, one batch-check and one batch read", len(keys), runs)
 	}
 }
 
@@ -375,6 +378,23 @@ func TestLocalFactsAmbiguousCommitPrefix(t *testing.T) {
 	}
 }
 
+// localObjectIDs is the ids of the objects in repo's own store, listed
+// without the promisor remote: no git fetches to list what it holds.
+func localObjectIDs(t *testing.T, git, repo string) map[string]bool {
+	t.Helper()
+	cmd := exec.Command(git, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)")
+	cmd.Dir = repo
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("listing %s's objects: %v", repo, err)
+	}
+	ids := map[string]bool{}
+	for id := range strings.FieldsSeq(string(out)) {
+		ids[id] = true
+	}
+	return ids
+}
+
 // In a partial clone, a path whose blob is not local answers unavailable
 // without fetching it; a path the tree lacks still answers absent.
 func TestLocalFactsPartialCloneDoesNotFetch(t *testing.T) {
@@ -384,12 +404,7 @@ func TestLocalFactsPartialCloneDoesNotFetch(t *testing.T) {
 	clone := filepath.Join(t.TempDir(), "clone")
 	testutil.RunGit(t, t.TempDir(), "clone", "-q", "--no-checkout", "--filter=blob:none", "file://"+r.dir, clone)
 	blob := r.blob(t, r.head, "docs/head.png")
-	local := func() bool {
-		cmd := exec.Command("git", "cat-file", "-e", blob)
-		cmd.Dir, cmd.Env = clone, append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
-		return cmd.Run() == nil
-	}
-	if local() {
+	if localObjectIDs(t, "git", clone)[blob] {
 		t.Fatal("the clone holds the blob")
 	}
 	core := NewCore()
@@ -402,72 +417,151 @@ func TestLocalFactsPartialCloneDoesNotFetch(t *testing.T) {
 			t.Errorf("%s = %+v, want %s", key, got[key], want)
 		}
 	}
-	if local() {
+	if localObjectIDs(t, "git", clone)[blob] {
 		t.Fatal("resolving the facts fetched the blob")
 	}
 }
 
-// A git that does not honor GIT_NO_LAZY_FETCH fetches a promised object
-// it is asked for, and git 2.43 as Ubuntu 24.04 ships it, refused the
-// fetch, dies with the whole batch-check. Neither happens: cat-file is
-// asked only for the paths a walk found local. The git here is this
-// machine's with the variable dropped, against a promisor remote that
-// would serve the fetch and against one that is gone.
-func TestLocalFactsAskGitOnlyForLocalObjects(t *testing.T) {
+// legacyGit installs a git that does not know GIT_NO_LAZY_FETCH: this
+// machine's with the variable dropped. Asked for a promised object that is
+// not local it starts a fetch, and with the transport refused it dies, as
+// git 2.43 does with the variable set. It answers the real git's path.
+func legacyGit(t *testing.T) string {
+	t.Helper()
 	real, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, remote := range []string{"reachable", "gone"} {
-		t.Run(remote, func(t *testing.T) {
-			r := newFactsRepo(t)
-			testutil.RunGit(t, r.dir, "config", "uploadpack.allowFilter", "true")
+	installMockGit(t, "#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '"+real+"' \"$@\"\n")
+	return real
+}
+
+// On a git that fetches a promised object it is asked for, or dies with
+// its whole batch when the fetch is refused, one object that is not local
+// costs its own keys and nothing is fetched: cat-file is asked only for
+// what the fetch-free reads found local. The clones' promisor remote
+// would serve the fetch ("reachable") or is gone.
+func TestLocalFactsAskGitOnlyForLocalObjects(t *testing.T) {
+	type fixture struct {
+		clone string
+		rev   PRRevision
+		// want is each key's status; notFetched the objects that are not
+		// local before or after.
+		want       map[string]string
+		subject    string
+		notFetched []string
+	}
+	source := func(t *testing.T) factsRepo {
+		r := newFactsRepo(t)
+		// Two paths of one blob.
+		writeFactFile(t, r.dir, "docs/twin.svg", []byte(svgDoc))
+		testutil.RunGit(t, r.dir, "add", ".")
+		testutil.RunGit(t, r.dir, "commit", "-q", "-m", "twin")
+		r.base, r.head = r.head, strings.TrimSpace(runGitStdout(t, r.dir, "rev-parse", "HEAD"))
+		testutil.RunGit(t, r.dir, "config", "uploadpack.allowFilter", "true")
+		testutil.RunGit(t, r.dir, "config", "uploadpack.allowAnySHA1InWant", "true")
+		return r
+	}
+	fixtures := map[string]func(t *testing.T) fixture{
+		// Every commit and tree is local, and of the blobs only the svg
+		// two paths share.
+		"blobs not local": func(t *testing.T) fixture {
+			r := source(t)
 			clone := filepath.Join(t.TempDir(), "clone")
 			testutil.RunGit(t, t.TempDir(), "clone", "-q", "--no-checkout", "--filter=blob:none", "file://"+r.dir, clone)
-			// One blob is local, as after a checkout of its path.
 			testutil.RunGit(t, clone, "cat-file", "-e", r.head+":docs/icon.svg")
-			if remote == "gone" {
-				testutil.RunGit(t, clone, "remote", "set-url", "origin", "file://"+filepath.Join(t.TempDir(), "gone"))
-			}
-			local := func(path string) bool {
-				cmd := exec.Command(real, "cat-file", "-e", r.blob(t, r.head, path))
-				cmd.Dir, cmd.Env = clone, append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
-				return cmd.Run() == nil
-			}
-			if local("docs/head.png") || !local("docs/icon.svg") {
-				t.Fatal("the clone does not hold docs/icon.svg alone")
-			}
-			installMockGit(t, "#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '"+real+"' \"$@\"\n")
-			core := NewCore()
-			calls := countFactGit(core)
-			keys := map[string]string{
+			return fixture{clone: clone, rev: r.rev(), subject: "commit:" + r.head[:8], want: map[string]string{
 				"image:head:docs/head.png": FactUnavailable, "lines:" + r.head + ":code.go:1-1": FactUnavailable,
-				"image:head:docs/none.png": FactAbsent, "commit:" + r.head[:8]: FactFound,
-				"image:base:docs/base.png": FactUnavailable, "commit:" + r.base[:8]: FactFound,
-				"image:head:docs/icon.svg": FactFound, "image:head:docs": FactAbsent,
-			}
-			got := resolveLocal(t, core, clone, r.rev(), slices.Collect(maps.Keys(keys))...)
-			for key, want := range keys {
-				if got[key].Status != want {
-					t.Errorf("%s = %+v, want %s", key, got[key], want)
+				"image:base:docs/head.png": FactUnavailable, "image:head:docs/none.png": FactAbsent,
+				"commit:" + r.head[:8]: FactFound, "commit:" + r.base: FactFound,
+				"image:head:docs/icon.svg": FactFound, "image:head:docs/twin.svg": FactFound,
+				// A directory named beside a path under it.
+				"image:head:docs": FactAbsent,
+			}, notFetched: []string{r.blob(t, r.head, "docs/head.png"), r.blob(t, r.head, "code.go")}}
+		},
+		// The head commit and what it holds are local (a checkout); the
+		// base commit is promised and not local.
+		"a commit not local": func(t *testing.T) fixture {
+			r := source(t)
+			clone := filepath.Join(t.TempDir(), "clone")
+			testutil.RunGit(t, t.TempDir(), "clone", "-q", "--filter=object:type=tag", "file://"+r.dir, clone)
+			return fixture{clone: clone, rev: r.rev(), subject: "commit:" + r.head, want: map[string]string{
+				"commit:" + r.head: FactFound, "commit:" + r.base: FactUnavailable,
+				"image:head:docs/icon.svg": FactFound, "image:head:docs/twin.svg": FactFound,
+				"image:base:docs/head.png": FactUnavailable, "lines:" + r.base + ":code.go:1-1": FactUnavailable,
+				"lines:" + r.head + ":code.go:1-1": FactFound,
+			}, notFetched: []string{r.base}}
+		},
+	}
+	for name, build := range fixtures {
+		for _, remote := range []string{"reachable", "gone"} {
+			t.Run(name+"/"+remote, func(t *testing.T) {
+				f := build(t)
+				if remote == "gone" {
+					testutil.RunGit(t, f.clone, "remote", "set-url", "origin", "file://"+filepath.Join(t.TempDir(), "gone"))
 				}
-			}
-			if got["commit:"+r.head[:8]].Title == "" {
-				t.Errorf("the head commit has no subject: %+v", got["commit:"+r.head[:8]])
-			}
-			if local("docs/head.png") || local("code.go") {
-				t.Error("resolving the facts fetched a blob")
-			}
-			checks := 0
-			for _, run := range calls.take() {
-				if strings.HasPrefix(run, "cat-file --batch-check") {
-					checks++
+				real := legacyGit(t)
+				for _, id := range f.notFetched {
+					if localObjectIDs(t, real, f.clone)[id] {
+						t.Fatalf("the clone holds %s", id)
+					}
 				}
-			}
-			if checks != 1 {
-				t.Errorf("%d batch-checks ran, want 1", checks)
-			}
-		})
+				core := NewCore()
+				var mu sync.Mutex
+				checks := 0
+				core.beforeFactGit = func(args []string) {
+					mu.Lock()
+					defer mu.Unlock()
+					switch {
+					case len(args) < 2:
+					case strings.HasPrefix(args[1], "--batch-check"):
+						checks++
+					case args[0] == "rev-list" && args[1] == "--objects" && slices.Contains(args, "docs"):
+						t.Errorf("a walk was given a directory: %q", args)
+					}
+				}
+				got := resolveLocal(t, core, f.clone, f.rev, slices.Collect(maps.Keys(f.want))...)
+				for key, want := range f.want {
+					if got[key].Status != want {
+						t.Errorf("%s = %+v, want %s", key, got[key], want)
+					}
+				}
+				if got[f.subject].Title == "" {
+					t.Errorf("the head commit has no subject: %+v", got[f.subject])
+				}
+				for _, id := range f.notFetched {
+					if localObjectIDs(t, real, f.clone)[id] {
+						t.Errorf("resolving the facts fetched %s", id)
+					}
+				}
+				if checks != 1 {
+					t.Errorf("%d batch-checks ran, want 1", checks)
+				}
+			})
+		}
+	}
+}
+
+// Every facts read refuses every transport, so a git that does not know
+// GIT_NO_LAZY_FETCH cannot fetch either: asked directly for a promised
+// blob whose remote would serve it, it answers an error and the blob
+// stays where it was.
+func TestFactGitRefusesEveryTransport(t *testing.T) {
+	r := newFactsRepo(t)
+	testutil.RunGit(t, r.dir, "config", "uploadpack.allowFilter", "true")
+	testutil.RunGit(t, r.dir, "config", "uploadpack.allowAnySHA1InWant", "true")
+	clone := filepath.Join(t.TempDir(), "clone")
+	testutil.RunGit(t, t.TempDir(), "clone", "-q", "--no-checkout", "--filter=blob:none", "file://"+r.dir, clone)
+	blob := r.blob(t, r.head, "docs/head.png")
+	real := legacyGit(t)
+	if localObjectIDs(t, real, clone)[blob] {
+		t.Fatal("the clone holds the blob")
+	}
+	if image, err := NewCore().BlobImage(t.Context(), clone, blob); err == nil {
+		t.Errorf("BlobImage of a blob that is not local = %+v", image)
+	}
+	if localObjectIDs(t, real, clone)[blob] {
+		t.Fatal("the read fetched the blob")
 	}
 }
 
@@ -722,7 +816,7 @@ func TestFreshLocalFactsReadOnlyWhatCanChange(t *testing.T) {
 
 // Paths whose bytes exceed the argv bound run as several ls-tree calls,
 // and every path is still answered.
-func TestTreePathsSplitsArgvByPathBytes(t *testing.T) {
+func TestPathEntriesSplitsArgvByPathBytes(t *testing.T) {
 	t.Parallel()
 	r := newFactsRepo(t)
 	core := NewCore()
@@ -738,12 +832,16 @@ func TestTreePathsSplitsArgvByPathBytes(t *testing.T) {
 	if total <= gitdiff.MaxEntryPathBytes || len(paths) > gitdiff.MaxEntryPaths {
 		t.Fatalf("%d paths of %d bytes are within one run's bounds", len(paths), total)
 	}
-	present, err := core.treePaths(t.Context(), r.dir, r.head, append(slices.Clone(paths), "docs/head.png", "code.go"))
+	entries, err := core.pathEntries(t.Context(), r.dir, r.head, append(slices.Clone(paths), "docs/head.png", "code.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(present) != 2 || !present["docs/head.png"] || !present["code.go"] {
-		t.Fatalf("present = %v, want the two paths the tree holds", slices.Collect(maps.Keys(present)))
+	want := map[string]pathEntry{
+		"docs/head.png": {kind: "blob", oid: r.blob(t, r.head, "docs/head.png")},
+		"code.go":       {kind: "blob", oid: r.blob(t, r.head, "code.go")},
+	}
+	if !maps.Equal(entries, want) {
+		t.Fatalf("entries = %v, want the two paths the tree holds", entries)
 	}
 	if runs := calls.take(); len(runs) < 2 {
 		t.Fatalf("%d path bytes ran %q, want more than one ls-tree", total+len("docs/head.pngcode.go"), runs)
@@ -752,6 +850,63 @@ func TestTreePathsSplitsArgvByPathBytes(t *testing.T) {
 	for _, key := range keys {
 		if got[key].Status != FactAbsent {
 			t.Errorf("%.40s... = %+v, want absent", key, got[key])
+		}
+	}
+}
+
+// A path answers as its own entry: a directory as a tree whether or not a
+// path under it is named beside it, a submodule as a commit, and a path
+// under a file or absent from the tree as nothing. Two paths of one blob
+// both answer it, and both read as local.
+func TestPathEntriesNameTheirOwnEntry(t *testing.T) {
+	t.Parallel()
+	r := newFactsRepo(t)
+	writeFactFile(t, r.dir, "docs/twin.png", pngOf(t, 3, 2))
+	writeFactFile(t, r.dir, "docs/deep/more/leaf.txt", []byte("leaf\n"))
+	testutil.RunGit(t, r.dir, "add", ".")
+	testutil.RunGit(t, r.dir, "update-index", "--add", "--cacheinfo", "160000,"+r.base+",module")
+	testutil.RunGit(t, r.dir, "commit", "-q", "-m", "more")
+	head := strings.TrimSpace(runGitStdout(t, r.dir, "rev-parse", "HEAD"))
+	core := NewCore()
+	png, leaf := r.blob(t, head, "docs/head.png"), r.blob(t, head, "docs/deep/more/leaf.txt")
+	for name, tc := range map[string]struct {
+		paths []string
+		want  map[string]pathEntry
+	}{
+		"a directory alone": {[]string{"docs"}, map[string]pathEntry{"docs": {kind: "tree"}}},
+		"a directory beside paths under it": {
+			[]string{"docs", "docs/deep", "docs/head.png", "docs/twin.png", "docs/deep/more/leaf.txt", "docs/none.png", "docs/head.png/under", "module", "module/x"},
+			map[string]pathEntry{
+				"docs": {kind: "tree"}, "docs/deep": {kind: "tree"},
+				"docs/head.png": {kind: "blob", oid: png}, "docs/twin.png": {kind: "blob", oid: png},
+				"docs/deep/more/leaf.txt": {kind: "blob", oid: leaf},
+				"module":                  {kind: "commit"},
+			},
+		},
+		"a directory beside a path it lacks": {[]string{"docs", "docs/none.png"}, map[string]pathEntry{"docs": {kind: "tree"}}},
+	} {
+		entries, err := core.pathEntries(t.Context(), r.dir, head, tc.paths)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !maps.Equal(entries, tc.want) {
+			t.Errorf("%s: entries = %v\nwant %v", name, entries, tc.want)
+		}
+	}
+	local, err := core.localObjects(t.Context(), r.dir, head, []string{"docs/head.png", "docs/twin.png", "docs/deep/more/leaf.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !local[png] || !local[leaf] {
+		t.Fatalf("local objects = %v, want %s and %s", local, png, leaf)
+	}
+	got := resolveLocal(t, core, r.dir, PRRevision{HeadSHA: head}, "image:head:docs/head.png", "image:head:docs/twin.png", "image:head:docs", "image:head:module")
+	for key, want := range map[string]string{
+		"image:head:docs/head.png": FactFound, "image:head:docs/twin.png": FactFound,
+		"image:head:docs": FactAbsent, "image:head:module": FactAbsent,
+	} {
+		if got[key].Status != want {
+			t.Errorf("%s = %+v, want %s", key, got[key], want)
 		}
 	}
 }

@@ -22,16 +22,18 @@ import (
 // Local facts: commit:, image: and lines: keys, read from the
 // workspace's repository without touching the network
 // (GIT_NO_LAZY_FETCH=1 and no transport allowed): an object that is not
-// local answers unavailable. One call's misses cost one `git rev-list`
-// per commit a path key names, which finds the paths whose objects are
-// local without fetching, one `git cat-file --batch-check` for every
-// commit and those paths' objects, one `git cat-file --batch` for the commits'
-// subjects and the lines ranges' blobs (streamed: no blob is held whole),
-// one header read per image blob the blob image cache lacks, one lstat per
-// Git LFS pointer blob (local_lfs.go) and one `git config` when the
-// workspace's LFS store directory is not held, and, only for a path its
-// commit's tree may lack, one `git ls-tree` per batch of paths of a
-// commit. An answer keyed by full object ids is content addressed (a full
+// local answers unavailable. One call's misses cost, to learn which
+// objects are local without fetching (local_residency.go), one `git
+// rev-list --no-walk` when a key names a full commit id, one `git ls-tree`
+// per local commit a path key names, and one `git rev-list --objects` per
+// commit with a blob to read (every lines key's, and an image key's the
+// blob image cache lacks); then one `git cat-file --batch-check` for the
+// commits and those blobs that are local, one `git cat-file --batch` for
+// the commits' subjects and the lines ranges' blobs (streamed: no blob is
+// held whole), one header read per image blob the blob image cache lacks,
+// one lstat per Git LFS pointer blob (local_lfs.go) and one `git config`
+// when the workspace's LFS store directory is not held. An answer keyed by
+// full object ids is content addressed (a full
 // commit id and a path name one blob forever), so its found and absent
 // facts are held without expiry. A found abbreviated commit id can change
 // (a fetch makes the prefix ambiguous): it is held for changingFactTTL,
@@ -56,8 +58,8 @@ const (
 	// image blob a header read reads before it stops git.
 	factImageHead      = 4096
 	factImageHeaderMax = 1 << 20
-	// factImageReads bounds the header reads, and the commit walks, one
-	// call runs at once.
+	// factImageReads bounds the header reads, and the commits whose trees
+	// are read (perCommit), one call runs at once.
 	factImageReads = 4
 	// factCommitBytes is how much of a commit object is read for its
 	// subject.
@@ -159,12 +161,10 @@ func parseLocalFactKey(key string, rev PRRevision) (localFactKey, string) {
 		case "base":
 			k.commit = rev.BaseSHA
 		default:
-			if !gitdiff.IsFullOID(commitish) {
-				return k, FactUnavailable
-			}
 			k.commit = commitish
 		}
-		if k.commit == "" {
+		// A revision without the side, too, names no commit.
+		if !gitdiff.IsFullOID(k.commit) {
 			return k, FactUnavailable
 		}
 		k.path = path
@@ -266,68 +266,125 @@ type localHold struct {
 
 // readLocalFacts reads keys from cwd's repository: one fact per key, and
 // how long each fact that can change may be held, by key (absent: without
-// expiry).
+// expiry). It asks which objects are local (local_residency.go) before it
+// reads any: the commits, then each path's entry in its commit's tree,
+// then the blobs it has to read.
 func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactKey) ([]ForgeFact, map[string]localHold) {
 	ctx, cancel := context.WithTimeout(ctx, localFactsTimeout)
 	defer cancel()
 	now := c.nowFn()
 	facts := make([]ForgeFact, len(keys))
+	for i, k := range keys {
+		facts[i] = unavailableFact(k.key)
+	}
 	holds := map[string]localHold{}
 	lfs := c.lfsStore(ctx, cwd)
-	var queries []string
-	seen := map[string]bool{}
-	ask := func(query string) {
-		if !seen[query] {
-			seen[query] = true
-			queries = append(queries, query)
+
+	// The full commit ids the keys name, and which of them are local. An
+	// abbreviated id resolves among local objects alone.
+	var ids []string
+	listed := map[string]bool{}
+	for _, k := range keys {
+		id := k.commit
+		if k.kind == "commit" {
+			id = k.hex
+		}
+		if gitdiff.IsFullOID(id) && !listed[id] {
+			listed[id] = true
+			ids = append(ids, id)
 		}
 	}
-	// The paths the keys name in each commit, once each.
+	local, err := c.localCommits(ctx, cwd, ids)
+	if err != nil {
+		log.Printf("local facts: rev-list --no-walk: %d keys unavailable: %v", len(keys), err)
+		return facts, holds
+	}
+
+	// Each local commit's entries at the paths its keys name.
 	pathsOf := map[string][]string{}
 	named := map[string]bool{}
 	for _, k := range keys {
-		if k.kind != "commit" && !named[k.commit+":"+k.path] {
-			named[k.commit+":"+k.path] = true
+		if name := k.commit + ":" + k.path; k.kind != "commit" && local.has(k.commit) && !named[name] {
+			named[name] = true
 			pathsOf[k.commit] = append(pathsOf[k.commit], k.path)
 		}
 	}
-	local, walkErrs := c.localPathsOf(ctx, cwd, pathsOf)
-	for _, k := range keys {
-		if k.kind == "commit" {
-			ask(k.hex + "^{commit}")
+	entries, errs := perCommit(pathsOf, func(commit string, paths []string) (map[string]pathEntry, error) {
+		return c.pathEntries(ctx, cwd, commit, paths)
+	})
+	for _, err := range errs {
+		log.Printf("local facts: ls-tree: unavailable: %v", err)
+	}
+
+	// Each path key's blob, and the paths whose blob is read: every lines
+	// key's, and an image key's unless what the blob is as an image is
+	// held.
+	blobOf := make([]string, len(keys))
+	held := map[string]BlobImage{}
+	readsOf := map[string][]string{}
+	clear(named)
+	for i, k := range keys {
+		at, ok := entries[k.commit]
+		if k.kind == "commit" || !ok {
 			continue
 		}
-		ask(k.commit + "^{commit}")
-		// cat-file is asked for a path only when its object is local: a
-		// path it is not asked for reads as missing below.
-		if local[k.commit][k.path] {
-			ask(k.commit + ":" + k.path)
+		entry := at[k.path]
+		if entry.kind != "blob" {
+			facts[i] = absentFact(k.key)
+			continue
+		}
+		blobOf[i] = entry.oid
+		if k.kind == "image" {
+			if _, ok := held[entry.oid]; ok {
+				continue
+			}
+			if record, ok := c.blobImages.get(entry.oid, now); ok {
+				held[entry.oid] = record
+				continue
+			}
+		}
+		if name := k.commit + ":" + k.path; !named[name] {
+			named[name] = true
+			readsOf[k.commit] = append(readsOf[k.commit], k.path)
+		}
+	}
+	localBlobs, errs := perCommit(readsOf, func(commit string, paths []string) (map[string]bool, error) {
+		return c.localObjects(ctx, cwd, commit, paths)
+	})
+	for _, err := range errs {
+		log.Printf("local facts: rev-list --objects: unavailable: %v", err)
+	}
+
+	// cat-file is asked only for objects that are local.
+	var queries []string
+	asked := map[string]bool{}
+	for i, k := range keys {
+		query := ""
+		switch {
+		case k.kind == "commit":
+			if !gitdiff.IsFullOID(k.hex) || local.has(k.hex) {
+				query = k.hex + "^{commit}"
+			}
+		case blobOf[i] != "" && localBlobs[k.commit][blobOf[i]]:
+			query = blobOf[i]
+		}
+		if query != "" && !asked[query] {
+			asked[query] = true
+			queries = append(queries, query)
 		}
 	}
 	objects, err := c.batchCheck(ctx, cwd, queries)
 	if err != nil {
-		log.Printf("local facts: cat-file --batch-check: %d keys unavailable: %v", len(keys), err)
-		for i, k := range keys {
-			facts[i] = unavailableFact(k.key)
-		}
-		return facts, holds
-	}
-	for commit, err := range walkErrs {
-		// A commit that is not local fails its walk and answers below.
-		if objects[commit+"^{commit}"].kind == "commit" {
-			log.Printf("local facts: rev-list: %d paths unavailable: %v", len(pathsOf[commit]), err)
-		}
+		log.Printf("local facts: cat-file --batch-check: %d objects unavailable: %v", len(queries), err)
 	}
 	var (
 		commits = map[string]*commitSink{}
 		lines   = map[string]*linesSink{}
 		images  = map[string][]int{}
-		missing = map[string][]int{}
 		imageAt = map[string]int64{}
 		order   []string
 	)
 	for i, k := range keys {
-		facts[i] = unavailableFact(k.key)
 		if k.kind == "commit" {
 			obj := objects[k.hex+"^{commit}"]
 			if obj.kind == "commit" && strings.HasPrefix(obj.oid, k.hex) {
@@ -343,16 +400,22 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 			}
 			continue
 		}
-		if objects[k.commit+"^{commit}"].kind != "commit" {
+		oid := blobOf[i]
+		if oid == "" {
 			continue
 		}
-		obj, asked := objects[k.commit+":"+k.path]
-		switch {
-		case !asked, obj.missing:
-			missing[k.commit] = append(missing[k.commit], i)
+		if record, ok := held[oid]; ok && k.kind == "image" {
+			if record.pointer.OID == "" {
+				facts[i] = imageFact(k.key, record)
+			} else {
+				// A held pointer record is resolved by the reads below.
+				images[oid] = append(images[oid], i)
+			}
 			continue
-		case obj.kind != "blob":
-			facts[i] = absentFact(k.key)
+		}
+		// A blob that is not local was not asked for: it stays unavailable.
+		obj := objects[oid]
+		if obj.kind != "blob" {
 			continue
 		}
 		switch k.kind {
@@ -362,13 +425,8 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 			case obj.size == 0:
 				facts[i] = absentFact(k.key)
 			default:
-				// A held pointer record is resolved by the reads below.
-				if held, ok := c.blobImages.get(obj.oid, now); ok && held.pointer.OID == "" {
-					facts[i] = imageFact(k.key, held)
-					continue
-				}
-				images[obj.oid] = append(images[obj.oid], i)
-				imageAt[obj.oid] = obj.size
+				images[oid] = append(images[oid], i)
+				imageAt[oid] = obj.size
 			}
 		case "lines":
 			switch {
@@ -376,14 +434,14 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 			case obj.size == 0:
 				facts[i] = absentFact(k.key)
 			default:
-				sink := lines[obj.oid]
+				sink := lines[oid]
 				if sink == nil {
 					sink = &linesSink{}
-					lines[obj.oid] = sink
-					order = append(order, obj.oid)
+					lines[oid] = sink
+					order = append(order, oid)
 				}
 				sink.ranges = append(sink.ranges, &lineRange{at: i, start: k.start, end: k.end})
-				facts[i] = ForgeFact{Key: k.key, Status: FactFound, OID: obj.oid, Path: k.path}
+				facts[i] = ForgeFact{Key: k.key, Status: FactFound, OID: oid, Path: k.path}
 			}
 		}
 	}
@@ -438,7 +496,16 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 				reads.Go(func() {
 					slots <- struct{}{}
 					defer func() { <-slots }()
-					image, throughPointer, err := c.blobImage(ctx, cwd, oid, imageAt[oid], lfs)
+					var (
+						image          BlobImage
+						throughPointer bool
+						err            error
+					)
+					if record, ok := held[oid]; ok {
+						image, throughPointer, err = resolveBlobImage(record, lfs)
+					} else {
+						image, throughPointer, err = c.blobImage(ctx, cwd, oid, imageAt[oid], lfs)
+					}
 					mu.Lock()
 					defer mu.Unlock()
 					if err != nil {
@@ -454,28 +521,6 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 				})
 			}
 			reads.Wait()
-		})
-	}
-	if len(missing) > 0 {
-		wg.Go(func() {
-			for commit, at := range missing {
-				paths := make([]string, len(at))
-				for j, i := range at {
-					paths[j] = keys[i].path
-				}
-				present, err := c.treePaths(ctx, cwd, commit, paths)
-				if err != nil {
-					log.Printf("local facts: ls-tree: %d paths unavailable: %v", len(paths), err)
-					continue
-				}
-				for _, i := range at {
-					// A path its tree holds whose object is not local
-					// (a partial clone) stays unavailable.
-					if !present[keys[i].path] {
-						facts[i] = absentFact(keys[i].key)
-					}
-				}
-			}
 		})
 	}
 	wg.Wait()
@@ -514,13 +559,18 @@ func (c *Core) factGit(ctx context.Context, cwd string, spec commandSpec) (comma
 
 // batchCheck answers each query's object in one `git cat-file
 // --batch-check`: a query git cannot resolve (missing or ambiguous)
-// answers missing. A caller in a partial clone asks only for objects it
-// knows are local (localPaths): asked for a promised object that is not,
-// git 2.43 tries the fetch and dies with the whole batch.
+// answers missing. A query is an abbreviated id, which resolves among
+// local objects alone, or names an object known to be local
+// (local_residency.go): asked for a promised object that is not, git 2.43
+// tries the fetch and dies with the whole batch. BlobImage's one query is
+// the exception: its failure costs that blob alone.
 func (c *Core) batchCheck(ctx context.Context, cwd string, queries []string) (map[string]objectInfo, error) {
+	if len(queries) == 0 {
+		return nil, nil
+	}
 	result, err := c.factGit(ctx, cwd, commandSpec{
 		stdin:    strings.Join(queries, "\n") + "\n",
-		maxBytes: int64(len(queries))*(gitdiff.MaxEntryPathBytes/16) + 1<<20,
+		maxBytes: int64(len(queries))*256 + 1<<10,
 		args:     []string{"cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"},
 	})
 	if err != nil {
@@ -548,107 +598,6 @@ func (c *Core) batchCheck(ctx context.Context, cwd string, queries []string) (ma
 		objects[query] = objectInfo{oid: fields[0], kind: fields[1], size: size}
 	}
 	return objects, nil
-}
-
-// pathRuns calls run with paths in batches of at most
-// gitdiff.MaxEntryPaths paths totaling at most gitdiff.MaxEntryPathBytes
-// (the paths ride argv). A path is at most 4096 bytes (gitdiff.CleanPath),
-// so each batch takes at least one.
-func pathRuns(paths []string, run func(batch []string) error) error {
-	for start := 0; start < len(paths); {
-		end, total := start, 0
-		for end < len(paths) && end-start < gitdiff.MaxEntryPaths && (end == start || total+len(paths[end]) <= gitdiff.MaxEntryPathBytes) {
-			total += len(paths[end])
-			end++
-		}
-		if err := run(paths[start:end]); err != nil {
-			return err
-		}
-		start = end
-	}
-	return nil
-}
-
-// localPathsMaxBytes bounds one localPaths run's listing. A path that
-// names a directory lists everything under it.
-const localPathsMaxBytes = 4 << 20
-
-// localPaths answers which of paths commit's tree holds as an object that
-// is local, in `git rev-list --objects --missing=print` runs over the
-// tree (pathRuns). The walk reads trees and never fetches on any git: an
-// object that is not local is printed as missing, without its path.
-func (c *Core) localPaths(ctx context.Context, cwd, commit string, paths []string) (map[string]bool, error) {
-	local := make(map[string]bool, len(paths))
-	err := pathRuns(paths, func(batch []string) error {
-		args := append([]string{"rev-list", "--objects", "--missing=print", "--no-walk", commit + "^{tree}", "--"}, batch...)
-		result, err := c.factGit(ctx, cwd, commandSpec{extraEnv: []string{"GIT_LITERAL_PATHSPECS=1"}, maxBytes: localPathsMaxBytes, args: args})
-		if err != nil {
-			return err
-		}
-		for line := range strings.SplitSeq(result.stdout, "\n") {
-			// "<oid> <path>" for an object that is local, "?<oid>" for
-			// one that is not.
-			if _, path, ok := strings.Cut(line, " "); ok && path != "" && !strings.HasPrefix(line, "?") {
-				local[path] = true
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return local, nil
-}
-
-// localPathsOf answers localPaths for each commit's paths, factImageReads
-// commits at a time, and the error of each commit whose walk failed.
-func (c *Core) localPathsOf(ctx context.Context, cwd string, pathsOf map[string][]string) (map[string]map[string]bool, map[string]error) {
-	var (
-		local = make(map[string]map[string]bool, len(pathsOf))
-		errs  = map[string]error{}
-		mu    sync.Mutex
-		wg    sync.WaitGroup
-		slots = make(chan struct{}, factImageReads)
-	)
-	for commit, paths := range pathsOf {
-		wg.Go(func() {
-			slots <- struct{}{}
-			defer func() { <-slots }()
-			present, err := c.localPaths(ctx, cwd, commit, paths)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				errs[commit] = err
-				return
-			}
-			local[commit] = present
-		})
-	}
-	wg.Wait()
-	return local, errs
-}
-
-// treePaths answers which of paths commit's tree holds, in `git ls-tree`
-// runs (pathRuns), which read trees and never blobs.
-func (c *Core) treePaths(ctx context.Context, cwd, commit string, paths []string) (map[string]bool, error) {
-	present := make(map[string]bool, len(paths))
-	err := pathRuns(paths, func(batch []string) error {
-		args := append([]string{"ls-tree", "-z", "--name-only", "--full-tree", commit, "--"}, batch...)
-		result, err := c.factGit(ctx, cwd, commandSpec{extraEnv: []string{"GIT_LITERAL_PATHSPECS=1"}, args: args})
-		if err != nil {
-			return err
-		}
-		for name := range strings.SplitSeq(strings.TrimSuffix(result.stdout, "\x00"), "\x00") {
-			if name != "" {
-				present[name] = true
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return present, nil
 }
 
 // errFactHeaderRead stops a header read's git once the header is read.
