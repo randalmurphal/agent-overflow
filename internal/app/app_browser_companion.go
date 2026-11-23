@@ -126,33 +126,38 @@ func (a *App) BrowserCompanionThreadState(threadID string) (appbrowser.Companion
 //ao:scope host
 //ao:route home
 func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (appbrowser.CompanionSubscription, error) {
-	if a.browser.manager == nil {
+	conn, err := transport.CallerConnection(ctx)
+	if err != nil {
+		return appbrowser.CompanionSubscription{}, err
+	}
+	manager := a.browser.manager
+	if manager == nil {
 		return appbrowser.CompanionSubscription{}, fmt.Errorf("browser manager unavailable")
 	}
-	if !transport.ConnStateFromContext(ctx).HostWindow() {
+	if !conn.HostWindow() {
 		return appbrowser.CompanionSubscription{}, errBrowserPaneNotHostWindow
 	}
 	caller, err := a.browserCaller(threadID)
 	if err != nil {
 		return appbrowser.CompanionSubscription{}, err
 	}
-	result, err := a.browser.manager.AttachPane(caller)
-	if err != nil {
-		return appbrowser.CompanionSubscription{}, err
-	}
-	if state := transport.ConnStateFromContext(ctx); state != nil {
-		if !state.BindCleanup(companionPaneCleanupKey(result.ID), func() { a.browser.manager.DetachPane(appbrowser.MountID(result.ID)) }) {
-			a.browser.manager.DetachPane(appbrowser.MountID(result.ID))
-			return appbrowser.CompanionSubscription{}, fmt.Errorf("browser: connection closing")
+	// The connection holds the mount from the moment it is published until
+	// it is detached, by whichever connection asks.
+	return manager.AttachPane(caller, func(mount appbrowser.MountID) (func(), error) {
+		tie, err := conn.Bind(companionPaneCleanupKey(string(mount)), func() { manager.DetachPane(mount) })
+		if err != nil {
+			return nil, fmt.Errorf("browser: %w", err)
 		}
-	}
-	return result, nil
+		return tie.Untie, nil
+	})
 }
 
+// BrowserCompanionPaneDetach releases a pane mount; the connection that
+// attached it is untied (browser.PaneTie).
+//
 //ao:scope host
 //ao:route home
 func (a *App) BrowserCompanionPaneDetach(ctx context.Context, paneID string) error {
-	transport.ConnStateFromContext(ctx).UnbindCleanup(companionPaneCleanupKey(paneID))
 	if a.browser.manager != nil {
 		a.browser.manager.DetachPane(appbrowser.MountID(paneID))
 	}

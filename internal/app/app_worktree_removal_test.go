@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
@@ -574,7 +573,7 @@ func TestRemoveOtherWorktreeHoldsGitStatusOfTheRemovedPath(t *testing.T) {
 	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "feature-status-hold"}}
 	installGitWatchForTest(t, f.app, stub)
 	events, mu := captureGitStatusEmissions(f.app)
-	sub, err := f.app.GitStatusSubscribe(context.Background(), WorkspaceRef{ProjectID: f.project.ID, WorkspacePath: f.worktree})
+	sub, err := f.app.GitStatusSubscribe(connCtx(t), WorkspaceRef{ProjectID: f.project.ID, WorkspacePath: f.worktree})
 	if err != nil {
 		t.Fatalf("GitStatusSubscribe: %v", err)
 	}
@@ -606,7 +605,7 @@ func TestRemoveOtherWorktreeResumesGitStatusWhenRemovalFails(t *testing.T) {
 	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "feature-status-resume"}}
 	installGitWatchForTest(t, f.app, stub)
 	events, mu := captureGitStatusEmissions(f.app)
-	sub, err := f.app.GitStatusSubscribe(context.Background(), WorkspaceRef{ProjectID: f.project.ID, WorkspacePath: worktree})
+	sub, err := f.app.GitStatusSubscribe(connCtx(t), WorkspaceRef{ProjectID: f.project.ID, WorkspacePath: worktree})
 	if err != nil {
 		t.Fatalf("GitStatusSubscribe: %v", err)
 	}

@@ -561,24 +561,25 @@ func TestRecoveredCodexRotationSurvivesEverySelectedPath(t *testing.T) {
 	} {
 		for _, path := range []struct {
 			name string
-			run  func(*App) error
+			run  func(*testing.T, *App) error
 		}{
-			{"usage refresh", func(app *App) error {
+			{"usage refresh", func(_ *testing.T, app *App) error {
 				return app.refreshProviderAccountUsage(context.Background(), string(provider.Codex), "selected")
 			}},
-			{"reconciliation", func(app *App) error {
+			{"reconciliation", func(_ *testing.T, app *App) error {
 				return app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex))
 			}},
-			{"account probe", func(app *App) error {
+			{"account probe", func(_ *testing.T, app *App) error {
 				_, err := app.ProbeCodexAccount()
 				return err
 			}},
-			{"dictation refresh", func(app *App) error {
+			{"dictation refresh", func(t *testing.T, app *App) error {
 				if _, err := app.settings.Update(map[string]any{"dictationSubscriptionEnabled": true}); err != nil {
 					return err
 				}
 				app.rateLimitProbeClientOverride = &http.Client{Transport: refuseConsumedSeed{}}
-				id, err := app.BeginDictation(context.Background(), "audio/webm")
+				ctx := connCtx(t)
+				id, err := app.BeginDictation(ctx, "audio/webm")
 				if err != nil {
 					return err
 				}
@@ -587,7 +588,7 @@ func TestRecoveredCodexRotationSurvivesEverySelectedPath(t *testing.T) {
 				}); err != nil {
 					return err
 				}
-				_, err = app.FinishDictation(context.Background(), id, 1)
+				_, err = app.FinishDictation(ctx, id, 1)
 				return err
 			}},
 		} {
@@ -596,7 +597,7 @@ func TestRecoveredCodexRotationSurvivesEverySelectedPath(t *testing.T) {
 				app := newTestAppWithStore(t)
 				_, live := installRecoveredCodexAccounts(t, app, identity.value, identity.rewritten)
 				writeCodexAppServerMock(t, app)
-				if err := path.run(app); err != nil {
+				if err := path.run(t, app); err != nil {
 					t.Fatal(err)
 				}
 				assertCodexCredentials(t, app, live, live)

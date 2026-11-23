@@ -60,7 +60,6 @@ type computerPairingState struct {
 	// window is gone, until its cancellation is durable.
 	linkID string
 	owner  *transport.ConnState
-	armed  map[*transport.ConnState]bool
 }
 
 // OpenComputerPairing opens a short-lived invitation window. Merely discovering
@@ -71,9 +70,22 @@ type computerPairingState struct {
 //ao:stepup
 //ao:remote
 func (a *App) OpenComputerPairing(ctx context.Context, networkChoice, access string) (ComputerPairingWindow, error) {
-	return a.openComputerPairing(ctx, networkChoice, access, "")
+	conn, err := transport.CallerConnection(ctx)
+	if err != nil {
+		return ComputerPairingWindow{}, err
+	}
+	return a.openComputerPairing(conn, networkChoice, access, "", nil)
 }
-func (a *App) openComputerPairing(ctx context.Context, networkChoice, access, purpose string) (ComputerPairingWindow, error) {
+
+const computerPairingCleanupKey = "computer-pairing"
+
+// openComputerPairing opens the window for conn, which owns it: the
+// connection's end closes it. conn is admitted before anything is changed:
+// a connection that is already closing retires no other connection's
+// window, persists nothing through prepare, and exposes no invitation.
+// prepare, when set, runs once the caller is admitted and before the old
+// window is retired.
+func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, access, purpose string, prepare func() error) (ComputerPairingWindow, error) {
 	if networkChoice != "lan" && networkChoice != "tailnet" {
 		return ComputerPairingWindow{}, errors.New("choose Local network or Tailscale")
 	}
@@ -91,6 +103,27 @@ func (a *App) openComputerPairing(ctx context.Context, networkChoice, access, pu
 	state := &a.computerPairing
 	state.ops.Lock()
 	defer state.ops.Unlock()
+	// Admission. The tie is the connection's for its life (the key is
+	// bound once) and closes whichever window the connection owns when it
+	// ends, so binding it before this connection owns one closes nothing.
+	if _, err := conn.Bind(computerPairingCleanupKey, func() {
+		state.mu.Lock()
+		id, owned := state.windowID, state.owner == conn
+		if owned {
+			state.owner = nil
+		}
+		state.mu.Unlock()
+		if owned {
+			a.closeComputerPairingWindow(id)
+		}
+	}); err != nil {
+		return ComputerPairingWindow{}, err
+	}
+	if prepare != nil {
+		if err := prepare(); err != nil {
+			return ComputerPairingWindow{}, err
+		}
+	}
 	state.mu.Lock()
 	if state.book == nil {
 		state.book = pairbootstrap.NewBook(a.cancelComputerPairingLink)
@@ -114,35 +147,18 @@ func (a *App) openComputerPairing(ctx context.Context, networkChoice, access, pu
 		invite, err := a.mintDevicePairingPurpose("desktop", access, choice, purpose)
 		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
 	})
-	conn := transport.ConnStateFromContext(ctx)
+	// The window becomes conn's only while its tie is still bound, checked
+	// in the critical section the tie's release takes: a connection that
+	// ended while the window opened has already run that release, so the
+	// window it would have owned is closed here instead.
 	state.mu.Lock()
+	if !conn.Bound(computerPairingCleanupKey) {
+		state.mu.Unlock()
+		book.Close(view.WindowID)
+		return ComputerPairingWindow{}, transport.ErrConnectionClosing
+	}
 	state.windowID, state.owner, state.discoveryError = view.WindowID, conn, ""
-	arm := conn != nil && !state.armed[conn]
-	if arm {
-		if state.armed == nil {
-			state.armed = make(map[*transport.ConnState]bool)
-		}
-		state.armed[conn] = true
-	}
 	state.mu.Unlock()
-	if arm {
-		cleanup := func() {
-			state.mu.Lock()
-			delete(state.armed, conn)
-			id, owned := state.windowID, state.owner == conn
-			if owned {
-				state.owner = nil
-			}
-			state.mu.Unlock()
-			if owned {
-				a.closeComputerPairingWindow(id)
-			}
-		}
-		if !conn.RegisterCleanup(cleanup) {
-			cleanup()
-			return ComputerPairingWindow{}, errors.New("the pairing screen disconnected")
-		}
-	}
 	if a.currentSettings().Network.BindAll && !nativeLAN {
 		a.advertiseComputerPairing(book, view.WindowID)
 	}

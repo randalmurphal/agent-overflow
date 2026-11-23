@@ -44,14 +44,8 @@ import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { connect, createServer as createTCPServer } from 'node:net';
 import { hostname } from 'node:os';
-import {
-  expect,
-  request,
-  test,
-  type BrowserContext,
-  type Locator,
-  type Page,
-} from '@playwright/test';
+import { request, type BrowserContext, type Locator, type Page } from '@playwright/test';
+import { expect, test } from './base-test.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import {

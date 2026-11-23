@@ -75,6 +75,11 @@ func TestAWSLBootAdvertisesNoAddressBeforeItsLauncherReports(t *testing.T) {
 	if routes := ComputerRoutes(wsl.app); len(routes) != 0 {
 		t.Fatalf("the WSL boot advertised %+v before its launcher reported", routes)
 	}
+	// Until a launcher's connection takes the channel nobody may report,
+	// a call that came over no connection included.
+	if err := wsl.app.ReportNativeNetworkState(context.Background(), nativenetwork.State{}); err == nil {
+		t.Fatal("a report with no connection was accepted before any launcher took the channel")
+	}
 	ctx, conn := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
 	defer conn.RunCleanups()
 	cfg, err := wsl.app.GetNativeNetworkConfig(ctx)
@@ -302,5 +307,29 @@ func TestNativeNetworkDoesNotAdvertiseAnExplicitLoopbackListener(t *testing.T) {
 	status := b.app.nativeLANStatus()
 	if len(status.Addresses) != 0 || !strings.Contains(status.Error, "listening only on localhost") {
 		t.Fatalf("actual loopback bind did not override stale ready report: %+v", status)
+	}
+}
+
+// nativeNetworkConnectionTie is GetNativeNetworkConfig's row of
+// connectionTieChecks: the launcher's ownership of native ingress, which
+// only the connection's end gives up; the connection binds one release
+// for its life.
+func nativeNetworkConnectionTie(t *testing.T) connectionTie {
+	a := identityApp(t)
+	a.SetTransportServer(startTestTransportServer(t))
+	return connectionTie{
+		open: func(ctx context.Context) (string, error) {
+			_, err := a.GetNativeNetworkConfig(ctx)
+			return "", err
+		},
+		held: func() int {
+			s := &a.nativeNetwork
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.owner != nil {
+				return 1
+			}
+			return 0
+		},
 	}
 }

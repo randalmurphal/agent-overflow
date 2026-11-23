@@ -90,7 +90,7 @@ func (f *findFixture) place(t *testing.T) {
 // attach mounts a pane for the thread, as the browser pane does.
 func (f *findFixture) attach(t *testing.T) {
 	t.Helper()
-	mount, err := f.manager.AttachPane(f.access.Caller())
+	mount, err := f.manager.AttachPane(f.access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}

@@ -3,7 +3,8 @@
 // even though this client has never received a turn_completed event before.
 // The overlap variant delivers a newer live copy ahead of replay, proving the
 // connected phone cannot discard earlier answer rows as already received.
-import { expect, test, type WebSocketRoute } from '@playwright/test';
+import { type WebSocketRoute } from '@playwright/test';
+import { expect, test } from './base-test.js';
 import { launchHarness } from '../src/harness.js';
 import {
   RESULT_LINE, advance, claudeScenario, emit, seedAgentThread, startMock, textLines, waitForGate,

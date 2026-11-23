@@ -11,7 +11,8 @@
 // is as quiet: the closed Projects section gains no status line and runs no
 // animation through the retries, the computer's rows dim only after thirty
 // seconds down, and the Projects menu names its state.
-import { test, expect, type Locator, type Page } from '@playwright/test';
+import { type Locator, type Page } from '@playwright/test';
+import { test, expect } from './base-test.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import type { SeedResult } from './fixtures.js';

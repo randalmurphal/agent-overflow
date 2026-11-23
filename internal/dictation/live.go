@@ -141,6 +141,13 @@ func NewLive(idle time.Duration) *Live {
 	return &Live{idle: idle, open: make(map[string]*liveSession), revoked: make(map[string]*revokedSession)}
 }
 
+// Sessions reports how many sessions are open or connecting.
+func (l *Live) Sessions() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.open)
+}
+
 // Open reserves a session admitted at settings revision admitted, connects
 // it with dial outside the lock, and returns its id. A session cancelled or
 // revoked while it connects is closed as soon as dial returns.

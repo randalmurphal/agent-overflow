@@ -36,6 +36,10 @@ func (a *App) reviewWorkspace(action string, ws WorkspaceRef) (string, error) {
 //
 //ao:scope files:read
 func (a *App) OpenWorkspaceDiff(ctx context.Context, ws WorkspaceRef, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+	conn, err := transport.CallerConnection(ctx)
+	if err != nil {
+		return ReviewDiffOpened{}, err
+	}
 	const action = "open workspace diff"
 	if a.shuttingDown.Load() {
 		return ReviewDiffOpened{}, ErrShuttingDown
@@ -47,7 +51,7 @@ func (a *App) OpenWorkspaceDiff(ctx context.Context, ws WorkspaceRef, ignoreWhit
 	if !gitdiff.IsGitRepository(ctx, workspace) {
 		return emptyReviewDiffOpened(), nil
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(tempRoot string) (*gitdiff.Sides, error) {
+	return a.openReviewDiff(ctx, conn, action, transport.ScopeFilesRead, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(tempRoot string) (*gitdiff.Sides, error) {
 		return gitdiff.WorktreeSides(ctx, workspace, tempRoot)
 	})
 }
@@ -59,6 +63,10 @@ func (a *App) OpenWorkspaceDiff(ctx context.Context, ws WorkspaceRef, ignoreWhit
 //
 //ao:scope files:read
 func (a *App) OpenBranchBaseDiff(ctx context.Context, ws WorkspaceRef, baseBranch string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+	conn, err := transport.CallerConnection(ctx)
+	if err != nil {
+		return ReviewDiffOpened{}, err
+	}
 	const action = "open branch base diff"
 	if a.shuttingDown.Load() {
 		return ReviewDiffOpened{}, ErrShuttingDown
@@ -73,7 +81,7 @@ func (a *App) OpenBranchBaseDiff(ctx context.Context, ws WorkspaceRef, baseBranc
 	if !gitdiff.IsGitRepository(ctx, workspace) {
 		return emptyReviewDiffOpened(), nil
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(tempRoot string) (*gitdiff.Sides, error) {
+	return a.openReviewDiff(ctx, conn, action, transport.ScopeFilesRead, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(tempRoot string) (*gitdiff.Sides, error) {
 		return gitdiff.BranchBaseSides(ctx, workspace, tempRoot, baseBranch)
 	})
 }
@@ -144,6 +152,10 @@ func (a *App) ListRecentCommits(ws WorkspaceRef) ([]BranchCommit, error) {
 //
 //ao:scope files:read
 func (a *App) OpenCommitDiff(ctx context.Context, ws WorkspaceRef, sha string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+	conn, err := transport.CallerConnection(ctx)
+	if err != nil {
+		return ReviewDiffOpened{}, err
+	}
 	const action = "open commit diff"
 	if a.shuttingDown.Load() {
 		return ReviewDiffOpened{}, ErrShuttingDown
@@ -155,7 +167,7 @@ func (a *App) OpenCommitDiff(ctx context.Context, ws WorkspaceRef, sha string, i
 	if !gitdiff.IsGitRepository(ctx, workspace) {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: workspace is not a git repository", action)
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(string) (*gitdiff.Sides, error) {
+	return a.openReviewDiff(ctx, conn, action, transport.ScopeFilesRead, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(string) (*gitdiff.Sides, error) {
 		return gitdiff.CommitSides(ctx, workspace, sha)
 	})
 }

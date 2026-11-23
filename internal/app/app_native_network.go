@@ -24,7 +24,6 @@ type nativeNetworkState struct {
 	mu         sync.Mutex
 	seen       bool
 	owner      *transport.ConnState
-	armed      map[*transport.ConnState]bool
 	addresses  []string
 	err        string
 	generation uint64
@@ -92,6 +91,10 @@ func (a *App) invalidateNativeNetwork() {
 //ao:scope host
 //ao:route home
 func (a *App) GetNativeNetworkConfig(ctx context.Context) (nativenetwork.Config, error) {
+	conn, err := transport.CallerConnection(ctx)
+	if err != nil {
+		return nativenetwork.Config{}, err
+	}
 	if a.netReach.LoopbackOnly() {
 		// The launcher would bind the Windows LAN and send multicast for an
 		// instance confined to this machine. It gets a disabled config and
@@ -105,42 +108,33 @@ func (a *App) GetNativeNetworkConfig(ctx context.Context) (nativenetwork.Config,
 	}
 	s := &a.nativeNetwork
 	s.mu.Lock()
+	// The launcher's connection becomes the owner in the same critical
+	// section that ties it, so its end finds itself the owner however soon
+	// it comes. Binding is keyed: each connection binds once for its life.
+	if _, err := conn.Bind("native-network", func() {
+		defer a.publishComputerRoutes()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.owner == conn {
+			s.owner = nil
+			s.invalidate()
+			s.err = "Windows local network access is unavailable. Reopen the Windows app."
+		}
+	}); err != nil {
+		s.mu.Unlock()
+		return nativenetwork.Config{}, err
+	}
 	s.seen = true
-	conn := transport.ConnStateFromContext(ctx)
 	if s.owner != conn {
 		s.invalidate()
 	}
 	s.owner = conn
-	arm := conn != nil && !s.armed[conn]
-	if arm {
-		if s.armed == nil {
-			s.armed = make(map[*transport.ConnState]bool)
-		}
-		s.armed[conn] = true
-	}
 	var scanID uint64
 	if s.scan != nil {
 		scanID = s.scan.id
 	}
 	generation := s.generation
 	s.mu.Unlock()
-	if arm {
-		cleanup := func() {
-			defer a.publishComputerRoutes()
-			s.mu.Lock()
-			defer s.mu.Unlock()
-			delete(s.armed, conn)
-			if s.owner == conn {
-				s.owner = nil
-				s.invalidate()
-				s.err = "Windows local network access is unavailable. Reopen the Windows app."
-			}
-		}
-		if !conn.RegisterCleanup(cleanup) {
-			cleanup()
-			return nativenetwork.Config{}, errors.New("the Windows app disconnected")
-		}
-	}
 	id, _ := a.backendIdentity()
 	cfg := nativenetwork.Config{Enabled: a.currentSettings().Network.BindAll, BackendID: id, Name: a.backendDisplayName(), ScanID: scanID, Generation: generation}
 	cfg.Enabled = cfg.Enabled && nativeLANListenerError(srv.Addr()) == ""
@@ -193,7 +187,9 @@ func (a *App) ReportNativeNetworkState(ctx context.Context, report nativenetwork
 	s := &a.nativeNetwork
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.seen || s.owner != transport.ConnStateFromContext(ctx) {
+	// Only the connection GetNativeNetworkConfig last tied the channel to
+	// reports; with no owner nobody does, a call with no connection included.
+	if conn := transport.ConnStateFromContext(ctx); !s.seen || s.owner == nil || s.owner != conn {
 		return errors.New("this Windows network connection was replaced")
 	}
 	if report.Generation != s.generation {
