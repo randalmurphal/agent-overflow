@@ -46,54 +46,29 @@ func readPIDFile(t *testing.T, path string) int {
 	return pid
 }
 
-// recordingReaper records the groups a launch watched and released.
-type recordingReaper struct {
-	mu       sync.Mutex
-	watched  []int
-	released []int
-}
-
-func (r *recordingReaper) Watch(pgid int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.watched = append(r.watched, pgid)
-}
-
-func (r *recordingReaper) Release(pgid int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.released = append(r.released, pgid)
-}
-
-func (r *recordingReaper) calls() (watched, released []int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]int(nil), r.watched...), append([]int(nil), r.released...)
-}
-
 // The browser's group is watched from its start until stop has ended it.
 func TestAChromiumGroupIsWatchedUntilStopEndsIt(t *testing.T) {
-	reaper := &recordingReaper{}
+	reaper := &procutiltest.Recorder{}
 	binary := writeChromiumScript(t, "echo 'DevTools listening on "+fakeDevToolsURL+"' >&2\nexec sleep 300\n")
 	process, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), reaper, binary, nil, nil)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	pid := process.cmd.Process.Pid
-	if watched, released := reaper.calls(); len(watched) != 1 || watched[0] != pid || len(released) != 0 {
+	if watched, released := reaper.Calls(); len(watched) != 1 || watched[0] != pid || len(released) != 0 {
 		t.Fatalf("running: watched %v released %v, want the browser's group %d watched", watched, released, pid)
 	}
 	if err := process.stop(); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if _, released := reaper.calls(); len(released) != 1 || released[0] != pid {
+	if _, released := reaper.Calls(); len(released) != 1 || released[0] != pid {
 		t.Fatalf("after stop: released %v, want %d", released, pid)
 	}
 }
 
 // A group stop could not kill may still run, so the reaper keeps it.
 func TestAChromiumGroupStopCouldNotKillStaysWatched(t *testing.T) {
-	reaper := &recordingReaper{}
+	reaper := &procutiltest.Recorder{}
 	binary := writeChromiumScript(t, "echo 'DevTools listening on "+fakeDevToolsURL+"' >&2\nexec sleep 300\n")
 	process, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), reaper, binary, nil, nil)
 	if err != nil {
@@ -113,7 +88,7 @@ func TestAChromiumGroupStopCouldNotKillStaysWatched(t *testing.T) {
 	if err := process.stop(); err == nil {
 		t.Fatal("stop reported a kill it could not make")
 	}
-	if _, released := reaper.calls(); len(released) != 0 {
+	if _, released := reaper.Calls(); len(released) != 0 {
 		t.Fatalf("released %v, want the group still watched", released)
 	}
 }
