@@ -719,9 +719,11 @@ func TestCollabResumeOwnershipsKeepValidRowsWhenOneIsMalformed(t *testing.T) {
 func TestCollabResumeOwnershipRecoveryHasNoTotalChildLimit(t *testing.T) {
 	t.Parallel()
 	s := newMultiAgentV2RoutingSession(t, func(provider.ProviderEvent) {})
-	// Keep the test at the ownership boundary: a closed session suppresses the
+	// Keep the test at the ownership boundary: the latch Close sets stops the
 	// asynchronous metadata reads after every edge has been registered.
-	s.closing.Store(true)
+	s.collabAsyncMu.Lock()
+	s.collabAsyncClosing = true
+	s.collabAsyncMu.Unlock()
 	const childCount = 300
 	launches := make([]ResumeCollabLaunch, 0, childCount)
 	for i := 0; i < childCount; i++ {
