@@ -371,7 +371,9 @@ when it sets the environment, replaces a package-level variable such as a
 the global logger, counts process-wide goroutines or memory, or must act
 inside a fixed real-time window such as a triage flush timer.
 
-Application tests run with the repository root as their working directory for
-whole-tree contracts and committed fixtures. Prefer `t.TempDir()` and explicit
-paths in new tests. Test responsibility-owned behavior in its narrower
+Application tests run in the package directory, where go test starts them,
+since the test cache records each file a test opens by that directory; a
+test reads a file elsewhere in the checkout, such as a committed fixture or
+a whole-tree contract's sources, through `internal/testutil/reporoot`.
+Prefer `t.TempDir()` and explicit paths in new tests. Test responsibility-owned behavior in its narrower
 package; keep tests here for binding, lifecycle, and multi-service composition.
