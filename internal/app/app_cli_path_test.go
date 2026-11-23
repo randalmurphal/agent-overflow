@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestEnsureCLISymlinkCreatesTheCanonicalName(t *testing.T) {
@@ -111,9 +113,7 @@ func TestEnsureCLISymlinkReplacesAPlainFile(t *testing.T) {
 	if err := os.MkdirAll(binDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(binDir, cliCommandName), []byte("stale"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, filepath.Join(binDir, cliCommandName), []byte("stale"), 0o700)
 	executable := filepath.Join(t.TempDir(), "agent-overflow")
 	writeStubBinary(t, executable)
 
@@ -224,7 +224,5 @@ func TestPrependCLIBinDir(t *testing.T) {
 
 func writeStubBinary(t *testing.T, path string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
+	mockexec.WriteFile(t, path, []byte("#!/bin/sh\nexit 0\n"), 0o700)
 }

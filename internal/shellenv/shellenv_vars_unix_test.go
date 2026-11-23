@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // clearEnv unsets names for the test and restores them afterwards.
@@ -31,9 +33,7 @@ func exportingShell(t *testing.T, exports ...string) string {
 		body += "export " + export + "\n"
 	}
 	body += "eval \"$2\"\n"
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, path, []byte(body), 0o755)
 	return path
 }
 

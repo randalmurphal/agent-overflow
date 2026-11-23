@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // hookedOperation is one git operation that runs a user's hook (or, for the
@@ -31,9 +32,7 @@ func installHook(t *testing.T, repo, name, script string) {
 	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(hook, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, hook, []byte("#!/bin/sh\n"+script), 0o755)
 }
 
 // withOrigin gives repo a bare origin holding main, tracked by main.
@@ -142,9 +141,7 @@ func hookedOperations() map[string]func(t *testing.T) hookedOperation {
 				options: []CoreOption{WithIsolatedForgeCLIs(fake, nil)},
 			}
 			op.install = func(script string) {
-				if err := os.WriteFile(fake, []byte("#!/bin/sh\n"+script+"echo https://github.com/acme/tool/pull/1\n"), 0o755); err != nil {
-					t.Fatal(err)
-				}
+				mockexec.WriteFile(t, fake, []byte("#!/bin/sh\n"+script+"echo https://github.com/acme/tool/pull/1\n"), 0o755)
 			}
 			return op
 		},

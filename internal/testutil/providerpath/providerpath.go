@@ -7,9 +7,10 @@
 // with that evidence. Its Guard also fails a run that leaves a process
 // running after the tests (leftovers_linux.go).
 //
-// The package depends only on the standard library and small internal
-// packages that do too, so any package with provider spawn code can use it
-// from TestMain, including the packages the shared fixtures import.
+// The package depends only on the standard library and low-level internal
+// packages that import no test fixture, so any package with provider spawn
+// code can use it from TestMain, including the packages the shared fixtures
+// import.
 package providerpath
 
 import (
@@ -28,6 +29,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/ownedtemp"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/stringsx"
 )
 
@@ -84,6 +86,21 @@ func Guard(run func() int) int {
 // shellName is the stand-in Install points SHELL at.
 const shellName = "login-shell"
 
+// writeExecutables writes the poison under each name and the stand-in shell
+// in dir and returns the shell's path.
+func writeExecutables(dir string) (shell string, err error) {
+	for _, name := range Names {
+		if err := procutil.InstallExecutable(filepath.Join(dir, name), []byte(poisonScript(dir)), 0o755); err != nil {
+			return "", fmt.Errorf("write poisoned %s: %w", name, err)
+		}
+	}
+	shell = filepath.Join(dir, shellName)
+	if err := procutil.InstallExecutable(shell, []byte(standInShell), 0o755); err != nil {
+		return "", fmt.Errorf("write stand-in shell: %w", err)
+	}
+	return shell, nil
+}
+
 // Install prepends a directory of poisoned provider executables to PATH for
 // the rest of the process, and points SHELL at a stand-in that runs /bin/sh
 // without the login and interactive flags. A login shell's startup files can
@@ -107,14 +124,9 @@ func Install() (check func() error, err error) {
 	if err := os.Mkdir(filepath.Join(dir, ackDirName), 0o755); err != nil {
 		return nil, errors.Join(fmt.Errorf("create poison ack directory: %w", err), release())
 	}
-	for _, name := range Names {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(poisonScript(dir)), 0o755); err != nil {
-			return nil, errors.Join(fmt.Errorf("write poisoned %s: %w", name, err), release())
-		}
-	}
-	shell := filepath.Join(dir, shellName)
-	if err := os.WriteFile(shell, []byte(standInShell), 0o755); err != nil {
-		return nil, errors.Join(fmt.Errorf("write stand-in shell: %w", err), release())
+	shell, err := writeExecutables(dir)
+	if err != nil {
+		return nil, errors.Join(err, release())
 	}
 	if err := os.Setenv("SHELL", shell); err != nil {
 		return nil, errors.Join(fmt.Errorf("set SHELL: %w", err), release())

@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/providerupdate"
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/textgen"
 )
 
@@ -241,9 +242,7 @@ func PoisonProviderBinary(t testing.TB) (poison, sentinel string) {
 		"echo \"argv: $0 $*\" >> '" + sentinel + "'\n" +
 		"echo 'agent-overflow tests: refused to spawn a provider binary without a mock' >&2\n" +
 		"exit 127\n"
-	if err := writeExecutable(poison, []byte(script)); err != nil {
-		t.Fatalf("write poisoned provider binary: %v", err)
-	}
+	mockexec.WriteFile(t, poison, []byte(script), 0o755)
 
 	t.Cleanup(func() {
 		invocations, err := os.ReadFile(sentinel)
@@ -258,16 +257,6 @@ func PoisonProviderBinary(t testing.TB) (poison, sentinel string) {
 		)
 	})
 	return poison, sentinel
-}
-
-// writeExecutable writes an executable with forks held off
-// (procutil.HoldForks). A child forked by a parallel test while the file is
-// open for writing would keep the poisoned binary from starting, and it
-// would write no sentinel.
-func writeExecutable(name string, data []byte) error {
-	release := procutil.HoldForks()
-	defer release()
-	return os.WriteFile(name, data, 0o755)
 }
 
 // ProviderBinarySettings is the settings patch that points all provider

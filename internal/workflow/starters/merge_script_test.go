@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/workflow/def"
 	workflowrunner "agent-overflow/internal/workflow/runner"
 )
@@ -39,9 +40,7 @@ func runMergeScript(t *testing.T, units []any) (json.RawMessage, int) {
 	for _, file := range set.Files {
 		if strings.HasSuffix(file.Name, ".py") {
 			script = filepath.Join(dir, file.Name)
-			if err := os.WriteFile(script, file.Data, 0o700); err != nil {
-				t.Fatal(err)
-			}
+			mockexec.WriteFile(t, script, file.Data, 0o700)
 		}
 	}
 	if script == "" {

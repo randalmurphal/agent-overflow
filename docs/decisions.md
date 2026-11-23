@@ -343,7 +343,7 @@ Mechanism in
   an assistant's current or past threads. A session the provider cleaned
   up moves the assistant to a new thread on its own, its opening block
   naming the previous thread (ruling 2026-10-15,
-  [standing agents](specs/standing-agents.md) rulings 22 to 29,
+  [standing agents](specs/standing-agents.md) rulings 22 to 28,
   "Retention" and "Session loss").
 - Turning assistants off pauses and hides them; it never deletes. Every assistant, thread, home, memory folder, wake
   registration and draft stays as it was, and turning them on resumes
@@ -583,12 +583,10 @@ Mechanism in
   recurring work. An Instructions action on the assistant is declined
   for now (owner ruling 2026-11-17,
   [wake supervisor](specs/standing-agents.md#wake-supervisor)).
-- In an assistant's thread, Stop is two actions: Interrupt (stop the
-  turn, keep the session) and End Session (end the process and its
-  background items); a workflow run's Pause keeps its members' sessions
-  and Pause and End Sessions ends them; the Agents row's Stop on a
-  spawned thread is a rest, not one of these (ruling 2026-10-15,
-  [interrupt and end session](specs/standing-agents.md#interrupt-and-end-session)).
+- A workflow run's Pause keeps its members' sessions and Pause and End
+  Sessions ends them; the Agents row's Stop on a spawned thread is a
+  rest, not one of these
+  ([workflow pause and end sessions](specs/standing-agents.md#workflow-pause-and-end-sessions)).
 - Requests to other threads and agent messages queued for a thread list
   in the activity rail's Agents segment, apart from Background, with a
   user Stop that keeps the caller's wake armed and brings a spawned

@@ -88,11 +88,6 @@ const CapabilityTimelineDigests = "timeline.digests.v1"
 // its own send-queue mirror.
 const CapabilitySendsPending = "sends-pending.v1"
 
-// CapabilitySessionLive publishes provider:session_live and the
-// sessionLive field of ListThreadLiveActivity. A client reading a backend
-// without it does not know whether a thread has a session.
-const CapabilitySessionLive = "session-live.v1"
-
 // CapabilityFlushSettlement reports which queue_flushed frames an answer
 // that nothing is pending covers: flushedThrough on provider:sends_pending
 // and GetThreadLiveState, and ListUnsettledFlushes. A client reading a
@@ -157,7 +152,6 @@ var serverCapabilities = []string{
 	CapabilityTimelineScopes,
 	CapabilityTimelineDigests,
 	CapabilitySendsPending,
-	CapabilitySessionLive,
 	CapabilityFlushSettlement,
 	CapabilityThreadFind,
 	CapabilityPRReviewDrafts,

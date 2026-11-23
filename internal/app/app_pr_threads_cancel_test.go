@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // A fork fetch that fails after it created pr/N leaves no pr/N: the call
@@ -30,9 +32,7 @@ exit 0
 	if err := os.MkdirAll(hooks, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(hooks, "reference-transaction"), []byte(hook), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, filepath.Join(hooks, "reference-transaction"), []byte(hook), 0o755)
 
 	if _, err := c.app.OpenPRThread(context.Background(), c.request("fork-work", true)); err == nil {
 		t.Fatal("OpenPRThread succeeded with its scratch ref removal refused")

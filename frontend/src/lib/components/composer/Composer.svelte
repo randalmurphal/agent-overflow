@@ -53,8 +53,7 @@
   import { deriveComposerSendState } from './composerSendState';
   import { dispatchSend } from './composerSend';
   import { runInterrupt } from '../../stores/threadInterrupt.svelte';
-  import { endThreadSession, isAssistantDraftMoved } from '../../stores/assistants.svelte';
-  import { threadSessionLive } from '../../stores/threadSessionLive.svelte';
+  import { isAssistantDraftMoved } from '../../stores/assistants.svelte';
   import { isEmptyDraftCleanupPending, removedOrDeletionObserved, settleEmptyDraftCleanup, withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
   import { keepDraftInNewThread } from '../../stores/deletedDraftThread';
   import { applyThreadDeleted } from '../../stores/eventsThreadRows';
@@ -938,11 +937,6 @@
     runInterrupt(pane);
   }
 
-  function endSession() {
-    const thread = pane.thread;
-    if (thread && access.send === 'granted') void endThreadSession(thread);
-  }
-
   function resetTextareaHeight() {
     surface?.resetInputHeight();
   }
@@ -1327,9 +1321,6 @@
       onSendWithoutPlanComments={(hasDraftPlanComments || hasDraftDiffReviewComments) && hasDraftContent ? () => send(false) : undefined}
       onSendInNewThread={hasPlanImplementAction ? sendPlanToNewThread : undefined}
       onInterrupt={interrupt}
-      onEndSession={pane.thread?.agentId ? endSession : undefined}
-      sessionLive={threadSessionLive(pane.threadId)}
-      sessionAccess={access.send}
     />
     <ComposerWorkspaceStrip {pane} />
   </div>

@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/supervise"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 const (
@@ -193,9 +194,7 @@ func (f *updateFixture) save(state supervise.UpdateState, attempts int, reported
 	if err := os.MkdirAll(filepath.Dir(f.launcher), 0o700); err != nil {
 		f.t.Fatal(err)
 	}
-	if err := os.WriteFile(f.launcher, []byte("MZ"), 0o700); err != nil {
-		f.t.Fatal(err)
-	}
+	mockexec.WriteFile(f.t, f.launcher, []byte("MZ"), 0o700)
 	return record
 }
 

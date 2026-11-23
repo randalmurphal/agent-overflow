@@ -3,12 +3,13 @@
 package instanceinfo
 
 import (
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // A binary replaced on disk after spawn (the harness-rebuild case) makes
@@ -20,22 +21,7 @@ func TestCaptureProcessIdentityStripsDeletedMarker(t *testing.T) {
 	if err != nil {
 		t.Skipf("no sleep binary: %v", err)
 	}
-	src, err := os.Open(sleepPath)
-	if err != nil {
-		t.Fatalf("open sleep: %v", err)
-	}
-	defer src.Close()
-	copied := filepath.Join(t.TempDir(), "sleep-copy")
-	dst, err := os.OpenFile(copied, os.O_CREATE|os.O_WRONLY, 0o755)
-	if err != nil {
-		t.Fatalf("create copy: %v", err)
-	}
-	if _, err := io.Copy(dst, src); err != nil {
-		t.Fatalf("copy sleep: %v", err)
-	}
-	if err := dst.Close(); err != nil {
-		t.Fatalf("close copy: %v", err)
-	}
+	copied := mockexec.CopyFile(t, filepath.Join(t.TempDir(), "sleep-copy"), sleepPath, 0o755, nil)
 
 	cmd := exec.Command(copied, "30")
 	if err := cmd.Start(); err != nil {

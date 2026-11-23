@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // TestListDistros_NoWSLShortCircuits pins the !isWSL() branch: on
@@ -59,9 +61,7 @@ func TestListDistros_WSLWithFakeWslExe(t *testing.T) {
 	}
 	shim := filepath.Join(dir, "wsl.exe")
 	shimBody := "#!/bin/sh\nexec /bin/cat " + fixturePath + "\n"
-	if err := os.WriteFile(shim, []byte(shimBody), 0o755); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
+	mockexec.WriteFile(t, shim, []byte(shimBody), 0o755)
 	t.Setenv("PATH", dir)
 
 	got, err := ListDistros(context.Background())

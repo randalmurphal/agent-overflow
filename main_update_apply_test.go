@@ -23,6 +23,7 @@ import (
 	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/supervise"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // The macOS and Linux desktop's helper and boot against the real update
@@ -286,13 +287,9 @@ func TestDesktopMigrationRemembersAFailedTrial(t *testing.T) {
 func (r *desktopApplyRig) desktopUpdateFixture(id string, attempts int) (supervise.DesktopRecord, string) {
 	r.t.Helper()
 	install := filepath.Join(r.t.TempDir(), "agent-overflow")
-	if err := os.WriteFile(install, []byte("old"), 0o755); err != nil {
-		r.t.Fatal(err)
-	}
+	mockexec.WriteFile(r.t, install, []byte("old"), 0o755)
 	staged := supervise.DesktopStagedPath(install, id)
-	if err := os.WriteFile(staged, []byte("new"), 0o755); err != nil {
-		r.t.Fatal(err)
-	}
+	mockexec.WriteFile(r.t, staged, []byte("new"), 0o755)
 	digest := sha256.Sum256([]byte("new"))
 	base, err := supervise.Adopt("1.0.0")
 	if err != nil {

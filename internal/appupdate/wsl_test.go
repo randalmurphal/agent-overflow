@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/selfupdate"
+	"agent-overflow/internal/testutil/mockexec"
 
 	"github.com/wailsapp/wails/v3/pkg/updater"
 	"github.com/wailsapp/wails/v3/pkg/updater/providers/github"
@@ -1175,9 +1176,7 @@ func seedStagedArtifact(t *testing.T, mode *wslUpdateMode) string {
 		t.Fatalf("mkdir staging: %v", err)
 	}
 	path := filepath.Join(mode.stagingDir, wslAssetName)
-	if err := os.WriteFile(path, wslAssetBytes, 0o755); err != nil {
-		t.Fatalf("seed staged artifact: %v", err)
-	}
+	mockexec.WriteFile(t, path, wslAssetBytes, 0o755)
 	return path
 }
 

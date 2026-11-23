@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/testutil/reporoot"
 )
 
@@ -234,9 +235,7 @@ func TestPoisonStopsHoldingItsCallerWhenTheRunEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	poison := filepath.Join(dir, "codex")
-	if err := os.WriteFile(poison, []byte(poisonScript(dir)), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, poison, []byte(poisonScript(dir)), 0o755)
 	cmd := exec.Command(poison, "--version")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/bundle"
+	"agent-overflow/internal/testutil/mockexec"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -66,9 +67,7 @@ func TestDarwinReleasePackagingPreservesFrameworkLinks(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(versions, "A"), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(versions, "A", "Example"), []byte("signed framework"), 0o700); err != nil {
-				t.Fatal(err)
-			}
+			mockexec.WriteFile(t, filepath.Join(versions, "A", "Example"), []byte("signed framework"), 0o700)
 			if err := os.Symlink("A", filepath.Join(versions, "Current")); err != nil {
 				t.Fatal(err)
 			}
@@ -267,9 +266,7 @@ func TestLinuxReleaseArtifactsHoldTheGlibcFloor(t *testing.T) {
 		t.Skip("the release scripts run on Unix")
 	}
 	artifact := filepath.Join(t.TempDir(), "agent-overflow")
-	if err := os.WriteFile(artifact, append([]byte("\x7fELF"), make([]byte, 2<<20)...), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, artifact, append([]byte("\x7fELF"), make([]byte, 2<<20)...), 0o700)
 	for _, tc := range []struct {
 		name, symbols, wantErr string
 	}{
@@ -281,9 +278,7 @@ func TestLinuxReleaseArtifactsHoldTheGlibcFloor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tools := t.TempDir()
 			stub := "#!/bin/sh\nprintf '%s' '" + tc.symbols + "'\n"
-			if err := os.WriteFile(filepath.Join(tools, "objdump"), []byte(stub), 0o700); err != nil {
-				t.Fatal(err)
-			}
+			mockexec.WriteFile(t, filepath.Join(tools, "objdump"), []byte(stub), 0o700)
 			cmd := exec.Command("sh", "-c", `. scripts/release-common.sh; validate_elf "$1"`, "sh", artifact)
 			cmd.Env = append(os.Environ(), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"))
 			out, err := cmd.CombinedOutput()

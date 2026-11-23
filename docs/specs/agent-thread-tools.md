@@ -1462,12 +1462,15 @@ not re-arm it. A wake already on its way when the archive lands is not
 written: the queue write requires every request it answers to still be
 armed, and the unarchive is decided under the thread lock the archive
 holds. A wake already
-queued when the caller is archived, or when an End Session or a revert drops
-the caller's queue, goes back to its request: one transaction removes
+queued when the caller is archived or brought to rest, or when
+`StopSession` or a revert drops it from the caller's queue, goes back to
+its request (a live Codex revert that keeps its session gives back only
+what its dispatch had already taken, and an answer or reminder still
+waiting in the queue is delivered after the cut): one transaction removes
 the queue row, clears its delivery and turns `notify` off, so
 `thread_status` still returns the answer and nothing reaches the
 thread at its next start. So does a wake the caller's session ended,
-or an End Session, an archive or a Codex resend that failed ended it, without
+or `StopSession`, a rest, an archive or a Codex resend that failed ended it, without
 taking in, still queued or written and unconfirmed; one the provider
 dropped unrun; one whose session could not start; and one still
 queued, or written and never confirmed, when the caller's computer

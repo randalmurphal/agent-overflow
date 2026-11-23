@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 var prRevisionPR = PRReference{Forge: "github", Host: "github.com", Namespace: "owner", Repo: "repo", Number: 5}
@@ -201,9 +202,7 @@ func countUploadPack(t *testing.T, origin, clone, moveTo string) string {
 	}
 	script := filepath.Join(dir, "upload-pack.sh")
 	body := "#!/bin/sh\necho connection >> '" + log + "'\n" + move + "exec git upload-pack \"$@\"\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, script, []byte(body), 0o755)
 	testutil.RunGit(t, clone, "config", "remote.origin.uploadpack", script)
 	return log
 }

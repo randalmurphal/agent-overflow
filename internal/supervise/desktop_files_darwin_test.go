@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // A staged or set-aside version is a bundle or a bare executable. Either is
@@ -14,17 +16,13 @@ func TestLsofInUseJudgesBundlesAndExecutables(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	executable := filepath.Join(dir, ".agent-overflow-update-0123456789abcdef")
-	if err := os.WriteFile(executable, []byte("new"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, executable, []byte("new"), 0o755)
 	bundle := filepath.Join(dir, "Agent Overflow.app")
 	inBundle := filepath.Join(bundle, "Contents", "MacOS", "agent-overflow")
 	if err := os.MkdirAll(filepath.Dir(inBundle), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(inBundle, []byte("new"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, inBundle, []byte("new"), 0o755)
 
 	for _, tc := range []struct{ name, path, open string }{
 		{"executable", executable, executable},
