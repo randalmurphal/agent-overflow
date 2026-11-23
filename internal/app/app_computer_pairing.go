@@ -37,31 +37,37 @@ type ComputerPairingView struct {
 
 // computerPairingState is the owner surface's side of one bootstrap window:
 // which connection owns it and its LAN advertisement. The book owns the
-// window and the retirement of every invitation a window minted.
+// window and the retirement of every invitation a window minted; the address
+// publication (computerRoutesPublication) records which window it admitted
+// and retires that window when it moves.
 //
 // mu guards the fields and is never held across I/O: SQLite writes, the
 // multicast responders and the book's settling calls all run with it
 // released, so the book's callbacks and the connection cleanup can take it
 // without ordering against anything. ops serializes opens, the one
-// multi-step act (close the old window, open, advertise); reads and closes
-// never take it. Expiry is the book's timer. The advertisement is retired
-// when the window is closed, replaced, or its owner disconnects; an expired
-// window answers info with Open:false, which discovery discards. The address
-// publication (computerRoutesPublication) retires a window whose address is
-// no longer live. Lock order: the book's locks, mu, the publication's mu.
+// multi-step act (close the old window, prepare, open, advertise); reads and
+// closes never take it. Expiry is the book's timer. The advertisement is
+// retired when the window is closed, replaced, retired by a publication or
+// its owner disconnects; an expired window answers info with Open:false,
+// which discovery discards. Lock order: the book's turn and settle, mu, the
+// publication's mu, the book's mu.
 type computerPairingState struct {
 	mu             sync.Mutex
 	ops            sync.Mutex
 	book           *pairbootstrap.Book
 	advertiser     *nearby.Server
 	discoveryError string
-	// windowID is the last window opened here, which owner, advertiser,
-	// choice and address belong to.
+	// windowID is the last window opened here, which owner, advertiser and
+	// advertising belong to.
 	windowID string
 	owner    *transport.ConnState
-	// choice is the network the window was opened on and address the
-	// address it shows.
-	choice, address string
+	// advertising is closed once the window's responder start has finished
+	// and its responders are adopted or closed; nil when no start is due. A
+	// close of the window waits for it, so no responder outlives the close.
+	advertising chan struct{}
+	// awaitingStart, when set before the state is used, runs when a close
+	// finds a responder start in flight, before it waits for it.
+	awaitingStart func()
 }
 
 // OpenComputerPairing opens a short-lived invitation window. Merely discovering
@@ -81,14 +87,16 @@ func (a *App) OpenComputerPairing(ctx context.Context, networkChoice, access str
 
 const computerPairingCleanupKey = "computer-pairing"
 
-var errComputerPairingListenerChanged = errors.New("this computer's network address changed while pairing opened; try again")
-
 // openComputerPairing opens the window for conn, which owns it: the
-// connection's end closes it. conn is admitted before anything is changed:
-// a connection that is already closing retires no other connection's
-// window, persists nothing through prepare, and exposes no invitation.
-// prepare, when set, runs once the caller is admitted and before the old
-// window is retired.
+// connection's end closes it. Everything that can refuse the open runs before
+// prepare, which persists (own-device enrollment): the arguments, the
+// caller's connection, whether the chosen network has an address now, and
+// the previous window's retirement. Only a network that loses its address or
+// a connection that ends while prepare runs fails the open after it.
+//
+// The window is admitted under the current publication, from which its
+// address comes: a publication between the eligibility check and the
+// admission changes which address the window shows, not whether it opens.
 func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, access, purpose string, prepare func() error) (ComputerPairingWindow, error) {
 	if networkChoice != "lan" && networkChoice != "tailnet" {
 		return ComputerPairingWindow{}, errors.New("choose Local network or Tailscale")
@@ -97,6 +105,9 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 		return ComputerPairingWindow{}, err
 	}
 	if _, err := identity.PairingAccess(access).Grants(); err != nil {
+		return ComputerPairingWindow{}, err
+	}
+	if _, err := a.publishComputerRoutes().pairing.on(networkChoice); err != nil {
 		return ComputerPairingWindow{}, err
 	}
 	state := &a.computerPairing
@@ -120,61 +131,60 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 	}); err != nil {
 		return ComputerPairingWindow{}, err
 	}
-	if prepare != nil {
-		if err := prepare(); err != nil {
-			return ComputerPairingWindow{}, err
-		}
-	}
 	book, previous := a.computerPairingBookAndWindow()
-	// One reading of the published addresses, after prepare: the window's
-	// address comes from it, and the admission below holds the window to it.
-	live := a.publishComputerRoutes()
-	address, err := live.pairing.on(networkChoice)
-	if err != nil {
-		return ComputerPairingWindow{}, err
-	}
 	// A window replaces its predecessor only once every earlier invitation's
 	// cancellation is durable: the close answers for the previous window,
 	// and the book's open for any other still unfinished.
 	if err := a.closeComputerPairingWindow(previous); err != nil {
 		return ComputerPairingWindow{}, err
 	}
+	if prepare != nil {
+		if err := prepare(); err != nil {
+			return ComputerPairingWindow{}, err
+		}
+	}
+	var address string
+	var advertise bool
 	view, err := book.Open(func(route string) (pairbootstrap.Invitation, error) {
 		// route is the listener the admitted reveal arrived on, which the
 		// HTTP adapter names. Both enabled routes enroll the same host; no
 		// pin crosses listeners.
-		invite, err := a.mintDevicePairingPurpose("desktop", access, route, purpose)
+		invite, err := a.mintDevicePairingPurpose("desktop", access, route, purpose, true)
 		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
 	}, func(w pairbootstrap.Snapshot) error {
 		// The window becomes conn's, before anything can see it, only while
 		// its tie is still bound, checked in the critical section the tie's
 		// release takes: a connection that ended while the window opened has
-		// already run that release. And only while its address is still the
-		// published one: an address that moved since it was read retired
-		// every window showing it, and this one would show it too.
+		// already run that release. Its address and its admission come from
+		// the publication as it stands now.
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		if !conn.Bound(computerPairingCleanupKey) {
 			return transport.ErrConnectionClosing
 		}
-		if a.publishedSerial() != live.serial {
-			return errComputerPairingListenerChanged
+		var err error
+		if address, advertise, err = a.admitComputerPairingWindow(book, w.WindowID, networkChoice); err != nil {
+			return err
 		}
 		state.windowID, state.owner, state.discoveryError = w.WindowID, conn, ""
-		state.choice, state.address = networkChoice, address
+		state.advertising = nil
+		if advertise {
+			state.advertising = make(chan struct{})
+		}
 		return nil
 	})
 	if err != nil {
 		return ComputerPairingWindow{}, err
 	}
-	if live.advertise {
+	if advertise {
 		a.advertiseComputerPairing(book, view.WindowID)
 	}
 	return ComputerPairingWindow{ID: view.WindowID, Address: address, ExpiresAtMs: view.ExpiresAtMs}, nil
 }
 
 // computerPairingBookAndWindow is the book, made on first use, and the last
-// window opened in it.
+// window opened in it. Every reader and writer of the book takes it here, so
+// a status read and the first open share one book.
 func (a *App) computerPairingBookAndWindow() (*pairbootstrap.Book, string) {
 	s := &a.computerPairing
 	s.mu.Lock()
@@ -185,11 +195,26 @@ func (a *App) computerPairingBookAndWindow() (*pairbootstrap.Book, string) {
 	return s.book, s.windowID
 }
 
+// computerPairingBook is computerPairingBookAndWindow's book.
+func (a *App) computerPairingBook() *pairbootstrap.Book {
+	book, _ := a.computerPairingBookAndWindow()
+	return book
+}
+
 // advertiseComputerPairing starts the LAN responders for one window with mu
-// released, then adopts them only while that window is still the open one.
-// A failure is the window's user-facing state, not a log line. A loopback
-// Reach starts none and says so the same way.
+// released, then adopts them only while that window is still the open one,
+// and ends the start a close of that window waits for. A failure is the
+// window's user-facing state, not a log line. A loopback Reach starts none
+// and says so the same way.
 func (a *App) advertiseComputerPairing(book *pairbootstrap.Book, windowID string) {
+	s := &a.computerPairing
+	s.mu.Lock()
+	done := s.advertising
+	s.mu.Unlock()
+	if done == nil {
+		return
+	}
+	defer close(done)
 	srv := a.transportServer.Load()
 	if srv == nil {
 		return
@@ -200,7 +225,6 @@ func (a *App) advertiseComputerPairing(book *pairbootstrap.Book, windowID string
 		id, _ := a.backendIdentity()
 		adv, err = nearby.Start(nearby.Advertisement{BackendID: id, Name: a.backendDisplayName, Port: portFromAddr(srv.Addr())})
 	}
-	s := &a.computerPairing
 	s.mu.Lock()
 	adopt := s.windowID == windowID && book.Snapshot(windowID).Open
 	if adopt {
@@ -233,16 +257,35 @@ func (a *App) CloseComputerPairing(id string) error {
 
 // closeComputerPairingWindow retires one window: the book removes it and
 // cancels its invitation, answering for that cancellation, then the
-// responders that window started are detached under mu and closed outside
-// it.
+// responders that window started are ended (endComputerPairingAdvertisement).
 func (a *App) closeComputerPairingWindow(id string) error {
+	err := a.computerPairingBook().Close(id)
+	a.endComputerPairingAdvertisement(id)
+	return err
+}
+
+// endComputerPairingAdvertisement ends the LAN responders of window id once
+// the window is removed: it waits for a responder start in flight, which
+// then adopts nothing, and closes the adopted responders outside mu. Any
+// other id is a no-op.
+func (a *App) endComputerPairingAdvertisement(id string) {
 	s := &a.computerPairing
 	s.mu.Lock()
-	book := s.book
+	var starting chan struct{}
+	if s.windowID == id {
+		starting = s.advertising
+	}
+	awaiting := s.awaitingStart
 	s.mu.Unlock()
-	var err error
-	if book != nil {
-		err = book.Close(id)
+	if starting != nil {
+		if awaiting != nil {
+			select {
+			case <-starting:
+			default:
+				awaiting()
+			}
+		}
+		<-starting
 	}
 	var adv *nearby.Server
 	s.mu.Lock()
@@ -253,25 +296,6 @@ func (a *App) closeComputerPairingWindow(id string) error {
 	if adv != nil {
 		_ = adv.Close()
 	}
-	return err
-}
-
-// retireStaleComputerPairing closes the window when the address it shows is
-// no longer the one its network publishes. The publication calls it after
-// every change. A failed cancellation is logged by the book's callback and
-// retried by the book.
-func (a *App) retireStaleComputerPairing(live pairingAddresses) {
-	s := &a.computerPairing
-	s.mu.Lock()
-	id, choice, address := s.windowID, s.choice, s.address
-	s.mu.Unlock()
-	if id == "" {
-		return
-	}
-	if current, err := live.on(choice); err == nil && current == address {
-		return
-	}
-	_ = a.closeComputerPairingWindow(id)
 }
 
 // stopComputerPairing ends pairing at shutdown, before the store closes: the
@@ -283,23 +307,17 @@ func (a *App) stopComputerPairing() {
 	if err := book.Stop(); err != nil {
 		log.Printf("nearby pairing: an invitation's cancellation is unfinished at shutdown; the next start retires it: %v", err)
 	}
-	var adv *nearby.Server
-	s := &a.computerPairing
-	s.mu.Lock()
-	if s.windowID == id {
-		adv, s.advertiser, s.discoveryError = s.advertiser, nil, ""
-	}
-	s.mu.Unlock()
-	if adv != nil {
-		_ = adv.Close()
-	}
+	a.endComputerPairingAdvertisement(id)
 }
 
 // cancelComputerPairingLink is the book's cancel callback, one cancellation
 // statement per call. A link already settled is durable. Every failure is
 // logged here, since the book's expiry has no caller to answer.
 func (a *App) cancelComputerPairingLink(id string) error {
-	err := a.CancelDevicePairing(id)
+	state, err := a.accessState()
+	if err == nil {
+		_, err = state.sessions.CancelPairing(id)
+	}
 	if errors.Is(err, identity.ErrPairingRefused) {
 		return nil
 	}
@@ -309,20 +327,31 @@ func (a *App) cancelComputerPairingLink(id string) error {
 	return err
 }
 
-func (a *App) computerPairingBook() *pairbootstrap.Book {
-	s := &a.computerPairing
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.book
+// computerPairingGate is the identity pairing gate (identity.PairingGate):
+// every redemption's spend and every owner confirmation is admitted by the
+// computer pairing book, which refuses a window's invitation once its
+// window is gone and orders that refusal against the window's removal.
+type computerPairingGate struct{ app *App }
+
+func (g computerPairingGate) Admit(linkID string, write func() error) error {
+	err := g.app.computerPairingBook().Admit(linkID, write)
+	if errors.Is(err, pairbootstrap.ErrClosed) {
+		return identity.ErrPairingRefused
+	}
+	return err
 }
 
 func (a *App) computerPairingOpen() bool {
-	book := a.computerPairingBook()
-	return book != nil && book.Snapshot("").Open
+	return a.computerPairingBook().Snapshot("").Open
 }
 
 // ComputerPairingStatus shows independently derived digits only on the owner
 // surface. Confirmation is enabled only after ordinary enrollment has completed.
+//
+// A window that is gone still answers for the invitation it published while
+// it is the window opened last: a confirmation admitted before the window's
+// deadline whose write lands after it reads confirmed, so a dialog whose
+// approval reply was lost reaches the durable result.
 //
 //ao:scope access:admin
 //ao:route home
@@ -334,27 +363,35 @@ func (a *App) ComputerPairingStatus(id string) (ComputerPairingView, error) {
 	var view pairbootstrap.Snapshot
 	var link store.PairingLink
 	var standing pairbootstrap.Standing
+	var sessions *identity.Sessions
 	var now int64
-	err := a.readPairingStanding(func(st pairbootstrap.Standing, sessions *identity.Sessions) error {
-		standing, view, now = st, st.Window(), sessions.Now()
-		if !view.Open || view.WindowID != id || view.LinkID == "" {
+	err := a.readPairingStanding(func(st pairbootstrap.Standing, ss *identity.Sessions) error {
+		standing, view, sessions, now = st, st.Window(), ss, ss.Now()
+		linkID := st.LinkOf(id)
+		if linkID == "" {
 			return nil
 		}
 		var err error
-		link, err = sessions.PairingLink(view.LinkID)
+		link, err = ss.PairingLink(linkID)
 		return err
 	})
 	if err != nil {
 		return ComputerPairingView{}, err
 	}
 	if !view.Open || view.WindowID != id {
+		if link.ConfirmedAt != 0 {
+			return ComputerPairingView{State: "confirmed", LinkID: link.ID, DeviceLabel: a.pairedDeviceLabel(link)}, nil
+		}
 		return ComputerPairingView{State: "expired"}, nil
 	}
-	out := ComputerPairingView{State: "waiting", VerificationNumber: view.VerificationNumber, DeviceLabel: view.Label, LinkID: view.LinkID, ExpiresAtMs: view.ExpiresAtMs, DiscoveryError: discoveryError}
+	out := ComputerPairingView{State: "waiting", DeviceLabel: view.Label, LinkID: view.LinkID, ExpiresAtMs: view.ExpiresAtMs, DiscoveryError: discoveryError}
 	if view.RequestID != "" {
 		out.State = "verifying"
 	}
-	if view.LinkID != "" {
+	if link.ID != "" {
+		if out.VerificationNumber, err = ownerPairingNumber(link, standing, sessions); err != nil {
+			return ComputerPairingView{}, err
+		}
 		switch pairingState(link, now, standing) {
 		case "confirmed":
 			out.State = "confirmed"
@@ -369,30 +406,32 @@ func (a *App) ComputerPairingStatus(id string) (ComputerPairingView, error) {
 
 // readPairingStanding runs read with the computer pairing book's standing and
 // the identity sessions, inside the book's Read: a status read and the book's
-// retirement of the same invitation never interleave. read does only the
-// pairing rows' reads; derivation, audit and events run after it returns.
+// retirement or publication of the same invitation never interleave. read
+// does only the pairing rows' reads; derivation, audit and events run after
+// it returns.
 func (a *App) readPairingStanding(read func(pairbootstrap.Standing, *identity.Sessions) error) error {
 	state, err := a.accessState()
 	if err != nil {
 		return err
 	}
-	book := a.computerPairingBook()
-	if book == nil {
-		return read(pairbootstrap.Standing{}, state.sessions)
-	}
-	return book.Read(func(st pairbootstrap.Standing) error { return read(st, state.sessions) })
+	return a.computerPairingBook().Read(func(st pairbootstrap.Standing) error { return read(st, state.sessions) })
 }
 
-// computerPairingNumber is the number the owner compares for linkID, a
-// redemption awaiting the owner: the open window's own digits for its
-// invitation, and otherwise the ordinary redemption's. A computer pairing
-// window's invitation awaits the owner only while its window is open
-// (pairingState), so it never falls back.
-func computerPairingNumber(linkID, fallback string, standing pairbootstrap.Standing) string {
-	if view := standing.Window(); view.LinkID == linkID && view.VerificationNumber != "" {
-		return view.VerificationNumber
+// ownerPairingNumber is the number the owner compares for link, read with
+// standing (readPairingStanding). A link a computer pairing window minted
+// (store.PairingLink.Bootstrap) shows the digits that window's exchange
+// derived, which the requesting computer derived too
+// (pairbootstrap.Client.Open), while the window holds it, and none
+// otherwise: never the ordinary number, which that computer does not show.
+// Any other link shows the ordinary redemption's number.
+func ownerPairingNumber(link store.PairingLink, standing pairbootstrap.Standing, sessions *identity.Sessions) (string, error) {
+	if link.Bootstrap {
+		if view := standing.Window(); view.LinkID == link.ID {
+			return view.VerificationNumber, nil
+		}
+		return "", nil
 	}
-	return fallback
+	return sessions.VerificationNumber(link.ID, link.KeyThumbprint)
 }
 
 func (e authEndpoints) NearbyPair(_ context.Context, authority string, req pairbootstrap.Request) (any, error) {
@@ -404,10 +443,7 @@ func (e authEndpoints) NearbyPair(_ context.Context, authority string, req pairb
 			BackendID string `json:"backendId"`
 			Name      string `json:"name"`
 			Open      bool   `json:"open"`
-		}{id, a.backendDisplayName(), book != nil && book.Snapshot("").Open}, nil
-	}
-	if book == nil {
-		return nil, pairbootstrap.ErrClosed
+		}{id, a.backendDisplayName(), book.Snapshot("").Open}, nil
 	}
 	switch req.Op {
 	case "begin":

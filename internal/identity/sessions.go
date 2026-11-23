@@ -40,10 +40,14 @@ type Sessions struct {
 	localMu         sync.Mutex
 	localCredential string
 	localSessionID  string
-	ownMu           sync.Mutex
-	store           *store.Store
-	backendID       string
-	now             func() time.Time
+	// ownMu serializes the pairing and own-device membership writes. Lock
+	// order: ownMu, then the pairing gate's lock (PairingGate.Admit, the
+	// computer pairing book's settle lock), which covers no call that takes
+	// ownMu.
+	ownMu     sync.Mutex
+	store     *store.Store
+	backendID string
+	now       func() time.Time
 
 	mu sync.RWMutex
 	// live is the per-RPC fast path: the in-memory session table the spec
@@ -90,6 +94,36 @@ type Sessions struct {
 
 	// releasedTo is the OnLinksReleased function.
 	releasedTo atomic.Pointer[func(threadIDs []string)]
+
+	// gate is the SetPairingGate gate; nil admits every link.
+	gate atomic.Pointer[PairingGate]
+}
+
+// PairingGate decides whether a pairing link may move forward, for a link
+// whose standing another owner decides (a computer pairing window's
+// invitation, internal/pairbootstrap). Admit runs write unless the gate
+// refuses linkID, holding the gate from its check until write returns, so a
+// retirement of the link either waits for write or comes first and is
+// refused by it. A refusal answers ErrPairingRefused and runs nothing. write
+// must not take Sessions.ownMu, which the caller already holds.
+type PairingGate interface {
+	Admit(linkID string, write func() error) error
+}
+
+// SetPairingGate sets the gate every redemption's spend and every owner
+// confirmation run inside. Set once at boot, before anything serves.
+func (s *Sessions) SetPairingGate(gate PairingGate) {
+	s.gate.Store(&gate)
+}
+
+// admitPairing runs write inside the pairing gate for linkID. The caller
+// holds ownMu.
+func (s *Sessions) admitPairing(linkID string, write func() error) error {
+	gate := s.gate.Load()
+	if gate == nil {
+		return write()
+	}
+	return (*gate).Admit(linkID, write)
 }
 
 // liveSweepThreshold is when the fast path drops expired entries. Below it

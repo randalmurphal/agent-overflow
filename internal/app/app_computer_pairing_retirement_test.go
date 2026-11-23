@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/pairbootstrap"
+	"agent-overflow/internal/transport"
 )
 
 // heldMintWindow opens a window on the host's book whose mint waits on the
@@ -25,7 +26,7 @@ func heldMintWindow(t *testing.T, a *App) (pairbootstrap.Snapshot, *testGate, <-
 	minted := make(chan string, 1)
 	view, err := book.Open(func(string) (pairbootstrap.Invitation, error) {
 		g.wait()
-		invite, err := a.mintDevicePairing("desktop", "full", "")
+		invite, err := a.mintDevicePairingPurpose("desktop", "full", "", "", true)
 		minted <- invite.LinkID
 		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
 	}, admitTestWindow(a))
@@ -352,37 +353,60 @@ func TestComputerPairingCancellationEndsThePendingSessionWithItsInvitation(t *te
 	}
 }
 
-// A listener move while a window opens refuses the window that open would
-// publish, whose address the move made stale: the open read the address
-// before the move, and the move published the new one before the open's
-// admission.
-func TestComputerPairingARebindDuringAnOpenRefusesItsWindow(t *testing.T) {
-	t.Parallel()
+// A listener move while a window opens changes the address the window
+// shows, not whether it opens: the open checked the old address, the move
+// published the new one while the open prepared, and the window is admitted
+// under the move's publication, shows its address, and stays open after it.
+func TestComputerPairingAnOpenAcrossARebindShowsTheMovedAddress(t *testing.T) {
 	remotetest.Require(t)
-	a, _ := computerPairingHost(t)
-	countCancellations(a)
-	book := a.computerPairingBook()
-	first, g, _, revealed := heldMintWindow(t, a)
-	before := a.publishedSerial()
-	opened := make(chan error, 1)
-	go func() {
-		_, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
-		opened <- err
-	}()
-	// The open has read its address and is replacing the first window.
-	waitFor(t, "the open to remove the first window", func() bool { return !book.Snapshot(first.WindowID).Open })
-	moved := make(chan error, 1)
-	go func() { moved <- moveListener(t, a) }()
-	waitFor(t, "the rebind to publish", func() bool { return a.publishedSerial() != before })
-	g.open()
-	<-revealed
-	if err := <-opened; !errors.Is(err, errComputerPairingListenerChanged) {
-		t.Fatalf("open across a rebind = %v, want errComputerPairingListenerChanged", err)
-	}
-	if err := <-moved; err != nil {
+	a := newNativeNetworkBackend(t).app
+	t.Cleanup(a.stopComputerPairing)
+	conn, err := transport.CallerConnection(connCtx(t))
+	if err != nil {
 		t.Fatal(err)
 	}
-	requireNoPublishedWindow(t, a)
+	old, err := a.publishComputerRoutes().pairing.on("lan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := newTestGate()
+	t.Cleanup(g.open)
+	type opened struct {
+		window ComputerPairingWindow
+		err    error
+	}
+	next := make(chan opened, 1)
+	go func() {
+		w, err := a.openComputerPairing(conn, "lan", "full", "", func() error { g.wait(); return nil })
+		next <- opened{w, err}
+	}()
+	<-g.reached
+	if err := moveListener(t, a); err != nil {
+		t.Fatal(err)
+	}
+	g.open()
+	result := <-next
+	if result.err != nil {
+		t.Fatalf("open across a rebind: %v", result.err)
+	}
+	want, err := a.publishComputerRoutes().pairing.on("lan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want == old || result.window.Address != want {
+		t.Fatalf("the window shows %q (checked %q), want the moved address %q", result.window.Address, old, want)
+	}
+	if !a.computerPairingBook().Snapshot(result.window.ID).Open {
+		t.Fatal("the window admitted under the move's publication was retired")
+	}
+}
+
+// publishedSerial is the address publication's current serial.
+func publishedSerial(a *App) uint64 {
+	state := &a.computerRoutesPublished
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.serial
 }
 
 // moveListener saves a new listen port, which rebinds the listener.

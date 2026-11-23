@@ -68,21 +68,42 @@ window, and no window opens while one is unfinished. Shutdown stops the book
 before the store closes: no retry outlives it, and startup retires what it
 left unfinished.
 
+A window's invitation is redeemed and confirmed only while the book admits it:
+`Book.Admit` holds the book from its check to the store commit, and identity
+reaches it through `identity.PairingGate`, so an invitation the book refuses is
+never spent. Cancel on the Devices list goes through the book, which retires the
+window that minted the invitation. The digits the owner sees for a window's
+invitation are the window's own: the invitation's row carries a mark
+(`pairing_links.bootstrap`) written at mint, and for a marked row the owner sees
+the window's digits while the window holds the invitation, and none otherwise.
+The book keeps the last window's invitation after the window is gone, so an
+approval that committed reads confirmed, and the dialog reads the host once
+more at its deadline and after a failed approval.
+
 The address publication (`publishComputerRoutes`) owns the address each
-pairing network resolves to. A settings rebind, a Windows launcher report and
-the launcher's loss each publish right after the move, and a publication
-retires a window whose address it no longer resolves to. An open reads the
-publication once and becomes visible only if nothing was published since.
+pairing network resolves to, and records the window admitted under it with the
+publication's serial. A settings rebind, a Windows launcher report and the
+launcher's loss each publish right after the move. A publication that moves the
+serial refuses the recorded window at once (`Book.Expire`), under the lock that
+moves the serial, then closes it, which waits for the window's LAN responders to
+finish starting. An open checks that its network has an address, closes the
+previous window, runs a personal open's enrollment, and is admitted inside the
+book's open against the publication as it stands then, showing the address read
+there. A personal open's enrollment is left behind only when the network loses
+its address, or the owner's connection ends, while that enrollment runs; every
+other failure changes no enrollment, registration or membership generation.
 
 Each step of the invitation's store state is one transaction: a redemption's
 new or relabeled device row, pending session, refresh secret and the link
-naming them; a confirmation's
-link, session activation and personal membership; a cancellation's link and
-pending session. A confirmation that can no longer admit its device cancels
-the invitation instead, and the owner is told it was not completed. Startup
-retires unfinished pairings in one store transaction because an ephemeral
-comparison cannot survive a restart. Confirmed devices retain their existing
-sessions and renewal policy.
+naming them, checked against the key, user, binding and scopes the spent link
+recorded; a confirmation's link, its device's check, session activation and
+personal membership; a cancellation's link and pending session, never an
+activated one. A confirmation that can no longer admit its device, including
+one revoked or removed, cancels the invitation instead, and the owner is told
+it was not completed. Startup retires unfinished pairings in one store
+transaction because an ephemeral comparison cannot survive a restart, and
+revokes the never-activated session of a confirmed link. Confirmed devices
+retain their existing sessions and renewal policy.
 
 ## Own devices
 

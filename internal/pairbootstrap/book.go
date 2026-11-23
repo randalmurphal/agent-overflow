@@ -44,15 +44,19 @@ type Snapshot struct {
 // installs a window only once nothing is pending, so a second record can
 // never be needed while one exists.
 //
-// mu guards the fields and is never held across a callback. turn runs Open,
-// Close, Stop and a retirement one at a time, with the removal's join of the
-// window's mint in flight inside it. settle orders a removal against a
-// confirmation's check and write and against a Read, and covers nothing
-// else, so an approval waits at most for another approval's write, a Read's
-// row read or a removal's bookkeeping. Lock order: turn, settle, mu. The
-// callbacks run under settle (Confirm, Read) may use the caller's store;
-// cancel runs under turn alone. A caller must not hold a store transaction
-// while it calls into the book.
+// mu guards the fields and is never held across a callback; it is a leaf,
+// which a caller may take under its own locks (Expire). turn runs Open,
+// Close, CancelLink, Stop and a retirement one at a time, with the removal's
+// join of the window's mint in flight inside it. settle orders a removal
+// against an admitted write's check and commit (Admit), against a Read, and
+// against a reveal's publication of its link and digits, and covers nothing
+// else, so an approval waits at most for another admitted write, a Read's
+// row read, a publication or a removal's bookkeeping. Lock order: the
+// caller's identity lock (identity.Sessions' own-device lock, held around
+// Admit), turn, settle, mu. The callbacks run under settle (Admit, Read) may
+// use the caller's store and must not take that identity lock; cancel runs
+// under turn alone. A caller must not hold a store transaction while it
+// calls into the book.
 type Book struct {
 	mu      sync.Mutex
 	turn    orderLock
@@ -63,8 +67,22 @@ type Book struct {
 	// needed.
 	retryTimer *time.Timer
 	stopped    bool
-	cancel     func(linkID string) error
-	retry      time.Duration
+	// stopErr is the first Stop's answer, which every later Stop returns.
+	stopErr error
+	// last is the window opened last and the link it published, kept after
+	// the window is removed so a decision's result stays readable for it
+	// (Standing.LinkOf) until the next Open replaces it.
+	last   lastWindow
+	cancel func(linkID string) error
+	retry  time.Duration
+	// joining, when a test sets it before the CancelLink it observes, runs
+	// when that CancelLink finds a mint in flight, before it waits for it.
+	joining func()
+}
+
+// lastWindow is Book.last.
+type lastWindow struct {
+	windowID, linkID string
 }
 
 type window struct {
@@ -170,6 +188,7 @@ func (b *Book) open(mint func(route string) (Invitation, error), admit func(Snap
 	}
 	b.mu.Lock()
 	b.window = w
+	b.last = lastWindow{windowID: w.view.WindowID}
 	w.timer = time.AfterFunc(ttl, func() { _ = b.Close(w.view.WindowID) })
 	view := w.view
 	b.mu.Unlock()
@@ -190,28 +209,92 @@ func (b *Book) Close(windowID string) error {
 }
 
 // Stop retires the open window and tries its invitation's cancellation once,
-// then refuses every Open and Close and disarms every timer. A timer callback
-// already in a Close or a retry holds turn, so Stop waits for it; one that
-// takes turn after Stop finds the book stopped and does nothing. Stop answers
-// for a cancellation still unfinished, which the caller's restart recovery
-// must retire.
+// then refuses every Open, Close and CancelLink and disarms every timer. A
+// timer callback already in a Close or a retry holds turn, so Stop waits for
+// it; one that takes turn after Stop finds the book stopped and does
+// nothing. Stop answers for a cancellation still unfinished, which the
+// caller's restart recovery must retire. A later Stop touches nothing and
+// returns the first one's answer.
 func (b *Book) Stop() error {
 	b.turn.Lock()
+	defer b.turn.Unlock()
 	b.mu.Lock()
-	w := b.window
+	w, stopped, stopErr := b.window, b.stopped, b.stopErr
 	b.mu.Unlock()
+	if stopped {
+		return stopErr
+	}
 	if w != nil {
 		b.removeInTurn(w.view.WindowID)
 	}
 	err := b.retireInTurn("", true)
 	b.mu.Lock()
-	b.stopped = true
+	b.stopped, b.stopErr = true, err
 	if b.retryTimer != nil {
 		b.retryTimer.Stop()
 	}
 	b.mu.Unlock()
-	b.turn.Unlock()
 	return err
+}
+
+// Expire refuses the named window from this moment, as its expiry would:
+// its invitation is refused confirmation (Refuses), it admits no request,
+// and it reads closed. It does nothing else; the caller closes the window
+// (Close) to retire its invitation. Expire takes mu alone, so a caller may
+// hold its own locks around it. Any other id is a no-op.
+func (b *Book) Expire(windowID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.window != nil && b.window.view.WindowID == windowID {
+		b.window.view.ExpiresAtMs = 0
+	}
+}
+
+// CancelLink cancels linkID for its owner. When the open window minted it,
+// the window is removed and retired, as Close would, and its id returned so
+// the caller can end what it attached to that window. A mint in flight is
+// joined first, so a link it is about to publish is found in its window.
+// A link the book still has pending is retired as the book would. Any other
+// link is canceled by other, with the book's turn held, so its answer (an
+// already settled link included) is the caller's. The wait is bounded by
+// that one mint.
+func (b *Book) CancelLink(linkID string, other func(linkID string) error) (windowID string, err error) {
+	b.turn.Lock()
+	defer b.turn.Unlock()
+	b.mu.Lock()
+	stopped := b.stopped
+	var minting chan struct{}
+	if b.window != nil {
+		minting = b.window.minting
+	}
+	b.mu.Unlock()
+	if stopped {
+		return "", ErrStopped
+	}
+	if minting != nil {
+		if b.joining != nil {
+			b.joining()
+		}
+		<-minting
+	}
+	b.mu.Lock()
+	if b.window != nil && b.window.view.LinkID == linkID {
+		windowID = b.window.view.WindowID
+	}
+	var pending string
+	if b.pending != nil && b.pending.linkID == linkID {
+		pending = b.pending.windowID
+	}
+	b.mu.Unlock()
+	switch {
+	case windowID != "":
+		b.removeInTurn(windowID)
+		return windowID, b.retireInTurn(windowID, false)
+	case pending != "":
+		return "", b.retireInTurn(pending, false)
+	default:
+		return "", other(linkID)
+	}
 }
 
 func (b *Book) isStopped() bool {
@@ -302,7 +385,18 @@ func (b *Book) retryPending() {
 type Standing struct {
 	pending string
 	open    Snapshot
+	last    lastWindow
 	now     int64
+}
+
+// LinkOf is the link the named window published, while it is the window
+// opened last, open or not; "" for any other window or one that published
+// none.
+func (s Standing) LinkOf(windowID string) string {
+	if windowID == "" || s.last.windowID != windowID {
+		return ""
+	}
+	return s.last.linkID
 }
 
 // Refuses reports whether linkID belongs to a window that is no longer open:
@@ -328,7 +422,7 @@ func (s Standing) Window() Snapshot {
 func (b *Book) standing() Standing {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	s := Standing{now: time.Now().UnixMilli()}
+	s := Standing{now: time.Now().UnixMilli(), last: b.last}
 	if b.pending != nil {
 		s.pending = b.pending.linkID
 	}
@@ -341,16 +435,17 @@ func (b *Book) standing() Standing {
 // Refuses reports Standing.Refuses for this instant.
 func (b *Book) Refuses(linkID string) bool { return b.standing().Refuses(linkID) }
 
-// Confirm runs confirm unless the book refuses linkID. A removal waits for a
-// confirmation already running, and a confirmation never starts between a
-// removal and its cancellation.
-func (b *Book) Confirm(linkID string, confirm func() error) error {
+// Admit runs write unless the book refuses linkID, answering ErrClosed for
+// a refusal. A removal waits for a write already admitted, and no write is
+// admitted between a removal and its cancellation: the caller's redemption
+// of a window's invitation and its owner's confirmation both run here.
+func (b *Book) Admit(linkID string, write func() error) error {
 	b.settle.Lock()
 	defer b.settle.Unlock()
 	if b.Refuses(linkID) {
 		return ErrClosed
 	}
-	return confirm()
+	return write()
 }
 
 // Read hands read the book's standing and lets it read the caller's records
@@ -453,6 +548,12 @@ func (b *Book) Reveal(id string, r Reveal, route string) (SealedInvitation, erro
 			sealed = SealedInvitation{Nonce: encode(nonce), Ciphertext: encode(aead.Seal(nil, nonce, plain, transcript))}
 		}
 	}
+	// The publication of the link and its digits takes settle, after the
+	// mint and its store write are done and for the in-memory update alone,
+	// so a Read never sees the link's store row without the window's digits
+	// for it: a redemption needs the sealed invitation, which is returned
+	// only after this.
+	b.settle.Lock()
 	b.mu.Lock()
 	current := b.window == w && time.Now().UnixMilli() < w.view.ExpiresAtMs
 	if invite.LinkID != "" {
@@ -463,6 +564,9 @@ func (b *Book) Reveal(id string, r Reveal, route string) (SealedInvitation, erro
 		req.sealed = &sealed
 		req.key = nil
 		w.view.Label, w.view.Platform, w.view.VerificationNumber, w.view.LinkID = r.Label, r.Platform, sas, invite.LinkID
+		if b.last.windowID == w.view.WindowID {
+			b.last.linkID = invite.LinkID
+		}
 	case invite.LinkID != "":
 		// Never published, so refused from here until its cancellation is
 		// durable. The window's removal retires it: a removal during the
@@ -473,6 +577,7 @@ func (b *Book) Reveal(id string, r Reveal, route string) (SealedInvitation, erro
 	w.minting = nil
 	close(minting)
 	b.mu.Unlock()
+	b.settle.Unlock()
 	if current && err == nil {
 		return sealed, nil
 	}

@@ -277,6 +277,102 @@ it('opens discovery pairing for another computer while preserving QR pairing for
   expect(mint).toHaveBeenCalledExactlyOnceWith('phone', 'full', 'lan');
 });
 
+// Each completion applies only to the opening and the link it started in.
+// The tests close and reopen the modal between a call and its reply, then
+// release the reply.
+describe('<PairDeviceModal> across a reopen', () => {
+  const PROPS = { remoteReachable: true, canEnrollOwnDevice: true, onChanged: () => {} };
+  beforeEach(() => {
+    resetBindingMocks();
+    __setTransportHelloForTest(LEGACY_HELLO);
+  });
+  afterEach(() => {
+    resetBindingMocks();
+    __setTransportHelloForTest(null);
+    vi.useRealTimers();
+  });
+
+  async function reopen(view: ReturnType<typeof renderModal>, onClose: () => void = () => {}): Promise<void> {
+    await view.rerender({ ...PROPS, open: false, onClose });
+    await view.rerender({ ...PROPS, open: true, onClose });
+    await view.findByRole('button', { name: /Phone or tablet/ });
+  }
+
+  async function verifyStage(view: ReturnType<typeof renderModal>): Promise<void> {
+    await fireEvent.click(await view.findByRole('button', { name: /Phone or tablet/ }));
+    await view.findByLabelText('Pairing link');
+    await vi.advanceTimersByTimeAsync(2_100);
+    await view.findByText('135 791');
+  }
+
+  it('leaves a link minted for an earlier opening on the pending row', async () => {
+    vi.useFakeTimers();
+    let resolve!: (invite: typeof INVITE) => void;
+    setBindingMock('MintDevicePairing', () => new Promise<typeof INVITE>((done) => { resolve = done; }));
+    const poll = setBindingMock('DevicePairingStatus', async () => ({ state: 'pending', expiresAtMs: INVITE.expiresAtMs }));
+    const changed = vi.fn();
+    const view = renderModal({ onChanged: changed });
+    await fireEvent.click(await view.findByRole('button', { name: /Phone or tablet/ }));
+    await reopen(view);
+    resolve(INVITE);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(view.queryByLabelText('Pairing link')).toBeNull();
+    expect(view.getByRole('button', { name: /Phone or tablet/ })).toBeEnabled();
+    expect(poll).not.toHaveBeenCalled();
+  });
+
+  it('does not complete a reopened modal with an approval sent before it closed', async () => {
+    vi.useFakeTimers();
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    setBindingMock('DevicePairingStatus', async () => ({ state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs }));
+    let resolve!: () => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((done) => { resolve = done; }));
+    const view = renderModal();
+    await verifyStage(view);
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    await reopen(view);
+    resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(view.queryByText('Device paired')).toBeNull();
+    expect(view.getByRole('button', { name: /Phone or tablet/ })).toBeEnabled();
+  });
+
+  it('does not close a reopened modal with a cancellation sent before it closed', async () => {
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    setBindingMock('DevicePairingStatus', async () => ({ state: 'pending', expiresAtMs: INVITE.expiresAtMs }));
+    let resolve!: () => void;
+    setBindingMock('CancelDevicePairing', () => new Promise<void>((done) => { resolve = done; }));
+    const onClose = vi.fn();
+    const view = renderModal({ onClose });
+    await fireEvent.click(await view.findByRole('button', { name: /Phone or tablet/ }));
+    await view.findByLabelText('Pairing link');
+    await fireEvent.click(view.getByRole('button', { name: 'Cancel link' }));
+    await reopen(view, onClose);
+    resolve();
+    await new Promise((done) => setTimeout(done, 0));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('does not move a newer link to the comparison with a poll of the previous one', async () => {
+    vi.useFakeTimers();
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    let resolve!: (status: { state: string; verificationNumber: string; expiresAtMs: number }) => void;
+    const poll = setBindingMock('DevicePairingStatus', async () => ({ state: 'pending', expiresAtMs: INVITE.expiresAtMs }));
+    poll.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const view = renderModal();
+    await fireEvent.click(await view.findByRole('button', { name: /Phone or tablet/ }));
+    await view.findByLabelText('Pairing link');
+    await vi.advanceTimersByTimeAsync(2_100);
+    await reopen(view);
+    await fireEvent.click(view.getByRole('button', { name: /Phone or tablet/ }));
+    await view.findByLabelText('Pairing link');
+    resolve({ state: 'redeemed', verificationNumber: '999 999', expiresAtMs: INVITE.expiresAtMs });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(view.queryByText('999 999')).toBeNull();
+    expect(view.getByLabelText('Pairing link')).toBeTruthy();
+  });
+});
+
 describe('<PairDeviceModal> across a hello refresh', () => {
   beforeEach(() => resetBindingMocks());
   afterEach(() => {

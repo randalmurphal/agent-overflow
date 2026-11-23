@@ -244,9 +244,9 @@ func TestVerificationNumberIsKeyedToTheDeviceThatRedeemed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PairingLink: %v", err)
 	}
-	shown, err := sessions.PairingNumber(read)
+	shown, err := sessions.VerificationNumber(read.ID, read.KeyThumbprint)
 	if err != nil {
-		t.Fatalf("PairingNumber: %v", err)
+		t.Fatalf("VerificationNumber: %v", err)
 	}
 	if shown != redemption.VerificationNumber {
 		t.Fatalf("minting surface shows %q, device shows %q; the two must agree",

@@ -240,8 +240,9 @@ async function stageFixtures(rig: Sandbox, s: Staged): Promise<void> {
     WHERE thread_id = '${s.threadId}' AND kind = 'user_text' AND json_extract(meta, '$.pendingFlush') = 1`);
   const now = Date.now();
   const later = now + 30 * 86_400_000;
-  const session = (id: string, expires: number) => `INSERT INTO sessions (id, user_id, device_id, binding_class, scopes, signing_key_id, created_at, expires_at)
-    VALUES ('${id}', '${local.user}', '${local.device}', 'device-bound', '[]', '${local.key}', ${now}, ${expires});`;
+  const session = (id: string, expires: number, activated: number | null = null) => `INSERT INTO sessions
+    (id, user_id, device_id, binding_class, scopes, signing_key_id, created_at, expires_at, activated_at)
+    VALUES ('${id}', '${local.user}', '${local.device}', 'device-bound', '[]', '${local.key}', ${now}, ${expires}, ${activated ?? 'NULL'});`;
   const link = (id: string, fields: string, values: string) => `INSERT INTO pairing_links
     (id, user_id, token_hash, scopes, binding_class, device_class, created_at, expires_at${fields})
     VALUES ('${id}', '${local.user}', randomblob(32), '[]', 'device-bound', 'desktop', ${now}, ${later}${values});`;
@@ -369,8 +370,13 @@ async function stageFixtures(rig: Sandbox, s: Staged): Promise<void> {
     -- own-admission-members and own-admission-revocations: two approved
     -- own-device admissions the process did not finish, one it can finish
     -- (an existing member at an older generation) and one it must refuse.
-    ${session('sess-member', later)}
-    ${session('sess-refused', later)}
+    -- A confirmation activates its session in the same write.
+    ${session('sess-member', later, now)}
+    ${session('sess-refused', later, now)}
+    -- confirmed-pending-sessions: a confirmed link whose session an older
+    -- build stopped before activating.
+    ${session('sess-confirmed-pending', later)}
+    ${link('pl-confirmed-pending', ', device_id, session_id, redeemed_at, confirmed_at', `, '${local.device}', 'sess-confirmed-pending', ${now}, ${now}`)}
     INSERT INTO own_devices (key_thumbprint, member, generation, removed)
       VALUES ('${MEMBER_KEY}', '{"keyThumbprint":"${MEMBER_KEY}","name":"Laptop","routes":[],"generation":1,"removed":false}', 1, 0);
     ${link('pl-member', ', device_id, key_thumbprint, session_id, confirmed_at, purpose, member_generation',
@@ -483,6 +489,7 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       'local-session-scopes sessions': 1,
       'own-admission-members own_devices': 1,
       'own-admission-revocations sessions': 1,
+      'confirmed-pending-sessions sessions': 1,
       'expired-sessions sessions': 1,
       'expired-refresh-secrets refresh_secrets': 1,
       'expired-pairing-links pairing_links': 1,
@@ -556,6 +563,7 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       { rule: 'payloads-of-removed-items', table: 'payloads', sql: `INSERT INTO payloads SELECT thread_id, id, 'edited', meta, data, created_at, preview_spans, spans FROM snap.payloads WHERE id = 'pl-queued'` },
       { rule: 'own-admission-members', table: 'own_devices', sql: `UPDATE own_devices SET removed = 1 WHERE key_thumbprint = '${MEMBER_KEY}'` },
       { rule: 'own-admission-revocations', table: 'sessions', sql: `UPDATE sessions SET scopes = '["edited"]' WHERE id = 'sess-refused'` },
+      { rule: 'confirmed-pending-sessions', table: 'sessions', sql: `UPDATE sessions SET scopes = '["edited"]' WHERE id = 'sess-confirmed-pending'` },
       { rule: 'expired-sessions', table: 'sessions', sql: `DELETE FROM sessions WHERE id = 'sess-live'` },
       { rule: 'expired-refresh-secrets', table: 'refresh_secrets', sql: `DELETE FROM refresh_secrets WHERE id = 'rs-live'` },
       { rule: 'expired-pairing-links', table: 'pairing_links', sql: `DELETE FROM pairing_links WHERE id = 'pl-member'` },

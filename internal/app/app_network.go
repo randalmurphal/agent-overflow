@@ -217,8 +217,8 @@ func (a *App) applyNetworkSettings(ctx context.Context, s network.Settings) (net
 		a.invalidateNativeNetwork()
 	}
 	// Published as soon as the listener moved, before any follow-up work: a
-	// pairing window showing the old address is retired here, and an open
-	// that read the old address is refused.
+	// pairing window admitted under the old publication is retired here, and
+	// an open still in flight is admitted under the new one.
 	a.publishComputerRoutes()
 
 	// Keep the transport-port cache naming where this listener actually

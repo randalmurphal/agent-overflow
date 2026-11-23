@@ -44,6 +44,10 @@ const refreshHashDomain = "agent-overflow/refresh-secret/v1\x00"
 // from a teardown.
 const reuseDetectedDetail = "reuse-detected"
 
+// errRenewalNotReady is what a renewal whose new credential cannot be signed
+// hands the rotation, which refuses with it where it would have committed.
+var errRenewalNotReady = errors.New("identity: the renewal's credential cannot be signed")
+
 // TokenSet is one issuance: the short-lived access credential and the
 // single-use secret that renews it.
 //
@@ -151,8 +155,7 @@ func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 	}
 	if !recoverable {
 		if held.Spent() {
-			s.revokeFamilyForReuse(held, req.Peer)
-			return TokenSet{}, ReasonRevokedSession
+			return s.revokeFamilyForReuse(held, req.Peer)
 		}
 		if held.ExpiresAt <= now {
 			s.audit(store.AuthAuditEntry{Event: string(AuditRefreshRefused), Outcome: store.AuthAuditOutcomeRefused, Reason: ReasonExpiredSession.Code(), SessionID: held.SessionID, Peer: req.Peer})
@@ -173,26 +176,32 @@ func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 	// Everything the new credential needs is resolved before the rotation
 	// commits: a rotation that committed and then failed to sign would leave
 	// the device holding a spent secret, which its next renewal presents as
-	// reuse.
-	signer, err := s.accessSignerFor(session, device)
-	if errors.Is(err, store.ErrDeviceRevoked) {
-		if _, reason := s.confirmedSession(session.ID, now); reason.Refused() {
-			return TokenSet{}, reason
-		}
-	}
-	if err != nil {
-		return s.refreshUnavailable("prepare renewal", err)
+	// reuse. A signer that is not ready does not decide the answer, though:
+	// the rotation still classifies the presentation (reuse, superseded,
+	// expired) and refuses with the signer's failure only where it would
+	// have committed.
+	signer, signErr := s.accessSignerFor(session, device)
+	var notReady error
+	if signErr != nil {
+		notReady = errRenewalNotReady
 	}
 	policy := RenewablePolicyFor(DeviceClass(device.Class))
 	generation := s.generationNow()
 	rotated, err := s.store.RotateRefreshSecret(context.Background(), store.RefreshRotation{
 		SessionID: session.ID, DeviceID: session.DeviceID, OldHash: digest[:], NextHash: nextDigest[:],
 		Now: now, AccessUntil: now + policy.Access.Milliseconds(), RefreshUntil: now + policy.Refresh.Milliseconds(), Recoverable: recoverable,
+		NotReady: notReady,
 	})
 	switch {
+	case errors.Is(err, errRenewalNotReady):
+		if errors.Is(signErr, store.ErrDeviceRevoked) {
+			if _, reason := s.confirmedSession(session.ID, now); reason.Refused() {
+				return TokenSet{}, reason
+			}
+		}
+		return s.refreshUnavailable("prepare renewal", signErr)
 	case errors.Is(err, store.ErrRefreshReuse):
-		s.revokeFamilyForReuse(held, req.Peer)
-		return TokenSet{}, ReasonRevokedSession
+		return s.revokeFamilyForReuse(held, req.Peer)
 	case errors.Is(err, store.ErrRefreshSuperseded):
 		return TokenSet{}, ReasonRefreshSuperseded
 	case errors.Is(err, store.ErrRefreshSuccessorTaken):
@@ -224,21 +233,24 @@ func (s *Sessions) refreshUnavailable(step string, err error) (TokenSet, Reason)
 	return TokenSet{}, ReasonTemporarilyUnavailable
 }
 
-func (s *Sessions) revokeFamilyForReuse(secret store.RefreshSecret, peer string) {
-	now := s.now().UnixMilli()
-	outstanding, err := s.store.SpendRefreshSecretsForSession(secret.SessionID, now, reuseDetectedDetail)
+// revokeFamilyForReuse answers a detected reuse: the family's outstanding
+// secrets are spent and its session revoked in one store transaction, and
+// only a committed end is audited and torn down at runtime. A storage
+// failure answers temporarily unavailable and changes nothing, so the next
+// presentation of the same spent secret detects the reuse again.
+func (s *Sessions) revokeFamilyForReuse(secret store.RefreshSecret, peer string) (TokenSet, Reason) {
+	ended, err := s.store.EndRefreshFamily(secret.SessionID, s.now().UnixMilli(), reuseDetectedDetail)
 	if err != nil {
-		log.Printf("identity: spend refresh family %s: %v", secret.SessionID, err)
+		return s.refreshUnavailable("end the refresh family of session "+secret.SessionID+" after reuse", err)
 	}
-	if _, err := s.RevokeSession(secret.SessionID); err != nil {
-		log.Printf("identity: revoke session %s after refresh reuse: %v", secret.SessionID, err)
-	}
+	s.sessionRevoked(secret.SessionID, ended.Revoked, ended.Released)
 	s.audit(store.AuthAuditEntry{
 		Event: string(AuditRefreshReuseDetected), Outcome: store.AuthAuditOutcomeRefused,
 		Reason: ReasonRevokedSession.Code(), SessionID: secret.SessionID, Peer: peer,
 		Detail: fmt.Sprintf("spent secret %s presented again; %d outstanding secrets invalidated",
-			secret.ID, outstanding),
+			secret.ID, ended.Outstanding),
 	})
+	return TokenSet{}, ReasonRevokedSession
 }
 
 // CheckDeviceProof enforces "refresh binds to the device key on every

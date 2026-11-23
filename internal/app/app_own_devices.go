@@ -286,7 +286,7 @@ func (a *App) MintOwnDevicePairingOnNetwork(ctx context.Context, deviceClass, ne
 	if e := a.enableOwnDevices(); e != nil {
 		return PairingInvite{}, e
 	}
-	return a.mintDevicePairingPurpose(deviceClass, "full", networkChoice, "own-device")
+	return a.mintDevicePairingPurpose(deviceClass, "full", networkChoice, "own-device", false)
 }
 
 //ao:scope access:admin
@@ -512,7 +512,7 @@ func (a *App) MintOwnDevicePairing(ctx context.Context, deviceClass string) (Pai
 	if e := a.enableOwnDevices(); e != nil {
 		return PairingInvite{}, e
 	}
-	return a.mintDevicePairingPurpose(deviceClass, "full", "", "own-device")
+	return a.mintDevicePairingPurpose(deviceClass, "full", "", "own-device", false)
 }
 
 func (a *App) mergeOwnDevicesAs(caller OwnDeviceMember, members []OwnDeviceMember) (bool, error) {

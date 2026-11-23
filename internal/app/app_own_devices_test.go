@@ -60,7 +60,7 @@ func TestPersonalPhoneEnrollmentReadsOwnCatalogOverRealTLS(t *testing.T) {
 	if e = b.app.enableOwnDevices(); e != nil {
 		t.Fatal(e)
 	}
-	invite, e := b.app.mintDevicePairingPurpose("phone", "full", "", "own-device")
+	invite, e := b.app.mintDevicePairingPurpose("phone", "full", "", "own-device", false)
 	if e != nil {
 		t.Fatal(e)
 	}

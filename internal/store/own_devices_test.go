@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -13,19 +14,15 @@ func approvedOwnPair(t *testing.T) (*Store, PairingLink) {
 	t.Helper()
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
-	session := newTestSession("own-session", owner, device, key, 9000)
-	session.ActivatedAt = 0
+	if e := s.SetDeviceKeyThumbprint(device.ID, ownKey()); e != nil {
+		t.Fatal(e)
+	}
 	link := PairingLink{ID: "own-link", UserID: owner.ID, Scopes: []string{"threads:read"}, BindingClass: "device-bound", DeviceClass: "phone", Purpose: "own-device", CreatedAt: 1000, ExpiresAt: 9000}
 	if e := s.CreatePairingLink(link, []byte("hash-own")); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := s.RedeemPairingLink([]byte("hash-own"), 2000, ownKey()); e != nil {
-		t.Fatal(e)
-	}
-	if e := s.CompletePairingRedemption(PairingRedemption{LinkID: link.ID, DeviceSession: DeviceSession{Device: device, Session: session}}); e != nil {
-		t.Fatal(e)
-	}
-	confirmed, e := s.ConfirmRedeemedPairing(link.ID, 2100, 9000)
+	redeemOnto(t, s, []byte("hash-own"), 2000, newTestSession("own-session", owner, device, key, 9000))
+	confirmed, e := s.ConfirmRedeemedPairing(link.ID, 2100, accessUntil(9000))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -86,5 +83,110 @@ func TestOwnMembershipAndSessionRevocationAreAtomic(t *testing.T) {
 	}
 	if _, e = s.OwnDeviceForSession(link.SessionID); !errors.Is(e, sql.ErrNoRows) {
 		t.Fatal("removed membership remained admitted", e)
+	}
+}
+
+// Removing this serving host from its group cancels its unconfirmed
+// personal invitation with the pending session its redemption created, in
+// the same transaction, and reports that session for teardown.
+func TestRemovingThisHostCancelsItsPersonalInvitationWithItsPendingSession(t *testing.T) {
+	s, owner, device := seedOwnerDevice(t)
+	key := seedSigningKey(t, s)
+	link := PairingLink{ID: "own-pending", UserID: owner.ID, Scopes: []string{"threads:read"}, BindingClass: "device-bound", DeviceClass: "desktop", Purpose: "own-device", CreatedAt: 1000, ExpiresAt: 9000}
+	if err := s.CreatePairingLink(link, []byte("hash-own-pending")); err != nil {
+		t.Fatal(err)
+	}
+	_, pending := redeemOnto(t, s, []byte("hash-own-pending"), 2000, newTestSession("sess-own-pending", owner, device, key, 9000))
+
+	const backendID = "93fd7522-831e-4401-8aa0-6dca4e65bcb0"
+	hostKey := make([]byte, 32)
+	hostKey[0] = 3
+	host := owndevices.Member{KeyThumbprint: base64.RawURLEncoding.EncodeToString(hostKey), BackendID: backendID, Generation: 1}
+	if _, _, _, err := s.MergeOwnDevices([]owndevices.Member{host}, 2100, backendID); err != nil {
+		t.Fatal(err)
+	}
+	host.Removed = true
+	_, revoked, _, err := s.MergeOwnDevices([]owndevices.Member{host}, 2200, backendID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(revoked, pending.ID) {
+		t.Fatalf("removing this host revoked %v, want the invitation's pending session %s", revoked, pending.ID)
+	}
+	if got, err := s.GetPairingLink(link.ID); err != nil || got.CanceledAt != 2200 {
+		t.Fatalf("the personal invitation = %+v (%v), want canceled", got, err)
+	}
+	if session, err := s.GetSession(pending.ID); err != nil || session.RevokedAt != 2200 {
+		t.Fatalf("the invitation's pending session = %+v (%v), want revoked with it", session, err)
+	}
+}
+
+// A cancellation never ends an activated session: an introduction admitted
+// without its device ever renewing is canceled, and its session stays as the
+// group's own rules leave it.
+func TestCancelingAnAdmittedIntroductionKeepsItsSession(t *testing.T) {
+	s, owner, device := seedOwnerDevice(t)
+	key := seedSigningKey(t, s)
+	link := PairingLink{ID: "intro", UserID: owner.ID, Scopes: []string{"threads:read"}, BindingClass: "device-bound", DeviceClass: "desktop", Purpose: "own-introduction", CreatedAt: 1000, ExpiresAt: 9000}
+	if err := s.CreatePairingLink(link, []byte("hash-intro")); err != nil {
+		t.Fatal(err)
+	}
+	_, session := redeemOnto(t, s, []byte("hash-intro"), 2000, newTestSession("sess-intro", owner, device, key, 9000))
+	mustExec(t, s.db, `UPDATE sessions SET activated_at = 2050 WHERE id = ?`, session.ID)
+	mustExec(t, s.db, `UPDATE pairing_links SET confirmed_at = 2050 WHERE id = ?`, link.ID)
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	canceled, err := cancelPairingLinksTx(tx, 2100, `id = ?`, link.ID)
+	if err != nil || len(canceled.links) != 1 || len(canceled.revoked) != 0 {
+		t.Fatalf("canceling the admitted introduction = %+v (%v), want it canceled and no session revoked", canceled, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if after, err := s.GetSession(session.ID); err != nil || after.RevokedAt != 0 {
+		t.Fatalf("the admitted introduction's session = %+v (%v), want it live", after, err)
+	}
+}
+
+// A confirmed link whose session an older build never activated is settled
+// at startup: its session is revoked, the link stays confirmed, and no
+// personal admission is left to finish for it, whether or not the older
+// build had written the membership.
+func TestStartupRevokesTheUnactivatedSessionOfAConfirmedLink(t *testing.T) {
+	for name, withMembership := range map[string]bool{"ordinary": false, "personal with its membership": true} {
+		t.Run(name, func(t *testing.T) { startupRevokesUnactivatedSession(t, withMembership) })
+	}
+}
+
+func startupRevokesUnactivatedSession(t *testing.T, withMembership bool) {
+	s, owner, device := seedOwnerDevice(t)
+	key := seedSigningKey(t, s)
+	link := PairingLink{ID: "confirmed-pending", UserID: owner.ID, Scopes: []string{"threads:read"}, BindingClass: "device-bound", DeviceClass: "desktop", Purpose: "own-device", MemberGeneration: 1, CreatedAt: 1000, ExpiresAt: 9000}
+	if err := s.CreatePairingLink(link, []byte("hash-confirmed-pending")); err != nil {
+		t.Fatal(err)
+	}
+	_, pending := redeemOnto(t, s, []byte("hash-confirmed-pending"), 2000, newTestSession("sess-confirmed-pending", owner, device, key, 9000))
+	// What an older build left when it stopped between the confirmation and
+	// the activation.
+	mustExec(t, s.db, `UPDATE pairing_links SET confirmed_at = 2100 WHERE id = ?`, link.ID)
+	if withMembership {
+		mustExec(t, s.db, `INSERT INTO own_devices (key_thumbprint, member, generation, removed) VALUES (?, '{}', 1, 0)`, ownKey())
+		mustExec(t, s.db, `INSERT INTO own_device_sessions (session_id, key_thumbprint, generation) VALUES (?, ?, 1)`, pending.ID, ownKey())
+	}
+	if err := s.RetirePendingPairings(3000); err != nil {
+		t.Fatal(err)
+	}
+	if session, err := s.GetSession(pending.ID); err != nil || session.RevokedAt != 3000 {
+		t.Fatalf("the confirmed link's unactivated session = %+v (%v), want revoked", session, err)
+	}
+	if got, err := s.GetPairingLink(link.ID); err != nil || got.ConfirmedAt != 2100 || got.CanceledAt != 0 {
+		t.Fatalf("the confirmed link = %+v (%v), want it confirmed and uncanceled", got, err)
+	}
+	incomplete, err := s.IncompleteOwnAdmissions()
+	if err != nil || len(incomplete) != 0 {
+		t.Fatalf("admissions left to finish = %+v (%v), want none", incomplete, err)
 	}
 }

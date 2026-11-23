@@ -105,21 +105,32 @@ func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID stri
 		}
 		hostingRemoved = removed && !active
 	}
+	var canceled []pairingCancellations
 	if hostingRemoved {
-		if _, e = tx.Exec(`UPDATE pairing_links SET canceled_at=? WHERE purpose='own-device' AND confirmed_at IS NULL AND canceled_at IS NULL`, at); e != nil {
+		personal, e := cancelPairingLinksTx(tx, at, `purpose='own-device' AND confirmed_at IS NULL`)
+		if e != nil {
 			return false, nil, nil, e
 		}
+		canceled = append(canceled, personal)
 	}
-	_, e = tx.Exec(`UPDATE pairing_links SET canceled_at=? WHERE purpose='own-introduction' AND canceled_at IS NULL AND (? OR sponsor_key IN(SELECT key_thumbprint FROM own_devices WHERE removed=1) OR EXISTS(SELECT 1 FROM own_devices d WHERE d.key_thumbprint=expected_key AND (d.removed=1 OR d.generation<>member_generation))) AND NOT EXISTS(SELECT 1 FROM refresh_secrets r WHERE r.session_id=pairing_links.session_id AND r.consumed_at IS NOT NULL)`, at, hostingRemoved)
+	// An introduction its device never renewed with (unredeemed, or admitted
+	// without a first renewal) is withdrawn with its sponsor or its target.
+	// An admitted one keeps its session here unless the statement below
+	// ends it.
+	introductions, e := cancelPairingLinksTx(tx, at, `purpose='own-introduction' AND (? OR sponsor_key IN(SELECT key_thumbprint FROM own_devices WHERE removed=1) OR EXISTS(SELECT 1 FROM own_devices d WHERE d.key_thumbprint=expected_key AND (d.removed=1 OR d.generation<>member_generation))) AND NOT EXISTS(SELECT 1 FROM refresh_secrets r WHERE r.session_id=pairing_links.session_id AND r.consumed_at IS NOT NULL)`, hostingRemoved)
 	if e != nil {
 		return false, nil, nil, e
 	}
+	canceled = append(canceled, introductions)
 	ids, released, e = endSessionsTx(tx, revokeSessions, at, nil, `id IN (SELECT o.session_id FROM own_device_sessions o JOIN own_devices d ON d.key_thumbprint=o.key_thumbprint WHERE ? OR d.removed=1 OR d.generation<>o.generation)`, hostingRemoved)
 	if e != nil {
 		return false, nil, nil, e
 	}
 	if e = tx.Commit(); e != nil {
 		return false, nil, nil, e
+	}
+	for _, c := range canceled {
+		ids, released = append(ids, c.revoked...), append(released, c.released...)
 	}
 	return true, ids, released, nil
 }
@@ -269,7 +280,7 @@ func (s *Store) RetireOwnIntroductions(key string, at int64) (ids, released []st
 		return nil, nil, e
 	}
 	defer tx.Rollback()
-	_, e = tx.Exec(`UPDATE pairing_links SET canceled_at=? WHERE purpose='own-introduction' AND expected_key=? AND canceled_at IS NULL AND NOT EXISTS(SELECT 1 FROM refresh_secrets r WHERE r.session_id=pairing_links.session_id AND r.consumed_at IS NOT NULL)`, at, key)
+	canceled, e := cancelPairingLinksTx(tx, at, `purpose='own-introduction' AND expected_key=? AND NOT EXISTS(SELECT 1 FROM refresh_secrets r WHERE r.session_id=pairing_links.session_id AND r.consumed_at IS NOT NULL)`, key)
 	if e != nil {
 		return nil, nil, e
 	}
@@ -280,7 +291,7 @@ func (s *Store) RetireOwnIntroductions(key string, at int64) (ids, released []st
 	if e = tx.Commit(); e != nil {
 		return nil, nil, e
 	}
-	return ids, released, nil
+	return append(ids, canceled.revoked...), append(released, canceled.released...), nil
 }
 
 // prepareOwnPairing freezes the generation authorized by this human approval.

@@ -513,6 +513,12 @@ export const recoveryRules: RecoveryRule[] = [
     columns: ['revoked_at'], to: 'b.revoked_at IS NOT NULL',
   },
   {
+    name: 'confirmed-pending-sessions', writer: 'identity.Bootstrap (store.RetirePendingPairings)', table: 'sessions',
+    rows: `s.activated_at IS NULL AND s.revoked_at IS NULL
+      AND s.id IN (SELECT l.session_id FROM mig.pairing_links l WHERE l.confirmed_at IS NOT NULL AND l.session_id <> '')`,
+    columns: ['revoked_at'], to: 'b.revoked_at IS NOT NULL',
+  },
+  {
     name: 'expired-sessions', writer: 'identity.(*Sessions).PruneCredentials (store.DeleteSessionsExpiredBefore)', table: 'sessions',
     rows: `s.expires_at < ${prunedBefore}
       AND NOT EXISTS (SELECT 1 FROM mig.refresh_secrets r WHERE r.session_id = s.id AND r.expires_at >= ${prunedBefore})`,
@@ -706,9 +712,9 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'devices', columns: ['passkey_credential_id', 'last_seen_at', 'revoked_at'], values: { class: ['browser', 'phone', 'cli', 'backend-peer'] }, reason: "rows the pairing flow writes for a browser, phone, CLI or a peer backend another computer introduced, and a revoked or passkey device; the top-up pairs one computer of the person's own" },
   { table: 'own_devices', values: { removed: [1] }, reason: "a paired computer of the person's own they removed; the top-up keeps its pairing" },
   {
-    table: 'pairing_links', columns: ['canceled_at', 'expected_key', 'sponsor_key'],
-    values: { binding_class: ['loopback-only', 'public'], device_class: ['browser', 'phone', 'cli', 'backend-peer'], purpose: ['', 'own-introduction'] },
-    reason: "a link minted for a browser, phone, CLI or peer backend, a canceled link and an introduction one computer sponsors for another; the top-up redeems one link between two computers of the person's own",
+    table: 'pairing_links', columns: ['canceled_at', 'expected_key', 'sponsor_key', 'bootstrap'],
+    values: { binding_class: ['loopback-only', 'public'], device_class: ['browser', 'phone', 'cli', 'backend-peer'], purpose: ['', 'own-introduction'], bootstrap: [1] },
+    reason: "a link minted for a browser, phone, CLI or peer backend, a canceled link, an introduction one computer sponsors for another and a computer pairing window's invitation (v164); the top-up redeems one link between two computers of the person's own",
   },
   { table: 'passkeys', reason: 'a WebAuthn registration from a browser' },
   { table: 'push_sender', reason: 'the push credential a paired phone registers' },

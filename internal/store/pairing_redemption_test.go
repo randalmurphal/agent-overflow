@@ -9,48 +9,90 @@ import (
 	"agent-overflow/internal/owndevices"
 )
 
-// spentLink seeds a link redeemed at 2000 and the redemption that would
-// complete it: the owner's existing device, relabeled, and its pending
-// session.
+// spentLink seeds a link redeemed at 2000 by the owner's existing device,
+// whose key is "thumb", and the redemption that would complete it on the
+// link's terms: that device, relabeled, and its pending session.
 func spentLink(t *testing.T) (*Store, PairingRedemption) {
+	t.Helper()
+	return spentLinkFor(t, false)
+}
+
+// spentLinkFor is spentLink, spent instead by a key this store has never
+// seen when newDevice is set: the redemption writes a new device row.
+func spentLinkFor(t *testing.T, newDevice bool) (*Store, PairingRedemption) {
 	t.Helper()
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
-	seedPairingLink(t, s, owner, []byte("hash-1"), 9000)
-	if _, err := s.RedeemPairingLink([]byte("hash-1"), 2000, "thumb"); err != nil {
-		t.Fatalf("RedeemPairingLink: %v", err)
-	}
-	pending := newTestSession("sess-pending", owner, device, key, 9000)
-	pending.ActivatedAt = 0
-	relabeled := device
-	relabeled.Label, relabeled.Platform = "Renamed by the redemption", "windows"
-	return s, PairingRedemption{LinkID: "link-1", DeviceSession: DeviceSession{Device: relabeled, Session: pending,
-		Refresh: RefreshGrant{Hash: []byte("refresh-1"), CreatedAt: 2000, ExpiresAt: 90000}}}
-}
-
-// onNewDevice is r redeemed by a key this store has never seen: a new
-// device row.
-func onNewDevice(t *testing.T, r PairingRedemption) PairingRedemption {
-	t.Helper()
-	device, err := NewPairedDevice(r.Session.UserID, "New laptop", "desktop", "linux", "thumb-new", "bearer")
-	if err != nil {
+	if err := s.SetDeviceKeyThumbprint(device.ID, "thumb"); err != nil {
 		t.Fatal(err)
 	}
-	r.Device, r.NewDevice, r.Session.DeviceID = device, true, device.ID
-	return r
+	device.KeyThumbprint = "thumb"
+	link := seedPairingLink(t, s, owner, []byte("hash-1"), 9000)
+	redeemed := device
+	redeemed.Label, redeemed.Platform = "Renamed by the redemption", "windows"
+	if newDevice {
+		var err error
+		if redeemed, err = NewPairedDevice(owner.ID, "New laptop", "desktop", "linux", "thumb-new", "bearer"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.RedeemPairingLink([]byte("hash-1"), 2000, redeemed.KeyThumbprint); err != nil {
+		t.Fatalf("RedeemPairingLink: %v", err)
+	}
+	pending := newTestSession("sess-pending", owner, redeemed, key, 9000)
+	pending.ActivatedAt, pending.Scopes = 0, link.Scopes
+	return s, PairingRedemption{LinkID: "link-1", DeviceSession: DeviceSession{Device: redeemed, NewDevice: newDevice, Session: pending,
+		Refresh: RefreshGrant{Hash: []byte("refresh-1"), CreatedAt: 2000, ExpiresAt: 90000}}}
 }
 
 // eachDevice runs test for a redemption on the existing device and on a new
 // one.
 func eachDevice(t *testing.T, test func(t *testing.T, s *Store, r PairingRedemption)) {
-	t.Run("existing device", func(t *testing.T) {
-		s, r := spentLink(t)
-		test(t, s, r)
-	})
-	t.Run("new device", func(t *testing.T) {
-		s, r := spentLink(t)
-		test(t, s, onNewDevice(t, r))
-	})
+	for _, newDevice := range []bool{false, true} {
+		name := "existing device"
+		if newDevice {
+			name = "new device"
+		}
+		t.Run(name, func(t *testing.T) {
+			s, r := spentLinkFor(t, newDevice)
+			test(t, s, r)
+		})
+	}
+}
+
+// A redemption is held to what its spent link recorded: a device or session
+// that is not the one the link admits writes nothing.
+func TestCompletePairingRedemptionRefusesTermsItsLinkDidNotRecord(t *testing.T) {
+	for _, mismatch := range []struct {
+		name   string
+		change func(r *PairingRedemption)
+	}{
+		{"a device holding another key", func(r *PairingRedemption) {
+			if r.NewDevice {
+				r.Device.KeyThumbprint = "thumb-stranger"
+				return
+			}
+			// The existing device is the one the link was spent with; the
+			// redemption names a different existing row instead.
+			r.Device.ID, r.Session.DeviceID = "dev-other", "dev-other"
+		}},
+		{"a session of another account", func(r *PairingRedemption) { r.Session.UserID = "user-other" }},
+		{"a session with another binding", func(r *PairingRedemption) { r.Session.BindingClass = "public" }},
+		{"a session with other scopes", func(r *PairingRedemption) { r.Session.Scopes = []string{"threads:read"} }},
+	} {
+		t.Run(mismatch.name, func(t *testing.T) {
+			eachDevice(t, func(t *testing.T, s *Store, r PairingRedemption) {
+				mustExec(t, s.db, `INSERT INTO users (id, display_name, role, created_at) VALUES ('user-other', 'Other', 'member', 1)`)
+				mustExec(t, s.db, `INSERT INTO devices (id, user_id, label, class, platform, key_thumbprint, created_at) VALUES ('dev-other', ?, 'Other', 'desktop', 'linux', 'thumb-other', 1)`, r.Session.UserID)
+				want := r
+				mismatch.change(&r)
+				if err := s.CompletePairingRedemption(r); !errors.Is(err, ErrRedemptionTerms) {
+					t.Fatalf("a redemption on terms its link did not record = %v, want ErrRedemptionTerms", err)
+				}
+				requireNothingRedeemed(t, s, want)
+			})
+		})
+	}
 }
 
 // requireNothingRedeemed checks that a redemption that failed left no
@@ -179,7 +221,7 @@ func TestConfirmRedeemedPairingWhoseWriteFailsChangesNothing(t *testing.T) {
 		t.Run(failing.name, func(t *testing.T) {
 			s, pending := readyLink(t)
 			mustExec(t, s.db, failing.trigger)
-			if _, err := s.ConfirmRedeemedPairing("link-1", 2500, 900000); err == nil || errors.Is(err, ErrPairingIncomplete) {
+			if _, err := s.ConfirmRedeemedPairing("link-1", 2500, accessUntil(900000)); err == nil || errors.Is(err, ErrPairingIncomplete) {
 				t.Fatalf("a confirmation whose %s failed = %v, want the storage error", failing.name, err)
 			}
 			if link, err := s.GetPairingLink("link-1"); err != nil || link.Settled() || !link.Ready() {
@@ -189,7 +231,7 @@ func TestConfirmRedeemedPairingWhoseWriteFailsChangesNothing(t *testing.T) {
 				t.Fatalf("a failed confirmation moved the session (%+v, %v)", session, err)
 			}
 			mustExec(t, s.db, `DROP TRIGGER reject_confirm`)
-			if _, err := s.ConfirmRedeemedPairing("link-1", 2600, 900000); err != nil {
+			if _, err := s.ConfirmRedeemedPairing("link-1", 2600, accessUntil(900000)); err != nil {
 				t.Fatalf("the retry after storage recovered: %v", err)
 			}
 			if session, err := s.GetSession(pending.ID); err != nil || session.ActivatedAt != 2600 {
@@ -204,7 +246,7 @@ func TestConfirmRedeemedPairingWhoseWriteFailsChangesNothing(t *testing.T) {
 func TestConfirmRedeemedPairingThatCannotActivateCancelsInstead(t *testing.T) {
 	s, pending := readyLink(t)
 	// Admitted at the session's own deadline: too late to activate.
-	confirmation, err := s.ConfirmRedeemedPairing("link-1", pending.ExpiresAt, 900000)
+	confirmation, err := s.ConfirmRedeemedPairing("link-1", pending.ExpiresAt, accessUntil(900000))
 	if !errors.Is(err, ErrPairingIncomplete) {
 		t.Fatalf("a confirmation of a lapsed session = %v, want ErrPairingIncomplete", err)
 	}
@@ -224,7 +266,7 @@ func TestConfirmRedeemedPairingThatCannotActivateCancelsInstead(t *testing.T) {
 // runs.
 func TestConfirmRedeemedPairingJudgesTheDeadlineAtAdmission(t *testing.T) {
 	s, pending := readyLink(t)
-	if _, err := s.ConfirmRedeemedPairing("link-1", pending.ExpiresAt-1, 900000); err != nil {
+	if _, err := s.ConfirmRedeemedPairing("link-1", pending.ExpiresAt-1, accessUntil(900000)); err != nil {
 		t.Fatalf("a confirmation admitted before the deadline: %v", err)
 	}
 	if session, err := s.GetSession(pending.ID); err != nil || session.ActivatedAt != pending.ExpiresAt-1 || session.ExpiresAt != 900000 {
@@ -257,16 +299,9 @@ func TestConfirmRedeemedPairingWhoseMembershipIsRefusedCancelsInstead(t *testing
 			if err := s.CreatePairingLink(link, []byte("hash-own")); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := s.RedeemPairingLink([]byte("hash-own"), 2000, "thumb-own"); err != nil {
-				t.Fatal(err)
-			}
-			pending := newTestSession("sess-own", owner, device, key, 9000)
-			pending.ActivatedAt = 0
-			if err := s.CompletePairingRedemption(PairingRedemption{LinkID: link.ID, DeviceSession: DeviceSession{Device: device, Session: pending}}); err != nil {
-				t.Fatal(err)
-			}
+			_, pending := redeemOnto(t, s, []byte("hash-own"), 2000, newTestSession("sess-own", owner, device, key, 9000))
 			refused.before(t, s)
-			confirmation, err := s.ConfirmRedeemedPairing(link.ID, 2500, 900000)
+			confirmation, err := s.ConfirmRedeemedPairing(link.ID, 2500, accessUntil(900000))
 			if !errors.Is(err, ErrPairingIncomplete) || !strings.Contains(err.Error(), refused.want) {
 				t.Fatalf("a confirmation whose membership is refused = %v, want ErrPairingIncomplete for the admission", err)
 			}

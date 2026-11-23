@@ -58,7 +58,7 @@ func openTestWindow(t *testing.T, a *App) pairbootstrap.Snapshot {
 	s := &a.computerPairing
 	book := s.book
 	view, err := book.Open(func(route string) (pairbootstrap.Invitation, error) {
-		invite, err := a.mintDevicePairing("browser", "full", "")
+		invite, err := a.mintDevicePairingPurpose("browser", "full", "", "", true)
 		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
 	}, admitTestWindow(a))
 	if err != nil {
@@ -69,15 +69,17 @@ func openTestWindow(t *testing.T, a *App) pairbootstrap.Snapshot {
 }
 
 // admitTestWindow is the admission of a window a test installs directly: it
-// becomes the host's window, shown on the host's current LAN address, owned
-// by no connection.
+// becomes the host's window, owned by no connection, and is admitted under
+// the current publication when the LAN has an address (a fixture that
+// serves no LAN keeps its window whatever is published).
 func admitTestWindow(a *App) func(pairbootstrap.Snapshot) error {
-	address, _ := a.publishComputerRoutes().pairing.on("lan")
+	a.publishComputerRoutes()
 	return func(w pairbootstrap.Snapshot) error {
 		s := &a.computerPairing
 		s.mu.Lock()
-		s.windowID, s.choice, s.address = w.WindowID, "lan", address
-		s.mu.Unlock()
+		defer s.mu.Unlock()
+		_, _, _ = a.admitComputerPairingWindow(s.book, w.WindowID, "lan")
+		s.windowID = w.WindowID
 		return nil
 	}
 }

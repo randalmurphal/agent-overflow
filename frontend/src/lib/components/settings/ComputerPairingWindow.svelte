@@ -8,6 +8,7 @@
   import { errString } from '../../utils/errors';
   import { backendNow } from '../../transport/backendClock';
   import { settingsComputer } from './settingsComputer';
+  import { pairingDecisionSettled, pairingTurns, recordPairingDecision, type PairingTurn } from './pairingTurns';
 
   let { networkChoice, access, ownEnroll, onChanged, onClose }: {
     networkChoice: string;
@@ -26,13 +27,12 @@
   let status = $state<Awaited<ReturnType<typeof ComputerPairingStatus>> | null>(null);
   let error = $state('');
   let deciding = $state(false);
-  // The outstanding approval, settled whether it succeeds or fails. A
-  // dismissal waits for it before closing the window, so the close never
-  // overtakes an approval the person already sent.
-  let decision: Promise<void> | null = null;
   let confirmed = $state(false);
   let expired = $state(false);
-  let disposed = false;
+  // Each open, including Try again, is a turn (pairingTurns.ts); `shown` is
+  // the turn of the window on screen.
+  const turns = pairingTurns();
+  let shown: PairingTurn | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   async function closeWindow(id: string): Promise<void> {
@@ -40,93 +40,116 @@
     catch (err) { addToast('warning', `Could not close pairing. It will expire automatically: ${errString(err)}`); }
   }
 
-  // A poll belongs to the window it was started for. Try again replaces
-  // the window in place, so a status read still in flight for the old one
-  // must neither paint over the new one nor schedule its own successor.
-  async function poll(id: string): Promise<void> {
-    if (window?.id !== id) return;
-    if (backendNow(backend) >= window.expiresAtMs) {
-      expired = true;
-      error = '';
-      return;
-    }
+  function adoptConfirmed(): void {
+    confirmed = true;
+    error = '';
+    clearTimeout(timer);
+    onChanged();
+  }
+
+  // Follow one window's status until it is decided or expires. Past the
+  // window's deadline one last read still runs, so an approval the host
+  // admitted before the deadline, whose reply was lost, shows as paired.
+  async function poll(at: PairingTurn, opened: NonNullable<typeof window>): Promise<void> {
+    if (!at.current || confirmed) return;
+    const pastDeadline = backendNow(backend) >= opened.expiresAtMs;
     try {
-      const next = await call(() => ComputerPairingStatus(id));
-      if (disposed || confirmed || window?.id !== id) return;
+      const next = await call(() => ComputerPairingStatus(opened.id));
+      if (!at.current || confirmed) return;
+      if (next.state === 'confirmed') {
+        status = next;
+        adoptConfirmed();
+        return;
+      }
+      if (pastDeadline) {
+        expired = true;
+        error = '';
+        return;
+      }
       status = next;
       error = '';
-      if (next.state === 'confirmed') {
-        confirmed = true;
-        onChanged();
-      }
-      if (next.state === 'expired' || confirmed) return;
+      if (next.state === 'expired') return;
     } catch (err) {
-      if (disposed || window?.id !== id) return;
+      if (!at.current) return;
+      if (pastDeadline) {
+        expired = true;
+        error = '';
+        return;
+      }
       // Never offer confirmation from a stale status after losing the host.
       status = null;
       error = `Could not check pairing: ${errString(err)}. Retrying…`;
     }
-    if (!disposed && !confirmed && window?.id === id) timer = setTimeout(() => void poll(id), 2_000);
+    if (at.current && !confirmed) timer = setTimeout(() => void poll(at, opened), 2_000);
   }
 
   // Open a window and follow it. Try again runs this once more with the
   // same network choice. The host's open retires the window it replaces,
-  // so Try again sends the open alone; a close is only for dismissal.
+  // so the open first waits for an approval still in flight for this
+  // computer, from this dialog or one dismissed before it; a close is only
+  // for dismissal.
   async function start(): Promise<void> {
+    const at = turns.begin();
+    shown = null;
     clearTimeout(timer);
     window = null;
     status = null;
     error = '';
     expired = false;
     try {
+      await pairingDecisionSettled(backend);
+      if (!at.current) return;
       const opened = await call(() => access === 'full' && ownEnroll ? OpenOwnComputerPairing(networkChoice) : OpenComputerPairing(networkChoice, access));
-      if (disposed) { await closeWindow(opened.id); return; }
+      if (!at.current) { await closeWindow(opened.id); return; }
       window = opened;
+      shown = at;
       onChanged();
-      await poll(opened.id);
+      await poll(at, opened);
     } catch (err) {
-      if (!disposed) error = `Could not start pairing: ${errString(err)}`;
+      if (at.current) error = `Could not start pairing: ${errString(err)}`;
     }
   }
 
   onMount(() => {
     void start();
     return () => {
-      disposed = true;
+      turns.end();
       clearTimeout(timer);
       // Dismissal always closes the window, after any approval already sent
       // has settled: the two calls may reach the host in either order, and
       // closing an approved pairing keeps the device's access.
       if (window) {
         const id = window.id;
-        void (decision ?? Promise.resolve()).then(() => closeWindow(id));
+        void pairingDecisionSettled(backend).then(() => closeWindow(id));
       }
     };
   });
 
   function confirm(): void {
-    if (status?.state !== 'ready' || !status.linkId || !status.verificationNumber || deciding) return;
-    const linkId = status.linkId;
+    if (status?.state !== 'ready' || !status.linkId || !status.verificationNumber || deciding || !window || !shown) return;
     deciding = true;
     error = '';
-    decision = decide(linkId);
+    recordPairingDecision(backend, decide(shown, status.linkId, window.id));
   }
 
-  async function decide(linkId: string): Promise<void> {
+  async function decide(at: PairingTurn, linkId: string, windowId: string): Promise<void> {
     try {
       await call(() => ConfirmDevicePairing(linkId));
-      if (disposed) return;
-      confirmed = true;
-      clearTimeout(timer);
-      onChanged();
+      if (at.current) adoptConfirmed();
     } catch (err) {
+      // The approval may have committed with its reply lost; the host's
+      // status of this window is the decision's durable result.
+      const after = await call(() => ComputerPairingStatus(windowId)).catch(() => null);
+      if (after?.state === 'confirmed') {
+        if (at.current) adoptConfirmed();
+        return;
+      }
       const message = `Could not allow this computer: ${errString(err)}`;
       // A dismissed dialog has nowhere to show it, so the failure is a toast.
-      if (disposed) addToast('error', message);
-      else error = message;
+      if (at.current) error = message;
+      else addToast('error', message);
     } finally {
-      deciding = false;
-      decision = null;
+      if (at.current) deciding = false;
     }
   }
 </script>

@@ -72,10 +72,11 @@ describe('computer pairing window', () => {
 
   it('closes a window whose open response arrives after the dialog was dismissed', async () => {
     let resolve!: (value: typeof WINDOW) => void;
-    setBindingMock('OpenComputerPairing', () => new Promise<typeof WINDOW>((done) => { resolve = done; }));
+    const open = setBindingMock('OpenComputerPairing', () => new Promise<typeof WINDOW>((done) => { resolve = done; }));
     const close = setBindingMock('CloseComputerPairing', async () => {});
     const poll = setBindingMock('ComputerPairingStatus', async () => WAITING);
     const view = show();
+    await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
     view.unmount();
     resolve(WINDOW);
     await vi.waitFor(() => expect(close).toHaveBeenCalledExactlyOnceWith(WINDOW.id));
@@ -214,6 +215,74 @@ describe('computer pairing window', () => {
     await vi.advanceTimersByTimeAsync(4_000);
     expect(view.getByText(/Pairing expired/)).toBeTruthy();
     expect(view.queryByRole('alert')).toBeNull();
+    const calls = poll.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(poll.mock.calls).toHaveLength(calls);
+  });
+});
+
+describe('computer pairing window decisions', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetBindingMocks();
+    setBindingMock('CloseComputerPairing', async () => {});
+  });
+  afterEach(() => { cleanup(); vi.useRealTimers(); resetBindingMocks(); resetToastsForTest(); });
+
+  // Opening a window retires the previous one on the host, so a dialog
+  // opened while a dismissed dialog's approval is in flight waits for it.
+  it('opens a new window only after the approval a dismissed dialog sent has settled', async () => {
+    const order: string[] = [];
+    const open = setBindingMock('OpenComputerPairing', async () => { order.push('open'); return WINDOW; });
+    setBindingMock('ComputerPairingStatus', async () => READY);
+    let resolve!: () => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((done) => { resolve = () => { order.push('approved'); done(); }; }));
+    setBindingMock('CloseComputerPairing', async () => { order.push('close'); });
+    const first = show();
+    await vi.waitFor(() => expect(first.getByLabelText('Verification number')).toBeTruthy());
+    await fireEvent.click(first.getByRole('button', { name: 'It matches — allow' }));
+    first.unmount();
+    show();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(open).toHaveBeenCalledTimes(1);
+    resolve();
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(2));
+    expect(order.slice(0, 2)).toEqual(['open', 'approved']);
+  });
+
+  it('shows a computer as paired when the approval reply is lost after the host admitted it', async () => {
+    setBindingMock('OpenComputerPairing', async () => WINDOW);
+    const poll = setBindingMock('ComputerPairingStatus', async () => READY);
+    setBindingMock('ConfirmDevicePairing', async () => {
+      poll.mockResolvedValue({ ...WAITING, state: 'confirmed', linkId: 'link-1', deviceLabel: 'Laptop' });
+      throw new Error('connection lost');
+    });
+    const view = show();
+    await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    await vi.waitFor(() => expect(view.getByText('Computer paired')).toBeTruthy());
+    expect(view.queryByRole('alert')).toBeNull();
+  });
+
+  it('reads the host once more at the deadline, and shows an approval admitted before it', async () => {
+    setBindingMock('OpenComputerPairing', async () => ({ ...WINDOW, expiresAtMs: Date.now() + 3_000 }));
+    const poll = setBindingMock('ComputerPairingStatus', async () => READY);
+    const view = show();
+    await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
+    await vi.advanceTimersByTimeAsync(2_000);
+    poll.mockResolvedValue({ ...WAITING, state: 'confirmed', linkId: 'link-1' });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(view.getByText('Computer paired')).toBeTruthy();
+    expect(view.queryByText('Pairing expired.')).toBeNull();
+  });
+
+  it('shows expiry when the read at the deadline finds no decision', async () => {
+    setBindingMock('OpenComputerPairing', async () => ({ ...WINDOW, expiresAtMs: Date.now() + 3_000 }));
+    const poll = setBindingMock('ComputerPairingStatus', async () => READY);
+    const view = show();
+    await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(view.getByText('Pairing expired.')).toBeTruthy();
     const calls = poll.mock.calls.length;
     await vi.advanceTimersByTimeAsync(10_000);
     expect(poll.mock.calls).toHaveLength(calls);

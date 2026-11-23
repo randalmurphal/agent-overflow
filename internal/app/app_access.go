@@ -163,9 +163,12 @@ func (a *App) MintDevicePairingOnNetwork(deviceClass, access, networkChoice stri
 }
 
 func (a *App) mintDevicePairing(deviceClass, access, networkChoice string) (PairingInvite, error) {
-	return a.mintDevicePairingPurpose(deviceClass, access, networkChoice, "")
+	return a.mintDevicePairingPurpose(deviceClass, access, networkChoice, "", false)
 }
-func (a *App) mintDevicePairingPurpose(deviceClass, access, networkChoice, purpose string) (PairingInvite, error) {
+
+// mintDevicePairingPurpose mints one invitation. bootstrap marks one a
+// computer pairing window mints, whose comparison number is that window's.
+func (a *App) mintDevicePairingPurpose(deviceClass, access, networkChoice, purpose string, bootstrap bool) (PairingInvite, error) {
 	state, err := a.accessState()
 	if err != nil {
 		return PairingInvite{}, err
@@ -214,6 +217,7 @@ func (a *App) mintDevicePairingPurpose(deviceClass, access, networkChoice, purpo
 		// Only the main listener's self-signed path carries a pin.
 		// Tailnet and canonical HTTPS certificates use WebPKI instead.
 		CertFingerprint: fingerprint,
+		Bootstrap:       bootstrap,
 	})
 	if err != nil {
 		return PairingInvite{}, err
@@ -270,11 +274,11 @@ func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
 	// settled pairing shows none, so no surface reads digits the requester
 	// never saw.
 	if view.State == pairingStateRedeemed {
-		number, err := sessions.PairingNumber(link)
+		number, err := ownerPairingNumber(link, standing, sessions)
 		if err != nil {
 			return PairingStatusView{}, err
 		}
-		view.VerificationNumber = computerPairingNumber(link.ID, number, standing)
+		view.VerificationNumber = number
 	}
 	return view, nil
 }
@@ -290,22 +294,11 @@ func (a *App) ConfirmDevicePairing(linkID string) error {
 	if err != nil {
 		return err
 	}
-	confirm := func() error {
-		_, err := state.sessions.ConfirmPairing(linkID)
-		return err
-	}
 	// A computer pairing window's invitation is refused once its window is
-	// gone, until its cancellation is durable; the book decides that and
-	// orders it against the window's removal. The store's settled-state
-	// guard decides everything else.
-	if book := a.computerPairingBook(); book != nil {
-		err = book.Confirm(linkID, confirm)
-		if errors.Is(err, pairbootstrap.ErrClosed) {
-			err = identity.ErrPairingRefused
-		}
-	} else {
-		err = confirm()
-	}
+	// gone, until its cancellation is durable: the identity pairing gate
+	// (computerPairingGate) admits the confirmation. The store's
+	// settled-state guard decides everything else.
+	_, err = state.sessions.ConfirmPairing(linkID)
 	if err == nil {
 		NotifyOwnDevices(a)
 	}
@@ -314,7 +307,9 @@ func (a *App) ConfirmDevicePairing(linkID string) error {
 
 // CancelDevicePairing refuses a link and revokes whatever a redemption
 // already created — the number did not match, or the link was minted by
-// mistake.
+// mistake. Every owner cancellation goes through the computer pairing book
+// (Book.CancelLink): a link a window minted retires that window, with its
+// LAN responders, and any other is canceled directly.
 //
 //ao:scope access:admin
 //ao:route home
@@ -323,7 +318,13 @@ func (a *App) CancelDevicePairing(linkID string) error {
 	if err != nil {
 		return err
 	}
-	_, err = state.sessions.CancelPairing(linkID)
+	windowID, err := a.computerPairingBook().CancelLink(linkID, func(id string) error {
+		_, err := state.sessions.CancelPairing(id)
+		return err
+	})
+	if windowID != "" {
+		a.endComputerPairingAdvertisement(windowID)
+	}
 	return err
 }
 
@@ -608,11 +609,11 @@ func (a *App) pendingPairings(state *identityState, now int64) ([]PendingPairing
 			Redeemed:    link.Ready(),
 		}
 		if link.Ready() {
-			number, err := state.sessions.VerificationNumber(link.ID, link.KeyThumbprint)
+			number, err := ownerPairingNumber(link, standing, state.sessions)
 			if err != nil {
 				return nil, fmt.Errorf("access: derive verification number for %s: %w", link.ID, err)
 			}
-			view.VerificationNumber = computerPairingNumber(link.ID, number, standing)
+			view.VerificationNumber = number
 			view.DeviceLabel = a.pairedDeviceLabel(link)
 		}
 		out = append(out, view)

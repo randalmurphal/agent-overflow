@@ -187,6 +187,9 @@ type PairingRequest struct {
 	// the only layer that knows which certificate the listener presents;
 	// empty is a link that names none.
 	CertFingerprint string
+	// Bootstrap marks a link a computer pairing window mints, whose
+	// comparison number is that window's (store.PairingLink.Bootstrap).
+	Bootstrap bool
 }
 
 // PairingLink is a minted, unredeemed link: the row plus the token, which
@@ -236,6 +239,7 @@ func (s *Sessions) mintPairingLink(req PairingRequest) (PairingLink, error) {
 		CertFingerprint: req.CertFingerprint,
 		CreatedAt:       now,
 		ExpiresAt:       now + PairingLinkTTL.Milliseconds(),
+		Bootstrap:       req.Bootstrap,
 	}
 	if err := s.store.CreatePairingLink(link, digest[:]); err != nil {
 		return PairingLink{}, err
@@ -356,12 +360,40 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 		return Redemption{}, ReasonUnknownCredential
 	}
 
+	// The spend and everything it produces run inside the pairing gate, from
+	// its check to the last commit: a link the gate refuses (a computer
+	// pairing window's invitation whose window is gone) is never spent, and
+	// a retirement of the link waits for a redemption already admitted.
+	var out Redemption
+	reason = ReasonNone
+	err = s.admitPairing(checked.ID, func() error {
+		out, reason = s.redeemSpending(req, digest[:], enrollment, now)
+		return nil
+	})
+	if errors.Is(err, ErrPairingRefused) {
+		s.auditPairingRefusal(ReasonUnknownCredential, req.Peer, checked.ID)
+		return Redemption{}, ReasonUnknownCredential
+	}
+	if err != nil {
+		log.Printf("identity: redeem pairing link %s: %v", checked.ID, err)
+		return Redemption{}, ReasonUnknownCredential
+	}
+	if reason.Refused() {
+		return Redemption{}, reason
+	}
+	out.VerificationNumber = number
+	return out, ReasonNone
+}
+
+// redeemSpending spends the link and writes what its redemption produced,
+// inside the pairing gate (RedeemPairing).
+func (s *Sessions) redeemSpending(req RedemptionRequest, digest []byte, enrollment deviceEnrollment, now int64) (Redemption, Reason) {
 	// Spend the link FIRST. Everything after this point can still refuse
 	// the redemption, and a refusal settles the link (cancelRedeemedLink)
 	// rather than releasing it — a link that could be freed by a failed
 	// redemption would be one a second presentation gets another turn at,
 	// which is exactly what single-use forbids.
-	pending, err := s.store.RedeemPairingLink(digest[:], now, enrollment.thumbprint)
+	pending, err := s.store.RedeemPairingLink(digest, now, enrollment.thumbprint)
 	if errors.Is(err, sql.ErrNoRows) {
 		s.auditPairingRefusal(ReasonUnknownCredential, req.Peer, "")
 		return Redemption{}, ReasonUnknownCredential
@@ -373,7 +405,7 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 
 	device, newDevice, reason := s.resolveDevice(pending.UserID, DeviceClass(pending.DeviceClass), req.Label, req.Platform, enrollment)
 	if reason.Refused() {
-		s.cancelRedeemedLink(pending.ID)
+		s.cancelRedeemedLink(pending, "", false)
 		s.auditPairingRefusal(reason, req.Peer, pending.ID)
 		return Redemption{}, reason
 	}
@@ -387,12 +419,9 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 	session, tokens, err := s.mintRedemptionSession(pending, device, newDevice, now)
 	if err != nil {
 		log.Printf("identity: mint pairing session for link %s: %v", pending.ID, err)
-		s.cancelRedeemedLink(pending.ID)
-		if errors.Is(err, store.ErrPairingIncomplete) {
-			// The introduction's membership was refused: recorded as the
-			// cancellation it is.
-			s.auditPairing(AuditPairingCanceled, pending.UserID, device.ID, "", pending.ID)
-		}
+		// An introduction whose membership was refused is recorded as the
+		// cancellation it is, with the device it would have admitted.
+		s.cancelRedeemedLink(pending, device.ID, errors.Is(err, store.ErrPairingIncomplete))
 		return Redemption{}, ReasonUnknownCredential
 	}
 
@@ -402,10 +431,9 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 		Detail: pending.ID,
 	})
 	return Redemption{
-		PairingID:          pending.ID,
-		DeviceID:           device.ID,
-		Tokens:             tokens,
-		VerificationNumber: number,
+		PairingID: pending.ID,
+		DeviceID:  device.ID,
+		Tokens:    tokens,
 	}, ReasonNone
 }
 
@@ -560,10 +588,24 @@ func (s *Sessions) mintRedemptionSession(link store.PairingLink, device store.De
 }
 
 // cancelRedeemedLink settles a link whose redemption could not complete, so
-// the spent link cannot be presented again by anything.
-func (s *Sessions) cancelRedeemedLink(linkID string) {
-	if _, err := s.cancelLink(linkID); err != nil && !errors.Is(err, ErrPairingRefused) {
-		log.Printf("identity: cancel pairing link %s: %v", linkID, err)
+// the spent link cannot be presented again by anything. With record set, a
+// cancellation this call committed is audited as the owner-visible
+// cancellation of deviceID's pairing; one another path settled first is
+// that path's to record. A cancellation that fails is audited as refused,
+// so the access audit shows a spent link left unsettled.
+func (s *Sessions) cancelRedeemedLink(link store.PairingLink, deviceID string, record bool) {
+	_, err := s.cancelLink(link.ID)
+	switch {
+	case errors.Is(err, ErrPairingRefused):
+	case err != nil:
+		log.Printf("identity: cancel pairing link %s: %v", link.ID, err)
+		s.audit(store.AuthAuditEntry{
+			Event: string(AuditPairingCanceled), Outcome: store.AuthAuditOutcomeRefused,
+			Reason: ReasonTemporarilyUnavailable.Code(), UserID: link.UserID, DeviceID: deviceID,
+			Detail: link.ID + ": the spent link could not be canceled: " + err.Error(),
+		})
+	case record:
+		s.auditPairing(AuditPairingCanceled, link.UserID, deviceID, "", link.ID)
 	}
 }
 
@@ -606,24 +648,21 @@ func (s *Sessions) ConfirmPairing(linkID string) (store.PairingLink, error) {
 // can no longer be activated, because it or its device was revoked or it
 // lapsed, or a membership no longer admissible, cancels the link and
 // revokes the session instead and answers ErrPairingNotCompleted. A
-// storage failure changes nothing, so the owner can try again.
+// storage failure changes nothing, so the owner can try again. The write runs
+// inside the pairing gate, and a link the gate refuses answers
+// ErrPairingRefused with nothing written.
 func (s *Sessions) confirmPairing(linkID string) (store.PairingLink, error) {
-	pending, err := s.store.GetPairingLink(linkID)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && pending.DeviceID == "") {
-		return store.PairingLink{}, ErrPairingRefused
+	var confirmation store.PairingConfirmation
+	var err error
+	if gated := s.admitPairing(linkID, func() error {
+		now := s.now().UnixMilli()
+		confirmation, err = s.store.ConfirmRedeemedPairing(linkID, now, func(class string) int64 {
+			return now + RenewablePolicyFor(DeviceClass(class)).Access.Milliseconds()
+		})
+		return nil
+	}); gated != nil {
+		return store.PairingLink{}, gated
 	}
-	if err != nil {
-		return store.PairingLink{}, err
-	}
-	// The device a redemption recorded never changes, so its class read
-	// here is the class of the device the transaction admits.
-	device, err := s.store.GetDevice(pending.DeviceID)
-	if err != nil {
-		return store.PairingLink{}, fmt.Errorf("identity: confirm pairing: read device: %w", err)
-	}
-	policy := RenewablePolicyFor(DeviceClass(device.Class))
-	now := s.now().UnixMilli()
-	confirmation, err := s.store.ConfirmRedeemedPairing(linkID, now, now+policy.Access.Milliseconds())
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return store.PairingLink{}, ErrPairingRefused
@@ -676,16 +715,6 @@ func (s *Sessions) PairingLink(linkID string) (store.PairingLink, error) {
 		return store.PairingLink{}, ErrPairingRefused
 	}
 	return link, err
-}
-
-// PairingNumber is the verification number of a redeemed link, derived on
-// demand from the thumbprint its redemption recorded, and "" for a link
-// nobody has redeemed.
-func (s *Sessions) PairingNumber(link store.PairingLink) (string, error) {
-	if !link.Redeemed() {
-		return "", nil
-	}
-	return s.VerificationNumber(link.ID, link.KeyThumbprint)
 }
 
 // VerificationNumber derives the digits the owner compares between the two

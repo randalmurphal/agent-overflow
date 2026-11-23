@@ -2,6 +2,7 @@ package identity
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 
 	"agent-overflow/internal/owndevices"
@@ -96,7 +97,11 @@ func (s *Sessions) MintOwnIntroduction(req PairingRequest) (PairingLink, error) 
 	return link, err
 }
 
-// RecoverOwnAdmissions finishes only already-approved durable generations.
+// RecoverOwnAdmissions finishes only already-approved durable generations. An
+// admission the membership refuses (store.ErrOwnAdmissionRefused) can never
+// complete, so its session is revoked; any other failure leaves the approved
+// session and its link for the next start to finish, and is returned with
+// every other link still tried.
 func (s *Sessions) RecoverOwnAdmissions() error {
 	s.ownMu.Lock()
 	defer s.ownMu.Unlock()
@@ -104,12 +109,17 @@ func (s *Sessions) RecoverOwnAdmissions() error {
 	if e != nil {
 		return e
 	}
+	var failed []error
 	for _, link := range links {
-		if e = s.store.AdmitOwnPairing(link); e != nil {
+		e = s.store.AdmitOwnPairing(link)
+		switch {
+		case errors.Is(e, store.ErrOwnAdmissionRefused):
 			if _, e = s.RevokeSession(link.SessionID); e != nil {
-				return e
+				failed = append(failed, fmt.Errorf("revoke the refused own-device admission of link %s: %w", link.ID, e))
 			}
+		case e != nil:
+			failed = append(failed, fmt.Errorf("finish the own-device admission of link %s: %w", link.ID, e))
 		}
 	}
-	return nil
+	return errors.Join(failed...)
 }

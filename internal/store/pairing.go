@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -63,6 +64,10 @@ type PairingLink struct {
 	SessionID     string `json:"sessionId,omitempty"`
 	ConfirmedAt   int64  `json:"confirmedAt,omitempty"`
 	CanceledAt    int64  `json:"canceledAt,omitempty"`
+	// Bootstrap marks a link a computer pairing window minted (v164). Its
+	// comparison number is the digits that window derived, never the
+	// ordinary one.
+	Bootstrap bool `json:"bootstrap,omitempty"`
 }
 
 // Redeemed reports whether a device has presented this link.
@@ -100,7 +105,7 @@ func (r RefreshSecret) Spent() bool { return r.ConsumedAt != 0 }
 
 const pairingLinkColumns = `id, user_id, scopes, binding_class, device_class,
 	cert_fingerprint, created_at, expires_at, redeemed_at, device_id,
-	key_thumbprint, session_id, confirmed_at, canceled_at, purpose, expected_key, member_generation, sponsor_key`
+	key_thumbprint, session_id, confirmed_at, canceled_at, purpose, expected_key, member_generation, sponsor_key, bootstrap`
 
 const refreshSecretColumns = `id, session_id, created_at, expires_at,
 	consumed_at, consumed_by, next_secret_hash`
@@ -131,10 +136,10 @@ func (s *Store) CreatePairingLink(link PairingLink, tokenHash []byte) error {
 	if _, err := s.db.Exec(
 		`INSERT INTO pairing_links (id, user_id, token_hash, scopes, binding_class,
 			device_class, cert_fingerprint, created_at, expires_at, redeemed_at,
-			device_id, key_thumbprint, session_id, confirmed_at, canceled_at, purpose, expected_key, member_generation, sponsor_key)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', '', '', NULL, NULL, ?, ?, ?, ?)`,
+			device_id, key_thumbprint, session_id, confirmed_at, canceled_at, purpose, expected_key, member_generation, sponsor_key, bootstrap)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', '', '', NULL, NULL, ?, ?, ?, ?, ?)`,
 		link.ID, link.UserID, tokenHash, scopes, link.BindingClass, link.DeviceClass,
-		link.CertFingerprint, link.CreatedAt, link.ExpiresAt, link.Purpose, link.ExpectedKey, link.MemberGeneration, link.SponsorKey,
+		link.CertFingerprint, link.CreatedAt, link.ExpiresAt, link.Purpose, link.ExpectedKey, link.MemberGeneration, link.SponsorKey, link.Bootstrap,
 	); err != nil {
 		return fmt.Errorf("store: create pairing link: %w", err)
 	}
@@ -294,6 +299,9 @@ func (s *Store) CompletePairingRedemption(r PairingRedemption) error {
 	if err := writeDeviceSession(tx, r.DeviceSession); err != nil {
 		return fmt.Errorf("store: complete pairing redemption: %w", err)
 	}
+	if err := checkRedemptionTerms(tx, r); err != nil {
+		return err
+	}
 	if err := attachPairingRedemption(tx, r.LinkID, r.Session.DeviceID, r.Session.ID); err != nil {
 		return err
 	}
@@ -317,6 +325,64 @@ func (s *Store) CompletePairingRedemption(r PairingRedemption) error {
 		return fmt.Errorf("store: complete pairing redemption: commit: %w", err)
 	}
 	return nil
+}
+
+// ErrRedemptionTerms reports a redemption whose device or session is not the
+// one its spent link admits.
+var ErrRedemptionTerms = errors.New("store: the redemption does not match its link")
+
+// checkRedemptionTerms holds a redemption, after its device and session are
+// written in tx, to what its spent link recorded: the device row holds the
+// key the link was spent with and belongs to the link's account, and the
+// session is that account's, with the link's binding and scopes. The link
+// must be spent, unsettled and name no redemption yet; sql.ErrNoRows
+// otherwise.
+func checkRedemptionTerms(tx *sql.Tx, r PairingRedemption) error {
+	link, err := scanPairingLink(tx.QueryRow(
+		`SELECT `+pairingLinkColumns+` FROM pairing_links
+		  WHERE id = ? AND redeemed_at IS NOT NULL AND device_id = '' AND session_id = ''
+		    AND confirmed_at IS NULL AND canceled_at IS NULL`, r.LinkID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err != nil {
+		return fmt.Errorf("store: complete pairing redemption: %w", err)
+	}
+	var deviceUser, deviceKey string
+	if err := tx.QueryRow(`SELECT user_id, COALESCE(key_thumbprint, '') FROM devices WHERE id = ?`, r.Session.DeviceID).Scan(&deviceUser, &deviceKey); err != nil {
+		return fmt.Errorf("store: complete pairing redemption: read its device: %w", err)
+	}
+	switch {
+	case link.KeyThumbprint == "" || deviceKey != link.KeyThumbprint:
+		return fmt.Errorf("%w: the device does not hold the key the link was spent with", ErrRedemptionTerms)
+	case link.ExpectedKey != "" && link.ExpectedKey != link.KeyThumbprint:
+		return fmt.Errorf("%w: the link was spent with a key it does not admit", ErrRedemptionTerms)
+	case deviceUser != link.UserID || r.Session.UserID != link.UserID:
+		return fmt.Errorf("%w: the device or session belongs to another account", ErrRedemptionTerms)
+	case r.Session.BindingClass != link.BindingClass:
+		return fmt.Errorf("%w: the session's binding %q is not the link's %q", ErrRedemptionTerms, r.Session.BindingClass, link.BindingClass)
+	case !sameScopes(r.Session.Scopes, link.Scopes):
+		return fmt.Errorf("%w: the session's scopes %v are not the link's %v", ErrRedemptionTerms, r.Session.Scopes, link.Scopes)
+	}
+	return nil
+}
+
+// sameScopes reports whether a and b hold the same scopes, in any order.
+func sameScopes(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	held := make(map[string]int, len(a))
+	for _, scope := range a {
+		held[scope]++
+	}
+	for _, scope := range b {
+		if held[scope] == 0 {
+			return false
+		}
+		held[scope]--
+	}
+	return true
 }
 
 // attachPairingRedemption records the device and session a redemption
@@ -363,8 +429,11 @@ type PairingConfirmation struct {
 // revoked) or a membership that is no longer admissible cannot be completed
 // by a retry, so the same transaction cancels the link and revokes the
 // session instead, and the call answers ErrPairingIncomplete with what that
-// ended. Any other failure rolls back, leaving the link as it was.
-func (s *Store) ConfirmRedeemedPairing(id string, at, accessExpiresAt int64) (PairingConfirmation, error) {
+// ended. So does a device that is revoked or no longer exists: the device's
+// class, which accessUntil turns into the session's access expiry, is read
+// in the same transaction. Any other failure rolls back, leaving the link as
+// it was.
+func (s *Store) ConfirmRedeemedPairing(id string, at int64, accessUntil func(deviceClass string) int64) (PairingConfirmation, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return PairingConfirmation{}, fmt.Errorf("store: confirm pairing: %w", err)
@@ -377,9 +446,19 @@ func (s *Store) ConfirmRedeemedPairing(id string, at, accessExpiresAt int64) (Pa
 	if _, err := tx.Exec(`SAVEPOINT confirm_pairing`); err != nil {
 		return PairingConfirmation{}, fmt.Errorf("store: confirm pairing: %w", err)
 	}
-	confirmed, refusal, err := admitPairingTx(tx, link, at, accessExpiresAt)
-	if err != nil {
-		return PairingConfirmation{}, err
+	var confirmed PairingLink
+	var class string
+	refusal := tx.QueryRow(`SELECT class FROM devices WHERE id = ? AND revoked_at IS NULL`, link.DeviceID).Scan(&class)
+	switch {
+	case errors.Is(refusal, sql.ErrNoRows):
+		refusal = errors.New("its device was revoked or removed")
+	case refusal != nil:
+		return PairingConfirmation{}, fmt.Errorf("store: confirm pairing: read its device: %w", refusal)
+	default:
+		confirmed, refusal, err = admitPairingTx(tx, link, at, accessUntil(class))
+		if err != nil {
+			return PairingConfirmation{}, err
+		}
 	}
 	if refusal != nil {
 		if _, err := tx.Exec(`ROLLBACK TO confirm_pairing`); err != nil {
@@ -477,23 +556,65 @@ func (s *Store) CancelPairingLink(id string, at int64) (PairingCancellation, err
 
 // cancelPairingLinkTx is CancelPairingLink's statements, in tx.
 func cancelPairingLinkTx(tx *sql.Tx, id string, at int64) (PairingCancellation, error) {
-	link, err := scanPairingLink(tx.QueryRow(
-		`UPDATE pairing_links SET canceled_at = ?
-		  WHERE id = ? AND confirmed_at IS NULL AND canceled_at IS NULL
-		 RETURNING `+pairingLinkColumns, at, id))
-	if errors.Is(err, sql.ErrNoRows) {
+	canceled, err := cancelPairingLinksTx(tx, at, `id = ? AND confirmed_at IS NULL`, id)
+	if err != nil {
 		return PairingCancellation{}, err
 	}
-	if err != nil {
-		return PairingCancellation{}, fmt.Errorf("store: cancel pairing link: %w", err)
+	if len(canceled.links) == 0 {
+		return PairingCancellation{}, sql.ErrNoRows
 	}
-	out := PairingCancellation{Link: link}
-	if link.SessionID != "" {
-		ids, released, err := endSessionsTx(tx, revokeSessions, at, nil, `id = ?`, link.SessionID)
+	return PairingCancellation{Link: canceled.links[0], SessionRevoked: len(canceled.revoked) > 0, Released: canceled.released}, nil
+}
+
+// pairingCancellations is what one cancelPairingLinksTx ended.
+type pairingCancellations struct {
+	links []PairingLink
+	// revoked names the pending sessions revoked with them, and released
+	// the threads whose spawn links that revocation released.
+	revoked, released []string
+}
+
+// cancelPairingLinksTx is the one writer of pairing_links.canceled_at. It
+// stamps every uncanceled link where selects and, in the same transaction,
+// revokes each stamped link's session that was never activated, so a
+// canceled link never leaves a pending session behind. An activated session
+// is not this statement's: a link canceled after its session was admitted
+// (an own-device introduction its device never renewed) leaves the decision
+// to end that session to its caller.
+func cancelPairingLinksTx(tx *sql.Tx, at int64, where string, args ...any) (pairingCancellations, error) {
+	var out pairingCancellations
+	rows, err := tx.Query(`UPDATE pairing_links SET canceled_at = ?
+		  WHERE canceled_at IS NULL AND (`+where+`)
+		 RETURNING `+pairingLinkColumns, append([]any{at}, args...)...)
+	if err != nil {
+		return out, fmt.Errorf("store: cancel pairing links: %w", err)
+	}
+	var sessions []string
+	for rows.Next() {
+		link, err := scanPairingLink(rows)
 		if err != nil {
-			return PairingCancellation{}, fmt.Errorf("store: cancel pairing link: revoke its pending session: %w", err)
+			_ = rows.Close()
+			return out, err
 		}
-		out.SessionRevoked, out.Released = len(ids) > 0, released
+		out.links = append(out.links, link)
+		if link.SessionID != "" {
+			sessions = append(sessions, link.SessionID)
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return out, fmt.Errorf("store: cancel pairing links: %w", err)
+	}
+	if len(sessions) == 0 {
+		return out, nil
+	}
+	encoded, err := json.Marshal(sessions)
+	if err != nil {
+		return out, fmt.Errorf("store: cancel pairing links: %w", err)
+	}
+	out.revoked, out.released, err = endSessionsTx(tx, revokeSessions, at, nil,
+		`activated_at IS NULL AND id IN (SELECT value FROM json_each(?))`, string(encoded))
+	if err != nil {
+		return out, fmt.Errorf("store: cancel pairing links: revoke their pending sessions: %w", err)
 	}
 	return out, nil
 }
@@ -509,21 +630,23 @@ type PairingCancellation struct {
 }
 
 // RetirePendingPairings runs before a restarted host serves credentials. An
-// unfinished screen comparison cannot survive the process that owned it; an
-// already-confirmed device is deliberately outside both update predicates.
+// unfinished screen comparison cannot survive the process that owned it, so
+// every unconfirmed link is canceled with its pending session. A confirmed
+// link whose session was never activated (an older build confirmed it and
+// stopped before activating) ends the same way: its session is revoked and
+// the device pairs again. An activated session is outside both statements.
 func (s *Store) RetirePendingPairings(at int64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("store: retire pending pairings: %w", err)
 	}
-	defer tx.Rollback()
-	if _, _, err = endSessionsTx(tx, revokeSessions, at, nil, `activated_at IS NULL
-		AND id IN (SELECT session_id FROM pairing_links WHERE confirmed_at IS NULL)`); err != nil {
-		return fmt.Errorf("store: retire pending pairing sessions: %w", err)
+	defer func() { _ = tx.Rollback() }()
+	if _, err := cancelPairingLinksTx(tx, at, `confirmed_at IS NULL`); err != nil {
+		return fmt.Errorf("store: retire pending pairings: %w", err)
 	}
-	if _, err = tx.Exec(`UPDATE pairing_links SET canceled_at = ?
-		WHERE confirmed_at IS NULL AND canceled_at IS NULL`, at); err != nil {
-		return fmt.Errorf("store: retire pending pairing links: %w", err)
+	if _, _, err := endSessionsTx(tx, revokeSessions, at, nil, `activated_at IS NULL
+		AND id IN (SELECT session_id FROM pairing_links WHERE confirmed_at IS NOT NULL AND session_id <> '')`); err != nil {
+		return fmt.Errorf("store: retire pending pairings: revoke the unactivated sessions of confirmed links: %w", err)
 	}
 	return tx.Commit()
 }
@@ -585,7 +708,7 @@ func scanPairingLink(sc interface{ Scan(...any) error }) (PairingLink, error) {
 		&link.ID, &link.UserID, &scopes, &link.BindingClass, &link.DeviceClass,
 		&link.CertFingerprint, &link.CreatedAt, &link.ExpiresAt, &redeemedAt,
 		&link.DeviceID, &link.KeyThumbprint, &link.SessionID, &confirmedAt, &canceledAt,
-		&link.Purpose, &link.ExpectedKey, &link.MemberGeneration, &link.SponsorKey,
+		&link.Purpose, &link.ExpectedKey, &link.MemberGeneration, &link.SponsorKey, &link.Bootstrap,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return PairingLink{}, err
@@ -603,10 +726,11 @@ func scanPairingLink(sc interface{ Scan(...any) error }) (PairingLink, error) {
 	return link, nil
 }
 
-// insertRefreshSecret writes a session's first renewal credential inside the
-// transaction that writes the session (writeDeviceSession). The id is minted
-// here; the hash is the caller's, because only the caller ever sees the
-// secret.
+// insertRefreshSecret writes one renewal credential inside the caller's
+// transaction: a session's first, with the session (writeDeviceSession), and
+// every successor, with the rotation that spends its predecessor
+// (RotateRefreshSecret). The id is minted here; the hash is the caller's,
+// because only the caller ever sees the secret.
 func insertRefreshSecret(db sqlExecutor, sessionID string, secretHash []byte, createdAt, expiresAt int64) (RefreshSecret, error) {
 	switch {
 	case strings.TrimSpace(sessionID) == "":
@@ -646,24 +770,46 @@ func (s *Store) GetRefreshSecretByHash(secretHash []byte) (RefreshSecret, error)
 		`SELECT `+refreshSecretColumns+` FROM refresh_secrets WHERE secret_hash = ?`, secretHash))
 }
 
-// SpendRefreshSecretsForSession marks every unspent secret of one session
-// consumed, returning how many moved. This is what a detected reuse
-// writes: the session is revoked separately, and this makes sure no
-// outstanding secret of that family can be exchanged in the window between
-// the two writes.
-func (s *Store) SpendRefreshSecretsForSession(sessionID string, at int64, reason string) (int64, error) {
-	result, err := s.db.Exec(
+// RefreshFamilyEnd is what one EndRefreshFamily ended.
+type RefreshFamilyEnd struct {
+	// Outstanding is how many unspent secrets were spent.
+	Outstanding int64
+	// Revoked reports that the session was still unrevoked; Released names
+	// the threads whose spawn links its revocation released.
+	Revoked  bool
+	Released []string
+}
+
+// EndRefreshFamily is what a detected reuse writes: every unspent secret of
+// one session is spent with reason and the session revoked, in one
+// transaction, so a failure leaves the family and the session as they were
+// and the caller is told.
+func (s *Store) EndRefreshFamily(sessionID string, at int64, reason string) (RefreshFamilyEnd, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return RefreshFamilyEnd{}, fmt.Errorf("store: end refresh family: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.Exec(
 		`UPDATE refresh_secrets SET consumed_at = ?, consumed_by = ?
 		  WHERE session_id = ? AND consumed_at IS NULL`,
 		at, reason, sessionID)
 	if err != nil {
-		return 0, fmt.Errorf("store: spend refresh secrets: %w", err)
+		return RefreshFamilyEnd{}, fmt.Errorf("store: end refresh family: spend its secrets: %w", err)
 	}
-	rows, err := result.RowsAffected()
+	var out RefreshFamilyEnd
+	if out.Outstanding, err = result.RowsAffected(); err != nil {
+		return RefreshFamilyEnd{}, fmt.Errorf("store: end refresh family: rows affected: %w", err)
+	}
+	ids, released, err := endSessionsTx(tx, revokeSessions, at, nil, `id = ?`, sessionID)
 	if err != nil {
-		return 0, fmt.Errorf("store: spend refresh secrets: rows affected: %w", err)
+		return RefreshFamilyEnd{}, fmt.Errorf("store: end refresh family: revoke its session: %w", err)
 	}
-	return rows, nil
+	if err := tx.Commit(); err != nil {
+		return RefreshFamilyEnd{}, fmt.Errorf("store: end refresh family: commit: %w", err)
+	}
+	out.Revoked, out.Released = len(ids) > 0, released
+	return out, nil
 }
 
 // ListRefreshSecretsForSession returns one session's chain, newest first.

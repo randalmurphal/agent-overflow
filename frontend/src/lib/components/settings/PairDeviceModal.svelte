@@ -42,6 +42,7 @@
   import SettingsCallout from './SettingsCallout.svelte';
   import ComputerPairingWindow from './ComputerPairingWindow.svelte';
   import { INPUT_CLASS } from './styles';
+  import { pairingTurns, type PairingTurn } from './pairingTurns';
 
   interface Props {
     open: boolean;
@@ -89,7 +90,12 @@
   let networkOptions = $state<Array<{ value: NetworkChoice; label: string }>>([]);
   let loadingNetworks = $state(false);
   let networkError = $state('');
-  let networkGeneration = 0;
+  // Each open of the modal and each minted link is a turn (pairingTurns.ts):
+  // a mint, poll, approval or cancellation applies only to the turn it
+  // started in. Network loads are their own sequence of turns.
+  const turns = pairingTurns();
+  let turn: PairingTurn = turns.begin();
+  const networkLoads = pairingTurns();
   const hello = $derived(backend === HOME_BACKEND ? getTransportHello() : getTransportHelloFor(backend));
   const explicitNetworks = $derived(hello?.capabilities.includes('pairing.networks.v1') ?? false);
   const nearbyPairing = $derived(hello?.capabilities.includes('pairing.nearby.v1') ?? false);
@@ -141,21 +147,21 @@
   }
 
   async function loadNetworks(): Promise<void> {
-    const generation = ++networkGeneration;
+    const at = networkLoads.begin();
     loadingNetworks = true;
     networkError = '';
     try {
       const settings = await call(() => GetNetworkSettings());
-      if (generation !== networkGeneration) return;
+      if (!at.current) return;
       const options: typeof networkOptions = [];
       if (settings.bindAll) options.push({ value: 'lan', label: 'Local network' });
       if (settings.tailnet?.running && settings.tailnet.dnsName) options.push({ value: 'tailnet', label: 'Tailscale' });
       networkOptions = options;
       networkChoice = options[0]?.value ?? 'lan';
     } catch (err) {
-      if (generation === networkGeneration) networkError = `Could not load networks: ${errString(err)}`;
+      if (at.current) networkError = `Could not load networks: ${errString(err)}`;
     } finally {
-      if (generation === networkGeneration) loadingNetworks = false;
+      if (at.current) loadingNetworks = false;
     }
   }
 
@@ -164,8 +170,8 @@
   // the hello-derived flags, and tracking them re-ran this on every
   // hello refresh, throwing a shared link away mid-flow.
   $effect(() => {
-    if (open) untrack(reset);
-    return () => { ++networkGeneration; stopTimers(); };
+    if (open) untrack(() => { turn = turns.begin(); reset(); });
+    return () => { turns.end(); networkLoads.end(); stopTimers(); };
   });
   // The network list follows the backend's capability, which can land
   // after the modal opened; the stage does not move with it.
@@ -179,6 +185,7 @@
       stage = { at: nearbyPairing ? 'computer' : 'legacy-computer' };
       return;
     }
+    const at = turn;
     minting = deviceClass;
     try {
       const invite = await call(() => ownEnroll && access === 'full'
@@ -186,28 +193,31 @@
         : explicitNetworks
         ? MintDevicePairingOnNetwork(deviceClass, access, networkChoice)
         : MintDevicePairing(deviceClass, access));
+      // A link minted for an earlier opening stays on the pending row.
+      onChanged();
+      if (!at.current) return;
+      turn = turns.begin();
       stage = { at: 'share', invite };
       nowMs = Date.now();
-      startWatching(invite.linkId);
-      onChanged();
+      startWatching(turn, invite.linkId);
     } catch (err) {
       addErrorToast(`Failed to mint a pairing link: ${errString(err)}`, err);
     } finally {
-      minting = null;
+      if (at.current) minting = null;
     }
   }
 
-  function startWatching(linkId: string): void {
+  function startWatching(at: PairingTurn, linkId: string): void {
     stopTimers();
     clockTimer = setInterval(() => {
       nowMs = Date.now();
     }, 1_000);
     pollTimer = setInterval(() => {
-      void poll(linkId);
+      void poll(at, linkId);
     }, POLL_INTERVAL_MS);
   }
 
-  async function poll(linkId: string): Promise<void> {
+  async function poll(at: PairingTurn, linkId: string): Promise<void> {
     let status: PairingStatusView;
     try {
       status = await call(() => DevicePairingStatus(linkId));
@@ -216,8 +226,9 @@
       return;
     }
     // The flow may have moved on (canceled, closed, re-minted) while the
-    // read was in flight — only the stage still watching this link acts.
-    if (stage.at === 'share' && stage.invite.linkId === linkId) {
+    // read was in flight; only the turn still watching this link acts.
+    if (!at.current) return;
+    if (stage.at === 'share') {
       if (status.state === 'redeemed') {
         stage = {
           at: 'verify',
@@ -238,7 +249,7 @@
       }
       return;
     }
-    if (stage.at === 'verify' && stage.linkId === linkId) {
+    if (stage.at === 'verify') {
       // Confirmed or canceled from the pending row while this modal sat
       // on the comparison — follow it rather than offering a stale choice.
       if (status.state === 'confirmed') {
@@ -255,33 +266,37 @@
 
   async function confirm(): Promise<void> {
     if (stage.at !== 'verify' || deciding) return;
+    const at = turn;
     const linkId = stage.linkId;
     deciding = true;
     try {
       await call(() => ConfirmDevicePairing(linkId));
+      onChanged();
+      if (!at.current) return;
       stopTimers();
       stage = { at: 'done' };
-      onChanged();
     } catch (err) {
       addErrorToast(`Failed to allow the device: ${errString(err)}`, err);
     } finally {
-      deciding = false;
+      if (at.current) deciding = false;
     }
   }
 
   async function cancel(): Promise<void> {
     const linkId = stage.at === 'share' ? stage.invite.linkId : stage.at === 'verify' ? stage.linkId : null;
     if (linkId === null || deciding) return;
+    const at = turn;
     deciding = true;
     try {
       await call(() => CancelDevicePairing(linkId));
-      stopTimers();
       onChanged();
+      if (!at.current) return;
+      stopTimers();
       onClose();
     } catch (err) {
       addErrorToast(`Failed to cancel the link: ${errString(err)}`, err);
     } finally {
-      deciding = false;
+      if (at.current) deciding = false;
     }
   }
 

@@ -78,6 +78,15 @@ func createSession(db sqlExecutor, session Session) error {
 	return nil
 }
 
+// sessionDeviceLive is the clause a write to one sessions row uses to require
+// that the row's device is unrevoked: a lookup of that one device by its
+// key, never a read of every device.
+const sessionDeviceLive = `EXISTS (SELECT 1 FROM devices d WHERE d.id = sessions.device_id AND d.revoked_at IS NULL)`
+
+const activateSessionSQL = `UPDATE sessions SET activated_at = ?, expires_at = ?
+	 WHERE id = ? AND activated_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+	   AND ` + sessionDeviceLive
+
 // activateSession stamps the moment a session became presentable, which is
 // the moment the owner confirmed the pairing verification number. Reports
 // whether it moved: a second confirmation keeps the first stamp, so the
@@ -97,11 +106,7 @@ func activateSession(db sqlExecutor, sessionID string, at, expiresAt int64) (boo
 	if at == 0 {
 		return false, fmt.Errorf("%w: session activation stamp", ErrIdentityFieldRequired)
 	}
-	result, err := db.Exec(
-		`UPDATE sessions SET activated_at = ?, expires_at = ?
-		 WHERE id = ? AND activated_at IS NULL AND revoked_at IS NULL AND expires_at > ?
-		   AND device_id IN (SELECT id FROM devices WHERE revoked_at IS NULL)`,
-		at, expiresAt, sessionID, at)
+	result, err := db.Exec(activateSessionSQL, at, expiresAt, sessionID, at)
 	if err != nil {
 		return false, fmt.Errorf("store: activate session: %w", err)
 	}
@@ -124,7 +129,7 @@ func (s *Store) ExtendSession(sessionID string, expiresAt, now int64) (bool, err
 		`UPDATE sessions SET expires_at = ?
 		 WHERE id = ? AND revoked_at IS NULL AND activated_at IS NOT NULL
 		   AND expires_at < ? AND ? > ?
-		   AND device_id IN (SELECT id FROM devices WHERE revoked_at IS NULL)`,
+		   AND `+sessionDeviceLive,
 		expiresAt, sessionID, expiresAt, expiresAt, now)
 	if err != nil {
 		return false, fmt.Errorf("store: extend session: %w", err)
@@ -249,7 +254,7 @@ func (s *Store) TouchSession(sessionID string, at int64) (bool, error) {
 	result, err := s.db.Exec(
 		`UPDATE sessions SET last_seen_at = ?
 		 WHERE id = ? AND revoked_at IS NULL AND last_seen_at IS NOT ?
-		   AND device_id IN (SELECT id FROM devices WHERE revoked_at IS NULL)`,
+		   AND `+sessionDeviceLive,
 		at, sessionID, at)
 	if err != nil {
 		return false, fmt.Errorf("store: touch session: %w", err)
