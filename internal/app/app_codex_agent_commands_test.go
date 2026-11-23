@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -181,21 +180,45 @@ func TestAgentCommandReachesTheTrayRestAndInventory(t *testing.T) {
 // terminalWire is a fake app-server's background terminals: it records
 // what it is asked and answers from the processes each thread runs.
 type terminalWire struct {
-	mu         sync.Mutex
-	cleaned    []string
-	terminated []string
-	listed     []string
+	mu          sync.Mutex
+	cleaned     []string
+	terminated  []string
+	listed      []string
+	interrupted []string
 	// terminate answers a terminate in a thread.
 	terminate func(providerThreadID, processID string) (bool, error)
 	// list answers the item ids a thread runs.
 	list func(providerThreadID string) ([]string, error)
 	// onClean runs after a clean is recorded, outside the lock.
 	onClean func(providerThreadID string)
+	// onInterrupt runs after an agent's interrupt is recorded, outside the
+	// lock, before Codex answers it.
+	onInterrupt func(childThreadID string)
 }
 
-func (w *terminalWire) session() *codex.Session {
+// session is the wire's session of threadID. Its agent threads are
+// childCodexThread under spawn-1 and child-1 under spawn-live, and what it
+// reports reaches app's router as the token session's frames.
+func (w *terminalWire) session(app *App, threadID, token string) *codex.Session {
 	return codex.NewBackgroundTerminalsTestSession(codex.BackgroundTerminalsTestWire{
 		RootThreadID: rootCodexThread,
+		Children:     map[string]string{childCodexThread: "spawn-1", "child-1": "spawn-live"},
+		OnEvent: func(evt provider.ProviderEvent) {
+			evt.ThreadID, evt.SessionToken = threadID, token
+			if err := app.triage.Handle(evt); err != nil {
+				panic(err)
+			}
+		},
+		InterruptChild: func(_ context.Context, childThreadID, _ string) error {
+			w.mu.Lock()
+			w.interrupted = append(w.interrupted, childThreadID)
+			onInterrupt := w.onInterrupt
+			w.mu.Unlock()
+			if onInterrupt != nil {
+				onInterrupt(childThreadID)
+			}
+			return nil
+		},
 		Clean: func(_ context.Context, providerThreadID string) error {
 			w.mu.Lock()
 			w.cleaned = append(w.cleaned, providerThreadID)
@@ -236,7 +259,13 @@ func (w *terminalWire) calls() (cleaned, terminated, listed []string) {
 }
 
 func putCodexWire(app *App, threadID string, wire *terminalWire) {
-	app.sessionManager().put(threadID, session{Provider: string(provider.Codex), Token: "tok", Codex: wire.session()})
+	putCodexWireAs(app, threadID, wire, "tok")
+}
+
+// putCodexWireAs makes wire's session the live session of threadID, as the
+// session token names.
+func putCodexWireAs(app *App, threadID string, wire *terminalWire, token string) {
+	app.sessionManager().put(threadID, session{Provider: string(provider.Codex), Token: token, Codex: wire.session(app, threadID, token)})
 }
 
 // threadNotFound is Codex's answer for a thread it has not loaded.
@@ -288,47 +317,100 @@ func TestCodexCommandStopReachesTheTableThatRunsIt(t *testing.T) {
 	}
 }
 
-// Codex's false is no proof the process is gone, so the stop asks the
-// thread's list. A command the list still holds is still running and the
-// stop fails naming it; a command the list no longer holds, the stopped
-// one or another of that thread's, has ended and leaves the tray, and so
-// does every command of a thread Codex no longer has loaded.
-func TestCodexCommandStopChecksAFalseAnswerAgainstTheList(t *testing.T) {
+// Codex's false says it did not stop the process, and nothing else: an
+// exited command's process has left the table, and a command that is
+// starting is not in it yet, since Codex reports the start first. So the
+// stop leaves every command live, the stopped one too, says Codex did not
+// stop it, and asks nothing more. A thread Codex no longer has loaded
+// answers "thread not found", which is the thread's unload: its commands
+// end.
+func TestCodexCommandStopFalseLeavesTheCommandsLive(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithTriage(t)
 	threadID := createCodexAgentCommandThread(t, app, "thread-agent-command-false")
-	seedCodexAgentCommand(t, app, threadID, "stuck-cmd", "1001", "spawn-1")
-	seedCodexAgentCommand(t, app, threadID, "exited-cmd", "1002", "spawn-1")
-	seedCodexCommand(t, app, threadID, "unloaded-cmd", "1003", "spawn-2", codexScope("gone-thread"))
+	seedCodexAgentCommand(t, app, threadID, "exited-cmd", "1001", "spawn-1")
+	seedCodexAgentCommand(t, app, threadID, "starting-cmd", "1002", "spawn-1")
 	wire := &terminalWire{
 		terminate: func(providerThreadID, _ string) (bool, error) {
-			if providerThreadID == "gone-thread" {
+			if providerThreadID == "child-1" {
 				return false, threadNotFound(providerThreadID)
 			}
 			return false, nil
 		},
-		list: func(string) ([]string, error) { return []string{"stuck-cmd"}, nil },
+		// Neither is in the table: one left it, one is not in it yet.
+		list: func(string) ([]string, error) { return nil, nil },
 	}
 	putCodexWire(app, threadID, wire)
 
-	stopped, err := app.StopCodexBackgroundCommand(threadID, "stuck-cmd")
-	if err == nil || stopped || !strings.Contains(err.Error(), "still running") || !strings.Contains(err.Error(), "pnpm run dev") {
-		t.Fatalf("stop Codex did not carry out = (%v, %v), want an error naming the running command", stopped, err)
+	stopped, err := app.StopCodexBackgroundCommand(threadID, "exited-cmd")
+	if err == nil || stopped || !strings.Contains(err.Error(), "Codex did not stop it") || !strings.Contains(err.Error(), "pnpm run dev") {
+		t.Fatalf("stop Codex answered false = (%v, %v), want an error naming the command Codex did not stop", stopped, err)
 	}
-	if _, ok := app.triage.LiveCodexCommand(threadID, "stuck-cmd"); !ok {
-		t.Fatal("a command the list still holds left the tray")
+	for _, id := range []string{"exited-cmd", "starting-cmd"} {
+		if _, ok := app.triage.LiveCodexCommand(threadID, id); !ok {
+			t.Fatalf("%s left the live work on Codex's false", id)
+		}
 	}
-	if _, ok := app.triage.LiveCodexCommand(threadID, "exited-cmd"); ok {
-		t.Fatal("a command of the listed thread that the list does not hold stayed live")
+	if _, _, listed := wire.calls(); len(listed) != 0 {
+		t.Fatalf("lists = %v, want none: a list is no evidence", listed)
 	}
+
+	seedCodexCommand(t, app, threadID, "unloaded-cmd", "1003", "spawn-live", codexScope("child-1"))
 	if stopped, err := app.StopCodexBackgroundCommand(threadID, "unloaded-cmd"); err != nil || stopped {
 		t.Fatalf("stop in a thread Codex no longer has loaded = (%v, %v), want (false, nil)", stopped, err)
 	}
-	if count := app.triage.CountLiveCodexBackgroundTasks(threadID); count != 1 {
-		t.Fatalf("live work = %d, want only the command Codex still runs", count)
+	if _, ok := app.triage.LiveCodexCommand(threadID, "unloaded-cmd"); ok {
+		t.Fatal("a command of a thread Codex answered not found stayed live")
 	}
-	if _, _, listed := wire.calls(); !slices.Equal(listed, []string{childCodexThread}) {
-		t.Fatalf("lists = %v, want one for the false answer and none for the unloaded thread", listed)
+}
+
+// A stop goes to the session triage read the command in. A replacement
+// session committed after the read gets nothing: its process table is
+// another table, and the same process id there names another process.
+func TestCodexCommandStopGoesOnlyToTheSessionThatRunsIt(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	threadID := createCodexAgentCommandThread(t, app, "thread-agent-command-replaced")
+	seedCodexCommand(t, app, threadID, "root-cmd", "1001", "", codexScope(rootCodexThread))
+	putCodexWire(app, threadID, &terminalWire{})
+	command, ok := app.triage.LiveCodexCommand(threadID, "root-cmd")
+	if !ok {
+		t.Fatal("no live command to stop")
+	}
+
+	app.triage.MarkThreadActive(threadID, "tok-2")
+	replacement := &terminalWire{}
+	putCodexWireAs(app, threadID, replacement, "tok-2")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if stopped, err := app.stopCodexCommand(ctx, threadID, command); err == nil || stopped {
+		t.Fatalf("stop after the session was replaced = (%v, %v), want a refusal", stopped, err)
+	}
+	if _, terminated, _ := replacement.calls(); len(terminated) != 0 {
+		t.Fatalf("the replacement session was asked to terminate %v", terminated)
+	}
+}
+
+// Codex gives an exited process's id to the next process it starts, which
+// can be before the exited command's completion arrives. A stop of the
+// exited command is refused rather than sent: it would terminate the newer
+// command's process.
+func TestCodexCommandStopRefusesAProcessIDANewerCommandHolds(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	threadID := createCodexAgentCommandThread(t, app, "thread-agent-command-reused")
+	seedCodexAgentCommand(t, app, threadID, "old-cmd", "1001", "spawn-1")
+	seedCodexAgentCommand(t, app, threadID, "new-cmd", "1001", "spawn-1")
+	wire := &terminalWire{}
+	putCodexWire(app, threadID, wire)
+	if stopped, err := app.StopCodexBackgroundCommand(threadID, "old-cmd"); err == nil || stopped || !strings.Contains(err.Error(), "another command") {
+		t.Fatalf("stop of the command whose process id was reused = (%v, %v), want a refusal", stopped, err)
+	}
+	if _, terminated, _ := wire.calls(); len(terminated) != 0 {
+		t.Fatalf("terminate calls = %v, want none: process 1001 is the newer command's", terminated)
+	}
+	if stopped, err := app.StopCodexBackgroundCommand(threadID, "new-cmd"); err != nil || !stopped {
+		t.Fatalf("stop of the newer command = (%v, %v), want (true, nil)", stopped, err)
 	}
 }
 
@@ -411,7 +493,9 @@ func TestCleanCodexBackgroundTerminalsReachesEveryThreadAndEndsNothing(t *testin
 	if err := app.CleanCodexBackgroundTerminals(threadID); err != nil {
 		t.Fatal(err)
 	}
-	if cleaned, _, _ := wire.calls(); !slices.Equal(cleaned, []string{rootCodexThread, childCodexThread}) {
+	cleaned, _, _ := wire.calls()
+	slices.Sort(cleaned)
+	if !slices.Equal(cleaned, []string{childCodexThread, rootCodexThread}) {
 		t.Fatalf("cleaned threads = %v, want the root thread and the agent's", cleaned)
 	}
 	if count := app.triage.CountLiveCodexBackgroundTasks(threadID); count != 1 {
@@ -419,10 +503,23 @@ func TestCleanCodexBackgroundTerminalsReachesEveryThreadAndEndsNothing(t *testin
 	}
 }
 
+// revertCodexCommands runs a revert's stop of the thread's Codex commands on
+// its live session.
+func revertCodexCommands(t *testing.T, app *App, threadID string, within time.Duration) error {
+	t.Helper()
+	live, ok := app.activeCodexSession(threadID)
+	if !ok {
+		t.Fatal("no live Codex session to revert on")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), within)
+	defer cancel()
+	return app.stopCodexCommandsBeforeRevert(ctx, threadID, live)
+}
+
 // A revert truncates the turns the commands came from, so it waits until
 // Codex has ended every one: a command leaves by its own item/completed or
-// when its thread's list no longer holds it, and a command that started
-// in a thread after that thread was cleaned gets a clean of its own.
+// by its thread's unload, and a command that started in a thread after
+// that thread was cleaned gets a clean of its own.
 func TestRevertWaitsForEveryCodexCommandToEnd(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithTriage(t)
@@ -430,41 +527,106 @@ func TestRevertWaitsForEveryCodexCommandToEnd(t *testing.T) {
 	seedCodexCommand(t, app, threadID, "root-cmd", "1001", "", codexScope(rootCodexThread))
 	var once sync.Once
 	wire := &terminalWire{
-		list: func(providerThreadID string) ([]string, error) {
-			if providerThreadID != rootCodexThread {
-				return nil, nil
+		onClean: func(providerThreadID string) {
+			switch providerThreadID {
+			case rootCodexThread:
+				// An agent starts a command while the root thread is cleaned,
+				// and the root command's completion arrives after.
+				once.Do(func() {
+					seedCodexAgentCommand(t, app, threadID, "late-agent-cmd", "2001", "spawn-1")
+					go completeCodexCommand(t, app, threadID, "root-cmd", "", codexScope(rootCodexThread))
+				})
+			case childCodexThread:
+				completeCodexCommand(t, app, threadID, "late-agent-cmd", "spawn-1", codexScope(childCodexThread))
 			}
-			// The root command is still running when the root thread is
-			// first listed; an agent starts a command meanwhile, and the
-			// root command's own completion arrives after.
-			once.Do(func() {
-				seedCodexAgentCommand(t, app, threadID, "late-agent-cmd", "2001", "spawn-1")
-				go func() {
-					meta := json.RawMessage(`{"source":"unifiedExecStartup","item_status":"completed","toolName":"command_execution"}`)
-					if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventToolComplete, ThreadID: threadID, ItemID: "root-cmd", ItemType: "commandExecution", ProcessScope: codexScope(rootCodexThread), Meta: meta, Timestamp: time.Now()}); err != nil {
-						t.Errorf("root command completion: %v", err)
-					}
-				}()
-			})
-			if _, live := app.triage.LiveCodexCommand(threadID, "root-cmd"); live {
-				return []string{"root-cmd"}, nil
-			}
-			return nil, nil
 		},
 	}
 	putCodexWire(app, threadID, wire)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := app.stopCodexCommandsBeforeRevert(ctx, threadID); err != nil {
+	if err := revertCodexCommands(t, app, threadID, 5*time.Second); err != nil {
 		t.Fatalf("revert's stop: %v", err)
 	}
 	if count := app.triage.CountLiveCodexBackgroundTasks(threadID); count != 0 {
 		t.Fatalf("live work after the revert's stop = %d, want 0", count)
 	}
-	if cleaned, _, _ := wire.calls(); !slices.Equal(cleaned, []string{rootCodexThread, childCodexThread}) {
-		t.Fatalf("cleaned threads = %v, want the root thread, then the agent's thread for its later command", cleaned)
+	if cleaned, _, listed := wire.calls(); !slices.Equal(cleaned, []string{rootCodexThread, childCodexThread}) || len(listed) != 0 {
+		t.Fatalf("cleaned threads = %v, lists %v; want the root thread, then the agent's thread for its later command, and no list", cleaned, listed)
 	}
+}
+
+// A consented revert keeps the session, and with it the thread's agents,
+// which could start a command after any check. It interrupts each active
+// agent first, and handles the events read before Codex answered the
+// interrupt, so the command an agent started just before its turn ended is
+// counted and cleaned.
+func TestRevertStopsTheAgentsAndCountsTheirLastCommand(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	threadID := createCodexAgentCommandThread(t, app, "thread-agent-command-revert-agents")
+	seedCodexSubagentLaunchRow(t, app, threadID, "spawn-live", time.Now().UnixMilli())
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	startMeta, err := json.Marshal(map[string]any{
+		"source": "unifiedExecStartup", "item_status": "inProgress", "process_id": "3001",
+		"toolName": "command_execution", "input": map[string]any{"command": "pnpm run dev"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := &terminalWire{
+		// The agent's command start was read before the interrupt's answer
+		// and still waits in the thread's event queue.
+		onInterrupt: func(string) {
+			start := provider.ProviderEvent{Kind: provider.EventToolStart, ThreadID: threadID, ItemID: "last-agent-cmd", ItemType: "commandExecution", ParentToolUseID: "spawn-live", ProcessScope: codexScope("child-1"), Meta: startMeta, SessionToken: "tok", Timestamp: time.Now()}
+			app.providerEvents.enqueue(threadID, start, func(evt provider.ProviderEvent) {
+				<-release
+				if err := app.triage.Handle(evt); err != nil {
+					t.Errorf("agent command start: %v", err)
+				}
+			})
+		},
+		onClean: func(providerThreadID string) {
+			if providerThreadID == "child-1" {
+				completeCodexCommand(t, app, threadID, "last-agent-cmd", "spawn-live", codexScope("child-1"))
+			}
+		},
+	}
+	putCodexWire(app, threadID, wire)
+	go func() {
+		waitUntil(t, 5*time.Second, func() bool { return providerEventDrainWaiting(app, threadID) })
+		releaseOnce.Do(func() { close(release) })
+	}()
+
+	if err := revertCodexCommands(t, app, threadID, 5*time.Second); err != nil {
+		t.Fatalf("revert's stop: %v", err)
+	}
+	wire.mu.Lock()
+	interrupted := slices.Clone(wire.interrupted)
+	wire.mu.Unlock()
+	if !slices.Equal(interrupted, []string{"child-1"}) {
+		t.Fatalf("interrupted agents = %v, want the active agent's thread", interrupted)
+	}
+	cleaned, _, _ := wire.calls()
+	slices.Sort(cleaned)
+	if !slices.Equal(cleaned, []string{"child-1", rootCodexThread}) {
+		t.Fatalf("cleaned threads = %v, want the root thread and the agent's, which ran the last command", cleaned)
+	}
+	if _, live := app.triage.LiveCodexCommand(threadID, "last-agent-cmd"); live {
+		t.Fatal("the revert returned with the agent's last command still live")
+	}
+}
+
+// providerEventDrainWaiting reports whether a caller waits for threadID's
+// queued provider events to be handled.
+func providerEventDrainWaiting(app *App, threadID string) bool {
+	q := app.providerEvents.lookup(threadID)
+	if q == nil {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.changed != nil
 }
 
 // A revert whose commands Codex still runs when its deadline passes fails
@@ -474,77 +636,14 @@ func TestRevertFailsNamingTheCodexCommandsStillRunning(t *testing.T) {
 	app := newTestAppWithTriage(t)
 	threadID := createCodexAgentCommandThread(t, app, "thread-agent-command-revert-fail")
 	seedCodexAgentCommand(t, app, threadID, "stuck-cmd", "1001", "spawn-1")
-	wire := &terminalWire{list: func(string) ([]string, error) { return []string{"stuck-cmd"}, nil }}
+	wire := &terminalWire{}
 	putCodexWire(app, threadID, wire)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	err := app.stopCodexCommandsBeforeRevert(ctx, threadID)
+	err := revertCodexCommands(t, app, threadID, 200*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "still running") || !strings.Contains(err.Error(), "pnpm run dev") {
 		t.Fatalf("revert's stop = %v, want a failure naming the running command", err)
 	}
 	if _, live := app.triage.LiveCodexCommand(threadID, "stuck-cmd"); !live {
 		t.Fatal("a failed revert's stop ended the command Codex still runs")
-	}
-}
-
-// A close item names an agent whose thread runs commands. The close does
-// not say the thread is gone, so the app asks the thread's list: a close
-// that succeeded removed the thread, which answers "thread not found", and
-// its commands end; a close that failed left it loaded, its list still
-// holds them, and they stay.
-func TestCodexCloseItemEndsCommandsOnlyWhenTheThreadIsGone(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name     string
-		list     func(string) ([]string, error)
-		wantLive bool
-	}{
-		{"close succeeded", func(threadID string) ([]string, error) { return nil, threadNotFound(threadID) }, false},
-		{"close failed", func(string) ([]string, error) { return []string{"agent-cmd"}, nil }, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			app := newTestAppWithStore(t)
-			app.triage = app.newTriageRouter(app.store)
-			threadID := createCodexAgentCommandThread(t, app, "thread-close-"+strings.ReplaceAll(tc.name, " ", "-"))
-			seedCodexAgentCommand(t, app, threadID, "agent-cmd", "1001", "spawn-1")
-			wire := &terminalWire{list: tc.list}
-			putCodexWire(app, threadID, wire)
-
-			closeMeta, err := json.Marshal(map[string]any{"toolName": "close_agent", "item_status": "completed", "input": map[string]any{"tool": "close_agent", "receiverThreadIds": []string{childCodexThread}}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			handleCodexFrame(t, app, threadID, provider.ProviderEvent{Kind: provider.EventTurnStart, TurnID: "close-turn"})
-			handleCodexFrame(t, app, threadID, provider.ProviderEvent{Kind: provider.EventToolComplete, ItemID: "close-1", ItemType: "close_agent", TurnID: "close-turn", Meta: closeMeta})
-			app.codexScopeChecks.Wait()
-
-			if _, _, listed := wire.calls(); !slices.Equal(listed, []string{childCodexThread}) {
-				t.Fatalf("lists = %v, want one of the closed agent's thread", listed)
-			}
-			if _, live := app.triage.LiveCodexCommand(threadID, "agent-cmd"); live != tc.wantLive {
-				t.Fatalf("command live = %v after the check, want %v", live, tc.wantLive)
-			}
-		})
-	}
-}
-
-// The hook only asks; when the check cannot run, the commands stay live.
-func TestCodexCloseCheckFailureKeepsTheCommands(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.triage = app.newTriageRouter(app.store)
-	threadID := createCodexAgentCommandThread(t, app, "thread-close-check-fails")
-	seedCodexAgentCommand(t, app, threadID, "agent-cmd", "1001", "spawn-1")
-	putCodexWire(app, threadID, &terminalWire{list: func(string) ([]string, error) { return nil, errors.New("pipe closed") }})
-	check, ok := app.triage.CodexScopeCheckFor(threadID, childCodexThread)
-	if !ok {
-		t.Fatal("no check for a thread with a live command")
-	}
-	app.runCodexScopeCheck(threadID, check)
-	app.codexScopeChecks.Wait()
-	if _, live := app.triage.LiveCodexCommand(threadID, "agent-cmd"); !live {
-		t.Fatal("a check that failed ended the command")
 	}
 }

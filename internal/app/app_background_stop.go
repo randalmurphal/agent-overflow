@@ -72,19 +72,19 @@ func (a *App) StopBackgroundTasks(threadID string, launchIDs []string) ([]Backgr
 	if err != nil {
 		return nil, fmt.Errorf("stop background tasks: load thread %s: %w", threadID, err)
 	}
-	cutoff := time.Now().UnixMilli() - store.BackgroundTaskRetentionMillis
-	rows, err := a.store.ListLiveBackgroundTasks(threadID, cutoff)
-	if err != nil {
-		return nil, fmt.Errorf("stop background tasks: list live background tasks: %w", err)
-	}
 	var results []BackgroundTaskStop
 	switch kind {
 	case string(provider.Claude):
+		cutoff := time.Now().UnixMilli() - store.BackgroundTaskRetentionMillis
+		rows, err := a.store.ListLiveBackgroundTasks(threadID, cutoff)
+		if err != nil {
+			return nil, fmt.Errorf("stop background tasks: list live background tasks: %w", err)
+		}
 		if results, err = a.stopClaudeBackgroundTasks(threadID, rows, named); err != nil {
 			return nil, err
 		}
 	case string(provider.Codex):
-		results = a.stopCodexBackgroundTasks(threadID, rows, named)
+		results = a.stopCodexBackgroundTasks(threadID, named)
 	default:
 		return nil, fmt.Errorf("stop background tasks: thread %s has provider %q", threadID, kind)
 	}
@@ -229,46 +229,21 @@ func stoppedOwner(row store.Item, byID map[string]store.Item, stoppedRoots map[s
 }
 
 // stopCodexBackgroundTasks interrupts each named live Codex subagent and
-// stops each named live background command in the Codex thread that runs
-// it (stopCodexCommand), so an unnamed command keeps running. Every stop
-// shares one deadline.
-func (a *App) stopCodexBackgroundTasks(threadID string, rows []store.Item, named []string) []BackgroundTaskStop {
-	now := time.Now().UnixMilli()
-	rows = append(rows, a.triage.ListLiveCodexBackgroundTasks(threadID, now, now-store.BackgroundTaskRetentionMillis)...)
-	settled := make(map[string]bool)
-	for _, row := range rows {
-		if row.CompletionOf != "" {
-			settled[row.CompletionOf] = true
-		}
-	}
-	terminals := make(map[string]bool)
-	for _, row := range rows {
-		if row.CompletionOf == "" && row.Kind == "tool_call" && row.IsBackground && row.Status == "running" && !settled[row.ID] {
-			terminals[row.ID] = true
-		}
-	}
-	agents := make(map[string]bool)
-	for _, agent := range a.triage.ListLiveCodexAgentTasks(threadID) {
-		agents[agent.ID] = true
-		delete(terminals, agent.ID)
-	}
-
+// stops each named live command in the Codex thread that runs it
+// (stopCodexCommand), so an unnamed command keeps running. A named launch
+// that is neither has ended. Every stop shares one deadline.
+func (a *App) stopCodexBackgroundTasks(threadID string, named []string) []BackgroundTaskStop {
 	results := make([]BackgroundTaskStop, len(named))
-	var stops []int
 	for i, id := range named {
 		results[i] = BackgroundTaskStop{LaunchItemID: id, Outcome: BackgroundStopEnded}
-		if agents[id] || terminals[id] {
-			stops = append(stops, i)
-		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), codexapp.BackgroundTerminalStopTimeout)
 	defer cancel()
 	codexApp := a.codexAppService()
-	runBounded(len(stops), backgroundStopsInFlight, func(j int) {
-		i := stops[j]
+	runBounded(len(named), backgroundStopsInFlight, func(i int) {
 		var stopped bool
 		var err error
-		if agents[named[i]] {
+		if a.triage.CodexAgentIsLive(threadID, named[i]) {
 			stopped, err = codexApp.StopSubagent(ctx, threadID, named[i])
 		} else if command, live := a.triage.LiveCodexCommand(threadID, named[i]); live {
 			stopped, err = a.stopCodexCommand(ctx, threadID, command)

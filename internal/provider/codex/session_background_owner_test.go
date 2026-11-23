@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
+
+	"agent-overflow/internal/provider"
 )
 
 // An agent's terminal lives in the agent's own Codex thread, whose process
@@ -74,15 +78,27 @@ func TestBackgroundTerminalRPCsRefuseAnUnaddressableScope(t *testing.T) {
 }
 
 // An agent thread the app-server no longer has loaded answers "thread not
-// found", which says none of its processes is left. The route of an agent
-// a close item named ends with that answer; an agent no close named keeps
-// its route, because Codex loads an idle agent again when it is addressed.
-// The root thread's refusal is a plain error.
+// found". That answer is the thread's unload, reported as its notLoaded
+// status naming its process scope, which ends its commands. The route of an
+// agent a close item named ends with it; an agent no close named keeps its
+// route, because Codex loads an idle agent again when it is addressed. The
+// root thread's refusal is a plain error.
 func TestBackgroundTerminalRPCsReadAnUnloadedAgentThread(t *testing.T) {
 	t.Parallel()
-	s, capturePath := newCapturingSession(t, "codex-root-thread")
+	var (
+		mu     sync.Mutex
+		events []provider.ProviderEvent
+	)
+	s, capturePath := newCapturingSessionEmitting(t, "codex-root-thread", func(evt provider.ProviderEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, evt)
+	})
+	s.mu.Lock()
 	s.collab.childParentByThread = map[string]string{"codex-closed-thread": "spawn-1", "codex-idle-thread": "spawn-2"}
-	s.collab.closedChildren = map[string]bool{"codex-closed-thread": true}
+	s.collab.childResidency = map[string]childResidency{"codex-closed-thread": {closed: true}}
+	s.collab.childRuntimeByThread = map[string]childRuntimeState{}
+	s.mu.Unlock()
 
 	refuse := func(threadID string) {
 		t.Helper()
@@ -100,6 +116,18 @@ func TestBackgroundTerminalRPCsReadAnUnloadedAgentThread(t *testing.T) {
 			t.Fatalf("terminate in unloaded %s: err = %v, want ErrBackgroundTerminalThreadNotLoaded", threadID, err)
 		}
 	}
+	mu.Lock()
+	got := append([]provider.ProviderEvent(nil), events...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("events = %+v, want one unload per thread", got)
+	}
+	for i, want := range []struct{ thread, spawn string }{{"codex-closed-thread", "spawn-1"}, {"codex-idle-thread", "spawn-2"}} {
+		evt := got[i]
+		if evt.Kind != provider.EventSubagentStatus || evt.ItemID != want.spawn || evt.ProcessScope.ID != want.thread || !strings.Contains(string(evt.Meta), `"notLoaded"`) {
+			t.Fatalf("event %d = %+v, want %s's notLoaded on %s", i, evt, want.thread, want.spawn)
+		}
+	}
 	if parent := s.parentToolUseForProviderThread("codex-closed-thread"); parent != "" {
 		t.Fatalf("closed agent's route = %q after Codex said its thread is gone, want none", parent)
 	}
@@ -113,4 +141,32 @@ func TestBackgroundTerminalRPCsReadAnUnloadedAgentThread(t *testing.T) {
 		t.Fatalf("clean refused for the root thread: err = %v, want a plain error", err)
 	}
 	waitForCapturedFrames(t, capturePath, 3, backgroundTerminalTestTimeout)
+}
+
+// The unload "thread not found" reports waits behind the frames still queued
+// for the session's dispatch, so it cannot pass a command start that came
+// before it.
+func TestThreadNotFoundWaitsBehindTheChildBacklog(t *testing.T) {
+	t.Parallel()
+	var events []provider.ProviderEvent
+	s := newMultiAgentV2RoutingSession(t, func(evt provider.ProviderEvent) { events = append(events, evt) })
+	if !s.registerHistoricalChildOwnership("root-provider-thread", "codex-child-thread", "/root/child", "spawn-1") {
+		t.Fatal("register ownership")
+	}
+	// The read loop holds the dispatch token, with the agent's command start
+	// still queued behind the frame it is dispatching.
+	s.earlyFramesMu.Lock()
+	s.dispatching = true
+	s.earlyFramesMu.Unlock()
+	s.enqueueEarlyFrames([]deferredChildWireEvent{{Method: "item/started", Params: childCommandFrame("codex-child-thread", "cmd-1", "inProgress")}})
+
+	s.observeChildThreadGone("codex-child-thread")
+	if len(events) != 0 {
+		t.Fatalf("the unload passed the queue: %+v", events)
+	}
+	s.endDispatch()
+	if len(events) != 2 || events[0].Kind != provider.EventToolStart || events[0].ItemID != "cmd-1" ||
+		events[1].Kind != provider.EventSubagentStatus || events[1].ProcessScope.ID != "codex-child-thread" {
+		t.Fatalf("events after the queue = %+v, want the command start, then the thread's unload", events)
+	}
 }

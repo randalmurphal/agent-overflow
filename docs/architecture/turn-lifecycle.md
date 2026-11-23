@@ -149,32 +149,37 @@ and every reader of live work counts it: the idle reaper, the account
 switch, rest, the background inventory and Stop All. The queue gate counts
 top-level commands only; `codex_background_live.go` states the rule and
 why. An agent's turn ending, erroring or being interrupted ends none of
-its commands. A command leaves the live work in one of four ways:
+its commands. A command leaves the live work in one of three ways:
 
 - its typed `item/completed` arrives;
 - its table unloads: the thread's `notLoaded` status, which Codex
-  publishes when it shuts a thread down and kills its processes, or the
-  review run's end;
-- a replacement session starts, or the session ends;
-- a check of its table confirms it gone (`ConfirmCodexScope`): the
-  table's list omits it, or the call answers that the thread is not
-  loaded. A check covers only the commands counted before it was pinned
-  (`CodexScopeCheck`), and only while the same session runs.
+  publishes when it shuts a thread down and kills its processes, a
+  "thread not found" answer to a request for the thread in the session
+  that runs it (the adapter reports it as the thread's `notLoaded`), or
+  the review run's end;
+- a replacement session starts, or the session ends.
 
-A Stop whose terminate answers false, a revert, and a V1 `close_agent`
-completion run that check. The close item is a hint, not proof: Codex
-writes it with the agent's previous status whether or not the close shut
-the agent down. Triage asks the app to check each closed agent's table
-that holds live commands (`SetCodexScopeCheckHook`); after a successful
-close the list answers "thread not found", and after a failed one it still
-lists the commands, which stay live. A clean's kills arrive as
-`item/completed`; a clean answered "thread not found" ends the table's
-counted commands as a check does.
+Nothing else ends a command, because Codex announces a command before it
+stores its process: a list omits that command as it omits one that has
+exited, and a terminate of it answers false. A Stop whose terminate
+answers false leaves the command live and says Codex did not stop it. A
+Stop goes to the session it read the command in, and is refused when
+another command now holds the command's process id. A V1 `close_agent`
+completion is a hint, not proof: Codex writes it with the agent's previous
+status whether or not the close shut the agent down, so it ends nothing
+here and the adapter asks the agent's thread whether Codex still has it
+loaded. A clean's kills arrive as `item/completed`.
 
-A command that leaves the live work before its `item/completed` keeps a
-bounded record without output until the session ends, so a completion
-Codex still writes stays that command's and follows the round rule above.
-Nothing is persisted while a command runs, so a restart starts with none.
+A revert stops the thread's active agents first, handles the events read
+before their interrupts were answered, cleans every table that runs a
+command, and waits for each command to leave by one of the three ways; at
+its deadline it fails, naming the commands still running, before anything
+is truncated.
+
+A command that leaves the live work before its `item/completed` keeps
+nothing, so a completion Codex writes after its table unloaded writes no
+row. Nothing is persisted while a command runs, so a restart starts with
+none.
 
 The retired `BackgroundClassifier` heuristic must not come back.
 Background authorization comes from the wire fields above; model

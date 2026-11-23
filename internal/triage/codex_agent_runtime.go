@@ -85,9 +85,9 @@ func (r *Router) ListLiveCodexAgentTasks(threadID string) []store.Item {
 	return items
 }
 
-// codexAgentIsLive reports whether id names a Codex agent whose runtime
+// CodexAgentIsLive reports whether id names a Codex agent whose runtime
 // copy ListLiveCodexAgentTasks serves.
-func (r *Router) codexAgentIsLive(threadID, id string) bool {
+func (r *Router) CodexAgentIsLive(threadID, id string) bool {
 	if id == "" {
 		return false
 	}

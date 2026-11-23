@@ -46,7 +46,16 @@ func (s *Session) rehydrateCollabOwnership(launches []ResumeCollabLaunch) {
 	s.mu.Lock()
 	generation := s.collabHistory.generation
 	s.mu.Unlock()
-	mapped := make([]string, 0, len(ownerships))
+	// Persisted spawn rows already exist on a reopen. The registrations run
+	// under the session's dispatch token, so every frame waits until each
+	// ownership edge in this resume set is registered, and endDispatch
+	// returns once the backlogs are delivered: each child's state is read
+	// after its backlog, so a status recovered from the read follows the
+	// frames that came before it.
+	if !s.takeDispatch() {
+		return
+	}
+	registered := make([]collabHistoryOwnership, 0, len(ownerships))
 	for _, ownership := range ownerships {
 		if !s.registerHistoricalChildOwnership("", ownership.ChildThreadID, ownership.AgentPath, ownership.ParentItemID) {
 			continue
@@ -60,12 +69,12 @@ func (s *Session) rehydrateCollabOwnership(launches []ResumeCollabLaunch) {
 			})
 		}
 		s.scheduleCollabMetadataRead(ownership.ChildThreadID, ownership.ParentItemID, ownership.LaunchMeta)
-		mapped = append(mapped, ownership.ChildThreadID)
+		registered = append(registered, ownership)
+	}
+	s.endDispatch()
+	for _, ownership := range registered {
 		s.enqueueCollabHistoryJob(collabHistoryJob{Ownership: ownership, Generation: generation})
 	}
-	// Persisted spawn rows already exist on a reopen. Drain only after every
-	// ownership edge in this resume set has been registered.
-	s.drainDeferredChildWireEvents(mapped...)
 }
 
 func collabResumeOwnerships(launches []ResumeCollabLaunch) ([]collabHistoryOwnership, error) {
@@ -279,7 +288,9 @@ func (s *Session) emitRecoveredChildUnload(providerThreadID, parentToolUseID, tu
 	}
 	event.TurnID = turnID
 	event.Meta = mergeMetaKeys(event.Meta, map[string]any{"recovered": true})
-	s.emitRecoveredChildStatus(providerThreadID, expectedLifecycleRevision, *event)
+	if s.emitRecoveredChildStatus(providerThreadID, expectedLifecycleRevision, *event) {
+		s.noteChildUnloaded(providerThreadID, true)
+	}
 }
 
 func (s *Session) readCollabHistoryWithRetry(providerThreadID string) (collabThreadSnapshot, error) {

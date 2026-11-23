@@ -439,8 +439,8 @@ func (c *Conn) open(
 		c.loaded[rootID] = struct{}{}
 		if earlyRootFrames := c.takeDeferredChildLocked(rootID); len(earlyRootFrames) > 0 {
 			// Enqueue BEFORE releasing routesMu so any subsequent frame routed
-			// to s by the reader goroutine sees earlyPending==true and drains
-			// these older frames first in strict FIFO order.
+			// to s by the reader goroutine queues behind these older frames
+			// in strict FIFO order.
 			s.enqueueEarlyFrames(earlyRootFrames)
 			hasEarlyFrames = true
 		}

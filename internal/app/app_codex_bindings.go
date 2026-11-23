@@ -54,10 +54,9 @@ type CodexAccountUsageBucket struct {
 // starts with it (stopCodexCommandsBeforeRevert).
 //
 // Codex answers before the processes are gone, so the answer ends no
-// command: each leaves the tray by its own item/completed, by its thread's
-// end, or when a list no longer holds it (triage codexExecTrackers). An
-// agent thread that is already gone has no processes left; its error is
-// read, and the commands it ran end with it.
+// command: each leaves the tray by its own item/completed or by its
+// thread's unload (triage codexExecTrackers). An agent thread that is
+// already gone answers "thread not found", which is that unload.
 //
 // Returns typed errors for:
 //
@@ -74,56 +73,68 @@ func (a *App) CleanCodexBackgroundTerminals(threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
+	session, err := a.codexCommandSession("clean codex background terminals", threadID, "")
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), codexapp.BackgroundTerminalStopTimeout)
 	defer cancel()
-	_, err := a.cleanCodexScopes(ctx, threadID, nil)
+	_, err = a.cleanCodexScopes(ctx, threadID, session, nil)
 	return err
 }
 
-// cleanCodexScopes cleans the root thread's processes, then those of each
-// Codex thread that runs a live command started after cleaned last cleaned
-// it, and returns what it cleaned: per scope, the latest command start the
-// clean covers. A nil cleaned cleans every scope with a live command.
-func (a *App) cleanCodexScopes(ctx context.Context, threadID string, cleaned map[string]uint64) (map[string]uint64, error) {
-	codexApp := a.codexAppService()
+// codexCommandSession returns the Codex session that runs threadID's
+// thread, and refuses when token is set and names another session: a
+// command's stop goes to the session triage read the command in and to no
+// other, since a replacement's process table is another table.
+func (a *App) codexCommandSession(action, threadID, token string) (*codex.Session, error) {
+	entry, active := a.sessionManager().get(threadID)
+	switch {
+	case !active:
+		return nil, fmt.Errorf("app: %s: no active session for thread %s", action, threadID)
+	case entry.Codex == nil:
+		return nil, fmt.Errorf("app: %s: thread %s is not a Codex thread", action, threadID)
+	case token != "" && entry.Token != token:
+		return nil, fmt.Errorf("app: %s: the session that ran it has ended", action)
+	}
+	return entry.Codex, nil
+}
+
+// cleanCodexScopes cleans, on session, the processes of the root thread when
+// cleaned is nil, and of each Codex thread that runs a live command cleaned
+// does not hold. It returns cleaned with the commands its cleans covered: a
+// clean covers the commands that had started when it was sent.
+func (a *App) cleanCodexScopes(ctx context.Context, threadID string, session *codex.Session, cleaned map[string]bool) (map[string]bool, error) {
+	scopes := map[string][]string{}
 	if cleaned == nil {
-		root, err := codexApp.RootProcessScope(threadID)
-		if err != nil {
-			return nil, err
+		root := session.RootProcessScope()
+		if root.ID == "" {
+			return nil, fmt.Errorf("app: clean codex background terminals: thread %s has no Codex thread yet", threadID)
 		}
-		var pin triage.CodexScopeCheck
-		if a.triage != nil {
-			pin = a.triage.PinCodexScopeCheck(threadID, root)
-		}
-		if err := codexApp.CleanBackgroundTerminals(ctx, threadID, root); err != nil {
-			return nil, err
-		}
-		cleaned = map[string]uint64{root: pin.Through}
+		cleaned = map[string]bool{}
+		scopes[root.ID] = nil
 	}
-	if a.triage == nil {
-		return cleaned, nil
-	}
-	newest := map[string]triage.CodexCommand{}
-	for _, command := range a.triage.LiveCodexCommands(threadID) {
-		if !command.Addressable || command.Seq <= cleaned[command.ScopeID] {
-			continue
-		}
-		if prior, ok := newest[command.ScopeID]; !ok || command.Seq > prior.Seq {
-			newest[command.ScopeID] = command
+	if a.triage != nil {
+		for _, command := range a.triage.LiveCodexCommands(threadID) {
+			if command.Addressable && !cleaned[command.LaunchID] {
+				scopes[command.ScopeID] = append(scopes[command.ScopeID], command.LaunchID)
+			}
 		}
 	}
 	var errs []error
-	for scopeID, command := range newest {
-		err := codexApp.CleanBackgroundTerminals(ctx, threadID, scopeID)
+	for scopeID, launches := range scopes {
+		err := session.CleanBackgroundTerminals(ctx, scopeID)
 		if errors.Is(err, codex.ErrBackgroundTerminalThreadNotLoaded) {
-			a.triage.ConfirmCodexScope(threadID, command.Check, nil, true)
+			// The thread's unload, which ends its commands.
 			err = nil
 		}
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		cleaned[scopeID] = command.Check.Through
+		for _, launchID := range launches {
+			cleaned[launchID] = true
+		}
 	}
 	return cleaned, errors.Join(errs...)
 }
@@ -134,10 +145,10 @@ func (a *App) cleanCodexScopes(ctx context.Context, threadID string, cleaned map
 // counterpart of StopClaudeTask.
 //
 // true: Codex terminated the process, and its item/completed takes the row
-// out of the tray. false, nil: the command had already ended; it has left
-// the tray. An error says why it could not be stopped: a command inside a
-// code review ends with the review, and one Codex still runs after the stop
-// is named so the person can try again.
+// out of the tray. false, nil: the command had already ended. An error says
+// why it was not stopped: Codex did not stop it, the command runs inside a
+// code review and ends with the review, or its process is no longer the one
+// the row names. The row stays until the command ends.
 //
 //ao:scope threads:operate
 func (a *App) StopCodexBackgroundCommand(threadID, launchID string) (bool, error) {
@@ -186,10 +197,21 @@ func (a *App) TerminateCodexBackgroundTerminal(threadID, processID string) (bool
 }
 
 // stopCodexCommand terminates command's process in the Codex thread that
-// runs it. Codex's false is no proof the process is gone (an exited
-// process the model polled has left the table before its end is written),
-// so false is checked against that thread's list: absent, the command has
-// ended (false, nil); still listed, the stop failed and says so.
+// runs it, on the session triage read command in. Just before it sends, it
+// checks that this session still runs the thread and that command still
+// holds its process id in its table (triage CodexCommandHoldsProcess):
+// Codex gives an exited process's id to the next process it starts, which
+// can be before the exited command's completion arrives. A process that
+// exits after that check, and whose id Codex gives to a new process before
+// it reads the request, is the window no check on this side closes; it is
+// as long as one request's trip.
+//
+// Codex's false means it did not stop the process: it had none by that id,
+// or the terminate failed (core unified_exec process_manager.rs
+// terminate_process). The command stays live until its own completion or
+// its thread's unload says it ended, and the error says Codex did not stop
+// it. A thread Codex no longer has loaded answers "thread not found", which
+// is its unload: the command has ended.
 func (a *App) stopCodexCommand(ctx context.Context, threadID string, command triage.CodexCommand) (bool, error) {
 	if command.ScopeID == "" {
 		return false, fmt.Errorf("app: stop codex command %q: Codex did not say which thread runs it", command.Summary)
@@ -200,61 +222,27 @@ func (a *App) stopCodexCommand(ctx context.Context, threadID string, command tri
 	if command.ProcessID == "" {
 		return false, fmt.Errorf("app: stop codex command %q: Codex has not named its process yet", command.Summary)
 	}
-	terminated, err := a.codexAppService().TerminateBackgroundTerminal(ctx, threadID, command.ScopeID, command.ProcessID)
-	notLoaded := errors.Is(err, codex.ErrBackgroundTerminalThreadNotLoaded)
-	if err != nil && !notLoaded {
+	session, err := a.codexCommandSession(fmt.Sprintf("stop codex command %q", command.Summary), threadID, command.Token)
+	if err != nil {
+		return false, err
+	}
+	if !a.triage.CodexCommandHoldsProcess(threadID, command) {
+		if _, live := a.triage.LiveCodexCommand(threadID, command.LaunchID); !live {
+			return false, nil
+		}
+		return false, fmt.Errorf("app: stop codex command %q: its process has exited and Codex gave process %s to another command; the row goes when Codex reports the end", command.Summary, command.ProcessID)
+	}
+	terminated, err := session.TerminateBackgroundTerminal(ctx, command.ScopeID, command.ProcessID)
+	switch {
+	case errors.Is(err, codex.ErrBackgroundTerminalThreadNotLoaded):
+		log.Printf("codex commands: thread %s: command %s's agent thread is gone, and the command with it", threadID, command.LaunchID)
+		return false, nil
+	case err != nil:
 		return false, fmt.Errorf("app: stop codex command %q: %w", command.Summary, err)
-	}
-	if terminated {
+	case terminated:
 		return true, nil
-	}
-	if err := a.confirmCodexScope(ctx, threadID, command.Check, notLoaded); err != nil {
-		return false, fmt.Errorf("app: stop codex command %q: Codex found no process to stop, and listing its processes failed: %w", command.Summary, err)
-	}
-	if _, live := a.triage.LiveCodexCommand(threadID, command.LaunchID); live {
-		return false, fmt.Errorf("app: stop codex command %q: Codex did not stop it, and it is still running", command.Summary)
-	}
-	log.Printf("codex commands: thread %s: command %s had already ended when its stop was sent", threadID, command.LaunchID)
-	return false, nil
-}
-
-// confirmCodexScope asks Codex which of check's scope's processes run, and
-// hands the answer to triage, which ends the commands it no longer holds
-// (ConfirmCodexScope). notLoaded skips the list: Codex already answered
-// that the thread is gone.
-func (a *App) confirmCodexScope(ctx context.Context, threadID string, check triage.CodexScopeCheck, notLoaded bool) error {
-	var listed []string
-	if !notLoaded {
-		terminals, err := a.codexAppService().ListBackgroundTerminals(ctx, threadID, check.ScopeID)
-		switch {
-		case errors.Is(err, codex.ErrBackgroundTerminalThreadNotLoaded):
-			notLoaded = true
-		case err != nil:
-			return err
-		}
-		for _, terminal := range terminals {
-			listed = append(listed, terminal.ItemID)
-		}
-	}
-	if ended := a.triage.ConfirmCodexScope(threadID, check, listed, notLoaded); len(ended) > 0 {
-		log.Printf("codex commands: thread %s: Codex no longer runs %v in %s; they left the live work before their item/completed", threadID, ended, check.ScopeID)
-	}
-	return nil
-}
-
-// runCodexScopeCheck answers the scope check triage asks for when a close
-// item names an agent that runs commands (triage.SetCodexScopeCheckHook).
-// It runs off the provider event worker, on joined work.
-func (a *App) runCodexScopeCheck(threadID string, check triage.CodexScopeCheck) {
-	started := a.codexScopeChecks.Go(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), codexapp.BackgroundTerminalStopTimeout)
-		defer cancel()
-		if err := a.confirmCodexScope(ctx, threadID, check, false); err != nil {
-			log.Printf("codex commands: thread %s: check of agent thread %s after its close failed; its commands stay live: %v", threadID, check.ScopeID, err)
-		}
-	})
-	if !started {
-		log.Printf("codex commands: thread %s: shutting down, so agent thread %s is not checked after its close", threadID, check.ScopeID)
+	default:
+		return false, fmt.Errorf("app: stop codex command %q: Codex did not stop it; the row goes when Codex reports the command ended", command.Summary)
 	}
 }
 

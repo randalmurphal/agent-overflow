@@ -1,12 +1,13 @@
 <script lang="ts">
   // Expanded body for the activity rail's Background segment. Lists
   // tray-eligible background tasks with a per-row stop and a bulk Stop
-  // All. A row's stop takes its provider's primitive: Claude stops a task
-  // by its task id (`StopClaudeTask`), Codex stops one command by its item
-  // id (`StopCodexBackgroundCommand`; on an older computer a root command
-  // by its process id, `TerminateCodexBackgroundTerminal`) or interrupts
-  // an owned subagent turn by launch id (`StopCodexSubagent`).
-  // Stop All is one `StopBackgroundTasks` call naming the provider rows,
+  // All. A row's stop takes its provider's primitive (`trayRowStop`):
+  // Claude stops a task by its task id (`StopClaudeTask`), Codex stops one
+  // command by its item id (`StopCodexBackgroundCommand`; on an older
+  // computer a root command by its process id,
+  // `TerminateCodexBackgroundTerminal`) or interrupts an owned subagent
+  // turn by launch id (`StopCodexSubagent`). Stop All is one
+  // `StopBackgroundTasks` call naming the provider rows that show a Stop,
   // however many there are, and renders the result it returns for each:
   // a failed stop on its row, a task that had already ended in a notice.
   // Remote jobs are cancelled through their own computers, a few at a time.
@@ -29,11 +30,8 @@
     type ProviderID,
   } from '../../providers/catalog';
   import {
-    codexCommandStopsByItem,
-    isCodexStoppableTask,
-    isCodexSubagentTask,
     trayRemoteJob,
-    trayRowStopTarget,
+    trayRowStop,
     trayTaskAgentInfo,
     trayTaskLabel,
     trayTaskScopeId,
@@ -128,18 +126,11 @@
     provider ? getProviderDefinition(provider).backgroundStop : 'none',
   );
 
-  // The provider rows Stop All names: the rows with a stop of their own,
-  // through the same helper as the rows' buttons, so the bulk button
-  // never disagrees with the rows beneath it. A Codex terminal is named
-  // without a process id too: the backend stops terminals thread-wide.
-  // The backend decides which named tasks get a stop of their own; a
-  // shell dies with the agent that owns it.
-  function stopAllNames(task: TrayTask): boolean {
-    if (task.status !== 'running' || task.launch === null || trayRemoteJob(task)) return false;
-    if (backgroundStop === 'codex-background-terminals') return isCodexStoppableTask(task);
-    return trayRowStopTarget(task, backgroundStop) !== null;
-  }
-  let stopAllTasks = $derived(tasks.filter(stopAllNames));
+  // The provider rows Stop All names: the rows that show a Stop, through
+  // the same handle as their buttons, so the bulk button never disagrees
+  // with the rows beneath it. The backend decides which named tasks get a
+  // stop of their own; a shell dies with the agent that owns it.
+  let stopAllTasks = $derived(tasks.filter((task) => trayRowStop(task, backgroundStop) !== null));
   let remoteTasks = $derived(tasks.filter((task) => task.status === 'running' && trayRemoteJob(task)));
   let canStopAll = $derived(stopAllTasks.length > 0 || remoteTasks.length > 0);
 
@@ -181,7 +172,9 @@
     stopErrors = next;
   }
 
-  async function onStopRow(rowId: string, stopTarget: string) {
+  // A row's Stop: a remote job's cancel, or the provider stop its row
+  // shows (trayRowStop), read from the row as it is now.
+  async function onStopRow(rowId: string) {
     if (!threadId) return;
     markStopping([rowId], true);
     setStopErrors([rowId], null);
@@ -190,30 +183,34 @@
     let keepMark = false;
     try {
       const task = tasks.find((task) => task.rowId === rowId);
-      const remote = task ? trayRemoteJob(task) : null;
       if (!task) return;
+      const remote = trayRemoteJob(task);
       if (remote) {
         await CancelThreadRemoteCommand(threadId, remote.computerId, remote.requestId);
         keepMark = true;
-      } else if (backgroundStop === 'claude-task') {
-        // False: the task had already ended, so no stop was sent. The
-        // backend announced the end, which takes the row out of the tray.
-        const stopped = await StopClaudeTask(threadId, stopTarget);
-        if (!stopped) addToast('info', 'That task had already ended.');
-      } else if (backgroundStop === 'codex-background-terminals') {
-        if (isCodexSubagentTask(task)) {
-          const stopped = await StopCodexSubagent(threadId, stopTarget);
-          if (!stopped) addToast('info', 'That subagent had already stopped.');
-          return;
-        }
-        // False: the command had already ended, so nothing was stopped,
-        // and the row leaves the tray. Say so instead of letting the click
-        // look ignored.
-        const terminated = task.launch && codexCommandStopsByItem(task.launch)
-          ? await StopCodexBackgroundCommand(threadId, stopTarget)
-          : await TerminateCodexBackgroundTerminal(threadId, stopTarget);
-        if (!terminated) {
-          addToast('info', 'That background terminal had already exited.');
+        return;
+      }
+      const stop = trayRowStop(task, backgroundStop);
+      if (!stop) return;
+      switch (stop.route) {
+        case 'claude-task':
+          // False: the task had already ended, so no stop was sent. The
+          // backend announced the end, which takes the row out of the tray.
+          if (!(await StopClaudeTask(threadId, stop.target))) addToast('info', 'That task had already ended.');
+          break;
+        case 'codex-subagent':
+          if (!(await StopCodexSubagent(threadId, stop.target))) addToast('info', 'That subagent had already stopped.');
+          break;
+        case 'codex-command':
+        case 'codex-process': {
+          // False: the command had already ended, so nothing was stopped,
+          // and the row leaves the tray. Say so instead of letting the
+          // click look ignored.
+          const terminated = stop.route === 'codex-command'
+            ? await StopCodexBackgroundCommand(threadId, stop.target)
+            : await TerminateCodexBackgroundTerminal(threadId, stop.target);
+          if (!terminated) addToast('info', 'That background terminal had already exited.');
+          break;
         }
       }
     } catch (err) {
@@ -276,11 +273,12 @@
     if (!threadId) return;
     const id = threadId;
     // A computer older than the item-id Stop cleans Codex background
-    // terminals thread-wide in Stop All, so a scoped tray stops those rows
-    // one by one and names only the rest. A row that stops by item id comes
-    // from a computer whose Stop All stops each named command alone.
-    const oneByOne = scoped && backgroundStop === 'codex-background-terminals'
-      ? stopAllTasks.filter((task) => !isCodexSubagentTask(task) && !(task.launch && codexCommandStopsByItem(task.launch)))
+    // terminals thread-wide in Stop All, so a scoped tray stops the rows
+    // that stop by process id one by one and names only the rest. A row
+    // that stops by item id comes from a computer whose Stop All stops each
+    // named command alone.
+    const oneByOne = scoped
+      ? stopAllTasks.filter((task) => trayRowStop(task, backgroundStop)?.route === 'codex-process')
       : [];
     const named = stopAllTasks.filter((task) => !oneByOne.includes(task));
     const remotes = remoteTasks;
@@ -292,7 +290,7 @@
       const providerStop = named.length === 0
         ? Promise.resolve<BackgroundTaskStop[]>([])
         : StopBackgroundTasks(id, named.map((task) => task.launch!.id));
-      const rowStops = oneByOne.map((task) => onStopRow(task.rowId, trayRowStopTarget(task, backgroundStop)!));
+      const rowStops = oneByOne.map((task) => onStopRow(task.rowId));
       const [stops, cancels] = await Promise.allSettled([providerStop, cancelRemoteJobs(id, remotes), ...rowStops]);
       if (stops.status === 'rejected') addErrorToast(`Failed to stop tasks: ${errString(stops.reason)}`, stops.reason);
       else renderStopResults(named, stops.value ?? []);
@@ -341,13 +339,13 @@
             job={remote}
             {threadId}
             isStopping={stoppingRows.has(task.rowId) || stopAllInFlight}
-            onStop={() => onStopRow(task.rowId, remote.requestId)}
+            onStop={() => onStopRow(task.rowId)}
           />
         {:else}
           <BackgroundTaskTrayRow
             {task}
             {provider}
-            stopTarget={trayRowStopTarget(task, backgroundStop)}
+            stopTarget={trayRowStop(task, backgroundStop)?.target ?? null}
             isStopping={stoppingRows.has(task.rowId)}
             stopError={stopErrors.get(task.rowId)}
             onStop={onStopRow}

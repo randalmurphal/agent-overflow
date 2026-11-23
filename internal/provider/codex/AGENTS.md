@@ -7,7 +7,10 @@ requests, notifications, queue behavior, collaboration, or history handling.
 
 ## Session and concurrency
 
-The read loop owns its private accounting state. Guard shared session state with
+A session's frames are dispatched one at a time by whoever holds its dispatch
+token: the read loop, or a publisher off the read loop delivering the frame
+queue (`dispatchFrame`, `takeDispatch`). That holder owns the dispatch path's
+private accounting state. Guard shared session state with
 the documented mutex or atomic, and never perform callbacks, provider writes,
 or event emission while holding state locks. `Close` must clear every
 session-scoped state group and settle pending requests.

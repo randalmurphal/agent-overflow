@@ -227,7 +227,7 @@ func TestStopBackgroundTasksClassifiesCodexLaunches(t *testing.T) {
 	if r := outcomes["gone"]; r.Outcome != BackgroundStopEnded {
 		t.Errorf("gone: %+v, want ended", r)
 	}
-	if !strings.Contains(outcomes["spawn-1"].Error, "stop Codex subagent") || !strings.Contains(outcomes["terminal-1"].Error, "terminate codex background terminal") {
+	if !strings.Contains(outcomes["spawn-1"].Error, "stop Codex subagent") || !strings.Contains(outcomes["terminal-1"].Error, "stop codex command") {
 		t.Errorf("spawn-1 %q and terminal-1 %q, want the subagent interrupted and the command terminated", outcomes["spawn-1"].Error, outcomes["terminal-1"].Error)
 	}
 }

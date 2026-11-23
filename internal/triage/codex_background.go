@@ -321,10 +321,6 @@ func (r *Router) observeCodexToolComplete(evt provider.ProviderEvent) error {
 		}
 	}
 
-	if evt.ItemType == "close_agent" {
-		r.checkClosedCodexScopes(evt)
-	}
-
 	// wait_agent completion: the parent just resumed after blocking on
 	// children. Each awaited child is terminal per the wait's
 	// agentsStates map. Find any backgrounded spawn_agent trackers
@@ -334,23 +330,6 @@ func (r *Router) observeCodexToolComplete(evt provider.ProviderEvent) error {
 		return r.resolveSubagentsForWait(evt)
 	}
 	return nil
-}
-
-// checkClosedCodexScopes asks for a check of each thread a close item names
-// that holds live commands. The item does not say the thread is gone: Codex
-// writes it with the agent's previous status when the close fails
-// (core tools/handlers/multi_agents/close_agent.rs). On a close that
-// succeeded the thread is already removed, and its list answers that it is
-// not loaded (ConfirmCodexScope).
-func (r *Router) checkClosedCodexScopes(evt provider.ProviderEvent) {
-	if r.codexScopeCheck == nil || r.frameRetired(evt.ThreadID, evt.SessionToken) {
-		return
-	}
-	for _, receiver := range decodeCodexItemMeta(evt.Meta).ReceiverThreadIDs {
-		if check, ok := r.CodexScopeCheckFor(evt.ThreadID, strings.TrimSpace(receiver)); ok {
-			r.codexScopeCheck(evt.ThreadID, check)
-		}
-	}
 }
 
 // observeCodexTurnComplete clears pending agent starts and releases held

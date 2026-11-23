@@ -220,10 +220,10 @@ type sessionSettingsState struct {
 // surfaces the wire fields; it doesn't project them.
 type sessionCollabState struct {
 	childParentByThread map[string]string
-	// closedChildren holds the children a V1 close_agent item named whose
-	// thread Codex has not yet reported gone (noteClosedCollabReceivers);
-	// each keeps its route until then.
-	closedChildren         map[string]bool
+	// childResidency holds, per owned child, whether a close item named it
+	// and whether Codex reported it unloaded; a child keeps its route until
+	// both are known (childResidency).
+	childResidency         map[string]childResidency
 	childParentByAgentPath map[string]string
 	childThreadByAgentPath map[string]string
 	childPathOwnerLive     map[string]bool
@@ -281,11 +281,6 @@ type sessionChildRoutingState struct {
 	deferredChildWireCount  int
 	deferredChildWireBytes  int
 	deferredChildDeadlines  map[string]*time.Timer
-	// backlogOpen holds the children whose route an off-read-loop recovery
-	// published while their quarantined frames are still being delivered:
-	// a new frame for one queues behind that backlog rather than passing
-	// it (gateChildBacklog, drainDeferredChildWireEvents).
-	backlogOpen map[string]bool
 	// warned dedupes the routing-overflow log to once per session.
 	warned bool
 }
@@ -459,8 +454,9 @@ type Session struct {
 	queueListDirty    bool
 	// usageAcct derives per-turn token usage from the cumulative
 	// thread/tokenUsage/updated totals (see usage_accounting.go).
-	// Read-loop goroutine only — observed in dispatchNotification and
-	// settled in updateNotificationState; no lock.
+	// Touched only by the dispatch token's holder (dispatchFrame) —
+	// observed in dispatchNotification and settled in
+	// updateNotificationState; no lock.
 	usageAcct usageAccounting
 	// requestTimeoutOverride replaces defaultRequestTimeout when
 	// non-zero. Set by tests that exercise the late-response path; a
@@ -604,16 +600,35 @@ type Session struct {
 	readDoneOnce    sync.Once
 	teardownEmitted atomic.Bool
 
-	// earlyFrames holds root/child frames quarantined on Conn before routing
-	// bound the thread to this Session. earlyFramesMu is a leaf mutex protecting
-	// ONLY the queue and earlyFlushing flag (never held during dispatch), so
-	// re-entrant child-route registration during replay cannot deadlock while
-	// preserving strict FIFO wire order. earlyFramesCond bounds live reader
-	// buffering by both count and bytes via backpressure.
+	// earlyFrames is the session's frame queue, and dispatching its dispatch
+	// token. One goroutine at a time holds the token: the read loop while it
+	// dispatches a frame, a goroutine delivering the queue, or a publisher off
+	// the read loop while it registers a child route and emits its rows
+	// (takeDispatch). Every frame that reaches the session while the token is
+	// held queues, and the holder delivers the queue in order before it lets
+	// the token go (endDispatch). So the session's frames are dispatched one
+	// at a time, in the order they reached it, and a publisher's
+	// registration and rows fall between two frames, never inside one.
+	//
+	// The queue is also where a backlog waits: the frames held before a route
+	// bound their thread to this Session, on the Conn or in the session's own
+	// child quarantine, move into it in the step that publishes the route
+	// (publishChildRouteLocked, the root's in open), behind what is queued,
+	// and every later frame of the thread queues behind them. A route that a
+	// dispatch publishes opens when that dispatch ends, after its own rows,
+	// a spawn row among them, have reached triage.
+	//
+	// dispatchWaiters counts publishers waiting for the token; while one
+	// waits, the read loop queues instead of taking it, so a publisher is not
+	// starved by a busy thread. earlyFramesMu is a leaf mutex protecting ONLY
+	// these fields and is never held during dispatch, so re-entrant child-route
+	// registration during delivery cannot deadlock. earlyFramesCond bounds the
+	// queue by both count and bytes via backpressure, and wakes publishers
+	// waiting for the token.
 	earlyFramesMu    sync.Mutex
 	earlyFramesCond  *sync.Cond
-	earlyPending     atomic.Bool
-	earlyFlushing    bool
+	dispatching      bool
+	dispatchWaiters  int
 	earlyFrames      []deferredChildWireEvent
 	earlyFramesBytes int
 }
@@ -625,6 +640,9 @@ func (s *Session) earlyFramesCondLocked() *sync.Cond {
 	return s.earlyFramesCond
 }
 
+// enqueueEarlyFrames moves held frames into the queue, behind what is
+// queued. Whoever holds the dispatch token delivers them; a caller that
+// holds none delivers them next (flushEarlyFrames).
 func (s *Session) enqueueEarlyFrames(frames []deferredChildWireEvent) {
 	if len(frames) == 0 {
 		return
@@ -636,86 +654,117 @@ func (s *Session) enqueueEarlyFrames(frames []deferredChildWireEvent) {
 	s.earlyFramesMu.Lock()
 	s.earlyFrames = append(s.earlyFrames, frames...)
 	s.earlyFramesBytes += addedBytes
-	s.earlyPending.Store(true)
 	s.earlyFramesMu.Unlock()
 }
 
-// earlyFramesMaxBuffered and earlyFramesMaxBytes cap live frames queued behind
-// an active replay drain so a stalled dispatch backpressures the reader instead
-// of growing unboundedly in either count or memory.
+// earlyFramesMaxBuffered and earlyFramesMaxBytes cap the frames queued behind
+// the token holder so a stalled dispatch backpressures the reader instead of
+// growing the queue unboundedly in either count or memory.
 const (
 	earlyFramesMaxBuffered = 64
 	earlyFramesMaxBytes    = 16 << 20 // 16 MiB
 )
 
-// enqueueFrameIfPending appends ev to earlyFrames when an early-frame drain is
-// pending, preserving strict FIFO wire ordering. If another goroutine is
-// draining and earlyFrames has reached its count or byte cap, this waits for a
-// batch pop so live frames cannot grow earlyFrames unboundedly.
-func (s *Session) enqueueFrameIfPending(ev deferredChildWireEvent) bool {
-	if !s.earlyPending.Load() {
-		return false
-	}
+// dispatchFrame is how a frame that reached this session is dispatched. With
+// the token free and nothing queued, the caller takes the token and
+// dispatches ev at once. Otherwise ev queues behind the frames before it:
+// the holder, or the publisher waiting for the token, delivers it, and when
+// there is neither, the caller takes the token and delivers the queue, ev
+// last. While the queue is full and a holder is delivering it, the caller
+// waits for a batch to leave it, unless the session is closing.
+func (s *Session) dispatchFrame(ev deferredChildWireEvent) {
 	evBytes := ev.sizeBytes()
 	s.earlyFramesMu.Lock()
-	for s.earlyPending.Load() && s.earlyFlushing && !s.closing.Load() &&
+	if !s.dispatching && s.dispatchWaiters == 0 && len(s.earlyFrames) == 0 {
+		s.dispatching = true
+		s.earlyFramesMu.Unlock()
+		s.dispatchFrameDirect(ev)
+		s.endDispatch()
+		return
+	}
+	for s.dispatching && !s.closing.Load() &&
 		(len(s.earlyFrames) >= earlyFramesMaxBuffered || (len(s.earlyFrames) > 0 && s.earlyFramesBytes+evBytes > earlyFramesMaxBytes)) {
 		s.earlyFramesCondLocked().Wait()
 	}
-	if !s.earlyPending.Load() || s.closing.Load() {
-		s.earlyFramesMu.Unlock()
-		return false
-	}
 	s.earlyFrames = append(s.earlyFrames, ev)
 	s.earlyFramesBytes += evBytes
-	alreadyFlushing := s.earlyFlushing
-	s.earlyFramesMu.Unlock()
-	if !alreadyFlushing {
-		s.flushEarlyFrames()
-	}
-	return true
-}
-
-func (s *Session) flushEarlyFrames() {
-	s.earlyFramesMu.Lock()
-	if s.earlyFlushing {
+	if s.dispatching || s.dispatchWaiters > 0 {
 		s.earlyFramesMu.Unlock()
 		return
 	}
-	s.earlyFlushing = true
-	for {
-		if len(s.earlyFrames) == 0 {
-			// Clear earlyPending ONLY after every buffered (and re-entrantly
-			// enqueued) frame has finished dispatching, while holding
-			// earlyFramesMu, so no live reader frame can overtake replay.
-			s.earlyPending.Store(false)
-			s.earlyFlushing = false
-			s.earlyFramesBytes = 0
-			if s.earlyFramesCond != nil {
-				s.earlyFramesCond.Broadcast()
-			}
-			s.earlyFramesMu.Unlock()
-			return
-		}
+	s.dispatching = true
+	s.earlyFramesMu.Unlock()
+	s.endDispatch()
+}
+
+func (s *Session) dispatchFrameDirect(ev deferredChildWireEvent) {
+	if ev.RequestID != "" {
+		reqID := json.Number(ev.RequestID)
+		s.dispatchServerRequestDirect(ev.Method, &reqID, ev.Params, ev.RawLine)
+		return
+	}
+	s.dispatchNotificationDirect(ev.Method, ev.Params)
+}
+
+// takeDispatch waits for the dispatch token and takes it, for a publisher
+// off the read loop (a resume's rehydration, a recovery) that registers a
+// child route and emits its rows: from here until its endDispatch no frame
+// of the session is dispatched, so none of the child's backlog goes out
+// ahead of the publisher's rows. A holder must not wait on the read loop
+// (a request, a slot that a request's answer frees): a full queue stops the
+// read loop until the holder delivers it. It reports false, holding nothing,
+// when the session is closing while another goroutine still holds the token,
+// so a publisher never keeps Close waiting. Never called from a dispatch,
+// which holds the token already.
+func (s *Session) takeDispatch() bool {
+	s.earlyFramesMu.Lock()
+	defer s.earlyFramesMu.Unlock()
+	s.dispatchWaiters++
+	for s.dispatching && !s.closing.Load() {
+		s.earlyFramesCondLocked().Wait()
+	}
+	s.dispatchWaiters--
+	if s.dispatching {
+		return false
+	}
+	s.dispatching = true
+	return true
+}
+
+// endDispatch is the token holder's last step: it delivers the queue in
+// order, the frames queued while it delivers included, and lets the token go
+// once the queue is empty. A publisher off the read loop returns from it
+// after the backlog it published has been dispatched.
+func (s *Session) endDispatch() {
+	s.earlyFramesMu.Lock()
+	for len(s.earlyFrames) > 0 {
 		frames := s.earlyFrames
 		s.earlyFrames = nil
 		s.earlyFramesBytes = 0
-		if s.earlyFramesCond != nil {
-			s.earlyFramesCond.Broadcast()
-		}
+		s.earlyFramesCondLocked().Broadcast()
 		s.earlyFramesMu.Unlock()
-
 		for _, ev := range frames {
-			if ev.RequestID != "" {
-				reqID := json.Number(ev.RequestID)
-				s.dispatchServerRequestDirect(ev.Method, &reqID, ev.Params, ev.RawLine)
-			} else {
-				s.dispatchNotificationDirect(ev.Method, ev.Params)
-			}
+			s.dispatchFrameDirect(ev)
 		}
-
 		s.earlyFramesMu.Lock()
 	}
+	s.dispatching = false
+	s.earlyFramesCondLocked().Broadcast()
+	s.earlyFramesMu.Unlock()
+}
+
+// flushEarlyFrames delivers the queue when no goroutine holds the dispatch
+// token or waits for it; a holder delivers it before letting go, and so does
+// the waiting publisher once it has the token.
+func (s *Session) flushEarlyFrames() {
+	s.earlyFramesMu.Lock()
+	if s.dispatching || s.dispatchWaiters > 0 || len(s.earlyFrames) == 0 {
+		s.earlyFramesMu.Unlock()
+		return
+	}
+	s.dispatching = true
+	s.earlyFramesMu.Unlock()
+	s.endDispatch()
 }
 
 // Binary returns the codex CLI path this session's app-server process was
@@ -1128,8 +1177,9 @@ func (s *Session) Close() error {
 	s.collabAsyncMu.Lock()
 	s.collabAsyncClosing = true
 	s.collabAsyncMu.Unlock()
-	// Wake any reader goroutine backpressured on earlyFrames BEFORE closeShared
-	// sends unsubscribe RPCs that rely on readLoop delivering thread/closed.
+	// Wake any reader goroutine backpressured on earlyFrames, and any
+	// publisher waiting for the dispatch token, BEFORE closeShared sends
+	// unsubscribe RPCs that rely on readLoop delivering thread/closed.
 	s.earlyFramesMu.Lock()
 	if s.earlyFramesCond != nil {
 		s.earlyFramesCond.Broadcast()
@@ -1202,8 +1252,7 @@ func (s *Session) Close() error {
 	s.earlyFramesMu.Lock()
 	s.earlyFrames = nil
 	s.earlyFramesBytes = 0
-	s.earlyFlushing = false
-	s.earlyPending.Store(false)
+	s.dispatching = false
 	if s.earlyFramesCond != nil {
 		s.earlyFramesCond.Broadcast()
 	}

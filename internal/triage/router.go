@@ -74,9 +74,6 @@ type Router struct {
 	// (SetQuietTurnClassifier), or is nil. Leaf lock.
 	quietTurnMu sync.Mutex
 	quietTurn   func(threadID string, turnIndex int) bool
-	// codexScopeCheck asks the app to run a Codex scope check
-	// (SetCodexScopeCheckHook), or is nil.
-	codexScopeCheck func(threadID string, check CodexScopeCheck)
 	// codexExecChanged holds, per thread, the channel that closes at the
 	// next change to its live Codex work (CodexExecChanged). Leaf lock.
 	codexExecChangedMu sync.Mutex
@@ -390,16 +387,6 @@ func (r *Router) SetQuietTurnClassifier(fn func(threadID string, turnIndex int) 
 	r.quietTurnMu.Lock()
 	r.quietTurn = fn
 	r.quietTurnMu.Unlock()
-}
-
-// SetCodexScopeCheckHook installs the runner of the Codex scope checks the
-// router asks for: when a close item names an agent whose thread holds live
-// commands, the router cannot tell from the item whether the close ended
-// them, so it asks for that thread's list. The hook runs on the provider
-// event worker and must not block; it answers with ConfirmCodexScope. Call
-// before the router handles events.
-func (r *Router) SetCodexScopeCheckHook(fn func(threadID string, check CodexScopeCheck)) {
-	r.codexScopeCheck = fn
 }
 
 // NewRouter creates a triage router. Telemetry is off by default; wire a

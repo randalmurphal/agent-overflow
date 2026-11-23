@@ -255,10 +255,6 @@ type App struct {
 	// settlements, wake runs and emits it counts. They start from any
 	// goroutine while it may be waited on, so it is a workGroup.
 	threadRequestsWG workGroup
-	// codexScopeChecks runs the Codex scope checks triage asks for
-	// (runCodexScopeCheck); shutdown joins them once no provider event is
-	// left to ask for one.
-	codexScopeChecks workGroup
 	// threadRequestSettling counts, inside threadRequestsWG, the
 	// settlements and wake deliveries in flight (goThreadRequestSettling),
 	// so a caller can wait for what a settlement sets off without waiting

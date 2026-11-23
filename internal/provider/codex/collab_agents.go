@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -640,7 +641,11 @@ func (s *Session) registerChildOwnershipWithSource(sourceThreadID, childThreadID
 	if s.forgetUnrelatedProviderThreadLocked(childThreadID) {
 		log.Printf("codex: typed spawn for previously unrelated thread %s; preserving spawn ownership", childThreadID)
 	}
+	published := s.collab.childParentByThread[childThreadID] == ""
 	s.collab.childParentByThread[childThreadID] = parentToolUseID
+	if published {
+		s.publishChildRouteLocked(childThreadID)
+	}
 	if s.collab.childRuntimeByThread == nil {
 		s.collab.childRuntimeByThread = make(map[string]childRuntimeState)
 	}
@@ -664,12 +669,12 @@ func (s *Session) registerChildOwnershipWithSource(sourceThreadID, childThreadID
 	return true
 }
 
-func (s *Session) rememberSubAgentActivityOwnership(sourceThreadID string, activity subAgentActivity) []string {
+func (s *Session) rememberSubAgentActivityOwnership(sourceThreadID string, activity subAgentActivity) {
 	if activity.Kind != "started" || activity.ItemID == "" || activity.AgentThreadID == "" {
-		return nil
+		return
 	}
 	if !s.registerChildOwnership(sourceThreadID, activity.AgentThreadID, activity.AgentPath, activity.ItemID) {
-		return nil
+		return
 	}
 	s.rememberSubAgentActivityProfile(activity)
 	launchMeta := collabLaunchMeta{
@@ -677,7 +682,6 @@ func (s *Session) rememberSubAgentActivityOwnership(sourceThreadID string, activ
 		ReceiverThreadIDs: []string{activity.AgentThreadID},
 	}
 	s.scheduleCollabProfileRead(activity.AgentThreadID, activity.ItemID, launchMeta)
-	return []string{activity.AgentThreadID}
 }
 
 // rememberSubAgentActivityProfile records the child profile a started
@@ -696,24 +700,12 @@ func (s *Session) rememberSubAgentActivityProfile(activity subAgentActivity) {
 	})
 }
 
-func (s *Session) observeSubAgentActivityOwnership(method string, params json.RawMessage) []string {
+func (s *Session) observeSubAgentActivityOwnership(method string, params json.RawMessage) {
 	activity, ok := decodeSubAgentActivity(method, params)
 	if !ok {
-		return nil
+		return
 	}
-	return s.rememberSubAgentActivityOwnership(providerThreadIDFromParams(params), activity)
-}
-
-func collabSpawnReceiverThreadIDs(method string, params json.RawMessage) []string {
-	if method != "item/completed" {
-		return nil
-	}
-	item := readNestedObject(params, "item")
-	if item == nil || readRawString(item, "type") != "collabAgentToolCall" ||
-		normalizeCollabToolName(readRawString(item, "tool")) != "spawn_agent" {
-		return nil
-	}
-	return readRawStringArray(item, "receiverThreadIds")
+	s.rememberSubAgentActivityOwnership(providerThreadIDFromParams(params), activity)
 }
 
 func (s *Session) rememberRawSpawnAgentIDForSubagentNotifications(agentID, parentToolUseID string) {
@@ -721,7 +713,8 @@ func (s *Session) rememberRawSpawnAgentIDForSubagentNotifications(agentID, paren
 	// `agent_id` before the richer typed child-thread metadata arrives.
 	// Detached completion notifications can later use that exact value as
 	// `agent_path`, so index it through the same resolver as receiver
-	// thread IDs.
+	// thread IDs. A route it publishes opens as the output's dispatch ends,
+	// as any dispatch's does.
 	s.setParentToolUseForProviderThread(strings.TrimSpace(agentID), strings.TrimSpace(parentToolUseID))
 }
 
@@ -744,6 +737,7 @@ func (s *Session) deleteParentToolUseForProviderThread(providerThreadID string) 
 		delete(s.collab.agentPathByThread, providerThreadID)
 	}
 	delete(s.collab.childParentByThread, providerThreadID)
+	delete(s.collab.childResidency, providerThreadID)
 	delete(s.collab.childRuntimeByThread, providerThreadID)
 	delete(s.collab.agentMetaByThread, providerThreadID)
 	delete(s.collab.profileReadsByThread, providerThreadID)
@@ -947,48 +941,124 @@ func (s *Session) maybeRememberCollabReceiverThreads(method string, params json.
 	}
 }
 
-// noteClosedCollabReceivers records the children a V1 close_agent
-// completion names. The close item is no proof the child ended: Codex
-// writes it, with the child's previous status, even when the close failed
-// before the child was shut down (core tools/handlers/multi_agents
-// close_agent.rs, agent/control/legacy.rs flush_rollout). So the child keeps
-// its route, and with it its own frames, until Codex says the thread is
-// gone: its notLoaded status or a background-terminal call answered
-// "thread not found" (retireUnloadedClosedChild). Triage reads the close
-// item as a hint and asks the latter.
-func (s *Session) noteClosedCollabReceivers(method string, params json.RawMessage) {
+// childResidency is what Codex has said about the end of one incarnation of
+// a child thread. A child's route, and with it its own frames, retires only
+// when both are known, in whichever order they come
+// (noteCollabReceiverResidency, noteChildUnloaded):
+//
+//   - closed: a V1 close_agent item named it. The item alone is no proof the
+//     child ended: Codex writes it, with the child's previous status, even
+//     when the close failed before the child was shut down (core
+//     tools/handlers/multi_agents/close_agent.rs, agent/control/legacy.rs
+//     flush_rollout). A resume_agent item reopens the child and clears it.
+//   - unloaded: Codex reported the thread notLoaded, or answered a request
+//     to it "thread not found" (observeChildThreadGone). The two come from
+//     different listeners, so either can precede the close item. Any other
+//     status of the thread means Codex loaded it again and clears it: Codex
+//     unloads an idle MultiAgentV2 agent and loads it again when it is
+//     addressed (core agent/control/residency.rs).
+type childResidency struct {
+	closed   bool
+	unloaded bool
+}
+
+// noteCollabReceiverResidency applies a V1 close_agent or resume_agent
+// completion to the children it names, after the item reached triage. A
+// closed child whose unload is known retires now; for any other closed
+// child Codex is asked whether it still has the thread, since its notLoaded
+// status is not certain to reach this connection (probeClosedChild).
+func (s *Session) noteCollabReceiverResidency(method string, params json.RawMessage) {
 	if method != "item/completed" {
 		return
 	}
 	item := readNestedObject(params, "item")
-	if item == nil || readRawString(item, "type") != "collabAgentToolCall" ||
-		normalizeCollabToolName(readRawString(item, "tool")) != "close_agent" {
+	if item == nil || readRawString(item, "type") != "collabAgentToolCall" {
 		return
 	}
+	tool := normalizeCollabToolName(readRawString(item, "tool"))
+	if tool != "close_agent" && tool != "resume_agent" {
+		return
+	}
+	var retire, probe []string
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for _, receiverThreadID := range readRawStringArray(item, "receiverThreadIds") {
 		if s.collab.childParentByThread[receiverThreadID] == "" {
 			continue
 		}
-		if s.collab.closedChildren == nil {
-			s.collab.closedChildren = make(map[string]bool)
+		residency := s.collab.childResidency[receiverThreadID]
+		residency.closed = tool == "close_agent"
+		switch {
+		case residency.closed && residency.unloaded:
+			retire = append(retire, receiverThreadID)
+		case residency.closed:
+			probe = append(probe, receiverThreadID)
 		}
-		s.collab.closedChildren[receiverThreadID] = true
+		s.setChildResidencyLocked(receiverThreadID, residency)
+	}
+	s.mu.Unlock()
+	for _, receiverThreadID := range retire {
+		s.deleteParentToolUseForProviderThread(receiverThreadID)
+	}
+	for _, receiverThreadID := range probe {
+		s.probeClosedChild(receiverThreadID)
 	}
 }
 
-// retireUnloadedClosedChild ends the route of a child a close item named
-// once Codex says the thread is gone. A child no close named keeps its
-// route: Codex unloads an idle MultiAgentV2 agent and loads it again when
-// it is addressed (core agent/control/residency.rs).
-func (s *Session) retireUnloadedClosedChild(providerThreadID string) {
+// noteChildUnloaded records whether Codex has the child thread loaded, from
+// its status, and retires the route of a closed child that it reports
+// unloaded.
+func (s *Session) noteChildUnloaded(providerThreadID string, unloaded bool) {
 	s.mu.Lock()
-	closed := s.collab.closedChildren[providerThreadID]
-	delete(s.collab.closedChildren, providerThreadID)
+	if s.collab.childParentByThread[providerThreadID] == "" {
+		s.mu.Unlock()
+		return
+	}
+	residency := s.collab.childResidency[providerThreadID]
+	residency.unloaded = unloaded
+	retire := residency.closed && residency.unloaded
+	s.setChildResidencyLocked(providerThreadID, residency)
 	s.mu.Unlock()
-	if closed {
+	if retire {
 		s.deleteParentToolUseForProviderThread(providerThreadID)
+	}
+}
+
+// setChildResidencyLocked stores residency, keeping no entry for a child
+// Codex has said nothing about. Caller holds mu.
+func (s *Session) setChildResidencyLocked(providerThreadID string, residency childResidency) {
+	if residency == (childResidency{}) {
+		delete(s.collab.childResidency, providerThreadID)
+		return
+	}
+	if s.collab.childResidency == nil {
+		s.collab.childResidency = make(map[string]childResidency)
+	}
+	s.collab.childResidency[providerThreadID] = residency
+}
+
+// closedChildProbeTimeout bounds the request probeClosedChild sends.
+const closedChildProbeTimeout = 10 * time.Second
+
+// probeClosedChild asks Codex for a closed child's background terminals,
+// off the read loop, for the one answer that matters: "thread not found"
+// says the close shut the thread down, which ends its commands and retires
+// its route (backgroundTerminalThreadGone). A listing means the close
+// failed or has not finished; the child keeps its route until its
+// notLoaded status.
+func (s *Session) probeClosedChild(providerThreadID string) {
+	parent := s.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	started := s.startCollabAsync(func() {
+		ctx, cancel := context.WithTimeout(parent, closedChildProbeTimeout)
+		defer cancel()
+		if _, err := s.ListBackgroundTerminals(ctx, providerThreadID); err != nil && !errors.Is(err, ErrBackgroundTerminalThreadNotLoaded) {
+			log.Printf("codex: closed agent thread %s: asking whether Codex still has it failed; it keeps its route until Codex reports it not loaded: %v", providerThreadID, err)
+		}
+	})
+	if !started {
+		log.Printf("codex: closed agent thread %s is not asked about: the session is closing", providerThreadID)
 	}
 }
 

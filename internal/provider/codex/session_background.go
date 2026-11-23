@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -132,16 +133,40 @@ func (s *Session) backgroundTerminalThread(method, scopeID string) (string, erro
 // thread. The background terminal methods resolve their thread among the
 // loaded ones and answer -32600 "thread not found: <id>" for any other
 // (Codex thread_processor.rs load_thread). The root thread stays loaded
-// while the session lives, so only an agent's thread is read this way, and
-// a closed agent's route goes with it (retireUnloadedClosedChild).
+// while the session lives, so only an agent's thread is read this way: it
+// is the thread's unload, reported in the thread's frame order
+// (observeChildThreadGone).
 func (s *Session) backgroundTerminalThreadGone(threadID string, err error) error {
 	var rpcErr *RPCError
 	if threadID == s.rootThreadID() || !errors.As(err, &rpcErr) || rpcErr.Code != -32600 ||
 		!strings.HasPrefix(strings.TrimSpace(rpcErr.Message), "thread not found") {
 		return err
 	}
-	s.retireUnloadedClosedChild(threadID)
+	s.observeChildThreadGone(threadID)
 	return errors.Join(ErrBackgroundTerminalThreadNotLoaded, err)
+}
+
+// observeChildThreadGone handles Codex's answer that it has no agent thread
+// providerThreadID loaded as the thread's own notLoaded status: the same
+// fact, through the same path, in the same order. The read loop has handed
+// every frame it read before the answer to the session by the time the
+// caller has it, so the status is dispatched after the thread's command
+// starts, behind any of them still queued. A thread with no route has
+// nothing to end: its route retires only after its unload was reported.
+func (s *Session) observeChildThreadGone(providerThreadID string) {
+	const method = "thread/status/changed"
+	if s.parentToolUseForProviderThread(providerThreadID) == "" {
+		return
+	}
+	params, err := json.Marshal(map[string]any{
+		"threadId": providerThreadID,
+		"status":   map[string]string{"type": "notLoaded"},
+	})
+	if err != nil {
+		log.Printf("codex: agent thread %s: encode its unload: %v", providerThreadID, err)
+		return
+	}
+	s.dispatchNotification(method, params)
 }
 
 // TerminateBackgroundTerminal asks Codex to kill ONE running background PTY
@@ -149,8 +174,9 @@ func (s *Session) backgroundTerminalThreadGone(threadID string, err error) error
 // command's ProcessScope.ID). `false, nil` is not proof the process is
 // gone: Codex answers false both when the thread has no such process and
 // when it failed to terminate one (core unified_exec process_manager.rs
-// terminate_process). Only the thread's list says which. A thread Codex no
-// longer has loaded is ErrBackgroundTerminalThreadNotLoaded.
+// terminate_process). The command's completion or its thread's unload says
+// when it ended. A thread Codex no longer has loaded is
+// ErrBackgroundTerminalThreadNotLoaded.
 //
 // Wire contract (`thread/backgroundTerminals/terminate`, params
 // `{threadId, processId}` → `{terminated: bool}`) is upstream-typed at

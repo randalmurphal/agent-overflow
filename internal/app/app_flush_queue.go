@@ -129,7 +129,6 @@ func (a *App) newTriageRouter(st *store.Store) *triage.Router {
 	r.SetPromptRouter(a.routeWorkerPrompt)
 	r.SetQuietTurnClassifier(a.agentTurnIsTick)
 	r.SetUnsavedRowObserver(unsavedRowSink{app: a})
-	r.SetCodexScopeCheckHook(a.runCodexScopeCheck)
 	return r
 }
 

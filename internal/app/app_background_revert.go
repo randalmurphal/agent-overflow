@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/codexapp"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -57,26 +58,49 @@ func (a *App) cleanRunningBackgroundTasksBeforeProviderRevert(thread store.Threa
 	if caps.BackgroundTerminalCleaner != provider.CodexBackgroundTerminalCleaner {
 		return nil
 	}
-	if _, hasSession := a.activeCodexSession(thread.ID); !hasSession {
+	session, hasSession := a.activeCodexSession(thread.ID)
+	if !hasSession {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), codexapp.BackgroundTerminalStopTimeout)
 	defer cancel()
-	if err := a.stopCodexCommandsBeforeRevert(ctx, thread.ID); err != nil {
+	if err := a.stopCodexCommandsBeforeRevert(ctx, thread.ID, session); err != nil {
 		return fmt.Errorf("%s: %w", errorPrefix, err)
 	}
 	return nil
 }
 
-// stopCodexCommandsBeforeRevert cleans the processes of every Codex thread
-// of the session and returns once no command of the thread is live, or
-// fails, naming the commands Codex still runs, when ctx ends first. A
-// clean's answer comes before its processes are gone, so the commands are
-// waited for: each leaves by its own item/completed, or when its thread's
-// list no longer holds it, which is asked again at each change. A command
-// that started after its thread was cleaned gets a clean of its own.
-func (a *App) stopCodexCommandsBeforeRevert(ctx context.Context, threadID string) error {
-	cleaned, err := a.cleanCodexScopes(ctx, threadID, nil)
+// stopCodexCommandsBeforeRevert returns once no Codex command of the thread
+// is live, or fails, naming the commands still running, when ctx ends
+// first. Every request goes to session, the one the revert found live.
+//
+// A revert that keeps the session reloads only the root thread
+// (thread/revert), so the thread's agents would go on running and could
+// start a command after any check. Each active agent is interrupted first,
+// as Stop All does: Codex answers an interrupt when the agent's turn has
+// ended (app-server bespoke_event_handling.rs
+// respond_to_pending_interrupts), so every command the agent started is
+// read by then. The thread's provider events already read are handled
+// next, so a command whose start waits in that queue is counted. Then the
+// root thread and each thread that runs a live command are cleaned. A
+// clean's answer comes before its processes are gone, so the revert waits
+// for each command's own item/completed or its thread's unload, and cleans
+// again for a command that started since.
+//
+// Codex writes a cleaned command's completion whether or not its process
+// died: an exec-server process's termination runs detached and its error is
+// discarded (core unified_exec process.rs terminate). The wait cannot tell
+// that case from a stopped process.
+func (a *App) stopCodexCommandsBeforeRevert(ctx context.Context, threadID string, session *codex.Session) error {
+	if a.triage != nil {
+		for _, agent := range a.triage.ListLiveCodexAgentTasks(threadID) {
+			if _, err := session.InterruptSubagent(ctx, agent.ID); err != nil {
+				return fmt.Errorf("the agent %q could not be stopped; stop it and try again: %w", firstNonEmpty(agent.Summary, agent.ID), err)
+			}
+		}
+		a.drainProviderEvents(threadID, "revert: handle the stopped agents' last events")
+	}
+	cleaned, err := a.cleanCodexScopes(ctx, threadID, session, nil)
 	if err != nil {
 		return a.codexCommandsStillRunning(threadID, fmt.Errorf("clean Codex background terminals: %w", err))
 	}
@@ -85,22 +109,11 @@ func (a *App) stopCodexCommandsBeforeRevert(ctx context.Context, threadID string
 	}
 	for {
 		changed := a.triage.CodexExecChanged(threadID)
-		if cleaned, err = a.cleanCodexScopes(ctx, threadID, cleaned); err != nil {
-			return a.codexCommandsStillRunning(threadID, fmt.Errorf("clean Codex background terminals: %w", err))
-		}
-		checks := map[string]triage.CodexScopeCheck{}
-		for _, command := range a.triage.LiveCodexCommands(threadID) {
-			if command.Addressable {
-				checks[command.ScopeID] = command.Check
-			}
-		}
-		for _, check := range checks {
-			if err := a.confirmCodexScope(ctx, threadID, check, false); err != nil {
-				return a.codexCommandsStillRunning(threadID, fmt.Errorf("list Codex background terminals: %w", err))
-			}
-		}
 		if len(a.triage.LiveCodexCommands(threadID)) == 0 {
 			return nil
+		}
+		if cleaned, err = a.cleanCodexScopes(ctx, threadID, session, cleaned); err != nil {
+			return a.codexCommandsStillRunning(threadID, fmt.Errorf("clean Codex background terminals: %w", err))
 		}
 		select {
 		case <-changed:

@@ -60,6 +60,14 @@ type BackgroundTerminalsTestWire struct {
 	Clean        func(ctx context.Context, providerThreadID string) error
 	Terminate    func(ctx context.Context, providerThreadID, processID string) (bool, error)
 	List         func(ctx context.Context, providerThreadID string) ([]string, error)
+	// Children maps each agent thread the session owns to its spawn launch.
+	Children map[string]string
+	// InterruptChild answers an agent's turn/interrupt. With it set, every
+	// child is running.
+	InterruptChild func(ctx context.Context, childThreadID, turnID string) error
+	// OnEvent receives the events the session reports, such as an agent
+	// thread's unload; nil drops them.
+	OnEvent func(provider.ProviderEvent)
 }
 
 // TestRPCError is the JSON-RPC error a test wire answers with, such as
@@ -75,9 +83,25 @@ func TestRPCError(code int, message string) error {
 // process a stop reaches without a real subprocess. The rest of the
 // session is zero, so callers MUST NOT call Send / Interrupt / Close on it.
 func NewBackgroundTerminalsTestSession(wire BackgroundTerminalsTestWire) *Session {
+	collab := sessionCollabState{
+		childParentByThread:  map[string]string{},
+		childRuntimeByThread: map[string]childRuntimeState{},
+	}
+	for childThreadID, launchID := range wire.Children {
+		collab.childParentByThread[childThreadID] = launchID
+		if wire.InterruptChild != nil {
+			collab.childRuntimeByThread[childThreadID] = childRuntimeState{phase: childRuntimeRunning}
+		}
+	}
+	onEvent := wire.OnEvent
+	if onEvent == nil {
+		onEvent = func(provider.ProviderEvent) {}
+	}
 	s := &Session{
-		threadID: "test-thread",
-		collab:   sessionCollabState{childParentByThread: map[string]string{}},
+		threadID:             "test-thread",
+		collab:               collab,
+		onEvent:              onEvent,
+		interruptChildTurnFn: wire.InterruptChild,
 		cleanBackgroundTerminalsFn: func(ctx context.Context, providerThreadID string) error {
 			if wire.Clean == nil {
 				return errors.New("codex test session: no clean wire")

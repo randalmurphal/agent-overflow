@@ -134,6 +134,33 @@ describe('Stop All in the background tray', () => {
     await waitFor(() => expect(toasts()).toEqual([['info', 'That background terminal had already exited.']]));
   });
 
+  // Stop All acts on the handle each row's Stop shows. A backgrounded command
+  // inside a code review has neither handle, so it has no Stop of its own,
+  // and Stop All neither names it nor sends a stop with no target for it.
+  it('leaves a Codex command with no Stop of its own out of Stop All', async () => {
+    const reviewCommand = shell('review-cmd', { parentId: 'review', meta: JSON.stringify({ source: 'unifiedExecStartup' }) });
+    const command = shell('cmd', { meta: JSON.stringify({ stop_by_item: true }) });
+    const stopAll = setBindingMock('StopBackgroundTasks', async (_thread: string, ids: string[]) =>
+      ids.map((launchItemId) => ({ launchItemId, outcome: 'stopping' })));
+    const terminate = setBindingMock('TerminateCodexBackgroundTerminal', async () => true);
+    const stopCommand = setBindingMock('StopCodexBackgroundCommand', async () => true);
+    const props = { tasks: trayTasks([reviewCommand, command]), provider: 'codex' as const, threadId: 'thread', runningCount: 2 };
+
+    const threadView = render(ActivityRailBackgroundBody, props);
+    expect(rowStop(threadView, 'review-cmd')).toBeNull();
+    await fireEvent.click(threadView.getByTestId('activity-rail-background-stop-all'));
+    await waitFor(() => expect(stopAll).toHaveBeenCalledWith('thread', ['cmd']));
+    threadView.unmount();
+
+    const scopedView = render(ActivityRailBackgroundBody, { ...props, scoped: true, idPrefix: 'agent-pane' });
+    await fireEvent.click(scopedView.getByTestId('agent-pane-background-stop-all'));
+    await waitFor(() => expect(stopAll).toHaveBeenCalledTimes(2));
+    expect(stopAll).toHaveBeenLastCalledWith('thread', ['cmd']);
+    expect(terminate).not.toHaveBeenCalled();
+    expect(stopCommand).not.toHaveBeenCalled();
+    expect(toasts()).toEqual([]);
+  });
+
   // A computer older than the item-id Stop cleans terminals thread-wide in
   // Stop All, so an agent pane's tray must not name its terminals in the
   // bulk call: that would stop the thread's other terminals too.

@@ -3,7 +3,6 @@ package triage
 import (
 	"encoding/json"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -33,13 +32,15 @@ func codexCommandTracked(r *Router, threadID, itemID string) bool {
 	return r.codexExecIfPresent(threadID).lookup(itemID) != nil
 }
 
-func (r *Router) codexEndedCount(threadID string) int {
+// codexCommandStateHeld counts what the thread keeps of Codex commands.
+func (r *Router) codexCommandStateHeld(threadID string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if execs := r.codexExecIfPresent(threadID); execs != nil {
-		return len(execs.ended)
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return 0
 	}
-	return 0
+	return len(st.codexExec.byLaunch) + len(st.codexExec.byProcess)
 }
 
 func trayRefreshes(log *emissionLog, threadID string) int {
@@ -194,128 +195,48 @@ func TestCodexAgentCommandDoesNotOutliveTheRouter(t *testing.T) {
 	}
 }
 
-// A command that left the live work before its item/completed (its thread
-// unloaded, a list no longer held it) can still get its output and
-// completion from Codex afterwards. They stay that command's: outside a
-// round they write no row, and inside one the row keeps the agent that ran
-// the command.
-func TestCodexEndedCommandKeepsItsLateCompletion(t *testing.T) {
+// A command whose thread unloaded leaves nothing behind: Codex can still
+// write its completion afterwards, and that completion is handled like any
+// untracked one.
+func TestCodexUnloadedThreadKeepsNothingOfItsCommands(t *testing.T) {
 	t.Parallel()
 	r, st, _ := newTestRouter(t)
-	const threadID = "thread-ended-late"
+	const threadID = "thread-unload-nothing"
 	createCodexBackgroundTestThread(t, st, threadID)
 	r.MarkThreadActive(threadID, "session-a")
-	late := func(itemID, processID, parent, scope string) {
-		t.Helper()
-		meta := buildUnifiedExecCompleteMeta(t, "completed", processID, "sleep 60", 0)
-		for _, evt := range []provider.ProviderEvent{
-			{Kind: provider.EventCommandOutput, ThreadID: threadID, ItemID: itemID, ItemType: "commandExecution", ParentToolUseID: parent, ProcessScope: threadScope(scope), Content: "done\n", Replace: true, Meta: meta, Timestamp: time.Now()},
-			{Kind: provider.EventToolComplete, ThreadID: threadID, ItemID: itemID, ItemType: "commandExecution", ParentToolUseID: parent, ProcessScope: threadScope(scope), Meta: meta, Timestamp: time.Now()},
-		} {
-			if err := r.Handle(fromSession(evt, "session-a")); err != nil {
-				t.Fatalf("late %s of %s: %v", evt.Kind, itemID, err)
-			}
-		}
-	}
-
-	startCodexCommandFromSession(t, r, threadID, "idle-cmd", "1001", "spawn-1", threadScope("child-1"), "session-a")
+	startCodexCommandFromSession(t, r, threadID, "agent-cmd", "1001", "spawn-1", threadScope("child-1"), "session-a")
 	unloadCodexScope(t, r, threadID, "spawn-1", "child-1", "session-a")
-	late("idle-cmd", "1001", "spawn-1", "child-1")
-	if item, found, err := st.GetThreadItem(threadID, "idle-cmd"); err != nil || found {
-		t.Fatalf("outside a round the ended command's late completion wrote %+v (err %v)", item, err)
+	if held := r.codexCommandStateHeld(threadID); held != 0 {
+		t.Fatalf("the unloaded thread's command left %d entries behind", held)
 	}
-
-	seedOpenTurn(t, r, st, threadID, 0)
-	seedCodexSpawnCard(t, r, st, threadID, "spawn-2", "child-2")
-	seedCodexSpawnCard(t, r, st, threadID, "spawn-3", "child-3")
-	startCodexCommandFromSession(t, r, threadID, "gone-cmd", "1003", "spawn-2", threadScope("child-2"), "session-a")
-	startCodexCommandFromSession(t, r, threadID, "unlisted-cmd", "1004", "spawn-3", threadScope("child-3"), "session-a")
-	unloadCodexScope(t, r, threadID, "spawn-2", "child-2", "session-a")
-	check, ok := r.CodexScopeCheckFor(threadID, "child-3")
-	if !ok {
-		t.Fatal("no check for a scope with a live command")
+	meta := buildUnifiedExecCompleteMeta(t, "completed", "1001", "sleep 60", 0)
+	late := provider.ProviderEvent{Kind: provider.EventToolComplete, ThreadID: threadID, ItemID: "agent-cmd", ItemType: "commandExecution", ParentToolUseID: "spawn-1", ProcessScope: threadScope("child-1"), Meta: meta, Timestamp: time.Now()}
+	if err := r.Handle(fromSession(late, "session-a")); err != nil {
+		t.Fatal(err)
 	}
-	if ended := r.ConfirmCodexScope(threadID, check, nil, false); len(ended) != 1 || ended[0] != "unlisted-cmd" {
-		t.Fatalf("confirm of an empty list ended %v, want [unlisted-cmd]", ended)
-	}
-	if got := len(r.ListLiveCodexBackgroundTasks(threadID, 0, 0)); got != 0 {
-		t.Fatalf("tray rows after the commands ended = %d, want 0", got)
-	}
-	for _, command := range []struct{ itemID, processID, parent, scope string }{
-		{"gone-cmd", "1003", "spawn-2", "child-2"},
-		{"unlisted-cmd", "1004", "spawn-3", "child-3"},
-	} {
-		late(command.itemID, command.processID, command.parent, command.scope)
-		item, found, err := st.GetThreadItem(threadID, command.itemID)
-		if err != nil || !found {
-			t.Fatalf("the late completion of %s wrote no row: found=%v err=%v", command.itemID, found, err)
-		}
-		if item.ParentID != command.parent || item.Status != statusCompleted {
-			t.Fatalf("%s row: parent=%q status=%q, want parent %q completed", command.itemID, item.ParentID, item.Status, command.parent)
-		}
-	}
-	if r.codexEndedCount(threadID) != 0 {
-		t.Fatalf("ended commands kept after their completions: %d", r.codexEndedCount(threadID))
+	if held := r.codexCommandStateHeld(threadID); held != 0 {
+		t.Fatalf("the late completion left %d entries behind", held)
 	}
 }
 
-// An ended command keeps what its history row needs and nothing more: no
-// item meta and none of the output it streamed while live, only the
-// completion's own aggregated output, which Codex writes as one replace
-// just before the completion.
-func TestCodexEndedCommandKeepsOnlyItsCompletionOutput(t *testing.T) {
+// Codex gives a process id to a newer command once the older command's
+// process has left the table, which can be before the older command's
+// completion arrives. The older command's completion leaves the newer
+// command's process correlation alone, and only the newer command holds the
+// process a stop would terminate (CodexCommandHoldsProcess).
+func TestCodexReusedProcessIDBelongsToTheNewerCommand(t *testing.T) {
 	t.Parallel()
 	r, st, _ := newTestRouter(t)
-	const threadID = "thread-ended-size"
-	createCodexBackgroundTestThread(t, st, threadID)
-	r.MarkThreadActive(threadID, "session-a")
-	startCodexCommandFromSession(t, r, threadID, "big-cmd", "1001", "spawn-1", threadScope("child-1"), "session-a")
-	output := func(content string, replace bool) {
-		t.Helper()
-		evt := provider.ProviderEvent{Kind: provider.EventCommandOutput, ThreadID: threadID, ItemID: "big-cmd", ItemType: "commandExecution", ParentToolUseID: "spawn-1", ProcessScope: threadScope("child-1"), Content: content, Replace: replace, Timestamp: time.Now()}
-		if !r.observeCodexCommandOutput(fromSession(evt, "session-a")) {
-			t.Fatal("command output was not taken as the command's")
-		}
-	}
-	output(strings.Repeat("x", 64*1024), false)
-	unloadCodexScope(t, r, threadID, "spawn-1", "child-1", "session-a")
-
-	ended := func() endedCodexCommand {
-		t.Helper()
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		record := r.codexExecIfPresent(threadID).endedFor("big-cmd")
-		if record == nil {
-			t.Fatal("the ended command kept no record")
-		}
-		return *record
-	}
-	if record := ended(); !record.output.Empty() || record.parentID != "spawn-1" || record.summary == "" {
-		t.Fatalf("ended record = %+v, want no output, parent spawn-1 and the summary", record)
-	}
-	output("streamed after the end\n", false)
-	if record := ended(); !record.output.Empty() {
-		t.Fatalf("ended record took streamed output: %q", record.output.String())
-	}
-	output("final\n", true)
-	if record := ended(); record.output.String() != "final\n" {
-		t.Fatalf("ended record output = %q, want the completion's replace", record.output.String())
-	}
-}
-
-// Codex can give an ended command's process id to a newer command. The
-// ended command's late completion leaves the newer command's process
-// correlation alone.
-func TestCodexEndedCommandLeavesANewerCommandsProcessID(t *testing.T) {
-	t.Parallel()
-	r, st, _ := newTestRouter(t)
-	const threadID = "thread-ended-pid"
+	const threadID = "thread-reused-pid"
 	createCodexBackgroundTestThread(t, st, threadID)
 	r.MarkThreadActive(threadID, "session-a")
 	startCodexCommandFromSession(t, r, threadID, "old-cmd", "1005", "", threadScope("root"), "session-a")
-	check, _ := r.CodexScopeCheckFor(threadID, "root")
-	r.ConfirmCodexScope(threadID, check, nil, false)
 	startCodexCommandFromSession(t, r, threadID, "new-cmd", "1005", "", threadScope("root"), "session-a")
+	old, _ := r.LiveCodexCommand(threadID, "old-cmd")
+	newer, _ := r.LiveCodexCommand(threadID, "new-cmd")
+	if r.CodexCommandHoldsProcess(threadID, old) || !r.CodexCommandHoldsProcess(threadID, newer) {
+		t.Fatal("process 1005 must be held by the newer command only")
+	}
 	completion := provider.ProviderEvent{Kind: provider.EventToolComplete, ThreadID: threadID, ItemID: "old-cmd", ItemType: "commandExecution", ProcessScope: threadScope("root"), Meta: buildUnifiedExecCompleteMeta(t, "completed", "1005", "sleep 60", 0), Timestamp: time.Now()}
 	if err := r.Handle(fromSession(completion, "session-a")); err != nil {
 		t.Fatal(err)
@@ -323,8 +244,29 @@ func TestCodexEndedCommandLeavesANewerCommandsProcessID(t *testing.T) {
 	r.mu.Lock()
 	indexed := r.codexExecIfPresent(threadID).byProcess[codexProcessKey{"root", "1005"}]
 	r.mu.Unlock()
-	if indexed != "new-cmd" {
-		t.Fatalf("process 1005 indexes %q after the ended command completed, want new-cmd", indexed)
+	if indexed != "new-cmd" || !r.CodexCommandHoldsProcess(threadID, newer) {
+		t.Fatalf("process 1005 indexes %q after the older command completed, want new-cmd", indexed)
+	}
+}
+
+// A command read for a stop names its process only while the session that
+// read it runs the thread: a replacement's command with the same id in the
+// same table is not the read one's.
+func TestCodexCommandHoldsItsProcessOnlyInItsSession(t *testing.T) {
+	t.Parallel()
+	r, st, _ := newTestRouter(t)
+	const threadID = "thread-holder-session"
+	createCodexBackgroundTestThread(t, st, threadID)
+	r.MarkThreadActive(threadID, "session-a")
+	startCodexCommandFromSession(t, r, threadID, "cmd", "1001", "", threadScope("root"), "session-a")
+	read, ok := r.LiveCodexCommand(threadID, "cmd")
+	if !ok || read.Token != "session-a" || !r.CodexCommandHoldsProcess(threadID, read) {
+		t.Fatalf("read command = %+v (ok %v), want session-a's holder of process 1001", read, ok)
+	}
+	r.MarkThreadActive(threadID, "session-b")
+	startCodexCommandFromSession(t, r, threadID, "cmd", "1001", "", threadScope("root"), "session-b")
+	if r.CodexCommandHoldsProcess(threadID, read) {
+		t.Fatal("a command read in the replaced session holds the replacement's process")
 	}
 }
 
@@ -361,8 +303,10 @@ func TestCodexCommandProcessIDsAreScopedToTheirTable(t *testing.T) {
 	if command, ok := r.LiveRootCodexCommandForProcess(threadID, "4242"); !ok || command.LaunchID != "root-cmd" {
 		t.Fatalf("stop by process 4242 = %+v (ok %v), want the root command", command, ok)
 	}
-	check, _ := r.CodexScopeCheckFor(threadID, "root")
-	r.ConfirmCodexScope(threadID, check, nil, false)
+	rootDone := provider.ProviderEvent{Kind: provider.EventToolComplete, ThreadID: threadID, ItemID: "root-cmd", ItemType: "commandExecution", ProcessScope: threadScope("root"), Meta: buildUnifiedExecCompleteMeta(t, "completed", "4242", "sleep 60", 0), Timestamp: time.Now()}
+	if err := r.Handle(fromSession(rootDone, "session-a")); err != nil {
+		t.Fatal(err)
+	}
 	if command, ok := r.LiveRootCodexCommandForProcess(threadID, "4242"); ok {
 		t.Fatalf("stop by process 4242 with only the agent's command live = %+v, want none: an agent's id names nothing in the root table", command)
 	}
@@ -422,9 +366,6 @@ func TestCodexReviewCommandsEndWithTheirRun(t *testing.T) {
 	if !ok || command.Addressable {
 		t.Fatalf("review command = %+v (ok %v), want live and not addressable", command, ok)
 	}
-	if _, ok := r.CodexScopeCheckFor(threadID, review.ID); ok {
-		t.Fatal("a check was offered for a table no request reaches")
-	}
 	for _, row := range r.ListLiveCodexBackgroundTasks(threadID, 0, 0) {
 		if row.ID == "review-cmd" && (CodexCommandStopsByItem(row) || strings.Contains(row.Meta, "process_id")) {
 			t.Fatalf("review row meta %s offers a Stop", row.Meta)
@@ -440,85 +381,25 @@ func TestCodexReviewCommandsEndWithTheirRun(t *testing.T) {
 	}
 }
 
-// A scope check is pinned to the session that asked and to the commands
-// that had started when it asked. A command the answer does not hold ends
-// only when the check covers it: Codex answers for its table as it is when
-// it reads the request, which says nothing of a later command. A listed
-// command stays, a thread that is not loaded ends every covered command,
-// and an answer asked of a replaced session changes nothing.
-func TestCodexScopeCheckEndsOnlyTheCommandsItCovers(t *testing.T) {
-	t.Parallel()
-	r, st, _ := newTestRouter(t)
-	const threadID = "thread-scope-check"
-	createCodexBackgroundTestThread(t, st, threadID)
-	r.MarkThreadActive(threadID, "session-a")
-	startCodexCommandFromSession(t, r, threadID, "listed-cmd", "1001", "spawn-1", threadScope("child-1"), "session-a")
-	startCodexCommandFromSession(t, r, threadID, "gone-cmd", "1002", "spawn-1", threadScope("child-1"), "session-a")
-	startCodexCommandFromSession(t, r, threadID, "other-cmd", "1003", "", threadScope("root"), "session-a")
-	check, ok := r.CodexScopeCheckFor(threadID, "child-1")
-	if !ok {
-		t.Fatal("no check for a scope with live commands")
-	}
-	startCodexCommandFromSession(t, r, threadID, "newer-cmd", "1004", "spawn-1", threadScope("child-1"), "session-a")
-
-	ended := r.ConfirmCodexScope(threadID, check, []string{"listed-cmd"}, false)
-	if len(ended) != 1 || ended[0] != "gone-cmd" {
-		t.Fatalf("confirm ended %v, want [gone-cmd]", ended)
-	}
-	for _, id := range []string{"listed-cmd", "newer-cmd", "other-cmd"} {
-		if !codexCommandTracked(r, threadID, id) {
-			t.Fatalf("%s left the live work; the answer holds it, did not cover it, or is another table's", id)
-		}
-	}
-
-	stale := check
-	stale.Token = "session-old"
-	if ended := r.ConfirmCodexScope(threadID, stale, nil, true); len(ended) != 0 {
-		t.Fatalf("an answer for a replaced session ended %v", ended)
-	}
-	if ended := r.ConfirmCodexScope(threadID, check, nil, true); len(ended) != 1 || ended[0] != "listed-cmd" {
-		t.Fatalf("not loaded ended %v, want [listed-cmd]: newer-cmd started after the check", ended)
-	}
-}
-
 // A close item is not proof the agent's thread is gone (Codex writes it
 // with the agent's previous status when the close fails), so it ends no
-// command. For each named thread that runs commands, the router asks for a
-// check of that thread, pinned to now; one that runs none is not checked.
-func TestCodexCloseItemAsksForACheckOfEachClosedThread(t *testing.T) {
+// command. The thread's unload, which the provider reports, ends them.
+func TestCodexCloseItemEndsNoCommand(t *testing.T) {
 	t.Parallel()
 	r, st, _ := newTestRouter(t)
-	const threadID = "thread-close-check"
+	const threadID = "thread-close-item"
 	createCodexBackgroundTestThread(t, st, threadID)
 	r.MarkThreadActive(threadID, "session-a")
 	seedOpenTurn(t, r, st, threadID, 0)
-	var (
-		mu     sync.Mutex
-		checks []CodexScopeCheck
-	)
-	r.SetCodexScopeCheckHook(func(id string, check CodexScopeCheck) {
-		mu.Lock()
-		defer mu.Unlock()
-		if id != threadID {
-			t.Errorf("check asked for thread %s, want %s", id, threadID)
-		}
-		checks = append(checks, check)
-	})
 	startCodexCommandFromSession(t, r, threadID, "agent-cmd", "1001", "spawn-1", threadScope("child-1"), "session-a")
 
-	closeMeta, err := json.Marshal(map[string]any{"toolName": "close_agent", "item_status": "completed", "input": map[string]any{"tool": "close_agent", "receiverThreadIds": []string{"child-1", "child-2"}}})
+	closeMeta, err := json.Marshal(map[string]any{"toolName": "close_agent", "item_status": "completed", "input": map[string]any{"tool": "close_agent", "receiverThreadIds": []string{"child-1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	closeItem := provider.ProviderEvent{Kind: provider.EventToolComplete, ThreadID: threadID, ItemID: "close-1", ItemType: "close_agent", Meta: closeMeta, Timestamp: time.Now()}
 	if err := r.Handle(fromSession(closeItem, "session-a")); err != nil {
 		t.Fatal(err)
-	}
-	mu.Lock()
-	got := append([]CodexScopeCheck(nil), checks...)
-	mu.Unlock()
-	if len(got) != 1 || got[0].ScopeID != "child-1" || got[0].Token != "session-a" || got[0].Through == 0 {
-		t.Fatalf("checks = %+v, want one pinned check of child-1", got)
 	}
 	if !codexCommandTracked(r, threadID, "agent-cmd") {
 		t.Fatal("the close item ended a command")

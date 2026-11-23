@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,49 +13,9 @@ import (
 	"agent-overflow/internal/provider/providertest"
 )
 
-// A recovery publishes a child's route off the read loop while the read
-// loop keeps routing that child's frames. A frame the read loop gets after
-// the route exists, a command's completion, must not overtake the backlog
-// that holds the command's start: it waits behind the backlog, and the
-// drain delivers both in wire order before the route opens.
-func TestRecoveredChildRouteDeliversTheBacklogBeforeLaterFrames(t *testing.T) {
-	t.Parallel()
-	var events []provider.ProviderEvent
-	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) { events = append(events, e) })
-	start := json.RawMessage(`{"threadId":"child-a","turnId":"child-turn","item":{"id":"cmd-1","type":"commandExecution","source":"unifiedExecStartup","status":"inProgress","processId":"77","command":"sleep 60"}}`)
-	complete := json.RawMessage(`{"threadId":"child-a","turnId":"child-turn","item":{"id":"cmd-1","type":"commandExecution","source":"unifiedExecStartup","status":"completed","processId":"77","command":"sleep 60","exitCode":0}}`)
-	if s.routeChildWireEvent("child-a", deferredChildWireEvent{Method: "item/started", Params: start}) != childWireDeferred {
-		t.Fatal("the unowned child's start was not quarantined")
-	}
-
-	s.gateChildBacklog("child-a")
-	if !s.registerHistoricalChildOwnership("root-provider-thread", "child-a", "/root/child-a", "spawn-a") {
-		t.Fatal("register recovered ownership")
-	}
-	if got := s.routeChildWireEvent("child-a", deferredChildWireEvent{Method: "item/completed", Params: complete}); got != childWireDeferred {
-		t.Fatalf("a frame routed while the backlog waits = %v, want it queued behind the backlog", got)
-	}
-	s.drainDeferredChildWireEvents("child-a")
-
-	var order []provider.EventKind
-	for _, e := range events {
-		if e.ItemID == "cmd-1" && (e.Kind == provider.EventToolStart || e.Kind == provider.EventToolComplete) {
-			if e.ParentToolUseID != "spawn-a" || e.ProcessScope != (provider.ProcessScope{ID: "child-a", Addressable: true}) {
-				t.Fatalf("drained %s = %+v, want it under spawn-a in child-a's process scope", e.Kind, e)
-			}
-			order = append(order, e.Kind)
-		}
-	}
-	if len(order) != 2 || order[0] != provider.EventToolStart || order[1] != provider.EventToolComplete {
-		t.Fatalf("drained command frames = %v, want the start, then the completion", order)
-	}
-	if got := s.routeChildWireEvent("child-a", deferredChildWireEvent{Method: "item/completed", Params: complete}); got != childWireRoutable {
-		t.Fatalf("route after the drain = %v, want routable", got)
-	}
-}
-
-// newOwnershipHistorySession is a routing session whose app-server answers
-// the ownership reads of a root that spawned worker, which spawned helper.
+// newOwnershipHistorySession is a routing session, the only one on its
+// connection, whose app-server answers the ownership reads of a root that
+// spawned worker, which spawned helper.
 func newOwnershipHistorySession(t *testing.T, onEvent func(provider.ProviderEvent)) (*Session, context.Context) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -75,19 +36,27 @@ func newOwnershipHistorySession(t *testing.T, onEvent func(provider.ProviderEven
 	if err != nil {
 		t.Fatal(err)
 	}
+	conn := newConnWithProcess(proc, cancel, "sh")
 	s := newMultiAgentV2RoutingSession(t, onEvent)
-	s.proc, s.ctx, s.cancel = proc, ctx, cancel
-	s.pending = make(map[int64]chan json.RawMessage)
+	s.conn, s.proc, s.ctx, s.cancel = conn, proc, ctx, cancel
+	conn.allSessions[s] = struct{}{}
+	conn.byThread[s.rootThreadID()] = s
+	conn.loaded[s.rootThreadID()] = struct{}{}
 	// These tests isolate identity discovery from the independently tested status reader.
 	s.collabHistory.visited["worker"] = 1
 	s.collabHistory.visited["helper"] = 1
-	go s.readLoop()
+	go conn.readLoop()
 	t.Cleanup(func() {
 		cancel()
 		if err := proc.Close(); err != nil && !errors.Is(err, context.Canceled) {
 			t.Errorf("close fake server: %v", err)
 		}
 		s.collabAsyncWG.Wait()
+		conn.routesMu.Lock()
+		for _, timer := range conn.deferredChildDeadlines {
+			timer.Stop()
+		}
+		conn.routesMu.Unlock()
 	})
 	return s, ctx
 }
@@ -122,12 +91,75 @@ func TestRecoverChildOwnershipUsesOriginalSpawnAndKeepsNestedScope(t *testing.T)
 	}
 }
 
-// A recovery that finds the child's spawn but cannot register it leaves no
-// backlog gate behind: the child stays unowned, its frames quarantined
-// until their deadline as any unowned child's are.
-func TestRecoverChildOwnershipThatConflictsLeavesNoBacklogGate(t *testing.T) {
+// A recovery publishes the agent's route on the connection and emits its
+// spawn row while it holds the session's dispatch token: a frame of the
+// agent that the read loop routes while the row is being emitted queues, and
+// the agent's backlog goes out after the whole row, as it does behind a live
+// spawn row.
+func TestARecoveredAgentsBacklogFollowsItsSpawnRow(t *testing.T) {
 	t.Parallel()
-	s, ctx := newOwnershipHistorySession(t, func(provider.ProviderEvent) {})
+	var log eventLog
+	var s *Session
+	var conn *Conn
+	var once sync.Once
+	var heldDuringRow bool
+	routed := make(chan struct{})
+	s, ctx := newOwnershipHistorySession(t, func(e provider.ProviderEvent) {
+		if e.ItemID == "spawn-helper" {
+			once.Do(func() {
+				s.earlyFramesMu.Lock()
+				heldDuringRow = s.dispatching
+				s.earlyFramesMu.Unlock()
+				go func() {
+					defer close(routed)
+					conn.dispatchNotification("item/agentMessage/delta", json.RawMessage(`{"threadId":"helper","turnId":"helper-turn","itemId":"answer","delta":"second"}`))
+				}()
+				// The read loop's frame queues behind the token at once. A
+				// read loop that took the token instead would wait for this
+				// event's emission to end and then deliver the backlog.
+				select {
+				case <-routed:
+				case <-time.After(300 * time.Millisecond):
+				}
+			})
+		}
+		log.add(e)
+	})
+	conn = s.conn
+	conn.dispatchNotification("item/agentMessage/delta", json.RawMessage(`{"threadId":"helper","turnId":"helper-turn","itemId":"answer","delta":"first"}`))
+	if err := s.recoverChildOwnership(ctx, "helper", make(map[string]bool)); err != nil {
+		t.Fatal(err)
+	}
+	<-routed
+	if !heldDuringRow {
+		t.Fatal("the recovery emitted the spawn row without holding the dispatch token: the read loop could deliver the agent's backlog ahead of it")
+	}
+	var order []string
+	for _, e := range log.snapshot() {
+		switch {
+		case e.ItemID == "spawn-helper" && e.Kind == provider.EventToolStart:
+			order = append(order, "spawn row start")
+		case e.ItemID == "spawn-helper" && e.Kind == provider.EventToolComplete:
+			order = append(order, "spawn row end")
+		case e.Kind == provider.EventTextDelta:
+			if e.ParentToolUseID != "spawn-helper" {
+				t.Fatalf("the agent's text %+v is not under spawn-helper", e)
+			}
+			order = append(order, e.Content)
+		}
+	}
+	if want := []string{"spawn row start", "spawn row end", "first", "second"}; !sameOrder(order, want) {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+}
+
+// A recovery that finds the child's spawn but cannot register it lets the
+// dispatch token go and leaves the child unowned, its frames quarantined
+// until their deadline as any unowned child's are.
+func TestRecoverChildOwnershipThatConflictsLeavesTheFramesQuarantined(t *testing.T) {
+	t.Parallel()
+	var log eventLog
+	s, ctx := newOwnershipHistorySession(t, log.add)
 	s.mu.Lock()
 	s.collab.agentPathByThread = map[string]string{"helper": "/root/elsewhere"}
 	s.mu.Unlock()
@@ -138,9 +170,16 @@ func TestRecoverChildOwnershipThatConflictsLeavesNoBacklogGate(t *testing.T) {
 		t.Fatalf("recover = %v, want the conflict", err)
 	}
 	s.mu.Lock()
-	gated, queued := s.childRouting.backlogOpen["helper"], len(s.childRouting.deferredChildWireEvents["helper"])
+	queued := len(s.childRouting.deferredChildWireEvents["helper"])
 	s.mu.Unlock()
-	if gated || queued != 1 {
-		t.Fatalf("after the conflict: gate %v, %d frames queued; want no gate and the frame still quarantined", gated, queued)
+	if queued != 1 || s.parentToolUseForProviderThread("helper") != "" {
+		t.Fatalf("after the conflict: %d frames queued, route %q; want the frame still quarantined and no route", queued, s.parentToolUseForProviderThread("helper"))
 	}
+	s.dispatchNotification("item/agentMessage/delta", json.RawMessage(`{"threadId":"root-provider-thread","turnId":"root-turn","itemId":"m1","delta":"root text"}`))
+	for _, e := range log.snapshot() {
+		if e.Kind == provider.EventTextDelta && e.Content == "root text" {
+			return
+		}
+	}
+	t.Fatal("a root frame was not dispatched after the conflict: the recovery kept the dispatch token")
 }

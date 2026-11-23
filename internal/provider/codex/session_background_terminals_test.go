@@ -39,6 +39,13 @@ type backgroundTerminalRequestFrame struct {
 // capture file.
 func newCapturingSession(t *testing.T, codexThreadID string) (*Session, string) {
 	t.Helper()
+	return newCapturingSessionEmitting(t, codexThreadID, func(provider.ProviderEvent) {})
+}
+
+// newCapturingSessionEmitting is newCapturingSession with the session's
+// event sink.
+func newCapturingSessionEmitting(t *testing.T, codexThreadID string, onEvent func(provider.ProviderEvent)) (*Session, string) {
+	t.Helper()
 	capturePath := t.TempDir() + "/requests.ndjson"
 	procCtx, cancelProc := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(procCtx, providertest.Lifetime(), provider.SpawnConfig{
@@ -59,7 +66,7 @@ func newCapturingSession(t *testing.T, codexThreadID string) (*Session, string) 
 		proc:     proc,
 		threadID: testThread,
 		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  func(provider.ProviderEvent) {},
+		onEvent:  onEvent,
 		cancel:   cancelProc,
 	}
 	s.setRootThreadID(codexThreadID)

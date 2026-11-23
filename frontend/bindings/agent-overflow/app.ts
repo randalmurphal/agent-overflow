@@ -767,10 +767,9 @@ export function CheckThreadImportUpdates(threadID: string): $CancellablePromise<
  * starts with it (stopCodexCommandsBeforeRevert).
  * 
  * Codex answers before the processes are gone, so the answer ends no
- * command: each leaves the tray by its own item/completed, by its thread's
- * end, or when a list no longer holds it (triage codexExecTrackers). An
- * agent thread that is already gone has no processes left; its error is
- * read, and the commands it ran end with it.
+ * command: each leaves the tray by its own item/completed or by its
+ * thread's unload (triage codexExecTrackers). An agent thread that is
+ * already gone answers "thread not found", which is that unload.
  * 
  * Returns typed errors for:
  * 
@@ -6490,10 +6489,10 @@ export function StopClaudeTask(threadID: string, taskID: string): $CancellablePr
  * counterpart of StopClaudeTask.
  * 
  * true: Codex terminated the process, and its item/completed takes the row
- * out of the tray. false, nil: the command had already ended; it has left
- * the tray. An error says why it could not be stopped: a command inside a
- * code review ends with the review, and one Codex still runs after the stop
- * is named so the person can try again.
+ * out of the tray. false, nil: the command had already ended. An error says
+ * why it was not stopped: Codex did not stop it, the command runs inside a
+ * code review and ends with the review, or its process is no longer the one
+ * the row names. The row stays until the command ends.
  */
 export function StopCodexBackgroundCommand(threadID: string, launchID: string): $CancellablePromise<boolean> {
     return $Call.ByID(1463917393, threadID, launchID);

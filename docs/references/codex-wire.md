@@ -1653,9 +1653,9 @@ Available since codex 0.140.0; verified on 0.146.0 and 0.159.1.
   `-32600 "Invalid request: missing field processId"`.
 - `osPid`, `cpuPercent`, `rssKb` are nullable, and absent is not zero.
 - `terminated: false` means no running process matched (already exited,
-  or belongs to another thread), or terminating it failed. It is a state
-  answer, not an error, and not proof the process is gone: only `list`
-  says which (§An agent's terminals below).
+  not stored yet, or belongs to another thread), or terminating it failed.
+  It is a state answer, not an error, and not proof the process is gone;
+  `list` cannot say which either (§An agent's terminals below).
 - `threadId` names the thread whose processes the call reaches: the root
   thread, or an agent's (§An agent's terminals below).
 - `list` paginates: pass a non-null `nextCursor` back as `cursor`.
@@ -1737,22 +1737,28 @@ frames from the terminals it announced (`cmd/ao-mockprovider/codex_terminals.go`
   has exited, and `clean`'s `{}` reports no outcome.
 - `exec_command` writes the command's `item/started` before it stores the
   process (`process_manager.rs`, the Begin emit then `store_process`), so a
-  `list` Codex handles between the two omits a command already announced.
+  `list` Codex handles between the two omits a command already announced,
+  and a `terminate` of it answers false.
+- `clean` takes every process out of the table before it signals any
+  (`terminate_all_processes`). An exec-server process's terminate is
+  spawned detached with its error discarded, and its exit token is then
+  cancelled (`core/src/unified_exec/process.rs`), so the command's
+  `item/completed` is written whether or not the process died.
 
 AO counts an agent's commands as the thread's live work and lists them in
 the tray under the agent's spawn launch. A command leaves the live work on
-its `item/completed`, its thread's `notLoaded`, the session's end, or a
-check that its thread's list omits it or that the thread is not loaded
-([turn lifecycle](../architecture/turn-lifecycle.md)). A Stop names the
-thread that runs the command and checks a false answer against the list.
-A V1 `close_agent` completion is a hint: triage asks for that check of
-each closed agent's thread that holds live commands, and the adapter keeps
-the closed agent's route until Codex says the thread is gone, by its
-`notLoaded` or a "thread not found" answer (`noteClosedCollabReceivers`).
-The check covers only the receivers the close item names; a descendant the
-close also shut down ends its commands through its own `notLoaded`. A
-check that lands in the window above ends a command that has just
-started; its `item/completed` still writes its row.
+its own `item/completed`, its thread's unload (`notLoaded`, or a "thread
+not found" answer in the session that runs it), or the session's end or
+replacement ([turn lifecycle](../architecture/turn-lifecycle.md)). A
+list's absence ends nothing: it omits a command that has exited and one
+that is starting alike. A Stop names the thread that runs the command; a
+false answer leaves the command live, and the Stop says Codex did not stop
+it. A V1 `close_agent` completion is a hint: the adapter asks the closed
+agent's thread for its terminals once, only to hear "thread not found"
+(`probeClosedChild`), and retires the agent's route when both the close
+and the unload are known, in either order (`childResidency`). A revert
+that waits for its commands' completions cannot prove their processes
+died, because an exec-server process's completion is written either way.
 
 ---
 

@@ -12,7 +12,7 @@ import (
 // agent whose execution is active, and every unified-exec command the
 // session's app-server runs, the root thread's, every agent's at every
 // depth and a review run's. A command outlives the turn that started it and
-// leaves the live work only by the four ways codexExecTrackers names, so
+// leaves the live work only by the three ways codexExecTrackers names, so
 // closing the session would kill it. The count, the tray and the
 // project-wide thread list below all apply this rule; the tray lists the
 // agents through ListLiveCodexAgentTasks.
@@ -198,8 +198,8 @@ func (r *Router) hasActiveCodexTopLevelCommand(threadID string) bool {
 	return false
 }
 
-// CodexCommand is one live command as a stop sees it: where its process
-// runs and the check that would confirm it gone.
+// CodexCommand is one live command as a stop sees it: the session that runs
+// it and where its process runs.
 type CodexCommand struct {
 	LaunchID  string
 	ProcessID string
@@ -208,22 +208,9 @@ type CodexCommand struct {
 	ScopeID     string
 	Addressable bool
 	Summary     string
-	// Seq orders the thread's command starts (CodexScopeCheck.Through).
-	Seq uint64
-	// Check confirms the command gone through its scope's list
-	// (ConfirmCodexScope).
-	Check CodexScopeCheck
-}
-
-// CodexScopeCheck is a request to confirm which of a scope's commands are
-// gone, pinned to the session that asked and to the commands that had
-// started when it asked: Codex answers for its process table as it is when
-// the request is read, so a command that started after the request cannot
-// be judged by it.
-type CodexScopeCheck struct {
-	ScopeID string
-	Token   string
-	Through uint64
+	// Token is the session the command runs in: the one MarkThreadActive
+	// committed the thread to when the command was read.
+	Token string
 }
 
 // LiveCodexCommand returns the live command launchID, and false when no
@@ -275,92 +262,34 @@ func (r *Router) LiveRootCodexCommandForProcess(threadID, processID string) (Cod
 
 // codexCommandLocked copies tracker for a stop. Caller holds r.mu.
 func (r *Router) codexCommandLocked(threadID string, tracker *unifiedExecTracker) CodexCommand {
-	return CodexCommand{
+	command := CodexCommand{
 		LaunchID:    tracker.launchID,
 		ProcessID:   tracker.processID,
 		ScopeID:     tracker.scope.ID,
 		Addressable: tracker.scope.Addressable && tracker.scope.ID != "",
 		Summary:     tracker.summary,
-		Seq:         tracker.seq,
-		Check:       r.codexScopeCheckLocked(threadID, tracker.scope.ID),
 	}
-}
-
-// PinCodexScopeCheck pins a check of scope's commands to now, for a caller
-// about to ask Codex about the scope: a command that starts after this is
-// not covered by the answer.
-func (r *Router) PinCodexScopeCheck(threadID, scopeID string) CodexScopeCheck {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.codexScopeCheckLocked(threadID, scopeID)
-}
-
-// CodexScopeCheckFor pins a check of scope's commands to now, and reports
-// false when the scope holds no live command to check.
-func (r *Router) CodexScopeCheckFor(threadID, scopeID string) (CodexScopeCheck, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	execs := r.codexExecIfPresent(threadID)
-	if execs == nil {
-		return CodexScopeCheck{}, false
-	}
-	for _, tracker := range execs.byLaunch {
-		if tracker.scope.ID == scopeID && tracker.scope.Addressable {
-			return r.codexScopeCheckLocked(threadID, scopeID), true
-		}
-	}
-	return CodexScopeCheck{}, false
-}
-
-func (r *Router) codexScopeCheckLocked(threadID, scopeID string) CodexScopeCheck {
-	check := CodexScopeCheck{ScopeID: scopeID}
 	if id := r.identityIfPresent(threadID); id != nil {
-		check.Token = id.sessionToken
+		command.Token = id.sessionToken
 	}
-	if execs := r.codexExecIfPresent(threadID); execs != nil {
-		check.Through = execs.lastSeq
-	}
-	return check
+	return command
 }
 
-// ConfirmCodexScope applies way 4 of codexExecTrackers: Codex's answer to
-// check. listed holds the item ids the scope's list returned; notLoaded
-// reports that Codex has no such thread loaded, which ends every command in
-// it. A command check covers (it started by check.Through) that the answer
-// does not hold leaves the live work. An answer for a session other than
-// the one that asked changes nothing. Returns the item ids it ended.
-func (r *Router) ConfirmCodexScope(threadID string, check CodexScopeCheck, listed []string, notLoaded bool) []string {
-	held := make(map[string]bool, len(listed))
-	for _, itemID := range listed {
-		held[itemID] = true
-	}
+// CodexCommandHoldsProcess reports whether command, read for a stop, still
+// names the process its stop would terminate: the session command.Token
+// names is not retired, as Handle's gate reads a frame's token
+// (frameRetiredLocked), and command is the live command that holds its
+// process id in its process table. The stop asks it just before it sends,
+// so a process id Codex gave a newer command, after command's process left
+// the table and its completion was handled, is not terminated for it.
+func (r *Router) CodexCommandHoldsProcess(threadID string, command CodexCommand) bool {
 	r.mu.Lock()
-	var ended []string
-	if execs := r.codexExecIfPresent(threadID); execs != nil && r.codexCheckCurrentLocked(threadID, check) {
-		for _, tracker := range execs.byLaunch {
-			if tracker.scope.ID != check.ScopeID || tracker.seq > check.Through || (!notLoaded && held[tracker.launchID]) {
-				continue
-			}
-			ended = append(ended, tracker.launchID)
-			execs.end(tracker)
-		}
-	}
-	r.mu.Unlock()
-	if len(ended) > 0 {
-		sort.Strings(ended)
-		r.emitCodexBackgroundChanged(threadID)
-	}
-	return ended
-}
-
-// codexCheckCurrentLocked reports whether check was asked of the session
-// that runs the thread now. Caller holds r.mu.
-func (r *Router) codexCheckCurrentLocked(threadID string, check CodexScopeCheck) bool {
-	id := r.identityIfPresent(threadID)
-	if id == nil || id.stopped {
+	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, command.Token) {
 		return false
 	}
-	return id.sessionToken == check.Token
+	tracker := r.codexExecIfPresent(threadID).byProcessID(command.ScopeID, command.ProcessID)
+	return tracker != nil && tracker.launchID == command.LaunchID
 }
 
 // CodexExecChanged returns a channel that closes at the next change to the
