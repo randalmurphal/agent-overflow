@@ -116,15 +116,18 @@ func (m *Manager) usageTransaction(
 	// already holds: that names its login and may move the selection, and the
 	// reading then starts over as the account now stands. Nothing runs here
 	// once a spend's record could exist.
-	if start.isSelected && !m.credentialRecorded(providerName, start.credential.Bytes()) {
-		if err := m.reconcileExternalProviderAccountWithMutexHeld(ctx, providerName); err != nil {
+	if start.isSelected {
+		unrecorded, err := m.reconcileCanonicalWithMutexHeld(ctx, providerName, start.credential)
+		if err != nil {
 			return err
 		}
-		if start, err = m.readUsageStart(providerName, accountID); err != nil {
-			return err
-		}
-		if spend != nil && !start.isSelected {
-			return m.resetSelectionMovedError(providerName, spend)
+		if unrecorded {
+			if start, err = m.readUsageStart(providerName, accountID); err != nil {
+				return err
+			}
+			if spend != nil && !start.isSelected {
+				return m.resetSelectionMovedError(providerName, spend)
+			}
 		}
 	}
 	account, isSelected, generation, selection := start.account, start.isSelected, start.generation, start.selection

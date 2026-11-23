@@ -79,13 +79,32 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 	if !present {
 		return nil
 	}
+	_, err = m.reconcileCanonicalWithMutexHeld(ctx, providerName, before)
+	return err
+}
 
-	m.mu.RLock()
-	known, observed := m.fingerprints[providerName]
-	m.mu.RUnlock()
-	if observed && known == sha256.Sum256(before.Bytes()) {
-		return nil
+// reconcileCanonicalWithMutexHeld reconciles the canonical credential before,
+// already read under the reconcile lock the caller holds. unrecorded reports
+// that before is not the credential recorded for the selected account, so
+// reconciliation tried to name its login and may have moved the selection.
+func (m *Manager) reconcileCanonicalWithMutexHeld(
+	ctx context.Context,
+	providerName string,
+	before provideraccounts.CredentialSnapshot,
+) (unrecorded bool, err error) {
+	if m.credentialRecorded(providerName, before.Bytes()) {
+		return false, nil
 	}
+	return true, m.identifyCanonicalWithMutexHeld(ctx, providerName, before)
+}
+
+// identifyCanonicalWithMutexHeld names the login of an unrecorded canonical
+// credential and makes its account the selected one.
+func (m *Manager) identifyCanonicalWithMutexHeld(
+	ctx context.Context,
+	providerName string,
+	before provideraccounts.CredentialSnapshot,
+) error {
 	if m.credentials.CredentialLoginExpired(providerName, before.Bytes(), time.Now()) {
 		// An expired login is a change this reconciliation cannot identify:
 		// the probe that would name it is a CLI start, and starting the CLI on
