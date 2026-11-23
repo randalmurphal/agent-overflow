@@ -104,10 +104,12 @@ type Sessions struct {
 // invitation, internal/pairbootstrap). Admit runs write unless the gate
 // refuses linkID, holding the gate from its check until write returns, so a
 // retirement of the link either waits for write or comes first and is
-// refused by it. A refusal answers ErrPairingRefused and runs nothing. write
-// must not take Sessions.ownMu, which the caller already holds.
+// refused by it. bootstrap is the link's mark (store.PairingLink.Bootstrap):
+// a marked link is admitted only while a live window holds it. A refusal
+// answers ErrPairingRefused and runs nothing. write must not take
+// Sessions.ownMu, which the caller already holds.
 type PairingGate interface {
-	Admit(linkID string, write func() error) error
+	Admit(linkID string, bootstrap bool, write func() error) error
 }
 
 // SetPairingGate sets the gate every redemption's spend and every owner
@@ -116,14 +118,18 @@ func (s *Sessions) SetPairingGate(gate PairingGate) {
 	s.gate.Store(&gate)
 }
 
-// admitPairing runs write inside the pairing gate for linkID. The caller
-// holds ownMu.
-func (s *Sessions) admitPairing(linkID string, write func() error) error {
+// admitPairing runs write inside the pairing gate for linkID. Without a gate
+// a marked link is refused, since no window can hold it. The caller holds
+// ownMu.
+func (s *Sessions) admitPairing(linkID string, bootstrap bool, write func() error) error {
 	gate := s.gate.Load()
 	if gate == nil {
+		if bootstrap {
+			return ErrPairingRefused
+		}
 		return write()
 	}
-	return (*gate).Admit(linkID, write)
+	return (*gate).Admit(linkID, bootstrap, write)
 }
 
 // liveSweepThreshold is when the fast path drops expired entries. Below it

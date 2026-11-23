@@ -2,7 +2,6 @@ package store
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -560,15 +559,20 @@ func cancelPairingLinkTx(tx *sql.Tx, id string, at int64) (PairingCancellation, 
 	if err != nil {
 		return PairingCancellation{}, err
 	}
-	if len(canceled.links) == 0 {
+	if canceled.links == 0 {
 		return PairingCancellation{}, sql.ErrNoRows
 	}
-	return PairingCancellation{Link: canceled.links[0], SessionRevoked: len(canceled.revoked) > 0, Released: canceled.released}, nil
+	link, err := scanPairingLink(tx.QueryRow(`SELECT `+pairingLinkColumns+` FROM pairing_links WHERE id = ?`, id))
+	if err != nil {
+		return PairingCancellation{}, fmt.Errorf("store: cancel pairing link: read it: %w", err)
+	}
+	return PairingCancellation{Link: link, SessionRevoked: len(canceled.revoked) > 0, Released: canceled.released}, nil
 }
 
 // pairingCancellations is what one cancelPairingLinksTx ended.
 type pairingCancellations struct {
-	links []PairingLink
+	// links counts the links stamped.
+	links int64
 	// revoked names the pending sessions revoked with them, and released
 	// the threads whose spawn links that revocation released.
 	revoked, released []string
@@ -576,45 +580,28 @@ type pairingCancellations struct {
 
 // cancelPairingLinksTx is the one writer of pairing_links.canceled_at. It
 // stamps every uncanceled link where selects and, in the same transaction,
-// revokes each stamped link's session that was never activated, so a
-// canceled link never leaves a pending session behind. An activated session
-// is not this statement's: a link canceled after its session was admitted
-// (an own-device introduction its device never renewed) leaves the decision
-// to end that session to its caller.
+// revokes each such link's session that was never activated, so a canceled
+// link never leaves a pending session behind. Both are set statements; no
+// link row is read. An activated session is not this statement's: a link
+// canceled after its session was admitted (an own-device introduction its
+// device never renewed) leaves the decision to end that session to its
+// caller.
 func cancelPairingLinksTx(tx *sql.Tx, at int64, where string, args ...any) (pairingCancellations, error) {
 	var out pairingCancellations
-	rows, err := tx.Query(`UPDATE pairing_links SET canceled_at = ?
-		  WHERE canceled_at IS NULL AND (`+where+`)
-		 RETURNING `+pairingLinkColumns, append([]any{at}, args...)...)
-	if err != nil {
-		return out, fmt.Errorf("store: cancel pairing links: %w", err)
-	}
-	var sessions []string
-	for rows.Next() {
-		link, err := scanPairingLink(rows)
-		if err != nil {
-			_ = rows.Close()
-			return out, err
-		}
-		out.links = append(out.links, link)
-		if link.SessionID != "" {
-			sessions = append(sessions, link.SessionID)
-		}
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return out, fmt.Errorf("store: cancel pairing links: %w", err)
-	}
-	if len(sessions) == 0 {
-		return out, nil
-	}
-	encoded, err := json.Marshal(sessions)
-	if err != nil {
-		return out, fmt.Errorf("store: cancel pairing links: %w", err)
-	}
+	var err error
 	out.revoked, out.released, err = endSessionsTx(tx, revokeSessions, at, nil,
-		`activated_at IS NULL AND id IN (SELECT value FROM json_each(?))`, string(encoded))
+		`activated_at IS NULL AND id IN (SELECT session_id FROM pairing_links
+		  WHERE canceled_at IS NULL AND session_id <> '' AND (`+where+`))`, args...)
 	if err != nil {
 		return out, fmt.Errorf("store: cancel pairing links: revoke their pending sessions: %w", err)
+	}
+	result, err := tx.Exec(`UPDATE pairing_links SET canceled_at = ?
+		  WHERE canceled_at IS NULL AND (`+where+`)`, append([]any{at}, args...)...)
+	if err != nil {
+		return out, fmt.Errorf("store: cancel pairing links: %w", err)
+	}
+	if out.links, err = result.RowsAffected(); err != nil {
+		return out, fmt.Errorf("store: cancel pairing links: rows affected: %w", err)
 	}
 	return out, nil
 }
@@ -631,10 +618,11 @@ type PairingCancellation struct {
 
 // RetirePendingPairings runs before a restarted host serves credentials. An
 // unfinished screen comparison cannot survive the process that owned it, so
-// every unconfirmed link is canceled with its pending session. A confirmed
-// link whose session was never activated (an older build confirmed it and
-// stopped before activating) ends the same way: its session is revoked and
-// the device pairs again. An activated session is outside both statements.
+// every unconfirmed link is canceled with its pending session. Every other
+// session a link names that was never activated ends the same way, whatever
+// the link's stamps (an older build confirmed or canceled the link and
+// stopped before settling its session): it is revoked and the device pairs
+// again. An activated session is outside both statements.
 func (s *Store) RetirePendingPairings(at int64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -645,8 +633,8 @@ func (s *Store) RetirePendingPairings(at int64) error {
 		return fmt.Errorf("store: retire pending pairings: %w", err)
 	}
 	if _, _, err := endSessionsTx(tx, revokeSessions, at, nil, `activated_at IS NULL
-		AND id IN (SELECT session_id FROM pairing_links WHERE confirmed_at IS NOT NULL AND session_id <> '')`); err != nil {
-		return fmt.Errorf("store: retire pending pairings: revoke the unactivated sessions of confirmed links: %w", err)
+		AND id IN (SELECT session_id FROM pairing_links WHERE session_id <> '')`); err != nil {
+		return fmt.Errorf("store: retire pending pairings: revoke the unactivated sessions of settled links: %w", err)
 	}
 	return tx.Commit()
 }

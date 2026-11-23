@@ -84,15 +84,21 @@ The address publication (`publishComputerRoutes`) owns the address each
 pairing network resolves to, and records the window admitted under it with the
 publication's serial. A settings rebind, a Windows launcher report and the
 launcher's loss each publish right after the move. A publication that moves the
-serial refuses the recorded window at once (`Book.Expire`), under the lock that
-moves the serial, then closes it, which waits for the window's LAN responders to
-finish starting. An open checks that its network has an address, closes the
-previous window, runs a personal open's enrollment, and is admitted inside the
-book's open against the publication as it stands then, showing the address read
-there. A personal open's enrollment is left behind only when the network loses
-its address, the owner's connection ends, or the app shuts down while that
-enrollment runs; every other failure changes no enrollment, registration or
-membership generation.
+serial and changes what the recorded window depends on (the address and port it
+shows, the certificate pin that address presents, and whether its LAN
+responders run and on which LAN address) refuses that window at once
+(`Book.Expire`), under the lock that moves the serial, then closes it, which
+waits for the window's LAN responders to finish starting; a route change that
+leaves those alone keeps the window. A window the publication refuses while
+the book is still admitting it is installed already expired. An open checks
+that its network has an address, closes the previous window, checks the
+network, the owner's connection and shutdown again, runs a personal open's
+enrollment, and is admitted inside the book's open against the publication as
+it stands then, showing the address read there. A
+personal open's enrollment is left behind when the network loses its address,
+the owner's connection ends, or the app shuts down while that enrollment runs,
+or when the enrollment (`enableOwnDevices`) itself fails partway; every earlier
+failure changes no enrollment, registration or membership generation.
 
 Each step of the invitation's store state is one transaction: a redemption's
 new or relabeled device row, pending session, refresh secret and the link

@@ -32,8 +32,8 @@ type computerRoutesPublication struct {
 	advertise bool
 	// window is the computer pairing window admitted under this
 	// publication, recorded at its admission (openComputerPairing) with the
-	// serial it was admitted under. A publication that moves the serial
-	// retires it.
+	// serial it was admitted under and what it depends on. A publication
+	// that moves the serial retires it only when what it depends on changed.
 	window admittedPairingWindow
 	// chosen, when set before the publication is used, runs after each
 	// publication releases mu and before it closes the window it retired,
@@ -46,6 +46,31 @@ type admittedPairingWindow struct {
 	id     string
 	serial uint64
 	book   *pairbootstrap.Book
+	choice string
+	terms  pairingWindowTerms
+}
+
+// pairingWindowTerms is what a pairing window on one network depends on: the
+// address and port it shows, the certificate pin that address presents, and
+// what its LAN responders advertise (whether they run, and the LAN address).
+type pairingWindowTerms struct {
+	address, pin string
+	advertise    bool
+	lan          string
+}
+
+// termsLocked is what a window on choice depends on under this publication.
+// The caller holds mu.
+func (p *computerRoutesPublication) termsLocked(choice string) pairingWindowTerms {
+	t := pairingWindowTerms{advertise: p.advertise}
+	t.address, _ = p.pairing.on(choice)
+	if choice == "lan" {
+		t.pin = p.pairing.lanPin
+	}
+	if t.advertise {
+		t.lan = p.pairing.lan
+	}
+	return t
 }
 
 // pairingAddresses is the address a pairing window opened on each network
@@ -53,6 +78,8 @@ type admittedPairingWindow struct {
 type pairingAddresses struct {
 	lan, tailnet       string
 	lanErr, tailnetErr string
+	// lanPin is the certificate pin the LAN address presents.
+	lanPin string
 }
 
 func (p pairingAddresses) on(choice string) (string, error) {
@@ -78,7 +105,8 @@ type publishedNetwork struct {
 
 // publishComputerRoutes reads the listener and the reported addresses once,
 // publishes what changed, and retires the pairing window admitted under an
-// earlier publication. Call it right after a listener or a reported address
+// earlier publication when what that window depends on changed
+// (pairingWindowTerms). Call it right after a listener or a reported address
 // moves, with the network-state locks released. The event carries no route
 // trust: delayed replay only asks clients for a fresh authenticated
 // bootstrap.
@@ -101,15 +129,15 @@ func (a *App) publishComputerRoutes() publishedNetwork {
 	}
 	pairing := pairingAddressesOf(srv, settings, reach)
 	routesChanged := !slices.Equal(state.routes, routes)
-	pairingChanged := pairing != state.pairing
+	advertise := settings.BindAll && settings.LAN == nil
+	pairingChanged := pairing != state.pairing || advertise != state.advertise
 	if routesChanged || pairingChanged {
-		state.routes, state.pairing = routes, pairing
+		state.routes, state.pairing, state.advertise = routes, pairing, advertise
 		state.serial++
 	}
-	state.advertise = settings.BindAll && settings.LAN == nil
 	published := publishedNetwork{serial: state.serial, pairing: pairing, advertise: state.advertise}
 	retired := state.window
-	if retired.id != "" && retired.serial < state.serial {
+	if retired.id != "" && retired.serial < state.serial && retired.terms != state.termsLocked(retired.choice) {
 		state.window = admittedPairingWindow{}
 		retired.book.Expire(retired.id)
 	} else {
@@ -141,6 +169,8 @@ func pairingAddressesOf(srv *transport.Server, s network.Settings, reach network
 	var err error
 	if p.lan, err = network.PairingAddressOnNetwork(srv, s, reach, "lan"); err != nil {
 		p.lanErr = err.Error()
+	} else {
+		p.lanPin = s.TLS.SelfSignedFingerprint
 	}
 	if p.tailnet, err = network.PairingAddressOnNetwork(srv, s, reach, "tailnet"); err != nil {
 		p.tailnetErr = err.Error()
@@ -159,7 +189,7 @@ func (a *App) admitComputerPairingWindow(book *pairbootstrap.Book, windowID, cho
 	if address, err = state.pairing.on(choice); err != nil {
 		return "", false, err
 	}
-	state.window = admittedPairingWindow{id: windowID, serial: state.serial, book: book}
+	state.window = admittedPairingWindow{id: windowID, serial: state.serial, book: book, choice: choice, terms: state.termsLocked(choice)}
 	return address, state.advertise, nil
 }
 

@@ -121,7 +121,7 @@ func (b *Book) pendingLink() string {
 func confirmed(t *testing.T, b *Book, id string) bool {
 	t.Helper()
 	ran := false
-	err := b.Admit(id, func() error { ran = true; return nil })
+	err := b.Admit(id, false, func() error { ran = true; return nil })
 	if ran != (err == nil) {
 		t.Fatalf("Admit(%s) = %v with confirmation run %v", id, err, ran)
 	}
@@ -316,7 +316,7 @@ func TestARemovalWaitsForARunningConfirmation(t *testing.T) {
 	t.Cleanup(release.open)
 	confirmedErr := make(chan error, 1)
 	go func() {
-		confirmedErr <- b.Admit("open", func() error { writing.open(); release.wait(); return nil })
+		confirmedErr <- b.Admit("open", false, func() error { writing.open(); release.wait(); return nil })
 	}()
 	<-writing.release
 	closed := make(chan error, 1)
@@ -359,7 +359,7 @@ func TestAnApprovalAdmittedBeforeTheDeadlineCompletesAfterIt(t *testing.T) {
 	t.Cleanup(func() { _ = b.Close(w.WindowID) })
 	handshake(t, b, newClient(t))
 	var wroteAfterDeadline bool
-	err = b.Admit("approved", func() error {
+	err = b.Admit("approved", false, func() error {
 		// The write is held until the window's own timer has fired and is
 		// waiting to remove the window.
 		select {

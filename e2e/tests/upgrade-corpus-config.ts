@@ -513,9 +513,9 @@ export const recoveryRules: RecoveryRule[] = [
     columns: ['revoked_at'], to: 'b.revoked_at IS NOT NULL',
   },
   {
-    name: 'confirmed-pending-sessions', writer: 'identity.Bootstrap (store.RetirePendingPairings)', table: 'sessions',
+    name: 'pending-link-sessions', writer: 'identity.Bootstrap (store.RetirePendingPairings)', table: 'sessions',
     rows: `s.activated_at IS NULL AND s.revoked_at IS NULL
-      AND s.id IN (SELECT l.session_id FROM mig.pairing_links l WHERE l.confirmed_at IS NOT NULL AND l.session_id <> '')`,
+      AND s.id IN (SELECT l.session_id FROM mig.pairing_links l WHERE l.session_id <> '')`,
     columns: ['revoked_at'], to: 'b.revoked_at IS NOT NULL',
   },
   {

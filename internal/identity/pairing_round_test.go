@@ -239,3 +239,23 @@ func TestRecoveringAnAdmissionRevokesOnlyARefusal(t *testing.T) {
 		t.Fatalf("the finished admission's session = %+v (%v), want live", session, err)
 	}
 }
+
+// A marked link is a computer pairing window's invitation, admitted only
+// while a window holds it; a session core with no gate has no window, so it
+// refuses the link unspent.
+func TestAMarkedLinkWithoutAGateIsRefused(t *testing.T) {
+	sessions, st, _, owner, _ := newFixture(t)
+	link, err := sessions.MintPairingLink(PairingRequest{
+		UserID: owner.ID, DeviceClass: DevicePhone, BindingClass: BindingDeviceBound,
+		Scopes: []Scope{ScopeThreadsRead}, Bootstrap: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, reason := sessions.RedeemPairing(RedemptionRequest{Token: link.Token, Proof: bearerProof("thumb-marked")}); reason != ReasonUnknownCredential {
+		t.Fatalf("redeeming a marked link with no gate = %s, want %s", reason, ReasonUnknownCredential)
+	}
+	if stored, err := st.GetPairingLink(link.Link.ID); err != nil || stored.RedeemedAt != 0 {
+		t.Fatalf("the marked link = %+v (%v), want it unspent", stored, err)
+	}
+}

@@ -90,9 +90,10 @@ const computerPairingCleanupKey = "computer-pairing"
 // openComputerPairing opens the window for conn, which owns it: the
 // connection's end closes it. Everything that can refuse the open runs before
 // prepare, which persists (own-device enrollment): the arguments, the
-// caller's connection, whether the chosen network has an address now, and
-// the previous window's retirement. Only a network that loses its address or
-// a connection that ends while prepare runs fails the open after it.
+// previous window's retirement, and, rechecked after every wait and right
+// before prepare, the caller's connection, whether the chosen network has an
+// address, and whether pairing is shutting down. Only those changing while
+// prepare runs, or prepare's own failure, fail the open after it.
 //
 // The window is admitted under the current publication, from which its
 // address comes: a publication between the eligibility check and the
@@ -137,6 +138,15 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 	// and the book's open for any other still unfinished.
 	if err := a.closeComputerPairingWindow(previous); err != nil {
 		return ComputerPairingWindow{}, err
+	}
+	if !conn.Bound(computerPairingCleanupKey) {
+		return ComputerPairingWindow{}, transport.ErrConnectionClosing
+	}
+	if _, err := a.publishComputerRoutes().pairing.on(networkChoice); err != nil {
+		return ComputerPairingWindow{}, err
+	}
+	if book.Stopped() {
+		return ComputerPairingWindow{}, pairbootstrap.ErrStopped
 	}
 	if prepare != nil {
 		if err := prepare(); err != nil {
@@ -333,8 +343,8 @@ func (a *App) cancelComputerPairingLink(id string) error {
 // window is gone and orders that refusal against the window's removal.
 type computerPairingGate struct{ app *App }
 
-func (g computerPairingGate) Admit(linkID string, write func() error) error {
-	err := g.app.computerPairingBook().Admit(linkID, write)
+func (g computerPairingGate) Admit(linkID string, bootstrap bool, write func() error) error {
+	err := g.app.computerPairingBook().Admit(linkID, bootstrap, write)
 	if errors.Is(err, pairbootstrap.ErrClosed) {
 		return identity.ErrPairingRefused
 	}
@@ -347,7 +357,6 @@ func (a *App) computerPairingOpen() bool {
 
 // ComputerPairingStatus shows independently derived digits only on the owner
 // surface. Confirmation is enabled only after ordinary enrollment has completed.
-//
 // A window that is gone still answers for the invitation it published while
 // it is the window opened last: a confirmation admitted before the window's
 // deadline whose write lands after it reads confirmed, so a dialog whose

@@ -140,7 +140,7 @@ func TestCancelingAnAdmittedIntroductionKeepsItsSession(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	canceled, err := cancelPairingLinksTx(tx, 2100, `id = ?`, link.ID)
-	if err != nil || len(canceled.links) != 1 || len(canceled.revoked) != 0 {
+	if err != nil || canceled.links != 1 || len(canceled.revoked) != 0 {
 		t.Fatalf("canceling the admitted introduction = %+v (%v), want it canceled and no session revoked", canceled, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -188,5 +188,52 @@ func startupRevokesUnactivatedSession(t *testing.T, withMembership bool) {
 	incomplete, err := s.IncompleteOwnAdmissions()
 	if err != nil || len(incomplete) != 0 {
 		t.Fatalf("admissions left to finish = %+v (%v), want none", incomplete, err)
+	}
+}
+
+// A link an older build canceled without revoking the session its
+// redemption created leaves that session pending; startup revokes it and
+// keeps the link's stamp.
+func TestStartupRevokesThePendingSessionOfACanceledLink(t *testing.T) {
+	s, owner, device := seedOwnerDevice(t)
+	key := seedSigningKey(t, s)
+	link := PairingLink{ID: "canceled-pending", UserID: owner.ID, Scopes: []string{"threads:read"}, BindingClass: "device-bound", DeviceClass: "desktop", CreatedAt: 1000, ExpiresAt: 9000}
+	if err := s.CreatePairingLink(link, []byte("hash-canceled-pending")); err != nil {
+		t.Fatal(err)
+	}
+	_, pending := redeemOnto(t, s, []byte("hash-canceled-pending"), 2000, newTestSession("sess-canceled-pending", owner, device, key, 9000))
+	mustExec(t, s.db, `UPDATE pairing_links SET canceled_at = 2100 WHERE id = ?`, link.ID)
+	if err := s.RetirePendingPairings(3000); err != nil {
+		t.Fatal(err)
+	}
+	if session, err := s.GetSession(pending.ID); err != nil || session.RevokedAt != 3000 {
+		t.Fatalf("the canceled link's pending session = %+v (%v), want revoked", session, err)
+	}
+	if got, err := s.GetPairingLink(link.ID); err != nil || got.CanceledAt != 2100 {
+		t.Fatalf("the canceled link = %+v (%v), want its stamp kept", got, err)
+	}
+}
+
+// Startup's retirement reads no link row: a link whose scopes are valid JSON
+// of a shape this build does not read is still canceled, with its pending
+// session, and recovery goes on.
+func TestStartupRetiresALinkWhoseScopesItCannotRead(t *testing.T) {
+	s, owner, device := seedOwnerDevice(t)
+	key := seedSigningKey(t, s)
+	link := PairingLink{ID: "odd-scopes", UserID: owner.ID, Scopes: []string{"threads:read"}, BindingClass: "device-bound", DeviceClass: "desktop", CreatedAt: 1000, ExpiresAt: 9000}
+	if err := s.CreatePairingLink(link, []byte("hash-odd-scopes")); err != nil {
+		t.Fatal(err)
+	}
+	_, pending := redeemOnto(t, s, []byte("hash-odd-scopes"), 2000, newTestSession("sess-odd-scopes", owner, device, key, 9000))
+	mustExec(t, s.db, `UPDATE pairing_links SET scopes = '{"threads":"read"}' WHERE id = ?`, link.ID)
+	if err := s.RetirePendingPairings(3000); err != nil {
+		t.Fatalf("startup stopped on a link whose scopes it cannot read: %v", err)
+	}
+	var canceledAt int64
+	if err := s.db.QueryRow(`SELECT canceled_at FROM pairing_links WHERE id = ?`, link.ID).Scan(&canceledAt); err != nil || canceledAt != 3000 {
+		t.Fatalf("the link's canceled_at = %d (%v), want 3000", canceledAt, err)
+	}
+	if session, err := s.GetSession(pending.ID); err != nil || session.RevokedAt != 3000 {
+		t.Fatalf("its pending session = %+v (%v), want revoked", session, err)
 	}
 }

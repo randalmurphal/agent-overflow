@@ -196,6 +196,7 @@
       // A link minted for an earlier opening stays on the pending row.
       onChanged();
       if (!at.current) return;
+      minting = null;
       turn = turns.begin();
       stage = { at: 'share', invite };
       nowMs = Date.now();

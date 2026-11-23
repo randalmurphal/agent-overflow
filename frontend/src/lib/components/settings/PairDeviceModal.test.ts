@@ -305,6 +305,22 @@ describe('<PairDeviceModal> across a reopen', () => {
     await view.findByText('135 791');
   }
 
+  it('mints again from New link after a link ran out', async () => {
+    vi.useFakeTimers();
+    const minted = setBindingMock('MintDevicePairing', async () => INVITE);
+    setBindingMock('DevicePairingStatus', async () => ({ state: 'expired', expiresAtMs: INVITE.expiresAtMs }));
+    const view = renderModal();
+    await fireEvent.click(await view.findByRole('button', { name: /Phone or tablet/ }));
+    await view.findByLabelText('Pairing link');
+    await vi.advanceTimersByTimeAsync(2_100);
+    await view.findByText(/ran out before a device opened it/);
+    await fireEvent.click(view.getByRole('button', { name: 'New link' }));
+    const phone = await view.findByRole('button', { name: /Phone or tablet/ });
+    expect(phone).toBeEnabled();
+    await fireEvent.click(phone);
+    expect(minted).toHaveBeenCalledTimes(2);
+  });
+
   it('leaves a link minted for an earlier opening on the pending row', async () => {
     vi.useFakeTimers();
     let resolve!: (invite: typeof INVITE) => void;

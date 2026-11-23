@@ -864,7 +864,6 @@ export function CompactCodexThread(threadID: string): $CancellablePromise<void> 
 /**
  * ComputerPairingStatus shows independently derived digits only on the owner
  * surface. Confirmation is enabled only after ordinary enrollment has completed.
- * 
  * A window that is gone still answers for the invitation it published while
  * it is the window opened last: a confirmation admitted before the window's
  * deadline whose write lands after it reads confirmed, so a dialog whose

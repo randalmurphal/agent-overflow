@@ -366,7 +366,7 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 	// a retirement of the link waits for a redemption already admitted.
 	var out Redemption
 	reason = ReasonNone
-	err = s.admitPairing(checked.ID, func() error {
+	err = s.admitPairing(checked.ID, checked.Bootstrap, func() error {
 		out, reason = s.redeemSpending(req, digest[:], enrollment, now)
 		return nil
 	})
@@ -653,8 +653,16 @@ func (s *Sessions) ConfirmPairing(linkID string) (store.PairingLink, error) {
 // ErrPairingRefused with nothing written.
 func (s *Sessions) confirmPairing(linkID string) (store.PairingLink, error) {
 	var confirmation store.PairingConfirmation
-	var err error
-	if gated := s.admitPairing(linkID, func() error {
+	// The mark is written at mint and never changes, so it is read here,
+	// before the gate.
+	marked, err := s.store.GetPairingLink(linkID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.PairingLink{}, ErrPairingRefused
+	}
+	if err != nil {
+		return store.PairingLink{}, err
+	}
+	if gated := s.admitPairing(linkID, marked.Bootstrap, func() error {
 		now := s.now().UnixMilli()
 		confirmation, err = s.store.ConfirmRedeemedPairing(linkID, now, func(class string) int64 {
 			return now + RenewablePolicyFor(DeviceClass(class)).Access.Milliseconds()
