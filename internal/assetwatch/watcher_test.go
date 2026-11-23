@@ -13,24 +13,24 @@ import (
 )
 
 // observedWatcher runs the shared core over a real directory with a held
-// debounce clock, its fsnotify events reaching the loop through a relay.
-// A test waits for the event it caused (relay.WaitDelivered), settles the
-// loop, and reads from the clock whether a wait was started. The waits are
-// never released: what the loop does with them is fswatch's.
+// debounce clock and an event source the test feeds, so the test states the
+// exact events and reads from the clock which ones the watcher took for a
+// change. The waits are never released: what the loop does with them is
+// fswatch's.
 type observedWatcher struct {
 	core  *watcher
 	clock *fswatchtest.Clock
-	relay *fswatchtest.Relay
-	// staging is a directory beside the watched one, where place writes a
-	// file before renaming it in.
-	staging string
+	feed  *fswatchtest.Feed
 }
 
 func startObservedWatcher(t *testing.T, label, dir string, relevantName func(name string) bool) *observedWatcher {
 	t.Helper()
-	observed := &observedWatcher{clock: &fswatchtest.Clock{}, staging: t.TempDir()}
+	observed := &observedWatcher{clock: &fswatchtest.Clock{}}
 	config := fswatch.Config{Debounce: time.Hour, Emit: func() {}, After: observed.clock.After}
-	core, err := newWatcher(label, dir, relevantName, config, observed.relaySource)
+	core, err := newWatcher(label, dir, relevantName, config, func(w *fsnotify.Watcher) fswatch.Source {
+		observed.feed = fswatchtest.NewFeed(w)
+		return observed.feed.Source()
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,56 +43,51 @@ func startObservedWatcher(t *testing.T, label, dir string, relevantName func(nam
 	return observed
 }
 
-func (o *observedWatcher) relaySource(watcher *fsnotify.Watcher) fswatch.Source {
-	o.relay = fswatchtest.NewRelay(watcher)
-	return o.relay.Source()
-}
-
 func (o *observedWatcher) path(name string) string { return filepath.Join(o.core.dir, name) }
 
-// place puts a new file named name into the watched directory by renaming
-// it in from staging, so its arrival is a single create event and no later
-// event for it can land in the next step of a test.
-func (o *observedWatcher) place(t *testing.T, name, content string) {
+// event is an op on name in the watched directory.
+func (o *observedWatcher) event(name string, op fsnotify.Op) fsnotify.Event {
+	return fsnotify.Event{Name: o.path(name), Op: op}
+}
+
+// change hands the watcher event, then one event outside its directory,
+// which no watcher takes for a change; when that one is taken, event was
+// handled in full. It reports whether event started a debounce wait.
+func (o *observedWatcher) change(t *testing.T, event fsnotify.Event) bool {
 	t.Helper()
-	staged := filepath.Join(o.staging, name)
-	if err := os.WriteFile(staged, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(staged, o.path(name)); err != nil {
-		t.Fatal(err)
+	armed := o.clock.Armed()
+	o.feed.Send(t, event)
+	o.feed.Send(t, fsnotify.Event{Name: filepath.Join(filepath.Dir(o.core.dir), "settle"), Op: fsnotify.Write})
+	return o.clock.Armed() > armed
+}
+
+// expectChanges asserts that each event is a change, and expectNoChanges
+// that none is.
+func (o *observedWatcher) expectChanges(t *testing.T, why string, events ...fsnotify.Event) {
+	t.Helper()
+	for _, event := range events {
+		if !o.change(t, event) {
+			t.Fatalf("%s: %v started no debounce wait", why, event)
+		}
 	}
 }
 
-// settle hands the loop one event outside the watched directory, which no
-// watcher takes for a change; when it has been taken, every event before
-// it has been handled in full.
-func (o *observedWatcher) settle(t *testing.T) {
+func (o *observedWatcher) expectNoChanges(t *testing.T, why string, events ...fsnotify.Event) {
 	t.Helper()
-	o.relay.Send(t, fsnotify.Event{Name: filepath.Join(filepath.Dir(o.core.dir), "settle"), Op: fsnotify.Write})
-}
-
-// expectChange waits for the op event on path, settles, and asserts that a
-// debounce wait was started since armedBefore.
-func (o *observedWatcher) expectChange(t *testing.T, armedBefore int, path string, op fsnotify.Op, why string) {
-	t.Helper()
-	o.relay.WaitDelivered(t, path, op)
-	o.settle(t)
-	if o.clock.Armed() <= armedBefore {
-		t.Fatalf("%s started no debounce wait", why)
+	for _, event := range events {
+		if o.change(t, event) {
+			t.Fatalf("%s: %v started a debounce wait", why, event)
+		}
 	}
 }
 
-// expectNoChange waits for the op event on each path, settles, and asserts
-// that no debounce wait was started since armedBefore.
-func (o *observedWatcher) expectNoChange(t *testing.T, armedBefore int, op fsnotify.Op, why string, paths ...string) {
+// emitted waits for one call of a watcher's callback.
+func emitted(t *testing.T, emits <-chan struct{}, why string) {
 	t.Helper()
-	for _, path := range paths {
-		o.relay.WaitDelivered(t, path, op)
-	}
-	o.settle(t)
-	if armed := o.clock.Armed() - armedBefore; armed != 0 {
-		t.Fatalf("%s started %d debounce waits, want none", why, armed)
+	select {
+	case <-emits:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s never reached the watcher's callback", why)
 	}
 }
 
@@ -128,22 +123,45 @@ func TestWatcherChecksItsOptionsFirst(t *testing.T) {
 func TestWatcherRearmsAfterTheDirectoryIsRemoved(t *testing.T) {
 	dir := t.TempDir()
 	observed := startObservedWatcher(t, "test watcher", dir, jsonRelevant)
-
-	armed := observed.clock.Armed()
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
 	// The removal is itself a change the frontend has to see, and the
 	// handler decides it only after the re-arm returned.
-	observed.expectChange(t, armed, dir, fsnotify.Remove, "the directory's removal")
+	for _, op := range []fsnotify.Op{fsnotify.Remove, fsnotify.Rename} {
+		observed.expectChanges(t, "the directory's "+op.String(), fsnotify.Event{Name: dir, Op: op})
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			t.Fatalf("the directory was not re-created after its %v: %v", op, err)
+		}
+	}
+}
+
+// The re-armed watch is live: after the directory is removed for real, a
+// file placed in the re-created directory reaches the callback. Waiting
+// for the callback, not for a particular event, keeps this independent of
+// how a platform reports the removal.
+func TestWatcherWatchesTheDirectoryItRecreated(t *testing.T) {
+	dir := t.TempDir()
+	emits := make(chan struct{}, 16)
+	config := fswatch.Config{Debounce: 10 * time.Millisecond, Emit: func() { emits <- struct{}{} }}
+	core, err := newWatcher("test watcher", dir, jsonRelevant, config, fswatch.FromWatcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = core.Close() })
+
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	// The handler re-creates the directory before it reports the change.
+	emitted(t, emits, "the directory's removal")
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		t.Fatalf("the directory was not re-created: %v", err)
 	}
-
-	// The new watch is live: a write into the fresh directory is seen.
-	armed = observed.clock.Armed()
-	observed.place(t, "after.json", "{}")
-	observed.expectChange(t, armed, observed.path("after.json"), fsnotify.Create, "a write into the re-created directory")
+	if err := os.WriteFile(filepath.Join(dir, "after.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	emitted(t, emits, "a file written into the re-created directory")
 }
 
 // The watch is not recursive, but a rename can still name a path below the

@@ -1,7 +1,6 @@
 package assetwatch
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -11,40 +10,21 @@ import (
 )
 
 func TestSpinnerWatcherStartsAWaitOnlyForSpriteFiles(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "orb.png"), []byte("png"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	observed := startObservedWatcher(t, "spinner watcher", dir, spinnerFileRelevant)
+	observed := startObservedWatcher(t, "spinner watcher", t.TempDir(), spinnerFileRelevant)
 
 	// The generated reference is rewritten by the backend at boot and read
 	// by nobody at runtime; a stray file is not a sprite half; a
 	// subdirectory holds nothing this app reads. None may wake the
 	// frontend.
-	names := []string{spinner.ReferenceFileName, "notes.txt", "source.gif"}
-	for _, name := range names {
-		observed.place(t, name, "x")
-	}
-	if err := os.Mkdir(observed.path("sources"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectNoChange(t, 0, fsnotify.Create, "non-sprite files",
-		observed.path(names[0]), observed.path(names[1]), observed.path(names[2]), observed.path("sources"))
+	observed.expectNoChanges(t, "non-sprite files",
+		observed.event(spinner.ReferenceFileName, fsnotify.Create), observed.event("notes.txt", fsnotify.Create),
+		observed.event("source.gif", fsnotify.Write), observed.event("sources", fsnotify.Create))
 
 	// Removing a strip changes what the picker offers, so it must reach
-	// the UI.
-	armed := observed.clock.Armed()
-	if err := os.Remove(observed.path("orb.png")); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectChange(t, armed, observed.path("orb.png"), fsnotify.Remove, "a strip removal")
-
-	// A sprite lands as two files, and each half is content.
-	for _, name := range []string{"robo-papers.png", "robo-papers.json"} {
-		armed = observed.clock.Armed()
-		observed.place(t, name, "x")
-		observed.expectChange(t, armed, observed.path(name), fsnotify.Create, "a write of "+name)
-	}
+	// the UI, and a sprite lands as two files, each of them content.
+	observed.expectChanges(t, "sprite files",
+		observed.event("orb.png", fsnotify.Remove), observed.event("robo-papers.png", fsnotify.Create),
+		observed.event("robo-papers.json", fsnotify.Create))
 }
 
 // internal/atomicfile names its temp file `<base>.tmp-NNNNN`, so the boot

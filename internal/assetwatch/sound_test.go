@@ -1,7 +1,6 @@
 package assetwatch
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -11,51 +10,31 @@ import (
 )
 
 func TestSoundWatcherStartsAWaitOnlyForCueFiles(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "old.wav"), []byte("wav"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	observed := startObservedWatcher(t, "sound watcher", dir, soundFileRelevant)
+	observed := startObservedWatcher(t, "sound watcher", t.TempDir(), soundFileRelevant)
 
 	// The seeded reference, a source file the user kept beside their cue,
 	// and a subdirectory all hold nothing this app plays.
-	names := []string{soundlib.ReferenceFileName, "original.mp3", "notes.txt"}
-	for _, name := range names {
-		observed.place(t, name, "x")
-	}
-	if err := os.Mkdir(observed.path("sources"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectNoChange(t, 0, fsnotify.Create, "non-cue files",
-		observed.path(names[0]), observed.path(names[1]), observed.path(names[2]), observed.path("sources"))
+	observed.expectNoChanges(t, "non-cue files",
+		observed.event(soundlib.ReferenceFileName, fsnotify.Create), observed.event("original.mp3", fsnotify.Create),
+		observed.event("notes.txt", fsnotify.Write), observed.event("sources", fsnotify.Create))
 
 	// Removing a cue changes what the pickers offer, so it must reach the
 	// UI: an event whose chosen cue just disappeared falls back.
-	armed := observed.clock.Armed()
-	if err := os.Remove(observed.path("old.wav")); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectChange(t, armed, observed.path("old.wav"), fsnotify.Remove, "a cue removal")
-
-	armed = observed.clock.Armed()
-	observed.place(t, "desk-bell.wav", "wav")
-	observed.expectChange(t, armed, observed.path("desk-bell.wav"), fsnotify.Create, "a cue write")
+	observed.expectChanges(t, "cue files",
+		observed.event("old.wav", fsnotify.Remove), observed.event("desk-bell.wav", fsnotify.Create))
 }
 
 func TestSoundWatcherSuppressesItsOwnWrites(t *testing.T) {
 	observed := startObservedWatcher(t, "sound watcher", t.TempDir(), soundFileRelevant)
 	watcher := &SoundWatcher{core: observed.core}
 
-	cue := observed.path("desk-bell.wav")
-	watcher.Suppress(cue)
-	observed.place(t, "desk-bell.wav", "wav")
-	observed.expectNoChange(t, 0, fsnotify.Create, "a suppressed self-write", cue)
+	watcher.Suppress(observed.path("desk-bell.wav"))
+	observed.expectNoChanges(t, "a suppressed self-write",
+		observed.event("desk-bell.wav", fsnotify.Create), observed.event("desk-bell.wav", fsnotify.Write))
 
 	// Suppression is per path, so a different cue written by hand still
 	// reaches the UI.
-	armed := observed.clock.Armed()
-	observed.place(t, "ping.wav", "wav")
-	observed.expectChange(t, armed, observed.path("ping.wav"), fsnotify.Create, "a cue written by hand")
+	observed.expectChanges(t, "a cue written by hand", observed.event("ping.wav", fsnotify.Create))
 }
 
 // internal/atomicfile names its temp file `<base>.tmp-NNNNN`, whose

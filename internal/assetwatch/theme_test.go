@@ -1,7 +1,6 @@
 package assetwatch
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,37 +11,26 @@ import (
 )
 
 func TestThemeWatcherStartsAWaitOnlyForThemeFiles(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "old.json"), []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	observed := startObservedWatcher(t, "theme watcher", dir, themeFileRelevant)
+	observed := startObservedWatcher(t, "theme watcher", t.TempDir(), themeFileRelevant)
 
 	// The generated reference artifacts are rewritten by the backend at
 	// boot and read by nobody at runtime; a subdirectory holds nothing
 	// this app reads. None may wake the frontend.
-	names := []string{theme.SchemaFileName, theme.TokensFileName, "notes.txt"}
-	for _, name := range names {
-		observed.place(t, name, "x")
-	}
-	if err := os.Mkdir(observed.path("backup"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectNoChange(t, 0, fsnotify.Create, "non-theme files",
-		observed.path(names[0]), observed.path(names[1]), observed.path(names[2]), observed.path("backup"))
+	observed.expectNoChanges(t, "non-theme files",
+		observed.event(theme.SchemaFileName, fsnotify.Create), observed.event(theme.TokensFileName, fsnotify.Write),
+		observed.event("notes.txt", fsnotify.Create), observed.event("backup", fsnotify.Create))
 
-	// Removing a theme changes what resolves, so it must reach the UI.
-	armed := observed.clock.Armed()
-	if err := os.Remove(observed.path("old.json")); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectChange(t, armed, observed.path("old.json"), fsnotify.Remove, "a theme removal")
-
-	armed = observed.clock.Armed()
-	observed.place(t, "tokyo-night.json", "{}")
-	observed.expectChange(t, armed, observed.path("tokyo-night.json"), fsnotify.Create, "a theme write")
+	// Removing a theme changes what resolves, so it must reach the UI, and
+	// so must every write or rename of one.
+	observed.expectChanges(t, "theme files",
+		observed.event("old.json", fsnotify.Remove), observed.event("tokyo-night.json", fsnotify.Create),
+		observed.event("tokyo-night.json", fsnotify.Write), observed.event("renamed.json", fsnotify.Rename))
 }
 
+// The app's own write of appearance.json is not an external change while
+// its suppression window lasts, whatever events it arrives as. The window
+// is not a latch: an external edit after it lapses still reaches the
+// frontend.
 func TestThemeWatcherIgnoresItsOwnAtomicAppearanceWrite(t *testing.T) {
 	service, err := theme.New(t.TempDir())
 	if err != nil {
@@ -53,26 +41,16 @@ func TestThemeWatcherIgnoresItsOwnAtomicAppearanceWrite(t *testing.T) {
 	}
 	observed := startObservedWatcher(t, "theme watcher", service.Dir(), themeFileRelevant)
 	watcher := &ThemeWatcher{core: observed.core}
-	appearancePath := service.AppearancePath()
+	appearance := filepath.Base(service.AppearancePath())
 
-	// The atomic write renames its temporary file onto appearance.json,
-	// which arrives as a create of that name.
-	watcher.Suppress(appearancePath)
-	if err := service.SetAppearance(theme.Appearance{Mode: "dark", WindowBackground: "#1a1b26"}); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectNoChange(t, 0, fsnotify.Create, "the app's own appearance write", appearancePath)
+	watcher.Suppress(service.AppearancePath())
+	observed.expectNoChanges(t, "the app's own appearance write",
+		observed.event(appearance, fsnotify.Create), observed.event(appearance, fsnotify.Write), observed.event(appearance, fsnotify.Rename))
 
-	// The suppression is a window, not a latch: an external edit after it
-	// lapses must still reach the frontend.
 	watcher.core.suppressMu.Lock()
-	watcher.core.suppressed[filepath.Clean(appearancePath)] = time.Now().Add(-time.Second)
+	watcher.core.suppressed[filepath.Clean(service.AppearancePath())] = time.Now().Add(-time.Second)
 	watcher.core.suppressMu.Unlock()
-	armed := observed.clock.Armed()
-	if err := os.WriteFile(appearancePath, []byte(`{"mode":"light"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectChange(t, armed, appearancePath, fsnotify.Write, "an external edit after the window")
+	observed.expectChanges(t, "an external edit after the window", observed.event(appearance, fsnotify.Write))
 }
 
 func TestThemeWatcherSuppressionExpiresAndPrunes(t *testing.T) {

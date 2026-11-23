@@ -12,87 +12,43 @@ import (
 	"agent-overflow/internal/fswatch/fswatchtest"
 )
 
-func TestWatcherStartsAWaitForDefinitionsAndDiscoversAProjectRename(t *testing.T) {
+func TestWatcherTakesOnlyDefinitionTreesForAChange(t *testing.T) {
 	root := t.TempDir()
-	shared := filepath.Join(root, "workflows")
-	projects := filepath.Join(root, "projects")
-	if err := os.MkdirAll(shared, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(projects, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	observed := startObservedWatcher(t, root)
 
 	// Database and settings churn at the data root is not a definition.
-	noise := filepath.Join(root, "store.db-wal")
-	observed.place(t, noise, "wal")
-	if err := os.Rename(noise, filepath.Join(root, "settings.json")); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectNoChange(t, 0, "data-root noise",
-		delivery{noise, fsnotify.Create}, delivery{noise, fsnotify.Rename}, delivery{filepath.Join(root, "settings.json"), fsnotify.Create})
-
-	armed := observed.clock.Armed()
-	definition := filepath.Join(shared, "build.yaml")
-	observed.place(t, definition, "id: build")
-	observed.expectChange(t, armed, definition, fsnotify.Create, "a shared definition")
-
-	outside := t.TempDir()
-	incoming := filepath.Join(outside, "renamed-project")
-	if err := os.MkdirAll(filepath.Join(incoming, "workflows"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(incoming, "workflows", "ship.yaml"), []byte("id: ship"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	armed = observed.clock.Armed()
-	project := filepath.Join(projects, "renamed-project")
-	if err := os.Rename(incoming, project); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectChange(t, armed, project, fsnotify.Create, "a project renamed into place")
-
-	// The rename's refresh must have watched the project's workflow tree:
-	// otherwise this edit never reaches the loop.
-	armed = observed.clock.Armed()
-	edited := filepath.Join(project, "workflows", "ship.yaml")
-	if err := os.WriteFile(edited, []byte("id: changed"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectChange(t, armed, edited, fsnotify.Write, "an edit inside the renamed project")
+	observed.expectNoChanges(t, "data-root noise",
+		fsnotify.Event{Name: filepath.Join(root, "store.db-wal"), Op: fsnotify.Create},
+		fsnotify.Event{Name: filepath.Join(root, "store.db-wal"), Op: fsnotify.Rename},
+		fsnotify.Event{Name: filepath.Join(root, "settings.json"), Op: fsnotify.Create},
+		fsnotify.Event{Name: filepath.Join(root, "projects", "app", "notes.md"), Op: fsnotify.Write})
+	observed.expectChanges(t, "definition trees",
+		fsnotify.Event{Name: filepath.Join(root, "workflows", "build.yaml"), Op: fsnotify.Create},
+		fsnotify.Event{Name: filepath.Join(root, "projects", "app"), Op: fsnotify.Create},
+		fsnotify.Event{Name: filepath.Join(root, "projects", "app", "workflows", "nested", "ship.yaml"), Op: fsnotify.Write})
 }
 
-func TestWatcherDiscoversAWorkflowTreeRenamedIntoTheRoot(t *testing.T) {
+// A tree that appears under the root, whole, is watched by the time its
+// event is handled: a shared workflows tree and a project's.
+func TestWatcherWatchesATreeThatAppears(t *testing.T) {
 	root := t.TempDir()
 	observed := startObservedWatcher(t, root)
-
-	staged := filepath.Join(t.TempDir(), "workflows")
-	if err := os.MkdirAll(staged, 0o700); err != nil {
-		t.Fatal(err)
+	shared := filepath.Join(root, "workflows", "nested")
+	project := filepath.Join(root, "projects", "renamed-project")
+	for _, dir := range []string{shared, filepath.Join(project, "workflows", "nested")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(staged, "ship.yaml"), []byte("id: ship"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	shared := filepath.Join(root, "workflows")
-	if err := os.Rename(staged, shared); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectChange(t, 0, shared, fsnotify.Create, "a workflows tree renamed into the root")
-
-	armed := observed.clock.Armed()
-	edited := filepath.Join(shared, "ship.yaml")
-	if err := os.WriteFile(edited, []byte("id: changed"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectChange(t, armed, edited, fsnotify.Write, "an edit inside the renamed tree")
+	observed.expectChanges(t, "the trees appearing",
+		fsnotify.Event{Name: filepath.Join(root, "workflows"), Op: fsnotify.Create},
+		fsnotify.Event{Name: project, Op: fsnotify.Create})
+	observed.expectWatched(t, shared, filepath.Join(root, "projects"), project, filepath.Join(project, "workflows", "nested"))
 }
 
-// TestWatcherRewatchesAProjectRemovedAndCreatedAgain removes a watched
-// project tree and creates it again under the same name, one directory at
-// a time. The removal must forget the old watches, or the refresh would
-// take the new directories for watched ones and nothing inside them would
-// reach the loop.
+// A watched project tree removed and created again under the same name is
+// watched again. The removal must forget the old watches, or the refresh
+// would take the new directories for watched ones.
 func TestWatcherRewatchesAProjectRemovedAndCreatedAgain(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "projects", "app")
@@ -101,27 +57,53 @@ func TestWatcherRewatchesAProjectRemovedAndCreatedAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	observed := startObservedWatcher(t, root)
+	observed.expectWatched(t, project, workflows)
 
 	if err := os.RemoveAll(project); err != nil {
 		t.Fatal(err)
 	}
-	observed.relay.WaitDelivered(t, project, fsnotify.Remove)
-	observed.settle(t)
+	observed.expectChanges(t, "the project's removal", fsnotify.Event{Name: project, Op: fsnotify.Remove})
+	observed.expectNotWatched(t, project, workflows)
 
-	armed := observed.clock.Armed()
-	if err := os.Mkdir(project, 0o700); err != nil {
+	if err := os.MkdirAll(workflows, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	observed.expectChange(t, armed, project, fsnotify.Create, "the project created again")
-	armed = observed.clock.Armed()
-	if err := os.Mkdir(workflows, 0o700); err != nil {
+	observed.expectChanges(t, "the project created again", fsnotify.Event{Name: project, Op: fsnotify.Create})
+	observed.expectWatched(t, project, workflows)
+}
+
+// The watches the handler adds are live: a project renamed in, whole, and
+// then an edit inside it each reach the callback. Each change leaves its
+// name on disk and the test waits for the callback, not for a particular
+// event, so this holds however a platform reports them.
+func TestWatcherCallsBackForATreeRenamedIn(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "projects"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	observed.expectChange(t, armed, workflows, fsnotify.Create, "its workflows directory created again")
-	armed = observed.clock.Armed()
-	definition := filepath.Join(workflows, "ship.yaml")
-	observed.place(t, definition, "id: ship")
-	observed.expectChange(t, armed, definition, fsnotify.Create, "a definition in the re-created project")
+	emits := make(chan struct{}, 16)
+	watcher, err := NewWatcher(root, 10*time.Millisecond, func() { emits <- struct{}{} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = watcher.Close() })
+
+	incoming := filepath.Join(t.TempDir(), "renamed-project")
+	if err := os.MkdirAll(filepath.Join(incoming, "workflows"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(incoming, "workflows", "ship.yaml"), []byte("id: ship"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(incoming, filepath.Join(root, "projects", "renamed-project")); err != nil {
+		t.Fatal(err)
+	}
+	emitted(t, emits, "the project renamed in")
+	edited := filepath.Join(root, "projects", "renamed-project", "workflows", "ship.yaml")
+	if err := os.WriteFile(edited, []byte("id: changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	emitted(t, emits, "an edit inside the renamed project")
 }
 
 func TestWatcherRejectsAMissingRootOrAFileForATree(t *testing.T) {
@@ -147,32 +129,21 @@ func TestWatcherChecksItsOptionsFirst(t *testing.T) {
 }
 
 // observedWatcher runs a Watcher over a real root with a held debounce
-// clock, its fsnotify events reaching the loop through a relay. A test
-// waits for the event it caused, settles the loop, and reads from the
-// clock whether a wait was started. The waits are never released: what
-// the loop does with them is fswatch's.
+// clock and an event source the test feeds, so the test states the exact
+// events and reads from the clock which ones the watcher took for a change.
 type observedWatcher struct {
 	watcher *Watcher
 	clock   *fswatchtest.Clock
-	relay   *fswatchtest.Relay
-	// staging is a directory beside the root, where place writes a file
-	// before renaming it in.
-	staging string
-}
-
-// delivery is one event a test waits for.
-type delivery struct {
-	path string
-	op   fsnotify.Op
+	feed    *fswatchtest.Feed
 }
 
 func startObservedWatcher(t *testing.T, root string) *observedWatcher {
 	t.Helper()
-	observed := &observedWatcher{clock: &fswatchtest.Clock{}, staging: t.TempDir()}
+	observed := &observedWatcher{clock: &fswatchtest.Clock{}}
 	config := fswatch.Config{Debounce: time.Hour, Emit: func() {}, After: observed.clock.After}
 	watcher, err := newWatcher(root, config, func(w *fsnotify.Watcher) fswatch.Source {
-		observed.relay = fswatchtest.NewRelay(w)
-		return observed.relay.Source()
+		observed.feed = fswatchtest.NewFeed(w)
+		return observed.feed.Source()
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -186,48 +157,62 @@ func startObservedWatcher(t *testing.T, root string) *observedWatcher {
 	return observed
 }
 
-// place puts a new file at path by renaming it in from staging, so its
-// arrival is a single create event and no later event for it can land in
-// the next step of a test.
-func (o *observedWatcher) place(t *testing.T, path, content string) {
+// change hands the watcher event, then one event outside the root, which
+// the watcher never takes for a change; when that one is taken, event was
+// handled in full. It reports whether event started a debounce wait.
+func (o *observedWatcher) change(t *testing.T, event fsnotify.Event) bool {
 	t.Helper()
-	staged := filepath.Join(o.staging, filepath.Base(path))
-	if err := os.WriteFile(staged, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(staged, path); err != nil {
-		t.Fatal(err)
+	armed := o.clock.Armed()
+	o.feed.Send(t, event)
+	o.feed.Send(t, fsnotify.Event{Name: filepath.Join(filepath.Dir(o.watcher.root), "settle"), Op: fsnotify.Write})
+	return o.clock.Armed() > armed
+}
+
+func (o *observedWatcher) expectChanges(t *testing.T, why string, events ...fsnotify.Event) {
+	t.Helper()
+	for _, event := range events {
+		if !o.change(t, event) {
+			t.Fatalf("%s: %v started no debounce wait", why, event)
+		}
 	}
 }
 
-// settle hands the loop one event outside the root, which the watcher
-// never takes for a change; when it has been taken, every event before it
-// has been handled in full.
-func (o *observedWatcher) settle(t *testing.T) {
+func (o *observedWatcher) expectNoChanges(t *testing.T, why string, events ...fsnotify.Event) {
 	t.Helper()
-	o.relay.Send(t, fsnotify.Event{Name: filepath.Join(filepath.Dir(o.watcher.root), "settle"), Op: fsnotify.Write})
-}
-
-// expectChange waits for the op event on path, settles, and asserts that a
-// debounce wait was started since armedBefore.
-func (o *observedWatcher) expectChange(t *testing.T, armedBefore int, path string, op fsnotify.Op, why string) {
-	t.Helper()
-	o.relay.WaitDelivered(t, path, op)
-	o.settle(t)
-	if o.clock.Armed() <= armedBefore {
-		t.Fatalf("%s started no debounce wait", why)
+	for _, event := range events {
+		if o.change(t, event) {
+			t.Fatalf("%s: %v started a debounce wait", why, event)
+		}
 	}
 }
 
-// expectNoChange waits for each delivery, settles, and asserts that no
-// debounce wait was started since armedBefore.
-func (o *observedWatcher) expectNoChange(t *testing.T, armedBefore int, why string, deliveries ...delivery) {
+// expectWatched and expectNotWatched read the watch set. The handler
+// keeps it on the loop goroutine, and a settled loop is parked waiting for
+// the next event, so reading it here races with nothing.
+func (o *observedWatcher) expectWatched(t *testing.T, dirs ...string) {
 	t.Helper()
-	for _, d := range deliveries {
-		o.relay.WaitDelivered(t, d.path, d.op)
+	for _, dir := range dirs {
+		if _, ok := o.watcher.watched[filepath.Clean(dir)]; !ok {
+			t.Fatalf("%s is not watched", dir)
+		}
 	}
-	o.settle(t)
-	if armed := o.clock.Armed() - armedBefore; armed != 0 {
-		t.Fatalf("%s started %d debounce waits, want none", why, armed)
+}
+
+func (o *observedWatcher) expectNotWatched(t *testing.T, dirs ...string) {
+	t.Helper()
+	for _, dir := range dirs {
+		if _, ok := o.watcher.watched[filepath.Clean(dir)]; ok {
+			t.Fatalf("%s is still watched", dir)
+		}
+	}
+}
+
+// emitted waits for one call of the watcher's callback.
+func emitted(t *testing.T, emits <-chan struct{}, why string) {
+	t.Helper()
+	select {
+	case <-emits:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s never reached the watcher's callback", why)
 	}
 }

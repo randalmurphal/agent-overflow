@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -185,7 +186,9 @@ func TestCIActionUnconfirmedWriteIsFollowed(t *testing.T) {
 		t.Fatalf("a lost answer = %v", err)
 	}
 	pipeline, seq := pipelineState(app, sub.ID)
-	if result.Seq == 0 || result.Seq != seq || gitops.FindCIJob(pipeline, old.ID) != nil || len(jobsNamed(pipeline, "test", old.Name)) != 1 {
+	retries := jobsNamed(pipeline, "test", old.Name)
+	if result.Seq == 0 || result.Seq != seq || gitops.FindCIJob(pipeline, old.ID) != nil || len(retries) != 1 ||
+		!idAbove(t, retries[0].ID, old.ID) || pipeline.ID == "" || pipeline.ID != sub.Pipeline.ID {
 		t.Fatalf("after the lost answer: seq %d (pump %d), pipeline %+v", result.Seq, seq, pipeline)
 	}
 	app.prUpdates.mu.Lock()
@@ -270,6 +273,20 @@ func jobsNamed(pipeline gitops.CIPipeline, stage, name string) []gitops.CIJob {
 	return jobs
 }
 
+// idAbove reports whether the decimal job id id is above old.
+func idAbove(t *testing.T, id, old string) bool {
+	t.Helper()
+	n, err := strconv.ParseUint(id, 10, 64)
+	if err != nil {
+		t.Fatalf("job id %q: %v", id, err)
+	}
+	o, err := strconv.ParseUint(old, 10, 64)
+	if err != nil {
+		t.Fatalf("job id %q: %v", old, err)
+	}
+	return n > o
+}
+
 func countRoute(engine *forgefake.Engine, route string) int {
 	n := 0
 	for _, inv := range engine.Invocations(0).Invocations {
@@ -307,9 +324,11 @@ func TestCIActionsSettleOnThePumpsPoll(t *testing.T) {
 		}
 		pipeline, seq := pipelineState(app, sub.ID)
 		// The forge's answer: the failed job left the read, and its stage
-		// holds one job of its name, the pending attempt under a new id.
+		// holds one job of its name, the pending attempt under a higher id,
+		// in the same workflow run (GitHub) or the same pipeline (GitLab).
 		retries := jobsNamed(pipeline, tc.stage, old.Name)
 		if gitops.FindCIJob(pipeline, old.ID) != nil || len(retries) != 1 || retries[0].Status != gitops.CIStatusPending || retries[0].RunID != old.RunID ||
+			!idAbove(t, retries[0].ID, old.ID) || (tc.repo.Forge == "gitlab" && (pipeline.ID == "" || pipeline.ID != sub.Pipeline.ID)) ||
 			result.Seq != seq || result.Seq <= sub.Seq || countRoute(engine, tc.retryRoute) != 1 {
 			t.Fatalf("%s after the retry: seq %d (pump %d, subscribe %d), jobs %+v, routes %v", tc.repo.Forge, result.Seq, seq, sub.Seq, retries, forgeRoutes(engine))
 		}

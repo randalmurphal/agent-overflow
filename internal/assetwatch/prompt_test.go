@@ -1,7 +1,6 @@
 package assetwatch
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -11,36 +10,18 @@ import (
 const testPromptName = "0b7a2c4e-9f1d-4e3a-8c5b-2d6f7a8e9b0c.md"
 
 func TestPromptWatcherStartsAWaitOnlyForPromptFiles(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, testPromptName), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	observed := startObservedWatcher(t, "prompt watcher", dir, promptFileRelevant)
+	observed := startObservedWatcher(t, "prompt watcher", t.TempDir(), promptFileRelevant)
 
 	// A backup an editor leaves beside the file, a swap file and a
 	// subdirectory hold nothing the settings service reads.
-	names := []string{testPromptName + "~", "." + testPromptName + ".swp", "notes.txt"}
-	for _, name := range names {
-		observed.place(t, name, "x")
-	}
-	if err := os.Mkdir(observed.path("drafts"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectNoChange(t, 0, fsnotify.Create, "non-prompt files",
-		observed.path(names[0]), observed.path(names[1]), observed.path(names[2]), observed.path("drafts"))
+	observed.expectNoChanges(t, "non-prompt files",
+		observed.event(testPromptName+"~", fsnotify.Create), observed.event("."+testPromptName+".swp", fsnotify.Write),
+		observed.event("notes.txt", fsnotify.Create), observed.event("drafts", fsnotify.Create))
 
 	// Removing a prompt file empties its entry, so it must reach the app.
-	armed := observed.clock.Armed()
-	if err := os.Remove(observed.path(testPromptName)); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectChange(t, armed, observed.path(testPromptName), fsnotify.Remove, "a prompt removal")
-
-	for _, name := range []string{"other.MD", "new.md"} {
-		armed = observed.clock.Armed()
-		observed.place(t, name, "x")
-		observed.expectChange(t, armed, observed.path(name), fsnotify.Create, "a write of "+name)
-	}
+	observed.expectChanges(t, "prompt files",
+		observed.event(testPromptName, fsnotify.Remove), observed.event("other.MD", fsnotify.Create),
+		observed.event("new.md", fsnotify.Create))
 }
 
 func TestPromptWatcherIgnoresAtomicfileTempNames(t *testing.T) {
