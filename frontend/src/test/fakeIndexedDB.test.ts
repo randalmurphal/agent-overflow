@@ -23,3 +23,18 @@ it('lands a chain of IndexedDB work however many steps it takes', async () => {
   expect(written).toBe(600);
   db.close();
 });
+
+it('lands only the installed factory\'s work: not a delete an earlier factory left blocked', async () => {
+  const request = indexedDB.open('held', 1);
+  await landIndexedDB();
+  // The open connection blocks the delete; neither is ever closed here.
+  const blocked = indexedDB.deleteDatabase('held');
+  const outcome = new Promise((resolve) => {
+    blocked.onblocked = () => resolve('blocked');
+    blocked.onsuccess = () => resolve('deleted');
+  });
+  expect(await outcome).toBe('blocked');
+  installFakeIndexedDB();
+  await landIndexedDB();
+  request.result.close();
+});

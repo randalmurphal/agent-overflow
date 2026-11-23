@@ -20,27 +20,33 @@ import {
 } from 'fake-indexeddb';
 import { REPLICA_OP_TIMEOUT_MS } from '../../lib/replica/idb';
 
-// The IndexedDB work in flight: open and delete requests, and transactions
-// of the databases they open, each counted until it settles.
-let inFlight = 0;
+// A factory's IndexedDB work in flight: open and delete requests, and
+// transactions of the databases they open, each counted until it settles.
+// Each factory counts its own: a request a previous test's factory left
+// blocked is not this one's work.
+interface InFlight {
+  open: number;
+}
 
-function track(target: EventTarget, settles: readonly string[]): void {
-  inFlight += 1;
+const inFlightOf = new WeakMap<IDBFactory, InFlight>();
+
+function track(work: InFlight, target: EventTarget, settles: readonly string[]): void {
+  work.open += 1;
   let settled = false;
   const settle = () => {
     if (settled) return;
     settled = true;
-    inFlight -= 1;
+    work.open -= 1;
   };
   for (const type of settles) target.addEventListener(type, settle, { once: true });
 }
 
 // Each wrapper calls through the prototype, so a test that replaces a
 // prototype method (a wedged storage backend) still replaces it.
-function trackedDatabase(db: IDBDatabase): void {
+function trackedDatabase(work: InFlight, db: IDBDatabase): void {
   db.transaction = ((...args: Parameters<IDBDatabase['transaction']>) => {
     const started = (Object.getPrototypeOf(db) as IDBDatabase).transaction.apply(db, args);
-    track(started, ['complete', 'abort']);
+    track(work, started, ['complete', 'abort']);
     return started;
   }) as IDBDatabase['transaction'];
 }
@@ -48,15 +54,17 @@ function trackedDatabase(db: IDBDatabase): void {
 /** A fresh, empty factory whose work in flight landIndexedDB() can see. */
 function trackedFactory(): IDBFactory {
   const factory = new IDBFactory();
+  const work: InFlight = { open: 0 };
+  inFlightOf.set(factory, work);
   factory.open = (...args: Parameters<IDBFactory['open']>) => {
     const request = IDBFactory.prototype.open.apply(factory, args);
-    track(request, ['success', 'error']);
-    request.addEventListener('success', () => trackedDatabase(request.result), { once: true });
+    track(work, request, ['success', 'error']);
+    request.addEventListener('success', () => trackedDatabase(work, request.result), { once: true });
     return request;
   };
   factory.deleteDatabase = (...args: Parameters<IDBFactory['deleteDatabase']>) => {
     const request = IDBFactory.prototype.deleteDatabase.apply(factory, args);
-    track(request, ['success', 'error']);
+    track(work, request, ['success', 'error']);
     return request;
   };
   return factory;
@@ -103,17 +111,19 @@ const LAND_TURN_LIMIT = 10_000;
 const taskTurn = () => new Promise((resolve) => realSetImmediate(resolve));
 
 /**
- * Lets the IndexedDB work in flight land: task turns until two in a row end
- * with no request or transaction open, the second for work that settled
- * work starts in a callback. Work waiting on the fake clock is not in
- * flight; `elapse` passes it.
+ * Lets the installed factory's IndexedDB work in flight land: task turns
+ * until two in a row end with no request or transaction of it open, the
+ * second for work that settled work starts in a callback. Work waiting on
+ * the fake clock is not in flight; `elapse` passes it.
  */
 export async function landIndexedDB(): Promise<void> {
+  const work = inFlightOf.get(globalThis.indexedDB);
+  if (work === undefined) throw new Error('landIndexedDB: the installed indexedDB is not one installFakeIndexedDB() installed');
   let idle = 0;
   for (let turn = 0; idle < 2; turn += 1) {
-    if (turn === LAND_TURN_LIMIT) throw new Error(`IndexedDB work still in flight after ${LAND_TURN_LIMIT} task turns: ${inFlight} requests or transactions open`);
+    if (turn === LAND_TURN_LIMIT) throw new Error(`IndexedDB work still in flight after ${LAND_TURN_LIMIT} task turns: ${work.open} requests or transactions open`);
     await taskTurn();
-    idle = inFlight === 0 ? idle + 1 : 0;
+    idle = work.open === 0 ? idle + 1 : 0;
   }
 }
 
