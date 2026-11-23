@@ -80,25 +80,51 @@ type Book struct {
 	stopped    bool
 	// stopErr is the first Stop's answer, which every later Stop returns.
 	stopErr error
-	// last is the window opened last and the link it published, kept after
-	// the window is removed so a decision's result stays readable for it
-	// (Standing.LinkOf) until the next Open replaces it.
-	last   lastWindow
-	cancel func(linkID string) error
-	retry  time.Duration
+	// last is the window opened last, the link it published and why it
+	// stopped being open, kept after the window is removed so a decision's
+	// result and the window's ending stay readable for it (Standing.LinkOf,
+	// Standing.EndingOf) until the next Open replaces it. previous is the
+	// window opened before it, kept for its ending alone.
+	last     lastWindow
+	previous lastWindow
+	cancel   func(linkID string) error
+	retry    time.Duration
 	// joining, when a test sets it before the CancelLink it observes, runs
 	// when that CancelLink finds a mint in flight, before it waits for it.
 	joining func()
 	// opening is the window Open is admitting, not yet installed, and
-	// openingExpired whether Expire named it meanwhile.
-	opening        string
-	openingExpired bool
+	// openingEnded why Expire named it meanwhile, "" when it did not.
+	opening      string
+	openingEnded Ending
 }
 
-// lastWindow is Book.last.
+// lastWindow is Book.last. ended is "" while the window is open.
 type lastWindow struct {
 	windowID, linkID string
+	ended            Ending
 }
+
+// Ending is why a window stopped being open, recorded where it stops: the
+// first of these to happen to it is the one it keeps.
+type Ending string
+
+const (
+	// EndedDeadline: the window reached its expiry (WindowTTL).
+	EndedDeadline Ending = "deadline"
+	// EndedClosed: its owner closed it.
+	EndedClosed Ending = "closed"
+	// EndedCanceled: its owner canceled the invitation it published
+	// (CancelLink).
+	EndedCanceled Ending = "canceled"
+	// EndedReplaced: a newer window was opened.
+	EndedReplaced Ending = "replaced"
+	// EndedAddressChanged: an address the window depends on changed.
+	EndedAddressChanged Ending = "addressChanged"
+	// EndedDisconnected: the connection that opened it ended.
+	EndedDisconnected Ending = "disconnected"
+	// EndedStopped: pairing stopped for shutdown (Stop).
+	EndedStopped Ending = "stopped"
+)
 
 type window struct {
 	view Snapshot
@@ -123,7 +149,7 @@ type retirement struct {
 }
 
 // ErrStopped answers an Open or Close after Stop.
-var ErrStopped = errors.New("pairbootstrap: pairing is shutting down")
+var ErrStopped = errors.New("this computer is shutting down; pair again after Agent Overflow restarts")
 
 type request struct {
 	commitment Commitment
@@ -212,14 +238,14 @@ func (b *Book) open(mint func(route string) (Invitation, error), admit func(Snap
 		return Snapshot{}, ErrStopped
 	}
 	if old != nil {
-		b.removeInTurn(old.view.WindowID)
+		b.removeInTurn(old.view.WindowID, EndedReplaced)
 	}
 	if err := durable(b.retireInTurn("", true)); err != nil {
 		return Snapshot{}, err
 	}
 	w := &window{mint: mint, view: Snapshot{Open: true, WindowID: encode(random(16)), ExpiresAtMs: time.Now().Add(ttl).UnixMilli()}}
 	b.mu.Lock()
-	b.opening, b.openingExpired = w.view.WindowID, false
+	b.opening, b.openingEnded = w.view.WindowID, ""
 	b.mu.Unlock()
 	if err := admit(w.view); err != nil {
 		b.mu.Lock()
@@ -229,29 +255,30 @@ func (b *Book) open(mint func(route string) (Invitation, error), admit func(Snap
 	}
 	b.mu.Lock()
 	// A window Expire named between its admission and here is installed
-	// already expired, never usable.
-	if b.openingExpired {
+	// already expired, never usable, with Expire's ending.
+	if b.openingEnded != "" {
 		w.view.ExpiresAtMs = 0
 	}
-	b.opening, b.openingExpired = "", false
 	b.window = w
-	b.last = lastWindow{windowID: w.view.WindowID}
-	w.timer = time.AfterFunc(ttl, func() { _ = b.Close(w.view.WindowID) })
+	b.previous, b.last = b.last, lastWindow{windowID: w.view.WindowID, ended: b.openingEnded}
+	b.opening, b.openingEnded = "", ""
+	w.timer = time.AfterFunc(ttl, func() { _ = b.Close(w.view.WindowID, EndedDeadline) })
 	view := w.view
 	b.mu.Unlock()
 	return view, nil
 }
 
-// Close retires the named window, never a replacement, and answers whether
-// that window's invitation is durably cancelled. A window already gone whose
-// cancellation failed earlier is tried again; any other id is a no-op.
-func (b *Book) Close(windowID string) error {
+// Close retires the named window, never a replacement, for why, and answers
+// whether that window's invitation is durably cancelled. A window already
+// gone whose cancellation failed earlier is tried again; any other id is a
+// no-op.
+func (b *Book) Close(windowID string, why Ending) error {
 	b.turn.Lock()
 	defer b.turn.Unlock()
 	if b.Stopped() {
 		return ErrStopped
 	}
-	b.removeInTurn(windowID)
+	b.removeInTurn(windowID, why)
 	return durable(b.retireInTurn(windowID, false))
 }
 
@@ -272,7 +299,7 @@ func (b *Book) Stop() error {
 		return stopErr
 	}
 	if w != nil {
-		b.removeInTurn(w.view.WindowID)
+		b.removeInTurn(w.view.WindowID, EndedStopped)
 	}
 	err := durable(b.retireInTurn("", true))
 	b.mu.Lock()
@@ -288,17 +315,31 @@ func (b *Book) Stop() error {
 // its invitation is refused confirmation (Refuses), it admits no request,
 // and it reads closed. It does nothing else; the caller closes the window
 // (Close) to retire its invitation. A window Open is still admitting is
-// installed expired. Expire takes mu alone, so a caller may hold its own
-// locks around it. Any other id is a no-op.
-func (b *Book) Expire(windowID string) {
+// installed expired. why is the window's ending. Expire takes mu alone, so
+// a caller may hold its own locks around it. Any other id is a no-op.
+func (b *Book) Expire(windowID string, why Ending) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	switch {
 	case b.window != nil && b.window.view.WindowID == windowID:
+		b.endLocked(why)
 		b.window.view.ExpiresAtMs = 0
-	case windowID != "" && b.opening == windowID:
-		b.openingExpired = true
+	case windowID != "" && b.opening == windowID && b.openingEnded == "":
+		b.openingEnded = why
 	}
+}
+
+// endLocked records why the installed window, which is always the window
+// opened last, stopped being open, unless an earlier ending was recorded;
+// one already past its expiry ended at its deadline. The caller holds mu.
+func (b *Book) endLocked(why Ending) {
+	if b.last.ended != "" {
+		return
+	}
+	if b.liveLocked() == nil {
+		why = EndedDeadline
+	}
+	b.last.ended = why
 }
 
 // CancelLink cancels linkID for its owner. When the open window minted it,
@@ -341,7 +382,7 @@ func (b *Book) CancelLink(linkID string) (windowID string, err error) {
 	b.mu.Unlock()
 	switch {
 	case windowID != "":
-		b.removeInTurn(windowID)
+		b.removeInTurn(windowID, EndedCanceled)
 		return windowID, b.retireInTurn(windowID, false)
 	case pending != "":
 		return "", b.retireInTurn(pending, false)
@@ -357,10 +398,10 @@ func (b *Book) Stopped() bool {
 	return b.stopped
 }
 
-// removeInTurn removes the window if it is the open one, refusing its
-// invitation from that moment, and waits for its mint in flight to record the
-// invitation it made. The caller holds turn.
-func (b *Book) removeInTurn(windowID string) {
+// removeInTurn removes the window if it is the open one, for why, refusing
+// its invitation from that moment, and waits for its mint in flight to record
+// the invitation it made. The caller holds turn.
+func (b *Book) removeInTurn(windowID string, why Ending) {
 	b.settle.Lock()
 	b.mu.Lock()
 	w := b.window
@@ -369,6 +410,7 @@ func (b *Book) removeInTurn(windowID string) {
 		b.settle.Unlock()
 		return
 	}
+	b.endLocked(why)
 	b.window = nil
 	w.timer.Stop()
 	if w.view.LinkID != "" {
@@ -438,10 +480,11 @@ func (b *Book) retryPending() {
 
 // Standing is what the book says about its invitations at one instant.
 type Standing struct {
-	pending string
-	open    Snapshot
-	last    lastWindow
-	now     int64
+	pending  string
+	open     Snapshot
+	last     lastWindow
+	previous lastWindow
+	now      int64
 }
 
 // LinkOf is the link the named window published, while it is the window
@@ -463,6 +506,26 @@ func (s Standing) Refuses(linkID string) bool {
 		return false
 	}
 	return s.pending == linkID || (s.open.LinkID == linkID && !s.open.liveAt(s.now))
+}
+
+// EndingOf is why windowID is not open: the ending recorded for the window
+// opened last or the one before it, and EndedDeadline while the window
+// opened last is past its expiry with none recorded (its timer has yet to
+// run). "" while windowID is open, and for any older window.
+func (s Standing) EndingOf(windowID string) Ending {
+	switch {
+	case windowID == "":
+		return ""
+	case windowID == s.previous.windowID:
+		return s.previous.ended
+	case windowID != s.last.windowID:
+		return ""
+	case s.last.ended != "":
+		return s.last.ended
+	case s.Window().WindowID != windowID:
+		return EndedDeadline
+	}
+	return ""
 }
 
 // Window is the open window, closed (Open false) when none is open or it is
@@ -490,7 +553,7 @@ func (b *Book) liveLocked() *window {
 func (b *Book) standing() Standing {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	s := Standing{now: time.Now().UnixMilli(), last: b.last}
+	s := Standing{now: time.Now().UnixMilli(), last: b.last, previous: b.previous}
 	if b.pending != nil {
 		s.pending = b.pending.linkID
 	}

@@ -66,7 +66,7 @@ func openWindow(t *testing.T, b *Book, mint func(string) (Invitation, error)) Sn
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = b.Close(s.WindowID) })
+	t.Cleanup(func() { _ = b.Close(s.WindowID, EndedClosed) })
 	return s
 }
 func handshake(t *testing.T, b *Book, c *Client) (Challenge, Reveal, SealedInvitation) {
@@ -240,8 +240,13 @@ func TestHTTPSExchangeAndNoRedirect(t *testing.T) {
 	var hits atomic.Int32
 	redirect := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1); http.Redirect(w, r, server.URL, 302) }))
 	defer redirect.Close()
-	if _, _, err := Exchange(context.Background(), hc, redirect.URL, "Laptop", "darwin"); err == nil || hits.Load() != 1 {
+	_, _, err = Exchange(context.Background(), hc, redirect.URL, "Laptop", "darwin")
+	if err == nil || hits.Load() != 1 {
 		t.Fatal("redirect accepted")
+	}
+	// The refusal names the menu path as the setup guide writes it.
+	if want := "Pairing request failed (HTTP 302). On the other computer, open Remote access → Allow device access → Allow a device to connect → Another computer, then try again"; err.Error() != want {
+		t.Fatalf("a refused request reads %q, want %q", err, want)
 	}
 }
 

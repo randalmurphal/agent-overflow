@@ -148,7 +148,7 @@ func (a *App) publishComputerRoutes() publishedNetwork {
 	retired := state.window
 	if retired.id != "" && retired.serial < state.serial {
 		state.window = admittedPairingWindow{}
-		retired.book.Expire(retired.id)
+		retired.book.Expire(retired.id, pairbootstrap.EndedAddressChanged)
 	} else {
 		retired = admittedPairingWindow{}
 	}
@@ -160,7 +160,7 @@ func (a *App) publishComputerRoutes() publishedNetwork {
 	if retired.id != "" {
 		// A failed cancellation is logged by the book's callback and retried
 		// by the book.
-		_ = a.closeComputerPairingWindow(retired.id)
+		_ = a.closeComputerPairingWindow(retired.id, pairbootstrap.EndedAddressChanged)
 	}
 	if routesChanged {
 		a.emit(eventchan.ComputerRoutesChanged, struct{}{})

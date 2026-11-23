@@ -33,6 +33,14 @@ type ComputerPairingView struct {
 	// window this process does not advertise (LAN sharing off, or the
 	// Windows launcher's own LAN listener).
 	DiscoveryError string `json:"discoveryError"`
+	// Ended says why a window in state "expired" is no longer open, one of
+	// pairbootstrap's Ending values: "deadline", "closed", "canceled",
+	// "replaced", "addressChanged", "disconnected" or "stopped". Empty
+	// while the window is open, and when nothing records why it ended: a
+	// window from before this process started or older than the one before
+	// the last, or an invitation the store settled while its window was
+	// open.
+	Ended string `json:"ended"`
 }
 
 // computerPairingState is the owner surface's side of one bootstrap window:
@@ -126,7 +134,7 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 		if owned {
 			// A failed cancellation is logged by the book's callback and
 			// stays refused until a later open or close retires it.
-			_ = a.closeComputerPairingWindow(id)
+			_ = a.closeComputerPairingWindow(id, pairbootstrap.EndedDisconnected)
 		}
 	}); err != nil {
 		return ComputerPairingWindow{}, err
@@ -135,7 +143,7 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 	// A window replaces its predecessor only once every earlier invitation's
 	// cancellation is durable: the close answers for the previous window,
 	// and the book's open for any other still unfinished.
-	if err := a.closeComputerPairingWindow(previous); err != nil {
+	if err := a.closeComputerPairingWindow(previous, pairbootstrap.EndedReplaced); err != nil {
 		return ComputerPairingWindow{}, err
 	}
 	// The publication, and the close of any window it retires, run first;
@@ -275,14 +283,14 @@ func (a *App) CloseComputerPairing(id string) error {
 		state.owner = nil
 	}
 	state.mu.Unlock()
-	return a.closeComputerPairingWindow(id)
+	return a.closeComputerPairingWindow(id, pairbootstrap.EndedClosed)
 }
 
-// closeComputerPairingWindow retires one window: the book removes it and
-// cancels its invitation, answering for that cancellation, then the
+// closeComputerPairingWindow retires one window for why: the book removes it
+// and cancels its invitation, answering for that cancellation, then the
 // responders that window started are ended (endComputerPairingAdvertisement).
-func (a *App) closeComputerPairingWindow(id string) error {
-	err := a.computerPairingBook().Close(id)
+func (a *App) closeComputerPairingWindow(id string, why pairbootstrap.Ending) error {
+	err := a.computerPairingBook().Close(id, why)
 	a.endComputerPairingAdvertisement(id)
 	return err
 }
@@ -405,7 +413,7 @@ func (a *App) ComputerPairingStatus(id string) (ComputerPairingView, error) {
 		if link.ConfirmedAt != 0 {
 			return ComputerPairingView{State: "confirmed", LinkID: link.ID, DeviceLabel: a.pairedDeviceLabel(link)}, nil
 		}
-		return ComputerPairingView{State: "expired"}, nil
+		return ComputerPairingView{State: "expired", Ended: string(standing.EndingOf(id))}, nil
 	}
 	out := ComputerPairingView{State: "waiting", DeviceLabel: view.Label, LinkID: view.LinkID, ExpiresAtMs: view.ExpiresAtMs, DiscoveryError: discoveryError}
 	if view.RequestID != "" {
@@ -421,6 +429,9 @@ func (a *App) ComputerPairingStatus(id string) (ComputerPairingView, error) {
 		case "redeemed":
 			out.State = "ready"
 		case "expired", "canceled":
+			// The store settled the invitation while its window is open,
+			// as a confirmation that could not finish does; the window
+			// itself did not end, so no ending is named.
 			out.State = "expired"
 		}
 	}

@@ -377,8 +377,8 @@ func TestComputerPairingTailscaleLeavingRetiresALANWindowWithARequester(t *testi
 	beginOnBook(t, book)
 	stop()
 	a.publishComputerRoutes()
-	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" {
-		t.Fatalf("the LAN window after Tailscale went away = %+v (%v), want it retired", status, err)
+	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" || status.Ended != "addressChanged" {
+		t.Fatalf("the LAN window after Tailscale went away = %+v (%v), want it retired for the address change", status, err)
 	}
 	if _, err := book.Begin(pairbootstrapClient(t).Commitment()); !errors.Is(err, pairbootstrap.ErrClosed) {
 		t.Fatalf("a new requester after Tailscale went away = %v, want pairbootstrap.ErrClosed", err)
@@ -416,8 +416,8 @@ func TestComputerPairingALANAddressMovingDuringARevealRetiresTheWindow(t *testin
 		t.Fatalf("the invitation = %s, want it on the address the window was admitted under", invite.URL)
 	}
 	a.publishComputerRoutes()
-	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" {
-		t.Fatalf("the window after its address moved = %+v (%v), want it retired", status, err)
+	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" || status.Ended != "addressChanged" {
+		t.Fatalf("the window after its address moved = %+v (%v), want it retired for the address change", status, err)
 	}
 	requireCanceled(t, a, invite.LinkID)
 	fresh, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
@@ -430,4 +430,49 @@ func TestComputerPairingALANAddressMovingDuringARevealRetiresTheWindow(t *testin
 	}
 	redeemOnHost(t, a, next, "moved-address-device")
 	requireAwaitingApproval(t, a, fresh, next, "on the fresh window")
+}
+
+// The owner's status of a window that is no longer open says why it ended,
+// as each path that ends one names it: a close, a newer window, a cancel of
+// its invitation and the end of the connection that opened it. The address
+// change is checked where an address moves.
+func TestComputerPairingStatusSaysWhyAWindowEnded(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	a, _ := computerPairingHost(t)
+	open := func(ctx context.Context) ComputerPairingWindow {
+		t.Helper()
+		window, err := a.OpenComputerPairing(ctx, "lan", "full")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return window
+	}
+	ended := func(window ComputerPairingWindow, want string) {
+		t.Helper()
+		status, err := a.ComputerPairingStatus(window.ID)
+		if err != nil || status.State != "expired" || status.Ended != want {
+			t.Fatalf("window %s = %+v (%v), want it ended %q", window.ID, status, err, want)
+		}
+	}
+	closed := open(connCtx(t))
+	if err := a.CloseComputerPairing(closed.ID); err != nil {
+		t.Fatal(err)
+	}
+	ended(closed, "closed")
+
+	replaced := open(connCtx(t))
+	canceled := open(connCtx(t))
+	ended(replaced, "replaced")
+
+	invite := revealOnBook(t, a.computerPairingBook())
+	if err := a.CancelDevicePairing(invite.LinkID); err != nil {
+		t.Fatal(err)
+	}
+	ended(canceled, "canceled")
+
+	ctx, conn := newTestConnection(t, transport.ConnPrincipal{})
+	dropped := open(ctx)
+	conn.RunCleanups()
+	ended(dropped, "disconnected")
 }

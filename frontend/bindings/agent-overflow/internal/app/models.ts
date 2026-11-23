@@ -1614,6 +1614,17 @@ export class ComputerPairingView {
      */
     "discoveryError": string;
 
+    /**
+     * Ended says why a window in state "expired" is no longer open, one of
+     * pairbootstrap's Ending values: "deadline", "closed", "canceled",
+     * "replaced", "addressChanged", "disconnected" or "stopped". Empty
+     * while the window is open, and when nothing records why it ended: a
+     * window from before this process started or older than the one before
+     * the last, or an invitation the store settled while its window was
+     * open.
+     */
+    "ended": string;
+
     /** Creates a new ComputerPairingView instance. */
     constructor($$source: Partial<ComputerPairingView> = {}) {
         if (!("state" in $$source)) {
@@ -1633,6 +1644,9 @@ export class ComputerPairingView {
         }
         if (!("discoveryError" in $$source)) {
             this["discoveryError"] = "";
+        }
+        if (!("ended" in $$source)) {
+            this["ended"] = "";
         }
 
         Object.assign(this, $$source);

@@ -24,6 +24,9 @@ describe('available computers', () => {
     expect(add).toHaveBeenCalledExactlyOnceWith(WINDOWS.address);
     await waitFor(() => expect(view.queryByRole('button', { name: 'Connect to Workstation' })).toBeNull());
     expect(view.queryByText('Already paired')).toBeNull();
+    // With nothing left to offer, the list says where to open pairing, in
+    // the menu path the setup guide uses.
+    expect(view.getByText('No new computers found. On the computer you want to connect, open Remote access → Allow device access → Allow a device to connect → Another computer.')).toBeTruthy();
   });
 
   it('shows discovery errors inline and only scans again on explicit refresh', async () => {

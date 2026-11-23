@@ -141,7 +141,7 @@ func TestCloseJoinsAnInFlightMintAndAnswersForItsInvitation(t *testing.T) {
 	old, g, revealed := heldMintWindow(t, b, "late")
 	l.fail(true)
 	closed := make(chan error, 1)
-	go func() { closed <- b.Close(old.WindowID) }()
+	go func() { closed <- b.Close(old.WindowID, EndedClosed) }()
 	// The window is removed before its mint finishes.
 	waitFor(t, "the close to remove the window", func() bool { return !b.Snapshot(old.WindowID).Open })
 	g.open()
@@ -158,13 +158,13 @@ func TestCloseJoinsAnInFlightMintAndAnswersForItsInvitation(t *testing.T) {
 		t.Fatal("a closed window's late invitation was confirmable")
 	}
 	l.fail(false)
-	if err := b.Close(old.WindowID); err != nil {
+	if err := b.Close(old.WindowID, EndedClosed); err != nil {
 		t.Fatalf("closing again after storage recovered = %v", err)
 	}
 	if n := l.count("late"); n != 2 {
 		t.Fatalf("closing again issued %d statements in all, want 2", n)
 	}
-	if err := b.Close(old.WindowID); err != nil || l.count("late") != 2 {
+	if err := b.Close(old.WindowID, EndedClosed); err != nil || l.count("late") != 2 {
 		t.Fatalf("a durable cancellation was issued again (%v, %d statements)", err, l.count("late"))
 	}
 }
@@ -177,7 +177,7 @@ func TestFailedCancellationStaysRefusedAndBlocksTheNextWindow(t *testing.T) {
 	first := openWindow(t, b, mintOf("first"))
 	handshake(t, b, newClient(t))
 	l.fail(true)
-	if err := b.Close(first.WindowID); !errors.Is(err, errStorage) {
+	if err := b.Close(first.WindowID, EndedClosed); !errors.Is(err, errStorage) {
 		t.Fatalf("close = %v, want the storage error", err)
 	}
 	if n := l.count("first"); n != 1 {
@@ -212,7 +212,7 @@ func TestFailedCancellationStaysRefusedAndBlocksTheNextWindow(t *testing.T) {
 		t.Fatal("the open window's invitation was refused")
 	}
 	// A stale close of the first window touches nothing of the second.
-	if err := b.Close(first.WindowID); err != nil || l.count("second") != 0 || !b.Snapshot(second.WindowID).Open {
+	if err := b.Close(first.WindowID, EndedClosed); err != nil || l.count("second") != 0 || !b.Snapshot(second.WindowID).Open {
 		t.Fatalf("stale close: %v, %d statements for the replacement", err, l.count("second"))
 	}
 }
@@ -226,7 +226,7 @@ func TestAFailedCancellationRetriesItselfUntilDurable(t *testing.T) {
 	w := openWindow(t, b, mintOf("retried"))
 	handshake(t, b, newClient(t))
 	l.fail(true)
-	if err := b.Close(w.WindowID); !errors.Is(err, errStorage) {
+	if err := b.Close(w.WindowID, EndedClosed); !errors.Is(err, errStorage) {
 		t.Fatalf("close = %v, want the storage error", err)
 	}
 	waitFor(t, "two retries", func() bool { return l.count("retried") >= 3 })
@@ -251,14 +251,14 @@ func TestADurableCloseEndsTheRetrySchedule(t *testing.T) {
 	w := openWindow(t, b, mintOf("retried"))
 	handshake(t, b, newClient(t))
 	l.fail(true)
-	if err := b.Close(w.WindowID); !errors.Is(err, errStorage) {
+	if err := b.Close(w.WindowID, EndedClosed); !errors.Is(err, errStorage) {
 		t.Fatalf("close = %v, want the storage error", err)
 	}
 	b.mu.Lock()
 	timer := b.retryTimer
 	b.mu.Unlock()
 	l.fail(false)
-	if err := b.Close(w.WindowID); err != nil {
+	if err := b.Close(w.WindowID, EndedClosed); err != nil {
 		t.Fatal(err)
 	}
 	if timer.Stop() {
@@ -274,7 +274,7 @@ func TestExpiryRetiresTheInvitation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = b.Close(w.WindowID) })
+	t.Cleanup(func() { _ = b.Close(w.WindowID, EndedClosed) })
 	handshake(t, b, newClient(t))
 	waitFor(t, "expiry to cancel the invitation", func() bool { return l.count("expiring") == 1 })
 	if b.Snapshot(w.WindowID).Open {
@@ -320,7 +320,7 @@ func TestARemovalWaitsForARunningConfirmation(t *testing.T) {
 	}()
 	<-writing.release
 	closed := make(chan error, 1)
-	go func() { closed <- b.Close(w.WindowID) }()
+	go func() { closed <- b.Close(w.WindowID, EndedClosed) }()
 	select {
 	case <-removalWaits:
 	case err := <-closed:
@@ -356,7 +356,7 @@ func TestAnApprovalAdmittedBeforeTheDeadlineCompletesAfterIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = b.Close(w.WindowID) })
+	t.Cleanup(func() { _ = b.Close(w.WindowID, EndedClosed) })
 	handshake(t, b, newClient(t))
 	var wroteAfterDeadline bool
 	err = b.Admit("approved", false, func() error {
@@ -395,7 +395,7 @@ func TestAReplacementWaitsForAnEarlierCloseToFinish(t *testing.T) {
 	old, g, revealed := heldMintWindow(t, b, "late")
 	l.fail(true)
 	closed := make(chan error, 1)
-	go func() { closed <- b.Close(old.WindowID) }()
+	go func() { closed <- b.Close(old.WindowID, EndedClosed) }()
 	waitFor(t, "the close to remove the window", func() bool { return !b.Snapshot(old.WindowID).Open })
 	replacementWaits := make(chan struct{}, 1)
 	// Set before the replacement starts; the close holds turn already.
@@ -409,7 +409,7 @@ func TestAReplacementWaitsForAnEarlierCloseToFinish(t *testing.T) {
 	go func() {
 		w, err := b.Open(mintOf("next"), admitted)
 		if err == nil {
-			_ = b.Close(w.WindowID)
+			_ = b.Close(w.WindowID, EndedClosed)
 		}
 		opened <- err
 	}()
@@ -545,7 +545,7 @@ func TestAWindowIsVisibleOnlyOnceAdmitted(t *testing.T) {
 	if err != nil || w != seen || !b.Snapshot(w.WindowID).Open {
 		t.Fatalf("an admitted open = %+v %v, admitted %+v", w, err, seen)
 	}
-	t.Cleanup(func() { _ = b.Close(w.WindowID) })
+	t.Cleanup(func() { _ = b.Close(w.WindowID, EndedClosed) })
 }
 
 // Stop retires the open window and its invitation, then refuses opens and
@@ -556,7 +556,7 @@ func TestStopRetiresTheWindowAndEndsEveryRetry(t *testing.T) {
 	w := openWindow(t, b, mintOf("stopped"))
 	handshake(t, b, newClient(t))
 	l.fail(true)
-	if err := b.Close(w.WindowID); !errors.Is(err, errStorage) {
+	if err := b.Close(w.WindowID, EndedClosed); !errors.Is(err, errStorage) {
 		t.Fatalf("close = %v, want the storage error", err)
 	}
 	waitFor(t, "a retry", func() bool { return l.count("stopped") >= 2 })
@@ -576,7 +576,7 @@ func TestStopRetiresTheWindowAndEndsEveryRetry(t *testing.T) {
 	if _, err := b.Open(mintOf("after"), admitted); !errors.Is(err, ErrStopped) {
 		t.Fatalf("open after stop = %v, want ErrStopped", err)
 	}
-	if err := b.Close(w.WindowID); !errors.Is(err, ErrStopped) {
+	if err := b.Close(w.WindowID, EndedClosed); !errors.Is(err, ErrStopped) {
 		t.Fatalf("close after stop = %v, want ErrStopped", err)
 	}
 	// A retry that fired before stop and took turn after it issues nothing.
@@ -628,7 +628,7 @@ func TestARemovalWaitsForARead(t *testing.T) {
 	}()
 	<-reading.release
 	closed := make(chan error, 1)
-	go func() { closed <- b.Close(w.WindowID) }()
+	go func() { closed <- b.Close(w.WindowID, EndedClosed) }()
 	select {
 	case <-removalWaits:
 	case err := <-closed:
@@ -654,7 +654,7 @@ func TestAReadRefusesAnUnfinishedRetirement(t *testing.T) {
 	w := openWindow(t, b, mintOf("retiring"))
 	handshake(t, b, newClient(t))
 	l.fail(true)
-	if err := b.Close(w.WindowID); !errors.Is(err, errStorage) {
+	if err := b.Close(w.WindowID, EndedClosed); !errors.Is(err, errStorage) {
 		t.Fatalf("close = %v, want the storage error", err)
 	}
 	var during, after Standing
@@ -663,7 +663,7 @@ func TestAReadRefusesAnUnfinishedRetirement(t *testing.T) {
 		t.Fatalf("a read during the retirement = %+v, want it refused and no window", during)
 	}
 	l.fail(false)
-	if err := b.Close(w.WindowID); err != nil {
+	if err := b.Close(w.WindowID, EndedClosed); err != nil {
 		t.Fatal(err)
 	}
 	_ = b.Read(func(s Standing) error { after = s; return nil })

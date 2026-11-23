@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/url"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/owndevices"
@@ -304,8 +305,13 @@ func (a *App) ConfirmDevicePairing(linkID string) error {
 	// (computerPairingGate) admits the confirmation. The store's
 	// settled-state guard decides everything else.
 	_, err = state.sessions.ConfirmPairing(linkID)
-	if err == nil {
+	switch {
+	case err == nil:
 		NotifyOwnDevices(a)
+	case errors.Is(err, identity.ErrPairingRefused):
+		err = errorsx.Public("pairing_closed", "this pairing is no longer open; start pairing again", err)
+	case errors.Is(err, identity.ErrPairingNotCompleted):
+		err = errorsx.Public("pairing_not_completed", "the device could not finish pairing; pair it again", err)
 	}
 	return err
 }
@@ -326,6 +332,9 @@ func (a *App) CancelDevicePairing(linkID string) error {
 	windowID, err := a.computerPairingBook().CancelLink(linkID)
 	if windowID != "" {
 		a.endComputerPairingAdvertisement(windowID)
+	}
+	if errors.Is(err, identity.ErrPairingRefused) {
+		err = errorsx.Public("pairing_settled", "this invitation was already used, canceled or expired, so there is nothing to cancel", err)
 	}
 	return err
 }

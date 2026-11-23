@@ -35,6 +35,23 @@
   let shown: PairingTurn | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
+  // Why the window on screen is no longer open, from the host's `ended`
+  // (ComputerPairingView.Ended). A window this dialog saw pass its deadline
+  // without the host naming another ending expired.
+  const endedText = $derived.by(() => {
+    const ended = status?.state === 'expired' ? status.ended : 'deadline';
+    switch (ended) {
+      case 'deadline': return 'Pairing expired.';
+      case 'canceled': return 'Pairing was canceled from Devices.';
+      case 'addressChanged': return `The address of ${name} changed, so this pairing was canceled. Try again to pair on the new address.`;
+      case 'disconnected': return `Pairing stopped because the connection to ${name} dropped.`;
+      case 'replaced': return `A newer pairing was started on ${name}, which ended this one.`;
+      case 'closed': return 'Pairing was closed.';
+      case 'stopped': return `Pairing stopped because ${name} shut down.`;
+      default: return 'Pairing ended.';
+    }
+  });
+
   async function closeWindow(id: string): Promise<void> {
     try { await call(() => CloseComputerPairing(id)); }
     catch (err) { addToast('warning', `Could not close pairing. It will expire automatically: ${errString(err)}`); }
@@ -61,13 +78,12 @@
         adoptConfirmed();
         return;
       }
-      if (pastDeadline) {
-        expired = true;
-        error = '';
-        return;
-      }
       status = next;
       error = '';
+      if (pastDeadline) {
+        expired = true;
+        return;
+      }
       if (next.state === 'expired') return;
     } catch (err) {
       if (!at.current) return;
@@ -144,6 +160,11 @@
         if (at.current) adoptConfirmed();
         return;
       }
+      // A window that ended meanwhile says why, beside the refusal.
+      if (at.current && after?.state === 'expired') {
+        clearTimeout(timer);
+        status = after;
+      }
       const message = `Could not allow this computer: ${errString(err)}`;
       // A dismissed dialog has nowhere to show it, so the failure is a toast.
       if (at.current) error = message;
@@ -159,7 +180,7 @@
     <p class="text-center text-sm font-medium text-fg">Computer paired</p>
     <Button variant="primary" onclick={onClose}>Done</Button>
   {:else if expired || status?.state === 'expired'}
-    <p class="text-sm text-fg-muted">Pairing expired.</p>
+    <p class="text-sm text-fg-muted">{endedText}</p>
     <div class="flex flex-wrap justify-end gap-2">
       <Button onclick={onClose}>Close</Button>
       <!-- A new window waits for the decision made in this one. -->

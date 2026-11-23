@@ -76,8 +76,8 @@ func TestComputerPairingALatePublicationKeepsTheNewerWindow(t *testing.T) {
 	if status, err := a.ComputerPairingStatus(newer.ID); err != nil || status.State == "expired" {
 		t.Fatalf("the newer window after the late publication = %+v (%v), want it open", status, err)
 	}
-	if status, err := a.ComputerPairingStatus(first.ID); err != nil || status.State != "expired" {
-		t.Fatalf("the first window = %+v (%v), want it retired", status, err)
+	if status, err := a.ComputerPairingStatus(first.ID); err != nil || status.State != "expired" || status.Ended != "addressChanged" {
+		t.Fatalf("the first window = %+v (%v), want it retired for the address change", status, err)
 	}
 	// A publication that moves nothing, as a network-status poll makes,
 	// keeps the window admitted under the current publication.
@@ -327,13 +327,15 @@ func TestComputerPairingCancelingAWindowsInvitationRetiresTheWindow(t *testing.T
 		t.Fatal(err)
 	}
 	requireCanceled(t, a, invite.LinkID)
-	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" {
-		t.Fatalf("the window after its invitation was canceled = %+v (%v), want it gone", status, err)
+	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" || status.Ended != "canceled" {
+		t.Fatalf("the window after its invitation was canceled = %+v (%v), want it gone, canceled", status, err)
 	}
 	requireNoPublishedWindow(t, a)
-	if err := a.CancelDevicePairing(invite.LinkID); !errors.Is(err, identity.ErrPairingRefused) {
+	err = a.CancelDevicePairing(invite.LinkID)
+	if !errors.Is(err, identity.ErrPairingRefused) {
 		t.Fatalf("canceling a settled invitation again = %v, want identity.ErrPairingRefused", err)
 	}
+	requirePersonSees(t, err, "this invitation was already used, canceled or expired, so there is nothing to cancel")
 }
 
 // standingOf is the computer pairing book's standing now.

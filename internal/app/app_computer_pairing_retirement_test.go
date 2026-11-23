@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/buildvariant/remotetest"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/pairbootstrap"
 	"agent-overflow/internal/transport"
@@ -33,7 +34,7 @@ func heldMintWindow(t *testing.T, a *App) (pairbootstrap.Snapshot, *testGate, <-
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = book.Close(view.WindowID) })
+	t.Cleanup(func() { _ = book.Close(view.WindowID, pairbootstrap.EndedClosed) })
 	t.Cleanup(g.open)
 	c, ch := beginOnBook(t, book)
 	r, err := c.Reveal(ch)
@@ -76,8 +77,19 @@ func invitationMint(string) (pairbootstrap.Invitation, error) {
 
 func refusedConfirmation(t *testing.T, a *App, linkID, when string) {
 	t.Helper()
-	if err := a.ConfirmDevicePairing(linkID); !errors.Is(err, identity.ErrPairingRefused) {
+	err := a.ConfirmDevicePairing(linkID)
+	if !errors.Is(err, identity.ErrPairingRefused) {
 		t.Fatalf("%s: confirming %s = %v, want identity.ErrPairingRefused", when, linkID, err)
+	}
+	requirePersonSees(t, err, "this pairing is no longer open; start pairing again")
+}
+
+// requirePersonSees fails unless err reaches a person as message alone
+// (errorsx.Public), with no internal cause in it.
+func requirePersonSees(t *testing.T, err error, message string) {
+	t.Helper()
+	if _, got, ok := errorsx.PublicDetails(err); !ok || got != message {
+		t.Fatalf("a person reads %q (public %v) for %v, want %q", got, ok, err, message)
 	}
 }
 
@@ -458,6 +470,11 @@ func TestComputerPairingUnfinishedCancellationIsRetiredAcrossRestart(t *testing.
 	}
 	if _, err := a.computerPairingBook().Open(invitationMint, func(pairbootstrap.Snapshot) error { return nil }); !errors.Is(err, pairbootstrap.ErrStopped) {
 		t.Fatalf("an open after shutdown = %v, want ErrStopped", err)
+	}
+	// What the owner's dialog reads when its close arrives during shutdown.
+	if err := a.CloseComputerPairing(window.ID); !errors.Is(err, pairbootstrap.ErrStopped) ||
+		err.Error() != "this computer is shutting down; pair again after Agent Overflow restarts" {
+		t.Fatalf("a close after shutdown = %v, want the shutdown explained", err)
 	}
 	rebooted := newTestAppAtStorePath(t, path)
 	if err := rebooted.initIdentity("backend-under-test"); err == nil {

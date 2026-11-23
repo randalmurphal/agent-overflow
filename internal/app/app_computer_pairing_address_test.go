@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -36,8 +35,8 @@ func openAddressedWindow(t *testing.T, a *App, want string) ComputerPairingWindo
 // discovery.
 func requireWindowRetired(t *testing.T, a *App, window ComputerPairingWindow) {
 	t.Helper()
-	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" {
-		t.Fatalf("the window after its address moved = %+v (%v), want expired", status, err)
+	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" || status.Ended != "addressChanged" {
+		t.Fatalf("the window after its address moved = %+v (%v), want it ended for the address change", status, err)
 	}
 	requireNoPublishedWindow(t, a)
 }
@@ -205,14 +204,16 @@ func TestComputerPairingAConfirmationThatCannotAdmitEndsThePairing(t *testing.T)
 		t.Fatal(err)
 	}
 	err = b.app.ConfirmDevicePairing(invite.LinkID)
-	if !errors.Is(err, identity.ErrPairingNotCompleted) || !strings.Contains(err.Error(), "the pairing was not completed") {
+	if !errors.Is(err, identity.ErrPairingNotCompleted) {
 		t.Fatalf("confirming a pairing whose device was revoked = %v, want it reported not completed", err)
 	}
+	requirePersonSees(t, err, "the device could not finish pairing; pair it again")
 	if status, err := b.app.DevicePairingStatus(invite.LinkID); err != nil || status.State != pairingStateCanceled {
 		t.Fatalf("the pairing after an incomplete confirmation = %+v (%v), want canceled", status, err)
 	}
-	if status, err := b.app.ComputerPairingStatus(window.WindowID); err != nil || status.State != "expired" {
-		t.Fatalf("the window after an incomplete confirmation = %+v (%v), want expired", status, err)
+	// The window itself did not end; nothing names an ending for it.
+	if status, err := b.app.ComputerPairingStatus(window.WindowID); err != nil || status.State != "expired" || status.Ended != "" {
+		t.Fatalf("the window after an incomplete confirmation = %+v (%v), want expired with no ending", status, err)
 	}
 }
 

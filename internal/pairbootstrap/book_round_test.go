@@ -41,11 +41,11 @@ func TestExpireRefusesTheWindowAtOnce(t *testing.T) {
 	if !confirmed(t, b, "expiring") {
 		t.Fatal("the open window's invitation was refused before Expire")
 	}
-	b.Expire("another-window")
+	b.Expire("another-window", EndedAddressChanged)
 	if !b.Snapshot(w.WindowID).Open {
 		t.Fatal("Expire of another id closed the window")
 	}
-	b.Expire(w.WindowID)
+	b.Expire(w.WindowID, EndedAddressChanged)
 	if confirmed(t, b, "expiring") {
 		t.Fatal("an expired window's invitation was admitted")
 	}
@@ -55,7 +55,7 @@ func TestExpireRefusesTheWindowAtOnce(t *testing.T) {
 	if _, err := b.Begin(newClient(t).Commitment()); !errors.Is(err, ErrClosed) {
 		t.Fatalf("a request to an expired window = %v, want ErrClosed", err)
 	}
-	if err := b.Close(w.WindowID); err != nil || l.count("expiring") != 1 {
+	if err := b.Close(w.WindowID, EndedClosed); err != nil || l.count("expiring") != 1 {
 		t.Fatalf("the close after Expire = %v with %d statements, want one durable cancellation", err, l.count("expiring"))
 	}
 }
@@ -122,7 +122,7 @@ func TestTheLastWindowsLinkOutlivesItsWindow(t *testing.T) {
 	b := NewBook(newLedger().cancel, time.Hour)
 	w := openWindow(t, b, mintOf("decided"))
 	handshake(t, b, newClient(t))
-	if err := b.Close(w.WindowID); err != nil {
+	if err := b.Close(w.WindowID, EndedClosed); err != nil {
 		t.Fatal(err)
 	}
 	var st Standing
@@ -253,7 +253,7 @@ func TestCancelLinkOfAPendingLinkAnswersItsCancellation(t *testing.T) {
 	b := NewBook(s.cancel, time.Hour)
 	w := openWindow(t, b, mintOf("pending"))
 	handshake(t, b, newClient(t))
-	if err := b.Close(w.WindowID); !errors.Is(err, errStorage) {
+	if err := b.Close(w.WindowID, EndedClosed); !errors.Is(err, errStorage) {
 		t.Fatalf("the close with a failing retirement = %v, want the storage error", err)
 	}
 	id, err := b.CancelLink("pending")
@@ -272,7 +272,7 @@ func TestASettledRefusalIsADurableRetirement(t *testing.T) {
 	b := NewBook(s.cancel, time.Hour)
 	w := openWindow(t, b, mintOf("settled"))
 	handshake(t, b, newClient(t))
-	if err := b.Close(w.WindowID); err != nil {
+	if err := b.Close(w.WindowID, EndedClosed); err != nil {
 		t.Fatalf("closing a window whose link was settled first = %v, want nil", err)
 	}
 	if b.Refuses("settled") {
@@ -294,9 +294,115 @@ func TestAdmitOfAHeldLinkNeedsTheWindowThatHoldsIt(t *testing.T) {
 	if err := b.Admit("held", true, func() error { ran = true; return nil }); err != nil || !ran {
 		t.Fatalf("Admit of the window's own link = %v (ran %v), want it run", err, ran)
 	}
-	b.Expire(w.WindowID)
+	b.Expire(w.WindowID, EndedAddressChanged)
 	ran = false
 	if err := b.Admit("held", true, func() error { ran = true; return nil }); !errors.Is(err, ErrClosed) || ran {
 		t.Fatalf("Admit of an expired window's link = %v (ran %v), want ErrClosed", err, ran)
 	}
+}
+
+// endingOf is the book's Standing.EndingOf for windowID.
+func endingOf(t *testing.T, b *Book, windowID string) Ending {
+	t.Helper()
+	var ending Ending
+	if err := b.Read(func(s Standing) error { ending = s.EndingOf(windowID); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	return ending
+}
+
+// A window keeps the first reason it stopped being open, recorded where it
+// stopped, and the book answers it for the window opened last and the one
+// before it.
+func TestAWindowKeepsWhyItEnded(t *testing.T) {
+	t.Run("deadline", func(t *testing.T) {
+		b := NewBook(newLedger().cancel, time.Hour)
+		w, err := b.open(mintOf("late"), admitted, 20*time.Millisecond)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The expiry's own close is held back, as a slow timer would be, so
+		// another reason reaches the expired window first.
+		b.mu.Lock()
+		b.window.timer.Stop()
+		b.mu.Unlock()
+		for deadline := time.Now().Add(5 * time.Second); b.Snapshot(w.WindowID).Open; time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("the window never reached its expiry")
+			}
+		}
+		if got := endingOf(t, b, w.WindowID); got != EndedDeadline {
+			t.Fatalf("a window past its expiry ended %q, want %q", got, EndedDeadline)
+		}
+		// A close for another reason after the expiry keeps it.
+		if err := b.Close(w.WindowID, EndedClosed); err != nil {
+			t.Fatal(err)
+		}
+		if got := endingOf(t, b, w.WindowID); got != EndedDeadline {
+			t.Fatalf("a window closed after its expiry ended %q, want %q", got, EndedDeadline)
+		}
+	})
+	t.Run("the first reason, then replaced", func(t *testing.T) {
+		b := NewBook(newLedger().cancel, time.Hour)
+		first := openWindow(t, b, mintOf("first"))
+		if got := endingOf(t, b, first.WindowID); got != "" {
+			t.Fatalf("an open window ended %q", got)
+		}
+		b.Expire(first.WindowID, EndedAddressChanged)
+		if err := b.Close(first.WindowID, EndedClosed); err != nil {
+			t.Fatal(err)
+		}
+		if got := endingOf(t, b, first.WindowID); got != EndedAddressChanged {
+			t.Fatalf("a window expired then closed ended %q, want %q", got, EndedAddressChanged)
+		}
+		second := openWindow(t, b, mintOf("second"))
+		if got := endingOf(t, b, first.WindowID); got != EndedAddressChanged {
+			t.Fatalf("the window before the last ended %q, want %q", got, EndedAddressChanged)
+		}
+		third := openWindow(t, b, mintOf("third"))
+		if got := endingOf(t, b, second.WindowID); got != EndedReplaced {
+			t.Fatalf("a window a newer one replaced ended %q, want %q", got, EndedReplaced)
+		}
+		if got := endingOf(t, b, first.WindowID); got != "" {
+			t.Fatalf("a window older than the one before the last ended %q, want none", got)
+		}
+		if got := endingOf(t, b, third.WindowID); got != "" {
+			t.Fatalf("the open window ended %q", got)
+		}
+	})
+	t.Run("canceled", func(t *testing.T) {
+		b := NewBook(newLedger().cancel, time.Hour)
+		w := openWindow(t, b, mintOf("canceling"))
+		handshake(t, b, newClient(t))
+		if _, err := b.CancelLink("canceling"); err != nil {
+			t.Fatal(err)
+		}
+		if got := endingOf(t, b, w.WindowID); got != EndedCanceled {
+			t.Fatalf("a window whose invitation was canceled ended %q, want %q", got, EndedCanceled)
+		}
+	})
+	t.Run("stopped", func(t *testing.T) {
+		b := NewBook(newLedger().cancel, time.Hour)
+		w := openWindow(t, b, mintOf("stopping"))
+		if err := b.Stop(); err != nil {
+			t.Fatal(err)
+		}
+		if got := endingOf(t, b, w.WindowID); got != EndedStopped {
+			t.Fatalf("a window Stop removed ended %q, want %q", got, EndedStopped)
+		}
+	})
+	t.Run("expired while admitting", func(t *testing.T) {
+		b := NewBook(newLedger().cancel, time.Hour)
+		w, err := b.Open(mintOf("admitting"), func(view Snapshot) error {
+			b.Expire(view.WindowID, EndedDisconnected)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = b.Close(w.WindowID, EndedClosed) })
+		if got := endingOf(t, b, w.WindowID); got != EndedDisconnected {
+			t.Fatalf("a window Expire named while it was admitted ended %q, want %q", got, EndedDisconnected)
+		}
+	})
 }

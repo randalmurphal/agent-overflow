@@ -64,7 +64,7 @@ func openTestWindow(t *testing.T, a *App) pairbootstrap.Snapshot {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = book.Close(view.WindowID) })
+	t.Cleanup(func() { _ = book.Close(view.WindowID, pairbootstrap.EndedClosed) })
 	return view
 }
 
@@ -414,7 +414,7 @@ func TestComputerPairingRestartRetiresLostComparisonButKeepsExistingDevice(t *te
 	s.book = nil
 	s.windowID = ""
 	s.mu.Unlock()
-	t.Cleanup(func() { _ = old.Close(window.WindowID) })
+	t.Cleanup(func() { _ = old.Close(window.WindowID, pairbootstrap.EndedClosed) })
 	if err := b.app.initIdentity("backend-under-test"); err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +617,7 @@ func TestComputerPairingReportsDiscoveryFailureOnTheWindow(t *testing.T) {
 	if err := a.CloseComputerPairing(w.ID); err != nil {
 		t.Fatal(err)
 	}
-	if status, _ := a.ComputerPairingStatus(w.ID); status.State != "expired" || status.DiscoveryError != "" {
+	if status, _ := a.ComputerPairingStatus(w.ID); status.State != "expired" || status.Ended != "closed" || status.DiscoveryError != "" {
 		t.Fatalf("closed window reports %+v", status)
 	}
 }
