@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/memory"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil/providerpath"
+	"agent-overflow/internal/testutil/testshard"
 	"agent-overflow/internal/wsldistro"
 )
 
@@ -23,6 +24,7 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == memory.HookSubcommand {
 		os.Exit(memory.RunHook(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	}
+	testshard.Select(m)
 	packageDir, err := os.Getwd()
 	if err != nil {
 		panic(err)

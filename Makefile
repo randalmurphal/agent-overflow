@@ -183,7 +183,10 @@ go-build: gocache-trim-tool
 # every interface or dials out reaches nothing beyond the namespace in any
 # WSL networking mode, and its temp files land in a private RAM directory
 # that goes with the namespace. `go test` itself runs under bin/ao-netns rather than
-# through `-exec`, which would disable the test cache. go-prefetch fetches,
+# through `-exec`, which would disable the test cache. bin/ao-gotest
+# (cmd/ao-gotest) starts it inside the namespace: a package whose TestMain
+# calls testshard.Select runs as one `go test` per core, and the rest as
+# one `go test` as before. go-prefetch fetches,
 # on the host network first, what every package of the module and its tests
 # import plus the module's tools, since a test may run `go tool wails3` and
 # a whole-tree contract test (TestThreadUpdatedFramesComeFromTheAnnouncer)
@@ -222,6 +225,13 @@ gocache-trim: gocache-trim-tool
 gocache-trim-pass = { [ -n "$$CI" ] || $(GOCACHE_TRIM) -warn; }
 gocache-trim-around = $(gocache-trim-pass); trap 'status=$$?; $(gocache-trim-pass) || status=$$?; exit $$status' EXIT
 
+# gotest-tool builds the command go-test runs its tests through.
+.PHONY: gotest-tool
+GOTEST := $(CURDIR)/bin/ao-gotest
+go-test: gotest-tool
+gotest-tool:
+	go build -o bin/ao-gotest ./cmd/ao-gotest
+
 # GO_TEST_EXCLUDE is an extended regexp over import paths to leave out,
 # for CI shards that run the heavy packages on their own runners.
 # The timeout is 30m rather than go's 10m: at nice 19 on a loaded host
@@ -234,7 +244,7 @@ go-test: netns-tool gocache-trim-tool
 	if [ -n "$(GO_TEST_EXCLUDE)" ]; then packages=$$(printf '%s\n' $$packages | grep -vE '$(GO_TEST_EXCLUDE)' || true); fi; \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
 	$(call go-prefetch,$(GO_PACKAGE_ROOTS)); \
-	$(NETNS) go test -timeout 30m $(GO_TEST_FLAGS) $$packages
+	$(NETNS) $(GOTEST) $$packages -- -timeout 30m $(GO_TEST_FLAGS)
 
 # Static checks. Each is one CI job (.github/workflows/ci.yml) and runs the
 # same way here. go-lint runs golangci-lint at the pinned version, installed

@@ -14,6 +14,7 @@ import (
 
 	"agent-overflow/internal/ownedtemp"
 	"agent-overflow/internal/testutil/providerpath"
+	"agent-overflow/internal/testutil/testshard"
 )
 
 // defaultTestProjectID is seeded once in the migrated template so legacy
@@ -24,6 +25,7 @@ const defaultTestProjectID = "default-test-project"
 var testStoreTemplatePath string
 
 func TestMain(m *testing.M) {
+	testshard.Select(m)
 	sweepStoreTemplates()
 	dir, release, err := ownedtemp.Make("", storeTemplatePrefix)
 	if err != nil {

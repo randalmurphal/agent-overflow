@@ -35,7 +35,7 @@ func TestMakeGoTestTrimsBeforeAndAfterTheTests(t *testing.T) {
 [ "$(grep -c '^trim' "$LOG")" -eq 2 ] && exit "${TRIM_AFTER_STATUS:-0}"
 exit 0
 `)
-	netns := script("netns", `echo "netns $1 $2" >> "$LOG"
+	netns := script("netns", `echo "netns ${1##*/}" >> "$LOG"
 exit "$NETNS_STATUS"
 `)
 	run := func(netnsStatus, trimAfterStatus string) (string, error) {
@@ -60,7 +60,7 @@ exit "$NETNS_STATUS"
 		}
 		return string(logged), runErr
 	}
-	const want = "trim -warn\nnetns go test\ntrim -warn\n"
+	const want = "trim -warn\nnetns ao-gotest\ntrim -warn\n"
 	for _, tc := range []struct {
 		name, netnsStatus, trimAfterStatus string
 		fails                              bool
