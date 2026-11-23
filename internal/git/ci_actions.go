@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"slices"
-	"strconv"
 
 	"agent-overflow/internal/forgeapi"
 )
@@ -319,44 +318,6 @@ func (c *Core) StreamCIArtifact(ctx context.Context, repo RepoReference, artifac
 		}
 	}
 	return c.ForgeByID(repo.Forge).StreamCIArtifact(ctx, repo, artifact, dst, limit)
-}
-
-// FindCIJobRetry returns the job that took over from old, which was a
-// job of stage in the pipeline oldPipelineID names, in pipeline, the read
-// applied since; nil when it cannot tell. It follows only when every one
-// of these holds: old is no longer in the read; the read is old's own
-// pipeline (GitLab: pipeline.ID is oldPipelineID; GitHub: a job of old's
-// workflow run, which a re-run keeps); and exactly one job of the same
-// stage and name has an id above old's. Both forges give a retried job a
-// new, higher id and keep its name and stage, and drop the old job from
-// the read. A new commit's pipeline, or two jobs that share a name, is
-// not a retry.
-func FindCIJobRetry(pipeline CIPipeline, oldPipelineID, stage string, old CIJob) *CIJob {
-	oldID, err := strconv.ParseInt(old.ID, 10, 64)
-	if err != nil || FindCIJob(pipeline, old.ID) != nil {
-		return nil
-	}
-	if old.RunID == "" && (pipeline.ID == "" || pipeline.ID != oldPipelineID) {
-		return nil
-	}
-	var found *CIJob
-	for i := range pipeline.Stages {
-		if pipeline.Stages[i].Name != stage {
-			continue
-		}
-		for j := range pipeline.Stages[i].Jobs {
-			job := &pipeline.Stages[i].Jobs[j]
-			id, err := strconv.ParseInt(job.ID, 10, 64)
-			if err != nil || job.Name != old.Name || (old.RunID != "" && job.RunID != old.RunID) || id <= oldID {
-				continue
-			}
-			if found != nil {
-				return nil
-			}
-			found = job
-		}
-	}
-	return found
 }
 
 // ciJobFinishedBad is a job status Retry applies to.

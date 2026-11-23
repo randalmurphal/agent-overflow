@@ -32,7 +32,7 @@ func ciActionsFixture() forgefake.Fixture {
 
 // The app's CI reads and actions against the fake, both forges: the
 // capability flags the reads carry, a retry that comes back as the new
-// pending attempt FindCIJobRetry follows, a GitLab play and job cancel,
+// pending attempt under a new id, a GitLab play and job cancel,
 // GitHub's run cancel refused once the run completed, and each forge's
 // artifact download.
 func TestCIActionsThroughTheAppsForgeCode(t *testing.T) {
@@ -56,10 +56,11 @@ func TestCIActionsThroughTheAppsForgeCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	retry := gitops.FindCIJobRetry(after, pipeline.ID, "CI", *unit)
-	if retry == nil || retry.Status != gitops.CIStatusPending || gitops.FindCIJob(after, "3001") != nil || after.Actions.Cancel != gitops.CIActionAllowed {
+	retries := jobsNamed(after, "CI", unit.Name)
+	if len(retries) != 1 || retries[0].Status != gitops.CIStatusPending || retries[0].RunID != unit.RunID || gitops.FindCIJob(after, "3001") != nil || after.Actions.Cancel != gitops.CIActionAllowed {
 		t.Fatalf("GitHub after the retry = %+v", after)
 	}
+	retry := retries[0]
 	if _, err := r.engine.AdvanceJob(forgefake.JobAdvance{Forge: "github", Project: "acme/ci", ID: mustID(t, retry.ID), Status: "success"}); err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +111,7 @@ func TestCIActionsThroughTheAppsForgeCode(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := gitops.FindCIJob(pipeline, "8001")
-	if retry := gitops.FindCIJobRetry(after, pipeline.ID, "test", *old); retry == nil || retry.Status != gitops.CIStatusPending || gitops.FindCIJob(after, "8001") != nil {
+	if retries := jobsNamed(after, "test", old.Name); len(retries) != 1 || retries[0].Status != gitops.CIStatusPending || gitops.FindCIJob(after, "8001") != nil {
 		t.Fatalf("GitLab retry = %+v", after)
 	}
 	if release := gitops.FindCIJob(after, "8002"); release.Status != gitops.CIStatusPending {
@@ -159,4 +160,20 @@ func mustID(t *testing.T, id string) int64 {
 		n = n*10 + int64(c-'0')
 	}
 	return n
+}
+
+// jobsNamed returns the jobs of stage in pipeline that are named name.
+func jobsNamed(pipeline gitops.CIPipeline, stage, name string) []gitops.CIJob {
+	var jobs []gitops.CIJob
+	for _, s := range pipeline.Stages {
+		if s.Name != stage {
+			continue
+		}
+		for _, job := range s.Jobs {
+			if job.Name == name {
+				jobs = append(jobs, job)
+			}
+		}
+	}
+	return jobs
 }
