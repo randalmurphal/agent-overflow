@@ -7,10 +7,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/reporoot"
 )
 
@@ -103,4 +105,15 @@ func TestOnlyHomeLaunchSetsTheStoreAndOnlyTheManagerMakesTheCanonicalHome(t *tes
 
 func isProductionGo(name string) bool {
 	return strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go")
+}
+
+// A name a spawn path sets or clears on purpose is reserved, so a custom
+// environment cannot ask for a value the launch would discard.
+func TestTheStoreAndHomeVariablesAreReserved(t *testing.T) {
+	reserved := provider.ReservedEnvNames(string(provider.Agy))
+	for _, name := range []string{forceFileStorageEnv, geminiHomeEnv, appDataDirEnv} {
+		if !slices.Contains(reserved, name) {
+			t.Errorf("%s is not reserved for Antigravity: %v", name, reserved)
+		}
+	}
 }

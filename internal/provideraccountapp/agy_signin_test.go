@@ -1,7 +1,9 @@
 package provideraccountapp
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
 )
@@ -107,4 +110,24 @@ func mustAgyAccountCredentialPath(t *testing.T, credentials *provideraccounts.Cr
 		t.Fatal(err)
 	}
 	return path
+}
+
+// A lookup that ran out of time is a failed lookup: the person reads the
+// lookup's sentence, not the sentence of a sign-in that ran out of time.
+func TestAnAgySignInWhoseLookupTimedOutNamesTheLookup(t *testing.T) {
+	rig := newAgyReadingRig(t)
+	rig.quota.answerUserinfo(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("userinfo for the test: %w", context.DeadlineExceeded)
+	})
+
+	_, err := rig.manager.adoptLogin(completedAgyLogin(t, rig, agyCredential("dev-new", "")))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("adoptLogin error = %v, want the lookup's timeout kept in the chain", err)
+	}
+	if got := loginProse(err); got != agySignInUnidentifiedSentence {
+		t.Fatalf("sign-in failure reads %q, want %q", got, agySignInUnidentifiedSentence)
+	}
+	if code, _, ok := errorsx.PublicDetails(err); !ok || code != "agy_sign_in_unidentified" {
+		t.Fatalf("public details = %q, %v; want the sign-in's own code", code, ok)
+	}
 }
