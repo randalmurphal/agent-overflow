@@ -372,14 +372,6 @@ export interface Item {
   rev: number;
 }
 
-export interface PayloadMeta {
-  id: string;
-  threadId?: string;
-  kind: string;
-  meta: string; // JSON string — parse based on kind
-  createdAt: number;
-}
-
 // DiffMeta and ToolInlineDiffMeta look similar but map to different
 // backend wire shapes — keep them separate. DiffMeta is single-file
 // (e.g. per-turn EventDiff upgrade path) and carries the patch text
@@ -564,14 +556,6 @@ export interface DiffReviewCommentUpdate {
   body: string;
 }
 
-export interface PRReference {
-  forge: "github" | "gitlab";
-  host: string;
-  namespace: string;
-  repo: string;
-  number: number;
-}
-
 export interface PRDetail {
   number: number;
   title: string;
@@ -657,13 +641,6 @@ export interface PRLabel {
   id?: string;
   name: string;
   color?: string;
-}
-
-/** EditPR's change; `expectedDescription` goes with `description` only. */
-export interface PREdit {
-  title?: string;
-  description?: string;
-  expectedDescription?: string;
 }
 
 export interface PRPeopleChange {
@@ -784,16 +761,6 @@ export interface ReviewEvent {
   text?: string;
   /** A SHA or branch the event names. */
   ref?: string;
-}
-
-/** What the user asked of MergePR (git.MergeRequest). */
-export interface MergeRequest {
-  method: string;
-  headSHA: string;
-  deleteBranch: boolean;
-  autoMerge: boolean;
-  /** An edited commit message; omitted, the forge's default applies. */
-  commitMessage?: MergeMessage;
 }
 
 export interface MergeOutcome {
@@ -1082,26 +1049,6 @@ export interface ProposedPlanComment {
   sentTurnId?: string;
   createdAt: number;
   updatedAt: number;
-}
-
-export interface ProposedPlanCommentInput {
-  planItemId: string;
-  startLine: number;
-  endLine: number;
-  body: string;
-}
-
-export interface ProposedPlanCommentUpdate {
-  body: string;
-}
-
-export interface ChangedFile {
-  path: string;
-  previousPath?: string;
-  insertions: number;
-  deletions: number;
-  kind: DiffMeta["changeKind"];
-  payloadId: string;
 }
 
 /**

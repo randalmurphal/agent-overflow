@@ -16,8 +16,6 @@ const RE_HEADING = /^#{1,6}\s/
 const RE_THEMATIC_BREAK = /^\s*(\*{3,}|-{3,}|_{3,})\s*$/
 const RE_SETEXT_UNDERLINE = /^\s*(?:={3,}|-{3,})\s*$/
 const RE_BLOCKQUOTE = /^\s{0,3}>/
-const RE_HTML_BLOCK_1 = /^\s{0,3}<(script|pre|style|textarea|!--|!DOCTYPE|\?|!\[CDATA\[)/i
-const RE_HTML_BLOCK_2 = /^\s{0,3}<\/?[a-zA-Z][a-zA-Z0-9-]*(\s|>|$)/
 const RE_TABLE_DELIMITER = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/
 const RE_ESCAPE_SPECIAL = /[.*+?^${}()|[\]\\]/g
 const RE_FOOTNOTE_DEFINITION = /^\[\^([^\]]+)\]:\s/
@@ -198,13 +196,6 @@ export function isBlockquoteStart(line: string): boolean {
 }
 
 /**
- * 检测是否是 HTML 块
- */
-export function isHtmlBlock(line: string): boolean {
-  return RE_HTML_BLOCK_1.test(line) || RE_HTML_BLOCK_2.test(line)
-}
-
-/**
  * 检测表格分隔行
  */
 export function isTableDelimiter(line: string): boolean {
@@ -304,39 +295,6 @@ export function detectContainerEnd(
   }
 
   return result.isEnd && result.markerLength >= context.containerMarkerLength
-}
-
-// ============ 边界检测 ============
-
-/**
- * 判断两行之间是否构成块边界
- */
-export function isBlockBoundary(
-  prevLine: string,
-  currentLine: string,
-  context: BlockContext
-): boolean {
-  if (context.inFencedCode) {
-    return detectFenceEnd(currentLine, context)
-  }
-
-  if (isEmptyLine(prevLine) && !isEmptyLine(currentLine)) {
-    return true
-  }
-
-  if (isHeading(currentLine) && !isEmptyLine(prevLine)) {
-    return true
-  }
-
-  if (isThematicBreak(currentLine)) {
-    return true
-  }
-
-  if (detectFenceStart(currentLine)) {
-    return true
-  }
-
-  return false
 }
 
 // ============ 上下文管理 ============

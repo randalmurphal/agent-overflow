@@ -20,5 +20,4 @@ export {
   REPLICA_SCHEMA_VERSION,
   type ReplicaBody,
   type ReplicaEnvelope,
-  type ReplicaStamp,
 } from './envelope';

@@ -28,22 +28,6 @@
 
 import type { NotifyCue, NotifyQuietWhen } from '../types/settings';
 
-/**
- * The wire spellings of `notify.Kind` (internal/notify/mapping.go). Read off
- * `Send.Kind`, so these are wire input: a value outside this set is refused
- * rather than raised.
- */
-export const NOTIFY_KINDS = [
-  'turn-complete',
-  'approval-needed',
-  'error',
-  'provider-signed-out',
-  'workflow-attention',
-  'app-update',
-  'thread-attention',
-] as const;
-export type NotifyKind = (typeof NOTIFY_KINDS)[number];
-
 /** The wire spellings of `notify.SoundEvent` (internal/notify/sound.go). */
 export type NotifySoundEvent = 'turn-complete' | 'input-needed' | 'attention';
 

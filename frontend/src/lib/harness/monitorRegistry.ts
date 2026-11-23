@@ -458,14 +458,3 @@ function freezeSpec(spec: MonitorSpec): MonitorSpec {
 }
 
 export const defaultMonitorRegistry = new MonitorRegistry();
-
-export function monitorSpecs(): readonly MonitorSpec[] {
-  return defaultMonitorRegistry.list();
-}
-
-/** Registers application-owned code through the typed monitor contract. */
-export function registerCustomMonitor<TInstance extends MonitorInstance>(
-  spec: CustomMonitorSpec<TInstance>,
-): void {
-  defaultMonitorRegistry.register(spec);
-}

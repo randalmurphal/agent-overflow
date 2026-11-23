@@ -111,11 +111,6 @@ export function factKind(key: string): string {
   return colon > 0 ? key.slice(0, colon) : 'unknown';
 }
 
-/** `state` when it is an answer the forge gave (found or absent). */
-export function factAnswer(state: ForgeFactState): ForgeFact | null {
-  return typeof state === 'object' && state !== null && state.status !== 'unavailable' ? state : null;
-}
-
 /** Whether two answers render alike: the same status and fields. A label
  * list is compared label by label, in one pass and no allocation. */
 export function sameFact(a: ForgeFact, b: ForgeFact): boolean {

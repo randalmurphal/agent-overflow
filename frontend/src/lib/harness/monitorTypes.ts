@@ -9,21 +9,6 @@
 export const MONITOR_SPEC_VERSION = 1 as const;
 export type MonitorSpecVersion = typeof MONITOR_SPEC_VERSION;
 
-export type MonitorId =
-  | 'frame-pacing'
-  | 'skipped-frames'
-  | 'long-task'
-  | 'long-animation-frame'
-  | 'input-to-render'
-  | 'scroll-response'
-  | 'layout-shift'
-  | 'animation-continuity'
-  | 'source-rewind'
-  | 'parser-boundary'
-  | 'semantic-dom-stability'
-  | 'focus-clipping-settledness'
-  | 'compositor-counters';
-
 export type MonitorCompatibilityLeg =
   | 'clean-renderer'
   | 'instrumented-renderer'
