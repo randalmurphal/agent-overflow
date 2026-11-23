@@ -13,18 +13,26 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// A request's work may start as the last one ends while shutdown, the
-// harness or a test waits on threadRequestsWG: the emit path starts a
-// drain from whatever goroutine emitted. The Wait returns at the moment
-// the count reached zero, and the new member is counted for the next one.
-// With one P the waiter cannot run between the Done and the Add, which is
-// the order a sync.WaitGroup panics on ("WaitGroup is reused before
-// previous Wait has returned"). Serial: it sets GOMAXPROCS.
-func TestThreadRequestWorkMayStartAsAWaitReturns(t *testing.T) {
+// Work may start as the last member ends while shutdown, the harness or a
+// test waits on the group: the emit path starts a request drain from
+// whatever goroutine emitted, and a send, a stop or a delete starts notice
+// work from its own. The Wait returns at the moment the count reached
+// zero, and the new member is counted for the next one. With one P the
+// waiter cannot run between the Done and the Add, which is the order a
+// sync.WaitGroup panics on ("WaitGroup is reused before previous Wait has
+// returned"). Serial: it sets GOMAXPROCS.
+func TestWorkMayStartAsAWaitReturns(t *testing.T) {
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 	var a App
-	g := &a.threadRequestsWG
+	for name, g := range map[string]*workGroup{
+		"request work": &a.threadRequestsWG,
+		"notice work":  &a.agentNoticeWork.wg,
+	} {
+		t.Run(name, func(t *testing.T) { memberMayStartAsAWaitReturns(t, g) })
+	}
+}
 
+func memberMayStartAsAWaitReturns(t *testing.T, g *workGroup) {
 	g.addMember(1)
 	waited := make(chan struct{})
 	go waitThreadRequestWork(g, waited)

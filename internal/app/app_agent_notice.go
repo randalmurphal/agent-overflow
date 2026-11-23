@@ -155,13 +155,9 @@ func (a *App) queueAgentNotice(notice agentNotice) error {
 func (a *App) goAgentNoticeWork(threadID string, fn func()) bool {
 	a.agentNoticeWork.mu.Lock()
 	defer a.agentNoticeWork.mu.Unlock()
-	if a.agentNoticeWork.stopped {
-		return false
-	}
-	a.agentNoticeWork.wg.Add(1)
-	a.agentNoticeWork.running++
-	go func() {
-		defer a.agentNoticeWork.wg.Done()
+	// The member's own decrement takes mu, which is held until the count
+	// below is made.
+	started := a.agentNoticeWork.wg.Go(func() {
 		defer func() {
 			a.agentNoticeWork.mu.Lock()
 			a.agentNoticeWork.running--
@@ -175,8 +171,11 @@ func (a *App) goAgentNoticeWork(threadID string, fn func()) bool {
 			}
 		}()
 		fn()
-	}()
-	return true
+	})
+	if started {
+		a.agentNoticeWork.running++
+	}
+	return started
 }
 
 // startAgentNoticeSession starts the session a queued notice needs, and
@@ -406,8 +405,5 @@ func (a *App) waitAgentNoticeWork() {
 // flight. Shutdown calls it before it closes sessions, so a start that
 // finishes cannot register a session the close has already passed.
 func (a *App) stopAgentNoticeWork() {
-	a.agentNoticeWork.mu.Lock()
-	a.agentNoticeWork.stopped = true
-	a.agentNoticeWork.mu.Unlock()
-	a.agentNoticeWork.wg.Wait()
+	a.agentNoticeWork.wg.Close()
 }

@@ -241,9 +241,10 @@ type appMemoryReportsState struct {
 }
 
 type appAgentNoticeWorkState struct {
-	mu      sync.Mutex
-	stopped bool
-	wg      sync.WaitGroup
+	mu sync.Mutex
+	// wg is the work notices start from any goroutine while shutdown, the
+	// harness or a test waits on it; Close is shutdown's refusal.
+	wg workGroup
 	// failing is the threads whose last notice start failed and that have
 	// not started since, with when that start was tried. Each holds the
 	// start-failure notification. The store keeps the same set
