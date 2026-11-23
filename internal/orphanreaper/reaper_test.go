@@ -16,22 +16,22 @@ import (
 	"time"
 )
 
-// sidecarInput is scriptInput for a test, closed when the test ends.
-func sidecarInput(t *testing.T, script string) *os.File {
-	t.Helper()
-	input, err := scriptInput(script)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = input.Close() })
-	return input
-}
-
 // recordSidecar runs sidecarScript on input with kill and sleep replaced by
 // shell functions that record their arguments, so pgids the script must
 // refuse (1 would signal every process the user owns) are never signalled.
 // It returns the recorded calls in order and the script's stderr.
 func recordSidecar(t *testing.T, input string) (calls []string, stderr string) {
+	t.Helper()
+	calls, stderr, err := recordScript(t, sidecarScript, input)
+	if err != nil {
+		t.Fatalf("sidecar exit: %v (stderr %q)", err, stderr)
+	}
+	return calls, stderr
+}
+
+// recordScript is recordSidecar for any script, and returns how the shell
+// exited.
+func recordScript(t *testing.T, script, input string) (calls []string, stderr string, exit error) {
 	t.Helper()
 	control, feed, err := os.Pipe()
 	if err != nil {
@@ -41,31 +41,31 @@ func recordSidecar(t *testing.T, input string) (calls []string, stderr string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := sidecarCommand(sidecarInput(t, `kill() { echo "kill $*" >&4; }; sleep() { echo "sleep $*" >&4; }`+"\n"+sidecarScript), control, 7*time.Second)
-	cmd.ExtraFiles = append(cmd.ExtraFiles, record) // fd 4
-	var errOut bytes.Buffer
-	cmd.Stderr = &errOut
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	_ = control.Close()
-	_ = record.Close()
+	// The control lines wait in the pipe, ended, before the shell starts: a
+	// shell that exits without reading them cannot fail the write.
 	if _, err := io.WriteString(feed, input); err != nil {
 		t.Fatal(err)
 	}
 	_ = feed.Close()
+	cmd := sidecarCommand(control, 7*time.Second)
+	cmd.ExtraFiles = append(cmd.ExtraFiles, record) // fd 4
+	var errOut bytes.Buffer
+	cmd.Stderr = &errOut
+	if err := startSidecar(cmd, `kill() { echo "kill $*" >&4; }; sleep() { echo "sleep $*" >&4; }`+"\n"+script); err != nil {
+		t.Fatal(err)
+	}
+	_ = control.Close()
+	_ = record.Close()
 	out, err := io.ReadAll(recorded)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = recorded.Close()
-	if err := cmd.Wait(); err != nil {
-		t.Fatalf("sidecar exit: %v (stderr %q)", err, errOut.String())
-	}
+	exit = cmd.Wait()
 	for line := range strings.Lines(string(out)) {
 		calls = append(calls, strings.TrimSuffix(line, "\n"))
 	}
-	return calls, errOut.String()
+	return calls, errOut.String(), exit
 }
 
 func TestSidecarReapsOnlyUnreleasedOnEOF(t *testing.T) {
@@ -91,10 +91,10 @@ func TestSidecarKillsWhenTheShellExitsAtTheGrace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := sidecarCommand(sidecarInput(t, `kill() { echo "kill $*"; }; sleep() { exit 254; }`+"\n"+sidecarScript), control, 7*time.Second)
+	cmd := sidecarCommand(control, 7*time.Second)
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
-	if err := cmd.Start(); err != nil {
+	if err := startSidecar(cmd, `kill() { echo "kill $*"; }; sleep() { exit 254; }`+"\n"+sidecarScript); err != nil {
 		t.Fatal(err)
 	}
 	_ = control.Close()
@@ -149,8 +149,8 @@ func TestSidecarKillsRealGroupsOnParentEOF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sidecar := sidecarCommand(sidecarInput(t, sidecarScript), control, time.Second)
-	if err := sidecar.Start(); err != nil {
+	sidecar := sidecarCommand(control, time.Second)
+	if err := startSidecar(sidecar, sidecarScript); err != nil {
 		t.Fatalf("start sidecar: %v", err)
 	}
 	_ = control.Close()
@@ -206,8 +206,8 @@ func TestSidecarIgnoresFunctionsExportedInTheEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sidecar := sidecarCommand(sidecarInput(t, sidecarScript), control, time.Second)
-	if err := sidecar.Start(); err != nil {
+	sidecar := sidecarCommand(control, time.Second)
+	if err := startSidecar(sidecar, sidecarScript); err != nil {
 		t.Fatalf("start sidecar: %v", err)
 	}
 	_ = control.Close()

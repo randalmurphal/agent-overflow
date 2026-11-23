@@ -3,7 +3,6 @@ package orphanreaper
 import (
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -32,67 +31,79 @@ type Client struct {
 // fd 3 and returns a Client holding the write end. Go marks the write end
 // close-on-exec, so it never leaks into the provider subprocesses spawned
 // later — the parent stays the pipe's sole writer, which is what makes EOF
-// a reliable parent-death signal. The sidecar has its whole script before it
-// starts, so it guards the parent from the moment Spawn returns.
+// a reliable parent-death signal. The sidecar holds its whole script when
+// Spawn returns (startSidecar), so it guards the parent from that moment.
 func Spawn() (*Client, error) {
-	script, err := scriptInput(sidecarScript)
-	if err != nil {
-		return nil, err
-	}
 	r, w, err := os.Pipe()
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("orphanreaper: pipe: %w", err), script.Close())
+		return nil, fmt.Errorf("orphanreaper: pipe: %w", err)
 	}
-	cmd := sidecarCommand(script, r, killGracePeriod)
-	startErr := cmd.Start()
-	// The child holds its own copies of the script and the control pipe's
-	// read end now, or never started; drop ours so the control pipe has
-	// exactly one reader (child) and one writer (this parent).
-	closeErr := errors.Join(script.Close(), r.Close())
+	cmd := sidecarCommand(r, killGracePeriod)
+	startErr := startSidecar(cmd, sidecarScript)
+	// The child holds its own copy of the read end now, or never started;
+	// drop ours so the pipe has exactly one reader (child) and one writer
+	// (this parent).
+	closeErr := r.Close()
 	if startErr != nil {
 		return nil, errors.Join(fmt.Errorf("orphanreaper: start sidecar: %w", startErr), closeErr, w.Close())
 	}
 	if closeErr != nil {
-		// The sidecar runs and guards this process; only the fds leak.
-		log.Printf("orphanreaper: close this process's copies of the sidecar's script and control pipe: %v", closeErr)
+		// The sidecar runs and guards this process; only the fd leaks.
+		log.Printf("orphanreaper: close this process's copy of the control pipe's read end: %v", closeErr)
 	}
 	return &Client{cmd: cmd, w: w}, nil
 }
 
-// scriptInput returns a file, open at its start and already removed from its
-// directory, that holds all of script. A Stdin that is not a file would be
-// copied to the shell by a goroutine of this process after the shell starts,
-// and a parent killed before that goroutine ran would leave the sidecar an
-// empty script: it would exit at once and reap nothing. A file takes a
-// script of any size with no reader, which a pipe filled ahead would not.
-func scriptInput(script string) (*os.File, error) {
-	f, err := os.CreateTemp("", SidecarName+"-*.sh")
+// scriptHandoff bounds startSidecar's write of the script. The shell reads
+// its script as soon as it runs, so only a shell that never runs waits it out.
+const scriptHandoff = 10 * time.Second
+
+// startSidecar starts cmd, a sidecarCommand, and returns once the shell's
+// stdin holds all of script and has ended. The write is made here, by the
+// caller's own goroutine: a Stdin that is not a file would be copied to the
+// shell by a goroutine exec starts after the shell, and a parent killed
+// before that goroutine ran would leave the sidecar an empty script, so it
+// would exit at once and reap nothing. The shell reads while this writes,
+// so the script's size is not bounded by the pipe's. A parent that dies
+// during the write leaves a script cut short, which the shell does not run:
+// sidecarScript is one compound command. When the handoff fails, the
+// sidecar is ended and waited for.
+func startSidecar(cmd *exec.Cmd, script string) error {
+	stdin, feed, err := os.Pipe()
 	if err != nil {
-		return nil, fmt.Errorf("orphanreaper: script file: %w", err)
+		return fmt.Errorf("script pipe: %w", err)
 	}
-	// The open file keeps the script; its name is not needed again.
-	err = os.Remove(f.Name())
+	cmd.Stdin = stdin
+	if err := cmd.Start(); err != nil {
+		return errors.Join(err, stdin.Close(), feed.Close())
+	}
+	err = stdin.Close()
 	if err == nil {
-		_, err = f.WriteString(script)
+		err = feed.SetWriteDeadline(time.Now().Add(scriptHandoff))
 	}
 	if err == nil {
-		_, err = f.Seek(0, io.SeekStart)
+		_, err = feed.WriteString(script)
 	}
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("orphanreaper: write the sidecar script: %w", err), f.Close())
+	if err = errors.Join(err, feed.Close()); err == nil {
+		return nil
 	}
-	return f, nil
+	err = errors.Join(fmt.Errorf("hand the sidecar its script: %w", err), cmd.Process.Kill())
+	// Its exit by that kill is the expected outcome, not a failure.
+	if waitErr := cmd.Wait(); waitErr != nil {
+		if _, exited := errors.AsType[*exec.ExitError](waitErr); !exited {
+			err = errors.Join(err, waitErr)
+		}
+	}
+	return err
 }
 
-// sidecarCommand builds the sidecar process: the shell reads script from
-// stdin (scriptInput), with control on fd 3 and the SIGTERM→SIGKILL grace in
-// whole seconds, so the command line reads
-// `/bin/sh -s agent-overflow-reaper 2`. The caller closes its copies of
-// script and control once the sidecar has started.
-func sidecarCommand(script, control *os.File, grace time.Duration) *exec.Cmd {
+// sidecarCommand builds the sidecar process, which startSidecar starts: the
+// shell reads its script from stdin, with control on fd 3 and the
+// SIGTERM→SIGKILL grace in whole seconds, so the command line reads
+// `/bin/sh -s agent-overflow-reaper 2`.
+func sidecarCommand(control *os.File, grace time.Duration) *exec.Cmd {
 	seconds := strconv.Itoa(int(grace / time.Second))
 	cmd := exec.Command("/bin/sh", "-s", SidecarName, seconds)
-	cmd.Stdin = script
 	cmd.ExtraFiles = []*os.File{control} // lands as fd 3, which sidecarScript reads
 	cmd.Stderr = os.Stderr               // surface the sidecar's diagnostics
 	// Only PATH, which finds sleep: a shell that imports functions from its

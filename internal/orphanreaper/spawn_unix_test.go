@@ -4,48 +4,27 @@ package orphanreaper
 
 import (
 	"errors"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
 
-// The sidecar's stdin holds the whole script before the sidecar starts:
-// reading it to EOF needs nothing else to write, so nothing this process
-// does after the start, or fails to do because it died, can cut it short.
-// A script larger than a pipe would hold is handed over the same way, and
-// the file leaves no name behind.
-func TestTheSidecarsInputHoldsItsWholeScriptBeforeTheStart(t *testing.T) {
-	for name, script := range map[string]string{
-		"the sidecar's script":        sidecarScript,
-		"a script larger than a pipe": strings.Repeat("#", 2<<20), // Linux pipes default to 64 KiB.
-	} {
-		t.Run(name, func(t *testing.T) {
-			input, err := scriptInput(script)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = input.Close() })
-			if _, err := os.Stat(input.Name()); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("the script file is still named %s: %v", input.Name(), err)
-			}
-			cmd := sidecarCommand(input, nil, time.Second)
-			if cmd.Stdin != input {
-				t.Fatalf("stdin = %T, want the script's file", cmd.Stdin)
-			}
-			got, err := io.ReadAll(input)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(got) != script {
-				t.Fatalf("the input holds %d bytes, want the script's %d", len(got), len(script))
-			}
-		})
+// A script cut short, as a parent that dies while handing it over leaves it,
+// runs nothing: the shell reads the whole brace group before any of it, so
+// the cut is a syntax error and no group is signalled, wherever the cut is.
+func TestAScriptCutShortSignalsNothing(t *testing.T) {
+	for _, keep := range []int{len(sidecarScript) - 3, len(sidecarScript) - 20, len(sidecarScript) / 2, 10} {
+		calls, stderr, err := recordScript(t, sidecarScript[:keep], formatWatch(200))
+		if len(calls) != 0 {
+			t.Errorf("a script cut at %d of %d bytes ran: %q", keep, len(sidecarScript), calls)
+		}
+		if _, failed := errors.AsType[*exec.ExitError](err); !failed {
+			t.Errorf("a script cut at %d of %d bytes exited %v, want the shell's syntax failure (stderr %q)", keep, len(sidecarScript), err, stderr)
+		}
 	}
 }
 
