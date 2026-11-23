@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/memory"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil/providerpath"
+	"agent-overflow/internal/testutil/testparallel"
 	"agent-overflow/internal/wsldistro"
 )
 
@@ -31,6 +32,9 @@ func TestMain(m *testing.M) {
 		if err := os.Unsetenv(name); err != nil {
 			panic(err)
 		}
+	}
+	if err := testparallel.CapDefault(); err != nil {
+		panic(err)
 	}
 	goBuildCache = resolveGoBuildCache()
 	removeHome, err := detachTestProcessHome()

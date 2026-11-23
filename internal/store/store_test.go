@@ -14,6 +14,7 @@ import (
 
 	"agent-overflow/internal/testutil/fixturedir"
 	"agent-overflow/internal/testutil/providerpath"
+	"agent-overflow/internal/testutil/testparallel"
 )
 
 // defaultTestProjectID is seeded once in the migrated template so legacy
@@ -44,6 +45,9 @@ var testStoreTemplate = fixturedir.New("store-template.sqlite", func(tb testing.
 })
 
 func TestMain(m *testing.M) {
+	if err := testparallel.CapDefault(); err != nil {
+		panic(err)
+	}
 	os.Exit(fixturedir.Guard(func() int {
 		code := providerpath.Run(m)
 		if report := recompilingReport(recompilingStatements()); report != "" {
@@ -52,6 +56,11 @@ func TestMain(m *testing.M) {
 		}
 		return code
 	}))
+}
+
+func TestTheDefaultParallelIsCapped(t *testing.T) {
+	t.Parallel()
+	testparallel.CheckApplied(t)
 }
 
 func newTestStore(t *testing.T) *Store {
