@@ -106,6 +106,9 @@
 
   let unlisted = $derived(account.usageResets?.unlisted ?? 0);
   let unsettled = $derived(account.pendingReset ?? null);
+  let finishLabel = $derived(
+    unsettled ? `Finish the ${unsettled.label} on ${providerAccountName(account)}` : '',
+  );
   let usableCount = $derived(rows.reduce((sum, row) => (row.usable ? sum + row.left : sum), 0) + unlisted);
   let shownCount = $derived(usableCount > MAX_SHOWN ? `${MAX_SHOWN}+` : `${usableCount}`);
   let shown = $derived(rows.length > 0 || unlisted > 0 || unsettled !== null);
@@ -235,7 +238,7 @@
               disabled={blockedReason !== ''}
               title={blockedReason || undefined}
               actionText={spendingHere ? 'Finishing…' : 'Finish'}
-              actionLabel={`Finish the ${unsettled.label} on ${providerAccountName(account)}`}
+              actionLabel={finishLabel}
               actionDisabled={blockedReason !== ''}
               actionTitle={blockedReason || undefined}
               testId="provider-account-reset-finish"

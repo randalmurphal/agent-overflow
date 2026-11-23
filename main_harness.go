@@ -402,13 +402,13 @@ func olderComputerSurface() (absent map[string]bool, reshape map[string]func(jso
 	absent = map[string]bool{}
 	for _, name := range []string{
 		"AgentRosterSeeds", "CancelThreadWake", "CheckAgentProfiles", "CreateAssistant", "DeleteThreads",
-		"GetDeleteDependents", "GetNativeMemoryStatus", "GetStandingAgent",
+		"FinishProviderAccountReset", "GetDeleteDependents", "GetNativeMemoryStatus", "GetStandingAgent",
 		"GetThreadAgentRows", "GetThreadRequestStates", "GetThreadWakeDetail",
 		"GetThreadWorkerSummary", "ListAssistantPastThreads", "ListStandingAgentWakes",
 		"ListThreadAgentRows", "ListThreadPastAgentRows", "ListThreadRecurringJobs",
 		"ListThreadWakes", "ListThreadWorkerSummaries", "MarkThreadsRead",
 		"SendExternalThreadMessage", "SetAssistantProjects", "SetThreadPlacement",
-		"StartNextAssistantThread", "StopThreadAgentIncoming", "StopThreadAgentRows",
+		"SpendProviderAccountReset", "StartNextAssistantThread", "StopThreadAgentIncoming", "StopThreadAgentRows",
 		"StopThreadAgentRow", "ThreadToolWatch", "WakeThreadWakeNow", "WorkflowPauseItemAndEndSessions",
 	} {
 		absent[name] = true
