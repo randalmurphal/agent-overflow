@@ -154,7 +154,7 @@ func identifyAccountAtURL(
 	if err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("agy: fetch Google userinfo: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUserInfoBytes+1))
 	if readErr != nil {

@@ -83,7 +83,7 @@ func (a *App) threadTransferChanged(row store.ThreadTransfer) {
 
 func (a *App) checkTransferIdle(thread store.Thread) error {
 	if thread.Provider != "claude" && thread.Provider != "codex" && thread.Provider != "agy" {
-		return errors.New("Conversation transfer currently requires a Claude, Codex, or Antigravity conversation.")
+		return errors.New("conversation transfer currently requires a Claude, Codex, or Antigravity conversation")
 	}
 	if thread.SessionRef == "" && thread.PendingForkRef == "" {
 		hasItems, err := a.store.HasItems(thread.ID)

@@ -306,7 +306,7 @@ func TestTheCatalogOffersOnlyInstalledEnabledProviders(t *testing.T) {
 		patch map[string]any
 		want  []string
 	}{
-		{"both", map[string]any{"claudeBinaryPath": claudeBinary, "codexBinaryPath": codexBinary}, []string{"claude", "codex"}},
+		{"both", map[string]any{"claudeBinaryPath": claudeBinary, "codexBinaryPath": codexBinary, "agyBinaryPath": filepath.Join(t.TempDir(), "no-agy")}, []string{"claude", "codex"}},
 		{"claude only installed", map[string]any{"codexBinaryPath": filepath.Join(t.TempDir(), "no-codex")}, []string{"claude"}},
 		{"codex only installed", map[string]any{"claudeBinaryPath": filepath.Join(t.TempDir(), "no-claude"), "codexBinaryPath": codexBinary}, []string{"codex"}},
 		{"codex turned off", map[string]any{"claudeBinaryPath": claudeBinary, "codexEnabled": false}, []string{"claude"}},
@@ -365,6 +365,7 @@ func TestTheSpawnShapeNamesProfilesByOfferedProviderAndReadsNoModels(t *testing.
 		"agentProfiles":    rawRoster,
 		"claudeBinaryPath": createMockBinary(t, "2.1.284 (Claude Code)"),
 		"codexBinaryPath":  createMockBinary(t, "codex-cli 0.160.0"),
+		"agyBinaryPath":    filepath.Join(t.TempDir(), "no-agy"),
 	}); err != nil {
 		t.Fatal(err)
 	}

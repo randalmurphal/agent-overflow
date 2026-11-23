@@ -150,7 +150,7 @@ func snapshotSchemaObjectNames(t *testing.T, db *sql.DB) []string {
 	if err != nil {
 		t.Fatalf("query sqlite_master: %v", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []string
 	for rows.Next() {
 		var entry string
@@ -171,7 +171,7 @@ func tableColumnNames(t *testing.T, db *sql.DB, table string) []string {
 	if err != nil {
 		t.Fatalf("pragma table_info(%s): %v", table, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var cols []string
 	for rows.Next() {
 		var cid int

@@ -521,7 +521,6 @@ func (s *Session) applyConfigAxes(
 					errs = append(errs, err)
 					effortApplied = false
 				} else if len(newOpts) > 0 {
-					opts = newOpts
 					s.mu.Lock()
 					s.configOptions = append([]ConfigOption(nil), newOpts...)
 					s.mu.Unlock()
@@ -1123,7 +1122,7 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 		s.pendingToolQuestions[resp.RequestID] = pendingQPeek
 	}
 	s.mu.Unlock()
-	if !(isToolQPeek && !isPermPeek) {
+	if !isToolQPeek || isPermPeek {
 		s.questionActionMu.Unlock()
 	}
 

@@ -130,6 +130,10 @@ func pickOwner(listenerCWD string, candidates []Owner) (string, bool) {
 }
 
 func normalizePathForMatch(p string) string {
+	return normalizePathForOS(p, runtime.GOOS)
+}
+
+func normalizePathForOS(p, goos string) string {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return ""
@@ -137,7 +141,7 @@ func normalizePathForMatch(p string) string {
 	cleaned := filepath.Clean(p)
 	// On macOS, /var and /tmp symlink to /private/var and /private/tmp;
 	// lsof often reports /private/... while thread WorkDir holds /tmp/...
-	if runtime.GOOS == "darwin" && (cleaned == "/private/tmp" || strings.HasPrefix(cleaned, "/private/tmp/") ||
+	if goos == "darwin" && (cleaned == "/private/tmp" || strings.HasPrefix(cleaned, "/private/tmp/") ||
 		cleaned == "/private/var" || strings.HasPrefix(cleaned, "/private/var/")) {
 		cleaned = strings.TrimPrefix(cleaned, "/private")
 	}

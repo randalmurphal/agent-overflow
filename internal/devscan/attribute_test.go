@@ -1,6 +1,9 @@
 package devscan
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 // Attribution is exercised on the shapes it exists for, with hand-built
 // listeners and owners: no process is spawned and no /proc is read.
@@ -88,13 +91,15 @@ func TestAttributeBreaksSharedProcessTiesByWorkDir(t *testing.T) {
 	}
 
 	// macOS /private/tmp prefix normalizes to match /tmp WorkDir.
-	tmpOwners := []Owner{
-		{ThreadID: "thread-a", PID: 300, PGID: 300, WorkDir: "/tmp/ws-a"},
-		{ThreadID: "thread-b", PID: 300, PGID: 300, WorkDir: "/tmp/ws-b"},
-	}
-	got, ok = attribute(listener{Port: 5174, PID: 500, PGID: 300, CWD: "/private/tmp/ws-b/app"}, tmpOwners, parents)
-	if !ok || got != "thread-b" {
-		t.Fatalf("macOS /private/tmp CWD attribute = %q/%v, want thread-b/true", got, ok)
+	if runtime.GOOS == "darwin" {
+		tmpOwners := []Owner{
+			{ThreadID: "thread-a", PID: 300, PGID: 300, WorkDir: "/tmp/ws-a"},
+			{ThreadID: "thread-b", PID: 300, PGID: 300, WorkDir: "/tmp/ws-b"},
+		}
+		got, ok = attribute(listener{Port: 5174, PID: 500, PGID: 300, CWD: "/private/tmp/ws-b/app"}, tmpOwners, parents)
+		if !ok || got != "thread-b" {
+			t.Fatalf("macOS /private/tmp CWD attribute = %q/%v, want thread-b/true", got, ok)
+		}
 	}
 
 	// Without a listener CWD or when two distinct threads share the exact same
@@ -128,16 +133,19 @@ func TestAttributeFallsThroughFromAmbiguousPGIDToPIDWalk(t *testing.T) {
 }
 
 func TestNormalizePathForMatchPreservesPrefixBoundaries(t *testing.T) {
-	if got := normalizePathForMatch("/private/tmp/work"); got != "/tmp/work" {
-		t.Fatalf("normalizePathForMatch(/private/tmp/work) = %q, want /tmp/work", got)
+	if got := normalizePathForOS("/private/tmp/work", "darwin"); got != "/tmp/work" {
+		t.Fatalf("normalizePathForOS(/private/tmp/work, darwin) = %q, want /tmp/work", got)
 	}
-	if got := normalizePathForMatch("/private/tmp"); got != "/tmp" {
-		t.Fatalf("normalizePathForMatch(/private/tmp) = %q, want /tmp", got)
+	if got := normalizePathForOS("/private/tmp", "darwin"); got != "/tmp" {
+		t.Fatalf("normalizePathForOS(/private/tmp, darwin) = %q, want /tmp", got)
 	}
-	if got := normalizePathForMatch("/private/tmpfoo/bar"); got != "/private/tmpfoo/bar" {
-		t.Fatalf("normalizePathForMatch(/private/tmpfoo/bar) = %q, want unchanged", got)
+	if got := normalizePathForOS("/private/tmp/work", "linux"); got != "/private/tmp/work" {
+		t.Fatalf("normalizePathForOS(/private/tmp/work, linux) = %q, want unchanged", got)
 	}
-	if got := normalizePathForMatch("/private/varfoo/bar"); got != "/private/varfoo/bar" {
-		t.Fatalf("normalizePathForMatch(/private/varfoo/bar) = %q, want unchanged", got)
+	if got := normalizePathForOS("/private/tmpfoo/bar", "darwin"); got != "/private/tmpfoo/bar" {
+		t.Fatalf("normalizePathForOS(/private/tmpfoo/bar, darwin) = %q, want unchanged", got)
+	}
+	if got := normalizePathForOS("/private/varfoo/bar", "darwin"); got != "/private/varfoo/bar" {
+		t.Fatalf("normalizePathForOS(/private/varfoo/bar, darwin) = %q, want unchanged", got)
 	}
 }

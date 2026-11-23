@@ -50,7 +50,7 @@ func TransferFiles(ctx context.Context, appDataDir, sessionID, scratchDir string
 	if err != nil {
 		return nil, fmt.Errorf("agy transfer: open conversation %s: %w", sessionID, err)
 	}
-	defer srcDB.Close()
+	defer func() { _ = srcDB.Close() }()
 
 	if err := verifyConversationSchema(srcDB); err != nil {
 		return nil, fmt.Errorf("agy transfer: %w", err)
@@ -148,25 +148,25 @@ func ValidateStagedTransferFiles(ctx context.Context, stageAgyDir, sessionID str
 		return nil, err
 	}
 	if _, err := uuid.Parse(sessionID); err != nil {
-		return nil, errors.New("Invalid Antigravity session identity.")
+		return nil, errors.New("invalid Antigravity session identity")
 	}
 	relDB := path.Join("conversations", sessionID+".db")
 	dbPath := filepath.Join(stageAgyDir, filepath.FromSlash(relDB))
 	db, err := openConversationDBReadOnly(dbPath)
 	if err != nil {
-		return nil, errors.New("The Antigravity conversation database is missing or unreadable.")
+		return nil, errors.New("antigravity conversation database is missing or unreadable")
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	if err := verifyConversationSchema(db); err != nil {
-		return nil, fmt.Errorf("Invalid Antigravity conversation database: %w", err)
+		return nil, fmt.Errorf("invalid Antigravity conversation database: %w", err)
 	}
 	var cascadeID string
 	if err := db.QueryRowContext(ctx, `SELECT cascade_id FROM trajectory_meta LIMIT 1`).Scan(&cascadeID); err != nil {
-		return nil, errors.New("The Antigravity conversation metadata is missing.")
+		return nil, errors.New("antigravity conversation metadata is missing")
 	}
 	if strings.TrimSpace(cascadeID) != sessionID {
-		return nil, errors.New("The Antigravity conversation database does not match the transfer session.")
+		return nil, errors.New("antigravity conversation database does not match the transfer session")
 	}
 
 	sources := []transferfiles.Source{{
@@ -187,7 +187,7 @@ func cloneAndRewriteTransferDB(ctx context.Context, srcPath, dstPath, newTrajID,
 	if err != nil {
 		return fmt.Errorf("agy transfer copy: open snapshot: %w", err)
 	}
-	defer srcDB.Close()
+	defer func() { _ = srcDB.Close() }()
 
 	if err := verifyConversationSchema(srcDB); err != nil {
 		return fmt.Errorf("agy transfer copy: %w", err)
@@ -213,7 +213,7 @@ func rewriteTransferTrajectoryMeta(ctx context.Context, dstPath, newTrajID, newS
 	if err != nil {
 		return fmt.Errorf("agy transfer copy: open cloned db: %w", err)
 	}
-	defer dstDB.Close()
+	defer func() { _ = dstDB.Close() }()
 
 	if _, err := dstDB.ExecContext(ctx, `UPDATE trajectory_meta SET trajectory_id = ?, cascade_id = ?`, newTrajID, newSessionID); err != nil {
 		return fmt.Errorf("agy transfer copy: rewrite trajectory_meta: %w", err)

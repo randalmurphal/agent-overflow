@@ -1,8 +1,6 @@
 package app
 
 import (
-	"context"
-
 	"agent-overflow/internal/provider"
 )
 
@@ -22,10 +20,6 @@ func (a *App) ProbeAgyAccount() (provider.AccountInfo, error) {
 //ao:route home
 func (a *App) RecheckAgyAccount() (provider.AccountInfo, error) {
 	return a.providerDiscoveryService().RecheckAgyAccount()
-}
-
-func (a *App) probeAgyRateLimits(ctx context.Context) error {
-	return a.providerLifecycleService().ProbeAgyRateLimits(ctx)
 }
 
 func (a *App) startAgyRateLimitProbeLoop() {

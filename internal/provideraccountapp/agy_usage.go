@@ -69,7 +69,7 @@ func (m *Manager) refreshAgyAccountUsage(
 		return fmt.Errorf("read saved %s credentials for usage refresh: %w", providerName, err)
 	}
 	if isSelected && !agyCredentialBelongsToAccount(credential.Bytes(), slotAtStart.Bytes(), account.Email) {
-		return fmt.Errorf("Antigravity credentials in the active home do not match saved account %q; reconcile accounts before refreshing usage", accountID)
+		return fmt.Errorf("active home Antigravity credentials do not match saved account %q; reconcile accounts before refreshing usage", accountID)
 	}
 
 	refresh := providerUsageRefresh{
@@ -213,7 +213,7 @@ func (m *Manager) refreshSelectedAgyCanonicalToken(
 	}
 	refreshed, present, readErr := m.readCanonicalCredentialIfPresent(providerName)
 	if readErr != nil || !present {
-		return nil, errors.New("Antigravity credentials missing after refresh; sign in again")
+		return nil, errors.New("missing Antigravity credentials after refresh; sign in again")
 	}
 	rotated := refreshed.Bytes()
 	if !agyCredentialBelongsToAccount(rotated, staleCred, accountEmail) {

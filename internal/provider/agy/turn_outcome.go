@@ -72,7 +72,7 @@ func readMaxStepIndex(appDataDir, sessionID string) (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	var maxIdx sql.NullInt64
 	if err := db.QueryRow(`SELECT MAX(idx) FROM steps`).Scan(&maxIdx); err != nil {
@@ -95,7 +95,7 @@ func inspectTurnErrorStep(appDataDir, sessionID string, sinceIdx int) *acp.Promp
 	if err != nil {
 		return nil
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	rows, err := db.Query(
 		`SELECT idx, step_type, COALESCE(error_details, X''), COALESCE(step_payload, X'') FROM steps WHERE idx > ? AND step_type = ? ORDER BY idx DESC LIMIT 1`,
@@ -104,7 +104,7 @@ func inspectTurnErrorStep(appDataDir, sessionID string, sinceIdx int) *acp.Promp
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	if !rows.Next() {
 		return nil

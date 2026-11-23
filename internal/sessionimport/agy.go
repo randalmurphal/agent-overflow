@@ -31,7 +31,7 @@ func scanAgy(ctx context.Context, d Deps, known map[store.ProviderSessionRef]str
 	}
 	sessions, err := d.AgyListSessions(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Antigravity sessions could not be read: %w", err)
+		return nil, nil, fmt.Errorf("could not read Antigravity sessions: %w", err)
 	}
 	rows := make([]Row, 0, len(sessions))
 	for _, s := range sessions {

@@ -544,7 +544,7 @@ func (a *App) sessionProcessEnv(
 	env map[string]string,
 ) map[string]string {
 	custom := a.providerCustomEnv(providerName)
-	merged := make(map[string]string, len(env)+len(custom)+len(a.providerExtraEnv)+2)
+	merged := make(map[string]string)
 	maps.Copy(merged, env)
 	maps.Copy(merged, custom)
 	maps.Copy(merged, a.providerExtraEnv)

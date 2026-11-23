@@ -51,7 +51,7 @@ func LaunchArgs(geminiDir, appDataSubdir string) []string {
 // `agy acp` process. Disables CLI auto-update so AO's providerupdate service
 // owns upgrades.
 func LaunchEnv(customEnv map[string]string, extraEnv map[string]string) (env map[string]string, unset []string) {
-	env = make(map[string]string, len(customEnv)+len(extraEnv)+2)
+	env = make(map[string]string)
 	maps.Copy(env, customEnv)
 	maps.Copy(env, extraEnv)
 	if _, exists := env["AGY_CLI_DISABLE_AUTO_UPDATE"]; !exists {

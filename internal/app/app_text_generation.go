@@ -171,7 +171,7 @@ func (a *App) agyTextGenEnv(base map[string]string) map[string]string {
 	if !a.hasManagedAgyCredentialFile() {
 		return base
 	}
-	out := make(map[string]string, len(base)+2)
+	out := make(map[string]string)
 	for k, v := range base {
 		out[k] = v
 	}

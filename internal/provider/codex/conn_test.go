@@ -126,7 +126,7 @@ func TestConnMultiplexesSessionsAndIsolatesClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	var skillsCalls atomic.Int32
 	conn.SetSkillsChangedHandler(func() {

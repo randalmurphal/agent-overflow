@@ -223,7 +223,12 @@ func writeRecordingCodex(t *testing.T, logPath string) string {
 func codexStarted(app *App, threadID, logPath string) startSession {
 	return func(t *testing.T) startedSession {
 		t.Helper()
-		_ = os.Remove(logPath)
+		// Truncate in place instead of unlinking so a warm pooled Codex
+		// app-server (whose `tee -a` holds the open O_APPEND fd) continues
+		// writing subsequent sessions' frames to logPath.
+		if err := os.Truncate(logPath, 0); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("truncate logPath: %v", err)
+		}
 		if err := app.StartSession(threadID); err != nil {
 			t.Fatalf("StartSession: %v", err)
 		}

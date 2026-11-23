@@ -405,7 +405,7 @@ func validateTransferredNative(ctx context.Context, stage string, manifest trans
 			collected = source
 		case "agy":
 			if len(seen) != 1 {
-				return "", errors.New("Antigravity transfers include only one root conversation.")
+				return "", errors.New("agy transfers include only one root conversation")
 			}
 			var err error
 			collected, err = agy.ValidateStagedTransferFiles(ctx, filepath.Join(stage, "native", "agy"), manifest.SessionRef)
@@ -413,7 +413,7 @@ func validateTransferredNative(ctx context.Context, stage string, manifest trans
 				return "", err
 			}
 			if len(collected) == 0 || collected[0].Name != manifest.NativePaths[manifest.SessionRef] {
-				return "", errors.New("The Antigravity conversation does not match the selected native root.")
+				return "", errors.New("staged Antigravity conversation does not match the selected native root")
 			}
 		}
 	}

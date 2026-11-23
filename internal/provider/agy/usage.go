@@ -167,7 +167,7 @@ func postQuotaJSON(ctx context.Context, client *http.Client, endpoint, accessTok
 	if err != nil {
 		return nil, fmt.Errorf("agy: quota request %s: %w", endpoint, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxQuotaResponseBytes+1))
 	if readErr != nil {

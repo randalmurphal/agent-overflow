@@ -108,7 +108,7 @@ func seedFakeConversationDB(t *testing.T, appDataDir, sessionID string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	stmts := []string{
 		`CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT)`,
@@ -187,7 +187,7 @@ func TestForkConversationSlicesAndVerifiesSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstDB.Close()
+	defer func() { _ = dstDB.Close() }()
 
 	var count int
 	if err := dstDB.QueryRow(`SELECT COUNT(*) FROM steps`).Scan(&count); err != nil || count != 2 {
@@ -670,7 +670,7 @@ func TestForkConversationEmptyCheckpointDeletesLaterSteps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer forkDB.Close()
+	defer func() { _ = forkDB.Close() }()
 	var count int
 	if err := forkDB.QueryRow(`SELECT COUNT(*) FROM steps`).Scan(&count); err != nil {
 		t.Fatal(err)
@@ -789,13 +789,13 @@ broken  http   failed    https://broken.example/mcp
 	if len(statuses) != 3 {
 		t.Fatalf("len(statuses) = %d, want 3: %+v", len(statuses), statuses)
 	}
-	if statuses[0].Key.Provider != mcpstatus.ProviderAgy || statuses[0].Key.Name != "demo" || statuses[0].Status != mcpstatus.StatusNotStarted {
+	if statuses[0].Provider != mcpstatus.ProviderAgy || statuses[0].Name != "demo" || statuses[0].Status != mcpstatus.StatusNotStarted {
 		t.Fatalf("statuses[0] = %+v", statuses[0])
 	}
-	if statuses[1].Key.Name != "local" || statuses[1].Status != mcpstatus.StatusDisabled {
+	if statuses[1].Name != "local" || statuses[1].Status != mcpstatus.StatusDisabled {
 		t.Fatalf("statuses[1] = %+v", statuses[1])
 	}
-	if statuses[2].Key.Name != "broken" || statuses[2].Status != mcpstatus.StatusFailed {
+	if statuses[2].Name != "broken" || statuses[2].Status != mcpstatus.StatusFailed {
 		t.Fatalf("statuses[2] = %+v", statuses[2])
 	}
 	if empty := ParseMCPListOutput("No MCP servers configured.\n", time.Now()); len(empty) != 0 {

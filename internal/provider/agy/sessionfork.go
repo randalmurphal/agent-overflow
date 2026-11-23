@@ -51,7 +51,7 @@ func ReadForkCheckpoint(appDataDir, sessionID string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("open agy conversation db: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	var maxIdx sql.NullInt64
 	if err := db.QueryRow(`SELECT MAX(idx) FROM steps`).Scan(&maxIdx); err != nil {
@@ -105,7 +105,7 @@ func forkConversation(appDataDir, srcSessionID string, cutIdx int, cutBeforeUser
 	if err != nil {
 		return "", nil, fmt.Errorf("agy fork: open source conversation %s: %w", srcSessionID, err)
 	}
-	defer srcDB.Close()
+	defer func() { _ = srcDB.Close() }()
 
 	if err := verifyConversationSchema(srcDB); err != nil {
 		return "", nil, fmt.Errorf("agy fork: %w", err)
@@ -159,7 +159,7 @@ func rewriteClonedConversationDB(dstPath, newSessionID string, cutIdx int, cutBe
 	if err != nil {
 		return fmt.Errorf("agy fork: open cloned conversation: %w", err)
 	}
-	defer dstDB.Close()
+	defer func() { _ = dstDB.Close() }()
 
 	tx, err := dstDB.Begin()
 	if err != nil {
@@ -315,7 +315,7 @@ func FindCutIndexBeforeUserTurn(appDataDir, sessionID string, beforeUserTurnInde
 	if err != nil {
 		return -1, false, fmt.Errorf("agy fork: open conversation %s: %w", sessionID, err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	if err := verifyConversationSchema(db); err != nil {
 		return -1, false, fmt.Errorf("agy fork: %w", err)
@@ -325,7 +325,7 @@ func FindCutIndexBeforeUserTurn(appDataDir, sessionID string, beforeUserTurnInde
 	if err != nil {
 		return -1, false, fmt.Errorf("agy fork: query user steps: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var userIdxs []int
 	for rows.Next() {
