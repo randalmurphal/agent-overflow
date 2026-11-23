@@ -710,17 +710,20 @@ mockforge:
 # and it resolves the backend binary as its own sibling, so building the
 # two together is what makes `bin/ao-harness up` need no configuration.
 #
-# HARNESS_TEST_PKGS are the packages whose test binaries the suite runs
-# (bin/ao-<name>-test). Their test files are Playwright inputs, which CI's
-# change classifier (scripts/ci-suites.mjs) reads from this line.
-HARNESS_TEST_PKGS := ./internal/frontendclient ./internal/store
+# What a run of the suite reads (the binaries, the test packages built as
+# bin/ao-<name>-test, the browsers) is declared once, in run-inputs.mk.
+# harness-build records the id of the frontend/dist it embeds in
+# bin/e2e-bundle-id, so bin/ao-harness-e2e can refuse a frontend/dist the
+# binaries were not built with.
+include cmd/ao-harness-e2e/run-inputs.mk
 harness-build: mockprovider mockforge $(FRONTEND_DEPS)
 	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) pnpm run build
+	mkdir -p bin && cp frontend/dist/bundle-id.txt bin/e2e-bundle-id
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/agent-overflow .
 	go build -tags noremote -ldflags "-X main.version=$(VERSION)" -o bin/agent-overflow-noremote .
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/ao-harness ./cmd/ao-harness
 	go build -o bin/ao-harness-e2e ./cmd/ao-harness-e2e
-	$(foreach pkg,$(HARNESS_TEST_PKGS),go test -c -o bin/ao-$(notdir $(pkg))-test $(pkg) &&) true
+	$(foreach pkg,$(E2E_TEST_PACKAGES),go test -c -o bin/ao-$(notdir $(pkg))-test $(pkg) &&) true
 
 harness: harness-build
 	bin/agent-overflow --harness --data-dir "$(HARNESS_DATA_DIR)"
