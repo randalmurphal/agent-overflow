@@ -3,7 +3,9 @@
 // `vitest-changed.mjs` selects them, for one reader of each kind: a raw
 // import of a file that is not a module, a glob, a file outside frontend/,
 // and a child-process workload, asked of Vitest's own related-files
-// resolver; and that a deletion through the script runs the projects whole.
+// resolver; that a change to an input every test reads runs every file
+// only when it is the frontend's own; and that a deletion through the script
+// runs the projects whole.
 //
 //   cd frontend
 //   ../bin/ao-netns node scripts/vitest-changed.check.mjs
@@ -19,6 +21,17 @@ const READERS = [
   { kind: 'glob', changed: 'src/styles/syntax.css', reader: 'src/lib/styleInvalidation.test.ts' },
   { kind: 'file outside frontend/', changed: '../internal/stringsx/findfold_table.go', reader: 'src/lib/utils/findMatch.test.ts' },
   { kind: 'child-process workload', changed: 'src/lib/markdown/parser/index.ts', reader: 'src/lib/markdown/parseBlockRetention.test.ts' },
+];
+
+// Inputs every test file reads without an import: a change to the
+// frontend's own runs every file, and another package's runs none.
+const TRIGGERS = [
+  { changed: 'pnpm-lock.yaml', all: true },
+  { changed: 'tsconfig.json', all: true },
+  { changed: 'src/test/config/testResets.ts', all: true },
+  { changed: '../pnpm-lock.yaml', all: false },
+  { changed: '../e2e/tsconfig.json', all: false },
+  { changed: '../e2e/pnpm-lock.yaml', all: false },
 ];
 
 const DELETIONS = [
@@ -47,6 +60,16 @@ try {
     const found = selected.includes(resolve(FRONTEND, reader));
     console.log(`${kind}: a change to ${changed} selects ${selected.length} files, ${found ? 'including' : 'NOT including'} ${reader}`);
     if (!found) failures.push(`${kind}: a change to ${changed} does not select ${reader}`);
+  }
+  vitest.config.related = undefined;
+  const total = (await vitest.getRelevantTestSpecifications()).length;
+  for (const { changed, all } of TRIGGERS) {
+    vitest.config.related = [resolve(FRONTEND, changed)];
+    const selected = (await vitest.getRelevantTestSpecifications()).length;
+    console.log(`a change to ${changed} selects ${selected} of ${total} files`);
+    if ((selected === total) !== all || (!all && selected !== 0)) {
+      failures.push(`a change to ${changed} selects ${selected} of ${total} files, expected ${all ? 'all' : 'none'}`);
+    }
   }
 } finally {
   await vitest.close();

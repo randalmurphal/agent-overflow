@@ -123,11 +123,18 @@ export default defineConfig({
   test: {
     // `--changed` selects the test files whose imports reach a changed file.
     // These inputs reach every test file without an import, so a change to
-    // one runs everything: the lockfile (dependency versions), the TypeScript
-    // config (transform options), and the files this config loads, all of
-    // which live in src/test/config/ (the transforms and the between-test
-    // contract). Vitest's defaults cover package.json and this file.
-    forceRerunTriggers: [...configDefaults.forceRerunTriggers, '**/pnpm-lock.yaml', '**/tsconfig*.json', '**/src/test/config/**'],
+    // one runs everything: the frontend's lockfile (dependency versions), its
+    // TypeScript config (transform options), and the files this config
+    // loads, all of which live in src/test/config/ (the transforms and the
+    // between-test contract). They are this directory's own, not another
+    // package's in the repository. Vitest's defaults cover package.json and
+    // this file.
+    forceRerunTriggers: [
+      ...configDefaults.forceRerunTriggers,
+      resolve(import.meta.dirname, 'pnpm-lock.yaml'),
+      resolve(import.meta.dirname, 'tsconfig*.json'),
+      resolve(import.meta.dirname, 'src/test/config/**'),
+    ],
     projects: [
       {
         plugins: [svelte(svelteOptions), threadPaneTracker(import.meta.dirname), testResetsPlugin(import.meta.dirname), rawImportsPlugin()],
