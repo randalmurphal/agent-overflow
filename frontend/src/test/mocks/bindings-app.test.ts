@@ -70,7 +70,7 @@ describe('bindings-app passive loads', () => {
   it('answer as a backend with nothing recorded after a reset, until a test installs its own', async () => {
     mockBindings.resetBindingMocks();
     await expect(mockBindings.GetSoundFiles()).resolves.toEqual({ dir: '/tmp/sounds', sounds: [], warnings: [] });
-    await expect(mockBindings.GetProviderLoginState()).resolves.toBeNull();
+    await expect(mockBindings.GetProviderLoginState('claude')).resolves.toEqual({ provider: 'claude', phase: 'idle' });
     await expect(mockBindings.ListProviderAccounts()).resolves.toEqual([]);
     await expect(mockBindings.GetRateLimitsSnapshots()).resolves.toEqual([]);
     mockBindings.setBindingMock('GetSoundFiles', async () => 'own');

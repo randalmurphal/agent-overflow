@@ -108,9 +108,11 @@ export function resetBindingMocks(): void {
 // with nothing recorded, so a test need not stub it and its store does not
 // log a failed load on every test. A test that cares installs its own
 // answer with setBindingMock, which holds until the next reset.
-const PASSIVE_LOADS: Record<string, () => unknown> = {
-  // A computer's sign-in state and accounts (stores/computerAccounts).
-  GetProviderLoginState: async () => null,
+const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
+  // A computer's sign-in state and accounts (stores/computerAccounts). With
+  // no sign-in running the backend answers idle for the provider asked
+  // about (app_provider_account_bindings.go GetProviderLoginState).
+  GetProviderLoginState: async (provider: string) => ({ provider, phase: 'idle' }),
   ListProviderAccounts: async () => [],
   // Custom notification sounds (stores/sounds).
   GetSoundFiles: async () => ({ dir: '/tmp/sounds', sounds: [], warnings: [] }),
