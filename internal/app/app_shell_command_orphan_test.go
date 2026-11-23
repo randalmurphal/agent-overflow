@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -170,53 +171,62 @@ func TestABackendsDeathEndsItsShellCommand(t *testing.T) {
 			if err := backend.Start(); err != nil {
 				t.Fatal(err)
 			}
-			pgid := 0
-			scanner := bufio.NewScanner(stdout)
-			for pgid == 0 && scanner.Scan() {
-				if rest, ok := strings.CutPrefix(scanner.Text(), "ready "); ok {
-					pgid, _ = strconv.Atoi(rest)
-				}
-			}
-			if pgid == 0 {
-				_ = backend.Process.Kill()
-				_ = backend.Wait()
-				t.Fatalf("the backend never started its command: %v", scanner.Err())
-			}
-			t.Cleanup(func() { _ = procutil.SignalGroup(pgid, syscall.SIGKILL) })
-			// The sidecar waits out its grace after the kill it sends.
-			sidecar := orphanreapertest.Of(t, backend.Process.Pid)
-			t.Cleanup(func() { helperproc.EndGroup(t, sidecar) })
-			if c.sidecarDies {
-				if err := syscall.Kill(sidecar, syscall.SIGKILL); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := backend.Process.Kill(); err != nil {
-				t.Fatal(err)
-			}
-			_ = backend.Wait()
-
-			registry := orphanreaper.NewRegistry(filepath.Join(dataDir, "orphan-registry.json"))
-			if c.sidecarDies {
-				if !groupRunning(pgid) {
-					t.Fatal("the group ended with the backend; this case needs one that survives it")
-				}
-				if err := orphanreaper.Sweep(registry, orphanreaper.GopsutilProcInfo(), 100*time.Millisecond); err != nil {
-					t.Fatal(err)
-				}
-			}
-			deadline := time.Now().Add(10 * time.Second)
-			for groupRunning(pgid) && time.Now().Before(deadline) {
-				time.Sleep(20 * time.Millisecond)
-			}
-			if groupRunning(pgid) {
-				t.Fatal("the command's group outlived the backend")
-			}
-			if c.sidecarDies {
-				if records, err := registry.Load(); err != nil || len(records) != 0 {
-					t.Fatalf("the sweep left %+v %v in the registry", records, err)
-				}
-			}
+			requireGroupEndsWithBackend(t, backend, stdout, dataDir, c.sidecarDies, "the command's group")
 		})
+	}
+}
+
+// requireGroupEndsWithBackend reads the process group a backend helper
+// reports as "ready <pgid>", kills the backend (and first its reaper
+// sidecar, when sidecarDies, so the next boot's sweep has to end the
+// group), and fails unless the group ends.
+func requireGroupEndsWithBackend(t *testing.T, backend *exec.Cmd, stdout io.Reader, dataDir string, sidecarDies bool, group string) {
+	t.Helper()
+	pgid := 0
+	scanner := bufio.NewScanner(stdout)
+	for pgid == 0 && scanner.Scan() {
+		if rest, ok := strings.CutPrefix(scanner.Text(), "ready "); ok {
+			pgid, _ = strconv.Atoi(rest)
+		}
+	}
+	if pgid == 0 {
+		_ = backend.Process.Kill()
+		_ = backend.Wait()
+		t.Fatalf("the backend never reported %s: %v", group, scanner.Err())
+	}
+	t.Cleanup(func() { _ = procutil.SignalGroup(pgid, syscall.SIGKILL) })
+	// The sidecar waits out its grace after the kill it sends.
+	sidecar := orphanreapertest.Of(t, backend.Process.Pid)
+	t.Cleanup(func() { helperproc.EndGroup(t, sidecar) })
+	if sidecarDies {
+		if err := syscall.Kill(sidecar, syscall.SIGKILL); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := backend.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = backend.Wait()
+
+	registry := orphanreaper.NewRegistry(filepath.Join(dataDir, "orphan-registry.json"))
+	if sidecarDies {
+		if !groupRunning(pgid) {
+			t.Fatal("the group ended with the backend; this case needs one that survives it")
+		}
+		if err := orphanreaper.Sweep(registry, orphanreaper.GopsutilProcInfo(), 100*time.Millisecond); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for groupRunning(pgid) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if groupRunning(pgid) {
+		t.Fatalf("%s outlived the backend", group)
+	}
+	if sidecarDies {
+		if records, err := registry.Load(); err != nil || len(records) != 0 {
+			t.Fatalf("the sweep left %+v %v in the registry", records, err)
+		}
 	}
 }

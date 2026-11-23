@@ -363,25 +363,7 @@ func TestTheIntroductionsRotationKeepsItsSessionThroughTheNextIntroduction(t *te
 	pairOwnConnection(t, b, a.app.backends, true)
 	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
-	var catalog owndevices.List
-	if err := a.app.backends.CallOwnDevice(ctx, b.id, "ListOwnDevices", &catalog); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := MergeOwnDeviceSource(a.app, catalog); err != nil {
-		t.Fatal(err)
-	}
-	bkey, err := b.app.backends.OwnIdentity()
-	if err != nil {
-		t.Fatal(err)
-	}
-	invite, err := a.app.MintOwnDeviceIntroduction(context.Background(), bkey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	link, err := deviceclient.DecodeLink(invite.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
+	bkey, invite, link := mintOwnIntroduction(ctx, t, a, b)
 	route := computerroute.Route{Endpoint: link.Endpoint, CertFingerprint: link.CertFingerprint}
 	if added, err := b.app.backends.AcceptOwnDeviceIntroduction(ctx, invite.URL, []computerroute.Route{route}); err != nil || !added {
 		t.Fatalf("introduction: added=%v %v", added, err)

@@ -464,3 +464,30 @@ func TestOwnDeviceRetireForgetsTheMachinesAgentRows(t *testing.T) {
 	}
 	waitUntil(t, 5*time.Second, func() bool { return frames.count(caller.ID) > 0 })
 }
+
+// mintOwnIntroduction merges b's device catalog into a over their confirmed
+// connection, then mints a's introduction of b. It returns b's identity key,
+// the introduction and its decoded link.
+func mintOwnIntroduction(ctx context.Context, t *testing.T, a, b ownConnectionHost) (string, PairingInvite, deviceclient.Link) {
+	t.Helper()
+	var catalog owndevices.List
+	if err := a.app.backends.CallOwnDevice(ctx, b.id, "ListOwnDevices", &catalog); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MergeOwnDeviceSource(a.app, catalog); err != nil {
+		t.Fatal(err)
+	}
+	bkey, err := b.app.backends.OwnIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite, err := a.app.MintOwnDeviceIntroduction(context.Background(), bkey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, err := deviceclient.DecodeLink(invite.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bkey, invite, link
+}

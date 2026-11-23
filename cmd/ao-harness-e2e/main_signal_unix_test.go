@@ -65,30 +65,7 @@ wait
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	var suite []int
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		for _, pid := range suite {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-		}
-	})
-	deadline := time.Now().Add(teardownBudget)
-	for len(suite) < 2 {
-		if body, err := os.ReadFile(pids); err == nil {
-			suite = suite[:0]
-			for _, field := range strings.Fields(string(body)) {
-				if pid, err := strconv.Atoi(field); err == nil {
-					suite = append(suite, pid)
-				}
-			}
-		}
-		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			t.Fatalf("the fake suite never started:\n%s", out.String())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	suite, _ := awaitFakeSuite(t, cmd, pids, out.String)
 
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
@@ -109,4 +86,36 @@ wait
 			t.Fatalf("suite process %d outlived the launcher:\n%s", pid, out.String())
 		}
 	}
+}
+
+// awaitFakeSuite waits until the launcher's fake suite has written the two
+// process ids it starts to pids, and kills the launcher and those processes
+// when the test ends. It returns the ids and the deadline it waited against.
+func awaitFakeSuite(t *testing.T, cmd *exec.Cmd, pids string, output func() string) ([]int, time.Time) {
+	t.Helper()
+	var suite []int
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		for _, pid := range suite {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	deadline := time.Now().Add(teardownBudget)
+	for len(suite) < 2 {
+		if body, err := os.ReadFile(pids); err == nil {
+			suite = suite[:0]
+			for _, field := range strings.Fields(string(body)) {
+				if pid, err := strconv.Atoi(field); err == nil {
+					suite = append(suite, pid)
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			t.Fatalf("the fake suite never started:\n%s", output())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return suite, deadline
 }

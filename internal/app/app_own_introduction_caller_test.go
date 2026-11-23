@@ -119,25 +119,7 @@ func TestAnIntroductionsOrphanedSessionIsRevokedAtTheNextMint(t *testing.T) {
 	pairOwnConnection(t, b, a.app.backends, true)
 	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
-	var catalog owndevices.List
-	if err := a.app.backends.CallOwnDevice(ctx, b.id, "ListOwnDevices", &catalog); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := MergeOwnDeviceSource(a.app, catalog); err != nil {
-		t.Fatal(err)
-	}
-	bkey, err := b.app.backends.OwnIdentity()
-	if err != nil {
-		t.Fatal(err)
-	}
-	invite, err := a.app.MintOwnDeviceIntroduction(context.Background(), bkey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	link, err := deviceclient.DecodeLink(invite.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
+	bkey, _, link := mintOwnIntroduction(ctx, t, a, b)
 
 	// The redemption b's cut introduction sent, answered by a, with b's key
 	// and nothing stored in b's profile.

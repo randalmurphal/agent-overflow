@@ -139,7 +139,7 @@ func (s *Service) RunOutput(ctx context.Context, itemID string) (RunOutputs, err
 	if err != nil {
 		return RunOutputs{}, err
 	}
-	outputs, err := workflowNamedOutputs(full.Snapshot, phases)
+	outputs, err := NamedOutputs(full.Snapshot, phases)
 	if err != nil {
 		return RunOutputs{}, fmt.Errorf("workflow run output %s: %w", item.ID, err)
 	}
@@ -157,7 +157,11 @@ func (s *Service) RunOutput(ctx context.Context, itemID string) (RunOutputs, err
 	}, nil
 }
 
-func workflowNamedOutputs(payload json.RawMessage, phases []store.WorkItemPhaseTimeline) (map[string]any, error) {
+// NamedOutputs resolves a run's declared non-artifact outputs from its frozen
+// snapshot and the envelopes of its phases: each phase's latest attempt that
+// rested `done` supplies `<phase>.<name>` variables, and each declared output
+// reads the variable its `from` names.
+func NamedOutputs(payload json.RawMessage, phases []store.WorkItemPhaseTimeline) (map[string]any, error) {
 	outputs := make(map[string]any)
 	if len(payload) == 0 {
 		return outputs, nil

@@ -365,35 +365,7 @@ func TestRevertAndResendConfirmedKillClearsBackgroundRows(t *testing.T) {
 func TestRevertAndResendMidTurnAnchorEmitsKeptSet(t *testing.T) {
 	t.Parallel()
 	app, bus := newResendTestApp(t)
-	workspace := t.TempDir()
-	writeClaudeProjectSession(t, testProviderHome(t, app), workspace, resendSourceSessionID,
-		`{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"source-session","message":{"role":"user","content":"first"}}
-{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
-{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"source-session","message":{"role":"user","content":"steer"}}
-{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
-`)
-	thread := e2eThread("t-resend-midturn", string(provider.Claude), workspace)
-	thread.SessionRef = resendSourceSessionID
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-	now := time.Now().UnixMilli()
-	for _, row := range []store.Item{
-		{ID: "user:0", Kind: "user_text", Role: "user", ItemIndex: 0, Summary: "first"},
-		{ID: "asst:0", Kind: "assistant_text", Role: "assistant", ItemIndex: 1, Summary: "reply 0"},
-		{ID: "user:steer", Kind: "user_text", Role: "user", ItemIndex: 2, Summary: "steer"},
-		{ID: "asst:1", Kind: "assistant_text", Role: "assistant", ItemIndex: 3, Summary: "reply 1"},
-	} {
-		row.ThreadID = thread.ID
-		row.TurnIndex = 0
-		row.Status = "completed"
-		row.CreatedAt = now
-		row.UpdatedAt = now
-		if _, err := app.store.AppendItem(row); err != nil {
-			t.Fatalf("append %s: %v", row.ID, err)
-		}
-	}
-	seedMessageAnchor(t, app.store, thread.ID, "user:steer", 0, "u1", "")
+	thread, workspace := seedResendMidTurnThread(t, app, "t-resend-midturn")
 
 	if err := revertAndResendForTest(app, context.Background(), thread.ID, "user:steer", RevertAndResendOptions{Content: "rewritten steer"}); err != nil {
 		t.Fatalf("revert and resend: %v", err)

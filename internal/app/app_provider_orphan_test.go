@@ -3,20 +3,13 @@
 package app
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
-	"syscall"
 	"testing"
 	"time"
 
-	"agent-overflow/internal/orphanreaper"
-	"agent-overflow/internal/orphanreaper/orphanreapertest"
-	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/testutil/helperproc"
@@ -147,53 +140,7 @@ func TestABackendsDeathEndsItsProviderSession(t *testing.T) {
 			if err := backend.Start(); err != nil {
 				t.Fatal(err)
 			}
-			pgid := 0
-			scanner := bufio.NewScanner(stdout)
-			for pgid == 0 && scanner.Scan() {
-				if rest, ok := strings.CutPrefix(scanner.Text(), "ready "); ok {
-					pgid, _ = strconv.Atoi(rest)
-				}
-			}
-			if pgid == 0 {
-				_ = backend.Process.Kill()
-				_ = backend.Wait()
-				t.Fatalf("the backend never recorded its provider's group: %v", scanner.Err())
-			}
-			t.Cleanup(func() { _ = procutil.SignalGroup(pgid, syscall.SIGKILL) })
-			// The sidecar waits out its grace after the kill it sends.
-			sidecar := orphanreapertest.Of(t, backend.Process.Pid)
-			t.Cleanup(func() { helperproc.EndGroup(t, sidecar) })
-			if c.sidecarDies {
-				if err := syscall.Kill(sidecar, syscall.SIGKILL); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := backend.Process.Kill(); err != nil {
-				t.Fatal(err)
-			}
-			_ = backend.Wait()
-
-			registry := orphanreaper.NewRegistry(filepath.Join(dataDir, "orphan-registry.json"))
-			if c.sidecarDies {
-				if !groupRunning(pgid) {
-					t.Fatal("the group ended with the backend; this case needs one that survives it")
-				}
-				if err := orphanreaper.Sweep(registry, orphanreaper.GopsutilProcInfo(), 100*time.Millisecond); err != nil {
-					t.Fatal(err)
-				}
-			}
-			deadline := time.Now().Add(10 * time.Second)
-			for groupRunning(pgid) && time.Now().Before(deadline) {
-				time.Sleep(20 * time.Millisecond)
-			}
-			if groupRunning(pgid) {
-				t.Fatal("the provider's group outlived the backend")
-			}
-			if c.sidecarDies {
-				if records, err := registry.Load(); err != nil || len(records) != 0 {
-					t.Fatalf("the sweep left %+v %v in the registry", records, err)
-				}
-			}
+			requireGroupEndsWithBackend(t, backend, stdout, dataDir, c.sidecarDies, "the provider's group")
 		})
 	}
 }
