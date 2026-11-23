@@ -51,7 +51,8 @@ func TestTrackerMirrorMigration(t *testing.T) {
 		body_updated_at || body_read_at || body_wall || body_opened_at || hex(body_digest) FROM tracker_cache_issues ORDER BY issue_id`,
 		"10001:901:00:3:5:0000,10002:902::0:0:0000,10003:903::2:0:0000")
 	assertRows(t, db, `SELECT count(*) FROM tracker_cache_issue_sprints`, "2")
-	assertRows(t, db, `SELECT count(*) FROM tracker_cache_board_issues`, "2")
+	assertRows(t, db, `SELECT group_concat(issue_id || ':' || order_key || ':' || read_at) FROM tracker_cache_board_issues`, "10001:a:901,10002:b:902")
+	assertRows(t, db, `SELECT count(*) FROM pragma_table_info('tracker_cache_board_issues') WHERE name = 'listed'`, "0")
 	assertRows(t, db, `SELECT board_id || ':' || read_at || ':' || structure_wall FROM tracker_cache_boards`, "10:900:0")
 	assertRows(t, db, `SELECT read_at || ':' || read_wall || ':' || reconciled_at || ':' || reconciled_wall || ':' || failed_wall FROM tracker_cache_sync`, "903:0:904:0:0")
 	assertRows(t, db, `SELECT count(*) FROM sqlite_master WHERE name LIKE 'tracker_cache_issue_details%' OR name LIKE 'idx_tracker_cache_issue_details%'`, "0")

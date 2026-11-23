@@ -46,6 +46,10 @@ package store
 //     which no set digests to: the next write that admits its card
 //     replaces its sprints. An issue with none holds the empty digest,
 //     which is right for it.
+//   - tracker_cache_board_issues.listed is dropped, with it from
+//     idx_tracker_cache_board_issues_order, which is made again over the
+//     rest of the row: a reconcile removes no row on a listing's word, so
+//     nothing reads which listing named a row.
 //
 // A root's read clock is seeded from the read times the root stores
 // (BeginMirrorRead): no table holds it.
@@ -66,6 +70,9 @@ ALTER TABLE tracker_cache_sync ADD COLUMN read_wall INTEGER NOT NULL DEFAULT 0 C
 ALTER TABLE tracker_cache_sync ADD COLUMN reconciled_wall INTEGER NOT NULL DEFAULT 0 CHECK(reconciled_wall >= 0);
 ALTER TABLE tracker_cache_sync ADD COLUMN failed_wall INTEGER NOT NULL DEFAULT 0 CHECK(failed_wall >= 0);
 ALTER TABLE tracker_cache_issues ADD COLUMN sprint_set BLOB NOT NULL DEFAULT x'';
+DROP INDEX idx_tracker_cache_board_issues_order;
+ALTER TABLE tracker_cache_board_issues DROP COLUMN listed;
+CREATE INDEX idx_tracker_cache_board_issues_order ON tracker_cache_board_issues(root_id, board_id, order_key, issue_id, estimate, read_at);
 UPDATE tracker_cache_issues SET sprint_set = x'` + mirrorSprintSetPartial + `'
  WHERE EXISTS (SELECT 1 FROM tracker_cache_issue_sprints m
                 WHERE m.root_id = tracker_cache_issues.root_id AND m.issue_id = tracker_cache_issues.issue_id);

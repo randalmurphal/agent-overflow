@@ -278,7 +278,6 @@ var mirrorNotReadTimes = map[string]string{
 	"tracker_cache_issues.boards_rev":              "a counter",
 	"tracker_cache_issues.history_boards_rev":      "a counter",
 	"tracker_cache_issues.board_rows":              "a count",
-	"tracker_cache_board_issues.listed":            "a flag",
 	"tracker_cache_changes.gen":                    "a counter",
 	"tracker_cache_changes.kind":                   "an enum",
 	"tracker_cache_changes.seq":                    "a position",

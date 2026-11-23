@@ -171,8 +171,7 @@ func TestACardsReadTimeIsInNoIndexOrTrigger(t *testing.T) {
 
 // A listing's omission is no evidence a row left, whatever its age and
 // whether or not a listing named it before: the listing returns it
-// unsettled and a read by ID judges it. A delta page or a listing that
-// names it marks it.
+// unsettled and a read by ID judges it.
 func TestARowAListingLeavesOutIsJudgedByID(t *testing.T) {
 	t.Parallel()
 	const placed, listedAt = 1_000, 62_000
@@ -180,7 +179,6 @@ func TestARowAListingLeavesOutIsJudgedByID(t *testing.T) {
 		s, _, root := newMirror(t)
 		writeMirrorBoard(t, s, root, "10", nil)
 		mustWriteRows(t, s, rowsPage(s, root, placed, nil, webRow("10004", 5, "d")), root)
-		assertRows(t, s.db, `SELECT listed FROM tracker_cache_board_issues`, "0")
 		var final MirrorReconcile
 		switch step {
 		case "by ID":
@@ -207,7 +205,6 @@ func TestARowAListingLeavesOutIsJudgedByID(t *testing.T) {
 				t.Fatalf("%s: a listing naming it = %+v", step, got)
 			}
 		}
-		assertRows(t, s.db, `SELECT listed FROM tracker_cache_board_issues`, "1")
 		final = mustReconcile(t, s, root, nil, true, listedAt+10_000)
 		if !reflect.DeepEqual(final, MirrorReconcile{Unsettled: []string{"10004"}}) {
 			t.Fatalf("%s: a later listing = %+v; want the row unsettled", step, final)
@@ -265,11 +262,11 @@ func TestARowNoListingNamedFollowsTheReadOrder(t *testing.T) {
 }
 
 // The statements the fences cost, pinned: a read by ID refused for a
-// listing reads its rows once and removes none; a listing with no row to
-// mark costs what it did before marks; one naming 1,001 rows no listing
-// marked marks them in three transactions of at most clearMirrorChunk; a
-// row only a read by ID placed, read by ID again identical, as a pass
-// reads an unsettled row, moves its row's and its card's read time.
+// listing reads its rows once and removes none; a listing costs the same
+// statements whatever rows it names, and one naming 1,001 rows writes
+// none of them; a row only a read by ID placed, read by ID again
+// identical, as a pass reads an unsettled row, moves its row's and its
+// card's read time.
 func TestMirrorFenceStatements(t *testing.T) {
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", mirrorRows(10001, 2, "a"))
@@ -302,7 +299,7 @@ func TestMirrorFenceStatements(t *testing.T) {
 	}
 	statements, writes := count(reconcile([]string{"10001", "10002"}, true, 30))
 	if statements != 3 || !reflect.DeepEqual(writes, map[string]int{"tracker_cache_boards": 1}) {
-		t.Errorf("a listing with nothing to mark: %d statements, wrote %v; want 3 and the board's listing", statements, writes)
+		t.Errorf("a listing naming its rows: %d statements, wrote %v; want 3 and the board's listing", statements, writes)
 	}
 	statements, writes = count(write(rowsPage(s, root, 20, []string{"10001"}), func(got MirrorChanges) {
 		if !reflect.DeepEqual(got.Refused, []string{"10001"}) {
@@ -321,13 +318,9 @@ func TestMirrorFenceStatements(t *testing.T) {
 		ids[i] = row.Card.IssueID
 	}
 	statements, writes = count(reconcile(ids, false, 50))
-	if statements != 7 || !reflect.DeepEqual(writes, map[string]int{"tracker_cache_board_issues": len(placed)}) {
-		t.Errorf("a listing naming %d rows to mark: %d statements, wrote %v; want 7 and each row once", len(placed), statements, writes)
+	if statements != 2 || len(writes) > 0 {
+		t.Errorf("an incomplete listing naming %d rows: %d statements, wrote %v; want 2 and nothing", len(placed), statements, writes)
 	}
-	if most, transactions := recorder.mostRowsInATransaction(); most > clearMirrorChunk || transactions != 3 {
-		t.Errorf("the marks took %d transactions, the largest of %d rows; want 3 of at most %d", transactions, most, clearMirrorChunk)
-	}
-	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_board_issues WHERE issue_id >= '20000' AND listed = 0`, "0")
 	mustWriteRows(t, s, rowsPage(s, root, 60, nil, webRow("30001", 5, "u")), root)
 	statements, writes = count(write(rowsPage(s, root, 70, nil, webRow("30001", 5, "u")), nil))
 	if statements != 6 || !reflect.DeepEqual(writes, map[string]int{"tracker_cache_board_issues": 1, "tracker_cache_issues": 1}) {

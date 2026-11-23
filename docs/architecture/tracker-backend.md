@@ -526,10 +526,7 @@ passed, so a clock step either way reads the scope once. A time a
 person is shown (a scope's read, reconcile and failure, an open
 ticket's read) is such a wall time, never an order time. Order times
 run ahead of the wall clock only while it is behind them, a millisecond
-a read. An issue's row on a board records whether a listing has named
-it (`listed`): a delta page, which is a search of the same index, or a
-listing a reconcile was given; no rule reads it since a reconcile removes
-no row.
+a read.
 A section page carries the board's revision; continuing it at another
 revision fails with `ErrTrackerCacheStale`. A board view's first paint
 reads structure, totals, first pages and what their cards name (statuses,
@@ -634,8 +631,7 @@ and writes share:
   began before that listing removes no row the listing may have named:
   its absence is read once more, from after the listing
   (`MirrorChanges.Refused`). One statement finds the listed issues with
-  no row and the rows to read; the listed rows no listing marked are
-  marked in transactions of at most 500. The rows a listing leaves out
+  no row and the rows to read. The rows a listing leaves out
   cost a rows read by ID (Jira: one match request per 50 left out, and a
   bulk fetch when any is placed; Linear: one request per 250); a listing
   that leaves out one row the board no longer holds is 3 requests on
