@@ -23,7 +23,8 @@ import (
 //
 //   - store.CreateSession — the device predicate is inside the INSERT;
 //   - store.CompletePairingRedemption - the same INSERT, inside the
-//     transaction that names the pending session on its link;
+//     transaction that names the pending session on its link, and for an
+//     own-device introduction the activation UPDATE's predicate as well;
 //   - store.CreateDeviceSession - the same INSERT, inside the transaction
 //     that writes a passkey sign-in's device row with its live session;
 //   - store.EnsureLocalSession - inside its serialized initialization transaction;
@@ -45,7 +46,7 @@ import (
 func TestEveryCredentialProducingCallGoesThroughAChokepoint(t *testing.T) {
 	chokepoints := map[string][]string{
 		"CreateSession":             {"Sessions.Mint"},
-		"CompletePairingRedemption": {"Sessions.mintPendingSession"},
+		"CompletePairingRedemption": {"Sessions.mintRedemptionSession"},
 		"CreateDeviceSession":       {"Sessions.FinishPasskeySignIn"},
 		"EnsureLocalSession":        {"Sessions.EnsureLocalChannelSession"},
 		"ConfirmRedeemedPairing":    {"Sessions.confirmPairing"},

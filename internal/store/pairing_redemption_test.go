@@ -286,3 +286,27 @@ func TestConfirmRedeemedPairingWhoseMembershipIsRefusedCancelsInstead(t *testing
 		})
 	}
 }
+
+// A redemption confirmed in its own transaction is an own-device
+// introduction's alone, and one whose confirmation is refused writes nothing.
+func TestCompletePairingRedemptionConfirmsOnlyAnIntroduction(t *testing.T) {
+	for _, purpose := range []string{"", "own-device", "own-introduction"} {
+		t.Run("purpose "+purpose, func(t *testing.T) {
+			eachDevice(t, func(t *testing.T, s *Store, r PairingRedemption) {
+				// spentLink's link is ordinary; give it the purpose under test.
+				// No member holds the generation an introduction was issued
+				// for, so its confirmation is refused.
+				mustExec(t, s.db, `UPDATE pairing_links SET purpose = ?, member_generation = 1 WHERE id = 'link-1'`, purpose)
+				r.ConfirmedAt, r.AccessExpiresAt = 2500, 900000
+				err := s.CompletePairingRedemption(r)
+				switch {
+				case purpose == "own-introduction" && !errors.Is(err, ErrPairingIncomplete):
+					t.Fatalf("an introduction whose membership is refused = %v, want ErrPairingIncomplete", err)
+				case purpose != "own-introduction" && (err == nil || !strings.Contains(err.Error(), "confirmed by its owner")):
+					t.Fatalf("a %q redemption confirmed with its write = %v, want refused", purpose, err)
+				}
+				requireNothingRedeemed(t, s, r)
+			})
+		})
+	}
+}

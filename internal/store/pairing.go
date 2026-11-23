@@ -252,6 +252,11 @@ func (s *Store) CreateDeviceSession(d DeviceSession) error {
 type PairingRedemption struct {
 	LinkID string
 	DeviceSession
+	// ConfirmedAt, when set, confirms an own-device introduction, which no
+	// owner confirms, in the same transaction: the session is activated
+	// until AccessExpiresAt and the membership admitted.
+	ConfirmedAt     int64
+	AccessExpiresAt int64
 }
 
 // RefreshGrant is a refresh secret to write: the hash of the secret only the
@@ -269,9 +274,17 @@ type RefreshGrant struct {
 // without the link that names it, a failed redemption adds or renames no
 // device, and a cancellation that reached the spent link first leaves no
 // session behind. sql.ErrNoRows reports that refusal.
+//
+// With ConfirmedAt set, the same transaction confirms an own-device
+// introduction as ConfirmRedeemedPairing would; a confirmation that is
+// refused writes nothing and answers ErrPairingIncomplete.
 func (s *Store) CompletePairingRedemption(r PairingRedemption) error {
-	if r.Session.ActivatedAt != 0 {
+	switch {
+	case r.Session.ActivatedAt != 0:
 		return fmt.Errorf("store: complete pairing redemption: session %s is already activated", r.Session.ID)
+	case r.ConfirmedAt != 0 && r.AccessExpiresAt <= r.ConfirmedAt:
+		return fmt.Errorf("store: complete pairing redemption: access expiry %d is not after confirmation %d",
+			r.AccessExpiresAt, r.ConfirmedAt)
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -283,6 +296,22 @@ func (s *Store) CompletePairingRedemption(r PairingRedemption) error {
 	}
 	if err := attachPairingRedemption(tx, r.LinkID, r.Session.DeviceID, r.Session.ID); err != nil {
 		return err
+	}
+	if r.ConfirmedAt != 0 {
+		link, err := readConfirmableLink(tx, r.LinkID)
+		if err != nil {
+			return err
+		}
+		if link.Purpose != "own-introduction" {
+			return fmt.Errorf("store: complete pairing redemption: a %q link is confirmed by its owner, not with its redemption", link.Purpose)
+		}
+		_, refusal, err := admitPairingTx(tx, link, r.ConfirmedAt, r.AccessExpiresAt)
+		if err != nil {
+			return err
+		}
+		if refusal != nil {
+			return fmt.Errorf("%w: %v", ErrPairingIncomplete, refusal)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: complete pairing redemption: commit: %w", err)
@@ -312,7 +341,8 @@ func attachPairingRedemption(db sqlExecutor, linkID, deviceID, sessionID string)
 }
 
 // ErrPairingIncomplete reports a confirmation that could not admit its
-// device: the link was cancelled and its session revoked instead.
+// device. ConfirmRedeemedPairing cancelled the link and revoked its session
+// instead; CompletePairingRedemption wrote nothing.
 var ErrPairingIncomplete = errors.New("store: the pairing could not be completed")
 
 // PairingConfirmation is what one ConfirmRedeemedPairing settled.
@@ -340,18 +370,9 @@ func (s *Store) ConfirmRedeemedPairing(id string, at, accessExpiresAt int64) (Pa
 		return PairingConfirmation{}, fmt.Errorf("store: confirm pairing: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := prepareOwnPairing(tx, id); err != nil {
-		return PairingConfirmation{}, err
-	}
-	link, err := scanPairingLink(tx.QueryRow(
-		`SELECT `+pairingLinkColumns+` FROM pairing_links
-		  WHERE id = ? AND redeemed_at IS NOT NULL AND session_id <> ''
-		    AND confirmed_at IS NULL AND canceled_at IS NULL`, id))
-	if errors.Is(err, sql.ErrNoRows) {
-		return PairingConfirmation{}, err
-	}
+	link, err := readConfirmableLink(tx, id)
 	if err != nil {
-		return PairingConfirmation{}, fmt.Errorf("store: confirm pairing: %w", err)
+		return PairingConfirmation{}, err
 	}
 	if _, err := tx.Exec(`SAVEPOINT confirm_pairing`); err != nil {
 		return PairingConfirmation{}, fmt.Errorf("store: confirm pairing: %w", err)
@@ -377,6 +398,26 @@ func (s *Store) ConfirmRedeemedPairing(id string, at, accessExpiresAt int64) (Pa
 		return PairingConfirmation{}, fmt.Errorf("store: confirm pairing: commit: %w", err)
 	}
 	return PairingConfirmation{Link: confirmed}, nil
+}
+
+// readConfirmableLink settles a personal pairing's member generation and
+// reads the link if it is redeemed, names its session and is unsettled;
+// sql.ErrNoRows otherwise.
+func readConfirmableLink(tx *sql.Tx, id string) (PairingLink, error) {
+	if err := prepareOwnPairing(tx, id); err != nil {
+		return PairingLink{}, err
+	}
+	link, err := scanPairingLink(tx.QueryRow(
+		`SELECT `+pairingLinkColumns+` FROM pairing_links
+		  WHERE id = ? AND redeemed_at IS NOT NULL AND session_id <> ''
+		    AND confirmed_at IS NULL AND canceled_at IS NULL`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return PairingLink{}, err
+	}
+	if err != nil {
+		return PairingLink{}, fmt.Errorf("store: confirm pairing: %w", err)
+	}
+	return link, nil
 }
 
 // admitPairingTx activates link's session, confirms link and admits its
