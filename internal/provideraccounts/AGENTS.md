@@ -125,9 +125,12 @@ Every data root on a machine shares the provider home's slots, so a slot
 that a root's account list does not name is usually another root's live
 login. A root deletes a slot without a user's removal only when it reserved
 that id and does not list it (`reserved_slots.go`): `ReserveAccountID` is the
-only source of a new account id and persists it before any slot byte exists,
-and inserting the row clears it. The boot settles reservations only against
-the home its `providerHome` stamp binds. Two data roots listing one account
-id (a copied `provider-accounts.json`) are unsupported: removal in either
-deletes the slot. Tests and harness runs use temporary homes and the
-file-backed keychain seam; they never inspect or modify real provider homes.
+only source of a new account id and persists it, with the data root and the
+provider home of its slot, before any slot byte exists; inserting the row
+clears it. Only that data root settles a reservation, only under that home,
+and a slot removal is synced before its record is cleared. The
+`providerHome` stamp is read only by earlier releases. Two data roots
+listing one account id (a copied `provider-accounts.json`) are unsupported:
+removal in either deletes the slot. Tests and harness runs use temporary
+homes and the file-backed keychain seam; they never inspect or modify real
+provider homes.
