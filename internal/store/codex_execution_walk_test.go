@@ -77,3 +77,46 @@ func TestCodexExecutionWalkReturnsOnlyTheExecutionsMembers(t *testing.T) {
 		t.Fatalf("snapshot of B meta %s, want %s (nested, n-in, b1 and a-nested-late)", meta, want)
 	}
 }
+
+// The store's membership rule tests the meta text for the quoted key before
+// it parses JSON: only the spelling AppendCodexAgentRow writes is a tag. A
+// key spelled with a JSON escape is untagged to the live seed and the
+// snapshot, as it is to the live counter and the frontend's text test, and
+// costs no parse.
+func TestCodexExecutionMembershipReadsOnlyTheStoresSpellingOfTheTag(t *testing.T) {
+	s := newTestStore(t)
+	base := time.Now().UnixMilli()
+	createDeleteConversationThread(t, s, "t", base)
+	for _, item := range []Item{
+		{ID: "user-0", TurnIndex: 0, Kind: "user_text", Role: "user"},
+		{ID: "launch", TurnIndex: 0, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "collab_agent"},
+	} {
+		item.ThreadID, item.CreatedAt = "t", base
+		if err := s.InsertItem(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, item := range []Item{
+		{ID: "escaped", ItemIndex: 2, Meta: `{"codex_\u0065xecution_turn_id":"A"}`},
+		{ID: "tagged", ItemIndex: 3, Meta: `{"` + CodexExecutionTurnMetaKey + `":"A"}`},
+		{ID: "plain", ItemIndex: 4, Meta: `{"command":"ls"}`},
+	} {
+		item.ThreadID, item.ParentID, item.Kind, item.Role, item.Status, item.CreatedAt = "t", "launch", "tool_call", "assistant", "completed", base
+		if err := insertCarded(s, item); err != nil {
+			t.Fatalf("seed %s: %v", item.ID, err)
+		}
+	}
+	var walked []string
+	if err := forEachCodexExecutionRow(s.reader(), "t", "launch", "B", 0, 1, 4, func(row subagentAggregateRow) {
+		walked = append(walked, row.id)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(walked)
+	if want := []string{"escaped", "plain"}; !slices.Equal(walked, want) {
+		t.Fatalf("execution B's members = %v, want %v", walked, want)
+	}
+	if count, _, err := s.SubagentExecutionToolCallsAfter("t", "launch", "B", 0, 1); err != nil || count != 2 {
+		t.Fatalf("execution B's live seed = %d, %v; want escaped and plain", count, err)
+	}
+}

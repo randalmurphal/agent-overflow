@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -126,20 +127,6 @@ func codexExitCodeFromMeta(raw json.RawMessage) int {
 		return parsed.ExitCode
 	}
 	return parsed.ExitCodeSnake
-}
-
-// withCodexExecutionTurnMeta tags an agent's command or stdin interaction
-// row with the agent execution it belongs to, so only that execution's card
-// counts and shows it (store.CodexExecutionTurnMetaKey).
-func withCodexExecutionTurnMeta(meta, turnID string) string {
-	if turnID = strings.TrimSpace(turnID); turnID == "" {
-		return meta
-	}
-	extra, err := json.Marshal(map[string]string{store.CodexExecutionTurnMetaKey: turnID})
-	if err != nil {
-		return meta
-	}
-	return validJSONObjectString(mergeRawJSONObject(json.RawMessage(meta), extra))
 }
 
 func addCodexWaitCarrierMeta(raw json.RawMessage, waitCarrierID string) json.RawMessage {
@@ -531,10 +518,14 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 // (persistCodexAgentRow). The row carries the agent execution that started
 // it, so only that execution's card counts it.
 func (r *Router) persistCodexAgentCommand(evt provider.ProviderEvent, item store.Item, tracker unifiedExecTracker) error {
+	meta, err := decodeCodexAgentMeta(item.Meta)
+	if err != nil {
+		return fmt.Errorf("agent command %s: %w", item.ID, err)
+	}
 	row := store.CodexAgentRow{
 		ThreadID: item.ThreadID, ParentID: item.ParentID, ID: item.ID,
 		Status: item.Status, Summary: item.Summary,
-		Meta:      withCodexExecutionTurnMeta(item.Meta, tracker.executionTurnID),
+		Meta: meta, ExecutionTurnID: strings.TrimSpace(tracker.executionTurnID),
 		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 	}
 	if output := tracker.output.String(); output != "" {
@@ -544,8 +535,18 @@ func (r *Router) persistCodexAgentCommand(evt provider.ProviderEvent, item store
 			Meta: BuildPayloadMeta("command_output", outputEvt), Data: []byte(output), CreatedAt: eventTimestampMillis(evt),
 		}
 	}
-	_, _, err := r.persistCodexAgentRow(row)
+	_, _, err = r.persistCodexAgentRow(row)
 	return err
+}
+
+// decodeCodexAgentMeta decodes an agent row's meta object for
+// store.CodexAgentRow, which encodes it.
+func decodeCodexAgentMeta(meta string) (map[string]json.RawMessage, error) {
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(meta), &decoded); err != nil {
+		return nil, fmt.Errorf("decode meta: %w", err)
+	}
+	return decoded, nil
 }
 
 func (r *Router) codexUnifiedExecCommandItem(evt provider.ProviderEvent, tracker unifiedExecTracker) store.Item {

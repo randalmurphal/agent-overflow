@@ -414,7 +414,7 @@ func (r *Router) attachPayloadToItemWithEmit(
 	}
 
 	if !linked {
-		payloadID = AttachedPayloadID(payloadKind, item.ID)
+		payloadID = store.AttachedPayloadID(payloadKind, item.ID)
 	}
 	item, payload := withWholePayload(item, evt, payloadKind, payloadID, summary)
 	var err error

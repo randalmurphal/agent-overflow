@@ -1301,7 +1301,8 @@ func (s *Store) SubagentExecutionToolCallsAfter(threadID, launchID, executionTur
 // belongs to: the one that started the command, or the one that wrote the
 // stdin. The command can exit during a later execution of the same agent; its
 // row sits at that position in the agent's history but is a member only of
-// the execution its tag names (codexExecutionMemberSQL).
+// the execution its tag names (codexExecutionMemberSQL). AppendCodexAgentRow
+// is its only writer.
 const CodexExecutionTurnMetaKey = "codex_execution_turn_id"
 
 // codexExecutionMemberSQL is the store's rule for whether a row belongs to
@@ -1311,8 +1312,17 @@ const CodexExecutionTurnMetaKey = "codex_execution_turn_id"
 // does an untagged row. Every store reader applies it: an execution's live
 // seed (subagentExecutionToolCalls), its snapshot (forEachCodexExecutionRow)
 // and its card's digest (TimelineDigestContext.filter).
+//
+// A row whose meta text lacks the quoted key is untagged without a JSON
+// parse. That cannot miss a tag: AppendCodexAgentRow, the only writer, encodes
+// the meta with encoding/json, which writes the key's ASCII letters and
+// underscores as they are; a row copied to a fork or a holder keeps those
+// bytes, and a transfer that rewrites a meta re-encodes it with
+// encoding/json, which spells the key the same way. The live counter (triage's codexExecutionMember)
+// and the frontend digest (withinDigestExecution) test the same text first.
 func codexExecutionMemberSQL(alias string) string {
-	return "(? = '' OR COALESCE(" + jsonFieldExpr(alias+"meta", "$."+CodexExecutionTurnMetaKey) + ", '') IN ('', ?))"
+	return "(? = '' OR instr(" + alias + "meta, '\"" + CodexExecutionTurnMetaKey + "\"') = 0 OR COALESCE(" +
+		jsonFieldExpr(alias+"meta", "$."+CodexExecutionTurnMetaKey) + ", '') IN ('', ?))"
 }
 
 // subagentExecutionToolCalls is an execution's tool count: the tool_call

@@ -3,6 +3,7 @@ package triage
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -107,10 +108,14 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	}
 	// The interaction belongs to the execution that wrote the stdin, which
 	// Codex names on the event, not to the one that started the command.
+	agentMeta, err := decodeCodexAgentMeta(item.Meta)
+	if err != nil {
+		return fmt.Errorf("terminal interaction %s: %w", item.ID, err)
+	}
 	_, _, err = r.persistCodexAgentRow(store.CodexAgentRow{
 		ThreadID: item.ThreadID, ParentID: scope, ID: item.ID, Interaction: true,
 		Status: item.Status, Summary: item.Summary,
-		Meta:      withCodexExecutionTurnMeta(item.Meta, evt.TurnID),
+		Meta: agentMeta, ExecutionTurnID: strings.TrimSpace(evt.TurnID),
 		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 	})
 	return err

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -41,10 +42,10 @@ func TestAppendCodexAgentRowFollowsItsParent(t *testing.T) {
 	command := CodexAgentRow{ThreadID: "t", ParentID: "spawn", ID: "cmd", Status: "completed", Summary: "Bash: ls", CreatedAt: base, UpdatedAt: base,
 		Output: &CodexAgentOutput{Data: []byte("done\n"), CreatedAt: base}}
 	persisted, written, err := appendCodexAgentRowForTest(t, s, command)
-	if err != nil || !written || persisted.TurnIndex != 0 || persisted.Kind != "tool_call" || persisted.ToolName != "command_execution" || persisted.PayloadID != CodexAgentOutputPayloadID("cmd") {
+	if err != nil || !written || persisted.TurnIndex != 0 || persisted.Kind != "tool_call" || persisted.ToolName != "command_execution" || persisted.PayloadID != AttachedPayloadID("command_output", "cmd") {
 		t.Fatalf("command under a present parent: %+v written=%v err=%v, want a command_execution tool_call on turn 0 with its output", persisted, written, err)
 	}
-	if data, err := s.GetPayloadData("t", CodexAgentOutputPayloadID("cmd")); err != nil || string(data) != "done\n" {
+	if data, err := s.GetPayloadData("t", AttachedPayloadID("command_output", "cmd")); err != nil || string(data) != "done\n" {
 		t.Fatalf("command output = %q, %v", data, err)
 	}
 	interaction, written, err := appendCodexAgentRowForTest(t, s, CodexAgentRow{ThreadID: "t", ParentID: "spawn", ID: "interacted", Interaction: true, Status: "completed", Summary: "Interacted", CreatedAt: base})
@@ -109,14 +110,15 @@ func TestAppendCodexAgentRowOnlyAppends(t *testing.T) {
 	}
 	// A completed row whose output payload carries the id the store would
 	// give the output of a new row "fresh".
-	if err := insertWithPayloadCarded(s, Item{ID: "done", ThreadID: "t", TurnIndex: 0, ItemIndex: 9, Kind: "tool_call", Role: "assistant", Status: "completed", ParentID: "spawn", PayloadID: CodexAgentOutputPayloadID("fresh"), CreatedAt: base},
-		Payload{ID: CodexAgentOutputPayloadID("fresh"), Kind: "command_output", Data: []byte("original"), CreatedAt: base}); err != nil {
+	if err := insertWithPayloadCarded(s, Item{ID: "done", ThreadID: "t", TurnIndex: 0, ItemIndex: 9, Kind: "tool_call", Role: "assistant", Status: "completed", ParentID: "spawn", PayloadID: AttachedPayloadID("command_output", "fresh"), CreatedAt: base},
+		Payload{ID: AttachedPayloadID("command_output", "fresh"), Kind: "command_output", Data: []byte("original"), CreatedAt: base}); err != nil {
 		t.Fatal(err)
 	}
 
 	for _, tc := range []struct {
-		name, id, parent, meta string
-		output                 bool
+		name, id, parent string
+		meta             map[string]json.RawMessage
+		output           bool
 	}{
 		{name: "a parent that is not a tool_call", id: "new-under-text", parent: "text"},
 		{name: "a parent whose chain holds the row", id: "cycled", parent: "loop"},
@@ -127,7 +129,8 @@ func TestAppendCodexAgentRowOnlyAppends(t *testing.T) {
 		{name: "a scoped user prompt in the same place", id: "prompt", parent: "spawn"},
 		{name: "a nested spawn in the same place", id: "nested-spawn", parent: "spawn"},
 		{name: "an output payload id another row holds", id: "fresh", parent: "spawn", output: true},
-		{name: "a meta naming a transcript root", id: "rooted", parent: "spawn", meta: `{"` + metaKeyTranscriptRootID + `":"spawn"}`},
+		{name: "a meta naming a transcript root", id: "rooted", parent: "spawn", meta: map[string]json.RawMessage{metaKeyTranscriptRootID: json.RawMessage(`"spawn"`)}},
+		{name: "a meta naming an empty transcript root", id: "rooted-empty", parent: "spawn", meta: map[string]json.RawMessage{metaKeyTranscriptRootID: json.RawMessage(`""`)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before, existed, err := s.GetThreadItem("t", tc.id)
@@ -148,7 +151,7 @@ func TestAppendCodexAgentRowOnlyAppends(t *testing.T) {
 			}
 		})
 	}
-	if data, err := s.GetPayloadData("t", CodexAgentOutputPayloadID("fresh")); err != nil || string(data) != "original" {
+	if data, err := s.GetPayloadData("t", AttachedPayloadID("command_output", "fresh")); err != nil || string(data) != "original" {
 		t.Fatalf("done's output = %q, %v; want original", data, err)
 	}
 }
@@ -190,4 +193,88 @@ func TestAppendCodexAgentRowUnderAnInheritedParent(t *testing.T) {
 	if _, found, err := s.GetThreadItem("fork", "cmd-early"); err != nil || found {
 		t.Fatalf("row before the fork's cut stored: found=%v err=%v", found, err)
 	}
+}
+
+// The store encodes an agent row's meta and writes its execution tag: the
+// stored meta holds each key once, the tag is ExecutionTurnID's, and a meta
+// that carries its own tag is refused.
+func TestAppendCodexAgentRowEncodesItsMeta(t *testing.T) {
+	s := newTestStore(t)
+	base := time.Now().UnixMilli()
+	createDeleteConversationThread(t, s, "t", base)
+	if err := s.InsertItem(Item{ID: "spawn", ThreadID: "t", Kind: "tool_call", Role: "assistant", Status: "completed", CreatedAt: base}); err != nil {
+		t.Fatal(err)
+	}
+	persisted, written, err := appendCodexAgentRowForTest(t, s, CodexAgentRow{ThreadID: "t", ParentID: "spawn", ID: "cmd", Status: "completed",
+		Meta: map[string]json.RawMessage{"command": json.RawMessage(`"ls"`)}, ExecutionTurnID: "B", CreatedAt: base})
+	if err != nil || !written {
+		t.Fatalf("append: written=%v err=%v", written, err)
+	}
+	if want := `{"codex_execution_turn_id":"B","command":"ls"}`; persisted.Meta != want {
+		t.Fatalf("stored meta %s, want %s", persisted.Meta, want)
+	}
+	_, written, err = appendCodexAgentRowForTest(t, s, CodexAgentRow{ThreadID: "t", ParentID: "spawn", ID: "self-tagged", Status: "completed",
+		Meta: map[string]json.RawMessage{CodexExecutionTurnMetaKey: json.RawMessage(`"A"`)}, CreatedAt: base})
+	if err == nil || written {
+		t.Fatalf("a meta with its own execution tag: written=%v err=%v, want refused", written, err)
+	}
+}
+
+// A command's output payload id that the thread's imported history or the
+// ancestor a pointer fork reads already holds is refused, and the stored
+// bytes stay as they were.
+func TestAppendCodexAgentRowRefusesAnOutputIDHeldElsewhere(t *testing.T) {
+	outputID := AttachedPayloadID("command_output", "fresh")
+	assertRefused := func(t *testing.T, s *Store, thread string, holders ...string) {
+		t.Helper()
+		_, written, err := appendCodexAgentRowForTest(t, s, CodexAgentRow{ThreadID: thread, ParentID: "spawn", ID: "fresh", Status: "completed",
+			Output: &CodexAgentOutput{Data: []byte("replaced")}})
+		if !errors.Is(err, ErrItemNotAppended) || written {
+			t.Fatalf("append fresh on %s: written=%v err=%v, want ErrItemNotAppended", thread, written, err)
+		}
+		for _, holder := range holders {
+			if data, err := s.GetPayloadData(holder, outputID); err != nil || string(data) != "original" {
+				t.Fatalf("%s's output = %q, %v; want original", holder, data, err)
+			}
+		}
+		if _, found, err := s.GetThreadItem(thread, "fresh"); err != nil || found {
+			t.Fatalf("fresh stored on %s: found=%v err=%v", thread, found, err)
+		}
+	}
+	base := int64(1_700_000_000_000)
+	spawn := Item{ID: "spawn", TurnIndex: 0, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "collab_agent", Meta: "{}", CreatedAt: base}
+	done := Item{ID: "done", TurnIndex: 0, ItemIndex: 2, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "command_execution", ParentID: "spawn", PayloadID: outputID, Meta: "{}", CreatedAt: base}
+	original := Payload{ID: outputID, Kind: "command_output", Meta: "{}", Data: []byte("original"), CreatedAt: base}
+
+	t.Run("imported history", func(t *testing.T) {
+		s := newTestStore(t)
+		newImportTargetThread(t, s, "imp")
+		user := Item{ID: "user-0", TurnIndex: 0, Kind: "user_text", Role: "user", Status: "completed", Meta: "{}", CreatedAt: base}
+		if err := s.ApplyImportBatch("imp", ImportBatch{
+			Turns: []Turn{{TurnID: "imp:0", ThreadID: "imp", TurnIndex: 0, StartedAt: base}},
+			Rows:  []ImportRow{{Item: user}, {Item: spawn}, {Item: done, Payload: &original}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		assertRefused(t, s, "imp", "imp")
+	})
+	t.Run("a pointer fork's ancestor", func(t *testing.T) {
+		s := newTestStore(t)
+		createDeleteConversationThread(t, s, "source", base)
+		for _, item := range []Item{{ID: "user-0", TurnIndex: 0, Kind: "user_text", Role: "user"}, spawn} {
+			item.ThreadID = "source"
+			if err := s.InsertItem(item); err != nil {
+				t.Fatal(err)
+			}
+		}
+		done := done
+		done.ThreadID = "source"
+		if err := insertWithPayloadCarded(s, done, original); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CreatePointerFork(makeThread("fork", "codex"), "source", ForkCut{}, testInterruptedSummary, base); err != nil {
+			t.Fatal(err)
+		}
+		assertRefused(t, s, "fork", "fork", "source")
+	})
 }
