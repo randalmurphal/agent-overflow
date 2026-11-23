@@ -4,6 +4,10 @@ import { seedAgentThread } from './agent-visibility-helpers.js';
 import { PAIRED_APP_MOUNT_MS, confirmOnHost, mintInvite, nonLoopbackIPv4, redeemOnScreen, socketAnswers } from './offhost-helpers.js';
 import { watchProjectsQuiet } from './sidebar-quiet-helpers.js';
 
+// The reconnect ladder's longest step for a paired page
+// (frontend/src/lib/transport/wsClient.ts RECONNECT_MAX_REMOTE_MS).
+const RECONNECT_MAX_REMOTE_MS = 30_000;
+
 export function offlineStartupFlow(): void {
   test('a paired frontend opens offline without toast spam and restores its thread on reconnect', async ({ page }) => {
     // Room for the reconnect's wait (PAIRED_REDIAL_MS) on top of the rest.
@@ -16,6 +20,10 @@ export function offlineStartupFlow(): void {
     let capture = false;
     const toasts: string[] = [];
     await page.exposeFunction('__recordStartupToast', (text: string) => { if (capture) toasts.push(text); });
+    // The page clock runs as the real one does until the reconnect ladder's
+    // attempts are run below by moving it on. Installed before the deadline
+    // tracker below, which wraps the clock's timers.
+    await page.clock.install();
     await page.addInitScript(() => {
       // Boot reads race a 2.5s deadline (COMPUTER_READ_DEADLINE_MS and the
       // UI-state read, both through readBeforeDeadline). Track every timer
@@ -79,16 +87,20 @@ export function offlineStartupFlow(): void {
       await expect(page.getByTestId('thread-row')).toHaveCount(1);
       // The banner says the computer is unreachable and carries Retry, so
       // the Projects section adds no line and runs nothing through the
-      // ladder's next two attempts.
+      // ladder's next two attempts, run by moving the page clock over two of
+      // its longest steps (RECONNECT_MAX_REMOTE_MS).
       const dialed = refused;
-      expect(await watchProjectsQuiet(page, () => expect.poll(() => refused, { timeout: 30_000 }).toBeGreaterThanOrEqual(dialed + 2)))
-        .toMatchObject({ statusLines: [], animations: [] });
+      expect(await watchProjectsQuiet(page, async () => {
+        await page.clock.runFor(2 * RECONNECT_MAX_REMOTE_MS + 1_000);
+        await expect.poll(() => refused).toBeGreaterThanOrEqual(dialed + 2);
+      })).toMatchObject({ statusLines: [], animations: [] });
       await expect(page.getByTestId('transport-status-retry')).toBeVisible();
       expect(toasts).toEqual([]);
       const answered = answers.count();
       online = true;
       // The banner goes once the backend answers the ladder's next dial,
-      // wherever in its climb the outage ended.
+      // wherever in its climb the outage ended: at most one longest step on.
+      await page.clock.runFor(RECONNECT_MAX_REMOTE_MS);
       await answers.waitBeyond(answered);
       await expect(page.getByTestId('transport-status-banner')).toHaveCount(0);
       await expect(page.getByText('Ready.', { exact: true })).toBeVisible();
