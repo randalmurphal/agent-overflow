@@ -54,21 +54,34 @@ func Spawn() (*Client, error) {
 	return &Client{cmd: cmd, w: w}, nil
 }
 
-// scriptHandoff bounds startSidecar's write of the script. The shell reads
+// scriptHandoff bounds the write of the sidecar's script. The shell reads
 // its script as soon as it runs, so only a shell that never runs waits it out.
 const scriptHandoff = 10 * time.Second
 
-// startSidecar starts cmd, a sidecarCommand, and returns once the shell's
-// stdin holds all of script and has ended. The write is made here, by the
-// caller's own goroutine: a Stdin that is not a file would be copied to the
-// shell by a goroutine exec starts after the shell, and a parent killed
-// before that goroutine ran would leave the sidecar an empty script, so it
-// would exit at once and reap nothing. The shell reads while this writes,
-// so the script's size is not bounded by the pipe's. A parent that dies
-// during the write leaves a script cut short, which the shell does not run:
-// sidecarScript is one compound command. When the handoff fails, the
-// sidecar is ended and waited for.
+// startSidecar starts cmd, a sidecarCommand, and returns once the shell
+// holds all of script. The shell is handed script as one brace group
+// (braceGroup), so it runs none of it until it has read all of it.
 func startSidecar(cmd *exec.Cmd, script string) error {
+	return handScript(cmd, braceGroup(script), scriptHandoff)
+}
+
+// braceGroup is script as one compound command. A shell given only part of
+// it, because the parent died while writing it, meets a syntax error and
+// runs nothing; given script bare, it would run every whole command before
+// the cut, which near the script's end signals the watched groups at once.
+func braceGroup(script string) string {
+	return "{\n" + script + "\n}\n"
+}
+
+// handScript starts cmd and returns once its stdin holds all of text and
+// has ended, or fails within bound. The write is made here, by the caller's
+// own goroutine: a Stdin that is not a file would be copied to the shell by
+// a goroutine exec starts after the shell, and a parent killed before that
+// goroutine ran would leave the sidecar an empty script, so it would exit at
+// once and reap nothing. The shell reads while this writes, so the pipe's
+// buffer does not bound the text. When the handoff fails, the process is
+// ended and waited for.
+func handScript(cmd *exec.Cmd, text string, bound time.Duration) error {
 	stdin, feed, err := os.Pipe()
 	if err != nil {
 		return fmt.Errorf("script pipe: %w", err)
@@ -79,10 +92,10 @@ func startSidecar(cmd *exec.Cmd, script string) error {
 	}
 	err = stdin.Close()
 	if err == nil {
-		err = feed.SetWriteDeadline(time.Now().Add(scriptHandoff))
+		err = feed.SetWriteDeadline(time.Now().Add(bound))
 	}
 	if err == nil {
-		_, err = feed.WriteString(script)
+		_, err = feed.WriteString(text)
 	}
 	if err = errors.Join(err, feed.Close()); err == nil {
 		return nil

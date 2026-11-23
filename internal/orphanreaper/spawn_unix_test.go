@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -17,14 +19,56 @@ import (
 // runs nothing: the shell reads the whole brace group before any of it, so
 // the cut is a syntax error and no group is signalled, wherever the cut is.
 func TestAScriptCutShortSignalsNothing(t *testing.T) {
-	for _, keep := range []int{len(sidecarScript) - 3, len(sidecarScript) - 20, len(sidecarScript) / 2, 10} {
-		calls, stderr, err := recordScript(t, sidecarScript[:keep], formatWatch(200))
+	whole := braceGroup(recorders + sidecarScript)
+	for _, keep := range []int{len(whole) - 3, len(whole) - 20, len(whole) / 2, len(recorders) + 12} {
+		calls, stderr, err := recordStart(t, formatWatch(200), func(cmd *exec.Cmd) error {
+			return handScript(cmd, whole[:keep], scriptHandoff)
+		})
 		if len(calls) != 0 {
-			t.Errorf("a script cut at %d of %d bytes ran: %q", keep, len(sidecarScript), calls)
+			t.Errorf("a script cut at %d of %d bytes ran: %q", keep, len(whole), calls)
 		}
 		if _, failed := errors.AsType[*exec.ExitError](err); !failed {
-			t.Errorf("a script cut at %d of %d bytes exited %v, want the shell's syntax failure (stderr %q)", keep, len(sidecarScript), err, stderr)
+			t.Errorf("a script cut at %d of %d bytes exited %v, want the shell's syntax failure (stderr %q)", keep, len(whole), err, stderr)
 		}
+	}
+}
+
+// A script larger than a pipe holds is handed over whole: the shell reads
+// while the parent writes.
+func TestAScriptLargerThanAPipeIsHandedOverWhole(t *testing.T) {
+	padding := strings.Repeat("# "+strings.Repeat("x", 62)+"\n", 4096) // 256 KiB; Linux pipes default to 64 KiB.
+	calls, stderr, err := recordStart(t, formatWatch(200), func(cmd *exec.Cmd) error {
+		return startSidecar(cmd, recorders+padding+sidecarScript)
+	})
+	if err != nil {
+		t.Fatalf("sidecar exit: %v (stderr %q)", err, stderr)
+	}
+	if want := []string{"kill -TERM -200", "sleep 7", "kill -KILL -200"}; !slices.Equal(calls, want) {
+		t.Errorf("calls = %q, want %q", calls, want)
+	}
+}
+
+// A process that never reads its script fails the handoff at the bound and
+// is ended and waited for, not left running or left to hold the caller.
+func TestAHandoffNothingReadsFailsAtItsBoundAndEndsTheProcess(t *testing.T) {
+	cmd := exec.Command("sleep", "120")
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+	done := make(chan error, 1)
+	go func() { done <- handScript(cmd, strings.Repeat("#", 2<<20), 200*time.Millisecond) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("handScript = %v, want its deadline", err)
+		}
+		if cmd.ProcessState == nil {
+			t.Fatal("the process that never read was not waited for")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("handScript outlived its bound")
 	}
 }
 

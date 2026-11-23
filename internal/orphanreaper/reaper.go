@@ -30,12 +30,7 @@ const killGracePeriod = 2 * time.Second
 // is the script's one external command, and a shell that cannot fork it
 // (the user's process limit is spent) exits there: bash, dash and busybox
 // all do. The trap then sends the SIGKILL without the grace.
-//
-// The whole script is one brace group, so the shell runs none of it until it
-// has read all of it: a script cut short, because the parent died while
-// writing it (startSidecar), is a syntax error that signals nothing.
-const sidecarScript = `{
-watched=
+const sidecarScript = `watched=
 while read -r verb pgid extra; do
 	case $verb:$pgid:$extra in
 	::) continue ;;
@@ -64,5 +59,4 @@ trap 'for g in $watched; do kill -KILL "-$g" 2>/dev/null; done
 set -- $watched
 echo "orphanreaper: parent died; reaped $# process group(s)" >&2' EXIT
 sleep "$2"
-}
 `

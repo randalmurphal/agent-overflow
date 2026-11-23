@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -22,36 +23,44 @@ import (
 // It returns the recorded calls in order and the script's stderr.
 func recordSidecar(t *testing.T, input string) (calls []string, stderr string) {
 	t.Helper()
-	calls, stderr, err := recordScript(t, sidecarScript, input)
+	calls, stderr, err := recordStart(t, input, func(cmd *exec.Cmd) error {
+		return startSidecar(cmd, recorders+sidecarScript)
+	})
 	if err != nil {
 		t.Fatalf("sidecar exit: %v (stderr %q)", err, stderr)
 	}
 	return calls, stderr
 }
 
-// recordScript is recordSidecar for any script, and returns how the shell
-// exited.
-func recordScript(t *testing.T, script, input string) (calls []string, stderr string, exit error) {
+// recorders replaces kill and sleep with functions that write their
+// arguments to fd 4.
+const recorders = `kill() { echo "kill $*" >&4; }; sleep() { echo "sleep $*" >&4; }` + "\n"
+
+// recordStart runs a sidecar command that start starts, with input as its
+// control lines and fd 4 recorded, and returns how the shell exited. The
+// control lines come from a file, so a shell that never reads them, and
+// input of any size, hold nothing up.
+func recordStart(t *testing.T, input string, start func(*exec.Cmd) error) (calls []string, stderr string, exit error) {
 	t.Helper()
-	control, feed, err := os.Pipe()
+	control, err := os.Create(filepath.Join(t.TempDir(), "control"))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.WriteString(input); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Seek(0, io.SeekStart); err != nil {
 		t.Fatal(err)
 	}
 	recorded, record, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The control lines wait in the pipe, ended, before the shell starts: a
-	// shell that exits without reading them cannot fail the write.
-	if _, err := io.WriteString(feed, input); err != nil {
-		t.Fatal(err)
-	}
-	_ = feed.Close()
 	cmd := sidecarCommand(control, 7*time.Second)
 	cmd.ExtraFiles = append(cmd.ExtraFiles, record) // fd 4
 	var errOut bytes.Buffer
 	cmd.Stderr = &errOut
-	if err := startSidecar(cmd, `kill() { echo "kill $*" >&4; }; sleep() { echo "sleep $*" >&4; }`+"\n"+script); err != nil {
+	if err := start(cmd); err != nil {
 		t.Fatal(err)
 	}
 	_ = control.Close()
