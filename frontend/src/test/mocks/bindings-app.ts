@@ -32,12 +32,21 @@ export function unansweredBinding(name: string): Error {
 }
 
 /**
- * Internal export of the mocks registry. Imported by the wailsio-runtime
- * mock so Call.ByName dispatches to the same per-name handlers that
- * setBindingMock installs. Not part of the public test surface — prefer
- * setBindingMock / getBindingMock in tests.
+ * The mock that answers `name`: the one a test installed, or the passive
+ * load's default, whose spy is made on first use. Undefined when neither
+ * exists. The wailsio-runtime mock dispatches through it too.
  */
-export const __bindingMocksInternal = mocks;
+export function bindingMockFor(name: string): MockedFn | undefined {
+  const installed = mocks.get(name);
+  if (installed !== undefined) return installed;
+  if (!Object.hasOwn(PASSIVE_LOADS, name)) return undefined;
+  return setBindingMock(name, PASSIVE_LOADS[name]);
+}
+
+/** Every name a mock answers or a passive load would answer. */
+export function bindingMockNames(): string[] {
+  return [...new Set([...mocks.keys(), ...Object.keys(PASSIVE_LOADS)])];
+}
 
 /**
  * Install (or replace) a mock implementation for a binding.
@@ -112,7 +121,7 @@ export function setAttachmentThumbnailMock(
  * Direct read for assertions (call counts, args).
  */
 export function getBindingMock(name: string): MockedFn | undefined {
-  return mocks.get(name);
+  return bindingMockFor(name);
 }
 
 /**
@@ -120,7 +129,6 @@ export function getBindingMock(name: string): MockedFn | undefined {
  */
 export function resetBindingMocks(): void {
   mocks.clear();
-  installPassiveLoads();
 }
 
 // Loads a rendered surface or a store starts on its own, with no user
@@ -268,15 +276,9 @@ function highlightingUnavailable(): Record<string, () => Promise<never>> {
   }]));
 }
 
-function installPassiveLoads(): void {
-  for (const [name, impl] of Object.entries(PASSIVE_LOADS)) setBindingMock(name, impl);
-}
-
-installPassiveLoads();
-
 function dispatch(name: string) {
   return (...args: unknown[]) => {
-    const fn = mocks.get(name);
+    const fn = bindingMockFor(name);
     if (!fn) throw unansweredBinding(name);
     return fn(...args);
   };

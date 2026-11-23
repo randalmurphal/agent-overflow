@@ -11,6 +11,10 @@ import { namedExports, RESET_NAME, RESET_REGISTRY_KEY, stepExports } from './tes
 type Node = { type: string; [key: string]: unknown };
 
 const TEST_FILE = /\.(?:test|spec)\.[tj]s$|\.manual\.ts$/;
+// What testResets.ts names, read once: every transformed module looks
+// itself up here.
+const NAMED = namedExports();
+const STEPS = stepExports();
 const RESET_TEXT = /(?:reset|clear)\w*ForTest/;
 
 /** The module key testResets.ts names a module by, or null for a module
@@ -53,8 +57,8 @@ function registryLine(key: string, call: string): string {
  * that it finished loading (a POSTURE step that waited on it may now run).
  * Null for a package with nothing to register. */
 export function registration(key: string, code: string): string | null {
-  const named = namedExports().get(key);
-  const steps = stepExports().get(key) ?? new Set<string>();
+  const named = NAMED.get(key);
+  const steps = STEPS.get(key) ?? new Set<string>();
   const packaged = !key.startsWith('src/');
   // Before the registry loads (the setup files' own imports) no POSTURE
   // step can be waiting, so the notice needs no registry.

@@ -10,7 +10,7 @@
 // generated module exports (superset rule, stated at the block comment in
 // the mock), and must export nothing the generated module lost, so a deleted
 // binding takes its mock line with it.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import generatedBindings from '../../../bindings/agent-overflow/app.ts?raw';
 
 import * as mockBindings from './bindings-app';
@@ -23,7 +23,8 @@ const mockMachinery = new Set([
   'setAttachmentThumbnailMock',
   'getBindingMock',
   'resetBindingMocks',
-  '__bindingMocksInternal',
+  'bindingMockFor',
+  'bindingMockNames',
   'unansweredBinding',
 ]);
 
@@ -102,6 +103,23 @@ describe('bindings-app passive loads', () => {
       const refusal = await (read() as Promise<unknown>).catch((error: unknown) => error);
       expect(refusal).toBeInstanceOf(TransportError);
       expect(refusal).toMatchObject({ code: 'scope_required', scope: 'files:read' });
+    }
+  });
+});
+
+describe('the passive loads', () => {
+  it('make no spy on a reset, and one on first use', async () => {
+    const made = vi.spyOn(vi, 'fn');
+    try {
+      mockBindings.resetBindingMocks();
+      expect(made).not.toHaveBeenCalled();
+      await mockBindings.ListProjects();
+      expect(made).toHaveBeenCalledTimes(1);
+      expect(mockBindings.getBindingMock('ListProjects')).toHaveBeenCalledTimes(1);
+      await mockBindings.ListProjects();
+      expect(made).toHaveBeenCalledTimes(1);
+    } finally {
+      made.mockRestore();
     }
   });
 });
