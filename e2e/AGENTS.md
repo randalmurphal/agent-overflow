@@ -208,8 +208,10 @@ binaries.
   action ordered after the moment the event would have fired, and the barrier
   is proved by breaking the product so the event fires and watching the spec
   fail. A mock start held for a spec uses the scenario's `startupGate`. A spec
-  about a timer's length scales its bounds with the knob it sets. A site that
-  must hold for a time is a `WAIT_ALLOWED` entry with its reason.
+  about a timer's length scales its bounds with the knob it sets. A page
+  value a spec moves the clock across or bounds a wait by is imported from
+  `frontend/src/lib/pageTiming.ts`, which its owner reads too, never copied.
+  A site that must hold for a time is a `WAIT_ALLOWED` entry with its reason.
 - Use unique IDs and await specific events so parallel workers cannot satisfy
   each other's assertions.
 - Register event waits before triggering operations that may complete inside an
