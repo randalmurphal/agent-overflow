@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/supervise"
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/wsllauncher"
 )
 
@@ -135,9 +136,7 @@ func TestLauncherUpdateSequenceRunsTheRealCommands(t *testing.T) {
 			stable := filepath.Join(bin, "agent-overflow")
 			staged := wsllauncher.StagedPayloadPath(stable, id)
 			for path, contents := range map[string]string{stable: "old", staged: "new"} {
-				if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
-					t.Fatal(err)
-				}
+				mockexec.WriteFile(t, path, []byte(contents), 0o755)
 			}
 			config := t.TempDir()
 			recordPath := supervise.LauncherRecordPath(config, "prod", "Ubuntu")
@@ -270,9 +269,7 @@ func TestLauncherMigrationRunsTheRealCommands(t *testing.T) {
 				t.Fatal(err)
 			}
 			stable := filepath.Join(t.TempDir(), "agent-overflow")
-			if err := os.WriteFile(stable, []byte("payload"), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			mockexec.WriteFile(t, stable, []byte("payload"), 0o755)
 			recordPath := supervise.LauncherRecordPath(t.TempDir(), "prod", "Ubuntu")
 			sequence := wsllauncher.UpdateSequence{
 				RecordPath: recordPath,

@@ -15,6 +15,7 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/threadtools"
 )
 
@@ -40,9 +41,7 @@ func gateCheckoutHook(t *testing.T, repo string) (started <-chan string, release
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\npwd -P > '" + startedPipe + "'\nread gate < '" + gatePipe + "'\n"
-	if err := os.WriteFile(filepath.Join(hooks, "post-checkout"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, filepath.Join(hooks, "post-checkout"), []byte(script), 0o755)
 	testutil.RunGit(t, repo, "config", "core.hooksPath", hooks)
 	paths := make(chan string, 1)
 	go func() {

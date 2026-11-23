@@ -15,6 +15,7 @@ import (
 
 	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/supervise"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // fakeWSL stands in for wsl.exe: it checks the `-d <distro> --exec` prefix
@@ -72,9 +73,7 @@ func commandScript(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "agent-overflow")
 	script := "#!/bin/sh\nN=0\nev() { printf '" + supervise.UpdateEventPrefix + "%s\\n' \"$1\"; }\n" + body + "\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, path, []byte(script), 0o755)
 	return path
 }
 
@@ -274,9 +273,7 @@ func TestUpdatePayloadsCommitAndRemove(t *testing.T) {
 	}
 	write := func(path, contents string) {
 		t.Helper()
-		if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		mockexec.WriteFile(t, path, []byte(contents), 0o755)
 	}
 	read := func(path string) string {
 		t.Helper()

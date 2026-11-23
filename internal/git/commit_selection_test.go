@@ -14,6 +14,7 @@ import (
 
 	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func commitRepoFile(t *testing.T, repo, name, content, message string) {
@@ -58,9 +59,7 @@ func installPreCommitHook(t *testing.T, repo, script string) {
 	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(hook, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, hook, []byte("#!/bin/sh\n"+script), 0o755)
 }
 
 // A pre-commit hook that outlasts the bound other git commands get still
@@ -463,9 +462,7 @@ func TestCommitSelectedLeavesNewFilesUntrackedWhenTheCommitFails(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho hook says no >&2\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, hook, []byte("#!/bin/sh\necho hook says no >&2\nexit 1\n"), 0o755)
 	writeRepoFile(t, repo, "README.txt", "hello\nedited\n")
 	writeRepoFile(t, repo, "new.txt", "fresh\n")
 	head := runGitStdout(t, repo, "rev-parse", "HEAD")
@@ -491,9 +488,7 @@ func TestCommitSelectedFailureKeepsAStagedDeletionOfTheSamePath(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, hook, []byte("#!/bin/sh\nexit 1\n"), 0o755)
 	testutil.RunGit(t, repo, "rm", "--cached", "--quiet", "README.txt")
 	writeRepoFile(t, repo, "README.txt", "hello\nedited\n")
 	before := runGitStdout(t, repo, "status", "--porcelain")
@@ -534,9 +529,7 @@ func TestCommitSelectedCommitsRepositoriesAsGitlinks(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, hook, []byte("#!/bin/sh\nexit 1\n"), 0o755)
 	if _, err := core.CommitSelected(repo, "refused", "", listedSelection(t, repo, "nested")); err == nil {
 		t.Fatal("the hook did not refuse the commit")
 	}

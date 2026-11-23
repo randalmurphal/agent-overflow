@@ -11,6 +11,7 @@ import (
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // prRevisionRead is one PR read at a revision, made with or without a
@@ -116,9 +117,7 @@ func TestPRRevisionReadsPromptOnlyForAUserRead(t *testing.T) {
 			dir := t.TempDir()
 			askpassLog := filepath.Join(dir, "askpass.log")
 			askpass := filepath.Join(dir, "askpass.sh")
-			if err := os.WriteFile(askpass, []byte("#!/bin/sh\necho invoked >> '"+askpassLog+"'\necho someone\n"), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			mockexec.WriteFile(t, askpass, []byte("#!/bin/sh\necho invoked >> '"+askpassLog+"'\necho someone\n"), 0o755)
 			t.Setenv("GIT_ASKPASS", askpass)
 			asked := func() bool {
 				_, err := os.Stat(askpassLog)

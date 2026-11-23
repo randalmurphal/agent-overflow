@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/supervise"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func handoffRecord(dir string) supervise.LauncherRecord {
@@ -119,12 +120,8 @@ func TestPublishLauncherFile(t *testing.T) {
 		dir = t.TempDir()
 		staged = filepath.Join(dir, "staged.exe")
 		install = filepath.Join(dir, "agent-overflow.exe")
-		if err := os.WriteFile(staged, []byte("new"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(install, []byte("old"), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		mockexec.WriteFile(t, staged, []byte("new"), 0o755)
+		mockexec.WriteFile(t, install, []byte("old"), 0o755)
 		return dir, staged, install
 	}
 	read := func(t *testing.T, p string) string {

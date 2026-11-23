@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // copyWhileAForkHoldsTheLock copies one file of the given mode while the
@@ -32,9 +34,7 @@ func copyWhileAForkHoldsTheLockWritten(t *testing.T, mode os.FileMode) (waited, 
 	t.Helper()
 	project := t.TempDir()
 	worktree = t.TempDir()
-	if err := os.WriteFile(filepath.Join(project, "tool"), []byte("#!/bin/sh\nexit 0\n"), mode); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, filepath.Join(project, "tool"), []byte("#!/bin/sh\nexit 0\n"), mode)
 	syscall.ForkLock.Lock()
 	done := make(chan error, 1)
 	go func() { done <- copyEntries(context.Background(), project, worktree, []string{"tool"}) }()

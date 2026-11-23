@@ -12,9 +12,17 @@ import type { SeedResult } from './fixtures.js';
 import { publishBranch, type ForgeRepo } from './forge-helpers.js';
 import { pairOwnDevice } from './headless-pairing-helpers.js';
 import { trackedRow } from './merge-cleanup-helpers.js';
-import { FOOTER_TOKEN_PATTERN, THREAD_TOOLS_SERVER, awaitToolAnswer, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
+import { FOOTER_TOKEN_PATTERN, THREAD_TOOLS_SERVER, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 
 const TURN_TIMEOUT_MS = 120_000;
+
+/** The mock gates writePeerSpawns holds two workers' turns at. */
+export interface PeerSpawnHolds {
+  /** The Codex worker's spawn turn, whose run stays open. */
+  spawn: string;
+  /** The nudged worker's nudge turn, whose run stays open. */
+  nudge: string;
+}
 
 /**
  * Review drafts on `threadId`, a thread whose session takes more turns: a
@@ -213,9 +221,14 @@ export async function writeThreadRequests(harness: HarnessApp, version: string, 
  * spawn's link (thread_receipt_nudges) until that computer takes it, which
  * it never does once closed: one ends at rest with its figures (run_open
  * 0), the other arms a loop, so it stays open (run_open 1). Returns the
- * project and the workers' threads.
+ * project and the workers' threads, each at rest.
+ *
+ * `hold` names the mock gates two of those turns stop at after the loop
+ * each arms, with their runs already open: the Codex worker's spawn turn
+ * and the nudged worker's nudge turn. Only a spec that proves the step
+ * waits for them passes it (upgrade-corpus-peer-spawns.spec.ts).
  */
-export async function writePeerSpawns(harness: HarnessApp, version: string, nonce: string): Promise<{ projectId: string; threadIds: string[] }> {
+export async function writePeerSpawns(harness: HarnessApp, version: string, nonce: string, hold?: PeerSpawnHolds): Promise<{ projectId: string; threadIds: string[] }> {
   const name = `topup-peer-spawns-v${version}-${nonce}`;
   const seeded = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{ name, repo: { commits: [{ message: 'init', files: { 'README.md': `# Top-up peer spawns v${version}\n` } }] }, threads: [] }],
@@ -239,14 +252,26 @@ export async function writePeerSpawns(harness: HarnessApp, version: string, nonc
       provider: 'claude',
       turns: [
         { text: 'Finished over here.' },
-        { steps: [{ call: { tool: 'thread_loop', args: { label: 'peer-notes', note: 'look at the notes', every_seconds: 3600 } } }], text: 'Watching the notes.' },
+        {
+          steps: [
+            { call: { tool: 'thread_loop', args: { label: 'peer-notes', note: 'look at the notes', every_seconds: 3600 } } },
+            ...(hold ? [{ gate: hold.nudge }] : []),
+          ],
+          text: 'Watching the notes.',
+        },
       ],
       afterTurns: 'repeatLast',
     }));
     await setScenario(harness, cwd, threadToolsScenario({
       name: `topup-peer-open-${nonce}`,
       provider: 'codex',
-      turns: [{ steps: [{ call: { tool: 'thread_loop', args: { label: 'peer-board', note: 'look at the board', every_seconds: 3600 } } }], text: 'Watching the board.' }],
+      turns: [{
+        steps: [
+          { call: { tool: 'thread_loop', args: { label: 'peer-board', note: 'look at the board', every_seconds: 3600 } } },
+          ...(hold ? [{ gate: hold.spawn }] : []),
+        ],
+        text: 'Watching the board.',
+      }],
       afterTurns: 'silent',
     }));
     const spawn = (title: string, provider: string) => ({
@@ -275,6 +300,11 @@ export async function writePeerSpawns(harness: HarnessApp, version: string, nonc
       if (answer.isError || !answer.value) throw new Error(`top-up: the paired spawn whose run ${run} was refused: ${answer.text}`);
       workers.push(answer.value.thread_id);
     }
+    // The open run is recorded at the spawn, so the receipts alone do not
+    // say the Codex worker's turn has ended. The harness log keeps a turn
+    // that ended before its spawn answered; taking each here also keeps the
+    // nudges' wait below from matching a spawn's turn.
+    for (const worker of workers) await awaitTurnCompleted(harness, worker, TURN_TIMEOUT_MS);
     await expect.poll(() => receiptRuns(harness, workers), {
       message: "top-up: the paired spawns' receipts never recorded two ended runs and one open run",
       timeout: TURN_TIMEOUT_MS,
@@ -282,7 +312,9 @@ export async function writePeerSpawns(harness: HarnessApp, version: string, nonc
     // The paired computer's first renewal activates its pairing and spends
     // the refresh secret its redemption was issued. It probes for that on
     // an interval and closing it ends the probe, so the renewal is awaited.
-    await expect.poll(() => renewals(harness), {
+    // A store an earlier top-up wrote keeps that pairing's spent secrets,
+    // so only this computer's count.
+    await expect.poll(() => renewals(harness, workers), {
       message: 'top-up: the paired computer never renewed the session its pairing opened',
       timeout: TURN_TIMEOUT_MS,
     }).toBeGreaterThan(0);
@@ -295,8 +327,12 @@ export async function writePeerSpawns(harness: HarnessApp, version: string, nonc
   const [ended, , nudged] = workers;
   await harness.rpc('StopSession', ended);
   await harness.rpc('StartSession', ended);
+  // The open nudge run is recorded when the message is taken, so the
+  // receipts alone do not say the second worker's turn has ended.
+  const nudgesAnswered = Promise.all([ended, nudged].map((worker) => awaitTurnCompleted(harness, worker, TURN_TIMEOUT_MS)));
   await harness.rpc('SendMessage', ended, 'Check the notes once more.', null);
   await harness.rpc('SendMessage', nudged, 'Keep an eye on the notes.', null);
+  await nudgesAnswered;
   await expect.poll(() => receiptNudges(harness, [ended, nudged]), {
     message: "top-up: the paired spawns' links never kept one ended and one open nudge run",
     timeout: TURN_TIMEOUT_MS,
@@ -319,12 +355,20 @@ function receiptRuns(harness: HarnessApp, workers: string[]): Array<{ run_open: 
   }
 }
 
-/** How many refresh secrets a renewal spent here: the spent secret names its successor and the device key that spent it. */
-function renewals(harness: HarnessApp): number {
+/**
+ * How many refresh secrets a renewal of the paired computer that spawned
+ * `workers` spent here, its device named by their spawn receipts: the spent
+ * secret names its successor and the device key that spent it.
+ */
+function renewals(harness: HarnessApp, workers: string[]): number {
   const database = new DatabaseSync(path.join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
   try {
-    const row = database.prepare(`SELECT count(*) AS n FROM refresh_secrets
-      WHERE consumed_at IS NOT NULL AND consumed_by IS NOT NULL AND next_secret_hash IS NOT NULL`).get() as { n: number };
+    const row = database.prepare(`SELECT count(*) AS n FROM refresh_secrets r
+        JOIN sessions s ON s.id = r.session_id
+      WHERE s.device_id IN (SELECT owner_device_id FROM thread_request_receipts
+                             WHERE kind = 'spawn' AND target_thread_id IN (SELECT value FROM json_each(?)))
+        AND r.consumed_at IS NOT NULL AND r.consumed_by IS NOT NULL AND r.next_secret_hash IS NOT NULL`)
+      .get(JSON.stringify(workers)) as { n: number };
     return row.n;
   } finally {
     database.close();

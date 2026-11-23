@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/harness/instanceinfo"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // forcedStopBudget bounds every wait this file performs. A --force stop
@@ -396,9 +397,7 @@ func startSleeperNamed(t *testing.T, name string) (int, <-chan struct{}) {
 		t.Skipf("cannot read %s: %v", source, err)
 	}
 	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(path, data, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, path, data, 0o700)
 	cmd := exec.Command(path, "600")
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	if err := cmd.Start(); err != nil {

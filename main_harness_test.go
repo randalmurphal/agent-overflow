@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/harnessrpc"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestParseFlagsHarnessRequiresDataDir(t *testing.T) {
@@ -177,9 +178,7 @@ func TestResolveMockProviderValidatesExistence(t *testing.T) {
 
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "mp")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write mock binary: %v", err)
-	}
+	mockexec.WriteFile(t, bin, []byte("#!/bin/sh\nexit 0\n"), 0o755)
 	got, err := resolveMockProvider(bin)
 	if err != nil {
 		t.Fatalf("resolveMockProvider: %v", err)
@@ -194,9 +193,7 @@ func TestResolveMockForge(t *testing.T) {
 		t.Fatal("accepted an explicit --mock-forge that does not exist")
 	}
 	bin := filepath.Join(t.TempDir(), "mf")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake binary: %v", err)
-	}
+	mockexec.WriteFile(t, bin, []byte("#!/bin/sh\nexit 0\n"), 0o755)
 	if got, err := resolveMockForge(bin); err != nil || got != bin {
 		t.Fatalf("resolveMockForge(%q) = %q, %v", bin, got, err)
 	}

@@ -204,9 +204,7 @@ func (r *rig) writeScript(path, version string, protocol int, hello, behavior st
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		r.t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
 	}
-	if err := os.WriteFile(path, []byte(r.renderScript(version, protocol, hello, behavior)), 0o700); err != nil {
-		r.t.Fatalf("write %s: %v", path, err)
-	}
+	mockexec.WriteFile(r.t, path, []byte(r.renderScript(version, protocol, hello, behavior)), 0o700)
 }
 
 // renderScript is one scripted version's program. hello is appended to the

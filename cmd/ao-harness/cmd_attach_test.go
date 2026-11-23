@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/harnessclient"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // fakeBrowser writes an executable file so the resolver's own
@@ -23,9 +24,7 @@ func fakeBrowser(t *testing.T, dir, name string) string {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", dir, err)
 	}
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
+	mockexec.WriteFile(t, path, []byte("#!/bin/sh\nexit 0\n"), 0o755)
 	return path
 }
 

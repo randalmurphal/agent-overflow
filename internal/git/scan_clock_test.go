@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // scanClock is the clock of a Core under test of a stat-keyed memo. A
@@ -105,9 +107,7 @@ func replaceKeepingStat(t *testing.T, path, content string) {
 		t.Fatalf("replaceKeepingStat %s: %d bytes replace %d", path, len(content), info.Size())
 	}
 	staged := path + ".replacement"
-	if err := os.WriteFile(staged, []byte(content), info.Mode().Perm()); err != nil {
-		t.Fatalf("write %s: %v", staged, err)
-	}
+	mockexec.WriteFile(t, staged, []byte(content), info.Mode().Perm())
 	if err := os.Chtimes(staged, info.ModTime(), info.ModTime()); err != nil {
 		t.Fatalf("chtimes %s: %v", staged, err)
 	}

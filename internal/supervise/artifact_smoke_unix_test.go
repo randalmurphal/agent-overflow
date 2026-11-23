@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +26,7 @@ import (
 	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/transport"
 
 	_ "modernc.org/sqlite"
@@ -55,9 +55,7 @@ func TestProductionServiceArtifact(t *testing.T) {
 	// Shell PATH synchronization is part of a real boot. Execute its probe
 	// without sourcing system login profiles that could restore a real CLI.
 	shell := filepath.Join(guardBin, "isolated-shell")
-	if err := os.WriteFile(shell, []byte("#!/bin/sh\nexec /bin/sh -c \"$2\"\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, shell, []byte("#!/bin/sh\nexec /bin/sh -c \"$2\"\n"), 0o700)
 	guardPath := guardBin + ":/usr/bin:/bin"
 	t.Setenv("PATH", guardPath)
 	t.Setenv("SHELL", shell)
@@ -210,22 +208,8 @@ func stageProductionArtifact(t *testing.T, layout supervise.Layout, source strin
 	t.Helper()
 	// Work on a copy: extraction must not create files next to the caller's
 	// release artifact, which may live in a read-only download directory.
-	in, err := os.Open(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer in.Close()
-	copyPath := filepath.Join(t.TempDir(), filepath.Base(source))
-	out, err := os.OpenFile(copyPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o700)
-	if err != nil {
-		t.Fatal(err)
-	}
 	hash := sha256.New()
-	_, copyErr := io.Copy(io.MultiWriter(out, hash), in)
-	closeErr := out.Close()
-	if err := errors.Join(copyErr, closeErr); err != nil {
-		t.Fatal(err)
-	}
+	copyPath := mockexec.CopyFile(t, filepath.Join(t.TempDir(), filepath.Base(source)), source, 0o700, hash)
 	assetName := filepath.Base(source)
 	if strings.HasSuffix(assetName, ".zip") {
 		assetName = "agent-overflow-darwin-" + runtime.GOARCH + ".zip"
