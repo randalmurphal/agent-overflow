@@ -10,6 +10,7 @@
 // explicit interval, and any call under fake timers (where each check
 // advances the fake clock by the interval), keep Vitest's own behavior.
 import { vi } from 'vitest';
+import { realTimers as uncountedTimers } from './realTimeBudget';
 
 type WaitFor = typeof vi.waitFor;
 
@@ -23,8 +24,9 @@ export interface WaitForTimers {
   clearTimeout(handle: unknown): void;
 }
 
-// Captured at import, before any test fakes them.
-const { setTimeout: realSetTimeout, clearTimeout: realClearTimeout } = globalThis;
+// Captured at import, before any test fakes them. The rechecks are not
+// counted as sleep: what the condition waits for is (realTimeBudget.ts).
+const { setTimeout: realSetTimeout, clearTimeout: realClearTimeout } = uncountedTimers();
 const realTimers: WaitForTimers = {
   setTimeout: (callback, ms) => realSetTimeout(callback, ms),
   clearTimeout: (handle) => realClearTimeout(handle as ReturnType<typeof setTimeout>),
