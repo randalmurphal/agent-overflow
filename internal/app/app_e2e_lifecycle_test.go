@@ -4,16 +4,21 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/sessionruntime"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
@@ -347,28 +352,139 @@ func TestAppFixtureTeardownEndsBackgroundWorkAndSessions(t *testing.T) {
 	}
 }
 
+// The teardown refuses a session start that work it waits for sets off, as
+// Shutdown's first step does. Without the refusal, a notice in flight at the
+// teardown started a session, that start queued a flush worker after the
+// teardown had joined the flush workers, and the worker started a second
+// session after the teardown had taken the sessions.
+func TestAppFixtureTeardownRefusesTheSessionStartsItSetsOff(t *testing.T) {
+	t.Parallel()
+	var (
+		started  bool
+		startErr error
+	)
+	t.Run("test", func(t *testing.T) {
+		app, _ := setupE2EApp(t)
+		app.appCtx, app.appCancel = context.WithCancel(context.Background())
+		thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
+		if err != nil {
+			t.Fatal(err)
+		}
+		app.startSessionFn = func(threadID string) error {
+			started = true
+			app.sessionManager().put(threadID, session{Provider: string(provider.Claude)})
+			return nil
+		}
+		// The work goes on once the teardown has begun, which cancels the App.
+		if !app.goAgentNoticeWork("teardown", func() {
+			<-app.lifeCtx().Done()
+			startErr = app.startSession(context.Background(), thread.ID)
+		}) {
+			t.Fatal("the notice work was refused before the test ended")
+		}
+	})
+	if started || !errors.Is(startErr, ErrShuttingDown) {
+		t.Errorf("a session start the teardown set off ran (started %v, error %v), want it refused", started, startErr)
+	}
+}
+
+// The teardown waits out a session start that passed the refusal before the
+// teardown began, and closes the session it registers with the rest. The
+// start is held until the teardown has taken the sessions, or for 200 ms
+// after the teardown began, so a teardown that took the sessions without
+// waiting would take them before the start registers its session.
+func TestAppFixtureTeardownClosesTheSessionOfAStartInFlight(t *testing.T) {
+	t.Parallel()
+	const standIn = "stand-in-thread"
+	var (
+		app      *App
+		started  provider.Session
+		startErr = make(chan error, 1)
+	)
+	t.Run("test", func(t *testing.T) {
+		// Made before the fixture, so they outlast its teardown, during
+		// which the start runs.
+		workspace := t.TempDir()
+		binary := testutil.WriteMockClaudeScript(t, t.TempDir(), nil)
+		app, _ = setupE2EApp(t)
+		if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+			t.Fatal(err)
+		}
+		thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
+		if err != nil {
+			t.Fatal(err)
+		}
+		app.sessionManager().put(standIn, session{Provider: string(provider.Claude)})
+		entered := make(chan struct{})
+		app.startSessionFn = func(threadID string) error {
+			close(entered)
+			for !app.shuttingDown.Load() {
+				time.Sleep(time.Millisecond)
+			}
+			for until := time.Now().Add(200 * time.Millisecond); time.Now().Before(until); time.Sleep(time.Millisecond) {
+				if _, held := app.sessionManager().get(standIn); !held {
+					break
+				}
+			}
+			if err := app.startSessionNow(threadID); err != nil {
+				return err
+			}
+			registered, _ := app.sessionManager().get(threadID)
+			started = registered.ProviderSession()
+			return nil
+		}
+		go func() { startErr <- app.startSession(context.Background(), thread.ID) }()
+		<-entered
+	})
+	if err := <-startErr; err != nil || started == nil {
+		t.Fatalf("the start in flight registered no session during the teardown: %v", err)
+	}
+	if open := len(app.sessionManager().runtime.Snapshot()); open != 0 {
+		t.Errorf("the App holds %d sessions after its teardown, want the start's taken with the rest", open)
+		for _, err := range closeLeftSessions(app) {
+			t.Error(err)
+		}
+	}
+	process, err := os.FindProcess(started.PID())
+	if err == nil {
+		err = process.Signal(syscall.Signal(0))
+	}
+	if !errors.Is(err, os.ErrProcessDone) {
+		t.Errorf("signal 0 to the provider process the start began = %v after the teardown, want it ended", err)
+	}
+}
+
+// The teardown's wait for session starts fails at its bound and names each
+// thread still starting.
+func TestWaitForSessionStartsNamesTheThreadsStillStartingAtItsBound(t *testing.T) {
+	t.Parallel()
+	sessions := sessionruntime.New()
+	start, _ := sessions.BeginStart("held-thread")
+	defer sessions.FinishStart("held-thread", start)
+	if err := waitForSessionStarts(sessions, 10*time.Millisecond); err == nil || !strings.Contains(err.Error(), "held-thread") {
+		t.Fatalf("wait = %v, want a failure naming held-thread", err)
+	}
+}
+
 // tearDownTestAppAtCleanup ends, when the test ends, what an App the test
-// built still runs, in Shutdown's order. First it cancels the App and joins
-// its session-starting background work: thread request settlements, wake
-// deliveries, and the flush dispatch workers that start a session for a
-// message queued without one. Then it refuses notice work and waits out what
-// is in flight, closes the sessions the App holds that own a provider
-// process, drains their events and waits for the settlements they started.
-// Work that outlived the test would run against its removed directories and
-// closed store, and a session left open keeps its provider process writing
-// into them.
+// built still runs, in Shutdown's order. It refuses new session starts as
+// Shutdown's first step does, so a start that work joined below sets off
+// (a flush worker's, queued by a notice's session start) is refused. It
+// cancels the App and joins its session-starting background work: thread
+// request settlements, wake deliveries, the flush dispatch workers that
+// start a session for a message queued without one, and notice work. It
+// waits out the session starts that passed the refusal before it, closes
+// the sessions the App holds that own a provider process, drains their
+// events and waits for the settlements they started. Work that outlived the
+// test would run against its removed directories and closed store, and a
+// session left open keeps its provider process writing into them.
 //
 // Every App fixture calls it once, after the cleanups that close its store
 // and remove its directories are registered, so it runs before them.
 func tearDownTestAppAtCleanup(t *testing.T, app *App) {
 	t.Helper()
 	t.Cleanup(func() {
-		app.stopAgentNoticeWork()
-		for _, err := range closeLeftSessions(app) {
-			t.Error(err)
-		}
-	})
-	t.Cleanup(func() {
+		app.shuttingDown.Store(true)
 		if app.appCancel != nil {
 			app.appCancel()
 		}
@@ -376,7 +492,36 @@ func tearDownTestAppAtCleanup(t *testing.T, app *App) {
 		if err := app.drainFlushDispatch(context.Background(), 30*time.Second); err != nil {
 			t.Errorf("join flush dispatch workers: %v", err)
 		}
+		app.stopAgentNoticeWork()
+		// Shutdown does not wait here (sessionruntime StartsInFlight).
+		if err := waitForSessionStarts(app.sessionManager().runtime, sessionStartsBound); err != nil {
+			t.Error(err)
+		}
+		for _, err := range closeLeftSessions(app) {
+			t.Error(err)
+		}
 	})
+}
+
+// sessionStartsBound is how long the teardown waits for the session starts
+// in flight. A start a test holds past its end fails the teardown here.
+const sessionStartsBound = 30 * time.Second
+
+// waitForSessionStarts returns once every session start in flight has
+// finished, or fails at bound naming the threads still starting. One pass
+// is enough once shuttingDown is set: startRegisteredSession, the one way a
+// start begins, refuses every start after it.
+func waitForSessionStarts(sessions *sessionruntime.Manager, bound time.Duration) error {
+	deadline := time.NewTimer(bound)
+	defer deadline.Stop()
+	for _, start := range sessions.StartsInFlight() {
+		select {
+		case <-start.Done:
+		case <-deadline.C:
+			return fmt.Errorf("session starts still in flight %s after the test ended, for threads %v", bound, slices.Sorted(maps.Keys(sessions.StartsInFlight())))
+		}
+	}
+	return nil
 }
 
 // closeLeftSessions takes the sessions the App holds in one step, as
