@@ -3,6 +3,7 @@ package codexconfig
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -263,12 +264,17 @@ func (s *Store) modify(fn func([]byte) ([]byte, error)) error {
 		if err != nil {
 			return err
 		}
-		ok, err := atomicfile.WriteIfUnchanged(s.path, nextData, snap.stat)
+		committed, err := atomicfile.WriteIfUnchanged(s.path, nextData, snap.stat)
+		if committed {
+			if err != nil {
+				// The new config is in place; only its directory entry may
+				// not survive a power loss. The caller goes on as written.
+				log.Printf("codexconfig: %v", err)
+			}
+			return nil
+		}
 		if err != nil {
 			return err
-		}
-		if ok {
-			return nil
 		}
 	}
 	return ErrConcurrentWrite

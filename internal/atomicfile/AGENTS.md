@@ -4,8 +4,12 @@ Write and WriteJSON durably replace small private state through a same-directory
 temporary file, file sync, rename, and directory sync. ReadJSON distinguishes an
 absent file from invalid content. ReadWithStat and WriteIfUnchanged are the
 read-modify-write against another writer of the same file (a provider CLI's
-config): the write is refused, for the caller to retry, when the file changed
-since the read. Remove deletes a file and syncs its
+config): the write is refused, for the caller to retry, when the file is not
+the version read (identity, size and modification time; appeared or
+disappeared counts). That is best-effort detection, not a guarantee: a writer
+that replaces the file between the last check and the rename is still lost.
+A write whose directory sync failed after the rename reports committed with
+the error, and callers treat it as written. Remove deletes a file and syncs its
 directory; a sync error after the unlink is still an error. Preserve 0600 files
 and 0700 directories.
 

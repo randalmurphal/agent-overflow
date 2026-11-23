@@ -3,14 +3,15 @@ package claudeconfig
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
 	"agent-overflow/internal/atomicfile"
 )
 
-// ErrConcurrentWrite reports that the file mtime/size changed between
-// our read and our write attempt. The caller may retry once.
+// ErrConcurrentWrite reports that another writer kept changing the file
+// between our read and our write across every attempt.
 var ErrConcurrentWrite = errors.New("claudeconfig: concurrent write detected")
 
 // Store reads and writes ~/.claude.json, plus the read-only slices of
@@ -78,8 +79,8 @@ func (s *Store) load() (*snapshot, error) {
 const modifyAttempts = 5
 
 // modify runs fn against the parsed snapshot, then atomically writes
-// the result back to disk. If the file's mtime or size changed
-// between our read and our write attempt, the call retries. After
+// the result back to disk. If the file changed between our read and our
+// write attempt (atomicfile.WriteIfUnchanged), the call retries. After
 // modifyAttempts it returns ErrConcurrentWrite.
 func (s *Store) modify(fn func(*orderedJSON) error) error {
 	_, err := s.modifyReporting(func(root *orderedJSON) (bool, error) {
@@ -110,12 +111,17 @@ func (s *Store) modifyReporting(fn func(*orderedJSON) (bool, error)) (bool, erro
 		if err != nil {
 			return false, fmt.Errorf("marshal: %w", err)
 		}
-		ok, err := atomicfile.WriteIfUnchanged(s.path, out, snap.stat)
+		committed, err := atomicfile.WriteIfUnchanged(s.path, out, snap.stat)
+		if committed {
+			if err != nil {
+				// The new config is in place; only its directory entry may
+				// not survive a power loss. The caller goes on as written.
+				log.Printf("claudeconfig: %v", err)
+			}
+			return true, nil
+		}
 		if err != nil {
 			return false, err
-		}
-		if ok {
-			return true, nil
 		}
 	}
 	return false, ErrConcurrentWrite

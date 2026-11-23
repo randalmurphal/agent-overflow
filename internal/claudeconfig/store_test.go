@@ -5,11 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
-
-	"agent-overflow/internal/atomicfile"
 )
 
 // Each test uses a fresh t.TempDir() file so the package never reads
@@ -321,45 +320,61 @@ func TestKeyOrderPreserved_unrelatedTopLevel(t *testing.T) {
 	}
 }
 
-func TestConcurrentWriteDetected(t *testing.T) {
+// Claude Code rewrites the file while a mutation is between its read and
+// its write. modify, which every mutation goes through, must refuse to
+// write over that version, read again and run the mutation once more, so
+// both writes survive.
+func TestModifyRetriesOverAWriteMadeSinceItsRead(t *testing.T) {
 	store := newStoreWithFile(t, `{"mcpServers": {}}`)
-	// Two concurrent calls: emulate by capturing the snapshot for the
-	// first, mutating the file out-of-band, then trying to write.
-	snap, err := store.load()
+	calls := 0
+	err := store.modify(func(root *orderedJSON) error {
+		calls++
+		if calls == 1 {
+			writeFile(t, store.path, `{"mcpServers": {}, "external": true}`)
+		}
+		root.set("mine", true)
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("load: %v", err)
+		t.Fatalf("modify: %v", err)
 	}
-	// External writer appends a key.
-	external := `{"mcpServers": {}, "newKey": true}`
-	if err := os.WriteFile(store.path, []byte(external), 0o600); err != nil {
-		t.Fatalf("external write: %v", err)
+	if calls != 2 {
+		t.Fatalf("the mutation ran %d times, want once more after the outside write", calls)
 	}
-	// Force a different mtime than what snapshot recorded.
-	mt := snap.stat.ModTime().Add(2 * 1000 * 1000 * 1000) // +2s
-	if err := os.Chtimes(store.path, mt, mt); err != nil {
-		t.Fatalf("chtimes: %v", err)
-	}
-	out, err := snap.raw.marshalIndented()
+	raw, err := os.ReadFile(store.path)
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
+		t.Fatal(err)
 	}
-	ok, err := atomicfile.WriteIfUnchanged(store.path, out, snap.stat)
-	if err != nil {
-		t.Fatalf("WriteIfUnchanged: %v", err)
-	}
-	if ok {
-		t.Fatalf("write should have been refused on stale snapshot")
+	if !strings.Contains(string(raw), `"external": true`) || !strings.Contains(string(raw), `"mine": true`) {
+		t.Fatalf("file = %s, want the outside write and the mutation both kept", raw)
 	}
 }
 
-func TestModifyRetriesOnceThenSucceeds(t *testing.T) {
+// A write whose directory sync failed after the rename is in place: the
+// store reports the mutation done, so its caller goes on to reconcile the
+// live session, and the sync failure is logged. A directory that allows
+// the rename and not the open for the sync (write and search, no read)
+// shows it.
+func TestModifyTreatsAWriteWhoseDirectorySyncFailedAsDone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the directory sync is a no-op on Windows")
+	}
 	store := newStoreWithFile(t, `{"mcpServers": {}}`)
-	// Race the first read by mutating mid-modify. We can't easily hook
-	// the internal loop, so verify directly that a clean second
-	// attempt (no external change between iterations) writes
-	// successfully — the integration is exercised in the simpler
-	// SetDisabled tests above.
-	if err := store.SetDisabled("/x", "alpha", true); err != nil {
-		t.Fatalf("SetDisabled: %v", err)
+	dir := filepath.Dir(store.path)
+	if err := os.Chmod(dir, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if err := store.modify(func(root *orderedJSON) error {
+		root.set("mine", true)
+		return nil
+	}); err != nil {
+		t.Fatalf("modify = %v, want the committed write reported done", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(store.path); !strings.Contains(string(raw), `"mine": true`) {
+		t.Fatalf("file = %s, want the mutation written", raw)
 	}
 }
