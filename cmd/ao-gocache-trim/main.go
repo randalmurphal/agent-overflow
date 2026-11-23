@@ -320,9 +320,20 @@ func walkAndTrim(dir, stamp string, capBytes int64, now time.Time, result *trimR
 			result.recent += e.size
 		}
 	}
+	candidates, target := trimCandidates(entries, total, capBytes, now)
+	return removeToTarget(candidates, target, result)
+}
+
+// removeToTarget removes candidates, oldest first, until result.after is
+// within target. A candidate a go command used since the walk stays, and
+// the next one is taken in its place.
+func removeToTarget(candidates []entry, target int64, result *trimResult) error {
 	failures := 0
 	var firstFailure error
-	for _, victim := range selectVictims(entries, total, capBytes, now) {
+	for _, victim := range candidates {
+		if result.after <= target {
+			break
+		}
 		removed, err := removeUnmoved(victim)
 		if err == nil && !removed {
 			continue
@@ -456,23 +467,19 @@ func isEntryDir(name string) bool {
 	return err == nil
 }
 
-// selectVictims returns the entries to delete, oldest first, to bring total
-// to trimTarget of capBytes: none while total is within the cap, and never
-// one used within recentAge.
-func selectVictims(entries []entry, total, capBytes int64, now time.Time) []entry {
+// trimCandidates returns the entries a trim may delete, oldest first, and
+// the size to bring the cache to, trimTarget of capBytes: none while total
+// is within the cap, and never one used within recentAge.
+func trimCandidates(entries []entry, total, capBytes int64, now time.Time) ([]entry, int64) {
 	if total <= capBytes {
-		return nil
+		return nil, 0
 	}
-	target := int64(float64(capBytes) * trimTarget)
-	sorted := append([]entry(nil), entries...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].mtime.Before(sorted[j].mtime) })
-	var victims []entry
-	for _, e := range sorted {
-		if total <= target || now.Sub(e.mtime) < recentAge {
-			break
+	var candidates []entry
+	for _, e := range entries {
+		if now.Sub(e.mtime) >= recentAge {
+			candidates = append(candidates, e)
 		}
-		victims = append(victims, e)
-		total -= e.size
 	}
-	return victims
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].mtime.Before(candidates[j].mtime) })
+	return candidates, int64(float64(capBytes) * trimTarget)
 }

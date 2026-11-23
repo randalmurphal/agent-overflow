@@ -114,6 +114,37 @@ func TestAnEntryUsedAfterTheWalkStays(t *testing.T) {
 	}
 }
 
+// TestATrimTakesTheNextEntryInPlaceOfOneUsedSinceTheWalk: the oldest entry
+// is used between the walk and its removal, so the trim removes the next
+// oldest and still reaches its target.
+func TestATrimTakesTheNextEntryInPlaceOfOneUsedSinceTheWalk(t *testing.T) {
+	dir := newCache(t)
+	oldest := writeEntry(t, dir, "0a/oldest-d", 300, 40*24*time.Hour)
+	older := writeEntry(t, dir, "1b/older-a", 300, 30*24*time.Hour)
+	newer := writeEntry(t, dir, "2c/newer-a", 300, 20*24*time.Hour)
+	newest := writeEntry(t, dir, "3d/newest-d", 300, 10*24*time.Hour)
+	entries, total, err := cacheEntries(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates, target := trimCandidates(entries, total, 1000, testNow)
+	if err := os.Chtimes(oldest, testNow, testNow); err != nil {
+		t.Fatal(err)
+	}
+	result := trimResult{before: total, after: total}
+	if err := removeToTarget(candidates, target, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.removed != 2 || result.after != 600 {
+		t.Fatalf("result = %+v, want 2 removed leaving 600 bytes", result)
+	}
+	for path, want := range map[string]bool{oldest: true, older: false, newer: false, newest: true} {
+		if exists(t, path) != want {
+			t.Fatalf("%s exists = %v, want %v", filepath.Base(path), !want, want)
+		}
+	}
+}
+
 // TestOverCapDeletesOldestFirstToTheTarget: 1500 bytes over a 1000-byte cap
 // lose the oldest entries until at most 800 (trimTarget) remain.
 func TestOverCapDeletesOldestFirstToTheTarget(t *testing.T) {
