@@ -348,6 +348,9 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		if a.handleReadRequest(id, method, params) {
 			return
 		}
+		if a.handleResetRequest(id, method, params) {
+			return
+		}
 		if a.handleTerminalRequest(id, method, params) {
 			return
 		}
@@ -426,7 +429,12 @@ func (a *codexAdapter) handleReadRequest(id json.RawMessage, method string, para
 		// (a ring the app must then treat as expired) or a date this file
 		// outlives. A plan with no window reported yet is a real state,
 		// and it is the one that invents nothing.
-		result = `{"rateLimits":{"limitId":"codex","planType":"pro"}}`
+		//
+		// The harness may seed a 5-hour window and the earned resets for
+		// the credential's account (codex_resets.go): the window resets five
+		// hours after the read, and `rateLimitResetCredits` is null when no
+		// resets are set, as the backend answers for an account without any.
+		result = `{"rateLimits":` + mockRateLimits() + `,"rateLimitResetCredits":` + mockResetSummary() + `}`
 	case "account/usage/read":
 		// `summary` + `dailyUsageBuckets` are the two keys the decoder
 		// reads; every summary field is a pointer, so an empty summary is

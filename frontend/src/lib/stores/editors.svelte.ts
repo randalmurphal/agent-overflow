@@ -1,10 +1,10 @@
 // Shared, lazily-loaded snapshot of the open-in-editor catalog + the
-// user's saved default. Every chat pane's header mounts an
-// OpenInEditorControl; without a shared cache each would fire its own
+// user's saved default. Every chat pane's header mounts a
+// ChatHeaderMenu; without a shared cache each would fire its own
 // ListAvailableEditors / GetEditorSettings pair on mount (a wire RPC
 // each in --connect mode, a PATH + /mnt/c walk behind the 60s backend
 // cache otherwise). This store dedupes them to one fetch and lets the
-// Settings picker push preference changes back so the header icon
+// Settings picker push preference changes back so the header menu
 // updates without a refetch.
 //
 // Read the values through the getter functions inside a `$derived` so

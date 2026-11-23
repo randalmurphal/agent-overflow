@@ -1,0 +1,477 @@
+package jira
+
+import (
+	"cmp"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strconv"
+	"time"
+
+	"agent-overflow/internal/tracker/adf"
+	"agent-overflow/internal/tracker/trackerapi"
+)
+
+// Comment is a comment on an issue.
+type Comment struct {
+	ID           string
+	Author       *User
+	UpdateAuthor *User
+	Body         *adf.Node
+	Created      time.Time
+	Updated      time.Time
+	// Internal reports a service desk comment only agents see.
+	Internal bool
+	// Visibility is a role or group the comment is restricted to; nil
+	// when everyone who can see the issue sees it.
+	Visibility json.RawMessage
+	// Problems names the fields whose value did not decode (created,
+	// updated); the rest of the comment is usable.
+	Problems []FieldProblem
+}
+
+type commentJSON struct {
+	ID           string          `json:"id"`
+	Author       *userJSON       `json:"author"`
+	UpdateAuthor *userJSON       `json:"updateAuthor"`
+	Body         json.RawMessage `json:"body"`
+	Created      string          `json:"created"`
+	Updated      string          `json:"updated"`
+	JSDPublic    *bool           `json:"jsdPublic"`
+	Visibility   json.RawMessage `json:"visibility"`
+}
+
+// comment decodes a comment. A body that is not a document is an error,
+// since the comment cannot be shown or edited; the comment returned with
+// it holds everything else.
+func (j commentJSON) comment() (Comment, error) {
+	out := Comment{ID: j.ID, Author: j.Author.userPtr(), UpdateAuthor: j.UpdateAuthor.userPtr()}
+	timeField("created", j.Created, &out.Created, &out.Problems)
+	timeField("updated", j.Updated, &out.Updated, &out.Problems)
+	out.Internal = j.JSDPublic != nil && !*j.JSDPublic
+	if !isNull(j.Visibility) {
+		out.Visibility = j.Visibility
+	}
+	if !isNull(j.Body) {
+		if err := decodeDoc(j.Body, &out.Body); err != nil {
+			return out, fmt.Errorf("comment %s: %w", j.ID, err)
+		}
+	}
+	return out, nil
+}
+
+// CommentPage is one page of an issue's comments, oldest first.
+type CommentPage struct {
+	Comments []Comment
+	StartAt  int
+	Total    int
+}
+
+// Comments returns the page of an issue's comments from startAt, at most
+// max of them (zero means 100).
+func (c *Client) Comments(ctx context.Context, issue string, startAt, max int) (CommentPage, error) {
+	if err := c.admit(ctx); err != nil {
+		return CommentPage{}, err
+	}
+	path, err := issuePath(issue)
+	if err != nil {
+		return CommentPage{}, err
+	}
+	if startAt < 0 || max < 0 {
+		return CommentPage{}, notSent("comments of %s: a negative page", issue)
+	}
+	q := url.Values{"startAt": {strconv.Itoa(startAt)}, "maxResults": {strconv.Itoa(pageSize(max, 100, maxCommentPage))}, "orderBy": {"created"}}
+	return c.commentPage(ctx, issue, path, q)
+}
+
+// maxCommentPage is the most comments a page asks for.
+const maxCommentPage = 5000
+
+// commentPage reads the page of issue's comments q names; path is the
+// issue's path.
+func (c *Client) commentPage(ctx context.Context, issue, path string, q url.Values) (CommentPage, error) {
+	var v struct {
+		Comments []commentJSON `json:"comments"`
+		StartAt  int           `json:"startAt"`
+		Total    int           `json:"total"`
+	}
+	if err := c.get(ctx, path+"/comment", q, &v); err != nil {
+		return CommentPage{}, fmt.Errorf("jira: comments of %s: %w", issue, err)
+	}
+	page := CommentPage{StartAt: v.StartAt, Total: v.Total, Comments: make([]Comment, 0, len(v.Comments))}
+	for _, j := range v.Comments {
+		cm, err := j.comment()
+		if err != nil {
+			return page, fmt.Errorf("jira: comments of %s: %w", issue, err)
+		}
+		page.Comments = append(page.Comments, cm)
+	}
+	return page, nil
+}
+
+// Comment returns one comment.
+func (c *Client) Comment(ctx context.Context, issue, id string) (Comment, error) {
+	if err := c.admit(ctx); err != nil {
+		return Comment{}, err
+	}
+	return c.comment(ctx, issue, id)
+}
+
+func (c *Client) comment(ctx context.Context, issue, id string) (Comment, error) {
+	path, err := commentPath(issue, id)
+	if err != nil {
+		return Comment{}, err
+	}
+	var j commentJSON
+	if err := c.get(ctx, path, nil, &j); err != nil {
+		return Comment{}, fmt.Errorf("jira: comment %s on %s: %w", id, issue, err)
+	}
+	cm, err := j.comment()
+	if err != nil {
+		return Comment{}, fmt.Errorf("jira: comment %s on %s: %w", id, issue, err)
+	}
+	return cm, nil
+}
+
+func commentPath(issue, id string) (string, error) {
+	path, err := issuePath(issue)
+	if err != nil {
+		return "", err
+	}
+	if err := checkID("comment", id); err != nil {
+		return "", err
+	}
+	return path + "/comment/" + url.PathEscape(id), nil
+}
+
+// Audience is who a new comment reaches on a Jira Service Management
+// project. It must be chosen there, since a public comment is emailed to
+// the customer; elsewhere every comment is public. A value outside the
+// constants below is refused before anything is sent.
+type Audience uint8
+
+const (
+	// AudienceUnset is refused on a service desk project.
+	AudienceUnset Audience = iota
+	// AudiencePublic reaches everyone who can see the issue, the
+	// customer included.
+	AudiencePublic
+	// AudienceInternal is a service desk note only agents see.
+	AudienceInternal
+)
+
+// internalProperty is the comment property that makes a service desk
+// comment internal. The platform spec does not document it; a site
+// measured stores an internal comment with it and jsdPublic false
+// (docs/references/tracker-api-measurements.md). A public comment
+// carries sd.allow.public.comment, which Jira Service Management sets
+// itself, so nothing is sent for one.
+var internalProperty = []commentProperty{{Key: "sd.public.comment", Value: commentVisibility{Internal: true}}}
+
+// commentProperty is an entity property a new comment carries, typed so
+// that declaring internalProperty allocates nothing.
+type commentProperty struct {
+	Key   string            `json:"key"`
+	Value commentVisibility `json:"value"`
+}
+
+type commentVisibility struct {
+	Internal bool `json:"internal"`
+}
+
+// commentAudience checks aud against the issue's project and returns the
+// properties a new comment carries, and whether the project is a
+// service desk.
+func (c *Client) commentAudience(ctx context.Context, issue string, aud Audience) ([]commentProperty, bool, error) {
+	switch aud {
+	case AudienceUnset, AudiencePublic, AudienceInternal:
+	default:
+		return nil, false, notSent("comment on %s: %d is not an Audience", issue, aud)
+	}
+	is, err := c.GetIssue(ctx, issue, "project")
+	if err != nil {
+		return nil, false, err
+	}
+	if is.Project == nil {
+		return nil, false, &AnswerError{Message: fmt.Sprintf("%s came without its project, so who a comment reaches is not known", issue)}
+	}
+	p := *is.Project
+	if p.TypeKey == "" {
+		if p, err = c.Project(ctx, p.Key); err != nil {
+			return nil, false, err
+		}
+	}
+	switch {
+	case p.ServiceDesk() && aud == AudienceUnset:
+		return nil, true, notSent("%s is a service desk project: choose AudienceInternal, or AudiencePublic to email the customer", p.Key)
+	case !p.ServiceDesk() && aud == AudienceInternal:
+		return nil, false, notSent("%s is not a service desk project, so a comment cannot be internal", p.Key)
+	case aud == AudienceInternal:
+		return internalProperty, true, nil
+	}
+	return nil, p.ServiceDesk(), nil
+}
+
+// CommentInput is a new comment.
+type CommentInput struct {
+	Issue    string
+	Markdown string
+	Audience Audience
+	// ImageDir is the folder the Markdown's local images are read from;
+	// see EditInput.
+	ImageDir string
+}
+
+// CommentResult is how far a comment write got: the images attached, and
+// the comment as Jira stored it. Unchanged reports an edit that sent
+// nothing because the comment already held the text asked for; Comment is
+// then the comment as read.
+type CommentResult struct {
+	Uploaded  []Attachment
+	Comment   *Comment
+	Unchanged bool
+}
+
+// AddComment checks the audience, converts the Markdown and reads its
+// images, then attaches the images and adds the comment. A failure after
+// the first write is a *StepError; a comment stored whose answer names it
+// but did not decode in full is one whose Applied reports it, with what
+// decoded (its ID at least) in the result.
+func (c *Client) AddComment(ctx context.Context, in CommentInput) (CommentResult, error) {
+	var res CommentResult
+	if err := c.admit(ctx); err != nil {
+		return res, err
+	}
+	path, err := issuePath(in.Issue)
+	if err != nil {
+		return res, err
+	}
+	// A public comment is taken by every project and carries no property,
+	// so only the other audiences read the project.
+	var props []commentProperty
+	if in.Audience != AudiencePublic {
+		if props, _, err = c.commentAudience(ctx, in.Issue, in.Audience); err != nil {
+			return res, notSentErr(fmt.Errorf("jira: comment on %s: %w", in.Issue, err))
+		}
+	}
+	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, ImageDir: in.ImageDir}, stage: newImageStage(in.ImageDir, c.maxUpload)}
+	doc, _, err := b.markdown(ctx, in.Markdown, nil)
+	if err != nil {
+		return res, notSentErr(fmt.Errorf("jira: comment on %s: %w", in.Issue, err))
+	}
+	imgs := b.stage.in(doc)
+	held, err := b.stage.hold(ctx, imgs)
+	if err != nil {
+		return res, err
+	}
+	if doc, err = c.uploadInto(ctx, in.Issue, doc, imgs, held, &res.Uploaded); err != nil {
+		return res, err
+	}
+	body := map[string]any{"body": doc}
+	if props != nil {
+		body["properties"] = props
+	}
+	res.Comment, err = c.writeComment(ctx, path+"/comment", "", body)
+	if err != nil {
+		return res, fmt.Errorf("jira: comment on %s: %w", in.Issue, err)
+	}
+	return res, nil
+}
+
+// writeComment sends a comment write to path and decodes the comment it
+// stored: an add (id empty; documented: POST, 201 with the new comment)
+// or an edit of comment id (PUT, 200 naming that comment). A failure is a
+// StepComment *StepError; an Applied one returns what of the comment
+// decoded, its ID at least, and any other returns no comment.
+func (c *Client) writeComment(ctx context.Context, path, id string, body any) (*Comment, error) {
+	method, want := http.MethodPost, bodyAnswer(namesID, http.StatusCreated)
+	if id != "" {
+		method, want = http.MethodPut, bodyAnswer(namesThisID(id), http.StatusOK)
+	}
+	var stored commentJSON
+	w, err := c.write(ctx, trackerapi.Request{Method: method, Path: apiPath + path, Body: body}, want, &stored)
+	if err != nil && !answerApplied(err) {
+		return nil, &StepError{Step: StepComment, Err: err}
+	}
+	cm, derr := stored.comment()
+	cm.ID = w.id()
+	if err == nil && derr != nil {
+		err = &AnswerError{Applied: true, Message: "the comment was stored, but its answer did not decode: " + derr.Error()}
+	}
+	if err != nil {
+		return &cm, &StepError{Step: StepComment, Err: err}
+	}
+	return &cm, nil
+}
+
+// uploadInto attaches imgs, whose content held has, to issue and returns
+// a copy of doc naming them by media ID; doc itself without images. Its
+// failures are uploadImages', with the comment as the write not sent.
+func (c *Client) uploadInto(ctx context.Context, issue string, doc *adf.Node, imgs []*Image, held map[*Image][]byte, done *[]Attachment) (*adf.Node, error) {
+	if len(imgs) == 0 {
+		return doc, nil
+	}
+	ids, err := c.uploadImages(ctx, issue, imgs, held, done, StepComment)
+	if err != nil {
+		return nil, err
+	}
+	out, err := copyDoc(doc)
+	if err != nil {
+		return nil, unsent(StepComment, err)
+	}
+	adf.ReplaceMediaIDs(out, ids)
+	return out, nil
+}
+
+// CommentEdit replaces a comment's text. It says what it is based on,
+// with no default; exactly one of From, Current and Unchecked is set.
+// From is the comment as read when the Markdown was written, which the
+// edit checks: a comment that holds another body by now (an absent one
+// included) is a *StaleError. Current is the comment as the caller read
+// it just now, as its last read before the edit: the edit is based on
+// it, and the comment is read again and checked against it only when
+// converting the Markdown read Jira (a mention), so the read the edit
+// rests on stays the last before the write. Unchecked edits whatever is
+// stored, with no check.
+type CommentEdit struct {
+	Issue     string
+	ID        string
+	Markdown  string
+	From      *Comment
+	Current   *Comment
+	Unchecked bool
+	// AcceptLoss is the user's explicit acceptance that the edit loses
+	// content Markdown cannot show; without it such an edit is a
+	// *adf.LossError.
+	AcceptLoss bool
+	// ImageDir is the folder the Markdown's local images are read from;
+	// see EditInput.
+	ImageDir string
+}
+
+// EditComment edits the base body with the Markdown, keeping what
+// Markdown cannot show where the text is unchanged, and keeps the
+// comment's visibility. With From, the Markdown is converted against its
+// body (its mentions read first) and the comment is read as the last read
+// before the first write: a comment that holds another body by then is a
+// *StaleError. Current is the same with that read left out unless the
+// conversion read Jira. An edit that attaches images reads the comment
+// again after them, as the last request before the write (Unchecked
+// excepted). This narrows the window for a lost update and does not
+// close it, since Jira takes no precondition on the write. Unchecked
+// reads the stored body first and edits it with no check. An edit that would
+// store the body already stored sends nothing and returns Unchanged with
+// the comment as read.
+func (c *Client) EditComment(ctx context.Context, in CommentEdit) (CommentResult, error) {
+	var res CommentResult
+	if err := c.admit(ctx); err != nil {
+		return res, err
+	}
+	path, err := commentPath(in.Issue, in.ID)
+	if err != nil {
+		return res, err
+	}
+	base := cmp.Or(in.From, in.Current)
+	switch {
+	case editBases(in.From != nil, in.Current != nil, in.Unchecked) != 1:
+		return res, notSent("edit comment %s: give one of From, Current and Unchecked", in.ID)
+	case base != nil && base.ID != in.ID:
+		return res, notSent("edit comment %s: its base is comment %s", in.ID, base.ID)
+	}
+	if in.Unchecked {
+		if base, err = c.readComment(ctx, in.Issue, in.ID); err != nil {
+			return res, err
+		}
+	}
+	cur := base
+	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, ImageDir: in.ImageDir}, stage: newImageStage(in.ImageDir, c.maxUpload)}
+	doc, ws, err := b.markdown(ctx, in.Markdown, base.Body)
+	if err == nil {
+		err = adf.CheckLoss(ws, in.AcceptLoss)
+	}
+	if err != nil {
+		return res, notSentErr(fmt.Errorf("jira: edit comment %s on %s: %w", in.ID, in.Issue, err))
+	}
+	recheck := func() error {
+		if cur, err = c.readComment(ctx, in.Issue, in.ID); err != nil {
+			return err
+		}
+		if !adf.Equal(base.Body, cur.Body) {
+			return notSentErr(&StaleError{Issue: in.Issue, What: "comment " + in.ID})
+		}
+		return nil
+	}
+	if in.From != nil || in.Current != nil && b.asked {
+		if err := recheck(); err != nil {
+			return res, err
+		}
+	}
+	if adf.Equal(doc, cur.Body) {
+		res.Comment, res.Unchanged = cur, true
+		return res, nil
+	}
+	imgs := b.stage.in(doc)
+	held, err := b.stage.hold(ctx, imgs)
+	if err != nil {
+		return res, err
+	}
+	if doc, err = c.uploadInto(ctx, in.Issue, doc, imgs, held, &res.Uploaded); err != nil {
+		return res, err
+	}
+	if len(imgs) > 0 && !in.Unchecked {
+		// The uploads came after the read the edit rests on; it is read
+		// again as the last request before the write.
+		if err := recheck(); err != nil {
+			return res, &StepError{Step: StepComment, Err: err}
+		}
+	}
+	body := map[string]any{"body": doc}
+	if cur.Visibility != nil {
+		// A PUT without it would show a restricted comment to everyone.
+		body["visibility"] = cur.Visibility
+	}
+	res.Comment, err = c.writeComment(ctx, path, in.ID, body)
+	if err != nil {
+		return res, fmt.Errorf("jira: edit comment %s on %s: %w", in.ID, in.Issue, err)
+	}
+	return res, nil
+}
+
+// readComment reads a comment an edit depends on; a failure is the edit's
+// refusal before sending.
+func (c *Client) readComment(ctx context.Context, issue, id string) (*Comment, error) {
+	cm, err := c.comment(ctx, issue, id)
+	if err != nil {
+		return nil, notSentErr(err)
+	}
+	return &cm, nil
+}
+
+// DeleteComment deletes a comment.
+func (c *Client) DeleteComment(ctx context.Context, issue, id string) error {
+	if err := c.admit(ctx); err != nil {
+		return err
+	}
+	path, err := commentPath(issue, id)
+	if err != nil {
+		return err
+	}
+	req := trackerapi.Request{Method: http.MethodDelete, Path: apiPath + path}
+	if _, err := c.write(ctx, req, emptyAnswer(http.StatusNoContent), nil); err != nil {
+		return fmt.Errorf("jira: delete comment %s on %s: %w", id, issue, err)
+	}
+	return nil
+}
+
+// editBases counts the bases an edit names.
+func editBases(bases ...bool) int {
+	n := 0
+	for _, b := range bases {
+		if b {
+			n++
+		}
+	}
+	return n
+}

@@ -125,7 +125,10 @@ func statementCallSite() (string, bool) {
 	frames := runtime.CallersFrames(pcs[:runtime.Callers(3, pcs)])
 	for {
 		frame, more := frames.Next()
-		if strings.HasPrefix(frame.Function, storePackagePrefix) && !strings.HasSuffix(frame.File, "/stmt_cache.go") {
+		// A test hook that wraps cachedStmtRan is an init closure of the
+		// package, not the call that ran the statement.
+		hook := strings.HasPrefix(frame.Function, storePackagePrefix+"init.")
+		if strings.HasPrefix(frame.Function, storePackagePrefix) && !hook && !strings.HasSuffix(frame.File, "/stmt_cache.go") {
 			return fmt.Sprintf("%s:%d", frame.File, frame.Line), !strings.HasSuffix(frame.File, "_test.go")
 		}
 		if !more {
@@ -187,7 +190,11 @@ func TestCachedStatementCheckFindsBoundPlans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	for _, tc := range []struct {
 		query      string
 		args       []any

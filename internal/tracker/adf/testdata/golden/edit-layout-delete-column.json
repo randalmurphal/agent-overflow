@@ -1,0 +1,79 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Intro"
+        }
+      ]
+    },
+    {
+      "type": "layoutSection",
+      "content": [
+        {
+          "type": "layoutColumn",
+          "attrs": {
+            "width": 50
+          },
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Left text"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "layoutColumn",
+          "attrs": {
+            "width": 50
+          },
+          "content": [
+            {
+              "type": "extension",
+              "attrs": {
+                "extensionKey": "toc",
+                "extensionType": "com.atlassian.confluence.macro.core",
+                "layout": "default",
+                "parameters": {
+                  "macroParams": {
+                    "maxLevel": {
+                      "value": "2"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "panel",
+              "attrs": {
+                "panelColor": "#ff0000",
+                "panelIcon": ":star:",
+                "panelType": "custom"
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Right panel"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

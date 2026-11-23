@@ -1,0 +1,45 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Before"
+        }
+      ]
+    },
+    {
+      "type": "mediaSingle",
+      "attrs": {
+        "layout": "align-start",
+        "width": 830,
+        "widthType": "pixel"
+      },
+      "content": [
+        {
+          "type": "media",
+          "attrs": {
+            "alt": "architecture diagram",
+            "collection": "contentId-42",
+            "height": 752,
+            "id": "57f0e3b3-5c0d-7c6e-b6df-40b3c30223ce",
+            "type": "file",
+            "width": 1705
+          }
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "After"
+        }
+      ]
+    }
+  ]
+}

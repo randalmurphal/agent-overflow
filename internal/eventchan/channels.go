@@ -142,6 +142,7 @@ const (
 	ProviderAccount                Channel = "provider:account"
 	ProviderAccountUsageError      Channel = "provider:account_usage_error"
 	ProviderAccountsChanged        Channel = "provider:accounts_changed"
+	ProviderAccountListing         Channel = "provider:account_listing"
 	ProviderAccountSignIn          Channel = "provider:account_signin"
 	ProviderAccountAutoSwitch      Channel = "provider:account_auto_switch"
 	ProviderApproval               Channel = "provider:approval"
@@ -277,6 +278,16 @@ const (
 // system:* — host CPU/memory samples for the sidebar footer.
 const (
 	SystemStats Channel = "system:stats"
+)
+
+// tracker:* — this computer's issue tracker connections.
+//
+// TrackerConnectionsUpdated is a payload-less refetch nudge sent after
+// every change the connection list shows: a row, a key file the app made
+// or removed, a verification, a problem. Receivers re-read through
+// TrackerConnections, which never carries a token.
+const (
+	TrackerConnectionsUpdated Channel = "tracker:connections_updated"
 )
 
 // terminal:* — local PTY session bytes and lifecycle.

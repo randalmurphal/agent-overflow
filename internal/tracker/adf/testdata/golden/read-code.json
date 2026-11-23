@@ -1,0 +1,34 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "codeBlock",
+      "attrs": {
+        "language": "md"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "```\nfenced inside\n```"
+        }
+      ]
+    },
+    {
+      "type": "codeBlock",
+      "content": []
+    },
+    {
+      "type": "codeBlock",
+      "attrs": {
+        "language": "python"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "print(\"x\")\n"
+        }
+      ]
+    }
+  ]
+}

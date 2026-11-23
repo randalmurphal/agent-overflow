@@ -90,6 +90,9 @@ type Store struct {
 	// deferredMu serializes the runs that advance the deferred migration
 	// watermark. See DeferredMigration.
 	deferredMu sync.Mutex
+	// mirrorCleanup serializes FinishMirrorCleanup runs
+	// (tracker_cache_cleanup.go).
+	mirrorCleanup sync.Mutex
 	// cards holds the subagent card accumulators between flushes
 	// (subagent_card.go).
 	cards subagentCards

@@ -62,6 +62,7 @@ var holderClearedRows = []struct{ table, column string }{
 	{"thread_request_receipts", "target_thread_id"},
 	{"thread_requests", "caller_thread_id"},
 	{"thread_tallies", "thread_id"},
+	{"thread_tickets", "thread_id"},
 }
 
 // retireToHolderTx makes id a holder when a fork reads it, in place of

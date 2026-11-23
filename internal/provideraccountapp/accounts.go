@@ -40,6 +40,9 @@ type ManagedAccount struct {
 	// AutoSwitch reports that the account is in the provider's auto-switch
 	// pool.
 	AutoSwitch bool `json:"autoSwitch"`
+	// PendingReset is the account's usage reset spend Codex has not settled,
+	// which the card offers to finish. Set in listings only.
+	PendingReset *UnsettledReset `json:"pendingReset,omitempty"`
 }
 
 func (m *Manager) ListProviderAccounts() ([]ManagedAccount, error) {
@@ -54,10 +57,11 @@ func (m *Manager) ListProviderAccounts() ([]ManagedAccount, error) {
 		generation := m.store.Generation(providerName)
 		for _, account := range m.store.List(providerName, now) {
 			out = append(out, ManagedAccount{
-				Account:    account,
-				Active:     hasActive && active.ID == account.ID,
-				Generation: generation,
-				AutoSwitch: m.store.AutoSwitch(providerName, account.ID),
+				Account:      account,
+				Active:       hasActive && active.ID == account.ID,
+				Generation:   generation,
+				AutoSwitch:   m.store.AutoSwitch(providerName, account.ID),
+				PendingReset: unsettledReset(m.store.PendingReset(providerName, account.ID)),
 			})
 		}
 	}

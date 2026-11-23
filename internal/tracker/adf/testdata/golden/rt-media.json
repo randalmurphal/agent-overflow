@@ -1,0 +1,63 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "mediaSingle",
+      "attrs": {
+        "layout": "center"
+      },
+      "content": [
+        {
+          "type": "media",
+          "attrs": {
+            "alt": "diagram.png",
+            "collection": "",
+            "id": "0f9c1d2e-1111-4222-8333-944455556666",
+            "type": "file"
+          }
+        }
+      ]
+    },
+    {
+      "type": "mediaSingle",
+      "attrs": {
+        "layout": "center"
+      },
+      "content": [
+        {
+          "type": "media",
+          "attrs": {
+            "type": "external",
+            "url": "https://example.com/logo.png"
+          }
+        }
+      ]
+    },
+    {
+      "type": "mediaSingle",
+      "attrs": {
+        "layout": "center"
+      },
+      "content": [
+        {
+          "type": "media",
+          "attrs": {
+            "alt": "linked image",
+            "collection": "",
+            "id": "abc-123",
+            "type": "file"
+          }
+        }
+      ],
+      "marks": [
+        {
+          "type": "link",
+          "attrs": {
+            "href": "https://example.com/target"
+          }
+        }
+      ]
+    }
+  ]
+}

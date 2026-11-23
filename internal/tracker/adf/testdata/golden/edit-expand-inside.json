@@ -1,0 +1,77 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "intro"
+        }
+      ]
+    },
+    {
+      "type": "expand",
+      "attrs": {
+        "localId": "e1",
+        "title": "More details"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "status",
+              "attrs": {
+                "color": "green",
+                "localId": "s1",
+                "text": "DONE"
+              }
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "inside changed"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "panel",
+      "attrs": {
+        "localId": "pn",
+        "panelType": "info"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "status",
+              "attrs": {
+                "color": "green",
+                "localId": "s1",
+                "text": "DONE"
+              }
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "panel text changed"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

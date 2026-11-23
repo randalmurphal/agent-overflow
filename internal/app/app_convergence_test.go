@@ -368,6 +368,20 @@ func TestRemovingAnInactiveProviderAccountAnnouncesTheListing(t *testing.T) {
 	}
 }
 
+// A change only a card shows (its usage resets, an unsettled reset) is its
+// own nudge: provider:accounts_changed would also make every client drop its
+// Claude command catalogs and re-read its dictation sources.
+func TestAResetListingChangeIsNotAnAccountSetChange(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	snapshot := captureOrderedEmissions(app,
+		string(eventchan.ProviderAccountListing), string(eventchan.ProviderAccountsChanged))
+	providerAccountEventSink{app: app}.PublishListingChanged(string(provider.Codex))
+	if got := emissionNames(snapshot()); len(got) != 1 || got[0] != string(eventchan.ProviderAccountListing) {
+		t.Fatalf("frames = %v, want one provider:account_listing", got)
+	}
+}
+
 // An import persisted threads and auto-created projects with nothing said
 // about them: the run reported its own progress and the importing client
 // compensated with a whole-sidebar resync, which no other client could be

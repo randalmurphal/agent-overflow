@@ -340,7 +340,7 @@ func TestAppendToolResultBlock_ErroredCompletionPropagatesIsError(t *testing.T) 
 // with `tool_use_result: {taskId, timeoutMs, persistent}` — no
 // `run_in_background` in the input, no `backgroundTaskId` on the wire.
 // The completion must carry is_background=true so triage keeps the
-// launch row running and the reaper's ListRunningBackgroundToolCalls
+// launch row running and the reaper's CountLiveRunningBackgroundToolCalls
 // sees the live watch (missing this signal is how a live
 // Monitor-watched session read as reap-idle; captured 2026-07-28,
 // session d946175f). Both persistent variants share the shape.

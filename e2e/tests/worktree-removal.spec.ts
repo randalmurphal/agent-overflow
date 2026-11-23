@@ -27,6 +27,7 @@ import type { Page } from '@playwright/test';
 import { test, expect, type HarnessMockEvent } from './fixtures.js';
 import { RESULT_LINE, claudeTurnsScenario, emit, textLines } from './agent-visibility-helpers.js';
 import { methodNameById } from './offhost-helpers.js';
+import { toggleTerminal } from './terminal-find-flow.js';
 import {
   attachWorktree,
   basename,
@@ -110,7 +111,7 @@ test('removing the thread\'s own worktree from the workspace picker keeps the ot
   await expect(envTrigger(page)).toHaveText(basename(ownPath));
 
   // A terminal in the thread's pane opens in its workspace: the worktree.
-  await page.getByRole('button', { name: 'Toggle Terminal' }).click();
+  await toggleTerminal(page);
   await expect.poll(async () => {
     const terminals = await harness.rpc<Array<{ cwd: string }>>('ListTerminals', ownId);
     return terminals.length === 1 && (await samePath(terminals[0].cwd, ownPath));

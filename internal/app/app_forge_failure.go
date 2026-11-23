@@ -184,9 +184,3 @@ func (a *App) prUpdateStagger() time.Duration {
 func prUpdateErrorMessage(correlationID string) string {
 	return fmt.Sprintf("failed to refresh pull request (id: %s)", correlationID)
 }
-
-// heldUntil is how long from now a poller waits for a rate limit's
-// release, at least a millisecond so a timer armed with it fires.
-func heldUntil(release time.Time) time.Duration {
-	return max(time.Until(release), time.Millisecond)
-}
