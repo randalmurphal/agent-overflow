@@ -260,6 +260,10 @@ type Router struct {
 	// the provider read loop; implementations must not block. Wired via
 	// SetUnsavedRowObserver at router construction.
 	unsavedRows UnsavedRowObserver
+	// turnEndMu orders each write of a turn's end with the report of its
+	// outcome to unsavedRows (writeTurnEnd), so the last report is the last
+	// write's. Taken only there.
+	turnEndMu sync.Mutex
 	// codeSpanEnricher builds the persisted `codeSpans` meta value for
 	// a settled assistant text (see code_spans.go). Wired via
 	// SetCodeSpanEnricher at router construction; nil disables it.
@@ -573,7 +577,7 @@ func (r *Router) HandleSynthetic(evt provider.ProviderEvent) error {
 // of a write the store refused (reportShownHistoryRefusal).
 func (r *Router) dispatchReportingRefusals(evt provider.ProviderEvent) error {
 	err := r.dispatch(evt)
-	if reportErr := r.reportShownHistoryRefusal(evt.ThreadID, err); reportErr != nil {
+	if _, reportErr := r.reportShownHistoryRefusal(evt.ThreadID, err); reportErr != nil {
 		err = errors.Join(err, reportErr)
 	}
 	return err
