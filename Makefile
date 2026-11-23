@@ -188,7 +188,9 @@ go-build: gocache-trim-tool
 # through `-exec`, which would disable the test cache. bin/ao-gotest
 # (cmd/ao-gotest) starts it inside the namespace: a package GO_TEST_SPLIT
 # names runs as fixed buckets of its tests, as many at once as the memory
-# governor grants, and the rest as one `go test` as before. go-prefetch fetches,
+# governor grants, and the rest as one `go test`. Every `go test` runs
+# under a leader that ends what it leaves, and a process left running
+# fails the run, named. go-prefetch fetches,
 # on the host network first, what every package of the module and its tests
 # import plus the module's tools, since a test may run `go tool wails3` and
 # a whole-tree contract test (TestThreadUpdatedFramesComeFromTheAnnouncer)

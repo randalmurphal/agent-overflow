@@ -7,7 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -33,12 +36,13 @@ var endGrace = 5 * time.Second
 // The `go test` leads a process group of its own, which every signal the
 // leader receives goes to. On Linux the leader is also the subreaper of
 // the tree, so a process whose parent exits comes to it, whatever its
-// group, and is waited for as it exits (reapUntil). The leader reads lifeline, a pipe whose other end only the
-// launcher holds, so the read ends when the launcher exits, however it
-// exits, and the leader then ends the tree as for SIGTERM. Once the `go
-// test` has exited, endTree ends what is left and waits for it; what was
-// still running after a `go test` that ended on its own is named on
-// stderr, since a test leaked it.
+// group, and is waited for as it exits (reapUntil). The leader reads
+// lifeline, a pipe whose other end only the launcher holds, so the read
+// ends when the launcher exits, however it exits, and the leader then ends
+// the tree as for SIGTERM. Once the `go test` has exited, endTree ends what
+// is left and waits for it. What was still running after a `go test` that
+// ended on its own was leaked by a test or a fixture: it is named on
+// stderr, and the leader exits non-zero even when every test passed.
 func lead(argv []string, lifeline io.Reader, stderr io.Writer) int {
 	if len(argv) == 0 {
 		fmt.Fprintln(stderr, "ao-gotest: a leader needs the command it leads")
@@ -91,12 +95,54 @@ func lead(argv []string, lifeline io.Reader, stderr io.Writer) int {
 				status = max(status, 1)
 			}
 			if len(left) > 0 && !stopped {
-				fmt.Fprintf(stderr, "ao-gotest: the go test left %d processes running, which were ended: %s\n", len(left), strings.Join(left, "; "))
+				status = max(status, 1)
+				var named strings.Builder
+				for _, l := range left {
+					named.WriteString("ao-gotest:   " + l.String() + "\n")
+				}
+				fmt.Fprintf(stderr, "ao-gotest: the go test left %d processes running, which were ended; the run fails, since a test or fixture must end the processes it starts:\n%s", len(left), named.String())
 			}
 			return status
 		}
 	}
 }
+
+// leftover is a process a job's `go test` left running, as far as it could
+// be read before it was ended: its pid, its command line and its working
+// directory.
+type leftover struct {
+	pid          int
+	command, dir string
+}
+
+// String names l on one line: its command line is cut to 200 bytes, after
+// the temp directory of a test was looked for in the whole of it.
+func (l leftover) String() string {
+	where := ""
+	if dir := testTempDir(l.command + " " + l.dir); dir != "" {
+		where = ", in the temp directory of a test, " + dir
+	}
+	command := l.command
+	if len(command) > 200 {
+		command = command[:200] + "..."
+	}
+	return fmt.Sprintf("pid %d%s: %s", l.pid, where, command)
+}
+
+// testTempDir is the first temp directory of a test that s names: t.TempDir
+// makes it in the temp directory, named for the test and then a number,
+// and the directories it returns in it, 001, 002 and so on.
+func testTempDir(s string) string {
+	m := testTempDirs().FindStringSubmatch(s)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+var testTempDirs = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`(` + regexp.QuoteMeta(filepath.Clean(os.TempDir())) + `/(?:Test|Benchmark|Fuzz|Example)[^/\s]*)/\d{3,}(?:/|\s|$)`)
+})
 
 // reapUntil waits for each child of this process as it exits until pid
 // does, and returns how pid ended. On Linux the leader is the subreaper of

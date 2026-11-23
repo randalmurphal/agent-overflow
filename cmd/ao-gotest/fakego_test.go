@@ -219,7 +219,9 @@ func startChildren(dir string) error {
 		own = append(own, true)
 	}
 	for _, group := range own {
-		child := exec.Command(os.Args[0])
+		// dir on its command line names the test, as a script a test
+		// writes to its temp directory does.
+		child := exec.Command(os.Args[0], dir)
 		child.Env = append(os.Environ(), childEnv+"="+dir)
 		child.SysProcAttr = &syscall.SysProcAttr{Setpgid: group}
 		if err := child.Start(); err != nil {

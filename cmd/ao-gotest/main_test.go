@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"os/exec"
@@ -172,11 +174,11 @@ func envValue(command *exec.Cmd, name string) string {
 }
 
 // TestARunThatSplitsNothingIsTheOneGoTest runs the command for runs it must
-// not split and checks that each replaced itself with the `go test` command
-// line it was given, in an environment it did not change; and that one
-// that splits, under make's GOFLAGS, reserves in its own governor, lists
-// the package first into a directory on GOTMPDIR, and leaves no directory
-// of its own or of a run that was killed.
+// not split and checks that each ran the `go test` command line it was
+// given, as one `go test`, in an environment it did not change; and that
+// one that splits, under make's GOFLAGS, reserves in its own governor,
+// lists the package first into a directory on GOTMPDIR, and leaves no
+// directory of its own or of a run that was killed.
 func TestARunThatSplitsNothingIsTheOneGoTest(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -228,6 +230,73 @@ func TestARunThatSplitsNothingIsTheOneGoTest(t *testing.T) {
 				t.Fatalf("calls %q; want [%q]", got, want)
 			}
 		})
+	}
+}
+
+// TestANarrowedRunThatLeavesAProcessFails: a run that splits nothing runs
+// under a leader too, so a process its go test leaves is ended and named,
+// and the run fails though the go test passed.
+func TestANarrowedRunThatLeavesAProcessFails(t *testing.T) {
+	kids := t.TempDir()
+	command := commandEnv(t, t.TempDir(), "-run", "TestX", splitPkg)
+	command.Env = append(command.Env, fakeEnv+"="+filepath.Join(t.TempDir(), "calls"), fakeChildEnv+"="+kids, childIgnoreEnv+"=1", graceEnv+"=100ms")
+	out, err := command.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		t.Fatalf("exit %v; want status 1\n%s", err, out)
+	}
+	checkChildrenGone(t, kids, childrenPerRun(), false)
+	for pid := range recorded(t, kids) {
+		if named := fmt.Sprintf("\nao-gotest:   pid %d", pid); !strings.Contains(string(out), named) {
+			t.Errorf("output:\n%s\nwant child %d named", out, pid)
+		}
+	}
+}
+
+// TestAnUnsplitRunStreamsItsOutputAndCtrlCEndsIt runs a narrowed run, which
+// splits nothing, as a shell runs it, in a process group of its own. A line
+// the go test writes arrives while it still runs, and SIGINT to the group,
+// what Ctrl-C sends, ends the go test and every process it started, with
+// the status a shell gives a process that SIGINT ended.
+func TestAnUnsplitRunStreamsItsOutputAndCtrlCEndsIt(t *testing.T) {
+	kids := t.TempDir()
+	command := commandEnv(t, t.TempDir(), "-run", "TestX", "-v", splitPkg)
+	command.Env = append(command.Env, fakeEnv+"="+filepath.Join(t.TempDir(), "calls"), fakeHoldEnv+"=1", fakeChildEnv+"="+kids)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stderr := &lockedWriter{}
+	command.Stderr = stderr
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		_ = command.Wait()
+	})
+	lines := bufio.NewScanner(stdout)
+	// The fake holds until it is signaled, so its first line can only have
+	// come while it ran.
+	if !lines.Scan() || lines.Text() != "before hold bucket TestX" {
+		t.Fatalf("first line %q, %v; want the go test's line while it holds\nstderr:\n%s", lines.Text(), lines.Err(), stderr.String())
+	}
+	if err := syscall.Kill(-command.Process.Pid, syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	var rest []string
+	for lines.Scan() {
+		rest = append(rest, lines.Text())
+	}
+	err = command.Wait()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 128+int(syscall.SIGINT) {
+		t.Fatalf("exit %v; want status %d\nstdout after the first line: %q\nstderr:\n%s", err, 128+int(syscall.SIGINT), rest, stderr.String())
+	}
+	checkChildrenGone(t, kids, childrenPerRun(), false)
+	if strings.Contains(stderr.String(), "the go test left") {
+		t.Errorf("stderr:\n%s\nwant no process named as left by a run that was stopped", stderr.String())
 	}
 }
 

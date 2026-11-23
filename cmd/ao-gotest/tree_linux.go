@@ -31,9 +31,9 @@ func adoptOrphans() error {
 // has exited and been waited for, and returns once no process of it is
 // left: those still in its group, and every process that came to this one,
 // the subreaper, from whatever group, as its parent exited. Each gets
-// SIGTERM once and, once grace has passed, SIGKILL. It returns the command
-// lines of the processes that came to this one alive.
-func endTree(group int, grace time.Duration) (left []string, err error) {
+// SIGTERM once and, once grace has passed, SIGKILL. It returns the
+// processes that came to this one alive.
+func endTree(group int, grace time.Duration) (left []leftover, err error) {
 	if err := syscall.Kill(-group, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return nil, fmt.Errorf("signal the group: %w", err)
 	}
@@ -64,7 +64,9 @@ func endTree(group int, grace time.Duration) (left []string, err error) {
 			}
 			if !killed {
 				if line := commandLine(pid); line != "" {
-					left = append(left, line)
+					// A process that exited since leaves no directory.
+					dir, _ := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "cwd"))
+					left = append(left, leftover{pid: pid, command: line, dir: dir})
 				}
 			}
 			signaled[pid] = true
@@ -117,16 +119,11 @@ func children() ([]int, error) {
 	return pids, nil
 }
 
-// commandLine is pid's command line, cut to a line's length, or "" for a
-// process that has exited.
+// commandLine is pid's command line, or "" for a process that has exited.
 func commandLine(pid int) string {
 	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
 	if err != nil {
 		return ""
 	}
-	line := strings.TrimSpace(strings.ReplaceAll(string(data), "\x00", " "))
-	if len(line) > 160 {
-		line = line[:160] + "..."
-	}
-	return line
+	return strings.TrimSpace(strings.ReplaceAll(string(data), "\x00", " "))
 }

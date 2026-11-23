@@ -67,17 +67,22 @@ them. While it grants none the run says why and waits, and after ten
 minutes fails. The other packages' `go test` runs outside the
 reservation, as it did before the split. A
 run whose bucket or list step went over its declaration says so at the
-end. Each `go test` runs under a leader that ends every process it
-started when it ends, is signaled, or loses the launcher (on macOS, the
-processes of its process group), and the reservation and the binaries'
-directory, on the namespace's disk-backed Go work directory, last until
-every leader has exited. A bucket writes its output to a file and prints
-it when it ends, so one that hangs shows nothing until its `-timeout`.
-Only `-count`, `-timeout`, `-tags`, `-short`, `-v`, `-vet`, `-shuffle` and
-`-skip`, and in `GOFLAGS` also `-trimpath`, `-mod`, `-modcacherw` and
-`-buildvcs`, keep a run split; with any other flag, such as `-run`,
-`-json`, `-failfast`, `-p` or a profile, it runs the one `go test` it was
-given, as a bare `go test` outside make does.
+end. Every `go test`, split or not, runs under a leader that ends every
+process it started when it ends, is signaled, or loses the launcher (on
+macOS, the processes of its process group), and the reservation and the
+binaries' directory, on the namespace's disk-backed Go work directory,
+last until every leader has exited. A process left running by a `go test`
+that ended on its own fails the run even when every test passed: the
+leader ends it and names its pid, its command line and the temp
+directory of the test that a path in it names, so the test or fixture
+that started it is fixed to end it. A bucket writes its output to a file
+and prints it when it ends, so one that hangs shows nothing until its
+`-timeout`. Only `-count`, `-timeout`, `-tags`, `-short`, `-v`, `-vet`,
+`-shuffle` and `-skip`, and in `GOFLAGS` also `-trimpath`, `-mod`,
+`-modcacherw` and `-buildvcs`, keep a run split; with any other flag, such
+as `-run`, `-json`, `-failfast`, `-p` or a profile, it runs the one `go
+test` it was given, under a leader, which passes its output on line by
+line as it comes.
 Go trims its build cache only by age, so `go-build`, `go-test` and
 `test-race` run a `cmd/ao-gocache-trim` pass before their build or test and
 another when it ends. A pass walks the cache at most every five minutes,

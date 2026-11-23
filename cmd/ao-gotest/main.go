@@ -14,8 +14,8 @@
 // beside it: a result cached at one worker count is cached at any other,
 // and a failed bucket reruns without hiding behind another's pass.
 //
-// Nothing is split, and this process becomes exactly the command line it
-// was given, when no package it names is declared, or when a flag on the
+// Nothing is split, and the command line it was given runs as it is, as one
+// `go test`, when no package it names is declared, or when a flag on the
 // command line or in GOFLAGS means something else in a bucket than in one
 // `go test` of the package. The command line may hold only bucketFlags, and
 // GOFLAGS also goflagsBuildFlags; anything else, such as -run, -list, -json,
@@ -43,12 +43,13 @@
 // from rusage; one over its package's declaration is named at the end of
 // the run, so the declaration can be raised.
 //
-// Every `go test` runs under a leader of its own (lead), which ends the
-// processes it started, however its `go test` ended and however this
-// process ends; this process waits for every leader before it releases
-// the reservation and removes the directory. A signal this process
-// receives goes to every leader, which passes it to its tree, and no new
-// `go test` starts.
+// Every `go test`, split or not, runs under a leader of its own (lead),
+// which ends the processes it started, however its `go test` ended and
+// however this process ends; this process waits for every leader before it
+// releases the reservation and removes the directory. A process a `go
+// test` that ended on its own left running fails the run, named. A signal
+// this process receives goes to every leader, which passes it to its tree,
+// and no new `go test` starts.
 //
 // The unsplit `go test` streams its output line by line. A bucket writes
 // its output to files in the run's directory, printed whole when it ends
@@ -62,11 +63,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"agent-overflow/internal/goenvfile"
 )
@@ -268,10 +267,6 @@ func runInvocation(inv invocation, splits []split, stdout, stderr io.Writer) int
 			names = append(names, s.pkg)
 		}
 	}
-	if !inv.shardable || !goflagsSplit(goflags) || len(declared) == 0 {
-		return passThrough(inv.argv, stderr)
-	}
-	whole := slices.DeleteFunc(slices.Clone(inv.packages), func(pkg string) bool { return slices.Contains(names, pkg) })
 	r, err := newRunner(inv.argv[0], stdout, stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, "ao-gotest:", err)
@@ -279,22 +274,13 @@ func runInvocation(inv invocation, splits []split, stdout, stderr io.Writer) int
 	}
 	defer r.close()
 	stopSignals := r.forwardSignals()
-	r.runSplit(inv, declared, whole, names)
+	if inv.shardable && goflagsSplit(goflags) && len(declared) > 0 {
+		whole := slices.DeleteFunc(slices.Clone(inv.packages), func(pkg string) bool { return slices.Contains(names, pkg) })
+		r.runSplit(inv, declared, whole, names)
+	} else {
+		r.runWhole(job{args: inv.argv[1:]})
+	}
 	stopSignals()
 	r.printNotes()
 	return r.status()
-}
-
-// passThrough replaces this process with argv, the one `go test` of every
-// package, so a run that splits nothing is the command `make go-test` ran
-// before this one existed: its arguments, environment and process tree.
-func passThrough(argv []string, stderr io.Writer) int {
-	path, err := exec.LookPath(argv[0])
-	if err != nil {
-		fmt.Fprintln(stderr, "ao-gotest:", err)
-		return 1
-	}
-	err = syscall.Exec(path, argv, os.Environ())
-	fmt.Fprintf(stderr, "ao-gotest: exec %s: %v\n", path, err)
-	return 1
 }
