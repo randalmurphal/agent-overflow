@@ -119,7 +119,7 @@ func TestDetachMirrorThenCleanupDrainsInBatches(t *testing.T) {
 // board.
 func TestMirrorDrainCoversEveryTable(t *testing.T) {
 	t.Parallel()
-	db := migrateThrough(t, trackerMigrationVersion)
+	db := migrateThrough(t, trackerOpenTicketsMigrationVersion)
 	tables, err := queryIDs(db, `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'tracker\_cache\_%' ESCAPE '\'
 		AND name <> 'tracker_cache_roots' ORDER BY name`)
 	if err != nil {
@@ -233,6 +233,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			_, err := s.RecordMirrorSyncAttempt(root, "11", currentAttempt(s, root, "11", MirrorSyncAttempt{ReadAt: 8, Failure: MirrorSyncFailure{At: 9, Kind: MirrorFailureTransient, Message: "timed out"}}))
 			return err
 		},
+		"KeepMirrorTicket": func(root int64) error { return s.KeepMirrorTicket(root, "10001", 2, 1) },
 	}
 }
 
@@ -244,6 +245,8 @@ var mirrorNonWriters = []string{
 	"GetMirrorBoard", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorSection", "CountMirrorSections",
 	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards",
 	"ReadMirrorRefreshTargets",
+	// An open ticket's row goes by its pump, whatever became of its root.
+	"DropMirrorTicket", "DropMirrorTicketsOfOtherSessions",
 }
 
 // Every writer refuses a detached root, and a root that never existed,
@@ -367,7 +370,7 @@ func mirrorCascadeViolations(t *testing.T, db *sql.DB) []string {
 // table.
 func TestTrackerCacheTablesCascadeFromTheRoot(t *testing.T) {
 	t.Parallel()
-	db := migrateThrough(t, trackerMigrationVersion)
+	db := migrateThrough(t, trackerOpenTicketsMigrationVersion)
 	if violations := mirrorCascadeViolations(t, db); len(violations) > 0 {
 		t.Fatalf("schema violations:\n%s", strings.Join(violations, "\n"))
 	}

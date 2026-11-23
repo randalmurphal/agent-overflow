@@ -300,6 +300,7 @@ func mirrorIssueKept(root, issue string) string {
 	            AND ` + mirrorBoardShown("kept_row.root_id", "kept_row.board_id") + `)
 	  OR EXISTS (SELECT 1 FROM ` + mirrorLinksSQL(root) + ` AND link_ticket.issue_id = ` + issue + `)
 	  OR EXISTS (SELECT 1 FROM tracker_cache_open_tickets kept_open
+	          JOIN tracker_cache_roots open_root ON open_root.id = kept_open.root_id AND open_root.connection_id IS NOT NULL
 	          WHERE kept_open.root_id = ` + root + ` AND kept_open.issue_id = ` + issue + `))`
 }
 

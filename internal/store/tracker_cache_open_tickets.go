@@ -14,20 +14,34 @@ import (
 // absent to reads at once and FinishMirrorCleanup removes it.
 
 // KeepMirrorTicket records that pump of session has issueID open in
-// rootID's mirror, which keeps the issue until DropMirrorTicket. One
-// statement; a root that is gone or detached refuses it with
-// ErrTrackerCacheGone, and a pump's second row is refused.
+// rootID's mirror, which keeps the issue until DropMirrorTicket. A pump
+// has one row: keeping again moves it to rootID and issueID, and the same
+// keep again writes nothing. One statement, and one more when it wrote
+// nothing, which tells the same keep from a root that is gone or
+// detached (ErrTrackerCacheGone).
 func (s *Store) KeepMirrorTicket(rootID int64, issueID string, session, pump int64) error {
 	if issueID == "" || pump <= 0 {
 		return fmt.Errorf("%w: an open ticket names its issue and its pump", ErrInvalidTrackerCache)
 	}
 	kept, err := execChangedTx(s.db, `INSERT INTO tracker_cache_open_tickets(root_id, issue_id, session, pump)
-		SELECT id, ?2, ?3, ?4 FROM tracker_cache_roots WHERE id = ?1 AND connection_id IS NOT NULL RETURNING pump`,
-		rootID, issueID, session, pump)
+		SELECT id, ?2, ?3, ?4 FROM tracker_cache_roots WHERE id = ?1 AND connection_id IS NOT NULL
+		ON CONFLICT(session, pump) DO UPDATE SET root_id = excluded.root_id, issue_id = excluded.issue_id
+		 WHERE root_id IS NOT excluded.root_id OR issue_id IS NOT excluded.issue_id
+		RETURNING pump`, rootID, issueID, session, pump)
+	if err != nil {
+		return fmt.Errorf("store: keep the open ticket %s of tracker mirror %d: %w", issueID, rootID, err)
+	}
+	if kept {
+		return nil
+	}
+	var same bool
+	err = s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM tracker_cache_open_tickets o JOIN tracker_cache_roots r ON r.id = o.root_id
+		WHERE o.session = ?3 AND o.pump = ?4 AND o.root_id = ?1 AND o.issue_id = ?2 AND r.connection_id IS NOT NULL)`,
+		rootID, issueID, session, pump).Scan(&same)
 	switch {
 	case err != nil:
 		return fmt.Errorf("store: keep the open ticket %s of tracker mirror %d: %w", issueID, rootID, err)
-	case !kept:
+	case !same:
 		return fmt.Errorf("store: keep the open ticket %s: root %d: %w", issueID, rootID, ErrTrackerCacheGone)
 	}
 	return nil
