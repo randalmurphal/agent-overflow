@@ -88,8 +88,12 @@ describe('registration', () => {
     expect(registration(STORE, "import { count } from './leaf';\nexport function resetCountForTest() { count(); }")).not.toBeNull();
   });
 
-  it('leaves a module without resets untouched', () => {
-    expect(registration(STORE, 'export function count() {}')).toBeNull();
+  it('has a source module without resets say when it has loaded, and leaves a package alone', () => {
+    const line = registration(STORE, 'export function count() {}');
+    let settled = 0;
+    evaluate(line!, {}, { settled: () => settled++ });
+    expect(settled).toBe(1);
+    expect(registration('some-package/index.js', 'export function resetCountForTest() {}')).toBeNull();
   });
 });
 

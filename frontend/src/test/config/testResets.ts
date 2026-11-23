@@ -63,9 +63,10 @@ function step(module: string, name: string, run?: (fn: never) => unknown): Step 
 
 /** Run before every test, for the modules loaded by then: the state the app
  * is in at boot that the unit suite has no boot to reach. A module first
- * loaded during a test gets it from the next test on; applying it as the
- * module loads would run it inside an import cycle (scopes.ts reads
- * deviceSession.ts before that module has initialized). */
+ * loaded during a test gets its steps as it loads. A step that reads a
+ * module of its import cycle still loading (scopes.ts reads
+ * deviceSession.ts) runs when the next module loads, and fails the test if
+ * none does. */
 export const POSTURE: readonly Step[] = [
   // App starts the sidebar rows' continuity at boot; so does every test.
   step('src/lib/stores/sidebarEntryContinuity.svelte.ts', 'startSidebarEntryContinuity'),

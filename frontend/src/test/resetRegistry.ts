@@ -10,6 +10,8 @@ type Loaded = { readonly key: string; readonly exports: Exports; readonly auto: 
 
 export type ResetRegistry = {
   loaded(key: string, exports: Exports, auto: readonly string[]): void;
+  /** A source module with nothing to register finished loading. */
+  settled(): void;
   /** Keys of the modules this file loaded, in load order. */
   keys(): string[];
 };
@@ -35,6 +37,12 @@ function install(): ResetRegistry {
   // vi.resetModules) is a second instance, and both are reset: the test
   // may still hold the first.
   const modules: Loaded[] = [];
+  // Set from the first step before a test to the last step after it.
+  let inTest = false;
+  // POSTURE steps of modules loaded during a test, in load order, that have
+  // not run: a step that reads a module still loading (an import cycle)
+  // waits for the next module to load.
+  let pending: { readonly loaded: Loaded; readonly step: Step }[] = [];
 
   async function runSteps(steps: readonly (Step | typeof STORAGE)[], errors: unknown[]): Promise<void> {
     for (const entry of steps) {
@@ -53,14 +61,33 @@ function install(): ResetRegistry {
     }
   }
 
+  function runPending(): void {
+    while (pending.length > 0) {
+      const { loaded, step } = pending[0];
+      try {
+        call(step, loaded.exports);
+      } catch (error) {
+        if (error instanceof ReferenceError) return;
+        throw error;
+      }
+      pending.shift();
+    }
+  }
+
   beforeEach(async () => {
+    pending = [];
     const errors: unknown[] = [];
     await runSteps(POSTURE, errors);
     fail(errors);
+    inTest = true;
   });
 
   afterEach(async () => {
-    const errors: unknown[] = [];
+    inTest = false;
+    const errors: unknown[] = pending.map(({ loaded, step }) => new Error(
+      `${loaded.key} loaded during the test, and its posture step ${step.name} could not run before the test ended: it read a module that was still loading`,
+    ));
+    pending = [];
     await runSteps(FIRST, errors);
     const ran = new Set<unknown>();
     for (const { exports, auto } of [...modules]) {
@@ -80,7 +107,14 @@ function install(): ResetRegistry {
 
   return {
     loaded(key, exports, auto) {
-      modules.push({ key, exports, auto });
+      const loaded = { key, exports, auto };
+      modules.push(loaded);
+      if (!inTest) return;
+      for (const step of POSTURE) if (step.module === key) pending.push({ loaded, step });
+      runPending();
+    },
+    settled() {
+      if (inTest) runPending();
     },
     keys: () => [...new Set(modules.map((loaded) => loaded.key))],
   };

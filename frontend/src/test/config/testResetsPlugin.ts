@@ -1,5 +1,6 @@
 // Registers each module that has a between-test reset with the test reset
-// registry when the module loads (testResets.ts says what runs). The line
+// registry when the module loads (testResets.ts says what runs); every other
+// source module tells the registry when it has loaded. The line
 // is appended to the module's test transform only: product code carries no
 // hook, and the line imports nothing, so a module gains no import-graph
 // edge to the test setup and a test file selects only what it imports.
@@ -55,13 +56,31 @@ function references(node: unknown, names: ReadonlySet<string>): string | null {
   return null;
 }
 
-/** The registration to append to `code`, the transformed module `key`, or
- * null when the module has nothing to register. */
+/** The line that runs `call` on the registry, failing when it is missing. */
+function registryLine(key: string, call: string): string {
+  const missing = `the test reset registry is not installed: the setup file must import src/test/resetRegistry.ts before ${key} loads`;
+  return `
+;{
+  const registry = globalThis[Symbol.for(${JSON.stringify(RESET_REGISTRY_KEY)})];
+  if (registry === undefined) throw new Error(${JSON.stringify(missing)});
+  registry.${call};
+}
+`;
+}
+
+/** The line to append to `code`, the transformed module `key`: its
+ * registration, or for a source module with nothing to register a notice
+ * that it finished loading (a POSTURE step that waited on it may now run).
+ * Null for a package with nothing to register. */
 export function registration(key: string, code: string): string | null {
   const named = namedExports().get(key);
   const steps = stepExports().get(key) ?? new Set<string>();
   const packaged = !key.startsWith('src/');
-  if (named === undefined && (packaged || !RESET_TEXT.test(code))) return null;
+  // Before the registry loads (the setup files' own imports) no POSTURE
+  // step can be waiting, so the notice needs no registry.
+  const settled = packaged ? null
+    : `\n;globalThis[Symbol.for(${JSON.stringify(RESET_REGISTRY_KEY)})]?.settled();\n`;
+  if (named === undefined && (packaged || !RESET_TEXT.test(code))) return settled;
   const program = parseAst(code) as unknown as { body: Node[] };
   // Top-level bindings: the function or initializer each name is bound to.
   const declared = new Map<string, Node>();
@@ -113,16 +132,9 @@ export function registration(key: string, code: string): string | null {
     if (!exported.has(name)) throw new Error(`testResets.ts names ${name} in ${key}, which does not export it`);
   }
   const passed = [...new Set([...auto, ...steps])];
-  if (passed.length === 0) return null;
+  if (passed.length === 0) return settled;
   const members = passed.map((name) => `${JSON.stringify(name)}: ${exported.get(name)}`).join(', ');
-  const missing = `the test reset registry is not installed: the setup file must import src/test/resetRegistry.ts before ${key} loads`;
-  return `
-;{
-  const registry = globalThis[Symbol.for(${JSON.stringify(RESET_REGISTRY_KEY)})];
-  if (registry === undefined) throw new Error(${JSON.stringify(missing)});
-  registry.loaded(${JSON.stringify(key)}, { ${members} }, ${JSON.stringify(auto)});
-}
-`;
+  return registryLine(key, `loaded(${JSON.stringify(key)}, { ${members} }, ${JSON.stringify(auto)})`);
 }
 
 export function testResetsPlugin(root: string): Plugin {
