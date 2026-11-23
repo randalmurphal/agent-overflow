@@ -109,6 +109,12 @@ func signClaims(claims Claims, secret []byte, backendID string) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	return renderClaims(payload, secret, backendID), nil
+}
+
+// renderClaims signs an encoded payload. It cannot fail: everything that
+// can is decided by encodeClaims.
+func renderClaims(payload [claimsPayloadLen]byte, secret []byte, backendID string) string {
 	mac := claimsMAC(payload[:], secret, backendID)
 	out := make([]byte, 0, len(claimsPrefix)+
 		base64.RawURLEncoding.EncodedLen(claimsPayloadLen)+1+
@@ -117,7 +123,7 @@ func signClaims(claims Claims, secret []byte, backendID string) (string, error) 
 	out = base64.RawURLEncoding.AppendEncode(out, payload[:])
 	out = append(out, '.')
 	out = base64.RawURLEncoding.AppendEncode(out, mac[:])
-	return string(out), nil
+	return string(out)
 }
 
 // encodeClaims lays the payload out. Returns an array rather than a slice
@@ -135,9 +141,14 @@ func encodeClaims(claims Claims) ([claimsPayloadLen]byte, error) {
 	payload[0] = claimsVersion
 	copy(payload[claimsKeyIDOffset:], keyID[:])
 	copy(payload[claimsSIDOffset:], sessionID[:])
-	binary.BigEndian.PutUint64(payload[claimsIatOffset:], uint64(claims.IssuedAt))
-	binary.BigEndian.PutUint64(payload[claimsExpOffset:], uint64(claims.ExpiresAt))
+	stampClaimsWindow(&payload, claims.IssuedAt, claims.ExpiresAt)
 	return payload, nil
+}
+
+// stampClaimsWindow writes an encoded payload's validity window.
+func stampClaimsWindow(payload *[claimsPayloadLen]byte, issuedAt, expiresAt int64) {
+	binary.BigEndian.PutUint64(payload[claimsIatOffset:], uint64(issuedAt))
+	binary.BigEndian.PutUint64(payload[claimsExpOffset:], uint64(expiresAt))
 }
 
 // parseClaims decodes a presentation's structure. It learns nothing about

@@ -32,8 +32,12 @@ import (
 //     the confirmation's transaction;
 //   - store.RotateRefreshSecret — session/device predicates inside the durable transaction;
 //   - signClaims — reached only through newSession (whose row must then
-//     survive CreateSession, CompletePairingRedemption or CreateDeviceSession) or accessTokensFor
-//     (which takes the device ROW and refuses a revoked one).
+//     survive CreateSession, CompletePairingRedemption or CreateDeviceSession);
+//   - renderClaims - reached only through signClaims or an accessSigner,
+//     whose only constructor, accessSignerFor, takes the device ROW and
+//     refuses a revoked one; its signAccess is called only by
+//     accessTokensFor and by Refresh, which resolves it before its rotation
+//     commits.
 //
 // So a new mint path built from these operations inherits the refusal. This test
 // fails when one of them is called from somewhere new, which is the moment
@@ -51,7 +55,9 @@ func TestEveryCredentialProducingCallGoesThroughAChokepoint(t *testing.T) {
 		"EnsureLocalSession":        {"Sessions.EnsureLocalChannelSession"},
 		"ConfirmRedeemedPairing":    {"Sessions.confirmPairing"},
 		"RotateRefreshSecret":       {"Sessions.Refresh"},
-		"signClaims":                {"Sessions.accessTokensFor", "Sessions.newSession"},
+		"signClaims":                {"Sessions.newSession"},
+		"renderClaims":              {"accessSigner.signAccess", "signClaims"},
+		"signAccess":                {"Sessions.Refresh", "Sessions.accessTokensFor"},
 	}
 	found := map[string][]string{}
 	for name, callers := range callersInPackage(t) {

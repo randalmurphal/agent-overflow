@@ -170,6 +170,19 @@ func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 	if session.BindingClass == string(BindingLoopbackOnly) {
 		return TokenSet{}, ReasonMalformedProof
 	}
+	// Everything the new credential needs is resolved before the rotation
+	// commits: a rotation that committed and then failed to sign would leave
+	// the device holding a spent secret, which its next renewal presents as
+	// reuse.
+	signer, err := s.accessSignerFor(session, device)
+	if errors.Is(err, store.ErrDeviceRevoked) {
+		if _, reason := s.confirmedSession(session.ID, now); reason.Refused() {
+			return TokenSet{}, reason
+		}
+	}
+	if err != nil {
+		return s.refreshUnavailable("prepare renewal", err)
+	}
 	policy := RenewablePolicyFor(DeviceClass(device.Class))
 	generation := s.generationNow()
 	rotated, err := s.store.RotateRefreshSecret(context.Background(), store.RefreshRotation{
@@ -196,10 +209,7 @@ func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 		return s.refreshUnavailable("commit renewal", err)
 	}
 	s.rememberAt(generation, rotated.Session)
-	tokens, err := s.accessTokensFor(rotated.Session, device, now)
-	if err != nil {
-		return s.refreshUnavailable("sign renewal", err)
-	}
+	tokens := signer.signAccess(rotated.Session, now)
 	tokens.RefreshSecret = nextSecret
 	tokens.RefreshExpiresAtMillis = rotated.Secret.ExpiresAt
 	if !rotated.Replayed {
@@ -385,33 +395,55 @@ func (s *Sessions) newTokens(session store.Session, device store.Device, now int
 
 // accessTokensFor signs the access half for already persisted session state.
 func (s *Sessions) accessTokensFor(session store.Session, device store.Device, now int64) (TokenSet, error) {
+	signer, err := s.accessSignerFor(session, device)
+	if err != nil {
+		return TokenSet{}, err
+	}
+	return signer.signAccess(session, now), nil
+}
+
+// accessSigner signs one session's access credentials. accessSignerFor runs
+// every check and read the signing needs, so a caller that must not move
+// anything durable before the credential exists (Refresh) resolves it first
+// and signs after, with nothing left to fail.
+type accessSigner struct {
+	payload   [claimsPayloadLen]byte
+	secret    []byte
+	backendID string
+}
+
+func (s *Sessions) accessSignerFor(session store.Session, device store.Device) (accessSigner, error) {
 	if session.ProcessBound() {
-		return TokenSet{}, fmt.Errorf("identity: process-bound sessions cannot issue timed claims")
+		return accessSigner{}, fmt.Errorf("identity: process-bound sessions cannot issue timed claims")
 	}
 	if device.RevokedAt != 0 {
-		return TokenSet{}, fmt.Errorf("identity: issue for session %s: %w",
+		return accessSigner{}, fmt.Errorf("identity: issue for session %s: %w",
 			session.ID, store.ErrDeviceRevoked)
 	}
 	key, err := s.signingKeyByID(session.SigningKeyID)
 	if err != nil {
-		return TokenSet{}, err
+		return accessSigner{}, err
 	}
-	credential, err := signClaims(Claims{
-		KeyID:     key.ID,
-		SessionID: session.ID,
-		IssuedAt:  now,
-		ExpiresAt: session.ExpiresAt,
-	}, key.Secret.Reveal(), s.backendID)
+	payload, err := encodeClaims(Claims{KeyID: key.ID, SessionID: session.ID})
 	if err != nil {
-		return TokenSet{}, err
+		return accessSigner{}, err
 	}
+	return accessSigner{payload: payload, secret: key.Secret.Reveal(), backendID: s.backendID}, nil
+}
+
+// signAccess signs session's access credential issued at now, valid until the
+// session's expiry. session is the row the signer was resolved for, as it
+// stands after any write that moved its expiry.
+func (a accessSigner) signAccess(session store.Session, now int64) TokenSet {
+	payload := a.payload
+	stampClaimsWindow(&payload, now, session.ExpiresAt)
 	return TokenSet{
 		SessionID:            session.ID,
-		Credential:           credential,
+		Credential:           renderClaims(payload, a.secret, a.backendID),
 		ExpiresAtMillis:      session.ExpiresAt,
 		AwaitingConfirmation: session.AwaitingConfirmation(),
 		Scopes:               session.Scopes,
-	}, nil
+	}
 }
 
 // signingKeyByID resolves a key row through the same cache Verify uses,
