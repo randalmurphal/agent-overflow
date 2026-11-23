@@ -140,7 +140,7 @@ func TestSharedImportHistoryStructuralCutMaterializesOnlyTargetThread(t *testing
 	}
 }
 
-func TestSharedImportHistoryPagingAndSubagentExpansionUseLogicalTimeline(t *testing.T) {
+func TestSharedImportHistoryPagingUsesLogicalTimeline(t *testing.T) {
 	s := newTestStore(t)
 	newImportTargetThread(t, s, "shared-window")
 	batch := importBatchFixture("shared-window")
@@ -155,13 +155,6 @@ func TestSharedImportHistoryPagingAndSubagentExpansionUseLogicalTimeline(t *test
 	}
 	if len(page.Items) != 1 || page.Items[0].ID != "item-user" {
 		t.Fatalf("top-level page = %+v, want only item-user", page.Items)
-	}
-	descendants, err := s.ListSubagentDescendants("shared-window", "item-user")
-	if err != nil {
-		t.Fatalf("list descendants: %v", err)
-	}
-	if len(descendants) != 1 || descendants[0].ID != "item-tool" || descendants[0].PayloadKind != "command_output" {
-		t.Fatalf("descendants = %+v", descendants)
 	}
 }
 

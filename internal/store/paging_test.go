@@ -10,8 +10,8 @@ import (
 
 // Paging tests cover:
 //   - History windows, budgets, and probes count top-level rows only —
-//     subagent children load on demand via ListSubagentDescendants and
-//     are summarised on their anchor by decorateSubagentAnchors.
+//     subagent children load in their agent's scoped pages and are
+//     summarised on their anchor by decorateSubagentAnchors.
 //   - The cursor pagers (ListItemsBeforeCursor / ListItemsAfterCursor)
 //     respect their exclusive bound and report HasMoreOlder /
 //     HasMoreNewer consistently.
@@ -479,7 +479,7 @@ func TestListThreadSliceAround_ChildAnchorPositionsWindow(t *testing.T) {
 	// Subagent parent in turn 0; anchor child in turn 6. The child's
 	// coordinate positions the slice (scroll-to-item lands on its
 	// group), but the rows loaded are the top-level neighborhood — the
-	// child itself hydrates through ListSubagentDescendants.
+	// child itself loads in its agent's scoped page.
 	seedAnchorItem(t, s, "t", "parent", 0, 0)
 	for i := 1; i <= 5; i++ {
 		seedItem(t, s, "t", idForTurn(i), i, 0, "")

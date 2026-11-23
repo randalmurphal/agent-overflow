@@ -325,10 +325,7 @@ VALUES (?, ?, 1, 2, '{"subagent":"review"}', ?, 'Review', '', 0, 'subagent', '',
 	if result == nil || result.Summary != "No issues found." || !strings.Contains(result.Meta, `"sourceKind":"review"`) {
 		t.Fatalf("review result = %+v", result)
 	}
-	descendants, err := st.ListSubagentDescendants(outcome.Threads[0].ID, launch.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	descendants := rowsUnderLaunch(t, st, outcome.Threads[0].ID, launch.ID)
 	if len(itemsByKind(descendants, "tool_call")) != 1 {
 		t.Fatalf("review descendants = %+v, want one joined tool call", descendants)
 	}
@@ -715,18 +712,9 @@ func TestImportClaudeNestsSubagentRowsUnderTheirTask(t *testing.T) {
 	outcome := importFixtureRow(t, d, row)
 	threadID := outcome.Threads[0].ID
 
-	descendants, err := st.ListSubagentDescendants(threadID, "toolu_task")
-	if err != nil {
-		t.Fatalf("list subagent descendants: %v", err)
-	}
-	if len(descendants) == 0 {
+	if len(rowsUnderLaunch(t, st, threadID, "toolu_task")) == 0 {
 		items, _ := st.ListItems(threadID)
 		t.Fatalf("no rows nested under the Task launch: %s", itemKinds(items))
-	}
-	for _, item := range descendants {
-		if item.ParentID != "toolu_task" {
-			t.Errorf("descendant %s parent = %q, want the Task launch", item.ID, item.ParentID)
-		}
 	}
 	// The nested rows must stay OUT of the windowed timeline read — that
 	// exclusion is what keeps one subagent-heavy turn from eating the
@@ -1516,4 +1504,20 @@ func assertCursorLandsOnTheLastRow(t *testing.T, st *store.Store, thread store.T
 		t.Errorf("a thread resumed after import does not read as diverged (cursor %d/%d)",
 			state.LastTurnIndex, state.LastItemIndex)
 	}
+}
+
+// rowsUnderLaunch returns the thread's rows whose parent is the launch.
+func rowsUnderLaunch(t *testing.T, st *store.Store, threadID, launchID string) []store.Item {
+	t.Helper()
+	items, err := st.ListItems(threadID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	var under []store.Item
+	for _, item := range items {
+		if item.ParentID == launchID {
+			under = append(under, item)
+		}
+	}
+	return under
 }

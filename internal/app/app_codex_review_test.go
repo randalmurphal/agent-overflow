@@ -322,9 +322,15 @@ func TestComposerReviewUsesOneTurnWithAgentActivityAndSourcedResult(t *testing.T
 	if !strings.Contains(result.Meta, `"sourceKind":"review"`) || !strings.Contains(result.Meta, launch.ID) {
 		t.Fatalf("review result source meta = %s", result.Meta)
 	}
-	children, err := app.store.ListSubagentDescendants(thread.ID, launch.ID)
+	items, err = app.store.ListItems(thread.ID)
 	if err != nil {
-		t.Fatalf("ListSubagentDescendants: %v", err)
+		t.Fatalf("ListItems: %v", err)
+	}
+	var children []store.Item
+	for _, item := range items {
+		if item.ParentID == launch.ID {
+			children = append(children, item)
+		}
 	}
 	if len(children) < 4 {
 		t.Fatalf("review agent transcript has %d rows, want prompt, tool, thinking, and final: %+v", len(children), children)
