@@ -3971,14 +3971,18 @@ func TestAutoReconnectAfterDeathRestoresTheQueueFirst(t *testing.T) {
 		handler(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: id, Content: "disconnected", Timestamp: time.Now()})
 	}
 
-	waitForCondition(t, "every thread auto-reconnected", func() bool { return started.Load() == threads })
 	for _, id := range ids {
-		var draft store.ThreadDraft
-		waitForCondition(t, "queued message restored for "+id, func() bool {
-			var err error
-			draft, _, err = app.store.GetThreadDraft(id)
-			return err == nil && draft.Content == "queued before the death"
-		})
+		waitProviderEvents(t, app, id)
+	}
+	app.sessionDeathWork.Wait()
+	if got := started.Load(); got != threads {
+		t.Fatalf("%d threads auto-reconnected, want %d", got, threads)
+	}
+	for _, id := range ids {
+		draft, _, err := app.store.GetThreadDraft(id)
+		if err != nil || draft.Content != "queued before the death" {
+			t.Fatalf("draft of %s = %q, %v; want the queued message restored", id, draft.Content, err)
+		}
 	}
 }
 

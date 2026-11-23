@@ -266,6 +266,10 @@ type App struct {
 	agentWakes agentWakeState
 	// agentNoticeWork joins what notices run after they are accepted.
 	agentNoticeWork appAgentNoticeWorkState
+	// sessionDeathWork joins what a session's unexpected end starts off its
+	// provider event worker (goSessionDeathWork): the startup-failure
+	// teardown, the queue restore and the auto-reconnect.
+	sessionDeathWork workGroup
 	// memoryReports joins the memory reads behind warning rows.
 	memoryReports appMemoryReportsState
 	// assistantHandOffs holds each assistant's running handoff and the
@@ -693,6 +697,8 @@ type App struct {
 	// closeBrowserPagesFn and closeProviderSessionFn, when set, answer
 	// closeThreadBrowserPages and a teardown's provider close in place of the
 	// real ones, which the fakes and mock CLIs cannot make fail.
+	// closeProviderSessionFn stands in only for closing a session the
+	// registry held (a non-empty token, closeTornDownSession).
 	closeBrowserPagesFn    func(threadID string) error
 	closeProviderSessionFn func(threadID string) error
 	sendMessageFn          func(string, string, []string) error

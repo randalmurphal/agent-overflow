@@ -267,14 +267,15 @@ func TestSessionEventHandlerAutoReconnectsAfterAbnormalDeath(t *testing.T) {
 	})
 
 	waitProviderEvents(t, app, thread.ID)
+	app.sessionDeathWork.Wait()
 
 	select {
 	case got := <-startCalls:
 		if got != thread.ID {
 			t.Fatalf("startSessionFn invoked for %q, want %q", got, thread.ID)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for auto-reconnect startSession call")
+	default:
+		t.Fatal("the death's work ended without an auto-reconnect startSession call")
 	}
 }
 
@@ -312,11 +313,12 @@ func TestSessionEventHandlerNoAutoReconnectWithoutDeathSignal(t *testing.T) {
 	})
 
 	waitProviderEvents(t, app, thread.ID)
+	app.sessionDeathWork.Wait()
 
 	select {
 	case <-startCalled:
 		t.Fatal("startSessionFn called on clean disconnect; auto-reconnect should be gated on prior error event")
-	case <-time.After(150 * time.Millisecond):
+	default:
 		// expected — no auto-reconnect for a clean stop
 	}
 }
@@ -360,11 +362,12 @@ func TestSessionEventHandlerNoAutoReconnectWithoutSessionRef(t *testing.T) {
 	})
 
 	waitProviderEvents(t, app, thread.ID)
+	app.sessionDeathWork.Wait()
 
 	select {
 	case <-startCalled:
 		t.Fatal("startSessionFn called despite empty SessionRef; auto-reconnect should skip when there is nothing to --resume against")
-	case <-time.After(150 * time.Millisecond):
+	default:
 		// expected
 	}
 }
@@ -550,11 +553,12 @@ func TestAttemptAutoReconnectSkippedDuringShutdown(t *testing.T) {
 	})
 
 	waitProviderEvents(t, app, thread.ID)
+	app.sessionDeathWork.Wait()
 
 	select {
 	case <-startCalled:
 		t.Fatal("auto-reconnect fired during shutdown; shuttingDown gate failed")
-	case <-time.After(150 * time.Millisecond):
+	default:
 		// expected — shutdown gated it
 	}
 }
@@ -661,6 +665,7 @@ func TestRetiredSessionFramesDoNotActOnTheReplacement(t *testing.T) {
 		dead(evt)
 	}
 	waitProviderEvents(t, app, thread.ID)
+	app.sessionDeathWork.Wait()
 
 	if _, ok := app.triage.PendingWakeupAt(thread.ID); !ok {
 		t.Fatal("the retired session's disconnect cleared the replacement's schedule")
@@ -674,7 +679,7 @@ func TestRetiredSessionFramesDoNotActOnTheReplacement(t *testing.T) {
 	select {
 	case threadID := <-starts:
 		t.Fatalf("the retired session's death started an auto-reconnect for %s", threadID)
-	case <-time.After(200 * time.Millisecond):
+	default:
 	}
 }
 

@@ -431,13 +431,14 @@ func TestAutoReconnectFailureSurfacesOnThread(t *testing.T) {
 	handler(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "error", Timestamp: time.Now()})
 	handler(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "disconnected", Timestamp: time.Now()})
 	waitProviderEvents(t, app, thread.ID)
+	app.sessionDeathWork.Wait()
 
 	select {
 	case item := <-errorItems:
 		if !strings.Contains(item.Summary, "could not be resumed automatically") || !strings.Contains(item.Summary, "chdir /gone") {
 			t.Fatalf("error item = %q, want the auto-reconnect failure and its cause", item.Summary)
 		}
-	case <-time.After(5 * time.Second):
+	default:
 		t.Fatal("no error item reached the thread")
 	}
 }

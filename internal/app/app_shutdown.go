@@ -277,6 +277,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// it took back to a settlement goroutine.
 	a.stopIdleSessionReaper()
 	record("stop idle session reaper", nil)
+	// After the app context is cancelled, so a reconnect's Codex start in
+	// flight ends, and before the request and notice work a restore can
+	// queue is joined; a reconnect's start registers before Step 4's snapshot.
+	a.sessionDeathWork.Close()
+	record("stop session death work", nil)
 	// The request sweep writes rows and can queue a wake, so it is joined
 	// beside the remote watches and before the store is closed. Closing
 	// it refuses the settlements a later session close would start.

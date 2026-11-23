@@ -177,6 +177,10 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		"close replay manager",
 		"shutdown telemetry",
 		"stop idle session reaper",
+		// "stop session death work" MUST follow "cancel app context" and
+		// precede "close provider sessions": a reconnect in flight registers
+		// its session before the close snapshots the registry.
+		"stop session death work",
 		// "stop retention cleanup" MUST appear between
 		// "stop idle session reaper" and "close provider sessions" —
 		// the sweep deletes threads, which mutates

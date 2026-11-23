@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"strings"
 	"sync/atomic"
@@ -117,11 +118,11 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// the thread action lock and closes this session, and a close
 		// drains this worker's queue.
 		if provider.IsStartupFailure(evt) {
-			go func() {
+			a.goSessionDeathWork(threadID, "startup-failure teardown", func() {
 				if err := a.teardownDeadPreInitSession(threadID, sessionToken); err != nil {
 					log.Printf("app: %v", err)
 				}
-			}()
+			})
 		}
 
 		// Codex's own cumulative cost estimate for this thread, read once per
@@ -173,7 +174,10 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 				}
 				return a.triage != nil && a.triage.ThreadEpoch(threadID) == deathEpoch
 			}
-			go a.restoreUnconfirmedQueueOnSessionDeathIf(threadID, deathRestoreGuard)
+			guard := deathRestoreGuard
+			a.goSessionDeathWork(threadID, "queue restore", func() {
+				a.restoreUnconfirmedQueueOnSessionDeathIf(threadID, guard)
+			})
 		}
 
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
@@ -181,14 +185,14 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			a.workflowApplication().SessionDisconnected(threadID)
 			if deathReported {
 				guard := deathRestoreGuard
-				go func() {
+				a.goSessionDeathWork(threadID, "queue restore and auto-reconnect", func() {
 					// The reconnect stops the dead thread first, and a stop
 					// drops its queue. Whichever goroutine reaches the lock
 					// first, the death's queue is restored before that; a
 					// second restore drains nothing.
 					a.restoreUnconfirmedQueueOnSessionDeathIf(threadID, guard)
 					a.attemptAutoReconnect(threadID)
-				}()
+				})
 			}
 			// The provider emits nothing after "disconnected". Only the
 			// disconnect of the session that owns the thread marks the
@@ -289,12 +293,36 @@ func (a *App) attemptAutoReconnect(threadID string) {
 		return
 	}
 	if err := a.reconnectDeadSession(threadID); err != nil {
+		log.Printf("app: auto-reconnect after session death failed for %s: %v", threadID, err)
+		if a.refusedByShutdown(err) {
+			// Nothing the person can act on: the app is quitting.
+			return
+		}
 		// The death banner says the session died; this says the recovery
 		// the user did not ask for also failed, and why. Without it the
 		// spawn's own refusal (a workspace that is gone, a resume cursor
 		// the CLI rejects) is a log line nobody reads.
-		log.Printf("app: auto-reconnect after session death failed for %s: %v", threadID, err)
 		a.emitErrorToThread(threadID, "session could not be resumed automatically: "+err.Error())
+	}
+}
+
+// refusedByShutdown reports whether err is shutdown refusing or cutting
+// short work: the shutting-down refusal, or a cancellation of the app
+// context once it has ended.
+func (a *App) refusedByShutdown(err error) bool {
+	return errors.Is(err, ErrShuttingDown) ||
+		(errors.Is(err, context.Canceled) && a.lifeCtx().Err() != nil)
+}
+
+// goSessionDeathWork runs fn, the work a session's unexpected end starts
+// for threadID, on its own goroutine joined at shutdown before sessions
+// close. Once shutdown has stopped the work it runs nothing and logs what it
+// refused, named by what: a session still registered is closed by
+// shutdown's session close, and the next boot restores the thread's queue
+// from its rows.
+func (a *App) goSessionDeathWork(threadID, what string, fn func()) {
+	if !a.sessionDeathWork.Go(fn) {
+		log.Printf("app: shutdown refused the %s after the session of %s ended; the next boot restores its queue", what, threadID)
 	}
 }
 

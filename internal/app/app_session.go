@@ -1477,13 +1477,7 @@ func (a *App) teardownDeadPreInitSessionLocked(threadID, sessionToken string) er
 			}
 		}
 	}
-	var err error
-	if a.closeProviderSessionFn != nil {
-		err = a.closeProviderSessionFn(threadID)
-	} else {
-		err = a.closeProviderSession(threadID, sess)
-	}
-	if err != nil {
+	if err := a.closeTornDownSession(threadID, sess); err != nil {
 		return fmt.Errorf("teardown dead pre-init session for thread %s: %w", threadID, err)
 	}
 	return nil
@@ -1572,12 +1566,7 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool,
 	} else {
 		defer a.giveBackTeardownRequests(threadID, requests)
 	}
-	var err error
-	if a.closeProviderSessionFn != nil {
-		err = a.closeProviderSessionFn(threadID)
-	} else {
-		err = a.closeProviderSession(threadID, sess)
-	}
+	err := a.closeTornDownSession(threadID, sess)
 	if err == nil && sess.Provider == string(provider.Codex) {
 		if retireErr := a.retireCodexBackgroundRuntime(threadID); retireErr != nil {
 			err = fmt.Errorf("%w: %w", errBackgroundNotRetired, retireErr)
@@ -1608,6 +1597,15 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool,
 	// its entries (no final tick ever arrives to clear them).
 	a.highlightService().PurgeThread(threadID)
 	return err
+}
+
+// closeTornDownSession is a teardown's provider close, answered by the
+// closeProviderSessionFn test hook where its rule says so.
+func (a *App) closeTornDownSession(threadID string, sess session) error {
+	if a.closeProviderSessionFn != nil && sess.Token != "" {
+		return a.closeProviderSessionFn(threadID)
+	}
+	return a.closeProviderSession(threadID, sess)
 }
 
 // settleQueueForTeardown empties the thread's queue for a teardown, durable

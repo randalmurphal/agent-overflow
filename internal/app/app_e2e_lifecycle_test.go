@@ -324,8 +324,8 @@ func setupE2EAppOn(t *testing.T, dbPath, settingsDir string) (*App, *capturedEve
 	return app, bus
 }
 
-// The fixture's teardown joins the notice work and request settlements a
-// test leaves running, as Shutdown does, so none of them uses the store
+// The fixture's teardown joins the notice work, request settlements and
+// session death work a test leaves running, as Shutdown does, so none of them uses the store
 // after it closes or writes into a temporary directory being removed.
 func TestE2EFixtureTeardownJoinsBackgroundWork(t *testing.T) {
 	t.Parallel()
@@ -335,6 +335,7 @@ func TestE2EFixtureTeardownJoinsBackgroundWork(t *testing.T) {
 	}{
 		{"notice work", func(app *App, work func()) bool { return app.goAgentNoticeWork("teardown", work) }},
 		{"request settlement", func(app *App, work func()) bool { app.goThreadRequestSettling(work); return true }},
+		{"session death work", func(app *App, work func()) bool { return app.sessionDeathWork.Go(work) }},
 	} {
 		var (
 			done    bool
@@ -359,9 +360,9 @@ func TestE2EFixtureTeardownJoinsBackgroundWork(t *testing.T) {
 }
 
 // joinBackgroundWorkAtCleanup ends the App's session-starting background
-// work when the test ends, as Shutdown does: thread request settlements and
-// wake deliveries, and the flush dispatch workers that start a session for a
-// message queued without one. Work that outlived the test would run against
+// work when the test ends, as Shutdown does: what a session's unexpected end
+// starts, thread request settlements and wake deliveries, and the flush
+// dispatch workers that start a session for a message queued without one. Work that outlived the test would run against
 // its removed directories and closed store.
 //
 // Call it after the fixture's other cleanups are registered, so it runs
@@ -372,6 +373,7 @@ func joinBackgroundWorkAtCleanup(t *testing.T, app *App) {
 		if app.appCancel != nil {
 			app.appCancel()
 		}
+		app.sessionDeathWork.Close()
 		app.threadRequestsWG.Close()
 		if err := app.drainFlushDispatch(context.Background(), 30*time.Second); err != nil {
 			t.Errorf("join flush dispatch workers: %v", err)
