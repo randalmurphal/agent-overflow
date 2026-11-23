@@ -281,7 +281,9 @@ func TestEndSessionClosesAnAgentCodexLoadedAgain(t *testing.T) {
 			var meta struct {
 				Status string `json:"status"`
 			}
-			_ = json.Unmarshal(evt.Meta, &meta)
+			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+				t.Fatalf("agent status meta %s: %v", evt.Meta, err)
+			}
 			statuses = append(statuses, meta.Status)
 		}
 	}

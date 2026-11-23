@@ -236,19 +236,24 @@ func TestARecoveredUnloadIsRecordedWhereItsRevisionIsChecked(t *testing.T) {
 
 // agentTimeline names each agent status and command start in events, in
 // order.
-func agentTimeline(events []provider.ProviderEvent) []string {
+func agentTimeline(t *testing.T, events []provider.ProviderEvent) []string {
+	t.Helper()
 	var out []string
 	for _, evt := range events {
-		switch evt.Kind {
-		case provider.EventSubagentStatus:
-			var meta struct {
-				Status string `json:"status"`
-			}
-			_ = json.Unmarshal(evt.Meta, &meta)
-			out = append(out, "status "+meta.Status)
-		case provider.EventToolStart:
+		if evt.Kind == provider.EventToolStart {
 			out = append(out, evt.ItemID+" start")
+			continue
 		}
+		if evt.Kind != provider.EventSubagentStatus {
+			continue
+		}
+		var meta struct {
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+			t.Fatalf("agent status meta %s: %v", evt.Meta, err)
+		}
+		out = append(out, "status "+meta.Status)
 	}
 	return out
 }
@@ -288,7 +293,7 @@ func TestAThreadNotFoundAnswerIsTheUnloadWhereItWasRead(t *testing.T) {
 		t.Fatalf("terminate = %v, want ErrBackgroundTerminalThreadNotLoaded", err)
 	}
 	mu.Lock()
-	got := agentTimeline(events)
+	got := agentTimeline(t, events)
 	mu.Unlock()
 	if want := []string{"status notLoaded", "status running", "cmd-2 start"}; !sameOrder(got, want) {
 		t.Fatalf("agent timeline = %q, want %q: the unload belongs where its answer was read", got, want)
