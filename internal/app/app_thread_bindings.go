@@ -516,33 +516,6 @@ func (a *App) UnpinThread(id string) (store.Thread, error) {
 	return row, nil
 }
 
-// UpdateThreadProvider switches to the provider's latest remembered profile
-// and restarts the session if one is live so the new provider takes effect.
-//
-// A thread is locked to its provider once any item has been persisted:
-// provider sessions are not interchangeable (Codex can't resume a Claude
-// rollout and vice versa), so an in-flight switch would surface as a
-// "thread/resume: no rollout found" error from the reconnect goroutine
-// and leave the thread in a confusing half-switched state. Reject at the
-// binding boundary with a user-facing message instead. Same-provider
-// calls short-circuit so a UI that re-sends the current provider on
-// every model change doesn't trip the lock.
-//
-//ao:scope threads:operate
-//ao:route thread
-func (a *App) UpdateThreadProvider(id, providerName string) (store.Thread, error) {
-	unlock, err := a.threadApplication().LockMutable(context.Background(), id)
-	if err != nil {
-		return store.Thread{}, err
-	}
-	defer unlock()
-	update, err := a.threadApplication().UpdateProvider(id, providerName)
-	if err != nil {
-		return store.Thread{}, err
-	}
-	return a.finishThreadModelUpdate(update)
-}
-
 // UpdateThreadModel changes a thread's model through live provider controls.
 // Launch-only profile changes wait for the session to be quiet before restart.
 // Threads without an active session use the new model on their next start.
@@ -694,7 +667,7 @@ func (a *App) UpdateThreadContextWindow(id string, tokens int) (store.Thread, er
 	if err != nil {
 		return store.Thread{}, err
 	}
-	return a.UpdateThreadContextSettings(id, ContextSettingsUpdate{
+	return a.updateThreadContextSettings(id, ContextSettingsUpdate{
 		Provider:                   thread.Provider,
 		Model:                      thread.Model,
 		ContextWindow:              tokens,

@@ -145,23 +145,6 @@ func (a *App) GetDraft(threadID string) (Draft, error) {
 	return draft, nil
 }
 
-// ClearDraft deletes any stored draft for a thread. Missing rows are not
-// treated as an error because the caller just wants the thread to have no
-// draft.
-//
-//ao:scope threads:operate
-func (a *App) ClearDraft(ctx context.Context, threadID string) error {
-	if a.store == nil {
-		return fmt.Errorf("draft store not initialized")
-	}
-	unlock, err := a.threadApplication().LockMutable(ctx, threadID)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	return a.removeThreadDraft(clientOf(ctx), threadID, nil)
-}
-
 // DeleteEmptyDraftThread removes a materialized chat/plan draft row after the
 // composer is cleared. It returns false when the thread has gained durable
 // state or is currently active.

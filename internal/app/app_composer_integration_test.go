@@ -179,34 +179,6 @@ func TestComposer_DraftOverwritePreservesMostRecent(t *testing.T) {
 	}
 }
 
-// TestComposer_DraftClearRemovesRow confirms ClearDraft deletes the row and
-// GetDraft returns a zero-value Draft (empty content, non-nil empty slices).
-func TestComposer_DraftClearRemovesRow(t *testing.T) {
-	t.Parallel()
-	app, _ := newComposerTestApp(t)
-	composerSeedThread(t, app, "thr-clear", "")
-
-	if err := app.SaveDraft(t.Context(), "thr-clear", "to clear", []string{"a"}, nil, nil); err != nil {
-		t.Fatalf("SaveDraft: %v", err)
-	}
-	if err := app.ClearDraft(t.Context(), "thr-clear"); err != nil {
-		t.Fatalf("ClearDraft: %v", err)
-	}
-	got, err := app.GetDraft("thr-clear")
-	if err != nil {
-		t.Fatalf("GetDraft: %v", err)
-	}
-	if got.Content != "" {
-		t.Fatalf("Content after clear = %q, want empty", got.Content)
-	}
-	if got.AttachmentIDs == nil {
-		t.Fatal("AttachmentIDs should be non-nil empty slice")
-	}
-	if len(got.AttachmentIDs) != 0 {
-		t.Fatalf("AttachmentIDs = %+v, want []", got.AttachmentIDs)
-	}
-}
-
 // TestComposer_DraftStaleGenerationCounterRejected documents the actual
 // contract: the backend has NO generation counter. Writes land in the order
 // the client sends them. The frontend's composerDraft.svelte.ts guards

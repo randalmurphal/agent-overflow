@@ -909,12 +909,7 @@ releases. No client cache.
 - Frontend never loads more than 4MB per payload. Stage 2's full load
   renders in a `<pre>` with `overflow:auto`. Chrome/Firefox handle
   4MB of preformatted text fine (no virtual scrolling needed).
-- **Save-to-file escape hatch:** a small "Save to file..." button in
-  the dropdown header calls `SavePayloadToFile(threadId, payloadId)` which
-  writes the full captured payload (up to 4MB) to a user-chosen path
-  via the OS save-file dialog. For users who want to grep / diff /
-  editor-view the raw output. No larger-than-4MB recovery: what
-  wasn't captured is gone.
+- No larger-than-4MB recovery: what wasn't captured is gone.
 
 **For diffs with >10 files:** the file tree IS the stage-1 peek. Each
 file's unified-diff body is its own stage-2-style on-demand fetch when

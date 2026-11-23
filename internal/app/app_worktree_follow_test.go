@@ -454,7 +454,7 @@ func TestStartSessionSettlesTranscriptUnderWorkspace(t *testing.T) {
 // Removing a Claude-entered worktree through AO: the CLI leaves it LOCKED,
 // so removal has to lift the lock, then the ordinary reattach moves the row
 // back to the project root.
-func TestGitRemoveWorktreeRemovesLockedProviderWorktree(t *testing.T) {
+func TestRemoveThreadWorktreeRemovesLockedProviderWorktree(t *testing.T) {
 	t.Parallel()
 	f := newFollowFixture(t, "thread-remove-locked")
 	worktree := f.cliWorktree(t, "feature-locked")
@@ -465,8 +465,8 @@ func TestGitRemoveWorktreeRemovesLockedProviderWorktree(t *testing.T) {
 		t.Fatalf("UpdateThread(moved): %v", err)
 	}
 
-	if _, err := f.app.GitRemoveWorktree(f.thread.ID); err != nil {
-		t.Fatalf("GitRemoveWorktree on the CLI's locked worktree: %v", err)
+	if _, err := f.app.RemoveOtherWorktree(attachedWorktreeRemoval(t, f.app, f.thread.ID)); err != nil {
+		t.Fatalf("RemoveOtherWorktree on the CLI's locked worktree: %v", err)
 	}
 
 	row, err := f.app.store.GetThread(f.thread.ID)

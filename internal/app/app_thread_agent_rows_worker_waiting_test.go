@@ -145,9 +145,9 @@ func TestAWorkerWaitingOnItsBackgroundWorkIsOpen(t *testing.T) {
 	f.app.threadRequestsWG.Wait()
 	frames := f.callerAgentFrames(t, f.caller.ID)
 	launchWorkerShell(t, f.app, worker.ID, "deploy-shell")
-	work, err := f.app.runningBackgroundWorkForThread(worker.ID, "")
-	if err != nil || len(work) != 1 {
-		t.Fatalf("running background work %+v, %v; this test needs the shell running", work, err)
+	work, err := f.app.ListLiveBackgroundTasks(worker.ID)
+	if running, countErr := f.app.runningBackgroundTaskCount(worker.ID); err != nil || countErr != nil || running != 1 || len(work) != 1 {
+		t.Fatalf("running background work %+v (%d running), %v, %v; this test needs the shell running", work, running, err, countErr)
 	}
 	f.expectWaiting(t, "bg-spawn", work[0].Summary)
 	f.awaitCallerFrame(t, f.caller.ID, frames)
@@ -156,8 +156,8 @@ func TestAWorkerWaitingOnItsBackgroundWorkIsOpen(t *testing.T) {
 		map[string]any{"task_id": "task-deploy-shell", "tool_use_id": "deploy-shell", "status": "completed", "source": "task_updated"})
 	workerEvent(t, f.app, worker.ID, provider.ProviderEvent{Kind: provider.EventBackgroundTaskNotification, ItemID: "deploy-shell", Content: "deploy finished"},
 		map[string]any{"task_id": "task-deploy-shell", "tool_use_id": "deploy-shell", "status": "completed", "uuid": "u-deploy-shell"})
-	if work, err := f.app.runningBackgroundWorkForThread(worker.ID, ""); err != nil || len(work) != 0 {
-		t.Fatalf("running background work after the shell ended %+v, %v", work, err)
+	if running, err := f.app.runningBackgroundTaskCount(worker.ID); err != nil || running != 0 {
+		t.Fatalf("running background work after the shell ended %d, %v", running, err)
 	}
 	f.expectRested(t, "bg-spawn")
 

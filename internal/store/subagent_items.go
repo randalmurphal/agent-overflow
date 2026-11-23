@@ -55,10 +55,8 @@ const (
 	metaKeyLiveBackgroundActive = "live_background_active"
 )
 
-// maxSubagentDescendants caps one expansion load, mirroring the
-// maxWindowItems resource limit on the window pagers (app_paging.go):
-// ListSubagentDescendants is a wire RPC, so its response must stay
-// bounded even when a remote caller requests a large subtree.
+// maxSubagentDescendants caps one ListSubagentDescendants load, mirroring
+// the maxWindowItems resource limit on the window pagers (app_paging.go).
 // Real subagent transcripts run one to two orders of magnitude below
 // this. When the cap binds, the newest rows win — transcripts resolve
 // tail-first like every other capped read in this package — and the

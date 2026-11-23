@@ -70,38 +70,10 @@ func (a *App) GetContextSettings(providerName, model string) (ContextSettingsPro
 	}, nil
 }
 
-//ao:scope settings:write
-//ao:route home
-func (a *App) UpdateContextSettingsProfile(update ContextSettingsUpdate) (ContextSettingsProfile, error) {
-	if a.store == nil {
-		return ContextSettingsProfile{}, fmt.Errorf("update context settings profile: store unavailable")
-	}
-	providerName, model, err := chatmodel.ValidateContextUpdate(a.contextWindowOptionsForModel(update.Provider, update.Model), update.Provider, update.Model, update.ContextWindow, update.AutoCompactStandardPercent, update.AutoCompactExtendedPercent)
-	if err != nil {
-		return ContextSettingsProfile{}, err
-	}
-
-	a.chatModelProfileMu.Lock()
-	defer a.chatModelProfileMu.Unlock()
-	profile, err := a.store.GetChatModelProfile(providerName, model)
-	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			return ContextSettingsProfile{}, fmt.Errorf("update context settings profile: load profile: %w", err)
-		}
-		profile = a.fallbackChatModelProfile(providerName, model)
-	}
-	profile.ContextWindow = update.ContextWindow
-	profile.AutoCompactStandardPercent = update.AutoCompactStandardPercent
-	profile.AutoCompactExtendedPercent = update.AutoCompactExtendedPercent
-	profile.UpdatedAt = 0
-	if err := a.store.UpsertChatModelProfile(profile); err != nil {
-		return ContextSettingsProfile{}, err
-	}
-	return a.GetContextSettings(providerName, model)
-}
-
-//ao:scope threads:operate
-func (a *App) UpdateThreadContextSettings(threadID string, update ContextSettingsUpdate) (store.Thread, error) {
+// updateThreadContextSettings validates and persists a thread's context
+// window and auto-compact thresholds, then restarts its session when the
+// change affects it. UpdateThreadContextWindow is its bound entry.
+func (a *App) updateThreadContextSettings(threadID string, update ContextSettingsUpdate) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update thread context settings: store unavailable")
 	}
@@ -134,7 +106,7 @@ func (a *App) UpdateThreadContextSettings(threadID string, update ContextSetting
 	// brings the new state online; once a turn runs the meter is
 	// authoritative again.
 	if err := a.store.ClearLastTokenUsage(threadID); err != nil {
-		log.Printf("UpdateThreadContextSettings: clear last token usage: %v", err)
+		log.Printf("updateThreadContextSettings: clear last token usage: %v", err)
 	}
 	a.emit(eventchan.ProviderUsage, provider.UsageEvent{
 		Action:   "reset",

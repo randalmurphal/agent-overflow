@@ -223,7 +223,7 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 		// stops (and is joined) or starts with the setting, no restart.
 		a.reconcileMergedPRPoll(0)
 	}
-	a.ReconfigureObservability(prev, next)
+	a.reconfigureObservability(prev, next)
 	if _, ok := patch["editor"]; ok {
 		// Editor preference touched — drop the cached catalog so the
 		// picker doesn't surface stale availability. Same invalidation

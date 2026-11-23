@@ -5,7 +5,6 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,53 +119,6 @@ func TestSendReceiptDeduplicatesDeferredQueueBeforeProviderEcho(t *testing.T) {
 	}
 	if rows := durableQueueRows(t, app, thread.ID); len(rows) != 0 {
 		t.Fatalf("retry created durable queue rows: %+v", rows)
-	}
-}
-
-func TestSendReceiptLegacySteerRetryAfterCompletionHasNoSideEffects(t *testing.T) {
-	t.Parallel()
-	app, _ := newAppForFlushQueueRPC(t)
-	thread := testThread("receipt-steer")
-	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatal(err)
-	}
-	if err := app.store.InsertTurn(store.Turn{TurnID: "receipt-turn", ThreadID: thread.ID, TurnIndex: 0, StartedAt: time.Now().UnixMilli()}); err != nil {
-		t.Fatal(err)
-	}
-	requests := installReceiptCaptureSession(t, app, thread)
-	opts := SendMessageOptions{SendID: "legacy-steer-send"}
-	first, err := app.SteerMessageWithOptions(context.Background(), thread.ID, "steer once", opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	item, found, err := app.store.FindUserTextItemBySendID(thread.ID, opts.SendID)
-	if err != nil || !found {
-		t.Fatalf("legacy steer lost sendId metadata: found=%v err=%v", found, err)
-	}
-	if err := app.store.UpdateTurnCompleted("receipt-turn", time.Now().UnixMilli(), "end_turn", "", "", ""); err != nil {
-		t.Fatal(err)
-	}
-	// A delayed retry is the prior send, even when its obsolete runtime
-	// selection differs from the thread's current setting and no turn is open.
-	opts.RuntimeMode = "full-access"
-	retried, err := app.SteerMessageWithOptions(context.Background(), thread.ID, "steer once", opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if retried.ID != first.ID || retried.RuntimeMode != first.RuntimeMode {
-		t.Fatalf("retry mutated thread: first=%+v retry=%+v", first, retried)
-	}
-	items, err := app.store.ListItems(thread.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(items) != 1 || items[0].ID != item.ID || items[0].Meta != item.Meta {
-		t.Fatalf("retry changed canonical rows: %+v", items)
-	}
-	if got := requests(); fmt.Sprint(got) != "[turn/steer]" {
-		t.Fatalf("provider dispatches = %v, want exactly one steer", got)
 	}
 }
 

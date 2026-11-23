@@ -78,7 +78,7 @@ func TestProbeCodexAccountReturnsInfo(t *testing.T) {
 		t.Fatalf("update settings: %v", err)
 	}
 
-	info, err := app.ProbeCodexAccount()
+	info, err := app.providerDiscoveryService().ProbeCodexAccount()
 	if err != nil {
 		t.Fatalf("ProbeCodexAccount: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestProbeCodexAccountCachesByBinary(t *testing.T) {
 		t.Fatalf("update settings: %v", err)
 	}
 
-	first, err := app.ProbeCodexAccount()
+	first, err := app.providerDiscoveryService().ProbeCodexAccount()
 	if err != nil {
 		t.Fatalf("first probe: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestProbeCodexAccountCachesByBinary(t *testing.T) {
 			"exit 0\n",
 	)
 
-	second, err := app.ProbeCodexAccount()
+	second, err := app.providerDiscoveryService().ProbeCodexAccount()
 	if err != nil {
 		t.Fatalf("second probe: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestProbeCodexAccountSurfacesSpawnErrors(t *testing.T) {
 		t.Fatalf("update settings: %v", err)
 	}
 
-	_, err := app.ProbeCodexAccount()
+	_, err := app.providerDiscoveryService().ProbeCodexAccount()
 	if err == nil {
 		t.Fatal("expected error on missing binary")
 	}
@@ -196,7 +196,7 @@ func TestProbeCodexAccountEmitsRateLimitsOnCacheMiss(t *testing.T) {
 		t.Fatalf("update settings: %v", err)
 	}
 
-	if _, err := app.ProbeCodexAccount(); err != nil {
+	if _, err := app.providerDiscoveryService().ProbeCodexAccount(); err != nil {
 		t.Fatalf("ProbeCodexAccount: %v", err)
 	}
 
@@ -266,10 +266,10 @@ func TestProbeCodexAccountSkipsRateLimitsEmitOnCacheHit(t *testing.T) {
 		t.Fatalf("update settings: %v", err)
 	}
 
-	if _, err := app.ProbeCodexAccount(); err != nil {
+	if _, err := app.providerDiscoveryService().ProbeCodexAccount(); err != nil {
 		t.Fatalf("first probe: %v", err)
 	}
-	if _, err := app.ProbeCodexAccount(); err != nil {
+	if _, err := app.providerDiscoveryService().ProbeCodexAccount(); err != nil {
 		t.Fatalf("second (cached) probe: %v", err)
 	}
 
@@ -294,7 +294,7 @@ func TestRecheckCodexAccountBypassesCache(t *testing.T) {
 		t.Fatalf("update settings: %v", err)
 	}
 
-	first, err := app.ProbeCodexAccount()
+	first, err := app.providerDiscoveryService().ProbeCodexAccount()
 	if err != nil {
 		t.Fatalf("first probe: %v", err)
 	}

@@ -54,7 +54,6 @@ var methodServerBounds = map[string]time.Duration{
 	// reads and the branch and lock steps around it.
 	"AttachThreadWorktree":  hooked + transport.DefaultMethodBudget,
 	"PrepareThreadWorktree": hooked + transport.DefaultMethodBudget,
-	"GitCreateWorktree":     hooked + transport.DefaultMethodBudget,
 	// The merge and its hooks, then the worktree cleanup.
 	"WorkflowMergeItem": hooked + 2*transport.DefaultMethodBudget,
 	// The push's pre-push hook, `gh pr create` or `glab mr create` (whose
@@ -94,8 +93,7 @@ var methodServerBounds = map[string]time.Duration{
 	"AgentRemoteFetchLog":      transport.MethodBudget("AgentRemoteFetchLog"),
 	// A Claude interrupt's acknowledgement, which a burst of kill frames
 	// delays, then the turn's settling.
-	"InterruptTurn":             claude.DefaultControlRequestCeiling + transport.DefaultMethodBudget/2,
-	"InterruptAndRevertIfClean": claude.DefaultControlRequestCeiling + transport.DefaultMethodBudget/2,
+	"InterruptTurn": claude.DefaultControlRequestCeiling + transport.DefaultMethodBudget/2,
 	// A forwarded wait, then the page it renders.
 	"ThreadToolQuery":    time.Duration(threadtools.MaxForwardedWaitSeconds)*time.Second + 5*time.Second,
 	"ThreadOwnerChanges": ownerWaitBound,

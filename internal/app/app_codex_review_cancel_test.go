@@ -20,7 +20,7 @@ func TestCodexTurnStartersRunWhenTheirCallerIsGone(t *testing.T) {
 	}{
 		"review": {
 			call: func(ctx context.Context, app *App, threadID string) error {
-				_, err := app.StartCodexReview(ctx, threadID, CodexReviewTarget{Kind: "uncommittedChanges"})
+				_, err := app.SendMessageWithOptions(ctx, threadID, "/review", SendMessageOptions{})
 				return err
 			},
 			method: `"method":"review/start"`,

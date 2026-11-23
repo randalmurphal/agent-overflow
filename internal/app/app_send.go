@@ -67,7 +67,7 @@ type sendMessageOptions struct {
 	// ExpandComposerCommands admits a leading `/command` word for send-time
 	// expansion (D31). Explicit opt-in, set ONLY where text a human typed
 	// into a composer enters the app: the bound SendMessage /
-	// SendMessageWithOptions / SteerMessageWithOptions wire methods and the
+	// SendMessageWithOptions wire methods and the
 	// flush-queue dispatch of previously queued composer text. Every
 	// app-internal caller (workflow wake, seeded triage/PR turns,
 	// schema-driven phase sends) leaves it false by
@@ -100,9 +100,6 @@ type sendMessageOptions struct {
 	// emitted as soon as stdin is written to the exact account generation that
 	// sent the turn; reading the session after Send returns is already too late.
 	onProviderDispatch func(workflowhost.DispatchIdentity)
-	// onCodexReviewStarted observes the review/start acknowledgement for the
-	// legacy structured binding. Composer sends leave it nil.
-	onCodexReviewStarted func(codex.ReviewStarted)
 }
 
 // userMessageInputs is the projection of fields shared by every
@@ -921,18 +918,14 @@ func (a *App) sendMessageLocked(
 		}
 		reviewCtx, cancel := context.WithTimeout(context.Background(), codexReviewRPCTimeout)
 		defer cancel()
-		started, startErr := sess.Codex.StartReviewForTurn(
+		if _, startErr := sess.Codex.StartReviewForTurn(
 			reviewCtx,
 			reviewTarget,
 			codex.ReviewRunOptions{TurnIndex: turnIndex},
-		)
-		if startErr != nil {
+		); startErr != nil {
 			err = fmt.Errorf("start code review: %w", startErr)
 			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
 			return store.Item{}, fmt.Errorf("send message: %w", err)
-		}
-		if opts.onCodexReviewStarted != nil {
-			opts.onCodexReviewStarted(started)
 		}
 		return userItem, nil
 	}

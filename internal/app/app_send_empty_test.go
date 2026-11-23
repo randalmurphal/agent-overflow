@@ -13,7 +13,7 @@ import (
 func TestEmptySendRefusedBeforeDraftHistoryQueueOrRuntimeEffects(t *testing.T) {
 	t.Parallel()
 	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
-		for _, entry := range []string{"send", "legacy", "queue", "steer", "workflow"} {
+		for _, entry := range []string{"send", "legacy", "queue", "workflow"} {
 			t.Run(providerName+"/"+entry, func(t *testing.T) {
 				app, _ := newAppForFlushQueueRPC(t)
 				thread := testThread("empty-send")
@@ -36,8 +36,6 @@ func TestEmptySendRefusedBeforeDraftHistoryQueueOrRuntimeEffects(t *testing.T) {
 					err = app.SendMessage(context.Background(), thread.ID, "", nil)
 				case "queue":
 					_, err = app.RegisterQueueItem(context.Background(), thread.ID, " \n\t", opts)
-				case "steer":
-					_, err = app.SteerMessageWithOptions(context.Background(), thread.ID, " \n\t", opts)
 				}
 				if err == nil || !strings.Contains(err.Error(), "enter a message or attach a file") {
 					t.Fatalf("empty admission: %v", err)
@@ -81,9 +79,6 @@ func TestEmptyRetryReturnsAcceptedQueueReceiptAcrossSendMethods(t *testing.T) {
 	}
 	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "", opts); err != nil {
 		t.Fatalf("send retry lost receipt: %v", err)
-	}
-	if _, err := app.SteerMessageWithOptions(context.Background(), thread.ID, "", opts); err != nil {
-		t.Fatalf("steer retry lost receipt: %v", err)
 	}
 	if rows := durableQueueRows(t, app, thread.ID); len(rows) != 1 || rows[0].Message != "accepted once" {
 		t.Fatalf("retry changed accepted input: %+v", rows)

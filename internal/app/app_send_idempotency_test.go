@@ -25,10 +25,6 @@ func TestClientSendsRefuseTheAppsSendIDs(t *testing.T) {
 			_, err := app.SendMessageWithOptions(ctx, thread.ID, "hello", SendMessageOptions{SendID: id})
 			return err
 		},
-		"SteerMessageWithOptions": func(id string) error {
-			_, err := app.SteerMessageWithOptions(ctx, thread.ID, "hello", SendMessageOptions{SendID: id})
-			return err
-		},
 		"RegisterQueueItem": func(id string) error {
 			_, err := app.RegisterQueueItem(ctx, thread.ID, "hello", SendMessageOptions{SendID: id})
 			return err

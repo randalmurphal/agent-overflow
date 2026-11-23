@@ -91,11 +91,6 @@ type App struct {
 	// Keeping it on the service makes the integration package importable while
 	// the root main package remains the ldflags target.
 	version string
-	// saveDialog opens the native save-file dialog. Wired by
-	// ServiceStartup in desktop mode (app_desktop.go); left nil in the
-	// headless WSL backend, where there is no native window to attach a
-	// dialog to and the frontend uses a download fallback instead.
-	saveDialog savePayloadPicker
 	// setWindowBackground paints the native window chrome (the color
 	// visible while a resize outruns the webview). Wired by
 	// ServiceStartup in desktop mode (app_desktop.go); left nil in the
@@ -974,11 +969,6 @@ type App struct {
 	// a routed prompt and before it is written to the worker
 	// (answerRoutedPrompt); an error it returns is that write's failure.
 	workerPromptAnsweringForTest func(token string) error
-	// savePayloadPickerFn is a test-only override for the save-file
-	// dialog used by SavePayloadToFile. Production leaves it nil and
-	// the real Wails dialog runs; tests install a stub that returns a
-	// canned path (or empty for "cancelled").
-	savePayloadPickerFn savePayloadPicker
 	// rateLimitProbeClientOverride replaces the Claude rate-limit probe's
 	// HTTP client. ConfigureIsolation sets one that answers in process only
 	// what claudeUsageFake holds; tests assign a client pointing at a local

@@ -1,13 +1,11 @@
 package app
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 
@@ -44,17 +42,8 @@ func TestUserMessagePlacement(t *testing.T) {
 						a.triage.RegisterPendingSendWithExpectation(thread.ID, "user:7", 7, triage.PendingSendExpectation{})
 					}
 				}
-				for _, intent := range []userMessageIntent{messageDirect, messageComposer, messageLegacyComposer, messageSteer, messageFlush, messageFlushFallback} {
+				for _, intent := range []userMessageIntent{messageDirect, messageComposer, messageLegacyComposer, messageFlush, messageFlushFallback} {
 					got, err := a.resolveUserMessagePlacement(thread, intent)
-					if intent == messageSteer && (p != provider.Codex || state != "active") {
-						if err == nil {
-							t.Fatalf("intent %d unexpectedly allowed: %+v", intent, got)
-						}
-						if p == provider.Codex && !errors.Is(err, codex.ErrNoActiveTurn) {
-							t.Fatal(err)
-						}
-						continue
-					}
 					if intent == messageLegacyComposer && (state == "active" || state == "starting") {
 						if err == nil || !strings.Contains(err.Error(), "already working") {
 							t.Fatalf("legacy admission: %+v, %v", got, err)
@@ -70,8 +59,6 @@ func TestUserMessagePlacement(t *testing.T) {
 						if state == "active" || state == "starting" {
 							want = userMessagePlacement{queue: true}
 						}
-					case messageSteer:
-						want = userMessagePlacement{displayTurn: 7, responseTurn: 7}
 					case messageFlush, messageFlushFallback:
 						want.persistence = messageDeferUntilEcho
 						if intent == messageFlush && state == "active" {
@@ -98,7 +85,7 @@ func TestUserMessageIdentityIndependentOfPlacement(t *testing.T) {
 	t.Parallel()
 	a := &App{}
 	for _, sendID := range []string{"composer-identity", "user:999:flush:../:steer:", "☃"} {
-		for _, intent := range []userMessageIntent{messageDirect, messageComposer, messageSteer, messageFlush} {
+		for _, intent := range []userMessageIntent{messageDirect, messageComposer, messageFlush} {
 			first, err := a.userMessageItemID("thread", sendID, 3, intent)
 			if err != nil {
 				t.Fatal(err)

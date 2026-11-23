@@ -421,13 +421,8 @@ func TestRemoteOnlyWorkRemainsVisibleUntilLifecycleCancelsIt(t *testing.T) {
 	if _, live := a.sessionManager().get(thread.ID); live {
 		t.Fatal("fixture unexpectedly has provider session")
 	}
-	inventory, err := a.ListRunningBackgroundWork()
-	if err != nil || len(inventory.Rows) != 1 {
-		t.Fatalf("remote-only inventory=%+v err=%v", inventory, err)
-	}
-	row := inventory.Rows[0]
-	if row.ThreadID != thread.ID || row.Kind != BackgroundWorkRemoteCommand || row.Provider != thread.Provider || !strings.Contains(row.StopID, watch.RequestID) {
-		t.Fatalf("remote-only attribution=%+v", row)
+	if running, err := a.runningBackgroundTaskCount(thread.ID); err != nil || running != 1 {
+		t.Fatalf("remote-only running count=%d err=%v", running, err)
 	}
 	if err := a.checkTransferIdle(thread); err == nil || !strings.Contains(err.Error(), "remote commands") {
 		t.Fatalf("copy ignored remote job: %v", err)
@@ -438,9 +433,8 @@ func TestRemoteOnlyWorkRemainsVisibleUntilLifecycleCancelsIt(t *testing.T) {
 	if err := archiveThread(a, thread.ID); err != nil {
 		t.Fatal(err)
 	}
-	inventory, err = a.ListRunningBackgroundWork()
-	if err != nil || len(inventory.Rows) != 0 {
-		t.Fatalf("archived conversation kept its remote command: %+v %v", inventory, err)
+	if running, err := a.runningBackgroundTaskCount(thread.ID); err != nil || running != 0 {
+		t.Fatalf("archived conversation kept its remote command: %d %v", running, err)
 	}
 	if saved, err := a.store.GetRemoteWatch(watch.ComputerID, watch.RequestID); err != nil || saved.Notification != "dismissed" {
 		t.Fatalf("archive left the watch pending: %+v %v", saved, err)
@@ -468,9 +462,8 @@ func TestRemoteOnlyWorkRemainsVisibleUntilLifecycleCancelsIt(t *testing.T) {
 	if err := a.store.ObserveRemoteWatch(watch.ComputerID, watch.RequestID, watch.Receipt, "", 0); err != nil {
 		t.Fatal(err)
 	}
-	inventory, err = a.ListRunningBackgroundWork()
-	if err != nil || len(inventory.Rows) != 0 {
-		t.Fatalf("finished job remained running: %+v %v", inventory, err)
+	if running, err := a.runningBackgroundTaskCount(thread.ID); err != nil || running != 0 {
+		t.Fatalf("finished job remained running: %d %v", running, err)
 	}
 	if err := a.checkTransferIdle(thread); err == nil {
 		t.Fatal("transfer orphaned pending completion")

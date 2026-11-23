@@ -89,7 +89,7 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 			t.Fatalf("cleanup nonempty draft = %v, %v", deleted, err)
 		}
 		broadcasts.expectSilence("retaining draft content")
-		if err := app.ClearDraft(t.Context(), thread.ID); err != nil {
+		if err := app.SaveDraft(t.Context(), thread.ID, "", nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		broadcasts.reset()

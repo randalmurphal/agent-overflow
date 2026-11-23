@@ -198,8 +198,8 @@ func TestAHeldSpawnsWorkerIsNotAtRestWhileATurnStarts(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("the worker's turn start never reached the gate")
 	}
-	if work, err := f.app.runningBackgroundWorkForThread(ack.ThreadID, ""); err != nil || len(work) != 0 {
-		t.Fatalf("background work %+v, %v; want the shell ended before the start", work, err)
+	if running, err := f.app.runningBackgroundTaskCount(ack.ThreadID); err != nil || running != 0 {
+		t.Fatalf("background work %d, %v; want the shell ended before the start", running, err)
 	}
 	state, err := f.app.threadTools().threadStateNow(t.Context(), ack.ThreadID)
 	if err != nil || state.Resting {
@@ -481,8 +481,8 @@ func TestASendWaitsForRestOnlyOnTheCallersOwnWorker(t *testing.T) {
 	if string(row.Answer) != "Tailing for you." {
 		t.Fatalf("send settled %+v; want its turn's message", row)
 	}
-	if work, err := f.app.runningBackgroundWorkForThread(other.ID, ""); err != nil || len(work) != 1 {
-		t.Fatalf("background work %+v, %v; the send must settle with the shell still running", work, err)
+	if running, err := f.app.runningBackgroundTaskCount(other.ID); err != nil || running != 1 {
+		t.Fatalf("background work %d, %v; the send must settle with the shell still running", running, err)
 	}
 	if f.request(t, own.Token).State != store.ThreadRequestRunning {
 		t.Fatal("the send to the caller's own worker settled while its shell runs")

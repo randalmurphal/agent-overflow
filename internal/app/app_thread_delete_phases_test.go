@@ -50,10 +50,6 @@ func TestEveryDoorRefusesAClaimedThread(t *testing.T) {
 		"send": {plain, func(t *testing.T, f *requestFixture, id string, _ int) error {
 			return f.app.SendMessage(context.Background(), id, "hello", nil)
 		}},
-		"steer": {plain, func(t *testing.T, f *requestFixture, id string, _ int) error {
-			_, err := f.app.SteerMessageWithOptions(t.Context(), id, "steer", SendMessageOptions{})
-			return err
-		}},
 		"session start": {plain, func(t *testing.T, f *requestFixture, id string, _ int) error {
 			return f.app.startSession(t.Context(), id)
 		}},

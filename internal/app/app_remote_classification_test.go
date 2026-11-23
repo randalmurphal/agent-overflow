@@ -59,7 +59,6 @@ var remoteOwnerLocalMethods = map[string]string{
 	"GetNetworkSettings":              "reads settings",
 	"SetNetworkSettings":              "settings validation refuses every remote field",
 	"ListOwnDevices":                  "reads the device list",
-	"RemoveOwnDevice":                 "withdraws access",
 	"ListPasskeys":                    "reads credentials",
 	"DeletePasskey":                   "withdraws access",
 	"BeginPasskeyStepUp":              "proves presence for a local call",

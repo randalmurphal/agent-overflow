@@ -90,27 +90,6 @@ func TestGetThreadDefaultsUsesWarmCodexCatalogWithoutReloading(t *testing.T) {
 // a stubbed active session so the binding returns after persisting even
 // though the session is "live".
 
-func TestUpdateThreadProviderPersistsAndValidates(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread, err := createTestThread(t, app, "claude", "/tmp/tp", "claude-sonnet-4-6", "")
-	if err != nil {
-		t.Fatalf("createTestThread: %v", err)
-	}
-
-	updated, err := app.UpdateThreadProvider(thread.ID, "codex")
-	if err != nil {
-		t.Fatalf("UpdateThreadProvider: %v", err)
-	}
-	if updated.Provider != "codex" {
-		t.Fatalf("Provider = %q, want codex", updated.Provider)
-	}
-
-	if _, err := app.UpdateThreadProvider(thread.ID, "bogus"); err == nil {
-		t.Fatal("UpdateThreadProvider(bogus) error = nil, want validation error")
-	}
-}
-
 func TestCreateThreadRefusesAClaudeAlias(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -286,66 +265,6 @@ func TestUpdateThreadModelRefusesAClaudeAlias(t *testing.T) {
 	stored, err := app.store.GetThread(thread.ID)
 	if err != nil || stored.Model != "claude-sonnet-4-6" {
 		t.Fatalf("stored model = %q, %v; want claude-sonnet-4-6 unchanged", stored.Model, err)
-	}
-}
-
-// TestUpdateThreadProviderLocksAfterFirstItem guards the "provider is
-// locked once the thread has been used" invariant. Once any item lands,
-// switching providers is rejected: the provider session ids aren't
-// interchangeable, so the reconnect would otherwise fail with an opaque
-// "no rollout found" from the new provider. Verified here by:
-//  1. creating a claude thread and persisting a single user_text item,
-//  2. asserting the cross-provider switch fails with a clear message
-//     and leaves the provider column untouched,
-//  3. asserting an idempotent same-provider call still succeeds.
-func TestUpdateThreadProviderLocksAfterFirstItem(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread, err := createTestThread(t, app, "claude", "/tmp/tlock", "claude-sonnet-4-6", "")
-	if err != nil {
-		t.Fatalf("createTestThread: %v", err)
-	}
-
-	now := time.Now().UnixMilli()
-	if err := app.store.InsertItem(store.Item{
-		ID:        "item-lock-1",
-		ThreadID:  thread.ID,
-		TurnIndex: 1,
-		ItemIndex: 0,
-		Kind:      "user_text",
-		Role:      "user",
-		Summary:   "hello",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("InsertItem: %v", err)
-	}
-
-	_, err = app.UpdateThreadProvider(thread.ID, "codex")
-	if err == nil {
-		t.Fatal("UpdateThreadProvider(codex) on used thread error = nil, want lock error")
-	}
-	if !strings.Contains(err.Error(), "locked to claude") {
-		t.Fatalf("UpdateThreadProvider error = %v, want 'locked to claude' context", err)
-	}
-
-	after, err := app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-	if after.Provider != "claude" {
-		t.Fatalf("Provider = %q after rejected switch, want claude (no mutation)", after.Provider)
-	}
-
-	// Idempotent same-provider call MUST still succeed so the composer's
-	// "set provider then set model" pattern (which re-sends the current
-	// provider when only the model changed) doesn't get wedged by the lock.
-	same, err := app.UpdateThreadProvider(thread.ID, "claude")
-	if err != nil {
-		t.Fatalf("UpdateThreadProvider(claude) on used claude thread error = %v, want nil", err)
-	}
-	if same.Provider != "claude" {
-		t.Fatalf("Provider = %q after same-provider call, want claude", same.Provider)
 	}
 }
 
@@ -799,9 +718,9 @@ func TestUpdateThreadWorkspaceSwitchesRegisteredWorktree(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	worktreePath, err := app.GitCreateWorktree(thread.ID, "feature/workspace")
+	worktreePath, err := worktreePathOf(app.PrepareThreadWorktree(thread.ID, "", "feature/workspace", false))
 	if err != nil {
-		t.Fatalf("GitCreateWorktree() error = %v", err)
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
 	}
 	t.Cleanup(func() {
 		_ = app.gitCore().RemoveWorktreeForce(repo, worktreePath, true)

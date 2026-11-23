@@ -160,56 +160,6 @@ func waitForCapturedRequest(t *testing.T, capturePath, needle string) string {
 	}
 }
 
-// TestCodexReviewTargetFromWireRoutesThroughTheValidatingConstructors pins
-// that the flat wire shape cannot smuggle an invalid variant past the union's
-// constructors: a commit with no sha, a base branch with no branch, and a
-// custom review with no instructions are all refused HERE, before a request
-// that would make Codex review the wrong thing is written.
-func TestCodexReviewTargetFromWireRoutesThroughTheValidatingConstructors(t *testing.T) {
-	t.Parallel()
-	valid := []struct {
-		name string
-		in   CodexReviewTarget
-		want codex.ReviewTargetKind
-	}{
-		{"uncommitted", CodexReviewTarget{Kind: "uncommittedChanges"}, codex.ReviewTargetUncommittedChanges},
-		{"base branch", CodexReviewTarget{Kind: "baseBranch", Branch: "main"}, codex.ReviewTargetBaseBranch},
-		{"commit", CodexReviewTarget{Kind: "commit", SHA: "abc123", Title: "fix"}, codex.ReviewTargetCommit},
-		{"commit without a title", CodexReviewTarget{Kind: "commit", SHA: "abc123"}, codex.ReviewTargetCommit},
-		{"custom", CodexReviewTarget{Kind: "custom", Instructions: "look at the locking"}, codex.ReviewTargetCustom},
-	}
-	for _, tc := range valid {
-		t.Run(tc.name, func(t *testing.T) {
-			target, err := codexReviewTargetFromWire(tc.in)
-			if err != nil {
-				t.Fatalf("codexReviewTargetFromWire: %v", err)
-			}
-			if target.Kind() != tc.want {
-				t.Fatalf("kind = %q, want %q", target.Kind(), tc.want)
-			}
-		})
-	}
-
-	invalid := []struct {
-		name string
-		in   CodexReviewTarget
-	}{
-		{"unset kind", CodexReviewTarget{}},
-		{"unknown kind", CodexReviewTarget{Kind: "wholeRepo"}},
-		{"base branch without a branch", CodexReviewTarget{Kind: "baseBranch"}},
-		{"base branch with a blank branch", CodexReviewTarget{Kind: "baseBranch", Branch: "   "}},
-		{"commit without a sha", CodexReviewTarget{Kind: "commit", Title: "fix"}},
-		{"custom without instructions", CodexReviewTarget{Kind: "custom"}},
-	}
-	for _, tc := range invalid {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := codexReviewTargetFromWire(tc.in); err == nil {
-				t.Fatalf("codexReviewTargetFromWire(%+v) must fail", tc.in)
-			}
-		})
-	}
-}
-
 func TestCodexReviewCommandTargetUsesTheComposerGrammar(t *testing.T) {
 	t.Parallel()
 	for _, command := range []string{
@@ -233,7 +183,7 @@ func TestCodexReviewCommandTargetUsesTheComposerGrammar(t *testing.T) {
 	}
 }
 
-func TestCodexReviewCannotBeQueuedOrSteeredIntoAnActiveTurn(t *testing.T) {
+func TestCodexReviewCannotBeQueuedIntoAnActiveTurn(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
@@ -242,10 +192,6 @@ func TestCodexReviewCannotBeQueuedOrSteeredIntoAnActiveTurn(t *testing.T) {
 	if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "/review", SendMessageOptions{}); err == nil ||
 		!strings.Contains(err.Error(), "idle thread") {
 		t.Fatalf("queue /review error = %v", err)
-	}
-	if _, err := app.SteerMessageWithOptions(context.Background(), thread.ID, "/review", SendMessageOptions{}); err == nil ||
-		!strings.Contains(err.Error(), "idle thread") {
-		t.Fatalf("steer /review error = %v", err)
 	}
 	items, err := app.store.ListItems(thread.ID)
 	if err != nil {
@@ -256,11 +202,10 @@ func TestCodexReviewCannotBeQueuedOrSteeredIntoAnActiveTurn(t *testing.T) {
 	}
 }
 
-// TestStartCodexReviewSendsTheTargetInline is the happy path: the validated
-// target reaches `review/start` without a delivery key (inline is the protocol
-// default), and the answer names the AO thread the review's transcript will
-// arrive on.
-func TestStartCodexReviewSendsTheTargetInline(t *testing.T) {
+// TestComposerReviewSendsTheTargetInline is the happy path: the target typed
+// after /review reaches `review/start` without a delivery key (inline is the
+// protocol default).
+func TestComposerReviewSendsTheTargetInline(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
@@ -269,18 +214,8 @@ func TestStartCodexReviewSendsTheTargetInline(t *testing.T) {
 	capturePath := filepath.Join(t.TempDir(), "rpc.ndjson")
 	installCodexReviewSession(t, app, thread, "", capturePath)
 
-	started, err := app.StartCodexReview(context.Background(), thread.ID, CodexReviewTarget{
-		Kind:   "baseBranch",
-		Branch: "main",
-	})
-	if err != nil {
-		t.Fatalf("StartCodexReview: %v", err)
-	}
-	if started.ThreadID != thread.ID {
-		t.Fatalf("ThreadID = %q, want the requesting thread %q", started.ThreadID, thread.ID)
-	}
-	if started.TurnID != "review-turn" || started.TurnStatus != "inProgress" {
-		t.Fatalf("started = %+v, want the wire's turn id and status", started)
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/review branch main", SendMessageOptions{}); err != nil {
+		t.Fatalf("SendMessageWithOptions /review branch main: %v", err)
 	}
 
 	captured := waitForCapturedRequest(t, capturePath, `"method":"review/start"`)
@@ -396,11 +331,11 @@ func TestComposerReviewUsesOneTurnWithAgentActivityAndSourcedResult(t *testing.T
 	}
 }
 
-// TestStartCodexReviewRefusesAnotherThreadAnswer: the review runs on the
+// TestComposerReviewRefusesAnotherThreadAnswer: the review runs on the
 // requesting thread, so a different review thread id means the transcript lands on a thread this
 // session does not own and is quarantined. Returning success would hand the UI
 // a billed turn it can never show.
-func TestStartCodexReviewRefusesAnotherThreadAnswer(t *testing.T) {
+func TestComposerReviewRefusesAnotherThreadAnswer(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
@@ -409,7 +344,7 @@ func TestStartCodexReviewRefusesAnotherThreadAnswer(t *testing.T) {
 	capturePath := filepath.Join(t.TempDir(), "rpc.ndjson")
 	installCodexReviewSession(t, app, thread, "some-other-thread", capturePath)
 
-	_, err := app.StartCodexReview(context.Background(), thread.ID, CodexReviewTarget{Kind: "uncommittedChanges"})
+	_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/review", SendMessageOptions{})
 	if err == nil {
 		t.Fatal("an answer naming another thread must be surfaced as an error, not reported as a started review")
 	}
@@ -461,12 +396,8 @@ func TestCodexReviewLazyStartsAColdThread(t *testing.T) {
 		t.Fatalf("set mock Codex binary: %v", err)
 	}
 
-	started, err := app.StartCodexReview(context.Background(), thread.ID, CodexReviewTarget{Kind: "uncommittedChanges"})
-	if err != nil {
-		t.Fatalf("StartCodexReview: %v", err)
-	}
-	if started.TurnID != "cold-review" {
-		t.Fatalf("started = %+v", started)
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/review", SendMessageOptions{}); err != nil {
+		t.Fatalf("SendMessageWithOptions /review: %v", err)
 	}
 	if _, ok := app.sessionManager().get(thread.ID); !ok {
 		t.Fatal("cold review did not retain the lazy-started session")
@@ -475,18 +406,15 @@ func TestCodexReviewLazyStartsAColdThread(t *testing.T) {
 		t.Fatal("CompactCodexThread must refuse while the review turn is active")
 	}
 
-	if _, err := app.StartCodexReview(context.Background(), "  ", CodexReviewTarget{Kind: "uncommittedChanges"}); err == nil {
-		t.Fatal("StartCodexReview must refuse an empty thread id")
-	}
 	if err := app.CompactCodexThread(context.Background(), ""); err == nil {
 		t.Fatal("CompactCodexThread must refuse an empty thread id")
 	}
 }
 
-// TestCodexReviewBindingsRefuseANonCodexThread — Codex-only RPCs. A Claude
-// thread has no `review/start`, so the frontend must branch on provider and
-// the backend must say so rather than nil-dereferencing its way there.
-func TestCodexReviewBindingsRefuseANonCodexThread(t *testing.T) {
+// TestCompactCodexThreadRefusesANonCodexThread — a Codex-only RPC. A Claude
+// thread has no `thread/compact/start`, so the backend must say so rather
+// than nil-dereferencing its way there.
+func TestCompactCodexThreadRefusesANonCodexThread(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
@@ -509,10 +437,6 @@ func TestCodexReviewBindingsRefuseANonCodexThread(t *testing.T) {
 	t.Cleanup(func() { _ = sess.Close() })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "t", Claude: sess})
 
-	if _, err := app.StartCodexReview(context.Background(), thread.ID, CodexReviewTarget{Kind: "uncommittedChanges"}); err == nil ||
-		!strings.Contains(err.Error(), "not a Codex thread") {
-		t.Fatalf("StartCodexReview on a Claude thread = %v, want a provider-mismatch refusal", err)
-	}
 	if err := app.CompactCodexThread(context.Background(), thread.ID); err == nil ||
 		!strings.Contains(err.Error(), "not a Codex thread") {
 		t.Fatalf("CompactCodexThread on a Claude thread = %v, want a provider-mismatch refusal", err)

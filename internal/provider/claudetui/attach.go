@@ -202,19 +202,6 @@ func (s *Session) ResizeTerminal(rows, cols uint16) error {
 	return term.Resize(terminalID, rows, cols)
 }
 
-// RefreshTerminal nudges the PTY winsize to force the TUI to repaint a glitched
-// frame — the take-control equivalent of the drawer's refresh affordance, and
-// what the design routes a glitched Ink frame to instead of parsing the TUI.
-func (s *Session) RefreshTerminal() error {
-	s.mu.Lock()
-	term, terminalID := s.term, s.terminalID
-	s.mu.Unlock()
-	if term == nil || terminalID == "" {
-		return fmt.Errorf("claudetui: no live terminal to refresh")
-	}
-	return term.Refresh(terminalID)
-}
-
 // TerminalID returns the live terminal's id (empty before launch / after close).
 func (s *Session) TerminalID() string {
 	s.mu.Lock()

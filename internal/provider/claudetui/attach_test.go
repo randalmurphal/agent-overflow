@@ -234,9 +234,6 @@ func TestAttachAndIORequireLiveTerminal(t *testing.T) {
 	if err := s.ResizeTerminal(24, 80); err == nil {
 		t.Error("ResizeTerminal with no live terminal should error")
 	}
-	if err := s.RefreshTerminal(); err == nil {
-		t.Error("RefreshTerminal with no live terminal should error")
-	}
 	if id := s.TerminalID(); id != "" {
 		t.Errorf("TerminalID on a session with no terminal = %q, want empty", id)
 	}

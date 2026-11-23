@@ -76,9 +76,9 @@ func mergeCleanupThread(t *testing.T, app *App, repo, branch string) (store.Thre
 	if err := app.store.CreateThread(owner); err != nil {
 		t.Fatalf("CreateThread(owner): %v", err)
 	}
-	path, err := app.GitCreateWorktree(owner.ID, branch)
+	path, err := worktreePathOf(app.PrepareThreadWorktree(owner.ID, "", branch, false))
 	if err != nil {
-		t.Fatalf("GitCreateWorktree: %v", err)
+		t.Fatalf("PrepareThreadWorktree: %v", err)
 	}
 	thread := testThread("merge-thread-" + strings.ReplaceAll(branch, "/", "-"))
 	thread.ProjectID = project.ID

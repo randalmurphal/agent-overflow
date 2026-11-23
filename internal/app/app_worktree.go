@@ -84,19 +84,6 @@ type WorktreeListItem struct {
 	Missing bool `json:"missing"`
 }
 
-// GitCreateWorktree creates a new worktree for the requested branch and returns its path.
-// Preserves legacy semantics — no carry-over of local changes.
-//
-//ao:scope git:operate
-//ao:budget 12m
-func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
-	updated, err := a.PrepareThreadWorktree(threadID, "", branch, false)
-	if err != nil {
-		return "", err
-	}
-	return updated.WorktreePath, nil
-}
-
 // PrepareThreadWorktree creates a new worktree from baseBranch, switches the
 // thread to it, and returns the updated thread. baseBranch may be a tag ref,
 // which the new branch is cut from locally with no upstream. An empty base
@@ -327,24 +314,6 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 	return refreshed, nil
 }
 
-// GitRemoveWorktree removes the worktree the thread is currently attached to.
-// Stays thread-keyed because its subject IS the thread's own attachment (the
-// sidebar row action, archived threads, proposed-plan implementation); it
-// resolves that attachment and hands the workspace-keyed removal the answer.
-//
-//ao:scope git:operate
-func (a *App) GitRemoveWorktree(threadID string) (WorktreeRemoval, error) {
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		return WorktreeRemoval{}, err
-	}
-	worktreePath := strings.TrimSpace(thread.WorktreePath)
-	if worktreePath == "" {
-		return WorktreeRemoval{}, fmt.Errorf("thread %s has no worktree path", threadID)
-	}
-	return a.RemoveOtherWorktree(workspaceRefForThread(thread), worktreePath, false)
-}
-
 // RemoveOtherWorktree removes one of the project's worktrees, optionally
 // forcing through dirty/unpushed safety. Locally owned threads are reset to the
 // project root and their idle sessions stop; the next send starts them there.
@@ -433,8 +402,8 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, pol
 		// changes in the tree, or commits the user made that haven't
 		// been pushed to the configured upstream. "No upstream" alone
 		// isn't a refusal — a freshly-created worktree off main
-		// rarely has one, and gating on it would make the legacy
-		// GitRemoveWorktree path unusable. The UI surfaces no-upstream
+		// rarely has one, and gating on it would refuse most removals.
+		// The UI surfaces no-upstream
 		// as a visual warning and routes through force=true so this
 		// gate never sees it.
 		status, err := a.worktreeApplication().Status(project, worktreePath)

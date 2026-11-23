@@ -35,7 +35,7 @@ func TestProviderLeafBindingsPreserveShutdownSentinel(t *testing.T) {
 		t.Fatal("StopClaudeTask returned true while shutting down")
 	}
 	assertSame("BackgroundClaudeTask", app.BackgroundClaudeTask("thread", "tool"))
-	assertSame("CleanCodexBackgroundTerminals", app.CleanCodexBackgroundTerminals("thread"))
+	assertSame("cleanCodexBackgroundTerminals", app.cleanCodexBackgroundTerminals("thread"))
 	terminated, err := app.TerminateCodexBackgroundTerminal("thread", "process")
 	assertSame("TerminateCodexBackgroundTerminal", err)
 	if terminated {

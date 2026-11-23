@@ -463,25 +463,6 @@ func (a *App) ownPairingAdmin(ctx context.Context) error {
 	return err
 }
 
-// RemoveOwnDevice revokes this membership generation everywhere as peers
-// reconnect. Local connection exclusions are separate and never call this RPC.
-//
-//ao:scope access:admin
-//ao:route home
-func (a *App) RemoveOwnDevice(ctx context.Context, keyThumbprint string) error {
-	caller, e := a.ownCaller(ctx)
-	if e != nil {
-		return e
-	}
-	member, e := a.store.OwnDevice(keyThumbprint)
-	if e != nil {
-		return e
-	}
-	member.Removed = true
-	_, e = a.mergeOwnDevicesAs(caller, []OwnDeviceMember{member})
-	return e
-}
-
 // Personal enrollment authorizes the joining computer to host reciprocal
 // connections. Use the same listener/native relay lifecycle as the settings UI.
 // The read and the apply sit under one hold of networkApply, so a save from

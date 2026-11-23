@@ -1197,9 +1197,9 @@ func TestSendMessageRenamesTemporaryWorktreeBranchOnFirstTurn(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	worktreePath, err := app.GitCreateWorktree(thread.ID, "")
+	worktreePath, err := worktreePathOf(app.PrepareThreadWorktree(thread.ID, "", "", false))
 	if err != nil {
-		t.Fatalf("GitCreateWorktree() error = %v", err)
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
 	}
 
 	thread, err = app.store.GetThread(thread.ID)

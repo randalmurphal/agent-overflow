@@ -9,7 +9,14 @@ import (
 	"agent-overflow/internal/provideraccounts"
 )
 
-// ProbeCodexAccount runs the zero-token Codex identity/rate-limit probe.
+// ProbeCodexAccount runs the zero-token Codex identity/rate-limit probe
+// through the account probe runner and the Codex probe cache. The
+// rate-limit snapshot the probe reads is emitted once the runner adopts the
+// account, so the usage rings fill before the first turn.
+//
+// Unlike Claude, Codex emits no unauthenticated status: an empty planType
+// is ambiguous (backend latency can produce it for an authenticated user),
+// so a login banner here would be a false positive.
 func (s *Service) ProbeCodexAccount() (provider.AccountInfo, error) {
 	if s == nil || s.deps.ProviderBinary == nil || s.deps.Selection == nil ||
 		s.deps.RunAccountProbe == nil || s.deps.CodexProbe == nil {

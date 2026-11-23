@@ -571,7 +571,7 @@ func TestRecoveredCodexRotationSurvivesEverySelectedPath(t *testing.T) {
 				return app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex))
 			}},
 			{"account probe", func(_ *testing.T, app *App) error {
-				_, err := app.ProbeCodexAccount()
+				_, err := app.providerDiscoveryService().ProbeCodexAccount()
 				return err
 			}},
 			{"dictation refresh", func(t *testing.T, app *App) error {

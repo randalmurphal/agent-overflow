@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -20,58 +19,9 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/threadtools"
-	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workflowhost"
 )
-
-// interruptAndRevertIfCleanMethodID is the method's FNV-1a id, which an
-// older client calls by number.
-const interruptAndRevertIfCleanMethodID = 753394581
-
-// An older client calls InterruptAndRevertIfClean for a Stop on a message
-// it just sent, with {expectedSendId, draft} as the second argument and []
-// as the third. The call decodes through the real dispatcher under its old
-// id, interrupts the turn exactly once, keeps the message and answers
-// reverted:false, which that client reads as a plain interrupt.
-func TestInterruptAndRevertIfCleanDecodesAnOlderClientsCall(t *testing.T) {
-	t.Parallel()
-	f := newClaudeAgentKillFixture(t)
-	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "never mind")
-	dispatcher := transport.NewDispatcher()
-	if _, err := dispatcher.Register(f.app, transport.RegisterOptions{Package: "main", TypeName: "App", AllowList: transport.NewMethodAllowList()}); err != nil {
-		t.Fatal(err)
-	}
-	method, ok := dispatcher.LookupID(interruptAndRevertIfCleanMethodID)
-	if !ok || method.Name != "InterruptAndRevertIfClean" {
-		t.Fatalf("method %d = %+v (found %v), want InterruptAndRevertIfClean", interruptAndRevertIfCleanMethodID, method, ok)
-	}
-	params := []json.RawMessage{
-		json.RawMessage(strconv.Quote(f.thread.ID)),
-		json.RawMessage(`{"expectedSendId":"send-1","draft":{"content":"never mind","attachmentIds":["att-1"],"terminalChips":[{"id":"term"}],"sourceProposedPlan":{"threadId":"t","itemId":"p"}}}`),
-		json.RawMessage(`[]`),
-	}
-	raw, frame := dispatcher.Invoke(context.Background(), method, params)
-	if frame != nil {
-		t.Fatalf("older client's Stop: frame %+v", frame)
-	}
-	var result map[string]any
-	if err := json.Unmarshal(raw, &result); err != nil {
-		t.Fatalf("decode result %s: %v", raw, err)
-	}
-	if reverted, present := result["reverted"]; !present || reverted != false {
-		t.Fatalf("result = %s, want reverted:false present", raw)
-	}
-	if n := f.interrupts(t); n != 1 {
-		t.Fatalf("interrupts = %d, want 1", n)
-	}
-	if _, found, err := f.app.store.GetThreadItem(f.thread.ID, "u:1"); err != nil || !found {
-		t.Fatalf("the message must stay: found=%v err=%v", found, err)
-	}
-	if _, found, err := f.app.store.GetThreadDraft(f.thread.ID); err != nil || found {
-		t.Fatalf("the Stop wrote a composer draft: found=%v err=%v", found, err)
-	}
-}
 
 // claudeTUINotices counts the thread's discarded-message notices.
 func claudeTUINotices(t *testing.T, st *store.Store, threadID string) int {
@@ -117,11 +67,6 @@ func TestInterruptNoticesAClaudeTUIMessageStoppedBeforeAReply(t *testing.T) {
 		{name: "claude-tui think-only, workflow takeover", provider: provider.ClaudeTUI, want: 1,
 			stop: func(f *agentKillFixture) error {
 				return f.app.interruptTurnForWorkflow(context.Background(), f.thread.ID, workflowhost.InterruptForTakeover)
-			}},
-		{name: "claude-tui think-only, older client", provider: provider.ClaudeTUI, want: 1,
-			stop: func(f *agentKillFixture) error {
-				_, err := f.app.InterruptAndRevertIfClean(f.thread.ID, InterruptRevertOptions{}, nil)
-				return err
 			}},
 		{name: "claude-tui with a reply", provider: provider.ClaudeTUI, want: 0,
 			agent: &store.Item{ID: "a:0", Kind: "assistant_text", Summary: "Sure"},

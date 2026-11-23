@@ -655,8 +655,6 @@ func TestAnAsksCopyRefusesAPersonsMessageAndKeep(t *testing.T) {
 	refused("SendMessage", f.app.SendMessage(context.Background(), copyRow.ID, "and also look at the tests", nil))
 	_, err = f.app.SendMessageWithOptions(t.Context(), copyRow.ID, "and also the docs", SendMessageOptions{SendID: "person-send"})
 	refused("SendMessageWithOptions", err)
-	_, err = f.app.SteerMessageWithOptions(t.Context(), copyRow.ID, "stop reading", SendMessageOptions{SendID: "person-steer"})
-	refused("SteerMessageWithOptions", err)
 	_, err = f.app.PromoteScratchThread(t.Context(), copyRow.ID)
 	refused("Keep", err)
 	if items, err := f.app.store.ListItems(copyRow.ID); err != nil {

@@ -148,12 +148,3 @@ func TestThreadCancelRecordsStopInTurnStartGap(t *testing.T) {
 		t.Fatalf("error rows = %q, want [Stopped by thread \"caller\", later error]", errors)
 	}
 }
-
-// An older client's InterruptAndRevertIfClean is the same interrupt.
-func TestInterruptAndRevertIfCleanRecordsStopInTurnStartGap(t *testing.T) {
-	t.Parallel()
-	requireStopAndLaterError(t, interruptInTurnStartGap(t, "interrupt-and-revert-start-gap", func(app *App, threadID string) error {
-		_, err := app.InterruptAndRevertIfClean(threadID, InterruptRevertOptions{}, nil)
-		return err
-	}))
-}

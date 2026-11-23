@@ -22,17 +22,13 @@ import (
 //
 // All the real work happens in (*App).Start, which is platform-neutral
 // and called directly by runHeadless in the WSL backend. ServiceStartup
-// adds the desktop-only dependency wiring (the native save-file dialog
-// and window background) and then runs Start on its own goroutine, so the
-// window opens and shows the boot's progress while the App starts. The
+// adds the desktop-only dependency wiring (the window background) and
+// then runs Start on its own goroutine, so the window opens and shows the boot's progress while the App starts. The
 // result reaches the SetStartDone hook; ServiceShutdown cancels a Start
 // still running and waits for it.
 func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
 	_ = options // Wails-imposed; unused in the body.
 	wailsApp := application.Get()
-	a.saveDialog = func(filename string) (string, error) {
-		return wailsApp.Dialog.SaveFile().SetFilename(filename).PromptForSingleSelection()
-	}
 	// Live native-window background (SetWindowBackgroundColor). Applied
 	// to every window this process owns rather than just the main one:
 	// they all render the same SPA under the same theme, and a second

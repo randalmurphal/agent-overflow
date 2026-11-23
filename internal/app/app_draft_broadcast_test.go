@@ -114,29 +114,6 @@ func TestDraftWritesBroadcastAndCarryTheWriter(t *testing.T) {
 		broadcasts.expectSilence("an autosave of unchanged content")
 	})
 
-	t.Run("a clear announces the thread, and clearing nothing says nothing", func(t *testing.T) {
-		app := draftTestApp(t, "thr-1")
-		if err := app.SaveDraft(ctxFromClient(phone), "thr-1", "hello", nil, nil, nil); err != nil {
-			t.Fatalf("SaveDraft: %v", err)
-		}
-		broadcasts := captureDraftBroadcasts(t, app)
-
-		if err := app.ClearDraft(ctxFromClient(phone), "thr-1"); err != nil {
-			t.Fatalf("ClearDraft: %v", err)
-		}
-		// A delete carries the moment it happened rather than the vanished
-		// row's stored timestamp, so the frame announcing it is still dateable.
-		if evt := broadcasts.expectOne("a clear"); evt.ThreadID != "thr-1" || evt.UpdatedAt <= 0 {
-			t.Errorf("frame = %+v, want a dated frame for thr-1", evt)
-		}
-
-		broadcasts.reset()
-		if err := app.ClearDraft(ctxFromClient(phone), "thr-1"); err != nil {
-			t.Fatalf("repeat ClearDraft: %v", err)
-		}
-		broadcasts.expectSilence("clearing a thread with no draft")
-	})
-
 	// A call with no connection behind it — an in-process binding, a test, a
 	// background saga — is anonymous rather than an error, and every client
 	// applies the frame it produces.
@@ -308,7 +285,7 @@ func TestBackendWrittenDraftsBroadcastAnonymously(t *testing.T) {
 // Driven through sendMessageWithOptions rather than a bound method: the
 // a.sendMessageFn test seam returns from sendMessageLocked BEFORE the draft
 // delete, so a stubbed send proves nothing here. This is the same waist a
-// ctx-carrying bound method reaches (StartCodexReview), with the composer
+// ctx-carrying bound method reaches (SendMessageWithOptions), with the composer
 // fixture's passthrough Claude script installed over the poisoned binary.
 func TestASendConsumingADraftNamesTheSendingScreen(t *testing.T) {
 	t.Parallel()
@@ -452,21 +429,14 @@ func TestTheDraftSaveThatListsAThreadAnnouncesIt(t *testing.T) {
 		t.Fatalf("a sent thread's draft: frames %+v, want only the draft frame", got)
 	}
 
-	// Erasing the text that listed it takes it off every sidebar, by a save
-	// of empty text or by a clear; a sent thread's erase is draft-only.
+	// Erasing the text that listed it takes it off every sidebar; a sent
+	// thread's erase is draft-only.
 	emptied := []frame{{"thread:updated", triage.ThreadActionEmptied, "thr-new"}, {name: "draft:updated", thread: "thr-new"}}
 	if got := save("thr-new", ""); !slices.Equal(got, emptied) {
 		t.Fatalf("erased content: frames %+v, want %+v", got, emptied)
 	}
 	if got := save("thr-new", "again"); !slices.Equal(got, listed) {
 		t.Fatalf("retyped content: frames %+v, want %+v", got, listed)
-	}
-	frames = nil
-	if err := app.ClearDraft(context.Background(), "thr-new"); err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(frames, emptied) {
-		t.Fatalf("cleared draft: frames %+v, want %+v", frames, emptied)
 	}
 	if got := save("thr-sent", ""); !slices.Equal(got, draftOnly("thr-sent")) {
 		t.Fatalf("a sent thread's erase: frames %+v, want only the draft frame", got)

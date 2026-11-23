@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 
 	"github.com/google/uuid"
@@ -16,7 +15,6 @@ const (
 	messageDirect         userMessageIntent = iota // Internal turn-opening send.
 	messageComposer                                // Queue when the backend is active or starting.
 	messageLegacyComposer                          // Caller predicts numeric IDs; only idle admission is safe.
-	messageSteer                                   // Legacy Codex-only, active-only RPC.
 	messageFlush                                   // Dispatch an accepted queue item.
 	messageFlushFallback                           // Provider refused steer: start a fresh turn.
 )
@@ -49,7 +47,7 @@ func (a *App) resolveUserMessagePlacement(thread store.Thread, intent userMessag
 	var active store.Turn
 	var found bool
 	composer := intent == messageComposer || intent == messageLegacyComposer
-	if composer || intent == messageSteer || intent == messageFlush {
+	if composer || intent == messageFlush {
 		var err error
 		active, found, err = a.store.GetActiveTurn(thread.ID)
 		if err != nil {
@@ -73,15 +71,6 @@ func (a *App) resolveUserMessagePlacement(thread store.Thread, intent userMessag
 			return userMessagePlacement{}, fmt.Errorf("This thread is already working. Reopen the app to update it, or wait for the turn to finish before sending again.")
 		}
 		return userMessagePlacement{queue: true}, nil
-	}
-	if intent == messageSteer {
-		if thread.Provider != string(provider.Codex) {
-			return userMessagePlacement{}, fmt.Errorf("steer message: not supported for provider %q", thread.Provider)
-		}
-		if !found {
-			return userMessagePlacement{}, codex.ErrNoActiveTurn
-		}
-		return userMessagePlacement{displayTurn: active.TurnIndex, responseTurn: active.TurnIndex}, nil
 	}
 	if intent == messageFlush && found && thread.Provider == string(provider.Codex) {
 		return userMessagePlacement{displayTurn: active.TurnIndex, responseTurn: active.TurnIndex, persistence: messageDeferUntilEcho, joinsActiveTurn: true}, nil
@@ -150,8 +139,6 @@ func (a *App) nextSendTurnIndex(threadID string) (int, error) {
 func (a *App) userMessageItemID(threadID, sendID string, turnIndex int, intent userMessageIntent) (string, error) {
 	scope := ""
 	switch intent {
-	case messageSteer:
-		scope = "steer"
 	case messageFlush, messageFlushFallback:
 		scope = "flush"
 	case messageDirect, messageComposer, messageLegacyComposer:
@@ -165,9 +152,6 @@ func (a *App) userMessageItemID(threadID, sendID string, turnIndex int, intent u
 	}
 	if scope == "flush" {
 		return a.nextFlushUserItemID(threadID, turnIndex)
-	}
-	if scope == "steer" {
-		return a.nextSteerUserItemID(threadID, turnIndex)
 	}
 	return fmt.Sprintf("user:%d", turnIndex), nil
 }

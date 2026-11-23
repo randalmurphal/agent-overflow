@@ -1108,7 +1108,7 @@ verdict it now is, with what the first attempt got wrong.
   **App-authored messages are exempt, structurally.** Expansion is an
   explicit opt-in (`sendMessageOptions.ExpandComposerCommands`) set only
   where composer-typed text enters the app: the bound SendMessage /
-  SendMessageWithOptions / SteerMessageWithOptions wire methods and the
+  SendMessageWithOptions wire methods and the
   flush-queue dispatch. A workflow wake, a seeded triage turn, and a
   schema-driven phase send never set it,
   and a future internal caller that forgets the flag gets the safe

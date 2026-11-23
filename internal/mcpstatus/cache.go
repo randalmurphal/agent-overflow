@@ -209,8 +209,7 @@ func (c *Cache) Snapshot() []ServerStatus {
 	return out
 }
 
-// SnapshotProvider is the per-provider variant of Snapshot. Used by
-// ListMcpServerStatuses bindings that scope to one provider.
+// SnapshotProvider is the per-provider variant of Snapshot.
 func (c *Cache) SnapshotProvider(p Provider) []ServerStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()

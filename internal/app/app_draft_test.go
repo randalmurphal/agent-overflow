@@ -142,29 +142,6 @@ func TestSaveDraftOverwrites(t *testing.T) {
 	}
 }
 
-func TestClearDraftRemovesRow(t *testing.T) {
-	t.Parallel()
-	app := newDraftTestApp(t)
-
-	if err := app.SaveDraft(t.Context(), "thr-draft", "to clear", nil, nil, nil); err != nil {
-		t.Fatalf("SaveDraft: %v", err)
-	}
-	if err := app.ClearDraft(t.Context(), "thr-draft"); err != nil {
-		t.Fatalf("ClearDraft: %v", err)
-	}
-	if err := app.ClearDraft(t.Context(), "thr-draft"); err != nil {
-		t.Fatalf("ClearDraft idempotent: %v", err)
-	}
-
-	got, err := app.GetDraft("thr-draft")
-	if err != nil {
-		t.Fatalf("GetDraft: %v", err)
-	}
-	if got.Content != "" {
-		t.Fatalf("expected empty content after clear, got %q", got.Content)
-	}
-}
-
 func TestSaveDraftRequiresInitialisedStore(t *testing.T) {
 	t.Parallel()
 	app := &App{}

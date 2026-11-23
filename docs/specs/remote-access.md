@@ -1641,16 +1641,10 @@ engaged (`internal/app/app_thread_archive.go`). The reaper's
 keep-alive-while-working choice stays (killing quiet-but-working
 sessions is rejected doctrine); what an unattended host adds is
 **visibility and control, not timeouts**:
-`ListRunningBackgroundWork` (wire-safe) reports the cross-thread
-inventory, unioning the same three sources `ListLiveBackgroundTasks`
-does (the store query, live Codex subagent launches, and the triage
-layer's in-memory Codex unified-exec tasks, which exist in no table),
-with per-thread unreadability carried in the payload rather than an
-error that would discard the rows; `StopThreadBackgroundWork`
-(LocalOnly) routes each row through the existing per-kind stop
-methods. The tray's 2-second completed-sibling retention is a
-live-tray tuning value, not an inventory history; the inventory
-reports what is running now.
+each thread's background tray (`ListLiveBackgroundTasks`) unions the
+store query, live Codex subagent launches, and the triage layer's
+in-memory Codex unified-exec tasks, which exist in no table, and each
+row stops through its per-kind stop method.
 
 Update is a genuine availability requirement once the machine is
 unattended, and a supply-chain risk if remotely triggerable. Resolution:

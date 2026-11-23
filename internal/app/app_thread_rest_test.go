@@ -91,8 +91,8 @@ func TestAStopBringsASpawnedThreadToRest(t *testing.T) {
 			if labels := stopRowLabels(t, f.app, target); !slices.Contains(labels, triage.StoppedByUser) {
 				t.Fatalf("the cut turn's rows = %q, want the user's stop", labels)
 			}
-			if running, err := f.app.runningBackgroundWorkForThread(target, ""); err != nil || len(running) != 0 {
-				t.Fatalf("background work after the stop = %+v, %v; want none running", running, err)
+			if running, err := f.app.runningBackgroundTaskCount(target); err != nil || running != 0 {
+				t.Fatalf("background work after the stop = %d, %v; want none running", running, err)
 			}
 			row, found, err := f.app.store.GetAgentWake(loop.ID)
 			if err != nil || !found || row.State != store.AgentWakeCancelled || row.LastOutcome != "cancelled: the user stopped the thread" {

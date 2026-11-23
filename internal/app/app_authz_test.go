@@ -257,10 +257,6 @@ func threadDrivingCalls(app *App) map[string]func(t *testing.T, ctx context.Cont
 			_, err := app.SendMessageWithOptions(ctx, id, "hi", SendMessageOptions{})
 			return err
 		},
-		"SteerMessageWithOptions": func(_ *testing.T, ctx context.Context, id string) error {
-			_, err := app.SteerMessageWithOptions(ctx, id, "hi", SendMessageOptions{})
-			return err
-		},
 		"RegisterQueueItem": func(_ *testing.T, ctx context.Context, id string) error {
 			_, err := app.RegisterQueueItem(ctx, id, "hi", SendMessageOptions{})
 			return err
@@ -271,10 +267,6 @@ func threadDrivingCalls(app *App) map[string]func(t *testing.T, ctx context.Cont
 		},
 		"SubmitAsyncAnswers": func(_ *testing.T, ctx context.Context, id string) error {
 			return app.SubmitAsyncAnswers(ctx, id, "send", nil)
-		},
-		"StartCodexReview": func(_ *testing.T, ctx context.Context, id string) error {
-			_, err := app.StartCodexReview(ctx, id, CodexReviewTarget{Kind: "uncommittedChanges"})
-			return err
 		},
 		"SendPlanRevisionComments": func(_ *testing.T, ctx context.Context, id string) error {
 			_, err := app.SendPlanRevisionComments(ctx, id, "plan", []string{"comment"})
@@ -531,10 +523,6 @@ func TestSelectingAnAutonomousModeStillNeedsAutonomy(t *testing.T) {
 	}{
 		{"SendMessageWithOptions", func() error {
 			_, err := app.SendMessageWithOptions(ctx, gated.ID, "hi", SendMessageOptions{RuntimeMode: auto})
-			return err
-		}},
-		{"SteerMessageWithOptions", func() error {
-			_, err := app.SteerMessageWithOptions(ctx, gated.ID, "hi", SendMessageOptions{RuntimeMode: auto})
 			return err
 		}},
 		{"RegisterQueueItem", func() error {

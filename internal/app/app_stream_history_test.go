@@ -35,10 +35,6 @@ func TestHistoryReadsCoverEmittedDeltas(t *testing.T) {
 			_, err := a.ListItemsAfterCursor(ctx, threadID, store.TimelineCursor{TurnIndex: -1}, 0, TimelinePageOptions{})
 			return err
 		},
-		"ListSubagentDescendants": func(a *App, threadID, itemID string) error {
-			_, err := a.ListSubagentDescendants(threadID, itemID, false)
-			return err
-		},
 		"GetThreadItem": func(a *App, threadID, itemID string) error {
 			_, err := a.GetThreadItem(threadID, itemID)
 			return err

@@ -659,7 +659,7 @@ func TestE2E_Codex_AppRestart_GhostRowsFlipped(t *testing.T) {
 // backgrounded tool_call rows must stay running. The frontend's
 // interrupt button is a turn-scoped cancel — it stops the model, NOT
 // the backgrounded PTYs / subagents. Those have their own stop
-// primitives (StopClaudeTask / CleanCodexBackgroundTerminals).
+// primitives (StopClaudeTask / cleanCodexBackgroundTerminals).
 //
 // Structure follows the existing TestInterrupt_LeavesBackgroundTasksRunning
 // coverage in app_send_test.go but routes through the full E2E harness

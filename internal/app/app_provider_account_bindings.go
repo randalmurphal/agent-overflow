@@ -127,7 +127,7 @@ func (a *App) probeSwitchedProviderAccount(providerName string) {
 		switch providerName {
 		case string(provider.Claude):
 			probe = func() error {
-				_, err := a.ProbeClaudeAccount()
+				_, err := a.providerDiscoveryService().ProbeClaudeAccount()
 				return err
 			}
 		case string(provider.Agy):

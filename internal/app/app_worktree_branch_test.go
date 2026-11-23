@@ -31,9 +31,9 @@ func TestMaybeRenameTemporaryWorktreeBranchRenamesOnFirstMessage(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	worktreePath, err := app.GitCreateWorktree(thread.ID, "")
+	worktreePath, err := worktreePathOf(app.PrepareThreadWorktree(thread.ID, "", "", false))
 	if err != nil {
-		t.Fatalf("GitCreateWorktree() error = %v", err)
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
 	}
 
 	var seenMessage string
@@ -89,9 +89,9 @@ func TestMaybeRenameTemporaryWorktreeBranchKeepsAMoveThatLandedAfterItsRead(t *t
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
-	worktreePath, err := app.GitCreateWorktree(thread.ID, "")
+	worktreePath, err := worktreePathOf(app.PrepareThreadWorktree(thread.ID, "", "", false))
 	if err != nil {
-		t.Fatalf("GitCreateWorktree() error = %v", err)
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
 	}
 	elsewhere := worktreePath + "-elsewhere"
 	app.generateBranchNameFn = func(store.Thread, string) (string, error) {
@@ -193,8 +193,8 @@ func TestMaybeRenameTemporaryWorktreeBranchGeneratorErrorIsNonFatal(t *testing.T
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	if _, err := app.GitCreateWorktree(thread.ID, ""); err != nil {
-		t.Fatalf("GitCreateWorktree() error = %v", err)
+	if _, err := app.PrepareThreadWorktree(thread.ID, "", "", false); err != nil {
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
 	}
 
 	stored, err := app.store.GetThread(thread.ID)
@@ -241,8 +241,8 @@ func TestMaybeRenameTemporaryWorktreeBranchFallsBackOnEmptyMessage(t *testing.T)
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	if _, err := app.GitCreateWorktree(thread.ID, ""); err != nil {
-		t.Fatalf("GitCreateWorktree() error = %v", err)
+	if _, err := app.PrepareThreadWorktree(thread.ID, "", "", false); err != nil {
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
 	}
 
 	// Leaving generateBranchNameFn nil exercises the
@@ -278,8 +278,8 @@ func TestMaybeRenameTemporaryWorktreeBranchIsIdempotentWhenSkipped(t *testing.T)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
-	if _, err := app.GitCreateWorktree(thread.ID, ""); err != nil {
-		t.Fatalf("GitCreateWorktree() error = %v", err)
+	if _, err := app.PrepareThreadWorktree(thread.ID, "", "", false); err != nil {
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
 	}
 
 	callCount := 0

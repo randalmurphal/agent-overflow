@@ -74,7 +74,7 @@ func TestGetModelsForProviderIsEnrichedByTheAccountProbe(t *testing.T) {
 		t.Errorf("pre-probe catalog = %v, want the shipped list", modelSlugs(before.Models))
 	}
 
-	if _, err := app.ProbeClaudeAccount(); err != nil {
+	if _, err := app.providerDiscoveryService().ProbeClaudeAccount(); err != nil {
 		t.Fatalf("ProbeClaudeAccount: %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestClaudeModelEnrichmentFollowsTheProbeIdentity(t *testing.T) {
 		`[{"value":"claude-newthing-1","displayName":"Newthing"}]`,
 	)
 	app := appWithClaudeProbeBinary(t, binary)
-	if _, err := app.ProbeClaudeAccount(); err != nil {
+	if _, err := app.providerDiscoveryService().ProbeClaudeAccount(); err != nil {
 		t.Fatalf("ProbeClaudeAccount: %v", err)
 	}
 	enriched, err := app.GetModelsForProvider("claude")
@@ -177,7 +177,7 @@ func TestClaudeModelEnrichmentFollowsTheProbeIdentity(t *testing.T) {
 // leave a usable picker rather than an empty one.
 func TestClaudeProbeWithoutModelsLeavesTheCatalogAlone(t *testing.T) {
 	app := appWithClaudeProbeBinary(t, writeProbeMockBinary(t, `{"subscriptionType":"pro"}`))
-	if _, err := app.ProbeClaudeAccount(); err != nil {
+	if _, err := app.providerDiscoveryService().ProbeClaudeAccount(); err != nil {
 		t.Fatalf("ProbeClaudeAccount: %v", err)
 	}
 
@@ -201,7 +201,7 @@ func TestClaudeModelCapabilityLookupsUseTheEnrichedCatalog(t *testing.T) {
 			`"supportsEffort":true,"supportedEffortLevels":["low","medium"],"supportsFastMode":true}]`,
 	)
 	app := appWithClaudeProbeBinary(t, binary)
-	if _, err := app.ProbeClaudeAccount(); err != nil {
+	if _, err := app.providerDiscoveryService().ProbeClaudeAccount(); err != nil {
 		t.Fatalf("ProbeClaudeAccount: %v", err)
 	}
 

@@ -334,7 +334,7 @@ func (a *App) cleanThreadProviderBackground(thread store.Thread) error {
 	if _, active := a.activeCodexSession(thread.ID); !active {
 		return nil
 	}
-	if err := a.CleanCodexBackgroundTerminals(thread.ID); err != nil {
+	if err := a.cleanCodexBackgroundTerminals(thread.ID); err != nil {
 		log.Printf("delete thread %s: clean codex background terminals: %v", thread.ID, err)
 	}
 	return nil

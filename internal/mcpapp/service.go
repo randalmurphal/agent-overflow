@@ -212,7 +212,7 @@ func (a *Service) StatusCache() *mcpstatus.Cache {
 // `mcp:status` event channel so the frontend store can update
 // reactively without polling. Failure to emit (transport not yet
 // wired during early startup) is silent — the cache state still
-// stands; the UI hydrates on the next ListMcpServerStatuses call.
+// stands; the UI hydrates on its next MCP server listing.
 type appMCPStatusBus struct {
 	app *Service
 }

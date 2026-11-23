@@ -70,9 +70,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2347956003: 'home', // CheckForUpdate
 	987486764: 'selected', // CheckProviderUpdates
 	2932719708: 'thread', // CheckThreadImportUpdates
-	16360282: 'thread', // CleanCodexBackgroundTerminals
 	544013229: 'home', // ClearBrowserSiteData
-	296814681: 'thread', // ClearDraft
 	1055713894: 'home', // ClearPushSenderCredential
 	2321581502: 'home', // CloseComputerPairing
 	2702963191: 'home', // CloseTerminal
@@ -196,7 +194,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1848576136: 'thread', // GetThreadItemProjectionSource
 	70226550: 'thread', // GetThreadLiveState
 	2127058226: 'thread', // GetThreadRequestStates
-	2573491630: 'thread', // GetThreadRuntimeMode
 	1598034249: 'thread', // GetThreadShellCommands
 	183380121: 'selected', // GetThreadTransferDestinationProject
 	704384690: 'thread', // GetThreadTransferIntent
@@ -210,7 +207,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2442730827: 'thread', // GetThreadWorkerSummary
 	49371251: 'thread', // GetThreadWorktreeSetup
 	3815301456: 'thread', // GetTimelineUserMessageTicks
-	1009213933: 'home', // GetUIRenderTracePath
 	3380106838: 'home', // GetUIState
 	3135466533: 'all', // GetUsageStats
 	294719565: 'home', // GetWSLDistroPreference
@@ -220,7 +216,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1971060042: 'workspace', // GitCommit
 	429779991: 'workspace', // GitCreateBranchFrom
 	4106667105: 'workspace', // GitCreatePR
-	3327650914: 'thread', // GitCreateWorktree
 	3703670631: 'workspace', // GitFetchOrigin
 	3795082615: 'workspace', // GitListBranchPruneCandidates
 	2693102179: 'workspace', // GitListBranches
@@ -231,7 +226,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3933172764: 'workspace', // GitPull
 	4036251239: 'workspace', // GitPush
 	1116232271: 'workspace', // GitRefreshTags
-	4002429606: 'thread', // GitRemoveWorktree
 	3282404643: 'workspace', // GitStatusSubscribe
 	3263989430: 'home', // GitStatusUnsubscribe
 	1057032236: 'workspace', // GitSyncBranch
@@ -245,7 +239,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	786331585: 'selected', // ImportSessions
 	535929682: 'thread', // ImportThreadUpdates
 	969607096: 'selected', // InspectProjectFolder
-	753394581: 'thread', // InterruptAndRevertIfClean
 	850013031: 'thread', // InterruptTurn
 	2219602920: 'home', // IntroduceOwnDevice
 	2789068977: 'home', // IsWSL
@@ -267,7 +260,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2915892537: 'thread', // ListItemsAfterCursor
 	162135710: 'thread', // ListItemsBeforeCursor
 	320784263: 'thread', // ListLiveBackgroundTasks
-	2582096622: 'home', // ListMcpServerStatuses
 	2775087950: 'home', // ListOwnDevices
 	4110818691: 'workspace', // ListPRCommits
 	4107523902: 'selected', // ListPRDiffReviewComments
@@ -281,10 +273,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1937809620: 'workspace', // ListRecentCommits
 	1083162294: 'thread', // ListRecentTurns
 	397986043: 'home', // ListReleases
-	3808352241: 'all', // ListRunningBackgroundWork
 	4211718354: 'selected', // ListServiceReleases
 	2939129659: 'all', // ListStandingAgentWakes
-	1299118478: 'thread', // ListSubagentDescendants
 	2445206506: 'thread', // ListTerminals
 	2323998099: 'thread', // ListThreadAgentRows
 	2243533007: 'thread', // ListThreadEditDiffs
@@ -347,15 +337,11 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1583250136: 'selected', // PostPRLineComment
 	2870364785: 'thread', // PrepareThreadWorktree
 	2105157519: 'home', // PreviewNotificationSound
-	633322787: 'home', // ProbeAgyAccount
-	1313986574: 'home', // ProbeClaudeAccount
-	2614227175: 'home', // ProbeCodexAccount
 	2575010484: 'project', // ProjectDeletionPreview
 	4079123887: 'thread', // PromoteScratchThread
 	1393518281: 'thread', // ProviderTerminalAttach
 	2584141779: 'thread', // ProviderTerminalDetach
 	1783659784: 'thread', // ProviderTerminalInput
-	1209472335: 'thread', // ProviderTerminalRefresh
 	907422467: 'thread', // ProviderTerminalReplay
 	2998028796: 'thread', // ProviderTerminalResize
 	1382066673: 'thread', // ProviderTerminalSetControl
@@ -368,7 +354,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4079519754: 'home', // RecheckAgyAccount
 	2274850917: 'home', // RecheckClaudeAccount
 	227978482: 'home', // RecheckCodexAccount
-	225050321: 'home', // ReconfigureObservability
 	878560845: 'thread', // ReconnectMcpServer
 	1420075138: 'thread', // ReconnectSession
 	2215279661: 'selected', // RefreshMcpServerStatus
@@ -395,7 +380,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3021549306: 'selected', // RemoteCommandStatus
 	3005272623: 'home', // RemoveBackend
 	2899196344: 'workspace', // RemoveOtherWorktree
-	3065006869: 'home', // RemoveOwnDevice
 	684418419: 'home', // RemoveProviderAccount
 	21628411: 'selected', // RemoveTrackerConnection
 	1528076361: 'home', // RenameBackend
@@ -439,7 +423,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1040176720: 'selected', // SaveLocalImage
 	1537914193: 'selected', // SavePRCIJobLog
 	1281545488: 'selected', // SavePRCIJobLogSection
-	3576148797: 'thread', // SavePayloadToFile
 	349857499: 'selected', // SearchPRCILog
 	173160885: 'selected', // SearchPRCandidates
 	1414650511: 'thread', // SearchThreadItems
@@ -487,14 +470,12 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2181574220: 'selected', // SetWorkspaceMcpServerEnabled
 	2115861089: 'home', // ShutdownBackend
 	1201673152: 'home', // SpendProviderAccountReset
-	1913732562: 'thread', // StartCodexReview
 	4173453878: 'thread', // StartNextAssistantThread
 	1484798083: 'home', // StartProviderLogin
 	531852766: 'home', // StartSSHComputer
 	2623175319: 'home', // StartSSHConnection
 	2850159713: 'thread', // StartSession
 	3009548683: 'selected', // StartTerminal
-	1698485705: 'thread', // SteerMessageWithOptions
 	2580445357: 'thread', // StopBackgroundTasks
 	536320598: 'thread', // StopClaudeTask
 	4232843083: 'thread', // StopCodexSubagent
@@ -502,7 +483,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	860377738: 'thread', // StopThreadAgentIncoming
 	2507523326: 'thread', // StopThreadAgentRow
 	3580127735: 'thread', // StopThreadAgentRows
-	2155771620: 'thread', // StopThreadBackgroundWork
 	212331826: 'thread', // StopThreadShellCommand
 	1219107798: 'thread', // SubmitAsyncAnswers
 	2692607191: 'selected', // SubmitPRReview
@@ -536,7 +516,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2697678232: 'home', // UnsubscribePipeline
 	1941806085: 'thread', // UnwatchBackgroundTaskOutput
 	3406073706: 'home', // UpdateClientDeviceName
-	1472386383: 'home', // UpdateContextSettingsProfile
 	2452201652: 'thread', // UpdateDiffReviewComment
 	3490094229: 'home', // UpdateKeybindings
 	595194384: 'home', // UpdateNewThreadDefaults
@@ -546,13 +525,11 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2747956806: 'thread', // UpdateProposedPlanComment
 	2894041249: 'home', // UpdateSettings
 	2929723500: 'selected', // UpdateThreadBranch
-	2621473242: 'thread', // UpdateThreadContextSettings
 	2456875639: 'thread', // UpdateThreadContextWindow
 	4175109385: 'thread', // UpdateThreadFastMode
 	3609479719: 'thread', // UpdateThreadMode
 	4179686417: 'thread', // UpdateThreadModel
 	3140398729: 'thread', // UpdateThreadModelSelection
-	665741969: 'thread', // UpdateThreadProvider
 	892204206: 'thread', // UpdateThreadReasoningEffort
 	325190827: 'thread', // UpdateThreadRuntimeMode
 	3875142865: 'thread', // UpdateThreadWorkspace
@@ -625,11 +602,9 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	1971060042: 720000, // GitCommit
 	429779991: 1260000, // GitCreateBranchFrom
 	4106667105: 720000, // GitCreatePR
-	3327650914: 720000, // GitCreateWorktree
 	3933172764: 720000, // GitPull
 	4036251239: 720000, // GitPush
 	1057032236: 720000, // GitSyncBranch
-	753394581: 90000, // InterruptAndRevertIfClean
 	850013031: 90000, // InterruptTurn
 	2660387675: 720000, // OpenPRThread
 	2870364785: 720000, // PrepareThreadWorktree

@@ -271,8 +271,8 @@ var channelPolicies = []ChannelPolicy{
 		Scope:     ScopeThreadsOperate,
 		Why: "Names a thread whose composer draft moved and the screen that " +
 			"moved it; the draft TEXT never rides it, because receivers " +
-			"re-read through GetDraft. Scope is the gate: GetDraft / " +
-			"SaveDraft / ClearDraft are all threads:operate for the " +
+			"re-read through GetDraft. Scope is the gate: GetDraft and " +
+			"SaveDraft are both threads:operate for the " +
 			"disclosure reason (in-progress user-typed work), so the only " +
 			"session told WHICH thread someone is typing in is one that may " +
 			"read the text a call later — the push is not a way around the " +
@@ -444,7 +444,7 @@ var channelPolicies = []ChannelPolicy{
 		Scope:     ScopeSettingsWrite,
 		Why: "Same disclosure class and same gate as mcp:oauth-completed — " +
 			"verbatim provider MCP error strings, reaching the settings:write " +
-			"sessions that ListMcpServerStatuses already answers, which is " +
+			"sessions that ListThreadMcpServers already answers, which is " +
 			"what makes the MCP panel render at all on a paired device. Keyed " +
 			"by server, so it must never become latest-only: capacity 1 would " +
 			"evict other servers' latest frames.",

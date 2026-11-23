@@ -146,21 +146,6 @@ func (a *App) ListItemsAfterCursor(ctx context.Context, threadID string, after s
 	return projectPage(paged, shape, 0), nil
 }
 
-// ListSubagentDescendants retains the bounded transitive read for older clients.
-// Current agent surfaces use selected timeline pages and run-member reads.
-//
-//ao:scope threads:read
-func (a *App) ListSubagentDescendants(threadID, rootItemID string, inlinePreviews bool) ([]store.Item, error) {
-	if err := a.readyThreadHistory(threadID); err != nil {
-		return nil, err
-	}
-	items, err := a.store.ListSubagentDescendants(threadID, rootItemID)
-	if err != nil {
-		return nil, fmt.Errorf("list subagent descendants: %w", err)
-	}
-	return projectItemSlice(items, inlinePreviews), nil
-}
-
 // ListThreadProposedPlans returns the current proposed-plan item for a thread,
 // outside the timeline window. It keeps the historical slice return shape for
 // binding compatibility, but callers should treat it as 0-or-1 items.

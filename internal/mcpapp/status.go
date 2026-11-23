@@ -161,22 +161,6 @@ func (a *Service) GetMcpServerStatus(providerName, name string, force bool) (mcp
 	return a.mcpStatus().GetOrFetch(ctx, key, fetcher, force)
 }
 
-// ListMcpServerStatuses returns the cached snapshot for one
-// provider. Does NOT trigger an ephemeral fetch — used to render
-// the popup on first open before the explicit refresh kicks in.
-// Live sessions push their own state into the cache continuously,
-// so for any provider that has run a thread this lifetime the
-// snapshot is already populated.
-func (a *Service) ListMcpServerStatuses(providerName string) ([]mcpstatus.ServerStatus, error) {
-	prov, err := parseMCPStatusProvider(providerName)
-	if err != nil {
-		return nil, err
-	}
-	out := a.mcpStatus().SnapshotProvider(prov)
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, nil
-}
-
 // RefreshMcpServerStatus forces a fresh ephemeral fetch for the
 // named provider and returns the resulting list. The menu chains this
 // after a config-sourced listing whose cache looks cold, then re-lists

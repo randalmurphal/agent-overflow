@@ -16,7 +16,8 @@ import (
 // response's model and command catalogs are committed only after the managed-
 // account runner accepts the corresponding identity, and before it emits
 // `provider:account`, so a client refreshing the catalog on that event reads
-// the enriched answer.
+// the enriched answer. A probe that finds no login emits Claude's
+// unauthenticated status so the thread banner can prompt `claude login`.
 func (s *Service) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	if s == nil || s.deps.ProviderBinary == nil || s.deps.Selection == nil ||
 		s.deps.RunAccountProbe == nil || s.deps.ClaudeProbe == nil {

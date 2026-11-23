@@ -1648,9 +1648,8 @@ func (a *App) nextFlushSequenceForTurn(threadID string, turnIndex int) (int, err
 //     error string is stable per codex-rs/core/src/session/mod.rs.
 func (a *App) dispatchFlushToProvider(sess session, content string, opts provider.SendOptions) error {
 	// Every branch below writes to provider stdin, so stamp activity
-	// once up front. Matches the pre-Send bumps in sendToProvider /
-	// steerMessageWithOptions so the idle reaper can't reap a session
-	// in the middle of a flush dispatch.
+	// once up front. Matches the pre-Send bump in sendToProvider so the
+	// idle reaper can't reap a session in the middle of a flush dispatch.
 	sess.Liveness.BumpActivity(time.Now())
 	if sess.Codex != nil {
 		return sess.Codex.Steer(context.Background(), content, opts)

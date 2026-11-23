@@ -96,7 +96,12 @@ func TestPersonalPhoneEnrollmentReadsOwnCatalogOverRealTLS(t *testing.T) {
 	if _, e = b.app.RegisterOwnDevice(ctx, self); e == nil {
 		t.Fatal("phone overwrote host identity")
 	}
-	if e = b.app.RemoveOwnDevice(ctx, clientKey(t, b.app, client.Session().SessionID)); e != nil {
+	revoked, e := b.app.store.OwnDevice(clientKey(t, b.app, client.Session().SessionID))
+	if e != nil {
+		t.Fatal(e)
+	}
+	revoked.Removed = true
+	if _, e = b.app.SyncOwnDevices(ctx, []OwnDeviceMember{revoked}); e != nil {
 		t.Fatal(e)
 	}
 	if _, e = b.app.ListOwnDevices(ctx); e == nil {

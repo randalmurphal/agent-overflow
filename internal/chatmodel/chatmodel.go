@@ -230,9 +230,8 @@ func IsValidContextWindow(tokens int) bool {
 	return tokens > 0
 }
 
-// ValidateContextUpdate runs the per-field bounds checks shared by
-// the global `UpdateContextSettingsProfile` and the per-thread
-// `UpdateThreadContextSettings` paths: trims and requires
+// ValidateContextUpdate runs the per-field bounds checks for a thread's
+// context settings update: trims and requires
 // provider/model, asserts that the caller-resolved options are
 // non-empty (an empty slice means the pair is unknown to every
 // catalog the caller consulted), asserts that contextWindow is one

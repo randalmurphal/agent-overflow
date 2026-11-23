@@ -4,7 +4,6 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -900,24 +899,6 @@ func TestSwitchThreadSanitizesStaleSparkContext(t *testing.T) {
 	}
 	if switched.UpdatedAt != before {
 		t.Fatalf("UpdatedAt = %d, want %d", switched.UpdatedAt, before)
-	}
-}
-
-func TestUpdateThreadProviderDoesNotRememberTransientProviderModelPair(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	thread, err := createTestThread(t, app, "claude", "/tmp/provider-transient", "claude-sonnet-4-6", "")
-	if err != nil {
-		t.Fatalf("createTestThread: %v", err)
-	}
-	if _, err := app.UpdateThreadProvider(thread.ID, "codex"); err != nil {
-		t.Fatalf("UpdateThreadProvider: %v", err)
-	}
-
-	_, profileErr := app.store.GetChatModelProfile("codex", "claude-sonnet-4-6")
-	if !errors.Is(profileErr, sql.ErrNoRows) {
-		t.Fatalf("transient profile error = %v, want sql.ErrNoRows", profileErr)
 	}
 }
 

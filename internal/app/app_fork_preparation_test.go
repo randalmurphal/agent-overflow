@@ -144,7 +144,6 @@ func TestForkPreparationPublication(t *testing.T) {
 							_, err := a.ListItemsAfterCursor(context.Background(), row.ID, store.TimelineCursor{}, 25, TimelinePageOptions{PageShape: PageShape{}})
 							return err
 						},
-						"subagent":   func() error { _, err := a.ListSubagentDescendants(row.ID, "root", true); return err },
 						"plans":      func() error { _, err := a.ListThreadProposedPlans(row.ID); return err },
 						"background": func() error { _, err := a.ListLiveBackgroundTasks(row.ID); return err },
 						"ticks":      func() error { _, err := a.GetThreadUserMessageTicks(row.ID); return err },
