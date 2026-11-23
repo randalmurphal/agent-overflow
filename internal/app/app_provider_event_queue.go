@@ -128,30 +128,41 @@ func (qs *providerEventQueues) enqueue(threadID string, evt provider.ProviderEve
 	item := queuedProviderEvent{evt: evt, handle: handle, size: providerEventSize(evt)}
 	for {
 		q := qs.queueFor(threadID)
-		q.mu.Lock()
-		if q.retired {
-			q.mu.Unlock()
+		start, queued := q.offer(item)
+		if !queued {
 			continue
 		}
-		for !q.admitsLocked(item.size) {
-			wait := q.waitLocked()
-			q.mu.Unlock()
-			<-wait
-			q.mu.Lock()
-		}
-		q.pushLocked(item)
-		q.enqueued++
-		// An event queued after the retire mark belongs to a replacement
-		// session; that session's own end re-arms the mark.
-		q.retireWhenIdle = false
-		start := !q.running
-		q.running = true
-		q.mu.Unlock()
 		if start {
 			go qs.run(q)
 		}
 		return
 	}
+}
+
+// offer queues item, waiting while the queue is full, and reports whether
+// the caller must start the worker. It queues nothing when the queue has
+// left the registry, before the call or while it waited for room: the
+// producer looks the thread's queue up again.
+func (q *providerEventQueue) offer(item queuedProviderEvent) (start, queued bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for !q.retired && !q.admitsLocked(item.size) {
+		wait := q.waitLocked()
+		q.mu.Unlock()
+		<-wait
+		q.mu.Lock()
+	}
+	if q.retired {
+		return false, false
+	}
+	q.pushLocked(item)
+	q.enqueued++
+	// An event queued after the retire mark belongs to a replacement
+	// session; that session's own end re-arms the mark.
+	q.retireWhenIdle = false
+	start = !q.running
+	q.running = true
+	return start, true
 }
 
 // drain waits until every event enqueued for threadID before the call has

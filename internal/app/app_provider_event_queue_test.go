@@ -570,6 +570,69 @@ func TestProviderEventQueueRetireKeepsAQueueWithWork(t *testing.T) {
 	rec.assertInOrder(t, threadID, 2)
 }
 
+// A producer waiting for room is woken when the worker frees it, and the
+// worker can find the queue empty and retire it before the producer runs.
+// The producer then queues on the thread's registered queue: an event on
+// the retired one would be handled by a worker no drain or later producer
+// can see.
+func TestProviderEventProducerWokenOnARetiredQueueLooksItsQueueUpAgain(t *testing.T) {
+	t.Parallel()
+	const threadID = "thread-retired-while-parked"
+	var qs providerEventQueues
+	// A worker is handling an event that fills the byte bound.
+	q := qs.queueFor(threadID)
+	q.mu.Lock()
+	q.running = true
+	q.bytes = providerEventQueueMaxBytes
+	q.mu.Unlock()
+
+	handledOn := make(chan *providerEventQueue, 1)
+	queued := make(chan struct{})
+	go func() {
+		qs.enqueue(threadID, seqEvent(0, 0), func(provider.ProviderEvent) { handledOn <- qs.lookup(threadID) })
+		close(queued)
+	}()
+	if !waitForQueueWaiter(&qs, threadID) {
+		t.Fatal("the producer did not wait on the full queue")
+	}
+
+	// The worker ends: the event is handled, the queue is empty and the
+	// session over, so it retires. The producer is woken only afterwards,
+	// which is what it finds when the worker wins the queue's lock.
+	q.mu.Lock()
+	q.bytes = 0
+	q.running = false
+	q.retireWhenIdle = true
+	q.mu.Unlock()
+	qs.retireIfIdle(q)
+	if qs.lookup(threadID) != nil {
+		t.Fatal("the empty queue of an ended session was not retired")
+	}
+	q.mu.Lock()
+	q.broadcastLocked()
+	q.mu.Unlock()
+
+	select {
+	case <-queued:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the producer did not queue its event after the queue retired")
+	}
+	select {
+	case on := <-handledOn:
+		if on == nil || on == q {
+			t.Fatalf("the event was handled while the thread's registered queue was %p, the retired queue %p", on, q)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the event was not handled")
+	}
+	q.mu.Lock()
+	onRetired := q.enqueued
+	q.mu.Unlock()
+	if onRetired != 0 {
+		t.Fatalf("%d event(s) queued on the retired queue, want none", onRetired)
+	}
+}
+
 // A handler error is logged with its thread and event kind, and the worker
 // goes on to the next event.
 func TestProviderEventHandlerErrorIsLoggedAndTheWorkerContinues(t *testing.T) {
