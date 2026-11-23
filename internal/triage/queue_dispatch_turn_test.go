@@ -734,7 +734,7 @@ func TestUpsertTurnRow_DistinctProviderTurnsCollide_RelocatesTheIncomingTurn(t *
 		t.Fatalf("seed standing turn: %v", err)
 	}
 
-	placed := router.upsertTurnRow(store.Turn{
+	placed, inserted := router.upsertTurnRow(store.Turn{
 		TurnID: "t1:prov-b", ThreadID: "t1", TurnIndex: 1,
 		StartedAt: now + 1, ProviderTurnID: "prov-b",
 	})
@@ -748,6 +748,9 @@ func TestUpsertTurnRow_DistinctProviderTurnsCollide_RelocatesTheIncomingTurn(t *
 	relocated, found, err := st.GetTurnByThreadIndex("t1", 2)
 	if err != nil || !found {
 		t.Fatalf("relocated row missing: found=%v err=%v", found, err)
+	}
+	if inserted != relocated.TurnID {
+		t.Fatalf("inserted = %q, want the relocated row %q", inserted, relocated.TurnID)
 	}
 	if relocated.ProviderTurnID != "prov-b" {
 		t.Fatalf("relocated provider turn = %q, want prov-b", relocated.ProviderTurnID)

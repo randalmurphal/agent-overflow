@@ -285,6 +285,41 @@ func TestDeletingAThreadForgetsItsUnsavedRows(t *testing.T) {
 	}
 }
 
+// A turn whose end the store refuses shows one error entry, saying what the
+// open row means, however often its end fails: a second failure of the
+// same turn replaces the entry.
+func TestAnUnsavedTurnEndIsOneEntry(t *testing.T) {
+	t.Parallel()
+	app, dbPath, rec := newUnsavedRowApp(t, "thread-turn-end")
+	execOnFile(t, dbPath, `CREATE TRIGGER fail_turn_end BEFORE UPDATE OF completed_at ON turns WHEN NEW.completed_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END`)
+	start := provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "thread-turn-end", TurnIndex: 1}
+	complete := provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "thread-turn-end", TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}}
+
+	// The provider re-initialises the same turn and completes it again, so
+	// the same turn's end is written, and refused, twice.
+	for range 2 {
+		start.Timestamp, complete.Timestamp = time.Now(), time.Now()
+		if err := app.triage.Handle(start); err != nil {
+			t.Fatalf("turn start: %v", err)
+		}
+		if err := app.triage.Handle(complete); err != nil {
+			t.Fatalf("turn complete: %v", err)
+		}
+	}
+
+	if frames := unsavedRowFrames(rec); len(frames) != 2 {
+		t.Fatalf("thread:unsaved_rows frames = %d, want one per failure", len(frames))
+	}
+	live := liveUnsavedRows(t, app, "thread-turn-end")
+	if live == nil || len(live.Rows) != 1 {
+		t.Fatalf("live unsaved rows = %+v, want one entry for the turn", live)
+	}
+	got := live.Rows[0]
+	if got.Severity != "error" || got.Message != triage.UnsavedTurnEndSummary || !strings.Contains(got.SaveError, "database or disk is full") {
+		t.Fatalf("entry = %+v, want the unsaved turn end as an error with its reason", got)
+	}
+}
+
 func failNoticeRowWrites(t *testing.T, dbPath string) {
 	t.Helper()
 	execOnFile(t, dbPath, `CREATE TRIGGER fail_notice_row BEFORE INSERT ON items WHEN NEW.kind = 'notification' BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END`)
