@@ -14,6 +14,10 @@ import (
 	"agent-overflow/internal/testutil/reporoot"
 )
 
+// generatorReportMargin is how long before the test run's deadline the
+// bindings generator is stopped, so the test reports its output.
+const generatorReportMargin = 30 * time.Second
+
 // The launcher embeds a backend which embeds the SPA. Every public build must
 // rebuild in that order, without Task's incomplete globs deciding that Go's
 // sources, build flags or embedded data have not changed.
@@ -78,8 +82,16 @@ func TestWSLBuildOwnsFrontendAndLeavesGoInputTrackingToGo(t *testing.T) {
 	// compare the real generated contract with the bindings the frontend uses.
 	reporoot.ObserveGoSources(t)
 	output := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	// The command's time follows the machine's load: go tool compiles
+	// wails3 and the generator type-checks the whole module, beside every
+	// other package's tests. Its bound is the test run's own deadline, less
+	// the time to report what it printed.
+	ctx := context.Background()
+	if deadline, ok := t.Deadline(); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline.Add(-generatorReportMargin))
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, "go", "tool", "wails3", "generate", "bindings", "-ts", "-f", bindingFlags, "-d", output)
 	cmd.Dir = filepath.Join("..", "..")
 	if log, err := cmd.CombinedOutput(); err != nil {
