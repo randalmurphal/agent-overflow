@@ -9,6 +9,7 @@
 // members it gained during the sync.
 import { test, expect, type SeedResult } from './fixtures.js';
 import { advance, claudeScenario, emit, listItems, startMock, textLines, toolResultLine, toolUseLine, waitForGate } from './agent-visibility-helpers.js';
+import { trackPageCalls } from './offhost-helpers.js';
 
 const RUN_MEMBERS = 500;
 // activityRunWindowRows default and ACTIVITY_RUN_CHUNK_ROWS, the two
@@ -428,7 +429,6 @@ test('a live run a switch-back sync ships mid-run counts the members it gained d
   let anchorItemId = '';
   let heldSyncId = '';
   let heldAnswer = '';
-  let sawLastMember = false;
   let sendToPage: (text: string) => void = () => {};
   await page.routeWebSocket(/\/ws(?:\?|$)/, socket => {
     const server = socket.connectToServer();
@@ -453,7 +453,6 @@ test('a live run a switch-back sync ships mid-run counts the members it gained d
         heldAnswer = text;
         return;
       }
-      if (text.includes('echo live-run-79')) sawLastMember = true;
       socket.send(message);
     });
   });
@@ -461,6 +460,7 @@ test('a live run a switch-back sync ships mid-run counts the members it gained d
     const i = start + j;
     return [toolUseLine(`message-${i}`, `tool-${i}`, 'Bash', { command: `echo live-run-${i}` }), toolResultLine(`tool-${i}`, 'done')];
   }).flat();
+  const calls = await trackPageCalls(page, { frames: ['echo live-run-79'] });
   await harness.rpc('HarnessSetScenario', { scenario: claudeScenario('live-run-sync', [
     emit([...textLines('lead', 'Starting a long sweep.'), ...batch(0, 60)]),
     { waitSignal: { name: 'grow' } }, emit(batch(60, 20)),
@@ -503,12 +503,9 @@ test('a live run a switch-back sync ships mid-run counts the members it gained d
   await expect.poll(() => heldAnswer).not.toBe('');
   await advance(harness, mockId, 'grow');
   await waitForGate(harness, 'hold');
-  await expect.poll(() => sawLastMember).toBe(true);
-  // The item stream flushes within a frame or 50ms of the last event:
-  // four frames later it has.
-  await page.evaluate(async () => {
-    for (let frame = 0; frame < 4; frame += 1) await new Promise(requestAnimationFrame);
-  });
+  await expect.poll(() => calls.applied('echo live-run-79'), {
+    message: 'the page never applied the last member gained during the sync',
+  }).toBe(true);
   heldSyncId = '';
   sendToPage(heldAnswer);
 

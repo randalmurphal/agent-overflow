@@ -485,6 +485,8 @@ interface PageCallRecord {
   closed: Array<number | string>;
   /** Per probe marker: the first refresh call sent after the marked trigger, and whether it was answered. */
   probes: Map<string, { asked: string; answered: boolean }>;
+  /** The watched texts some frame the page received has carried. */
+  frames: Set<string>;
 }
 
 /** The marker a spec puts in a trigger event's payload for `PageCalls.refreshedAfter`. */
@@ -494,6 +496,14 @@ export const PROBE_FIELD = 'aoProbe';
 export interface PageRefresh {
   trigger: string;
   method: string;
+}
+
+/** What `trackPageCalls` watches beyond the calls themselves. */
+export interface PageTracking {
+  /** The refresh `PageCalls.refreshedAfter` answers for. */
+  refresh?: PageRefresh;
+  /** Texts `PageCalls.applied` answers for: a frame carrying one is recorded when the page receives it. */
+  frames?: string[];
 }
 
 export interface PageCalls {
@@ -509,6 +519,12 @@ export interface PageCalls {
    * answer. A call the page sent before that trigger arrived does not count.
    */
   refreshedAfter(probe: string): Promise<boolean>;
+  /**
+   * Whether the page received a frame carrying `text` (one of the tracked
+   * `frames`) and its item stream has since applied every item event the
+   * page had queued, that frame's included (`window.__aoItemEventsSettled`).
+   */
+  applied(text: string): Promise<boolean>;
 }
 
 /**
@@ -521,9 +537,9 @@ export interface PageCalls {
  * page: a routed socket is made by Playwright's own WebSocket class, and
  * this wraps whichever class the page has when its documents start.
  */
-export async function trackPageCalls(page: Page, refresh?: PageRefresh): Promise<PageCalls> {
-  await page.addInitScript(({ refreshMethodId, trigger, probeField }) => {
-    const record: PageCallRecord = { sockets: 0, open: new Map(), closed: [], probes: new Map() };
+export async function trackPageCalls(page: Page, { refresh, frames = [] }: PageTracking = {}): Promise<PageCalls> {
+  await page.addInitScript(({ refreshMethodId, trigger, probeField, watched }) => {
+    const record: PageCallRecord = { sockets: 0, open: new Map(), closed: [], probes: new Map(), frames: new Set() };
     (window as unknown as { __aoPageCalls: PageCallRecord }).__aoPageCalls = record;
     type Event = { channel?: string; data?: Record<string, unknown> | null };
     const Base = window.WebSocket;
@@ -534,6 +550,10 @@ export async function trackPageCalls(page: Page, refresh?: PageRefresh): Promise
         record.sockets++;
         this.addEventListener('message', (message) => {
           if (typeof message.data !== 'string') return;
+          // Recorded before the page's own listener runs, in the same
+          // dispatch: by the time another task reads the record, the page
+          // has handled the frame.
+          for (const text of watched) if (message.data.includes(text)) record.frames.add(text);
           const frame = JSON.parse(message.data) as { type?: string; id?: string; events?: Event[] } & Event;
           if (frame.type === 'rpc') {
             const id = String(frame.id);
@@ -575,6 +595,7 @@ export async function trackPageCalls(page: Page, refresh?: PageRefresh): Promise
     refreshMethodId: refresh === undefined ? null : methodIdByName(refresh.method),
     trigger: refresh?.trigger ?? null,
     probeField: PROBE_FIELD,
+    watched: frames,
   });
   const read = (methodId: number | null) => page.evaluate((only) => {
     const record = (window as unknown as { __aoPageCalls?: PageCallRecord }).__aoPageCalls;
@@ -601,6 +622,16 @@ export async function trackPageCalls(page: Page, refresh?: PageRefresh): Promise
         const record = (window as unknown as { __aoPageCalls?: PageCallRecord }).__aoPageCalls;
         return record?.probes.get(marker)?.answered === true;
       }, probe);
+    },
+    async applied(text) {
+      if (!frames.includes(text)) throw new Error(`applied(${JSON.stringify(text)}): trackPageCalls was not told to watch it`);
+      return page.evaluate(async (watched) => {
+        const win = window as unknown as { __aoPageCalls?: PageCallRecord; __aoItemEventsSettled?: () => Promise<void> };
+        if (!win.__aoPageCalls?.frames.has(watched)) return false;
+        if (win.__aoItemEventsSettled === undefined) throw new Error('the page installs no __aoItemEventsSettled');
+        await win.__aoItemEventsSettled();
+        return true;
+      }, text);
     },
   };
 }

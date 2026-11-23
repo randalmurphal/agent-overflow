@@ -77,7 +77,7 @@ test('an offline paired computer logs once per outage and a draft pane is never 
   let home: HarnessApp | undefined;
   let remote: HarnessApp | undefined;
   const drain = collect(page);
-  const calls = await trackPageCalls(page, REFRESH);
+  const calls = await trackPageCalls(page, { refresh: REFRESH });
   const draftAsked = placeholderCalls(page);
   try {
     home = await launchHarness({ env: harnessTiming({ 'unreachable-settle': `${SETTLE_MS}ms` }) });
