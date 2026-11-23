@@ -592,6 +592,16 @@ func TestProviderEventProducerWokenOnARetiredQueueLooksItsQueueUpAgain(t *testin
 		qs.enqueue(threadID, seqEvent(0, 0), func(provider.ProviderEvent) { handledOn <- qs.lookup(threadID) })
 		close(queued)
 	}()
+	// No worker runs to free the made-up state: a test that fails before
+	// it does frees it here, so the producer always ends.
+	t.Cleanup(func() {
+		q.mu.Lock()
+		q.bytes = 0
+		q.running = false
+		q.broadcastLocked()
+		q.mu.Unlock()
+		<-queued
+	})
 	if !waitForQueueWaiter(&qs, threadID) {
 		t.Fatal("the producer did not wait on the full queue")
 	}
