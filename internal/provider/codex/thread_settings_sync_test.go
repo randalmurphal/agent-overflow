@@ -171,16 +171,29 @@ func TestSendDoesNotWaitForSettingsAckAndIgnoresItsLateTierReceipt(t *testing.T)
 	if tier, ok := turns[0]["serviceTier"]; !ok || tier != nil {
 		t.Fatalf("turn did not clear in-flight ON: %+v", turns[0])
 	}
-	s.mu.Lock()
 	var requestID int64
-	for id := range s.pending {
-		requestID = id
+	if s.conn != nil {
+		s.conn.pendingMu.Lock()
+		for id := range s.conn.pending {
+			requestID = id
+		}
+		s.conn.pendingMu.Unlock()
+	} else {
+		s.mu.Lock()
+		for id := range s.pending {
+			requestID = id
+		}
+		s.mu.Unlock()
 	}
-	s.mu.Unlock()
 	if requestID == 0 {
 		t.Fatal("expected settings request awaiting acknowledgement")
 	}
-	s.dispatchLine([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{}}`, requestID)))
+	ack := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{}}`, requestID))
+	if s.conn != nil {
+		s.conn.dispatchLine(ack)
+	} else {
+		s.dispatchLine(ack)
+	}
 	s.settingsSync.wg.Wait()
 	s.mu.Lock()
 	defer s.mu.Unlock()

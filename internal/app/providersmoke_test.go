@@ -134,6 +134,16 @@ func TestProviderSmokeCodex(t *testing.T) {
 	})
 }
 
+func TestProviderSmokeAgy(t *testing.T) {
+	runProviderSmoke(t, providerSmokeCase{
+		providerName: string(provider.Agy),
+		model:        "gemini-4-hydrogen",
+		installHint:  "install the Antigravity CLI (https://antigravity.google/docs/cli) and put `agy` on PATH",
+		loginHint:    "run `agy login`",
+		probeAccount: (*App).ProbeAgyAccount,
+	})
+}
+
 // runProviderSmoke drives one trivial workflow through one real provider CLI and
 // asserts the gate's three dimensions.
 func runProviderSmoke(t *testing.T, smoke providerSmokeCase) {
@@ -217,6 +227,8 @@ func defaultProviderBinaryPath(t *testing.T, providerName string) string {
 		return settings.DefaultSettings.ClaudeBinaryPath
 	case string(provider.Codex):
 		return settings.DefaultSettings.CodexBinaryPath
+	case string(provider.Agy):
+		return settings.DefaultSettings.AgyBinaryPath
 	default:
 		t.Fatalf("provider smoke: no default binary path for provider %q", providerName)
 		return ""

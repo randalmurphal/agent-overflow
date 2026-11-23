@@ -841,3 +841,57 @@ func assertFlagValue(t *testing.T, args []string, flag string, want []string) {
 		t.Fatalf("args missing %v; got %v", want, args)
 	}
 }
+
+func TestRunAgyAndDecodeStructured(t *testing.T) {
+	var got CLISpec
+	cfg := Config{
+		Provider: "agy",
+		Binary:   "agy",
+		Model:    DefaultAgyModel,
+		Effort:   "low",
+		Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
+			got = spec
+			return CLIResult{Stdout: `{"result":"{\"title\":\"Add Antigravity textgen\"}"}`}, nil
+		},
+	}
+
+	out, err := RunAgy(context.Background(), cfg, "/workspace", `{"type":"object"}`, nil, "prompt", time.Minute)
+	if err != nil {
+		t.Fatalf("RunAgy: %v", err)
+	}
+	for _, want := range []string{"--output-format", "json", "--json-schema", "--disable-slash-commands", "--model", DefaultAgyModel, "--effort", "low", "--print=prompt"} {
+		if !slices.Contains(got.Args, want) {
+			t.Errorf("agy args missing %q: %v", want, got.Args)
+		}
+	}
+	if got.Stdin != "" {
+		t.Errorf("agy stdin = %q, want empty (prompt rides --print=...)", got.Stdin)
+	}
+	if got.Env["AGY_CLI_DISABLE_AUTO_UPDATE"] != "1" {
+		t.Errorf("AGY_CLI_DISABLE_AUTO_UPDATE = %q, want 1", got.Env["AGY_CLI_DISABLE_AUTO_UPDATE"])
+	}
+
+	type titlePayload struct {
+		Title string `json:"title"`
+	}
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"result_json_string", string(out), "Add Antigravity textgen"},
+		{"structured_output", `{"structured_output":{"title":"Envelope title"}}`, "Envelope title"},
+		{"direct_json", `{"title":"Direct title"}`, "Direct title"},
+		{"fenced_response", `{"response":"` + "```json\\n{\\\"title\\\":\\\"Fenced title\\\"}\\n```" + `"}`, "Fenced title"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := DecodeAgyStructured[titlePayload]([]byte(tc.raw))
+			if err != nil {
+				t.Fatalf("DecodeAgyStructured: %v", err)
+			}
+			if parsed.Title != tc.want {
+				t.Fatalf("Title = %q, want %q", parsed.Title, tc.want)
+			}
+		})
+	}
+}

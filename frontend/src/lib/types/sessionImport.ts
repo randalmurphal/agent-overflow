@@ -25,7 +25,7 @@ export type {
 } from '../../../bindings/agent-overflow/internal/app/models';
 
 /** Providers that can be imported from. */
-export type ImportProvider = 'claude' | 'codex';
+export type ImportProvider = 'claude' | 'codex' | 'agy';
 
 /** Per-row outcome reported on a progress frame. */
 export type ImportRowStatus = 'imported' | 'failed' | 'skipped';

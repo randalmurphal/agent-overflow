@@ -53,7 +53,7 @@ type importedForkSource struct {
 func (s *Store) ReconcileImportedForkLineage(
 	providerName, sessionID string,
 ) (ImportedForkLineageResult, error) {
-	if providerName != "claude" && providerName != "codex" {
+	if providerName != "claude" && providerName != "codex" && providerName != "agy" {
 		return ImportedForkLineageResult{}, fmt.Errorf("%w: %q", ErrInvalidImportProvider, providerName)
 	}
 	sessionID = strings.TrimSpace(sessionID)

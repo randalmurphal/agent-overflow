@@ -71,7 +71,7 @@ describe('settings section map', () => {
     expect(settingsSectionGroups().map((g) => g.sections.map((s) => s.id))).toEqual([
       ['theme', 'typography', 'chat', 'sidebar', 'spinner'],
       ['threads', 'performance', 'keybindings', 'notifications', 'voice', 'updates'],
-      ['claude', 'codex', 'commit-messages', 'browser', 'thread-tools', 'assistants', 'agent-profiles', 'agent-guide', 'memory'],
+      ['claude', 'codex', 'agy', 'commit-messages', 'browser', 'thread-tools', 'assistants', 'agent-profiles', 'agent-guide', 'memory'],
       ['projects', 'git', 'editor'],
       ['systems', 'remote', 'agent-access'],
       ['observability', 'storage'],

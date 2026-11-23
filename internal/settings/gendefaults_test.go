@@ -20,7 +20,7 @@ func TestEveryTextGenerationProviderHasADefaultFamily(t *testing.T) {
 	if _, ok := TextGenerationDefaultFamily("claude-tui"); ok {
 		t.Error("claude-tui has a default family, but text generation never runs on it")
 	}
-	if want := `export const TEXT_GENERATION_DEFAULT_FAMILIES: Readonly<Record<string, string>> = {"claude":"claude-haiku","codex":"gpt-luna"};`; !strings.Contains(FrontendDefaultsSource(), want) {
+	if want := `export const TEXT_GENERATION_DEFAULT_FAMILIES: Readonly<Record<string, string>> = {"agy":"gemini-4-hydrogen","claude":"claude-haiku","codex":"gpt-luna"};`; !strings.Contains(FrontendDefaultsSource(), want) {
 		t.Errorf("the generated module does not carry %s", want)
 	}
 }

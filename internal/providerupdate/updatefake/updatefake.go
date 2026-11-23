@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -97,6 +98,10 @@ func (f *Feed) Serve(req *http.Request) (resp *http.Response, ok bool, err error
 		return jsonResponse(req, map[string]string{"name": "@openai/codex", "version": latest})
 	case providerupdate.CodexLatestReleaseURL:
 		return release(req, "openai/codex", "rust-v", "rust-v"+latest, latest)
+	case providerupdate.AgyManifestURL(runtime.GOOS, providerupdate.AgyArch()):
+		return jsonResponse(req, map[string]string{"version": latest})
+	case providerupdate.AgyChangelogURL:
+		return response(req, http.StatusOK, "## Antigravity CLI\n\n- Mock release "+latest+"\n"), true, nil
 	}
 	for _, r := range repos {
 		if prefix, found := strings.CutPrefix(url, providerupdate.MatchingRefsURL(r.repo, "")); found {

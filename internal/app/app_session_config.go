@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/acp"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 )
@@ -205,6 +206,23 @@ func (a *App) liveApplySessionConfig(threadID string, reassertModel bool) bool {
 		sess.Codex.ApplyLiveUpdate(update)
 		a.pushCodexThreadSettings(threadID, sess.Codex, push)
 		if push.Model {
+			a.clearAppliedModelFallback(threadID, sess.Token, fallbackRevision)
+		}
+	case sess.ACP != nil:
+		update, ok := acp.PlanLiveUpdate(sess.LaunchOptions, opts)
+		if !ok {
+			return false
+		}
+		if reassertModel {
+			update.Model = opts.Model
+			update.HasModel = true
+		}
+		if err := sess.ACP.ApplyLiveUpdate(a.lifeCtx(), update); err != nil {
+			log.Printf("thread %s: acp live config update failed: %v", threadID, err)
+			a.emitErrorToThread(threadID, "live config change failed, restarting session to apply: "+err.Error())
+			return false
+		}
+		if update.HasModel {
 			a.clearAppliedModelFallback(threadID, sess.Token, fallbackRevision)
 		}
 	default:

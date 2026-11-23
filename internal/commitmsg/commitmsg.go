@@ -161,6 +161,21 @@ func DecodeClaude(stdout []byte) (subject, body string, err error) {
 	return payload.Subject, payload.Body, nil
 }
 
+// DecodeAgy pulls the structured output out of an Antigravity JSON response.
+func DecodeAgy(stdout []byte) (subject, body string, err error) {
+	payload, err := textgen.DecodeAgyStructured[struct {
+		Subject string `json:"subject"`
+		Body    string `json:"body"`
+	}](stdout)
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(payload.Subject) == "" {
+		return "", "", fmt.Errorf("agy returned an empty subject")
+	}
+	return payload.Subject, payload.Body, nil
+}
+
 // SanitizeSubject trims the model's output into a well-formed subject
 // line: single line, stripped quotes, no trailing period, capped at 72
 // characters. Returns an empty string when the model returns nothing

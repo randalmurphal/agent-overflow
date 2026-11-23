@@ -135,11 +135,11 @@ func (r *Router) persistCodexGeneratedImage(evt provider.ProviderEvent) error {
 	if !isCodexImageGenerationItem(evt, meta.ToolName) {
 		return nil
 	}
-	codexThread, err := r.isCodexThread(evt.ThreadID)
+	providerName, _, err := r.store.GetThreadProviderWorkspace(evt.ThreadID)
 	if err != nil {
-		return err
+		return fmt.Errorf("lookup thread provider %s: %w", evt.ThreadID, err)
 	}
-	if !codexThread {
+	if providerName != string(provider.Codex) && providerName != string(provider.Agy) {
 		return nil
 	}
 	importer := r.generatedImageImport()
@@ -195,9 +195,9 @@ func (r *Router) persistCodexGeneratedImage(evt provider.ProviderEvent) error {
 		// carries the message only.
 		log.Printf("triage: import generated image for %s/%s: %v", evt.ThreadID, toolItemID, importErr)
 		item.Status = statusErrored
-		item.Meta = generatedImageMeta(evt.ThreadID, toolItemID, fields.Prompt, nil, importErr.Error())
+		item.Meta = generatedImageMetaForProvider(providerName, evt.ThreadID, toolItemID, fields.Prompt, nil, importErr.Error())
 	} else {
-		item.Meta = generatedImageMeta(evt.ThreadID, toolItemID, fields.Prompt, &imported, "")
+		item.Meta = generatedImageMetaForProvider(providerName, evt.ThreadID, toolItemID, fields.Prompt, &imported, "")
 	}
 
 	// The picture is a new top-level row arriving while the turn may still be
@@ -234,7 +234,14 @@ func generatedImageSummary(prompt string) string {
 // itemmeta.TransferAttachments rewrites); `generatedImage` is the provenance
 // and the failure reason, which only this row's renderer reads.
 func generatedImageMeta(threadID, toolItemID, prompt string, imported *GeneratedImage, failure string) string {
-	provenance := map[string]any{"sourceItemId": toolItemID, "provider": "codex"}
+	return generatedImageMetaForProvider("codex", threadID, toolItemID, prompt, imported, failure)
+}
+
+func generatedImageMetaForProvider(providerName, threadID, toolItemID, prompt string, imported *GeneratedImage, failure string) string {
+	if strings.TrimSpace(providerName) == "" {
+		providerName = "codex"
+	}
+	provenance := map[string]any{"sourceItemId": toolItemID, "provider": providerName}
 	if prompt != "" {
 		provenance["prompt"] = prompt
 	}

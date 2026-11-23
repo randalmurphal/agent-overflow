@@ -45,3 +45,25 @@ func TestModelInputsRefuseClaudeAliases(t *testing.T) {
 		t.Fatalf("Create(codex, 5.4) = %q, %v; want the slug stored as written", codex.Model, err)
 	}
 }
+
+func TestValidProviderAndUpdateModelSelectionAcceptsAgy(t *testing.T) {
+	if !ValidProvider(string(provider.Agy)) {
+		t.Fatal("ValidProvider(agy) = false, want true")
+	}
+	service, database, _ := newServiceFixture(t)
+	thread, err := service.Create(CreateOptions{ProjectID: "project", Provider: "claude", Model: "claude-opus-5"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	updated, err := service.UpdateModelSelection(thread.ID, string(provider.Agy), "gemini-4-neon")
+	if err != nil {
+		t.Fatalf("UpdateModelSelection(agy, gemini-4-neon): %v", err)
+	}
+	if updated.Thread.Provider != string(provider.Agy) || updated.Thread.Model != "gemini-4-neon" {
+		t.Fatalf("updated thread = (%q, %q), want (agy, gemini-4-neon)", updated.Thread.Provider, updated.Thread.Model)
+	}
+	stored, err := database.GetThread(thread.ID)
+	if err != nil || stored.Provider != string(provider.Agy) || stored.Model != "gemini-4-neon" {
+		t.Fatalf("stored thread = (%q, %q, err=%v)", stored.Provider, stored.Model, err)
+	}
+}

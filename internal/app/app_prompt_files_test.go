@@ -171,7 +171,7 @@ func TestAnEditedPromptFileFlagsTheLiveThreadAndNeverReachesIt(t *testing.T) {
 	}
 	select {
 	case keys := <-reloads:
-		if !slices.Equal(keys, []string{"claudePromptOverrides", "codexPromptOverrides"}) {
+		if !slices.Equal(keys, []string{"claudePromptOverrides", "codexPromptOverrides", "agyPromptOverrides"}) {
 			t.Fatalf("reload announced %v", keys)
 		}
 	case <-time.After(10 * time.Second):

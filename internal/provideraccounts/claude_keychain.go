@@ -49,7 +49,7 @@ const claudeCredentialFileName = ".credentials.json"
 // binary is unreachable — and never add a code path that shells out to
 // security(1) without going through this interface (pinned by
 // TestNoSecurityCallsOutsideTheKeychainSeam).
-type claudeKeychain interface {
+type providerKeychain interface {
 	read(configHome string, active bool) ([]byte, error)
 	write(configHome string, active bool, data []byte) error
 	remove(configHome string, active bool) error
@@ -59,6 +59,9 @@ type claudeKeychain interface {
 	// password data.
 	present(configHome string, active bool) (bool, error)
 }
+
+// claudeKeychain is kept as an alias for providerKeychain within the package.
+type claudeKeychain = providerKeychain
 
 // defaultClaudeKeychain picks the backend for a new Credentials: the
 // real security(1) Keychain in normal runs, the file-backed stand-in

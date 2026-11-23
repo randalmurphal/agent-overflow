@@ -269,7 +269,7 @@ describe('counts', () => {
     expect(counts.entries[0].label).toBe('MCP');
   });
 
-  it.each(['claude', 'codex'] as const)('names an AO tool by family and verb in a %s header', (provider) => {
+  it.each(['claude', 'codex', 'agy'] as const)('names an AO tool by family and verb in a %s header', (provider) => {
     const remote = JSON.stringify({ mcp: { server: 'ao-remote-tools', tool: 'remote_run' }, input: { argv: ['make'] } });
     const browser = JSON.stringify({ mcp: { server: 'ao-browser-tools', tool: 'browser_click' }, input: { selector: '#go' } });
     const { counts, runningLabel } = activityRunSummary([
@@ -286,6 +286,22 @@ describe('counts', () => {
       { label: provider === 'codex' ? 'MCP' : 'MCP/browser_click', icon: 'puzzle', count: 1 },
     ]);
     expect(runningLabel).toBe('Remote run');
+  });
+
+  it('preserves normalized tool labels for Antigravity runs', () => {
+    const { counts } = activityRunSummary([
+      tool('r1', 'Read'),
+      tool('e1', 'Edit'),
+      tool('b1', 'Bash'),
+      tool('m1', 'MCP/search'),
+    ], 'agy');
+
+    expect(counts.entries.map(({ label, count }) => ({ label, count }))).toEqual([
+      { label: 'Bash', count: 1 },
+      { label: 'Edit', count: 1 },
+      { label: 'MCP/search', count: 1 },
+      { label: 'Read', count: 1 },
+    ]);
   });
 
   it('keeps agent waiting distinct from a terminal wait', () => {

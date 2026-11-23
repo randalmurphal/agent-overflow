@@ -24,6 +24,7 @@
 import { remoteAccessAvailable } from '../../transport/buildVariant';
 import { anyAssistantsOn, assistantsOn } from '../../stores/assistants.svelte';
 import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
+import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
 import { settingsSectionAvailable, type SettingsSection } from './sections';
 
 export interface SettingsFieldDef {
@@ -44,13 +45,14 @@ export interface SettingsFieldDef {
 }
 
 /** The providers that get a settings page each. Mirrors `PROVIDER_SETTINGS_ORDER`. */
-export const SETTINGS_PROVIDERS = ['claude', 'codex'] as const;
+export const SETTINGS_PROVIDERS = ['claude', 'codex', 'agy'] as const;
 
 export type SettingsProvider = (typeof SETTINGS_PROVIDERS)[number];
 
 const PROVIDER_LABELS: Record<SettingsProvider, string> = {
   claude: 'Claude',
   codex: 'Codex',
+  agy: 'Antigravity',
 };
 
 /**
@@ -91,12 +93,14 @@ const PROVIDER_FIELDS = [
     heading: 'Accounts',
     label: 'Accounts',
     keywords: ['login', 'sign in', 'switch', 'usage', 'limits', 'rate limit'],
+    feature: 'accounts',
   },
   {
     slug: 'auto-switch-strategy',
     heading: 'Accounts',
     label: 'Use accounts in order of',
     keywords: ['auto-switch', 'auto switch', 'soonest weekly reset', 'card order', 'account order', 'strategy', 'usage limit', 'rate limit', 'quota'],
+    feature: 'accounts',
   },
   {
     slug: 'auto-switch-threshold',
@@ -104,6 +108,7 @@ const PROVIDER_FIELDS = [
     label: 'Switch at',
     hint: 'Leave an account once any limit that applies to a running model reaches this. When every account is past it, the current one is used until the provider refuses it.',
     keywords: ['auto-switch', 'auto switch', 'threshold', 'percent', 'usage limit', 'rate limit', 'quota'],
+    feature: 'accounts',
   },
   {
     slug: 'auto-continue',
@@ -111,6 +116,7 @@ const PROVIDER_FIELDS = [
     label: 'Continue threads after a usage limit',
     hint: 'When a usage limit stops a thread, send it "Continue" once another account takes over or the limit resets.',
     keywords: ['auto-continue', 'resume', 'restart', 'rate limit', 'spawned', 'agents', 'auto-switch'],
+    feature: 'accounts',
   },
   {
     slug: 'auto-compact',
@@ -118,6 +124,7 @@ const PROVIDER_FIELDS = [
     label: 'Auto-compact',
     hint: 'Trigger compaction at this percent of the live context window.',
     keywords: ['context', 'compaction', 'threshold', 'standard window', 'extended window'],
+    feature: 'autoCompact',
   },
   {
     slug: 'system-prompt',
@@ -125,6 +132,7 @@ const PROVIDER_FIELDS = [
     label: 'System prompt overrides',
     hint: "Each override is a Markdown file in the computer's prompts folder; its text replaces the provider's default system prompt for the models you pick. Edit the file in your editor or hand it to an agent. The first enabled entry whose models include the session's model wins; a .md file in the folder without an entry is ignored.",
     keywords: ['instructions', 'prompt override', 'prompt file', 'placeholder', 'agent'],
+    feature: 'promptOverrides',
   },
 ] as const;
 
@@ -511,7 +519,7 @@ const STATIC_FIELDS = [
     id: 'browser.enabled',
     section: 'browser',
     label: 'Built-in browser tools',
-    hint: 'Give Claude and Codex a browser in a companion pane.',
+    hint: 'Give agents a browser in a companion pane.',
     keywords: ['web', 'playwright', 'companion pane'],
   },
   {
@@ -549,7 +557,7 @@ const STATIC_FIELDS = [
     id: 'thread-tools.enabled',
     section: 'thread-tools',
     label: 'Built-in thread tools',
-    hint: "Let Claude and Codex read, start and answer this computer's other conversations.",
+    hint: "Let agents read, start and answer this computer's other conversations.",
     keywords: ['ao-thread-tools', 'threads', 'agents', 'mcp'],
   },
 
@@ -597,7 +605,7 @@ const STATIC_FIELDS = [
     id: 'agent-guide.enabled',
     section: 'agent-guide',
     label: 'Append the app guide',
-    hint: 'Tell Claude and Codex what Agent Overflow renders and which built-in tools are on. Applies to sessions started after a change.',
+    hint: 'Tell agents what Agent Overflow renders and which built-in tools are on. Applies to sessions started after a change.',
     keywords: ['system prompt', 'append', 'guide', 'mcp'],
   },
 
@@ -1093,9 +1101,11 @@ export type SettingsFieldId = StaticFieldId | ProviderFieldId;
  * listing reads top-to-bottom like the page does.
  */
 export const SETTINGS_FIELDS: readonly SettingsFieldDef[] = [
-  ...STATIC_FIELDS.filter((f) => f.section !== 'claude' && f.section !== 'codex'),
+  ...STATIC_FIELDS.filter((f) => !(SETTINGS_PROVIDERS as readonly string[]).includes(f.section)),
   ...SETTINGS_PROVIDERS.flatMap((provider) => [
-    ...PROVIDER_FIELDS.map((f) => ({
+    ...PROVIDER_FIELDS.filter(
+      (f) => !('feature' in f) || PROVIDER_DEFINITIONS[provider].features[f.feature],
+    ).map((f) => ({
       id: providerFieldId(provider, f.slug),
       section: provider,
       heading: f.heading,

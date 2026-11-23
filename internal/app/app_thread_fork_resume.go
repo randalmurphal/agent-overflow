@@ -40,7 +40,7 @@ type forkResumeState struct {
 // including idle sources. This prevents later source turns from entering an unstarted
 // fork's context. Codex materializes its native fork through a temporary
 // app-server; an active tail uses its native interrupted-fork semantics.
-func (a *App) resolveForkResumeState(ctx context.Context, source store.Thread, atTurnIndex *int, midTurnCut *claudeMidTurnCut, lineage string) (forkResumeState, error) {
+func (a *App) resolveForkResumeState(ctx context.Context, source store.Thread, forkID string, atTurnIndex *int, midTurnCut *claudeMidTurnCut, agyCutMaxIdx *int, lineage string) (forkResumeState, error) {
 	switch source.Provider {
 	case string(provider.Codex):
 		ref, err := a.forkCodexThread(ctx, source, atTurnIndex, lineage)
@@ -50,6 +50,8 @@ func (a *App) resolveForkResumeState(ctx context.Context, source store.Thread, a
 		return forkResumeState{SessionRef: ref}, nil
 	case string(provider.Claude):
 		return a.forkClaudeThread(source, atTurnIndex, midTurnCut)
+	case string(provider.Agy):
+		return a.forkAgyThread(source, forkID, atTurnIndex, agyCutMaxIdx)
 	default:
 		return forkResumeState{}, fmt.Errorf("fork thread: unsupported provider %q", source.Provider)
 	}
@@ -73,6 +75,8 @@ func (a *App) resolveMessageForkResumeState(ctx context.Context, source store.Th
 		return forkResumeState{SessionRef: ref}, nil
 	case string(provider.Claude):
 		return a.forkClaudeThreadBeforeMessage(source, anchor, anchorItem)
+	case string(provider.Agy):
+		return a.forkAgyThreadBeforeMessage(source, anchor, anchorItem)
 	default:
 		return forkResumeState{}, fmt.Errorf("fork thread from message: unsupported provider %q", source.Provider)
 	}

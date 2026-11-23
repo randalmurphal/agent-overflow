@@ -362,3 +362,35 @@ func TestGeneratedImageWireFieldsIgnoreInlineResult(t *testing.T) {
 		}
 	}
 }
+
+func TestAgyGeneratedImageWritesInlineAttachmentRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createGeneratedImageThread(t, st, "t-agy", "agy")
+	imports := &recordingImporter{result: GeneratedImage{
+		AttachmentID: "att-agy-1", Filename: "nebula.png", MimeType: "image/png", Size: 2048,
+	}}
+	router.SetGeneratedImageImporter(imports.importer)
+	insertToolCallItem(t, st, "t-agy", "img-agy-1", "ImageGeneration", "ImageGeneration", statusRunning)
+
+	evt := imageGenerationComplete("t-agy", "img-agy-1", imageGenerationMeta("completed", "/agy/brain/s1/nebula.png", "A glowing nebula"))
+	if err := router.Handle(evt); err != nil {
+		t.Fatalf("handle agy generated image: %v", err)
+	}
+	if imports.calls != 1 {
+		t.Fatalf("importer calls = %d, want 1", imports.calls)
+	}
+	row, found, err := st.GetThreadItem("t-agy", GeneratedImageItemID("img-agy-1"))
+	if err != nil || !found {
+		t.Fatalf("generated image row missing: found=%v err=%v", found, err)
+	}
+	if row.Status != statusCompleted {
+		t.Fatalf("status = %q, want completed", row.Status)
+	}
+	prov := generatedImageProvenance(t, row)
+	if prov["provider"] != "agy" {
+		t.Fatalf("provenance.provider = %v, want agy", prov["provider"])
+	}
+	if len(generatedImageAttachments(t, row)) != 1 {
+		t.Fatalf("expected 1 attachment, got %s", row.Meta)
+	}
+}

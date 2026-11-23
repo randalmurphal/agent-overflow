@@ -23,7 +23,7 @@ func TestUpdaterHelperRunsBeforeEntryDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestUpdaterHelperRunsBeforeEntryDispatch$")
-	cmd.Env = append(os.Environ(), "AO_TEST_UPDATE_HELPER=1", "WAILS_UPDATER_HELPER=1", "WAILS_UPDATER_HELPER_TARGET=", "WAILS_UPDATER_HELPER_NEW=", "AO_ENDPOINT=http://127.0.0.1:1")
+	cmd.Env = append(os.Environ(), "AO_TEST_UPDATE_HELPER=1", "WAILS_UPDATER_HELPER=1", "WAILS_UPDATER_HELPER_TARGET=", "WAILS_UPDATER_HELPER_NEW=", "AO_IN_SESSION=1")
 	output, err := cmd.CombinedOutput()
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(output) != 0 {

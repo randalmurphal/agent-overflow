@@ -113,12 +113,7 @@ func (s *Service) UpdateProvider(threadID, providerName string) (ModelUpdate, er
 }
 
 func ValidProvider(providerName string) bool {
-	switch providerName {
-	case string(provider.Claude), string(provider.Codex), string(provider.ClaudeTUI):
-		return true
-	default:
-		return false
-	}
+	return provider.IsKnownProvider(providerName)
 }
 
 func (s *Service) profileForSelection(providerName, model string) (store.ChatModelProfile, error) {

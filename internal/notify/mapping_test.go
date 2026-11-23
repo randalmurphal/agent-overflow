@@ -952,3 +952,9 @@ func TestAHiddenThreadIsMarkedOnEveryThreadScopedSend(t *testing.T) {
 		t.Fatal("a retraction carrying the hidden mark was accepted")
 	}
 }
+
+func TestProviderDisplayNameIncludesAntigravity(t *testing.T) {
+	if got := ProviderDisplayName("agy"); got != "Antigravity" {
+		t.Fatalf("ProviderDisplayName(agy) = %q, want Antigravity", got)
+	}
+}

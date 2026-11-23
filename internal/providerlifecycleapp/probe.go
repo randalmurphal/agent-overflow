@@ -120,6 +120,31 @@ func (s *Service) ProbeCodexRateLimits(ctx context.Context) error {
 	return s.probeCodexRateLimits(ctx)
 }
 
+func (s *Service) probeAgyRateLimits(ctx context.Context) error {
+	if s.shuttingDown() {
+		return nil
+	}
+	if s.deps.Accounts.Reconcile != nil {
+		if err := s.deps.Accounts.Reconcile(ctx, string(provider.Agy)); err != nil {
+			log.Printf("agy: reconcile external account before rate-limit probe: %v", err)
+			return err
+		}
+	}
+	selection := s.selection(string(provider.Agy))
+	if selection.AccountID != "" && s.deps.Accounts.RefreshUsage != nil {
+		err := s.deps.Accounts.RefreshUsage(ctx, string(provider.Agy), selection.AccountID)
+		if err != nil {
+			log.Printf("agy: rate-limit probe: %v", err)
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *Service) ProbeAgyRateLimits(ctx context.Context) error {
+	return s.probeAgyRateLimits(ctx)
+}
+
 func (s *Service) selection(providerName string) Selection {
 	if s.deps.Accounts.Selection == nil {
 		return Selection{}

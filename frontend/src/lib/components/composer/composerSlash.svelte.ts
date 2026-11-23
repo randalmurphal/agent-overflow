@@ -20,6 +20,7 @@ import {
   getProviderCommandsFrame,
 } from '../../stores/providerCommands.svelte';
 import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
+import { getProviderDefinition } from '../../providers/catalog';
 import type { BranchCommit, GitBranch, WorkspaceRef } from '../../types/git';
 import { errString } from '../../utils/errors';
 import { runInterceptedCommand } from './composerCommandActions';
@@ -183,9 +184,10 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
   function warmSources(next: OpenTrigger): void {
     if (next.level === 'review') return;
     if (!next.atStart) return;
-    if (provider === 'codex') {
+    const slashSource = getProviderDefinition(provider)?.features.slashSource ?? 'none';
+    if (slashSource === 'codex') {
       void ensureCodexSkills(workspacePath, false, threadMachine(pane.threadId ?? '', pane.thread?.projectId));
-    } else if (provider !== '') {
+    } else if (slashSource === 'claude') {
       void ensureClaudeProbeCommands(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
       void ensureClaudeSkills(workspacePath, threadMachine(pane.threadId ?? '', pane.thread?.projectId));
     }

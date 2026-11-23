@@ -17,7 +17,7 @@ describe('searchSettings', () => {
     const pages = searchSettings('accounts')
       .filter((hit) => hit.kind === 'field' && hit.field.label === 'Accounts')
       .map((hit) => hit.page.id);
-    expect(pages).toEqual(['claude', 'codex']);
+    expect(pages).toEqual(['claude', 'codex', 'agy']);
     expect(keys('codex accounts')).toContain('codex.accounts');
   });
 

@@ -136,15 +136,18 @@
     }, starred);
   }
 
-  let modelLabel = $derived(
-    pane.activeModel
-      ? displayModelLabel(pane.thread?.provider ?? '', pane.activeModel)
-      : 'Provider default',
-  );
+  let activeProvider = $derived(asProviderID(pane.thread?.provider));
+  let modelLabel = $derived.by(() => {
+    if (!pane.activeModel) return 'Provider default';
+    const prov = pane.thread?.provider ?? '';
+    const catalogModel = activeProvider
+      ? getModels(activeProvider).find((m) => m.slug === pane.activeModel)
+      : undefined;
+    return displayModelLabel(prov, pane.activeModel, catalogModel?.name);
+  });
 
   let settings = $derived(getSettings(backend));
   let isLocked = $derived(pane.isLocked);
-  let activeProvider = $derived(asProviderID(pane.thread?.provider));
   let visibleFavorites = $derived.by(() => {
     // Hidden sets built once per provider per recompute, not per
     // favorite (the list holds up to 30 entries).

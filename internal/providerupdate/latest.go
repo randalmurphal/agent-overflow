@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -26,7 +27,23 @@ const (
 	// CodexLatestReleaseURL is Codex's latest GitHub release, the version
 	// the Codex installer installs by default.
 	CodexLatestReleaseURL = githubAPIBase + "openai/codex/releases/latest"
+	agyManifestBase       = "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/"
+	// AgyChangelogURL is the published Markdown changelog for Antigravity CLI.
+	AgyChangelogURL = "https://antigravity.google/docs/changelog.md"
 )
+
+// AgyArch returns the architecture token Antigravity's updater manifest uses.
+func AgyArch() string {
+	if runtime.GOARCH == "arm64" {
+		return "arm64"
+	}
+	return "x64"
+}
+
+// AgyManifestURL returns the release manifest URL for Antigravity CLI.
+func AgyManifestURL(osName, arch string) string {
+	return agyManifestBase + osName + "_" + arch
+}
 
 // Response bounds. A body over its limit fails the request.
 const (
@@ -120,6 +137,8 @@ func (s *Service) plan(ctx context.Context, providerName string, binary Binary, 
 		pinRelease = true
 	case providerName == ProviderCodex:
 		return "", Command{}, errNoCodexUpdater
+	case providerName == ProviderAgy:
+		latest, err = s.manifestVersion(ctx, AgyManifestURL(runtime.GOOS, AgyArch()))
 	default:
 		return "", Command{}, unknownProvider(providerName)
 	}

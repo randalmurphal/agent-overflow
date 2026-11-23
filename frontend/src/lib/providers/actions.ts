@@ -1,4 +1,4 @@
-import { RecheckClaudeAccount, RecheckCodexAccount } from '../stores/bindings';
+import { RecheckAgyAccount, RecheckClaudeAccount, RecheckCodexAccount } from '../stores/bindings';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
 import type { ProviderID } from '../types/providers';
@@ -21,6 +21,8 @@ export async function recheckProviderAccount(
       return await withBackendTarget(backend, () => RecheckClaudeAccount()) as ProviderAccountInfo;
     case 'codex':
       return await withBackendTarget(backend, () => RecheckCodexAccount()) as ProviderAccountInfo;
+    case 'agy':
+      return await withBackendTarget(backend, () => RecheckAgyAccount()) as ProviderAccountInfo;
   }
 }
 

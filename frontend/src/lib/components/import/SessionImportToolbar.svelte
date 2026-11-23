@@ -68,6 +68,7 @@
     { value: 'all', label: 'All' },
     { value: 'claude', label: 'Claude' },
     { value: 'codex', label: 'Codex' },
+    { value: 'agy', label: 'Antigravity' },
   ];
 
   let query = $derived(getImportQuery());

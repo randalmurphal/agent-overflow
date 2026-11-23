@@ -24,8 +24,10 @@ export function defaultSettings(): Settings {
     gitlabSelfHostedHosts: [...SETTINGS_DEFAULTS.gitlabSelfHostedHosts],
     claudeHiddenModels: [...SETTINGS_DEFAULTS.claudeHiddenModels],
     codexHiddenModels: [...SETTINGS_DEFAULTS.codexHiddenModels],
+    agyHiddenModels: [...SETTINGS_DEFAULTS.agyHiddenModels],
     claudeCustomEnv: [...SETTINGS_DEFAULTS.claudeCustomEnv],
     codexCustomEnv: [...SETTINGS_DEFAULTS.codexCustomEnv],
+    agyCustomEnv: [...SETTINGS_DEFAULTS.agyCustomEnv],
     spinnerCustomVerbs: [...SETTINGS_DEFAULTS.spinnerCustomVerbs],
     spinnerDisabledAnimations: [...SETTINGS_DEFAULTS.spinnerDisabledAnimations],
     // A computer's roster is its own settings answer; none is assumed.
@@ -79,12 +81,18 @@ export function mergeSettingsWithDefaults(raw: Partial<Settings>): Settings {
     codexHiddenModels: result.codexHiddenModels
       ? [...result.codexHiddenModels]
       : defaults.codexHiddenModels,
+    agyHiddenModels: result.agyHiddenModels
+      ? [...result.agyHiddenModels]
+      : defaults.agyHiddenModels,
     claudeCustomEnv: result.claudeCustomEnv
       ? [...result.claudeCustomEnv]
       : defaults.claudeCustomEnv,
     codexCustomEnv: result.codexCustomEnv
       ? [...result.codexCustomEnv]
       : defaults.codexCustomEnv,
+    agyCustomEnv: result.agyCustomEnv
+      ? [...result.agyCustomEnv]
+      : defaults.agyCustomEnv,
     spinnerCustomVerbs: result.spinnerCustomVerbs
       ? [...result.spinnerCustomVerbs]
       : defaults.spinnerCustomVerbs,

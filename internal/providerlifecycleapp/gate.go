@@ -97,6 +97,13 @@ func (s *Service) codexUsageGate() *usageProbeGate {
 	return s.codexGate
 }
 
+func (s *Service) agyUsageGate() *usageProbeGate {
+	s.agyGateOnce.Do(func() {
+		s.agyGate = s.newGate(s.probeAgyRateLimits)
+	})
+	return s.agyGate
+}
+
 // newGate builds a gate whose trailing runs Close joins.
 func (s *Service) newGate(probe func(context.Context) error) *usageProbeGate {
 	gate := newUsageProbeGate(probe, s.context)
@@ -114,3 +121,4 @@ func (s *Service) newGate(probe func(context.Context) error) *usageProbeGate {
 func (s *Service) RequestClaudeUsage() { s.claudeUsageGate().Request() }
 
 func (s *Service) RequestCodexUsage() { s.codexUsageGate().Request() }
+func (s *Service) RequestAgyUsage()   { s.agyUsageGate().Request() }

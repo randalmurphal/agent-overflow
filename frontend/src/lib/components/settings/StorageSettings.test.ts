@@ -50,7 +50,7 @@ describe('<StorageSettings> — Retention', () => {
     const { getByTestId } = render(StorageSettings);
     const text = getByTestId('settings-retention').textContent ?? '';
     expect(text).toContain('Assistants and their past threads are never cleaned up.');
-    expect(text).toContain('Claude and Codex delete their own session files under their own settings; Claude sessions Agent Overflow starts keep theirs at least this long.');
+    expect(text).toContain('Providers delete their own session files under their own settings; Claude sessions Agent Overflow starts keep theirs at least this long.');
   });
 
   it('renders the retention input inert, saying why, off the host without a passkey', async () => {

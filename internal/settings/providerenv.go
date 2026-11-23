@@ -55,9 +55,8 @@ const (
 )
 
 // providerEnvReservedPrefix is the namespace Agent Overflow uses for every
-// variable it injects into a provider process: the `agent-overflow` CLI
-// session contract (AO_ENDPOINT / AO_TOKEN / AO_THREAD_ID,
-// internal/aocli/session.go), the test harness
+// variable it injects into a provider process: the in-session marker
+// (AO_IN_SESSION, internal/aocli/run.go), the test harness
 // control channel (AO_HARNESS_*, internal/harness/control), the mock provider
 // (AO_MOCK_*), and claudetui's hook relay (AO_CLAUDE_HOOK_URL /
 // AO_CLAUDE_HOOK_TOKEN). Denying the whole prefix rather than the current name
@@ -106,6 +105,11 @@ var deniedProviderEnvNames = map[string]map[string]string{
 	"codex": {
 		"CODEX_HOME": "Agent Overflow owns Codex's home: every spawn clears this variable, and login / inactive-account probes set it to a temporary home holding that account's credentials",
 	},
+	"agy": {
+		"GEMINI_HOME":                 "Agent Overflow manages Antigravity's home isolation",
+		"AGY_ACP_FORCE_FILE_STORAGE":  "Agent Overflow controls Antigravity's credential storage isolation",
+		"AGY_CLI_DISABLE_AUTO_UPDATE": "Agent Overflow pins this so background auto-updates do not replace the running ACP server mid-session",
+	},
 }
 
 // providerEnvSettingsField returns the settings JSON key that stores the
@@ -118,6 +122,8 @@ func providerEnvSettingsField(providerName string) (field, key string, err error
 		return "claudeCustomEnv", "claude", nil
 	case "codex":
 		return "codexCustomEnv", "codex", nil
+	case "agy":
+		return "agyCustomEnv", "agy", nil
 	default:
 		return "", "", fmt.Errorf("settings: %q has no custom environment", providerName)
 	}
@@ -136,6 +142,8 @@ func (s Settings) ProviderEnvVars(providerName string) []ProviderEnvVar {
 		return s.ClaudeCustomEnv
 	case "codex":
 		return s.CodexCustomEnv
+	case "agy":
+		return s.AgyCustomEnv
 	}
 	return nil
 }
@@ -166,6 +174,8 @@ func (s *Settings) setProviderEnvVars(providerKey string, vars []ProviderEnvVar)
 		s.ClaudeCustomEnv = vars
 	case "codex":
 		s.CodexCustomEnv = vars
+	case "agy":
+		s.AgyCustomEnv = vars
 	}
 }
 

@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "agy-basic",
+  "description": "Single-turn Antigravity ACP text reply with usage update.",
+  "provider": "agy",
+  "afterTurns": "repeatLast",
+  "turns": [
+    {
+      "label": "reply",
+      "steps": [
+        {
+          "emit": {
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"${SESSION_ID}\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"Hello from Antigravity mock.\"}}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"${SESSION_ID}\",\"update\":{\"sessionUpdate\":\"usage_update\",\"used\":120,\"size\":1048576}}}"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

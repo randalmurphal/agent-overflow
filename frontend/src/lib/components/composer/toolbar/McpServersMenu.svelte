@@ -18,6 +18,7 @@
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import type { ThreadPane } from '../../../stores/thread.svelte';
+  import { providerLabel } from '../../../providers/catalog';
   import { mcpRowAction } from '../../../utils/mcpRowAction';
   import {
     isMcpServersLoading,
@@ -201,7 +202,7 @@
         {:else if !listingError}
           <div class="mb-2 font-medium text-fg">No MCP servers configured</div>
           <div class="text-fg-subtle">
-            Servers configured for {scopeProvider === 'codex' ? 'Codex' : 'Claude Code'} appear
+            Servers configured for {providerLabel(scopeProvider)} appear
             here with a per-thread toggle.
           </div>
         {/if}

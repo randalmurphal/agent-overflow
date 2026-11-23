@@ -100,9 +100,14 @@
   let payloadMeta = $derived(identity ? parseJsonObject(identity.payloadMeta) : null);
   let parentMeta = $derived(identity ? parseJsonObject(identity.meta) : null);
   let inputObject = $derived(readClaudeSubagentInput(payloadMeta, parentMeta));
-  const launchCtx: SubagentLaunchContext = { hasChildren: () => hasChildren };
+  let launchCtx = $derived<SubagentLaunchContext>({
+    hasChildren: () => hasChildren,
+    threadProvider: pane?.thread?.provider,
+  });
   let launchInfo = $derived(identity ? subagentLaunchInfo(identity, launchCtx) : null);
-  let provider = $derived(launchInfo?.provider ?? 'claude');
+  let provider = $derived(
+    pane?.thread?.provider === 'agy' ? 'agy' : (launchInfo?.provider ?? 'claude'),
+  );
   let codexInfo = $derived(
     identity && launchInfo?.provider === 'codex' ? codexSubagentLaunchInfo(identity) : null,
   );
@@ -120,7 +125,7 @@
     return deriveClaudeSubagentModel(inputObject, parentMeta, identity?.toolName ?? '')
       || (carrierIdentity?.model ?? '');
   });
-  // The model the child runs: the named one, else (Claude only) the live
+  // The model the child runs: the named one, else (Claude/Antigravity) the live
   // session model it inherits.
   let model = $derived(
     namedModel || (provider === 'codex' ? '' : pane?.effectiveModel || pane?.thread?.model || ''),
@@ -137,6 +142,7 @@
     const effort = carrierIdentity
       ? carrierIdentity.effort
       : deriveClaudeSubagentEffort(inputObject, parentMeta, identity?.toolName ?? '');
+    if (provider === 'agy') return subagentEffortLabel('agy', effort, undefined);
     const alternatives = carrierIdentity
       ? carrierIdentity.effortAlternatives
       : deriveClaudeSubagentEffortAlternatives(inputObject, parentMeta, identity?.toolName ?? '');
@@ -190,6 +196,7 @@
   let stopTaskId = $derived.by(() => {
     if (!lifecycle || !isRunning) return null;
     if (codexInfo) return lifecycle.id;
+    if (provider !== 'claude') return null;
     // Agent/Task launches, a forked Skill, backgrounded Bash, and a
     // SendMessage resume carrier (triage rebinds the fresh task_id onto it)
     // all name a live Claude task. A fork from a CLI that gave it no task

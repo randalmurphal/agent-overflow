@@ -195,7 +195,7 @@ func (a *App) refreshThreadToolsAdmission(threadID string) {
 // Workflow phase sessions are excluded; they run a scripted step and have
 // no business driving other threads.
 func (a *App) threadMCPConfigForThread(thread store.Thread, sessionToken string, place subThreadPlace) (map[string]any, error) {
-	if thread.Provider != string(provider.Claude) && thread.Provider != string(provider.Codex) {
+	if !provider.CapabilitiesForProvider(thread.Provider).SupportsAppManagedMCP {
 		return nil, nil
 	}
 	scope, ok, err := a.deriveCallerScope(thread)
@@ -319,7 +319,7 @@ func (a *App) threadToolsCaller(threadID string) (threadtools.Caller, error) {
 }
 
 func (a *App) withThreadMCPRow(thread store.Thread, rows []ThreadMCPServer, live bool) []ThreadMCPServer {
-	if thread.Provider != string(provider.Claude) && thread.Provider != string(provider.Codex) {
+	if !provider.CapabilitiesForProvider(thread.Provider).SupportsAppManagedMCP {
 		return rows
 	}
 	scope, ok, err := a.deriveCallerScope(thread)

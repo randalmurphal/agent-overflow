@@ -455,8 +455,10 @@ export interface Settings {
   autoPinNewThreads: boolean;
   claudeBinaryPath: string;
   codexBinaryPath: string;
+  agyBinaryPath: string;
   claudeEnabled: boolean;
   codexEnabled: boolean;
+  agyEnabled: boolean;
   /**
    * Surfaces the `claude-tui` provider (the real interactive Claude TUI) in
    * the model/provider pickers. Unlike the two flags above this one defaults
@@ -475,6 +477,7 @@ export interface Settings {
    */
   claudeHiddenModels?: string[];
   codexHiddenModels?: string[];
+  agyHiddenModels?: string[];
   /**
    * User-defined environment variables applied to the provider processes
    * the backend spawns (sessions, account probes, text generation).
@@ -489,6 +492,7 @@ export interface Settings {
    */
   claudeCustomEnv?: ProviderEnvVar[];
   codexCustomEnv?: ProviderEnvVar[];
+  agyCustomEnv?: ProviderEnvVar[];
   /**
    * System-prompt replacements, in precedence order: the first enabled
    * entry whose `models` contains the session's model replaces the
@@ -503,6 +507,7 @@ export interface Settings {
    */
   claudePromptOverrides?: PromptOverride[];
   codexPromptOverrides?: PromptOverride[];
+  agyPromptOverrides?: PromptOverride[];
   /**
    * Built-in tools kept out of the model's context, provider-wide (not
    * model-scoped). Claude holds raw CLI tool names — passed to
@@ -742,7 +747,7 @@ export interface RetentionPersistedSettings {
 export interface AgentProfile {
   name: string;
   useFor: string;
-  provider: "" | "claude" | "codex";
+  provider: "" | "claude" | "codex" | "agy";
   model: string;
   effort: "" | ReasoningEffort;
   runtimeMode: "" | RuntimeMode;

@@ -28,10 +28,12 @@ func TestGetProviderStatusesUsesConfiguredBinaryPaths(t *testing.T) {
 
 	claudeBinary := createMockBinary(t, "claude-mock 1.2.3")
 	codexBinary := createMockBinary(t, "codex-mock 4.5.6")
+	agyBinary := createMockBinary(t, "agy 1.5.13")
 
 	if _, err := app.settings.Update(map[string]any{
 		"claudeBinaryPath": claudeBinary,
 		"codexBinaryPath":  codexBinary,
+		"agyBinaryPath":    agyBinary,
 	}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -40,8 +42,8 @@ func TestGetProviderStatusesUsesConfiguredBinaryPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetProviderStatuses() error = %v", err)
 	}
-	if len(statuses) != 2 {
-		t.Fatalf("len(statuses) = %d, want 2", len(statuses))
+	if len(statuses) != 3 {
+		t.Fatalf("len(statuses) = %d, want 3", len(statuses))
 	}
 
 	if statuses[0].Provider != "claude" {
@@ -62,6 +64,16 @@ func TestGetProviderStatusesUsesConfiguredBinaryPaths(t *testing.T) {
 	}
 	if statuses[1].Version != "codex-mock 4.5.6" {
 		t.Fatalf("statuses[1].Version = %q, want %q", statuses[1].Version, "codex-mock 4.5.6")
+	}
+
+	if statuses[2].Provider != "agy" {
+		t.Fatalf("statuses[2].Provider = %q, want agy", statuses[2].Provider)
+	}
+	if statuses[2].BinaryPath != agyBinary {
+		t.Fatalf("statuses[2].BinaryPath = %q, want %q", statuses[2].BinaryPath, agyBinary)
+	}
+	if statuses[2].Version != "agy 1.5.13" {
+		t.Fatalf("statuses[2].Version = %q, want %q", statuses[2].Version, "agy 1.5.13")
 	}
 }
 
@@ -102,11 +114,12 @@ func TestGetProviderStatusesFallsBackToDefaultsWithoutSettingsService(t *testing
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell scripts require unix")
 	}
-	// Serial: PATH holds the only claude and codex the defaults may resolve
+	// Serial: PATH holds the only claude, codex and agy the defaults may resolve
 	// to, so the version probes run mocks and never an installed CLI.
 	bin := t.TempDir()
 	mockexec.Write(t, filepath.Join(bin, "claude"), "#!/bin/sh\necho 'claude-mock 1.2.3'\n")
 	mockexec.Write(t, filepath.Join(bin, "codex"), "#!/bin/sh\necho 'codex-cli 0.162.1'\n")
+	mockexec.Write(t, filepath.Join(bin, "agy"), "#!/bin/sh\necho 'agy 1.5.13'\n")
 	t.Setenv("PATH", bin)
 	app := &App{}
 
@@ -114,8 +127,8 @@ func TestGetProviderStatusesFallsBackToDefaultsWithoutSettingsService(t *testing
 	if err != nil {
 		t.Fatalf("GetProviderStatuses() error = %v", err)
 	}
-	if len(statuses) != 2 {
-		t.Fatalf("len(statuses) = %d, want 2", len(statuses))
+	if len(statuses) != 3 {
+		t.Fatalf("len(statuses) = %d, want 3", len(statuses))
 	}
 
 	if statuses[0].Provider != "claude" {
@@ -131,17 +144,25 @@ func TestGetProviderStatusesFallsBackToDefaultsWithoutSettingsService(t *testing
 	if statuses[1].BinaryPath != filepath.Join(bin, "codex") {
 		t.Fatalf("statuses[1].BinaryPath = %q, want the default resolved on PATH", statuses[1].BinaryPath)
 	}
+
+	if statuses[2].Provider != "agy" {
+		t.Fatalf("statuses[2].Provider = %q, want agy", statuses[2].Provider)
+	}
+	if statuses[2].BinaryPath != filepath.Join(bin, "agy") {
+		t.Fatalf("statuses[2].BinaryPath = %q, want the default resolved on PATH", statuses[2].BinaryPath)
+	}
 }
 
 func TestGetProviderStatusesDefaultsBlankConfiguredBinaryPaths(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell scripts require unix")
 	}
-	// Serial: PATH holds the only claude and codex the defaults may resolve
+	// Serial: PATH holds the only claude, codex and agy the defaults may resolve
 	// to, so the version probes run mocks and never an installed CLI.
 	bin := t.TempDir()
 	mockexec.Write(t, filepath.Join(bin, "claude"), "#!/bin/sh\necho 'claude-mock 1.2.3'\n")
 	mockexec.Write(t, filepath.Join(bin, "codex"), "#!/bin/sh\necho 'codex-cli 0.162.1'\n")
+	mockexec.Write(t, filepath.Join(bin, "agy"), "#!/bin/sh\necho 'agy 1.5.13'\n")
 	t.Setenv("PATH", bin)
 	app := &App{
 		settings: settings.NewService(t.TempDir()),
@@ -150,6 +171,7 @@ func TestGetProviderStatusesDefaultsBlankConfiguredBinaryPaths(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{
 		"claudeBinaryPath": "   ",
 		"codexBinaryPath":  "",
+		"agyBinaryPath":    " ",
 	}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -158,12 +180,13 @@ func TestGetProviderStatusesDefaultsBlankConfiguredBinaryPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetProviderStatuses() error = %v", err)
 	}
-	if len(statuses) != 2 {
-		t.Fatalf("len(statuses) = %d, want 2", len(statuses))
+	if len(statuses) != 3 {
+		t.Fatalf("len(statuses) = %d, want 3", len(statuses))
 	}
 
 	wantClaude := provider.DetectProvider(string(provider.Claude), settings.DefaultSettings.ClaudeBinaryPath)
 	wantCodex := provider.DetectProvider(string(provider.Codex), settings.DefaultSettings.CodexBinaryPath)
+	wantAgy := provider.DetectProvider(string(provider.Agy), settings.DefaultSettings.AgyBinaryPath)
 
 	if statuses[0] != wantClaude {
 		t.Fatalf("claude status = %+v, want %+v", statuses[0], wantClaude)
@@ -171,8 +194,14 @@ func TestGetProviderStatusesDefaultsBlankConfiguredBinaryPaths(t *testing.T) {
 	if statuses[1] != wantCodex {
 		t.Fatalf("codex status = %+v, want %+v", statuses[1], wantCodex)
 	}
+	if statuses[2] != wantAgy {
+		t.Fatalf("agy status = %+v, want %+v", statuses[2], wantAgy)
+	}
 	if statuses[1].BinaryPath != filepath.Join(bin, "codex") || statuses[1].Status != "ready" {
 		t.Fatalf("codex status = %+v, want the PATH mock, ready", statuses[1])
+	}
+	if statuses[2].BinaryPath != filepath.Join(bin, "agy") || statuses[2].Status != "ready" {
+		t.Fatalf("agy status = %+v, want the PATH mock, ready", statuses[2])
 	}
 }
 
@@ -189,10 +218,12 @@ func TestGetProviderStatusesFlagsUnsupportedCodexVersion(t *testing.T) {
 
 	claudeBinary := createMockBinary(t, "claude-mock 1.2.3")
 	codexBinary := createMockBinary(t, "codex 0.36.0")
+	agyBinary := createMockBinary(t, "agy 1.5.13")
 
 	if _, err := app.settings.Update(map[string]any{
 		"claudeBinaryPath": claudeBinary,
 		"codexBinaryPath":  codexBinary,
+		"agyBinaryPath":    agyBinary,
 	}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -201,8 +232,8 @@ func TestGetProviderStatusesFlagsUnsupportedCodexVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetProviderStatuses() error = %v", err)
 	}
-	if len(statuses) != 2 {
-		t.Fatalf("len(statuses) = %d, want 2", len(statuses))
+	if len(statuses) != 3 {
+		t.Fatalf("len(statuses) = %d, want 3", len(statuses))
 	}
 
 	if statuses[1].Provider != "codex" {

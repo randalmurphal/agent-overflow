@@ -3,8 +3,6 @@ package provideraccountapp
 import (
 	"fmt"
 	"time"
-
-	"agent-overflow/internal/provider"
 )
 
 // ReconcileProviderHome stamps the metadata with its credential home and
@@ -19,7 +17,7 @@ func (m *Manager) ReconcileProviderHome(userHome string) error {
 	}
 
 	selected := make(map[string]string)
-	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+	for _, providerName := range ManagedAccountProviders {
 		if active, ok := m.store.Active(providerName, time.Now()); ok {
 			selected[providerName] = active.ID
 		}

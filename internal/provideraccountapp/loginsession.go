@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/externalurl"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 )
@@ -189,6 +190,7 @@ type loginRun struct {
 
 	claude *claude.LoginSession
 	codex  *codex.LoginSession
+	agy    *agy.LoginSession
 
 	flow loginFlow
 }
@@ -298,15 +300,25 @@ func (m *Manager) SubmitProviderLoginCode(providerName, pasted string) (LoginSta
 	if err := ValidateProvider(providerName); err != nil {
 		return IdleLoginState(providerName), err
 	}
-	if providerName != string(provider.Claude) {
+	if providerName != string(provider.Claude) && providerName != string(provider.Agy) {
 		return m.ProviderLoginState(providerName), errLoginCodeUnsupported
 	}
-	// Refuse a half-empty paste before the CLI sees it: one wrong callback
-	// ends the CLI's flow outright, so an obvious mistake must not cost the
-	// user their link.
-	code, state, err := splitLoginPaste(pasted)
-	if err != nil {
-		return m.ProviderLoginState(providerName), err
+	var paste loginPaste
+	if providerName == string(provider.Claude) {
+		// Refuse a half-empty paste before the CLI sees it: one wrong callback
+		// ends the CLI's flow outright, so an obvious mistake must not cost the
+		// user their link.
+		code, state, err := splitLoginPaste(pasted)
+		if err != nil {
+			return m.ProviderLoginState(providerName), err
+		}
+		paste = loginPaste{code: code, state: state}
+	} else {
+		trimmed := strings.TrimSpace(pasted)
+		if trimmed == "" {
+			return m.ProviderLoginState(providerName), errLoginCodeEmpty
+		}
+		paste = loginPaste{code: trimmed}
 	}
 
 	// Verifying is stored in the same critical section that hands the code
@@ -318,8 +330,16 @@ func (m *Manager) SubmitProviderLoginCode(providerName, pasted string) (LoginSta
 		m.loginMu.Unlock()
 		return m.ProviderLoginState(providerName), errNoLoginInProgress
 	}
+	if providerName == string(provider.Agy) && run.agy != nil {
+		validated, err := run.agy.ValidatePaste(paste.code)
+		if err != nil {
+			m.loginMu.Unlock()
+			return m.ProviderLoginState(providerName), err
+		}
+		paste.code = validated
+	}
 	select {
-	case run.pastes <- loginPaste{code: code, state: state}:
+	case run.pastes <- paste:
 	default:
 		m.loginMu.Unlock()
 		return m.ProviderLoginState(providerName), errLoginCodeBusy
@@ -424,6 +444,8 @@ func (m *Manager) openLoginFlow(
 		return m.openClaudeLoginFlow(ctx, run, method, notice)
 	case string(provider.Codex):
 		return m.openCodexLoginFlow(ctx, run, method, notice)
+	case string(provider.Agy):
+		return m.openAgyLoginFlow(ctx, run, method, notice)
 	}
 	return loginFlow{}, "", fmt.Errorf("provider %q has no sign-in flow", run.provider)
 }
@@ -541,6 +563,48 @@ func (m *Manager) openCodexLoginFlow(
 	return flow, notice, nil
 }
 
+func (m *Manager) openAgyLoginFlow(
+	ctx context.Context,
+	run *loginRun,
+	method LoginMethod,
+	notice string,
+) (loginFlow, string, error) {
+	if run.agy != nil {
+		_ = run.agy.Close()
+		run.agy = nil
+	}
+	geminiDir, appDataSubdir := splitAgyEphemeralHome(run.attempt.home.Path)
+	session, err := agy.StartLogin(ctx, agy.LoginConfig{
+		Binary:        run.attempt.binary,
+		WorkDir:       providerProbeWorkDir(),
+		GeminiDir:     geminiDir,
+		AppDataSubdir: appDataSubdir,
+		Env:           m.providerLoginEnv(run.provider, nil),
+		Reaper:        m.deps.Reaper,
+	})
+	if err != nil {
+		return loginFlow{}, "", err
+	}
+	run.agy = session
+
+	authURL := session.AuthorizeURL()
+	if method == LoginMethodBrowser {
+		if openErr := m.openLoginURL(ctx, authURL); openErr != nil && !errors.Is(openErr, externalurl.ErrNoOpener) {
+			return loginFlow{}, "", openErr
+		}
+	}
+	// `agy acp --login` completes by pasting the authorization code (or callback
+	// URL) shown on antigravity.google/oauth-callback back into stdin. Using
+	// LoginMethodRemote + LoginPhaseAwaitingCode presents both the clickable
+	// link and the code input field in ProviderLoginFlow.
+	return loginFlow{
+		method:       LoginMethodRemote,
+		phase:        LoginPhaseAwaitingCode,
+		authorizeURL: authURL,
+		expiresAt:    run.deadline,
+	}, notice, nil
+}
+
 // settleLoginFlow blocks until this flow ends. A non-empty notice means the
 // sign-in is still alive but the link the user is holding is not: the caller
 // opens a fresh one and shows the notice with it.
@@ -580,6 +644,19 @@ func (m *Manager) settleLoginFlow(
 		}
 	case string(provider.Codex):
 		return "", run.codex.WaitForCompletion(ctx, flow.loginID)
+	case string(provider.Agy):
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case paste := <-run.pastes:
+			if err := run.agy.SubmitCode(ctx, paste.code); err != nil {
+				if ctx.Err() != nil {
+					return "", ctx.Err()
+				}
+				return joinLoginNotice(loginProse(err), loginBurnedNotice), nil
+			}
+			return "", nil
+		}
 	}
 	return "", fmt.Errorf("provider %q has no sign-in flow", run.provider)
 }
@@ -601,6 +678,9 @@ func (r *loginRun) teardown() error {
 	}
 	if r.codex != nil {
 		errs = append(errs, r.codex.Close())
+	}
+	if r.agy != nil {
+		errs = append(errs, r.agy.Close())
 	}
 	r.cancel()
 	errs = append(errs, r.attempt.cleanup())

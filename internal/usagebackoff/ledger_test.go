@@ -280,3 +280,29 @@ func TestUsageBackoffLedgerToleratesACorruptFile(t *testing.T) {
 		t.Fatalf("Remaining after repair = %v, want the new hold", got)
 	}
 }
+
+type providerRetryAfterErr struct {
+	d time.Duration
+}
+
+func (e providerRetryAfterErr) Error() string             { return "HTTP 429" }
+func (e providerRetryAfterErr) RetryAfter() time.Duration { return e.d }
+
+func TestUsageBackoffLedgerHonorsProviderRetryAfterInterface(t *testing.T) {
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	ledger := newBackoffLedgerForTest(&now)
+
+	ledger.Note(string(provider.Agy), "acct-1", providerRetryAfterErr{d: 45 * time.Second})
+	if got := ledger.Remaining(string(provider.Agy), "acct-1"); got != 45*time.Second {
+		t.Fatalf("Remaining(agy, RetryAfter=45s) = %v, want 45s", got)
+	}
+	ledger.Note(string(provider.Agy), "acct-1", nil)
+	if got := ledger.Remaining(string(provider.Agy), "acct-1"); got != 0 {
+		t.Fatalf("Remaining(agy) after success = %v, want 0", got)
+	}
+	// Headerless 429 escalates with default backoff.
+	ledger.Note(string(provider.Agy), "acct-1", providerRetryAfterErr{})
+	if got := ledger.Remaining(string(provider.Agy), "acct-1"); got != initialProbeBackoff {
+		t.Fatalf("Remaining(agy, headerless 429) = %v, want %v", got, initialProbeBackoff)
+	}
+}

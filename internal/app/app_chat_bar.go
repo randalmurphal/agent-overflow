@@ -175,6 +175,10 @@ func (a *App) defaultModelForProvider(providerName string) string {
 		if models, err, ok := a.cachedCodexModelsForBinary(a.providerBinaryPath(providerName)); ok && err == nil {
 			served = models
 		}
+	case provider.ACPLiveModelCatalog:
+		if models, ok := a.providerDiscoveryService().CachedAgyModelsForBinary(a.providerBinaryPath(providerName)); ok {
+			served = models
+		}
 	case provider.StaticModelCatalog:
 	}
 	hidden := a.currentSettings().HiddenModelsForProvider(providerName)

@@ -8,7 +8,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
-	"agent-overflow/internal/transport"
 )
 
 func TestStartStateDeduplicatesByThread(t *testing.T) {
@@ -52,23 +51,9 @@ func TestRecordActivityRejectsAStaleSessionToken(t *testing.T) {
 	}
 }
 
-func TestPutAndRemovalOwnTokenAuthorityAtomically(t *testing.T) {
+func TestUnregisterStaleTokenPreservesReplacement(t *testing.T) {
 	manager := New()
-	scope := transport.CallerScope{ThreadID: "thread", ProjectID: "project"}
-	manager.Put("thread", Entry{Token: "session", AOToken: "ao-token", AOScope: scope})
-
-	if got, ok := manager.ResolveAOToken("ao-token"); !ok || got.ThreadID != scope.ThreadID {
-		t.Fatalf("live token = (%+v, %v), want registered scope", got, ok)
-	}
-	manager.Take("thread")
-	if _, ok := manager.ResolveAOToken("ao-token"); ok {
-		t.Fatal("token authority survived session removal")
-	}
-}
-
-func TestUnregisterStaleTokenPreservesReplacementAndAuthority(t *testing.T) {
-	manager := New()
-	manager.Put("thread", Entry{Token: "fresh", AOToken: "fresh-ao", AOScope: transport.CallerScope{ThreadID: "thread"}})
+	manager.Put("thread", Entry{Token: "fresh"})
 
 	if _, ok := manager.Unregister("thread", "stale"); ok {
 		t.Fatal("stale unregister removed a replacement")
@@ -76,9 +61,6 @@ func TestUnregisterStaleTokenPreservesReplacementAndAuthority(t *testing.T) {
 	entry, ok := manager.Get("thread")
 	if !ok || entry.Token != "fresh" {
 		t.Fatalf("replacement = (%+v, %v), want fresh session", entry, ok)
-	}
-	if _, ok := manager.ResolveAOToken("fresh-ao"); !ok {
-		t.Fatal("stale unregister revoked the replacement authority")
 	}
 }
 

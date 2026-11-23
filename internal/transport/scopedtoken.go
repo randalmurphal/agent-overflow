@@ -1,23 +1,6 @@
 package transport
 
-import (
-	"context"
-	"fmt"
-	"sort"
-	"strings"
-)
-
-// Scoped tokens are the credential the `agent-overflow remote` command
-// presents. They are NOT the webview token: a scoped token authenticates one
-// live provider session and authorizes only the method set below, filtered
-// further, for a phase session, by the grants its workflow froze.
-//
-// The app owns the registry (a token exists exactly as long as the session it
-// was minted for); this package owns the authorization table and the one-shot
-// HTTP route the command speaks. The same CallerScope also travels on the
-// context of an ao-workflow-tools call, which the app attaches from the
-// session that holds the tool's capability URL; that surface's tool-level
-// grant table lives in internal/workflowtools.
+import "context"
 
 // Caller-scope kinds. An interactive session belongs to a human-driven thread
 // (chat, plan, triage, studio); a phase session belongs to an unattended
@@ -27,20 +10,16 @@ const (
 	ScopeKindPhase       = "phase"
 )
 
-// ErrCodeInvalidScope is returned when an authenticated token resolves to a
-// scope kind outside the closed caller-scope vocabulary. Treating an unknown
-// value as interactive would silently widen the token's authority.
-const ErrCodeInvalidScope = "invalid_scope"
-
-// CallerScope is what a scoped token resolves to. It travels on the request
-// context so a bound method reads the caller's authority instead of trusting an
-// argument the caller supplied.
+// CallerScope identifies the provider session on whose behalf an in-process
+// MCP tool call (ao-remote-tools, ao-workflow-tools) runs. It travels on the
+// request context so handlers read the caller's authority instead of trusting
+// caller-supplied arguments.
 type CallerScope struct {
 	// Kind is ScopeKindInteractive or ScopeKindPhase.
 	Kind string `json:"kind"`
-	// ThreadID is the AO thread whose provider session holds this token.
+	// ThreadID is the AO thread whose provider session holds the capability URL.
 	ThreadID string `json:"threadId"`
-	// ProjectID scopes every run this token may see or act on.
+	// ProjectID scopes every run this session may see or act on.
 	ProjectID string `json:"projectId"`
 	// ItemID and PhaseID identify the phase attempt (phase kind only). They are
 	// the effect-ledger key that makes re-entry surface-and-skip.
@@ -73,13 +52,6 @@ func (s CallerScope) IsPhase() bool { return s.Kind == ScopeKindPhase }
 // IsInteractive reports whether the scope has the only other supported kind.
 func (s CallerScope) IsInteractive() bool { return s.Kind == ScopeKindInteractive }
 
-// ScopedTokens is the narrow app-side registry this package consults. The
-// implementation registers a token when a provider session starts and revokes
-// it when the session stops, so a resolved scope always names a live session.
-type ScopedTokens interface {
-	ResolveScopedToken(token string) (CallerScope, bool)
-}
-
 type callerScopeKey struct{}
 
 // WithCallerScope attaches an authenticated scope to a request context.
@@ -87,85 +59,10 @@ func WithCallerScope(ctx context.Context, scope CallerScope) context.Context {
 	return context.WithValue(ctx, callerScopeKey{}, scope)
 }
 
-// CallerScopeFrom returns the scope a scoped-token call was authenticated
-// with. Absent for every webview / remote-client call: those carry the user's
-// own authority through the session token and never a per-session scope.
+// CallerScopeFrom returns the scope attached to ctx. Absent for every webview
+// and remote-client call, which carry the user's own authority through the
+// session token and never a per-session scope.
 func CallerScopeFrom(ctx context.Context) (CallerScope, bool) {
 	scope, ok := ctx.Value(callerScopeKey{}).(CallerScope)
 	return scope, ok
-}
-
-// ScopedTokenMethods is the complete set of App methods a scoped token may
-// invoke, mapped to the phase grants that admit each one. It is a closed
-// allow-list: anything absent is refused for a scoped token as
-// method_not_found, exactly as an unregistered method would be, so the surface
-// stays unenumerable from a compromised agent session.
-//
-// An interactive scope may call every method named here. A phase scope may
-// call one only if it holds at least one of the listed grants.
-//
-// Row-level scoping is NOT expressed here: it depends on the record, not on
-// the method name. The bound methods enforce it from the scope on their
-// context.
-var ScopedTokenMethods = map[string][]string{
-	"AgentRemoteComputers": {"remote-commands"},
-	"AgentRemoteStart":     {"remote-commands"},
-	"AgentRemoteStatus":    {"remote-commands"},
-	"AgentRemoteCancel":    {"remote-commands"},
-}
-
-// ErrCodeGrantRequired is the typed refusal a phase token gets for a method its
-// workflow did not grant. It is deliberately distinct from method_not_found:
-// the method exists and the caller is authenticated, so hiding the reason would
-// only make a misconfigured workflow harder to fix. The route is loopback-only
-// and the caller is our own command, so naming the grant leaks nothing to a
-// network peer.
-const ErrCodeGrantRequired = "grant_required"
-
-// AuthorizeScopedMethod decides whether a scoped token may invoke methodName.
-// A nil return authorizes the call.
-func AuthorizeScopedMethod(scope CallerScope, methodName string) *FrameError {
-	if !scope.IsPhase() && !scope.IsInteractive() {
-		return &FrameError{
-			Code:    ErrCodeInvalidScope,
-			Message: fmt.Sprintf("unknown caller scope kind %q", scope.Kind),
-		}
-	}
-	grants, listed := ScopedTokenMethods[methodName]
-	if !listed {
-		return &FrameError{Code: ErrCodeMethodNotFound, Message: "method not registered"}
-	}
-	if !scope.IsPhase() {
-		return nil
-	}
-	for _, grant := range grants {
-		if scope.HasGrant(grant) {
-			return nil
-		}
-	}
-	return &FrameError{
-		Code: ErrCodeGrantRequired,
-		Message: fmt.Sprintf(
-			"this phase was not granted %s; add %s to the phase's grants: to allow it",
-			describeGrants(grants), describeGrants(grants),
-		),
-	}
-}
-
-// describeGrants renders a grant requirement the way an author would fix it.
-func describeGrants(grants []string) string {
-	sorted := append([]string(nil), grants...)
-	sort.Strings(sorted)
-	quoted := make([]string, 0, len(sorted))
-	for _, grant := range sorted {
-		quoted = append(quoted, fmt.Sprintf("%q", grant))
-	}
-	switch len(quoted) {
-	case 0:
-		return "any grant"
-	case 1:
-		return quoted[0]
-	default:
-		return strings.Join(quoted[:len(quoted)-1], ", ") + " or " + quoted[len(quoted)-1]
-	}
 }

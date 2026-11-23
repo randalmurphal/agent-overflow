@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/url"
 	"strings"
 	"time"
 
-	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/sessionruntime"
@@ -214,104 +212,6 @@ func (a *App) reportClaudeLostWrites(threadID string, sess session) {
 	if text := sess.Claude.TakeLostWritesError(); text != "" {
 		a.emitErrorToThread(threadID, text)
 	}
-}
-
-// The session credential for the `agent-overflow remote` command (D30).
-//
-// Every provider session the app starts is handed a scoped credential in its
-// process environment. The credential authorizes the `remote` command's method
-// set (transport.ScopedTokenMethods) and nothing else, and it lives exactly as long as the session: minted while
-// the session's launch config is built, registered when the session enters the
-// session map, revoked the moment it leaves. Registration riding the session
-// map — not the spawn path — is what makes leaking an entry structurally
-// impossible: this file is the sole root adapter for those Manager mutations.
-
-// The AO_* variable names are owned by internal/aocli — the reader of the
-// contract — so the writer here cannot drift from it. See that package's
-// AGENTS.md for the contract itself.
-
-// aoSessionCredential is one minted-but-not-yet-registered credential plus the
-// env it renders to. It is carried from launch-config assembly to session
-// registration; a spawn that fails never registers, so the token dies unused.
-type aoSessionCredential struct {
-	token string
-	scope transport.CallerScope
-	env   map[string]string
-}
-
-// ResolveScopedToken implements transport.ScopedTokens. An unknown or revoked
-// token resolves to nothing, which the route turns into a 401.
-//
-// `//wails:ignore` keeps it off the wire entirely: a method that turns a token
-// into the authority it carries must never be callable by anything holding one.
-//
-//wails:ignore
-func (a *App) ResolveScopedToken(token string) (transport.CallerScope, bool) {
-	return a.sessionManager().runtime.ResolveAOToken(token)
-}
-
-// sessionAOEnv returns the AO_* environment of a thread's live session. Empty
-// when the thread has no session — the credential only exists while the process
-// that holds it does.
-func (a *App) sessionAOEnv(threadID string) map[string]string {
-	return a.sessionManager().runtime.AOEnv(threadID)
-}
-
-// mintAOCredential builds the scoped credential for a session about to start on
-// this thread. A thread the CLI cannot be scoped to (no transport server, no
-// project, an unresolvable workflow phase) yields no credential: the session
-// starts without AO_* set and `ao` reports that it is not inside a session,
-// which is a legible failure rather than a silent partial authority.
-func (a *App) mintAOCredential(thread store.Thread) (aoSessionCredential, error) {
-	server := a.transportServer.Load()
-	if server == nil {
-		// Unit-level App instances and non-transport embeddings legitimately
-		// omit the HTTP server. Production boot installs it before any session
-		// can start.
-		return aoSessionCredential{}, nil
-	}
-	scope, ok, err := a.deriveCallerScope(thread)
-	if err != nil {
-		return aoSessionCredential{}, err
-	}
-	if !ok {
-		return aoSessionCredential{}, nil
-	}
-	// The CLI runs beside the provider, on this side of any WSL boundary,
-	// so it dials the ::1 listener when there is one (app_local_listener.go).
-	origin := server.Origin()
-	if local := a.localListenerAddr(); local != "" {
-		origin = "http://" + local
-	}
-	endpoint, err := aoEndpointFromOrigin(origin)
-	if err != nil {
-		return aoSessionCredential{}, err
-	}
-	token, err := transport.NewToken()
-	if err != nil {
-		return aoSessionCredential{}, fmt.Errorf("mint ao session token for thread %s: %w", thread.ID, err)
-	}
-	env := map[string]string{
-		aocli.EnvEndpoint: endpoint,
-		aocli.EnvToken:    token,
-		aocli.EnvThreadID: thread.ID,
-	}
-	return aoSessionCredential{token: token, scope: scope, env: env}, nil
-}
-
-// aoEndpointFromOrigin validates the transport's own origin into the endpoint
-// the CLI dials, and strips anything but scheme and authority. The CLI
-// authenticates with its own scoped credential and is never handed a
-// full-authority one, so nothing on this path may carry a query string.
-func aoEndpointFromOrigin(origin string) (string, error) {
-	parsed, err := url.Parse(origin)
-	if err != nil || parsed.Host == "" {
-		return "", fmt.Errorf("ao session env: transport URL %q is unusable", origin)
-	}
-	parsed.Path = ""
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return strings.TrimSuffix(parsed.String(), "/"), nil
 }
 
 // deriveCallerScope answers "what authority does this thread's session have".

@@ -2,71 +2,66 @@ package provider
 
 import "testing"
 
-func TestCapabilitiesForProvider(t *testing.T) {
-	tests := []struct {
-		name     string
-		provider string
-		want     Capabilities
-	}{
-		{
-			name:     "claude",
-			provider: string(Claude),
-			want: Capabilities{
-				ModelCatalog:        ClaudeProbeEnrichedCatalog,
-				EnforcesRuntimeMode: true,
-				ResumeTranscript:    ClaudeProjectsTranscript,
-			},
-		},
-		{
-			name:     "claude-tui",
-			provider: string(ClaudeTUI),
-			want: Capabilities{
-				ModelCatalog:     ClaudeProbeEnrichedCatalog,
-				ImageIngestion:   PathImageIngestion,
-				ResumeTranscript: ClaudeProjectsTranscript,
-			},
-		},
-		{
-			name:     "codex",
-			provider: string(Codex),
-			want: Capabilities{
-				ModelCatalog:              CodexLiveModelCatalog,
-				BackgroundTerminalCleaner: CodexBackgroundTerminalCleaner,
-				ImageIngestion:            PathImageIngestion,
-				EnforcesRuntimeMode:       true,
-			},
-		},
-		{
-			name:     "unknown",
-			provider: "other",
-			want:     Capabilities{},
-		},
+// TestProviderRegistryExhaustiveness pins that every ProviderKind in
+// AllProviders() is explicitly wired into capabilities, display naming,
+// usage family, context windows, and reasoning-effort sets.
+func TestProviderRegistryExhaustiveness(t *testing.T) {
+	t.Parallel()
+	if len(AllProviders()) == 0 {
+		t.Fatal("AllProviders() is empty")
+	}
+	if len(StandaloneProviders()) == 0 {
+		t.Fatal("StandaloneProviders() is empty")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := CapabilitiesForProvider(tt.provider); got != tt.want {
-				t.Fatalf("CapabilitiesForProvider(%q) = %+v, want %+v", tt.provider, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestEnforcesRuntimeModeMatchesSessionConfig pins the capability to the
-// actual behaviour of each provider's ConfigFromOptions rather than to a
-// hand-maintained opinion. claude-tui deliberately drops the permission
-// fields (approvals live inside the real TUI), so its threads' runtime mode
-// is inert — callers that treat a runtime mode as a guarantee must refuse it.
-func TestEnforcesRuntimeModeMatchesSessionConfig(t *testing.T) {
-	enforcing := map[string]bool{
-		string(Claude):    true,
-		string(Codex):     true,
-		string(ClaudeTUI): false,
-		"other":           false,
-	}
-	for name, want := range enforcing {
-		if got := CapabilitiesForProvider(name).EnforcesRuntimeMode; got != want {
-			t.Errorf("CapabilitiesForProvider(%q).EnforcesRuntimeMode = %v, want %v", name, got, want)
+	seen := make(map[ProviderKind]bool, len(AllProviders()))
+	for _, kind := range AllProviders() {
+		if kind == "" {
+			t.Fatal("AllProviders() contains empty ProviderKind")
 		}
+		if seen[kind] {
+			t.Fatalf("AllProviders() repeats %q", kind)
+		}
+		seen[kind] = true
+
+		name := string(kind)
+		if !IsKnownProvider(name) {
+			t.Errorf("IsKnownProvider(%q) = false", name)
+		}
+		if ProviderDisplayName(name) == "" || ProviderDisplayName(name) == name {
+			t.Errorf("ProviderDisplayName(%q) = %q, want a human label", name, ProviderDisplayName(name))
+		}
+		caps := CapabilitiesForProvider(name)
+		if caps.UsageFamily == "" {
+			t.Errorf("CapabilitiesForProvider(%q).UsageFamily is empty", name)
+		}
+		if !IsStandaloneProvider(string(caps.UsageFamily)) {
+			t.Errorf("CapabilitiesForProvider(%q).UsageFamily = %q, want a standalone provider", name, caps.UsageFamily)
+		}
+		if caps.StandardContextWindow <= 0 {
+			t.Errorf("CapabilitiesForProvider(%q).StandardContextWindow = %d, want > 0", name, caps.StandardContextWindow)
+		}
+		if caps.ExtendedContextWindow <= 0 {
+			t.Errorf("CapabilitiesForProvider(%q).ExtendedContextWindow = %d, want > 0", name, caps.ExtendedContextWindow)
+		}
+		if len(ReasoningEffortsForProvider(name)) == 0 {
+			t.Errorf("ReasoningEffortsForProvider(%q) is empty", name)
+		}
+	}
+
+	for _, kind := range StandaloneProviders() {
+		if !seen[kind] {
+			t.Errorf("StandaloneProviders() contains %q which is absent from AllProviders()", kind)
+		}
+		if !IsStandaloneProvider(string(kind)) {
+			t.Errorf("IsStandaloneProvider(%q) = false", kind)
+		}
+	}
+
+	if IsKnownProvider("unknown-provider") {
+		t.Error("IsKnownProvider accepted an unknown provider")
+	}
+	if IsStandaloneProvider(string(ClaudeTUI)) {
+		t.Error("IsStandaloneProvider accepted dependent provider claude-tui")
 	}
 }

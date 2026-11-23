@@ -115,7 +115,8 @@ type UserMessageRevertedEvent struct {
 }
 
 func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (cut revertedConversationCut, err error) {
-	if args.thread.Provider != string(provider.Codex) && args.thread.Provider != string(provider.Claude) {
+	caps := provider.CapabilitiesForProvider(args.thread.Provider)
+	if !caps.SupportsConversationRollback() {
 		return cut, fmt.Errorf("%s: provider %q does not support conversation rollback", args.errorPrefix, args.thread.Provider)
 	}
 	if err := a.store.CheckThreadExecutionAccess(args.thread); err != nil {
@@ -132,7 +133,8 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		}
 	}
 
-	if args.thread.Provider == string(provider.Codex) {
+	switch args.thread.Provider {
+	case string(provider.Codex):
 		if args.clearRunningBackgroundTasks {
 			if err := a.markConfirmedBackgroundTasksInactiveAfterProviderCleanup(args.thread.ID, args.errorPrefix); err != nil {
 				return revertedConversationCut{}, err
@@ -141,7 +143,7 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		if err := a.rollbackCodexThreadToMessage(args.thread, args.anchor); err != nil {
 			return revertedConversationCut{}, fmt.Errorf("%s: %w", args.errorPrefix, err)
 		}
-	} else {
+	case string(provider.Claude):
 		// Mark BEFORE the stop, mirroring the Codex branch: the stop's
 		// teardown settles still-running background launches with
 		// session_died completion siblings
@@ -162,6 +164,20 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		if err := a.rollbackClaudeThreadToMessage(args.thread, args.anchor, args.userItem); err != nil {
 			return revertedConversationCut{}, fmt.Errorf("%s: %w", args.errorPrefix, err)
 		}
+	case string(provider.Agy):
+		if args.clearRunningBackgroundTasks {
+			if err := a.markConfirmedBackgroundTasksInactiveAfterProviderCleanup(args.thread.ID, args.errorPrefix); err != nil {
+				return revertedConversationCut{}, err
+			}
+		}
+		if err := a.stopSession(args.thread.ID); err != nil {
+			return revertedConversationCut{}, fmt.Errorf("%s: stop session: %w", args.errorPrefix, err)
+		}
+		if err := a.rollbackAgyThreadToMessage(args.thread, args.anchor, args.userItem); err != nil {
+			return revertedConversationCut{}, fmt.Errorf("%s: %w", args.errorPrefix, err)
+		}
+	default:
+		return cut, fmt.Errorf("%s: provider %q does not support conversation rollback", args.errorPrefix, args.thread.Provider)
 	}
 
 	// The activity-rail todo list (threads.live_todo) deliberately survives
@@ -174,36 +190,32 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 	// anchor, and a retry converges: the provider rollback re-runs against
 	// the already-cut transcript (the already-cut detector clones it whole).
 
-	// Truncation granularity must match the provider rollback above. Both
-	// Codex cuts — thread/fork's inclusive lastTurnId and thread/revert's
-	// exclusive beforeTurnId — land on the turn boundary before the
-	// anchor's turn, so SQLite drops the whole turn. Claude's session
-	// slice cuts at the message itself, so
-	// only the anchor row and what follows it go — a queued flush message
-	// that shares its turn with an earlier prompt keeps that prompt and the
-	// agent work that preceded the queued send. The Codex coarseness is an
-	// app-server API limit, not permanent: see the granularity note on
-	// codex.Session.ForkAt for what upstream already has and when this
-	// branch can move to a message-granular cut.
-	if args.thread.Provider == string(provider.Codex) {
+	// Truncation granularity must match the provider rollback above.
+	switch caps.RollbackGranularity {
+	case provider.RollbackTurn:
 		_, stamp, err := a.store.DeleteConversationFromTurn(args.thread.ID, args.userItem.TurnIndex)
 		if err != nil {
 			return revertedConversationCut{}, fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
 		}
-		if a.triage != nil {
+		if a.triage != nil && args.thread.Provider == string(provider.Codex) {
 			// thread/revert keeps the session live across the cut.
 			a.triage.ForgetToolCallLinks(args.thread.ID)
 		}
 		return revertedConversationCut{Stamp: stamp}, nil
+	case provider.RollbackItem:
+		// A background launch the cut keeps stays settled when the cut deletes
+		// its ending sibling: it has no result card and nothing writes it one
+		// (internal/store/background_settle_triggers.go).
+		keptAnchorTurnItemIDs, stamp, err := a.store.DeleteConversationFromItem(args.thread.ID, args.userItem.ID)
+		if err != nil {
+			return revertedConversationCut{}, fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
+		}
+		return revertedConversationCut{KeptAnchorTurnItemIDs: keptAnchorTurnItemIDs, Stamp: stamp}, nil
+	case provider.RollbackNone:
+		return cut, fmt.Errorf("%s: provider %q has no rollback granularity", args.errorPrefix, args.thread.Provider)
+	default:
+		return cut, fmt.Errorf("%s: provider %q has no rollback granularity", args.errorPrefix, args.thread.Provider)
 	}
-	// A background launch the cut keeps stays settled when the cut deletes
-	// its ending sibling: it has no result card and nothing writes it one
-	// (internal/store/background_settle_triggers.go).
-	keptAnchorTurnItemIDs, stamp, err := a.store.DeleteConversationFromItem(args.thread.ID, args.userItem.ID)
-	if err != nil {
-		return revertedConversationCut{}, fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
-	}
-	return revertedConversationCut{KeptAnchorTurnItemIDs: keptAnchorTurnItemIDs, Stamp: stamp}, nil
 }
 
 // rollbackCodexThreadToMessage cuts Codex history at the last provider-backed

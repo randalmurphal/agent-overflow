@@ -555,8 +555,10 @@ export const GetCodexSkills = dispatch('GetCodexSkills');
 export const CompactCodexThread = dispatch('CompactCodexThread');
 export const StartCodexReview = dispatch('StartCodexReview');
 export const ProbeClaudeAccount = dispatch('ProbeClaudeAccount');
+export const ProbeAgyAccount = dispatch('ProbeAgyAccount');
 export const RecheckClaudeAccount = dispatch('RecheckClaudeAccount');
 export const RecheckCodexAccount = dispatch('RecheckCodexAccount');
+export const RecheckAgyAccount = dispatch('RecheckAgyAccount');
 
 export const GetGitStatus = dispatch('GetGitStatus');
 export const GitStatusSubscribe = dispatch('GitStatusSubscribe');

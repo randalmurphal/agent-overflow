@@ -233,6 +233,18 @@ func WriteMockCodexSession(t *testing.T, dir string, responses map[string]string
 		b.WriteString("    continue\n")
 		b.WriteString("  fi\n")
 	}
+	b.WriteString("  if /bin/echo \"$line\" | /usr/bin/grep -q '\"method\":\"thread/backgroundTerminals/clean\"'; then\n")
+	b.WriteString("    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{}}\\n' \"$id\"\n")
+	b.WriteString("    continue\n")
+	b.WriteString("  fi\n")
+	b.WriteString("  if /bin/echo \"$line\" | /usr/bin/grep -q '\"method\":\"thread/unsubscribe\"'; then\n")
+	b.WriteString("    tid=$(/bin/echo \"$line\" | /usr/bin/grep -o '\"threadId\":\"[^\"]*\"' | /usr/bin/head -1 | /usr/bin/cut -d'\"' -f4)\n")
+	b.WriteString("    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"status\":\"unloaded\"}}\\n' \"$id\"\n")
+	b.WriteString("    if [ -n \"$tid\" ]; then\n")
+	b.WriteString("      printf '{\"jsonrpc\":\"2.0\",\"method\":\"thread/closed\",\"params\":{\"threadId\":\"%s\"}}\\n' \"$tid\"\n")
+	b.WriteString("    fi\n")
+	b.WriteString("    continue\n")
+	b.WriteString("  fi\n")
 	if hasFallback {
 		fmt.Fprintf(&b, "  printf %s \"$id\"\n", stringsx.ShellQuote(fallback+"\n"))
 	}
