@@ -81,10 +81,6 @@ func threadTurnIDsPageWith(
 	return page, nil
 }
 
-func (s *Session) newestThreadTurnID(ctx context.Context, threadID string) (string, error) {
-	return newestThreadTurnIDWith(ctx, s.sendRequest, threadID)
-}
-
 func newestThreadTurnIDWith(ctx context.Context, call rpcCaller, threadID string) (string, error) {
 	page, err := threadTurnIDsPageWith(ctx, call, threadID, "", 1)
 	if err != nil {

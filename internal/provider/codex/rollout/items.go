@@ -648,13 +648,3 @@ func sleepSummary(durationMS int64) string {
 	}
 	return "Agent paused for " + (time.Duration(durationMS) * time.Millisecond).String()
 }
-
-func exitedReviewSummary(item turnItem) string {
-	if item.ReviewOutput == nil {
-		return "Code review finished"
-	}
-	return reviewSummary("Code review finished", firstNonEmpty(
-		item.ReviewOutput.OverallExplanation,
-		item.ReviewOutput.OverallCorrectness,
-	))
-}

@@ -114,7 +114,6 @@ type chunkBuffer struct {
 // Implements provider.Session.
 type Session struct {
 	conn            *Conn
-	ownsConn        bool
 	releaseConn     func()
 	releaseConnOnce sync.Once
 
@@ -176,28 +175,13 @@ var _ provider.Session = (*Session)(nil)
 // Session closes only the conversation, leaving the Conn alive for sibling
 // sessions.
 func (c *Conn) Open(ctx context.Context, threadID string, cfg SessionConfig, onEvent func(provider.ProviderEvent)) (*Session, error) {
-	return c.open(ctx, threadID, cfg, onEvent, false, nil)
+	return c.open(ctx, threadID, cfg, onEvent, nil)
 }
 
 // OpenPooled attaches a Session to this shared Conn and invokes releaseConn
 // when the session closes (or if Open fails).
 func (c *Conn) OpenPooled(ctx context.Context, threadID string, cfg SessionConfig, onEvent func(provider.ProviderEvent), releaseConn func()) (*Session, error) {
-	return c.open(ctx, threadID, cfg, onEvent, false, releaseConn)
-}
-
-// NewSession spawns a dedicated Conn and opens one Session on it. Closing the
-// Session shuts down that Conn.
-func NewSession(ctx context.Context, threadID string, connCfg ConnConfig, sessCfg SessionConfig, onEvent func(provider.ProviderEvent)) (*Session, error) {
-	conn, err := Dial(ctx, connCfg)
-	if err != nil {
-		return nil, err
-	}
-	sess, err := conn.open(ctx, threadID, sessCfg, onEvent, true, nil)
-	if err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	return sess, nil
+	return c.open(ctx, threadID, cfg, onEvent, releaseConn)
 }
 
 func (c *Conn) open(
@@ -205,7 +189,6 @@ func (c *Conn) open(
 	threadID string,
 	cfg SessionConfig,
 	onEvent func(provider.ProviderEvent),
-	ownsConn bool,
 	releaseConn func(),
 ) (*Session, error) {
 	flavor := cfg.Flavor
@@ -235,7 +218,6 @@ func (c *Conn) open(
 
 	s := &Session{
 		conn:                 c,
-		ownsConn:             ownsConn,
 		releaseConn:          releaseConn,
 		threadID:             threadID,
 		instanceID:           newSessionInstanceID(),
@@ -1291,27 +1273,16 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 	return nil
 }
 
-// Close detaches this session from its Conn (sending session/close on a shared
-// Conn) or closes the dedicated Conn when ownsConn is true.
+// Close detaches this session from its Conn, sending session/close on it.
 func (s *Session) Close() error {
 	s.closing.Store(true)
 	if s.sessionCancel != nil {
 		s.sessionCancel()
 	}
 	s.stopChunkTimer()
-
-	var err error
-	if s.ownsConn {
-		s.drainPendingApprovals("lost", true)
-		err = s.conn.Close()
-		<-s.readDone
-		s.promptWG.Wait()
-		s.subagentWG.Wait()
-		return err
-	}
-
 	s.drainPendingApprovals("lost", true)
 
+	var err error
 	s.mu.Lock()
 	sessionID := s.sessionID
 	inFlight := s.inFlightPrompts > 0

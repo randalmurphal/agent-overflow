@@ -127,6 +127,9 @@ func Dial(ctx context.Context, cfg ConnConfig) (*Conn, error) {
 		_ = c.Close()
 		return nil, fmt.Errorf("codex: initialize handshake failed: %w", err)
 	}
+	// A response that carries no parseable version leaves the version empty,
+	// which every gate reads as "too old": fail closed, since the cost of
+	// guessing wrong is a JSON-RPC error on every attempt.
 	version := parseAppServerVersion(readNestedString(initResp, "userAgent"))
 	c.appServerVersion.Store(&version)
 	c.threadQueueNative.Store(provider.CodexCLIVersionAtLeast(version, threadQueueMinimumCodexVersion))

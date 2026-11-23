@@ -455,14 +455,6 @@ func (DefaultFlavor) ClassifyPermission(threadID, turnID, requestID string, req 
 
 const maxApprovalDiffPreviewBytes = 16 * 1024
 
-// EnrichApprovalInput merges ACP's native pending diff hunks and file locations
-// from tc into base (if base is a JSON object or empty) so approval cards
-// display file paths and pending diffs before the user approves.
-func EnrichApprovalInput(base json.RawMessage, tc *ToolCallUpdate) json.RawMessage {
-	diffPath, combinedDiff := extractApprovalDiffAndPath(tc)
-	return mergeApprovalPreview(base, diffPath, combinedDiff)
-}
-
 // MergeApprovalPreview copies any already-computed "path" and "diff" preview
 // fields from enriched into base without recomputing unified diffs.
 func MergeApprovalPreview(base, enriched json.RawMessage) json.RawMessage {

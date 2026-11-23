@@ -576,13 +576,11 @@ type Session struct {
 	// change means the turn it intended to stop crossed a revert boundary and
 	// the stale interrupt must not hit the resulting thread runtime.
 	revertEpoch atomic.Uint64
-	// threadQueueNative freezes, at handshake time, whether this session
-	// hands mid-turn user messages to the provider's own `thread/queue/*`
-	// (codex >= 0.148) instead of AO's in-process flushqueue. Atomic for the
-	// same reason appServerVersion is — the app-layer dispatcher reads it off
-	// its own goroutine — and written exactly once, by
-	// recordThreadQueueSupport, because the two queues must be mutually
-	// exclusive for the whole life of the session.
+	// threadQueueNative freezes, at handshake time, whether the connected
+	// app-server has the `thread/queue/*` family (codex >= 0.148); see
+	// ThreadQueueNative. Atomic for the same reason appServerVersion is — the
+	// app layer reads it off its own goroutine — and written exactly once,
+	// from the Conn's handshake when the session opens.
 	threadQueueNative atomic.Bool
 
 	// conn is the multiplexed app-server connection this session runs on (nil

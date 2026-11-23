@@ -1,7 +1,6 @@
 package codex
 
 import (
-	"encoding/json"
 	"strings"
 
 	"agent-overflow/internal/provider"
@@ -28,15 +27,6 @@ import (
 // strictly better for a per-call gate: it describes the process actually on
 // the other end of this pipe, not whatever binary the setting named when the
 // app booted.
-
-// recordAppServerVersion stores the build version stated by an `initialize`
-// response. A response that carries no parseable version leaves the field
-// empty, which every gate reads as "too old" — fail closed, since the cost of
-// guessing wrong is a JSON-RPC error on every attempt.
-func (s *Session) recordAppServerVersion(initializeResponse json.RawMessage) {
-	version := parseAppServerVersion(readNestedString(initializeResponse, "userAgent"))
-	s.appServerVersion.Store(&version)
-}
 
 // AppServerVersion returns the codex build this session's process reported at
 // `initialize`, or "" when it could not be determined.

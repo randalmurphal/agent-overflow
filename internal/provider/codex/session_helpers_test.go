@@ -994,3 +994,11 @@ func TestBuildPermissionMeta(t *testing.T) {
 		t.Errorf("input: got %s, want %s", approval.Input, params)
 	}
 }
+
+// recordAppServerVersion stores the build version an `initialize` response
+// states on a synthetic session, as Dial does for a live connection's
+// sessions.
+func (s *Session) recordAppServerVersion(initializeResponse json.RawMessage) {
+	version := parseAppServerVersion(readNestedString(initializeResponse, "userAgent"))
+	s.appServerVersion.Store(&version)
+}
