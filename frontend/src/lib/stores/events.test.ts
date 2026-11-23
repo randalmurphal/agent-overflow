@@ -3156,6 +3156,30 @@ describe('setupEventListeners', () => {
     await vi.waitFor(() => expect(sources.mock.calls.length).toBe(asked + 1));
   });
 
+  // provider:account names the account the composer shows as in use, with
+  // its usage rings. Another card's change comes as provider:account_listing,
+  // which re-reads the listing and leaves that account as it was.
+  it('keeps the account in use when another card changes', async () => {
+    const accountInfo = await import('./accountInfo.svelte');
+    accountInfo.resetForTest();
+    emitWailsEvent('provider:account', {
+      provider: 'codex',
+      accountId: 'selected',
+      account: { email: 'selected@example.com', subscriptionType: 'pro' },
+      generation: 4,
+    });
+    const list = setBindingMock('ListProviderAccounts', async () => []);
+
+    emitWailsEvent('provider:account_listing', null);
+    await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+    expect(accountInfo.getProviderAccount('codex')).toMatchObject({
+      accountId: 'selected',
+      email: 'selected@example.com',
+      generation: 4,
+    });
+    accountInfo.resetForTest();
+  });
+
   it('clears retired account limits from provider:usage', async () => {
     const rateLimits = await import('./rateLimitsInfo.svelte');
     rateLimits.resetForTest();

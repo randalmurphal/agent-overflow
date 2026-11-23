@@ -111,13 +111,13 @@ func TestSameAccountActivationKeepsTheIdentity(t *testing.T) {
 		t.Fatal("a same-account activation retired the identity")
 	}
 
-	if err := credentials.CommitSelectedCredential(
+	if err := credentials.CommitSelectedCredentialForTest(
 		"claude",
 		"same",
 		nil,
 		[]byte(`{"claudeAiOauth":{"accessToken":"rotated"}}`),
 	); err != nil {
-		t.Fatalf("CommitSelectedCredential: %v", err)
+		t.Fatalf("CommitSelectedCredentialForTest: %v", err)
 	}
 	if !hasIdentity(t, configPath) {
 		t.Fatal("a same-account credential rotation retired the identity")
@@ -210,7 +210,7 @@ func TestEphemeralClaudeHomeCopiesConfigWithoutTheIdentity(t *testing.T) {
 	home, err := credentials.NewEphemeralHomeWithCredential(
 		"claude",
 		[]byte(`{"claudeAiOauth":{"accessToken":"probe"}}`),
-		"probe-account",
+		EphemeralOwner{AccountID: "probe-account"},
 	)
 	if err != nil {
 		t.Fatal(err)

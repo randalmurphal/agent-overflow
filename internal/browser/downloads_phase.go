@@ -84,6 +84,14 @@ func (e *DownloadInfo) takesReports() bool {
 	panic(fmt.Sprintf("browser: %v", e.phase))
 }
 
+// endReceived is whether the row's end was received and is on its way to
+// it (downloadStart.EndReported, or a popup's parked end, addParkedRow):
+// its page's leave waits for that end, and the user's cancel has nothing
+// to stop. The caller holds the row's log.
+func (e *DownloadInfo) endReceived() bool {
+	return e.endReported != nil && e.endReported()
+}
+
 // advance moves the row to the running phase to, and refuses with
 // errDownloadPhase a move its phase does not allow: a cancel is requested
 // only of a running row, withdrawn only while requested, a publish begins

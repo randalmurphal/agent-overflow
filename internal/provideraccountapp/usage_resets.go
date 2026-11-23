@@ -206,6 +206,23 @@ func (m *Manager) lockForUsage(ctx context.Context, mu *reconcileLock, providerN
 	return nil
 }
 
+// resetSelectionMovedError refuses a spend of the selected account after the
+// reconciliation at its start found another login in the canonical store and
+// selected it: the person chose the reset for an account that is no longer
+// the one Codex runs as. Caller holds the reconcile lock and no Manager lock.
+func (m *Manager) resetSelectionMovedError(providerName string, spend *resetSpendRequest) error {
+	m.mu.RLock()
+	active, ok := m.store.Active(providerName, time.Now())
+	m.mu.RUnlock()
+	signedIn := "another account"
+	if ok && strings.TrimSpace(active.Email) != "" {
+		signedIn = DescribeObservedAccount(AccountInfo(active))
+	}
+	return errorsx.Public("reset_account_switched", fmt.Sprintf(
+		"Codex was signed in to %s outside the app, so the app switched to that account and %s",
+		signedIn, unsentTail(spend.finish)), nil)
+}
+
 // unsentTail ends a sentence about a request that was never sent: a fresh
 // spend used nothing, but the request a Finish follows may have.
 func unsentTail(finish bool) string {

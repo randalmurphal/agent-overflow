@@ -109,7 +109,7 @@ func sessionStartTestSessionWith(t *testing.T, resume string, hook *provider.Ses
 		sessionID:         "sess-1",
 		parser:            newSessionParser(),
 		feed:              make(chan json.RawMessage, 16),
-		done:              make(chan struct{}),
+		completed:         make(chan struct{}),
 		logf:              func(string, ...any) {},
 		onEvent:           rec.record,
 		sessionStart:      delivery,

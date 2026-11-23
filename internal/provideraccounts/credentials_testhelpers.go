@@ -54,3 +54,18 @@ func (c *Credentials) RecoverRotationForTest(providerName, accountID string, see
 	}
 	return c.writeCredentialAt(providerName, accountDir, false, rotated)
 }
+
+// CommitSelectedCredentialForTest installs a selected account's login the
+// way an activation leaves it: the canonical credential first, then the
+// account's slot while it still holds expectedSlot. Production lands a
+// selected rotation through the settle rule (rotation.go) instead.
+func (c *Credentials) CommitSelectedCredentialForTest(providerName, accountID string, expectedSlot, data []byte) error {
+	if !testing.Testing() {
+		return errors.New("provideraccounts: CommitSelectedCredentialForTest is only available inside a test binary")
+	}
+	if err := c.writeActiveCredential(providerName, data); err != nil {
+		return err
+	}
+	_, err := c.ReplaceAccountCredential(providerName, accountID, expectedSlot, data)
+	return err
+}

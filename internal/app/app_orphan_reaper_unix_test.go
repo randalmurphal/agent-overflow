@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
@@ -38,8 +39,43 @@ func TestTheHeadlessBrowserIsGivenTheOrphanReaper(t *testing.T) {
 	}
 	opts.Reaper.Watch(leader.Process.Pid)
 	records, err := registry.Load()
-	if err != nil || len(records) != 1 || records[0].PGID != leader.Process.Pid || records[0].Owner != "headless browser" {
+	if err != nil || len(records) != 1 || records[0].Leader != leader.Process.Pid || records[0].Owner != "headless browser" {
 		t.Fatalf("records %+v %v, want the browser's group", records, err)
+	}
+}
+
+// A leader whose identity cannot be read gets no record: the sweep could
+// never reap it. A recorded leader carries its identity.
+func TestAWatchedGroupIsRecordedOnlyWithItsLeadersIdentity(t *testing.T) {
+	t.Parallel()
+	gone := exec.Command("true")
+	if err := gone.Run(); err != nil {
+		t.Fatal(err)
+	}
+	running := exec.Command("sleep", "60")
+	if err := running.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = running.Process.Kill()
+		_ = running.Wait()
+	})
+	a := NewApp()
+	registry := orphanreaper.NewRegistry(filepath.Join(t.TempDir(), "orphan-registry.json"))
+	a.orphanRegistry = registry
+	reaper := a.groupReaper("shell command")
+	reaper.Watch(gone.Process.Pid)
+	reaper.Watch(running.Process.Pid)
+	records, err := registry.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, _, err := instanceinfo.ProcessStart(running.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Leader != running.Process.Pid || records[0].Identity == nil || records[0].Identity.Start != start {
+		t.Fatalf("records %+v, want only the running leader with kernel start %q", records, start)
 	}
 }
 
@@ -72,7 +108,7 @@ func TestProviderServicesAreGivenTheOrphanReaper(t *testing.T) {
 			}
 			reaper.Watch(leader.Process.Pid)
 			records, err := registry.Load()
-			if err != nil || len(records) != 1 || records[0].PGID != leader.Process.Pid || records[0].Owner != c.owner {
+			if err != nil || len(records) != 1 || records[0].Leader != leader.Process.Pid || records[0].Owner != c.owner {
 				t.Fatalf("records %+v %v, want the group under %q", records, err, c.owner)
 			}
 		})

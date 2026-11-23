@@ -41,11 +41,11 @@ func TestCredentialWritesRefuseASignOutHusk(t *testing.T) {
 	) {
 		t.Fatalf("WriteAccountCredential(husk) = %v, want ErrSignedOutCredential", err)
 	}
-	if err := credentials.CommitSelectedCredential("claude", "slot", nil, []byte("husk")); !errors.Is(
+	if err := credentials.CommitSelectedCredentialForTest("claude", "slot", nil, []byte("husk")); !errors.Is(
 		err,
 		ErrSignedOutCredential,
 	) {
-		t.Fatalf("CommitSelectedCredential(husk) = %v, want ErrSignedOutCredential", err)
+		t.Fatalf("CommitSelectedCredentialForTest(husk) = %v, want ErrSignedOutCredential", err)
 	}
 	if err := credentials.WriteNativeCredentialForTest("claude", []byte("husk")); err != nil {
 		// The provider-impersonating helper is the one path that may write a
@@ -90,14 +90,14 @@ func TestARefusedHuskLeavesTheExistingCredentialIntact(t *testing.T) {
 
 	// The canonical store is the other destination, and the one whose loss
 	// signs the user out of the running app.
-	if err := credentials.CommitSelectedCredential("claude", "slot", []byte("real-token"), []byte("real-token")); err != nil {
+	if err := credentials.CommitSelectedCredentialForTest("claude", "slot", []byte("real-token"), []byte("real-token")); err != nil {
 		t.Fatal(err)
 	}
-	if err := credentials.CommitSelectedCredential("claude", "slot", nil, []byte("husk")); !errors.Is(
+	if err := credentials.CommitSelectedCredentialForTest("claude", "slot", nil, []byte("husk")); !errors.Is(
 		err,
 		ErrSignedOutCredential,
 	) {
-		t.Fatalf("CommitSelectedCredential(husk) = %v, want ErrSignedOutCredential", err)
+		t.Fatalf("CommitSelectedCredentialForTest(husk) = %v, want ErrSignedOutCredential", err)
 	}
 	canonical, err := credentials.ReadCredential("claude", "", true)
 	if err != nil {
@@ -125,9 +125,14 @@ func TestARefusedHuskLeavesTheExistingCredentialIntact(t *testing.T) {
 func TestRawCredentialWritesStayBehindTheSignOutRefusal(t *testing.T) {
 	allowedCallers := map[string]map[string]bool{
 		"storeCredentialAt": {
-			// The refusal itself, and the active-write wrapper below.
-			"writeCredentialAt":     true,
+			// The refusal itself, and the active write below.
+			"writeCredentialAt":           true,
+			"storeActiveCredentialLocked": true,
+		},
+		"storeActiveCredentialLocked": {
 			"storeActiveCredential": true,
+			// Refuses a sign-out itself before taking the write locks.
+			"replaceActiveCredentialHolding": true,
 		},
 		"storeActiveCredential": {
 			"writeActiveCredential": true,
@@ -249,7 +254,7 @@ func TestActivateWithSnapshotSkipsAHuskSnapshotAndStillSwitches(t *testing.T) {
 // leaves a registry entry pointing at an orphan that was never a login.
 func TestNewEphemeralHomeWithCredentialRefusesAHusk(t *testing.T) {
 	credentials := newHuskAwareCredentials(t)
-	home, err := credentials.NewEphemeralHomeWithCredential("claude", []byte("husk"), "dead")
+	home, err := credentials.NewEphemeralHomeWithCredential("claude", []byte("husk"), EphemeralOwner{AccountID: "dead"})
 	if !errors.Is(err, ErrSignedOutCredential) {
 		if home != nil {
 			_ = home.Cleanup()

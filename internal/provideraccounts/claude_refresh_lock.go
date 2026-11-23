@@ -139,6 +139,11 @@ func claudeCredentialLockPaths(configHome string) []claudeCredentialLock {
 // The caller's parent directory is created first when it is missing: the
 // canonical home is created by the write this guards, and a lock that cannot
 // be taken because the home does not exist yet would refuse every first write.
+// lockHeldForTest, when a test sets it, runs each time acquireLockDirectory
+// finds its lock held by someone else: the gate a test opens to act while
+// AO waits.
+var lockHeldForTest func(path string)
+
 func acquireLockDirectory(path string, wait, stale time.Duration) error {
 	deadline := time.Now().Add(wait)
 	for attempt := 0; ; attempt++ {
@@ -171,6 +176,9 @@ func acquireLockDirectory(path string, wait, stale time.Duration) error {
 				return fmt.Errorf("provideraccounts: reclaim abandoned credential lock %s: %w", path, rmErr)
 			}
 		default:
+			if lockHeldForTest != nil {
+				lockHeldForTest(path)
+			}
 			time.Sleep(claudeRefreshLockPoll)
 		}
 	}

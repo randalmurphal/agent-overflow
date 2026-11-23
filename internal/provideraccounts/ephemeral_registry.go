@@ -22,9 +22,8 @@ import (
 // store nothing references, and an abandoned home keeps a live credential
 // in the temporary directory indefinitely. Each home is therefore recorded
 // in a per-entry file BEFORE any credential can exist there, the entry is
-// removed on clean teardown, and the boot sweep recovers whatever a crash
-// left behind: adopt the bytes into the owning slot when the slot is dead
-// or behind the orphan on its chain, then delete the remnant.
+// removed once its rotation is settled (rotation.go), and the boot sweep
+// settles whatever a crash left behind by the same rule.
 //
 // Each entry has a lease: a lock file beside it that the owning process
 // holds until the home is cleaned up. The kernel releases it when that
@@ -61,8 +60,15 @@ type ephemeralRegistryEntry struct {
 	AccountID  string `json:"accountId,omitempty"`
 	// SeedDigest is the fingerprint of the refresh token the home was seeded
 	// with (consumed.go); empty for a login home, which starts with none.
-	SeedDigest string    `json:"seedDigest,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
+	SeedDigest string `json:"seedDigest,omitempty"`
+	// SlotToken is the fingerprint of the refresh token the owner's slot held
+	// when the home was seeded (ephemeralProvenance). Entries written before
+	// it was recorded have none.
+	SlotToken string    `json:"slotToken,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	// Kept records that a sweep already reported keeping this entry, so a
+	// later sweep that keeps it again reports nothing.
+	Kept bool `json:"kept,omitempty"`
 }
 
 // EphemeralSweepResult reports what the boot sweep did with one
@@ -71,15 +77,16 @@ type EphemeralSweepResult struct {
 	Provider   string
 	ConfigHome string
 	AccountID  string
-	// Action is one of "adopted" (the orphan held the only live copy of
-	// the owning account's chain and was restored into its slot),
-	// "discarded" (a credential was left behind but the slot is
-	// healthy), "cleaned" (no credential remained), or "skipped" (the
-	// home's owner is still running).
+	// Action is one of "adopted" (the orphan held a rotation and the
+	// canonical store or a slot took it, settleRotation), "discarded" (a
+	// credential was left behind that nothing needs), "kept" (a rotation
+	// nothing took and nothing proves unneeded; reported once), "cleaned"
+	// (no credential remained), or "skipped" (the home's owner is still
+	// running).
 	Action string
 	// Canonical reports that the orphan also replaced the canonical
 	// credential: the owning account is this store's selected one and the
-	// canonical store still held the bytes the orphan was rotated from.
+	// canonical store still held the token the orphan's rotation consumed.
 	Canonical bool
 }
 
@@ -110,7 +117,7 @@ func ephemeralLeaseFileName(configHome string) string {
 // crashes is invisible forever, so registration failure fails the home's
 // creation rather than proceeding uncovered. The lease is taken before the
 // entry exists, so no sweep can see the entry without it.
-func (c *Credentials) registerEphemeralHome(providerName, configHome, ownerAccountID, seedDigest string) (*os.File, error) {
+func (c *Credentials) registerEphemeralHome(providerName, configHome string, from ephemeralProvenance) (*os.File, error) {
 	dir, err := c.ephemeralRegistryDir(providerName)
 	if err != nil {
 		return nil, err
@@ -133,8 +140,9 @@ func (c *Credentials) registerEphemeralHome(providerName, configHome, ownerAccou
 	}
 	entry := ephemeralRegistryEntry{
 		ConfigHome: configHome,
-		AccountID:  ownerAccountID,
-		SeedDigest: seedDigest,
+		AccountID:  from.AccountID,
+		SeedDigest: from.SeedToken,
+		SlotToken:  from.SlotToken,
 		CreatedAt:  time.Now().UTC(),
 	}
 	if err := atomicfile.WriteJSON(filepath.Join(dir, ephemeralRegistryFileName(configHome)), entry); err != nil {
@@ -187,26 +195,19 @@ func sweepableEphemeralHome(providerName, configHome string) bool {
 		strings.HasPrefix(filepath.Base(configHome), ephemeralHomePrefix(providerName))
 }
 
-// SweepEphemeralCredentials recovers and removes credentials left behind
-// by ephemeral homes that never reached their cleanup — a crash or kill
-// mid-probe or mid-login. Run at boot, after the orphan-slot prune.
-// selected maps each provider to this store's selected account ID.
+// SweepEphemeralCredentials settles credentials left behind by ephemeral
+// homes that never reached their cleanup: a crash or kill mid-probe or
+// mid-login. Run at boot. selected maps each
+// provider to this store's selected account ID.
 //
 // Per entry whose owner is gone: read whatever credential the home still
-// holds (Keychain item for Claude on darwin, credential file otherwise).
-// When the owning account is this store's selected one, the orphan rotated
-// its seed, and the canonical store still holds that seed, the orphan
-// replaces it first, as CommitSelectedCredential orders a selected
-// rotation. Only the store that selected an account writes its canonical
-// credential: another store's sweep restores the slot alone, and the owner
-// promotes it (PromoteSlotOverCanonical). Then,
-// if the owning account's slot still exists and the orphan's bytes are
-// usable and the slot's are not (missing, the provider's sign-out husk, or
-// behind the orphan on the rotation chain), restore them into the slot:
-// the orphan may be the only live copy of a rotated chain. Then delete the
-// remnant credential, the leftover directory, and the entry. Any step that
-// cannot prove it is safe keeps the entry for the next boot instead of
-// guessing.
+// holds (Keychain item for Claude on darwin, credential file otherwise) and
+// settle it as the live probe would have (settleRotation). A rotation that
+// is placed, or that nothing needs, is deleted with its directory and entry.
+// One that is still needed, or whose stores cannot be read, keeps its entry
+// for the next boot; a kept rotation is reported once, and ends when a later
+// sweep can place or discard it or when its account is removed
+// (ForgetAccountEphemerals).
 func (c *Credentials) SweepEphemeralCredentials(now time.Time, selected map[string]string) ([]EphemeralSweepResult, error) {
 	var results []EphemeralSweepResult
 	var sweepErrs []error
@@ -219,6 +220,10 @@ func (c *Credentials) SweepEphemeralCredentials(now time.Time, selected map[stri
 	}
 	return results, errors.Join(sweepErrs...)
 }
+
+// beforeEphemeralClaimForTest, when a test sets it, runs between a sweep's
+// read of the entry at entryPath and its claim of the entry's lease.
+var beforeEphemeralClaimForTest func(entryPath string)
 
 func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time, selectedAccountID string) ([]EphemeralSweepResult, error) {
 	dir, err := c.ephemeralRegistryDir(providerName)
@@ -266,6 +271,9 @@ func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time, se
 			Action:     "skipped",
 		}
 		leasePath := filepath.Join(dir, ephemeralLeaseFileName(entry.ConfigHome))
+		if beforeEphemeralClaimForTest != nil {
+			beforeEphemeralClaimForTest(entryPath)
+		}
 		lease, claim, claimErr := claimEphemeralEntry(entryPath, leasePath, entry, now)
 		if claimErr != nil {
 			sweepErrs = append(sweepErrs, fmt.Errorf("provideraccounts: claim ephemeral %s home %s: %w", providerName, entry.ConfigHome, claimErr))
@@ -279,13 +287,42 @@ func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time, se
 			continue
 		case entryClaimed:
 		}
+		// Decided from the entry as it stands under the lease: another sweep
+		// may have settled or marked it between the read above and the claim.
+		// The entry must still name the home whose lease was taken; one
+		// rewritten to another path in between is left alone and reported.
+		var leased ephemeralRegistryEntry
+		found, err := atomicfile.ReadJSON(entryPath, &leased)
+		if err == nil && found && leased.ConfigHome != entry.ConfigHome {
+			err = fmt.Errorf("it names %s, not the home whose lease the sweep took (%s)", leased.ConfigHome, entry.ConfigHome)
+		}
+		if err != nil || !found {
+			if err != nil {
+				sweepErrs = append(sweepErrs, fmt.Errorf("provideraccounts: reread ephemeral %s registry entry %s: %w", providerName, dirEntry.Name(), err))
+			}
+			if lease != nil {
+				if releaseErr := filelock.Release(lease); releaseErr != nil {
+					sweepErrs = append(sweepErrs, releaseErr)
+				}
+			}
+			continue
+		}
+		entry = leased
 
 		result, entryErr := c.sweepOneEphemeralHome(providerName, entry, selectedAccountID)
-		if entryErr != nil {
+		if entryErr != nil || result.Action == "kept" {
 			// Kept for the next boot: the orphan may still hold the only
 			// live copy of a chain, so an indeterminate state is never
 			// resolved by deleting.
-			sweepErrs = append(sweepErrs, entryErr)
+			if entryErr != nil {
+				sweepErrs = append(sweepErrs, entryErr)
+			} else if !entry.Kept {
+				entry.Kept = true
+				if err := atomicfile.WriteJSON(entryPath, entry); err != nil {
+					sweepErrs = append(sweepErrs, fmt.Errorf("provideraccounts: mark ephemeral %s home %s kept: %w", providerName, entry.ConfigHome, err))
+				}
+				results = append(results, result)
+			}
 			if lease != nil {
 				if releaseErr := filelock.Release(lease); releaseErr != nil {
 					sweepErrs = append(sweepErrs, releaseErr)
@@ -393,124 +430,88 @@ func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeral
 		result.Action = "cleaned"
 		return result, c.removeEphemeralRemnants(providerName, entry.ConfigHome)
 	}
-
-	result.Action = "discarded"
-	if entry.AccountID != "" && !c.credentialSignedOut(providerName, orphan.Bytes()) {
-		orphanToken, hasToken := c.tokenFingerprint(providerName, orphan.Bytes())
-		rotated := entry.SeedDigest != "" && hasToken && orphanToken != entry.SeedDigest
-		if rotated && entry.AccountID == selectedAccountID {
-			replaced, err := c.restoreCanonicalFromOrphan(providerName, entry.SeedDigest, orphan.Bytes())
-			if err != nil {
-				return result, err
-			}
-			result.Canonical = replaced
-		}
-		consumed := ""
-		if rotated {
-			consumed = entry.SeedDigest
-		}
-		adopted, err := c.adoptIntoSlot(providerName, entry.AccountID, orphan.Bytes(), consumed)
-		if err != nil {
-			return result, err
-		}
-		if adopted || result.Canonical {
-			result.Action = "adopted"
-		}
+	from := ephemeralProvenance{AccountID: entry.AccountID, SeedToken: entry.SeedDigest, SlotToken: entry.SlotToken}
+	selectedHere := entry.AccountID != "" && entry.AccountID == selectedAccountID
+	landing, err := c.settleRotation(providerName, from, orphan.Bytes(), selectedHere)
+	if err != nil {
+		return result, err
+	}
+	result.Canonical = landing.Canonical
+	if landing.Unchecked != nil {
+		// A slot that could not be inspected may still hold the seed's
+		// token: the home stays, and is reported at every boot until each
+		// slot can be judged.
+		result.Action = "kept"
+		return result, fmt.Errorf("provideraccounts: keep crash-orphaned ephemeral %s home %s: a saved slot could not be checked for the token it spent: %w", providerName, entry.ConfigHome, landing.Unchecked)
+	}
+	switch {
+	case landing.Kept:
+		result.Action = "kept"
+		return result, nil
+	case landing.placed():
+		result.Action = "adopted"
+	default:
+		result.Action = "discarded"
 	}
 	return result, c.removeEphemeralRemnants(providerName, entry.ConfigHome)
 }
 
-// restoreCanonicalFromOrphan replaces the canonical credential with the
-// selected account's orphan while the canonical store still holds the
-// refresh token the orphan's rotation consumed. Anything else there (a sign-in, a later rotation, another
-// account) is left alone.
-//
-// Nothing serializes this read-compare-write against the provider CLI:
-// Codex takes no lock AO can share, so every AO write of the canonical
-// Codex credential has the same window. The consumed seed narrows it to
-// sign-ins: no CLI can rotate those bytes, and only a sign-in completing
-// inside the read-compare-write would be replaced.
-func (c *Credentials) restoreCanonicalFromOrphan(providerName, seedDigest string, orphan []byte) (bool, error) {
-	canonical, err := c.ReadCredentialSnapshot(providerName, "", true)
-	if IsCredentialMissing(err) {
-		return false, nil
+// ForgetAccountEphemerals deletes the entries, homes and credentials of a
+// removed account's temporary homes whose owners are gone: a kept rotation
+// ends with its account. A home whose owner still runs is left to it. The
+// caller removed the account; only account removal calls this. A slot
+// directory alone is no reason to: it says only that some data root saved
+// it, or an earlier release left it.
+func (c *Credentials) ForgetAccountEphemerals(providerName, accountID string, now time.Time) error {
+	dir, err := c.ephemeralRegistryDir(providerName)
+	if err != nil {
+		return err
+	}
+	dirEntries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("provideraccounts: inspect canonical %s credential before adoption: %w", providerName, err)
+		return fmt.Errorf("provideraccounts: read ephemeral %s registry: %w", providerName, err)
 	}
-	if !c.holdsConsumed(providerName, canonical.Bytes(), seedDigest) {
-		return false, nil
-	}
-	if err := c.writeActiveCredential(providerName, orphan); err != nil {
-		return false, fmt.Errorf("provideraccounts: restore crash-orphaned %s credential to the canonical home: %w", providerName, err)
-	}
-	return true, nil
-}
-
-// adoptIntoSlot restores the orphan into the account's slot when the slot
-// would gain from it: the slot directory still exists (the account is
-// still saved on this machine — the prune runs first) and its credential
-// is missing, the provider's own sign-out husk, or strictly behind the
-// orphan on the rotation chain. A slot at or past the orphan's position,
-// or one whose position is unknown, is never overwritten: the user may
-// have re-logged-in since the crash, and those bytes are newer than any
-// orphan. The slot lock is held from the existence check to the write, so
-// another process's slot write or removal lands wholly before the decision
-// or after it.
-//
-// consumed is the digest of the seed the orphan rotated, when it rotated
-// one. It is recorded before the slot is written (consumed.go), so no copy
-// of those bytes can land in the slot after the recovery; a failure to
-// record it leaves the entry for the next boot.
-func (c *Credentials) adoptIntoSlot(providerName, accountID string, orphan []byte, consumed string) (adopted bool, retErr error) {
-	accountDir, err := c.accountDirectory(providerName, accountID)
-	if err != nil {
-		return false, nil
-	}
-	lock, err := c.lockSlot(providerName, accountID)
-	if err != nil {
-		return false, err
-	}
-	defer func() { retErr = errors.Join(retErr, releaseSlot(lock)) }()
-	if _, statErr := os.Stat(accountDir); statErr != nil {
-		return false, nil
-	}
-	slot, readErr := c.readCredentialAt(providerName, accountDir, false)
-	switch {
-	case IsCredentialMissing(readErr):
-	case readErr != nil:
-		// Indeterminate slot state: without knowing whether the slot is
-		// healthy, neither overwriting it nor discarding the orphan is
-		// provably safe.
-		return false, fmt.Errorf("provideraccounts: inspect %s slot %s before adoption: %w", providerName, accountID, readErr)
-	case c.credentialSignedOut(providerName, slot.Bytes()):
-	case !c.chainAdvances(providerName, slot.Bytes(), orphan):
-		return false, nil
-	}
-	if consumed != "" {
-		if err := c.writeConsumedMarker(providerName, accountID, consumed); err != nil {
-			return false, err
+	var errs []error
+	for _, dirEntry := range dirEntries {
+		if dirEntry.IsDir() || !strings.HasSuffix(dirEntry.Name(), ".json") {
+			continue
 		}
+		entryPath := filepath.Join(dir, dirEntry.Name())
+		var entry ephemeralRegistryEntry
+		found, readErr := atomicfile.ReadJSON(entryPath, &entry)
+		if readErr != nil || !found || entry.AccountID != accountID || !sweepableEphemeralHome(providerName, entry.ConfigHome) {
+			continue
+		}
+		leasePath := filepath.Join(dir, ephemeralLeaseFileName(entry.ConfigHome))
+		lease, claim, claimErr := claimEphemeralEntry(entryPath, leasePath, entry, now)
+		if claimErr != nil {
+			errs = append(errs, fmt.Errorf("provideraccounts: claim ephemeral %s home %s: %w", providerName, entry.ConfigHome, claimErr))
+			continue
+		}
+		if claim != entryClaimed {
+			continue
+		}
+		if err := c.removeEphemeralRemnants(providerName, entry.ConfigHome); err != nil {
+			errs = append(errs, err, releaseLease(lease))
+			continue
+		}
+		if err := os.Remove(entryPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+		errs = append(errs, releaseEphemeralLease(lease, leasePath))
 	}
-	if err := c.writeCredentialAt(providerName, accountDir, false, orphan); err != nil {
-		return false, fmt.Errorf("provideraccounts: restore crash-orphaned %s credential to slot %s: %w", providerName, accountID, err)
-	}
-	return true, nil
+	return errors.Join(errs...)
 }
 
-// chainAdvances reports that next sits strictly later than current on one
-// account's rotation chain. Bytes without an ordering signal never
-// advance anything.
-func (c *Credentials) chainAdvances(providerName string, current, next []byte) bool {
-	if c.policy.ChainPosition == nil {
-		return false
+// releaseLease releases a claimed lease, if any, keeping its file.
+func releaseLease(lease *os.File) error {
+	if lease == nil {
+		return nil
 	}
-	currentPosition, ok := c.policy.ChainPosition(providerName, current)
-	if !ok {
-		return false
-	}
-	nextPosition, ok := c.policy.ChainPosition(providerName, next)
-	return ok && nextPosition > currentPosition
+	return filelock.Release(lease)
 }
 
 // removeEphemeralRemnants deletes whatever a crashed ephemeral home left
