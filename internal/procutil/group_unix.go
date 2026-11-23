@@ -91,3 +91,16 @@ func SignalGroup(pgid int, signal syscall.Signal) error {
 	}
 	return err
 }
+
+// StopGroup stops process group pgid as StopConfiguredGroup stops a
+// command's group, for a group this process did not start: SIGTERM, up to
+// grace for the group to empty, SIGKILL, and up to a second for the killed
+// members to be reaped. It returns os.ErrProcessDone when the group was
+// already gone, nil once it is gone after the signals, and otherwise the
+// error that left members running.
+func StopGroup(pgid int, grace time.Duration) error {
+	return stopSequence(grace,
+		func() error { return SignalGroup(pgid, syscall.SIGTERM) },
+		func() error { return SignalGroup(pgid, syscall.SIGKILL) },
+		func() bool { return !errors.Is(SignalGroup(pgid, 0), os.ErrProcessDone) })
+}

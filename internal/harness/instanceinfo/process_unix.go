@@ -29,10 +29,11 @@ func CaptureProcessIdentity(pid int) (ProcessIdentity, error) {
 		return ProcessIdentity{}, fmt.Errorf("process identity: %d is not a pid", pid)
 	}
 	base := filepath.Join("/proc", fmt.Sprint(pid))
-	_, start, err := readStat(pid)
+	proc, err := readStat(pid)
 	if err != nil {
 		return ProcessIdentity{}, err
 	}
+	start := proc.Start
 	exe, err := os.Readlink(filepath.Join(base, "exe"))
 	if err != nil {
 		return ProcessIdentity{}, fmt.Errorf("read process %d executable: %w", pid, err)
@@ -54,17 +55,27 @@ func CaptureProcessIdentity(pid int) (ProcessIdentity, error) {
 // it, and whether the process has not exited. A zombie has exited. A pid
 // that names no process is not alive, with a nil error.
 func ProcessStart(pid int) (start string, alive bool, err error) {
-	if pid <= 0 {
-		return "", false, fmt.Errorf("process identity: %d is not a pid", pid)
-	}
-	state, start, err := readStat(pid)
-	if errors.Is(err, fs.ErrNotExist) {
-		return "", false, nil
-	}
-	if err != nil {
+	proc, found, err := ReadProcess(pid)
+	if err != nil || !found {
 		return "", false, err
 	}
-	return start, !exitedState(state), nil
+	return proc.Start, !proc.Exited, nil
+}
+
+// ReadProcess reads pid's Process from one /proc/<pid>/stat line. A pid that
+// names no process is not found, with a nil error.
+func ReadProcess(pid int) (proc Process, found bool, err error) {
+	if pid <= 0 {
+		return Process{}, false, fmt.Errorf("process identity: %d is not a pid", pid)
+	}
+	proc, err = readStat(pid)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Process{}, false, nil
+	}
+	if err != nil {
+		return Process{}, false, err
+	}
+	return proc, true, nil
 }
 
 // exitedState reports a /proc state letter of a process that has exited:
@@ -77,28 +88,33 @@ func exitedState(state string) bool {
 	return false
 }
 
-func readStat(pid int) (state, start string, err error) {
+func readStat(pid int) (Process, error) {
 	stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
 	if err != nil {
-		return "", "", fmt.Errorf("read process %d stat: %w", pid, err)
+		return Process{}, fmt.Errorf("read process %d stat: %w", pid, err)
 	}
 	return parseStat(pid, stat)
 }
 
-// parseStat reads the state (field 3) and starttime (field 22, clock ticks
-// since boot) of a /proc/<pid>/stat line. comm can contain spaces and
-// parentheses. The final ')' is the end of that field, after which fields
-// are whitespace-delimited, so starttime is token 20 of that suffix.
-func parseStat(pid int, stat []byte) (state, start string, err error) {
+// parseStat reads the state (field 3), ppid (field 4) and starttime (field
+// 22, clock ticks since boot) of a /proc/<pid>/stat line. comm can contain
+// spaces and parentheses. The final ')' is the end of that field, after
+// which fields are whitespace-delimited, so starttime is token 20 of that
+// suffix.
+func parseStat(pid int, stat []byte) (Process, error) {
 	close := strings.LastIndexByte(string(stat), ')')
 	if close < 0 || close+1 >= len(stat) {
-		return "", "", fmt.Errorf("process %d stat has no comm terminator", pid)
+		return Process{}, fmt.Errorf("process %d stat has no comm terminator", pid)
 	}
 	fields := strings.Fields(string(stat[close+1:]))
 	if len(fields) < 20 {
-		return "", "", fmt.Errorf("process %d stat has %d fields, want start time", pid, len(fields))
+		return Process{}, fmt.Errorf("process %d stat has %d fields, want start time", pid, len(fields))
 	}
-	return fields[0], fields[19], nil
+	ppid, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return Process{}, fmt.Errorf("process %d stat has parent %q: %w", pid, fields[1], err)
+	}
+	return Process{Start: fields[19], PPID: ppid, Exited: exitedState(fields[0])}, nil
 }
 
 // CurrentPIDNamespace returns the namespace marker for this process.
