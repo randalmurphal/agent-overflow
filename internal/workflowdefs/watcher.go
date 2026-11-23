@@ -8,55 +8,41 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"agent-overflow/internal/fswatch"
 )
 
 // Watcher watches the shared workflow tree and every project-local workflow
 // tree beneath one configuration root.
 type Watcher struct {
-	root     string
-	debounce time.Duration
-	// after starts one debounce wait. It is time.After in production;
-	// tests replace it before start so a burst's window stays open until
-	// they release it.
-	after func(time.Duration) <-chan time.Time
+	root string
 	// handled, when set, is called with each event's path once the loop
 	// has handled it. Nil in production; tests use it to know the loop
 	// has caught up with the changes they made.
-	handled   func(path string)
-	emit      func()
-	watcher   *fsnotify.Watcher
-	watched   map[string]struct{}
-	done      chan struct{}
-	closeOnce sync.Once
-	waitGroup sync.WaitGroup
+	handled func(path string)
+	watcher *fsnotify.Watcher
+	// watched is the set of directories under watch. Only the loop
+	// goroutine touches it after newWatcher returns: fswatch never calls
+	// handle concurrently.
+	watched map[string]struct{}
+	loop    *fswatch.Loop
 }
 
 // NewWatcher starts a recursive workflow-definition watcher. emit is called
 // after a trailing-edge debounce whenever a relevant tree changes.
 func NewWatcher(root string, debounce time.Duration, emit func()) (*Watcher, error) {
-	definitionsWatcher, err := openWatcher(root, debounce, emit)
-	if err != nil {
-		return nil, err
-	}
-	definitionsWatcher.start()
-	return definitionsWatcher, nil
+	return newWatcher(root, fswatch.Config{Debounce: debounce, Emit: emit}, nil)
 }
 
-// openWatcher arms the watches without starting the loop, so a test can
-// replace fields the loop reads before start.
-func openWatcher(root string, debounce time.Duration, emit func()) (*Watcher, error) {
+// newWatcher arms the watches and starts the loop. loop carries the
+// debounce and emit (and, in tests, a held clock); handled is the test
+// hook described on Watcher.
+func newWatcher(root string, loop fswatch.Config, handled func(path string)) (*Watcher, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, errors.New("workflow definitions watcher: root is required")
-	}
-	if debounce <= 0 {
-		return nil, errors.New("workflow definitions watcher: debounce must be positive")
-	}
-	if emit == nil {
-		return nil, errors.New("workflow definitions watcher: emit callback is required")
 	}
 	info, err := os.Stat(root)
 	if err != nil {
@@ -70,63 +56,27 @@ func openWatcher(root string, debounce time.Duration, emit func()) (*Watcher, er
 		return nil, fmt.Errorf("workflow definitions watcher: create watcher: %w", err)
 	}
 	definitionsWatcher := &Watcher{
-		root: filepath.Clean(root), debounce: debounce, after: time.After, emit: emit, watcher: fsWatcher,
-		watched: make(map[string]struct{}), done: make(chan struct{}),
+		root: filepath.Clean(root), handled: handled, watcher: fsWatcher, watched: make(map[string]struct{}),
 	}
 	if err := definitionsWatcher.refreshWatches(); err != nil {
 		return nil, errors.Join(err, fsWatcher.Close())
 	}
+	loop.Label, loop.Watcher, loop.Handle = "workflow definitions watcher", fsWatcher, definitionsWatcher.handle
+	if definitionsWatcher.loop, err = fswatch.Start(loop); err != nil {
+		return nil, err
+	}
 	return definitionsWatcher, nil
 }
 
-// start runs the event loop. Call it once, after openWatcher.
-func (w *Watcher) start() {
-	w.waitGroup.Add(1)
-	go w.loop()
-}
-
 // Close stops the watcher. It is safe to call more than once.
-func (w *Watcher) Close() error {
-	var closeErr error
-	w.closeOnce.Do(func() {
-		close(w.done)
-		closeErr = w.watcher.Close()
-		w.waitGroup.Wait()
-	})
-	return closeErr
-}
+func (w *Watcher) Close() error { return w.loop.Close() }
 
-func (w *Watcher) loop() {
-	defer w.waitGroup.Done()
-	// timerChannel is the pending debounce wait. Each queued event replaces
-	// it, so only the wait started by the last event of a burst can emit; an
-	// abandoned wait's channel is never read again.
-	var timerChannel <-chan time.Time
-
-	for {
-		select {
-		case <-w.done:
-			return
-		case event, ok := <-w.watcher.Events:
-			if !ok {
-				return
-			}
-			if w.handleEvent(event) {
-				timerChannel = w.after(w.debounce)
-			}
-			if w.handled != nil {
-				w.handled(event.Name)
-			}
-		case err, ok := <-w.watcher.Errors:
-			if !ok {
-				return
-			}
-			log.Printf("workflow definitions watcher: %v", err)
-		case <-timerChannel:
-			timerChannel = nil
-			w.emit()
-		}
+func (w *Watcher) handle(event fsnotify.Event, _ <-chan struct{}) bool {
+	changed := w.handleEvent(event)
+	if w.handled != nil {
+		w.handled(event.Name)
 	}
+	return changed
 }
 
 // handleEvent keeps the watches in step with one event and reports whether
@@ -145,7 +95,7 @@ func (w *Watcher) handleEvent(event fsnotify.Event) bool {
 			log.Printf("workflow definitions watcher refresh: %v", err)
 		}
 	}
-	return event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) != 0 && w.relevant(event.Name)
+	return w.relevant(event.Name)
 }
 
 func (w *Watcher) refreshWatches() error {

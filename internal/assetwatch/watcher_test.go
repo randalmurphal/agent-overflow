@@ -5,74 +5,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/fswatch"
+	"agent-overflow/internal/fswatch/fswatchtest"
 )
-
-// debounceClock replaces a watcher's debounce waits. No wait fires until the
-// test releases them, so a burst stays inside one debounce window however
-// the scheduler spaces its writes and their events.
-type debounceClock struct {
-	mu        sync.Mutex
-	pending   []chan time.Time
-	armed     int
-	durations []time.Duration
-}
-
-func (c *debounceClock) after(duration time.Duration) <-chan time.Time {
-	wait := make(chan time.Time, 1)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.pending = append(c.pending, wait)
-	c.armed++
-	c.durations = append(c.durations, duration)
-	return wait
-}
-
-// armedCount reports how many debounce waits the loop has started.
-func (c *debounceClock) armedCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.armed
-}
-
-// fireAbandoned fires every wait started so far except the latest, as if
-// the clock passed the deadlines the loop has already replaced, and returns
-// how many it fired.
-func (c *debounceClock) fireAbandoned() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.pending) < 2 {
-		return 0
-	}
-	abandoned := c.pending[:len(c.pending)-1]
-	for _, wait := range abandoned {
-		wait <- time.Now()
-	}
-	c.pending = c.pending[len(c.pending)-1:]
-	return len(abandoned)
-}
-
-// fireLatest fires the wait the loop started last.
-func (c *debounceClock) fireLatest() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.pending) == 0 {
-		return false
-	}
-	c.pending[len(c.pending)-1] <- time.Now()
-	c.pending = nil
-	return true
-}
 
 // observedWatcher runs the shared core with a held debounce clock and a
 // sentinel hook, so a test can tell when the loop has handled every event
-// it caused.
+// it caused and count the debounce waits those events started. The waits
+// are never released: what the loop does with them is fswatch's, and this
+// package's tests assert only which events start one.
 type observedWatcher struct {
 	core      *watcher
-	clock     *debounceClock
-	emitted   chan struct{}
+	clock     *fswatchtest.Clock
 	sentinels chan string
 	next      int
 }
@@ -82,11 +29,10 @@ type observedWatcher struct {
 // irrelevant.
 const sentinelExtension = ".sentinel"
 
-func startObservedWatcher(t *testing.T, label string, relevantName func(name string) bool) *observedWatcher {
+func startObservedWatcher(t *testing.T, label, dir string, relevantName func(name string) bool) *observedWatcher {
 	t.Helper()
 	observed := &observedWatcher{
-		clock:     &debounceClock{},
-		emitted:   make(chan struct{}, 8),
+		clock:     &fswatchtest.Clock{},
 		sentinels: make(chan string, 64),
 	}
 	observe := func(name string) bool {
@@ -101,12 +47,10 @@ func startObservedWatcher(t *testing.T, label string, relevantName func(name str
 		}
 		return relevantName(name)
 	}
-	core, err := openWatcher(label, t.TempDir(), 25*time.Millisecond, observe, func() { observed.emitted <- struct{}{} })
+	core, err := newWatcher(label, dir, observe, fswatch.Config{Debounce: time.Hour, Emit: func() {}, After: observed.clock.After})
 	if err != nil {
 		t.Fatal(err)
 	}
-	core.after = observed.clock.after
-	core.start()
 	t.Cleanup(func() {
 		if err := core.Close(); err != nil {
 			t.Errorf("close %s: %v", label, err)
@@ -132,12 +76,11 @@ func (o *observedWatcher) sync(t *testing.T) {
 	o.next++
 	name := fmt.Sprintf("%d%s", o.next, sentinelExtension)
 	o.write(t, name, "")
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(5 * time.Second)
 	for {
 		select {
 		case seen := <-o.sentinels:
 			if seen == name {
-				o.checkDurations(t)
 				return
 			}
 		case <-deadline:
@@ -146,64 +89,76 @@ func (o *observedWatcher) sync(t *testing.T) {
 	}
 }
 
-func (o *observedWatcher) checkDurations(t *testing.T) {
-	t.Helper()
-	o.clock.mu.Lock()
-	defer o.clock.mu.Unlock()
-	for _, duration := range o.clock.durations {
-		if duration != o.core.debounce {
-			t.Fatalf("debounce wait = %v, want %v", duration, o.core.debounce)
-		}
-	}
-}
-
-func (o *observedWatcher) expectNoEmit(t *testing.T, why string) {
-	t.Helper()
-	select {
-	case <-o.emitted:
-		t.Fatalf("%s emitted a change event", why)
-	default:
-	}
-}
-
-// expectQueued syncs and asserts that the changes since armedBefore queued
+// expectQueued syncs and asserts that the changes since armedBefore started
 // at least minimum debounce waits.
 func (o *observedWatcher) expectQueued(t *testing.T, armedBefore, minimum int, why string) {
 	t.Helper()
 	o.sync(t)
-	if armed := o.clock.armedCount() - armedBefore; armed < minimum {
-		t.Fatalf("%s queued %d debounce waits, want at least %d", why, armed, minimum)
+	if armed := o.clock.Armed() - armedBefore; armed < minimum {
+		t.Fatalf("%s started %d debounce waits, want at least %d", why, armed, minimum)
 	}
-	o.expectNoEmit(t, why+" before its debounce elapsed")
 }
 
-// expectIgnored syncs and asserts that the changes since armedBefore queued
-// nothing.
+// expectIgnored syncs and asserts that the changes since armedBefore
+// started no debounce wait.
 func (o *observedWatcher) expectIgnored(t *testing.T, armedBefore int, why string) {
 	t.Helper()
 	o.sync(t)
-	if armed := o.clock.armedCount() - armedBefore; armed != 0 {
-		t.Fatalf("%s queued %d debounce waits, want none", why, armed)
+	if armed := o.clock.Armed() - armedBefore; armed != 0 {
+		t.Fatalf("%s started %d debounce waits, want none", why, armed)
 	}
-	o.expectNoEmit(t, why)
 }
 
-// releaseOneEmit lets the pending debounce waits elapse oldest first and
-// asserts that only the wait queued by the last event emits, exactly once.
-func (o *observedWatcher) releaseOneEmit(t *testing.T, why string) {
-	t.Helper()
-	if o.clock.fireAbandoned() > 0 {
-		o.sync(t)
-		o.expectNoEmit(t, why+" through a replaced debounce wait")
+func jsonRelevant(name string) bool { return filepath.Ext(name) == ".json" }
+
+func TestWatcherRejectsAMissingDirOrAFileInItsPlace(t *testing.T) {
+	config := fswatch.Config{Debounce: time.Hour, Emit: func() {}}
+	if _, err := newWatcher("test watcher", filepath.Join(t.TempDir(), "missing"), jsonRelevant, config); err == nil {
+		t.Fatal("missing dir unexpectedly accepted")
 	}
-	if !o.clock.fireLatest() {
-		t.Fatalf("%s: no debounce wait is pending", why)
+	notADir := filepath.Join(t.TempDir(), "themes")
+	if err := os.WriteFile(notADir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	select {
-	case <-o.emitted:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("%s: timed out waiting for a change event", why)
+	if _, err := newWatcher("test watcher", notADir, jsonRelevant, config); err == nil {
+		t.Fatal("file in place of the dir unexpectedly accepted")
 	}
-	o.sync(t)
-	o.expectNoEmit(t, why+" a second time")
+}
+
+// Removing the watched directory kills the inotify watch silently: no
+// error on the Errors channel, no further events, live reload dead for
+// the rest of the process. The watcher must put the directory back and
+// re-register, or `rm -rf themes/` would be a one-way door.
+func TestWatcherRearmsAfterTheDirectoryIsRemoved(t *testing.T) {
+	dir := t.TempDir()
+	observed := startObservedWatcher(t, "test watcher", dir, jsonRelevant)
+	observed.sync(t)
+
+	armed := observed.clock.Armed()
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	// The removal is itself a change the frontend has to see, and the
+	// handler starts its wait only after the re-arm returned.
+	observed.clock.WaitArmed(t, armed+1)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Fatalf("the directory was not re-created: %v", err)
+	}
+
+	// The new watch is live: a write into the fresh directory is seen.
+	armed = observed.clock.Armed()
+	observed.write(t, "after.json", "{}")
+	observed.expectQueued(t, armed, 1, "a write into the re-created directory")
+}
+
+// The watch is not recursive, but a rename can still name a path below the
+// watched directory, and nothing there is content.
+func TestWatcherIgnoresAPathBelowItsDirectory(t *testing.T) {
+	core := &watcher{dir: filepath.Clean(t.TempDir()), relevantName: jsonRelevant}
+	if !core.relevant(filepath.Join(core.dir, "tokyo-night.json")) {
+		t.Fatal("a file in the directory is not relevant")
+	}
+	if core.relevant(filepath.Join(core.dir, "backup", "tokyo-night.json")) {
+		t.Fatal("a file in a subdirectory is relevant")
+	}
 }

@@ -1,9 +1,9 @@
 # Appearance asset watchers
 
 This package watches flat theme, spinner, sound, prompt, and installation-name
-directories. The private core owns fsnotify, trailing-edge debounce, directory
-re-arming, and self-write suppression; concept-specific types own filename
-policy.
+directories. The private core owns the fsnotify watch, directory re-arming,
+and self-write suppression; `internal/fswatch` owns the debounce, the emit and
+`Close`; concept-specific types own filename policy.
 
 Do not expose watcher internals or block the event loop on consumers. Directory
 removal, recreation, and atomic replacement must continue to re-arm correctly.

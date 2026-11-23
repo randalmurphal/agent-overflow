@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/fswatch"
 )
 
 const soundDebounce = 250 * time.Millisecond
@@ -16,11 +18,7 @@ type SoundWatcher struct {
 
 // NewSoundWatcher arms a production sounds-directory watcher.
 func NewSoundWatcher(dir string, emit func()) (*SoundWatcher, error) {
-	return newSoundWatcher(dir, soundDebounce, emit)
-}
-
-func newSoundWatcher(dir string, debounce time.Duration, emit func()) (*SoundWatcher, error) {
-	core, err := newWatcher("sound watcher", dir, debounce, soundFileRelevant, emit)
+	core, err := newWatcher("sound watcher", dir, soundFileRelevant, fswatch.Config{Debounce: soundDebounce, Emit: emit})
 	if err != nil {
 		return nil, err
 	}

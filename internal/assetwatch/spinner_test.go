@@ -4,48 +4,25 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"agent-overflow/internal/spinner"
 )
 
-func newTestSpinnerWatcher(t *testing.T) (*SpinnerWatcher, string, <-chan struct{}) {
-	t.Helper()
-	dir := t.TempDir()
-	emitted := make(chan struct{}, 8)
-	watcher, err := newSpinnerWatcher(dir, 25*time.Millisecond, func() { emitted <- struct{}{} })
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = watcher.Close() })
-	return watcher, dir, emitted
-}
+func TestSpinnerWatcherStartsAWaitOnlyForSpriteFiles(t *testing.T) {
+	observed := startObservedWatcher(t, "spinner watcher", t.TempDir(), spinnerFileRelevant)
 
-func waitForSpinnerChanged(t *testing.T, emitted <-chan struct{}) {
-	t.Helper()
-	select {
-	case <-emitted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for a spinner-changed event")
-	}
-}
-
-func TestSpinnerWatcherDebouncesWritesAndIgnoresNonSpriteFiles(t *testing.T) {
-	observed := startObservedWatcher(t, "spinner watcher", spinnerFileRelevant)
-
-	// A sprite lands as two files; the pair plus a rewrite must collapse
-	// into one refetch, not three.
+	// A sprite lands as two files, and each half is content.
 	observed.write(t, "robo-papers.png", "png")
+	observed.expectQueued(t, 0, 1, "a strip write")
+	armed := observed.clock.Armed()
 	observed.write(t, "robo-papers.json", "{}")
-	observed.write(t, "robo-papers.png", "png2")
-	observed.expectQueued(t, 0, 2, "a write burst")
-	observed.releaseOneEmit(t, "a write burst")
+	observed.expectQueued(t, armed, 1, "a sprite descriptor write")
 
 	// The generated reference is rewritten by the backend at boot and read
 	// by nobody at runtime; a stray file is not a sprite half; a
 	// subdirectory holds nothing this app reads. None may wake the
 	// frontend.
-	armed := observed.clock.armedCount()
+	armed = observed.clock.Armed()
 	for _, name := range []string{spinner.ReferenceFileName, "notes.txt", "source.gif"} {
 		observed.write(t, name, "x")
 	}
@@ -60,54 +37,11 @@ func TestSpinnerWatcherDebouncesWritesAndIgnoresNonSpriteFiles(t *testing.T) {
 
 	// Removing a strip changes what the picker offers, so it must reach
 	// the UI.
-	armed = observed.clock.armedCount()
+	armed = observed.clock.Armed()
 	if err := os.Remove(filepath.Join(observed.core.dir, "robo-papers.png")); err != nil {
 		t.Fatal(err)
 	}
 	observed.expectQueued(t, armed, 1, "a strip removal")
-	observed.releaseOneEmit(t, "a strip removal")
-}
-
-// Removing the watched directory kills the inotify watch silently: no
-// error on the Errors channel, no further events, live reload dead for
-// the rest of the process. The watcher must put the directory back and
-// re-register, or `rm -rf spinners/` would be a one-way door.
-func TestSpinnerWatcherRearmsAfterTheDirectoryIsRemoved(t *testing.T) {
-	_, dir, emitted := newTestSpinnerWatcher(t)
-
-	if err := os.WriteFile(filepath.Join(dir, "orb.png"), []byte("png"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	waitForSpinnerChanged(t, emitted)
-
-	if err := os.RemoveAll(dir); err != nil {
-		t.Fatal(err)
-	}
-	// The removal is itself a change the frontend has to see.
-	waitForSpinnerChanged(t, emitted)
-
-	// Wait for the re-create rather than assuming it already happened —
-	// it runs on the watch goroutine, off this one's clock.
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the spinners directory was never re-created")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	// Drain any emit the re-create itself produced, then prove the new
-	// watch is live by writing a sprite into the fresh directory.
-	select {
-	case <-emitted:
-	case <-time.After(200 * time.Millisecond):
-	}
-	if err := os.WriteFile(filepath.Join(dir, "after.png"), []byte("png"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	waitForSpinnerChanged(t, emitted)
 }
 
 // internal/atomicfile names its temp file `<base>.tmp-NNNNN`, so the boot
@@ -137,35 +71,5 @@ func TestSpinnerWatcherIgnoresAtomicfileTempNames(t *testing.T) {
 		if !watcher.core.relevant(filepath.Join(watcher.core.dir, name)) {
 			t.Fatalf("%s is not relevant", name)
 		}
-	}
-}
-
-func TestSpinnerWatcherRejectsInvalidSetupAndClosesCleanly(t *testing.T) {
-	if _, err := newSpinnerWatcher(filepath.Join(t.TempDir(), "missing"), time.Millisecond, func() {}); err == nil {
-		t.Fatal("missing dir unexpectedly accepted")
-	}
-	notADir := filepath.Join(t.TempDir(), "spinners")
-	if err := os.WriteFile(notADir, []byte("not a directory"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := newSpinnerWatcher(notADir, time.Millisecond, func() {}); err == nil {
-		t.Fatal("file in place of the spinners dir unexpectedly accepted")
-	}
-	dir := t.TempDir()
-	if _, err := newSpinnerWatcher(dir, 0, func() {}); err == nil {
-		t.Fatal("non-positive debounce unexpectedly accepted")
-	}
-	if _, err := newSpinnerWatcher(dir, time.Millisecond, nil); err == nil {
-		t.Fatal("nil emit callback unexpectedly accepted")
-	}
-	watcher, err := newSpinnerWatcher(dir, time.Millisecond, func() {})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := watcher.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := watcher.Close(); err != nil {
-		t.Fatalf("second close: %v", err)
 	}
 }

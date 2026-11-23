@@ -4,53 +4,19 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"agent-overflow/internal/soundlib"
 )
 
-func newTestSoundWatcher(t *testing.T) (*SoundWatcher, string, <-chan struct{}) {
-	t.Helper()
-	dir := t.TempDir()
-	emitted := make(chan struct{}, 8)
-	watcher, err := newSoundWatcher(dir, 25*time.Millisecond, func() { emitted <- struct{}{} })
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = watcher.Close() })
-	return watcher, dir, emitted
-}
-
-func waitForSoundChanged(t *testing.T, emitted <-chan struct{}) {
-	t.Helper()
-	select {
-	case <-emitted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for a sound-changed event")
-	}
-}
-
-func expectNoSoundChange(t *testing.T, emitted <-chan struct{}, why string) {
-	t.Helper()
-	select {
-	case <-emitted:
-		t.Fatalf("%s emitted a sound-changed event", why)
-	case <-time.After(100 * time.Millisecond):
-	}
-}
-
-func TestSoundWatcherDebouncesWritesAndIgnoresNonCueFiles(t *testing.T) {
-	observed := startObservedWatcher(t, "sound watcher", soundFileRelevant)
+func TestSoundWatcherStartsAWaitOnlyForCueFiles(t *testing.T) {
+	observed := startObservedWatcher(t, "sound watcher", t.TempDir(), soundFileRelevant)
 
 	observed.write(t, "desk-bell.wav", "wav")
-	observed.write(t, "ping.wav", "wav")
-	observed.write(t, "desk-bell.wav", "wav2")
-	observed.expectQueued(t, 0, 2, "a write burst")
-	observed.releaseOneEmit(t, "a write burst")
+	observed.expectQueued(t, 0, 1, "a cue write")
 
 	// The seeded reference, a source file the user kept beside their cue,
 	// and a subdirectory all hold nothing this app plays.
-	armed := observed.clock.armedCount()
+	armed := observed.clock.Armed()
 	for _, name := range []string{soundlib.ReferenceFileName, "original.mp3", "notes.txt"} {
 		observed.write(t, name, "x")
 	}
@@ -65,33 +31,31 @@ func TestSoundWatcherDebouncesWritesAndIgnoresNonCueFiles(t *testing.T) {
 
 	// Removing a cue changes what the pickers offer, so it must reach the
 	// UI: an event whose chosen cue just disappeared falls back.
-	armed = observed.clock.armedCount()
+	armed = observed.clock.Armed()
 	if err := os.Remove(filepath.Join(observed.core.dir, "desk-bell.wav")); err != nil {
 		t.Fatal(err)
 	}
 	observed.expectQueued(t, armed, 1, "a cue removal")
-	observed.releaseOneEmit(t, "a cue removal")
 }
 
 // PutSoundFile and DeleteSoundFile write this directory themselves. Their
 // caller already knows what it did, so the resulting filesystem events must
 // not travel back as an external change and cost a full listing refetch.
 func TestSoundWatcherSuppressesItsOwnWrites(t *testing.T) {
-	watcher, dir, emitted := newTestSoundWatcher(t)
+	observed := startObservedWatcher(t, "sound watcher", t.TempDir(), soundFileRelevant)
+	watcher := &SoundWatcher{core: observed.core}
 
-	cue := filepath.Join(dir, "desk-bell.wav")
+	cue := filepath.Join(observed.core.dir, "desk-bell.wav")
 	watcher.Suppress(cue)
 	if err := os.WriteFile(cue, []byte("wav"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	expectNoSoundChange(t, emitted, "a suppressed self-write")
+	observed.expectIgnored(t, 0, "a suppressed self-write")
 
-	// Suppression is per path and bounded in time, so a different cue
-	// written by hand still reaches the UI.
-	if err := os.WriteFile(filepath.Join(dir, "ping.wav"), []byte("wav"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	waitForSoundChanged(t, emitted)
+	// Suppression is per path, so a different cue written by hand still
+	// reaches the UI.
+	observed.write(t, "ping.wav", "wav")
+	observed.expectQueued(t, 0, 1, "a cue written by hand")
 }
 
 // internal/atomicfile names its temp file `<base>.tmp-NNNNN`, whose
@@ -117,35 +81,5 @@ func TestSoundWatcherIgnoresAtomicfileTempNames(t *testing.T) {
 		if !watcher.core.relevant(filepath.Join(watcher.core.dir, name)) {
 			t.Fatalf("%s is not relevant", name)
 		}
-	}
-}
-
-func TestSoundWatcherRejectsInvalidSetupAndClosesCleanly(t *testing.T) {
-	if _, err := newSoundWatcher(filepath.Join(t.TempDir(), "missing"), time.Millisecond, func() {}); err == nil {
-		t.Fatal("missing dir unexpectedly accepted")
-	}
-	notADir := filepath.Join(t.TempDir(), soundlib.DirName)
-	if err := os.WriteFile(notADir, []byte("not a directory"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := newSoundWatcher(notADir, time.Millisecond, func() {}); err == nil {
-		t.Fatal("file in place of the sounds dir unexpectedly accepted")
-	}
-	dir := t.TempDir()
-	if _, err := newSoundWatcher(dir, 0, func() {}); err == nil {
-		t.Fatal("non-positive debounce unexpectedly accepted")
-	}
-	if _, err := newSoundWatcher(dir, time.Millisecond, nil); err == nil {
-		t.Fatal("nil emit callback unexpectedly accepted")
-	}
-	watcher, err := newSoundWatcher(dir, time.Millisecond, func() {})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := watcher.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := watcher.Close(); err != nil {
-		t.Fatalf("second close: %v", err)
 	}
 }

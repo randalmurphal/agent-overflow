@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/fswatch"
 	"agent-overflow/internal/spinner"
 )
 
@@ -18,11 +19,7 @@ type SpinnerWatcher struct {
 
 // NewSpinnerWatcher arms a production spinners-directory watcher.
 func NewSpinnerWatcher(dir string, emit func()) (*SpinnerWatcher, error) {
-	return newSpinnerWatcher(dir, spinnerDebounce, emit)
-}
-
-func newSpinnerWatcher(dir string, debounce time.Duration, emit func()) (*SpinnerWatcher, error) {
-	core, err := newWatcher("spinner watcher", dir, debounce, spinnerFileRelevant, emit)
+	core, err := newWatcher("spinner watcher", dir, spinnerFileRelevant, fswatch.Config{Debounce: spinnerDebounce, Emit: emit})
 	if err != nil {
 		return nil, err
 	}

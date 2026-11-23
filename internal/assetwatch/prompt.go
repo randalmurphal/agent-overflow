@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/fswatch"
 )
 
 const promptDebounce = 250 * time.Millisecond
@@ -19,11 +21,7 @@ type PromptWatcher struct {
 
 // NewPromptWatcher arms a production prompts-directory watcher.
 func NewPromptWatcher(dir string, emit func()) (*PromptWatcher, error) {
-	return newPromptWatcher(dir, promptDebounce, emit)
-}
-
-func newPromptWatcher(dir string, debounce time.Duration, emit func()) (*PromptWatcher, error) {
-	core, err := newWatcher("prompt watcher", dir, debounce, promptFileRelevant, emit)
+	core, err := newWatcher("prompt watcher", dir, promptFileRelevant, fswatch.Config{Debounce: promptDebounce, Emit: emit})
 	if err != nil {
 		return nil, err
 	}
