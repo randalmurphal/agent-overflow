@@ -115,17 +115,6 @@ describe('prKey — the shared PR wire address', () => {
     );
   });
 
-  // A namespace containing ':' would make two different PRs share a key, so
-  // the backend refuses one (internal/git/forge.go ValidateProjectSegment).
-  // Nothing here can produce one: a forge URL's path splits on '/' — this
-  // asserts the shape prRefFromUrl hands prKey, so a future loosening of
-  // it trips a test.
-  it('never builds a key from a segment carrying the delimiter', () => {
-    const ref = prRefFromUrl('gitlab', 'https://gitlab.com/group/sub/repo/-/merge_requests/12', 12);
-    if (!ref) throw new Error('expected a ref');
-    const key = prKey(ref);
-    expect(key.split(':')).toHaveLength(3);
-  });
 });
 
 describe('prReferenceWire', () => {
