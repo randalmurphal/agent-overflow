@@ -82,18 +82,23 @@ func (fr *feedReorder) admit(line json.RawMessage) []json.RawMessage {
 		// nothing is held forever, then reset per-turn state. Feeding a genuine
 		// orphan is harmless: triage already drops a completion with no launch
 		// row, which is exactly the pre-fix behavior for that (rare) case.
-		out := make([]json.RawMessage, 0, len(fr.pending)+1)
-		for _, held := range fr.pending {
-			out = append(out, held...)
-		}
-		out = append(out, line)
-		fr.started = map[string]bool{}
-		fr.pending = map[string][]json.RawMessage{}
-		return out
+		return append(fr.flush(), line)
 
 	default:
 		return []json.RawMessage{line}
 	}
+}
+
+// flush returns every held completion and resets per-turn state: at a turn's
+// close, and when the session ends with completions whose start never came.
+func (fr *feedReorder) flush() []json.RawMessage {
+	var out []json.RawMessage
+	for _, held := range fr.pending {
+		out = append(out, held...)
+	}
+	fr.started = map[string]bool{}
+	fr.pending = map[string][]json.RawMessage{}
+	return out
 }
 
 // envelopeType reads the top-level "type" of a reconstructed stream-json

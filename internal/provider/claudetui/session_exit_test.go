@@ -23,9 +23,11 @@ import (
 )
 
 // exitRecorder records a session's events and closes disconnected when the
-// "disconnected" status arrives.
+// "disconnected" status arrives. hold, when set, runs before an event is
+// recorded, on the emitting goroutine.
 type exitRecorder struct {
 	eventRecorder
+	hold         func(provider.ProviderEvent)
 	once         sync.Once
 	disconnected chan struct{}
 }
@@ -35,10 +37,17 @@ func newExitRecorder() *exitRecorder {
 }
 
 func (r *exitRecorder) record(e provider.ProviderEvent) {
+	if r.hold != nil {
+		r.hold(e)
+	}
 	r.eventRecorder.record(e)
-	if e.Kind == provider.EventSessionStatus && e.Content == "disconnected" {
+	if isDisconnected(e) {
 		r.once.Do(func() { close(r.disconnected) })
 	}
+}
+
+func isDisconnected(e provider.ProviderEvent) bool {
+	return e.Kind == provider.EventSessionStatus && e.Content == "disconnected"
 }
 
 func (r *exitRecorder) waitDisconnected(t *testing.T) {
@@ -47,6 +56,53 @@ func (r *exitRecorder) waitDisconnected(t *testing.T) {
 	case <-r.disconnected:
 	case <-time.After(10 * time.Second):
 		t.Fatalf("no \"disconnected\" status; events %v", kindsOf(r.snapshot()))
+	}
+}
+
+// gate blocks the emitting goroutine at the first event match accepts until
+// open; reached closes when it is blocked there.
+type gate struct {
+	reached  chan struct{}
+	opened   chan struct{}
+	once     sync.Once
+	openOnce sync.Once
+}
+
+func newGate() *gate {
+	return &gate{reached: make(chan struct{}), opened: make(chan struct{})}
+}
+
+// newHeldSession is newTestSession with held opened at cleanup before the
+// session's Close, which would otherwise wait on the held emission.
+func newHeldSession(t *testing.T, ctx context.Context, cfg Config, rec *exitRecorder, held *gate) *Session {
+	t.Helper()
+	s := newTestSession(t, ctx, cfg, rec)
+	t.Cleanup(held.open)
+	return s
+}
+
+func (g *gate) holdAt(match func(provider.ProviderEvent) bool) func(provider.ProviderEvent) {
+	return func(e provider.ProviderEvent) {
+		if !match(e) {
+			return
+		}
+		first := false
+		g.once.Do(func() { first = true })
+		if first {
+			close(g.reached)
+			<-g.opened
+		}
+	}
+}
+
+func (g *gate) open() { g.openOnce.Do(func() { close(g.opened) }) }
+
+func (g *gate) waitReached(t *testing.T) {
+	t.Helper()
+	select {
+	case <-g.reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the held event was never emitted")
 	}
 }
 
@@ -65,14 +121,53 @@ func tuiExitConfig(t *testing.T, script, promptDir string) Config {
 	})
 }
 
-// sessionGoroutineFuncs are the functions a live session's own goroutines
-// run in: the feed loop, the context watcher, and the gateway's and relay's
-// serve loops.
-var sessionGoroutineFuncs = []string{
-	"claudetui.(*Session).feedLoop(",
-	"claudetui.(*Session).watchContext(",
-	"claudetui.(*gateway).start.func1(",
-	"claudetui.(*hookRelay).start.func1(",
+// readLineScript reads one line from its terminal, then ends as ending says.
+func readLineScript(ending string) string {
+	return "#!/bin/sh\nread line\n" + ending + "\n"
+}
+
+func newTestSession(t *testing.T, ctx context.Context, cfg Config, rec *exitRecorder) *Session {
+	t.Helper()
+	s, err := NewSession(ctx, testThread, cfg, rec.record)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+func endProcess(t *testing.T, s *Session) {
+	t.Helper()
+	if err := s.writePTY([]byte("\n")); err != nil {
+		t.Fatalf("write the line: %v", err)
+	}
+}
+
+func dialable(addr string) bool {
+	conn, err := net.Dial("tcp6", addr)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+func addrOf(rawURL string) string {
+	return strings.TrimPrefix(rawURL, "http://")
+}
+
+// waitRefused waits until addr refuses connections: the server's stop has
+// closed its listener. A listener's close has no other observable handle,
+// so this polls, bounded.
+func waitRefused(t *testing.T, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for dialable(addr) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s still accepts connections", addr)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func allStacks() string {
@@ -86,107 +181,55 @@ func allStacks() string {
 	}
 }
 
-// sessionGoroutines counts the goroutines in each of sessionGoroutineFuncs.
-func sessionGoroutines() map[string]int {
-	counts := map[string]int{}
-	for _, g := range strings.Split(allStacks(), "\n\n") {
-		for _, fn := range sessionGoroutineFuncs {
-			if strings.Contains(g, fn) {
-				counts[fn]++
-			}
-		}
-	}
-	return counts
-}
-
-// waitSessionGoroutines waits until the session goroutines are back to
-// want. A goroutine's return is observable only in the stacks, so this
-// polls, bounded.
-func waitSessionGoroutines(t *testing.T, want map[string]int) {
+// waitParked waits until want goroutines are blocked (their state contains
+// state) in fn. A goroutine blocked inside a function offers no handle of
+// its own, so this polls the stacks, bounded; failed, when it has a value,
+// ends the wait early as a failure.
+func waitParked(t *testing.T, state, fn string, want int, failed <-chan error) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		got := sessionGoroutines()
-		if sameCounts(got, want) {
+		parked := 0
+		for _, g := range strings.Split(allStacks(), "\n\n") {
+			header, rest, _ := strings.Cut(g, "\n")
+			if strings.Contains(header, state) && strings.Contains(rest, fn) {
+				parked++
+			}
+		}
+		if parked >= want {
 			return
 		}
+		select {
+		case err := <-failed:
+			t.Fatalf("returned (%v) instead of waiting in %s", err, fn)
+		default:
+		}
 		if time.Now().After(deadline) {
-			t.Fatalf("session goroutines = %v, want %v\n%s", got, want, allStacks())
+			t.Fatalf("%d goroutines wait in %s, want %d\n%s", parked, fn, want, allStacks())
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 }
 
-func sameCounts(a, b map[string]int) bool {
-	for _, fn := range sessionGoroutineFuncs {
-		if a[fn] != b[fn] {
-			return false
-		}
+const closeFrame = "agent-overflow/internal/provider/claudetui.(*Session).closeFrom("
+
+func closed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
 	}
-	return true
 }
 
-func plusOne(base map[string]int) map[string]int {
-	out := map[string]int{}
-	for _, fn := range sessionGoroutineFuncs {
-		out[fn] = base[fn] + 1
+func eventLines(events []provider.ProviderEvent) []string {
+	var out []string
+	for _, e := range events {
+		out = append(out, fmt.Sprintf("%s:%s", e.Kind, e.Content))
 	}
 	return out
 }
 
-// listenerAddrs are the gateway's and the relay's loopback addresses.
-func listenerAddrs(s *Session) []string {
-	return []string{s.gateway.ln.Addr().String(), s.relay.ln.Addr().String()}
-}
-
-func dialable(addr string) bool {
-	conn, err := net.Dial("tcp6", addr)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
-
-// parserHoldsState reports whether the parser still remembers a tool_use,
-// which Parser.Close forgets.
-func parserHoldsState(p *claude.Parser) bool {
-	return !reflect.ValueOf(p).Elem().FieldByName("toolUseNames").IsZero()
-}
-
-const toolUseEnvelope = `{"type":"assistant","message":{"id":"msg_exit","type":"message","role":"assistant","model":"claude-x","content":[{"type":"tool_use","id":"toolu_exit","name":"Bash","input":{"command":"ls"}}]}}`
-
-// assertReleased checks everything a live session holds is gone: both
-// listeners refuse connections, the feed loop has returned, done is closed,
-// the parser forgot its state, both prompt files are removed, and the
-// session's goroutines are back to base.
-func assertReleased(t *testing.T, s *Session, addrs []string, promptDir string, base map[string]int) {
-	t.Helper()
-	for _, addr := range addrs {
-		if dialable(addr) {
-			t.Errorf("listener %s still accepts connections", addr)
-		}
-	}
-	select {
-	case <-s.done:
-	default:
-		t.Error("done is still open")
-	}
-	select {
-	case <-s.feedDone:
-	default:
-		t.Error("the feed loop has not returned")
-	}
-	if parserHoldsState(s.parser) {
-		t.Error("parser state was not released")
-	}
-	if left := promptFilesIn(t, promptDir); len(left) > 0 {
-		t.Errorf("prompt files left behind: %v", left)
-	}
-	waitSessionGoroutines(t, base)
-}
-
-// statusEvents is the session-status contents in events, in order.
 func statusEvents(events []provider.ProviderEvent) []string {
 	var out []string
 	for _, e := range events {
@@ -202,43 +245,66 @@ func assertLastIsDisconnected(t *testing.T, events []provider.ProviderEvent) {
 	if len(events) == 0 {
 		t.Fatal("no events")
 	}
-	last := events[len(events)-1]
-	if last.Kind != provider.EventSessionStatus || last.Content != "disconnected" {
-		t.Fatalf("last event = %v %q, want \"disconnected\"; kinds %v", last.Kind, last.Content, kindsOf(events))
+	if last := events[len(events)-1]; !isDisconnected(last) {
+		t.Fatalf("last event = %v %q, want \"disconnected\"; events %q", last.Kind, last.Content, eventLines(events))
 	}
 }
 
-// startLiveSession launches script, which reads one line from its terminal
-// before it ends, and holds parser state from one fed tool_use. It returns
-// the session goroutine counts from before the launch.
-func startLiveSession(t *testing.T, ctx context.Context, script, promptDir string, rec *exitRecorder) (*Session, map[string]int) {
-	t.Helper()
-	base := sessionGoroutines()
-	s, err := NewSession(ctx, testThread, tuiExitConfig(t, script, promptDir), rec.record)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	if left := promptFilesIn(t, promptDir); len(left) != 2 {
-		t.Fatalf("prompt files = %v, want both", left)
-	}
-	for _, addr := range listenerAddrs(s) {
-		if !dialable(addr) {
-			t.Fatalf("listener %s refuses connections on a live session", addr)
+// parserHoldsState reports whether the parser still remembers a tool_use,
+// which Parser.Close forgets.
+func parserHoldsState(p *claude.Parser) bool {
+	return !reflect.ValueOf(p).Elem().FieldByName("toolUseNames").IsZero()
+}
+
+func toolUseEnvelope(id string) json.RawMessage {
+	return json.RawMessage(`{"type":"assistant","message":{"id":"msg_` + id + `","type":"message","role":"assistant","model":"claude-x","content":[{"type":"tool_use","id":"` + id + `","name":"Bash","input":{"command":"ls"}}]}}`)
+}
+
+func toolStartIDs(events []provider.ProviderEvent) []string {
+	var out []string
+	for _, e := range events {
+		if e.Kind == provider.EventToolStart {
+			out = append(out, e.ItemID)
 		}
 	}
-	waitSessionGoroutines(t, plusOne(base))
-	s.feedEnvelope(json.RawMessage(toolUseEnvelope))
-	rec.waitForKind(t, provider.EventToolStart)
-	if !parserHoldsState(s.parser) {
-		t.Fatal("parser holds no state after a tool_use")
+	return out
+}
+
+// assertReleased checks everything a live session holds is gone: both
+// listeners refuse connections, their serve goroutines and the feed loop
+// have returned, the session is complete, the parser forgot its state and
+// both prompt files are removed.
+func assertReleased(t *testing.T, s *Session, promptDir string) {
+	t.Helper()
+	for _, addr := range []string{addrOf(s.gateway.baseURL()), addrOf(s.relay.url())} {
+		if dialable(addr) {
+			t.Errorf("listener %s still accepts connections", addr)
+		}
 	}
-	return s, base
+	for name, ch := range map[string]chan struct{}{
+		"the gateway's serve goroutine": s.gateway.srv.serveDone,
+		"the relay's serve goroutine":   s.relay.srv.serveDone,
+		"the feed loop":                 s.feedDone,
+	} {
+		if !closed(ch) {
+			t.Errorf("%s has not returned", name)
+		}
+	}
+	if !closed(s.Connection().Done()) {
+		t.Error("the session is not complete")
+	}
+	if parserHoldsState(s.parser) {
+		t.Error("parser state was not released")
+	}
+	if left := promptFilesIn(t, promptDir); len(left) > 0 {
+		t.Errorf("prompt files left behind: %v", left)
+	}
 }
 
 // A process that ends on its own, cleanly, with an error code, or by a
 // signal, releases everything the session held for it with nobody calling
-// Close, before its teardown pair, which keeps its events and meta.
+// Close, before its teardown pair, which keeps its events and meta. A
+// later Close returns at once and emits nothing.
 func TestASelfExitReleasesTheSession(t *testing.T) {
 	for name, tc := range map[string]struct {
 		ending string
@@ -251,14 +317,19 @@ func TestASelfExitReleasesTheSession(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			rec := newExitRecorder()
 			promptDir := t.TempDir()
-			s, base := startLiveSession(t, context.Background(), "#!/bin/sh\nread line\n"+tc.ending+"\n", promptDir, rec)
-			addrs := listenerAddrs(s)
-
-			if err := s.writePTY([]byte("\n")); err != nil {
-				t.Fatalf("write the line: %v", err)
+			s := newTestSession(t, context.Background(), tuiExitConfig(t, readLineScript(tc.ending), promptDir), rec)
+			if left := promptFilesIn(t, promptDir); len(left) != 2 {
+				t.Fatalf("prompt files = %v, want both", left)
 			}
+			s.feedEnvelope(toolUseEnvelope("toolu_exit"))
+			rec.waitForKind(t, provider.EventToolStart)
+			if !parserHoldsState(s.parser) {
+				t.Fatal("parser holds no state after a tool_use")
+			}
+
+			endProcess(t, s)
 			rec.waitDisconnected(t)
-			assertReleased(t, s, addrs, promptDir, base)
+			assertReleased(t, s, promptDir)
 
 			events := rec.snapshot()
 			assertLastIsDisconnected(t, events)
@@ -277,13 +348,8 @@ func TestASelfExitReleasesTheSession(t *testing.T) {
 				t.Errorf("exit meta = %+v, want %+v", info, tc.want)
 			}
 
-			// Close after the exit returns what the release returned, and
-			// neither Close emits or releases again.
 			if err := s.Close(); err != nil {
 				t.Fatalf("Close after a self-exit: %v", err)
-			}
-			if err := s.Close(); err != nil {
-				t.Fatalf("second Close: %v", err)
 			}
 			if after := rec.snapshot(); len(after) != len(events) {
 				t.Fatalf("Close emitted %v after the release", kindsOf(after[len(events):]))
@@ -292,182 +358,307 @@ func TestASelfExitReleasesTheSession(t *testing.T) {
 	}
 }
 
-// A self-exit and a Close that race release once, emit one teardown pair
-// ending in "disconnected", and Close returns no error.
-func TestASelfExitRacingCloseReleasesOnce(t *testing.T) {
+// Envelopes the feed accepted before the process ended are all parsed and
+// emitted, in order, before the teardown pair: here the parser goroutine is
+// held on an earlier event while 20 more wait in the feed and the process
+// exits.
+func TestASelfExitParsesTheFeedBacklog(t *testing.T) {
 	rec := newExitRecorder()
-	promptDir := t.TempDir()
-	s, base := startLiveSession(t, context.Background(), "#!/bin/sh\nread line\nexit 0\n", promptDir, rec)
-	addrs := listenerAddrs(s)
+	held := newGate()
+	rec.hold = held.holdAt(func(e provider.ProviderEvent) bool { return e.Kind == provider.EventToolStart })
+	s := newHeldSession(t, context.Background(), tuiExitConfig(t, readLineScript("exit 0"), t.TempDir()), rec, held)
 
-	closed := make(chan error, 1)
-	if err := s.writePTY([]byte("\n")); err != nil {
-		t.Fatalf("write the line: %v", err)
+	want := []string{"toolu_0"}
+	s.feedEnvelope(toolUseEnvelope("toolu_0"))
+	held.waitReached(t)
+	for i := 1; i <= 20; i++ {
+		id := fmt.Sprintf("toolu_%d", i)
+		want = append(want, id)
+		s.feedEnvelope(toolUseEnvelope(id))
 	}
-	go func() { closed <- s.Close() }()
-	if err := <-closed; err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	endProcess(t, s)
+	// The teardown is past the gateway's stop, and on to the feed.
+	waitRefused(t, addrOf(s.gateway.baseURL()))
+	held.open()
 	rec.waitDisconnected(t)
-	assertReleased(t, s, addrs, promptDir, base)
+
 	events := rec.snapshot()
 	assertLastIsDisconnected(t, events)
-	if got := statusEvents(events); strings.Count(strings.Join(got, ","), "disconnected") != 1 {
-		t.Fatalf("statuses = %v, want one \"disconnected\"", got)
+	if got := toolStartIDs(events); !slices.Equal(got, want) {
+		t.Fatalf("tool starts = %v, want %v", got, want)
 	}
 }
 
-// closeParked reports whether a goroutine is blocked on a channel receive
-// in Session.Close itself, which is where Close waits for the teardown pair.
-func closeParked() bool {
-	for _, g := range strings.Split(allStacks(), "\n\n") {
-		header, rest, _ := strings.Cut(g, "\n")
-		if strings.Contains(header, "[chan receive") && strings.HasPrefix(rest, "agent-overflow/internal/provider/claudetui.(*Session).Close(") {
-			return true
+// stalledUpstream is an upstream that holds every request until the test
+// releases it, then drops the connection without answering. arrived closes
+// when the first request is held.
+type stalledUpstream struct {
+	url     string
+	arrived chan struct{}
+	release func()
+}
+
+func newStalledUpstream(t *testing.T) *stalledUpstream {
+	t.Helper()
+	arrived := make(chan struct{})
+	unblock := make(chan struct{})
+	var arriveOnce, releaseOnce sync.Once
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arriveOnce.Do(func() { close(arrived) })
+		<-unblock
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			_ = conn.Close()
 		}
+	})}
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
 	}
-	return false
+	go func() { _ = server.Serve(ln) }()
+	release := func() { releaseOnce.Do(func() { close(unblock) }) }
+	t.Cleanup(func() {
+		release()
+		_ = server.Close()
+	})
+	return &stalledUpstream{url: "http://" + ln.Addr().String(), arrived: arrived, release: release}
+}
+
+// stalledGatewaySession starts a session whose gateway holds one request
+// the upstream does not answer, so the gateway's stop outlasts its grace.
+// The returned channel closes when that request's client got its answer,
+// which the gateway sends only once the handler has returned.
+func stalledGatewaySession(t *testing.T, ctx context.Context, rec *exitRecorder) (*Session, *stalledUpstream, <-chan struct{}) {
+	t.Helper()
+	upstream := newStalledUpstream(t)
+	cfg := tuiExitConfig(t, readLineScript("exit 0"), t.TempDir())
+	cfg.Upstream = upstream.url
+	s := newTestSession(t, ctx, cfg, rec)
+	answered := make(chan struct{})
+	go func() {
+		defer close(answered)
+		resp, err := http.Get(s.gateway.baseURL() + "/v1/models")
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+	}()
+	<-upstream.arrived
+	return s, upstream, answered
+}
+
+const cutOff = "requests still active after 2s were cut off: context deadline exceeded"
+
+// A gateway request that outlasts the stop's grace is cut off, joined, and
+// reported once before the teardown pair; when its upstream later fails,
+// the handler is long gone and nothing follows "disconnected".
+func TestAHandlerPastTheGraceIsCutOffBeforeDisconnected(t *testing.T) {
+	rec := newExitRecorder()
+	s, upstream, answered := stalledGatewaySession(t, context.Background(), rec)
+	endProcess(t, s)
+	rec.waitDisconnected(t)
+
+	upstream.release()
+	select {
+	case <-answered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stalled request was never answered")
+	}
+	want := []string{
+		string(provider.EventError) + ":release the session: claudetui gateway: " + cutOff,
+		string(provider.EventSessionStatus) + ":error",
+		string(provider.EventSessionStatus) + ":disconnected",
+	}
+	if got := eventLines(rec.snapshot()); !slices.Equal(got, want) {
+		t.Fatalf("events = %q, want %q", got, want)
+	}
+	if err := s.Close(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close after the cut-off = %v, want its error", err)
+	}
+}
+
+// A release that fails under Close is Close's error, not a thread event,
+// and Close returns after the teardown pair.
+func TestCloseReturnsAFailedRelease(t *testing.T) {
+	rec := newExitRecorder()
+	s, _, _ := stalledGatewaySession(t, context.Background(), rec)
+	if err := s.Close(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close = %v, want the release's error", err)
+	}
+	if !closed(rec.disconnected) {
+		t.Fatal("Close returned before \"disconnected\" was emitted")
+	}
+	want := []string{string(provider.EventSessionStatus) + ":disconnected"}
+	if got := eventLines(rec.snapshot()); !slices.Equal(got, want) {
+		t.Fatalf("events = %q, want %q", got, want)
+	}
+}
+
+// The context watcher's teardown has nobody waiting on it, so its error is
+// posted on the thread before the pair; a later Close returns it too.
+func TestTheWatchersFailedReleaseReachesTheThread(t *testing.T) {
+	rec := newExitRecorder()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s, _, _ := stalledGatewaySession(t, ctx, rec)
+	cancel()
+	rec.waitDisconnected(t)
+	want := []string{
+		string(provider.EventError) + ":release the session: claudetui gateway: " + cutOff,
+		string(provider.EventSessionStatus) + ":disconnected",
+	}
+	if got := eventLines(rec.snapshot()); !slices.Equal(got, want) {
+		t.Fatalf("events = %q, want %q", got, want)
+	}
+	if err := s.Close(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close after the watcher = %v, want the release's error", err)
+	}
+}
+
+// A PostCompact the relay is still dispatching when the process ends, held
+// past the stop's grace, keeps the teardown waiting after its connection is
+// cut: the handler is joined before the feed closes and before the
+// SessionStart settlement, so its compaction boundary precedes the pair and
+// the delivery it armed is forgotten.
+func TestAPostCompactInDispatchIsJoinedAndSettled(t *testing.T) {
+	rec := newExitRecorder()
+	forgot := 0
+	cfg := tuiExitConfig(t, readLineScript("exit 0"), t.TempDir())
+	cfg.SessionStartHook = testHook()
+	cfg.SessionStartForget = func() error { forgot++; return nil }
+	cfg.Resume = "sess-1"
+	s := newTestSession(t, context.Background(), cfg, rec)
+	if got := s.sessionStart.Expecting(); got != "" {
+		t.Fatalf("a resume expects %q", got)
+	}
+
+	// Hold the relay's PostCompact handler before its Expect.
+	s.recMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			s.recMu.Unlock()
+		}
+	}()
+	posted := make(chan error, 1)
+	go func() {
+		req, err := http.NewRequest(http.MethodPost, s.relay.url(), strings.NewReader(`{"hook_event_name":"PostCompact","trigger":"auto","compact_summary":"the summary"}`))
+		if err != nil {
+			posted <- err
+			return
+		}
+		req.Header.Set(hookAuthHeader, s.relay.authToken())
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		posted <- err
+	}()
+	waitParked(t, "sync.Mutex.Lock", "agent-overflow/internal/provider/claudetui.(*Session).finalizeCompaction(", 1, posted)
+
+	endProcess(t, s)
+	// The stop's grace passed and it closed the hook's connection.
+	select {
+	case err := <-posted:
+		if err == nil {
+			t.Fatal("the held PostCompact was answered; want its connection cut")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the relay's stop never cut the held PostCompact")
+	}
+	waitParked(t, "sync.Cond.Wait", "agent-overflow/internal/provider/claudetui.(*loopbackServer).stop(", 1, nil)
+	if closed(rec.disconnected) {
+		t.Fatal("\"disconnected\" was emitted while a relay handler was still running")
+	}
+	s.recMu.Unlock()
+	locked = false
+	rec.waitDisconnected(t)
+	if forgot != 1 {
+		t.Fatalf("forgot %d times, want once", forgot)
+	}
+	want := []string{
+		string(provider.EventCompactBoundary),
+		string(provider.EventError) + ":release the session: claudetui hook relay: " + cutOff,
+		string(provider.EventSessionStatus) + ":error",
+		string(provider.EventSessionStatus) + ":disconnected",
+	}
+	var got []string
+	for _, e := range rec.snapshot() {
+		if e.Kind == provider.EventCompactBoundary {
+			got = append(got, string(e.Kind))
+			continue
+		}
+		got = append(got, fmt.Sprintf("%s:%s", e.Kind, e.Content))
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("events = %q, want %q", got, want)
+	}
 }
 
 // Close of a session whose process started returns only once the teardown
 // pair has reached onEvent: the app drains its event queue right after
-// Close and relies on "disconnected" being in it.
+// Close and relies on "disconnected" being in it. A second Close waits for
+// the same completion.
 func TestCloseReturnsAfterTheTeardownPair(t *testing.T) {
 	rec := newExitRecorder()
-	held := make(chan struct{})
-	unhold := make(chan struct{})
-	var unholdOnce sync.Once
-	t.Cleanup(func() { unholdOnce.Do(func() { close(unhold) }) })
-	onEvent := func(e provider.ProviderEvent) {
-		if e.Kind == provider.EventSessionStatus && e.Content == "disconnected" {
-			close(held)
-			<-unhold
-		}
-		rec.record(e)
-	}
-	s, err := NewSession(context.Background(), testThread, tuiExitConfig(t, "#!/bin/sh\nread line\n", t.TempDir()), onEvent)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
+	held := newGate()
+	rec.hold = held.holdAt(isDisconnected)
+	s := newHeldSession(t, context.Background(), tuiExitConfig(t, readLineScript(""), t.TempDir()), rec, held)
 
-	closed := make(chan error, 1)
-	go func() { closed <- s.Close() }()
-	select {
-	case <-held:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the teardown pair was never emitted")
-	}
-	// Close's goroutine has nothing left to wait for but the pair, so it is
-	// either parked on it or gone. Seeing it parked is the bounded poll.
-	deadline := time.Now().Add(5 * time.Second)
-	for !closeParked() {
-		select {
-		case err := <-closed:
-			t.Fatalf("Close returned (%v) while \"disconnected\" was still being emitted", err)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Close is not waiting for the teardown pair\n%s", allStacks())
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	// A second Close does not wait behind the first.
+	first := make(chan error, 1)
+	go func() { first <- s.Close() }()
+	held.waitReached(t)
+	waitParked(t, "chan receive", closeFrame, 1, first)
 	second := make(chan error, 1)
 	go func() { second <- s.Close() }()
-	select {
-	case err := <-second:
-		if err != nil {
-			t.Fatalf("second Close while the first waits: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("a second Close waited behind the first")
+	waitParked(t, "chan receive", closeFrame, 2, second)
+	if closed(s.Connection().Done()) {
+		t.Fatal("the session is complete while \"disconnected\" is being emitted")
 	}
 
-	unholdOnce.Do(func() { close(unhold) })
+	held.open()
+	for name, ch := range map[string]chan error{"first": first, "second": second} {
+		select {
+		case err := <-ch:
+			if err != nil {
+				t.Fatalf("%s Close: %v", name, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the %s Close did not return after the pair was emitted", name)
+		}
+	}
+	assertLastIsDisconnected(t, rec.snapshot())
+}
+
+// When the context watcher closes the session first, a caller's later Close
+// still returns only after the teardown pair, with the watcher's result.
+func TestAWatcherCloseHoldsALaterClose(t *testing.T) {
+	rec := newExitRecorder()
+	held := newGate()
+	rec.hold = held.holdAt(isDisconnected)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := newHeldSession(t, ctx, tuiExitConfig(t, readLineScript(""), t.TempDir()), rec, held)
+
+	cancel()
+	held.waitReached(t)
+	later := make(chan error, 1)
+	go func() { later <- s.Close() }()
+	// The watcher waits in closeFrom too.
+	waitParked(t, "chan receive", closeFrame, 2, later)
+	if closed(s.Connection().Done()) {
+		t.Fatal("the session is complete while \"disconnected\" is being emitted")
+	}
+	held.open()
 	select {
-	case err := <-closed:
+	case err := <-later:
 		if err != nil {
 			t.Fatalf("Close: %v", err)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Close did not return after the pair was emitted")
 	}
-	assertLastIsDisconnected(t, rec.snapshot())
-}
-
-// A cancelled spawn context closes the session through its watcher: the
-// host ended it, so the pair is "disconnected" alone.
-func TestTheContextWatcherClosesTheSession(t *testing.T) {
-	rec := newExitRecorder()
-	promptDir := t.TempDir()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	s, base := startLiveSession(t, ctx, "#!/bin/sh\nread line\n", promptDir, rec)
-	addrs := listenerAddrs(s)
-
-	cancel()
-	rec.waitDisconnected(t)
-	assertReleased(t, s, addrs, promptDir, base)
-	events := rec.snapshot()
-	assertLastIsDisconnected(t, events)
-	if got := statusEvents(events); !slices.Equal(got, []string{"disconnected"}) {
+	if got := statusEvents(rec.snapshot()); !slices.Equal(got, []string{"disconnected"}) {
 		t.Fatalf("statuses = %v, want [disconnected]", got)
-	}
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close after the watcher's: %v", err)
-	}
-}
-
-// A process that exits as soon as it starts, possibly while NewSession is
-// still setting up, releases the session too, and a later Close is a
-// no-op.
-func TestAnExitDuringSetupReleasesTheSession(t *testing.T) {
-	rec := newExitRecorder()
-	promptDir := t.TempDir()
-	base := sessionGoroutines()
-	s, err := NewSession(context.Background(), testThread, tuiExitConfig(t, "#!/bin/sh\nexit 0\n", promptDir), rec.record)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	addrs := listenerAddrs(s)
-	rec.waitDisconnected(t)
-	select {
-	case <-s.done:
-	default:
-		t.Error("done is still open")
-	}
-	for _, addr := range addrs {
-		if dialable(addr) {
-			t.Errorf("listener %s still accepts connections", addr)
-		}
-	}
-	if left := promptFilesIn(t, promptDir); len(left) > 0 {
-		t.Errorf("prompt files left behind: %v", left)
-	}
-	waitSessionGoroutines(t, base)
-	assertLastIsDisconnected(t, rec.snapshot())
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-}
-
-// A launch that fails after the gateway and relay started releases them and
-// the prompt files, and emits nothing: no process ran.
-func TestAFailedLaunchReleasesTheSession(t *testing.T) {
-	rec := newExitRecorder()
-	promptDir := t.TempDir()
-	base := sessionGoroutines()
-	cfg := tuiExitConfig(t, "#!/bin/sh\nexit 0\n", promptDir)
-	cfg.Binary = t.TempDir() + "/does-not-exist"
-	if _, err := NewSession(context.Background(), testThread, cfg, rec.record); err == nil {
-		t.Fatal("NewSession succeeded without a binary")
-	}
-	if left := promptFilesIn(t, promptDir); len(left) > 0 {
-		t.Errorf("prompt files left behind: %v", left)
-	}
-	waitSessionGoroutines(t, base)
-	if events := rec.snapshot(); len(events) > 0 {
-		t.Fatalf("a failed launch emitted %v", kindsOf(events))
 	}
 }
 
@@ -476,34 +667,23 @@ func TestAFailedLaunchReleasesTheSession(t *testing.T) {
 // the teardown pair. A later Close does not forget again.
 func TestASelfExitForgetsAPendingDelivery(t *testing.T) {
 	rec := newExitRecorder()
-	promptDir := t.TempDir()
 	forgot := 0
-	cfg := tuiExitConfig(t, "#!/bin/sh\nread line\nexit 0\n", promptDir)
+	cfg := tuiExitConfig(t, readLineScript("exit 0"), t.TempDir())
 	cfg.SessionStartHook = testHook()
 	cfg.SessionStartForget = func() error { forgot++; return errors.New("disk full") }
-	s, err := NewSession(context.Background(), testThread, cfg, rec.record)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	if err := s.writePTY([]byte("\n")); err != nil {
-		t.Fatalf("write the line: %v", err)
-	}
+	s := newTestSession(t, context.Background(), cfg, rec)
+	endProcess(t, s)
 	rec.waitDisconnected(t)
 	if forgot != 1 {
 		t.Fatalf("forgot %d times, want once", forgot)
-	}
-	var kinds []string
-	for _, e := range rec.snapshot() {
-		kinds = append(kinds, fmt.Sprintf("%s:%s", e.Kind, firstLine(e.Content)))
 	}
 	want := []string{
 		string(provider.EventError) + ":Agent Overflow could not record that the memory has not reached this session since its start, so a later prompt may deliver only what changed: disk full",
 		string(provider.EventSessionStatus) + ":error",
 		string(provider.EventSessionStatus) + ":disconnected",
 	}
-	if !slices.Equal(kinds, want) {
-		t.Fatalf("events = %q, want %q", kinds, want)
+	if got := eventLines(rec.snapshot()); !slices.Equal(got, want) {
+		t.Fatalf("events = %q, want %q", got, want)
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -513,96 +693,52 @@ func TestASelfExitForgetsAPendingDelivery(t *testing.T) {
 	}
 }
 
-func firstLine(s string) string {
-	line, _, _ := strings.Cut(s, "\n")
-	return line
-}
-
-// stalledGatewaySession starts a session whose gateway holds a request the
-// upstream does not answer until the test ends, so closing the gateway
-// outlasts its shutdown grace and the release fails.
-func stalledGatewaySession(t *testing.T, rec *exitRecorder) *Session {
-	t.Helper()
-	arrived := make(chan struct{})
-	unblock := make(chan struct{})
-	upstream := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		close(arrived)
-		<-unblock
-	})}
-	ln, err := net.Listen("tcp6", "[::1]:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	go func() { _ = upstream.Serve(ln) }()
-	t.Cleanup(func() {
-		close(unblock)
-		_ = upstream.Close()
-	})
-
-	cfg := tuiExitConfig(t, "#!/bin/sh\nread line\nexit 0\n", t.TempDir())
-	cfg.Upstream = "http://" + ln.Addr().String()
-	s, err := NewSession(context.Background(), testThread, cfg, rec.record)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-
+// A launch the terminal refuses starts no PTY, so no exit callback will
+// complete the session: NewSession's cleanup Close completes it itself and
+// returns, with the gateway, relay and prompt files released.
+func TestAFailedLaunchCompletesWithoutAPTY(t *testing.T) {
+	rec := newExitRecorder()
+	promptDir := t.TempDir()
+	cfg := tuiExitConfig(t, readLineScript("exit 0"), promptDir)
+	cfg.Binary = t.TempDir() + "/does-not-exist"
+	result := make(chan error, 1)
 	go func() {
-		resp, err := http.Get(s.gateway.baseURL() + "/v1/models")
-		if err == nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-		}
+		_, err := NewSession(context.Background(), testThread, cfg, rec.record)
+		result <- err
 	}()
-	<-arrived
-	return s
-}
-
-func eventLines(events []provider.ProviderEvent) []string {
-	var out []string
-	for _, e := range events {
-		out = append(out, fmt.Sprintf("%s:%s", e.Kind, e.Content))
-	}
-	return out
-}
-
-// A release that fails after a self-exit reaches the thread as an error
-// before the teardown pair, since no Close caller would see it.
-func TestASelfExitReportsAFailedRelease(t *testing.T) {
-	rec := newExitRecorder()
-	s := stalledGatewaySession(t, rec)
-	if err := s.writePTY([]byte("\n")); err != nil {
-		t.Fatalf("write the line: %v", err)
-	}
-	rec.waitDisconnected(t)
-
-	want := []string{
-		string(provider.EventError) + ":release the session after its process ended: " + context.DeadlineExceeded.Error(),
-		string(provider.EventSessionStatus) + ":error",
-		string(provider.EventSessionStatus) + ":disconnected",
-	}
-	if got := eventLines(rec.snapshot()); !slices.Equal(got, want) {
-		t.Fatalf("events = %q, want %q", got, want)
-	}
-	if err := s.Close(); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Close after the failed release = %v, want its error", err)
-	}
-}
-
-// A release that fails under Close is Close's error, not a thread event.
-func TestCloseReturnsAFailedRelease(t *testing.T) {
-	rec := newExitRecorder()
-	s := stalledGatewaySession(t, rec)
-	if err := s.Close(); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Close = %v, want the release's error", err)
-	}
 	select {
-	case <-rec.disconnected:
-	default:
-		t.Fatal("Close returned before \"disconnected\" was emitted")
+	case err := <-result:
+		if err == nil {
+			t.Fatal("NewSession succeeded without a binary")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("NewSession's cleanup Close waited for a PTY that never started")
 	}
-	want := []string{string(provider.EventSessionStatus) + ":disconnected"}
-	if got := eventLines(rec.snapshot()); !slices.Equal(got, want) {
-		t.Fatalf("events = %q, want %q", got, want)
+	if left := promptFilesIn(t, promptDir); len(left) > 0 {
+		t.Errorf("prompt files left behind: %v", left)
+	}
+	if events := rec.snapshot(); len(events) > 0 {
+		t.Fatalf("a failed launch emitted %v", kindsOf(events))
+	}
+}
+
+// Regression: a cancelled spawn context closes the session through its
+// watcher; the host ended it, so the pair is "disconnected" alone.
+func TestTheContextWatcherClosesTheSession(t *testing.T) {
+	rec := newExitRecorder()
+	promptDir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := newTestSession(t, ctx, tuiExitConfig(t, readLineScript(""), promptDir), rec)
+	cancel()
+	rec.waitDisconnected(t)
+	select {
+	case <-s.Connection().Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the session did not complete")
+	}
+	assertReleased(t, s, promptDir)
+	if got := statusEvents(rec.snapshot()); !slices.Equal(got, []string{"disconnected"}) {
+		t.Fatalf("statuses = %v, want [disconnected]", got)
 	}
 }

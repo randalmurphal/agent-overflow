@@ -33,8 +33,8 @@ type Session struct {
 	// systemPromptPath and appendSystemPromptPath are the files
 	// cfg.SystemPrompt and cfg.AppendSystemPrompt were written to for
 	// `--system-prompt-file` and `--append-system-prompt-file`, or "" for
-	// the one the session does not carry. Removed when the read loop ends,
-	// which Close waits for; see
+	// the one the session does not carry. Removed by the read loop's end
+	// once the process is gone, which Close waits for; see
 	// WriteSystemPromptFile for why a prompt does not travel in argv.
 	systemPromptPath       string
 	appendSystemPromptPath string
@@ -369,13 +369,10 @@ func (s *Session) Close() error {
 	s.clearPendingControlRequests()
 	err := s.proc.Close()
 	s.cancel()
-	// The read loop's end removes the prompt files.
+	// The read loop's end removes the prompt files and releases parser
+	// state, once the process is gone.
 	if s.readDone != nil {
 		<-s.readDone
 	}
-	// Release parser-owned state so the dedup sets
-	// (completedToolUseIDs, completedTasks, backgroundToolUses, etc.)
-	// don't linger after the readLoop exits.
-	s.parser.Close()
 	return err
 }

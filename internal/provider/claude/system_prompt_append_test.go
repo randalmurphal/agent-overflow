@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -218,6 +219,52 @@ func TestASelfExitRemovesThePromptFiles(t *testing.T) {
 				t.Fatalf("prompt files in SystemPromptDir after the process ended = %v, want none", left)
 			}
 		})
+	}
+}
+
+// A CLI that closes its stdout while it runs on, as one still starting up
+// might, keeps its prompt files: the session's end comes at the end of its
+// output, the files go only once the process is gone.
+func TestPromptFilesOutliveAClosedStdoutUntilTheProcessEnds(t *testing.T) {
+	dir := t.TempDir()
+	binary := mockexec.Write(t, t.TempDir()+"/claude", "#!/bin/sh\nexec >&-\nread line\nexit 0\n")
+	disconnected := make(chan struct{})
+	var once sync.Once
+	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:             procutiltest.Reaper(),
+		Retention:          UserHomeRetention(0),
+		Binary:             binary,
+		SystemPrompt:       "REPLACEMENT",
+		AppendSystemPrompt: "APPENDED GUIDE",
+		SystemPromptDir:    dir,
+	}, func(evt provider.ProviderEvent) {
+		if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
+			once.Do(func() { close(disconnected) })
+		}
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	select {
+	case <-disconnected:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no \"disconnected\" after the CLI closed its stdout")
+	}
+	if left := promptFilesIn(t, dir); len(left) != 2 {
+		t.Fatalf("prompt files with the process still running = %v, want both", left)
+	}
+	if err := s.proc.WriteLine([]byte("go")); err != nil {
+		t.Fatalf("write the line: %v", err)
+	}
+	select {
+	case <-s.readDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("read loop did not end after the process ended")
+	}
+	if left := promptFilesIn(t, dir); len(left) > 0 {
+		t.Fatalf("prompt files after the process ended = %v, want none", left)
 	}
 }
 

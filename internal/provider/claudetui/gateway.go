@@ -37,8 +37,7 @@ type gateway struct {
 	// read-only on the serving goroutines.
 	maxBodyBytes int64
 
-	ln     net.Listener
-	server *http.Server
+	srv *loopbackServer
 }
 
 // agentTurnDriver is the slice of the session the gateway needs: open and close
@@ -104,7 +103,6 @@ func newGateway(upstream string, drive agentTurnDriver, onError func(error), onC
 		onError:      onError,
 		onClassify:   onClassify,
 		maxBodyBytes: maxRequestBodyBytes,
-		ln:           ln,
 		client: &http.Client{
 			// No Client.Timeout: /v1/messages SSE streams are long-lived and a
 			// blanket deadline would truncate a turn. The transport bounds the
@@ -121,32 +119,25 @@ func newGateway(upstream string, drive agentTurnDriver, onError func(error), onC
 			},
 		},
 	}
-	g.server = &http.Server{Handler: http.HandlerFunc(g.handle)}
+	g.srv = newLoopbackServer("claudetui gateway", ln, g.handle, onError, nil)
 	return g, nil
 }
 
 // baseURL is the loopback address to inject as ANTHROPIC_BASE_URL.
 func (g *gateway) baseURL() string {
-	return "http://" + g.ln.Addr().String()
+	return g.srv.url()
 }
 
-// start serves the proxy until close. A non-ErrServerClosed exit is surfaced.
+// start serves the proxy until close.
 func (g *gateway) start() {
-	go func() {
-		if err := g.server.Serve(g.ln); err != nil && err != http.ErrServerClosed {
-			g.onError(fmt.Errorf("claudetui gateway serve: %w", err))
-		}
-	}()
+	g.srv.start()
 }
 
-// close shuts the proxy down and closes its idle upstream connections. Safe
-// to call once.
+// close stops the proxy (loopbackServer.stop: no handler runs once it
+// returns) and closes its idle upstream connections. Safe to call once.
 func (g *gateway) close() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	err := g.server.Shutdown(ctx)
-	// After Shutdown, so the handlers it waited for have returned their
-	// connections to the pool.
+	err := g.srv.stop()
+	// After the handlers returned their connections to the pool.
 	g.client.CloseIdleConnections()
 	return err
 }
@@ -190,7 +181,11 @@ func (g *gateway) handle(w http.ResponseWriter, r *http.Request) {
 	resp, err := g.client.Do(upReq)
 	if err != nil {
 		http.Error(w, "upstream error", http.StatusBadGateway)
-		g.onError(fmt.Errorf("claudetui gateway: upstream: %w", err))
+		// As in stream: a canceled inbound context means the client went
+		// away or the gateway is stopping, not an upstream fault.
+		if r.Context().Err() == nil {
+			g.onError(fmt.Errorf("claudetui gateway: upstream: %w", err))
+		}
 		return
 	}
 	defer resp.Body.Close()
