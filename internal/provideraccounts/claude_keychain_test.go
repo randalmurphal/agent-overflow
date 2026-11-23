@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/testutil/reporoot"
 )
 
@@ -205,9 +206,7 @@ delete-generic-password) exit "${FAKE_SECURITY_DELETE_EXIT:-0}" ;;
 esac
 exit 0
 `
-	if err := os.WriteFile(filepath.Join(dir, "security"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, filepath.Join(dir, "security"), []byte(script), 0o755)
 	t.Setenv("PATH", dir)
 }
 

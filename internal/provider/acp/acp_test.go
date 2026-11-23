@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -13,14 +12,13 @@ import (
 
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func writeFakeACPServer(t *testing.T, script string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-acp.py")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake ACP server: %v", err)
-	}
+	mockexec.WriteFile(t, path, []byte(script), 0o755)
 	return path
 }
 

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // fakeInterop points the Windows taskkill path at a real file in a temp
@@ -19,9 +21,7 @@ func (f *fakeInterop) install(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	taskkill := filepath.Join(dir, "taskkill.exe")
-	if err := os.WriteFile(taskkill, []byte("stub"), 0o700); err != nil {
-		t.Fatalf("write %s: %v", taskkill, err)
-	}
+	mockexec.WriteFile(t, taskkill, []byte("stub"), 0o700)
 	origKill, origRun := winTaskkillExe, runInterop
 	t.Cleanup(func() { winTaskkillExe, runInterop = origKill, origRun })
 	winTaskkillExe = taskkill

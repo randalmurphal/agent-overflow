@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func installFixture(t *testing.T, staging, name, body string, executable bool) File {
@@ -23,9 +25,7 @@ func installFixture(t *testing.T, staging, name, body string, executable bool) F
 	if executable {
 		mode = 0700
 	}
-	if err := os.WriteFile(p, []byte(body), mode); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, p, []byte(body), mode)
 	hash := sha256.Sum256([]byte(body))
 	return File{Name: name, Size: int64(len(body)), SHA256: hex.EncodeToString(hash[:]), Executable: executable}
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/testutil/reporoot"
 )
 
@@ -25,9 +26,7 @@ func TestMakeGoTestTrimsBeforeAndAfterTheTests(t *testing.T) {
 	log := filepath.Join(dir, "log")
 	script := func(name, body string) string {
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o700); err != nil {
-			t.Fatal(err)
-		}
+		mockexec.WriteFile(t, path, []byte("#!/bin/sh\n"+body), 0o700)
 		return path
 	}
 	// The trim fails its second call when TRIM_AFTER_STATUS says so.

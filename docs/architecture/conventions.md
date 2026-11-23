@@ -56,7 +56,13 @@ introduced only when a suitable existing observation point is unavailable.
 macOS assesses an executable on its first exec, which takes from 150ms to
 over a second for a script a test has just written. Write mock executables
 with `internal/testutil/mockexec`, run such a script with `/bin/sh`, or start a
-deadline once the script reports that it is running.
+deadline once the script reports that it is running. A test that needs the
+executable's own bytes (a copied binary, a file whose content, size or mode it
+reads) writes it with `mockexec.WriteFile` or `mockexec.CopyFile`, which hold
+process starts off while the file is open for writing: a child a parallel test
+forks then keeps the file busy, and running it fails with "text file busy".
+`TestEveryTestExecutableIsWrittenWithForksHeldOff` fails any other write of an
+executable in test code.
 
 Use temporary roots and explicit fixtures. Tests must not depend on shared
 machine state. Session-capable fixtures follow

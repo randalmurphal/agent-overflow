@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/ownedtemp"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/testutil"
 )
 
@@ -201,12 +202,19 @@ func copyTemplateTree(src, dst string) error {
 	})
 }
 
+// copyTemplateFile holds process starts off while it writes an executable
+// (procutil.HoldForks): a hook the copy's git runs would otherwise fail with
+// "text file busy" when a parallel test forked during the write.
 func copyTemplateFile(src, dst string, mode fs.FileMode) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
+	if mode&0o111 != 0 {
+		release := procutil.HoldForks()
+		defer release()
+	}
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return err

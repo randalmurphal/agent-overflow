@@ -83,9 +83,7 @@ func holdHook(t *testing.T, workspace, name string) *heldGate {
 	if err := os.MkdirAll(hooks, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(hooks, name), []byte("#!/bin/sh\n"+g.script()), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, filepath.Join(hooks, name), []byte("#!/bin/sh\n"+g.script()), 0o755)
 	return g
 }
 

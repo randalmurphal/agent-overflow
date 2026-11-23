@@ -11,14 +11,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestArchiveRoundTrip(t *testing.T) {
 	root := t.TempDir()
 	body := bytes.Repeat([]byte("native history\n"), 100_000)
-	if err := os.WriteFile(filepath.Join(root, "history.jsonl"), body, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, filepath.Join(root, "history.jsonl"), body, 0o700)
 	archive := filepath.Join(t.TempDir(), "bundle.tar")
 	name := "native/" + strings.Repeat("long/", 70) + "history.jsonl"
 	digest, err := Create(context.Background(), archive, []Source{{root, "history.jsonl", name}})

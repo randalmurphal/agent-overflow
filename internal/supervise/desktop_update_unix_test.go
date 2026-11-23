@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/startupprogress"
+	"agent-overflow/internal/testutil/mockexec"
 
 	"golang.org/x/sys/unix"
 )
@@ -142,9 +143,7 @@ func writeExecutable(t *testing.T, path, contents string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, path, []byte(contents), 0o755)
 }
 
 // stage records update 1.0.0 to 2.0.0 pending with install holding "old"
