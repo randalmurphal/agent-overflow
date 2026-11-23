@@ -139,7 +139,13 @@ type agyReadingRig struct {
 
 func newAgyReadingRig(t *testing.T, saved ...provideraccounts.Account) agyReadingRig {
 	t.Helper()
-	manager, store, credentials := newTestManager(t)
+	return newAgyReadingRigAt(t, t.TempDir(), saved...)
+}
+
+// newAgyReadingRigAt is newAgyReadingRig whose account store lives in dir.
+func newAgyReadingRigAt(t *testing.T, dir string, saved ...provideraccounts.Account) agyReadingRig {
+	t.Helper()
+	manager, store, credentials := newTestManagerAt(t, dir)
 	agyName := string(provider.Agy)
 	binary := agyAccountProbe(t)
 	manager.deps.ProviderBinary = func(string) string { return binary }
