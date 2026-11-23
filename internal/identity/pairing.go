@@ -347,6 +347,14 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 		s.auditPairingRefusal(ReasonUnknownCredential, req.Peer, checked.ID)
 		return Redemption{}, ReasonUnknownCredential
 	}
+	// The number depends only on the link and the key, so it is derived
+	// before anything is written: a redemption that commits is never then
+	// refused.
+	number, err := s.VerificationNumber(checked.ID, enrollment.thumbprint)
+	if err != nil {
+		log.Printf("identity: derive verification number for %s: %v", checked.ID, err)
+		return Redemption{}, ReasonUnknownCredential
+	}
 
 	// Spend the link FIRST. Everything after this point can still refuse
 	// the redemption, and a refusal settles the link (cancelRedeemedLink)
@@ -388,11 +396,6 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 		return Redemption{}, ReasonUnknownCredential
 	}
 
-	number, err := s.VerificationNumber(pending.ID, enrollment.thumbprint)
-	if err != nil {
-		log.Printf("identity: derive verification number for %s: %v", pending.ID, err)
-		return Redemption{}, ReasonUnknownCredential
-	}
 	s.audit(store.AuthAuditEntry{
 		Event: string(AuditPairingRedeemed), Outcome: store.AuthAuditOutcomeAllowed,
 		UserID: pending.UserID, DeviceID: device.ID, SessionID: session.ID, Peer: req.Peer,

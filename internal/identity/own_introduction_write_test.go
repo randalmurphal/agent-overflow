@@ -91,6 +91,40 @@ func TestAnOwnIntroductionWhoseConfirmationFailsLeavesNothing(t *testing.T) {
 	}
 }
 
+// A redemption derives its verification number before it writes anything,
+// so a failure to derive it leaves the link unspent and nothing written,
+// and a redemption that commits is never then refused.
+func TestARedemptionThatCannotDeriveItsNumberSpendsNothing(t *testing.T) {
+	s, st, raw, owner, _ := stragglerFixture(t)
+	link := mustMintLink(t, s, owner)
+	before := countSignInWrites(t, raw)
+	// The number is keyed by the signing key: with none stored and none
+	// mintable, it cannot be derived.
+	for _, statement := range []string{
+		`DELETE FROM signing_keys`,
+		`CREATE TRIGGER fail_key BEFORE INSERT ON signing_keys BEGIN SELECT RAISE(ABORT, 'injected key failure'); END`,
+	} {
+		if _, err := raw.Exec(statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	if _, reason := s.RedeemPairing(RedemptionRequest{Token: link.Token, Proof: bearerProof("thumb-number")}); reason != ReasonUnknownCredential {
+		t.Fatalf("a redemption that cannot derive its number = %s, want %s", reason, ReasonUnknownCredential)
+	}
+	if stored, err := st.GetPairingLink(link.Link.ID); err != nil || stored.RedeemedAt != 0 || stored.Settled() {
+		t.Fatalf("the link after the failure = %+v (%v), want unspent", stored, err)
+	}
+	if after := countSignInWrites(t, raw); after.devices != before.devices || after.sessions != before.sessions {
+		t.Fatalf("the failure wrote %d devices and %d sessions, want %d and %d", after.devices, after.sessions, before.devices, before.sessions)
+	}
+	if _, err := raw.Exec(`DROP TRIGGER fail_key`); err != nil {
+		t.Fatal(err)
+	}
+	if _, reason := s.RedeemPairing(RedemptionRequest{Token: link.Token, Proof: bearerProof("thumb-number")}); reason.Refused() {
+		t.Fatalf("the retry after the key recovered = %s", reason)
+	}
+}
+
 // countIntroductionWrites counts the sessions admitted to the group and the
 // confirmations recorded for linkID.
 func countIntroductionWrites(t *testing.T, raw *sql.DB, linkID string) (members, confirmed int) {
