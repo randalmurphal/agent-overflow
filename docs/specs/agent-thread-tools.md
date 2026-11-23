@@ -1463,8 +1463,10 @@ written: the queue write requires every request it answers to still be
 armed, and the unarchive is decided under the thread lock the archive
 holds. A wake already
 queued when the caller is archived or brought to rest, or when
-`StopSession` or a revert drops the caller's queue, goes back to its
-request: one transaction removes
+`StopSession` or a revert drops it from the caller's queue, goes back to
+its request (a live Codex revert that keeps its session drops only what
+its dispatch had already taken, and a wake still waiting in the queue is
+delivered after the cut): one transaction removes
 the queue row, clears its delivery and turns `notify` off, so
 `thread_status` still returns the answer and nothing reaches the
 thread at its next start. So does a wake the caller's session ended,

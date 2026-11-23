@@ -82,6 +82,7 @@ interface TurnCompleted {
   completedAt: number;
   errorMessage?: string;
   aborted?: boolean;
+  stopReason?: string;
 }
 
 /** The assistant texts of one turn of the thread, read from a bounded page. */
@@ -211,20 +212,24 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await setScenario(harness, tree.childPath, threadToolsScenario({
       name: `agents-${provider}-child-again`, provider, echoUserMessage: true, turns: [{ text: 'Back on it.' }],
     }));
-    const taken = awaitMockInput(harness, { cwd: tree.childPath, includes: 'one more thing' });
     expect(sessionStarts(harness, tree.childPath), 'a session started before the message').toBe(startsAtStop);
     const sentAt = Date.now();
-    // The follow-up's own completion: the stopped turn's, still in the
-    // event log, completed before the send.
-    const settled = harness.waitForEvent<TurnCompleted>(
-      'provider:turn_completed', (ev) => ev.threadId === started.child && ev.completedAt >= sentAt, 60_000,
-    );
     await harness.rpc('SendMessage', started.child, 'one more thing', null);
+    // The waiters read the retained event log first, so the send's events
+    // are not missed. The follow-up's own completion: the stopped turn's,
+    // still in the event log, completed before the send.
+    const [taken, followUp] = await Promise.all([
+      awaitMockInput(harness, { cwd: tree.childPath, includes: 'one more thing' }),
+      harness.waitForEvent<TurnCompleted>(
+        'provider:turn_completed', (ev) => ev.threadId === started.child && ev.completedAt >= sentAt, 60_000,
+      ),
+    ]);
     // A new session took the message, its turn settled, and it answered.
-    expect((await taken).mockId, 'the message reached a new session').not.toBe(original);
-    const followUp = await settled;
+    expect(taken.mockId, 'the message reached a new session').not.toBe(original);
     expect(followUp.aborted ?? false, 'the follow-up turn was not aborted').toBe(false);
-    expect(followUp.errorMessage ?? '', 'the follow-up turn did not fail').toBe('');
+    expect(followUp.errorMessage ?? '', 'the follow-up turn reported no error').toBe('');
+    // A provider can end a turn failed without an error message.
+    expect(followUp.stopReason ?? '', 'the follow-up turn did not fail').not.toBe('error');
     expect(await harness.rpc('HarnessThreadsWorking', [started.child]), 'the child is at rest after its answer').toEqual([]);
     expect(await turnReplies(harness, started.child, followUp.turnIndex)).toContain('Back on it.');
     // The registration report rides its own path to the event stream, so

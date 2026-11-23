@@ -1570,13 +1570,19 @@ disarmed, as the archive leaves the thread's undelivered requests
 ([agent-thread-tools.md](agent-thread-tools.md)). An Interrupt stops the turn and leaves the queue, which is delivered
 after it. `StopSession` (which a workflow's Pause and End Sessions runs
 for each member with a live session; a member without one keeps its
-queue) or a revert drops the whole queue, and returns these
+queue) drops the whole queue, and returns these
 two kinds the same way once the queue is gone: an answer or reminder to
 its request, owed and disarmed, so `thread_status` still returns it; a
 remote job's completion to its watch, whose watcher delivers it again
 and starts the session for it, as for a completion that finishes after
 the session ended. A rest dismisses the completion instead
-([At rest](#at-rest)). Ending the session does not quiet later wakes.
+([At rest](#at-rest)). A revert runs `StopSession` first, except on
+Codex. A Codex revert drops what its dispatch had already taken from the
+queue and returns the answers and completions among it the same way. A
+message still waiting in the queue stays queued for the session a live
+in-place cut keeps, and is delivered after the cut; a cut that ends the
+session drops it through that `StopSession`, which returns an answer or
+completion as above. Ending the session does not quiet later wakes.
 `StopSession` or an archive that ends a session holding such an answer
 or completion, handed to the provider and not confirmed, returns it
 too, and a rest returns the answer; a person's text joined with it stays
