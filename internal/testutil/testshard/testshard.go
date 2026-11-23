@@ -31,11 +31,12 @@ import (
 	"agent-overflow/internal/testutil/testshard/shardspec"
 )
 
-// Select restricts m's run to the tests of the shard shardspec.Env names,
-// and does nothing when it is unset. It fails the process, before any test
-// runs, when the value is malformed, when -run is also given (cmd/ao-gotest
-// never splits a run that -run narrows), or when this Go version's
-// testing.M no longer has the lists Select reads.
+// Select restricts m's run to the tests of the shard shardspec.Env names.
+// It does nothing when the variable is unset, or when -run is given: a run
+// that -run narrows is one cmd/ao-gotest never splits, such as a helper
+// process a test starts from its own binary, which inherits the variable.
+// It fails the process, before any test runs, when the value is malformed
+// or when this Go version's testing.M no longer has the lists Select reads.
 func Select(m *testing.M) {
 	spec, ok := os.LookupEnv(shardspec.Env)
 	if !ok {
@@ -63,8 +64,8 @@ func selectShard(m *testing.M, spec string) error {
 	if run == nil {
 		return fmt.Errorf("no -test.run flag to restrict (Go %s)", runtime.Version())
 	}
-	if given := run.Value.String(); given != "" {
-		return fmt.Errorf("%s=%s with -run %q: a shard runs its share of every test, so narrow a run with -run alone", shardspec.Env, spec, given)
+	if run.Value.String() != "" {
+		return nil
 	}
 	return run.Value.Set(pattern(names, shard, count))
 }

@@ -125,7 +125,7 @@ func TestSelectRunsEveryTestOfTheBinaryInOneShard(t *testing.T) {
 			all = append(all, name)
 		}
 	}
-	for _, want := range []string{"TestParse", "Example_pattern", "FuzzShardOf"} {
+	for _, want := range []string{"TestParse", "TestARunNarrowedByRunIsWhole", "Example_pattern", "FuzzShardOf"} {
 		if !slices.Contains(all, want) {
 			t.Fatalf("the listing %q lacks %s", all, want)
 		}
@@ -156,7 +156,7 @@ func TestSelectRunsEveryTestOfTheBinaryInOneShard(t *testing.T) {
 	}
 }
 
-func TestSelectRefusesAMalformedShardOrARunFilter(t *testing.T) {
+func TestSelectRefusesAMalformedShard(t *testing.T) {
 	if os.Getenv(childEnv) != "" {
 		return
 	}
@@ -168,7 +168,7 @@ func TestSelectRefusesAMalformedShardOrARunFilter(t *testing.T) {
 	}{
 		{env: "2/2", want: shardspec.Env + `="2/2"`},
 		{env: "", want: shardspec.Env + `=""`},
-		{env: "0/2", args: []string{"-test.run=TestParse"}, want: "with -run"},
+		{env: "x", args: []string{"-test.run=TestParse"}, want: shardspec.Env + `="x"`},
 	} {
 		out, err := runChild(t, []string{shardspec.Env + "=" + tc.env}, tc.args...)
 		var exit *exec.ExitError
@@ -178,6 +178,28 @@ func TestSelectRefusesAMalformedShardOrARunFilter(t *testing.T) {
 		}
 		if !strings.Contains(string(out), tc.want) || strings.Contains(string(out), "=== RUN") {
 			t.Errorf("%s=%q %v: output %q; want %q before any test runs", shardspec.Env, tc.env, tc.args, out, tc.want)
+		}
+	}
+}
+
+// TestARunNarrowedByRunIsWhole runs a test, as a helper process started
+// from a test's binary would, with -run and the shard variable it
+// inherited, and checks that every test -run names ran, whatever its
+// shard.
+func TestARunNarrowedByRunIsWhole(t *testing.T) {
+	if os.Getenv(childEnv) != "" {
+		return
+	}
+	t.Parallel()
+	for shard := range 3 {
+		out, err := runChild(t, []string{fmt.Sprintf("%s=%d/3", shardspec.Env, shard)}, "-test.v=true", "-test.run=^(TestParse|TestEveryNameRunsInExactlyOneShard)$")
+		if err != nil {
+			t.Fatalf("shard %d: %v\n%s", shard, err, out)
+		}
+		for _, name := range []string{"TestParse", "TestEveryNameRunsInExactlyOneShard"} {
+			if !strings.Contains(string(out), "=== RUN   "+name+"\n") {
+				t.Errorf("shard %d with -run: %s did not run\n%s", shard, name, out)
+			}
 		}
 	}
 }
