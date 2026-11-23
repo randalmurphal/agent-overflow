@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // TestAKilledLauncherEndsTheSuite: SIGKILL of the launcher skips its
@@ -18,12 +20,20 @@ import (
 // of a group signal. The suite receives SIGTERM from its parent-death
 // signal and stops what it started.
 func TestAKilledLauncherEndsTheSuite(t *testing.T) {
-	scratch := t.TempDir()
-	pids := filepath.Join(scratch, "suite.pids")
-	stopped := filepath.Join(scratch, "suite.stopped")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "playwright.config.ts"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pids := filepath.Join(dir, "suite.pids")
+	stopped := filepath.Join(dir, "suite.stopped")
 	// The fake suite stops its descendant on SIGTERM, as Playwright stops
 	// its workers.
-	dir, env := launcherFixture(t, `sleep 300 &
+	bin := filepath.Join(dir, "bin")
+	mockexec.WriteIn(t, bin, "pnpm", `#!/bin/sh
+case "$*" in
+  *tsc*) exit 0 ;;
+esac
+sleep 300 &
 child=$!
 trap 'kill $child; echo stopped > "$AO_TEST_SUITE_STOPPED"; exit 143' TERM
 echo "$$ $child" > "$AO_TEST_SUITE_PIDS"
@@ -35,13 +45,16 @@ wait
 	}
 	cmd := exec.Command(self, "--host-network", "--memory-limit-bytes", strconv.Itoa(256<<20))
 	cmd.Dir = dir
-	cmd.Env = append(append(os.Environ(), env...),
+	cmd.Env = append(os.Environ(),
+		runLauncherEnv+"=1",
 		"AO_TEST_SUITE_PIDS="+pids,
 		"AO_TEST_SUITE_STOPPED="+stopped,
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"XDG_CACHE_HOME="+filepath.Join(dir, "cache"),
 	)
 	// A file rather than a pipe: Wait would wait for the suite, which
 	// shares it, to close it too.
-	out, err := os.Create(filepath.Join(scratch, "out"))
+	out, err := os.Create(filepath.Join(dir, "out"))
 	if err != nil {
 		t.Fatal(err)
 	}

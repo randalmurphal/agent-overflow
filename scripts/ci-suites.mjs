@@ -33,11 +33,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 // harnessTestPackages are the packages whose test binaries the Playwright
-// suite runs (E2E_TEST_PACKAGES in cmd/ao-harness-e2e/run-inputs.mk), whose
-// test files are therefore Playwright inputs.
-export function harnessTestPackages(declaration = readFileSync(join(root, 'cmd/ao-harness-e2e/run-inputs.mk'), 'utf8')) {
+// suite runs (E2E_TEST_PACKAGES in build/test-inputs.mk), whose test files
+// are therefore Playwright inputs.
+export function harnessTestPackages(declaration = readFileSync(join(root, 'build/test-inputs.mk'), 'utf8')) {
   const line = /^E2E_TEST_PACKAGES :=(.*)$/m.exec(declaration);
-  if (!line) throw new Error('run-inputs.mk no longer sets E2E_TEST_PACKAGES');
+  if (!line) throw new Error('build/test-inputs.mk no longer sets E2E_TEST_PACKAGES');
   const packages = line[1].trim().split(/\s+/).filter(Boolean).map(pkg => pkg.replace(/^\.\//, ''));
   if (packages.length === 0 || packages.some(pkg => !/^[\w./-]+$/.test(pkg) || pkg.includes('...'))) {
     throw new Error(`E2E_TEST_PACKAGES names no plain package directories: ${line[1].trim()}`);
@@ -48,15 +48,17 @@ export function harnessTestPackages(declaration = readFileSync(join(root, 'cmd/a
 // classify names a path's class. Searched before each class was added,
 // over every suite's sources for what they read outside their own
 // directory: no Go package embeds, and no Vitest, Playwright or lint source
-// reads, a Markdown file under docs/ or a guide file (Playwright reads the
-// NDJSON captures under docs/references/fixtures, so the rest of docs/
-// falls through); Vitest and Playwright read no _test.go file but those of
+// reads, a Markdown file under docs/ or a guide file; Vitest and
+// Playwright read no _test.go file but those of
 // the harness test packages; svelte-check and the bundle read nothing
 // outside frontend/. Vitest and Playwright read testdata under internal/
 // and cmd/, which falls through to "other". Markdown elsewhere is no prose
 // class: Go embeds some (internal/workflow/starters/content, assets/).
 export function classify(path, harnessPackages) {
   const base = path.slice(path.lastIndexOf('/') + 1);
+  // The prose class, and the only one: Markdown under docs/ and the guide
+  // files. Only Markdown of docs/ because Playwright replays the NDJSON
+  // captures under docs/references/fixtures.
   if ((path.startsWith('docs/') && path.endsWith('.md')) || base === 'AGENTS.md' || base === 'CLAUDE.md' || path === 'README.md') return 'docs';
   if (path.startsWith('e2e/')) return 'e2e';
   if (path.startsWith('frontend/')) {
@@ -80,8 +82,12 @@ const reads = {
 };
 
 // upgradeLineage matches what the upgrade lineage check can break on: the
-// store, the check and its corpus, and the version bump.
-const upgradeLineage = /^(internal\/store\/|e2e\/tests\/upgrade-corpus|scripts\/release-upgrade-check\.sh$|build\/config\.yml$|frontend\/package\.json$)/;
+// store; the launcher's update commands the check migrates through
+// (main_update*.go, __update-snapshot and __update-trial-run) and the
+// reports they write (internal/supervise); the check, its corpus and its
+// update driver (e2e/tests/update-launcher-helpers.ts); and the version
+// bump.
+const upgradeLineage = /^(internal\/store\/|internal\/supervise\/|main_update[^/]*\.go$|e2e\/tests\/upgrade-corpus|e2e\/tests\/update-launcher-helpers\.ts$|scripts\/release-upgrade-check\.sh$|build\/config\.yml$|frontend\/package\.json$)/;
 
 export function suites(paths, harnessPackages) {
   const classes = new Set(paths.map(path => classify(path, harnessPackages)));

@@ -725,15 +725,12 @@ mockforge:
 # and it resolves the backend binary as its own sibling, so building the
 # two together is what makes `bin/ao-harness up` need no configuration.
 #
-# What a run of the suite reads (the binaries, the test packages built as
-# bin/ao-<name>-test, the browsers) is declared once, in run-inputs.mk.
-# harness-build records the id of the frontend/dist it embeds in
-# bin/e2e-bundle-id, so bin/ao-harness-e2e can refuse a frontend/dist the
-# binaries were not built with.
-include cmd/ao-harness-e2e/run-inputs.mk
+# The packages whose test binaries the suite runs, built as
+# bin/ao-<name>-test, and the browsers each run installs are declared in
+# build/test-inputs.mk.
+include build/test-inputs.mk
 harness-build: mockprovider mockforge $(FRONTEND_DEPS)
 	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) pnpm run build
-	mkdir -p bin && cp frontend/dist/bundle-id.txt bin/e2e-bundle-id
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/agent-overflow .
 	go build -tags noremote -ldflags "-X main.version=$(VERSION)" -o bin/agent-overflow-noremote .
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/ao-harness ./cmd/ao-harness
@@ -788,13 +785,13 @@ E2E_ARGS ?=
 e2e e2e-mobile-browser: harness-build
 	cd e2e && pnpm install --frozen-lockfile
 	$(MAKE) e2e-browsers
+	bin/ao-harness-e2e $(E2E_ARGS) $(if $(filter e2e-mobile-browser,$@),tests/compact-browser-lock.spec.ts)
 
-# e2e-browsers installs what run-inputs.mk declares for the suite; a
-# present build is skipped. CI's Playwright shards run it after the e2e
+# e2e-browsers installs the suite's browsers (E2E_BROWSERS); a present
+# build is skipped. CI's Playwright shards run it after the e2e
 # dependencies.
 e2e-browsers:
-	cd e2e && pnpm exec playwright install $(E2E_BROWSERS)
-	bin/ao-harness-e2e $(E2E_ARGS) $(if $(filter e2e-mobile-browser,$@),tests/compact-browser-lock.spec.ts)
+	scripts/playwright-browsers.sh E2E_BROWSERS
 
 # release-upgrade-check: the candidate migrates the corpus the previous
 # release published, boots on it, tops it up and archives it for the next
@@ -813,7 +810,7 @@ e2e-browsers:
 RELEASE_UPGRADE_SCALE ?= 1
 release-upgrade-check: harness-build
 	cd e2e && pnpm install --frozen-lockfile
-	cd e2e && pnpm exec playwright install $(E2E_BROWSERS_MANUAL)
+	scripts/playwright-browsers.sh E2E_BROWSERS_MANUAL
 	scripts/release-upgrade-check.sh --scale "$(RELEASE_UPGRADE_SCALE)" \
 		$(if $(PREVIOUS_RELEASE),--previous "$(PREVIOUS_RELEASE)") \
 		$(if $(RELEASE_UPGRADE_BOOTSTRAP),--bootstrap) \

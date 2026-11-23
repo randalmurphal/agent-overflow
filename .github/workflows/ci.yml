@@ -303,10 +303,6 @@ jobs:
     if: fromJSON(needs.toolchain.outputs.plan || '{}')['vitest']
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: read
-      actions: write
     container:
       image: ${{ needs.toolchain.outputs.image }}
       credentials:
@@ -320,7 +316,7 @@ jobs:
           - project: unit
             browsers: ""
           - project: browser
-            browsers: chromium
+            browsers: VITEST_BROWSERS
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -365,7 +361,7 @@ jobs:
           e2e-deps: "true"
           cache-name: harness
       - run: make harness-build
-      - name: Typecheck the Playwright suite once for every shard
+      - name: Typecheck the Playwright suite before packing it
         run: bin/ao-harness-e2e --typecheck
       - name: Pack what a Playwright run reads
         run: tar --zstd -cf "$RUNNER_TEMP/harness-bin.tar.zst" bin frontend/dist
@@ -379,15 +375,17 @@ jobs:
       - uses: ./.github/actions/cache-save
 
   # A shard runs bin/ao-harness-e2e from the harness build, Playwright from
-  # e2e/node_modules, and the browsers run-inputs.mk declares: the image
-  # carries all but the regular Chromium build, which make e2e-browsers
-  # installs. The launcher's preflight names any input that is missing.
+  # e2e/node_modules, and the suite's browsers (E2E_BROWSERS in
+  # build/test-inputs.mk): the image carries all but the regular Chromium
+  # build, which make e2e-browsers installs after the unpack.
   e2e:
     name: Playwright harness suite (shard ${{ matrix.shard }} of 8)
     needs: [toolchain, harness-build]
     if: fromJSON(needs.toolchain.outputs.plan || '{}')['e2e']
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      AO_E2E_TYPECHECKED: "1"
     container:
       image: ${{ needs.toolchain.outputs.image }}
       credentials:
@@ -409,7 +407,7 @@ jobs:
       - name: Require the harness build
         if: steps.harness.outcome != 'success'
         run: |
-          echo "::error title=Harness build missing::This run's harness-bin artifact is gone (it lives 7 days) or was never uploaded. Re-running failed jobs does not rebuild it: re-run all jobs."
+          echo "::error title=Harness build missing::This run's harness-bin artifact is gone (it lives 7 days) or was never uploaded. Re-running failed jobs does not rebuild it: re-run the Harness build job, which re-runs the jobs that need it."
           exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -417,9 +415,9 @@ jobs:
           node: "true"
           e2e-deps: "true"
           netns: "true"
-      - run: make e2e-browsers
       - name: Unpack the harness build
         run: tar --zstd -xf "$RUNNER_TEMP/harness-bin.tar.zst"
+      - run: make e2e-browsers
       - run: bin/ao-harness-e2e --shard=${{ matrix.shard }}/8
         env:
           AO_E2E_WORKERS: "3"
@@ -447,6 +445,8 @@ jobs:
     if: fromJSON(needs.toolchain.outputs.plan || '{}')['upgrade-lineage']
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    env:
+      AO_E2E_TYPECHECKED: "1"
     container:
       image: ${{ needs.toolchain.outputs.image }}
       credentials:
@@ -464,7 +464,7 @@ jobs:
       - name: Require the harness build
         if: steps.harness.outcome != 'success'
         run: |
-          echo "::error title=Harness build missing::This run's harness-bin artifact is gone (it lives 7 days) or was never uploaded. Re-running failed jobs does not rebuild it: re-run all jobs."
+          echo "::error title=Harness build missing::This run's harness-bin artifact is gone (it lives 7 days) or was never uploaded. Re-running failed jobs does not rebuild it: re-run the Harness build job, which re-runs the jobs that need it."
           exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -474,6 +474,7 @@ jobs:
           netns: "true"
       - name: Unpack the harness build
         run: tar --zstd -xf "$RUNNER_TEMP/harness-bin.tar.zst"
+      - run: scripts/playwright-browsers.sh --with-deps E2E_BROWSERS_MANUAL
       - name: Migrate the newest release's corpus with this build
         env:
           GH_TOKEN: ${{ github.token }}

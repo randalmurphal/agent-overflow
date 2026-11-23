@@ -26,7 +26,7 @@ inputs:
     description: Install e2e dependencies (e2e/).
     default: "false"
   browsers:
-    description: Playwright browsers to provide, space separated (chromium, webkit), with OS dependencies. Empty provides none.
+    description: A browser set of build/test-inputs.mk to provide, with its OS libraries. Empty provides none.
     default: ""
   netns:
     description: Allow the isolated test network namespace (unprivileged user namespaces, dummy link type).
@@ -146,10 +146,13 @@ runs:
         key: ${{ env.AO_CACHE_PNPM_KEY }}
         restore-keys: ${{ env.AO_CACHE_PNPM_RESTORE }}
 
-    # The bundle is a function of frontend/ alone, so it is restored only
-    # for the exact git tree of frontend/ that a push to main built. When
-    # this job's frontend/ matches one, the job skips the install and the
-    # build; otherwise it builds as before.
+    # The build reads frontend/ and nothing outside it, but a build that is
+    # not a release stamps its version with the build time, so two builds
+    # of one tree differ. The bundle a push to main built is restored for
+    # exactly the files the build reads, guide files aside
+    # (scripts/ci-cache.mjs bundleSource). When this job's files match one,
+    # the job skips the install and the build; otherwise it builds as
+    # before.
     - name: Restore the frontend bundle
       if: env.AO_CACHE_FRONTEND_DIST_KEY != ''
       id: frontend-dist
@@ -200,28 +203,12 @@ runs:
       shell: bash
       run: pnpm --dir e2e install --frozen-lockfile
 
+    # The one installer (scripts/playwright-browsers.sh): in the image the
+    # set is present and this downloads nothing; off it, or past its pin,
+    # it downloads what is missing and the OS libraries that needs.
     - name: Provide Playwright browsers
       if: inputs.browsers != ''
       shell: bash
       env:
         BROWSERS: ${{ inputs.browsers }}
-      run: |
-        set -euo pipefail
-        # The frontend and e2e lockfiles pin the same Playwright; the e2e
-        # package owns the CLI here. The suites run headless without a
-        # channel, so Chromium is the headless shell only, as in the image.
-        # `install` is a no-op for a browser build that is already present
-        # and downloads a missing one, after which the OS libraries that
-        # build needs are installed too. Only the Linux jobs ask for
-        # browsers, and the image carries them at its pin.
-        dir=e2e
-        if [[ ! -d e2e/node_modules ]]; then dir=frontend; fi
-        root=${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}
-        before=$(ls -1 "$root" 2>/dev/null | sort || true)
-        # shellcheck disable=SC2086
-        pnpm --dir "$dir" exec playwright install --only-shell $BROWSERS
-        after=$(ls -1 "$root" | sort)
-        if [[ "$before" != "$after" ]]; then
-          # shellcheck disable=SC2086
-          pnpm --dir "$dir" exec playwright install-deps $BROWSERS
-        fi
+      run: scripts/playwright-browsers.sh --with-deps "$BROWSERS"

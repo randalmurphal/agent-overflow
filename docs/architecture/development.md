@@ -136,29 +136,34 @@ shard also runs `make script-tests`. `CI result` passes only when every
 job the plan selected succeeded and every job it excluded was skipped, so
 a selected job that was skipped fails the run.
 
-`cmd/ao-harness-e2e/run-inputs.mk` declares what a Playwright run needs:
-the binaries, the test binaries of the packages the suite runs, and the
-browsers of each kind of run. The Makefile, the toolchain image and the
-plan read it, and `bin/ao-harness-e2e` checks it before a run: a missing
-binary, a `frontend/dist` other than the one the binaries embed, or a
-missing browser fails in seconds and is named. The launcher typechecks the
-suite and records the pass in `bin/`; a run whose suite and the files tsc
-read are unchanged skips the check. The harness build typechecks once and
-uploads `bin/` and `frontend/dist`, kept 7 days, so no shard compiles,
-bundles or typechecks. Re-running failed jobs reuses the run's artifact,
-so after 7 days a shard fails at its first step and says to re-run all
-jobs. The image carries the headless shell and WebKit; each Playwright
-shard installs the regular Chromium build with `make e2e-browsers`, which
-saves every other Linux job pulling it in the image.
+The harness build job builds the binaries and the `frontend/dist` they
+embed, typechecks the suite with `bin/ao-harness-e2e --typecheck`, and
+only then packs both into one artifact, kept 7 days, so a type error
+publishes nothing. The Playwright shards and `upgrade-lineage` run that
+artifact with `AO_E2E_TYPECHECKED=1`, which makes the launcher skip its
+typecheck, so no shard compiles, bundles or typechecks. Elsewhere the
+launcher always typechecks, with tsc's incremental state under
+`e2e/node_modules/.cache`. Re-running failed jobs reuses the run's
+artifact; after 7 days a shard fails at its first step and says to re-run
+the harness build job, which re-runs the jobs that need it.
+
+`build/test-inputs.mk` declares the test packages the Playwright suite
+runs and each browser set. `scripts/playwright-browsers.sh SET` is the one
+installer: the image installs `CI_IMAGE_BROWSERS` through it with the OS
+libraries, `.github/actions/setup` installs a job's set (a no-op on the
+image), and the Make targets install theirs (`make e2e-browsers`, `make
+release-upgrade-check`). The image carries the headless shell and WebKit;
+each Playwright shard installs the regular Chromium build after it
+unpacks the artifact, which saves every other Linux job pulling 403 MiB
+more in the image.
 
 The branch ruleset requires `CI result` alone. Moving a repository from
 per-job required checks to it is a step of this migration in the
 repository's settings: remove the old required checks and add `CI result`.
 
 The Linux jobs run in the toolchain image, `ghcr.io/<repo>/ci-toolchain`,
-built from `ci/Dockerfile`: Go, Node, pnpm, the GTK headers, the Playwright
-browsers with their OS libraries (Chromium as the headless shell the
-suites run), the Wails CLI, golangci-lint, the pnpm store and a Go module
+built from `ci/Dockerfile`: Go, Node, pnpm, the GTK headers, the
+`CI_IMAGE_BROWSERS` set with its OS libraries, the Wails CLI, golangci-lint, the pnpm store and a Go module
 cache holding what the tree imports under every tag set the Make targets
 use. The Make test targets prefetch that same set before entering the
 network namespace. A job pulls that one image instead of apt, the Go
@@ -183,15 +188,18 @@ through `.github/actions/cache-save` as the job's last step.
 restore and the save. The Go build cache has one slot per job; a pull
 request restores the newest `main` entry of its slot, and a push saves the
 entries that job used (`scripts/ci-go-cache.mjs`). Off the image a job
-also caches the Go module cache and the pnpm store. Each save then retires
-its slot's entries from before the run, so the jobs that save need
-`actions: write`; GitHub grants a job's permissions for every event, and
-only a push uses this one. The jobs that compile the root package, which
-embeds `frontend/dist`, restore the bundle keyed by the git tree of
-`frontend/`. When `frontend/` matches a tree `main` has built, the job
-skips the install and the build; otherwise it builds as before. The `store`
-and `rest` Go test shards neither compile nor link the root package, so
-they set up no bundle. The Go test cache then
+also caches the Go module cache and the pnpm store. A save deletes
+nothing: `cache-cleanup`, the push's last job and the only one with
+`actions: write`, retires every slot's older entries. The jobs that
+compile or list the root package, which embeds `frontend/dist`, restore
+the bundle keyed by every file of `frontend/` the build reads, guide files
+aside. When those match what `main` has built, the job skips the install
+and the build; otherwise it builds as before. Two builds of one tree
+differ, since a build that is not a release stamps its version with the
+build time, and a job that sets a variable changing the build
+(`AO_RELEASE_BUILD`, `AO_SOURCEMAP`, the UI trace and oracle flags) is
+refused the cached bundle. The `store` Go test shard neither compiles
+nor lists the root package, so it sets up no bundle. The Go test cache then
 reports a package as `(cached)` when its code, its dependencies and the
 files its tests read are unchanged; `scripts/ci-stable-mtimes.mjs` sets the
 checkout's file times from content first, since Go compares a read file by
@@ -206,10 +214,11 @@ and `internal/netisolate` rerun on every run: their tests read
 `AO_NETISOLATE_NS`, which names the run's own network namespace.
 `make go-test-noremote` runs, with `-tags noremote`, every package whose
 test binary the tag changes ([noremote build](noremote-build.md#testing)).
-`cache-cleanup` retires what a save's retire could not and the key shapes
-this pipeline used before `ao-ci-`, never another key, and fails when the
-caches, this pipeline's and others' counted apart, pass 8 GB of GitHub's
-10 GB (`scripts/ci-cache-cleanup.mjs`). `codeql.yml` scans Go and
+`cache-cleanup` keeps each slot's newest entry, retires the rest, the key
+shapes this pipeline used before `ao-ci-` and entries of a slot it no
+longer names, never another key, and fails when two generations of this
+pipeline's caches plus all others pass GitHub's 10 GB: a push's saves
+hold both generations until it runs (`scripts/ci-cache-cleanup.mjs`). `codeql.yml` scans Go and
 TypeScript; `dependabot.yml` opens only security updates for Go, npm,
 Gradle and actions; `dependency-review-action` checks pull request
 dependency changes.

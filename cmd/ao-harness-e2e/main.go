@@ -53,8 +53,8 @@ const (
 	modeTests runMode = iota
 	modeFlow
 	modeFreeze
-	// modeTypecheck checks the suite's types, records the pass and exits:
-	// CI's harness build, so no shard checks again (typecheck.go).
+	// modeTypecheck typechecks the suite and exits: CI's harness build,
+	// before it packs the artifact the Playwright jobs run (typecheck.go).
 	modeTypecheck
 )
 
@@ -107,24 +107,16 @@ func run(args []string, stdout, stderr *os.File) int {
 		return 1
 	}
 
-	root := filepath.Dir(testDir)
 	if opts.mode == modeTypecheck {
-		if err := typecheck(root, testDir, stdout); err != nil {
+		if code, err := typecheck(testDir, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, "ao-harness-e2e:", err)
-			return 1
+			return code
 		}
 		return 0
 	}
-	inputs, err := parseRunInputs(runInputsMk)
-	if err == nil {
-		err = preflight(root, testDir, opts, inputs, playwrightInstalls)
-	}
-	if err == nil {
-		err = ensureTypechecked(root, testDir, stdout)
-	}
-	if err != nil {
+	if code, err := ensureTypechecked(testDir, stdout, stderr); err != nil {
 		fmt.Fprintln(stderr, "ao-harness-e2e:", err)
-		return 1
+		return code
 	}
 	isolate := needsIsolation(opts.hostNetwork, netisolate.Inside())
 	if isolate {

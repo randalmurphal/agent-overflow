@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { readFileSync, readdirSync } from 'node:fs';
 import { harnessTestPackages, jobs, plan, suites, verdict } from './ci-suites.mjs';
 
 const harness = harnessTestPackages('# packages\nE2E_TEST_PACKAGES := ./internal/frontendclient ./internal/store\n');
@@ -10,7 +11,7 @@ const none = { 'go-checks': false, 'go-lint': false, frontend: false, vitest: fa
 test('the run declaration names the harness test packages', () => {
   assert.deepEqual(harness, ['internal/frontendclient', 'internal/store']);
   assert.ok(harnessTestPackages().length > 0);
-  assert.throws(() => harnessTestPackages('E2E_COMMANDS := x\n'), /no longer sets E2E_TEST_PACKAGES/);
+  assert.throws(() => harnessTestPackages('E2E_BROWSERS := x\n'), /no longer sets E2E_TEST_PACKAGES/);
   assert.throws(() => harnessTestPackages('E2E_TEST_PACKAGES := ./internal/...\n'), /no plain package directories/);
 });
 
@@ -52,10 +53,11 @@ test('a path no class matches runs everything', () => {
 
 test('the upgrade lineage check runs for the store, its corpus, the check and the version', () => {
   for (const path of ['internal/store/migrations.go', 'e2e/tests/upgrade-corpus-config.ts', 'scripts/release-upgrade-check.sh',
-    'build/config.yml', 'frontend/package.json']) {
+    'build/config.yml', 'frontend/package.json', 'main_update.go', 'main_update_apply.go', 'internal/supervise/events.go',
+    'e2e/tests/update-launcher-helpers.ts']) {
     assert.equal(run([path])['upgrade-lineage'], true, path);
   }
-  for (const path of ['internal/storex/x.go', 'e2e/tests/pane-find.spec.ts', 'frontend/package-lock.json']) {
+  for (const path of ['internal/storex/x.go', 'e2e/tests/pane-find.spec.ts', 'frontend/package-lock.json', 'main_updatex/x.go', 'main.go']) {
     assert.equal(run([path])['upgrade-lineage'], false, path);
   }
 });
@@ -91,18 +93,27 @@ test('the verdict holds each job to the plan', () => {
   assert.deepEqual(verdict(JSON.stringify(selected), withoutVitest), ["vitest: missing from the result job's needs, the plan excluded it"]);
 });
 
-// ciJobs reads ci.yml's jobs: each one's id, needs and if.
-function ciJobs() {
-  const text = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+// workflowJobs reads a workflow's jobs: each one's id, needs, if, env,
+// permissions and steps, by the indentation ci.yml keeps.
+function workflowJobs(file) {
+  const text = readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8');
   const body = text.slice(text.indexOf('\njobs:\n'));
   const found = {};
   for (const block of body.split(/\n(?=  [a-z0-9-]+:\n)/).slice(1)) {
     const id = /^  ([a-z0-9-]+):/.exec(block)[1];
     const needs = /\n    needs: (\[[^\]]*\]|[a-z0-9-]+)\n/.exec(block)?.[1] ?? '';
-    found[id] = { needs: needs.replace(/[[\]\s]/g, '').split(',').filter(Boolean), if: /\n    if: (.*)\n/.exec(block)?.[1] ?? '' };
+    const section = name => new RegExp(`\\n    ${name}:\\n((?:      .*\\n|\\s*\\n)*)`).exec(block + '\n')?.[1] ?? '';
+    found[id] = {
+      needs: needs.replace(/[[\]\s]/g, '').split(',').filter(Boolean),
+      if: /\n    if: (.*)\n/.exec(block)?.[1] ?? '',
+      env: section('env'),
+      permissions: section('permissions'),
+      steps: section('steps').split(/\n(?=      - )/).filter(step => step.trim()),
+    };
   }
   return found;
 }
+const ciJobs = () => workflowJobs('ci.yml');
 
 test('every job ci.yml runs follows its own key of the plan, and the result job needs them all', () => {
   const found = ciJobs();
@@ -113,4 +124,69 @@ test('every job ci.yml runs follows its own key of the plan, and the result job 
     assert.ok(found[id].if.includes(`fromJSON(needs.toolchain.outputs.plan || '{}')['${id}']`), `${id}: if: ${found[id].if}`);
   }
   assert.deepEqual(found['ci-result'].needs.sort(), ['toolchain', ...decided].sort());
+  // It runs whatever the others did, and it is the verdict that fails it.
+  assert.equal(found['ci-result'].if, 'always()');
+  assert.ok(found['ci-result'].steps.some(step => /run: node scripts\/ci-suites\.mjs verdict\n/.test(step + '\n')), 'ci-result runs the verdict');
+});
+
+// launches names a step that starts the Playwright launcher, directly or
+// through the script that does.
+const launches = step => /bin\/ao-harness-e2e(?! --typecheck)|release-upgrade-check\.sh|make e2e(?!-browsers)/.test(step);
+
+// runsArtifact is whether a job downloads the harness build's artifact.
+const runsArtifact = job => job.steps.some(step => step.includes('uses: actions/download-artifact') && step.includes('name: harness-bin'));
+
+test('a job that runs the harness build unpacks it first and runs it once', () => {
+  const found = ciJobs();
+  const runners = Object.keys(found).filter(id => runsArtifact(found[id]));
+  assert.deepEqual(runners.sort(), ['e2e', 'upgrade-lineage']);
+  for (const id of runners) {
+    assert.ok(found[id].needs.includes('harness-build'), `${id} needs harness-build`);
+    const unpack = found[id].steps.findIndex(step => step.includes('tar --zstd -xf'));
+    const runs = found[id].steps.map((step, i) => launches(step) ? i : -1).filter(i => i >= 0);
+    assert.ok(unpack >= 0, `${id} unpacks the harness build`);
+    assert.equal(runs.length, 1, `${id} runs the launcher once: ${runs}`);
+    assert.ok(runs[0] > unpack, `${id} runs the launcher at step ${runs[0]}, before the unpack at ${unpack}`);
+  }
+});
+
+test('make e2e-browsers installs and runs nothing; the run targets run their own specs', () => {
+  const dry = target => execFileSync('make', ['-s', '-n', target], { cwd: new URL('..', import.meta.url), encoding: 'utf8' });
+  assert.doesNotMatch(dry('e2e-browsers'), /ao-harness-e2e/);
+  const launch = target => dry(target).split('\n').filter(line => line.startsWith('bin/ao-harness-e2e'));
+  const mobile = launch('e2e-mobile-browser');
+  assert.equal(mobile.length, 1);
+  assert.match(mobile[0], /tests\/compact-browser-lock\.spec\.ts$/);
+  const full = launch('e2e');
+  assert.equal(full.length, 1);
+  assert.doesNotMatch(full[0], /\.spec\.ts/);
+});
+
+test('only the jobs that run the typechecked artifact skip the typecheck, and the build checks before it packs', () => {
+  const found = ciJobs();
+  for (const [id, job] of Object.entries(found)) {
+    const named = /AO_E2E_TYPECHECKED/.test(job.env) || job.steps.some(step => step.includes('AO_E2E_TYPECHECKED'));
+    if (named) {
+      assert.ok(job.needs.includes('harness-build') && runsArtifact(job), `${id} sets AO_E2E_TYPECHECKED without running the harness build's artifact`);
+      assert.match(job.env, /^      AO_E2E_TYPECHECKED: "1"$/m, `${id} sets it at job level`);
+    } else {
+      assert.ok(!runsArtifact(job), `${id} runs the artifact and typechecks again`);
+    }
+  }
+  const steps = found['harness-build'].steps;
+  const check = steps.findIndex(step => step.includes('bin/ao-harness-e2e --typecheck'));
+  const pack = steps.findIndex(step => step.includes('tar --zstd -cf'));
+  assert.ok(check >= 0 && pack > check, `harness-build typechecks at step ${check} and packs at ${pack}`);
+});
+
+test('no job a pull request can run holds actions: write', () => {
+  const writers = [];
+  for (const file of readdirSync(new URL('../.github/workflows/', import.meta.url)).filter(name => name.endsWith('.yml'))) {
+    for (const [id, job] of Object.entries(workflowJobs(file))) {
+      if (/actions: write/.test(job.permissions)) writers.push(`${file}:${id}`);
+    }
+  }
+  assert.deepEqual(writers, ['ci.yml:cache-cleanup']);
+  assert.equal(plan('pull_request', ['Makefile'], harness)['cache-cleanup'], false);
+  assert.equal(plan('workflow_dispatch', undefined, harness)['cache-cleanup'], false);
 });

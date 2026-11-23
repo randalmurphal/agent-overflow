@@ -22,7 +22,7 @@ ARG GO_VERSION
 ARG NODE_VERSION=24.22.2
 ARG PNPM_VERSION
 ARG PLAYWRIGHT_VERSION
-ARG PLAYWRIGHT_BROWSERS
+ARG PLAYWRIGHT_INSTALL
 ARG GH_VERSION=2.102.0
 ARG TARGETARCH=amd64
 
@@ -66,17 +66,13 @@ ENV PATH=/opt/ao-toolchain/bin:/usr/local/go/bin:$PATH \
 RUN mkdir -p /opt/ao-toolchain/bin /var/cache/go-mod /var/cache/pnpm /var/cache/pnpm-meta /opt/ms-playwright \
     && chown runner:runner /opt/ao-toolchain/bin /var/cache/go-mod /var/cache/pnpm /var/cache/pnpm-meta /opt/ms-playwright
 
-# The browsers a Playwright harness run declares
-# (cmd/ao-harness-e2e/run-inputs.mk), with their OS libraries, at the
-# pinned version, but for the regular Chromium build: --only-shell keeps
-# Chromium to the headless shell, which every browser job uses. The regular
-# build, which only the harness suite's lifecycle specs launch, is about
-# 190 MiB that every Linux job would pull; the Playwright shards install it
-# (make e2e-browsers).
-RUN npx --yes "playwright@${PLAYWRIGHT_VERSION}" install-deps ${PLAYWRIGHT_BROWSERS} \
-    && rm -rf /var/lib/apt/lists/* \
-    && su runner -c "npx --yes playwright@${PLAYWRIGHT_VERSION} install --only-shell ${PLAYWRIGHT_BROWSERS}" \
-    && rm -rf /home/runner/.npm
+# The CI_IMAGE_BROWSERS set (build/test-inputs.mk) with its OS libraries,
+# at the pinned version, through the one installer. ci/toolchain-inputs.sh
+# puts both files' digest in the image's name.
+COPY --chown=runner:runner build/test-inputs.mk /opt/ao-browsers/build/
+COPY --chown=runner:runner scripts/playwright-browsers.sh /opt/ao-browsers/scripts/
+RUN su runner -c "PLAYWRIGHT_CLI='npx --yes playwright@${PLAYWRIGHT_VERSION}' /opt/ao-browsers/scripts/playwright-browsers.sh --with-deps CI_IMAGE_BROWSERS" \
+    && rm -rf /var/lib/apt/lists/* /home/runner/.npm /opt/ao-browsers
 
 USER runner
 
