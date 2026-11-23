@@ -611,8 +611,9 @@ export function BypassPRRequestedChanges(pr: git$0.PRReference): $CancellablePro
  * CancelDevicePairing refuses a link and revokes whatever a redemption
  * already created — the number did not match, or the link was minted by
  * mistake. Every owner cancellation goes through the computer pairing book
- * (Book.CancelLink): a link a window minted retires that window, with its
- * LAN responders, and any other is canceled directly.
+ * (Book.CancelLink), whose one cancellation (cancelComputerPairingLink)
+ * answers it: a link a window minted retires that window, with its LAN
+ * responders, and any other is canceled directly.
  */
 export function CancelDevicePairing(linkID: string): $CancellablePromise<void> {
     return $Call.ByID(2608316491, linkID);
