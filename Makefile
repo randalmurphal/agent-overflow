@@ -191,6 +191,9 @@ NETNS := $(CURDIR)/bin/ao-netns
 go-prefetch = go list -e -deps -test $(1) tool > /dev/null
 GO_TEST_PKGS ?= $(GO_PACKAGE_ROOTS)
 GO_TEST_FLAGS ?=
+# GO_TEST_TAGS are build tags for every Go command go-test starts: the
+# package list, the prefetch and the tests.
+GO_TEST_TAGS ?=
 
 include build/go-build-tool.mk
 
@@ -230,28 +233,36 @@ GO_TEST_EXCLUDE ?=
 # listing; Go keys a cached test result by that listing, so every test that
 # lists the root would rerun after any other package's run. Test binaries
 # carry no VCS stamp either way.
+go-test-tags = $(if $(GO_TEST_TAGS),-tags $(GO_TEST_TAGS))
 go-test go-test-noremote test-race: override GOFLAGS := $(filter-out -buildvcs=false,$(GOFLAGS)) -buildvcs=false
 go-test: netns-tool gocache-trim-tool
 	@set -e; $(gocache-trim-around); \
-	packages=$$(go list $(GO_TEST_PKGS)); \
+	packages=$$(go list $(go-test-tags) $(GO_TEST_PKGS)); \
 	if [ -n "$(GO_TEST_EXCLUDE)" ]; then packages=$$(printf '%s\n' $$packages | grep -vE '$(GO_TEST_EXCLUDE)' || true); fi; \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
-	$(call go-prefetch,$(GO_PACKAGE_ROOTS)); \
-	$(NETNS) go test -timeout 30m $(GO_TEST_FLAGS) $$packages
+	$(call go-prefetch,$(go-test-tags) $(GO_PACKAGE_ROOTS)); \
+	$(NETNS) go test -timeout 30m $(go-test-tags) $(GO_TEST_FLAGS) $$packages
 
 # go-test-noremote runs, compiled with -tags noremote
 # (docs/architecture/noremote-build.md), every package whose test binary the
-# tag changes: one that links a package whose own files differ under the
-# tag, that package included. A package's imports change only with its
+# tag changes: one that links a package whose files differ under the tag,
+# that package included. GO_FILE_SET is every file a build constraint
+# selects, embeds included; a package's imports change only with those
 # files, so any other test binary is the one `make go-test` already ran.
+# Each go list is its own assignment, so set -e stops on its failure.
 # GO_TEST_FLAGS adds flags as for go-test, but not tags: this target owns
-# them, and a caller's -tags would replace noremote.
-GO_FILE_SET := {{.ImportPath}} {{.GoFiles}} {{.CgoFiles}} {{.TestGoFiles}} {{.XTestGoFiles}}
+# them, and a caller's tags would replace noremote.
+GO_FILE_SET := {{.ImportPath}} {{.GoFiles}} {{.CgoFiles}} {{.CFiles}} {{.CXXFiles}} {{.HFiles}} {{.SFiles}} {{.SysoFiles}} {{.EmbedFiles}} {{.TestGoFiles}} {{.XTestGoFiles}} {{.TestEmbedFiles}} {{.XTestEmbedFiles}}
+GO_TEST_MAINS := {{if eq .Name "main"}}{{.ImportPath}}{{range .Deps}}|{{.}}{{end}}{{"\n"}}{{end}}
 go-test-noremote:
 	@set -e; \
 	case ' $(GO_TEST_FLAGS) ' in *' -tags'*|*' --tags'*) echo "ERROR: go-test-noremote sets the tags itself and cannot add others (GO_TEST_FLAGS=$(GO_TEST_FLAGS))"; exit 2;; esac; \
-	differ=$$( { go list -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS); go list -tags noremote -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS); } | sort | uniq -u | cut -d' ' -f1 | sort -u ); \
-	packages=$$(go list -tags noremote -deps -test -f '{{.ImportPath}}{{range .Deps}}|{{.}}{{end}}' $(GO_PACKAGE_ROOTS) | awk -F'|' -v differ="$$differ" ' \
+	if [ -n "$(GO_TEST_TAGS)" ]; then echo "ERROR: go-test-noremote sets the tags itself and cannot add others (GO_TEST_TAGS=$(GO_TEST_TAGS))"; exit 2; fi; \
+	plain=$$(go list -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS)); \
+	tagged=$$(go list -tags noremote -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS)); \
+	mains=$$(go list -tags noremote -test -f '$(GO_TEST_MAINS)' $(GO_PACKAGE_ROOTS)); \
+	differ=$$(printf '%s\n%s\n' "$$plain" "$$tagged" | sort | uniq -u | cut -d' ' -f1 | sort -u); \
+	packages=$$(printf '%s\n' "$$mains" | awk -F'|' -v differ="$$differ" ' \
 		BEGIN { n = split(differ, list, "\n"); for (i = 1; i <= n; i++) changed[list[i]] = 1 } \
 		$$1 ~ /^agent-overflow(\/.*)?\.test$$/ { \
 			pkg = substr($$1, 1, length($$1) - 5); hit = (pkg in changed); \
@@ -259,7 +270,7 @@ go-test-noremote:
 			if (hit) print pkg }' | sort -u); \
 	if [ -z "$$packages" ]; then echo "ERROR: no test binary changes under -tags noremote"; exit 1; fi; \
 	echo "go-test-noremote: $$(echo "$$packages" | wc -l) packages:" $$packages; \
-	$(MAKE) go-test GO_TEST_PKGS="$$(echo $$packages)" GO_TEST_FLAGS='-tags noremote $(GO_TEST_FLAGS)'
+	$(MAKE) go-test GO_TEST_PKGS="$$(echo $$packages)" GO_TEST_TAGS=noremote
 
 # Static checks. Each is one CI job (.github/workflows/ci.yml) and runs the
 # same way here. go-lint runs golangci-lint at the pinned version, installed
