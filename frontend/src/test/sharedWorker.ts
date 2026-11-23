@@ -1,8 +1,9 @@
 // Setup for the `unit` project, whose workers run many files in one process
-// against one happy-dom window (vitest.config.ts). The first setup file, so
-// it tracks what setup.ts's imports install and its afterAll runs after
-// setup.ts's hooks and the file's own. sharedWorkerStart.ts, the last setup
-// file, records what the test file starts from.
+// against one happy-dom window (vitest.config.ts). The first setup file
+// after sharedWorkerEndPrevious.ts, so it tracks what setup.ts's imports
+// install and its afterAll runs after setup.ts's hooks and the file's own.
+// sharedWorkerStart.ts, the last setup file, records what the test file
+// starts from.
 //
 // Each file leaves the worker as a fresh worker would find it:
 //   - app modules are re-evaluated for the next file (`vi.resetModules`),
@@ -14,7 +15,7 @@
 //   - a file that replaces a global, a DOM prototype member or a host
 //     object property must put it back itself; sharedGlobals.ts fails the
 //     file that leaves one changed.
-import { afterAll, vi } from 'vitest';
+import { afterAll, expect, vi } from 'vitest';
 import { sharedGlobalChanges, snapshotSharedGlobals, type SharedGlobalsSnapshot } from './sharedGlobals';
 
 type TrackedListener = {
@@ -29,6 +30,9 @@ type FileResources = {
 };
 
 const RESOURCES = Symbol.for('agent-overflow.test.sharedWorkerResources');
+// The end step of the file whose setup ran and whose end has not
+// (sharedWorkerEndPrevious.ts names the same key).
+const UNENDED_FILE = Symbol.for('agent-overflow.test.sharedWorkerUnendedFile');
 
 // happy-dom's control API on the environment's window.
 const happyDOM = (window as unknown as { happyDOM: { abort(): Promise<void>; setURL(url: string): void } }).happyDOM;
@@ -129,7 +133,8 @@ function releaseFileResources(resources: FileResources): void {
   for (const handle of resources.timers) clearTimeout(handle);
   resources.timers.clear();
   for (const [listener, entries] of resources.listeners) {
-    for (const { target, type, capture } of [...entries]) target.removeEventListener(type, listener, capture);
+    // A copy: the removeEventListener wrapper splices `entries`.
+    for (const { target, type, capture } of entries.slice()) target.removeEventListener(type, listener, capture);
   }
   resources.listeners.clear();
 }
@@ -152,6 +157,7 @@ function resetDocument(href: string): void {
 }
 
 const resources = workerResources();
+const file = expect.getState().testPath;
 let fileStart: { readonly globals: SharedGlobalsSnapshot; readonly href: string } | null = null;
 
 /** Called by sharedWorkerStart.ts once setup.ts has run, before the test
@@ -160,9 +166,18 @@ export function startSharedWorkerFile(): void {
   fileStart = { globals: snapshotSharedGlobals(), href: location.href };
 }
 
-afterAll(async () => {
+// This file's end step. Vitest runs no afterAll in a file that runs no
+// test (every test skipped, or the file failed to load), so the step waits
+// on the worker until the next file's first setup file,
+// sharedWorkerEndPrevious.ts, runs it.
+const worker = globalThis as { [UNENDED_FILE]?: () => Promise<void> };
+worker[UNENDED_FILE] = endFile;
+afterAll(endFile);
+
+async function endFile(): Promise<void> {
+  worker[UNENDED_FILE] = undefined;
   const start = fileStart;
-  if (start === null) throw new Error('sharedWorkerStart.ts must be the last setup file of the unit project');
+  if (start === null) throw new Error(`sharedWorkerStart.ts did not run for ${file}: it must be the last setup file of the unit project`);
   // Stubs and spies taken over fake timers come off before the timers do.
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
@@ -178,7 +193,7 @@ afterAll(async () => {
   const changes = sharedGlobalChanges(start.globals);
   if (changes.length > 0) {
     throw new Error(
-      `This file left shared globals changed for the next file in its worker; restore them in afterEach or afterAll, or use vi.stubGlobal: ${changes.join('; ')}`,
+      `${file} left shared globals changed for the next file in its worker; restore them in afterEach or afterAll, or use vi.stubGlobal: ${changes.join('; ')}`,
     );
   }
-});
+}

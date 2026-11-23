@@ -160,7 +160,7 @@ export default defineConfig({
           // sharedWorker.ts returns each file's worker to the state a fresh
           // one would have, and fails a file that leaves a global changed.
           isolate: false,
-          setupFiles: ['./src/test/sharedWorker.ts', ...unitTestOptions.setupFiles, './src/test/sharedWorkerStart.ts'],
+          setupFiles: ['./src/test/sharedWorkerEndPrevious.ts', './src/test/sharedWorker.ts', ...unitTestOptions.setupFiles, './src/test/sharedWorkerStart.ts'],
           include: unitInclude,
           exclude: [...unitExclude, ...moduleMockFiles],
         },
