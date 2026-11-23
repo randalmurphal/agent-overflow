@@ -60,6 +60,7 @@
     writeMermaidRenderedHeight,
   } from './renderedHeightCache';
   import { createRenderedHeightRecorder } from './renderedHeightMeasurement';
+  import { watchIslandSettled } from './islandSettled';
 
   // Per-source rendered-height cache. Same story as
   // StreamdownMathHost: the source-text fallback only covers the
@@ -109,6 +110,8 @@
   // SVG-presence tracking. Mermaid renders into `<svg data-mermaid-svg>`
   // via `svgTarget.innerHTML = svgString` — once the svg has children
   // we know the diagram is on screen and the source fallback can drop.
+  // A diagram Mermaid rejects settles too: the renderer shows its source
+  // at that text's size (`watchIslandSettled`).
   let wrapperEl: HTMLDivElement | undefined = $state();
 
   // Read the cached rendered height for this source. $derived so a
@@ -155,19 +158,10 @@
       heightRecorder.record();
     };
 
-    if (wrapperEl.querySelector('[data-mermaid-svg] *')) {
-      markRendered();
-      return heightRecorder.cancel;
-    }
-    const observer = new MutationObserver(() => {
-      if (wrapperEl?.querySelector('[data-mermaid-svg] *')) {
-        observer.disconnect();
-        markRendered();
-      }
-    });
-    observer.observe(wrapperEl, { childList: true, subtree: true });
+    // The diagram's SVG, or the source shown when Mermaid rejects it.
+    const stopWatching = watchIslandSettled(wrapperEl, '[data-mermaid-svg] *', markRendered);
     return () => {
-      observer.disconnect();
+      stopWatching();
       heightRecorder.cancel();
     };
   });
@@ -194,7 +188,9 @@
     }
   }}
 >
-  <pre class="mermaid-source-fallback" aria-hidden="true">{token.text}</pre>
+  {#if !mermaidRendered}
+    <pre class="mermaid-source-fallback" aria-hidden="true">{token.text}</pre>
+  {/if}
   {#key paletteIdentity}
     <Mermaid {token} {id} />
   {/key}
@@ -215,12 +211,6 @@
   .mermaid-host-with-fallback > :global([data-streamdown-mermaid]) {
     grid-area: 1 / 1;
   }
-  /* Once mermaid has rendered, drop the source fallback out of the
-     layout so the wrapper sizes to the SVG (no stale whitespace
-     below a short diagram). */
-  .mermaid-host-with-fallback.mermaid-rendered > .mermaid-source-fallback {
-    display: none;
-  }
   /* Until the SVG lands, hide the empty inner wrapper so the
      fallback alone determines what the user sees. Once
      `mermaid-rendered` flips the wrapper becomes visible and the
@@ -233,8 +223,8 @@
      runs exactly once. Applied UNCONDITIONALLY — including after
      `.mermaid-rendered` flips — because the script sync-initializes
      `mermaidRendered = true` whenever the cache hits. Without this
-     unconditional rule the mermaid-rendered class drops the
-     fallback (display:none) and the `:not(.mermaid-rendered)`
+     unconditional rule the mermaid-rendered class removes the
+     fallback and the `:not(.mermaid-rendered)`
      visibility:hidden on the inner wrapper, so the wrapper would
      collapse to inner=0 while mermaid is loading async and then
      jump back up — the same oscillation the cache exists to

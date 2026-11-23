@@ -28,6 +28,7 @@
 import type { BackendKey } from '../transport/backendKey';
 import type { Forge, PRRef } from './prReference';
 import { MARKDOWN_HREF_NONCE } from './markdownHrefNonce';
+import type { ForgeFactReader } from './forgeFacts';
 
 /** Where a rendered body's forge attachments are fetched from. */
 export interface ForgeAttachmentSource {
@@ -36,6 +37,9 @@ export interface ForgeAttachmentSource {
   backend: BackendKey;
   /** The PR/MR web URL (`review.prDetail.url`), or '' when unknown. */
   webBase: string;
+  /** What the forge answered about the names the PR's bodies mention, as
+   * of now (stores/forgeFacts.svelte.ts); absent off the review pane. */
+  facts?: ForgeFactReader | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,9 +170,20 @@ function forgeShape(forge: Forge, href: string): ForgeHrefShape | null {
   return forge === 'github' ? githubShape(trimmed) : gitlabShape(trimmed);
 }
 
-/** Whether this forge would serve `href` as an attachment the CLI can fetch. */
-export function isForgeAttachmentHref(forge: Forge, href: string): boolean {
-  return forgeShape(forge, href) !== null;
+/**
+ * Whether `pr`'s forge would serve `href` as an attachment its login can
+ * fetch. An absolute GitLab upload must be on the MR's own host: the fetch
+ * asks that host for the project the path names, and a URL on another server
+ * names no project there (`internal/forgeattach` refuses it the same way).
+ */
+export function isForgeAttachmentHref(pr: Pick<PRRef, 'forge' | 'host'>, href: string): boolean {
+  const shape = forgeShape(pr.forge, href);
+  if (shape === null) return false;
+  if (pr.forge !== 'gitlab' || shape.absolute === null) return true;
+  // `URL.host` on both sides: lowercase, without the scheme's default port.
+  // Userinfo names no server, and the backend refuses it.
+  const { host, username, password } = shape.absolute;
+  return username === '' && password === '' && host === pr.host.toLowerCase();
 }
 
 /** The attachment's display name: the `<name>` segment, else the trailing id. */

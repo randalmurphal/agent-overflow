@@ -13,10 +13,11 @@ type Attachment struct {
 	MimeType string
 	Kind     string
 	Filename string
-	// Width and Height are the pixel size of an image whose header Go can
-	// read (Classification); zero when unknown.
+	// Width, Height and Fluid are how an <img> of an image is sized
+	// (Classification); zero when unknown.
 	Width  int
 	Height int
+	Fluid  bool
 }
 
 // Entry is one cached attachment with the content id its ticketed URL names.

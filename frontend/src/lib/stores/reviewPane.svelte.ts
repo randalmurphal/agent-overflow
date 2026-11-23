@@ -141,6 +141,7 @@ import {
   type PRRef,
 } from '../utils/prReference';
 import { prRevision, type PRRevision } from '../utils/prRevision';
+import { noteForgeFactsRevision, reloadForgeFacts } from './forgeFacts.svelte';
 import {
   applyContextExpansion,
   expansionFetchRange,
@@ -235,6 +236,8 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
   readonly backend: BackendKey;
   readonly baseBranch: string | null;
   readonly prRef: PRRef | null;
+  /** The PR store's key for the PR on screen; null outside the PR scope. */
+  readonly prEntityKey: string | null;
   readonly prScopeLabel: string | null;
   readonly sourceKey: string;
   /** The loaded diff's files in tree order. A load into an empty pane
@@ -1764,7 +1767,7 @@ export function createReviewPaneState(
     const key = computerPRKey(ref);
     if (prAttachment?.key === key) return prAttachment;
     releasePR();
-    prAttachment = attachPR(key, { ref });
+    prAttachment = attachPR(key, { ref, workspace });
     return prAttachment;
   }
 
@@ -2150,6 +2153,8 @@ export function createReviewPaneState(
         // loaded, and without a switch to a different PR being compared
         // against a head that was never its own.
         loadedPRHead = { key: loadingPRKey, revision: loaded.prRevision };
+        // The commits the PR's bodies name are read at this revision.
+        noteForgeFactsRevision(loadingPRKey, workspace, loaded.prRevision);
       }
       // The files, patch key and selection are already updated above, so
       // the derived reflects this load — no need to re-derive by hand.
@@ -3202,6 +3207,9 @@ export function createReviewPaneState(
   let explicitReadOwed = false;
   async function refreshPRThreads(opts?: { explicit?: boolean }): Promise<void> {
     if (scope !== 'pr' || !prRef) return;
+    // The reader's refresh (the Conversation's, or a reload of the diff)
+    // asks the forge again for every fact the PR's bodies hold.
+    if (opts?.explicit) reloadForgeFacts(computerPRKey(prRef));
     if (opts?.explicit && !explicitReadOwed) {
       explicitReadOwed = true;
       conversation.beginExplicitRead();
@@ -3689,6 +3697,7 @@ export function createReviewPaneState(
     backend,
     get baseBranch() { return baseBranch; },
     get prRef() { return prRef; },
+    get prEntityKey() { return prEntityKey; },
     get prScopeLabel() { return prRef ? prScopeLabel(prRef) : null; },
     get sourceKey() { return sourceKey; },
     get files() { return files; },

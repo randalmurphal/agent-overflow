@@ -6,9 +6,18 @@ import ChatMarkdown from '../ChatMarkdown.svelte';
 import { EMPTY_PATH_REFS } from '../../../utils/pathLinkify';
 import { countFindMatches, findNeedle, foldFindText } from '../../../utils/findMatch';
 import { findTextRuns, findTextSegments } from '../../../utils/findHighlights';
-import { markdownFindText, SHOWS } from './markdownFindText';
-import { EMBEDDED_HTML_EXTENSIONS, lex, parseBlocks } from '../../../markdown';
-import { buildForgeAttachmentExtension } from '../../../utils/forgeAttachmentExtension';
+import { createMarkdownFindTextCache, markdownFindText, SHOWS } from './markdownFindText';
+import { createDocumentContextCache, createParseBlocksCache, documentContextOf, lex, parseBlocks, type ForgeFactReader } from '../../../markdown';
+import {
+  __resetForgeFactsForTest,
+  __setResolveForgeFactsForTest,
+  forgeFactReader,
+  observePRFacts,
+} from '../../../stores/forgeFacts.svelte';
+import type { ForgeFact } from '../../../utils/forgeFacts';
+import { prKey } from '../../../utils/prReference';
+import type { PRDetail } from '../../../types/models';
+import { chatMarkdownExtensions, chatMarkdownForgeOptions } from './chatMarkdownOptions';
 import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from './forgeAttachmentContext';
 import type { ForgeAttachmentSource } from '../../../utils/forgeAttachments';
 import { resetCodeSpanCacheForTest } from './codeSpanCache';
@@ -51,6 +60,7 @@ const CONTAINERS: Record<string, (inner: string) => string> = {
   'footnote definition': (inner) => `Ref[^n].\n\n${indent(inner, '    ', '[^n]: ')}`,
   'alignment block': (inner) => `[center]\n${inner}\n[/center]`,
   mdx: (inner) => `<Note kind="x">\n${inner}\n</Note>`,
+  'html wrapper': (inner) => `<table><tr><td>\n\n${inner}\n\n</td></tr></table>`,
 };
 const INNER: Record<string, string> = {
   details: '<details><summary>inner summary</summary>\n\ninner needle words\n\n</details>',
@@ -108,9 +118,18 @@ function mismatches(source: string, dom: readonly string[], projected: readonly 
     .filter((row) => row.dom !== row.projected);
 }
 
-// Every token kind the projection has a rule for, as the corpus lexes.
+// A reader that answers every key it is asked as asked about: what a
+// review reads before the forge answers (a label is a chip).
+const ASKED: ForgeFactReader = { get: () => 'pending', signature: () => 'p' };
+
+// Every token kind the projection has a rule for, as the corpus lexes on
+// each surface: agent chat, and a GitHub and a GitLab review with the
+// options ChatMarkdown builds for them, the GitLab one also under facts.
 function corpusKinds(): Set<string> {
-  const extensions = [...buildForgeAttachmentExtension({ ...FORGE, embeddedHtml: true }), ...EMBEDDED_HTML_EXTENSIONS];
+  const surfaces = ([[null, false], [GITHUB_FORGE, true], [FORGE, true]] as const).map(([source, embeddedHtml]) =>
+    chatMarkdownExtensions({ forge: chatMarkdownForgeOptions(source, embeddedHtml) }),
+  );
+  const underFacts = surfaces[2];
   const seen = new Set<string>();
   const visit = (tokens: readonly { type: string; tokens?: unknown[]; items?: unknown[] }[] | undefined) => {
     for (const token of tokens ?? []) {
@@ -119,9 +138,24 @@ function corpusKinds(): Set<string> {
       visit(token.items as typeof tokens);
     }
   };
-  for (const source of CORPUS) {
-    for (const block of parseBlocks(source, extensions)) visit(lex(block, extensions) as never);
+  for (const extensions of surfaces) {
+    for (const source of CORPUS) {
+      for (const block of parseBlocks(source, extensions)) visit(lex(block, extensions) as never);
+    }
   }
+  const underFactsOn = (extensions: typeof underFacts, forge: 'github' | 'gitlab', sources: readonly string[]) => {
+    for (const source of sources) {
+      const cache = createParseBlocksCache();
+      const blocks = parseBlocks(source, extensions, cache);
+      const context = documentContextOf(cache, extensions, createDocumentContextCache(), forge, ASKED);
+      blocks.forEach((block, index) => visit(lex(block, extensions, context.scope(index)) as never));
+    }
+  };
+  underFactsOn(underFacts, 'gitlab', CORPUS);
+  // A GitHub permalink to lines of the PR's repository is a snippet block
+  // only once its lines are asked about; repositoryFilesFind.browser.test.ts
+  // holds its find text to the DOM.
+  underFactsOn(surfaces[1], 'github', [`See https://github.com/acme/widget/blob/${'a'.repeat(40)}/src/x.ts#L2-L3 here.`]);
   return seen;
 }
 
@@ -167,6 +201,52 @@ describe('markdownFindText', () => {
     const projected = markdownFindText(source, { embeddedHtml: true, forgeSource: GITHUB_FORGE }).runs;
     expect(count(projected, 'user-attachments')).toBe(0);
     expect(mismatches(source, dom, projected)).toEqual([]);
+  });
+
+  it.each([
+    ['GitHub', GITHUB_FORGE],
+    ['GitLab', FORGE],
+  ] as const)('counts a soft line break and an entity reference as the %s comment shows them', async (_name, forge) => {
+    const source = 'line one\nline two &amp; &copy; &#35;\n\n> quoted one\n> quoted two\n\n- item one\n  item more';
+    const root = await mounted(source, forge);
+    expect(root.querySelectorAll('br').length > 0).toBe(forge === GITHUB_FORGE);
+    const dom = findTextSegments(root);
+    const projected = markdownFindText(source, { embeddedHtml: true, forgeSource: forge });
+    expect(mismatches(source, dom, projected.runs), JSON.stringify({ dom, projected })).toEqual([]);
+    const text = (run: string) => foldFindText(run).replace(/\s+/g, ' ').trim();
+    expect(projected.runs.map(text).filter(Boolean)).toEqual(dom.map(text).filter(Boolean));
+  });
+
+  // A line break puts what follows on another line, so no match spans it.
+  // Fixed counts, not the scanner and the projection agreeing.
+  it.each([
+    ['a GitHub soft break', 'alpha\nbeta', GITHUB_FORGE],
+    ['a hard break on GitHub', 'alpha  \nbeta', GITHUB_FORGE],
+    ['a hard break on GitLab', 'alpha  \nbeta', FORGE],
+    ['a backslash break', 'alpha\\\nbeta', FORGE],
+    ['an inline <br>', 'alpha<br>beta', FORGE],
+    ['a <br> in an html block', '<p>alpha<br>beta</p>', FORGE],
+    ['a <br> in an html region', '<div>\n<p>alpha<br>beta</p>\n\nafter\n\n</div>', FORGE],
+  ] as const)('finds no match across %s', async (_name, source, forge) => {
+    const root = await mounted(source, forge);
+    expect(root.querySelector('br'), 'renders a line break').not.toBeNull();
+    const dom = findTextSegments(root);
+    const projected = markdownFindText(source, { embeddedHtml: true, forgeSource: forge }).runs;
+    for (const [query, want] of [['alphabeta', 0], ['alpha beta', 0], ['alpha', 1], ['beta', 1]] as const) {
+      expect(count(dom, query), `${query} painted`).toBe(want);
+      expect(count(projected, query), `${query} counted`).toBe(want);
+    }
+  });
+
+  it('counts an html region island once, whatever the HTML around it spells', async () => {
+    // `&#1;0&#1;` decodes to the control characters a text marker for
+    // island 0 would be.
+    const source = '<div>\n<p>&#1;0&#1;</p>\n\nneedle paragraph\n\n</div>';
+    const root = await mounted(source);
+    const dom = findTextSegments(root);
+    const projected = markdownFindText(source, { embeddedHtml: true, forgeSource: FORGE }).runs;
+    expect(count(dom, 'needle'), 'painted').toBe(1);
+    expect(count(projected, 'needle'), 'counted').toBe(1);
   });
 
   it.each(NESTED)('finds every <details> and counts what shows, as written and with each toggled: %s', async (_name, source) => {
@@ -274,6 +354,18 @@ describe('markdownFindText under the chat options', () => {
     expect(projected.map(text).filter(Boolean), raw).toEqual(findTextSegments(root).map(text).filter(Boolean));
   });
 
+  it('finds no match across a hard line break', async () => {
+    const source = 'line one  \nline two\\\nline three';
+    const root = await chatMounted(source);
+    expect(root.querySelectorAll('br')).toHaveLength(2);
+    const dom = findTextSegments(root);
+    const projected = markdownFindText(source, { embeddedHtml: false }).runs;
+    for (const [query, want] of [['oneline', 0], ['twoline', 0], ['line', 3], ['line one', 1]] as const) {
+      expect(count(dom, query), `${query} painted`).toBe(want);
+      expect(count(projected, query), `${query} counted`).toBe(want);
+    }
+  });
+
   it('counts none of a link target, a diagram, math or a blocked link tag, and the text markup joins', async () => {
     const source = '**foo**bar and [docs](https://example.com/x)suffix, $x+yy$ and [bad](javascript:alert(1))tail\n\n```mermaid\ngraph TD; Start-->Finish\n```';
     const root = await chatMounted(source);
@@ -283,5 +375,92 @@ describe('markdownFindText under the chat options', () => {
       expect(count(dom, query), `${query} painted`).toBe(want);
       expect(count(projected, query), `${query} counted`).toBe(want);
     }
+  });
+});
+
+// A review body before and after the forge answers its references: the
+// projection reads the same facts ChatMarkdown does (the PR's reader), so
+// it counts what the body shows in each state, a label's chip included.
+describe('markdownFindText under the PR\'s facts', () => {
+  const SOURCES = [
+    ...CORPUS.filter((source) => /[#@~%$&!]|[0-9a-f]{7}/.test(source)),
+    'Fixes #12 and !3 by @ana: ~bug, ~"two words", ~type::bug, %v1, $5 and &6 in group/other#7 at abc1234.',
+    // The same in HTML text, which the sanitizer reads under the block's facts.
+    '<div>See #12 and @ana in <b>HTML</b>, ~bug, ~"two words" and %v1 too.</div>',
+    '<table><tr><td>~type::bug and !3</td><td>group/other#7 at abc1234</td></tr></table>\n\nAfter #12.',
+    '<div>Region #4 with ~bug\n\nAn island names #3 and ~"two words"\n\n</div>',
+    '<details open><summary>~type::bug in a summary</summary>\n\nBody #5 and $5\n\n</details>',
+  ];
+  let answer: ((fact: (key: string) => ForgeFact) => Promise<void>) | null = null;
+
+  beforeEach(() => {
+    __resetForgeFactsForTest();
+    const held: { keys: readonly string[]; resolve: (facts: ForgeFact[]) => void }[] = [];
+    __setResolveForgeFactsForTest((_b, _w, _p, _r, keys) => new Promise((resolve) => held.push({ keys, resolve: (facts) => resolve({ facts }) })));
+    answer = async (fact) => {
+      for (const call of held.splice(0)) call.resolve(call.keys.map(fact));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    };
+  });
+
+  const ANSWERS: ((key: string) => ForgeFact)[] = [
+    (key) => ({ key, status: 'found', url: 'https://gitlab.com/group/widget/-/issues/1', title: 'Title', color: '#123456', textColor: '#ffffff' }),
+    (key) => ({ key, status: 'absent' }),
+  ];
+
+  async function mountUnderFacts(source: string): Promise<{ root: Element; key: string }> {
+    const key = prKey(FORGE.pr);
+    observePRFacts(key, FORGE.pr, { detail: { number: 3, body: source, latestReviews: [] } as unknown as PRDetail, threads: [] });
+    const host = document.createElement('div');
+    host.style.width = '600px';
+    document.body.appendChild(host);
+    const { container } = render(ChatMarkdown, {
+      target: host,
+      props: { source, pathRefs: EMPTY_PATH_REFS, embeddedHtml: true, class: 'review-prose' },
+      context: new Map([[FORGE_ATTACHMENT_SOURCE_CONTEXT, () => ({ ...FORGE, facts: forgeFactReader(key) })]]),
+    });
+    await waitFor(() => expect(container.querySelector('.markdown-body')?.textContent?.trim()).toBeTruthy());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return { root: container.querySelector('.markdown-body')!, key };
+  }
+
+  it.each(SOURCES.flatMap((source) => ANSWERS.map((_, at) => [source, at] as const)))('counts what %s shows while asked and once answered (%i)', async (source, at) => {
+    const { root, key } = await mountUnderFacts(source);
+    const facts = () => forgeFactReader(key);
+    const check = (label: string) => {
+      const projected = markdownFindText(source, { embeddedHtml: true, forgeSource: FORGE, facts });
+      expect(mismatches(source, findTextSegments(root), projected.runs), `${label}: ${source}`).toEqual([]);
+    };
+    check('asked');
+    await answer!(ANSWERS[at]);
+    check('answered');
+  });
+
+  it('holds a projection until a fact it read changes', async () => {
+    const reads = 'See #12 and ~bug';
+    const plain = 'Nothing named here';
+    const { key } = await mountUnderFacts(reads);
+    const texts = createMarkdownFindTextCache({ embeddedHtml: true, forgeSource: FORGE, facts: () => forgeFactReader(key) });
+    const before = texts(reads);
+    const plainBefore = texts(plain);
+    expect(texts(reads)).toBe(before);
+    // Asked about, the label is a chip reading `bug`.
+    expect(before.runs.join('')).not.toContain('~bug');
+    await answer!(ANSWERS[1]);
+    const after = texts(reads);
+    expect(after).not.toBe(before);
+    expect(after.runs.join('')).toContain('~bug');
+    expect(texts(reads)).toBe(after);
+    expect(texts(plain)).toBe(plainBefore);
+  });
+
+  it('tells the facts\' reader what its lexes decided a label list lacks', () => {
+    const list: ForgeFact = { key: 'labels:group/widget', status: 'found', complete: true, labels: [{ title: 'bug', color: '#123456' }] };
+    const denied: string[] = [];
+    const facts: ForgeFactReader = { get: (key) => (key === list.key ? list : undefined), signature: () => 's', denied: (key) => denied.push(key) };
+    markdownFindText('~bug only', { embeddedHtml: true, forgeSource: FORGE, facts: () => facts });
+    expect(denied).toEqual([]);
+    markdownFindText('~bug and ~docs\n\n<div>~gone</div>', { embeddedHtml: true, forgeSource: FORGE, facts: () => facts });
+    expect(denied).toEqual([list.key, list.key]);
   });
 });

@@ -6,7 +6,14 @@
 		acquireDocumentInteraction,
 		type DocumentInteraction
 	} from './documentInteraction';
-	import { lex, type Alignment, type Extension } from '../parser/index';
+	import {
+		lexCapture,
+		sameScopeReads,
+		type Alignment,
+		type DocumentContext,
+		type DocumentScope,
+		type Extension
+	} from '../parser/index';
 	import { reconcileParagraphGapsInNodes } from './paragraphSpacing';
 	import { renderStaticTokenHtml } from './staticHtml';
 
@@ -16,6 +23,9 @@
 		block: string;
 		align: Alignment | 'marker';
 		nodes: ChildNode[];
+		/** The document scope it was lexed under and the keys it read. */
+		scope: DocumentScope | null;
+		reads: Set<string> | null;
 	};
 	type ComponentRecord = {
 		kind: 'component';
@@ -70,6 +80,7 @@
 	const contexts = getAllContexts();
 	const records: Record[] = [];
 	let renderedRoot: HTMLElement | undefined;
+	let renderedDocument: DocumentContext | null | undefined;
 	let configuration: Configuration | undefined;
 	let destroyed = false;
 	let retryScheduled = false;
@@ -178,7 +189,8 @@
 		anchor: ChildNode | null,
 		block: string,
 		align: Alignment,
-		html: string
+		html: string,
+		lexed: { scope: DocumentScope | null; reads: Set<string> | null }
 	): StaticRecord {
 		const { fragment, nodes } = staticNodes(html);
 		try {
@@ -188,14 +200,15 @@
 			for (const node of nodes) node.remove();
 			throw error;
 		}
-		return { kind: 'static', block, align, nodes };
+		return { kind: 'static', block, align, nodes, scope: lexed.scope, reads: lexed.reads };
 	}
 
 	function insertComponentRecord(
 		target: HTMLElement,
 		anchor: ChildNode | null,
 		block: string,
-		align: Alignment
+		align: Alignment,
+		index: number
 	): ComponentRecord {
 		const start = document.createComment('');
 		const end = document.createComment('');
@@ -209,6 +222,7 @@
 				context: contexts,
 				props: {
 					block,
+					index,
 					align,
 					static: false,
 					compactStaticHtml: false
@@ -246,16 +260,22 @@
 		align: Alignment | 'marker',
 		index: number
 	): Record {
-		if (align === 'marker') return { kind: 'static', block, align, nodes: [] };
+		if (align === 'marker') return { kind: 'static', block, align, nodes: [], scope: null, reads: null };
+		const scope = scopeAt(index);
+		const lexed = lexCapture(block, streamdown.extensions ?? [], null, null, scope);
 		const html = renderStaticTokenHtml(
-			lex(block, streamdown.extensions),
+			lexed.tokens,
 			streamdown,
 			`${id}-${index}`,
 			align
 		);
 		return html === null
-			? insertComponentRecord(target, anchor, block, align)
-			: insertStaticRecord(target, anchor, block, align, html);
+			? insertComponentRecord(target, anchor, block, align, index)
+			: insertStaticRecord(target, anchor, block, align, html, { scope, reads: lexed.reads });
+	}
+
+	function scopeAt(index: number): DocumentScope | null {
+		return streamdown.document?.scope(index) ?? null;
 	}
 
 	function firstNodeFrom(index: number): ChildNode | null {
@@ -310,8 +330,10 @@
 			if (record.kind !== 'component' || !record.retryStatic) continue;
 			if (recordHasActiveInteraction(record)) continue;
 			attempts++;
+			const scope = scopeAt(index);
+			const lexed = lexCapture(record.block, streamdown.extensions ?? [], null, null, scope);
 			const html = renderStaticTokenHtml(
-				lex(record.block, streamdown.extensions),
+				lexed.tokens,
 				streamdown,
 				`${id}-${index}`,
 				record.align
@@ -332,7 +354,7 @@
 				throw error;
 			}
 			removeComponentRecord(record);
-			records[index] = { kind: 'static', block: record.block, align: record.align, nodes };
+			records[index] = { kind: 'static', block: record.block, align: record.align, nodes, scope, reads: lexed.reads };
 			if (attempts >= limit) return retryCursor < records.length;
 		}
 		return false;
@@ -384,7 +406,11 @@
 		restartStaticRetry();
 	}
 
-	function reconcile(target: HTMLElement, nextConfiguration: Configuration): void {
+	function reconcile(
+		target: HTMLElement,
+		nextConfiguration: Configuration,
+		nextDocument: DocumentContext | null
+	): void {
 		const previous = configuration;
 		let reset = target !== renderedRoot || previous === undefined;
 		// A changed extension list normally invalidates every record. When
@@ -410,7 +436,25 @@
 		truncateRecords(common);
 		if (target !== renderedRoot) renderedRoot = target;
 		configuration = nextConfiguration;
+		const documentChanged = nextDocument !== renderedDocument;
+		renderedDocument = nextDocument;
 		let replaced = false;
+		// A new document context rebuilds only the kept records whose lex
+		// read a key that now resolves differently. A component record's
+		// Block reads the context reactively.
+		if (documentChanged) {
+			for (let index = 0; index < common; index++) {
+				const record = records[index];
+				if (record.kind !== 'static' || record.align === 'marker') continue;
+				const scope = scopeAt(index);
+				if (sameScopeReads(record.scope, scope, record.reads)) {
+					record.scope = scope;
+					continue;
+				}
+				replaceStaticRecord(target, index);
+				replaced = true;
+			}
+		}
 		if (keeps) {
 			for (let index = 0; index < common; index++) {
 				const record = records[index];
@@ -433,8 +477,9 @@
 		void revision;
 		const target = root;
 		const nextConfiguration = readConfiguration();
+		const nextDocument = streamdown.document ?? null;
 		if (!target || destroyed) return;
-		reconcile(target, nextConfiguration);
+		reconcile(target, nextConfiguration, nextDocument);
 	});
 
 	$effect(() => {
@@ -460,6 +505,7 @@
 		retryScheduler = undefined;
 		truncateRecords(0);
 		renderedRoot = undefined;
+		renderedDocument = undefined;
 		configuration = undefined;
 	});
 </script>

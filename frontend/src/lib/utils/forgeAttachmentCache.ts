@@ -20,9 +20,11 @@ import { lastImageTier } from './imageTiers';
 import {
   acquireMediaBlob,
   objectOrDataUrl,
+  paintedSize,
   type ImageSize,
   type MediaBytes,
   type MediaHandle,
+  type MediaSizeSink,
 } from './mediaBlobCache';
 import { prKey, prReferenceWire, type PRRef } from './prReference';
 
@@ -72,7 +74,7 @@ export function acquireForgeAttachment(
 ): ForgeAttachmentHandle {
   return acquireMediaBlob(
     JSON.stringify(['forge', backend, prKey(pr), href, tier]),
-    () => loadForgeAttachment(backend, pr, href, tier),
+    (sized) => loadForgeAttachment(backend, pr, href, tier, sized),
   );
 }
 
@@ -116,8 +118,9 @@ async function loadForgeAttachment(
   pr: PRRef,
   href: string,
   tier: number,
+  sized: MediaSizeSink,
 ): Promise<ResolvedForgeAttachment> {
-  const { meta, mimeType, blob } = await mintAndFetch(backend, pr, href, tier);
+  const { meta, mimeType, blob } = await mintAndFetch(backend, pr, href, tier, undefined, sized);
   return {
     url: await objectOrDataUrl(blob, mimeType),
     mimeType,
@@ -131,6 +134,7 @@ async function loadForgeAttachment(
     originalHeight: meta.originalHeight,
     originalBytes: meta.sizeBytes || blob.size,
     derived: meta.derived,
+    ...(meta.fluid === true ? { fluid: true } : {}),
   };
 }
 
@@ -145,10 +149,13 @@ async function mintAndFetch(
   href: string,
   maxWidth: number,
   signal?: AbortSignal,
+  sized?: MediaSizeSink,
 ) {
   const wire = prReferenceWire(pr);
   const mint = () => withBackendTarget(backend, () => FetchForgeAttachment(wire, href, maxWidth));
   let meta = await mint();
+  // An image's box, known before its bytes cross; a player sizes itself.
+  if (meta.kind === 'image') sized?.(paintedSize(meta));
   let bytes: Blob;
   try {
     bytes = await fetchTicketedBytes(backend, meta.url, 'Could not load attachment', signal);

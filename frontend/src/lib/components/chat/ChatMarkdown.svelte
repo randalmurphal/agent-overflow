@@ -48,10 +48,17 @@
   import {
     Streamdown,
     alignmentAtEnd,
+    createDocumentContextCache,
     createParseBlocksCache,
+    documentContextOf,
+    mayNeedDocumentContext,
     parseBlocks,
     sanitizeEmbeddedHtmlToken,
     type Alignment,
+    type DocumentContext,
+    type DocumentForge,
+    type DocumentReading,
+    type Extension,
     type ProvenAppend,
     type Tokens,
   } from '../../markdown';
@@ -76,14 +83,9 @@
     ensureMarkdownCopyDelegate,
     ensurePathLinkClickDelegate,
   } from '../../utils/markdownEnhance';
-  import {
-    LOCAL_IMAGE_HREF_PREFIX,
-    buildPathLinkExtension,
-    type PathLinkMode,
-  } from '../../utils/pathLinkExtension';
+  import { buildPathLinkExtension, type PathLinkMode } from '../../utils/pathLinkExtension';
   import { buildPreviewLinkExtension } from '../../utils/previewLinkExtension';
-  import { FORGE_ATTACHMENT_HREF_PREFIX } from '../../utils/forgeAttachments';
-  import { CHAT_LINK_PREFIXES } from './markdown/chatLinkPrefixes';
+  import { CHAT_IMAGE_PREFIXES, CHAT_LINK_PREFIXES } from './markdown/chatLinkPrefixes';
   import {
     FORGE_ATTACHMENT_SOURCE_CONTEXT,
     type ForgeAttachmentSourceReader,
@@ -101,6 +103,7 @@
     type StreamingAssistantSelectionSnapshot,
   } from './markdown/streamingAssistantSelection';
   import { ensureStaticCodeDelegate } from './markdown/staticCodeBlock';
+  import { ensureFragmentLinkDelegate } from './markdown/fragmentLinks';
   import { registerFootnoteSource } from './markdown/footnoteDefinitions';
   import type { PathRef } from '../../types/models';
   import { StreamingBoundarySplitter } from '../../markdown/boundary';
@@ -162,9 +165,8 @@
     /** Render forge-authored embedded HTML. OFF for agent chat output by
      *  design: only forge-content surfaces (PR/MR descriptions, review
      *  comments) pass true. `<details>/<summary>` and the safe inline
-     *  pairs become native tokens, remaining complete blocks render
-     *  through the allowlist sanitizer, and anything unrecognized shows
-     *  as escaped literal text — never silently dropped. See
+     *  pairs become native tokens, and remaining HTML renders through the
+     *  allowlist sanitizer, which keeps what the forge keeps. See
      *  `markdown/parser/extensions/embeddedHtml.ts`. */
     embeddedHtml?: boolean;
     /** Fenced blocks the host renders itself, in place (codeClaim.ts). */
@@ -225,6 +227,7 @@
     ensurePathLinkClickDelegate();
     ensureForgeAttachmentClickDelegate();
     ensureStaticCodeDelegate();
+    ensureFragmentLinkDelegate();
   });
 
   // Marked inline extension derived from the validated allowlist. The
@@ -278,10 +281,15 @@
   const forgeNumber = $derived(forgeSource?.pr.number ?? 0);
   const forgeBackend = $derived(forgeSource?.backend ?? '');
   const forgeWebBase = $derived(forgeSource?.webBase ?? '');
+  // What the forge answered about the names this body mentions, as of now:
+  // a new reader per change of the PR's facts, which re-derives only the
+  // document context below, never the extensions. A block whose lex read
+  // none of the changed facts keeps its DOM (`sameScopeReads`).
+  const forgeFacts = $derived(forgeForge === 'github' || forgeForge === 'gitlab' ? (forgeSource?.facts ?? null) : null);
   // The forge attachment extensions, and the same claim for media the
   // parser never sees as a token: a forge wrapper (`<p align="center"><img
   // …>`, `<a href><img>`, a screenshot table, a `<details>` body) is ONE
-  // html block, so the sanitizer asks `claimMedia` per
+  // html block, so the sanitizer runs the same destination hooks per
   // `<img>`/`<video>`/`<source>` and `EmbeddedHtmlHost` mounts a real
   // attachment host over each claim. Built by chatMarkdownOptions.ts, which
   // find's projection (markdownFindText.ts) builds its parse from too. The
@@ -302,15 +310,15 @@
   );
   const renderEmbeddedHtml = $derived.by(() => {
     const options = forgeOptions.html;
-    return (token: Tokens.HTML | Tokens.Tag) => sanitizeEmbeddedHtmlToken(token, options);
+    // `reading` is the token's block's, so its text reads the PR's facts.
+    return (token: Tokens.HTML | Tokens.Tag, reading?: DocumentReading | null) => sanitizeEmbeddedHtmlToken(token, options, reading);
   });
 
   const extensions = $derived.by(() => {
     const list = chatMarkdownExtensions({
-      forge: forgeOptions.extensions,
+      forge: forgeOptions,
       preview: previewLinkExtension,
       pathLink: pathLinkExtension,
-      embeddedHtml,
     });
     return list.length > 0 ? list : undefined;
   });
@@ -323,15 +331,8 @@
   // `[click](agent-overflow:open?path=/etc/passwd)` cannot satisfy
   // the nonce-prefixed form and is rejected before any anchor is
   // rendered.
-  // `data:` is a denied LINK scheme (it is a document the webview would
-  // evaluate), but an inline `data:image/…` src is just bytes for an <img>.
   const allowedLinkPrefixes = [...CHAT_LINK_PREFIXES];
-  const allowedImagePrefixes = [
-    '*',
-    LOCAL_IMAGE_HREF_PREFIX,
-    FORGE_ATTACHMENT_HREF_PREFIX,
-    'data:image/',
-  ];
+  const allowedImagePrefixes = [...CHAT_IMAGE_PREFIXES];
 
   // Diagram palette. Without a `mermaidConfig` the renderer falls back
   // to mermaid's built-in `'dark'`/`'default'` themes, which
@@ -405,16 +406,54 @@
   // the `[center]`/`[right]` alignment in force at the prefix's end. The
   // prefix only grows while streaming; its append proof keeps this fold
   // proportional to the newly committed bytes.
+  //
+  // The same parse feeds the document context (markdown/parser/
+  // documentContext.ts): what the committed blocks define, for every
+  // block's lex. A definition still in the volatile tail resolves the
+  // committed blocks once it commits; the tail sees the committed ones.
+  const documentForge = $derived<DocumentForge>(forgeForge === 'github' || forgeForge === 'gitlab' ? forgeForge : null);
+  // Stable identities: a fresh list or cache per evaluation would reset
+  // the context's per-block memo.
+  const NO_EXTENSIONS: Extension[] = [];
+  // Never parsed: a settled body with nothing to share folds no blocks.
+  const NO_BLOCKS = createParseBlocksCache();
   let prefixAlignmentCache = createParseBlocksCache();
-  const tailAlignStart = $derived.by((): Alignment => {
+  const prefixDocumentCache = createDocumentContextCache();
+  const prefixState = $derived.by((): { align: Alignment; document: DocumentContext | null } => {
     if (!streaming) {
       prefixAlignmentCache = createParseBlocksCache();
-      return null;
+      return { align: null, document: null };
     }
     const { prefix, prefixAppend } = splitDerived;
     parseBlocks(prefix, extensions, prefixAlignmentCache, prefixAppend);
-    return alignmentAtEnd(prefixAlignmentCache);
+    return {
+      align: alignmentAtEnd(prefixAlignmentCache),
+      document: documentContextOf(prefixAlignmentCache, extensions ?? NO_EXTENSIONS, prefixDocumentCache, documentForge, forgeFacts),
+    };
   });
+  const tailAlignStart = $derived(prefixState.align);
+
+  // A settled body's context covers it whole. A body that cannot hold a
+  // definition, footnote, heading link or contents marker skips the parse;
+  // a forge body still gets its forge's empty context, which makes its
+  // `#name` links jump within it (markdown/fragmentLinks.ts).
+  const settledBlocksCache = createParseBlocksCache();
+  const settledDocumentCache = createDocumentContextCache();
+  // The parse apart from the fold, so new facts fold nothing and parse
+  // nothing: only the context's scopes are handed out again.
+  const settledBlocks = $derived.by((): { blocks: ReturnType<typeof createParseBlocksCache> } | null => {
+    if (streaming) return null;
+    const source = processedSource;
+    const needed = mayNeedDocumentContext(source, documentForge);
+    if (needed) parseBlocks(source, extensions, settledBlocksCache);
+    return { blocks: needed ? settledBlocksCache : NO_BLOCKS };
+  });
+  const settledDocument = $derived.by((): DocumentContext | null => {
+    const parsed = settledBlocks;
+    if (!parsed) return null;
+    return documentContextOf(parsed.blocks, extensions ?? NO_EXTENSIONS, settledDocumentCache, documentForge, forgeFacts);
+  });
+  const documentContext = $derived(streaming ? prefixState.document : settledDocument);
 
   // A stable block migrates from the volatile Streamdown to the committed
   // owner. Both render identical DOM, but they cannot share node identity.
@@ -475,6 +514,8 @@
   const showVolatileTail = $derived(
     !hideVolatileTail && (splitDerived.tail.length > 0 || splitDerived.prefix.length === 0),
   );
+  // A forge lists its footnotes after the body.
+  const footnoteSection = $derived(documentContext?.footnoteSection ?? null);
 </script>
 
 <!--
@@ -529,12 +570,14 @@
   trimFirstBlockMargin = false,
   trimLastBlockMargin = false,
   alignStart: Alignment = null,
+  document: DocumentContext | null = null,
 )}
   <Streamdown
     class={wrapperClass}
     {content}
     {contentAppend}
     {alignStart}
+    {document}
     {parseIncompleteMarkdown}
     isolatedVolatileTail={parseIncompleteMarkdown}
     {diagnostics}
@@ -542,6 +585,7 @@
     {mermaidConfig}
     {allowedLinkPrefixes}
     {allowedImagePrefixes}
+    colorScheme={forgeOptions.colorScheme?.()}
     renderHtml={embeddedHtml ? renderEmbeddedHtml : false}
     html={embeddedHtml ? embeddedHtmlFragment : undefined}
     compactStaticHtml={true}
@@ -575,7 +619,9 @@
       'md-committed',
       splitDerived.prefixAppend,
       true,
-      !showVolatileTail,
+      !showVolatileTail && !footnoteSection,
+      null,
+      documentContext,
     )}
   {/if}
   {#if showVolatileTail}
@@ -585,8 +631,20 @@
       'md-volatile',
       splitDerived.tailAppend,
       !splitDerived.prefix,
-      true,
+      !footnoteSection,
       tailAlignStart,
+      documentContext?.after ?? null,
+    )}
+  {/if}{#if footnoteSection}
+    {@render streamdownInstance(
+      footnoteSection,
+      false,
+      'md-footnotes',
+      undefined,
+      false,
+      true,
+      null,
+      documentContext?.after ?? null,
     )}
   {/if}
 </div>

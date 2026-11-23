@@ -13,12 +13,13 @@ import { makeSettings } from './settings';
 export const METHODS_AFTER_V0_0_19 = [
   'AgentRosterSeeds', 'CancelThreadWake', 'CheckAgentProfiles', 'CreateAssistant', 'DeleteThreads',
   'FinishProviderAccountReset',
-  'GetDeleteDependents', 'GetNativeMemoryStatus', 'GetStandingAgent',
+  'GetDeleteDependents', 'GetGitBlobImage', 'GetNativeMemoryStatus', 'GetStandingAgent',
   'GetThreadAgentRows', 'GetThreadRequestStates', 'GetThreadWakeDetail',
   'GetThreadWorkerSummary', 'ListAssistantPastThreads', 'ListStandingAgentWakes',
   'ListThreadAgentRows', 'ListThreadPastAgentRows', 'ListThreadRecurringJobs',
-  'ListThreadWakes', 'ListThreadWorkerSummaries', 'MarkThreadsRead',
-  'SendExternalThreadMessage', 'SetAssistantProjects', 'SetThreadPlacement', 'SpendProviderAccountReset',
+  'ListThreadWakes', 'ListThreadWorkerSummaries', 'MarkThreadsRead', 'ResolveForgeFacts',
+  'SaveGitBlobImage', 'SendExternalThreadMessage', 'SetAssistantProjects', 'SetThreadPlacement',
+  'SpendProviderAccountReset',
   'StartNextAssistantThread', 'StopThreadAgentIncoming', 'StopThreadAgentRows',
   'StopThreadAgentRow', 'ThreadToolWatch', 'WakeThreadWakeNow', 'WorkflowPauseItemAndEndSessions',
 ] as const;

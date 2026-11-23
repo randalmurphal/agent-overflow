@@ -117,7 +117,12 @@
   let editing = new Set<string>();
 
   function commentTexts(): (source: string, open?: readonly boolean[]) => MarkdownFindText {
-    return (texts ??= createMarkdownFindTextCache({ embeddedHtml: true, forgeSource: readForgeSource?.() ?? null, claimsCode: isSuggestionMark }));
+    return (texts ??= createMarkdownFindTextCache({
+      embeddedHtml: true,
+      forgeSource: readForgeSource?.() ?? null,
+      claimsCode: isSuggestionMark,
+      facts: () => readForgeSource?.()?.facts ?? null,
+    }));
   }
 
   function readDetails(): MountedCommentDetails {
@@ -594,7 +599,10 @@
     const scope = scopeOf(shown);
     const content = shown === 'log'
       ? [review.ciLog?.version, review.ciLog?.sections]
-      : [files, shown === 'diff' ? review.shownDrafts : null, shown === 'diff' ? review.shownPRThreads : null, shown === 'diff' ? review.mediaHost.renderedPaths.size : null];
+      // The PR's facts decide what a comment shows (a label the forge does
+      // not have is text again): the comments that read a changed one are
+      // projected again (markdownFindText's `factReads`), the rest are held.
+      : [files, shown === 'diff' ? review.shownDrafts : null, shown === 'diff' ? review.shownPRThreads : null, shown === 'diff' ? review.mediaHost.renderedPaths.size : null, shown === 'diff' ? readForgeSource?.()?.facts : null];
     void content;
     untrack(() => {
       if (scope !== seenView) {

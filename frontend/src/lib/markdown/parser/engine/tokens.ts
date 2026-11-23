@@ -52,15 +52,22 @@ export namespace Tokens {
     type: 'code';
     raw: string;
     codeBlockStyle?: 'indented';
+    /** The whole info string; its language is `fenceLanguage(lang)`. */
     lang?: string;
     text: string;
     escaped?: boolean;
+    /** Shown with line numbers from this one (a file excerpt,
+     * extensions/codeSnippet.ts); absent: no line numbers. */
+    firstLine?: number;
   }
 
   export interface Codespan {
     type: 'codespan';
     raw: string;
     text: string;
+    /** The color the code names, shown as a swatch beside it. Only
+     * `extensions/colorChips.ts` sets it, from a value its grammar accepted. */
+    color?: string;
   }
 
   export interface Def {

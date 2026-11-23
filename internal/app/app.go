@@ -451,6 +451,11 @@ type App struct {
 	// reviewDiffReadHook, set only by tests, runs in a file read after its
 	// record is found and before it waits for the pin.
 	reviewDiffReadHook func()
+	// gitBlobHook, set only by tests, runs in GetGitBlobImage and in the
+	// review diff's read of a Git LFS object before the bytes are read
+	// (step "read", with the read's context) and before a derivative is
+	// made (step "derive").
+	gitBlobHook func(ctx context.Context, step string)
 	// ciLogStore is the CI job log cache (app_ci_logs.go), opened on
 	// first use for the reason forgeAttachCache is lazy.
 	ciLogOnce  sync.Once
