@@ -399,6 +399,20 @@ func TestTheFirstRunDeletesTheOpenTicketsAnEarlierProcessLeft(t *testing.T) {
 	}
 }
 
+// A run that no view read preceded, a detail refresh here, deletes the
+// rows an earlier process left as it starts.
+func TestARunBeforeAnyViewReadDeletesTheEarlierRows(t *testing.T) {
+	t.Parallel()
+	s, conn, _ := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
+	s.earlierRows(t, conn, "10105", 2)
+	if _, _, err := s.svc.RefreshIssueDetail(t.Context(), conn.ID, "10105", Interactive); err != nil {
+		t.Fatal(err)
+	}
+	if n := must[int64](t)(s.st.DropMirrorTicketsOfOtherSessions(s.svc.session)); n != 0 {
+		t.Fatalf("%d rows of the earlier process after the first run", n)
+	}
+}
+
 // A delete of the earlier rows that fails fails what tried it, a view
 // read or a run: an opening, whose answer reads the mirror's copy, fails
 // with it, and the next try deletes them and binds the ticket; a run
