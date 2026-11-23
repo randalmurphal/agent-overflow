@@ -65,3 +65,19 @@ describe('bindings-app mock stays in sync with the generated bindings', () => {
     expect(vanished, 'remove these from bindings-app.ts').toEqual([]);
   });
 });
+
+describe('bindings-app passive loads', () => {
+  it('answer as a backend with nothing recorded after a reset, until a test installs its own', async () => {
+    mockBindings.resetBindingMocks();
+    await expect(mockBindings.GetSoundFiles()).resolves.toEqual({ dir: '/tmp/sounds', sounds: [], warnings: [] });
+    await expect(mockBindings.GetProviderLoginState()).resolves.toBeNull();
+    await expect(mockBindings.ListProviderAccounts()).resolves.toEqual([]);
+    await expect(mockBindings.GetRateLimitsSnapshots()).resolves.toEqual([]);
+    mockBindings.setBindingMock('GetSoundFiles', async () => 'own');
+    await expect(mockBindings.GetSoundFiles()).resolves.toBe('own');
+    mockBindings.resetBindingMocks();
+    await expect(mockBindings.GetSoundFiles()).resolves.toEqual({ dir: '/tmp/sounds', sounds: [], warnings: [] });
+    // Any other binding still rejects unmocked.
+    expect(() => mockBindings.ListThreads()).toThrow('Binding ListThreads called without a mock');
+  });
+});

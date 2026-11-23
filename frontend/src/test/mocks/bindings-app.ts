@@ -3,7 +3,7 @@
 //
 // Tests call `setBindingMock('ListItems', impl)` to stub specific RPC methods.
 // Anything not explicitly mocked rejects with a clear error so an untested
-// code path can't silently no-op.
+// code path can't silently no-op, except the passive loads below.
 
 import { vi, type Mock } from 'vitest';
 
@@ -100,7 +100,29 @@ export function getBindingMock(name: string): MockedFn | undefined {
  */
 export function resetBindingMocks(): void {
   mocks.clear();
+  installPassiveLoads();
 }
+
+// Loads a rendered surface or a store starts on its own, with no user
+// action, that most tests never mean to exercise. Each answers as a backend
+// with nothing recorded, so a test need not stub it and its store does not
+// log a failed load on every test. A test that cares installs its own
+// answer with setBindingMock, which holds until the next reset.
+const PASSIVE_LOADS: Record<string, () => unknown> = {
+  // A computer's sign-in state and accounts (stores/computerAccounts).
+  GetProviderLoginState: async () => null,
+  ListProviderAccounts: async () => [],
+  // Custom notification sounds (stores/sounds).
+  GetSoundFiles: async () => ({ dir: '/tmp/sounds', sounds: [], warnings: [] }),
+  // Rate limit snapshots read on every hello (stores/eventsRateLimits).
+  GetRateLimitsSnapshots: async () => [],
+};
+
+function installPassiveLoads(): void {
+  for (const [name, impl] of Object.entries(PASSIVE_LOADS)) setBindingMock(name, impl);
+}
+
+installPassiveLoads();
 
 function dispatch(name: string) {
   return (...args: unknown[]) => {
