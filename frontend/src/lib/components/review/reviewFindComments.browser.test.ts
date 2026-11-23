@@ -181,7 +181,7 @@ describe('review find over a comment whose forge facts arrive', () => {
     // Asked: the label is a chip, which shows no tilde.
     await waitFor(() => expect(host.querySelector('.md-label-chip')).not.toBeNull());
     const review = {
-      shownDrafts: [], mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [thread], shownPRThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS,
+      mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [thread], commentIndex: indexReviewComments([thread], []), shownCommentIndex: indexReviewComments([thread], []), collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS,
     } as unknown as ReviewPaneState;
     const files = parseReviewFiles(PATCH);
     onTestFinished(() => files[0].body.segments[0].store.dispose());

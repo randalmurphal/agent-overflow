@@ -200,10 +200,11 @@ describe('markdownFindText', () => {
     for (const hidden of ['hidden body words', 'inner cell words', 'shot.png', 'embedded', 'start-->finish', 'yy', 'bb']) {
       expect(dom.join('\n'), hidden).not.toContain(hidden);
     }
-    // What was compared is the settled render: every formula typeset, and
-    // every diagram's renderer loaded.
+    // What was compared is the settled render: every formula typeset, or
+    // shown as its source when it cannot be, and every diagram's renderer
+    // loaded.
     for (const math of root.querySelectorAll('[data-streamdown-inline-math], [data-streamdown-block-math]')) {
-      expect(math.querySelector('.katex'), math.outerHTML).not.toBeNull();
+      expect(math.querySelector('.katex') !== null || math.hasAttribute('data-render-failed'), math.outerHTML).toBe(true);
     }
     for (const diagram of root.querySelectorAll('[data-streamdown-mermaid]')) {
       expect(diagram.querySelector('[data-mermaid-svg]'), diagram.outerHTML).not.toBeNull();
