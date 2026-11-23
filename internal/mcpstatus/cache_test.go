@@ -226,11 +226,7 @@ func TestCache_SnapshotProviderWithFreshness_KeepsExpiredEntries(t *testing.T) {
 	clock = now.Add(time.Second)
 	c.Put(ServerStatus{Key: Key{Provider: ProviderClaude, Name: "new"}, Status: StatusConnected, Source: SourceEphemeralFetch})
 
-	// The TTL-filtered snapshot drops the expired entry...
-	if got := c.SnapshotProvider(ProviderClaude); len(got) != 1 || got[0].Name != "new" {
-		t.Fatalf("SnapshotProvider = %#v, want only the fresh entry", got)
-	}
-	// ...the freshness-annotated one keeps it, marked stale.
+	// The freshness-annotated snapshot keeps the expired entry, marked stale.
 	all := c.SnapshotProviderWithFreshness(ProviderClaude)
 	if len(all) != 2 {
 		t.Fatalf("SnapshotProviderWithFreshness = %#v, want both entries", all)
@@ -525,7 +521,7 @@ func TestRefreshProvider_EmptyResultIsHandled(t *testing.T) {
 	if len(got) != 0 {
 		t.Fatalf("expected empty result, got %d entries", len(got))
 	}
-	if snap := c.SnapshotProvider(ProviderClaude); len(snap) != 0 {
+	if snap := c.SnapshotProviderWithFreshness(ProviderClaude); len(snap) != 0 {
 		t.Fatalf("expected empty provider snapshot, got %d", len(snap))
 	}
 }

@@ -209,24 +209,6 @@ func (c *Cache) Snapshot() []ServerStatus {
 	return out
 }
 
-// SnapshotProvider is the per-provider variant of Snapshot.
-func (c *Cache) SnapshotProvider(p Provider) []ServerStatus {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	now := c.now()
-	out := make([]ServerStatus, 0, len(c.entries))
-	for k, entry := range c.entries {
-		if k.Provider != p {
-			continue
-		}
-		if c.ttl > 0 && now.Sub(entry.storedAt) > c.ttl {
-			continue
-		}
-		out = append(out, entry.status)
-	}
-	return out
-}
-
 // CachedStatus is a snapshot entry annotated with TTL freshness, for
 // callers that treat the cache as two signals: which servers EXIST
 // (membership — a plugin server the config files cannot name doesn't
