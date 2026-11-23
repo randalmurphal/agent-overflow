@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -47,6 +48,46 @@ func TestAMessageForAPausedAssistantWaitsForAssistants(t *testing.T) {
 	sent := f.mockClaudeRecording(t, "I am Ops.")
 	setAssistants(t, a, true)
 	awaitSent(t, sent, func(text string) bool { return strings.Contains(text, "who are you") })
+}
+
+// A queue handed to the dispatcher for a paused assistant's thread starts no
+// session either: the person's message hands the whole queue over, the
+// dispatcher meets the pause (flushStartFenced) and puts the batch back on
+// the queue unsent, with no error row, and turning assistants on sends it.
+func TestAQueueFlushedForAPausedAssistantWaitsForAssistants(t *testing.T) {
+	t.Parallel()
+	f := newAssistantFixture(t)
+	a := f.app
+	a.registerSettingsBroadcast()
+	target, _ := f.assistantTarget(t, "Ops.")
+	setAssistants(t, a, false)
+
+	if _, err := a.RegisterQueueItem(context.Background(), target.ID, "are you there", SendMessageOptions{SendID: "person-send"}); err != nil {
+		t.Fatalf("RegisterQueueItem: %v", err)
+	}
+	if err := a.drainFlushDispatch(t.Context(), 10*time.Second); err != nil {
+		t.Fatalf("the dispatcher did not finish: %v", err)
+	}
+	a.waitAgentNoticeWork()
+	if _, live := a.sessionManager().get(target.ID); live {
+		t.Fatal("a session started for a paused assistant")
+	}
+	if queued := durableQueueRows(t, a, target.ID); len(queued) != 1 || queued[0].SendID != "person-send" {
+		t.Fatalf("the paused assistant's queue = %+v, want the person's message waiting", queued)
+	}
+	items, err := a.store.ListItems(target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.Kind == "error" {
+			t.Fatalf("the paused assistant has an error row: %s", item.Summary)
+		}
+	}
+
+	sent := f.mockClaudeRecording(t, "I am Ops.")
+	setAssistants(t, a, true)
+	awaitSent(t, sent, func(text string) bool { return strings.Contains(text, "are you there") })
 }
 
 // Turning assistants on while a delete claims a paused assistant's thread

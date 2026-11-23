@@ -17,10 +17,16 @@ import {
 import { confirmOnHost, instrument, mintInvite, nonLoopbackIPv4, redeemOnScreen } from './offhost-helpers.js';
 import { COMPACT_SURFACE } from './preview-gateway-helpers.js';
 
-// Past the product's replay deadline (a minute) and one staleness tick (ten
-// seconds), so one jump of the page clock carries the stalled replay over
-// its deadline and fires the tick that reads it.
-const PAST_REPLAY_DEADLINE_MS = 75_000;
+// The product's replay deadline is a minute, read on a ten-second
+// staleness tick. A jump of the page clock fires a due tick once, at its
+// end: the first jump leaves the stall well short of the deadline (the
+// steps under it take a few seconds), the second carries it past.
+const SHORT_OF_REPLAY_DEADLINE_MS = 45_000;
+const PAST_REPLAY_DEADLINE_MS = 30_000;
+// The page's word that its watchdog retired a replay (wsClient.ts). The
+// tick logs it inside the clock jump that fired it, so it has reached this
+// process by the time that jump returns.
+const REPLAY_RETIRED = 'wsClient: replay did not complete; forcing reconnect';
 
 test('interrupted then stalled replay recovers a changed thread and an accepted send', async ({ page }) => {
   test.skip(nonLoopbackIPv4() === null, 'requires a LAN interface for a paired browser');
@@ -74,6 +80,8 @@ test('interrupted then stalled replay recovers a changed thread and an accepted 
     });
   });
   try {
+    let retiredWarnings = 0;
+    page.on('console', (message) => { if (message.text() === REPLAY_RETIRED) retiredWarnings++; });
     await page.clock.install();
     await harness.rpc('SetNetworkSettings', { bindAll: true });
     const first = await seedAgentThread(harness, 'interrupted-first', 'First recovery thread');
@@ -122,8 +130,11 @@ test('interrupted then stalled replay recovers a changed thread and an accepted 
     expect(stalledRetired, 'the page retired the stalled replay before its deadline').toBe(false);
     expect(completedRecovery).toBe(false);
 
+    await page.clock.fastForward(SHORT_OF_REPLAY_DEADLINE_MS);
+    expect(retiredWarnings, 'the page retired the stalled replay before its deadline').toBe(0);
     await page.clock.fastForward(PAST_REPLAY_DEADLINE_MS);
-    await expect.poll(() => stalledRetired, { message: 'the page kept a replay past its deadline' }).toBe(true);
+    expect(retiredWarnings, 'the page kept a replay past its deadline').toBe(1);
+    await expect.poll(() => stalledRetired, { message: 'the retired replay\'s socket did not close' }).toBe(true);
     await expect.poll(() => completedRecovery).toBe(true);
     expect(trafficWhileStalled).toBeGreaterThan(0);
     expect(recoveredWatch).toContain(second);

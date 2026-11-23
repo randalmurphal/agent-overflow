@@ -195,10 +195,11 @@ test('with this computer\'s assistants off, an assistant\'s worker on the other 
     // Assistants off here: the worker's approval stays the assistant's. It
     // waits in the assistant's queue and the person there is not asked. An
     // app-written message for a paused assistant's thread waits in its queue
-    // and starts no session for it until assistants are on; that the
-    // dispatch met the pause and the switch, not a late wake, started the
-    // session is internal/app's TestAMessageForAPausedAssistantWaitsForAssistants,
-    // which drains the dispatcher between the two.
+    // and starts no session for it until assistants are on. That the
+    // notice's start and the dispatcher each meet the pause, and the switch
+    // starts the session, is internal/app's
+    // TestAMessageForAPausedAssistantWaitsForAssistants and
+    // TestAQueueFlushedForAPausedAssistantWaitsForAssistants.
     await here.rpc('UpdateSettings', { assistantsEnabled: false });
     const waiting = () => {
       const db = new DatabaseSync(join(here.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });

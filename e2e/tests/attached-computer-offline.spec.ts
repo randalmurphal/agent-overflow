@@ -18,7 +18,7 @@ import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js
 import { headlessPairing } from './headless-pairing-helpers.js';
 import type { SeedResult } from './fixtures.js';
 import { expectProjectsMenuSays, watchProjectsQuiet } from './sidebar-quiet-helpers.js';
-import { callsInFlight, methodIdByName } from './offhost-helpers.js';
+import { callsInFlight, methodIdByName, methodNameById } from './offhost-helpers.js';
 
 // The unreachable settle (UNREACHABLE_SETTLE_MS). Ten seconds keeps the
 // window the dial ceiling below was sized for: the outage is watched from
@@ -77,6 +77,25 @@ function refreshesAfterTrigger(page: Page): () => number {
   return () => answered;
 }
 
+/**
+ * Every call the page sends that names a draft placeholder (an id starting
+ * `draft:`, frontend draftPlaceholderId.ts) as its first argument, by method:
+ * a placeholder has no thread row anywhere, so no read may carry one.
+ * Installed before the page opens, so it sees every socket.
+ */
+function placeholderCalls(page: Page): () => string[] {
+  const asked: string[] = [];
+  page.on('websocket', (socket) => {
+    socket.on('framesent', ({ payload }) => {
+      if (typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
+      const sent = JSON.parse(payload) as { methodId?: number; params?: unknown[] };
+      const first = sent.params?.[0];
+      if (typeof first === 'string' && first.startsWith('draft:')) asked.push(methodNameById(sent.methodId ?? -1));
+    });
+  });
+  return () => asked.splice(0);
+}
+
 test('an offline paired computer logs once per outage and a draft pane is never routed', async ({ page }) => {
   test.setTimeout(240_000);
   page.setDefaultTimeout(15_000);
@@ -85,6 +104,7 @@ test('an offline paired computer logs once per outage and a draft pane is never 
   const drain = collect(page);
   const refreshed = refreshesAfterTrigger(page);
   const inFlight = callsInFlight(page);
+  const draftAsked = placeholderCalls(page);
   try {
     home = await launchHarness({ env: harnessTiming({ 'unreachable-settle': `${SETTLE_MS}ms` }) });
     remote = await launchHarness();
@@ -136,6 +156,7 @@ test('an offline paired computer logs once per outage and a draft pane is never 
     // its placeholder id would have failed, and logged, by then.
     const draftSettled = async () => {
       await expect.poll(inFlight, { message: 'the draft pane\'s reads did not finish' }).toBe(0);
+      expect(draftAsked(), 'calls the page made for a draft placeholder').toEqual([]);
     };
 
     await home.open(page);

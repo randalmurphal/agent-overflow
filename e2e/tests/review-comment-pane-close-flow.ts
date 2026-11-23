@@ -90,6 +90,10 @@ export async function failAfterPaneCloses(harness: HarnessApp, page: Page, compa
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(TEXT);
   await expect(toast).toHaveCount(1);
   // Held past an ordinary toast's lifetime: the property under test is time.
+  // Any toast waits while the pointer or focus is on it (ToastItem), as both
+  // are after the copy, so both leave it first.
+  await page.mouse.move(0, 0);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.clock.fastForward(DEFAULT_TOAST_MS + 1_000);
   await expect(toast).toHaveCount(1);
 

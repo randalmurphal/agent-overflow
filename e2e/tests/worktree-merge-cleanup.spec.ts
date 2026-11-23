@@ -409,8 +409,8 @@ test('a turn running when the PR merges delays the cleanup until it ends', async
 
   await mergePR(harness, fixture);
   await expect.poll(() => trackedRow(harness, threadId)?.merged_at ?? 0).toBeGreaterThan(0);
-  // Polls go on (the control's two reads), the turn still runs and the
-  // worktree stays.
+  // Polls go on through one that came due for the merged pull request, the
+  // turn still runs and the worktree stays.
   await expectNoMoreStateReads(harness, control, POLL_MS);
   expect(trackedRow(harness, threadId)?.handled_at).toBe(0);
   await expectWorktreeKept(harness, threadId, fixture);
