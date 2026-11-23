@@ -221,9 +221,18 @@ describe('<CommitDialog> — file selection', () => {
     await fireEvent.click(m.check('z.txt'));
 
     files = [THREE[0], file('appeared.ts', { status: 'A' })];
-    __seedGitStatusForTest(WORKSPACE, status({ fileCount: 2, insertions: 9 }));
-    await waitFor(() => expect(m.rows()).toHaveLength(2));
+    // The refresh waits out the scheduler's interval after the first
+    // listing (a second), on a fake clock.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      __seedGitStatusForTest(WORKSPACE, status({ fileCount: 2, insertions: 9 }));
+      await vi.advanceTimersByTimeAsync(1_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    await waitFor(() => expect(m.list).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(m.row('appeared.ts').getAttribute('aria-selected')).toBe('false'));
+    expect(m.rows()).toHaveLength(2);
     expect(m.row('src/a.ts').getAttribute('aria-selected')).toBe('true');
     expect(m.getByTestId('commit-dialog-selection').textContent?.trim()).toBe('1 of 2 files selected');
   });
@@ -262,16 +271,26 @@ describe('<CommitDialog> — file selection', () => {
     let files = [THREE[0]];
     const m = await mount(() => listing(files));
     await waitFor(() => expect(m.diff).toHaveBeenCalledTimes(1));
+    // A listing after one that just ran waits out the scheduler's interval
+    // (a second), on a fake clock from here.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      // Another status change with the same file content reads nothing.
+      __seedGitStatusForTest(WORKSPACE, status({ aheadCount: 1 }));
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(m.list).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(m.diff).toHaveBeenCalledTimes(1);
 
-    // Another status change with the same file content reads nothing.
-    __seedGitStatusForTest(WORKSPACE, status({ aheadCount: 1 }));
-    // A listing after one that just ran waits out the scheduler's interval.
-    await waitFor(() => expect(m.list).toHaveBeenCalledTimes(2), { timeout: 3_000 });
-    expect(m.diff).toHaveBeenCalledTimes(1);
-
-    files = [{ ...THREE[0], version: '100644:edited' }];
-    __seedGitStatusForTest(WORKSPACE, status({ aheadCount: 2 }));
-    await waitFor(() => expect(m.diff).toHaveBeenCalledTimes(2), { timeout: 3_000 });
+      files = [{ ...THREE[0], version: '100644:edited' }];
+      __seedGitStatusForTest(WORKSPACE, status({ aheadCount: 2 }));
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(m.list).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(m.diff).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('says how many files are not shown when the list is bounded', async () => {
@@ -419,7 +438,14 @@ describe('<CommitDialog> — pending operation notice', () => {
   it('lists once on open, not once per effect', async () => {
     const m = await mount();
     await waitFor(() => expect(m.rows()).toHaveLength(3));
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    // Past the scheduler's delay and its longest wait: a second listing
+    // asked for by a later effect would have run.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      await vi.advanceTimersByTimeAsync(2_000);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(m.list).toHaveBeenCalledTimes(1);
   });
 
