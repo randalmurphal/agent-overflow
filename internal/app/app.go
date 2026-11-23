@@ -642,9 +642,6 @@ type App struct {
 	// reported and the live threads flagged stale against it. Zero value
 	// ready; the watcher goroutine only runs from Start.
 	providerBinaries appProviderBinaryWatchState
-	// codexRefusal is the Codex binary the last shared dial refused for its
-	// version (app_codex_pool.go).
-	codexRefusal codexVersionRefusal
 	// promptStale is the set of live threads whose settings-level system
 	// prompt would differ at their next session start
 	// (app_prompt_stale.go).

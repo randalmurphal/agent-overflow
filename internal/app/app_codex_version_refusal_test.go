@@ -48,7 +48,6 @@ func (c versionedCodex) write(t *testing.T) {
 	}
 	script := `#!/bin/bash
 if [ "$1" = "--version" ]; then
-  /bin/echo "$*" >> '` + c.launchLog + `.probes'
   /bin/echo 'codex-cli ` + c.firstVersion + `'
   exit 0
 fi
@@ -111,6 +110,14 @@ func (c versionedCodex) launches(t *testing.T) []int {
 	return pids
 }
 
+// requireLaunches checks how many app-server launches the fake has seen.
+func requireLaunches(t *testing.T, fake versionedCodex, want int) {
+	t.Helper()
+	if n := len(fake.launches(t)); n != want {
+		t.Fatalf("app-server launches = %d, want %d", n, want)
+	}
+}
+
 func wantCodexVersionMessage(path, version string) string {
 	return "Codex v" + version + " (" + path + ") is installed; Agent Overflow needs v" +
 		provider.MinimumCodexCLIVersion + " or newer. Update Codex."
@@ -144,11 +151,10 @@ func setCodexBinary(t *testing.T, app *App, path string) {
 	}
 }
 
-// A Codex below the minimum is refused at initialize, leaves nothing
-// behind, and is not launched again for later starts while the file is
-// unchanged. An update gives the file a new identity, and the next start
-// launches it and succeeds without a restart of the app.
-func TestCodexVersionRefusalIsFinalUntilTheBinaryChanges(t *testing.T) {
+// A Codex below the minimum is refused at initialize and leaves nothing
+// behind. Each start is one dial, with no retry inside it. After an update the next start
+// launches the new binary and succeeds without a restart of the app.
+func TestCodexVersionRefusalEachStartDialsOnce(t *testing.T) {
 	t.Parallel()
 	app, bus := setupE2EApp(t)
 	fake := newVersionedCodex(t, "0.153.0")
@@ -167,18 +173,13 @@ func TestCodexVersionRefusalIsFinalUntilTheBinaryChanges(t *testing.T) {
 	if n := app.sessionManager().runtime.Connections().ActiveCount(); n != 0 {
 		t.Fatalf("pool active connections = %d after a refused dial, want 0", n)
 	}
-	if n := len(fake.launches(t)); n != 1 {
-		t.Fatalf("launches = %d, want 1", n)
-	}
+	requireLaunches(t, fake, 1)
 
-	// Every later start against the same file is answered with the same
-	// refusal and launches nothing.
+	// Every later start dials again, once, and is refused the same way.
 	for range 3 {
 		requireCodexVersionRefusal(t, app.StartSession(thread.ID), want)
 	}
-	if n := len(fake.launches(t)); n != 1 {
-		t.Fatalf("launches = %d after repeated starts, want the refused binary launched once", n)
-	}
+	requireLaunches(t, fake, 4)
 
 	// The update: same path, new bytes.
 	fake.firstVersion, fake.laterVersion = provider.MinimumCodexCLIVersion, provider.MinimumCodexCLIVersion
@@ -190,9 +191,7 @@ func TestCodexVersionRefusalIsFinalUntilTheBinaryChanges(t *testing.T) {
 	if _, ok := app.sessionRuntime.Get(thread.ID); !ok {
 		t.Fatal("no session after the update")
 	}
-	if n := len(fake.launches(t)); n != 2 {
-		t.Fatalf("launches = %d, want the updated binary launched once more", n)
-	}
+	requireLaunches(t, fake, 5)
 	if err := app.StopSession(thread.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +273,7 @@ func TestCodexVersionRefusalOnTheDedicatedFallback(t *testing.T) {
 
 // A session dies after Codex was replaced by a version below the minimum.
 // The automatic reconnect makes its one attempt, which is refused, and the
-// refusal is written in the thread. Nothing launches the binary again.
+// refusal is written in the thread. Nothing retries it.
 func TestCodexVersionRefusalOnAutoReconnect(t *testing.T) {
 	t.Parallel()
 	app, bus := setupE2EApp(t)
@@ -336,10 +335,9 @@ func TestCodexVersionRefusalOnAutoReconnect(t *testing.T) {
 	if _, ok := app.sessionRuntime.Get(thread.ID); ok {
 		t.Fatal("a refused reconnect left a session registered")
 	}
-	// A start after the reconnect is answered from the refusal without a
-	// launch.
+	// A later start is a new attempt: one dial, refused the same way.
 	requireCodexVersionRefusal(t, app.StartSession(thread.ID), wantCodexVersionMessage(fake.path, "0.153.0"))
-	if n := len(fake.launches(t)); n != 2 {
-		t.Fatalf("launches = %d after a later start, want 2", n)
+	if n := len(fake.launches(t)); n != 3 {
+		t.Fatalf("launches = %d after a later start, want 3", n)
 	}
 }

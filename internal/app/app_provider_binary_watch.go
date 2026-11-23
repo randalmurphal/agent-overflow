@@ -41,11 +41,6 @@ type appProviderBinaryWatchState struct {
 	// binary whose version was read successfully; a failed read leaves the
 	// previous entry (or none) in place so the next tick retries.
 	installed map[string]providerBinaryVersion
-	// detected is the status of each provider's last probe, so a probe that
-	// changes it (an update past the minimum, a binary that appeared or
-	// broke) is announced; the boot probe that first fills it announces
-	// through GetProviderStatuses.
-	detected map[string]string
 	// stale is keyed by thread id, holding the two versions the banner
 	// shows. GetThreadLiveState reads it so a reconnecting webview
 	// converges without waiting for the next push.
@@ -161,11 +156,6 @@ func (a *App) recordProbedProviderVersion(providerName string, identity provider
 	previous, known := a.providerBinaries.lookupInstalled(providerName)
 	if known && previous.identity == identity {
 		return
-	}
-	if a.providerBinaries.swapDetected(providerName, status.Status) {
-		// A ready status clears the banner and the settings row an earlier
-		// probe raised, so an update needs no restart.
-		a.emitProviderStatus(providerstatus.EventFromDetect(status))
 	}
 	version := providerstatus.VersionToken(status.Version)
 	if version == "" {
@@ -376,19 +366,6 @@ func (s *appProviderBinaryWatchState) lookupInstalled(providerName string) (prov
 	defer s.mu.Unlock()
 	entry, ok := s.installed[providerName]
 	return entry, ok
-}
-
-// swapDetected records a probe's status and reports whether it changed one
-// an earlier probe recorded.
-func (s *appProviderBinaryWatchState) swapDetected(providerName, status string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.detected == nil {
-		s.detected = make(map[string]string, 3)
-	}
-	previous, known := s.detected[providerName]
-	s.detected[providerName] = status
-	return known && previous != status
 }
 
 func (s *appProviderBinaryWatchState) storeInstalled(providerName string, entry providerBinaryVersion) {
