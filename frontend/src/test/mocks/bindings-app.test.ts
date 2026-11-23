@@ -73,11 +73,15 @@ describe('bindings-app passive loads', () => {
     await expect(mockBindings.GetProviderLoginState('claude')).resolves.toEqual({ provider: 'claude', phase: 'idle' });
     await expect(mockBindings.ListProviderAccounts()).resolves.toEqual([]);
     await expect(mockBindings.GetRateLimitsSnapshots()).resolves.toEqual([]);
+    await expect(mockBindings.GetThreadLiveState('t1')).resolves.toMatchObject({ threadId: 't1', queueItems: [], interactive: { approvals: [], userInputs: [] } });
+    await expect(mockBindings.GetThreadWorkerSummary('t1')).resolves.toEqual({ threadId: 't1', open: 0, needYou: 0 });
+    await expect(mockBindings.ListThreadWakes('t1')).resolves.toEqual({ rows: [], moreReminders: 0 });
+    await expect(mockBindings.AutoResumeThread('t1')).resolves.toBeUndefined();
     mockBindings.setBindingMock('GetSoundFiles', async () => 'own');
     await expect(mockBindings.GetSoundFiles()).resolves.toBe('own');
     mockBindings.resetBindingMocks();
     await expect(mockBindings.GetSoundFiles()).resolves.toEqual({ dir: '/tmp/sounds', sounds: [], warnings: [] });
     // Any other binding still rejects unmocked.
-    expect(() => mockBindings.ListThreads()).toThrow('Binding ListThreads called without a mock');
+    expect(() => mockBindings.GitCommit('/w', '', [], '', '')).toThrow('Binding GitCommit called without a mock');
   });
 });

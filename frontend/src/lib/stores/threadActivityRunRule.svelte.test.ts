@@ -193,6 +193,9 @@ describe('a hello that changes the rule', () => {
     setBindingMock('ListThreadLiveActivity', async () => []);
     setBindingMock('GetRateLimitsSnapshots', async () => []);
     setBindingMock('ListUnsettledFlushes', async () => []);
+    // The refresh re-reads the sidebar, which does not list the open thread,
+    // so it asks the thread's computer, which still holds it.
+    setBindingMock('GetThread', async (id: string) => makeThread({ id }));
     const history = HISTORIES[name].rows();
     const backend = serveClassifiedHistory(() => history, requestedRule);
     const { pane, projection } = await openPane();
@@ -300,6 +303,7 @@ describe('a rule change over a partial window', () => {
     setBindingMock('ListThreadLiveActivity', async () => []);
     setBindingMock('GetRateLimitsSnapshots', async () => []);
     setBindingMock('ListUnsettledFlushes', async () => []);
+    setBindingMock('GetThread', async (id: string) => makeThread({ id }));
     return gpu;
   }
 

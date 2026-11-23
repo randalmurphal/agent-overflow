@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
+import { modelCatalog } from '../../test/helpers/modelCatalog';
 import { setupEventListeners } from './events';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { createThreadPane } from './thread.svelte';
@@ -1142,6 +1143,8 @@ describe('setupEventListeners', () => {
     let releaseSnapshot!: (value: unknown) => void;
     setBindingMock('SwitchThread', async (threadId: unknown) =>
       makeThread({ id: typeof threadId === 'string' ? threadId : 'thread-1' }));
+    // The live snapshot fails, so the pane takes the pending-request fallback.
+    setBindingMock('GetThreadLiveState', async () => { throw new Error('live state unavailable'); });
     setBindingMock('ListPendingInteractiveRequests', () => new Promise((resolve) => {
       releaseSnapshot = resolve;
     }));
@@ -3102,6 +3105,8 @@ describe('setupEventListeners', () => {
   it('hydrates accountInfo store from provider:account', async () => {
     const accountInfo = await import('./accountInfo.svelte');
     accountInfo.resetForTest();
+    // An account change reads the provider's model list again.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
 
     emitWailsEvent('provider:account', {
       provider: 'claude',
@@ -3126,6 +3131,8 @@ describe('setupEventListeners', () => {
   it('clears selected account state from a provider:account removal event', async () => {
     const accountInfo = await import('./accountInfo.svelte');
     accountInfo.resetForTest();
+    // An account change reads the provider's model list again.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     accountInfo.setProviderAccount('claude', { subscriptionType: 'Claude Max' }, 'account-one');
 
     emitWailsEvent('provider:account', {
@@ -3196,6 +3203,8 @@ describe('setupEventListeners', () => {
   it('drops malformed provider:account events before hitting the store', async () => {
     const accountInfo = await import('./accountInfo.svelte');
     accountInfo.resetForTest();
+    // An account change reads the provider's model list again.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
 
     // Unknown provider name — should be ignored, not silently inserted.
     emitWailsEvent('provider:account', {

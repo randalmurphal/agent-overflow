@@ -59,6 +59,10 @@ describe('<ShellRunCard>', () => {
     const stop = setBindingMock('StopThreadShellCommand', async () => {
       if (fail) throw new Error('not running');
     });
+    // A refused stop reads the running commands again: the run is still there.
+    setBindingMock('GetThreadShellCommands', async () => [{
+      threadId: 'thread-1', runId: 'run-1', command: 'make test', state: 'running', output: '', outputSeq: 0, startedAt: 1_000,
+    }]);
     const { getByTestId } = render(ShellRunCard, { props: { pane } });
     start();
     await tick();

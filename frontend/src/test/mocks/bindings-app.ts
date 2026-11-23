@@ -108,6 +108,7 @@ export function resetBindingMocks(): void {
 // with nothing recorded, so a test need not stub it and its store does not
 // log a failed load on every test. A test that cares installs its own
 // answer with setBindingMock, which holds until the next reset.
+let gitStatusSubscriptions = 0;
 const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   // A computer's sign-in state and accounts (stores/computerAccounts). With
   // no sign-in running the backend answers idle for the provider asked
@@ -118,6 +119,78 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   GetSoundFiles: async () => ({ dir: '/tmp/sounds', sounds: [], warnings: [] }),
   // Rate limit snapshots read on every hello (stores/eventsRateLimits).
   GetRateLimitsSnapshots: async () => [],
+  // A thread the pane opens, as the backend holds an idle thread with no
+  // history: resuming it does nothing (app_session_bindings.go), and its
+  // ticks, plans, turns, tray tasks, wakes and pending requests are empty
+  // (app_paging.go, app_agent_wake_rows.go, app_approval.go).
+  AutoResumeThread: async () => undefined,
+  GetThreadUserMessageTicks: async () => [],
+  ListThreadProposedPlans: async () => [],
+  ListRecentTurns: async () => [],
+  ListLiveBackgroundTasks: async () => [],
+  ListThreadWakes: async () => ({ rows: [], moreReminders: 0 }),
+  // Its window, read again on a refresh: the empty page (store/paging.go
+  // emptyPagedItems).
+  ListThreadSliceAround: async () => ({
+    items: [],
+    runs: [],
+    oldestCursor: { turnIndex: -1, itemIndex: -1, itemId: '' },
+    newestCursor: { turnIndex: -1, itemIndex: -1, itemId: '' },
+    oldestTurnIndex: -1,
+    newestTurnIndex: -1,
+    hasMore: false,
+    hasMoreOlder: false,
+    hasMoreNewer: false,
+  }),
+  ListPendingInteractiveRequests: async () => ({ approvals: [], userInputs: [] }),
+  // Its live state: nothing running, queued or waiting (app_live_state.go).
+  GetThreadLiveState: async (threadId: string) => ({
+    threadId,
+    codexAgents: [],
+    subagentProgress: [],
+    queueItems: [],
+    flushedItems: [],
+    flushedThrough: 0,
+    interactive: { approvals: [], userInputs: [] },
+  }),
+  // Its workers: none open (app_thread_agent_rows_summary.go).
+  GetThreadWorkerSummary: async (threadId: string) => ({ threadId, open: 0, needYou: 0 }),
+  ListThreadWorkerSummaries: async () => ({ summaries: [] }),
+  ListStandingAgentWakes: async () => [],
+  // Its running shell commands, async questions and agent request
+  // deliveries: none (app_shell_command.go, app_async_questions.go,
+  // app_thread_request_states.go).
+  GetThreadShellCommands: async () => [],
+  ListAsyncQuestions: async () => [],
+  GetThreadRequestStates: async () => [],
+  // Every thread's live activity, read on each connection: none running
+  // (app_live_state.go).
+  ListThreadLiveActivity: async () => [],
+  // The workflow engine, not paused (app_workflow.go).
+  WorkflowGetEngineState: async () => ({ paused: false }),
+  // A checkout with no busy thread (app_workspace_activity.go).
+  GetWorkspaceActivity: async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0, busyThreads: [] }),
+  // A checkout's status stream, for a project directory that is no git
+  // repository (gitapp/watch.go Subscribe, git/status.go Status). The stream
+  // is keyed on the workspace path; unsubscribing is idempotent
+  // (app_gitwatch.go).
+  GitStatusSubscribe: async (ws: { workspacePath: string }) => ({
+    id: `git-status-${++gitStatusSubscriptions}`,
+    cwd: ws.workspacePath,
+    status: {
+      isRepo: false, branch: '', isDefaultBranch: false, hasChanges: false, insertions: 0, deletions: 0,
+      fileCount: 0, hasUpstream: false, aheadCount: 0, behindCount: 0, hasOriginRemote: false,
+    },
+  }),
+  GitStatusUnsubscribe: async () => undefined,
+  // The sidebar's thread list and the composer's usage meter, with nothing
+  // recorded (app_thread_bindings.go, app_usage.go).
+  ListThreads: async () => [],
+  GetUsageStats: async () => [],
+  // The error and render trace sinks answer with the file they appended to
+  // (app_observability.go, internal/uitrace).
+  ReportFrontendErrorBatch: async () => '/tmp/ui-trace/frontend-errors.jsonl',
+  AppendUIRenderTraceBatch: async () => '/tmp/ui-trace/render.jsonl',
 };
 
 function installPassiveLoads(): void {
