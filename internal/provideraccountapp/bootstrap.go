@@ -8,8 +8,9 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// ReconcileProviderHome binds metadata to its credential home, prunes only
-// slots owned by that pairing, and recovers crash-orphaned provider rotations.
+// ReconcileProviderHome binds metadata to its credential home, deletes the
+// slots of sign-ins this store started that never saved their account, and
+// recovers crash-orphaned provider rotations.
 func (m *Manager) ReconcileProviderHome(dbDir, userHome string) error {
 	if !m.available() {
 		return fmt.Errorf("provider account storage is unavailable")
@@ -24,17 +25,11 @@ func (m *Manager) ReconcileProviderHome(dbDir, userHome string) error {
 			filepath.Join(dbDir, "provider-accounts.json"), claimedHome, userHome,
 		)
 	} else {
+		// Reservations settle only in the bound home, where this store's
+		// sign-ins write their slots (provideraccounts.ReserveAccountID).
 		for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
-			keep := make(map[string]bool)
-			for _, account := range m.store.List(providerName, time.Now()) {
-				keep[account.ID] = true
-			}
-			pruned, pruneErr := m.credentials.PruneOrphanedAccounts(providerName, keep)
-			for _, accountID := range pruned {
-				m.audit("removed orphaned %s credential slot %s (no saved account references it)", providerName, accountID)
-			}
-			if pruneErr != nil {
-				return fmt.Errorf("clean orphaned %s account credentials: %w", providerName, pruneErr)
+			if err := m.removeUnsavedSlots(providerName); err != nil {
+				return err
 			}
 		}
 	}

@@ -12,8 +12,6 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
-
-	"github.com/google/uuid"
 )
 
 type ManagedAccount struct {
@@ -741,7 +739,10 @@ func (m *Manager) adoptCurrentProviderAccountLocked(
 	}
 	if _, hasActive := m.store.Active(providerName, time.Now()); !hasActive &&
 		strings.TrimSpace(info.Email) == "" {
-		accountID := uuid.NewString()
+		accountID, err := m.store.ReserveAccountID(providerName)
+		if err != nil {
+			return provideraccounts.Account{}, SignIn{}, err
+		}
 		saved, err := m.credentials.CaptureAccountCredential(providerName, accountID)
 		if err != nil {
 			return provideraccounts.Account{}, SignIn{}, err
@@ -827,8 +828,7 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 	// login we are adopting may already be saved under this identity from
 	// an earlier session; minting a fresh ID here would put the credential
 	// in a slot the metadata never references, leaving the real account on
-	// a stale credential until the next startup prune deleted the copy.
-	accountID := uuid.NewString()
+	// a stale credential.
 	m.backfillCodexOrgIDs(providerName, info.Email)
 	existing, found, err := m.findAccountByObservedIdentity(providerName, info)
 	if err != nil {
@@ -839,8 +839,11 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 			err,
 		)
 	}
-	if found {
-		accountID = existing.ID
+	accountID := existing.ID
+	if !found {
+		if accountID, err = m.store.ReserveAccountID(providerName); err != nil {
+			return SignIn{}, err
+		}
 	}
 	saved, err := m.credentials.CaptureAccountCredential(providerName, accountID)
 	if err != nil {

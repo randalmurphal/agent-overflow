@@ -139,6 +139,10 @@ type ProviderState struct {
 	// (PendingReset says what ends one). Backend state: a key is no business
 	// of a client's. Remove forgets it.
 	PendingResets map[string]PendingReset `json:"pendingResets,omitempty"`
+	// ReservedSlots holds the ids ReserveAccountID minted whose row does not
+	// exist yet, with only true entries (reserved_slots.go). Inserting the
+	// row clears its id.
+	ReservedSlots map[string]bool `json:"reservedSlots,omitempty"`
 }
 
 // selectAccount makes accountID the selection and records whether
@@ -159,9 +163,10 @@ type persistedState struct {
 	// (~/.claude, ~/.codex) hold the credential slots this metadata
 	// describes. Stamped on first claim so a process pairing this store
 	// with a DIFFERENT home — a scratch --data-dir against a real home,
-	// or vice versa — can be detected before it acts on slots that were
-	// never its to manage (the orphan-slot prune is the destructive
-	// consumer). Absent in stores written before the stamp existed.
+	// or vice versa — settles no reservation there. Reservations settle in
+	// the bound home only, where the store's sign-ins write their slots;
+	// clearing one from another home would leave its slot with nothing that
+	// can ever delete it. Absent in stores written before the stamp existed.
 	ProviderHome string                   `json:"providerHome,omitempty"`
 	Providers    map[string]ProviderState `json:"providers"`
 }
@@ -357,6 +362,7 @@ func (s *Store) upsertAndActivate(
 		state.Accounts[index] = cloneAccount(account)
 	} else {
 		state.Accounts = append(state.Accounts, cloneAccount(account))
+		state.clearReservation(account.ID)
 	}
 	selected, err := s.selectLocked(account.Provider, &state, account.ID, false)
 	if err != nil {
@@ -411,6 +417,7 @@ func (s *Store) Add(account Account) (Account, error) {
 	// SetUsageResets is the only writer of a row's list.
 	account.UsageResets = nil
 	state.Accounts = append(state.Accounts, cloneAccount(account))
+	state.clearReservation(account.ID)
 	s.state.Providers[account.Provider] = state
 	if err := s.saveLocked(); err != nil {
 		restoreProviderState(s.state.Providers, account.Provider, previous, existed)
@@ -861,10 +868,10 @@ func (s *Store) ClaudeCatalog(accountID string) (ClaudeCatalogRecord, bool) {
 // ClaimProviderHome binds this metadata store to userHome, the home whose
 // provider trees hold the credential slots it describes. The first claim
 // wins and is persisted; later claims only compare. It returns the home the
-// store is bound to and whether that matches userHome — callers gate slot
-// destruction (the orphan prune) on a true match, so a store paired with a
-// foreign home degrades to "never prune" rather than "prune someone else's
-// logins".
+// store is bound to and whether that matches userHome. The boot settles
+// reservations (ReleaseReservedSlots) only on a true match: a reservation
+// does not record its home, and the bound home is where the store's
+// sign-ins write their slots.
 func (s *Store) ClaimProviderHome(userHome string) (string, bool, error) {
 	cleaned := filepath.Clean(userHome)
 	if strings.TrimSpace(userHome) == "" {
@@ -936,6 +943,7 @@ func cloneProviderState(state ProviderState) ProviderState {
 	state.ClaudeCatalogs = cloneClaudeCatalogs(state.ClaudeCatalogs)
 	state.AutoSwitchOff = maps.Clone(state.AutoSwitchOff)
 	state.PendingResets = clonePendingResets(state.PendingResets)
+	state.ReservedSlots = maps.Clone(state.ReservedSlots)
 	return state
 }
 
