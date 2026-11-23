@@ -15,13 +15,6 @@ type ProcessGroup interface {
 	Kill(context.Context) error
 }
 
-// ProcessGroups returns the identities registered for this run.
-func (s *Supervisor) ProcessGroups() []ProcessGroupRecord {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]ProcessGroupRecord(nil), s.manifest.ProcessGroups...)
-}
-
 // StopProcessGroups is the immediate safety path. It is safe to call while a
 // managed adapter is running and is idempotent for groups that already exited.
 func (s *Supervisor) StopProcessGroups(ctx context.Context) error { return s.terminateGroups(ctx) }

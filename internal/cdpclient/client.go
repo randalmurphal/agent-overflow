@@ -69,7 +69,6 @@ type pendingCall struct {
 
 // Conn is one WebSocket to one debugger target.
 type Conn struct {
-	url  string
 	conn *websocket.Conn
 
 	writeMu sync.Mutex
@@ -97,7 +96,6 @@ func Dial(ctx context.Context, wsURL string) (*Conn, error) {
 	}
 	conn.SetReadLimit(ReadLimit)
 	c := &Conn{
-		url:      wsURL,
 		conn:     conn,
 		pending:  map[int]*pendingCall{},
 		subs:     map[int]*Subscription{},
@@ -106,9 +104,6 @@ func Dial(ctx context.Context, wsURL string) (*Conn, error) {
 	go c.readLoop()
 	return c, nil
 }
-
-// URL is the endpoint this connection was opened against.
-func (c *Conn) URL() string { return c.url }
 
 // Close tears the connection down; parked calls fail rather than hang.
 func (c *Conn) Close() error {
@@ -196,10 +191,6 @@ type Subscription struct {
 	key     int
 	methods map[string]struct{}
 	ch      chan Event
-
-	mu      sync.Mutex
-	dropped int
-	closed  bool
 }
 
 // subscriptionBuffer is how many events one subscription may hold before
@@ -226,25 +217,11 @@ func (c *Conn) Subscribe(methods ...string) *Subscription {
 	return sub
 }
 
-// C is the subscription's event channel.
-func (s *Subscription) C() <-chan Event { return s.ch }
-
-// Dropped counts events this subscription could not hold. Non-zero means
-// the reader was slower than the browser, not that nothing happened.
-func (s *Subscription) Dropped() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.dropped
-}
-
 // Close unregisters the subscription. Idempotent.
 func (s *Subscription) Close() {
 	s.conn.mu.Lock()
 	delete(s.conn.subs, s.key)
 	s.conn.mu.Unlock()
-	s.mu.Lock()
-	s.closed = true
-	s.mu.Unlock()
 }
 
 // Wait blocks for the next matching event, the context, or the
@@ -291,9 +268,6 @@ func (s *Subscription) offer(ev Event) {
 	select {
 	case s.ch <- ev:
 	default:
-		s.mu.Lock()
-		s.dropped++
-		s.mu.Unlock()
 	}
 }
 

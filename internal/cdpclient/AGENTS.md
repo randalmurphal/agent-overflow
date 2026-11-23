@@ -69,7 +69,7 @@ own pending entry.
 `Subscribe` must be called BEFORE the call that causes the event: the
 browser can deliver `Tracing.tracingComplete` inside the `Tracing.end`
 round trip. A subscription's buffer is small and arrivals past it are
-DROPPED with a count (`Dropped()`), never blocked on: blocking would park
+DROPPED, never blocked on: blocking would park
 the read loop, which would then deadlock every call parked on the
 connection.
 
