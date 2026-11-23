@@ -23,8 +23,8 @@ import {
   openSettingsOverlay,
   resetSettingsOverlayForTest,
 } from '../../stores/settingsOverlay.svelte';
-import { getUpdateState, resetForTest as resetUpdatesForTest } from '../../stores/updates.svelte';
-import { initServiceUpdates, resetServiceUpdatesForTest } from '../../stores/serviceUpdate.svelte';
+import { getUpdateState } from '../../stores/updates.svelte';
+import { initServiceUpdates } from '../../stores/serviceUpdate.svelte';
 
 const REMOTE_PAGES = ['systems', 'remote', 'agent-access'] as const;
 const REMOTE_TABS = ['Connect to a computer', 'Allow device access', 'Agent remote tools'];
@@ -46,12 +46,10 @@ for (const variant of variants) {
   describe(variant.name, () => {
     beforeEach(async () => {
       if (!variant.remote) stageNoRemoteBuild();
-      resetSettingsOverlayForTest();
       await seedSettingsPages();
     });
 
     afterEach(() => {
-      resetSettingsOverlayForTest();
       resetToLocalPage();
     });
 
@@ -143,11 +141,6 @@ for (const variant of variants) {
     });
 
     describe('updates page', () => {
-      beforeEach(() => {
-        resetUpdatesForTest();
-        resetServiceUpdatesForTest();
-      });
-      afterEach(() => resetServiceUpdatesForTest());
 
       it(variant.remote ? 'lists supervised computers' : 'lists no other computer', async () => {
         initServiceUpdates();

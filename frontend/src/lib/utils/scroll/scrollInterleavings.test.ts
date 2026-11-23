@@ -33,14 +33,12 @@ import {
   type UseStickToBottomController,
 } from './index.svelte';
 import { SCROLL_WRITE_CALLER_PHYSICS, type ScrollWriteCaller } from './types';
-import { resetScrollIntentModuleStateForTest } from './intent';
 import { SPRING_MAX_CATCHUP_STEPS, SPRING_MAX_VELOCITY_PX_PER_FRAME } from './motion';
 import {
   clearUiRenderTrace,
   getUiRenderTraceRecords,
   setUiRenderTraceEnabled,
 } from '../uiRenderTrace';
-import { resetSettingsForTest } from '../../stores/settings.svelte';
 import { MockResizeObserver, stubGeometry, type Geometry } from './testGeometry';
 
 // Callers whose writes are continuous-program motion, bounded by the
@@ -154,7 +152,6 @@ describe('scroll interleavings — ops × states frame invariants', () => {
 
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
-    resetScrollIntentModuleStateForTest();
     setUiRenderTraceEnabled(true);
     clearUiRenderTrace();
     MockResizeObserver.instances = [];
@@ -194,7 +191,6 @@ describe('scroll interleavings — ops × states frame invariants', () => {
         originalRO;
     }
     vi.restoreAllMocks();
-    resetSettingsForTest();
     vi.useRealTimers();
   });
 

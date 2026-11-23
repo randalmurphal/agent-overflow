@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { makeSettings } from '../../test/helpers/settings';
 import { loadSettingsFixture as loadSettings } from '../../test/helpers/settingsFixture';
 import { autoPinNewThread, shouldAutoPinFirstSend } from './threadAutoPin';
@@ -25,7 +25,6 @@ function mkThread(overrides: Partial<Thread> = {}): Thread {
 
 describe('shouldAutoPinFirstSend', () => {
   beforeEach(async () => {
-    resetBindingMocks();
     setBindingMock('GetSettings', async () => makeSettings({ autoPinNewThreads: true }));
     await loadSettings();
   });
@@ -33,7 +32,6 @@ describe('shouldAutoPinFirstSend', () => {
   it('pins a plain in-app draft on its first send', () => {
     expect(shouldAutoPinFirstSend(mkThread())).toBe(true);
   });
-
 
   it('still refuses imports, hidden modes, and non-drafts', () => {
     expect(shouldAutoPinFirstSend(undefined)).toBe(false);
@@ -51,7 +49,6 @@ describe('shouldAutoPinFirstSend', () => {
 
 describe('autoPinNewThread', () => {
   beforeEach(async () => {
-    resetBindingMocks();
     for (const toast of Array.from(getToasts())) removeToast(toast.id);
     setBindingMock('GetSettings', async () => makeSettings({ autoPinNewThreads: true }));
     await loadSettings();

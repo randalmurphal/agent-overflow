@@ -5,11 +5,10 @@
 // and restores is still expanded.
 
 import { fireEvent, render } from '@testing-library/svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import WorkflowProjectGroup from './WorkflowProjectGroup.svelte';
 import type { WorkflowHomeGroup } from '../../stores/workflowData';
 import type { WorkItem } from '../../types/workflow';
-import { resetWorkflowsHomeForTest } from '../../stores/workflowsHome.svelte';
 
 const MERGED = '{"action":"merged","policy":"manual","at":1}';
 
@@ -17,8 +16,6 @@ function group(projectId = 'p1'): WorkflowHomeGroup {
   const run = (id: string, goal: string) => ({ id, goal, workflowId: 'port', state: 'done', disposition: MERGED, createdAt: 1, endedAt: 2, projectId }) as WorkItem;
   return { projectId, projectName: 'Widgets', attention: [], running: [], recent: [run('r1', 'Port the parser'), run('r2', 'Port the lexer')], definitions: [] };
 }
-
-afterEach(() => resetWorkflowsHomeForTest());
 
 describe('<WorkflowProjectGroup> Recent', () => {
   it('is collapsed with its count and opens on its toggle', async () => {

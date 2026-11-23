@@ -3,7 +3,6 @@ import {
   flushFrontendErrors,
   frontendErrorCaptureStateForTest,
   installFrontendErrorCapture,
-  resetFrontendErrorCaptureForTest,
 } from './frontendErrorCapture';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { copyToClipboard, reportCopyFailure } from './clipboard';
@@ -49,7 +48,6 @@ function reportedLines(call = 0): string[] {
 
 describe('frontendErrorCapture', () => {
   afterEach(() => {
-    resetFrontendErrorCaptureForTest();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });

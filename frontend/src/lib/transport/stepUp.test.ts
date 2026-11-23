@@ -12,7 +12,6 @@ import generatedBindings from '../../../bindings/agent-overflow/app.ts?raw';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeCtor, flushMicrotasks, MockWebSocket } from '../../test/helpers/mockWebSocket';
-import { resetBindingMocks } from '../../test/mocks/bindings-app';
 import { PasskeyAbandonedError, setPasskeysAvailableFromBootstrap } from './passkey';
 import { isStepUpRefusal } from './scopeRefusal';
 import {
@@ -73,7 +72,6 @@ function stubProver(token = 'proof-abc'): StepUpProver & { prove: ReturnType<typ
 
 afterEach(() => {
   MockWebSocket.reset();
-  resetBindingMocks();
   setPasskeysAvailableFromBootstrap(false);
   Reflect.deleteProperty(window, 'PublicKeyCredential');
   Reflect.deleteProperty(navigator, 'credentials');

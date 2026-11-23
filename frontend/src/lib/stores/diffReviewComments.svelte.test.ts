@@ -8,14 +8,12 @@ import {
   getDiffReviewComments,
   holdDiffReviewComments,
   refreshDiffReviewComments,
-  resetDiffReviewCommentsForTest,
 } from './diffReviewComments.svelte';
 import {
   getPRDiffReviewComments,
   holdPRDiffReviewComments,
   prDraftsKey,
   refreshPRDiffReviewComments,
-  resetPRDiffReviewCommentsForTest,
 } from './prDiffReviewComments.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -34,8 +32,6 @@ function row(sourceKey: string): DiffReviewComment {
 const sources = (count: number, prefix = 's') => Array.from({ length: count }, (_, index) => `${prefix}${index}`);
 
 beforeEach(() => {
-  resetDiffReviewCommentsForTest();
-  resetPRDiffReviewCommentsForTest();
   setBindingMock('ListDiffReviewComments', async (_thread: string, _scope: string, sourceKey: string) => [row(sourceKey)]);
   setBindingMock('ListPRDiffReviewComments', async (_pr: unknown, _scope: string, sourceKey: string) => [row(sourceKey)]);
 });

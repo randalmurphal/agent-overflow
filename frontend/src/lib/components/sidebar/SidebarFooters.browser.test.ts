@@ -6,15 +6,14 @@ import SystemStatsFooter from './SystemStatsFooter.svelte';
 import UsageFooter from './UsageFooter.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { UsageBucket } from '../../stores/bindings';
-import { setSystemStats, resetForTest as resetSystemStatsForTest } from '../../stores/systemStats.svelte';
-import { resetTelemetryForTest, setTelemetrySelection } from '../../stores/telemetryComputers.svelte';
-import { cycleUsagePeriod, resetUsagePeriodForTest } from '../../stores/usagePeriod.svelte';
-import { resetUsageRefreshForTest } from '../../stores/usageRefresh.svelte';
+import { setSystemStats } from '../../stores/systemStats.svelte';
+import { setTelemetrySelection } from '../../stores/telemetryComputers.svelte';
+import { cycleUsagePeriod } from '../../stores/usagePeriod.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
 import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { getTelemetryFooterShape, recordTelemetryFooterShape, telemetryFooterShapeKey } from '../../stores/telemetryFooterShape.svelte';
-import { REMOTE_BACKEND_UUID, stageBackend, resetStagedBackends } from '../../../test/helpers/backends';
+import { REMOTE_BACKEND_UUID, stageBackend } from '../../../test/helpers/backends';
 
 // The footers sit under the sidebar's project list, so a footer that mounts
 // or grows after first paint pushes every row above it. Each one holds its
@@ -22,18 +21,11 @@ import { REMOTE_BACKEND_UUID, stageBackend, resetStagedBackends } from '../../..
 
 beforeEach(() => {
   __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
-  resetSystemStatsForTest();
-  resetTelemetryForTest();
-  resetUsagePeriodForTest();
-  resetUsageRefreshForTest();
   setBindingMock('UpdateSettings', async () => null);
 });
 
 afterEach(() => {
   setCompactLayoutForTest(false);
-  resetStagedBackends();
-  resetSystemStatsForTest();
-  resetTelemetryForTest();
 });
 
 function deferredUsage() {

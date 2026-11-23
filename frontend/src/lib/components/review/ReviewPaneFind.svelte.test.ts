@@ -7,7 +7,7 @@ import { render } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ReviewPaneFind from './ReviewPaneFind.svelte';
-import { getPaneFindProvider, openPaneFind, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
+import { getPaneFindProvider, openPaneFind, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import { REVIEW_FIND_REMOTE_DEBOUNCE_MS, type ReviewFind } from '../../stores/reviewFind.svelte';
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { placeCILogLine, type CILogFindHit } from '../../utils/ciLogFind';
@@ -54,7 +54,6 @@ function mount() {
 }
 
 afterEach(() => {
-  resetPaneFindForTest();
   vi.useRealTimers();
   document.body.innerHTML = '';
 });

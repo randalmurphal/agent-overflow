@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
 import { createComposerDraftStore } from './composerDraft.svelte';
-import { resetComposerDraftSnapshotStateForTest } from './composerDraftSnapshots';
 import { registerComposerDraft, getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { moveDraftProject } from './draftProjectMove';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -10,7 +9,7 @@ import { noteProject, noteThread } from '../transport/entityIndex';
 import { HOME_BACKEND } from '../transport/backendKey';
 import type { Draft, DraftSnapshot } from '../types/draft';
 import type { Project, Thread } from '../types/models';
-import { setThreadEnvMode, hasStagedWorktreeIntent, resetForTest as resetWorktreeIntents } from './worktreeIntent.svelte';
+import { setThreadEnvMode, hasStagedWorktreeIntent } from './worktreeIntent.svelte';
 
 vi.mock('./panes.svelte', async (importOriginal) => ({
   ...await importOriginal<typeof import('./panes.svelte')>(),
@@ -31,8 +30,6 @@ let pane: ThreadPane;
 let draft: ReturnType<typeof createComposerDraftStore>;
 
 beforeEach(async () => {
-  resetComposerDraftSnapshotStateForTest();
-  resetWorktreeIntents();
   saved = new Map([[source.id, { ...empty(source.id), content: 'original prompt' }]]);
   noteProject(source.projectId!, HOME_BACKEND);
   noteProject(project.id, HOME_BACKEND);
@@ -55,7 +52,7 @@ beforeEach(async () => {
   dispose = registerComposerDraft(pane.paneId, draft);
   await draft.setThread(source.id);
 });
-afterEach(async () => { dispose(); await draft.setThread(null); pane.clear(); resetWorktreeIntents(); });
+afterEach(async () => { dispose(); await draft.setThread(null); pane.clear(); });
 
 describe('draft project moves', () => {
   it('moves a saved empty draft through the backend so its conversation settings travel', async () => {

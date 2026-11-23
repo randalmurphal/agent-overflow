@@ -1,14 +1,14 @@
 import { afterEach, expect, it } from 'vitest';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { detachBackend } from '../transport/backends';
 import { noteThread } from '../transport/entityIndex';
 
 import { threadItemCache } from './threadItemCache';
-import { beginThreadInterrupt, finishThreadInterrupt, isThreadInterruptPending, resetThreadInterruptStateForTest } from './threadInterruptState.svelte';
+import { beginThreadInterrupt, finishThreadInterrupt, isThreadInterruptPending } from './threadInterruptState.svelte';
 import { AGENT_MESSAGES_ABSORBED_RULE } from '../utils/activityRunSpans';
 
-afterEach(() => { resetStagedBackends(); resetThreadInterruptStateForTest(); threadItemCache.clear(); });
+afterEach(() => { threadItemCache.clear(); });
 
 it('invalidates only the moving conversation when its execution owner changes', () => {
   stageBackend({ id: 'gpu' });

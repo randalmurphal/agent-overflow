@@ -1,14 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import PreviousThreadsDialog from './PreviousThreadsDialog.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   closePreviousThreadsDialog,
   getPreviousThreads,
   openPreviousThreadsDialog,
   PREVIOUS_THREADS_PAGE,
-  resetPreviousThreadsForTest,
 } from '../../stores/assistantPastThreads.svelte';
 import { openThreadFromNavigation } from '../../stores/panes.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
@@ -16,7 +15,7 @@ import { replaceAllThreads } from '../../stores/threads.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { takePinnedBackend } from '../../transport/backends';
 import { noteThread, threadBackend } from '../../transport/entityIndex';
-import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { stageBackend } from '../../../test/helpers/backends';
 import type { PastThreadsCursor } from '../../stores/bindings';
 import type { Thread } from '../../types/models';
 import { applySettingsSnapshot } from '../../stores/settings.svelte';
@@ -55,14 +54,10 @@ const items = (el: HTMLElement) => Array.from(el.querySelectorAll<HTMLElement>('
 
 describe('<PreviousThreadsDialog>', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetStagedBackends();
-    resetPreviousThreadsForTest();
     vi.mocked(openThreadFromNavigation).mockClear();
     replaceAllThreads([agent]);
     noteThread('agent', HOME_BACKEND);
   });
-  afterEach(() => resetPreviousThreadsForTest());
 
   it('lists the newest first with when each was superseded, a page at a time', async () => {
     const list = pages();

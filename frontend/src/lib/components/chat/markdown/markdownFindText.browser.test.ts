@@ -11,8 +11,6 @@ import { EMBEDDED_HTML_EXTENSIONS, lex, parseBlocks } from '../../../markdown';
 import { buildForgeAttachmentExtension } from '../../../utils/forgeAttachmentExtension';
 import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from './forgeAttachmentContext';
 import type { ForgeAttachmentSource } from '../../../utils/forgeAttachments';
-import { resetCodeSpanCacheForTest } from './codeSpanCache';
-import { __resetStreamdownCodeHostForTest } from './StreamdownCodeHost.svelte';
 import { CORPUS, generatedMarkdown } from '../../../../test/fixtures/markdownFindCorpus';
 import { assistantMarkdownSource } from '../threadFindText';
 import { CHAT_MARKDOWN_SETTLED_CONTEXT } from '../markdownSettledContext';
@@ -70,8 +68,6 @@ for (const [outer, wrapOuter] of Object.entries(CONTAINERS)) {
 }
 
 beforeEach(() => {
-  resetCodeSpanCacheForTest();
-  __resetStreamdownCodeHostForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none']);
   setBindingMock('HighlightPatch', async () => ({ lines: [] }));

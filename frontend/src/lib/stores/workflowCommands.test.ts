@@ -12,7 +12,6 @@ import {
   getWorkflowsOverlayTop,
   openWorkflowsPane,
   pushWorkflowRunDetail,
-  resetWorkflowsOverlayForTest,
   setWorkflowArmedAction,
 } from './workflowsOverlay.svelte';
 // Imported for its side effect as much as its API: the settings store arms the
@@ -20,9 +19,7 @@ import {
 import {
   isSettingsOpen,
   openSettingsOverlay,
-  resetSettingsOverlayForTest,
 } from './settingsOverlay.svelte';
-import { resetAppStorageForTest } from './appStorage';
 import { createPane, focusPane, getFocusedPaneId, resetPanesForTest } from './panes.svelte';
 import { getPaneLayoutItems, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { isToolOpen, resetToolPanesForTest } from './toolPanes.svelte';
@@ -56,9 +53,6 @@ function resetPaneState(): void {
 describe('workflows commands', () => {
   beforeEach(() => {
     clearCommandRegistry();
-    resetAppStorageForTest();
-    resetWorkflowsOverlayForTest();
-    resetSettingsOverlayForTest();
     resetPaneState();
     registerWorkflowCommands();
   });

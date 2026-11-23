@@ -1,11 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { applyQueueStateChanged } from './eventsQueue';
-import { getQueueRevisionForThread, resetForTest as resetSendQueueForTest } from './sendQueue.svelte';
+import { getQueueRevisionForThread } from './sendQueue.svelte';
 
 describe('provider:queue_state_changed', () => {
-  beforeEach(() => {
-    resetSendQueueForTest();
-  });
 
   // A queue snapshot read before the frame left can reach this client after
   // it, and the frame is the newer state even when it matches what this

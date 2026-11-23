@@ -5,7 +5,7 @@
 //     errors differently — conflating them flips success toasts on push
 //     failures. Assert both paths.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   menuPullEnabled,
   menuPushEnabled,
@@ -20,11 +20,9 @@ import {
 import type { GitActionOutcome, GitStatus, WorkspaceRef } from '../../types/git';
 import { DisconnectedError } from '../../transport/wsClient';
 import {
-  resetBindingMocks,
   setBindingMock,
 } from '../../../test/mocks/bindings-app';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 
 function status(overrides: Partial<GitStatus> = {}): GitStatus {
   return {
@@ -122,7 +120,6 @@ describe('primaryActionFor', () => {
 });
 
 describe('runPushAction', () => {
-  beforeEach(() => resetBindingMocks());
 
   it('reports result.error without throwing and without refreshing status', async () => {
     setBindingMock('GitPush', async () => ({ error: 'Repo has diverged', commitSha: '' }));
@@ -179,7 +176,6 @@ describe('runPushAction', () => {
 });
 
 describe('runPullAction', () => {
-  beforeEach(() => resetBindingMocks());
 
   it('reports result.error without throwing', async () => {
     setBindingMock('GitPull', async () => ({ error: 'conflict' }));
@@ -215,7 +211,6 @@ describe('runPullAction', () => {
 });
 
 describe('runFetchOriginAction', () => {
-  beforeEach(() => resetBindingMocks());
 
   it('fetches the workspace and refreshes its status', async () => {
     const fetch = setBindingMock('GitFetchOrigin', vi.fn(async () => ({ action: 'fetch' })));
@@ -275,10 +270,6 @@ describe('a detached HEAD', () => {
 });
 
 describe('runRemoveWorktreeAction', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
-  });
 
   it('removes the named worktree and applies the moved rows from the reply', async () => {
     const worktree = '/workspace/.worktrees/feature';

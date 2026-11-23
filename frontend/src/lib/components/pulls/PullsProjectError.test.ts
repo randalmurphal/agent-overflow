@@ -3,9 +3,8 @@
 // error, from the list snapshot's per-project detail or a failed call.
 
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import PullsProjectError from './PullsProjectError.svelte';
-import { __resetCauseCaptureForTest } from './causeCapture';
 import { projectErrors } from '../../stores/pullsPageRows';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
@@ -16,10 +15,6 @@ const REFUSED = pullsProject([], {
   error: 'Your GitHub token lacks the `repo` scope, so the app cannot read owner/repo.',
   errorKind: 'forbidden',
   errorDetails: { ref: 'cid-1', method: 'repository read', at: 1_700_000_000_000, chain: ['forge refused (token lacks the repo scope): forge GET https://api.github.com/search: HTTP 403'] },
-});
-
-beforeEach(() => {
-  __resetCauseCaptureForTest();
 });
 
 afterEach(() => {

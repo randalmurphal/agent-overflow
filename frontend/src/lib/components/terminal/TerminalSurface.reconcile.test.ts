@@ -4,20 +4,18 @@ import TerminalSurface from './TerminalSurface.svelte';
 import {
   getThreadTerminalState,
   notifyTerminalFocus,
-  resetTerminalFocusForTest,
-  resetThreadTerminalStatesForTest,
 } from './terminalStore.svelte';
 import type { ThreadTerminalSurfaceContext } from './terminalDrawerTypes';
 import type { TerminalSessionSummary } from '../../types/terminal';
 import { setupEventListeners } from '../../stores/events';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
-import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend, type StagedBackend } from '../../../test/helpers/backends';
-import { __resetEntityIndexForTest, noteTerminal, noteThread, terminalBackend } from '../../transport/entityIndex';
+import { REMOTE_BACKEND_UUID, stageBackend, type StagedBackend } from '../../../test/helpers/backends';
+import { noteTerminal, noteThread, terminalBackend } from '../../transport/entityIndex';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { transportGapChannel } from '../../transport/wsClient';
 import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
-import { createPane, resetPanesForTest } from '../../stores/panes.svelte';
+import { createPane } from '../../stores/panes.svelte';
 import type { Thread } from '../../types/models';
 
 // A mounted surface re-reads its thread's terminals once the thread's computer
@@ -67,11 +65,6 @@ function fromLaptop(channel: string, data: unknown): void {
 }
 
 beforeEach(() => {
-  resetThreadTerminalStatesForTest();
-  resetPanesForTest();
-  resetTerminalFocusForTest();
-  resetBindingMocks();
-  __resetEntityIndexForTest();
   running = { 'thread-L': ['a', 'b'], 'thread-H': ['h'] };
   listTerminals = setBindingMock('ListTerminals', async (threadId: string) =>
     (running[threadId] ?? []).map((id) => summary(id, threadId)));
@@ -82,13 +75,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  cleanup();
   cleanupEvents?.();
   cleanupEvents = null;
-  resetStagedBackends();
-  resetThreadTerminalStatesForTest();
-  resetPanesForTest();
-  resetTerminalFocusForTest();
   vi.mocked(reportFrontendDiagnostic).mockClear();
 });
 

@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import UpdatesSettings from './UpdatesSettings.svelte';
-import { getUpdateState, resetForTest } from '../../stores/updates.svelte';
+import { getUpdateState } from '../../stores/updates.svelte';
 
 // The panel is a pure projection of the updates store — every RPC it can fire
 // is behind a button press or the Advanced disclosure — so these tests drive
@@ -17,7 +17,6 @@ const mockCancelRestart = vi.mocked(CancelRestartToUpdate);
 
 describe('<UpdatesSettings>', () => {
   beforeEach(() => {
-    resetForTest();
     mockCancelRestart.mockReset().mockResolvedValue(undefined);
   });
 

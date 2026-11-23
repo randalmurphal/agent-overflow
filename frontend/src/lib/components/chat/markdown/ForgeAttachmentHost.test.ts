@@ -7,7 +7,6 @@ import { buildForgeAttachmentHref } from '../../../utils/forgeAttachments';
 import { forgeImageMenuTag } from '../../../utils/imageMenuActions';
 import {
   __reportImageBoxForTest,
-  __resetImageTiersForTest,
   lastImageTier,
   rememberImageTier,
 } from '../../../utils/imageTiers';
@@ -120,7 +119,6 @@ describe('<ForgeAttachmentHost>', () => {
   });
   afterEach(() => {
     closeImageLightbox();
-    __resetImageTiersForTest();
     vi.restoreAllMocks();
   });
 

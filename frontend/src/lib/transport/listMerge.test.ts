@@ -6,7 +6,7 @@
 // and `stores/projects.svelte.ts` call the generated binding and nothing
 // else — the fan-out happens under them, in `Call.ByID` — so the test that
 // proves it has to go through the same door they do.
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { homeClient } = vi.hoisted(() => ({
   homeClient: {
@@ -37,13 +37,11 @@ vi.mock('./wsClient', async (importOriginal) => ({
 
 import {
   __attachBackendForTest,
-  __resetBackendsForTest,
   HOME_BACKEND,
   backendById,
 } from './backends';
 import { HOME_DESCRIPTOR } from './manifestBackends';
 import {
-  __resetEntityIndexForTest,
   projectBackend,
   threadBackend,
 } from './entityIndex';
@@ -90,18 +88,11 @@ function attachRemote(): FakeClient {
 
 beforeEach(() => {
   __attachBackendForTest(HOME_DESCRIPTOR, homeClient as never);
-  __resetBackendsForTest();
-  __resetEntityIndexForTest();
   for (const fn of Object.values(homeClient)) (fn as { mockReset?: () => void }).mockReset?.();
   homeClient.getStatus.mockReturnValue({ status: 'connected', nextAttemptAt: null });
   homeClient.onStatusChange.mockReturnValue(() => undefined);
   homeClient.onReplay.mockReturnValue(() => undefined);
   homeClient.subscribe.mockReturnValue(() => undefined);
-});
-
-afterEach(() => {
-  __resetBackendsForTest();
-  __resetEntityIndexForTest();
 });
 
 describe('the unified sidebar list', () => {

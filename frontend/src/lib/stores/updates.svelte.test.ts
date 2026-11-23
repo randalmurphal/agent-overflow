@@ -44,7 +44,6 @@ import {
 import { deferred } from '../../test/helpers/providerAccounts';
 import {
   emitWailsEvent,
-  resetWailsMocks,
   wailsListenerCount,
 } from '../../test/mocks/wailsio-runtime';
 
@@ -115,8 +114,6 @@ function methodError(message: string): Error {
 
 describe('updates store', () => {
   beforeEach(() => {
-    resetWailsMocks();
-    resetForTest();
     mockCheck.mockReset();
     mockList.mockReset().mockResolvedValue([]);
     mockDownload.mockReset().mockResolvedValue(undefined);

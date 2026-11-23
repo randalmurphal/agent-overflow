@@ -7,20 +7,17 @@ import {
   getComposerRateLimitWindows,
   rateLimitDisplayName,
   rateLimitWindowLabel,
-  resetForTest,
   setProviderRateLimits,
 } from './rateLimitsInfo.svelte';
 
 describe('rateLimitsInfo', () => {
   beforeEach(() => {
-    resetForTest();
     // Getters project entries whose reset boundary has passed to 0% used,
     // so the fixture epochs below (Apr 2026) must sit in the future.
     vi.useFakeTimers();
     vi.setSystemTime(new Date(1_776_000_000_000));
   });
   afterEach(() => {
-    resetForTest();
     vi.useRealTimers();
   });
 

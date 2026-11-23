@@ -6,7 +6,7 @@ import { setBindingMock } from '../../../test/mocks/bindings-app';
 import ReviewCommentThread from './ReviewCommentThread.svelte';
 import ReviewThreadComments from './ReviewThreadComments.svelte';
 import ReviewPaneFind from './ReviewPaneFind.svelte';
-import { getPaneFindProvider, openPaneFind, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
+import { getPaneFindProvider, openPaneFind, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { createMarkdownFindTextCache } from '../chat/markdown/markdownFindText';
 import { createFindHighlighter, findHighlightName, type FindHighlighter, type FindRun } from '../../utils/findHighlights';
@@ -71,7 +71,6 @@ beforeEach(() => {
 afterEach(() => {
   highlighter?.dispose();
   highlighter = null;
-  resetPaneFindForTest();
 });
 
 describe('review find over comments', () => {
@@ -193,7 +192,6 @@ describe('review find over a comment its projection misreads', () => {
     expect([find.result.count, find.result.pending]).toEqual([before, false]);
   });
 });
-
 
 describe('review find\'s current comment match across a recount held open', () => {
   // A file after the thread's with enough rows that a held recount stops

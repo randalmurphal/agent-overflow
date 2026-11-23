@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import ComputerAddress from './ComputerAddress.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { stageBackend } from '../../../test/helpers/backends';
 import { resetToLocalPage } from '../../../test/helpers/scopes';
 import { detachBackend } from '../../transport/backends';
 
-beforeEach(() => { resetBindingMocks(); resetStagedBackends(); resetToLocalPage(); });
-afterEach(() => { cleanup(); resetStagedBackends(); resetToLocalPage(); });
+beforeEach(() => { resetToLocalPage(); });
+afterEach(() => { resetToLocalPage(); });
 
 it('verifies the captured computer and keeps a failed address editable', async () => {
   const remote = stageBackend({ status: 'reconnecting' });

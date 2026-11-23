@@ -1,14 +1,9 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { deleteSideChatThread } from './sideChatThread';
 import { getThreadById, replaceAllThreads } from './threads.svelte';
-import { getToasts, resetToastsForTest } from './toast.svelte';
+import { getToasts } from './toast.svelte';
 import { makeThread } from '../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-
-beforeEach(() => {
-  resetBindingMocks();
-  resetToastsForTest();
-});
+import { setBindingMock } from '../../test/mocks/bindings-app';
 
 describe('deleteSideChatThread', () => {
   // The delete stands: the fork leaves the list, and what it could not stop

@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { clearCommandRegistry, type CommandContext } from '../stores/commandRegistry.svelte';
 import { registerBrowserCommands } from '../stores/browserCommands.svelte';
-import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../stores/browserCompanion.svelte';
+import { applyBrowserCompanionState } from '../stores/browserCompanion.svelte';
 import { attachBrowserPaneForTest } from '../../test/helpers/browserPane';
-import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from '../stores/companionPanes.svelte';
-import { createPane, focusPane, resetPanesForTest } from '../stores/panes.svelte';
+import { installCompanionPanes, openCompanion } from '../stores/companionPanes.svelte';
+import { createPane, focusPane } from '../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../stores/paneLayout.svelte';
 import { makeCommandContext } from '../stores/builtinCommands.svelte';
 import { dispatchKey, resetKeybindingsStore, setKeybindingsForTest, type KeybindingRule } from '../stores/keybindings.svelte';
@@ -40,10 +40,7 @@ describe('shell chords', () => {
     vi.stubGlobal('chrome', { webview: { postMessage: (message: string) => posted.push(message) } });
     clearCommandRegistry();
     resetKeybindingsStore();
-    resetBrowserCompanionForTest();
-    resetCompanionPanesForTest();
     resetPaneLayoutForTest();
-    resetPanesForTest();
     installCompanionPanes();
     setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 600 }]);
     createPane('main').replaceThread(makeThread({ id: THREAD }));
@@ -69,10 +66,7 @@ describe('shell chords', () => {
     delete (window as Window & ShellGlobals).__aoShellChords;
     vi.unstubAllGlobals();
     resetKeybindingsStore();
-    resetBrowserCompanionForTest();
-    resetCompanionPanesForTest();
     resetPaneLayoutForTest();
-    resetPanesForTest();
   });
 
   function install(): void {

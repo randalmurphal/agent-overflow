@@ -1,8 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Item } from '../types/models';
 import { makeItem } from '../../test/helpers/chat';
 import {
-  __resetPayloadCacheForTest,
   readPayloadCache,
   writePayloadCache,
 } from '../utils/payloadDataCache';
@@ -10,10 +9,9 @@ import type { LiveRevealStream } from '../utils/payloadExpansion.svelte';
 import { THINKING_PAYLOAD_EXPANSION_STATE_KEY } from '../utils/payloadVersion';
 import { payloadRetentionKey } from '../utils/rowUiRetention';
 import { createThreadRowUiState } from './threadRowUiState.svelte';
-import { resetSettingsForTest } from './settings.svelte';
 import { loadSettingsFixture as loadSettings } from '../../test/helpers/settingsFixture';
 import { makeSettings } from '../../test/helpers/settings';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 
 /**
  * "Nothing is loaded" stated explicitly, which is what most of these cases
@@ -41,11 +39,6 @@ function liveStream(text: string): LiveRevealStream {
 }
 
 describe('createThreadRowUiState', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetSettingsForTest();
-    __resetPayloadCacheForTest();
-  });
 
   it('keeps item-keyed expansion handles stable while reading the latest item reference', () => {
     const items = new Map<string, Item>();

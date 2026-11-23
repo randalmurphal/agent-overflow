@@ -6,14 +6,10 @@ import { tick } from 'svelte';
 
 import ProjectsSection from '../ProjectsSection.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
-import { resetSidebarForTest } from '../../../stores/sidebar.svelte';
-import { resetProjectsForTest } from '../../../stores/projects.svelte';
 import { updateThreadTitle } from '../../../stores/threads.svelte';
 import { listCatalogTreesForTest, loadSidebarCatalogs } from '../../../stores/sidebarCatalogs';
 
-import { resetPanesForTest } from '../../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../../stores/paneLayout.svelte';
-import { resetThreadGroupsForTest } from '../../../stores/threadGroups.svelte';
 import { setThreadFilterQuery } from '../../../stores/threadFilter.svelte';
 import { buildSidebarThreadTree } from '../../../utils/sidebarTree';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
@@ -33,11 +29,7 @@ const thread = (id: string, projectId: string): Thread => ({
 });
 
 beforeEach(async () => {
-  resetSidebarForTest();
-  resetProjectsForTest();
-  resetPanesForTest();
   resetPaneLayoutForTest();
-  resetThreadGroupsForTest();
   setThreadFilterQuery('');
   setBindingMock('ListProjects', async () => [
     { project: project('alpha'), threadCount: 2 },

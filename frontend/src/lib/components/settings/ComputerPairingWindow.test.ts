@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import ComputerPairingWindow from './ComputerPairingWindow.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 const WINDOW = { id: 'window-1', address: 'https://workstation.tail123.ts.net', expiresAtMs: Date.now() + 300_000 };
 const WAITING = { state: 'waiting', verificationNumber: '', deviceLabel: '', linkId: '', expiresAtMs: WINDOW.expiresAtMs };
@@ -16,11 +16,10 @@ function show() {
 describe('computer pairing window', () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    resetBindingMocks();
     setBindingMock('OpenComputerPairing', async () => WINDOW);
     setBindingMock('CloseComputerPairing', async () => {});
   });
-  afterEach(() => { __setTransportHelloForTest(null); cleanup(); vi.useRealTimers(); resetBindingMocks(); });
+  afterEach(() => { __setTransportHelloForTest(null); vi.useRealTimers(); });
 
   it('opens personal pairing where the modal established this caller may enroll', async () => {
     __setTransportHelloForTest({ backendId: '', backendName: 'My computers', capabilities: ['own-devices.v1'], protocolVersion: 1,
@@ -177,12 +176,11 @@ describe('computer pairing window', () => {
 
 describe('computer pairing window naming', () => {
   beforeEach(() => {
-    resetBindingMocks();
     setBindingMock('OpenComputerPairing', async () => WINDOW);
     setBindingMock('CloseComputerPairing', async () => {});
     setBindingMock('ComputerPairingStatus', async () => WAITING);
   });
-  afterEach(() => { __setTransportHelloForTest(null); cleanup(); resetBindingMocks(); });
+  afterEach(() => { __setTransportHelloForTest(null); });
 
   it('names the computer from a hello that lands after the window opened', async () => {
     const view = show();

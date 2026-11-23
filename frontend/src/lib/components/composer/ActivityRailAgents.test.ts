@@ -3,15 +3,14 @@ import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ActivityRailHost from '../../../test/mocks/ActivityRailTestHost.svelte';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { setupEventListeners } from '../../stores/events';
 import { noteThread } from '../../transport/entityIndex';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
-import { __resetActivityRailUiPrefsForTest } from '../../stores/liveTodoState.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { ThreadAgentRow, ThreadAgentStop } from '../../stores/bindings';
-import { replaceQueueForThread, resetForTest as resetSendQueue, type QueueItem } from '../../stores/sendQueue.svelte';
+import { replaceQueueForThread, type QueueItem } from '../../stores/sendQueue.svelte';
 import { withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
 import { getPinnedBackend } from '../../transport/backends';
 import { HOME_BACKEND } from '../../transport/backendKey';
@@ -108,8 +107,6 @@ function toastTexts(): string[] {
 describe('the Agents segment', () => {
   let stopEvents = () => {};
   beforeEach(() => {
-    resetBindingMocks();
-    __resetActivityRailUiPrefsForTest();
     for (const toast of getToasts().slice()) removeToast(toast.id);
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
@@ -125,7 +122,6 @@ describe('the Agents segment', () => {
   });
   afterEach(() => {
     setCompactLayoutForTest(false);
-    resetSendQueue();
     stopEvents();
     vi.restoreAllMocks();
     vi.useRealTimers();

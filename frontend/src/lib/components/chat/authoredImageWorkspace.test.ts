@@ -4,7 +4,7 @@
 // call names the recorded workspace.
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import AdvisorRow from './AdvisorRow.svelte';
 import AskUserQuestionCard from './AskUserQuestionCard.svelte';
 import AssistantMessage from './AssistantMessage.svelte';
@@ -19,8 +19,7 @@ import { makePanelContext } from '../../stores/panelContext.svelte';
 import { resetProposedPlanCacheForTests } from '../../stores/proposedPlans.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { Item } from '../../types/models';
-import { __reportImageBoxForTest, __resetImageTiersForTest } from '../../utils/imageTiers';
-import { __resetMediaBlobCacheForTest } from '../../utils/mediaBlobCache';
+import { __reportImageBoxForTest } from '../../utils/imageTiers';
 
 const THREAD_WORKSPACE = '/thread-now';
 const AUTHORED_WORKSPACE = '/written-in';
@@ -34,10 +33,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  cleanup();
   resetProposedPlanCacheForTests();
-  __resetImageTiersForTest();
-  __resetMediaBlobCacheForTest();
 });
 
 function payload(data: string): void {

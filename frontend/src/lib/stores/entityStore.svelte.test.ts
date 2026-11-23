@@ -4,7 +4,6 @@ import { flushSync } from 'svelte';
 import { createEntityStore, DEFAULT_RETRY } from './entityStore.svelte';
 import {
   frontendErrorCaptureStateForTest,
-  resetFrontendErrorCaptureForTest,
 } from '../utils/frontendErrorCapture';
 
 // A controllable source. Each call records its args and hands back a
@@ -1230,12 +1229,6 @@ describe('createEntityStore — reactivity boundary', () => {
  * every gate stays green. The contract is enforced here rather than documented.
  */
 describe('createEntityStore — the rawValue replace contract', () => {
-  beforeEach(() => {
-    resetFrontendErrorCaptureForTest();
-  });
-  afterEach(() => {
-    resetFrontendErrorCaptureForTest();
-  });
 
   function rawStore() {
     const { source, calls } = makeSource<{ n: number }>();
@@ -1323,7 +1316,6 @@ describe('createEntityStore — the rawValue replace contract', () => {
     errors.mockRestore();
   });
 });
-
 
 describe('entity resources belong to a computer', () => {
   it('lets guarded routing resolve unknown ownership even without a HOME connection', async () => {

@@ -1,13 +1,12 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { applyProjectUpdated } from './eventsProjectRows';
 import {
   addProjectDeletedObserver,
   addProjectLocal,
   getProject,
   getProjects,
-  resetProjectsForTest,
 } from './projects.svelte';
-import { createPane, getAllPanes, resetPanesForTest, revealPane } from './panes.svelte';
+import { createPane, getAllPanes, revealPane } from './panes.svelte';
 import { getCompactScreen, setCompactLayoutForTest } from './layoutMode.svelte';
 import type { Project } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -27,10 +26,6 @@ function makeProject(id: string, overrides: Partial<Project> = {}): Project {
 }
 
 describe('applyProjectUpdated — project:updated convergence', () => {
-  beforeEach(() => {
-    resetProjectsForTest();
-    resetPanesForTest();
-  });
 
   it("inserts a row this client does not have on 'listed'", () => {
     applyProjectUpdated({ action: 'listed', project: makeProject('p1') });

@@ -5,10 +5,9 @@ import { tick } from 'svelte';
 
 import ComposerWorkspaceStrip from './ComposerWorkspaceStrip.svelte';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   enterCreateBranchMode,
-  resetForTest as resetWorktreeIntent,
   setThreadEnvMode,
   worktreeIntentForThread,
 } from '../../stores/worktreeIntent.svelte';
@@ -20,8 +19,6 @@ afterEach(() => setCompactLayoutForTest(false));
 
 describe('<ComposerWorkspaceStrip>', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetWorktreeIntent();
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     setBindingMock('GitListBranches', async () => []);

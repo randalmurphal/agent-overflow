@@ -27,9 +27,8 @@ import type { WorkItem } from '../../types/workflow';
 import {
   attachWorkflowRunMap,
   peekWorkflowRunMap,
-  __resetWorkflowRunMapStoreForTest,
 } from '../../stores/workflowRunMap.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 /** Every run here is a wave of one campaign, so they all carry its skeleton. */
 function run(itemId: string, over: Partial<WorkflowRunMapRun> = {}): WorkflowRunMapRun {
@@ -82,16 +81,12 @@ async function loadMap(view: WorkflowRunMapView): Promise<() => void> {
 let release: (() => void) | null = null;
 
 beforeEach(() => {
-  resetBindingMocks();
-  __resetWorkflowRunMapStoreForTest();
   setBindingMock('GetThread', async () => null);
 });
 
 afterEach(() => {
   release?.();
   release = null;
-  __resetWorkflowRunMapStoreForTest();
-  resetBindingMocks();
 });
 
 /** Structurally typed: only the one query this file reads is required. */

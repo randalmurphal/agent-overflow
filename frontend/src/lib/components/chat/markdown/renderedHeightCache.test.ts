@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   readMathRenderedHeight,
   readMermaidRenderedHeight,
@@ -30,9 +30,6 @@ import {
 // fraction of a millisecond) and check the eviction shape.
 
 describe('renderedHeightCache (math)', () => {
-  afterEach(() => {
-    __resetRenderedHeightCachesForTest();
-  });
 
   it('writes and reads a height for a given source key', () => {
     writeMathRenderedHeight('src-A', 240);
@@ -82,9 +79,6 @@ describe('renderedHeightCache (math)', () => {
 });
 
 describe('renderedHeightCache (mermaid)', () => {
-  afterEach(() => {
-    __resetRenderedHeightCachesForTest();
-  });
 
   it('writes and reads independently of the math cache', () => {
     writeMathRenderedHeight('mathsrc', 100);

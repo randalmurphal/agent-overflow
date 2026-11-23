@@ -1,17 +1,15 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import BackgroundKillConfirmationHost from './BackgroundKillConfirmationHost.svelte';
 import {
   confirmBackgroundKill,
   pendingBackgroundKillConfirmation,
-  resetForTest,
 } from '../../stores/backgroundKillConfirmation.svelte';
 
 const parked = { launchItemId: 'tu-a', description: 'gate watcher', runState: 'parked' as const, transcriptRootId: 'tu-a' };
 const running = { launchItemId: 'tu-b', description: 'shard reviewer', runState: 'running' as const, transcriptRootId: 'tu-b' };
 
 describe('<BackgroundKillConfirmationHost>', () => {
-  afterEach(() => resetForTest());
 
   it('renders nothing until a Stop asks', () => {
     const { queryByTestId } = render(BackgroundKillConfirmationHost);

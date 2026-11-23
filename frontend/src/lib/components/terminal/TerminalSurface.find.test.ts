@@ -6,7 +6,7 @@
 // call by terminal; the provider itself is terminalFind.svelte.test.ts and,
 // over a real xterm, terminalFind.browser.test.ts.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import TerminalSurface from './TerminalSurface.svelte';
 import {
@@ -14,7 +14,6 @@ import {
   getTerminalFocused,
   getThreadTerminalState,
   migrateThreadTerminalState,
-  resetThreadTerminalStatesForTest,
   terminalStateKeyForPane,
 } from './terminalStore.svelte';
 import { terminalFindKey } from './terminalFind.svelte';
@@ -27,7 +26,6 @@ import {
   openPaneFind,
   paneFindTarget,
   registerPaneFindProvider,
-  resetPaneFindForTest,
 } from '../../stores/paneFind.svelte';
 import { setPaneLayoutItemsForTest, resetPaneLayoutForTest, removePaneLayoutItem } from '../../stores/paneLayout.svelte';
 import { terminalFindCalls, resetTerminalFocusCalls } from '../../../test/mocks/terminalBodyFocusRecorder';
@@ -101,9 +99,7 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
-  resetThreadTerminalStatesForTest();
   resetTerminalFocusCalls();
-  resetPaneFindForTest();
   setPaneLayoutItemsForTest([{ id: PANE, paneId: PANE, kind: 'thread', widthPx: 600 }]);
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
     cb(0);
@@ -116,9 +112,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  cleanup();
   vi.unstubAllGlobals();
-  resetPaneFindForTest();
   resetPaneLayoutForTest();
   document.body.replaceChildren();
 });

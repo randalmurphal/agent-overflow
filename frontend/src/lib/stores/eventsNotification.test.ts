@@ -5,15 +5,14 @@ import { noteThread, workflowItemBackend } from '../transport/entityIndex';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { getToasts } from './toast.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { Thread } from '../types/models';
-import { getFocusedPaneOrNull, resetPanesForTest } from './panes.svelte';
+import { getFocusedPaneOrNull } from './panes.svelte';
 import { resetPaneLayoutForTest } from './paneLayout.svelte';
 import { prependThread, removeThread } from './threads.svelte';
 import {
   applyNotificationActivated,
   markNotificationHydrated,
-  resetNotificationActivationForTest,
   resolveNotificationThread,
   resolveNotificationWorkflow,
 } from './eventsNotification';
@@ -28,10 +27,7 @@ function thread(id: string): Thread {
 
 describe('notification activation wiring', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetNotificationActivationForTest();
     setBindingMock('ListRecentTurns', async () => []);
     setBindingMock('GetThread', async () => null);
     // Opening a target switches a pane to its thread.
@@ -39,10 +35,7 @@ describe('notification activation wiring', () => {
   });
 
   afterEach(() => {
-    resetNotificationActivationForTest();
     removeThread('thread-1');
-    resetStagedBackends();
-    resetBindingMocks();
   });
 
   it('opens a tracked thread target after hydration', async () => {
@@ -101,7 +94,6 @@ describe('notification activation wiring', () => {
   });
 });
 
-
 it('fetches a cold notification on the explicitly named computer before its catalog is loaded', async () => {
   stageBackend();
   setCarriedSessionScopes('laptop', SCOPES);
@@ -134,7 +126,6 @@ it('does not fall back to another computer when an unindexed notification names 
   expect(await resolveNotificationThread('missing-host', 'removed')).toBeUndefined();
   expect(fetch).not.toHaveBeenCalled();
 });
-
 
 it('learns a cold workflow notification’s owner from its named computer', async () => {
   stageBackend();

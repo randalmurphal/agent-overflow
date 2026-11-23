@@ -5,7 +5,7 @@
 // one menu opens for any press.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import app from '../../../App.svelte?raw';
 import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
@@ -67,7 +67,6 @@ async function rightClick(target: Element): Promise<MouseEvent> {
 
 describe('delegated context menu hosts', () => {
   afterEach(() => {
-    cleanup();
     document.body.innerHTML = '';
   });
 

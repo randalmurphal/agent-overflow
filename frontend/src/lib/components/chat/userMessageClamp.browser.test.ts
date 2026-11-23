@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { mount, unmount, tick } from 'svelte';
-import { cleanup, render } from '@testing-library/svelte';
+import { render } from '@testing-library/svelte';
 // Real production cascade: the clamp is `${USER_MESSAGE_CLAMP_LINES}lh`
 // against the bubble's own line box, and the fade is a mask that only exists
 // in app.css-compiled component styles. Both are invisible to happy-dom,
@@ -123,7 +123,6 @@ afterEach(async () => {
     await unmount(app);
     host.remove();
   }
-  cleanup();
   for (const host of renderedHosts.splice(0)) host.remove();
   resizeLoopErrors.stop();
   expect(resizeLoopErrors.messages).toEqual([]);

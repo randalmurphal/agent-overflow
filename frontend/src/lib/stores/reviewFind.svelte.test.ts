@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createReviewFind, REVIEW_FIND_REMOTE_DEBOUNCE_MS, type ReviewFindHost, type ReviewFindSource } from './reviewFind.svelte';
-import { closePaneFind, openPaneFind, registerPaneFindProvider, resetPaneFindForTest, setPaneFindQuery } from './paneFind.svelte';
+import { closePaneFind, openPaneFind, registerPaneFindProvider, setPaneFindQuery } from './paneFind.svelte';
 import { setPatchTextBudgetForTest } from '../utils/patchMemory.svelte';
 import type { ReviewFindHit } from '../utils/reviewFindIdentity';
 import { scanReviewFind } from '../utils/reviewFindScan';
@@ -71,7 +71,6 @@ function host(src: () => ReviewFindSource<Hit> | null, overrides: Partial<Review
 }
 
 afterEach(() => {
-  resetPaneFindForTest();
   vi.useRealTimers();
   setPatchTextBudgetForTest(null);
 });

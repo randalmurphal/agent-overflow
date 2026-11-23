@@ -3,11 +3,9 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import OpenInEditorControl from './OpenInEditorControl.svelte';
 import {
   ensureEditorsLoaded,
-  resetEditorsForTest,
 } from '../../stores/editors.svelte';
 import {
   setBindingMock,
-  resetBindingMocks,
 } from '../../../test/mocks/bindings-app';
 import type { EditorInfo } from '../../stores/bindings';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
@@ -39,8 +37,6 @@ async function seed(editors: EditorInfo[], preference = ''): Promise<void> {
 
 describe('<OpenInEditorControl>', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetEditorsForTest();
     setPageGrantsFromBootstrap(false);
   });
 

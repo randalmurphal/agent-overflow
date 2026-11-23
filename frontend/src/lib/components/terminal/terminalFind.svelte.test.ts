@@ -22,7 +22,6 @@ import {
   isPaneFindOpen,
   openPaneFind,
   paneOfFindKey,
-  resetPaneFindForTest,
   setPaneFindQuery,
   stepPaneFind,
 } from '../../stores/paneFind.svelte';
@@ -146,12 +145,7 @@ function setup(lines = [...ROWS], rows = 24) {
   return { fake, find };
 }
 
-beforeEach(() => {
-  resetPaneFindForTest();
-});
-
 afterEach(() => {
-  resetPaneFindForTest();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });

@@ -1,8 +1,8 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 
 import ContextBreakdown from './ContextBreakdown.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 // Shape mirrors the Go `ThreadContextUsage` wire type; the fixture numbers
 // are the real 2.1.219 capture in
@@ -26,9 +26,6 @@ function fixture() {
 }
 
 describe('<ContextBreakdown>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
 
   it('shows a loading line until the live read answers', async () => {
     let resolve: ((value: unknown) => void) | undefined;

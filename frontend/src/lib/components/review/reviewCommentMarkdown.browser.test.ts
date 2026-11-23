@@ -13,15 +13,11 @@ import { setBindingMock } from '../../../test/mocks/bindings-app';
 import ReviewCommentMarkdown from './ReviewCommentMarkdown.svelte';
 import FootnotePopoverHost from '../chat/FootnotePopoverHost.svelte';
 import { markdownFindText } from '../chat/markdown/markdownFindText';
-import { resetCodeSpanCacheForTest } from '../chat/markdown/codeSpanCache';
-import { __resetStreamdownCodeHostForTest } from '../chat/markdown/StreamdownCodeHost.svelte';
 import { countFindMatches, findNeedle } from '../../utils/findMatch';
 import { findTextSegments } from '../../utils/findHighlights';
 import { isSuggestionMark, markSuggestionFences, type PlacedBlock } from '../../utils/suggestionMarks';
 
 beforeEach(() => {
-  resetCodeSpanCacheForTest();
-  __resetStreamdownCodeHostForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none']);
   setBindingMock('HighlightPatch', async () => ({ lines: [] }));

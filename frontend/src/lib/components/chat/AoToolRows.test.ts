@@ -6,17 +6,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import GenericToolCallRow from './GenericToolCallRow.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeItem, makeThread } from '../../../test/helpers/chat';
-import { resetStagedBackends } from '../../../test/helpers/backends';
-import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { noteThread } from '../../transport/entityIndex';
 import { HOME_BACKEND } from '../../transport/backendKey';
-import { replaceAllThreads, resetThreadsForTest } from '../../stores/threads.svelte';
+import { replaceAllThreads } from '../../stores/threads.svelte';
 import { clearThreadStatus, projectSendResolved, projectSendStarted, setThreadStatus } from '../../stores/threadStatuses.svelte';
-import { __resetItemProjectionSourceCacheForTest } from '../../utils/itemProjectionSource.svelte';
 import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
 import type { Item } from '../../types/models';
-import { __resetAgentRequestAnswersForTest } from '../../stores/agentRequestAnswers.svelte';
 import { applyThreadAgentRowsChanged, applyThreadAgentRowsGap } from '../../stores/eventsThreadAgentRows';
 
 /** The pane surface the row reads: its expansion registry and its timeline. */
@@ -84,12 +81,6 @@ const spawnAck = JSON.stringify({
 
 describe('AO thread tool rows', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    __resetItemProjectionSourceCacheForTest();
-    __resetAgentRequestAnswersForTest();
-    resetThreadsForTest();
     clearThreadStatus(CHILD);
     projectSendResolved(CHILD);
     noteThread(THREAD, HOME_BACKEND);
@@ -413,11 +404,6 @@ describe('AO tool replies past the payload preview, and replies nothing decodes'
   });
 
   beforeEach(() => {
-    resetBindingMocks();
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    __resetItemProjectionSourceCacheForTest();
-    resetThreadsForTest();
     noteThread(THREAD, HOME_BACKEND);
     replaceAllThreads([makeThread({ id: CHILD, title: 'Docs slice' })]);
   });
@@ -602,8 +588,6 @@ describe('AO tool replies past the payload preview, and replies nothing decodes'
 
 describe('AO workflow tool rows', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    __resetEntityIndexForTest();
     noteThread(THREAD, HOME_BACKEND);
     replyWith('');
   });

@@ -3,15 +3,15 @@
 // card's width and the controls a row beneath it, wrapping within the card
 // with each label whole; on desktop the controls sit beside the name.
 import { afterEach, beforeAll, beforeEach, expect, it } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/svelte';
+import { render, waitFor } from '@testing-library/svelte';
 import '../../../app.css';
 import SettingsView from './SettingsView.svelte';
 import { seedSettingsPages } from '../../../test/helpers/settingsPages';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
-import { hideSettingsRail, resetSettingsOverlayForTest } from '../../stores/settingsOverlay.svelte';
+import { hideSettingsRail } from '../../stores/settingsOverlay.svelte';
 import { resetForTest as resetProviderAccountsForTest } from '../../stores/providerAccounts.svelte';
-import { resetForTest as resetRateLimitsForTest, setProviderRateLimits } from '../../stores/rateLimitsInfo.svelte';
+import { setProviderRateLimits } from '../../stores/rateLimitsInfo.svelte';
 import { applyFonts } from '../../utils/fonts';
 import { applyFontScale } from '../../utils/zoom';
 import type { SansFont } from '../../types/settings';
@@ -57,11 +57,7 @@ beforeEach(async () => {
   document.body.append(host);
 });
 afterEach(() => {
-  cleanup();
   host.remove();
-  resetProviderAccountsForTest();
-  resetRateLimitsForTest();
-  resetSettingsOverlayForTest();
   setCompactLayoutForTest(false);
   applyFonts('geist', 'geist');
   applyFontScale(DEFAULT_TEXT_SIZE);

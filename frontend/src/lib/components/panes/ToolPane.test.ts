@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -37,7 +37,7 @@ import { getCompactScreen, setCompactLayoutForTest, showCompactThread } from '..
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import { installThreadSwitchMocks, makeThread } from '../../../test/helpers/chat';
 import { prependThread } from '../../stores/threads.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   beginThreadRowDrag,
   beginToolPaneDrag,
@@ -117,8 +117,6 @@ describe('tool panes in the strip', () => {
   });
 
   afterEach(() => {
-    cleanup();
-    resetBindingMocks();
     resetAll();
     setCompactLayoutForTest(false);
     vi.unstubAllGlobals();
@@ -250,9 +248,7 @@ describe('a tool dragged from the tools row', () => {
   });
 
   afterEach(() => {
-    cleanup();
     endToolPaneDrag();
-    resetBindingMocks();
     resetAll();
     vi.unstubAllGlobals();
   });
@@ -380,7 +376,6 @@ describe('tool panes under compact', () => {
   });
 
   afterEach(() => {
-    cleanup();
     resetAll();
     setCompactLayoutForTest(false);
     vi.unstubAllGlobals();

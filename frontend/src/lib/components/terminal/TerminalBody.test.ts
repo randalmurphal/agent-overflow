@@ -10,7 +10,7 @@ import { eventEscapesTerminalToCommand } from '../../stores/keybindings.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
-import { applySettingsSnapshot, resetSettingsForTest } from '../../stores/settings.svelte';
+import { applySettingsSnapshot } from '../../stores/settings.svelte';
 import { terminalFindKey } from './terminalFind.svelte';
 import { setResolvedThemeForTest } from '../../../test/mocks/resolvedThemeMock.svelte';
 import PaneFindBar from '../panes/PaneFindBar.svelte';
@@ -20,7 +20,6 @@ import {
   isPaneFindOpen,
   openPaneFind,
   registerPaneFindProvider,
-  resetPaneFindForTest,
   setPaneFindQuery,
 } from '../../stores/paneFind.svelte';
 
@@ -314,7 +313,6 @@ describe('TerminalBody hydrate ordering', () => {
   afterEach(() => {
     consoleErrorSpy?.mockRestore();
     consoleErrorSpy = null;
-    cleanup();
   });
 
   it('sizes the grid to the backend dimensions before writing the replay', async () => {
@@ -440,12 +438,6 @@ describe('TerminalBody find', () => {
     mocks.writes.length = 0;
     mocks.timeline.length = 0;
     mocks.GetTerminalReplay.mockReset();
-    resetPaneFindForTest();
-  });
-
-  afterEach(() => {
-    cleanup();
-    resetPaneFindForTest();
   });
 
   async function settle(): Promise<void> {
@@ -524,8 +516,6 @@ describe('TerminalBody pane-nav key handler', () => {
     vi.mocked(eventEscapesTerminalToCommand).mockReturnValue(false);
   });
 
-  afterEach(() => cleanup());
-
   it('bubbles an escaping chord (false) and keeps every other key for the PTY (true)', async () => {
     const { resolveReplay } = await mountWithPendingReplay('t-keys');
     resolveReplay({ data: '', fromSequence: 0, throughSequence: 0 });
@@ -563,8 +553,6 @@ describe('TerminalBody Shift+Enter newline', () => {
     vi.mocked(eventEscapesTerminalToCommand).mockReset();
     vi.mocked(eventEscapesTerminalToCommand).mockReturnValue(false);
   });
-
-  afterEach(() => cleanup());
 
   function enterEvent(over: Partial<KeyboardEvent>): KeyboardEvent {
     return {
@@ -630,8 +618,6 @@ describe('TerminalBody input ordering', () => {
     mocks.GetTerminalReplay.mockReset();
     mocks.WriteTerminal.mockReset();
   });
-
-  afterEach(() => cleanup());
 
   it('waits for the in-flight write before sending later keystrokes', async () => {
     let resolveFirst!: () => void;
@@ -699,7 +685,6 @@ describe('TerminalBody copy/paste', () => {
   afterEach(() => {
     consoleErrorSpy?.mockRestore();
     consoleErrorSpy = null;
-    cleanup();
   });
 
   function clip(over: Partial<KeyboardEvent>): KeyboardEvent {
@@ -974,12 +959,6 @@ describe('TerminalBody copy/paste', () => {
 describe('TerminalBody app integration', () => {
   beforeEach(() => {
     mocks.GetTerminalReplay.mockReset();
-    resetSettingsForTest();
-  });
-
-  afterEach(() => {
-    cleanup();
-    resetSettingsForTest();
   });
 
   async function mounted(id: string) {
@@ -1023,7 +1002,6 @@ describe('TerminalBody compact key row', () => {
   });
 
   afterEach(() => {
-    cleanup();
     setCompactLayoutForTest(false);
   });
 
@@ -1218,13 +1196,10 @@ describe('TerminalBody with its find bar focused', () => {
       configurable: true,
       writable: true,
     });
-    resetPaneFindForTest();
   });
 
   afterEach(() => {
-    cleanup();
     setCompactLayoutForTest(false);
-    resetPaneFindForTest();
   });
 
   async function mountWithBar(id: string, compact: boolean) {

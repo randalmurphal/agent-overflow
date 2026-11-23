@@ -17,7 +17,6 @@ import {
 } from '../../test/helpers/chat';
 import { installThreadPaneTestEnv, nextFrame } from '../../test/helpers/threadPane';
 import {
-  clearAllThreadSizePriorsForTest,
   peekThreadSizePriorsForTest,
   setThreadSizePriors,
 } from '../utils/virtual/priors';
@@ -381,10 +380,6 @@ describe('threadItemWindow', () => {
       expansionSig: '',
       rows: new Map([['seed', 42]]),
     };
-
-    beforeEach(() => {
-      clearAllThreadSizePriorsForTest();
-    });
 
     it('evicts the priors when an item is removed by id', async () => {
       const pane = await buildPane(makeThread({ id: 't' }), [makeItem({ id: 'x', threadId: 't' })]);

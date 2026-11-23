@@ -13,12 +13,8 @@ import { mount, tick, unmount } from 'svelte';
 import { userEvent } from 'vitest/browser';
 import '../../../app.css';
 import ReviewPane from './ReviewPane.svelte';
-import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
-import { __resetPinnedReviewStatesForTest, disposePRReviewStates } from '../../stores/reviewPanePinned.svelte';
-import { resetAppStorageForTest } from '../../stores/appStorage';
-import { resetPanesForTest } from '../../stores/panes.svelte';
+import { disposePRReviewStates } from '../../stores/reviewPanePinned.svelte';
 import { __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
-import { resetForTest as resetDiffReviewComments } from '../../stores/diffReviewComments.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { PRDetail, PRManageCan } from '../../types/models';
 import type { PRRef } from '../../utils/prReference';
@@ -63,11 +59,6 @@ let app: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  __resetReviewPaneStateForTest();
-  __resetPinnedReviewStatesForTest();
-  resetPanesForTest();
-  resetDiffReviewComments();
   __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
   target = document.createElement('div');
   target.style.cssText = 'position:fixed;top:0;left:0;width:1100px;height:700px;display:flex;flex-direction:column';
@@ -91,7 +82,6 @@ afterEach(async () => {
   app = undefined;
   target.remove();
   disposePRReviewStates(OWNER);
-  __resetReviewPaneStateForTest();
 });
 
 function q<T extends Element = HTMLElement>(selector: string): T | null {

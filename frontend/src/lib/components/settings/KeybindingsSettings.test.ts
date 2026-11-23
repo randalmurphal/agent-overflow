@@ -9,10 +9,8 @@ import {
 } from '../../stores/commandRegistry.svelte';
 import {
   isSidebarCollapsed,
-  resetSidebarLayoutForTest,
   toggleSidebarCollapsed,
 } from '../../stores/sidebarLayout.svelte';
-import { resetAppStorageForTest } from '../../stores/appStorage';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 
@@ -344,8 +342,6 @@ describe('<KeybindingsSettings> chord capture vs. global dispatch', () => {
   beforeEach(() => {
     resetKeybindingsStore();
     clearCommandRegistry();
-    resetAppStorageForTest();
-    resetSidebarLayoutForTest();
     for (const t of [...getToasts()]) removeToast(t.id);
     registerCommand({
       id: 'sidebar.toggle',

@@ -4,31 +4,28 @@ import { modelCatalog } from '../../test/helpers/modelCatalog';
 import { setupEventListeners } from './events';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { createThreadPane } from './thread.svelte';
-import { findPaneShowingThread, registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { findPaneShowingThread, registerPaneForTest } from './panes.svelte';
 import {
   getActiveTurn,
   getThreadStatus,
   hasPendingSend,
   projectSendStarted,
-  resetForTest as resetThreadStatuses,
 } from './threadStatuses.svelte';
-import { resetForTest as resetSendQueue, markItemsFlushed, getFlushedForThread, registerQueueItem } from './sendQueue.svelte';
-import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
+import { markItemsFlushed, getFlushedForThread, registerQueueItem } from './sendQueue.svelte';
 import { addThreadRemovedObserver, getThreads, getThreadLiveActivityAt } from './threads.svelte';
 import { loadSidebarCatalogs } from './sidebarCatalogs';
 import { hasUnread } from '../utils/threadStatusPill';
 import { sidebarListsThread } from '../components/sidebar/sidebarBuckets';
-import { claimLocalReadMarker, resetLocalReadMarkersForTest } from './threadReadWrites';
+import { claimLocalReadMarker } from './threadReadWrites';
 import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import { getToasts } from './toast.svelte';
-import { getProjectLiveActivityAt, getProjects, resetProjectsForTest } from './projects.svelte';
+import { getProjectLiveActivityAt, getProjects } from './projects.svelte';
 import {
   getProviderRateLimit,
   resetForTest as resetRateLimitsInfo,
 } from './rateLimitsInfo.svelte';
 import {
   getProviderStatus,
-  resetForTest as resetProviderStatuses,
 } from './providerStatus.svelte';
 import { transportGapChannel } from '../transport/wsClient';
 import { attachPR } from './prReviewStore.svelte';
@@ -38,8 +35,8 @@ import { prKey } from '../utils/prReference';
 import { setPullsReceiver } from './pullsStore.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { getConnectionId } from '../transport/clientIdentity';
-import { emitWailsEvent, resetWailsMocks, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { emitWailsEvent, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import {
   buildPane,
   installPaneMocks,
@@ -101,19 +98,9 @@ describe('setupEventListeners', () => {
   let cleanup: () => void;
 
   beforeEach(() => {
-    resetWailsMocks();
-    resetBindingMocks();
-    resetThreadStatuses();
-    resetSendQueue();
-    resetLiveUsageSnapshotsForTest();
-    resetLocalReadMarkersForTest();
-    resetProjectsForTest();
-    resetRateLimitsInfo();
-    resetProviderStatuses();
     setBindingMock('AutoResumeThread', async () => {});
     setBindingMock('GetRateLimitsSnapshots', async () => []);
     setBindingMock('ListProviderAccounts', async () => []);
-    resetPanesForTest();
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
     cleanup = setupEventListeners();
@@ -121,9 +108,6 @@ describe('setupEventListeners', () => {
 
   afterEach(() => {
     cleanup();
-    resetPanesForTest();
-    resetThreadStatuses();
-    resetSendQueue();
   });
 
   it('registers and unregisters the unified listener set', () => {

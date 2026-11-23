@@ -4,7 +4,6 @@
 
 import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
-import { resetPanesForTest } from './panes.svelte';
 import {
   __resetGitStatusStoreForTest,
   __seedGitStatusForTest,
@@ -19,7 +18,6 @@ import { __setTransportStatusForTest } from './transportStatus.svelte';
 import type { GitStatus, GitWorkspaceState, WorkspaceRef } from '../types/git';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { HOME_BACKEND } from '../transport/backendKey';
-import { __resetEntityIndexForTest } from '../transport/entityIndex';
 import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
@@ -125,9 +123,7 @@ afterEach(() => {
 });
 
 beforeEach(() => {
-  resetPanesForTest();
   setBindingMock('UpdateThreadBranch', async () => null);
-  __resetEntityIndexForTest();
 });
 
 describe('gitStatusStore — sequenced frames', () => {

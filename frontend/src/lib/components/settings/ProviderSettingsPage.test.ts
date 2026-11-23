@@ -15,9 +15,6 @@ import type { Settings } from "../../types/settings";
 import { makeSettings } from "../../../test/helpers/settings";
 import { modelCatalog } from "../../../test/helpers/modelCatalog";
 import { resetForTest as resetProviderAccounts } from "../../stores/providerAccounts.svelte";
-import { resetForTest as resetAccountInfo } from "../../stores/accountInfo.svelte";
-import { resetForTest as resetRateLimits } from "../../stores/rateLimitsInfo.svelte";
-import { resetProviderModelsForTest } from "../../stores/providerModels.svelte";
 import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from "../../../test/helpers/scopes";
 import { setPageGrantsFromBootstrap } from "../../transport/scopes";
 import { HOST_TIER_REASON } from "./settingsComputer";
@@ -33,12 +30,6 @@ const BASE_SETTINGS: Settings = makeSettings();
 
 // The account listing and the model catalog live in module-global stores, not
 // in the component, so without this every test inherits the previous one's.
-beforeEach(() => {
-  resetProviderAccounts();
-  resetAccountInfo();
-  resetRateLimits();
-  resetProviderModelsForTest();
-});
 
 async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
   const merged: Settings = { ...BASE_SETTINGS, ...overrides };

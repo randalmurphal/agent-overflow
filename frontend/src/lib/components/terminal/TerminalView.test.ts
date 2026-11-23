@@ -1,16 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { intendFocus, paneFocusScope } from '../../utils/focusIntent';
 import { TERMINAL_FOCUS_REGION } from './terminalStore.svelte';
-import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import TerminalView from './TerminalView.svelte';
 import { getFocusedPaneId } from '../../stores/panes.svelte';
 import { closePaneById } from '../../stores/companionPanes.svelte';
 import { getProject } from '../../stores/projects.svelte';
-import { resetThreadTerminalStatesForTest } from './terminalStore.svelte';
 import { setupEventListeners } from '../../stores/events';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
-import { resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 
 // Same mock layer as ThreadTerminalDrawer.test.ts: control the Wails bindings
 // here; the event bus is the global @wailsio/runtime mock (vitest alias →
@@ -128,11 +126,9 @@ function makePane(opts: MakePaneOpts = {}) {
 
 beforeEach(() => {
   callLog.length = 0;
-  resetThreadTerminalStatesForTest();
   vi.mocked(closePaneById).mockClear();
   vi.mocked(getFocusedPaneId).mockReturnValue(null);
   vi.mocked(getProject).mockReturnValue(undefined as never);
-  resetWailsMocks();
   resetPaneLayoutForTest();
   cleanupEvents = setupEventListeners();
 });
@@ -140,7 +136,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanupEvents?.();
   cleanupEvents = null;
-  cleanup();
 });
 
 describe('TerminalView', () => {

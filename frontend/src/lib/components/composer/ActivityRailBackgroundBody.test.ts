@@ -3,7 +3,7 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import ActivityRailBackgroundBody from './ActivityRailBackgroundBody.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { normalizedTextContent } from '../../../test/helpers/textContent';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { deriveTrayTasks } from '../../utils/backgroundTray';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import type { Item } from '../../types/models';
@@ -35,7 +35,6 @@ function toasts() {
 
 describe('Stop All in the background tray', () => {
   beforeEach(() => {
-    resetBindingMocks();
     for (const toast of [...getToasts()]) removeToast(toast.id);
   });
 

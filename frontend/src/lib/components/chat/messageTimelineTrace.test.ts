@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import traceSource from './messageTimelineTrace.ts?raw';
 import diagnosticsSource from './timelineDiagnostics.ts?raw';
-import { cleanup, render } from '@testing-library/svelte';
+import { render } from '@testing-library/svelte';
 import {
   clearUiRenderTrace,
   getUiRenderTraceRecords,
@@ -11,7 +11,6 @@ import { REASONING_TAIL_SELECTOR, startTimelineRowResizeTrace } from './messageT
 import ThinkingBlock from './ThinkingBlock.svelte';
 import CompactionReasoning from './CompactionReasoning.svelte';
 import { makeItem } from '../../../test/helpers/chat';
-import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 
 // Drift guard for the reasoning-tail jump oracle. The oracle is silent=healthy:
 // `startReasoningTailJumpTrace` finds bodies via REASONING_TAIL_SELECTOR, so a
@@ -22,8 +21,6 @@ import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 // Defined before the ResizeObserver-overriding suite below so it runs against
 // the pristine happy-dom environment (matching ThinkingBlock.test.ts).
 describe('REASONING_TAIL_SELECTOR drift guard', () => {
-  beforeEach(() => resetBindingMocks());
-  afterEach(() => cleanup());
 
   it('matches the body ThinkingBlock renders', () => {
     const { container } = render(ThinkingBlock, {

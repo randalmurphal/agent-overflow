@@ -12,7 +12,7 @@ import { windowDigest } from './threadWindowDigest';
 import { isActivityRailRow } from '../utils/activityRunSpans';
 import { activityRunProse, activityRunRow } from '../../test/helpers/activityRuns';
 import { formatFnv1a64 } from '../utils/fnv1a';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { Item } from '../types/models';
 import type {
   ActivityRunMembers,
@@ -201,7 +201,6 @@ function pane(initial: Item[], windowRows = 1) {
 }
 
 beforeEach(() => {
-  resetBindingMocks();
   // The registries group by the member rule; members calls ask the
   // backend for the rule its hello advertises.
   installAgentMessageRunMembersCapability();

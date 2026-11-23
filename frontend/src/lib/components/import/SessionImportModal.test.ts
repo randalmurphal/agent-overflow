@@ -29,7 +29,6 @@ import {
   isSessionImportOpen,
   loadImportCatalog,
   openSessionImport,
-  resetSessionImportForTest,
   setProviderFilter,
   startImport,
   toggleRow,
@@ -111,7 +110,6 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
-  resetSessionImportForTest();
   // A terminal progress frame resyncs the sidebar through the real
   // projection path; give it empty answers rather than "no mock" throws.
   setBindingMock('ListThreads', async () => []);
@@ -120,7 +118,6 @@ beforeEach(() => {
 
 afterEach(() => {
   setPageGrantsFromBootstrap(false);
-  resetSessionImportForTest();
 });
 
 describe('empty and error states', () => {

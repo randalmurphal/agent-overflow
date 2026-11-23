@@ -10,14 +10,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import '../../../app.css';
 import ReviewPane from './ReviewPane.svelte';
-import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
-import { __resetPinnedReviewStatesForTest, disposePRReviewStates, reviewStateForPR, reviewSubjectForPR } from '../../stores/reviewPanePinned.svelte';
+import { disposePRReviewStates, reviewStateForPR, reviewSubjectForPR } from '../../stores/reviewPanePinned.svelte';
 import { applyPRUpdatedEvent } from '../../stores/prReviewStore.svelte';
-import { appStorageGet, resetAppStorageForTest } from '../../stores/appStorage';
+import { appStorageGet } from '../../stores/appStorage';
 import { HIDE_RESOLVED_KEY } from '../../stores/reviewHideResolved.svelte';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 import { __setTransportHelloForTest, __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
-import { resetForTest as resetDiffReviewComments } from '../../stores/diffReviewComments.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { PRDetail, ReviewThread } from '../../types/models';
 import type { PRRef } from '../../utils/prReference';
@@ -62,11 +59,6 @@ let app: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  __resetReviewPaneStateForTest();
-  __resetPinnedReviewStatesForTest();
-  resetPanesForTest();
-  resetDiffReviewComments();
   __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
   // Reactions show on a backend that serves them.
   __setTransportHelloForTest(HELLO);
@@ -95,7 +87,6 @@ afterEach(async () => {
   app = undefined;
   target.remove();
   disposePRReviewStates(OWNER);
-  __resetReviewPaneStateForTest();
 });
 
 async function frames(count = 2): Promise<void> {

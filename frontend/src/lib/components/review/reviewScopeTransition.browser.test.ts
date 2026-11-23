@@ -4,8 +4,6 @@ import '../../../app.css';
 import ReviewPane from './ReviewPane.svelte';
 import { makeStubPanelContext } from '../../../test/helpers/panelContext';
 import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
-import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
-import { resetAppStorageForTest } from '../../stores/appStorage';
 
 let app: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
@@ -15,8 +13,6 @@ function patch(path: string, text: string): string {
 }
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  __resetReviewPaneStateForTest();
   target = document.createElement('div');
   target.style.cssText = 'height:700px;display:flex;position:relative';
   document.body.append(target);
@@ -41,7 +37,6 @@ afterEach(async () => {
   if (app) await unmount(app);
   app = undefined;
   target.remove();
-  __resetReviewPaneStateForTest();
 });
 
 for (const width of [400, 1100]) {

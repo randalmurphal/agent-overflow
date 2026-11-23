@@ -1,7 +1,7 @@
 // The backend registry: one handle per attached backend, the `all` route's
 // fan-out and merge, and the event stamp that has to name the connection a
 // frame actually arrived on rather than "the" backend.
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { homeClient } = vi.hoisted(() => ({
   homeClient: {
@@ -33,7 +33,6 @@ vi.mock('./wsClient', async (importOriginal) => ({
 
 import {
   __attachBackendForTest,
-  __resetBackendsForTest,
   HOME_BACKEND,
   attachedBackends,
   backendById,
@@ -49,11 +48,9 @@ import {
 } from './backends';
 import { HOME_DESCRIPTOR } from './manifestBackends';
 import {
-  __resetBackendIdentityForTest,
   setBackendIdentityFromBootstrap,
 } from './backendIdentity';
 import {
-  __resetEntityIndexForTest,
   noteProject,
   noteTerminal,
   noteThread,
@@ -137,9 +134,6 @@ function deliverHome(channel: string, data: unknown, sequence?: number): void {
 
 beforeEach(() => {
   __attachBackendForTest(HOME_DESCRIPTOR, homeClient as never);
-  __resetBackendsForTest();
-  __resetBackendIdentityForTest();
-  __resetEntityIndexForTest();
   resetBackendClocksForTest();
   homeHandlers = new Map();
   for (const fn of Object.values(homeClient)) (fn as { mockReset?: () => void }).mockReset?.();
@@ -155,11 +149,6 @@ beforeEach(() => {
     set.add(handler);
     return () => set.delete(handler);
   });
-});
-
-afterEach(() => {
-  __resetBackendsForTest();
-  __resetBackendIdentityForTest();
 });
 
 describe('the registry', () => {
@@ -453,7 +442,6 @@ describe('callEveryBackend', () => {
   });
 });
 
-
 // A detached backend takes its rows with it. Both halves matter and each
 // breaks differently: an index that still resolves the thread points calls
 // at a machine this client is no longer attached to, and an index that
@@ -521,7 +509,6 @@ describe('detach forgets what the backend owned', () => {
     expect(listener).toHaveBeenCalledTimes(1);
   });
 });
-
 
 it('captures diagnostics from existing and later connections and releases detached sinks', () => {
   const sink = vi.fn();

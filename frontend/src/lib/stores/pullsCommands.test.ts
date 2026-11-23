@@ -4,13 +4,11 @@ import {
   isPullsPaneFocused,
   registerPullsBackHandler,
   registerPullsCommands,
-  resetPullsCommandsForTest,
   stepPullsBack,
 } from './pullsCommands.svelte';
-import { focusPane, resetPanesForTest } from './panes.svelte';
+import { focusPane } from './panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
-import { isToolOpen, resetToolPanesForTest } from './toolPanes.svelte';
-import { resetAppStorageForTest } from './appStorage';
+import { isToolOpen } from './toolPanes.svelte';
 import { evaluateWhen, parseWhen } from './keybindingParser';
 import { KEYBINDING_DEFAULTS } from '../generated/keybindingDefaults';
 
@@ -21,10 +19,6 @@ function ctx(flags: Record<string, boolean> = {}): CommandContext {
 describe('pulls commands', () => {
   beforeEach(() => {
     clearCommandRegistry();
-    resetAppStorageForTest();
-    resetPullsCommandsForTest();
-    resetToolPanesForTest();
-    resetPanesForTest();
     resetPaneLayoutForTest();
     setPaneLayoutItemsForTest([]);
     registerPullsCommands();

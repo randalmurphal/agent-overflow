@@ -1,16 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
-  __resetHarnessModeForTest,
   harnessPageMarker,
   setHarnessPageMarkerFromBootstrap,
   isHarnessSession,
   setHarnessSessionFromBootstrap,
   whenHarnessSession,
 } from './harnessMode';
-
-beforeEach(() => {
-  __resetHarnessModeForTest();
-});
 
 describe('harness session flag', () => {
   it('defaults to false so an ordinary boot arms nothing', () => {

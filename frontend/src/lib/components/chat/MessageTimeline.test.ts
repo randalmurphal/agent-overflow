@@ -18,9 +18,9 @@ import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { addProjectLocal, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
 import { reloadReadAloudPreferencesForTest, setReadAloudPreference } from '../../stores/readAloudPreferences.svelte';
 import { resetReadAloudSourcesForTest } from '../../stores/readAloudSource.svelte';
-import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { noteThread } from '../../transport/entityIndex';
 import { HOME_BACKEND } from '../../transport/backendKey';
-import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { REMOTE_BACKEND_UUID, stageBackend } from '../../../test/helpers/backends';
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -1740,9 +1740,6 @@ describe('<MessageTimeline> read-aloud source', () => {
     setReadAloudPreference('enabled', true);
   });
   afterEach(() => {
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    resetReadAloudSourcesForTest();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
   });

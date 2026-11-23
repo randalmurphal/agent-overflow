@@ -15,12 +15,12 @@ import {
   useOpenAIEngineForTest,
   watchReadAloudVoices,
 } from '../../stores/readAloud.svelte';
-import { refreshReadAloudSource, resetReadAloudSourcesForTest } from '../../stores/readAloudSource.svelte';
+import { refreshReadAloudSource } from '../../stores/readAloudSource.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { reloadReadAloudPreferencesForTest, setReadAloudPreference } from '../../stores/readAloudPreferences.svelte';
-import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
-import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { noteThread } from '../../transport/entityIndex';
+import { REMOTE_BACKEND_UUID, stageBackend } from '../../../test/helpers/backends';
 import type { SpeechEngine } from '../../native/speech';
 
 async function settle(): Promise<void> {
@@ -34,7 +34,6 @@ describe('<AssistantMessage> read aloud', () => {
   beforeEach(async () => {
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
-    resetReadAloudForTest();
     fake = fakeSpeechEngine();
     watchReadAloudVoices(fake.engine);
     setReadAloudPreference('enabled', true);
@@ -42,10 +41,6 @@ describe('<AssistantMessage> read aloud', () => {
   });
 
   afterEach(() => {
-    resetReadAloudForTest();
-    resetReadAloudSourcesForTest();
-    resetStagedBackends();
-    __resetEntityIndexForTest();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
   });

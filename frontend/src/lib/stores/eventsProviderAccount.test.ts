@@ -1,13 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { applyProviderAccount } from './eventsProvider';
 import {
   ensureProviderModels,
   getProviderModels,
-  resetProviderModelsForTest,
 } from './providerModels.svelte';
-import { resetForTest as resetAccountInfo } from './accountInfo.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { ModelInfo } from '../types/settings';
 import { modelCatalog } from '../../test/helpers/modelCatalog';
 
@@ -23,11 +21,6 @@ function model(slug: string): ModelInfo {
 }
 
 describe('provider:account refreshes the model catalog', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetProviderModelsForTest();
-    resetAccountInfo();
-  });
 
   // The Claude catalog is enriched from the account probe's own response, and
   // that probe finishes seconds after the composer has already loaded the

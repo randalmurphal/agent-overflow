@@ -26,7 +26,6 @@ import {
   type PairingPayload,
 } from './deviceSession';
 import {
-  __resetHomeEndpointForTest,
   homeEndpoint,
   setHomeEndpoint,
   storeBackendEndpoint,
@@ -468,12 +467,10 @@ describe('the auth exchanges under a shell origin', () => {
 
   beforeEach(() => {
     localStorage.clear();
-    __resetHomeEndpointForTest();
     setHomeEndpoint(ENDPOINT);
   });
 
   afterEach(() => {
-    __resetHomeEndpointForTest();
     localStorage.clear();
   });
 

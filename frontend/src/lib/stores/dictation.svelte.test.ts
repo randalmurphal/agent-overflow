@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { hasScope } from '../transport/scopes';
-import { __attachBackendForTest, __resetBackendsForTest, detachBackend } from '../transport/backends';
+import { __attachBackendForTest, detachBackend } from '../transport/backends';
 import { TransportError } from '../transport/wsClient';
 import {
   FINISH_UNANSWERED,
@@ -21,7 +21,6 @@ vi.mock('../transport/scopes', async (original) => ({ ...await original<object>(
 
 afterEach(() => {
   vi.mocked(hasScope).mockReset().mockReturnValue(true);
-  __resetBackendsForTest();
 });
 
 const fakeClient = {

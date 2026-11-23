@@ -8,15 +8,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
 import { fireEvent, render } from '@testing-library/svelte';
-import { resetAppStorageForTest } from './appStorage';
-import { __resetReviewPaneStateForTest, type CommentAnchor, type ReviewPaneState } from './reviewPane.svelte';
-import { __resetPinnedReviewStatesForTest, disposePRReviewStates, reviewStateForPR, reviewSubjectForPR } from './reviewPanePinned.svelte';
-import { getToasts, resetToastsForTest } from './toast.svelte';
+import { type CommentAnchor, type ReviewPaneState } from './reviewPane.svelte';
+import { disposePRReviewStates, reviewStateForPR, reviewSubjectForPR } from './reviewPanePinned.svelte';
+import { getToasts } from './toast.svelte';
 import Toast from '../components/shared/Toast.svelte';
 import { applyPRUpdatedEvent } from './prReviewStore.svelte';
 import { commentWriteKey } from './reviewCommentWrites.svelte';
-import { resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
-import { resetPanesForTest } from './panes.svelte';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { prKey, type PRRef } from '../utils/prReference';
@@ -26,7 +23,6 @@ import { setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app
 import { commitList } from '../../test/helpers/commitList';
 import { TransportError } from '../transport/wsClient';
 import { resetToLocalPage } from '../../test/helpers/scopes';
-import { resetStagedBackends } from '../../test/helpers/backends';
 import ReviewSentCommentBody from '../components/review/ReviewSentCommentBody.svelte';
 import ReviewPRCommentField from '../components/review/ReviewPRCommentField.svelte';
 import ReviewThreadFooter from '../components/review/ReviewThreadFooter.svelte';
@@ -117,13 +113,7 @@ function editorWith(state: ReviewPaneState, anchor: CommentAnchor, body: string)
 }
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  __resetPinnedReviewStatesForTest();
-  __resetReviewPaneStateForTest();
-  resetComposerDraftRegistryForTest();
-  resetPanesForTest();
   resetToLocalPage();
-  resetToastsForTest();
   hello();
   threads = [THREAD];
   setBindingMock('SubscribePRUpdates', async () => ({ id: 'sub-5', prKey: KEY, detail: detail(), threads, headSHA: 'sha-5', seq: 1 }));
@@ -137,9 +127,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  __resetPinnedReviewStatesForTest();
-  __resetReviewPaneStateForTest();
-  resetStagedBackends();
   resetToLocalPage();
 });
 

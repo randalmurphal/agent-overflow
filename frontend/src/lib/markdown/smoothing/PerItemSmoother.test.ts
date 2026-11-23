@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { forEachSeed, seededRandom } from '../../../test/helpers/seededRandom';
 import {
   PerItemSmoother,
@@ -13,8 +13,6 @@ import {
   type SmoothingClock,
   __resetRevealFrameGateForTest,
 } from './PerItemSmoother';
-
-beforeEach(() => __resetRevealFrameGateForTest());
 
 class FakeClock implements SmoothingClock {
   private current = 0;

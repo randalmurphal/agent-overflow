@@ -21,7 +21,7 @@ import {
   setPaneLayoutItemsForTest,
   type PaneLayoutItem,
 } from './paneLayout.svelte';
-import { resetLayoutMetricsForTest, setPaneHostWidth } from './layoutMetrics.svelte';
+import { setPaneHostWidth } from './layoutMetrics.svelte';
 import { setCompactLayoutForTest } from './layoutMode.svelte';
 
 function thread(paneId: string): PaneLayoutItem {
@@ -36,7 +36,6 @@ function review(sourcePaneId: string): PaneLayoutItem {
 describe('paneLayout store', () => {
   beforeEach(() => {
     resetPaneLayoutForTest();
-    resetLayoutMetricsForTest();
   });
 
   it('classifies every companion kind, and only those', () => {

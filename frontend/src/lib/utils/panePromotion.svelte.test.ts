@@ -1,13 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { promotedLayerClip, promotedLayerFrame, setPromotedLayer } from './panePromotion.svelte';
-import { airspaceIntersects, airspaceSurfaces, resetAirspaceForTest } from './paneAirspace.svelte';
+import { airspaceIntersects, airspaceSurfaces } from './paneAirspace.svelte';
 
 const clip = { left: 10, top: 0, right: 110, bottom: 50 };
 
 describe('promoted layer', () => {
   afterEach(() => {
     setPromotedLayer(null, null);
-    resetAirspaceForTest();
   });
 
   it('answers its clip only for an element inside it, and only while clipped', () => {

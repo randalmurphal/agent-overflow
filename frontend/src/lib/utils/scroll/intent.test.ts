@@ -12,7 +12,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createScrollIntent,
   isSelectingInside,
-  resetScrollIntentModuleStateForTest,
   setScrollIntentPlatformForTest,
   type ScrollIntent,
   type ScrollIntentDeps,
@@ -176,7 +175,6 @@ let active: Harness | null = null;
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
-  resetScrollIntentModuleStateForTest();
 });
 
 afterEach(() => {

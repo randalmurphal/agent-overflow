@@ -1,11 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
 
 import { addComputerCheckout, checkoutRefusal } from './computerProjects';
-import { getProject, resetProjectsForTest } from './projects.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getProject } from './projects.svelte';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { takePinnedBackend } from '../transport/backends';
-import { __resetEntityIndexForTest } from '../transport/entityIndex';
 import type { Project } from '../types/models';
 
 function makeProject(overrides: Partial<Project>): Project {
@@ -26,12 +25,6 @@ function inspectAs(answer: () => Promise<unknown>) {
 }
 
 describe('checkoutRefusal', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetProjectsForTest();
-    __resetEntityIndexForTest();
-  });
-  afterEach(() => resetProjectsForTest());
 
   it('accepts a checkout of the same verified repository', async () => {
     await seed(makeProject({ repositoryID: 'github:github.com:1' }));

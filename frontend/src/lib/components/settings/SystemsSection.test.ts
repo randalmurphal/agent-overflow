@@ -1,23 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { within } from '@testing-library/svelte';
 import SystemsSection from './SystemsSection.svelte';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
-import { backendNickname, __resetBackendNicknamesForTest } from '../../stores/attachedBackends.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { backendNickname } from '../../stores/attachedBackends.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetRunMode, setRunMode } from '../../../test/runMode';
 import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { SCOPES } from '../../transport/scopes';
-import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
-import { __resetManifestBackendsForTest } from '../../transport/manifestBackends';
-import { __resetPendingAttachmentsForTest } from '../../transport/backendAttach';
+import { stageBackend } from '../../../test/helpers/backends';
 import { hasPairedSession } from '../../transport/deviceSession';
 import {
-  __resetHomeEndpointForTest,
   storeBackendEndpoint,
   storedBackendEndpoint,
 } from '../../transport/homeEndpoint';
-import { __resetSystemsForTest } from '../../stores/systems.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 
 const LAPTOP = {
@@ -31,21 +27,13 @@ const LAPTOP = {
 
 describe('<SystemsSection>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     __setTransportHelloForTest(null);
-    __resetBackendNicknamesForTest();
     resetRunMode();
-    __resetSystemsForTest();
-    resetStagedBackends();
-    __resetManifestBackendsForTest();
   });
 
   afterEach(() => {
-    cleanup();
     __setTransportHelloForTest(null);
     resetRunMode();
-    resetStagedBackends();
-    __resetManifestBackendsForTest();
   });
 
   it('lists attached systems with live reachability', async () => {
@@ -213,8 +201,6 @@ describe('<SystemsSection>', () => {
   describe('on the phone shell', () => {
     beforeEach(async () => {
       localStorage.clear();
-      __resetHomeEndpointForTest();
-      __resetPendingAttachmentsForTest();
       vi.stubGlobal('Capacitor', { isNativePlatform: () => true, getPlatform: () => 'android' });
       // A phone is a paired device: full access, and never `host`.
       await pairWithScopes(SCOPES);
@@ -223,8 +209,6 @@ describe('<SystemsSection>', () => {
     afterEach(() => {
       vi.unstubAllGlobals();
       resetToLocalPage();
-      __resetPendingAttachmentsForTest();
-      __resetHomeEndpointForTest();
       localStorage.clear();
     });
 

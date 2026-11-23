@@ -7,7 +7,6 @@ import { getKeybindingRules, loadKeybindings, resyncKeybindings, resetKeybinding
 import { readFrontendValue, writeFrontendValue } from '../stores/frontendStorage';
 import { getToasts, removeToast } from '../stores/toast.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { resetStagedBackends } from '../../test/helpers/backends';
 import { detachBackend } from '../transport/backends';
 
 beforeEach(() => {
@@ -20,7 +19,6 @@ afterEach(() => {
   resetKeybindingsStore();
   localStorage.clear();
   vi.unstubAllGlobals();
-  resetStagedBackends();
 });
 
 it('native boot loads and edits shortcuts without a HOME connection or any remote RPC', async () => {

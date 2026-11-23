@@ -96,6 +96,13 @@ export const FIRST: readonly (Step | typeof STORAGE)[] = [
   // Panes hold timers that call the binding mocks; clear them while the
   // mocks are still installed.
   step('src/lib/stores/panes.svelte.ts', 'resetPanesForTest'),
+  // Review diffs hold handles the backend keeps, and the Pull requests and
+  // Pipelines pages hold subscriptions through effects that react to the
+  // resets below (a scope or backend reset re-runs their grant gate): let
+  // them go while the mocks are still installed.
+  step('src/lib/stores/reviewPane.svelte.ts', '__resetReviewPaneStateForTest'),
+  step('src/lib/stores/pullsPage.svelte.ts', '__resetPullsPageForTest'),
+  step('src/lib/stores/pipelinesPage.svelte.ts', '__resetPipelinesPageForTest'),
   step('src/test/helpers/backends.ts', 'resetStagedBackends'),
   step('src/test/mocks/wailsio-runtime.ts', 'resetWailsMocks'),
   step('src/test/mocks/bindings-app.ts', 'resetBindingMocks'),

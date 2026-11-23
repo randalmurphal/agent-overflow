@@ -9,7 +9,7 @@ import '../../../app.css';
 import ReviewDiffBody from './ReviewDiffBody.svelte';
 import ReviewCommentThread from './ReviewCommentThread.svelte';
 import ReviewPaneFind from './ReviewPaneFind.svelte';
-import { getPaneFindProvider, openPaneFind, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
+import { getPaneFindProvider, openPaneFind, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 import type { ReviewFind } from '../../stores/reviewFind.svelte';
 import type { CommentAnchor } from '../../utils/reviewRows';
@@ -59,7 +59,6 @@ beforeEach(() => {
 const mounted: { app: object; host: HTMLElement; files: ReviewFile[][] }[] = [];
 
 afterEach(() => {
-  resetPaneFindForTest();
   for (const { app, host, files } of mounted.splice(0)) {
     unmount(app);
     host.remove();

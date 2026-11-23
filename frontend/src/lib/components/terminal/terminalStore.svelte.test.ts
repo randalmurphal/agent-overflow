@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   createThreadTerminalState,
   getThreadTerminalState,
@@ -6,8 +6,6 @@ import {
   getTerminalFocused,
   notifyTerminalFocus,
   PENDING_OUTPUT_LIMITS,
-  resetThreadTerminalStatesForTest,
-  resetTerminalFocusForTest,
   terminalFocusRegion,
   TERMINAL_DRAWER_LIMITS,
 } from './terminalStore.svelte';
@@ -37,9 +35,6 @@ function makeSummary(overrides: Partial<TerminalSessionSummary> = {}): TerminalS
 }
 
 describe('ThreadTerminalState', () => {
-  beforeEach(() => {
-    resetThreadTerminalStatesForTest();
-  });
 
   it('adds a tab and marks it active', () => {
     const s = createThreadTerminalState();
@@ -308,10 +303,6 @@ describe('syncTabs', () => {
 // --- Bug D5 regression: terminalFocus registry (pane-scoped) ---
 describe('terminal focus registry', () => {
   const PANE = 'pane-a';
-
-  beforeEach(() => {
-    resetTerminalFocusForTest();
-  });
 
   it('starts unfocused', () => {
     expect(getTerminalFocused(PANE)).toBe(false);

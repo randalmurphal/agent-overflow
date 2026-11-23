@@ -6,7 +6,7 @@
 // cannot drift into agreeing with each other about a shape neither produces.
 
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import type { WorkflowRunMapView } from '../../../../bindings/agent-overflow/internal/app/models';
 import {
   campaignSkeleton,
@@ -27,12 +27,9 @@ import { buildRunMap, RUN_MAP_INLINE_DONE_MAX } from '../../utils/workflowRunMap
 // pass a `toContain` audit's negation while failing its assertion — the file's
 // bytes are what the cross-check is about.
 import appCss from '../../../app.css?raw';
-import { __resetWorkflowRunMapStoreForTest } from '../../stores/workflowRunMap.svelte';
 import {
   getWorkflowRunMapExpansion,
-  resetWorkflowsOverlayForTest,
 } from '../../stores/workflowsOverlay.svelte';
-import { __resetRunningElapsedTickerForTest } from '../chat/useRunningElapsed.svelte';
 import { getSettings } from '../../stores/settings.svelte';
 import {
   runMapNodeStyle,
@@ -42,7 +39,7 @@ import {
   RUN_MAP_LANE_MIN,
 } from '../../utils/workflowRunMapStyle';
 import { branchKeyOf } from '../../utils/workflowRunMapIndex';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 
 const NOW = 10_000_000;
 
@@ -193,17 +190,7 @@ function mountWave(
 }
 
 beforeEach(() => {
-  resetBindingMocks();
-  resetWorkflowsOverlayForTest();
-  __resetWorkflowRunMapStoreForTest();
-  __resetRunningElapsedTickerForTest();
   setBindingMock('GetThread', async () => null);
-});
-
-afterEach(() => {
-  __resetWorkflowRunMapStoreForTest();
-  __resetRunningElapsedTickerForTest();
-  resetBindingMocks();
 });
 
 describe('WorkflowRunMap — the surface', () => {

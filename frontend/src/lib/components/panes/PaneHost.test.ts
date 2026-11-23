@@ -1,4 +1,4 @@
-import { cleanup, render, waitFor } from '@testing-library/svelte';
+import { render, waitFor } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,13 +15,12 @@ vi.mock('../review/ReviewPane.svelte', async () => ({
 
 import PaneHost from './PaneHost.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { getPaneWidth, resetLayoutMetricsForTest } from '../../stores/layoutMetrics.svelte';
+import { getPaneWidth } from '../../stores/layoutMetrics.svelte';
 import {
   destroyPane,
   focusPane,
   getFocusedPaneId,
   registerPaneForTest,
-  resetPanesForTest,
   revealPane,
 } from '../../stores/panes.svelte';
 import {
@@ -34,9 +33,8 @@ import {
   setPaneLayoutItemsForTest,
 } from '../../stores/paneLayout.svelte';
 import { setPaneDensityMode } from '../../stores/paneDensity.svelte';
-import { resetSettingsForTest } from '../../stores/settings.svelte';
 import { stubScrollController } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
 import { getCompactScreen, setCompactLayoutForTest, showCompactList } from '../../stores/layoutMode.svelte';
 import { navigateToAdjacentPane } from './paneNavigation';
@@ -83,10 +81,7 @@ describe('PaneHost', () => {
     (globalThis as unknown as { ResizeObserver: typeof FireableResizeObserver }).ResizeObserver =
       FireableResizeObserver;
     FireableResizeObserver.instances = [];
-    resetLayoutMetricsForTest();
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetSettingsForTest();
     setBindingMock('UpdateSettings', async (patch: unknown) => ({
       ...makeSettings(),
       ...(patch as Partial<ReturnType<typeof makeSettings>>),
@@ -94,18 +89,13 @@ describe('PaneHost', () => {
   });
 
   afterEach(() => {
-    cleanup();
     vi.restoreAllMocks();
-    resetBindingMocks();
     if (originalResizeObserver) {
       (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
         originalResizeObserver;
     }
     FireableResizeObserver.instances = [];
-    resetLayoutMetricsForTest();
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetSettingsForTest();
   });
 
   // Deterministic rAF pump for the reveal path: PaneHost defers reveals one
@@ -904,16 +894,12 @@ describe('PaneHost under compact', () => {
   beforeEach(() => {
     (globalThis as unknown as { ResizeObserver: typeof FireableResizeObserver }).ResizeObserver =
       FireableResizeObserver;
-    resetLayoutMetricsForTest();
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetSettingsForTest();
     setCompactLayoutForTest(true);
   });
 
   afterEach(() => {
     setCompactLayoutForTest(false);
-    cleanup();
   });
 
   it('sizes every pane to the screen and drops the dividers', async () => {

@@ -1,19 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { makeThread } from '../../test/helpers/chat';
 import { HOME_BACKEND, detachBackend, takePinnedBackend } from '../transport/backends';
-import { __resetEntityIndexForTest, threadBackend } from '../transport/entityIndex';
+import { threadBackend } from '../transport/entityIndex';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { collectGarbage } from '../../test/helpers/gc';
 import { ReadDeadlineError } from '../utils/readBeforeDeadline';
 import type { ProjectWithCounts, Thread, ThreadGroup } from '../types/models';
-import { __catalogRetryCountForTest, catalogLoadState, resetCatalogLoadForTest, retryCatalogLoad } from './catalogLoad.svelte';
-import { openCatalogReadsForTest, recordCatalogMutation, resetCatalogReadsForTest } from './computerCatalogReads';
-import { getProjects, resetProjectsForTest } from './projects.svelte';
-import { getThreadGroups, resetThreadGroupsForTest } from './threadGroups.svelte';
-import { getThreadById, getThreads, resetThreadsForTest, updateThreadTitle } from './threads.svelte';
-import { catalogTreeListed, loadSidebarCatalogs, resetSidebarCatalogsForTest } from './sidebarCatalogs';
+import { __catalogRetryCountForTest, catalogLoadState, retryCatalogLoad } from './catalogLoad.svelte';
+import { openCatalogReadsForTest, recordCatalogMutation } from './computerCatalogReads';
+import { getProjects } from './projects.svelte';
+import { getThreadGroups } from './threadGroups.svelte';
+import { getThreadById, getThreads, updateThreadTitle } from './threads.svelte';
+import { catalogTreeListed, loadSidebarCatalogs } from './sidebarCatalogs';
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
   let resolve!: (value: T) => void;
@@ -34,14 +34,6 @@ const groupOf = (id: string) => getThreadById(id)?.groupId;
 const never = <T>() => new Promise<T>(() => {});
 
 beforeEach(() => {
-  resetStagedBackends();
-  resetCatalogLoadForTest();
-  resetSidebarCatalogsForTest();
-  resetCatalogReadsForTest();
-  resetThreadsForTest();
-  resetThreadGroupsForTest();
-  resetProjectsForTest();
-  __resetEntityIndexForTest();
   vi.useFakeTimers();
   vi.spyOn(console, 'error').mockImplementation(() => {});
   // A round reads all three catalogs of the tree; a case mocks the ones it
@@ -51,7 +43,6 @@ beforeEach(() => {
   setBindingMock('ListThreadGroups', async () => []);
 });
 afterEach(() => {
-  resetStagedBackends();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });

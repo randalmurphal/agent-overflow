@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
 import { createReviewCommentExtras, type ReviewCommentExtras } from './reviewCommentExtras.svelte';
 import { createReviewPRIdentity } from './reviewPRIdentity.svelte';
-import { getToasts, resetToastsForTest } from './toast.svelte';
+import { getToasts } from './toast.svelte';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { TransportError } from '../transport/wsClient';
@@ -57,7 +57,6 @@ let extras: ReviewCommentExtras;
 let stop: () => void;
 
 beforeEach(() => {
-  resetToastsForTest();
   hello(true);
   host = makeHost();
   stop = $effect.root(() => {

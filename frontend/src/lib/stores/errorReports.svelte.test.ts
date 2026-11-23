@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { captureError, capturedErrorText, resetErrorReportsForTest } from './errorReports.svelte';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { captureError, capturedErrorText } from './errorReports.svelte';
 import { TransportError } from '../transport/wsClient';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { __resetScopesForTest, setCarriedSessionScopes, setPageGrantsFromBootstrap } from '../transport/scopes';
 import { getPinnedBackend } from '../transport/backends';
 
@@ -18,13 +18,7 @@ async function settle(): Promise<void> {
 
 describe('captureError', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetErrorReportsForTest();
     setPageGrantsFromBootstrap(false);
-  });
-  afterEach(() => {
-    resetErrorReportsForTest();
-    __resetScopesForTest();
   });
 
   it('reads the backend log when the error is captured', async () => {

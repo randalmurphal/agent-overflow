@@ -17,14 +17,13 @@ import { modelCatalog } from '../../test/helpers/modelCatalog';
 import { pairViewOnly, resetToLocalPage } from '../../test/helpers/scopes';
 import {
   hydrateBrowserCompanionState,
-  resetBrowserCompanionForTest,
 } from './browserCompanion.svelte';
 import { attachGitStatus, refreshGitStatus } from './gitStatusStore.svelte';
 import type { WorkspaceRef } from '../types/git';
 import { attachMcpServers } from './mcpServers.svelte';
-import { ensureProviderModels, resetProviderModelsForTest } from './providerModels.svelte';
+import { ensureProviderModels } from './providerModels.svelte';
 import { hydrateWorktreeSetup } from './worktreeSetup.svelte';
-import { getUpdateState, resetForTest as resetUpdatesForTest, runUpdateCheck } from './updates.svelte';
+import { getUpdateState, runUpdateCheck } from './updates.svelte';
 import { checkProviderUpdates, loadProviderUpdates } from './providerUpdates.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 
@@ -67,15 +66,10 @@ describe('view-only sessions issue no passive operate RPCs', () => {
 
   beforeEach(() => {
     bindings = stubBindings();
-    resetProviderModelsForTest();
-    resetUpdatesForTest();
-    resetBrowserCompanionForTest();
   });
 
   afterEach(() => {
     resetToLocalPage();
-    resetProviderModelsForTest();
-    resetBrowserCompanionForTest();
   });
 
   it('does not subscribe git status without git:operate', async () => {

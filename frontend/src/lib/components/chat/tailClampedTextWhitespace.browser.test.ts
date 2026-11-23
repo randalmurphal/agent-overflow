@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render } from '@testing-library/svelte';
+import { render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import '../../../app.css';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
@@ -8,7 +8,6 @@ import { TAIL_WINDOW_CAP_CHARS } from './tailWindow';
 
 const hosts: HTMLElement[] = [];
 afterEach(() => {
-  cleanup();
   for (const host of hosts.splice(0)) host.remove();
 });
 

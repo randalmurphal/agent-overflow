@@ -13,15 +13,12 @@
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it } from 'vitest';
 import Harness from '../../../test/fixtures/RenderBoundaryHarness.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   frontendErrorCaptureStateForTest,
-  resetFrontendErrorCaptureForTest,
 } from '../../utils/frontendErrorCapture';
 
 beforeEach(() => {
-  resetBindingMocks();
-  resetFrontendErrorCaptureForTest();
   setBindingMock('ReportFrontendErrorBatch', async () => '/tmp/frontend-errors.jsonl');
 });
 

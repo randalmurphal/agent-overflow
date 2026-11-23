@@ -97,7 +97,6 @@ async function flush(n = 8): Promise<void> {
 
 describe('<GitActionsControl> consumer rendering', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     await loadSettings();
@@ -209,8 +208,6 @@ describe('<GitActionsControl> consumer rendering', () => {
 
 describe('<GitActionsControl> on a detached checkout', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetWorktreeIntent();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     setBindingMock('UpdateThreadBranch', async () => []);
@@ -285,8 +282,6 @@ describe('<GitActionsControl> on a detached checkout', () => {
 
 describe('<GitActionsControl> after a checkout', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetToastsForTest();
     setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
@@ -368,7 +363,6 @@ describe('<GitActionsControl> after a checkout', () => {
 
 describe('<GitActionsControl> palette dialog event', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     // The Commit dialog lists the uncommitted changes as it opens.
@@ -727,7 +721,6 @@ describe('<GitActionsControl> palette dialog event', () => {
 
 describe('<GitActionsControl> forge labels', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     await loadSettings();
@@ -824,7 +817,6 @@ describe('<GitActionsControl> header action controls are height-locked', () => {
   // tests pin it (and the error button) to the 24px cluster height. happy-dom
   // reports zero geometry, so the contract is asserted via the height class.
   beforeEach(async () => {
-    resetPanesForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     await loadSettings();

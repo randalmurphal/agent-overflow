@@ -135,7 +135,6 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const hold of holds.splice(0)) hold.release();
-  __resetWorkflowRunMapStoreForTest();
   vi.useRealTimers();
 });
 

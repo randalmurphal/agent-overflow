@@ -9,12 +9,12 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadGroupContextMenu from './ThreadGroupContextMenu.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
-import { getFocusedPaneOrNull, resetPanesForTest } from '../../stores/panes.svelte';
+import { addProjectLocal } from '../../stores/projects.svelte';
+import { getFocusedPaneOrNull } from '../../stores/panes.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { getThreadById, replaceAllThreads } from '../../stores/threads.svelte';
-import { upsertThreadGroup, resetThreadGroupsForTest } from '../../stores/threadGroups.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { upsertThreadGroup } from '../../stores/threadGroups.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
 import type { Thread, ThreadGroup } from '../../types/models';
 
@@ -83,10 +83,6 @@ describe('<ThreadGroupContextMenu> without threads:operate', () => {
   const INERT = 'Not granted to this device';
 
   beforeEach(async () => {
-    resetPanesForTest();
-    resetProjectsForTest();
-    resetThreadGroupsForTest();
-    resetBindingMocks();
     replaceAllThreads([mkThread('t1'), mkThread('t2')]);
     await primeSettings();
     await pairViewOnly();
@@ -122,10 +118,6 @@ describe('<ThreadGroupContextMenu> without threads:operate', () => {
 
 describe('<ThreadGroupContextMenu>', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetProjectsForTest();
-    resetThreadGroupsForTest();
-    resetBindingMocks();
     replaceAllThreads([mkThread('t1'), mkThread('t2')]);
     await primeSettings();
   });

@@ -20,7 +20,6 @@ import {
   pruneWorkflowsOverlayStack,
   pushWorkflowAllClear,
   pushWorkflowRunDetail,
-  resetWorkflowsOverlayForTest,
   setWorkflowArmedAction,
   setWorkflowProjectFilter,
   setWorkflowSweepCursor,
@@ -30,7 +29,7 @@ import {
   toggleWorkflowRunMapWave,
   toggleWorkflowsPane,
 } from './workflowsOverlay.svelte';
-import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
+import { appStorageGet, appStorageSet } from './appStorage';
 import { createPane, focusPane, focusedOpenTargetPane, resetPanesForTest } from './panes.svelte';
 import { getPaneLayoutItems, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { installToolPanes, isToolOpen, resetToolPanesForTest } from './toolPanes.svelte';
@@ -47,8 +46,6 @@ function resetPaneState(): void {
 
 describe('workflows navigation', () => {
   beforeEach(() => {
-    resetAppStorageForTest();
-    resetWorkflowsOverlayForTest();
     resetPaneState();
   });
 
@@ -292,7 +289,6 @@ describe('workflows navigation', () => {
 
 describe('run-map expansion (RUN-MAP §8)', () => {
   beforeEach(() => {
-    resetWorkflowsOverlayForTest();
     resetPaneState();
   });
 

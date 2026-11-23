@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
-import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render } from '@testing-library/svelte';
 import ProjectItem from './ProjectItem.svelte';
 import ProjectList from './ProjectList.svelte';
 import { addProjectLocal, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
@@ -15,13 +15,12 @@ import type { ProjectDeletionPreview } from '../../types/workflow';
 import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../../test/helpers/scopes';
 import type { Project } from '../../types/models';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
-import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
-import { resetSidebarForTest } from '../../stores/sidebar.svelte';
-import { projectTurnStarted, resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
+import { getToasts } from '../../stores/toast.svelte';
+import { projectTurnStarted } from '../../stores/threadStatuses.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteProject, noteThread } from '../../transport/entityIndex';
 import { UNREACHABLE_SETTLE_MS } from '../../stores/transportStatus.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Thread } from '../../types/models';
 import { setEntryExpanded } from '../../stores/sidebarEntryContinuity.svelte';
 
@@ -60,8 +59,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  cleanup();
-  resetProjectsForTest();
   resetToLocalPage();
 });
 
@@ -212,10 +209,6 @@ describe('ProjectItem compact layout', () => {
 });
 
 describe('ProjectItem identity read failure', () => {
-  afterEach(() => {
-    resetToastsForTest();
-    resetBindingMocks();
-  });
 
   it('flags the entry with git\'s reason and clears once the read succeeds', async () => {
     const failed = { ...makeProject('a', 'web', '/work/web'), identityError: 'detected dubious ownership' };
@@ -279,10 +272,6 @@ describe('ProjectItem identity read failure', () => {
 describe('ProjectItem action target', () => {
   afterEach(() => {
     revokeBackendScopes('laptop');
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    resetBindingMocks();
-    resetToastsForTest();
   });
 
   // One repository, checked out here and on the laptop, with the home
@@ -490,10 +479,6 @@ describe('ProjectItem action target', () => {
 // computer unreachable for a while is its last report, shown still.
 describe('ProjectItem status rollup', () => {
   afterEach(() => {
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    resetThreadStatuses();
-    resetSidebarForTest();
     vi.useRealTimers();
   });
 

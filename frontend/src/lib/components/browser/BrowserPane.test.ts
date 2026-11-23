@@ -41,7 +41,6 @@ describe('<BrowserPane> suspended pages', () => {
     setBindingMock('BrowserCompanionPaneDetach', async () => undefined);
     setBindingMock('BrowserCompanionPaneRect', async () => undefined);
   });
-  afterEach(() => resetBrowserCompanionForTest());
 
   it('restores a suspended active page by presenting it, once', async () => {
     setBindingMock('BrowserCompanionPaneAttach', async () => ({ id: 'mount-1', state: state([page('a', true), page('b', false)]) }));

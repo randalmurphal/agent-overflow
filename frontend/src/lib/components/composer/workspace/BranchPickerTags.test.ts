@@ -6,7 +6,7 @@ import BranchPicker from './BranchPicker.svelte';
 import { TAG_ROW_CAP } from './branchPickerRows';
 import type { Thread } from '../../../types/models';
 import type { GitStatus } from '../../../types/git';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../../test/mocks/bindings-app';
 import {
   enterCreateBranchMode,
   resetForTest as resetWorktreeIntent,
@@ -15,11 +15,9 @@ import {
 } from '../../../stores/worktreeIntent.svelte';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../../test/helpers/chat';
 import { recentBranchSelections, recordBranchSelection } from '../../../stores/branchMru';
-import { resetAppStorageForTest } from '../../../stores/appStorage';
 import { __resetGitStatusStoreForTest, __seedGitStatusForTest } from '../../../stores/gitStatusStore.svelte';
-import { resetPanesForTest } from '../../../stores/panes.svelte';
 import { __setTransportHelloForTest } from '../../../stores/transportStatus.svelte';
-import { getToasts, resetToastsForTest } from '../../../stores/toast.svelte';
+import { getToasts } from '../../../stores/toast.svelte';
 import { idleWorkspaceActivity } from '../../../../test/helpers/workspaceLock';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import { checkoutPickerRow } from './branchPickerCheckout';
@@ -84,12 +82,6 @@ async function openWithTags(pane: Awaited<ReturnType<typeof buildPane>>) {
 
 describe('<BranchPicker> tags', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetWorktreeIntent();
-    resetAppStorageForTest();
-    resetPanesForTest();
-    __resetGitStatusStoreForTest();
-    resetToastsForTest();
     hello(['git-tags.v1']);
   });
 

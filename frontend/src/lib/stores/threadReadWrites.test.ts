@@ -1,10 +1,9 @@
 import storeThreads from '../../../../internal/store/threads.go?raw';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import {
   claimLocalReadMarker,
   pendingLocalReadMarker,
-  resetLocalReadMarkersForTest,
   withLocalReadMarker,
 } from './threadReadWrites';
 import {
@@ -34,8 +33,6 @@ function mkThread(id: string, lastReadAt: number | undefined): Thread {
 
 describe('threadReadWrites', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetLocalReadMarkersForTest();
     replaceAllThreads([]);
   });
 

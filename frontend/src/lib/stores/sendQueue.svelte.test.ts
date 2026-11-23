@@ -1,7 +1,7 @@
-import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { buildSendOptions } from '../utils/sendOptions';
 import { makeItem as makeChatItem } from '../../test/helpers/chat';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { flushSync } from 'svelte';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import {
@@ -18,7 +18,6 @@ import {
   removeRestoredQueueItems,
   replaceFlushedForThread,
   replaceQueueForThread,
-  resetForTest as resetSendQueueForTest,
   settleFlushed,
   type QueueItem,
 } from './sendQueue.svelte';
@@ -37,9 +36,6 @@ function makeItem(overrides: Partial<QueueItem> & { message: string; threadId: s
 }
 
 describe('sendQueue store', () => {
-  beforeEach(() => {
-    resetSendQueueForTest();
-  });
 
   describe('Zone 1 (queued)', () => {
     it('replaceQueueForThread sets the snapshot', () => {
@@ -404,7 +400,6 @@ describe('sendQueue store', () => {
 });
 
 describe('pending submission visibility', () => {
-  beforeEach(() => { resetSendQueueForTest(); resetBindingMocks(); });
 
   it('a live snapshot acknowledges a provisional send before its RPC replies', async () => {
     const options = buildSendOptions({ attachmentIds: [] });

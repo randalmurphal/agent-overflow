@@ -3,14 +3,13 @@
 // state moves nothing below the header. Where it does not, they wrap under
 // the pill: nothing overlaps and nothing leaves the page's width.
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/svelte';
+import { render, waitFor } from '@testing-library/svelte';
 import '../../../app.css';
 import ClaudeSettings from './ClaudeSettings.svelte';
 import { seedSettingsPages } from '../../../test/helpers/settingsPages';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
-import { resetProviderUpdatesForTest } from '../../stores/providerUpdates.svelte';
 import { listenProviderUpdates } from '../../../test/helpers/providerUpdates';
 
 function status(overrides: Record<string, unknown> = {}) {
@@ -32,9 +31,7 @@ beforeEach(async () => {
   document.body.append(host);
 });
 afterEach(() => {
-  cleanup();
   host.remove();
-  resetProviderUpdatesForTest();
   setCompactLayoutForTest(false);
 });
 

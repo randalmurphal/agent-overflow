@@ -5,7 +5,7 @@ import { applySubagentProgress } from '../../stores/subagentProgress.svelte';
 // These tests drive it with a real ThreadPane so the scoped projection,
 // the breadcrumb, the self-close rule, and the composer shell's Stop gate
 // run against the same state the chat surface uses.
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,11 +14,9 @@ import { installTimelineScopeCapability, installPaneMocks, makeItem, makeThread 
 import { makeSettings } from '../../../test/helpers/settings';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 import { createThreadPane, type ThreadPane } from '../../stores/thread.svelte';
-import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { focusPane, registerPaneForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
-import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import {
-  __resetAgentPaneStateForTest,
   agentStateForPane,
   openAgentCompanion,
 } from '../../stores/agentPane.svelte';
@@ -32,7 +30,7 @@ import {
   setUiRenderTraceEnabled,
 } from '../../utils/uiRenderTrace';
 import { makePanelContext, type PanelContext } from '../../stores/panelContext.svelte';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import type { Item } from '../../types/models';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
@@ -77,12 +75,8 @@ async function renderAgent(options: { props: { ctx: PanelContext } }) {
 describe('<AgentPane>', () => {
   beforeEach(async () => {
     installTimelineScopeCapability();
-    resetBindingMocks();
     for (const toast of getToasts()) removeToast(toast.id);
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetCompanionPanesForTest();
-    __resetAgentPaneStateForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('ListSubagentDescendants', async () => []);
     setBindingMock('GetThreadUserMessageTicks', async () => []);
@@ -91,8 +85,6 @@ describe('<AgentPane>', () => {
   });
 
   afterEach(() => {
-    cleanup();
-    __resetAgentPaneStateForTest();
     vi.restoreAllMocks();
   });
 
@@ -754,7 +746,6 @@ describe('<AgentPane>', () => {
     beforeEach(() => {
       setUiRenderTraceEnabled(true);
       clearUiRenderTrace();
-      clearThreadScrollSnapshotsForTest();
     });
 
     afterEach(() => {

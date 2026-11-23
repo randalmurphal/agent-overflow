@@ -3,11 +3,9 @@ import { fireEvent, render, screen } from '@testing-library/svelte';
 
 import RateLimitMeter from './RateLimitMeter.svelte';
 import {
-  resetForTest as resetAccountInfoForTest,
   setProviderAccount,
 } from '../../stores/accountInfo.svelte';
 import {
-  resetForTest as resetRateLimitsInfoForTest,
   setProviderRateLimits,
 } from '../../stores/rateLimitsInfo.svelte';
 import type { RateLimitEntry } from '../../types/events';
@@ -33,13 +31,9 @@ describe('<RateLimitMeter>', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW_MS);
-    resetAccountInfoForTest();
-    resetRateLimitsInfoForTest();
   });
   afterEach(() => {
     vi.useRealTimers();
-    resetAccountInfoForTest();
-    resetRateLimitsInfoForTest();
   });
 
   it('renders the static window label inside the ring (not a percent)', () => {

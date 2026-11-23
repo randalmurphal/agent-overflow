@@ -13,10 +13,7 @@ import { cdp, page, userEvent } from 'vitest/browser';
 import '../../../app.css';
 import ReviewPane from './ReviewPane.svelte';
 import ReviewDraftEditor from './ReviewDraftEditor.svelte';
-import { __resetReviewPaneStateForTest, reviewStateForPane, reviewSubjectForPane, type ReviewPaneState } from '../../stores/reviewPane.svelte';
-import { resetAppStorageForTest } from '../../stores/appStorage';
-import { resetPanesForTest } from '../../stores/panes.svelte';
-import { resetForTest as resetDiffReviewComments } from '../../stores/diffReviewComments.svelte';
+import { reviewStateForPane, reviewSubjectForPane, type ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { DiffReviewComment } from '../../types/models';
 import { makeStubPanelContext } from '../../../test/helpers/panelContext';
@@ -37,10 +34,6 @@ let target: HTMLDivElement;
 beforeEach(async () => {
   // Wide enough for the desktop pane, so a pointer reaches all of it.
   await page.viewport(1200, 800);
-  resetAppStorageForTest();
-  __resetReviewPaneStateForTest();
-  resetPanesForTest();
-  resetDiffReviewComments();
   target = document.createElement('div');
   document.body.append(target);
   setBindingMock('HighlightSchemaVersion', async () => 'test-schema');
@@ -58,7 +51,6 @@ afterEach(async () => {
   app = undefined;
   target.remove();
   setCompactLayoutForTest(false);
-  __resetReviewPaneStateForTest();
 });
 
 function q<T extends Element = HTMLElement>(selector: string): T | null {

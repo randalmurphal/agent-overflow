@@ -3,7 +3,6 @@ import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import BrowserAddressBar from './BrowserAddressBar.svelte';
 import { getPromotedPaneId, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 
 const URL_A = 'https://example.test/a';
 
@@ -35,7 +34,6 @@ function selected(input: HTMLInputElement): [number | null, number | null] {
 describe('<BrowserAddressBar>', () => {
   afterEach(() => {
     resetPaneLayoutForTest();
-    resetPanesForTest();
   });
 
   it('selects the whole address when focused from the keyboard', async () => {

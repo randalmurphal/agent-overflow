@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   resolveDefault,
   ensureEditorsLoaded,
@@ -11,12 +11,10 @@ import {
   getEditorsLoadStatus,
   hasEditorsSnapshot,
   setEditorPreference,
-  resetEditorsForTest,
   resyncEditorPreference,
 } from './editors.svelte';
 import {
   setBindingMock,
-  resetBindingMocks,
 } from '../../test/mocks/bindings-app';
 import type { EditorInfo } from './bindings';
 import { DisconnectedError } from '../transport/wsClient';
@@ -73,10 +71,6 @@ describe('resolveDefault', () => {
 });
 
 describe('editors store', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetEditorsForTest();
-  });
 
   it('loads the catalog once even when ensureEditorsLoaded races', async () => {
     const listMock = setBindingMock('ListAvailableEditors', vi.fn(async () => [
@@ -325,10 +319,6 @@ describe('editors store', () => {
 // anywhere else left every open header icon pointing at the previous editor.
 // `settings:updated` naming the `editor` key is the trigger.
 describe('resyncEditorPreference', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetEditorsForTest();
-  });
 
   it('adopts the preference another client saved, without re-walking the catalog', async () => {
     const listMock = setBindingMock('ListAvailableEditors', vi.fn(async () => [

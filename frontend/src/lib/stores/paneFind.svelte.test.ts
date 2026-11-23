@@ -21,7 +21,6 @@ import {
   paneFindTarget,
   paneOfFindKey,
   registerPaneFindProvider,
-  resetPaneFindForTest,
   setPaneFindQuery,
   setPaneFindRegionElement,
   stepPaneFind,
@@ -50,12 +49,10 @@ function layout(...paneIds: string[]): void {
 }
 
 beforeEach(() => {
-  resetPaneFindForTest();
   layout('a', 'b');
 });
 
 afterEach(() => {
-  resetPaneFindForTest();
   resetPaneLayoutForTest();
 });
 

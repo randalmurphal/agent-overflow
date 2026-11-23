@@ -5,7 +5,6 @@ import {
   IMAGE_TIER_WIDTHS,
   fullSizeMaxWidth,
   imageBoxContainer,
-  __resetImageTiersForTest,
   imageTierFor,
   isHigherImageTier,
   lastImageTier,
@@ -88,7 +87,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  __resetImageTiersForTest();
   vi.unstubAllGlobals();
 });
 

@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { getResolvedTheme, teardownThemeModeForTest } from './themeMode.svelte';
 import {
-  resetAppearanceForTest,
   setAppearance,
   type AppearanceMode,
 } from './appearance.svelte';
@@ -49,14 +48,12 @@ describe('themeMode', () => {
       vi.fn(() => mediaList),
     );
     teardownThemeModeForTest();
-    resetAppearanceForTest();
     localStorage.clear();
     setBindingMock('SetAppearance', async () => undefined);
   });
 
   afterEach(() => {
     teardownThemeModeForTest();
-    resetAppearanceForTest();
     localStorage.clear();
     vi.unstubAllGlobals();
   });

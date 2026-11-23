@@ -11,7 +11,7 @@ import { createThreadActivityRuns } from './threadActivityRuns.svelte';
 import { windowDigest } from './threadWindowDigest';
 import { activityRunRow, activityRunProse, activityRunStub } from '../../test/helpers/activityRuns';
 import { formatFnv1a64 } from '../utils/fnv1a';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { Item } from '../types/models';
 import type { TimelineSelection } from '../../../bindings/agent-overflow/internal/store/models';
 import { AGENT_MESSAGE_MEMBERS_RULE } from '../utils/activityRunSpans';
@@ -67,7 +67,6 @@ function fixture(initial: Item[] = [], bounds = { oldest: null, newest: null } a
 }
 
 beforeEach(() => {
-  resetBindingMocks();
   // The registries group by the member rule; members calls ask the
   // backend for the rule its hello advertises.
   installAgentMessageRunMembersCapability();

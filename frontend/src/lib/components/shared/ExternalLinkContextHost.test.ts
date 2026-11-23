@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent } from '@testing-library/svelte';
 import ExternalLinkContextHost from './ExternalLinkContextHost.svelte';
 import { buildPathLinkHref } from '../../utils/pathLinkExtension';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { copyToClipboard } from '../../utils/clipboard';
 import { addToast } from '../../stores/toast.svelte';
 
@@ -38,14 +38,12 @@ function rightClick(el: Element): MouseEvent {
 
 describe('ExternalLinkContextHost', () => {
   beforeEach(() => {
-    resetBindingMocks();
     copyMock.mockClear();
     copyMock.mockResolvedValue(true);
     toastMock.mockClear();
   });
 
   afterEach(() => {
-    cleanup();
     document.body.innerHTML = '';
   });
 

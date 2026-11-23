@@ -4,9 +4,7 @@ import ReviewPane from './ReviewPane.svelte';
 import ReviewConversationCommits from './ReviewConversationCommits.svelte';
 import type { PanelContext } from '../../stores/panelContext.svelte';
 import { makeStubPanelContext } from '../../../test/helpers/panelContext';
-import { __resetReviewPaneStateForTest, reviewStateForPane, reviewSubjectForPane, type ReviewPaneState } from '../../stores/reviewPane.svelte';
-import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
-import { resetAppStorageForTest } from '../../stores/appStorage';
+import { reviewStateForPane, reviewSubjectForPane, type ReviewPaneState } from '../../stores/reviewPane.svelte';
 import type { CIPipeline, DiffReviewComment, DiffReviewCommentInput, PRDetail, ReviewThread, Thread } from '../../types/models';
 import { getBindingMock, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { commitList } from '../../../test/helpers/commitList';
@@ -16,7 +14,7 @@ import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import { adoptDiffSpanOwner, evictDiffSpansForThread, resetDiffSpanCacheForTest } from '../../utils/diffSpanCache.svelte';
 import { resetSyntaxClassNamesForTest } from '../../utils/syntaxSpans';
 import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
-import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { registerPaneForTest } from '../../stores/panes.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { stepPaneBack } from '../../stores/paneBackSteps';
 
@@ -117,10 +115,6 @@ function patch(): string {
 }
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  __resetReviewPaneStateForTest();
-  resetDiffReviewCommentsForTest();
-  resetPanesForTest();
   setBindingMock('GetGitStatus', async () => ({}));
   // Seeding a workspace status runs the shared store's branch reconciliation.
   setBindingMock('UpdateThreadBranch', async () => []);

@@ -1,13 +1,12 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import ConversationTransferDialog from './ConversationTransferDialog.svelte';
-import { resetBindingMocks } from '../../../test/mocks/bindings-app';
-import { resetStagedBackends, stageBackend, REMOTE_BACKEND_UUID } from '../../../test/helpers/backends';
+import { stageBackend, REMOTE_BACKEND_UUID } from '../../../test/helpers/backends';
 import { grantBackendScopes, resetToLocalPage, revokeBackendScopes } from '../../../test/helpers/scopes';
 import { makeThread } from '../../../test/helpers/chat';
 import { setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import type { TransportHello } from '../../transport/wsClient';
-import { resetConversationTransfersForTest, type TransferRequest } from '../../stores/conversationTransfers.svelte';
+import { type TransferRequest } from '../../stores/conversationTransfers.svelte';
 
 const SOURCE = '11111111-2222-4333-8444-555555555555';
 const hello = (id: string) => ({ protocolVersion: 1, backendId: id, capabilities: ['conversation.transfer.v1'], backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 }) as TransportHello;
@@ -18,7 +17,7 @@ const request = (patch: Partial<TransferRequest> = {}, agentId?: string): Transf
 const NOTE = 'This conversation is the assistant "Ops", which stays on this computer with its home, memory, loops and watches, so it can only be copied. The copy is an ordinary conversation.';
 
 beforeEach(async () => {
-  resetBindingMocks(); resetStagedBackends(); resetToLocalPage(); resetConversationTransfersForTest();
+  resetToLocalPage();
   stageBackend({ id: 'tower', backendId: SOURCE, hello: hello(SOURCE) });
   stageBackend({ hello: hello(REMOTE_BACKEND_UUID) });
   setBackendIdentityFromBootstrap(SOURCE, 'generation-a', 'Tower', 'tower');
@@ -26,7 +25,6 @@ beforeEach(async () => {
   for (const backend of ['tower', 'laptop']) await grantBackendScopes(backend, ['threads:read', 'threads:operate']);
 });
 afterEach(() => {
-  resetConversationTransfersForTest(); resetStagedBackends();
   for (const backend of ['tower', 'laptop']) revokeBackendScopes(backend);
   resetToLocalPage();
 });

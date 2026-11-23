@@ -1,13 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import SystemStatsFooter from '../SystemStatsFooter.svelte';
-import { stageBackend, resetStagedBackends } from '../../../../test/helpers/backends';
-import { setSystemStats, resetForTest } from '../../../stores/systemStats.svelte';
-import { resetTelemetryForTest } from '../../../stores/telemetryComputers.svelte';
-import { setSelectedBackend, __resetSelectedBackendForTest } from '../../../stores/selectedBackend.svelte';
+import { stageBackend } from '../../../../test/helpers/backends';
+import { setSystemStats } from '../../../stores/systemStats.svelte';
+import { setSelectedBackend } from '../../../stores/selectedBackend.svelte';
 
-beforeEach(() => { resetForTest(); resetTelemetryForTest(); });
-afterEach(() => { resetForTest(); resetTelemetryForTest(); resetStagedBackends(); __resetSelectedBackendForTest(); });
 const sample = { isWsl: false, cpuPercent: 20, memUsedBytes: 4 * 1024 ** 3, memTotalBytes: 16 * 1024 ** 3 };
 
 describe('system stats footer', () => {

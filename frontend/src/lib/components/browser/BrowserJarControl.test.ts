@@ -1,6 +1,6 @@
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import BrowserJarControl from './BrowserJarControl.svelte';
 import BrowserJarControlHarness from './BrowserJarControlHarness.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -8,7 +8,6 @@ import {
   applyBrowserCompanionState,
   attachBrowserCompanion,
   browserActionError,
-  resetBrowserCompanionForTest,
 } from '../../stores/browserCompanion.svelte';
 import { TransportError } from '../../transport/wsClient';
 import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
@@ -45,7 +44,6 @@ describe('<BrowserJarControl>', () => {
   let live = true;
   let act: ReturnType<typeof vi.fn>;
   beforeEach(() => {
-    resetBrowserCompanionForTest();
     live = true;
     act = setBindingMock('BrowserCompanionDo', vi.fn(async (_thread: string, action: { jar?: string; confirmed?: boolean }) => {
       if (live && !action.confirmed) {
@@ -54,7 +52,6 @@ describe('<BrowserJarControl>', () => {
       return { kind: 'state', threadId: THREAD, jar: action.jar, pages: [] };
     }));
   });
-  afterEach(() => resetBrowserCompanionForTest());
 
   it('shows the current jar and lists the four with what each shares', async () => {
     const release = await attachPane();

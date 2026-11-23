@@ -10,14 +10,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
-import { appStorageGet, reinitAppStorageForTest, resetAppStorageForTest } from './appStorage';
+import { appStorageGet, reinitAppStorageForTest } from './appStorage';
 import { HIDE_RESOLVED_KEY } from './reviewHideResolved.svelte';
-import { getToasts, resetToastsForTest } from './toast.svelte';
-import { __resetReviewPaneStateForTest, type ReviewPaneState } from './reviewPane.svelte';
+import { getToasts } from './toast.svelte';
+import { type ReviewPaneState } from './reviewPane.svelte';
 import { __resetPinnedReviewStatesForTest, reviewStateForPR, reviewSubjectForPR } from './reviewPanePinned.svelte';
 import { applyPRUpdatedEvent } from './prReviewStore.svelte';
-import { resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
-import { resetPanesForTest } from './panes.svelte';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { prKey, type PRRef } from '../utils/prReference';
@@ -25,7 +23,6 @@ import type { CommentSuggestion, PRDetail, ReviewThread } from '../types/models'
 import { installPRDraftsFake } from '../../test/helpers/prDraftsFake';
 import { setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
 import { resetToLocalPage } from '../../test/helpers/scopes';
-import { resetStagedBackends } from '../../test/helpers/backends';
 import { insertArrivals, type ConversationFeedEntry } from './reviewConversationFeed.svelte';
 
 const REF: PRRef = { forge: 'github', host: 'github.com', namespace: 'owner', repo: 'repo', number: 5 };
@@ -106,15 +103,9 @@ function deferThreadReads(): { calls: () => number; answer: (next: ReviewThread[
 }
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  __resetPinnedReviewStatesForTest();
-  __resetReviewPaneStateForTest();
-  resetComposerDraftRegistryForTest();
-  resetPanesForTest();
   resetToLocalPage();
   __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities: ['pr-review-drafts.v1', 'pr-comment-actions.v1'], backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
   seq = 1;
-  resetToastsForTest();
   setBindingMock('SubscribePRUpdates', async () => ({ id: 'sub-5', prKey: KEY, detail: detail(), threads, headSHA: 'sha-5', seq: 1 }));
   setBindingMock('UnsubscribePRUpdates', async () => undefined);
   setReviewDiffMock('OpenPRDiff', async () => PATCH);
@@ -126,9 +117,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  __resetPinnedReviewStatesForTest();
-  __resetReviewPaneStateForTest();
-  resetStagedBackends();
   resetToLocalPage();
 });
 

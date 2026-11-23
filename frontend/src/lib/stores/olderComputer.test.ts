@@ -3,8 +3,8 @@
 // a read of a feature it lacks answers empty, and every other failure is
 // still the caller's.
 import generated from '../../../bindings/agent-overflow/app.ts?raw';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { answerAsV0019, METHODS_AFTER_V0_0_19, methodNotFound, SETTINGS_AFTER_V0_0_19, settingsAsV0019 } from '../../test/helpers/olderComputer';
 import { getPinnedBackend, withBackendTarget } from '../transport/backends';
 import { TransportError } from '../transport/wsClient';
@@ -38,12 +38,9 @@ import {
   WorkflowPauseItemAndEndSessions,
 } from './bindings';
 
-
 beforeEach(() => {
-  resetBindingMocks();
   answerAsV0019();
 });
-afterEach(() => resetBindingMocks());
 
 describe('the methods v0.0.19 lacks', () => {
   it('are bindings this build has, called by the id the generator gives them', () => {

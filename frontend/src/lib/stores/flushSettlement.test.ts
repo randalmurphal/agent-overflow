@@ -4,12 +4,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { applyQueueFlushed, applySendsPendingEvent } from './eventsQueue';
 import {
   __flushSettlementFloorsForTest,
-  __resetFlushSettlementForTest,
   reconcileSettledFlushes,
 } from './flushSettlement';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { buildPane, makeThread } from '../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import {
   __heldAnswerThreadsForTest,
@@ -19,14 +18,13 @@ import {
   markItemsFlushed,
   registerQueueItem,
   replaceFlushedForThread,
-  resetForTest as resetSendQueueForTest,
   type FlushedItem,
 } from './sendQueue.svelte';
-import { getThreadStatus, resetForTest as resetThreadStatuses } from './threadStatuses.svelte';
+import { getThreadStatus } from './threadStatuses.svelte';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { detachBackend } from '../transport/backends';
-import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
-import { __resetScopesForTest, setCarriedSessionScopes } from '../transport/scopes';
+import { noteThread } from '../transport/entityIndex';
+import { setCarriedSessionScopes } from '../transport/scopes';
 import type { TransportHello } from '../transport/wsClient';
 
 const hello = (launchId: string, backendId = 'gpu', capabilities = ['sends-pending.v1', 'flush-settlement.v1']): TransportHello => ({
@@ -54,23 +52,14 @@ function answers(flushedThrough: number, unsettled: string[] = []) {
 const held = (threadId = 'remote'): string[] => getFlushedForThread(threadId).map((item) => item.message);
 
 beforeEach(() => {
-  resetBindingMocks();
-  resetSendQueueForTest();
-  resetThreadStatuses();
-  __resetFlushSettlementForTest();
-  __resetEntityIndexForTest();
   noteThread('remote', 'gpu', 1);
   noteThread('other', 'gpu', 1);
   __setTransportHelloForTest(hello('launch-1'), 'gpu');
   setCarriedSessionScopes('gpu', ['threads:read', 'threads:operate']);
 });
 afterEach(() => {
-  resetSendQueueForTest();
-  resetThreadStatuses();
-  __resetFlushSettlementForTest();
   __setTransportHelloForTest(null, 'gpu');
   __setTransportHelloForTest(null, 'laptop');
-  __resetScopesForTest();
 });
 
 describe('a frame that reads nothing pending, for a thread with no pane', () => {

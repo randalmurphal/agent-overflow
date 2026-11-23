@@ -1,12 +1,12 @@
 // A watched computer's answer survives a dropped connection and is read
 // again when the computer comes back: on its reconnect, and after a gap in
 // its settings frames.
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { providerMemory, refreshProviderMemory, watchProviderMemory } from './providerMemory.svelte';
 import { installComputerHydration } from './computerHydration';
 import { applyTransportGap } from './eventsTransportGap';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { DisconnectedError, TransportError, type TransportHello } from '../transport/wsClient';
 import type { NativeMemoryStatus } from '../types/models';
@@ -16,13 +16,11 @@ const OFF: NativeMemoryStatus = { claude: { on: false, error: '' }, codex: { on:
 
 let release: (() => void) | undefined;
 let stop: (() => void) | undefined;
-beforeEach(() => { resetStagedBackends(); });
 afterEach(() => {
   release?.();
   release = undefined;
   stop?.();
   stop = undefined;
-  resetStagedBackends();
 });
 
 it('keeps the answer through a dropped connection, and takes any other failure', async () => {

@@ -43,7 +43,6 @@ vi.mock('./wsClient', async (importOriginal) => ({
 import { Call, CancellablePromise, Create, Events } from './runtime';
 import {
   __attachBackendForTest,
-  __resetBackendsForTest,
   withBackendTarget,
 } from './backends';
 import { HOME_DESCRIPTOR } from './manifestBackends';
@@ -345,7 +344,6 @@ describe('CancellablePromise', () => {
   });
 });
 
-
 // A pinned call is still a call that can MINT an id. The pin names the
 // machine, which is exactly the fact the index wants, so the pinned path
 // has to index its answer the way the routed path does. Skipping it left
@@ -387,13 +385,6 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
 
   beforeEach(() => {
     __attachBackendForTest(HOME_DESCRIPTOR, mockClient as unknown as Parameters<typeof __attachBackendForTest>[1]);
-    __resetBackendsForTest();
-    __resetEntityIndexForTest();
-  });
-
-  afterEach(() => {
-    __resetBackendsForTest();
-    __resetEntityIndexForTest();
   });
 
   it('notes a single minted id against the pinned backend', async () => {

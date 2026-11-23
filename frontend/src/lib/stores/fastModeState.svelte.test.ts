@@ -1,15 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   applyFastModeState,
   clearFastModeStateForThread,
   getFastModeReport,
-  resetForTest,
 } from './fastModeState.svelte';
 
 describe('fastModeState', () => {
-  beforeEach(() => {
-    resetForTest();
-  });
 
   it('starts unknown for every thread', () => {
     expect(getFastModeReport('t1')).toBeUndefined();

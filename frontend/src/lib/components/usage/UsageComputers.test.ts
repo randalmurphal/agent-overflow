@@ -1,18 +1,17 @@
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { beforeEach, expect, it } from 'vitest';
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import UsageFooter from '../sidebar/UsageFooter.svelte';
 // UsageFooter imports the modal lazily. Loaded with the file, the case waits
 // for the mount rather than for a first import transforming the modal's
 // component graph, which is load-dependent.
 import './UsageModal.svelte';
-import { stageBackend, resetStagedBackends } from '../../../test/helpers/backends';
+import { stageBackend } from '../../../test/helpers/backends';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { takePinnedBackend } from '../../transport/backends';
 import { resetTelemetryForTest } from '../../stores/telemetryComputers.svelte';
 import { UsageBucket, CodexAccountUsage, type UsageQuery } from '../../stores/bindings';
 
 beforeEach(resetTelemetryForTest);
-afterEach(() => { resetTelemetryForTest(); resetStagedBackends(); });
 
 it('shares the modal multi-computer selection with footer totals and names separate account reports', async () => {
   stageBackend({ id: 'gpu', name: 'Nexus' });

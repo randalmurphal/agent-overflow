@@ -2,15 +2,14 @@
 // projection of the serviceUpdate store, so the cases drive that store
 // through its own channels and assert what the card says at each phase.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import MachineUpdates from './MachineUpdates.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { emitWailsEvent, resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
-import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
+import { REMOTE_BACKEND_UUID, stageBackend } from '../../../test/helpers/backends';
 import {
   initServiceUpdates,
-  resetServiceUpdatesForTest,
   type ServiceUpdateStatus,
 } from '../../stores/serviceUpdate.svelte';
 
@@ -26,17 +25,7 @@ function status(overrides: Partial<ServiceUpdateStatus> = {}): ServiceUpdateStat
 
 describe('<MachineUpdates>', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetWailsMocks();
-    resetServiceUpdatesForTest();
-    resetStagedBackends();
     initServiceUpdates();
-  });
-
-  afterEach(() => {
-    cleanup();
-    resetServiceUpdatesForTest();
-    resetStagedBackends();
   });
 
   it('explains why a staged update is waiting and keeps cancellation available', async () => {

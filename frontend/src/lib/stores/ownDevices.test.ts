@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installOwnDeviceSync, ownDeviceConnectionsWaiting } from './ownDevices.svelte';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { stageBackend } from '../../test/helpers/backends';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { attachIntroducedBackend, awaitAttachedActivation, payloadFromLink } from '../transport/backendAttach';
 import { pairedSessionId } from '../transport/deviceSession';
@@ -29,7 +29,7 @@ function pair(id: string, ownDevice = true) {
 }
 let stop = () => {};
 beforeEach(() => {
-  resetStagedBackends(); resetBindingMocks(); localStorage.clear();
+  localStorage.clear();
   vi.mocked(attachIntroducedBackend).mockReset();
   vi.mocked(awaitAttachedActivation).mockResolvedValue('attached');
   vi.mocked(attachIntroducedBackend).mockImplementation(async (link, current) => {
@@ -39,7 +39,7 @@ beforeEach(() => {
     return { id, name: 'Computer', verificationNumber: '' };
   });
 });
-afterEach(() => { stop(); resetStagedBackends(); vi.useRealTimers(); });
+afterEach(() => { stop(); vi.useRealTimers(); });
 
 describe('own device connections', () => {
   it('introduces a third computer once across sponsors, then works without the first host', async () => {

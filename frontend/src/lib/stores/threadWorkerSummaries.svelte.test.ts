@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { answerAsV0019 } from '../../test/helpers/olderComputer';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import {
   getThreadWorkerCounts,
   refreshThreadWorkerSummaries,
-  resetThreadWorkerSummariesForTest,
   threadWorkerSummaryRetentionForTest,
 } from './threadWorkerSummaries.svelte';
 import { applyThreadAgentRowsChanged, applyThreadAgentRowsGap } from './eventsThreadAgentRows';
@@ -14,7 +13,7 @@ import { DisconnectedError } from '../transport/wsClient';
 import type { ThreadWorkerSummary, ThreadWorkerSummaryPage } from './bindings';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { detachBackend, takePinnedBackend } from '../transport/backends';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 
 function summary(threadId: string, open: number, needYou = 0): ThreadWorkerSummary {
   return { threadId, open, needYou };
@@ -36,9 +35,6 @@ const EMPTY_RETENTION = { counts: 0, owners: 0, landed: 0, snapshots: 0, failed:
 
 describe('thread worker summaries', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetStagedBackends();
-    resetThreadWorkerSummariesForTest();
     vi.useFakeTimers();
   });
   afterEach(() => {

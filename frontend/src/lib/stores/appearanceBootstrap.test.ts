@@ -14,7 +14,7 @@ beforeEach(() => {
   }));
   __resetScopesForTest();
 });
-afterEach(() => { setPageGrantsFromBootstrap(false); resetAppearanceForTest(); });
+afterEach(() => { setPageGrantsFromBootstrap(false); });
 
 it('waits for desktop bootstrap before loading appearance or choosing spinner storage', async () => {
   const loading = loadAppearance();

@@ -2,10 +2,9 @@
 // native view without registering again: the one shared resize observer
 // bumps the revision the view re-judges its obscurity on.
 import { afterEach, expect, it, vi } from 'vitest';
-import { airspaceIntersects, airspaceRevision, airspaceSurface, resetAirspaceForTest } from './paneAirspace.svelte';
+import { airspaceIntersects, airspaceRevision, airspaceSurface } from './paneAirspace.svelte';
 
 afterEach(() => {
-  resetAirspaceForTest();
   document.body.replaceChildren();
 });
 

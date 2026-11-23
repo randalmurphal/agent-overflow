@@ -6,7 +6,7 @@ import {
 } from './composerDraft.svelte';
 import { resetComposerDraftSnapshotStateForTest } from './composerDraftSnapshots';
 import type { Attachment } from '../types/attachment';
-import { getToasts, resetToastsForTest } from './toast.svelte';
+import { getToasts } from './toast.svelte';
 import { flushFrontendErrors, resetFrontendErrorCaptureForTest } from '../utils/frontendErrorCapture';
 import { DraftThreadDeletedError, getRememberedDraftSnapshot } from './composerDraftSnapshots';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -59,7 +59,6 @@ function sampleAttachment(id: string): Attachment {
 
 describe('composerDraft store', () => {
   beforeEach(() => {
-    resetComposerDraftSnapshotStateForTest();
     installMocks({ content: '', attachmentIds: [], terminalChips: [] });
   });
 
@@ -789,9 +788,6 @@ describe('empty-draft cleanup of a thread another screen may hold', () => {
   let reports: string[];
 
   beforeEach(() => {
-    resetComposerDraftSnapshotStateForTest();
-    resetToastsForTest();
-    resetFrontendErrorCaptureForTest();
     installMocks({ content: '', attachmentIds: [], terminalChips: [] });
     stored = {};
     setBindingMock('SaveDraft', async (id: string, content: string) => { stored[id] = content; });

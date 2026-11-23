@@ -5,7 +5,6 @@ import { loadSettingsFixture as loadSettings } from '../../../test/helpers/setti
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
-import { __resetCustomSoundsForTest } from '../../stores/sounds.svelte';
 import { renderCueWav } from '../../audio/renderCue';
 
 // The built-in cues are assets this bundle plays itself; happy-dom has no
@@ -115,10 +114,6 @@ describe('<NotificationsSection>', () => {
     playNotificationCue.mockClear();
     renderCue.mockReset();
     await seed();
-  });
-
-  afterEach(() => {
-    __resetCustomSoundsForTest();
   });
 
   it('renders every kind on, because notifications were unconditional before these keys', async () => {
@@ -582,7 +577,6 @@ describe('<NotificationsSection> on a remote screen', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    __resetCustomSoundsForTest();
   });
 
   it('says nothing about permission once the browser has granted it', () => {

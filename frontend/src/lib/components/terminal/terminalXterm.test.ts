@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildTerminal } from './terminalXterm';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetRunMode, setRunMode } from '../../../test/runMode';
 
 const mocks = vi.hoisted(() => {
@@ -71,7 +71,6 @@ function buildAndTakeLinkHandler(): (event: MouseEvent, uri: string) => void {
 // bypasses internal/externalurl and loses the WSL → Windows bridge.
 describe('buildTerminal web links', () => {
   beforeEach(() => {
-    resetBindingMocks();
     resetRunMode();
   });
 

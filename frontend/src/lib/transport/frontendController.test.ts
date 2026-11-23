@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { attachedBackends, attachedBackendCount, backendById, callEveryBackend, detachBackend, requireEntityBackend, subscribeEveryBackend } from './backends';
 import { Call } from './runtime';
 import { HOME_BACKEND } from './backendKey';
@@ -13,7 +13,7 @@ vi.hoisted(() => vi.resetModules());
 vi.mock('./runMode', () => ({ isFrontendOnly: () => true, isClientMode: () => true, initialComputer: () => 'first' }));
 
 beforeEach(() => { setSelectedBackend('first'); });
-afterEach(() => { resetStagedBackends(); vi.restoreAllMocks(); });
+afterEach(() => { vi.restoreAllMocks(); });
 
 it('uses the sole execution computer for unknown-item permissions, never the controller', () => {
   stageBackend({ id: 'first', backendId: 'first' });

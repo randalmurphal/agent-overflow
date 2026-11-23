@@ -1,15 +1,13 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import McpServersTrigger from './McpServersTrigger.svelte';
 import { ThreadMCPServer } from '../../../stores/bindings';
-import { resetPanesForTest } from '../../../stores/panes.svelte';
 import { getToasts } from '../../../stores/toast.svelte';
 import { refreshMcpServers } from '../../../stores/mcpServers.svelte';
 import { withEmptyDraftCleanup } from '../../../stores/emptyDraftCleanup';
 import {
   getBindingMock,
-  resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../../../test/mocks/wailsio-runtime';
@@ -27,10 +25,6 @@ function row(over: Partial<ThreadMCPServer> = {}): ThreadMCPServer {
 }
 
 describe('<McpServersTrigger>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
-  });
 
   it('primes the enabled-count badge without spawning a provider status check', async () => {
     setBindingMock('ListThreadMcpServers', async () => [

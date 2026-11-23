@@ -9,13 +9,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SvelteMap } from 'svelte/reactivity';
 import { tick } from 'svelte';
-import { __resetCIActionsForTest, ciJobActionKinds, ciPipelineActionKinds } from './ciActions.svelte';
-import { __resetCIHandlesForTest, setCIHandle } from './ciHandles';
-import { __resetPRCIForTest, ensurePRCI, seedPRCI } from './prReviewCI.svelte';
+import { ciJobActionKinds, ciPipelineActionKinds } from './ciActions.svelte';
+import { setCIHandle } from './ciHandles';
+import { ensurePRCI, seedPRCI } from './prReviewCI.svelte';
 import { ciKeyFor, createCISubjectState, findCIJobRetry, type CISubject } from './ciSubject.svelte';
 import { ciArtifactRunIds } from './ciSubjectActions.svelte';
-import { __resetPipelineCIForTest, applyPipelineFrame, attachPipelineCI } from './pipelineCI.svelte';
-import { getToasts, resetToastsForTest } from './toast.svelte';
+import { applyPipelineFrame, attachPipelineCI } from './pipelineCI.svelte';
+import { getToasts } from './toast.svelte';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import type { CIJob, CIPipeline } from '../types/models';
@@ -72,17 +72,11 @@ function hello(launchId: string): void {
 }
 
 beforeEach(() => {
-  __resetPipelineCIForTest();
-  __resetCIActionsForTest();
-  resetToastsForTest();
   hello('launch-1');
 });
 
 afterEach(() => {
   for (const state of states.splice(0)) state.dispose();
-  __resetPipelineCIForTest();
-  __resetCIActionsForTest();
-  resetToastsForTest();
   __setTransportHelloForTest(null);
 });
 
@@ -348,8 +342,6 @@ describe('one pending action across surfaces', () => {
   }
 
   afterEach(() => {
-    __resetPRCIForTest();
-    __resetCIHandlesForTest();
     applied.clear();
   });
 

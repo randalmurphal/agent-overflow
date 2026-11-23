@@ -23,7 +23,6 @@ const FULL_SETTINGS: Settings = makeSettings({
 
 describe('settings store', () => {
   beforeEach(async () => {
-    resetSettingsForTest();
     setBindingMock('GetSettings', async () => FULL_SETTINGS);
     setBindingMock('UpdateSettings', async () => FULL_SETTINGS);
     await loadSettings();

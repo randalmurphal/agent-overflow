@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, expect, it } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { afterEach, expect, it } from 'vitest';
+import { setBindingMock } from '../../test/mocks/bindings-app';
+import { stageBackend } from '../../test/helpers/backends';
 import { takePinnedBackend, withBackendTarget } from '../transport/backends';
-import { noteThread, __resetEntityIndexForTest } from '../transport/entityIndex';
+import { noteThread } from '../transport/entityIndex';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import type { TransportHello } from '../transport/wsClient';
 import type { TimelineSelection } from '../../../bindings/agent-overflow/internal/store/models';
@@ -20,8 +20,7 @@ const readers = [
   ['GetTimelineUserMessageTicks', (selection: TimelineSelection) => GetThreadUserMessageTicks('thread', selection)],
 ] as const;
 
-beforeEach(() => { resetBindingMocks(); resetStagedBackends(); __resetEntityIndexForTest(); });
-afterEach(() => { resetStagedBackends(); __resetEntityIndexForTest(); __setTransportHelloForTest(null); });
+afterEach(() => { __setTransportHelloForTest(null); });
 
 it.each(readers)('%s refuses unsupported scoped reads before issuing RPC and recovers on upgrade', async (name, read) => {
   const rpc = setBindingMock(name, async () => ({}));

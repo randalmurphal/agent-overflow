@@ -5,7 +5,7 @@ import {
   type ProviderStatusEvent,
 } from './providerStatus.svelte';
 import { setupEventListeners } from './events';
-import { emitWailsEvent, wailsListenerCount, resetWailsMocks } from '../../test/mocks/wailsio-runtime';
+import { emitWailsEvent, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
 
 function statusEvent(overrides: Partial<ProviderStatusEvent> = {}): ProviderStatusEvent {
   return {
@@ -23,8 +23,6 @@ describe('providerStatus store', () => {
   let cleanup: () => void;
 
   beforeEach(() => {
-    resetWailsMocks();
-    resetForTest();
     // The store now feeds through the consolidated `provider:status`
     // listener in setupEventListeners; wiring that single listener gives
     // the store the same coverage as the retired dedicated subscriber.
@@ -33,7 +31,6 @@ describe('providerStatus store', () => {
 
   afterEach(() => {
     cleanup();
-    resetForTest();
   });
 
   describe('listener lifecycle', () => {

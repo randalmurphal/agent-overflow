@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   confirmUnsentMessageRestore,
   hasPendingUnsentMessageConfirmation,
@@ -7,9 +7,6 @@ import {
 } from './unsentMessageConfirmation.svelte';
 
 describe('unsent-message confirmation', () => {
-  afterEach(() => {
-    resetUnsentMessageConfirmationForTest();
-  });
 
   it('is closed until somebody asks', () => {
     expect(hasPendingUnsentMessageConfirmation()).toBe(false);

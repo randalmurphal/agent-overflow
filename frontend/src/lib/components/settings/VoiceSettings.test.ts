@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import VoiceSettings from './VoiceSettings.svelte';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { makeSettings } from '../../../test/helpers/settings';
 import { loadSettings } from '../../stores/settings.svelte';
@@ -14,7 +14,7 @@ import {
   useOpenAIEngineForTest,
   watchReadAloudVoices,
 } from '../../stores/readAloud.svelte';
-import { refreshReadAloudSource, resetReadAloudSourcesForTest } from '../../stores/readAloudSource.svelte';
+import { refreshReadAloudSource } from '../../stores/readAloudSource.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { HOST_TIER_REASON } from './settingsComputer';
 import type { SpeechEngine } from '../../native/speech';
@@ -46,7 +46,6 @@ function answerNoKeyFile(): void {
 
 describe('<VoiceSettings>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     resetToLocalPage();
     answerNoKeyFile();
   });
@@ -98,11 +97,9 @@ describe('<VoiceSettings> read aloud', () => {
   let fake: ReturnType<typeof fakeSpeechEngine>;
 
   beforeEach(async () => {
-    resetBindingMocks();
     resetToLocalPage();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
-    resetReadAloudForTest();
     fake = fakeSpeechEngine(2);
     watchReadAloudVoices(fake.engine);
     await settleSpeech();
@@ -111,7 +108,6 @@ describe('<VoiceSettings> read aloud', () => {
     setBindingMock('DictationSources', async () => ({ subscription: false, chatGPTSignIn: false }));
   });
   afterEach(() => {
-    resetReadAloudForTest();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
     resetToLocalPage();
@@ -190,7 +186,6 @@ describe('<VoiceSettings> live dictation', () => {
   const keyFile = (state: string, problem?: string) => ({ path: '/data/credentials/openai-api-key', state, problem });
 
   beforeEach(() => {
-    resetBindingMocks();
     resetToLocalPage();
     answerNoKeyFile();
     setBindingMock('DictationSources', async () => ({ subscription: false, live: false, chatGPTSignIn: false }));
@@ -385,9 +380,7 @@ describe('<VoiceSettings> OpenAI voices', () => {
   }
 
   beforeEach(async () => {
-    resetBindingMocks();
     resetToLocalPage();
-    resetReadAloudSourcesForTest();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
     available = false;
@@ -398,8 +391,6 @@ describe('<VoiceSettings> OpenAI voices', () => {
     setBindingMock('ReadAloudSource', async () => ({ available, voices: VOICES }));
   });
   afterEach(() => {
-    resetReadAloudForTest();
-    resetReadAloudSourcesForTest();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
     resetToLocalPage();

@@ -9,7 +9,6 @@ import App from '../../App.svelte';
 import { flush, installAnimateShim, installAppDefaults, resetAppState } from './_helpers';
 import { setBindingMock } from '../mocks/bindings-app';
 import { updateFrontendPreferences } from '../../lib/stores/frontendPreferences.svelte';
-import { __resetCustomSpinnersForTest } from '../../lib/stores/spinners.svelte';
 import { __retainedSpriteSrcsForTest, retainSpriteImages } from '../../lib/spinners/retain';
 import { BUILTIN_SPRITES } from '../../lib/spinners/catalog';
 
@@ -28,7 +27,6 @@ describe('App integration: working sprites', () => {
   afterEach(() => {
     updateFrontendPreferences({ spinnerAnimationsEnabled: false, spinnerDisabledAnimations: [] });
     retainSpriteImages([]);
-    __resetCustomSpinnersForTest();
   });
 
   it('loads nothing while animations are off', async () => {

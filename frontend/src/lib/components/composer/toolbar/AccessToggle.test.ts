@@ -6,14 +6,12 @@ import { createThreadPane } from '../../../stores/thread.svelte';
 import type { Project, RuntimeMode, Thread } from '../../../types/models';
 import {
   getBindingMock,
-  resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 import { buildPane as buildRegisteredPane } from '../../../../test/helpers/chat';
 import { modelCatalog } from '../../../../test/helpers/modelCatalog';
 import {
   ensureProviderModels,
-  resetProviderModelsForTest,
 } from '../../../stores/providerModels.svelte';
 import type { ModelInfo } from '../../../types/settings';
 import { withEmptyDraftCleanup } from '../../../stores/emptyDraftCleanup';
@@ -52,8 +50,6 @@ function makeProject(): Project {
 
 describe('<AccessToggle>', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetProviderModelsForTest();
     setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   });
 

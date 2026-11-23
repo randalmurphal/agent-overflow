@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { tick, flushSync } from 'svelte';
-import { render, cleanup } from '@testing-library/svelte';
+import { render } from '@testing-library/svelte';
 // Real production cascade so `max-h-[3lh]`, `text-[0.75rem]`, `leading-relaxed`
 // and `whitespace-pre-wrap` resolve to the same geometry the app ships. The
 // browser project compiles tailwind against app.css (see vitest.config.ts).
@@ -34,7 +34,6 @@ import { TAIL_WINDOW_CAP_CHARS, TAIL_WINDOW_KEEP_LINES, heightAbove } from './ta
 
 const hosts: HTMLElement[] = [];
 afterEach(() => {
-  cleanup();
   for (const host of hosts.splice(0)) host.remove();
 });
 

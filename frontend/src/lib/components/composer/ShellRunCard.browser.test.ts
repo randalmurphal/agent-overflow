@@ -1,11 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import '../../../app.css';
-import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import type { ThreadPane } from '../../stores/thread.svelte';
-import { applyShellCommandEvent, resetShellRunsForTest } from '../../stores/shellCommands.svelte';
+import { applyShellCommandEvent } from '../../stores/shellCommands.svelte';
 import ShellRunCard from './ShellRunCard.svelte';
 
 // The pane the card hands focus within: its composer textarea is found by
@@ -33,11 +32,6 @@ function ask(terminalSeq: number, text: string): void {
 
 describe('ShellRunCard prompt focus', () => {
   let cleanup: (() => void) | null = null;
-
-  beforeEach(() => {
-    resetBindingMocks();
-    resetShellRunsForTest();
-  });
 
   afterEach(() => {
     cleanup?.();

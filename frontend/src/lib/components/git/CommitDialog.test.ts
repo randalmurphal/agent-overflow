@@ -1,8 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor, within } from '@testing-library/svelte';
 import CommitDialog from './CommitDialog.svelte';
-import { resetPanesForTest } from '../../stores/panes.svelte';
-import { resetBindingMocks, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
 import type { CommitFile, CommitFiles, GitActionOutcome, GitActionResult, GitStatus } from '../../types/git';
 import { DisconnectedError, TransportError } from '../../transport/wsClient';
@@ -94,11 +93,6 @@ async function mount(
     },
   };
 }
-
-beforeEach(() => {
-  resetPanesForTest();
-  resetBindingMocks();
-});
 
 describe('<CommitDialog> — file selection', () => {
   it('lists the changed files with nothing selected and refuses to commit until one is', async () => {

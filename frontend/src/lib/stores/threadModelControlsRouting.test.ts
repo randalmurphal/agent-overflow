@@ -3,12 +3,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Call } from '../transport/runtime';
 import { wsClient, type WSClient } from '../transport/wsClient';
-import { __attachBackendForTest, __resetBackendsForTest } from '../transport/backends';
+import { __attachBackendForTest } from '../transport/backends';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { HOME_DESCRIPTOR } from '../transport/manifestBackends';
-import { __resetEntityIndexForTest, forgetProject, noteProject, threadBackend } from '../transport/entityIndex';
+import { forgetProject, noteProject, threadBackend } from '../transport/entityIndex';
 import { createThreadPane } from './thread.svelte';
-import { focusPane, registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { focusPane, registerPaneForTest } from './panes.svelte';
 import { applyThreadModelSelection, applyThreadReasoningEffort } from './threadModelControls';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
@@ -36,9 +36,6 @@ function client(callByID: WSClient['callByID']): WSClient {
 
 beforeEach(() => {
   installThreadPaneTestEnv();
-  resetPanesForTest();
-  __resetBackendsForTest();
-  __resetEntityIndexForTest();
   setBindingMock('UpdateNewThreadDefaults', (input: unknown) => Call.ByID(UPDATE_DEFAULTS, input));
   setBindingMock('CreateThread', (input: unknown) => Call.ByID(CREATE_THREAD, input));
   setBindingMock('UpdateThreadModelSelection', (...args: unknown[]) => Call.ByID(UPDATE_MODEL, ...args));
@@ -46,9 +43,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  resetPanesForTest();
-  __resetBackendsForTest();
-  __resetEntityIndexForTest();
   __attachBackendForTest(HOME_DESCRIPTOR, wsClient);
 });
 

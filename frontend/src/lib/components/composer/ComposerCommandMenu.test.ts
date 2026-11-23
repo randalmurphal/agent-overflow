@@ -12,27 +12,18 @@ import Composer from './Composer.svelte';
 import {
   createComposerDraftStore,
 } from '../../stores/composerDraft.svelte';
-import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { applyProviderCommands } from '../../stores/providerCommands.svelte';
-import { resetForTest as resetClaudeSkills } from '../../stores/claudeSkills.svelte';
-import { resetForTest as resetCodexSkills } from '../../stores/codexSkills.svelte';
 import {
   projectTurnStarted,
-  resetForTest as resetThreadStatuses,
 } from '../../stores/threadStatuses.svelte';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
-import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
-import { resetForTest as resetWorktreeIntent } from '../../stores/worktreeIntent.svelte';
 import { resetProposedPlanCacheForTests } from '../../stores/proposedPlans.svelte';
-import { resetProviderModelsForTest } from '../../stores/providerModels.svelte';
-import { resetComposerPickerRegistryForTest, registerComposerPicker } from '../../stores/composerPickerRegistry.svelte';
+import { registerComposerPicker } from '../../stores/composerPickerRegistry.svelte';
 import {
   registerPaneTitleRename,
-  resetPaneTitleRenameForTest,
 } from '../../stores/paneTitleRename';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
@@ -109,19 +100,8 @@ function optionNames(getAll: (id: string) => HTMLElement[]): string[] {
 
 describe('composer command menu', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetComposerDraftSnapshotStateForTest();
     resetProposedPlanCacheForTests();
-    resetWorktreeIntent();
-    resetThreadStatuses();
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetCompanionPanesForTest();
-    resetCodexSkills();
-    resetClaudeSkills();
-    resetProviderModelsForTest();
-    resetComposerPickerRegistryForTest();
-    resetPaneTitleRenameForTest();
     installBaseMocks();
   });
 

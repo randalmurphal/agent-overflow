@@ -5,21 +5,19 @@ import {
   BROWSER_FIND_STOP_ATTEMPTS,
   BROWSER_FIND_STOP_RETRY_MS,
   createBrowserFind,
-  resetBrowserFindForTest,
   type BrowserFindMode,
 } from './browserFind.svelte';
 import { BrowserCompanionEvent, BrowserFindState } from './bindings';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { errString } from '../utils/errors';
-import { getToasts, resetToastsForTest } from './toast.svelte';
+import { getToasts } from './toast.svelte';
 import {
   closePaneFind,
   isPaneFindOpen,
   openPaneFind,
   paneFindReads,
   registerPaneFindProvider,
-  resetPaneFindForTest,
   setPaneFindQuery,
 } from './paneFind.svelte';
 
@@ -107,9 +105,6 @@ const kinds = () => calls.map((call) => call.kind);
 
 beforeEach(() => {
   vi.useFakeTimers();
-  resetBrowserFindForTest();
-  resetPaneFindForTest();
-  resetToastsForTest();
   calls = [];
   pageId = 'page-1';
   mount = 'mount-1';
@@ -131,9 +126,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
-  resetBrowserFindForTest();
-  resetPaneFindForTest();
-  resetToastsForTest();
 });
 
 describe('browser find provider', () => {

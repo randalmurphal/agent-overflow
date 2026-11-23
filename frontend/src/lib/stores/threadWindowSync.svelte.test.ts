@@ -14,7 +14,6 @@ import {
   initReplica,
   putReplicaWindow,
   removeReplicaWindow,
-  __resetReplicaForTest,
 } from '../replica';
 
 import { installPaneMocks, makeItem, makeThread } from '../../test/helpers/chat';
@@ -149,7 +148,6 @@ function replicaBody(items: Item[], epoch: number, rev: number) {
 
 describe('cold-open window sync', () => {
   beforeEach(async () => {
-    __resetReplicaForTest();
     installPaneMocks();
     await initReplica({
       backendId: `backend-${Math.random().toString(36).slice(2)}`,

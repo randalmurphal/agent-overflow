@@ -1,4 +1,4 @@
-import { beforeEach, describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   MAX_ADAPTIVE_CHARS_PER_SEC,
   MAX_REVEAL_TICK_DT_MS,
@@ -16,8 +16,6 @@ import {
   transformTranslateY,
   type SlideObservation,
 } from './tailSlide';
-
-beforeEach(() => __resetRevealFrameGateForTest());
 
 // The reveal smoother's clock, stepped a paint at a time: callbacks
 // scheduled during a frame run on the next one, as rAF does.

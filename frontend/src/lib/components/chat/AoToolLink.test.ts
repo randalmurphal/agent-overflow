@@ -1,14 +1,14 @@
 // The link an AO tool result shows, in both layouts. A thread_reply answers a
 // caller that can be on another computer: its link names that computer and
 // reads the thread there, or is plain text when this client cannot reach it.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import AoToolLink from './AoToolLink.svelte';
 import { threadResultView } from './aoToolResults';
 import { NO_AO_NAMES } from './aoTools';
 import { getPinnedBackend } from '../../transport/backends';
 import { HOME_BACKEND } from '../../transport/backendKey';
-import { resetStagedBackends, stageBackend, REMOTE_BACKEND_UUID } from '../../../test/helpers/backends';
+import { stageBackend, REMOTE_BACKEND_UUID } from '../../../test/helpers/backends';
 import { installPaneMocks } from '../../../test/helpers/chat';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 
@@ -20,10 +20,8 @@ function replyLink(computerId: string, computerName: string) {
 describe('<AoToolLink> for a reply to a caller on another computer', () => {
   beforeEach(() => {
     installPaneMocks();
-    resetStagedBackends();
     stageBackend({ id: HOME_BACKEND, name: 'This computer', backendId: 'home-uuid' });
   });
-  afterEach(() => resetStagedBackends());
 
   it('names that computer and reads the caller\'s thread there', async () => {
     stageBackend({ id: 'studio', backendId: REMOTE_BACKEND_UUID, name: 'Studio' });

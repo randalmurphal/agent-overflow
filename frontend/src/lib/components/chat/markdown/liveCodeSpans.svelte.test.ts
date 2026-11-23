@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { contentKey } from '../../../utils/fnv1a';
-import { getCachedBlockSpans, resetCodeSpanCacheForTest } from './codeSpanCache';
+import { getCachedBlockSpans } from './codeSpanCache';
 import {
   LIVE_CODE_FINISHED_ROWS_MAX,
   TextLineChain,
@@ -12,7 +12,6 @@ import {
   coverPaints,
   liveCodeRow,
   liveCoverSpans,
-  resetLiveCodeSpansForTest,
   resyncLiveCodeRows,
   retainLiveCodeThreads,
   stopLiveCodeFence,
@@ -54,11 +53,6 @@ function push(text: string, overrides: Partial<HighlightLiveCodeEvent> = {}): vo
 function cover(text: string, lang = 'python', streaming = true) {
   return coverLiveCode(liveCodeRow('t1', 'i1'), undefined, lang, new TextLineChain(text), streaming);
 }
-
-beforeEach(() => {
-  resetLiveCodeSpansForTest();
-  resetCodeSpanCacheForTest();
-});
 
 describe('TextLineChain', () => {
   it('builds the chain the backend sends, the same whether appended or reset', () => {

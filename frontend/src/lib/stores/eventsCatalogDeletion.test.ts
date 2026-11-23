@@ -2,24 +2,23 @@
 // kept catalogs, through the subscription the app installs.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setupEventListeners } from './events';
-import { emitWailsEvent, resetWailsMocks } from '../../test/mocks/wailsio-runtime';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
+import { stageBackend } from '../../test/helpers/backends';
 import { makeThread } from '../../test/helpers/chat';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
-import { __resetEntityIndexForTest, noteProject, noteThread, noteThreadGroup, projectBackend, threadGroupBackend } from '../transport/entityIndex';
+import { noteProject, noteThread, noteThreadGroup, projectBackend, threadGroupBackend } from '../transport/entityIndex';
 import * as replicaSession from '../replica/session';
 import { currentCatalogStamp } from '../replica/catalogStamp';
 import type { CatalogKind } from '../replica/catalog';
-import { markCatalogTree, resetCatalogLoadForTest } from './catalogLoad.svelte';
-import { CATALOG_WRITE_SPACING_MS, resetCatalogWritesForTest } from './computerCatalogWriter';
-import { addProjectLocal, getProjects, resetProjectsForTest } from './projects.svelte';
-import { getThreadGroups, resetThreadGroupsForTest, upsertThreadGroup } from './threadGroups.svelte';
-import { getThreads, prependThread, resetThreadsForTest } from './threads.svelte';
+import { markCatalogTree } from './catalogLoad.svelte';
+import { CATALOG_WRITE_SPACING_MS } from './computerCatalogWriter';
+import { addProjectLocal, getProjects } from './projects.svelte';
+import { getThreadGroups, upsertThreadGroup } from './threadGroups.svelte';
+import { getThreads, prependThread } from './threads.svelte';
 import type { Project, ProjectWithCounts, ThreadGroup } from '../types/models';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
 import { takePinnedBackend } from '../transport/backends';
-import { resetSidebarCatalogsForTest } from './sidebarCatalogs';
 import { renameThreadGroupAction } from '../components/sidebar/threadGroupActions';
 
 const LAPTOP = 'laptop';
@@ -30,17 +29,7 @@ let cleanup: () => void = () => {};
 let writes: { backend: BackendKey; projects: string[]; groups: string[]; threads: string[] }[] = [];
 
 beforeEach(() => {
-  resetWailsMocks();
-  resetBindingMocks();
-  resetSidebarCatalogsForTest();
-  resetStagedBackends();
   stageBackend({ id: LAPTOP, backendId: 'laptop-id', name: 'Laptop' });
-  __resetEntityIndexForTest();
-  resetCatalogLoadForTest();
-  resetCatalogWritesForTest();
-  resetProjectsForTest();
-  resetThreadsForTest();
-  resetThreadGroupsForTest();
   writes = [];
   vi.spyOn(replicaSession, 'putReplicaTree').mockImplementation(async (backend, catalogs) => {
     writes.push({
@@ -59,8 +48,6 @@ afterEach(() => {
   vi.useRealTimers();
   cleanup();
   vi.restoreAllMocks();
-  resetCatalogWritesForTest();
-  resetStagedBackends();
 });
 
 /** The laptop holds project P with group G and thread T; home holds project H. */

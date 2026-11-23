@@ -1,9 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import type { ThreadPane } from '../../stores/thread.svelte';
-import { applyShellCommandEvent, getShellRun, resetShellRunsForTest } from '../../stores/shellCommands.svelte';
+import { applyShellCommandEvent, getShellRun } from '../../stores/shellCommands.svelte';
 import ShellRunCard from './ShellRunCard.svelte';
 
 function makePane(threadId: string | null = 'thread-1') {
@@ -16,10 +16,6 @@ function start(command = 'make test', threadId = 'thread-1'): void {
 }
 
 describe('<ShellRunCard>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetShellRunsForTest();
-  });
 
   it('renders nothing while no command runs, and nothing for another thread', async () => {
     const { pane } = makePane();

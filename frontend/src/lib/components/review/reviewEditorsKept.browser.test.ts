@@ -12,12 +12,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, tick, unmount } from 'svelte';
 import '../../../app.css';
 import ReviewPane from './ReviewPane.svelte';
-import { __resetReviewPaneStateForTest, reviewStateForPane, reviewSubjectForPane } from '../../stores/reviewPane.svelte';
-import { __resetPinnedReviewStatesForTest, currentPinnedReviewState, disposePRReviewStates } from '../../stores/reviewPanePinned.svelte';
-import { resetAppStorageForTest } from '../../stores/appStorage';
-import { resetPanesForTest } from '../../stores/panes.svelte';
+import { reviewStateForPane, reviewSubjectForPane } from '../../stores/reviewPane.svelte';
+import { currentPinnedReviewState, disposePRReviewStates } from '../../stores/reviewPanePinned.svelte';
 import { __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
-import { resetForTest as resetDiffReviewComments } from '../../stores/diffReviewComments.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { DiffReviewComment, PRDetail, ReviewThread } from '../../types/models';
 import type { PRRef } from '../../utils/prReference';
@@ -64,11 +61,6 @@ let app: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  __resetReviewPaneStateForTest();
-  __resetPinnedReviewStatesForTest();
-  resetPanesForTest();
-  resetDiffReviewComments();
   // The pinned review's PR reads wait for a connected transport.
   __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
   target = document.createElement('div');
@@ -85,7 +77,6 @@ afterEach(async () => {
   app = undefined;
   target.remove();
   disposePRReviewStates(OWNER);
-  __resetReviewPaneStateForTest();
 });
 
 function q<T extends Element = HTMLElement>(selector: string): T | null {

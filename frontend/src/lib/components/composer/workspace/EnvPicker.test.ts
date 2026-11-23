@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import EnvPicker from './EnvPicker.svelte';
@@ -6,14 +6,12 @@ import { createThreadPane } from '../../../stores/thread.svelte';
 import type { Project, Thread } from '../../../types/models';
 import {
   getBindingMock,
-  resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
-import { resetForTest as resetWorktreeIntent } from '../../../stores/worktreeIntent.svelte';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../../test/helpers/chat';
 import { idleWorkspaceActivity, makeWorkspaceLock } from '../../../../test/helpers/workspaceLock';
 import { emitWailsEvent } from '../../../../test/mocks/wailsio-runtime';
-import { registerPaneForTest, resetPanesForTest } from '../../../stores/panes.svelte';
+import { registerPaneForTest } from '../../../stores/panes.svelte';
 import { withEmptyDraftCleanup } from '../../../stores/emptyDraftCleanup';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
@@ -87,11 +85,6 @@ function buildPlaceholderPane(paneId?: string, workspacePath = '/tmp/wt-feature'
 }
 
 describe('<EnvPicker>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetWorktreeIntent();
-    resetPanesForTest();
-  });
 
   it('labels the trigger Base at the project root', async () => {
     const pane = await buildPane(makeThread({ workspacePath: '/repo' }));

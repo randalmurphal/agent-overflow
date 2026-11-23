@@ -6,21 +6,18 @@ import { createThreadPane } from '../../../stores/thread.svelte';
 import type { Project, Thread } from '../../../types/models';
 import {
   getBindingMock,
-  resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 import {
   enterCreateBranchMode,
-  resetForTest as resetWorktreeIntent,
   setNewBranchName,
   setThreadEnvMode,
   worktreeIntentForThread,
 } from '../../../stores/worktreeIntent.svelte';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../../test/helpers/chat';
 import { recentBranchSelections, recordBranchSelection } from '../../../stores/branchMru';
-import { resetAppStorageForTest } from '../../../stores/appStorage';
 import { __seedGitStatusForTest } from '../../../stores/gitStatusStore.svelte';
-import { registerPaneForTest, resetPanesForTest } from '../../../stores/panes.svelte';
+import { registerPaneForTest } from '../../../stores/panes.svelte';
 import { idleWorkspaceActivity } from '../../../../test/helpers/workspaceLock';
 
 function makeThread(branch: string, overrides: Partial<Thread> = {}): Thread {
@@ -78,12 +75,8 @@ function buildPlaceholderPane(branch = 'main', paneId?: string) {
 
 describe('<BranchPicker>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     // Opening the picker fetches stale remotes first; these are fresh.
     setBindingMock('GitMaybeFetchRemotes', async () => false);
-    resetWorktreeIntent();
-    resetAppStorageForTest();
-    resetPanesForTest();
   });
 
   it('renders the current branch on the trigger', async () => {

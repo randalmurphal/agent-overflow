@@ -1,13 +1,10 @@
-import { beforeEach, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 import {
-  __resetGlideTotalsForTest,
   beginGlideRun,
   ChaseCadence,
   foldGlideChase,
   readGlideRun,
 } from './glideMeter';
-
-beforeEach(() => __resetGlideTotalsForTest());
 
 function warm(cadence: ChaseCadence, periodMs: number, ticks = 8): void {
   for (let i = 0; i < ticks; i++) cadence.tick(periodMs, 0.2, 0, false, false);

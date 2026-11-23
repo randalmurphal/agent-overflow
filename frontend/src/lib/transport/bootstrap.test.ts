@@ -17,8 +17,8 @@ import {
   validateWsUrl,
 } from './bootstrap';
 import { clearPairedSession, redeemPairing } from './deviceSession';
-import { __resetPageHostForTest, isHostWindow } from './pageHost';
-import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
+import { isHostWindow } from './pageHost';
+import { setHomeEndpoint } from './homeEndpoint';
 import { fetchBackendManifest } from './manifestBackends';
 import { BackendStartingError, STARTUP_REPORT_LIMIT_BYTES } from './startupProgress';
 
@@ -163,7 +163,6 @@ describe('defaultBootstrap', () => {
 
   afterEach(() => {
     setPageSearch('');
-    __resetPageHostForTest();
     vi.unstubAllGlobals();
   });
 
@@ -497,10 +496,8 @@ describe('defaultBootstrap under a shell origin', () => {
   const ENDPOINT = 'https://desk.tail-scale.ts.net:7777';
 
   afterEach(() => {
-    __resetHomeEndpointForTest();
     // defaultBootstrap memoises whether a webview hosts the page; a later
     // case that sets ?host=webview must not read this case's answer.
-    __resetPageHostForTest();
     vi.unstubAllGlobals();
   });
 

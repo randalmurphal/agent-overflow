@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import { cleanup, render, fireEvent, waitFor } from '@testing-library/svelte';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import NetworkSection from './NetworkSection.svelte';
 import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
 import { setRunMode, resetRunMode } from '../../../test/runMode';
@@ -94,7 +94,6 @@ function networkSettings(overrides: Partial<MockNetworkSettings> = {}): MockNetw
 
 describe('<NetworkSection>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     resetRunMode();
     resetToLocalPage();
     vi.useRealTimers();
@@ -106,8 +105,6 @@ describe('<NetworkSection>', () => {
     // the owner's own screen back — but flipping the grant set under a
     // still-mounted section would re-run its load against binding mocks
     // that are already gone.
-    cleanup();
-    resetBindingMocks();
     resetRunMode();
     resetToLocalPage();
     vi.useRealTimers();

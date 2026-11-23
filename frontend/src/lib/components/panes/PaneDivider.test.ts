@@ -1,15 +1,13 @@
-import { cleanup, render } from '@testing-library/svelte';
+import { render } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import PaneDivider from './PaneDivider.svelte';
-import { resetLayoutMetricsForTest, setPaneHostWidth, setPaneWidth } from '../../stores/layoutMetrics.svelte';
+import { setPaneHostWidth, setPaneWidth } from '../../stores/layoutMetrics.svelte';
 import {
   getPaneLayoutItems,
   resetPaneLayoutForTest,
   setPaneLayoutItemsForTest,
 } from '../../stores/paneLayout.svelte';
-import { resetPanesForTest } from '../../stores/panes.svelte';
-import { resetSettingsForTest } from '../../stores/settings.svelte';
 
 // Compact density minimum (the default after resetSettingsForTest).
 const MIN = 560;
@@ -121,10 +119,7 @@ describe('PaneDivider', () => {
   }
 
   beforeEach(() => {
-    resetLayoutMetricsForTest();
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetSettingsForTest();
     setPaneLayoutItemsForTest([
       { id: 'a', paneId: 'a', kind: 'thread', widthPx: 800 },
       { id: 'b', paneId: 'b', kind: 'thread', widthPx: 800 },
@@ -146,12 +141,8 @@ describe('PaneDivider', () => {
   });
 
   afterEach(() => {
-    cleanup();
     vi.restoreAllMocks();
-    resetLayoutMetricsForTest();
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetSettingsForTest();
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
   });

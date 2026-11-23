@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
 import { getToasts } from './toast.svelte';
-import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
+import { appStorageGet, appStorageSet } from './appStorage';
 import {
   activeDiffReviewSourceForThread,
   getDiffReviewComments,
@@ -29,17 +29,17 @@ import {
   supportsIgnoreWhitespace,
 } from './reviewPaneLoad';
 import { applyPRCILogEvent, applyPRCIUpdatedEvent, applyPRUpdatedEvent, attachPR } from './prReviewStore.svelte';
-import { closeCompanion, hideCompanion, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';
+import { closeCompanion, hideCompanion, openCompanion } from './companionPanes.svelte';
 import { __setTransportHelloForTest, __setTransportStatusForTest } from './transportStatus.svelte';
 import { DisconnectedError, TransportError, type TransportHello } from '../transport/wsClient';
 import { companionSubjectKey } from './companionSubject';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
-import { getPane, registerPaneForTest, resetPanesForTest, revealPane } from './panes.svelte';
+import { getPane, registerPaneForTest, revealPane } from './panes.svelte';
 import { noteCompactPaneShown, setCompactLayoutForTest, showCompactList, showCompactThread } from './layoutMode.svelte';
 import { persistScope } from './reviewPaneScope';
 import { removeThread } from './threads.svelte';
 import { createThreadPane } from './thread.svelte';
-import { registerComposerDraft, resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
+import { registerComposerDraft } from './composerDraftRegistry.svelte';
 import { demotePane, promotePane, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import type { DiffReviewComment, PRDetail, PRReviewSubmitOutcome, ReviewThread, Thread } from '../types/models';
 import type { GitStatus, WorkspaceRef } from '../types/git';
@@ -206,12 +206,7 @@ function draft(overrides: Partial<DiffReviewComment> = {}): DiffReviewComment {
 }
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  __resetReviewPaneStateForTest();
-  resetCompanionPanesForTest();
-  resetComposerDraftRegistryForTest();
   resetPaneLayoutForTest();
-  resetPanesForTest();
   installDefaultMocks();
 });
 
@@ -2193,7 +2188,6 @@ describe('reviewPane store — PR scope', () => {
     expect(state.error).toBeNull();
     expect(diff).toHaveBeenCalledTimes(1);
   });
-
 
   it('a pane restored into pr scope waits through the fast status whose PR lookup is pending', async () => {
     installPRMocks();
@@ -4465,7 +4459,6 @@ describe('reviewPane store — diffs past the memory budget', () => {
   const diagnostics = installDiagnosticsCapture();
   afterEach(() => {
     // Their diffs keep handles: let them go while the release mock stands.
-    __resetReviewPaneStateForTest();
     setPatchTextBudgetForTest(null);
   });
 
@@ -4622,7 +4615,6 @@ describe('reviewPane store — diffs past the memory budget', () => {
 
 describe('reviewPane store — diff text past ASCII', () => {
   afterEach(() => {
-    __resetReviewPaneStateForTest();
     setPatchTextBudgetForTest(null);
   });
 
@@ -5590,7 +5582,6 @@ describe('reviewPane store — open new-comment editors', () => {
 
   describe('while their placement waits on evicted text', () => {
     afterEach(() => {
-      __resetReviewPaneStateForTest();
       setPatchTextBudgetForTest(null);
     });
 

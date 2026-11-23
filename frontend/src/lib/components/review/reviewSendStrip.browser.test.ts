@@ -9,12 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import '../../../app.css';
 import ReviewPane from './ReviewPane.svelte';
-import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
-import { __resetPinnedReviewStatesForTest, disposePRReviewStates } from '../../stores/reviewPanePinned.svelte';
-import { resetAppStorageForTest } from '../../stores/appStorage';
-import { resetPanesForTest } from '../../stores/panes.svelte';
+import { disposePRReviewStates } from '../../stores/reviewPanePinned.svelte';
 import { __setTransportHelloForTest, __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
-import { resetForTest as resetDiffReviewComments } from '../../stores/diffReviewComments.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
 import type { DiffReviewComment, PRDetail } from '../../types/models';
@@ -46,11 +42,6 @@ let app: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  __resetReviewPaneStateForTest();
-  __resetPinnedReviewStatesForTest();
-  resetPanesForTest();
-  resetDiffReviewComments();
   __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
   __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities: ['pr-review-drafts.v1'], backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
   target = document.createElement('div');
@@ -67,7 +58,6 @@ afterEach(async () => {
   app = undefined;
   target.remove();
   disposePRReviewStates(OWNER);
-  __resetReviewPaneStateForTest();
   __setTransportHelloForTest(null);
 });
 

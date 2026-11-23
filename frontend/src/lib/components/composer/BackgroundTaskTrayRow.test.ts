@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import BackgroundTaskTrayRow from './BackgroundTaskTrayRow.svelte';
 import { makeItem } from '../../../test/helpers/chat';
@@ -10,7 +10,7 @@ import { tick } from 'svelte';
 import { applySubagentProgress, resetForTest } from '../../stores/subagentProgress.svelte';
 import { __resetBackgroundTaskOutputForTest } from '../../stores/backgroundTaskOutput.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { replaceSubagentRunStates, resetForTest as resetSubagentRunStates } from '../../stores/subagentRunState.svelte';
+import { replaceSubagentRunStates } from '../../stores/subagentRunState.svelte';
 
 function taskFor(anchor: Item, overrides: Partial<TrayTask> = {}): TrayTask {
   return {
@@ -539,11 +539,6 @@ describe('<BackgroundTaskTrayRow> agent run state', () => {
       toolName: 'Agent',
       input: { subagent_type: 'Explorer', description: 'Inspect tests' },
     }),
-  });
-
-  afterEach(() => {
-    resetForTest();
-    resetSubagentRunStates();
   });
 
   it('shows a parked agent as parked: hollow indicator, the waiting line over the live activity, and the report head', () => {

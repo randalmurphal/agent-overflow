@@ -12,7 +12,6 @@ import {
   isAppearanceWritable,
   isThemeDirectoryAvailable,
   loadAppearance,
-  resetAppearanceForTest,
   setAppearance,
   syncWindowBackground,
 } from './appearance.svelte';
@@ -58,7 +57,6 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   localStorage.clear();
-  resetAppearanceForTest();
   setBindingMock('GetThemeFiles', async () => files());
   setBindingMock('SetAppearance', async () => undefined);
   setBindingMock('SetWindowBackgroundColor', async () => undefined);
@@ -66,7 +64,6 @@ beforeEach(() => {
 
 afterEach(() => {
   localStorage.clear();
-  resetAppearanceForTest();
   vi.restoreAllMocks();
 });
 

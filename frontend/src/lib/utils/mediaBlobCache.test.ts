@@ -30,7 +30,6 @@ describe('the media blob cache', () => {
   });
 
   afterEach(() => {
-    __resetMediaBlobCacheForTest();
     vi.restoreAllMocks();
   });
 

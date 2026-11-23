@@ -3,14 +3,12 @@ import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import { FakeSmoothingClock, installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import { __setSmoothingClockForTest } from './threadPaneShared';
 import { applyItemStreamEvent, flushItemEventQueue, resetItemEventQueue } from './eventsItemStream';
-import { resetPanesForTest } from './panes.svelte';
 import { getSettings } from './settings.svelte';
 import { SEEDS, seededRandom } from '../../test/helpers/seededRandom';
 
 beforeEach(installThreadPaneTestEnv);
 afterEach(() => {
   resetItemEventQueue();
-  resetPanesForTest();
   __setSmoothingClockForTest(undefined);
   getSettings().lowPowerMode = false;
   getSettings().streamingEnabled = true;

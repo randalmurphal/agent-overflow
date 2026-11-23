@@ -1,16 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import TerminalSurface from './TerminalSurface.svelte';
 import {
   getThreadTerminalState,
   terminalStateKeyForPane,
-  resetThreadTerminalStatesForTest,
 } from './terminalStore.svelte';
 import type { ThreadTerminalSurfaceContext } from './terminalDrawerTypes';
 import { TERMINAL_FOCUS_REGION } from './terminalStore.svelte';
 import { carryCaretIntoPane } from '../panes/paneComposerFocus';
-import { intendFocus, paneFocusScope, resetFocusIntentForTest, returnFocus, type FocusIntent } from '../../utils/focusIntent';
+import { intendFocus, paneFocusScope, returnFocus, type FocusIntent } from '../../utils/focusIntent';
 import {
   terminalFocusCalls,
   resetTerminalFocusCalls,
@@ -105,7 +104,6 @@ async function settle() {
 }
 
 beforeEach(() => {
-  resetThreadTerminalStatesForTest();
   resetTerminalFocusCalls();
   // Make the surface's requestAnimationFrame(() => el.focus()) synchronous so
   // the focus lands within the test flush; happy-dom does not auto-run rAF.
@@ -120,8 +118,6 @@ afterEach(() => {
   calls.close = null;
   calls.openId = 't1';
   vi.unstubAllGlobals();
-  cleanup();
-  resetFocusIntentForTest();
 });
 
 /** The pane's latch: requestTerminalFocus registers the intent, the surface consumes it once. */

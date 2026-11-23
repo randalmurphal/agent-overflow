@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { TransferUnavailableError } from '../transport/attachmentTransfer';
 import {
   acquireForgeAttachment,
@@ -7,8 +7,7 @@ import {
   fetchForgeAttachmentBytes,
   forgeAttachmentCacheKey,
 } from './forgeAttachmentCache';
-import { __resetImageTiersForTest, rememberImageTier } from './imageTiers';
-import { __resetMediaBlobCacheForTest } from './mediaBlobCache';
+import { rememberImageTier } from './imageTiers';
 import type { PRRef } from './prReference';
 
 const responses: Response[] = [];
@@ -61,9 +60,6 @@ describe('the forge attachment cache', () => {
   });
 
   afterEach(() => {
-    __resetMediaBlobCacheForTest();
-    __resetImageTiersForTest();
-    resetBindingMocks();
     vi.restoreAllMocks();
   });
 
@@ -207,9 +203,6 @@ describe('the forge attachment original', () => {
   });
 
   afterEach(() => {
-    __resetMediaBlobCacheForTest();
-    __resetImageTiersForTest();
-    resetBindingMocks();
     vi.restoreAllMocks();
   });
 
@@ -252,9 +245,6 @@ describe('the painted resolution a save or copy reuses', () => {
   });
 
   afterEach(() => {
-    __resetMediaBlobCacheForTest();
-    __resetImageTiersForTest();
-    resetBindingMocks();
     vi.restoreAllMocks();
   });
 

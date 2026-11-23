@@ -5,10 +5,9 @@
 import { elapse, fakeTimeoutsBesideIndexedDB, installFakeIndexedDB } from '../../test/helpers/fakeIndexedDB';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { resetStagedBackends } from '../../test/helpers/backends';
 import { makeThread } from '../../test/helpers/chat';
 import { HOME_BACKEND } from '../transport/backends';
-import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
+import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { rememberIdentity } from '../transport/rememberedIdentity';
 import { __resetEntityIndexForTest } from '../transport/entityIndex';
 import { DisconnectedError } from '../transport/wsClient';
@@ -50,9 +49,6 @@ function forgetSession(): void {
 beforeEach(async () => {
   for (const list of LISTS) setBindingMock(list, offline);
   await __replicaSweepForTest();
-  __resetReplicaForTest();
-  __resetBackendIdentityForTest();
-  resetStagedBackends();
   localStorage.clear();
   for (const { name } of await indexedDB.databases()) {
     if (name) await new Promise<void>((resolve) => { const drop = indexedDB.deleteDatabase(name); drop.onsuccess = () => resolve(); });
@@ -67,8 +63,6 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   await __replicaSweepForTest();
-  __resetReplicaForTest();
-  resetStagedBackends();
 });
 
 /** This computer is awake: its identity is known and its replica takes writes. */

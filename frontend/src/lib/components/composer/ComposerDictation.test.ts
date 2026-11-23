@@ -8,20 +8,18 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Composer from './Composer.svelte';
 import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
-import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { DictationEnvironment } from '../../dictation/dictationSession.svelte';
-import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { noteThread } from '../../transport/entityIndex';
 import { HOME_BACKEND } from '../../transport/backendKey';
-import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { REMOTE_BACKEND_UUID, stageBackend } from '../../../test/helpers/backends';
 
 const scripted = vi.hoisted(() => ({ env: null as DictationEnvironment | null }));
 vi.mock('../../dictation/browserDictation', () => ({
@@ -63,9 +61,6 @@ async function mountComposer() {
 
 describe('<Composer> dictation', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetComposerDraftSnapshotStateForTest();
-    resetPanesForTest();
     resetPaneLayoutForTest();
     resetToLocalPage();
     installComposerMocks();
@@ -74,8 +69,6 @@ describe('<Composer> dictation', () => {
     resetToLocalPage();
     setCompactLayoutForTest(false);
     scripted.env = null;
-    resetStagedBackends();
-    __resetEntityIndexForTest();
   });
 
   // Dictation spends the computer's credentials, so a thread two computers
@@ -214,9 +207,6 @@ describe('<Composer> dictation', () => {
 
 describe('<Composer> live caption', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetComposerDraftSnapshotStateForTest();
-    resetPanesForTest();
     resetPaneLayoutForTest();
     resetToLocalPage();
     installComposerMocks();

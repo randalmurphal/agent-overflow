@@ -1,4 +1,4 @@
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { takePinnedBackend } from '../transport/backends';
 import { setCarriedSessionScopes } from '../transport/scopes';
 import { setSelectedBackend } from './selectedBackend.svelte';
@@ -35,7 +35,6 @@ import {
   loadImportCatalog,
   markImportConnectionLost,
   openSessionImport,
-  resetSessionImportForTest,
   setProjectFilter,
   setSelection,
   setShowAlreadyRan,
@@ -115,7 +114,6 @@ function clearToasts(): void {
 }
 
 beforeEach(() => {
-  resetSessionImportForTest();
   clearToasts();
   // The `done` frame resyncs the sidebar through the real projection path
   // (mocking a dependency of a .svelte.ts module is unreliable), so give it
@@ -126,7 +124,6 @@ beforeEach(() => {
 
 afterEach(() => {
   setPageGrantsFromBootstrap(false);
-  resetSessionImportForTest();
   clearToasts();
 });
 
@@ -939,9 +936,8 @@ describe('the unwired case', () => {
   });
 });
 
-
 describe('imports stay on the computer whose catalog was opened', () => {
-  afterEach(() => { resetStagedBackends(); setSelectedBackend(''); });
+  afterEach(() => { setSelectedBackend(''); });
 
   it('pins scan, start and cancel despite frontend selection changes and ignores another computer’s frames', async () => {
     stageBackend();

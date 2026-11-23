@@ -13,13 +13,10 @@ import {
   createComposerDraftStore,
   type ComposerDraftStore,
 } from '../../stores/composerDraft.svelte';
-import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import { buildPane } from '../../../test/helpers/chat';
-import { resetBindingMocks, setAttachmentThumbnailMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setAttachmentThumbnailMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
-import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import type { Attachment } from '../../types/attachment';
 import type { ThreadPane } from '../../stores/thread.svelte';
@@ -193,13 +190,9 @@ describe('<ComposerInputSurface>', () => {
     platform.native = false;
   });
   beforeEach(() => {
-    resetBindingMocks();
     // The composer loads the thumbnail of each image a test uploads.
     setAttachmentThumbnailMock();
-    resetComposerDraftSnapshotStateForTest();
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetCompanionPanesForTest();
     installMocks();
   });
 

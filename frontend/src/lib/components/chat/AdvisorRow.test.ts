@@ -1,12 +1,11 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render } from '@testing-library/svelte';
 import AdvisorRow from './AdvisorRow.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeItem } from '../../../test/helpers/chat';
 
 describe('<AdvisorRow>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: '', size: 0, isComplete: true })));
   });
 

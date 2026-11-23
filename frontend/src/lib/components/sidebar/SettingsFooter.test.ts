@@ -1,14 +1,13 @@
 import { fireEvent, render } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { loadSettings, resetSettingsForTest, updateSetting } from '../../stores/settings.svelte';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { loadSettings, updateSetting } from '../../stores/settings.svelte';
 import { makeSettings } from '../../../test/helpers/settings';
 import { pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
-import { getUpdateState, resetForTest as resetUpdatesForTest } from '../../stores/updates.svelte';
+import { getUpdateState } from '../../stores/updates.svelte';
 import {
   getSettingsSection,
   isSettingsOpen,
-  resetSettingsOverlayForTest,
 } from '../../stores/settingsOverlay.svelte';
 import SettingsFooter from './SettingsFooter.svelte';
 
@@ -25,14 +24,12 @@ vi.mock('../../transport/runMode', async (original) => ({
 describe('SettingsFooter view-only indicator', () => {
   beforeEach(() => {
     mode.frontend = false;
-    resetBindingMocks();
     resetToLocalPage();
   });
 
   afterEach(() => {
     mode.frontend = false;
     resetToLocalPage();
-    resetBindingMocks();
   });
 
   it('has no execution-host sleep control in a standalone frontend', () => {
@@ -77,8 +74,6 @@ describe('SettingsFooter notification-sound toggle', () => {
   // The device-tier mirror reaches a computer once its settings answer is in.
   beforeEach(async () => {
     mode.frontend = false;
-    resetBindingMocks();
-    resetSettingsForTest();
     resetToLocalPage();
     setBindingMock('GetSettings', async () => makeSettings());
     await loadSettings();
@@ -87,8 +82,6 @@ describe('SettingsFooter notification-sound toggle', () => {
   afterEach(() => {
     mode.frontend = false;
     resetToLocalPage();
-    resetSettingsForTest();
-    resetBindingMocks();
   });
 
   it('renders unmuted by default, offering the mute', () => {
@@ -156,16 +149,7 @@ describe('SettingsFooter notification-sound toggle', () => {
 // Updates page; the Settings button keeps opening wherever the caller sends it.
 describe('SettingsFooter update button', () => {
   beforeEach(() => {
-    resetBindingMocks();
     resetToLocalPage();
-    resetUpdatesForTest();
-    resetSettingsOverlayForTest();
-  });
-
-  afterEach(() => {
-    resetUpdatesForTest();
-    resetSettingsOverlayForTest();
-    resetBindingMocks();
   });
 
   it('is absent while no release is waiting', () => {

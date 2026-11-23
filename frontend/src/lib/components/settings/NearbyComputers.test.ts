@@ -1,13 +1,11 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import NearbyComputers from './NearbyComputers.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { resetStagedBackends, stageBackend, REMOTE_BACKEND_UUID } from '../../../test/helpers/backends';
-import { __resetSystemsForTest, addSystem } from '../../stores/systems.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { stageBackend, REMOTE_BACKEND_UUID } from '../../../test/helpers/backends';
+import { addSystem } from '../../stores/systems.svelte';
 
 const WINDOWS = { backendId: 'windows', name: 'Workstation', address: 'https://workstation.ts.net', network: 'tailnet' };
-
-afterEach(() => { cleanup(); resetBindingMocks(); resetStagedBackends(); __resetSystemsForTest(); });
 
 describe('available computers', () => {
   it('filters existing and pending connections while pairing a named Tailscale computer by its address', async () => {

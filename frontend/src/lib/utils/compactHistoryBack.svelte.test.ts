@@ -19,7 +19,7 @@ import {
   showCompactList,
   showCompactThread,
 } from '../stores/layoutMode.svelte';
-import { registerAirspaceSurface, resetAirspaceForTest } from './paneAirspace.svelte';
+import { registerAirspaceSurface } from './paneAirspace.svelte';
 
 let dispose: () => void = () => {};
 
@@ -57,7 +57,6 @@ function openSurface(): { closed: () => boolean } {
 
 beforeEach(async () => {
   shell.native = false;
-  resetAirspaceForTest();
   setCompactLayoutForTest(true);
   // Start every case on the page's own entry with no sentinel current.
   if (isCompactBackSentinel(window.history.state)) window.history.replaceState(null, '');
@@ -67,7 +66,6 @@ beforeEach(async () => {
 afterEach(async () => {
   dispose();
   dispose = () => {};
-  resetAirspaceForTest();
   setCompactLayoutForTest(false);
   showCompactList();
   document.body.innerHTML = '';

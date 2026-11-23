@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import SettingsView from './SettingsView.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
@@ -17,7 +17,7 @@ import { REMOTE_BACKEND_UUID, stageBackend } from '../../../test/helpers/backend
 import { grantBackendScopes } from '../../../test/helpers/scopes';
 import { SCOPES } from '../../transport/scopes';
 import { listenProviderUpdates } from '../../../test/helpers/providerUpdates';
-import { resetSettingsOverlayForTest, setSettingsComputer } from '../../stores/settingsOverlay.svelte';
+import { setSettingsComputer } from '../../stores/settingsOverlay.svelte';
 
 const BASE_SETTINGS: Settings = makeSettings();
 
@@ -315,7 +315,6 @@ describe('<SettingsView> search', () => {
 
 describe('settings rail: provider update dots', () => {
   beforeEach(seed);
-  afterEach(() => resetSettingsOverlayForTest());
 
   it('follows the computer the view shows', async () => {
     stageBackend();

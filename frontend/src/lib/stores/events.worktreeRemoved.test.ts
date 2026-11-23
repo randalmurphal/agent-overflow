@@ -5,13 +5,12 @@ import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import type { RecoveryPhase } from './transportRecovery';
 import { loadSidebarCatalogs } from './sidebarCatalogs';
 import { createThreadPane } from './thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { registerPaneForTest } from './panes.svelte';
 import {
   hasStagedWorktreeIntent,
-  resetForTest as resetWorktreeIntent,
   setThreadEnvMode,
 } from './worktreeIntent.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { makeThread } from '../../test/helpers/chat';
 import type { Project } from '../types/models';
@@ -48,9 +47,6 @@ function draftPane(paneId: string, owner: Project, workspacePath: string, branch
 let cleanupEvents: (() => void) | null = null;
 
 beforeEach(async () => {
-  resetPanesForTest();
-  resetBindingMocks();
-  resetWorktreeIntent();
   setBindingMock('ListThreads', async () => []);
   await loadSidebarCatalogs();
   cleanupEvents = setupEventListeners();

@@ -9,7 +9,6 @@ import {
   exitCreateBranchMode,
   hasStagedWorktreeIntent,
   isLocalBase,
-  resetForTest,
   resolveBaseForWire,
   seedDefaultWorktreeIntentForDraft,
   setAttachBranch,
@@ -45,7 +44,6 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 
 describe('worktreeIntent store', () => {
   beforeEach(async () => {
-    resetForTest();
     setBindingMock('GetSettings', async () => SETTINGS);
     setBindingMock('UpdateSettings', async (patch: Partial<Settings>) => ({
       ...SETTINGS,

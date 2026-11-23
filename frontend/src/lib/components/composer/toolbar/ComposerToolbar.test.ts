@@ -4,15 +4,13 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import ComposerToolbar from './ComposerToolbar.svelte';
 import { createThreadPane, type ThreadPane } from '../../../stores/thread.svelte';
 import {
-  resetForTest as resetProviderAccounts,
   setProviderAccount,
 } from '../../../stores/accountInfo.svelte';
 import {
-  resetForTest as resetRateLimits,
   setProviderRateLimits,
 } from '../../../stores/rateLimitsInfo.svelte';
 import { makeItem } from '../../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { modelCatalog } from '../../../../test/helpers/modelCatalog';
 import { ThreadMCPServer } from '../../../stores/bindings';
 import { refreshMcpServers } from '../../../stores/mcpServers.svelte';
@@ -113,8 +111,6 @@ describe('<ComposerToolbar>', () => {
   let restoreDimensions: (() => void) | undefined;
 
   beforeEach(() => {
-    resetBindingMocks();
-    resetProviderAccounts();
     // The composer loads its provider's model list.
     setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     const frame = vi.spyOn(window, 'requestAnimationFrame')
@@ -130,7 +126,6 @@ describe('<ComposerToolbar>', () => {
   });
 
   afterEach(() => {
-    resetProviderAccounts();
     restoreDimensions?.();
     restoreDimensions = undefined;
     restoreAnimationFrame?.();
@@ -404,15 +399,8 @@ describe('<ComposerToolbar>', () => {
 
 describe('<ComposerToolbar> usage rings', () => {
   beforeEach(() => {
-    resetBindingMocks();
     // The composer loads its provider's model list.
     setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
-    resetProviderAccounts();
-    resetRateLimits();
-  });
-  afterEach(() => {
-    resetProviderAccounts();
-    resetRateLimits();
   });
 
   const resetsAt = Math.floor(Date.now() / 1000) + 86400;
@@ -513,7 +501,6 @@ describe('<ComposerToolbar> usage rings', () => {
 // popover's anchor tracking.
 describe('<ComposerToolbar> context meter', () => {
   beforeEach(() => {
-    resetBindingMocks();
     // The composer loads its provider's model list.
     setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   });

@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { grantBackendScopes, resetToLocalPage, revokeBackendScopes } from '../../test/helpers/scopes';
 import { resetStagedBackends, stageBackend, REMOTE_BACKEND_UUID } from '../../test/helpers/backends';
 import { makeThread } from '../../test/helpers/chat';
-import { noteProject, noteThread, __resetEntityIndexForTest } from '../transport/entityIndex';
+import { noteProject, noteThread } from '../transport/entityIndex';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { takePinnedBackend } from '../transport/backends';
 import type { TransportHello } from '../transport/wsClient';
@@ -26,7 +26,7 @@ const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 let stop = () => {};
 
 beforeEach(async () => {
-  resetBindingMocks(); resetStagedBackends(); resetToLocalPage(); resetConversationTransfersForTest(); __resetEntityIndexForTest();
+  resetToLocalPage();
   stageBackend({ id: 'tower', backendId: SOURCE, hello: hello(SOURCE) });
   stageBackend({ hello: hello(REMOTE_BACKEND_UUID) });
   setBackendIdentityFromBootstrap(SOURCE, 'generation-a', 'Tower', 'tower');

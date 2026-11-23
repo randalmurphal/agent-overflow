@@ -1653,8 +1653,6 @@ describe('<ProjectsSection> while a paired computer is not loaded', () => {
   });
   afterEach(() => {
     resetStagedBackends();
-    resetCatalogLoadForTest();
-    resetSidebarCatalogsForTest();
     __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
     vi.useRealTimers();
     vi.restoreAllMocks();

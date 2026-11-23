@@ -17,8 +17,8 @@ import {
   syncSidebarFromSettings,
 } from './sidebar.svelte';
 import { appStorageGet, hydrateAppStorage, resetAppStorageForTest } from './appStorage';
-import { loadSettings, resetSettingsForTest } from './settings.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { loadSettings } from './settings.svelte';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { makeSettings } from '../../test/helpers/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
 import { deleteThreadGroupLocal } from './threadGroups.svelte';
@@ -26,11 +26,6 @@ import { deleteThreadGroupLocal } from './threadGroups.svelte';
 const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
 
 describe('sidebar store', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetAppStorageForTest();
-    resetSidebarForTest();
-  });
 
   it('forgets a group\'s paging when the group goes', () => {
     setThreadListVisibleLimit('group-1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
@@ -127,9 +122,6 @@ describe('sidebar store', () => {
   });
 
   describe('syncSidebarFromSettings', () => {
-    beforeEach(() => {
-      resetSettingsForTest();
-    });
 
     it('overwrites sort mode from Go settings', async () => {
       setBindingMock('UpdateSettings', async () => null);

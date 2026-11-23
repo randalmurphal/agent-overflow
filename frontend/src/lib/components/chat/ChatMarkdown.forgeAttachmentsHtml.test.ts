@@ -4,9 +4,8 @@ import { fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ForgeAttachmentChatHarness from './ForgeAttachmentChatHarness.svelte';
 import ImageMenuHost from './ImageMenuHost.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { __reportImageBoxForTest, __resetImageTiersForTest } from '../../utils/imageTiers';
-import { __resetMediaBlobCacheForTest } from '../../utils/mediaBlobCache';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { __reportImageBoxForTest } from '../../utils/imageTiers';
 import type { ForgeAttachmentSource } from '../../utils/forgeAttachments';
 
 // Forge media a PR template writes INSIDE an HTML wrapper. There is no
@@ -62,9 +61,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  __resetMediaBlobCacheForTest();
-  __resetImageTiersForTest();
-  resetBindingMocks();
   vi.restoreAllMocks();
 });
 

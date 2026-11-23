@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { createReviewDiffMedia, type ImageHandle } from './reviewDiffMedia.svelte';
 import { DiffFilesHandle, DIFF_FILES_CHANGED, DIFF_FILES_GONE, DIFF_FILES_UNREADABLE, DIFF_FILE_REFUSED, readDiffFileSizes, type DiffFilesTarget, type DiffImageAnswer } from './reviewDiffFiles';
 import { TransportError } from '../transport/wsClient';
-import { frontendErrorCaptureStateForTest, resetFrontendErrorCaptureForTest } from '../utils/frontendErrorCapture';
-import { __mediaBlobCacheKeysForTest, __resetMediaBlobCacheForTest, __setMediaBlobCacheLimitsForTest } from '../utils/mediaBlobCache';
+import { frontendErrorCaptureStateForTest } from '../utils/frontendErrorCapture';
+import { __mediaBlobCacheKeysForTest, __setMediaBlobCacheLimitsForTest } from '../utils/mediaBlobCache';
 import { __setBackendStatusForTest } from './transportStatus.svelte';
 import { parseReviewFiles, type ReviewFile } from '../utils/patchParser';
 
@@ -81,13 +81,7 @@ function shownUrls(handle: ImageHandle): Array<[string, string | null]> {
 describe('a review diff\'s images', () => {
   beforeEach(() => {
     fetched.length = 0;
-    resetFrontendErrorCaptureForTest();
     failFetch = null;
-    __resetMediaBlobCacheForTest();
-  });
-  afterEach(() => {
-    resetBindingMocks();
-    __resetMediaBlobCacheForTest();
   });
 
   it('reads a changed image once, naming the file as the patch does, and shows both sides', async () => {

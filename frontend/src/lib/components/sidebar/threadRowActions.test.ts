@@ -1,5 +1,5 @@
-import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { answerAsV0019 } from '../../../test/helpers/olderComputer';
 import {
   archiveThreadAction,
@@ -15,7 +15,7 @@ import {
 } from './threadRowActions';
 import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { buildPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
-import { getPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { getPane, registerPaneForTest } from '../../stores/panes.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
 import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
@@ -68,7 +68,6 @@ function clearThreadsForTest(): void {
 
 describe('forkThreadAction', () => {
   beforeEach(async () => {
-    resetBindingMocks();
     clearThreadsForTest();
     setEntryExpanded('project-1', false);
     for (const toast of getToasts()) removeToast(toast.id);
@@ -151,8 +150,6 @@ describe('forkThreadAction', () => {
 
 describe('archiveThreadAction', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
     clearThreadsForTest();
     for (const toast of getToasts()) removeToast(toast.id);
   });
@@ -244,8 +241,6 @@ describe('archiveThreadAction', () => {
 
 describe('deleteThreadAction', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
     clearThreadsForTest();
     for (const toast of getToasts()) removeToast(toast.id);
   });
@@ -405,17 +400,11 @@ describe('deleteThreadAction', () => {
 // reports nothing when it went.
 describe('thread actions on a computer on v0.0.19', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
     clearThreadsForTest();
     for (const toast of getToasts()) removeToast(toast.id);
     stageBackend();
     noteThread('thread-1', 'laptop');
     answerAsV0019();
-  });
-  afterEach(() => {
-    resetStagedBackends();
-    __resetEntityIndexForTest();
   });
 
   it('archives it there and says nothing more', async () => {
@@ -486,8 +475,6 @@ function settle(): Promise<void> {
 
 describe('standing agent actions', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
     clearThreadsForTest();
   });
 
@@ -629,7 +616,6 @@ describe('standing agent actions', () => {
 // whole-row frame that lands during the call is newer than its reply.
 describe('pin replies', () => {
   beforeEach(() => {
-    resetBindingMocks();
     clearThreadsForTest();
   });
 

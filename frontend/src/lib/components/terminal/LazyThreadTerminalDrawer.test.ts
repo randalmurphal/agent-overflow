@@ -1,4 +1,4 @@
-import { cleanup, render, waitFor } from '@testing-library/svelte';
+import { render, waitFor } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const terminalDrawerMock = vi.hoisted(() => ({
@@ -26,7 +26,6 @@ function makeSurface() {
 }
 
 afterEach(() => {
-  cleanup();
   terminalDrawerMock.shouldFailLoad = false;
 });
 

@@ -1,20 +1,20 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { render } from '@testing-library/svelte';
 import ConversationTransferStatus from './ConversationTransferStatus.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { resetStagedBackends, stageBackend, REMOTE_BACKEND_UUID } from '../../../test/helpers/backends';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { stageBackend, REMOTE_BACKEND_UUID } from '../../../test/helpers/backends';
 import { grantBackendScopes, resetToLocalPage, revokeBackendScopes } from '../../../test/helpers/scopes';
 import { setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { takePinnedBackend } from '../../transport/backends';
 import type { TransportHello } from '../../transport/wsClient';
-import { refreshComputerTransfers, resetConversationTransfersForTest, type ConversationTransfer } from '../../stores/conversationTransfers.svelte';
+import { refreshComputerTransfers, type ConversationTransfer } from '../../stores/conversationTransfers.svelte';
 
 const SOURCE = '11111111-2222-4333-8444-555555555555';
 const hello = (id: string) => ({ protocolVersion: 1, backendId: id, capabilities: ['conversation.transfer.v1'], backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 }) as TransportHello;
 const row = (patch: Partial<ConversationTransfer> = {}): ConversationTransfer => ({ id: 'op-1', threadId: 'conversation', targetThreadId: 'copy-id', peerBackendId: REMOTE_BACKEND_UUID, kind: 'move', direction: 'outgoing', phase: 'preparing', needsDestination: false, ownershipEpoch: 0, createdAt: 1, updatedAt: 1, ...patch });
 
 beforeEach(async () => {
-  resetBindingMocks(); resetStagedBackends(); resetToLocalPage(); resetConversationTransfersForTest();
+  resetToLocalPage();
   stageBackend({ id: 'tower', backendId: SOURCE, hello: hello(SOURCE) });
   stageBackend({ hello: hello(REMOTE_BACKEND_UUID) });
   setBackendIdentityFromBootstrap(SOURCE, 'generation-a', 'Tower', 'tower');
@@ -22,7 +22,6 @@ beforeEach(async () => {
   for (const backend of ['tower', 'laptop']) await grantBackendScopes(backend, ['threads:read', 'threads:operate']);
 });
 afterEach(() => {
-  resetConversationTransfersForTest(); resetStagedBackends();
   for (const backend of ['tower', 'laptop']) revokeBackendScopes(backend);
   resetToLocalPage();
 });

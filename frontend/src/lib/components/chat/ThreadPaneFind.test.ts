@@ -6,13 +6,12 @@ import { render, waitFor } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
 import ThreadPaneFind from './ThreadPaneFind.svelte';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   closePaneFind,
   getPaneFindProvider,
   hasPaneFindProvider,
   openPaneFind,
-  resetPaneFindForTest,
   setPaneFindQuery,
 } from '../../stores/paneFind.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
@@ -49,13 +48,10 @@ function mount(pane: ThreadPane) {
 }
 
 beforeEach(() => {
-  resetBindingMocks();
-  resetPaneFindForTest();
   resetPaneLayoutForTest();
 });
 
 afterEach(() => {
-  resetPaneFindForTest();
   __setTransportHelloForTest(null);
 });
 
