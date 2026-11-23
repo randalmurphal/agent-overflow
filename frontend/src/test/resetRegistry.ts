@@ -4,6 +4,15 @@
 // file imports no app module. Import this first in a setup file: a module
 // that loads before it fails its registration.
 //
+// Every module instance a file uses is registered with that file's
+// registry. Work a file started can outlive it and load a module after the
+// file ended (a lazy chunk still in flight); that instance is not this
+// file's, so an ended registry holds it aside. In the `unit` project the
+// next file's first setup file (sharedWorkerEndPrevious.ts) ends this
+// registry, dropping what it held, and resets every module. A module that
+// loads after that reset and before the next registry installs is the next
+// file's instance, and the next registry adopts it as it installs.
+//
 // It also fails the test that called a binding with no mock installed
 // (mocks/bindings-app.ts records each such call here). A call is charged to
 // the test running when it was made, or, made between tests, to the test
@@ -51,6 +60,13 @@ export type ResetRegistry = {
   loaded(key: string, exports: Exports, auto: readonly string[]): void;
   /** A source module with nothing to register finished loading. */
   settled(): void;
+  /** This file is over: a module that loads from now on is held aside for
+   *  the next registry, and the ones held so far are dropped (the module
+   *  reset that follows discards those instances). */
+  end(): void;
+  /** The modules that loaded after this file ended, which the next
+   *  registry adopts. */
+  takeLate(): Array<readonly [string, Exports, readonly string[]]>;
   /** Keys of the modules this file loaded, in load order. */
   keys(): string[];
   /** A binding was called with no mock installed. */
@@ -105,6 +121,8 @@ function install(): ResetRegistry {
   let pending: { readonly loaded: Loaded; readonly step: Step }[] = [];
   // Whom an unanswered binding call made now is charged to.
   let during = 'while the test file loaded';
+  let ended = false;
+  let late: Array<readonly [string, Exports, readonly string[]]> = [];
   let file = 'its test file';
   const unanswered = unansweredCalls();
 
@@ -186,18 +204,32 @@ function install(): ResetRegistry {
   afterAll(() => {
     const calls = unansweredError(takeUnanswered());
     during = `after ${file} ended`;
+    ended = true;
     if (calls) throw calls;
   });
 
   return {
     loaded(key, exports, auto) {
+      if (ended) {
+        late.push([key, exports, auto]);
+        return;
+      }
       const loaded = { key, exports: weakly(exports), auto };
       modules.push(loaded);
       for (const step of POSTURE) if (step.module === key) pending.push({ loaded, step });
       runPending();
     },
     settled() {
-      runPending();
+      if (!ended) runPending();
+    },
+    end() {
+      ended = true;
+      late = [];
+    },
+    takeLate() {
+      const taken = late;
+      late = [];
+      return taken;
     },
     keys: () => [...new Set(modules.filter((loaded) => exportsOf(loaded) !== null).map((loaded) => loaded.key))],
     unansweredBinding(name) {
@@ -207,5 +239,8 @@ function install(): ResetRegistry {
   };
 }
 
+const worker = globalThis as { [key: symbol]: ResetRegistry | undefined };
+const previous = worker[Symbol.for(RESET_REGISTRY_KEY)];
 export const resetRegistry: ResetRegistry = install();
-(globalThis as { [key: symbol]: ResetRegistry })[Symbol.for(RESET_REGISTRY_KEY)] = resetRegistry;
+worker[Symbol.for(RESET_REGISTRY_KEY)] = resetRegistry;
+for (const [key, exports, auto] of previous?.takeLate() ?? []) resetRegistry.loaded(key, exports, auto);

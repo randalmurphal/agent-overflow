@@ -6,7 +6,8 @@
 // starts from.
 //
 // Each file leaves the worker as a fresh worker would find it:
-//   - app modules are re-evaluated for the next file (`vi.resetModules`),
+//   - app modules are re-evaluated for the next file: the next file's first
+//     setup file, sharedWorkerEndPrevious.ts, resets them (`vi.resetModules`),
 //     so module state does not carry over;
 //   - listeners a file's modules added to `window` or `document`, and the
 //     timers they left pending, end with the file, so the previous file's
@@ -189,7 +190,6 @@ async function endFile(): Promise<void> {
   releaseFileResources(resources);
   await happyDOM.abort();
   resetDocument(start.href);
-  vi.resetModules();
   const changes = sharedGlobalChanges(start.globals);
   if (changes.length > 0) {
     throw new Error(
