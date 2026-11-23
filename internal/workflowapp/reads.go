@@ -158,7 +158,13 @@ func (s *Service) RunOutput(ctx context.Context, itemID string) (RunOutputs, err
 }
 
 // NamedOutputs reads a run's declared non-artifact outputs from its frozen
-// snapshot and the done envelopes of its phases' latest attempts.
+// snapshot and its phases' attempts.
+//
+// Each phase's values come from exactly one attempt: the one the engine's
+// later phases read (engine.WinningAttempts), with one case added for the
+// run view. A run that ended failed at a gate shows the outputs of that
+// final attempt: a phase whose latest attempt failed with a done envelope
+// takes its values from that attempt instead of any earlier one.
 func NamedOutputs(payload json.RawMessage, phases []store.WorkItemPhaseTimeline) (map[string]any, error) {
 	outputs := make(map[string]any)
 	if len(payload) == 0 {
@@ -168,28 +174,33 @@ func NamedOutputs(payload json.RawMessage, phases []store.WorkItemPhaseTimeline)
 	if err := json.Unmarshal(payload, &snapshot); err != nil {
 		return nil, err
 	}
-	vars := make(map[string]any)
-	latestAttempts := make(map[string]int)
+	attempts := make([]engine.PhaseAttempt, 0, len(phases))
+	latest := make(map[string]engine.PhaseAttempt)
 	for _, phase := range phases {
-		if (phase.Status != "completed" && phase.Status != "failed") || len(phase.OutputEnvelope) == 0 || phase.Attempt < latestAttempts[phase.PhaseID] {
+		attempt := engine.PhaseAttempt{PhaseID: phase.PhaseID, Attempt: phase.Attempt, Status: phase.Status, Envelope: phase.OutputEnvelope}
+		attempts = append(attempts, attempt)
+		if prior, ok := latest[phase.PhaseID]; !ok || attempt.Attempt > prior.Attempt {
+			latest[phase.PhaseID] = attempt
+		}
+	}
+	chosen := engine.WinningAttempts(attempts)
+	for phaseID, attempt := range latest {
+		if attempt.Status != "failed" || len(attempt.Envelope) == 0 {
 			continue
 		}
 		var envelope struct {
-			Status  string         `json:"status"`
-			Outputs map[string]any `json:"outputs"`
+			Status string `json:"status"`
 		}
-		if err := json.Unmarshal(phase.OutputEnvelope, &envelope); err != nil {
-			return nil, fmt.Errorf("decode phase %s attempt %d: %w", phase.PhaseID, phase.Attempt, err)
+		if err := json.Unmarshal(attempt.Envelope, &envelope); err != nil {
+			return nil, fmt.Errorf("decode phase %s attempt %d: %w", phaseID, attempt.Attempt, err)
 		}
-		if envelope.Status != "done" {
-			continue
+		if envelope.Status == "done" {
+			chosen[phaseID] = attempt
 		}
-		latestAttempts[phase.PhaseID] = phase.Attempt
-		for name, value := range envelope.Outputs {
-			if value != nil {
-				vars[phase.PhaseID+"."+name] = value
-			}
-		}
+	}
+	vars := make(map[string]any)
+	if err := engine.BindOutputs(vars, chosen); err != nil {
+		return nil, err
 	}
 	for name, declaration := range snapshot.Workflow.Outputs {
 		if declaration.Artifact {

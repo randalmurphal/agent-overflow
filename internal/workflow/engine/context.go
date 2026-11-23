@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -66,20 +67,15 @@ func (e *Engine) variableContext(item *runtimeItem, current attemptRef) (map[str
 	if err != nil {
 		return nil, nil, err
 	}
-	latest := make(map[string]store.WorkItemPhaseContext)
+	attempts := make([]PhaseAttempt, 0, len(phases))
 	for _, phase := range phases {
-		if phase.Status != "completed" || len(phase.OutputEnvelope) == 0 {
-			continue
-		}
-		if prior, ok := latest[phase.PhaseID]; !ok || phase.Attempt > prior.Attempt {
-			latest[phase.PhaseID] = phase
-		}
+		attempts = append(attempts, PhaseAttempt{PhaseID: phase.PhaseID, Attempt: phase.Attempt, Status: phase.Status, Envelope: phase.OutputEnvelope})
 	}
-	for phaseID, phase := range latest {
-		if err := addOutputs(vars, phaseID, phase.OutputEnvelope); err != nil {
-			return nil, nil, fmt.Errorf("decode completed phase %s/%s/%d: %w", item.item.ID, phaseID, phase.Attempt, err)
-		}
+	completed, err := CompletedOutputs(attempts)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decode completed outputs of %s: %w", item.item.ID, err)
 	}
+	maps.Copy(vars, completed)
 	if len(current.envelope) > 0 {
 		if err := addOutputs(vars, current.phaseID, current.envelope); err != nil {
 			return nil, nil, fmt.Errorf("decode current phase %s/%s/%d: %w", item.item.ID, current.phaseID, current.attempt, err)
@@ -176,6 +172,53 @@ func renderBudgetBinding(view BudgetView) map[string]any {
 		binding["estimated"] = false
 	}
 	return binding
+}
+
+// PhaseAttempt is one persisted attempt of a phase, as the rule for which
+// attempt supplies a phase's outputs reads it.
+type PhaseAttempt struct {
+	PhaseID  string
+	Attempt  int
+	Status   string
+	Envelope json.RawMessage
+}
+
+// WinningAttempts is the rule for which attempt of each phase supplies that
+// phase's outputs: the highest-numbered completed attempt that carries an
+// envelope. Exactly one attempt per phase supplies values, never a mix, so
+// an output a later attempt withdrew (null or absent) is gone.
+func WinningAttempts(attempts []PhaseAttempt) map[string]PhaseAttempt {
+	winners := make(map[string]PhaseAttempt)
+	for _, attempt := range attempts {
+		if attempt.Status != "completed" || len(attempt.Envelope) == 0 {
+			continue
+		}
+		if prior, ok := winners[attempt.PhaseID]; !ok || attempt.Attempt > prior.Attempt {
+			winners[attempt.PhaseID] = attempt
+		}
+	}
+	return winners
+}
+
+// BindOutputs binds into vars, under "<phase>.<name>", the non-null outputs
+// of each phase's chosen attempt. Each envelope must be a done one.
+func BindOutputs(vars map[string]any, chosen map[string]PhaseAttempt) error {
+	for phaseID, attempt := range chosen {
+		if err := addOutputs(vars, phaseID, attempt.Envelope); err != nil {
+			return fmt.Errorf("phase %s attempt %d: %w", phaseID, attempt.Attempt, err)
+		}
+	}
+	return nil
+}
+
+// CompletedOutputs is what later phases of a run read from the earlier
+// ones: the outputs of each phase's winning attempt (WinningAttempts).
+func CompletedOutputs(attempts []PhaseAttempt) (map[string]any, error) {
+	vars := make(map[string]any)
+	if err := BindOutputs(vars, WinningAttempts(attempts)); err != nil {
+		return nil, err
+	}
+	return vars, nil
 }
 
 func addOutputs(vars map[string]any, phaseID string, payload json.RawMessage) error {
