@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { test, expect, type SeedResult } from './fixtures.js';
-import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { startTogether } from './launch-helpers.js';
 import { pairBuildBox } from './build-box-helpers.js';
 import { agentsBody, openAgents } from './agents-tray-helpers.js';
@@ -851,7 +851,13 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
   test(`${provider}: a Stop on a held remote completion's incoming row dismisses it for good`, async ({ page }) => {
     test.setTimeout(180_000);
-    const [harness, remote] = await startTogether(launchHarness(), launchHarness());
+    // The watcher's pass over its due list is part of the barrier below, so
+    // its cadence is the spec's.
+    const WATCH_POLL_MS = 1_000;
+    const [harness, remote] = await startTogether(
+      launchHarness({ env: harnessTiming({ 'remote-watch-poll': `${WATCH_POLL_MS}ms` }) }),
+      launchHarness(),
+    );
     let breaker: ReturnType<typeof startBreaker> | undefined;
     try {
       await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
@@ -869,7 +875,17 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const b = startBreaker(harness, provider, cwd);
       breaker = b;
       const requestId = randomUUID();
+      // A job that runs for the whole test: the watcher observes it on every
+      // pass, which is how the barrier below sees a pass happen.
+      const controlId = randomUUID();
       const release = join(remotePath, 'build.release');
+      const remoteRun = (id: string, label: string, argv: string[]) => ({
+        call: {
+          server: 'ao-remote-tools',
+          tool: 'remote_run',
+          args: { computer_id: computer, project_id: remoteProject, request_id: id, label, argv, wait_seconds: 0 },
+        },
+      });
       await setScenario(
         harness,
         cwd,
@@ -880,20 +896,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           turns: [
             {
               steps: [
-                {
-                  call: {
-                    server: 'ao-remote-tools',
-                    tool: 'remote_run',
-                    args: {
-                      computer_id: computer,
-                      project_id: remoteProject,
-                      request_id: requestId,
-                      label: 'nightly build',
-                      argv: ['sh', '-c', `while [ ! -f '${release}' ]; do sleep 0.1; done; echo 'build 812 finished: green'`],
-                      wait_seconds: 0,
-                    },
-                  },
-                },
+                remoteRun(requestId, 'nightly build', ['sh', '-c', `while [ ! -f '${release}' ]; do sleep 0.1; done; echo 'build 812 finished: green'`]),
+                remoteRun(controlId, 'soak test', ['sh', '-c', `while [ ! -f '${join(remotePath, 'soak.release')}' ]; do sleep 0.1; done`]),
               ],
               text: 'The build runs on Build box.',
             },
@@ -939,8 +943,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await expect(incoming).toHaveAttribute('data-kind', 'wake');
 
       // Stopped, it is dismissed on its watch, not handed back: nothing is
-      // queued, and a dismissed watch is out of the watcher's due list
-      // (internal/store remoteWatchCheckable).
+      // queued.
       await incoming.getByTestId('agent-incoming-row-stop').click();
       await expect(page.getByTestId('toast').filter({ hasText: /Withdrew .* before this thread's agent read it\./ })).toBeVisible({ timeout: 30_000 });
       await expect(incoming).toHaveCount(0);
@@ -948,8 +951,16 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(watch()).toEqual({ notification: 'dismissed', wake_issue: 'The user withdrew it from the queue before the agent read it.' });
 
       // A mended start still never receives it, and remote_jobs keeps the
-      // result. The person's message after the start is the barrier: a
-      // completion queued for the thread reaches the session before it.
+      // result. The barrier is a watcher pass that read its due list once
+      // the dismissed watch's next check had come, then the person's
+      // message: a completion that pass queued reaches the session before
+      // it. The running soak test is observed on every pass, each booking
+      // its next check WATCH_POLL_MS after the observation, so a booking
+      // that far past the due moment is a pass after it, and the change
+      // after that is a pass that began after it.
+      const nextCheck = (id: string) =>
+        db((conn) => (conn.prepare(`SELECT next_check FROM remote_watches WHERE request_id = ?`).get(id) as { next_check: number }).next_check);
+      const due = nextCheck(requestId);
       await b.mend();
       await setScenario(harness, cwd, threadToolsScenario({
         name: `remote-stopped-mended-${provider}`, provider, echoUserMessage: true, turns: [{ text: 'Nothing to read.' }], afterTurns: 'silent',
@@ -960,6 +971,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       );
       await delivered.expectNoneThrough(async () => {
         await harness.rpc('StartSession', thread);
+        await expect.poll(() => nextCheck(controlId), { timeout: 30_000 }).toBeGreaterThanOrEqual(due + WATCH_POLL_MS);
+        const after = nextCheck(controlId);
+        await expect.poll(() => nextCheck(controlId), { timeout: 30_000 }).not.toBe(after);
         await laterMessage(harness, thread, cwd, 'anything new from the build box?');
       }, 'the dismissed completion reached the mended session');
       expect(queued()).toEqual([]);

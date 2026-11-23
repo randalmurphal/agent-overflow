@@ -497,11 +497,10 @@ async function giveBackCaller(app: () => HarnessApp, remote: HarnessApp, provide
       conn.close();
     }
   };
-  // Each message starts a session that reads it and holds, never echoing
-  // it: Claude's still starting, Codex's in a turn held at its first step.
-  const holdNextSession = async (scenario: string) => {
-    await app().rpc('StopSession', caller);
-    await setScenario(
+  // The next session started reads a message and holds, never echoing it:
+  // Claude's still starting, Codex's in a turn held at its first step.
+  const held = (scenario: string) =>
+    setScenario(
       app(),
       callerPath,
       provider === 'claude'
@@ -514,6 +513,10 @@ async function giveBackCaller(app: () => HarnessApp, remote: HarnessApp, provide
             afterTurns: 'silent',
           }),
     );
+  // Each message starts a session that holds as `held` says.
+  const holdNextSession = async (scenario: string) => {
+    await app().rpc('StopSession', caller);
+    await held(scenario);
   };
   // The mock can hold before the app settles the write that reached it, so
   // the queue row a delivery removes is polled for, not read once.
@@ -536,6 +539,7 @@ async function giveBackCaller(app: () => HarnessApp, remote: HarnessApp, provide
     completion: `request_id: ${requestId}`,
     state,
     marks,
+    held,
     holdNextSession,
     heldMock,
     healthy,
@@ -568,7 +572,11 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const answerMock = await g.heldMock(answerInput);
       await expect.poll(() => g.state()).toMatchObject({ request: { delivered: 1, how: 'queued', notify: 1 }, rows: 0 });
       expect(g.marks().answer).toBe(0);
-      await g.healthy(`give-back-death-answer-after-${provider}`);
+      // The death's teardown starts the thread's session again, and that
+      // session is the one the completion reaches, so it holds too. No Stop
+      // comes between: StopSession takes a registered session only, and the
+      // restart may still be starting.
+      await g.held(`give-back-death-completion-held-${provider}`);
       const answerDeath = harness.waitForEvent<NotificationSend>(
         'notification:send',
         (data) => !data.retract && data.kind === 'error' && data.id === `thread:${g.caller}`,
@@ -586,7 +594,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       // queued again would reach the next session before it.
       let completionInput!: HarnessMockEventData;
       await answerAgain.expectNoneThrough(async () => {
-        await g.holdNextSession(`give-back-death-completion-held-${provider}`);
         await writeFile(g.release, '');
         completionInput = await wakeInput(harness, g.callerPath, g.completion, 60_000);
       }, 'the answer a dying session never took in was delivered again');
