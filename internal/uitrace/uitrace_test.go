@@ -22,8 +22,8 @@ func TestAppendWritesJSONLines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Append returned error: %v", err)
 	}
-	if path != tr.Path() {
-		t.Fatalf("Append path = %q, want %q", path, tr.Path())
+	if path != tr.path {
+		t.Fatalf("Append path = %q, want %q", path, tr.path)
 	}
 
 	data, err := os.ReadFile(path)
@@ -47,8 +47,8 @@ func TestNewErrorsWritesSeparateFile(t *testing.T) {
 	}
 
 	want := filepath.Join(configDir, DirName, ErrorFileName)
-	if tr.Path() != want {
-		t.Fatalf("Path() = %q, want %q", tr.Path(), want)
+	if tr.path != want {
+		t.Fatalf("path = %q, want %q", tr.path, want)
 	}
 	if _, err := tr.Append([]string{`{"kind":"error"}`}); err != nil {
 		t.Fatalf("Append returned error: %v", err)
@@ -77,7 +77,7 @@ func TestAppendRejectsEmbeddedNewlines(t *testing.T) {
 	if _, err := tr.Append([]string{smuggled}); err == nil {
 		t.Fatal("Append accepted a line with embedded newlines")
 	}
-	if _, err := os.Stat(tr.Path()); !os.IsNotExist(err) {
+	if _, err := os.Stat(tr.path); !os.IsNotExist(err) {
 		t.Fatalf("rejected batch still created the file (err=%v)", err)
 	}
 }
@@ -101,7 +101,7 @@ func TestAppendUsesPrivatePermissions(t *testing.T) {
 	}
 
 	assertMode(t, traceDir, 0o700)
-	assertMode(t, tr.Path(), 0o600)
+	assertMode(t, tr.path, 0o600)
 }
 
 func TestAppendEmptyBatchIsNoOp(t *testing.T) {
@@ -114,8 +114,8 @@ func TestAppendEmptyBatchIsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Append(nil) returned error: %v", err)
 	}
-	if path != tr.Path() {
-		t.Fatalf("Append(nil) path = %q, want %q", path, tr.Path())
+	if path != tr.path {
+		t.Fatalf("Append(nil) path = %q, want %q", path, tr.path)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("expected no trace file on empty batch, stat err = %v", err)
@@ -245,7 +245,7 @@ func TestAppendRotatesAtMaxFileBytes(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	bulk := strings.Repeat("a", MaxFileBytes)
-	if err := os.WriteFile(tr.Path(), []byte(bulk), 0644); err != nil {
+	if err := os.WriteFile(tr.path, []byte(bulk), 0644); err != nil {
 		t.Fatalf("seed trace file: %v", err)
 	}
 
@@ -253,7 +253,7 @@ func TestAppendRotatesAtMaxFileBytes(t *testing.T) {
 		t.Fatalf("Append returned error: %v", err)
 	}
 
-	rotated, err := os.ReadFile(tr.Path() + ".1")
+	rotated, err := os.ReadFile(tr.path + ".1")
 	if err != nil {
 		t.Fatalf("read rotated file: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestAppendRotatesAtMaxFileBytes(t *testing.T) {
 		t.Fatalf("rotated size = %d, want %d", len(rotated), len(bulk))
 	}
 
-	current, err := os.ReadFile(tr.Path())
+	current, err := os.ReadFile(tr.path)
 	if err != nil {
 		t.Fatalf("read current file: %v", err)
 	}
@@ -280,11 +280,11 @@ func TestAppendReplacesPreviousRotation(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, DirName), 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(tr.Path()+".1", []byte("stale"), 0644); err != nil {
+	if err := os.WriteFile(tr.path+".1", []byte("stale"), 0644); err != nil {
 		t.Fatalf("seed stale rotation: %v", err)
 	}
 	bulk := strings.Repeat("b", MaxFileBytes)
-	if err := os.WriteFile(tr.Path(), []byte(bulk), 0644); err != nil {
+	if err := os.WriteFile(tr.path, []byte(bulk), 0644); err != nil {
 		t.Fatalf("seed trace file: %v", err)
 	}
 
@@ -292,7 +292,7 @@ func TestAppendReplacesPreviousRotation(t *testing.T) {
 		t.Fatalf("Append returned error: %v", err)
 	}
 
-	rotated, err := os.ReadFile(tr.Path() + ".1")
+	rotated, err := os.ReadFile(tr.path + ".1")
 	if err != nil {
 		t.Fatalf("read rotated file: %v", err)
 	}
@@ -314,8 +314,8 @@ func TestPathLayout(t *testing.T) {
 		t.Fatalf("New returned error: %v", err)
 	}
 	want := filepath.Join(dir, DirName, FileName)
-	if tr.Path() != want {
-		t.Fatalf("Path() = %q, want %q", tr.Path(), want)
+	if tr.path != want {
+		t.Fatalf("path = %q, want %q", tr.path, want)
 	}
 }
 
@@ -330,10 +330,10 @@ func TestBookmarkConcatenatesRotationAndCurrent(t *testing.T) {
 	}
 	// Pre-seed rotation + current with distinct content so the bookmark
 	// concatenation order is observable (older history first).
-	if err := os.WriteFile(tr.Path()+".1", []byte(`{"seq":1}`+"\n"), 0644); err != nil {
+	if err := os.WriteFile(tr.path+".1", []byte(`{"seq":1}`+"\n"), 0644); err != nil {
 		t.Fatalf("seed rotation: %v", err)
 	}
-	if err := os.WriteFile(tr.Path(), []byte(`{"seq":2}`+"\n"), 0644); err != nil {
+	if err := os.WriteFile(tr.path, []byte(`{"seq":2}`+"\n"), 0644); err != nil {
 		t.Fatalf("seed current: %v", err)
 	}
 
@@ -365,7 +365,7 @@ func TestBookmarkWhenOnlyCurrentExists(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, DirName), 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(tr.Path(), []byte(`{"seq":1}`+"\n"), 0644); err != nil {
+	if err := os.WriteFile(tr.path, []byte(`{"seq":1}`+"\n"), 0644); err != nil {
 		t.Fatalf("seed current: %v", err)
 	}
 
