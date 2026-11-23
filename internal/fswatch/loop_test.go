@@ -38,9 +38,6 @@ type driven struct {
 	emitted atomic.Int32
 	emits   chan struct{}
 	closed  atomic.Int32
-	// sourceClosed is closed when the loop first closes its source, which
-	// Close does after it has begun.
-	sourceClosed chan struct{}
 
 	mu      sync.Mutex
 	handled []string
@@ -48,6 +45,10 @@ type driven struct {
 	// sees the stop signal; release lets it return.
 	held    chan string
 	release chan struct{}
+	// holdEmit parks each Emit after it is counted: emitHeld is told, and
+	// release lets it return.
+	holdEmit atomic.Bool
+	emitHeld chan struct{}
 }
 
 func startDriven(t *testing.T, debounce time.Duration, clock *fswatchtest.Clock) *driven {
@@ -62,19 +63,21 @@ func startGatedDriven(t *testing.T, debounce time.Duration, clock *fswatchtest.C
 	d := &driven{
 		clock: clock, events: make(chan fsnotify.Event), errors: make(chan error),
 		emits: make(chan struct{}, 8), held: make(chan string, 2), release: make(chan struct{}),
-		sourceClosed: make(chan struct{}),
+		emitHeld: make(chan struct{}, 1),
 	}
 	config := fswatch.Config{Label: "test watcher", Debounce: debounce, Emit: func() {
 		d.emitted.Add(1)
 		d.emits <- struct{}{}
+		if d.holdEmit.Load() {
+			d.emitHeld <- struct{}{}
+			<-d.release
+		}
 	}}
 	if clock != nil {
 		config.After = clock.After
 	}
 	source := fswatch.Source{Events: d.events, Errors: d.errors, Close: func() error {
-		if d.closed.Add(1) == 1 {
-			close(d.sourceClosed)
-		}
+		d.closed.Add(1)
 		return nil
 	}}
 	loop, err := fswatch.StartGated(config, source, d.handle, gate)
@@ -235,40 +238,67 @@ func TestLoopCloseDropsAPendingWait(t *testing.T) {
 	}
 }
 
-// TestLoopCloseWaitsForTheLoop parks the loop in the handler and checks
-// that Close is still waiting for it, by finding Close blocked on the loop's
-// exit rather than by waiting for some time to pass.
-func TestLoopCloseWaitsForTheLoop(t *testing.T) {
-	d := startDriven(t, time.Hour, &fswatchtest.Clock{})
-	go func() { d.events <- fsnotify.Event{Name: holdName, Op: fsnotify.Write} }()
-	<-d.held
-	closed := make(chan error, 1)
-	go func() { closed <- d.loop.Close() }()
-	deadline := time.After(5 * time.Second)
-	for !closeIsWaitingForTheLoop() {
-		select {
-		case err := <-closed:
-			t.Fatalf("Close returned (%v) while the loop was parked in the handler", err)
-		case <-deadline:
-			t.Fatal("Close never reached its wait for the loop")
-		case <-time.After(time.Millisecond):
-		}
-	}
-	d.releaseHold()
-	select {
-	case err := <-closed:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Close never returned after the loop was released")
+// TestLoopClosesTheSourceOnlyAfterTheCallInFlight parks a handler, and
+// then an Emit, and calls Close. The parked handler is told to stop at
+// once, Close waits for the call instead of closing the source under it,
+// and once the call returns Close closes the source exactly once and
+// nothing else runs.
+func TestLoopClosesTheSourceOnlyAfterTheCallInFlight(t *testing.T) {
+	for _, path := range []string{"handler", "emit"} {
+		t.Run(path, func(t *testing.T) {
+			clock := &fswatchtest.Clock{}
+			d := startDriven(t, time.Hour, clock)
+			switch path {
+			case "handler":
+				go func() { d.events <- fsnotify.Event{Name: holdName, Op: fsnotify.Write} }()
+				<-d.held
+			case "emit":
+				d.holdEmit.Store(true)
+				d.send(t, "a"+changeSuffix, fsnotify.Write)
+				d.settle(t)
+				clock.Fire(t, 0)
+				<-d.emitHeld
+			}
+			closed := make(chan error, 1)
+			go func() { closed <- d.loop.Close() }()
+			if path == "handler" {
+				select {
+				case <-d.held:
+				case <-time.After(5 * time.Second):
+					t.Fatal("Close began without telling the parked handler to stop")
+				}
+			}
+			awaitCloseWaitingForTheLoop(t, closed)
+			if n := d.closed.Load(); n != 0 {
+				t.Fatalf("Close closed the source %d times while the %s call was running", n, path)
+			}
+			d.releaseHold()
+			select {
+			case err := <-closed:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Close never returned after the call was released")
+			}
+			if n := d.closed.Load(); n != 1 {
+				t.Fatalf("the source was closed %d times, want once", n)
+			}
+			wantEmits := int32(0)
+			if path == "emit" {
+				wantEmits = 1
+			}
+			if n := d.emitted.Load(); n != wantEmits {
+				t.Fatalf("emitted %d times, want %d", n, wantEmits)
+			}
+		})
 	}
 }
 
 // Close begins exactly between the loop's choice of a lapsed wait or a
 // change event and the admission of the Emit or handler call that follows:
-// the gate holds the loop there until Close has closed the source, which
-// it does only after it has begun. Neither call may start. Admissions run
+// the gate holds the loop there until Close has begun and is waiting for
+// the loop. Neither call may start. Admissions run
 // one at a time on the loop goroutine, so the gate counts them: the change
 // and the settle are the first two, the call under test the third.
 func TestLoopStartsNoCallOnceCloseHasBegun(t *testing.T) {
@@ -298,11 +328,7 @@ func TestLoopStartsNoCallOnceCloseHasBegun(t *testing.T) {
 			}
 			closed := make(chan error, 1)
 			go func() { closed <- d.loop.Close() }()
-			select {
-			case <-d.sourceClosed:
-			case <-time.After(5 * time.Second):
-				t.Fatal("Close never began")
-			}
+			awaitCloseWaitingForTheLoop(t, closed)
 			close(closing)
 			select {
 			case err := <-closed:
@@ -424,6 +450,24 @@ func awaitNoLoopGoroutines(within time.Duration) []string {
 			return left
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// awaitCloseWaitingForTheLoop returns once a Close running on another
+// goroutine has begun and is blocked on the loop's exit, found by its stack
+// rather than by waiting for some time to pass. closed receives that
+// Close's result; a Close that returns first fails the test.
+func awaitCloseWaitingForTheLoop(t *testing.T, closed <-chan error) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for !closeIsWaitingForTheLoop() {
+		select {
+		case err := <-closed:
+			t.Fatalf("Close returned (%v) while the loop was held", err)
+		case <-deadline:
+			t.Fatal("Close never reached its wait for the loop")
+		case <-time.After(time.Millisecond):
+		}
 	}
 }
 
