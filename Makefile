@@ -859,6 +859,7 @@ script-tests: netns-tool
 	$(NETNS) node --test scripts/*.test.mjs
 	$(NETNS) sh scripts/test-install-download.sh
 	$(NETNS) sh scripts/test-ci-change.sh
+	$(NETNS) sh scripts/test-playwright-browsers.sh
 
 check: $(FRONTEND_DEPS)
 	$(MAKE) go-build
