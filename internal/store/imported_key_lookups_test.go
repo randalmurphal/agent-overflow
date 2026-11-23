@@ -347,10 +347,15 @@ func keyedLookups(th string) []keyedLookup {
 			roots := []string{"launch-1"}
 			must[map[string]subagentAnchorAggregate](t, "aggregates")(subagentAggregatesByRound(q, th, roots, subagentRoundBoundsFor(roots, named, nil)))
 			must[int](t, "completed child index")(s.SubagentCompletedChildIndex(th, "launch-1"))
-			if _, tools, err := s.SnapshotSubagentExecutionMeta(th, "launch-1", "{}", 1, 1, 6); err != nil || tools != 1 {
+			if _, tools, err := s.SnapshotSubagentExecutionMeta(th, "launch-1", "", "{}", 1, 1, 6); err != nil || tools != 1 {
 				t.Errorf("execution tools of launch-1 = %d, %v; want child-1", tools, err)
 			}
-			if count, last, err := s.SubagentExecutionToolCallsAfter(th, "launch-1", 1, 1); err != nil || count != 1 || last != 2 {
+			// An execution with an id also reads the rows another execution
+			// started (otherCodexExecutionRows).
+			if _, tools, err := s.SnapshotSubagentExecutionMeta(th, "launch-1", "run-1", "{}", 1, 1, 6); err != nil || tools != 1 {
+				t.Errorf("execution run-1 tools of launch-1 = %d, %v; want child-1", tools, err)
+			}
+			if count, last, err := s.SubagentExecutionToolCallsAfter(th, "launch-1", "", 1, 1); err != nil || count != 1 || last != 2 {
 				t.Errorf("live tools of launch-1 = %d through %d, %v; want child-1", count, last, err)
 			}
 			must[int](t, "tool calls since completion")(s.SubagentToolCallsSinceCompletion(th, "launch-1", 1_800_000_000_000))
@@ -603,7 +608,19 @@ func TestKeyedReadsUseTheirLocalKeyIndex(t *testing.T) {
 			// in its turn, not over the thread or the launch's whole subtree.
 			name: "execution tool count",
 			run: func() {
-				if _, _, err := s.SubagentExecutionToolCallsAfter(keyedThreadID, "launch-1", 1, 1); err != nil {
+				if _, _, err := s.SubagentExecutionToolCallsAfter(keyedThreadID, "launch-1", "", 1, 1); err != nil {
+					t.Error(err)
+				}
+			},
+			want:      "idx_items_parent (thread_id=? AND parent_id=? AND turn_index=? AND item_index>? AND item_index<?)",
+			forbidden: []string{"MATERIALIZE", "AUTOMATIC", "idx_items_thread_turn_item_unique"},
+		},
+		{
+			// The rows another execution started range over the same
+			// children as the execution's tool count.
+			name: "other execution rows",
+			run: func() {
+				if _, err := otherCodexExecutionRows(s.reader(), keyedThreadID, "launch-1", "run-1", 1, 1, 6); err != nil {
 					t.Error(err)
 				}
 			},

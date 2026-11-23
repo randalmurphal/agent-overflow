@@ -278,7 +278,11 @@ own stop (`agentStopScope`, `internal/triage/agent_stops.go`;
   progress event) plus a tool count AO keeps itself. Codex reports no
   tool count, so an execution's count is its `tool_call` rows directly
   under the spawn within the execution's bounds, the rows its card body
-  is sliced to. A nested agent's spawn counts as one call; the nested
+  is sliced to. A background command belongs to the execution that started
+  it (`codex_execution_turn_id`): one that exits while that execution runs
+  is in its count and card, and one that exits later is in the agent pane at
+  the point it exited and in no execution's count or card, since a saved
+  card never changes. A nested agent's spawn counts as one call; the nested
   agent's own calls do not, as in Claude's count. The live count adds one
   per row and starts over with each execution
   (`internal/triage/codex_execution_tools.go`); the completion's is read

@@ -69,8 +69,9 @@ The item stays `status: inProgress` until `spawn_exit_watcher` fires
 **Implication for agent-overflow**:
 `source: "unifiedExecStartup"` is the wire-typed signal that an item may
 become a background terminal. Typed `item/completed` clears the transient live
-tracker and is the history source for the command row, using the same item id,
-only while a Codex wire round is active. Typed
+tracker and is the history source for the command row, using the same item id:
+on the agent's turn for an agent's command, and for a top-level one only while
+a Codex wire round is active. Typed
 `TerminalInteractionNotification` is the history source for the separate
 waited/interacted marker rows. Raw `exec_command` function-call output is
 model-facing text; it can enrich live metadata but must not gate or fabricate

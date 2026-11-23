@@ -302,6 +302,36 @@ func (s *Store) UpsertUnsettledItem(item Item, resultPayload, inputPayload *Payl
 	return s.upsertItemWithInputPayload(item, resultPayload, inputPayload, true)
 }
 
+// UpsertItemUnderParent upserts item only while its parent row is in the
+// thread's history, and places it in the parent's turn. The parent check,
+// the turn and the write share one transaction, so a conversation cut
+// either precedes the check (nothing is written; written is false) or
+// follows the write (the cut removes the row with its parent). item.TurnIndex
+// is ignored.
+func (s *Store) UpsertItemUnderParent(item Item, resultPayload *Payload) (persisted Item, written bool, err error) {
+	if strings.TrimSpace(item.ParentID) == "" {
+		return Item{}, false, fmt.Errorf("store: upsert item %s under parent: no parent", item.ID)
+	}
+	applyItemDefaults(&item)
+	err = s.groupWriteItems(item.ThreadID, item.SubagentCard, "upsert item under parent", func(tx *sql.Tx, w *cardWrite) error {
+		parent, found, err := s.getThreadItem(tx, item.ThreadID, item.ParentID)
+		if err != nil || !found {
+			return err
+		}
+		item.TurnIndex = parent.TurnIndex
+		if err := upsertPayload(tx, resultPayload, &item); err != nil {
+			return err
+		}
+		persisted, err = writeItemAndReadBack(tx, w, &item, nextItemIndexTx)
+		written = err == nil
+		return err
+	})
+	if err != nil {
+		return Item{}, false, err
+	}
+	return persisted, written, nil
+}
+
 func (s *Store) upsertItemWithInputPayload(item Item, resultPayload, inputPayload *Payload, preserveTerminal bool) (Item, error) {
 	applyItemDefaults(&item)
 	var persisted Item

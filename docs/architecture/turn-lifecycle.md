@@ -128,8 +128,10 @@ persisted-launch-row shape. Their starts are tracked as transient
 running-tray state so the user can see the command immediately, but
 they are not written into transcript history at start time. Typed
 `item/completed` clears the transient tray state and persists the command row
-with the original item id only while a Codex wire round is active, matching
-Codex TUI timing. Raw `exec_command` output may enrich live process metadata,
+with the original item id. An agent's command row goes on its agent's turn,
+like every row under that agent, whether or not the root is running. A
+top-level command row is persisted only while a Codex wire round is active,
+matching Codex TUI timing. Raw `exec_command` output may enrich live process metadata,
 but it does not create, delay, or reorder command history. Empty `write_stdin`
 polls update process tracking without creating history rows or ending text
 streams. Non-empty stdin produces a completed interaction marker without
@@ -898,7 +900,7 @@ cases only. It must not feed turn detection.
 | Claude `control_response` success to `stop_task` | `EventBackgroundTaskStopAcked` | `provider:item_event` upsert (completion sibling) | Settle the named run if no kill frame settled it |
 | Claude `result` | `EventTurnComplete` | `provider:turn_completed` | Update `turns` row, force-close orphans |
 | Codex `item/started` | `EventToolStart` | `provider:item_event` upsert for persisted items | Upsert item row; `unifiedExecStartup` starts stay transient tray state |
-| Codex `item/completed` | `EventToolComplete` | `provider:item_event` upsert for persisted items | Update item row; unifiedExec completion clears live state and only persists while a Codex wire round is active |
+| Codex `item/completed` | `EventToolComplete` | `provider:item_event` upsert for persisted items | Update item row; unifiedExec completion clears live state; an agent's command persists on its agent's turn, a top-level one only while a Codex wire round is active |
 | Codex `turn/started` | `EventTurnStart` | `provider:turn_started` | Insert `turns` row |
 | Codex `turn/completed` | `EventTurnComplete` | `provider:turn_completed` | Update `turns` row, force-close orphans |
 

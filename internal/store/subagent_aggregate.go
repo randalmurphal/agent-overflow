@@ -119,6 +119,9 @@ func (acc *subagentAggregateAccumulator) noteNewest(position TimelineCursor) {
 }
 
 func subagentBoundContains(bound subagentRoundBounds, row subagentAggregateRow) bool {
+	if bound.excluded[row.id] {
+		return false
+	}
 	position := TimelineCursor{TurnIndex: row.turnIndex, ItemIndex: row.itemIndex}
 	return (bound.lo == nil || !cursorBefore(position, *bound.lo)) &&
 		(bound.hi == nil || cursorBefore(position, *bound.hi))

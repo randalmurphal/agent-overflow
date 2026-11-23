@@ -409,7 +409,7 @@ func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 	if started {
 		// Before the runtime write, whose progress frame carries the
 		// new execution's count.
-		if err := r.startCodexExecutionTools(launch.item, runtime.ChildStartIndex, evt.SessionToken); err != nil {
+		if err := r.startCodexExecutionTools(launch.item, runtime.TurnID, runtime.ChildStartIndex, evt.SessionToken); err != nil {
 			return err
 		}
 	}
@@ -608,7 +608,7 @@ func (r *Router) stampCodexItemBackgrounded(threadID, itemID, sessionToken strin
 	current.Meta = mergeItemMetaJSON(current.Meta, json.RawMessage(fmt.Sprintf(`{"live_background_active":true,"codex_runtime":{"status":"running","startedAt":%d}}`, launch.CreatedAt)))
 	// The first execution's start index is zero until a child status
 	// fences it (observeCodexSubagentStatus).
-	if err := r.startCodexExecutionTools(current, 0, sessionToken); err != nil {
+	if err := r.startCodexExecutionTools(current, "", 0, sessionToken); err != nil {
 		return err
 	}
 	if err := r.setCodexAgentRuntime(current, sessionToken); err != nil {
@@ -697,17 +697,22 @@ func (r *Router) synthesizeCodexBackgroundCompletion(evt provider.ProviderEvent,
 	}
 	if launch.ToolName == "collab_agent" {
 		var bounds struct {
-			Start *int `json:"codex_execution_child_start_index"`
-			End   *int `json:"codex_execution_child_end_index"`
+			Start   *int              `json:"codex_execution_child_start_index"`
+			End     *int              `json:"codex_execution_child_end_index"`
+			Runtime *codexRuntimeMeta `json:"codex_runtime"`
 		}
 		if err := json.Unmarshal([]byte(completion.Meta), &bounds); err != nil {
 			return err
+		}
+		executionTurnID := ""
+		if bounds.Runtime != nil {
+			executionTurnID = strings.TrimSpace(bounds.Runtime.TurnID)
 		}
 		// The tool count is read from the stored rows the card's body
 		// covers, never from the live count (codex_execution_tools.go).
 		var tools int
 		if bounds.Start != nil && bounds.End != nil {
-			completion.Meta, tools, err = r.store.SnapshotSubagentExecutionMeta(evt.ThreadID, launchID, completion.Meta, launch.TurnIndex, *bounds.Start, *bounds.End)
+			completion.Meta, tools, err = r.store.SnapshotSubagentExecutionMeta(evt.ThreadID, launchID, executionTurnID, completion.Meta, launch.TurnIndex, *bounds.Start, *bounds.End)
 			if err != nil {
 				return fmt.Errorf("snapshot Codex completion aggregates: %w", err)
 			}

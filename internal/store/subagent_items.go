@@ -103,6 +103,48 @@ type subagentRoundBounds struct {
 	lo       *TimelineCursor
 	hi       *TimelineCursor
 	round    bool
+	// excluded holds rows inside the bounds that belong to another
+	// execution (otherCodexExecutionRows). They have no rows under them.
+	excluded map[string]bool
+}
+
+// otherCodexExecutionRows returns the rows directly under launchID in an
+// execution's bounds that another execution of the agent started
+// (codexExecutionMemberSQL), nil when there are none.
+func otherCodexExecutionRows(q sqlQueryer, threadID, launchID, executionTurnID string, turnIndex, startIndex, endIndex int) (out map[string]bool, err error) {
+	if executionTurnID == "" {
+		return nil, nil
+	}
+	source, args, err := timelineArms(q, threadID, timelineSelection{
+		Columns:  timelineIDColumns,
+		KeyFirst: true,
+		Where: `items.parent_id <> '' AND items.parent_id = ` + boundText + ` AND items.turn_index = ?
+		   AND items.item_index > ? AND items.item_index <= ? AND NOT ` + codexExecutionMemberSQL("items."),
+		WhereArgs: []any{launchID, turnIndex, startIndex, endIndex, executionTurnID, executionTurnID},
+	})
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query("SELECT id FROM ("+source+")", args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: read other executions' rows of %s/%s: %w", threadID, launchID, err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			out, err = nil, fmt.Errorf("store: close other executions' rows of %s/%s: %w", threadID, launchID, closeErr)
+		}
+	}()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: scan other execution row: %w", err)
+		}
+		if out == nil {
+			out = make(map[string]bool)
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
 }
 
 // descendantsWalk renders the `WITH RECURSIVE rel(root, id)` walk down
@@ -1256,16 +1298,21 @@ func (s *Store) SubagentCompletedChildIndex(threadID, launchID string) (int, err
 // bounds). The caller persists the result on its new completion item only.
 // Child coordinates belong to the original spawn's AO turn. Both are read
 // from one snapshot.
-func (s *Store) SnapshotSubagentExecutionMeta(threadID, launchID, itemMeta string, turnIndex, startIndex, endIndex int) (string, int, error) {
+func (s *Store) SnapshotSubagentExecutionMeta(threadID, launchID, executionTurnID, itemMeta string, turnIndex, startIndex, endIndex int) (string, int, error) {
 	type snapshot struct {
 		meta  string
 		tools int
 	}
 	got, err := readSnapshot(s.reader(), "subagent execution snapshot", func(q sqlQueryer) (snapshot, error) {
+		others, err := otherCodexExecutionRows(q, threadID, launchID, executionTurnID, turnIndex, startIndex, endIndex)
+		if err != nil {
+			return snapshot{}, err
+		}
 		aggregates, err := subagentAggregatesByRound(q, threadID, []string{launchID}, []subagentRoundBounds{{
 			anchorID: launchID, rootID: launchID,
-			lo: &TimelineCursor{TurnIndex: turnIndex, ItemIndex: startIndex + 1},
-			hi: &TimelineCursor{TurnIndex: turnIndex, ItemIndex: endIndex + 1},
+			lo:       &TimelineCursor{TurnIndex: turnIndex, ItemIndex: startIndex + 1},
+			hi:       &TimelineCursor{TurnIndex: turnIndex, ItemIndex: endIndex + 1},
+			excluded: others,
 		}})
 		if err != nil {
 			return snapshot{}, err
@@ -1278,7 +1325,7 @@ func (s *Store) SnapshotSubagentExecutionMeta(threadID, launchID, itemMeta strin
 		if err != nil {
 			return snapshot{}, err
 		}
-		tools, _, err := subagentExecutionToolCalls(q, threadID, launchID, turnIndex, startIndex, int64(endIndex))
+		tools, _, err := subagentExecutionToolCalls(q, threadID, launchID, executionTurnID, turnIndex, startIndex, int64(endIndex))
 		if err != nil {
 			return snapshot{}, err
 		}
@@ -1292,23 +1339,40 @@ func (s *Store) SnapshotSubagentExecutionMeta(threadID, launchID, itemMeta strin
 // still running, and returns the highest counted index (afterIndex when
 // there is none). A count kept live from here adds the rows written after
 // that index.
-func (s *Store) SubagentExecutionToolCallsAfter(threadID, launchID string, turnIndex, afterIndex int) (count, last int, err error) {
-	return subagentExecutionToolCalls(s.reader(), threadID, launchID, turnIndex, afterIndex, math.MaxInt64)
+func (s *Store) SubagentExecutionToolCallsAfter(threadID, launchID, executionTurnID string, turnIndex, afterIndex int) (count, last int, err error) {
+	return subagentExecutionToolCalls(s.reader(), threadID, launchID, executionTurnID, turnIndex, afterIndex, math.MaxInt64)
+}
+
+// CodexExecutionTurnMetaKey names, on a Codex agent's background command
+// and stdin interaction rows, the agent execution (the child turn id) that
+// started the command. The command can exit during a later execution of the
+// same agent; its row sits at that position in the agent's history but is a
+// member only of the execution its tag names (codexExecutionMemberSQL).
+const CodexExecutionTurnMetaKey = "codex_execution_turn_id"
+
+// codexExecutionMemberSQL keeps a row in the Codex execution whose turn id
+// it binds, twice, unless the row is tagged with another execution. An
+// empty turn id (an execution recorded without one) keeps every row in its
+// bounds, as does an untagged row.
+func codexExecutionMemberSQL(alias string) string {
+	return "(? = '' OR COALESCE(" + jsonFieldExpr(alias+"meta", "$."+CodexExecutionTurnMetaKey) + ", '') IN ('', ?))"
 }
 
 // subagentExecutionToolCalls is an execution's tool count: the tool_call
 // rows directly under launchID in turnIndex with item_index in
-// (afterIndex, throughIndex], the rows a Codex completion card's digest
+// (afterIndex, throughIndex] that are members of the execution
+// (codexExecutionMemberSQL), the rows a Codex completion card's digest
 // shows under the same bounds (resolveTimelineDigest). A nested agent's
 // launch is one of them; the rows under it are not. It also returns the
 // highest counted index, or afterIndex when there is none.
-func subagentExecutionToolCalls(q sqlQueryer, threadID, launchID string, turnIndex, afterIndex int, throughIndex int64) (count, last int, err error) {
+func subagentExecutionToolCalls(q sqlQueryer, threadID, launchID, executionTurnID string, turnIndex, afterIndex int, throughIndex int64) (count, last int, err error) {
 	source, args, err := timelineArms(q, threadID, timelineSelection{
 		Columns:  func(string, string) string { return "items.item_index AS item_index" },
 		KeyFirst: true,
 		Where: `items.parent_id <> '' AND items.parent_id = ` + boundText + ` AND items.turn_index = ?
-		   AND items.item_index > ? AND items.item_index <= ? AND items.kind = 'tool_call'`,
-		WhereArgs: []any{launchID, turnIndex, afterIndex, throughIndex},
+		   AND items.item_index > ? AND items.item_index <= ? AND items.kind = 'tool_call'
+		   AND ` + codexExecutionMemberSQL("items."),
+		WhereArgs: []any{launchID, turnIndex, afterIndex, throughIndex, executionTurnID, executionTurnID},
 	})
 	if err != nil {
 		return 0, 0, err

@@ -28,8 +28,9 @@ import (
 // Codex unified exec command executions. Unlike Claude background
 // tasks, these rows are not timeline history while they are live:
 // they first appear only in the running-task tray. Typed item/completed removes
-// the tracker; it persists the normal command row only while a Codex wire round
-// is still active. Empty write_stdin polls update background process state only.
+// the tracker; it persists the normal command row on the agent's turn for an
+// agent's command, and for a top-level one only while a Codex wire round is
+// still active. Empty write_stdin polls update background process state only.
 type unifiedExecTracker struct {
 	backgrounded bool
 	launchID     string
@@ -37,12 +38,17 @@ type unifiedExecTracker struct {
 	command      string
 	summary      string
 	parentID     string
-	status       string
-	exitCode     int
-	meta         json.RawMessage
-	output       cappedCommandOutput
-	createdAt    int64
-	updatedAt    int64
+	// executionTurnID is the agent turn that started an agent's command:
+	// Codex stamps the command's start and its exit with it
+	// (codex_execution_turn_id on the saved rows). Empty for a top-level
+	// command.
+	executionTurnID string
+	status          string
+	exitCode        int
+	meta            json.RawMessage
+	output          cappedCommandOutput
+	createdAt       int64
+	updatedAt       int64
 }
 
 type cappedCommandOutput struct {
@@ -120,6 +126,20 @@ func codexExitCodeFromMeta(raw json.RawMessage) int {
 		return parsed.ExitCode
 	}
 	return parsed.ExitCodeSnake
+}
+
+// withCodexExecutionTurnMeta tags an agent's command or stdin interaction
+// row with the agent execution that started the command, so only that
+// execution's card counts and shows it (store.CodexExecutionTurnMetaKey).
+func withCodexExecutionTurnMeta(meta, turnID string) string {
+	if turnID = strings.TrimSpace(turnID); turnID == "" {
+		return meta
+	}
+	extra, err := json.Marshal(map[string]string{store.CodexExecutionTurnMetaKey: turnID})
+	if err != nil {
+		return meta
+	}
+	return validJSONObjectString(mergeRawJSONObject(json.RawMessage(meta), extra))
 }
 
 func addCodexWaitCarrierMeta(raw json.RawMessage, waitCarrierID string) json.RawMessage {
@@ -312,6 +332,26 @@ func (r *Router) codexTerminalSummaryForProcess(threadID, processID string) stri
 	return tracker.summary
 }
 
+// codexTerminalExecutionTurnForProcess returns the agent execution that
+// started the process's command, empty for a top-level command.
+func (r *Router) codexTerminalExecutionTurnForProcess(threadID, processID string) string {
+	processID = strings.TrimSpace(processID)
+	if processID == "" {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.codexBackgroundIfPresent(threadID)
+	if state == nil {
+		return ""
+	}
+	tracker := codexUnifiedExecTrackerByProcessLocked(state, processID)
+	if tracker == nil {
+		return ""
+	}
+	return tracker.executionTurnID
+}
+
 func (r *Router) codexTerminalCommandForProcess(threadID, processID string) string {
 	processID = strings.TrimSpace(processID)
 	if processID == "" {
@@ -434,10 +474,11 @@ func (r *Router) observeCodexCommandOutput(evt provider.ProviderEvent) bool {
 }
 
 // observeCodexUnifiedExecComplete owns item/completed for tracked unified exec
-// startups. This mirrors Codex TUI: late completions still clear background
-// process state, but chat history only changes while the task indicator is
-// running. TerminalInteraction owns only explicit stdin interaction marker
-// rows.
+// startups. Late completions always clear background process state. A
+// top-level command mirrors Codex TUI: chat history only changes while the task
+// indicator is running. An agent's command is always saved on its agent's turn
+// (persistCodexAgentCommand). TerminalInteraction owns only explicit
+// stdin interaction marker rows.
 func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bool, error) {
 	itemID := strings.TrimSpace(eventItemID(evt))
 	if itemID == "" {
@@ -478,6 +519,9 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 		if evt.Content != "" {
 			live.output.Replace(evt.Content)
 		}
+		if live.parentID != "" && live.executionTurnID == "" {
+			live.executionTurnID = strings.TrimSpace(evt.TurnID)
+		}
 		tracker = *live
 		removeCodexUnifiedExecTrackerLocked(state, live)
 	}
@@ -486,14 +530,41 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 		return false, nil
 	}
 	r.emitCodexBackgroundChanged(evt.ThreadID)
+	item := r.codexUnifiedExecCommandItem(evt, tracker)
+	if item.ParentID != "" {
+		return true, r.persistCodexAgentCommand(evt, item, tracker)
+	}
+	// A top-level command follows Codex TUI: it becomes history only while
+	// the root's round is running.
 	turnIndex, ok := r.activeRoundTurnIndex(evt.ThreadID)
 	if !ok {
 		return true, nil
 	}
-	return true, r.persistCodexUnifiedExecCommand(evt, tracker, turnIndex)
+	item.TurnIndex = turnIndex
+	return true, r.persistCodexUnifiedExecCommand(evt, item, tracker)
 }
 
-func (r *Router) persistCodexUnifiedExecCommand(evt provider.ProviderEvent, tracker unifiedExecTracker, turnIndex int) error {
+// persistCodexAgentCommand saves an agent's completed command under the
+// agent, in the agent's turn, whether or not the root is running: the root's
+// later round is not the agent's history, and reverting it must not delete
+// the agent's command. A cut that removed the agent writes nothing
+// (persistItemUnderScope). The row carries the agent execution that started
+// it, so only that execution's card counts it.
+func (r *Router) persistCodexAgentCommand(evt provider.ProviderEvent, item store.Item, tracker unifiedExecTracker) error {
+	item.Meta = withCodexExecutionTurnMeta(item.Meta, tracker.executionTurnID)
+	output := tracker.output.String()
+	if output == "" {
+		_, _, err := r.persistItemUnderScope(item, nil)
+		return err
+	}
+	outputEvt := evt
+	outputEvt.Content = output
+	item, payload := withWholePayload(item, outputEvt, "command_output", AttachedPayloadID("command_output", item.ID), item.Summary)
+	_, _, err := r.persistItemUnderScope(item, &payload)
+	return err
+}
+
+func (r *Router) codexUnifiedExecCommandItem(evt provider.ProviderEvent, tracker unifiedExecTracker) store.Item {
 	meta := DecodeToolStartMeta(evt.Meta)
 	summary := BuildToolCallSummary(meta, evt.ItemType)
 	if strings.TrimSpace(summary) == "" {
@@ -503,7 +574,6 @@ func (r *Router) persistCodexUnifiedExecCommand(evt provider.ProviderEvent, trac
 	item := store.Item{
 		ID:        tracker.launchID,
 		ThreadID:  evt.ThreadID,
-		TurnIndex: turnIndex,
 		Kind:      itemKindToolCall,
 		Role:      "assistant",
 		Status:    tracker.status,
@@ -517,6 +587,10 @@ func (r *Router) persistCodexUnifiedExecCommand(evt provider.ProviderEvent, trac
 	if item.CreatedAt == 0 {
 		item.CreatedAt = now
 	}
+	return item
+}
+
+func (r *Router) persistCodexUnifiedExecCommand(evt provider.ProviderEvent, item store.Item, tracker unifiedExecTracker) error {
 	output := tracker.output.String()
 	if output == "" {
 		return r.persistItem(item, nil)

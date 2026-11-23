@@ -661,8 +661,9 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// visible terminal-wait carriers and drops pending spawn-agent starts that
 	// never reached a terminal spawn completion. UnifiedExec trackers stay
 	// transient after turn close because Codex `Op::Interrupt` does not kill
-	// the PTY; typed item/completed later clears the live tracker, and only
-	// persists transcript history if a Codex wire round is active at that time.
+	// the PTY; typed item/completed later clears the live tracker, and persists
+	// a top-level command's history only if a Codex wire round is active at
+	// that time (an agent's command always lands on the agent's turn).
 	if persistErr == nil && err == nil {
 		r.observeCodexTurnComplete(evt.ThreadID)
 	}

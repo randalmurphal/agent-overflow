@@ -28,8 +28,9 @@ import (
 // and spawn_agent starts in transient state. A unifiedExec is shown in
 // the running-task tray immediately, but it only becomes a background
 // task when a typed trigger proves the model explicitly waited on it.
-// Command completion transcript history comes from typed item/completed only
-// while a Codex wire round is active, matching Codex TUI timing;
+// Command completion transcript history comes from typed item/completed: on
+// the agent's turn for an agent's command, and for a top-level one only while
+// a Codex wire round is active, matching Codex TUI timing;
 // non-empty terminal input owns interaction marker rows. A spawn_agent start
 // becomes transcript history only when Codex emits the terminal spawn
 // completion.
@@ -43,9 +44,10 @@ import (
 //
 // Claude's handleBackgroundTaskTerminal remains the shape-of-truth for
 // persisted completion sibling rows. Codex unifiedExec intentionally
-// diverges: typed command item/completed owns the command row itself while a
-// Codex wire round is active, while TerminalInteraction persists only the
-// separate input interaction marker rows.
+// diverges: typed command item/completed owns the command row itself (a
+// top-level one only while a Codex wire round is active), while
+// TerminalInteraction persists only the separate input interaction marker
+// rows.
 //
 // This file holds what the two halves SHARE: the per-thread correlation state,
 // its constructor and accessor, the tray-changed emit, and the two
@@ -80,8 +82,8 @@ type BackgroundTasksChangedEvent struct {
 type codexBackgroundState struct {
 	// unifiedExec maps launchID → tracker for inProgress unifiedExec
 	// command_execution items. Typed item/completed removes the tracker and
-	// persists the command row only when the frontend-visible Codex task is
-	// still running.
+	// persists the command row: an agent's under the agent, a top-level one
+	// only when the frontend-visible Codex task is still running.
 	unifiedExec map[string]*unifiedExecTracker
 	// unifiedExecByProcess maps process_id → launchID so
 	// TerminalInteraction events can correlate input marker rows without
@@ -218,7 +220,7 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 		if strings.TrimSpace(summary) == "" {
 			summary = "Bash"
 		}
-		state.unifiedExec[itemID] = &unifiedExecTracker{
+		tracker := &unifiedExecTracker{
 			launchID:  itemID,
 			processID: meta.ProcessID,
 			command:   codexCommandFromMeta(evt.Meta),
@@ -229,6 +231,10 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 			createdAt: now,
 			updatedAt: now,
 		}
+		if tracker.parentID != "" {
+			tracker.executionTurnID = strings.TrimSpace(evt.TurnID)
+		}
+		state.unifiedExec[itemID] = tracker
 		if meta.ProcessID != "" {
 			state.unifiedExecByProcess[meta.ProcessID] = itemID
 		}
