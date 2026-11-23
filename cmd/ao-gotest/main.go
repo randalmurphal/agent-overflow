@@ -1002,13 +1002,19 @@ func exitStatus(command *exec.Cmd, err error) int {
 	if err == nil {
 		return 0
 	}
-	if status, ok := command.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-		return 128 + int(status.Signal())
-	}
-	if code := command.ProcessState.ExitCode(); code > 0 {
-		return code
+	if status, ok := command.ProcessState.Sys().(syscall.WaitStatus); ok && waitedStatus(status) > 0 {
+		return waitedStatus(status)
 	}
 	return 1
+}
+
+// waitedStatus is the status a shell gives a process that ended as status
+// says: its exit code, or 128 and the signal that ended it.
+func waitedStatus(status syscall.WaitStatus) int {
+	if status.Signaled() {
+		return 128 + int(status.Signal())
+	}
+	return status.ExitStatus()
 }
 
 // lineWriter passes whole lines to w under out, holding back a partial one.

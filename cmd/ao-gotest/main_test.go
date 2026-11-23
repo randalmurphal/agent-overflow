@@ -50,6 +50,9 @@ const (
 	// directory it names, and childIgnoreEnv makes it ignore SIGTERM.
 	childEnv       = "AO_GOTEST_CHILD"
 	childIgnoreEnv = "AO_GOTEST_CHILD_IGNORE"
+	// fakeOrphanEnv makes every run but the list step orphan a process
+	// that exits soon after, and fail unless it is gone within 10 s.
+	fakeOrphanEnv = "AO_GOTEST_FAKE_ORPHAN"
 	// graceEnv sets a leader's endGrace.
 	graceEnv = "AO_GOTEST_GRACE"
 	// proxyEnv makes the binary the go command it names, after the first
@@ -168,6 +171,12 @@ func fakeGo(log string, args []string) int {
 			return 9
 		}
 	}
+	if os.Getenv(fakeOrphanEnv) != "" {
+		if err := orphanAndWait(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 9
+		}
+	}
 	if os.Getenv(fakeHoldEnv) != "" {
 		signals := make(chan os.Signal, 1)
 		signal.Notify(signals, syscall.SIGTERM)
@@ -223,6 +232,29 @@ func startChildren(dir string) error {
 			}
 			time.Sleep(5 * time.Millisecond)
 		}
+	}
+	return nil
+}
+
+// orphanAndWait starts a shell that starts a process and exits, so the
+// process comes to the nearest subreaper, and waits for the process to be
+// gone once it exits, as a test that ends a process group checks.
+func orphanAndWait() error {
+	out, err := exec.Command("sh", "-c", "sleep 0.05 & echo $!").Output()
+	if err != nil {
+		return fmt.Errorf("orphan a process: %w", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return fmt.Errorf("orphan a process: %w", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+		if time.Now().After(deadline) {
+			status, _ := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+			return fmt.Errorf("the orphaned process %d is still there 10 s after it was to exit: %s", pid, status)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	return nil
 }
@@ -851,6 +883,22 @@ func TestAGoTestThatLeavesProcessesHasThemEndedAndNamed(t *testing.T) {
 	checkChildrenGone(t, kids, childrenPerRun(), false)
 	if out := stderr.String(); !strings.Contains(out, "ao-gotest: the go test left ") || !strings.Contains(out, "which were ended: ") {
 		t.Fatalf("stderr:\n%s\nwant the processes it left named", out)
+	}
+}
+
+// TestAProcessOrphanedDuringARunIsGoneOnceItExits runs a go test that
+// orphans a process and waits for it to be gone. On Linux the process
+// comes to the leader, the subreaper of the tree, which must wait for it
+// as it exits: a zombie is still found by kill(pid, 0) and by a check that
+// its group has ended, as a provider's Close makes.
+func TestAProcessOrphanedDuringARunIsGoneOnceItExits(t *testing.T) {
+	r, _, stderr, _ := fakeRunner(t, fakeOrphanEnv+"=1")
+	inv, err := parseArgs([]string{"go", "test", "example/whole"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := r.run(plan(inv, nil, []string{"example/whole"}, t.TempDir()), 1); status != 0 {
+		t.Fatalf("status %d; want the go test's 0\nstderr:\n%s", status, stderr.String())
 	}
 }
 

@@ -33,7 +33,7 @@ var endGrace = 5 * time.Second
 // The `go test` leads a process group of its own, which every signal the
 // leader receives goes to. On Linux the leader is also the subreaper of
 // the tree, so a process whose parent exits comes to it, whatever its
-// group. The leader reads lifeline, a pipe whose other end only the
+// group, and is waited for as it exits (reapUntil). The leader reads lifeline, a pipe whose other end only the
 // launcher holds, so the read ends when the launcher exits, however it
 // exits, and the leader then ends the tree as for SIGTERM. Once the `go
 // test` has exited, endTree ends what is left and waits for it; what was
@@ -62,8 +62,15 @@ func lead(argv []string, lifeline io.Reader, stderr io.Writer) int {
 		_, _ = io.Copy(io.Discard, lifeline)
 		signals <- syscall.SIGTERM
 	}()
-	exited := make(chan error, 1)
-	go func() { exited <- command.Wait() }()
+	type waited struct {
+		status syscall.WaitStatus
+		err    error
+	}
+	exited := make(chan waited, 1)
+	go func() {
+		status, err := reapUntil(group)
+		exited <- waited{status, err}
+	}()
 	stopped := false
 	for {
 		select {
@@ -72,8 +79,12 @@ func lead(argv []string, lifeline io.Reader, stderr io.Writer) int {
 			if err := syscall.Kill(-group, sig.(syscall.Signal)); err != nil && !errors.Is(err, syscall.ESRCH) {
 				fmt.Fprintf(stderr, "ao-gotest: pass %v to the processes of a go test: %v\n", sig, err)
 			}
-		case err := <-exited:
-			status := exitStatus(command, err)
+		case w := <-exited:
+			status := waitedStatus(w.status)
+			if w.err != nil {
+				fmt.Fprintln(stderr, "ao-gotest:", w.err)
+				status = 1
+			}
 			left, endErr := endTree(group, endGrace)
 			if endErr != nil {
 				fmt.Fprintln(stderr, "ao-gotest: end the processes a go test left:", endErr)
@@ -83,6 +94,27 @@ func lead(argv []string, lifeline io.Reader, stderr io.Writer) int {
 				fmt.Fprintf(stderr, "ao-gotest: the go test left %d processes running, which were ended: %s\n", len(left), strings.Join(left, "; "))
 			}
 			return status
+		}
+	}
+}
+
+// reapUntil waits for each child of this process as it exits until pid
+// does, and returns how pid ended. On Linux the leader is the subreaper of
+// its tree, so a process whose parent exits comes to it; until it is
+// waited for, it stays a zombie, which kill(pid, 0) and a test's check that
+// a process group has ended still find. The go test is waited for here and
+// not through exec.Cmd.Wait, which a wait for any child could take its
+// status from. endTree waits for the rest once pid has exited.
+func reapUntil(pid int) (syscall.WaitStatus, error) {
+	for {
+		var status syscall.WaitStatus
+		got, err := syscall.Wait4(-1, &status, 0, nil)
+		switch {
+		case errors.Is(err, syscall.EINTR):
+		case err != nil:
+			return 0, fmt.Errorf("wait for the go test (pid %d): %w", pid, err)
+		case got == pid:
+			return status, nil
 		}
 	}
 }
