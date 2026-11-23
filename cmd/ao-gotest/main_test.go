@@ -53,6 +53,9 @@ const (
 	// fakeOrphanEnv makes every run but the list step orphan a process
 	// that exits soon after, and fail unless it is gone within 10 s.
 	fakeOrphanEnv = "AO_GOTEST_FAKE_ORPHAN"
+	// standInsEnv names the directory that ties a test's stand-ins to it
+	// (tieStandIns).
+	standInsEnv = "AO_GOTEST_STAND_INS"
 	// graceEnv sets a leader's endGrace.
 	graceEnv = "AO_GOTEST_GRACE"
 	// proxyEnv makes the binary the go command it names, after the first
@@ -128,6 +131,9 @@ func runNames(pattern string) []string {
 }
 
 func fakeGo(log string, args []string) int {
+	if ended := standIn(); ended {
+		return 9
+	}
 	if err := appendLog(log, "go "+strings.Join(args, " ")+"|"+os.Getenv(markEnv)); err != nil {
 		return 9
 	}
@@ -184,7 +190,10 @@ func fakeGo(log string, args []string) int {
 		if err := appendLog(log, "held "+name); err != nil {
 			return 9
 		}
-		sig := <-signals
+		sig, ok := nextSignal(signals)
+		if !ok {
+			return 9
+		}
 		fmt.Println("got", sig, name)
 		if err := appendLog(log, "ended "+name); err != nil {
 			return 9
@@ -265,11 +274,17 @@ func orphanAndWait() error {
 func fakeChild(dir string) int {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM)
+	if ended := standIn(); ended {
+		return 9
+	}
 	marker := filepath.Join(dir, strconv.Itoa(os.Getpid()))
 	if err := os.WriteFile(marker+".started", nil, 0o600); err != nil {
 		return 9
 	}
-	for range signals {
+	for {
+		if _, ok := nextSignal(signals); !ok {
+			return 9
+		}
 		if os.Getenv(childIgnoreEnv) == "" {
 			break
 		}
@@ -279,6 +294,143 @@ func fakeChild(dir string) int {
 		return 9
 	}
 	return 128 + int(syscall.SIGTERM)
+}
+
+// tieStandIns ties the stand-ins that runs in t start, the fake go command
+// and its children, to t, and returns the directory to name in
+// standInsEnv. Each stand-in records its pid and its parent's there as it
+// starts (standIn), and t holds a lock on a file there until it ends. A
+// stand-in ends once it can take the lock, which t's cleanup frees, as the
+// kernel does when the test binary dies however it dies, and one that
+// starts after that ends at once. The cleanup then fails t with any stand-in
+// or parent of one still running, and kills it.
+func tieStandIns(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	lock, err := os.Create(filepath.Join(dir, standInLock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := lock.Close(); err != nil {
+			t.Errorf("free the stand-ins' lock: %v", err)
+		}
+		endStandIns(t, dir)
+	})
+	return dir
+}
+
+// standInLock is the file in a tieStandIns directory that the test locks.
+const standInLock = "test"
+
+// standInGrace is how long the stand-ins of a test that ended have to be
+// gone before endStandIns kills them.
+const standInGrace = 10 * time.Second
+
+// standIn records this process in the standInsEnv directory, if there is
+// one, and reports whether the test it stands in for has ended.
+func standIn() (ended bool) {
+	dir := os.Getenv(standInsEnv)
+	if dir == "" {
+		return false
+	}
+	if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(os.Getpid())), []byte(strconv.Itoa(os.Getppid())), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, "record a stand-in:", err)
+		return true
+	}
+	return testEnded(dir)
+}
+
+// testEnded reports whether the test that tied this stand-in to it has
+// ended: its lock on dir's file is free, or the file is gone.
+func testEnded(dir string) bool {
+	lock, err := os.Open(filepath.Join(dir, standInLock))
+	if err != nil {
+		return true
+	}
+	defer lock.Close()
+	return syscall.Flock(int(lock.Fd()), syscall.LOCK_SH|syscall.LOCK_NB) == nil
+}
+
+// nextSignal waits for a signal on signals, and reports false instead once
+// the test this stand-in is tied to has ended.
+func nextSignal(signals <-chan os.Signal) (os.Signal, bool) {
+	dir := os.Getenv(standInsEnv)
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case sig := <-signals:
+			return sig, true
+		case <-tick.C:
+			if dir != "" && testEnded(dir) {
+				return nil, false
+			}
+		}
+	}
+}
+
+// endStandIns waits for every stand-in recorded in dir, and the parent of
+// each, to be gone, and fails t with those still running after
+// standInGrace, which it kills.
+func endStandIns(t *testing.T, dir string) {
+	t.Helper()
+	deadline := time.Now().Add(standInGrace)
+	for {
+		left := standInsRunning(t, dir)
+		if len(left) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("processes the test's runs started are still running %v after it ended, and are killed: %v", standInGrace, left)
+			for _, pid := range left {
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+			deadline = time.Now().Add(standInGrace)
+			for len(standInsRunning(t, dir)) > 0 {
+				if time.Now().After(deadline) {
+					t.Errorf("processes the test's runs started outlived SIGKILL: %v", standInsRunning(t, dir))
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// standInsRunning lists the stand-ins recorded in dir and their parents
+// that are still running, the test binary aside.
+func standInsRunning(t *testing.T, dir string) []int {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[int]bool{os.Getpid(): true, 1: true}
+	var running []int
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		parent, err := strconv.Atoi(readFile(t, filepath.Join(dir, entry.Name())))
+		if err != nil {
+			t.Fatalf("stand-in %d recorded its parent as %v", pid, err)
+		}
+		for _, p := range []int{pid, parent} {
+			if !seen[p] && syscall.Kill(p, 0) == nil {
+				running = append(running, p)
+			}
+			seen[p] = true
+		}
+	}
+	return running
 }
 
 // recorded reads what the children recorded in dir: each one's pid, and
@@ -604,6 +756,7 @@ func fakeRunner(t *testing.T, env ...string) (r *runner, stdout, stderr *lockedW
 		name, value, _ := strings.Cut(kv, "=")
 		t.Setenv(name, value)
 	}
+	t.Setenv(standInsEnv, tieStandIns(t))
 	stdout, stderr = &lockedWriter{}, &lockedWriter{}
 	r = must(newRunner(os.Args[0], stdout, stderr))
 	t.Cleanup(r.close)
@@ -921,7 +1074,7 @@ func commandEnv(t *testing.T, gotmp string, args ...string) *exec.Cmd {
 		}
 		return false
 	}), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "HOME="+t.TempDir(), "GOENV=off",
-		"GOTMPDIR="+gotmp, "TMPDIR="+t.TempDir(), mainEnv+"=1", markEnv+"=kept")
+		"GOTMPDIR="+gotmp, "TMPDIR="+t.TempDir(), mainEnv+"=1", markEnv+"=kept", standInsEnv+"="+tieStandIns(t))
 	return command
 }
 
@@ -1027,8 +1180,15 @@ func TestARunThatIsSignaledOrKilledEndsEveryProcessOfIt(t *testing.T) {
 			if err := command.Start(); err != nil {
 				t.Fatal(err)
 			}
-			exited := make(chan error, 1)
-			go func() { exited <- command.Wait() }()
+			var waitErr error
+			exited := make(chan struct{})
+			go func() { waitErr = command.Wait(); close(exited) }()
+			// However the test ends, the command is gone before its
+			// stand-ins are checked.
+			t.Cleanup(func() {
+				_ = command.Process.Kill()
+				<-exited
+			})
 			// The run is admitted at least one bucket; each that starts holds.
 			deadline := time.Now().Add(time.Minute)
 			for strings.Count(readFile(t, log), "held ") < 1 {
@@ -1042,7 +1202,8 @@ func TestARunThatIsSignaledOrKilledEndsEveryProcessOfIt(t *testing.T) {
 			}
 			var err error
 			select {
-			case err = <-exited:
+			case <-exited:
+				err = waitErr
 			case <-time.After(time.Minute):
 				t.Fatalf("the command did not end after %v\n%s", sig, out.String())
 			}
