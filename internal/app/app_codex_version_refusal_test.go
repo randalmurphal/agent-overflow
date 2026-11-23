@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil"
@@ -24,7 +26,7 @@ import (
 // way an update does. Each app-server launch appends its pid and arguments
 // to launchLog; a `--version` probe prints firstVersion and is not counted. The first
 // launch reports firstVersion at initialize and every later launch reports
-// laterVersion. With unsubscribeFails, `thread/unsubscribe` answers an
+// laterVersion. `model/list` offers gpt-5.5. With unsubscribeFails, `thread/unsubscribe` answers an
 // error, which keeps the thread loaded on the shared app-server and sends
 // the next resume to a dedicated process.
 type versionedCodex struct {
@@ -68,6 +70,8 @@ while IFS= read -r line; do
     printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"` + c.providerThreadIDs + `"}}}\n' "$id"
   elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/unsubscribe"'; then
     ` + unsubscribe + `
+  elif /bin/echo "$line" | /usr/bin/grep -q '"method":"model/list"'; then
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"model":"gpt-5.5","displayName":"GPT-5.5","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high"}],"nextCursor":null}}\n' "$id"
   elif /bin/echo "$line" | /usr/bin/grep -q '"method":"skills/list"'; then
     printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[]}}\n' "$id"
   else
@@ -339,5 +343,87 @@ func TestCodexVersionRefusalOnAutoReconnect(t *testing.T) {
 	requireCodexVersionRefusal(t, app.StartSession(thread.ID), wantCodexVersionMessage(fake.path, "0.153.0"))
 	if n := len(fake.launches(t)); n != 3 {
 		t.Fatalf("launches = %d after a later start, want 3", n)
+	}
+}
+
+// useCodexCatalog gives f's app the real Codex model catalog, which reads
+// `model/list` from the configured binary, over the isolation's disabled one.
+func useCodexCatalog(f *requestFixture) {
+	f.app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, nil, nil)
+}
+
+// spawnCodexAnswer calls thread_spawn for a Codex thread the way an agent
+// does and returns what the agent reads: the refusal's text.
+func spawnCodexAnswer(t *testing.T, f *requestFixture) string {
+	t.Helper()
+	answer, err := f.app.threadToolsServer().Call(t.Context(), f.callerIdentity(), "thread_spawn",
+		json.RawMessage(`{"prompt":"work","provider":"codex"}`))
+	if err == nil {
+		t.Fatalf("thread_spawn on a refused Codex answered %+v, want a refusal", answer)
+	}
+	_, message, ok := errorsx.PublicDetails(err)
+	if !ok {
+		t.Fatalf("thread_spawn refused with %v, which has no message for the agent", err)
+	}
+	return message
+}
+
+// An agent spawning a Codex thread while the model catalog is cold reaches
+// Codex first through the catalog's handshake. The refusal there is the
+// spawn's answer, not "Codex does not run on this computer", and no thread
+// is created.
+func TestCodexVersionRefusalAnswersAColdCatalogSpawn(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	useCodexCatalog(f)
+	fake := newVersionedCodex(t, "0.153.4")
+	fake.write(t)
+	if _, err := f.app.settings.Update(map[string]any{"codexBinaryPath": fake.path}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := f.app.store.ListThreads()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := spawnCodexAnswer(t, f)
+
+	if want := wantCodexVersionMessage(fake.path, "0.153.4"); !strings.Contains(got, want) {
+		t.Fatalf("thread_spawn answered %q, want it to carry %q", got, want)
+	}
+	if strings.Contains(got, "does not run") {
+		t.Fatalf("thread_spawn answered %q, which hides the refusal", got)
+	}
+	after, err := f.app.store.ListThreads()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("threads = %d after a refused spawn, want %d", len(after), len(before))
+	}
+}
+
+// With the catalog read from a supported Codex, a spawn creates the thread
+// and its start meets the refusal. The answer carries the refusal and says
+// the thread was created and its prompt did not run, so the agent sends the
+// prompt there instead of spawning again.
+func TestCodexVersionRefusalAnswersASpawnWhoseStartIsRefused(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	useCodexCatalog(f)
+	fake := newVersionedCodex(t, provider.MinimumCodexCLIVersion)
+	fake.laterVersion = "0.153.4"
+	fake.write(t)
+	if _, err := f.app.settings.Update(map[string]any{"codexBinaryPath": fake.path}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := spawnCodexAnswer(t, f)
+
+	if want := wantCodexVersionMessage(fake.path, "0.153.4"); !strings.Contains(got, want) {
+		t.Fatalf("thread_spawn answered %q, want it to carry %q", got, want)
+	}
+	if !strings.Contains(got, "was created for it and its prompt did not run") {
+		t.Fatalf("thread_spawn answered %q, want it to name the created thread", got)
 	}
 }

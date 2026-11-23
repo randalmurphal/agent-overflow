@@ -557,6 +557,10 @@ type ProviderOption struct {
 	Name         string        `json:"name,omitempty"`
 	DefaultModel string        `json:"default_model,omitempty"`
 	Models       []ModelOption `json:"models"`
+	// Unavailable is why the provider, installed here, runs nothing, such as
+	// Codex's refusal of a version below the minimum. A spawn on it is
+	// refused with this text.
+	Unavailable string `json:"unavailable,omitempty"`
 	// Unlisted are the models the provider no longer offers a new thread
 	// but still runs for one already on them, such as a spawner's own.
 	// The computer that has them resolves with them; they are never

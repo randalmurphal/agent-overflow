@@ -553,9 +553,14 @@ func (t threadToolsApp) Catalog(ctx context.Context, q threadtools.CatalogQuery)
 			// A provider whose catalog probe failed is still installed;
 			// dropping it would read as "this computer has no Codex".
 			// The entry stands with an empty model list, which is what
-			// the renderer reports, and the cause is logged here.
+			// the renderer reports, and the cause is logged here. A cause
+			// written for the person, such as Codex's version refusal, is
+			// what a spawn on it answers.
 			log.Printf("thread tools: model catalog for %s: %v", name, err)
 			option = threadtools.ProviderOption{ID: name, Name: threadToolsProviderName(name), Models: []threadtools.ModelOption{}}
+			if _, message, ok := errorsx.PublicDetails(err); ok {
+				option.Unavailable = message
+			}
 		}
 		catalog.Providers = append(catalog.Providers, option)
 	}

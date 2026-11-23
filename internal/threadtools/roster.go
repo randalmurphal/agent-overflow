@@ -133,6 +133,9 @@ func ResolveSpawn(spawner SpawnDefaults, choice SpawnChoice, catalog []ProviderO
 	resolved := ResolvedSpawn{Provider: choice.runsOn(spawner), Effort: choice.Effort}
 	inherits := resolved.Provider == spawner.Provider
 	index := slices.IndexFunc(catalog, func(candidate ProviderOption) bool { return candidate.ID == resolved.Provider })
+	if index >= 0 && catalog[index].Unavailable != "" {
+		return resolved, &SpawnRefusal{Missing: true, Reason: catalog[index].Unavailable}
+	}
 	if index < 0 || len(catalog[index].Models) == 0 {
 		return resolved, &SpawnRefusal{Missing: true, Reason: fmt.Sprintf("%s does not run on %s.", providerLabel(resolved.Provider), where)}
 	}
