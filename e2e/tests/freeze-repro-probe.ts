@@ -16,12 +16,8 @@
 //     svelte flush caps and the fork watchdog are both designed to) hands the
 //     profile over the moment it does — but a wedge that never clears never
 //     answers, so its deadline is a bound, not a wait.
-//   - `Debugger.pause` rides the V8 interrupt path and CAN break into a
-//     spinning JS loop — but only once the Debugger domain is live, and
-//     `Debugger.enable` is itself main-thread-answered. Enabling it on demand
-//     was measured hanging with everything else (observed 2026-08-10: a wedge
-//     that outlived a 10-minute Profiler.stop and a 5s Debugger.enable),
-//     so the domain is enabled up front instead.
+//   - `Debugger.pause` CAN break into a wedged thread, but only on a session
+//     armed while the page still answered (src/page-stall.ts).
 //
 // Enabling the Debugger domain for the whole replay costs some V8 optimization
 // and is a deliberate trade: on a permanent wedge it is the only channel that
@@ -31,25 +27,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { BrowserContext, CDPSession, Page } from '@playwright/test';
+import { armDebugger, pauseAndReadStack, withDeadline, type ArmedDebugger, type StackFrame } from '../src/page-stall.js';
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-/** Reject rather than hang forever when the renderer never answers. */
-function withDeadline<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms}ms`)), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err instanceof Error ? err : new Error(String(err)));
-      },
-    );
-  });
-}
 
 export interface WedgeInfo {
   /** Milliseconds since the last probe came back, at detection time. */
@@ -198,10 +178,8 @@ export function captureConsole(page: Page, cap = 5000): string[] {
 export interface CaptureSessions {
   /** Sampling profiler, running from before the first live turn. */
   profiler: CDPSession;
-  /** Debugger domain, enabled up front so `pause` can interrupt a wedge. */
-  debug: CDPSession;
-  /** scriptId → url, accumulated from Debugger.scriptParsed. */
-  scripts: Map<string, string>;
+  /** Debugger domain, armed up front so `pause` can interrupt a wedge. */
+  debug: ArmedDebugger;
 }
 
 /**
@@ -222,71 +200,14 @@ export async function startCaptureSessions(
   await profiler.send('Profiler.setSamplingInterval', { interval: samplingIntervalUs });
   await profiler.send('Profiler.start');
 
-  const debug = await context.newCDPSession(page);
-  // `Debugger.paused` call frames carry a scriptId, not always a url. Collect
-  // the mapping as scripts load so a captured frame names its bundle.
-  const scripts = new Map<string, string>();
-  debug.on('Debugger.scriptParsed', (event: unknown) => {
-    const parsed = event as { scriptId?: string; url?: string };
-    if (parsed.scriptId) scripts.set(parsed.scriptId, parsed.url ?? '');
-  });
-  await debug.send('Debugger.enable');
-  return { profiler, debug, scripts };
-}
-
-interface CallFrame {
-  functionName: string;
-  url: string;
-  scriptId: string;
-  lineNumber: number;
-  columnNumber?: number;
-  /**
-   * The bundle text around the frame's position. Production bundles are
-   * minified, so `xY @ index-abc.js:50` alone names nothing — the surrounding
-   * source is what makes a captured stack actionable.
-   */
-  source?: string;
-}
-
-/**
- * A bounded slice of a script around one position. Fetching the script is only
- * possible while the inspector is servicing us (i.e. while paused), so this
- * runs inside the pause window and caches per script.
- */
-async function sourceAround(
-  session: CDPSession,
-  cache: Map<string, string[]>,
-  scriptId: string,
-  lineNumber: number,
-  columnNumber: number,
-  radius = 160,
-): Promise<string | undefined> {
-  try {
-    let lines = cache.get(scriptId);
-    if (!lines) {
-      const result = (await withDeadline(
-        session.send('Debugger.getScriptSource', { scriptId }),
-        10_000,
-        'Debugger.getScriptSource',
-      )) as { scriptSource: string };
-      lines = result.scriptSource.split('\n');
-      cache.set(scriptId, lines);
-    }
-    const line = lines[lineNumber];
-    if (line === undefined) return undefined;
-    const from = Math.max(0, columnNumber - radius);
-    return `${from > 0 ? '…' : ''}${line.slice(from, columnNumber + radius)}${
-      columnNumber + radius < line.length ? '…' : ''
-    }`;
-  } catch {
-    return undefined;
-  }
+  const debug = await armDebugger(await context.newCDPSession(page));
+  return { profiler, debug };
 }
 
 interface StackSample {
   sample: number;
   at: number;
-  callFrames?: CallFrame[];
+  callFrames?: StackFrame[];
   error?: string;
   /**
    * Why this sample's `Debugger.resume` failed, when it did.
@@ -299,23 +220,9 @@ interface StackSample {
   resumeError?: string;
 }
 
-/**
- * Pause the renderer through the V8 interrupt path and read the paused stack,
- * a few times, resuming between samples. Runs on its own CDP session so it is
- * never queued behind the profiler's main-thread-answered commands.
- */
-interface WirePausedFrame {
-  functionName: string;
-  url?: string;
-  location: { scriptId: string; lineNumber: number; columnNumber?: number };
-}
-
-/** Frames deep enough to be caller context rather than the spin itself. */
-const SOURCE_SNIPPET_FRAMES = 8;
-
+/** Pause the renderer a few times, resuming between samples. */
 async function collectPausedStacks(
-  session: CDPSession,
-  scripts: Map<string, string>,
+  armed: ArmedDebugger,
   samples: number,
   spacingMs: number,
   deadlineMs: number,
@@ -323,55 +230,17 @@ async function collectPausedStacks(
   const out: StackSample[] = [];
   const sourceCache = new Map<string, string[]>();
   for (let i = 0; i < samples; i += 1) {
-    try {
-      // Register the listener before the command: a wedged thread can deliver
-      // `paused` the instant the interrupt lands.
-      const paused = new Promise<{ callFrames: WirePausedFrame[] }>((resolve, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error(`Debugger.paused not delivered within ${deadlineMs}ms`)),
-          deadlineMs,
-        );
-        session.once('Debugger.paused', (event: unknown) => {
-          clearTimeout(timer);
-          resolve(event as { callFrames: WirePausedFrame[] });
-        });
-      });
-      await withDeadline(session.send('Debugger.pause'), deadlineMs, 'Debugger.pause');
-      const event = await paused;
-
-      const callFrames: CallFrame[] = [];
-      for (const [depth, frame] of event.callFrames.entries()) {
-        const columnNumber = frame.location.columnNumber ?? 0;
-        callFrames.push({
-          functionName: frame.functionName || '(anonymous)',
-          url: frame.url || scripts.get(frame.location.scriptId) || '',
-          scriptId: frame.location.scriptId,
-          lineNumber: frame.location.lineNumber,
-          columnNumber,
-          // Still paused here, so the inspector answers.
-          source:
-            depth < SOURCE_SNIPPET_FRAMES
-              ? await sourceAround(
-                  session,
-                  sourceCache,
-                  frame.location.scriptId,
-                  frame.location.lineNumber,
-                  columnNumber,
-                )
-              : undefined,
-        });
-      }
-      const stack: StackSample = { sample: i, at: Date.now(), callFrames };
-      out.push(stack);
-
-      try {
-        await withDeadline(session.send('Debugger.resume'), deadlineMs, 'Debugger.resume');
-      } catch (err) {
-        stack.resumeError = err instanceof Error ? err.message : String(err);
-      }
-    } catch (err) {
-      out.push({ sample: i, at: Date.now(), error: String(err) });
-    }
+    const stack = await pauseAndReadStack(armed, {
+      pauseMs: deadlineMs,
+      sourceMs: 10_000,
+      resumeMs: deadlineMs,
+      sourceCache,
+    });
+    out.push(
+      stack.paused
+        ? { sample: i, at: Date.now(), callFrames: stack.frames, resumeError: stack.resumeError }
+        : { sample: i, at: Date.now(), error: stack.error },
+    );
     await sleep(spacingMs);
   }
   // The session belongs to the caller (armed up front); leave it attached.
@@ -441,7 +310,7 @@ export async function captureWedgeEvidence(opts: {
   // that may never answer must not sit in front of the interrupt-path pause,
   // and vice versa.
   const [pausedStacks] = await Promise.all([
-    collectPausedStacks(opts.sessions.debug, opts.sessions.scripts, 4, 700, 5_000),
+    collectPausedStacks(opts.sessions.debug, 4, 700, 5_000),
     (async () => {
       try {
         const stopped = (await withDeadline(

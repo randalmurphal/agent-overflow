@@ -110,6 +110,10 @@ record names. A backend a spec
 launches itself keeps its console in
 `<root>/agent-overflow/logs/harness-console.log` and is not copied.
 
+A failed test also gets a `stalled page` attachment for each open page that
+did not answer a trivial evaluate: its paused JavaScript stack with source,
+or why none could be read (`src/page-stall.ts`).
+
 `make e2e-mobile-browser` runs browser-lock checks in mobile Chromium and
 WebKit without the Android emulator. See
 [mobile browser validation](../docs/references/mobile-browser-testing.md) for
