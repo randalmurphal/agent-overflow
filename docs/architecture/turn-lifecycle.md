@@ -846,9 +846,19 @@ worker's reassessment, a wait's read) finds it ended. The durable
 `stop_reason='interrupted'`, the only thing the sidebar's boot pill
 (`Thread.HasIncompleteTurn`) reads: an unseen settled interruption.
 
-When the write of a turn's end fails, or the boot sweep fails, the row
-stays open with nothing running its turn, and it reads as running until
-a later boot's sweep records it as interrupted.
+When the write of an open turn's end fails, or the boot sweep fails, the
+row stays open with nothing running its turn, and it reads as running
+until a later end of the same turn saves or a later boot's sweep records
+it as interrupted. Nothing retries the end.
+The round still ends, so the pane and sidebar read the thread idle while
+every reader of the row (the thread tools, send placement, revert,
+transfer, the Agents tally) reads it running, as long as it is the
+thread's newest row. A fork made then settles its copy of the row as
+interrupted. A failed end write reaches the user as one error entry per
+turn on the unsaved-rows surface (`triage/unsaved_rows.go`), unless it
+was a shown-history refusal whose own error row told them, and an end of
+that turn that later saves withdraws the entry; a boot sweep failure is a
+failed boot phase.
 
 The frontend still shows no active-turn spinner for any of this
 (spinner requires a live `activeTurn` push, not a DB row), and we do

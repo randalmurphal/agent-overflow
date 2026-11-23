@@ -1,6 +1,11 @@
 package triage
 
-import "agent-overflow/internal/store"
+import (
+	"database/sql"
+	"errors"
+
+	"agent-overflow/internal/store"
+)
 
 // Rows the user must see that the store refused.
 //
@@ -12,6 +17,11 @@ import "agent-overflow/internal/store"
 // the observer about every such row it saves, so a refused row that a later
 // write saves stops reading as unsaved. Every producer of those rows writes
 // through the funnel, so none has to remember this.
+//
+// A turn's end the store refused is told to the observer the same way, as
+// an error entry of its own (reportUnsavedTurnEnd), and every end it saves
+// is told too (reportSavedTurnEnd): the end is no row of the timeline, but
+// the user must know that the thread's turn may still read as running.
 
 // UnsavedRow is an error or notification row, as the user sees it.
 type UnsavedRow struct {
@@ -70,6 +80,48 @@ func (r *Router) reportSavedRow(item store.Item) {
 	if row, ok := r.observedRow(item); ok {
 		r.unsavedRows.RowSaved(row)
 	}
+}
+
+// UnsavedTurnEndSummary is the entry of a turn whose end the store
+// refused. It describes the failed write, and holds whatever the row was
+// and whatever the turn does next: a row still open reads as running to
+// every reader of the thread's newest turn row (the thread tools, send
+// placement, revert) while it is the newest, a row an earlier end
+// completed keeps that end, and a soft-closed turn can run on. It promises
+// nothing about a restart, whose sweep can fail as well.
+const UnsavedTurnEndSummary = "The app could not save how this turn ended. " +
+	"Agents and tools may still see the thread as running."
+
+// unsavedTurnEndRow is the observer's entry for turnID's unsaved end: one
+// per turn, whichever path wrote the end and however often it failed, so a
+// second failure replaces the entry rather than adding one. It leaves when
+// an end of the same turn saves (reportSavedTurnEnd), and like every entry
+// when the user dismisses it, when the thread is deleted, or with the
+// process.
+func unsavedTurnEndRow(threadID, turnID string) UnsavedRow {
+	return UnsavedRow{ThreadID: threadID, ItemID: "turn-end:" + turnID, Severity: UnsavedSeverityError, Summary: UnsavedTurnEndSummary}
+}
+
+// reportUnsavedTurnEnd tells the observer that turnID's end was not saved,
+// unless the user was already told of err (told, from
+// reportShownHistoryRefusal) or err found no row, which leaves nothing
+// open.
+func (r *Router) reportUnsavedTurnEnd(threadID, turnID string, err error, told bool) {
+	if r.unsavedRows == nil || threadID == "" || told || errors.Is(err, sql.ErrNoRows) {
+		return
+	}
+	r.unsavedRows.RowRefused(unsavedTurnEndRow(threadID, turnID), err)
+}
+
+// reportSavedTurnEnd tells the observer that turnID's end saved, so an
+// entry an earlier failure left is withdrawn. It runs on every saved end;
+// for a thread with no entries the app's answer is a clamp of the summary
+// and one map lookup under its lock (App.withdrawSavedThreadRow).
+func (r *Router) reportSavedTurnEnd(threadID, turnID string) {
+	if r.unsavedRows == nil || threadID == "" {
+		return
+	}
+	r.unsavedRows.RowSaved(unsavedTurnEndRow(threadID, turnID))
 }
 
 // observedRow is the item as the observer sees it; false for a kind the
