@@ -941,8 +941,9 @@ func TestLocalFactsInDirectoriesOfOneTree(t *testing.T) {
 }
 
 // wideRepo is a repository whose directory "wide" holds n files of long
-// names besides images i0.png to i5.png, and outside.txt at its root; it
-// answers the repository and its head.
+// names, and one of a name longer than any path a key can name, besides
+// images i0.png to i5.png, and outside.txt at its root; it answers the
+// repository and its head.
 func wideRepo(t *testing.T, n int) (string, string) {
 	t.Helper()
 	repo := initGitRepo(t)
@@ -953,6 +954,7 @@ func wideRepo(t *testing.T, n int) (string, string) {
 	testutil.RunGit(t, repo, "add", ".")
 	blob := strings.TrimSpace(runGitStdout(t, repo, "rev-parse", ":outside.txt"))
 	var index strings.Builder
+	fmt.Fprintf(&index, "100644 %s\twide/%s\n", blob, strings.Repeat("y", 17000))
 	for i := range n {
 		fmt.Fprintf(&index, "100644 %s\twide/%s%06d\n", blob, strings.Repeat("x", 230), i)
 	}
@@ -981,6 +983,33 @@ func TestLocalFactsBesideAWideDirectory(t *testing.T) {
 		if got[key].Status != want {
 			t.Errorf("%s = %+v, want %s", key, got[key], want)
 		}
+	}
+}
+
+// An entry no path names is scanned and dropped: a listing of a thousand
+// under a named directory, one of them longer than is kept, allocates
+// nothing once the directory is known.
+func TestEntryStreamScansUnnamedEntriesWithoutAllocating(t *testing.T) {
+	oid := strings.Repeat("a", 40)
+	listing := fmt.Appendf(nil, "100644 blob %s\twide/%s\x00", oid, strings.Repeat("y", 17000))
+	for i := range 1000 {
+		listing = fmt.Appendf(listing, "100644 blob %s\twide/%s%04d\x00", oid, strings.Repeat("x", 230), i)
+	}
+	stream := &entryStream{named: map[string]bool{"wide": true, "wide/none.png": true}, entries: map[string]pathEntry{}}
+	write := func() {
+		// In pieces that split entries, as a pipe delivers them.
+		for p := listing; len(p) > 0; p = p[min(4093, len(p)):] {
+			if _, err := stream.Write(p[:min(4093, len(p))]); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	write()
+	if want := map[string]pathEntry{"wide": {kind: "tree"}}; !maps.Equal(stream.entries, want) || len(stream.record) != 0 {
+		t.Fatalf("entries = %v with %d bytes left, want %v", stream.entries, len(stream.record), want)
+	}
+	if allocs := testing.AllocsPerRun(5, write); allocs != 0 {
+		t.Fatalf("reading %d unnamed entries allocated %v times", 1001, allocs)
 	}
 }
 

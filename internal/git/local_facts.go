@@ -357,15 +357,14 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 		case k.kind == "lines":
 			query = oid
 		default:
-			record, ok := held[oid]
-			if !ok {
-				if record, ok = c.blobImages.get(oid, now); ok {
-					held[oid] = record
-				}
+			if _, ok := held[oid]; ok {
+				break
 			}
-			if !ok {
-				query = oid
+			if record, ok := c.blobImages.get(oid, now); ok {
+				held[oid] = record
+				break
 			}
+			query = oid
 		}
 		if query != "" && !asked[query] {
 			asked[query] = true

@@ -1115,7 +1115,8 @@ submodule is `absent`. Whether a blob is local is asked by its id and of
 this checkout on every call, so two paths of one blob answer alike, and
 a blob whose image record another checkout's read left in the cache is
 still `unavailable` where it is not local. Git's tree listing is read as
-it arrives and none of it is held. A tree on the way to a path that is
+it arrives and none of it is held; an entry no key names costs one scan
+of its bytes. A tree on the way to a path that is
 not local (a clone that filters trees) fails that commit's `ls-tree`,
 and the commit's path keys answer `unavailable` for the call.
 `Core.BlobImage` asks `cat-file` for its one blob directly: on such a

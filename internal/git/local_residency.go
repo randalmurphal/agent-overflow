@@ -85,9 +85,10 @@ func (c *Core) localCommits(ctx context.Context, cwd string, ids []string) (comm
 
 // localObjects answers which of ids, each a blob's full id, are local, in
 // one `git rev-list --objects --no-walk`, which reads no blob: an id that
-// names no local object is skipped, or printed as missing. A tree's or a
-// commit's id lists what it holds: that fails the run, and git is stopped
-// past the ids' own lines.
+// names no local object is skipped, or printed as missing. The ids are
+// blobs' (pathEntries); what kind an object is, cat-file answers. A
+// tree's or a commit's id lists what it holds: that fails the run, and
+// git is stopped past the ids' own lines.
 func (c *Core) localObjects(ctx context.Context, cwd string, ids []string) (map[string]bool, error) {
 	if len(ids) == 0 {
 		return nil, nil
@@ -154,8 +155,9 @@ const (
 	// directory holds. The listing is read as it arrives and none of it
 	// is held, so the bound is on git's work alone.
 	pathEntriesMaxBytes = 256 << 20
-	// pathEntryMaxBytes is the longest one entry of a listing is read.
-	pathEntryMaxBytes = 16 << 10
+	// pathEntryMaxBytes is how much of one entry of a listing is kept:
+	// more than an entry at a named path (at most 4096 bytes of path).
+	pathEntryMaxBytes = 8 << 10
 )
 
 // pathEntries answers commit's tree's entry at each of paths, in `git
@@ -188,59 +190,72 @@ func (c *Core) pathEntries(ctx context.Context, cwd, commit string, paths []stri
 }
 
 // entryStream reads `git ls-tree -z` output as it arrives and keeps the
-// entries of the named paths, in strings of their own.
+// entries of the named paths, in strings of their own. An entry no path
+// names costs one scan of its bytes and no allocation.
 type entryStream struct {
 	named   map[string]bool
 	entries map[string]pathEntry
-	// record is the start of an entry a write ended inside.
+	// record is the start of an entry a write ended inside, and cut is
+	// set when the entry is longer than pathEntryMaxBytes: it is kept that
+	// far, which is past every named path.
 	record []byte
+	cut    bool
 }
 
 func (s *entryStream) Write(p []byte) (int, error) {
 	n := len(p)
 	for len(p) > 0 {
 		i := bytes.IndexByte(p, 0)
-		record := p
+		part := p
 		if i >= 0 {
-			record = p[:i]
+			part = p[:i]
 		}
-		if len(s.record)+len(record) > pathEntryMaxBytes {
-			return 0, errors.New("ls-tree: an entry is too long")
+		if room := pathEntryMaxBytes - len(s.record); len(part) > room {
+			part, s.cut = part[:room], true
 		}
 		if i < 0 {
-			s.record = append(s.record, record...)
+			s.record = append(s.record, part...)
 			break
 		}
+		record := part
 		if len(s.record) > 0 {
-			s.record = append(s.record, record...)
+			s.record = append(s.record, part...)
 			record = s.record
 		}
-		if err := s.take(record); err != nil {
+		if err := s.take(record, s.cut); err != nil {
 			return 0, err
 		}
-		s.record, p = s.record[:0], p[i+1:]
+		s.record, s.cut, p = s.record[:0], false, p[i+1:]
 	}
 	return n, nil
 }
 
-// take reads one entry: "<mode> <kind> <oid>\t<path>".
-func (s *entryStream) take(record []byte) error {
-	meta, path, ok := bytes.Cut(record, []byte{'\t'})
-	fields := bytes.Fields(meta)
-	if !ok || len(fields) != 3 || !gitdiff.IsFullOID(string(fields[2])) {
+// take reads one entry, "<mode> <kind> <oid>\t<path>", whole or cut.
+func (s *entryStream) take(record []byte, cut bool) error {
+	tab := bytes.IndexByte(record, '\t')
+	if tab < 0 {
 		return errors.New("ls-tree: malformed entry")
 	}
-	switch {
-	case !s.named[string(path)]:
-	case string(fields[1]) == "blob":
-		s.entries[string(path)] = pathEntry{kind: "blob", oid: string(fields[2])}
-	default:
-		s.entries[string(path)] = pathEntry{kind: string(fields[1])}
+	meta, path := record[:tab], record[tab+1:]
+	if !cut && s.named[string(path)] {
+		kindAt := bytes.IndexByte(meta, ' ') + 1
+		oidAt := kindAt + bytes.IndexByte(meta[kindAt:], ' ') + 1
+		if kindAt == 0 || oidAt == kindAt || !gitdiff.IsFullOID(string(meta[oidAt:])) {
+			return errors.New("ls-tree: malformed entry")
+		}
+		entry := pathEntry{kind: string(meta[kindAt : oidAt-1])}
+		if entry.kind == "blob" {
+			entry.oid = string(meta[oidAt:])
+		}
+		s.entries[string(path)] = entry
 	}
 	// Git lists a directory named beside a path under it as its entries,
 	// without its own: an entry under a named path makes that path a tree.
 	for i, b := range path {
-		if b == '/' && s.named[string(path[:i])] {
+		if b != '/' || !s.named[string(path[:i])] {
+			continue
+		}
+		if _, known := s.entries[string(path[:i])]; !known {
 			s.entries[string(path[:i])] = pathEntry{kind: "tree"}
 		}
 	}
