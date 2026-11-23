@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
-import { FILE_SLEEP_BUDGET_MS, sleepOverBudget, sleptMs, startSleepClock, unionMs } from './realTimeBudget';
+import { FILE_SLEEP_BUDGET_MS, sleepOverBudget, sleptMs, startSleepClock } from './realTimeBudget';
+import { unionMs } from './timerWaits';
 
 const realWait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
