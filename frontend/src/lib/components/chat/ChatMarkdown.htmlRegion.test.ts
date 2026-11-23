@@ -14,10 +14,12 @@ import type { ForgeAttachmentSource } from '../../utils/forgeAttachments';
 // bodies only; the streaming splitter does not keep a multi-block HTML
 // construct (a region or a <details> run) in one block.
 
-vi.mock('../../transport/deviceSession', () => ({
+vi.mock('../../transport/deviceSession', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../transport/deviceSession')>()),
   fetchPairedComputer: async () => new Response('bytes', { status: 200 }),
 }));
-vi.mock('../../transport/backends', () => ({
+vi.mock('../../transport/backends', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../transport/backends')>()),
   withBackendTarget: <T>(_backend: string, run: () => T): T => run(),
 }));
 

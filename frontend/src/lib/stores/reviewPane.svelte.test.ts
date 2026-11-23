@@ -1133,6 +1133,8 @@ describe('reviewPane store — PR scope', () => {
       threads: [],
       headSHA: 'sha-a',
     }));
+    // The refresh and the reload read the PR again.
+    setBindingMock('GetPRDetail', async () => prDetailStub({ body: 'Fixes #1 in abc1234' }));
     const resolve = setBindingMock('ResolveForgeFacts', async (_ws: WorkspaceRef, _pr: unknown, _rev: unknown, keys: string[]) => ({
       facts: keys.map((key) => ({ key, status: 'found', url: 'https://github.com/owner/repo/issues/1' })),
     }));
