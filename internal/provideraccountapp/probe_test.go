@@ -122,7 +122,7 @@ func TestAgyProbesRunOnTheManagersStoreAndHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ephemeral.Cleanup() })
-	if _, err := manager.probeProviderAccountAtHome(agyName, binary, ephemeral.Path); err != nil {
+	if _, err := manager.probeProviderAccountAtHome(context.Background(), agyName, binary, ephemeral.Path); err != nil {
 		t.Fatalf("isolated probe: %v", err)
 	}
 	got = readAgyLaunchRecord(t, record)

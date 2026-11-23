@@ -457,3 +457,46 @@ func TestASavedProviderHomeIsNotApplied(t *testing.T) {
 		}
 	}
 }
+
+// The boot's steps before clients, run as the boot runs them, report a
+// reserved variable saved in a provider's custom environment as a failure
+// of its own phase, which every client shows, naming the variable and not
+// its value; the boot goes on.
+//
+// Serial: the boot fixture sets HOME.
+func TestASavedReservedProviderVariableIsReportedByTheBoot(t *testing.T) {
+	a := newBootTestApp(t)
+	dbDir := filepath.Join(a.dataDirOverride, "agent-overflow")
+	if err := os.MkdirAll(dbDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dbDir, "settings.json"), []byte(savedProviderHomes), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	progress := newRecordingBootProgress("")
+	SetBootProgress(a, progress)
+	ParkUnattendedWork(a)
+	t.Cleanup(func() {
+		if err := a.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	})
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for i, step := range a.startBeforeClients() {
+		if err := step(); err != nil {
+			t.Fatalf("boot step %d: %v", i, err)
+		}
+	}
+	want := "settings.reserved_provider_env: Claude HOME, Codex HOME, and Antigravity HOME are reserved, so the provider runs without them."
+	var reported []string
+	for _, failure := range progress.failures() {
+		if strings.HasPrefix(failure, "settings.reserved_provider_env:") {
+			reported = append(reported, failure)
+		}
+	}
+	if len(reported) != 1 || !strings.HasPrefix(reported[0], want) || strings.Contains(reported[0], "/tmp/") {
+		t.Fatalf("boot failures = %q, want one starting %q and naming no value", progress.failures(), want)
+	}
+}

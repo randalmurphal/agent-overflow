@@ -432,7 +432,7 @@ func (m *Manager) runLogin(ctx context.Context, run *loginRun) error {
 		}
 		if notice == "" {
 			m.publishLoginPhase(run, LoginPhaseVerifying, "")
-			_, err := m.adoptLogin(run.attempt)
+			_, err := m.adoptLogin(ctx, run.attempt)
 			return err
 		}
 		next, carried, err := m.openLoginFlow(ctx, run, flow.method, notice)

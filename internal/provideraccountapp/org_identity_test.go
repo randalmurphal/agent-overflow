@@ -2,6 +2,7 @@ package provideraccountapp
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -144,7 +145,7 @@ func TestASignInIsMatchedByItsTokensOrganization(t *testing.T) {
 	manager, store, credentials, loginA, _ := sameEmailOrgs(t, claudefake.Transport{})
 	fresh := claudeLogin(claudefake.AccessToken(sharedEmail, "org-b", "b-new"), time.Now().Add(30*24*time.Hour))
 
-	result, err := manager.adoptLogin(completedLogin(t, manager, credentials, fresh))
+	result, err := manager.adoptLogin(context.Background(), completedLogin(t, manager, credentials, fresh))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -39,6 +39,12 @@ alive. Rate-limit persistence and emission enter through narrow
   teardown that fails is audited on every exit as what failed (the process
   close, or the temporary home's removal), and a failed sign-in shows that
   failure after its own sentence, each within its own bound.
+- Adoption (`adoptLogin`) runs on the sign-in's context: the probe of the
+  temporary home and the identity requests stop at a Cancel or the time
+  limit, and a step that failed because the sign-in ended reports that end.
+  Its commit point is under the reconcile lock, before `selectionChanging`
+  and any write: a sign-in that ended before it saves nothing, and one past
+  it is saved whole and reported.
 - Adoption lands a login by its identity and never switches: a saved account
   is renewed in its slot, a new one is appended. Only a login for the selected
   account, or the first login when none is selected, replaces the canonical

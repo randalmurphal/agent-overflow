@@ -1,6 +1,7 @@
 package provideraccountapp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -92,18 +93,31 @@ func (a *loginAttempt) cleanup() error {
 // account is renewed in place and a new one is appended. Only a login for the
 // selected account, or the first login when nothing is selected, replaces
 // the canonical credential; a sign-in never switches accounts.
-func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr error) {
+//
+// ctx is the sign-in's: the probe of the temporary home and the identity
+// lookups run on it, so a Cancel or the sign-in's time limit stops them, and
+// a step that failed because the sign-in ended reports that end. ctx is
+// checked once more under the reconcile lock, before anything is ended or
+// written, the commit point: a sign-in that ended before it saves nothing,
+// and one past it is saved whole.
+func (m *Manager) adoptLogin(ctx context.Context, attempt *loginAttempt) (_ ManagedAccount, retErr error) {
 	providerName := attempt.provider
 	binary := attempt.binary
 	loginHome := attempt.home
 	reconcileMu := m.reconcileMutex(providerName)
+	verifyFailed := func(err error) (ManagedAccount, error) {
+		if ctx.Err() != nil {
+			return ManagedAccount{}, context.Cause(ctx)
+		}
+		return ManagedAccount{}, err
+	}
 
-	info, err := m.probeProviderAccountAtHome(providerName, binary, loginHome.Path)
+	info, err := m.probeProviderAccountAtHome(ctx, providerName, binary, loginHome.Path)
 	if err != nil {
-		return ManagedAccount{}, fmt.Errorf("verify %s login: %w", providerName, err)
+		return verifyFailed(fmt.Errorf("verify %s login: %w", providerName, err))
 	}
 	if providerName == string(provider.Claude) && providerstatus.ClaudeUnauthenticated(info) {
-		return ManagedAccount{}, errors.New("Claude login completed without an authenticated account")
+		return verifyFailed(errors.New("Claude login completed without an authenticated account"))
 	}
 	loginCredential, err := m.credentials.ReadEphemeralCredential(loginHome)
 	if err != nil {
@@ -114,18 +128,18 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	// the credential's own access token.
 	info = EnrichCodexIdentity(providerName, info, loginCredential.Bytes())
 	if providerName == string(provider.Claude) {
-		info, err = m.identifyClaudeCredential(info, loginCredential.Bytes())
+		info, err = m.identifyClaudeCredential(ctx, info, loginCredential.Bytes())
 		if err != nil {
-			return ManagedAccount{}, fmt.Errorf("verify %s login: %w", providerName, err)
+			return verifyFailed(fmt.Errorf("verify %s login: %w", providerName, err))
 		}
 	}
 	if providerName == string(provider.Agy) {
 		// A failed lookup names nobody for certain, so nothing of the
 		// sign-in is saved; a lookup that answered and named nobody is
 		// saved under no email.
-		if info, err = m.identifyAgyCredential(m.context(), info, loginCredential.Bytes()); err != nil {
+		if info, err = m.identifyAgyCredential(ctx, info, loginCredential.Bytes()); err != nil {
 			m.audit("did not save the Antigravity sign-in: %v", err)
-			return ManagedAccount{}, agySignInUnidentifiedError{cause: err}
+			return verifyFailed(agySignInUnidentifiedError{cause: err})
 		}
 	}
 	if err := attempt.cleanup(); err != nil {
@@ -138,6 +152,10 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 			reconcileMu.Unlock()
 		}
 	}()
+	// The commit point: from here the sign-in is saved whole.
+	if ctx.Err() != nil {
+		return verifyFailed(nil)
+	}
 	// A sign-in selects its account only when none is selected; signing in
 	// to the selected one keeps the account and its uses.
 	if _, hasCurrent := m.store.Active(providerName, time.Now()); !hasCurrent {

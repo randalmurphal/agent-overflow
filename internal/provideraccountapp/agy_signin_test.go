@@ -53,7 +53,7 @@ func TestAnAgySignInWhoseLookupFailedSavesNothingAndTheNextOneRenews(t *testing.
 
 	fresh := agyCredential("dev-new", "")
 	attempt := completedAgyLogin(t, rig, fresh)
-	_, err := rig.manager.adoptLogin(attempt)
+	_, err := rig.manager.adoptLogin(context.Background(), attempt)
 	if err == nil {
 		t.Fatalf("adoptLogin saved a sign-in nobody could identify; accounts = %v", agyAccountIDs(rig))
 	}
@@ -88,7 +88,7 @@ func TestAnAgySignInWhoseLookupFailedSavesNothingAndTheNextOneRenews(t *testing.
 		return agyAnswer(http.StatusOK, `{"email":"dev@example.com","name":"Dev"}`), nil
 	})
 	renewed := agyCredential("devr-1", "")
-	result, err := rig.manager.adoptLogin(completedAgyLogin(t, rig, renewed))
+	result, err := rig.manager.adoptLogin(context.Background(), completedAgyLogin(t, rig, renewed))
 	if err != nil {
 		t.Fatalf("sign-in with the lookup answering: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestAnAgySignInWhoseLookupTimedOutNamesTheLookup(t *testing.T) {
 		return nil, fmt.Errorf("userinfo for the test: %w", context.DeadlineExceeded)
 	})
 
-	_, err := rig.manager.adoptLogin(completedAgyLogin(t, rig, agyCredential("dev-new", "")))
+	_, err := rig.manager.adoptLogin(context.Background(), completedAgyLogin(t, rig, agyCredential("dev-new", "")))
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("adoptLogin error = %v, want the lookup's timeout kept in the chain", err)
 	}
@@ -147,7 +147,7 @@ func TestAFailedSignInWhoseTeardownFailedSaysBoth(t *testing.T) {
 	run := &loginRun{provider: string(provider.Agy), attempt: attempt, done: make(chan struct{}), cancel: func() {}}
 	rig.manager.registerLoginRun(run)
 
-	_, err := rig.manager.adoptLogin(attempt)
+	_, err := rig.manager.adoptLogin(context.Background(), attempt)
 	if err == nil {
 		t.Fatal("adoptLogin saved a sign-in nobody could identify")
 	}
