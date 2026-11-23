@@ -62,7 +62,7 @@ function mkProject(id: string, overrides: Partial<Project> = {}): Project {
  * Fakes the clock and passes the deadline on it; the caller's describe
  * restores real timers.
  */
-async function loadPastReadDeadline(): Promise<Thread[]> {
+async function loadPastReadDeadline(): ReturnType<typeof loadSidebarCatalogs> {
   vi.useFakeTimers();
   const round = loadSidebarCatalogs();
   await vi.advanceTimersByTimeAsync(COMPUTER_READ_DEADLINE_MS);
