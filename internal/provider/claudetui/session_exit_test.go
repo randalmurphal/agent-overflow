@@ -317,6 +317,84 @@ func TestASelfExitRacingCloseReleasesOnce(t *testing.T) {
 	}
 }
 
+// closeParked reports whether a goroutine is blocked on a channel receive
+// in Session.Close itself, which is where Close waits for the teardown pair.
+func closeParked() bool {
+	for _, g := range strings.Split(allStacks(), "\n\n") {
+		header, rest, _ := strings.Cut(g, "\n")
+		if strings.Contains(header, "[chan receive") && strings.HasPrefix(rest, "agent-overflow/internal/provider/claudetui.(*Session).Close(") {
+			return true
+		}
+	}
+	return false
+}
+
+// Close of a session whose process started returns only once the teardown
+// pair has reached onEvent: the app drains its event queue right after
+// Close and relies on "disconnected" being in it.
+func TestCloseReturnsAfterTheTeardownPair(t *testing.T) {
+	rec := newExitRecorder()
+	held := make(chan struct{})
+	unhold := make(chan struct{})
+	var unholdOnce sync.Once
+	t.Cleanup(func() { unholdOnce.Do(func() { close(unhold) }) })
+	onEvent := func(e provider.ProviderEvent) {
+		if e.Kind == provider.EventSessionStatus && e.Content == "disconnected" {
+			close(held)
+			<-unhold
+		}
+		rec.record(e)
+	}
+	s, err := NewSession(context.Background(), testThread, tuiExitConfig(t, "#!/bin/sh\nread line\n", t.TempDir()), onEvent)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close() }()
+	select {
+	case <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the teardown pair was never emitted")
+	}
+	// Close's goroutine has nothing left to wait for but the pair, so it is
+	// either parked on it or gone. Seeing it parked is the bounded poll.
+	deadline := time.Now().Add(5 * time.Second)
+	for !closeParked() {
+		select {
+		case err := <-closed:
+			t.Fatalf("Close returned (%v) while \"disconnected\" was still being emitted", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Close is not waiting for the teardown pair\n%s", allStacks())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// A second Close does not wait behind the first.
+	second := make(chan error, 1)
+	go func() { second <- s.Close() }()
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatalf("second Close while the first waits: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a second Close waited behind the first")
+	}
+
+	unholdOnce.Do(func() { close(unhold) })
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return after the pair was emitted")
+	}
+	assertLastIsDisconnected(t, rec.snapshot())
+}
+
 // A cancelled spawn context closes the session through its watcher: the
 // host ended it, so the pair is "disconnected" alone.
 func TestTheContextWatcherClosesTheSession(t *testing.T) {
@@ -518,7 +596,11 @@ func TestCloseReturnsAFailedRelease(t *testing.T) {
 	if err := s.Close(); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Close = %v, want the release's error", err)
 	}
-	rec.waitDisconnected(t)
+	select {
+	case <-rec.disconnected:
+	default:
+		t.Fatal("Close returned before \"disconnected\" was emitted")
+	}
 	want := []string{string(provider.EventSessionStatus) + ":disconnected"}
 	if got := eventLines(rec.snapshot()); !slices.Equal(got, want) {
 		t.Fatalf("events = %q, want %q", got, want)

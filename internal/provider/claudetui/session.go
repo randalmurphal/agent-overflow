@@ -66,6 +66,10 @@ type Session struct {
 	// later release waits for that run to finish and returns its error.
 	teardownOnce sync.Once
 	teardownErr  error
+	// exitEmitted closes once onPTYExit has emitted the teardown pair. Close
+	// of a session whose PTY started waits on it, so the pair has reached
+	// onEvent when Close returns, as it has for the stdio providers.
+	exitEmitted chan struct{}
 
 	// recMu guards the reconstructor's cross-request state (turn-usage
 	// accumulation, session identity, the subagent launch registry).
@@ -180,13 +184,14 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	}
 
 	s = &Session{
-		threadID: threadID,
-		onEvent:  onEvent,
-		parser:   newSessionParser(),
-		feed:     make(chan json.RawMessage, 256),
-		done:     make(chan struct{}),
-		logf:     log.Printf,
-		evlog:    cfg.EventLogger,
+		threadID:    threadID,
+		onEvent:     onEvent,
+		parser:      newSessionParser(),
+		feed:        make(chan json.RawMessage, 256),
+		done:        make(chan struct{}),
+		exitEmitted: make(chan struct{}),
+		logf:        log.Printf,
+		evlog:       cfg.EventLogger,
 	}
 	// Seed the parser with the resolved model so result usage can be priced
 	// before the reconstructed init lands (mirrors the headless seed).
@@ -527,8 +532,16 @@ func (s *Session) SessionID() string {
 	return s.sessionID
 }
 
-// Close ends the PTY and releases the session. Idempotent and nil-safe so
-// the NewSession failure path can reuse it: a second call returns nil.
+// Close ends the PTY and releases the session. When a PTY process started,
+// it returns once the session's teardown pair has been emitted. Idempotent
+// and nil-safe so the NewSession failure path can reuse it: a second call
+// returns nil at once.
+//
+// The wait is bounded by the terminal: its Close returns once the process
+// has exited, and its output goroutine then drains at most a bounded tail
+// and runs onPTYExit whether or not the process group could be emptied.
+// A terminalID is recorded only after the terminal started the process, so
+// a launch that failed before that waits for nothing.
 func (s *Session) Close() error {
 	s.mu.Lock()
 	if s.closing {
@@ -536,8 +549,13 @@ func (s *Session) Close() error {
 		return nil
 	}
 	s.closing = true
+	started := s.terminalID != ""
 	s.mu.Unlock()
-	return s.release()
+	err := s.release()
+	if started {
+		<-s.exitEmitted
+	}
+	return err
 }
 
 // release runs teardown once. A caller that arrives while another runs it
@@ -653,6 +671,7 @@ func (s *Session) onPTYExit(threadID, terminalID string, status terminal.ExitSta
 	// only the meta source differs (a PTY exit status, not a subprocess
 	// exit). See provider.EmitTeardownStatus for why the pair is load-bearing.
 	provider.EmitTeardownStatusWithMeta(s.emit, s.threadID, ptyExitMeta(status), closing)
+	close(s.exitEmitted)
 }
 
 // onProxyError surfaces a gateway/relay infrastructure failure as a non-fatal
