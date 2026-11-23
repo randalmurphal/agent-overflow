@@ -43,6 +43,10 @@ func TestChangelog(t *testing.T) {
 	if _, _, ok := log.Entries[1].Items[0].StatusChange(); ok {
 		t.Error("an assignee change read as a status change")
 	}
+	changes := FieldChanges(log.Entries, "assignee")
+	if len(changes) != 1 || !changes[0].When.Equal(time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)) {
+		t.Errorf("field changes %+v", changes)
+	}
 }
 
 // bulkRequest is a bulk changelog request as the fake reads it.

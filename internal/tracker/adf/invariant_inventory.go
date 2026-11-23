@@ -42,6 +42,9 @@ type rich struct {
 // text, and settings that trade places between two cells are a loss.
 func (r rich) id() string { return r.sig + "\x00" + r.rep }
 
+// inventory lists the rich nodes in doc, in document order.
+func inventory(doc *Node) []rich { return inventorySkip(doc, nil) }
+
 // inventorySkip is inventory without the subtrees rooted at nodes in
 // skip.
 func inventorySkip(doc *Node, skip map[*Node]bool) []rich {

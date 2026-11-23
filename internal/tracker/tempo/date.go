@@ -13,8 +13,8 @@ const dateLayout = "2006-01-02"
 // Date is a calendar day with no time zone, as Tempo stores a worklog's
 // start date, a schedule day and an approval period's ends. The zero Date
 // is no date. Every other Date is in years 1 to 9999: NewDate, ParseDate
-// and UnmarshalText refuse a day outside them, and AddDays returns the
-// zero Date for one, so a result outside the range reads as no
+// and UnmarshalText refuse a day outside them, and DateOf and AddDays
+// return the zero Date for one, so a result outside the range reads as no
 // date, never as a real one.
 type Date struct {
 	// days counts days from 0001-01-01, plus one, so zero is no date; it
@@ -38,6 +38,17 @@ func NewDate(year int, month time.Month, day int) (Date, error) {
 		return Date{}, fmt.Errorf("tempo: %04d-%02d-%02d is not a calendar date in years 1 to 9999", year, int(month), day)
 	}
 	return Date{days: t.Unix()/86400 + epochDays + 1}, nil
+}
+
+// DateOf is the calendar day t falls on in t's own location; the zero
+// Date when that day is outside years 1 to 9999.
+func DateOf(t time.Time) Date {
+	y, m, d := t.Date()
+	out, err := NewDate(y, m, d)
+	if err != nil {
+		return Date{}
+	}
+	return out
 }
 
 // ParseDate reads YYYY-MM-DD in years 1 to 9999. It never returns the

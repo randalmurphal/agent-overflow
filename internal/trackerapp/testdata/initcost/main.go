@@ -96,6 +96,7 @@ func reachADF(arg string) {
 		os.Exit(1)
 	}
 	adf.ReplaceMediaIDs(edited, nil)
+	_ = adf.PlainText(adf.Doc(edited.Content...))
 }
 
 func reachTrackerAPI(arg string) {
@@ -134,6 +135,7 @@ func reachJira(arg string) *jira.Client {
 	keepMethods(arg, c, jira.NewCatalog(nil))
 	_, _ = jira.ParseSprintIDs(arg)
 	_, _ = jira.ParseDate(arg)
+	_ = jira.FieldChanges(nil, arg)
 	_ = jira.IsIssueKey(arg)
 	_ = jira.QuoteJQL(arg) + jira.QuoteJQLText(arg) + jira.QuoteJQLList(os.Args[1:]...)
 	_, _ = jira.Text(arg), jira.RawJSON(nil)
@@ -152,6 +154,7 @@ func reachTempo(arg string, jc *jira.Client) *tempo.Client {
 	_, _ = tempo.ParseTimeOfDay(arg)
 	_, _ = tempo.Clock(len(arg), 0, 0)
 	_, _ = tempo.NewDate(len(arg), time.January, 1)
+	_ = tempo.DateOf(time.Now())
 	_, _, _ = tempo.CreateOp(tempo.Draft{}), tempo.UpdateOp(tempo.Change{}), tempo.DeleteOp(int64(len(arg)))
 	return c
 }

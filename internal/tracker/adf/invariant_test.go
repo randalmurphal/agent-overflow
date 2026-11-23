@@ -326,6 +326,3 @@ func TestDressLossWarnsContentLossRefuses(t *testing.T) {
 		}
 	}
 }
-
-// inventory lists the rich nodes in doc, in document order.
-func inventory(doc *Node) []rich { return inventorySkip(doc, nil) }
