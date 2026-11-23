@@ -3,6 +3,7 @@ package provideraccountapp
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -258,7 +259,7 @@ func testRestartAfterACrashedSelectedRefresh(t *testing.T, rotated bool, bEmail 
 	if otherRootFirst {
 		otherDB := t.TempDir()
 		other, _, _ := openBackend(t, userHome, otherDB, "")
-		if err := other.ReconcileProviderHome(otherDB, userHome); err != nil {
+		if err := bootProviderAccounts(other, userHome); err != nil {
 			t.Fatal(err)
 		}
 		if got := mustReadCredential(t, credentials, "acct-a", false); got != string(aLogin) {
@@ -274,7 +275,7 @@ func testRestartAfterACrashedSelectedRefresh(t *testing.T, rotated bool, bEmail 
 	}
 
 	manager, _, credentials := openBackend(t, userHome, dbDir, "")
-	if err := manager.ReconcileProviderHome(dbDir, userHome); err != nil {
+	if err := bootProviderAccounts(manager, userHome); err != nil {
 		t.Fatal(err)
 	}
 	if got := mustReadCredential(t, credentials, "acct-a", false); got != string(aLogin) {
@@ -352,7 +353,7 @@ func TestBootBringsALaggingSelectedSlotToTheRecoveredRotation(t *testing.T) {
 			if tc.otherRootFirst {
 				otherDB := t.TempDir()
 				other, _, _ := openBackend(t, userHome, otherDB, "")
-				if err := other.ReconcileProviderHome(otherDB, userHome); err != nil {
+				if err := bootProviderAccounts(other, userHome); err != nil {
 					t.Fatal(err)
 				}
 				if got := mustReadCredential(t, credentials, "", true); got != string(cliRotated) {
@@ -368,7 +369,7 @@ func TestBootBringsALaggingSelectedSlotToTheRecoveredRotation(t *testing.T) {
 			}
 
 			manager, store, credentials := openBackend(t, userHome, dbDir, codexIdentityProbe(t, "a@example.com"))
-			if err := manager.ReconcileProviderHome(dbDir, userHome); err != nil {
+			if err := bootProviderAccounts(manager, userHome); err != nil {
 				t.Fatal(err)
 			}
 			if got := mustReadCredential(t, credentials, "", true); got != string(wantCanonical) {
@@ -388,4 +389,10 @@ func TestBootBringsALaggingSelectedSlotToTheRecoveredRotation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// bootProviderAccounts runs the boot's account steps in the boot's order:
+// the reserved slots of unfinished sign-ins, then the provider home.
+func bootProviderAccounts(m *Manager, userHome string) error {
+	return errors.Join(m.SettleReservedSlots(), m.ReconcileProviderHome(userHome))
 }

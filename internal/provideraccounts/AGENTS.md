@@ -98,14 +98,14 @@ can take.
 Each registry entry records the fingerprint of the refresh token its home
 was seeded with (`TokenFingerprint`, provider-owned: the provider rewrites
 its credential file for other reasons and keeps the token), and of the one
-the owner's slot held then (`slotToken`), selected or not. `settleRotation` (`rotation.go`)
-is the one writer of a Codex rotation, for a live usage probe as it
-finishes and for the boot sweep after a crash. It places a rotation by
-descent, never by whose login anything says it is: every store that holds
-the seed's token takes it (the canonical credential only from the store
-that selected the owner, and every saved slot), and the owner's slot takes
-it while it still holds what it held at seeding. Each slot write first
-records the seed's token as consumed beside the slot's lock
+the owner's slot held then (`slotToken`), selected or not. `settleRotation`
+(`rotation.go`) is the one writer of a Codex rotation, for a live usage
+probe as it finishes and for the boot sweep after a crash. It places a
+rotation by descent, never by whose login anything says it is: every store
+that holds the seed's token takes it (the canonical credential only from
+the store that selected the owner, and every saved slot), and the owner's
+slot takes it while it still holds what it held at seeding. Each slot write
+first records the seed's token as consumed beside the slot's lock
 (`consumed.go`), and no slot write ever lands a credential holding it
 again: a switch's preserve, an adoption, a delayed commit. A recovery
 record that cannot be read stops every write to its slot.
@@ -117,9 +117,10 @@ once, and settled again at the next boot. A missing or unreadable slot is
 no evidence. The canonical credential and the owner's slot are settled
 first; another slot that cannot be inspected stops neither, and keeps the
 home and its entry, reported at every settle until it can be judged,
-whether or not a store took the rotation (`RotationLanding.Unchecked`). Entries v0.0.19 wrote carry no `slotToken`, so one whose
-rotation cannot be placed stays until its account is removed
-(`ForgetAccountEphemerals`, called by account removal).
+whether or not a store took the rotation (`RotationLanding.Unchecked`).
+Entries v0.0.19 wrote carry no `slotToken`, so one whose rotation cannot be
+placed stays until its account is removed (`ForgetAccountEphemerals`,
+called by account removal).
 
 While the canonical store still holds the consumed token, the owner
 promotes the slot (`PromoteSlotOverCanonical`): at boot, before

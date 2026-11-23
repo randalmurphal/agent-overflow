@@ -7,9 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/claudefake"
+	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/testutil/mockexec"
@@ -24,9 +27,10 @@ func writeCodexMarkerBinary(t *testing.T, marker string) string {
 	return path
 }
 
-// writeCodexTurnBinary is an app-server signed in as email that runs every
-// turn to completion and records each turn/start line in capture.
-func writeCodexTurnBinary(t *testing.T, email, capture string) string {
+// writeCodexTurnBinary is an app-server whose account/read answers
+// accountJSON, that runs every turn to completion and records each
+// turn/start line in capture.
+func writeCodexTurnBinary(t *testing.T, accountJSON, capture string) string {
 	t.Helper()
 	const providerThread = "codex-unresolved-send"
 	script := fmt.Sprintf(`#!/bin/bash
@@ -39,7 +43,7 @@ while IFS= read -r line; do
     continue
   fi
   if /bin/echo "$line" | /usr/bin/grep -q '"method":"account/read"'; then
-    printf '{"jsonrpc":"2.0","id":%%s,"result":{"account":{"type":"chatgpt","email":"%s","planType":"pro"},"requiresOpenaiAuth":true}}\n' "$id"
+    printf '{"jsonrpc":"2.0","id":%%s,"result":{"account":%s,"requiresOpenaiAuth":true}}\n' "$id"
     continue
   fi
   if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/start"'; then
@@ -57,7 +61,7 @@ while IFS= read -r line; do
   fi
   printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
 done
-`, email, providerThread, capture, providerThread, providerThread, providerThread)
+`, accountJSON, providerThread, capture, providerThread, providerThread, providerThread)
 	path := filepath.Join(t.TempDir(), "codex-turns")
 	mockexec.Write(t, path, script)
 	return path
@@ -178,7 +182,7 @@ func TestASendUnderAnUnresolvedLoginIsRefusedUntilASwitch(t *testing.T) {
 				t.Fatalf("switch = %v, want it to go through", err)
 			}
 			capture := filepath.Join(t.TempDir(), "turns")
-			setCodex(writeCodexTurnBinary(t, tc.secondEmail, capture))
+			setCodex(writeCodexTurnBinary(t, `{"type":"chatgpt","email":"`+tc.secondEmail+`","planType":"pro"}`, capture))
 			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
 			if err := app.SendMessage(context.Background(), thread.ID, "hello", nil); err != nil {
 				t.Fatalf("send after the switch = %v, want it sent", err)
@@ -189,6 +193,124 @@ func TestASendUnderAnUnresolvedLoginIsRefusedUntilASwitch(t *testing.T) {
 			})
 			if sess, _ := app.sessionManager().get(thread.ID); sess.CredentialAccountID != "second" {
 				t.Fatalf("session account = %q, want second", sess.CredentialAccountID)
+			}
+		})
+	}
+}
+
+// writeClaudeTurnBinary is a Claude that answers every control request,
+// runs every turn to completion and records each user message in capture.
+func writeClaudeTurnBinary(t *testing.T, capture string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "claude-turns")
+	mockexec.Write(t, path, `#!/bin/bash
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"control_request"'*)
+      reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+      printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"
+      ;;
+    *'"type":"user"'*)
+      printf '%s\n' "$line" >> `+shellQuote(capture)+`
+      printf '%s\n' '`+mockClaudeInitLine+`'
+      printf '{"isReplay":true,%s\n' "${line#\{}"
+      printf '%s\n' '{"type":"assistant","message":{"id":"msg-done","role":"assistant","model":"claude-opus-4-7","content":[{"type":"text","text":"done"}]}}'
+      printf '%s\n' '{"type":"result","subtype":"success","is_error":false}'
+      ;;
+  esac
+done
+`)
+	return path
+}
+
+// With no account saved, a login that names nobody (a Codex API key, a
+// Claude token without the profile scope) is no verdict: reconciliation
+// has nothing to attribute it to, so the send goes out on it and nothing
+// is saved under any name.
+func TestASendWithNoSavedAccountGoesOutOnALoginThatNamesNobody(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, provider, settingsKey string
+		login                       string
+		binary                      func(t *testing.T, capture string) string
+	}{
+		{
+			name: "a Codex API key", provider: string(provider.Codex), settingsKey: "codexBinaryPath",
+			login: `{"OPENAI_API_KEY":"sk-test-key"}`,
+			binary: func(t *testing.T, capture string) string {
+				return writeCodexTurnBinary(t, `{"type":"apiKey"}`, capture)
+			},
+		},
+		{
+			name: "a Claude token without the profile scope", provider: string(provider.Claude), settingsKey: "claudeBinaryPath",
+			login: fmt.Sprintf(`{"claudeAiOauth":{"accessToken":%q,"refreshToken":"unscoped-rt","expiresAt":%d,"scopes":["user:inference"]}}`,
+				claudefake.AccessToken("someone@example.com", "org-1", "unscoped"), time.Now().Add(time.Hour).UnixMilli()),
+			binary: writeClaudeTurnBinary,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			app.settings = settings.NewService(t.TempDir())
+			app.ensureTriageRouter()
+			accounts, err := provideraccounts.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			credentials := newTestProviderCredentials(t, t.TempDir())
+			if err := credentials.WriteNativeCredentialForTest(tc.provider, []byte(tc.login)); err != nil {
+				t.Fatal(err)
+			}
+			attachProviderAccountStoresForTest(t, app, accounts, credentials)
+			capture := filepath.Join(t.TempDir(), "turns")
+			if _, err := app.settings.Update(map[string]any{tc.settingsKey: tc.binary(t, capture)}); err != nil {
+				t.Fatal(err)
+			}
+			thread := testThread("nameless-send")
+			thread.Provider = tc.provider
+			thread.WorkspacePath = t.TempDir()
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+
+			if err := app.SendMessage(context.Background(), thread.ID, "hello", nil); err != nil {
+				t.Fatalf("send = %v, want it sent", err)
+			}
+			waitForCondition(t, "the turn on the nameless login", func() bool {
+				text, err := os.ReadFile(capture)
+				return err == nil && strings.Contains(string(text), "hello")
+			})
+			if saved := app.providerAccounts.List(tc.provider, time.Now()); len(saved) != 0 {
+				t.Fatalf("saved accounts = %+v, want none", saved)
+			}
+			slots, err := credentials.AccountCredentialPath(tc.provider, "probe")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if entries, err := os.ReadDir(filepath.Dir(filepath.Dir(slots))); err == nil && len(entries) != 0 {
+				t.Fatalf("saved slots = %d entries, want none", len(entries))
+			} else if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+
+			// The account probe is what saves such a login: with nothing
+			// selected it adopts it as a new account saved without an email,
+			// selects it, and stores the login in its slot.
+			if _, err := app.providerAccounts.RunAccountProbe(provideraccountapp.ProbeRequest{
+				ProviderName: tc.provider,
+				Probe:        func(context.Context) (provider.AccountInfo, error) { return provider.AccountInfo{}, nil },
+			}); err != nil {
+				t.Fatalf("account probe = %v", err)
+			}
+			saved := app.providerAccounts.List(tc.provider, time.Now())
+			active, hasActive := app.providerAccounts.Active(tc.provider, time.Now())
+			if len(saved) != 1 || saved[0].Email != "" || !hasActive || active.ID != saved[0].ID {
+				t.Fatalf("after the probe: saved = %+v, active = %+v (%v); want one selected account without an email", saved, active, hasActive)
+			}
+			if slot, err := credentials.ReadCredential(tc.provider, saved[0].ID, false); err != nil || string(slot) != tc.login {
+				t.Fatalf("the adopted account's slot = %s, %v; want the login", slot, err)
 			}
 		})
 	}

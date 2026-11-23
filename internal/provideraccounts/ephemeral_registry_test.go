@@ -948,9 +948,8 @@ func TestSweepNeverRecreatesASlotRemovedDuringAdoption(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	// A missing slot proves nothing about the account (another data root
-	// may have pruned it): the orphan is kept, until the account's removal
-	// forgets it.
+	// A missing slot proves nothing about the account: the orphan is kept,
+	// until the account's removal forgets it.
 	if done.err != nil || len(done.results) != 1 || done.results[0].Action != "kept" {
 		t.Fatalf("sweep = %+v, %v; want the orphan kept", done.results, done.err)
 	}
@@ -1285,9 +1284,9 @@ func TestSweepRefusesToTouchNonEphemeralPaths(t *testing.T) {
 	}
 }
 
-// Adoption requires the slot directory to still exist: the prune runs
-// first, so a missing directory means the account was deleted and the
-// orphan has no home to return to.
+// A home whose credential never rotated holds nothing a store needs: the
+// sweep discards it, and never recreates the slot of an account that is
+// gone.
 func TestSweepDiscardsWhenTheAccountWasRemoved(t *testing.T) {
 	credentials := sweepFixture(t)
 	crashEphemeralClaudeHome(t, credentials, []byte("rotated-chain"), "deleted-acct")
