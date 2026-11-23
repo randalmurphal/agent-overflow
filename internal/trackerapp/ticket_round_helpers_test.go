@@ -160,7 +160,9 @@ func newRoundFixture(t *testing.T, n int, jira bool) (*mirrorFixture, *trackerSt
 	}
 	m.tracks(rows)
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
-	m.p.set(func(p *scripted) { p.detail = st.detail })
+	// Either tracker answers a cards read: a Jira round's check, and on
+	// either a card a changed document is owed (payOwedCards).
+	m.p.set(func(p *scripted) { p.detail, p.cards = st.detail, st.cardsRead })
 	if jira {
 		m.p.updatedMovesWithDetail(st.cardsRead)
 	}

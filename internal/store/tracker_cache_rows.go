@@ -107,10 +107,8 @@ var (
 	// (identical content stored by an earlier read, whose read time alone
 	// moves, or, on a delta page, a row no listing marked that the write
 	// does not reach), whether the stored card admits its card from
-	// an earlier read (mirrorCardAdvancesSQL), whether it is new on the
-	// board (gained when the page may add rows, refused when not), and
-	// whether it names a reference the mirror lacks (mirrorRowLacksSQL),
-	// with its place in the page.
+	// an earlier read (mirrorCardAdvancesSQL), and whether it is new on
+	// the board (gained when the page may add rows, refused when not).
 	mirrorRowsStateSQL = `SELECT c.value ->> 'i',
 		    (b.root_id IS NULL AND NOT ?5) OR ` + mirrorCardRefusedSQL("?4") + `
 		      OR (b.read_at > ?4 AND (b.order_key IS NOT c.value ->> 'o' OR b.estimate IS NOT c.value ->> 'e')),
@@ -119,8 +117,7 @@ var (
 		    (b.read_at < ?4 AND b.order_key IS c.value ->> 'o' AND b.estimate IS c.value ->> 'e')
 		      OR (?6 AND b.listed = 0 AND (b.read_at > ?4 OR (b.order_key IS c.value ->> 'o' AND b.estimate IS c.value ->> 'e'))),
 		    (b.root_id IS NOT NULL OR ?5) AND ` + mirrorCardAdvancesSQL("?4") + `,
-		    b.root_id IS NULL,
-		    ` + mirrorRowLacksSQL + `, c.key
+		    b.root_id IS NULL
 		  FROM json_each(?2) c
 		  LEFT JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = c.value ->> 'i'
 		  LEFT JOIN tracker_cache_board_issues b ON b.root_id = ?1 AND b.issue_id = c.value ->> 'i' AND b.board_id = ?3`
@@ -198,81 +195,22 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 	return changes, nil
 }
 
-// mirrorRowLacksSQL holds for a row c of board ?3 that names a status,
-// user or sprint the mirror has no row for and has not marked unexplained.
-const mirrorRowLacksSQL = `(c.value ->> 's' <> ''
-	      AND NOT EXISTS (SELECT 1 FROM tracker_cache_statuses st WHERE st.root_id = ?1 AND st.status_id = c.value ->> 's')
-	      AND NOT EXISTS (SELECT 1 FROM tracker_cache_board_unexplained u
-	                       WHERE u.root_id = ?1 AND u.board_id = ?3 AND u.kind = 1 AND u.ref_id = c.value ->> 's' AND u.named_at = 0))
-	    OR (c.value ->> 'a' <> ''
-	      AND NOT EXISTS (SELECT 1 FROM tracker_cache_users us WHERE us.root_id = ?1 AND us.user_id = c.value ->> 'a')
-	      AND NOT EXISTS (SELECT 1 FROM tracker_cache_board_unexplained u
-	                       WHERE u.root_id = ?1 AND u.board_id = ?3 AND u.kind = 2 AND u.ref_id = c.value ->> 'a' AND u.named_at = 0))
-	    OR EXISTS (SELECT 1 FROM json_each(c.value -> 'm') m
-	      WHERE NOT EXISTS (SELECT 1 FROM tracker_cache_sprints sp WHERE sp.root_id = ?1 AND sp.board_id = ?3 AND sp.sprint_id = m.value)
-	        AND NOT EXISTS (SELECT 1 FROM tracker_cache_board_unexplained u
-	                         WHERE u.root_id = ?1 AND u.board_id = ?3 AND u.kind = 3 AND u.ref_id = m.value AND u.named_at = 0))`
-
-// mirrorRowsPendingSQL marks pending each reference of the JSON list ?2
-// of mirrorRefRow, named by rows of board ?3, that the mirror lacks, as
-// named by the page's read ?4: a new mark, or a pending one the
-// structure's read ?5 began after, which makes the board due again.
-// An unexplained mark stays as it is.
-const mirrorRowsPendingSQL = `INSERT INTO tracker_cache_board_unexplained(root_id, board_id, kind, ref_id, named_at)
-	SELECT ?1, ?3, r.value ->> 'k', r.value ->> 'r', ?4 FROM json_each(?2) r
-	 WHERE CASE r.value ->> 'k'
-	   WHEN 1 THEN NOT EXISTS (SELECT 1 FROM tracker_cache_statuses st WHERE st.root_id = ?1 AND st.status_id = r.value ->> 'r')
-	   WHEN 2 THEN NOT EXISTS (SELECT 1 FROM tracker_cache_users us WHERE us.root_id = ?1 AND us.user_id = r.value ->> 'r')
-	   ELSE NOT EXISTS (SELECT 1 FROM tracker_cache_sprints sp WHERE sp.root_id = ?1 AND sp.board_id = ?3 AND sp.sprint_id = r.value ->> 'r') END
-	ON CONFLICT(root_id, board_id, kind, ref_id) DO UPDATE SET named_at = excluded.named_at
-	WHERE named_at > 0 AND named_at < ?5 AND excluded.named_at > named_at`
-
-// mirrorRefRow is a reference a row names, as mirrorRowsPendingSQL reads
-// it: its kind (1 status, 2 user, 3 sprint) and ID.
-type mirrorRefRow struct {
-	Kind int    `json:"k"`
-	ID   string `json:"r"`
-}
-
-// mirrorRefsOf is the distinct references rows name.
-func mirrorRefsOf(rows []mirrorCardRow) []mirrorRefRow {
-	seen := map[mirrorRefRow]bool{}
-	var refs []mirrorRefRow
-	add := func(kind int, id string) {
-		if ref := (mirrorRefRow{Kind: kind, ID: id}); id != "" && !seen[ref] {
-			seen[ref] = true
-			refs = append(refs, ref)
-		}
-	}
-	for _, row := range rows {
-		add(1, row.Status)
-		add(2, row.Assignee)
-		for _, sprint := range row.Sprints {
-			add(3, sprint)
-		}
-	}
-	return refs
-}
-
 // writeMirrorRowsTx stores the page's cards and rows: one statement sorts
-// the rows, then the card statements (one more when a card is admitted
-// from an earlier read and not replaced), the row upsert when a row is to
-// be written, and the read-time move when one is identical or a listing
-// names a row no listing marked. A row the page
-// does not supersede that names a reference the mirror lacks and has not
-// marked unexplained marks it pending (mirrorRowsPendingSQL), one
-// statement more, which makes the board due a structure read when the
-// page began no earlier than the structure's read.
+// the rows, then the card statements (storeMirrorCardsTx), the row upsert
+// when a row is to be written, and the read-time move when one is
+// identical or a listing names a row no listing marked. A card the page
+// stores that names a reference the mirror lacks and has not marked
+// unexplained marks it pending on the page's board (mirrorCardMarkSQL),
+// which makes the board due a structure read when the page began no
+// earlier than the structure's read.
 func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, rows []mirrorCardRow, encoded string, addsRows, listing bool,
 	board mirrorBoard, changes *MirrorChanges) error {
 	var write bool
 	var advance, advancing []string
-	var lacking []mirrorCardRow
 	err := scanMirrorRows(tx, mirrorRowsStateSQL, []any{rootID, encoded, page.BoardID, page.ReadAt, addsRows, listing}, func(r rowScanner) error {
 		var id string
-		var superseded, writes, advances, cardAdvances, fresh, rowLacks sql.NullBool
-		var at int
-		if err := r.Scan(&id, &superseded, &writes, &advances, &cardAdvances, &fresh, &rowLacks, &at); err != nil {
+		var superseded, writes, advances, cardAdvances, fresh sql.NullBool
+		if err := r.Scan(&id, &superseded, &writes, &advances, &cardAdvances, &fresh); err != nil {
 			return err
 		}
 		if cardAdvances.Bool {
@@ -287,9 +225,6 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, rows []mirr
 		case fresh.Bool:
 			changes.Refused = append(changes.Refused, id)
 		}
-		if rowLacks.Bool && !superseded.Bool {
-			lacking = append(lacking, rows[at])
-		}
 		write = write || writes.Bool
 		if advances.Bool {
 			advance = append(advance, id)
@@ -300,9 +235,11 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, rows []mirr
 		return fmt.Errorf("sort rows: %w", err)
 	}
 	slices.Sort(advancing)
-	if changes.Cards, err = storeMirrorCardsTx(tx, mirrorRowCards, rootID, encoded, page.ReadAt, advancing, page.BoardID, addsRows); err != nil {
+	stored, err := storeMirrorCardsTx(tx, mirrorRowCards, rootID, rows, encoded, page.ReadAt, advancing, page.BoardID, addsRows)
+	if err != nil {
 		return err
 	}
+	changes.Cards = stored.changed
 	if write {
 		if changes.Rows, err = queryIDs(tx, mirrorRowsUpsertSQL, rootID, encoded, page.BoardID, page.ReadAt, addsRows, listing); err != nil {
 			return fmt.Errorf("upsert rows: %w", err)
@@ -318,16 +255,8 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, rows []mirr
 			return fmt.Errorf("record the rows' read: %w", err)
 		}
 	}
-	if len(lacking) > 0 {
-		list, err := encodeMirrorJSON(mirrorRefsOf(lacking))
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(mirrorRowsPendingSQL, rootID, list, page.BoardID, page.ReadAt, board.readAt); err != nil {
-			return fmt.Errorf("mark lacking references: %w", err)
-		}
-	}
-	changes.StructureDue = board.structureDueAt() > 0 || len(lacking) > 0 && page.ReadAt >= board.readAt
+	_, marked := slices.BinarySearch(stored.marked, page.BoardID)
+	changes.StructureDue = board.structureDueAt() > 0 || marked && page.ReadAt >= board.readAt
 	return nil
 }
 

@@ -295,7 +295,12 @@ type shownDetail struct {
 }
 
 // shownDetailOf is d shown from the cards of mirrored that want names: its
-// own issue first, then the others it shows.
+// own issue first, then the others it shows. When the mirror's card of the
+// issue is of the update d's card is, the ticket shows the mirror's card:
+// at one update time the card owns the fields it holds and the document
+// the rest (store StoreMirrorDetails), so a change that moves no update
+// time, such as a project key rename, shows on the ticket as on the
+// board. The document's URL stays its own.
 func shownDetailOf(d tracker.Detail, want []string, mirrored map[string]store.MirrorCard) shownDetail {
 	out := shownDetail{d: d, links: slices.Clone(d.Links)}
 	cards := make(map[tracker.IssueID]tracker.Card, len(want))
@@ -305,6 +310,9 @@ func shownDetailOf(d tracker.Detail, want []string, mirrored map[string]store.Mi
 		case !ok:
 		case id == string(d.Card.ID):
 			out.own = &m
+			if c, ok := cardOf(m); ok && m.UpdatedAt == millis(d.Card.Updated) {
+				out.d.Card = c
+			}
 		default:
 			if c, ok := cardOf(m); ok {
 				cards[c.ID] = c
@@ -317,7 +325,7 @@ func shownDetailOf(d tracker.Detail, want []string, mirrored map[string]store.Mi
 			ref.Key, ref.Title, ref.Status = c.Key, c.Title, c.Status
 		}
 	}
-	if p, ok := cards[d.Card.Parent]; ok && d.Card.Parent != "" {
+	if p, ok := cards[out.d.Card.Parent]; ok && out.d.Card.Parent != "" {
 		out.parent = &p
 	}
 	return out
@@ -412,10 +420,10 @@ func (sd shownDetail) view(mirrored catalogNames) DetailView {
 // the same issue, when m is the version c shows: the same update time and
 // status. Otherwise it is unknown (0): the mirror's time belongs to
 // another status, or to an earlier or a later stay in this one. The store
-// alone decides the time a card keeps (mirrorStatusSinceSQL); a
-// document's card is stored with the document (StoreMirrorDetails), so
-// only a document of an issue the mirror does not keep, or one a later
-// read already superseded, shows none.
+// alone decides the time a card keeps (mirrorStatusSinceSQL); a document
+// is stored only once the mirror holds its card's version (store
+// StoreMirrorDetails, trackerapp payOwedCards), so only a document of an
+// issue the mirror does not keep, or one the pump holds, shows none.
 func statusSinceOf(m store.MirrorCard, c tracker.Card) int64 {
 	if m.StatusID != string(c.Status) || m.UpdatedAt != millis(c.Updated) {
 		return 0

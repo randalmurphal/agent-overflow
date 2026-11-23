@@ -18,7 +18,8 @@ const fakeRoundIssues = 12
 // real providers and clients, whatever their number: on Jira one cards
 // read (an issue bulk fetch) while none changed, on Linear one details
 // read of up to linear.MaxIssueDetails issues, a further one past it. A
-// ticket that changed adds its own full read only.
+// ticket that changed adds its own full read on Jira, and on Linear the
+// read of the card its new document is owed.
 func TestFakeRoundRequests(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"jira", "linear"} {
@@ -98,10 +99,11 @@ func TestFakeRoundRequests(t *testing.T) {
 			routes := s.requestsOf(t, func() { s.svc.roundTick(rd) })
 			t.Logf("one changed: %d requests: %s", total(routes), describe(routes))
 			// Jira: the cards read, then the issue and its comments. Linear:
-			// the details reads, which read the changed one in full.
+			// the details reads, which read the changed one in full, and the
+			// cards read of the card its new document is owed (payOwedCards).
 			wantChanged := want[fakeRoundIssues] + 2
 			if kind == "linear" {
-				wantChanged = want[fakeRoundIssues]
+				wantChanged = want[fakeRoundIssues] + 1
 			}
 			if total(routes) != wantChanged {
 				t.Errorf("one changed: %d requests, pinned at %d: %s", total(routes), wantChanged, describe(routes))

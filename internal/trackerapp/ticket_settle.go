@@ -68,9 +68,11 @@ func askerErr(rd *ticketRead, failure *Failure, readErr error) error {
 }
 
 // ticketInputs reports what ch, changes stored by one read, moves of tp's
-// view: read when the issue's own card changed and the ticket is due a
-// full read at once, rebuild when an input of the view other than its
-// document may have changed. The inputs are those detailView reads: the
+// view: read when the issue's own card changed and the same read stored no
+// document of it, so the ticket is due a full read at once; rebuild when
+// an input of the view other than its document may have changed, or
+// another read stored its document, which the rebuild reads from the
+// mirror's copy. The inputs are those detailView reads: the
 // mirror's card of the issue (its status time, from the card and its
 // history), the cards of the issues it shows (its parent and the issues it
 // links) and whether the mirror keeps them (a row stored or removed), the
@@ -83,7 +85,7 @@ func ticketInputs(tp *ticketPump, ch Changes, origin bool) (read, rebuild bool) 
 	shown := func(ids []tracker.IssueID) bool {
 		return slices.ContainsFunc(tp.shows, func(id tracker.IssueID) bool { return slices.Contains(ids, id) })
 	}
-	read = !origin && own(ch.Cards)
+	read = !origin && own(ch.Cards) && !own(ch.Details)
 	rebuild = ch.Catalog || own(ch.Cards) || own(ch.History) || own(ch.Rows) || own(ch.Removed) || own(ch.Dropped) ||
 		!origin && own(ch.Details) || shown(ch.Cards) || shown(ch.Rows) || shown(ch.Removed)
 	return read, rebuild
@@ -91,7 +93,7 @@ func ticketInputs(tp *ticketPump, ch Changes, origin bool) (read, rebuild bool) 
 
 // readTickets reads the tickets of pumps, all of connection conn, together
 // (readDetails), each checked against what its pump settled last and read
-// in full when full is set or it was due a read at once (ticketReads),
+// in full when full is set (ticketReads),
 // passes what the read stored through the change funnel under the root the
 // read held, and settles each pump with its own outcome (settleTickets).
 // opened records a person's opening.
@@ -108,9 +110,11 @@ func (s *Service) readTickets(ctx context.Context, conn string, pumps []*ticketP
 }
 
 // ticketReads are the reads of pumps' tickets, each checked against what
-// its pump settled last and read in full when full is set or it was due a
-// read at once (readNowLocked), and the stamp the read began at. Each is
-// in flight (ticketPump.reading) until settleTickets settles it.
+// its pump settled last and read in full when full is set, and the stamp
+// the read began at. A read at once (readNowLocked) is checked as any
+// other, and read in full when the card stored since is newer than its
+// document (mirrorMoved). Each is in flight (ticketPump.reading) until
+// settleTickets settles it.
 func (s *Service) ticketReads(pumps []*ticketPump, full bool) (began uint64, reads []*ticketRead) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
@@ -118,7 +122,7 @@ func (s *Service) ticketReads(pumps []*ticketPump, full bool) (began uint64, rea
 	reads = make([]*ticketRead, len(pumps))
 	for i, tp := range pumps {
 		tp.reading++
-		reads[i] = &ticketRead{issue: tp.key.issue, full: full || tp.nudged > tp.settled}
+		reads[i] = &ticketRead{issue: tp.key.issue, full: full, nudged: tp.nudged > tp.settled}
 		if tp.check != nil {
 			prior := *tp.check
 			reads[i].prior = &prior

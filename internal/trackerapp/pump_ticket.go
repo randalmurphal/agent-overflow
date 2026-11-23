@@ -43,9 +43,9 @@ type ticketPump struct {
 	settled, docs uint64
 	// due is when the round reads the ticket next. nudged is the stamp of
 	// the last request to read it at once (readNowLocked): a read that
-	// began before it neither undoes it nor counts as its read, and the
-	// next read is a full one. inputs is the stamp of the last change to
-	// an input of the view other than its document (ticketInputs).
+	// began before it neither undoes it nor counts as its read. inputs is
+	// the stamp of the last change to an input of the view other than its
+	// document (ticketInputs).
 	due            time.Time
 	nudged, inputs uint64
 	// reading counts the reads of the ticket begun and not settled

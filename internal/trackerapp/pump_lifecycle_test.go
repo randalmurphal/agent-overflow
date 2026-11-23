@@ -450,6 +450,7 @@ func TestStopJoinsPumpsAndLoop(t *testing.T) {
 			return tracker.Detail{Card: card(string(id), 1)}, nil
 		}
 	})
+	answerCardsFromDetails(m.p)
 	m.subscribe(t, testBoard)
 	m.subscribe(t, "2")
 	if _, err := m.svc.SubscribeTicket(m.conn.ID, "10001"); err != nil {

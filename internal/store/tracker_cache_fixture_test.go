@@ -73,21 +73,22 @@ func webRow(id string, updated int64, order string, sprints ...string) MirrorRow
 	return MirrorRow{Card: webCard(id, updated, sprints...), OrderKey: order}
 }
 
-// heldDoc is issue's detail document with data, showing the card the
-// mirror keeps for issue, or the least card when it keeps none, so a test
-// of the documents leaves the mirror's cards as they were.
+// heldDoc is issue's detail document with data, of the update of the card
+// the mirror keeps for issue, or of update 1 when it keeps none (a
+// document then owed its card), so a test of the documents passes the
+// card fence. It reads the mirror: a test that counts a write's
+// statements builds its documents before it counts.
 func heldDoc(t *testing.T, s *Store, root int64, issue string, data []byte) MirrorDetailDoc {
 	t.Helper()
 	cards, err := s.ListMirrorCards(root, []string{issue})
 	if err != nil {
 		t.Fatal(err)
 	}
-	card := MirrorCard{IssueID: issue, Key: issue, UpdatedAt: 1}
+	doc := MirrorDetailDoc{IssueID: issue, Data: data, CardUpdatedAt: 1}
 	if len(cards) == 1 {
-		card = cards[0]
-		card.StatusSince = 0
+		doc.CardUpdatedAt = cards[0].UpdatedAt
 	}
-	return MirrorDetailDoc{IssueID: issue, Data: data, Card: card}
+	return doc
 }
 
 // heldDocs is heldDoc of each of docs' issues and data.

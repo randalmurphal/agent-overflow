@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -106,7 +107,9 @@ func TestAReopenAfterEvictionStoresTheDetailAgain(t *testing.T) {
 }
 
 // A read through that began before another one stored its detail does
-// not replace it: the later read's document stays.
+// not replace it: the later read's document stays. The two documents are
+// of one card version and differ in what the document owns, its
+// description.
 func TestAStaleInFlightDetailReadStoresNothing(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -114,33 +117,35 @@ func TestAStaleInFlightDetailReadStoresNothing(t *testing.T) {
 	m.p.changedRows = pagedDelta(t, []tracker.Row{row("10001", 1_799_000_000_000, "a")})
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
 	inside, release := make(chan struct{}), make(chan struct{})
+	var end sync.Once
+	// The held read ends with the test, so a failure before the release
+	// leaves no read waiting.
+	t.Cleanup(func() { end.Do(func() { close(release) }) })
 	var calls atomic.Int32
 	m.p.detail = func(id tracker.IssueID) (tracker.Detail, error) {
 		c := card(string(id), 1_799_000_000_000)
 		if calls.Add(1) == 1 {
 			close(inside)
 			<-release
-			c.Title = "Stale"
-			return tracker.Detail{Card: c}, nil
+			return tracker.Detail{Card: c, Description: "Stale"}, nil
 		}
-		c.Title = "Fresh"
-		return tracker.Detail{Card: c}, nil
+		return tracker.Detail{Card: c, Description: "Fresh"}, nil
 	}
 	done := make(chan error, 1)
 	go func() {
 		_, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
 		done <- err
 	}()
-	<-inside
-	if v, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err != nil || v.Card.Title != "Fresh" {
-		t.Fatalf("the later read: %q, %v", v.Card.Title, err)
+	waitClosed(t, "the first read at the tracker", inside)
+	if v, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err != nil || v.Description != "Fresh" {
+		t.Fatalf("the later read: %q, %v", v.Description, err)
 	}
-	close(release)
+	end.Do(func() { close(release) })
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if _, d, ok := m.storedDetail(t, "10001"); !ok || d.Card.Title != "Fresh" {
-		t.Fatalf("stored %v: %q", ok, d.Card.Title)
+	if _, d, ok := m.storedDetail(t, "10001"); !ok || d.Description != "Fresh" {
+		t.Fatalf("stored %v: %q", ok, d.Description)
 	}
 }
 
@@ -183,8 +188,7 @@ func (m *mirrorFixture) evictUntold(t *testing.T) Changes {
 		if err != nil {
 			t.Fatal(err)
 		}
-		c := must[store.MirrorCard](t)(mirrorCard(d.Card))
-		docs = append(docs, store.MirrorDetailDoc{IssueID: id, Data: data, Card: c})
+		docs = append(docs, store.MirrorDetailDoc{IssueID: id, Data: data, CardUpdatedAt: millis(d.Card.Updated)})
 	}
 	at := m.svc.readAtNext()
 	written, err := m.st.StoreMirrorDetails(m.root(), m.sync("").Sweep, docs, at, at)
@@ -237,11 +241,10 @@ func TestADetailDroppedDuringItsCheckIsReadAgain(t *testing.T) {
 // a document or none: a write that is no opening stores only into one.
 func (m *mirrorFixture) heldDetail(t *testing.T, issue string) bool {
 	t.Helper()
-	c := store.MirrorCard{IssueID: issue, Key: issue, UpdatedAt: 1}
+	doc := store.MirrorDetailDoc{IssueID: issue, Data: []byte(`{}`), CardUpdatedAt: 1}
 	if held := must[[]store.MirrorCard](t)(m.st.ListMirrorCards(m.root(), []string{issue})); len(held) == 1 {
-		c, c.StatusSince = held[0], 0
+		doc.CardUpdatedAt = held[0].UpdatedAt
 	}
-	doc := store.MirrorDetailDoc{IssueID: issue, Data: []byte(`{}`), Card: c}
 	w := must[store.MirrorDetailWrite](t)(m.st.StoreMirrorDetail(m.root(), m.sync("").Sweep, doc, 0, m.svc.readAtNext()))
 	return w.Stored
 }
@@ -281,6 +284,7 @@ func TestTheMirrorsCopyRewrittenBeforeItsOpeningIsReadAgain(t *testing.T) {
 	m.seedBoard(t)
 	c := card("10001", 1_799_000_000_000)
 	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
+	m.p.cards = cardsAnswering(&c)
 	m.openDetail(t, "10001")
 	rewritten := false
 	m.svc.store = afterDetailRead{Store: m.st, then: func() {
@@ -289,7 +293,7 @@ func TestTheMirrorsCopyRewrittenBeforeItsOpeningIsReadAgain(t *testing.T) {
 		}
 		rewritten = true
 		m.pass(time.Minute)
-		c.Title = "Rewritten"
+		c.Title, c.Updated = "Rewritten", c.Updated.Add(time.Minute)
 		if _, _, err := m.svc.RefreshIssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err != nil {
 			t.Error(err)
 		}
@@ -401,8 +405,9 @@ func TestARefreshReadsTheDetail(t *testing.T) {
 }
 
 // A stored detail older than the card sync stored since is read with no
-// check; one newer than the mirror's card (read after sync) is checked,
-// which stores the card.
+// check. A refresh that reads a document newer than the mirror's card
+// reads that card first (it is owed, store MirrorDetailWrite.CardOwed),
+// and an open after it checks the stored document with a cards read.
 func TestADetailTheMirrorKnowsIsStaleIsRead(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -422,7 +427,7 @@ func TestADetailTheMirrorKnowsIsStaleIsRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.openDetail(t, "10001")
-	if m.p.count("Cards") != 1 || m.p.count("Details") != 3 {
-		t.Fatalf("an older mirror card: %d card reads, %d detail reads", m.p.count("Cards"), m.p.count("Details"))
+	if m.p.count("Cards") != 2 || m.p.count("Details") != 3 {
+		t.Fatalf("an older mirror card: %d card reads, %d detail reads; want the owed card's and the check's, 3", m.p.count("Cards"), m.p.count("Details"))
 	}
 }

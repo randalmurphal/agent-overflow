@@ -22,9 +22,11 @@ import (
 
 // cardsHold holds the next view build at its read of the mirror's cards,
 // once armed, after the read returned: the build has its snapshot of the
-// linked card and has not installed its view.
+// linked card and has not installed its view. A hold ends with the test
+// (ended), so a failure before the release leaves no build waiting.
 type cardsHold struct {
 	*store.Store
+	ended   chan struct{}
 	mu      sync.Mutex
 	armed   *heldCall
 	pending bool
@@ -47,7 +49,10 @@ func (h *cardsHold) ListMirrorCards(root int64, ids []string) ([]store.MirrorCar
 	h.mu.Unlock()
 	if held {
 		close(c.arrived)
-		<-c.release
+		select {
+		case <-c.release:
+		case <-h.ended:
+		}
 	}
 	return cards, err
 }
@@ -85,10 +90,12 @@ func newCrossFixture(t *testing.T) *crossFixture {
 			return d, nil
 		}
 	})
+	answerCardsFromDetails(m.p)
 	f.sub = must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001"))
 	m.events.issueEvents(t, 1)
 	m.settledTickets(t)
-	f.hold = &cardsHold{Store: m.st}
+	f.hold = &cardsHold{Store: m.st, ended: make(chan struct{})}
+	t.Cleanup(func() { close(f.hold.ended) })
 	m.svc.store = f.hold
 	f.before = m.issueEventCount()
 	return f

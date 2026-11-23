@@ -19,15 +19,22 @@ func (m *mirrorFixture) seedBoard(t *testing.T) {
 	t.Helper()
 	epic := row("10004", 1_799_000_000_000, "d")
 	epic.Card.Title, epic.Card.Type = "The epic", tracker.IssueType{ID: "t1", Name: "Epic", Level: 1}
-	inSprint := row("10001", 1_799_000_000_000, "a")
 	five := 5.0
-	inSprint.Card.Sprints, inSprint.Card.Parent, inSprint.Estimate = []tracker.SprintID{"1"}, "10004", &five
-	inSprint.Card.Priority = tracker.Choice{ID: "3", Name: "Medium"}
-	inSprint.Card.Labels = []tracker.Choice{{ID: "frontend", Name: "frontend"}}
+	inSprint := tracker.Row{Card: seededCard(), Order: "a", Estimate: &five}
 	done := row("10003", 1_799_000_000_000, "c")
 	done.Card.Status = "s3"
 	m.p.changedRows = pagedDelta(t, []tracker.Row{inSprint, row("10002", 1_799_000_000_000, "b"), done, epic})
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+}
+
+// seededCard is issue 10001's card as seedBoard's board read finds it:
+// in sprint 1, a child of 10004, of medium priority, labeled frontend.
+func seededCard() tracker.Card {
+	c := card("10001", 1_799_000_000_000)
+	c.Sprints, c.Parent = []tracker.SprintID{"1"}, "10004"
+	c.Priority = tracker.Choice{ID: "3", Name: "Medium"}
+	c.Labels = []tracker.Choice{{ID: "frontend", Name: "frontend"}}
+	return c
 }
 
 func TestBoardView(t *testing.T) {
@@ -199,11 +206,8 @@ func TestCardShowsWhenItsStatusBegan(t *testing.T) {
 	if v := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10001")); v.Card.StatusSince != want {
 		t.Fatalf("issue card status since %d", v.Card.StatusSince)
 	}
-	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) {
-		c := card("10001", 1_799_000_000_000)
-		c.Parent = "10004"
-		return tracker.Detail{Card: c}, nil
-	}
+	c := seededCard()
+	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return tracker.Detail{Card: c}, nil }
 	for _, path := range []string{"read through", "checked", "the mirror's copy"} {
 		var v DetailView
 		var err error
@@ -211,7 +215,7 @@ func TestCardShowsWhenItsStatusBegan(t *testing.T) {
 		case "read through":
 			v, _, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
 		case "checked":
-			m.p.updatedMovesWithDetail(cardsOf)
+			m.p.updatedMovesWithDetail(cardsAnswering(&c))
 			v, _, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
 		default:
 			v, _, err = m.svc.MirroredDetail(m.conn.ID, "10001")
@@ -262,13 +266,15 @@ func TestAnEditThatKeepsTheStatusKeepsWhenItBegan(t *testing.T) {
 }
 
 // A detail shows when its status began only when the mirror's time
-// describes that status and stay: the detail's card is stored with it, so
-// a later card of the same status keeps the time as a board's edit does
+// describes that status and stay: a detail of a later card is owed that
+// card, read and stored before it, so a later card of the same status
+// keeps the time as a board's edit does
 // (TestAnEditThatKeepsTheStatusKeepsWhenItBegan) and one of another
 // status shows it unknown until its history is read, read through and as
-// the mirror's copy; a detail read before a newer card was stored shows
-// it unknown whatever its status. The view never keeps the mirror's time
-// for a version the mirror has not stored: that is the store's to decide.
+// the mirror's copy; a detail read before a newer card was stored is
+// stale, shows it unknown whatever its status, and is not stored. The view
+// never keeps the mirror's time for a version the mirror has not stored:
+// that is the store's to decide.
 func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
 	t.Parallel()
 	began := time.UnixMilli(1_798_500_000_000).UTC()
@@ -308,6 +314,7 @@ func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
 				c.Status = tc.status
 				return tracker.Detail{Card: c}, nil
 			}
+			answerCardsFromDetails(m.p)
 			for _, mirrored := range []bool{false, true} {
 				var v DetailView
 				var err error
@@ -315,6 +322,12 @@ func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
 					v, _, err = m.svc.MirroredDetail(m.conn.ID, "10001")
 				} else {
 					v, _, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
+				}
+				if stale := tc.updated < 1_799_000_000_000; mirrored && stale {
+					if !errors.Is(err, ErrNotMirrored) {
+						t.Fatalf("the mirror's copy of a stale detail: %+v, %v; want none", v.Card, err)
+					}
+					continue
 				}
 				if err != nil || v.Card.StatusSince != tc.since || v.Card.Updated != tc.updated {
 					t.Fatalf("detail (mirror's copy %v): status %s since %d, updated %d, %v; want since %d", mirrored, v.Card.Status.ID, v.Card.StatusSince, v.Card.Updated, err, tc.since)
@@ -335,6 +348,7 @@ func TestATicketDoesNotShowAnEarlierStaysTime(t *testing.T) {
 			m := newMirrorFixture(t)
 			m.seedBoard(t)
 			m.p.caps.DetailMovesUpdated = refresh
+			answerCardsFromDetails(m.p)
 			began := time.UnixMilli(1_798_500_000_000).UTC()
 			m.p.history = func(q tracker.HistoryQuery) (tracker.History, error) {
 				var h tracker.History
@@ -391,7 +405,8 @@ func TestStatusSinceOf(t *testing.T) {
 // An edit that keeps the issue's status leaves the time the status began
 // on the open ticket: on Jira the round's check stores the changed card
 // before the ticket is read in full, and on Linear, read in full with no
-// check, the document's card is stored with the document.
+// check, the card the changed document is owed is read by ID and stored
+// before the document (payOwedCards).
 func TestAnOpenTicketKeepsWhenItsStatusBeganAcrossAnEdit(t *testing.T) {
 	t.Parallel()
 	for _, jira := range []bool{true, false} {

@@ -70,6 +70,7 @@ func TestCrossingTicketReadsKeepTheLater(t *testing.T) {
 						return d, nil
 					}
 				})
+				answerCardsFromDetails(m.p)
 				sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, issue))
 				m.events.issueEvents(t, 1)
 				m.settledTickets(t)
@@ -283,6 +284,7 @@ func TestAnEndIsToldBeforeTheCoreStops(t *testing.T) {
 			m.p.set(func(p *scripted) {
 				p.detail = func(id tracker.IssueID) (tracker.Detail, error) { return detailOfCard(card(string(id), 1)), nil }
 			})
+			answerCardsFromDetails(m.p)
 			var done <-chan struct{}
 			var handle string
 			ended := make(chan struct{})

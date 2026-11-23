@@ -160,8 +160,9 @@ func (s *Service) roundRead(rd *ticketRound, at time.Time, all bool) ticketsResu
 	return s.readTickets(rd.ctx, rd.conn, members, Background, false, false)
 }
 
-// readNowLocked makes tp due a read at once, a full one (a stored card
-// of its issue changed, or nothing holds its document), and wakes its
+// readNowLocked makes tp due a read at once (a stored card of its issue
+// changed, or nothing holds its document), in full when that card is newer
+// than the pump's document and else checked (mirrorMoved), and wakes its
 // connection's round. A read that began before this does not undo it. The
 // caller holds subMu.
 func (s *Service) readNowLocked(tp *ticketPump) {

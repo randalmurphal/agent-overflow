@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/linear"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // Detail is one issue as its ticket shows it: the issue with its first 50
@@ -26,6 +27,11 @@ func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.D
 		return tracker.Detail{}, fmt.Errorf("linearprovider: detail: %w: no issue named", tracker.ErrInvalidInput)
 	}
 	d, err := p.c.Issue(ctx, string(issue))
+	if err == nil && d.Trashed {
+		// A trashed issue is one the tracker no longer shows, as one it
+		// does not return.
+		err = fmt.Errorf("%w: the issue is in the trash", trackerapi.ErrNotFound)
+	}
 	if err != nil {
 		return tracker.Detail{}, fmt.Errorf("linearprovider: detail of %s: %w", issue, err)
 	}
@@ -40,8 +46,9 @@ func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.D
 // request (Linear charges a request of several the points of one), then
 // what each issue needs beyond its first pages, as Detail does, and the
 // labels any of them carries beyond its nested list in one request for
-// all of them. An ID Linear does not return, or that is no issue ID, is
-// Missing.
+// all of them. An ID Linear does not return, that is no issue ID, or of a
+// trashed issue is Missing, as Cards has it: a trashed issue is one the
+// tracker no longer shows.
 func (p *Provider) Details(ctx context.Context, issues []tracker.IssueID) (tracker.Details, error) {
 	for i, issue := range issues {
 		if issue == "" || slices.Contains(issues[:i], issue) {
@@ -58,6 +65,7 @@ func (p *Provider) Details(ctx context.Context, issues []tracker.IssueID) (track
 		}
 		read = append(read, got...)
 	}
+	read = slices.DeleteFunc(read, func(d *linear.IssueDetail) bool { return d.Trashed })
 	for _, id := range valid {
 		if !slices.ContainsFunc(read, func(d *linear.IssueDetail) bool { return d.ID == id }) {
 			out.Missing = append(out.Missing, tracker.IssueID(id))
@@ -74,15 +82,20 @@ func (p *Provider) Details(ctx context.Context, issues []tracker.IssueID) (track
 }
 
 // details are ds as their tickets show them: each issue's team's states
-// and history past the first page read, then the label names all of them
-// need.
+// and history past the first page read, then the label names their cards
+// need. A card's labels are named as Cards names them (labelNames: the
+// issue's own nested list, then the rest by ID), never from the history,
+// whose entries name a label as it was then: a detail's card is the card
+// a cards read of the same version finds. The history keeps the names its
+// entries carry, and takes the card's for a label they do not name.
 func (p *Provider) details(ctx context.Context, ds []*linear.IssueDetail) ([]tracker.Detail, error) {
 	n := names{states: map[string]string{}, labels: map[string]string{}, users: map[string]string{}, cycles: map[string]string{},
 		projects: map[string]string{}, teams: map[string]string{}, issues: map[string]string{}}
 	states := make([][]linear.WorkflowState, len(ds))
 	older := make([][]linear.HistoryEntry, len(ds))
-	var labels []string
+	issues := make([]linear.Issue, len(ds))
 	for i, d := range ds {
+		issues[i] = d.Issue
 		st := d.States
 		var err error
 		if d.MoreStates {
@@ -94,28 +107,32 @@ func (p *Provider) details(ctx context.Context, ds []*linear.IssueDetail) ([]tra
 			return nil, err
 		}
 		n.addIssue(d, states[i])
-		labels = append(labels, d.LabelIDs...)
 		if older[i], err = p.olderHistory(ctx, d, n); err != nil {
 			return nil, err
 		}
 	}
-	var err error
-	if n.labels, err = labelsByID(ctx, p, n.labels, labels); err != nil {
+	cardLabels, err := p.labelNames(ctx, issues)
+	if err != nil {
 		return nil, err
+	}
+	for id, name := range cardLabels {
+		if _, ok := n.labels[id]; !ok {
+			n.labels[id] = name
+		}
 	}
 	out := make([]tracker.Detail, len(ds))
 	for i, d := range ds {
-		out[i] = n.detail(d, states[i], older[i])
+		out[i] = n.detail(d, states[i], older[i], cardLabels)
 	}
 	return out, nil
 }
 
 // detail is d as its ticket shows it, with its team's states and its
 // whole history, older being the entries after d's own page, its IDs
-// named by n.
-func (n names) detail(d *linear.IssueDetail, states []linear.WorkflowState, older []linear.HistoryEntry) tracker.Detail {
+// named by n and its card's labels by cardLabels.
+func (n names) detail(d *linear.IssueDetail, states []linear.WorkflowState, older []linear.HistoryEntry, cardLabels map[string]string) tracker.Detail {
 	out := tracker.Detail{
-		Card: card(d.Issue, n.labels), URL: d.URL, Description: d.Description,
+		Card: card(d.Issue, cardLabels), URL: d.URL, Description: d.Description,
 		Fields:      detailFields(d.Issue, n),
 		Comments:    commentPage(d.Comments),
 		HistoryFrom: d.CreatedAt.Add(creationFold),
