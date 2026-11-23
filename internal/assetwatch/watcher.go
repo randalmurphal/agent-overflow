@@ -82,10 +82,15 @@ const (
 	rearmDelay    = 200 * time.Millisecond
 )
 
-// newWatcher arms a watch over dir and starts its loop. loop carries the
-// debounce and emit (and, in tests, a held clock); the label, the fsnotify
-// watcher and the handler are this core's.
-func newWatcher(label, dir string, relevantName func(name string) bool, loop fswatch.Config) (*watcher, error) {
+// newWatcher arms a watch over dir and starts its loop. config carries
+// the debounce and emit (and, in tests, a held clock); its label is set
+// here. source turns the armed fsnotify watcher into what the loop reads:
+// fswatch.FromWatcher in production, a relay in tests.
+func newWatcher(label, dir string, relevantName func(name string) bool, config fswatch.Config, source func(*fsnotify.Watcher) fswatch.Source) (*watcher, error) {
+	config.Label = label
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(dir) == "" {
 		return nil, fmt.Errorf("%s: dir is required", label)
 	}
@@ -112,8 +117,7 @@ func newWatcher(label, dir string, relevantName func(name string) bool, loop fsw
 	if err := fsWatcher.Add(result.dir); err != nil {
 		return nil, errors.Join(fmt.Errorf("%s: watch %s: %w", label, result.dir, err), fsWatcher.Close())
 	}
-	loop.Label, loop.Watcher, loop.Handle = label, fsWatcher, result.handle
-	if result.loop, err = fswatch.Start(loop); err != nil {
+	if result.loop, err = fswatch.Start(config, source(fsWatcher), result.handle); err != nil {
 		return nil, err
 	}
 	return result, nil

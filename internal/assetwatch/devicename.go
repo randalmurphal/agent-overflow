@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+
 	"agent-overflow/internal/fswatch"
 )
 
@@ -21,12 +23,19 @@ func deviceNameRelevant(path string) func(name string) bool {
 }
 
 func NewDeviceNameWatcher(path string, emit func()) (*DeviceNameWatcher, error) {
-	core, err := newWatcher("device name watcher", filepath.Dir(path), deviceNameRelevant(path), fswatch.Config{Debounce: deviceNameDebounce, Emit: emit})
+	return newDeviceNameWatcher(path, emit, nil, fswatch.FromWatcher)
+}
+
+// newDeviceNameWatcher is NewDeviceNameWatcher with the debounce clock
+// (nil: the real one) and the event source a test replaces.
+func newDeviceNameWatcher(path string, emit func(), after func(time.Duration) <-chan time.Time, source func(*fsnotify.Watcher) fswatch.Source) (*DeviceNameWatcher, error) {
+	core, err := newWatcher("device name watcher", filepath.Dir(path), deviceNameRelevant(path), fswatch.Config{Debounce: deviceNameDebounce, After: after, Emit: emit}, source)
 	if err != nil {
 		return nil, err
 	}
 	return &DeviceNameWatcher{core: core}, nil
 }
+
 func (w *DeviceNameWatcher) Close() error {
 	if w == nil || w.core == nil {
 		return nil

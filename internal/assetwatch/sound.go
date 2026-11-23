@@ -18,7 +18,7 @@ type SoundWatcher struct {
 
 // NewSoundWatcher arms a production sounds-directory watcher.
 func NewSoundWatcher(dir string, emit func()) (*SoundWatcher, error) {
-	core, err := newWatcher("sound watcher", dir, soundFileRelevant, fswatch.Config{Debounce: soundDebounce, Emit: emit})
+	core, err := newWatcher("sound watcher", dir, soundFileRelevant, fswatch.Config{Debounce: soundDebounce, Emit: emit}, fswatch.FromWatcher)
 	if err != nil {
 		return nil, err
 	}

@@ -18,15 +18,11 @@ import (
 // Watcher watches the shared workflow tree and every project-local workflow
 // tree beneath one configuration root.
 type Watcher struct {
-	root string
-	// handled, when set, is called with each event's path once the loop
-	// has handled it. Nil in production; tests use it to know the loop
-	// has caught up with the changes they made.
-	handled func(path string)
+	root    string
 	watcher *fsnotify.Watcher
 	// watched is the set of directories under watch. Only the loop
 	// goroutine touches it after newWatcher returns: fswatch never calls
-	// handle concurrently.
+	// the handler concurrently.
 	watched map[string]struct{}
 	loop    *fswatch.Loop
 }
@@ -34,13 +30,18 @@ type Watcher struct {
 // NewWatcher starts a recursive workflow-definition watcher. emit is called
 // after a trailing-edge debounce whenever a relevant tree changes.
 func NewWatcher(root string, debounce time.Duration, emit func()) (*Watcher, error) {
-	return newWatcher(root, fswatch.Config{Debounce: debounce, Emit: emit}, nil)
+	return newWatcher(root, fswatch.Config{Debounce: debounce, Emit: emit}, fswatch.FromWatcher)
 }
 
-// newWatcher arms the watches and starts the loop. loop carries the
-// debounce and emit (and, in tests, a held clock); handled is the test
-// hook described on Watcher.
-func newWatcher(root string, loop fswatch.Config, handled func(path string)) (*Watcher, error) {
+// newWatcher arms the watches and starts the loop. config carries the
+// debounce and emit (and, in tests, a held clock); its label is set here.
+// source turns the armed fsnotify watcher into what the loop reads:
+// fswatch.FromWatcher in production, a relay in tests.
+func newWatcher(root string, config fswatch.Config, source func(*fsnotify.Watcher) fswatch.Source) (*Watcher, error) {
+	config.Label = "workflow definitions watcher"
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(root) == "" {
 		return nil, errors.New("workflow definitions watcher: root is required")
 	}
@@ -55,14 +56,11 @@ func newWatcher(root string, loop fswatch.Config, handled func(path string)) (*W
 	if err != nil {
 		return nil, fmt.Errorf("workflow definitions watcher: create watcher: %w", err)
 	}
-	definitionsWatcher := &Watcher{
-		root: filepath.Clean(root), handled: handled, watcher: fsWatcher, watched: make(map[string]struct{}),
-	}
+	definitionsWatcher := &Watcher{root: filepath.Clean(root), watcher: fsWatcher, watched: make(map[string]struct{})}
 	if err := definitionsWatcher.refreshWatches(); err != nil {
 		return nil, errors.Join(err, fsWatcher.Close())
 	}
-	loop.Label, loop.Watcher, loop.Handle = "workflow definitions watcher", fsWatcher, definitionsWatcher.handle
-	if definitionsWatcher.loop, err = fswatch.Start(loop); err != nil {
+	if definitionsWatcher.loop, err = fswatch.Start(config, source(fsWatcher), definitionsWatcher.handleEvent); err != nil {
 		return nil, err
 	}
 	return definitionsWatcher, nil
@@ -71,17 +69,9 @@ func newWatcher(root string, loop fswatch.Config, handled func(path string)) (*W
 // Close stops the watcher. It is safe to call more than once.
 func (w *Watcher) Close() error { return w.loop.Close() }
 
-func (w *Watcher) handle(event fsnotify.Event, _ <-chan struct{}) bool {
-	changed := w.handleEvent(event)
-	if w.handled != nil {
-		w.handled(event.Name)
-	}
-	return changed
-}
-
 // handleEvent keeps the watches in step with one event and reports whether
 // it changed a definition tree.
-func (w *Watcher) handleEvent(event fsnotify.Event) bool {
+func (w *Watcher) handleEvent(event fsnotify.Event, _ <-chan struct{}) bool {
 	// The root watch exists only to discover the workflows/ and projects/
 	// trees. Database and settings churn at the root is irrelevant.
 	if !w.inDefinitionTree(event.Name) {

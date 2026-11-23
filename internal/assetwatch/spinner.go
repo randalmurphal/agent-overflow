@@ -19,7 +19,7 @@ type SpinnerWatcher struct {
 
 // NewSpinnerWatcher arms a production spinners-directory watcher.
 func NewSpinnerWatcher(dir string, emit func()) (*SpinnerWatcher, error) {
-	core, err := newWatcher("spinner watcher", dir, spinnerFileRelevant, fswatch.Config{Debounce: spinnerDebounce, Emit: emit})
+	core, err := newWatcher("spinner watcher", dir, spinnerFileRelevant, fswatch.Config{Debounce: spinnerDebounce, Emit: emit}, fswatch.FromWatcher)
 	if err != nil {
 		return nil, err
 	}

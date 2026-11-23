@@ -21,7 +21,7 @@ type PromptWatcher struct {
 
 // NewPromptWatcher arms a production prompts-directory watcher.
 func NewPromptWatcher(dir string, emit func()) (*PromptWatcher, error) {
-	core, err := newWatcher("prompt watcher", dir, promptFileRelevant, fswatch.Config{Debounce: promptDebounce, Emit: emit})
+	core, err := newWatcher("prompt watcher", dir, promptFileRelevant, fswatch.Config{Debounce: promptDebounce, Emit: emit}, fswatch.FromWatcher)
 	if err != nil {
 		return nil, err
 	}

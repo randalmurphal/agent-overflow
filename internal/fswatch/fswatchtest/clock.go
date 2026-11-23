@@ -1,5 +1,7 @@
-// Package fswatchtest supplies the debounce clock tests hand to an
-// fswatch loop. Production code must not import it.
+// Package fswatchtest supplies what tests hand to an fswatch loop: a
+// debounce clock whose waits the test fires, and a relay that feeds a
+// watcher's real events to its loop and lets the test know when one was
+// handled. Production code must not import it.
 package fswatchtest
 
 import (
@@ -9,11 +11,12 @@ import (
 )
 
 // Clock replaces a loop's debounce waits (fswatch.Config.After). No wait
-// fires until the test releases it, so a burst stays inside one debounce
-// window however the scheduler spaces its writes and their events.
+// fires until the test fires it by its index, so a burst stays inside one
+// debounce window however the scheduler spaces its events, and the test
+// knows which wait it released.
 type Clock struct {
 	mu        sync.Mutex
-	pending   []chan time.Time
+	waits     []chan time.Time
 	durations []time.Duration
 	// started is closed and replaced each time a wait starts, so WaitArmed
 	// blocks on the next start instead of polling.
@@ -25,7 +28,7 @@ func (c *Clock) After(duration time.Duration) <-chan time.Time {
 	wait := make(chan time.Time, 1)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.pending = append(c.pending, wait)
+	c.waits = append(c.waits, wait)
 	c.durations = append(c.durations, duration)
 	if c.started != nil {
 		close(c.started)
@@ -38,7 +41,7 @@ func (c *Clock) After(duration time.Duration) <-chan time.Time {
 func (c *Clock) Armed() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(c.durations)
+	return len(c.waits)
 }
 
 // Durations returns the duration of every wait started so far, in order.
@@ -55,7 +58,7 @@ func (c *Clock) WaitArmed(t testing.TB, n int) {
 	deadline := time.After(5 * time.Second)
 	for {
 		c.mu.Lock()
-		if len(c.durations) >= n {
+		if len(c.waits) >= n {
 			c.mu.Unlock()
 			return
 		}
@@ -72,32 +75,13 @@ func (c *Clock) WaitArmed(t testing.TB, n int) {
 	}
 }
 
-// FireAbandoned fires every wait started so far except the latest, as if
-// the clock passed the deadlines the loop has already replaced, and returns
-// how many it fired.
-func (c *Clock) FireAbandoned() int {
+// Fire lapses the index-th wait the loop started, counting from 0.
+func (c *Clock) Fire(t testing.TB, index int) {
+	t.Helper()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.pending) < 2 {
-		return 0
+	if index >= len(c.waits) {
+		t.Fatalf("fire wait %d: the loop started %d", index, len(c.waits))
 	}
-	abandoned := c.pending[:len(c.pending)-1]
-	for _, wait := range abandoned {
-		wait <- time.Now()
-	}
-	c.pending = c.pending[len(c.pending)-1:]
-	return len(abandoned)
-}
-
-// FireLatest fires the wait the loop started last and reports whether one
-// was pending.
-func (c *Clock) FireLatest() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.pending) == 0 {
-		return false
-	}
-	c.pending[len(c.pending)-1] <- time.Now()
-	c.pending = nil
-	return true
+	c.waits[index] <- time.Now()
 }

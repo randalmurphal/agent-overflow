@@ -5,57 +5,57 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/fsnotify/fsnotify"
+
 	"agent-overflow/internal/soundlib"
 )
 
 func TestSoundWatcherStartsAWaitOnlyForCueFiles(t *testing.T) {
-	observed := startObservedWatcher(t, "sound watcher", t.TempDir(), soundFileRelevant)
-
-	observed.write(t, "desk-bell.wav", "wav")
-	observed.expectQueued(t, 0, 1, "a cue write")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "old.wav"), []byte("wav"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observed := startObservedWatcher(t, "sound watcher", dir, soundFileRelevant)
 
 	// The seeded reference, a source file the user kept beside their cue,
 	// and a subdirectory all hold nothing this app plays.
-	armed := observed.clock.Armed()
-	for _, name := range []string{soundlib.ReferenceFileName, "original.mp3", "notes.txt"} {
-		observed.write(t, name, "x")
+	names := []string{soundlib.ReferenceFileName, "original.mp3", "notes.txt"}
+	for _, name := range names {
+		observed.place(t, name, "x")
 	}
-	nested := filepath.Join(observed.core.dir, "sources")
-	if err := os.MkdirAll(nested, 0o700); err != nil {
+	if err := os.Mkdir(observed.path("sources"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(nested, "old.wav"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectIgnored(t, armed, "non-cue files")
+	observed.expectNoChange(t, 0, fsnotify.Create, "non-cue files",
+		observed.path(names[0]), observed.path(names[1]), observed.path(names[2]), observed.path("sources"))
 
 	// Removing a cue changes what the pickers offer, so it must reach the
 	// UI: an event whose chosen cue just disappeared falls back.
-	armed = observed.clock.Armed()
-	if err := os.Remove(filepath.Join(observed.core.dir, "desk-bell.wav")); err != nil {
+	armed := observed.clock.Armed()
+	if err := os.Remove(observed.path("old.wav")); err != nil {
 		t.Fatal(err)
 	}
-	observed.expectQueued(t, armed, 1, "a cue removal")
+	observed.expectChange(t, armed, observed.path("old.wav"), fsnotify.Remove, "a cue removal")
+
+	armed = observed.clock.Armed()
+	observed.place(t, "desk-bell.wav", "wav")
+	observed.expectChange(t, armed, observed.path("desk-bell.wav"), fsnotify.Create, "a cue write")
 }
 
-// PutSoundFile and DeleteSoundFile write this directory themselves. Their
-// caller already knows what it did, so the resulting filesystem events must
-// not travel back as an external change and cost a full listing refetch.
 func TestSoundWatcherSuppressesItsOwnWrites(t *testing.T) {
 	observed := startObservedWatcher(t, "sound watcher", t.TempDir(), soundFileRelevant)
 	watcher := &SoundWatcher{core: observed.core}
 
-	cue := filepath.Join(observed.core.dir, "desk-bell.wav")
+	cue := observed.path("desk-bell.wav")
 	watcher.Suppress(cue)
-	if err := os.WriteFile(cue, []byte("wav"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectIgnored(t, 0, "a suppressed self-write")
+	observed.place(t, "desk-bell.wav", "wav")
+	observed.expectNoChange(t, 0, fsnotify.Create, "a suppressed self-write", cue)
 
 	// Suppression is per path, so a different cue written by hand still
 	// reaches the UI.
-	observed.write(t, "ping.wav", "wav")
-	observed.expectQueued(t, 0, 1, "a cue written by hand")
+	armed := observed.clock.Armed()
+	observed.place(t, "ping.wav", "wav")
+	observed.expectChange(t, armed, observed.path("ping.wav"), fsnotify.Create, "a cue written by hand")
 }
 
 // internal/atomicfile names its temp file `<base>.tmp-NNNNN`, whose

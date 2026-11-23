@@ -1,179 +1,125 @@
-package fswatch
+package fswatch_test
 
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 
+	"agent-overflow/internal/fswatch"
 	"agent-overflow/internal/fswatch/fswatchtest"
 )
 
-// File names the test handler treats as no change: the sync sentinels, and
-// files a test writes to prove a non-change starts no wait.
+// The test handler's rule: an event whose name ends in changeSuffix is a
+// change, any other is not, and the event named holdName parks the handler
+// until the test releases it.
 const (
-	sentinelExtension = ".sentinel"
-	ignoredExtension  = ".ignored"
+	changeSuffix = ".change"
+	holdName     = "hold"
 )
 
-// observedLoop runs a Loop over one temp directory with a handler that
-// reports each event it is handed, so a test can tell when the loop has
-// handled every event it caused.
-type observedLoop struct {
-	dir     string
-	loop    *Loop
+// driven is a Loop fed from channels the test owns. The channels are
+// unbuffered, so a send returns once the loop has taken the event, which is
+// after it finished every event before it.
+type driven struct {
+	loop    *fswatch.Loop
 	clock   *fswatchtest.Clock
-	emitted chan struct{}
-	handled chan string
-	next    int
+	events  chan fsnotify.Event
+	errors  chan error
+	emitted atomic.Int32
+	emits   chan struct{}
+	closed  atomic.Int32
 
-	holdMu   sync.Mutex
-	holdName string
-	resume   chan struct{}
+	mu      sync.Mutex
+	handled []string
+	// held is told when the handler parks on holdName and again when it
+	// sees the stop signal; release lets it return.
+	held    chan string
+	release chan struct{}
 }
 
-// startObservedLoop starts a loop over a fresh directory. With a clock its
-// waits are held; without one they are the production waits.
-func startObservedLoop(t *testing.T, debounce time.Duration, clock *fswatchtest.Clock) *observedLoop {
+func startDriven(t *testing.T, debounce time.Duration, clock *fswatchtest.Clock) *driven {
 	t.Helper()
-	observed := &observedLoop{
-		dir:     t.TempDir(),
-		clock:   clock,
-		emitted: make(chan struct{}, 8),
-		handled: make(chan string, 64),
+	d := &driven{
+		clock: clock, events: make(chan fsnotify.Event), errors: make(chan error),
+		emits: make(chan struct{}, 8), held: make(chan string, 2), release: make(chan struct{}),
 	}
-	fsWatcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := fsWatcher.Add(observed.dir); err != nil {
-		t.Fatal(errors.Join(err, fsWatcher.Close()))
-	}
-	config := Config{
-		Label:    "test watcher",
-		Watcher:  fsWatcher,
-		Debounce: debounce,
-		Handle:   observed.handle,
-		Emit:     func() { observed.emitted <- struct{}{} },
-	}
+	config := fswatch.Config{Label: "test watcher", Debounce: debounce, Emit: func() {
+		d.emitted.Add(1)
+		d.emits <- struct{}{}
+	}}
 	if clock != nil {
 		config.After = clock.After
 	}
-	loop, err := Start(config)
+	source := fswatch.Source{Events: d.events, Errors: d.errors, Close: func() error {
+		d.closed.Add(1)
+		return nil
+	}}
+	loop, err := fswatch.Start(config, source, d.handle)
 	if err != nil {
 		t.Fatal(err)
 	}
+	d.loop = loop
 	t.Cleanup(func() {
+		d.releaseHold()
 		if err := closeWithin(t, loop); err != nil {
 			t.Errorf("close loop: %v", err)
 		}
 	})
-	observed.loop = loop
-	return observed
+	return d
 }
 
-func (o *observedLoop) handle(event fsnotify.Event, _ <-chan struct{}) bool {
-	name := filepath.Base(event.Name)
-	// Never block the loop on the report: Close waits for it. A dropped
-	// name fails a waiting sync with a timeout naming its sentinel.
-	select {
-	case o.handled <- name:
-	default:
-	}
-	o.holdMu.Lock()
-	resume := o.resume
-	parked := name == o.holdName
-	o.holdMu.Unlock()
-	if parked {
-		<-resume
-	}
-	return !strings.HasSuffix(name, sentinelExtension) && !strings.HasSuffix(name, ignoredExtension)
-}
-
-func (o *observedLoop) write(t *testing.T, name, content string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(o.dir, name), []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func (o *observedLoop) writeSentinel(t *testing.T) string {
-	t.Helper()
-	o.next++
-	name := fmt.Sprintf("%d%s", o.next, sentinelExtension)
-	o.write(t, name, "")
-	return name
-}
-
-// sync writes a sentinel and waits until the loop has handled it. The
-// kernel queues a change's events before the syscall returns, and the loop
-// handles them in delivery order on one goroutine, so every event from an
-// earlier change has been handled too.
-func (o *observedLoop) sync(t *testing.T) []string {
-	t.Helper()
-	return o.waitHandled(t, o.writeSentinel(t))
-}
-
-// waitHandled waits until the loop has handled sentinel and returns the
-// names it handled before it.
-func (o *observedLoop) waitHandled(t *testing.T, sentinel string) []string {
-	t.Helper()
-	var before []string
-	deadline := time.After(5 * time.Second)
-	for {
+func (d *driven) handle(event fsnotify.Event, stop <-chan struct{}) bool {
+	d.mu.Lock()
+	d.handled = append(d.handled, event.Name)
+	d.mu.Unlock()
+	if event.Name == holdName {
+		d.held <- "parked"
 		select {
-		case name := <-o.handled:
-			if name == sentinel {
-				return before
-			}
-			before = append(before, name)
-		case <-deadline:
-			t.Fatalf("the watch loop never handled sentinel %s", sentinel)
+		case <-stop:
+			d.held <- "stopping"
+			<-d.release
+		case <-d.release:
 		}
+		return false
 	}
+	return strings.HasSuffix(event.Name, changeSuffix)
 }
 
-// hold parks the loop inside the handler on a sentinel until the returned
-// release is called, so changes made meanwhile are all queued before the
-// loop handles any. The parked handler ignores the stop signal, so Close
-// cannot end the loop while it is held.
-func (o *observedLoop) hold(t *testing.T) (release func()) {
-	t.Helper()
-	o.next++
-	name := fmt.Sprintf("%d%s", o.next, sentinelExtension)
-	resume := make(chan struct{})
-	release = sync.OnceFunc(func() { close(resume) })
-	t.Cleanup(release)
-	o.holdMu.Lock()
-	o.holdName, o.resume = name, resume
-	o.holdMu.Unlock()
-	o.write(t, name, "")
-	o.waitHandled(t, name)
-	return release
-}
-
-func (o *observedLoop) expectNoEmit(t *testing.T, why string) {
-	t.Helper()
+func (d *driven) releaseHold() {
 	select {
-	case <-o.emitted:
-		t.Fatalf("%s emitted", why)
+	case <-d.release:
 	default:
+		close(d.release)
 	}
 }
 
-func (o *observedLoop) waitEmit(t *testing.T, why string) {
+// send hands the loop one event and returns once the loop has taken it.
+func (d *driven) send(t *testing.T, name string, op fsnotify.Op) {
 	t.Helper()
 	select {
-	case <-o.emitted:
+	case d.events <- fsnotify.Event{Name: name, Op: op}:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the loop never took %s", name)
+	}
+}
+
+// settle sends one event that is no change, so every event sent before it
+// has been handled in full, including any wait it started.
+func (d *driven) settle(t *testing.T) { d.send(t, "settle", fsnotify.Write) }
+
+func (d *driven) waitEmit(t *testing.T, why string) {
+	t.Helper()
+	select {
+	case <-d.emits:
 	case <-time.After(5 * time.Second):
 		t.Fatalf("%s: timed out waiting for an emit", why)
 	}
@@ -181,109 +127,97 @@ func (o *observedLoop) waitEmit(t *testing.T, why string) {
 
 func TestLoopDebouncesABurstToOneEmit(t *testing.T) {
 	clock := &fswatchtest.Clock{}
-	observed := startObservedLoop(t, 25*time.Millisecond, clock)
+	d := startDriven(t, 25*time.Millisecond, clock)
 
-	// The first write alone is a CREATE then a WRITE, which inotify never
-	// merges, so the burst starts the debounce more than once. kqueue finds
-	// a new file by listing its directory and watches it only then, so a
-	// burst that ends first can arrive as one event.
-	burstWaits := 2
-	if runtime.GOOS == "darwin" {
-		burstWaits = 1
-	}
-	for index := range 3 {
-		observed.write(t, "content.txt", string(rune('a'+index)))
-	}
-	observed.sync(t)
-	if armed := clock.Armed(); armed < burstWaits {
-		t.Fatalf("a write burst started %d debounce waits, want at least %d", armed, burstWaits)
+	d.send(t, "a"+changeSuffix, fsnotify.Create)
+	d.send(t, "a"+changeSuffix, fsnotify.Write)
+	d.send(t, "noise", fsnotify.Write)
+	d.settle(t)
+	if armed := clock.Armed(); armed != 2 {
+		t.Fatalf("two changes and two non-changes started %d debounce waits, want 2", armed)
 	}
 	for _, duration := range clock.Durations() {
 		if duration != 25*time.Millisecond {
 			t.Fatalf("debounce wait = %v, want the configured 25ms", duration)
 		}
 	}
-	observed.expectNoEmit(t, "a write burst before its debounce lapsed")
-
-	// The waits a later change replaced lapse first: none of them emits.
-	if clock.FireAbandoned() > 0 {
-		observed.sync(t)
-		observed.expectNoEmit(t, "a replaced debounce wait")
+	if n := d.emitted.Load(); n != 0 {
+		t.Fatalf("emitted %d times before any wait lapsed", n)
 	}
-	if !clock.FireLatest() {
-		t.Fatal("no debounce wait is pending")
-	}
-	observed.waitEmit(t, "the burst's last wait")
-	observed.sync(t)
-	observed.expectNoEmit(t, "a write burst a second time")
 
-	// An event the handler reports as no change starts no wait.
-	armed := clock.Armed()
-	observed.write(t, "noise"+ignoredExtension, "x")
-	observed.sync(t)
-	if got := clock.Armed() - armed; got != 0 {
-		t.Fatalf("an event that is no change started %d debounce waits", got)
+	// The latest wait lapses first, so the emit is that wait's.
+	clock.Fire(t, 1)
+	d.waitEmit(t, "the burst's last wait")
+	// The replaced wait lapses after. A loop still waiting on it would
+	// take it at once; Close joins the loop, so its emit is counted.
+	clock.Fire(t, 0)
+	d.settle(t)
+	if err := closeWithin(t, d.loop); err != nil {
+		t.Fatal(err)
+	}
+	if n := d.emitted.Load(); n != 1 {
+		t.Fatalf("a burst emitted %d times, want once", n)
 	}
 }
 
 func TestLoopNeverHandsAPermissionOnlyEvent(t *testing.T) {
-	observed := startObservedLoop(t, time.Hour, &fswatchtest.Clock{})
-	path := filepath.Join(observed.dir, "content.txt")
-	observed.write(t, "content.txt", "x")
-	observed.sync(t)
-	if err := os.Chmod(path, 0o400); err != nil {
-		t.Fatal(err)
-	}
-	if handled := observed.sync(t); len(handled) != 0 {
-		t.Fatalf("a chmod reached the handler as %v", handled)
+	d := startDriven(t, time.Hour, &fswatchtest.Clock{})
+	d.send(t, "a"+changeSuffix, fsnotify.Chmod)
+	d.settle(t)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, name := range d.handled {
+		if name == "a"+changeSuffix {
+			t.Fatal("a permission-only event reached the handler")
+		}
 	}
 }
 
 // TestLoopDebouncesOnTheRealClock runs the wait production runs: a loop
-// started without After waits on time.After. The held clock stands in for
-// that wait everywhere else, so only this test proves the default. Each
-// burst is written while the loop is parked, so the whole burst is queued
-// before the loop handles any of it and lands inside one window.
+// started without After waits on time.After, which the held clock stands
+// in for everywhere else. The emit may not come before the debounce has
+// passed.
 func TestLoopDebouncesOnTheRealClock(t *testing.T) {
-	observed := startObservedLoop(t, time.Second, nil)
-	for burst := range 2 {
-		why := fmt.Sprintf("write burst %d", burst+1)
-		release := observed.hold(t)
-		for index := range 3 {
-			observed.write(t, "content.txt", string(rune('a'+index)))
-		}
-		release()
-		observed.waitEmit(t, why)
-		observed.sync(t)
-		observed.expectNoEmit(t, why+" a second time")
+	const debounce = 20 * time.Millisecond
+	d := startDriven(t, debounce, nil)
+	sent := time.Now()
+	d.send(t, "a"+changeSuffix, fsnotify.Write)
+	d.waitEmit(t, "a change on the real clock")
+	if elapsed := time.Since(sent); elapsed < debounce {
+		t.Fatalf("emitted %v after the change, before the %v debounce", elapsed, debounce)
 	}
 }
 
 // TestLoopCloseDropsAPendingWait closes the loop while a debounce wait is
-// pending. Nothing may emit, Close must leave none of the loop's
-// goroutines behind, and a second Close is a no-op.
+// pending. Nothing may emit, Close closes the source and leaves none of
+// the loop's goroutines behind, and a second Close is a no-op.
 func TestLoopCloseDropsAPendingWait(t *testing.T) {
 	clock := &fswatchtest.Clock{}
-	observed := startObservedLoop(t, time.Hour, clock)
-	observed.write(t, "content.txt", "x")
-	observed.sync(t)
-	if clock.Armed() == 0 {
-		t.Fatal("the write started no debounce wait")
+	d := startDriven(t, time.Hour, clock)
+	d.send(t, "a"+changeSuffix, fsnotify.Write)
+	d.settle(t)
+	if clock.Armed() != 1 {
+		t.Fatal("the change started no debounce wait")
 	}
 	if len(loopGoroutines()) == 0 {
 		t.Fatal("no loop goroutine found while the loop is open")
 	}
-	if err := closeWithin(t, observed.loop); err != nil {
+	if err := closeWithin(t, d.loop); err != nil {
 		t.Fatal(err)
 	}
 	// The loop has exited, so the wait lapsing now reaches nobody.
-	clock.FireLatest()
-	observed.expectNoEmit(t, "closing with a pending debounce wait")
+	clock.Fire(t, 0)
+	if n := d.emitted.Load(); n != 0 {
+		t.Fatalf("closing with a pending debounce wait emitted %d times", n)
+	}
 	if left := awaitNoLoopGoroutines(5 * time.Second); len(left) != 0 {
 		t.Fatalf("Close left %d loop goroutines:\n%s", len(left), strings.Join(left, "\n\n"))
 	}
-	if err := closeWithin(t, observed.loop); err != nil {
+	if err := closeWithin(t, d.loop); err != nil {
 		t.Fatalf("second close: %v", err)
+	}
+	if n := d.closed.Load(); n != 1 {
+		t.Fatalf("the source was closed %d times, want once", n)
 	}
 }
 
@@ -291,10 +225,11 @@ func TestLoopCloseDropsAPendingWait(t *testing.T) {
 // that Close is still waiting for it, by finding Close blocked on the loop's
 // exit rather than by waiting for some time to pass.
 func TestLoopCloseWaitsForTheLoop(t *testing.T) {
-	observed := startObservedLoop(t, time.Hour, &fswatchtest.Clock{})
-	release := observed.hold(t)
+	d := startDriven(t, time.Hour, &fswatchtest.Clock{})
+	go func() { d.events <- fsnotify.Event{Name: holdName, Op: fsnotify.Write} }()
+	<-d.held
 	closed := make(chan error, 1)
-	go func() { closed <- observed.loop.Close() }()
+	go func() { closed <- d.loop.Close() }()
 	deadline := time.After(5 * time.Second)
 	for !closeIsWaitingForTheLoop() {
 		select {
@@ -305,7 +240,7 @@ func TestLoopCloseWaitsForTheLoop(t *testing.T) {
 		case <-time.After(time.Millisecond):
 		}
 	}
-	release()
+	d.releaseHold()
 	select {
 	case err := <-closed:
 		if err != nil {
@@ -316,33 +251,69 @@ func TestLoopCloseWaitsForTheLoop(t *testing.T) {
 	}
 }
 
-func TestStartRejectsAnInvalidDebounceOrEmit(t *testing.T) {
-	cases := []struct {
-		name     string
-		debounce time.Duration
-		emit     func()
-		want     string
-	}{
-		{"zero debounce", 0, func() {}, "test watcher: debounce must be positive"},
-		{"negative debounce", -time.Second, func() {}, "test watcher: debounce must be positive"},
-		{"nil emit", time.Second, nil, "test watcher: emit callback is required"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			fsWatcher, err := fsnotify.NewWatcher()
+// TestLoopEmitsNothingOnceCloseHasBegun lets a wait lapse while the handler
+// holds the loop, begins Close, and only then releases the handler: the
+// loop finds the lapsed wait and the stop both ready. Go picks either case
+// of a select at random, so the sequence runs 64 times; a loop that emits
+// for the lapsed wait passes all of them about once in 1.8e19.
+func TestLoopEmitsNothingOnceCloseHasBegun(t *testing.T) {
+	for range 64 {
+		clock := &fswatchtest.Clock{}
+		d := startDriven(t, time.Hour, clock)
+		d.send(t, "a"+changeSuffix, fsnotify.Write)
+		go func() { d.events <- fsnotify.Event{Name: holdName, Op: fsnotify.Write} }()
+		if got := <-d.held; got != "parked" {
+			t.Fatalf("handler = %s, want parked", got)
+		}
+		clock.Fire(t, 0)
+		closed := make(chan error, 1)
+		go func() { closed <- d.loop.Close() }()
+		if got := <-d.held; got != "stopping" {
+			t.Fatalf("handler = %s, want stopping", got)
+		}
+		d.releaseHold()
+		select {
+		case err := <-closed:
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = Start(Config{
-				Label: "test watcher", Watcher: fsWatcher, Debounce: tc.debounce,
-				Handle: func(fsnotify.Event, <-chan struct{}) bool { return true }, Emit: tc.emit,
-			})
-			if err == nil || err.Error() != tc.want {
+		case <-time.After(5 * time.Second):
+			t.Fatal("Close never returned")
+		}
+		if n := d.emitted.Load(); n != 0 {
+			t.Fatalf("emitted %d times after Close began", n)
+		}
+	}
+}
+
+func TestStartRefusesAnInvalidConfigOrAMissingPartAndClosesTheSource(t *testing.T) {
+	valid := fswatch.Config{Label: "test watcher", Debounce: time.Second, Emit: func() {}}
+	handle := func(fsnotify.Event, <-chan struct{}) bool { return true }
+	cases := []struct {
+		name   string
+		config func(fswatch.Config) fswatch.Config
+		events bool
+		handle fswatch.Handler
+		want   string
+	}{
+		{"zero debounce", func(c fswatch.Config) fswatch.Config { c.Debounce = 0; return c }, true, handle, "test watcher: debounce must be positive"},
+		{"negative debounce", func(c fswatch.Config) fswatch.Config { c.Debounce = -time.Second; return c }, true, handle, "test watcher: debounce must be positive"},
+		{"nil emit", func(c fswatch.Config) fswatch.Config { c.Emit = nil; return c }, true, handle, "test watcher: emit callback is required"},
+		{"no events", func(c fswatch.Config) fswatch.Config { return c }, false, handle, "test watcher: an event source is required"},
+		{"nil handler", func(c fswatch.Config) fswatch.Config { return c }, true, nil, "test watcher: an event handler is required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			closed := 0
+			source := fswatch.Source{Errors: make(chan error), Close: func() error { closed++; return nil }}
+			if tc.events {
+				source.Events = make(chan fsnotify.Event)
+			}
+			if _, err := fswatch.Start(tc.config(valid), source, tc.handle); err == nil || err.Error() != tc.want {
 				t.Fatalf("Start error = %v, want %q", err, tc.want)
 			}
-			// Start owns the watcher it was handed, including on failure.
-			if err := fsWatcher.Add(t.TempDir()); !errors.Is(err, fsnotify.ErrClosed) {
-				t.Fatalf("Add after a failed Start = %v, want the watcher closed", err)
+			if closed != 1 {
+				t.Fatalf("a refused Start closed its source %d times, want once", closed)
 			}
 		})
 	}
@@ -360,16 +331,16 @@ func TestLoopLogsAWatcherErrorWithItsLabelAndKeepsRunning(t *testing.T) {
 		log.SetPrefix(prefix)
 	})
 	clock := &fswatchtest.Clock{}
-	observed := startObservedLoop(t, time.Hour, clock)
-	fsWatcher := observed.loop.config.Watcher
-	// Errors is unbuffered: the send returns once the loop has received it.
-	fsWatcher.Errors <- errors.New("queue overflow")
-	observed.write(t, "content.txt", "x")
-	observed.sync(t)
+	d := startDriven(t, time.Hour, clock)
+	// errors is unbuffered: the send returns once the loop has taken it,
+	// and the loop logs before it takes the next event.
+	d.errors <- errors.New("queue overflow")
+	d.send(t, "a"+changeSuffix, fsnotify.Write)
+	d.settle(t)
 	if got := logged.String(); got != "test watcher: queue overflow\n" {
 		t.Fatalf("logged %q, want the watcher's label and the error", got)
 	}
-	if clock.Armed() == 0 {
+	if clock.Armed() != 1 {
 		t.Fatal("the loop stopped handling changes after a watcher error")
 	}
 }
@@ -377,7 +348,7 @@ func TestLoopLogsAWatcherErrorWithItsLabelAndKeepsRunning(t *testing.T) {
 // closeWithin closes loop and fails the test if Close has not returned
 // after five seconds, which only a Close that never joins reaches. The
 // abandoned Close goroutine is left to the failed test.
-func closeWithin(t *testing.T, loop *Loop) error {
+func closeWithin(t *testing.T, loop *fswatch.Loop) error {
 	t.Helper()
 	closed := make(chan error, 1)
 	go func() { closed <- loop.Close() }()
@@ -391,13 +362,12 @@ func closeWithin(t *testing.T, loop *Loop) error {
 }
 
 // loopGoroutines returns the stacks of live goroutines that run this
-// package's loop or were started by fsnotify. Matching stacks rather than
-// counting goroutines keeps runtime and test framework goroutines out of
-// the result.
+// package's loop. Matching stacks rather than counting goroutines keeps
+// runtime and test framework goroutines out of the result.
 func loopGoroutines() []string {
 	var found []string
 	for _, stack := range goroutineStacks() {
-		if strings.Contains(stack, "fswatch.(*Loop).run") || strings.Contains(stack, "github.com/fsnotify/fsnotify") {
+		if strings.Contains(stack, "fswatch.(*Loop).run") {
 			found = append(found, stack)
 		}
 	}

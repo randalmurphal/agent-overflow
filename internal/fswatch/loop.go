@@ -3,16 +3,17 @@
 // each event means; the loop owns the debounce, the emit, watcher-error
 // logging and Close.
 //
-// The rule: a create, write, remove or rename event that Handle reports as
-// a change starts a new debounce wait and abandons the pending one, so Emit
-// runs once, after the wait started by the last change of a burst lapses.
-// Permission-only events never reach Handle. A watcher error is logged with
-// the watcher's label and the loop keeps running. Close drops a pending
-// wait without emitting and returns once the loop has exited.
+// The rule: a create, write, remove or rename event that the handler
+// reports as a change starts a new debounce wait and abandons the pending
+// one, so Emit runs once, after the wait started by the last change of a
+// burst lapses. Permission-only events never reach the handler. A watcher
+// error is logged with the watcher's label and the loop keeps running. Once
+// Close has begun nothing more is emitted, and Close returns once the loop
+// has exited.
 //
-// Handle and Emit run on the loop goroutine, one call at a time: Handle is
-// never called concurrently with itself or with Emit, so a handler may keep
-// unlocked state that only it touches.
+// The handler and Emit run on the loop goroutine, one call at a time: the
+// handler is never called concurrently with itself or with Emit, so a
+// handler may keep unlocked state that only it touches.
 package fswatch
 
 import (
@@ -25,65 +26,98 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// Config is what one loop runs on.
+// Config is how one loop debounces and what it calls.
 type Config struct {
 	// Label names the watcher in setup errors and in the log line for a
 	// watcher error ("theme watcher: ...").
 	Label string
-	// Watcher is the armed fsnotify watcher. Start owns it from the call on:
-	// Start closes it when it fails, and Close closes it.
-	Watcher *fsnotify.Watcher
 	// Debounce is how long the loop waits after the last change of a burst.
 	Debounce time.Duration
 	// After starts one debounce wait. Nil means time.After; tests pass a
-	// clock whose waits they release (fswatchtest.Clock).
+	// clock whose waits they fire (fswatchtest.Clock).
 	After func(time.Duration) <-chan time.Time
-	// Handle reports whether event changed content the caller watches. stop
-	// is closed once Close begins; a handler that waits gives up then.
-	Handle func(event fsnotify.Event, stop <-chan struct{}) bool
 	// Emit is called once per lapsed debounce wait.
 	Emit func()
 }
 
+// Validate reports the first option the loop cannot run with. A watcher
+// calls it before it acquires anything, and Start calls it again.
+func (c Config) Validate() error {
+	switch {
+	case c.Debounce <= 0:
+		return fmt.Errorf("%s: debounce must be positive", c.Label)
+	case c.Emit == nil:
+		return fmt.Errorf("%s: emit callback is required", c.Label)
+	}
+	return nil
+}
+
+// Source is what the loop reads: events, watcher errors, and how to
+// release them. In production it is an armed fsnotify watcher
+// (FromWatcher).
+type Source struct {
+	Events <-chan fsnotify.Event
+	Errors <-chan error
+	// Close releases the source. Loop.Close calls it once.
+	Close func() error
+}
+
+// FromWatcher is the Source of an armed fsnotify watcher.
+func FromWatcher(watcher *fsnotify.Watcher) Source {
+	return Source{Events: watcher.Events, Errors: watcher.Errors, Close: watcher.Close}
+}
+
+// Handler reports whether event changed content the watcher watches. stop
+// is closed once Close begins; a handler that waits gives up then.
+type Handler func(event fsnotify.Event, stop <-chan struct{}) bool
+
 // Loop is one running watch loop.
 type Loop struct {
 	config    Config
+	source    Source
+	handle    Handler
 	after     func(time.Duration) <-chan time.Time
 	done      chan struct{}
 	closeOnce sync.Once
 	exited    sync.WaitGroup
 }
 
-// Start validates config and runs the loop on its own goroutine.
-func Start(config Config) (*Loop, error) {
-	var invalid error
+// Start runs the loop on its own goroutine. Start owns source from the
+// call on: it closes source when it refuses to start, and Close closes it.
+func Start(config Config, source Source, handle Handler) (*Loop, error) {
+	invalid := config.Validate()
 	switch {
-	case config.Debounce <= 0:
-		invalid = fmt.Errorf("%s: debounce must be positive", config.Label)
-	case config.Emit == nil:
-		invalid = fmt.Errorf("%s: emit callback is required", config.Label)
+	case invalid != nil:
+	case source.Events == nil || source.Errors == nil || source.Close == nil:
+		invalid = fmt.Errorf("%s: an event source is required", config.Label)
+	case handle == nil:
+		invalid = fmt.Errorf("%s: an event handler is required", config.Label)
 	}
 	if invalid != nil {
-		return nil, errors.Join(invalid, config.Watcher.Close())
+		if source.Close != nil {
+			invalid = errors.Join(invalid, source.Close())
+		}
+		return nil, invalid
 	}
 	after := config.After
 	if after == nil {
 		after = time.After
 	}
-	loop := &Loop{config: config, after: after, done: make(chan struct{})}
+	loop := &Loop{config: config, source: source, handle: handle, after: after, done: make(chan struct{})}
 	loop.exited.Add(1)
 	go loop.run()
 	return loop, nil
 }
 
-// Close stops the loop and closes the fsnotify watcher. A pending debounce
-// wait is dropped without emitting. Close returns after the loop goroutine
-// has exited, and is safe to call more than once.
+// Close stops the loop and closes its source. Nothing is emitted once
+// Close has begun, including for a wait that lapsed while a handler held
+// the loop. Close returns after the loop goroutine has exited, and is safe
+// to call more than once.
 func (l *Loop) Close() error {
 	var closeErr error
 	l.closeOnce.Do(func() {
 		close(l.done)
-		closeErr = l.config.Watcher.Close()
+		closeErr = l.source.Close()
 		l.exited.Wait()
 	})
 	return closeErr
@@ -99,23 +133,30 @@ func (l *Loop) run() {
 		select {
 		case <-l.done:
 			return
-		case event, ok := <-l.config.Watcher.Events:
+		case event, ok := <-l.source.Events:
 			if !ok {
 				return
 			}
 			if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) == 0 {
 				continue
 			}
-			if l.config.Handle(event, l.done) {
+			if l.handle(event, l.done) {
 				wait = l.after(l.config.Debounce)
 			}
-		case err, ok := <-l.config.Watcher.Errors:
+		case err, ok := <-l.source.Errors:
 			if !ok {
 				return
 			}
 			log.Printf("%s: %v", l.config.Label, err)
 		case <-wait:
 			wait = nil
+			// A select with both ready picks either, so a wait that lapsed
+			// while a handler held the loop can be chosen after Close began.
+			select {
+			case <-l.done:
+				return
+			default:
+			}
 			l.config.Emit()
 		}
 	}

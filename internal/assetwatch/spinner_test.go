@@ -5,43 +5,46 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/fsnotify/fsnotify"
+
 	"agent-overflow/internal/spinner"
 )
 
 func TestSpinnerWatcherStartsAWaitOnlyForSpriteFiles(t *testing.T) {
-	observed := startObservedWatcher(t, "spinner watcher", t.TempDir(), spinnerFileRelevant)
-
-	// A sprite lands as two files, and each half is content.
-	observed.write(t, "robo-papers.png", "png")
-	observed.expectQueued(t, 0, 1, "a strip write")
-	armed := observed.clock.Armed()
-	observed.write(t, "robo-papers.json", "{}")
-	observed.expectQueued(t, armed, 1, "a sprite descriptor write")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "orb.png"), []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observed := startObservedWatcher(t, "spinner watcher", dir, spinnerFileRelevant)
 
 	// The generated reference is rewritten by the backend at boot and read
 	// by nobody at runtime; a stray file is not a sprite half; a
 	// subdirectory holds nothing this app reads. None may wake the
 	// frontend.
-	armed = observed.clock.Armed()
-	for _, name := range []string{spinner.ReferenceFileName, "notes.txt", "source.gif"} {
-		observed.write(t, name, "x")
+	names := []string{spinner.ReferenceFileName, "notes.txt", "source.gif"}
+	for _, name := range names {
+		observed.place(t, name, "x")
 	}
-	nested := filepath.Join(observed.core.dir, "sources")
-	if err := os.MkdirAll(nested, 0o700); err != nil {
+	if err := os.Mkdir(observed.path("sources"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(nested, "old.png"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	observed.expectIgnored(t, armed, "non-sprite files")
+	observed.expectNoChange(t, 0, fsnotify.Create, "non-sprite files",
+		observed.path(names[0]), observed.path(names[1]), observed.path(names[2]), observed.path("sources"))
 
 	// Removing a strip changes what the picker offers, so it must reach
 	// the UI.
-	armed = observed.clock.Armed()
-	if err := os.Remove(filepath.Join(observed.core.dir, "robo-papers.png")); err != nil {
+	armed := observed.clock.Armed()
+	if err := os.Remove(observed.path("orb.png")); err != nil {
 		t.Fatal(err)
 	}
-	observed.expectQueued(t, armed, 1, "a strip removal")
+	observed.expectChange(t, armed, observed.path("orb.png"), fsnotify.Remove, "a strip removal")
+
+	// A sprite lands as two files, and each half is content.
+	for _, name := range []string{"robo-papers.png", "robo-papers.json"} {
+		armed = observed.clock.Armed()
+		observed.place(t, name, "x")
+		observed.expectChange(t, armed, observed.path(name), fsnotify.Create, "a write of "+name)
+	}
 }
 
 // internal/atomicfile names its temp file `<base>.tmp-NNNNN`, so the boot

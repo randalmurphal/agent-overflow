@@ -23,7 +23,7 @@ type ThemeWatcher struct {
 
 // NewThemeWatcher arms a production themes-directory watcher.
 func NewThemeWatcher(dir string, emit func()) (*ThemeWatcher, error) {
-	core, err := newWatcher("theme watcher", dir, themeFileRelevant, fswatch.Config{Debounce: themeDebounce, Emit: emit})
+	core, err := newWatcher("theme watcher", dir, themeFileRelevant, fswatch.Config{Debounce: themeDebounce, Emit: emit}, fswatch.FromWatcher)
 	if err != nil {
 		return nil, err
 	}
