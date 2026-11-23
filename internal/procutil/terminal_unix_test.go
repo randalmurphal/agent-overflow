@@ -127,10 +127,7 @@ func TestARelativeCommandIsFoundInTheCommandsDirectoryWithATerminal(t *testing.T
 	terminal, _, _ := openTestTerminal(t)
 	dir := t.TempDir()
 	script := "#!/bin/sh\necho ran-in-dir\n"
-	release := HoldForks()
-	err := os.WriteFile(filepath.Join(dir, "tool"), []byte(script), 0o755)
-	release()
-	if err != nil {
+	if err := InstallExecutable(filepath.Join(dir, "tool"), strings.NewReader(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	var output syncBuffer

@@ -10,8 +10,8 @@
 // the script were executed directly.
 //
 // WriteFile and CopyFile are for an executable whose bytes must be the file
-// itself. They hold process starts in this process off while the file is
-// open for writing, as every executable test code writes needs:
+// itself. They install it through procutil.InstallExecutable, as every
+// executable test code writes must be:
 // TestEveryTestExecutableIsWrittenWithForksHeldOff fails test code that
 // writes one any other way.
 //
@@ -21,8 +21,8 @@
 package mockexec
 
 import (
+	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -60,66 +60,26 @@ func Write(t testing.TB, path, script string) string {
 	return path
 }
 
-// WriteFile writes data to path with perm, which may be executable, and
-// returns path. Use it where the file must hold data itself: a copied
-// binary, a file whose bytes, size or mode the test reads, or a script that
-// finds files beside it through $0. Use Write for any other mock script.
-//
-// Process starts in this process are held off while the file is open for
-// writing (procutil.HoldForks): a child forked then keeps the write
-// descriptor until its own exec, and running the file meanwhile fails with
-// "text file busy". It holds them off for the whole write rather than
-// waiting after it (procutil.WriteExecutable), because a start that asks for
-// a new user namespace, as internal/netisolate's do, releases the fork lock
-// before its child execs.
+// WriteFile installs data as the file at path with mode perm, which may be
+// executable, and returns path. Use it where the file must hold data
+// itself: a copied binary, a file whose bytes, size or mode the test reads,
+// or a script that finds files beside it through $0. Use Write for any other
+// mock script. A file or link already at path is replaced, never written
+// through, and process starts are held off while the new file is open for
+// writing (procutil.InstallExecutable).
 func WriteFile(t testing.TB, path string, data []byte, perm fs.FileMode) string {
 	t.Helper()
-	if err := writeFile(path, data, perm); err != nil {
-		t.Fatalf("mockexec: %v", err)
-	}
-	return path
+	return CopyFile(t, path, bytes.NewReader(data), perm)
 }
 
-func writeFile(path string, data []byte, perm fs.FileMode) error {
-	release := procutil.HoldForks()
-	defer release()
-	if err := os.WriteFile(path, data, perm); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	return nil
-}
-
-// CopyFile is WriteFile with the bytes of the file at src, streamed rather
-// than read into memory, for a copy of a binary. path must not exist.
-func CopyFile(t testing.TB, path, src string, perm fs.FileMode) string {
+// CopyFile is WriteFile with the bytes src yields, streamed rather than held
+// in memory, for a copy of a binary.
+func CopyFile(t testing.TB, path string, src io.Reader, perm fs.FileMode) string {
 	t.Helper()
-	if err := copyFile(path, src, perm); err != nil {
+	if err := procutil.InstallExecutable(path, src, perm); err != nil {
 		t.Fatalf("mockexec: %v", err)
 	}
 	return path
-}
-
-func copyFile(path, src string, perm fs.FileMode) (err error) {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if closeErr := in.Close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close %s: %w", src, closeErr))
-		}
-	}()
-	release := procutil.HoldForks()
-	defer release()
-	out, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
-	if err != nil {
-		return err
-	}
-	_, copyErr := io.Copy(out, in)
-	if err := errors.Join(copyErr, out.Close()); err != nil {
-		return fmt.Errorf("copy %s to %s: %w", src, path, err)
-	}
-	return nil
 }
 
 // WriteIn is Write for a script named name in dir.

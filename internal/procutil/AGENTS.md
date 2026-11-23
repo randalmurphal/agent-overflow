@@ -76,7 +76,10 @@ This package owns seven utilities:
   starts, runs next: a child forked while the file is open for writing keeps
   it busy, and running it fails with "text file busy". Every process start
   waits, so hold it only across the write, and not for an executable another
-  process runs.
+  process runs. `InstallExecutable` is that write, replacing whatever is at
+  the path; test code writes executables only through it. `WriteExecutable`
+  holds starts off for less on Linux, for a large copy in the app; their
+  doc comments say when each applies.
 - `SetJobInformation` and `QueryJobInformation` (Windows) pass a Job
   Object information buffer pinned across the call. Use them for every Job
   Object limit or accounting call, never a bare `uintptr(unsafe.Pointer(...))`

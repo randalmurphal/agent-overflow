@@ -32,7 +32,16 @@ type updateFixture struct {
 func newUpdateFixture(t *testing.T) updateFixture {
 	t.Helper()
 	dir := t.TempDir()
-	bin := mockexec.CopyFile(t, filepath.Join(dir, filepath.Base(mockBin)), mockBin, 0o755)
+	src, err := os.Open(mockBin)
+	if err != nil {
+		t.Fatalf("open mock binary: %v", err)
+	}
+	defer func() {
+		if err := src.Close(); err != nil {
+			t.Errorf("close mock binary: %v", err)
+		}
+	}()
+	bin := mockexec.CopyFile(t, filepath.Join(dir, filepath.Base(mockBin)), src, 0o755)
 	// An old mtime makes "the update moved it" unambiguous.
 	old := time.Now().Add(-time.Hour).Truncate(time.Second)
 	if err := os.Chtimes(bin, old, old); err != nil {

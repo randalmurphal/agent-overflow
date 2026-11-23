@@ -209,14 +209,13 @@ func stageProductionArtifact(t *testing.T, layout supervise.Layout, source strin
 	t.Helper()
 	// Work on a copy: extraction must not create files next to the caller's
 	// release artifact, which may live in a read-only download directory.
-	copyPath := mockexec.CopyFile(t, filepath.Join(t.TempDir(), filepath.Base(source)), source, 0o700)
-	copied, err := os.Open(copyPath)
+	in, err := os.Open(source)
 	if err != nil {
 		t.Fatal(err)
 	}
 	hash := sha256.New()
-	_, hashErr := io.Copy(hash, copied)
-	if err := errors.Join(hashErr, copied.Close()); err != nil {
+	copyPath := mockexec.CopyFile(t, filepath.Join(t.TempDir(), filepath.Base(source)), io.TeeReader(in, hash), 0o700)
+	if err := in.Close(); err != nil {
 		t.Fatal(err)
 	}
 	assetName := filepath.Base(source)

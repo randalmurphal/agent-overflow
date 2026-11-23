@@ -77,19 +77,15 @@ func Guard(run func() int) int {
 const shellName = "login-shell"
 
 // writeExecutables writes the poison under each name and the stand-in shell
-// in dir and returns the shell's path. Process starts are held off while
-// they are open for writing (procutil.HoldForks): a child forked then would
-// keep them busy, and running one would fail with "text file busy".
+// in dir and returns the shell's path.
 func writeExecutables(dir string) (shell string, err error) {
-	release := procutil.HoldForks()
-	defer release()
 	for _, name := range Names {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(poisonScript(dir)), 0o755); err != nil {
+		if err := procutil.InstallExecutable(filepath.Join(dir, name), strings.NewReader(poisonScript(dir)), 0o755); err != nil {
 			return "", fmt.Errorf("write poisoned %s: %w", name, err)
 		}
 	}
 	shell = filepath.Join(dir, shellName)
-	if err := os.WriteFile(shell, []byte(standInShell), 0o755); err != nil {
+	if err := procutil.InstallExecutable(shell, strings.NewReader(standInShell), 0o755); err != nil {
 		return "", fmt.Errorf("write stand-in shell: %w", err)
 	}
 	return shell, nil

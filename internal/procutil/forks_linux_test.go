@@ -1,4 +1,4 @@
-package mockexec
+package procutil
 
 import (
 	"errors"
@@ -11,9 +11,10 @@ import (
 
 // A child that has an executable's write descriptor, as one forked while
 // the file is open for writing has until its own exec, makes running the
-// file fail with "text file busy". WriteFile's hold keeps a child from being
-// forked in that window. The write here is deliberately unheld, and
-// TestEveryTestExecutableIsWrittenWithForksHeldOff requires that it find it.
+// file fail with "text file busy". InstallExecutable's hold keeps a child
+// from being forked in that window. The write here is deliberately raw, and
+// TestEveryTestExecutableIsWrittenWithForksHeldOff requires that it find it,
+// and only it.
 func TestAChildHoldingTheWriteDescriptorMakesTheExecutableBusy(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "tool")
