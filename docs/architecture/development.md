@@ -167,7 +167,8 @@ size and time. A test that lists a directory also depends on its entries'
 times, so `make go-test` neither rewrites an unchanged tool in `bin/` nor
 lets a Go command run `git status`, which touches `.git`; a test walks the
 tree with `reporoot.Walk`, which leaves out build output, and writes nowhere
-inside the checkout. The root package, `cmd/ao-netns` and
+inside the checkout; each Go test shard ends by naming any stamped path that
+changed (`ci-stable-mtimes.mjs --moved`). The root package, `cmd/ao-netns` and
 `internal/netisolate` rerun on every run: their tests read
 `AO_NETISOLATE_NS`, which names the run's own network namespace.
 `cache-cleanup` keeps one entry per cache name after a push

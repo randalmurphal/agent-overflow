@@ -1,7 +1,9 @@
 // Gives the checkout modification times that depend only on content, so a
 // Go test result cached by an earlier CI run stays valid.
 //
-//   node scripts/ci-stable-mtimes.mjs   (from the repository root)
+//   node scripts/ci-stable-mtimes.mjs           (from the repository root)
+//   node scripts/ci-stable-mtimes.mjs --moved   after the tests: warns of
+//                                               stamped paths they changed
 //
 // Go keys a cached test result by the size and modification time of every
 // file inside the module that the test opened, and by each directory
@@ -20,7 +22,7 @@
 // Run it after the last step that writes into the checkout and before
 // `make go-test`.
 import { execFileSync } from 'node:child_process';
-import { lstatSync, lutimesSync, readdirSync, utimesSync } from 'node:fs';
+import { lstatSync, lutimesSync, readdirSync, statSync, utimesSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -46,11 +48,14 @@ export function trackedEntries(root) {
   });
 }
 
-export function stamp(root) {
+// targets lists what stamp sets: every tracked file but a gitlink at its
+// blob time, then every directory holding a tracked path and every
+// untracked directory listed in one at directoryTime.
+export function targets(root) {
   const entries = trackedEntries(root);
   const tracked = new Set();
   const directories = new Set(['.']);
-  let files = 0;
+  const found = [];
   for (const { mode, oid, path } of entries) {
     tracked.add(path);
     for (let dir = dirname(path); dir !== '.'; dir = dirname(dir)) {
@@ -59,32 +64,65 @@ export function stamp(root) {
     }
     // A gitlink names a commit in another repository, not a file here.
     if (mode === '160000') continue;
-    const time = blobTime(oid);
-    const target = join(root, path);
-    if (mode === '120000') lutimesSync(target, time, time);
-    else utimesSync(target, time, time);
-    files++;
+    found.push({ path, time: blobTime(oid), link: mode === '120000', kind: 'file' });
   }
-  let untracked = 0;
   for (const dir of directories) {
     for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
       const path = dir === '.' ? entry.name : `${dir}/${entry.name}`;
-      if (!tracked.has(path) && entry.isDirectory()) {
-        utimesSync(join(root, path), directoryTime, directoryTime);
-        untracked++;
-      }
+      if (!tracked.has(path) && entry.isDirectory()) found.push({ path, time: directoryTime, link: false, kind: 'untracked' });
     }
-    utimesSync(join(root, dir), directoryTime, directoryTime);
+    found.push({ path: dir, time: directoryTime, link: false, kind: 'directory' });
   }
-  return { files, directories: directories.size, untracked };
+  return found;
+}
+
+export function stamp(root) {
+  const counts = { files: 0, directories: 0, untracked: 0 };
+  for (const { path, time, link, kind } of targets(root)) {
+    if (link) lutimesSync(join(root, path), time, time);
+    else utimesSync(join(root, path), time, time);
+    counts[kind === 'file' ? 'files' : kind === 'directory' ? 'directories' : 'untracked']++;
+  }
+  return counts;
+}
+
+// moved lists the stamped paths whose time is no longer the stamped one:
+// what a step after the stamp wrote inside the checkout. A directory moves
+// when an entry is created or removed in it. Each is an input Go records for
+// a test that reads it, so a result saved after the move is never reused
+// by a fresh checkout.
+export function moved(root) {
+  return targets(root).filter(({ path, time, link }) => {
+    const target = join(root, path);
+    let stats;
+    try {
+      stats = link ? lstatSync(target) : statSync(target);
+    } catch (error) {
+      if (error.code === 'ENOENT') return true;
+      throw error;
+    }
+    return Math.abs(stats.mtimeMs / 1000 - time) > 1e-3;
+  }).map(({ path }) => path);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     const root = process.cwd();
     lstatSync(join(root, '.git'));
-    const { files, directories, untracked } = stamp(root);
-    console.log(`ci-stable-mtimes: stamped ${files} tracked files, ${directories} tracked directories and ${untracked} untracked directories`);
+    if (process.argv[2] === '--moved') {
+      const paths = moved(root);
+      if (paths.length > 0) {
+        const shown = paths.slice(0, 20).join(', ');
+        console.log(`::warning title=Tests wrote inside the checkout::${paths.length} stamped paths changed during the tests (${shown}${paths.length > 20 ? ', ...' : ''}). Go saves a result under the times it sees after the run, so every test that reads one of these reruns in each fresh checkout. Make the test write to its temp directory.`);
+      } else {
+        console.log('ci-stable-mtimes: no stamped path changed');
+      }
+    } else if (process.argv[2] === undefined) {
+      const { files, directories, untracked } = stamp(root);
+      console.log(`ci-stable-mtimes: stamped ${files} tracked files, ${directories} tracked directories and ${untracked} untracked directories`);
+    } else {
+      throw new Error(`usage: ci-stable-mtimes.mjs [--moved]; got ${process.argv.slice(2).join(' ')}`);
+    }
   } catch (error) {
     console.error(`ci-stable-mtimes: ${error.message}`);
     process.exitCode = 1;

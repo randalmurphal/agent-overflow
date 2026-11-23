@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { blobTime, directoryTime, stamp } from './ci-stable-mtimes.mjs';
+import { blobTime, directoryTime, moved, stamp } from './ci-stable-mtimes.mjs';
 
 const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], {
   encoding: 'utf8',
@@ -72,4 +72,20 @@ test('directories get the fixed time, untracked files keep theirs', t => {
 
 test('a malformed object id fails', () => {
   assert.throws(() => blobTime('not-an-id'), /not a git object id/);
+});
+
+test('moved names the stamped paths a later step changed', t => {
+  const dir = repo(t, { 'AGENTS.md': 'guide\n', 'internal/x/x.go': 'package x\n', 'internal/y/y.go': 'package y\n' });
+  mkdirSync(join(dir, 'bin'));
+  stamp(dir);
+  assert.deepEqual(moved(dir), []);
+  // A test that makes and removes a directory in its package directory.
+  mkdirSync(join(dir, 'internal', 'x', '.scratch'));
+  rmSync(join(dir, 'internal', 'x', '.scratch'), { recursive: true });
+  // A step that rewrites a tracked file, and one that adds to bin/.
+  utimesSync(join(dir, 'AGENTS.md'), new Date(), new Date());
+  writeFileSync(join(dir, 'bin', 'tool'), 'binary');
+  // An untracked file is not checked; the directory it was made in moved.
+  writeFileSync(join(dir, 'internal', 'y', 'scratch.txt'), 'untracked');
+  assert.deepEqual(moved(dir).sort(), ['AGENTS.md', 'bin', 'internal/x', 'internal/y']);
 });

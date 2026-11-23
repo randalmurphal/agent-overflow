@@ -280,6 +280,9 @@ jobs:
       - name: Script tests
         if: matrix.shard == 'rest'
         run: make script-tests
+      - name: Name what the tests wrote inside the checkout
+        if: always()
+        run: node scripts/ci-stable-mtimes.mjs --moved
       - uses: ./.github/actions/cache-save
 
   vitest:
