@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -293,7 +294,9 @@ func TestCloseTruncatesTheWAL(t *testing.T) {
 // Close closes the pool, waits for that read and then truncates the WAL,
 // with no settle pause: a read that took the pool from reader() before
 // Close and starts after the pool closed fails instead of opening a read
-// transaction of its own.
+// transaction of its own. The read is released only once the drain is
+// seen waiting for it, so a Close that truncated without waiting would run
+// the truncate while the read is still held, on every run.
 func TestCloseWaitsForAReadInFlightBeforeTruncating(t *testing.T) {
 	dbPath := newTestStorePath(t)
 	s, err := New(dbPath)
@@ -323,25 +326,33 @@ func TestCloseWaitsForAReadInFlightBeforeTruncating(t *testing.T) {
 	if err := inFlight.QueryRow(`SELECT count(*) FROM ui_state`).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
+	var held atomic.Bool
+	held.Store(true)
+	waiting := make(chan struct{}, 1)
+	drained := make(chan bool, 1)
+	s.quiesceHooks.waiting = func() {
+		select {
+		case waiting <- struct{}{}:
+		default:
+		}
+	}
+	s.quiesceHooks.drained = func() { drained <- held.Load() }
 	closed := make(chan error, 1)
 	go func() { closed <- s.Close() }()
-	for deadline := time.Now().Add(time.Minute); ; time.Sleep(time.Millisecond) {
-		err := late.Ping()
-		if err != nil && err.Error() == "sql: database is closed" {
-			break
-		}
-		if err != nil {
-			t.Fatalf("ping the pool: %v", err)
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("Close never closed the read pool")
-		}
+	select {
+	case <-waiting:
+	case <-drained:
+		t.Fatal("Close went on to the truncate with a read in flight")
 	}
 	if _, err := late.Exec(`SELECT 1`); err == nil || err.Error() != "sql: database is closed" {
 		t.Fatalf("a read on the pool after it closed: %v; want it refused", err)
 	}
+	held.Store(false)
 	if err := inFlight.Rollback(); err != nil {
 		t.Fatal(err)
+	}
+	if <-drained {
+		t.Fatal("Close went on to the truncate with a read in flight")
 	}
 	if err := <-closed; err != nil {
 		t.Fatalf("close: %v", err)

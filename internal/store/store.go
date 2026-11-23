@@ -79,6 +79,8 @@ type Store struct {
 	checkpoints checkpointer
 	// convertHooks are test-only seams inside the conversion swap.
 	convertHooks convertHooks
+	// quiesceHooks are test-only seams in quiesceReadsAfter's drain.
+	quiesceHooks quiesceHooks
 	// reclaimUnavailableOnce keeps ReclaimFreeSpace's "this database
 	// predates incremental auto-vacuum" report to one line per process
 	// instead of one per sweep.
@@ -402,9 +404,25 @@ func (s *Store) quiesceReadsAfter(settle time.Duration, fn func() error) error {
 	// the pre-read-pool worst case.
 	deadline := time.Now().Add(5 * time.Second)
 	for s.read.Stats().InUse > 0 && time.Now().Before(deadline) {
+		if s.quiesceHooks.waiting != nil {
+			s.quiesceHooks.waiting()
+		}
 		time.Sleep(readQuiesceSettleTick)
 	}
+	if s.quiesceHooks.drained != nil {
+		s.quiesceHooks.drained()
+	}
 	return fn()
+}
+
+// quiesceHooks are test seams in quiesceReadsAfter. Production leaves them
+// nil; the test of Close's drain sets them, because whether the drain
+// waits for a read is decided only by what runs while that read is held.
+type quiesceHooks struct {
+	// waiting runs at each poll that finds a read pool statement running.
+	waiting func()
+	// drained runs once the drain ends, before fn.
+	drained func()
 }
 
 // Close closes the database connections, truncating the WAL on the way
