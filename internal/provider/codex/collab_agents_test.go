@@ -13,7 +13,10 @@ import (
 func TestDispatchLineCollabSpawnRemembersReceiverThread(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+	fx := newConnFixture(t)
+	// The spawn reads the child's metadata in the background.
+	fx.answer("thread/read", `{"thread":{"id":"child-provider-1"}}`)
+	s := fx.session("parent-thread", "", func(evt provider.ProviderEvent) {
 		events = append(events, evt)
 	})
 	s.collab = sessionCollabState{
