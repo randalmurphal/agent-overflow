@@ -7,8 +7,9 @@
 // It also fails the test that called a binding with no mock installed
 // (mocks/bindings-app.ts records each such call here). A call is charged to
 // the test running when it was made, or, made between tests, to the test
-// that ended last; the first check after it fails: the end of that test, the
-// start of the next, or the end of the file. The record lives on the
+// that ended last. The check at the end of each test and of each file fails
+// on every call recorded since the last check: a call made between tests
+// fails the next test. The record lives on the
 // worker's global, so a call a file's modules make after the file ended
 // fails the next file run in the same worker. A call made after the last
 // file of a worker, or after a file with a context of its own (unit-isolated,
@@ -145,8 +146,6 @@ function install(): ResetRegistry {
   }
 
   beforeEach(async ({ task }) => {
-    const earlier = unansweredError(takeUnanswered());
-    if (earlier) throw earlier;
     file = task.file.name;
     during = `in "${task.fullTestName}" (${file})`;
     pending = [];
@@ -163,7 +162,7 @@ function install(): ResetRegistry {
     await runSteps(FIRST, errors);
     const ran = new Set<unknown>();
     // A copy: a reset may load a module.
-    for (const loaded of [...modules]) {
+    for (const loaded of modules.slice()) {
       const exports = exportsOf(loaded);
       if (exports === null) continue;
       for (const name of loaded.auto) {

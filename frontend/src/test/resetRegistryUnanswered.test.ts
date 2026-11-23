@@ -4,9 +4,9 @@ import { GitCommit, GitPush, setBindingMock } from './mocks/bindings-app';
 import { Call } from './mocks/wailsio-runtime';
 import { methodId } from '../lib/transport/methodId';
 
-// The registry charges a binding call with no mock to a test, and its checks
-// fail that test. Each test here takes the calls it records, so the checks
-// pass; a call left in the record would fail it.
+// Whom the registry charges a binding call with no mock to. Each test here
+// takes the calls it records, so the checks pass; resetRegistryEnforcement
+// shows the checks failing a run.
 const FILE = 'src/test/resetRegistryUnanswered.test.ts';
 
 function swallow(call: () => unknown): void {
