@@ -27,7 +27,14 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { BrowserContext, CDPSession, Page } from '@playwright/test';
-import { armDebugger, pauseAndReadStack, withDeadline, type ArmedDebugger, type StackFrame } from '../src/page-stall.js';
+import {
+  armDebugger,
+  pauseAndReadStack,
+  STALL_CAPTURE_LIMITS,
+  withDeadline,
+  type ArmedDebugger,
+  type StackFrame,
+} from '../src/page-stall.js';
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -218,6 +225,8 @@ interface StackSample {
    * failure left those samples looking like independent evidence.
    */
   resumeError?: string;
+  /** Failures to resume a pause that landed after an earlier sample gave up. */
+  earlierResumeErrors?: string[];
 }
 
 /** Pause the renderer a few times, resuming between samples. */
@@ -228,18 +237,22 @@ async function collectPausedStacks(
   deadlineMs: number,
 ): Promise<StackSample[]> {
   const out: StackSample[] = [];
-  const sourceCache = new Map<string, string[]>();
+  // One cache and one source budget for all samples of the wedge.
+  const sourceCache = new Map<string, string>();
+  const sourceBudget = { remainingChars: STALL_CAPTURE_LIMITS.sourceCharsPerFailure };
   for (let i = 0; i < samples; i += 1) {
     const stack = await pauseAndReadStack(armed, {
       pauseMs: deadlineMs,
       sourceMs: 10_000,
       resumeMs: deadlineMs,
       sourceCache,
+      sourceBudget,
     });
+    const earlierResumeErrors = stack.earlierResumeErrors.length > 0 ? stack.earlierResumeErrors : undefined;
     out.push(
       stack.paused
-        ? { sample: i, at: Date.now(), callFrames: stack.frames, resumeError: stack.resumeError }
-        : { sample: i, at: Date.now(), error: stack.error },
+        ? { sample: i, at: Date.now(), callFrames: stack.frames, resumeError: stack.resumeError, earlierResumeErrors }
+        : { sample: i, at: Date.now(), error: stack.error, earlierResumeErrors },
     );
     await sleep(spacingMs);
   }

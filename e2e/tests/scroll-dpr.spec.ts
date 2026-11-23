@@ -1,4 +1,5 @@
-import { test, expect, type Browser } from '@playwright/test';
+import { type Browser } from '@playwright/test';
+import { test, expect } from './base-test.js';
 import { startCompositorTrace, summarizeCompositorWindow } from '../src/compositorTrace.js';
 
 const DPR_VALUES = [1, 1.25, 1.5, 2] as const;

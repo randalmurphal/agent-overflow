@@ -38,7 +38,10 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   that grows keeps `launchBudgetMs()` under the worker fixture timeout.
 - `tests/fixtures.ts` owns the worker backend and per-test reset. Before reset,
   wait until the previous context's page registration is gone; a leaked page is
-  a test failure.
+  a test failure. It extends `tests/base-test.ts`, the `test` every spec builds
+  on, which adds only the stalled-page capture; a spec that needs neither
+  backend nor page checks imports that one, never `@playwright/test`
+  (`tests/base-test-imports.spec.ts`).
 - `frontend-client-helpers.ts` owns production frontend-controller fixtures.
   Execution hosts remain separate harness processes, and cold-start cases reuse
   only the intended disposable device profile.
@@ -112,7 +115,8 @@ launches itself keeps its console in
 
 A failed test also gets a `stalled page` attachment for each open page that
 did not answer a trivial evaluate: its paused JavaScript stack with source,
-or why none could be read (`src/page-stall.ts`).
+or why none could be read. What it does not cover is listed in
+`src/page-stall.ts`.
 
 `make e2e-mobile-browser` runs browser-lock checks in mobile Chromium and
 WebKit without the Android emulator. See

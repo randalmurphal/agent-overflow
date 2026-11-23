@@ -1,9 +1,8 @@
 // Shared Playwright fixtures: one harness backend per worker, reset to
 // a blank slate before every test. Import { test, expect } from here
 // instead of '@playwright/test'.
-import { test as base, expect } from '@playwright/test';
+import { test as base, expect } from './base-test.js';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
-import { StalledPageCapture } from '../src/page-stall.js';
 import { webkitKeychainHome } from '../src/webkit-keychain.js';
 
 interface WorkerFixtures {
@@ -24,12 +23,6 @@ interface TestFixtures {
    * itself; every other spec fails at teardown when a page threw.
    */
   expectPageErrors: boolean;
-  /**
-   * Arms a debugger session on every page a test opens and, when the test
-   * fails, attaches a `stalled page` report for each open page that does not
-   * answer (src/page-stall.ts).
-   */
-  stalledPageCapture: StalledPageCapture;
 }
 
 /**
@@ -38,9 +31,6 @@ interface TestFixtures {
  * that test and a context from a `beforeAll` reports to none.
  */
 let currentPageErrors: string[] | undefined;
-
-/** The running test's stalled-page capture, bound the same way. */
-let currentStalledPageCapture: StalledPageCapture | undefined;
 
 /**
  * The worker backend fixture's own timeout. It sits above `launchBudgetMs()`
@@ -115,7 +105,6 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   browser: [
     async ({ browser }, use) => {
       browser.on('context', (context) => {
-        currentStalledPageCapture?.trackContext(context);
         const errors = currentPageErrors;
         if (!errors) return;
         context.on('page', (page) => {
@@ -126,27 +115,6 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     },
     { scope: 'worker' },
   ],
-  // Auto, so it is current before any context the test opens. Its own
-  // teardown captures for a test without the `context` fixture, whose
-  // contexts the test closes itself; the `context` override below captures
-  // before the fixture context closes.
-  stalledPageCapture: [
-    async ({}, use, testInfo) => {
-      const capture = new StalledPageCapture();
-      currentStalledPageCapture = capture;
-      try {
-        await use(capture);
-      } finally {
-        currentStalledPageCapture = undefined;
-      }
-      await capture.captureIfFailed(testInfo);
-    },
-    { auto: true, box: true },
-  ],
-  context: async ({ context, stalledPageCapture }, use, testInfo) => {
-    await use(context);
-    await stalledPageCapture.captureIfFailed(testInfo);
-  },
   expectPageErrors: [false, { option: true }],
   pageErrors: [
     async ({ expectPageErrors }, use) => {

@@ -2,7 +2,7 @@
 // that same data root. This checks installation upgrades, not old/new remote
 // protocol compatibility. Both processes use isolated homes and mock providers.
 // Run with AO_E2E_UPGRADE_BASELINE=/absolute/path/to/the/saved/binary.
-import { expect, test } from '@playwright/test';
+import { expect, test } from './base-test.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';

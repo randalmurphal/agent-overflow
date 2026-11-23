@@ -13,11 +13,20 @@
 // statements in page code never stop it. While paused, the inspector answers
 // `Debugger.getScriptSource`, which gives each frame its bundle text.
 //
-// tests/fixtures.ts arms every page a test opens and pauses the ones that do
-// not answer when the test fails; tests/freeze-repro-probe.ts arms its replay
-// page and samples the stack of a wedge. The failure capture sees only pages
-// still open at teardown: a page in a context the test closed itself before
-// failing (an expect that timed out, then a finally that closed it) is gone.
+// tests/base-test.ts, which every spec builds on, arms every page a test
+// opens and pauses the ones that do not answer when the test fails;
+// tests/freeze-repro-probe.ts arms its replay page and samples the stack of
+// a wedge. What the failure capture does not cover:
+//   - a page in a context the test closed itself before failing (an expect
+//     that timed out, then a finally that closed it): it is gone;
+//   - a page on a browser connection of its own (`chromium.launch`,
+//     `connectOverCDP`, as tests/browser-lifecycle-helpers.ts and
+//     tests/harness-passkey-lifecycle.spec.ts do), and manual specs, which
+//     keep their own setup;
+//   - a page that stalls before its session is armed. The `page` fixture
+//     waits for arming before handing its page over; a page the test opens
+//     itself is armed from its page event, usually within milliseconds, and
+//     a popup cannot be armed before its first document runs.
 
 import type { BrowserContext, CDPSession, Page, TestInfo } from '@playwright/test';
 
@@ -42,21 +51,131 @@ export function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * The limits of the failure capture. Pages are captured concurrently, so a
+ * failure gets at most PROBE + PAUSE + SOURCE + RESUME (11 s) longer, and
+ * only when a page does not answer the probe. The capture fixtures get their
+ * own timeout, `STALL_CAPTURE_TIMEOUT_MS`, so after-hooks that spent the
+ * shared teardown time cannot cut a capture short.
+ */
+export const STALL_CAPTURE_BOUNDS = {
+  /** A trivial evaluate a running page answers at once. */
+  probeMs: 2_000,
+  /** `Debugger.pause` lands within 300 ms when it can land at all. */
+  pauseMs: 5_000,
+  /** Reading the scripts the top frames sit in, while paused. */
+  sourceMs: 3_000,
+  resumeMs: 1_000,
+} as const;
+
+/** How long the page fixture waits for a page's session to arm before handing it over. */
+export const STALL_ARM_MS = 2_000;
+
+export const STALL_CAPTURE_TIMEOUT_MS =
+  Object.values(STALL_CAPTURE_BOUNDS).reduce((sum, ms) => sum + ms, 0) + 5_000;
+
+/** The memory limits of an armed session and of one capture. */
+export const STALL_CAPTURE_LIMITS = {
+  /** Script urls kept per armed session; the oldest go first. */
+  scriptRecords: 2_000,
+  /** Characters of a script url kept. */
+  scriptUrlChars: 300,
+  /**
+   * Characters of script source fetched per failure, across all stalled
+   * pages. Each script is fetched once however many frames point into it;
+   * one that does not fit what is left is not fetched.
+   */
+  sourceCharsPerFailure: 8 * 2 ** 20,
+} as const;
+
+/** Source characters a capture may still fetch; shared by the pages of one failure. */
+export interface SourceBudget {
+  remainingChars: number;
+}
+
+interface WirePausedFrame {
+  functionName: string;
+  url?: string;
+  location: { scriptId: string; lineNumber: number; columnNumber?: number };
+}
+
+interface PausedEvent {
+  callFrames: WirePausedFrame[];
+}
+
+/**
+ * The one owner of a session's pause state. Every `Debugger.paused` goes to
+ * the pause request waiting for it; one that arrives with none waiting (a
+ * pause that landed after its request gave up) is resumed at once, and a
+ * failure to resume it is kept for the next request to report.
+ */
+class PauseOwner {
+  private waiter: ((event: PausedEvent) => void) | undefined;
+  private lateResumeErrors: string[] = [];
+
+  constructor(private readonly session: CDPSession) {
+    session.on('Debugger.paused', (event) => this.paused(event as PausedEvent));
+  }
+
+  private paused(event: PausedEvent): void {
+    const waiter = this.waiter;
+    this.waiter = undefined;
+    if (waiter) {
+      waiter(event);
+      return;
+    }
+    this.session.send('Debugger.resume').catch((err: unknown) => {
+      const message = `resuming a pause that landed after its request gave up failed: ${errorText(err)}`;
+      this.lateResumeErrors.push(message);
+      console.error(`page-stall: ${message}`);
+    });
+  }
+
+  /** Wait for the next pause. A request still waiting is retired first. */
+  next(): Promise<PausedEvent> {
+    return new Promise((resolve) => {
+      this.waiter = resolve;
+    });
+  }
+
+  retire(): void {
+    this.waiter = undefined;
+  }
+
+  takeLateResumeErrors(): string[] {
+    const errors = this.lateResumeErrors;
+    this.lateResumeErrors = [];
+    return errors;
+  }
+}
+
+interface ScriptRecord {
+  url: string;
+  /** Source length in characters, as Debugger.scriptParsed reports it. */
+  length: number;
+}
+
 export interface ArmedDebugger {
   session: CDPSession;
-  /** scriptId to url, from Debugger.scriptParsed, for frames that carry no url. */
-  scripts: Map<string, string>;
+  /** Scripts with a url, by scriptId, newest last, capped at STALL_CAPTURE_LIMITS.scriptRecords. */
+  scripts: Map<string, ScriptRecord>;
+  pauses: PauseOwner;
 }
 
 /** Enable the Debugger domain on a page session while the page still answers. */
 export async function armDebugger(session: CDPSession): Promise<ArmedDebugger> {
-  const scripts = new Map<string, string>();
+  const scripts = new Map<string, ScriptRecord>();
   session.on('Debugger.scriptParsed', (event) => {
-    if (event.scriptId) scripts.set(event.scriptId, event.url ?? '');
+    // Frames need a url only for scripts that have one; eval'd and inline
+    // scripts are most of what parses and are left out.
+    if (!event.scriptId || !event.url) return;
+    scripts.set(event.scriptId, { url: event.url.slice(0, STALL_CAPTURE_LIMITS.scriptUrlChars), length: event.length ?? 0 });
+    if (scripts.size > STALL_CAPTURE_LIMITS.scriptRecords) scripts.delete(scripts.keys().next().value!);
   });
+  const pauses = new PauseOwner(session);
   await session.send('Debugger.enable');
   await session.send('Debugger.setBreakpointsActive', { active: false });
-  return { session, scripts };
+  return { session, scripts, pauses };
 }
 
 export interface StackFrame {
@@ -76,14 +195,18 @@ export interface StackFrame {
   sourceError?: string;
 }
 
-export type PausedStack =
+export type PausedStack = (
   | { paused: true; pausedAfterMs: number; frames: StackFrame[]; resumeError?: string }
   | {
       paused: false;
       error: string;
       /** What became of the `Debugger.pause` command's own reply. */
       pauseReply: string;
-    };
+    }
+) & {
+  /** Failures to resume pauses that landed after an earlier request gave up. */
+  earlierResumeErrors: string[];
+};
 
 export interface PauseOptions {
   /** How long to wait for `Debugger.pause` to land. */
@@ -97,35 +220,29 @@ export interface PauseOptions {
   /** Characters of source kept on each side of a frame's position. */
   sourceRadius?: number;
   /** Scripts already fetched, shared across samples of one page. */
-  sourceCache?: Map<string, string[]>;
-}
-
-interface WirePausedFrame {
-  functionName: string;
-  url?: string;
-  location: { scriptId: string; lineNumber: number; columnNumber?: number };
+  sourceCache?: Map<string, string>;
+  /** Defaults to STALL_CAPTURE_LIMITS.sourceCharsPerFailure for this call alone. */
+  sourceBudget?: SourceBudget;
 }
 
 /**
  * Pause the page, read its call stack and the source around the top frames,
  * then resume it. Every step is bounded; a step that fails is reported in
- * the result, never thrown.
+ * the result, never thrown. Calls on one session must not overlap.
  */
 export async function pauseAndReadStack(armed: ArmedDebugger, options: PauseOptions): Promise<PausedStack> {
-  const { session, scripts } = armed;
+  const { session, scripts, pauses } = armed;
   const sourceFrames = options.sourceFrames ?? 8;
   const radius = options.sourceRadius ?? 160;
-  const cache = options.sourceCache ?? new Map<string, string[]>();
+  const cache = options.sourceCache ?? new Map<string, string>();
+  const budget = options.sourceBudget ?? { remainingChars: STALL_CAPTURE_LIMITS.sourceCharsPerFailure };
+  const earlierResumeErrors = pauses.takeLateResumeErrors();
   const startedAt = Date.now();
 
-  // Register the listener before the command: a blocked thread can deliver
-  // `paused` the instant the interrupt lands.
-  let onPaused: ((event: { callFrames: WirePausedFrame[] }) => void) | undefined;
-  const paused = new Promise<{ callFrames: WirePausedFrame[] }>((resolve) => {
-    onPaused = resolve;
-    session.once('Debugger.paused', resolve);
-  });
-  let event: { callFrames: WirePausedFrame[] };
+  // Wait before the command: a blocked thread can deliver `paused` the
+  // instant the interrupt lands.
+  const paused = pauses.next();
+  let event: PausedEvent;
   let pauseReply = `not answered within ${options.pauseMs} ms`;
   try {
     // Wait for the event, not the command's reply: the reply can trail the
@@ -142,14 +259,8 @@ export async function pauseAndReadStack(armed: ArmedDebugger, options: PauseOpti
     );
     event = await withDeadline(Promise.race([paused, refused]), options.pauseMs, 'Debugger.paused');
   } catch (err) {
-    if (onPaused) session.off('Debugger.paused', onPaused);
-    // A pause that lands after the bound would leave the page stopped. The
-    // caller has its answer by then; if this resume fails, the page's
-    // context closes it anyway.
-    session.once('Debugger.paused', () => {
-      session.send('Debugger.resume').catch(() => undefined);
-    });
-    return { paused: false, error: errorText(err), pauseReply };
+    pauses.retire();
+    return { paused: false, error: errorText(err), pauseReply, earlierResumeErrors };
   }
   const pausedAfterMs = Date.now() - startedAt;
 
@@ -159,14 +270,15 @@ export async function pauseAndReadStack(armed: ArmedDebugger, options: PauseOpti
     const columnNumber = frame.location.columnNumber ?? 0;
     const out: StackFrame = {
       functionName: frame.functionName || '(anonymous)',
-      url: frame.url || scripts.get(frame.location.scriptId) || '',
+      url: frame.url || scripts.get(frame.location.scriptId)?.url || '',
       scriptId: frame.location.scriptId,
       lineNumber: frame.location.lineNumber,
       columnNumber,
     };
     if (depth < sourceFrames) {
       try {
-        out.source = await sourceAround(session, cache, out, radius, sourceDeadlineAt - Date.now());
+        const source = await scriptSource(armed, cache, budget, out.scriptId, sourceDeadlineAt - Date.now());
+        out.source = snippet(source, out.lineNumber, columnNumber, radius);
       } catch (err) {
         out.sourceError = errorText(err);
       }
@@ -176,35 +288,50 @@ export async function pauseAndReadStack(armed: ArmedDebugger, options: PauseOpti
 
   try {
     await withDeadline(session.send('Debugger.resume'), options.resumeMs, 'Debugger.resume');
-    return { paused: true, pausedAfterMs, frames };
+    return { paused: true, pausedAfterMs, frames, earlierResumeErrors };
   } catch (err) {
-    return { paused: true, pausedAfterMs, frames, resumeError: errorText(err) };
+    return { paused: true, pausedAfterMs, frames, resumeError: errorText(err), earlierResumeErrors };
   }
 }
 
-async function sourceAround(
-  session: CDPSession,
-  cache: Map<string, string[]>,
-  frame: StackFrame,
-  radius: number,
+async function scriptSource(
+  armed: ArmedDebugger,
+  cache: Map<string, string>,
+  budget: SourceBudget,
+  scriptId: string,
   remainingMs: number,
 ): Promise<string> {
-  let lines = cache.get(frame.scriptId);
-  if (!lines) {
-    if (remainingMs <= 0) throw new Error('the source budget was spent on earlier frames');
-    const result = await withDeadline(
-      session.send('Debugger.getScriptSource', { scriptId: frame.scriptId }),
-      remainingMs,
-      'Debugger.getScriptSource',
-    );
-    lines = result.scriptSource.split('\n');
-    cache.set(frame.scriptId, lines);
+  const cached = cache.get(scriptId);
+  if (cached !== undefined) return cached;
+  if (remainingMs <= 0) throw new Error('the source time budget was spent on earlier frames');
+  const length = armed.scripts.get(scriptId)?.length;
+  if (length === undefined) throw new Error('the script has no url record, so its size is unknown and it is not fetched');
+  if (length > budget.remainingChars) {
+    throw new Error(`the script is ${length} characters and ${budget.remainingChars} of this failure's source budget are left`);
   }
-  const line = lines[frame.lineNumber];
-  if (line === undefined) throw new Error(`the script has no line ${frame.lineNumber + 1}`);
-  const from = Math.max(0, frame.columnNumber - radius);
-  const to = frame.columnNumber + radius;
-  return `${from > 0 ? '…' : ''}${line.slice(from, to)}${to < line.length ? '…' : ''}`;
+  budget.remainingChars -= length;
+  const result = await withDeadline(
+    armed.session.send('Debugger.getScriptSource', { scriptId }),
+    remainingMs,
+    'Debugger.getScriptSource',
+  );
+  cache.set(scriptId, result.scriptSource);
+  return result.scriptSource;
+}
+
+/** The text around one position, found without splitting the whole script. */
+function snippet(source: string, lineNumber: number, columnNumber: number, radius: number): string {
+  let lineStart = 0;
+  for (let line = 0; line < lineNumber; line += 1) {
+    const next = source.indexOf('\n', lineStart);
+    if (next < 0) throw new Error(`the script has no line ${lineNumber + 1}`);
+    lineStart = next + 1;
+  }
+  const end = source.indexOf('\n', lineStart);
+  const lineEnd = end < 0 ? source.length : end;
+  const from = Math.max(lineStart, lineStart + columnNumber - radius);
+  const to = Math.min(lineEnd, lineStart + columnNumber + radius);
+  return `${from > lineStart ? '…' : ''}${source.slice(from, to)}${to < lineEnd ? '…' : ''}`;
 }
 
 /** The stack as text, one frame per line with its source snippet below it. */
@@ -220,21 +347,6 @@ export function formatStack(frames: readonly StackFrame[]): string {
     .join('\n');
 }
 
-/**
- * The bounds of the failure capture, per failed test. Pages are captured
- * concurrently, so a failure gets at most PROBE + PAUSE + SOURCE + RESUME
- * (11 s) longer, and only when a page does not answer the probe.
- */
-export const STALL_CAPTURE_BOUNDS = {
-  /** A trivial evaluate a running page answers at once. */
-  probeMs: 2_000,
-  /** `Debugger.pause` landed in 1.7 to 3.7 s on a blocked page. */
-  pauseMs: 5_000,
-  /** Reading the scripts the top frames sit in, while paused. */
-  sourceMs: 3_000,
-  resumeMs: 1_000,
-} as const;
-
 type ArmResult = { armed: ArmedDebugger } | { error: string };
 
 /**
@@ -244,6 +356,7 @@ type ArmResult = { armed: ArmedDebugger } | { error: string };
 export class StalledPageCapture {
   private readonly contexts = new Set<BrowserContext>();
   private readonly armed = new WeakMap<Page, Promise<ArmResult>>();
+  private readonly armedNow = new WeakSet<Page>();
   /** The last thing each page did that reaches the test without its main thread's help. */
   private readonly lastActivity = new WeakMap<Page, { what: string; at: number }>();
   private captured = false;
@@ -272,12 +385,29 @@ export class StalledPageCapture {
     if (!hasCdp(context)) return;
     const armed = (async (): Promise<ArmResult> => {
       try {
-        return { armed: await armDebugger(await context.newCDPSession(page)) };
+        const result = { armed: await armDebugger(await context.newCDPSession(page)) };
+        this.armedNow.add(page);
+        return result;
       } catch (err) {
         return { error: errorText(err) };
       }
     })();
     this.armed.set(page, armed);
+  }
+
+  /** Whether the page's debugger session is armed at this moment. */
+  isArmed(page: Page): boolean {
+    return this.armedNow.has(page);
+  }
+
+  /**
+   * Wait, at most STALL_ARM_MS, until the page's session is armed, so a page
+   * handed to a test cannot stall before its Debugger domain is enabled. A
+   * page that is not armed by then is reported by the capture, not here.
+   */
+  async untilArmed(page: Page): Promise<void> {
+    const armed = this.armed.get(page);
+    if (armed) await withDeadline(armed, STALL_ARM_MS, 'arming the debugger session').catch(() => undefined);
   }
 
   /**
@@ -287,18 +417,20 @@ export class StalledPageCapture {
    * what it tried and its error in the attachment.
    */
   async captureIfFailed(testInfo: TestInfo): Promise<void> {
-    if (this.captured) return;
+    // A later teardown can still fail the test, so only a capture that ran
+    // closes the door.
+    if (this.captured || testInfo.status === 'skipped' || testInfo.status === testInfo.expectedStatus) return;
     this.captured = true;
-    if (testInfo.status === 'skipped' || testInfo.status === testInfo.expectedStatus) return;
     const pages = [...this.contexts].flatMap((context) => context.pages()).filter((page) => !page.isClosed());
-    const reports = await Promise.all(pages.map((page, index) => this.capturePage(page, index, pages.length)));
+    const budget: SourceBudget = { remainingChars: STALL_CAPTURE_LIMITS.sourceCharsPerFailure };
+    const reports = await Promise.all(pages.map((page, index) => this.capturePage(page, index, pages.length, budget)));
     for (const report of reports) {
       if (report === undefined) continue;
       await testInfo.attach('stalled page', { body: report, contentType: 'text/plain' });
     }
   }
 
-  private async capturePage(page: Page, index: number, count: number): Promise<string | undefined> {
+  private async capturePage(page: Page, index: number, count: number, budget: SourceBudget): Promise<string | undefined> {
     const bounds = STALL_CAPTURE_BOUNDS;
     // The session was armed when the page opened; waiting for it shares the
     // probe's window so the bound stays as stated.
@@ -337,7 +469,8 @@ export class StalledPageCapture {
       lines.push(`The debugger session for this page was not armed (${ready.error}), so its stack cannot be read.`);
       return lines.join('\n');
     }
-    const stack = await pauseAndReadStack(ready.armed, bounds);
+    const stack = await pauseAndReadStack(ready.armed, { ...bounds, sourceBudget: budget });
+    for (const error of stack.earlierResumeErrors) lines.push(`Before this capture: ${error}`);
     if (!stack.paused) {
       lines.push(
         `Debugger.pause did not land within ${bounds.pauseMs} ms. V8 takes a pause only at its own ` +

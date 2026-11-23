@@ -5,11 +5,14 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: '.',
   testMatch: /blocked-page\.fixture\.ts$/,
-  timeout: 30_000,
+  // Also the after-hooks slot after a test times out; one fixture test
+  // spends nearly all of it in an afterEach.
+  timeout: 12_000,
   workers: 1,
   retries: 0,
   reporter: [['json']],
-  use: { trace: 'off', screenshot: 'off' },
+  // The trace setting of ../../playwright.config.ts, which CI runs.
+  use: { trace: { mode: 'retain-on-failure', screenshots: false }, screenshot: 'off' },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
     { name: 'webkit', use: { ...devices['iPhone 13'] } },
