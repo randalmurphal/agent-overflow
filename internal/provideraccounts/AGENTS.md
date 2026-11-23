@@ -89,22 +89,28 @@ longer to the same readers.
 Every ephemeral home, Claude or Codex, is registered with a lease the
 owning process holds before a credential can exist in it
 (`ephemeral_registry.go`). The boot sweep acts only on homes whose lease it
-can take. It adopts a crash-orphaned credential into its slot only when the
-slot is missing, signed out, or strictly behind it on the rotation chain
-(`ChainPosition`: Claude token expiry, Codex `last_refresh`).
+can take.
 
 Each registry entry records the fingerprint of the refresh token its home
 was seeded with (`TokenFingerprint`, provider-owned: the provider rewrites
-its credential file for other reasons and keeps the token). An adoption of
-an orphan that rotated that token first records it as consumed beside the
-slot's lock (`consumed.go`), and no slot write ever lands a credential
-holding it again: a switch's preserve, an adoption, a delayed commit. A
-recovery record that cannot be read stops every write to its slot.
+its credential file for other reasons and keeps the token). A selected
+account's home is seeded from the canonical credential, which an outside
+sign-in can replace, so the seed proves nothing about whose login it is.
+The sweep restores a crash-orphaned credential only when it rotated that
+token, and only into a store that still holds it: there the orphan is the
+same login moved forward. No other evidence (chain position, an empty or
+signed-out slot, the entry's owner) lets it write a slot. An adoption first
+records the seed's token as consumed beside the slot's lock
+(`consumed.go`), and no slot write ever lands a credential holding it
+again: a switch's preserve, an adoption, a delayed commit. A recovery
+record that cannot be read stops every write to its slot.
 
 Only the store that selected an account writes the canonical credential
 for it. Its sweep also restores a selected account's orphan into the
 canonical home while that still holds the consumed token. Another data
-root's sweep restores the slot alone. While the canonical store still holds
+root's sweep restores the slot alone, and keeps an orphan neither store
+took while the canonical store holds the consumed token, reporting it once,
+so the owner's next boot restores it. While the canonical store still holds
 the consumed token, the owner promotes the slot (`PromoteSlotOverCanonical`):
 at boot, before reconciliation, before an account probe, before a
 selected usage probe and before a dictation token refresh. Coherence of the

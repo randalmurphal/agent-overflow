@@ -134,14 +134,11 @@ func (c *Credentials) PromoteSlotOverCanonical(providerName, accountID string) (
 	if err != nil || consumed == "" {
 		return CredentialSnapshot{}, false, err
 	}
-	canonical, err := c.ReadCredentialSnapshot(providerName, "", true)
-	if IsCredentialMissing(err) {
-		return CredentialSnapshot{}, false, nil
-	}
+	held, err := c.canonicalHoldsToken(providerName, consumed)
 	if err != nil {
-		return CredentialSnapshot{}, false, fmt.Errorf("provideraccounts: read canonical %s credential before promoting slot %s: %w", providerName, accountID, err)
+		return CredentialSnapshot{}, false, fmt.Errorf("provideraccounts: before promoting %s slot %s: %w", providerName, accountID, err)
 	}
-	if !c.holdsConsumed(providerName, canonical.Bytes(), consumed) {
+	if !held {
 		return CredentialSnapshot{}, false, nil
 	}
 	if err := c.writeActiveCredential(providerName, slot.Bytes()); err != nil {

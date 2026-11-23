@@ -180,33 +180,41 @@ func makeCodexSlotDir(t *testing.T, c *Credentials, accountID string) {
 
 // A Codex usage probe rotates the chain inside its temporary home and the
 // caller copies the rotation into the slot afterwards. A crash in between
-// leaves the slot healthy-looking but behind: the sweep restores the
-// orphan when it is strictly later on the chain, never otherwise, and
-// always removes the abandoned home.
+// leaves the slot on the token the rotation consumed: the sweep restores the
+// orphan when the slot still holds the seed's token and the orphan holds
+// another, whatever their chain positions say, never otherwise, and always
+// removes the abandoned home and its entry. A seed the slot never held (a
+// selected account's home seeded from a canonical credential another login
+// replaced) never reaches the slot.
 func TestSweepRecoversACrashedCodexRotation(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		slot   string
+		seed   string
 		orphan string
 		action string
 		want   string
 	}{
-		{name: "orphan ahead of the slot", slot: "pos:10", orphan: "pos:20", action: "adopted", want: "pos:20"},
-		{name: "slot ahead of the orphan", slot: "pos:30", orphan: "pos:20", action: "discarded", want: "pos:30"},
-		{name: "same position", slot: "pos:20", orphan: "pos:20", action: "discarded", want: "pos:20"},
-		{name: "slot position unknown", slot: "relogin", orphan: "pos:20", action: "discarded", want: "relogin"},
-		{name: "orphan position unknown", slot: "pos:10", orphan: "api-key", action: "discarded", want: "pos:10"},
+		{name: "rotation of the slot's seed", slot: "pos:10", seed: "pos:10", orphan: "pos:20", action: "adopted", want: "pos:20"},
+		{name: "rotation of the slot's rewritten seed", slot: "pos:10 meta:agent", seed: "pos:10", orphan: "pos:20", action: "adopted", want: "pos:20"},
+		{name: "rotation that reads earlier on the chain", slot: "pos:10", seed: "pos:10", orphan: "pos:5", action: "adopted", want: "pos:5"},
+		{name: "slot moved on since the seed", slot: "pos:30", seed: "pos:10", orphan: "pos:20", action: "discarded", want: "pos:30"},
+		{name: "rotation already saved", slot: "pos:20", seed: "pos:10", orphan: "pos:20", action: "discarded", want: "pos:20"},
+		{name: "orphan rotated nothing", slot: "pos:10", seed: "pos:10", orphan: "pos:10 meta:agent", action: "discarded", want: "pos:10"},
+		{name: "slot position unknown", slot: "relogin", seed: "pos:10", orphan: "pos:20", action: "discarded", want: "relogin"},
+		{name: "another login's rotation", slot: "pos:10", seed: "pos:15 bob", orphan: "pos:20 bob", action: "discarded", want: "pos:10"},
+		{name: "another login, unrotated", slot: "pos:10", seed: "pos:15 bob", orphan: "pos:15 bob", action: "discarded", want: "pos:10"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			credentials := chainFixture(t)
 			writeCodexSlot(t, credentials, "acct-1", tc.slot)
-			homePath := crashEphemeralHome(t, credentials, "codex", []byte(tc.orphan), "acct-1")
+			homePath := crashRotatedHome(t, credentials, []byte(tc.seed), []byte(tc.orphan), "acct-1")
 
 			results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(results) != 1 || results[0].Provider != "codex" || results[0].Action != tc.action {
+			if len(results) != 1 || results[0].Provider != "codex" || results[0].Action != tc.action || results[0].Canonical {
 				t.Fatalf("sweep results = %+v, want one codex %s", results, tc.action)
 			}
 			slot, err := credentials.ReadCredential("codex", "acct-1", false)
@@ -216,19 +224,86 @@ func TestSweepRecoversACrashedCodexRotation(t *testing.T) {
 			if _, err := os.Stat(homePath); !os.IsNotExist(err) {
 				t.Fatalf("crashed codex home survived the sweep: %v", err)
 			}
+			if entries := registryEntries(t, credentials, "codex"); len(entries) != 0 {
+				t.Fatalf("registry after the sweep = %v; want empty", entries)
+			}
+			// The sweep is idempotent: nothing left to do on the next boot.
+			if results, err := credentials.SweepEphemeralCredentials(time.Now(), nil); err != nil || len(results) != 0 {
+				t.Fatalf("second sweep = %+v, %v; want empty", results, err)
+			}
 		})
 	}
+}
+
+// A slot that holds no credential, or only the provider's sign-out, holds
+// no seed either: nothing proves the orphan is that slot's login, so it is
+// never adopted there.
+func TestSweepNeverAdoptsIntoASlotWithoutTheSeed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		slot string
+	}{
+		{name: "empty slot"},
+		{name: "signed-out slot", slot: "husk"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			credentials := sweepFixture(t)
+			accountDir := makeSlotDir(t, credentials, "acct-1")
+			if tc.slot != "" {
+				writeProviderAuthoredCredential(t, accountDir, []byte(tc.slot))
+			}
+			crashRotatedProviderHome(t, credentials, "claude", []byte("seed-chain"), []byte("rotated-chain"), "acct-1")
+
+			results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
+			if err != nil || len(results) != 1 || results[0].Action != "discarded" {
+				t.Fatalf("sweep = %+v, %v; want the orphan discarded", results, err)
+			}
+			slot, err := credentials.readCredentialAt("claude", accountDir, false)
+			switch {
+			case tc.slot == "" && !IsCredentialMissing(err):
+				t.Fatalf("empty slot after the sweep = %q, %v; want still empty", slot.Bytes(), err)
+			case tc.slot != "" && (err != nil || string(slot.Bytes()) != tc.slot):
+				t.Fatalf("signed-out slot after the sweep = %q, %v; want untouched", slot.Bytes(), err)
+			}
+		})
+	}
+}
+
+// registryEntries lists the files in a provider's ephemeral registry.
+func registryEntries(t *testing.T, c *Credentials, providerName string) []string {
+	t.Helper()
+	dir, err := c.ephemeralRegistryDir(providerName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
 }
 
 // crashRotatedHome is crashEphemeralHome for a probe that rotated its seed
 // before the crash: the home was seeded with seed and holds rotated.
 func crashRotatedHome(t *testing.T, c *Credentials, seed, rotated []byte, ownerAccountID string) string {
 	t.Helper()
-	home, err := c.NewEphemeralHomeWithCredential("codex", seed, ownerAccountID)
+	return crashRotatedProviderHome(t, c, "codex", seed, rotated, ownerAccountID)
+}
+
+func crashRotatedProviderHome(t *testing.T, c *Credentials, providerName string, seed, rotated []byte, ownerAccountID string) string {
+	t.Helper()
+	home, err := c.NewEphemeralHomeWithCredential(providerName, seed, ownerAccountID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.writeCredentialAt("codex", home.Path, false, rotated); err != nil {
+	if err := c.writeCredentialAt(providerName, home.Path, false, rotated); err != nil {
 		t.Fatal(err)
 	}
 	abandonEphemeralHome(t, home)
@@ -292,6 +367,199 @@ func TestSweepRestoresTheSelectedAccountsCanonicalCredential(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An outside sign-in as bob replaced the canonical credential before the
+// selected account's probe seeded its home from it. Whether the probe
+// rotated bob's token or not, and whichever store sweeps, the selected
+// account's slot keeps its own login. Bob's rotation goes back only where his
+// consumed token still is: the canonical store, written by the store that
+// selected the home's owner. Another store keeps the entry for that one.
+func TestSweepNeverPutsAnotherLoginInTheSlot(t *testing.T) {
+	selected := map[string]string{"codex": "acct-1"}
+	for _, tc := range []struct {
+		name          string
+		selected      map[string]string
+		orphan        string
+		action        string
+		wantCanonical string
+	}{
+		{name: "rotated, own store", selected: selected, orphan: "pos:20 bob", action: "adopted", wantCanonical: "pos:20 bob"},
+		{name: "rotated, another store", orphan: "pos:20 bob", action: "kept", wantCanonical: "pos:15 bob"},
+		{name: "unrotated, own store", selected: selected, orphan: "pos:15 bob", action: "discarded", wantCanonical: "pos:15 bob"},
+		{name: "unrotated, another store", orphan: "pos:15 bob", action: "discarded", wantCanonical: "pos:15 bob"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			credentials := chainFixture(t)
+			writeCodexSlot(t, credentials, "acct-1", "pos:10")
+			if err := credentials.writeActiveCredential("codex", []byte("pos:15 bob")); err != nil {
+				t.Fatal(err)
+			}
+			crashRotatedHome(t, credentials, []byte("pos:15 bob"), []byte(tc.orphan), "acct-1")
+
+			results, err := credentials.SweepEphemeralCredentials(time.Now(), tc.selected)
+			if err != nil || len(results) != 1 || results[0].Action != tc.action {
+				t.Fatalf("sweep = %+v, %v; want one %s", results, err, tc.action)
+			}
+			if slot, err := credentials.ReadCredential("codex", "acct-1", false); err != nil || string(slot) != "pos:10" {
+				t.Fatalf("slot = %q, %v; want its own login", slot, err)
+			}
+			if canonical, err := credentials.ReadCredential("codex", "", true); err != nil || string(canonical) != tc.wantCanonical {
+				t.Fatalf("canonical = %q, %v; want %q", canonical, err, tc.wantCanonical)
+			}
+			if _, _, err := credentials.PromoteSlotOverCanonical("codex", "acct-1"); err != nil {
+				t.Fatal(err)
+			}
+			if canonical, err := credentials.ReadCredential("codex", "", true); err != nil || string(canonical) != tc.wantCanonical {
+				t.Fatalf("canonical after promotion = %q, %v; nothing was recovered into the slot to promote", canonical, err)
+			}
+		})
+	}
+}
+
+// crashKeptRotation leaves the state a kept entry stands for: the selected
+// account's probe rotated the canonical credential's pos:10 to pos:20 in its
+// home and died, the slot lags behind the canonical credential (the CLI
+// rotated it in place to pos:10 after the slot's pos:5), and another store's
+// sweep, which may not write the canonical credential, found it first.
+func crashKeptRotation(t *testing.T, credentials *Credentials) (homePath string) {
+	t.Helper()
+	writeCodexSlot(t, credentials, "acct-1", "pos:5")
+	if err := credentials.writeActiveCredential("codex", []byte("pos:10")); err != nil {
+		t.Fatal(err)
+	}
+	homePath = crashRotatedHome(t, credentials, []byte("pos:10"), []byte("pos:20"), "acct-1")
+	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
+	if err != nil || len(results) != 1 || results[0].Action != "kept" || results[0].Canonical {
+		t.Fatalf("another store's sweep = %+v, %v; want the entry kept", results, err)
+	}
+	if slot, err := credentials.ReadCredential("codex", "acct-1", false); err != nil || string(slot) != "pos:5" {
+		t.Fatalf("slot = %q, %v; want it untouched", slot, err)
+	}
+	if canonical, err := credentials.ReadCredential("codex", "", true); err != nil || string(canonical) != "pos:10" {
+		t.Fatalf("canonical = %q, %v; want it untouched", canonical, err)
+	}
+	if orphan, err := credentials.readCredentialAt("codex", homePath, false); err != nil || string(orphan.Bytes()) != "pos:20" {
+		t.Fatalf("kept home = %q, %v; want the rotation", orphan.Bytes(), err)
+	}
+	return homePath
+}
+
+// The store that selected the kept entry's owner restores its rotation to
+// the canonical credential at its next boot, and the entry goes.
+func TestKeptRotationIsRestoredByTheOwnersBoot(t *testing.T) {
+	credentials := chainFixture(t)
+	homePath := crashKeptRotation(t, credentials)
+
+	results, err := credentials.SweepEphemeralCredentials(time.Now(), map[string]string{"codex": "acct-1"})
+	if err != nil || len(results) != 1 || results[0].Action != "adopted" || !results[0].Canonical {
+		t.Fatalf("owner's sweep = %+v, %v; want the canonical credential restored", results, err)
+	}
+	if canonical, err := credentials.ReadCredential("codex", "", true); err != nil || string(canonical) != "pos:20" {
+		t.Fatalf("canonical = %q, %v; want the rotation", canonical, err)
+	}
+	if slot, err := credentials.ReadCredential("codex", "acct-1", false); err != nil || string(slot) != "pos:5" {
+		t.Fatalf("slot = %q, %v; the sweep wrote a slot that never held the seed", slot, err)
+	}
+	if _, err := os.Stat(homePath); !os.IsNotExist(err) {
+		t.Fatalf("kept home survived its restore: %v", err)
+	}
+	if entries := registryEntries(t, credentials, "codex"); len(entries) != 0 {
+		t.Fatalf("registry after the restore = %v; want empty", entries)
+	}
+}
+
+// Once the canonical credential no longer holds the seed's token (a sign-in
+// replaced it), the kept rotation is nobody's chain any more: the next sweep
+// discards it and leaves the canonical credential alone.
+func TestKeptRotationIsDiscardedOnceTheCanonicalMovesOn(t *testing.T) {
+	credentials := chainFixture(t)
+	homePath := crashKeptRotation(t, credentials)
+	if err := credentials.writeActiveCredential("codex", []byte("pos:40 carol")); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := credentials.SweepEphemeralCredentials(time.Now(), map[string]string{"codex": "acct-1"})
+	if err != nil || len(results) != 1 || results[0].Action != "discarded" || results[0].Canonical {
+		t.Fatalf("sweep = %+v, %v; want the kept rotation discarded", results, err)
+	}
+	if canonical, err := credentials.ReadCredential("codex", "", true); err != nil || string(canonical) != "pos:40 carol" {
+		t.Fatalf("canonical = %q, %v; want the sign-in kept", canonical, err)
+	}
+	if _, err := os.Stat(homePath); !os.IsNotExist(err) {
+		t.Fatalf("discarded home survived: %v", err)
+	}
+	if entries := registryEntries(t, credentials, "codex"); len(entries) != 0 {
+		t.Fatalf("registry after the discard = %v; want empty", entries)
+	}
+}
+
+// A sweep that keeps an entry it already kept changes nothing and reports
+// nothing: the entry, its lease and the home stay byte for byte, and the
+// keep is reported once, not once per boot.
+func TestRepeatedSweepsOfAKeptEntryChangeNothing(t *testing.T) {
+	credentials := chainFixture(t)
+	homePath := crashKeptRotation(t, credentials)
+	dir, err := credentials.ephemeralRegistryDir("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotTree(t, dir, homePath)
+	if entry := readRegistryEntry(t, dir, homePath); !entry.Kept {
+		t.Fatalf("kept entry = %+v; want it marked kept", entry)
+	}
+	for range 3 {
+		results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
+		if err != nil || len(results) != 0 {
+			t.Fatalf("repeated sweep = %+v, %v; want nothing reported", results, err)
+		}
+		if after := snapshotTree(t, dir, homePath); after != before {
+			t.Fatalf("a repeated sweep changed the kept state:\nbefore %s\nafter  %s", before, after)
+		}
+	}
+}
+
+func readRegistryEntry(t *testing.T, dir, homePath string) ephemeralRegistryEntry {
+	t.Helper()
+	var entry ephemeralRegistryEntry
+	found, err := atomicfile.ReadJSON(filepath.Join(dir, ephemeralRegistryFileName(homePath)), &entry)
+	if err != nil || !found {
+		t.Fatalf("read registry entry: found=%v, %v", found, err)
+	}
+	return entry
+}
+
+// snapshotTree renders every file under the given directories with its
+// contents and modification time, so two snapshots are equal only when
+// nothing was added, removed or rewritten.
+func snapshotTree(t *testing.T, roots ...string) string {
+	t.Helper()
+	var out strings.Builder
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				fmt.Fprintf(&out, "%s/\n", path)
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(&out, "%s %d %q\n", path, info.ModTime().UnixNano(), data)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return out.String()
 }
 
 // recoverForeign leaves acct-1 the way another store's sweep does after a
@@ -490,7 +758,7 @@ func TestUnreadableRecoveryRecordStopsSlotWrites(t *testing.T) {
 func TestSweepAdoptionHoldsTheSlotLock(t *testing.T) {
 	credentials := chainFixture(t)
 	writeCodexSlot(t, credentials, "acct-1", "pos:10")
-	crashEphemeralHome(t, credentials, "codex", []byte("pos:20"), "acct-1")
+	crashRotatedHome(t, credentials, []byte("pos:10"), []byte("pos:20"), "acct-1")
 	accountDir, err := credentials.accountDirectory("codex", "acct-1")
 	if err != nil {
 		t.Fatal(err)
@@ -514,7 +782,7 @@ func TestSweepAdoptionHoldsTheSlotLock(t *testing.T) {
 func TestSweepNeverRecreatesASlotRemovedDuringAdoption(t *testing.T) {
 	credentials := chainFixture(t)
 	writeCodexSlot(t, credentials, "acct-1", "pos:10")
-	crashEphemeralHome(t, credentials, "codex", []byte("pos:20"), "acct-1")
+	crashRotatedHome(t, credentials, []byte("pos:10"), []byte("pos:20"), "acct-1")
 	accountDir, err := credentials.accountDirectory("codex", "acct-1")
 	if err != nil {
 		t.Fatal(err)
@@ -678,61 +946,6 @@ func TestSweepCleansAnUnseededLoginHome(t *testing.T) {
 	}
 }
 
-// The core recovery: a crash after the CLI rotated the single-use chain
-// leaves the only live copy in the abandoned home. When the owning slot
-// is dead (missing or husk), the sweep restores those bytes before
-// deleting the remnants.
-func TestSweepAdoptsOrphanIntoADeadSlot(t *testing.T) {
-	credentials := sweepFixture(t)
-	makeSlotDir(t, credentials, "acct-1")
-	homePath := crashEphemeralClaudeHome(t, credentials, []byte("rotated-chain"), "acct-1")
-
-	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 1 || results[0].Action != "adopted" || results[0].AccountID != "acct-1" {
-		t.Fatalf("sweep results = %+v, want one adoption for acct-1", results)
-	}
-	slot, err := credentials.ReadCredential("claude", "acct-1", false)
-	if err != nil || string(slot) != "rotated-chain" {
-		t.Fatalf("slot after adoption = %q, %v; want the orphan bytes", slot, err)
-	}
-	if _, err := os.Stat(homePath); !os.IsNotExist(err) {
-		t.Fatalf("crashed home survived the sweep: %v", err)
-	}
-	dir, err := credentials.ephemeralRegistryDir("claude")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
-		t.Fatalf("registry after the sweep = %v, %v; want empty", entries, err)
-	}
-
-	// The sweep is idempotent: nothing left to do on the next boot.
-	results, err = credentials.SweepEphemeralCredentials(time.Now(), nil)
-	if err != nil || len(results) != 0 {
-		t.Fatalf("second sweep = %+v, %v; want empty", results, err)
-	}
-}
-
-// A husk in the slot is as dead as an empty slot — the orphan's live
-// bytes must still win.
-func TestSweepAdoptsOverASignedOutHusk(t *testing.T) {
-	credentials := sweepFixture(t)
-	writeProviderAuthoredCredential(t, makeSlotDir(t, credentials, "acct-1"), []byte("husk"))
-	crashEphemeralClaudeHome(t, credentials, []byte("rotated-chain"), "acct-1")
-
-	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
-	if err != nil || len(results) != 1 || results[0].Action != "adopted" {
-		t.Fatalf("sweep = %+v, %v; want adoption over the husk", results, err)
-	}
-	slot, err := credentials.ReadCredential("claude", "acct-1", false)
-	if err != nil || string(slot) != "rotated-chain" {
-		t.Fatalf("slot = %q, %v; want the orphan bytes", slot, err)
-	}
-}
-
 // A healthy slot is NEVER overwritten: the user may have re-logged-in
 // since the crash, and those bytes are newer than any orphan. The
 // orphan itself, when it is a husk, is never adopted anywhere.
@@ -778,6 +991,9 @@ func TestSweepNeverOverwritesAHealthySlotAndNeverAdoptsAHusk(t *testing.T) {
 func TestSweepSkipsHomesWhoseOwnerIsRunning(t *testing.T) {
 	credentials := sweepFixture(t)
 	makeSlotDir(t, credentials, "acct-1")
+	if err := credentials.WriteAccountCredential("claude", "acct-1", []byte("in-flight")); err != nil {
+		t.Fatal(err)
+	}
 	home, err := credentials.NewEphemeralHomeWithCredential("claude", []byte("in-flight"), "acct-1")
 	if err != nil {
 		t.Fatal(err)
@@ -792,6 +1008,10 @@ func TestSweepSkipsHomesWhoseOwnerIsRunning(t *testing.T) {
 		t.Fatalf("in-flight home disturbed by sweep: %q, %v", data.Bytes(), err)
 	}
 
+	// The owner's probe rotated the slot's seed before it died.
+	if err := credentials.writeCredentialAt("claude", home.Path, false, []byte("rotated")); err != nil {
+		t.Fatal(err)
+	}
 	abandonEphemeralHome(t, home)
 	results, err = credentials.SweepEphemeralCredentials(time.Now(), nil)
 	if err != nil || len(results) != 1 || results[0].Action != "adopted" {

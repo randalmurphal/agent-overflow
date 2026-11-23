@@ -28,8 +28,11 @@ func (m *Manager) ReconcileProviderHome(userHome string) error {
 			continue
 		}
 		canonical := ""
-		if result.Canonical {
+		switch {
+		case result.Canonical:
 			canonical = ", canonical credential included"
+		case result.Action == "kept":
+			canonical = ", left for the store that selected it to restore the canonical credential"
 		}
 		m.audit("ephemeral %s sweep: %s crash-orphaned home %s (account %q%s)", result.Provider, result.Action, result.ConfigHome, result.AccountID, canonical)
 	}

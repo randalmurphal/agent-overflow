@@ -688,6 +688,21 @@ func releaseSlot(lock *os.File) error {
 	return nil
 }
 
+// chainAdvances reports that next sits strictly later than current on one
+// account's rotation chain. Bytes without an ordering signal never
+// advance anything.
+func (c *Credentials) chainAdvances(providerName string, current, next []byte) bool {
+	if c.policy.ChainPosition == nil {
+		return false
+	}
+	currentPosition, ok := c.policy.ChainPosition(providerName, current)
+	if !ok {
+		return false
+	}
+	nextPosition, ok := c.policy.ChainPosition(providerName, next)
+	return ok && nextPosition > currentPosition
+}
+
 // ReplaceAccountCredential writes data into a slot only while the slot still
 // holds expected, the credential data was derived from. It reports whether
 // the slot holds data afterwards; false means the slot moved on (a sign-in,

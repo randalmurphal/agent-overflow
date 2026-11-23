@@ -23,8 +23,8 @@ import (
 // in the temporary directory indefinitely. Each home is therefore recorded
 // in a per-entry file BEFORE any credential can exist there, the entry is
 // removed on clean teardown, and the boot sweep recovers whatever a crash
-// left behind: adopt the bytes into the owning slot when the slot is dead
-// or behind the orphan on its chain, then delete the remnant.
+// left behind: restore a rotation to the store that still holds the token
+// it consumed, then delete the remnant.
 //
 // Each entry has a lease: a lock file beside it that the owning process
 // holds until the home is cleaned up. The kernel releases it when that
@@ -63,6 +63,9 @@ type ephemeralRegistryEntry struct {
 	// with (consumed.go); empty for a login home, which starts with none.
 	SeedDigest string    `json:"seedDigest,omitempty"`
 	CreatedAt  time.Time `json:"createdAt"`
+	// Kept records that a sweep already reported keeping this entry, so a
+	// later sweep that keeps it again reports nothing.
+	Kept bool `json:"kept,omitempty"`
 }
 
 // EphemeralSweepResult reports what the boot sweep did with one
@@ -71,11 +74,13 @@ type EphemeralSweepResult struct {
 	Provider   string
 	ConfigHome string
 	AccountID  string
-	// Action is one of "adopted" (the orphan held the only live copy of
-	// the owning account's chain and was restored into its slot),
-	// "discarded" (a credential was left behind but the slot is
-	// healthy), "cleaned" (no credential remained), or "skipped" (the
-	// home's owner is still running).
+	// Action is one of "adopted" (the orphan held the only live copy of a
+	// rotated chain and was restored into the slot or the canonical store
+	// that held the token it consumed), "discarded" (a credential was left
+	// behind that nothing needs), "kept" (the orphan is the only live copy
+	// of the canonical credential's chain and only the store that selected
+	// its owner may restore it; reported once), "cleaned" (no credential
+	// remained), or "skipped" (the home's owner is still running).
 	Action string
 	// Canonical reports that the orphan also replaced the canonical
 	// credential: the owning account is this store's selected one and the
@@ -194,19 +199,25 @@ func sweepableEphemeralHome(providerName, configHome string) bool {
 //
 // Per entry whose owner is gone: read whatever credential the home still
 // holds (Keychain item for Claude on darwin, credential file otherwise).
-// When the owning account is this store's selected one, the orphan rotated
-// its seed, and the canonical store still holds that seed, the orphan
-// replaces it first, as CommitSelectedCredential orders a selected
-// rotation. Only the store that selected an account writes its canonical
-// credential: another store's sweep restores the slot alone, and the owner
-// promotes it (PromoteSlotOverCanonical). Then,
-// if the owning account's slot still exists and the orphan's bytes are
-// usable and the slot's are not (missing, the provider's sign-out husk, or
-// behind the orphan on the rotation chain), restore them into the slot:
-// the orphan may be the only live copy of a rotated chain. Then delete the
-// remnant credential, the leftover directory, and the entry. Any step that
-// cannot prove it is safe keeps the entry for the next boot instead of
-// guessing.
+// Only an orphan that rotated its seed (it holds a different refresh token
+// than the one the entry records) is worth restoring, and only into a store
+// that still holds the seed's token, because only there is it provably the
+// same login moved forward. The seed may be another login than the owner's:
+// a selected account's home is seeded from the canonical credential, which
+// an outside sign-in can replace.
+//
+// When the owning account is this store's selected one and the canonical
+// store still holds the seed's token, the orphan replaces it first, as
+// CommitSelectedCredential orders a selected rotation. Only the store that
+// selected an account writes its canonical credential. Then, when the
+// owner's slot still holds the seed's token, the orphan replaces it; the
+// owner promotes it over a canonical credential another store's sweep left
+// on the seed (PromoteSlotOverCanonical). A rotated orphan that neither
+// took, while the canonical store still holds the seed's token, is the only
+// live copy of that chain: the entry is kept for the store that selected its
+// owner and reported once. Otherwise the remnant credential, the leftover
+// directory, and the entry are deleted. Any step that cannot prove it is
+// safe keeps the entry for the next boot instead of guessing.
 func (c *Credentials) SweepEphemeralCredentials(now time.Time, selected map[string]string) ([]EphemeralSweepResult, error) {
 	var results []EphemeralSweepResult
 	var sweepErrs []error
@@ -281,11 +292,19 @@ func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time, se
 		}
 
 		result, entryErr := c.sweepOneEphemeralHome(providerName, entry, selectedAccountID)
-		if entryErr != nil {
+		if entryErr != nil || result.Action == "kept" {
 			// Kept for the next boot: the orphan may still hold the only
 			// live copy of a chain, so an indeterminate state is never
 			// resolved by deleting.
-			sweepErrs = append(sweepErrs, entryErr)
+			if entryErr != nil {
+				sweepErrs = append(sweepErrs, entryErr)
+			} else if !entry.Kept {
+				entry.Kept = true
+				if err := atomicfile.WriteJSON(entryPath, entry); err != nil {
+					sweepErrs = append(sweepErrs, fmt.Errorf("provideraccounts: mark ephemeral %s home %s kept: %w", providerName, entry.ConfigHome, err))
+				}
+				results = append(results, result)
+			}
 			if lease != nil {
 				if releaseErr := filelock.Release(lease); releaseErr != nil {
 					sweepErrs = append(sweepErrs, releaseErr)
@@ -395,35 +414,56 @@ func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeral
 	}
 
 	result.Action = "discarded"
-	if entry.AccountID != "" && !c.credentialSignedOut(providerName, orphan.Bytes()) {
-		orphanToken, hasToken := c.tokenFingerprint(providerName, orphan.Bytes())
-		rotated := entry.SeedDigest != "" && hasToken && orphanToken != entry.SeedDigest
-		if rotated && entry.AccountID == selectedAccountID {
-			replaced, err := c.restoreCanonicalFromOrphan(providerName, entry.SeedDigest, orphan.Bytes())
-			if err != nil {
-				return result, err
-			}
-			result.Canonical = replaced
-		}
-		consumed := ""
-		if rotated {
-			consumed = entry.SeedDigest
-		}
-		adopted, err := c.adoptIntoSlot(providerName, entry.AccountID, orphan.Bytes(), consumed)
+	orphanToken, hasToken := c.tokenFingerprint(providerName, orphan.Bytes())
+	rotated := entry.AccountID != "" && entry.SeedDigest != "" && hasToken && orphanToken != entry.SeedDigest
+	if !rotated {
+		// The seed's token is still live wherever it came from.
+		return result, c.removeEphemeralRemnants(providerName, entry.ConfigHome)
+	}
+	if entry.AccountID == selectedAccountID {
+		replaced, err := c.restoreCanonicalFromOrphan(providerName, entry.SeedDigest, orphan.Bytes())
 		if err != nil {
 			return result, err
 		}
-		if adopted || result.Canonical {
-			result.Action = "adopted"
-		}
+		result.Canonical = replaced
+	}
+	adopted, err := c.adoptIntoSlot(providerName, entry.AccountID, entry.SeedDigest, orphan.Bytes())
+	if err != nil {
+		return result, err
+	}
+	if adopted || result.Canonical {
+		result.Action = "adopted"
+		return result, c.removeEphemeralRemnants(providerName, entry.ConfigHome)
+	}
+	held, err := c.canonicalHoldsToken(providerName, entry.SeedDigest)
+	if err != nil {
+		return result, err
+	}
+	if held {
+		result.Action = "kept"
+		return result, nil
 	}
 	return result, c.removeEphemeralRemnants(providerName, entry.ConfigHome)
 }
 
+// canonicalHoldsToken reports that the canonical credential holds the
+// refresh token token fingerprints. A missing canonical credential holds
+// none.
+func (c *Credentials) canonicalHoldsToken(providerName, token string) (bool, error) {
+	canonical, err := c.ReadCredentialSnapshot(providerName, "", true)
+	if IsCredentialMissing(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("provideraccounts: inspect canonical %s credential: %w", providerName, err)
+	}
+	return c.holdsConsumed(providerName, canonical.Bytes(), token), nil
+}
+
 // restoreCanonicalFromOrphan replaces the canonical credential with the
 // selected account's orphan while the canonical store still holds the
-// refresh token the orphan's rotation consumed. Anything else there (a sign-in, a later rotation, another
-// account) is left alone.
+// refresh token the orphan's rotation consumed. Anything else there (a
+// sign-in, a later rotation, another account) is left alone.
 //
 // Nothing serializes this read-compare-write against the provider CLI:
 // Codex takes no lock AO can share, so every AO write of the canonical
@@ -431,15 +471,9 @@ func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeral
 // sign-ins: no CLI can rotate those bytes, and only a sign-in completing
 // inside the read-compare-write would be replaced.
 func (c *Credentials) restoreCanonicalFromOrphan(providerName, seedDigest string, orphan []byte) (bool, error) {
-	canonical, err := c.ReadCredentialSnapshot(providerName, "", true)
-	if IsCredentialMissing(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("provideraccounts: inspect canonical %s credential before adoption: %w", providerName, err)
-	}
-	if !c.holdsConsumed(providerName, canonical.Bytes(), seedDigest) {
-		return false, nil
+	held, err := c.canonicalHoldsToken(providerName, seedDigest)
+	if err != nil || !held {
+		return false, err
 	}
 	if err := c.writeActiveCredential(providerName, orphan); err != nil {
 		return false, fmt.Errorf("provideraccounts: restore crash-orphaned %s credential to the canonical home: %w", providerName, err)
@@ -447,22 +481,20 @@ func (c *Credentials) restoreCanonicalFromOrphan(providerName, seedDigest string
 	return true, nil
 }
 
-// adoptIntoSlot restores the orphan into the account's slot when the slot
-// would gain from it: the slot directory still exists (the account is
-// still saved on this machine — the prune runs first) and its credential
-// is missing, the provider's own sign-out husk, or strictly behind the
-// orphan on the rotation chain. A slot at or past the orphan's position,
-// or one whose position is unknown, is never overwritten: the user may
-// have re-logged-in since the crash, and those bytes are newer than any
-// orphan. The slot lock is held from the existence check to the write, so
-// another process's slot write or removal lands wholly before the decision
-// or after it.
+// adoptIntoSlot restores a rotated orphan into the account's slot when the
+// orphan descends from what the slot holds: the slot directory still exists
+// (the account is still saved on this machine; the prune runs first) and its
+// credential still holds the seed's refresh token, which the orphan's
+// rotation consumed. Anything else in the slot (another login, a later
+// rotation, a sign-in since, nothing at all) is left alone: without the
+// seed's token there is no proof the orphan is that slot's login. The slot
+// lock is held from the existence check to the write, so another process's
+// slot write or removal lands wholly before the decision or after it.
 //
-// consumed is the digest of the seed the orphan rotated, when it rotated
-// one. It is recorded before the slot is written (consumed.go), so no copy
-// of those bytes can land in the slot after the recovery; a failure to
-// record it leaves the entry for the next boot.
-func (c *Credentials) adoptIntoSlot(providerName, accountID string, orphan []byte, consumed string) (adopted bool, retErr error) {
+// The seed is recorded as consumed before the slot is written (consumed.go),
+// so no copy of those bytes can land in the slot after the recovery; a
+// failure to record it leaves the entry for the next boot.
+func (c *Credentials) adoptIntoSlot(providerName, accountID, seed string, orphan []byte) (adopted bool, retErr error) {
 	accountDir, err := c.accountDirectory(providerName, accountID)
 	if err != nil {
 		return false, nil
@@ -478,39 +510,22 @@ func (c *Credentials) adoptIntoSlot(providerName, accountID string, orphan []byt
 	slot, readErr := c.readCredentialAt(providerName, accountDir, false)
 	switch {
 	case IsCredentialMissing(readErr):
+		return false, nil
 	case readErr != nil:
-		// Indeterminate slot state: without knowing whether the slot is
-		// healthy, neither overwriting it nor discarding the orphan is
-		// provably safe.
+		// Indeterminate slot state: without knowing what the slot holds,
+		// neither overwriting it nor discarding the orphan is provably
+		// safe.
 		return false, fmt.Errorf("provideraccounts: inspect %s slot %s before adoption: %w", providerName, accountID, readErr)
-	case c.credentialSignedOut(providerName, slot.Bytes()):
-	case !c.chainAdvances(providerName, slot.Bytes(), orphan):
+	case !c.holdsConsumed(providerName, slot.Bytes(), seed):
 		return false, nil
 	}
-	if consumed != "" {
-		if err := c.writeConsumedMarker(providerName, accountID, consumed); err != nil {
-			return false, err
-		}
+	if err := c.writeConsumedMarker(providerName, accountID, seed); err != nil {
+		return false, err
 	}
 	if err := c.writeCredentialAt(providerName, accountDir, false, orphan); err != nil {
 		return false, fmt.Errorf("provideraccounts: restore crash-orphaned %s credential to slot %s: %w", providerName, accountID, err)
 	}
 	return true, nil
-}
-
-// chainAdvances reports that next sits strictly later than current on one
-// account's rotation chain. Bytes without an ordering signal never
-// advance anything.
-func (c *Credentials) chainAdvances(providerName string, current, next []byte) bool {
-	if c.policy.ChainPosition == nil {
-		return false
-	}
-	currentPosition, ok := c.policy.ChainPosition(providerName, current)
-	if !ok {
-		return false
-	}
-	nextPosition, ok := c.policy.ChainPosition(providerName, next)
-	return ok && nextPosition > currentPosition
 }
 
 // removeEphemeralRemnants deletes whatever a crashed ephemeral home left
