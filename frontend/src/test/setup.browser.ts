@@ -7,14 +7,12 @@
 //
 // Module-level state between tests is reset by the registry, as in the
 // happy-dom projects (config/testResets.ts). What stays here is the
-// browser's own posture: real storage and fonts outlive a test, and a trace
-// flush timer can outlive the component that scheduled it.
+// browser's own posture: real storage and fonts outlive a test.
 import { resetRegistry } from './resetRegistry';
 import { beforeAll, beforeEach } from 'vitest';
 import { cleanup } from '@testing-library/svelte';
 import { SHIPPED_FONT_FACES } from '../fonts';
 import './helpers/firstDivergence';
-import { setBindingMock } from './mocks/bindings-app';
 import { resetFrontendPreferencesForTest } from '../lib/stores/frontendPreferences.svelte';
 import { resetClientDeviceNameForTest } from '../lib/stores/clientDeviceName.svelte';
 import { writeFrontendValue } from '../lib/stores/frontendStorage';
@@ -26,15 +24,6 @@ resetRegistry.loaded('@testing-library/svelte/src/pure.js', { cleanup }, []);
 
 installWaitForBackoff();
 
-function installBrowserTraceSinks(): void {
-  // uiRenderTrace is compiled in under MODE==='test' and flushes on a real
-  // 500ms timer, which browser tests actually reach (unit tests finish before
-  // it fires). Default the sink bindings to no-ops so any traced code path
-  // doesn't spam "called without a mock" warnings; tests can override.
-  setBindingMock('AppendUIRenderTraceBatch', async () => '');
-  setBindingMock('BookmarkUIRenderTrace', async () => '');
-}
-
 // Layout assertions measure text. Without the app's own faces they would
 // measure whatever fallback font the host has installed, which differs by
 // platform. @font-face loads lazily, so load every shipped face up front.
@@ -44,15 +33,11 @@ beforeAll(async () => {
   if (missing.length > 0) throw new Error(`Shipped fonts did not load: ${missing.join(', ')}`);
 });
 
-beforeEach(({ onTestFinished }) => {
+beforeEach(() => {
   // Real browser storage survives between files; backend settings only seed
   // missing preferences and cannot undo a prior fixture's local UI choices.
   writeFrontendValue('preferences', {});
   resetFrontendPreferencesForTest({});
   writeFrontendValue('device-name', null);
   resetClientDeviceNameForTest();
-  installBrowserTraceSinks();
-  // The between-test steps reset the binding mocks; keep the no-op sinks
-  // installed across the gap between this test and the next one's setup.
-  onTestFinished(installBrowserTraceSinks);
 });

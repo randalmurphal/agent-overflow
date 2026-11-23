@@ -109,6 +109,7 @@ export function resetBindingMocks(): void {
 // log a failed load on every test. A test that cares installs its own
 // answer with setBindingMock, which holds until the next reset.
 let gitStatusSubscriptions = 0;
+let browserStates = 0;
 const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   // A computer's sign-in state and accounts (stores/computerAccounts). With
   // no sign-in running the backend answers idle for the provider asked
@@ -191,7 +192,61 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   // (app_observability.go, internal/uitrace).
   ReportFrontendErrorBatch: async () => '/tmp/ui-trace/frontend-errors.jsonl',
   AppendUIRenderTraceBatch: async () => '/tmp/ui-trace/render.jsonl',
+  // An error report reads the backend log lines of the failure it carries:
+  // none retained for it (app_observability.go GetErrorLogLines).
+  GetErrorLogLines: async () => ({ lines: [], found: false }),
+  // The sidebar's projects and groups: none (store/projects.go,
+  // store/thread_groups.go; the generated binding reads a null list as []).
+  ListProjects: async () => [],
+  ListThreadGroups: async () => [],
+  // A thread's requests of other threads, waiting and past: none
+  // (app_thread_agent_rows.go).
+  ListThreadAgentRows: async () => ({ rows: [] }),
+  ListThreadPastAgentRows: async () => ({ rows: [], total: 0 }),
+  // A thread's browser, with no pages opened: the state of a fresh thread
+  // browser (browser/state_push.go buildThreadState, thread_life.go
+  // newThreadBrowser). Seq rises with each state built.
+  BrowserCompanionThreadState: async (threadId: string) => ({
+    kind: 'state', threadId, visible: false, viewportWidth: 1280, viewportHeight: 720, jar: 'worktree',
+    recentGen: 'test-launch.0', seq: ++browserStates,
+  }),
+  // Dictation offered by neither source: no Codex sign-in, no OpenAI key
+  // (app_dictation.go).
+  DictationSources: async () => ({ subscription: false, live: false, chatGPTSignIn: false }),
+  // Dev servers: none listening, and no address to share a preview on
+  // (devscan.go DevServerList).
+  GetDevServers: async () => ({ servers: [], previewHost: '' }),
+  // An unstamped build without an updater: version "dev", self-update not
+  // supported (app_host.go Version, app_update_bindings.go CheckForUpdate).
+  Version: async () => 'dev',
+  CheckForUpdate: async () => ({ supported: false, available: false, currentVersion: 'dev' }),
+  // A computer no service manager supervises, read on each connection
+  // (app_service_update.go serviceUpdateStatusLocked).
+  GetServiceUpdateStatus: async () => ({ supervised: false, available: false, currentVersion: 'dev', phase: 'idle' }),
+  // A thread's or a draft's MCP menu, as the backend lists it for a thread of
+  // a provider with no built-in servers and nothing configured
+  // (app_mcp_bindings.go).
+  ListThreadMcpServers: async () => [],
+  ListWorkspaceMcpServers: async () => [],
+  ...highlightingUnavailable(),
 };
+
+// Highlighting unavailable: every highlight read refuses the way the backend
+// refuses a session without `files:read` (transport/authorize.go
+// scopeRefusal), so code renders plain, as with no computer to highlight it.
+// This stands apart from the scope posture the other answers assume, the
+// owner's session with every scope. A test about highlighting installs its
+// own answers.
+function highlightingUnavailable(): Record<string, () => Promise<never>> {
+  const names = [
+    'HighlightSchemaVersion', 'HighlightClassNames', 'HighlightCode',
+    'HighlightPatch', 'HighlightPatchWithContext', 'HighlightEditPatchWithContext',
+  ];
+  return Object.fromEntries(names.map((name) => [name, async () => {
+    const { TransportError } = await import('../../lib/transport/wsClient');
+    throw new TransportError('scope_required', `${name} requires the files:read scope, which this session was not granted`, { scope: 'files:read' });
+  }]));
+}
 
 function installPassiveLoads(): void {
   for (const [name, impl] of Object.entries(PASSIVE_LOADS)) setBindingMock(name, impl);

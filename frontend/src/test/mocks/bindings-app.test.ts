@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import generatedBindings from '../../../bindings/agent-overflow/app.ts?raw';
 
 import * as mockBindings from './bindings-app';
+import { TransportError } from '../../lib/transport/wsClient';
 
 // Exports that are the mock's own machinery, not fakes of generated bindings.
 const mockMachinery = new Set([
@@ -83,5 +84,25 @@ describe('bindings-app passive loads', () => {
     await expect(mockBindings.GetSoundFiles()).resolves.toEqual({ dir: '/tmp/sounds', sounds: [], warnings: [] });
     // Any other binding still rejects unmocked.
     expect(() => mockBindings.GitCommit('/w', '', [], '', '')).toThrow('Binding GitCommit called without a mock');
+  });
+
+  it('list no MCP servers, as for a provider with no built-in servers', async () => {
+    await expect(mockBindings.ListThreadMcpServers('t1')).resolves.toEqual([]);
+    await expect(mockBindings.ListWorkspaceMcpServers('claude', '/w')).resolves.toEqual([]);
+  });
+
+  it('refuse every highlight read as a session without files:read', async () => {
+    for (const read of [
+      () => mockBindings.HighlightSchemaVersion(),
+      () => mockBindings.HighlightClassNames(),
+      () => mockBindings.HighlightCode({ lang: 'ts', source: 'x' }),
+      () => mockBindings.HighlightPatch({ path: 'a.ts', patch: '' }),
+      () => mockBindings.HighlightPatchWithContext('/w', {}),
+      () => mockBindings.HighlightEditPatchWithContext('t1', {}),
+    ]) {
+      const refusal = await (read() as Promise<unknown>).catch((error: unknown) => error);
+      expect(refusal).toBeInstanceOf(TransportError);
+      expect(refusal).toMatchObject({ code: 'scope_required', scope: 'files:read' });
+    }
   });
 });
