@@ -62,6 +62,7 @@ type testHost struct {
 	liveAfterStop   [][]string
 	mergedPRPauses  int
 	mergedPRResumes int
+	mergedPRPolled  time.Time
 	onPause         func()
 	onResume        func()
 }
@@ -246,6 +247,7 @@ func (h *testHost) PauseMergedPRCleanup() func() {
 		}
 	}
 }
+func (h *testHost) MergedPRPolled() time.Time    { return h.mergedPRPolled }
 func (h *testHost) DropRetainedEvents()          { h.droppedRetained++ }
 func (h *testHost) HasWorkflowEngine() bool      { return false }
 func (h *testHost) RequireWorkflowEngine() error { return fmt.Errorf("workflow engine unavailable") }

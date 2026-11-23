@@ -107,6 +107,10 @@ type mergedPRCleanupState struct {
 	wake     chan struct{}
 	stop     chan struct{}
 	done     chan struct{}
+	// polled is when the last poll pass that ran to its end began; zero
+	// before one has. A pass that began at or after a repository's read
+	// came due has read it, so the harness fences on it.
+	polled time.Time
 
 	// pass serializes the worker's and the poll's passes.
 	pass sync.Mutex
@@ -281,7 +285,7 @@ func (a *App) pauseMergedPRCleanup() (resume func()) {
 		c.life.Lock()
 		// Observations made while paused belong to the state just reset.
 		c.mu.Lock()
-		c.observed, c.act, c.logged = nil, false, nil
+		c.observed, c.act, c.logged, c.polled = nil, false, nil, time.Time{}
 		c.mu.Unlock()
 		c.reads, c.lookups, c.removals, c.noneRead = nil, nil, nil, nil
 		c.waitingIdle.Store(false)
@@ -752,6 +756,17 @@ func (a *App) mergedPRPoll(ctx context.Context, now time.Time) {
 			delete(c.reads, key)
 		}
 	}
+	c.mu.Lock()
+	c.polled = now
+	c.mu.Unlock()
+}
+
+// mergedPRPolled is when the last poll pass that ran to its end began.
+func (a *App) mergedPRPolled() time.Time {
+	c := &a.mergedPRs
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.polled
 }
 
 // mergedPROutcome is what one pass did with a merged pull request.

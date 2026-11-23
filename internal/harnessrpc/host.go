@@ -3,6 +3,7 @@ package harnessrpc
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/keybindings"
@@ -100,6 +101,9 @@ type Host interface {
 	// PauseMergedPRCleanup stops the merged pull request cleanup, joins it
 	// and drops its in-memory state; resume starts it again from nothing.
 	PauseMergedPRCleanup() (resume func())
+	// MergedPRPolled is when the merged pull request poll's last pass
+	// that ran to its end began; zero before one has.
+	MergedPRPolled() time.Time
 	// DropReviewDiffImages forgets the image bytes review diffs read and
 	// what their opens pinned, so a spec's URLs and file handles do not
 	// resolve in the next.
