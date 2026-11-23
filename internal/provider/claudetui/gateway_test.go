@@ -1,8 +1,11 @@
 package claudetui
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -508,4 +511,47 @@ func waitDriver(t *testing.T, d *recordingDriver, wantEnds int) (begins, ends in
 	}
 	t.Fatalf("timed out waiting for %d end(s); begins=%d ends=%d", wantEnds, begins, ends)
 	return begins, ends
+}
+
+// Closing the gateway closes the upstream connections it kept idle, rather
+// than leaving them open for the transport's idle timeout.
+func TestGatewayCloseClosesIdleUpstreamConnections(t *testing.T) {
+	up := sseUpstream(t, http.StatusOK, nil)
+	gw, err := newGateway(up.URL, newRecordingDriver(), func(err error) { t.Logf("gateway error: %v", err) }, nil)
+	if err != nil {
+		t.Fatalf("newGateway: %v", err)
+	}
+	var mu sync.Mutex
+	var conns []net.Conn
+	transport := gw.client.Transport.(*http.Transport)
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+		if err == nil {
+			mu.Lock()
+			conns = append(conns, conn)
+			mu.Unlock()
+		}
+		return conn, err
+	}
+	gw.start()
+
+	// Reading the body to its end puts the upstream connection back in the
+	// idle pool before the read returns.
+	resp := postGateway(t, gw, http.MethodGet, "/v1/models", "")
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	if err := gw.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(conns) == 0 {
+		t.Fatal("the gateway dialed no upstream connection")
+	}
+	for _, conn := range conns {
+		if err := conn.SetReadDeadline(time.Now()); !errors.Is(err, net.ErrClosed) {
+			t.Errorf("upstream connection %s is open after close (SetReadDeadline = %v)", conn.LocalAddr(), err)
+		}
+	}
 }

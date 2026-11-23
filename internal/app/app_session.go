@@ -1552,8 +1552,10 @@ func (a *App) teardownDeadPreInitSessionLocked(threadID, sessionToken string) er
 // never had a session registered.
 //
 // Not shared with unregisterSession (readLoop disconnect): that path
-// runs after the provider subprocess has already exited, so calling
-// closeProviderSession would be redundant, and it deliberately leaves
+// runs after the provider subprocess has already exited (a Claude TUI
+// session has also released its own listeners, feed loop, parser and
+// prompt files by then), so calling closeProviderSession would be
+// redundant, and it deliberately leaves
 // triage state alone so the final wire frames have somewhere to land.
 func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 	return a.teardownSession(threadID, sess, false, dropQueue)
