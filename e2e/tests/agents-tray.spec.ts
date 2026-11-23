@@ -27,6 +27,7 @@
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp, HarnessMockEventData } from '../src/harness.js';
 import { rename } from 'node:fs/promises';
+import { captureProcessIdentity, processHoldState, type ProcessIdentity } from '../src/harness-process.js';
 import { advanceGate, awaitGate, awaitMockInput, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
 import { capture } from './wake-rows-helpers.js';
 import { scrollTimelineToTop } from './standing-agent-home-contents-helpers.js';
@@ -67,23 +68,28 @@ async function liveMockIn(harness: HarnessApp, cwd: string): Promise<{ mockId: s
 }
 
 /**
- * Whether the process is gone, probed as the harness's own registry probes
- * it (internal/harness/control/alive_unix.go): it reads exited however it
- * ended, a mock's report before exit or not.
+ * Whether the captured process no longer holds its pid: it exited, or the
+ * pid now names another process. Either way the captured one is gone, a
+ * mock's exit report or not.
  */
-function processGone(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'ESRCH';
-  }
+async function processGone(identity: ProcessIdentity): Promise<boolean> {
+  return (await processHoldState(identity)) !== 'held';
 }
 
-/** Whether the thread holds an assistant reply with this text. */
-async function hasReply(harness: HarnessApp, threadId: string, text: string): Promise<boolean> {
-  const items = await harness.rpc<{ kind: string; summary: string }[]>('ListItems', threadId, true);
-  return items.some((item) => item.kind === 'assistant_text' && item.summary.includes(text));
+interface TurnCompleted {
+  threadId: string;
+  turnIndex: number;
+  completedAt: number;
+  errorMessage?: string;
+  aborted?: boolean;
+}
+
+/** The assistant texts of one turn of the thread, read from a bounded page. */
+async function turnReplies(harness: HarnessApp, threadId: string, turnIndex: number): Promise<string[]> {
+  const page = await harness.rpc<{ items: { kind: string; summary: string; turnIndex: number }[] }>(
+    'ListItemsAfterCursor', threadId, { turnIndex, itemIndex: -1, itemId: '' }, 50, {},
+  );
+  return page.items.filter((item) => item.turnIndex === turnIndex && item.kind === 'assistant_text').map((item) => item.summary);
 }
 
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
@@ -173,6 +179,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     // its process: every Codex thread gets its own app-server with no idle
     // grace (acquireCodexConn), and a Claude session is its own process.
     const { mockId: original, pid: originalPid } = await liveMockIn(harness, tree.childPath);
+    const originalProcess = await captureProcessIdentity(originalPid);
     await child.getByTestId('agent-tray-row-stop').click();
     await expect(page.getByTestId('toast-message').filter({ hasText: `Stopped ${CHILD}` }))
       .toHaveText(`Stopped ${CHILD}: its turn, 1 background task and 1 agent of its own.`, { timeout: 30_000 });
@@ -199,17 +206,27 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
     // The child is at rest: its session ended with its shell, and nothing
     // started another one. A later message starts exactly one and is answered.
-    await expect.poll(() => processGone(originalPid), { message: 'the stopped child\'s process is gone', timeout: 30_000 }).toBe(true);
+    await expect.poll(() => processGone(originalProcess), { message: 'the stopped child\'s process is gone', timeout: 30_000 }).toBe(true);
     expect(sessionStarts(harness, tree.childPath), 'the stopped child came back').toBe(startsAtStop);
     await setScenario(harness, tree.childPath, threadToolsScenario({
       name: `agents-${provider}-child-again`, provider, echoUserMessage: true, turns: [{ text: 'Back on it.' }],
     }));
     const taken = awaitMockInput(harness, { cwd: tree.childPath, includes: 'one more thing' });
     expect(sessionStarts(harness, tree.childPath), 'a session started before the message').toBe(startsAtStop);
+    const sentAt = Date.now();
+    // The follow-up's own completion: the stopped turn's, still in the
+    // event log, completed before the send.
+    const settled = harness.waitForEvent<TurnCompleted>(
+      'provider:turn_completed', (ev) => ev.threadId === started.child && ev.completedAt >= sentAt, 60_000,
+    );
     await harness.rpc('SendMessage', started.child, 'one more thing', null);
-    // A new session took the message and answered it on the child's thread.
+    // A new session took the message, its turn settled, and it answered.
     expect((await taken).mockId, 'the message reached a new session').not.toBe(original);
-    await expect.poll(() => hasReply(harness, started.child, 'Back on it.'), { timeout: 30_000 }).toBe(true);
+    const followUp = await settled;
+    expect(followUp.aborted ?? false, 'the follow-up turn was not aborted').toBe(false);
+    expect(followUp.errorMessage ?? '', 'the follow-up turn did not fail').toBe('');
+    expect(await harness.rpc('HarnessThreadsWorking', [started.child]), 'the child is at rest after its answer').toEqual([]);
+    expect(await turnReplies(harness, started.child, followUp.turnIndex)).toContain('Back on it.');
     // The registration report rides its own path to the event stream, so
     // it can land after the turn's completion.
     await harness.waitForEvent<HarnessMockEventData>(

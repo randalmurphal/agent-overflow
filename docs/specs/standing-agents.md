@@ -1569,7 +1569,8 @@ request's queued answer or reminder goes back to its request, owed and
 disarmed, as the archive leaves the thread's undelivered requests
 ([agent-thread-tools.md](agent-thread-tools.md)). An Interrupt stops the turn and leaves the queue, which is delivered
 after it. `StopSession` (which a workflow's Pause and End Sessions runs
-for each member) or a revert drops the whole queue, and returns these
+for each member with a live session; a member without one keeps its
+queue) or a revert drops the whole queue, and returns these
 two kinds the same way once the queue is gone: an answer or reminder to
 its request, owed and disarmed, so `thread_status` still returns it; a
 remote job's completion to its watch, whose watcher delivers it again
@@ -1591,10 +1592,12 @@ so it can reach the agent twice. The confirmation is the app's own write
 after the provider's echo, while the provider records the message in its
 session file on its own, so a crash or a session death between the two
 leaves a message the agent holds reading unconfirmed. `StopSession`, a
-rest and an archive drop the unconfirmed sends before they close the
-provider, which
-has three seconds to exit once its input closes, and an echo the
-provider sends in that window arrives after the drop and is discarded.
+rest and an archive drop the unconfirmed sends and then close the
+session, so an echo the provider sends while the session closes arrives
+after the drop and is discarded. A close that ends the provider process
+(a Claude session; a Codex app-server once no other thread holds it
+and its idle grace has passed)
+gives it three seconds to exit once its input closes.
 That cost is accepted: a request that reads owed and a watch that reads
 pending, with nothing lost, outrank a line the agent may already have
 seen. A completion a
@@ -1605,7 +1608,7 @@ ending before it takes the completion in is not restarted every few
 seconds; after the last attempt the watch is dismissed with the reason,
 and `remote_jobs` still returns the result. One that `StopSession`, a
 revert or a restart returned is delivered at the watcher's next poll.
-A session teardown and a revert drop the queue under the
+Every drop of the queue, a session teardown's or a revert's, runs under the
 thread's mutation lock, which every queue write takes, so a message queued
 during the drop is either dropped with it or queued after it.
 An archived thread takes none of these messages and starts no session
@@ -2222,10 +2225,11 @@ closes up their spacing so the row holds at a phone width.
   here start at once, beside those that wait on a paired computer.
   Background's `Stop All` and Stop background work leave Agents rows
   alone. The composer's Stop interrupts the turn and leaves the thread's
-  requests and its queue, the incoming rows with it; a rest, an archive
-  and `StopSession` (a workflow's Pause and End Sessions) clear the
-  incoming rows with the rest of the queue, each giving them back as
-  [Wake supervisor](#wake-supervisor) describes.
+  requests and its queue, the incoming rows with it. A rest settles the
+  requests on the thread ([At rest](#at-rest)). `StopSession` returns a
+  queued answer to its request ([Wake supervisor](#wake-supervisor)) and
+  queues again a request its session had not taken in, so that row stays
+  ([request recovery](agent-thread-tools.md#wakes-q7-q8-q15-q25)).
 - **Other computers.** A spawn on a paired computer lists and stops as a
   local one: the forwarded `agent_rows` and `agent_stop` calls
   ([reaching another computer](agent-thread-tools.md#reaching-another-computer)) nest that
