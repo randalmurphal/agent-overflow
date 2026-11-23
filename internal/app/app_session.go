@@ -499,7 +499,8 @@ func (a *App) registerStartedSession(threadID string, sess session) error {
 // guards, disarming that close. If the app's end closed the process first,
 // shutdown refused the open whatever it answered: an opened session is
 // closed, and a failure the process close caused is reported as the
-// refusal. closeOpened runs only for an open that succeeded.
+// refusal. closeOpened runs only for an open that succeeded, so a caller
+// settling a failure passes nil.
 func refuseOpenAfterAppEnd(disarm func() bool, threadID string, err error, closeOpened func() error) error {
 	if disarm() {
 		return err
@@ -811,7 +812,9 @@ func (a *App) spawnProviderSession(
 					}
 				}
 				if accountErr != nil {
-					disarm()
+					// An account read the app's end cut short is the same
+					// refusal as an open it cut short.
+					accountErr = refuseOpenAfterAppEnd(disarm, threadID, accountErr, nil)
 					return session{}, errors.Join(accountErr, dedicatedConn.Close())
 				}
 			}
