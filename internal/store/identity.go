@@ -134,7 +134,22 @@ type Session struct {
 // that outlives its device's revocation is inert by definition rather than
 // a standing credential, whatever produced it.
 func (s Session) Live(now int64) bool {
-	return s.ActivatedAt != 0 && s.RevokedAt == 0 && s.DeviceRevokedAt == 0 && !s.Expired(now)
+	return s.admitted() && !s.Expired(now)
+}
+
+// Usable reports whether this row lets its device in at now by either way
+// a device has: presenting its access (Live), or, once that access ran
+// out, renewing it with the refresh secret it holds (renewal.Renews), which
+// is how identity's renewal decides. renewal is the newest secret of the
+// session's chain, or the zero value when it has none.
+func (s Session) Usable(renewal RefreshSecret, now int64) bool {
+	return s.Live(now) || (s.admitted() && renewal.Renews(now))
+}
+
+// admitted is Live without the expiry: activated, and neither the session
+// nor its device revoked.
+func (s Session) admitted() bool {
+	return s.ActivatedAt != 0 && s.RevokedAt == 0 && s.DeviceRevokedAt == 0
 }
 
 // ProcessBound reports whether the session uses the local boot credential.

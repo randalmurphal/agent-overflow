@@ -121,7 +121,9 @@ type PairingInvite struct {
 // waits for a device to redeem.
 type PairingStatusView struct {
 	LinkID string `json:"linkId"`
-	// State is one of: pending, redeemed, confirmed, canceled, expired.
+	// State is one of: pending, redeemed, confirmed, accessEnded, canceled,
+	// expired. accessEnded is a link that was confirmed whose device can no
+	// longer use its access: revoked, or past its access and its renewal.
 	State string `json:"state"`
 	// VerificationNumber and DeviceLabel are populated once a device has
 	// redeemed. The number is what the owner compares against the one the
@@ -140,7 +142,7 @@ func (v PairingStatusView) Redeemed() bool { return v.State == pairingStateRedee
 // poll loop can stop.
 func (v PairingStatusView) Settled() bool {
 	switch v.State {
-	case pairingStateConfirmed, pairingStateCanceled, pairingStateExpired:
+	case pairingStateConfirmed, pairingStateAccessEnded, pairingStateCanceled, pairingStateExpired:
 		return true
 	}
 	return false
@@ -191,4 +193,7 @@ const (
 	pairingStateConfirmed = "confirmed"
 	pairingStateCanceled  = "canceled"
 	pairingStateExpired   = "expired"
+	// pairingStateAccessEnded is a confirmed link whose device can no
+	// longer use its access (store.PairingAccessEnded): never "confirmed".
+	pairingStateAccessEnded = "accessEnded"
 )

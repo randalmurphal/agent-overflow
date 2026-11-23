@@ -75,7 +75,8 @@ func TestComputerPairingCancelOfAnApprovedWindowInvitationIsRefused(t *testing.T
 // A window approved on one surface and then canceled from another (the
 // store refuses the cancel) reads confirmed in its own dialog even once a
 // newer window opened: the status answers from the invitation's row, not
-// from the ending the cancel recorded.
+// from the ending the cancel recorded. Once the device is revoked, the same
+// window reads that its access ended, not confirmed and not canceled.
 func TestComputerPairingAnApprovedWindowReadsConfirmedAfterARefusedCancelAndANewerWindow(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
@@ -92,6 +93,62 @@ func TestComputerPairingAnApprovedWindowReadsConfirmedAfterARefusedCancelAndANew
 	}
 	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "confirmed" || status.LinkID != invite.LinkID {
 		t.Fatalf("the approved window after a newer one opened = %+v (%v), want it confirmed", status, err)
+	}
+	link, err := a.store.GetPairingLink(invite.LinkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.RevokeAccessDevice(link.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+	requireAccessEnded(t, a, window.ID, invite.LinkID, "the window before the newer one, after its device was revoked")
+}
+
+// requireAccessEnded checks that the dialog of an approved window whose
+// device lost its access reads that ending, and that a stale Allow on it is
+// refused with words that say so.
+func requireAccessEnded(t *testing.T, a *App, windowID, linkID, when string) {
+	t.Helper()
+	err := a.ConfirmDevicePairing(linkID)
+	if !errors.Is(err, identity.ErrPairingAccessEnded) {
+		t.Fatalf("%s: a stale approval = %v, want identity.ErrPairingAccessEnded", when, err)
+	}
+	requirePersonSees(t, err, "this device was allowed, and its access has since been removed or expired; pair it again")
+	if status, err := a.ComputerPairingStatus(windowID); err != nil || status.State != "expired" || status.Ended != "accessEnded" {
+		t.Fatalf("%s: the dialog's status read = %+v (%v), want expired with Ended accessEnded", when, status, err)
+	}
+}
+
+// An owner approves a window's invitation on one view and then ends the
+// device's session in Devices: the other view's stale Allow is refused, and
+// its follow-up status read of the still-open window says the access ended,
+// so the dialog never shows the computer as paired. The ordinary pairing
+// modal's poll of the same invitation says the same.
+func TestComputerPairingAnApprovedWindowWhoseSessionEndedReadsAccessEnded(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	a, _ := computerPairingHost(t)
+	window, invite := windowAwaitingApproval(t, a)
+	if err := a.ConfirmDevicePairing(invite.LinkID); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := a.DevicePairingStatus(invite.LinkID); err != nil || status.State != "confirmed" {
+		t.Fatalf("the modal's poll of the approved invitation = %+v (%v), want confirmed", status, err)
+	}
+	link, err := a.store.GetPairingLink(invite.LinkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.RevokeAccessSession(link.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if !a.computerPairingBook().Snapshot(window.ID).Open {
+		t.Fatal("the approved window closed; this sequence needs it open")
+	}
+	requireAccessEnded(t, a, window.ID, invite.LinkID, "the open window, after its session ended")
+	status, err := a.DevicePairingStatus(invite.LinkID)
+	if err != nil || status.State != "accessEnded" || !status.Settled() || status.Confirmed() {
+		t.Fatalf("the modal's poll after the session ended = %+v (%v), want accessEnded, settled and not confirmed", status, err)
 	}
 }
 
@@ -128,7 +185,7 @@ func TestComputerPairingASecondApprovalSaysTheDeviceIsAlreadyAllowed(t *testing.
 	if err := a.RevokeAccessSession(link.SessionID); err != nil {
 		t.Fatal(err)
 	}
-	refusedConfirmation(t, a, invite.LinkID, "after the device's session was revoked")
+	requireAccessEnded(t, a, window.ID, invite.LinkID, "after the device's session was revoked")
 }
 
 // A publication that retires a window the book is still admitting, between

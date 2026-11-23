@@ -90,6 +90,11 @@ var ErrPairingNotCompleted = errors.New("identity: the pairing was not completed
 // (store.ErrPairingAlreadyConfirmed): the device is allowed.
 var ErrPairingAlreadyConfirmed = errors.New("identity: the device is already allowed")
 
+// ErrPairingAccessEnded answers a confirmation of a link an earlier
+// confirmation admitted whose device can no longer use its access
+// (store.ErrPairingAccessEnded): only a new pairing admits it again.
+var ErrPairingAccessEnded = errors.New("identity: the device was allowed and its access has ended")
+
 // PairingPayload is what the minting surface hands to the new device: the
 // contents of the URL fragment behind a pairing link, and the same fields a
 // QR code or a typed code carries.
@@ -656,9 +661,9 @@ func (s *Sessions) ConfirmPairing(linkID string) (store.PairingLink, error) {
 // storage failure changes nothing, so the owner can try again. The write runs
 // inside the pairing gate, and a link the gate refuses answers
 // ErrPairingRefused with nothing written. A link an earlier confirmation
-// admitted, whose session and device are live, answers
-// ErrPairingAlreadyConfirmed, as the store decides from its row; a gate
-// refusal asks the store the same question.
+// admitted answers ErrPairingAlreadyConfirmed while its device can use its
+// access and ErrPairingAccessEnded once it cannot, as the store decides
+// (store.PairingAccessOf); a gate refusal asks the store the same question.
 func (s *Sessions) confirmPairing(linkID string) (store.PairingLink, error) {
 	var confirmation store.PairingConfirmation
 	// The mark is written at mint and never changes, so it is read here,
@@ -680,18 +685,22 @@ func (s *Sessions) confirmPairing(linkID string) (store.PairingLink, error) {
 		if !errors.Is(gated, ErrPairingRefused) {
 			return store.PairingLink{}, gated
 		}
-		allowed, err := s.store.PairingAllowed(linkID)
+		access, err := s.store.PairingAccessOf(linkID, s.now().UnixMilli())
 		switch {
 		case err != nil:
 			return store.PairingLink{}, err
-		case allowed:
+		case access == store.PairingUsable:
 			return store.PairingLink{}, ErrPairingAlreadyConfirmed
+		case access == store.PairingAccessEnded:
+			return store.PairingLink{}, ErrPairingAccessEnded
 		}
 		return store.PairingLink{}, gated
 	}
 	switch {
 	case errors.Is(err, store.ErrPairingAlreadyConfirmed):
 		return store.PairingLink{}, ErrPairingAlreadyConfirmed
+	case errors.Is(err, store.ErrPairingAccessEnded):
+		return store.PairingLink{}, ErrPairingAccessEnded
 	case errors.Is(err, sql.ErrNoRows):
 		return store.PairingLink{}, ErrPairingRefused
 	case errors.Is(err, store.ErrPairingIncomplete):

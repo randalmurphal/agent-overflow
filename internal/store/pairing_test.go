@@ -262,6 +262,60 @@ func TestConfirmRedeemedPairingRequiresAnAttachedRedemptionAndHappensOnce(t *tes
 	}
 }
 
+// A repeat confirmation answers from whether the confirmed device can use
+// its access at that moment, by its access or by renewal: allowed while
+// either has time left and its renewal is unspent, ended once both expired,
+// its renewal was spent, or its session was revoked. Nothing is written.
+func TestARepeatConfirmationAnswersFromWhetherTheDeviceCanUseItsAccess(t *testing.T) {
+	s, owner, device := seedOwnerDevice(t)
+	key := seedSigningKey(t, s)
+	seedPairingLink(t, s, owner, []byte("hash-1"), 9000)
+	if err := s.SetDeviceKeyThumbprint(device.ID, "thumb"); err != nil {
+		t.Fatal(err)
+	}
+	device.KeyThumbprint = "thumb"
+	if _, err := s.RedeemPairingLink([]byte("hash-1"), 2000, "thumb"); err != nil {
+		t.Fatal(err)
+	}
+	pending := newTestSession("sess-pending", owner, device, key, 9000)
+	pending.ActivatedAt, pending.Scopes = 0, []string{"threads:read", "files:read"}
+	// Access until 10000 once confirmed; renewal until 50000.
+	refresh := RefreshGrant{Hash: []byte("refresh-1"), CreatedAt: 2000, ExpiresAt: 50000}
+	if err := s.CompletePairingRedemption(PairingRedemption{LinkID: "link-1", DeviceSession: DeviceSession{Device: device, Session: pending, Refresh: refresh}}); err != nil {
+		t.Fatal(err)
+	}
+	if access, err := s.PairingAccessOf("link-1", 2400); err != nil || access != PairingNotConfirmed {
+		t.Fatalf("before confirmation the access = %v (%v), want PairingNotConfirmed", access, err)
+	}
+	if _, err := s.ConfirmRedeemedPairing("link-1", 2500, accessUntil(10000)); err != nil {
+		t.Fatal(err)
+	}
+	repeat := func(at int64, wantAccess PairingAccess, wantErr error, when string) {
+		t.Helper()
+		if access, err := s.PairingAccessOf("link-1", at); err != nil || access != wantAccess {
+			t.Fatalf("%s: the access = %v (%v), want %v", when, access, err, wantAccess)
+		}
+		if _, err := s.ConfirmRedeemedPairing("link-1", at, accessUntil(at+10000)); !errors.Is(err, wantErr) {
+			t.Fatalf("%s: a repeat confirmation = %v, want %v", when, err, wantErr)
+		}
+	}
+	repeat(5000, PairingUsable, ErrPairingAlreadyConfirmed, "inside its access")
+	repeat(20000, PairingUsable, ErrPairingAlreadyConfirmed, "past its access, inside its renewal")
+	repeat(60000, PairingAccessEnded, ErrPairingAccessEnded, "past its access and its renewal")
+	if session, err := s.GetSession(pending.ID); err != nil || session.ExpiresAt != 10000 {
+		t.Fatalf("the repeat confirmations moved the session to %+v (%v)", session, err)
+	}
+	if _, err := s.db.Exec(`UPDATE refresh_secrets SET consumed_at = 3000 WHERE session_id = ?`, pending.ID); err != nil {
+		t.Fatal(err)
+	}
+	repeat(20000, PairingAccessEnded, ErrPairingAccessEnded, "past its access, with its renewal spent")
+	repeat(5000, PairingUsable, ErrPairingAlreadyConfirmed, "inside its access, with its renewal spent")
+	if _, _, err := s.RevokeSession(pending.ID, 5000); err != nil {
+		t.Fatal(err)
+	}
+	repeat(5000, PairingAccessEnded, ErrPairingAccessEnded, "inside its access, with its session revoked")
+}
+
 // TestCancelPairingLinkWorksAfterRedemption — the refusal case the
 // verification number exists for is a link a device the owner does not
 // recognise has ALREADY redeemed. Cancelling only before redemption would

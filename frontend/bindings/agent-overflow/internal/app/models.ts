@@ -1617,7 +1617,9 @@ export class ComputerPairingView {
     /**
      * Ended says why a window in state "expired" is no longer open, one of
      * pairbootstrap's Ending values: "deadline", "closed", "canceled",
-     * "replaced", "networkChanged", "disconnected" or "stopped". Empty
+     * "replaced", "networkChanged", "disconnected" or "stopped"; or
+     * "accessEnded" for a window whose invitation was approved and whose
+     * device can no longer use that access, open or not. Otherwise empty
      * while the window is open, and when nothing records why it ended: a
      * window from before this process started or older than the one before
      * the last, or an invitation the store settled while its window was
@@ -5591,7 +5593,9 @@ export class PairingStatusView {
     "linkId": string;
 
     /**
-     * State is one of: pending, redeemed, confirmed, canceled, expired.
+     * State is one of: pending, redeemed, confirmed, accessEnded, canceled,
+     * expired. accessEnded is a link that was confirmed whose device can no
+     * longer use its access: revoked, or past its access and its renewal.
      */
     "state": string;
 

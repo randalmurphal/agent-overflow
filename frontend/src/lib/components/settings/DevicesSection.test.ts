@@ -221,6 +221,24 @@ describe('<DevicesSection>', () => {
     expect(load.mock.calls.length).toBeGreaterThan(1);
   });
 
+  it('says an approval whose access was removed since is refused, and never that it is allowed', async () => {
+    const pending = {
+      linkId: 'link-1', createdAtMs: 1000, expiresAtMs: Date.now() + 300_000,
+      redeemed: true, deviceLabel: 'iPhone', verificationNumber: '481 923',
+    };
+    setBindingMock('GetAccessOverview', async () => overview({ pendingPairings: [pending] }));
+    setBindingMock('ConfirmDevicePairing', async () => {
+      throw new TransportError('pairing_access_ended', 'this device was allowed, and its access has since been removed or expired; pair it again');
+    });
+    resetToastsForTest();
+    const { findByRole } = render(DevicesSection);
+    await fireEvent.click(await findByRole('button', { name: 'It matches — allow' }));
+    await waitFor(() => expect(getToasts().map((toast) => [toast.type, toast.message])).toContainEqual(
+      ['error', 'Failed to allow the device: this device was allowed, and its access has since been removed or expired; pair it again'],
+    ));
+    expect(getToasts().filter((toast) => toast.type === 'info')).toHaveLength(0);
+  });
+
   it('offers cancel on a link nothing has opened yet', async () => {
     setBindingMock('GetAccessOverview', async () =>
       overview({

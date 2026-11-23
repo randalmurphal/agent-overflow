@@ -48,6 +48,7 @@
       case 'replaced': return `A newer pairing was started on ${name}, which ended this one.`;
       case 'closed': return 'Pairing was closed.';
       case 'stopped': return `Pairing stopped because ${name} shut down.`;
+      case 'accessEnded': return 'This computer was paired, and its access has since been removed or expired. Choose Try again to pair it again.';
       default: return 'Pairing ended.';
     }
   });

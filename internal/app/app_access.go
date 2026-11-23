@@ -258,13 +258,17 @@ func (a *App) mintDevicePairingOn(deviceClass, access, purpose string, bootstrap
 //ao:route home
 func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
 	var link store.PairingLink
+	var access store.PairingAccess
 	var standing pairbootstrap.Standing
 	var sessions *identity.Sessions
 	var now int64
 	err := a.readPairingStanding(func(st pairbootstrap.Standing, s *identity.Sessions) error {
 		standing, sessions, now = st, s, s.Now()
 		var err error
-		link, err = s.PairingLink(linkID)
+		if link, err = s.PairingLink(linkID); err != nil {
+			return err
+		}
+		access, err = a.store.PairingAccessOf(linkID, now)
 		return err
 	})
 	if err != nil {
@@ -272,7 +276,7 @@ func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
 	}
 	view := PairingStatusView{
 		LinkID:      link.ID,
-		State:       pairingState(link, now, standing),
+		State:       pairingState(link, access, now, standing),
 		DeviceLabel: a.pairedDeviceLabel(link),
 		ExpiresAtMs: pairingDeadline(link),
 	}
@@ -310,6 +314,8 @@ func (a *App) ConfirmDevicePairing(linkID string) error {
 		NotifyOwnDevices(a)
 	case errors.Is(err, identity.ErrPairingAlreadyConfirmed):
 		err = errorsx.Public("pairing_already_allowed", "this device is already allowed", err)
+	case errors.Is(err, identity.ErrPairingAccessEnded):
+		err = errorsx.Public("pairing_access_ended", "this device was allowed, and its access has since been removed or expired; pair it again", err)
 	case errors.Is(err, identity.ErrPairingRefused):
 		err = errorsx.Public("pairing_closed", "this pairing is no longer open; start pairing again", err)
 	case errors.Is(err, identity.ErrPairingNotCompleted):
@@ -623,7 +629,9 @@ func (a *App) pendingPairings(state *identityState, now int64) ([]PendingPairing
 	}
 	var out []PendingPairing
 	for _, link := range links {
-		if s := pairingState(link, now, standing); s != pairingStatePending && s != pairingStateRedeemed {
+		// Only an unconfirmed link is pending, and access decides nothing
+		// about one, so none is read.
+		if s := pairingState(link, store.PairingNotConfirmed, now, standing); s != pairingStatePending && s != pairingStateRedeemed {
 			continue
 		}
 		view := PendingPairing{
@@ -668,17 +676,21 @@ func (a *App) pairedDeviceLabel(link store.PairingLink) string {
 // with link (readPairingStanding).
 //
 // The order is the contract. Settled first, because confirmed and
-// canceled are terminal and outlive every window. Ready BEFORE expired,
+// canceled are terminal and outlive every window; a confirmed link is
+// confirmed only while access (store.PairingAccessOf, read at now) says its
+// device can use its access, and accessEnded after. Ready BEFORE expired,
 // because a redeemed link deliberately outlives its own five-minute
 // window: redemption mints the session with the confirmation window
 // (identity.PairingConfirmWindow), and reporting "expired" while the owner
 // still has minutes to match the number would take away the step the
 // exchange is waiting on. A link spent but not yet naming its session is
 // still pending: there is nothing to approve yet.
-func pairingState(link store.PairingLink, now int64, standing pairbootstrap.Standing) string {
+func pairingState(link store.PairingLink, access store.PairingAccess, now int64, standing pairbootstrap.Standing) string {
 	switch {
-	case link.ConfirmedAt != 0:
+	case link.ConfirmedAt != 0 && access == store.PairingUsable:
 		return pairingStateConfirmed
+	case link.ConfirmedAt != 0:
+		return pairingStateAccessEnded
 	case link.CanceledAt != 0 || standing.Refuses(link.ID):
 		return pairingStateCanceled
 	case link.Ready():

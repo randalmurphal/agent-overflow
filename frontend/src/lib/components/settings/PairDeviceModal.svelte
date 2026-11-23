@@ -253,9 +253,15 @@
     if (stage.at === 'verify') {
       // Confirmed or canceled from the pending row while this modal sat
       // on the comparison — follow it rather than offering a stale choice.
+      // A confirmation whose access has since ended is never shown as
+      // paired.
       if (status.state === 'confirmed') {
         stopTimers();
         stage = { at: 'done' };
+        onChanged();
+      } else if (status.state === 'accessEnded') {
+        stopTimers();
+        stage = { at: 'ended', note: 'This device was allowed, and its access has since been removed or expired. Choose New link to pair it again.' };
         onChanged();
       } else if (status.state === 'canceled' || status.state === 'expired') {
         stopTimers();

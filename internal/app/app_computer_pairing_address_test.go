@@ -179,11 +179,11 @@ func TestComputerPairingStatusDuringARetirementShowsItCanceled(t *testing.T) {
 // ready to approve.
 func TestAPairingSpentButNotYetNamingItsSessionIsPending(t *testing.T) {
 	spent := store.PairingLink{ID: "spent", CreatedAt: 1, ExpiresAt: 10_000, RedeemedAt: 2}
-	if got := pairingState(spent, 3, pairbootstrap.Standing{}); got != pairingStatePending {
+	if got := pairingState(spent, store.PairingNotConfirmed, 3, pairbootstrap.Standing{}); got != pairingStatePending {
 		t.Fatalf("a spent, unattached link reads %s, want pending", got)
 	}
 	spent.SessionID = "session"
-	if got := pairingState(spent, 3, pairbootstrap.Standing{}); got != pairingStateRedeemed {
+	if got := pairingState(spent, store.PairingNotConfirmed, 3, pairbootstrap.Standing{}); got != pairingStateRedeemed {
 		t.Fatalf("an attached link reads %s, want redeemed", got)
 	}
 }

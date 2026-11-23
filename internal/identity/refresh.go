@@ -157,7 +157,7 @@ func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 		if held.Spent() {
 			return s.revokeFamilyForReuse(held, req.Peer)
 		}
-		if held.ExpiresAt <= now {
+		if held.Expired(now) {
 			s.audit(store.AuthAuditEntry{Event: string(AuditRefreshRefused), Outcome: store.AuthAuditOutcomeRefused, Reason: ReasonExpiredSession.Code(), SessionID: held.SessionID, Peer: req.Peer})
 			return TokenSet{}, ReasonExpiredSession
 		}

@@ -299,6 +299,7 @@ describe('computer pairing window decisions', () => {
     ['replaced', 'A newer pairing was started on this computer, which ended this one.'],
     ['closed', 'Pairing was closed.'],
     ['stopped', 'Pairing stopped because this computer shut down.'],
+    ['accessEnded', 'This computer was paired, and its access has since been removed or expired. Choose Try again to pair it again.'],
     ['', 'Pairing ended.'],
   ])('says why the window ended: %s', async (ended, text) => {
     setBindingMock('OpenComputerPairing', async () => WINDOW);
@@ -333,6 +334,24 @@ describe('computer pairing window decisions', () => {
     await vi.waitFor(() => expect(view.getByText(/The network of this computer changed/)).toBeTruthy());
     expect(view.getByRole('alert')).toHaveTextContent('Could not allow this computer: this pairing is no longer open; start pairing again');
     expect(view.queryByLabelText('Verification number')).toBeNull();
+  });
+
+  // Another owner view approved it and the device's access was then
+  // removed: the refusal and the ending both show, and nothing says paired.
+  it('shows that an approved computer lost its access beside the approval it refused', async () => {
+    setBindingMock('OpenComputerPairing', async () => WINDOW);
+    const poll = setBindingMock('ComputerPairingStatus', async () => READY);
+    setBindingMock('ConfirmDevicePairing', async () => {
+      poll.mockResolvedValue({ ...WAITING, state: 'expired', ended: 'accessEnded' });
+      throw new TransportError('pairing_access_ended', 'this device was allowed, and its access has since been removed or expired; pair it again');
+    });
+    const view = show();
+    await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    await vi.waitFor(() => expect(view.getByText(/its access has since been removed or expired. Choose Try again/)).toBeTruthy());
+    expect(view.getByRole('alert')).toHaveTextContent('Could not allow this computer: this device was allowed, and its access has since been removed or expired; pair it again');
+    expect(view.queryByText('Computer paired')).toBeNull();
+    expect(view.getByRole('button', { name: 'Try again' })).toBeEnabled();
   });
 
   it('shows a computer another owner view already approved as paired', async () => {

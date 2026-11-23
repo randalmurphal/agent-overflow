@@ -349,6 +349,19 @@ describe('<PairDeviceModal> across a reopen', () => {
     await view.findByText('Device paired');
   });
 
+  it('says the access ended, not paired, when the poll finds an approval whose access was removed', async () => {
+    vi.useFakeTimers();
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    const poll = setBindingMock('DevicePairingStatus', async () => ({ state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs }));
+    const view = renderModal();
+    await verifyStage(view);
+    poll.mockResolvedValue({ state: 'accessEnded', expiresAtMs: INVITE.expiresAtMs });
+    await vi.advanceTimersByTimeAsync(2_100);
+    await view.findByText('This device was allowed, and its access has since been removed or expired. Choose New link to pair it again.');
+    expect(view.queryByText('Device paired')).toBeNull();
+    expect(view.getByRole('button', { name: 'New link' })).toBeEnabled();
+  });
+
   it('does not complete a reopened modal with an approval sent before it closed', async () => {
     vi.useFakeTimers();
     setBindingMock('MintDevicePairing', async () => INVITE);

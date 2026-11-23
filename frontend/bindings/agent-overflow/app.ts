@@ -870,7 +870,10 @@ export function CompactCodexThread(threadID: string): $CancellablePromise<void> 
  * from the invitation's row first: a confirmation admitted before the
  * window's deadline whose write lands after it reads confirmed, so a dialog
  * whose approval reply was lost reaches the durable result, and a confirmed
- * pairing never reads as ended.
+ * pairing never reads as ended. Confirmed holds only while the device can
+ * use its access (store.PairingAccessOf); an approved invitation whose
+ * access has since ended reads expired with Ended "accessEnded", open
+ * window or not.
  */
 export function ComputerPairingStatus(id: string): $CancellablePromise<app$0.ComputerPairingView> {
     return $Call.ByID(2151872702, id).then(($result: any) => {
