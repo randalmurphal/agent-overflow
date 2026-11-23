@@ -7,6 +7,8 @@ import { forgetReviewFindSpotsForTest, placeReviewFindHit, resolveReviewFindHit,
 import { findThreadCommentKey, makeReviewFindHit, reviewCommentKey, type ReviewFindHit } from './reviewFindIdentity';
 import { scanReviewFind, type ReviewFindContent } from './reviewFindScan';
 import { freshScan, shownOf, type Scanned } from '../../test/helpers/reviewFindOracle';
+import { withComments } from '../../test/helpers/reviewFindContent';
+import { indexReviewComments } from './reviewRows';
 import type { DiffReviewComment, ReviewComment, ReviewThread } from '../types/models';
 import { forEachSeed, seededFraction } from '../../test/helpers/seededRandom';
 
@@ -52,7 +54,7 @@ const thread: ReviewThread = {
 };
 
 function diffContent(patch: string[], comments = true): ReviewFindContent {
-  return { files: parseReviewFiles(patch.join('\n')), drafts: comments ? [draft] : [], prThreads: comments ? [thread] : [], commentText: (body) => [{ text: body, shown: true }] };
+  return { files: parseReviewFiles(patch.join('\n')), comments: comments ? indexReviewComments([thread], [draft]) : indexReviewComments([], []), commentText: (body) => [{ text: body, shown: true }] };
 }
 
 // A scan seeded as the pane's source seeds what its scans read.
@@ -131,7 +133,7 @@ describe('resolveReviewFindHit', () => {
 
   it('a comment deleted while its file stays the same is not present; the next keeps its key', async () => {
     const base = diffContent(PATCHES.base);
-    const resolved = await expectResolves(base, { ...base, drafts: [], prThreads: [{ ...thread, comments: thread.comments.slice(1) }] });
+    const resolved = await expectResolves(base, withComments(base, { drafts: [], prThreads: [{ ...thread, comments: thread.comments.slice(1) }] }));
     expect(resolved.get(id('src/b.ts', 'dc:d1'))).toEqual({ kind: 'absent' });
     expect(resolved.get(id('src/a.test.ts', pc('p1', '1'), '0:0'))).toEqual({ kind: 'absent' });
     expect(at(resolved.get(id('src/a.test.ts', pc('p1', '2'), '0:0')))).toMatchObject({ rowKey: pc('p1', '2') });
@@ -143,8 +145,8 @@ describe('resolveReviewFindHit', () => {
       id: 'r1', threadId: 'p1', scope: 'pr', sourceKey: 'k', filePath: 'src/a.test.ts', status: 'draft', side: 'reply',
       replyThreadId: 'p1', selectedText: '', body: 'needle reply', createdAt: 0, updatedAt: 0,
     };
-    const before = { ...diffContent(PATCHES.base), drafts: [reply] };
-    const after = { ...before, prThreads: [{ ...thread, path: 'src/b.ts', line: 100 }] };
+    const before = withComments(diffContent(PATCHES.base), { drafts: [reply] });
+    const after = withComments(before, { prThreads: [{ ...thread, path: 'src/b.ts', line: 100 }] });
     const published = await seededScan(before);
     const held = [...published.values()].map((each) => each.hit).filter((hit) => hit.at.kind === 'draft');
     expect(held.map((hit) => hit.path)).toEqual(['src/a.test.ts']);
@@ -157,7 +159,7 @@ describe('resolveReviewFindHit', () => {
       id: 'r1', threadId: 'p1', scope: 'pr', sourceKey: 'k', filePath: 'src/a.test.ts', status: 'draft', side: 'reply',
       replyThreadId: 'p1', selectedText: '', body: 'needle reply', createdAt: 0, updatedAt: 0,
     };
-    const after = { ...diffContent(PATCHES.base), drafts: [reply], prThreads: [{ ...thread, path: 'src/b.ts', line: 100 }] };
+    const after = withComments(diffContent(PATCHES.base), { drafts: [reply], prThreads: [{ ...thread, path: 'src/b.ts', line: 100 }] });
     const published = await seededScan(after);
     const held = [...published.values()].map((each) => each.hit).filter((hit) => hit.at.kind === 'draft');
     expect(held.map((hit) => hit.path)).toEqual(['src/b.ts']);
@@ -170,11 +172,11 @@ describe('resolveReviewFindHit', () => {
       id: 'r1', threadId: 'p1', scope: 'pr', sourceKey: 'k', filePath: 'src/a.test.ts', status: 'draft', side: 'reply',
       replyThreadId: 'p1', selectedText: '', body: 'needle reply', createdAt: 0, updatedAt: 0,
     };
-    const before = { ...diffContent(PATCHES.base), drafts: [reply] };
+    const before = withComments(diffContent(PATCHES.base), { drafts: [reply] });
     const published = await seededScan(before);
     const held = [...published.values()].map((each) => each.hit).filter((hit) => hit.at.kind === 'draft');
     expect(held.map((hit) => hit.path)).toEqual(['src/a.test.ts']);
-    const resolved = await expectResolvesTo(held, { ...before, prThreads: [] });
+    const resolved = await expectResolvesTo(held, withComments(before, { prThreads: [] }));
     expect([...resolved.values()]).toEqual([{ kind: 'absent' }]);
   });
 
@@ -188,7 +190,7 @@ describe('resolveReviewFindHit', () => {
   it('a comment match is counted among the shown runs before it', async () => {
     const two: ReviewThread = { ...thread, comments: [{ authorLogin: 'a', body: 'needle|needle needle|needle', createdAt: '', databaseID: 7, id: `n${7}`, viewerCanEdit: false, viewerCanDelete: false }] };
     const runs = (hidden: boolean): ReviewFindContent => ({
-      ...diffContent(PATCHES.base), prThreads: [two],
+      ...withComments(diffContent(PATCHES.base), { prThreads: [two] }),
       commentText: (body) => body.split('|').map((text, index) => ({ text, shown: !hidden || index !== 1 })),
     });
     const resolved = await expectResolvesTo([makeReviewFindHit('src/a.test.ts', { kind: 'thread', threadId: 'p1', comment: '7' }, 2, 0)], runs(false));
@@ -220,7 +222,7 @@ describe('resolveReviewFindHit', () => {
     const build = (expanded: Set<number> | undefined): ReviewFindContent => {
       const folds = new Map<number, readonly string[]>();
       const file = reviewFileFromPatchFile(conflictPatchFile('c.go', source, { expandedFolds: expanded, onFold: (foldId, lines) => folds.set(foldId, lines) }));
-      return { files: [file], drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }], foldLines: () => folds };
+      return { files: [file], comments: indexReviewComments([], []), commentText: (body) => [{ text: body, shown: true }], foldLines: () => folds };
     };
     const closed = build(undefined);
     const atClosed = await expectResolves(closed, closed);
@@ -234,7 +236,7 @@ describe('resolveReviewFindHit', () => {
 
   it('a content listing no file of the match is not present', () => {
     const hit: ReviewFindHit = { identity: id('gone.ts', 'h'), path: 'gone.ts', at: { kind: 'header' }, run: 0, occurrence: 0 };
-    const content: ReviewFindLocateContent = { files: [] as ReviewFile[], drafts: [], prThreads: [] };
+    const content: ReviewFindLocateContent = { files: [] as ReviewFile[], comments: indexReviewComments([], []) };
     expect(placeReviewFindHit(content, hit)).toBeNull();
     expect(resolveReviewFindHit({ ...content, commentRuns: () => [], editing: new Set() }, hit, NEEDLE)).toEqual({ kind: 'absent' });
   });
@@ -369,8 +371,7 @@ class World {
     const closed = new Set(m.closed);
     return {
       files: m.order.filter((path) => !m.hiddenPaths.has(path)).map((path) => byPath.get(path)!),
-      drafts: m.drafts.map((d) => ({ ...d })),
-      prThreads: m.threads.map((t) => ({ ...t, comments: t.comments.map((c) => ({ ...c })) })),
+      comments: indexReviewComments(m.threads.map((t) => ({ ...t, comments: t.comments.map((c) => ({ ...c })) })), m.drafts.map((d) => ({ ...d }))),
       commentText: (body, rowKey) => body.split('|').map((text, index) => ({ text, shown: !(closed.has(rowKey) && index % 2 === 1) })),
       editing: new Set(m.editing),
       foldLines: (path) => (path === m.conflict.path ? conflict.folds : null),
@@ -488,10 +489,10 @@ function runText(content: ReviewFindContent, scanned: Scanned): string {
   const file = content.files[where.fileIndex];
   const at = hit.at;
   if (at.kind === 'header') return file.path;
-  if (at.kind === 'draft') return content.drafts.find((d) => d.id === at.commentId)!.body;
+  if (at.kind === 'draft') return content.comments.drafts.find((d) => d.id === at.commentId)!.body;
   if (at.kind === 'thread') {
     // The comment its identity names, by forge id.
-    const comment = content.prThreads.find((t) => t.id === at.threadId)?.comments.find((c) => reviewCommentKey(c) === at.comment);
+    const comment = content.comments.threads.find((t) => t.id === at.threadId)?.comments.find((c) => reviewCommentKey(c) === at.comment);
     if (!comment) throw new Error(`${JSON.stringify(hit.identity)} names no comment of its thread by its forge key`);
     return content.commentText(visibleBody(comment.body), where.rowKey)[hit.run].text;
   }
@@ -505,9 +506,9 @@ function runText(content: ReviewFindContent, scanned: Scanned): string {
 function runShown(content: ReviewFindContent, hit: ReviewFindHit): boolean {
   if (!content.files.some((file) => file.path === hit.path)) return false;
   const at = hit.at;
-  if (at.kind === 'draft') return !content.editing?.has(`dc:${at.commentId}`) && content.drafts.some((d) => d.id === at.commentId);
+  if (at.kind === 'draft') return !content.editing?.has(`dc:${at.commentId}`) && content.comments.drafts.some((d) => d.id === at.commentId);
   if (at.kind !== 'thread') return true;
-  const comment = content.prThreads.find((t) => t.id === at.threadId)?.comments.find((c) => reviewCommentKey(c) === at.comment);
+  const comment = content.comments.threads.find((t) => t.id === at.threadId)?.comments.find((c) => reviewCommentKey(c) === at.comment);
   return !!comment && content.commentText(visibleBody(comment.body), findThreadCommentKey(at.threadId, at.comment))[hit.run]?.shown === true;
 }
 

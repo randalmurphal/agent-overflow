@@ -595,7 +595,6 @@ function pushInsert(
   }, `d:${insert.editor.id}`, fileIndex);
 }
 
-/** Where a PR thread sits in the diff: its file and line, or its file. */
 /**
  * A held reply: a draft that answers a forge thread. It shows at the foot of
  * that thread, in the file the thread is in now; the file it was held on is
@@ -605,19 +604,67 @@ export function isHeldReply(draft: DiffReviewComment): boolean {
   return !!draft.replyThreadId;
 }
 
-/** The held replies `thread` shows at its foot, in `drafts` order. */
-export function heldRepliesOf(thread: Pick<ReviewThread, 'id'>, drafts: readonly DiffReviewComment[]): DiffReviewComment[] {
-  return drafts.filter((draft) => draft.status === 'draft' && draft.replyThreadId === thread.id);
+/**
+ * One snapshot's PR threads and drafts with the lookups that every reader
+ * of a held reply shares: the thread rows, the per-file counts, and find's
+ * scan, placement and resolver. Build it once per snapshot
+ * (`indexReviewComments`), so they agree on where a reply shows and in
+ * what order.
+ */
+export interface ReviewCommentIndex {
+  readonly threads: readonly ReviewThread[];
+  /** The drafts, in display order (file, line, creation). */
+  readonly drafts: readonly DiffReviewComment[];
+  thread(id: string): ReviewThread | undefined;
+  draft(id: string): DiffReviewComment | undefined;
+  /** The held replies at `threadId`'s foot, oldest first. A recovered
+   * delivery can leave several; each shows. */
+  repliesOf(threadId: string): readonly DiffReviewComment[];
+  /** The threads, listed or not, that have a held reply. */
+  repliedThreadIds(): Iterable<string>;
+  /** The held replies whose thread `threads` does not list. */
+  readonly orphanedReplies: readonly DiffReviewComment[];
+  /** The file `draft` shows in: its thread's while `threads` lists it, else
+   * the file it was saved on. */
+  shownPath(draft: DiffReviewComment): string;
 }
 
-/** The file `draft` shows in: a held reply's thread's while `threads` lists
- * it, else the file the draft was saved on. */
-export function draftShownPath(draft: DiffReviewComment, threads: readonly ReviewThread[]): string {
-  if (!isHeldReply(draft)) return draft.filePath;
-  const thread = threads.find((each) => each.id === draft.replyThreadId);
-  return thread ? prThreadAnchor(thread).filePath : draft.filePath;
+const NO_REPLIES: readonly DiffReviewComment[] = [];
+
+export function indexReviewComments(threads: readonly ReviewThread[], drafts: readonly DiffReviewComment[]): ReviewCommentIndex {
+  const threadsById = new Map<string, ReviewThread>();
+  for (const thread of threads) threadsById.set(thread.id, thread);
+  const draftsById = new Map<string, DiffReviewComment>();
+  const replies = new Map<string, DiffReviewComment[]>();
+  for (const draft of drafts) {
+    if (draft.status !== 'draft') continue;
+    draftsById.set(draft.id, draft);
+    if (!isHeldReply(draft)) continue;
+    const list = replies.get(draft.replyThreadId!);
+    if (list) list.push(draft);
+    else replies.set(draft.replyThreadId!, [draft]);
+  }
+  const orphanedReplies: DiffReviewComment[] = [];
+  for (const [threadId, list] of replies) {
+    list.sort((a, b) => a.createdAt - b.createdAt);
+    if (!threadsById.has(threadId)) orphanedReplies.push(...list);
+  }
+  return {
+    threads,
+    drafts,
+    thread: (id) => threadsById.get(id),
+    draft: (id) => draftsById.get(id),
+    repliesOf: (threadId) => replies.get(threadId) ?? NO_REPLIES,
+    repliedThreadIds: () => replies.keys(),
+    orphanedReplies,
+    shownPath(draft) {
+      const thread = isHeldReply(draft) ? threadsById.get(draft.replyThreadId!) : undefined;
+      return thread ? prThreadAnchor(thread).filePath : draft.filePath;
+    },
+  };
 }
 
+/** Where a PR thread sits in the diff: its file and line, or its file. */
 export function prThreadAnchor(thread: ReviewThread): CommentAnchor {
   const line = thread.line ?? undefined;
   const side = thread.side === 'left' || thread.side === 'old' ? 'old' : 'new';

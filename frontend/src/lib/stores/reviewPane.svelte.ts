@@ -156,7 +156,7 @@ import { reviewFileFromPatchFile, type PatchParser, type ReviewFile } from '../u
 import { PatchTextLost } from '../utils/patchChunks';
 import { keptText } from '../utils/patchStore';
 import { anchorRow, anchorRows, completeAnchor, namesOneRow } from '../utils/patchRows';
-import { anchorKey, type CommentAnchor, type EditorRow, type EditorState } from '../utils/reviewRows';
+import { anchorKey, indexReviewComments, type CommentAnchor, type EditorRow, type EditorState, type ReviewCommentIndex } from '../utils/reviewRows';
 import {
   EDITOR_QUOTE_MAX_BYTES,
   lineGuard,
@@ -582,6 +582,11 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
   readonly hiddenResolvedCount: number;
   /** The PR's threads the view shows: the diff's thread rows and find. */
   readonly shownPRThreads: readonly ReviewThread[];
+  /** `prThreads` and `drafts`, indexed once: the thread rows' held replies
+   * and the per-file counts read it. */
+  readonly commentIndex: ReviewCommentIndex;
+  /** `shownPRThreads` and `shownDrafts`, indexed once: what find reads. */
+  readonly shownCommentIndex: ReviewCommentIndex;
   /** Whether a thread card's REPLIES are unfolded. The card's first
    * comment is always visible; settled threads fold replies by default. */
   conversationThreadExpanded(threadId: string): boolean;
@@ -1532,6 +1537,8 @@ export function createReviewPaneState(
   const canDraftComments = $derived(pinned ? scope === 'pr' && (selectedCommitSHA === null || headRange) : threadId !== null);
   const drafts = $derived(comments.filter((comment) => comment.status === 'draft'));
   const shownDrafts = $derived.by(() => (shown?.headRange ? rangeShownDrafts(drafts) : drafts));
+  const commentIndex = $derived(indexReviewComments(prThreads, drafts));
+  const shownCommentIndex = $derived(indexReviewComments(hideResolved.shownThreads, shownDrafts));
   // A summary or verdict kept for the next PR review needs the strip to
   // send it, drafts or not.
   const sendStripShown = $derived(
@@ -1554,8 +1561,7 @@ export function createReviewPaneState(
     forgeGrant: () => (pinned ? scopeGrant('git:operate', backend) : threadScopeGrant('git:operate', threadId, workspace.projectId)),
     prWithheld: () => mergeWithheldReason,
     canDraft: () => canDraftComments && commentsGrant === 'granted',
-    drafts: () => drafts,
-    threads: () => prThreads,
+    comments: () => commentIndex,
     threadsLoaded: () => prSnapshot !== null,
     sourceKey: () => sourceKey,
     loadedHeadSHA: () => loadedPRHeadSHA,
@@ -2929,13 +2935,13 @@ export function createReviewPaneState(
     const detail = prSnapshot?.detail;
     const shown = files;
     if (sendScope !== 'pr' || !detail) return undefined;
-    const threads = prThreads;
+    const comments = commentIndex;
     return {
       number: detail.number,
       url: detail.url,
       comments: await Promise.all(sending.map(async (comment) => {
         // A held reply quotes the thread it answers, as the pane shows it.
-        if (comment.side === 'reply') return { commentId: comment.id, hunkExcerpt: '', thread: commentActions.replyContext(comment, threads) };
+        if (comment.side === 'reply') return { commentId: comment.id, hunkExcerpt: '', thread: commentActions.replyContext(comment, comments) };
         return { commentId: comment.id, hunkExcerpt: await hunkExcerptForComment(shown, comment) };
       })),
     };
@@ -3754,6 +3760,8 @@ export function createReviewPaneState(
     setHideResolved: (on: boolean) => hideResolved.set(on),
     get hiddenResolvedCount() { return hideResolved.hiddenCount; },
     get shownPRThreads() { return hideResolved.shownThreads; },
+    get commentIndex() { return commentIndex; },
+    get shownCommentIndex() { return shownCommentIndex; },
     get pendingConversationThreadId() { return pendingConversationThreadId; },
     get prHeadSHA() { return loadedPRHeadSHA; },
     get prUpdateError() { return prUpdateError; },

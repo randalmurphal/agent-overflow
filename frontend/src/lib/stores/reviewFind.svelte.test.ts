@@ -5,6 +5,7 @@ import { setPatchTextBudgetForTest } from '../utils/patchMemory.svelte';
 import type { ReviewFindHit } from '../utils/reviewFindIdentity';
 import { scanReviewFind } from '../utils/reviewFindScan';
 import { placeReviewFindHit } from '../utils/reviewFindRows';
+import { indexReviewComments } from '../utils/reviewRows';
 import { streamPatch } from '../../test/helpers/streamedPatch';
 
 interface Hit { identity: string; at: number }
@@ -840,7 +841,7 @@ describe('review find over evicted diff text', () => {
   function scanning(files: ReturnType<typeof evictedFiles>['files']): ReviewFindSource<ReviewFindHit> {
     return {
       remote: false,
-      run: (query, context) => scanReviewFind({ files, drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }] }, query, {
+      run: (query, context) => scanReviewFind({ files, comments: indexReviewComments([], []), commentText: (body) => [{ text: body, shown: true }] }, query, {
         limit: 1000, live: context.live, emit: context.emit, pause: () => new Promise((resolve) => setTimeout(resolve, 0)),
       }),
     };
@@ -890,7 +891,7 @@ describe('review find over evicted diff text', () => {
       find.search('line 1999');
       open();
       await vi.waitFor(() => expect(find.result.pending).toBe(false));
-      expect(find.hits.map((hit) => placeReviewFindHit({ files, drafts: [], prThreads: [] }, hit as unknown as ReviewFindHit)?.line)).toEqual([4 + 1999]);
+      expect(find.hits.map((hit) => placeReviewFindHit({ files, comments: indexReviewComments([], []) }, hit as unknown as ReviewFindHit)?.line)).toEqual([4 + 1999]);
     } finally {
       parser.store.dispose();
     }

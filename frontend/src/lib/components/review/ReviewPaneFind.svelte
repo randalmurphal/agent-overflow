@@ -62,7 +62,7 @@
     type ReviewFindResolution,
     type ReviewFindShown,
   } from '../../utils/reviewFindRows';
-  import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
+  import { indexReviewComments, REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
   import { watchReaderScrollInput } from '../../utils/scroll/readerInput';
 
   type Hit = ReviewFindHit | CILogFindHit;
@@ -113,6 +113,8 @@
   const readForgeSource = getContext<ForgeAttachmentSourceReader | undefined>(FORGE_ATTACHMENT_SOURCE_CONTEXT);
   let texts: ((source: string, open?: readonly boolean[]) => MarkdownFindText) | null = null;
   const NO_DETAILS: MountedCommentDetails = { toggled: new Map() };
+  // The conflict view shows no comments.
+  const NO_COMMENTS = indexReviewComments([], []);
   let details = NO_DETAILS;
   let editing = new Set<string>();
 
@@ -124,7 +126,7 @@
     if (!root || untrack(() => view) !== 'diff') return NO_DETAILS;
     return readCommentDetails(root, (rowKey) => {
       const at = findThreadCommentOfKey(rowKey);
-      const comment = at ? review.prThreads.find((thread) => thread.id === at.threadId)?.comments.find((each) => reviewCommentKey(each) === at.comment) : undefined;
+      const comment = at ? review.commentIndex.thread(at.threadId)?.comments.find((each) => reviewCommentKey(each) === at.comment) : undefined;
       return comment ? commentTexts()(findableBody(comment)).details : null;
     });
   }
@@ -162,7 +164,7 @@
   function diffContent(): ReviewFindLocateContent {
     return untrack(() => {
       const conflicts = view === 'conflicts';
-      return { files, drafts: conflicts ? [] : review.shownDrafts, prThreads: conflicts ? [] : review.shownPRThreads, showsMedia: conflicts ? undefined : showsMedia };
+      return { files, comments: conflicts ? NO_COMMENTS : review.shownCommentIndex, showsMedia: conflicts ? undefined : showsMedia };
     });
   }
 
@@ -381,7 +383,7 @@
     // A thread's comment, or a held reply at its foot: a settled thread opens.
     const place = first.at.place;
     if (place.kind === 'thread') {
-      const thread = review.prThreads.find((t) => t.id === place.threadId);
+      const thread = review.commentIndex.thread(place.threadId);
       if (thread?.isResolved && !review.expandedPRThreadIds.has(thread.id)) review.togglePRThread(thread.id);
     }
     await tick();
@@ -404,7 +406,7 @@
     if ((conflicts ? review.conflictCollapsedPaths : review.collapsedPaths).has(hit.path)) return false;
     const place = resolved.at.place;
     if (place.kind !== 'thread') return true;
-    const thread = review.prThreads.find((t) => t.id === place.threadId);
+    const thread = review.commentIndex.thread(place.threadId);
     return !thread?.isResolved || review.expandedPRThreadIds.has(thread.id);
   }
 
@@ -447,8 +449,7 @@
       editing = readEditing();
       const content = untrack(() => ({
         files,
-        drafts: conflicts ? [] : review.shownDrafts,
-        prThreads: conflicts ? [] : review.shownPRThreads,
+        comments: conflicts ? NO_COMMENTS : review.shownCommentIndex,
         showsMedia: conflicts ? undefined : showsMedia,
         foldLines: conflicts ? (path: string) => review.conflictFoldLines(path) : undefined,
         commentText: (body: string, rowKey: string) => commentTexts()(body, details.toggled.get(rowKey)).all,
@@ -594,7 +595,7 @@
     const scope = scopeOf(shown);
     const content = shown === 'log'
       ? [review.ciLog?.version, review.ciLog?.sections]
-      : [files, shown === 'diff' ? review.shownDrafts : null, shown === 'diff' ? review.shownPRThreads : null, shown === 'diff' ? review.mediaHost.renderedPaths.size : null];
+      : [files, shown === 'diff' ? review.shownCommentIndex : null, shown === 'diff' ? review.mediaHost.renderedPaths.size : null];
     void content;
     untrack(() => {
       if (scope !== seenView) {

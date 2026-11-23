@@ -13,7 +13,7 @@ import { countFindMatches, findNeedle } from '../../utils/findMatch';
 import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from '../../utils/patchParser';
 import type { ReviewFindFileSpot, ReviewFindHit } from '../../utils/reviewFindIdentity';
 import { scanReviewFind } from '../../utils/reviewFindScan';
-import type { CommentAnchor } from '../../utils/reviewRows';
+import { indexReviewComments, type CommentAnchor } from '../../utils/reviewRows';
 import type { DiffReviewComment, ReviewThread } from '../../types/models';
 import { waitFor } from '../../../test/helpers/browserFrames';
 import { FakeCILog } from '../../../test/helpers/ciLog';
@@ -151,7 +151,7 @@ async function counted(files: ReviewFile[], drafts: DiffReviewComment[], prThrea
   const texts = createMarkdownFindTextCache({ embeddedHtml: true });
   // Each hit with where the scan read it.
   const hits: (ReviewFindHit & ReviewFindFileSpot)[] = [];
-  await scanReviewFind({ files, drafts, prThreads, foldLines, commentText: (body) => texts(body).all }, query, {
+  await scanReviewFind({ files, comments: indexReviewComments(prThreads, drafts), foldLines, commentText: (body) => texts(body).all }, query, {
     limit: 1000, live: () => true, emit: (hit, _file, spot) => hits.push({ ...hit, ...spot }), pause: async () => {},
   });
   return hits.map((hit) => hit.rowKey);
