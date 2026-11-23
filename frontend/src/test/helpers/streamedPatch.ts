@@ -120,8 +120,9 @@ function jsonText(bytes: Uint8Array, from: number, to: number): string {
 
 /** A patch served by byte offset as the backend serves it. */
 export interface FakeDiff {
-  /** Its bytes. */
-  readonly bytes: Uint8Array;
+  /** Its length in bytes. Its bytes are its own: nothing a caller holds
+   * writes them. */
+  readonly length: number;
   /** ReadReviewDiff from `offset`. `keyed` false is a backend older than
    * the key. */
   read(offset: number, maxBytes: number, keyed?: boolean): StreamedChunk;
@@ -130,8 +131,9 @@ export interface FakeDiff {
 /** A fake backend serving `patch`, text or raw bytes (which may hold
  * invalid UTF-8). */
 export function fakeDiff(patch: string | Uint8Array): FakeDiff {
-  // A copy: what the caller does to its array later is not served.
-  const bytes = typeof patch === 'string' ? new TextEncoder().encode(patch) : patch.slice();
+  // A copy: what the caller does to its array later is not served. A
+  // Node Buffer's slice() is a view, so the copy is a new array.
+  const bytes = typeof patch === 'string' ? new TextEncoder().encode(patch) : new Uint8Array(patch);
   // The key at each boundary read so far.
   const keys = new Map<number, PatchTextKey>([[0, { hash: FNV_OFFSET_BASIS_32, units: 0 }]]);
   // A read is the same for the same offset and window, and a store with a
@@ -139,7 +141,7 @@ export function fakeDiff(patch: string | Uint8Array): FakeDiff {
   // keyed once.
   const reads = new Map<string, StreamedChunk>();
   return {
-    bytes,
+    length: bytes.length,
     read(offset, maxBytes, keyed = true) {
       // The backend's window is never shorter than a character; one here
       // is widened to the character at the offset.
@@ -167,7 +169,7 @@ export function fakeDiff(patch: string | Uint8Array): FakeDiff {
 export function patchChunks(patch: string, size: number | ((index: number) => number)): StreamedChunk[] {
   const diff = fakeDiff(patch);
   const chunks: StreamedChunk[] = [];
-  for (let offset = 0, index = 0; offset < diff.bytes.length; index += 1) {
+  for (let offset = 0, index = 0; offset < diff.length; index += 1) {
     const chunk = diff.read(offset, typeof size === 'number' ? size : size(index));
     chunks.push(chunk);
     offset = chunk.nextOffset;
