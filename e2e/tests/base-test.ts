@@ -3,11 +3,14 @@
 // assert against. The gate's rules: a page sleep throws, and an event watch
 // ends with the test that made it. tests/fixtures.ts extends it with the
 // harness backend and the page-error and CSP checks; a spec that launches its
-// own harnesses imports this one. The wait scan (src/wait-scan.ts) fails a
-// spec that imports `test` from '@playwright/test' instead.
+// own harnesses imports this one. The wait scan (src/wait-scan.ts) fails any
+// other suite file that reaches Playwright's own `test`, so this file hands
+// the harness the running test's TestInfo.
 import { test as base, expect, type BrowserContext, type Page } from '@playwright/test';
-import { openEventWatchScope } from '../src/harness.js';
+import { installTestInfoReader, openEventWatchScope } from '../src/harness.js';
 import { STALL_CAPTURE_TIMEOUT_MS, StalledPageCapture, StalledPageRegistry } from '../src/page-stall.js';
+
+installTestInfoReader(() => base.info());
 
 /** Makes `page.waitForTimeout` throw with the reason and the alternatives. */
 function banPageSleep(page: Page): void {

@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 
-import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { expect, type Page, type TestInfo } from '@playwright/test';
 
 import {
   type ProcessIdentity,
@@ -49,6 +49,19 @@ export interface EventWatch {
   expectNoneThrough(barrier: () => Promise<unknown>, message: string): Promise<void>;
   /** Run `barrier`; fail with `message` unless exactly `n` matches arrived before it finished. */
   expectExactlyThrough(n: number, barrier: () => Promise<unknown>, message: string): Promise<void>;
+}
+
+/**
+ * Reads the running test's TestInfo, throwing outside a test. Only
+ * tests/base-test.ts reaches Playwright's `test` (src/wait-scan.ts), so it
+ * installs the reader when it loads; a driver script that never loads it
+ * runs outside any test.
+ */
+let readTestInfo: (() => TestInfo) | undefined;
+
+/** Installs the reader of the running test's TestInfo; tests/base-test.ts calls it once. */
+export function installTestInfoReader(read: () => TestInfo): void {
+  readTestInfo = read;
 }
 
 /**
@@ -642,7 +655,7 @@ export class HarnessApp {
     // it only for a failure.
     let info: TestInfo | undefined;
     try {
-      info = test.info();
+      info = readTestInfo?.();
     } catch {
       // Outside a test: a worker fixture's teardown or a driver script.
     }
