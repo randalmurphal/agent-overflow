@@ -149,7 +149,9 @@ the watchdog against blocked and live pages.
 
 Files in the `unit` Vitest project share a worker process, so a test must
 restore every global and prototype method it changes; prefer `vi.stubGlobal`.
-`src/test/sharedGlobals.ts` fails a file that leaves one replaced. Files that
+`src/test/sharedGlobals.ts` fails a file that leaves one replaced, and
+`src/test/sharedWorker.ts` fails one whose dynamic import is still in flight
+10 s after its last test: await what a test starts. Files that
 use `vi.mock`, `vi.doMock`, `vi.unmock` or `vi.resetModules` run in the
 `unit-isolated` project automatically.
 

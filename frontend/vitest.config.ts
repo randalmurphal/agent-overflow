@@ -1,4 +1,5 @@
-import { defineConfig, configDefaults } from 'vitest/config';
+import { defineConfig, defineProject, configDefaults } from 'vitest/config';
+import type { InlineConfig } from 'vitest/node';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 import { playwright } from '@vitest/browser-playwright';
@@ -7,6 +8,7 @@ import { resolve } from 'node:path';
 import { threadPaneTracker } from './src/test/config/threadPaneTracker.ts';
 import { testResetsPlugin } from './src/test/config/testResetsPlugin.ts';
 import { rawImportsPlugin } from './src/test/config/rawImportsPlugin.ts';
+import { importTrackerPlugin } from './src/test/config/importTrackerPlugin.ts';
 import { StalledPageWatchdog } from './src/test/stalledPageWatchdog.ts';
 
 // There is no `svelte.config.js` (see vite.config.ts for why). Saying so
@@ -101,7 +103,28 @@ const unitTestOptions = {
       inline: [/@testing-library\/svelte/, /svelte/],
     },
   },
-} as const;
+} satisfies InlineConfig;
+
+// One worker process and happy-dom window run many files. Its runner
+// retires each file before the next starts (src/test/sharedWorkerRunner.ts)
+// and fails a file that leaves a global changed; the import tracker lets it
+// wait for the dynamic imports a file started. Exported for the runner's
+// own test, which runs fixture files in this project's setting
+// (src/test/sharedWorker/vitest.config.ts).
+export const unitProject = defineProject({
+  plugins: [svelte(svelteOptions), threadPaneTracker(import.meta.dirname), testResetsPlugin(import.meta.dirname), rawImportsPlugin(), importTrackerPlugin(import.meta.dirname)],
+  server: repoServer,
+  resolve: happyDomResolve,
+  test: {
+    ...unitTestOptions,
+    name: 'unit',
+    isolate: false,
+    runner: './src/test/sharedWorkerRunner.ts',
+    setupFiles: [...unitTestOptions.setupFiles, './src/test/sharedWorkerStart.ts'],
+    include: unitInclude,
+    exclude: [...unitExclude, ...moduleMockFiles],
+  },
+});
 
 // Projects:
 //  - `unit` and `unit-isolated`: the default happy-dom component/store suite,
@@ -135,8 +158,8 @@ export default defineConfig({
     // one runs everything: the frontend's lockfile (dependency versions), its
     // TypeScript config (transform options), and the files this config
     // loads: those in src/test/config/ (the transforms and the between-test
-    // contract) and the stalled-page watchdog, with its package.json and
-    // this config. They
+    // contract), the `unit` runner with the modules it imports, and the
+    // stalled-page watchdog, with its package.json and this config. They
     // are this directory's own: Vitest's defaults match any package.json and
     // config in the repository, so e2e/package.json would run every file.
     forceRerunTriggers: [
@@ -145,26 +168,12 @@ export default defineConfig({
       resolve(import.meta.dirname, 'pnpm-lock.yaml'),
       resolve(import.meta.dirname, 'tsconfig*.json'),
       resolve(import.meta.dirname, 'src/test/config/**'),
+      resolve(import.meta.dirname, 'src/test/{sharedWorkerRunner,sharedWorker,sharedGlobals}.ts'),
       resolve(import.meta.dirname, 'src/test/stalledPageWatchdog.ts'),
     ],
     reporters: [...configDefaults.reporters, new StalledPageWatchdog({ boundMs: STALLED_PAGE_MS })],
     projects: [
-      {
-        plugins: [svelte(svelteOptions), threadPaneTracker(import.meta.dirname), testResetsPlugin(import.meta.dirname), rawImportsPlugin()],
-        server: repoServer,
-        resolve: happyDomResolve,
-        test: {
-          ...unitTestOptions,
-          name: 'unit',
-          // One worker process and happy-dom window run many files.
-          // sharedWorker.ts returns each file's worker to the state a fresh
-          // one would have, and fails a file that leaves a global changed.
-          isolate: false,
-          setupFiles: ['./src/test/sharedWorkerEndPrevious.ts', './src/test/sharedWorker.ts', ...unitTestOptions.setupFiles, './src/test/sharedWorkerStart.ts'],
-          include: unitInclude,
-          exclude: [...unitExclude, ...moduleMockFiles],
-        },
-      },
+      unitProject,
       {
         plugins: [svelte(svelteOptions), threadPaneTracker(import.meta.dirname), testResetsPlugin(import.meta.dirname), rawImportsPlugin()],
         server: repoServer,
