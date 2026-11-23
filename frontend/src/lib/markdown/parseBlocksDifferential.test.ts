@@ -319,6 +319,17 @@ describe('parseBlocks append differential', () => {
     expect(parseBlocks(`${first}| c`)).toEqual([first, '| c']);
   });
 
+  // Block boundaries are found on the source as it is, so a CR-led line is
+  // paragraph text, and a setext heading can follow it with no blank line
+  // between. Once the underline gains a character the heading is text again
+  // and joins that paragraph.
+  it('joins a setext heading that turns back into text to the paragraph before it', () => {
+    const cache = createParseBlocksCache();
+    parseBlocks('\r\n2\n-', [], cache, createProvenAppend('', '\r\n2\n-'));
+    expect(cache.blocks).toEqual(['\r\n', '2\n-']);
+    expect(parseBlocks('\r\n2\n-3', [], cache, createProvenAppend('\r\n2\n-', '3'))).toEqual(parseBlocks('\r\n2\n-3', []));
+  });
+
   it.each([
     ['task items', '- [ ] pending\n- [x] done\n- final item'],
     ['loose items', '- first\n\n  continuation\n\n- second\n\n  more'],

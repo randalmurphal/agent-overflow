@@ -158,12 +158,21 @@ export const updateParseBlockStringMaterialization = (cache: ParseBlocksCache, e
 // suffix. This avoids feeding marked an unrelated prior list/table on every
 // prose reveal while preserving the backward-merge transition.
 const BACKWARD_MERGE_MARKER = /^[|:=_*\- \t\r\n]+$/;
+// A setext heading's last line: its underline.
+const SETEXT_UNDERLINE = /(?:\r\n|\n|\r) {0,3}(?:=+|-+)[ \t]*$/;
 export const trailingBlockMayMergeBackward = (cache: ParseBlocksCache): boolean => {
     for (let i = cache.raws.length - 1; i >= 0; i--) {
         if (!cache.keep[i])
             continue;
         const raw = cache.raws[i];
         if (raw.trim().length > 0 && BACKWARD_MERGE_MARKER.test(raw))
+            return true;
+        // A setext heading is text again once its underline gains another
+        // character, and that text joins a block it directly follows (no
+        // omitted blank line between): block boundaries are found on the
+        // source as it is, so a CR-led line is paragraph text a heading can
+        // follow.
+        if (i > 0 && cache.keep[i - 1] && SETEXT_UNDERLINE.test(raw))
             return true;
         const start = cache.rawStarts[i];
         // The simple-table extension can provisionally stop at a closing pipe
