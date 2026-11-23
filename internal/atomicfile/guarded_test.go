@@ -44,13 +44,19 @@ func expectRefused(t *testing.T, path, want string, before os.FileInfo) {
 	case want != "" && string(got) != want:
 		t.Fatalf("the other writer's file became %q (%v)", got, err)
 	}
-	entries, err := os.ReadDir(filepath.Dir(path))
+	assertNoStagedFiles(t, filepath.Dir(path))
+}
+
+// assertNoStagedFiles asserts that no staged temporary file is left in dir.
+func assertNoStagedFiles(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
 		if strings.Contains(entry.Name(), ".tmp-") {
-			t.Fatalf("a refused write left %s behind", entry.Name())
+			t.Fatalf("a write left %s behind", entry.Name())
 		}
 	}
 }
