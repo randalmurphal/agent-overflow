@@ -10,7 +10,6 @@
 // This file sits under `src/test/`, which BOTH scanners exclude — so the
 // scaffolding can name the shapes it hunts for without becoming an offender.
 
-import { readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect } from 'vitest';
@@ -18,45 +17,45 @@ import { expect } from 'vitest';
 /** Absolute path of `frontend/src`. */
 export const SRC_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-/**
- * Every file under `dir` whose name matches `extensions`, depth-first,
- * skipping `node_modules`. Callers pass the extension pattern because the two
- * scanners differ: the architecture rules are about imports (`.ts`/`.svelte`)
- * while the token rules also cover stylesheets.
- */
-export function* walkSources(dir: string, extensions: RegExp): Generator<string> {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === 'node_modules') continue;
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      yield* walkSources(full, extensions);
-      continue;
-    }
-    if (extensions.test(entry.name)) yield full;
-  }
-}
+// The files a tripwire applies to: everything under `src/` except tests,
+// operator-run drivers, and this `src/test/` helper tree.
+//
+// Tests exist to drive, mock and PIN the very seams these rules protect — a
+// test importing `GetGitStatus`, or asserting the exact hex an xterm theme
+// produces, is doing its job. `vendor/` is outside `src/` entirely; its
+// divergence ledger governs it.
+//
+// Read through an import so that `vitest --changed` selects a tripwire when
+// any file it scans changes.
+const SOURCES: Map<string, string> = new Map(
+  Object.entries(
+    import.meta.glob<string>(
+      ['/src/**/*.{ts,js,svelte,css}', '!/src/test/**', '!**/*.{test,spec}.{ts,js}', '!**/*.manual.ts'],
+      { query: '?raw', import: 'default', eager: true },
+    ),
+  ).map(([key, text]) => [join(SRC_ROOT, ...key.split('/').slice(2)), text]),
+);
 
 /**
- * The files a tripwire applies to: everything under `src/` except tests,
- * operator-run drivers, and this `src/test/` helper tree.
+ * The scanned files whose name matches `extensions`, as absolute paths.
+ * Callers pass the extension pattern because the scanners differ: the
+ * architecture rules are about imports (`.ts`/`.svelte`) while the token
+ * rules also cover stylesheets.
  *
- * Tests exist to drive, mock and PIN the very seams these rules protect — a
- * test importing `GetGitStatus`, or asserting the exact hex an xterm theme
- * produces, is doing its job. `vendor/` is outside `src/` entirely; its
- * divergence ledger governs it.
- *
- * Throws when the walk finds nothing: a rule that silently scanned zero files
+ * Throws when nothing matches: a rule that silently scanned zero files
  * would pass vacuously forever.
  */
-export function scannedSources(extensions: RegExp): string[] {
-  const files: string[] = [];
-  for (const file of walkSources(SRC_ROOT, extensions)) {
-    if (/\.(test|spec)\.[a-z]+$|\.manual\.ts$/.test(file)) continue;
-    if (file.startsWith(join(SRC_ROOT, 'test') + sep)) continue;
-    files.push(file);
-  }
+export function scannedSources(extensions: RegExp, under = SRC_ROOT): string[] {
+  const files = [...SOURCES.keys()].filter((file) => file.startsWith(under + sep) && extensions.test(file));
   if (files.length === 0) throw new Error('no source files found; the rules would pass vacuously');
   return files;
+}
+
+/** The text of a scanned file. */
+export function sourceText(file: string): string {
+  const text = SOURCES.get(file);
+  if (text === undefined) throw new Error(`${repoPath(file)} is not a scanned source`);
+  return text;
 }
 
 /** `src/`-relative path with forward slashes — the allowlist key format. */

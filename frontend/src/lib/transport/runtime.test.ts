@@ -17,15 +17,18 @@ const { mockClient } = vi.hoisted(() => ({
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn<(channel: string, handler: (data: unknown) => void) => () => void>(),
     installStepUpProver: vi.fn(),
+    setDiagnosticsSink: vi.fn(),
     setWatchedThreads: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onReplay: vi.fn(() => () => undefined),
     onStatusChange: vi.fn(() => () => undefined),
+    onHelloChange: vi.fn(() => () => undefined),
     close: vi.fn(),
   },
 }));
 
-vi.mock('./wsClient', () => ({
+vi.mock('./wsClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./wsClient')>()),
   wsClient: mockClient,
   // The runtime shim doesn't import these, but other tests in the same
   // file might — re-export sensible stubs so the resolver doesn't
@@ -368,6 +371,7 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
         callByName: vi.fn(),
         subscribe: vi.fn(() => () => undefined),
         installStepUpProver: vi.fn(),
+        setDiagnosticsSink: vi.fn(),
     setWatchedThreads: vi.fn(),
         setLease: vi.fn(),
         getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),

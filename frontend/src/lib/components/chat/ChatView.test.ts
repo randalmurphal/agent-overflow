@@ -9,8 +9,6 @@ import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { pendingAttention } from '../../utils/threadStatusPill';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import ChatView from './ChatView.svelte';
 import { applySettingsSnapshot } from '../../stores/settings.svelte';
 import { makeSettings } from '../../../test/helpers/settings';
@@ -44,11 +42,10 @@ import {
 } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { resetEditResendExecutionForTest } from './editResendFlow.svelte';
-import { SRC_ROOT } from '../../../test/sourceScan';
+import appCss from '../../../app.css?raw';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
-const appCss = readFileSync(join(SRC_ROOT, 'app.css'), 'utf8');
 
 beforeAll(() => {
   // Svelte transitions used by children call element.animate; happy-dom

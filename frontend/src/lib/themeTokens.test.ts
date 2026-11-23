@@ -32,7 +32,6 @@
 // exists to stop dead rules. Every class reference below is therefore prose or
 // a brace-set shape that cannot be a valid candidate.
 
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -40,6 +39,7 @@ import {
   expectAllowlistExact,
   repoPath,
   scannedSources,
+  sourceText,
 } from '../test/sourceScan';
 
 const SOURCE_EXTENSIONS = /\.(ts|svelte|css)$/;
@@ -210,7 +210,7 @@ const NON_COLOR_UTILITY_ALLOWLIST: Record<string, string> = {};
 // ---------------------------------------------------------------------------
 
 function themeBlock(): string {
-  const css = readFileSync(join(SRC_ROOT, 'app.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const css = sourceText(join(SRC_ROOT, 'app.css')).replace(/\/\*[\s\S]*?\*\//g, ' ');
   const start = css.indexOf('@theme');
   if (start < 0) throw new Error('app.css has no @theme block; the token rules would be vacuous');
   const open = css.indexOf('{', start);
@@ -329,7 +329,7 @@ function scan(): Scan {
 
   for (const file of scannedSources(SOURCE_EXTENSIONS)) {
     const path = repoPath(file);
-    const text = stripComments(readFileSync(file, 'utf8'), path);
+    const text = stripComments(sourceText(file), path);
 
     const reasons: string[] = [];
     const palette = findAll(text, RAW_PALETTE_CLASS);

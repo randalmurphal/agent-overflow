@@ -20,7 +20,8 @@ vi.mock('../transport/attachmentTransfer', () => ({
   },
 }));
 
-vi.mock('../transport/backends', () => ({
+vi.mock('../transport/backends', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../transport/backends')>()),
   withBackendTarget: <T>(_backend: string, run: () => T): T => run(),
 }));
 

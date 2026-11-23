@@ -11,10 +11,8 @@
 // the mock), and must export nothing the generated module lost, so a deleted
 // binding takes its mock line with it.
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import generatedBindings from '../../../bindings/agent-overflow/app.ts?raw';
 
-import { SRC_ROOT } from '../sourceScan';
 import * as mockBindings from './bindings-app';
 
 // Exports that are the mock's own machinery, not fakes of generated bindings.
@@ -28,8 +26,7 @@ const mockMachinery = new Set([
 ]);
 
 function generatedFunctionNames(): Set<string> {
-  const path = resolve(SRC_ROOT, '..', 'bindings', 'agent-overflow', 'app.ts');
-  const source = readFileSync(path, 'utf8');
+  const source = generatedBindings;
   // The generator emits every binding as a top-level `export function Name(`.
   return new Set(
     [...source.matchAll(/^export function (\w+)\(/gm)].map((m) => m[1]),

@@ -1,7 +1,6 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SRC_ROOT } from '../../../test/sourceScan';
+import traceSource from './messageTimelineTrace.ts?raw';
+import diagnosticsSource from './timelineDiagnostics.ts?raw';
 import { cleanup, render } from '@testing-library/svelte';
 import {
   clearUiRenderTrace,
@@ -299,11 +298,8 @@ describe('messageTimelineTrace', () => {
 // element-keyed collection in the trace modules, and the WeakRef guard pins
 // the one handle cache in timelineDiagnostics the same snapshot caught.
 describe('probe retention tripwire', () => {
-  const read = (name: string): string =>
-    readFileSync(join(SRC_ROOT, 'lib', 'components', 'chat', name), 'utf8');
-
   it('messageTimelineTrace holds no strong element-keyed collections (frame-local `changed` excepted)', () => {
-    const src = read('messageTimelineTrace.ts');
+    const src = traceSource;
     const offenders = [...src.matchAll(/new (?:Map|Set)<(?:HTML|SVG)?Element\b[^>]*>/g)]
       .map((m) => ({ match: m[0], line: src.slice(0, m.index).split('\n').length }))
       // The margin probe's per-frame `changed` map lives only for one RO
@@ -313,7 +309,7 @@ describe('probe retention tripwire', () => {
   });
 
   it('timelineDiagnostics holds the listRef dedup cache through a WeakRef', () => {
-    const src = read('timelineDiagnostics.ts');
+    const src = diagnosticsSource;
     expect(src).toMatch(/lastListRefBind:\s*\{\s*\n?\s*listRef:\s*WeakRef</);
     expect(src).not.toMatch(/listRef:\s*TimelineVirtualizerHandle \| undefined;/);
   });

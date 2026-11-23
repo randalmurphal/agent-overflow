@@ -1,6 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import syntaxCss from '../../styles/syntax.css?raw';
 import { initSyntaxClassNames, spanSegments, type EncodedLine } from './syntaxSpans';
 
 const line = (r?: number[]): EncodedLine => ({ r }) as EncodedLine;
@@ -96,7 +95,7 @@ describe('spanSegments', () => {
   });
 
   it('only collapses capture families that have no visual CSS rule', () => {
-    const css = readFileSync(join(process.cwd(), 'src/styles/syntax.css'), 'utf8')
+    const css = syntaxCss
       .replace(/\/\*[\s\S]*?\*\//g, '');
     for (const family of inheritedFamilies) {
       expect(css).not.toMatch(new RegExp(`\\.syntax-${family}(?![\\w-])`));

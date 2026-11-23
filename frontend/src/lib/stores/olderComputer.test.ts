@@ -2,12 +2,10 @@
 // olderComputer.ts): an action that release has goes through its method,
 // a read of a feature it lacks answers empty, and every other failure is
 // still the caller's.
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import generated from '../../../bindings/agent-overflow/app.ts?raw';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { answerAsV0019, METHODS_AFTER_V0_0_19, methodNotFound, SETTINGS_AFTER_V0_0_19, settingsAsV0019 } from '../../test/helpers/olderComputer';
-import { SRC_ROOT } from '../../test/sourceScan';
 import { getPinnedBackend, withBackendTarget } from '../transport/backends';
 import { TransportError } from '../transport/wsClient';
 import { methodId } from '../transport/methodId';
@@ -40,7 +38,6 @@ import {
   WorkflowPauseItemAndEndSessions,
 } from './bindings';
 
-const generated = readFileSync(resolve(SRC_ROOT, '..', 'bindings', 'agent-overflow', 'app.ts'), 'utf8');
 
 beforeEach(() => {
   resetBindingMocks();

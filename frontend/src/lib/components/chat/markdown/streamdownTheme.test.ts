@@ -1,7 +1,6 @@
-import { readFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { SRC_ROOT, walkSources } from '../../../../test/sourceScan';
+import { SRC_ROOT, scannedSources, sourceText } from '../../../../test/sourceScan';
 import { MD_BLOCK_MARKER, chatMarkdownTheme } from './streamdownTheme';
 
 // Completeness tripwire for the ONE first-party markdown theme table.
@@ -37,9 +36,8 @@ const RENDER_PATH_ROOTS = [
 function renderPathSources(): Array<{ path: string; text: string }> {
   const files: Array<{ path: string; text: string }> = [];
   for (const root of RENDER_PATH_ROOTS) {
-    for (const file of walkSources(root, /\.(ts|js|svelte)$/)) {
-      if (/\.(test|spec)\.[a-z]+$|\.manual\.ts$/.test(file)) continue;
-      files.push({ path: file.split(sep).join('/'), text: readFileSync(file, 'utf8') });
+    for (const file of scannedSources(/\.(ts|js|svelte)$/, root)) {
+      files.push({ path: file.split(sep).join('/'), text: sourceText(file) });
     }
   }
   return files;

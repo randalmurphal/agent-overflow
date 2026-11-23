@@ -172,7 +172,10 @@ vi.mock('@xterm/addon-webgl', () => ({
 vi.mock('../../stores/keybindings.svelte', () => ({
   eventEscapesTerminalToCommand: vi.fn(() => false),
 }));
-vi.mock('../../utils/clipboard', () => ({ copyToClipboard: vi.fn(async () => true) }));
+vi.mock('../../utils/clipboard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/clipboard')>()),
+  copyToClipboard: vi.fn(async () => true),
+}));
 vi.mock('../../stores/toast.svelte', () => ({ addToast: mocks.addToast, addErrorToast: mocks.addErrorToast }));
 // Spread the real module: the bridge already degrades to an empty ITheme
 // without a canvas, and a factory that lists only the export this component

@@ -27,7 +27,8 @@ vi.mock('../transport/scopes', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../transport/scopes')>()),
   hasScope: () => hostScope.value,
 }));
-vi.mock('../transport/backends', () => ({
+vi.mock('../transport/backends', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../transport/backends')>()),
   withBackendTarget: <T>(_backend: string, run: () => T): T => run(),
 }));
 vi.mock('../stores/attachedBackends.svelte', async (importOriginal) => ({

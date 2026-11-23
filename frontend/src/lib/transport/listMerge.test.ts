@@ -14,6 +14,7 @@ const { homeClient } = vi.hoisted(() => ({
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn(() => () => undefined),
     installStepUpProver: vi.fn(),
+    setDiagnosticsSink: vi.fn(),
     setWatchedThreads: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onReplay: vi.fn(() => () => undefined),
@@ -24,7 +25,8 @@ const { homeClient } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('./wsClient', () => ({
+vi.mock('./wsClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./wsClient')>()),
   wsClient: homeClient,
   DisconnectedError: class extends Error {},
   TransportError: class extends Error {},
@@ -60,6 +62,7 @@ function fakeClient(): FakeClient {
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn(() => () => undefined),
     installStepUpProver: vi.fn(),
+    setDiagnosticsSink: vi.fn(),
     setWatchedThreads: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onReplay: vi.fn(() => () => undefined),

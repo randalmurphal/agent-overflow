@@ -16,10 +16,12 @@ import type { ForgeAttachmentSource } from '../../utils/forgeAttachments';
 // static serializer (which must bail for an html token), a streaming one
 // through the component tree.
 
-vi.mock('../../transport/deviceSession', () => ({
+vi.mock('../../transport/deviceSession', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../transport/deviceSession')>()),
   fetchPairedComputer: async () => new Response('bytes', { status: 200 }),
 }));
-vi.mock('../../transport/backends', () => ({
+vi.mock('../../transport/backends', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../transport/backends')>()),
   withBackendTarget: <T>(_backend: string, run: () => T): T => run(),
 }));
 

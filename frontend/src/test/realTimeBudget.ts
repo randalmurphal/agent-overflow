@@ -11,6 +11,7 @@
 // FILE_SLEEP_BUDGET_MS fails, naming them. A child process a test waits on
 // is work, not sleep: run it through runNodeWorkload, which credits it.
 // Where the counters do not exist (macOS), nothing is measured.
+// oxlint-disable-next-line no-restricted-imports -- reads this thread's scheduler counters in /proc, not a repository file
 import { readFileSync } from 'node:fs';
 import { afterAll, afterEach, beforeEach, expect } from 'vitest';
 

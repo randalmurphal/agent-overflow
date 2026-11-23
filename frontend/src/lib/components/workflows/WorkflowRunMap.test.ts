@@ -26,9 +26,7 @@ import { buildRunMap, RUN_MAP_INLINE_DONE_MAX } from '../../utils/workflowRunMap
 // (deliberately empty) style module under vitest, and an empty string would
 // pass a `toContain` audit's negation while failing its assertion — the file's
 // bytes are what the cross-check is about.
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-const appCss = readFileSync(join(process.cwd(), 'src/app.css'), 'utf8');
+import appCss from '../../../app.css?raw';
 import { __resetWorkflowRunMapStoreForTest } from '../../stores/workflowRunMap.svelte';
 import {
   getWorkflowRunMapExpansion,

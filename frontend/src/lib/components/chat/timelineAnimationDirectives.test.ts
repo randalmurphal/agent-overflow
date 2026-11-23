@@ -18,12 +18,11 @@
 // cannot see; a new
 // external dependency rendered inside rows needs the same check by hand.
 
-import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-const CHAT_DIR = dirname(fileURLToPath(import.meta.url));
+// Read through an import so that `vitest --changed` selects this file when a
+// chat component changes.
+const CHAT_COMPONENTS = import.meta.glob<string>('./**/*.svelte', { query: '?raw', import: 'default', eager: true });
 
 // Components under components/chat/ that legitimately use a Svelte animation
 // directive because they mount outside the timeline scroller.
@@ -40,32 +39,19 @@ const OUTSIDE_SCROLLER_ALLOWLIST: Record<string, string> = {
 // never match.
 const DIRECTIVE = /[\s<](transition|in|out|animate):[a-zA-Z_$][\w$]*/g;
 
-function* walkSvelte(dir: string): Generator<string> {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      yield* walkSvelte(full);
-      continue;
-    }
-    if (entry.name.endsWith('.svelte')) yield full;
-  }
-}
-
 function directiveUsers(): Map<string, string[]> {
   const users = new Map<string, string[]>();
   let scanned = 0;
-  for (const file of walkSvelte(CHAT_DIR)) {
+  for (const [file, source] of Object.entries(CHAT_COMPONENTS)) {
     scanned += 1;
-    const text = readFileSync(file, 'utf8')
+    const text = source
       // HTML comments can quote a directive while documenting its absence.
       .replace(/<!--[\s\S]*?-->/g, '')
       // <style> blocks can legitimately write `transition:opacity …` — CSS,
       // not a directive, and the app.css kill rule already governs it.
       .replace(/<style[\s\S]*?<\/style>/g, '');
     const hits = [...text.matchAll(DIRECTIVE)].map((m) => m[0].trim());
-    // Forward slashes regardless of platform, so allowlist keys for a future
-    // nested file are written one way.
-    if (hits.length > 0) users.set(relative(CHAT_DIR, file).split(sep).join('/'), hits);
+    if (hits.length > 0) users.set(file.slice('./'.length), hits);
   }
   if (scanned === 0) throw new Error('no .svelte files found; the rule would pass vacuously');
   return users;

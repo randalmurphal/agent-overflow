@@ -5,7 +5,8 @@ import { copyAppearanceFiles, readAppearanceFiles, readSpinnerFiles } from './ap
 import { getAppearance, loadAppearance, resetAppearanceForTest, setAppearance } from './appearance.svelte';
 
 const context = vi.hoisted(() => ({ local: false, home: true, targets: [] as string[], grants: Promise.resolve() }));
-vi.mock('../transport/scopes', () => ({
+vi.mock('../transport/scopes', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../transport/scopes')>()),
   hasScope: (scope: string) => scope === 'host' ? context.local : true,
   pageGrantsResolved: () => context.grants,
 }));

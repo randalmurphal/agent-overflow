@@ -4,7 +4,7 @@
 // message editor) will use, so none of them is first exercised in
 // production.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { createRawSnippet, tick, type Snippet } from 'svelte';
 import ComposerInputSurface from './ComposerInputSurface.svelte';
@@ -26,7 +26,10 @@ import type { ThreadPane } from '../../stores/thread.svelte';
 import type { ControlAccess } from '../../transport/scopes';
 
 const platform = vi.hoisted(() => ({ native: false }));
-vi.mock('../../native/platform', () => ({ isNativeShell: () => platform.native }));
+vi.mock('../../native/platform', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../native/platform')>()),
+  isNativeShell: () => platform.native,
+}));
 
 function makeAttachment(id: string): Attachment {
   return {
@@ -184,8 +187,12 @@ async function mountSurface(options: MountOptions = {}) {
 }
 
 describe('<ComposerInputSurface>', () => {
-  beforeEach(() => {
+  // Back to the desktop page before the between-test steps reset the
+  // computers, which attach the page's own by what the platform says.
+  afterEach(() => {
     platform.native = false;
+  });
+  beforeEach(() => {
     resetBindingMocks();
     resetComposerDraftSnapshotsForTest();
     resetPanesForTest();

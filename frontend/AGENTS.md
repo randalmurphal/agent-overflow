@@ -141,6 +141,13 @@ restore every global and prototype method it changes; prefer `vi.stubGlobal`.
 use `vi.mock`, `vi.doMock`, `vi.unmock` or `vi.resetModules` run in the
 `unit-isolated` project automatically.
 
+Module state is reset between tests by name: an export named
+`reset…ForTest` or `clear…ForTest` that takes no argument runs after every
+test of a file that loaded its module. `src/test/config/testResets.ts` owns
+the order, the steps that take arguments and the exceptions. Tests read
+repository files through imports (`?raw`, JSON, `import.meta.glob`), never
+`node:fs`, so `vitest --changed` selects them; oxlint enforces it.
+
 A unit test never waits on the wall clock. Pass a product timer on a fake clock
 (fake only the timers the code uses, beside real ones it needs), or wait for the
 condition; read the product's constant rather than repeating its value.

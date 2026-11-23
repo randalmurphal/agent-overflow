@@ -14,7 +14,8 @@
 // rule means changing both and re-stamping that file, which is what
 // each side's failure message says.
 
-import { readFileSync } from 'node:fs';
+import goldenId from '../../../internal/bundle/testdata/fixturebundle.id?raw';
+// oxlint-disable-next-line no-restricted-imports -- builds and reads its own temporary bundle, not a repository file
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
@@ -33,11 +34,13 @@ const TESTDATA = resolve(
   'testdata',
 );
 const FIXTURE = resolve(TESTDATA, 'fixturebundle');
-const GOLDEN = resolve(TESTDATA, 'fixturebundle.id');
+// The rule hashes this directory itself; importing it here makes
+// `vitest --changed` select this file when a fixture file changes.
+import.meta.glob('../../../internal/bundle/testdata/fixturebundle/**', { query: '?raw' });
 
 describe('the bundle id rule', () => {
   it('agrees with the Go implementation over the shared fixture', async () => {
-    const golden = readFileSync(GOLDEN, 'utf8').trim();
+    const golden = goldenId.trim();
     expect(
       await computeBundleId(FIXTURE),
       'Both this rule and internal/bundle hash the same fixture directory. '

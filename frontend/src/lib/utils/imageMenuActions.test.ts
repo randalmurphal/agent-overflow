@@ -24,6 +24,12 @@ import { mockAttachmentDownload, mockLocalImage } from '../../test/mocks/attachm
 
 const nativeShell = vi.hoisted(() => ({ value: false }));
 const webviewHosted = vi.hoisted(() => ({ value: false }));
+// Back to the desktop page before the between-test steps reset the
+// computers, which attach the page's own by what the platform says.
+afterEach(() => {
+  nativeShell.value = false;
+  webviewHosted.value = false;
+});
 const scopes = vi.hoisted(() => ({ host: false, write: true, git: true, files: true }));
 const forgeCache = vi.hoisted(() => ({ acquire: vi.fn(), release: vi.fn(), original: vi.fn() }));
 const openForge = vi.hoisted(() => vi.fn(async () => {}));
@@ -56,7 +62,8 @@ vi.mock('./forgeAttachmentCache', async (importOriginal) => ({
   acquirePaintedForgeAttachment: (...args: unknown[]) => forgeCache.acquire(...args),
   fetchForgeAttachmentBytes: (...args: unknown[]) => forgeCache.original(...args),
 }));
-vi.mock('./forgeAttachmentActions', () => ({
+vi.mock('./forgeAttachmentActions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./forgeAttachmentActions')>()),
   openForgeAttachment: (...args: unknown[]) => openForge(...(args as [])),
 }));
 vi.mock('../stores/toast.svelte', () => ({

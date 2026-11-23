@@ -21,7 +21,8 @@ const { homeClient } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('./wsClient', () => ({
+vi.mock('./wsClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./wsClient')>()),
   wsClient: homeClient,
   DisconnectedError: class extends Error {},
   TransportError: class extends Error {},

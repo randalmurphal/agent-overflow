@@ -7,21 +7,17 @@
 // the frame nobody is looking at when they run the tests is wrong. A grep is
 // the cheapest thing that fails when someone renames one side.
 
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import html from '../../../index.html?raw';
+import bootScript from '../../../public/boot-theme.js?raw';
 import { describe, expect, it } from 'vitest';
 import { THEME_BOOT_MAX_CSS, THEME_BOOT_STORAGE_KEY, USER_THEME_STYLE_ID } from './themeApply.svelte';
 import { serializeThemeCss, type ResolvedDeclaration } from './themeResolve';
 
-const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-const html = readFileSync(resolve(frontendRoot, 'index.html'), 'utf8');
 // The script moved out of index.html when the baseline CSP landed:
 // script-src 'self' with no 'unsafe-inline' admits a file and refuses an
 // inline block, and neither a build-tracked hash nor a per-request nonce was
 // worth carrying to keep it inline. public/ is copied to the bundle root
 // verbatim, so these are the exact bytes the browser runs.
-const bootScript = readFileSync(resolve(frontendRoot, 'public/boot-theme.js'), 'utf8');
 
 /**
  * The boot script's CSS validator, lifted out of the file and executed.

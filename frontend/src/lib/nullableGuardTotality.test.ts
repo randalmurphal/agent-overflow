@@ -31,11 +31,10 @@
 // reads through `?.`, or optional-chaining with a neutral default — never an
 // allowlist entry.
 
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import ts from 'typescript';
-import { SRC_ROOT, expectAllowlistExact, repoPath, scannedSources } from '../test/sourceScan';
+import { SRC_ROOT, expectAllowlistExact, repoPath, scannedSources, sourceText } from '../test/sourceScan';
 
 /** Everything after the last `</script>`: the template half of the file. */
 function templateOf(source: string): string {
@@ -195,7 +194,7 @@ function scanTree(): Scan {
   const offenders = new Map<string, string[]>();
   let singleDep = 0;
   for (const file of scannedSources(/\.svelte$/)) {
-    const source = readFileSync(file, 'utf8');
+    const source = sourceText(file);
     const template = templateOf(source);
     const reactive = reactiveNames(scriptOf(source));
     for (const block of ifBlocks(template)) {
@@ -260,7 +259,7 @@ describe('nullable-guarded branches render total expressions', () => {
 
   for (const [file, name] of STILL_GATED) {
     it(`${file}: \`${name}\` still gates its branch`, () => {
-      const template = templateOf(readFileSync(join(SRC_ROOT, ...file.split('/')), 'utf8'));
+      const template = templateOf(sourceText(join(SRC_ROOT, ...file.split('/'))));
       const gated = ifBlocks(template).some((block) =>
         new RegExp(String.raw`(?<![.\w$])${name}(?![\w$.])`).test(block.condition),
       );

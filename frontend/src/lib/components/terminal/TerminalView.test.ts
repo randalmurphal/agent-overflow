@@ -68,7 +68,8 @@ vi.mock('../../stores/bindings', async (importOriginal) => ({
 
 vi.mock('../../stores/toast.svelte', () => ({ addToast: vi.fn(), addErrorToast: vi.fn() }));
 
-vi.mock('../../stores/panes.svelte', () => ({
+vi.mock('../../stores/panes.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/panes.svelte')>()),
   addPaneThreadMountedObserver: vi.fn(() => () => {}),
   destroyPane: vi.fn(),
   // The header's PaneHeaderLine reads pane focus, and the shared

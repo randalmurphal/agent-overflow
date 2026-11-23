@@ -8,9 +8,7 @@
 // against a stubbed `call()` could not see any of that — the token
 // reaches a frame at construction time, and "exactly one retry" is a
 // statement about what the socket saw.
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import generatedBindings from '../../../bindings/agent-overflow/app.ts?raw';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeCtor, flushMicrotasks, MockWebSocket } from '../../test/helpers/mockWebSocket';
@@ -517,10 +515,7 @@ describe('the installed passkey prover', () => {
 // families. The generated bindings are the reference because they are
 // what methodgen wrote from the receiver itself.
 describe('the ceremony method ids', () => {
-  const generated = readFileSync(
-    resolve(dirname(fileURLToPath(import.meta.url)), '../../../bindings/agent-overflow/app.ts'),
-    'utf8',
-  );
+  const generated = generatedBindings;
 
   function generatedId(methodName: string): number {
     const declaration = generated.indexOf(`export function ${methodName}(`);

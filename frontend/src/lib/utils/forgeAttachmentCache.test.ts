@@ -14,7 +14,8 @@ import type { PRRef } from './prReference';
 const responses: Response[] = [];
 const fetchCalls: string[] = [];
 
-vi.mock('../transport/deviceSession', () => ({
+vi.mock('../transport/deviceSession', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../transport/deviceSession')>()),
   fetchPairedComputer: async (_backend: string, _fetcher: unknown, input: string) => {
     fetchCalls.push(input);
     const next = responses.shift();
@@ -23,7 +24,8 @@ vi.mock('../transport/deviceSession', () => ({
   },
 }));
 
-vi.mock('../transport/backends', () => ({
+vi.mock('../transport/backends', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../transport/backends')>()),
   withBackendTarget: <T>(_backend: string, run: () => T): T => run(),
 }));
 
