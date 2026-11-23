@@ -387,10 +387,11 @@ func (s *Sessions) newTokens(session store.Session, device store.Device, now int
 	if session.BindingClass == string(BindingLoopbackOnly) {
 		return TokenSet{}, store.RefreshGrant{}, fmt.Errorf("identity: local sessions cannot issue renewable credentials")
 	}
-	tokens, err := s.accessTokensFor(session, device, now)
+	signer, err := s.accessSignerFor(session, device)
 	if err != nil {
 		return TokenSet{}, store.RefreshGrant{}, err
 	}
+	tokens := signer.signAccess(session, now)
 	policy := RenewablePolicyFor(DeviceClass(device.Class))
 	if !policy.Renewable() {
 		return tokens, store.RefreshGrant{}, nil
@@ -403,15 +404,6 @@ func (s *Sessions) newTokens(session store.Session, device store.Device, now int
 	tokens.RefreshSecret = secret
 	tokens.RefreshExpiresAtMillis = refreshExpiry
 	return tokens, store.RefreshGrant{Hash: digest[:], CreatedAt: now, ExpiresAt: refreshExpiry}, nil
-}
-
-// accessTokensFor signs the access half for already persisted session state.
-func (s *Sessions) accessTokensFor(session store.Session, device store.Device, now int64) (TokenSet, error) {
-	signer, err := s.accessSignerFor(session, device)
-	if err != nil {
-		return TokenSet{}, err
-	}
-	return signer.signAccess(session, now), nil
 }
 
 // accessSigner signs one session's access credentials. accessSignerFor runs

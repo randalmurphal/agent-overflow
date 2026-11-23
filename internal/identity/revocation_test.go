@@ -172,7 +172,7 @@ func TestRevokeDeviceReportsWhatItDid(t *testing.T) {
 // package that can produce or renew a credential. The gate is inside the
 // chokepoints each of them goes through (store.CreateSession's INSERT
 // predicate, ActivateSession's and ExtendSession's UPDATE predicates,
-// RotateRefreshSecret's transaction and accessTokensFor's device argument), never in these callers — which is what
+// RotateRefreshSecret's transaction and newTokens' device argument), never in these callers — which is what
 // TestEveryCredentialProducingCallGoesThroughAChokepoint pins.
 func TestNoMintPathAdmitsARevokedDevice(t *testing.T) {
 	// The device row as a sign-in read it before the revocation landed: the

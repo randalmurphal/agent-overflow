@@ -40,10 +40,9 @@ type Sessions struct {
 	localMu         sync.Mutex
 	localCredential string
 	localSessionID  string
-	// ownMu serializes the pairing and own-device membership writes. Lock
-	// order: ownMu, then the pairing gate's lock (PairingGate.Admit, the
-	// computer pairing book's settle lock), which covers no call that takes
-	// ownMu.
+	// ownMu serializes the pairing and own-device membership writes. It is
+	// taken before the pairing gate's lock (PairingGate.Admit); the whole
+	// lock order is stated on pairbootstrap.Book.
 	ownMu     sync.Mutex
 	store     *store.Store
 	backendID string

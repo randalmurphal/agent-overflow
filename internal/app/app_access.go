@@ -144,7 +144,7 @@ func (a *App) GetAccessOverview() (AccessOverview, error) {
 //ao:stepup
 //ao:remote
 func (a *App) MintDevicePairing(deviceClass, access string) (PairingInvite, error) {
-	return a.mintDevicePairing(deviceClass, access, "")
+	return a.mintDevicePairingPurpose(deviceClass, access, "", "", false)
 }
 
 // MintDevicePairingOnNetwork creates an invitation for the chosen enabled
@@ -156,13 +156,9 @@ func (a *App) MintDevicePairing(deviceClass, access string) (PairingInvite, erro
 //ao:stepup
 //ao:remote
 func (a *App) MintDevicePairingOnNetwork(deviceClass, access, networkChoice string) (PairingInvite, error) {
-	if networkChoice != "lan" && networkChoice != "tailnet" {
-		return PairingInvite{}, fmt.Errorf("choose Local network or Tailscale for this invitation")
+	if err := checkPairingNetwork(networkChoice); err != nil {
+		return PairingInvite{}, err
 	}
-	return a.mintDevicePairing(deviceClass, access, networkChoice)
-}
-
-func (a *App) mintDevicePairing(deviceClass, access, networkChoice string) (PairingInvite, error) {
 	return a.mintDevicePairingPurpose(deviceClass, access, networkChoice, "", false)
 }
 

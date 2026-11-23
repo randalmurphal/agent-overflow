@@ -427,7 +427,7 @@ relying party resolved per ceremony (`internal/app/app_passkey.go`:
 canonical domain as the only RP ID candidate, origins =
 `https://domain` + `https://domain:port`, http only for the
 `.localhost` family the e2e rig uses). Sign-in mints through the same
-`newDeviceSession`/`accessTokensFor` chokepoints pairing uses, with a REQUIRED device-key
+`newDeviceSession`/`newTokens` chokepoints pairing uses, with a REQUIRED device-key
 proof: the passkey proves the PERSON, the device row is what
 revocation reaches, and `resolveDevice` applies pairing's
 adoption rules (revoked refused, other-user key mismatch, class

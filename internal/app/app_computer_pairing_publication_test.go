@@ -267,7 +267,7 @@ func TestTheOwnerNumberOfAWindowsInvitationIsTheWindows(t *testing.T) {
 	if got, err := ownerPairingNumber(ordinary, held, sessions); err != nil || got != want || got == requesterDigits {
 		t.Fatalf("an ordinary invitation shows %q (%v), want the ordinary number %q", got, err, want)
 	}
-	plain, err := a.mintDevicePairing("desktop", "full", "lan")
+	plain, err := a.mintDevicePairingPurpose("desktop", "full", "lan", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

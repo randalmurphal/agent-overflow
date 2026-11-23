@@ -21,6 +21,7 @@ import (
 // Only the previous publication is retained, to avoid network-status polls
 // invalidating every connected client when no usable address changed.
 type computerRoutesPublication struct {
+	// mu's place in the lock order is stated on pairbootstrap.Book.
 	mu     sync.Mutex
 	routes []computerroute.Route
 	// pairing is this computer's published pairing set, with the reason
@@ -69,6 +70,17 @@ type pairingAddresses struct {
 func (p pairingAddresses) set() pairingAddresses {
 	p.lanErr, p.tailnetErr, p.lanPageErr, p.tailnetPageErr = "", "", "", ""
 	return p
+}
+
+// checkPairingNetwork refuses a network choice that is neither of the two a
+// person can pick. Every pairing choice a caller names passes it before
+// anything reads the choice, and NearbyPair names a reveal's route as one of
+// the two, so on and pageOn take any choice but "tailnet" as "lan".
+func checkPairingNetwork(choice string) error {
+	if choice != "lan" && choice != "tailnet" {
+		return errors.New("choose Local network or Tailscale")
+	}
+	return nil
 }
 
 func (p pairingAddresses) on(choice string) (string, error) {
@@ -181,8 +193,7 @@ func pairingAddressesOf(srv *transport.Server, s network.Settings, reach network
 
 // admitComputerPairingWindow records windowID as admitted under the current
 // pairing set and answers the address it shows on choice, or why choice has
-// none now. The caller holds the pairing state's lock (lock order: the
-// pairing state's mu, then this publication's mu, then the book's mu).
+// none now. The caller holds the pairing state's lock.
 func (a *App) admitComputerPairingWindow(book *pairbootstrap.Book, windowID, choice string) (address string, advertise bool, err error) {
 	state := &a.computerRoutesPublished
 	state.mu.Lock()

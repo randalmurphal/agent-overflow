@@ -280,8 +280,8 @@ func (a *App) MintOwnDevicePairingOnNetwork(ctx context.Context, deviceClass, ne
 	if err := a.ownPairingAdmin(ctx); err != nil {
 		return PairingInvite{}, err
 	}
-	if networkChoice != "lan" && networkChoice != "tailnet" {
-		return PairingInvite{}, errors.New("choose Local network or Tailscale")
+	if err := checkPairingNetwork(networkChoice); err != nil {
+		return PairingInvite{}, err
 	}
 	if e := a.enableOwnDevices(); e != nil {
 		return PairingInvite{}, e

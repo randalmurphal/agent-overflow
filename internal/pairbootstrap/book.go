@@ -51,12 +51,23 @@ type Snapshot struct {
 // against an admitted write's check and commit (Admit), against a Read, and
 // against a reveal's publication of its link and digits, and covers nothing
 // else, so an approval waits at most for another admitted write, a Read's
-// row read, a publication or a removal's bookkeeping. Lock order: the
-// caller's identity lock (identity.Sessions' own-device lock, held around
-// Admit), turn, settle, mu. The callbacks run under settle (Admit, Read) may
-// use the caller's store and must not take that identity lock; cancel runs
-// under turn alone. A caller must not hold a store transaction while it
-// calls into the book.
+// row read, a publication or a removal's bookkeeping.
+//
+// Lock order, stated here for every package that uses a book:
+//
+//  1. identity.Sessions' own-device lock (ownMu), held around Admit;
+//  2. turn;
+//  3. settle;
+//  4. the app's computer pairing state lock (computerPairingState.mu),
+//     taken in Open's admit callback;
+//  5. the app's address publication lock (computerRoutesPublication.mu),
+//     under which a publication that moves the pairing set retires its
+//     window with Expire;
+//  6. mu.
+//
+// The callbacks run under settle (Admit, Read) may use the caller's store
+// and must not take the identity lock; cancel runs under turn alone. A
+// caller must not hold a store transaction while it calls into the book.
 type Book struct {
 	mu      sync.Mutex
 	turn    orderLock
@@ -237,7 +248,7 @@ func (b *Book) open(mint func(route string) (Invitation, error), admit func(Snap
 func (b *Book) Close(windowID string) error {
 	b.turn.Lock()
 	defer b.turn.Unlock()
-	if b.isStopped() {
+	if b.Stopped() {
 		return ErrStopped
 	}
 	b.removeInTurn(windowID)
@@ -340,9 +351,7 @@ func (b *Book) CancelLink(linkID string) (windowID string, err error) {
 }
 
 // Stopped reports whether Stop has run.
-func (b *Book) Stopped() bool { return b.isStopped() }
-
-func (b *Book) isStopped() bool {
+func (b *Book) Stopped() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.stopped
@@ -422,7 +431,7 @@ func (b *Book) retireInTurn(windowID string, every bool) error {
 func (b *Book) retryPending() {
 	b.turn.Lock()
 	defer b.turn.Unlock()
-	if !b.isStopped() {
+	if !b.Stopped() {
 		_ = b.retireInTurn("", true)
 	}
 }
@@ -453,16 +462,29 @@ func (s Standing) Refuses(linkID string) bool {
 	if linkID == "" {
 		return false
 	}
-	return s.pending == linkID || (s.open.LinkID == linkID && s.now >= s.open.ExpiresAtMs)
+	return s.pending == linkID || (s.open.LinkID == linkID && !s.open.liveAt(s.now))
 }
 
 // Window is the open window, closed (Open false) when none is open or it is
 // past its expiry.
 func (s Standing) Window() Snapshot {
-	if !s.open.Open || s.now >= s.open.ExpiresAtMs {
+	if !s.open.liveAt(s.now) {
 		return Snapshot{}
 	}
 	return s.open
+}
+
+// liveAt reports whether v is an open window before its expiry at now (Unix
+// milliseconds): the one test of a window being usable.
+func (v Snapshot) liveAt(now int64) bool { return v.Open && now < v.ExpiresAtMs }
+
+// liveLocked is the installed window while it is open and unexpired, else
+// nil. The caller holds mu.
+func (b *Book) liveLocked() *window {
+	if b.window == nil || !b.window.view.liveAt(time.Now().UnixMilli()) {
+		return nil
+	}
+	return b.window
 }
 
 func (b *Book) standing() Standing {
@@ -510,10 +532,11 @@ func (b *Book) Read(read func(Standing) error) error {
 func (b *Book) Snapshot(windowID string) Snapshot {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.window == nil || (windowID != "" && b.window.view.WindowID != windowID) || time.Now().UnixMilli() >= b.window.view.ExpiresAtMs {
+	w := b.liveLocked()
+	if w == nil || (windowID != "" && w.view.WindowID != windowID) {
 		return Snapshot{}
 	}
-	return b.window.view
+	return w.view
 }
 
 func (b *Book) Begin(co Commitment) (Challenge, error) {
@@ -525,8 +548,8 @@ func (b *Book) Begin(co Commitment) (Challenge, error) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	w := b.window
-	if w == nil || time.Now().UnixMilli() >= w.view.ExpiresAtMs {
+	w := b.liveLocked()
+	if w == nil {
 		return Challenge{}, ErrClosed
 	}
 	if w.request != nil {
@@ -550,8 +573,8 @@ func (b *Book) Begin(co Commitment) (Challenge, error) {
 // to the mint unread.
 func (b *Book) Reveal(id string, r Reveal, route string) (SealedInvitation, error) {
 	b.mu.Lock()
-	w := b.window
-	if w == nil || time.Now().UnixMilli() >= w.view.ExpiresAtMs {
+	w := b.liveLocked()
+	if w == nil {
 		b.mu.Unlock()
 		return SealedInvitation{}, ErrClosed
 	}
@@ -603,7 +626,7 @@ func (b *Book) Reveal(id string, r Reveal, route string) (SealedInvitation, erro
 	// only after this.
 	b.settle.Lock()
 	b.mu.Lock()
-	current := b.window == w && time.Now().UnixMilli() < w.view.ExpiresAtMs
+	current := b.liveLocked() == w
 	if invite.LinkID != "" {
 		w.spent = true
 	}

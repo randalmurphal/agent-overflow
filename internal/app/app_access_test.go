@@ -899,4 +899,8 @@ func TestMintDevicePairingOnNetworkKeepsLANTrustInPayloadAndRecord(t *testing.T)
 			t.Fatalf("accepted unavailable choice %q", choice)
 		}
 	}
+	// A choice that names neither network gets the pairing dialog's wording.
+	if _, err := app.MintDevicePairingOnNetwork("phone", "full", "auto"); err == nil || err.Error() != "choose Local network or Tailscale" {
+		t.Fatalf("an unknown choice answered %v", err)
+	}
 }

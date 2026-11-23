@@ -34,7 +34,7 @@ import (
 //   - renderClaims - reached only through an accessSigner,
 //     whose only constructor, accessSignerFor, takes the device ROW and
 //     refuses a revoked one; its signAccess is called only by
-//     accessTokensFor and by Refresh, which resolves it before its rotation
+//     newTokens and by Refresh, which resolves it before its rotation
 //     commits.
 //
 // So a new mint path built from these operations inherits the refusal. This test
@@ -53,7 +53,7 @@ func TestEveryCredentialProducingCallGoesThroughAChokepoint(t *testing.T) {
 		"ConfirmRedeemedPairing":    {"Sessions.confirmPairing"},
 		"RotateRefreshSecret":       {"Sessions.Refresh"},
 		"renderClaims":              {"accessSigner.signAccess"},
-		"signAccess":                {"Sessions.Refresh", "Sessions.accessTokensFor"},
+		"signAccess":                {"Sessions.Refresh", "Sessions.newTokens"},
 	}
 	found := map[string][]string{}
 	for name, callers := range callersInPackage(t) {

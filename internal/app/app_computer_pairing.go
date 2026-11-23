@@ -49,8 +49,7 @@ type ComputerPairingView struct {
 // closes never take it. Expiry is the book's timer. The advertisement is
 // retired when the window is closed, replaced, retired by a publication or
 // its owner disconnects; an expired window answers info with Open:false,
-// which discovery discards. Lock order: the book's turn and settle, mu, the
-// publication's mu, the book's mu.
+// which discovery discards. The lock order is stated on pairbootstrap.Book.
 type computerPairingState struct {
 	mu             sync.Mutex
 	ops            sync.Mutex
@@ -99,8 +98,8 @@ const computerPairingCleanupKey = "computer-pairing"
 // address comes: a publication between the eligibility check and the
 // admission changes which address the window shows, not whether it opens.
 func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, access, purpose string, prepare func() error) (ComputerPairingWindow, error) {
-	if networkChoice != "lan" && networkChoice != "tailnet" {
-		return ComputerPairingWindow{}, errors.New("choose Local network or Tailscale")
+	if err := checkPairingNetwork(networkChoice); err != nil {
+		return ComputerPairingWindow{}, err
 	}
 	if _, err := a.accessState(); err != nil {
 		return ComputerPairingWindow{}, err
