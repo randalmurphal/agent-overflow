@@ -722,7 +722,7 @@ func (m *Manager) adoptCurrentProviderAccountLocked(
 	providerName string,
 	info provider.AccountInfo,
 	credential *provideraccounts.CredentialSnapshot,
-) (provideraccounts.Account, SignIn, error) {
+) (_ provideraccounts.Account, _ SignIn, retErr error) {
 	if credential == nil {
 		return provideraccounts.Account{}, SignIn{}, nil
 	}
@@ -739,10 +739,12 @@ func (m *Manager) adoptCurrentProviderAccountLocked(
 	}
 	if _, hasActive := m.store.Active(providerName, time.Now()); !hasActive &&
 		strings.TrimSpace(info.Email) == "" {
-		accountID, err := m.store.ReserveAccountID(providerName)
+		reservation, err := m.reserveAccount(providerName)
 		if err != nil {
 			return provideraccounts.Account{}, SignIn{}, err
 		}
+		defer reservation.settleOnFailure(&retErr)
+		accountID := reservation.ID()
 		saved, err := m.credentials.CaptureAccountCredential(providerName, accountID)
 		if err != nil {
 			return provideraccounts.Account{}, SignIn{}, err
@@ -781,7 +783,7 @@ func (m *Manager) adoptCurrentProviderAccountLocked(
 	return account, signIn, nil
 }
 
-func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary string) (SignIn, error) {
+func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary string) (_ SignIn, retErr error) {
 	if _, ok := m.store.Active(providerName, time.Now()); ok {
 		return SignIn{}, nil
 	}
@@ -841,9 +843,12 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 	}
 	accountID := existing.ID
 	if !found {
-		if accountID, err = m.store.ReserveAccountID(providerName); err != nil {
+		reservation, err := m.reserveAccount(providerName)
+		if err != nil {
 			return SignIn{}, err
 		}
+		defer reservation.settleOnFailure(&retErr)
+		accountID = reservation.ID()
 	}
 	saved, err := m.credentials.CaptureAccountCredential(providerName, accountID)
 	if err != nil {

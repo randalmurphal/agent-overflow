@@ -260,11 +260,12 @@ func (m *Manager) reconcileObservedAccountLocked(
 		}
 	}
 	if !found {
-		reserved, err := m.store.ReserveAccountID(providerName)
+		reservation, err := m.reserveAccount(providerName)
 		if err != nil {
 			return provideraccounts.Account{}, SignIn{}, false, err
 		}
-		target.ID = reserved
+		defer reservation.settleOnFailure(&retErr)
+		target.ID = reservation.ID()
 		target.Provider = providerName
 	}
 	if !hasActive || target.ID != active.ID {

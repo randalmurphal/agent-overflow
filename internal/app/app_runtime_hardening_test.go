@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/provideraccounts"
@@ -179,47 +180,57 @@ func assertAppMode(t *testing.T, path string, want os.FileMode) {
 	}
 }
 
-// A REUSED foreign metadata store (a harness data dir whose store already
-// registered a mock account, a second install's store) boots over this
-// home without deleting the slots it does not list.
-func TestInitStoresSkipsPruneWhenMetadataBelongsToAnotherHome(t *testing.T) {
+// The account boot steps of a data root whose store already lists an account
+// of its own remove the slot of its own unfinished sign-in and keep a slot of
+// another data root on the same home. A slot that cannot be removed is
+// reported and does not stop the steps that follow.
+func TestBootStepsRemoveOnlyThisRootsUnfinishedSignIns(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 	t.Setenv("USERPROFILE", homeDir)
 
-	seeded := newTestProviderCredentials(t, homeDir)
-	if err := seeded.WriteAccountCredential(
-		"claude",
-		"saved-login",
-		[]byte(`{"account":"precious"}`),
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	// A metadata store born under a different home, with an account of its
-	// own — the reused-foreign-store shape. It does not list "saved-login".
 	dataRoot := t.TempDir()
 	dbDir := filepath.Join(dataRoot, "agent-overflow")
 	if err := os.MkdirAll(dbDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	foreign, err := provideraccounts.NewStore(dbDir)
+	credentials := newTestProviderCredentials(t, homeDir)
+	codexHome := filepath.Join(homeDir, ".codex")
+	claudeHome := filepath.Join(homeDir, ".claude")
+	seeded, err := provideraccounts.NewStore(dbDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := foreign.ClaimProviderHome(filepath.Join(dataRoot, "some-other-home")); err != nil {
+	if _, err := seeded.UpsertAndActivate(provideraccounts.Account{ID: "own-account", Provider: "codex"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := foreign.UpsertAndActivate(provideraccounts.Account{
-		ID:       "foreign-account",
-		Provider: "claude",
-	}); err != nil {
+	unfinished, err := seeded.ReserveAccountID("codex", codexHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stuck, err := seeded.ReserveAccountID("claude", claudeHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"own-account", unfinished, "another-roots-login"} {
+		if err := credentials.WriteAccountCredential("codex", id, []byte(`{"account":"`+id+`"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A regular file where the stuck slot's directory belongs: it can be
+	// neither read nor removed.
+	if err := os.MkdirAll(filepath.Join(claudeHome, "agent-overflow-accounts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeHome, "agent-overflow-accounts", stuck), []byte("not a slot"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	migratedDatabaseAt(t, filepath.Join(dbDir, databaseFileName))
 	app := NewApp()
 	app.dataDirOverride = dataRoot
+	progress := newRecordingBootProgress("")
+	SetBootProgress(app, progress)
 	_, st, err := app.initStores(context.Background())
 	if err != nil {
 		t.Fatalf("initStores: %v", err)
@@ -228,8 +239,22 @@ func TestInitStoresSkipsPruneWhenMetadataBelongsToAnotherHome(t *testing.T) {
 	if app.logger != nil {
 		defer app.logger.Close()
 	}
+	for i, step := range app.providerAccountBootSteps() {
+		if err := step(); err != nil {
+			t.Fatalf("account boot step %d failed the boot: %v", i, err)
+		}
+	}
 
-	if _, err := seeded.ReadCredential("claude", "saved-login", false); err != nil {
-		t.Fatalf("slot destroyed by a boot over a foreign metadata store: %v", err)
+	for _, id := range []string{"own-account", "another-roots-login"} {
+		if _, err := credentials.ReadCredential("codex", id, false); err != nil {
+			t.Fatalf("the boot deleted codex slot %s: %v", id, err)
+		}
+	}
+	if _, err := credentials.ReadCredential("codex", unfinished, false); !provideraccounts.IsCredentialMissing(err) {
+		t.Fatalf("the unfinished sign-in's slot survived the boot (err %v)", err)
+	}
+	failures := progress.failures()
+	if len(failures) != 1 || !strings.Contains(failures[0], stuck) {
+		t.Fatalf("reported boot failures = %q, want one naming the claude slot %s", failures, stuck)
 	}
 }

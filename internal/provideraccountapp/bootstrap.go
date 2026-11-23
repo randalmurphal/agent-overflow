@@ -2,36 +2,20 @@ package provideraccountapp
 
 import (
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"agent-overflow/internal/provider"
 )
 
-// ReconcileProviderHome binds metadata to its credential home, deletes the
-// slots of sign-ins this store started that never saved their account, and
-// recovers crash-orphaned provider rotations.
-func (m *Manager) ReconcileProviderHome(dbDir, userHome string) error {
+// ReconcileProviderHome stamps the metadata with its credential home and
+// recovers crash-orphaned provider rotations. The slots of unfinished
+// sign-ins are SettleReservedSlots's.
+func (m *Manager) ReconcileProviderHome(userHome string) error {
 	if !m.available() {
 		return fmt.Errorf("provider account storage is unavailable")
 	}
-	claimedHome, homeMatches, err := m.store.ClaimProviderHome(userHome)
-	if err != nil {
+	if err := m.store.ClaimProviderHome(userHome); err != nil {
 		return fmt.Errorf("bind provider account metadata to credential home: %w", err)
-	}
-	if !homeMatches {
-		m.audit(
-			"prune skipped: metadata store %s is bound to provider home %s but this process resolves %s",
-			filepath.Join(dbDir, "provider-accounts.json"), claimedHome, userHome,
-		)
-	} else {
-		// Reservations settle only in the bound home, where this store's
-		// sign-ins write their slots (provideraccounts.ReserveAccountID).
-		for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
-			if err := m.removeUnsavedSlots(providerName); err != nil {
-				return err
-			}
-		}
 	}
 
 	selected := make(map[string]string)

@@ -144,9 +144,12 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	}
 	targetID := existing.ID
 	if !found {
-		if targetID, err = m.store.ReserveAccountID(providerName); err != nil {
+		reservation, err := m.reserveAccount(providerName)
+		if err != nil {
 			return ManagedAccount{}, err
 		}
+		defer reservation.settleOnFailure(&retErr)
+		targetID = reservation.ID()
 	}
 	current, hasCurrent := m.store.Active(providerName, time.Now())
 	currentID := ""

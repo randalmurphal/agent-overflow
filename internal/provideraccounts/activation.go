@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 // This file owns the mutations that move a credential between the canonical
@@ -194,6 +196,16 @@ func (c *Credentials) removeAccountLocked(providerName, accountID string) error 
 	defer root.Close()
 	if err := root.RemoveAll(filepath.Join(accountDirectoryName, accountID)); err != nil {
 		return fmt.Errorf("provideraccounts: remove saved account credentials: %w", err)
+	}
+	// The removal is durable before the caller clears any record of the
+	// slot (a reservation, an account row), already-absent slot included:
+	// another process's removal may not have been synced.
+	if _, err := root.Lstat(accountDirectoryName); err == nil {
+		if err := atomicfile.SyncRootDir(root, accountDirectoryName); err != nil {
+			return fmt.Errorf("provideraccounts: make the %s slot removal durable: %w", providerName, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("provideraccounts: inspect managed account root: %w", err)
 	}
 	return c.removeConsumedMarker(providerName, accountID)
 }
