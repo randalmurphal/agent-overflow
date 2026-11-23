@@ -19,33 +19,16 @@ import (
 // whatever goroutine emitted, a send, a stop or a delete starts notice work
 // from its own, a queued message's handoff starts a flush dispatch worker
 // from the triage callback, a subscribe or a CI action starts a PR update
-// pump from its RPC, and each group below starts its members from a request,
-// a PTY exit or the provider event worker. The Wait returns at the moment the count reached
-// zero, and the new member is counted for the next one. With one P the
-// waiter cannot run between the Done and the Add, which is the order a
-// sync.WaitGroup panics on ("WaitGroup is reused before previous Wait has
-// returned"). Serial: it sets GOMAXPROCS.
+// pump from its RPC, and each group listed below the test starts its
+// members from a request, a PTY exit or the provider event worker. Each is
+// a workGroup, so this tests the one algorithm they share. The Wait returns
+// at the moment the count reached zero, and the new member is counted for
+// the next one. With one P the waiter cannot run between the Done and the
+// Add, which is the order a sync.WaitGroup panics on ("WaitGroup is reused
+// before previous Wait has returned"). Serial: it sets GOMAXPROCS.
 func TestWorkMayStartAsAWaitReturns(t *testing.T) {
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
-	var a App
-	for name, g := range map[string]*workGroup{
-		"request work":            &a.threadRequestsWG,
-		"notice work":             &a.agentNoticeWork.wg,
-		"flush dispatch":          &a.flushDispatch.wg,
-		"PR updates":              &a.prUpdates.wg,
-		"terminal thread ends":    &a.terminalThreads.wg,
-		"review diff pins":        &a.reviewDiffFiles.pins,
-		"browser settings":        &a.browser.applyWG,
-		"permission mode follows": &a.permissionModeFollowWG,
-		"read-state stamps":       &a.markThreadRead.wg,
-		"memory reports":          &a.memoryReports.wg,
-		"sends pending worker":    &a.sendsPending.wg,
-	} {
-		t.Run(name, func(t *testing.T) { memberMayStartAsAWaitReturns(t, g) })
-	}
-}
-
-func memberMayStartAsAWaitReturns(t *testing.T, g *workGroup) {
+	g := &workGroup{}
 	g.addMember(1)
 	waited := make(chan struct{})
 	go waitThreadRequestWork(g, waited)
@@ -74,6 +57,25 @@ func memberMayStartAsAWaitReturns(t *testing.T, g *workGroup) {
 		t.Fatal("Wait did not return once the member that started during the last one ended")
 	}
 	g.Wait()
+}
+
+// The App's groups whose members start from whatever goroutine does the
+// work. The listing stops compiling when one of them is anything but a
+// workGroup, whose Wait allows that (TestWorkMayStartAsAWaitReturns).
+var _ = func(a *App) []*workGroup {
+	return []*workGroup{
+		&a.threadRequestsWG,
+		&a.agentNoticeWork.wg,
+		&a.flushDispatch.wg,
+		&a.prUpdates.wg,
+		&a.terminalThreads.wg,
+		&a.reviewDiffFiles.pins,
+		&a.browser.applyWG,
+		&a.permissionModeFollowWG,
+		&a.markThreadRead.wg,
+		&a.memoryReports.wg,
+		&a.sendsPending.wg,
+	}
 }
 
 func waitThreadRequestWork(g interface{ Wait() }, done chan<- struct{}) {
