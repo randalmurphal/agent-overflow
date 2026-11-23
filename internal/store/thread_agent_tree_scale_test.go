@@ -3,6 +3,7 @@ package store
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -167,6 +168,9 @@ func TestListThreadAgentTreeOverEveryKindOfRow(t *testing.T) {
 		if err != nil || len(rows) != read.Limit || !more {
 			t.Fatalf("analyzed %v: listing %d rows, more %v, %v", analyzed, len(rows), more, err)
 		}
+		if got, want := agentTreeRowNames(rows), agentTreeEveryKindListing(); !slices.Equal(got, want) {
+			t.Fatalf("analyzed %v: listing\n%v\nwant\n%v", analyzed, got, want)
+		}
 		for _, row := range agentTreeNamedReads(agentTreeEveryKind) {
 			one := read
 			one.Tokens = []string{row.token}
@@ -176,6 +180,38 @@ func TestListThreadAgentTreeOverEveryKindOfRow(t *testing.T) {
 			}
 		}
 	}
+}
+
+// agentTreeEveryKindListing is the listing of agentTreeEveryKind, each row
+// as its token at its depth, in tree order: a spawn, then what its thread
+// made, oldest first. The chief spawned the managers first, so manager 0's
+// spawns of workers 0, 3, 6 and 9, each with its 20 open sends two spawns
+// down, come first (85 rows), and manager 1 with workers 1 and 4 fills the
+// limit.
+func agentTreeEveryKindListing() []string {
+	var want []string
+	for _, manager := range []struct {
+		id      int
+		workers []int
+	}{{0, []int{0, 3, 6, 9}}, {1, []int{1, 4}}} {
+		want = append(want, fmt.Sprintf("spawn-manager-%d@0", manager.id))
+		for _, worker := range manager.workers {
+			want = append(want, fmt.Sprintf("spawn-worker-%d@1", worker))
+			for i := worker; i < agentTreeEveryKind.deep; i += 10 {
+				want = append(want, fmt.Sprintf("deep-%06d@2", i))
+			}
+		}
+	}
+	return want
+}
+
+// agentTreeRowNames names each row as agentTreeEveryKindListing does.
+func agentTreeRowNames(rows []ThreadAgentRequest) []string {
+	names := make([]string, len(rows))
+	for i, row := range rows {
+		names[i] = fmt.Sprintf("%s@%d", row.Token, row.Depth)
+	}
+	return names
 }
 
 // BenchmarkListThreadAgentTree times the listing and each named read over
