@@ -68,7 +68,7 @@ func (s *Service) publish(root int64, gen uint64, conn string, ch Changes, own [
 		return
 	}
 	cards := unite(slices.Clone(ch.Cards), ch.History)
-	parents := unite(unite(unite(slices.Clone(ch.Cards), ch.Added), ch.Removed), ch.Unkept)
+	parents := unite(unite(unite(slices.Clone(ch.Cards), ch.Added), ch.Removed), ch.Visibility)
 	s.subMu.Lock()
 	var boards []*boardPump
 	var tickets []*ticketPump

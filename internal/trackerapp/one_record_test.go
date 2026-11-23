@@ -604,9 +604,11 @@ func TestAStatusLeftAndReturnedToBetweenCardReads(t *testing.T) {
 }
 
 // A ticket's read sends the shared catalog only what its card names, its
-// status and assignee: the body keeps the rest of the catalog it read (a
-// comment's author), which its own view shows, and the board's names of
-// other users stay as the reads that named them stored them.
+// status and assignee: the body keeps the rest of the catalog it read, and
+// the board's names of other users and statuses stay as the reads that
+// named them stored them. The ticket names what the shared catalog holds
+// as the board does (the move's status) and from its own catalog only what
+// the shared one lacks (the comment's author).
 func TestATicketsReadNamesOnlyItsCardsUsersAndStatusInTheSharedCatalog(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -621,8 +623,8 @@ func TestATicketsReadNamesOnlyItsCardsUsersAndStatusInTheSharedCatalog(t *testin
 		return d, nil
 	}
 	v, _ := m.openDetail(t, "10001")
-	if v.Card.Assignee.Name != "User 1 renamed" || v.Comments[0].Author.Name != "User 2 renamed" || v.Moves[0].To.Name != "Shipped" {
-		t.Fatalf("the ticket shows assignee %q, comment author %q, move to %q; want its read's names",
+	if v.Card.Assignee.Name != "User 1 renamed" || v.Comments[0].Author.Name != "User 2 renamed" || v.Moves[0].To.Name != "Done" {
+		t.Fatalf("the ticket shows assignee %q, comment author %q, move to %q; want the shared names, its read's for the author the board lacks",
 			v.Card.Assignee.Name, v.Comments[0].Author.Name, v.Moves[0].To.Name)
 	}
 	shared := must[store.MirrorCatalog](t)(m.st.GetMirrorCatalog(m.root(), []string{"acc-user1", "acc-user2"}, []string{"s1", "s3"}))
@@ -645,5 +647,125 @@ func TestATicketsReadNamesOnlyItsCardsUsersAndStatusInTheSharedCatalog(t *testin
 	}
 	if names["acc-user2"] != was["acc-user2"] || names["s3"] != was["s3"] {
 		t.Fatalf("the shared catalog names the comment's author %q and the move's status %q; want them as they were, %v", names["acc-user2"], names["s3"], was)
+	}
+}
+
+// A Jira round's check of an open ticket whose cards read began before a
+// board read stored a newer version (the tracker answered it the version
+// the ticket shows, landing after the board's): the board's write tells
+// the ticket its card changed after the check began, so the ticket stays
+// due at once (readNowLocked, dueLocked) and the next read, finding the
+// record newer than the ticket's body (mirrorMoved), reads it in full and
+// shows that version's body with nothing behind.
+func TestAJiraCheckRacingABoardWriteReadsTheTicketInFull(t *testing.T) {
+	t.Parallel()
+	m, st, issues, subs := newRoundFixture(t, 1, true)
+	quiet(t, m.svc)
+	shown := st.cards[issues[0]]
+	arrived, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	m.p.set(func(p *scripted) {
+		p.cards = func(asked []tracker.IssueID) (tracker.Cards, error) {
+			// The answer is the version the ticket shows, held at the tracker.
+			out, err := cardsAnswering(&shown)(asked)
+			close(arrived)
+			<-release
+			return out, err
+		}
+	})
+	details, cards := m.p.count("Details"), m.p.count("Cards")
+	m.readSoon(issues[0])
+	waitClosed(t, "the check's cards read", arrived)
+	st.edit(issues[0], func(c *tracker.Card) { c.Title = "Renamed" })
+	st.comment(issues[0], "Second")
+	m.tracks([]tracker.Row{{Card: st.cards[issues[0]], Order: "a000"}})
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	m.p.set(func(p *scripted) { p.cards = st.cardsRead })
+	once.Do(func() { close(release) })
+	quiet(t, m.svc)
+	v := m.ticketView(t, subs[0].ID)
+	if v.Detail == nil || v.Detail.Card.Title != "Renamed" || v.Detail.BodyBehind || len(v.Detail.Comments) == 0 || v.Detail.Comments[0].Body != "Second" {
+		t.Fatalf("after the check raced the board write the ticket shows %+v", v.Detail)
+	}
+	if d, c := m.p.count("Details")-details, m.p.count("Cards")-cards; d != 1 || c != 1 {
+		t.Fatalf("the rounds made %d full reads and %d cards reads; want 1 of each: the check, then the read the board's write asked", d, c)
+	}
+}
+
+// A user renamed with no update of the ticket's issue (a board read of
+// another issue names the new name) shows renamed on the open ticket as on
+// the board: the ticket's held body named the old name, and the shared
+// catalog's name comes first.
+func TestARenameWithNoIssueUpdateShowsOnTheOpenTicket(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour, RetryBase: time.Hour})
+	m.seedBoard(t)
+	m.p.set(func(p *scripted) {
+		p.detail = func(tracker.IssueID) (tracker.Detail, error) {
+			d := detailOfCard(seededCard())
+			d.Catalog.Users = []tracker.User{user1, user2}
+			return d, nil
+		}
+	})
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001"))
+	m.settledTickets(t)
+	quiet(t, m.svc)
+	if v := m.ticketView(t, sub.ID); v.Detail == nil || v.Detail.Card.Assignee == nil || v.Detail.Card.Assignee.Name != "User 1" {
+		t.Fatalf("the ticket shows %+v; want its assignee User 1", v.Detail)
+	}
+	renamed := user1
+	renamed.Name = "User 1 renamed"
+	other := row("10002", 1_799_000_100_000, "b")
+	m.p.set(func(p *scripted) {
+		p.changedRows = func(q tracker.DeltaQuery) (tracker.RowPage, error) {
+			return tracker.RowPage{Rows: []tracker.Row{other}, Next: q.From, Catalog: tracker.Catalog{Users: []tracker.User{renamed}}}, nil
+		}
+	})
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	quiet(t, m.svc)
+	if b := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10001")).Card; b.Assignee == nil || b.Assignee.Name != "User 1 renamed" {
+		t.Fatalf("the board shows assignee %+v; want the new name", b.Assignee)
+	}
+	v := m.ticketView(t, sub.ID)
+	if v.Detail == nil || v.Detail.Card.Assignee == nil || v.Detail.Card.Assignee.Name != "User 1 renamed" {
+		t.Fatalf("the open ticket shows assignee %+v; want the name the board shows", v.Detail)
+	}
+	if v.Detail.History[0].Author == nil || v.Detail.History[0].Author.Name != "User 1 renamed" {
+		t.Fatalf("the open ticket's history names its author %+v; want the new name", v.Detail.History[0].Author)
+	}
+}
+
+// A board read that reparents the ticket's issue after the ticket's body
+// read (the body names the old parent, the record's newer card the new
+// one): the ticket's view shows the record's card with its new parent's
+// key and title, and the issues it shows, which its pump follows, are the
+// rendered card's: the new parent, not the body's old one.
+func TestAReparentAfterTheBodyReadShowsAndFollowsTheNewParent(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour, RetryBase: time.Hour})
+	m.seedBoard(t)
+	read := seededCard()
+	moved := read
+	moved.Parent, moved.Updated = "10003", read.Updated.Add(time.Minute)
+	m.p.set(func(p *scripted) {
+		p.changedRows = func(q tracker.DeltaQuery) (tracker.RowPage, error) {
+			return tracker.RowPage{Rows: []tracker.Row{{Card: moved, Order: "a"}}, Next: q.From, Catalog: tracker.Catalog{Users: []tracker.User{user1}}}, nil
+		}
+	})
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	row := must[store.TrackerConnection](t)(m.svc.viewRow(m.conn.ID))
+	views, shows, err := m.svc.detailViews(m.root(), row, []ticketDoc{{d: detailOfCard(read), version: read.Updated.UnixMilli()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := views[0].Card.Parent; p == nil || p.ID != "10003" || p.Key != "WEB-3" || p.Title != "Issue 10003" {
+		t.Fatalf("the ticket shows its parent %+v; want the record's, WEB-3 with its title", p)
+	}
+	if !views[0].BodyBehind {
+		t.Fatal("the ticket's body is of an older version than its card and is not marked behind")
+	}
+	if !slices.Contains(shows[0], "10003") || slices.Contains(shows[0], "10004") {
+		t.Fatalf("the ticket follows %v; want the new parent 10003 and not the old 10004", shows[0])
 	}
 }

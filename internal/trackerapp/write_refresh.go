@@ -289,13 +289,19 @@ func (r *run) refreshDetails(f *refreshed, open []*ticketPump, cached []string, 
 	err := r.boundDetails(f.reads, false)
 	f.ch.add(ch)
 	f.details = detailsRead{ch: ch, root: r.root, gen: r.gen, kind: r.row.Kind}
-	// A detail whose own read ended is refreshed however the others' did;
-	// the rest owe the read that failed.
+	// A detail whose own read succeeded is refreshed however the others'
+	// did, and one whose own read failed (its bind) is stale with that
+	// failure (ticketRead.failed); the rest owe the read that failed.
 	var owed []tracker.Resource
 	for _, rd := range f.reads {
-		if rd.answered {
+		switch {
+		case !rd.failed():
 			f.covered(tracker.DetailOf(rd.issue))
-		} else {
+		case rd.answered:
+			if stop := r.failedRead(f, rd.err, tracker.DetailOf(rd.issue)); stop != nil {
+				return stop
+			}
+		default:
 			owed = append(owed, tracker.DetailOf(rd.issue))
 		}
 	}

@@ -175,10 +175,14 @@ type mirrorHistoryState struct {
 }
 
 // statusOf is the status result in gives the issue's card, of the
-// version st holds (MirrorStatusSince): none for a history read for an
-// earlier update, whose evidence is of another version. The latest status
-// change is the history's own, held in in whole even when it is staged.
-// The history is final for its version when it waits for nothing.
+// version and status st holds (MirrorStatusSince): none for a history read
+// for an earlier update, whose evidence is of another version. The latest
+// status change at or before the version is the history's own, held in in
+// whole even when it is staged: a change after it belongs to a later
+// version the tracker reached since, and the stay it starts is not the
+// card's. The history is final for its version when it waits for nothing.
+// The writer applies the result only to a record still of that version
+// and status (rowOf, mirrorStatusWriteSQL).
 func (st mirrorHistoryState) statusOf(in mirrorHistoryInput) (mirrorStatusResult, int64) {
 	if in.h.For != st.updatedAt {
 		return 0, 0
@@ -186,7 +190,7 @@ func (st mirrorHistoryState) statusOf(in mirrorHistoryInput) (mirrorStatusResult
 	e := MirrorStatusEvidence{Status: st.status, CreatedAt: st.createdAt, UpdatedAt: st.updatedAt,
 		Complete: in.h.CompleteFrom == 0, Final: in.h.Wait == 0, Settle: in.h.Wait}
 	for _, c := range in.h.Changes {
-		if c.Kind == MirrorChangeStatus {
+		if c.Kind == MirrorChangeStatus && c.At <= st.updatedAt {
 			e.LatestTo, e.LatestAt = c.To, c.At
 		}
 	}
@@ -199,7 +203,7 @@ func (st mirrorHistoryState) rowOf(in mirrorHistoryInput, gen int64) mirrorHisto
 	row := in.rowAt(gen)
 	var r mirrorStatusResult
 	r, row.Since = st.statusOf(in)
-	row.Status = int(r)
+	row.Status, row.Of = int(r), st.status
 	return row
 }
 

@@ -129,7 +129,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 	// A row only a read by ID placed, which a listing marks, read again
 	// identical: its card's read time moves alone.
 	mustWriteRows(t, s, rowsPage(s, root, 60, nil, webRow("10004", 5, "d")), root)
-	mustReconcile(t, s, root, []string{"10004"}, false, 61, 61)
+	mustReconcile(t, s, root, []string{"10004"}, false, 61)
 	assertRows(t, s.db, fmt.Sprintf(`SELECT listed FROM tracker_cache_board_issues WHERE root_id = %d AND issue_id = '10004' AND board_id = '10'`, root), "1")
 	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10004", 5, "d")}, ReadAt: mirrorReadAt(62)}, nil)
 	assertRows(t, s.db, fmt.Sprintf(`SELECT read_at FROM tracker_cache_issues WHERE root_id = %d AND issue_id = '10004'`, root), "62")
@@ -345,7 +345,8 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		"listing marks": {mirrorReconcileMarkSQL, "SEARCH tracker_cache_board_issues USING PRIMARY KEY (root_id=? AND issue_id=? AND board_id=?)"},
 		"card read":     {mirrorCardReadSQL, "(root_id=? AND issue_id=?)\nLIST SUBQUERY"},
 		"card states":   {mirrorCardStatesSQL, "SEARCH i USING INDEX sqlite_autoindex_tracker_cache_issues_1 (root_id=? AND issue_id=?)"},
-		"ticket move":   {mirrorTicketMoveSQL, "(root_id=? AND issue_id=?)\nLIST SUBQUERY"},
+		"ticket move":   {mirrorTicketMoveSQL.full, "(root_id=? AND issue_id=?)\nLIST SUBQUERY"},
+		"ticket reads":  {mirrorTicketMoveSQL.reads, "(root_id=? AND issue_id=?)\nLIST SUBQUERY"},
 		"issue rows":    {mirrorIssueRowsSQL, "PRIMARY KEY (root_id=? AND issue_id=? AND board_id>?)"},
 		"keep rule":     {`SELECT ` + mirrorIssueKept("?1", "?2"), "PRIMARY KEY (root_id=? AND issue_id=?)"},
 		"backlog section": {mirrorSectionSQL[MirrorSectionBacklog],

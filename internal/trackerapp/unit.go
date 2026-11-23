@@ -98,8 +98,9 @@ var errEnded = errors.New("trackerapp: the connection's mirror ended")
 // with errEnded for a connection turned off or removed, ErrNoProvider for
 // a Tempo connection, ErrStopped after Stop, the context's error when ctx
 // has ended, and the error of the delete of an earlier process's open
-// tickets when that failed (dropEarlierTickets). The caller ends the run
-// with finish.
+// tickets when that failed (dropEarlierTickets). It first tries again the
+// drops of closed tickets that failed (payOwedDrops). The caller ends the
+// run with finish.
 func (s *Service) start(ctx context.Context, id string, u Urgency) (*run, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -111,6 +112,7 @@ func (s *Service) start(ctx context.Context, id string, u Urgency) (*run, error)
 		s.leave()
 		return nil, err
 	}
+	s.payOwedDrops("the next run tries it again")
 	r, err := s.hold(id)
 	if err != nil {
 		s.leave()
@@ -181,10 +183,11 @@ func (s *Service) hold(id string) (*run, error) {
 // (store DropMirrorTicketsOfOtherSessions), once per process: every run
 // passes it as it starts, and every bind of an open ticket is made in a
 // run (bindTickets), so the delete has completed before any row of this
-// process is written and never removes one. Concurrent first runs wait
-// for one delete. A delete that fails fails the run that tried it, which
-// is retried as a failure outside the tracker is, and the next run tries
-// it again.
+// process is written and never removes one. Every read of a view passes
+// it too (readRoot), so no view shows an issue that only an earlier
+// process's row keeps. Concurrent first runs wait for one delete. A delete
+// that fails fails the run or the read that tried it, which is retried as
+// a failure outside the tracker is, and the next one tries it again.
 func (s *Service) dropEarlierTickets() error {
 	s.earlier.Lock()
 	defer s.earlier.Unlock()

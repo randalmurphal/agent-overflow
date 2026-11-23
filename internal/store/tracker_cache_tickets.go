@@ -45,7 +45,10 @@ type MirrorBody struct {
 	ReadAt, Wall int64
 	OpenedAt     int64
 	Data         []byte
-	Card         MirrorCard
+	// digest is the body's digest as the record holds it, part of the
+	// identity ConfirmMirrorBody matches.
+	digest []byte
+	Card   MirrorCard
 	// row and sweep name the body for ConfirmMirrorBody: the root's sweep
 	// when it was read.
 	sweep int64
@@ -173,7 +176,7 @@ func readMirrorCardStatesTx(tx *sql.Tx, rootID int64, encoded string, n int, rea
 // Body is set (the version U, the digest D), the opening it records on
 // the body it holds or starts (O, an order time, zero for none), and its
 // status result (X, a mirrorStatusResult, zero for none, giving S, for
-// version V).
+// version V of a card in status T).
 type mirrorTicketMove struct {
 	ID      string `json:"i"`
 	Advance bool   `json:"a,omitempty"`
@@ -184,6 +187,7 @@ type mirrorTicketMove struct {
 	X       int    `json:"x"`
 	S       int64  `json:"s"`
 	V       int64  `json:"v"`
+	T       string `json:"t,omitempty"`
 }
 
 // mirrorTicketMoveSQL writes, for each kept ticket of the JSON list ?2 of
@@ -192,23 +196,38 @@ type mirrorTicketMove struct {
 // when it runs (after the card upsert), in one statement, each issue found
 // by key from the list, and returns each row it changed as it left it: a
 // row the move leaves as it was is not written (an identical read again).
-var mirrorTicketMoveSQL = func() string {
-	since, finalFor := mirrorStatusWriteSQL("(h.value ->> 'x')", "(h.value ->> 's')", "(h.value ->> 'v')")
+// A stored body's bookkeeping is the admitted body's own (bodyOutcome
+// admits only a body of a later (update time, read) pair than the held
+// one): its version, its read, its wall time and its digest.
+// mirrorTicketMoveSQL.full assigns too the body version and opening,
+// which idx_tracker_cache_issues_body_opened holds; SQLite rewrites an
+// index whose column a statement assigns, changed or not, so a write in
+// which neither changes for any ticket (an idle round) runs
+// mirrorTicketMoveSQL.reads, which leaves them and the index alone.
+var mirrorTicketMoveSQL = struct{ full, reads string }{mirrorTicketMoveOf(true), mirrorTicketMoveOf(false)}
+
+func mirrorTicketMoveOf(full bool) string {
+	since, finalFor := mirrorStatusWriteSQL("(h.value ->> 'x')", "(h.value ->> 's')", "(h.value ->> 'v')", "(h.value ->> 't')")
 	i := "tracker_cache_issues."
-	const columns = `(read_at, body_updated_at, body_read_at, body_wall, body_opened_at, body_digest, status_since, status_final_for)`
+	columns, versions := `(read_at, body_read_at, body_wall, body_digest, status_since, status_final_for`, ``
+	if full {
+		columns += `, body_updated_at, body_opened_at`
+		versions = `,
+	         iif(h.value ->> 'b', h.value ->> 'u', ` + i + `body_updated_at),
+	         iif(h.value ->> 'b' OR ` + i + `body_read_at > 0, max(` + i + `body_opened_at, h.value ->> 'o'), ` + i + `body_opened_at)`
+	}
+	columns += `)`
 	after := `(
 	  SELECT iif(h.value ->> 'a', max(` + i + `read_at, ?3), ` + i + `read_at),
-	         iif(h.value ->> 'b', h.value ->> 'u', ` + i + `body_updated_at),
-	         iif(h.value ->> 'b', max(` + i + `body_read_at, ?3), ` + i + `body_read_at),
-	         iif(h.value ->> 'b' AND ?3 >= ` + i + `body_read_at, ?4, ` + i + `body_wall),
-	         iif(h.value ->> 'b' OR ` + i + `body_read_at > 0, max(` + i + `body_opened_at, h.value ->> 'o'), ` + i + `body_opened_at),
+	         iif(h.value ->> 'b', ?3, ` + i + `body_read_at),
+	         iif(h.value ->> 'b', ?4, ` + i + `body_wall),
 	         iif(h.value ->> 'b', unhex(h.value ->> 'd'), ` + i + `body_digest),
-	         ` + since + `, ` + finalFor + `
+	         ` + since + `, ` + finalFor + versions + `
 	    FROM json_each(?2) h WHERE h.value ->> 'i' = ` + i + `issue_id)`
 	return `UPDATE tracker_cache_issues SET ` + columns + ` = ` + after + `
 	WHERE root_id = ?1 AND issue_id IN (SELECT value ->> 'i' FROM json_each(?2)) AND ` + columns + ` IS NOT ` + after + `
 	RETURNING ` + mirrorRecordAfterColumns
-}()
+}
 
 // mirrorBodyWriteSQL stores body ?3 of issue ?2, whose bookkeeping the
 // same transaction writes (mirrorTicketMoveSQL).
@@ -345,6 +364,9 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 			return err
 		}
 		moves := make([]mirrorTicketMove, 0, len(tickets))
+		// Whether a ticket moves the body version or the opening the record
+		// holds (mirrorTicketMoveSQL.full).
+		versions := false
 		var bodies []int
 		started := false
 		for i, t := range tickets {
@@ -365,12 +387,14 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 			if st.keepOpened > m.O {
 				m.O = st.keepOpened
 			}
+
 			if t.Body != nil {
 				var write, start bool
 				w.Body, write, start = st.bodyOutcome(t.Card.UpdatedAt, readAt, opening.at, digests[i])
 				m.Body = w.Body == MirrorBodyStored
 				if m.Body {
 					m.D = hex.EncodeToString(digests[i])
+					versions = versions || st.body.UpdatedAt != m.U
 				}
 				if write {
 					w.BodyChanged, started = true, started || start
@@ -380,10 +404,13 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 				// of, which a view of it shows (the body behind the record).
 				w.BodyChanged = w.BodyChanged || m.Body && st.body.UpdatedAt != t.Card.UpdatedAt
 			}
-			if t.Status != nil {
+			// A refused card's evidence is of a card the record does not
+			// hold: it gives no result.
+			versions = versions || m.O > st.bodyOpened && (m.Body || st.body.ReadAt > 0)
+			if t.Status != nil && !st.refused {
 				var r mirrorStatusResult
 				r, m.S = mirrorStatusSince(*t.Status)
-				m.X, m.V = int(r), t.Card.UpdatedAt
+				m.X, m.V, m.T = int(r), t.Card.UpdatedAt, t.Status.Status
 			}
 			moves = append(moves, m)
 		}
@@ -405,7 +432,11 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 				return err
 			}
 			after = map[string]mirrorRecordAfter{}
-			if _, err := scanMirrorRecordsAfter(tx, mirrorTicketMoveSQL, after, rootID, list, readAt, times.wall); err != nil {
+			query := mirrorTicketMoveSQL.reads
+			if versions {
+				query = mirrorTicketMoveSQL.full
+			}
+			if _, err := scanMirrorRecordsAfter(tx, query, after, rootID, list, readAt, times.wall); err != nil {
 				return fmt.Errorf("record the tickets' read: %w", err)
 			}
 			return nil
@@ -477,12 +508,12 @@ func (s *Store) GetMirrorBody(rootID int64, issueID string) (MirrorBody, bool, e
 	b := MirrorBody{IssueID: issueID}
 	var err error
 	b.Card, err = scanMirrorCard(s.reader().QueryRow(`SELECT `+mirrorCardColumns+`,
-		    r.sweep, i.body_updated_at, i.body_read_at, i.body_wall, i.body_opened_at, d.data
+		    r.sweep, i.body_updated_at, i.body_read_at, i.body_wall, i.body_opened_at, i.body_digest, d.data
 		FROM tracker_cache_issues i
 		JOIN tracker_cache_issue_bodies d ON d.root_id = i.root_id AND d.issue_id = i.issue_id
 		JOIN tracker_cache_roots r ON r.id = i.root_id
 		WHERE i.root_id = ?1 AND i.issue_id = ?2 AND i.body_read_at > 0 AND `+mirrorIssueKept("?1", "?2"),
-		rootID, issueID), &b.sweep, &b.UpdatedAt, &b.ReadAt, &b.Wall, &b.OpenedAt, &b.Data)
+		rootID, issueID), &b.sweep, &b.UpdatedAt, &b.ReadAt, &b.Wall, &b.OpenedAt, &b.digest, &b.Data)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MirrorBody{}, false, nil
 	}
@@ -494,7 +525,8 @@ func (s *Store) GetMirrorBody(rootID int64, issueID string) (MirrorBody, bool, e
 
 // ConfirmMirrorBody records a person's opening (only forward) of b, a body
 // GetMirrorBody read, when the record still holds it: the body of the same
-// read, of an issue the mirror keeps, with no sweep since b was read. It
+// identity (its version, read, wall time and digest), of an issue the
+// mirror keeps, with no sweep since b was read. It
 // reports the confirmation; unconfirmed, nothing is written and the caller
 // reads the body again rather than show b, which may predate a sweep. It
 // never adds or changes a body, so it drops none. One statement, and the
@@ -509,15 +541,17 @@ func (s *Store) ConfirmMirrorBody(rootID int64, b MirrorBody, opened MirrorRead)
 		return false, fmt.Errorf("%w: a confirmation needs a body GetMirrorBody read and the time it was opened", ErrInvalidTrackerCache)
 	}
 	action := fmt.Sprintf("store: confirm tracker mirror %d issue %s body", rootID, b.IssueID)
-	held := `root_id = ?1 AND issue_id = ?2 AND body_read_at = ?3 AND ` + mirrorIssueKept("?1", "?2")
+	held := `root_id = ?1 AND issue_id = ?2 AND body_read_at = ?3 AND body_updated_at = ?5 AND body_wall = ?6 AND body_digest = ?7 AND ` +
+		mirrorIssueKept("?1", "?2")
 	err = s.mirrorSweptWrite(rootID, b.sweep, action, func(tx *sql.Tx) error {
 		err := tx.QueryRow(`UPDATE tracker_cache_issues SET body_opened_at = ?4 WHERE `+held+` AND body_opened_at < ?4 RETURNING 1`,
-			rootID, b.IssueID, b.ReadAt, opening.at).Scan(&confirmed)
+			rootID, b.IssueID, b.ReadAt, opening.at, b.UpdatedAt, b.Wall, b.digest).Scan(&confirmed)
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		// Recorded already: an opening no later than the one held.
-		err = tx.QueryRow(`SELECT 1 FROM tracker_cache_issues WHERE `+held, rootID, b.IssueID, b.ReadAt).Scan(&confirmed)
+		err = tx.QueryRow(`SELECT 1 FROM tracker_cache_issues WHERE `+held, rootID, b.IssueID, b.ReadAt, opening.at, b.UpdatedAt, b.Wall,
+			b.digest).Scan(&confirmed)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}

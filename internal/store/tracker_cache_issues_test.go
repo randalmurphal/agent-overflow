@@ -91,7 +91,7 @@ func TestMirrorKeepsIssuesLinkedToOwnedThreads(t *testing.T) {
 		t.Fatalf("linked issues on a board = %v, %v, %v", linked, more, err)
 	}
 
-	if _, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, mirrorReadAt(5), 0); err != nil {
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10001", "10002", "10003", "10004"}, ReadAt: mirrorReadAt(5)})); err != nil {
 		t.Fatal(err)
 	}
 	if linked, more, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); err != nil || more || !reflect.DeepEqual(linked, []string{"10001"}) {

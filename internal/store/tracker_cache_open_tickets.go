@@ -21,48 +21,69 @@ import (
 
 // KeepMirrorTicket records that pump of session has issueID open in
 // rootID's mirror, bound at opened (a read begun on the root's clock for
-// the bind), which keeps the issue until DropMirrorTicket. A pump has one
-// row: keeping again moves it to rootID and issueID with the new bind,
-// and the same keep again writes nothing and keeps its first bind. One
-// statement, and one more when it wrote nothing, which tells the same
-// keep from a root that is gone or detached (ErrTrackerCacheGone).
-func (s *Store) KeepMirrorTicket(rootID int64, issueID string, session, pump int64, opened MirrorRead) error {
+// the bind), which keeps the issue until DropMirrorTicket, and reports
+// whether the keep made the issue's record shown again (shown): the
+// mirror holds a record of it that nothing kept, so no read served it (a
+// ticket closed and opened again before the cleanup removed the record).
+// A pump keeps one issue of one root: the same keep again writes nothing
+// and keeps its first bind, and a keep of another issue or root by a pump
+// that has a row fails (ErrInvalidTrackerCache). One transaction: the
+// probe of the issue's keep and the insert, and one more statement when
+// the insert wrote nothing, which tells the same keep from another and
+// from a root that is gone or detached (ErrTrackerCacheGone).
+func (s *Store) KeepMirrorTicket(rootID int64, issueID string, session, pump int64, opened MirrorRead) (shown bool, err error) {
 	if issueID == "" || pump <= 0 {
-		return fmt.Errorf("%w: an open ticket names its issue and its pump", ErrInvalidTrackerCache)
+		return false, fmt.Errorf("%w: an open ticket names its issue and its pump", ErrInvalidTrackerCache)
 	}
 	bind, err := opened.in(rootID)
 	if err != nil {
-		return err
+		return false, err
 	}
-	kept, err := execChangedTx(s.db, `INSERT INTO tracker_cache_open_tickets(root_id, issue_id, session, pump, opened_at)
+	action := fmt.Sprintf("store: keep the open ticket %s of tracker mirror %d", issueID, rootID)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer rollbackTx(tx, action, &err)
+	var hidden bool
+	if err = tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM tracker_cache_issues WHERE root_id = ?1 AND issue_id = ?2) AND NOT `+
+		mirrorIssueKept("?1", "?2"), rootID, issueID).Scan(&hidden); err != nil {
+		return false, fmt.Errorf("%s: read the keep of the issue: %w", action, err)
+	}
+	kept, err := execChangedTx(tx, `INSERT INTO tracker_cache_open_tickets(root_id, issue_id, session, pump, opened_at)
 		SELECT id, ?2, ?3, ?4, ?5 FROM tracker_cache_roots WHERE id = ?1 AND connection_id IS NOT NULL
-		ON CONFLICT(session, pump) DO UPDATE SET root_id = excluded.root_id, issue_id = excluded.issue_id, opened_at = excluded.opened_at
-		 WHERE root_id IS NOT excluded.root_id OR issue_id IS NOT excluded.issue_id
+		ON CONFLICT(session, pump) DO NOTHING
 		RETURNING pump`, rootID, issueID, session, pump, bind.at)
 	if err != nil {
-		return fmt.Errorf("store: keep the open ticket %s of tracker mirror %d: %w", issueID, rootID, err)
+		return false, fmt.Errorf("%s: %w", action, err)
 	}
-	if kept {
-		return nil
+	if !kept {
+		var same, other bool
+		err = tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM tracker_cache_open_tickets o JOIN tracker_cache_roots r ON r.id = o.root_id
+			  WHERE o.session = ?3 AND o.pump = ?4 AND o.root_id = ?1 AND o.issue_id = ?2 AND r.connection_id IS NOT NULL),
+			EXISTS (SELECT 1 FROM tracker_cache_open_tickets WHERE session = ?3 AND pump = ?4 AND (root_id <> ?1 OR issue_id <> ?2))`,
+			rootID, issueID, session, pump).Scan(&same, &other)
+		switch {
+		case err != nil:
+			return false, fmt.Errorf("%s: %w", action, err)
+		case other:
+			return false, fmt.Errorf("%w: pump %d of session %d keeps another open ticket", ErrInvalidTrackerCache, pump, session)
+		case !same:
+			return false, fmt.Errorf("store: keep the open ticket %s: root %d: %w", issueID, rootID, ErrTrackerCacheGone)
+		}
 	}
-	var same bool
-	err = s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM tracker_cache_open_tickets o JOIN tracker_cache_roots r ON r.id = o.root_id
-		WHERE o.session = ?3 AND o.pump = ?4 AND o.root_id = ?1 AND o.issue_id = ?2 AND r.connection_id IS NOT NULL)`,
-		rootID, issueID, session, pump).Scan(&same)
-	switch {
-	case err != nil:
-		return fmt.Errorf("store: keep the open ticket %s of tracker mirror %d: %w", issueID, rootID, err)
-	case !same:
-		return fmt.Errorf("store: keep the open ticket %s: root %d: %w", issueID, rootID, ErrTrackerCacheGone)
+	if err = tx.Commit(); err != nil {
+		return false, fmt.Errorf("%s: commit: %w", action, err)
 	}
-	return nil
+	return kept && hidden, nil
 }
 
 // DropMirrorTicket deletes the row of pump of session, if any, and reports
 // whether the mirror keeps its issue no longer (unkept), as the same
 // transaction leaves it: a ticket that shows the issue as another's parent
-// or link then shows it without its card. Two statements when a row was
-// deleted, one when none was.
+// or link then shows it without its card, until a keep shows it again
+// (KeepMirrorTicket). Two statements when a row was deleted, one when none
+// was.
 func (s *Store) DropMirrorTicket(session, pump int64) (unkept bool, err error) {
 	action := fmt.Sprintf("store: drop the open ticket of pump %d", pump)
 	tx, err := s.db.Begin()

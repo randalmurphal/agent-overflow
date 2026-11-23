@@ -83,7 +83,11 @@ func heldView(t *testing.T, s *Service, tp *ticketPump) (bool, uint64) {
 		return false, 0
 	}
 	row := must[store.TrackerConnection](t)(s.viewRow(tp.key.connection))
-	return modelView(s, TicketView{Loaded: true, Detail: new(must[DetailView](t)(s.detailView(root, row, d)))})
+	v, _, err := s.detailView(root, row, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return modelView(s, TicketView{Loaded: true, Detail: &v})
 }
 
 func subscriptionModel(t *testing.T, r *rand.Rand) {

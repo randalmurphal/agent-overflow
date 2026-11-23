@@ -149,6 +149,7 @@ type mirrorHistoryRow struct {
 	BoardsRev int64  `json:"b"`
 	Status    int    `json:"x"`
 	Since     int64  `json:"s"`
+	Of        string `json:"t"`
 	Changes   bool   `json:"c,omitempty"`
 }
 
@@ -220,7 +221,7 @@ var (
 // updated, the status time and its finality their result gives its card,
 // and then extra.
 func mirrorHistoryTimesOf(extra string) string {
-	since, finalFor := mirrorStatusWriteSQL("(h.value ->> 'x')", "(h.value ->> 's')", "(h.value ->> 'v')")
+	since, finalFor := mirrorStatusWriteSQL("(h.value ->> 'x')", "(h.value ->> 's')", "(h.value ->> 'v')", "(h.value ->> 't')")
 	return `SELECT h.value ->> 'f', h.value ->> 'v', h.value ->> 'a', h.value ->> 'w', h.value ->> 'b', ` + since + `, ` + finalFor +
 		extra + ` FROM json_each(?2) h WHERE h.value ->> 'i' = tracker_cache_issues.issue_id`
 }

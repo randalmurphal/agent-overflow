@@ -83,7 +83,8 @@ func askerErr(rd *ticketRead, failure *Failure, readErr error) error {
 // The inputs are those detailView reads: the record's card of the issue
 // (with its status time), the cards of the issues it shows (its parent
 // and the issues it links) and whether the mirror keeps them (a row
-// stored or removed, a ticket's keep ended), the connection's users and
+// stored or removed, a ticket's keep ended or begun again), the
+// connection's users and
 // statuses, and the mirror's body (another read stored it, or the cap
 // dropped it, or the issue stopped or started being kept). origin reports
 // that ch is a write of the read of the ticket itself, which settles its
@@ -94,8 +95,8 @@ func ticketInputs(tp *ticketPump, ch Changes, origin bool) (read, rebuild bool) 
 		return slices.ContainsFunc(tp.shows, func(id tracker.IssueID) bool { return slices.Contains(ids, id) })
 	}
 	read = !origin && own(ch.Cards) && !own(ch.Details)
-	rebuild = ch.Catalog || own(ch.Cards) || own(ch.History) || own(ch.Rows) || own(ch.Removed) || own(ch.Dropped) || own(ch.Unkept) ||
-		!origin && own(ch.Details) || shown(ch.Cards) || shown(ch.Rows) || shown(ch.Removed) || shown(ch.Unkept)
+	rebuild = ch.Catalog || own(ch.Cards) || own(ch.History) || own(ch.Rows) || own(ch.Removed) || own(ch.Dropped) || own(ch.Visibility) ||
+		!origin && own(ch.Details) || shown(ch.Cards) || shown(ch.Rows) || shown(ch.Removed) || shown(ch.Visibility)
 	return read, rebuild
 }
 
@@ -373,7 +374,7 @@ func (s *Service) rebuildTicket(tp *ticketPump) {
 		return
 	}
 	at := millis(s.now())
-	v, d, mirrored, ok, err := s.rebuiltView(tp.key, held, readAt)
+	v, shows, mirrored, ok, err := s.rebuiltView(tp.key, held, readAt)
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	switch {
@@ -401,7 +402,7 @@ func (s *Service) rebuildTicket(tp *ticketPump) {
 			tp.docs++
 			wall = mirrored.wall
 		}
-		tp.shows = showsOf(d.d)
+		tp.shows = shows
 		s.installViewLocked(tp, &v, s.digestOf(v), wall, b)
 	}
 	s.flushTicketLocked(tp, false)
@@ -412,31 +413,32 @@ func (s *Service) rebuildTicket(tp *ticketPump) {
 // nil for none) and the mirror's body, which another read may have stored
 // beside the pump's. mirrored is the mirror's body's check when the view
 // is built from it. ok is false when neither holds a document.
-func (s *Service) rebuiltView(key ticketKey, held *ticketDoc, heldAt int64) (v DetailView, d ticketDoc, mirrored detailCheck, ok bool, err error) {
+func (s *Service) rebuiltView(key ticketKey, held *ticketDoc, heldAt int64) (v DetailView, shows []tracker.IssueID, mirrored detailCheck, ok bool, err error) {
 	root, err := s.readRoot(key.connection)
 	if errors.Is(err, ErrNotMirrored) {
-		return DetailView{}, ticketDoc{}, detailCheck{}, false, nil
+		return DetailView{}, nil, detailCheck{}, false, nil
 	}
 	if err != nil {
-		return DetailView{}, ticketDoc{}, detailCheck{}, false, err
+		return DetailView{}, nil, detailCheck{}, false, err
 	}
 	defer s.leave()
 	row, err := s.viewRow(key.connection)
 	if err != nil {
-		return DetailView{}, ticketDoc{}, detailCheck{}, false, err
+		return DetailView{}, nil, detailCheck{}, false, err
 	}
+	var d ticketDoc
 	b, stored, isStored, err := s.storedDetail(root, key.issue)
 	switch {
 	case err != nil:
-		return DetailView{}, ticketDoc{}, detailCheck{}, false, err
+		return DetailView{}, nil, detailCheck{}, false, err
 	case isStored && (held == nil || b.ReadAt > heldAt):
 		d = stored
 		mirrored = detailCheck{readAt: b.ReadAt, wall: b.Wall, updated: b.UpdatedAt, doc: maphash.Bytes(s.digestSeed, b.Data)}
 	case held != nil:
 		d = *held
 	default:
-		return DetailView{}, ticketDoc{}, detailCheck{}, false, nil
+		return DetailView{}, nil, detailCheck{}, false, nil
 	}
-	v, err = s.detailView(root, row, d)
-	return v, d, mirrored, err == nil, err
+	v, shows, err = s.detailView(root, row, d)
+	return v, shows, mirrored, err == nil, err
 }

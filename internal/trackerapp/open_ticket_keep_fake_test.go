@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -333,7 +335,7 @@ func (s *fakeScenario) earlierRows(t *testing.T, conn Connection, issue tracker.
 	}
 	read := must[store.MirrorRead](t)(s.st.BeginMirrorRead(root, 1))
 	for i := range n {
-		if err := s.st.KeepMirrorTicket(root, string(issue), s.svc.session+1, int64(i+1), read); err != nil {
+		if _, err := s.st.KeepMirrorTicket(root, string(issue), s.svc.session+1, int64(i+1), read); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -397,22 +399,21 @@ func TestTheFirstRunDeletesTheOpenTicketsAnEarlierProcessLeft(t *testing.T) {
 	}
 }
 
-// A delete of the earlier rows that fails fails the run that tried it: the
-// ticket shows a failure that its next read retries, and that read
-// deletes them and binds the ticket.
+// A delete of the earlier rows that fails fails what tried it, a view
+// read or a run: an opening, whose answer reads the mirror's copy, fails
+// with it, and the next try deletes them and binds the ticket; a run
+// whose delete fails is the ticket's failure, which its next read
+// retries.
 func TestAFailedDeleteOfTheEarlierRowsIsRetried(t *testing.T) {
 	t.Parallel()
 	s, conn, _ := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour, RetryBase: time.Hour})
 	s.earlierRows(t, conn, "10105", 1)
 	drops := &earlierDrops{Store: s.st, fail: 1}
 	s.svc.store = drops
+	if _, err := s.svc.SubscribeTicket(conn.ID, "10105"); err == nil || !strings.Contains(err.Error(), "the store refused the delete") {
+		t.Fatalf("an opening whose delete failed: %v; want the delete's failure", err)
+	}
 	sub := s.openTicket(t, conn, "10105")
-	if v := must[TicketView](t)(s.svc.TicketDetail(sub.ID)); v.Failure == nil || v.Failure.Kind != string(FailureInternal) {
-		t.Fatalf("the ticket whose first run failed its delete shows %+v; want the failure that it tries again", v)
-	}
-	if err := s.svc.RefreshSubscription(t.Context(), sub.ID); err != nil {
-		t.Fatal(err)
-	}
 	if v := must[TicketView](t)(s.svc.TicketDetail(sub.ID)); v.Failure != nil || !v.Loaded {
 		t.Fatalf("after the retry the ticket shows %+v", v)
 	}
@@ -533,5 +534,207 @@ func TestARoundReadsHistoryOnlyForATicketWithoutItsStatusTime(t *testing.T) {
 	s.openTicket(t, conn, "10105")
 	if res := s.svc.roundTick(rd); !res.historyDue || !res.historyWanted {
 		t.Fatalf("a round with a ticket read inside the margin: history due %v, wanted %v; want both", res.historyDue, res.historyWanted)
+	}
+}
+
+// childShowsParentKey waits until the open child's ticket shows its
+// parent 10104 with key, after the events told before.
+func (s *fakeScenario) childShowsParentKey(t *testing.T, child TicketSubscription, told int, key string) {
+	t.Helper()
+	s.events.waitFor(t, "the child's change", func(_ []BoardEvent, i []IssueEvent, _ []error) bool {
+		return slices.ContainsFunc(i[told:], func(e IssueEvent) bool { return e.Issue == "10101" && e.Changed })
+	})
+	if v := must[TicketView](t)(s.svc.TicketDetail(child.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || v.Detail.Card.Parent.Key != key {
+		t.Fatalf("the child shows its parent %+v; want the key %q", v.Detail, key)
+	}
+}
+
+// Closing the ticket of a parent no board keeps and opening it again
+// before the cleanup removed its record: the reopening's keep shows the
+// record again with no write of it (its read finds the card it holds), and
+// the open child's ticket, which showed the parent without its key after
+// the close, is told and shows the key again.
+func TestReopeningAParentsTicketRebuildsItsOpenChild(t *testing.T) {
+	t.Parallel()
+	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
+	s.syncBoard(t, scope)
+	child := s.openTicket(t, conn, "10101")
+	parent := s.openTicket(t, conn, "10104")
+	quiet(t, s.svc)
+	_, told, _ := s.events.snapshot()
+	s.closeTicket(t, conn, parent, "10104")
+	quiet(t, s.svc)
+	s.childShowsParentKey(t, child, len(told), "")
+	_, told, _ = s.events.snapshot()
+	s.openTicket(t, conn, "10104")
+	quiet(t, s.svc)
+	s.childShowsParentKey(t, child, len(told), "WEB-4")
+}
+
+// dropsRefused is a store whose first refuse drops of an open ticket fail.
+type dropsRefused struct {
+	*store.Store
+	mu     sync.Mutex
+	refuse int
+	calls  int
+}
+
+func (d *dropsRefused) DropMirrorTicket(session, pump int64) (bool, error) {
+	d.mu.Lock()
+	d.calls++
+	refused := d.calls <= d.refuse
+	d.mu.Unlock()
+	if refused {
+		return false, errors.New("test: the store refused the drop")
+	}
+	return d.Store.DropMirrorTicket(session, pump)
+}
+
+func (d *dropsRefused) count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls
+}
+
+// A close whose drop fails stays owed: the store keeps the parent, so the
+// open child still shows its key and nothing is told; the next run tries
+// the drop again, and once it commits the child is told and shows the
+// parent without the key, and the parent's row is gone.
+func TestAFailedDropOfAClosedTicketIsRetried(t *testing.T) {
+	t.Parallel()
+	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
+	s.syncBoard(t, scope)
+	child := s.openTicket(t, conn, "10101")
+	parent := s.openTicket(t, conn, "10104")
+	quiet(t, s.svc)
+	drops := &dropsRefused{Store: s.st, refuse: 1}
+	s.svc.store = drops
+	s.closeTicket(t, conn, parent, "10104")
+	quiet(t, s.svc)
+	if card, _ := s.kept(t, conn, "10104"); !card {
+		t.Fatal("the mirror stopped keeping the parent while its drop failed")
+	}
+	if v := must[TicketView](t)(s.svc.TicketDetail(child.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || v.Detail.Card.Parent.Key != "WEB-4" {
+		t.Fatalf("while the drop is owed the child shows its parent %+v; want WEB-4", v.Detail)
+	}
+	_, told, _ := s.events.snapshot()
+	s.syncBoard(t, scope)
+	quiet(t, s.svc)
+	s.childShowsParentKey(t, child, len(told), "")
+	if n := drops.count(); n != 2 {
+		t.Fatalf("the drop ran %d times; want the failure and the retry", n)
+	}
+	if card, _ := s.kept(t, conn, "10104"); card {
+		t.Fatal("after the retried drop the mirror keeps the parent")
+	}
+	if n := s.openTicketRows(t); n != 1 {
+		t.Fatalf("%d open-ticket rows; want the child's", n)
+	}
+}
+
+// A view read before this process's first run, with a row an earlier
+// process left keeping an issue no board keeps: the read deletes the
+// earlier rows first, so it does not show the issue, and no earlier row
+// remains.
+func TestAViewReadAtStartDoesNotShowAnIssueOnlyAnEarlierProcessKept(t *testing.T) {
+	t.Parallel()
+	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
+	s.syncBoard(t, scope)
+	sub := s.openTicket(t, conn, "10105")
+	s.closeTicket(t, conn, sub, "10105")
+	s.earlierRows(t, conn, "10105", 1)
+	// This process as at its start: no run has deleted the earlier rows.
+	s.svc.earlier.Lock()
+	s.svc.earlier.done = false
+	s.svc.earlier.Unlock()
+	if _, err := s.svc.Issue(conn.ID, "10105"); !errors.Is(err, ErrNotMirrored) {
+		t.Fatalf("a view read at start of an issue only an earlier process kept: %v; want ErrNotMirrored", err)
+	}
+	if n := must[int64](t)(s.st.DropMirrorTicketsOfOtherSessions(s.svc.session)); n != 0 {
+		t.Fatalf("%d rows of the earlier process after the view read", n)
+	}
+}
+
+// beginsGated is a store whose next BeginMirrorRead made by a bind of open
+// tickets (bindTickets), once armed, waits for release.
+type beginsGated struct {
+	*keepsMade
+	mu      sync.Mutex
+	armed   bool
+	arrived chan struct{}
+	release chan struct{}
+}
+
+func (g *beginsGated) BeginMirrorRead(root, now int64) (store.MirrorRead, error) {
+	g.mu.Lock()
+	hold := g.armed && strings.Contains(string(debug.Stack()), "bindTickets")
+	if hold {
+		g.armed = false
+	}
+	g.mu.Unlock()
+	if hold {
+		close(g.arrived)
+		<-g.release
+	}
+	return g.keepsMade.BeginMirrorRead(root, now)
+}
+
+// A round that took the read of an open ticket whose bind failed, and
+// binds it after the ticket closed and opened again: the closed pump is
+// dropped under opMu before the round's bind takes opMu and finds it
+// dropped, so the old pump writes no keep: closing the new pump, whose
+// keep is the issue's one row, leaves none.
+func TestAClosedPumpsKeepDoesNotOutliveAReopening(t *testing.T) {
+	t.Parallel()
+	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour, RetryBase: time.Hour})
+	s.syncBoard(t, scope)
+	gate := &beginsGated{keepsMade: &keepsMade{Store: s.st, refuse: "10105"}, arrived: make(chan struct{}), release: make(chan struct{})}
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(gate.release) }) })
+	s.svc.store = gate
+	old := s.openTicket(t, conn, "10105")
+	if v := must[TicketView](t)(s.svc.TicketDetail(old.ID)); v.Failure == nil {
+		t.Fatalf("the ticket whose keep failed shows %+v; want its failure", v)
+	}
+	oldPump := s.svc.ticketPumpOf(conn.ID, "10105")
+	// The round reads the ticket its retry is due for, and binds it first.
+	s.svc.subMu.Lock()
+	oldPump.due = s.svc.now()
+	s.svc.subMu.Unlock()
+	gate.mu.Lock()
+	gate.armed = true
+	gate.mu.Unlock()
+	rd := s.svc.roundOf(conn.ID)
+	if rd == nil {
+		t.Fatal("no ticket round runs")
+	}
+	done := make(chan ticketsResult, 1)
+	go func() { done <- s.svc.roundTick(rd) }()
+	waitClosed(t, "the round's bind", gate.arrived)
+	s.closeTicket(t, conn, old, "10105")
+	reopened := s.openTicket(t, conn, "10105")
+	once.Do(func() { close(gate.release) })
+	<-done
+	quiet(t, s.svc)
+	s.closeTicket(t, conn, reopened, "10105")
+	if n := s.openTicketRows(t); n != 0 {
+		t.Fatalf("%d open-ticket rows after the reopened ticket closed", n)
+	}
+}
+
+// Stop makes a last try of a drop that failed as it ended the ticket's
+// pump: after Stop no open-ticket row remains.
+func TestStopMakesALastTryOfAFailedDrop(t *testing.T) {
+	t.Parallel()
+	s, conn, _ := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
+	s.openTicket(t, conn, "10105")
+	drops := &dropsRefused{Store: s.st, refuse: 1}
+	s.svc.store = drops
+	s.svc.Stop()
+	if n := drops.count(); n != 2 {
+		t.Fatalf("the drop ran %d times; want the failure and the last try", n)
+	}
+	if n := s.openTicketRows(t); n != 0 {
+		t.Fatalf("%d open-ticket rows after Stop", n)
 	}
 }

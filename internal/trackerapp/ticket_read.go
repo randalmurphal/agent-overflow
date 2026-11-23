@@ -159,18 +159,19 @@ func (s *Service) ticketViews(root int64, row store.TrackerConnection, reads []*
 	if len(docs) == 0 {
 		return
 	}
-	views, err := s.detailViews(root, row, docs)
+	views, shows, err := s.detailViews(root, row, docs)
 	for i, rd := range built {
 		if err != nil {
 			rd.err = fmt.Errorf("trackerapp: build the view of %s: %w", rd.issue, err)
 			continue
 		}
-		rd.view, rd.digest, rd.shows = &views[i], s.digestOf(views[i]), showsOf(docs[i].d)
+		rd.view, rd.digest, rd.shows = &views[i], s.digestOf(views[i]), shows[i]
 	}
 }
 
 // showsOf are the other issues d's view shows from the mirror's cards:
-// its parent and the issues it links.
+// its parent and the issues it links, d's card being the card the view
+// rendered (detailViews).
 func showsOf(d tracker.Detail) []tracker.IssueID {
 	var out []tracker.IssueID
 	if d.Card.Parent != "" {

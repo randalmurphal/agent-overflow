@@ -178,7 +178,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"ReconcileMirrorBoard": func(root int64) error {
-			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"10001"}, true, mirrorReadOf(root, 1), 0)
+			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"10001"}, true, mirrorReadOf(root, 1))
 			return err
 		},
 		"ReplaceMirrorHistories": func(root int64) error {
@@ -232,7 +232,10 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			_, err := s.RecordMirrorSyncAttempt(root, "11", currentAttempt(s, root, "11", MirrorSyncAttempt{ReadAt: mirrorReadOf(root, 8), Failure: MirrorAttemptFailure{At: mirrorReadOf(root, 9), Kind: MirrorFailureTransient, Message: "timed out"}}))
 			return err
 		},
-		"KeepMirrorTicket": func(root int64) error { return s.KeepMirrorTicket(root, "10001", 2, 1, mirrorReadOf(root, 9)) },
+		"KeepMirrorTicket": func(root int64) error {
+			_, err := s.KeepMirrorTicket(root, "10001", 2, 1, mirrorReadOf(root, 9))
+			return err
+		},
 	}
 }
 

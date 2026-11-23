@@ -365,8 +365,8 @@ func (m *mirrorFixture) refuseKeeps() {
 // next read retries (bindTickets).
 type keepRefused struct{ *store.Store }
 
-func (keepRefused) KeepMirrorTicket(int64, string, int64, int64, store.MirrorRead) error {
-	return errors.New("test: the store refused the keep")
+func (keepRefused) KeepMirrorTicket(int64, string, int64, int64, store.MirrorRead) (bool, error) {
+	return false, errors.New("test: the store refused the keep")
 }
 
 // keepsMade records the issues of the open tickets the store kept, and
@@ -379,21 +379,22 @@ type keepsMade struct {
 	issues  []string
 }
 
-func (k *keepsMade) KeepMirrorTicket(root int64, issue string, session, pump int64, opened store.MirrorRead) error {
+func (k *keepsMade) KeepMirrorTicket(root int64, issue string, session, pump int64, opened store.MirrorRead) (bool, error) {
 	k.mu.Lock()
 	refuse := issue == k.refuse && !k.refused
 	k.refused = k.refused || refuse
 	k.mu.Unlock()
 	if refuse {
-		return errors.New("test: the store refused the keep")
+		return false, errors.New("test: the store refused the keep")
 	}
-	if err := k.Store.KeepMirrorTicket(root, issue, session, pump, opened); err != nil {
-		return err
+	shown, err := k.Store.KeepMirrorTicket(root, issue, session, pump, opened)
+	if err != nil {
+		return false, err
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.issues = append(k.issues, issue)
-	return nil
+	return shown, nil
 }
 
 // since is the issues kept since the last call, sorted.
@@ -417,7 +418,9 @@ func (m *mirrorFixture) loseKeeps() {
 // and its pump holds the content it shows.
 type keepsLost struct{ *store.Store }
 
-func (keepsLost) KeepMirrorTicket(int64, string, int64, int64, store.MirrorRead) error { return nil }
+func (keepsLost) KeepMirrorTicket(int64, string, int64, int64, store.MirrorRead) (bool, error) {
+	return false, nil
+}
 
 // testBoards are the boards a mirror fixture's connection lists.
 var testBoards = []tracker.BoardID{testBoard, "2", "7", "9"}

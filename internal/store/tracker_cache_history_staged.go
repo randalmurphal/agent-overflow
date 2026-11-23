@@ -40,10 +40,10 @@ var (
 	// mirrorHistorySwitchSQL makes generation ?3, complete from ?4, read
 	// for update time ?5 and boards revision ?6, answered at ?7 with a wait
 	// of ?8, the issue's history, with the status result ?10 giving ?11 it
-	// gives the card (mirrorStatusWriteSQL), when the issue's receipt is
-	// still ?9, and advances the receipt.
+	// gives the card in status ?12 (mirrorStatusWriteSQL), when the issue's
+	// receipt is still ?9, and advances the receipt.
 	mirrorHistorySwitchSQL = func() string {
-		since, finalFor := mirrorStatusWriteSQL("?10", "?11", "?5")
+		since, finalFor := mirrorStatusWriteSQL("?10", "?11", "?5", "?12")
 		return `UPDATE tracker_cache_issues SET history_gen = ?3, history_from = ?4, history_for = ?5, history_boards_rev = ?6,
 		history_answered_at = ?7, history_wait = ?8, history_receipt = ?9 + 1, status_since = ` + since + `, status_final_for = ` + finalFor + `
 		WHERE root_id = ?1 AND issue_id = ?2 AND history_receipt = ?9`
@@ -305,7 +305,7 @@ func (s *Store) stageMirrorHistory(rootID int64, in mirrorHistoryInput, st mirro
 	}
 	err := s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
 		res, err := tx.Exec(mirrorHistorySwitchSQL, rootID, in.h.IssueID, next, in.h.CompleteFrom, in.h.For, in.h.BoardsRev,
-			in.h.AnsweredAt, in.h.Wait, in.h.Receipt, int(status), since)
+			in.h.AnsweredAt, in.h.Wait, in.h.Receipt, int(status), since, st.status)
 		if err != nil {
 			return fmt.Errorf("make the staged history the issue's: %w", err)
 		}

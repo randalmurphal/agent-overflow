@@ -378,7 +378,10 @@ func (s *Service) endTicketLocked(tp *ticketPump) {
 // ticket's failure, answered without a read of it, which the retry
 // schedule reads, and binds, again. A pump whose bind failed shows its
 // failure until a bind succeeds; so a ticket whose content the mirror does
-// not keep is one of an issue it does not keep, never one it failed to.
+// not keep is one of an issue it does not keep, never one it failed to. A
+// bind that shows a held record again (a ticket closed and opened again
+// before the cleanup) is published as its keep commits
+// (Changes.Visibility), before the read of the tickets begins.
 func (r *run) bindTickets(reads []*ticketRead) error {
 	s := r.s
 	unbound := func(rd *ticketRead) bool {
@@ -394,50 +397,93 @@ func (r *run) bindTickets(reads []*ticketRead) error {
 	if err != nil {
 		return err
 	}
+	var shown []tracker.IssueID
 	s.opMu.Lock()
-	defer s.opMu.Unlock()
 	for _, rd := range reads {
 		if !unbound(rd) {
 			continue
 		}
-		if err := s.keepTicketLocked(rd.tp, r.root, opened); err != nil {
+		again, err := s.keepTicketLocked(rd.tp, r.root, opened)
+		switch {
+		case err != nil:
 			rd.err, rd.answered = fmt.Errorf("trackerapp: keep the open ticket %s of connection %s: %w", rd.issue, r.row.ID, err), true
+		case again:
+			shown = append(shown, rd.issue)
 		}
+	}
+	s.opMu.Unlock()
+	if len(shown) > 0 {
+		slices.Sort(shown)
+		s.publish(r.root, r.gen, r.row.ID, Changes{Visibility: shown}, nil, nil)
 	}
 	return nil
 }
 
 // keepTicketLocked writes tp's keep under root, bound at opened (store
-// KeepMirrorTicket). The caller holds opMu.
-func (s *Service) keepTicketLocked(tp *ticketPump, root int64, opened store.MirrorRead) error {
-	if err := s.store.KeepMirrorTicket(root, string(tp.key.issue), s.session, tp.number, opened); err != nil {
-		return err
+// KeepMirrorTicket), and reports whether it showed the issue's held record
+// again. The caller holds opMu.
+func (s *Service) keepTicketLocked(tp *ticketPump, root int64, opened store.MirrorRead) (bool, error) {
+	shown, err := s.store.KeepMirrorTicket(root, string(tp.key.issue), s.session, tp.number, opened)
+	if err != nil {
+		return false, err
 	}
 	tp.bound, tp.root = true, root
-	return nil
+	return shown, nil
 }
 
-// dropTicket ends tp's keep (store DropMirrorTicket) as its goroutine
-// returns, and no bind follows it. When the issue is kept no longer, the
-// change reaches every subscription that shows it as another's parent or
-// link (Changes.Unkept). A drop that fails is logged; the next process
+// owedDrop is the keep of an ended pump whose drop has not committed: the
+// store keeps the issue until it does.
+type owedDrop struct {
+	key    ticketKey
+	number int64
+	root   int64
+	gen    uint64
+}
+
+// dropTicket ends tp's keep as its goroutine returns, and no bind follows
+// it (dropKeep). A drop that fails stays owed: the next run retries it
+// (payOwedDrops), and Stop makes a last try, after which the next process
 // drops the row (dropEarlierTickets).
 func (s *Service) dropTicket(tp *ticketPump) {
 	s.opMu.Lock()
 	tp.dropped = true
-	bound, root := tp.bound, tp.root
+	bound := tp.bound
 	tp.bound = false
-	var unkept bool
-	var err error
+	s.opMu.Unlock()
 	if bound {
-		unkept, err = s.store.DropMirrorTicket(s.session, tp.number)
+		s.dropKeep(owedDrop{key: tp.key, number: tp.number, root: tp.root, gen: tp.gen}, "the next run tries it again")
+	}
+}
+
+// dropKeep deletes d's keep (store DropMirrorTicket) under opMu, the lock
+// of every write of the row. When the issue is kept no longer, the change
+// reaches every subscription that shows it as another's parent or link
+// (Changes.Visibility). A drop that fails is logged with retry, what
+// follows it, and owed until a later try commits.
+func (s *Service) dropKeep(d owedDrop, retry string) {
+	s.opMu.Lock()
+	unkept, err := s.store.DropMirrorTicket(s.session, d.number)
+	if err != nil {
+		s.owedDrops = append(s.owedDrops, d)
 	}
 	s.opMu.Unlock()
 	switch {
 	case err != nil:
-		s.logf("trackerapp: drop the open ticket %s of connection %s: %v; the next process drops it", tp.key.issue, tp.key.connection, err)
+		s.logf("trackerapp: drop the open ticket %s of connection %s: %v; %s", d.key.issue, d.key.connection, err, retry)
 	case unkept:
-		s.publish(root, tp.gen, tp.key.connection, Changes{Unkept: []tracker.IssueID{tp.key.issue}}, nil, nil)
+		s.publish(d.root, d.gen, d.key.connection, Changes{Visibility: []tracker.IssueID{d.key.issue}}, nil, nil)
+	}
+}
+
+// payOwedDrops tries again every drop owed (dropKeep), retry naming what
+// follows one that fails again.
+func (s *Service) payOwedDrops(retry string) {
+	s.opMu.Lock()
+	owed := s.owedDrops
+	s.owedDrops = nil
+	s.opMu.Unlock()
+	for _, d := range owed {
+		s.dropKeep(d, retry)
 	}
 }
 
@@ -470,7 +516,8 @@ func (s *Service) keepTicketsAgainLocked(id string, gen uint64, root int64) {
 		return
 	}
 	for _, tp := range live {
-		if err := s.keepTicketLocked(tp, root, opened); err != nil {
+		// A root made now holds no record, so no keep shows one again.
+		if _, err := s.keepTicketLocked(tp, root, opened); err != nil {
 			s.logf("trackerapp: keep the open ticket %s of connection %s again after its mirror was emptied: %v; its next read binds it", tp.key.issue, id, err)
 		}
 	}

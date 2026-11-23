@@ -44,14 +44,19 @@ const (
 // no more than the settle margin before the version's update time, which
 // bounds the error by the margin (the true time is no later than the
 // update), and otherwise unknown: an older change may be a stay the issue
-// left and came back from since. The store writes a result only for the
-// version it was read for (mirrorStatusWriteSQL).
+// left and came back from since. Evidence of a change after the version
+// is of a later version, and gives no result. The store writes a result
+// only to a record of the version and status it was read for
+// (mirrorStatusWriteSQL).
 func MirrorStatusSince(e MirrorStatusEvidence) (since int64, final bool) {
 	r, since := mirrorStatusSince(e)
 	return since, r == mirrorStatusFinal
 }
 
 func mirrorStatusSince(e MirrorStatusEvidence) (mirrorStatusResult, int64) {
+	if e.LatestTo != "" && e.LatestAt > e.UpdatedAt {
+		return 0, 0
+	}
 	if !e.Final {
 		if e.LatestTo != "" && e.LatestTo == e.Status && e.LatestAt >= e.UpdatedAt-e.Settle {
 			return mirrorStatusProvisional, e.LatestAt
@@ -72,29 +77,40 @@ func mirrorStatusSince(e MirrorStatusEvidence) (mirrorStatusResult, int64) {
 // mirrorStatusWriteSQL is the one way a status result is written to the
 // issue row being updated: the values of status_since and
 // status_final_for for a result of kind (a mirrorStatusResult, zero for
-// none) giving since, read for version (an update time), each an SQL
-// expression. A result applies only while the row's card is of that
-// version, so evidence read for an update the card has moved past writes
-// nothing; a final one decides the version's time, and a provisional one
+// none) giving since, read for version (an update time) of a card in
+// status, each an SQL expression. A result applies only while the row's
+// card is of that version and that status, checked by the statement that
+// writes it, so evidence read for an update the card has moved past, or
+// of a card another read of the same update replaced, writes nothing; a final one decides the version's time, and a provisional one
 // shows only while no final one is stored for the version. A card write
 // keeps the time while the status stays and is no evidence
 // (mirrorStatusKeptBy): the row's status_final_for then names an earlier
 // version, so the issue is due history and its tickets lack a final time.
-func mirrorStatusWriteSQL(kind, since, version string) (sinceTo, finalForTo string) {
-	applies := `tracker_cache_issues.updated_at = ` + version
+func mirrorStatusWriteSQL(kind, since, version, status string) (sinceTo, finalForTo string) {
+	applies := `tracker_cache_issues.updated_at = ` + version + ` AND tracker_cache_issues.status_id IS ` + status
 	sinceTo = `CASE WHEN ` + applies + ` AND (` + kind + ` = 2 OR ` + kind + ` = 1 AND tracker_cache_issues.status_final_for < ` + version + `)
 	    THEN ` + since + ` ELSE tracker_cache_issues.status_since END`
 	finalForTo = `iif(` + applies + ` AND ` + kind + ` = 2, ` + version + `, tracker_cache_issues.status_final_for)`
 	return sinceTo, finalForTo
 }
 
-// mirrorStatusKeptBy is what a card write leaves of the status time: the
-// stored time when the card it brings has the stored card's status, and
-// zero when it has another, the stored time being that of a status the
-// issue left. The time stays final only for the update it was decided for
-// (status_final_for), so a card of a later update shows it until a read
-// for that update decides.
-func mirrorStatusKeptBy(status string) string {
+// mirrorStatusKeptBy is what a card write of update time updated in
+// status leaves of the status time: the stored time when the card has the
+// stored card's status, and zero when it has another, the stored time
+// being that of a status the issue left. The time stays final only for the
+// update it was decided for (status_final_for), so a card of a later
+// update shows it until a read for that update decides; a card of a later
+// update is due a history read by its update time. A card of the same
+// update in another status (a later read of a change within the tracker's
+// millisecond) clears a time a read decided for that update, so the
+// write makes the issue due a history read again (history_for, the
+// version arm of mirrorHistoryDue) and moves its receipt, which supersedes
+// a history read listed before it: that history was read for the status
+// the issue left.
+func mirrorStatusKeptBy(status, updated string) string {
+	moved := `(` + updated + ` = tracker_cache_issues.updated_at AND ` + status + ` IS NOT tracker_cache_issues.status_id)`
 	return `status_since = iif(` + status + ` IS tracker_cache_issues.status_id, tracker_cache_issues.status_since, 0),
-	    status_final_for = iif(` + status + ` IS tracker_cache_issues.status_id, tracker_cache_issues.status_final_for, 0)`
+	    status_final_for = iif(` + status + ` IS tracker_cache_issues.status_id, tracker_cache_issues.status_final_for, 0),
+	    history_for = iif(` + moved + `, 0, tracker_cache_issues.history_for),
+	    history_receipt = tracker_cache_issues.history_receipt + ` + moved
 }

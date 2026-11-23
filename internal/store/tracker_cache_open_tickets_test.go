@@ -13,8 +13,9 @@ import (
 // a card of an issue on no board and no link is stored only while a
 // ticket keeps it, every read serves it, and the cleanup removes it once
 // the last keep goes. A keep of another root keeps nothing here; an issue
-// a board also keeps is untouched by the drop; and a pump keeps one row,
-// moved by its next keep.
+// a board also keeps is untouched by the drop; a pump keeps one issue; and
+// a keep reports that it shows a record again only when the record was
+// held and nothing kept it.
 func TestAnOpenTicketKeepsItsIssue(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -36,17 +37,18 @@ func TestAnOpenTicketKeepsItsIssue(t *testing.T) {
 	if ch := write("20001"); !reflect.DeepEqual(ch.Unkept, []string{"20001"}) {
 		t.Fatalf("a card no ticket keeps was stored: %+v", ch)
 	}
-	if err := s.KeepMirrorTicket(other, "20001", 1, 9, mirrorReadOf(other, 5)); err != nil {
+	if _, err := s.KeepMirrorTicket(other, "20001", 1, 9, mirrorReadOf(other, 5)); err != nil {
 		t.Fatal(err)
 	}
 	if ch := write("20001"); !reflect.DeepEqual(ch.Unkept, []string{"20001"}) {
 		t.Fatalf("a ticket of another root kept the card: %+v", ch)
 	}
-	if err := s.KeepMirrorTicket(root, "20001", 1, 1, mirrorReadOf(root, 5)); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.KeepMirrorTicket(root, "10001", 1, 2, mirrorReadOf(root, 5)); err != nil {
-		t.Fatal(err)
+	// No record of 20001 is held, and the board keeps 10001: neither keep
+	// shows a record again.
+	for pump, id := range map[int64]string{1: "20001", 2: "10001"} {
+		if shown, err := s.KeepMirrorTicket(root, id, 1, pump, mirrorReadOf(root, 5)); err != nil || shown {
+			t.Fatalf("the keep of %s: shown %v, %v; want false", id, shown, err)
+		}
 	}
 	if ch := write("20001"); len(ch.Unkept) != 0 {
 		t.Fatalf("the open ticket's card was not stored: %+v", ch)
@@ -54,20 +56,39 @@ func TestAnOpenTicketKeepsItsIssue(t *testing.T) {
 	if cards := mustMirrorCards(t, s, root, "20001"); len(cards) != 1 {
 		t.Fatalf("the open ticket's card is not served: %+v", cards)
 	}
-	// The pump's next keep moves its row: 20001 is kept no more.
-	if err := s.KeepMirrorTicket(root, "20002", 1, 1, mirrorReadOf(root, 5)); err != nil {
-		t.Fatal(err)
+	// A pump keeps one issue: a keep of another fails and keeps 20001.
+	if _, err := s.KeepMirrorTicket(root, "20002", 1, 1, mirrorReadOf(root, 5)); !errors.Is(err, ErrInvalidTrackerCache) {
+		t.Fatalf("a pump's keep of a second issue: %v", err)
 	}
-	if cards := mustMirrorCards(t, s, root, "20001"); len(cards) != 0 {
-		t.Fatalf("a card whose keep moved on is served: %+v", cards)
+	if shown, err := s.KeepMirrorTicket(root, "20001", 1, 1, mirrorReadOf(root, 5)); err != nil || shown {
+		t.Fatalf("the same keep again: shown %v, %v", shown, err)
 	}
-	if err := s.KeepMirrorTicket(root, "20001", 1, 1, mirrorReadOf(root, 5)); err != nil {
-		t.Fatal(err)
+	if cards := mustMirrorCards(t, s, root, "20001"); len(cards) != 1 {
+		t.Fatalf("the open ticket's card is not served after a refused keep: %+v", cards)
 	}
 	// The drop of 20001's ticket leaves it unkept; 10001's board keeps it.
 	for pump, wantUnkept := range map[int64]bool{1: true, 2: false} {
 		if unkept, err := s.DropMirrorTicket(1, pump); err != nil || unkept != wantUnkept {
 			t.Fatalf("the drop of pump %d: unkept %v, %v; want %v", pump, unkept, err, wantUnkept)
+		}
+	}
+	// Opened again before the cleanup, 20001's held record is shown again,
+	// once, and a keep of another root shows nothing here.
+	if shown, err := s.KeepMirrorTicket(other, "20001", 1, 8, mirrorReadOf(other, 5)); err != nil || shown {
+		t.Fatalf("a keep of another root: shown %v, %v", shown, err)
+	}
+	if shown, err := s.KeepMirrorTicket(root, "20001", 1, 3, mirrorReadOf(root, 5)); err != nil || !shown {
+		t.Fatalf("the reopening before the cleanup: shown %v, %v; want true", shown, err)
+	}
+	if cards := mustMirrorCards(t, s, root, "20001"); len(cards) != 1 {
+		t.Fatalf("the reopened ticket's card is not served: %+v", cards)
+	}
+	if shown, err := s.KeepMirrorTicket(root, "20001", 1, 4, mirrorReadOf(root, 5)); err != nil || shown {
+		t.Fatalf("a second keep of a kept issue: shown %v, %v; want false", shown, err)
+	}
+	for _, pump := range []int64{3, 4} {
+		if unkept, err := s.DropMirrorTicket(1, pump); err != nil || unkept != (pump == 4) {
+			t.Fatalf("the drop of pump %d: unkept %v, %v", pump, unkept, err)
 		}
 	}
 	if unkept, err := s.DropMirrorTicket(1, 1); err != nil || unkept {
@@ -80,7 +101,7 @@ func TestAnOpenTicketKeepsItsIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRows(t, s.db, fmt.Sprintf(`SELECT issue_id FROM tracker_cache_issues WHERE root_id = %d`, root), "10001")
-	if err := s.KeepMirrorTicket(root, "", 1, 3, mirrorReadOf(root, 5)); !errors.Is(err, ErrInvalidTrackerCache) {
+	if _, err := s.KeepMirrorTicket(root, "", 1, 3, mirrorReadOf(root, 5)); !errors.Is(err, ErrInvalidTrackerCache) {
 		t.Fatalf("a keep of no issue: %v", err)
 	}
 }
@@ -102,7 +123,7 @@ func TestTheBootDropsTheOpenTicketsOfOtherSessions(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
 	for _, keep := range []struct{ session, pump int64 }{{1, 1}, {1, 2}, {2, 1}, {3, 1}} {
-		if err := s.KeepMirrorTicket(root, fmt.Sprint(20000+keep.session*10+keep.pump), keep.session, keep.pump, mirrorReadOf(root, 5)); err != nil {
+		if _, err := s.KeepMirrorTicket(root, fmt.Sprint(20000+keep.session*10+keep.pump), keep.session, keep.pump, mirrorReadOf(root, 5)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -112,11 +133,11 @@ func TestTheBootDropsTheOpenTicketsOfOtherSessions(t *testing.T) {
 	assertRows(t, s.db, fmt.Sprintf(`SELECT issue_id FROM tracker_cache_open_tickets WHERE root_id = %d AND session = 1 AND pump >= 1 ORDER BY pump`, root), "20011,20012")
 }
 
-// Opening a ticket costs one statement and one row; the same keep again
-// two statements and no row; moving a pump's keep one and one; closing
-// two, the drop and the keep rule's probe of its issue, and one row; and
-// the boot's drop one statement and a row a ticket an earlier process
-// left open.
+// Opening a ticket costs two statements, the keep rule's probe of its
+// issue and the keep, and one row; the same keep again three statements
+// and no row; closing two, the drop and the probe, and one row; and the
+// boot's drop one statement and a row a ticket an earlier process left
+// open.
 func TestOpenTicketKeepCosts(t *testing.T) {
 	s, _, root := newMirror(t)
 	recorder := recordMirrorWrites(t, s)
@@ -127,11 +148,19 @@ func TestOpenTicketKeepCosts(t *testing.T) {
 		statements int
 		writes     map[string]int
 	}{
-		{"open", func() error { return s.KeepMirrorTicket(root, "20001", 1, 1, mirrorReadOf(root, 5)) }, 1, open},
-		{"the same keep", func() error { return s.KeepMirrorTicket(root, "20001", 1, 1, mirrorReadOf(root, 5)) }, 2, map[string]int{}},
-		{"a moved keep", func() error { return s.KeepMirrorTicket(root, "20002", 1, 1, mirrorReadOf(root, 5)) }, 1, open},
+		{"open", func() error {
+			_, err := s.KeepMirrorTicket(root, "20001", 1, 1, mirrorReadOf(root, 5))
+			return err
+		}, 2, open},
+		{"the same keep", func() error {
+			_, err := s.KeepMirrorTicket(root, "20001", 1, 1, mirrorReadOf(root, 5))
+			return err
+		}, 3, map[string]int{}},
 		{"close", func() error { _, err := s.DropMirrorTicket(1, 1); return err }, 2, open},
-		{"an earlier process's row", func() error { return s.KeepMirrorTicket(root, "20003", 2, 1, mirrorReadOf(root, 5)) }, 1, open},
+		{"an earlier process's row", func() error {
+			_, err := s.KeepMirrorTicket(root, "20003", 2, 1, mirrorReadOf(root, 5))
+			return err
+		}, 2, open},
 		{"the boot's drop", func() error { _, err := s.DropMirrorTicketsOfOtherSessions(1); return err }, 1, open},
 	} {
 		recorder.reset()

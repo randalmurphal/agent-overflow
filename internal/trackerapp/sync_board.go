@@ -106,9 +106,10 @@ func (r *run) deltaPages(board tracker.BoardID, log *changeLog) (more bool, _ er
 }
 
 // reconcile is the reconcile unit of board (syncBoard). A pass lists the
-// board, removes the unlisted rows read more than tracker.DeltaOverlap
-// before the listing began, and reads by ID the listed issues with no
-// row and the unlisted rows read since: its candidates, each attempted
+// board and reads by ID the listed issues with no row and the unlisted
+// rows, which the read removes when the board no longer holds them (a
+// listing may show an issue late, so it removes none on its own word):
+// its candidates, each attempted
 // once, up to reconcileBatches batches a tick. The pass is the board
 // pump's (run.pass), open from the reconcile that begins it in a board
 // lifetime, an ID the store never reuses, until every candidate was
@@ -177,13 +178,7 @@ func (r *run) reconcileReads(board tracker.BoardID, pass *reconcilePass, log *ch
 		if err != nil {
 			return fmt.Errorf("trackerapp: list the issues of board %s: %w", board, call(err))
 		}
-		// A tracker may list an issue up to DeltaOverlap late (a search
-		// index), so the listing judges only the rows read before that; an
-		// unlisted row read since is read by ID, which removes it only when
-		// the board no longer holds it.
-		result, err := r.s.store.ReconcileMirrorBoard(r.root, string(board), pass.lifetime, idStrings(listing.IDs), listing.Complete, read, tracker.DeltaOverlap)
-		// A reconcile that failed part way removed what it reports.
-		log.add(Changes{Removed: issueIDs(result.Removed)})
+		result, err := r.s.store.ReconcileMirrorBoard(r.root, string(board), pass.lifetime, idStrings(listing.IDs), listing.Complete, read)
 		if err != nil {
 			return fmt.Errorf("trackerapp: reconcile board %s: %w", board, err)
 		}

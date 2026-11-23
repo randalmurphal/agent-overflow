@@ -4,7 +4,6 @@ import (
 	"context"
 	"maps"
 	"sync"
-	"time"
 
 	"agent-overflow/internal/store"
 )
@@ -92,9 +91,9 @@ func (c *countingStore) UpsertMirrorCards(root, sweep int64, cards []store.Mirro
 	return c.Store.UpsertMirrorCards(root, sweep, cards, catalog, read)
 }
 
-func (c *countingStore) ReconcileMirrorBoard(root int64, board string, lifetime int64, listed []string, complete bool, read store.MirrorRead, lag time.Duration) (store.MirrorReconcile, error) {
+func (c *countingStore) ReconcileMirrorBoard(root int64, board string, lifetime int64, listed []string, complete bool, read store.MirrorRead) (store.MirrorReconcile, error) {
 	c.count("ReconcileMirrorBoard")
-	return c.Store.ReconcileMirrorBoard(root, board, lifetime, listed, complete, read, lag)
+	return c.Store.ReconcileMirrorBoard(root, board, lifetime, listed, complete, read)
 }
 
 func (c *countingStore) ReplaceMirrorStructure(root int64, st store.MirrorStructure) (store.MirrorStructureWrite, error) {
@@ -187,7 +186,7 @@ func (c *countingStore) ListMirrorWorklogs(root int64, author, from, to string) 
 	return c.Store.ListMirrorWorklogs(root, author, from, to)
 }
 
-func (c *countingStore) KeepMirrorTicket(root int64, issue string, session, pump int64, opened store.MirrorRead) error {
+func (c *countingStore) KeepMirrorTicket(root int64, issue string, session, pump int64, opened store.MirrorRead) (bool, error) {
 	c.count("KeepMirrorTicket")
 	return c.Store.KeepMirrorTicket(root, issue, session, pump, opened)
 }

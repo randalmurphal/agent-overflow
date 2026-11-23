@@ -170,6 +170,9 @@ type Service struct {
 		sync.Mutex
 		done bool
 	}
+	// owedDrops are the keeps of ended pumps whose drop failed, owed until
+	// one commits (dropKeep, payOwedDrops). Guarded by opMu.
+	owedDrops []owedDrop
 
 	// subMu is the one lock of the subscriptions, their pumps and the
 	// linked loop (subscriptions.go). It is held for map and flag work and
@@ -238,6 +241,7 @@ func (s *Service) Stop() {
 	s.opMu.Unlock()
 	s.inflight.Wait()
 	s.workers.Wait()
+	s.payOwedDrops("the next process drops it")
 }
 
 // halt marks the service stopped, forgets every problem and takes every

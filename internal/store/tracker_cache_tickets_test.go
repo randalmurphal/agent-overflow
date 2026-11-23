@@ -101,7 +101,7 @@ func TestAnOpenTicketsBindAdmitsItsBody(t *testing.T) {
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
 	sweep := currentSweep(s, root)
-	if err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadAt(100)); err != nil {
+	if _, err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadAt(100)); err != nil {
 		t.Fatal(err)
 	}
 	if w, err := storeTicket(t, s, root, sweep, "10001", 0, 90, []byte(`{"v":"before"}`)); err != nil || w.Body != MirrorBodyNotKept {
@@ -119,7 +119,7 @@ func TestAnOpenTicketsBindAdmitsItsBody(t *testing.T) {
 	if _, err := s.DropMirrorTicket(1, 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.KeepMirrorTicket(root, "10001", 1, 2, mirrorReadAt(300)); err != nil {
+	if _, err := s.KeepMirrorTicket(root, "10001", 1, 2, mirrorReadAt(300)); err != nil {
 		t.Fatal(err)
 	}
 	mustExec(t, s.db, `DELETE FROM tracker_cache_issue_bodies`)
@@ -143,7 +143,7 @@ func TestTheBodyCapKeepsTheOpenTicketsAndTheMostRecentlyOpened(t *testing.T) {
 	writeMirrorBoard(t, s, root, "10", mirrorRows(10000, mirrorBodyCap+3, "a"))
 	sweep := currentSweep(s, root)
 	// 10000 is opened first, and stays open as a ticket.
-	if err := s.KeepMirrorTicket(root, "10000", 1, 1, mirrorReadAt(5)); err != nil {
+	if _, err := s.KeepMirrorTicket(root, "10000", 1, 1, mirrorReadAt(5)); err != nil {
 		t.Fatal(err)
 	}
 	for i := range mirrorBodyCap + 1 {
@@ -163,7 +163,7 @@ func TestTheBodyCapKeepsTheOpenTicketsAndTheMostRecentlyOpened(t *testing.T) {
 	// One write that starts two bodies opened before every other, one of
 	// them an open ticket's, and reads a held one again: it drops the body
 	// it started with no keep row and the least recently opened held one.
-	if err := s.KeepMirrorTicket(root, fmt.Sprint(10000+mirrorBodyCap+2), 1, 2, mirrorReadAt(900)); err != nil {
+	if _, err := s.KeepMirrorTicket(root, fmt.Sprint(10000+mirrorBodyCap+2), 1, 2, mirrorReadAt(900)); err != nil {
 		t.Fatal(err)
 	}
 	tickets := heldTickets(t, s, root, []string{fmt.Sprint(10000 + mirrorBodyCap + 1), fmt.Sprint(10000 + mirrorBodyCap + 2), "10003"}, []byte(`{"v":"1"}`))

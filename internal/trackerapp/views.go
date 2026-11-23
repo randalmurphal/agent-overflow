@@ -95,10 +95,15 @@ type RowView struct {
 	Estimate *float64 `json:"estimate,omitempty"`
 }
 
-// readRoot is connection id's mirror root for a read, admitted past
-// Stop; ErrNotMirrored when it has none. The caller calls leave.
+// readRoot is connection id's mirror root for a read, once the rows an
+// earlier process left are deleted (dropEarlierTickets); ErrNotMirrored
+// when it has none. The caller calls leave.
 func (s *Service) readRoot(id string) (int64, error) {
 	if err := s.enter(); err != nil {
+		return 0, err
+	}
+	if err := s.dropEarlierTickets(); err != nil {
+		s.leave()
 		return 0, err
 	}
 	root, ok, err := s.store.GetMirrorRoot(id)

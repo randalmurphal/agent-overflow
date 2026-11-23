@@ -1,8 +1,12 @@
 package store
 
 import (
+	"encoding/binary"
 	"fmt"
 	"maps"
+	"os"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -138,6 +142,110 @@ func TestChangedRoundStatements(t *testing.T) {
 			}
 			if want := 7 * len(changed); bodyBytes != want {
 				t.Errorf("%s wrote %d body bytes; want %d, the changed bodies'", name, bodyBytes, want)
+			}
+		})
+	}
+}
+
+// walPagesByTree is how many frames s's WAL holds of each b-tree (dbstat):
+// the pages the writes since the last checkpoint rewrote.
+func walPagesByTree(t *testing.T, s *Store) map[string]int {
+	t.Helper()
+	data, err := os.ReadFile(s.path + "-wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[uint32]string{}
+	rows, err := s.db.Query(`SELECT name, pageno FROM dbstat`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var name string
+		var page uint32
+		if err := rows.Scan(&name, &page); err != nil {
+			t.Fatal(err)
+		}
+		names[page] = name
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pages := map[string]int{}
+	if len(data) < 32 {
+		return pages
+	}
+	size := int(binary.BigEndian.Uint32(data[8:12]))
+	for off := 32; off+24+size <= len(data); off += 24 + size {
+		pages[names[binary.BigEndian.Uint32(data[off:off+4])]]++
+	}
+	return pages
+}
+
+// An idle ticket round at a real size (50 open tickets spread over a root
+// of 2,000 issues, each card blob the size TestBlobSizes measures for its
+// tracker) rewrites one issue page per open ticket, for its read times,
+// and one page of each catalog table, for their stamps; no page of the
+// bodies' index (mirrorTicketMoveSQL.reads), and no body.
+func TestAnIdleRoundRewritesOnePagePerOpenTicket(t *testing.T) {
+	t.Parallel()
+	catalog := MirrorCatalog{}
+	for i := range 4 {
+		catalog.Users = append(catalog.Users, MirrorUser{ID: fmt.Sprint("acc-user", i+1), Name: fmt.Sprint("User ", i+1)})
+	}
+	for i := range 3 {
+		catalog.Statuses = append(catalog.Statuses, MirrorStatus{ID: fmt.Sprint(i + 1), Name: fmt.Sprint("Status ", i+1), Group: MirrorGroupToDo})
+	}
+	for name, size := range map[string]int{"jira": 211, "linear": 300} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s, _, root := newMirror(t)
+			mustReplaceStructure(t, s, root, webStructure(), true)
+			rows := mirrorRows(20001, 2000, "z")
+			for i := range rows {
+				head := fmt.Sprintf(`{"title":"Issue %s","pad":"`, rows[i].Card.IssueID)
+				rows[i].Card.Data = []byte(head + strings.Repeat("x", size-len(head)-2) + `"}`)
+			}
+			for page := range slices.Chunk(rows, mirrorMaxPageRows) {
+				mustWriteRowPage(t, s, root, webPage("10", page...), nil)
+			}
+			var issues []string
+			for i := range 50 {
+				issues = append(issues, fmt.Sprint(20001+40*i))
+			}
+			sweep := currentSweep(s, root)
+			tickets := heldTickets(t, s, root, issues, []byte(`{"v":1}`))
+			for i := range tickets {
+				c := tickets[i].Card
+				tickets[i].Status = &MirrorStatusEvidence{Status: c.StatusID, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Complete: true, Final: true}
+			}
+			if _, err := s.StoreMirrorTickets(root, sweep, tickets, catalog, mirrorReadAt(7), mirrorReadAt(7)); err != nil {
+				t.Fatal(err)
+			}
+			// The round: Jira checks the cards, Linear reads every ticket in
+			// full; nothing changed.
+			round := tickets
+			if name == "jira" {
+				round = make([]MirrorTicket, len(tickets))
+				for i := range tickets {
+					round[i] = MirrorTicket{Card: tickets[i].Card}
+				}
+			}
+			if _, err := s.TruncateCheckpoint(); err != nil {
+				t.Fatal(err)
+			}
+			w, err := s.StoreMirrorTickets(root, sweep, round, catalog, MirrorRead{}, mirrorReadAt(100))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tw := range w.Tickets {
+				if tw.BodyChanged || tw.CardChanged || tw.StatusChanged {
+					t.Fatalf("an idle round changed a ticket: %+v", tw)
+				}
+			}
+			want := map[string]int{"tracker_cache_issues": 50, "tracker_cache_users": 1, "tracker_cache_statuses": 1}
+			if got := walPagesByTree(t, s); !maps.Equal(got, want) {
+				t.Errorf("the idle round rewrote pages %v; want %v", got, want)
 			}
 		})
 	}

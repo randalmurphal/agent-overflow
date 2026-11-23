@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
-	"time"
 )
 
 // rowsPage is a read by ID of board 10's rows begun at readAt: the rows it
@@ -22,9 +21,9 @@ func mustWriteRows(t *testing.T, s *Store, page MirrorRowPage, root int64) Mirro
 	return got
 }
 
-func mustReconcile(t *testing.T, s *Store, root int64, listed []string, complete bool, readAt, settledAt int64) MirrorReconcile {
+func mustReconcile(t *testing.T, s *Store, root int64, listed []string, complete bool, readAt int64) MirrorReconcile {
 	t.Helper()
-	got, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), listed, complete, mirrorReadAt(readAt), time.Duration(readAt-settledAt)*time.Millisecond)
+	got, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), listed, complete, mirrorReadAt(readAt))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +54,7 @@ func TestAnAbsenceFromBeforeAListingIsOwedARead(t *testing.T) {
 		absence := rowsPage(s, root, 20, []string{"10001"}, webRow("10005", 5, "e"))
 		switch order {
 		case "listing commits first":
-			if got := mustReconcile(t, s, root, []string{"10001"}, true, 30, 30); !reflect.DeepEqual(got, MirrorReconcile{}) {
+			if got := mustReconcile(t, s, root, []string{"10001"}, true, 30); !reflect.DeepEqual(got, MirrorReconcile{}) {
 				t.Fatalf("%s: listing = %+v", order, got)
 			}
 			got := mustWriteRows(t, s, absence, root)
@@ -70,7 +69,7 @@ func TestAnAbsenceFromBeforeAListingIsOwedARead(t *testing.T) {
 			}
 			// 10005, which only the read by ID placed, is unsettled.
 			want := MirrorReconcile{Missing: []string{"10001"}, Unsettled: []string{"10005"}}
-			if got := mustReconcile(t, s, root, []string{"10001"}, true, 30, 30); !reflect.DeepEqual(got, want) {
+			if got := mustReconcile(t, s, root, []string{"10001"}, true, 30); !reflect.DeepEqual(got, want) {
 				t.Fatalf("%s: listing = %+v; want %+v", order, got, want)
 			}
 		}
@@ -170,16 +169,11 @@ func TestACardsReadTimeIsInNoIndexOrTrigger(t *testing.T) {
 	}
 }
 
-// settled is the settle bound of a listing read at readAt, as the service
-// gives it (tracker.DeltaOverlap).
-func settled(readAt int64) int64 { return readAt - 60_000 }
-
-// A row no listing has named has only a read by ID's word that the board
-// holds it: a listing's omission is no evidence it left, whatever its age,
-// so the listing returns it unsettled and a read by ID judges it. A delta
-// page or a listing that names it marks it, and the margin rule judges it
-// from then on.
-func TestARowNoListingNamedIsJudgedByID(t *testing.T) {
+// A listing's omission is no evidence a row left, whatever its age and
+// whether or not a listing named it before: the listing returns it
+// unsettled and a read by ID judges it. A delta page or a listing that
+// names it marks it.
+func TestARowAListingLeavesOutIsJudgedByID(t *testing.T) {
 	t.Parallel()
 	const placed, listedAt = 1_000, 62_000
 	for _, step := range []string{"by ID", "delta page", "changed delta page", "superseded delta page", "listing", "incomplete listing"} {
@@ -190,7 +184,7 @@ func TestARowNoListingNamedIsJudgedByID(t *testing.T) {
 		var final MirrorReconcile
 		switch step {
 		case "by ID":
-			got := mustReconcile(t, s, root, nil, true, listedAt, settled(listedAt))
+			got := mustReconcile(t, s, root, nil, true, listedAt)
 			if !reflect.DeepEqual(got, MirrorReconcile{Unsettled: []string{"10004"}}) {
 				t.Fatalf("%s: a listing past the margin = %+v; want the row unsettled", step, got)
 			}
@@ -209,15 +203,16 @@ func TestARowNoListingNamedIsJudgedByID(t *testing.T) {
 			mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10004", 5, "d")}, ReadAt: mirrorReadAt(placed + 500)}, nil)
 			assertRows(t, s.db, `SELECT order_key FROM tracker_cache_board_issues`, "d2")
 		case "listing", "incomplete listing":
-			if got := mustReconcile(t, s, root, []string{"10004"}, step == "listing", placed+500, placed+500); !reflect.DeepEqual(got, MirrorReconcile{}) {
+			if got := mustReconcile(t, s, root, []string{"10004"}, step == "listing", placed+500); !reflect.DeepEqual(got, MirrorReconcile{}) {
 				t.Fatalf("%s: a listing naming it = %+v", step, got)
 			}
 		}
 		assertRows(t, s.db, `SELECT listed FROM tracker_cache_board_issues`, "1")
-		final = mustReconcile(t, s, root, nil, true, listedAt+10_000, settled(listedAt+10_000))
-		if !reflect.DeepEqual(final, MirrorReconcile{Removed: []string{"10004"}}) {
-			t.Fatalf("%s: a later listing past the margin = %+v; want the row removed", step, final)
+		final = mustReconcile(t, s, root, nil, true, listedAt+10_000)
+		if !reflect.DeepEqual(final, MirrorReconcile{Unsettled: []string{"10004"}}) {
+			t.Fatalf("%s: a later listing = %+v; want the row unsettled", step, final)
 		}
+		assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_board_issues`, "1")
 	}
 }
 
@@ -242,11 +237,11 @@ func TestARowNoListingNamedFollowsTheReadOrder(t *testing.T) {
 			var byID MirrorChanges
 			var listing MirrorReconcile
 			if listingFirst {
-				listing = mustReconcile(t, s, root, nil, true, listedAt, settled(listedAt))
+				listing = mustReconcile(t, s, root, nil, true, listedAt)
 				byID = mustWriteRows(t, s, read, root)
 			} else {
 				byID = mustWriteRows(t, s, read, root)
-				listing = mustReconcile(t, s, root, nil, true, listedAt, settled(listedAt))
+				listing = mustReconcile(t, s, root, nil, true, listedAt)
 			}
 			var wantByID MirrorChanges
 			var wantListing MirrorReconcile
@@ -292,7 +287,7 @@ func TestMirrorFenceStatements(t *testing.T) {
 	}
 	reconcile := func(listed []string, complete bool, readAt int64) func() error {
 		return func() error {
-			_, err := s.ReconcileMirrorBoard(root, "10", lifetime, listed, complete, mirrorReadAt(readAt), 0)
+			_, err := s.ReconcileMirrorBoard(root, "10", lifetime, listed, complete, mirrorReadAt(readAt))
 			return err
 		}
 	}

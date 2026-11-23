@@ -282,11 +282,10 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	out["delta tick, 1 changed"] = measureScale(t, rec, nil, delta(1))
 	out["delta tick, 100 changed"] = measureScale(t, rec, nil, delta(100))
 	out["reconcile, complete listing"] = measureScale(t, rec, nil, func(int) error {
-		// The settled bound is the service's: a minute before the read.
 		at := next()
-		got, err := s.ReconcileMirrorBoard(root, board, lifetime, listing, true, mirrorReadAt(at), time.Minute)
-		if err == nil && len(got.Missing)+len(got.Removed)+len(got.Unsettled) > 0 {
-			err = fmt.Errorf("missing %d, removed %d, unsettled %d", len(got.Missing), len(got.Removed), len(got.Unsettled))
+		got, err := s.ReconcileMirrorBoard(root, board, lifetime, listing, true, mirrorReadAt(at))
+		if err == nil && len(got.Missing)+len(got.Unsettled) > 0 {
+			err = fmt.Errorf("missing %d, unsettled %d", len(got.Missing), len(got.Unsettled))
 		}
 		return err
 	})
@@ -417,7 +416,9 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	for i := range unlisted {
 		unlisted[i] = benchRow(0, size.issues-quarter+i, 1000)
 	}
-	out["reconcile, a quarter unlisted"] = measureScale(t, rec, func(int) {
+	// The reconcile leaves the unlisted rows to the read by ID, which
+	// removes them: both are measured.
+	out["reconcile, a quarter unlisted, read by ID"] = measureScale(t, rec, func(int) {
 		for page := range slices.Chunk(unlisted, mirrorMaxPageRows) {
 			if _, err := s.WriteMirrorRowPage(root, MirrorRowPage{BoardID: board, Lifetime: lifetime, Rows: page, ReadAt: mirrorReadAt(next())}, nil); err != nil {
 				t.Fatal(err)
@@ -425,9 +426,21 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		}
 	}, func(int) error {
 		at := next()
-		got, err := s.ReconcileMirrorBoard(root, board, lifetime, listing[:size.issues-quarter], true, mirrorReadAt(at), 0)
-		if err == nil && len(got.Removed) != quarter {
-			err = fmt.Errorf("removed %d of %d unlisted", len(got.Removed), quarter)
+		got, err := s.ReconcileMirrorBoard(root, board, lifetime, listing[:size.issues-quarter], true, mirrorReadAt(at))
+		if err == nil && len(got.Unsettled) != quarter {
+			err = fmt.Errorf("unsettled %d of %d unlisted", len(got.Unsettled), quarter)
+		}
+		removed := 0
+		for ids := range slices.Chunk(got.Unsettled, mirrorMaxPageRows) {
+			if err != nil {
+				break
+			}
+			var ch MirrorChanges
+			ch, err = s.WriteMirrorRows(root, MirrorRowPage{BoardID: board, Lifetime: lifetime, Missing: ids, ReadAt: mirrorReadAt(next())})
+			removed += len(ch.Removed)
+		}
+		if err == nil && removed != quarter {
+			err = fmt.Errorf("the read by ID removed %d of %d unlisted", removed, quarter)
 		}
 		return err
 	})

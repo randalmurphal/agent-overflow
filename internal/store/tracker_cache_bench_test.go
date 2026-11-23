@@ -74,7 +74,7 @@ func BenchmarkMirrorWritePage(b *testing.B) {
 }
 
 // A complete reconcile of a 1,000-issue board: nothing to do, and 50 rows
-// removed (put back between runs, untimed).
+// unlisted, which the read by ID removes (put back between runs, untimed).
 func BenchmarkMirrorReconcile(b *testing.B) {
 	listing := make([]string, benchBoardIssues)
 	for i := range listing {
@@ -83,24 +83,28 @@ func BenchmarkMirrorReconcile(b *testing.B) {
 	b.Run("nothing", func(b *testing.B) {
 		s, root := openBenchMirror(b)
 		measureMirror(b, func(int) error {
-			_, err := s.ReconcileMirrorBoard(root, benchBoardID(0), currentLifetime(s, root, benchBoardID(0)), listing, true, mirrorReadAt(1), 0)
+			_, err := s.ReconcileMirrorBoard(root, benchBoardID(0), currentLifetime(s, root, benchBoardID(0)), listing, true, mirrorReadAt(1))
 			return err
 		})
 	})
-	b.Run("50-removed", func(b *testing.B) {
+	b.Run("50-unlisted", func(b *testing.B) {
 		s, root := openBenchMirror(b)
 		back := make([]MirrorRow, 50)
 		for r := range back {
 			back[r] = benchRow(0, r, 1000)
 		}
 		measureMirror(b, func(i int) error {
-			got, err := s.ReconcileMirrorBoard(root, benchBoardID(0), currentLifetime(s, root, benchBoardID(0)), listing[50:], true, mirrorReadAt(int64(10+2*i)), 0)
-			if err != nil || len(got.Removed) != 50 {
-				return fmt.Errorf("removed %d, %v", len(got.Removed), err)
+			got, err := s.ReconcileMirrorBoard(root, benchBoardID(0), currentLifetime(s, root, benchBoardID(0)), listing[50:], true, mirrorReadAt(int64(10+3*i)))
+			if err != nil || len(got.Unsettled) != 50 {
+				return fmt.Errorf("unsettled %d, %v", len(got.Unsettled), err)
+			}
+			gone, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: benchBoardID(0), Missing: got.Unsettled, ReadAt: mirrorReadAt(int64(11 + 3*i))}))
+			if err != nil || len(gone.Removed) != 50 {
+				return fmt.Errorf("the read by ID removed %d, %v", len(gone.Removed), err)
 			}
 			b.StopTimer()
 			page := benchPage(0, back)
-			page.ReadAt = mirrorReadAt(int64(11 + 2*i))
+			page.ReadAt = mirrorReadAt(int64(12 + 3*i))
 			put, err := s.WriteMirrorRows(root, currentPage(s, root, page))
 			b.StartTimer()
 			return benchApplied(put, err, 0, 50)

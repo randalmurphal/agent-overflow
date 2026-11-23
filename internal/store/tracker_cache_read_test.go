@@ -406,7 +406,7 @@ func TestEveryMirrorWriterRefusesAReadOfAnotherRoot(t *testing.T) {
 			return err
 		}},
 		{"ReconcileMirrorBoard", func(read MirrorRead) error {
-			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"10001"}, true, read, 0)
+			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"10001"}, true, read)
 			return err
 		}},
 		{"ReplaceMirrorHistories", func(read MirrorRead) error {
@@ -437,7 +437,8 @@ func TestEveryMirrorWriterRefusesAReadOfAnotherRoot(t *testing.T) {
 			return err
 		}},
 		{"KeepMirrorTicket", func(read MirrorRead) error {
-			return s.KeepMirrorTicket(root, "10001", 7, 1, read)
+			_, err := s.KeepMirrorTicket(root, "10001", 7, 1, read)
+			return err
 		}},
 		{"RecordMirrorSyncAttempt read", func(read MirrorRead) error {
 			a := currentAttempt(s, root, "10", MirrorSyncAttempt{})

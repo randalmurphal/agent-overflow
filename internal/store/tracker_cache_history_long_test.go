@@ -44,7 +44,7 @@ func mirrorHistoryShown(t *testing.T, s *Store) string {
 // appends in place.
 func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 	s, _, root := newMirror(t)
-	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
+	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 10_000, "a")})
 	const n = 5000
 	recorder := recordMirrorWrites(t, s)
 	for _, step := range []struct {
@@ -92,10 +92,10 @@ func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 func TestMirrorStagedHistoryIsProvisionalUntilFinal(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
-	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
+	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 10_000, "a")})
 	const n = 5000
 	mustReplaceHistory(t, s, root, longHistory("10001", n, 1), MirrorWrite{Changed: true})
-	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 6, "a")), nil)
+	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 10_001, "a")), nil)
 	// Every change a time unit later: no stored change is kept, so the
 	// history is staged as a new generation and switched to.
 	later := func(wait int64) MirrorHistory {
@@ -118,11 +118,11 @@ func TestMirrorStagedHistoryIsProvisionalUntilFinal(t *testing.T) {
 	if gen() == before {
 		t.Fatal("the history was not staged as a new generation")
 	}
-	if got := statusOf(t, s, root, "10001"); got != fmt.Sprintf("%d false 6", n+1) {
+	if got := statusOf(t, s, root, "10001"); got != fmt.Sprintf("%d false 10001", n+1) {
 		t.Fatalf("after a staged history still waiting: %s; want its change within the margin, %d, provisionally", got, n+1)
 	}
 	mustReplaceHistory(t, s, root, later(0), MirrorWrite{Changed: true})
-	if got := statusOf(t, s, root, "10001"); got != fmt.Sprintf("%d true 6", n+1) {
+	if got := statusOf(t, s, root, "10001"); got != fmt.Sprintf("%d true 10001", n+1) {
 		t.Fatalf("after the final history: %s; want %d, final", got, n+1)
 	}
 }
@@ -139,21 +139,21 @@ func TestAnIdenticalHistoryWritesItsStatusResultStagedOrNot(t *testing.T) {
 			t.Parallel()
 			s, _, root := newMirror(t)
 			mustReplaceStructure(t, s, root, webStructure(), true)
-			mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a")), nil)
+			mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 10_000, "a")), nil)
 			// The last change enters the card's status 1 at n.
 			h := longHistory("10001", n, 1)
 			mustReplaceHistory(t, s, root, h, MirrorWrite{Changed: true})
-			want := fmt.Sprintf("%d true 5", n)
+			want := fmt.Sprintf("%d true 10000", n)
 			if got := statusOf(t, s, root, "10001"); got != want {
 				t.Fatalf("after the history: %s; want %s", got, want)
 			}
-			card := webCard("10001", 5)
-			e := MirrorStatusEvidence{Status: card.StatusID, CreatedAt: card.CreatedAt, UpdatedAt: 5, LatestTo: card.StatusID, LatestAt: 2, Final: true}
+			card := webCard("10001", 10_000)
+			e := MirrorStatusEvidence{Status: card.StatusID, CreatedAt: card.CreatedAt, UpdatedAt: 10_000, LatestTo: card.StatusID, LatestAt: 2, Final: true}
 			if _, err := s.StoreMirrorTickets(root, currentSweep(s, root), []MirrorTicket{{Card: card, Body: []byte(`{}`), Status: &e}},
 				MirrorCatalog{}, mirrorReadAt(20), mirrorReadAt(20)); err != nil {
 				t.Fatal(err)
 			}
-			if got := statusOf(t, s, root, "10001"); got != "2 true 5" {
+			if got := statusOf(t, s, root, "10001"); got != "2 true 10000" {
 				t.Fatalf("after the ticket's evidence: %s", got)
 			}
 			mustReplaceHistory(t, s, root, h, MirrorWrite{Changed: true})
@@ -186,7 +186,8 @@ func TestMirrorStagingStoppedBetweenChunks(t *testing.T) {
 			}},
 	} {
 		s, _, root := newMirror(t)
-		writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
+		// The card is of an update after every change the histories hold.
+		writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 20_000, "a")})
 		mustReplaceHistory(t, s, root, longHistory("10001", 5000, 1), MirrorWrite{Changed: true})
 		next := longHistory("10001", 10, 6000)
 		if stop.name == "before the switch" {

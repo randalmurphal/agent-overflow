@@ -10,9 +10,9 @@ import (
 	"agent-overflow/internal/tracker"
 )
 
-// partialStore fails a history write and a reconcile after part of each
-// was stored, as the store does when a later transaction of one call
-// fails: what committed comes back with the error.
+// partialStore fails a history write after part of it was stored, as the
+// store does when a later transaction of one call fails: what committed
+// comes back with the error.
 type partialStore struct{ *store.Store }
 
 func (s *partialStore) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog,
@@ -22,14 +22,6 @@ func (s *partialStore) ReplaceMirrorHistories(root, sweep int64, hs []store.Mirr
 		return res, changed, err
 	}
 	return res, changed, errStoreDown
-}
-
-func (s *partialStore) ReconcileMirrorBoard(root int64, board string, lifetime int64, listed []string, complete bool, read store.MirrorRead, lag time.Duration) (store.MirrorReconcile, error) {
-	res, err := s.Store.ReconcileMirrorBoard(root, board, lifetime, listed, complete, read, lag)
-	if err != nil {
-		return res, err
-	}
-	return store.MirrorReconcile{Removed: res.Removed}, errStoreDown
 }
 
 // A store call that failed after it stored part changed the mirror: the
@@ -57,13 +49,5 @@ func TestATickTellsWhatAFailedStoreCallStored(t *testing.T) {
 	out, err := m.svc.tickHistory(t.Context(), m.scope(), Background)
 	if !errors.Is(err, errStoreDown) || !slices.Equal(out.Changes().History, ids("10001")) {
 		t.Fatalf("history %+v, %v; want the failure and the one history stored", out, err)
-	}
-
-	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
-	// Past the overlap, the listing judges the rows itself.
-	m.pass(tracker.DeltaOverlap + time.Millisecond)
-	out, err = m.svc.tickReconcile(t.Context(), m.scope(), Background)
-	if !errors.Is(err, errStoreDown) || !slices.Equal(out.Changes().Removed, ids("10002")) {
-		t.Fatalf("reconcile %+v, %v; want the failure and the one row removed", out, err)
 	}
 }

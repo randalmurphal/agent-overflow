@@ -316,7 +316,7 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 		{ID: "w1", IssueID: "10001", AuthorID: "acc-user1", Day: "2026-01-05", SpentSeconds: 3600}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadOf(root, 7)); err != nil {
+	if _, err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadOf(root, 7)); err != nil {
 		t.Fatal(err)
 	}
 	for table, n := range countMirrorRows(t, s.db) {

@@ -221,7 +221,7 @@ func (s *Service) MirroredDetail(id string, issue tracker.IssueID) (DetailView, 
 		case err != nil:
 			return DetailView{}, 0, fmt.Errorf("trackerapp: mark the body of %s opened: %w", issue, err)
 		case confirmed:
-			v, err := s.detailView(root, row, doc)
+			v, _, err := s.detailView(root, row, doc)
 			return v, b.Wall, err
 		}
 	}
@@ -274,27 +274,32 @@ func urlOf(row store.TrackerConnection, c tracker.Card) string {
 	return jiraprovider.IssueURL(row.Site, c.Key)
 }
 
-// detailView is doc as a view of connection row (detailViews).
-func (s *Service) detailView(root int64, row store.TrackerConnection, doc ticketDoc) (DetailView, error) {
-	views, err := s.detailViews(root, row, []ticketDoc{doc})
+// detailView is doc as a view of connection row, with the other issues
+// it shows (detailViews).
+func (s *Service) detailView(root int64, row store.TrackerConnection, doc ticketDoc) (DetailView, []tracker.IssueID, error) {
+	views, shows, err := s.detailViews(root, row, []ticketDoc{doc})
 	if err != nil {
-		return DetailView{}, err
+		return DetailView{}, nil, err
 	}
-	return views[0], nil
+	return views[0], shows[0], nil
 }
 
 // detailViews is each of docs as a view of connection row. The card is
 // the issue record's when the mirror keeps the issue, with the time its
 // status began as the record decided it; else the document's own, with
 // that time from the read's evidence (store.MirrorStatusSince). Its names
-// are from its own catalog and, for the IDs that leaves out, the
-// mirror's; its parent's key and title, and each linked issue's key,
-// title and status, from the mirror's card of it when the mirror keeps
-// one (else from the detail). The cards of every document are read in one
-// lookup, and then the names of every document in one, a store lookup's
-// bound at a time; a document linking more than that bound shows the rest
-// as it has them.
-func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ticketDoc) ([]DetailView, error) {
+// are the mirror's shared catalog's and, for the IDs that leaves out (a
+// comment's author no card names), its own catalog's; its parent's key
+// and title, and each linked issue's key, title and status, from the
+// mirror's card of it when the mirror keeps one (else from the detail).
+// The parent is the shown card's, so a parent another read changed since
+// the body's is looked up too. The cards of every document are read in
+// one lookup (and the parents only the record names in a second), and
+// then the names of every document in one, a store lookup's bound at a
+// time; a document linking more than that bound shows the rest as it has
+// them. It returns each view with the other issues it shows (showsOf of
+// the card it rendered), the dependencies its pump watches.
+func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ticketDoc) ([]DetailView, [][]tracker.IssueID, error) {
 	wants := make([][]string, len(docs))
 	var all idSet
 	for i, doc := range docs {
@@ -311,30 +316,53 @@ func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ti
 		}
 	}
 	mirrored := make(map[string]store.MirrorCard, len(all.ids))
-	for batch := range slices.Chunk(all.ids, readBatch) {
-		cards, err := s.store.ListMirrorCards(root, batch)
-		if err != nil {
-			return nil, fmt.Errorf("trackerapp: read the cards %d tickets show from the mirror: %w", len(docs), err)
+	lookup := func(ids []string) error {
+		for batch := range slices.Chunk(ids, readBatch) {
+			cards, err := s.store.ListMirrorCards(root, batch)
+			if err != nil {
+				return fmt.Errorf("trackerapp: read the cards %d tickets show from the mirror: %w", len(docs), err)
+			}
+			for _, m := range cards {
+				mirrored[m.IssueID] = m
+			}
 		}
-		for _, m := range cards {
-			mirrored[m.IssueID] = m
-		}
+		return nil
+	}
+	if err := lookup(all.ids); err != nil {
+		return nil, nil, err
 	}
 	shown := make([]shownDetail, len(docs))
+	var later idSet
+	for i, doc := range docs {
+		shown[i] = shownDetailOf(doc, wants[i], mirrored)
+		if p := string(shown[i].d.Card.Parent); p != "" && !slices.Contains(wants[i], p) {
+			wants[i] = append(wants[i], p)
+			if !all.seen[p] {
+				later.add(p)
+			}
+		}
+	}
+	if len(later.ids) > 0 {
+		if err := lookup(later.ids); err != nil {
+			return nil, nil, err
+		}
+	}
 	var users, statuses idSet
+	shows := make([][]tracker.IssueID, len(docs))
 	for i, doc := range docs {
 		shown[i] = shownDetailOf(doc, wants[i], mirrored)
 		shown[i].names(&users, &statuses)
+		shows[i] = showsOf(shown[i].d)
 	}
 	names, err := s.names(root, users.ids, statuses.ids)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	views := make([]DetailView, len(docs))
 	for i := range docs {
 		views[i] = shown[i].view(names, row)
 	}
-	return views, nil
+	return views, shows, nil
 }
 
 // shownDetail is a document with what the mirror's cards show of it: its
@@ -409,18 +437,24 @@ func (sd shownDetail) names(users, statuses *idSet) {
 	}
 }
 
-// view is the document's view on connection row, named from its own
-// catalog over mirrored, the mirror's names.
+// view is the document's view on connection row, named from mirrored,
+// the mirror's shared names, and its own catalog for the IDs mirrored
+// lacks: a user or status renamed with no issue update shows its new name
+// on the ticket as on the board.
 func (sd shownDetail) view(mirrored catalogNames, row store.TrackerConnection) DetailView {
 	d := sd.d
 	names := mirrored
 	if len(d.Users)+len(d.Statuses) > 0 {
 		names = catalogNames{users: maps.Clone(mirrored.users), statuses: maps.Clone(mirrored.statuses)}
 		for _, u := range d.Users {
-			names.users[string(u.ID)] = u
+			if _, ok := names.users[string(u.ID)]; !ok {
+				names.users[string(u.ID)] = u
+			}
 		}
 		for _, st := range d.Statuses {
-			names.statuses[string(st.ID)] = st
+			if _, ok := names.statuses[string(st.ID)]; !ok {
+				names.statuses[string(st.ID)] = st
+			}
 		}
 	}
 	card := cardView(d.Card, names)

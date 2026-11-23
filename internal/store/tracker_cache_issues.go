@@ -232,7 +232,7 @@ var mirrorCardConflictSQL = `
 	    type_id = excluded.type_id, type_level = excluded.type_level, status_id = excluded.status_id,
 	    assignee_id = excluded.assignee_id, priority_id = excluded.priority_id, parent_id = excluded.parent_id,
 	    created_at = excluded.created_at, updated_at = excluded.updated_at, resolved_at = excluded.resolved_at,
-	    read_at = excluded.read_at, data = excluded.data, sprint_set = excluded.sprint_set, ` + mirrorStatusKeptBy("excluded.status_id") + `
+	    read_at = excluded.read_at, data = excluded.data, sprint_set = excluded.sprint_set, ` + mirrorStatusKeptBy("excluded.status_id", "excluded.updated_at") + `
 	WHERE NOT ` + mirrorCardSupersededSQL("tracker_cache_issues", "excluded.updated_at", "excluded.read_at") + `
 	  AND ` + mirrorCardDiffersSQL("", func(column, _ string) string { return "excluded." + column }) + `
 	RETURNING ` + mirrorRecordAfterColumns
