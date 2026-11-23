@@ -233,7 +233,6 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 		"timeline.scopes.v1",
 		"timeline.digests.v1",
 		"sends-pending.v1",
-		"session-live.v1",
 		"flush-settlement.v1",
 		"thread-find.v1",
 		"pr-review-drafts.v1",

@@ -279,7 +279,7 @@ export function workflowActionRow(input: WorkflowActionRowInput): WorkflowAction
       // that the second one is pending.
       // Pause interrupts the members' turns and keeps their sessions; Pause
       // and End Sessions also ends those sessions (docs/specs/standing-agents.md,
-      // "Interrupt and end session").
+      // "Workflow pause and end sessions").
       const row: WorkflowActionButton[] = [
         { id: 'pause', label: 'Pause', variant: 'secondary' },
         { id: 'pause-end-sessions', label: 'Pause and End Sessions', variant: 'secondary' },
