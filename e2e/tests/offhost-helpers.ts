@@ -475,26 +475,134 @@ export function methodIdByName(name: string): number {
   throw new Error(`no bound method named ${name} in the generated bindings`);
 }
 
+/** The page-side record `trackPageCalls` keeps for the current document. */
+interface PageCallRecord {
+  /** Sockets the document opened through the tracked class. */
+  sockets: number;
+  /** Each call sent and not yet settled: id to method id. */
+  open: Map<string, number | string>;
+  /** The method of each call whose socket closed before its answer. */
+  closed: Array<number | string>;
+  /** Per probe marker: the first refresh call sent after the marked trigger, and whether it was answered. */
+  probes: Map<string, { asked: string; answered: boolean }>;
+}
+
+/** The marker a spec puts in a trigger event's payload for `PageCalls.refreshedAfter`. */
+export const PROBE_FIELD = 'aoProbe';
+
+/** A refresh the page runs when an event arrives: the event's channel and the method the refresh calls. */
+export interface PageRefresh {
+  trigger: string;
+  method: string;
+}
+
+export interface PageCalls {
+  /**
+   * Waits until every call the current document has sent (only `method`'s,
+   * when given) is answered or ended by its socket's close, then fails
+   * naming any call a close ended unanswered.
+   */
+  drain(message: string, method?: string): Promise<void>;
+  /**
+   * Whether the document sent the refresh's call after it received the
+   * refresh's trigger carrying `{ [PROBE_FIELD]: probe }`, and got its
+   * answer. A call the page sent before that trigger arrived does not count.
+   */
+  refreshedAfter(probe: string): Promise<boolean>;
+}
+
 /**
- * How many of the page's calls (only `method`'s, when given) are asked and
- * not yet answered, counted from now on. A poll of it reaching zero is the
- * barrier that every call a page timer started has landed.
+ * The page's calls as the page issues and settles them, recorded in the
+ * page at its WebSocket. A call counts from the moment the page sends it,
+ * so one a page timer sends inside a clock move is counted by the time the
+ * move returns; it settles at its answer, or at its socket's close, which
+ * is recorded rather than left open. Each document keeps its own record.
+ * Install it before the page opens, and after any `routeWebSocket` on the
+ * page: a routed socket is made by Playwright's own WebSocket class, and
+ * this wraps whichever class the page has when its documents start.
  */
-export function callsInFlight(page: Page, method?: string): () => number {
-  const methodId = method === undefined ? undefined : methodIdByName(method);
-  const open = new Set<string>();
-  page.on('websocket', (socket) => {
-    socket.on('framesent', ({ payload }) => {
-      if (typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
-      const sent = JSON.parse(payload) as { id?: string; methodId?: number };
-      if (methodId === undefined || sent.methodId === methodId) open.add(String(sent.id));
-    });
-    socket.on('framereceived', ({ payload }) => {
-      if (typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
-      open.delete(String((JSON.parse(payload) as { id?: string }).id));
-    });
+export async function trackPageCalls(page: Page, refresh?: PageRefresh): Promise<PageCalls> {
+  await page.addInitScript(({ refreshMethodId, trigger, probeField }) => {
+    const record: PageCallRecord = { sockets: 0, open: new Map(), closed: [], probes: new Map() };
+    (window as unknown as { __aoPageCalls: PageCallRecord }).__aoPageCalls = record;
+    type Event = { channel?: string; data?: Record<string, unknown> | null };
+    const Base = window.WebSocket;
+    class TrackedWebSocket extends Base {
+      private readonly calls = new Set<string>();
+      constructor(...args: ConstructorParameters<typeof WebSocket>) {
+        super(...args);
+        record.sockets++;
+        this.addEventListener('message', (message) => {
+          if (typeof message.data !== 'string') return;
+          const frame = JSON.parse(message.data) as { type?: string; id?: string; events?: Event[] } & Event;
+          if (frame.type === 'rpc') {
+            const id = String(frame.id);
+            if (!this.calls.delete(id)) return;
+            record.open.delete(id);
+            for (const probe of record.probes.values()) if (probe.asked === id) probe.answered = true;
+            return;
+          }
+          if (trigger === null) return;
+          const events = frame.type === 'event' ? [frame] : frame.type === 'batch' ? frame.events ?? [] : [];
+          for (const event of events) {
+            const marker = event.channel === trigger ? event.data?.[probeField] : undefined;
+            if (typeof marker === 'string' && !record.probes.has(marker)) record.probes.set(marker, { asked: '', answered: false });
+          }
+        });
+        this.addEventListener('close', () => {
+          for (const id of this.calls) {
+            record.closed.push(record.open.get(id) ?? '?');
+            record.open.delete(id);
+          }
+          this.calls.clear();
+        });
+      }
+      send(data: Parameters<WebSocket['send']>[0]): void {
+        if (typeof data === 'string' && data.startsWith('{"type":"rpc"')) {
+          const frame = JSON.parse(data) as { id?: string; methodId?: number; method?: string };
+          const id = String(frame.id);
+          this.calls.add(id);
+          record.open.set(id, frame.methodId ?? frame.method ?? '?');
+          if (refreshMethodId !== null && frame.methodId === refreshMethodId) {
+            for (const probe of record.probes.values()) if (probe.asked === '') probe.asked = id;
+          }
+        }
+        super.send(data);
+      }
+    }
+    window.WebSocket = TrackedWebSocket;
+  }, {
+    refreshMethodId: refresh === undefined ? null : methodIdByName(refresh.method),
+    trigger: refresh?.trigger ?? null,
+    probeField: PROBE_FIELD,
   });
-  return () => open.size;
+  const read = (methodId: number | null) => page.evaluate((only) => {
+    const record = (window as unknown as { __aoPageCalls?: PageCallRecord }).__aoPageCalls;
+    if (record === undefined) return { sockets: 0, open: 0, closed: [] as Array<number | string> };
+    const matches = (method: number | string) => only === null || method === only;
+    return {
+      sockets: record.sockets,
+      open: [...record.open.values()].filter(matches).length,
+      closed: record.closed.filter(matches),
+    };
+  }, methodId);
+  return {
+    async drain(message, method) {
+      const methodId = method === undefined ? null : methodIdByName(method);
+      await expect.poll(async () => (await read(methodId)).open, { message }).toBe(0);
+      const { sockets, closed } = await read(methodId);
+      if (sockets === 0) {
+        throw new Error(`${message}: the call tracker saw no socket; install trackPageCalls after the page's routeWebSocket`);
+      }
+      expect(closed.map((id) => (typeof id === 'number' ? methodNameById(id) : id)), `${message}: calls a socket close ended unanswered`).toEqual([]);
+    },
+    refreshedAfter(probe) {
+      return page.evaluate((marker) => {
+        const record = (window as unknown as { __aoPageCalls?: PageCallRecord }).__aoPageCalls;
+        return record?.probes.get(marker)?.answered === true;
+      }, probe);
+    },
+  };
 }
 
 // ---------------------------------------------------------------------

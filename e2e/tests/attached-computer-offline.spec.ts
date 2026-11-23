@@ -18,7 +18,7 @@ import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js
 import { headlessPairing } from './headless-pairing-helpers.js';
 import type { SeedResult } from './fixtures.js';
 import { expectProjectsMenuSays, watchProjectsQuiet } from './sidebar-quiet-helpers.js';
-import { callsInFlight, methodIdByName, methodNameById } from './offhost-helpers.js';
+import { methodNameById, PROBE_FIELD, trackPageCalls } from './offhost-helpers.js';
 
 // The unreachable settle (UNREACHABLE_SETTLE_MS). Ten seconds keeps the
 // window the dial ceiling below was sized for: the outage is watched from
@@ -49,33 +49,8 @@ function collect(page: Page): () => Counts {
   };
 }
 
-const TRIGGER = 'provider:background_tasks_changed';
-
-/**
- * The open pane's refresh as the page runs it: each time a page socket
- * receives the trigger, the workspace activity read the page sends after it
- * and its answer. Installed before the page opens, so it sees every socket.
- */
-function refreshesAfterTrigger(page: Page): () => number {
-  const method = methodIdByName('GetWorkspaceActivity');
-  let triggered = false;
-  const asked = new Set<string>();
-  let answered = 0;
-  page.on('websocket', (socket) => {
-    socket.on('framereceived', ({ payload }) => {
-      if (typeof payload !== 'string') return;
-      if (payload.includes(`"${TRIGGER}"`)) triggered = true;
-      if (!payload.startsWith('{"type":"rpc"')) return;
-      if (asked.delete(String((JSON.parse(payload) as { id?: string }).id))) answered++;
-    });
-    socket.on('framesent', ({ payload }) => {
-      if (!triggered || typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
-      const sent = JSON.parse(payload) as { id?: string; methodId?: number };
-      if (sent.methodId === method) asked.add(String(sent.id));
-    });
-  });
-  return () => answered;
-}
+// The open pane's refresh trigger, and the workspace read it refreshes with.
+const REFRESH = { trigger: 'provider:background_tasks_changed', method: 'GetWorkspaceActivity' };
 
 /**
  * Every call the page sends that names a draft placeholder (an id starting
@@ -102,8 +77,7 @@ test('an offline paired computer logs once per outage and a draft pane is never 
   let home: HarnessApp | undefined;
   let remote: HarnessApp | undefined;
   const drain = collect(page);
-  const refreshed = refreshesAfterTrigger(page);
-  const inFlight = callsInFlight(page);
+  const calls = await trackPageCalls(page, REFRESH);
   const draftAsked = placeholderCalls(page);
   try {
     home = await launchHarness({ env: harnessTiming({ 'unreachable-settle': `${SETTLE_MS}ms` }) });
@@ -157,18 +131,21 @@ test('an offline paired computer logs once per outage and a draft pane is never 
       });
     };
     // The open pane's refresh trigger, done once the page has read the
-    // workspace again after receiving it, so whatever that refresh logs is
-    // in before the console is drained.
+    // workspace again after receiving this trigger, so whatever that refresh
+    // logs is in before the console is drained. Each trigger carries a
+    // marker of its own, so a read the page made for another reason or an
+    // earlier trigger does not stand in for this one.
+    let pokes = 0;
     const poke = async () => {
-      const before = refreshed();
-      await home!.rpc('HarnessEmit', TRIGGER, { threadId });
-      await expect.poll(refreshed, { message: 'the page did not refresh the open pane on its trigger' }).toBeGreaterThan(before);
+      const probe = `refresh-${++pokes}`;
+      await home!.rpc('HarnessEmit', REFRESH.trigger, { threadId, [PROBE_FIELD]: probe });
+      await expect.poll(() => calls.refreshedAfter(probe), { message: `the page did not refresh the open pane on trigger ${probe}` }).toBe(true);
     };
     // A draft pane reads nothing on that trigger, so its reads are done once
     // every call the page made opening it is answered: a call that routed
     // its placeholder id would have failed, and logged, by then.
     const draftSettled = async () => {
-      await expect.poll(inFlight, { message: 'the draft pane\'s reads did not finish' }).toBe(0);
+      await calls.drain('the draft pane\'s reads did not finish');
       expect(draftAsked(), 'calls the page made for a draft placeholder').toEqual([]);
     };
 
