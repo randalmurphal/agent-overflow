@@ -11,7 +11,9 @@ lives in `internal/harness/containment`; callers own identity-checked shutdown.
   `Options.Dir` must be absolute; unsupported locking fails with
   `ErrUnsupported`.
 - Read available memory while holding the reservation lock. Use the operating
-  system's available-memory figure, such as Linux `MemAvailable`.
+  system's available-memory figure; on Linux, `MemAvailable` or the headroom
+  below the process's cgroup memory limits when lower
+  (`internal/hostmemory`).
 - Identify an owner by PID and process birth marker. Reject a supplied marker
   that does not match the live process.
 - Prune only verified-dead or identity-mismatched owners. Probe errors preserve

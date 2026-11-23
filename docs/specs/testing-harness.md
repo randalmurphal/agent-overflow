@@ -211,7 +211,9 @@ the backend's process tree — including the real engine an attended
 `AO_HARNESS_REAL_BROWSER=1` boot selects
 (`docs/specs/embedded-browser.md` §10), which is in-process on the native
 desktops and launcher-side on Windows. Worktree reservations use the same 2 GiB claim, so
-parallel harnesses cannot overcommit the host's available-memory floor.
+parallel harnesses cannot overcommit the host's available-memory floor. On
+Linux the available memory the governor reads is `MemAvailable`, or the
+headroom below the process's cgroup memory limits when that is lower.
 
 - Linux uses a private cgroup v2 with `memory.max=2 GiB`,
   `memory.swap.max=0`, and `memory.oom.group=1`. The child enters it through

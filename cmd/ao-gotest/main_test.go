@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,8 +39,19 @@ const (
 	// fakeStaleEnv is a test name whose bucket replaces its -o link, as the
 	// go command does when the binary is stale.
 	fakeStaleEnv = "AO_GOTEST_FAKE_STALE"
-	// fakeHoldEnv makes every run but the list step wait for a signal.
+	// fakeHoldEnv makes every run but the list step write a line and wait
+	// for a signal.
 	fakeHoldEnv = "AO_GOTEST_FAKE_HOLD"
+	// fakeChildEnv names a directory: every run but the list step starts
+	// children (fakeChild) that record themselves there, and leaves them
+	// running when it exits, as the go command leaves a test's processes.
+	fakeChildEnv = "AO_GOTEST_FAKE_CHILD"
+	// childEnv makes the binary such a child, recording itself in the
+	// directory it names, and childIgnoreEnv makes it ignore SIGTERM.
+	childEnv       = "AO_GOTEST_CHILD"
+	childIgnoreEnv = "AO_GOTEST_CHILD_IGNORE"
+	// graceEnv sets a leader's endGrace.
+	graceEnv = "AO_GOTEST_GRACE"
 	// proxyEnv makes the binary the go command it names, after the first
 	// bucket to start writes proxyEditEnv's file (see proxyGo).
 	proxyEnv     = "AO_GOTEST_PROXY"
@@ -57,6 +70,15 @@ const fakeLines = 40
 var fakeNames = []string{"TestA", "TestAB", "TestB", "TestC", "TestD", "TestE", "TestF", "TestG", "TestH", "TestI", "TestJ", "TestK"}
 
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == leaderArg {
+		if grace := os.Getenv(graceEnv); grace != "" {
+			endGrace = must(time.ParseDuration(grace))
+		}
+		os.Exit(lead(os.Args[2:], os.Stdin, os.Stderr))
+	}
+	if dir := os.Getenv(childEnv); dir != "" {
+		os.Exit(fakeChild(dir))
+	}
 	// The go command's first argument is its subcommand; this command's is
 	// the go command.
 	if len(os.Args) > 1 && os.Args[1] == "test" {
@@ -67,15 +89,15 @@ func TestMain(m *testing.M) {
 			os.Exit(proxyGo(real, os.Args[1:]))
 		}
 	}
-	if os.Getenv(mainEnv) != "" {
-		os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
-	}
 	if os.Getenv(orphanEnv) != "" {
-		if _, _, err := ownedtemp.Make("", runDirPrefix); err != nil {
+		if _, _, err := ownedtemp.Make(os.Getenv("GOTMPDIR"), runDirPrefix); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		os.Exit(0)
+	}
+	if os.Getenv(mainEnv) != "" {
+		os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 	}
 	os.Exit(m.Run())
 }
@@ -111,7 +133,10 @@ func fakeGo(log string, args []string) int {
 			fmt.Fprintln(os.Stderr, "list failed: a build error")
 			return status
 		}
-		if err := os.WriteFile(flagValue(args, "-o"), []byte("binary"), 0o755); err != nil {
+		// A list step takes a while, so a bucket started beside it would
+		// start before it ends.
+		time.Sleep(50 * time.Millisecond)
+		if err := errors.Join(os.WriteFile(flagValue(args, "-o"), []byte("binary"), 0o755), appendLog(log, "listed "+args[len(args)-1])); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 9
 		}
@@ -137,14 +162,24 @@ func fakeGo(log string, args []string) int {
 			return 9
 		}
 	}
+	if dir := os.Getenv(fakeChildEnv); dir != "" {
+		if err := startChildren(dir); err != nil {
+			fmt.Fprintln(os.Stderr, "start children:", err)
+			return 9
+		}
+	}
 	if os.Getenv(fakeHoldEnv) != "" {
 		signals := make(chan os.Signal, 1)
 		signal.Notify(signals, syscall.SIGTERM)
+		fmt.Println("before hold", name)
 		if err := appendLog(log, "held "+name); err != nil {
 			return 9
 		}
 		sig := <-signals
 		fmt.Println("got", sig, name)
+		if err := appendLog(log, "ended "+name); err != nil {
+			return 9
+		}
 		return 128 + int(sig.(syscall.Signal))
 	}
 	for i := range fakeLines {
@@ -159,6 +194,107 @@ func fakeGo(log string, args []string) int {
 		return 3
 	}
 	return 0
+}
+
+// startChildren starts the children of a fake run, each a fakeChild
+// recording itself in dir, and returns once each has: one in this
+// process's group and, on Linux, one in a group of its own, as a test
+// starts a provider, which only a subreaper finds once this process exits.
+func startChildren(dir string) error {
+	own := []bool{false}
+	if runtime.GOOS == "linux" {
+		own = append(own, true)
+	}
+	for _, group := range own {
+		child := exec.Command(os.Args[0])
+		child.Env = append(os.Environ(), childEnv+"="+dir)
+		child.SysProcAttr = &syscall.SysProcAttr{Setpgid: group}
+		if err := child.Start(); err != nil {
+			return err
+		}
+		started := filepath.Join(dir, strconv.Itoa(child.Process.Pid)+".started")
+		deadline := time.Now().Add(time.Minute)
+		for {
+			if _, err := os.Stat(started); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("child %d never started", child.Process.Pid)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	return nil
+}
+
+// fakeChild records that it started in dir, and when SIGTERM comes, unless
+// childIgnoreEnv is set, takes a while to clean up, records that it
+// exited, and exits.
+func fakeChild(dir string) int {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM)
+	marker := filepath.Join(dir, strconv.Itoa(os.Getpid()))
+	if err := os.WriteFile(marker+".started", nil, 0o600); err != nil {
+		return 9
+	}
+	for range signals {
+		if os.Getenv(childIgnoreEnv) == "" {
+			break
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := os.WriteFile(marker+".exited", nil, 0o600); err != nil {
+		return 9
+	}
+	return 128 + int(syscall.SIGTERM)
+}
+
+// recorded reads what the children recorded in dir: each one's pid, and
+// whether it recorded that it exited.
+func recorded(t *testing.T, dir string) map[int]bool {
+	t.Helper()
+	started, err := filepath.Glob(filepath.Join(dir, "*.started"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int]bool{}
+	for _, path := range started {
+		base := strings.TrimSuffix(path, ".started")
+		pid, err := strconv.Atoi(filepath.Base(base))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = os.Stat(base + ".exited")
+		got[pid] = err == nil
+	}
+	return got
+}
+
+// checkChildrenGone checks that at least least children recorded
+// themselves in dir, that each is gone, and, when exited, that each
+// recorded that it exited after its SIGTERM.
+func checkChildrenGone(t *testing.T, dir string, least int, exited bool) {
+	t.Helper()
+	got := recorded(t, dir)
+	if len(got) < least {
+		t.Fatalf("%d children started; want at least %d", len(got), least)
+	}
+	for pid, done := range got {
+		if exited && !done {
+			t.Errorf("child %d had not exited after its SIGTERM", pid)
+		}
+		if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("child %d is still running (%v)", pid, err)
+		}
+	}
+}
+
+// childrenPerRun is how many children startChildren starts.
+func childrenPerRun() int {
+	if runtime.GOOS == "linux" {
+		return 2
+	}
+	return 1
 }
 
 // proxyGo runs the go command real with args. The first bucket to start
@@ -195,11 +331,15 @@ func TestParseArgs(t *testing.T) {
 		{"", true, ""},
 		{"./a ./b", true, "./a ./b"},
 		{"-timeout 30m -count=1 ./a", true, "./a"},
-		{"-timeout 30m -count 1 -json -v ./a ./b", true, "./a ./b"},
-		{"./a -count 1 ./b --json", true, "./a ./b"},
-		{"--count=2 --json", true, ""},
+		{"-timeout 30m -count 1 -v ./a ./b", true, "./a ./b"},
+		{"./a -count 1 ./b --v", true, "./a ./b"},
+		{"--count=2 --short", true, ""},
 		{"-tags noremote -count=1 ./a", true, "./a"},
-		{"-tags=noremote -vet=off -short -failfast -shuffle on -skip TestX -p 4", true, ""},
+		{"-tags=noremote -vet=off -short -shuffle on -skip TestX", true, ""},
+		{"-failfast ./a", false, ""},
+		{"-json ./a", false, ""},
+		{"-p 4 ./a", false, ""},
+		{"-p=1", false, ""},
 		{"-timeout 30m -run TestX -count=1", false, ""},
 		{"-run=TestX", false, ""},
 		{"-list .", false, ""},
@@ -239,58 +379,183 @@ func TestParseArgs(t *testing.T) {
 
 func TestParseSplits(t *testing.T) {
 	t.Parallel()
-	splits, rest, err := parseSplits([]string{"-split=example/a=512", "-split", "example/b=64", "go", "test", "-split=x=1"})
+	splits, rest, err := parseSplits([]string{"-split=example/a=512,1024", "-split", "example/b=64,32", "go", "test", "-split=x=1,1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []split{{"example/a", 512 << 20}, {"example/b", 64 << 20}}
-	if !slices.Equal(splits, want) || !slices.Equal(rest, []string{"go", "test", "-split=x=1"}) {
+	want := []split{{"example/a", 512 << 20, 1024 << 20}, {"example/b", 64 << 20, 32 << 20}}
+	if !slices.Equal(splits, want) || !slices.Equal(rest, []string{"go", "test", "-split=x=1,1"}) {
 		t.Fatalf("splits %v, rest %q; want %v and the go command line", splits, rest, want)
 	}
-	for _, bad := range []string{"example/a", "example/a=", "=512", "example/a=0", "example/a=1.5", "example/a=-1"} {
+	for _, bad := range []string{"example/a", "example/a=", "=512,1", "example/a=512", "example/a=0,1", "example/a=1,0", "example/a=1.5,1", "example/a=-1,1", "example/a=1,2,3"} {
 		if _, _, err := parseSplits([]string{"-split=" + bad, "go", "test"}); err == nil {
 			t.Errorf("-split=%s parsed; want an error", bad)
 		}
 	}
 }
 
-// TestReserveWorkersRunsWhatTheGovernorGrantsAndAtLeastOne reserves
-// against a governor whose host has 2.5 units above its floor, then none:
-// two buckets at a time under one lease the release removes, then one at a
-// time with no lease.
-func TestReserveWorkersRunsWhatTheGovernorGrantsAndAtLeastOne(t *testing.T) {
+// TestGOFLAGSDecidesASplitAsTheCommandLineDoes: GOFLAGS splits a run only
+// when every flag it sets is one a bucket keeps or a build flag that
+// changes nothing but the binary, as make's -trimpath; a field the go
+// command would refuse leaves the run whole for it to report.
+func TestGOFLAGSDecidesASplitAsTheCommandLineDoes(t *testing.T) {
 	t.Parallel()
-	const unit, floor = 100 << 20, 1 << 30
-	memory := &fixedMemory{available: floor + 5*unit/2}
-	m, err := governor.New(governor.Options{Dir: t.TempDir(), AvailableFloorBytes: floor, Memory: memory})
+	for value, want := range map[string]bool{
+		"":                                  true,
+		"-trimpath":                         true,
+		" -trimpath\t-mod=mod -modcacherw ": true,
+		"-buildvcs=false -count=1 -v":       true,
+		"--count=1 -test.timeout=5m":        true,
+		"'-tags=a b' -short":                true,
+		"-run=^TestB$":                      false,
+		"-test.run=TestB":                   false,
+		"-trimpath -list=.":                 false,
+		"-json":                             false,
+		"-failfast":                         false,
+		"-p=1":                              false,
+		"-coverprofile=c.out":               false,
+		"-cover":                            false,
+		"-race":                             false,
+		"'-ldflags=-s -w'":                  false,
+		"-tags=a 'unterminated":             false,
+		"trimpath":                          false,
+	} {
+		if got := goflagsSplit(value); got != want {
+			t.Errorf("GOFLAGS=%q splits %v; want %v", value, got, want)
+		}
+	}
+}
+
+// TestReservationUnitsCapAtOnePackagesBuckets: a run reserves at most a
+// unit per core and at most one package's buckets, the largest first, the
+// first raised to the largest list step.
+func TestReservationUnitsCapAtOnePackagesBuckets(t *testing.T) {
+	t.Parallel()
+	app, store := split{"example/app", 1664 << 20, 2432 << 20}, split{"example/store", 640 << 20, 640 << 20}
+	repeat := func(first, rest uint64, n int) []uint64 {
+		return append([]uint64{first << 20}, slices.Repeat([]uint64{rest << 20}, n-1)...)
+	}
+	for _, tc := range []struct {
+		declared []split
+		cores    int
+		want     []uint64
+	}{
+		{[]split{app, store}, 24, repeat(2432, 1664, 8)},
+		{[]split{store, app}, 24, repeat(2432, 1664, 8)},
+		{[]split{app, store}, 4, repeat(2432, 1664, 4)},
+		{[]split{app, store}, 1, repeat(2432, 1664, 1)},
+		{[]split{store}, 24, repeat(640, 640, 8)},
+		{[]split{{"example/small", 100 << 20, 300 << 20}}, 2, repeat(300, 100, 2)},
+	} {
+		if got := reservationUnits(tc.declared, tc.cores); !slices.Equal(got, tc.want) {
+			t.Errorf("%v on %d cores: units %v; want %v", tc.declared, tc.cores, got, tc.want)
+		}
+	}
+}
+
+// fixedGovernor is a governor whose host has available bytes, with a
+// runner that asks it every 10ms, and the request a run makes.
+func fixedGovernor(t *testing.T, available uint64) (*fixedMemory, *governor.Manager, *runner, *lockedWriter, governor.Request) {
+	t.Helper()
+	memory := &fixedMemory{available: available}
+	m, err := governor.New(governor.Options{Dir: t.TempDir(), AvailableFloorBytes: 1 << 30, Memory: memory})
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := newRunner("go", &lockedWriter{}, &lockedWriter{})
-	req := governor.Request{RunID: "go-test", Worktree: t.TempDir(), DataRoot: t.TempDir(), OwnerPID: os.Getpid()}
-	leases := func() int {
-		t.Helper()
-		snap, err := m.Snapshot()
-		if err != nil {
-			t.Fatal(err)
+	stderr := &lockedWriter{}
+	r := must(newRunner("go", &lockedWriter{}, stderr))
+	t.Cleanup(r.close)
+	r.admitPoll = 10 * time.Millisecond
+	return memory, m, r, stderr, governor.Request{RunID: "go-test", Worktree: t.TempDir(), DataRoot: t.TempDir(), OwnerPID: os.Getpid()}
+}
+
+// TestAZeroGrantWaitsUntilAHolderReleases has another run hold all but
+// half a unit above the floor: the run says once why it waits and starts
+// no bucket until that run releases, then runs as many as fit.
+func TestAZeroGrantWaitsUntilAHolderReleases(t *testing.T) {
+	t.Parallel()
+	const unit, floor = 100 << 20, 1 << 30
+	_, m, r, stderr, req := fixedGovernor(t, floor+5*unit/2)
+	holder, err := m.Reserve(governor.Request{RunID: "holder", Worktree: "/elsewhere", DataRoot: t.TempDir(), OwnerPID: os.Getpid(), CeilingBytes: 2 * unit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type grant struct {
+		w       int
+		release func() error
+		err     error
+	}
+	granted := make(chan grant, 1)
+	go func() {
+		w, release, err := r.reserve(m, req, []uint64{unit, unit, unit, unit})
+		granted <- grant{w, release, err}
+	}()
+	deadline := time.Now().Add(time.Minute)
+	for !strings.Contains(stderr.String(), "waiting for memory") {
+		if time.Now().After(deadline) {
+			t.Fatal("the run never said it was waiting")
 		}
-		return len(snap.Leases)
+		time.Sleep(5 * time.Millisecond)
 	}
-	units := []uint64{unit, unit, unit, unit}
-	w, release, reserved := reserveWorkers(r, m, req, units)
-	if w != 2 || reserved != "200 MiB reserved" || leases() != 1 {
-		t.Fatalf("%d at a time (%s), %d leases; want 2 under one lease", w, reserved, leases())
+	select {
+	case g := <-granted:
+		t.Fatalf("granted %d (%v) while nothing fits; want a wait", g.w, g.err)
+	case <-time.After(100 * time.Millisecond):
 	}
-	if err := release(); err != nil || leases() != 0 {
-		t.Fatalf("release: %v, %d leases left; want none", err, leases())
+	want := "ao-gotest: waiting for memory for the buckets: one bucket needs 100 MiB and 50 MiB is free: 1274 MiB available less the 1024 MiB floor the host keeps and the 200 MiB other runs reserved (holder in /elsewhere holds 200 MiB)\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("stderr %q; want %q, once", got, want)
 	}
-	memory.available = floor - 1
-	w, release, reserved = reserveWorkers(r, m, req, units)
-	if w != 1 || !strings.HasPrefix(reserved, "no 100 MiB free") || leases() != 0 || release() != nil {
-		t.Fatalf("%d at a time (%s), %d leases; want 1 with no lease", w, reserved, leases())
+	if err := m.Release(holder); err != nil {
+		t.Fatal(err)
 	}
-	if len(r.notes) != 0 {
-		t.Fatalf("notes %q; want none for a grant of nothing", r.notes)
+	g := <-granted
+	if g.err != nil || g.w != 2 {
+		t.Fatalf("granted %d, %v once the holder released; want the 2 units that fit", g.w, g.err)
+	}
+	if err := g.release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestARefusalPastItsBoundFailsWithTheReason: a run that nothing frees
+// for fails with the reason once its wait is over, holding no lease.
+func TestARefusalPastItsBoundFailsWithTheReason(t *testing.T) {
+	t.Parallel()
+	const unit, floor = 100 << 20, 1 << 30
+	_, m, r, stderr, req := fixedGovernor(t, floor+unit/2)
+	r.admitWait = 50 * time.Millisecond
+	w, _, err := r.reserve(m, req, []uint64{unit})
+	if w != 0 || err == nil || !strings.HasPrefix(err.Error(), "no memory for the buckets after 50ms: one bucket needs 100 MiB and 50 MiB is free") {
+		t.Fatalf("reserve = %d, %v; want the refusal", w, err)
+	}
+	if got := strings.Count(stderr.String(), "waiting for memory"); got != 1 {
+		t.Fatalf("said it was waiting %d times; want once:\n%s", got, stderr.String())
+	}
+	if snap, err := m.Snapshot(); err != nil || len(snap.Leases) != 0 {
+		t.Fatalf("leases %v, %v; want none", snap.Leases, err)
+	}
+}
+
+// TestASignalEndsTheWaitForMemory: a signal while the run waits ends the
+// wait at once.
+func TestASignalEndsTheWaitForMemory(t *testing.T) {
+	t.Parallel()
+	const unit, floor = 100 << 20, 1 << 30
+	_, m, r, _, req := fixedGovernor(t, floor)
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := r.reserve(m, req, []uint64{unit})
+		done <- err
+	}()
+	r.signal(syscall.SIGTERM)
+	select {
+	case err := <-done:
+		if !errors.Is(err, errStopped) {
+			t.Fatalf("reserve = %v; want it stopped", err)
+		}
+	case <-time.After(time.Minute):
+		t.Fatal("the wait went on after the signal")
 	}
 }
 
@@ -308,7 +573,9 @@ func fakeRunner(t *testing.T, env ...string) (r *runner, stdout, stderr *lockedW
 		t.Setenv(name, value)
 	}
 	stdout, stderr = &lockedWriter{}, &lockedWriter{}
-	return newRunner(os.Args[0], stdout, stderr), stdout, stderr, log
+	r = must(newRunner(os.Args[0], stdout, stderr))
+	t.Cleanup(r.close)
+	return r, stdout, stderr, log
 }
 
 // calls are the fake's logged calls, sorted, without the hold lines.
@@ -316,7 +583,7 @@ func calls(t *testing.T, log string) []string {
 	t.Helper()
 	var got []string
 	for line := range strings.Lines(readFile(t, log)) {
-		if !strings.HasPrefix(line, "held ") {
+		if !strings.HasPrefix(line, "held ") && !strings.HasPrefix(line, "ended ") && !strings.HasPrefix(line, "listed ") {
 			got = append(got, strings.TrimSuffix(line, "\n"))
 		}
 	}
@@ -330,7 +597,7 @@ func testPlan(t *testing.T, dir string, unit uint64) runPlan {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return plan(inv, []split{{"example/split", unit}}, []string{"example/whole"}, dir)
+	return plan(inv, []split{{"example/split", unit, unit}}, []string{"example/whole"}, dir)
 }
 
 // wantCalls are the calls the plan of testPlan makes: the list step, one
@@ -372,6 +639,38 @@ func TestASplitRunPrintsWholeLinesAndEachBucketWhole(t *testing.T) {
 	checkBlocks(t, "stderr", stderr.String(), "err", blocks, false)
 	if info, err := os.Stat(filepath.Join(dir, "0-split.test")); err != nil || info.Mode().Perm() != 0o555 {
 		t.Fatalf("the shared binary: %v, %v; want it read-only", info, err)
+	}
+}
+
+// TestEveryListStepRunsBeforeAnyBucket splits two packages: both list
+// steps end, one after the other, before the first bucket starts, so no
+// link runs beside a bucket the reservation counts.
+func TestEveryListStepRunsBeforeAnyBucket(t *testing.T) {
+	r, _, _, log := fakeRunner(t)
+	inv, err := parseArgs([]string{"go", "test", "-count=1", "example/split", "example/other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := plan(inv, []split{{"example/split", 1 << 40, 1 << 40}, {"example/other", 1 << 40, 1 << 40}}, nil, t.TempDir())
+	if status := r.run(p, 8); status != 0 {
+		t.Fatalf("status %d", status)
+	}
+	var order []string
+	for line := range strings.Lines(readFile(t, log)) {
+		switch {
+		case strings.HasPrefix(line, "listed "):
+			order = append(order, strings.TrimSpace(line))
+		case strings.Contains(line, " -list . "):
+			order = append(order, "list "+strings.Fields(line)[len(strings.Fields(line))-1])
+		case strings.Contains(line, " -run "):
+			if len(order) == 0 || order[len(order)-1] != "bucket" {
+				order = append(order, "bucket")
+			}
+		}
+	}
+	want := []string{"list example/split|", "listed example/split", "list example/other|", "listed example/other", "bucket"}
+	if !slices.Equal(order, want) {
+		t.Fatalf("order %q; want %q\n%s", order, want, readFile(t, log))
 	}
 }
 
@@ -473,24 +772,31 @@ func TestABucketOverItsUnitIsNamedAtTheEnd(t *testing.T) {
 		}
 		r.printNotes()
 		lines := strings.Split(strings.TrimSuffix(stderr.String(), "\n"), "\n")
-		last := lines[len(lines)-1]
-		if named := strings.HasPrefix(last, "ao-gotest: example/split: a bucket's largest process reached ") && strings.HasSuffix(last, fmt.Sprintf(" MiB, over the %d MiB its -split declares; raise it in GO_TEST_SPLIT in the Makefile", tc.unit>>20)); named != tc.named {
-			t.Errorf("unit %d MiB: last line %q; named %v, want %v", tc.unit>>20, last, named, tc.named)
+		over := fmt.Sprintf(" MiB, over the %d MiB its -split declares; raise it in GO_TEST_SPLIT in the Makefile", tc.unit>>20)
+		bucket := len(lines) > 0 && strings.HasPrefix(lines[len(lines)-1], "ao-gotest: example/split: a bucket's largest process reached ") && strings.HasSuffix(lines[len(lines)-1], over)
+		list := len(lines) > 1 && strings.HasPrefix(lines[len(lines)-2], "ao-gotest: example/split: its list step's largest process reached ") && strings.HasSuffix(lines[len(lines)-2], over)
+		if bucket != tc.named || list != tc.named {
+			t.Errorf("unit %d MiB: last lines %q; bucket and list step named %v and %v, want %v", tc.unit>>20, lines[max(0, len(lines)-2):], bucket, list, tc.named)
 		}
 	}
 }
 
 // TestASignalReachesEveryRunningProcessAndStartsNoMore holds every run
-// open, signals the runner and checks that each running `go test` got the
-// signal and ended with it, and that no queued bucket started after it.
+// open, each with children that outlive it unless they are signaled too,
+// signals the runner, and checks that each running `go test` and every
+// child got the signal and ended with it, that the run ended only after
+// they had, and that no queued bucket started after it. While the
+// buckets hold, what each wrote is in its file in the run's directory.
 func TestASignalReachesEveryRunningProcessAndStartsNoMore(t *testing.T) {
-	r, stdout, _, log := fakeRunner(t, fakeHoldEnv+"=1")
+	kids := t.TempDir()
+	r, stdout, _, log := fakeRunner(t, fakeHoldEnv+"=1", fakeChildEnv+"="+kids)
+	dir := t.TempDir()
 	done := make(chan int)
 	// Two slots for more buckets: the rest are queued when the signal
 	// comes.
-	go func() { done <- r.run(testPlan(t, t.TempDir(), 1<<40), 2) }()
+	go func() { done <- r.run(testPlan(t, dir, 1<<40), 2) }()
 	// The unsplit run and the buckets in the two slots hold, each once its
-	// signal handler is set.
+	// children and its signal handler are set.
 	deadline := time.Now().Add(time.Minute)
 	for strings.Count(readFile(t, log), "held ") < 3 {
 		if time.Now().After(deadline) {
@@ -498,12 +804,25 @@ func TestASignalReachesEveryRunningProcessAndStartsNoMore(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+	outputs, err := filepath.Glob(filepath.Join(dir, "0-split-*.test.out"))
+	if err != nil || len(outputs) != 2 {
+		t.Fatalf("output files %v, %v; want the two running buckets'", outputs, err)
+	}
+	for _, path := range outputs {
+		if got := readFile(t, path); !strings.HasPrefix(got, "before hold bucket ") {
+			t.Fatalf("%s holds %q; want what its bucket wrote so far", path, got)
+		}
+	}
 	r.signal(syscall.SIGTERM)
 	var status int
 	select {
 	case status = <-done:
 	case <-time.After(time.Minute):
 		t.Fatal("the runner did not end after the signal")
+	}
+	checkChildrenGone(t, kids, 3*childrenPerRun(), true)
+	if got := len(recorded(t, kids)); got != 3*childrenPerRun() {
+		t.Errorf("%d children started; want those of the 3 runs that held", got)
 	}
 	if status != 128+int(syscall.SIGTERM) {
 		t.Errorf("status %d; want %d", status, 128+int(syscall.SIGTERM))
@@ -516,58 +835,121 @@ func TestASignalReachesEveryRunningProcessAndStartsNoMore(t *testing.T) {
 	}
 }
 
-// TestARunThatSplitsNothingIsTheOneGoTest runs the command for runs it must
-// not split and checks that each replaced itself with the `go test` command
-// line it was given, in an environment it did not change; and that one
-// that splits reserves in its own governor, lists the package first, and
-// leaves no directory of its own or of a run that was killed.
-func TestARunThatSplitsNothingIsTheOneGoTest(t *testing.T) {
-	// The command finds this binary as its go command.
+// TestAGoTestThatLeavesProcessesHasThemEndedAndNamed: a `go test` that
+// exits leaving children that ignore SIGTERM has them killed once the
+// grace has passed, before its run ends, and they are named.
+func TestAGoTestThatLeavesProcessesHasThemEndedAndNamed(t *testing.T) {
+	kids := t.TempDir()
+	r, _, stderr, _ := fakeRunner(t, fakeChildEnv+"="+kids, childIgnoreEnv+"=1", graceEnv+"=100ms")
+	inv, err := parseArgs([]string{"go", "test", "example/whole"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := r.run(plan(inv, nil, []string{"example/whole"}, t.TempDir()), 1); status != 0 {
+		t.Fatalf("status %d; want the go test's 0", status)
+	}
+	checkChildrenGone(t, kids, childrenPerRun(), false)
+	if out := stderr.String(); !strings.Contains(out, "ao-gotest: the go test left ") || !strings.Contains(out, "which were ended: ") {
+		t.Fatalf("stderr:\n%s\nwant the processes it left named", out)
+	}
+}
+
+// commandEnv is the environment of this command run as `make go-test` runs
+// it, with this binary as its go command and the governor in a home of its
+// own, and gotmp as GOTMPDIR, and the command line make gives it.
+func commandEnv(t *testing.T, gotmp string, args ...string) *exec.Cmd {
+	t.Helper()
 	bin := t.TempDir()
 	if err := os.Symlink(os.Args[0], filepath.Join(bin, "go")); err != nil {
 		t.Fatal(err)
 	}
-	// The governor's directory is under the cache directory of HOME.
-	home := t.TempDir()
-	env := append(slices.DeleteFunc(os.Environ(), func(kv string) bool {
-		return strings.HasPrefix(kv, "PATH=") || strings.HasPrefix(kv, "HOME=") || strings.HasPrefix(kv, "XDG_CACHE_HOME=")
-	}), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "HOME="+home, mainEnv+"=1", markEnv+"=kept")
-	const split, whole = "example/split", "example/whole"
+	command := exec.Command(os.Args[0], append([]string{"-split=" + splitPkg + "=1,1", "go", "test"}, args...)...)
+	command.Dir = t.TempDir()
+	command.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		for _, name := range []string{"PATH", "HOME", "XDG_CACHE_HOME", "GOFLAGS", "GOENV", "GOTMPDIR", "TMPDIR"} {
+			if strings.HasPrefix(kv, name+"=") {
+				return true
+			}
+		}
+		return false
+	}), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "HOME="+t.TempDir(), "GOENV=off",
+		"GOTMPDIR="+gotmp, "TMPDIR="+t.TempDir(), mainEnv+"=1", markEnv+"=kept")
+	return command
+}
+
+const splitPkg, wholePkg = "example/split", "example/whole"
+
+// leases reads the reservations of the governor in home.
+func leases(t *testing.T, home string) []governor.Lease {
+	t.Helper()
+	m, err := governor.New(governor.Options{Dir: filepath.Join(home, ".cache", "agent-overflow", "harness-governor")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := m.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snap.Leases
+}
+
+func envValue(command *exec.Cmd, name string) string {
+	for _, kv := range slices.Backward(command.Env) {
+		if value, ok := strings.CutPrefix(kv, name+"="); ok {
+			return value
+		}
+	}
+	return ""
+}
+
+// TestARunThatSplitsNothingIsTheOneGoTest runs the command for runs it must
+// not split and checks that each replaced itself with the `go test` command
+// line it was given, in an environment it did not change; and that one
+// that splits, under make's GOFLAGS, reserves in its own governor, lists
+// the package first into a directory on GOTMPDIR, and leaves no directory
+// of its own or of a run that was killed.
+func TestARunThatSplitsNothingIsTheOneGoTest(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		args  []string
-		split bool
+		name    string
+		args    []string
+		goflags string
+		split   bool
 	}{
-		{name: "a narrowed run", args: []string{"-timeout", "30m", "-run", "TestX", "-count=1", split}},
-		{name: "a profile", args: []string{"-cpuprofile", "cpu.out", split}},
-		{name: "no package is declared", args: []string{"-timeout", "30m", "-count=1", whole}},
-		{name: "a package is declared", args: []string{"-timeout", "30m", "-count=1", split}, split: true},
+		{name: "a narrowed run", args: []string{"-timeout", "30m", "-run", "TestX", "-count=1", splitPkg}},
+		{name: "a profile", args: []string{"-cpuprofile", "cpu.out", splitPkg}},
+		{name: "JSON", args: []string{"-json", splitPkg}},
+		{name: "fail fast", args: []string{"-failfast", splitPkg}},
+		{name: "a build parallelism", args: []string{"-p", "1", splitPkg}},
+		{name: "GOFLAGS narrows the run", args: []string{"-count=1", splitPkg}, goflags: "-trimpath -run=^TestB$"},
+		{name: "GOFLAGS asks for JSON", args: []string{"-count=1", splitPkg}, goflags: "-json"},
+		{name: "no package is declared", args: []string{"-timeout", "30m", "-count=1", wholePkg}},
+		{name: "a package is declared", args: []string{"-timeout", "30m", "-count=1", splitPkg}, goflags: "-trimpath -count=1", split: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := filepath.Join(t.TempDir(), "calls")
-			tmp := t.TempDir()
+			gotmp := t.TempDir()
+			command := commandEnv(t, gotmp, tc.args...)
+			command.Env = append(command.Env, fakeEnv+"="+log, "GOFLAGS="+tc.goflags)
 			orphan := exec.Command(os.Args[0])
-			orphan.Env = append(os.Environ(), orphanEnv+"=1", "TMPDIR="+tmp)
+			orphan.Env = append(slices.Clone(command.Env), orphanEnv+"=1")
 			if out, err := orphan.CombinedOutput(); err != nil {
 				t.Fatalf("%v\n%s", err, out)
 			}
-			// The command line make go-test gives it.
-			command := exec.Command(os.Args[0], append([]string{"-split=" + split + "=1", "go", "test"}, tc.args...)...)
-			command.Dir = t.TempDir()
-			command.Env = append(slices.Clone(env), fakeEnv+"="+log, "TMPDIR="+tmp)
 			out, err := command.CombinedOutput()
 			if err != nil {
 				t.Fatalf("%v\n%s", err, out)
 			}
 			got := calls(t, log)
 			if tc.split {
-				if len(got) != 1+len(wantCalls(""))-2 || !slices.ContainsFunc(got, func(call string) bool {
-					return strings.Contains(call, " -list . "+split+"|kept")
-				}) || !strings.Contains(string(out), "ao-gotest: "+split+": 8 buckets each, ") {
-					t.Fatalf("calls %q\n%s\nwant the list step and the buckets", got, out)
+				binary := regexp.MustCompile(` -o ` + regexp.QuoteMeta(gotmp) + `/` + runDirPrefix + `[^/ ]+/0-split\.test -list \. ` + splitPkg + `\|kept$`)
+				if len(got) != 1+len(wantCalls(""))-2 || !slices.ContainsFunc(got, binary.MatchString) || !strings.Contains(string(out), "ao-gotest: "+splitPkg+": 8 buckets each, ") {
+					t.Fatalf("calls %q\n%s\nwant the list step into GOTMPDIR, and the buckets", got, out)
 				}
-				if left, err := filepath.Glob(filepath.Join(tmp, runDirPrefix+"*")); err != nil || len(left) != 0 {
+				if left, err := filepath.Glob(filepath.Join(gotmp, runDirPrefix+"*")); err != nil || len(left) != 0 {
 					t.Fatalf("left %v, %v; want the run's directory and the killed run's removed", left, err)
+				}
+				if held := leases(t, envValue(command, "HOME")); len(held) != 0 {
+					t.Fatalf("leases %v; want the run's released", held)
 				}
 				return
 			}
@@ -575,6 +957,77 @@ func TestARunThatSplitsNothingIsTheOneGoTest(t *testing.T) {
 			want := "go test " + strings.Join(tc.args, " ") + "|kept"
 			if len(got) != 1 || got[0] != want {
 				t.Fatalf("calls %q; want [%q]", got, want)
+			}
+		})
+	}
+}
+
+// TestARunThatIsSignaledOrKilledEndsEveryProcessOfIt holds the buckets of
+// a run of the command, with children that outlive their `go test` unless
+// they are signaled too. Signaled, the command exits only once each child
+// has, and then its reservation and directory are gone. Killed outright,
+// every child still gets its SIGTERM.
+func TestARunThatIsSignaledOrKilledEndsEveryProcessOfIt(t *testing.T) {
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL} {
+		t.Run(sig.String(), func(t *testing.T) {
+			log := filepath.Join(t.TempDir(), "calls")
+			kids, gotmp := t.TempDir(), t.TempDir()
+			command := commandEnv(t, gotmp, "-count=1", splitPkg)
+			command.Env = append(command.Env, fakeEnv+"="+log, fakeHoldEnv+"=1", fakeChildEnv+"="+kids)
+			out := &lockedWriter{}
+			command.Stdout, command.Stderr = out, out
+			if err := command.Start(); err != nil {
+				t.Fatal(err)
+			}
+			exited := make(chan error, 1)
+			go func() { exited <- command.Wait() }()
+			// The run is admitted at least one bucket; each that starts holds.
+			deadline := time.Now().Add(time.Minute)
+			for strings.Count(readFile(t, log), "held ") < 1 {
+				if time.Now().After(deadline) {
+					t.Fatalf("no bucket held:\n%s\n%s", readFile(t, log), out.String())
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			if err := command.Process.Signal(sig); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			select {
+			case err = <-exited:
+			case <-time.After(time.Minute):
+				t.Fatalf("the command did not end after %v\n%s", sig, out.String())
+			}
+			if sig == syscall.SIGKILL {
+				// Each leader reads the end of its lifeline and ends its tree:
+				// every run that held ends, and every child exits and is
+				// reaped.
+				deadline := time.Now().Add(time.Minute)
+				for {
+					log := readFile(t, log)
+					got := recorded(t, kids)
+					gone := !slices.ContainsFunc(slices.Collect(maps.Keys(got)), func(pid int) bool { return syscall.Kill(pid, 0) == nil })
+					if gone && strings.Count(log, "ended ") == strings.Count(log, "held ") && !slices.Contains(slices.Collect(maps.Values(got)), false) {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("after the command was killed: children %v\n%s", got, log)
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				checkChildrenGone(t, kids, childrenPerRun(), true)
+				return
+			}
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 128+int(syscall.SIGTERM) {
+				t.Fatalf("exit %v; want status %d\n%s", err, 128+int(syscall.SIGTERM), out.String())
+			}
+			checkChildrenGone(t, kids, childrenPerRun(), true)
+			if left, err := filepath.Glob(filepath.Join(gotmp, runDirPrefix+"*")); err != nil || len(left) != 0 {
+				t.Fatalf("left %v, %v; want the run's directory removed", left, err)
+			}
+			if held := leases(t, envValue(command, "HOME")); len(held) != 0 {
+				t.Fatalf("leases %v; want the run's released", held)
 			}
 		})
 	}
@@ -606,7 +1059,7 @@ func fixturePlan(t *testing.T, goCommand string) runPlan {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return plan(inv, []split{{"example.com/fixture/split", 1 << 40}}, nil, t.TempDir())
+	return plan(inv, []split{{"example.com/fixture/split", 1 << 40, 1 << 40}}, nil, t.TempDir())
 }
 
 // fixtureRun is one run's output, bucket by bucket.
@@ -620,7 +1073,8 @@ type fixtureRun struct {
 func runFixture(t *testing.T, goCommand string, w int) fixtureRun {
 	t.Helper()
 	out := &lockedWriter{}
-	r := newRunner(goCommand, out, out)
+	r := must(newRunner(goCommand, out, out))
+	t.Cleanup(r.close)
 	status := r.run(fixturePlan(t, goCommand), w)
 	run := fixtureRun{status: status, buckets: map[int]string{}, out: out.String()}
 	header := regexp.MustCompile(`(?m)^ao-gotest: example.com/fixture/split bucket (\d) of 8\n`)
@@ -734,7 +1188,8 @@ func TestABucketThatBuildsItsOwnBinaryIsFailedAndTheSharedOneIsKept(t *testing.T
 	t.Setenv(proxyEnv, goCommand)
 	t.Setenv(proxyEditEnv, source+"="+strings.Replace(string(before), "Version = 1", "Version = 2", 1))
 	out := &lockedWriter{}
-	r := newRunner(os.Args[0], out, out)
+	r := must(newRunner(os.Args[0], out, out))
+	t.Cleanup(r.close)
 	p := fixturePlan(t, os.Args[0])
 	binary := p.split[0].binary
 	status := r.run(p, 2)

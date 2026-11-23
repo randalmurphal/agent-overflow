@@ -66,67 +66,6 @@ func TestRAMTempAdmission(t *testing.T) {
 	}
 }
 
-func TestParseMeminfo(t *testing.T) {
-	meminfo := []byte("MemTotal:       53457840 kB\nMemFree:         8651028 kB\nMemAvailable:   47887028 kB\nBuffers: 1 kB\n")
-	for key, want := range map[string]uint64{"MemAvailable": 47887028 << 10, "MemTotal": 53457840 << 10} {
-		if got, err := parseMeminfo(meminfo, key); err != nil || got != want {
-			t.Fatalf("parseMeminfo(%s) = %d, %v; want %d", key, got, err, want)
-		}
-	}
-	for _, bad := range []string{"MemTotal: 1 kB\n", "MemAvailable: lots kB\n", "MemAvailable: 12 MB\n"} {
-		if _, err := parseMeminfo([]byte(bad), "MemAvailable"); err == nil {
-			t.Fatalf("parseMeminfo(%q) accepted", bad)
-		}
-	}
-	// The host's own files parse.
-	if m, err := readMemoryLimits(); err != nil || m.total == 0 || m.available == 0 {
-		t.Fatalf("readMemoryLimits = %+v, %v", m, err)
-	}
-}
-
-// TestCgroupMemoryLimit: the lowest limit on the cgroup's path counts, v1
-// when its memory controller is mounted, else v2; "max", a missing file
-// and no cgroup at all set none, and an unreadable value is an error.
-func TestCgroupMemoryLimit(t *testing.T) {
-	root := t.TempDir()
-	write := func(rel, value string) {
-		t.Helper()
-		path := filepath.Join(root, rel)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(value+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write("user.slice/memory.max", "17179869184")
-	write("user.slice/session/memory.max", "max")
-	write("user.slice/session/app/memory.max", "34359738368")
-	write("memory/docker/abc/memory.limit_in_bytes", "8589934592")
-	write("memory/docker/memory.limit_in_bytes", "9223372036854771712")
-	write("broken/memory.max", "lots")
-	for _, tc := range []struct {
-		name, cgroup string
-		want         uint64
-		fails        bool
-	}{
-		{name: "v2 ancestor lowest", cgroup: "0::/user.slice/session/app\n", want: 16 << 30},
-		{name: "v2 none set", cgroup: "0::/other/leaf\n"},
-		{name: "v2 root", cgroup: "0::/\n"},
-		{name: "v1 memory controller", cgroup: "12:pids:/docker/abc\n4:cpu,memory:/docker/abc\n0::/\n", want: 8 << 30},
-		{name: "v1 unlimited", cgroup: "4:memory:/docker\n", want: 9223372036854771712},
-		{name: "no cgroup", cgroup: ""},
-		{name: "unreadable value", cgroup: "0::/broken\n", fails: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := cgroupMemoryLimit([]byte(tc.cgroup), root)
-			if (err != nil) != tc.fails || got != tc.want {
-				t.Fatalf("cgroupMemoryLimit = %d, %v; want %d, failure %v", got, err, tc.want, tc.fails)
-			}
-		})
-	}
-}
-
 func isTmpfs(t *testing.T, dir string) bool {
 	t.Helper()
 	var stat unix.Statfs_t
