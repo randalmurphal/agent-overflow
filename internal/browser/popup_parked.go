@@ -22,14 +22,15 @@ import (
 // its adoption, at its page's close (removeClosedPage), or after
 // popupParkTimeout if neither comes, and is remembered (popupFate), so a
 // download the popup starts after it goes the same way at once
-// (admitLate). Where a download goes is decided, and that page's download
-// log taken, in one m.mu hold (holdParkedOwner), the hold every page's
-// departure ends its log in, so an opener leaving at any point of that
-// listing finds the row in its log or has already left as the popup's
-// carrier. The tab
-// and its downloads are listed in one m.parkMu hold, which a page's close
-// also takes (removeClosedPage), so a close never takes the tab before the
-// downloads, with their newest progress, are in it. A download whose
+// (admitLate). Every page's departure ends its log in an m.mu hold
+// (pageLeftLocked), so a download is listed with its page chosen and its
+// log taken in one m.mu hold: an adopted popup's in the hold that lists
+// its tab (listAdoptedParkedLocked), any other in holdParkedOwner's. A
+// page leaving at any point after finds the row in its log, or, for an
+// opener, has already left as the popup's carrier. The newest progress of
+// a download listed in its adopted tab is applied after that hold, still
+// in m.parkMu; a row whose newest progress is its end waits for that end
+// across a departure (addParkedRow). A download whose
 // workspace or a bound refuses it is refused, and one no listed page, open
 // jar or workspace can own yet is unowned (parkDownload): either way its
 // engine ends it (downloadAdmission), the file AO keeps for it (staged or
@@ -333,6 +334,26 @@ func (m *Manager) resolveParked(handle ids.PageHandle, p *managedPage, openers .
 
 // resolveParkedLocked is resolveParked for a caller that holds m.parkMu.
 func (m *Manager) resolveParkedLocked(handle ids.PageHandle, p *managedPage, openers ...ids.PageHandle) {
+	fate, popup := m.takeParkedLocked(handle, p, openers)
+	if popup == nil {
+		return
+	}
+	for _, d := range popup.downloads {
+		placed, discard, canceled := m.placeParked(handle, fate, d, true)
+		switch {
+		case !placed:
+			log.Printf("browser: download %s of popup %s is listed in no tab: no page that opened the popup is open", d.start.ID, handle)
+			m.refuseParked(d)
+		case canceled:
+			m.stopRefused(d, discard)
+		}
+	}
+}
+
+// takeParkedLocked records the fate of popup handle (resolveParked) and
+// takes what it parked, nil for nothing: the downloads are no longer
+// parked, and the caller lists each. The caller holds m.parkMu.
+func (m *Manager) takeParkedLocked(handle ids.PageHandle, p *managedPage, openers []ids.PageHandle) (popupFate, *parkedPopup) {
 	fate, _ := m.fates().get(handle)
 	if p != nil {
 		fate.listed = p.driver.Handle()
@@ -348,19 +369,72 @@ func (m *Manager) resolveParkedLocked(handle ids.PageHandle, p *managedPage, ope
 		fate.openers = mergeOpeners(fate.openers, popup.openers)
 	}
 	m.fates().put(handle, fate)
+	return fate, popup
+}
+
+// adoptedDownload is a parked download listed in its adopted popup's tab
+// (listAdoptedParkedLocked): the note of its row's start, and the newest
+// progress it parked, nil for none, both still to be published.
+type adoptedDownload struct {
+	start  downloadNote
+	newest *downloadProgress
+}
+
+// listAdoptedParkedLocked records that popup handle, opened by opener, is
+// listed as p, and adds a row to p's log for each download it parked, in
+// the m.mu hold that lists p (commitPopup): every departure of p comes
+// after, and settles the rows as it settles any of p's (pageLeftLocked).
+// The caller publishes the answer once m.mu is released
+// (publishAdoptedParked). The caller holds m.parkMu and m.mu.
+func (m *Manager) listAdoptedParkedLocked(handle ids.PageHandle, p *managedPage, opener ids.PageHandle) []adoptedDownload {
+	_, popup := m.takeParkedLocked(handle, p, []ids.PageHandle{opener})
 	if popup == nil {
-		return
+		return nil
 	}
+	held := p.downloads.hold()
+	defer held.release()
+	listed := make([]adoptedDownload, 0, len(popup.downloads))
 	for _, d := range popup.downloads {
-		placed, discard, canceled := m.placeParked(handle, fate, d, true)
-		switch {
-		case !placed:
-			log.Printf("browser: download %s of popup %s is listed in no tab: no page that opened the popup is open", d.start.ID, handle)
-			m.refuseParked(d)
-		case canceled:
-			m.stopRefused(d, discard)
+		listed = append(listed, adoptedDownload{start: m.addParkedRow(p, held, d, downloadSource(p, d.start)), newest: d.newest})
+	}
+	return listed
+}
+
+// publishAdoptedParked applies each listed download's newest progress to
+// its row wherever the row is now (applyDownloadProgress): in its tab, or,
+// once the tab left, in the leave that waits for its end. Then it
+// publishes the row's start. The caller holds m.parkMu, so a later
+// progress lands after.
+func (m *Manager) publishAdoptedParked(listed []adoptedDownload) {
+	for _, d := range listed {
+		if d.newest != nil {
+			m.applyDownloadProgress(*d.newest)
+		}
+		m.publishDownloads(d.start)
+	}
+}
+
+// addParkedRow adds parked download d's row to p's log, held, and answers
+// the note of its start. The row takes d's file, its reservation and its
+// newest counts. If d's newest progress is its end, which its lister
+// applies after the row is added, the row waits for that end as a row
+// whose end its engine received does: a leave of p before the end is
+// applied leaves the row to it (departLocked).
+func (m *Manager) addParkedRow(p *managedPage, held *downloadLogHold, d *parkedDownload, source string) downloadNote {
+	entry := m.downloadEntry(d.start)
+	// Its bytes stay held, against the workspace they were taken from.
+	entry.reservation = quota.Take(&d.reservation)
+	entry.source, d.file = d.file, downloadFile{}
+	if newest := d.newest; newest != nil {
+		entry.Bytes = int64(newest.Received)
+		if newest.Total > 0 {
+			entry.TotalBytes = int64(newest.Total)
+		}
+		if !newest.State.running() {
+			entry.endReported = func() bool { return true }
 		}
 	}
+	return m.noteDownloadStartLocked(p, held.add(entry), source)
 }
 
 // placeParked lists d, a parked download of popup handle whose fate is
@@ -423,11 +497,7 @@ func (m *Manager) holdParkedOwner(handle ids.PageHandle, fate popupFate, live bo
 // that settled canceled.
 func (m *Manager) listParked(owner parkedOwner, d *parkedDownload) (discard downloadDiscard, canceled bool) {
 	p, held := owner.page, owner.held
-	entry := m.downloadEntry(d.start)
-	// Its bytes stay held, against the workspace they were taken from.
-	entry.reservation = quota.Take(&d.reservation)
-	entry.source, d.file = d.file, downloadFile{}
-	listed := m.noteDownloadStartLocked(p, held.add(entry), owner.source)
+	listed := m.addParkedRow(p, held, d, owner.source)
 	if d.newest != nil {
 		m.applyHeldRow(p, owner.scope, held, *d.newest)
 	} else {

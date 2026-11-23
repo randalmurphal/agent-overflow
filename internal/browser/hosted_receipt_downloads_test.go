@@ -38,12 +38,15 @@ const receiptDownloadName = "a.txt"
 // answering the tab the actions name; abandon, set for a page being created
 // or restored, closes its tab before its listing instead and lets the
 // creation or restore end; cause, set for a popup whose close was
-// received, is the reason a running download of it ends with, the close's.
+// received, is the reason a running download of it ends with, the close's;
+// listed, set for a popup whose listing the action comes inside of, waits
+// for that listing to end.
 type receiptPage struct {
 	page    string
 	list    func(t *testing.T) (tab string)
 	abandon func(t *testing.T)
 	cause   string
+	listed  func(t *testing.T)
 }
 
 // receiptState puts a fresh launcher's page in a state; listing is set
@@ -94,6 +97,9 @@ var (
 	listedTimings  = []receiptTiming{processedBeforeAction, processedAfterAction}
 	listingTimings = []receiptTiming{processedBeforeListing, processedBeforeAction, processedAfterAction}
 	closedTimings  = []receiptTiming{processedAfterAction, processedBeforeSettling}
+	// windowTimings are a listing's that the action comes inside of, whose
+	// held processing cannot come between it and the action.
+	windowTimings = []receiptTiming{processedBeforeListing, processedAfterAction}
 )
 
 // awaitRetired waits until the engine has no record of page.
@@ -255,6 +261,35 @@ var receiptStates = []receiptState{
 		return &receiptPage{page: popup, list: func(t *testing.T) string {
 			release()
 			return string(l.awaitTab(string(access.ThreadID()), popup, true).id)
+		}}
+	}},
+	{"a popup being adopted, acted on before its downloads settle", false, windowTimings, func(t *testing.T, l *popupLauncher, access Access) *receiptPage {
+		_, opener := l.open(access)
+		release := l.gateHistory("PT-1")
+		t.Cleanup(release)
+		popup, _ := l.popup(opener, "https://example.test/popup")
+		l.awaitAttach("history PT-1")
+		return &receiptPage{page: popup, list: func(t *testing.T) string {
+			// The listing waits, its tab listed and its downloads' newest
+			// progress not applied, until the action takes the tab out in
+			// one m.mu hold; what else of the action waits for the listing
+			// runs after it.
+			inWindow := make(chan struct{})
+			l.manager.popupListing = func() {
+				close(inWindow)
+				for deadline := time.Now().Add(hostedTestDeadline); listed(l.manager, ids.PageHandle(popup)) && time.Now().Before(deadline); {
+					time.Sleep(time.Millisecond)
+				}
+			}
+			release()
+			awaitClosed(t, inWindow, "the popup's listing")
+			return string(l.awaitTab(string(access.ThreadID()), popup, true).id)
+		}, listed: func(t *testing.T) {
+			select {
+			case <-l.adopted:
+			case <-time.After(hostedTestDeadline):
+				t.Fatal("the popup's listing never ended")
+			}
 		}}
 	}},
 	{"a popup with no target, its close received while its opener is listed", false, closedTimings, func(t *testing.T, l *popupLauncher, access Access) *receiptPage {
@@ -440,14 +475,16 @@ func (l *popupLauncher) tabPage(access Access, tab string) *managedPage {
 }
 
 // The cross of the page's state at receipt, what was received, the
-// Manager's action and when the engine processes what it received: 6
+// Manager's action and when the engine processes what it received: 7
 // states, 5 report kinds, 4 actions, with a fifth, the close before the
 // listing, for the 2 states that have one, and each state's timings: a
 // listed tab's processing before or after the action; a tab being created
 // or restored, or a popup being adopted, also before its listing (only
-// before or after a close before the listing); a popup whose close was
+// before or after a close before the listing); a popup being adopted whose
+// tab the action takes out before its downloads' newest progress is
+// applied, before its listing or after the action; a popup whose close was
 // received, its engine page held until after the action, or retired
-// before it and settled by the Manager after (320 rows). A popup never
+// before it and settled by the Manager after (360 rows). A popup never
 // listed whose close was not received has no row: its fate, not a
 // receipt, decides where its downloads list, and every action here takes
 // away the opener its fate would name.
@@ -533,6 +570,9 @@ func receiptRow(t *testing.T, state receiptState, kind receiptKind, action recei
 				awaitRetired(t, l.engine, p.page)
 			}
 			action.act(t, l, access, string(holder.id))
+			if p.listed != nil {
+				p.listed(t)
+			}
 			settle()
 		}
 		release()

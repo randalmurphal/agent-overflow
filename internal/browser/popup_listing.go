@@ -117,9 +117,9 @@ func (m *Manager) readyPopup(r popupReservation) (pageDriver, error) {
 // commitPopup is the one decision on a reserved popup, whose setup ended
 // with driver (nil when its attach failed) and setupErr: it lists the
 // popup live, lists it crashed, or refuses it, and answers the live tab,
-// or nil. The tab and the downloads the popup started are listed in one
-// m.parkMu hold, which a page's close takes too (removeClosedPage), so a
-// close never takes the tab before its downloads are in it. The listing
+// or nil. The downloads the popup started are listed in the tab in the m.mu
+// hold that lists it (listAdoptedParkedLocked), so whatever takes the tab
+// out after finds them in its log and settles them as the tab's. The listing
 // waits out a jar switch of the opener's lifetime (lockStructure), whose
 // commit closes the opener; without a cancel, since a switch ends with its
 // one write.
@@ -149,6 +149,7 @@ func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr er
 	}
 	listedCrashed, reserved := false, true
 	var released *jarScope
+	var downloads []adoptedDownload
 	switch m.unlistedOutcomeLocked(p, listable, verdict) {
 	case listLive:
 		delete(r.scope.creating, p)
@@ -159,6 +160,7 @@ func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr er
 		// A report made while the popup was adopted joins the listing,
 		// whose push carries it.
 		m.commitHeldInfoLocked(p, handle)
+		downloads = m.listAdoptedParkedLocked(handle, p, r.popup.Opener)
 	case listCrashed:
 		released = m.listCrashedPopupLocked(r.scope, p, handle, verdict.CrashReason())
 		listedCrashed, reserved = true, false
@@ -190,9 +192,9 @@ func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr er
 	if m.popupListing != nil {
 		m.popupListing()
 	}
-	// Its downloads, before anything the engine held for the listing can
-	// close it.
-	m.resolveParkedLocked(handle, p, r.popup.Opener)
+	// Its downloads' newest progress and starts, in the m.parkMu hold that
+	// a later report of them waits for (downloadProgress).
+	m.publishAdoptedParked(downloads)
 	m.parkMu.Unlock()
 	// A new tab.
 	m.pageAdded(p)
