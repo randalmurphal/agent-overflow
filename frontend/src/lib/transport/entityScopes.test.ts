@@ -3,7 +3,7 @@ import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { noteProject, noteThread, noteWorkflowItem } from './entityIndex';
 import { setCarriedSessionScopes } from './scopes';
 import {
-  projectHasScope, projectScopeGrant, threadHasScope, threadScopeGrant, workflowItemHasScope, workflowItemScopeGrant,
+  projectHasScope, projectScopeGrant, threadHasScope, threadScopeGrant, workflowItemScopeGrant,
 } from './entityScopes';
 import { draftPlaceholderId } from '../stores/draftPlaceholderId';
 
@@ -18,7 +18,6 @@ it('refuses ambiguous unknown entities instead of borrowing HOME permissions', (
   stageBackend({ id: 'readonly' });
   expect(threadHasScope('threads:operate', 'unknown')).toBe(false);
   expect(projectHasScope('git:operate', 'unknown')).toBe(false);
-  expect(workflowItemHasScope('threads:autonomy', 'unknown')).toBe(false);
   // No computer is known to hold them: that is neither a refusal nor a
   // computer whose grant has not arrived.
   expect(threadScopeGrant('threads:operate', 'unknown')).toBe('unrouted');
@@ -57,7 +56,7 @@ it('checks the owning computer for each visible entity and for a draft’s proje
     expect(threadHasScope('threads:operate', `thread-${computer}`)).toBe(granted);
     expect(threadHasScope('attachments:write', null, `project-${computer}`)).toBe(granted);
     expect(projectHasScope('git:operate', `project-${computer}`)).toBe(granted);
-    expect(workflowItemHasScope('threads:autonomy', `run-${computer}`)).toBe(granted);
+    expect(workflowItemScopeGrant('threads:autonomy', `run-${computer}`) === 'granted').toBe(granted);
   }
 });
 

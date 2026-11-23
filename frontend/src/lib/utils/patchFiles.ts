@@ -78,16 +78,6 @@ export interface PatchFile {
   suppressGaps?: boolean;
 }
 
-/** Display rows for a PatchFile — the canonical call shape, so every
- * consumer shares one memo entry per file (see buildPatchDisplayRows). */
-export function filePatchDisplayRows(file: PatchFile): PatchDisplayRow[] {
-  return buildPatchDisplayRows(file.lines, file.newSideTotal, file.suppressGaps === true);
-}
-
-export function patchFileRowId(file: Pick<PatchFile, 'path'>, index: number): string {
-  return `${index}:${file.path}`;
-}
-
 export function parsePatchFiles(patch: string): PatchFile[] {
   if (!patch.trim()) return [];
   const files: PatchFile[] = [];
@@ -498,12 +488,10 @@ export function __parsePatchCacheStatsForTest(): { entries: number; chars: numbe
   return { entries: parsePatchCache.size, chars: parsePatchCacheTotalChars };
 }
 
-// Identity-keyed memo: the review surface derives display rows for
-// every file on every row-model rebuild (buildReviewRows AND
-// reviewInsertsByFile AND anchor checks), always from the same parsed
-// `lines` arrays (parsePatchFilesCached returns shared results). One
-// build per lines identity also means the intraline pass runs once,
-// not per rebuild. `newSideTotal` (learned from a context-expansion
+// Identity-keyed memo over a parsed `lines` array. The review surface
+// builds its rows from the compact store (patchRows.ts), and
+// patchParser.test.ts checks that store against these rows; one build per
+// lines identity also means the intraline pass runs once per array. `newSideTotal` (learned from a context-expansion
 // response) participates in the key: it changes the trailing gap.
 const displayRowsCache = new WeakMap<
   PatchLine[],

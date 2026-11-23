@@ -259,12 +259,3 @@ export function presentAuthReason(code: string | undefined | null): AuthReasonPr
 export function isAuthFailure(err: unknown): err is TransportError {
   return err instanceof TransportError && err.code === 'auth_failed';
 }
-
-/**
- * The presentation for a caught transport error, or null if it was not a
- * credential refusal. The null answer is what keeps callers from reporting
- * an ordinary method failure as a sign-in problem.
- */
-export function authFailurePresentation(err: unknown): AuthReasonPresentation | null {
-  return isAuthFailure(err) ? presentAuthReason(err.reason) : null;
-}

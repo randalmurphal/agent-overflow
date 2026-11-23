@@ -176,30 +176,6 @@ export function trayTaskLabel(task: TrayTask): string {
   return 'Tool';
 }
 
-/** Status label rendered next to the glyph on a tray row. */
-export function statusLabel(status: TrayTask['status']): string {
-  if (status === 'running') return 'running';
-  if (status === 'errored') return 'failed';
-  if (status === 'declined') return 'declined';
-  if (status === 'killed') return 'stopped';
-  return '';
-}
-
-/**
- * Tailwind text-color class for the status span. `declined` shares
- * the error palette with ToolDecisionChip — a user-declined tool run
- * is not a success, and the rest of the UI already colors it the
- * same way a tool failure is colored. `killed` lands on muted-gray
- * text so it reads as a user-initiated terminal, distinct from the
- * red of an actual failure.
- */
-export function statusClass(status: TrayTask['status']): string {
-  if (status === 'running') return 'text-accent';
-  if (status === 'errored' || status === 'declined') return 'text-error';
-  if (status === 'killed') return 'text-text-secondary';
-  return 'rounded bg-success/10 px-1 py-px text-success';
-}
-
 /**
  * Human-readable elapsed-time label — `12s` / `3m 7s` / `1h 12m 5s`.
  * Tray rows call this once per 1s tick against the task's live

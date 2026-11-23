@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearProviderRateLimits,
-  getProviderRateLimit,
   getProviderRateLimits,
   getProviderRateLimitsForWindow,
   getComposerRateLimitWindows,
@@ -22,8 +21,8 @@ describe('rateLimitsInfo', () => {
   });
 
   it('returns null for an unseeded provider/window combination', () => {
-    expect(getProviderRateLimit('claude', 300)).toBeNull();
-    expect(getProviderRateLimit('codex', 10080)).toBeNull();
+    expect(getProviderRateLimitsForWindow('claude', 300).primary).toBeNull();
+    expect(getProviderRateLimitsForWindow('codex', 10080).primary).toBeNull();
   });
 
   it('returns null when provider is undefined', () => {
@@ -34,7 +33,7 @@ describe('rateLimitsInfo', () => {
       ],
       updatedAt: 1776283000,
     });
-    expect(getProviderRateLimit(undefined, 300)).toBeNull();
+    expect(getProviderRateLimitsForWindow(undefined, 300).primary).toBeNull();
   });
 
   it('stores and retrieves a single-window snapshot', () => {
@@ -45,7 +44,7 @@ describe('rateLimitsInfo', () => {
       ],
       updatedAt: 1776283000,
     });
-    const got = getProviderRateLimit('claude', 300);
+    const got = getProviderRateLimitsForWindow('claude', 300).primary;
     expect(got).not.toBeNull();
     expect(got?.usedPercent).toBe(42);
     expect(got?.resetsAt).toBe(1776283200);
@@ -60,7 +59,7 @@ describe('rateLimitsInfo', () => {
       updatedAt: 1776283000,
     });
 
-    expect(getProviderRateLimit('codex', 300, 'different-account')).toBeNull();
+    expect(getProviderRateLimitsForWindow('codex', 300, 'different-account').primary).toBeNull();
     expect(
       getProviderRateLimitsForWindow('codex', 300, 'different-account'),
     ).toEqual({ primary: null, secondary: null, limits: [] });
@@ -86,8 +85,8 @@ describe('rateLimitsInfo', () => {
       updatedAt: 1776283500,
     });
 
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(30);
-    expect(getProviderRateLimit('claude', 10080)?.usedPercent).toBe(51);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(30);
+    expect(getProviderRateLimitsForWindow('claude', 10080).primary?.usedPercent).toBe(51);
   });
 
   // Codex pushes both windows together — the same merge path handles it.
@@ -101,8 +100,8 @@ describe('rateLimitsInfo', () => {
       updatedAt: 1776283000,
     });
 
-    expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(25);
-    expect(getProviderRateLimit('codex', 10080)?.usedPercent).toBe(60);
+    expect(getProviderRateLimitsForWindow('codex', 300).primary?.usedPercent).toBe(25);
+    expect(getProviderRateLimitsForWindow('codex', 10080).primary?.usedPercent).toBe(60);
   });
 
   // A subsequent snapshot for the SAME window should overwrite that
@@ -124,8 +123,8 @@ describe('rateLimitsInfo', () => {
       updatedAt: 1776284000,
     });
 
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(95);
-    expect(getProviderRateLimit('claude', 10080)?.usedPercent).toBe(51);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(95);
+    expect(getProviderRateLimitsForWindow('claude', 10080).primary?.usedPercent).toBe(51);
   });
 
   // Provider isolation: snapshots in different provider slots must not
@@ -146,8 +145,8 @@ describe('rateLimitsInfo', () => {
       updatedAt: 1776283500,
     });
 
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(30);
-    expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(88);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(30);
+    expect(getProviderRateLimitsForWindow('codex', 300).primary?.usedPercent).toBe(88);
   });
 
   // A new provider bucket can arrive before its duration is known locally.
@@ -163,8 +162,8 @@ describe('rateLimitsInfo', () => {
       updatedAt: 1776283000,
     });
 
-    expect(getProviderRateLimit('claude', 0)).toBeNull();
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
+    expect(getProviderRateLimitsForWindow('claude', 0).primary).toBeNull();
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(42);
     expect(getProviderRateLimits('claude').map((entry) => entry.limitId)).toContain('thirty_day');
   });
 
@@ -185,7 +184,7 @@ describe('rateLimitsInfo', () => {
       updatedAt: 1776284000,
     });
 
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(42);
   });
 
   // The window-reset stale-event defense.
@@ -223,8 +222,8 @@ describe('rateLimitsInfo', () => {
     });
 
     // Post-reset value sticks; the stale event was dropped.
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(5);
-    expect(getProviderRateLimit('claude', 300)?.resetsAt).toBe(1776300000);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(5);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.resetsAt).toBe(1776300000);
   });
 
   // Window rollover from below: existing (pre-reset) is replaced by
@@ -247,8 +246,8 @@ describe('rateLimitsInfo', () => {
       updatedAt: 1776284000,
     });
 
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(5);
-    expect(getProviderRateLimit('claude', 300)?.resetsAt).toBe(1776300000);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(5);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.resetsAt).toBe(1776300000);
   });
 
   // Equal `resetsAt` = same window. The newest reading wins in either
@@ -269,7 +268,7 @@ describe('rateLimitsInfo', () => {
       updatedAt: 1776285000,
     });
 
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(42);
   });
 
   it('accepts higher usage when the provider jitters a reset boundary by seconds', () => {
@@ -362,8 +361,8 @@ describe('rateLimitsInfo', () => {
       updatedAt: 1776286000,
     });
 
-    expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(9);
-    expect(getProviderRateLimit('codex', 300)?.resetsAt).toBe(1776300000);
+    expect(getProviderRateLimitsForWindow('codex', 300).primary?.usedPercent).toBe(9);
+    expect(getProviderRateLimitsForWindow('codex', 300).primary?.resetsAt).toBe(1776300000);
   });
 
   // A provider drops a bucket from its answer once the bucket has no usage,
@@ -390,7 +389,7 @@ describe('rateLimitsInfo', () => {
     });
 
     expect(getProviderRateLimits('claude').map((entry) => entry.limitId)).toEqual(['weekly_all']);
-    expect(getProviderRateLimit('claude', 10080)?.usedPercent).toBe(0);
+    expect(getProviderRateLimitsForWindow('claude', 10080).primary?.usedPercent).toBe(0);
   });
 
   // A whole-answer reading replaces a stored entry even when the stored
@@ -416,10 +415,10 @@ describe('rateLimitsInfo', () => {
       updatedAt: 1776285000,
     };
     setProviderRateLimits(partial);
-    expect(getProviderRateLimit('claude', 10080, 'acct')?.usedPercent).toBe(28);
+    expect(getProviderRateLimitsForWindow('claude', 10080, 'acct').primary?.usedPercent).toBe(28);
 
     setProviderRateLimits({ ...partial, complete: true });
-    const limit = getProviderRateLimit('claude', 10080, 'acct');
+    const limit = getProviderRateLimitsForWindow('claude', 10080, 'acct').primary;
     expect(limit?.usedPercent).toBe(100);
     expect(limit?.resetsAt).toBe(1776855600);
   });
@@ -471,8 +470,8 @@ describe('rateLimitsInfo', () => {
       updatedAt: 1776285000,
     });
 
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(5);
-    expect(getProviderRateLimit('claude', 10080)?.usedPercent).toBe(60);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(5);
+    expect(getProviderRateLimitsForWindow('claude', 10080).primary?.usedPercent).toBe(60);
   });
 
   // Unknown providers (anything other than claude/codex) are dropped
@@ -489,8 +488,8 @@ describe('rateLimitsInfo', () => {
       ],
       updatedAt: 1776283000,
     });
-    expect(getProviderRateLimit('claude', 300)).toBeNull();
-    expect(getProviderRateLimit('codex', 300)).toBeNull();
+    expect(getProviderRateLimitsForWindow('claude', 300).primary).toBeNull();
+    expect(getProviderRateLimitsForWindow('codex', 300).primary).toBeNull();
   });
 
   it('isolates two accounts on the same provider', () => {
@@ -536,7 +535,7 @@ describe('rateLimitsInfo', () => {
     clearProviderRateLimits('codex', 'first');
 
     expect(getProviderRateLimits('codex', 'first')).toEqual([]);
-    expect(getProviderRateLimit('codex', 300, 'second')?.usedPercent).toBe(12);
+    expect(getProviderRateLimitsForWindow('codex', 300, 'second').primary?.usedPercent).toBe(12);
   });
 
   it('retains multiple dynamic buckets for the same window', () => {
@@ -704,7 +703,7 @@ describe('rateLimitsInfo', () => {
     // No provider-wide 5h limit, so the composer keeps only its weekly meter.
     expect(getComposerRateLimitWindows('codex')).toEqual([10080]);
     expect(group.limits.map((entry) => entry.limitId)).toEqual(['spark']);
-    expect(getProviderRateLimit('codex', 300)).toBeNull();
+    expect(getProviderRateLimitsForWindow('codex', 300).primary).toBeNull();
   });
 
   // Reset-boundary expiry. The stored entry is never rewritten when its
@@ -734,14 +733,14 @@ describe('rateLimitsInfo', () => {
 
     it('shows 0% with no reset time once the boundary passes', () => {
       vi.setSystemTime(new Date((OLD_BOUNDARY + 30) * 1000));
-      const limit = getProviderRateLimit('claude', 300, 'acct');
+      const limit = getProviderRateLimitsForWindow('claude', 300, 'acct').primary;
       expect(limit?.usedPercent).toBe(0);
       expect(limit?.resetsAt).toBe(0);
     });
 
     it('fires the expiry timer at the boundary without rewriting entries', () => {
       vi.advanceTimersByTime(3601 * 1000);
-      const limit = getProviderRateLimit('claude', 300, 'acct');
+      const limit = getProviderRateLimitsForWindow('claude', 300, 'acct').primary;
       expect(limit?.usedPercent).toBe(0);
       expect(limit?.resetsAt).toBe(0);
       // The stored boundary still guards against a stale pre-reset reading.
@@ -753,7 +752,7 @@ describe('rateLimitsInfo', () => {
         ],
         updatedAt: (OLD_BOUNDARY + 1) * 1000,
       });
-      expect(getProviderRateLimit('claude', 300, 'acct')?.usedPercent).toBe(0);
+      expect(getProviderRateLimitsForWindow('claude', 300, 'acct').primary?.usedPercent).toBe(0);
     });
 
     it('accepts the re-anchored next window whose boundary lands earlier than old + window', () => {
@@ -766,7 +765,7 @@ describe('rateLimitsInfo', () => {
         ],
         updatedAt: (OLD_BOUNDARY + 300) * 1000,
       });
-      const limit = getProviderRateLimit('claude', 300, 'acct');
+      const limit = getProviderRateLimitsForWindow('claude', 300, 'acct').primary;
       expect(limit?.usedPercent).toBe(18);
       expect(limit?.resetsAt).toBe(NEXT_BOUNDARY);
     });
@@ -781,7 +780,7 @@ describe('rateLimitsInfo', () => {
         ],
         updatedAt: (OLD_BOUNDARY + 300) * 1000,
       });
-      expect(getProviderRateLimit('claude', 300, 'acct')?.usedPercent).toBe(0);
+      expect(getProviderRateLimitsForWindow('claude', 300, 'acct').primary?.usedPercent).toBe(0);
     });
 
     it('projects weekly windows the same way', () => {
@@ -795,7 +794,7 @@ describe('rateLimitsInfo', () => {
         updatedAt: (OLD_BOUNDARY - 3600) * 1000,
       });
       vi.setSystemTime(new Date((weeklyBoundary + 30) * 1000));
-      const limit = getProviderRateLimit('claude', 10080, 'acct');
+      const limit = getProviderRateLimitsForWindow('claude', 10080, 'acct').primary;
       expect(limit?.usedPercent).toBe(0);
       expect(limit?.resetsAt).toBe(0);
     });
@@ -814,7 +813,7 @@ describe('rateLimitsInfo', () => {
         ],
         updatedAt: (OLD_BOUNDARY - 3600) * 1000,
       });
-      expect(getProviderRateLimit('claude', 300, 'idle-acct')?.usedPercent).toBe(0);
+      expect(getProviderRateLimitsForWindow('claude', 300, 'idle-acct').primary?.usedPercent).toBe(0);
     });
   });
 

@@ -16,7 +16,6 @@ const RE_HEADING = /^#{1,6}\s/
 const RE_THEMATIC_BREAK = /^\s*(\*{3,}|-{3,}|_{3,})\s*$/
 const RE_SETEXT_UNDERLINE = /^\s*(?:={3,}|-{3,})\s*$/
 const RE_BLOCKQUOTE = /^\s{0,3}>/
-const RE_TABLE_DELIMITER = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/
 const RE_ESCAPE_SPECIAL = /[.*+?^${}()|[\]\\]/g
 const RE_FOOTNOTE_DEFINITION = /^\[\^([^\]]+)\]:\s/
 const RE_FOOTNOTE_CONTINUATION = /^(?:    |\t)/
@@ -193,13 +192,6 @@ export function isListItemStart(line: string): { ordered: boolean; indent: numbe
  */
 export function isBlockquoteStart(line: string): boolean {
   return RE_BLOCKQUOTE.test(line)
-}
-
-/**
- * 检测表格分隔行
- */
-export function isTableDelimiter(line: string): boolean {
-  return RE_TABLE_DELIMITER.test(line)
 }
 
 // ============ 脚注检测 ============

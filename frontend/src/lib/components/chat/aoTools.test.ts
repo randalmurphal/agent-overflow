@@ -9,7 +9,6 @@ import {
   aoToolFacts,
   aoToolPresentation,
   aoToolServer,
-  isAoToolMeta,
   remoteRunCommand,
   type AoToolNames,
 } from './aoTools';
@@ -46,8 +45,6 @@ describe('AO tool presentation', () => {
     expect(aoToolPresentation({ input: { file_path: 'a.ts' } })).toBeNull();
     expect(aoToolPresentation(meta('docs', 'lookup', { q: 'wails' }))).toBeNull();
     expect(aoToolPresentation({ mcp: 'ao-remote-tools' })).toBeNull();
-    expect(isAoToolMeta(meta('playwright', 'browser_click'))).toBe(false);
-    expect(isAoToolMeta(meta(REMOTE_TOOLS_SERVER, 'remote_run'))).toBe(true);
     expect(aoToolServer(meta('playwright', 'browser_click'))).toBeNull();
     expect(aoToolServer(meta(BROWSER_TOOLS_SERVER, 'browser_click'))).toBe(BROWSER_TOOLS_SERVER);
   });

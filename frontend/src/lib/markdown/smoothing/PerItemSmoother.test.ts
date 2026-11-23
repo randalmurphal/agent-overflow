@@ -2,7 +2,6 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { forEachSeed, seededRandom } from '../../../test/helpers/seededRandom';
 import {
   PerItemSmoother,
-  computeAdvanceEnd,
   BASE_CHARS_PER_SEC,
   ADAPTIVE_TRIGGER_CHARS,
   ADAPTIVE_CATCHUP_MS,
@@ -85,46 +84,6 @@ function concatDeltas(reveals: RevealEntry[]): string {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-});
-
-describe('computeAdvanceEnd', () => {
-  it('returns the from offset when from is at end', () => {
-    expect(computeAdvanceEnd('abc', 3, 10)).toBe(3);
-  });
-
-  it('takes a whole word+trailing-space unit when it fits the budget', () => {
-    // "hello " is 6 chars; budget 6 fits exactly.
-    expect(computeAdvanceEnd('hello world', 0, 6)).toBe(6);
-  });
-
-  it('holds back a unit larger than the budget', () => {
-    // First unit "supercalifragilistic " is 21 chars; budget 5 won't fit.
-    expect(computeAdvanceEnd('supercalifragilistic word', 0, 5)).toBe(0);
-  });
-
-  it('takes the trailing tail (no trailing whitespace) when at end', () => {
-    expect(computeAdvanceEnd('hi', 0, 5)).toBe(2);
-  });
-
-  it('takes multiple word units when budget covers several', () => {
-    // "one two three" — "one " (4) + "two " (4) + "three" (5) = 13.
-    expect(computeAdvanceEnd('one two three', 0, 13)).toBe(13);
-    // Budget 8: "one " + "two " = 8. Holds back "three" (5 chars).
-    expect(computeAdvanceEnd('one two three', 0, 8)).toBe(8);
-  });
-
-  it('consumes leading whitespace with the next word', () => {
-    // From offset 0 on "  hello world": leading whitespace + "hello" +
-    // trailing whitespace = 8 chars.
-    expect(computeAdvanceEnd('  hello world', 0, 8)).toBe(8);
-  });
-
-  it('treats a multi-newline gap as part of a unit', () => {
-    // "para\n\nmore" — at offset 0, unit is "para\n\n" (6 chars) then
-    // "more" (4 chars).
-    expect(computeAdvanceEnd('para\n\nmore', 0, 6)).toBe(6);
-    expect(computeAdvanceEnd('para\n\nmore', 0, 10)).toBe(10);
-  });
 });
 
 // Relationships between the tuned constants that the behavioral tests

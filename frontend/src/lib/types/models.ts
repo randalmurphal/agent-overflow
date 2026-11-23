@@ -653,13 +653,6 @@ export interface PRLabelChange {
   remove: PRLabel[];
 }
 
-/** One picker search's first page; `more` when the forge has more. */
-export interface PRCandidates {
-  people: PRPerson[];
-  labels: PRLabel[];
-  more: boolean;
-}
-
 /** A merge commit's title and body (git.MergeMessage). */
 export interface MergeMessage {
   title: string;

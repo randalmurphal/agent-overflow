@@ -11,11 +11,9 @@ import {
   __parsePatchCacheStatsForTest,
   buildPatchDisplayRows,
   buildSplitDisplayRows,
-  filePatchDisplayRows,
   mergePatchFilesByPath,
   parsePatchFiles,
   parsePatchFilesCached,
-  patchFileRowId,
   stripPatchLinePrefix,
 } from './patchFiles';
 
@@ -170,7 +168,7 @@ index 1111111..2222222 100644
     ]);
   });
 
-  it('builds distinct row ids for duplicate file paths', () => {
+  it('keeps duplicate file paths as separate files', () => {
     const files = parsePatchFiles(`diff --git a/notes.txt b/notes.txt
 --- a/notes.txt
 +++ b/notes.txt
@@ -185,10 +183,7 @@ diff --git a/notes.txt b/notes.txt
 +four
 `);
 
-    expect(files.map((file, index) => patchFileRowId(file, index))).toEqual([
-      '0:notes.txt',
-      '1:notes.txt',
-    ]);
+    expect(files.map((file) => file.path)).toEqual(['notes.txt', 'notes.txt']);
   });
 
   // git emits a file→symlink (or symlink→file) type change as two
@@ -232,7 +227,7 @@ diff --git a/other.ts b/other.ts
     ]);
     // Old content numbers on the old side, the symlink target on the
     // new side, and no synthetic gap row between the two hunks.
-    const rows = filePatchDisplayRows(merged);
+    const rows = buildPatchDisplayRows(merged.lines, merged.newSideTotal, merged.suppressGaps === true);
     expect(rows.some((row) => row.gap)).toBe(false);
     expect(rows.map((row) => [row.side, row.oldLine, row.newLine])).toEqual([
       ['old', 1, 0],
@@ -278,7 +273,7 @@ new file mode 100644
     ]);
     // Before: the marker took old 2 / new 1 as a context row and `+new`
     // landed on new line 2.
-    const rows = filePatchDisplayRows(file).filter((row) => !row.gap);
+    const rows = buildPatchDisplayRows(file.lines, file.newSideTotal, file.suppressGaps === true).filter((row) => !row.gap);
     expect(rows.map((row) => [row.line.type, row.oldLine, row.newLine])).toEqual([
       ['del', 1, 0],
       ['add', 0, 1],
@@ -821,7 +816,7 @@ describe('mergePatchFilesByPath', () => {
       '+delta',
     ]);
     // An added file is fully present — no gap rows to expand.
-    expect(filePatchDisplayRows(merged[0]).some((row) => row.gap)).toBe(false);
+    expect(buildPatchDisplayRows(merged[0].lines, merged[0].newSideTotal, merged[0].suppressGaps === true).some((row) => row.gap)).toBe(false);
     // Shared parse results are never mutated.
     expect(created.lines.map((line) => line.content)).toContain('@@ -0,0 +1,4 @@');
   });

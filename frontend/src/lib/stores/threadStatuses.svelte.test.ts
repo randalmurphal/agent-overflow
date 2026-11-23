@@ -4,7 +4,6 @@ import { flushSync } from 'svelte';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import {
   beginThreadLiveStateHydration,
-  clearPendingSend,
   clearThreadStatus,
   finishThreadLiveStateHydration,
   getActiveTurn,
@@ -511,7 +510,7 @@ describe('threadStatuses store', () => {
   // that column current by broadcasting the row on thread:updated from
   // every proposed-plan write.
 
-  describe('hasPendingSend / clearPendingSend', () => {
+  describe('hasPendingSend', () => {
     it('hasPendingSend mirrors projectSendStarted / projectSendResolved', () => {
       expect(hasPendingSend('thread-1')).toBe(false);
       projectSendStarted('thread-1');
@@ -544,28 +543,6 @@ describe('threadStatuses store', () => {
 
       expect(hasPendingSend('thread-1')).toBe(false);
       expect(getThreadStatus('thread-1')).toBe('error');
-    });
-
-    it('clearPendingSend drops the flag without flipping the thread to error', () => {
-      // Mirrors the drain failure path: SendMessageWithOptions threw,
-      // we want to stop advertising "running" but the thread should
-      // not be flipped to a Failed pill state — the queue preview
-      // still shows the user's restored item, and the error banner
-      // carries the failure context.
-      projectSendStarted('thread-1');
-      expect(getThreadStatus('thread-1')).toBe('running');
-
-      clearPendingSend('thread-1');
-      expect(hasPendingSend('thread-1')).toBe(false);
-      expect(getThreadStatus('thread-1')).toBe('idle');
-    });
-
-    it('clearPendingSend on a thread without the flag is a no-op', () => {
-      // No throw, no error pill — defensive call from the drain
-      // failure path even when projectTurnStarted may have already
-      // arrived first.
-      expect(() => clearPendingSend('thread-1')).not.toThrow();
-      expect(getThreadStatus('thread-1')).toBe('idle');
     });
   });
 

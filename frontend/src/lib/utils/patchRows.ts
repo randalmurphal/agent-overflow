@@ -58,7 +58,7 @@ function trailingGapRows(file: ReviewFile): number {
   return total === undefined || total >= body.endNew ? 1 : 0;
 }
 
-/** The file's display row count (`filePatchDisplayRows(file).length`). */
+/** The file's display row count (the length of `buildPatchDisplayRows` for it). */
 export function displayRowCount(file: ReviewFile): number {
   const body = file.body;
   if (!fileGapsOn(file)) return body.contentRows;

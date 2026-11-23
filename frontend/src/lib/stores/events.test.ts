@@ -21,7 +21,7 @@ import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import { getToasts } from './toast.svelte';
 import { getProjectLiveActivityAt, getProjects } from './projects.svelte';
 import {
-  getProviderRateLimit,
+  getProviderRateLimitsForWindow,
   resetForTest as resetRateLimitsInfo,
 } from './rateLimitsInfo.svelte';
 import {
@@ -254,8 +254,8 @@ describe('setupEventListeners', () => {
 
     cleanup = setupEventListeners();
     await vi.waitFor(() => {
-      expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(31);
-      expect(getProviderRateLimit('codex', 10080)?.usedPercent).toBe(30);
+      expect(getProviderRateLimitsForWindow('codex', 300).primary?.usedPercent).toBe(31);
+      expect(getProviderRateLimitsForWindow('codex', 10080).primary?.usedPercent).toBe(30);
     });
   });
 
@@ -2873,8 +2873,8 @@ describe('setupEventListeners', () => {
 
     expect(pane.contextWindow?.usedTokens).toBe(175000);
     expect(pane.contextWindow?.usedPercentage).toBe(87.5);
-    expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(47);
-    expect(getProviderRateLimit('codex', 10080)?.usedPercent).toBe(28);
+    expect(getProviderRateLimitsForWindow('codex', 300).primary?.usedPercent).toBe(47);
+    expect(getProviderRateLimitsForWindow('codex', 10080).primary?.usedPercent).toBe(28);
   });
 
   it('does not revert local read state when a provider:usage gap refreshes the thread row', async () => {
@@ -3431,7 +3431,7 @@ describe('setupEventListeners', () => {
     expect(pane.contextWindow?.maxTokens).toBe(200000);
 
     // Global store populated with the 5h entry under provider 'claude'.
-    const fiveHour = getProviderRateLimit('claude', 300);
+    const fiveHour = getProviderRateLimitsForWindow('claude', 300).primary;
     expect(fiveHour).not.toBeNull();
     expect(fiveHour?.usedPercent).toBe(62.5);
     expect(fiveHour?.resetsAt).toBe(4102444800);
@@ -3467,14 +3467,14 @@ describe('setupEventListeners', () => {
       },
     });
 
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(30);
-    expect(getProviderRateLimit('claude', 10080)?.usedPercent).toBe(51);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(30);
+    expect(getProviderRateLimitsForWindow('claude', 10080).primary?.usedPercent).toBe(51);
   });
 
   // Unknown rate-limit types arrive with windowMins=0 from the parser
   // (Claude's `windowMinsForRateLimitType` fallback). The store must
   // drop those rather than write a 0-keyed slot — the toolbar reads
-  // `getProviderRateLimit(provider, 300)` / `(provider, 10080)` and a
+  // `getProviderRateLimitsForWindow(provider, 300)` / `(provider, 10080)` and a
   // stray 0 entry would let an unrenderable window fill memory forever.
   it('keeps unknown-duration limits out of the toolbar lookup', async () => {
     await buildPane();
@@ -3492,8 +3492,8 @@ describe('setupEventListeners', () => {
       },
     });
 
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
-    expect(getProviderRateLimit('claude', 0)).toBeNull();
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(42);
+    expect(getProviderRateLimitsForWindow('claude', 0).primary).toBeNull();
   });
 
   // Rate-limit data is account-wide, not thread-wide. A snapshot for
@@ -3517,7 +3517,7 @@ describe('setupEventListeners', () => {
 
     // Even before any pane registers itself for thread-B, the global
     // store carries the value — RateLimitMeter reads from it directly.
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(73);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(73);
   });
 
   // Provider isolation: a Codex snapshot must not bleed into the
@@ -3536,8 +3536,8 @@ describe('setupEventListeners', () => {
       },
     });
 
-    expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(88);
-    expect(getProviderRateLimit('claude', 300)).toBeNull();
+    expect(getProviderRateLimitsForWindow('codex', 300).primary?.usedPercent).toBe(88);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary).toBeNull();
   });
 
   // Empty snapshots (no `limits` entries) arrive in edge cases — the
@@ -3558,7 +3558,7 @@ describe('setupEventListeners', () => {
       },
     });
 
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(42);
 
     // Empty-limits snapshot — must be a no-op, not a wipe.
     emitWailsEvent('provider:usage', {
@@ -3571,7 +3571,7 @@ describe('setupEventListeners', () => {
       },
     });
 
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(42);
   });
 
   // EventSessionStatus routing: persistent kinds surface on

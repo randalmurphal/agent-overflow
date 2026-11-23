@@ -130,17 +130,3 @@ export function groupActivityRunSpans(
   }
   return spans;
 }
-
-/** The span holding `itemId`, or null. Linear; callers index when it matters. */
-export function spanHolding(
-  spans: readonly ActivityRunSpan[],
-  itemId: string,
-): ActivityRunSpan | null {
-  if (itemId === '') return null;
-  for (const span of spans) {
-    for (const item of span.items) {
-      if (item.id === itemId) return span;
-    }
-  }
-  return null;
-}

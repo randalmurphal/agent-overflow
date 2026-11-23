@@ -299,8 +299,3 @@ export function readTokenColors(
 ): Record<string, string | undefined> {
   return readTokenStyles(tokenNames).colors;
 }
-
-/** `readTokenStyles` for callers that only want a font stack. */
-export function readTokenFontFamily(tokenName: string): string | undefined {
-  return readTokenStyles([], tokenName).fontFamily;
-}

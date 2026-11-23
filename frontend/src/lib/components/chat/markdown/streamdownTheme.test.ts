@@ -1,7 +1,7 @@
 import { join, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { SRC_ROOT, scannedSources } from '../../../../test/sourceScan';
-import { MD_BLOCK_MARKER, chatMarkdownTheme } from './streamdownTheme';
+import { chatMarkdownTheme } from './streamdownTheme';
 
 // What this suite scans (test/sourceScan.ts).
 const SCANNED = scannedSources(import.meta.glob<string>(
@@ -268,7 +268,7 @@ describe('md-blk block marker', () => {
   // else does. Streamdown uses it to find the two direct edge blocks and
   // publishes explicit `sd-trim-*` classes. app.css therefore needs no
   // structural pseudo whose invalidation set reacts to nested syntax-span
-  // changes. See the MD_BLOCK_MARKER doc in streamdownTheme.ts.
+  // changes. See the `md-blk` comment in streamdownTheme.ts.
   //
   // A block-level key missing the marker keeps its own edge margin when it
   // lands first/last in a message; an inline key carrying it would hand the
@@ -296,7 +296,7 @@ describe('md-blk block marker', () => {
     'ul.base',
   ];
 
-  const markerRe = new RegExp(`(?:^|\\s)${MD_BLOCK_MARKER}(?:\\s|$)`);
+  const markerRe = /(?:^|\s)md-blk(?:\s|$)/;
 
   function valueOf(key: string): string | undefined {
     const [group, slot] = key.split('.') as [string, string];

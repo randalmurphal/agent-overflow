@@ -14,7 +14,6 @@
 // Codex helpers.
 
 import { parseJsonObject } from './parseJsonObject';
-import { displayModelLabel } from './modelLabels';
 
 function readStringField(obj: Record<string, unknown> | null, key: string): string {
   if (!obj) return '';
@@ -117,16 +116,6 @@ export function deriveClaudeSubagentModel(
   // A fork runs on its launcher's model whatever its input names.
   if (readStringField(input, 'subagent_type') === 'fork') return '';
   return readStringField(input, 'model');
-}
-
-/** `deriveClaudeSubagentModel` as the display label ('' when unknown). */
-export function deriveClaudeSubagentModelLabel(
-  input: Record<string, unknown> | null,
-  parentMeta: Record<string, unknown> | null,
-  toolName: string,
-): string {
-  const model = deriveClaudeSubagentModel(input, parentMeta, toolName);
-  return model ? displayModelLabel('claude', model) : '';
 }
 
 /**

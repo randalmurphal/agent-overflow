@@ -17,7 +17,6 @@ import { resetPaneLayoutPersistenceForTest } from '../../lib/stores/paneLayoutPe
 import {
   clearThreadSelection,
   setThreadFilterQuery,
-  setWorkspaceFilter,
 } from '../../lib/stores/threadFilter.svelte';
 import { setBindingMock } from '../mocks/bindings-app';
 import type { Project, ProjectWithCounts, Thread } from '../../lib/types/models';
@@ -71,7 +70,6 @@ export function resetAppState(): void {
   resetPaneLayoutForTest();
   resetPaneLayoutPersistenceForTest();
   setThreadFilterQuery('');
-  setWorkspaceFilter(null);
   clearThreadSelection();
   // Reset the projects-first sidebar state so tests that expect a clean
   // project list / collapsed chevrons don't inherit from a prior case.

@@ -41,7 +41,6 @@ import type { Theme } from '../../../markdown';
 // 1,091-element passes during two-pane streaming). A block-level theme
 // entry missing the marker keeps its own edge margin when it lands
 // first/last in a message — streamdownTheme.test.ts pins the roster.
-export const MD_BLOCK_MARKER = 'md-blk';
 
 export const chatMarkdownTheme: Theme = {
   // Links: `text-md-link` names the token the unlayered `.markdown-body a`
@@ -63,8 +62,8 @@ export const chatMarkdownTheme: Theme = {
   h4: { base: 'md-blk text-sm font-semibold' },
   h5: { base: 'md-blk text-sm font-semibold' },
   h6: { base: 'md-blk text-sm font-semibold' },
-  // Block-level entries that carry nothing but the md-blk marker (see its
-  // doc above); spacing is the cascade's.
+  // Block-level entries that carry nothing but the md-blk marker (see the
+  // comment above the theme); spacing is the cascade's.
   paragraph: { base: 'md-blk' },
   // pl matches `.markdown-body ul/ol` in app.css (which wins the cascade):
   // 2em of marker room so wide fonts don't clip — see the comment there.

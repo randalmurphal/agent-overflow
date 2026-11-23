@@ -609,40 +609,6 @@ export class PerItemSmoother {
   }
 }
 
-// Advance up to `chars` characters but stop at word boundaries so we
-// never split a word. Each step is one (word + trailing whitespace)
-// unit; a unit larger than `chars` is held back for the next tick
-// (budget accumulates across ticks).
-export function computeAdvanceEnd(
-  text: string,
-  from: number,
-  chars: number,
-): number {
-  if (from >= text.length) return from;
-  let end = from;
-  let budget = chars;
-  while (end < text.length) {
-    const unitEnd = nextWordUnitEnd(text, end);
-    const unitLen = unitEnd - end;
-    if (unitLen > budget) break;
-    end = unitEnd;
-    budget -= unitLen;
-  }
-  return end;
-}
-
-// Returns the offset one past the end of the next (word + trailing
-// whitespace) unit starting at `from`. Whitespace at `from` is
-// consumed as a leading whitespace-only run; in steady state the
-// previous unit already pulled trailing whitespace with its word.
-function nextWordUnitEnd(text: string, from: number): number {
-  let i = from;
-  while (i < text.length && isWhitespaceCode(text.charCodeAt(i))) i++;
-  while (i < text.length && !isWhitespaceCode(text.charCodeAt(i))) i++;
-  while (i < text.length && isWhitespaceCode(text.charCodeAt(i))) i++;
-  return i;
-}
-
 function isWhitespaceCode(code: number): boolean {
   return code === 32 || code === 9 || code === 10 || code === 13;
 }

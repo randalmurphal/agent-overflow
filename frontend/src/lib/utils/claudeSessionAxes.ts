@@ -17,7 +17,6 @@
 
 import type {
   ClaudeOutputStyle,
-  ClaudeSubagentLimits,
   ClaudeThinking,
   ClaudeThinkingDisplay,
   ClaudeThinkingMode,
@@ -90,12 +89,6 @@ export function clampSubagentLimit(value: number): number {
   const floored = Math.floor(value);
   if (floored <= 0) return 0;
   return Math.min(floored, CLAUDE_SUBAGENT_LIMIT_MAX);
-}
-
-/** True when neither axis carries a value, i.e. the whole group is unset. */
-export function subagentLimitsAreEmpty(limits: ClaudeSubagentLimits): boolean {
-  return clampSubagentLimit(limits.maxSpawnDepth ?? 0) === 0 &&
-    clampSubagentLimit(limits.maxConcurrent ?? 0) === 0;
 }
 
 /**

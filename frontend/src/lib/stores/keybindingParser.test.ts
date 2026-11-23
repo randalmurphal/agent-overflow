@@ -4,8 +4,6 @@ import {
   encodeChord,
   encodeWhen,
   evaluateWhen,
-  parseChord,
-  parseWhen,
   tryParseChord,
   tryParseWhen,
 } from './keybindingParser';
@@ -13,27 +11,27 @@ import { KEYBINDING_DEFAULTS } from '../generated/keybindingDefaults';
 
 describe('keybindingParser — chords', () => {
   it('parses a plain key', () => {
-    const c = parseChord('k');
+    const c = tryParseChord('k')!;
     expect(c).toMatchObject({ key: 'k', metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, modKey: false });
   });
 
   it('parses modifier aliases (cmd/ctrl/alt/option/shift/meta)', () => {
-    expect(parseChord('cmd+k')).toMatchObject({ key: 'k', metaKey: true });
-    expect(parseChord('meta+k')).toMatchObject({ key: 'k', metaKey: true });
-    expect(parseChord('ctrl+k')).toMatchObject({ key: 'k', ctrlKey: true });
-    expect(parseChord('control+k')).toMatchObject({ key: 'k', ctrlKey: true });
-    expect(parseChord('alt+k')).toMatchObject({ key: 'k', altKey: true });
-    expect(parseChord('option+k')).toMatchObject({ key: 'k', altKey: true });
-    expect(parseChord('shift+k')).toMatchObject({ key: 'k', shiftKey: true });
+    expect(tryParseChord('cmd+k')).toMatchObject({ key: 'k', metaKey: true });
+    expect(tryParseChord('meta+k')).toMatchObject({ key: 'k', metaKey: true });
+    expect(tryParseChord('ctrl+k')).toMatchObject({ key: 'k', ctrlKey: true });
+    expect(tryParseChord('control+k')).toMatchObject({ key: 'k', ctrlKey: true });
+    expect(tryParseChord('alt+k')).toMatchObject({ key: 'k', altKey: true });
+    expect(tryParseChord('option+k')).toMatchObject({ key: 'k', altKey: true });
+    expect(tryParseChord('shift+k')).toMatchObject({ key: 'k', shiftKey: true });
   });
 
   it('parses mod+ as the platform modifier', () => {
-    const c = parseChord('mod+j');
+    const c = tryParseChord('mod+j')!;
     expect(c).toMatchObject({ key: 'j', modKey: true });
   });
 
   it('treats trailing + as the "+" key', () => {
-    const c = parseChord('shift++');
+    const c = tryParseChord('shift++')!;
     expect(c).toMatchObject({ key: '+', shiftKey: true });
   });
 
@@ -48,18 +46,14 @@ describe('keybindingParser — chords', () => {
   });
 
   it('parses "space" and "esc" aliases', () => {
-    expect(parseChord('space')).toMatchObject({ key: ' ' });
-    expect(parseChord('esc')).toMatchObject({ key: 'escape' });
+    expect(tryParseChord('space')).toMatchObject({ key: ' ' });
+    expect(tryParseChord('esc')).toMatchObject({ key: 'escape' });
   });
 
   it('encodes back to a canonical form', () => {
-    expect(encodeChord(parseChord('mod+shift+p'))).toBe('mod+shift+p');
-    expect(encodeChord(parseChord('cmd+k'))).toBe('cmd+k');
-    expect(encodeChord(parseChord('space'))).toBe('space');
-  });
-
-  it('throws ParseError on invalid chords', () => {
-    expect(() => parseChord('')).toThrow(/invalid keybinding shortcut/);
+    expect(encodeChord(tryParseChord('mod+shift+p')!)).toBe('mod+shift+p');
+    expect(encodeChord(tryParseChord('cmd+k')!)).toBe('cmd+k');
+    expect(encodeChord(tryParseChord('space')!)).toBe('space');
   });
 });
 
@@ -78,38 +72,38 @@ describe('keybindingParser — chordMatches', () => {
   });
 
   it('matches mod+k on macOS against cmd', () => {
-    const chord = parseChord('mod+k');
+    const chord = tryParseChord('mod+k')!;
     expect(chordMatches(chord, ev('k', { metaKey: true }), true)).toBe(true);
     expect(chordMatches(chord, ev('k', { ctrlKey: true }), true)).toBe(false);
   });
 
   it('matches mod+k on non-mac against ctrl', () => {
-    const chord = parseChord('mod+k');
+    const chord = tryParseChord('mod+k')!;
     expect(chordMatches(chord, ev('k', { ctrlKey: true }), false)).toBe(true);
     expect(chordMatches(chord, ev('k', { metaKey: true }), false)).toBe(false);
   });
 
   it('rejects when an unwanted modifier is held', () => {
-    const chord = parseChord('mod+k');
+    const chord = tryParseChord('mod+k')!;
     expect(chordMatches(chord, ev('k', { metaKey: true, shiftKey: true }), true)).toBe(false);
   });
 
   it('matches case-insensitively', () => {
-    const chord = parseChord('mod+k');
+    const chord = tryParseChord('mod+k')!;
     expect(chordMatches(chord, ev('K', { metaKey: true }), true)).toBe(true);
   });
 
   it('matches macOS Option-letter chords by physical key code when event.key is the produced glyph', () => {
-    expect(chordMatches(parseChord('alt+h'), ev('˙', { code: 'KeyH', altKey: true }), true))
+    expect(chordMatches(tryParseChord('alt+h')!, ev('˙', { code: 'KeyH', altKey: true }), true))
       .toBe(true);
-    expect(chordMatches(parseChord('alt+l'), ev('¬', { code: 'KeyL', altKey: true }), true))
+    expect(chordMatches(tryParseChord('alt+l')!, ev('¬', { code: 'KeyL', altKey: true }), true))
       .toBe(true);
-    expect(chordMatches(parseChord('alt+shift+l'), ev('Ò', { code: 'KeyL', altKey: true, shiftKey: true }), true))
+    expect(chordMatches(tryParseChord('alt+shift+l')!, ev('Ò', { code: 'KeyL', altKey: true, shiftKey: true }), true))
       .toBe(true);
   });
 
   it('does not use physical-key fallback off macOS', () => {
-    expect(chordMatches(parseChord('alt+h'), ev('˙', { code: 'KeyH', altKey: true }), false))
+    expect(chordMatches(tryParseChord('alt+h')!, ev('˙', { code: 'KeyH', altKey: true }), false))
       .toBe(false);
   });
 
@@ -133,12 +127,12 @@ describe('keybindingParser — chordMatches', () => {
     });
 
     it('matches Ctrl+Shift+Backtick (event.key="~") on non-mac', () => {
-      const chord = parseChord('mod+shift+~');
+      const chord = tryParseChord('mod+shift+~')!;
       expect(chordMatches(chord, ev('~', { ctrlKey: true, shiftKey: true }), false)).toBe(true);
     });
 
     it('matches Cmd+Shift+Backtick (event.key="~") on mac — Chromium shape', () => {
-      const chord = parseChord('mod+shift+~');
+      const chord = tryParseChord('mod+shift+~')!;
       expect(chordMatches(chord, ev('~', { metaKey: true, shiftKey: true }), true)).toBe(true);
     });
 
@@ -147,7 +141,7 @@ describe('keybindingParser — chordMatches', () => {
       // UNSHIFTED backtick; only code carries the physical key. Verified
       // against the live layout via UCKeyTranslate (cmd|shift + keycode 50
       // → "`").
-      const chord = parseChord('mod+shift+~');
+      const chord = tryParseChord('mod+shift+~')!;
       expect(chordMatches(chord, ev('`', { metaKey: true, shiftKey: true, code: 'Backquote' }), true)).toBe(true);
     });
 
@@ -155,12 +149,12 @@ describe('keybindingParser — chordMatches', () => {
       // On Chromium platforms "`" with shift means the layout genuinely
       // produced a backtick — the tilde chord must not fire, and the mac
       // Cmd+Shift fallback must stay unreachable there.
-      const chord = parseChord('mod+shift+~');
+      const chord = tryParseChord('mod+shift+~')!;
       expect(chordMatches(chord, ev('`', { ctrlKey: true, shiftKey: true, code: 'Backquote' }), false)).toBe(false);
     });
 
     it('does NOT use the Cmd+Shift fallback without meta or without shift', () => {
-      const chord = parseChord('mod+shift+~');
+      const chord = tryParseChord('mod+shift+~')!;
       // mac, ctrl+shift (no meta): no stripping occurs in reality, and the
       // fallback must not fire for a key the layout says is a backtick.
       expect(chordMatches(chord, ev('`', { ctrlKey: true, shiftKey: true, code: 'Backquote' }), true)).toBe(false);
@@ -178,7 +172,7 @@ describe('keybindingParser — chordMatches', () => {
       ['mod+shift+?', '?', '/', 'Slash'],
     ] as const) {
       it(`${spelling} matches Chromium on every platform and WKWebView on mac`, () => {
-        const chord = parseChord(spelling);
+        const chord = tryParseChord(spelling)!;
         expect(chordMatches(chord, ev(shifted, { ctrlKey: true, shiftKey: true, code }), false)).toBe(true);
         expect(chordMatches(chord, ev(shifted, { metaKey: true, shiftKey: true, code }), true)).toBe(true);
         expect(chordMatches(chord, ev(unshifted, { metaKey: true, shiftKey: true, code }), true)).toBe(true);
@@ -222,7 +216,7 @@ describe('keybindingParser — chordMatches', () => {
     });
 
     it('matches Ctrl+Tab on both mac and non-mac, but never Cmd+Tab', () => {
-      const chord = parseChord('ctrl+tab');
+      const chord = tryParseChord('ctrl+tab')!;
       expect(chordMatches(chord, ev('Tab', { ctrlKey: true }), false)).toBe(true);
       expect(chordMatches(chord, ev('Tab', { ctrlKey: true }), true)).toBe(true);
       // Cmd+Tab must NOT match a literal-ctrl chord (it's the OS app switcher).
@@ -233,11 +227,11 @@ describe('keybindingParser — chordMatches', () => {
 
 describe('keybindingParser — when expressions', () => {
   it('parses a plain identifier', () => {
-    expect(parseWhen('terminalOpen')).toEqual({ type: 'identifier', name: 'terminalOpen' });
+    expect(tryParseWhen('terminalOpen')).toEqual({ type: 'identifier', name: 'terminalOpen' });
   });
 
   it('parses NOT', () => {
-    expect(parseWhen('!paletteOpen')).toEqual({
+    expect(tryParseWhen('!paletteOpen')).toEqual({
       type: 'not',
       node: { type: 'identifier', name: 'paletteOpen' },
     });
@@ -245,7 +239,7 @@ describe('keybindingParser — when expressions', () => {
 
   it('parses AND / OR with correct precedence', () => {
     // a || b && c should parse as (a || (b && c)).
-    const ast = parseWhen('a || b && c');
+    const ast = tryParseWhen('a || b && c')!;
     expect(ast).toEqual({
       type: 'or',
       left: { type: 'identifier', name: 'a' },
@@ -258,7 +252,7 @@ describe('keybindingParser — when expressions', () => {
   });
 
   it('respects parentheses', () => {
-    const ast = parseWhen('(a || b) && c');
+    const ast = tryParseWhen('(a || b) && c');
     expect(ast).toEqual({
       type: 'and',
       left: {
@@ -270,16 +264,15 @@ describe('keybindingParser — when expressions', () => {
     });
   });
 
-  it('returns null (or throws) on malformed input', () => {
+  it('returns null on malformed input', () => {
     expect(tryParseWhen('')).toBeNull();
     expect(tryParseWhen('a &&')).toBeNull();
     expect(tryParseWhen('(a')).toBeNull();
     expect(tryParseWhen('!! ')).toBeNull();
-    expect(() => parseWhen('a &&')).toThrow(/invalid when/);
   });
 
   it('evaluateWhen treats missing identifiers as false', () => {
-    const ast = parseWhen('!paletteOpen && terminalOpen');
+    const ast = tryParseWhen('!paletteOpen && terminalOpen')!;
     expect(evaluateWhen(ast, { terminalOpen: true })).toBe(true);
     expect(evaluateWhen(ast, { terminalOpen: true, paletteOpen: true })).toBe(false);
     expect(evaluateWhen(ast, {})).toBe(false);
@@ -287,8 +280,8 @@ describe('keybindingParser — when expressions', () => {
 
   it('round-trips through encode/decode', () => {
     const original = '!paletteOpen && (terminalOpen || approvalPending)';
-    const ast = parseWhen(original);
-    const re = parseWhen(encodeWhen(ast));
+    const ast = tryParseWhen(original)!;
+    const re = tryParseWhen(encodeWhen(ast))!;
     expect(re).toEqual(ast);
   });
 });

@@ -19,8 +19,10 @@ import { PICKER_SEARCH_DEBOUNCE_MS } from './prManagePicker.svelte';
 import { getToasts } from './toast.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { TransportError } from '../transport/wsClient';
-import type { PRCandidates } from '../types/models';
+import type { SearchPRCandidates } from './bindings';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+
+type PRCandidates = Awaited<ReturnType<typeof SearchPRCandidates>>;
 
 const REF = { forge: 'github' as const, host: 'github.com', namespace: 'owner', repo: 'repo', number: 5 };
 const REF_B = { ...REF, number: 6 };

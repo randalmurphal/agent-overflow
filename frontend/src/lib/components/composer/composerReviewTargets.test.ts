@@ -1,46 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildReviewSections, parseReviewTarget } from './composerReviewTargets';
+import { buildReviewSections } from './composerReviewTargets';
 import { filterCommandSections, flattenSections } from './composerCommandEntries';
 import type { BranchCommit } from '../../types/git';
 
 function commit(shortSha: string, subject: string): BranchCommit {
   return { sha: `${shortSha}0000`, shortSha, subject, author: 'a', authoredAt: 0 } as BranchCommit;
 }
-
-describe('parseReviewTarget', () => {
-  it('reads a bare /review as the uncommitted-changes variant', () => {
-    expect(parseReviewTarget('')).toEqual({ target: { kind: 'uncommittedChanges' } });
-    expect(parseReviewTarget('  ')).toEqual({ target: { kind: 'uncommittedChanges' } });
-    expect(parseReviewTarget('uncommitted')).toEqual({ target: { kind: 'uncommittedChanges' } });
-  });
-
-  it('reads each variant with its own required payload', () => {
-    expect(parseReviewTarget('branch main')).toEqual({
-      target: { kind: 'baseBranch', branch: 'main' },
-    });
-    expect(parseReviewTarget('commit abc1234 Fix the parser')).toEqual({
-      target: { kind: 'commit', sha: 'abc1234', title: 'Fix the parser' },
-    });
-    expect(parseReviewTarget('commit abc1234')).toEqual({
-      target: { kind: 'commit', sha: 'abc1234', title: undefined },
-    });
-    expect(parseReviewTarget('custom check every lock ordering')).toEqual({
-      target: { kind: 'custom', instructions: 'check every lock ordering' },
-    });
-  });
-
-  it('refuses a variant with its payload missing rather than guessing', () => {
-    expect(parseReviewTarget('branch').error).toMatch(/Name a branch/);
-    expect(parseReviewTarget('commit').error).toMatch(/Name a commit/);
-    expect(parseReviewTarget('custom').error).toMatch(/Describe the review/);
-  });
-
-  it('names the four variants when the target word is unknown', () => {
-    const parsed = parseReviewTarget('everything');
-    expect(parsed.target).toBeUndefined();
-    expect(parsed.error).toMatch(/uncommitted, branch, commit, or custom/);
-  });
-});
 
 describe('buildReviewSections', () => {
   const git = {
