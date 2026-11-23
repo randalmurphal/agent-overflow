@@ -129,8 +129,8 @@ func codexExitCodeFromMeta(raw json.RawMessage) int {
 }
 
 // withCodexExecutionTurnMeta tags an agent's command or stdin interaction
-// row with the agent execution that started the command, so only that
-// execution's card counts and shows it (store.CodexExecutionTurnMetaKey).
+// row with the agent execution it belongs to, so only that execution's card
+// counts and shows it (store.CodexExecutionTurnMetaKey).
 func withCodexExecutionTurnMeta(meta, turnID string) string {
 	if turnID = strings.TrimSpace(turnID); turnID == "" {
 		return meta
@@ -330,26 +330,6 @@ func (r *Router) codexTerminalSummaryForProcess(threadID, processID string) stri
 		return ""
 	}
 	return tracker.summary
-}
-
-// codexTerminalExecutionTurnForProcess returns the agent execution that
-// started the process's command, empty for a top-level command.
-func (r *Router) codexTerminalExecutionTurnForProcess(threadID, processID string) string {
-	processID = strings.TrimSpace(processID)
-	if processID == "" {
-		return ""
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	state := r.codexBackgroundIfPresent(threadID)
-	if state == nil {
-		return ""
-	}
-	tracker := codexUnifiedExecTrackerByProcessLocked(state, processID)
-	if tracker == nil {
-		return ""
-	}
-	return tracker.executionTurnID
 }
 
 func (r *Router) codexTerminalCommandForProcess(threadID, processID string) string {

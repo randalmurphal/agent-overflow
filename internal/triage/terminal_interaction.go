@@ -105,7 +105,9 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	if scope == "" {
 		return r.persistItem(item, nil)
 	}
-	item.Meta = withCodexExecutionTurnMeta(item.Meta, r.codexTerminalExecutionTurnForProcess(evt.ThreadID, meta.ProcessID))
+	// The interaction belongs to the execution that wrote the stdin, which
+	// Codex names on the event, not to the one that started the command.
+	item.Meta = withCodexExecutionTurnMeta(item.Meta, evt.TurnID)
 	_, _, err = r.persistItemUnderScope(item, nil)
 	return err
 }

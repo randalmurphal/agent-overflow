@@ -103,48 +103,6 @@ type subagentRoundBounds struct {
 	lo       *TimelineCursor
 	hi       *TimelineCursor
 	round    bool
-	// excluded holds rows inside the bounds that belong to another
-	// execution (otherCodexExecutionRows). They have no rows under them.
-	excluded map[string]bool
-}
-
-// otherCodexExecutionRows returns the rows directly under launchID in an
-// execution's bounds that another execution of the agent started
-// (codexExecutionMemberSQL), nil when there are none.
-func otherCodexExecutionRows(q sqlQueryer, threadID, launchID, executionTurnID string, turnIndex, startIndex, endIndex int) (out map[string]bool, err error) {
-	if executionTurnID == "" {
-		return nil, nil
-	}
-	source, args, err := timelineArms(q, threadID, timelineSelection{
-		Columns:  timelineIDColumns,
-		KeyFirst: true,
-		Where: `items.parent_id <> '' AND items.parent_id = ` + boundText + ` AND items.turn_index = ?
-		   AND items.item_index > ? AND items.item_index <= ? AND NOT ` + codexExecutionMemberSQL("items."),
-		WhereArgs: []any{launchID, turnIndex, startIndex, endIndex, executionTurnID, executionTurnID},
-	})
-	if err != nil {
-		return nil, err
-	}
-	rows, err := q.Query("SELECT id FROM ("+source+")", args...)
-	if err != nil {
-		return nil, fmt.Errorf("store: read other executions' rows of %s/%s: %w", threadID, launchID, err)
-	}
-	defer func() {
-		if closeErr := rows.Close(); closeErr != nil && err == nil {
-			out, err = nil, fmt.Errorf("store: close other executions' rows of %s/%s: %w", threadID, launchID, closeErr)
-		}
-	}()
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: scan other execution row: %w", err)
-		}
-		if out == nil {
-			out = make(map[string]bool)
-		}
-		out[id] = true
-	}
-	return out, rows.Err()
 }
 
 // descendantsWalk renders the `WITH RECURSIVE rel(root, id)` walk down
@@ -1294,38 +1252,42 @@ func (s *Store) SubagentCompletedChildIndex(threadID, launchID string) (int, err
 }
 
 // SnapshotSubagentExecutionMeta returns immutable aggregates for one completed
-// execution, and its tool count (subagentExecutionToolCalls over the same
-// bounds). The caller persists the result on its new completion item only.
-// Child coordinates belong to the original spawn's AO turn. Both are read
-// from one snapshot.
+// execution, and its tool count. The caller persists the result on its new
+// completion item only. Child coordinates belong to the original spawn's AO
+// turn. One walk of the agent's rows partitions the execution for both: the
+// rows in (startIndex, endIndex] of turnIndex, less the rows directly under
+// the launch that are tagged with another execution (CodexExecutionMember);
+// the tool count is their tool_call rows directly under the launch, the rows
+// the live count (subagentExecutionToolCalls) and the card's digest
+// (resolveTimelineDigest) read under the same bounds.
 func (s *Store) SnapshotSubagentExecutionMeta(threadID, launchID, executionTurnID, itemMeta string, turnIndex, startIndex, endIndex int) (string, int, error) {
 	type snapshot struct {
 		meta  string
 		tools int
 	}
 	got, err := readSnapshot(s.reader(), "subagent execution snapshot", func(q sqlQueryer) (snapshot, error) {
-		others, err := otherCodexExecutionRows(q, threadID, launchID, executionTurnID, turnIndex, startIndex, endIndex)
-		if err != nil {
-			return snapshot{}, err
+		bound := subagentRoundBounds{
+			lo: &TimelineCursor{TurnIndex: turnIndex, ItemIndex: startIndex + 1},
+			hi: &TimelineCursor{TurnIndex: turnIndex, ItemIndex: endIndex + 1},
 		}
-		aggregates, err := subagentAggregatesByRound(q, threadID, []string{launchID}, []subagentRoundBounds{{
-			anchorID: launchID, rootID: launchID,
-			lo:       &TimelineCursor{TurnIndex: turnIndex, ItemIndex: startIndex + 1},
-			hi:       &TimelineCursor{TurnIndex: turnIndex, ItemIndex: endIndex + 1},
-			excluded: others,
-		}})
-		if err != nil {
-			return snapshot{}, err
-		}
-		aggregate := aggregates[launchID]
-		meta, err := mergeReadTimeMeta(itemMeta, map[string]any{
-			metaKeySubagentDescendantCount:    aggregate.descendantCount,
-			metaKeySubagentLatestChildSummary: aggregate.latestChildSummary,
+		var acc subagentAggregateAccumulator
+		tools := 0
+		err := forEachCodexExecutionRow(q, threadID, launchID, func(row subagentAggregateRow) {
+			if !subagentBoundContains(bound, row) || (row.direct && !CodexExecutionMember(row.executionTag, executionTurnID)) {
+				return
+			}
+			acc.add(row)
+			if row.direct && row.kind == "tool_call" {
+				tools++
+			}
 		})
 		if err != nil {
 			return snapshot{}, err
 		}
-		tools, _, err := subagentExecutionToolCalls(q, threadID, launchID, executionTurnID, turnIndex, startIndex, int64(endIndex))
+		meta, err := mergeReadTimeMeta(itemMeta, map[string]any{
+			metaKeySubagentDescendantCount:    acc.aggregate.descendantCount,
+			metaKeySubagentLatestChildSummary: acc.aggregate.latestChildSummary,
+		})
 		if err != nil {
 			return snapshot{}, err
 		}
@@ -1344,16 +1306,24 @@ func (s *Store) SubagentExecutionToolCallsAfter(threadID, launchID, executionTur
 }
 
 // CodexExecutionTurnMetaKey names, on a Codex agent's background command
-// and stdin interaction rows, the agent execution (the child turn id) that
-// started the command. The command can exit during a later execution of the
-// same agent; its row sits at that position in the agent's history but is a
-// member only of the execution its tag names (codexExecutionMemberSQL).
+// and stdin interaction rows, the agent execution (the child turn id) the row
+// belongs to: the one that started the command, or the one that wrote the
+// stdin. The command can exit during a later execution of the same agent; its
+// row sits at that position in the agent's history but is a member only of
+// the execution its tag names (codexExecutionMemberSQL).
 const CodexExecutionTurnMetaKey = "codex_execution_turn_id"
 
-// codexExecutionMemberSQL keeps a row in the Codex execution whose turn id
-// it binds, twice, unless the row is tagged with another execution. An
-// empty turn id (an execution recorded without one) keeps every row in its
-// bounds, as does an untagged row.
+// CodexExecutionMember reports whether a row tagged tag (its
+// CodexExecutionTurnMetaKey, "" when untagged) is a member of the Codex
+// execution executionTurnID: unless the row is tagged with another
+// execution. An empty execution turn id (an execution recorded without one)
+// keeps every row in its bounds, as does an untagged row.
+func CodexExecutionMember(tag, executionTurnID string) bool {
+	return executionTurnID == "" || tag == "" || tag == executionTurnID
+}
+
+// codexExecutionMemberSQL is CodexExecutionMember in SQL, binding the
+// execution turn id twice.
 func codexExecutionMemberSQL(alias string) string {
 	return "(? = '' OR COALESCE(" + jsonFieldExpr(alias+"meta", "$."+CodexExecutionTurnMetaKey) + ", '') IN ('', ?))"
 }

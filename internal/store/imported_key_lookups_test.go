@@ -350,8 +350,8 @@ func keyedLookups(th string) []keyedLookup {
 			if _, tools, err := s.SnapshotSubagentExecutionMeta(th, "launch-1", "", "{}", 1, 1, 6); err != nil || tools != 1 {
 				t.Errorf("execution tools of launch-1 = %d, %v; want child-1", tools, err)
 			}
-			// An execution with an id also reads the rows another execution
-			// started (otherCodexExecutionRows).
+			// An execution with an id reads each direct row's execution tag
+			// (forEachCodexExecutionRow).
 			if _, tools, err := s.SnapshotSubagentExecutionMeta(th, "launch-1", "run-1", "{}", 1, 1, 6); err != nil || tools != 1 {
 				t.Errorf("execution run-1 tools of launch-1 = %d, %v; want child-1", tools, err)
 			}
@@ -609,18 +609,6 @@ func TestKeyedReadsUseTheirLocalKeyIndex(t *testing.T) {
 			name: "execution tool count",
 			run: func() {
 				if _, _, err := s.SubagentExecutionToolCallsAfter(keyedThreadID, "launch-1", "", 1, 1); err != nil {
-					t.Error(err)
-				}
-			},
-			want:      "idx_items_parent (thread_id=? AND parent_id=? AND turn_index=? AND item_index>? AND item_index<?)",
-			forbidden: []string{"MATERIALIZE", "AUTOMATIC", "idx_items_thread_turn_item_unique"},
-		},
-		{
-			// The rows another execution started range over the same
-			// children as the execution's tool count.
-			name: "other execution rows",
-			run: func() {
-				if _, err := otherCodexExecutionRows(s.reader(), keyedThreadID, "launch-1", "run-1", 1, 1, 6); err != nil {
 					t.Error(err)
 				}
 			},

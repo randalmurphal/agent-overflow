@@ -56,10 +56,10 @@ func finishAgentCommand(t *testing.T, r *Router, threadID, spawnID, itemID, pid,
 	}
 }
 
-func agentInteraction(t *testing.T, r *Router, threadID, spawnID, pid string) {
+func agentInteraction(t *testing.T, r *Router, threadID, spawnID, pid, childTurnID string) {
 	t.Helper()
 	if err := r.Handle(provider.ProviderEvent{
-		Kind: provider.EventTerminalInteraction, ThreadID: threadID, ParentToolUseID: spawnID,
+		Kind: provider.EventTerminalInteraction, ThreadID: threadID, TurnID: childTurnID, ParentToolUseID: spawnID,
 		Meta: terminalInteractionMetaBlob(t, pid, "y\n"), Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("agent interaction %s: %v", pid, err)
@@ -191,10 +191,75 @@ func TestCodexAgentCommandCompletionWritesNothingOnceACutRemovedItsAgent(t *test
 	}
 }
 
+// The store refuses an agent's command whose scope row is not a tool_call,
+// or whose id is already stored on another turn (as the newest-turn
+// fallback before the scoped write could leave it): the completion writes
+// nothing, leaves the stored row as it was, and says so.
+func TestCodexAgentCommandTheStoreRefusesWritesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		scope string
+		seed  func(t *testing.T, st *store.Store)
+		want  string
+	}{
+		{
+			name:  "scope is a text row",
+			scope: "note",
+			seed: func(t *testing.T, st *store.Store) {
+				if err := st.InsertItem(store.Item{ID: "note", ThreadID: "t1", TurnIndex: 0, ItemIndex: 5, Kind: "assistant_text", Role: "assistant", Status: statusCompleted, Summary: "hello"}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: `parent kind "assistant_text" is not tool_call`,
+		},
+		{
+			name:  "command already stored on a later turn",
+			scope: "spawn-agent",
+			seed: func(t *testing.T, st *store.Store) {
+				seedAgentSpawnRow(t, st, "t1", "spawn-agent", 0)
+				if err := st.WithSubagentCard("t1", "spawn-agent", func(card *store.SubagentCard) error {
+					return st.InsertItem(store.Item{ID: "child-cmd", ThreadID: "t1", TurnIndex: 1, ItemIndex: 1, Kind: itemKindToolCall, Role: "assistant", Status: statusCompleted, Summary: "old", ParentID: "spawn-agent", SubagentCard: card})
+				}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: `is stored under "spawn-agent" in turn 1, not under "spawn-agent" in turn 0`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, st, _ := newTestRouter(t)
+			logs := captureLogs(t)
+			createCodexBackgroundTestThread(t, st, "t1")
+			seedOpenTurn(t, r, st, "t1", 0)
+			endRootTurn(t, r, "t1", 0)
+			seedOpenTurn(t, r, st, "t1", 1)
+			tc.seed(t, st)
+			before, existed, err := st.GetThreadItem("t1", "child-cmd")
+			if err != nil {
+				t.Fatal(err)
+			}
+			startAgentCommand(t, r, "t1", tc.scope, "child-cmd", "pid-child", "child-turn")
+			finishAgentCommand(t, r, "t1", tc.scope, "child-cmd", "pid-child", "child-turn")
+
+			after, found, err := st.GetThreadItem("t1", "child-cmd")
+			if err != nil || found != existed || (found && (after.TurnIndex != before.TurnIndex || after.ItemIndex != before.ItemIndex || after.Summary != before.Summary)) {
+				t.Fatalf("command row changed: %+v -> %+v (found=%v err=%v)", before, after, found, err)
+			}
+			if codexTrackerPresent(r, "t1", "child-cmd") {
+				t.Fatalf("refused completion kept the command's tracker")
+			}
+			if !strings.Contains(logs.String(), "triage: refusing child-cmd on thread t1") || !strings.Contains(logs.String(), tc.want) {
+				t.Fatalf("refusal not logged with %q: %q", tc.want, logs.String())
+			}
+		})
+	}
+}
+
 // A non-empty stdin interaction with an agent's background terminal is the
 // agent's history like the agent's command: on the agent's turn while the
-// root is idle or running a later turn, tagged with the execution that
-// started the command, and nothing once a cut removed the agent. A
+// root is idle or running a later turn, tagged with the execution Codex
+// reports it in (the one that wrote the stdin), and nothing once a cut
+// removed the agent. A
 // top-level interaction is unchanged: TestCodexUnifiedExecStartWaitsForTypedTerminalInteraction.
 func TestCodexAgentTerminalInteractionLandsOnAgentTurn(t *testing.T) {
 	for _, tc := range []struct {
@@ -233,7 +298,7 @@ func TestCodexAgentTerminalInteractionLandsOnAgentTurn(t *testing.T) {
 				cut()
 			}
 
-			agentInteraction(t, r, "t1", "spawn-agent", "pid-child")
+			agentInteraction(t, r, "t1", "spawn-agent", "pid-child", "child-turn")
 
 			rows := rowsOfKind(t, st, "t1", string(provider.ItemTerminalInteraction))
 			if tc.cut {
@@ -264,7 +329,8 @@ func TestCodexAgentTerminalInteractionLandsOnAgentTurn(t *testing.T) {
 // exits during B. The command is in the agent pane at the position it
 // completed, and the background tray's tool list shows it, but it is in no
 // execution's card or count: A's card was saved before it exited and never
-// changes, and B did not start it.
+// changes, and B did not start it. B's stdin to another command A started
+// is B's: in B's aggregates, not A's.
 func TestCodexAgentCommandFromAnEarlierExecutionIsNotCountedByALaterOne(t *testing.T) {
 	r, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
@@ -274,6 +340,7 @@ func TestCodexAgentCommandFromAnEarlierExecutionIsNotCountedByALaterOne(t *testi
 	childTurnStatus(t, r, "t1", "spawn", "child", "A", "running")
 	childToolCall(t, r, "t1", "spawn", "a1")
 	startAgentCommand(t, r, "t1", "spawn", "cmd-a", "pid-a", "A")
+	startAgentCommand(t, r, "t1", "spawn", "cmd-a2", "pid-a2", "A")
 	childTurnStatus(t, r, "t1", "spawn", "child", "A", "completed")
 	deliverMailbox(t, r, "t1", "spawn", rootAnswer(t, "final-a", "First answer."))
 	cardA, found, err := st.GetThreadItem("t1", "complete:spawn:turn:A")
@@ -293,6 +360,9 @@ func TestCodexAgentCommandFromAnEarlierExecutionIsNotCountedByALaterOne(t *testi
 		t.Fatalf("B's live count = %d after A's command exited, want 1", got)
 	}
 	childToolCall(t, r, "t1", "spawn", "b2")
+	// B writes to A's other command, still running: Codex reports the
+	// interaction in B, the execution that wrote it.
+	agentInteraction(t, r, "t1", "spawn", "pid-a2", "B")
 	if got := liveToolUses(t, r, "t1", "spawn"); got != 2 {
 		t.Fatalf("B's live count = %d, want 2", got)
 	}
@@ -305,6 +375,14 @@ func TestCodexAgentCommandFromAnEarlierExecutionIsNotCountedByALaterOne(t *testi
 	}
 	if command.ParentID != "spawn" || command.TurnIndex != 0 || decodeItemMetaMap(t, command.Meta)[store.CodexExecutionTurnMetaKey] != "A" {
 		t.Fatalf("A's command row = %+v, want under spawn on turn 0 tagged A", command)
+	}
+	const interactionID = "interacted:pid-a2:0:0"
+	interaction, found, err := st.GetThreadItem("t1", interactionID)
+	if err != nil || !found {
+		t.Fatalf("B's interaction row: found=%v err=%v", found, err)
+	}
+	if interaction.ParentID != "spawn" || interaction.TurnIndex != 0 {
+		t.Fatalf("B's interaction row = %+v, want under spawn on turn 0", interaction)
 	}
 
 	cardB, found, err := st.GetThreadItem("t1", "complete:spawn:turn:B")
@@ -326,6 +404,9 @@ func TestCodexAgentCommandFromAnEarlierExecutionIsNotCountedByALaterOne(t *testi
 	if command.ItemIndex <= bMeta.Start || command.ItemIndex > bMeta.End {
 		t.Fatalf("fixture: A's command at %d is outside B's range (%d, %d]", command.ItemIndex, bMeta.Start, bMeta.End)
 	}
+	if interaction.ItemIndex <= bMeta.Start || interaction.ItemIndex > bMeta.End {
+		t.Fatalf("fixture: B's interaction at %d is outside B's range (%d, %d]", interaction.ItemIndex, bMeta.Start, bMeta.End)
+	}
 	inB := 0
 	items, err := st.ListItems("t1")
 	if err != nil {
@@ -336,8 +417,8 @@ func TestCodexAgentCommandFromAnEarlierExecutionIsNotCountedByALaterOne(t *testi
 			inB++
 		}
 	}
-	if bMeta.Descendants != inB || strings.Contains(bMeta.Latest, "sleep 60") {
-		t.Fatalf("B's card aggregates = %d rows, latest %q; want %d rows without A's command", bMeta.Descendants, bMeta.Latest, inB)
+	if bMeta.Descendants != inB || bMeta.Latest != interaction.Summary {
+		t.Fatalf("B's card aggregates = %d rows, latest %q; want %d rows without A's command, latest %q", bMeta.Descendants, bMeta.Latest, inB, interaction.Summary)
 	}
 
 	again, _, err := st.GetThreadItem("t1", cardA.ID)
@@ -372,10 +453,13 @@ func TestCodexAgentCommandFromAnEarlierExecutionIsNotCountedByALaterOne(t *testi
 		t.Fatalf("A's card body = %v, want a1 without cmd-a", ids)
 	}
 	pane := slice(store.TimelineSelection{ScopeRootID: "spawn"})
-	if order := strings.Join(pane, ","); !strings.Contains(order, "b1,cmd-a,b2") {
-		t.Fatalf("agent pane = %v, want A's command between b1 and b2 where it completed", pane)
+	if order := strings.Join(pane, ","); !strings.Contains(order, "b1,cmd-a,b2,"+interactionID) {
+		t.Fatalf("agent pane = %v, want A's command between b1 and b2 where it completed, then B's interaction", pane)
 	}
 	if ids := slice(store.TimelineSelection{ScopeRootID: "spawn", Tools: true}); !contains(ids, "cmd-a") {
 		t.Fatalf("tray tool list = %v, want A's command", ids)
+	}
+	if tag := decodeItemMetaMap(t, interaction.Meta)[store.CodexExecutionTurnMetaKey]; tag != "B" {
+		t.Fatalf("B's interaction is tagged %v, want B, the execution that wrote it", tag)
 	}
 }

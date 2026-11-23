@@ -58,7 +58,7 @@ Codex has no `run_in_background` flag, but it does background work via
   optional streaming output deltas, eventual `item/completed` (status
   flips in place, same `item_id`). No "yielded" event and no
   `is_background` flag. Agent Overflow clears transient live state on typed
-  `item/completed`; it persists the same item id as the command row, on the agent's turn for
+  `item/completed` for a command it still tracks; it persists the same item id as the command row, on the agent's turn for
   an agent's command and, for a top-level one, only while a Codex wire round
   is still active, matching Codex TUI timing.
 - `exec_command` supports parallel tool calls (`supports_parallel_tool_calls = true`).

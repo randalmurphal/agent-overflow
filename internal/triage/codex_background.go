@@ -28,7 +28,8 @@ import (
 // and spawn_agent starts in transient state. A unifiedExec is shown in
 // the running-task tray immediately, but it only becomes a background
 // task when a typed trigger proves the model explicitly waited on it.
-// Command completion transcript history comes from typed item/completed: on
+// Command completion transcript history comes from typed item/completed of a
+// command the tracker still holds: on
 // the agent's turn for an agent's command, and for a top-level one only while
 // a Codex wire round is active, matching Codex TUI timing;
 // non-empty terminal input owns interaction marker rows. A spawn_agent start

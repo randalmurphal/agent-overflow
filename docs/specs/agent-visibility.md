@@ -282,7 +282,8 @@ own stop (`agentStopScope`, `internal/triage/agent_stops.go`;
   it (`codex_execution_turn_id`): one that exits while that execution runs
   is in its count and card, and one that exits later is in the agent pane at
   the point it exited and in no execution's count or card, since a saved
-  card never changes. A nested agent's spawn counts as one call; the nested
+  card never changes. Writing stdin to that command is an interaction of
+  the execution that wrote it, the turn Codex reports it in. A nested agent's spawn counts as one call; the nested
   agent's own calls do not, as in Claude's count. The live count adds one
   per row and starts over with each execution
   (`internal/triage/codex_execution_tools.go`); the completion's is read

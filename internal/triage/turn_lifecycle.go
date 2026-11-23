@@ -663,7 +663,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// transient after turn close because Codex `Op::Interrupt` does not kill
 	// the PTY; typed item/completed later clears the live tracker, and persists
 	// a top-level command's history only if a Codex wire round is active at
-	// that time (an agent's command always lands on the agent's turn).
+	// that time (a tracked agent's command lands on the agent's turn).
 	if persistErr == nil && err == nil {
 		r.observeCodexTurnComplete(evt.ThreadID)
 	}

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"slices"
 	"strings"
@@ -15,20 +16,51 @@ var subagentPreviewKindPredicate = "items.kind IN ('" + strings.Join(subagentPre
 type subagentAggregateRow struct {
 	root, id, kind, summary string
 	turnIndex, itemIndex    int
+	// direct and executionTag are read only by the Codex execution walk
+	// (forEachCodexExecutionRow): whether the row is directly under the
+	// root, and its CodexExecutionTurnMetaKey tag when it is.
+	direct       bool
+	executionTag string
 }
 
+var subagentAggregateColumns = `rel.root, items.id, items.kind,
+	CASE WHEN ` + subagentPreviewKindPredicate + ` THEN items.summary ELSE '' END,
+	items.turn_index, items.item_index`
+
+// codexExecutionAggregateColumns adds to subagentAggregateColumns whether
+// the row is directly under the root and, for such a row whose meta names
+// one, its execution tag. The instr test keeps the JSON parse to the rows
+// that carry the key.
+var codexExecutionAggregateColumns = subagentAggregateColumns + `,
+	items.parent_id = rel.root,
+	CASE WHEN items.parent_id = rel.root AND instr(items.meta, '"` + CodexExecutionTurnMetaKey + `"') > 0
+	     THEN COALESCE(` + jsonFieldExpr("items.meta", "$."+CodexExecutionTurnMetaKey) + `, '') ELSE '' END`
+
 func forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootIDs []string, visit func(subagentAggregateRow)) error {
+	return walkSubagentAggregateRows(q, threadID, rootIDs, subagentAggregateColumns, func(rows *sql.Rows, row *subagentAggregateRow) error {
+		return rows.Scan(&row.root, &row.id, &row.kind, &row.summary, &row.turnIndex, &row.itemIndex)
+	}, visit)
+}
+
+// forEachCodexExecutionRow is forEachSubagentAggregateRow with each row's
+// direct and executionTag.
+func forEachCodexExecutionRow(q sqlQueryer, threadID, rootID string, visit func(subagentAggregateRow)) error {
+	return walkSubagentAggregateRows(q, threadID, []string{rootID}, codexExecutionAggregateColumns, func(rows *sql.Rows, row *subagentAggregateRow) error {
+		return rows.Scan(&row.root, &row.id, &row.kind, &row.summary, &row.turnIndex, &row.itemIndex, &row.direct, &row.executionTag)
+	}, visit)
+}
+
+func walkSubagentAggregateRows(
+	q sqlQueryer, threadID string, rootIDs []string, columns string,
+	scan func(*sql.Rows, *subagentAggregateRow) error, visit func(subagentAggregateRow),
+) error {
 	if len(rootIDs) == 0 {
 		return nil
 	}
 	resolvedSQL, resolvedArgs, err := timelineArms(q, threadID, timelineSelection{
-		Columns: func(string, string) string {
-			return `rel.root, items.id, items.kind,
-			        CASE WHEN ` + subagentPreviewKindPredicate + ` THEN items.summary ELSE '' END,
-			        items.turn_index, items.item_index`
-		},
-		Source: "rel",
-		Where:  "items.id = rel.id",
+		Columns: func(string, string) string { return columns },
+		Source:  "rel",
+		Where:   "items.id = rel.id",
 	})
 	if err != nil {
 		return err
@@ -44,7 +76,7 @@ func forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootIDs []string
 	defer rows.Close()
 	for rows.Next() {
 		var row subagentAggregateRow
-		if err := rows.Scan(&row.root, &row.id, &row.kind, &row.summary, &row.turnIndex, &row.itemIndex); err != nil {
+		if err := scan(rows, &row); err != nil {
 			return fmt.Errorf("store: scan subagent aggregate row: %w", err)
 		}
 		visit(row)
@@ -119,9 +151,6 @@ func (acc *subagentAggregateAccumulator) noteNewest(position TimelineCursor) {
 }
 
 func subagentBoundContains(bound subagentRoundBounds, row subagentAggregateRow) bool {
-	if bound.excluded[row.id] {
-		return false
-	}
 	position := TimelineCursor{TurnIndex: row.turnIndex, ItemIndex: row.itemIndex}
 	return (bound.lo == nil || !cursorBefore(position, *bound.lo)) &&
 		(bound.hi == nil || cursorBefore(position, *bound.hi))
