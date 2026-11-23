@@ -390,12 +390,9 @@ func TestNoSecurityCallsOutsideTheKeychainSeam(t *testing.T) {
 	root := reporoot.Dir(t)
 	allowedFile := filepath.Join(root, "internal", "provideraccounts", "claude_keychain.go")
 
-	skipDirs := map[string]bool{
-		".git": true, ".claude": true, "node_modules": true,
-		"frontend": true, "docs": true, "dist": true, "build": true,
-	}
+	skipDirs := map[string]bool{".claude": true, "frontend": true, "docs": true, "build": true}
 	fset := token.NewFileSet()
-	walkErr := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+	walkErr := reporoot.Walk(t, ".", func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

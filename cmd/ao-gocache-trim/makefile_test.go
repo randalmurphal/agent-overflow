@@ -6,8 +6,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/testutil/reporoot"
 )
@@ -78,5 +80,31 @@ exit "$NETNS_STATUS"
 				t.Fatalf("make go-test: %v, want failure %v", err, tc.fails)
 			}
 		})
+	}
+}
+
+// TestNoMakeTimeoutOutlastsTheTrimGuard holds longestGoCommand to the
+// Makefile: every timeout a target gives a go command, a test binary's or
+// golangci-lint's, plus buildAllowance for the build before it, fits in it.
+// A whole-tree `make go-test` runs one binary after another under one go
+// command, so its 30m is per binary; its runs take 7 to 27 minutes here.
+func TestNoMakeTimeoutOutlastsTheTrimGuard(t *testing.T) {
+	const buildAllowance = 30 * time.Minute
+	makefile, err := os.ReadFile(reporoot.Path(t, "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeouts := regexp.MustCompile(`(?m)^\t.*\s--?timeout[ =](\S+)`).FindAllStringSubmatch(string(makefile), -1)
+	if len(timeouts) == 0 {
+		t.Fatal("found no -timeout in the Makefile's recipes; the pattern no longer matches them")
+	}
+	for _, match := range timeouts {
+		timeout, err := time.ParseDuration(match[1])
+		if err != nil {
+			t.Fatalf("Makefile timeout %q: %v", match[1], err)
+		}
+		if timeout+buildAllowance > longestGoCommand {
+			t.Errorf("a Makefile target runs a go command for up to %s plus its build, past longestGoCommand (%s): raise longestGoCommand, or a trim may delete an entry that command still needs", timeout, longestGoCommand)
+		}
 	}
 }

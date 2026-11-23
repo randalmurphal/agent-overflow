@@ -15,7 +15,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -73,8 +76,8 @@ var goSourceRoots = []string{"cmd", "internal"}
 // itself opens. A test that inspects the tree through a child process, such as
 // `go list`, is otherwise answered from a pass recorded before the tree
 // changed, in this checkout or in another that built the same test binary.
-// Reading the root and every directory under the package roots records each
-// entry's name, size and modification time.
+// Reading the root and every directory Walk visits under the package roots
+// records each entry's name, size and modification time.
 func ObserveGoSources(t testing.TB) {
 	t.Helper()
 	dir := Dir(t)
@@ -82,11 +85,80 @@ func ObserveGoSources(t testing.TB) {
 		t.Fatalf("reporoot: read %s: %v", dir, err)
 	}
 	for _, sourceRoot := range goSourceRoots {
-		err := filepath.WalkDir(filepath.Join(dir, sourceRoot), func(_ string, _ fs.DirEntry, err error) error {
+		err := Walk(t, sourceRoot, func(_ string, _ fs.DirEntry, err error) error {
 			return err
 		})
 		if err != nil {
 			t.Fatalf("reporoot: walk %s: %v", sourceRoot, err)
 		}
 	}
+}
+
+// Walk walks the tree at rel, a slash-separated path relative to the
+// checkout's root, as filepath.WalkDir does, and leaves out .git and every
+// path the checkout's .gitignore files ignore: build output such as bin/,
+// frontend/dist/ and node_modules/. fn receives absolute paths. A test that
+// reads the source tree walks it with Walk.
+//
+// Go keys a cached test result by every directory listing the test reads,
+// each entry's modification time included. Build output is rewritten by
+// builds and differs between checkouts, so a test that listed it would rerun
+// after a build and in every fresh CI checkout although no source changed.
+// Untracked files that no .gitignore ignores are walked: a new source file
+// belongs to the tree before it is added. Only .gitignore files count, not
+// a developer's global or .git/info excludes, so every checkout walks the
+// same tree.
+func Walk(t testing.TB, rel string, fn fs.WalkDirFunc) error {
+	t.Helper()
+	ignored, err := ignoredPaths(Dir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return walk(Path(t, rel), ignored, fn)
+}
+
+func walk(dir string, ignored map[string]bool, fn fs.WalkDirFunc) error {
+	return filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if entry != nil && path != dir && (entry.Name() == ".git" || ignored[path]) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		return fn(path, entry, err)
+	})
+}
+
+var (
+	ignoredOnce sync.Once
+	ignoredSet  map[string]bool
+	ignoredErr  error
+)
+
+// ignoredPaths returns the absolute paths under root that its .gitignore
+// files ignore, a directory standing for everything in it. The checkout's
+// root does not change during a test binary's run, so it is read once.
+func ignoredPaths(root string) (map[string]bool, error) {
+	ignoredOnce.Do(func() { ignoredSet, ignoredErr = listIgnored(root) })
+	return ignoredSet, ignoredErr
+}
+
+func listIgnored(root string) (map[string]bool, error) {
+	cmd := exec.Command("git", "-C", root, "ls-files", "-z", "--others", "--ignored", "--directory", "--exclude-per-directory=.gitignore")
+	// Only the checkout decides what is ignored: no global or system config,
+	// which could name an excludes file of the developer's.
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("reporoot: list the paths .gitignore ignores in %s: %v\n%s", root, err, stderr.String())
+	}
+	ignored := map[string]bool{}
+	for _, rel := range strings.Split(string(out), "\x00") {
+		if rel != "" {
+			ignored[filepath.Join(root, filepath.FromSlash(strings.TrimSuffix(rel, "/")))] = true
+		}
+	}
+	return ignored, nil
 }

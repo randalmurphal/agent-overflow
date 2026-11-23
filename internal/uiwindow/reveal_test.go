@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // goSourceRoots mirrors GO_PACKAGE_ROOTS in the Makefile, relative to the
-// repository root (this package sits two levels below it).
+// repository root.
 var goSourceRoots = []string{".", "cmd", "internal"}
 
 const wailsApplicationImport = `"github.com/wailsapp/wails/v3/pkg/application"`
@@ -26,21 +28,18 @@ const wailsApplicationImport = `"github.com/wailsapp/wails/v3/pkg/application"`
 // bring a window forward. Creation likewise goes through New, which prevents
 // unused window-event JavaScript from clearing clipboard user activation.
 func TestWindowCallsUseUIWindowBoundary(t *testing.T) {
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := reporoot.Dir(t)
 	fset := token.NewFileSet()
 	var offenders []string
 	for _, sub := range goSourceRoots {
-		dir := filepath.Join(root, sub)
-		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		dir := reporoot.Path(t, sub)
+		err := reporoot.Walk(t, sub, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
 			if d.IsDir() {
 				name := d.Name()
-				if path != dir && (strings.HasPrefix(name, ".") || name == "node_modules" || name == "frontend" || (sub == "." && (name == "cmd" || name == "internal"))) {
+				if path != dir && (strings.HasPrefix(name, ".") || name == "frontend" || (sub == "." && (name == "cmd" || name == "internal"))) {
 					return filepath.SkipDir
 				}
 				return nil

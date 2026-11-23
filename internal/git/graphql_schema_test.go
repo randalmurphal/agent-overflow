@@ -13,6 +13,7 @@ import (
 
 	"agent-overflow/internal/forgeapi"
 	"agent-overflow/internal/git/forgeschema"
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // allowedDeprecatedGraphQL are the deprecated schema elements a document
@@ -89,16 +90,15 @@ var initTimeDocumentBuilders = map[string]bool{"gitlabPullsQuery": true}
 // initializer calls. A document made later would be sent unchecked.
 func TestGraphQLDocumentsAreMadeAtInit(t *testing.T) {
 	t.Parallel()
-	root := filepath.Join("..", "..")
 	fset := token.NewFileSet()
 	calls := 0
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err := reporoot.Walk(t, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", ".claude", "node_modules", "frontend", "e2e", "mobile", "dist", "bin", "build", "docs":
+			case ".claude", "frontend", "e2e", "mobile", "build", "docs":
 				return filepath.SkipDir
 			}
 			return nil

@@ -8,10 +8,12 @@
 // At most once per checkInterval (a stamp file in the cache records the
 // last walk) a pass sums the cache's entries and, when they exceed the cap,
 // deletes the least recently used until they fit in trimTarget of it. Go
-// refreshes an entry's mtime when it uses one more than an hour old and
-// treats a missing entry as a miss, which its own trim relies on too, so
-// only entries untouched for an hour are deleted, and only entries: the
-// names Go's own trim removes, ending -a or -d in the two-hex-digit
+// treats a missing entry as a miss, which its own trim relies on too, but
+// it refreshes an entry's mtime only when it uses one more than an hour
+// old, so an mtime says only that the entry was last used after it, or
+// within the hour before it. A go command still running may also need an
+// entry it looked up long ago. Only entries older than recentAge are
+// deleted therefore, and only entries: the names Go's own trim removes, ending -a or -d in the two-hex-digit
 // subdirectories. A linked executable is an entry too, a -d directory
 // holding the binary; it counts as its whole tree, ages by the directory's
 // mtime, which is the one Go refreshes, and goes whole. The files at the
@@ -68,9 +70,19 @@ const (
 	stampName = "ao-trim-stamp"
 	// lockName is the file a pass holds locked while it walks.
 	lockName = "ao-trim-lock"
-	// recentAge protects entries Go may be using now: it refreshes a used
-	// entry's mtime only when the mtime is over an hour old.
-	recentAge = time.Hour
+	// goRefreshAge is how old an entry's mtime must be before the go
+	// command sets it again on use (mtimeInterval in cmd/go/internal/cache).
+	goRefreshAge = time.Hour
+	// longestGoCommand bounds how long a go command that looked up an entry
+	// may still read it: the run of the longest Make target. The longest
+	// test timeout a target sets is provider-smoke's 90m, the rest leave
+	// time for the build. TestNoMakeTimeoutOutlastsTheTrimGuard fails when
+	// a target's timeout passes longestGoCommand.
+	longestGoCommand = 2 * time.Hour
+	// recentAge protects every entry a live go command could have selected:
+	// one whose mtime is that old was last used at least recentAge -
+	// goRefreshAge ago, longer than any go command runs.
+	recentAge = goRefreshAge + longestGoCommand
 )
 
 func main() {
@@ -125,8 +137,8 @@ func run(args []string, stdout, stderr io.Writer, now time.Time) int {
 			result.removed, gib(result.before-result.after), dir, gib(result.before), gib(result.after), gib(capBytes))
 	}
 	if result.walked && result.after > capBytes {
-		sayf(stderr, "ao-gocache-trim: %s holds %s, over its %s cap: %s of it was used within the last hour, which a trim keeps\n",
-			dir, gib(result.after), gib(capBytes), gib(result.recent))
+		sayf(stderr, "ao-gocache-trim: %s holds %s, over its %s cap: %s of it was used within the last %g hours, which a trim keeps\n",
+			dir, gib(result.after), gib(capBytes), gib(result.recent), recentAge.Hours())
 	}
 	return 0
 }

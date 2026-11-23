@@ -75,6 +75,23 @@ func TestUnderCapDeletesNothing(t *testing.T) {
 	}
 }
 
+// TestAnEntryAGoCommandMayStillNeedSurvives: Go left this entry's mtime
+// alone when a go command used it a minute ago, because the mtime was then
+// just under goRefreshAge old. That command may still be running and read
+// it again, so no trim removes the entry, however far over the cap.
+func TestAnEntryAGoCommandMayStillNeedSurvives(t *testing.T) {
+	dir := newCache(t)
+	stale := writeEntry(t, dir, "00/stale-a", 1000, 30*24*time.Hour)
+	used := writeEntry(t, dir, "01/used-d", 1000, goRefreshAge+time.Minute)
+	result, err := trim(dir, 100, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists(t, stale) || !exists(t, used) || result.recent != 1000 {
+		t.Fatalf("result = %+v, stale kept %v, used kept %v; want only the stale entry removed", result, exists(t, stale), exists(t, used))
+	}
+}
+
 // TestOverCapDeletesOldestFirstToTheTarget: 1500 bytes over a 1000-byte cap
 // lose the oldest entries until at most 800 (trimTarget) remain.
 func TestOverCapDeletesOldestFirstToTheTarget(t *testing.T) {
@@ -100,7 +117,7 @@ func TestOverCapDeletesOldestFirstToTheTarget(t *testing.T) {
 
 // TestProtectedFilesSurvive: the cache's top-level files, names in its
 // subdirectories that are not entries (Go's trim leaves them too) and
-// entries used within the hour stay even when the cap cannot be met
+// entries younger than recentAge stay even when the cap cannot be met
 // without them.
 func TestProtectedFilesSurvive(t *testing.T) {
 	dir := newCache(t)
@@ -313,8 +330,8 @@ func TestRunIsOffInCIAndReportsRemovals(t *testing.T) {
 	}
 }
 
-// TestPassSaysWhenRecentEntriesKeepTheCacheOverItsCap: entries used within
-// the hour stay, so a pass can end over the cap; it says so with the size
+// TestPassSaysWhenRecentEntriesKeepTheCacheOverItsCap: entries younger than
+// recentAge stay, so a pass can end over the cap; it says so with the size
 // and how much of it was protected.
 func TestPassSaysWhenRecentEntriesKeepTheCacheOverItsCap(t *testing.T) {
 	dir := newCache(t)
@@ -338,7 +355,7 @@ func TestPassSaysWhenRecentEntriesKeepTheCacheOverItsCap(t *testing.T) {
 	if code := run([]string{dir}, &stdout, &stderr, testNow); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	want := "ao-gocache-trim: " + dir + " holds 0.3 GiB, over its 0.2 GiB cap: 0.3 GiB of it was used within the last hour, which a trim keeps\n"
+	want := "ao-gocache-trim: " + dir + " holds 0.3 GiB, over its 0.2 GiB cap: 0.3 GiB of it was used within the last 3 hours, which a trim keeps\n"
 	if stderr.String() != want {
 		t.Fatalf("stderr = %q, want %q", stderr.String(), want)
 	}

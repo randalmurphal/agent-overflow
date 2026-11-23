@@ -163,7 +163,12 @@ files its tests read are unchanged; `scripts/ci-stable-mtimes.mjs` sets the
 checkout's file times from content first, since Go compares a read file by
 size and time. A test that lists a directory also depends on its entries'
 times, so `make go-test` neither rewrites an unchanged tool in `bin/` nor
-lets a Go command run `git status`, which touches `.git`. `cache-cleanup` keeps one entry per cache name after a push
+lets a Go command run `git status`, which touches `.git`; a test walks the
+tree with `reporoot.Walk`, which leaves out build output, and writes nowhere
+inside the checkout. The root package, `cmd/ao-netns` and
+`internal/netisolate` rerun on every run: their tests read
+`AO_NETISOLATE_NS`, which names the run's own network namespace.
+`cache-cleanup` keeps one entry per cache name after a push
 and fails when they pass 8 GB of GitHub's 10 GB
 (`scripts/ci-cache-cleanup.mjs`). `codeql.yml` scans Go and
 TypeScript; `dependabot.yml` opens only security updates for Go, npm,
