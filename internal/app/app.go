@@ -1007,6 +1007,10 @@ type App struct {
 	// it owes paired computers (ownerOpReach) for a test. Zero keeps the
 	// product bound.
 	ownerOpReachOverride time.Duration
+	// threadAgentPeerListOverride replaces the bound on a forwarded Agents
+	// listing (threadAgentPeerListBound) for a test whose destination does
+	// slow work inside the answer. Zero keeps the product bound.
+	threadAgentPeerListOverride time.Duration
 	// ownerOpsOmitted answers agent_owner_op as a build before owner
 	// operations does (IsolationConfig.OmitOwnerOps). False serves them.
 	ownerOpsOmitted bool
