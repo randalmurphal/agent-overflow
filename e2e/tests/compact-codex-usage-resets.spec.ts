@@ -6,7 +6,7 @@
 // Owns its backend: it signs a Codex account in, process-wide state no other
 // spec should inherit.
 
-import { expect, test } from '@playwright/test';
+import { expect, test } from './base-test.js';
 
 import { launchHarness } from '../src/harness.js';
 import { runCodexUsageResets } from './codex-usage-resets-helpers.js';
