@@ -726,17 +726,14 @@ export type SidebarSection = 'assistants' | 'projects';
 // The banner takes its own row above the conversation: scrolled to the top,
 // the first message is under nothing.
 async function expectFirstMessageUncovered(page: Page): Promise<void> {
-  const scroller = page.getByTestId('message-timeline-scroll').first();
-  const first = page.getByTestId('user-message-bubble').first();
+  const opening = page.getByTestId('user-message-bubble').filter({ hasText: 'Set up your home.' });
+  await scrollTimelineToTop(page, opening);
   await expect
-    .poll(async () => {
-      await scroller.evaluate((el) => { el.scrollTop = 0; });
-      return first.evaluate((row) => {
-        const box = row.getBoundingClientRect();
-        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + 2);
-        return hit !== null && row.contains(hit);
-      });
-    })
+    .poll(() => opening.evaluate((row) => {
+      const box = row.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + 2);
+      return hit !== null && row.contains(hit);
+    }))
     .toBe(true);
 }
 

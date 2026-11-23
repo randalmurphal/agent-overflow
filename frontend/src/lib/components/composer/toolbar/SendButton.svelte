@@ -74,14 +74,12 @@
 
   const PENDING_LABEL = 'Sending message';
 
-  // Treat the dispatch window the same as a wire-active turn
-  // for the Stop affordance, but only when there's nothing meaningful
-  // to send. With a non-empty draft mid-round, the button stays in Send
-  // mode so the user can queue the message — `Composer.send()` picks
-  // the enqueue branch internally when `isTurnActive` is true.
-  // While the button shows Send or the pending spinner, no button here or
-  // in the working indicator interrupts the turn; only the
-  // `thread.interrupt` command (Escape by default) does.
+  // Treat the dispatch window the same as a wire-active turn for the Stop
+  // affordance, but only when there's nothing meaningful to send. A draft
+  // typed mid-turn makes this a Send button by design: the message queues
+  // behind the turn (`Composer.send()` picks the enqueue branch when
+  // `isTurnActive` is true). The `thread.interrupt` command (Escape by
+  // default) still interrupts the turn then.
   let operationBlocked = $derived(Boolean(disabledReason));
   let showPending = $derived(sendPending && !canSend);
   let showStop = $derived(!operationBlocked && !showPending && (isTurnActive || sendInFlight) && !canSend);

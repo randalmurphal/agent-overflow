@@ -1578,11 +1578,11 @@ and starts the session for it, as for a completion that finishes after
 the session ended. A rest dismisses the completion instead
 ([At rest](#at-rest)). A revert runs `StopSession` first, except on
 Codex. A Codex revert drops what its dispatch had already taken from the
-queue and returns the answers and completions among it the same way. A
-message still waiting in the queue stays queued for the session a live
-in-place cut keeps, and is delivered after the cut; a cut that ends the
-session drops it through that `StopSession`, which returns an answer or
-completion as above. Ending the session does not quiet later wakes.
+queue and returns the answers and completions among it the same way. An
+answer, reminder or completion still waiting in the queue stays queued
+for the session a live in-place cut keeps, and is delivered after the
+cut; a cut that ends the session drops it through that `StopSession`,
+which returns it as above. Ending the session does not quiet later wakes.
 `StopSession` or an archive that ends a session holding such an answer
 or completion, handed to the provider and not confirmed, returns it
 too, and a rest returns the answer; a person's text joined with it stays
