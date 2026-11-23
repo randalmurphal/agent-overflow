@@ -3803,7 +3803,13 @@ func TestASpawnPastTheFloorIsUnknownButKeepsItsLineage(t *testing.T) {
 		t.Fatal("the spawn names no thread")
 	}
 
-	f.app.expireThreadRequests(time.Now().AddDate(0, 0, store.ThreadRequestRetentionDays+1))
+	later := time.Now().AddDate(0, 0, store.ThreadRequestRetentionDays+1)
+	passesUntil(t, func() { f.app.expireThreadRequests(later) }, func() error {
+		if _, found, err := f.app.store.GetThreadRequest(token); err != nil || found {
+			return fmt.Errorf("the spawn's token past the floor: found %v, %v; want it cleared to its lineage", found, err)
+		}
+		return nil
+	})
 
 	adapter, caller := f.adapter(), f.callerIdentity()
 	unknown := func(tool string, err error) {

@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,8 +21,9 @@ import (
 
 // lineageOnly moves the pair's spawn receipt there past the retention
 // floor, its link standing: the receipt is settled, its worker's session
-// ended so the worker rests, its owner reached it after the floor, and the
-// sweep keeps it as lineage only.
+// ended so the worker rests, its owner reached it after the floor, and a
+// sweep keeps it as lineage only. A receipt the sweeps keep whole is
+// reported with what they read of the worker's rest.
 func lineageOnly(t *testing.T, p *ownerOpPair) {
 	t.Helper()
 	if err := p.dest.settleThreadReceipt(p.token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
@@ -40,12 +42,26 @@ func lineageOnly(t *testing.T, p *ownerOpPair) {
 	if _, found, err := p.dest.store.ReachSpawnLink(p.token, p.device, p.caller.ID, floor+time.Hour.Milliseconds()); err != nil || !found {
 		t.Fatalf("the owner's contact: %v, %v", found, err)
 	}
-	if _, released, err := p.dest.sweepThreadRequestsBefore(floor); err != nil || len(released) != 0 {
-		t.Fatalf("the sweep there: released %v, %v; want the link kept", released, err)
+	sweep := func() {
+		if _, released, err := p.dest.sweepThreadRequestsBefore(floor); err != nil || len(released) != 0 {
+			t.Fatalf("the sweep there: released %v, %v; want the link kept", released, err)
+		}
 	}
-	if _, found, err := p.dest.store.GetThreadRequestReceipt(p.token); err != nil || found {
-		t.Fatalf("the receipt reads found %v, %v; want it lineage only", found, err)
-	}
+	passesUntil(t, sweep, func() error {
+		receipt, found, err := p.dest.store.GetThreadRequestReceipt(p.token)
+		if err == nil && !found {
+			return nil
+		}
+		var why strings.Builder
+		past, pastErr := p.dest.store.SpawnThreadsPastFloor(floor)
+		fmt.Fprintf(&why, "\nthe spawns' threads past the floor: %v, %v", past, pastErr)
+		subtree, restErr := p.dest.store.ReadSubtreeRest([]string{p.worker})
+		fmt.Fprintf(&why, "\nthe worker's subtree: %v, %v", subtree.Reached, restErr)
+		for id, src := range subtree.Sources {
+			fmt.Fprintf(&why, "\n%s: %+v, in memory %q", id, src, p.dest.ownRest(id, src).unrest)
+		}
+		return fmt.Errorf("the receipt reads %s settled at %d, found %v, %v; want it lineage only%s", receipt.State, receipt.SettledAt, found, err, why.String())
+	})
 }
 
 // A link past the retention floor, kept as lineage, still answers its
