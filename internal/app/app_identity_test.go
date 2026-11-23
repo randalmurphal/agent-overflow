@@ -479,3 +479,13 @@ func TestLocalBootCredentialCannotMintTicketsAfterRestart(t *testing.T) {
 		t.Fatalf("new boot ticket status=%d", got)
 	}
 }
+
+// SessionLive reports whether a session id still admits work.
+func SessionLive(a *App, sessionID string) bool {
+	state := a.identityState()
+	if state == nil {
+		return false
+	}
+	_, reason := state.sessions.Live(sessionID)
+	return !reason.Refused()
+}

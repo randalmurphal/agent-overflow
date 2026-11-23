@@ -405,12 +405,6 @@ func (a *App) goMemoryReport(threadID string, fn func()) bool {
 	})
 }
 
-// waitMemoryReports blocks until the reports already begun have finished,
-// without refusing more. It is the observation point for tests.
-func (a *App) waitMemoryReports() {
-	a.memoryReports.wg.Wait()
-}
-
 // stopMemoryReports refuses new reports and waits out the ones in flight.
 func (a *App) stopMemoryReports() {
 	a.memoryReports.wg.Close()

@@ -935,23 +935,6 @@ type WorkflowAgentOutputDigest struct {
 	Value string `json:"value"`
 }
 
-// workflowAgentPhaseAttempts projects a run's phase history for the single-run
-// status read. A gate trace that no longer decodes fails the read rather than
-// reporting an attempt with no decision: "this attempt reached no gate" and
-// "this attempt's record is corrupt" are different answers, and only one of
-// them is a state a run can legitimately be in.
-func (a *App) workflowAgentPhaseAttempts(itemID string) ([]WorkflowAgentPhaseAttempt, error) {
-	values, err := a.workflowApplication().PhaseAttempts(itemID)
-	if err != nil {
-		return nil, err
-	}
-	attempts := make([]WorkflowAgentPhaseAttempt, 0, len(values))
-	for _, value := range values {
-		attempts = append(attempts, projectWorkflowPhaseAttempt(value))
-	}
-	return attempts, nil
-}
-
 // The methods the workflow tools call. Each one takes its project from the
 // caller's scope rather than from an argument: the session is what says which
 // project it may touch, and an argument would be the caller's claim about it.

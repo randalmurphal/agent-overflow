@@ -2,7 +2,6 @@ package app
 
 import (
 	"agent-overflow/internal/eventchan"
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/providerstatus"
 )
 
@@ -12,20 +11,6 @@ import (
 // the status is "ready" — the UI treats ready as a clear-banner signal.
 func (a *App) emitProviderStatus(evt providerstatus.Event) {
 	a.emit(eventchan.ProviderStatus, evt)
-}
-
-// emitProviderStatusesFromDetect emits a provider:status event per
-// non-ready provider status in `statuses`. Callers that also want to
-// clear stale banners for providers that are now ready should emit
-// the ready event themselves — this helper deliberately skips them
-// to keep the startup path quiet on the happy path.
-func (a *App) emitProviderStatusesFromDetect(statuses []provider.ProviderStatus) {
-	for _, ps := range statuses {
-		if ps.Status == "ready" {
-			continue
-		}
-		a.emitProviderStatus(providerstatus.EventFromDetect(ps))
-	}
 }
 
 // probeStartupProviderStatuses runs DetectProvider for every known
@@ -48,14 +33,6 @@ func (a *App) probeStartupProviderStatuses() {
 		defer a.startupProbeWG.Done()
 		_, _ = a.GetProviderStatuses()
 	}()
-}
-
-// emitClaudeUnauthenticatedStatus emits a `provider:status` event for
-// Claude's unauthenticated case. Used by ProbeClaudeAccount when it
-// succeeds with a zero-value AccountInfo — the binary is fine, the
-// user just hasn't logged in yet.
-func (a *App) emitClaudeUnauthenticatedStatus() {
-	a.providerDiscoveryService().EmitClaudeUnauthenticatedStatus()
 }
 
 // emitProviderStatusOnSessionStartError inspects why a session start

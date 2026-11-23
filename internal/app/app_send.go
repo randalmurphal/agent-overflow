@@ -387,13 +387,6 @@ func (a *App) wireText(threadID, content string, meta usermessage.Meta, shellInv
 	return text, command, nil
 }
 
-func (a *App) sendMessage(threadID string, content string, attachmentIDs []string) error {
-	_, err := a.sendMessageWithOptions(
-		context.Background(), threadID, content, sendMessageOptions{AttachmentIDs: attachmentIDs},
-	)
-	return err
-}
-
 // sendMessagePrepared is what sendMessageWithOptions resolves BEFORE it
 // takes the per-thread action lock. Neither field can be produced inside
 // the critical section: an invalid runtime mode has to be rejected
@@ -1697,15 +1690,6 @@ func (c diffReviewClaim) announce(a *App) {
 // diffReviewClaims are the claims of a message, one per source it carries,
 // or of a joined message's members.
 type diffReviewClaims []diffReviewClaim
-
-// ids are the comment ids the claims marked.
-func (cs diffReviewClaims) ids() []string {
-	var ids []string
-	for _, c := range cs {
-		ids = append(ids, c.ids...)
-	}
-	return ids
-}
 
 func (cs diffReviewClaims) release(a *App) error {
 	var errs []error

@@ -25,3 +25,9 @@ func TestNewerPeerReadWinsAndChangeDuringReadStaysOwed(t *testing.T) {
 		t.Fatalf("pre-change read returned %v", err)
 	}
 }
+
+func (o *ownerReads) changed(keys []string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.changedLocked(keys)
+}

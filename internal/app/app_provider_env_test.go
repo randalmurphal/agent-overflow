@@ -1,6 +1,8 @@
 package app
 
 import (
+	"agent-overflow/internal/provideraccountapp"
+	"agent-overflow/internal/providerdiscoveryapp"
 	"context"
 	"os"
 	"path/filepath"
@@ -155,7 +157,7 @@ func TestProbeConfigsCarryCustomEnvWithPinsWinning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	claudeCfg := app.claudeProbeConfig("claude", nil)
+	claudeCfg := app.ensureProviderAccountManager().ClaudeProbeConfig("claude", nil)
 	if claudeCfg.Env["ANTHROPIC_BASE_URL"] != "https://gw.test" {
 		t.Fatalf("claude probe env = %#v, want the custom base URL", claudeCfg.Env)
 	}
@@ -181,7 +183,7 @@ func TestProbeConfigsCarryCustomEnvWithPinsWinning(t *testing.T) {
 	// With nothing configured and nothing pinned, probes keep inheriting the
 	// process environment rather than being handed an empty override map.
 	clean := newTestAppWithStore(t)
-	if env := clean.claudeProbeConfig("claude", nil).Env; env != nil {
+	if env := clean.ensureProviderAccountManager().ClaudeProbeConfig("claude", nil).Env; env != nil {
 		t.Fatalf("probe env = %#v, want nil when nothing is configured", env)
 	}
 }
@@ -423,4 +425,15 @@ func upperSet(names []string) map[string]struct{} {
 		out[strings.ToUpper(name)] = struct{}{}
 	}
 	return out
+}
+
+func claudeAccountProbeCache() *provider.ProbeCache {
+	return providerdiscoveryapp.DefaultCaches().Claude
+}
+
+func (a *App) providerProbeCacheKey(providerName, binary string) provider.ProbeCacheKey {
+	if a.providerAccounts == nil {
+		return provideraccountapp.ProbeCacheKeyForAccountEnv(binary, "", a.providerCustomEnv(providerName))
+	}
+	return a.providerAccounts.ProbeCacheKey(providerName, binary)
 }

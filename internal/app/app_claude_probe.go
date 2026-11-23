@@ -6,7 +6,6 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccountapp"
-	"agent-overflow/internal/providerdiscoveryapp"
 )
 
 var (
@@ -15,10 +14,6 @@ var (
 )
 
 var rateLimitProbeHTTPClient = &http.Client{}
-
-func claudeAccountProbeCache() *provider.ProbeCache {
-	return providerdiscoveryapp.DefaultCaches().Claude
-}
 
 // ProbeClaudeAccount spawns a short-lived Claude CLI subprocess (via
 // the SDK initialize handshake) and returns the authenticated account
@@ -57,10 +52,6 @@ func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 //ao:route home
 func (a *App) RecheckClaudeAccount() (provider.AccountInfo, error) {
 	return a.providerDiscoveryService().RecheckClaudeAccount()
-}
-
-func (a *App) assertSelectedClaudeIdentity(selection providerAccountSelection, info provider.AccountInfo) error {
-	return a.providerAccounts.AssertSelectedClaudeIdentity(selection, info)
 }
 
 func (a *App) probeClaudeRateLimits(ctx context.Context) error {

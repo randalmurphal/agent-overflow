@@ -87,15 +87,6 @@ type agentNotice struct {
 	recipient func(threadID string)
 }
 
-// personMessage is the prepare of a notice that carries the person's own
-// words (fromPerson), from one that returns their text.
-func personMessage(prepare func() (string, bool, error)) func() (usermessage.AgentMessage, bool, error) {
-	return func() (usermessage.AgentMessage, bool, error) {
-		text, proceed, err := prepare()
-		return usermessage.PersonMessage(text), proceed, err
-	}
-}
-
 // queueAgentNotice queues one notice and makes sure something will run to
 // read it. It returns once the notice is in the durable queue; a session
 // start it needs runs afterwards (startAgentNoticeSession). An archived
@@ -393,12 +384,6 @@ func (a *App) withdrawAgentNotice(notice agentNotice) {
 	if removal == queueRemovalRemoved && notice.withdrawn != nil {
 		notice.withdrawn()
 	}
-}
-
-// waitAgentNoticeWork blocks until the notice work already begun has
-// finished, without refusing more. It is the observation point for tests.
-func (a *App) waitAgentNoticeWork() {
-	a.agentNoticeWork.wg.Wait()
 }
 
 // stopAgentNoticeWork refuses new notice work and waits out what is in

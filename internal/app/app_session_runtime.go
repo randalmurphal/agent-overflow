@@ -113,8 +113,10 @@ func (m sessionManager) snapshotAndClear() map[string]session {
 
 type sessionStart = sessionruntime.Start
 
-// runSessionStart single-flights session starts per thread: the first caller
-// leads and runs start(), everybody else joins its result.
+// runRegisteredSessionStart single-flights session starts per thread: the
+// first caller leads and runs start(), everybody else joins its result, and
+// each of them gets back the session the start registered: a session that
+// failed before it initialized may already have left the registry.
 //
 // Two properties are load-bearing and were both learned the hard way:
 //
@@ -127,14 +129,6 @@ type sessionStart = sessionruntime.Start
 //     runs to completion either way. (The leader's own wait is the provider
 //     IO inside start(), which deliberately stays uncancellable — a
 //     cancelled spawn/send is indistinguishable from a delivered one.)
-func (a *App) runSessionStart(ctx context.Context, threadID string, start func() error) error {
-	_, err := a.runRegisteredSessionStart(ctx, threadID, start)
-	return err
-}
-
-// runRegisteredSessionStart is runSessionStart that also returns, to the
-// leader and every joiner, the session the start registered: a session that
-// failed before it initialized may already have left the registry.
 func (a *App) runRegisteredSessionStart(ctx context.Context, threadID string, start func() error) (session, error) {
 	startState, leader := a.sessionManager().beginStart(threadID)
 	if !leader {

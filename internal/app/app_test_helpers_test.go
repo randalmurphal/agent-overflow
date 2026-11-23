@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/provider"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,4 +132,18 @@ func migratedDatabaseAt(t *testing.T, path string) {
 	if err := os.Rename(storetest.ClonePath(t), path); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// NewApp is NewAppWithVersion for tests: an unstamped "dev" App.
+func NewApp() *App { return NewAppWithVersion("dev") }
+
+// waitMarkThreadReads blocks until every read-state stamp already
+// registered has landed, WITHOUT refusing later ones. It is the
+// observation point for tests that need the durable row.
+func (a *App) waitMarkThreadReads() {
+	a.markThreadRead.wg.Wait()
+}
+
+func (a *App) claudeProbeModelKey() provider.ProbeCacheKey {
+	return a.providerDiscoveryService().ClaudeProbeKey()
 }

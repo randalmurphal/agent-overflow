@@ -4045,3 +4045,8 @@ func TestDispatchFlush_QuietRowDoesNotDeliverItsReviewDrafts(t *testing.T) {
 		})
 	}
 }
+
+// restoreUnconfirmedQueueOnSessionDeath is the unguarded restore.
+func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) []triage.UnconfirmedFlushItem {
+	return a.restoreUnconfirmedQueueOnSessionDeathIf(threadID, nil)
+}

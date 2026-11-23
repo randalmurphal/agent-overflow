@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -717,4 +718,11 @@ func blockingUsageClient(
 	return &http.Client{
 		Transport: redirectRoundTripper{target: target, inner: http.DefaultTransport},
 	}
+}
+
+func (a *App) refreshProviderAccountUsage(ctx context.Context, providerName, accountID string) error {
+	if a.providerAccounts == nil {
+		return errors.New("provider account storage is unavailable")
+	}
+	return a.providerAccounts.RefreshProviderAccountUsageContext(ctx, providerName, accountID)
 }

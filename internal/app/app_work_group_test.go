@@ -281,3 +281,10 @@ func TestARefusedWakeGivesBackItsSlotAndIsDropped(t *testing.T) {
 		t.Fatalf("cancelled: delivered %v dropped %v slots %d", delivered, dropped, len(cancelled.threadWakeDeliverySlots()))
 	}
 }
+
+// members is how many members run, for tests.
+func (g *workGroup) members() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.n
+}

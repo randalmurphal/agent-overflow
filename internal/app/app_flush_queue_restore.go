@@ -26,20 +26,16 @@ import (
 // app_flush_queue.go and what remains of the PROVIDER's own queue — the legacy
 // sunset and the rollback purge — in app_codex_provider_queue.go.
 
-// restoreUnconfirmedQueueOnSessionDeath drains queued and unconfirmed
-// flush state after a session death, restoring what it can to the
-// composer draft. Items it REQUEUES instead (failed stale-row cleanup,
-// failed draft restore) are also returned: a caller that runs a triage
-// CleanupThread afterwards wipes the queue those items just re-entered
-// and must re-register them once the cleanup has run (round-13,
-// D13-1). Callers with no subsequent cleanup may ignore the return.
-func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) []triage.UnconfirmedFlushItem {
-	return a.restoreUnconfirmedQueueOnSessionDeathIf(threadID, nil)
-}
-
-// restoreUnconfirmedQueueOnSessionDeathIf is the guarded form used by the
-// provider event handler. The guard runs after the thread action lock is held and
-// before any queue state is drained. That makes a session token plus triage
+// restoreUnconfirmedQueueOnSessionDeathIf drains queued and unconfirmed
+// flush state after a session death, restoring what it can to the composer
+// draft. Items it REQUEUES instead (failed stale-row cleanup, failed draft
+// restore) are also returned: a caller that runs a triage CleanupThread
+// afterwards wipes the queue those items just re-entered and must
+// re-register them once the cleanup has run. Callers with no subsequent
+// cleanup may ignore the return.
+//
+// The provider event handler passes a guard. The guard runs after the thread
+// action lock is held and before any queue state is drained. That makes a session token plus triage
 // epoch check atomic with respect to a replacement start or send on the same
 // thread.
 func (a *App) restoreUnconfirmedQueueOnSessionDeathIf(

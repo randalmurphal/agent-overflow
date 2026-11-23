@@ -26,7 +26,7 @@ func TestSessionRateLimitsStayAttributedToOriginalAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	event := app.attributeSessionRateLimits(provider.ProviderEvent{
+	event := app.providerLifecycleService().AttributeRateLimits(provider.ProviderEvent{
 		Kind: provider.EventRateLimits,
 		Meta: meta,
 	}, "thread", "old-process")

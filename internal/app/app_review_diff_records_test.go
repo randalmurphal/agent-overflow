@@ -661,3 +661,9 @@ func TestConcurrentSettlesStayWithinTheBounds(t *testing.T) {
 		t.Fatalf("totals after removing everything: %d records, %d bindings, %d name bytes", records.len(), records.bindings, records.pathBytes)
 	}
 }
+
+func (r *reviewDiffRecords) len() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.byID)
+}

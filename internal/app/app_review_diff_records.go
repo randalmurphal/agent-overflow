@@ -241,12 +241,6 @@ func (r *reviewDiffRecords) removeAllLocked() []*reviewDiffRecord {
 	return removed
 }
 
-func (r *reviewDiffRecords) len() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.byID)
-}
-
 func (r *reviewDiffRecords) removeLocked(record *reviewDiffRecord) *reviewDiffRecord {
 	r.lru.Remove(record.elem)
 	delete(r.byID, record.id)

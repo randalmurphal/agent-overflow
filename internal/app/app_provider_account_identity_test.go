@@ -1031,7 +1031,7 @@ func TestAssertSelectedClaudeIdentityUsesOrgContradiction(t *testing.T) {
 		{"rename under the same org id", provider.AccountInfo{Email: "e@x.com", OrgID: "org-1", OrgName: "Renamed"}, false},
 	}
 	for _, tc := range cases {
-		err := app.assertSelectedClaudeIdentity(selection, tc.info)
+		err := app.providerAccounts.AssertSelectedClaudeIdentity(selection, tc.info)
 		if (err != nil) != tc.wantErr {
 			t.Errorf("%s: err = %v, wantErr %v", tc.name, err, tc.wantErr)
 		}

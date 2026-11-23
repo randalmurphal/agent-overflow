@@ -397,10 +397,6 @@ func (a *App) refreshAgyModelCatalog() {
 	a.providerDiscoveryService().RefreshAgyModelCatalog()
 }
 
-func (a *App) codexModelsForBinary(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
-	return a.providerDiscoveryService().CodexModelsForBinary(ctx, binary)
-}
-
 func (a *App) cachedCodexModelsForBinary(binary string) ([]provider.ModelInfo, error, bool) {
 	return a.providerDiscoveryService().CachedCodexModelsForBinary(binary)
 }

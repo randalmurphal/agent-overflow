@@ -243,13 +243,6 @@ func (a *App) markThreadFocused(threadID string) {
 	})
 }
 
-// waitMarkThreadReads blocks until every read-state stamp already
-// registered has landed, WITHOUT refusing later ones. It is the
-// observation point for tests that need the durable row.
-func (a *App) waitMarkThreadReads() {
-	a.markThreadRead.wg.Wait()
-}
-
 // stopMarkThreadReads refuses new read-state stamps and waits out the
 // in-flight ones. Shutdown calls it before the store closes — each stamp
 // writes to SQLite, and markThreadReadTimeout caps how long that wait

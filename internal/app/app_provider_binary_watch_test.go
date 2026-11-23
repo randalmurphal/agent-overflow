@@ -277,7 +277,7 @@ func TestProviderBinaryUpgradeRefreshesTheCodexCatalogBeforeCommitting(t *testin
 		lists++
 		return []provider.ModelInfo{{Slug: "gpt-5", Provider: string(provider.Codex)}}, nil
 	}, time.Now)
-	if _, err := app.codexModelsForBinary(context.Background(), binary); err != nil {
+	if _, err := app.providerDiscoveryService().CodexModelsForBinary(context.Background(), binary); err != nil {
 		t.Fatalf("prime codex catalog: %v", err)
 	}
 	if lists != 1 {
@@ -326,7 +326,7 @@ func TestProviderBinaryUpgradeRefreshesTheCodexCatalogBeforeCommitting(t *testin
 	if _, _, cached := app.cachedCodexModelsForBinary(binary); cached {
 		t.Fatal("codex model cache still answers for the old binary after the upgrade")
 	}
-	if _, err := app.codexModelsForBinary(context.Background(), binary); err != nil {
+	if _, err := app.providerDiscoveryService().CodexModelsForBinary(context.Background(), binary); err != nil {
 		t.Fatalf("relist codex catalog: %v", err)
 	}
 	if lists != 2 {

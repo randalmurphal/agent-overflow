@@ -200,3 +200,20 @@ func TestPRManageLocksRefuseAnEndedContext(t *testing.T) {
 		t.Fatalf("a canceled management call = %v, wrote %v", err, wrote)
 	}
 }
+
+// users is how many callers hold or await key's lock.
+func (l *prManageLocks) users(key string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if entry := l.entries[key]; entry != nil {
+		return entry.users
+	}
+	return 0
+}
+
+// size is the number of PRs with a held or awaited lock.
+func (l *prManageLocks) size() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.entries)
+}

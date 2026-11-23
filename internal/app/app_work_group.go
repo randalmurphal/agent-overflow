@@ -81,10 +81,3 @@ func (g *workGroup) Wait() {
 		g.idle.Wait()
 	}
 }
-
-// members is how many members run, for tests.
-func (g *workGroup) members() int {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.n
-}

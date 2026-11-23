@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"agent-overflow/internal/mcpstatus"
@@ -244,13 +243,6 @@ func (a *App) observeFrameBeforeTriage(threadID, sessionToken, providerType stri
 	}
 }
 
-func (a *App) attributeSessionRateLimits(
-	evt provider.ProviderEvent,
-	threadID, sessionToken string,
-) provider.ProviderEvent {
-	return a.providerLifecycleService().AttributeRateLimits(evt, threadID, sessionToken)
-}
-
 // attemptAutoReconnect is the recovery hook fired after the read loop
 // observed an abnormal exit ("error" → "disconnected" pair) on a session.
 // At this point the provider process is already reaped and the session is
@@ -325,57 +317,6 @@ func (a *App) clearAutoReconnectAttempted(threadID string) {
 func turnCompletedWithoutError(evt provider.ProviderEvent) bool {
 	wire, ok := evt.TurnComplete.(*provider.WireTurnCompleteMeta)
 	return ok && wire != nil && wire.ErrorMessage == "" && evt.Failure == nil
-}
-
-// recordSessionActivity is the single chokepoint that bumps a session's
-// last-activity timestamp and tracks turn-in-flight state for the idle
-// reaper. Called from sessionEventHandler on every wire event so any
-// provider-driven signal — text deltas, tool starts, approvals, errors,
-// thinking, init — counts as activity that keeps the subprocess alive.
-//
-// The token guard matches unregisterSession's pattern: if a fresher
-// session has replaced the one this handler closes over, ignore the
-// bump rather than mutating the new session's liveness counters.
-//
-// activeTurns is ±1 on EventTurnStart/EventTurnComplete. Provider
-// asymmetry: only Codex emits EventTurnStart (see
-// internal/provider/codex/protocol.go); Claude's session never emits
-// it (triage synthesizes turn-start from system.init downstream of
-// this chokepoint). For Claude sessions activeTurns therefore stays
-// at zero. The reaper also checks triage's open turn/round before eviction,
-// so quiet foreground tools remain protected without streaming or heartbeats.
-//
-// Any NEW consumer of activeTurns must not read it as "a turn is
-// open" — for Claude it never is. Pair it with triage's
-// AnyInFlightTurnOrRound and/or the lastActivity stamp, the way
-// hasActiveProviderTurn (app_webview_trim.go) does; reading the
-// counter alone is the bug that let every idle trim land mid-Claude-
-// turn as a 60-130ms GC stall (2026-08-27).
-//
-// On EventSessionStatus("disconnected") we drain activeTurns to 0
-// because the subprocess is going away and any in-flight counter is
-// no longer meaningful. Without the drain, a turn that errored before
-// EventTurnComplete would leave the counter stuck at 1 forever — the
-// reaper would then refuse to reap that thread even if a new session
-// took its place with no active turn.
-func (a *App) recordSessionActivity(threadID, sessionToken string, kind provider.EventKind, content string) {
-	a.providerLifecycleService().RecordActivity(threadID, sessionToken, kind, content)
-}
-
-// decrementActiveTurnsClamped does activeTurns.Add(-1) with a clamp
-// at zero so an unmatched EventTurnComplete (replay, double-fire)
-// can't drive the counter negative. Race-correct under any number of
-// concurrent decrements via CAS retry.
-func decrementActiveTurnsClamped(turns *atomic.Int32) {
-	for {
-		cur := turns.Load()
-		if cur <= 0 {
-			return
-		}
-		if turns.CompareAndSwap(cur, cur-1) {
-			return
-		}
-	}
 }
 
 // ingestClaudeInitMCPStatus decodes the SessionInfo carried on an

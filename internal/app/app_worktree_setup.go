@@ -79,10 +79,6 @@ func (a *App) startThreadWorktreeSetup(thread store.Thread) {
 	a.worktreeSetupService().StartThread(thread)
 }
 
-func (a *App) launchThreadWorktreeSetup(thread store.Thread, requireRecipe bool) error {
-	return a.worktreeSetupService().LaunchThread(thread, requireRecipe)
-}
-
 func (a *App) cancelThreadWorktreeSetup(threadID string) {
 	a.worktreeSetupService().CancelThread(threadID)
 }

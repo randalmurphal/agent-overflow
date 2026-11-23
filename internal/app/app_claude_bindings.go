@@ -264,7 +264,3 @@ func (a *App) claudeAppService() *claudeapp.Service {
 func (a *App) claudeModelsForProvider(providerName string) []provider.ModelInfo {
 	return a.providerDiscoveryService().ClaudeModels(providerName)
 }
-
-func (a *App) claudeProbeModelKey() provider.ProbeCacheKey {
-	return a.providerDiscoveryService().ClaudeProbeKey()
-}

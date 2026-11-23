@@ -2344,3 +2344,19 @@ func TestSendMessageBroadcastsListedRowOnFirstItem(t *testing.T) {
 		t.Fatalf("listed frames after a send on a thread with items = %d, want the first thread's only", n)
 	}
 }
+
+func (a *App) sendMessage(threadID string, content string, attachmentIDs []string) error {
+	_, err := a.sendMessageWithOptions(
+		context.Background(), threadID, content, sendMessageOptions{AttachmentIDs: attachmentIDs},
+	)
+	return err
+}
+
+// ids are the comment ids the claims marked.
+func (cs diffReviewClaims) ids() []string {
+	var ids []string
+	for _, c := range cs {
+		ids = append(ids, c.ids...)
+	}
+	return ids
+}

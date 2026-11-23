@@ -3,7 +3,6 @@ package app
 import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/provideraccounts"
@@ -13,13 +12,6 @@ type providerAccountSelection = provideraccountapp.Selection
 
 func (a *App) captureProviderAccountSelection(providerName string) providerAccountSelection {
 	return a.ensureProviderAccountManager().Selection(providerName)
-}
-
-func (a *App) providerProbeCacheKey(providerName, binary string) provider.ProbeCacheKey {
-	if a.providerAccounts == nil {
-		return provideraccountapp.ProbeCacheKeyForAccountEnv(binary, "", a.providerCustomEnv(providerName))
-	}
-	return a.providerAccounts.ProbeCacheKey(providerName, binary)
 }
 
 func (a *App) providerProbeCacheKeyForAccount(providerName, binary, accountID string) provider.ProbeCacheKey {
@@ -39,10 +31,6 @@ func (a *App) providerCustomEnv(providerName string) map[string]string {
 
 func (a *App) providerProbeEnv(providerName string, pins map[string]string) map[string]string {
 	return a.providerAccounts.ProbeEnv(providerName, pins)
-}
-
-func (a *App) claudeProbeConfig(binary string, pins map[string]string) claude.ProbeConfig {
-	return a.ensureProviderAccountManager().ClaudeProbeConfig(binary, pins)
 }
 
 func (a *App) codexProbeConfig(binary string, pins map[string]string) codex.ProbeConfig {
@@ -212,8 +200,9 @@ func newProviderAccountManager(app *App) *provideraccountapp.Manager {
 }
 
 // ensureProviderAccountManager preserves focused bare-App probe fixtures. Real
-// Apps construct the Manager in NewApp before concurrent use begins, while the
-// Once keeps the startup fixture's parallel Claude/Codex probes race-free.
+// Apps construct the Manager in NewAppWithVersion before concurrent use
+// begins, while the Once keeps the startup fixture's parallel Claude/Codex
+// probes race-free.
 func (a *App) ensureProviderAccountManager() *provideraccountapp.Manager {
 	a.providerAccountsOnce.Do(func() {
 		if a.providerAccounts == nil {

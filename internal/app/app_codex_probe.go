@@ -1,8 +1,6 @@
 package app
 
 import (
-	"context"
-
 	"agent-overflow/internal/provider"
 )
 
@@ -53,10 +51,6 @@ func (a *App) ProbeCodexAccount() (provider.AccountInfo, error) {
 //ao:route home
 func (a *App) RecheckCodexAccount() (provider.AccountInfo, error) {
 	return a.providerDiscoveryService().RecheckCodexAccount()
-}
-
-func (a *App) probeCodexRateLimits(ctx context.Context) error {
-	return a.providerLifecycleService().ProbeCodexRateLimits(ctx)
 }
 
 func (a *App) startCodexRateLimitProbeLoop() {

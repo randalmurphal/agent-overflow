@@ -220,13 +220,6 @@ func (a *App) withOpenThreadRequestsOn(computerID string, due []store.ThreadRequ
 	return due
 }
 
-// callThreadRequestStatus asks one computer about requests this one made
-// there.
-func (a *App) callThreadRequestStatus(computerID string, poll ThreadPeerPoll) (ThreadPeerPollReply, error) {
-	reply, _, err := a.readThreadRequestStatus(computerID, poll)
-	return reply, err
-}
-
 // callThreadRequestStatusProving is callThreadRequestStatus that also
 // reports whether the destination that answered is on thread-tools.v2,
 // whose answer marks a token a handler there may still admit.

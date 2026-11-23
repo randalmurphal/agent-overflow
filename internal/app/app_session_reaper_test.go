@@ -1231,3 +1231,9 @@ func TestIdleCloseLockWaitStopsAtShutdown(t *testing.T) {
 		})
 	}
 }
+
+// recordSessionActivity feeds one provider event to the session runtime's
+// activity record, as the provider event path does.
+func (a *App) recordSessionActivity(threadID, sessionToken string, kind provider.EventKind, content string) {
+	a.providerLifecycleService().RecordActivity(threadID, sessionToken, kind, content)
+}

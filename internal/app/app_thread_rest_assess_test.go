@@ -309,3 +309,10 @@ func TestSteadyChangesOffTheTreeDoNotStarveASettlement(t *testing.T) {
 		t.Fatalf("request %+v with work changing only off its subtree; want finished at its turn end", row)
 	}
 }
+
+// watchedThreads counts the threads watched now.
+func (r *restRevisions) watchedThreads() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.watched)
+}

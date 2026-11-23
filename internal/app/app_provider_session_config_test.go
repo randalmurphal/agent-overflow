@@ -33,7 +33,7 @@ func TestThreadTurnInFlightTransitions(t *testing.T) {
 	if !app.threadTurnInFlight(thread.ID) {
 		t.Fatal("an active turn on the session must read busy")
 	}
-	decrementActiveTurnsClamped(&entry.Liveness.ActiveTurns)
+	entry.Liveness.ActiveTurns.Add(-1)
 	if app.threadTurnInFlight(thread.ID) {
 		t.Fatal("the gate must reopen once the turn count drains")
 	}

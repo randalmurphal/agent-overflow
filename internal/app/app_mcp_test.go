@@ -1572,3 +1572,14 @@ func TestPollClaudeMCPAfterOAuth_ContextCancelExitsImmediately(t *testing.T) {
 		t.Errorf("expected no emissions on canceled ctx, got %d", got)
 	}
 }
+
+func (a *App) pollClaudeMCPAfterOAuth(
+	ctx context.Context,
+	threadID, serverName string,
+	intervals []time.Duration,
+	getQuerier func() claudeMCPStatusQuerier,
+) {
+	a.mcpService().PollClaudeMCPAfterOAuth(ctx, threadID, serverName, intervals, func() mcpapp.ClaudeMCPStatusQuerier {
+		return mcpapp.ClaudeMCPStatusQuerier(getQuerier())
+	})
+}

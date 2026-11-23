@@ -912,3 +912,10 @@ func TestMergedPRWatchedReadRunsWithTheSettingOff(t *testing.T) {
 		t.Fatal("the poll runs with the setting off")
 	}
 }
+
+// mergedPRPollRunning reports whether the poll goroutine is running.
+func (c *mergedPRCleanupState) mergedPRPollRunning() bool {
+	c.pollMu.Lock()
+	defer c.pollMu.Unlock()
+	return c.pollStop != nil
+}

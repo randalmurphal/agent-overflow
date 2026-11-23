@@ -900,3 +900,18 @@ func TestAnIncompleteAgentNoticeIsRefused(t *testing.T) {
 		t.Fatalf("queue = %q / %q, want nothing", durable, memory)
 	}
 }
+
+// waitAgentNoticeWork blocks until the notice work already begun has
+// finished, without refusing more. It is the observation point for tests.
+func (a *App) waitAgentNoticeWork() {
+	a.agentNoticeWork.wg.Wait()
+}
+
+// personMessage is the prepare of a notice that carries the person's own
+// words (fromPerson), from one that returns their text.
+func personMessage(prepare func() (string, bool, error)) func() (usermessage.AgentMessage, bool, error) {
+	return func() (usermessage.AgentMessage, bool, error) {
+		text, proceed, err := prepare()
+		return usermessage.PersonMessage(text), proceed, err
+	}
+}

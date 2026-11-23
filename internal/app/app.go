@@ -1240,11 +1240,10 @@ type sessionLiveness = sessionruntime.Liveness
 
 func newSessionLiveness(now time.Time) *sessionLiveness { return sessionruntime.NewLiveness(now) }
 
-func NewApp() *App { return NewAppWithVersion("dev") }
-
 // NewAppWithVersion constructs the application service with the executable's
 // build-stamped version. Root is the sole production caller; tests use NewApp
-// and therefore retain the unstamped "dev" behavior.
+// (app_test_helpers_test.go) and therefore retain the unstamped "dev"
+// behavior.
 func NewAppWithVersion(buildVersion string) *App {
 	if buildVersion == "" {
 		buildVersion = "dev"

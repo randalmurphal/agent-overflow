@@ -91,11 +91,6 @@ func (r ownerRead) commit(origin attachedbackends.PeerRead, launch string, callE
 	})
 }
 
-func (o *ownerReads) changed(keys []string) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.changedLocked(keys)
-}
 func (o *ownerReads) changedLocked(keys []string) {
 	o.next++
 	for _, key := range keys {

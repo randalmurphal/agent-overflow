@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"time"
 
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/mcpapp"
@@ -390,15 +389,4 @@ func (a *App) handleCodexMCPOAuthCompleted(threadID, serverName string, success 
 
 func (a *App) handleCodexMCPStartupUpdate(update codex.MCPStartupUpdate) {
 	a.mcpService().HandleCodexMCPStartupUpdate(update)
-}
-
-func (a *App) pollClaudeMCPAfterOAuth(
-	ctx context.Context,
-	threadID, serverName string,
-	intervals []time.Duration,
-	getQuerier func() claudeMCPStatusQuerier,
-) {
-	a.mcpService().PollClaudeMCPAfterOAuth(ctx, threadID, serverName, intervals, func() mcpapp.ClaudeMCPStatusQuerier {
-		return mcpapp.ClaudeMCPStatusQuerier(getQuerier())
-	})
 }

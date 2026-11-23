@@ -289,13 +289,6 @@ func (a *App) FinishProviderAccountReset(
 	return a.providerAccounts.FinishProviderAccountReset(ctx, providerName, accountID, spendID)
 }
 
-func (a *App) refreshProviderAccountUsage(ctx context.Context, providerName, accountID string) error {
-	if a.providerAccounts == nil {
-		return errors.New("provider account storage is unavailable")
-	}
-	return a.providerAccounts.RefreshProviderAccountUsageContext(ctx, providerName, accountID)
-}
-
 func managedProviderAccount(account provideraccountapp.ManagedAccount) ManagedProviderAccount {
 	return ManagedProviderAccount{
 		Account: account.Account, Active: account.Active,

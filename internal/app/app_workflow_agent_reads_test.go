@@ -727,7 +727,7 @@ func TestWorkflowWatchTreeResolvesThroughSnapshotFreeRows(t *testing.T) {
 		Snapshot: snapshot, Seeds: json.RawMessage(`{"task":"y"}`)})
 	wanted[grandchild.ID] = true
 
-	nodes, err := h.app.workflowRunTreeNodes(root.ID)
+	nodes, err := h.app.workflowApplication().RunTreeNodes(root.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

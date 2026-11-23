@@ -430,10 +430,6 @@ func (a *App) workflowRunTree(rootID string) ([]store.WorkItem, error) {
 	return a.workflowApplication().RunTree(rootID)
 }
 
-func (a *App) workflowRunTreeNodes(rootID string) ([]store.WorkItemNode, error) {
-	return a.workflowApplication().RunTreeNodes(rootID)
-}
-
 func (a *App) cancelWorkflowTreeMembers(members []store.WorkItem) ([]string, error) {
 	return a.workflowApplication().CancelTreeMembers(members)
 }

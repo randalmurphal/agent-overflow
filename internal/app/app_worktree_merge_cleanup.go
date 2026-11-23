@@ -383,13 +383,6 @@ func (c *mergedPRCleanupState) stopMergedPRPollLocked() {
 	c.pollStop, c.pollDone = nil, nil
 }
 
-// mergedPRPollRunning reports whether the poll goroutine is running.
-func (c *mergedPRCleanupState) mergedPRPollRunning() bool {
-	c.pollMu.Lock()
-	defer c.pollMu.Unlock()
-	return c.pollStop != nil
-}
-
 // backgroundFetchSettingOn reads Settings.BackgroundGitFetch live.
 func (a *App) backgroundFetchSettingOn() bool {
 	return a.settings != nil && a.settings.Get().BackgroundGitFetch

@@ -394,7 +394,7 @@ func TestTheSpawnShapeNamesProfilesByOfferedProviderAndReadsNoModels(t *testing.
 		t.Helper()
 		ctx, cancel := context.WithCancel(context.WithValue(t.Context(), lookupBy{}, by))
 		cancel()
-		_, _ = f.app.codexModelsForBinary(ctx, f.app.providerBinaryPath(string(provider.Codex)))
+		_, _ = f.app.providerDiscoveryService().CodexModelsForBinary(ctx, f.app.providerBinaryPath(string(provider.Codex)))
 		select {
 		case got := <-entered:
 			if got != by {
