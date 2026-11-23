@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/supervise"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // recordingRunner answers every service-manager command without running one.
@@ -444,9 +445,7 @@ func writeFakeBinary(t *testing.T, path, marker string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(path, []byte("fake agent-overflow "+marker), 0o700); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	mockexec.WriteFile(t, path, []byte("fake agent-overflow "+marker), 0o700)
 }
 
 func TestServiceStartStopPreserveInstalledUnit(t *testing.T) {

@@ -3,19 +3,18 @@ package main
 import (
 	"context"
 	"errors"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/providerupdate/updatefake"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // oneShotTimeout bounds a doctor, update or --version run. These routes
@@ -33,27 +32,7 @@ type updateFixture struct {
 func newUpdateFixture(t *testing.T) updateFixture {
 	t.Helper()
 	dir := t.TempDir()
-	bin := filepath.Join(dir, filepath.Base(mockBin))
-	src, err := os.Open(mockBin)
-	if err != nil {
-		t.Fatalf("open mock binary: %v", err)
-	}
-	defer func() {
-		if err := src.Close(); err != nil {
-			t.Errorf("close mock binary: %v", err)
-		}
-	}()
-	dst, err := os.OpenFile(bin, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o755)
-	if err != nil {
-		t.Fatalf("create mock copy: %v", err)
-	}
-	if _, err := io.Copy(dst, src); err != nil {
-		_ = dst.Close()
-		t.Fatalf("copy mock binary: %v", err)
-	}
-	if err := dst.Close(); err != nil {
-		t.Fatalf("close mock copy: %v", err)
-	}
+	bin := mockexec.CopyFile(t, filepath.Join(dir, filepath.Base(mockBin)), mockBin, 0o755, nil)
 	// An old mtime makes "the update moved it" unambiguous.
 	old := time.Now().Add(-time.Hour).Truncate(time.Second)
 	if err := os.Chtimes(bin, old, old); err != nil {
@@ -100,22 +79,7 @@ type oneShotResult struct {
 
 // run executes the copy with argv args under the fixture's home, with no
 // harness control or scenario environment unless extraEnv supplies it.
-//
-// A start that fails with ETXTBSY is retried: a parallel test's fork can
-// briefly hold the write descriptor of a fixture copy still being written
-// (golang/go#22315), which makes executing the finished copy fail.
 func (f updateFixture) run(t *testing.T, extraEnv []string, args ...string) oneShotResult {
-	t.Helper()
-	for attempt := 1; ; attempt++ {
-		res := f.runOnce(t, extraEnv, args...)
-		if !errors.Is(res.err, syscall.ETXTBSY) || attempt == 20 {
-			return res
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-func (f updateFixture) runOnce(t *testing.T, extraEnv []string, args ...string) oneShotResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), oneShotTimeout)
 	defer cancel()

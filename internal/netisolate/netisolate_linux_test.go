@@ -21,6 +21,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 const isolationProbeEnv = "AO_NETISOLATE_PROBE"
@@ -550,9 +552,7 @@ func probeBinary(t *testing.T) string {
 		}
 	})
 	binary := filepath.Join(dir, "probe")
-	if err := os.WriteFile(binary, data, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, binary, data, 0o700)
 	return binary
 }
 

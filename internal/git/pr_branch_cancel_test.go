@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // A caller that leaves once the PR head is fetched does not strand the
@@ -41,9 +43,7 @@ exit 0
 			if err := os.MkdirAll(hooks, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(hooks, "reference-transaction"), []byte(hook), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			mockexec.WriteFile(t, filepath.Join(hooks, "reference-transaction"), []byte(hook), 0o755)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()

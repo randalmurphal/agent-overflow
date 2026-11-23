@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,6 +14,7 @@ import (
 
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func writeFakeMultiplexCodex(t *testing.T, script string) string {
@@ -23,9 +23,7 @@ func writeFakeMultiplexCodex(t *testing.T, script string) string {
 		t.Skip("shell fake requires unix")
 	}
 	path := filepath.Join(t.TempDir(), "fake-codex-mux")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake codex: %v", err)
-	}
+	mockexec.WriteFile(t, path, []byte(script), 0o755)
 	return path
 }
 

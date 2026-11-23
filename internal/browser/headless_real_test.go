@@ -23,6 +23,7 @@ import (
 
 	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // TestHeadlessChromiumReal and the TestHeadlessChromiumReal* smokes beside
@@ -69,9 +70,7 @@ func TestHeadlessChromiumReal(t *testing.T) {
 		// the keychain; a serve backend runs with the user's own HOME.
 		wrapper := filepath.Join(t.TempDir(), "chromium")
 		script := "#!/bin/sh\nexec '" + strings.ReplaceAll(engine.binary, "'", `'\''`) + "' --use-mock-keychain \"$@\"\n"
-		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
-			t.Fatal(err)
-		}
+		mockexec.WriteFile(t, wrapper, []byte(script), 0o700)
 		engine.binary = wrapper
 	}
 	engine.logf = func(format string, args ...any) { t.Logf(format, args...) }
