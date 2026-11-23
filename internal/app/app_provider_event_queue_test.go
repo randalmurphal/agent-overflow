@@ -592,35 +592,38 @@ func TestProviderEventProducerWokenOnARetiredQueueLooksItsQueueUpAgain(t *testin
 		qs.enqueue(threadID, seqEvent(0, 0), func(provider.ProviderEvent) { handledOn <- qs.lookup(threadID) })
 		close(queued)
 	}()
-	// No worker runs to free the made-up state: a test that fails before
-	// it does frees it here, so the producer always ends.
-	t.Cleanup(func() {
+	// The made-up worker ends once: its event is handled, the queue is
+	// empty and the session over. No real worker frees that state, so a
+	// test that fails before this step still takes it, in cleanup, and
+	// wakes the producer.
+	workerEnds := sync.OnceFunc(func() {
 		q.mu.Lock()
 		q.bytes = 0
 		q.running = false
+		q.retireWhenIdle = true
+		q.mu.Unlock()
+	})
+	wake := func() {
+		q.mu.Lock()
 		q.broadcastLocked()
 		q.mu.Unlock()
-		<-queued
+	}
+	t.Cleanup(func() {
+		workerEnds()
+		wake()
 	})
 	if !waitForQueueWaiter(&qs, threadID) {
 		t.Fatal("the producer did not wait on the full queue")
 	}
 
-	// The worker ends: the event is handled, the queue is empty and the
-	// session over, so it retires. The producer is woken only afterwards,
-	// which is what it finds when the worker wins the queue's lock.
-	q.mu.Lock()
-	q.bytes = 0
-	q.running = false
-	q.retireWhenIdle = true
-	q.mu.Unlock()
+	// The queue retires before the producer is woken, which is what the
+	// producer finds when the worker wins the queue's lock.
+	workerEnds()
 	qs.retireIfIdle(q)
 	if qs.lookup(threadID) != nil {
 		t.Fatal("the empty queue of an ended session was not retired")
 	}
-	q.mu.Lock()
-	q.broadcastLocked()
-	q.mu.Unlock()
+	wake()
 
 	select {
 	case <-queued:
