@@ -1,13 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 // The real stylesheet: these tests exist to prove app.css's ambient
-// keyframes still render the waveforms ambientTicker.ts specifies.
+// keyframes still render the waveforms ambientWaveforms.ts specifies.
 import '../../app.css';
-import {
-  AMBIENT_SLOT_MS,
-  ledOpacitiesAt,
-  pulseOpacityAt,
-  spinAngleAt,
-} from './ambientTicker';
+import { AMBIENT_SLOT_MS } from './ambientTicker';
+import { ledOpacitiesAt, pulseOpacityAt, spinAngleAt } from '../../test/helpers/ambientWaveforms';
 import { startAmbientPhase } from './ambientPhase';
 import { BUILTIN_SPRITES } from '../spinners/catalog';
 

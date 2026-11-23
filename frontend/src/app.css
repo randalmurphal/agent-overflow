@@ -1461,8 +1461,8 @@ svg[data-mermaid-svg] .labelBox {
  * over 2s. `animate-pulse` is redefined in @theme to run these with
  * steps(8, jump-none), which lands 8 opacity values on each 1s half —
  * 125ms per value, the same slot grid every other ambient indicator
- * uses. Mirrors pulseOpacityAt() in utils/ambientTicker.ts, and
- * ambientCss.browser.test.ts samples this rule against it.
+ * uses. Mirrors pulseOpacityAt() in src/test/helpers/ambientWaveforms.ts,
+ * and ambientCss.browser.test.ts samples this rule against it.
  *
  * .ambient-pulse-s2 / -s4 are Indicator.svelte's staggers for the three
  * backgrounded dots, one and two slots apart so they never breathe in

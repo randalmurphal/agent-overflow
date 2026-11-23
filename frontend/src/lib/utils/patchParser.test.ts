@@ -3,12 +3,12 @@ import { conflictPatchFile } from './conflictFile';
 import { diffSourceKey } from './diffSourceKey';
 import { contentKey, fnv1a32 } from './fnv1a';
 import {
-  buildPatchDisplayRows,
   buildSplitDisplayRows,
   parsePatchFiles,
   type PatchDisplayRow,
   type PatchFile,
 } from './patchFiles';
+import { buildPatchDisplayRows } from '../../test/helpers/patchDisplayRows';
 import {
   displayRowCount,
   FILE_START,

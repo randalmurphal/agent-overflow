@@ -35,7 +35,8 @@ export interface BodySegment {
  * their index in the file, which is also the index the highlighter's
  * spans are aligned with.
  *
- * The facts are computed as `buildPatchDisplayRows` would with gaps on;
+ * The facts are computed as the reference builder
+ * (src/test/helpers/patchDisplayRows.ts) would with gaps on;
  * `patchRows.ts` applies a file's `suppressGaps` and `newSideTotal`.
  */
 export class PatchBody {

@@ -9,13 +9,13 @@ import {
   HunkBody,
   PATCH_PARSE_CACHE_MAX_ENTRY_CHARS,
   __parsePatchCacheStatsForTest,
-  buildPatchDisplayRows,
   buildSplitDisplayRows,
   mergePatchFilesByPath,
   parsePatchFiles,
   parsePatchFilesCached,
   stripPatchLinePrefix,
 } from './patchFiles';
+import { buildPatchDisplayRows } from '../../test/helpers/patchDisplayRows';
 
 function hunkKinds(lines: string[]): number[] {
   const body = new HunkBody();
