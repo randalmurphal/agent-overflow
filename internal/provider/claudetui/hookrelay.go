@@ -32,8 +32,7 @@ type hookRelay struct {
 	compaction compactionHooks
 	onError    func(error)
 
-	ln     net.Listener
-	server *http.Server
+	srv *loopbackServer
 
 	mu      sync.Mutex
 	pending map[string]*pendingQuestion
@@ -90,29 +89,24 @@ func newHookRelay(feed func(json.RawMessage), onSession func(string, string, str
 		onSession:  onSession,
 		compaction: compaction,
 		onError:    onError,
-		ln:         ln,
 		pending:    map[string]*pendingQuestion{},
 	}
-	h.server = &http.Server{
-		Handler:           http.HandlerFunc(h.handle),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	h.srv = newLoopbackServer("claudetui hook relay", ln, h.handle, onError, func(server *http.Server) {
+		server.ReadHeaderTimeout = 5 * time.Second
+	})
 	return h, nil
 }
 
-func (h *hookRelay) url() string       { return "http://" + h.ln.Addr().String() }
+func (h *hookRelay) url() string       { return h.srv.url() }
 func (h *hookRelay) authToken() string { return h.token }
 
 func (h *hookRelay) start() {
-	go func() {
-		if err := h.server.Serve(h.ln); err != nil && err != http.ErrServerClosed {
-			h.onError(fmt.Errorf("claudetui hook relay serve: %w", err))
-		}
-	}()
+	h.srv.start()
 }
 
-// close shuts the relay down and unblocks any pending AskUserQuestion handlers
-// so their hooks fall through rather than hang.
+// close unblocks any pending AskUserQuestion handlers so their hooks fall
+// through rather than hang, then stops the relay (loopbackServer.stop: no
+// handler runs once it returns).
 func (h *hookRelay) close() error {
 	h.mu.Lock()
 	h.closed = true
@@ -121,9 +115,7 @@ func (h *hookRelay) close() error {
 		delete(h.pending, id)
 	}
 	h.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	return h.server.Shutdown(ctx)
+	return h.srv.stop()
 }
 
 func (h *hookRelay) handle(w http.ResponseWriter, r *http.Request) {

@@ -21,19 +21,22 @@ import "encoding/json"
 // claude.Parser and triage stay untouched.
 //
 // feedReorder holds a hook tool_result until the `assistant` carrying its
-// tool_use_id has been fed, then releases it immediately after. It is driven
-// only by feedLoop (a single goroutine), so it needs no lock. Per-turn state is
-// reset on the `result` envelope (turn close) so the maps stay bounded.
+// tool_use_id has been fed, then releases it immediately after. Held
+// completions are released in the order they arrived. It is driven only by
+// feedLoop (a single goroutine), so it needs no lock. Per-turn state is reset
+// on the `result` envelope (turn close) so it stays bounded.
 type feedReorder struct {
-	started map[string]bool              // tool_use_ids whose assistant start has been fed
-	pending map[string][]json.RawMessage // hook tool_results waiting for their start
+	started map[string]bool // tool_use_ids whose assistant start has been fed
+	pending []heldResult    // hook tool_results waiting for their start, in arrival order
+}
+
+type heldResult struct {
+	id   string
+	line json.RawMessage
 }
 
 func newFeedReorder() *feedReorder {
-	return &feedReorder{
-		started: map[string]bool{},
-		pending: map[string][]json.RawMessage{},
-	}
+	return &feedReorder{started: map[string]bool{}}
 }
 
 // streamEventPrefix is the marshaled lead of every streamEventLine envelope
@@ -55,14 +58,19 @@ func (fr *feedReorder) admit(line json.RawMessage) []json.RawMessage {
 		// The assistant envelope is the sole EventToolStart source. Feed it,
 		// then release any completion that raced ahead of the tool_use ids it
 		// starts.
-		out := []json.RawMessage{line}
 		for _, id := range assistantToolUseIDs(line) {
 			fr.started[id] = true
-			if held := fr.pending[id]; len(held) > 0 {
-				out = append(out, held...)
-				delete(fr.pending, id)
+		}
+		out := []json.RawMessage{line}
+		kept := fr.pending[:0]
+		for _, held := range fr.pending {
+			if fr.started[held.id] {
+				out = append(out, held.line)
+			} else {
+				kept = append(kept, held)
 			}
 		}
+		fr.pending = kept
 		return out
 
 	case "user":
@@ -73,7 +81,7 @@ func (fr *feedReorder) admit(line json.RawMessage) []json.RawMessage {
 		if !ok || fr.started[id] {
 			return []json.RawMessage{line}
 		}
-		fr.pending[id] = append(fr.pending[id], line)
+		fr.pending = append(fr.pending, heldResult{id: id, line: line})
 		return nil
 
 	case "result":
@@ -82,18 +90,24 @@ func (fr *feedReorder) admit(line json.RawMessage) []json.RawMessage {
 		// nothing is held forever, then reset per-turn state. Feeding a genuine
 		// orphan is harmless: triage already drops a completion with no launch
 		// row, which is exactly the pre-fix behavior for that (rare) case.
-		out := make([]json.RawMessage, 0, len(fr.pending)+1)
-		for _, held := range fr.pending {
-			out = append(out, held...)
-		}
-		out = append(out, line)
-		fr.started = map[string]bool{}
-		fr.pending = map[string][]json.RawMessage{}
-		return out
+		return append(fr.flush(), line)
 
 	default:
 		return []json.RawMessage{line}
 	}
+}
+
+// flush returns every held completion, in arrival order, and resets per-turn
+// state: at a turn's close, and when the session ends with completions whose
+// start never came.
+func (fr *feedReorder) flush() []json.RawMessage {
+	out := make([]json.RawMessage, 0, len(fr.pending))
+	for _, held := range fr.pending {
+		out = append(out, held.line)
+	}
+	fr.started = map[string]bool{}
+	fr.pending = nil
+	return out
 }
 
 // envelopeType reads the top-level "type" of a reconstructed stream-json
