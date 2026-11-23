@@ -48,7 +48,8 @@ func (m *Manager) startAdoption(handle ids.PageHandle) {
 }
 
 // finishAdoption ends the adoption of handle, opened by opener, listed as p
-// or not at all, lists the downloads it started meanwhile, and wakes the
+// or not at all, lists the downloads it started meanwhile that its listing
+// did not (listAdoptedParkedLocked), and wakes the
 // popups it opened (awaitOpener). The downloads are listed while its
 // admission still keeps its chain live. A popup not listed lets go of the
 // report held for it, and none is held for it after (updatePageInfo); one
