@@ -31,7 +31,9 @@ func TestWriteMockClaudeInitEmitsInitLine(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer func() { _ = cmd.Wait() }()
+	// Closed first, so a test that fails before its own close ends the
+	// script instead of waiting on it forever.
+	defer func() { _ = stdin.Close(); _ = cmd.Wait() }()
 
 	reader := bufio.NewReader(stdout)
 	out := readLineWithTimeout(t, reader, 3*time.Second)
@@ -62,7 +64,9 @@ func TestWriteMockClaudeSessionEmitsAllEvents(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer func() { _ = cmd.Wait() }()
+	// Closed first, so a test that fails before its own close ends the
+	// script instead of waiting on it forever.
+	defer func() { _ = stdin.Close(); _ = cmd.Wait() }()
 
 	// Send a user message so the script's initial read completes.
 	if _, err := stdin.Write([]byte("user-hello\n")); err != nil {
@@ -80,7 +84,9 @@ func TestWriteMockClaudeSessionEmitsAllEvents(t *testing.T) {
 }
 
 // TestWriteMockCodexSessionRespondsToInitialize verifies the mock responds
-// with a matching id for the initialize JSON-RPC request.
+// with a matching id for the initialize JSON-RPC request, answers a method
+// it was not given "method not found" at once, and answers neither a
+// request whose template is empty nor the client's answer to a request.
 func TestWriteMockCodexSessionRespondsToInitialize(t *testing.T) {
 	t.Parallel()
 
@@ -88,6 +94,7 @@ func TestWriteMockCodexSessionRespondsToInitialize(t *testing.T) {
 		`"method":"initialize"`:    `{"jsonrpc":"2.0","id":%s,"result":{}}`,
 		`"method":"thread/start"`:  `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"t-1"}}}`,
 		`"method":"thread/resume"`: `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"t-1"}}}`,
+		`"method":"turn/start"`:    "",
 	})
 
 	cmd := exec.Command(path)
@@ -96,7 +103,9 @@ func TestWriteMockCodexSessionRespondsToInitialize(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer func() { _ = cmd.Wait() }()
+	// Closed first, so a test that fails before its own close ends the
+	// script instead of waiting on it forever.
+	defer func() { _ = stdin.Close(); _ = cmd.Wait() }()
 
 	// Send an initialize request.
 	req := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n"
@@ -119,6 +128,22 @@ func TestWriteMockCodexSessionRespondsToInitialize(t *testing.T) {
 	line = readLineWithTimeout(t, reader, 3*time.Second)
 	if !strings.Contains(line, `"id":2`) || !strings.Contains(line, `"t-1"`) {
 		t.Fatalf("thread/start response = %q", line)
+	}
+
+	// Unanswered lines first: the next line read answers the request after
+	// them.
+	for _, req := range []string{
+		`{"jsonrpc":"2.0","id":3,"method":"turn/start","params":{}}`,
+		`{"jsonrpc":"2.0","id":4,"result":{"decision":"accept"}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"model/list","params":{}}`,
+	} {
+		if _, err := stdin.Write([]byte(req + "\n")); err != nil {
+			t.Fatalf("write stdin: %v", err)
+		}
+	}
+	line = readLineWithTimeout(t, reader, 3*time.Second)
+	if want := `{"jsonrpc":"2.0","id":5,"error":{"code":-32601,"message":"Method not found"}}`; line != want {
+		t.Fatalf("after turn/start, a client answer and model/list: %q; want only model/list's %q", line, want)
 	}
 
 	_ = stdin.Close()
@@ -221,7 +246,9 @@ func TestWriteMockClaudeScriptHoldsATurnAtAWaitForFileLine(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer func() { _ = cmd.Wait() }()
+	// Closed first, so a test that fails before its own close ends the
+	// script instead of waiting on it forever.
+	defer func() { _ = stdin.Close(); _ = cmd.Wait() }()
 	if _, err := stdin.Write([]byte("user-hello\n")); err != nil {
 		t.Fatalf("write stdin: %v", err)
 	}
