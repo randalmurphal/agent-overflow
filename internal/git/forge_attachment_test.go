@@ -31,6 +31,8 @@ func TestFetchAttachmentRefusesAMalformedHrefBeforeSpawning(t *testing.T) {
 	}{
 		{PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widget", Number: 1}, "https://evil.example.com/user-attachments/assets/a"},
 		{PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "g", Repo: "r", Number: 1}, "/uploads/short/a.png"},
+		// An upload on another server: its path is not a project on this one.
+		{PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "g", Repo: "r", Number: 1}, "https://unrelated.invalid/other/private/uploads/0123456789abcdef0123456789abcdef/a.png"},
 		{PRReference{Forge: "bitbucket", Host: "bitbucket.org", Namespace: "g", Repo: "r", Number: 1}, "https://github.com/user-attachments/assets/a"},
 	} {
 		if _, _, err := core.FetchAttachment(t.Context(), tc.ref.Repository(), tc.href, 1<<20); err == nil {

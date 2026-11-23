@@ -39,6 +39,7 @@
 		incrementalLex,
 		matchesProvenAppend,
 		type Alignment,
+		type DocumentScope,
 		type IncrementalLexObserver,
 		type ProvenAppend,
 		type StreamdownToken
@@ -51,9 +52,10 @@
 		withoutPartialAlignmentCloser
 	} from '../parser/extensions/align';
 	import LiteralHost from './LiteralHost.svelte';
-	import { useStreamdown } from './context.svelte';
+	import { setBlockScope, useStreamdown } from './context.svelte';
 	import { renderStaticTokenHtml } from './staticHtml';
 	import { tableCellRenders } from './elements/url';
+	import { headingAnchor } from '../parser/documentScope';
 
 	let {
 		block,
@@ -61,9 +63,13 @@
 		static: isStatic = false,
 		directAppendTail = false,
 		compactStaticHtml = false,
-		align = null
+		align = null,
+		index
 	}: {
 		block: string;
+		/** Its parseBlocks block index, for its document scope; absent for a
+		 * static Block, which renders a whole document. */
+		index?: number;
 		append?: ProvenAppend;
 		static?: boolean;
 		directAppendTail?: boolean;
@@ -73,6 +79,9 @@
 	} = $props();
 
 	const streamdown = useStreamdown();
+	const scopeOf = (): DocumentScope | null => (index === undefined ? null : streamdown.document?.scope(index) ?? null);
+	// What an html token reads when it renders comes from this block's scope.
+	setBlockScope(scopeOf);
 	// Per-instance incremental state: a streaming list block re-lexes only
 	// from its last item per update, and sealed items keep their token
 	// references so their subtrees below never re-evaluate. Non-reactive by
@@ -92,7 +101,8 @@
 		cache: typeof lexCache,
 		sourceAppend?: ProvenAppend
 	): StreamdownToken[] => {
-		const run = () => incrementalLex(source, streamdown.extensions, cache, completer, sourceAppend);
+		const scope = scopeOf();
+		const run = () => incrementalLex(source, streamdown.extensions, cache, completer, sourceAppend, scope);
 		return isStatic ? run() : withoutAlignmentMarkers(run);
 	};
 	const blockTokens = $derived(lexBlock(block, lexCache, append));
@@ -156,27 +166,27 @@
 				{/if}
 			{:else if token.type === 'heading' && !streamdown.snippets.heading}
 				{#if token.depth === 1}
-					<h1 data-streamdown-heading-1={id} class={streamdown.theme.h1.base}>
+					<h1 data-streamdown-heading-1={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme.h1.base}>
 						{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 					</h1>
 				{:else if token.depth === 2}
-					<h2 data-streamdown-heading-2={id} class={streamdown.theme.h2.base}>
+					<h2 data-streamdown-heading-2={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme.h2.base}>
 						{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 					</h2>
 				{:else if token.depth === 3}
-					<h3 data-streamdown-heading-3={id} class={streamdown.theme.h3.base}>
+					<h3 data-streamdown-heading-3={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme.h3.base}>
 						{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 					</h3>
 				{:else if token.depth === 4}
-					<h4 data-streamdown-heading-4={id} class={streamdown.theme.h4.base}>
+					<h4 data-streamdown-heading-4={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme.h4.base}>
 						{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 					</h4>
 				{:else if token.depth === 5}
-					<h5 data-streamdown-heading-5={id} class={streamdown.theme.h5.base}>
+					<h5 data-streamdown-heading-5={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme.h5.base}>
 						{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 					</h5>
 				{:else if token.depth === 6}
-					<h6 data-streamdown-heading-6={id} class={streamdown.theme.h6.base}>
+					<h6 data-streamdown-heading-6={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme.h6.base}>
 						{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 					</h6>
 				{/if}
@@ -191,7 +201,7 @@
 				<blockquote data-streamdown-blockquote={id} class={streamdown.theme.blockquote.base}>
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</blockquote>
-			{:else if token.type === 'codespan' && !streamdown.snippets.codespan}
+			{:else if token.type === 'codespan' && !token.color && !streamdown.snippets.codespan}
 				<code
 					data-streamdown-codespan={id}
 					class={codespanClass(streamdown.theme.codespan.base, token.text)}
@@ -205,6 +215,7 @@
 				{#if token.ordered}
 					<ol
 						data-streamdown-ol={id}
+						start={token.start === 1 ? undefined : token.start}
 						style:list-style-type={token.listType}
 						class={streamdown.theme.ol.base}
 					>

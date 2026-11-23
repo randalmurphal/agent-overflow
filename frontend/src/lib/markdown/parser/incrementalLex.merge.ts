@@ -9,6 +9,7 @@
  */
 import { Lexer } from './engine';
 import { getLexOptions, lexCapture } from './lexer';
+import { installDocumentScope } from './documentScope';
 import type { Extension } from './lexer';
 import { lastLineStartOf, sealedLengthOf, tableTailUnsafe } from './geometry';
 import type { TableAppendInfo } from './geometry';
@@ -95,6 +96,7 @@ const declaresDefs = (src: string, extensions: Extension[]): boolean => {
 // cannot depend on which path re-tokenized the item.
 const loosenTailItems = (items: ListItemToken[], extensions: Extension[], cache: IncrementalLexCache): void => {
     const lexer = new Lexer(getLexOptions(extensions));
+    installDocumentScope(lexer, cache.scope);
     if (cache.links)
         Object.assign(lexer.tokens.links, cache.links);
     if (cache.footnotes)
@@ -110,6 +112,14 @@ const loosenTailItems = (items: ListItemToken[], extensions: Extension[], cache:
         const next = queue[i];
         lexer.inlineTokens(next.src, next.tokens);
     }
+    addReads(cache, lexer.documentReads);
+};
+// The keys a tail lex read join the block's, which its cached tokens now hold.
+const addReads = (cache: IncrementalLexCache, reads: Set<string> | null): void => {
+    if (!reads || !cache.reads)
+        return;
+    for (const key of reads)
+        cache.reads.add(key);
 };
 export const mergeTrailingList = (
     cachedList: ListToken,
@@ -125,7 +135,8 @@ export const mergeTrailingList = (
     const completedTail = complete ? complete(tailSrc) : tailSrc;
     if (declaresDefs(completedTail, extensions))
         return null;
-    const result = lexCapture(completedTail, extensions, cache.links, cache.footnotes);
+    const result = lexCapture(completedTail, extensions, cache.links, cache.footnotes, cache.scope);
+    addReads(cache, result.reads);
     const tailTokens = result.tokens;
     if (tailTokens.length !== 1)
         return null;
@@ -183,7 +194,8 @@ export const mergeTrailingTable = (
     extensions: Extension[],
     complete: ((markdown: string) => string) | null,
     tableTailUnstable: boolean,
-    appendInfo: TableAppendInfo | null
+    appendInfo: TableAppendInfo | null,
+    cache: IncrementalLexCache
 ): { token: TableToken; appendInfo: TableAppendInfo } | null => {
     if (tableTailUnstable || !appendInfo)
         return null;
@@ -207,7 +219,9 @@ export const mergeTrailingTable = (
         !Array.isArray(cachedTable.align))
         return null;
     const tailLexer = new Lexer(getLexOptions(extensions));
+    installDocumentScope(tailLexer, cache.scope);
     const mini = tokenizeTableTail(completedMini, tailLexer);
+    addReads(cache, tailLexer.documentReads);
     if (!mini || mini.headerRowCount !== cachedHead.tokens.length || mini.align.length !== cachedTable.align.length)
         return null;
     for (let index = 0; index < mini.align.length; index++) {

@@ -1,4 +1,5 @@
 import type { Extension } from '../index';
+import { fenceLanguage } from '../fenceLanguage';
 // Math parsing rules
 // Block math: three alternatives, tried left-to-right (lazy quantifiers + leftmost-first).
 //   Alt 1 (group 2): $$\nCONTENT\n$$  — canonical multiline form.
@@ -130,7 +131,6 @@ export const markedMath: Extension[] = [
             if (match) {
                 const content = match[2];
                 const dollarCount = match[1]; // '$' or '$$'
-                const isDisplayMode = dollarCount === '$$';
                 // Only apply currency detection to single dollars
                 // Double dollars ($$) indicate explicit math intent
                 if (dollarCount === '$' && isCurrencyPattern(content, src, 0)) {
@@ -142,10 +142,11 @@ export const markedMath: Extension[] = [
                     singleDollarLooksLikeProse(content, src.charAt(match[0].length))) {
                     return;
                 }
+                // Agent chat typesets `$$…$$` in a paragraph at text size.
                 return {
                     type: 'math',
-                    isInline: true, // Inline tokenizer always produces inline math
-                    displayMode: isDisplayMode, // $$ = display mode styling, $ = inline styling
+                    isInline: true,
+                    displayMode: false,
                     raw: match[0],
                     text: content.trim()
                 };
@@ -153,6 +154,117 @@ export const markedMath: Extension[] = [
         }
     }
 ];
+// ---------------------------------------------------------------------------
+// Forge math
+// ---------------------------------------------------------------------------
+
+type Forge = 'github' | 'gitlab';
+
+// A code span's content as CommonMark reads it: line endings as spaces,
+// and one space off each end when both ends have one and it is not all spaces.
+const codeSpanContent = (text: string): string => {
+    const flat = text.replace(/\r?\n/g, ' ');
+    return /^ [\s\S]*[^ ][\s\S]* $/.test(flat) ? flat.slice(1, -1) : flat;
+};
+// CommonMark's backslash escapes: a backslash before ASCII punctuation.
+const unescapeMarkdown = (text: string): string => text.replace(/\\([!-/:-@[-`{-~])/g, '$1');
+const DOUBLE_DOLLAR = /^\$\$(?!\$)((?:[^$\n]|\\\$)+?)\$\$/;
+
+/**
+ * The math a forge reads at `src`'s leading `$`, as both GitHub and GitLab
+ * read it: `` $`…`$ `` (a code span between dollars); `$$…$$`, display math
+ * in the paragraph's flow; and `$…$`, whose opening `$` has no space after it and whose
+ * first unescaped `$` closes it when it has no space before it and no digit
+ * after it, else there is no math here. GitHub reads the `$…$` content after
+ * Markdown's backslash escapes; GitLab reads it as written.
+ */
+const forgeMathAt = (src: string, forge: Forge): MathToken | undefined => {
+    const ticks = /^\$(`+)/.exec(src);
+    if (ticks) {
+        const run = ticks[1].length;
+        for (let at = src.indexOf('`', ticks[0].length); at !== -1; at = src.indexOf('`', at)) {
+            let length = 1;
+            while (src[at + length] === '`')
+                length++;
+            if (length === run) {
+                if (src[at + length] !== '$')
+                    return undefined;
+                const raw = src.slice(0, at + length + 1);
+                return { type: 'math', raw, text: codeSpanContent(src.slice(ticks[0].length, at)), isInline: true, displayMode: false };
+            }
+            at += length;
+        }
+        return undefined;
+    }
+    const double = DOUBLE_DOLLAR.exec(src);
+    if (double) {
+        return { type: 'math', raw: double[0], text: double[1].trim(), isInline: true, displayMode: true };
+    }
+    if (src.length < 3 || /\s|\$/.test(src[1]))
+        return undefined;
+    for (let at = 1; at < src.length; at++) {
+        const char = src[at];
+        if (char === '\\') {
+            at++;
+            continue;
+        }
+        if (char === '\n')
+            return undefined;
+        if (char !== '$')
+            continue;
+        if (/\s/.test(src[at - 1]) || /\d/.test(src[at + 1] ?? ''))
+            return undefined;
+        const content = src.slice(1, at);
+        return {
+            type: 'math',
+            raw: src.slice(0, at + 1),
+            text: forge === 'github' ? unescapeMarkdown(content) : content,
+            isInline: true,
+            displayMode: false
+        };
+    }
+    return undefined;
+};
+
+// A forge surface leaves chat's inline rule out (`markedForgeGrammar`), so
+// dollars this rule does not read are text.
+const forgeInlineMath = (forge: Forge): Extension => ({
+    name: 'forgeMath',
+    level: 'inline',
+    start(src) {
+        const at = src.indexOf('$');
+        return at === -1 ? undefined : at;
+    },
+    tokenizer(src) {
+        if (src.charCodeAt(0) !== 36 /* $ */)
+            return undefined;
+        return forgeMathAt(src, forge);
+    }
+});
+
+/** A fence whose info string is `math`: display math on both forges. */
+const markedMathFence: Extension = {
+    name: 'mathFence',
+    level: 'block',
+    tokenizer(src) {
+        let at = 0;
+        while (at < 3 && src.charCodeAt(at) === 32)
+            at++;
+        const first = src.charCodeAt(at);
+        if (first !== 96 /* ` */ && first !== 126 /* ~ */)
+            return undefined;
+        const code = this.lexer.tokenizer.fences(src);
+        if (!code || fenceLanguage(code.lang) !== 'math')
+            return undefined;
+        return { type: 'math', raw: code.raw, text: code.text, isInline: false, displayMode: true } satisfies MathToken;
+    }
+};
+
+/** Math as GitHub reads it, for a GitHub surface. */
+export const markedGithubMath: readonly Extension[] = [forgeInlineMath('github'), markedMathFence];
+/** Math as GitLab reads it, for a GitLab surface. */
+export const markedGitlabMath: readonly Extension[] = [forgeInlineMath('gitlab'), markedMathFence];
+
 // Helper function to detect currency patterns
 function isCurrencyPattern(content: string, fullSrc: string, dollarIndex: number): boolean {
     const trimmedContent = content.trim();
@@ -189,6 +301,8 @@ export type MathToken = {
     type: 'math';
     raw: string;
     text: string;
+    /** In a paragraph's flow: its host is phrasing content (a `<span>`). */
     isInline: boolean;
+    /** Typeset as display math: its own centered line, full-size operators. */
     displayMode: boolean;
 };

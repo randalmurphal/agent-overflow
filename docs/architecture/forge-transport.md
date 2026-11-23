@@ -1053,6 +1053,118 @@ comments with more than 100."
 Every comment carries its forge link in `ReviewComment.URL`: GitHub's
 comment `url`, GitLab's merge request URL with `#note_<id>`.
 
+## Facts
+
+`ResolveForgeFacts(ws, pr, rev, keys, fresh)` (`git.Core.ResolveFacts`,
+`internal/git/forge_facts*.go`, `local_facts.go`) answers what a PR's
+bodies and comments name: one `ForgeFact` per key, in the keys' order,
+each `found`, `absent` (the owner said it does not exist) or
+`unavailable` (nobody could say: a failed or refused read, an object
+that is not local, a cap, a kind this release does not know). At most
+256 keys a call; a repeated key is resolved once. The forge kinds and
+the local kinds run concurrently. `fresh` is the person's reload of the
+PR: a held answer with an expiry is read again rather than answered from
+the caches below (a read in flight for the key is joined), and the new
+answer replaces it under the same hold rules; a fresh read that fails
+answers `unavailable` and leaves the held answer for later calls. An
+answer held without expiry answers either way.
+
+| Key | Answered by |
+|---|---|
+| `ref:<project>#<n>` | GitHub `issueOrPullRequest` (kind `issue` or `pull`); GitLab `issue` |
+| `mr:<project>!<n>`, `label:<project>~<title>`, `milestone:<project>%<title>`, `snippet:<project>$<id>`, `epic:<group>&<n>` | GitLab only (`unavailable` on GitHub): `mergeRequest`, `labels(title:, includeAncestorGroups: true)`, `milestones(title:, includeAncestors: true)`, `snippets(ids:)`, `group { workItem(iid:) }` |
+| `labels:<project>` | GitLab only: the project's whole label list with its ancestor groups' (`labels(includeAncestorGroups: true)`, the set and order by title `labels(title:)` searches), each label's `title`, `color` and `textColor` in `labels`, and `complete` when that is all of them; read 100 a page by cursor, at most 10 pages and 256 KiB of estimated label bytes (64 a label plus its strings), past which it is the labels read so far, not complete; a project GitLab answers null is `absent`, and any failed page, or pages answered under two logins, makes the whole list `unavailable` |
+| `user:<name>` | GitHub `repositoryOwner` (kind `user` or `org`); GitLab `user`, else `group` (kind `group`) |
+| `commit:<hex>` | local: 7 to 64 lowercase hex naming exactly one local commit; missing or ambiguous is `unavailable` and not held |
+| `image:<head\|base\|sha>:<path>` | local: the blob's size, sniffed type and how an `<img>` of it is sized (`attachment.DisplaySize`): a raster's header dimensions, an avif's primary item `ispe` (rotated by `irot`; 0 with `clap`, for an image sequence, or past a 256 KiB `meta`), an svg's CSS default sizing from its root `width`, `height` and `viewBox` (absolute units to px, a missing side 300 or 150), or, for an svg with only a ratio, `fluid` with the ratio's smallest integer terms as `width` and `height`; 0 for ico and an svg sized by font or viewport units; a header whose size is read and past the pixel budget, a raster's or an avif's, is `absent`, as bytes that are no image are; a Git LFS pointer whose object is in the local LFS store answers as that object (its size and header, the pointer blob's `oid`), any other pointer `lfs`, decided on every call; a blob over 25 MiB is `unavailable` |
+| `lines:<sha>:<path>:<start>-<end>` | local: at most 200 lines and 64 KiB of text from a blob of at most 2 MiB; binary or past the end is `absent` |
+
+A key that does not parse is `unavailable`; a project path or login the
+forge cannot hold, a path that is not clean or starts with `-`, and a
+range over 200 lines are `absent`, each without a request or a git run.
+
+Forge reads are background requests, so the rate gate's reserve refuses
+them (`unavailable`, no request). Each document is fixed text with one
+aliased slot per key, every part behind `@include`, so an unused slot
+runs nothing; a read sends the smallest that holds its keys. A missing
+node is null (GitHub beside a `NOT_FOUND` at its alias): that key is
+`absent`, and any other problem at an alias makes only that key
+`unavailable`. A read refused as too costly (GitLab's complexity limit of
+250) or too slow (GitHub's 502 or 504) is sent once more in halves, so a
+refusing forge costs at most three requests per read. Keys of more than
+four projects other than the PR's are `unavailable`. Each failed read is
+logged once with its operation and no titles.
+
+| Call | GitHub | GitLab |
+|---|---|---|
+| Forge keys not held | 1 `ForgeFacts8`, `ForgeFacts32` or `ForgeFacts128` per 128 keys | 1 `ForgeFacts4`, `ForgeFacts16` or `ForgeFacts32` per 32 keys, and beside them 1 `ForgeFactsLabels` per 100 labels of each `labels:` key (at most 10) |
+| Every forge key held | none, or with `fresh` as if none were held | none, or with `fresh` as if none were held |
+| Local keys not held | To learn what is local without fetching: 1 `git rev-list --no-walk` when a key names a full commit id, 1 `git ls-tree` per local commit a path key names, per 200 paths or 64 KiB of paths (4 commits at a time), and 1 `git rev-list --objects --no-walk` for the blobs those paths hold. Then 1 `git cat-file --batch-check` for the commits and the local blobs to size (every `lines:` key's, and an `image:` key's the blob image cache does not hold), 1 `git cat-file --batch` for the commits' subjects and the lines' blobs (streamed), 1 header read per image blob the blob image cache does not hold (stopped after at most 1 MiB, 4 at a time), 1 lstat per LFS pointer blob (an `image:` key through a pointer is never held) and a header read of its object when it is present and its header is not held, 1 `git config` for `lfs.storage` per workspace per 10 minutes when a key reaches a pointer | same |
+| Every local key held | no git; with `fresh`, a held abbreviated `commit:` is read as if not held | same |
+
+In a partial clone a commit or a blob that is not local is `unavailable`,
+never fetched. Every git read sets `GIT_NO_LAZY_FETCH=1` and an empty
+`GIT_ALLOW_PROTOCOL`, which refuses every transport on a git that does
+not know the first. `cat-file` is asked only for an abbreviated commit
+id, which resolves among local objects alone, and for objects the reads
+of `local_residency.go` found local, which fetch on no git: asked for a
+promised object that is not local, git 2.43 as Ubuntu 24.04 ships it
+tries the fetch, is refused, and dies with the whole batch-check. A path
+answers as its own entry in its commit's tree: a directory or a
+submodule is `absent`. Whether a blob is local is asked by its id and of
+this checkout on every call, so two paths of one blob answer alike, and
+a blob whose image record another checkout's read left in the cache is
+still `unavailable` where it is not local. Git's tree listing is read as
+it arrives and none of it is held; an entry no key names costs one scan
+of its bytes. A tree on the way to a path that is
+not local (a clone that filters trees) fails that commit's `ls-tree`,
+and the commit's path keys answer `unavailable` for the call.
+`Core.BlobImage` asks `cat-file` for its one blob directly: on such a
+git a promised blob that is not local fails that read alone, and a check
+first would add a git run to every first read of an image.
+
+A pointer's object is read from the local LFS store only, never through
+git-lfs or the network (`local_lfs.go`): the store is `lfs.storage`
+(relative to the git common dir) or `<common dir>/lfs`, the object
+`objects/<oid[0:2]>/<oid[2:4]>/<oid>` there, and it is present only as a
+regular file, not a symlink, of the pointer's size within 25 MiB. Its
+header is classified as a blob's; its bytes are hashed while they are
+read and refused when they do not match the pointer's sha256. Whether
+it is present is decided by one lstat on every lookup, so a `git lfs
+pull` or prune shows on the next one.
+
+The caches (`factCache`, `forge_facts_cache.go`) are LRU, bounded by
+entries and estimated bytes (an entry over 1/64 of the bytes is never
+held; a forge facts entry may also hold a label list's 256 KiB), and
+share one read among concurrent calls for a key, in one call or
+overlapping ones. A `fresh` call skips a held entry with an expiry
+(`factCache.claim`), never one without:
+
+| Cache | Key | Bound | Held |
+|---|---|---|---|
+| Forge facts, one per forge adapter | host, credential fingerprint, key | 4096 entries, 4 MiB; a label list counts its labels, so the worst one held is about 320 KiB | `found` 10 minutes, `absent` 2 minutes, `unavailable` never; read under another login than the call's is not held, and a call whose reads answered under two logins answers every key it read `unavailable`; `ResetForgeCaches` clears it |
+| Local facts, one per `Core` | workspace path, kind, full commit id, path, range | 2048 entries, 8 MiB | `found` and `absent` without expiry (content addressed), except a found abbreviated `commit:` (a fetch can make it ambiguous), 10 minutes; an `image:` read through an LFS pointer (a pull or prune changes it) is never held |
+| Blob images, one per `Core` | blob id; an LFS object's sha256, size and file modification time; workspace path for its LFS store | 4096 entries, 2 MiB | a blob's header answer, or a pointer blob's parsed pointer, and a present LFS object's header answer, without expiry (content addressed); a workspace's LFS store directory, 10 minutes |
+
+`GetGitBlobImage(ws, oid, maxWidth)` serves a blob as `GetLocalImage`
+serves a file: `Core.BlobImage` (1 `git cat-file --batch-check` and a
+header read, or the blob image cache) refuses a blob that is not local,
+over the cap, an LFS pointer whose object is not local or no displayable
+image before any read. The review diff's image store holds the bytes
+under `blob\x00<oid>` (one `git cat-file blob` into a buffer of the
+blob's size, shared with the review diff's images of the same blob), a
+pointer's verified LFS object under `lfs\x00<sha256>` (the key the
+review diff holds a pointer side's local object by, so the two share one
+copy; the pointer blob's own key holds nothing), and each
+derived tier under that key and the tier, all within that store's budget. A tier is looked up first, so
+a held derivative is served without its original; the original is read
+only to derive a tier not held. Concurrent calls share one read and one
+derivation, and the caller's context stops the read.
+`SaveGitBlobImage(ws, oid, name)`, the image menu's Save on the PR's
+computer, applies the same refusals and reads, and writes the bytes into
+Downloads through the writer `SaveLocalImage` uses (the name cut to its
+last segment and sanitized, never over an existing file).
+
 ## Merged PR worktree cleanup
 
 `internal/app/app_worktree_merge_cleanup.go` removes a linked worktree

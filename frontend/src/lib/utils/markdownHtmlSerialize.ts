@@ -41,7 +41,7 @@
 // and integer `start` / `colspan` / `rowspan`. No `style`, no event
 // handlers, no `title`, no `img`.
 
-import { lex } from '../markdown';
+import { fenceLanguage, lex } from '../markdown';
 
 /**
  * The shape of the marked tokens this serializer reads.
@@ -396,9 +396,7 @@ function safeHref(href: string | undefined): string | null {
  * author text (```` ```js" onload="… ````).
  */
 function languageClass(lang: string | undefined): string {
-  if (typeof lang !== 'string') return '';
-  const first = lang.trim().split(/\s+/)[0] ?? '';
-  const safe = first.replace(/[^A-Za-z0-9+._-]/g, '').slice(0, 32);
+  const safe = fenceLanguage(lang).replace(/[^A-Za-z0-9+._-]/g, '').slice(0, 32);
   return safe ? ` class="language-${safe}"` : '';
 }
 

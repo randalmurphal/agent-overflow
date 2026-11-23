@@ -5,6 +5,7 @@
 	import type { MermaidConfig } from 'mermaid';
 	import { fullscreenIcon } from './icons';
 	import { mermaidRenderConfig } from './mermaidRenderConfig';
+	import SourceText, { RENDER_FAILED_ATTR } from './SourceText.svelte';
 
 	// Module-level SVG cache. `mermaid.render` is expensive (hundreds of
 	// ms for non-trivial diagrams) and its output is deterministic for a
@@ -35,6 +36,9 @@
 	} = $props();
 
 	let mermaid = $state<any>(null);
+	// The source Mermaid last rejected; that source shows as written.
+	let rejected = $state<string | null>(null);
+	const failed = $derived(rejected === token.text ? { [RENDER_FAILED_ATTR]: '' } : {});
 	onMount(async () => {
 		const resolveAsync = streamdown.registerAsyncResource?.();
 		try {
@@ -253,13 +257,15 @@
 			}
 		} catch (err) {
 			console.warn('Mermaid rendering error:', err);
-			// Could show error state in UI here
+			rejected = code;
 		}
 	};
 </script>
 
-<div data-streamdown-mermaid={id}>
-	{#if mermaid}
+<div data-streamdown-mermaid={id} {...failed}>
+	{#if rejected === token.text}
+		<SourceText text={token.text} />
+	{:else if mermaid}
 		<div
 			class={streamdown.theme.mermaid.base}
 			{@attach (node) => {

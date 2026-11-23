@@ -68,11 +68,11 @@ func Classify(data []byte, filename string) (Classification, error) {
 		// number of pixels is an error rather than a download: it would
 		// be handed to the same <img> a safe one is, and the failure has
 		// to reach the person who clicked rather than the renderer.
-		width, height, err := attachment.ValidateDisplayImage(data, detected)
+		size, err := attachment.ValidateDisplayImage(data, detected)
 		if err != nil {
 			return Classification{}, err
 		}
-		return Classification{MimeType: detected, Kind: KindImage, Width: width, Height: height}, nil
+		return Classification{MimeType: detected, Kind: KindImage, Width: size.Width, Height: size.Height, Fluid: size.Fluid}, nil
 	}
 	if brands, ok := isoBrands(data); ok {
 		for _, brand := range brands {
@@ -90,14 +90,16 @@ func Classify(data []byte, filename string) (Classification, error) {
 	return Classification{MimeType: fileMIME(filename), Kind: KindFile}, nil
 }
 
-// Classification is what Classify learned from the bytes. Width and Height
-// are the declared pixel size of an image whose header Go can read, and
-// zero for every other kind and for svg, ico and avif.
+// Classification is what Classify learned from the bytes. Width, Height
+// and Fluid are how an <img> of an image is sized
+// (attachment.ValidateDisplayImage): its pixels, or, when Fluid, only its
+// ratio's terms; zero when unknown and for every other kind.
 type Classification struct {
 	MimeType string
 	Kind     string
 	Width    int
 	Height   int
+	Fluid    bool
 }
 
 // sniffContainer covers the non-ISO media containers, leaning on the

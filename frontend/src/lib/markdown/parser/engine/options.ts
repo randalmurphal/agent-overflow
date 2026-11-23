@@ -9,6 +9,7 @@
  */
 import type { Token, Tokens, TokensList } from './tokens';
 import type { Lexer } from './Lexer';
+import type { BareUrlRule, DestinationHook } from './destination';
 
 /** The receiver an extension tokenizer is invoked with. */
 export interface TokenizerThis {
@@ -38,6 +39,23 @@ export interface LexerOptions {
 
   /** Log an infinite-loop bailout instead of throwing it. */
   silent?: boolean;
+
+  /**
+   * Resolves a link or image destination or title as written, inline and in
+   * a reference definition. Replaces the default, which resolves backslash
+   * escapes only.
+   */
+  linkText?: (written: string) => string;
+
+  /**
+   * The hosts' claims on a link or image destination, in order
+   * (`decideDestination`). Every link and image token the engine builds
+   * passes them, and an extension's own through `Tokenizer.destination`.
+   */
+  destinations?: readonly DestinationHook[];
+
+  /** How bare URLs autolink; absent, as GFM does with http, https and ftp. */
+  bareUrls?: BareUrlRule;
 
   /** Registered extension tokenizers, pre-sorted by level. */
   extensions?: null | {

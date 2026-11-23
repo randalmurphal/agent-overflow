@@ -15,24 +15,45 @@ import type { Rules } from './rules';
 import type { Lexer } from './Lexer';
 import type { Links, Tokens, Token } from './tokens';
 import type { LexerOptions } from './options';
+import { backpedalUrl, decideDestination } from './destination';
+import { readFact } from '../documentScope';
 
-function outputLink(cap: string[], link: Pick<Tokens.Link, 'href' | 'title'>, raw: string, lexer: Lexer, rules: Rules): Tokens.Link | Tokens.Image {
+/**
+ * The link or image `cap` matched, or undefined for a link whose text holds
+ * a link: CommonMark's innermost link wins, and the outer brackets are text.
+ * Link text is lexed once; only a link that turns out not to be one is
+ * lexed again, as text, where it sits. An image label lexes its links, since
+ * it shows as alt text and no anchor can nest, and a link in it makes the
+ * link around the image not a link, as CommonMark has it.
+ */
+function outputLink(cap: string[], link: Pick<Tokens.Link, 'href' | 'title'>, raw: string, lexer: Lexer, rules: Rules): Tokens.Link | Tokens.Image | undefined {
   const href = link.href;
   const title = link.title || null;
   const text = cap[1].replace(rules.other.outputLinkReplace, '$1');
+  const image = cap[0].charAt(0) === '!';
 
+  // Restored, not cleared: an image in link text returns into that link.
+  const { inLink, inLinkText, linkInText } = lexer.state;
   lexer.state.inLink = true;
-  const token: Tokens.Link | Tokens.Image = {
-    type: cap[0].charAt(0) === '!' ? 'image' : 'link',
-    raw,
-    href,
-    title,
-    text,
-    tokens: lexer.inlineTokens(text),
-  };
-  lexer.state.inLink = false;
-  return token;
+  lexer.state.inLinkText = !image;
+  lexer.state.linkInText = false;
+  const tokens = lexer.inlineTokens(text);
+  const nested = lexer.state.linkInText;
+  lexer.state.inLink = inLink;
+  lexer.state.inLinkText = inLinkText;
+  if (nested && !image) {
+    lexer.state.linkInText = linkInText;
+    return undefined;
+  }
+  lexer.state.linkInText = linkInText || nested || !image;
+  return { type: image ? 'image' : 'link', raw, href, title, text, tokens };
 }
+
+/**
+ * An autolink's destination as CommonMark writes it: a backslash, which a
+ * URL parser reads as `/`, is percent-encoded, as both forges encode it.
+ */
+const autolinkHref = (written: string): string => written.replaceAll('\\', '%5C');
 
 function indentCodeCompensation(raw: string, text: string, rules: Rules) {
   const matchIndentToCode = raw.match(rules.other.indentCodeCompensation);
@@ -147,6 +168,32 @@ export class Tokenizer {
     }
   }
 
+  /**
+   * A link destination or title as written, resolved to its value: by
+   * `options.linkText` when a host sets it, else backslash escapes alone.
+   */
+  private linkText(written: string): string {
+    return this.options.linkText ? this.options.linkText(written) : written.replace(this.rules.inline.anyPunctuation, '$1');
+  }
+
+  /**
+   * A link or image token as its destination decides it: its href
+   * canonical and claimed by the hosts' hooks (`decideDestination`). Every
+   * link or image this engine builds passes here, and an extension that
+   * builds one from other syntax (an HTML `<a>` or `<img>`) calls it.
+   */
+  destination<T extends Tokens.Link | Tokens.Image>(token: T): T {
+    return decideDestination(token, this.options.destinations, { inLink: this.lexer.state.inLink, fact: this.fact }) as T;
+  }
+
+  /** A hook's fact read, recorded as this lex's (`readFact`). */
+  private readonly fact = (key: string) => readFact(this.lexer, key);
+
+  /** The URL a bare URL run holds, by the surface's rule (`bareUrls`). */
+  urlEnd(run: string): string {
+    return this.options.bareUrls ? this.options.bareUrls.end(run) : backpedalUrl(run);
+  }
+
   blockquote(src: string): Tokens.Blockquote | undefined {
     const cap = this.rules.block.blockquote.exec(src);
     if (cap) {
@@ -199,21 +246,24 @@ export class Tokenizer {
         if (lastToken?.type === 'code') {
           // blockquote continuation cannot be preceded by a code block
           break;
-        } else if (lastToken?.type === 'blockquote') {
-          // include continuation in nested blockquote
-          const oldToken = lastToken as Tokens.Blockquote;
+        } else if (lastToken?.type === 'blockquote' || lastToken?.type === 'alert') {
+          // include continuation in nested blockquote (an alert is one).
+          // Here and for a list below, a block extension that owns the
+          // construct builds the token, as it would in the block loop.
+          const oldToken = lastToken;
           const newText = oldToken.raw + '\n' + lines.join('\n');
-          const newToken = this.blockquote(newText)!;
+          const newToken = this.lexer.blockExtensionToken(newText, []) ?? this.blockquote(newText)!;
           tokens[tokens.length - 1] = newToken;
 
+          // The quoted text holds the nested quote's source lines.
           raw = raw.substring(0, raw.length - oldToken.raw.length) + newToken.raw;
-          text = text.substring(0, text.length - oldToken.text.length) + newToken.text;
+          text = text.substring(0, text.length - oldToken.raw.length) + newToken.raw;
           break;
         } else if (lastToken?.type === 'list') {
           // include continuation in nested list
           const oldToken = lastToken as Tokens.List;
           const newText = oldToken.raw + '\n' + lines.join('\n');
-          const newToken = this.list(newText)!;
+          const newToken = this.lexer.blockExtensionToken(newText, []) ?? this.list(newText)!;
           tokens[tokens.length - 1] = newToken;
 
           raw = raw.substring(0, raw.length - lastToken.raw.length) + newToken.raw;
@@ -315,6 +365,7 @@ export class Tokenizer {
           const fencesBeginRegex = this.rules.other.fencesBeginRegex(indent);
           const headingBeginRegex = this.rules.other.headingBeginRegex(indent);
           const htmlBeginRegex = this.rules.other.htmlBeginRegex(indent);
+          const blockquoteBeginRegex = this.rules.other.blockquoteBeginRegex(indent);
 
           // Check if following lines should be included in List Item
           while (src) {
@@ -352,6 +403,11 @@ export class Tokenizer {
 
             // Horizontal rule found
             if (hrRegex.test(nextLine)) {
+              break;
+            }
+
+            // End list item if found start of blockquote
+            if (blockquoteBeginRegex.test(nextLine)) {
               break;
             }
 
@@ -442,7 +498,7 @@ export class Tokenizer {
         if (!list.loose) {
           // Check if list should be loose
           const spacers = list.items[i].tokens.filter(t => t.type === 'space');
-          const hasMultipleLineBreaks = spacers.length > 0 && spacers.some(t => this.rules.other.anyLine.test(t.raw));
+          const hasMultipleLineBreaks = spacers.some(t => this.rules.other.anyLine.test(t.raw));
 
           list.loose = hasMultipleLineBreaks;
         }
@@ -477,8 +533,8 @@ export class Tokenizer {
     const cap = this.rules.block.def.exec(src);
     if (cap) {
       const tag = cap[1].toLowerCase().replace(this.rules.other.multipleSpaceGlobal, ' ');
-      const href = cap[2] ? cap[2].replace(this.rules.other.hrefBrackets, '$1').replace(this.rules.inline.anyPunctuation, '$1') : '';
-      const title = cap[3] ? cap[3].substring(1, cap[3].length - 1).replace(this.rules.inline.anyPunctuation, '$1') : cap[3];
+      const href = cap[2] ? this.linkText(cap[2].replace(this.rules.other.hrefBrackets, '$1')) : '';
+      const title = cap[3] ? this.linkText(cap[3].substring(1, cap[3].length - 1)) : cap[3];
       return {
         type: 'def',
         tag,
@@ -682,19 +738,38 @@ export class Tokenizer {
           href = href.slice(1, -1);
         }
       }
-      return outputLink(cap, {
-        href: href ? href.replace(this.rules.inline.anyPunctuation, '$1') : href,
-        title: title ? title.replace(this.rules.inline.anyPunctuation, '$1') : title,
+      // Link text holds images, not links: a link here makes the text's
+      // own link not a link (`outputLink`).
+      if (this.lexer.state.inLinkText && src.charCodeAt(0) !== 33 /* ! */) {
+        this.lexer.state.linkInText = true;
+        return;
+      }
+      const token = outputLink(cap, {
+        href: href ? this.linkText(href) : href,
+        title: title ? this.linkText(title) : title,
       }, cap[0], this.lexer, this.rules);
+      return token && this.destination(token);
     }
   }
 
+  /** The definition the reference link opening `src` names, when `links` has one. */
+  reflinkDefinition(src: string, links: Links): Links[string] | undefined {
+    const cap = this.rules.inline.reflink.exec(src) || this.rules.inline.nolink.exec(src);
+    return cap ? links[(cap[2] || cap[1]).replace(this.rules.other.multipleSpaceGlobal, ' ').toLowerCase()] : undefined;
+  }
+
   reflink(src: string, links: Links): Tokens.Link | Tokens.Image | Tokens.Text | undefined {
+    const inLinkText = this.lexer.state.inLinkText && src.charCodeAt(0) !== 33 /* ! */;
     let cap;
     if ((cap = this.rules.inline.reflink.exec(src))
       || (cap = this.rules.inline.nolink.exec(src))) {
       const linkString = (cap[2] || cap[1]).replace(this.rules.other.multipleSpaceGlobal, ' ');
       const link = links[linkString.toLowerCase()];
+      // As in `link`.
+      if (inLinkText) {
+        if (link) this.lexer.state.linkInText = true;
+        return;
+      }
       if (!link) {
         const text = cap[0].charAt(0);
         return {
@@ -703,7 +778,8 @@ export class Tokenizer {
           text,
         };
       }
-      return outputLink(cap, link, cap[0], this.lexer, this.rules);
+      const token = outputLink(cap, link, cap[0], this.lexer, this.rules);
+      return token && this.destination(token);
     }
   }
 
@@ -824,11 +900,11 @@ export class Tokenizer {
       // scheme URL.
       const text = cap[1];
 
-      return {
+      return this.destination<Tokens.Link>({
         type: 'link',
         raw: cap[0],
         text,
-        href: text,
+        href: autolinkHref(text),
         tokens: [
           {
             type: 'text',
@@ -836,25 +912,23 @@ export class Tokenizer {
             text,
           },
         ],
-      };
+      });
     }
   }
 
   url(src: string): Tokens.Link | undefined {
-    let cap;
-    if (cap = this.rules.inline.url.exec(src)) {
+    const cap = this.rules.inline.url.exec(src);
+    if (cap) {
       // Same as `autolink`: the bare-email alternative is removed from the
       // rule, so only the extended `protocol://` / `www.` forms reach here.
-      let prevCapZero;
-      do {
-        prevCapZero = cap[0];
-        cap[0] = this.rules.inline._backpedal.exec(cap[0])?.[0] ?? '';
-      } while (prevCapZero !== cap[0]);
-      const text = cap[0];
-      const href = cap[1] === 'www.' ? 'http://' + cap[0] : cap[0];
-      return {
+      const www = cap[1] === 'www.';
+      if (this.options.bareUrls && !this.options.bareUrls.links(www ? 'http' : cap[1].slice(0, -3).toLowerCase())) return;
+      const text = this.urlEnd(cap[0]);
+      if (text === '') return;
+      const href = autolinkHref(www ? 'http://' + text : text);
+      return this.destination<Tokens.Link>({
         type: 'link',
-        raw: cap[0],
+        raw: text,
         text,
         href,
         tokens: [
@@ -864,7 +938,7 @@ export class Tokenizer {
             text,
           },
         ],
-      };
+      });
     }
   }
 

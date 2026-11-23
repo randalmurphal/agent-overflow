@@ -225,6 +225,36 @@ func TestClearForgetsEntriesAndFreesReadOnesOnClose(t *testing.T) {
 	}
 }
 
+// View holds its entry as a reader while fn runs: an entry cleared or
+// evicted meanwhile keeps its bytes until fn returns, and is freed then.
+func TestViewHoldsItsEntryWhileItRuns(t *testing.T) {
+	t.Parallel()
+	store := newMetered(100, 50*time.Millisecond)
+	a, err := store.Load(context.Background(), "a", 70, fillWith(7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := store.View(a.ID, func(data []byte) error {
+		if _, err := store.Load(context.Background(), "b", 70, fillWith(2)); !errors.Is(err, ErrNoRoom) {
+			t.Errorf("a load past a viewed entry = %v, want ErrNoRoom", err)
+		}
+		store.Clear()
+		if len(data) != 70 || data[0] != 7 || store.Held() != 70 {
+			t.Errorf("during the view: %d bytes, held %d", len(data), store.Held())
+		}
+		return errors.New("from fn")
+	})
+	if !found || err == nil || err.Error() != "from fn" {
+		t.Fatalf("View = %v, %v, want fn's error", found, err)
+	}
+	if store.Held() != 0 || store.live != 0 {
+		t.Fatalf("held %d, live %d after the view of a cleared entry", store.Held(), store.live)
+	}
+	if found, err := store.View(a.ID, func([]byte) error { t.Error("fn ran for no entry"); return nil }); found || err != nil {
+		t.Fatalf("View of a gone id = %v, %v", found, err)
+	}
+}
+
 func TestEntriesExpire(t *testing.T) {
 	t.Parallel()
 	store := New(100, time.Minute, time.Second)

@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -447,15 +450,18 @@ func TestGetReviewDiffImageReadsNothingOverTheCap(t *testing.T) {
 	}
 }
 
-// A committed Git LFS pointer and a working-tree file under a filter are
-// unavailable with their reason; a CRLF file under core.autocrlf is
-// served as the bytes on disk.
-func TestFilteredAndLFSFilesAreUnavailable(t *testing.T) {
+// A committed Git LFS pointer whose object is not local is unavailable
+// with its reason. A working-tree file under the LFS filter is classified
+// by its bytes on disk: a smudged image shows, a pointer shows its local
+// object or the pointer's reason. A working-tree file under any other
+// filter is unavailable with its reason. A CRLF file under core.autocrlf
+// is served as the bytes on disk.
+func TestLFSAndFilteredFilesInTheReviewDiff(t *testing.T) {
 	t.Parallel()
 	app, base := reviewDiffFilesApp(t)
 	repo := testutil.InitGitRepo(t)
 	pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize 4096\n"
-	writeRepoBytes(t, repo, ".gitattributes", []byte("*.png filter=lfs diff=lfs merge=lfs -text\n"))
+	writeRepoBytes(t, repo, ".gitattributes", []byte("*.png filter=lfs diff=lfs merge=lfs -text\nsealed.png filter=crypt\n"))
 	writeRepoBytes(t, repo, "stored.png", []byte(pointer))
 	testutil.RunGit(t, repo, "add", "-A")
 	testutil.RunGit(t, repo, "commit", "-qm", "lfs")
@@ -471,24 +477,162 @@ func TestFilteredAndLFSFilesAreUnavailable(t *testing.T) {
 		t.Fatalf("a committed LFS pointer = %+v, want %+v", got.New, want)
 	}
 
+	lfsPointerTo := func(data []byte) []byte {
+		sum := sha256.Sum256(data)
+		oid := hex.EncodeToString(sum[:])
+		return fmt.Appendf(nil, "version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", oid, len(data))
+	}
+	inStore := func(data []byte) {
+		sum := sha256.Sum256(data)
+		oid := hex.EncodeToString(sum[:])
+		writeRepoBytes(t, repo, filepath.Join(".git", "lfs", "objects", oid[:2], oid[2:4], oid), data)
+	}
 	smudged := sizedPNG(t, 6, 6)
 	writeRepoBytes(t, repo, "drawn.png", smudged)
+	local, missing := sizedPNG(t, 7, 3), sizedPNG(t, 3, 7)
+	inStore(local)
+	writeRepoBytes(t, repo, "local.png", lfsPointerTo(local))
+	writeRepoBytes(t, repo, "missing.png", lfsPointerTo(missing))
+	sealed := sizedPNG(t, 4, 4)
+	writeRepoBytes(t, repo, "sealed.png", sealed)
 	crlf := []byte("<svg xmlns=\"http://www.w3.org/2000/svg\">\r\n<rect/>\r\n</svg>\r\n")
 	writeRepoBytes(t, repo, "crlf.svg", crlf)
 	opened, err = app.OpenWorkspaceDiff(ctx, ref, false)
 	handle := filesHandle(t, opened, err)
-	got, err = app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "drawn.png"})
-	if err != nil {
-		t.Fatal(err)
+	read := func(path string) ReviewDiffImageSide {
+		t.Helper()
+		got, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: path})
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		return got.New
 	}
-	if want := (ReviewDiffImageSide{Exists: true, Size: int64(len(smudged)), Unavailable: "This file passes through a git filter, so its image is not shown."}); got.New != want {
-		t.Fatalf("a filtered working-tree file = %+v, want %+v", got.New, want)
+	expectSide(t, base, "a smudged LFS file", read("drawn.png"), smudged, "image/png")
+	expectSide(t, base, "an LFS pointer on disk with its object local", read("local.png"), local, "image/png")
+	if want := (ReviewDiffImageSide{Exists: true, Size: int64(len(lfsPointerTo(missing))), Unavailable: "Stored with Git LFS; the image is not in the repository."}); read("missing.png") != want {
+		t.Fatalf("an LFS pointer on disk without its object = %+v, want %+v", read("missing.png"), want)
+	}
+	if want := (ReviewDiffImageSide{Exists: true, Size: int64(len(sealed)), Unavailable: "This file passes through a git filter, so its image is not shown."}); read("sealed.png") != want {
+		t.Fatalf("a working-tree file under another filter = %+v, want %+v", read("sealed.png"), want)
 	}
 	got, err = app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "crlf.svg"})
 	if err != nil {
 		t.Fatalf("a CRLF file under core.autocrlf: %v", err)
 	}
 	expectSide(t, base, "crlf.svg", got.New, crlf, "image/svg+xml")
+}
+
+// A side that is a Git LFS pointer whose object is in the local LFS store
+// shows the object, on either side, from a commit's tree or the working
+// tree, under the key prose images hold it by; an object not local or
+// forged shows the pointer's message and holds nothing, and a pull between
+// two reads of one diff shows on the second.
+func TestReviewDiffShowsALocalLFSObject(t *testing.T) {
+	t.Parallel()
+	app, base := reviewDiffFilesApp(t)
+	// One Core across calls, as a running app has, so its caches carry.
+	app.git = gitops.NewCore()
+	repo := testutil.InitGitRepo(t)
+	type object struct {
+		data      []byte
+		oid       string
+		pointer   []byte
+		storePath string
+	}
+	newObject := func(data []byte, as string) object {
+		sum := sha256.Sum256(data)
+		oid := hex.EncodeToString(sum[:])
+		if as != "" {
+			oid = as
+		}
+		return object{data: data, oid: oid,
+			pointer:   fmt.Appendf(nil, "version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", oid, len(data)),
+			storePath: filepath.Join(".git", "lfs", "objects", oid[:2], oid[2:4], oid)}
+	}
+	store := func(o object) { writeRepoBytes(t, repo, o.storePath, o.data) }
+	before, after := newObject(sizedPNG(t, 5, 4), ""), newObject(sizedPNG(t, 9, 8), "")
+	localOld, missingNew := newObject(sizedPNG(t, 3, 2), ""), newObject(sizedPNG(t, 13, 2), "")
+	forged := newObject(sizedPNG(t, 7, 7), strings.Repeat("a", 64))
+	worktree := newObject(sizedPNG(t, 6, 3), "")
+	for _, o := range []object{before, after, localOld, forged, worktree} {
+		store(o)
+	}
+	writeRepoBytes(t, repo, "both.png", before.pointer)
+	writeRepoBytes(t, repo, "half.png", localOld.pointer)
+	testutil.RunGit(t, repo, "add", "both.png", "half.png")
+	testutil.RunGit(t, repo, "commit", "-qm", "base")
+	writeRepoBytes(t, repo, "both.png", after.pointer)
+	writeRepoBytes(t, repo, "half.png", missingNew.pointer)
+	writeRepoBytes(t, repo, "forged.png", forged.pointer)
+	testutil.RunGit(t, repo, "add", "both.png", "half.png", "forged.png")
+	testutil.RunGit(t, repo, "commit", "-qm", "head")
+	head := revParseIn(t, repo, "HEAD")
+	ref := testWorkspaceRef(t, app, repo)
+	ctx, _ := reviewDiffConn(t)
+	reads := &atomic.Int32{}
+	app.gitBlobHook = func(_ context.Context, step string) {
+		if step == "read" {
+			reads.Add(1)
+		}
+	}
+
+	// Prose first, then the diff: the object is read once.
+	if _, err := app.GetGitBlobImage(context.Background(), ref, revParseIn(t, repo, "HEAD:both.png"), 0); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := app.OpenCommitDiff(ctx, ref, head, false)
+	handle := filesHandle(t, opened, err)
+	got, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "both.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectSide(t, base, "both.png old", got.Old, before.data, "image/png")
+	expectSide(t, base, "both.png new", got.New, after.data, "image/png")
+	if reads.Load() != 2 {
+		t.Fatalf("%d object reads, want 2: the new side's once, by prose, and the old side's", reads.Load())
+	}
+	// The diff first, then prose: the old side's object is read no more.
+	if _, err := app.GetGitBlobImage(context.Background(), ref, revParseIn(t, repo, "HEAD~1:both.png"), 0); err != nil || reads.Load() != 2 {
+		t.Fatalf("prose after the diff: %v, %d object reads, want 2", err, reads.Load())
+	}
+
+	held := app.reviewDiffImages().Held()
+	notShown := func(o object) ReviewDiffImageSide {
+		return ReviewDiffImageSide{Exists: true, Size: int64(len(o.pointer)), Unavailable: unavailableLFS}
+	}
+	got, err = app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "half.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectSide(t, base, "half.png old", got.Old, localOld.data, "image/png")
+	if got.New != notShown(missingNew) {
+		t.Fatalf("a side whose object is not local = %+v, want %+v", got.New, notShown(missingNew))
+	}
+	held += int64(len(localOld.data))
+	got, err = app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "forged.png"})
+	if err != nil || got.New != notShown(forged) {
+		t.Fatalf("a forged object = %+v (err %v), want %+v", got.New, err, notShown(forged))
+	}
+	if app.reviewDiffImages().Held() != held {
+		t.Fatalf("the image store holds %d bytes, want %d: a refused or absent object is held", app.reviewDiffImages().Held(), held)
+	}
+
+	// A pull between two reads of the same diff shows on the second.
+	store(missingNew)
+	got, err = app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "half.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectSide(t, base, "half.png new after the pull", got.New, missingNew.data, "image/png")
+
+	// A working-tree file holding a pointer, with no filter, is its object.
+	writeRepoBytes(t, repo, "drawn.png", worktree.pointer)
+	opened, err = app.OpenWorkspaceDiff(ctx, ref, false)
+	got, err = app.GetReviewDiffImage(ctx, ref, filesHandle(t, opened, err), ReviewDiffFile{Path: "drawn.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectSide(t, base, "drawn.png new", got.New, worktree.data, "image/png")
 }
 
 // An SVG is served as an image that can run nothing at the app's origin.

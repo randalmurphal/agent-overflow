@@ -44,7 +44,7 @@ func (c *Core) FetchAttachment(ctx context.Context, repo RepoReference, href str
 	if err := repo.Validate(); err != nil {
 		return nil, "", err
 	}
-	target, err := forgeattach.ParseReference(repo.Forge, repo.Project(), href)
+	target, err := forgeattach.ParseReference(repo.Forge, repo.Host, repo.Project(), href)
 	if err != nil {
 		return nil, "", err
 	}

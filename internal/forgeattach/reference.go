@@ -64,11 +64,14 @@ var gitLabUploadSecret = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 // ParseReference resolves one href as written in markdown.
 //
-// project is the PR/MR's own project ("namespace/repo"), used for the
-// GitLab references that are relative to the repository they were
-// written in. It is ignored for GitHub, whose attachment URLs are always
-// absolute and always carry their own identity.
-func ParseReference(forge, project, href string) (Target, error) {
+// host and project are the PR/MR's own ("gitlab.example.com",
+// "namespace/repo"). A GitLab reference is requested from that host with
+// the user's login, so an absolute one must name that host: the path of a
+// URL on any other server says nothing about a project on this one. A
+// reference relative to the repository it was written in resolves against
+// project. Both are ignored for GitHub, whose attachment URLs are always
+// absolute and carry their own identity.
+func ParseReference(forge, host, project, href string) (Target, error) {
 	href = strings.TrimFunc(href, func(r rune) bool { return r <= ' ' })
 	if href == "" {
 		return Target{}, errors.New("attachment reference is empty")
@@ -82,7 +85,7 @@ func ParseReference(forge, project, href string) (Target, error) {
 	case "github":
 		return parseGitHubReference(href)
 	case "gitlab":
-		return parseGitLabReference(project, href)
+		return parseGitLabReference(host, project, href)
 	default:
 		return Target{}, fmt.Errorf("unsupported forge %q", forge)
 	}
@@ -156,7 +159,7 @@ func gitHubAttachmentName(segments []string) (string, bool) {
 	}
 }
 
-func parseGitLabReference(project, href string) (Target, error) {
+func parseGitLabReference(host, project, href string) (Target, error) {
 	var (
 		escaped []string
 		decoded []string
@@ -172,7 +175,7 @@ func parseGitLabReference(project, href string) (Target, error) {
 		default:
 			return Target{}, errNotGitLabUpload
 		}
-		if u.Hostname() == "" || u.User != nil {
+		if u.Host == "" || u.User != nil || authority(u.Scheme, u.Host) != authority(u.Scheme, host) {
 			return Target{}, errNotGitLabUpload
 		}
 		escaped, decoded, err = pathSegments(u.EscapedPath())
@@ -241,6 +244,21 @@ func parseGitLabReference(project, href string) (Target, error) {
 		Request:  "projects/" + url.PathEscape(target) + "/uploads/" + secret + "/" + name,
 		Filename: filename,
 	}, nil
+}
+
+// authority is a URL's host and port as a browser's URL.host spells them:
+// lowercase, without the scheme's default port. host is the MR's own in
+// that spelling, so a reference a browser reads as the same server compares
+// equal, and a port that is not the default stays part of the identity.
+func authority(scheme, host string) string {
+	host = strings.ToLower(host)
+	switch strings.ToLower(scheme) {
+	case "https":
+		return strings.TrimSuffix(host, ":443")
+	case "http":
+		return strings.TrimSuffix(host, ":80")
+	}
+	return host
 }
 
 // pathSegments splits an escaped URL path and returns both spellings of

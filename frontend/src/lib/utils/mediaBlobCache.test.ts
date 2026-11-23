@@ -5,6 +5,7 @@ import {
   __setMediaBlobCacheLimitsForTest,
   acquireMediaBlob,
   discardMediaBlobs,
+  mediaBlobCacheStats,
   rememberDecodedSize,
   type MediaBytes,
 } from './mediaBlobCache';
@@ -176,15 +177,114 @@ describe('the media blob cache', () => {
     fresh.release();
   });
 
+  describe('eviction at the last release', () => {
+    it('drops an entry over the byte budget when its last holder releases it, not before', async () => {
+      __setMediaBlobCacheLimitsForTest({ maxBytes: 4 });
+      const handle = acquireMediaBlob('big', async () => bytes('12345'));
+      await handle.value;
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+      expect(__mediaBlobCacheKeysForTest()).toEqual(['big']);
+      handle.release();
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:12345');
+      expect(mediaBlobCacheStats()).toMatchObject({ entries: 0, bytes: 0, objectURLs: 0 });
+    });
+
+    it('drops the oldest entries over the entry limit as their holders release them', async () => {
+      __setMediaBlobCacheLimitsForTest({ maxEntries: 2 });
+      const handles = ['a', 'b', 'c', 'd'].map((name) => acquireMediaBlob(name, async () => bytes(name)));
+      await Promise.all(handles.map((handle) => handle.value));
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+      for (const handle of handles) handle.release();
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:a');
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:b');
+      expect(__mediaBlobCacheKeysForTest()).toEqual(['c', 'd']);
+    });
+
+    it('waits for the second of two holders', async () => {
+      __setMediaBlobCacheLimitsForTest({ maxBytes: 4 });
+      const first = acquireMediaBlob('big', async () => bytes('12345'));
+      const second = acquireMediaBlob('big', async () => bytes('12345'));
+      await first.value;
+      first.release();
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+      expect(__mediaBlobCacheKeysForTest()).toEqual(['big']);
+      second.release();
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:12345');
+      expect(__mediaBlobCacheKeysForTest()).toEqual([]);
+    });
+
+    it('counts a repeated release once', async () => {
+      __setMediaBlobCacheLimitsForTest({ maxBytes: 4 });
+      const first = acquireMediaBlob('big', async () => bytes('12345'));
+      const second = acquireMediaBlob('big', async () => bytes('12345'));
+      await first.value;
+      first.release();
+      first.release();
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+      second.release();
+      second.release();
+      expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:12345');
+    });
+
+    it('drops an entry released while it loads when the cache is over its limit, and revokes its late value', async () => {
+      __setMediaBlobCacheLimitsForTest({ maxEntries: 1 });
+      const held = acquireMediaBlob('held', async () => bytes('held'));
+      await held.value;
+      const pending = deferred<MediaBytes>();
+      const loading = acquireMediaBlob('loading', () => pending.promise);
+      loading.release();
+      expect(__mediaBlobCacheKeysForTest()).toEqual(['held']);
+      pending.resolve(bytes('late'));
+      expect((await loading.value).url).toBe('blob:late');
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:late');
+      expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:held');
+      held.release();
+    });
+
+    it('keeps an entry released while it loads under both limits', async () => {
+      const pending = deferred<MediaBytes>();
+      const loading = acquireMediaBlob('loading', () => pending.promise);
+      loading.release();
+      pending.resolve(bytes('kept'));
+      await loading.value;
+      expect(__mediaBlobCacheKeysForTest()).toEqual(['loading']);
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    });
+
+    it('revokes a discarded entry at its last release and leaves the cache alone', async () => {
+      __setMediaBlobCacheLimitsForTest({ maxEntries: 1 });
+      const other = acquireMediaBlob('other', async () => bytes('other'));
+      await other.value;
+      const discarded = acquireMediaBlob('diff-1/a', async () => bytes('gone'));
+      await discarded.value;
+      discardMediaBlobs('diff-1/');
+      discarded.release();
+      expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:gone');
+      expect(__mediaBlobCacheKeysForTest()).toEqual(['other']);
+      other.release();
+      expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('never remembers what an svg decoded at', () => {
+    for (const mimeType of ['image/svg+xml', 'IMAGE/SVG+XML; charset=utf-8']) {
+      const svg = { mimeType, width: 0, height: 0 };
+      rememberDecodedSize(svg, { naturalWidth: 267, naturalHeight: 150 } as HTMLImageElement);
+      expect(svg).toEqual({ mimeType, width: 0, height: 0 });
+    }
+  });
+
   it('remembers a decoded size only while the size is unknown', () => {
-    const size = { width: 0, height: 0 };
+    const size = { mimeType: 'image/png', width: 0, height: 0 };
     const img = { naturalWidth: 120, naturalHeight: 80 } as HTMLImageElement;
     rememberDecodedSize(size, img);
-    expect(size).toEqual({ width: 120, height: 80 });
+    expect(size).toEqual({ mimeType: 'image/png', width: 120, height: 80 });
     rememberDecodedSize(size, { naturalWidth: 1, naturalHeight: 1 } as HTMLImageElement);
-    expect(size).toEqual({ width: 120, height: 80 });
-    const unknown = { width: 0, height: 0 };
+    expect(size).toEqual({ mimeType: 'image/png', width: 120, height: 80 });
+    const unknown = { mimeType: 'image/png', width: 0, height: 0 };
     rememberDecodedSize(unknown, { naturalWidth: 0, naturalHeight: 0 } as HTMLImageElement);
-    expect(unknown).toEqual({ width: 0, height: 0 });
+    expect(unknown).toEqual({ mimeType: 'image/png', width: 0, height: 0 });
   });
 });
