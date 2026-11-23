@@ -27,24 +27,51 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// launcherFixture lays out a run the launcher accepts: what harness-build
+// leaves, a git checkout for the typecheck record, a suite directory, an
+// installed browser, and pnpm as a script on PATH that answers Playwright's
+// install probe and the typecheck and otherwise runs suite as the suite.
+// It returns the suite directory and the environment for the launcher.
+func launcherFixture(t *testing.T, suite string) (string, []string) {
+	t.Helper()
+	in, err := parseRunInputs(runInputsMk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := harnessRoot(t, in)
+	gitEnv := []string{"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1"}
+	git := exec.Command("git", "init", "-q", root)
+	git.Env = append(os.Environ(), gitEnv...)
+	if out, err := git.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	testDir := filepath.Join(root, "e2e")
+	writeFile(t, filepath.Join(testDir, "playwright.config.ts"), "", 0o600)
+	browser := filepath.Join(t.TempDir(), "chromium-1")
+	writeFile(t, filepath.Join(browser, "INSTALLATION_COMPLETE"), "", 0o644)
+	bin := t.TempDir()
+	mockexec.WriteIn(t, bin, "pnpm", `#!/bin/sh
+case "$*" in
+  *"playwright install --dry-run"*) printf 'Chromium 1\n  Install location:    %s\n' "$AO_TEST_BROWSER"; exit 0 ;;
+  *tsc*) exit 0 ;;
+esac
+`+suite)
+	return testDir, append(gitEnv,
+		runLauncherEnv+"=1",
+		"AO_TEST_BROWSER="+browser,
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"XDG_CACHE_HOME="+filepath.Join(t.TempDir(), "cache"),
+	)
+}
+
 // SIGTERM to the launcher stops Playwright's whole process group, a
 // descendant included, and the launcher reports the signal only after that:
 // Playwright runs in a process group of its own, which no signal sent to
 // the launcher reaches by itself.
 func TestTheLauncherStopsTheSuiteOnSIGTERM(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "playwright.config.ts"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	pids := filepath.Join(dir, "suite.pids")
-	// pnpm runs both the typecheck and the suite; the fake suite leaves a
-	// descendant behind it and waits.
-	bin := filepath.Join(dir, "bin")
-	mockexec.WriteIn(t, bin, "pnpm", `#!/bin/sh
-case "$*" in
-  *tsc*) exit 0 ;;
-esac
-sleep 300 &
+	// The fake suite leaves a descendant behind it and waits.
+	pids := filepath.Join(t.TempDir(), "suite.pids")
+	dir, env := launcherFixture(t, `sleep 300 &
 echo "$$ $!" > "$AO_TEST_SUITE_PIDS"
 wait
 `)
@@ -54,12 +81,7 @@ wait
 	}
 	cmd := exec.Command(self, "--host-network", "--memory-limit-bytes", strconv.Itoa(256<<20))
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		runLauncherEnv+"=1",
-		"AO_TEST_SUITE_PIDS="+pids,
-		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"XDG_CACHE_HOME="+filepath.Join(dir, "cache"),
-	)
+	cmd.Env = append(append(os.Environ(), env...), "AO_TEST_SUITE_PIDS="+pids)
 	var out strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Start(); err != nil {
@@ -108,5 +130,34 @@ wait
 		if err := syscall.Kill(pid, 0); err == nil {
 			t.Fatalf("suite process %d outlived the launcher:\n%s", pid, out.String())
 		}
+	}
+}
+
+// A run missing a declared input fails before the typecheck and the suite,
+// naming the input.
+func TestTheLauncherRefusesARunMissingAnInput(t *testing.T) {
+	started := filepath.Join(t.TempDir(), "suite.started")
+	dir, env := launcherFixture(t, `echo started > "$AO_TEST_SUITE_STARTED"
+`)
+	if err := os.Remove(filepath.Join(filepath.Dir(dir), "bin", "ao-mockforge")); err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(self, "--host-network", "--memory-limit-bytes", strconv.Itoa(256<<20))
+	cmd.Dir = dir
+	cmd.Env = append(append(os.Environ(), env...), "AO_TEST_SUITE_STARTED="+started)
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 || !strings.Contains(string(out), "bin/ao-mockforge: not an executable file") {
+		t.Fatalf("launcher without bin/ao-mockforge = %v:\n%s", err, out)
+	}
+	if strings.Contains(string(out), "TypeScript") {
+		t.Fatalf("the launcher typechecked before its preflight:\n%s", out)
+	}
+	if _, err := os.Stat(started); err == nil {
+		t.Fatalf("the suite started without bin/ao-mockforge:\n%s", out)
 	}
 }
