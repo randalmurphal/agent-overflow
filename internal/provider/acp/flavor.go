@@ -460,6 +460,25 @@ const maxApprovalDiffPreviewBytes = 16 * 1024
 // display file paths and pending diffs before the user approves.
 func EnrichApprovalInput(base json.RawMessage, tc *ToolCallUpdate) json.RawMessage {
 	diffPath, combinedDiff := extractApprovalDiffAndPath(tc)
+	return mergeApprovalPreview(base, diffPath, combinedDiff)
+}
+
+// MergeApprovalPreview copies any already-computed "path" and "diff" preview
+// fields from enriched into base without recomputing unified diffs.
+func MergeApprovalPreview(base, enriched json.RawMessage) json.RawMessage {
+	if len(enriched) == 0 {
+		return base
+	}
+	var src map[string]any
+	if json.Unmarshal(enriched, &src) != nil {
+		return base
+	}
+	diffPath, _ := src["path"].(string)
+	diffText, _ := src["diff"].(string)
+	return mergeApprovalPreview(base, diffPath, diffText)
+}
+
+func mergeApprovalPreview(base json.RawMessage, diffPath, combinedDiff string) json.RawMessage {
 	if diffPath == "" && combinedDiff == "" {
 		return base
 	}
@@ -504,7 +523,8 @@ func extractApprovalDiffAndPath(tc *ToolCallUpdate) (string, string) {
 		return "", ""
 	}
 	var diffPath string
-	var diffParts []string
+	var diffBuf strings.Builder
+	truncated := false
 	for _, item := range tc.Content {
 		if item.Type != "diff" {
 			continue
@@ -513,22 +533,46 @@ func extractApprovalDiffAndPath(tc *ToolCallUpdate) (string, string) {
 		if diffPath == "" && p != "" {
 			diffPath = p
 		}
-		if patch := BuildUnifiedDiff(p, item.OldText, item.NewText); patch != "" {
-			diffParts = append(diffParts, patch)
+		if truncated {
+			continue
 		}
+		// Avoid running O(N*M) diff generation on giant payloads on the shared
+		// ACP reader goroutine: cap individual diff inputs and stop once the
+		// 16 KiB preview budget is full.
+		if len(item.OldText)+len(item.NewText) > maxApprovalDiffPreviewBytes*4 {
+			if diffBuf.Len() > 0 {
+				diffBuf.WriteByte('\n')
+			}
+			diffBuf.WriteString("... (diff omitted: file exceeds approval preview limit)")
+			truncated = true
+			continue
+		}
+		patch := BuildUnifiedDiff(p, item.OldText, item.NewText)
+		if patch == "" {
+			continue
+		}
+		if diffBuf.Len() > 0 {
+			diffBuf.WriteByte('\n')
+		}
+		if diffBuf.Len()+len(patch) > maxApprovalDiffPreviewBytes {
+			rem := maxApprovalDiffPreviewBytes - diffBuf.Len()
+			if rem > 0 {
+				diffBuf.WriteString(patch[:rem])
+			}
+			diffBuf.WriteString("\n... (diff truncated)")
+			truncated = true
+			continue
+		}
+		diffBuf.WriteString(patch)
 	}
 	if diffPath == "" && len(tc.Locations) > 0 {
 		diffPath = strings.TrimSpace(tc.Locations[0].Path)
 	}
-	combinedDiff := strings.Join(diffParts, "\n")
-	if len(combinedDiff) > maxApprovalDiffPreviewBytes {
-		combinedDiff = combinedDiff[:maxApprovalDiffPreviewBytes] + "\n... (diff truncated)"
-	}
-	return diffPath, combinedDiff
+	return diffPath, diffBuf.String()
 }
 
 func buildApprovalPreview(tc *ToolCallUpdate, fallbackDesc string) (json.RawMessage, string) {
-	diffPath, _ := extractApprovalDiffAndPath(tc)
+	diffPath, combinedDiff := extractApprovalDiffAndPath(tc)
 	desc := fallbackDesc
 	if diffPath != "" && !strings.Contains(desc, diffPath) {
 		if desc == "" {
@@ -537,7 +581,7 @@ func buildApprovalPreview(tc *ToolCallUpdate, fallbackDesc string) (json.RawMess
 			desc = desc + ": " + diffPath
 		}
 	}
-	return EnrichApprovalInput(tc.EffectiveInput(), tc), desc
+	return mergeApprovalPreview(tc.EffectiveInput(), diffPath, combinedDiff), desc
 }
 
 func (DefaultFlavor) ExtractPendingQuestion(*ToolCallUpdate) ([]provider.UserInputQuestion, bool) {

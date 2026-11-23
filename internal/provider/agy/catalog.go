@@ -89,6 +89,7 @@ func (c *CatalogCache) Put(key string, models []provider.ModelInfo) {
 func (c *CatalogCache) Clear() {
 	c.mu.Lock()
 	clear(c.entries)
+	clear(c.inFlight)
 	c.generation++
 	c.mu.Unlock()
 }
@@ -149,7 +150,9 @@ func (c *CatalogCache) GetOrProbe(
 		}
 		flight.models = provider.CloneModels(models)
 		flight.err = err
-		delete(c.inFlight, key)
+		if c.inFlight[key] == flight {
+			delete(c.inFlight, key)
+		}
 		close(flight.done)
 		c.mu.Unlock()
 	}()

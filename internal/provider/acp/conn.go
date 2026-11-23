@@ -595,10 +595,33 @@ func (c *Conn) startRequestWithSessionOpen(method string, params any, timeout ti
 	c.pendingMu.Unlock()
 
 	abandon := func() {
+		var orphanID string
 		if openEntry != nil {
+			// Hold openEntry.mu across marking abandoned AND draining ch so
+			// dispatchLine either observes abandoned==true (and closes sid) or
+			// delivers into ch before we drain it here (and we close sid).
 			openEntry.mu.Lock()
 			openEntry.abandoned = true
+			select {
+			case raw := <-ch:
+				if openEntry.sess == nil && len(raw) > 0 {
+					var openResp struct {
+						Result *struct {
+							SessionID string `json:"sessionId"`
+						} `json:"result"`
+					}
+					if json.Unmarshal(raw, &openResp) == nil && openResp.Result != nil {
+						orphanID = openResp.Result.SessionID
+					}
+				}
+			default:
+			}
 			openEntry.mu.Unlock()
+		} else {
+			select {
+			case <-ch:
+			default:
+			}
 		}
 		c.pendingMu.Lock()
 		delete(c.pending, id)
@@ -606,9 +629,12 @@ func (c *Conn) startRequestWithSessionOpen(method string, params any, timeout ti
 		// the late session/new response (or readLoop tears down) so an orphaned
 		// remote session created after cancellation still gets closed.
 		c.pendingMu.Unlock()
-		select {
-		case <-ch:
-		default:
+		if orphanID != "" {
+			go func(sid string) {
+				closeCtx, cancel := context.WithTimeout(context.Background(), defaultCloseTimeout)
+				_, _ = c.sendRequest(closeCtx, "session/close", SessionCloseParams{SessionID: sid})
+				cancel()
+			}(orphanID)
 		}
 	}
 
@@ -852,31 +878,39 @@ func (c *Conn) dispatchLine(line []byte) {
 					SessionID string `json:"sessionId"`
 				} `json:"result"`
 			}
-			if json.Unmarshal(line, &openResp) == nil && openResp.Result != nil && openResp.Result.SessionID != "" {
-				sid := openResp.Result.SessionID
-				openEntry.mu.Lock()
-				abandoned := openEntry.abandoned
-				openSess := openEntry.sess
-				if !abandoned && openSess != nil {
-					openSess.mu.Lock()
-					if openSess.sessionID == "" {
-						openSess.sessionID = sid
-					}
-					openSess.mu.Unlock()
-					c.registerSession(sid, openSess)
+			var sid string
+			if json.Unmarshal(line, &openResp) == nil && openResp.Result != nil {
+				sid = openResp.Result.SessionID
+			}
+			openEntry.mu.Lock()
+			abandoned := openEntry.abandoned
+			openSess := openEntry.sess
+			if !abandoned && sid != "" && openSess != nil {
+				openSess.mu.Lock()
+				if openSess.sessionID == "" {
+					openSess.sessionID = sid
 				}
-				openEntry.mu.Unlock()
-				if abandoned {
-					// Request was cancelled before registration; close the
-					// orphaned remote session asynchronously without blocking
-					// the reader loop.
-					go func(orphanID string) {
-						closeCtx, cancel := context.WithTimeout(context.Background(), defaultCloseTimeout)
-						_, _ = c.sendRequest(closeCtx, "session/close", SessionCloseParams{SessionID: orphanID})
-						cancel()
-					}(sid)
+				openSess.mu.Unlock()
+				c.registerSession(sid, openSess)
+			}
+			if ok && !abandoned {
+				select {
+				case ch <- append(json.RawMessage(nil), line...):
+				default:
 				}
 			}
+			openEntry.mu.Unlock()
+			if abandoned && sid != "" {
+				// Request was cancelled before registration; close the
+				// orphaned remote session asynchronously without blocking
+				// the reader loop.
+				go func(orphanID string) {
+					closeCtx, cancel := context.WithTimeout(context.Background(), defaultCloseTimeout)
+					_, _ = c.sendRequest(closeCtx, "session/close", SessionCloseParams{SessionID: orphanID})
+					cancel()
+				}(sid)
+			}
+			return
 		}
 		if ok {
 			select {

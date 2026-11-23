@@ -564,7 +564,7 @@ func (s *Session) applyConfigAxes(
 					s.lastRequestedModeID = ""
 				}
 				s.mu.Unlock()
-				if !IsMethodNotFound(err) || strict {
+				if !IsMethodNotFound(err) || strict || im == provider.ModePlan {
 					errs = append(errs, err)
 					modeApplied = false
 				}
@@ -622,27 +622,7 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		return errors.New("acp: cannot send empty prompt")
 	}
 
-	// Detach ONLY questions already pending BEFORE this prompt is written so:
-	// (a) a brand-new ask_question emitted by this prompt cannot be swept, and
-	// (b) a fast completion of this prompt cannot observe the old question in
-	// pendingToolQuestions and spuriously hold the turn open. If dispatchPrompt
-	// fails before writing, restore the detached questions intact.
-	detachedQuestions, detachedTools, detachTurnID := s.detachPendingToolQuestions()
-
-	var emitDetached func()
-	if len(detachedQuestions) > 0 {
-		emitDetached = func() {
-			s.emitResolvedDetachedToolQuestions(detachedQuestions, detachTurnID, "answered", map[string]provider.UserInputAnswer{
-				"reply": {content},
-			})
-		}
-	}
-
-	if err := s.dispatchPrompt(ctx, blocks, hasOutputSchema, strings.TrimSpace(opts.UserMessageUUID), content, emitDetached); err != nil {
-		s.restorePendingToolQuestions(detachedQuestions, detachedTools)
-		return err
-	}
-	return nil
+	return s.dispatchPrompt(ctx, blocks, hasOutputSchema, strings.TrimSpace(opts.UserMessageUUID), content, true)
 }
 
 func (s *Session) startPromptRequest(sessionID string, blocks []ContentBlock) (func(context.Context) (json.RawMessage, error), error) {
@@ -689,7 +669,7 @@ func (s *Session) confirmSolePrompt() {
 	s.emitPromptConfirmation(c)
 }
 
-func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, hasOutputSchema bool, userMsgUUID, userContent string, beforeWait func()) error {
+func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, hasOutputSchema bool, userMsgUUID, userContent string, detachQuestions bool) error {
 	s.mu.Lock()
 	sessionID := s.sessionID
 	s.mu.Unlock()
@@ -698,8 +678,9 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 	}
 
 	// Capture any pre-prompt flavor token (e.g. agy SQLite max step idx)
-	// BEFORE registering in-flight state or arming solePromptConfirm so
-	// delayed updates arriving during I/O cannot confirm an unwritten prompt.
+	// BEFORE registering in-flight state, detaching pending questions, or
+	// arming solePromptConfirm so neither delayed updates nor the original
+	// prompt's waiter can race this I/O window.
 	beforeToken := s.flavor.BeforePrompt(ctx, sessionID)
 
 	var confirm *pendingPromptConfirm
@@ -707,19 +688,35 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 		confirm = &pendingPromptConfirm{uuid: userMsgUUID, content: userContent}
 	}
 
-	// Register in-flight state and open the turn BEFORE writing session/prompt
-	// so early updates on the shared reader goroutine cannot slip in ahead of
-	// registration and open a spontaneous wake turn.
+	// Atomically detach pre-existing pending questions AND register in-flight
+	// state under the same s.mu lock BEFORE writing session/prompt so:
+	// (a) an earlier prompt's finishPrompt cannot observe 0 prompts + 0
+	//     questions and prematurely close the held turn,
+	// (b) a fast completion of this prompt cannot see the old question and
+	//     hold the turn open, and
+	// (c) early updates on the shared reader goroutine cannot open a
+	//     spontaneous wake turn.
 	//
-	// Only arm solePromptConfirm when the session is completely quiescent
-	// (no prior in-flight prompt, no open spontaneous wake turn, and no
-	// unfinished background tool calls, tracked subagents, or active subagent
-	// watchers). Otherwise, delayed updates from earlier activity must NEVER
-	// confirm this prompt; it is confirmed only when its own RPC completes
-	// without error.
+	// Only arm solePromptConfirm when the session is completely quiescent.
 	var openTurnID string
 	var prevOutputSchema bool
+	var detachedQuestions map[string]pendingToolQuestion
+	var detachedTools map[string]NormalizedToolStart
+	var detachTurnID string
 	s.mu.Lock()
+	if detachQuestions && len(s.pendingToolQuestions) > 0 {
+		detachedQuestions = make(map[string]pendingToolQuestion, len(s.pendingToolQuestions))
+		detachedTools = make(map[string]NormalizedToolStart, len(s.pendingToolQuestions))
+		detachTurnID = s.activeTurnID
+		for id, q := range s.pendingToolQuestions {
+			detachedQuestions[id] = q
+			if st, ok := s.startedTools[id]; ok {
+				detachedTools[id] = st
+				delete(s.startedTools, id)
+			}
+			delete(s.pendingToolQuestions, id)
+		}
+	}
 	priorInFlight := s.inFlightPrompts
 	quiescent := priorInFlight == 0 && !s.spontaneousTurnOpen && len(s.startedTools) == 0 && len(s.trackedSubagents) == 0 && s.activeSubagentWatchers == 0
 	s.inFlightPrompts++
@@ -761,6 +758,16 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 		} else if openTurnID == "" {
 			s.turnHasOutputSchema = prevOutputSchema
 		}
+		for id, q := range detachedQuestions {
+			if _, exists := s.pendingToolQuestions[id]; !exists {
+				s.pendingToolQuestions[id] = q
+			}
+		}
+		for id, st := range detachedTools {
+			if _, exists := s.startedTools[id]; !exists {
+				s.startedTools[id] = st
+			}
+		}
 		s.mu.Unlock()
 		return err
 	}
@@ -773,8 +780,10 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 			Timestamp: time.Now(),
 		})
 	}
-	if beforeWait != nil {
-		beforeWait()
+	if len(detachedQuestions) > 0 {
+		s.emitResolvedDetachedToolQuestions(detachedQuestions, detachTurnID, "answered", map[string]provider.UserInputAnswer{
+			"reply": {userContent},
+		})
 	}
 
 	s.promptWG.Add(1)
@@ -1390,43 +1399,6 @@ func (s *Session) drainPendingApprovals(decision string, closeRegistry bool) {
 			Timestamp: time.Now(),
 		})
 	}
-}
-
-func (s *Session) detachPendingToolQuestions() (map[string]pendingToolQuestion, map[string]NormalizedToolStart, string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.pendingToolQuestions) == 0 {
-		return nil, nil, ""
-	}
-	qs := make(map[string]pendingToolQuestion, len(s.pendingToolQuestions))
-	tools := make(map[string]NormalizedToolStart, len(s.pendingToolQuestions))
-	for id, q := range s.pendingToolQuestions {
-		qs[id] = q
-		if st, ok := s.startedTools[id]; ok {
-			tools[id] = st
-			delete(s.startedTools, id)
-		}
-		delete(s.pendingToolQuestions, id)
-	}
-	return qs, tools, s.activeTurnID
-}
-
-func (s *Session) restorePendingToolQuestions(qs map[string]pendingToolQuestion, tools map[string]NormalizedToolStart) {
-	if len(qs) == 0 {
-		return
-	}
-	s.mu.Lock()
-	for id, q := range qs {
-		if _, exists := s.pendingToolQuestions[id]; !exists {
-			s.pendingToolQuestions[id] = q
-		}
-	}
-	for id, st := range tools {
-		if _, exists := s.startedTools[id]; !exists {
-			s.startedTools[id] = st
-		}
-	}
-	s.mu.Unlock()
 }
 
 func (s *Session) emitResolvedDetachedToolQuestions(qs map[string]pendingToolQuestion, turnID, decision string, answers map[string]provider.UserInputAnswer) {

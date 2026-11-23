@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -269,4 +270,89 @@ func TestAgyReadOnlyUsageRefreshDoesNotHoldReconcileLock(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("RefreshProviderAccountUsageContext(agy): %v", err)
 	}
+
+	// External login to account B must NEVER be accepted as a rotation of account A.
+	credA := []byte(`{"access_token":"ya29.oldA","refresh_token":"1//refA","id_token_email":"alice@example.com"}`)
+	credARotated := []byte(`{"access_token":"ya29.newA","refresh_token":"1//refA","id_token_email":"alice@example.com"}`)
+	credB := []byte(`{"access_token":"ya29.newB","refresh_token":"1//refB","id_token_email":"bob@example.com"}`)
+	if !agyCredentialBelongsToAccount(credARotated, credA, "alice@example.com") {
+		t.Fatal("same-account rotation for alice was rejected")
+	}
+	if agyCredentialBelongsToAccount(credB, credA, "alice@example.com") {
+		t.Fatal("foreign account bob credential was accepted as alice rotation")
+	}
+
+	// If an external CLI login replaces canonical with Bob's credential BEFORE
+	// Phase 1 snapshots selected account dev@example.com, refresh MUST fail
+	// without probing HTTP or overwriting dev's saved slot with Bob's bytes.
+	if err := credentials.WriteNativeCredentialForTest(agyName, credB); err != nil {
+		t.Fatalf("overwrite canonical with bob: %v", err)
+	}
+	if err := manager.RefreshProviderAccountUsageContext(context.Background(), agyName, selection.AccountID); err == nil {
+		t.Fatal("expected usage refresh to reject foreign canonical credential before probing")
+	}
+	slotAfter, err := credentials.ReadCredentialSnapshot(agyName, selection.AccountID, false)
+	if err != nil {
+		t.Fatalf("read saved slot after foreign refusal: %v", err)
+	}
+	if bytes.Equal(slotAfter.Bytes(), credB) {
+		t.Fatal("foreign account bob credential was copied into dev's saved slot")
+	}
+
+	// Missing saved slot AND blank saved email must also fail closed so a
+	// foreign canonical credential can never publish usage under an unanchored account.
+	unanchoredManager, _, unanchoredCreds := newTestManager(t)
+	credNoEmail := []byte(`{"access_token":"ya29.noemail","refresh_token":"1//refNoEmail"}`)
+	if err := unanchoredCreds.WriteNativeCredentialForTest(agyName, credNoEmail); err != nil {
+		t.Fatalf("write initial unanchored canonical cred: %v", err)
+	}
+	if _, err := unanchoredManager.RunAccountProbe(ProbeRequest{
+		ProviderName: agyName,
+		Context:      context.Background(),
+		Probe: func(context.Context) (provider.AccountInfo, error) {
+			return provider.AccountInfo{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("seed unanchored agy account: %v", err)
+	}
+	unanchoredSel := unanchoredManager.Selection(agyName)
+	unanchoredManager.mu.RLock()
+	savedUnanchored, ok := unanchoredManager.store.Get(agyName, unanchoredSel.AccountID, time.Now())
+	unanchoredManager.mu.RUnlock()
+	if !ok || savedUnanchored.Email != "" {
+		t.Fatalf("expected seeded unanchored account with blank email, got ok=%v email=%q", ok, savedUnanchored.Email)
+	}
+	slotPath, err := unanchoredCreds.AccountCredentialPath(agyName, unanchoredSel.AccountID)
+	if err != nil {
+		t.Fatalf("account credential path: %v", err)
+	}
+	if err := os.Remove(slotPath); err != nil {
+		t.Fatalf("remove saved slot: %v", err)
+	}
+	if err := unanchoredCreds.WriteNativeCredentialForTest(agyName, credB); err != nil {
+		t.Fatalf("overwrite unanchored canonical with bob: %v", err)
+	}
+	var httpCalled bool
+	unanchoredManager.deps.HTTPClient = func() *http.Client {
+		return &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			httpCalled = true
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewBufferString(`{"buckets":[{"bucketId":"gemini-argon-5h","window":"5h","remainingFraction":0.8}]}`)),
+			}, nil
+		})}
+	}
+	if err := unanchoredManager.RefreshProviderAccountUsageContext(context.Background(), agyName, unanchoredSel.AccountID); err == nil {
+		t.Fatal("expected usage refresh to fail closed when saved slot is missing and saved email is blank")
+	}
+	if httpCalled {
+		t.Fatal("HTTP quota probe should not run when account ownership cannot be verified")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
 }

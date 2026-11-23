@@ -83,8 +83,8 @@ func probeRateLimitsAtEndpoints(
 		client = http.DefaultClient
 	}
 
-	var lastErr error
-	sawUnauthorized := false
+	var lastNonAuthErr error
+	allUnauthorized := len(endpoints) > 0
 	for _, base := range endpoints {
 		trimmedBase := strings.TrimRight(base, "/")
 		body, err := postQuotaJSON(ctx, client, trimmedBase+"/v1internal:retrieveUserQuotaSummary", cred.AccessToken)
@@ -94,17 +94,12 @@ func probeRateLimitsAtEndpoints(
 			if errors.As(err, &rl) {
 				return provider.RateLimitsSnapshot{}, err
 			}
-			if errors.Is(err, ErrOAuthUnauthorized) {
-				// An enterprise/Workspace token may receive 401/403 on the
-				// consumer endpoint (daily-cloudcode-pa) while succeeding on
-				// cloudcode-pa; try remaining endpoints before declaring auth
-				// invalid.
-				sawUnauthorized = true
-				lastErr = err
-				continue
+			if !errors.Is(err, ErrOAuthUnauthorized) {
+				allUnauthorized = false
+				lastNonAuthErr = err
 			}
-			lastErr = err
 		} else {
+			allUnauthorized = false
 			limits, pErr := parseQuotaSummary(body, now)
 			if pErr == nil && len(limits) > 0 {
 				return provider.RateLimitsSnapshot{
@@ -114,20 +109,23 @@ func probeRateLimitsAtEndpoints(
 					Complete:  true,
 				}, nil
 			}
+			if pErr != nil {
+				lastNonAuthErr = pErr
+			}
 			parseErr = pErr
 		}
-		// Fallback for accounts whose retrieveUserQuotaSummary is unsupported
-		// or returns empty buckets.
+		// Fallback for accounts whose retrieveUserQuotaSummary is unsupported,
+		// restricted (403), or returns empty buckets.
 		modelsBody, mErr := postQuotaJSON(ctx, client, trimmedBase+"/v1internal:fetchAvailableModels", cred.AccessToken)
 		if mErr != nil {
 			var rl RateLimitedError
 			if errors.As(mErr, &rl) {
 				return provider.RateLimitsSnapshot{}, mErr
 			}
-			if errors.Is(mErr, ErrOAuthUnauthorized) {
-				sawUnauthorized = true
+			if !errors.Is(mErr, ErrOAuthUnauthorized) {
+				allUnauthorized = false
+				lastNonAuthErr = mErr
 			}
-			lastErr = mErr
 			continue
 		}
 		modelLimits, mParseErr := parseAvailableModelsQuota(modelsBody)
@@ -139,17 +137,18 @@ func probeRateLimitsAtEndpoints(
 				Complete:  true,
 			}, nil
 		}
+		allUnauthorized = false
 		if parseErr != nil {
-			lastErr = parseErr
+			lastNonAuthErr = parseErr
 		} else if mParseErr != nil {
-			lastErr = mParseErr
+			lastNonAuthErr = mParseErr
 		}
 	}
-	if sawUnauthorized {
+	if allUnauthorized {
 		return provider.RateLimitsSnapshot{}, ErrOAuthUnauthorized
 	}
-	if lastErr != nil {
-		return provider.RateLimitsSnapshot{}, lastErr
+	if lastNonAuthErr != nil {
+		return provider.RateLimitsSnapshot{}, lastNonAuthErr
 	}
 	return provider.RateLimitsSnapshot{}, errors.New("agy: quota endpoint returned no usage buckets")
 }

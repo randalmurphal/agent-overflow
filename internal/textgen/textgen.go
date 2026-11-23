@@ -592,6 +592,7 @@ func RunAgy(
 		Cwd:      workspace,
 		Env:      env,
 		UnsetEnv: unsetEnv,
+		Admit:    cfg.Admit,
 	})
 	if err != nil {
 		return nil, TranslateCLINotFound("agy", timeout, err)

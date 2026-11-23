@@ -238,6 +238,10 @@ func (m *Manager) CodexAccountProbe(binary, accountID string) (provider.ProbeCac
 }
 
 func (m *Manager) agyProbeConfig(binary, geminiDir, appDataSubdir string, pins map[string]string) agy.ProbeConfig {
+	return m.agyProbeConfigWith(binary, geminiDir, appDataSubdir, m.providerCustomEnv(string(provider.Agy)), pins)
+}
+
+func (m *Manager) agyProbeConfigWith(binary, geminiDir, appDataSubdir string, custom, pins map[string]string) agy.ProbeConfig {
 	forceFile := strings.TrimSpace(geminiDir) != ""
 	if !forceFile && m != nil && m.credentials != nil {
 		forceFile = m.credentials.AgyShouldForceFileStorage("")
@@ -247,7 +251,7 @@ func (m *Manager) agyProbeConfig(binary, geminiDir, appDataSubdir string, pins m
 		WorkDir:       providerProbeWorkDir(),
 		GeminiDir:     geminiDir,
 		AppDataSubdir: appDataSubdir,
-		Env:           m.providerProbeEnv(string(provider.Agy), pins),
+		Env:           probeEnvWith(custom, pins),
 		Reaper:        m.deps.Reaper,
 		ForceFileAuth: forceFile,
 	}
@@ -256,6 +260,13 @@ func (m *Manager) agyProbeConfig(binary, geminiDir, appDataSubdir string, pins m
 // AgyProbeConfig constructs the canonical Antigravity account probe configuration.
 func (m *Manager) AgyProbeConfig(binary string, pins map[string]string) agy.ProbeConfig {
 	return m.agyProbeConfig(binary, "", "", pins)
+}
+
+// AgyAccountProbe is ClaudeAccountProbe for Antigravity, returning the cache
+// key and probe configuration from one read of settings.
+func (m *Manager) AgyAccountProbe(binary, accountID string) (provider.ProbeCacheKey, agy.ProbeConfig) {
+	custom := m.providerCustomEnv(string(provider.Agy))
+	return providerProbeCacheKeyForAccountEnv(binary, accountID, custom), m.agyProbeConfigWith(binary, "", "", custom, nil)
 }
 
 // AgyShouldForceFileStorage reports whether launching `agy` against appDataDir

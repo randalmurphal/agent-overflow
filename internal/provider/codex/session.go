@@ -601,12 +601,13 @@ type Session struct {
 	// ONLY the queue and earlyFlushing flag (never held during dispatch), so
 	// re-entrant child-route registration during replay cannot deadlock while
 	// preserving strict FIFO wire order. earlyFramesCond bounds live reader
-	// buffering to deferredChildWireMaxEvents via backpressure.
-	earlyFramesMu   sync.Mutex
-	earlyFramesCond *sync.Cond
-	earlyPending    atomic.Bool
-	earlyFlushing   bool
-	earlyFrames     []deferredChildWireEvent
+	// buffering by both count and bytes via backpressure.
+	earlyFramesMu    sync.Mutex
+	earlyFramesCond  *sync.Cond
+	earlyPending     atomic.Bool
+	earlyFlushing    bool
+	earlyFrames      []deferredChildWireEvent
+	earlyFramesBytes int
 }
 
 func (s *Session) earlyFramesCondLocked() *sync.Cond {
@@ -620,26 +621,37 @@ func (s *Session) enqueueEarlyFrames(frames []deferredChildWireEvent) {
 	if len(frames) == 0 {
 		return
 	}
+	var addedBytes int
+	for _, f := range frames {
+		addedBytes += f.sizeBytes()
+	}
 	s.earlyFramesMu.Lock()
 	s.earlyFrames = append(s.earlyFrames, frames...)
+	s.earlyFramesBytes += addedBytes
 	s.earlyPending.Store(true)
 	s.earlyFramesMu.Unlock()
 }
 
-// earlyFramesMaxBuffered caps live frames queued behind an active replay drain
-// so a stalled dispatch backpressures the reader instead of growing unboundedly.
-const earlyFramesMaxBuffered = 64
+// earlyFramesMaxBuffered and earlyFramesMaxBytes cap live frames queued behind
+// an active replay drain so a stalled dispatch backpressures the reader instead
+// of growing unboundedly in either count or memory.
+const (
+	earlyFramesMaxBuffered = 64
+	earlyFramesMaxBytes    = 16 << 20 // 16 MiB
+)
 
 // enqueueFrameIfPending appends ev to earlyFrames when an early-frame drain is
 // pending, preserving strict FIFO wire ordering. If another goroutine is
-// draining and earlyFrames has reached earlyFramesMaxBuffered, this waits
-// for a batch pop so live frames cannot grow earlyFrames unboundedly.
+// draining and earlyFrames has reached its count or byte cap, this waits for a
+// batch pop so live frames cannot grow earlyFrames unboundedly.
 func (s *Session) enqueueFrameIfPending(ev deferredChildWireEvent) bool {
 	if !s.earlyPending.Load() {
 		return false
 	}
+	evBytes := ev.sizeBytes()
 	s.earlyFramesMu.Lock()
-	for s.earlyPending.Load() && s.earlyFlushing && len(s.earlyFrames) >= earlyFramesMaxBuffered && !s.closing.Load() {
+	for s.earlyPending.Load() && s.earlyFlushing && !s.closing.Load() &&
+		(len(s.earlyFrames) >= earlyFramesMaxBuffered || (len(s.earlyFrames) > 0 && s.earlyFramesBytes+evBytes > earlyFramesMaxBytes)) {
 		s.earlyFramesCondLocked().Wait()
 	}
 	if !s.earlyPending.Load() || s.closing.Load() {
@@ -647,6 +659,7 @@ func (s *Session) enqueueFrameIfPending(ev deferredChildWireEvent) bool {
 		return false
 	}
 	s.earlyFrames = append(s.earlyFrames, ev)
+	s.earlyFramesBytes += evBytes
 	alreadyFlushing := s.earlyFlushing
 	s.earlyFramesMu.Unlock()
 	if !alreadyFlushing {
@@ -669,6 +682,7 @@ func (s *Session) flushEarlyFrames() {
 			// earlyFramesMu, so no live reader frame can overtake replay.
 			s.earlyPending.Store(false)
 			s.earlyFlushing = false
+			s.earlyFramesBytes = 0
 			if s.earlyFramesCond != nil {
 				s.earlyFramesCond.Broadcast()
 			}
@@ -677,6 +691,7 @@ func (s *Session) flushEarlyFrames() {
 		}
 		frames := s.earlyFrames
 		s.earlyFrames = nil
+		s.earlyFramesBytes = 0
 		if s.earlyFramesCond != nil {
 			s.earlyFramesCond.Broadcast()
 		}
@@ -1178,6 +1193,7 @@ func (s *Session) Close() error {
 	s.childLifecycleMu.Unlock()
 	s.earlyFramesMu.Lock()
 	s.earlyFrames = nil
+	s.earlyFramesBytes = 0
 	s.earlyFlushing = false
 	s.earlyPending.Store(false)
 	if s.earlyFramesCond != nil {

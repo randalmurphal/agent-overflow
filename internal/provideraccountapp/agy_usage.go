@@ -68,6 +68,9 @@ func (m *Manager) refreshAgyAccountUsage(
 	if err != nil {
 		return fmt.Errorf("read saved %s credentials for usage refresh: %w", providerName, err)
 	}
+	if isSelected && !agyCredentialBelongsToAccount(credential.Bytes(), slotAtStart.Bytes(), account.Email) {
+		return fmt.Errorf("Antigravity credentials in the active home do not match saved account %q; reconcile accounts before refreshing usage", accountID)
+	}
 
 	refresh := providerUsageRefresh{
 		providerName: providerName,
@@ -93,7 +96,7 @@ func (m *Manager) refreshAgyAccountUsage(
 	probeRan = true
 	snapshot, probeErr = agy.ProbeRateLimitsFromCredentialData(ctx, m.providerHTTPClient(), credential.Bytes())
 	if refresh.refreshesInCanonicalHome() && errors.Is(probeErr, agy.ErrOAuthUnauthorized) {
-		rotated, refreshErr := m.refreshSelectedAgyCanonicalToken(ctx, accountID, generation, credential.Bytes(), backoffHold)
+		rotated, refreshErr := m.refreshSelectedAgyCanonicalToken(ctx, accountID, account.Email, generation, credential.Bytes(), backoffHold)
 		if refreshErr != nil {
 			probeErr = refreshErr
 		} else {
@@ -131,13 +134,46 @@ func (m *Manager) refreshAgyAccountUsage(
 	return errors.Join(probeErr, commitErr)
 }
 
+// agyCredentialBelongsToAccount verifies that candidate bytes positively belong
+// to the same Antigravity account as staleCred / expectedEmail so an external
+// CLI login to account B during an unlocked probe can NEVER be copied into
+// account A's saved slot.
+func agyCredentialBelongsToAccount(candidate, staleCred []byte, expectedEmail string) bool {
+	cand, err := agy.ParseCredential(candidate)
+	if err != nil || cand.AccessToken == "" {
+		return false
+	}
+	stale, _ := agy.ParseCredential(staleCred)
+	expectedEmail = strings.TrimSpace(expectedEmail)
+	if expectedEmail == "" {
+		expectedEmail = strings.TrimSpace(stale.Email)
+	}
+	candEmail := strings.TrimSpace(cand.Email)
+	if expectedEmail != "" && candEmail != "" && !strings.EqualFold(candEmail, expectedEmail) {
+		return false
+	}
+	if len(staleCred) > 0 && bytes.Equal(candidate, staleCred) {
+		return true
+	}
+	if stale.RefreshToken != "" && cand.RefreshToken != "" && cand.RefreshToken == stale.RefreshToken {
+		return true
+	}
+	if expectedEmail != "" && candEmail != "" && strings.EqualFold(candEmail, expectedEmail) {
+		return true
+	}
+	return false
+}
+
 // refreshSelectedAgyCanonicalToken refreshes the selected account's OAuth
-// token under reconcileMutex. If another goroutine already rotated the
-// canonical credential while waiting for the lock, it reuses the updated bytes
-// instead of spawning a second cold agy acp process.
+// token under reconcileMutex. If another goroutine already rotated the same
+// account's canonical credential while waiting for the lock, it reuses those
+// bytes instead of spawning a second cold agy acp process. If an external
+// login replaced canonical with a different account, it refuses to adopt the
+// foreign credential under accountID.
 func (m *Manager) refreshSelectedAgyCanonicalToken(
 	ctx context.Context,
 	accountID string,
+	accountEmail string,
 	startGen uint64,
 	staleCred []byte,
 	backoffHold func() error,
@@ -162,7 +198,12 @@ func (m *Manager) refreshSelectedAgyCanonicalToken(
 
 	if cur, present, readErr := m.readCanonicalCredentialIfPresent(providerName); readErr == nil && present {
 		if curBytes := cur.Bytes(); len(curBytes) > 0 && !bytes.Equal(curBytes, staleCred) {
-			return curBytes, nil
+			if agyCredentialBelongsToAccount(curBytes, staleCred, accountEmail) {
+				return curBytes, nil
+			}
+			// Canonical store changed to a different or unverified account
+			// externally; never write it into accountID's slot.
+			return nil, agy.ErrOAuthUnauthorized
 		}
 	}
 
@@ -174,7 +215,11 @@ func (m *Manager) refreshSelectedAgyCanonicalToken(
 	if readErr != nil || !present {
 		return nil, errors.New("Antigravity credentials missing after refresh; sign in again")
 	}
-	return refreshed.Bytes(), nil
+	rotated := refreshed.Bytes()
+	if !agyCredentialBelongsToAccount(rotated, staleCred, accountEmail) {
+		return nil, agy.ErrOAuthUnauthorized
+	}
+	return rotated, nil
 }
 
 // identifyAgyCredential enriches a probed Antigravity AccountInfo with email,

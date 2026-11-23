@@ -307,7 +307,11 @@ func (a *App) GetModelsForProvider(providerName string) (provider.ModelCatalog, 
 // Agent profiles, spawns and text generation resolve a model family from
 // it; it reads no usage ledger.
 func (a *App) modelCatalog(providerName string) (provider.ModelCatalog, error) {
-	catalog, err := a.providerDiscoveryService().ModelsForProvider(context.Background(), providerName)
+	return a.modelCatalogContext(context.Background(), providerName)
+}
+
+func (a *App) modelCatalogContext(ctx context.Context, providerName string) (provider.ModelCatalog, error) {
+	catalog, err := a.providerDiscoveryService().ModelsForProvider(ctx, providerName)
 	if err != nil {
 		return catalog, err
 	}

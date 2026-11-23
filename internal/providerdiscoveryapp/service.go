@@ -58,7 +58,7 @@ type Deps struct {
 	RunAccountProbe            func(AccountProbeRequest) (provider.AccountInfo, error)
 	ClaudeProbe                func(binary, accountID string) (provider.ProbeCacheKey, claude.ProbeConfig)
 	CodexProbe                 func(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig)
-	AgyConfig                  func(binary string) agy.ProbeConfig
+	AgyProbe                   func(binary, accountID string) (provider.ProbeCacheKey, agy.ProbeConfig)
 	EmitStatus                 func(providerstatus.Event)
 	EmitRateLimits             func(provider.RateLimitsSnapshot)
 	DetectProvider             func(providerName, binary string) provider.ProviderStatus

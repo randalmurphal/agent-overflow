@@ -684,8 +684,17 @@ func readChildLaunchToolCallIDContained(brainDir, childID string) string {
 	}
 
 	msgRelDir := filepath.Join(".system_generated", "messages")
-	msgDir, err := sessionRoot.Open(msgRelDir)
+	msgDirLstat, err := sessionRoot.Lstat(msgRelDir)
+	if err != nil || msgDirLstat.Mode()&os.ModeSymlink != 0 || !msgDirLstat.IsDir() {
+		return ""
+	}
+	msgDir, err := sessionRoot.OpenFile(msgRelDir, os.O_RDONLY|openNonBlockFlag(), 0)
 	if err != nil {
+		return ""
+	}
+	msgDirStat, statErr := msgDir.Stat()
+	if statErr != nil || !msgDirStat.IsDir() || !os.SameFile(msgDirLstat, msgDirStat) {
+		_ = msgDir.Close()
 		return ""
 	}
 	entries, err := msgDir.ReadDir(maxInboxMessagesToScan)

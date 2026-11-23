@@ -925,4 +925,36 @@ func TestCatalogCacheGetOrProbeCoalescesConcurrentMisses(t *testing.T) {
 			t.Fatalf("waiter %d = (%+v, %v), want 1 model", i, results[i], errs[i])
 		}
 	}
+
+	// Clear() mid-flight must prevent a post-Clear caller from joining the stale
+	// flight and receiving pre-invalidation results.
+	staleStarted := make(chan struct{})
+	staleRelease := make(chan struct{})
+	var flightSeq int
+	staleProbe := func(ctx context.Context, key string) ([]provider.ModelInfo, error) {
+		mu.Lock()
+		flightSeq++
+		seq := flightSeq
+		mu.Unlock()
+		if seq == 1 {
+			close(staleStarted)
+			<-staleRelease
+			return []provider.ModelInfo{{Slug: "old-model", Provider: string(provider.Agy)}}, nil
+		}
+		return []provider.ModelInfo{{Slug: "fresh-model", Provider: string(provider.Agy)}}, nil
+	}
+	cache.Clear()
+	staleDone := make(chan struct{})
+	go func() {
+		defer close(staleDone)
+		_, _ = cache.GetOrProbe(context.Background(), "agy", staleProbe)
+	}()
+	<-staleStarted
+	cache.Clear()
+	freshModels, freshErr := cache.GetOrProbe(context.Background(), "agy", staleProbe)
+	close(staleRelease)
+	<-staleDone
+	if freshErr != nil || len(freshModels) != 1 || freshModels[0].Slug != "fresh-model" {
+		t.Fatalf("post-Clear caller got (%+v, %v), want fresh-model", freshModels, freshErr)
+	}
 }

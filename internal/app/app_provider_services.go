@@ -51,8 +51,8 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 			CodexProbe: func(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig) {
 				return a.ensureProviderAccountManager().CodexAccountProbe(binary, accountID)
 			},
-			AgyConfig: func(binary string) agy.ProbeConfig {
-				return a.ensureProviderAccountManager().AgyProbeConfig(binary, nil)
+			AgyProbe: func(binary, accountID string) (provider.ProbeCacheKey, agy.ProbeConfig) {
+				return a.ensureProviderAccountManager().AgyAccountProbe(binary, accountID)
 			},
 			EmitStatus:     a.emitProviderStatus,
 			EmitRateLimits: a.emitRateLimitsSnapshot,

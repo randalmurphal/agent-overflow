@@ -222,4 +222,67 @@ func TestProbeRateLimitsEnterpriseFallbackAfterConsumer403And404(t *testing.T) {
 	if !errors.Is(err, ErrOAuthUnauthorized) {
 		t.Fatalf("both unauthorized err = %v, want ErrOAuthUnauthorized", err)
 	}
+
+	// 3. Summary 500 followed by models 403 must NOT misclassify as ErrOAuthUnauthorized.
+	mixed500Then403 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "retrieveUserQuotaSummary") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer mixed500Then403.Close()
+
+	_, err = probeRateLimitsAtEndpoints(
+		context.Background(),
+		mixed500Then403.Client(),
+		[]string{mixed500Then403.URL},
+		credBytes,
+		time.Now(),
+	)
+	if err == nil || errors.Is(err, ErrOAuthUnauthorized) {
+		t.Fatalf("mixed 500+403 err = %v, want non-unauthorized error", err)
+	}
+
+	// 4. Summary 403 followed by models 200 with empty buckets must NOT return ErrOAuthUnauthorized.
+	mixed403ThenEmpty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "retrieveUserQuotaSummary") {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = w.Write([]byte(`{"models":{}}`))
+	}))
+	defer mixed403ThenEmpty.Close()
+
+	_, err = probeRateLimitsAtEndpoints(
+		context.Background(),
+		mixed403ThenEmpty.Client(),
+		[]string{mixed403ThenEmpty.URL},
+		credBytes,
+		time.Now(),
+	)
+	if err == nil || errors.Is(err, ErrOAuthUnauthorized) {
+		t.Fatalf("mixed 403+200-empty err = %v, want non-unauthorized error", err)
+	}
+
+	// 5. Summary 200 with empty buckets followed by models 403 must NOT return ErrOAuthUnauthorized.
+	mixedEmptyThen403 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "retrieveUserQuotaSummary") {
+			_, _ = w.Write([]byte(`{"buckets":[]}`))
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer mixedEmptyThen403.Close()
+
+	_, err = probeRateLimitsAtEndpoints(
+		context.Background(),
+		mixedEmptyThen403.Client(),
+		[]string{mixedEmptyThen403.URL},
+		credBytes,
+		time.Now(),
+	)
+	if err == nil || errors.Is(err, ErrOAuthUnauthorized) {
+		t.Fatalf("mixed 200-empty+403 err = %v, want non-unauthorized error", err)
+	}
 }

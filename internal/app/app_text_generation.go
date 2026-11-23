@@ -198,7 +198,7 @@ func (a *App) textGenerationDefaultModel(ctx context.Context, providerName strin
 	if providerName == string(provider.Claude) {
 		catalog, err = a.awaitClaudeModels(ctx)
 	} else {
-		catalog, err = a.modelCatalog(providerName)
+		catalog, err = a.modelCatalogContext(ctx, providerName)
 	}
 	if err != nil {
 		return provider.ModelInfo{}, fmt.Errorf("text generation: %s model list: %w", providerName, err)
@@ -334,14 +334,23 @@ func runTextGenWithFallback[T any](
 	// runOnce is called here and not handed on, so the budget walk
 	// (TestEveryMethodReachingALongStepDeclaresItsBudget) follows each caller's
 	// runOnce to its own run.
-	run := func(attemptBudget time.Duration, resolve func() (textgen.Config, error)) (textgen.Config, T, error) {
+	run := func(attemptBudget time.Duration, resolve func(context.Context) (textgen.Config, error)) (textgen.Config, T, error) {
 		for {
-			cfg, err := resolve()
+			remaining := time.Until(overallDeadline)
+			if remaining <= 0 {
+				var zero T
+				return textgen.Config{}, zero, context.DeadlineExceeded
+			}
+			stepBudget := min(attemptBudget, remaining)
+			stepDeadline := time.Now().Add(stepBudget)
+			resolveCtx, cancelResolve := context.WithDeadline(ctx, stepDeadline)
+			cfg, err := resolve(resolveCtx)
+			cancelResolve()
 			if err != nil {
 				var zero T
 				return cfg, zero, err
 			}
-			result, err := runOnce(cfg, time.Now().Add(attemptBudget))
+			result, err := runOnce(cfg, stepDeadline)
 			if errors.Is(err, procutil.ErrGroupSurvived) {
 				// Logged here, once per run: a run an account change ended is
 				// run again and a primary's failure gives way to a fallback
@@ -357,8 +366,8 @@ func runTextGenWithFallback[T any](
 			}
 		}
 	}
-	primary, result, err := run(budget, func() (textgen.Config, error) {
-		return a.resolveTextGenerationConfig(ctx)
+	primary, result, err := run(budget, func(stepCtx context.Context) (textgen.Config, error) {
+		return a.resolveTextGenerationConfig(stepCtx)
 	})
 	if err == nil {
 		return result, nil
@@ -384,8 +393,8 @@ func runTextGenWithFallback[T any](
 		if perAttempt > budget {
 			perAttempt = budget
 		}
-		altCfg, altResult, altErr := run(perAttempt, func() (textgen.Config, error) {
-			cfg, ok := a.resolveTextGenerationConfigFor(ctx, altName)
+		altCfg, altResult, altErr := run(perAttempt, func(stepCtx context.Context) (textgen.Config, error) {
+			cfg, ok := a.resolveTextGenerationConfigFor(stepCtx, altName)
 			if !ok {
 				return cfg, errNoTextGenerationAlternate
 			}

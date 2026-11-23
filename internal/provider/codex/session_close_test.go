@@ -173,6 +173,7 @@ var sessionCloseFieldDispositions = map[string]string{
 	"earlyPending":        "atomic flag cleared by Close",
 	"earlyFlushing":       "drain-loop guard cleared by Close under earlyFramesMu",
 	"earlyFrames":         "bounded early-frame slice cleared by Close",
+	"earlyFramesBytes":    "byte tally for earlyFrames cleared by Close",
 	"rolloutObserverWG":   "joined by Close",
 	"collabMetadataReads": "serialization channel",
 	"collabAsyncMu":       "lock",
