@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/nearby"
 	"agent-overflow/internal/pairbootstrap"
@@ -283,7 +284,13 @@ func (a *App) CloseComputerPairing(id string) error {
 		state.owner = nil
 	}
 	state.mu.Unlock()
-	return a.closeComputerPairingWindow(id, pairbootstrap.EndedClosed)
+	err := a.closeComputerPairingWindow(id, pairbootstrap.EndedClosed)
+	if err != nil && !errors.Is(err, pairbootstrap.ErrStopped) {
+		// The window is closed and its invitation refused; the book retries
+		// the cancellation on its own.
+		err = errorsx.Public("pairing_close_unfinished", "this computer could not save the cancellation yet; it keeps the pairing refused and tries again on its own", err)
+	}
+	return err
 }
 
 // closeComputerPairingWindow retires one window for why: the book removes it

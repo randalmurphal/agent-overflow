@@ -549,3 +549,56 @@ func TestComputerPairingAnOpenOnAnUnavailableNetworkSaysWhatToDo(t *testing.T) {
 		t.Fatalf("an open on Tailscale without it = %v, want %q", err, want)
 	}
 }
+
+// Device access asked for before this computer has its session core, its
+// identity or its listener says to wait, not which part is missing.
+func TestDeviceAccessBeforeStartupFinishesSaysToWait(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	const starting = "this computer is still starting; try again in a moment"
+	t.Run("no store", func(t *testing.T) {
+		t.Parallel()
+		requirePersonSees(t, (&App{}).CancelDevicePairing("link"), starting)
+	})
+	t.Run("no session core", func(t *testing.T) {
+		t.Parallel()
+		a := newTestAppWithStore(t)
+		_, err := a.MintDevicePairing("phone", "full")
+		requirePersonSees(t, err, starting)
+		requirePersonSees(t, a.CancelDevicePairing("link"), starting)
+		requirePersonSees(t, a.ConfirmDevicePairing("link"), starting)
+	})
+	t.Run("no listener", func(t *testing.T) {
+		t.Parallel()
+		a, _ := newTestAppWithStorePath(t)
+		if err := a.initIdentity("backend-under-test"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := a.MintDevicePairing("phone", "full")
+		requirePersonSees(t, err, starting)
+	})
+	t.Run("no backend identity", func(t *testing.T) {
+		t.Parallel()
+		a, _ := computerPairingHost(t)
+		a.storeIdentity.Store(nil)
+		_, err := a.MintDevicePairing("phone", "full")
+		requirePersonSees(t, err, starting)
+	})
+}
+
+// A cancel or a close whose cancellation the store refuses to write says so
+// and what happens next, keeping the cause for errors.Is.
+func TestComputerPairingAnUnsavedCancellationSaysWhatHappensNext(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	a, path := computerPairingHost(t)
+	invite, err := a.MintDevicePairing("phone", "full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	window, _ := windowAwaitingApproval(t, a)
+	restore := rejectCancellations(t, path)
+	defer restore()
+	requirePersonSees(t, a.CancelDevicePairing(invite.LinkID), "this computer could not save the cancellation; try Cancel again")
+	requirePersonSees(t, a.CloseComputerPairing(window.ID), "this computer could not save the cancellation yet; it keeps the pairing refused and tries again on its own")
+}

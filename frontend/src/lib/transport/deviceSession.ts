@@ -171,8 +171,14 @@ export class PairingRefusedError extends Error {
   /** Reason code from the closed refusal set, '' when the response carried none. */
   reason: string;
   status: number;
+  // The message is the sentence a person is shown: the refusal's own
+  // presentation (./authReason.ts), or for an answer that named no reason,
+  // what is known and what to do.
   constructor(status: number, reason: string) {
-    super(`pairing refused: HTTP ${status}${reason ? ` (${reason})` : ''}`);
+    const shown = presentAuthReason(reason);
+    super(reason
+      ? `${shown.title} ${shown.hint}`
+      : `The computer refused the request (HTTP ${status}). Try again, and pair this device again if it keeps happening.`);
     this.name = 'PairingRefusedError';
     this.status = status;
     this.reason = reason;

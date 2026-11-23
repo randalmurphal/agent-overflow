@@ -98,7 +98,8 @@ finish starting. A reveal mints the invitation for the network the requester
 arrived on from the set the window was admitted under, never from live
 settings, so the invitation and the window's serial come from one set. For a
 person this means: if any of this computer's pairing addresses changes while a
-pairing is in progress, the pairing is canceled and started again. A settings
+pairing is in progress, the pairing ends (`networkChanged`) and the dialog says
+so; the person starts it again with Try again. A settings
 rebind, a Windows launcher report and the launcher's loss each publish right
 after the move; a change that leaves the set alone, such as a domain
 certificate arriving or a second forwarded address, keeps the window. A window

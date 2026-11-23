@@ -34,6 +34,7 @@ import {
 } from './homeEndpoint';
 import { __resetDetachStepsForTest, onBeforeBackendDetach } from './detachSteps';
 import { renewalLeaseKey, withRenewalLease } from './renewalLease';
+import { presentAuthReason } from './authReason';
 
 const PAYLOAD: PairingPayload = {
   v: 1,
@@ -214,6 +215,15 @@ describe('redeemPairing', () => {
       redeemPairing(PAYLOAD, 'My phone', fetcher as unknown as typeof fetch),
     ).rejects.toThrow(PairingRefusedError);
     expect(hasPairedSession()).toBe(false);
+  });
+
+  it('reads a refusal as the sentence a person is shown, not as wire text', async () => {
+    const shown = presentAuthReason('unknown_credential');
+    await expect(redeemPairing(PAYLOAD, 'My phone', (async () => refusal('unknown_credential')) as unknown as typeof fetch))
+      .rejects.toThrow(`${shown.title} ${shown.hint}`);
+    const bare = async () => new Response('{}', { status: 502, headers: { 'Content-Type': 'application/json' } });
+    await expect(redeemPairing(PAYLOAD, 'My phone', bare as unknown as typeof fetch))
+      .rejects.toThrow('The computer refused the request (HTTP 502). Try again, and pair this device again if it keeps happening.');
   });
 });
 

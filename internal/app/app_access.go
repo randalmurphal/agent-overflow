@@ -202,7 +202,7 @@ func (a *App) mintDevicePairingOn(deviceClass, access, purpose string, bootstrap
 		// id, and a payload naming none would leave the device unable to
 		// say which backend offered to pair. Refuse rather than mint a
 		// link that resolves to an anonymous backend.
-		return PairingInvite{}, fmt.Errorf("access: the backend identity is not available yet")
+		return PairingInvite{}, errAccessStarting()
 	}
 
 	link, err := state.sessions.MintPairingLink(identity.PairingRequest{
@@ -335,8 +335,11 @@ func (a *App) CancelDevicePairing(linkID string) error {
 	if windowID != "" {
 		a.endComputerPairingAdvertisement(windowID)
 	}
-	if errors.Is(err, identity.ErrPairingRefused) {
+	switch {
+	case errors.Is(err, identity.ErrPairingRefused):
 		err = errorsx.Public("pairing_settled", "this invitation was already used, canceled or expired, so there is nothing to cancel", err)
+	case err != nil && !errors.Is(err, pairbootstrap.ErrStopped):
+		err = errorsx.Public("pairing_cancel_failed", "this computer could not save the cancellation; try Cancel again", err)
 	}
 	return err
 }
@@ -515,17 +518,25 @@ func (a *App) RevokeAccessSession(sessionID string) error {
 	return err
 }
 
+// errAccessStarting is what a person is told when device access is asked
+// for before this computer has its store, session core, identity and
+// listener: every one is in place before the backend reports itself ready,
+// so the answer is to wait.
+func errAccessStarting() error {
+	return errorsx.Public("access_starting", "this computer is still starting; try again in a moment", nil)
+}
+
 // accessState resolves the session core and the owner account, with one
 // error every method in this file reports the same way. Identity not
 // being wired is a state, not a fault (app_identity.go), but it is one
 // this surface cannot answer anything from.
 func (a *App) accessState() (*identityState, error) {
 	if a.store == nil {
-		return nil, fmt.Errorf("access: store unavailable")
+		return nil, errAccessStarting()
 	}
 	state := a.identityState()
 	if state == nil {
-		return nil, fmt.Errorf("access: the session core is not running; device access is unavailable")
+		return nil, errAccessStarting()
 	}
 	return state, nil
 }
@@ -708,7 +719,7 @@ func pairingDeadline(link store.PairingLink) int64 {
 func (a *App) pairingPageURL(networkChoice string) (pageURL, endpoint, fingerprint string, err error) {
 	srv := a.transportServer.Load()
 	if srv == nil {
-		return "", "", "", fmt.Errorf("access: transport server unavailable")
+		return "", "", "", errAccessStarting()
 	}
 	if networkChoice == "" {
 		pageURL, fingerprint = network.PairingURL(srv, a.persistedNetworkSettings(), a.netReach)
@@ -719,7 +730,7 @@ func (a *App) pairingPageURL(networkChoice string) (pageURL, endpoint, fingerpri
 		}
 	}
 	if pageURL == "" {
-		return "", "", "", fmt.Errorf("access: the transport has no page URL to pair against yet")
+		return "", "", "", errAccessStarting()
 	}
 	parsed, err := url.Parse(pageURL)
 	if err != nil {
@@ -733,11 +744,11 @@ func (a *App) pairingPageURL(networkChoice string) (pageURL, endpoint, fingerpri
 func (a *App) pairingPageAt(page network.PairingPage) (pageURL, endpoint, fingerprint string, err error) {
 	srv := a.transportServer.Load()
 	if srv == nil {
-		return "", "", "", fmt.Errorf("access: transport server unavailable")
+		return "", "", "", errAccessStarting()
 	}
 	pageURL, ok := page.URL(srv)
 	if !ok {
-		return "", "", "", fmt.Errorf("access: could not create a pairing link")
+		return "", "", "", errorsx.Public("pairing_link_unavailable", "this computer could not create a pairing link; try again", nil)
 	}
 	return pageURL, page.Scheme + "://" + page.Authority, page.Fingerprint, nil
 }
