@@ -69,7 +69,7 @@ func TestSessionCloseRemovesBothPromptFiles(t *testing.T) {
 		threadID:               testThread,
 		parser:                 claude.NewParser(),
 		feed:                   make(chan json.RawMessage, 1),
-		done:                   make(chan struct{}),
+		completed:              make(chan struct{}),
 		logf:                   func(string, ...any) {},
 		onEvent:                func(provider.ProviderEvent) {},
 		systemPromptPath:       replacement,

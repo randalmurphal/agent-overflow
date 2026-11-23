@@ -66,12 +66,12 @@ func newWiredSession(t *testing.T) (*Session, *eventRecorder) {
 	t.Helper()
 	rec := &eventRecorder{}
 	s := &Session{
-		threadID: testThread,
-		parser:   newSessionParser(),
-		feed:     make(chan json.RawMessage, 256),
-		done:     make(chan struct{}),
-		logf:     func(string, ...any) {},
-		onEvent:  rec.record,
+		threadID:  testThread,
+		parser:    newSessionParser(),
+		feed:      make(chan json.RawMessage, 256),
+		completed: make(chan struct{}),
+		logf:      func(string, ...any) {},
+		onEvent:   rec.record,
 	}
 	s.rec = newReconstructor(s.feedEnvelope)
 	s.startFeedLoop()
@@ -681,12 +681,12 @@ func TestSessionRespondToApprovalRejected(t *testing.T) {
 // set, as in a partially constructed session) and a no-op on the second call.
 func TestSessionCloseIdempotent(t *testing.T) {
 	s := &Session{
-		threadID: testThread,
-		parser:   claude.NewParser(),
-		feed:     make(chan json.RawMessage, 1),
-		done:     make(chan struct{}),
-		logf:     func(string, ...any) {},
-		onEvent:  func(provider.ProviderEvent) {},
+		threadID:  testThread,
+		parser:    claude.NewParser(),
+		feed:      make(chan json.RawMessage, 1),
+		completed: make(chan struct{}),
+		logf:      func(string, ...any) {},
+		onEvent:   func(provider.ProviderEvent) {},
 	}
 	s.rec = newReconstructor(s.feedEnvelope)
 
@@ -714,7 +714,7 @@ func TestSessionCloseRemovesTheSystemPromptFile(t *testing.T) {
 		threadID:         testThread,
 		parser:           claude.NewParser(),
 		feed:             make(chan json.RawMessage, 1),
-		done:             make(chan struct{}),
+		completed:        make(chan struct{}),
 		logf:             func(string, ...any) {},
 		onEvent:          func(provider.ProviderEvent) {},
 		systemPromptPath: path,
