@@ -25,7 +25,7 @@ import {
   readBackendDescriptors,
   setBackendManifestFetcher,
 } from './manifestBackends';
-import { setHarnessPageMarkerFromBootstrap, setHarnessSessionFromBootstrap, setHarnessTimingFromBootstrap } from './harnessMode';
+import { readHarnessTimingFromBootstrap, setHarnessPageMarkerFromBootstrap, setHarnessSessionFromBootstrap, setHarnessTimingFromBootstrap } from './harnessMode';
 import { setPasskeysAvailableFromBootstrap } from './passkey';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 import { clampString } from './frames';
@@ -358,6 +358,9 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
     throw new Error('bootstrap response missing wsUrl');
   }
   validateWsUrl(data.wsUrl, originPartsOf(computerResponseURL(resp, url)) ?? homeOriginParts());
+  // Every check that can refuse the manifest runs before the first thing is
+  // published from it, so a refused manifest leaves the page as it was.
+  const harnessTiming = readHarnessTimingFromBootstrap(data.harness === true, data.harnessTiming);
   await observePairedComputerBootstrap(HOME_BACKEND, data.backendId, data.routes);
   data.remote = data.remote === true;
   // Locality is this page's half of the capability answer: a page served
@@ -371,7 +374,7 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
   // The harness bridge registers its page synchronously when this latch
   // flips. Publish the marker first so that first-load registration cannot
   // race with the waiter callback.
-  setHarnessTimingFromBootstrap(data.harness === true, data.harnessTiming);
+  setHarnessTimingFromBootstrap(harnessTiming);
   setHarnessSessionFromBootstrap(data.harness === true);
   // Re-validated on every manifest resolution, which is what makes a
   // mid-session generation re-mint (a restored backend) observable on

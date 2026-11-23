@@ -36,7 +36,9 @@ const FRONTEND_TIMERS: ReadonlySet<string> = new Set<HarnessFrontendTimer>([
   'unreachable-settle',
   'agent-row-linger',
 ]);
-let timing: ReadonlyMap<HarnessFrontendTimer, number> = new Map();
+/** A manifest's frontend timer overrides, read by `readHarnessTimingFromBootstrap`. */
+export type HarnessTiming = ReadonlyMap<HarnessFrontendTimer, number>;
+let timing: HarnessTiming = new Map();
 const waiting = new Set<() => void>();
 
 /** Whether this session is attached to a --harness / --soak backend. */
@@ -79,14 +81,15 @@ export function harnessInterval(timer: HarnessFrontendTimer, productMs: number):
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /**
- * A manifest's frontend timer overrides, validated. Timing without the
- * harness bit is no timing: only a harness boot may shorten a product
- * timer. An entry this build does not name, or a duration that is not a
- * whole number of milliseconds from 1 to MAX_TIMER_MS, is a defect in the
- * boot that served it and throws, so the manifest that carried it is
- * refused.
+ * A manifest's frontend timer overrides, validated and not yet published.
+ * Timing without the harness bit is no timing: only a harness boot may
+ * shorten a product timer. An entry this build does not name, or a
+ * duration that is not a whole number of milliseconds from 1 to
+ * MAX_TIMER_MS, is a defect in the boot that served it and throws, so the
+ * manifest that carried it is refused. bootstrap.ts reads it before it
+ * publishes anything from the manifest.
  */
-function harnessTimingOf(isHarness: boolean, value: unknown): ReadonlyMap<HarnessFrontendTimer, number> {
+export function readHarnessTimingFromBootstrap(isHarness: boolean, value: unknown): HarnessTiming {
   const next = new Map<HarnessFrontendTimer, number>();
   if (!isHarness || value === undefined) return next;
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -102,13 +105,13 @@ function harnessTimingOf(isHarness: boolean, value: unknown): ReadonlyMap<Harnes
   return next;
 }
 
-// Called by bootstrap.ts with each accepted home manifest's harness bit and
-// `harnessTiming`. Every manifest replaces the page's timing: a later
-// manifest's values win, and one without overrides restores the product
-// timers. An owner reads its timer when it arms, so a timer already armed
-// keeps the value it armed with.
-export function setHarnessTimingFromBootstrap(isHarness: boolean, value: unknown): void {
-  timing = harnessTimingOf(isHarness, value);
+// Called by bootstrap.ts with each accepted home manifest's timing
+// (readHarnessTimingFromBootstrap). Every manifest replaces the page's
+// timing: a later manifest's values win, and one without overrides restores
+// the product timers. An owner reads its timer when it arms, so a timer
+// already armed keeps the value it armed with.
+export function setHarnessTimingFromBootstrap(next: HarnessTiming): void {
+  timing = next;
 }
 
 export function setHarnessPageMarkerFromBootstrap(value: unknown): void {

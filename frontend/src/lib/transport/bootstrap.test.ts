@@ -20,7 +20,9 @@ import { clearPairedSession, redeemPairing } from './deviceSession';
 import { isHostWindow } from './pageHost';
 import { setHomeEndpoint } from './homeEndpoint';
 import { fetchBackendManifest } from './manifestBackends';
-import { harnessInterval } from './harnessMode';
+import { __resetHarnessModeForTest, harnessInterval, harnessPageMarker, isHarnessSession } from './harnessMode';
+import { getBackendIdentity } from './backendIdentity';
+import { manifestBackendDescriptors } from './manifestBackends';
 import { BackendStartingError, STARTUP_REPORT_LIMIT_BYTES } from './startupProgress';
 
 describe('isLoopbackHostname', () => {
@@ -289,6 +291,30 @@ describe('defaultBootstrap', () => {
       expect(harnessInterval('agent-row-linger', 60_000)).toBe(60_000);
     },
   );
+
+  // A manifest refused for its timing publishes none of its other fields.
+  it('publishes nothing from a manifest it refuses', async () => {
+    __resetHarnessModeForTest();
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, backendId: 'kept', replicaGeneration: 'g1' })));
+    await defaultBootstrap();
+    const before = { identity: getBackendIdentity(), backends: manifestBackendDescriptors() };
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({
+      wsUrl: SAME_ORIGIN_WS,
+      backendId: 'refused',
+      replicaGeneration: 'g2',
+      hostWindow: true,
+      harness: true,
+      pageMarker: 'refused-page',
+      backends: [{ id: 'other', wsUrl: SAME_ORIGIN_WS, bootstrapUrl: '/bootstrap.json' }],
+      harnessTiming: { 'agent-row-linger': 0.5 },
+    })));
+    await expect(defaultBootstrap()).rejects.toThrow(/harnessTiming/);
+    expect(isHostWindow(), 'host window').toBe(false);
+    expect(isHarnessSession(), 'harness session').toBe(false);
+    expect(harnessPageMarker(), 'page marker').toBe('');
+    expect(getBackendIdentity(), 'backend identity').toEqual(before.identity);
+    expect(manifestBackendDescriptors(), 'manifest backends').toEqual(before.backends);
+  });
 
   it.each([1, 2 ** 31 - 1])('takes a page timer of %d ms, the ends of what setTimeout holds', async (ms) => {
     vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harness: true, harnessTiming: { 'agent-row-linger': ms } })));
