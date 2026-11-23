@@ -20,12 +20,9 @@ jobs:
     name: Analyze ${{ matrix.language }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # actions: write lets the cache save retire its slot's previous entry
-    # on a push (.github/actions/cache-save).
     permissions:
       contents: read
       security-events: write
-      actions: write
     strategy:
       fail-fast: false
       matrix:

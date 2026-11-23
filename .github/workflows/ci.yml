@@ -38,9 +38,8 @@ concurrency:
 # other job, each true or false. Each job's `if` reads its own key, and the
 # CI result job fails unless every job the plan selected succeeded and
 # every one it excluded was skipped (scripts/ci-suites.test.mjs holds this
-# file to that shape). A job that saves caches needs actions: write, which
-# its save's retire uses on a push (scripts/ci-cache.mjs); a permission
-# cannot depend on the event, and no step uses it on a pull request.
+# file to that shape). Only cache-cleanup, which runs on a push alone,
+# holds actions: write: it is the one job that deletes cache entries.
 jobs:
   toolchain:
     name: Toolchain image and suites
@@ -87,10 +86,6 @@ jobs:
     if: fromJSON(needs.toolchain.outputs.plan || '{}')['go-checks']
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: read
-      actions: write
     container:
       image: ${{ needs.toolchain.outputs.image }}
       credentials:
@@ -123,10 +118,6 @@ jobs:
     if: fromJSON(needs.toolchain.outputs.plan || '{}')['build-macos']
     runs-on: macos-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: read
-      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -155,10 +146,6 @@ jobs:
     if: fromJSON(needs.toolchain.outputs.plan || '{}')['go-lint']
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: read
-      actions: write
     container:
       image: ${{ needs.toolchain.outputs.image }}
       credentials:
@@ -347,23 +334,20 @@ jobs:
       - run: make vitest-${{ matrix.project }}
       - uses: ./.github/actions/cache-save
 
-  # One build of everything a Playwright run reads besides the browsers
-  # (cmd/ao-harness-e2e/run-inputs.mk): the binaries, the frontend/dist
-  # they embed, and the suite's typecheck record, which the shards and the
-  # upgrade lineage check download. A shard compiles no Go, runs no vite and
-  # no tsc. tar keeps the executable bits an artifact would drop. The
-  # artifact lives 7 days: re-running failed jobs reuses it and does not
-  # rerun this job, so a re-run after that must re-run all jobs.
+  # One build of the binaries and the frontend/dist they embed, which the
+  # Playwright shards and the upgrade lineage check download as one unit.
+  # It typechecks the suite before it packs, so a type error publishes no
+  # artifact, and the jobs that run it set AO_E2E_TYPECHECKED=1: a shard
+  # compiles no Go, runs no vite and no tsc. tar keeps the executable bits
+  # an artifact would drop. The artifact lives 7 days. Re-running failed
+  # jobs reuses it and does not rerun this job, so after that, re-run this
+  # job, which re-runs the jobs that need it.
   harness-build:
     name: Harness build
     needs: toolchain
     if: fromJSON(needs.toolchain.outputs.plan || '{}')['harness-build']
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: read
-      actions: write
     container:
       image: ${{ needs.toolchain.outputs.image }}
       credentials:

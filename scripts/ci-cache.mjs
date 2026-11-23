@@ -1,19 +1,16 @@
 // The Actions caches this pipeline owns: the one list of its slots, their
-// keys and paths, and the retirement of a slot's superseded entries.
+// keys and paths, and which entries of a slot are superseded.
 //
 //   node scripts/ci-cache.mjs name [--go-build SLOT] [--go-mod] [--pnpm] [--frontend-dist]
 //       (.github/actions/setup) resolves each named cache's key and path
 //       once and writes them to $GITHUB_ENV, so the restore and the save
 //       pass the same strings: Actions hashes the path into a cache's
 //       version, and a save under another spelling never restores.
-//   node scripts/ci-cache.mjs retire KEY
-//       (.github/actions/cache-save, after saving KEY on a push) deletes
-//       the entries of KEY's slot that were made before this run started,
-//       so a slot holds two entries only between a save and its retire.
-//       Needs GH_TOKEN with actions: write.
 //
-// Every key starts with prefix, which nothing else in the repository uses;
-// no entry outside it is ever deleted but the legacy shapes named below. A key is SLOT-VERSION: VERSION is its last dash-separated
+// scripts/ci-cache-cleanup.mjs, a push's last job, is the one place that
+// deletes entries. Every key starts with prefix, which nothing else in the
+// repository uses; no entry outside it is ever deleted but the legacy
+// shapes named below. A key is SLOT-VERSION: VERSION is its last dash-separated
 // part, the commit for a Go build cache and a git object id otherwise, so
 // a key changes exactly when its content's source does.
 import { execFileSync } from 'node:child_process';
@@ -49,16 +46,39 @@ export const owned = key => key.startsWith(prefix) || legacyShapes.some(shape =>
 
 export const slotOf = key => key.slice(0, key.lastIndexOf('-'));
 
+// knownSlot is whether slot is one caches() can name, so an entry of a slot
+// dropped from the lists above is retired rather than kept forever.
+export const knownSlot = slot => new RegExp(
+  `^${prefix}(go-build-(${goBuildSlots.join('|')})|go-mod|pnpm-store|frontend-dist)-[A-Za-z]+$`).test(slot);
+
 function git(...args) {
   return execFileSync('git', args, { encoding: 'utf8' }).trim();
 }
 
 const digest = parts => createHash('sha256').update(parts.join('\n')).digest('hex');
 
+// bundleEnv are the variables that change what `pnpm run build` writes
+// (frontend/vite.config.ts, frontend/scripts/bundleId.ts, the UI trace and
+// oracle flags). The cached bundle is built without them, so a job that
+// sets one cannot take it.
+export const bundleEnv = ['AO_RELEASE_BUILD', 'AO_SOURCEMAP', 'VITE_AGENT_OVERFLOW_UI_TRACE', 'VITE_AGENT_OVERFLOW_UI_ORACLES'];
+
+// bundleSource names what the frontend build reads: every file of
+// frontend/ but its guide files, which it never opens. The build reads
+// nothing outside frontend/ (vite.config.ts, scripts/bundleId.ts). tree
+// is `git ls-tree -r HEAD -- frontend`: mode, type, object id and path per
+// line, so the digest changes with any path or byte the build reads.
+export function bundleSource(tree) {
+  const read = tree.split('\n').filter(line => line && !/\/(AGENTS|CLAUDE)\.md$/.test(line));
+  if (read.length === 0) throw new Error('git ls-tree listed no files under frontend/');
+  return digest(read);
+}
+
 // caches names the caches a job asked for: each one's key, restore prefix
 // (absent for an exact-only cache) and path. objectId reads a git object
-// id from the checkout; tool runs a toolchain command for a path.
-export function caches({ os, sha, goBuild, goMod, pnpm, frontendDist }, { objectId, tool }) {
+// id from the checkout, tree lists frontend/'s files, env is the job's
+// environment, and tool runs a toolchain command for a path.
+export function caches({ os, sha, goBuild, goMod, pnpm, frontendDist }, { objectId, tree, env, tool }) {
   if (!/^[A-Za-z]+$/.test(os ?? '')) throw new Error(`runner OS is not a name: ${os}`);
   const named = {};
   if (goBuild !== undefined) {
@@ -79,9 +99,12 @@ export function caches({ os, sha, goBuild, goMod, pnpm, frontendDist }, { object
     named.PNPM = { key: `${slot}-${lockfiles}`, restore: `${slot}-`, path: tool('pnpm', '--dir', 'frontend', 'store', 'path') };
   }
   if (frontendDist) {
-    // The tree id names frontend/'s every path and byte; the bundle is
-    // restored only for that exact tree.
-    named.FRONTEND_DIST = { key: `${prefix}frontend-dist-${os}-${objectId('HEAD:frontend')}`, path: 'frontend/dist' };
+    const set = bundleEnv.filter(name => env[name]);
+    if (set.length > 0) throw new Error(`${set.join(', ')} change the bundle, which the frontend-dist cache holds as built without them; build it in this job instead`);
+    // Restored only for exactly the files the build reads. Two builds of
+    // one tree still differ: a build that is not a release stamps its
+    // bundle's version with the build time (bundleId.ts).
+    named.FRONTEND_DIST = { key: `${prefix}frontend-dist-${os}-${bundleSource(tree())}`, path: 'frontend/dist' };
   }
   return named;
 }
@@ -109,9 +132,8 @@ export function repositoryAndRun() {
   return { repository, startedAt };
 }
 
-export function listCaches(repository, key) {
-  const query = key === undefined ? '' : `&key=${encodeURIComponent(key)}`;
-  return gh(['api', '--paginate', `repos/${repository}/actions/caches?per_page=100${query}`, '--jq', '.actions_caches[]'])
+export function listCaches(repository) {
+  return gh(['api', '--paginate', `repos/${repository}/actions/caches?per_page=100`, '--jq', '.actions_caches[]'])
     .split('\n').filter(Boolean).map(line => JSON.parse(line));
 }
 
@@ -141,6 +163,8 @@ function name(flags) {
   }
   const named = caches(options, {
     objectId: spec => git('rev-parse', spec),
+    tree: () => git('ls-tree', '-r', 'HEAD', '--', 'frontend'),
+    env: process.env,
     tool: (command, ...args) => execFileSync(command, args, { encoding: 'utf8' }).trim(),
   });
   const env = process.env.GITHUB_ENV;
@@ -152,19 +176,11 @@ function name(flags) {
   }
 }
 
-function retire(key) {
-  if (!key?.startsWith(prefix)) throw new Error(`retire needs a key this pipeline owns, got ${key}`);
-  const { repository, startedAt } = repositoryAndRun();
-  const slot = slotOf(key);
-  for (const cache of superseded(listCaches(repository, `${slot}-`), slot, startedAt)) deleteCache(repository, cache);
-}
-
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     const [command, ...rest] = process.argv.slice(2);
     if (command === 'name') name(rest);
-    else if (command === 'retire' && rest.length === 1) retire(rest[0]);
-    else throw new Error('usage: ci-cache.mjs name [--go-build SLOT] [--go-mod] [--pnpm] [--frontend-dist] | retire KEY');
+    else throw new Error('usage: ci-cache.mjs name [--go-build SLOT] [--go-mod] [--pnpm] [--frontend-dist]');
   } catch (error) {
     console.error(`::error title=Actions caches::${error.message}`);
     process.exitCode = 1;

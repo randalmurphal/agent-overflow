@@ -4,10 +4,9 @@ description: >-
   it saves the caches setup restored, under the keys and paths setup named
   (scripts/ci-cache.mjs): the Go build cache cut to the entries this job
   used (scripts/ci-go-cache.mjs), and the frontend bundle, the Go module
-  cache and the pnpm store when their exact key was missed. Each save then
-  retires its slot's entries from before this run, which needs the job's
-  token to have actions: write. Any other event saves nothing, so a pull
-  request never writes a cache.
+  cache and the pnpm store when their exact key was missed. It deletes
+  nothing: the push's cache-cleanup job retires superseded entries. Any
+  other event saves nothing, so a pull request never writes a cache.
 
 runs:
   using: composite
@@ -24,26 +23,12 @@ runs:
         path: ${{ env.AO_CACHE_GO_BUILD_PATH }}
         key: ${{ env.AO_CACHE_GO_BUILD_KEY }}
 
-    - name: Retire the Go build cache's previous entry
-      if: github.event_name == 'push' && env.AO_CACHE_GO_BUILD_KEY != ''
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: node scripts/ci-cache.mjs retire "$AO_CACHE_GO_BUILD_KEY"
-
     - name: Save the Go module cache
       if: github.event_name == 'push' && env.AO_CACHE_GO_MOD_KEY != '' && env.AO_CACHE_GO_MOD_HIT != 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ env.AO_CACHE_GO_MOD_PATH }}
         key: ${{ env.AO_CACHE_GO_MOD_KEY }}
-
-    - name: Retire the Go module cache's previous entry
-      if: github.event_name == 'push' && env.AO_CACHE_GO_MOD_KEY != '' && env.AO_CACHE_GO_MOD_HIT != 'true'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: node scripts/ci-cache.mjs retire "$AO_CACHE_GO_MOD_KEY"
 
     - name: Save the pnpm store
       if: github.event_name == 'push' && env.AO_CACHE_PNPM_KEY != '' && env.AO_CACHE_PNPM_HIT != 'true'
@@ -52,23 +37,9 @@ runs:
         path: ${{ env.AO_CACHE_PNPM_PATH }}
         key: ${{ env.AO_CACHE_PNPM_KEY }}
 
-    - name: Retire the pnpm store's previous entry
-      if: github.event_name == 'push' && env.AO_CACHE_PNPM_KEY != '' && env.AO_CACHE_PNPM_HIT != 'true'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: node scripts/ci-cache.mjs retire "$AO_CACHE_PNPM_KEY"
-
     - name: Save the frontend bundle
       if: github.event_name == 'push' && env.AO_CACHE_FRONTEND_DIST_KEY != '' && env.AO_CACHE_FRONTEND_DIST_HIT != 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ env.AO_CACHE_FRONTEND_DIST_PATH }}
         key: ${{ env.AO_CACHE_FRONTEND_DIST_KEY }}
-
-    - name: Retire the frontend bundle's previous entry
-      if: github.event_name == 'push' && env.AO_CACHE_FRONTEND_DIST_KEY != '' && env.AO_CACHE_FRONTEND_DIST_HIT != 'true'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: node scripts/ci-cache.mjs retire "$AO_CACHE_FRONTEND_DIST_KEY"

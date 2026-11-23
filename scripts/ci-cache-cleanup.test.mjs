@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { plan } from './ci-cache-cleanup.mjs';
+import { capBytes, plan } from './ci-cache-cleanup.mjs';
 
 const sha = n => String(n).repeat(40).slice(0, 40);
 let id = 0;
@@ -43,19 +43,29 @@ test('legacy shapes are retired, other caches are counted and never touched', ()
   assert.deepEqual({ managed: result.managedBytes, other: result.otherBytes }, { managed: 1e9, other: 2e9 });
 });
 
+test('an entry of a slot the pipeline no longer names is retired and named', () => {
+  const result = plan([entry(`ao-ci-go-build-test-noremote-rest-Linux-${sha(1)}`, '2026-11-21T10:00:00Z')], start);
+  assert.deepEqual(keys(result.remove), [`ao-ci-go-build-test-noremote-rest-Linux-${sha(1)}`]);
+  assert.match(result.warnings[0], /no longer names/);
+});
+
 test('a managed entry from another ref is deleted and named', () => {
   const result = plan([entry(`ao-ci-go-build-lint-Linux-${sha(1)}`, '2026-11-21T10:00:00Z', 1e9, 'refs/pull/7/merge')], start);
   assert.equal(result.remove.length, 1);
   assert.match(result.warnings[0], /refs\/pull\/7\/merge saved ao-ci-go-build-lint/);
 });
 
-test('the budget counts this pipeline and everything else together', () => {
-  const caches = [
-    entry(`ao-ci-go-build-lint-Linux-${sha(1)}`, '2026-11-21T10:00:00Z', 5e9),
-    entry('setup-go-Linux-x64-abc', '2026-11-21T10:00:00Z', 3.5e9, 'refs/heads/release'),
-  ];
-  assert.equal(plan(caches, start).over, true);
-  assert.equal(plan(caches.slice(0, 1), start).over, false);
+test('two generations of the pipeline caches and the others must fit under the cap', () => {
+  // The 11 entries this repository held on 2026-11-22: one generation of
+  // the pipeline's slots is 9.05 GB of them, held twice while a push saves.
+  const measured = [659.13, 1691.02, 803.98, 777.39, 4206.93, 215.76, 71.05, 12.99, 485.93, 119.57].map(mb => mb * 1e6)
+    .reduce((sum, size) => sum + size, 0);
+  assert.equal(capBytes, 10e9);
+  assert.equal(plan([entry(`ao-ci-go-build-lint-Linux-${sha(1)}`, '2026-11-21T10:00:00Z', measured)], start).over, true);
+  const half = entry(`ao-ci-go-build-lint-Linux-${sha(1)}`, '2026-11-21T10:00:00Z', 4e9);
+  assert.equal(plan([half], start).over, false);
+  // Others count once: 2 x 4 GB + 2.5 GB is over.
+  assert.equal(plan([half, entry('setup-go-Linux-x64-abc', '2026-11-21T10:00:00Z', 2.5e9, 'refs/heads/release')], start).over, true);
 });
 
 test('a run start that is not a time fails', () => {
