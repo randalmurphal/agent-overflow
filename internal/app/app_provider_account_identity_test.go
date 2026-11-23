@@ -115,7 +115,7 @@ func TestCodexReconciliationTracksReportedWorkspaceName(t *testing.T) {
 		if err := os.WriteFile(activePath, []byte(credential), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := app.reconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+		if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex)); err != nil {
 			t.Fatalf("step %d: reconcileExternalProviderAccount: %v", i, err)
 		}
 		listed, err := app.ListProviderAccounts()
@@ -209,7 +209,7 @@ func TestReconciliationAbsorbsARotationDuringTheIdentityProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := app.reconcileExternalProviderAccount(string(provider.Claude)); err != nil {
+	if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Claude)); err != nil {
 		t.Fatalf("reconcileExternalProviderAccount: %v", err)
 	}
 
@@ -258,7 +258,7 @@ func TestReconciliationRefusesToAdoptABlankedClaudeCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := app.reconcileExternalProviderAccount(string(provider.Claude)); err != nil {
+	if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Claude)); err != nil {
 		t.Fatalf("reconcileExternalProviderAccount: %v", err)
 	}
 
@@ -331,7 +331,7 @@ func TestExternalClaudeLoginReconcilesMetadataAndLiveSessions(t *testing.T) {
 		}
 	}
 
-	if err := app.reconcileExternalProviderAccount(string(provider.Claude)); err != nil {
+	if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Claude)); err != nil {
 		t.Fatalf("reconcileExternalProviderAccount: %v", err)
 	}
 	active, ok := app.providerAccounts.Active(string(provider.Claude), time.Now())
@@ -385,7 +385,7 @@ func TestExternalCodexLoginLeavesRunningSessionOnCachedAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := app.reconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+	if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex)); err != nil {
 		t.Fatalf("reconcileExternalProviderAccount: %v", err)
 	}
 	active, ok := app.providerAccounts.Active(string(provider.Codex), time.Now())
@@ -447,7 +447,7 @@ func TestExternalCodexTokenRotationUpdatesSavedAccountCredential(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.reconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+	if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex)); err != nil {
 		t.Fatalf("reconcileExternalProviderAccount: %v", err)
 	}
 
@@ -509,7 +509,7 @@ func TestExternalCodexReconciliationUsesCanonicalCredentialAsTruth(t *testing.T)
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.reconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+	if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex)); err != nil {
 		t.Fatalf("reconcileExternalProviderAccount: %v", err)
 	}
 
@@ -681,7 +681,7 @@ func TestUnchangedCredentialFingerprintSkipsIdentityProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := app.reconcileExternalProviderAccount(string(provider.Claude)); err != nil {
+	if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Claude)); err != nil {
 		t.Fatalf("unchanged credential unexpectedly probed: %v", err)
 	}
 }
@@ -813,7 +813,7 @@ func TestExternalCodexLoginOnDifferentWorkspaceCreatesSeparateAccount(t *testing
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.reconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+	if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex)); err != nil {
 		t.Fatalf("reconcileExternalProviderAccount: %v", err)
 	}
 
@@ -863,7 +863,7 @@ func TestExternalCodexSameWorkspaceRelandsOnSavedAccount(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.reconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+	if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex)); err != nil {
 		t.Fatalf("reconcileExternalProviderAccount: %v", err)
 	}
 
@@ -922,7 +922,7 @@ func TestReconcileAmbiguousIdentityKeepsTheActiveAccountAndItsSlot(t *testing.T)
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.reconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+	if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex)); err != nil {
 		t.Fatalf("reconcileExternalProviderAccount: %v", err)
 	}
 

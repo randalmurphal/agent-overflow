@@ -38,7 +38,7 @@ type EphemeralOwner struct {
 	// Slot is the credential the owner's slot holds as the home is seeded:
 	// the seed itself for an inactive account, and possibly an earlier one
 	// for the selected account, whose seed is the canonical credential.
-	Slot []byte
+	Slot CredentialSnapshot
 	// Selected reports that this store selected the owner, so a rotation
 	// may replace the canonical credential (only the selecting store writes
 	// it).
@@ -92,8 +92,8 @@ func (c *Credentials) newEphemeralHome(
 	from := ephemeralProvenance{AccountID: owner.AccountID}
 	if credential != nil {
 		from.SeedToken, _ = c.tokenFingerprint(providerName, credential)
-		if !c.credentialSignedOut(providerName, owner.Slot) {
-			from.SlotToken, _ = c.tokenFingerprint(providerName, owner.Slot)
+		if !c.credentialSignedOut(providerName, owner.Slot.Bytes()) {
+			from.SlotToken, _ = c.tokenFingerprint(providerName, owner.Slot.Bytes())
 		}
 	}
 	home := &EphemeralHome{
@@ -260,9 +260,10 @@ func (h *EphemeralHome) Settle() (RotationLanding, error) {
 }
 
 // Cleanup removes the home once its rotation is settled. A home whose
-// rotation nothing took (RotationLanding.Kept), or that could not be
-// settled, is kept with its entry for the boot sweep: its lease is released
-// so the sweep can claim it, and the error says so.
+// rotation nothing took (RotationLanding.Kept), that could not be settled,
+// or whose settle could not inspect every saved slot
+// (RotationLanding.Unchecked) is kept with its entry for the boot sweep:
+// its lease is released so the sweep can claim it, and the error says so.
 func (h *EphemeralHome) Cleanup() error {
 	if h == nil || h.cleaned {
 		return nil
@@ -270,7 +271,10 @@ func (h *EphemeralHome) Cleanup() error {
 	if h.lease != nil {
 		landing, err := h.Settle()
 		if err != nil || landing.Kept {
-			return h.keepForSweep(err)
+			return h.keepForSweep(errors.Join(ErrRotationKept, err, landing.Unchecked))
+		}
+		if landing.Unchecked != nil {
+			return h.keepForSweep(fmt.Errorf("provideraccounts: the temporary %s home's rotation was saved, and the home is kept for the next start because a saved slot could not be checked for the token it spent: %w", h.providerName, landing.Unchecked))
 		}
 	}
 	var cleanupErrs []error
@@ -303,9 +307,9 @@ var ErrRotationKept = errors.New("provideraccounts: a refreshed login could not 
 
 // keepForSweep leaves the home and its entry, marked kept so the sweep
 // reports it no second time, and releases the lease so the sweep may claim
-// it.
+// it. cause says why it is kept.
 func (h *EphemeralHome) keepForSweep(cause error) error {
-	errs := []error{ErrRotationKept, cause}
+	errs := []error{cause}
 	dir, err := h.credentials.ephemeralRegistryDir(h.providerName)
 	if err == nil {
 		entryPath := filepath.Join(dir, ephemeralRegistryFileName(h.Path))

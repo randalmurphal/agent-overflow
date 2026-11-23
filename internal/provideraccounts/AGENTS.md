@@ -98,7 +98,7 @@ can take.
 Each registry entry records the fingerprint of the refresh token its home
 was seeded with (`TokenFingerprint`, provider-owned: the provider rewrites
 its credential file for other reasons and keeps the token), and of the one
-the owner's slot held then (`slotToken`). `settleRotation` (`rotation.go`)
+the owner's slot held then (`slotToken`), selected or not. `settleRotation` (`rotation.go`)
 is the one writer of a Codex rotation, for a live usage probe as it
 finishes and for the boot sweep after a crash. It places a rotation by
 descent, never by whose login anything says it is: every store that holds
@@ -114,7 +114,10 @@ A rotation nothing took is deleted only on evidence that nothing needs it:
 a store already holds it, or the owner's slot holds neither recorded token.
 Otherwise the home and its entry are kept (`ErrRotationKept`), reported
 once, and settled again at the next boot. A missing or unreadable slot is
-no evidence. Entries v0.0.19 wrote carry no `slotToken`, so one whose
+no evidence. The canonical credential and the owner's slot are settled
+first; another slot that cannot be inspected stops neither, and keeps the
+home and its entry, reported at every settle until it can be judged,
+whether or not a store took the rotation (`RotationLanding.Unchecked`). Entries v0.0.19 wrote carry no `slotToken`, so one whose
 rotation cannot be placed stays until its account is removed
 (`ForgetAccountEphemerals`, called by account removal).
 

@@ -59,13 +59,16 @@ alive. Rate-limit persistence and emission enter through narrow
   and the saved identities: another credential, a changed identity or a
   removal forgets it. Until then no reconciliation identifies those bytes
   again, every reading and spend of the selected account answers with its
-  sentence, and a switch, removal or sign-in preserves nothing from them.
+  sentence, a send is refused with it before anything is dispatched
+  (`ReconcileBeforeSend`), and a switch, removal or sign-in goes through and
+  preserves nothing from them.
 - One resolver (`resolveObservedLoginLocked`) attributes an unrecorded
   canonical login, for reconciliation and for the selected Claude refresh.
-  A login that names no account goes only to a selected account saved
-  without an email, and only while nothing the credential carries
-  contradicts it. An email several saved accounts share, with no
-  organization named, is nobody's for certain.
+  An account saved without an email takes an observed login, named or not,
+  only while nothing the login carries contradicts it
+  (`blankEmailAccountTakes`, also session attribution's rule). An email
+  several saved accounts share, with no organization named, is nobody's for
+  certain.
 - A usage reading or spend of the selected account whose canonical
   credential is not the recorded one reconciles first, under the lock it
   already holds, and runs on exactly the credential reconciliation
@@ -74,8 +77,12 @@ alive. Rate-limit persistence and emission enter through narrow
   write and record only for the recorded credential
   (`commitProviderUsageRefreshLocked`). A Codex rotation is placed only by
   the credential store's settle, live and at boot; the commit learns where
-  it went. An inactive Codex slot whose credential names another workspace
-  is refused before Codex starts.
+  it went.
+- A saved slot whose credential names another workspace than its account
+  (`savedLoginOfAnotherWorkspace`) is never activated: an inactive reading
+  and a switch refuse it before anything is written, auto-switch reads that
+  refusal as an account that needs a sign-in (`IsNeedsLogin`), and removal
+  passes over it when it picks the replacement.
 - The selected Claude refresh starts the CLI only while the canonical store
   still holds the credential the reading was admitted on. A sign-in landing
   between that check and the CLI's own refresh cannot be excluded: the

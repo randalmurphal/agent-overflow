@@ -26,36 +26,57 @@ import (
 //
 // ctx bounds the admission, the wait for the provider's reconcile lock and
 // the start of the identity probe; a probe that has started runs to its end.
-func (m *Manager) reconcileExternalProviderAccount(ctx context.Context, providerName string) error {
+func (m *Manager) reconcileExternalProviderAccount(ctx context.Context, providerName string) (canonicalState, error) {
 	if m.store == nil || m.credentials == nil {
-		return nil
+		return canonicalState{}, nil
 	}
 	if ValidateProvider(providerName) != nil {
-		return nil
+		return canonicalState{}, nil
 	}
 	endWork, err := m.beginWork(ctx)
 	if err != nil {
-		return err
+		return canonicalState{}, err
 	}
 	defer endWork()
 	reconcileMu := m.reconcileMutex(providerName)
 	if err := reconcileMu.LockContext(ctx); err != nil {
-		return fmt.Errorf("wait for the %s account lock to check for an outside login: %w", providerName, err)
+		return canonicalState{}, fmt.Errorf("wait for the %s account lock to check for an outside login: %w", providerName, err)
 	}
 	defer reconcileMu.Unlock()
-	return m.reconcileExternalProviderAccountWithMutexHeld(ctx, providerName)
+	return m.reconcileSelectedLoginWithMutexHeld(ctx, providerName)
 }
 
 // ReconcileExternalProviderAccount adopts a provider-native login completed
 // outside Agent Overflow under the provider-specific reconcile transaction.
+// A login it cannot attribute is not an error here (see
+// reconcileExternalProviderAccountWithMutexHeld).
 func (m *Manager) ReconcileExternalProviderAccount(providerName string) error {
-	return m.reconcileExternalProviderAccount(m.context(), providerName)
+	_, err := m.reconcileExternalProviderAccount(m.context(), providerName)
+	return err
 }
 
 // ReconcileExternalProviderAccountContext is ReconcileExternalProviderAccount
 // for a caller with its own bound, such as the usage poll.
 func (m *Manager) ReconcileExternalProviderAccountContext(ctx context.Context, providerName string) error {
-	return m.reconcileExternalProviderAccount(ctx, providerName)
+	_, err := m.reconcileExternalProviderAccount(ctx, providerName)
+	return err
+}
+
+// ReconcileBeforeSend is ReconcileExternalProviderAccount for a send: a
+// canonical login reconciliation could not attribute to one saved account
+// refuses the send with that verdict's sentence, since the provider would
+// run the turn on a login nobody can name. Any other refusal of the
+// canonical login (expired, signed out) is the provider's to answer, as it
+// was.
+func (m *Manager) ReconcileBeforeSend(providerName string) error {
+	state, err := m.reconcileExternalProviderAccount(m.context(), providerName)
+	if err != nil {
+		return err
+	}
+	if errors.As(state.refusal, new(unresolvedLoginError)) {
+		return state.refusal
+	}
+	return nil
 }
 
 // reconcileExternalProviderAccountWithMutexHeld is the reconciliation body for
@@ -63,26 +84,37 @@ func (m *Manager) ReconcileExternalProviderAccountContext(ctx context.Context, p
 // refreshes ordered through their canonical credential write. The caller holds
 // reconcileMutex(providerName). ctx bounds the start of the identity probe.
 // A login it cannot attribute is not an error here: the selection stays, and
-// the verdict is kept for the readings that refuse under it.
+// the verdict is kept for the readings that refuse under it, so a switch,
+// removal or sign-in that replaces it still goes through.
 func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 	ctx context.Context,
 	providerName string,
 ) error {
+	_, err := m.reconcileSelectedLoginWithMutexHeld(ctx, providerName)
+	return err
+}
+
+// reconcileSelectedLoginWithMutexHeld reconciles the canonical credential as
+// it stands and returns what reconciliation decided about it; an absent
+// credential decides nothing. The caller holds reconcileMutex(providerName).
+func (m *Manager) reconcileSelectedLoginWithMutexHeld(
+	ctx context.Context,
+	providerName string,
+) (canonicalState, error) {
 	// A rotation another store's sweep recovered into the selected slot
 	// goes back into the canonical store before anything reads it as the
 	// selected login.
 	if err := m.promoteActiveSlot(providerName); err != nil {
-		return err
+		return canonicalState{}, err
 	}
 	before, present, err := m.readCanonicalCredentialIfPresent(providerName)
 	if err != nil {
-		return err
+		return canonicalState{}, err
 	}
 	if !present {
-		return nil
+		return canonicalState{}, nil
 	}
-	_, err = m.reconcileCanonicalWithMutexHeld(ctx, providerName, before)
-	return err
+	return m.reconcileCanonicalWithMutexHeld(ctx, providerName, before)
 }
 
 // canonicalState is what reconciliation decided about the canonical
@@ -263,8 +295,7 @@ func (m *Manager) resolveObservedLoginLocked(
 		// identity either, and only while nothing the login carries (a Codex
 		// workspace) contradicts it; any other selected account is somebody,
 		// and nothing proves this login is theirs.
-		if !hasActive || strings.TrimSpace(active.Email) != "" ||
-			provideraccounts.AccountIdentity(active).Contradicts(provideraccounts.IdentityFromInfo(info)) {
+		if !hasActive || !blankEmailAccountTakes(active, info) {
 			selected := "the selected account"
 			if hasActive {
 				selected = describeProviderAccount(active)
@@ -292,13 +323,22 @@ func (m *Manager) resolveObservedLoginLocked(
 			findErr,
 		)
 	}
-	if !found && hasActive && strings.TrimSpace(active.Email) == "" {
+	if !found && hasActive && blankEmailAccountTakes(active, info) {
 		// Enrich an account adopted before identity was available rather
 		// than manufacturing a duplicate the first time the provider
 		// returns email.
 		return active, true, nil
 	}
 	return target, found, nil
+}
+
+// blankEmailAccountTakes reports that an account saved without an email may
+// be named by an observed login: nothing the login carries contradicts what
+// is known of the account. It is the one rule for such an account, whether
+// the login names an email or not.
+func blankEmailAccountTakes(account provideraccounts.Account, info provider.AccountInfo) bool {
+	return strings.TrimSpace(account.Email) == "" &&
+		!provideraccounts.AccountIdentity(account).Contradicts(provideraccounts.IdentityFromInfo(info))
 }
 
 // reconcileObservedAccountLocked maps an observed provider identity onto the
@@ -523,7 +563,7 @@ func (m *Manager) attributeObservedIdentity(
 	if found {
 		return resolved, nil
 	}
-	if hasExpected && strings.TrimSpace(expected.Email) == "" {
+	if hasExpected && blankEmailAccountTakes(expected, info) {
 		return expected, nil
 	}
 	return provideraccounts.Account{}, fmt.Errorf(

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 )
 
 // A rotation is a temporary home's credential that holds another refresh
@@ -29,7 +28,10 @@ import (
 //     credential the app recorded for it.
 //
 // Each slot write first records the seed's token as consumed (consumed.go).
-// A rotation nothing took is deleted only on evidence that nothing needs it
+// The canonical credential and the owner's slot are settled first; another
+// slot that cannot be inspected stops neither, and keeps the home for the
+// next boot, since it may still hold the seed's token. A rotation nothing
+// took is deleted only on evidence that nothing needs it
 // (rotationStillNeeded); otherwise the home and its entry are kept.
 
 // ephemeralProvenance is what a temporary home started from.
@@ -54,6 +56,11 @@ type RotationLanding struct {
 	// Kept reports that nothing took the rotation and nothing proves it
 	// unneeded: the home stays, with its entry, for the next boot's sweep.
 	Kept bool
+	// Unchecked names the saved slots other than the owner's that could not
+	// be inspected; each may still hold the seed's token. While it is set
+	// the home stays, with its entry, for the next boot's sweep, whether or
+	// not a store took the rotation.
+	Unchecked error
 }
 
 // placed reports that a durable store took the rotation.
@@ -61,7 +68,8 @@ func (l RotationLanding) placed() bool { return l.Canonical || len(l.Slots) > 0 
 
 // settleRotation places a temporary home's credential, orphan, by the rules
 // above. selectedHere reports that this store selected the owner. An error
-// leaves the home to be kept: the state could not be judged.
+// (the canonical credential or the owner's slot could not be judged) leaves
+// the home to be kept.
 func (c *Credentials) settleRotation(providerName string, from ephemeralProvenance, orphan []byte, selectedHere bool) (RotationLanding, error) {
 	orphanToken, hasToken := c.tokenFingerprint(providerName, orphan)
 	if from.AccountID == "" || from.SeedToken == "" || !hasToken || orphanToken == from.SeedToken ||
@@ -79,28 +87,28 @@ func (c *Credentials) settleRotation(providerName string, from ephemeralProvenan
 		}
 		landing.Canonical = replaced
 	}
-	slots, err := c.savedSlotIDs(providerName)
+	// The owner's slot is inspected first, whatever the listing shows: one
+	// that cannot be read keeps the rotation.
+	took, err := c.adoptIntoSlot(providerName, from.AccountID, from.SeedToken, from.SlotToken, orphan)
 	if err != nil {
 		return landing, err
 	}
-	// The owner's slot is always inspected, whatever the listing shows: one
-	// that cannot be read keeps the rotation.
-	if !slices.Contains(slots, from.AccountID) {
-		slots = append(slots, from.AccountID)
+	if took {
+		landing.Slots = append(landing.Slots, from.AccountID)
 	}
+	slots, err := c.savedSlotIDs(providerName)
+	unchecked := []error{err}
 	for _, accountID := range slots {
-		slotToken := ""
 		if accountID == from.AccountID {
-			slotToken = from.SlotToken
+			continue
 		}
-		took, err := c.adoptIntoSlot(providerName, accountID, from.SeedToken, slotToken, orphan)
-		if err != nil {
-			return landing, err
-		}
+		took, err := c.adoptIntoSlot(providerName, accountID, from.SeedToken, "", orphan)
+		unchecked = append(unchecked, err)
 		if took {
 			landing.Slots = append(landing.Slots, accountID)
 		}
 	}
+	landing.Unchecked = errors.Join(unchecked...)
 	if landing.placed() {
 		return landing, nil
 	}
@@ -108,7 +116,7 @@ func (c *Credentials) settleRotation(providerName string, from ephemeralProvenan
 	if err != nil {
 		return landing, err
 	}
-	landing.Kept = needed
+	landing.Kept = needed || landing.Unchecked != nil
 	return landing, nil
 }
 
@@ -195,8 +203,7 @@ func (c *Credentials) inspectSlotLocked(providerName, accountID, accountDir stri
 //
 // The canonical credential still holding the seed's token, when another
 // store selected the owner, is a store that will restore it: kept. A slot
-// that is missing (the owner removed, or another data root pruned it) or
-// cannot be read is no evidence either: kept.
+// that is missing or cannot be read is no evidence either: kept.
 func (c *Credentials) rotationStillNeeded(providerName string, from ephemeralProvenance, orphanToken string, selectedHere bool) (bool, error) {
 	canonical, err := c.ReadCredentialSnapshot(providerName, "", true)
 	switch {

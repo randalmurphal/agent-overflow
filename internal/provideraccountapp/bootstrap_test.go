@@ -70,7 +70,7 @@ func TestCrashedCodexProbeHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	home, err := credentials.NewEphemeralHomeWithCredential(string(provider.Codex), seed.Bytes(), provideraccounts.EphemeralOwner{AccountID: "acct-1", Slot: seed.Bytes()})
+	home, err := credentials.NewEphemeralHomeWithCredential(string(provider.Codex), seed.Bytes(), provideraccounts.EphemeralOwner{AccountID: "acct-1", Slot: seed})
 	if err != nil {
 		t.Fatal(err)
 	}

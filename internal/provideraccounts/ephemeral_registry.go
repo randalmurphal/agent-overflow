@@ -197,7 +197,7 @@ func sweepableEphemeralHome(providerName, configHome string) bool {
 
 // SweepEphemeralCredentials settles credentials left behind by ephemeral
 // homes that never reached their cleanup: a crash or kill mid-probe or
-// mid-login. Run at boot, after the orphan-slot prune. selected maps each
+// mid-login. Run at boot. selected maps each
 // provider to this store's selected account ID.
 //
 // Per entry whose owner is gone: read whatever credential the home still
@@ -222,8 +222,8 @@ func (c *Credentials) SweepEphemeralCredentials(now time.Time, selected map[stri
 }
 
 // beforeEphemeralClaimForTest, when a test sets it, runs between a sweep's
-// read of an entry and its claim of the entry's lease.
-var beforeEphemeralClaimForTest func()
+// read of the entry at entryPath and its claim of the entry's lease.
+var beforeEphemeralClaimForTest func(entryPath string)
 
 func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time, selectedAccountID string) ([]EphemeralSweepResult, error) {
 	dir, err := c.ephemeralRegistryDir(providerName)
@@ -272,7 +272,7 @@ func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time, se
 		}
 		leasePath := filepath.Join(dir, ephemeralLeaseFileName(entry.ConfigHome))
 		if beforeEphemeralClaimForTest != nil {
-			beforeEphemeralClaimForTest()
+			beforeEphemeralClaimForTest(entryPath)
 		}
 		lease, claim, claimErr := claimEphemeralEntry(entryPath, leasePath, entry, now)
 		if claimErr != nil {
@@ -289,7 +289,14 @@ func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time, se
 		}
 		// Decided from the entry as it stands under the lease: another sweep
 		// may have settled or marked it between the read above and the claim.
-		if found, err := atomicfile.ReadJSON(entryPath, &entry); err != nil || !found {
+		// The entry must still name the home whose lease was taken; one
+		// rewritten to another path in between is left alone and reported.
+		var leased ephemeralRegistryEntry
+		found, err := atomicfile.ReadJSON(entryPath, &leased)
+		if err == nil && found && leased.ConfigHome != entry.ConfigHome {
+			err = fmt.Errorf("it names %s, not the home whose lease the sweep took (%s)", leased.ConfigHome, entry.ConfigHome)
+		}
+		if err != nil || !found {
 			if err != nil {
 				sweepErrs = append(sweepErrs, fmt.Errorf("provideraccounts: reread ephemeral %s registry entry %s: %w", providerName, dirEntry.Name(), err))
 			}
@@ -300,6 +307,7 @@ func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time, se
 			}
 			continue
 		}
+		entry = leased
 
 		result, entryErr := c.sweepOneEphemeralHome(providerName, entry, selectedAccountID)
 		if entryErr != nil || result.Action == "kept" {
@@ -429,6 +437,13 @@ func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeral
 		return result, err
 	}
 	result.Canonical = landing.Canonical
+	if landing.Unchecked != nil {
+		// A slot that could not be inspected may still hold the seed's
+		// token: the home stays, and is reported at every boot until each
+		// slot can be judged.
+		result.Action = "kept"
+		return result, fmt.Errorf("provideraccounts: keep crash-orphaned ephemeral %s home %s: a saved slot could not be checked for the token it spent: %w", providerName, entry.ConfigHome, landing.Unchecked)
+	}
 	switch {
 	case landing.Kept:
 		result.Action = "kept"
@@ -444,8 +459,9 @@ func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeral
 // ForgetAccountEphemerals deletes the entries, homes and credentials of a
 // removed account's temporary homes whose owners are gone: a kept rotation
 // ends with its account. A home whose owner still runs is left to it. The
-// caller removed the account; account removal calls this, the orphan-slot
-// prune does not (a slot it prunes may be another data root's account).
+// caller removed the account; only account removal calls this. A slot
+// directory alone is no reason to: it says only that some data root saved
+// it, or an earlier release left it.
 func (c *Credentials) ForgetAccountEphemerals(providerName, accountID string, now time.Time) error {
 	dir, err := c.ephemeralRegistryDir(providerName)
 	if err != nil {

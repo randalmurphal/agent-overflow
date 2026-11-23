@@ -368,7 +368,7 @@ func ownerAtSeeding(t *testing.T, c *Credentials, providerName, accountID string
 	if err != nil && !IsCredentialMissing(err) {
 		t.Fatal(err)
 	}
-	owner.Slot = slot
+	owner.Slot = NewCredentialSnapshot(slot)
 	return owner
 }
 
@@ -1313,7 +1313,7 @@ func TestOverlappingSweepsReportAKeptEntryOnce(t *testing.T) {
 	crashRotatedHomeOf(t, credentials, "codex", []byte("pos:10"), []byte("pos:20"), EphemeralOwner{AccountID: "acct-1"})
 
 	var inner []EphemeralSweepResult
-	beforeEphemeralClaimForTest = func() {
+	beforeEphemeralClaimForTest = func(string) {
 		beforeEphemeralClaimForTest = nil
 		var err error
 		if inner, err = credentials.SweepEphemeralCredentials(time.Now(), nil); err != nil {
@@ -1350,5 +1350,89 @@ func TestARotationLandsInEverySlotThatHeldItsToken(t *testing.T) {
 		if slot, err := credentials.ReadCredential("codex", accountID, false); err != nil || string(slot) != want {
 			t.Fatalf("slot %s = %q, %v; want %q", accountID, slot, err, want)
 		}
+	}
+}
+
+// The sweep decides from the entry it re-reads under the lease, and only
+// while that entry still names the home whose lease it took: an entry
+// rewritten to another home between the first read and the claim removes
+// nothing and is reported.
+func TestASweepActsOnlyOnTheHomeWhoseLeaseItTook(t *testing.T) {
+	credentials := chainFixture(t)
+	writeCodexSlot(t, credentials, "acct-1", "pos:10")
+	crashedPath := crashEphemeralHome(t, credentials, "codex", []byte("pos:10"), "acct-1")
+	live, err := credentials.NewEphemeralHomeWithCredential("codex", []byte("pos:30"), EphemeralOwner{AccountID: "acct-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = live.Cleanup() })
+	dir, err := credentials.ephemeralRegistryDir("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entryPath := filepath.Join(dir, ephemeralRegistryFileName(crashedPath))
+	beforeEphemeralClaimForTest = func(claimed string) {
+		if claimed != entryPath {
+			return
+		}
+		beforeEphemeralClaimForTest = nil
+		entry := readRegistryEntry(t, dir, crashedPath)
+		entry.ConfigHome = live.Path
+		if err := atomicfile.WriteJSON(entryPath, entry); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { beforeEphemeralClaimForTest = nil })
+
+	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
+	if err == nil {
+		t.Fatalf("sweep = %+v; want the rewritten entry reported", results)
+	}
+	if _, statErr := os.Stat(live.Path); statErr != nil {
+		t.Fatalf("the sweep removed a home whose lease it never took: %v", statErr)
+	}
+	if _, statErr := os.Stat(crashedPath); statErr != nil {
+		t.Fatalf("the sweep removed the crashed home on a rewritten entry: %v", statErr)
+	}
+}
+
+// Another saved slot that cannot be read neither stops a rotation from
+// reaching its owner's slot nor lets it be deleted: the rotation lands, the
+// slot is reported, and the entry is kept so the next sweep checks it again.
+func TestAnUnreadableOtherSlotDoesNotStopTheSweep(t *testing.T) {
+	credentials := chainFixture(t)
+	writeCodexSlot(t, credentials, "acct-1", "pos:10")
+	writeCodexSlot(t, credentials, "acct-0", "pos:10")
+	zeroPath, err := credentials.AccountCredentialPath("codex", "acct-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(t.TempDir(), "elsewhere.json")
+	if err := os.Rename(zeroPath, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, zeroPath); err != nil {
+		t.Fatal(err)
+	}
+	homePath := crashRotatedHome(t, credentials, []byte("pos:10"), []byte("pos:20"), "acct-1")
+
+	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
+	if err == nil || !strings.Contains(err.Error(), "acct-0") {
+		t.Fatalf("sweep = %+v, %v; want the unreadable slot reported", results, err)
+	}
+	if slot, err := credentials.ReadCredential("codex", "acct-1", false); err != nil || string(slot) != "pos:20" {
+		t.Fatalf("owner's slot = %q, %v; want the rotation", slot, err)
+	}
+	dir, err := credentials.ephemeralRegistryDir("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The entry and the home stay, unmarked, so every sweep reports the
+	// slot again until it can be judged.
+	if entry := readRegistryEntry(t, dir, homePath); entry.ConfigHome != homePath || entry.Kept {
+		t.Fatalf("entry = %+v, want it left for the next sweep", entry)
+	}
+	if _, err := os.Stat(homePath); err != nil {
+		t.Fatalf("home = %v, want it kept for the next sweep", err)
 	}
 }

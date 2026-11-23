@@ -62,6 +62,10 @@ func (e unresolvedLoginError) PublicDetails() (code, message string) {
 // a sign-in from the app, or a switch, installs a saved login over it.
 const replaceUnresolvedLogin = "Sign in from the app, or switch to another saved account, to replace it."
 
+// The unresolved sentences say only what the bytes show: the CLI's own
+// refresh of the selected account's login and a sign-in outside the app look
+// the same, so neither sentence says which one it was.
+
 // errAmbiguousLogin is the unresolved verdict for a login whose email more
 // than one saved account uses, naming no organization to tell them apart.
 func errAmbiguousLogin(providerName string, info provider.AccountInfo) error {
@@ -70,7 +74,7 @@ func errAmbiguousLogin(providerName string, info provider.AccountInfo) error {
 		unit = "workspace"
 	}
 	return unresolvedLoginError{sentence: fmt.Sprintf(
-		"%s is signed in outside the app as %s, which more than one saved account uses, and the login names no %s, so the app can't tell which account it is. %s",
+		"The %s login in use is %s, an email more than one saved account uses, and it names no %s, so the app can't tell which account it is. %s",
 		providerLabel(providerName), strings.TrimSpace(info.Email), unit, replaceUnresolvedLogin,
 	)}
 }
@@ -83,7 +87,7 @@ func errIdentitylessLogin(providerName string, selected string) error {
 		example = ", such as an API key"
 	}
 	return unresolvedLoginError{sentence: fmt.Sprintf(
-		"%s is signed in outside the app with a login that names no account%s, so the app doesn't read usage for %s while it is active. %s",
+		"The %s login in use names no account%s, so the app can't confirm it is %s's and doesn't read its usage. %s",
 		providerLabel(providerName), example, selected, replaceUnresolvedLogin,
 	)}
 }

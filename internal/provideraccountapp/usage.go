@@ -150,7 +150,7 @@ func (m *Manager) usageTransaction(
 	// Refused before Codex starts, so a login saved under the wrong account
 	// is never rotated or read for it.
 	if !isSelected && providerName == string(provider.Codex) {
-		if err := savedLoginContradiction(providerName, account, credential.Bytes()); err != nil {
+		if err := savedLoginOfAnotherWorkspace(providerName, account, credential.Bytes()); err != nil {
 			return err
 		}
 	}
@@ -200,7 +200,7 @@ func (m *Manager) usageTransaction(
 		ephemeral, err = m.credentials.NewEphemeralHomeWithCredential(
 			providerName,
 			credential.Bytes(),
-			provideraccounts.EphemeralOwner{AccountID: accountID, Slot: slotAtStart.Bytes(), Selected: isSelected},
+			provideraccounts.EphemeralOwner{AccountID: accountID, Slot: slotAtStart, Selected: isSelected},
 		)
 		if err != nil {
 			return err
@@ -310,6 +310,11 @@ func (m *Manager) usageTransaction(
 		landing, settleErr := ephemeral.Settle()
 		if settleErr != nil || landing.Kept {
 			return errors.Join(probeErr, rotationKeptError(account), settleErr)
+		}
+		if landing.Unchecked != nil {
+			// The rotation reached its stores and the reading goes on; the
+			// home stays for the next start, and the answer says why.
+			defer func() { retErr = errors.Join(retErr, rotationUncheckedError(account)) }()
 		}
 		refresh.landing = landing
 		if landing.Rotated {
@@ -425,7 +430,10 @@ func (m *Manager) readUsageStart(providerName, accountID string, canonical *prov
 			}
 		}
 	} else {
+		// An inactive account's probe runs on its slot, so the slot as it
+		// stood is the seed itself.
 		start.credential, err = m.credentials.ReadCredentialSnapshot(providerName, accountID, false)
+		start.slotAtStart = start.credential
 	}
 	if err != nil {
 		return usageStart{}, fmt.Errorf("read saved %s credentials for usage refresh: %w", providerName, err)
@@ -441,8 +449,8 @@ type providerUsageRefresh struct {
 	isSelected   bool
 	// probed is the credential the probe started from.
 	probed provideraccounts.CredentialSnapshot
-	// slotAtStart is the selected account's slot as it stood before the
-	// probe, empty when absent; the commit replaces only this.
+	// slotAtStart is the account's slot as it stood before the probe, empty
+	// when absent; a selected commit replaces only this.
 	slotAtStart provideraccounts.CredentialSnapshot
 	// refreshed is the credential the probe ended on, empty when nothing
 	// rotated. Only two probes can fill it: the selected Claude account's
@@ -652,19 +660,6 @@ func (m *Manager) observationContradictsAccountLocked(refresh providerUsageRefre
 	return ok && provideraccounts.AccountIdentity(saved).Contradicts(provideraccounts.IdentityFromInfo(refresh.observed))
 }
 
-// savedLoginContradiction refuses a reading of an inactive account whose saved
-// credential carries an identity (a Codex workspace) that is provably not the
-// account's: the old defect could save one login under another account.
-func savedLoginContradiction(providerName string, account provideraccounts.Account, credential []byte) error {
-	carried := provideraccounts.IdentityFromInfo(EnrichCodexIdentity(providerName, provider.AccountInfo{}, credential))
-	if !provideraccounts.AccountIdentity(account).Contradicts(carried) {
-		return nil
-	}
-	name := describeProviderAccount(account)
-	return errorsx.Public("account_login_mismatch",
-		fmt.Sprintf("The login saved for %s belongs to another workspace. Sign in to %s again.", name, name), nil)
-}
-
 // savedLoginIsAnotherLocked is the answer to a reading whose provider named
 // another login than the refreshed account's: the credential saved or
 // recorded for the account is somebody else's. Caller holds mu.
@@ -683,6 +678,15 @@ func (m *Manager) savedLoginIsAnotherLocked(refresh providerUsageRefresh, observ
 func rotationKeptError(account provideraccounts.Account) error {
 	return errorsx.Public("account_login_kept", fmt.Sprintf(
 		"Codex refreshed the login for %s and the app could not save it, so it is kept for the app's next start.",
+		describeProviderAccount(account)), nil)
+}
+
+// rotationUncheckedError is the answer to a reading whose rotation was
+// saved while another saved slot could not be inspected for the token the
+// rotation replaced.
+func rotationUncheckedError(account provideraccounts.Account) error {
+	return errorsx.Public("account_login_unchecked", fmt.Sprintf(
+		"Codex refreshed the login for %s and the app saved it, but could not read another saved Codex login to see whether it holds the one replaced. The app checks again at its next start.",
 		describeProviderAccount(account)), nil)
 }
 

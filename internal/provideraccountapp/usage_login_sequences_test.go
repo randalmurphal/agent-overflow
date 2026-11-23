@@ -1,6 +1,7 @@
 package provideraccountapp
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -53,8 +54,8 @@ func (s *limitsSink) Forget(string, string) {}
 // temporary home (a usage reading). At the rate-limit read it copies
 // rotate.json into its home, as a rotation, and outside.json over the
 // canonical credential, as a sign-in from outside the app landing during
-// the reading. With remove-slot naming a slot's credential file it deletes
-// that file there too. Every start is logged to starts.log: "canonical", or "home"
+// the reading. With slot-path naming a slot's credential file it writes
+// slot-new.json there too, or deletes the file when there is none. Every start is logged to starts.log: "canonical", or "home"
 // with the refresh token the temporary home was seeded with.
 type loginRig struct {
 	dir     string
@@ -98,7 +99,9 @@ func newLoginRig(t *testing.T) loginRig {
 		`*'"account/rateLimits/read"'*)`+"\n"+
 		`  [ -f "$dir/rotate.json" ] && cp "$dir/rotate.json" "$CODEX_HOME/auth.json"`+"\n"+
 		`  [ -f "$dir/outside.json" ] && cp "$dir/outside.json" "$(cat "$dir/canonical-path")"`+"\n"+
-		`  [ -f "$dir/remove-slot" ] && rm -f "$(cat "$dir/remove-slot")"`+"\n"+
+		`  if [ -f "$dir/slot-path" ]; then`+"\n"+
+		`    if [ -f "$dir/slot-new.json" ]; then cp "$dir/slot-new.json" "$(cat "$dir/slot-path")"; else rm -f "$(cat "$dir/slot-path")"; fi`+"\n"+
+		`  fi`+"\n"+
 		`  [ -s "$dir/ratelimits.json" ] || exit 0`+"\n"+
 		`  cat "$dir/ratelimits.json" ;;`+"\n"+
 		"esac\ndone\n")
@@ -315,7 +318,7 @@ func TestALiveRotationNothingCanTakeIsKeptForTheNextBoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	rig.write(t, "rotate.json", string(cRotated))
-	rig.write(t, "remove-slot", slotPath)
+	rig.write(t, "slot-path", slotPath)
 	rig.answer(t, chatgptAccountFrame("a@example.com", "team", ""), chatgptAccountFrame("c@example.com", "team", ""))
 
 	err = rig.manager.RefreshProviderAccountUsage(codexName, "acct-c")
@@ -422,6 +425,10 @@ func ambiguousRig(t *testing.T) (rig loginRig, aLogin []byte) {
 	return rig, aLogin
 }
 
+// outsideLoginX1 is the no-workspace login of shared@example.com that
+// ambiguousRig signs in outside the app.
+const outsideLoginX1 = `{"tokens":{"access_token":"x","refresh_token":"rt-x1"},"last_refresh":"2029-01-01T00:00:00Z"}`
+
 // setOutside puts a no-workspace login of shared@example.com in the canonical
 // store, as an outside sign-in.
 func (r loginRig) setOutside(t *testing.T, refreshToken string) string {
@@ -481,7 +488,7 @@ func TestAnUnresolvedVerdictIsForgottenWhenItsInputsChange(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			rig, _ := ambiguousRig(t)
+			rig, aLogin := ambiguousRig(t)
 			if err := rig.manager.ReconcileExternalProviderAccount(codexName); err != nil {
 				t.Fatalf("reconcile: %v", err)
 			}
@@ -494,6 +501,15 @@ func TestAnUnresolvedVerdictIsForgottenWhenItsInputsChange(t *testing.T) {
 			}
 			if got := rig.count(t, "canonical"); got != 2 {
 				t.Fatalf("identity probes after the change = %d, want 2", got)
+			}
+			// Identified again, a login of an email only A now has is A's;
+			// another unattributable login leaves A's slot alone.
+			want := outsideLoginX1
+			if name == "another canonical credential" {
+				want = string(aLogin)
+			}
+			if got := rig.credential(t, "acct-a", false); got != want {
+				t.Fatalf("A's slot = %s, want %s", got, want)
 			}
 		})
 	}
@@ -579,8 +595,14 @@ func TestASelectedClaudeRefreshToALoginThatNamesNobodyIsNotSaved(t *testing.T) {
 	manager.deps.HTTPClient = func() *http.Client { return &http.Client{Transport: rejecting} }
 
 	err = manager.RefreshProviderAccountUsage(claudeName, "current")
-	if code := publicCode(err); code != "account_login_unresolved" {
+	code, message, _ := errorsx.PublicDetails(err)
+	if code != "account_login_unresolved" || !strings.Contains(message, "names no account, so the app can't confirm it is current@example.com's") {
 		t.Fatalf("refresh = %v (code %q), want the login refused as naming nobody", err, code)
+	}
+	// The bytes are the CLI's refresh of the account's own login: nothing
+	// says anyone signed in outside the app.
+	if strings.Contains(message, "outside the app") {
+		t.Fatalf("refusal = %q, want no claim of an outside sign-in", message)
 	}
 	if got := readCredential(t, credentials, "current"); string(got) != string(current) {
 		t.Fatalf("slot = %s, want the account's own login kept", got)
@@ -621,5 +643,247 @@ func TestASelectedClaudeRefreshIsAttributedByTheReconciliationRule(t *testing.T)
 		if err := manager.assertSelectedClaudeIdentity(selection, tc.info); (err != nil) != tc.wantErr {
 			t.Errorf("%s: err = %v, wantErr %v", tc.name, err, tc.wantErr)
 		}
+	}
+}
+
+// A selected account saved with a workspace and no email takes a login that
+// names an email only while nothing the login carries contradicts it. An
+// outside sign-in on another workspace is another login: it is added as its
+// own account and selected, and the selected account's slot keeps its own.
+func TestALoginOfAnotherWorkspaceNeverLandsInABlankEmailAccountsSlot(t *testing.T) {
+	rig := newLoginRig(t)
+	aLogin := codexWorkspaceLogin(t, "a@example.com", "ws-a", "rt-a1", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+	rig.save(t, provideraccounts.Account{ID: "acct-a", OrgID: "ws-a"}, aLogin)
+	if err := rig.creds.WriteNativeCredentialForTest(codexName, aLogin); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rig.store.Activate(codexName, "acct-a"); err != nil {
+		t.Fatal(err)
+	}
+	rig.manager.BlessCredentialForTest(codexName, aLogin)
+	newLogin := codexWorkspaceLogin(t, "new@example.com", "ws-b", "rt-n1", time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC))
+	if err := rig.creds.WriteNativeCredentialForTest(codexName, newLogin); err != nil {
+		t.Fatal(err)
+	}
+	frame := chatgptAccountFrame("new@example.com", "team", "")
+	rig.answer(t, frame, frame)
+
+	if err := rig.manager.ReconcileExternalProviderAccount(codexName); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := rig.credential(t, "acct-a", false); got != string(aLogin) {
+		t.Fatalf("A's slot = %s, want A's own login", got)
+	}
+	active, ok := rig.store.Active(codexName, time.Now())
+	if !ok || active.ID == "acct-a" || active.Email != "new@example.com" || active.OrgID != "ws-b" {
+		t.Fatalf("active = %+v, %v; want the new login as its own account", active, ok)
+	}
+	if got := rig.credential(t, active.ID, false); got != string(newLogin) {
+		t.Fatalf("new account's slot = %s, want the new login", got)
+	}
+}
+
+// The same rule attributes a live session's or a probe's observation: an
+// expected account saved without an email is not named by a login its known
+// organization contradicts.
+func TestAnObservationContradictingABlankEmailAccountIsNotAttributedToIt(t *testing.T) {
+	claudeName := string(provider.Claude)
+	manager, store, _ := newTestManager(t)
+	if _, err := store.UpsertAndActivate(provideraccounts.Account{ID: "acct-a", Provider: claudeName, OrgID: "org-1"}); err != nil {
+		t.Fatal(err)
+	}
+	// Refused as another login, before any write to the account.
+	if _, _, err := manager.ResolveObservedAccount(claudeName, "acct-a", provider.AccountInfo{Email: "x@example.com", OrgID: "org-2"}); err == nil ||
+		!strings.Contains(err.Error(), "returned unsaved account x@example.com") {
+		t.Fatalf("resolve = %v, want the observation refused as another login", err)
+	}
+	if id, _, err := manager.ResolveObservedAccount(claudeName, "acct-a", provider.AccountInfo{Email: "x@example.com", OrgID: "org-1"}); err != nil || id != "acct-a" {
+		t.Fatalf("observation on the account's organization = %q, %v; want acct-a", id, err)
+	}
+}
+
+// foreignSlotRig selects A beside C, whose slot holds a login of another
+// workspace (the old defect's result), and D, after C in card order.
+func foreignSlotRig(t *testing.T) (rig loginRig, aLogin, foreign, dLogin []byte) {
+	t.Helper()
+	rig = newLoginRig(t)
+	aLogin = rig.selectA(t)
+	foreign = codexWorkspaceLogin(t, "b@example.com", "ws-b", "rt-b1", time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC))
+	dLogin = codexWorkspaceLogin(t, "d@example.com", "ws-d", "rt-d1", time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC))
+	rig.save(t, provideraccounts.Account{ID: "acct-c", Email: "c@example.com", OrgID: "ws-c"}, foreign)
+	rig.save(t, provideraccounts.Account{ID: "acct-d", Email: "d@example.com", OrgID: "ws-d"}, dLogin)
+	return rig, aLogin, foreign, dLogin
+}
+
+// A slot whose credential names another workspace than its account is never
+// activated: a switch to it is refused unwritten with the sign-in-again
+// sentence, an auto-switch sees an account that needs a sign-in, and a
+// removal passes over it for the next usable card.
+func TestASlotHoldingAnotherWorkspacesLoginIsNeverActivated(t *testing.T) {
+	assertUntouched := func(t *testing.T, rig loginRig, aLogin, foreign []byte) {
+		t.Helper()
+		if active, ok := rig.store.Active(codexName, time.Now()); !ok || active.ID != "acct-a" {
+			t.Fatalf("active = %+v, %v; want acct-a kept", active, ok)
+		}
+		if got := rig.credential(t, "", true); got != string(aLogin) {
+			t.Fatalf("canonical = %s, want A's login", got)
+		}
+		if got := rig.credential(t, "acct-c", false); got != string(foreign) {
+			t.Fatalf("C's slot = %s, want it as it was", got)
+		}
+		if fingerprint, ok := rig.manager.CredentialFingerprintForTest(codexName); !ok || fingerprint != sha256.Sum256(aLogin) {
+			t.Fatal("the record no longer names A's login")
+		}
+	}
+	t.Run("switch", func(t *testing.T) {
+		rig, aLogin, foreign, _ := foreignSlotRig(t)
+		_, err := rig.manager.SwitchProviderAccount(codexName, "acct-c")
+		if code := publicCode(err); code != "account_login_mismatch" || !strings.Contains(err.Error(), "Sign in to c@example.com again") {
+			t.Fatalf("switch = %v (code %q), want the mismatch named", err, code)
+		}
+		assertUntouched(t, rig, aLogin, foreign)
+	})
+	t.Run("auto-switch", func(t *testing.T) {
+		rig, aLogin, foreign, _ := foreignSlotRig(t)
+		_, err := rig.manager.AutoSwitchProviderAccount(codexName, "acct-c")
+		if !IsNeedsLogin(err) {
+			t.Fatalf("auto-switch = %v, want an account that needs a sign-in", err)
+		}
+		assertUntouched(t, rig, aLogin, foreign)
+	})
+	t.Run("removal", func(t *testing.T) {
+		rig, _, foreign, dLogin := foreignSlotRig(t)
+		if err := rig.manager.RemoveProviderAccount(codexName, "acct-a"); err != nil {
+			t.Fatalf("remove: %v", err)
+		}
+		if active, ok := rig.store.Active(codexName, time.Now()); !ok || active.ID != "acct-d" {
+			t.Fatalf("active = %+v, %v; want the next usable card", active, ok)
+		}
+		if got := rig.credential(t, "", true); got != string(dLogin) {
+			t.Fatalf("canonical = %s, want D's login", got)
+		}
+		if got := rig.credential(t, "acct-c", false); got != string(foreign) {
+			t.Fatalf("C's slot = %s, want it as it was", got)
+		}
+	})
+}
+
+// A sign-in to an inactive account while its reading runs replaces the slot
+// the reading started from. The rotation of the old login is then nobody's
+// to keep: the slot moved past it, and the reading's home is deleted.
+func TestASignInDuringAnInactiveReadingRetiresItsRotation(t *testing.T) {
+	rig := newLoginRig(t)
+	rig.selectA(t)
+	cLogin := codexWorkspaceLogin(t, "c@example.com", "ws-c", "rt-c1", time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC))
+	cRotated := codexWorkspaceLogin(t, "c@example.com", "ws-c", "rt-c2", time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC))
+	cSignIn := codexWorkspaceLogin(t, "c@example.com", "ws-c", "rt-c9", time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC))
+	rig.save(t, provideraccounts.Account{ID: "acct-c", Email: "c@example.com", OrgID: "ws-c"}, cLogin)
+	slotPath, err := rig.creds.AccountCredentialPath(codexName, "acct-c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.write(t, "rotate.json", string(cRotated))
+	rig.write(t, "slot-path", slotPath)
+	rig.write(t, "slot-new.json", string(cSignIn))
+	rig.answer(t, chatgptAccountFrame("a@example.com", "team", ""), chatgptAccountFrame("c@example.com", "team", ""))
+
+	if err := rig.manager.RefreshProviderAccountUsage(codexName, "acct-c"); err != nil {
+		t.Fatalf("refresh = %v, want the reading, with the old login's rotation retired", err)
+	}
+	if got := rig.credential(t, "acct-c", false); got != string(cSignIn) {
+		t.Fatalf("C's slot = %s, want the sign-in", got)
+	}
+	results, err := rig.creds.SweepEphemeralCredentials(time.Now(), map[string]string{codexName: "acct-a"})
+	if err != nil || len(results) != 0 {
+		t.Fatalf("sweep = %+v, %v; want nothing left for it", results, err)
+	}
+}
+
+// A rotation no store took is kept while another saved slot that may hold
+// the token it spent cannot be read: an unread slot is no evidence that
+// nothing needs it.
+func TestAnUnreadableOtherSlotKeepsARotationNothingTook(t *testing.T) {
+	rig := newLoginRig(t)
+	rig.selectA(t)
+	cLogin := codexWorkspaceLogin(t, "c@example.com", "ws-c", "rt-c1", time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC))
+	cRotated := codexWorkspaceLogin(t, "c@example.com", "ws-c", "rt-c2", time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC))
+	cSignIn := codexWorkspaceLogin(t, "c@example.com", "ws-c", "rt-c9", time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC))
+	rig.save(t, provideraccounts.Account{ID: "acct-c", Email: "c@example.com", OrgID: "ws-c"}, cLogin)
+	rig.save(t, provideraccounts.Account{ID: "acct-0", Email: "zero@example.com", OrgID: "ws-0"}, cLogin)
+	zeroPath, err := rig.creds.AccountCredentialPath(codexName, "acct-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(t.TempDir(), "elsewhere.json")
+	if err := os.Rename(zeroPath, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, zeroPath); err != nil {
+		t.Fatal(err)
+	}
+	slotPath, err := rig.creds.AccountCredentialPath(codexName, "acct-c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// C's slot moves on during the probe, so C's slot does not take the
+	// rotation and only the unread slot could still need it.
+	rig.write(t, "rotate.json", string(cRotated))
+	rig.write(t, "slot-path", slotPath)
+	rig.write(t, "slot-new.json", string(cSignIn))
+	rig.answer(t, chatgptAccountFrame("a@example.com", "team", ""), chatgptAccountFrame("c@example.com", "team", ""))
+
+	err = rig.manager.RefreshProviderAccountUsage(codexName, "acct-c")
+	if code, _, _ := errorsx.PublicDetails(err); code != "account_login_kept" || !strings.Contains(err.Error(), "acct-0") {
+		t.Fatalf("refresh = %v (code %q), want the rotation kept and the unread slot named", err, code)
+	}
+	if got := rig.credential(t, "acct-c", false); got != string(cSignIn) {
+		t.Fatalf("C's slot = %s, want the sign-in", got)
+	}
+	results, err := rig.creds.SweepEphemeralCredentials(time.Now(), map[string]string{codexName: "acct-a"})
+	if err == nil || !strings.Contains(err.Error(), "acct-0") || len(results) != 0 {
+		t.Fatalf("sweep = %+v, %v; want the kept rotation's unread slot reported again", results, err)
+	}
+}
+
+// Another saved slot whose credential cannot be read does not stop a
+// reading's rotation from reaching the account's own slot. The reading lands
+// and says which slot it could not check, and the rotation is kept for the
+// next start, which checks that slot again.
+func TestAnUnreadableOtherSlotDoesNotStopTheOwnersRotation(t *testing.T) {
+	rig := newLoginRig(t)
+	rig.selectA(t)
+	cLogin := codexWorkspaceLogin(t, "c@example.com", "ws-c", "rt-c1", time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC))
+	cRotated := codexWorkspaceLogin(t, "c@example.com", "ws-c", "rt-c2", time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC))
+	rig.save(t, provideraccounts.Account{ID: "acct-c", Email: "c@example.com", OrgID: "ws-c"}, cLogin)
+	// acct-0 sorts first: a slot whose credential is a link, which every
+	// credential read refuses.
+	rig.save(t, provideraccounts.Account{ID: "acct-0", Email: "zero@example.com", OrgID: "ws-0"}, cLogin)
+	zeroPath, err := rig.creds.AccountCredentialPath(codexName, "acct-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(t.TempDir(), "elsewhere.json")
+	if err := os.Rename(zeroPath, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, zeroPath); err != nil {
+		t.Fatal(err)
+	}
+	rig.write(t, "rotate.json", string(cRotated))
+	rig.answer(t, chatgptAccountFrame("a@example.com", "team", ""), chatgptAccountFrame("c@example.com", "team", ""))
+
+	err = rig.manager.RefreshProviderAccountUsage(codexName, "acct-c")
+	if code, _, _ := errorsx.PublicDetails(err); code != "account_login_unchecked" || !strings.Contains(err.Error(), "acct-0") {
+		t.Fatalf("refresh = %v (code %q), want the saved rotation and the unchecked slot named", err, code)
+	}
+	if got := rig.credential(t, "acct-c", false); got != string(cRotated) {
+		t.Fatalf("C's slot = %s, want the rotation", got)
+	}
+	if len(rig.limits.published) != 1 || rig.limits.published[0].AccountID != "acct-c" {
+		t.Fatalf("published readings = %+v, want C's", rig.limits.published)
+	}
+	results, err := rig.creds.SweepEphemeralCredentials(time.Now(), map[string]string{codexName: "acct-a"})
+	if err == nil || len(results) != 0 {
+		t.Fatalf("sweep = %+v, %v; want the kept rotation's slot reported again", results, err)
 	}
 }

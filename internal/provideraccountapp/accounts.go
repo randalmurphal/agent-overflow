@@ -131,14 +131,44 @@ type needsLoginError struct{ message string }
 
 func (e needsLoginError) Error() string { return e.message }
 
+// savedLoginOfAnotherWorkspace refuses a saved slot whose credential carries
+// an identity (a Codex workspace) that is provably not its account's: an
+// older build could save one login under another account. Every path that
+// runs or installs a slot's credential asks it first: an inactive account's
+// reading, a switch or auto-switch to the account, and the replacement a
+// removal picks.
+func savedLoginOfAnotherWorkspace(providerName string, account provideraccounts.Account, credential []byte) error {
+	carried := provideraccounts.IdentityFromInfo(EnrichCodexIdentity(providerName, provider.AccountInfo{}, credential))
+	if !provideraccounts.AccountIdentity(account).Contradicts(carried) {
+		return nil
+	}
+	name := describeProviderAccount(account)
+	return savedLoginMismatchError{sentence: fmt.Sprintf(
+		"The login saved for %s belongs to another workspace. Sign in to %s again.", name, name,
+	)}
+}
+
+// savedLoginMismatchError is the type of savedLoginOfAnotherWorkspace's
+// refusal: the account needs a sign-in, as one whose login is gone does.
+type savedLoginMismatchError struct{ sentence string }
+
+func (e savedLoginMismatchError) Error() string { return e.sentence }
+
+// PublicDetails makes the sentence the client-safe text (errorsx.Detailed).
+func (e savedLoginMismatchError) PublicDetails() (code, message string) {
+	return "account_login_mismatch", e.sentence
+}
+
 // IsNeedsLogin reports whether err says the switch target can be used only
-// after a fresh sign-in because its saved credential is missing or signed
-// out. A switch reports an expired target through SignInRequired instead.
-// The login sentinels are not matched: a switch wraps the reconcile of the
-// current account with %w, and that verdict is not about the target.
+// after a fresh sign-in because its saved credential is missing, signed out,
+// or another workspace's login. A switch reports an expired target through
+// SignInRequired instead. The login sentinels are not matched: a switch wraps
+// the reconcile of the current account with %w, and that verdict is not
+// about the target.
 func IsNeedsLogin(err error) bool {
 	var needsLogin needsLoginError
-	return errors.As(err, &needsLogin)
+	var mismatch savedLoginMismatchError
+	return errors.As(err, &needsLogin) || errors.As(err, &mismatch)
 }
 
 // errProviderAccountLoginExpired names the account whose OAuth session ran
@@ -507,6 +537,10 @@ func (m *Manager) planSwitchLocked(providerName, accountID string, kind switchKi
 			accountID,
 		)
 		return switchPlan{}, errProviderAccountNeedsLogin(providerName, target)
+	}
+	if err := savedLoginOfAnotherWorkspace(providerName, target, targetCredential.Bytes()); err != nil {
+		m.audit("refused to %s to %s account %s: its saved credential names another workspace", kind, providerName, accountID)
+		return switchPlan{}, err
 	}
 	// An expired login is not yet a husk — the tokens are all still there —
 	// but activating it hands the provider a refresh token the server will
