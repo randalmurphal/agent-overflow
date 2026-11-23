@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 // The real stylesheet: these tests exist to prove app.css's ambient
-// keyframes still render the waveforms ambientWaveforms.ts specifies.
+// keyframes still render the waveforms the tables below specify.
 import '../../app.css';
 import { AMBIENT_SLOT_MS } from './ambientTicker';
-import { ledOpacitiesAt, pulseOpacityAt, spinAngleAt } from '../../test/helpers/ambientWaveforms';
 import { startAmbientPhase } from './ambientPhase';
 import { BUILTIN_SPRITES } from '../spinners/catalog';
 
@@ -11,12 +10,40 @@ import { BUILTIN_SPRITES } from '../spinners/catalog';
 // can run them off the main thread (measured 2026-08-23: 163.0ms of
 // main-thread work per 5s became 0.0ms). That trade is only safe if the
 // CSS renders the SAME waveform the ticker did, so these sample the real
-// rendered animation slot by slot against the pure functions that remain
-// the specification. Drift in either direction fails.
+// rendered animation slot by slot against the tables below, which are the
+// specification. Each slot is sampled at its first and its last
+// millisecond, so a value that changes inside a slot fails too.
 //
 // happy-dom has no animation timeline and no computed transforms, so this
 // needs the `browser` vitest project (real Chromium). Run with
 // `pnpm test:browser`.
+
+// `animate-pulse` opacity per 125ms slot over its 2s cycle: base → 0.5 →
+// base, steps(8, jump-none) per 1s keyframe segment, so each half lands 8
+// values with both endpoints. 0.5 holds across the join (slots 7 and 8)
+// and base across the wrap (slots 15 and 0).
+const PULSE_OPACITY = [14, 13, 12, 11, 10, 9, 8, 7, 7, 8, 9, 10, 11, 12, 13, 14].map((n) => n / 14);
+
+// Working-LED opacities per 125ms slot over the 750ms chase: one LED lit
+// (1) and two resting (0.2), left to right, 250ms each.
+const LED_OPACITIES = [
+  [1, 0.2, 0.2], [1, 0.2, 0.2],
+  [0.2, 1, 0.2], [0.2, 1, 0.2],
+  [0.2, 0.2, 1], [0.2, 0.2, 1],
+];
+
+// SteppedSpinner rotation in degrees per 125ms slot: one 30° spoke per
+// slot, 12 spokes per 1.5s revolution.
+const SPIN_DEGREES = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
+
+/** The first and the last millisecond of each slot of a `slots`-slot
+ * cycle, with the slot's index. */
+function slotSamples(slots: number): Array<readonly [number, number]> {
+  return Array.from({ length: slots }, (_, slot) => [
+    [slot * AMBIENT_SLOT_MS, slot] as const,
+    [(slot + 1) * AMBIENT_SLOT_MS - 1, slot] as const,
+  ]).flat();
+}
 
 const hosts: HTMLElement[] = [];
 
@@ -62,12 +89,12 @@ afterEach(() => {
 });
 
 describe('ambient pulse keyframes', () => {
-  it('renders pulseOpacityAt() across the 2s cycle', () => {
+  it('renders the pulse table across the 2s cycle', () => {
     const dot = mount('<span class="animate-pulse"></span>');
     const animation = animationOf(dot, 'ambient-pulse');
-    for (let t = 0; t < 2000; t += AMBIENT_SLOT_MS) {
+    for (const [t, slot] of slotSamples(PULSE_OPACITY.length)) {
       sampleAt(animation, t);
-      expect(opacityOf(dot), `t=${t}ms`).toBeCloseTo(pulseOpacityAt(t), 4);
+      expect(opacityOf(dot), `t=${t}ms`).toBeCloseTo(PULSE_OPACITY[slot]!, 4);
     }
   });
 
@@ -85,24 +112,25 @@ describe('ambient pulse keyframes', () => {
     const staggered = mount(`<span class="animate-pulse ${stagger}"></span>`);
     const baseAnimation = animationOf(base, 'ambient-pulse');
     const staggeredAnimation = animationOf(staggered, 'ambient-pulse');
-    for (let t = 0; t < 2000; t += AMBIENT_SLOT_MS) {
+    const leadSlots = leadMs / AMBIENT_SLOT_MS;
+    for (const [t, slot] of slotSamples(PULSE_OPACITY.length)) {
       sampleAt(baseAnimation, t);
       sampleAt(staggeredAnimation, t);
-      expect(opacityOf(staggered), `t=${t}ms`).toBeCloseTo(pulseOpacityAt(t + leadMs), 4);
+      expect(opacityOf(staggered), `t=${t}ms`).toBeCloseTo(PULSE_OPACITY[(slot + leadSlots) % PULSE_OPACITY.length]!, 4);
     }
   });
 });
 
 describe('working-LED chase keyframes', () => {
-  it('renders ledOpacitiesAt() one-hot across the 750ms cycle', () => {
+  it('renders the LED table one-hot across the 750ms cycle', () => {
     const chase = mount(
       '<span class="working-leds"><i class="working-led"></i><i class="working-led"></i><i class="working-led"></i></span>',
     );
     const leds = [...chase.children];
     const animations = leds.map((led) => animationOf(led, 'ambient-led'));
-    for (let t = 0; t < 750; t += AMBIENT_SLOT_MS) {
+    for (const [t, slot] of slotSamples(LED_OPACITIES.length)) {
       for (const a of animations) sampleAt(a, t);
-      const expected = ledOpacitiesAt(t);
+      const expected = LED_OPACITIES[slot]!;
       for (let i = 0; i < 3; i += 1) {
         expect(opacityOf(leds[i]!), `LED ${i} at t=${t}ms`).toBeCloseTo(expected[i]!, 4);
       }
@@ -121,12 +149,12 @@ describe('working-LED chase keyframes', () => {
 });
 
 describe('stepped spinner keyframes', () => {
-  it('renders spinAngleAt() one 30deg spoke per slot', () => {
+  it('renders the spin table one 30deg spoke per slot', () => {
     const spinner = mount('<svg class="stepped-spin" viewBox="0 0 24 24" width="11" height="11"></svg>');
     const animation = animationOf(spinner, 'ambient-spin');
-    for (let t = 0; t < 1500; t += AMBIENT_SLOT_MS) {
+    for (const [t, slot] of slotSamples(SPIN_DEGREES.length)) {
       sampleAt(animation, t);
-      expect(rotationOf(spinner), `t=${t}ms`).toBeCloseTo(spinAngleAt(t) % 360, 3);
+      expect(rotationOf(spinner), `t=${t}ms`).toBeCloseTo(SPIN_DEGREES[slot]!, 3);
     }
   });
 });

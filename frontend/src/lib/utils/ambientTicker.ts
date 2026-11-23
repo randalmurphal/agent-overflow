@@ -41,10 +41,9 @@
 // pending user action is the only thing that arms it, so in an ordinary
 // session it is suspended.
 //
-// The CSS animations' waveforms are specified in
-// src/test/helpers/ambientWaveforms.ts, which ambientCss.browser.test.ts
-// samples the rendered animations against; this module's suite pins the
-// glow write to glowTAt.
+// The CSS animations' waveforms are specified as per-slot tables in
+// ambientCss.browser.test.ts, which samples the rendered animations
+// against them; this module's suite pins the glow write to glowTAt.
 import { prefersReducedMotion, reducedMotionQuery } from './reducedMotion';
 import { startAmbientPhase } from './ambientPhase';
 
