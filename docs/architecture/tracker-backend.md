@@ -283,10 +283,12 @@ The tracker tables are created by migration v162, frozen, and v164,
 which adds `tracker_cache_open_tickets`, the wall times of the reads an
 interval is measured from or a person is shown
 (`tracker_cache_boards.structure_wall`, `tracker_cache_sync.read_wall`,
-`reconciled_wall` and `failed_wall`,
-`tracker_cache_issue_details.read_wall`) and
-`tracker_cache_issues.sprint_set`; a later tracker table or column is a
-later migration.
+`reconciled_wall` and `failed_wall`), `tracker_cache_issues.sprint_set`,
+and the issue record's status finality and ticket body
+(`tracker_cache_issues.status_final_for` and `body_*`, with
+`tracker_cache_issue_bodies` in place of v162's
+`tracker_cache_issue_details`, dropped with its documents); a later
+tracker table or column is a later migration.
 
 Durable records, restored and kept like other application records:
 
@@ -319,11 +321,11 @@ classification:
 | `tracker_cache_users`, `_statuses` | The users and statuses a mirror's reads name. |
 | `tracker_cache_boards`, `_board_columns`, `_board_column_statuses`, `_board_unexplained` | A board's name, kind and estimate, its columns and the statuses in each, and the statuses, users and sprints its row pages named that the mirror lacked. |
 | `tracker_cache_sprints` | Sprints as each board shows them, with the board each was made on (a Jira sprint can show on several boards): state and dates. |
-| `tracker_cache_issues` | Cards, one per issue per mirror. |
+| `tracker_cache_issues` | The issue record, one per issue per mirror: its card, the time its status began and the update a final read decided it for, and the bookkeeping of its ticket body. |
 | `tracker_cache_board_issues` | Which issues are on which board, each with that board's order key and estimate. |
 | `tracker_cache_issue_sprints` | Which sprints an issue is or was in. |
 | `tracker_cache_changes` | Status, sprint, estimate and assignee changes with their times and authors. The issue row holds the time from which they are complete. |
-| `tracker_cache_issue_details` | The detail of recently opened issues, one JSON document each. |
+| `tracker_cache_issue_bodies` | The ticket bodies of the open tickets' issues and the most recently opened, 200 a mirror: what a ticket shows besides its card, one JSON document each. |
 | `tracker_cache_worklogs` | Logged time by issue, author and day. A Tempo connection has no mirror of its own; its worklogs are in its Jira connection's. |
 | `tracker_cache_worklog_days` | The latest read of an author's day, an unchanged or empty day included; a replace from an earlier read leaves the day. |
 | `tracker_cache_sync` | Per scope: the provider's cursor, last read, last reconcile, last failure. The linked-issues scope has no cursor: it reads its cards by ID. |
@@ -356,38 +358,71 @@ For each board some app project lists:
   changes are complete gets none and shows the issue as not counted.
 
 Plus, per connection: the issues linked to threads, the issues open as
-tickets, and the detail of the 200 most recently opened issues the mirror
-holds. An issue outside every listed board is read from the tracker when
-asked for and is kept only while a thread links it or a person has its
-ticket open.
+tickets, and the ticket bodies of the open tickets' issues and of the
+most recently opened, 200 in all. An issue outside every listed board is
+read from the tracker when asked for and is kept only while a thread
+links it or a person has its ticket open.
 
-A stored detail is current only when the tracker says so in the read that
+The issue record is the one record of an issue: its row holds the card
+every read of the issue shares, the time its status began, and the
+bookkeeping of its ticket body, the rest of what a ticket shows (its
+description, fields, comments, links, attachments, history and moves).
+A ticket's read stores its card, its body and the evidence of its status
+time in one transaction (`store.StoreMirrorTickets`): the card through
+the same card path as a card read by ID, ordered, fenced, named from the
+catalog entries the card names, with its sprints and the marks of what it
+names that the mirror lacks; the body by the record's order of bodies;
+the status result for the version it was read for. Its receipt says, for
+each ticket, whether the write changed the card, moved the status time
+(told as `Changes.History`, so every view of the card follows), and
+stored a body or moved the one held to another version (told as
+`Changes.Details`, which the issue's open ticket, when the read was not
+its own, rebuilds from rather than reads again). A view of a ticket
+shows the record's card, its URL included (Linear's is a stored card
+field; Jira's is the site and the key, `jiraprovider.IssueURL`), with its
+body, and says when the body is of an older version than the card
+(`DetailView.BodyBehind`). An issue the mirror does not keep shows the
+read's own card, and its pump holds its document.
+
+A body is ordered by its version and then its read: a body of a later
+update, or of the same update from a later read, replaces the record's;
+one of an earlier update, or of the same update from an earlier read, is
+superseded, and the read shows the record's; the same body again moves
+its read alone and writes no body bytes (its digest, `body_digest`, is
+compared). A body is started only by a person's opening or by a read
+that began after an open ticket of the issue was bound, so any automatic
+read of an open ticket fills a body the record lacks. The cap keeps the
+bodies of the issues an open ticket keeps, then the most recently
+opened; one function writes a body and one evicts it, each moving the
+bookkeeping and the bytes in one transaction.
+
+A stored body is current only when the tracker says so in the read that
 shows it (`IssueDetail`, or an open ticket's read). Where the issue's
 update time moves with its detail, that is one cards read of the issue
-alone, stored as the card resource, in which the issue's update time
-equals that of the document's card. The detail is read and stored instead
-when there is no document to check, when the mirror's card is already
-newer than the document's, when the document's read began more than 30
-minutes ago (its moves and field metadata come from the workflow and
-screens, which move no update time), on a person's refresh
-(`RefreshIssueDetail`), and where the update time does not move with the
-detail. An open ticket due a read because another read stored its card is
-read in full when that card is newer than its document, with no cards
-read, and checked otherwise. No document is written outside such a full
-read. A view shows its
-parent's key and title and each linked issue's key, title and status from
-the mirror's cards, read with the issue's own card in one
-`ListMirrorCards`. A linked issue the mirror keeps no card of shows as the
-document holds it, at most 30 minutes old; a parent it keeps no card of
-shows its ID alone, since the document names the parent by ID. The opening is
-recorded only while the mirror still holds the document checked, the same
-row from the same read with no sweep since (`ConfirmMirrorDetail`);
-otherwise the detail is read again. A failed check leaves the stored
-detail as it is. `MirroredDetail` returns the stored detail and when it
-was read, with no tracker call, for a first paint before the check
-answers; a detail another read rewrote between its read and its opening
-is read again, so it answers not mirrored only when the mirror holds
-none.
+alone, stored through the same ticket write with no body, which records
+the opening on the body the record holds and returns the record's body
+bookkeeping: the body is confirmed when the card's update time equals the
+body's version and the record still holds the body checked, from the same
+read. The detail is read and stored instead when there is no body to
+check, when the record's card is already newer than the body, when the
+body's read began more than 30 minutes ago (its moves and field metadata
+come from the workflow and screens, which move no update time), on a
+person's refresh (`RefreshIssueDetail`), and where the update time does
+not move with the detail. An open ticket due a read because another read
+stored its card is read in full when that card is newer than its body,
+with no cards read, and checked otherwise. No body is written outside
+such a full read. A view shows its parent's key and title and each linked
+issue's key, title and status from the mirror's cards, read with the
+issue's own card in one `ListMirrorCards`. A linked issue the mirror
+keeps no card of shows as the body holds it, at most 30 minutes old; a
+parent it keeps no card of shows its ID alone. A failed check leaves the
+stored body as it is. `MirroredDetail` returns the stored body with its
+record's card and when its read began, with no tracker call, for a first
+paint before the check answers, and records the opening only while the
+record still holds that body with no sweep since
+(`store.ConfirmMirrorBody`); a body another read rewrote between its read
+and its opening is read again, so it answers not mirrored only when the
+mirror holds none.
 
 An issue stays while it is on a listed board, a thread this computer owns
 links it on that connection's site, or its ticket is open
@@ -405,20 +440,30 @@ An open ticket keeps its issue through one row of
 `tracker_cache_open_tickets` per ticket pump, whatever brought the person
 to it: a search, a parent or a link opened from another ticket, a done
 issue older than the window, an issue a reconcile dropped from its board,
-or one on a board not read yet. The pump's goroutine writes the row before
-its first read and deletes it as it returns, the one place each end of the
-pump comes to (its last subscription released, its connection turned off
-or removed, `Stop`); each is one statement and one row
-(`TestOpenTicketKeepCosts`). A pump has one row, so the table holds at
-most the cap of open tickets (64) of the live process. Rows a process left
-when it ended without deleting them are deleted by the next boot's
-`StartLinkedSync`, and the cleanup then removes what nothing else keeps.
-A restore empties the table with the mirror while pumps live: the run
-that makes the connection's new root keeps the open tickets of its mirror
-generation again (`trackerapp.mirrorRootLocked`), and a ticket opened
-before any run did keeps itself under the new root. A keep that fails is
-logged and leaves the ticket working as one the mirror does not keep: its
-pump holds its document.
+or one on a board not read yet. The row is the ticket's one record of its
+lifetime: a read binds a ticket the mirror does not keep yet before it
+reads it (`trackerapp.bindTickets`), at a read begun on the root's clock
+(`opened_at`) that admits a body from every read that begins after it, so
+a close and a reopen is a new lifetime that no earlier read reaches. The
+pump's goroutine deletes the row as it returns, the one place each end
+of the pump comes to (its last subscription released, its connection
+turned off or removed, `Stop`), and no bind follows; the bind is one
+statement and one row, the delete two statements
+(`TestOpenTicketKeepCosts`). When the delete leaves the issue kept by
+nothing, every view that shows it as a parent or a link is told
+(`Changes.Unkept`). A bind that fails is the ticket's failure, a failure
+outside the tracker that its next read retries; until a bind succeeds the
+ticket is not read. A pump has one row, so the table holds at most the
+cap of open tickets (64) of the live process. Rows a process left when it
+ended without deleting them are deleted by this process's first run
+(`trackerapp.dropEarlierTickets`): every run passes that step as it
+starts and every bind is made in a run, so the delete completes before any
+row of this process is written; a delete that fails fails its run, and
+the next run tries it again. The cleanup then removes what nothing else
+keeps. A restore empties the table with the mirror while pumps live: the
+run that makes the connection's new root binds every live open ticket of
+its mirror generation again, one whose earlier bind failed included
+(`trackerapp.keepTicketsAgainLocked`).
 
 A board whose last listing goes is retired: absent to reads and writes,
 its sync state deleted, its rows drained by `FinishMirrorCleanup`. Listed
@@ -429,13 +474,12 @@ caller captures it with the scope's sync state (`MirrorSync.Lifetime`)
 before its reads and names it in every write and section continuation, so
 nothing read in one lifetime lands in a later one.
 
-A card, detail or history written outside a board is fenced by the root's
+A card, body or history written outside a board is fenced by the root's
 `sweep`, which advances in every cleanup transaction that deletes an issue
 or part of its history and is never repeated. The write names the value
 its caller read before the read (`MirrorSync.Sweep`), and one naming an
 earlier value fails with `ErrTrackerCacheSwept`, so content read before
-its issue was swept is not stored after the issue is kept again. Only an
-opening starts a detail.
+its issue was swept is not stored after the issue is kept again.
 
 Each row's `read_at` is when the latest read admitted for it began, whether
 it changed the row or found it identical; an absence is admitted the same
@@ -451,23 +495,15 @@ with one stores no cursor, and a read by ID reads it once more
 one update time, by its `read_at`, the latest read admitted for the card
 or its sprints, identical or not: a project key rename changes every key
 and moves no update time. Every card write follows that one rule
-(`mirrorCardSupersededSQL`): a board's rows and cards read by ID
-(`UpsertMirrorCards`: a Jira round's check, linked issues, a document's
-owed card). In the same transaction each card write marks every board the
-card is on whose structure lacks a sprint or status the card names as
-due a structure read (`mirrorCardMarkSQL`), whichever writer stored it.
-A detail document writes no card. It names the update time of the card
-it was read with (`MirrorDetailDoc.CardUpdatedAt`) and is stored only
-while the mirror's card is that version: a document newer than the
-mirror's card is owed its card, which the read reads by ID and stores
-before storing the document again; a document whose card the tracker no
-longer returns is not stored, and an open ticket's pump holds it; a
-document older than the mirror's card is stale and not stored. At one
-update time the card owns the fields it holds (key, title, status,
-assignee, priority, labels, parent, sprints, type and times) and the
-document owns the rest, so a ticket shows the mirror's card in place of
-its document's (`shownDetailOf`): a key rename a board read stores shows
-on the open ticket with no full read. A read's order time comes
+(`mirrorCardSupersededSQL`): a board's rows, cards read by ID
+(`UpsertMirrorCards`: linked issues, a write's refresh) and tickets
+(`StoreMirrorTickets`: a ticket's read and a Jira round's check). In the
+same transaction each card write marks every board the card is on whose
+structure lacks a sprint or status the card names as due a structure
+read (`mirrorCardMarkSQL`), whichever writer stored it. A ticket shows
+the record's card, so a key or label rename at an unchanged update time
+shows on the ticket as on the board whichever read lands last. A read's
+order time comes
 from its root's one clock (`store.BeginMirrorRead`), the only maker of
 the `store.MirrorRead` every write that orders by it takes, and every
 writer refuses a read of another root: now, or a millisecond after the
@@ -476,7 +512,7 @@ began whatever their path, process or wall clock. A process's first read
 of a root seeds the clock from the highest read time the root stores
 (`mirrorReadTimeColumns`, held to the schema by a test), so a read begun
 after a restart, a crash included, orders after every stored read; later
-reads touch no row. A person's opening of a detail is such a read. The
+reads touch no row. A person's opening of a ticket is such a read. The
 service's elapsed-time decisions, and the clock each reads, are listed
 beside `Service.sinceWall`: an interval since a stored read is measured
 from the wall time the read began at, stored beside its order time, and
@@ -495,35 +531,34 @@ revision fails with `ErrTrackerCacheStale`. A board view's first paint
 reads structure, totals, first pages and what their cards name (statuses,
 users and parents) in one snapshot (`ReadMirrorBoardView`), so its totals,
 rows and names are one state; a section page reads its names with its rows
-(`ListMirrorSection`). A card's
-status time is derived from the card and the stored history by every write
-of either. While no final history read for the card's update is stored,
-the time stands as long as the card keeps its status and is unknown once
-the status changes: an edit to another field does not blank it. An issue
-that left its status and came back between two reads of its card shows
-the earlier stay's time until that history is stored. A ticket's time
-is decided in one place (`statusSinceOf`), from the latest status change
-its document's history holds (`tracker.Detail.StatusChanged`) and the
-mirror's card. When the document's history is final through the card's
-update (`Detail.HistoryTo`, the tracker's clock on the answer less its
-settle margin), its latest status change decides: its time when it went
-to the card's status, unknown when it went to another. A stored document
-keeps only that fact (`HistoryTo` is the card's update when final, zero
-when not), so a document read again with nothing changed but the time
-of the answer is the same bytes and is not stored again. Otherwise the
-ticket shows the mirror's time, when the mirror's card is the version
-the document shows and the document's history does not contradict it;
-otherwise none. A document is stored only beside the card of its
-version, so the time stands across an edit on every read of a kept
-issue: a Jira round's check, a full read, a refresh, a write's re-read
-and every Linear ticket read. A detail of an issue the mirror does not
-keep (an `IssueDetail` read with no ticket open, or a ticket whose keep
-failed) shows the time its document's history gives. For the settle window
-after an issue leaves its status and comes back, a board card can show
-the earlier stay's time while the open ticket shows the newer one: the
-ticket's document holds the return before a history read stores it.
-A detail's read time starts at its opening, so a document read before the
-opening is superseded.
+(`ListMirrorSection`).
+
+A card's status time is the issue record's, the same on the board and the
+ticket. One rule decides it from the evidence of one read
+(`store.MirrorStatusSince`), a ticket's read or a history read, taken
+before the ticket's history is bounded: the read's latest status change,
+whether its history is complete from the creation, and whether it is
+final through the card's update (the tracker's clock on the answer less
+its settle margin). From a final read, the latest change into the card's
+status gives its time, one into another status gives unknown, and no
+change gives the creation when the history is complete from it (Linear's
+history folds its opening interval, so it never is) and unknown
+otherwise. A read that is not final may lack the newest change, so its
+result is provisional: the latest change's time when it entered the
+card's status no more than the settle margin before the card's update,
+and unknown otherwise, since an older change may be a stay the issue
+left and came back to since. The result is written only for the version
+it was read for; a final result decides the version
+(`status_final_for`), and a provisional one never replaces it. A card
+read that finds the same status at a newer update keeps the time it
+showed, no longer final, so an issue that left its status and came back
+between two card reads shows the earlier stay's time until a read of the
+new version decides it; one that finds another status shows unknown. An
+issue whose record holds no final time for its update is due a history
+read, and a round's history read takes the shown tickets' issues first
+(`ListMirrorHistoryDue`). An issue the mirror does not keep shows the
+result of its read's own evidence. Status evidence discharges no sprint,
+estimate or assignee history.
 
 A board's backlog is its rows in no future or active sprint of that board
 whose status is not in the done or canceled group, by the group the mirror

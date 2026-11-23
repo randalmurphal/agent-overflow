@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"slices"
 	"strconv"
 
@@ -103,7 +102,7 @@ func (p *Provider) detailOf(s site, issue tracker.IssueID, read issueRead) (trac
 	full, comments := read.full, read.comments
 	is := full.Issue
 	cat := newCatalog()
-	d := tracker.Detail{URL: p.origin + "/browse/" + url.PathEscape(is.Key)}
+	var d tracker.Detail
 	var err error
 	if d.Card, err = s.cardOf(is, cat); err != nil {
 		return tracker.Detail{}, err

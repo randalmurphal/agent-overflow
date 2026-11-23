@@ -11,8 +11,9 @@ import (
 // TestRedeliveredRowsTellNothing and TestIdleRoundCosts pin them, cost the
 // statements and row writes pinned here. Each tick runs twice; the second
 // is the steady state. Each writes only read times: a board's read and
-// cursor, a redelivered row's and its card's read, each card's read (a
-// Jira round), an open detail's read (Linear). Every card write checks the
+// cursor, a redelivered row's and its card's read, each ticket's card read
+// (a Jira round) and with it its body's read (Linear), writing no body
+// bytes: a body read again is compared by its digest. Every card write checks the
 // references its cards name (mirrorCardMarkSQL), one statement that finds
 // nothing to mark when nothing changed. A round's statements do not
 // grow with its tickets; its row writes are each ticket's read time. A board tick while an issue's
@@ -27,17 +28,15 @@ func TestIdleTickStatements(t *testing.T) {
 		tickets = append(tickets, fmt.Sprint(20001+i))
 	}
 	mustWriteRowPage(t, s, root, webPage("10", mirrorRows(20001, 9, "z")...), nil)
-	// The documents are of their cards' updates, read before any round
-	// is counted.
-	held := heldDocs(t, s, root, func() []MirrorDetailDoc {
-		var out []MirrorDetailDoc
-		for _, id := range tickets {
-			out = append(out, MirrorDetailDoc{IssueID: id, Data: []byte(`{}`)})
-		}
-		return out
-	}())
-	docs := func(n int) []MirrorDetailDoc { return held[:n] }
-	if _, err := s.StoreMirrorDetails(root, currentSweep(s, root), docs(10)[1:], mirrorReadAt(7), mirrorReadAt(7)); err != nil {
+	// The tickets are of their cards' updates, read before any round is
+	// counted; each brings the evidence of its status time a ticket's read
+	// does.
+	held := heldTickets(t, s, root, tickets, []byte(`{}`))
+	for i := range held {
+		c := held[i].Card
+		held[i].Status = &MirrorStatusEvidence{Status: c.StatusID, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Complete: true, Final: true}
+	}
+	if _, err := s.StoreMirrorTickets(root, currentSweep(s, root), held[1:], MirrorCatalog{}, mirrorReadAt(7), mirrorReadAt(7)); err != nil {
 		t.Fatal(err)
 	}
 	recorder := recordMirrorWrites(t, s)
@@ -76,20 +75,23 @@ func TestIdleTickStatements(t *testing.T) {
 			cards[i] = webCard(id, 5)
 		}
 		cards[0] = webCard("10001", 5, "21")
+		checks := make([]MirrorTicket, n)
+		for i, c := range cards {
+			checks[i] = MirrorTicket{Card: c}
+		}
 		rounds = append(rounds, idleTick{fmt.Sprintf("a Jira round of %d tickets", n), func() {
 			call("GetMirrorSync", syncState(""))
-			call("ListMirrorDetailStates", func() error { _, err := s.ListMirrorDetailStates(root, tickets[:n]); return err })
-			call("UpsertMirrorCards", func() error {
-				_, err := s.UpsertMirrorCards(root, sweep, cards, MirrorCatalog{}, mirrorReadAt(at))
+			call("StoreMirrorTickets", func() error {
+				_, err := s.StoreMirrorTickets(root, sweep, checks, MirrorCatalog{}, MirrorRead{}, mirrorReadAt(at))
 				return err
 			})
-		}, 8, map[string]int{"tracker_cache_issues": n}, nil}, idleTick{fmt.Sprintf("a Linear round of %d tickets", n), func() {
+		}, 6, map[string]int{"tracker_cache_issues": n}, nil}, idleTick{fmt.Sprintf("a Linear round of %d tickets", n), func() {
 			call("GetMirrorSync", syncState(""))
-			call("StoreMirrorDetails", func() error {
-				_, err := s.StoreMirrorDetails(root, sweep, docs(n), mirrorReadAt(0), mirrorReadAt(at))
+			call("StoreMirrorTickets", func() error {
+				_, err := s.StoreMirrorTickets(root, sweep, held[:n], MirrorCatalog{}, MirrorRead{}, mirrorReadAt(at))
 				return err
 			})
-		}, 4, map[string]int{"tracker_cache_issue_details": n}, nil})
+		}, 6, map[string]int{"tracker_cache_issues": n}, nil})
 	}
 	// The tick whose history waits runs last: it moves issue 10001's update
 	// time.

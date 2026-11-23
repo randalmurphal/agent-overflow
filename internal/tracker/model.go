@@ -221,6 +221,10 @@ type Card struct {
 	Created  time.Time
 	Updated  time.Time
 	Resolved time.Time // zero when the issue is not resolved
+	// URL is the issue's web address when every read of the issue gives
+	// it (Linear); empty on a tracker whose address is its site and key
+	// (jiraprovider.IssueURL).
+	URL string
 }
 
 // Row is an issue on one board: its card with that board's order key and
@@ -321,7 +325,6 @@ type Event struct {
 // HistoryFrom (zero: from creation), and an earlier value is unknown.
 type Detail struct {
 	Card        Card
-	URL         string
 	Description string // Markdown
 	Fields      []Field
 	Comments    CommentPage

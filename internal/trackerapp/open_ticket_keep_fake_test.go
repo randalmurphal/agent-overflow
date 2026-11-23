@@ -1,19 +1,23 @@
 package trackerapp
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/harness/trackerfake"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 )
 
 // The open-ticket keep against the fake trackers: the mirror keeps the
-// issue of every open ticket for as long as its pump lives (keepTicket,
-// store mirrorIssueKept), whatever brought the person to it, and stops
+// issue of every open ticket from the bind before its first read to the
+// pump's end (bindTickets, dropTicket, store mirrorIssueKept), whatever
+// brought the person to it, and stops
 // keeping it when the last subscription ends; the cleanup then removes
 // what nothing else keeps.
 
@@ -70,7 +74,7 @@ func (s *fakeScenario) kept(t *testing.T, conn Connection, issue tracker.IssueID
 	default:
 		card = true
 	}
-	d, ok, err := s.st.GetMirrorDetail(root, string(issue))
+	d, ok, err := s.st.GetMirrorBody(root, string(issue))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,29 +213,19 @@ func synced(t *testing.T, s *fakeScenario, _ Connection, scope Scope) {
 	s.syncBoard(t, scope)
 }
 
-// An issue the mirror keeps for its ticket alone has its history read by
-// the ticket's round: one never moved shows the time it entered its
-// status, its creation, from the round after the opening, which no
-// document can show (its history holds no status change).
-func TestAnOpenTicketShowsItsStatusTimeWithinARound(t *testing.T) {
+// An issue the mirror keeps for its ticket alone that never moved shows
+// the time it entered its status, its creation, from the opening's read:
+// its history is complete from the creation and holds no status change,
+// so the read settles the time, and the board's card shows it too.
+func TestAnOpenTicketNeverMovedShowsItsCreationFromTheOpening(t *testing.T) {
 	t.Parallel()
-	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: 100 * time.Millisecond})
+	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
 	s.syncBoard(t, scope)
 	created := must[[]tracker.Detail](t)(detailsOf(t, s, conn, "10105"))[0].Card.Created
+	s.clock.advance(time.Minute + time.Second)
 	sub := s.openTicket(t, conn, "10105")
-	if v := must[TicketView](t)(s.svc.TicketDetail(sub.ID)); v.Detail.Card.StatusSince != 0 {
-		t.Fatalf("the opening shows since %d before any history read", v.Detail.Card.StatusSince)
-	}
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		v := must[TicketView](t)(s.svc.TicketDetail(sub.ID))
-		if v.Detail.Card.StatusSince == millis(created) {
-			break
-		}
-		if v.Detail.Card.StatusSince != 0 || time.Now().After(deadline) {
-			t.Fatalf("the ticket shows since %d; want its creation %d", v.Detail.Card.StatusSince, millis(created))
-		}
-		time.Sleep(10 * time.Millisecond)
+	if v := must[TicketView](t)(s.svc.TicketDetail(sub.ID)); v.Detail.Card.StatusSince != millis(created) {
+		t.Fatalf("the opening shows since %d; want its creation %d", v.Detail.Card.StatusSince, millis(created))
 	}
 	if c := must[IssueView](t)(s.svc.Issue(conn.ID, "10105")).Card; c.StatusSince != millis(created) {
 		t.Fatalf("the mirror's card shows since %d", c.StatusSince)
@@ -277,8 +271,8 @@ func TestEveryEndOfAnOpenTicketDeletesItsKeep(t *testing.T) {
 
 // A restore empties the mirror, open tickets included, while their pumps
 // live. The run that finds the root gone makes another (rehold), which
-// keeps the open tickets again; a ticket opened before any run did keeps
-// itself under the new root (keepTicket). Either way the next read stores
+// keeps the open tickets again; a ticket opened before any run did binds
+// itself under the new root (bindTickets). Either way the next read stores
 // the ticket's document and card as a kept issue's.
 func TestARestoreKeepsTheOpenTicketsAgain(t *testing.T) {
 	t.Parallel()
@@ -328,36 +322,155 @@ func TestARestoreKeepsTheOpenTicketsAgain(t *testing.T) {
 	}
 }
 
-// The rows a process left when it ended without deleting them keep their
-// issues until the next boot's StartLinkedSync deletes them; the cleanup
-// then removes what nothing else keeps.
-func TestTheBootDeletesTheOpenTicketsAnEarlierProcessLeft(t *testing.T) {
+// earlierRows writes n open-ticket rows of issue under conn's mirror root
+// that a process before this one left (another session), and returns the
+// root.
+func (s *fakeScenario) earlierRows(t *testing.T, conn Connection, issue tracker.IssueID, n int) int64 {
+	t.Helper()
+	root, _, err := s.st.GetOrCreateMirrorRoot(conn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := must[store.MirrorRead](t)(s.st.BeginMirrorRead(root, 1))
+	for i := range n {
+		if err := s.st.KeepMirrorTicket(root, string(issue), s.svc.session+1, int64(i+1), read); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// earlierDrops is a store that counts the deletes of an earlier process's
+// open tickets, fails the first fail of them, and runs each through hold.
+type earlierDrops struct {
+	*store.Store
+	mu    sync.Mutex
+	calls int
+	fail  int
+	hold  func()
+}
+
+func (s *earlierDrops) DropMirrorTicketsOfOtherSessions(session int64) (int64, error) {
+	s.mu.Lock()
+	s.calls++
+	failed := s.calls <= s.fail
+	s.mu.Unlock()
+	if s.hold != nil {
+		s.hold()
+	}
+	if failed {
+		return 0, errors.New("test: the store refused the delete")
+	}
+	return s.Store.DropMirrorTicketsOfOtherSessions(session)
+}
+
+func (s *earlierDrops) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// The rows a process left when it ended without deleting them are deleted
+// by this process's first run, before any bind: a ticket opened at once
+// keeps its own row, the earlier rows are gone, and the cleanup removes
+// what nothing else keeps once the ticket closes.
+func TestTheFirstRunDeletesTheOpenTicketsAnEarlierProcessLeft(t *testing.T) {
 	t.Parallel()
 	s, conn, _ := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
+	s.earlierRows(t, conn, "10105", 2)
 	sub := s.openTicket(t, conn, "10105")
-	root := must[int64](t)(rootOf(s, conn))
-	// An earlier process's row of the same issue.
-	if err := s.st.KeepMirrorTicket(root, "10105", s.svc.session+1, 1); err != nil {
-		t.Fatal(err)
+	if n := must[int64](t)(s.st.DropMirrorTicketsOfOtherSessions(s.svc.session)); n != 0 {
+		t.Fatalf("%d rows of the earlier process after the first run", n)
+	}
+	if card, doc := s.kept(t, conn, "10105"); !card || !doc {
+		t.Fatalf("the open ticket's own row keeps the card %v and the body %v", card, doc)
 	}
 	s.closeTicket(t, conn, sub, "10105")
 	if err := s.svc.FinishMirrorCleanup(); err != nil {
 		t.Fatal(err)
 	}
-	if card, _ := s.kept(t, conn, "10105"); !card {
-		t.Fatal("the earlier process's row kept nothing")
-	}
-	if err := s.svc.StartLinkedSync(); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.svc.FinishMirrorCleanup(); err != nil {
-		t.Fatal(err)
-	}
 	if card, doc := s.kept(t, conn, "10105"); card || doc {
-		t.Fatalf("after the boot the mirror keeps the card %v and the document %v", card, doc)
+		t.Fatalf("after the close the mirror keeps the card %v and the body %v", card, doc)
 	}
 	if n := s.openTicketRows(t); n != 0 {
-		t.Fatalf("%d open-ticket rows after the boot", n)
+		t.Fatalf("%d open-ticket rows after the close", n)
+	}
+}
+
+// A delete of the earlier rows that fails fails the run that tried it: the
+// ticket shows a failure that its next read retries, and that read
+// deletes them and binds the ticket.
+func TestAFailedDeleteOfTheEarlierRowsIsRetried(t *testing.T) {
+	t.Parallel()
+	s, conn, _ := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour, RetryBase: time.Hour})
+	s.earlierRows(t, conn, "10105", 1)
+	drops := &earlierDrops{Store: s.st, fail: 1}
+	s.svc.store = drops
+	sub := s.openTicket(t, conn, "10105")
+	if v := must[TicketView](t)(s.svc.TicketDetail(sub.ID)); v.Failure == nil || v.Failure.Kind != string(FailureInternal) {
+		t.Fatalf("the ticket whose first run failed its delete shows %+v; want the failure that it tries again", v)
+	}
+	if err := s.svc.RefreshSubscription(t.Context(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if v := must[TicketView](t)(s.svc.TicketDetail(sub.ID)); v.Failure != nil || !v.Loaded {
+		t.Fatalf("after the retry the ticket shows %+v", v)
+	}
+	if n := drops.count(); n != 2 {
+		t.Fatalf("the delete ran %d times; want the failure and the retry", n)
+	}
+	if n := must[int64](t)(s.st.DropMirrorTicketsOfOtherSessions(s.svc.session)); n != 0 {
+		t.Fatalf("%d rows of the earlier process after the retry", n)
+	}
+	if n := s.openTicketRows(t); n != 1 {
+		t.Fatalf("%d open-ticket rows; want the ticket's own", n)
+	}
+}
+
+// Two first runs at once delete the earlier rows once: the second waits
+// for the first's delete. While the first's delete is held, the second run
+// is given time to reach a delete of its own, which it must not.
+func TestConcurrentFirstRunsDeleteTheEarlierRowsOnce(t *testing.T) {
+	t.Parallel()
+	s, conn, _ := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
+	s.earlierRows(t, conn, "10105", 1)
+	arrived, second, release := make(chan struct{}), make(chan struct{}, 1), make(chan struct{})
+	var once sync.Once
+	drops := &earlierDrops{Store: s.st, hold: func() {
+		first := false
+		once.Do(func() { first = true; close(arrived) })
+		if !first {
+			second <- struct{}{}
+		}
+		<-release
+	}}
+	s.svc.store = drops
+	done := make(chan error, 2)
+	// Two reads of tickets, which take no lock of a scope.
+	run := func(issue tracker.IssueID) {
+		_, _, err := s.svc.IssueDetail(context.Background(), conn.ID, issue, Background)
+		done <- err
+	}
+	go run("10105")
+	<-arrived
+	go run("10104")
+	select {
+	case <-second:
+		close(release)
+		t.Fatal("the second first run deleted the earlier rows while the first's delete ran")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := drops.count(); n != 1 {
+		t.Fatalf("the delete ran %d times; want once", n)
+	}
+	if n := s.openTicketRows(t); n != 0 {
+		t.Fatalf("%d open-ticket rows after the first runs", n)
 	}
 }
 
@@ -394,10 +507,11 @@ func TestOpeningAndClosingATicketKeepCosts(t *testing.T) {
 	}
 }
 
-// A round reads the connection's due histories only for a ticket that
-// shows no time in its status (roundRead): with an issue due a history
-// read, a round whose ticket shows its time from its document wants none,
-// and one with a ticket that shows none wants one.
+// A round reads the connection's due histories only for a shown ticket
+// whose record's status time no final read decided (roundRead): with an
+// issue due a history read, a round whose ticket's read settled its time
+// wants none, and one with a ticket edited inside the settle margin, whose
+// read cannot settle it, wants one.
 func TestARoundReadsHistoryOnlyForATicketWithoutItsStatusTime(t *testing.T) {
 	t.Parallel()
 	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
@@ -415,8 +529,9 @@ func TestARoundReadsHistoryOnlyForATicketWithoutItsStatusTime(t *testing.T) {
 	if res := s.svc.roundTick(rd); !res.historyDue || res.historyWanted {
 		t.Fatalf("a round of a ticket that shows its time: history due %v, wanted %v; want due and not wanted", res.historyDue, res.historyWanted)
 	}
+	s.editTitles(t, conn.ID, []tracker.IssueID{"10105"})
 	s.openTicket(t, conn, "10105")
 	if res := s.svc.roundTick(rd); !res.historyDue || !res.historyWanted {
-		t.Fatalf("a round with a ticket that shows no time: history due %v, wanted %v; want both", res.historyDue, res.historyWanted)
+		t.Fatalf("a round with a ticket read inside the margin: history due %v, wanted %v; want both", res.historyDue, res.historyWanted)
 	}
 }

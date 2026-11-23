@@ -160,9 +160,11 @@ func mustStatusSince(t *testing.T, s *Store, root int64, issue string) int64 {
 }
 
 // A stored history sets the time the card's status began when it shows
-// it: the history was read for the card's update time and is final, and
-// its last status change led to the card's status, or it changed no status
-// and is complete from the issue's creation; a history that shows
+// it (MirrorStatusSince): the history was read for the card's update time
+// and is final, and its last status change led to the card's status, or it
+// changed no status and is complete from the issue's creation; a history
+// that is not final shows its last change's time provisionally when that
+// change is within the settle margin of the update; a history that shows
 // otherwise gives zero. A card updated after the update its history was
 // read for keeps the time it had while it keeps its status, through the
 // histories that do not cover it, and reads as unknown once its status
@@ -186,7 +188,7 @@ func TestMirrorStatusSinceComesFromTheHistory(t *testing.T) {
 	}{
 		{"last change leads to the status", webHistory("10001"), 7},
 		{"card newer than the history", func() MirrorHistory { h := webHistory("10002"); h.For = 8; return h }(), 0},
-		{"history not final", func() MirrorHistory { h := webHistory("10006"); h.Wait = 60_000; return h }(), 0},
+		{"history not final, its change within the margin", func() MirrorHistory { h := webHistory("10006"); h.Wait = 60_000; return h }(), 7},
 		{"last change leads elsewhere", webHistory("10003"), 0},
 		{"no change, complete from creation", MirrorHistory{IssueID: "10004", Changes: assignee}, 1},
 		{"no change, complete from later", MirrorHistory{IssueID: "10005", CompleteFrom: 4, Changes: assignee}, 0},

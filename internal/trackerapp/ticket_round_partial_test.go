@@ -20,11 +20,11 @@ type ticketStore struct {
 	failDetails, failViews atomic.Bool
 }
 
-func (s *ticketStore) StoreMirrorDetails(root, sweep int64, docs []store.MirrorDetailDoc, opened, read store.MirrorRead) (store.MirrorDetailWrites, error) {
-	if s.failDetails.Load() {
-		return store.MirrorDetailWrites{}, errStoreDown
+func (s *ticketStore) StoreMirrorTickets(root, sweep int64, tickets []store.MirrorTicket, catalog store.MirrorCatalog, opened, read store.MirrorRead) (store.MirrorTicketsWrite, error) {
+	if s.failDetails.Load() && slices.ContainsFunc(tickets, func(t store.MirrorTicket) bool { return t.Body != nil }) {
+		return store.MirrorTicketsWrite{}, errStoreDown
 	}
-	return s.Store.StoreMirrorDetails(root, sweep, docs, opened, read)
+	return s.Store.StoreMirrorTickets(root, sweep, tickets, catalog, opened, read)
 }
 
 func (s *ticketStore) ListMirrorCards(root int64, issues []string) ([]store.MirrorCard, error) {
@@ -45,7 +45,10 @@ func (m *mirrorFixture) pumpOf(issue tracker.IssueID) *ticketPump {
 // its full read fails, at the tracker, by a rate limit or in the store.
 // Only the ticket read in full is told the failure and goes on the retry
 // schedule, which the other's success leaves running; the current one
-// settles as read, due with the round's next regular read.
+// settles as read, due with the round's next regular read. The check
+// stored the changed card in the issue record, so the failed ticket is
+// told the failure, then its view with the record's card over the body it
+// held, still with the failure.
 func TestARoundTellsItsFailureOnlyToTheTicketsItDidNotRead(t *testing.T) {
 	t.Parallel()
 	until := time.UnixMilli(1_900_000_000_000).UTC()
@@ -80,8 +83,16 @@ func TestARoundTellsItsFailureOnlyToTheTicketsItDidNotRead(t *testing.T) {
 				t.Fatalf("the round read %v in full", got)
 			}
 			got := m.issueEventsSince(events)
-			if len(got) != 1 || got[0].Issue != issues[0] || got[0].Failure == nil || got[0].Failure.Kind != string(tc.kind) {
+			if len(got) != 2 || got[0].Changed || !got[1].Changed {
 				t.Fatalf("events %+v", got)
+			}
+			for _, e := range got {
+				if e.Issue != issues[0] || e.Failure == nil || e.Failure.Kind != string(tc.kind) {
+					t.Fatalf("events %+v", got)
+				}
+			}
+			if v := m.ticketView(t, subs[0].ID); v.Detail.Card.Title != "Renamed" || !v.Detail.BodyBehind {
+				t.Fatalf("the ticket not read shows %q, body behind %v; want the record's card over the held body", v.Detail.Card.Title, v.Detail.BodyBehind)
 			}
 			if v := m.ticketView(t, subs[1].ID); v.Failure != nil {
 				t.Fatalf("the ticket the round read shows %+v", v.Failure)

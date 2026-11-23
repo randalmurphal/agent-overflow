@@ -132,7 +132,7 @@ func (p *Provider) details(ctx context.Context, ds []*linear.IssueDetail) ([]tra
 // named by n and its card's labels by cardLabels.
 func (n names) detail(d *linear.IssueDetail, states []linear.WorkflowState, older []linear.HistoryEntry, cardLabels map[string]string) tracker.Detail {
 	out := tracker.Detail{
-		Card: card(d.Issue, cardLabels), URL: d.URL, Description: d.Description,
+		Card: card(d.Issue, cardLabels), Description: d.Description,
 		Fields:      detailFields(d.Issue, n),
 		Comments:    commentPage(d.Comments),
 		HistoryFrom: d.CreatedAt.Add(creationFold),

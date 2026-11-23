@@ -1,7 +1,6 @@
 package store
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 	"testing"
@@ -37,20 +36,20 @@ func mirrorScopes(t *testing.T, s *Store, root int64) map[string]mirrorScope {
 	page := func(readAt int64, rows ...MirrorRow) MirrorRowPage {
 		return MirrorRowPage{BoardID: "10", Lifetime: lifetime, Rows: rows, ReadAt: mirrorReadAt(readAt)}
 	}
-	// The card's update time, for scopes that are not only listed.
-	var cardAt int64
+	// The card as the mirror holds it, for scopes that are not only listed.
+	var held MirrorCard
 	if s != nil {
-		cardAt = heldDoc(t, s, root, "10001", nil).CardUpdatedAt
+		held = heldCard(t, s, root, "10001")
 	}
 	return map[string]mirrorScope{
-		"detail": {
+		"body": {
 			store: func(readAt int64, v string) error {
-				doc := MirrorDetailDoc{IssueID: "10001", Data: []byte(`{"v":"` + v + `"}`), CardUpdatedAt: cardAt}
-				_, err := s.StoreMirrorDetail(root, sweep, doc, mirrorReadAt(10), mirrorReadAt(readAt))
+				ticket := MirrorTicket{Card: held, Body: []byte(`{"v":"` + v + `"}`)}
+				_, err := s.StoreMirrorTickets(root, sweep, []MirrorTicket{ticket}, MirrorCatalog{}, mirrorReadAt(10), mirrorReadAt(readAt))
 				return err
 			},
-			content: scalar(`SELECT data ->> 'v' FROM tracker_cache_issue_details`),
-			later:   map[string]int{"tracker_cache_issue_details": 1}, statements: 3,
+			content: scalar(`SELECT data ->> 'v' FROM tracker_cache_issue_bodies`),
+			later:   map[string]int{"tracker_cache_issues": 1}, statements: 5,
 		},
 		"board order": {
 			store: func(readAt int64, v string) error {
@@ -70,7 +69,7 @@ func mirrorScopes(t *testing.T, s *Store, root int64) map[string]mirrorScope {
 			content: func() string {
 				return scalar(`SELECT issue_key FROM tracker_cache_issues WHERE issue_id = '10001'`)()[len("WEB-"):]
 			},
-			later: map[string]int{"tracker_cache_issues": 1}, statements: 6,
+			later: map[string]int{"tracker_cache_issues": 1}, statements: 5,
 		},
 		"cursor": {
 			store: func(readAt int64, v string) error {
@@ -200,56 +199,5 @@ func TestMirrorAbsenceIsAdmitted(t *testing.T) {
 			t.Errorf("%s: a read from before it = %+v, %v; want it refused", absence, got, err)
 		}
 		assertRows(t, s.db, fmt.Sprintf(`SELECT count(*) FROM tracker_cache_board_issues WHERE root_id = %d AND issue_id = '10002'`, root), "0")
-	}
-}
-
-// A detail write records the opening it carries in the same statement as
-// its document or its read time: whatever it moves, one row write. Only an
-// opening starts a detail.
-func TestStoreMirrorDetailRecordsTheOpening(t *testing.T) {
-	s, _, root := newMirror(t)
-	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a"), webRow("10002", 5, "b")})
-	recorder := recordMirrorWrites(t, s)
-	sweep := currentSweep(s, root)
-	for _, step := range []struct {
-		name               string
-		issue              string
-		opened, read       int64
-		doc                string
-		want               MirrorDetailWrite
-		statements, writes int
-		state              string
-	}{
-		{"new, opened", "10001", 80, 80, `{"v":1}`, MirrorDetailWrite{Stored: true, Changed: true}, 4, 1, "80 80 1"},
-		{"opened again", "10001", 200, 80, `{"v":1}`, MirrorDetailWrite{Stored: true}, 3, 1, "200 80 1"},
-		{"the same again", "10001", 200, 80, `{"v":1}`, MirrorDetailWrite{Stored: true}, 2, 0, "200 80 1"},
-		{"earlier document, opened", "10001", 300, 70, `{"v":0}`, MirrorDetailWrite{Stored: true, Superseded: true}, 3, 1, "300 80 1"},
-		{"identical later read", "10001", 0, 90, `{"v":1}`, MirrorDetailWrite{Stored: true}, 3, 1, "300 90 1"},
-		{"earlier opening", "10001", 250, 95, `{"v":2}`, MirrorDetailWrite{Stored: true, Changed: true}, 3, 1, "300 95 2"},
-		{"earlier opening, same document read later", "10001", 150, 99, `{"v":2}`, MirrorDetailWrite{Stored: true}, 3, 1, "300 99 2"},
-		{"new, no opening", "10002", 0, 60, `{"v":1}`, MirrorDetailWrite{}, 2, 0, "none"},
-		{"new, opened", "10002", 60, 60, `{"v":1}`, MirrorDetailWrite{Stored: true, Changed: true}, 4, 1, "60 60 1"},
-	} {
-		recorder.reset()
-		var got MirrorDetailWrite
-		var err error
-		doc := heldDoc(t, s, root, step.issue, []byte(step.doc))
-		statements := countMirrorStatements(t, func() {
-			got, err = s.StoreMirrorDetail(root, sweep, doc, mirrorReadAt(step.opened), mirrorReadAt(step.read))
-		})
-		writes := 0
-		for _, n := range recorder.rowWrites() {
-			writes += n
-		}
-		if err != nil || !reflect.DeepEqual(got, step.want) || statements != step.statements || writes != step.writes {
-			t.Errorf("%s: %+v, %v in %d statements, %d rows; want %+v in %d, %d", step.name, got, err, statements, writes, step.want, step.statements, step.writes)
-		}
-		assertRows(t, s.db, `SELECT coalesce((SELECT opened_at || ' ' || read_at || ' ' || (data ->> 'v') FROM tracker_cache_issue_details WHERE root_id = '`+fmt.Sprint(root)+`' AND issue_id = '`+step.issue+`'), 'none')`, step.state)
-	}
-	if _, err := storeDetail(t, s, root, sweep, "10001", -1, 99, nil); !errors.Is(err, ErrInvalidTrackerCache) {
-		t.Fatalf("a negative opening: %v", err)
-	}
-	if _, err := storeDetail(t, s, root, 0, "10001", 0, 99, nil); !errors.Is(err, ErrInvalidTrackerCache) {
-		t.Fatalf("no sweep: %v", err)
 	}
 }

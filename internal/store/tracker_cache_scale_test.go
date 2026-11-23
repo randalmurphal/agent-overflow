@@ -245,16 +245,6 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	doc := func(id string, rev int) []byte {
 		return append(bytes.Repeat([]byte("d"), 16_000), fmt.Sprintf("%s-%d", id, rev)...)
 	}
-	// cardAt is the update time of each ticket's card as the mirror holds
-	// it, read before a measured section (heldCards).
-	cardAt := map[string]int64{}
-	docs := func(ids []string, rev int) []MirrorDetailDoc {
-		out := make([]MirrorDetailDoc, len(ids))
-		for i, id := range ids {
-			out[i] = MirrorDetailDoc{IssueID: id, Data: doc(id, rev), CardUpdatedAt: cardAt[id]}
-		}
-		return out
-	}
 	// held are the tickets' cards as the mirror holds them, which an idle
 	// round reads again.
 	var held []MirrorCard
@@ -263,12 +253,16 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		if held, err = s.ListMirrorCards(root, tickets); err != nil || len(held) != len(tickets) {
 			t.Fatalf("%d cards of %d tickets: %v", len(held), len(tickets), err)
 		}
-		for _, c := range held {
-			cardAt[c.IssueID] = c.UpdatedAt
+	}
+	ticketsOf := func(cards []MirrorCard, rev int) []MirrorTicket {
+		out := make([]MirrorTicket, len(cards))
+		for i, c := range cards {
+			out[i] = MirrorTicket{Card: c, Body: doc(c.IssueID, rev)}
 		}
+		return out
 	}
 	heldCards()
-	if _, err := s.StoreMirrorDetails(root, sweep, docs(tickets, 0), mirrorReadAt(7), mirrorReadAt(7)); err != nil {
+	if _, err := s.StoreMirrorTickets(root, sweep, ticketsOf(held, 0), MirrorCatalog{}, mirrorReadAt(7), mirrorReadAt(7)); err != nil {
 		t.Fatal(err)
 	}
 	cards := func(n int) []MirrorCard { return slices.Clone(held[:n]) }
@@ -356,9 +350,8 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		if err := syncState(""); err != nil {
 			return err
 		}
-		d, ok, err := s.GetMirrorDetail(root, tickets[0])
-		if err != nil || !ok {
-			return fmt.Errorf("detail held %v: %v", ok, err)
+		if _, ok, err := s.GetMirrorBody(root, tickets[0]); err != nil || !ok {
+			return fmt.Errorf("body held %v: %v", ok, err)
 		}
 		if _, err := s.GetMirrorCatalog(root, []string{"acc-user1"}, []string{"1"}); err != nil {
 			return err
@@ -366,78 +359,49 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		if _, err := s.ListMirrorCards(root, tickets[:4]); err != nil {
 			return err
 		}
-		if _, err := s.UpsertMirrorCards(root, sweep, cards(1), MirrorCatalog{}, mirrorReadAt(next())); err != nil {
-			return err
-		}
-		_, err = s.ConfirmMirrorDetail(root, d, mirrorReadAt(next()))
+		_, err := s.StoreMirrorTickets(root, sweep, []MirrorTicket{{Card: cards(1)[0]}}, MirrorCatalog{}, mirrorReadAt(next()), mirrorReadAt(next()))
 		return err
 	})
-	// A round's inputs are built before its measured section: the cards
-	// and documents the tracker answered, changedTickets of them (every
-	// tenth) at a new update time with a new document: since, plus the
-	// rep, after every update an earlier path stored.
-	var roundCards []MirrorCard
-	var roundDocs, owedDocs []MirrorDetailDoc
+	// A round's inputs are built before its measured section: the tickets
+	// the tracker answered, changedTickets of them (every tenth) at a new
+	// update time with a new body: since, plus the rep, after every update
+	// an earlier path stored.
+	var roundTickets, roundChanged []MirrorTicket
 	roundInputs := func(changedTickets int, since int64) func(rep int) {
 		return func(rep int) {
 			heldCards()
-			roundCards, roundDocs, owedDocs = cards(len(tickets)), docs(tickets, 0), nil
+			roundTickets, roundChanged = ticketsOf(cards(len(tickets)), 0), nil
 			for i := range changedTickets {
 				at := i * 10
-				roundCards[at].UpdatedAt = since + int64(rep)
-				roundDocs[at] = MirrorDetailDoc{IssueID: tickets[at], Data: doc(tickets[at], 1+rep), CardUpdatedAt: since + int64(rep)}
-				owedDocs = append(owedDocs, roundDocs[at])
+				roundTickets[at].Card.UpdatedAt = since + int64(rep)
+				roundTickets[at].Body = doc(tickets[at], 1+rep)
+				roundChanged = append(roundChanged, roundTickets[at])
 			}
 		}
 	}
-	changedCards := func() []MirrorCard {
-		var out []MirrorCard
-		for _, d := range owedDocs {
-			i := slices.IndexFunc(roundCards, func(c MirrorCard) bool { return c.IssueID == d.IssueID })
-			out = append(out, roundCards[i])
-		}
-		return out
-	}
 	// A Jira round checks every ticket with one cards read, then stores
-	// the documents of those that changed.
+	// the tickets of those that changed, read in full.
 	jira := func(rep int) error {
 		if err := syncState(""); err != nil {
 			return err
 		}
-		if _, err := s.ListMirrorDetailStates(root, tickets); err != nil {
+		checks := make([]MirrorTicket, len(roundTickets))
+		for i, rt := range roundTickets {
+			checks[i] = MirrorTicket{Card: rt.Card}
+		}
+		if _, err := s.StoreMirrorTickets(root, sweep, checks, MirrorCatalog{}, MirrorRead{}, mirrorReadAt(next())); err != nil || len(roundChanged) == 0 {
 			return err
 		}
-		if _, err := s.UpsertMirrorCards(root, sweep, roundCards, MirrorCatalog{}, mirrorReadAt(next())); err != nil || len(owedDocs) == 0 {
-			return err
-		}
-		_, err := s.StoreMirrorDetails(root, sweep, owedDocs, mirrorReadAt(0), mirrorReadAt(next()))
+		_, err := s.StoreMirrorTickets(root, sweep, roundChanged, MirrorCatalog{}, MirrorRead{}, mirrorReadAt(next()))
 		return err
 	}
-	// A Linear round stores every ticket's document; those whose card
-	// moved are owed it, read by ID, and stored again
-	// (trackerapp payOwedCards).
+	// A Linear round reads every ticket in full and stores them in one
+	// write.
 	linear := func(rep int) error {
 		if err := syncState(""); err != nil {
 			return err
 		}
-		at := next()
-		got, err := s.StoreMirrorDetails(root, sweep, roundDocs, mirrorReadAt(0), mirrorReadAt(at))
-		if err != nil || len(owedDocs) == 0 {
-			return err
-		}
-		owed := 0
-		for _, w := range got.Docs {
-			if w.CardOwed {
-				owed++
-			}
-		}
-		if owed != len(owedDocs) {
-			return fmt.Errorf("%d documents owed their card; want %d", owed, len(owedDocs))
-		}
-		if _, err := s.UpsertMirrorCards(root, sweep, changedCards(), MirrorCatalog{}, mirrorReadAt(next())); err != nil {
-			return err
-		}
-		_, err = s.StoreMirrorDetails(root, sweep, owedDocs, mirrorReadAt(0), mirrorReadAt(at))
+		_, err := s.StoreMirrorTickets(root, sweep, roundTickets, MirrorCatalog{}, MirrorRead{}, mirrorReadAt(next()))
 		return err
 	}
 	out["Jira round of 100, idle"] = measureScale(t, rec, roundInputs(0, 0), jira)

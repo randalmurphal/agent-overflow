@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -12,15 +13,18 @@ import (
 	"agent-overflow/internal/tracker"
 )
 
-// A detail document's card is the card a cards read and a board's rows
-// read make of the same issue, column for column and in the blob a view
-// decodes, on each provider: the view shows the mirror's card in place of
-// a document's at the same update (shownDetailOf), so a difference would
-// show a ticket other than its document. The two reads also leave out the
-// same issues: a trashed Linear issue has no card and no detail. Each
+// A detail's card is the card a cards read and a board's rows read make
+// of the same issue, column for column and in the blob a view decodes, on
+// each provider: every read stores its card in the one issue record
+// through the same card path, so a difference would make the record
+// change with the path that read it last. The two reads also leave out
+// the same issues: a trashed Linear issue has no card and no detail. Each
 // issue the board shows is compared with its row, and the issues carry a
 // parent, labels their history shows changing, a sprint or cycle, an
-// estimate and a resolution.
+// estimate and a resolution; on Jira one names a sprint that closed
+// before the history window (the cutoff), and on Linear one carries more
+// labels than a read's nested page of 250 holds (the cap), which the
+// reads name past the page.
 func TestFakeDetailCardIsTheReadCard(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
@@ -75,6 +79,13 @@ func TestFakeDetailCardIsTheReadCard(t *testing.T) {
 				}
 				ws.Issues = append(ws.Issues, trackerfake.LinearIssue{ID: lid(63), Team: lid(10), Number: 4, Title: "Old idea", State: lid(20),
 					Creator: lid(1), SortOrder: 400, CreatedAt: at.Add(-96 * time.Hour), UpdatedAt: at.Add(-24 * time.Hour), Trashed: true})
+				many := trackerfake.LinearIssue{ID: lid(64), Team: lid(10), Number: 5, Title: "Many labels", State: lid(21),
+					Creator: lid(1), SortOrder: 500, CreatedAt: at.Add(-96 * time.Hour), UpdatedAt: at.Add(-24 * time.Hour)}
+				for i := range 251 {
+					ws.Labels = append(ws.Labels, trackerfake.LinearLabel{ID: lid(1000 + i), Name: fmt.Sprintf("label-%03d", i)})
+					many.Labels = append(many.Labels, lid(1000+i))
+				}
+				ws.Issues = append(ws.Issues, many)
 				done := at.Add(-time.Hour)
 				ws.Issues[2].State, ws.Issues[2].CompletedAt, ws.Issues[2].UpdatedAt = lid(23), done, done
 				return trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{ws}}
@@ -85,7 +96,7 @@ func TestFakeDetailCardIsTheReadCard(t *testing.T) {
 				return conn
 			},
 			board:  tracker.BoardID(lid(10)),
-			issues: ids(lid(60), lid(61), lid(62)),
+			issues: ids(lid(60), lid(61), lid(62), lid(64)),
 			gone:   ids(lid(63)),
 		},
 	} {
@@ -112,7 +123,7 @@ func TestFakeDetailCardIsTheReadCard(t *testing.T) {
 			for _, r := range rows.Rows {
 				onBoard[r.Card.ID] = stored(r.Card)
 			}
-			var parent, labelled, sprinted, resolved, relabelled bool
+			var parent, labelled, sprinted, resolved, relabelled, capped bool
 			for _, d := range details.Details {
 				got := stored(d.Card)
 				if want, ok := read[d.Card.ID]; !ok || !reflect.DeepEqual(got, want) {
@@ -123,6 +134,7 @@ func TestFakeDetailCardIsTheReadCard(t *testing.T) {
 				}
 				parent = parent || got.ParentID != ""
 				labelled = labelled || len(d.Card.Labels) > 0
+				capped = capped || len(d.Card.Labels) > 250 && !slices.ContainsFunc(d.Card.Labels, func(c tracker.Choice) bool { return c.Name == "" })
 				sprinted = sprinted || len(got.Sprints) > 0
 				if slices.Contains(got.Sprints, "90") {
 					t.Errorf("issue %s names sprint 90, which closed before the history window", d.Card.ID)
@@ -130,9 +142,9 @@ func TestFakeDetailCardIsTheReadCard(t *testing.T) {
 				resolved = resolved || got.ResolvedAt > 0
 				relabelled = relabelled || slices.ContainsFunc(d.History, func(e tracker.Event) bool { return strings.EqualFold(e.Field, "labels") })
 			}
-			if !parent || !labelled || !sprinted || !resolved || !relabelled {
-				t.Fatalf("the issues compared: a parent %v, labels %v, a sprint %v, a resolution %v, a label change %v",
-					parent, labelled, sprinted, resolved, relabelled)
+			if !parent || !labelled || !sprinted || !resolved || !relabelled || name == "linear" && !capped {
+				t.Fatalf("the issues compared: a parent %v, labels %v, a sprint %v, a resolution %v, a label change %v, past the label cap %v",
+					parent, labelled, sprinted, resolved, relabelled, capped)
 			}
 		})
 	}

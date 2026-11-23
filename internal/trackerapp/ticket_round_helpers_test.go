@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -43,8 +44,9 @@ func (m *mirrorFixture) readSoon(issues ...tracker.IssueID) {
 }
 
 // quiet waits until no ticket pump of s owes work: each first read has
-// settled, no shown ticket is due a read now, no view is behind its inputs
-// and no rebuild is queued. A test calls it before comparing what the
+// settled, no shown ticket is due a read now, no view is behind its inputs,
+// no rebuild is queued and no round is reading (its history read after
+// its tickets settled included). A test calls it before comparing what the
 // subscribers were told with what the service holds.
 func quiet(t *testing.T, s *Service) {
 	t.Helper()
@@ -61,6 +63,11 @@ func quiet(t *testing.T, s *Service) {
 				busy = fmt.Sprint(k.issue, " is due a read")
 			case tp.behindLocked() && tp.shownLocked(), len(tp.viewChanged) > 0 && tp.shownLocked():
 				busy = fmt.Sprint(k.issue, " owes a view")
+			}
+		}
+		for conn, rd := range s.subs.rounds {
+			if rd.reading {
+				busy = fmt.Sprint("the round of ", conn, " is reading")
 			}
 		}
 		s.subMu.Unlock()
@@ -175,8 +182,8 @@ func newRoundFixtureThen(t *testing.T, n int, jira bool, beforeOpen func(*mirror
 	}
 	m.tracks(rows)
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
-	// Either tracker answers a cards read: a Jira round's check, and on
-	// either a card a changed document is owed (payOwedCards).
+	// Either tracker answers a cards read, as a Jira round's check reads
+	// one.
 	m.p.set(func(p *scripted) { p.detail, p.cards = st.detail, st.cardsRead })
 	if jira {
 		m.p.updatedMovesWithDetail(st.cardsRead)
@@ -252,4 +259,51 @@ func sortedIDs(ids []tracker.IssueID) []tracker.IssueID {
 	out := slices.Clone(ids)
 	slices.Sort(out)
 	return out
+}
+
+// historyGate holds the first history write, once armed, until release:
+// the round's history read, stored after its read of the tickets settled.
+type historyGate struct {
+	*store.Store
+	arrived, release chan struct{}
+	once             sync.Once
+}
+
+func (g *historyGate) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, bool, error) {
+	g.once.Do(func() {
+		close(g.arrived)
+		<-g.release
+	})
+	return g.Store.ReplaceMirrorHistories(root, sweep, hs, catalog, read)
+}
+
+// quiet waits for a round's history read, which the round makes after its
+// read of the tickets settled them: what that read stores changes the
+// views it is told to, so a test that compares them after quiet would race
+// it.
+func TestQuietWaitsForTheRoundsHistoryRead(t *testing.T) {
+	t.Parallel()
+	m, _, issues, _ := newRoundFixture(t, 1, false)
+	quiet(t, m.svc)
+	if r := m.recordOf(t, string(issues[0])); r.StatusFinal {
+		t.Fatal("the ticket's status time is final; the round would read no history")
+	}
+	gate := &historyGate{Store: m.st, arrived: make(chan struct{}), release: make(chan struct{})}
+	m.svc.store = gate
+	release := sync.OnceFunc(func() { close(gate.release) })
+	t.Cleanup(release)
+	m.readSoon(issues[0])
+	waitClosed(t, "the round's history write", gate.arrived)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		quiet(t, m.svc)
+	}()
+	select {
+	case <-done:
+		t.Fatal("quiet returned while the round's history read was in flight")
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+	<-done
 }

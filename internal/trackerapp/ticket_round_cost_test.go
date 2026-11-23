@@ -8,13 +8,14 @@ import (
 )
 
 // A round of 50 shown tickets that finds 10 of them changed costs, on
-// Jira, the one cards read of the check and one full read of the changed
-// tickets together, stored in one write; on Linear, the one read in full
-// of every ticket and the read of the cards the changed documents are
-// owed, each stored in one write, and the owed documents in one more.
-// The store calls do not grow with the tickets; the requests these
-// provider calls make are TestFakeRoundRequests', the statements and row
-// writes the store's TestRoundStatements'.
+// Jira, the one cards read of the check, stored with each ticket's record
+// in one ticket write, and one full read of the changed tickets together,
+// stored in one more; on Linear, the one read in full of every ticket,
+// stored in one ticket write with each card, body and status result. Both
+// then read the changed tickets' cards and names for their views. The
+// store calls do not grow with the tickets; the requests these provider
+// calls make are TestFakeRoundRequests', the statements and row writes
+// the store's TestChangedRoundStatements'.
 func TestChangedRoundCosts(t *testing.T) {
 	t.Parallel()
 	for _, jira := range []bool{true, false} {
@@ -33,9 +34,9 @@ func TestChangedRoundCosts(t *testing.T) {
 			}
 			provider, stored := describeCounts(countsOf(m.p.callsInOrder()[calls:])), describeCounts(cs.take())
 			wantProvider := "Cards:1 Details:1"
-			wantStore := "GetMirrorCatalog:1 GetMirrorSync:1 ListMirrorCards:1 ListMirrorDetailStates:1 StoreMirrorDetails:1 UpsertMirrorCards:1"
+			wantStore := "GetMirrorCatalog:1 GetMirrorSync:1 ListMirrorCards:1 StoreMirrorTickets:2"
 			if !jira {
-				wantStore = "GetMirrorCatalog:1 GetMirrorSync:1 ListMirrorCards:1 StoreMirrorDetails:2 UpsertMirrorCards:1"
+				wantProvider, wantStore = "Details:1", "GetMirrorCatalog:1 GetMirrorSync:1 ListMirrorCards:1 StoreMirrorTickets:1"
 			}
 			t.Logf("10 of 50 changed: provider %s, store %s", provider, stored)
 			if provider != wantProvider || stored != wantStore {

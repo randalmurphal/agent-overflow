@@ -276,7 +276,7 @@ func TestAChangedCardWakesTheOpenTicket(t *testing.T) {
 // On a tracker whose update time does not move with a comment, an open
 // ticket picks a new comment up at its next round with no card change:
 // the mirror's copy for an issue it keeps, by its board or for the ticket
-// alone, and the view the pump holds for one whose keep failed. The test
+// alone, and the view the pump holds for one the mirror does not keep. The test
 // runs each round itself.
 func TestAnOpenTicketPicksUpANewComment(t *testing.T) {
 	t.Parallel()
@@ -287,7 +287,7 @@ func TestAnOpenTicketPicksUpANewComment(t *testing.T) {
 	}{
 		{"kept by its board", "10001", true, true},
 		{"kept for the ticket", "20001", true, false},
-		{"keep refused", "20001", false, false},
+		{"not kept", "20001", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -299,7 +299,7 @@ func TestAnOpenTicketPicksUpANewComment(t *testing.T) {
 				m.events.boardEvents(t, 1)
 			}
 			if !kept {
-				m.refuseKeeps()
+				m.loseKeeps()
 			}
 			var mu sync.Mutex
 			comments := []tracker.Comment{{ID: "1", Author: "acc-user1", Body: "First", Created: time.UnixMilli(1_799_000_000_000)}}
@@ -312,9 +312,6 @@ func TestAnOpenTicketPicksUpANewComment(t *testing.T) {
 					return d, nil
 				}
 			})
-			// The first document of an issue kept for its ticket alone is
-			// owed its card (payOwedCards).
-			answerCardsFromDetails(m.p)
 			sub, err := m.svc.SubscribeTicket(m.conn.ID, issue)
 			if err != nil {
 				t.Fatal(err)

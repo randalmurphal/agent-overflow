@@ -139,8 +139,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, _, err := s.GetMirrorSync(root, "10", testNow); return err },
 		func() error { _, _, err := s.GetMirrorSync(root, "", testNow); return err },
 		func() error { _, _, err := s.ListMirrorHistoryDue(root, testNow); return err },
-		func() error { _, _, err := s.GetMirrorDetail(root, "10001"); return err },
-		func() error { _, err := s.ListMirrorDetailStates(root, []string{"10001", "10002"}); return err },
+		func() error { _, _, err := s.GetMirrorBody(root, "10001"); return err },
 		func() error {
 			_, _, err := s.ListMirrorWorklogs(root, "acc-user1", "2026-01-01", "2026-01-31")
 			return err
@@ -261,8 +260,10 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 		"the read clock's seed (mirrorReadSeedSQL) walks the root's rows of each table holding a read time, once per root per process, at its first read"},
 	{" LIMIT 500) AND EXISTS (SELECT 1 FROM tracker_cache_roots WHERE id = ?1 AND connection_id IS NULL)", "",
 		"a detached root's batch reads at most clearMirrorChunk rows of the root"},
-	{"ORDER BY opened_at DESC, issue_id DESC LIMIT -1 OFFSET", "SEARCH tracker_cache_issue_details USING COVERING INDEX idx_tracker_cache_issue_details_opened (root_id=?)",
-		"a root's details, at most mirrorDetailCap+1"},
+	{"ORDER BY EXISTS (SELECT 1 FROM tracker_cache_open_tickets o", "USE TEMP B-TREE FOR ORDER BY",
+		"a root's bodies, at most mirrorBodyCap and the bodies one write started, ordered by their keep"},
+	{"INDEXED BY idx_tracker_cache_issues_body_opened", "SEARCH b USING INDEX idx_tracker_cache_issues_body_opened (root_id=?)",
+		"the partial index holds only the bodies a root holds, at most mirrorBodyCap and the bodies one write started"},
 	{"DELETE FROM tracker_cache_roots WHERE id = ? AND connection_id IS NULL", "",
 		"the foreign key probes of a drained root, whose tables the drain emptied"},
 	{"INSERT INTO tracker_cache_roots", "", "the foreign key probes of a new root, which has no rows"},
@@ -341,12 +342,12 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		"linked issues":    {mirrorOffBoardLinkedSQL, "idx_thread_tickets_issue (kind=? AND site=? AND issue_id>?)"},
 		"linked issues' walk of their rows": {mirrorOffBoardLinkedSQL,
 			"SEARCH on_board USING PRIMARY KEY (root_id=? AND issue_id=?)\nLIST SUBQUERY"},
-		"listing marks":   {mirrorReconcileMarkSQL, "SEARCH tracker_cache_board_issues USING PRIMARY KEY (root_id=? AND issue_id=? AND board_id=?)"},
-		"card read":       {mirrorCardReadSQL, "(root_id=? AND issue_id=?)\nLIST SUBQUERY"},
-		"detail eviction": {mirrorDetailEvictSQL, "idx_tracker_cache_issue_details_opened (root_id=?)"},
-		"detail states":   {mirrorDetailStatesSQL, "SEARCH d USING INDEX sqlite_autoindex_tracker_cache_issue_details_1 (root_id=? AND issue_id=?)"},
-		"issue rows":      {mirrorIssueRowsSQL, "PRIMARY KEY (root_id=? AND issue_id=? AND board_id>?)"},
-		"keep rule":       {`SELECT ` + mirrorIssueKept("?1", "?2"), "PRIMARY KEY (root_id=? AND issue_id=?)"},
+		"listing marks": {mirrorReconcileMarkSQL, "SEARCH tracker_cache_board_issues USING PRIMARY KEY (root_id=? AND issue_id=? AND board_id=?)"},
+		"card read":     {mirrorCardReadSQL, "(root_id=? AND issue_id=?)\nLIST SUBQUERY"},
+		"card states":   {mirrorCardStatesSQL, "SEARCH i USING INDEX sqlite_autoindex_tracker_cache_issues_1 (root_id=? AND issue_id=?)"},
+		"ticket move":   {mirrorTicketMoveSQL, "(root_id=? AND issue_id=?)\nLIST SUBQUERY"},
+		"issue rows":    {mirrorIssueRowsSQL, "PRIMARY KEY (root_id=? AND issue_id=? AND board_id>?)"},
+		"keep rule":     {`SELECT ` + mirrorIssueKept("?1", "?2"), "PRIMARY KEY (root_id=? AND issue_id=?)"},
 		"backlog section": {mirrorSectionSQL[MirrorSectionBacklog],
 			"SEARCH m USING PRIMARY KEY (root_id=? AND issue_id=?)\nSEARCH sp USING PRIMARY KEY (root_id=? AND board_id=? AND sprint_id=?)"},
 		"sprint section": {mirrorSectionSQL[MirrorSectionSprint],
@@ -366,6 +367,11 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		if !strings.Contains(plan, read.index) || strings.Contains(plan, "TEMP B-TREE") {
 			t.Errorf("%s plan:\n%s\nwant %s and no sort", name, plan, read.index)
 		}
+	}
+	// The cap's eviction walks the bodies held alone, and sorts those
+	// (mirrorPlanAllowed), not the root's issues.
+	if plan := explainMirror(t, s, mirrorBodyEvictSQL); !strings.Contains(plan, "SEARCH b USING INDEX idx_tracker_cache_issues_body_opened (root_id=?)") {
+		t.Errorf("body eviction plan:\n%s\nwant a walk of idx_tracker_cache_issues_body_opened", plan)
 	}
 	// A listing probes each listed issue's row by key, which finds the rows
 	// to mark; only the arm of the unlisted rows walks the board.

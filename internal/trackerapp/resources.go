@@ -103,7 +103,7 @@ func (r *run) cards(issues []tracker.IssueID) (out Changes, unread []tracker.Iss
 	for i := 0; i < len(issues); i += readBatch {
 		batch := issues[i:min(i+readBatch, len(issues))]
 		err := r.againIfSwept(func() error {
-			_, ch, err := r.cardsOf(batch)
+			ch, err := r.cardsOf(batch)
 			out.add(ch)
 			return err
 		})
@@ -114,51 +114,34 @@ func (r *run) cards(issues []tracker.IssueID) (out Changes, unread []tracker.Iss
 	return out, nil, nil
 }
 
-// cardsNow is the cards read of one batch of issues (at most readBatch):
-// the cards the tracker returned, those of the issues the mirror keeps
-// stored.
-func (r *run) cardsNow(batch []tracker.IssueID) ([]tracker.Card, Changes, error) {
-	var read []tracker.Card
-	var out Changes
-	err := r.againIfSwept(func() error {
-		var ch Changes
-		var err error
-		read, ch, err = r.cardsOf(batch)
-		out.add(ch)
-		return err
-	})
-	return read, out, err
-}
-
-// cardsOf reads and stores the cards of one batch of issues, and returns
-// the cards read.
-func (r *run) cardsOf(batch []tracker.IssueID) ([]tracker.Card, Changes, error) {
+// cardsOf reads and stores the cards of one batch of issues.
+func (r *run) cardsOf(batch []tracker.IssueID) (Changes, error) {
 	began, err := r.beginRead()
 	if err != nil {
-		return nil, Changes{}, err
+		return Changes{}, err
 	}
 	r.calls++
 	read, err := r.p.Cards(r.ctx, batch)
 	if err != nil {
-		return nil, Changes{}, fmt.Errorf("trackerapp: read %d cards: %w", len(batch), call(err))
+		return Changes{}, fmt.Errorf("trackerapp: read %d cards: %w", len(batch), call(err))
 	}
 	cards := make([]store.MirrorCard, 0, len(read.Cards))
 	for _, c := range read.Cards {
 		m, err := mirrorCard(c)
 		if err != nil {
-			return nil, Changes{}, err
+			return Changes{}, err
 		}
 		cards = append(cards, m)
 	}
 	catalog, err := mirrorCatalog(read.Catalog)
 	if err != nil {
-		return nil, Changes{}, err
+		return Changes{}, err
 	}
 	stored, err := r.s.store.UpsertMirrorCards(r.root, r.state.Sweep, cards, catalog, began)
 	if err != nil {
-		return nil, Changes{}, fmt.Errorf("trackerapp: store %d cards: %w", len(cards), err)
+		return Changes{}, fmt.Errorf("trackerapp: store %d cards: %w", len(cards), err)
 	}
-	return read.Cards, changesOf(stored), nil
+	return changesOf(stored), nil
 }
 
 // againIfSwept runs read, a read of content outside a board and its

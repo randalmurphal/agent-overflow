@@ -32,27 +32,18 @@ type loopState struct {
 }
 
 // StartLinkedSync arms the linked loop; it belongs in the app's
-// unattended-work boot step, which does not call it yet. It first drops
-// the open tickets an earlier process left (store
-// DropMirrorTicketsOfOtherSessions), one statement. The loop starts
+// unattended-work boot step, which does not call it yet. The loop starts
 // now when a Jira or Linear connection is on, and from then on with the
 // first one turned on or added, and it stops with the last one turned off
-// or removed. Each call
-// reads the connections and starts or stops the loop to match. Its cost
-// with no connection on is that one read. When the read fails, the loop
-// runs (followLoopLocked) and the error is returned. A loop it stops has
-// exited when it returns.
+// or removed. Each call reads the connections and starts or stops the
+// loop to match. Its cost with no connection on is that one read. When
+// the read fails, the loop runs (followLoopLocked) and the error is
+// returned. A loop it stops has exited when it returns.
 func (s *Service) StartLinkedSync() error {
 	if err := s.enter(); err != nil {
 		return err
 	}
 	defer s.leave()
-	// The open tickets an earlier process left keep their issues no more;
-	// the loop's first cleanup removes what nothing else keeps.
-	var dropErr error
-	if _, err := s.store.DropMirrorTicketsOfOtherSessions(s.session); err != nil {
-		dropErr = fmt.Errorf("trackerapp: drop the open tickets of an earlier process: %w", err)
-	}
 	s.opMu.Lock()
 	s.subMu.Lock()
 	s.subs.loop.armed = true
@@ -62,7 +53,7 @@ func (s *Service) StartLinkedSync() error {
 	if done != nil {
 		<-done
 	}
-	return errors.Join(dropErr, err)
+	return err
 }
 
 // syncLoopLocked starts or stops the armed loop to match the connections

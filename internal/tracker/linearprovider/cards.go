@@ -73,7 +73,7 @@ func card(is linear.Issue, labels map[string]string) tracker.Card {
 	c := tracker.Card{
 		ID: tracker.IssueID(is.ID), Key: is.Identifier, Project: tracker.ProjectID(is.TeamID), Title: is.Title,
 		Status: tracker.StatusID(is.StateID), Assignee: tracker.UserID(is.AssigneeID), Priority: priorityChoice(is.Priority),
-		Parent: tracker.IssueID(is.ParentID), Created: is.CreatedAt, Updated: is.UpdatedAt,
+		Parent: tracker.IssueID(is.ParentID), Created: is.CreatedAt, Updated: is.UpdatedAt, URL: is.URL,
 	}
 	if len(is.LabelIDs) > 0 {
 		c.Labels = make([]tracker.Choice, 0, len(is.LabelIDs))

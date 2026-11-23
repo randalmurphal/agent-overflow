@@ -48,7 +48,7 @@ var ErrTrackerCacheNoBoard = errors.New("store: tracker mirror has no such board
 var ErrTrackerCacheUnlisted = errors.New("store: no project lists the tracker board")
 
 // ErrTrackerCacheSwept is returned by a write of content read outside a
-// board (UpsertMirrorCards, StoreMirrorDetail, ReplaceMirrorHistories)
+// board (UpsertMirrorCards, StoreMirrorTickets, ReplaceMirrorHistories)
 // naming a root sweep earlier than the root's: a sweep deleted issues
 // since the caller captured MirrorSync.Sweep, so the read may describe an
 // issue's earlier lifetime. The caller reads the sync state and the

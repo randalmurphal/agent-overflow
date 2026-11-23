@@ -190,7 +190,7 @@ func BenchmarkCardBlobDecode(b *testing.B) {
 func realisticDetail() tracker.Detail {
 	at := time.UnixMilli(1_799_000_000_000).UTC()
 	d := tracker.Detail{
-		Card: realisticRow(1, at).Card, URL: "https://example.atlassian.net/browse/WEB-2",
+		Card:        realisticRow(1, at).Card,
 		Description: strings.Repeat("The checkout page waits on three requests before it paints. ", 34),
 	}
 	for i := range 10 {
@@ -217,16 +217,20 @@ func realisticDetail() tracker.Detail {
 	return d
 }
 
-func BenchmarkDetailBlobDecode(b *testing.B) {
+func BenchmarkBodyBlobDecode(b *testing.B) {
 	d := realisticDetail()
-	data, err := mirrorDetail(d)
+	data, err := mirrorBody(d)
 	if err != nil {
 		b.Fatal(err)
 	}
-	m := store.MirrorDetail{IssueID: string(d.Card.ID), Data: data}
+	card, err := mirrorCard(d.Card)
+	if err != nil {
+		b.Fatal(err)
+	}
+	m := store.MirrorBody{IssueID: string(d.Card.ID), Card: card, Data: data}
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, ok := detailOf(m); !ok {
+		if _, ok := bodyOf(m); !ok {
 			b.Fatal("a miss")
 		}
 	}
@@ -241,7 +245,7 @@ var benchmarks = map[string]func(*testing.B){
 	"BenchmarkBoardView500":               BenchmarkBoardView500,
 	"BenchmarkSectionPage100":             BenchmarkSectionPage100,
 	"BenchmarkCardBlobDecode":             BenchmarkCardBlobDecode,
-	"BenchmarkDetailBlobDecode":           BenchmarkDetailBlobDecode,
+	"BenchmarkBodyBlobDecode":             BenchmarkBodyBlobDecode,
 	"BenchmarkLinkedCardsAllChanged10000": BenchmarkLinkedCardsAllChanged10000,
 	"BenchmarkFoldByMerge10000":           BenchmarkFoldByMerge10000,
 	"BenchmarkFoldByLog10000":             BenchmarkFoldByLog10000,

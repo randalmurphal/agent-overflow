@@ -107,29 +107,24 @@ func (c *countingStore) ReplaceMirrorHistories(root, sweep int64, hs []store.Mir
 	return c.Store.ReplaceMirrorHistories(root, sweep, hs, catalog, read)
 }
 
-func (c *countingStore) ListMirrorHistoryDue(root int64, now int64) ([]store.MirrorHistoryDue, bool, error) {
+func (c *countingStore) ListMirrorHistoryDue(root int64, now int64, first ...string) ([]store.MirrorHistoryDue, bool, error) {
 	c.count("ListMirrorHistoryDue")
-	return c.Store.ListMirrorHistoryDue(root, now)
+	return c.Store.ListMirrorHistoryDue(root, now, first...)
 }
 
-func (c *countingStore) StoreMirrorDetails(root, sweep int64, docs []store.MirrorDetailDoc, opened, read store.MirrorRead) (store.MirrorDetailWrites, error) {
-	c.count("StoreMirrorDetails")
-	return c.Store.StoreMirrorDetails(root, sweep, docs, opened, read)
+func (c *countingStore) StoreMirrorTickets(root, sweep int64, tickets []store.MirrorTicket, catalog store.MirrorCatalog, opened, read store.MirrorRead) (store.MirrorTicketsWrite, error) {
+	c.count("StoreMirrorTickets")
+	return c.Store.StoreMirrorTickets(root, sweep, tickets, catalog, opened, read)
 }
 
-func (c *countingStore) ConfirmMirrorDetail(root int64, d store.MirrorDetail, opened store.MirrorRead) (store.MirrorDetailWrite, error) {
-	c.count("ConfirmMirrorDetail")
-	return c.Store.ConfirmMirrorDetail(root, d, opened)
+func (c *countingStore) ConfirmMirrorBody(root int64, b store.MirrorBody, opened store.MirrorRead) (bool, error) {
+	c.count("ConfirmMirrorBody")
+	return c.Store.ConfirmMirrorBody(root, b, opened)
 }
 
-func (c *countingStore) ListMirrorDetailStates(root int64, issues []string) ([]store.MirrorDetail, error) {
-	c.count("ListMirrorDetailStates")
-	return c.Store.ListMirrorDetailStates(root, issues)
-}
-
-func (c *countingStore) GetMirrorDetail(root int64, issue string) (store.MirrorDetail, bool, error) {
-	c.count("GetMirrorDetail")
-	return c.Store.GetMirrorDetail(root, issue)
+func (c *countingStore) GetMirrorBody(root int64, issue string) (store.MirrorBody, bool, error) {
+	c.count("GetMirrorBody")
+	return c.Store.GetMirrorBody(root, issue)
 }
 
 func (c *countingStore) GetMirrorBoard(root int64, board string) (store.MirrorStructure, bool, error) {
@@ -192,12 +187,12 @@ func (c *countingStore) ListMirrorWorklogs(root int64, author, from, to string) 
 	return c.Store.ListMirrorWorklogs(root, author, from, to)
 }
 
-func (c *countingStore) KeepMirrorTicket(root int64, issue string, session, pump int64) error {
+func (c *countingStore) KeepMirrorTicket(root int64, issue string, session, pump int64, opened store.MirrorRead) error {
 	c.count("KeepMirrorTicket")
-	return c.Store.KeepMirrorTicket(root, issue, session, pump)
+	return c.Store.KeepMirrorTicket(root, issue, session, pump, opened)
 }
 
-func (c *countingStore) DropMirrorTicket(session, pump int64) error {
+func (c *countingStore) DropMirrorTicket(session, pump int64) (bool, error) {
 	c.count("DropMirrorTicket")
 	return c.Store.DropMirrorTicket(session, pump)
 }

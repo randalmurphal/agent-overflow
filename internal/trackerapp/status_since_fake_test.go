@@ -6,8 +6,20 @@ import (
 	"time"
 
 	"agent-overflow/internal/harness/trackerfake"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 )
+
+// recordOfFake is the issue record's card of issue on conn's mirror.
+func recordOfFake(t *testing.T, s *fakeScenario, conn Connection, issue tracker.IssueID) store.MirrorCard {
+	t.Helper()
+	root := must[int64](t)(rootOf(s, conn))
+	cards := must[[]store.MirrorCard](t)(s.st.ListMirrorCards(root, []string{string(issue)}))
+	if len(cards) != 1 {
+		t.Fatalf("the mirror keeps no card of %s", issue)
+	}
+	return cards[0]
+}
 
 // statusSinceTracker is one tracker's issue for the status time tests:
 // the issue on the board, the status it is in and another it can move to,
@@ -69,13 +81,14 @@ func (tc statusSinceTracker) leaveAndReturn(t *testing.T, s *fakeScenario, conn 
 
 // The Monday and Tuesday case: an issue in its status since Monday leaves
 // it and comes back on Tuesday, between two reads of its card. The board's
-// card keeps Monday's time until a history read stores Tuesday's changes
-// (the store's rule), while a ticket read once the tracker's history is
-// final for the card's update shows Tuesday's return, the latest status
-// change its document holds (statusSinceOf rule 1). Read inside the
-// tracker's settle margin, the document's history is not trusted, the
-// mirror's Monday time contradicts the return it holds, and the ticket
-// shows the time unknown rather than Monday's.
+// card keeps Monday's time until a read of the new version decides it. A
+// ticket read once the tracker's history is final for the card's update
+// shows Tuesday's return, the latest status change its history holds, and
+// decides it. Read inside the tracker's settle margin, the return is the
+// update, no more than the margin before it, so the ticket shows it at
+// once, provisionally: the record is not final for the version, and the
+// history read decides it later. Either way the board's card shows the
+// record's time, the ticket's.
 func TestATicketShowsTheLatestStayFromItsHistory(t *testing.T) {
 	t.Parallel()
 	for name, tc := range statusSinceTrackers() {
@@ -95,17 +108,19 @@ func TestATicketShowsTheLatestStayFromItsHistory(t *testing.T) {
 				if board.Updated != millis(tuesday) || board.StatusSince != monday {
 					t.Fatalf("the board's card after the return: updated %d since %d; want %d since Monday's %d", board.Updated, board.StatusSince, millis(tuesday), monday)
 				}
-				want := int64(0)
 				if settled {
 					s.clock.advance(tc.settle + time.Second)
-					want = millis(tuesday)
 				}
+				want := millis(tuesday)
 				v, _, err := s.svc.IssueDetail(t.Context(), conn.ID, tc.issue, Interactive)
 				if err != nil || v.Card.Status.ID != string(tc.status) || v.Card.StatusSince != want {
 					t.Fatalf("the ticket shows %s since %d, %v; want since %d (Monday was %d)", v.Card.Status.ID, v.Card.StatusSince, err, want, monday)
 				}
-				if c := must[IssueView](t)(s.svc.Issue(conn.ID, tc.issue)).Card; c.StatusSince != monday {
-					t.Fatalf("the board's card after the ticket read shows since %d; want Monday's %d until its history is read", c.StatusSince, monday)
+				if c := must[IssueView](t)(s.svc.Issue(conn.ID, tc.issue)).Card; c.StatusSince != want {
+					t.Fatalf("the board's card after the ticket read shows since %d; want the ticket's %d", c.StatusSince, want)
+				}
+				if r := recordOfFake(t, s, conn, tc.issue); r.StatusFinal != settled {
+					t.Fatalf("the record's status time final %v; want %v", r.StatusFinal, settled)
 				}
 			})
 		}

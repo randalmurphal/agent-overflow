@@ -162,9 +162,14 @@ type Service struct {
 	// published (ticketPump.digest).
 	digestSeed maphash.Seed
 	// session names this service's open tickets in the mirror, each a
-	// pump of it (keepTicket): the rows of another session were left by
-	// a process that ended, and StartLinkedSync drops them.
+	// pump of it (bindTickets): the rows of another session were left by
+	// a process that ended, and the first run drops them; earlier.done
+	// reports that delete made (dropEarlierTickets).
 	session int64
+	earlier struct {
+		sync.Mutex
+		done bool
+	}
 
 	// subMu is the one lock of the subscriptions, their pumps and the
 	// linked loop (subscriptions.go). It is held for map and flag work and

@@ -8,21 +8,36 @@ package store
 //     process, each one row per ticket pump (trackerapp), so the mirror
 //     keeps the issue of every open ticket (mirrorIssueKept) for as long
 //     as its pump lives, whatever else keeps it or not. session names the
-//     process that wrote the row and pump the pump within it; the pump
-//     writes its row when it starts and deletes it when it ends, and the
-//     rows of other sessions, left by a process that ended without
-//     deleting them, are deleted at the next boot
-//     (DropMirrorTicketsOfOtherSessions). The table cascades from its
+//     process that wrote the row and pump the pump within it, and
+//     opened_at is the order time of the root's read clock when the pump
+//     bound it: a read that began no earlier may start the ticket's body.
+//     The pump writes its row before its first read and deletes it when it
+//     ends, and the rows of other sessions, left by a process that ended
+//     without deleting them, are deleted by the first operation of the
+//     next process (DropMirrorTicketsOfOtherSessions). The table cascades from its
 //     root and a restore empties it. idx_tracker_cache_open_tickets_issue
 //     serves the keep rule's probe and a root's drain.
 //   - The wall time of the reads whose interval decides the next one or
 //     that a person is shown: tracker_cache_boards.structure_wall (the
-//     board's structure read), tracker_cache_sync.read_wall,
+//     board's structure read) and tracker_cache_sync.read_wall,
 //     reconciled_wall and failed_wall (the scope's last read, reconcile
-//     and failure) and tracker_cache_issue_details.read_wall (a
-//     document's read), each the MirrorRead.Wall of the read whose order
-//     time the row already stores, written by the same statement. A row
-//     stored before them holds 0, which is due: each scope is read once.
+//     and failure), each the MirrorRead.Wall of the read whose order time
+//     the row already stores, written by the same statement. A row stored
+//     before them holds 0, which is due: each scope is read once.
+//   - The issue record is the one record of an issue (StoreMirrorTickets):
+//     tracker_cache_issues.status_final_for is the update time whose
+//     status time a final read decided (MirrorStatusSince), backfilled
+//     for the rows whose stored history was final for their card, the
+//     rule v162 derived the time by. body_updated_at, body_read_at,
+//     body_wall, body_opened_at and body_digest are the bookkeeping of the
+//     ticket body the issue holds in tracker_cache_issue_bodies, a body
+//     existing exactly when body_read_at and body_updated_at are over zero;
+//     one function writes a body and one evicts it, each moving both
+//     tables in one transaction. idx_tracker_cache_issues_body_opened
+//     orders the bodies for the cap's eviction; its predicate names
+//     body_updated_at, which moves with a version, not body_read_at, which
+//     moves with every read. tracker_cache_issue_details is dropped with
+//     the documents it held: the next opening reads each body again.
 //   - tracker_cache_issues.sprint_set, the digest of the sprints an issue's
 //     card names (mirrorSprintSet), part of the card's content, so a card
 //     that names the same sprints costs one comparison and no membership
@@ -42,6 +57,7 @@ CREATE TABLE tracker_cache_open_tickets (
  issue_id TEXT NOT NULL CHECK(issue_id <> ''),
  session INTEGER NOT NULL,
  pump INTEGER NOT NULL CHECK(pump > 0),
+ opened_at INTEGER NOT NULL CHECK(opened_at > 0),
  PRIMARY KEY (session, pump)
 );
 CREATE INDEX idx_tracker_cache_open_tickets_issue ON tracker_cache_open_tickets(root_id, issue_id);
@@ -49,9 +65,24 @@ ALTER TABLE tracker_cache_boards ADD COLUMN structure_wall INTEGER NOT NULL DEFA
 ALTER TABLE tracker_cache_sync ADD COLUMN read_wall INTEGER NOT NULL DEFAULT 0 CHECK(read_wall >= 0);
 ALTER TABLE tracker_cache_sync ADD COLUMN reconciled_wall INTEGER NOT NULL DEFAULT 0 CHECK(reconciled_wall >= 0);
 ALTER TABLE tracker_cache_sync ADD COLUMN failed_wall INTEGER NOT NULL DEFAULT 0 CHECK(failed_wall >= 0);
-ALTER TABLE tracker_cache_issue_details ADD COLUMN read_wall INTEGER NOT NULL DEFAULT 0 CHECK(read_wall >= 0);
 ALTER TABLE tracker_cache_issues ADD COLUMN sprint_set BLOB NOT NULL DEFAULT x'';
 UPDATE tracker_cache_issues SET sprint_set = x'` + mirrorSprintSetPartial + `'
  WHERE EXISTS (SELECT 1 FROM tracker_cache_issue_sprints m
                 WHERE m.root_id = tracker_cache_issues.root_id AND m.issue_id = tracker_cache_issues.issue_id);
+DROP TABLE tracker_cache_issue_details;
+ALTER TABLE tracker_cache_issues ADD COLUMN status_final_for INTEGER NOT NULL DEFAULT 0 CHECK(status_final_for >= 0);
+UPDATE tracker_cache_issues SET status_final_for = updated_at WHERE history_for >= updated_at AND history_wait = 0;
+ALTER TABLE tracker_cache_issues ADD COLUMN body_updated_at INTEGER NOT NULL DEFAULT 0 CHECK(body_updated_at >= 0);
+ALTER TABLE tracker_cache_issues ADD COLUMN body_read_at INTEGER NOT NULL DEFAULT 0 CHECK(body_read_at >= 0);
+ALTER TABLE tracker_cache_issues ADD COLUMN body_wall INTEGER NOT NULL DEFAULT 0 CHECK(body_wall >= 0);
+ALTER TABLE tracker_cache_issues ADD COLUMN body_opened_at INTEGER NOT NULL DEFAULT 0 CHECK(body_opened_at >= 0);
+ALTER TABLE tracker_cache_issues ADD COLUMN body_digest BLOB NOT NULL DEFAULT x'';
+CREATE INDEX idx_tracker_cache_issues_body_opened ON tracker_cache_issues(root_id, body_opened_at, issue_id) WHERE body_updated_at > 0;
+CREATE TABLE tracker_cache_issue_bodies (
+ root_id INTEGER NOT NULL,
+ issue_id TEXT NOT NULL,
+ data BLOB NOT NULL,
+ PRIMARY KEY (root_id, issue_id),
+ FOREIGN KEY (root_id, issue_id) REFERENCES tracker_cache_issues(root_id, issue_id) ON DELETE CASCADE
+);
 `

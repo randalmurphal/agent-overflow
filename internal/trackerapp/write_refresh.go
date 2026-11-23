@@ -282,7 +282,11 @@ func (r *run) refreshDetails(f *refreshed, open []*ticketPump, cached []string, 
 	if len(f.reads) == 0 {
 		return nil
 	}
-	ch, err := r.verifiedDetails(f.reads, false)
+	// The refresh's changes are published once, with its own boards', as
+	// the write returns (Service.write).
+	var ch Changes
+	r.tell = func(stored Changes) { ch.add(stored) }
+	err := r.boundDetails(f.reads, false)
 	f.ch.add(ch)
 	f.details = detailsRead{ch: ch, root: r.root, gen: r.gen, kind: r.row.Kind}
 	// A detail whose own read ended is refreshed however the others' did;

@@ -283,7 +283,9 @@ var mirrorNotReadTimes = map[string]string{
 	"tracker_cache_changes.kind":                   "an enum",
 	"tracker_cache_changes.seq":                    "a position",
 	"tracker_cache_changes.at":                     "the tracker's clock",
-	"tracker_cache_issue_details.read_wall":        "a wall time (MirrorRead.Wall)",
+	"tracker_cache_issues.status_final_for":        "the tracker's clock",
+	"tracker_cache_issues.body_updated_at":         "the tracker's clock",
+	"tracker_cache_issues.body_wall":               "a wall time (MirrorRead.Wall)",
 	"tracker_cache_worklogs.spent_seconds":         "a duration",
 	"tracker_cache_worklogs.updated_at":            "the tracker's clock",
 	"tracker_cache_sync.reconciled_wall":           "a wall time (MirrorRead.Wall)",
@@ -416,21 +418,26 @@ func TestEveryMirrorWriterRefusesAReadOfAnotherRoot(t *testing.T) {
 			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", read, nil)
 			return err
 		}},
-		{"StoreMirrorDetail read", func(read MirrorRead) error {
-			_, err := s.StoreMirrorDetail(root, sweep, heldDoc(t, s, root, "10001", []byte(`{}`)), mirrorReadOf(root, 1), read)
+		{"StoreMirrorTickets read", func(read MirrorRead) error {
+			_, err := s.StoreMirrorTickets(root, sweep, []MirrorTicket{heldTicket(t, s, root, "10001", []byte(`{}`))}, MirrorCatalog{},
+				mirrorReadOf(root, 1), read)
 			return err
 		}},
-		{"StoreMirrorDetails opening", func(read MirrorRead) error {
-			_, err := s.StoreMirrorDetails(root, sweep, []MirrorDetailDoc{heldDoc(t, s, root, "10001", []byte(`{}`))}, read, mirrorReadOf(root, 1_000_000))
+		{"StoreMirrorTickets opening", func(read MirrorRead) error {
+			_, err := s.StoreMirrorTickets(root, sweep, []MirrorTicket{heldTicket(t, s, root, "10001", []byte(`{}`))}, MirrorCatalog{},
+				read, mirrorReadOf(root, 1_000_000))
 			return err
 		}},
-		{"ConfirmMirrorDetail", func(read MirrorRead) error {
-			d, ok, err := s.GetMirrorDetail(root, "10001")
+		{"ConfirmMirrorBody", func(read MirrorRead) error {
+			b, ok, err := s.GetMirrorBody(root, "10001")
 			if err != nil || !ok {
-				return fmt.Errorf("no detail to confirm: %v, %w", ok, err)
+				return fmt.Errorf("no body to confirm: %v, %w", ok, err)
 			}
-			_, err = s.ConfirmMirrorDetail(root, d, read)
+			_, err = s.ConfirmMirrorBody(root, b, read)
 			return err
+		}},
+		{"KeepMirrorTicket", func(read MirrorRead) error {
+			return s.KeepMirrorTicket(root, "10001", 7, 1, read)
 		}},
 		{"RecordMirrorSyncAttempt read", func(read MirrorRead) error {
 			a := currentAttempt(s, root, "10", MirrorSyncAttempt{})

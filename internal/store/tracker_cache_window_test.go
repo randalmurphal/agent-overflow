@@ -1,43 +1,9 @@
 package store
 
 import (
-	"fmt"
 	"reflect"
 	"testing"
 )
-
-// A detail the cap evicted starts a new lifetime when it is opened again:
-// the opening that creates its row is its read watermark, so a document
-// from a read that began before it, the eviction's lifetime included, is
-// superseded, and one from a read that began at or after it is stored. A
-// write that opens the detail itself stores its document only when its read
-// began no earlier than its opening.
-func TestMirrorReopenedDetailRefusesReadsFromBeforeTheOpening(t *testing.T) {
-	t.Parallel()
-	s, _, root := newMirror(t)
-	writeMirrorBoard(t, s, root, "10", mirrorRows(10000, mirrorDetailCap+2, "a"))
-	sweep := currentSweep(s, root)
-	got, err := storeDetail(t, s, root, sweep, "10000", 10, 50, []byte(`{"v":"new"}`))
-	mustDetailWrite(t, "first opening", got, err, MirrorDetailWrite{Stored: true, Changed: true})
-	for i := range mirrorDetailCap {
-		if _, err := storeDetail(t, s, root, sweep, fmt.Sprint(10001+i), int64(100+i), int64(100+i), []byte(`{}`)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details WHERE issue_id = '10000'`, "0")
-	mustDetailStore(t, s, root, "opened again, its read earlier", "10000", 400, 300, MirrorDetailWrite{Stored: true, Superseded: true}, "10001")
-	got, err = storeDetail(t, s, root, sweep, "10000", 0, 20, []byte(`{"v":"old"}`))
-	mustDetailWrite(t, "a read from before the eviction", got, err, MirrorDetailWrite{Stored: true, Superseded: true})
-	if d, ok, err := s.GetMirrorDetail(root, "10000"); err != nil || ok {
-		t.Fatalf("detail after a superseded read = %+v, %v, %v; want none", d, ok, err)
-	}
-	got, err = storeDetail(t, s, root, sweep, "10000", 0, 400, []byte(`{"v":"now"}`))
-	mustDetailWrite(t, "a read from the opening", got, err, MirrorDetailWrite{Stored: true, Changed: true})
-	assertRows(t, s.db, `SELECT opened_at || ' ' || read_at || ' ' || (data ->> 'v') FROM tracker_cache_issue_details WHERE issue_id = '10000'`, "400 400 now")
-
-	mustDetailStore(t, s, root, "an opening later than its own read", "10201", 500, 450, MirrorDetailWrite{Stored: true, Superseded: true}, "10002")
-	assertRows(t, s.db, `SELECT opened_at || ' ' || read_at || ' ' || (data IS NULL) FROM tracker_cache_issue_details WHERE issue_id = '10201'`, "500 500 1")
-}
 
 // A board row that leaves the board's window (a done issue aging out, read
 // as missing) and returns keeps its board's watermarks: the removal time

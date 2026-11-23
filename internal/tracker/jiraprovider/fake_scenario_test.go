@@ -61,7 +61,7 @@ func TestFakeScenario(t *testing.T) {
 	}
 	d := s.detail(t, "10101")
 	if d.Card.Key != "WEB-1" || strings.TrimSpace(d.Description) != "first" || len(d.Comments.Comments) != 1 || len(d.History) == 0 || len(d.Moves) == 0 ||
-		d.URL != "https://"+scenarioSite+"/browse/WEB-1" {
+		IssueURL("https://"+scenarioSite, d.Card.Key) != "https://"+scenarioSite+"/browse/WEB-1" {
 		t.Fatalf("detail %+v", d)
 	}
 	if cs := scenarioMust[tracker.CommentPage](t)(s.p.Comments(s.ctx, "10101", "")); len(cs.Comments) != 1 {

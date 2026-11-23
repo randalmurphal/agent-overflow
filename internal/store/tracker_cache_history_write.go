@@ -156,7 +156,7 @@ func replaceMirrorHistoriesTx(tx *sql.Tx, rootID int64, pending []mirrorHistoryI
 		removeBudget -= st.removes
 		writeBudget -= len(in.changes)
 		in.setGen(st.gen)
-		write, changes = append(write, in.rowAt(st.gen)), append(changes, in.changes...)
+		write, changes = append(write, st.rowOf(in, st.gen)), append(changes, in.changes...)
 	}
 	return nil, staged, writeMirrorHistoriesTx(tx, rootID, write, changes, index, results)
 }
@@ -168,6 +168,39 @@ type mirrorHistoryState struct {
 	receipt, boardsRev, updatedAt, gen                                 int64
 	dirty, kept                                                        bool
 	removes                                                            int
+	// status and createdAt are the issue's card's, for the status result
+	// of a history read for its version (statusOf).
+	status    string
+	createdAt int64
+}
+
+// statusOf is the status result in gives the issue's card, of the
+// version st holds (MirrorStatusSince): none for a history read for an
+// earlier update, whose evidence is of another version. The latest status
+// change is the history's own, held in in whole even when it is staged.
+// The history is final for its version when it waits for nothing.
+func (st mirrorHistoryState) statusOf(in mirrorHistoryInput) (mirrorStatusResult, int64) {
+	if in.h.For != st.updatedAt {
+		return 0, 0
+	}
+	e := MirrorStatusEvidence{Status: st.status, CreatedAt: st.createdAt, UpdatedAt: st.updatedAt,
+		Complete: in.h.CompleteFrom == 0, Final: in.h.Wait == 0, Settle: in.h.Wait}
+	for _, c := range in.h.Changes {
+		if c.Kind == MirrorChangeStatus {
+			e.LatestTo, e.LatestAt = c.To, c.At
+		}
+	}
+	return mirrorStatusSince(e)
+}
+
+// rowOf is in's row for generation gen with the status result it gives
+// the issue's card.
+func (st mirrorHistoryState) rowOf(in mirrorHistoryInput, gen int64) mirrorHistoryRow {
+	row := in.rowAt(gen)
+	var r mirrorStatusResult
+	r, row.Since = st.statusOf(in)
+	row.Status = int(r)
+	return row
 }
 
 // checkAhead refuses a history read for a boards revision or an update
@@ -204,7 +237,7 @@ func readMirrorHistoryStatesTx(q sqlQueryer, rootID int64, listed string) (map[s
 		var id string
 		var st mirrorHistoryState
 		err := r.Scan(&id, &st.storedFrom, &st.storedFor, &st.storedAnswered, &st.storedWait, &st.storedBoardsRev, &st.receipt,
-			&st.boardsRev, &st.updatedAt, &st.gen, &st.dirty, &st.kept, &st.removes)
+			&st.boardsRev, &st.updatedAt, &st.gen, &st.dirty, &st.kept, &st.removes, &st.status, &st.createdAt)
 		states[id] = st
 		return err
 	})

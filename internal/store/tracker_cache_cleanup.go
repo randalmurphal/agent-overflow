@@ -33,7 +33,7 @@ var mirrorTableKeys = []struct{ table, keys string }{
 	{"tracker_cache_board_issues", "issue_id, board_id"},
 	{"tracker_cache_issue_sprints", "issue_id, sprint_id"},
 	{"tracker_cache_changes", "issue_id, gen, kind, seq"},
-	{"tracker_cache_issue_details", "rowid"},
+	{"tracker_cache_issue_bodies", "rowid"},
 	{"tracker_cache_open_tickets", "session, pump"},
 	{"tracker_cache_board_column_statuses", "board_id, status_id"},
 	{"tracker_cache_board_columns", "board_id, position"},
@@ -105,7 +105,7 @@ var mirrorUnkeptRootsSQL = `SELECT DISTINCT i.root_id FROM tracker_cache_issues 
 // detached root and then the root, the rows of every retired board and
 // then the board (starting a new lifetime of a board listed again), the
 // generations of changes a history staging left, and every unkept issue
-// with its changes, sprints and detail. Each transaction deletes at most
+// with its changes, sprints and body. Each transaction deletes at most
 // clearMirrorChunk rows, and pause runs before each. When ctx ends it
 // stops before the next transaction and returns ctx's cause. It is
 // idempotent, finishes what a crash, a failure or a stop left, and costs
@@ -306,14 +306,14 @@ func (s *Store) sweepMirrorRoot(rootID int64, between func() error) error {
 // mirrorSweepCandidatesSQL reads a page of a root's unkept issues by ID
 // after ?2, from idx_tracker_cache_issues_boardless, each with its changes
 // and its sprints (each counted to at most one more than a chunk) and
-// whether it has a detail: with the issue itself, what its delete cascades
+// whether it has a body: with the issue itself, what its delete cascades
 // to. A board row cannot cascade: the issue has none.
 var mirrorSweepCandidatesSQL = `SELECT i.issue_id,
 	  (SELECT count(*) FROM (SELECT 1 FROM tracker_cache_changes c WHERE c.root_id = i.root_id AND c.issue_id = i.issue_id
 	    LIMIT ` + strconv.Itoa(clearMirrorChunk+1) + `)),
 	  (SELECT count(*) FROM (SELECT 1 FROM tracker_cache_issue_sprints m WHERE m.root_id = i.root_id AND m.issue_id = i.issue_id
 	    LIMIT ` + strconv.Itoa(clearMirrorChunk+1) + `)),
-	  EXISTS (SELECT 1 FROM tracker_cache_issue_details d WHERE d.root_id = i.root_id AND d.issue_id = i.issue_id)
+	  i.body_read_at > 0
 	FROM tracker_cache_issues i
 	WHERE i.root_id = ?1 AND i.board_rows = 0 AND i.issue_id > ?2 AND NOT ` + mirrorIssueKept("i.root_id", "i.issue_id") + `
 	ORDER BY i.issue_id LIMIT ` + strconv.Itoa(mirrorSweepPage+1)
@@ -328,8 +328,8 @@ var mirrorSweepCandidatesSQL = `SELECT i.issue_id,
 // that admits the issue's card replaces its sprints whatever it names.
 var mirrorSweepSQL = struct{ resetHistory, changes, partialSprints, sprints string }{
 	resetHistory: `UPDATE tracker_cache_issues SET history_from = 0, history_for = 0, history_answered_at = 0, history_wait = 0,
-		status_since = 0, history_receipt = history_receipt + 1 WHERE root_id = ?1 AND issue_id = ?2
-		AND (history_from, history_for, history_answered_at, history_wait, status_since) IS NOT (0, 0, 0, 0, 0)`,
+		status_since = 0, status_final_for = 0, history_receipt = history_receipt + 1 WHERE root_id = ?1 AND issue_id = ?2
+		AND (history_from, history_for, history_answered_at, history_wait, status_since, status_final_for) IS NOT (0, 0, 0, 0, 0, 0)`,
 	changes: `DELETE FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2
 		AND (gen, kind, seq) <= (SELECT gen, kind, seq FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2
 		                          ORDER BY gen, kind, seq LIMIT 1 OFFSET ?3 - 1)`,
@@ -342,12 +342,12 @@ var mirrorSweepSQL = struct{ resetHistory, changes, partialSprints, sprints stri
 
 // sweepMirrorPage removes, in one transaction of at most clearMirrorChunk
 // deleted rows, the unkept issues after after that fit, leaf first: an
-// issue's changes and sprints, then the issue with its detail. Of the
+// issue's changes and sprints, then the issue with its body. Of the
 // first issue that does not fit it removes what the rest of the budget
 // holds, changes first, then sprints (mirrorSweepSQL), so a page never
 // stops at an issue it cannot finish: the page's first issue always
 // leaves it with a row deleted. A page that deletes anything advances the
-// root's sweep in its transaction, so a card, detail or history read
+// root's sweep in its transaction, so a card, body or history read
 // before it is refused (ErrTrackerCacheSwept). next is the last issue
 // fully removed (or after); more reports work after it. A page with work
 // after it that neither moves past an issue nor deletes a row fails, so
@@ -359,12 +359,12 @@ func (s *Store) sweepMirrorPage(rootID int64, after string) (next string, more b
 		type candidate struct {
 			id               string
 			changes, sprints int
-			detail           bool
+			body             bool
 		}
 		var page []candidate
 		err := scanMirrorRows(tx, mirrorSweepCandidatesSQL, []any{rootID, after}, func(r rowScanner) error {
 			var c candidate
-			err := r.Scan(&c.id, &c.changes, &c.sprints, &c.detail)
+			err := r.Scan(&c.id, &c.changes, &c.sprints, &c.body)
 			page = append(page, c)
 			return err
 		})
@@ -379,7 +379,7 @@ func (s *Store) sweepMirrorPage(rootID int64, after string) (next string, more b
 		var partial candidate
 		for _, c := range page {
 			cost := c.changes + c.sprints + 1
-			if c.detail {
+			if c.body {
 				cost++
 			}
 			if cost <= budget {

@@ -73,39 +73,49 @@ func webRow(id string, updated int64, order string, sprints ...string) MirrorRow
 	return MirrorRow{Card: webCard(id, updated, sprints...), OrderKey: order}
 }
 
-// heldDoc is issue's detail document with data, of the update of the card
-// the mirror keeps for issue, or of update 1 when it keeps none (a
-// document then owed its card), so a test of the documents passes the
-// card fence. It reads the mirror: a test that counts a write's
-// statements builds its documents before it counts.
-func heldDoc(t *testing.T, s *Store, root int64, issue string, data []byte) MirrorDetailDoc {
+// heldCard is the card the mirror keeps for issue, or webCard(issue, 1)
+// when it keeps none, so a ticket of it is of the record's version. It
+// reads the mirror: a test that counts a write's statements builds its
+// tickets before it counts.
+func heldCard(t *testing.T, s *Store, root int64, issue string) MirrorCard {
 	t.Helper()
 	cards, err := s.ListMirrorCards(root, []string{issue})
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := MirrorDetailDoc{IssueID: issue, Data: data, CardUpdatedAt: 1}
 	if len(cards) == 1 {
-		doc.CardUpdatedAt = cards[0].UpdatedAt
+		return cards[0]
 	}
-	return doc
+	return webCard(issue, 1)
 }
 
-// heldDocs is heldDoc of each of docs' issues and data.
-func heldDocs(t *testing.T, s *Store, root int64, docs []MirrorDetailDoc) []MirrorDetailDoc {
+// heldTicket is issue's ticket with body data and the card the mirror
+// keeps (heldCard).
+func heldTicket(t *testing.T, s *Store, root int64, issue string, data []byte) MirrorTicket {
 	t.Helper()
-	out := make([]MirrorDetailDoc, len(docs))
-	for i, d := range docs {
-		out[i] = heldDoc(t, s, root, d.IssueID, d.Data)
+	return MirrorTicket{Card: heldCard(t, s, root, issue), Body: data}
+}
+
+// heldTickets is heldTicket of each issue with data.
+func heldTickets(t *testing.T, s *Store, root int64, issues []string, data []byte) []MirrorTicket {
+	t.Helper()
+	out := make([]MirrorTicket, len(issues))
+	for i, id := range issues {
+		out[i] = heldTicket(t, s, root, id, data)
 	}
 	return out
 }
 
-// storeDetail stores issue's detail document with data and the card the
-// mirror keeps (heldDoc).
-func storeDetail(t *testing.T, s *Store, root, sweep int64, issue string, openedAt, readAt int64, data []byte) (MirrorDetailWrite, error) {
+// storeTicket stores issue's ticket with body data (heldTicket), opened
+// at openedAt (zero: no opening) by a read begun at readAt.
+func storeTicket(t *testing.T, s *Store, root, sweep int64, issue string, openedAt, readAt int64, data []byte) (MirrorTicketWrite, error) {
 	t.Helper()
-	return s.StoreMirrorDetail(root, sweep, heldDoc(t, s, root, issue, data), mirrorReadAt(openedAt), mirrorReadAt(readAt))
+	w, err := s.StoreMirrorTickets(root, sweep, []MirrorTicket{heldTicket(t, s, root, issue, data)}, MirrorCatalog{},
+		mirrorReadOf(root, openedAt), mirrorReadOf(root, readAt))
+	if err != nil {
+		return MirrorTicketWrite{}, err
+	}
+	return w.Tickets[0], nil
 }
 
 // webPage is a page of board's rows read at 1.
@@ -299,14 +309,14 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 	if _, err := replaceHistory(s, root, MirrorHistory{IssueID: "10001", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storeDetail(t, s, root, currentSweep(s, root), "10001", 7, 7, []byte(`{}`)); err != nil {
+	if _, err := storeTicket(t, s, root, currentSweep(s, root), "10001", 7, 7, []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(1), []MirrorWorklog{
 		{ID: "w1", IssueID: "10001", AuthorID: "acc-user1", Day: "2026-01-05", SpentSeconds: 3600}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.KeepMirrorTicket(root, "10001", 1, 1); err != nil {
+	if err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadOf(root, 7)); err != nil {
 		t.Fatal(err)
 	}
 	for table, n := range countMirrorRows(t, s.db) {

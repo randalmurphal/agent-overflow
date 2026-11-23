@@ -240,7 +240,8 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, readAt int6
 		return fmt.Errorf("sort rows: %w", err)
 	}
 	slices.Sort(advancing)
-	stored, err := storeMirrorCardsTx(tx, mirrorRowCards, rootID, rows, encoded, readAt, advancing, page.BoardID, addsRows)
+	stored, err := storeMirrorCardsTx(tx, mirrorRowCards, rootID, rows, encoded, readAt, mirrorCardReadMove(tx, rootID, readAt, advancing),
+		page.BoardID, addsRows)
 	if err != nil {
 		return err
 	}

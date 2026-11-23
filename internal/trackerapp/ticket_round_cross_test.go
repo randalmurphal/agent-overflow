@@ -57,8 +57,8 @@ func (h *cardsHold) ListMirrorCards(root int64, ids []string) ([]store.MirrorCar
 	return cards, err
 }
 
-// crossFixture is an open ticket, 10001, that the mirror does not keep (the
-// store refused its keep), so its pump holds its content, linking 10002,
+// crossFixture is an open ticket, 10001, that the mirror does not keep
+// (keepsLost), so its pump holds its content, linking 10002,
 // which the mirror keeps, on a tracker that reads every ticket in full. rename stores a new title of
 // 10002 as a board read does; describe sets the description the tracker
 // answers for 10001; failing fails its reads.
@@ -95,7 +95,7 @@ func newCrossFixture(t *testing.T) *crossFixture {
 		}
 	})
 	answerCardsFromDetails(m.p)
-	m.refuseKeeps()
+	m.loseKeeps()
 	f.sub = must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001"))
 	m.events.issueEvents(t, 1)
 	m.settledTickets(t)

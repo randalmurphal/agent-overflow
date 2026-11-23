@@ -6,21 +6,21 @@ import (
 	"testing"
 )
 
-// The store calls of a ticket round of 50 tickets that finds 10 changed,
-// as trackerapp's TestChangedRoundCosts pins them, cost the statements
-// and row writes pinned here. Jira: the check's card write moves each
-// unchanged card's read time and writes the changed cards, and one write
-// stores their documents. Linear: one write moves the read time of the
-// unchanged documents and finds the changed ones owed their cards, the
-// cards are written, and one more write stores the owed documents. Both
-// then read the changed tickets' cards and the catalog they name for
-// their views. Every card write brings the catalog its cards name, here 4
-// users and 3 statuses, and stamps each entry with its read (read_at),
-// one row each whether or not it changed: the stamp orders the entry's
-// later reads, so a read that began before this one cannot replace what
-// this one found. A Jira round that finds nothing changed still writes
-// its cards' read times and the catalog's. Every input is built before
-// the round is counted.
+// The store calls of a ticket round of 50 tickets, idle or finding 10
+// changed, as trackerapp's TestIdleRoundCosts and TestChangedRoundCosts
+// pin them, cost the statements, row writes and body bytes pinned here,
+// and the WAL bytes each writes are measured beside them. Jira: one write
+// stores the check's cards (the cards read by ID) with each ticket's
+// record, and a second the changed tickets read in full. Linear: one write
+// stores every ticket, card and body, read in full. Both then read the
+// changed tickets' cards and the catalog they name for their views. Every
+// ticket write brings the catalog its cards name, here 4 users and 3
+// statuses (a Jira round's two writes each stamp them), and stamps each entry with its read (read_at), one row each
+// whether or not it changed: the stamp orders the entry's later reads, so
+// a read that began before this one cannot replace what this one found.
+// An idle round writes each ticket's read times and the catalog's, and no
+// body bytes: a body read again is compared by its digest. Every input is
+// built before the round is counted.
 func TestChangedRoundStatements(t *testing.T) {
 	type cost struct {
 		statements int
@@ -35,16 +35,21 @@ func TestChangedRoundStatements(t *testing.T) {
 	}
 	stamped := map[string]int{"tracker_cache_users": 4, "tracker_cache_statuses": 3}
 	pinned := map[string]cost{
-		"a Jira round":       {25, map[string]int{"tracker_cache_issue_details": 10, "tracker_cache_issues": 50}},
-		"a Linear round":     {26, map[string]int{"tracker_cache_issue_details": 50, "tracker_cache_issues": 10}},
-		"an idle Jira round": {10, map[string]int{"tracker_cache_issues": 50}},
+		"a Jira round":         {28, map[string]int{"tracker_cache_issue_bodies": 10, "tracker_cache_issues": 60, "tracker_cache_users": 8, "tracker_cache_statuses": 6}},
+		"a Linear round":       {21, map[string]int{"tracker_cache_issue_bodies": 10, "tracker_cache_issues": 60}},
+		"an idle Jira round":   {8, map[string]int{"tracker_cache_issues": 50}},
+		"an idle Linear round": {8, map[string]int{"tracker_cache_issues": 50}},
 	}
 	for name, want := range pinned {
-		maps.Copy(want.writes, stamped)
+		for table, n := range stamped {
+			if _, set := want.writes[table]; !set {
+				want.writes[table] = n
+			}
+		}
 		pinned[name] = want
 	}
-	for _, name := range []string{"a Jira round", "a Linear round", "an idle Jira round"} {
-		jira, idle := name != "a Linear round", name == "an idle Jira round"
+	for _, name := range []string{"a Jira round", "a Linear round", "an idle Jira round", "an idle Linear round"} {
+		jira, idle := name == "a Jira round" || name == "an idle Jira round", name == "an idle Jira round" || name == "an idle Linear round"
 		t.Run(name, func(t *testing.T) {
 			s, _, root := newMirror(t)
 			mustReplaceStructure(t, s, root, webStructure(), true)
@@ -58,14 +63,8 @@ func TestChangedRoundStatements(t *testing.T) {
 				changed = nil
 			}
 			sweep := currentSweep(s, root)
-			before := heldDocs(t, s, root, func() []MirrorDetailDoc {
-				out := make([]MirrorDetailDoc, len(tickets))
-				for i, id := range tickets {
-					out[i] = MirrorDetailDoc{IssueID: id, Data: []byte(`{"v":1}`)}
-				}
-				return out
-			}())
-			if _, err := s.StoreMirrorDetails(root, sweep, before, mirrorReadAt(7), mirrorReadAt(7)); err != nil {
+			before := heldTickets(t, s, root, tickets, []byte(`{"v":1}`))
+			if _, err := s.StoreMirrorTickets(root, sweep, before, MirrorCatalog{}, mirrorReadAt(7), mirrorReadAt(7)); err != nil {
 				t.Fatal(err)
 			}
 			// The catalog as an earlier round stored it.
@@ -73,18 +72,21 @@ func TestChangedRoundStatements(t *testing.T) {
 				t.Fatal(err)
 			}
 			// What the tracker answers: each changed card a minute newer with
-			// a new title, and its new document.
-			cards := make([]MirrorCard, len(tickets))
-			docs := make([]MirrorDetailDoc, len(tickets))
-			for i, id := range tickets {
-				cards[i], docs[i] = webCard(id, 5), before[i]
+			// a new title, and its new body; each ticket read in full brings
+			// the evidence of its status time.
+			read := make([]MirrorTicket, len(tickets))
+			checks := make([]MirrorTicket, len(tickets))
+			for i := range tickets {
+				read[i] = before[i]
 				if i < len(changed) {
-					cards[i] = webCard(id, 60_005)
-					cards[i].Data = []byte(`{"title":"Renamed ` + id + `"}`)
-					docs[i] = MirrorDetailDoc{IssueID: id, Data: []byte(`{"v":2}`), CardUpdatedAt: 60_005}
+					read[i].Card.UpdatedAt = 60_005
+					read[i].Card.Data = []byte(`{"title":"Renamed ` + tickets[i] + `"}`)
+					read[i].Body = []byte(`{"v":2}`)
 				}
+				c := read[i].Card
+				read[i].Status = &MirrorStatusEvidence{Status: c.StatusID, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Complete: true, Final: true}
+				checks[i] = MirrorTicket{Card: c}
 			}
-			read := mirrorReadAt(100)
 			recorder := recordMirrorWrites(t, s)
 			each := map[string]int{}
 			call := func(name string, fn func() error) {
@@ -94,39 +96,30 @@ func TestChangedRoundStatements(t *testing.T) {
 					t.Fatalf("%s: %v", name, err)
 				}
 			}
+			var bodyBytes int
+			store := func(tickets []MirrorTicket, at int64) func() error {
+				return func() error {
+					w, err := s.StoreMirrorTickets(root, sweep, tickets, catalog, MirrorRead{}, mirrorReadAt(at))
+					for i, tw := range w.Tickets {
+						if tw.BodyChanged {
+							bodyBytes += len(tickets[i].Body)
+						}
+					}
+					return err
+				}
+			}
+			if _, err := s.TruncateCheckpoint(); err != nil {
+				t.Fatal(err)
+			}
 			statements := countMirrorStatements(t, func() {
 				call("GetMirrorSync", func() error { _, _, err := s.GetMirrorSync(root, "", testNow); return err })
 				if jira {
-					call("ListMirrorDetailStates", func() error { _, err := s.ListMirrorDetailStates(root, tickets); return err })
-					call("UpsertMirrorCards", func() error { _, err := s.UpsertMirrorCards(root, sweep, cards, catalog, read); return err })
+					call("StoreMirrorTickets", store(checks, 100))
 					if !idle {
-						call("StoreMirrorDetails", func() error {
-							w, err := s.StoreMirrorDetails(root, sweep, docs[:len(changed)], MirrorRead{}, read)
-							if err == nil && countStored(w) != len(changed) {
-								err = fmt.Errorf("stored %d of %d documents", countStored(w), len(changed))
-							}
-							return err
-						})
+						call("StoreMirrorTickets", store(read[:len(changed)], 101))
 					}
 				} else {
-					call("StoreMirrorDetails", func() error {
-						w, err := s.StoreMirrorDetails(root, sweep, docs, MirrorRead{}, read)
-						if err == nil && countOwed(w) != len(changed) {
-							err = fmt.Errorf("%d documents owed their card; want %d", countOwed(w), len(changed))
-						}
-						return err
-					})
-					call("UpsertMirrorCards", func() error {
-						_, err := s.UpsertMirrorCards(root, sweep, cards[:len(changed)], catalog, read)
-						return err
-					})
-					call("StoreMirrorDetails", func() error {
-						w, err := s.StoreMirrorDetails(root, sweep, docs[:len(changed)], MirrorRead{}, read)
-						if err == nil && countStored(w) != len(changed) {
-							err = fmt.Errorf("stored %d of %d owed documents", countStored(w), len(changed))
-						}
-						return err
-					})
+					call("StoreMirrorTickets", store(read, 100))
 				}
 				if !idle {
 					call("ListMirrorCards", func() error { _, err := s.ListMirrorCards(root, changed); return err })
@@ -136,33 +129,16 @@ func TestChangedRoundStatements(t *testing.T) {
 					})
 				}
 			})
+			wal := walSize(t, s.path)
 			writes := recorder.rowWrites()
-			t.Logf("%s, %d of 50 changed: %d statements (%v), rows written %v", name, len(changed), statements, each, writes)
+			t.Logf("%s, %d of 50 changed: %d statements (%v), rows written %v, %d body bytes, %d WAL bytes", name, len(changed), statements, each,
+				writes, bodyBytes, wal)
 			if want := pinned[name]; statements != want.statements || !maps.Equal(writes, want.writes) {
 				t.Errorf("%s, %d of 50 changed: %d statements, rows written %v; pinned %d and %v", name, len(changed), statements, writes, want.statements, want.writes)
 			}
+			if want := 7 * len(changed); bodyBytes != want {
+				t.Errorf("%s wrote %d body bytes; want %d, the changed bodies'", name, bodyBytes, want)
+			}
 		})
 	}
-}
-
-// countStored is how many of w's documents were stored.
-func countStored(w MirrorDetailWrites) int {
-	n := 0
-	for _, d := range w.Docs {
-		if d.Stored {
-			n++
-		}
-	}
-	return n
-}
-
-// countOwed is how many of w's documents are owed their card.
-func countOwed(w MirrorDetailWrites) int {
-	n := 0
-	for _, d := range w.Docs {
-		if d.CardOwed {
-			n++
-		}
-	}
-	return n
 }

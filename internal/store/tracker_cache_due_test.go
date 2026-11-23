@@ -237,7 +237,7 @@ func seedHistoryDue(t *testing.T, w, d int) (*Store, int64) {
 func historyDueCosts(t *testing.T, w, d int, now int64) (probe, list int) {
 	t.Helper()
 	s, root := seedHistoryDue(t, w, d)
-	return statementVMSteps(t, s, mirrorSyncStateSQL, root, "10", now), statementVMSteps(t, s, mirrorHistoryDueSQL, root, now)
+	return statementVMSteps(t, s, mirrorSyncStateSQL, root, "10", now), statementVMSteps(t, s, mirrorHistoryDueSQL, root, now, "[]")
 }
 
 // Neither read of the due rule grows with the issues waiting out their
@@ -286,7 +286,8 @@ func TestMirrorHistoryDueReadsCostAPage(t *testing.T) {
 		query   string
 		indexes []string
 	}{
-		"listing": {mirrorHistoryDueSQL, []string{"SEARCH i USING INDEX idx_tracker_cache_issues_history_waiting (root_id=? AND <expr><?)",
+		"listing": {mirrorHistoryDueSQL, []string{"SCAN f VIRTUAL TABLE INDEX 1:\nSEARCH i USING INDEX sqlite_autoindex_tracker_cache_issues_1 (root_id=? AND issue_id=?)",
+			"SEARCH i USING INDEX idx_tracker_cache_issues_history_waiting (root_id=? AND <expr><?)",
 			"SEARCH i USING INDEX idx_tracker_cache_issues_history_answered (root_id=? AND history_answered_at>?)",
 			"SEARCH i USING INDEX idx_tracker_cache_issues_history_due (root_id=?)"}},
 		"probe": {mirrorSyncStateSQL, []string{"SEARCH hd USING INDEX idx_tracker_cache_issues_history_waiting (root_id=? AND <expr><?)",
@@ -375,6 +376,16 @@ func TestListMirrorHistoryDue(t *testing.T) {
 	first, more, err := s.ListMirrorHistoryDue(root, testNow)
 	if err != nil || !more || len(first) != mirrorHistoryDuePage || first[0].IssueID != "10001" || first[1].IssueID != "10003" {
 		t.Fatalf("first page = %d IDs from %v, more %v, %v; want %d from 10001, 10003", len(first), first[:2], more, err, mirrorHistoryDuePage)
+	}
+	// Issues asked first lead the page when due, each once; one not due is
+	// not listed.
+	asked, more, err := s.ListMirrorHistoryDue(root, testNow, "10201", "10000", "10202")
+	if err != nil || !more || len(asked) != mirrorHistoryDuePage || asked[0].IssueID != "10201" || asked[1].IssueID != "10202" ||
+		asked[2].IssueID != "10001" || slices.ContainsFunc(asked[2:], func(d MirrorHistoryDue) bool { return d.IssueID > "10200" }) {
+		t.Fatalf("asked first = %d IDs from %v, more %v, %v; want 10201, 10202 then 10001", len(asked), asked[:3], more, err)
+	}
+	if _, _, err := s.ListMirrorHistoryDue(root, testNow, make([]string, mirrorHistoryDuePage+1)...); !errors.Is(err, ErrInvalidTrackerCache) {
+		t.Fatalf("over a page asked first: %v", err)
 	}
 	for batch := range slices.Chunk(first, mirrorHistoryBatch) {
 		histories := make([]MirrorHistory, len(batch))

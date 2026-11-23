@@ -62,24 +62,32 @@ func mirrorHistoryDue(i, now string) []mirrorHistoryDueArm {
 	}
 }
 
-// mirrorHistoryDueSQL lists the kept issues of root ?1 due at ?2, each
-// arm of the rule a walk of its index of at most a page and one, the
-// version arm passing the issues the waiting arms listed. Each arm is
-// read only while the page is short, so the walk is bounded by the page
-// (and the unkept issues the cleanup has yet to delete), not by how many
-// issues are due or waiting.
+// mirrorHistoryDueSQL lists the kept issues of root ?1 due at ?2: first
+// those of the JSON list ?3 due by any arm, each found by key; then each arm of the rule a walk of its index of at most a
+// page and one, passing the listed issues, the version arm passing too
+// the issues the waiting arms listed. Each arm is read only while the page
+// is short, so the walk is bounded by the page and the list (and the
+// unkept issues the cleanup has yet to delete), not by how many issues
+// are due or waiting.
 var mirrorHistoryDueSQL = func() string {
 	arms := mirrorHistoryDue("i", "?2")
 	limit := strconv.Itoa(mirrorHistoryDuePage + 1)
-	selects := make([]string, len(arms))
+	const columns = `i.issue_id, i.boards_rev, i.updated_at, i.history_for, i.history_answered_at, i.history_wait, i.history_receipt`
+	kept := mirrorIssueKept("i.root_id", "i.issue_id")
+	byAny := make([]string, len(arms))
+	for k, arm := range arms {
+		byAny[k] = `(` + arm.where + `)`
+	}
+	selects := make([]string, len(arms)+1)
+	selects[0] = `SELECT * FROM (SELECT ` + columns + ` FROM json_each(?3) f CROSS JOIN tracker_cache_issues i
+	  WHERE i.root_id = ?1 AND i.issue_id = f.value AND (` + strings.Join(byAny, " OR ") + `) AND ` + kept + ` LIMIT ` + limit + `)`
 	for k, arm := range arms {
 		where := arm.where
 		if k == len(arms)-1 {
 			where += ` AND NOT (` + arms[0].where + `) AND NOT (` + arms[1].where + `)`
 		}
-		selects[k] = `SELECT * FROM (SELECT i.issue_id, i.boards_rev, i.updated_at, i.history_for, i.history_answered_at,
-		    i.history_wait, i.history_receipt FROM tracker_cache_issues i
-		  WHERE i.root_id = ?1 AND ` + where + ` AND ` + mirrorIssueKept("i.root_id", "i.issue_id") + `
+		selects[k+1] = `SELECT * FROM (SELECT ` + columns + ` FROM tracker_cache_issues i
+		  WHERE i.root_id = ?1 AND ` + where + ` AND i.issue_id NOT IN (SELECT value FROM json_each(?3)) AND ` + kept + `
 		  ORDER BY ` + arm.order + ` LIMIT ` + limit + `)`
 	}
 	return `SELECT d.issue_id,
@@ -103,14 +111,22 @@ func mirrorHistoryDueExistsSQL(now string) string {
 
 // ListMirrorHistoryDue lists up to mirrorHistoryDuePage kept issues of
 // rootID due a history read at now, the caller's steady clock in Unix
-// milliseconds (mirrorHistoryDue): those whose wait is over, longest over
-// first, then those whose answer is after now, then those of a new version
-// or boards by issue ID, each with its boards. more reports that more are
-// due. A read that clears an issue's due state takes it off the list, and
-// one superseded leaves the state the write that superseded it stored, so
-// the next listing reaches the issues behind them.
-func (s *Store) ListMirrorHistoryDue(rootID int64, now int64) (due []MirrorHistoryDue, more bool, err error) {
-	err = scanMirrorRows(s.reader(), mirrorHistoryDueSQL, []any{rootID, now}, func(r rowScanner) error {
+// milliseconds (mirrorHistoryDue): those of first that are due (issues a
+// person is shown, whose status time a read is to decide first), then those whose wait is over, longest over first, then those
+// whose answer is after now, then those of a new version or boards by
+// issue ID, each once, with its boards. more reports that more are due. A
+// read that clears an issue's due state takes it off the list, and one
+// superseded leaves the state the write that superseded it stored, so the
+// next listing reaches the issues behind them.
+func (s *Store) ListMirrorHistoryDue(rootID int64, now int64, first ...string) (due []MirrorHistoryDue, more bool, err error) {
+	if len(first) > mirrorHistoryDuePage {
+		return nil, false, fmt.Errorf("%w: %d issues to list first, over %d", ErrInvalidTrackerCache, len(first), mirrorHistoryDuePage)
+	}
+	list, err := encodeMirrorIDs(first)
+	if err != nil {
+		return nil, false, err
+	}
+	err = scanMirrorRows(s.reader(), mirrorHistoryDueSQL, []any{rootID, now, list}, func(r rowScanner) error {
 		var d MirrorHistoryDue
 		var boards []byte
 		if err := r.Scan(&d.IssueID, &boards, &d.BoardsRev, &d.UpdatedAt, &d.For, &d.AnsweredAt, &d.Wait, &d.Receipt); err != nil {

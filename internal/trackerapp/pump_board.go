@@ -204,13 +204,8 @@ func (p *boardPump) toldLocked() SyncView {
 // when it is turned off, removed or a Tempo connection. A connection a tick holds is
 // on: any change to it drops the hold. The caller holds opMu.
 func (s *Service) subscribableLocked(id string) (kind string, err error) {
-	if h := s.holds[id]; h != nil {
-		s.mu.Lock()
-		inUse := s.clients[id] == h.c
-		s.mu.Unlock()
-		if inUse {
-			return h.row.Kind, nil
-		}
+	if h := s.heldLocked(id); h != nil {
+		return h.row.Kind, nil
 	}
 	row, err := s.get(id)
 	switch {

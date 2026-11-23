@@ -33,17 +33,20 @@ const (
 // listing gives the unit its issues, a page the size of historyBatches
 // reads; each read either clears its issues' due state or is superseded
 // by a write that did, so the next tick's listing reaches the issues
-// behind them.
-func (r *run) history() (UnitResult, error) {
+// behind them. The issues of first that are due are listed before the
+// others (the shown tickets' issues whose status times no final read
+// decided, roundHistory).
+func (r *run) history(first ...string) (UnitResult, error) {
 	var log changeLog
-	more, err := r.historyReads(&log)
+	more, err := r.historyReads(&log, first)
 	return UnitResult{Changes: log.changes(), More: more}, err
 }
 
-// historyReads makes the reads of the history unit, adding what each
-// stored to log, and reports whether due issues are left.
-func (r *run) historyReads(log *changeLog) (more bool, _ error) {
-	due, more, err := r.s.store.ListMirrorHistoryDue(r.root, r.steadyAt())
+// historyReads makes the reads of the history unit, first's due issues
+// first, adding what each stored to log, and reports whether due issues
+// are left.
+func (r *run) historyReads(log *changeLog, first []string) (more bool, _ error) {
+	due, more, err := r.s.store.ListMirrorHistoryDue(r.root, r.steadyAt(), first...)
 	if err != nil {
 		return false, fmt.Errorf("trackerapp: list the issues whose history is due: %w", err)
 	}

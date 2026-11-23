@@ -11,8 +11,8 @@ import (
 )
 
 // A project key rename moves no update time: a board read stores the
-// renamed card at the update the stored document shows, and the card owns
-// the key (store StoreMirrorDetails). A detail read in flight while the
+// renamed card at the update the stored body shows, and the issue record
+// owns the key (store StoreMirrorTickets). A detail read in flight while the
 // board read lands, its answer stored after, shows the board's new key;
 // so do a reopen, which checks the stored document with a cards read, and
 // an open ticket, with the one full read of the first opening.
@@ -159,10 +159,10 @@ func (r gatedRead) finish(t *testing.T) gatedReadAnswer {
 	}
 }
 
-// A ticket read of a changed issue stores the card its document is owed,
-// read by ID through the cards path, then the document: the mirror holds
-// both, of one version, and the board shows the new card.
-func TestAChangedDocumentStoresTheCardItIsOwed(t *testing.T) {
+// A ticket read of a changed issue stores its card with its body in the
+// issue record, in one write with no cards read: the mirror holds both, of
+// one version, and the board shows the new card.
+func TestAChangedTicketReadStoresItsCardWithItsBody(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
 	m.seedBoard(t)
@@ -171,39 +171,15 @@ func TestAChangedDocumentStoresTheCardItIsOwed(t *testing.T) {
 	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
 	m.p.cards = cardsAnswering(&c)
 	v, ch := m.openDetail(t, "10001")
-	if v.Card.Title != "Renamed" || !containsIssue(ch.Cards, "10001") || !containsIssue(ch.Details, "10001") || m.p.count("Cards") != 1 {
+	if v.Card.Title != "Renamed" || !containsIssue(ch.Cards, "10001") || !containsIssue(ch.Details, "10001") || m.p.count("Cards") != 0 {
 		t.Fatalf("the read shows %q, changed %+v, %d card reads", v.Card.Title, ch, m.p.count("Cards"))
 	}
 	if b := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10001")); b.Card.Title != "Renamed" || b.Card.Updated != millis(c.Updated) {
 		t.Fatalf("the board's card %+v", b.Card)
 	}
-	stored, d, ok := m.storedDetail(t, "10001")
-	if !ok || stored.CardUpdatedAt != millis(c.Updated) || d.Card.Title != "Renamed" {
-		t.Fatalf("the mirror's detail %+v held %v", stored, ok)
-	}
-}
-
-// A document whose owed card the tracker no longer returns (the issue was
-// trashed between the two reads) is not stored: the ticket shows it,
-// loaded, from the pump, with its status time unknown, and the next read
-// settles it as the tracker then says.
-func TestADocumentWhoseCardIsGoneIsHeldByThePump(t *testing.T) {
-	t.Parallel()
-	m := newMirrorFixture(t)
-	m.seedBoard(t)
-	c := seededCard()
-	c.Updated = c.Updated.Add(time.Minute)
-	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
-	m.p.cards = func(asked []tracker.IssueID) (tracker.Cards, error) { return tracker.Cards{Missing: asked}, nil }
-	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001"))
-	m.events.issueEvents(t, 1)
-	quiet(t, m.svc)
-	v := m.ticketView(t, sub.ID)
-	if !v.Loaded || v.Failure != nil || v.Detail.Card.Updated != millis(c.Updated) || v.Detail.Card.StatusSince != 0 || v.Detail.Description != "Body" {
-		t.Fatalf("the ticket shows %+v", v)
-	}
-	if _, _, ok := m.storedDetail(t, "10001"); ok {
-		t.Fatal("the mirror stored a document whose card it does not hold")
+	stored, _, ok := m.storedDetail(t, "10001")
+	if record, _ := cardOf(stored.Card); !ok || stored.UpdatedAt != millis(c.Updated) || millis(record.Updated) != millis(c.Updated) || record.Title != "Renamed" {
+		t.Fatalf("the mirror's body %+v held %v", stored, ok)
 	}
 }
 
@@ -247,9 +223,10 @@ func TestATrashedLinearTicketSaysItIsGone(t *testing.T) {
 }
 
 // A person's refresh of a changed ticket that is open makes one full
-// read on either tracker: what the refresh stored is told to the open
-// ticket as its own document stored (ticketInputs), which the pump builds
-// from the mirror's copy, not as a card change owing a read.
+// read on either tracker and no cards read: what the refresh stored is
+// told to the open ticket as its body stored of the new version
+// (ticketInputs), which the pump builds from the mirror's body, not as a
+// card change owing a read.
 func TestARefreshOfAChangedOpenTicketReadsItOnce(t *testing.T) {
 	t.Parallel()
 	for _, jira := range []bool{true, false} {
@@ -266,9 +243,8 @@ func TestARefreshOfAChangedOpenTicketReadsItOnce(t *testing.T) {
 			if v := m.ticketView(t, subs[0].ID); v.Detail == nil || v.Detail.Card.Title != "Renamed" {
 				t.Fatalf("the open ticket after the refresh %+v", v)
 			}
-			// The refresh's full read, and the card its new document is owed.
-			if d, c := m.p.count("Details")-details, m.p.count("Cards")-cards; d != 1 || c != 1 {
-				t.Fatalf("the refresh made %d full reads and %d card reads; want 1 and 1", d, c)
+			if d, c := m.p.count("Details")-details, m.p.count("Cards")-cards; d != 1 || c != 0 {
+				t.Fatalf("the refresh made %d full reads and %d card reads; want 1 and 0", d, c)
 			}
 		})
 	}

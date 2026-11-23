@@ -116,7 +116,7 @@ func boardSteps(b tracker.BoardID, due BoardDue) []step {
 			records: true, reconcile: true, whole: true})
 	}
 	if due.History {
-		steps = append(steps, step{unit: UnitHistory, body: (*run).history, history: true})
+		steps = append(steps, step{unit: UnitHistory, body: func(r *run) (UnitResult, error) { return r.history() }, history: true})
 	}
 	return steps
 }
@@ -140,6 +140,12 @@ func deltaStep(b tracker.BoardID) step {
 // The issues nothing keeps any more, which a thread's unlink, delete,
 // retire or transfer leaves, are removed by FinishMirrorCleanup.
 func (s *Service) SyncLinked(ctx context.Context, id string, due LinkedDue, u Urgency) (Outcome, error) {
+	return s.syncLinked(ctx, id, due, u, nil)
+}
+
+// syncLinked is SyncLinked, its history unit reading the issues of first
+// that are due before the others (run.history).
+func (s *Service) syncLinked(ctx context.Context, id string, due LinkedDue, u Urgency, first []string) (Outcome, error) {
 	if id == "" {
 		return Outcome{}, fmt.Errorf("%w: a linked-issues tick needs a connection", ErrInvalidRequest)
 	}
@@ -148,7 +154,7 @@ func (s *Service) SyncLinked(ctx context.Context, id string, due LinkedDue, u Ur
 		steps = append(steps, step{unit: UnitCards, body: (*run).linkedCards, records: true})
 	}
 	if due.History {
-		steps = append(steps, step{unit: UnitHistory, body: (*run).history, history: true})
+		steps = append(steps, step{unit: UnitHistory, body: func(r *run) (UnitResult, error) { return r.history(first...) }, history: true})
 	}
 	if len(steps) == 0 {
 		return Outcome{Ran: []UnitResult{}}, nil

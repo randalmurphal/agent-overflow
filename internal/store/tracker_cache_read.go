@@ -26,13 +26,13 @@ type MirrorRead struct {
 
 // At is the read's order time in Unix milliseconds on its root's clock,
 // for comparing with the order times the root stores (MirrorSync.ReadAt,
-// MirrorDetail.ReadAt). It is no wall time: an interval is measured with
+// MirrorBody.ReadAt). It is no wall time: an interval is measured with
 // Wall.
 func (r MirrorRead) At() int64 { return r.rootOrder }
 
 // Wall is the wall clock the read began at, in Unix milliseconds: the time
 // an interval since the read is measured from (MirrorSync.StructureWall,
-// MirrorSync.ReconciledWall, MirrorDetail.ReadWall).
+// MirrorSync.ReconciledWall, MirrorBody.Wall).
 func (r MirrorRead) Wall() int64 { return r.wall }
 
 // mirrorReadTimes are a read's times once checked against the root a
@@ -68,9 +68,9 @@ var mirrorReadTimeColumns = []struct {
 	{"tracker_cache_statuses", []string{"read_at"}},
 	{"tracker_cache_boards", []string{"read_at", "rows_removed_at", "listing_read_at", "estimate_reset_at"}},
 	{"tracker_cache_board_unexplained", []string{"named_at"}},
-	{"tracker_cache_issues", []string{"read_at"}},
+	{"tracker_cache_issues", []string{"read_at", "body_read_at", "body_opened_at"}},
 	{"tracker_cache_board_issues", []string{"read_at"}},
-	{"tracker_cache_issue_details", []string{"opened_at", "read_at"}},
+	{"tracker_cache_open_tickets", []string{"opened_at"}},
 	{"tracker_cache_worklog_days", []string{"read_at"}},
 	{"tracker_cache_sync", []string{"cursor_read_at", "read_at", "reconciled_at", "outcome_at"}},
 }

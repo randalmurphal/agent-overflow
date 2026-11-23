@@ -193,29 +193,27 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{{ID: "1", Name: "To Do", Group: MirrorGroupDone}}}, mirrorReadOf(root, 2))
 			return err
 		},
-		"StoreMirrorDetails": func(root int64) error {
-			_, err := s.StoreMirrorDetails(root, currentSweep(s, root), []MirrorDetailDoc{
-				{IssueID: "10001", Data: []byte(`{"v":2}`), CardUpdatedAt: 5}, {IssueID: "10002", Data: []byte(`{}`), CardUpdatedAt: 5}}, mirrorReadOf(root, 9), mirrorReadOf(root, 9))
+		"StoreMirrorTickets": func(root int64) error {
+			_, err := s.StoreMirrorTickets(root, currentSweep(s, root), []MirrorTicket{
+				{Card: webCard("10001", 5), Body: []byte(`{"v":2}`)}, {Card: webCard("10002", 5), Body: []byte(`{}`)}}, MirrorCatalog{},
+				mirrorReadOf(root, 9), mirrorReadOf(root, 9))
 			return err
 		},
-		"ConfirmMirrorDetail": func(root int64) error {
-			d, ok, err := s.GetMirrorDetail(root, "10001")
+		"StoreMirrorTickets check": func(root int64) error {
+			_, err := s.StoreMirrorTickets(root, currentSweep(s, root), []MirrorTicket{{Card: webCard("10001", 5)}}, MirrorCatalog{},
+				mirrorReadOf(root, 0), mirrorReadOf(root, 9))
+			return err
+		},
+		"ConfirmMirrorBody": func(root int64) error {
+			b, ok, err := s.GetMirrorBody(root, "10001")
 			if err != nil {
 				return err
 			}
 			if !ok {
-				// A gone root holds none: the detail as a live root read it.
-				d = MirrorDetail{IssueID: "10001", ReadAt: 7, row: 1, sweep: 1}
+				// A gone root holds none: the body as a live root read it.
+				b = MirrorBody{IssueID: "10001", ReadAt: 7, sweep: 1}
 			}
-			_, err = s.ConfirmMirrorDetail(root, d, mirrorReadOf(root, 9))
-			return err
-		},
-		"StoreMirrorDetail": func(root int64) error {
-			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), MirrorDetailDoc{IssueID: "10001", Data: []byte(`{}`), CardUpdatedAt: 5}, mirrorReadOf(root, 0), mirrorReadOf(root, 9))
-			return err
-		},
-		"StoreMirrorDetail opened": func(root int64) error {
-			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), MirrorDetailDoc{IssueID: "10001", Data: []byte(`{}`), CardUpdatedAt: 5}, mirrorReadOf(root, 20), mirrorReadOf(root, 7))
+			_, err = s.ConfirmMirrorBody(root, b, mirrorReadOf(root, 9))
 			return err
 		},
 		"ReplaceMirrorWorklogs": func(root int64) error {
@@ -234,7 +232,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			_, err := s.RecordMirrorSyncAttempt(root, "11", currentAttempt(s, root, "11", MirrorSyncAttempt{ReadAt: mirrorReadOf(root, 8), Failure: MirrorAttemptFailure{At: mirrorReadOf(root, 9), Kind: MirrorFailureTransient, Message: "timed out"}}))
 			return err
 		},
-		"KeepMirrorTicket": func(root int64) error { return s.KeepMirrorTicket(root, "10001", 2, 1) },
+		"KeepMirrorTicket": func(root int64) error { return s.KeepMirrorTicket(root, "10001", 2, 1, mirrorReadOf(root, 9)) },
 	}
 }
 
@@ -242,7 +240,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 // the cleanup and the reads.
 var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
-	"GetMirrorSync", "ListMirrorHistoryDue", "GetMirrorDetail", "ListMirrorDetailStates", "ListMirrorWorklogs", "ListMirrorIssueWorklogs",
+	"GetMirrorSync", "ListMirrorHistoryDue", "GetMirrorBody", "ListMirrorWorklogs", "ListMirrorIssueWorklogs",
 	"GetMirrorBoard", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorSection", "CountMirrorSections",
 	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards",
 	"ReadMirrorRefreshTargets",

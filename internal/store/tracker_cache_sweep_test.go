@@ -23,8 +23,8 @@ func TestMirrorSweepFencesReadsOutsideABoard(t *testing.T) {
 			_, err := s.UpsertMirrorCards(root, sweep, []MirrorCard{webCard("10001", 9)}, MirrorCatalog{}, mirrorReadAt(2))
 			return err
 		}},
-		{"detail", `tracker_cache_issue_details`, func(s *Store, root, sweep int64) error {
-			_, err := storeDetail(t, s, root, sweep, "10001", 9, 9, []byte(`{}`))
+		{"body", `tracker_cache_issue_bodies`, func(s *Store, root, sweep int64) error {
+			_, err := storeTicket(t, s, root, sweep, "10001", 9, 9, []byte(`{}`))
 			return err
 		}},
 		{"history", `tracker_cache_changes`, func(s *Store, root, sweep int64) error {

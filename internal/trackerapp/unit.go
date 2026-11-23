@@ -52,7 +52,11 @@ type run struct {
 	// through, captured before its reads (refreshTargets); a tick names its
 	// own board's from state.
 	lifetimes map[tracker.BoardID]int64
-	stop      func()
+	// tell passes what one write of a read of tickets stored through the
+	// change funnel as the write commits, before any later call of the
+	// read can fail; set by readDetails, whose writes alone call it.
+	tell func(Changes)
+	stop func()
 }
 
 // connHold is what ticks of a connection reuse until a change to it made
@@ -92,13 +96,19 @@ var errEnded = errors.New("trackerapp: the connection's mirror ended")
 
 // start takes a hold on connection id for one tick or read, or fails:
 // with errEnded for a connection turned off or removed, ErrNoProvider for
-// a Tempo connection, ErrStopped after Stop, and the context's error when
-// ctx has ended. The caller ends the run with finish.
+// a Tempo connection, ErrStopped after Stop, the context's error when ctx
+// has ended, and the error of the delete of an earlier process's open
+// tickets when that failed (dropEarlierTickets). The caller ends the run
+// with finish.
 func (s *Service) start(ctx context.Context, id string, u Urgency) (*run, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if err := s.enter(); err != nil {
+		return nil, err
+	}
+	if err := s.dropEarlierTickets(); err != nil {
+		s.leave()
 		return nil, err
 	}
 	r, err := s.hold(id)
@@ -129,15 +139,10 @@ func (s *Service) start(ctx context.Context, id string, u Urgency) (*run, error)
 func (s *Service) hold(id string) (*run, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
-	if h := s.holds[id]; h != nil {
-		s.mu.Lock()
-		inUse := s.clients[id] == h.c
-		s.mu.Unlock()
-		if inUse {
-			return &run{s: s, row: h.row, root: h.root, gen: h.gen, p: h.p, at: s.begin(h.c)}, nil
-		}
-		delete(s.holds, id)
+	if h := s.heldLocked(id); h != nil {
+		return &run{s: s, row: h.row, root: h.root, gen: h.gen, p: h.p, at: s.begin(h.c)}, nil
 	}
+	delete(s.holds, id)
 	row, err := s.get(id)
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -170,6 +175,42 @@ func (s *Service) hold(id string) (*run, error) {
 	r.p, r.at = p, s.begin(c)
 	s.holds[id] = &connHold{row: row, root: root, gen: r.gen, p: p, c: c}
 	return r, nil
+}
+
+// dropEarlierTickets deletes the open-ticket rows an earlier process left
+// (store DropMirrorTicketsOfOtherSessions), once per process: every run
+// passes it as it starts, and every bind of an open ticket is made in a
+// run (bindTickets), so the delete has completed before any row of this
+// process is written and never removes one. Concurrent first runs wait
+// for one delete. A delete that fails fails the run that tried it, which
+// is retried as a failure outside the tracker is, and the next run tries
+// it again.
+func (s *Service) dropEarlierTickets() error {
+	s.earlier.Lock()
+	defer s.earlier.Unlock()
+	if s.earlier.done {
+		return nil
+	}
+	if _, err := s.store.DropMirrorTicketsOfOtherSessions(s.session); err != nil {
+		return fmt.Errorf("trackerapp: drop the open tickets an earlier process left: %w", err)
+	}
+	s.earlier.done = true
+	return nil
+}
+
+// heldLocked is connection id's hold while the client it was built over
+// is still the connection's, nil otherwise. The caller holds opMu.
+func (s *Service) heldLocked(id string) *connHold {
+	h := s.holds[id]
+	if h == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.clients[id] != h.c {
+		return nil
+	}
+	return h
 }
 
 // rehold looks connection id's mirror root up again after the store

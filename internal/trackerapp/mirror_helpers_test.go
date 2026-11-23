@@ -360,14 +360,64 @@ func (m *mirrorFixture) refuseKeeps() {
 	m.svc.store = keepRefused{m.st}
 }
 
-// keepRefused is a store whose keep of an open ticket fails, as a failing
-// write does, so the ticket works as one of an issue the mirror does not
-// keep: its pump holds its content (keepTicket).
+// keepRefused is a store whose bind of an open ticket fails, as a failing
+// write does: the ticket shows a failure outside the tracker, which its
+// next read retries (bindTickets).
 type keepRefused struct{ *store.Store }
 
-func (keepRefused) KeepMirrorTicket(int64, string, int64, int64) error {
+func (keepRefused) KeepMirrorTicket(int64, string, int64, int64, store.MirrorRead) error {
 	return errors.New("test: the store refused the keep")
 }
+
+// keepsMade records the issues of the open tickets the store kept, and
+// refuses the first keep of the open ticket of issue refuse.
+type keepsMade struct {
+	*store.Store
+	refuse  string
+	mu      sync.Mutex
+	refused bool
+	issues  []string
+}
+
+func (k *keepsMade) KeepMirrorTicket(root int64, issue string, session, pump int64, opened store.MirrorRead) error {
+	k.mu.Lock()
+	refuse := issue == k.refuse && !k.refused
+	k.refused = k.refused || refuse
+	k.mu.Unlock()
+	if refuse {
+		return errors.New("test: the store refused the keep")
+	}
+	if err := k.Store.KeepMirrorTicket(root, issue, session, pump, opened); err != nil {
+		return err
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.issues = append(k.issues, issue)
+	return nil
+}
+
+// since is the issues kept since the last call, sorted.
+func (k *keepsMade) since() []string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	issues := slices.Sorted(slices.Values(k.issues))
+	k.issues = nil
+	return issues
+}
+
+// loseKeeps makes the store keep no issue for an open ticket from now on
+// (keepsLost).
+func (m *mirrorFixture) loseKeeps() {
+	m.svc.store = keepsLost{m.st}
+}
+
+// keepsLost is a store whose bind of an open ticket succeeds and writes no
+// row, as a mirror that no longer keeps the issue does (the cap, with more
+// open tickets than it keeps bodies): the ticket's reads store no body,
+// and its pump holds the content it shows.
+type keepsLost struct{ *store.Store }
+
+func (keepsLost) KeepMirrorTicket(int64, string, int64, int64, store.MirrorRead) error { return nil }
 
 // testBoards are the boards a mirror fixture's connection lists.
 var testBoards = []tracker.BoardID{testBoard, "2", "7", "9"}

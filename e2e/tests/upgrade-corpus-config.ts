@@ -51,6 +51,7 @@ export const migrationExceptions: MigrationException[] = [
   { version: 154, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v154 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
   { version: 154, table: 'remote_watches', rowsMayShrink: true, reason: 'v154 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
   { version: 158, table: 'thread_requests', columns: ['next_check'], reason: 'v158 makes the acknowledgement it owes again for an answer from a paired computer due at once' },
+  { version: 164, table: 'tracker_cache_issue_details', dropped: true, reason: 'v164 drops the documents of opened tracker issues; each ticket body is read again into tracker_cache_issue_bodies at its next opening' },
 ];
 
 /**
@@ -819,7 +820,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'tracker_cache_board_issues', reason: 'a tracker issue\'s row on a board (v162); no app method syncs a tracker yet' },
   { table: 'tracker_cache_issue_sprints', reason: 'the sprints a tracker issue is in (v162); no app method syncs a tracker yet' },
   { table: 'tracker_cache_changes', reason: 'a tracker issue\'s status, sprint, estimate or assignee change (v162); no app method syncs a tracker yet' },
-  { table: 'tracker_cache_issue_details', reason: 'the detail of a recently opened tracker issue (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_issue_bodies', reason: 'the ticket body of an open or recently opened tracker issue (v164); no app method syncs a tracker yet' },
   { table: 'tracker_cache_worklogs', reason: 'time logged in a tracker (v162); no app method syncs a tracker yet' },
   { table: 'tracker_cache_worklog_days', reason: 'the latest read of a day of a tracker author\'s worklogs (v162); no app method syncs a tracker yet' },
   { table: 'tracker_cache_sync', reason: 'a tracker mirror scope\'s sync state (v162); no app method syncs a tracker yet' },

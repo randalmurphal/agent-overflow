@@ -14,9 +14,9 @@ import (
 
 // A round that finds nothing changed costs one provider call for every
 // shown ticket of the connection, and store calls that do not grow with
-// them: on Jira one cards read checked against the details' states (no
-// document decoded, nothing written); on Linear one many-issue detail read
-// stored in one transaction. It emits nothing.
+// them: on Jira one cards read stored with each ticket's record, whose
+// receipts confirm the bodies (none decoded); on Linear one many-issue
+// detail read stored in one ticket write. It emits nothing.
 func TestIdleRoundCosts(t *testing.T) {
 	t.Parallel()
 	for _, jira := range []bool{true, false} {
@@ -33,9 +33,9 @@ func TestIdleRoundCosts(t *testing.T) {
 					t.Fatalf("round %+v", res)
 				}
 				provider, stored := countsOf(m.p.callsInOrder()[calls:]), cs.take()
-				wantProvider, wantStore := "Details:1", "GetMirrorSync:1 StoreMirrorDetails:1"
+				wantProvider, wantStore := "Details:1", "GetMirrorSync:1 StoreMirrorTickets:1"
 				if jira {
-					wantProvider, wantStore = "Cards:1", "GetMirrorSync:1 ListMirrorDetailStates:1 UpsertMirrorCards:1"
+					wantProvider = "Cards:1"
 				}
 				t.Logf("idle round: provider %s, store %s", describeCounts(provider), describeCounts(stored))
 				if describeCounts(provider) != wantProvider || describeCounts(stored) != wantStore {
@@ -54,9 +54,10 @@ func TestIdleRoundCosts(t *testing.T) {
 
 // A Linear round reads every shown ticket's document; when nothing changed
 // but the time the tracker answered, which moves HistoryTo, the round
-// rewrites no document and tells no view: the stored document keeps only
-// whether its history is final for the card's update. Once that changes,
-// the document is written again.
+// rewrites no body and tells no view: the body holds no history bound, and
+// whether the status time is final for the card's update is the issue
+// record's. Once the answers pass the update, the record turns final once
+// and the bodies stay as they were.
 func TestAnIdleRoundOfAdvancingAnswersRewritesNothing(t *testing.T) {
 	t.Parallel()
 	m, st, issues, _ := newRoundFixture(t, 3, false)
@@ -68,43 +69,56 @@ func TestAnIdleRoundOfAdvancingAnswersRewritesNothing(t *testing.T) {
 	}
 	// Each round answers three documents, three minutes in all.
 	answerFrom(updated.Add(-30 * time.Minute))
-	docs := func() []string {
+	bodies := func() []string {
 		out := make([]string, len(issues))
 		for i, id := range issues {
-			d, ok, err := m.st.GetMirrorDetail(m.root(), string(id))
+			d, ok, err := m.st.GetMirrorBody(m.root(), string(id))
 			if err != nil || !ok {
-				t.Fatalf("the document of %s: %v, %v", id, ok, err)
+				t.Fatalf("the body of %s: %v, %v", id, ok, err)
 			}
 			out[i] = string(d.Data)
 		}
 		return out
 	}
-	// The answers are before the update: the history is not final for it,
-	// and the documents say so.
+	finals := func() []bool {
+		out := make([]bool, len(issues))
+		for i, id := range issues {
+			out[i] = m.recordOf(t, string(id)).StatusFinal
+		}
+		return out
+	}
+	// The answers are before the update: the status time is not final for
+	// it.
 	m.round(t)
-	notFinal, events := docs(), m.issueEventCount()
+	stored, events := bodies(), m.issueEventCount()
 	for range 3 {
 		m.round(t)
 	}
-	if got := docs(); !slices.Equal(got, notFinal) {
-		t.Fatal("a round that found nothing changed but the answer time rewrote a document")
+	if got := bodies(); !slices.Equal(got, stored) {
+		t.Fatal("a round that found nothing changed but the answer time rewrote a body")
+	}
+	if got := finals(); slices.Contains(got, true) {
+		t.Fatalf("answers before the update made the status times final: %v", got)
 	}
 	if got := m.issueEventsSince(events); len(got) != 0 {
 		t.Fatalf("rounds of later answers told %+v", got)
 	}
-	// Answers past the update make the history final: written once.
+	// Answers past the update make the status times final, and leave the
+	// bodies as they were.
 	answerFrom(updated.Add(5 * time.Minute))
 	m.round(t)
-	final := docs()
-	if slices.Equal(final, notFinal) {
-		t.Fatal("the history turned final and no document changed")
+	if got := finals(); slices.Contains(got, false) {
+		t.Fatalf("answers past the update left status times not final: %v", got)
+	}
+	if got := bodies(); !slices.Equal(got, stored) {
+		t.Fatal("the status times turned final and a body was rewritten")
 	}
 	events = m.issueEventCount()
 	for range 3 {
 		m.round(t)
 	}
-	if got := docs(); !slices.Equal(got, final) {
-		t.Fatal("a round of later answers rewrote a final document")
+	if got := bodies(); !slices.Equal(got, stored) {
+		t.Fatal("a round of later answers rewrote a body")
 	}
 	if got := m.issueEventsSince(events); len(got) != 0 {
 		t.Fatalf("rounds of later answers told %+v", got)

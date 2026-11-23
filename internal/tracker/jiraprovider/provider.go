@@ -92,6 +92,14 @@ func siteOrigin(s string) (string, error) {
 	return u.Scheme + "://" + u.Host, nil
 }
 
+// IssueURL is the web address of the issue key on the Jira site site, the
+// connection's site as Options.Site takes it. A Jira card carries no URL
+// (tracker.Card.URL): its address follows its key, which a project's
+// rename changes without moving the issue's update time.
+func IssueURL(site, key string) string {
+	return strings.TrimSuffix(site, "/") + "/browse/" + url.PathEscape(key)
+}
+
 // Capabilities are Jira's: every capability the neutral model names.
 // DetailMovesUpdated is measured: a comment, a link, an attachment and a
 // worklog each move an issue's `updated`

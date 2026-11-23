@@ -84,9 +84,10 @@ func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 	}
 }
 
-// A staged history that is not final for the card leaves the time the
-// card's status began standing, as a batch's does; the final one sets it.
-func TestMirrorStagedHistoryKeepsTheStatusTimeUntilFinal(t *testing.T) {
+// A staged history that is not final for the card gives the card's status
+// time provisionally, as a batch's does (MirrorStatusSince); the final one
+// makes it final.
+func TestMirrorStagedHistoryIsProvisionalUntilFinal(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
@@ -115,12 +116,12 @@ func TestMirrorStagedHistoryKeepsTheStatusTimeUntilFinal(t *testing.T) {
 	if gen() == before {
 		t.Fatal("the history was not staged as a new generation")
 	}
-	if got := mustStatusSince(t, s, root, "10001"); got != n {
-		t.Fatalf("after a staged history still waiting: %d; want the time it had, %d", got, n)
+	if got := statusOf(t, s, root, "10001"); got != fmt.Sprintf("%d false 6", n+1) {
+		t.Fatalf("after a staged history still waiting: %s; want its change within the margin, %d, provisionally", got, n+1)
 	}
 	mustReplaceHistory(t, s, root, later(0), MirrorWrite{Changed: true})
-	if got := mustStatusSince(t, s, root, "10001"); got != n+1 {
-		t.Fatalf("after the final history: %d; want %d", got, n+1)
+	if got := statusOf(t, s, root, "10001"); got != fmt.Sprintf("%d true 6", n+1) {
+		t.Fatalf("after the final history: %s; want %d, final", got, n+1)
 	}
 }
 

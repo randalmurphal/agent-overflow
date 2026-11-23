@@ -23,7 +23,7 @@ func TestReadMirrorRefreshTargets(t *testing.T) {
 	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10003", 5)}, MirrorCatalog{}, mirrorReadAt(5)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StoreMirrorDetails(root, currentSweep(s, root), []MirrorDetailDoc{heldDoc(t, s, root, "10001", []byte(`{}`))}, mirrorReadAt(10), mirrorReadAt(10)); err != nil {
+	if _, err := storeTicket(t, s, root, currentSweep(s, root), "10001", 10, 10, []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
 	read := func(cards, details []string) MirrorRefreshTargets {
