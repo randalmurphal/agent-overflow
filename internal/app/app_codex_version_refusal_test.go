@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -18,9 +19,11 @@ import (
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/workflow/engine"
 )
 
 // versionedCodex is a fake app-server whose bytes are the file itself
@@ -106,7 +109,12 @@ func (c versionedCodex) launches(t *testing.T) []int {
 		t.Fatalf("read launch log: %v", err)
 	}
 	var pids []int
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	// A launch's shell creates the log before it writes its line, so a read
+	// can find the file empty or its last line not yet ended.
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		if !strings.HasSuffix(line, "\n") {
+			continue
+		}
 		pid, err := strconv.Atoi(strings.Fields(line)[0])
 		if err != nil {
 			t.Fatalf("launch log line %q: %v", line, err)
@@ -458,4 +466,129 @@ func TestCodexVersionRefusalReachesAPairedSenderOnce(t *testing.T) {
 		t.Fatalf("the destination received the send %d times, want once", n)
 	}
 	requireLaunches(t, fake, 1)
+}
+
+// A workflow phase on a Codex below the minimum is refused when its session
+// starts. The run parks for a person with the refusal as its cause, and the
+// phase is not tried again: the binary was dialed once.
+func TestCodexVersionRefusalParksAWorkflowPhase(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	configRoot := t.TempDir()
+	workflowDir := filepath.Join(configRoot, "workflows")
+	if err := os.MkdirAll(workflowDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	definition := `id: codex-refused
+name: Codex refused
+inputs:
+  goal:
+    schema:
+      type: string
+phases:
+  - id: execute
+    driver: agent
+    provider: codex
+    model: gpt-5.5
+    prompt: execute.md
+    inputs:
+      goal:
+        schema:
+          type: string
+    outputs:
+      complete:
+        schema:
+          type: boolean
+    gate:
+      routes:
+        - to: done
+cleanup: manual
+`
+	if err := os.WriteFile(filepath.Join(workflowDir, "codex-refused.yaml"), []byte(definition), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowDir, "execute.md"), []byte("Execute {{goal}}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := newVersionedCodex(t, "0.153.4")
+	fake.write(t)
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": fake.path}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.initWorkflowEngine(configRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if app.workflowApplication().Engine() != nil {
+			_ = app.workflowApplication().Engine().Close()
+		}
+	})
+	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
+	item, err := app.WorkflowStartRun(projectRow.ID, "codex-refused", "shared", "refused",
+		json.RawMessage(`{"goal":"refused"}`), nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var parked store.WorkItem
+	waitUntil(t, testutil.WaitBudget(t), func() bool {
+		row, err := app.store.GetWorkItem(item.ID)
+		parked = row
+		return err == nil && row.State == string(engine.StateNeedsHuman)
+	})
+	phases, err := app.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := wantCodexVersionMessage(fake.path, "0.153.4")
+	if len(phases) != 1 || !strings.Contains(phases[0].ParkCause, want) {
+		t.Fatalf("parked %s with phases %+v, want one attempt whose cause carries %q", parked.Reason, phases, want)
+	}
+	requireLaunches(t, fake, 1)
+}
+
+// A loop's wake to an idle Codex thread starts its session, and Codex below
+// the minimum refuses it. Each refused start writes its error row, which
+// names the start once and carries the refusal, and the person is notified
+// once for the run of failures. A second loop's wake makes the second start:
+// a loop whose wake is still queued skips its next fire.
+func TestCodexVersionRefusalOfAWakeStartNotifiesOnce(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	recorder := &recordingNotificationSender{}
+	a.osNotifications = recorder
+	a.storeIdentity.Store(&store.Identity{BackendID: "backend-under-test"})
+	fake := newVersionedCodex(t, "0.153.4")
+	fake.write(t)
+	if _, err := a.settings.Update(map[string]any{"codexBinaryPath": fake.path}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := createTestThread(t, a, string(provider.Codex), t.TempDir(), "gpt-5.5", threadmode.ModeChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.stopAgentWakeRunsForThread(thread.ID) })
+
+	refusal := wantCodexVersionMessage(fake.path, "0.153.4")
+	var want []string
+	for fire, label := range []string{"board", "news"} {
+		loop := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeLoop, Label: label,
+			Note: "Check the " + label + ".", IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli()})
+		now := time.Now()
+		if err := a.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}); err != nil {
+			t.Fatalf("fire %s: %v", label, err)
+		}
+		waitUntil(t, testutil.WaitBudget(t), func() bool { return len(fake.launches(t)) == fire+1 })
+		a.threadRequestsWG.Wait()
+		a.waitAgentNoticeWork()
+		a.notifications.queue.Wait()
+		want = append(want, `The loop "`+label+`" woke this thread and its message is queued, but the agent could not start: `+refusal)
+		if rows := threadErrorRows(t, a.store, thread.ID, ""); !slices.Equal(rows, want) {
+			t.Fatalf("after the %s wake the error rows are %q, want %q", label, rows, want)
+		}
+	}
+	if sends := recorder.snapshot(); len(sends) != 1 || sends[0].ID != "session-start:"+thread.ID {
+		t.Fatalf("notifications %#v, want one for the failed start", sends)
+	}
+	requireLaunches(t, fake, 2)
 }

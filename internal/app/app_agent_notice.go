@@ -279,7 +279,7 @@ func (a *App) startAgentNoticeSession(ctx context.Context, notice agentNotice, r
 		a.emitErrorToThread(notice.threadID, fmt.Sprintf(
 			"A message is queued for this thread, but the agent was not started for it: the app could not check that the message is still wanted (%v).", checkErr))
 	case startErr != nil:
-		a.emitErrorToThread(notice.threadID, notice.startFailed(startErr))
+		a.emitErrorToThread(notice.threadID, notice.startFailed(startFailureCause(startErr)))
 		if notice.failed != nil {
 			notice.failed()
 		}

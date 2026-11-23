@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"time"
 
@@ -366,14 +365,33 @@ func (a *App) startSession(ctx context.Context, threadID string) error {
 
 // startRegisteredSession is startSession that also returns the session the
 // start registered. It is the one door every start goes through, so it names
-// the failed step once: "start session: <cause>". Nothing below it adds the
+// the failed step once: a *sessionStartError. Nothing below it adds the
 // prefix, and its callers do not add it again.
 func (a *App) startRegisteredSession(ctx context.Context, threadID string) (session, error) {
 	sess, err := a.startRegisteredSessionOnce(ctx, threadID)
 	if err != nil {
-		return session{}, fmt.Errorf("start session: %w", err)
+		return session{}, &sessionStartError{cause: err}
 	}
 	return sess, nil
+}
+
+// sessionStartError is a failed session start, said as
+// "start session: <cause>". A row that already says the agent could not
+// start reports the cause alone (startFailureCause).
+type sessionStartError struct{ cause error }
+
+func (e *sessionStartError) Error() string { return "start session: " + e.cause.Error() }
+
+func (e *sessionStartError) Unwrap() error { return e.cause }
+
+// startFailureCause is what a row that says the agent could not start
+// reports for err: the cause of a failed start, without the step the row
+// already names.
+func startFailureCause(err error) error {
+	if start, ok := err.(*sessionStartError); ok {
+		return start.cause
+	}
+	return err
 }
 
 func (a *App) startRegisteredSessionOnce(ctx context.Context, threadID string) (session, error) {
