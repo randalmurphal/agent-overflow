@@ -222,26 +222,43 @@ type TailnetStatus struct {
 // session. It mints only while the node is actually up, so an install
 // with the feature off spends no ticket at all.
 func tailnetURL(srv *transport.Server, s TailnetStatus) string {
-	if !s.Running || s.DNSName == "" {
+	page, ok := tailnetPage(srv, s)
+	if !ok {
 		return ""
+	}
+	url, _ := page.URL(srv)
+	return url
+}
+
+// tailnetPage is the tailnet's page, false when the node is not up.
+func tailnetPage(srv *transport.Server, s TailnetStatus) (PairingPage, bool) {
+	if !s.Running || s.DNSName == "" {
+		return PairingPage{}, false
 	}
 	if s.HTTPS {
 		// tsnet answers TLS on 443 for the node's own name, so the URL is
 		// the bare name — which is the whole point of the ts.net
 		// certificate.
-		if url, ok := ticketedURL(srv, "https", s.DNSName); ok {
-			return url
-		}
-		return ""
+		return PairingPage{Scheme: "https", Authority: s.DNSName}, true
 	}
 	_, port, err := net.SplitHostPort(srv.Addr())
 	if err != nil {
-		return ""
+		return PairingPage{}, false
 	}
-	if url, ok := ticketedURL(srv, "http", net.JoinHostPort(s.DNSName, port)); ok {
-		return url
-	}
-	return ""
+	return PairingPage{Scheme: "http", Authority: net.JoinHostPort(s.DNSName, port)}, true
+}
+
+// PairingPage is where a pairing invitation on one network sends the
+// device, without its one-time ticket: the page's scheme and authority, and
+// the certificate pin that authority presents ("" for WebPKI).
+type PairingPage struct {
+	Scheme, Authority, Fingerprint string
+}
+
+// URL mints a one-time page ticket and answers the page's URL with it,
+// false when no ticket could be minted.
+func (p PairingPage) URL(srv *transport.Server) (string, bool) {
+	return ticketedURL(srv, p.Scheme, p.Authority)
 }
 
 // PairingURL chooses the reachable pairing address and its TLS trust root.
@@ -271,38 +288,51 @@ func PairingURL(srv *transport.Server, s Settings, reach Reach) (pageURL, finger
 // LAN uses the main listener's private address and matching certificate pin,
 // independently of any canonical domain or running tailnet.
 func PairingURLOnNetwork(srv *transport.Server, s Settings, reach Reach, choice string) (pageURL, fingerprint string, err error) {
+	page, err := PairingPageOnNetwork(srv, s, reach, choice)
+	if err != nil {
+		return "", "", err
+	}
+	link, ok := page.URL(srv)
+	if !ok {
+		if choice == "lan" {
+			return "", "", fmt.Errorf("could not create a local network pairing link")
+		}
+		return "", "", fmt.Errorf("could not create a Tailscale pairing link")
+	}
+	return link, page.Fingerprint, nil
+}
+
+// PairingPageOnNetwork is the page PairingURLOnNetwork mints a ticket for,
+// or why choice has none.
+func PairingPageOnNetwork(srv *transport.Server, s Settings, reach Reach, choice string) (PairingPage, error) {
 	if srv == nil {
-		return "", "", fmt.Errorf("the computer's network listener is unavailable")
+		return PairingPage{}, fmt.Errorf("the computer's network listener is unavailable")
 	}
 	switch choice {
 	case "lan":
 		if !s.BindAll {
-			return "", "", fmt.Errorf("enable Allow LAN connections before pairing over the local network")
+			return PairingPage{}, fmt.Errorf("enable Allow LAN connections before pairing over the local network")
 		}
 		ip := LANIP(s, reach.LANIP())
 		if !reach.pairable(net.ParseIP(ip)) {
-			return "", "", fmt.Errorf("no local network address is available for pairing")
+			return PairingPage{}, fmt.Errorf("no local network address is available for pairing")
 		}
 		_, port, err := net.SplitHostPort(srv.Addr())
 		if err != nil || port == "" || port == "0" {
-			return "", "", fmt.Errorf("the local network listener is unavailable")
+			return PairingPage{}, fmt.Errorf("the local network listener is unavailable")
 		}
-		link, ok := ticketedURL(srv, "http", net.JoinHostPort(ip, port))
-		if !ok {
-			return "", "", fmt.Errorf("could not create a local network pairing link")
-		}
-		return link, s.TLS.SelfSignedFingerprint, nil
+		return PairingPage{Scheme: "http", Authority: net.JoinHostPort(ip, port), Fingerprint: s.TLS.SelfSignedFingerprint}, nil
 	case "tailnet":
 		if !s.Tailnet.Running || s.Tailnet.DNSName == "" {
-			return "", "", fmt.Errorf("connect this computer to Tailscale before pairing over the tailnet")
+			return PairingPage{}, fmt.Errorf("connect this computer to Tailscale before pairing over the tailnet")
 		}
-		link := tailnetURL(srv, s.Tailnet)
-		if link == "" {
-			return "", "", fmt.Errorf("could not create a Tailscale pairing link")
+		page, ok := tailnetPage(srv, s.Tailnet)
+		if !ok {
+			return PairingPage{}, fmt.Errorf("could not create a Tailscale pairing link")
 		}
-		return link, "", nil
+		return page, nil
 	default:
-		return "", "", fmt.Errorf("unknown pairing network %q", choice)
+		return PairingPage{}, fmt.Errorf("unknown pairing network %q", choice)
 	}
 }
 

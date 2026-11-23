@@ -166,9 +166,18 @@ func (a *App) mintDevicePairing(deviceClass, access, networkChoice string) (Pair
 	return a.mintDevicePairingPurpose(deviceClass, access, networkChoice, "", false)
 }
 
-// mintDevicePairingPurpose mints one invitation. bootstrap marks one a
-// computer pairing window mints, whose comparison number is that window's.
+// mintDevicePairingPurpose mints one invitation for the page networkChoice
+// resolves to now. bootstrap marks one a computer pairing window mints,
+// whose comparison number is that window's.
 func (a *App) mintDevicePairingPurpose(deviceClass, access, networkChoice, purpose string, bootstrap bool) (PairingInvite, error) {
+	return a.mintDevicePairingOn(deviceClass, access, purpose, bootstrap, func() (string, string, string, error) {
+		return a.pairingPageURL(networkChoice)
+	})
+}
+
+// mintDevicePairingOn mints one invitation for the page that page answers
+// (its URL, endpoint and certificate pin), read once the request is valid.
+func (a *App) mintDevicePairingOn(deviceClass, access, purpose string, bootstrap bool, page func() (pageURL, endpoint, fingerprint string, err error)) (PairingInvite, error) {
 	state, err := a.accessState()
 	if err != nil {
 		return PairingInvite{}, err
@@ -186,7 +195,7 @@ func (a *App) mintDevicePairingPurpose(deviceClass, access, networkChoice, purpo
 		return PairingInvite{}, err
 	}
 
-	pageURL, endpoint, fingerprint, err := a.pairingPageURL(networkChoice)
+	pageURL, endpoint, fingerprint, err := page()
 	if err != nil {
 		return PairingInvite{}, err
 	}
@@ -710,6 +719,20 @@ func (a *App) pairingPageURL(networkChoice string) (pageURL, endpoint, fingerpri
 		return "", "", "", fmt.Errorf("access: parse the page URL: %w", err)
 	}
 	return pageURL, parsed.Scheme + "://" + parsed.Host, fingerprint, nil
+}
+
+// pairingPageAt is pairingPageURL for a page already resolved, as the
+// address publication holds it.
+func (a *App) pairingPageAt(page network.PairingPage) (pageURL, endpoint, fingerprint string, err error) {
+	srv := a.transportServer.Load()
+	if srv == nil {
+		return "", "", "", fmt.Errorf("access: transport server unavailable")
+	}
+	pageURL, ok := page.URL(srv)
+	if !ok {
+		return "", "", "", fmt.Errorf("access: could not create a pairing link")
+	}
+	return pageURL, page.Scheme + "://" + page.Authority, page.Fingerprint, nil
 }
 
 // backendDisplayName is display metadata shared by pairing, hello and push.

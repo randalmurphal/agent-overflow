@@ -12,12 +12,14 @@ package store
 // before it serves (store.RetirePendingPairings), so no such row can still
 // wait for a number.
 //
-// idx_pairing_links_session finds the link that names a session, so
-// startup's sweep of unactivated sessions (pendingLinkSessionsSQL) reads one
-// index entry per such session instead of the link history.
+// Startup's sweep of unactivated sessions (pendingLinkSessionsSQL) reads
+// only those sessions, through idx_sessions_pending, and finds each one's
+// link through idx_pairing_links_session, so it reads neither every live
+// session nor the link history.
 const pairingBootstrapMigrationVersion = 164
 
 const pairingBootstrapV164SQL = `
 ALTER TABLE pairing_links ADD COLUMN bootstrap INTEGER NOT NULL DEFAULT 0 CHECK(bootstrap IN (0,1));
 CREATE INDEX idx_pairing_links_session ON pairing_links(session_id);
+CREATE INDEX idx_sessions_pending ON sessions(activated_at) WHERE activated_at IS NULL AND revoked_at IS NULL;
 `

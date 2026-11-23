@@ -528,10 +528,23 @@ export const recoveryRules: RecoveryRule[] = [
   // unreachable: the end (store.endSessionsTx) releases its spawn links and
   // forgets its spawn changes in the same transaction.
   {
+    // A released link is stamped; any other receipt only stops tracking.
     name: 'ended-device-spawn-links', writer: 'store.endSessionsTx (releaseSpawnLinksTx), for the session ends above',
-    table: 'thread_request_receipts', rows: deviceLostItsLastSession('s.owner_device_id'),
-    columns: ['spawn_link', 'track_spawn', 'updated_at', 'run_open', 'run_tool_calls', 'run_tokens', 'run_turn_ms'],
-    to: 'b.spawn_link = 0 AND b.track_spawn = 0',
+    table: 'thread_request_receipts',
+    rows: `${deviceLostItsLastSession('s.owner_device_id')} AND (s.spawn_link = 1 OR s.track_spawn = 1)`,
+    columns: ['spawn_link', 'track_spawn', 'updated_at'],
+    to: 'b.spawn_link = 0 AND b.track_spawn = 0 AND (s.spawn_link = 1 OR b.updated_at IS s.updated_at)',
+  },
+  {
+    // The release ends the open run of each released link's source thread
+    // on its thread, with the thread's figures then.
+    name: 'ended-device-spawn-runs', writer: 'store.endSessionsTx (releaseSpawnLinksTx), for the session ends above',
+    table: 'thread_request_receipts',
+    rows: `s.run_open = 1 AND EXISTS (SELECT 1 FROM mig.thread_request_receipts r WHERE r.spawn_link = 1
+      AND r.target_thread_id = s.target_thread_id AND r.owner_device_id = s.owner_device_id
+      AND r.source_thread_id = s.source_thread_id AND ${deviceLostItsLastSession('r.owner_device_id')})`,
+    columns: ['run_open', 'run_tool_calls', 'run_tokens', 'run_turn_ms', 'spawn_link', 'track_spawn', 'updated_at'],
+    to: 'b.run_open = 0 AND b.spawn_link = 0 AND b.track_spawn = 0 AND (s.spawn_link = 1 OR b.updated_at IS s.updated_at)',
   },
   {
     name: 'ended-device-nudges', writer: 'store.endSessionsTx, for the session ends above', table: 'thread_receipt_nudges',

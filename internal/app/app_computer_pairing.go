@@ -140,17 +140,17 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 		return ComputerPairingWindow{}, err
 	}
 	// The publication, and the close of any window it retires, run first;
-	// the last reads before prepare are the current terms and the
-	// connection, with nothing between them and prepare that waits.
+	// the last reads before prepare are the published address, the
+	// connection and shutdown, with nothing after the first that waits.
 	a.publishComputerRoutes()
-	if book.Stopped() {
-		return ComputerPairingWindow{}, pairbootstrap.ErrStopped
-	}
 	if _, err := a.publishedPairingAddress(networkChoice); err != nil {
 		return ComputerPairingWindow{}, err
 	}
 	if !conn.Bound(computerPairingCleanupKey) {
 		return ComputerPairingWindow{}, transport.ErrConnectionClosing
+	}
+	if book.Stopped() {
+		return ComputerPairingWindow{}, pairbootstrap.ErrStopped
 	}
 	if prepare != nil {
 		if err := prepare(); err != nil {
@@ -162,11 +162,15 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 	view, err := book.Open(func(route string) (pairbootstrap.Invitation, error) {
 		// route is the listener the admitted reveal arrived on, which the
 		// HTTP adapter names. Both enabled routes enroll the same host; no
-		// pin crosses listeners. The window depends on that route from here.
-		if err := a.mintingComputerPairingWindow(windowID, route); err != nil {
-			return pairbootstrap.Invitation{}, err
-		}
-		invite, err := a.mintDevicePairingPurpose("desktop", access, route, purpose, true)
+		// pin crosses listeners. The page comes from the pairing set the
+		// window was admitted under, never from live settings.
+		invite, err := a.mintDevicePairingOn("desktop", access, purpose, true, func() (string, string, string, error) {
+			page, err := a.pairingPageOfWindow(windowID, route)
+			if err != nil {
+				return "", "", "", err
+			}
+			return a.pairingPageAt(page)
+		})
 		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
 	}, func(w pairbootstrap.Snapshot) error {
 		// The window becomes conn's, before anything can see it, only while

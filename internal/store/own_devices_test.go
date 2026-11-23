@@ -239,16 +239,19 @@ func TestStartupRetiresALinkWhoseScopesItCannotRead(t *testing.T) {
 	}
 }
 
-// Startup's one sweep of pending sessions starts from the sessions never
-// activated and finds each one's link through the index, so a store's
-// settled link history is not read: the plan searches pairing_links and
-// never scans it, and the sweep still revokes the pending session.
+// Startup's one sweep of pending sessions reads only the sessions never
+// activated, through their index, and finds each one's link through the
+// link index: on a store with many live sessions and many settled links the
+// plan scans neither table, and the sweep still revokes the pending session.
 func TestStartupSweepReadsNoSettledLinkHistory(t *testing.T) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
 	mustExec(t, s.db, `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 2000)
 		INSERT INTO pairing_links (id, user_id, token_hash, scopes, binding_class, device_class, created_at, expires_at, redeemed_at, confirmed_at, session_id)
 		SELECT 'settled-' || i, ?, randomblob(32), '[]', 'device-bound', 'desktop', 1000, 9000, 1500, 1600, 'gone-' || i FROM n`, owner.ID)
+	mustExec(t, s.db, `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 2000)
+		INSERT INTO sessions (id, user_id, device_id, binding_class, scopes, signing_key_id, created_at, expires_at, activated_at)
+		SELECT 'live-' || i, ?, ?, 'device-bound', '[]', ?, 1000, 9000, 1000 FROM n`, owner.ID, device.ID, key.ID)
 	link := PairingLink{ID: "pending", UserID: owner.ID, Scopes: []string{"threads:read"}, BindingClass: "device-bound", DeviceClass: "desktop", CreatedAt: 1000, ExpiresAt: 9000}
 	if err := s.CreatePairingLink(link, []byte("hash-pending")); err != nil {
 		t.Fatal(err)
@@ -259,6 +262,9 @@ func TestStartupSweepReadsNoSettledLinkHistory(t *testing.T) {
 		WHERE revoked_at IS NULL AND (`+pendingLinkSessionsSQL+`) RETURNING id, device_id`)
 	if !strings.Contains(plan, "SEARCH l USING COVERING INDEX idx_pairing_links_session") || strings.Contains(plan, "SCAN pairing_links") || strings.Contains(plan, "SCAN l") {
 		t.Fatalf("startup's sweep reads the link history:\n%s", plan)
+	}
+	if !strings.Contains(plan, "SEARCH sessions USING INDEX idx_sessions_pending") || strings.Contains(plan, "SCAN sessions") {
+		t.Fatalf("startup's sweep reads every live session:\n%s", plan)
 	}
 	if err := s.RetirePendingPairings(3000); err != nil {
 		t.Fatal(err)

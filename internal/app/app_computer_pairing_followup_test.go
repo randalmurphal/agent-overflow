@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
+	"agent-overflow/internal/network"
 	"agent-overflow/internal/pairbootstrap"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
@@ -205,24 +206,26 @@ func computerPairingHostWithCertificates(t *testing.T, domain string) (*App, *tr
 	return a, source
 }
 
-// What a window depends on decides its retirement: turning LAN access off
-// under a Tailscale window whose LAN responders run changes what they
-// advertise, so the window is retired; a route change that leaves a window's
-// address, pin and responders alone does not.
-func TestComputerPairingWindowTermsFollowItsResponders(t *testing.T) {
-	p := &computerRoutesPublication{
-		pairing:   pairingAddresses{lan: "https://192.168.1.55:4000", tailnet: "https://host.tail.ts.net", lanPin: "pin"},
-		advertise: true,
+// A window depends on the whole pairing set: turning LAN access off under a
+// Tailscale window, whose LAN responders advertise, changes it, and so
+// retires that window; a change only to why a network has no address does
+// not.
+func TestComputerPairingLANTurnedOffChangesThePairingSet(t *testing.T) {
+	on := pairingAddresses{
+		lan: "https://192.168.1.55:4000", tailnet: "https://host.tail.ts.net", advertise: true,
+		lanPage:     network.PairingPage{Scheme: "http", Authority: "192.168.1.55:4000", Fingerprint: "pin"},
+		tailnetPage: network.PairingPage{Scheme: "https", Authority: "host.tail.ts.net"},
 	}
-	admitted := p.termsLocked("tailnet")
-	p.routes = nil
-	if p.termsLocked("tailnet") != admitted {
-		t.Fatal("a window's terms moved with nothing it depends on")
+	off := on
+	off.lan, off.lanPage, off.advertise = "", network.PairingPage{}, false
+	off.lanErr, off.lanPageErr = "enable Allow LAN connections before pairing", "enable Allow LAN connections before pairing over the local network"
+	if off.set() == on.set() {
+		t.Fatal("turning LAN off under a Tailscale window left the pairing set as it was")
 	}
-	p.pairing.lan, p.pairing.lanPin, p.pairing.lanErr = "", "", "enable Allow LAN connections before pairing"
-	p.advertise = false
-	if p.termsLocked("tailnet") == admitted {
-		t.Fatal("turning LAN off under a Tailscale window with responders left its terms as they were")
+	reworded := off
+	reworded.lanErr = "the computer's local network connection is not ready"
+	if reworded.set() != off.set() {
+		t.Fatal("a new reason for a network having no address moved the pairing set")
 	}
 }
 
@@ -335,37 +338,58 @@ func ownOpenThatChangesWhileWaiting(t *testing.T, change func(*App, *transport.C
 	}
 }
 
-// A LAN window whose invitation a reveal through Tailscale started minting
-// depends on Tailscale from then on: a publication that removes Tailscale
-// retires it, where before that reveal it did not.
-func TestComputerPairingAWindowDependsOnTheRouteItsInvitationUses(t *testing.T) {
-	a := &App{}
-	p := &a.computerRoutesPublished
-	reached := pairingAddresses{lan: "https://192.168.1.55:4000", tailnet: "https://host.tail.ts.net", lanPin: "pin"}
-	gone := reached
-	gone.tailnet, gone.tailnetErr = "", "connect this computer to Tailscale with HTTPS enabled before pairing"
-	p.pairing, p.serial = reached, 1
-	p.window = admittedPairingWindow{id: "lan-window", serial: 1, choice: "lan", terms: p.termsLocked("lan")}
-	p.pairing, p.serial = gone, 2
-	if p.retiresLocked(p.window) {
-		t.Fatal("Tailscale leaving retired a LAN window no reveal reached through it")
+// publishTailnet makes the publication hold a Tailscale address after every
+// publication until the returned stop runs, as publications would while
+// Tailscale runs. This host has no Tailscale, so the first publication after
+// stop reads it gone.
+func publishTailnet(a *App) (stop func()) {
+	state := &a.computerRoutesPublished
+	seed := func() {
+		state.mu.Lock()
+		state.pairing.tailnet, state.pairing.tailnetErr = "https://host.tail.ts.net", ""
+		state.pairing.tailnetPage, state.pairing.tailnetPageErr = network.PairingPage{Scheme: "https", Authority: "host.tail.ts.net"}, ""
+		state.mu.Unlock()
 	}
-	p.pairing, p.serial = reached, 1
-	if err := a.mintingComputerPairingWindow("another-window", "tailnet"); !errors.Is(err, pairbootstrap.ErrClosed) {
-		t.Fatalf("minting for a window the publication does not record = %v, want pairbootstrap.ErrClosed", err)
-	}
-	if err := a.mintingComputerPairingWindow("lan-window", "tailnet"); err != nil {
-		t.Fatal(err)
-	}
-	p.pairing, p.serial = gone, 2
-	if !p.retiresLocked(p.window) {
-		t.Fatal("Tailscale leaving kept a LAN window whose invitation was minted for Tailscale")
+	seed()
+	state.mu.Lock()
+	state.chosen = seed
+	state.mu.Unlock()
+	return func() {
+		state.mu.Lock()
+		state.chosen = nil
+		state.mu.Unlock()
 	}
 }
 
-// A reveal records, before its mint, the route it arrived on as one the
-// window depends on.
-func TestComputerPairingARevealRecordsItsRoute(t *testing.T) {
+// A LAN window whose requester began, and has not reached the mint, is
+// retired when Tailscale goes away: a new requester finds it closed, not
+// busy.
+func TestComputerPairingTailscaleLeavingRetiresALANWindowWithARequester(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	a, _ := computerPairingHost(t)
+	stop := publishTailnet(a)
+	window, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	book := a.computerPairingBook()
+	beginOnBook(t, book)
+	stop()
+	a.publishComputerRoutes()
+	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" {
+		t.Fatalf("the LAN window after Tailscale went away = %+v (%v), want it retired", status, err)
+	}
+	if _, err := book.Begin(pairbootstrapClient(t).Commitment()); !errors.Is(err, pairbootstrap.ErrClosed) {
+		t.Fatalf("a new requester after Tailscale went away = %v, want pairbootstrap.ErrClosed", err)
+	}
+}
+
+// A LAN address that moves during a reveal, before it is published, leaves
+// the invitation on the address the window was admitted under; the
+// publication of the move retires the window and its invitation, and the
+// requester pairs on a fresh window at the new address.
+func TestComputerPairingALANAddressMovingDuringARevealRetiresTheWindow(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	a, _ := computerPairingHost(t)
@@ -373,20 +397,37 @@ func TestComputerPairingARevealRecordsItsRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, ch := beginOnBook(t, a.computerPairingBook())
+	book := a.computerPairingBook()
+	c, ch := beginOnBook(t, book)
+	moveNativeAddress(a, "192.168.1.70")
 	r, err := c.Reveal(ch)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// This host has no Tailscale, so the mint fails after the record.
-	if _, err := a.computerPairingBook().Reveal(ch.ID, r, "tailnet"); err == nil {
-		t.Fatal("a reveal through Tailscale minted on a host without it")
+	sealed, err := book.Reveal(ch.ID, r, "lan")
+	if err != nil {
+		t.Fatal(err)
 	}
-	state := &a.computerRoutesPublished
-	state.mu.Lock()
-	recorded := state.window
-	state.mu.Unlock()
-	if recorded.id != window.ID || recorded.minted != "tailnet" {
-		t.Fatalf("the publication's window = %+v, want %s depending on tailnet", recorded, window.ID)
+	invite, _, err := c.Open(sealed)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if !strings.Contains(invite.URL, "192.168.1.55") {
+		t.Fatalf("the invitation = %s, want it on the address the window was admitted under", invite.URL)
+	}
+	a.publishComputerRoutes()
+	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" {
+		t.Fatalf("the window after its address moved = %+v (%v), want it retired", status, err)
+	}
+	requireCanceled(t, a, invite.LinkID)
+	fresh, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := revealOnBook(t, book)
+	if !strings.Contains(fresh.Address, "192.168.1.70") || !strings.Contains(next.URL, "192.168.1.70") {
+		t.Fatalf("the fresh window shows %s and invites at %s, want the moved address", fresh.Address, next.URL)
+	}
+	redeemOnHost(t, a, next, "moved-address-device")
+	requireAwaitingApproval(t, a, fresh, next, "on the fresh window")
 }

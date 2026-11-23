@@ -390,6 +390,9 @@ async function stageFixtures(rig: Sandbox, s: Staged): Promise<void> {
     ${link('pl-pending-only', ', device_id, session_id, redeemed_at, canceled_at', `, 'dev-pending-only', 'sess-pending-only', ${now}, ${now}`)}
     INSERT INTO thread_request_receipts (token, owner_device_id, kind, target_thread_id, state, created_at, updated_at, spawn_link, track_spawn)
       VALUES ('rcpt-spawn-linked', 'dev-pending-only', 'spawn', '${s.draftId}', 'finished', ${now}, ${now}, 1, 1);
+    -- The run of the link's source thread on that thread, still open.
+    INSERT INTO thread_request_receipts (token, owner_device_id, kind, target_thread_id, state, created_at, updated_at, run_open)
+      VALUES ('rcpt-run-open', 'dev-pending-only', 'send', '${s.draftId}', 'finished', ${now}, ${now}, 1);
     INSERT INTO thread_receipt_nudges (token, link_token, target_thread_id, started_at, run_open, run_base_tool_calls, run_base_tokens, run_base_turn_ms, ended_at)
       VALUES ('nudge-spawn-linked', 'rcpt-spawn-linked', '${s.draftId}', ${now}, 0, 0, 0, 0, ${now});
     UPDATE threads SET placement = 'owned' WHERE id = '${s.draftId}';
@@ -507,6 +510,7 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       'own-admission-revocations sessions': 1,
       'pending-link-sessions sessions': 3,
       'ended-device-spawn-links thread_request_receipts': 1,
+      'ended-device-spawn-runs thread_request_receipts': 1,
       'ended-device-nudges thread_receipt_nudges': 1,
       'ended-device-spawn-revisions spawn_revisions': 1,
       'ended-device-placements threads': 1,
@@ -586,6 +590,8 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       { rule: 'pending-link-sessions', table: 'sessions', sql: `UPDATE sessions SET scopes = '["edited"]' WHERE id = 'sess-confirmed-pending'` },
       { rule: 'ended-device-spawn-links', table: 'thread_request_receipts',
         sql: `UPDATE thread_request_receipts SET source_thread_title = 'edited' WHERE token = 'rcpt-spawn-linked'` },
+      { rule: 'ended-device-spawn-runs: a closed receipt retallied', table: 'thread_request_receipts',
+        sql: `UPDATE thread_request_receipts SET run_tokens = 7 WHERE token = 'rcpt-spawn-linked'` },
       { rule: 'ended-device-nudges', table: 'thread_receipt_nudges',
         sql: `INSERT INTO thread_receipt_nudges (token, link_token, target_thread_id, started_at, run_open, run_base_tool_calls, run_base_tokens, run_base_turn_ms, ended_at)
           SELECT token, link_token, target_thread_id, started_at + 1, run_open, run_base_tool_calls, run_base_tokens, run_base_turn_ms, ended_at FROM snap.thread_receipt_nudges` },

@@ -83,29 +83,32 @@ The book keeps the last window's invitation after the window is gone, so an
 approval that committed reads confirmed, and the dialog reads the host once
 more at its deadline and after a failed approval.
 
-The address publication (`publishComputerRoutes`) owns the address each
-pairing network resolves to, and records the window admitted under it with the
-publication's serial. A settings rebind, a Windows launcher report and the
-launcher's loss each publish right after the move. A publication that moves the
-serial and changes what the recorded window depends on (the address and port it
-shows, the certificate pin that address presents, and whether its LAN
-responders run and on which LAN address) refuses that window at once
-(`Book.Expire`), under the lock that moves the serial, then closes it, which
-waits for the window's LAN responders to finish starting; a route change that
-leaves those alone keeps the window. A reveal mints the invitation for the
-network the requester arrived on, which may differ from the window's; once
-that mint starts, the window also depends on that network's address and pin.
-A window the publication refuses while the book is still admitting it is
-installed already expired. An open checks that its network has an address,
-closes the previous window, publishes (closing any window that publication
-retires), checks shutdown, and reads last the network's address as published
-and the owner's connection, with nothing that waits between them and a
-personal open's enrollment. It is then admitted inside the book's open against
-the publication as it stands then, showing the address read there. A personal
-open's enrollment is left behind when the network loses its address,
-the owner's connection ends, or the app shuts down while that enrollment runs,
-or when the enrollment (`enableOwnDevices`) itself fails partway; every earlier
-failure changes no enrollment, registration or membership generation.
+The address publication (`publishComputerRoutes`) owns this computer's pairing
+set: on each pairing network, the address a window shows and the page an
+invitation sends the device to, with its certificate pin, and whether a window
+advertises on the LAN itself. Its serial moves only when that set changes. A
+window records the serial it was admitted under, and a publication with a newer
+serial refuses that window at once (`Book.Expire`), under the lock that moves
+the serial, then closes it, which waits for the window's LAN responders to
+finish starting. A reveal mints the invitation for the network the requester
+arrived on from the set the window was admitted under, never from live
+settings, so the invitation and the window's serial come from one set. For a
+person this means: if any of this computer's pairing addresses changes while a
+pairing is in progress, the pairing is canceled and started again. A settings
+rebind, a Windows launcher report and the launcher's loss each publish right
+after the move; a change that leaves the set alone, such as a domain
+certificate arriving or a second forwarded address, keeps the window. A window
+the publication refuses while the book is still admitting it is installed
+already expired. An open checks that its network has an address, closes the
+previous window, publishes (closing any window that publication retires), and
+reads last the network's address as published, the owner's connection and
+shutdown, with nothing after the first that waits before a personal open's
+enrollment. It is then admitted inside the book's open against the publication
+as it stands then, showing the address read there. A personal open's
+enrollment is left behind when the network loses its address, the owner's
+connection ends, or the app shuts down while that enrollment runs, or when the
+enrollment (`enableOwnDevices`) itself fails partway; every earlier failure
+changes no enrollment, registration or membership generation.
 
 Each step of the invitation's store state is one transaction: a redemption's
 new or relabeled device row, pending session, refresh secret and the link
@@ -117,8 +120,8 @@ one revoked or removed, cancels the invitation instead, and the owner is told
 it was not completed. Startup retires unfinished pairings in one store
 transaction because an ephemeral comparison cannot survive a restart, and
 revokes every never-activated session a link names in one sweep that starts
-from those sessions (`idx_pairing_links_session`). Confirmed devices
-retain their existing sessions and renewal policy.
+from those sessions (`idx_sessions_pending`, `idx_pairing_links_session`).
+Confirmed devices retain their existing sessions and renewal policy.
 
 ## Own devices
 

@@ -23,17 +23,17 @@ import (
 type computerRoutesPublication struct {
 	mu     sync.Mutex
 	routes []computerroute.Route
-	// pairing is the address each pairing network resolved to.
+	// pairing is this computer's published pairing set, with the reason
+	// each network has none.
 	pairing pairingAddresses
-	// serial moves whenever routes or pairing change, so a reader can tell
-	// whether what it read is still what is published.
+	// serial moves only when the pairing set changes
+	// (pairingAddresses.set), so a pairing window can tell whether what it
+	// was admitted under is still what is published.
 	serial uint64
-	// advertise is publishedNetwork.advertise as last published.
-	advertise bool
 	// window is the computer pairing window admitted under this
 	// publication, recorded at its admission (openComputerPairing) with the
-	// serial it was admitted under and what it depends on. A publication
-	// that moves the serial retires it only when what it depends on changed.
+	// serial it was admitted under. A publication with a newer serial
+	// retires it.
 	window admittedPairingWindow
 	// chosen, when set before the publication is used, runs after each
 	// publication releases mu and before it closes the window it retired,
@@ -46,56 +46,29 @@ type admittedPairingWindow struct {
 	id     string
 	serial uint64
 	book   *pairbootstrap.Book
-	choice string
-	terms  pairingWindowTerms
-	// minted is the network a reveal mints the window's invitation for,
-	// which may differ from choice, and mintedTerms what that invitation
-	// depends on; "" until a reveal starts minting.
-	minted      string
-	mintedTerms pairingWindowTerms
 }
 
-// retiresLocked reports whether this publication retires w: w was admitted
-// under an earlier serial and what it depends on changed, which is its own
-// network's terms and, once a reveal started minting, the terms of the
-// network its invitation uses. The caller holds mu.
-func (p *computerRoutesPublication) retiresLocked(w admittedPairingWindow) bool {
-	if w.id == "" || w.serial >= p.serial {
-		return false
-	}
-	return w.terms != p.termsLocked(w.choice) || (w.minted != "" && w.mintedTerms != p.termsLocked(w.minted))
-}
-
-// pairingWindowTerms is what a pairing window on one network depends on: the
-// address and port it shows, the certificate pin that address presents, and
-// what its LAN responders advertise (whether they run, and the LAN address).
-type pairingWindowTerms struct {
-	address, pin string
-	advertise    bool
-	lan          string
-}
-
-// termsLocked is what a window on choice depends on under this publication.
-// The caller holds mu.
-func (p *computerRoutesPublication) termsLocked(choice string) pairingWindowTerms {
-	t := pairingWindowTerms{advertise: p.advertise}
-	t.address, _ = p.pairing.on(choice)
-	if choice == "lan" {
-		t.pin = p.pairing.lanPin
-	}
-	if t.advertise {
-		t.lan = p.pairing.lan
-	}
-	return t
-}
-
-// pairingAddresses is the address a pairing window opened on each network
-// shows, or why that network has none.
+// pairingAddresses is this computer's pairing set: on each pairing network,
+// the address a window opened there shows and the page an invitation minted
+// there sends the device to (with its certificate pin), and whether a
+// window advertises on the LAN itself. The reasons a network has none are
+// carried beside the set and are not part of it.
 type pairingAddresses struct {
-	lan, tailnet       string
-	lanErr, tailnetErr string
-	// lanPin is the certificate pin the LAN address presents.
-	lanPin string
+	lan, tailnet         string
+	lanPage, tailnetPage network.PairingPage
+	// advertise is whether a pairing window advertises on the LAN itself:
+	// LAN access is on and the Windows launcher is not this backend's LAN
+	// ingress.
+	advertise bool
+
+	lanErr, tailnetErr         string
+	lanPageErr, tailnetPageErr string
+}
+
+// set is p without the reasons, the part a pairing window depends on.
+func (p pairingAddresses) set() pairingAddresses {
+	p.lanErr, p.tailnetErr, p.lanPageErr, p.tailnetPageErr = "", "", "", ""
+	return p
 }
 
 func (p pairingAddresses) on(choice string) (string, error) {
@@ -109,20 +82,27 @@ func (p pairingAddresses) on(choice string) (string, error) {
 	return address, nil
 }
 
+// pageOn is the page an invitation minted on choice sends the device to, or
+// why choice has none.
+func (p pairingAddresses) pageOn(choice string) (network.PairingPage, error) {
+	page, reason := p.lanPage, p.lanPageErr
+	if choice == "tailnet" {
+		page, reason = p.tailnetPage, p.tailnetPageErr
+	}
+	if page.Authority == "" {
+		return network.PairingPage{}, errors.New(reason)
+	}
+	return page, nil
+}
+
 // publishedNetwork is one reading of the publication.
 type publishedNetwork struct {
-	serial  uint64
 	pairing pairingAddresses
-	// advertise is whether a pairing window advertises on the LAN itself:
-	// LAN access is on and the Windows launcher is not this backend's LAN
-	// ingress.
-	advertise bool
 }
 
 // publishComputerRoutes reads the listener and the reported addresses once,
 // publishes what changed, and retires the pairing window admitted under an
-// earlier publication when what that window depends on changed
-// (pairingWindowTerms). Call it right after a listener or a reported address
+// earlier pairing set. Call it right after a listener or a reported address
 // moves, with the network-state locks released. The event carries no route
 // trust: delayed replay only asks clients for a fresh authenticated
 // bootstrap.
@@ -145,15 +125,16 @@ func (a *App) publishComputerRoutes() publishedNetwork {
 	}
 	pairing := pairingAddressesOf(srv, settings, reach)
 	routesChanged := !slices.Equal(state.routes, routes)
-	advertise := settings.BindAll && settings.LAN == nil
-	pairingChanged := pairing != state.pairing || advertise != state.advertise
-	if routesChanged || pairingChanged {
-		state.routes, state.pairing, state.advertise = routes, pairing, advertise
+	if routesChanged {
+		state.routes = routes
+	}
+	if pairing.set() != state.pairing.set() {
 		state.serial++
 	}
-	published := publishedNetwork{serial: state.serial, pairing: pairing, advertise: state.advertise}
+	state.pairing = pairing
+	published := publishedNetwork{pairing: pairing}
 	retired := state.window
-	if state.retiresLocked(retired) {
+	if retired.id != "" && retired.serial < state.serial {
 		state.window = admittedPairingWindow{}
 		retired.book.Expire(retired.id)
 	} else {
@@ -181,21 +162,25 @@ func (a *App) publishComputerRoutes() publishedNetwork {
 }
 
 func pairingAddressesOf(srv *transport.Server, s network.Settings, reach network.Reach) pairingAddresses {
-	var p pairingAddresses
+	p := pairingAddresses{advertise: s.BindAll && s.LAN == nil}
 	var err error
 	if p.lan, err = network.PairingAddressOnNetwork(srv, s, reach, "lan"); err != nil {
 		p.lanErr = err.Error()
-	} else {
-		p.lanPin = s.TLS.SelfSignedFingerprint
 	}
 	if p.tailnet, err = network.PairingAddressOnNetwork(srv, s, reach, "tailnet"); err != nil {
 		p.tailnetErr = err.Error()
+	}
+	if p.lanPage, err = network.PairingPageOnNetwork(srv, s, reach, "lan"); err != nil {
+		p.lanPageErr = err.Error()
+	}
+	if p.tailnetPage, err = network.PairingPageOnNetwork(srv, s, reach, "tailnet"); err != nil {
+		p.tailnetPageErr = err.Error()
 	}
 	return p
 }
 
 // admitComputerPairingWindow records windowID as admitted under the current
-// publication and answers the address it shows on choice, or why choice has
+// pairing set and answers the address it shows on choice, or why choice has
 // none now. The caller holds the pairing state's lock (lock order: the
 // pairing state's mu, then this publication's mu, then the book's mu).
 func (a *App) admitComputerPairingWindow(book *pairbootstrap.Book, windowID, choice string) (address string, advertise bool, err error) {
@@ -205,8 +190,8 @@ func (a *App) admitComputerPairingWindow(book *pairbootstrap.Book, windowID, cho
 	if address, err = state.pairing.on(choice); err != nil {
 		return "", false, err
 	}
-	state.window = admittedPairingWindow{id: windowID, serial: state.serial, book: book, choice: choice, terms: state.termsLocked(choice)}
-	return address, state.advertise, nil
+	state.window = admittedPairingWindow{id: windowID, serial: state.serial, book: book}
+	return address, state.pairing.advertise, nil
 }
 
 // publishedPairingAddress is the address a window opened on choice shows
@@ -219,19 +204,18 @@ func (a *App) publishedPairingAddress(choice string) (string, error) {
 	return state.pairing.on(choice)
 }
 
-// mintingComputerPairingWindow records, before windowID's invitation is
-// minted for route, that the window depends on route's terms from now on, so
-// a publication that changes them retires it. A window this publication no
-// longer records was retired, and mints nothing.
-func (a *App) mintingComputerPairingWindow(windowID, route string) error {
+// pairingPageOfWindow is the page windowID's invitation minted on route sends
+// the device to, from the pairing set the window was admitted under: the
+// window is recorded only while that set is published. A window no longer
+// recorded was retired, and mints nothing.
+func (a *App) pairingPageOfWindow(windowID, route string) (network.PairingPage, error) {
 	state := &a.computerRoutesPublished
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if windowID == "" || state.window.id != windowID {
-		return pairbootstrap.ErrClosed
+		return network.PairingPage{}, pairbootstrap.ErrClosed
 	}
-	state.window.minted, state.window.mintedTerms = route, state.termsLocked(route)
-	return nil
+	return state.pairing.pageOn(route)
 }
 
 // GetComputerRoutes refreshes this computer's public addresses over an already
