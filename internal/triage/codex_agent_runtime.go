@@ -68,17 +68,11 @@ func (r *Router) ListLiveCodexAgentTasks(threadID string) []store.Item {
 	var items []store.Item
 	if state := r.codexBackgroundIfPresent(threadID); state != nil {
 		for _, item := range state.agents {
-			var meta struct {
-				Active  bool             `json:"live_background_active"`
-				Runtime codexRuntimeMeta `json:"codex_runtime"`
-			}
-			if json.Unmarshal([]byte(item.Meta), &meta) != nil || !meta.Active {
+			if !codexRuntimeActive(item) {
 				continue
 			}
 			item.Status, item.IsBackground = statusRunning, true
-			if decodeCodexItemMeta(json.RawMessage(item.Meta)).Runtime != nil {
-				item.CreatedAt = meta.Runtime.StartedAt
-			}
+			item.CreatedAt = codexAgentStartedAt(item)
 			items = append(items, item)
 		}
 	}
@@ -91,9 +85,9 @@ func (r *Router) ListLiveCodexAgentTasks(threadID string) []store.Item {
 	return items
 }
 
-// codexAgentIsLive reports whether id names a Codex agent whose runtime
+// CodexAgentIsLive reports whether id names a Codex agent whose runtime
 // copy ListLiveCodexAgentTasks serves.
-func (r *Router) codexAgentIsLive(threadID, id string) bool {
+func (r *Router) CodexAgentIsLive(threadID, id string) bool {
 	if id == "" {
 		return false
 	}
@@ -107,6 +101,17 @@ func (r *Router) codexAgentIsLive(threadID, id string) bool {
 	return ok && codexRuntimeActive(item)
 }
 
+// codexAgentStartedAt is when the agent's current execution started, which
+// orders the live agents.
+func codexAgentStartedAt(item store.Item) int64 {
+	if runtime := decodeCodexItemMeta(json.RawMessage(item.Meta)).Runtime; runtime != nil {
+		return runtime.StartedAt
+	}
+	return item.CreatedAt
+}
+
+// codexRuntimeActive is the one reading of whether a Codex agent's
+// execution is active.
 func codexRuntimeActive(item store.Item) bool {
 	var meta struct {
 		Active bool `json:"live_background_active"`

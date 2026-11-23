@@ -65,7 +65,7 @@ done
 	}
 	defer s.Close()
 
-	if err := s.CleanBackgroundTerminals(context.Background()); err != nil {
+	if err := s.CleanBackgroundTerminals(context.Background(), s.RootProcessScope().ID); err != nil {
 		t.Fatalf("CleanBackgroundTerminals: %v", err)
 	}
 
@@ -132,7 +132,7 @@ func TestSession_CleanBackgroundTerminals_ErrorResponse(t *testing.T) {
 
 	cleanDone := make(chan error, 1)
 	go func() {
-		cleanDone <- s.CleanBackgroundTerminals(context.Background())
+		cleanDone <- s.CleanBackgroundTerminals(context.Background(), "codex-thread-bg-err")
 	}()
 
 	ch, rpcID := waitForPending(t, s, 3*time.Second)
@@ -187,7 +187,7 @@ func TestSession_CleanBackgroundTerminals_ContextCanceled(t *testing.T) {
 	cancel() // cancel BEFORE the call so sendRequest sees ctx.Done immediately
 
 	start := time.Now()
-	err = s.CleanBackgroundTerminals(ctx)
+	err = s.CleanBackgroundTerminals(ctx, "codex-thread-bg-cancel")
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -241,7 +241,7 @@ func TestSession_CleanBackgroundTerminals_MidWaitCancel(t *testing.T) {
 
 	cleanDone := make(chan error, 1)
 	go func() {
-		cleanDone <- s.CleanBackgroundTerminals(ctx)
+		cleanDone <- s.CleanBackgroundTerminals(ctx, "codex-thread-bg-midcancel")
 	}()
 
 	// Wait until sendRequest has parked on a pending-channel — proves

@@ -19,7 +19,12 @@ import (
 	"agent-overflow/internal/slicesx"
 )
 
-const backgroundTerminalStopTimeout = 10 * time.Second
+// BackgroundTerminalStopTimeout bounds one stop of background work: a
+// row's Stop, a Stop All, or a revert's cleanup, every call it makes
+// included. The caller makes one context with it and passes it to each.
+// A command's stop is sent by the app on the session that runs the command
+// (app stopCodexCommand), not looked up here by thread.
+const BackgroundTerminalStopTimeout = 10 * time.Second
 
 // skillsReadTimeout bounds one shared skills read: a live session's
 // request, then the fallback process's own bound.
@@ -72,36 +77,10 @@ func New(deps Deps) *Service {
 	return &Service{deps: deps, skillsCache: skillsCache, usageCache: usageCache}
 }
 
-func (s *Service) CleanBackgroundTerminals(threadID string) error {
-	session, active := s.session(threadID)
-	if !active {
-		return fmt.Errorf("app: clean codex background terminals: no active session for thread %s", threadID)
-	}
-	if session == nil {
-		return fmt.Errorf("app: clean codex background terminals: thread %s is not a Codex thread", threadID)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), backgroundTerminalStopTimeout)
-	defer cancel()
-	return session.CleanBackgroundTerminals(ctx)
-}
-
-func (s *Service) TerminateBackgroundTerminal(threadID, processID string) (bool, error) {
-	session, active := s.session(threadID)
-	if !active {
-		return false, fmt.Errorf("app: terminate codex background terminal: no active session for thread %s", threadID)
-	}
-	if session == nil {
-		return false, fmt.Errorf("app: terminate codex background terminal: thread %s is not a Codex thread", threadID)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), backgroundTerminalStopTimeout)
-	defer cancel()
-	return session.TerminateBackgroundTerminal(ctx, processID)
-}
-
 // StopSubagent interrupts the live child turn owned by launchID. Codex's
 // typed ownership map prevents a caller-supplied id from targeting the root or
 // an unrelated child. false, nil means the child was already terminal.
-func (s *Service) StopSubagent(threadID, launchID string) (bool, error) {
+func (s *Service) StopSubagent(ctx context.Context, threadID, launchID string) (bool, error) {
 	session, active := s.session(threadID)
 	if !active {
 		return false, fmt.Errorf("app: stop Codex subagent: no active session for thread %s", threadID)
@@ -109,8 +88,6 @@ func (s *Service) StopSubagent(threadID, launchID string) (bool, error) {
 	if session == nil {
 		return false, fmt.Errorf("app: stop Codex subagent: thread %s is not a Codex thread", threadID)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), backgroundTerminalStopTimeout)
-	defer cancel()
 	return session.InterruptSubagent(ctx, launchID)
 }
 

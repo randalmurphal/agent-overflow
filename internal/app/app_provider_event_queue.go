@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -167,14 +168,14 @@ func (q *providerEventQueue) offer(item queuedProviderEvent) (start, queued bool
 
 // drain waits until every event enqueued for threadID before the call has
 // been handled. It returns an error when the worker handles nothing for
-// the stall bound first; the events stay queued and are still handled, in
-// order, after drain returns.
-func (qs *providerEventQueues) drain(threadID string) error {
+// the stall bound, or ctx ends, first; the events stay queued and are
+// still handled, in order, after drain returns.
+func (qs *providerEventQueues) drain(ctx context.Context, threadID string) error {
 	q := qs.lookup(threadID)
 	if q == nil {
 		return nil
 	}
-	return q.waitHandled(qs.drainStallBound())
+	return q.waitHandled(ctx, qs.drainStallBound())
 }
 
 // drainAll drains every thread's queue and reports the threads whose
@@ -191,7 +192,7 @@ func (qs *providerEventQueues) drainAll() error {
 	errs := make([]error, len(queues))
 	var wg sync.WaitGroup
 	for i, q := range queues {
-		wg.Go(func() { errs[i] = q.waitHandled(stall) })
+		wg.Go(func() { errs[i] = q.waitHandled(context.Background(), stall) })
 	}
 	wg.Wait()
 	return errors.Join(errs...)
@@ -286,8 +287,8 @@ func (qs *providerEventQueues) retireIfIdle(q *providerEventQueue) {
 }
 
 // waitHandled waits until every event enqueued before the call has been
-// handled, failing when the worker handles none for stall.
-func (q *providerEventQueue) waitHandled(stall time.Duration) error {
+// handled, failing when the worker handles none for stall or ctx ends.
+func (q *providerEventQueue) waitHandled(ctx context.Context, stall time.Duration) error {
 	q.mu.Lock()
 	target, progress := q.enqueued, q.handled
 	q.mu.Unlock()
@@ -310,6 +311,8 @@ func (q *providerEventQueue) waitHandled(stall time.Duration) error {
 		case <-wait:
 		case <-timer.C:
 			return fmt.Errorf("%d provider event(s) for thread %s not handled: none handled for %s", pending, q.threadID, stall)
+		case <-ctx.Done():
+			return fmt.Errorf("%d provider event(s) for thread %s not handled: %w", pending, q.threadID, context.Cause(ctx))
 		}
 	}
 }
@@ -380,7 +383,7 @@ func providerEventSize(evt provider.ProviderEvent) int {
 // emitted once a stop's CleanupThread marks the thread stopped (invariant
 // 29) or a replacement start commits the thread to another session.
 func (a *App) drainProviderEvents(threadID, reason string) {
-	if err := a.providerEvents.drain(threadID); err != nil {
+	if err := a.providerEvents.drain(context.Background(), threadID); err != nil {
 		log.Printf("app: %s: %v", reason, err)
 	}
 }

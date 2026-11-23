@@ -688,7 +688,9 @@ func (r *Router) hasQueueBlockingWork(threadID string) (bool, error) {
 	if r.store == nil {
 		return false, nil
 	}
-	if r.hasActiveCodexUnifiedExec(threadID) {
+	// Top-level commands only; codex_background_live.go says why an
+	// agent's command does not hold the queue.
+	if r.hasActiveCodexTopLevelCommand(threadID) {
 		return true, nil
 	}
 	active, err := r.store.HasRunningTopLevelForegroundToolCall(threadID)
@@ -709,22 +711,6 @@ func (r *Router) hasQueueBlockingWork(threadID string) (bool, error) {
 		return true, nil
 	}
 	return len(r.ListLiveCodexAgentTasks(threadID)) > 0, nil
-}
-
-func (r *Router) hasActiveCodexUnifiedExec(threadID string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	st := r.threadStateIfPresent(threadID)
-	if st == nil || st.codexBackground == nil {
-		return false
-	}
-	state := st.codexBackground
-	for _, tracker := range state.unifiedExec {
-		if tracker != nil {
-			return true
-		}
-	}
-	return false
 }
 
 // clearFlushQueueLocked drops every queued item for threadID. Caller

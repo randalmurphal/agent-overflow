@@ -643,8 +643,8 @@ Stop controls split by scope:
   upstream).
 - **Claude background task**: `stop_task` control_request keyed by
   `task_id`.
-- **Codex background tray**: `thread/backgroundTerminals/clean`
-  (thread-wide only; no per-row terminal/subagent stop upstream).
+- **Codex background tray**: `thread/backgroundTerminals/terminate` per
+  command and `turn/interrupt` per subagent ([Background tray](#background-tray)).
 
 **Cascade behavior: what survives a user interrupt** (verified
 against codex-source and claude-code-source-code; tables below
@@ -1637,9 +1637,10 @@ the launch and completion also render inline in chat history.
 
 Stop controls follow provider capabilities. Both providers get the same
 two affordances over different primitives, resolved by one helper
-(`trayRowStopTarget`) so a row and the bulk button can never disagree.
-Stop-all is one `StopBackgroundTasks(threadId, launchIds)` call naming the
-running rows it can stop, which returns one result per launch: a failed
+(`trayRowStop`, the binding and the id a row's Stop takes) so a row and
+the bulk button can never disagree. Stop-all is one
+`StopBackgroundTasks(threadId, launchIds)` call naming the running rows
+that show a Stop, which returns one result per launch: a failed
 stop shows under its row, and launches that had already ended are
 summarized in one toast. A shell a named agent owns dies with the agent and
 gets no stop of its own. Remote job rows are cancelled beside it, eight at a
@@ -1647,13 +1648,21 @@ time.
 
 - **Claude**: per-row Stop when the launch meta carries `task_id`
   (`StopClaudeTask`); Stop-all sends `stop_task` per named task.
-- **Codex**: per-row Stop when a yielded unified-exec PTY carries
-  `process_id` (`TerminateCodexBackgroundTerminal` →
-  `thread/backgroundTerminals/terminate`, available since codex 0.140,
-  below AO's provider floor); Stop-all runs the single thread-wide
-  `thread/backgroundTerminals/clean`. The terminate response's
-  `terminated: false` means "matched nothing" and surfaces as an info
-  toast, because no `item/completed` follows to change the row.
+- **Codex**: per-row Stop when a yielded unified-exec PTY's row carries
+  `stop_by_item` (`StopCodexBackgroundCommand` with the row's item id →
+  `thread/backgroundTerminals/terminate` in the Codex thread that runs the
+  command, the root thread's or the agent's; available since codex 0.140,
+  below AO's provider floor). Stop-all terminates each named command the
+  same way. Codex's `terminated: false` is not proof the process is gone,
+  and no list can settle it, so the command stays in the tray and the stop
+  fails with "Codex did not stop it" under its row (an error toast from
+  the row's own Stop). A command that had already ended stops nothing and
+  surfaces as an info toast. A command inside a code review has no Stop,
+  is not named by Stop-all, and ends with the review. A row from a
+  computer that predates `StopCodexBackgroundCommand` carries
+  `process_id` only for a root command, stopped through
+  `TerminateCodexBackgroundTerminal`; an agent pane's Stop-all stops those
+  rows one by one.
 - **Codex subagent rows**: per-row Stop interrupts the subagent's turn
   (`StopCodexSubagent`); Stop-all interrupts each named subagent.
 

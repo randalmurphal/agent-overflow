@@ -9,11 +9,10 @@ import {
   trayTaskAgentInfo,
   extractClaudeTaskID,
   formatElapsed,
-  isCodexStoppableTask,
   isCodexSubagentTask,
   statusClass,
   statusLabel,
-  trayRowStopTarget,
+  trayRowStop,
   trayTaskLabel,
   scopedTrayTasks,
   type TrayTask,
@@ -179,39 +178,16 @@ describe('isCodexSubagentTask', () => {
   });
 });
 
-describe('isCodexStoppableTask', () => {
-  it('returns true only for backgrounded Codex unifiedExec rows', () => {
-    expect(
-      isCodexStoppableTask(makeTrayTask({
-        launch: makeItem({ id: 'bg', isBackground: true, toolName: 'exec_command' }),
-      })),
-    ).toBe(true);
+// The target a row's Stop names, or null; the route is asserted where it
+// differs between rows of one provider.
+function stopTarget(...args: Parameters<typeof trayRowStop>): string | null {
+  return trayRowStop(...args)?.target ?? null;
+}
 
-    expect(
-      isCodexStoppableTask(makeTrayTask({
-        launch: makeItem({ id: 'pending', isBackground: false, toolName: 'exec_command' }),
-      })),
-    ).toBe(false);
-  });
-
-  it('returns true for a live Codex subagent launch', () => {
-    expect(
-      isCodexStoppableTask(makeTrayTask({
-        launch: makeItem({
-          id: 'agent',
-          isBackground: true,
-          toolName: 'collab_agent',
-          meta: JSON.stringify({ input: { tool: 'spawn_agent' } }),
-        }),
-      })),
-    ).toBe(true);
-  });
-});
-
-describe('trayRowStopTarget', () => {
+describe('trayRowStop', () => {
   it('resolves the Claude task_id for a claude-task thread', () => {
     expect(
-      trayRowStopTarget(
+      stopTarget(
         makeTrayTask({
           launch: makeItem({ id: 'L', meta: JSON.stringify({ task_id: 'tsk-7' }) }),
         }),
@@ -222,7 +198,7 @@ describe('trayRowStopTarget', () => {
 
   it('resolves the Codex PTY process_id for a codex thread', () => {
     expect(
-      trayRowStopTarget(
+      stopTarget(
         makeTrayTask({
           launch: makeItem({
             id: 'L',
@@ -236,6 +212,52 @@ describe('trayRowStopTarget', () => {
     ).toBe('1734029');
   });
 
+  it('routes each Codex row to the binding its handle takes', () => {
+    const row = (id: string, overrides: Partial<Item>) =>
+      makeTrayTask({ launch: makeItem({ id, isBackground: true, toolName: 'exec_command', ...overrides }) });
+    expect(trayRowStop(row('cmd', { meta: JSON.stringify({ stop_by_item: true, process_id: '42' }) }), 'codex-background-terminals'))
+      .toEqual({ route: 'codex-command', target: 'cmd' });
+    expect(trayRowStop(row('old', { meta: JSON.stringify({ process_id: '42' }) }), 'codex-background-terminals'))
+      .toEqual({ route: 'codex-process', target: '42' });
+    expect(trayRowStop(row('agent', { toolName: 'collab_agent', meta: JSON.stringify({ input: { tool: 'spawn_agent' } }) }), 'codex-background-terminals'))
+      .toEqual({ route: 'codex-subagent', target: 'agent' });
+    expect(trayRowStop(row('L', { meta: JSON.stringify({ task_id: 'tsk-7' }) }), 'claude-task'))
+      .toEqual({ route: 'claude-task', target: 'tsk-7' });
+  });
+
+  it('gives a command inside a code review no Stop: it carries neither handle', () => {
+    expect(
+      trayRowStop(
+        makeTrayTask({
+          launch: makeItem({ id: 'review-cmd', isBackground: true, parentId: 'review', toolName: 'exec_command', meta: JSON.stringify({ source: 'unifiedExecStartup' }) }),
+        }),
+        'codex-background-terminals',
+      ),
+    ).toBeNull();
+  });
+
+  it('resolves a Codex command that stops by item id to its item id', () => {
+    const command = (id: string, meta: Record<string, unknown>) =>
+      makeTrayTask({
+        launch: makeItem({ id, isBackground: true, toolName: 'exec_command', meta: JSON.stringify(meta) }),
+      });
+    // A root command carries both handles; the item id wins.
+    expect(
+      stopTarget(command('root-cmd', { stop_by_item: true, process_id: '42' }), 'codex-background-terminals'),
+    ).toBe('root-cmd');
+    // An agent's command has no process id on its row, only the item-id Stop.
+    expect(stopTarget(command('agent-cmd', { stop_by_item: true }), 'codex-background-terminals')).toBe(
+      'agent-cmd',
+    );
+    // A row from an older computer, or one whose flag is not true, keeps the process id.
+    expect(stopTarget(command('old', { process_id: '42' }), 'codex-background-terminals')).toBe('42');
+    expect(
+      stopTarget(command('flag-off', { stop_by_item: 'true', process_id: '42' }), 'codex-background-terminals'),
+    ).toBe('42');
+    // The flag never gives a Claude row a Codex handle.
+    expect(stopTarget(command('claude', { stop_by_item: true }), 'claude-task')).toBeNull();
+  });
+
   it('never crosses the two id namespaces', () => {
     // A Claude row's task_id must not be offered to the Codex terminate
     // RPC (which parses the id as an i32 and would refuse it), and a
@@ -244,7 +266,7 @@ describe('trayRowStopTarget', () => {
     const claudeRow = makeTrayTask({
       launch: makeItem({ id: 'L', meta: JSON.stringify({ task_id: 'tsk-7' }) }),
     });
-    expect(trayRowStopTarget(claudeRow, 'codex-background-terminals')).toBeNull();
+    expect(stopTarget(claudeRow, 'codex-background-terminals')).toBeNull();
 
     const codexRow = makeTrayTask({
       launch: makeItem({
@@ -254,14 +276,14 @@ describe('trayRowStopTarget', () => {
         meta: JSON.stringify({ source: 'unifiedExecStartup', process_id: '42' }),
       }),
     });
-    expect(trayRowStopTarget(codexRow, 'claude-task')).toBeNull();
+    expect(stopTarget(codexRow, 'claude-task')).toBeNull();
   });
 
   it('returns null for a Codex row the terminate RPC cannot reach', () => {
     // Not yielded yet: still a foreground command, not a background
     // terminal, so there is nothing for terminate to match.
     expect(
-      trayRowStopTarget(
+      stopTarget(
         makeTrayTask({
           launch: makeItem({
             id: 'pending',
@@ -277,7 +299,7 @@ describe('trayRowStopTarget', () => {
     // Spawned collab-agent child targets the owning launch row. The backend
     // resolves that id to a child provider thread.
     expect(
-      trayRowStopTarget(
+      stopTarget(
         makeTrayTask({
           launch: makeItem({
             id: 'agent',
@@ -292,7 +314,7 @@ describe('trayRowStopTarget', () => {
 
     // Backgrounded, but the wire has not named a process id yet.
     expect(
-      trayRowStopTarget(
+      stopTarget(
         makeTrayTask({
           launch: makeItem({
             id: 'unnamed',
@@ -314,7 +336,7 @@ describe('trayRowStopTarget', () => {
     });
     for (const stop of ['claude-task', 'codex-background-terminals'] as const) {
       expect(
-        trayRowStopTarget(
+        stopTarget(
           makeTrayTask({
             status: 'completed',
             launch: makeItem({ id: 'L', isBackground: true, toolName: 'exec_command', meta }),
@@ -325,7 +347,7 @@ describe('trayRowStopTarget', () => {
 
       const completion = makeItem({ id: 'C', meta, completionOf: 'L' });
       expect(
-        trayRowStopTarget(
+        stopTarget(
           makeTrayTask({ launch: null, completion, anchor: completion, rowId: 'C' }),
           stop,
         ),
@@ -335,7 +357,7 @@ describe('trayRowStopTarget', () => {
 
   it('returns null for a provider with no background stop primitive', () => {
     expect(
-      trayRowStopTarget(
+      stopTarget(
         makeTrayTask({
           launch: makeItem({
             id: 'L',

@@ -24,7 +24,7 @@ import (
 // once every event queued for threadID so far has been handled.
 func waitProviderEvents(t testing.TB, app *App, threadID string) {
 	t.Helper()
-	if err := app.providerEvents.drain(threadID); err != nil {
+	if err := app.providerEvents.drain(context.Background(), threadID); err != nil {
 		t.Fatalf("wait for provider events: %v", err)
 	}
 }
@@ -165,7 +165,7 @@ func TestProviderEventQueueKeepsEachThreadInOrderUnderLoad(t *testing.T) {
 				// Fast threads pause now and then, so their worker runs
 				// dry, exits, and is restarted by the next event.
 				if !slow && seq%250 == 249 {
-					if err := qs.drain(threadID); err != nil {
+					if err := qs.drain(context.Background(), threadID); err != nil {
 						t.Errorf("%s: drain: %v", threadID, err)
 						return
 					}
@@ -249,7 +249,7 @@ func TestProviderEventQueueBlocksProducerAtItsBoundThenResumes(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("producer did not resume after the worker made room")
 			}
-			if err := qs.drain(threadID); err != nil {
+			if err := qs.drain(context.Background(), threadID); err != nil {
 				t.Fatalf("drain: %v", err)
 			}
 			rec.assertInOrder(t, tc.name, blockedSeq+1)
@@ -283,7 +283,7 @@ func TestProviderEventDrainStallLeavesTheQueueIntact(t *testing.T) {
 	<-started
 
 	begin := time.Now()
-	err := qs.drain(threadID)
+	err := qs.drain(context.Background(), threadID)
 	elapsed := time.Since(begin)
 	if err == nil {
 		t.Fatal("drain returned nil while the worker was blocked")
@@ -300,7 +300,7 @@ func TestProviderEventDrainStallLeavesTheQueueIntact(t *testing.T) {
 	}
 	releaseOnce()
 	qs.drainStall = 5 * time.Second
-	if err := qs.drain(threadID); err != nil {
+	if err := qs.drain(context.Background(), threadID); err != nil {
 		t.Fatalf("second drain: %v", err)
 	}
 	rec.assertInOrder(t, threadID, 20)
@@ -329,7 +329,7 @@ func TestProviderEventDrainWaitsOnlyForEventsQueuedBeforeIt(t *testing.T) {
 	<-firstStarted
 
 	drained := make(chan error, 1)
-	go func() { drained <- qs.drain(threadID) }()
+	go func() { drained <- qs.drain(context.Background(), threadID) }()
 	if !waitForQueueWaiter(&qs, threadID) {
 		t.Fatal("drain never waited")
 	}
@@ -430,7 +430,7 @@ func TestProviderEventStallThatTimesOutHoldsNothing(t *testing.T) {
 		t.Fatalf("stall error = %v, want the bound's failure", err)
 	}
 	c.openGate()
-	if err := qs.drain(c.threadID); err != nil {
+	if err := qs.drain(context.Background(), c.threadID); err != nil {
 		t.Fatalf("the timed-out stall still holds the worker: %v", err)
 	}
 	if err := qs.stall(c.threadID); err != nil {
@@ -455,7 +455,7 @@ func TestProviderEventStallReleasedDuringAcquisitionHoldsNothing(t *testing.T) {
 		t.Fatalf("stall error = %v, want the release's outcome", err)
 	}
 	c.openGate()
-	if err := qs.drain(c.threadID); err != nil {
+	if err := qs.drain(context.Background(), c.threadID); err != nil {
 		t.Fatalf("the released stall still holds the worker: %v", err)
 	}
 	if got := qs.pending(c.threadID); got != 0 {
@@ -486,7 +486,7 @@ func TestProviderEventStallMarkerReachedAfterReleaseReportsNoHold(t *testing.T) 
 		t.Fatalf("release: %v", err)
 	}
 	openGate()
-	if err := qs.drain(threadID); err != nil {
+	if err := qs.drain(context.Background(), threadID); err != nil {
 		t.Fatalf("the released marker still holds the worker: %v", err)
 	}
 	select {
@@ -564,7 +564,7 @@ func TestProviderEventQueueRetireKeepsAQueueWithWork(t *testing.T) {
 	}
 
 	releaseOnce()
-	if err := qs.drain(threadID); err != nil {
+	if err := qs.drain(context.Background(), threadID); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 	rec.assertInOrder(t, threadID, 2)

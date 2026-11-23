@@ -41,13 +41,7 @@ var sessionSideChannelNotifications = map[string]func(*Session, json.RawMessage)
 }
 
 func (s *Session) dispatchNotification(method string, params json.RawMessage) {
-	if s.enqueueFrameIfPending(deferredChildWireEvent{
-		Method: method,
-		Params: params,
-	}) {
-		return
-	}
-	s.dispatchNotificationDirect(method, params)
+	s.dispatchFrame(deferredChildWireEvent{Method: method, Params: params})
 }
 
 func (s *Session) dispatchNotificationDirect(method string, params json.RawMessage) {
@@ -101,12 +95,20 @@ func (s *Session) dispatchNotificationDirect(method string, params json.RawMessa
 // step takes and returns its values explicitly so the two the route is carried
 // on — params (rewritten) and providerThreadID (re-derived) — stay visible at
 // this call site rather than mutating behind a pipeline.
+//
+// A child route the frame publishes, V2's started subAgentActivity in the
+// claim step, V1's spawn completion in the classify step or a raw spawn
+// output in the route step, moves the child's backlog into the session's
+// frame queue (publishChildRouteLocked), and the queue is delivered when the
+// dispatch ends (endDispatch), whichever step ends it: after the frame's own
+// events, its spawn row among them, have reached triage, so the child's
+// backlog cannot race ahead of its parent card.
 func (s *Session) dispatchRoutableNotification(method string, params json.RawMessage, providerThreadID string) {
 	params, providerThreadID, routed := s.resolveNotificationRoute(method, params, providerThreadID)
 	if routed {
 		return
 	}
-	parentToolUseID, mappedChildThreadIDs, consumed := s.claimNotificationOwnership(method, params, providerThreadID)
+	parentToolUseID, consumed := s.claimNotificationOwnership(method, params, providerThreadID)
 	if consumed {
 		return
 	}
@@ -114,7 +116,7 @@ func (s *Session) dispatchRoutableNotification(method string, params json.RawMes
 		return
 	}
 	s.foldNotificationOntoParent(method, params)
-	s.classifyAndEmitNotification(method, params, providerThreadID, parentToolUseID, mappedChildThreadIDs)
+	s.classifyAndEmitNotification(method, params, providerThreadID, parentToolUseID)
 }
 
 // resolveNotificationRoute answers which thread this frame belongs to, and
@@ -143,10 +145,9 @@ func (s *Session) resolveNotificationRoute(
 }
 
 // claimNotificationOwnership records what this frame proves about child-thread
-// ownership and resolves the spawn card a child frame renders on.
-// mappedChildThreadIDs are the provider threads this frame just mapped; their
-// quarantined backlog is drained at the very end of dispatch, once the spawn
-// row itself has reached triage.
+// ownership and resolves the spawn card a child frame renders on. A route it
+// publishes opens at the very end of dispatch, once the spawn row itself has
+// reached triage.
 //
 // The raw mailbox carrier is consumed BEFORE the path/meta retention that
 // follows it, which is the original order and load-bearing: a consumed carrier
@@ -156,11 +157,11 @@ func (s *Session) claimNotificationOwnership(
 	method string,
 	params json.RawMessage,
 	providerThreadID string,
-) (parentToolUseID string, mappedChildThreadIDs []string, consumed bool) {
-	mappedChildThreadIDs = s.observeSubAgentActivityOwnership(method, params)
+) (parentToolUseID string, consumed bool) {
+	s.observeSubAgentActivityOwnership(method, params)
 	parentToolUseID = s.parentToolUseForProviderThread(providerThreadID)
 	if s.emitSubagentNotificationsFromRawMailboxCarrier(method, params, providerThreadID, parentToolUseID) {
-		return "", nil, true
+		return "", true
 	}
 	if parentToolUseID != "" {
 		s.rememberAgentPathForProviderThread(providerThreadID, parentToolUseID, params)
@@ -171,7 +172,7 @@ func (s *Session) claimNotificationOwnership(
 			s.registerChildMailboxTail(providerThreadID, readNestedString(params, "thread", "path"))
 		}
 	}
-	return parentToolUseID, mappedChildThreadIDs, false
+	return parentToolUseID, false
 }
 
 // interceptChildNotification is the child-thread gate: what a child says that
@@ -187,14 +188,18 @@ func (s *Session) interceptChildNotification(
 	if parentToolUseID == "" {
 		return false
 	}
-	if method == "thread/status/changed" {
+	if method == "thread/status/changed" || method == "thread/closed" {
 		var wire struct {
 			Status struct {
 				Type        string   `json:"type"`
 				ActiveFlags []string `json:"activeFlags"`
 			} `json:"status"`
 		}
-		if err := json.Unmarshal(params, &wire); err != nil {
+		if method == "thread/closed" {
+			// Codex unloaded the thread: the same fact as its notLoaded
+			// status, which a thread/closed need not come with.
+			wire.Status.Type = "notLoaded"
+		} else if err := json.Unmarshal(params, &wire); err != nil {
 			s.warnCollabHistory("Codex child status could not be decoded", err)
 			return true
 		}
@@ -225,6 +230,7 @@ func (s *Session) interceptChildNotification(
 			event.Meta = meta
 			s.observeAndEmitChildLifecycle(providerThreadID, []provider.ProviderEvent{*event})
 		}
+		s.noteChildUnloaded(providerThreadID, status == "notLoaded")
 		return true
 	}
 	if method == "thread/tokenUsage/updated" {
@@ -293,15 +299,13 @@ func (s *Session) foldNotificationOntoParent(method string, params json.RawMessa
 
 // classifyAndEmitNotification turns the frame into provider events and
 // delivers them: the classifier, the two event rewrites that need session
-// state (the provider-queue notice and review scoping), the per-event child
-// gate, and the deferred-child drain that must not run until the spawn row it
-// belongs under has reached triage.
+// state (the provider-queue notice and review scoping), and the per-event
+// child gate.
 func (s *Session) classifyAndEmitNotification(
 	method string,
 	params json.RawMessage,
 	providerThreadID string,
 	parentToolUseID string,
-	mappedChildThreadIDs []string,
 ) {
 	if parentToolUseID == "" && s.observeSessionStartHooks(method, params) {
 		return
@@ -331,6 +335,7 @@ func (s *Session) classifyAndEmitNotification(
 	if method == safetyBufferingMethod && len(events) > 0 && !s.claimSafetyBufferingNotice(events[0].TurnID) {
 		events = nil
 	}
+	s.stampProcessScope(events, providerThreadID)
 	events = s.scopeReviewEvents(events)
 	suppressSubagentNotificationCarrier := s.emitSubagentNotificationsFromUserCarrier(method, params, events)
 
@@ -361,13 +366,46 @@ func (s *Session) classifyAndEmitNotification(
 	if parentToolUseID != "" && method == "error" && !readTopLevelBool(params, "willRetry") {
 		s.emitChildErrorStatusEvent(providerThreadID, parentToolUseID)
 	}
+	// After the close item reached triage: its row is resolved through the
+	// route a retirement removes (maybeRewriteCollabControlItemID).
+	s.noteCollabReceiverResidency(method, params)
+}
 
-	// V1 establishes ownership from collabAgentToolCall spawn completion in
-	// prepareNotificationEvent. V2 establishes it above from
-	// subAgentActivity. In both cases, drain only after the spawn row event has
-	// reached triage so fast child output cannot race ahead of its parent card.
-	mappedChildThreadIDs = append(mappedChildThreadIDs, collabSpawnReceiverThreadIDs(method, params)...)
-	s.drainDeferredChildWireEvents(mappedChildThreadIDs...)
+// stampProcessScope names, on every command event, the process table that
+// holds the command: each Codex thread has its own (core
+// session/session.rs, one UnifiedExecProcessManager per thread), so it is
+// the provider thread the frame came from. scopeReviewEvents then moves a
+// review's commands to the review run's table.
+func (s *Session) stampProcessScope(events []provider.ProviderEvent, providerThreadID string) {
+	scope := s.threadProcessScope(providerThreadID)
+	if scope.ID == "" {
+		return
+	}
+	for i := range events {
+		if kind := events[i].Kind; kind == provider.EventToolStart || kind == provider.EventToolComplete ||
+			kind == provider.EventCommandOutput || kind == provider.EventTerminalInteraction {
+			events[i].ProcessScope = scope
+		}
+	}
+}
+
+// RootProcessScope is the root thread's process table, which a clean of
+// the session's own commands names.
+func (s *Session) RootProcessScope() provider.ProcessScope {
+	return s.threadProcessScope("")
+}
+
+// threadProcessScope is the process table of the Codex thread a frame came
+// from: a frame without a thread id is the root thread's.
+func (s *Session) threadProcessScope(providerThreadID string) provider.ProcessScope {
+	scopeID := strings.TrimSpace(providerThreadID)
+	if scopeID == "" {
+		scopeID = s.rootThreadID()
+	}
+	if scopeID == "" {
+		return provider.ProcessScope{}
+	}
+	return provider.ProcessScope{ID: scopeID, Addressable: true}
 }
 
 func (s *Session) emitSubagentNotificationsFromUserCarrier(method string, params json.RawMessage, events []provider.ProviderEvent) bool {

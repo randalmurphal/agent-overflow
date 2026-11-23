@@ -61,10 +61,17 @@ items. `exec_command` (`source: "unifiedExecStartup"`) yields to the
 model after `yield_time_ms` (default 10s) with whatever output
 accumulated, and the PTY keeps running in `UnifiedExecProcessManager`.
 The item stays `status: inProgress` until `spawn_exit_watcher` fires
-`ExecCommandEnd`, potentially across multiple turns, up to
-`background_terminal_max_timeout` (1h default). See
+`ExecCommandEnd`, potentially across multiple turns. No lifetime cap ends
+it: `background_terminal_max_timeout` (default 300000 ms) bounds one
+`write_stdin` poll window, not the process (`codex-rs/config/src/config_toml.rs`
+at rust-v0.150.1). The process ends when it exits, when a background-terminal
+RPC terminates it, when its session shuts down (`terminate_all_processes`),
+or when the session's 64-process limit prunes it. Each Codex thread, an
+agent's included, has its own process manager, so an agent's command runs
+in the agent's thread and ends with that thread. See
 `codex-rs/core/src/tools/handlers/unified_exec.rs`,
-`codex-rs/core/src/unified_exec/async_watcher.rs`.
+`codex-rs/core/src/unified_exec/async_watcher.rs`,
+`codex-rs/core/src/unified_exec/process_manager.rs`.
 
 **Implication for agent-overflow**:
 `source: "unifiedExecStartup"` is the wire-typed signal that an item may
@@ -142,7 +149,8 @@ Authoritative method list from
 | `hook/started`, `hook/completed` | Hook lifecycle; one notification row each, except the runs of the thread's own SessionStart and UserPromptSubmit hooks (`source` `sessionFlags`), which render none. `run.eventName` and `run.status` are camelCase (`HookEventName`, `HookRunStatus`: `running`, `completed`, `failed`, `blocked`, `stopped`). `preModelRequest` and `postModelRequest` (0.164) fire around every model request, so they get no row on `hook/started` and a row on `hook/completed` only when the status is not `completed`. Codex does not write hook runs to the rollout. See §SessionStart hooks. |
 | `thread/started` | Session-level. First notification on a new thread; emits `EventSessionInit`. |
 | `thread/status/changed` | Session-level. Thread status transitions; emits `EventSessionStatus`. |
-| `thread/archived`, `thread/unarchived`, `thread/closed` | Recognised, no event. |
+| `thread/archived`, `thread/unarchived` | Recognised, no event. |
+| `thread/closed` | The unload an unsubscribe waits on. For an owned agent's thread it is also that agent's unload, read as its `notLoaded` status at that position in the stream. |
 | `thread/reverted` | The echo `thread/revert` waits on. Releases the RPC's bounded wait; an UNSOLICITED one is logged and never acted on (it carries a thread id and no boundary). See §History truncation below. |
 | `thread/queue/changed` | 0.148. The thread's provider-side queue changed. `{threadId}` and nothing else: no depth, no item id, no text. Below 0.148 the classifier's own notice is the answer; on a queue-native session the session layer replaces it with a `thread/queue/list` diffed against AO's own client ids. See §Externally queued turns in the package guide. |
 | `thread/compacted` | Thread housekeeping. Compaction boundary event (deprecated upstream in favour of the `contextCompaction` item; both feed `EventCompactBoundary`). |
@@ -1640,12 +1648,17 @@ Available since codex 0.140.0; verified on 0.146.0 and 0.159.1.
 ```
 
 - `processId` is the app-server handle, not the OS pid; it is the same
-  value the `commandExecution` item carries and AO stores as
-  `meta.process_id`. Omitting it from `terminate` returns
+  value the `commandExecution` item carries and AO's live command tracker
+  keeps (a root command's tray row also shows it as `meta.process_id`).
+  Omitting it from `terminate` returns
   `-32600 "Invalid request: missing field processId"`.
 - `osPid`, `cpuPercent`, `rssKb` are nullable, and absent is not zero.
 - `terminated: false` means no running process matched (already exited,
-  or belongs to another thread). It is a state answer, not an error.
+  not stored yet, or belongs to another thread), or terminating it failed.
+  It is a state answer, not an error, and not proof the process is gone;
+  `list` cannot say which either (§An agent's terminals below).
+- `threadId` names the thread whose processes the call reaches: the root
+  thread, or an agent's (§An agent's terminals below).
 - `list` paginates: pass a non-null `nextCursor` back as `cursor`.
 
 ### What a kill writes (verified 0.159.1)
@@ -1691,6 +1704,70 @@ Spike 2026-10-15, codex-cli 0.159.1, `gpt-6-luna`. Fixtures under
 AO reads the `item/completed` as the PTY's completion, which removes its
 live tray row (`observeCodexUnifiedExecComplete`). The mock writes the same
 frames from the terminals it announced (`cmd/ao-mockprovider/codex_terminals.go`).
+
+### An agent's terminals (source-verified rust-v0.150.1, not run)
+
+- Each Codex thread owns its own `UnifiedExecProcessManager`
+  (`core/src/state/service.rs`, `core/src/session/session.rs`), so an
+  agent's PTYs live in the agent's thread. The three RPCs resolve
+  `threadId` among the loaded threads (`load_thread` in
+  `app-server/src/request_processors/thread_processor.rs`), so they reach
+  an agent's terminals by the agent's thread id. A thread that is not
+  loaded is refused with -32600 `thread not found: <id>`.
+- Process ids are per thread (random in 1000..100000 per manager), so a
+  root PTY and an agent's can share one.
+- An agent's turn ending, erroring or being interrupted (V2
+  `interrupt_agent` is `Op::Interrupt`) kills none of its PTYs.
+- A thread's PTYs die when the thread shuts down: `Op::Shutdown` runs
+  `terminate_all_processes` (`core/src/session/handlers.rs`), and the
+  thread is removed only after that (`shutdown_live_agent`,
+  `core/src/agent/control/legacy.rs`). A V1 `close_agent` shuts the agent
+  and its live descendants down (`shutdown_agent_tree`) and then writes
+  its `item/completed` with the agent's status from before the close,
+  whether or not the shutdown succeeded
+  (`core/src/tools/handlers/multi_agents/close_agent.rs`). V2 residency
+  eviction shuts down an idle completed, errored or interrupted agent
+  (`core/src/agent/control/residency.rs`). App-server then publishes
+  `thread/status/changed` `notLoaded` for each shut-down thread
+  (`note_thread_shutdown`, `app-server/src/thread_status.rs`). Whether a
+  killed PTY's own `item/completed` is written before the shutdown is not
+  established.
+- `terminate` answers false both when the thread has no such process and
+  when terminating one failed (`terminate_process` in
+  `core/src/unified_exec/process_manager.rs`). `list` omits a process that
+  has exited, and `clean`'s `{}` reports no outcome.
+- `exec_command` writes the command's `item/started` before it stores the
+  process (`process_manager.rs`, the Begin emit then `store_process`), so a
+  `list` Codex handles between the two omits a command already announced,
+  and a `terminate` of it answers false.
+- `clean` takes every process out of the table before it signals any
+  (`terminate_all_processes`). An exec-server process's terminate is
+  spawned detached with its error discarded, and its exit token is then
+  cancelled (`core/src/unified_exec/process.rs`), so the command's
+  `item/completed` is written whether or not the process died.
+
+AO counts an agent's commands as the thread's live work and lists them in
+the tray under the agent's spawn launch. A command leaves the live work on
+its own `item/completed`, its thread's unload (`notLoaded`, `thread/closed`,
+or a "thread not found" answer in the session that runs it, each at the
+position in the stream where the read loop read it), or the session's end
+or replacement ([turn lifecycle](../architecture/turn-lifecycle.md)). A
+list's absence ends nothing: it omits a command that has exited and one
+that is starting alike. A Stop names the thread that runs the command; a
+false answer leaves the command live, and the Stop says Codex did not stop
+it. The session writes a terminal call only for its root thread or an
+agent thread it owns, and none once End Session has begun. A V1
+`close_agent` completion is a hint: the adapter asks the closed agent's
+thread for one entry of its terminals once, only to hear "thread not
+found" (`probeClosedChild`), and retires the agent's route when both the
+close and the unload are known, in either order (`childResidency`). A V1
+`resume_agent` that names a retired agent opens its route again under the
+agent's spawn launch, which the session keeps for its life. A revert
+that waits for its commands' completions cannot prove their processes
+died, because an exec-server process's completion is written either way.
+Whether a running PTY keeps a thread active, and so loaded after its last
+unsubscribe, is not established; End Session cleans every thread it owns
+before it unsubscribes, so this matters only when a clean fails.
 
 ---
 

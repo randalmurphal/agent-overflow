@@ -7,7 +7,7 @@ import type { ProviderBackgroundStop } from '../providers/catalog';
 import type { Item } from '../types/models';
 import { parseJsonObject } from './parseJsonObject';
 import { extractClaudeTaskID } from './claudeTaskMeta';
-import { extractCodexProcessID } from './codexProcessMeta';
+import { codexCommandStopsByItem, extractCodexProcessID } from './codexProcessMeta';
 import {
   agentScopeRootId,
   claudeResumeTranscriptRootId,
@@ -18,7 +18,7 @@ import {
 } from './subagentLaunch';
 
 export { extractClaudeTaskID } from './claudeTaskMeta';
-export { extractCodexProcessID } from './codexProcessMeta';
+export { codexCommandStopsByItem, extractCodexProcessID } from './codexProcessMeta';
 
 export interface TrayTask {
   /** Stable id used for the row key and scroll-to-item request. */
@@ -125,38 +125,52 @@ export function isCodexSubagentTask(task: TrayTask): boolean {
 }
 
 /**
- * Codex can stop active subagents and yielded unifiedExec PTYs. Pending
- * foreground commands are visible in the same running tray, but neither
- * primitive targets them yet.
+ * How a tray row's Stop reaches its task: the binding (`route`) and the id
+ * it takes (`target`). The ids are per provider and never cross:
+ *
+ * - `claude-task`: a Claude task id (`StopClaudeTask`).
+ * - `codex-subagent`: a Codex subagent's launch id (`StopCodexSubagent`).
+ * - `codex-command`: a Codex command's item id
+ *   (`StopCodexBackgroundCommand`), on a row the backend marks
+ *   (`codexCommandStopsByItem`).
+ * - `codex-process`: a root Codex command's PTY process id
+ *   (`TerminateCodexBackgroundTerminal`), the Stop of a computer older
+ *   than the item-id Stop.
  */
-export function isCodexStoppableTask(task: TrayTask): boolean {
-  if (trayRemoteJob(task)) return false;
-  if (isCodexSubagentTask(task)) return task.launch !== null;
-  return task.launch?.isBackground === true;
+export interface TrayRowStop {
+  route: 'claude-task' | 'codex-subagent' | 'codex-command' | 'codex-process';
+  target: string;
 }
 
 /**
- * Resolve the id a row's Stop button would target, or null when the row
- * has no per-row stop at all. The id namespace is per provider — a
- * Claude task id for `claude-task`, a Codex PTY process id for
- * `codex-background-terminals` — and the caller pairs it with the
- * matching binding.
+ * The Stop of a tray row, or null when the row has none. It is the one
+ * handle the row's own Stop and Stop All both act on, so the bulk button
+ * names exactly the rows that show a Stop and reaches each the way its
+ * row does. A Codex command has a Stop once it is a background terminal
+ * and carries a handle: a pending foreground command has none, and
+ * neither has a command inside a code review, which ends with the review.
  *
  * Only running rows with a live launch are stoppable: a completed row
  * has nothing to kill, and a launch that has already been pruned from
  * the tray's source list carries no id to kill it by.
  */
-export function trayRowStopTarget(
+export function trayRowStop(
   task: TrayTask,
   backgroundStop: ProviderBackgroundStop,
-): string | null {
+): TrayRowStop | null {
   if (task.status !== 'running' || task.launch === null || trayRemoteJob(task)) return null;
   switch (backgroundStop) {
-    case 'claude-task':
-      return extractClaudeTaskID(task.launch);
-    case 'codex-background-terminals':
-      if (!isCodexStoppableTask(task)) return null;
-      return isCodexSubagentTask(task) ? task.launch.id : extractCodexProcessID(task.launch);
+    case 'claude-task': {
+      const taskID = extractClaudeTaskID(task.launch);
+      return taskID === null ? null : { route: 'claude-task', target: taskID };
+    }
+    case 'codex-background-terminals': {
+      if (isCodexSubagentTask(task)) return { route: 'codex-subagent', target: task.launch.id };
+      if (task.launch.isBackground !== true) return null;
+      if (codexCommandStopsByItem(task.launch)) return { route: 'codex-command', target: task.launch.id };
+      const processID = extractCodexProcessID(task.launch);
+      return processID === null ? null : { route: 'codex-process', target: processID };
+    }
     case 'none':
       return null;
   }

@@ -3,7 +3,6 @@ package codexapp
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -13,45 +12,7 @@ import (
 	"agent-overflow/internal/provider/codex"
 )
 
-func TestBackgroundControlsDistinguishMissingMismatchAndForward(t *testing.T) {
-	missing := New(Deps{Reaper: procutiltest.Reaper(), Session: func(threadID string) (*codex.Session, bool) {
-		return nil, threadID == "other-provider"
-	}})
-	if err := missing.CleanBackgroundTerminals("missing"); err == nil || !strings.Contains(err.Error(), "no active session") {
-		t.Fatalf("missing error = %v", err)
-	}
-	if _, err := missing.TerminateBackgroundTerminal("other-provider", "42"); err == nil || !strings.Contains(err.Error(), "not a Codex thread") {
-		t.Fatalf("mismatch error = %v", err)
-	}
-
-	var cleanCalled atomic.Bool
-	var processID string
-	session := codex.NewCleanBackgroundTerminalsTestSession(func(ctx context.Context) error {
-		if _, ok := ctx.Deadline(); !ok {
-			t.Error("clean context has no deadline")
-		}
-		cleanCalled.Store(true)
-		return nil
-	})
-	cleanService := New(Deps{Reaper: procutiltest.Reaper(), Session: func(string) (*codex.Session, bool) { return session, true }})
-	if err := cleanService.CleanBackgroundTerminals("thread"); err != nil {
-		t.Fatalf("CleanBackgroundTerminals: %v", err)
-	}
-	terminateSession := codex.NewTerminateBackgroundTerminalTestSession(func(ctx context.Context, id string) (bool, error) {
-		if _, ok := ctx.Deadline(); !ok {
-			t.Error("terminate context has no deadline")
-		}
-		processID = id
-		return true, nil
-	})
-	terminateService := New(Deps{Reaper: procutiltest.Reaper(), Session: func(string) (*codex.Session, bool) { return terminateSession, true }})
-	terminated, err := terminateService.TerminateBackgroundTerminal("thread", "1734029")
-	if err != nil || !terminated || processID != "1734029" || !cleanCalled.Load() {
-		t.Fatalf("terminate=%v id=%q clean=%v err=%v", terminated, processID, cleanCalled.Load(), err)
-	}
-}
-
-func TestStopSubagentForwardsOwnedLaunchUnderDeadline(t *testing.T) {
+func TestStopSubagentForwardsOwnedLaunchUnderCallerContext(t *testing.T) {
 	var called atomic.Bool
 	var sawDeadline bool
 	fake := codex.NewInterruptSubagentTestSession("spawn-1", func(ctx context.Context, childThreadID, turnID string) error {
@@ -63,14 +24,16 @@ func TestStopSubagentForwardsOwnedLaunchUnderDeadline(t *testing.T) {
 		return nil
 	})
 	service := New(Deps{Reaper: procutiltest.Reaper(), Session: func(string) (*codex.Session, bool) { return fake, true }})
-	stopped, err := service.StopSubagent("codex-thread", "spawn-1")
+	ctx, cancel := context.WithTimeout(context.Background(), BackgroundTerminalStopTimeout)
+	defer cancel()
+	stopped, err := service.StopSubagent(ctx, "codex-thread", "spawn-1")
 	if err != nil || !stopped {
 		t.Fatalf("StopSubagent = (%v, %v), want (true, nil)", stopped, err)
 	}
 	if !called.Load() || !sawDeadline {
 		t.Fatalf("interrupt called=%v deadline=%v", called.Load(), sawDeadline)
 	}
-	stopped, err = service.StopSubagent("codex-thread", "spawn-1")
+	stopped, err = service.StopSubagent(ctx, "codex-thread", "spawn-1")
 	if err != nil || stopped {
 		t.Fatalf("repeated StopSubagent = (%v, %v), want (false, nil)", stopped, err)
 	}

@@ -7,14 +7,18 @@ requests, notifications, queue behavior, collaboration, or history handling.
 
 ## Session and concurrency
 
-The read loop owns its private accounting state. Guard shared session state with
+A session's frames are dispatched one at a time by whoever holds its dispatch
+token: the read loop, or a publisher off the read loop delivering the frame
+queue (`dispatchFrame`, `takeDispatch`). That holder owns the dispatch path's
+private accounting state. Guard shared session state with
 the documented mutex or atomic, and never perform callbacks, provider writes,
 or event emission while holding state locks. `Close` must clear every
 session-scoped state group and settle pending requests.
 
 Lock order is `controlMu -> mu -> childLifecycleMu -> eventMu`.
 `settingsWireMu` also precedes `mu`, never nests with `controlMu`, and only
-orders settings and turn pipe writes. `settingsSync.mu` is a leaf lock.
+orders settings and turn pipe writes. `terminalWriteMu` precedes `mu` and
+orders background-terminal writes against `Close`. `settingsSync.mu` is a leaf lock.
 `ApprovalRegistry` and `collabAsyncMu` are leaf locks. Only `eventMu` may
 remain held across `onEvent`; `mu` never may. Keep read-loop coordination
 values on their existing atomics.

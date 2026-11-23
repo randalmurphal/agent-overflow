@@ -1,29 +1,65 @@
 package triage
 
 import (
+	"encoding/json"
 	"sort"
 	"strings"
 
 	"agent-overflow/internal/store"
 )
 
+// Codex live work is the background work only this router holds: every
+// agent whose execution is active, and every unified-exec command the
+// session's app-server runs, the root thread's, every agent's at every
+// depth and a review run's. A command outlives the turn that started it and
+// leaves the live work only by the three ways codexExecTrackers names, so
+// closing the session would kill it. The count, the tray and the
+// project-wide thread list below all apply this rule; the tray lists the
+// agents through ListLiveCodexAgentTasks.
+//
+// The queue gate is the one deliberate difference: it counts top-level
+// commands only (hasActiveCodexTopLevelCommand). A queued send waits for
+// the main agent's work. An agent's command is that agent's work, and the
+// agent's active execution already holds the queue while it runs; a command
+// left behind by an agent that finished is not something the next prompt
+// waits on. Claude's queue gate draws the same line
+// (store.HasQueueBlockingBackgroundToolCall).
+
+// Tray row meta keys for a Codex command. codexCommandStopKey marks a row
+// whose Stop names the command by its item id (StopCodexBackgroundCommand
+// in the app); codexCommandProcessIDKey is the app-server process id, which
+// only a root command's row carries, for a window that stops by process id.
+const (
+	codexCommandStopKey      = "stop_by_item"
+	codexCommandProcessIDKey = "process_id"
+)
+
+// CodexCommandStopsByItem reports whether a Codex command's tray row has a
+// Stop that names it by item id.
+func CodexCommandStopsByItem(item store.Item) bool {
+	var meta struct {
+		Stop bool `json:"stop_by_item"`
+	}
+	return json.Unmarshal([]byte(item.Meta), &meta) == nil && meta.Stop
+}
+
 // ListLiveCodexBackgroundTasks returns transient Codex unified exec tray
-// rows. Pending foreground commands are included with IsBackground=false;
-// yielded PTYs are included with IsBackground=true. Completed commands leave
-// the live tray when typed item/completed removes the transient tracker.
+// rows, an agent's commands parented to its spawn launch. Pending
+// foreground commands are included with IsBackground=false; yielded PTYs
+// are included with IsBackground=true. Completed commands leave the live
+// tray when typed item/completed removes the transient tracker.
 func (r *Router) ListLiveCodexBackgroundTasks(threadID string, _ int64, _ int64) []store.Item {
 	r.mu.Lock()
-	state := r.codexBackgroundIfPresent(threadID)
-	if state == nil {
+	execs := r.codexExecIfPresent(threadID)
+	if execs == nil || len(execs.byLaunch) == 0 {
 		r.mu.Unlock()
 		return nil
 	}
-	trackers := make([]unifiedExecTracker, 0, len(state.unifiedExec))
-	for _, tracker := range state.unifiedExec {
-		if tracker == nil {
-			continue
-		}
-		trackers = append(trackers, *tracker)
+	trackers := make([]unifiedExecTracker, 0, len(execs.byLaunch))
+	for _, tracker := range execs.byLaunch {
+		copied := *tracker
+		copied.meta, copied.output = nil, cappedCommandOutput{}
+		trackers = append(trackers, copied)
 	}
 	r.mu.Unlock()
 
@@ -36,9 +72,6 @@ func (r *Router) ListLiveCodexBackgroundTasks(threadID string, _ int64, _ int64)
 
 	items := make([]store.Item, 0, len(trackers))
 	for _, tracker := range trackers {
-		if strings.TrimSpace(tracker.parentID) != "" {
-			continue
-		}
 		launch := store.Item{
 			ID:           tracker.launchID,
 			ThreadID:     threadID,
@@ -51,7 +84,7 @@ func (r *Router) ListLiveCodexBackgroundTasks(threadID string, _ int64, _ int64)
 			ParentID:     tracker.parentID,
 			IsBackground: tracker.backgrounded,
 			ToolName:     "command_execution",
-			Meta:         codexLiveUnifiedExecMeta(tracker.command, tracker.processID),
+			Meta:         codexLiveUnifiedExecMeta(tracker),
 			CreatedAt:    tracker.createdAt,
 			UpdatedAt:    tracker.updatedAt,
 		}
@@ -60,58 +93,253 @@ func (r *Router) ListLiveCodexBackgroundTasks(threadID string, _ int64, _ int64)
 	return items
 }
 
+// CodexLiveWorkCounts returns the thread's active Codex agents and its live
+// commands, apart; the commands are counted without a scan.
+func (r *Router) CodexLiveWorkCounts(threadID string) (agents, commands int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return 0, 0
+	}
+	commands = len(st.codexExec.byLaunch)
+	return codexLiveWorkLocked(st, false) - commands, commands
+}
+
+// CodexCommandsStarted counts the Codex commands that have started in the
+// thread's provider process, so a waiter can tell, without a scan, whether
+// one started since it last looked.
+func (r *Router) CodexCommandsStarted(threadID string) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		return st.codexExec.started
+	}
+	return 0
+}
+
+// CountLiveCodexBackgroundTasks counts the thread's Codex live work.
 func (r *Router) CountLiveCodexBackgroundTasks(threadID string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state := r.codexBackgroundIfPresent(threadID)
-	if state == nil {
+	return codexLiveWorkLocked(r.threadStateIfPresent(threadID), false)
+}
+
+// codexLiveWorkLocked is the Codex live-work rule for one thread: its live
+// commands plus its active agents. With any true it stops at the first
+// unit found, for a caller that only asks whether there is any. Caller
+// holds r.mu.
+func codexLiveWorkLocked(st *threadState, any bool) int {
+	if st == nil {
 		return 0
 	}
-	count := 0
-	for _, item := range state.agents {
-		if codexRuntimeActive(item) {
-			count++
-		}
+	count := len(st.codexExec.byLaunch)
+	if any && count > 0 {
+		return count
 	}
-	for _, tracker := range state.unifiedExec {
-		if tracker != nil && strings.TrimSpace(tracker.parentID) == "" {
-			count++
+	if st.codexBackground != nil {
+		for _, item := range st.codexBackground.agents {
+			if codexRuntimeActive(item) {
+				count++
+				if any {
+					return count
+				}
+			}
 		}
 	}
 	return count
 }
 
-// ThreadIDsWithLiveCodexBackgroundTasks snapshots the threads that currently
-// own active Codex agents or top-level unified-exec tasks. Project-wide
-// availability can take one router lock instead of probing every historical
-// thread independently.
+// ThreadIDsWithLiveCodexBackgroundTasks snapshots the threads that hold
+// Codex live work. Project-wide availability can take one router lock
+// instead of probing every historical thread independently.
 func (r *Router) ThreadIDsWithLiveCodexBackgroundTasks() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var ids []string
 	for threadID, st := range r.threads {
-		state := st.codexBackground
-		if state == nil {
-			continue
-		}
-		agentActive := false
-		for _, item := range state.agents {
-			if codexRuntimeActive(item) {
-				agentActive = true
-				break
-			}
-		}
-		if agentActive {
+		if codexLiveWorkLocked(st, true) > 0 {
 			ids = append(ids, threadID)
-			continue
-		}
-		for _, tracker := range state.unifiedExec {
-			if tracker != nil && strings.TrimSpace(tracker.parentID) == "" {
-				ids = append(ids, threadID)
-				break
-			}
 		}
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// CodexLiveWork reports whether the thread holds Codex live work, with the
+// summary of one unit of it for a reader that names what it waits on: the
+// first row the tray lists, the earliest live command, else the earliest
+// active agent (ListLiveCodexAgentTasks's order). It copies nothing.
+func (r *Router) CodexLiveWork(threadID string) (bool, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return false, ""
+	}
+	var first *unifiedExecTracker
+	for _, tracker := range st.codexExec.byLaunch {
+		if first == nil || tracker.createdAt < first.createdAt ||
+			tracker.createdAt == first.createdAt && tracker.launchID < first.launchID {
+			first = tracker
+		}
+	}
+	if first != nil {
+		return true, firstNonEmptyString(first.summary, "command_execution")
+	}
+	if st.codexBackground == nil {
+		return false, ""
+	}
+	var agent store.Item
+	var agentStart int64
+	found := false
+	for _, item := range st.codexBackground.agents {
+		if !codexRuntimeActive(item) {
+			continue
+		}
+		start := codexAgentStartedAt(item)
+		if !found || start < agentStart || start == agentStart && item.ID < agent.ID {
+			agent, agentStart, found = item, start, true
+		}
+	}
+	if !found {
+		return false, ""
+	}
+	return true, firstNonEmptyString(agent.Summary, agent.ToolName)
+}
+
+// hasActiveCodexTopLevelCommand is the queue gate's half of the rule above:
+// a live command of the root thread.
+func (r *Router) hasActiveCodexTopLevelCommand(threadID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if execs := r.codexExecIfPresent(threadID); execs != nil {
+		for _, tracker := range execs.byLaunch {
+			if tracker.parentID == "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// CodexCommand is one live command as a stop sees it: the session that runs
+// it and where its process runs.
+type CodexCommand struct {
+	LaunchID  string
+	ProcessID string
+	// ScopeID and Addressable are the process scope the command started in
+	// (provider.ProcessScope).
+	ScopeID     string
+	Addressable bool
+	Summary     string
+	// Token is the session the command runs in: the one MarkThreadActive
+	// committed the thread to when the command was read.
+	Token string
+}
+
+// LiveCodexCommand returns the live command launchID, and false when no
+// live command has that item id.
+func (r *Router) LiveCodexCommand(threadID, launchID string) (CodexCommand, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	tracker := r.codexExecIfPresent(threadID).lookup(strings.TrimSpace(launchID))
+	if tracker == nil {
+		return CodexCommand{}, false
+	}
+	return r.codexCommandLocked(threadID, tracker), true
+}
+
+// LiveCodexCommands returns the thread's live commands, in no order.
+func (r *Router) LiveCodexCommands(threadID string) []CodexCommand {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	execs := r.codexExecIfPresent(threadID)
+	if execs == nil {
+		return nil
+	}
+	commands := make([]CodexCommand, 0, len(execs.byLaunch))
+	for _, tracker := range execs.byLaunch {
+		commands = append(commands, r.codexCommandLocked(threadID, tracker))
+	}
+	return commands
+}
+
+// LiveRootCodexCommandForProcess resolves a process id among the root
+// thread's live commands, the only ones a row stopped by process id can
+// name (codexCommandProcessIDKey).
+func (r *Router) LiveRootCodexCommandForProcess(threadID, processID string) (CodexCommand, bool) {
+	processID = strings.TrimSpace(processID)
+	if processID == "" {
+		return CodexCommand{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if execs := r.codexExecIfPresent(threadID); execs != nil {
+		for _, tracker := range execs.byLaunch {
+			if tracker.parentID == "" && tracker.processID == processID {
+				return r.codexCommandLocked(threadID, tracker), true
+			}
+		}
+	}
+	return CodexCommand{}, false
+}
+
+// codexCommandLocked copies tracker for a stop. Caller holds r.mu.
+func (r *Router) codexCommandLocked(threadID string, tracker *unifiedExecTracker) CodexCommand {
+	command := CodexCommand{
+		LaunchID:    tracker.launchID,
+		ProcessID:   tracker.processID,
+		ScopeID:     tracker.scope.ID,
+		Addressable: tracker.scope.Addressable && tracker.scope.ID != "",
+		Summary:     tracker.summary,
+	}
+	if id := r.identityIfPresent(threadID); id != nil {
+		command.Token = id.sessionToken
+	}
+	return command
+}
+
+// CodexCommandHoldsProcess reports whether command, read for a stop, still
+// names the process its stop would terminate: the session command.Token
+// names is not retired, as Handle's gate reads a frame's token
+// (frameRetiredLocked), and command is the live command that holds its
+// process id in its process table. The stop asks it just before it sends,
+// so a process id Codex gave a newer command, after command's process left
+// the table and its completion was handled, is not terminated for it.
+func (r *Router) CodexCommandHoldsProcess(threadID string, command CodexCommand) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, command.Token) {
+		return false
+	}
+	tracker := r.codexExecIfPresent(threadID).byProcessID(command.ScopeID, command.ProcessID)
+	return tracker != nil && tracker.launchID == command.LaunchID
+}
+
+// CodexExecChanged returns a channel that closes at the next change to the
+// thread's live Codex work, for a caller waiting for commands to leave. Take
+// it before reading the state it waits on, so no change falls between. An
+// entry lives until that change; one per thread at most.
+func (r *Router) CodexExecChanged(threadID string) <-chan struct{} {
+	r.codexExecChangedMu.Lock()
+	defer r.codexExecChangedMu.Unlock()
+	changed := r.codexExecChanged[threadID]
+	if changed == nil {
+		if r.codexExecChanged == nil {
+			r.codexExecChanged = make(map[string]chan struct{})
+		}
+		changed = make(chan struct{})
+		r.codexExecChanged[threadID] = changed
+	}
+	return changed
+}
+
+func (r *Router) signalCodexExecChanged(threadID string) {
+	r.codexExecChangedMu.Lock()
+	if changed := r.codexExecChanged[threadID]; changed != nil {
+		close(changed)
+		delete(r.codexExecChanged, threadID)
+	}
+	r.codexExecChangedMu.Unlock()
 }

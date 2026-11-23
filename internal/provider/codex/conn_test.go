@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 )
@@ -23,7 +24,13 @@ func writeFakeMultiplexCodex(t *testing.T, script string) string {
 		t.Skip("shell fake requires unix")
 	}
 	path := filepath.Join(t.TempDir(), "fake-codex-mux")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	// Forks are held off while the file is open for writing: a child a
+	// parallel test forks meanwhile would keep the descriptor until its exec,
+	// and running the script would fail with ETXTBSY.
+	release := procutil.HoldForks()
+	err := os.WriteFile(path, []byte(script), 0o755)
+	release()
+	if err != nil {
 		t.Fatalf("write fake codex: %v", err)
 	}
 	return path

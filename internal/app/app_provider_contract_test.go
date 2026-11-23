@@ -41,6 +41,11 @@ func TestProviderLeafBindingsPreserveShutdownSentinel(t *testing.T) {
 	if terminated {
 		t.Fatal("TerminateCodexBackgroundTerminal returned true while shutting down")
 	}
+	stopped, err = app.StopCodexBackgroundCommand("thread", "command")
+	assertSame("StopCodexBackgroundCommand", err)
+	if stopped {
+		t.Fatal("StopCodexBackgroundCommand returned true while shutting down")
+	}
 }
 
 func TestProviderLeafBindingDTOProjectionsAreFieldComplete(t *testing.T) {

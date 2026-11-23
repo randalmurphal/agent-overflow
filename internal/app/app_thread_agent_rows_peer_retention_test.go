@@ -247,11 +247,15 @@ func TestAnEndedRemoteLineageIsExcludedFromDeleteConfirmation(t *testing.T) {
 
 // A thread deleted there while that computer answers for it is refused as
 // not the spawn's, the answer every later call gets, never a failure to
-// answer, which would keep the last answer's state on the spawn's row.
+// answer, which would keep the last answer's state on the spawn's row. The
+// delete runs inside the answer, so the listing's bound is not the
+// product's: how long a delete takes on a loaded machine is not what this
+// test is about.
 func TestAThreadDeletedDuringItsListingIsRefused(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
+	pair.source.threadAgentPeerListOverride = time.Minute
 	spawn, child := remoteRestedWorker(t, pair)
 	pair.dest.peerAgentsReachedForTest = func(threadID string) {
 		if threadID != child {

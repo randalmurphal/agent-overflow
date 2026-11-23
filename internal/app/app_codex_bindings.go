@@ -2,12 +2,16 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log"
 	"strings"
 
 	"agent-overflow/internal/codexapp"
 	"agent-overflow/internal/codexskills"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/triage"
 )
 
 // CodexAccountUsage is Codex's own token-usage report for the signed-in
@@ -43,15 +47,16 @@ type CodexAccountUsageBucket struct {
 }
 
 // CleanCodexBackgroundTerminals asks the Codex app-server to terminate
-// every running unified-exec background PTY for `threadID`. This is the
-// thread-wide "Stop all" primitive for Codex; the per-row stop is
-// TerminateCodexBackgroundTerminal below.
+// every running unified-exec background PTY of `threadID`'s session: the
+// root thread's, and those of each agent thread that runs a live command.
+// Each Codex thread has its own processes, so a cleanup of the root thread
+// alone leaves the agents' running. Thread delete uses it, and a revert
+// starts with it (stopCodexCommandsBeforeRevert).
 //
-// After the RPC succeeds, Codex emits one `item/completed` notification
-// per terminated PTY. Those update triage's transient tray state; the
-// command output becomes transcript history only if the model explicitly
-// waits/polls the terminal with write_stdin. No follow-up work is needed
-// here.
+// Codex answers before the processes are gone, so the answer ends no
+// command: each leaves the tray by its own item/completed or by its
+// thread's unload (triage codexExecTrackers). An agent thread that is
+// already gone answers "thread not found", which is that unload.
 //
 // Returns typed errors for:
 //
@@ -68,42 +73,177 @@ func (a *App) CleanCodexBackgroundTerminals(threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
-	return a.codexAppService().CleanBackgroundTerminals(threadID)
+	session, err := a.codexCommandSession("clean codex background terminals", threadID, "")
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), codexapp.BackgroundTerminalStopTimeout)
+	defer cancel()
+	_, err = a.cleanCodexScopes(ctx, threadID, session, nil)
+	return err
 }
 
-// TerminateCodexBackgroundTerminal stops ONE running unified-exec
-// background PTY on `threadID`, identified by the app-server process id
-// the tray row carries as `meta.process_id`. It is the Codex counterpart
-// of StopClaudeTask — same tray affordance, different id namespace and a
-// different RPC (`thread/backgroundTerminals/terminate`), which is why
-// the frontend branches on provider rather than sharing one binding.
+// codexCommandSession returns the Codex session that runs threadID's
+// thread, and refuses when token is set and names another session: a
+// command's stop goes to the session triage read the command in and to no
+// other, since a replacement's process table is another table.
+func (a *App) codexCommandSession(action, threadID, token string) (*codex.Session, error) {
+	entry, active := a.sessionManager().get(threadID)
+	switch {
+	case !active:
+		return nil, fmt.Errorf("app: %s: no active session for thread %s", action, threadID)
+	case entry.Codex == nil:
+		return nil, fmt.Errorf("app: %s: thread %s is not a Codex thread", action, threadID)
+	case token != "" && entry.Token != token:
+		return nil, fmt.Errorf("app: %s: the session that ran it has ended", action)
+	}
+	return entry.Codex, nil
+}
+
+// cleanCodexScopes cleans, on session, the processes of the root thread when
+// cleaned is nil, and of each Codex thread that runs a live command cleaned
+// does not hold. It returns cleaned with the commands its cleans covered: a
+// clean covers the commands that had started when it was sent.
+func (a *App) cleanCodexScopes(ctx context.Context, threadID string, session *codex.Session, cleaned map[string]bool) (map[string]bool, error) {
+	scopes := map[string][]string{}
+	if cleaned == nil {
+		root := session.RootProcessScope()
+		if root.ID == "" {
+			return nil, fmt.Errorf("app: clean codex background terminals: thread %s has no Codex thread yet", threadID)
+		}
+		cleaned = map[string]bool{}
+		scopes[root.ID] = nil
+	}
+	if a.triage != nil {
+		for _, command := range a.triage.LiveCodexCommands(threadID) {
+			if command.Addressable && !cleaned[command.LaunchID] {
+				scopes[command.ScopeID] = append(scopes[command.ScopeID], command.LaunchID)
+			}
+		}
+	}
+	var errs []error
+	for scopeID, launches := range scopes {
+		err := session.CleanBackgroundTerminals(ctx, scopeID)
+		if errors.Is(err, codex.ErrBackgroundTerminalThreadNotLoaded) {
+			// The thread's unload, which ends its commands.
+			err = nil
+		}
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for _, launchID := range launches {
+			cleaned[launchID] = true
+		}
+	}
+	return cleaned, errors.Join(errs...)
+}
+
+// StopCodexBackgroundCommand stops one running Codex command, named by its
+// item id (the tray row's id), in the Codex thread whose processes include
+// it: the root thread's, or the agent's that ran it. It is the Codex
+// counterpart of StopClaudeTask.
 //
-// The bool is the wire's own answer, not a success flag: `false, nil`
-// means the RPC succeeded and matched no running process (the shell had
-// already exited, or the id belongs to another thread). Callers must
-// surface that as state — a stop that killed nothing emits no follow-up
-// `item/completed`, so silently discarding it would leave the user
-// staring at a row that never changes.
+// true: Codex terminated the process, and its item/completed takes the row
+// out of the tray. false, nil: the command had already ended. An error says
+// why it was not stopped: Codex did not stop it, the command runs inside a
+// code review and ends with the review, or its process is no longer the one
+// the row names. The row stays until the command ends.
 //
-// On a real termination Codex emits `item/completed` for that PTY, which
-// flows through the existing triage path and clears the tray row. No
-// follow-up work is needed here.
+//ao:scope threads:operate
+func (a *App) StopCodexBackgroundCommand(threadID, launchID string) (bool, error) {
+	if a.shuttingDown.Load() {
+		return false, ErrShuttingDown
+	}
+	if a.triage == nil {
+		return false, fmt.Errorf("app: stop codex command: thread %s has no event router", threadID)
+	}
+	command, ok := a.triage.LiveCodexCommand(threadID, launchID)
+	if !ok {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), codexapp.BackgroundTerminalStopTimeout)
+	defer cancel()
+	return a.stopCodexCommand(ctx, threadID, command)
+}
+
+// TerminateCodexBackgroundTerminal stops ONE running command of the root
+// Codex thread, identified by the app-server process id its tray row
+// carries as `meta.process_id`. It is the Stop of a window older than
+// StopCodexBackgroundCommand; a row carries a process id only for a root
+// command, the only one this id can name. Each Codex thread numbers its own
+// processes, so an agent's command is stopped by item id. Within the root
+// thread, a process id Codex reused after its command ended names the
+// newer command.
 //
-// Returns typed errors for:
-//
-//   - session-missing: no Codex session for this thread. The caller
-//     reached the binding before Start / after Close.
-//   - provider-mismatch: the thread exists but it's a Claude session.
-//     Claude's per-row stop is StopClaudeTask, keyed by task id.
-//   - blank process id / timeout / provider error: surfaced verbatim so
-//     the UI can render the CLI-supplied message.
+// The bool is the stop's answer, as StopCodexBackgroundCommand's: false,
+// nil also means no live root command holds the id, and nothing was sent.
 //
 //ao:scope threads:operate
 func (a *App) TerminateCodexBackgroundTerminal(threadID, processID string) (bool, error) {
 	if a.shuttingDown.Load() {
 		return false, ErrShuttingDown
 	}
-	return a.codexAppService().TerminateBackgroundTerminal(threadID, processID)
+	if a.triage == nil {
+		return false, fmt.Errorf("app: terminate codex background terminal: thread %s has no event router", threadID)
+	}
+	command, ok := a.triage.LiveRootCodexCommandForProcess(threadID, processID)
+	if !ok {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), codexapp.BackgroundTerminalStopTimeout)
+	defer cancel()
+	return a.stopCodexCommand(ctx, threadID, command)
+}
+
+// stopCodexCommand terminates command's process in the Codex thread that
+// runs it, on the session triage read command in. Just before it sends, it
+// checks that this session still runs the thread and that command still
+// holds its process id in its table (triage CodexCommandHoldsProcess):
+// Codex gives an exited process's id to the next process it starts, which
+// can be before the exited command's completion arrives. A process that
+// exits after that check, and whose id Codex gives to a new process before
+// it reads the request, is the window no check on this side closes; it is
+// as long as one request's trip.
+//
+// Codex's false means it did not stop the process: it had none by that id,
+// or the terminate failed (core unified_exec process_manager.rs
+// terminate_process). The command stays live until its own completion or
+// its thread's unload says it ended, and the error says Codex did not stop
+// it. A thread Codex no longer has loaded answers "thread not found", which
+// is its unload: the command has ended.
+func (a *App) stopCodexCommand(ctx context.Context, threadID string, command triage.CodexCommand) (bool, error) {
+	if command.ScopeID == "" {
+		return false, fmt.Errorf("app: stop codex command %q: Codex did not say which thread runs it", command.Summary)
+	}
+	if !command.Addressable {
+		return false, fmt.Errorf("app: stop codex command %q: it runs inside the code review and ends with the review", command.Summary)
+	}
+	if command.ProcessID == "" {
+		return false, fmt.Errorf("app: stop codex command %q: Codex has not named its process yet", command.Summary)
+	}
+	session, err := a.codexCommandSession(fmt.Sprintf("stop codex command %q", command.Summary), threadID, command.Token)
+	if err != nil {
+		return false, err
+	}
+	if !a.triage.CodexCommandHoldsProcess(threadID, command) {
+		if _, live := a.triage.LiveCodexCommand(threadID, command.LaunchID); !live {
+			return false, nil
+		}
+		return false, fmt.Errorf("app: stop codex command %q: its process has exited and Codex gave process %s to another command; the row goes when Codex reports the end", command.Summary, command.ProcessID)
+	}
+	terminated, err := session.TerminateBackgroundTerminal(ctx, command.ScopeID, command.ProcessID)
+	switch {
+	case errors.Is(err, codex.ErrBackgroundTerminalThreadNotLoaded):
+		log.Printf("codex commands: thread %s: command %s's agent thread is gone, and the command with it", threadID, command.LaunchID)
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("app: stop codex command %q: %w", command.Summary, err)
+	case terminated:
+		return true, nil
+	default:
+		return false, fmt.Errorf("app: stop codex command %q: Codex did not stop it; the row goes when Codex reports the command ended", command.Summary)
+	}
 }
 
 // StopCodexSubagent interrupts the live child turn owned by launchID. The
@@ -114,7 +254,9 @@ func (a *App) StopCodexSubagent(threadID, launchID string) (bool, error) {
 	if a.shuttingDown.Load() {
 		return false, ErrShuttingDown
 	}
-	return a.codexAppService().StopSubagent(threadID, launchID)
+	ctx, cancel := context.WithTimeout(context.Background(), codexapp.BackgroundTerminalStopTimeout)
+	defer cancel()
+	return a.codexAppService().StopSubagent(ctx, threadID, launchID)
 }
 
 // GetCodexSkills returns the Codex skills visible from one workspace

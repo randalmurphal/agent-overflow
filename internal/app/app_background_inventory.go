@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 // The cross-thread view of what a host is currently running.
@@ -41,10 +42,11 @@ const (
 	// where stopId is the launch row's own id; the provider resolves it
 	// to the child threads it owns.
 	BackgroundWorkCodexSubagent = "codexSubagent"
-	// BackgroundWorkCodexTerminal — TerminateCodexBackgroundTerminal(
-	// threadId, stopId), where stopId is the PTY `process_id`. Empty
-	// until the wire names a process.
-	BackgroundWorkCodexTerminal = "codexTerminal"
+	// BackgroundWorkCodexCommand: StopCodexBackgroundCommand(threadId,
+	// stopId), where stopId is the command's item id. Empty while the
+	// command has no Stop: until the wire names its process, and for a
+	// command inside a code review, which ends with the review.
+	BackgroundWorkCodexCommand = "codexCommand"
 )
 
 // RunningBackgroundWork is one live background task, attributed to the
@@ -176,7 +178,7 @@ func (a *App) ListRunningBackgroundWork() (BackgroundWorkInventory, error) {
 //
 // Each task goes through the same per-task RPC a client would call for
 // that row (StopClaudeTask, StopCodexSubagent,
-// TerminateCodexBackgroundTerminal), so there is exactly one
+// StopCodexBackgroundCommand), so there is exactly one
 // termination path per provider and this method adds none. Failures are
 // joined rather than short-circuiting: a task that refuses to die must
 // not keep the rest alive.
@@ -233,8 +235,8 @@ func (a *App) stopBackgroundWorkItem(ctx context.Context, row RunningBackgroundW
 		return a.StopClaudeTask(row.ThreadID, row.StopID)
 	case BackgroundWorkCodexSubagent:
 		return a.StopCodexSubagent(row.ThreadID, row.StopID)
-	case BackgroundWorkCodexTerminal:
-		return a.TerminateCodexBackgroundTerminal(row.ThreadID, row.StopID)
+	case BackgroundWorkCodexCommand:
+		return a.StopCodexBackgroundCommand(row.ThreadID, row.StopID)
 	default:
 		return false, fmt.Errorf("unknown background work kind %q on thread %s", row.Kind, row.ThreadID)
 	}
@@ -326,9 +328,8 @@ const statusRunningBackgroundWork = "running"
 
 // backgroundWorkHandle resolves which stop RPC owns a row and the id it
 // takes. Keyed on the provider first because the two id namespaces are
-// not interchangeable — Claude stops by task id, Codex by process id or
-// launch id — which is the same branch every existing caller of those
-// RPCs has to make.
+// not interchangeable: Claude stops by task id, Codex by item id. That is
+// the same branch every existing caller of those RPCs has to make.
 func backgroundWorkHandle(providerName string, item store.Item) (kind, stopID string) {
 	if item.ToolName == remoteTrayToolName {
 		var meta struct {
@@ -347,7 +348,10 @@ func backgroundWorkHandle(providerName string, item store.Item) (kind, stopID st
 		if item.ToolName == codexSubagentToolName {
 			return BackgroundWorkCodexSubagent, item.ID
 		}
-		return BackgroundWorkCodexTerminal, itemMetaString(item.Meta, "process_id")
+		if triage.CodexCommandStopsByItem(item) {
+			return BackgroundWorkCodexCommand, item.ID
+		}
+		return BackgroundWorkCodexCommand, ""
 	default:
 		return BackgroundWorkClaudeTask, itemMetaString(item.Meta, "task_id")
 	}

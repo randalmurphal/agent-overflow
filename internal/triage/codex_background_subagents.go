@@ -293,11 +293,17 @@ func clearPendingCodexSpawnTrackersLocked(state *codexBackgroundState) bool {
 
 // observeCodexSubagentStatus updates live execution state and records each
 // terminal child turn as a new completion. The spawn row remains unchanged.
+// A notLoaded status says the process table its ProcessScope names ended
+// (way 2 of codexExecTrackers). An agent's turn ending does not: its
+// commands outlive it.
 func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 	parsed := decodeCodexSubagentSignalMeta(evt.Meta)
 	childID, status := strings.TrimSpace(parsed.AgentPath), strings.TrimSpace(parsed.Status)
 	if childID == "" || status == "" {
 		return nil
+	}
+	if status == "notLoaded" {
+		r.endCodexScope(evt)
 	}
 	launch, found, err := r.findPersistedCodexSpawnLaunchForStatus(evt.ThreadID, evt.ItemID, childID)
 	if err != nil || !found {

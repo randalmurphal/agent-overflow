@@ -322,18 +322,41 @@ thread loaded only keeps its writer lock and MCP children alive.
 
 `Session.Close` on Codex, in order:
 
-1. interrupt the thread's active turn and each live owned child's turn
-   (`turn/interrupt`), and settle its pending approvals with
-   `turnTransition` as `Close` does today;
-2. `thread/backgroundTerminals/clean`, which kills the thread's PTYs
+1. settle the thread's pending approvals with `turnTransition`, and
+   interrupt its active turn and each live owned child's turn
+   (`turn/interrupt`). Codex answers an interrupt once the turn has ended,
+   so the session then dispatches every frame Codex sent before the
+   answers and looks again: an agent those turns started is interrupted
+   in turn, until a look finds none, under one 3 s bound;
+2. `thread/backgroundTerminals/clean` for the root and every owned child
+   Codex has loaded, under one 3 s bound, which kills each thread's PTYs
    ([background terminals](../references/codex-wire.md#background-terminals));
-3. `thread/unsubscribe` for the root and every loaded child it owns;
+3. `thread/unsubscribe` for every such child and then the root;
 4. wait for `thread/closed` for each, bounded at 10 s;
-5. emit the session's own `disconnected`, deregister its routes, release
+5. look once more: an owned child loaded after step 1's last look was
+   neither cleaned nor unsubscribed, and is reported as not closed;
+6. emit the session's own `disconnected`, deregister its routes, release
    its registry count.
 
+Whether Codex has an owned child loaded is the session's residency
+record: a `notLoaded` status or a `thread/closed` of the child, or a
+"thread not found" answer to a request on it, marks it unloaded where the
+read loop read it, and any other status of it, or a `resume_agent` that
+names it, loads it again. The connection routes by the same record.
+
+While it ends, the session refuses a frame that would grow its frame
+queue past its bound (64 frames or 16 MiB) instead of holding the read
+loop, so the replies and `thread/closed` it waits for, which do not pass
+through that queue, still arrive. The count of refused frames is part of
+the error End Session returns.
+
 A `thread/closed` that does not arrive in time is an error returned to the
-caller and shown on the thread. The connection keeps the thread marked as
+caller. The thread shows an error row that names each thread Codex did not
+confirm closed (the session's own or an agent's) and the commands it was
+running when the session began to end, which may still be running; a
+command started during the close is not known, and the row says so. The
+session's end still drops their live state.
+The connection keeps the thread marked as
 loaded, and a later start of that thread first unloads it there (another
 process would be refused by the thread's writer lock): `thread/unsubscribe`
 again and wait for `thread/closed` on the old connection, then start on the

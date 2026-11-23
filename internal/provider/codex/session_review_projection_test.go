@@ -110,6 +110,61 @@ func TestReviewProjectionKeepsControlTurnPrivateAndScopesActivity(t *testing.T) 
 	}
 }
 
+// A review's commands come on the root thread's frames but run in the
+// review delegate's process table, which no background-terminal call
+// reaches: they carry the review run's scope, not the root thread's, and the
+// run's end reports that table ended, whether the review completed or was
+// interrupted.
+func TestReviewCommandsRunInTheReviewRunsTableAndEndWithIt(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"completed", "interrupted"} {
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			var events []provider.ProviderEvent
+			s := newReviewProjectionSession(&events)
+			s.handleReviewSpecialNotification("item/started", json.RawMessage(`{
+				"threadId":"codex-thread","turnId":"outer-turn",
+				"item":{"type":"enteredReviewMode","id":"enter-1","review":"Review"}
+			}`))
+			launchID := events[1].ItemID
+			command := func(turnID string) provider.ProviderEvent {
+				t.Helper()
+				scoped := ClassifyNotification("ao-thread", "item/started", json.RawMessage(`{
+					"threadId":"codex-thread","turnId":"`+turnID+`",
+					"item":{"type":"commandExecution","id":"cmd-`+turnID+`","source":"unifiedExecStartup","processId":"1001","command":"sleep 60","status":"inProgress"}
+				}`))
+				s.stampProcessScope(scoped, "codex-thread")
+				scoped = s.scopeReviewEvents(scoped)
+				if len(scoped) != 1 {
+					t.Fatalf("command events = %+v", scoped)
+				}
+				return scoped[0]
+			}
+			if got := command("outer-turn").ProcessScope; got != reviewProcessScope(launchID) || got.Addressable {
+				t.Fatalf("review command scope = %+v, want the review run's, not addressable", got)
+			}
+			if got := command("other-turn").ProcessScope; got != (provider.ProcessScope{ID: "codex-thread", Addressable: true}) {
+				t.Fatalf("root command scope = %+v, want the root thread's", got)
+			}
+
+			events = nil
+			s.handleReviewSpecialNotification("turn/completed", json.RawMessage(`{
+				"threadId":"codex-thread","turn":{"id":"outer-turn","status":"`+status+`","items":[]}
+			}`))
+			ended := -1
+			for i, event := range events {
+				if event.Kind == provider.EventSubagentStatus && event.ProcessScope == reviewProcessScope(launchID) &&
+					event.ParentToolUseID == launchID && string(event.Meta) == `{"agent_path":"`+reviewProcessScope(launchID).ID+`","status":"notLoaded"}` {
+					ended = i
+				}
+			}
+			if ended < 0 {
+				t.Fatalf("review end events = %+v, want the review run's table reported ended", events)
+			}
+		})
+	}
+}
+
 func TestReviewProjectionFlushesIntermediateProseAndPublishesOneSourcedResult(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent

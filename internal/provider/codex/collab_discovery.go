@@ -113,19 +113,9 @@ func (s *Session) recoverChildOwnership(ctx context.Context, childID string, see
 			if s.parentToolUseForProviderThread(childID) != "" {
 				return nil
 			}
-			if !s.registerHistoricalChildOwnership(parentID, childID, activity.AgentPath, activity.ItemID) {
-				return fmt.Errorf("conflicting recovered ownership for %s", childID)
-			}
-			s.rememberSubAgentActivityProfile(activity)
-			params, err := json.Marshal(map[string]any{"threadId": parentID, "turnId": entry.TurnID, "item": entry.Item})
-			if err != nil {
+			if err := s.publishRecoveredChildOwnership(parentID, childID, entry.TurnID, entry.Item, activity); err != nil {
 				return err
 			}
-			for _, event := range classifySubAgentActivityCompleted(s.threadID, params, time.Now()) {
-				event.ParentToolUseID = s.parentToolUseForProviderThread(parentID)
-				s.emitEvent(event)
-			}
-			s.drainDeferredChildWireEvents(childID)
 			s.mu.Lock()
 			generation := s.collabHistory.generation
 			s.mu.Unlock()
@@ -141,6 +131,30 @@ func (s *Session) recoverChildOwnership(ctx context.Context, childID string, see
 		cursor = result.NextCursor
 	}
 	return fmt.Errorf("original spawn for %s was not found within the ownership read limit", childID)
+}
+
+// publishRecoveredChildOwnership registers a recovered spawn's ownership and
+// emits its spawn row while it holds the session's dispatch token, so the
+// child's backlog, which the registration moves into the session's frame
+// queue, is dispatched after the row, as it is behind a live spawn row.
+func (s *Session) publishRecoveredChildOwnership(parentID, childID, turnID string, item map[string]json.RawMessage, activity subAgentActivity) error {
+	if !s.takeDispatch() {
+		return context.Canceled
+	}
+	defer s.endDispatch()
+	if !s.registerHistoricalChildOwnership(parentID, childID, activity.AgentPath, activity.ItemID) {
+		return fmt.Errorf("conflicting recovered ownership for %s", childID)
+	}
+	s.rememberSubAgentActivityProfile(activity)
+	params, err := json.Marshal(map[string]any{"threadId": parentID, "turnId": turnID, "item": item})
+	if err != nil {
+		return err
+	}
+	for _, event := range classifySubAgentActivityCompleted(s.threadID, params, time.Now()) {
+		event.ParentToolUseID = s.parentToolUseForProviderThread(parentID)
+		s.emitEvent(event)
+	}
+	return nil
 }
 
 // Discover descendants on resume even if AO never received their launch event.

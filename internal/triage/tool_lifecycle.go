@@ -327,7 +327,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 	// nested agent's membership) from the live list, and this row's push
 	// reaches only a connection watching the agent's scope, which the tray
 	// does not: the tray's own channel announces it.
-	if r.codexAgentIsLive(evt.ThreadID, strings.TrimSpace(persisted.ParentID)) {
+	if r.CodexAgentIsLive(evt.ThreadID, strings.TrimSpace(persisted.ParentID)) {
 		r.emitBackgroundTrayRefresh(evt.ThreadID)
 	}
 

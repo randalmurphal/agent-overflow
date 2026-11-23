@@ -414,11 +414,11 @@ func TestDeleteThread_CleansCodexBackgroundTerminals(t *testing.T) {
 	// runs, because once the session closes there's no JSON-RPC wire.
 	var order []string
 	var cleanCalls atomic.Int32
-	fakeSess := codex.NewCleanBackgroundTerminalsTestSession(func(ctx context.Context) error {
+	fakeSess := codex.NewBackgroundTerminalsTestSession(codex.BackgroundTerminalsTestWire{RootThreadID: "test-root", Clean: func(ctx context.Context, _ string) error {
 		cleanCalls.Add(1)
 		order = append(order, "clean")
 		return nil
-	})
+	}})
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
 		Token:    "delete-codex-clean-token",
@@ -466,10 +466,10 @@ func TestDeleteThread_ClaudeNoCleanCodexCall(t *testing.T) {
 	// Install a fake Codex clean session under the Claude thread id. If
 	// the delete path wrongly reached for it, this callback would fire.
 	var cleanCalls atomic.Int32
-	fakeSess := codex.NewCleanBackgroundTerminalsTestSession(func(ctx context.Context) error {
+	fakeSess := codex.NewBackgroundTerminalsTestSession(codex.BackgroundTerminalsTestWire{RootThreadID: "test-root", Clean: func(ctx context.Context, _ string) error {
 		cleanCalls.Add(1)
 		return nil
-	})
+	}})
 	// Place it as a Claude session (provider field is "claude", not
 	// "codex") so the activeCodexSession guard in delete correctly
 	// treats this as "not Codex-backed".
@@ -532,9 +532,9 @@ func TestDeleteThread_CodexCleanFailureDoesNotBlockDelete(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	fakeSess := codex.NewCleanBackgroundTerminalsTestSession(func(_ context.Context) error {
+	fakeSess := codex.NewBackgroundTerminalsTestSession(codex.BackgroundTerminalsTestWire{RootThreadID: "test-root", Clean: func(_ context.Context, _ string) error {
 		return errors.New("codex: clean: thread not found")
-	})
+	}})
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
 		Token:    "clean-fail-token",

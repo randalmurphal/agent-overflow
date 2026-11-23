@@ -117,7 +117,8 @@ func seedCodexUnifiedExecTracker(t *testing.T, app *App, threadID, itemID, proce
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind: provider.EventToolStart, ThreadID: threadID, ItemID: itemID,
 		ItemType: "commandExecution", TurnID: threadID + ":turn", Meta: startMeta,
-		Timestamp: time.Now(),
+		ProcessScope: provider.ProcessScope{ID: "codex-root-" + threadID, Addressable: true},
+		Timestamp:    time.Now(),
 	}); err != nil {
 		t.Fatalf("tool start: %v", err)
 	}
@@ -189,7 +190,7 @@ func TestListRunningBackgroundWorkUnionsAllThreeSources(t *testing.T) {
 	}{
 		{claudeThread.ID, BackgroundWorkClaudeTask, "task-claude"},
 		{subagentThread.ID, BackgroundWorkCodexSubagent, "spawn-codex"},
-		{execThread.ID, BackgroundWorkCodexTerminal, "pid-codex"},
+		{execThread.ID, BackgroundWorkCodexCommand, "cmd-codex"},
 	} {
 		got, found := byThread[want.threadID]
 		if !found {
@@ -377,8 +378,8 @@ func TestStopThreadBackgroundWorkRoutesThroughTheProviderStopRPC(t *testing.T) {
 
 // TestBackgroundWorkHandleSelectsTheProviderStopTarget pins the mapping
 // a remote client reads off each row. The two id namespaces are not
-// interchangeable — Claude stops by task id, Codex by launch id or PTY
-// process id — so the row has to name which one it is carrying.
+// interchangeable: Claude stops by task id, Codex by item id, so the row
+// has to name which one it is carrying.
 func TestBackgroundWorkHandleSelectsTheProviderStopTarget(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -410,17 +411,17 @@ func TestBackgroundWorkHandleSelectsTheProviderStopTarget(t *testing.T) {
 			wantStopID: "spawn-1",
 		},
 		{
-			name:       "codex terminal stops by process id",
+			name:       "codex command stops by item id",
 			provider:   string(provider.Codex),
-			item:       store.Item{ID: "cmd-1", ToolName: "command_execution", Meta: `{"process_id":"pid-1"}`},
-			wantKind:   BackgroundWorkCodexTerminal,
-			wantStopID: "pid-1",
+			item:       store.Item{ID: "cmd-1", ToolName: "command_execution", Meta: `{"process_id":"pid-1","stop_by_item":true}`},
+			wantKind:   BackgroundWorkCodexCommand,
+			wantStopID: "cmd-1",
 		},
 		{
-			name:       "unnamed process yields no stop handle",
+			name:       "a command with no Stop yields no stop handle",
 			provider:   string(provider.Codex),
 			item:       store.Item{ID: "cmd-2", ToolName: "command_execution", Meta: `{"source":"unifiedExecStartup"}`},
-			wantKind:   BackgroundWorkCodexTerminal,
+			wantKind:   BackgroundWorkCodexCommand,
 			wantStopID: "",
 		},
 		{

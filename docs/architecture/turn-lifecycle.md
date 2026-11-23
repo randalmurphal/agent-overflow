@@ -137,6 +137,54 @@ storing the input bytes. Existing historical wait rows remain readable.
 Codex messages end on their explicit item completion or turn termination;
 concurrent command starts and completions do not end those messages.
 
+The live command trackers belong to the provider process, not the thread
+(`processBound.codexExec`, `codex_background_exec.go`). They hold the root
+thread's commands and every agent's at any depth. Each tracker names the
+process table that holds its command (`provider.ProcessScope`, stamped by
+the adapter and never persisted): the Codex thread that ran it, or the
+code review run for a review's commands, which no background-terminal call
+reaches. Process ids are keyed by that table, because each Codex thread
+numbers its own. The tray lists an agent's command under its spawn launch,
+and every reader of live work counts it: the idle reaper, the account
+switch, rest, the background inventory and Stop All. The queue gate counts
+top-level commands only; `codex_background_live.go` states the rule and
+why. An agent's turn ending, erroring or being interrupted ends none of
+its commands. A command leaves the live work in one of three ways:
+
+- its typed `item/completed` arrives;
+- its table unloads: the thread's `notLoaded` status or `thread/closed`,
+  which Codex publishes when it shuts a thread down and kills its
+  processes, a "thread not found" answer to a request for the thread in
+  the session that runs it (the adapter reports either as the thread's
+  `notLoaded`, at the position in the stream where the read loop read
+  it), or the review run's end;
+- a replacement session starts, or the session ends.
+
+Nothing else ends a command, because Codex announces a command before it
+stores its process: a list omits that command as it omits one that has
+exited, and a terminate of it answers false. A Stop whose terminate
+answers false leaves the command live and says Codex did not stop it. A
+Stop goes to the session it read the command in, and is refused when
+another command now holds the command's process id. A V1 `close_agent`
+completion is a hint, not proof: Codex writes it with the agent's previous
+status whether or not the close shut the agent down, so it ends nothing
+here and the adapter asks the agent's thread whether Codex still has it
+loaded. A clean's kills arrive as `item/completed`.
+
+A revert repeats one pass until no agent is active and no command is
+live: it interrupts every active agent, handles every frame Codex sent
+before the answers and every provider event already read, cleans the
+root table on the first pass and each table that runs a command started
+since its last clean, and looks. A pass that finds work waits for the
+next change to it. A queue that stops being handled fails the revert,
+since what it holds is unknown; at its deadline the revert fails, naming
+the agents and commands still running, before anything is truncated.
+
+An agent's or a review's command whose `item/completed` or output arrives
+with no live tracker writes no row: its table unloaded or its session
+ended before Codex wrote it. Nothing is persisted while a command runs,
+so a restart starts with none.
+
 The retired `BackgroundClassifier` heuristic must not come back.
 Background authorization comes from the wire fields above; model
 text/thinking or turn completion is only the trigger that marks an
@@ -1241,7 +1289,7 @@ counterpart "retry succeeded" wire signal from either provider.
 | `MessageTimeline` (response divider) | Ordered timeline nodes | Separator rendered before assistant text directly below an activity run, in any turn. |
 | Launch row `backgrounded` indicator (`rowState.ts`) | `item.isBackground && item.status === 'running'` and `meta.live_background_active` not `false` | Three dots on the launch row until the launch settles, then the same box with the dots hidden (`settled`). |
 | `BackgroundTaskLiveTail` (open tray row) | `WatchBackgroundTaskOutput(threadId, launchId)`, then `provider:background_task_output` frames | Follows a running Claude command's `output_file` from the backend (`internal/tasktail`) while the row is open; released on collapse, ended by the tray delta that completes the launch. |
-| `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)`, then `provider:background_tray` deltas | Shows running launches and pending Codex unifiedExec commands; completed Codex commands leave the live tray when typed completion clears the transient tracker. |
+| `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)`, then `provider:background_tray` deltas | Shows running launches and pending Codex unifiedExec commands, an agent's under its spawn launch; a Codex command leaves the live tray when its typed completion arrives or it ends without one (§Codex background projection). |
 
 ## Anti-patterns (forbidden)
 

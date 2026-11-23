@@ -74,8 +74,12 @@ type Router struct {
 	// (SetQuietTurnClassifier), or is nil. Leaf lock.
 	quietTurnMu sync.Mutex
 	quietTurn   func(threadID string, turnIndex int) bool
-	tracer      trace.Tracer
-	metrics     TurnMetrics
+	// codexExecChanged holds, per thread, the channel that closes at the
+	// next change to its live Codex work (CodexExecChanged). Leaf lock.
+	codexExecChangedMu sync.Mutex
+	codexExecChanged   map[string]chan struct{}
+	tracer             trace.Tracer
+	metrics            TurnMetrics
 	// deferredPersistGate is a test-only hook (same-package tests set it
 	// directly) called inside the anchored echo section AFTER the pending
 	// entry is popped and BEFORE its row persists — the window

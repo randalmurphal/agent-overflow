@@ -121,7 +121,7 @@ func (a *App) callThreadAgentPeer(ctx context.Context, method, computerID, sourc
 	if err != nil {
 		return attachedbackends.PeerRead{}, fmt.Errorf("encode %s: %w", method, err)
 	}
-	tool, timeout := threadAgentPeerRows, threadAgentPeerListTimeout
+	tool, timeout := threadAgentPeerRows, a.threadAgentPeerListBound()
 	if method == "ThreadToolCall" {
 		tool, timeout = threadAgentPeerStop, threadAgentPeerStopTimeout
 	}
@@ -145,6 +145,15 @@ func (a *App) callThreadAgentPeer(ctx context.Context, method, computerID, sourc
 		return origin, fmt.Errorf("read %s from %s: %w", tool, computerID, err)
 	}
 	return origin, nil
+}
+
+// threadAgentPeerListBound is the bound on a forwarded listing:
+// threadAgentPeerListTimeout, or the test's threadAgentPeerListOverride.
+func (a *App) threadAgentPeerListBound() time.Duration {
+	if a.threadAgentPeerListOverride > 0 {
+		return a.threadAgentPeerListOverride
+	}
+	return threadAgentPeerListTimeout
 }
 
 // peerThreadAgentRows reads the Agents rows of the thread spawn made on a

@@ -7,6 +7,8 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -553,14 +555,177 @@ func TestDispatchLineCloseAgentKeepsOwnItemID(t *testing.T) {
 		collab: sessionCollabState{
 			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 		},
+		// The close asks whether Codex still has the thread; it does.
+		listBackgroundTerminalsFn: func(context.Context, string, string) (json.RawMessage, error) {
+			return json.RawMessage(`{"data":[],"nextCursor":null}`), nil
+		},
 	}
 
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"close-call-1","type":"collabAgentToolCall","tool":"closeAgent","receiverThreadIds":["child-provider-1"],"status":"completed"}}}`))
+	s.collabAsyncWG.Wait()
 
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
 	if events[0].ItemID != "close-call-1" {
 		t.Fatalf("ItemID: got %q, want %q", events[0].ItemID, "close-call-1")
+	}
+}
+
+// A child's route retires once a close item has named it and Codex has
+// reported its thread unloaded, in whichever order the two come: they come
+// from different listeners. The facts belong to one incarnation of the
+// thread: a later status means Codex loaded it again, and a resume_agent
+// reopens a closed child. A close item alone keeps the route, since Codex
+// writes it with the child's previous status when the close fails; for a
+// child not yet known unloaded, the close asks Codex whether it still has
+// the thread. A child no close named keeps its route through notLoaded,
+// because Codex loads an idle agent again when it is addressed. A resume of
+// a retired child opens its route again: Codex resumes the same thread.
+func TestAChildRouteRetiresWhenItIsClosedAndUnloadedInEitherOrder(t *testing.T) {
+	t.Parallel()
+	const (
+		closeItem  = `{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"close-call-1","type":"collabAgentToolCall","tool":"closeAgent","receiverThreadIds":["child-provider-1"],"status":"completed"}}}`
+		resumeItem = `{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"resume-call-1","type":"collabAgentToolCall","tool":"resumeAgent","receiverThreadIds":["child-provider-1"],"status":"completed"}}}`
+		unloaded   = `{"jsonrpc":"2.0","method":"thread/status/changed","params":{"threadId":"child-provider-1","status":{"type":"notLoaded"}}}`
+		loaded     = `{"jsonrpc":"2.0","method":"thread/status/changed","params":{"threadId":"child-provider-1","status":{"type":"idle"}}}`
+	)
+	for _, tc := range []struct {
+		name    string
+		frames  []string
+		retired bool
+		probes  int
+	}{
+		{name: "closed then unloaded", frames: []string{closeItem, unloaded}, retired: true, probes: 1},
+		{name: "unloaded then closed", frames: []string{unloaded, closeItem}, retired: true},
+		{name: "unloaded, closed, then resumed", frames: []string{unloaded, closeItem, resumeItem}},
+		{name: "unloaded, loaded again, then closed", frames: []string{unloaded, loaded, closeItem}, probes: 1},
+		{name: "closed, resumed, then unloaded", frames: []string{closeItem, resumeItem, unloaded}, probes: 1},
+		{name: "unloaded and never closed", frames: []string{unloaded}},
+		{name: "closed and never unloaded", frames: []string{closeItem}, probes: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var probes atomic.Int32
+			s := &Session{
+				threadID: "parent-thread",
+				pending:  make(map[int64]chan json.RawMessage),
+				onEvent:  func(provider.ProviderEvent) {},
+				collab: sessionCollabState{
+					childParentByThread:  map[string]string{"child-provider-1": "call-collab-1"},
+					childSpawnByThread:   map[string]string{"child-provider-1": "call-collab-1"},
+					childRuntimeByThread: map[string]childRuntimeState{},
+				},
+				// The closed thread is still loaded: the close failed.
+				listBackgroundTerminalsFn: func(_ context.Context, threadID, _ string) (json.RawMessage, error) {
+					if threadID != "child-provider-1" {
+						t.Errorf("probe asked about %s, want child-provider-1", threadID)
+					}
+					probes.Add(1)
+					return json.RawMessage(`{"data":[],"nextCursor":null}`), nil
+				},
+			}
+			s.setRootThreadID("provider-parent")
+			for _, frame := range tc.frames {
+				s.dispatchLine([]byte(frame))
+				// The close's question is answered before the next frame.
+				s.collabAsyncWG.Wait()
+			}
+			route := s.parentToolUseForProviderThread("child-provider-1")
+			if tc.retired && route != "" || !tc.retired && route != "call-collab-1" {
+				t.Fatalf("route = %q, want retired=%v", route, tc.retired)
+			}
+			if got := int(probes.Load()); got != tc.probes {
+				t.Fatalf("Codex was asked about the closed thread %d times, want %d", got, tc.probes)
+			}
+		})
+	}
+}
+
+// An agent whose route retired, closed and unloaded, and that its parent
+// then resumed, is the same Codex thread under the same spawn: its command,
+// whether Codex writes it before or after the resume item, reaches the
+// spawn's tray.
+func TestAResumedAgentGetsItsRouteBack(t *testing.T) {
+	t.Parallel()
+	const (
+		spawnItem  = `{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"id":"spawn-1","type":"collabAgentToolCall","tool":"spawnAgent","receiverThreadIds":["codex-child-thread"],"status":"completed"}}}`
+		unloaded   = `{"jsonrpc":"2.0","method":"thread/status/changed","params":{"threadId":"codex-child-thread","status":{"type":"notLoaded"}}}`
+		closeItem  = `{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"id":"close-1","type":"collabAgentToolCall","tool":"closeAgent","receiverThreadIds":["codex-child-thread"],"status":"completed"}}}`
+		resumeItem = `{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"id":"resume-1","type":"collabAgentToolCall","tool":"resumeAgent","receiverThreadIds":["codex-child-thread"],"status":"completed"}}}`
+	)
+	command := `{"jsonrpc":"2.0","method":"item/started","params":` + string(childCommandFrame("codex-child-thread", "cmd-2", "inProgress")) + `}`
+	for _, tc := range []struct {
+		name  string
+		after []string
+	}{
+		{name: "command after the resume item", after: []string{resumeItem, command}},
+		{name: "command before the resume item", after: []string{command, resumeItem}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var log eventLog
+			s := newMultiAgentV2RoutingSession(t, log.add)
+			for _, frame := range []string{spawnItem, unloaded, closeItem} {
+				s.dispatchLine([]byte(frame))
+			}
+			if route := s.parentToolUseForProviderThread("codex-child-thread"); route != "" {
+				t.Fatalf("route = %q after the close and the unload, want it retired", route)
+			}
+			for _, frame := range tc.after {
+				s.dispatchLine([]byte(frame))
+			}
+			var started *provider.ProviderEvent
+			for _, evt := range log.snapshot() {
+				if evt.Kind == provider.EventToolStart && evt.ItemID == "cmd-2" {
+					started = &evt
+				}
+			}
+			if started == nil || started.ParentToolUseID != "spawn-1" || started.ProcessScope.ID != "codex-child-thread" {
+				t.Fatalf("command start = %+v, want cmd-2 under spawn-1 in codex-child-thread's table", started)
+			}
+		})
+	}
+}
+
+// A close that shut the child down is answered "thread not found" by the
+// probe the close sends. That answer is the child's unload: it is reported
+// as the child's notLoaded, which ends its commands, and the route retires.
+func TestACloseThatShutTheChildDownRetiresItsRoute(t *testing.T) {
+	t.Parallel()
+	var (
+		mu     sync.Mutex
+		events []provider.ProviderEvent
+	)
+	s := &Session{
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
+		onEvent: func(evt provider.ProviderEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread:  map[string]string{"child-provider-1": "call-collab-1"},
+			childRuntimeByThread: map[string]childRuntimeState{},
+		},
+		listBackgroundTerminalsFn: func(_ context.Context, threadID, _ string) (json.RawMessage, error) {
+			return nil, &RPCError{Code: -32600, Message: "thread not found: " + threadID}
+		},
+	}
+	s.setRootThreadID("provider-parent")
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"close-call-1","type":"collabAgentToolCall","tool":"closeAgent","receiverThreadIds":["child-provider-1"],"status":"completed"}}}`))
+	s.collabAsyncWG.Wait()
+	if got := s.parentToolUseForProviderThread("child-provider-1"); got != "" {
+		t.Fatalf("closed child still routes to %q after Codex said its thread is gone", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 2 || events[0].ItemID != "close-call-1" {
+		t.Fatalf("events = %+v, want the close's row, then the child's unload", events)
+	}
+	if unload := events[1]; unload.Kind != provider.EventSubagentStatus || unload.ItemID != "call-collab-1" ||
+		unload.ProcessScope.ID != "child-provider-1" || !strings.Contains(string(unload.Meta), `"notLoaded"`) {
+		t.Fatalf("second event = %+v, want child-provider-1's notLoaded on call-collab-1", unload)
 	}
 }

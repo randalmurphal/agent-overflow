@@ -243,6 +243,7 @@ export const SendPlanRevisionComments = dispatch('SendPlanRevisionComments');
 // Background tasks (per-item + thread-wide stop primitives)
 export const StopClaudeTask = dispatch('StopClaudeTask');
 export const TerminateCodexBackgroundTerminal = dispatch('TerminateCodexBackgroundTerminal');
+export const StopCodexBackgroundCommand = dispatch('StopCodexBackgroundCommand');
 export const StopCodexSubagent = dispatch('StopCodexSubagent');
 export const CleanCodexBackgroundTerminals = dispatch('CleanCodexBackgroundTerminals');
 export const StopBackgroundTasks = dispatch('StopBackgroundTasks');

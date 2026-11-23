@@ -86,6 +86,11 @@ type processBound struct {
 	// provider bounds the list. See session_wakeup.go.
 	scheduledJobs []provider.ScheduledJob
 
+	// codexExec is the Codex unified-exec commands this process runs, the
+	// root thread's and its agents' alike (codex_background_exec.go). Their
+	// PTYs belong to the app-server and end with it.
+	codexExec codexExecTrackers
+
 	// subagentProgress is the latest live progress tick per launch
 	// tool_use, keyed by itemID. Live UI state only; the terminal path
 	// consumes it into the launch row's meta, and a dead process never

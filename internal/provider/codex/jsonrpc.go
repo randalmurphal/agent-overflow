@@ -31,14 +31,28 @@ func (s *Session) sendRequest(ctx context.Context, method string, params any) (j
 // startRequest separates ordered pipe writes from response waits. The caller
 // must invoke the returned function exactly once to settle the pending request.
 func (s *Session) startRequest(method string, params any) (func(context.Context) (json.RawMessage, error), error) {
+	return s.startRequestObserved(method, params, nil)
+}
+
+// startRequestObserved is startRequest with an observer of the answer: the
+// read loop applies observe to the answer's line before the waiter gets it
+// and before it reads the next line, so what the answer says lands at its
+// place in the stream. observe must not wait on the read loop.
+func (s *Session) startRequestObserved(method string, params any, observe func(json.RawMessage)) (func(context.Context) (json.RawMessage, error), error) {
 	if s.conn != nil {
-		return s.conn.startRequestWithTimeout(method, params, s.requestTimeoutOverride)
+		return s.conn.startRequestWithTimeout(method, params, s.requestTimeoutOverride, observe)
 	}
 	id := s.nextID.Add(1)
 
 	ch := make(chan json.RawMessage, 1)
 	s.mu.Lock()
 	s.pending[id] = ch
+	if observe != nil {
+		if s.replyObservers == nil {
+			s.replyObservers = make(map[int64]func(json.RawMessage))
+		}
+		s.replyObservers[id] = observe
+	}
 	s.mu.Unlock()
 
 	// abandon removes the pending entry under the lock and drains the
@@ -51,6 +65,7 @@ func (s *Session) startRequest(method string, params any) (func(context.Context)
 	abandon := func() {
 		s.mu.Lock()
 		delete(s.pending, id)
+		delete(s.replyObservers, id)
 		s.mu.Unlock()
 		select {
 		case <-ch:
@@ -89,37 +104,44 @@ func (s *Session) startRequest(method string, params any) (func(context.Context)
 			// the single source of truth.
 			s.mu.Lock()
 			delete(s.pending, id)
+			delete(s.replyObservers, id)
 			s.mu.Unlock()
 			if !ok {
 				return nil, fmt.Errorf("codex: %s: session stopped before request completed", method)
 			}
-			var rpcResp struct {
-				Error *struct {
-					Code    int             `json:"code"`
-					Message string          `json:"message"`
-					Data    json.RawMessage `json:"data,omitempty"`
-				} `json:"error,omitempty"`
-				Result json.RawMessage `json:"result,omitempty"`
-			}
-			if err := json.Unmarshal(resp, &rpcResp); err == nil {
-				if rpcResp.Error != nil {
-					return nil, &RPCError{
-						Method:  method,
-						Code:    rpcResp.Error.Code,
-						Message: rpcResp.Error.Message,
-						Data:    rpcResp.Error.Data,
-					}
-				}
-				if len(rpcResp.Result) > 0 {
-					return rpcResp.Result, nil
-				}
-			}
-			return resp, nil
+			return decodeRPCReply(method, resp)
 		case <-time.After(s.requestTimeout()):
 			abandon()
 			return nil, &RequestTimeoutError{Method: method}
 		}
 	}, nil
+}
+
+// decodeRPCReply reads a JSON-RPC answer to method: its result, or its
+// error as an RPCError. An answer that decodes as neither is returned whole.
+func decodeRPCReply(method string, resp json.RawMessage) (json.RawMessage, error) {
+	var rpcResp struct {
+		Error *struct {
+			Code    int             `json:"code"`
+			Message string          `json:"message"`
+			Data    json.RawMessage `json:"data,omitempty"`
+		} `json:"error,omitempty"`
+		Result json.RawMessage `json:"result,omitempty"`
+	}
+	if err := json.Unmarshal(resp, &rpcResp); err == nil {
+		if rpcResp.Error != nil {
+			return nil, &RPCError{
+				Method:  method,
+				Code:    rpcResp.Error.Code,
+				Message: rpcResp.Error.Message,
+				Data:    rpcResp.Error.Data,
+			}
+		}
+		if len(rpcResp.Result) > 0 {
+			return rpcResp.Result, nil
+		}
+	}
+	return resp, nil
 }
 
 // RPCError is a JSON-RPC error response from the Codex app-server, kept
@@ -491,6 +513,7 @@ func (s *Session) readLoop() {
 			close(ch)
 			delete(s.pending, id)
 		}
+		s.replyObservers = nil
 		s.mu.Unlock()
 
 		// If the app-server exits while an approval or user-input request is
@@ -554,7 +577,12 @@ func (s *Session) dispatchLine(line []byte) {
 		}
 		s.mu.Lock()
 		ch, ok := s.pending[id]
+		observe := s.replyObservers[id]
+		delete(s.replyObservers, id)
 		s.mu.Unlock()
+		if observe != nil {
+			observe(line)
+		}
 		if ok {
 			// Non-blocking send: if the request already timed out and the channel
 			// was removed or is full, drop the response silently.

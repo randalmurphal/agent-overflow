@@ -43,6 +43,7 @@ type childWireRoute uint8
 const (
 	childWireRoutable childWireRoute = iota
 	childWireUnrelated
+	// childWireDeferred: quarantined until the child's ownership arrives.
 	childWireDeferred
 	childWireOverflow
 )
@@ -159,7 +160,6 @@ func (s *Session) routeChildWireEvent(providerThreadID string, event deferredChi
 		return childWireOverflow
 	}
 	event.Method = strings.TrimSpace(event.Method)
-	eventBytes := event.sizeBytes()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -169,6 +169,54 @@ func (s *Session) routeChildWireEvent(providerThreadID string, event deferredChi
 	if _, unrelated := s.childRouting.unrelatedThreads[providerThreadID]; unrelated {
 		return childWireUnrelated
 	}
+	if !s.queueChildWireEventLocked(providerThreadID, event) {
+		return childWireOverflow
+	}
+	s.armChildOwnershipDeadlineLocked(providerThreadID)
+	return childWireDeferred
+}
+
+// armChildOwnershipDeadlineLocked starts the deadline by which an unowned
+// child's quarantined frames must find their spawn, unless one runs.
+// Caller holds mu.
+func (s *Session) armChildOwnershipDeadlineLocked(providerThreadID string) {
+	if s.childRouting.deferredChildDeadlines == nil {
+		s.childRouting.deferredChildDeadlines = make(map[string]*time.Timer)
+	}
+	if s.childRouting.deferredChildDeadlines[providerThreadID] != nil {
+		return
+	}
+	threadID := providerThreadID
+	s.childRouting.deferredChildDeadlines[providerThreadID] = time.AfterFunc(deferredChildOwnershipTimeout, func() {
+		// The expiry writes a JSON-RPC rejection and can emit a routing
+		// warning, so it has to be over before Close returns, and
+		// Close's own timer.Stop() cannot promise that: Stop does not
+		// wait for a callback already running, and it only runs after
+		// the drains it would be racing. Registering the work with
+		// collabAsyncWG (which Close waits on, having already latched
+		// collabAsyncClosing) is what closes both halves: a timer that
+		// fires after the latch is refused outright, and one that beat
+		// it is joined.
+		s.startCollabAsync(func() {
+			s.expireDeferredChildWireEvents(threadID)
+		})
+	})
+}
+
+// stopChildOwnershipDeadlineLocked ends the ownership deadline of a child
+// whose spawn arrived. Caller holds mu.
+func (s *Session) stopChildOwnershipDeadlineLocked(providerThreadID string) {
+	if timer := s.childRouting.deferredChildDeadlines[providerThreadID]; timer != nil {
+		timer.Stop()
+		delete(s.childRouting.deferredChildDeadlines, providerThreadID)
+	}
+}
+
+// queueChildWireEventLocked appends event to the child's queue within the
+// quarantine bounds, and reports false when it does not fit. Caller holds
+// mu.
+func (s *Session) queueChildWireEventLocked(providerThreadID string, event deferredChildWireEvent) bool {
+	eventBytes := event.sizeBytes()
 	if s.childRouting.deferredChildWireEvents == nil {
 		s.childRouting.deferredChildWireEvents = make(map[string][]deferredChildWireEvent)
 	}
@@ -177,57 +225,34 @@ func (s *Session) routeChildWireEvent(providerThreadID string, event deferredChi
 		s.childRouting.deferredChildWireCount >= maxDeferredChildEventsTotal ||
 		eventBytes > maxDeferredChildEventBytes ||
 		s.childRouting.deferredChildWireBytes > maxDeferredChildEventBytes-eventBytes {
-		return childWireOverflow
+		return false
 	}
 	event.Params = append(json.RawMessage(nil), event.Params...)
 	event.RawLine = append(json.RawMessage(nil), event.RawLine...)
 	s.childRouting.deferredChildWireEvents[providerThreadID] = append(queuedForThread, event)
 	s.childRouting.deferredChildWireCount++
 	s.childRouting.deferredChildWireBytes += eventBytes
-	if s.childRouting.deferredChildDeadlines == nil {
-		s.childRouting.deferredChildDeadlines = make(map[string]*time.Timer)
-	}
-	if s.childRouting.deferredChildDeadlines[providerThreadID] == nil {
-		threadID := providerThreadID
-		s.childRouting.deferredChildDeadlines[providerThreadID] = time.AfterFunc(deferredChildOwnershipTimeout, func() {
-			// The expiry writes a JSON-RPC rejection and can emit a routing
-			// warning, so it has to be OVER before Close returns — and
-			// Close's own timer.Stop() cannot promise that: Stop does not
-			// wait for a callback already running, and it only runs after
-			// the drains it would be racing. Registering the work with
-			// collabAsyncWG (which Close waits on, having already latched
-			// collabAsyncClosing) is what closes both halves: a timer that
-			// fires after the latch is refused outright, and one that beat
-			// it is joined.
-			s.startCollabAsync(func() {
-				s.expireDeferredChildWireEvents(threadID)
-			})
-		})
-	}
-	return childWireDeferred
+	return true
 }
 
-func (s *Session) takeDeferredChildWireEvents(providerThreadID string) []deferredChildWireEvent {
-	return s.takeDeferredChildWireEventsUnlessClosing(providerThreadID, false)
-}
-
-// takeDeferredChildWireEventsUnlessClosing removes and returns one child
-// thread's quarantined queue, cancelling its deadline timer.
+// takeExpiredChildWireEvents removes and returns the quarantined queue of a
+// child whose ownership deadline passed, cancelling the deadline timer. An
+// owned child has nothing here: its route's publication took its queue.
 //
-// stopIfClosing is for the EXPIRY path, and it must be answered under mu
-// rather than by the caller afterwards: taking the queue and then noticing
-// the session is closing drops the events either way, but it does so having
-// already committed to a rejection the caller then never writes. Under mu the
-// two are one decision — Close's own drain sees an untouched queue and logs
-// it as unresolved ownership, which is what it is.
-func (s *Session) takeDeferredChildWireEventsUnlessClosing(providerThreadID string, stopIfClosing bool) []deferredChildWireEvent {
+// The closing refusal must be answered under mu rather than by the caller
+// afterwards: taking the queue and then noticing the session is closing drops
+// the events either way, but it does so having already committed to a
+// rejection the caller then never writes. Under mu the two are one decision:
+// Close's own drain sees an untouched queue and logs it as unresolved
+// ownership, which is what it is.
+func (s *Session) takeExpiredChildWireEvents(providerThreadID string) []deferredChildWireEvent {
 	providerThreadID = strings.TrimSpace(providerThreadID)
 	if providerThreadID == "" {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if stopIfClosing && s.closing.Load() {
+	if s.closing.Load() {
 		return nil
 	}
 	return s.takeDeferredChildWireEventsLocked(providerThreadID)
@@ -242,14 +267,18 @@ func (s *Session) takeDeferredChildWireEventsLocked(providerThreadID string) []d
 	}
 	delete(s.childRouting.deferredChildWireEvents, providerThreadID)
 	delete(s.childRouting.recoveryPending, providerThreadID)
-	if timer := s.childRouting.deferredChildDeadlines[providerThreadID]; timer != nil {
-		timer.Stop()
-		delete(s.childRouting.deferredChildDeadlines, providerThreadID)
-	}
+	s.stopChildOwnershipDeadlineLocked(providerThreadID)
 	for _, event := range events {
-		s.childRouting.deferredChildWireBytes -= event.sizeBytes()
+		s.forgetDeferredChildWireEventLocked(event)
 	}
-	s.childRouting.deferredChildWireCount -= len(events)
+	return events
+}
+
+// forgetDeferredChildWireEventLocked takes a frame that left a queue out of
+// the quarantine bounds. Caller holds mu.
+func (s *Session) forgetDeferredChildWireEventLocked(event deferredChildWireEvent) {
+	s.childRouting.deferredChildWireBytes -= event.sizeBytes()
+	s.childRouting.deferredChildWireCount--
 	if s.childRouting.deferredChildWireCount < 0 {
 		log.Printf("codex: deferred child routing event count underflow; resetting")
 		s.childRouting.deferredChildWireCount = 0
@@ -260,11 +289,10 @@ func (s *Session) takeDeferredChildWireEventsLocked(providerThreadID string) []d
 		log.Printf("codex: deferred child routing byte count underflow; resetting")
 		s.childRouting.deferredChildWireBytes = 0
 	}
-	return events
 }
 
 func (s *Session) expireDeferredChildWireEvents(providerThreadID string) {
-	events := s.takeDeferredChildWireEventsUnlessClosing(providerThreadID, true)
+	events := s.takeExpiredChildWireEvents(providerThreadID)
 	if len(events) == 0 {
 		return
 	}
@@ -285,24 +313,20 @@ func (s *Session) expireDeferredChildWireEvents(providerThreadID string) {
 	s.warnChildRoutingOverflow(providerThreadID, "ownership timeout", nil)
 }
 
-func (s *Session) drainDeferredChildWireEvents(providerThreadIDs ...string) {
-	for _, providerThreadID := range providerThreadIDs {
-		var needsFlush bool
-		if s.conn != nil {
-			if s.conn.registerChildRoute(providerThreadID, s) {
-				needsFlush = true
-			}
-		}
-		// Enqueue session-quarantined child frames through enqueueEarlyFrames
-		// (never through enqueueFrameIfPending's backpressure wait) so a
-		// re-entrant drain inside flushEarlyFrames can never wait on itself.
-		if events := s.takeDeferredChildWireEvents(providerThreadID); len(events) > 0 {
-			s.enqueueEarlyFrames(events)
-			needsFlush = true
-		}
-		if needsFlush {
-			s.flushEarlyFrames()
-		}
+// publishChildRouteLocked opens a new child route in the step that registers
+// it. The frames the session quarantined for the child, then the ones the
+// connection held, move into the session's frame queue in wire order, and the
+// connection routes the child's later frames to this session, behind them in
+// that queue. So no frame of an owned child waits on an ownership deadline,
+// and none overtakes the child's backlog. The publisher holds the session's
+// dispatch token, so the queue is delivered when it lets the token go, after
+// its own rows, a spawn row among them, have reached triage (endDispatch).
+// Caller holds mu; the connection's route lock and the queue's lock are
+// leaves after it.
+func (s *Session) publishChildRouteLocked(childThreadID string) {
+	s.enqueueEarlyFrames(s.takeDeferredChildWireEventsLocked(childThreadID))
+	if s.conn != nil {
+		s.conn.registerChildRoute(childThreadID, s)
 	}
 }
 
@@ -356,15 +380,12 @@ func (s *Session) dispatchServerRequest(method string, id *json.Number, params j
 	if id != nil {
 		reqID = id.String()
 	}
-	if s.enqueueFrameIfPending(deferredChildWireEvent{
+	s.dispatchFrame(deferredChildWireEvent{
 		Method:    method,
 		RequestID: reqID,
 		Params:    params,
 		RawLine:   line,
-	}) {
-		return
-	}
-	s.dispatchServerRequestDirect(method, id, params, line)
+	})
 }
 
 func (s *Session) dispatchServerRequestDirect(method string, id *json.Number, params json.RawMessage, line []byte) {

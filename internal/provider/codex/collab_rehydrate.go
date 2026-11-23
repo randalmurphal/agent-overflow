@@ -46,7 +46,16 @@ func (s *Session) rehydrateCollabOwnership(launches []ResumeCollabLaunch) {
 	s.mu.Lock()
 	generation := s.collabHistory.generation
 	s.mu.Unlock()
-	mapped := make([]string, 0, len(ownerships))
+	// Persisted spawn rows already exist on a reopen. The registrations run
+	// under the session's dispatch token, so every frame waits until each
+	// ownership edge in this resume set is registered, and endDispatch
+	// returns once the backlogs are delivered: each child's state is read
+	// after its backlog, so a status recovered from the read follows the
+	// frames that came before it.
+	if !s.takeDispatch() {
+		return
+	}
+	registered := make([]collabHistoryOwnership, 0, len(ownerships))
 	for _, ownership := range ownerships {
 		if !s.registerHistoricalChildOwnership("", ownership.ChildThreadID, ownership.AgentPath, ownership.ParentItemID) {
 			continue
@@ -60,12 +69,12 @@ func (s *Session) rehydrateCollabOwnership(launches []ResumeCollabLaunch) {
 			})
 		}
 		s.scheduleCollabMetadataRead(ownership.ChildThreadID, ownership.ParentItemID, ownership.LaunchMeta)
-		mapped = append(mapped, ownership.ChildThreadID)
+		registered = append(registered, ownership)
+	}
+	s.endDispatch()
+	for _, ownership := range registered {
 		s.enqueueCollabHistoryJob(collabHistoryJob{Ownership: ownership, Generation: generation})
 	}
-	// Persisted spawn rows already exist on a reopen. Drain only after every
-	// ownership edge in this resume set has been registered.
-	s.drainDeferredChildWireEvents(mapped...)
 }
 
 func collabResumeOwnerships(launches []ResumeCollabLaunch) ([]collabHistoryOwnership, error) {
@@ -227,6 +236,12 @@ func (s *Session) reconcileCollabHistoryTerminal(job collabHistoryJob, snapshot 
 	if responseThreadID == "" || responseThreadID != providerThreadID {
 		return "", fmt.Errorf("child recovery snapshot thread mismatch: got %q, want %q", responseThreadID, providerThreadID)
 	}
+	if snapshot.Status == "notLoaded" {
+		// The thread is gone, and its processes with it. That is a fact of
+		// its own, apart from the outcome of its last turn reported below,
+		// and it is reported after that outcome, as a live session sees it.
+		defer s.emitRecoveredChildUnload(providerThreadID, parentToolUseID, snapshot.LatestTurnID, expectedLifecycleRevision)
+	}
 	var status string
 	switch snapshot.Status {
 	case "active":
@@ -264,6 +279,16 @@ func (s *Session) reconcileCollabHistoryTerminal(job collabHistoryJob, snapshot 
 	}
 	s.emitRecoveredChildStatus(providerThreadID, expectedLifecycleRevision, *event)
 	return snapshot.Status, nil
+}
+
+func (s *Session) emitRecoveredChildUnload(providerThreadID, parentToolUseID, turnID string, expectedLifecycleRevision uint64) {
+	event := s.childStatusEvent(providerThreadID, parentToolUseID, "notLoaded")
+	if event == nil {
+		return
+	}
+	event.TurnID = turnID
+	event.Meta = mergeMetaKeys(event.Meta, map[string]any{"recovered": true})
+	s.emitRecoveredChildStatus(providerThreadID, expectedLifecycleRevision, *event)
 }
 
 func (s *Session) readCollabHistoryWithRetry(providerThreadID string) (collabThreadSnapshot, error) {
