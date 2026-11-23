@@ -105,35 +105,62 @@ describe('computer pairing window', () => {
     expect(close).toHaveBeenCalledExactlyOnceWith(WINDOW.id);
   });
 
-  // The host orders the close after an approval already writing, and
-  // closing an approved pairing keeps the device's access.
-  it('closes its window when dismissed while an approval is outstanding', async () => {
+  // The approval and the close are separate calls the host may run in
+  // either order, so the close is sent only once the approval has settled.
+  it('closes its window only after an approval sent before dismissal has succeeded', async () => {
     setBindingMock('ComputerPairingStatus', async () => READY);
+    const order: string[] = [];
     let resolve!: () => void;
-    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((done) => { resolve = done; }));
-    const close = setBindingMock('CloseComputerPairing', async () => {});
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((done) => { resolve = () => { order.push('approved'); done(); }; }));
+    const close = setBindingMock('CloseComputerPairing', async () => { order.push('close'); });
     const view = show();
     await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
     await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
     view.unmount();
-    expect(close).toHaveBeenCalledExactlyOnceWith(WINDOW.id);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(close).not.toHaveBeenCalled();
     resolve();
-    await tick();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledExactlyOnceWith(WINDOW.id));
+    expect(order).toEqual(['approved', 'close']);
     expect(getToasts()).toHaveLength(0);
   });
 
-  it('reports an approval that fails after its dialog was dismissed', async () => {
+  it('reports an approval that fails after its dialog was dismissed, then closes its window', async () => {
     setBindingMock('ComputerPairingStatus', async () => READY);
+    const order: string[] = [];
     let reject!: (err: Error) => void;
-    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((_, fail) => { reject = fail; }));
-    const close = setBindingMock('CloseComputerPairing', async () => {});
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((_, fail) => { reject = (err) => { order.push('refused'); fail(err); }; }));
+    const close = setBindingMock('CloseComputerPairing', async () => { order.push('close'); });
     const view = show();
     await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
     await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
     view.unmount();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(close).not.toHaveBeenCalled();
     reject(new Error('the pairing was closed'));
     await vi.waitFor(() => expect(getToasts().map((toast) => toast.message)).toContain('Could not allow this computer: the pairing was closed'));
-    expect(close).toHaveBeenCalledExactlyOnceWith(WINDOW.id);
+    await vi.waitFor(() => expect(close).toHaveBeenCalledExactlyOnceWith(WINDOW.id));
+    expect(order).toEqual(['refused', 'close']);
+  });
+
+  // The window can pass its deadline while an approval admitted before it is
+  // still writing. That approval decides this window; no replacement opens
+  // until it has.
+  it('offers no Try again while an approval is outstanding, and shows that approval\'s result', async () => {
+    const open = setBindingMock('OpenComputerPairing', async () => ({ ...WINDOW, expiresAtMs: Date.now() + 3_000 }));
+    setBindingMock('ComputerPairingStatus', async () => READY);
+    let resolve!: () => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((done) => { resolve = done; }));
+    const view = show();
+    await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(view.getByText('Pairing expired.')).toBeTruthy();
+    expect(view.getByRole('button', { name: 'Try again' })).toBeDisabled();
+    await fireEvent.click(view.getByRole('button', { name: 'Try again' }));
+    expect(open).toHaveBeenCalledTimes(1);
+    resolve();
+    await vi.waitFor(() => expect(view.getByText('Computer paired')).toBeTruthy());
   });
 
   it('reopens a window in place, with the same network choice, after the first one expires', async () => {

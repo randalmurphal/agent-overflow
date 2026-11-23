@@ -26,6 +26,10 @@
   let status = $state<Awaited<ReturnType<typeof ComputerPairingStatus>> | null>(null);
   let error = $state('');
   let deciding = $state(false);
+  // The outstanding approval, settled whether it succeeds or fails. A
+  // dismissal waits for it before closing the window, so the close never
+  // overtakes an approval the person already sent.
+  let decision: Promise<void> | null = null;
   let confirmed = $state(false);
   let expired = $state(false);
   let disposed = false;
@@ -90,18 +94,25 @@
     return () => {
       disposed = true;
       clearTimeout(timer);
-      // Dismissal always closes the window. The host orders the close after
-      // an approval already writing, and closing an approved pairing keeps
-      // the device's access.
-      if (window) void closeWindow(window.id);
+      // Dismissal always closes the window, after any approval already sent
+      // has settled: the two calls may reach the host in either order, and
+      // closing an approved pairing keeps the device's access.
+      if (window) {
+        const id = window.id;
+        void (decision ?? Promise.resolve()).then(() => closeWindow(id));
+      }
     };
   });
 
-  async function confirm(): Promise<void> {
+  function confirm(): void {
     if (status?.state !== 'ready' || !status.linkId || !status.verificationNumber || deciding) return;
     const linkId = status.linkId;
     deciding = true;
     error = '';
+    decision = decide(linkId);
+  }
+
+  async function decide(linkId: string): Promise<void> {
     try {
       await call(() => ConfirmDevicePairing(linkId));
       if (disposed) return;
@@ -115,6 +126,7 @@
       else error = message;
     } finally {
       deciding = false;
+      decision = null;
     }
   }
 </script>
@@ -127,7 +139,8 @@
     <p class="text-sm text-fg-muted">Pairing expired.</p>
     <div class="flex flex-wrap justify-end gap-2">
       <Button onclick={onClose}>Close</Button>
-      <Button variant="primary" onclick={() => void start()}>Try again</Button>
+      <!-- A new window waits for the decision made in this one. -->
+      <Button variant="primary" disabled={deciding} onclick={() => void start()}>Try again</Button>
     </div>
   {:else}
     {#if status?.verificationNumber}
@@ -139,7 +152,7 @@
       {#if status.state !== 'ready'}<p class="text-xs text-fg-muted" role="status">Finishing the connection…</p>{/if}
       <div class="flex flex-wrap justify-end gap-2">
         <Button variant="danger-outline" disabled={deciding} onclick={onClose}>It doesn’t match</Button>
-        <Button variant="primary" disabled={deciding || status?.state !== 'ready'} onclick={() => void confirm()}>It matches — allow</Button>
+        <Button variant="primary" disabled={deciding || status?.state !== 'ready'} onclick={confirm}>It matches — allow</Button>
       </div>
     {:else}
       <p class="text-sm leading-relaxed text-fg-muted">On the other computer, open <span class="text-fg">Remote access → Connect to a computer</span> and choose <span class="font-medium text-fg">{name}</span>.</p>
