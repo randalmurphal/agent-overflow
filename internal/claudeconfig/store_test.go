@@ -1,14 +1,18 @@
 package claudeconfig
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 // Each test uses a fresh t.TempDir() file so the package never reads
@@ -350,31 +354,50 @@ func TestModifyRetriesOverAWriteMadeSinceItsRead(t *testing.T) {
 	}
 }
 
-// A write whose directory sync failed after the rename is in place: the
-// store reports the mutation done, so its caller goes on to reconcile the
-// live session, and the sync failure is logged. A directory that allows
-// the rename and not the open for the sync (write and search, no read)
-// shows it.
+// A write that committed with its directory sync failed is done: modify
+// succeeds with the mutation in place and logs the sync's failure.
 func TestModifyTreatsAWriteWhoseDirectorySyncFailedAsDone(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the directory sync is a no-op on Windows")
-	}
 	store := newStoreWithFile(t, `{"mcpServers": {}}`)
-	dir := filepath.Dir(store.path)
-	if err := os.Chmod(dir, 0o300); err != nil {
-		t.Fatal(err)
+	failure := errors.New("injected sync failure")
+	writeIfUnchanged = func(path string, data []byte, before os.FileInfo) (bool, error) {
+		committed, err := atomicfile.WriteIfUnchanged(path, data, before)
+		if !committed || err != nil {
+			t.Errorf("the real write = %v, %v", committed, err)
+		}
+		return true, failure
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	t.Cleanup(func() { writeIfUnchanged = atomicfile.WriteIfUnchanged })
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
 	if err := store.modify(func(root *orderedJSON) error {
 		root.set("mine", true)
 		return nil
 	}); err != nil {
 		t.Fatalf("modify = %v, want the committed write reported done", err)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	if raw, _ := os.ReadFile(store.path); !strings.Contains(string(raw), `"mine": true`) {
 		t.Fatalf("file = %s, want the mutation written", raw)
+	}
+	if !strings.Contains(logged.String(), "claudeconfig: injected sync failure") {
+		t.Fatalf("logged %q, want the sync's failure", logged.String())
+	}
+}
+
+// A config that is a symbolic link to a missing file is not a concurrent
+// write: the error names the link and what to do.
+func TestModifyNamesAConfigLinkedToAMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	path, target := filepath.Join(dir, ".claude.json"), filepath.Join(dir, "dotfiles", ".claude.json")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skip(err)
+	}
+	err := New(path).modify(func(root *orderedJSON) error {
+		root.set("mine", true)
+		return nil
+	})
+	if err == nil || errors.Is(err, ErrConcurrentWrite) || !strings.Contains(err.Error(), "create "+target+" or remove the link") {
+		t.Fatalf("modify = %v, want the dangling link named", err)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -132,31 +131,92 @@ func TestWriteIfUnchangedWritesTheVersionItRead(t *testing.T) {
 }
 
 // A directory sync that fails after the rename is reported with the write
-// committed: the new contents are in place. A directory that allows the
-// rename and not the open for the sync (write and search, no read) shows it.
+// committed: the new contents are in place.
 func TestWriteIfUnchangedReportsACommittedWriteWhoseDirectorySyncFailed(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("SyncDir is a no-op on Windows")
-	}
-	dir := filepath.Join(t.TempDir(), "d")
-	path := filepath.Join(dir, "config")
-	if err := Write(path, []byte("v1")); err != nil {
-		t.Fatal(err)
-	}
+	path := filepath.Join(t.TempDir(), "config")
+	writeRaw(t, path, "v1")
 	before := readVersion(t, path)
-	if err := os.Chmod(dir, 0o300); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, dirMode) })
+	failure := errors.New("injected sync failure")
+	syncPublished = func(string) error { return failure }
+	t.Cleanup(func() { syncPublished = SyncDir })
+
 	committed, err := WriteIfUnchanged(path, []byte("mine"), before)
-	if !committed || err == nil || !strings.Contains(err.Error(), "sync dir") {
+	if !committed || !errors.Is(err, failure) {
 		t.Fatalf("WriteIfUnchanged = %v, %v; want committed with the directory sync's failure", committed, err)
-	}
-	if err := os.Chmod(dir, dirMode); err != nil {
-		t.Fatal(err)
 	}
 	if got, _ := os.ReadFile(path); string(got) != "mine" {
 		t.Fatalf("file = %q, want the committed write", got)
+	}
+}
+
+// A change already visible when the write starts is refused before the
+// candidate is staged; a file that changes after the early check is still
+// refused by the check before the rename.
+func TestWriteIfUnchangedRefusesAVisibleChangeBeforeStaging(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	writeRaw(t, path, "v1")
+	before := readVersion(t, path)
+	staged := 0
+	stageWrite = func(path string, data []byte) (string, error) {
+		staged++
+		return stage(path, data)
+	}
+	t.Cleanup(func() { stageWrite = stage })
+
+	writeRaw(t, path, "theirs, longer")
+	expectRefused(t, path, "theirs, longer", before)
+	if staged != 0 {
+		t.Fatalf("a refused write staged %d candidates, want none", staged)
+	}
+
+	// Changed after the early check, while the candidate is staged.
+	before = readVersion(t, path)
+	stageWrite = func(target string, data []byte) (string, error) {
+		staged++
+		writeRaw(t, target, "theirs again, longer still")
+		return stage(target, data)
+	}
+	expectRefused(t, path, "theirs again, longer still", before)
+	if staged != 1 {
+		t.Fatalf("staged %d candidates, want the one the late check refused", staged)
+	}
+}
+
+// The bytes and the info come from the file that was opened: a new
+// version renamed onto the path during the read does not pair its info
+// with the old bytes, and the write against what was read is refused.
+func TestReadWithStatPairsTheBytesWithTheFileItOpened(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	writeRaw(t, path, "old")
+	openedForRead = func() {
+		openedForRead = nil
+		replacement := path + ".new"
+		writeRaw(t, replacement, "new version")
+		if err := os.Rename(replacement, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { openedForRead = nil })
+
+	data, info, err := ReadWithStat(path)
+	if err != nil || string(data) != "old" || info.Size() != int64(len("old")) {
+		t.Fatalf("ReadWithStat = %q, %v, %v; want the opened file's bytes and info", data, info, err)
+	}
+	expectRefused(t, path, "new version", info)
+}
+
+// A config that is a symbolic link to a missing file reads as an error
+// naming the link and what to do, not as an absent file the write could
+// never create through the link.
+func TestReadWithStatNamesALinkToAMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	path, target := filepath.Join(dir, "config"), filepath.Join(dir, "dotfiles", "config")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skip(err)
+	}
+	_, _, err := ReadWithStat(path)
+	if err == nil || !strings.Contains(err.Error(), path+" is a symbolic link to "+target+", which does not exist: create "+target+" or remove the link") {
+		t.Fatalf("ReadWithStat = %v, want the dangling link named", err)
 	}
 }
 

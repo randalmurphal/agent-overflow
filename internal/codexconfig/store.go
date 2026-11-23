@@ -15,6 +15,10 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// writeIfUnchanged is atomicfile.WriteIfUnchanged; a test replaces it to
+// report a committed write whose directory sync failed.
+var writeIfUnchanged = atomicfile.WriteIfUnchanged
+
 // Transport mirrors Codex's discriminator on RawMcpServerConfig — the
 // presence of `command` selects stdio, presence of `url` selects
 // streamable_http. AO normalises to a single Transport field on the
@@ -264,7 +268,7 @@ func (s *Store) modify(fn func([]byte) ([]byte, error)) error {
 		if err != nil {
 			return err
 		}
-		committed, err := atomicfile.WriteIfUnchanged(s.path, nextData, snap.stat)
+		committed, err := writeIfUnchanged(s.path, nextData, snap.stat)
 		if committed {
 			if err != nil {
 				// The new config is in place; only its directory entry may

@@ -10,6 +10,10 @@ import (
 	"agent-overflow/internal/atomicfile"
 )
 
+// writeIfUnchanged is atomicfile.WriteIfUnchanged; a test replaces it to
+// report a committed write whose directory sync failed.
+var writeIfUnchanged = atomicfile.WriteIfUnchanged
+
 // ErrConcurrentWrite reports that another writer kept changing the file
 // between our read and our write across every attempt.
 var ErrConcurrentWrite = errors.New("claudeconfig: concurrent write detected")
@@ -111,7 +115,7 @@ func (s *Store) modifyReporting(fn func(*orderedJSON) (bool, error)) (bool, erro
 		if err != nil {
 			return false, fmt.Errorf("marshal: %w", err)
 		}
-		committed, err := atomicfile.WriteIfUnchanged(s.path, out, snap.stat)
+		committed, err := writeIfUnchanged(s.path, out, snap.stat)
 		if committed {
 			if err != nil {
 				// The new config is in place; only its directory entry may

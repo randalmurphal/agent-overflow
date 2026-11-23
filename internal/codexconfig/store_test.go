@@ -1,14 +1,19 @@
 package codexconfig
 
 import (
-	"github.com/BurntSushi/toml"
+	"bytes"
+	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 func newStoreWithFile(t *testing.T, body string) *Store {
@@ -294,30 +299,32 @@ enabled = "false"
 	}
 }
 
-// A write whose directory sync failed after the rename is in place: the
-// store reports the mutation done, so its caller goes on to reconcile the
-// live session, and the sync failure is logged. A directory that allows
-// the rename and not the open for the sync (write and search, no read)
-// shows it.
+// A write that committed with its directory sync failed is done: modify
+// succeeds with the mutation in place and logs the sync's failure.
 func TestModifyTreatsAWriteWhoseDirectorySyncFailedAsDone(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the directory sync is a no-op on Windows")
-	}
 	store := newStoreWithFile(t, "model = \"x\"\n")
-	dir := filepath.Dir(store.path)
-	if err := os.Chmod(dir, 0o300); err != nil {
-		t.Fatal(err)
+	failure := errors.New("injected sync failure")
+	writeIfUnchanged = func(path string, data []byte, before os.FileInfo) (bool, error) {
+		committed, err := atomicfile.WriteIfUnchanged(path, data, before)
+		if !committed || err != nil {
+			t.Errorf("the real write = %v, %v", committed, err)
+		}
+		return true, failure
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	t.Cleanup(func() { writeIfUnchanged = atomicfile.WriteIfUnchanged })
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
 	if err := store.modify(func(data []byte) ([]byte, error) {
 		return append(data, []byte("[mine]\nbar = true\n")...), nil
 	}); err != nil {
 		t.Fatalf("modify = %v, want the committed write reported done", err)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if raw, _ := os.ReadFile(store.path); !strings.Contains(string(raw), "[mine]") {
+	if raw, _ := os.ReadFile(store.path); !strings.Contains(string(raw), `[mine]`) {
 		t.Fatalf("file = %s, want the mutation written", raw)
+	}
+	if !strings.Contains(logged.String(), "codexconfig: injected sync failure") {
+		t.Fatalf("logged %q, want the sync's failure", logged.String())
 	}
 }
