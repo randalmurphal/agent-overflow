@@ -1,14 +1,13 @@
 package procutil
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
-	"testing/iotest"
 )
 
 // Not parallel: it takes the process-wide fork lock.
@@ -28,44 +27,69 @@ func TestHoldForksBlocksAForkUntilReleased(t *testing.T) {
 	syscall.ForkLock.Unlock()
 }
 
-// The source is a pipe the test writes, so the install cannot close its
-// file until the test closes the pipe: once the first write has been read,
-// the file is open for writing, and a process start must not be able to
-// begin. Not parallel: it takes the process-wide fork lock.
-func TestInstallExecutableHoldsForksWhileTheFileIsOpenForWriting(t *testing.T) {
+// The fill runs while the new file is open for writing, inside the hold: a
+// process start must not be able to begin then, and can once the install
+// returns. A failure of the install ends the test with its error. Not
+// parallel: it takes the process-wide fork lock.
+func TestInstallHoldsForksWhileTheFileIsOpenForWriting(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tool")
-	src, feed := io.Pipe()
-	done := make(chan error, 1)
-	go func() { done <- InstallExecutable(path, src, 0o755) }()
-	if _, err := feed.Write([]byte("#!/bin/sh\n")); err != nil { // returns once the install has read it
-		t.Fatal(err)
-	}
-	if syscall.ForkLock.TryLock() {
-		syscall.ForkLock.Unlock()
-		_ = feed.CloseWithError(errors.New("test failed"))
-		<-done
-		t.Fatal("a process could start while the executable was open for writing")
-	}
-	if _, err := feed.Write([]byte("exit 0\n")); err != nil {
-		t.Fatal(err)
-	}
-	if err := feed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-done; err != nil {
+	err := install(path, 0o755, func(file *os.File) error {
+		if syscall.ForkLock.TryLock() {
+			syscall.ForkLock.Unlock()
+			return errors.New("a process could start while the executable was open for writing")
+		}
+		_, err := file.WriteString("#!/bin/sh\nexit 0\n")
+		return err
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if !syscall.ForkLock.TryLock() {
 		t.Fatal("process starts were still held off after the install")
 	}
 	syscall.ForkLock.Unlock()
+}
+
+func TestInstallExecutableWritesTheBytesWithTheMode(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "tool")
+	if err := InstallExecutable(path, []byte("#!/bin/sh\nexit 0\n"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	assertInstalled(t, path, "#!/bin/sh\nexit 0\n", 0o750)
+}
+
+func TestCopyExecutableCopiesTheFileAndFeedsTheDigest(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source")
+	if err := os.WriteFile(src, []byte("binary"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "tool")
+	digest := sha256.New()
+	if err := CopyExecutable(path, src, 0o755, digest); err != nil {
+		t.Fatal(err)
+	}
+	assertInstalled(t, path, "binary", 0o755)
+	if want := sha256.Sum256([]byte("binary")); !bytes.Equal(digest.Sum(nil), want[:]) {
+		t.Fatalf("digest = %x, want %x", digest.Sum(nil), want)
+	}
+	if err := CopyExecutable(filepath.Join(dir, "other"), src, 0o755, nil); err != nil {
+		t.Fatal(err)
+	}
+	assertInstalled(t, filepath.Join(dir, "other"), "binary", 0o755)
+}
+
+func assertInstalled(t *testing.T, path, want string, perm os.FileMode) {
+	t.Helper()
 	data, err := os.ReadFile(path)
-	if err != nil || string(data) != "#!/bin/sh\nexit 0\n" {
-		t.Fatalf("installed %q, %v", data, err)
+	if err != nil || string(data) != want {
+		t.Fatalf("installed %q, %v; want %q", data, err, want)
 	}
 	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o755 {
-		t.Fatalf("installed mode = %v, %v; want 0755", info, err)
+	if err != nil || info.Mode().Perm() != perm {
+		t.Fatalf("installed mode = %v, %v; want %v", info, err, perm)
 	}
 }
 
@@ -91,7 +115,7 @@ func TestInstallExecutableReplacesALinkWithoutWritingThroughIt(t *testing.T) {
 			if err := link.make(shared, path); err != nil {
 				t.Fatal(err)
 			}
-			if err := InstallExecutable(path, strings.NewReader("own"), 0o755); err != nil {
+			if err := InstallExecutable(path, []byte("own"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			if data, err := os.ReadFile(shared); err != nil || string(data) != "shared" {
@@ -107,12 +131,17 @@ func TestInstallExecutableReplacesALinkWithoutWritingThroughIt(t *testing.T) {
 	}
 }
 
-// A failed install leaves nothing beside the path.
-func TestInstallExecutableRemovesItsFileWhenTheSourceFails(t *testing.T) {
+// A failed fill leaves nothing beside the path.
+func TestInstallRemovesItsFileWhenTheFillFails(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	broken := errors.New("source failed")
-	err := InstallExecutable(filepath.Join(dir, "tool"), io.MultiReader(strings.NewReader("partial"), iotest.ErrReader(broken)), 0o755)
+	broken := errors.New("fill failed")
+	err := install(filepath.Join(dir, "tool"), 0o755, func(file *os.File) error {
+		if _, err := file.WriteString("partial"); err != nil {
+			return err
+		}
+		return broken
+	})
 	if !errors.Is(err, broken) {
 		t.Fatalf("err = %v, want %v", err, broken)
 	}

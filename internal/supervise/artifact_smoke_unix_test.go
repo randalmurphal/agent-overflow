@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -209,15 +208,8 @@ func stageProductionArtifact(t *testing.T, layout supervise.Layout, source strin
 	t.Helper()
 	// Work on a copy: extraction must not create files next to the caller's
 	// release artifact, which may live in a read-only download directory.
-	in, err := os.Open(source)
-	if err != nil {
-		t.Fatal(err)
-	}
 	hash := sha256.New()
-	copyPath := mockexec.CopyFile(t, filepath.Join(t.TempDir(), filepath.Base(source)), io.TeeReader(in, hash), 0o700)
-	if err := in.Close(); err != nil {
-		t.Fatal(err)
-	}
+	copyPath := mockexec.CopyFile(t, filepath.Join(t.TempDir(), filepath.Base(source)), source, 0o700, hash)
 	assetName := filepath.Base(source)
 	if strings.HasSuffix(assetName, ".zip") {
 		assetName = "agent-overflow-darwin-" + runtime.GOARCH + ".zip"

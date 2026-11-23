@@ -21,14 +21,7 @@ func TestCaptureProcessIdentityStripsDeletedMarker(t *testing.T) {
 	if err != nil {
 		t.Skipf("no sleep binary: %v", err)
 	}
-	src, err := os.Open(sleepPath)
-	if err != nil {
-		t.Fatalf("open sleep: %v", err)
-	}
-	copied := mockexec.CopyFile(t, filepath.Join(t.TempDir(), "sleep-copy"), src, 0o755)
-	if err := src.Close(); err != nil {
-		t.Fatalf("close sleep: %v", err)
-	}
+	copied := mockexec.CopyFile(t, filepath.Join(t.TempDir(), "sleep-copy"), sleepPath, 0o755, nil)
 
 	cmd := exec.Command(copied, "30")
 	if err := cmd.Start(); err != nil {

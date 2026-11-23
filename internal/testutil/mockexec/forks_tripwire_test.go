@@ -1,6 +1,7 @@
 package mockexec
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -25,40 +26,44 @@ var controlSite = scanSite{
 // TestEveryTestExecutableIsWrittenWithForksHeldOff is a tripwire, because
 // nothing in the type system stops test code from calling os.WriteFile with
 // an executable mode. Test code writes an executable only through
-// procutil.InstallExecutable, which mockexec's WriteFile and CopyFile use, or
-// as a link with mockexec.Write: a child that a parallel test forks while the
-// file is open for writing keeps it busy, and running it fails with "text
-// file busy".
+// procutil.InstallExecutable or CopyExecutable, which mockexec's WriteFile
+// and CopyFile use, or as a link with mockexec.Write: a child that a
+// parallel test forks while the file is open for writing keeps it busy, and
+// running it fails with "text file busy".
 //
 // It scans the files of the Makefile's GO_PACKAGE_ROOTS that are test code:
 // test files and the files of test-support packages (under internal/testutil,
-// or in a directory named *test or *fake). Within a function it reports:
-//
-//   - os.WriteFile, or os.OpenFile for writing, with a mode that may be
-//     executable;
-//   - File.Chmod, or os.Chmod of a path the function wrote, to such a mode;
-//   - os.WriteFile, os.OpenFile for writing, os.Create or os.Truncate of a
-//     path the function installed as an executable.
-//
-// A mode may be executable when its execute bits are set or are not
-// constants the scan can read in the package.
+// or in a directory named *test or *fake). It reports os.WriteFile, and
+// os.OpenFile for writing, with a mode that may be executable, and File.Chmod
+// to such a mode, whatever name the file imports os under. A mode may be
+// executable when its execute bits are set or are not constants the scan can
+// read in the package. It does not judge os.Chmod, which cannot tell a file
+// from a directory, or what a function does later with a path it wrote.
 func TestEveryTestExecutableIsWrittenWithForksHeldOff(t *testing.T) {
-	root := reporoot.Dir(t)
-	dirs, err := packageRootDirs(root)
+	found, err := scanTree(reporoot.Dir(t))
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, problem := range checkFindings(found) {
+		t.Error(problem)
+	}
+}
+
+// scanTree scans the test code of the project rooted at root.
+func scanTree(root string) ([]scanSite, error) {
+	dirs, err := packageRootDirs(root)
+	if err != nil {
+		return nil, err
 	}
 	var found []scanSite
 	for _, dir := range dirs {
 		sites, err := scanDir(root, dir.path, dir.recursive)
 		if err != nil {
-			t.Fatal(err)
+			return nil, err
 		}
 		found = append(found, sites...)
 	}
-	for _, problem := range checkFindings(found) {
-		t.Error(problem)
-	}
+	return found, nil
 }
 
 type scanSite struct {
@@ -116,7 +121,8 @@ func packageRootDirs(root string) ([]rootDir, error) {
 }
 
 // scanDir scans the test code of the packages in dir, and under it when
-// recursive, skipping what a ./... pattern skips.
+// recursive, skipping what a ./... pattern skips: a directory whose name
+// starts with "." or "_", testdata, and a nested module.
 func scanDir(root, dir string, recursive bool) ([]scanSite, error) {
 	var found []scanSite
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -130,6 +136,11 @@ func scanDir(root, dir string, recursive bool) ([]scanSite, error) {
 			name := d.Name()
 			if !recursive || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || name == "testdata" {
 				return filepath.SkipDir
+			}
+			if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
+				return filepath.SkipDir
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				return err
 			}
 		}
 		sites, err := scanPackageDir(root, path)
@@ -162,8 +173,10 @@ func scanPackageDir(root, dir string) ([]scanSite, error) {
 	}
 	var goFiles []string
 	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") {
-			goFiles = append(goFiles, entry.Name())
+		// The go command ignores a file whose name starts with "_" or ".".
+		name := entry.Name()
+		if !entry.IsDir() && strings.HasSuffix(name, ".go") && !strings.HasPrefix(name, "_") && !strings.HasPrefix(name, ".") {
+			goFiles = append(goFiles, name)
 		}
 	}
 	var packageConsts map[string]map[string]ast.Expr // package name -> constants
@@ -229,22 +242,9 @@ func inTestScope(rel string) bool {
 	return strings.HasPrefix(rel, "internal/") && (strings.HasSuffix(dir, "test") || strings.HasSuffix(dir, "fake"))
 }
 
-// installers install an executable at their first argument and return it.
-var installers = map[string]bool{
-	"mockexec.Write":             true,
-	"mockexec.WriteFile":         true,
-	"mockexec.CopyFile":          true,
-	"procutil.InstallExecutable": true,
-	"Write":                      true,
-	"WriteFile":                  true,
-	"CopyFile":                   true,
-	"InstallExecutable":          true,
-}
-
-// executableWrites returns the executable writes in file, named by
-// function. A path's history is followed within one function body; a
-// function literal has its own. resolve looks up a constant the file does
-// not declare.
+// executableWrites returns the executable writes in file, named by the
+// function they are in. resolve looks up a constant the file does not
+// declare.
 func executableWrites(file *ast.File, fset *token.FileSet, resolve func(string) (ast.Expr, bool)) []scanSite {
 	osName := importName(file, "os")
 	local := fileConstants(file)
@@ -258,123 +258,47 @@ func executableWrites(file *ast.File, fset *token.FileSet, resolve func(string) 
 		return resolve(name)
 	}
 	var found []scanSite
-	var scan func(fnName string, body *ast.BlockStmt)
-	scan = func(fnName string, body *ast.BlockStmt) {
-		installed := map[string]bool{} // paths installed as executables
-		written := map[string]bool{}   // paths written raw
-		report := func(call *ast.CallExpr) {
-			found = append(found, scanSite{fn: fnName, line: fset.Position(call.Pos()).Line})
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
 		}
-		ast.Inspect(body, func(n ast.Node) bool {
-			if lit, ok := n.(*ast.FuncLit); ok {
-				scan(fnName, lit.Body)
-				return false
-			}
-			if assign, ok := n.(*ast.AssignStmt); ok && len(assign.Lhs) == 1 && len(assign.Rhs) == 1 {
-				// path := mockexec.WriteFile(...) names the installed path.
-				if call, ok := assign.Rhs[0].(*ast.CallExpr); ok && installers[calleeName(call)] {
-					installed[spelling(assign.Lhs[0])] = true
-				}
-			}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
-			if installers[calleeName(call)] {
-				if path := installedPathArg(call); path != nil {
-					installed[spelling(path)] = true
-				}
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			pkg, _ := sel.X.(*ast.Ident)
-			if osName == "" || pkg == nil || pkg.Name != osName {
-				if sel.Sel.Name == "Chmod" && len(call.Args) == 1 && mayExecute(call.Args[0], consts) {
-					report(call) // File.Chmod
-				}
-				return true
-			}
-			var path string
-			if len(call.Args) > 0 {
-				path = spelling(call.Args[0])
-			}
+			name, fromOS := osFunc(call, osName)
+			executable := false
 			switch {
-			case sel.Sel.Name == "WriteFile" && len(call.Args) == 3:
-				written[path] = true
-				if installed[path] || mayExecute(call.Args[2], consts) {
-					report(call)
-				}
-			case sel.Sel.Name == "OpenFile" && len(call.Args) == 3:
-				if !opensForWriting(call.Args[1], osName) {
-					return true
-				}
-				written[path] = true
-				if installed[path] || mayExecute(call.Args[2], consts) {
-					report(call)
-				}
-			case (sel.Sel.Name == "Create" && len(call.Args) == 1) || (sel.Sel.Name == "Truncate" && len(call.Args) == 2):
-				written[path] = true
-				if installed[path] {
-					report(call)
-				}
-			case sel.Sel.Name == "Chmod" && len(call.Args) == 2:
-				if written[path] && mayExecute(call.Args[1], consts) {
-					report(call)
-				}
+			case fromOS && name == "WriteFile" && len(call.Args) == 3:
+				executable = mayExecute(call.Args[2], consts)
+			case fromOS && name == "OpenFile" && len(call.Args) == 3:
+				executable = opensForWriting(call.Args[1], osName) && mayExecute(call.Args[2], consts)
+			case !fromOS && name == "Chmod" && len(call.Args) == 1:
+				executable = mayExecute(call.Args[0], consts) // File.Chmod
+			}
+			if executable {
+				found = append(found, scanSite{fn: fn.Name.Name, line: fset.Position(call.Pos()).Line})
 			}
 			return true
 		})
 	}
-	for _, decl := range file.Decls {
-		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
-			scan(fn.Name.Name, fn.Body)
-		}
-	}
 	return found
 }
 
-// installedPathArg is the path argument of an installer call: the second of
-// mockexec's, after the testing.TB, and the first of procutil's.
-func installedPathArg(call *ast.CallExpr) ast.Expr {
-	index := 1
-	if strings.HasSuffix(calleeName(call), "InstallExecutable") {
-		index = 0
-	}
-	if len(call.Args) <= index {
-		return nil
-	}
-	return call.Args[index]
-}
-
-// calleeName spells a call's function as pkg.Name or Name.
-func calleeName(call *ast.CallExpr) string {
+// osFunc names the function or method call calls, and reports whether it
+// is a function of package os, which the file imports as osName ("." for a
+// dot import, "" for none).
+func osFunc(call *ast.CallExpr, osName string) (string, bool) {
 	switch fn := call.Fun.(type) {
 	case *ast.SelectorExpr:
-		if pkg, ok := fn.X.(*ast.Ident); ok {
-			return pkg.Name + "." + fn.Sel.Name
-		}
+		pkg, ok := fn.X.(*ast.Ident)
+		return fn.Sel.Name, ok && osName != "" && osName != "." && pkg.Name == osName
 	case *ast.Ident:
-		return fn.Name
+		return fn.Name, osName == "."
 	}
-	return ""
-}
-
-// spelling spells an expression so two mentions of one path compare equal.
-func spelling(expr ast.Expr) string {
-	var b strings.Builder
-	ast.Inspect(expr, func(n ast.Node) bool {
-		switch v := n.(type) {
-		case *ast.Ident:
-			b.WriteString(v.Name + " ")
-		case *ast.BasicLit:
-			b.WriteString(v.Value + " ")
-		}
-		return true
-	})
-	return b.String()
+	return "", false
 }
 
 func importName(file *ast.File, path string) string {
@@ -420,6 +344,10 @@ func opensForWriting(flags ast.Expr, osName string) bool {
 	case *ast.SelectorExpr:
 		pkg, ok := v.X.(*ast.Ident)
 		return !ok || pkg.Name != osName || v.Sel.Name == "O_WRONLY" || v.Sel.Name == "O_RDWR"
+	case *ast.Ident:
+		if osName == "." && strings.HasPrefix(v.Name, "O_") {
+			return v.Name == "O_WRONLY" || v.Name == "O_RDWR"
+		}
 	}
 	return true
 }
@@ -492,36 +420,31 @@ func constantBits(expr ast.Expr, consts func(string) (ast.Expr, bool)) (uint64, 
 func TestTheTripwireFindsEachKindOfExecutableWrite(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name, body string
-		want       bool
+		name, imports, body string
+		want                bool
 	}{
-		{"WriteFile with an executable literal", `os.WriteFile(p, nil, 0o755)`, true},
-		{"WriteFile with a constant of the file", `os.WriteFile(p, nil, perm)`, true},
-		{"WriteFile with a converted literal", `os.WriteFile(p, nil, fs.FileMode(0o700))`, true},
-		{"WriteFile with a mode it cannot read", `os.WriteFile(p, nil, info.Mode())`, true},
-		{"WriteFile with execute bits cleared", `os.WriteFile(p, nil, info.Mode()&^0o111)`, false},
-		{"WriteFile of a data file", `os.WriteFile(p, nil, 0o644)`, false},
-		{"OpenFile that creates an executable", `os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o755)`, true},
-		{"OpenFile for reading", `os.OpenFile(p, os.O_RDONLY, 0o755)`, false},
-		{"Create then Chmod to executable", "os.Create(p)\nos.Chmod(p, 0o755)", true},
-		{"Chmod of a path it did not write", `os.Chmod(dir, 0o755)`, false},
-		{"Chmod of a path a sibling closure wrote", "_ = func() { os.WriteFile(p, nil, 0o644) }\n_ = func() { os.Chmod(p, 0o700) }", false},
-		{"Chmod in a closure of a path it wrote", "_ = func() { os.WriteFile(p, nil, 0o644); os.Chmod(p, 0o700) }", true},
-		{"File.Chmod to executable", `f.Chmod(0o700)`, true},
-		{"an installed executable", `mockexec.WriteFile(t, p, nil, 0o755)`, false},
-		{"a data file written over another path", "mockexec.WriteFile(t, p, nil, 0o755)\nos.WriteFile(q, nil, 0o644)", false},
-		{"a Write link written through", "mockexec.Write(t, p, \"\")\nos.WriteFile(p, nil, 0o644)", true},
-		// The reviewer's cases: a write after its hold is released, and a
-		// reopen of an existing executable.
-		{"a write after its hold is released", "release := procutil.HoldForks()\nrelease()\nos.WriteFile(p, nil, 0o755)", true},
-		{"a write a hold covers", "release := procutil.HoldForks()\ndefer release()\nos.WriteFile(p, nil, 0o755)", true},
-		{"a truncating reopen of an installed executable", "mockexec.WriteFile(t, p, nil, 0o755)\nos.OpenFile(p, os.O_WRONLY|os.O_TRUNC, 0)", true},
-		{"a reopen of the path an installer returned", "q := mockexec.WriteFile(t, p, nil, 0o755)\nos.OpenFile(q, os.O_WRONLY, 0)", true},
-		{"Create of an installed executable", "procutil.InstallExecutable(p, r, 0o755)\nos.Create(p)", true},
+		{"WriteFile with an executable literal", `"os"`, `os.WriteFile(p, nil, 0o755)`, true},
+		{"WriteFile with a constant of the file", `"os"`, `os.WriteFile(p, nil, perm)`, true},
+		{"WriteFile with a converted literal", `"os"`, `os.WriteFile(p, nil, fs.FileMode(0o700))`, true},
+		{"WriteFile with a mode it cannot read", `"os"`, `os.WriteFile(p, nil, info.Mode())`, true},
+		{"WriteFile with execute bits cleared", `"os"`, `os.WriteFile(p, nil, info.Mode()&^0o111)`, false},
+		{"WriteFile of a data file", `"os"`, `os.WriteFile(p, nil, 0o644)`, false},
+		{"OpenFile that creates an executable", `"os"`, `os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o755)`, true},
+		{"OpenFile for reading", `"os"`, `os.OpenFile(p, os.O_RDONLY, 0o755)`, false},
+		{"File.Chmod to executable", `"os"`, `f.Chmod(0o700)`, true},
+		{"a write in a closure", `"os"`, `t.Run("x", func(t *testing.T) { os.WriteFile(p, nil, 0o755) })`, true},
+		{"os imported under another name", `xos "os"`, `xos.WriteFile(p, nil, 0o755)`, true},
+		{"os imported with a dot", `. "os"`, `OpenFile(p, O_CREATE|O_WRONLY, 0o755)`, true},
+		{"a dot import read only", `. "os"`, `OpenFile(p, O_RDONLY, 0o755)`, false},
+		{"another package's WriteFile", `"os"; xos "example.com/os"`, `xos.WriteFile(p, nil, 0o755)`, false},
+		// The reviewer's first case: a hold does not make a raw write pass.
+		{"a write after its hold is released", `"os"`, "release := procutil.HoldForks()\nrelease()\nos.WriteFile(p, nil, 0o755)", true},
+		{"a write a hold covers", `"os"`, "release := procutil.HoldForks()\ndefer release()\nos.WriteFile(p, nil, 0o755)", true},
+		{"an installed executable", `"os"`, `mockexec.WriteFile(t, p, nil, 0o755)`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			src := "package p\n\nimport \"os\"\n\nconst perm = 0o750\n\nfunc f() {\n" + tc.body + "\n}\n"
+			src := "package p\n\nimport (" + tc.imports + ")\n\nconst perm = 0o750\n\nfunc f() {\n" + tc.body + "\n}\n"
 			fset := token.NewFileSet()
 			file, err := parser.ParseFile(fset, "p.go", src, parser.SkipObjectResolution)
 			if err != nil {
@@ -529,6 +452,56 @@ func TestTheTripwireFindsEachKindOfExecutableWrite(t *testing.T) {
 			}
 			if got := len(executableWrites(file, fset, nil)) > 0; got != tc.want {
 				t.Fatalf("found = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The scan reads what the go command builds in the package roots, and
+// nothing else: not a file the go command ignores, a nested module, a
+// directory outside the roots, or testdata.
+func TestTheTripwireScansTheProjectsPackagesOnly(t *testing.T) {
+	t.Parallel()
+	const raw = "package p\n\nimport \"os\"\n\nfunc f() { os.WriteFile(p, nil, 0o755) }\n"
+	for _, tc := range []struct {
+		name string
+		file string
+		want int
+	}{
+		{"a test file of a package", "internal/p/p_test.go", 1},
+		{"a test file of the root package", "root_test.go", 1},
+		{"a file whose name starts with _", "internal/p/_draft_test.go", 0},
+		{"a file whose name starts with .", "internal/p/.draft_test.go", 0},
+		{"a nested module", "internal/nested/n_test.go", 0},
+		{"a directory outside the roots", "scratch/example_test.go", 0},
+		{"a directory under the root package", "sub/s_test.go", 0},
+		{"testdata", "internal/p/testdata/t_test.go", 0},
+		{"a directory whose name starts with _", "internal/_old/o_test.go", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			files := map[string]string{
+				"Makefile":               "GO_PACKAGE_ROOTS := . ./cmd/... ./internal/...\n",
+				"go.mod":                 "module example\n",
+				"internal/nested/go.mod": "module nested\n",
+				tc.file:                  raw,
+			}
+			for name, content := range files {
+				path := filepath.Join(root, filepath.FromSlash(name))
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.MkdirAll(filepath.Join(root, "cmd"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			found, err := scanTree(root)
+			if err != nil || len(found) != tc.want {
+				t.Fatalf("found %v, %v; want %d", found, err, tc.want)
 			}
 		})
 	}

@@ -60,7 +60,7 @@ deadline once the script reports that it is running. A test that needs the
 executable's own bytes (a copied binary, a file whose content, size or mode it
 reads) writes it with `mockexec.WriteFile` or `mockexec.CopyFile`, which
 replace what is at the path and hold process starts off while the new file is
-open for writing (`procutil.InstallExecutable`): a child a parallel test forks
+open for writing (`procutil.InstallExecutable`, `CopyExecutable`): a child a parallel test forks
 then keeps the file busy, and running it fails with "text file busy".
 `TestEveryTestExecutableIsWrittenWithForksHeldOff` fails any other write of an
 executable in test code.

@@ -21,9 +21,8 @@
 package mockexec
 
 import (
-	"bytes"
 	"errors"
-	"io"
+	"hash"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -69,14 +68,18 @@ func Write(t testing.TB, path, script string) string {
 // writing (procutil.InstallExecutable).
 func WriteFile(t testing.TB, path string, data []byte, perm fs.FileMode) string {
 	t.Helper()
-	return CopyFile(t, path, bytes.NewReader(data), perm)
+	if err := procutil.InstallExecutable(path, data, perm); err != nil {
+		t.Fatalf("mockexec: %v", err)
+	}
+	return path
 }
 
-// CopyFile is WriteFile with the bytes src yields, streamed rather than held
-// in memory, for a copy of a binary.
-func CopyFile(t testing.TB, path string, src io.Reader, perm fs.FileMode) string {
+// CopyFile is WriteFile with the bytes of the regular file at src, streamed
+// rather than held in memory, for a copy of a binary. A non-nil digest
+// receives the bytes in the same pass (procutil.CopyExecutable).
+func CopyFile(t testing.TB, path, src string, perm fs.FileMode, digest hash.Hash) string {
 	t.Helper()
-	if err := procutil.InstallExecutable(path, src, perm); err != nil {
+	if err := procutil.CopyExecutable(path, src, perm, digest); err != nil {
 		t.Fatalf("mockexec: %v", err)
 	}
 	return path

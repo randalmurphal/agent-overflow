@@ -80,12 +80,12 @@ const shellName = "login-shell"
 // in dir and returns the shell's path.
 func writeExecutables(dir string) (shell string, err error) {
 	for _, name := range Names {
-		if err := procutil.InstallExecutable(filepath.Join(dir, name), strings.NewReader(poisonScript(dir)), 0o755); err != nil {
+		if err := procutil.InstallExecutable(filepath.Join(dir, name), []byte(poisonScript(dir)), 0o755); err != nil {
 			return "", fmt.Errorf("write poisoned %s: %w", name, err)
 		}
 	}
 	shell = filepath.Join(dir, shellName)
-	if err := procutil.InstallExecutable(shell, strings.NewReader(standInShell), 0o755); err != nil {
+	if err := procutil.InstallExecutable(shell, []byte(standInShell), 0o755); err != nil {
 		return "", fmt.Errorf("write stand-in shell: %w", err)
 	}
 	return shell, nil
