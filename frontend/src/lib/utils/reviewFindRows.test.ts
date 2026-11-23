@@ -137,6 +137,21 @@ describe('resolveReviewFindHit', () => {
     expect(at(resolved.get(id('src/a.test.ts', pc('p1', '2'), '0:0')))).toMatchObject({ rowKey: pc('p1', '2') });
   });
 
+  it('a held reply found under its thread is not present there once the thread moves to another file', async () => {
+    // The reply keeps the path it was held on; it shows wherever its thread is.
+    const reply: DiffReviewComment = {
+      id: 'r1', threadId: 'p1', scope: 'pr', sourceKey: 'k', filePath: 'src/a.test.ts', status: 'draft', side: 'reply',
+      replyThreadId: 'p1', selectedText: '', body: 'needle reply', createdAt: 0, updatedAt: 0,
+    };
+    const before = { ...diffContent(PATCHES.base), drafts: [reply] };
+    const after = { ...before, prThreads: [{ ...thread, path: 'src/b.ts', line: 100 }] };
+    const published = await seededScan(before);
+    const held = [...published.values()].map((each) => each.hit).filter((hit) => hit.at.kind === 'draft');
+    expect(held.map((hit) => hit.path)).toEqual(['src/a.test.ts']);
+    const resolved = await expectResolvesTo(held, after);
+    expect([...resolved.values()]).toEqual([{ kind: 'absent' }]);
+  });
+
   it('a comment without a forge id is keyed by its time and author', () => {
     const comment: ReviewComment = { authorLogin: 'a:b', body: 'x', createdAt: '2026-01-01T00:00:00Z', databaseID: 0, id: `n${0}`, viewerCanEdit: false, viewerCanDelete: false };
     expect(reviewCommentKey(comment)).toBe('@2026-01-01T00:00:00Z@a:b');
