@@ -408,30 +408,6 @@ func TestHandleDynamicToolCall(t *testing.T) {
 	_ = eventCh
 }
 
-func TestHandleDynamicToolCallToolNameField(t *testing.T) {
-	t.Parallel()
-	s, _ := newTestCodexSession(t)
-
-	resultCh := make(chan string, 1)
-	s.SetDynamicToolHandler(func(toolName string, args map[string]any) (string, bool, error) {
-		resultCh <- toolName
-		return "ok", true, nil
-	})
-
-	// Use "toolName" field instead of "tool".
-	line := []byte(`{"jsonrpc":"2.0","id":11,"method":"dynamicToolCall","params":{"toolName":"alt_tool","arguments":{}}}`)
-	feed(t, s, line)
-
-	select {
-	case name := <-resultCh:
-		if name != "alt_tool" {
-			t.Errorf("toolName: got %q, want %q", name, "alt_tool")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for dynamic tool handler invocation")
-	}
-}
-
 func TestHandleDynamicToolCallHandlerError(t *testing.T) {
 	t.Parallel()
 	s, _ := newTestCodexSession(t)
@@ -620,31 +596,5 @@ func TestCodexHandleServerRequestExecCommandApproval(t *testing.T) {
 	}
 	if approval.ToolName != "command" {
 		t.Errorf("toolName: got %q, want %q", approval.ToolName, "command")
-	}
-}
-
-// -- handleServerRequest: file read approval --
-
-func TestCodexHandleServerRequestFileReadApproval(t *testing.T) {
-	t.Parallel()
-	s, eventCh := newTestCodexSession(t)
-
-	line := []byte(`{"jsonrpc":"2.0","id":8,"method":"item/fileRead/requestApproval","params":{"filePath":"/etc/passwd"}}`)
-	feed(t, s, line)
-
-	evt := codexWaitEvent(t, eventCh)
-	if evt.Kind != provider.EventApprovalRequest {
-		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventApprovalRequest)
-	}
-
-	var approval provider.ApprovalRequest
-	if err := json.Unmarshal(evt.Meta, &approval); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if approval.Kind != "file-read" {
-		t.Errorf("kind: got %q, want %q", approval.Kind, "file-read")
-	}
-	if approval.ToolName != "file_read" {
-		t.Errorf("toolName: got %q, want %q", approval.ToolName, "file_read")
 	}
 }

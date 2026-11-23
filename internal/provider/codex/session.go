@@ -66,8 +66,8 @@ func IsTurnNotSteerable(err error) bool {
 	return errors.Is(err, ErrTurnNotSteerable)
 }
 
-// DynamicToolHandler is called when the provider invokes a dynamic tool (item/tool/call
-// or dynamicToolCall). The handler receives the tool name and arguments, and returns
+// DynamicToolHandler is called when the provider invokes a dynamic tool
+// (item/tool/call). The handler receives the tool name and arguments, and returns
 // the result content and a success flag.
 type DynamicToolHandler func(toolName string, args map[string]any) (content string, success bool, err error)
 
@@ -962,8 +962,8 @@ func (s *Session) ThreadID() string {
 	return s.threadID
 }
 
-// SetDynamicToolHandler registers a handler for dynamic tool calls (item/tool/call,
-// dynamicToolCall). If nil, those requests are rejected with -32601.
+// SetDynamicToolHandler registers a handler for dynamic tool calls
+// (item/tool/call). If nil, those requests are rejected with -32601.
 func (s *Session) SetDynamicToolHandler(h DynamicToolHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

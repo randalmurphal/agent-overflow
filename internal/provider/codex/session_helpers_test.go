@@ -453,7 +453,6 @@ func TestApprovalKindForMethod(t *testing.T) {
 	}{
 		{"item/commandExecution/requestApproval", "command"},
 		{"execCommandApproval", "command"},
-		{"item/fileRead/requestApproval", "file-read"},
 		{"item/fileChange/requestApproval", "file-change"},
 		{"applyPatchApproval", "file-change"},
 		{"unknown/method", ""},
@@ -467,31 +466,6 @@ func TestApprovalKindForMethod(t *testing.T) {
 				t.Errorf("approvalKindForMethod(%q) = %q, want %q", tt.method, got, tt.want)
 			}
 		})
-	}
-}
-
-// -- buildApprovalMeta file-read path --
-
-func TestBuildApprovalMetaFileRead(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(`{"filePath":"/etc/hosts"}`)
-	meta := buildApprovalMeta("t1", "turn-1", "item/fileRead/requestApproval", 50, params)
-
-	var approval provider.ApprovalRequest
-	if err := json.Unmarshal(meta, &approval); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if approval.ToolName != "file_read" {
-		t.Errorf("toolName: got %q, want %q", approval.ToolName, "file_read")
-	}
-	if approval.Title != "File read" {
-		t.Errorf("title: got %q, want %q", approval.Title, "File read")
-	}
-	if approval.Description != "/etc/hosts" {
-		t.Errorf("description: got %q, want %q", approval.Description, "/etc/hosts")
-	}
-	if approval.Kind != "file-read" {
-		t.Errorf("kind: got %q, want %q", approval.Kind, "file-read")
 	}
 }
 

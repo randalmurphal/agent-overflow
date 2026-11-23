@@ -278,13 +278,8 @@ func buildApprovalRequest(threadID, turnID, method string, rpcID int64, params j
 	if filePath, ok := parsed["filePath"]; ok {
 		var fp string
 		if json.Unmarshal(filePath, &fp) == nil {
-			if kind == "file-read" {
-				toolName = "file_read"
-				title = "File read"
-			} else {
-				toolName = "file_change"
-				title = "File change"
-			}
+			toolName = "file_change"
+			title = "File change"
 			description = fp
 			input = params
 		}
@@ -322,8 +317,6 @@ func approvalKindForMethod(method string) string {
 	switch method {
 	case "item/commandExecution/requestApproval", "execCommandApproval":
 		return "command"
-	case "item/fileRead/requestApproval":
-		return "file-read"
 	case "item/fileChange/requestApproval", "applyPatchApproval":
 		return "file-change"
 	default:
