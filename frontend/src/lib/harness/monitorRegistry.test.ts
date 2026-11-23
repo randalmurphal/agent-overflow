@@ -100,12 +100,14 @@ describe('MonitorRegistry', () => {
     })).toThrow(/listed more than once/);
   });
 
-  it('refuses a monitor on the platform leg or with the platform-counter perturbation', () => {
-    const monitors = registry();
-    const platformLeg = { ...frameSpec, id: 'test-platform-leg', compatibilityLeg: 'platform' } as unknown as CustomMonitorSpec<MonitorInstance>;
-    const platformCounter = { ...frameSpec, id: 'test-platform-counter', perturbation: 'platform-counter' } as unknown as CustomMonitorSpec<MonitorInstance>;
-    expect(() => monitors.register(platformLeg)).toThrow(/unknown compatibility leg/);
-    expect(() => monitors.register(platformCounter)).toThrow(/unknown measurement perturbation/);
+  it.each(['platform', 'provider-source'])('refuses a monitor on the %s leg', (leg) => {
+    const spec = { ...frameSpec, id: 'test-leg', compatibilityLeg: leg } as unknown as CustomMonitorSpec<MonitorInstance>;
+    expect(() => registry().register(spec)).toThrow(/unknown compatibility leg/);
+  });
+
+  it.each(['platform-counter', 'source-instrumentation'])('refuses a monitor with the %s perturbation', (perturbation) => {
+    const spec = { ...frameSpec, id: 'test-perturbation', perturbation } as unknown as CustomMonitorSpec<MonitorInstance>;
+    expect(() => registry().register(spec)).toThrow(/unknown measurement perturbation/);
   });
 
   it('enforces the selected compatibility leg before arming hosts', () => {

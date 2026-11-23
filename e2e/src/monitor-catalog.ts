@@ -5,9 +5,9 @@ export type MonitorId =
   | 'input-to-render' | 'scroll-response' | 'layout-shift' | 'animation-continuity'
   | 'semantic-dom-stability' | 'focus-clipping-settledness';
 
-export type CompatibilityLeg = 'clean-renderer' | 'instrumented-renderer' | 'functional' | 'provider-source';
-export const COMPATIBILITY_LEGS: readonly CompatibilityLeg[] = ['clean-renderer', 'instrumented-renderer', 'functional', 'provider-source'];
-export type Perturbation = 'none' | 'animation-frame' | 'performance-observer' | 'event-listener' | 'dom-observer' | 'layout-read' | 'source-instrumentation';
+export type CompatibilityLeg = 'clean-renderer' | 'instrumented-renderer' | 'functional';
+export const COMPATIBILITY_LEGS: readonly CompatibilityLeg[] = ['clean-renderer', 'instrumented-renderer', 'functional'];
+export type Perturbation = 'none' | 'animation-frame' | 'performance-observer' | 'event-listener' | 'dom-observer' | 'layout-read';
 
 export interface MonitorSpec {
   readonly v: typeof MONITOR_SPEC_VERSION;
