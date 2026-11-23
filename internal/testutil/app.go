@@ -243,14 +243,7 @@ func WriteMockCodexSession(t *testing.T, dir string, responses map[string]string
 	b.WriteString("    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{}}\\n' \"$id\"\n")
 	b.WriteString("    continue\n")
 	b.WriteString("  fi\n")
-	b.WriteString("  if /bin/echo \"$line\" | /usr/bin/grep -q '\"method\":\"thread/unsubscribe\"'; then\n")
-	b.WriteString("    tid=$(/bin/echo \"$line\" | /usr/bin/grep -o '\"threadId\":\"[^\"]*\"' | /usr/bin/head -1 | /usr/bin/cut -d'\"' -f4)\n")
-	b.WriteString("    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"status\":\"unloaded\"}}\\n' \"$id\"\n")
-	b.WriteString("    if [ -n \"$tid\" ]; then\n")
-	b.WriteString("      printf '{\"jsonrpc\":\"2.0\",\"method\":\"thread/closed\",\"params\":{\"threadId\":\"%s\"}}\\n' \"$tid\"\n")
-	b.WriteString("    fi\n")
-	b.WriteString("    continue\n")
-	b.WriteString("  fi\n")
+	b.WriteString(MockCodexUnsubscribeShell)
 	if hasFallback {
 		fmt.Fprintf(&b, "  printf %s \"$id\"\n", stringsx.ShellQuote(fallback+"\n"))
 	} else {
@@ -263,6 +256,22 @@ func WriteMockCodexSession(t *testing.T, dir string, responses map[string]string
 
 	return writeMockShellScript(t, dir, "mock-codex-session.sh", b.String())
 }
+
+// MockCodexUnsubscribeShell is the part of a mock app-server's read loop
+// that answers thread/unsubscribe as app-server does: the request's result,
+// then the thread/closed notification that closing a session waits ten
+// seconds for. It reads $line and $id, the request and its id, and continues
+// the loop. Every hand-written mock app-server whose session can still be
+// open when its test ends includes it ahead of its own fallback answer.
+const MockCodexUnsubscribeShell = `  if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/unsubscribe"'; then
+    tid=$(/bin/echo "$line" | /usr/bin/grep -o '"threadId":"[^"]*"' | /usr/bin/head -1 | /usr/bin/cut -d'"' -f4)
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"status":"unloaded"}}\n' "$id"
+    if [ -n "$tid" ]; then
+      printf '{"jsonrpc":"2.0","method":"thread/closed","params":{"threadId":"%s"}}\n' "$tid"
+    fi
+    continue
+  fi
+`
 
 // WriteMockGhCLI writes a script that mimics `gh` by matching its arguments
 // against the provided responses map. Keys are space-joined argument prefixes

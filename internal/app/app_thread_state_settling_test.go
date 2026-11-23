@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/reporoot"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
@@ -155,12 +156,12 @@ func checkLiveSnapshotFixture(t *testing.T, fixture string, comment []string, li
 	}
 	encoded = append(encoded, '\n')
 	if os.Getenv("UPDATE_LIVE_SNAPSHOT_FIXTURES") != "" {
-		if err := os.WriteFile(fixture, encoded, 0o644); err != nil {
+		if err := os.WriteFile(reporoot.Path(t, fixture), encoded, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		return
 	}
-	committed, err := os.ReadFile(fixture)
+	committed, err := os.ReadFile(reporoot.Path(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
