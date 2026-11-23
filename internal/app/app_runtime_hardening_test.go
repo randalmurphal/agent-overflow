@@ -108,13 +108,11 @@ func TestInitStoresRepairsAppOwnedPermissions(t *testing.T) {
 	assertAppMode(t, logFiles[0], 0o600)
 }
 
-// initStores' startup prune sweeps the credential slots under the user's
-// HOME while its keep-set comes from the metadata store under the data dir.
-// When those roots disagree — a fresh --data-dir, a test overriding the
-// config root but not the home — the metadata lists no accounts, and before
-// the empty-keep-set guard the prune then deleted every saved login on the
-// machine (incident 2026-07-29). A boot over empty metadata must leave
-// existing slots untouched.
+// initStores' boot acts on the credential slots under the user's HOME while
+// its metadata store lives under the data dir. When those roots disagree (a
+// fresh --data-dir, a test overriding the config root but not the home) the
+// metadata names none of the home's slots (incident 2026-07-29). A boot over
+// empty metadata must leave existing slots untouched.
 func TestInitStoresKeepsCredentialSlotsWhenMetadataIsEmpty(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
@@ -181,12 +179,9 @@ func assertAppMode(t *testing.T, path string, want os.FileMode) {
 	}
 }
 
-// The empty-keep-set guard above covers a FRESH foreign metadata store; a
-// REUSED one (a harness data dir whose store already registered a mock
-// account, a second install's store) hands the prune a non-empty keep-set
-// that vouches for nothing on this machine. The home stamp closes that
-// half: a store bound to one provider home must never authorize slot
-// destruction under another.
+// A REUSED foreign metadata store (a harness data dir whose store already
+// registered a mock account, a second install's store) boots over this
+// home without deleting the slots it does not list.
 func TestInitStoresSkipsPruneWhenMetadataBelongsToAnotherHome(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
@@ -202,8 +197,7 @@ func TestInitStoresSkipsPruneWhenMetadataBelongsToAnotherHome(t *testing.T) {
 	}
 
 	// A metadata store born under a different home, with an account of its
-	// own — the reused-foreign-store shape. "saved-login" is not in its
-	// keep-set, so an ungated prune would delete it.
+	// own — the reused-foreign-store shape. It does not list "saved-login".
 	dataRoot := t.TempDir()
 	dbDir := filepath.Join(dataRoot, "agent-overflow")
 	if err := os.MkdirAll(dbDir, 0o700); err != nil {

@@ -193,9 +193,9 @@ func (a *App) startBeforeClients() []bootStep {
 		// Every prompt file here belongs to a process that exited without
 		// closing its sessions.
 		a.reportedBootStep("", "", func() error { return sweepClaudePromptFiles(a.configDir) }),
-		// Prune the credential slots no saved account references and sweep
-		// the ephemeral homes a crash left, before any session or probe reads
-		// them.
+		// Remove the credential slots of sign-ins that never saved their
+		// account and sweep the ephemeral homes a crash left, before any
+		// session or probe reads them.
 		a.reconcileProviderHome,
 		// Publish this executable as the `agent-overflow` command, so the
 		// very first session already has it on PATH. Best-effort by design:
@@ -246,14 +246,11 @@ func (a *App) reportedBootStep(phase, detail string, run func() error) bootStep 
 }
 
 // reconcileProviderHome binds the provider account metadata to this
-// process's provider home, prunes the credential slots no saved account
-// references and sweeps the ephemeral homes a crash left. It deletes
-// credentials, which live outside the database.
-//
-// A metadata store paired with the WRONG provider home would delete slots
-// that were never its to manage. The stamp binds store to home on first
-// contact; on mismatch the prune is skipped outright, because orphan slots
-// are benign and destroyed logins are not.
+// process's provider home, removes the credential slots of sign-ins this
+// data root started that never saved their account, and sweeps the
+// ephemeral homes a crash left. It deletes credentials, which live outside
+// the database. The rule for which slots it may delete is
+// provideraccounts.ReserveAccountID's.
 func (a *App) reconcileProviderHome() error {
 	userHome, err := a.providerHome()
 	if err != nil {
