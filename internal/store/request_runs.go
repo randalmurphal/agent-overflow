@@ -119,15 +119,22 @@ func doneRowSQL(alias string) string {
 }
 
 // tallyFiguresSQL is the three figures of the tally of the thread id names
-// at now (milliseconds), as threadTallyColumnsSQL reads them.
+// at now (milliseconds), as ThreadTallies reads them: its running turn is
+// its newest turn row while that row is open (turn_newest.go), counted to
+// now.
 func tallyFiguresSQL(id, now string) [3]string {
-	open := `(SELECT started_at FROM turns WHERE thread_id = ` + id + ` AND completed_at IS NULL ORDER BY turn_index DESC LIMIT 1)`
+	return tallyFiguresSpanSQL(id, newestTurnSQL(id, `CASE WHEN `+turnOpenSQL+` THEN MAX(0, `+now+` - nt.started_at) END`))
+}
+
+// tallyFiguresSpanSQL is the three figures with span the time the thread's
+// open newest turn has run, NULL for none, read by the caller.
+func tallyFiguresSpanSQL(id, span string) [3]string {
 	return [3]string{
 		`COALESCE((SELECT tool_calls FROM thread_tallies WHERE thread_id = ` + id + `), 0)`,
 		`(COALESCE((SELECT tokens FROM thread_tallies WHERE thread_id = ` + id + `), 0)
 		  + COALESCE((SELECT SUM(` + usageSpendSQLPlain + `) FROM usage_pending WHERE thread_id = ` + id + `), 0))`,
 		`(COALESCE((SELECT turn_ms FROM thread_tallies WHERE thread_id = ` + id + `), 0)
-		  + COALESCE(MAX(0, ` + now + ` - ` + open + `), 0))`,
+		  + COALESCE(` + span + `, 0))`,
 	}
 }
 

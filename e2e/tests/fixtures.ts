@@ -1,7 +1,7 @@
 // Shared Playwright fixtures: one harness backend per worker, reset to
 // a blank slate before every test. Import { test, expect } from here
 // instead of '@playwright/test'.
-import { test as base, expect } from '@playwright/test';
+import { test as base, expect } from './base-test.js';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { webkitKeychainHome } from '../src/webkit-keychain.js';
 

@@ -1,7 +1,7 @@
 // The owner console of a separately running harness. The child owns no
 // backend: closing SSH/stdin must leave that host alive.
 import { createInterface } from 'node:readline';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './base-test.js';
 import { productBinary, spawnProduct } from '../src/product-process.js';
 import { launchStep, processDiagnostics } from '../src/harness-launch-step.js';
 import type { HarnessApp } from '../src/harness.js';

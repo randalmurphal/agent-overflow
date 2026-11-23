@@ -7,12 +7,14 @@ import (
 )
 
 // The fixture's own shape. Documented beside the file itself. The Go test
-// reads live; liveStatus is the same case stated as the frontend's input
-// to resolveEffectiveThreadStatus, so both must produce want.
+// reads thread and live; liveStatus is the same case stated as the
+// frontend's input to resolveEffectiveThreadStatus, so both must produce
+// want.
 type stateFixture struct {
 	Cases []struct {
 		Name   string `json:"name"`
 		Thread struct {
+			HasOpenTurn               bool   `json:"hasOpenTurn"`
 			HasIncompleteTurn         bool   `json:"hasIncompleteTurn"`
 			HasFailedTurn             bool   `json:"hasFailedTurn"`
 			HasActionableProposedPlan bool   `json:"hasActionableProposedPlan"`
@@ -46,7 +48,11 @@ func TestStateFixture(t *testing.T) {
 	}
 	for _, testCase := range fixture.Cases {
 		t.Run(testCase.Name, func(t *testing.T) {
+			if testCase.Thread.HasOpenTurn && testCase.Thread.HasIncompleteTurn {
+				t.Fatal("hasOpenTurn and hasIncompleteTurn both read the newest turn row and cannot both hold")
+			}
 			thread := Thread{
+				HasOpenTurn:               testCase.Thread.HasOpenTurn,
 				HasIncompleteTurn:         testCase.Thread.HasIncompleteTurn,
 				HasFailedTurn:             testCase.Thread.HasFailedTurn,
 				HasActionableProposedPlan: testCase.Thread.HasActionableProposedPlan,
@@ -71,7 +77,8 @@ func TestStateFixture(t *testing.T) {
 }
 
 // liveStatusOf is what the frontend's getThreadStatus derives from the
-// same live inputs, so the fixture's two input columns cannot disagree.
+// live fields it also receives, so the fixture's two input columns cannot
+// disagree.
 func liveStatusOf(live LiveState) string {
 	switch {
 	case live.PendingApprovals > 0:
@@ -82,6 +89,16 @@ func liveStatusOf(live LiveState) string {
 		return StateRunning
 	default:
 		return StateIdle
+	}
+}
+
+// TestStateReadsAnOpenRow covers what only Go reads, the newest turn row:
+// open with no live round, it is a running turn. The frontend has no
+// open-row input; its live registry holds a turn until
+// provider:turn_completed.
+func TestStateReadsAnOpenRow(t *testing.T) {
+	if got := State(Thread{HasOpenTurn: true}, LiveState{}); got != StateRunning {
+		t.Errorf("an open row with no live round = %q, want running", got)
 	}
 }
 

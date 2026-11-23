@@ -1,7 +1,8 @@
 // Two independently booted computers, real pairing/proxy/RPC and production
 // frontend. Profiles and network identities outlive HarnessReset, so this
 // flow owns both backends and all of its browser contexts.
-import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
+import { type Page, type WebSocketRoute } from '@playwright/test';
+import { expect, test } from './base-test.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';

@@ -285,6 +285,12 @@ jobs:
       - name: Run the ${{ matrix.project }} project
         working-directory: frontend
         run: AO_PERF_CONTRACT=1 ../bin/ao-netns pnpm run ${{ matrix.script }}
+      # The stalled-page watchdog ends a blocked browser run through
+      # vitest.exit(); this fails the job when a Vitest change stops that.
+      - name: Check the stalled-page watchdog
+        if: matrix.project == 'browser'
+        working-directory: frontend
+        run: ../bin/ao-netns pnpm run check:stall-watchdog
 
   e2e:
     name: Playwright harness suite (shard ${{ matrix.shard }} of 8)
