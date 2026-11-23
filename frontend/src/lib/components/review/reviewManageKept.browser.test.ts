@@ -104,6 +104,16 @@ async function present<T extends Element = HTMLElement>(id: string): Promise<T> 
   }, { timeout: 5_000 });
 }
 
+// Focuses a control and holds the test until the document's focus is on
+// it, so a key press goes to the control, and a focus the page refuses
+// fails here by name rather than later as a missing result.
+async function focusOn(id: string): Promise<HTMLElement> {
+  const control = await present(id);
+  control.focus();
+  await vi.waitFor(() => expect(document.activeElement, `${id} has focus`).toBe(control));
+  return control;
+}
+
 async function mountPinned(): Promise<void> {
   app = mount(ReviewPane, { target, props: { pr: { ownerPaneId: OWNER, backend: HOME_BACKEND, projectId: 'project-1', pr: PR } } });
   await present('review-pr-details');
@@ -190,7 +200,7 @@ describe('a held Enter', () => {
   it('opens the state menu and never activates the item focus moved to', async () => {
     const setState = setBindingMock('SetPRState', async () => ({ seq: 0 }));
     await mountPinned();
-    (await present('review-pr-state-menu')).focus();
+    await focusOn('review-pr-state-menu');
     await userEvent.keyboard('{Enter>6}');
     await present('review-pr-state-items');
     await frames(4);
@@ -202,7 +212,7 @@ describe('a held Enter', () => {
     const set = setBindingMock('SetPRReviewers', async () => ({ seq: 0 }));
     await mountPinned();
     await openDetails();
-    (await present('review-details-edit-reviewers')).focus();
+    await focusOn('review-details-edit-reviewers');
     await userEvent.keyboard('{Enter>6}');
     await frames(4);
     expect(document.querySelector('[data-testid="review-picker"]')).not.toBeNull();
