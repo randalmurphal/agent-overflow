@@ -3,6 +3,7 @@ import { ComputerAccounts } from './computerAccounts.svelte';
 import type { ProviderAccountActions, ProviderAccountGroup } from './computerAccounts.svelte';
 export type { ProviderAccountActions, ProviderAccountGroup } from './computerAccounts.svelte';
 import type { ManagedProviderAccount, ProviderLoginState } from './bindings';
+import type { ProviderAccountResetChoice } from './computerAccounts.svelte';
 import type { ProviderID } from '../types/providers';
 import type { ProviderAccountAutoSwitchEvent, ProviderAccountSignInEvent } from '../types/events';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
@@ -83,6 +84,14 @@ export function switchProviderAccount(provider: ProviderID, account: ManagedProv
 
 export function refreshProviderAccountUsage(provider: ProviderID, account: ManagedProviderAccount, backend: BackendKey = HOME_BACKEND): Promise<void> {
   return editComputer(backend).refreshProviderAccountUsage(provider, account);
+}
+
+export function spendProviderAccountReset(provider: ProviderID, choice: ProviderAccountResetChoice, backend: BackendKey = HOME_BACKEND): Promise<void> {
+  return editComputer(backend).spendProviderAccountReset(provider, choice);
+}
+
+export function finishProviderAccountReset(provider: ProviderID, accountId: string, spendId: string, backend: BackendKey = HOME_BACKEND): Promise<void> {
+  return editComputer(backend).finishProviderAccountReset(provider, accountId, spendId);
 }
 
 export function removeProviderAccount(provider: ProviderID, account: ManagedProviderAccount, backend: BackendKey = HOME_BACKEND): Promise<boolean> {

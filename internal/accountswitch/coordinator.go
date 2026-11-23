@@ -452,6 +452,20 @@ func (c *Coordinator) ReadingUpdated(prov, accountID string) {
 	c.signal()
 }
 
+// LimitsReset forgets the account's refusal marks once a usage reset of it
+// landed and the reading after it was recorded: the limits the marks stood
+// for were refilled, and the reading now says what is left. Then it checks
+// the waiting threads as a new reading does. A reset whose reading did not
+// land is not reported, so its marks stay until they expire.
+func (c *Coordinator) LimitsReset(prov, accountID string) {
+	key := accountKey{prov, accountID}
+	c.mu.Lock()
+	delete(c.marks, key)
+	c.pending.addReading(key)
+	c.mu.Unlock()
+	c.signal()
+}
+
 // RevokeWaitsBefore ends the waits admitted before a write to the
 // auto-continue setting, given that write's revision. A wait admitted while
 // the setting was on does not survive it being switched off, however soon it

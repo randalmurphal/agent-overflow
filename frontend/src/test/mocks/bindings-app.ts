@@ -288,6 +288,8 @@ export const RemoveProviderAccount = dispatch('RemoveProviderAccount');
 export const ReorderProviderAccounts = dispatch('ReorderProviderAccounts');
 export const SetProviderAccountAutoSwitch = dispatch('SetProviderAccountAutoSwitch');
 export const RefreshProviderAccountUsage = dispatch('RefreshProviderAccountUsage');
+export const SpendProviderAccountReset = dispatch('SpendProviderAccountReset');
+export const FinishProviderAccountReset = dispatch('FinishProviderAccountReset');
 
 export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');

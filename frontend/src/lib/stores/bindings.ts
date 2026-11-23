@@ -220,6 +220,12 @@ export {
   ReorderProviderAccounts,
   SetProviderAccountAutoSwitch,
   RefreshProviderAccountUsage,
+  // Spend one of an account's usage resets, or finish the one Codex has not
+  // confirmed, then read its usage again. A computer on an older release
+  // lists no resets and no unconfirmed one, so nothing offers either there.
+  // See internal/provideraccountapp/usage_resets.go.
+  SpendProviderAccountReset,
+  FinishProviderAccountReset,
 
   // Per-client UI view state (ui_state table) behind stores/appStorage.ts.
   GetUIState,
@@ -776,7 +782,13 @@ export {
   LoginMethod as ProviderLoginMethod,
   LoginPhase as ProviderLoginPhase,
   LoginState as ProviderLoginState,
+  ResetSpendResult as ProviderAccountResetResult,
+  UnsettledReset as ProviderAccountUnsettledReset,
 } from '../../../bindings/agent-overflow/internal/provideraccountapp/models.js';
+export {
+  UsageResetOption as ProviderAccountResetOption,
+  UsageResets as ProviderAccountResets,
+} from '../../../bindings/agent-overflow/internal/provideraccounts/models.js';
 export { EditorSettings } from '../../../bindings/agent-overflow/internal/settings/models.js';
 export {
   Attached as AttachedBackend,

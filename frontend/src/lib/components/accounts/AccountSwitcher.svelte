@@ -19,6 +19,7 @@
   import IconButton from '../primitives/IconButton.svelte';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import ProviderAccountLimits from '../shared/ProviderAccountLimits.svelte';
+  import ProviderAccountResets from '../settings/ProviderAccountResets.svelte';
   import ProviderLoginFlow from './ProviderLoginFlow.svelte';
   import { SETTINGS_PROVIDERS } from '../settings/fields';
   import type { ManagedProviderAccount } from '../../stores/bindings';
@@ -245,7 +246,7 @@
                 {@const loginExpiry = providerAccountLoginExpiry(account)}
                 <li
                   class={[
-                    'rounded-[var(--radius-field)] px-2 py-1.5 transition-colors',
+                    'rounded-[var(--radius-field)] px-2 py-1.5 [--card-pad-bottom:0.375rem] transition-colors',
                     activeIndex === row.index ? 'bg-accent/10' : 'hover:bg-surface-2/30',
                   ].join(' ')}
                   data-testid="account-switcher-row-{account.id}"
@@ -330,7 +331,10 @@
                       </IconButton>
                     </div>
                   </div>
-                  <ProviderAccountLimits {limits} />
+                  {#snippet resets()}
+                    <ProviderAccountResets {account} {backend} admin={true} {credentialOpInFlight} />
+                  {/snippet}
+                  <ProviderAccountLimits {limits} lineEnd={group.provider === 'codex' ? resets : undefined} />
                 </li>
               {/each}
             </ul>

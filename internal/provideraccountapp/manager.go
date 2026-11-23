@@ -47,6 +47,16 @@ type AccountSink interface {
 	// spend an RPC per probe, and one that never re-lists (the state before
 	// this existed) misses a removal entirely.
 	PublishAccountsChanged(providerName string)
+	// PublishListingChanged says a saved card's listing changed in what only
+	// ListProviderAccounts carries (its usage resets) while the set of
+	// accounts stayed the same, so clients re-list and nothing that follows
+	// the set (auto-switch's sign-in results) is forgotten.
+	PublishListingChanged(providerName string)
+	// PublishLimitsReset says a usage reset of the account landed and the
+	// reading after it was recorded, so refusals the account earned before
+	// it no longer describe it. A reset whose reading did not land is not
+	// published.
+	PublishLimitsReset(providerName, accountID string)
 	PublishUsageError(providerName, accountID string, err error)
 	PublishLogin(state LoginState)
 	// PublishSignIn names the account a login landed on and what it did to
@@ -109,6 +119,24 @@ type Manager struct {
 	loginStates map[string]LoginState
 	// loginSeq numbers every stored sign-in state (LoginState.Seq).
 	loginSeq uint64
+
+	// resetLockWaitOverride replaces ResetLockWait in focused tests.
+	resetLockWaitOverride time.Duration
+	// resetSendCutoffOverride replaces ResetSendCutoff in focused tests.
+	resetSendCutoffOverride time.Duration
+	// resetAdmitted, when set in focused tests, runs as a spend's admission
+	// ends, after a fresh spend's record is written.
+	resetAdmitted func()
+	// resetNotes is the last note codexResetReading logged per Codex
+	// account, so each is logged once per change. Guarded by mu.
+	resetNotes map[string]string
+}
+
+func (m *Manager) resetLockWait() time.Duration {
+	if m.resetLockWaitOverride > 0 {
+		return m.resetLockWaitOverride
+	}
+	return ResetLockWait
 }
 
 // NewManager constructs an unattached manager. Attach installs the two stores

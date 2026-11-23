@@ -123,6 +123,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3774452621: 'selected', // FinishLiveDictation
 	1601396603: 'home', // FinishPasskeyRegistration
 	1569276637: 'home', // FinishPasskeyStepUp
+	3520335973: 'home', // FinishProviderAccountReset
 	516065248: 'home', // ForgetAccessDevice
 	767560289: 'home', // ForgetTailnetNode
 	2246569884: 'thread', // ForkSideChat
@@ -480,6 +481,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3648660014: 'home', // SetWindowBackgroundColor
 	2181574220: 'selected', // SetWorkspaceMcpServerEnabled
 	2115861089: 'home', // ShutdownBackend
+	1201673152: 'home', // SpendProviderAccountReset
 	1913732562: 'thread', // StartCodexReview
 	4173453878: 'thread', // StartNextAssistantThread
 	1484798083: 'home', // StartProviderLogin
@@ -606,6 +608,7 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	2579322833: 720000, // CreateThread
 	1594348919: 660000, // FetchForgeAttachment
 	2178028847: 180000, // FinishDictation
+	3520335973: 60000, // FinishProviderAccountReset
 	2246569884: 120000, // ForkSideChat
 	4063914461: 120000, // ForkThread
 	3977213964: 120000, // ForkThreadFromMessage
@@ -628,6 +631,7 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	1986917811: 1800000, // SaveCIArtifacts
 	2960563266: 660000, // SaveForgeAttachment
 	1537914193: 900000, // SavePRCIJobLog
+	1201673152: 60000, // SpendProviderAccountReset
 	2692607191: 600000, // SubmitPRReview
 	3558393553: 60000, // ThreadOwnerChanges
 	894716875: 780000, // ThreadToolCall

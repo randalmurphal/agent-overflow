@@ -3138,6 +3138,24 @@ describe('setupEventListeners', () => {
     accountInfo.resetForTest();
   });
 
+  // A card's resets changing re-reads the listing and nothing that follows the
+  // saved set: provider:accounts_changed also re-asks dictation.
+  it('re-lists accounts on provider:account_listing without the set change effects', async () => {
+    const dictation = await import('./dictation.svelte');
+    const sources = setBindingMock('DictationSources', async () => ({ live: false, subscription: false, chatGPTSignIn: false }));
+    await dictation.refreshDictationSources(HOME_BACKEND);
+    const list = setBindingMock('ListProviderAccounts', async () => []);
+    const asked = sources.mock.calls.length;
+
+    emitWailsEvent('provider:account_listing', null);
+    await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+    expect(sources.mock.calls.length).toBe(asked);
+
+    emitWailsEvent('provider:accounts_changed', null);
+    await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(sources.mock.calls.length).toBe(asked + 1));
+  });
+
   it('clears retired account limits from provider:usage', async () => {
     const rateLimits = await import('./rateLimitsInfo.svelte');
     rateLimits.resetForTest();

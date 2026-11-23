@@ -28,6 +28,9 @@
     title?: string;
     /** `data-testid` on the row, for tests that drive a menu by hook. */
     testId?: string;
+    /** The label and description wrap instead of being cut off, for text the
+     * row must show whole (a provider's reason, an explanation). */
+    wrap?: boolean;
     onSelect?: () => void;
     actionLabel?: string;
     actionPressed?: boolean;
@@ -63,6 +66,7 @@
     disabled = false,
     title,
     testId,
+    wrap = false,
     onSelect,
     action,
     actionLabel,
@@ -195,9 +199,9 @@
       </span>
     {/if}
     <span class="min-w-0 flex-1">
-      <span class="block truncate">{#if labelContent}{@render labelContent()}{:else}{label}{/if}</span>
+      <span class={wrap ? 'block break-words' : 'block truncate'}>{#if labelContent}{@render labelContent()}{:else}{label}{/if}</span>
       {#if description}
-        <span class="block truncate text-[0.6875rem] leading-4 text-fg-hint">{description}</span>
+        <span class="block text-[0.6875rem] leading-4 text-fg-hint {wrap ? 'break-words' : 'truncate'}">{description}</span>
       {/if}
     </span>
     {#if indicator}
