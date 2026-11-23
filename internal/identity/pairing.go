@@ -363,7 +363,7 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 		return Redemption{}, ReasonUnknownCredential
 	}
 
-	device, reason := s.resolveRedeemingDevice(pending, req, enrollment)
+	device, newDevice, reason := s.resolveRedeemingDevice(pending, req, enrollment)
 	if reason.Refused() {
 		s.cancelRedeemedLink(pending.ID)
 		s.auditPairingRefusal(reason, req.Peer, pending.ID)
@@ -375,7 +375,7 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 	// record of both commit together or not at all, so a failure here
 	// leaves no session, and the spent link is settled so nothing can
 	// present it again.
-	session, tokens, err := s.mintPendingSession(pending, device, now)
+	session, tokens, err := s.mintPendingSession(pending, device, newDevice, now)
 	if err != nil {
 		log.Printf("identity: mint pairing session for link %s: %v", pending.ID, err)
 		s.cancelRedeemedLink(pending.ID)
@@ -448,10 +448,12 @@ func (s *Sessions) enrollmentFor(presented DeviceProof) (deviceEnrollment, Reaso
 	return deviceEnrollment{thumbprint: parsed.thumbprint, kind: ProofSignedKey}, ReasonNone
 }
 
-// resolveRedeemingDevice finds or creates the device row for a presented
-// key. See RedeemPairing for why an existing key is adopted and a revoked
-// one is refused.
-func (s *Sessions) resolveRedeemingDevice(link store.PairingLink, req RedemptionRequest, enrollment deviceEnrollment) (store.Device, Reason) {
+// resolveRedeemingDevice finds the device row for a presented key, relabeled
+// to what the device now reports, or builds a new one; newDevice says which.
+// It writes nothing: mintPendingSession writes the row with the session.
+// See RedeemPairing for why an existing key is adopted and a revoked one is
+// refused.
+func (s *Sessions) resolveRedeemingDevice(link store.PairingLink, req RedemptionRequest, enrollment deviceEnrollment) (device store.Device, newDevice bool, reason Reason) {
 	label := strings.TrimSpace(req.Label)
 	if label == "" {
 		label = defaultDeviceLabel(DeviceClass(link.DeviceClass))
@@ -469,42 +471,39 @@ func (s *Sessions) resolveRedeemingDevice(link store.PairingLink, req Redemption
 			// rows. The other direction cannot occur: a key thumbprint is
 			// the hash of a public key, so a bearer row's opaque
 			// identifier does not collide with one.
-			return store.Device{}, ReasonProofDowngraded
+			return store.Device{}, false, ReasonProofDowngraded
 		}
 		if existing.RevokedAt != 0 {
 			// The owner withdrew this device; a fresh link must not undo
 			// that by itself. The reason names the remedy: restore the
 			// device on the owner surface, then redeem a NEW link.
-			return store.Device{}, ReasonRevokedDevice
+			return store.Device{}, false, ReasonRevokedDevice
 		}
 		if existing.UserID != link.UserID {
-			return store.Device{}, ReasonKeyMismatch
-		}
-		if err := s.store.RelabelDevice(existing.ID, label, req.Platform); err != nil {
-			log.Printf("identity: relabel device %s: %v", existing.ID, err)
+			return store.Device{}, false, ReasonKeyMismatch
 		}
 		existing.Label, existing.Platform = label, req.Platform
-		return existing, ReasonNone
+		return existing, false, ReasonNone
 	case !errors.Is(err, sql.ErrNoRows):
 		log.Printf("identity: read device by thumbprint: %v", err)
-		return store.Device{}, ReasonKeyMismatch
+		return store.Device{}, false, ReasonKeyMismatch
 	}
-	device, err := s.store.CreatePairedDevice(
+	device, err = store.NewPairedDevice(
 		link.UserID, label, link.DeviceClass, req.Platform,
 		enrollment.thumbprint, string(enrollment.kind))
 	if err != nil {
-		log.Printf("identity: create paired device: %v", err)
-		return store.Device{}, ReasonKeyMismatch
+		log.Printf("identity: build paired device: %v", err)
+		return store.Device{}, false, ReasonKeyMismatch
 	}
-	return device, ReasonNone
+	return device, true, ReasonNone
 }
 
 // mintPendingSession issues the unactivated session and its first
-// credential pair, written with the link that names them in one store
-// transaction. The window is the confirmation window, not the device
+// credential pair, written with the device row (created or relabeled) and
+// the link that names them in one store transaction. The window is the confirmation window, not the device
 // class's access TTL: an unconfirmed credential must not outlive the
 // decision it is waiting on. Confirm replaces it with the real one.
-func (s *Sessions) mintPendingSession(link store.PairingLink, device store.Device, now int64) (store.Session, TokenSet, error) {
+func (s *Sessions) mintPendingSession(link store.PairingLink, device store.Device, newDevice bool, now int64) (store.Session, TokenSet, error) {
 	scopes := make([]Scope, 0, len(link.Scopes))
 	for _, name := range link.Scopes {
 		scopes = append(scopes, Scope(name))
@@ -527,7 +526,9 @@ func (s *Sessions) mintPendingSession(link store.PairingLink, device store.Devic
 	if err != nil {
 		return store.Session{}, TokenSet{}, err
 	}
-	if err := s.store.CompletePairingRedemption(store.PairingRedemption{LinkID: link.ID, Session: session, Refresh: grant}); err != nil {
+	if err := s.store.CompletePairingRedemption(store.PairingRedemption{
+		LinkID: link.ID, Device: device, NewDevice: newDevice, Session: session, Refresh: grant,
+	}); err != nil {
 		return store.Session{}, TokenSet{}, err
 	}
 	s.auditMinted(session)

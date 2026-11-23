@@ -181,11 +181,16 @@ func (s *Store) RedeemPairingLink(tokenHash []byte, at int64, keyThumbprint stri
 }
 
 // PairingRedemption is what a redemption produced for its spent link: the
-// unactivated session, and the refresh secret issued with it.
+// redeeming device's row, the unactivated session, and the refresh secret
+// issued with it.
 type PairingRedemption struct {
 	LinkID string
-	// Session is the pending session, on the redeeming device's row; its
-	// ActivatedAt is zero.
+	// Device is the redeeming device: created when NewDevice is set (a row
+	// built by NewPairedDevice), otherwise an existing row relabeled to the
+	// Label and Platform it now reports.
+	Device    Device
+	NewDevice bool
+	// Session is the pending session, on Device; its ActivatedAt is zero.
 	Session Session
 	// Refresh is the session's first renewal credential; a nil Hash issues
 	// none, for a device class that does not renew.
@@ -200,21 +205,33 @@ type RefreshGrant struct {
 	ExpiresAt int64
 }
 
-// CompletePairingRedemption writes the session a redemption produced, its
-// refresh secret, and the link naming both, in one transaction. A link that
-// is no longer redeemed and unsettled, or that already names a redemption,
-// writes nothing: a pending session never exists without the link that
-// names it, and a cancellation that reached the spent link first leaves no
+// CompletePairingRedemption writes the device row a redemption produced or
+// its relabel, the session, its refresh secret, and the link naming both, in
+// one transaction. A link that is no longer redeemed and unsettled, or that
+// already names a redemption, writes nothing: a pending session never exists
+// without the link that names it, a failed redemption adds or renames no
+// device, and a cancellation that reached the spent link first leaves no
 // session behind. sql.ErrNoRows reports that refusal.
 func (s *Store) CompletePairingRedemption(r PairingRedemption) error {
 	if r.Session.ActivatedAt != 0 {
 		return fmt.Errorf("store: complete pairing redemption: session %s is already activated", r.Session.ID)
+	}
+	if r.Session.DeviceID != r.Device.ID {
+		return fmt.Errorf("store: complete pairing redemption: session %s is not on device %s", r.Session.ID, r.Device.ID)
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("store: complete pairing redemption: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if r.NewDevice {
+		err = insertPairedDevice(tx, r.Device)
+	} else {
+		err = relabelDevice(tx, r.Device.ID, r.Device.Label, r.Device.Platform)
+	}
+	if err != nil {
+		return fmt.Errorf("store: complete pairing redemption: %w", err)
+	}
 	if err := createSession(tx, r.Session); err != nil {
 		return fmt.Errorf("store: complete pairing redemption: %w", err)
 	}

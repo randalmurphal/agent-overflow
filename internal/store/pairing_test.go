@@ -200,7 +200,7 @@ func TestConfirmRedeemedPairingRequiresAnAttachedRedemptionAndHappensOnce(t *tes
 	}
 	pending := newTestSession("sess-pending", owner, device, key, 9000)
 	pending.ActivatedAt = 0
-	if err := s.CompletePairingRedemption(PairingRedemption{LinkID: "link-1", Session: pending}); err != nil {
+	if err := s.CompletePairingRedemption(PairingRedemption{LinkID: "link-1", Device: device, Session: pending}); err != nil {
 		t.Fatalf("CompletePairingRedemption: %v", err)
 	}
 	confirmed, err := s.ConfirmRedeemedPairing("link-1", 2500, 900000)

@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/nativenetwork"
 	"agent-overflow/internal/pairbootstrap"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
 )
 
 // openAddressedWindow opens a LAN pairing window on a and checks the address
@@ -42,13 +43,47 @@ func requireWindowRetired(t *testing.T, a *App, window ComputerPairingWindow) {
 }
 
 // A settings save that moves the listener's port retires the window showing
-// the old port before the save returns.
+// the old port right after the rebind, before the save's follow-up work.
 func TestComputerPairingARebindRetiresTheOpenWindow(t *testing.T) {
 	remotetest.Require(t)
 	b := newNativeNetworkBackend(t)
 	window := openAddressedWindow(t, b.app, fmt.Sprintf("https://172.20.0.2:%d", portFromAddr(b.srv.Addr())))
+	// Recording the bound port is the save's first follow-up after the
+	// rebind; the window must already be gone there.
+	probed := false
+	b.app.boundPortRecorder = func(int) {
+		probed = true
+		if b.app.computerPairingOpen() {
+			t.Error("the window showing the old port was still open after the rebind")
+		}
+	}
 	if err := moveListener(t, b.app); err != nil {
 		t.Fatal(err)
+	}
+	if !probed {
+		t.Fatal("the save recorded no bound port")
+	}
+	requireWindowRetired(t, b.app, window)
+}
+
+// A new launcher connection replacing the old one drops the old one's
+// forwarded address and retires the window showing it before anything else
+// in the call runs: the config it answers already says no window is open.
+func TestComputerPairingALauncherHandoverRetiresTheOpenWindow(t *testing.T) {
+	remotetest.Require(t)
+	b, ctx, _, cfg := nativeNetworkBackend(t)
+	if err := b.app.ReportNativeNetworkState(ctx, nativeReport(b, cfg)); err != nil {
+		t.Fatal(err)
+	}
+	window := openAddressedWindow(t, b.app, fmt.Sprintf("https://192.168.1.55:%d", portFromAddr(b.srv.Addr())))
+	next, conn := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	t.Cleanup(conn.RunCleanups)
+	answered, err := b.app.GetNativeNetworkConfig(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answered.PairingOpen {
+		t.Fatal("the new launcher was told a window showing the old launcher's address is open")
 	}
 	requireWindowRetired(t, b.app, window)
 }

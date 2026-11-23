@@ -75,7 +75,8 @@ retires a window whose address it no longer resolves to. An open reads the
 publication once and becomes visible only if nothing was published since.
 
 Each step of the invitation's store state is one transaction: a redemption's
-pending session, refresh secret and the link naming them; a confirmation's
+new or relabeled device row, pending session, refresh secret and the link
+naming them; a confirmation's
 link, session activation and personal membership; a cancellation's link and
 pending session. A confirmation that can no longer admit its device cancels
 the invitation instead, and the owner is told it was not completed. Startup

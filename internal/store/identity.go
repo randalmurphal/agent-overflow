@@ -430,6 +430,20 @@ func (s *Store) deviceByChannel(channel string) (Device, error) {
 // unique index to a concurrent redemption would leave a device row nothing
 // created it for. One INSERT means the conflict refuses the whole thing.
 func (s *Store) CreatePairedDevice(userID, label, class, platform, thumbprint, proofKind string) (Device, error) {
+	device, err := NewPairedDevice(userID, label, class, platform, thumbprint, proofKind)
+	if err != nil {
+		return Device{}, err
+	}
+	if err := insertPairedDevice(s.db, device); err != nil {
+		return Device{}, err
+	}
+	return device, nil
+}
+
+// NewPairedDevice builds the row CreatePairedDevice writes, for a caller that
+// writes it together with what the device was created for
+// (CompletePairingRedemption).
+func NewPairedDevice(userID, label, class, platform, thumbprint, proofKind string) (Device, error) {
 	if strings.TrimSpace(userID) == "" {
 		return Device{}, fmt.Errorf("%w: device user id", ErrIdentityFieldRequired)
 	}
@@ -452,16 +466,20 @@ func (s *Store) CreatePairedDevice(userID, label, class, platform, thumbprint, p
 		ProofKind:     proofKind,
 		CreatedAt:     nowMillis(),
 	}
-	if _, err := s.db.Exec(
+	return device, nil
+}
+
+func insertPairedDevice(db sqlExecutor, device Device) error {
+	if _, err := db.Exec(
 		`INSERT INTO devices (id, user_id, label, class, platform, key_thumbprint,
 			passkey_credential_id, channel, created_at, last_seen_at, revoked_at, proof_kind)
 		 VALUES (?, ?, ?, ?, ?, ?, NULL, '', ?, 0, NULL, ?)`,
 		device.ID, device.UserID, device.Label, device.Class, device.Platform,
 		device.KeyThumbprint, device.CreatedAt, device.ProofKind,
 	); err != nil {
-		return Device{}, fmt.Errorf("store: create paired device: %w", err)
+		return fmt.Errorf("store: create paired device: %w", err)
 	}
-	return device, nil
+	return nil
 }
 
 // DeviceByKeyThumbprint resolves a device from the public key it presented.
@@ -481,10 +499,14 @@ func (s *Store) DeviceByKeyThumbprint(thumbprint string) (Device, error) {
 // renamed or moved to another OS since, and the row should say what the
 // device says.
 func (s *Store) RelabelDevice(deviceID, label, platform string) error {
+	return relabelDevice(s.db, deviceID, label, platform)
+}
+
+func relabelDevice(db sqlExecutor, deviceID, label, platform string) error {
 	if strings.TrimSpace(label) == "" {
 		return fmt.Errorf("%w: device label", ErrIdentityFieldRequired)
 	}
-	result, err := s.db.Exec(
+	result, err := db.Exec(
 		`UPDATE devices SET label = ?, platform = ? WHERE id = ?`,
 		strings.TrimSpace(label), platform, deviceID)
 	if err != nil {

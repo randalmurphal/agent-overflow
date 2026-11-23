@@ -3,12 +3,16 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
+
+	"agent-overflow/internal/owndevices"
 )
 
-// spentLink seeds a link redeemed at 2000 whose pending session is not yet
-// written, and the pending session a redemption would write for it.
-func spentLink(t *testing.T) (*Store, Session) {
+// spentLink seeds a link redeemed at 2000 and the redemption that would
+// complete it: the owner's existing device, relabeled, and its pending
+// session.
+func spentLink(t *testing.T) (*Store, PairingRedemption) {
 	t.Helper()
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
@@ -18,88 +22,126 @@ func spentLink(t *testing.T) (*Store, Session) {
 	}
 	pending := newTestSession("sess-pending", owner, device, key, 9000)
 	pending.ActivatedAt = 0
-	return s, pending
+	relabeled := device
+	relabeled.Label, relabeled.Platform = "Renamed by the redemption", "windows"
+	return s, PairingRedemption{LinkID: "link-1", Device: relabeled, Session: pending,
+		Refresh: RefreshGrant{Hash: []byte("refresh-1"), CreatedAt: 2000, ExpiresAt: 90000}}
 }
 
-func redemptionOf(session Session) PairingRedemption {
-	return PairingRedemption{LinkID: "link-1", Session: session, Refresh: RefreshGrant{Hash: []byte("refresh-1"), CreatedAt: 2000, ExpiresAt: 90000}}
-}
-
-// requireNoPendingSession checks that a redemption that failed left neither
-// its session, its refresh secret, nor a link naming them.
-func requireNoPendingSession(t *testing.T, s *Store, session Session) {
+// onNewDevice is r redeemed by a key this store has never seen: a new
+// device row.
+func onNewDevice(t *testing.T, r PairingRedemption) PairingRedemption {
 	t.Helper()
-	if got, err := s.GetSession(session.ID); !errors.Is(err, sql.ErrNoRows) {
+	device, err := NewPairedDevice(r.Session.UserID, "New laptop", "desktop", "linux", "thumb-new", "bearer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Device, r.NewDevice, r.Session.DeviceID = device, true, device.ID
+	return r
+}
+
+// eachDevice runs test for a redemption on the existing device and on a new
+// one.
+func eachDevice(t *testing.T, test func(t *testing.T, s *Store, r PairingRedemption)) {
+	t.Run("existing device", func(t *testing.T) {
+		s, r := spentLink(t)
+		test(t, s, r)
+	})
+	t.Run("new device", func(t *testing.T) {
+		s, r := spentLink(t)
+		test(t, s, onNewDevice(t, r))
+	})
+}
+
+// requireNothingRedeemed checks that a redemption that failed left no
+// session, no refresh secret, no link naming them, and no new or renamed
+// device.
+func requireNothingRedeemed(t *testing.T, s *Store, r PairingRedemption) {
+	t.Helper()
+	if got, err := s.GetSession(r.Session.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("a failed redemption left its session (%+v, %v)", got, err)
 	}
 	var secrets int
-	if err := s.db.QueryRow(`SELECT count(*) FROM refresh_secrets WHERE session_id = ?`, session.ID).Scan(&secrets); err != nil || secrets != 0 {
+	if err := s.db.QueryRow(`SELECT count(*) FROM refresh_secrets WHERE session_id = ?`, r.Session.ID).Scan(&secrets); err != nil || secrets != 0 {
 		t.Fatalf("a failed redemption left %d refresh secrets (%v)", secrets, err)
 	}
 	if link, err := s.GetPairingLink("link-1"); err != nil || link.SessionID != "" || link.DeviceID != "" {
 		t.Fatalf("a failed redemption left the link naming rows (%+v, %v)", link, err)
 	}
+	device, err := s.GetDevice(r.Device.ID)
+	switch {
+	case r.NewDevice && !errors.Is(err, sql.ErrNoRows):
+		t.Fatalf("a failed redemption left its new device (%+v, %v)", device, err)
+	case !r.NewDevice && (err != nil || device.Label != "This Desktop" || device.Platform != "linux"):
+		t.Fatalf("a failed redemption renamed its device (%+v, %v)", device, err)
+	}
 }
 
-// A redemption whose refresh secret cannot be written writes no session
-// either.
+// A redemption whose refresh secret cannot be written writes nothing else.
 func TestCompletePairingRedemptionWritesNothingWhenItsRefreshSecretFails(t *testing.T) {
-	s, pending := spentLink(t)
-	mustExec(t, s.db, `CREATE TRIGGER reject_refresh BEFORE INSERT ON refresh_secrets BEGIN SELECT RAISE(ABORT, 'test refresh failure'); END`)
-	if err := s.CompletePairingRedemption(redemptionOf(pending)); err == nil {
-		t.Fatal("a redemption whose refresh secret failed reported success")
-	}
-	requireNoPendingSession(t, s, pending)
+	eachDevice(t, func(t *testing.T, s *Store, r PairingRedemption) {
+		mustExec(t, s.db, `CREATE TRIGGER reject_refresh BEFORE INSERT ON refresh_secrets BEGIN SELECT RAISE(ABORT, 'test refresh failure'); END`)
+		if err := s.CompletePairingRedemption(r); err == nil {
+			t.Fatal("a redemption whose refresh secret failed reported success")
+		}
+		requireNothingRedeemed(t, s, r)
+	})
 }
 
-// A redemption whose link cannot name it writes no session.
+// A redemption whose link cannot name it writes nothing.
 func TestCompletePairingRedemptionWritesNothingWhenItsAttachFails(t *testing.T) {
-	s, pending := spentLink(t)
-	mustExec(t, s.db, `CREATE TRIGGER reject_attach BEFORE UPDATE OF session_id ON pairing_links BEGIN SELECT RAISE(ABORT, 'test attach failure'); END`)
-	if err := s.CompletePairingRedemption(redemptionOf(pending)); err == nil {
-		t.Fatal("a redemption whose attach failed reported success")
-	}
-	requireNoPendingSession(t, s, pending)
+	eachDevice(t, func(t *testing.T, s *Store, r PairingRedemption) {
+		mustExec(t, s.db, `CREATE TRIGGER reject_attach BEFORE UPDATE OF session_id ON pairing_links BEGIN SELECT RAISE(ABORT, 'test attach failure'); END`)
+		if err := s.CompletePairingRedemption(r); err == nil {
+			t.Fatal("a redemption whose attach failed reported success")
+		}
+		requireNothingRedeemed(t, s, r)
+	})
 }
 
 // A cancellation that reaches the spent link before the redemption completes
 // leaves the redemption nothing to write.
-func TestCompletePairingRedemptionAfterACancellationWritesNoSession(t *testing.T) {
-	s, pending := spentLink(t)
-	if _, err := s.CancelPairingLink("link-1", 2100); err != nil {
-		t.Fatalf("CancelPairingLink: %v", err)
-	}
-	if err := s.CompletePairingRedemption(redemptionOf(pending)); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("a redemption of a cancelled link = %v, want sql.ErrNoRows", err)
-	}
-	requireNoPendingSession(t, s, pending)
+func TestCompletePairingRedemptionAfterACancellationWritesNothing(t *testing.T) {
+	eachDevice(t, func(t *testing.T, s *Store, r PairingRedemption) {
+		if _, err := s.CancelPairingLink("link-1", 2100); err != nil {
+			t.Fatalf("CancelPairingLink: %v", err)
+		}
+		if err := s.CompletePairingRedemption(r); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("a redemption of a cancelled link = %v, want sql.ErrNoRows", err)
+		}
+		requireNothingRedeemed(t, s, r)
+	})
 }
 
-func TestCompletePairingRedemptionWritesTheSessionWithItsLink(t *testing.T) {
-	s, pending := spentLink(t)
-	if err := s.CompletePairingRedemption(redemptionOf(pending)); err != nil {
-		t.Fatalf("CompletePairingRedemption: %v", err)
-	}
-	link, err := s.GetPairingLink("link-1")
-	if err != nil || link.SessionID != pending.ID || link.DeviceID != pending.DeviceID || !link.Ready() {
-		t.Fatalf("the link after its redemption = %+v (%v)", link, err)
-	}
-	if session, err := s.GetSession(pending.ID); err != nil || session.ActivatedAt != 0 {
-		t.Fatalf("the redemption's session = %+v (%v), want written and unactivated", session, err)
-	}
-	if _, err := s.GetRefreshSecretByHash([]byte("refresh-1")); err != nil {
-		t.Fatalf("the redemption's refresh secret: %v", err)
-	}
+func TestCompletePairingRedemptionWritesTheDeviceAndSessionWithItsLink(t *testing.T) {
+	eachDevice(t, func(t *testing.T, s *Store, r PairingRedemption) {
+		if err := s.CompletePairingRedemption(r); err != nil {
+			t.Fatalf("CompletePairingRedemption: %v", err)
+		}
+		link, err := s.GetPairingLink("link-1")
+		if err != nil || link.SessionID != r.Session.ID || link.DeviceID != r.Device.ID || !link.Ready() {
+			t.Fatalf("the link after its redemption = %+v (%v)", link, err)
+		}
+		if device, err := s.GetDevice(r.Device.ID); err != nil || device.Label != r.Device.Label || device.Platform != r.Device.Platform {
+			t.Fatalf("the redemption's device = %+v (%v), want %+v", device, err, r.Device)
+		}
+		if session, err := s.GetSession(r.Session.ID); err != nil || session.ActivatedAt != 0 {
+			t.Fatalf("the redemption's session = %+v (%v), want written and unactivated", session, err)
+		}
+		if _, err := s.GetRefreshSecretByHash([]byte("refresh-1")); err != nil {
+			t.Fatalf("the redemption's refresh secret: %v", err)
+		}
+	})
 }
 
 // readyLink seeds a redeemed link whose pending session is attached.
 func readyLink(t *testing.T) (*Store, Session) {
 	t.Helper()
-	s, pending := spentLink(t)
-	if err := s.CompletePairingRedemption(redemptionOf(pending)); err != nil {
+	s, r := spentLink(t)
+	if err := s.CompletePairingRedemption(r); err != nil {
 		t.Fatalf("CompletePairingRedemption: %v", err)
 	}
-	return s, pending
+	return s, r.Session
 }
 
 // A confirmation whose write fails leaves the link and its session as they
@@ -162,5 +204,60 @@ func TestConfirmRedeemedPairingJudgesTheDeadlineAtAdmission(t *testing.T) {
 	}
 	if session, err := s.GetSession(pending.ID); err != nil || session.ActivatedAt != pending.ExpiresAt-1 || session.ExpiresAt != 900000 {
 		t.Fatalf("the session = %+v (%v), want activated with its access window", session, err)
+	}
+}
+
+// A personal pairing whose membership can no longer be admitted cancels the
+// link and revokes its session in the confirmation's transaction, and admits
+// nothing.
+func TestConfirmRedeemedPairingWhoseMembershipIsRefusedCancelsInstead(t *testing.T) {
+	for _, refused := range []struct {
+		name, purpose, want string
+		// before makes the membership inadmissible.
+		before func(t *testing.T, s *Store)
+	}{
+		// No member holds the generation the introduction was issued for.
+		{"an introduction no longer authorized", "own-introduction", "no longer authorized", func(*testing.T, *Store) {}},
+		// The catalog is full, so a new member cannot join it.
+		{"a full catalog", "own-device", "too many own devices", func(t *testing.T, s *Store) {
+			mustExec(t, s.db, `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+				INSERT INTO own_devices(key_thumbprint, member, generation, removed) SELECT 'member-' || i, '{}', 1, 0 FROM n`, owndevices.MaxMembers)
+		}},
+	} {
+		t.Run(refused.name, func(t *testing.T) {
+			s, owner, device := seedOwnerDevice(t)
+			key := seedSigningKey(t, s)
+			link := PairingLink{ID: "own-link", UserID: owner.ID, Scopes: []string{"threads:read"}, BindingClass: "device-bound",
+				DeviceClass: "desktop", Purpose: refused.purpose, MemberGeneration: 1, CreatedAt: 1000, ExpiresAt: 9000}
+			if err := s.CreatePairingLink(link, []byte("hash-own")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.RedeemPairingLink([]byte("hash-own"), 2000, "thumb-own"); err != nil {
+				t.Fatal(err)
+			}
+			pending := newTestSession("sess-own", owner, device, key, 9000)
+			pending.ActivatedAt = 0
+			if err := s.CompletePairingRedemption(PairingRedemption{LinkID: link.ID, Device: device, Session: pending}); err != nil {
+				t.Fatal(err)
+			}
+			refused.before(t, s)
+			confirmation, err := s.ConfirmRedeemedPairing(link.ID, 2500, 900000)
+			if !errors.Is(err, ErrPairingIncomplete) || !strings.Contains(err.Error(), refused.want) {
+				t.Fatalf("a confirmation whose membership is refused = %v, want ErrPairingIncomplete for the admission", err)
+			}
+			if !confirmation.Canceled.SessionRevoked {
+				t.Fatalf("the incomplete confirmation reported %+v, want its session revoked", confirmation.Canceled)
+			}
+			if got, err := s.GetPairingLink(link.ID); err != nil || got.ConfirmedAt != 0 || got.CanceledAt == 0 {
+				t.Fatalf("the link = %+v (%v), want cancelled and unconfirmed", got, err)
+			}
+			if session, err := s.GetSession(pending.ID); err != nil || session.ActivatedAt != 0 || session.RevokedAt == 0 {
+				t.Fatalf("the session = %+v (%v), want revoked and unactivated", session, err)
+			}
+			var admitted int
+			if err := s.db.QueryRow(`SELECT count(*) FROM own_device_sessions WHERE session_id = ?`, pending.ID).Scan(&admitted); err != nil || admitted != 0 {
+				t.Fatalf("%d memberships admitted for the refused pairing (%v)", admitted, err)
+			}
+		})
 	}
 }
