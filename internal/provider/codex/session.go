@@ -406,7 +406,7 @@ type Session struct {
 	// the provider callback its serialized-delivery contract without pinning
 	// session state while the app layer runs.
 	//
-	// codexThreadID, appServerVersion, threadHistoryMode, pendingRevert,
+	// codexThreadID, threadHistoryMode, pendingRevert,
 	// revertEpoch, closing and nextID are atomics precisely
 	// so their readers never have to enter this order at all.
 	// settingsWireMu precedes mu and never nests with controlMu.
@@ -552,15 +552,10 @@ type Session struct {
 	// binary-scoped read (skills) can match on it rather than assuming the
 	// current setting still describes a process that started earlier.
 	binary string
-	// appServerVersion is the codex build the LIVE process reported at
-	// `initialize` (`InitializeResponse.userAgent`), copied from its Conn,
-	// which admitted it (app_server_version.go). Atomic so the binary watch
-	// reads it from any goroutine without taking mu.
-	appServerVersion atomic.Pointer[string]
 	// threadHistoryMode is the `thread.historyMode` this session's thread
 	// reported on its start/resume response, recorded by
-	// recordThreadHistoryMode. Atomic for the same reason appServerVersion
-	// is. "" means the app-server did not state one, which every gate
+	// recordThreadHistoryMode. Atomic so its readers never take mu.
+	// "" means the app-server did not state one, which every gate
 	// treats as not-paginated — see session_revert.go.
 	threadHistoryMode atomic.Pointer[string]
 	// pendingRevert is the in-place history cut this session has asked for

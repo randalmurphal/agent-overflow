@@ -9,10 +9,16 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/providerdiscoveryapp"
 	"agent-overflow/internal/settings"
 )
+
+// codexProbeInitReply opens a Codex fake that reads its requests in order:
+// it reads initialize and answers it as a supported app-server, which every
+// client waits for before it sends anything else.
+const codexProbeInitReply = "read -r _ || true\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":" + providertest.CodexInitializeResult + "}'\n"
 
 // resetCodexProbeCacheForTest gives the test fresh process-wide probe caches
 // and resets them again when it ends. Like resetClaudeProbeCacheForTest, a test
@@ -39,11 +45,10 @@ func writeCodexProbeMockBinary(t *testing.T, rateLimitsJSON string) string {
 	}
 
 	script := "#!/bin/bash\n" +
+		codexProbeInitReply +
 		`read -r _ || true` + "\n" +
 		`read -r _ || true` + "\n" +
 		`read -r _ || true` + "\n" +
-		`read -r _ || true` + "\n" +
-		`printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}\n'` + "\n" +
 		`printf '%s\n' '` + idTwoFrame + `'` + "\n" +
 		`exit 0` + "\n"
 	mockexec.Write(t, path, script)
@@ -113,8 +118,7 @@ func TestProbeCodexAccountCachesByBinary(t *testing.T) {
 	idTwoFrame := `{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"planType":"second"}}}`
 	mockexec.Write(t, binary,
 		"#!/bin/bash\n"+
-			"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n"+
-			`printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}\n'`+"\n"+
+			codexProbeInitReply+"read -r _ || true\nread -r _ || true\nread -r _ || true\n"+
 			`printf '%s\n' '`+idTwoFrame+`'`+"\n"+
 			"exit 0\n",
 	)
@@ -306,8 +310,7 @@ func TestRecheckCodexAccountBypassesCache(t *testing.T) {
 	idTwoFrame := `{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"planType":"team"}}}`
 	mockexec.Write(t, binary,
 		"#!/bin/bash\n"+
-			"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n"+
-			`printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}\n'`+"\n"+
+			codexProbeInitReply+"read -r _ || true\nread -r _ || true\nread -r _ || true\n"+
 			`printf '%s\n' '`+idTwoFrame+`'`+"\n"+
 			"exit 0\n",
 	)

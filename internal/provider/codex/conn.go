@@ -126,9 +126,8 @@ func Dial(ctx context.Context, cfg ConnConfig) (*Conn, error) {
 		_ = c.Close()
 		return nil, fmt.Errorf("codex: initialize handshake failed: %w", err)
 	}
-	userAgent := readNestedString(initResp, "userAgent")
-	version := parseAppServerVersion(userAgent)
-	if err := provider.CheckCodexVersion(proc.Path(), version, userAgent); err != nil {
+	version, err := admitInitialize(proc.Path(), initResp)
+	if err != nil {
 		return nil, errors.Join(err, c.Close())
 	}
 	c.appServerVersion.Store(&version)
@@ -376,10 +375,6 @@ func (c *Conn) open(
 		planBuffersByTurnID: make(map[string]*planBuffer),
 		ownsQueuedClient:    cfg.OwnsQueuedClientID,
 	}
-	if v := c.AppServerVersion(); v != "" {
-		s.appServerVersion.Store(&v)
-	}
-
 	if delivery := cfg.DeveloperInstructionsDelivery; delivery != nil {
 		s.developerInstructionsRecord = delivery.Record
 		if cfg.ResumeThreadID != "" {

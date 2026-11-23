@@ -304,7 +304,7 @@ func codexIdentityProbe(t *testing.T, email string) string {
 	frame := filepath.Join(dir, "account-read.json")
 	writeAccountReadFrame(t, frame, chatgptAccountFrame(email, "team", ""))
 	return mockexec.Write(t, filepath.Join(dir, "mock-codex"), "#!/bin/bash\n"+
-		"read -r _ || true\nread -r _ || true\nread -r _ || true\n"+
+		codexInitReply+"read -r _ || true\nread -r _ || true\n"+
 		"cat "+shellQuoteForTest(frame)+"\n")
 }
 

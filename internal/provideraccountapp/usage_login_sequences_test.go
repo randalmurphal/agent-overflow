@@ -95,6 +95,7 @@ func newLoginRig(t *testing.T) loginRig {
 		"fi\n"+
 		"while IFS= read -r line; do\n"+
 		`case "$line" in`+"\n"+
+		codexInitCase+
 		`*'"account/read"'*) cat "$account" ;;`+"\n"+
 		`*'"account/rateLimits/read"'*)`+"\n"+
 		`  [ -f "$dir/rotate.json" ] && cp "$dir/rotate.json" "$CODEX_HOME/auth.json"`+"\n"+

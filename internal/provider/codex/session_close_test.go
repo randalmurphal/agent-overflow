@@ -183,7 +183,6 @@ var sessionCloseFieldDispositions = map[string]string{
 	// Atomic wire facts; honest answers after Close.
 	"codexThreadID":     "identity, atomic",
 	"codexSessionID":    "session-tree identity, atomic",
-	"appServerVersion":  "wire fact, atomic",
 	"threadHistoryMode": "wire fact, atomic",
 	"pendingRevert":     "atomic pointer, one small expectation",
 	"revertEpoch":       "root control-operation generation, atomic",

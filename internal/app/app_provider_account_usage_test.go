@@ -63,9 +63,8 @@ func TestSelectedCodexUsageCredentialRotationAdvancesReconnectGeneration(t *test
 
 	binary := filepath.Join(t.TempDir(), "mock-codex")
 	script := "#!/bin/bash\n" +
-		"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n" +
+		codexProbeInitReply + "read -r _ || true\nread -r _ || true\nread -r _ || true\n" +
 		`printf '%s' '` + rotated + `' > "$CODEX_HOME/auth.json"` + "\n" +
-		`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}'` + "\n" +
 		`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"selected@example.com","planType":"pro"},"requiresOpenaiAuth":true}}'` + "\n" +
 		`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","planType":"pro","primary":{"usedPercent":7,"windowDurationMins":300,"resetsAt":1778479200}}}}'` + "\n"
 	mockexec.Write(t, binary, script)
@@ -406,10 +405,9 @@ func TestSelectedCodexUsageRefreshNeverRewindsTheSlot(t *testing.T) {
 			}
 			binary := filepath.Join(t.TempDir(), "mock-codex")
 			script := "#!/bin/bash\n" +
-				"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n" +
+				codexProbeInitReply + "read -r _ || true\nread -r _ || true\nread -r _ || true\n" +
 				rotation +
 				`printf '%s' '` + later + `' > '` + slotPath + `'` + "\n" +
-				`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}'` + "\n" +
 				`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"selected@example.com","planType":"pro"},"requiresOpenaiAuth":true}}'` + "\n" +
 				`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","planType":"pro","primary":{"usedPercent":7,"windowDurationMins":300,"resetsAt":1778479200}}}}'` + "\n"
 			mockexec.Write(t, binary, script)
@@ -518,7 +516,7 @@ func writeCodexAppServerMock(t *testing.T, app *App) {
 		"  case \"$line\" in\n"+
 		"    *'\"method\":\"account/read\"'*) result='{\"account\":{\"type\":\"chatgpt\",\"email\":null,\"planType\":\"pro\"},\"requiresOpenaiAuth\":true}' ;;\n"+
 		"    *'\"method\":\"account/rateLimits/read\"'*) result='{\"rateLimits\":{\"limitId\":\"codex\",\"planType\":\"pro\",\"primary\":{\"usedPercent\":7,\"windowDurationMins\":300,\"resetsAt\":1778479200}}}' ;;\n"+
-		"    *) result='{\"protocolVersion\":\"v2\",\"userAgent\":\"codex/0.200.0\"}' ;;\n"+
+		"    *) result='{\"protocolVersion\":\"v2\",\"userAgent\":\"codex/0.200.0 (test)\"}' ;;\n"+
 		"  esac\n"+
 		"  printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":%s}\\n' \"$id\" \"$result\"\n"+
 		"done\n")
@@ -673,10 +671,9 @@ func TestInactiveCodexUsageRefreshNeverRewindsTheSlot(t *testing.T) {
 			}
 			binary := filepath.Join(t.TempDir(), "mock-codex")
 			script := "#!/bin/bash\n" +
-				"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n" +
+				codexProbeInitReply + "read -r _ || true\nread -r _ || true\nread -r _ || true\n" +
 				rotation +
 				`printf '%s' '` + later + `' > '` + slotPath + `'` + "\n" +
-				`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}'` + "\n" +
 				`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"inactive@example.com","planType":"pro"},"requiresOpenaiAuth":true}}'` + "\n" +
 				`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","planType":"pro","primary":{"usedPercent":7,"windowDurationMins":300,"resetsAt":1778479200}}}}'` + "\n"
 			mockexec.Write(t, binary, script)

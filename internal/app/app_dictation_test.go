@@ -224,7 +224,7 @@ func TestDictationRefreshesARefusedSignInOnce(t *testing.T) {
 			binary := filepath.Join(t.TempDir(), "mock-codex")
 			mockexec.Write(t, binary, "#!/bin/bash\n"+
 				"read -r _ || true\n"+
-				`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex/0.200.0"}}'`+"\n"+
+				`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex/0.200.0 (test)"}}'`+"\n"+
 				"read -r _ || true\nread -r _ || true\n"+
 				refresh+
 				`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"account":{"type":"chatgpt","email":"selected@example.com","planType":"pro"},"requiresOpenaiAuth":true}}'`+"\n")

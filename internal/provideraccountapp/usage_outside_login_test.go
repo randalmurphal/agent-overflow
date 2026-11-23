@@ -177,9 +177,9 @@ func codexOutsideLoginProbe(t *testing.T, aEmail, bEmail string) string {
 		`"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":4102444800}}}}`
 	return mockexec.Write(t, filepath.Join(dir, "mock-codex"), "#!/bin/bash\n"+
 		"if [ -z \"$CODEX_HOME\" ]; then\n"+
-		"  read -r _ || true\n  read -r _ || true\n  read -r _ || true\n"+
+		codexInitReply+"  read -r _ || true\n  read -r _ || true\n"+
 		"  cat "+shellQuoteForTest(bFrame)+"\n  exit 0\nfi\n"+
-		"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n"+
+		codexInitReply+"read -r _ || true\nread -r _ || true\nread -r _ || true\n"+
 		"if grep -q '\"refresh_token\":\"rt-a' \"$CODEX_HOME/auth.json\"; then cat "+shellQuoteForTest(aFrame)+
 		"; else cat "+shellQuoteForTest(bFrame)+"; fi\n"+
 		"printf '%s\\n' '"+rateLimits+"'\n")

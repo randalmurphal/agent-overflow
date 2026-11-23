@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -23,15 +24,20 @@ var probeWorkDir = os.TempDir()
 // writeMockCodexAppServerScript writes a shell script to tmpDir that
 // mimics `codex app-server` during a probe. The probe sends four
 // NDJSON lines (initialize request, initialized notification,
-// account/read, account/rateLimits/read); the script reads enough to let
-// the probe proceed, emits a
-// noisy id=1 init reply (which the probe must skip), then emits the
-// id=2 response carrying the supplied rate-limits payload.
+// account/read, account/rateLimits/read); the script answers initialize
+// (probeInitReply), reads the rest, emits a notification the probe must
+// skip, then emits the id=2 response carrying the supplied rate-limits
+// payload.
 //
 // rateLimitsJSON is the inner `result` object — pass an empty string to
 // omit the result field entirely (modeling the wire's absent-data
 // case). When errMsg is non-empty, the id=2 frame carries an `error`
 // member instead of `result`.
+// probeInitReply is the shell lines a probe fake starts with: it reads the
+// initialize request and answers it as a supported Codex, which the probe
+// waits for before it sends anything else.
+const probeInitReply = "read -r _ || true\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":" + providertest.CodexInitializeResult + "}'\n"
+
 func writeMockCodexAppServerScript(t *testing.T, tmpDir, rateLimitsJSON, errMsg string) string {
 	t.Helper()
 	path := filepath.Join(tmpDir, "mock-codex")
@@ -49,12 +55,10 @@ func writeMockCodexAppServerScript(t *testing.T, tmpDir, rateLimitsJSON, errMsg 
 	script := "#!/bin/bash\n" +
 		// Drain the four probe writes (initialize, initialized, account/read,
 		// rateLimits/read) before exiting, so no write meets a closed pipe.
+		probeInitReply +
 		`read -r _ || true` + "\n" +
 		`read -r _ || true` + "\n" +
 		`read -r _ || true` + "\n" +
-		`read -r _ || true` + "\n" +
-		// Init reply (id=1) — probe must skip this and keep reading.
-		`printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}\n'` + "\n" +
 		// A bare notification — probe must skip (no id).
 		`printf '{"jsonrpc":"2.0","method":"some/notification","params":{}}\n'` + "\n" +
 		// The matching id=2 response.
@@ -69,7 +73,7 @@ func TestProbeAccountWaitsBrieflyForOutOfOrderAccountIdentity(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "mock-codex-out-of-order")
 	script := "#!/bin/bash\n" +
-		"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n" +
+		probeInitReply + "read -r _ || true\nread -r _ || true\nread -r _ || true\n" +
 		`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"planType":"pro"}}}'` + "\n" +
 		`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"person@example.com","planType":"pro"}}}'` + "\n"
 	mockexec.Write(t, path, script)
@@ -92,7 +96,7 @@ func TestProbeAccountCarriesWorkspaceName(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "mock-codex-workspace")
 	script := "#!/bin/bash\n" +
-		"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n" +
+		probeInitReply + "read -r _ || true\nread -r _ || true\nread -r _ || true\n" +
 		`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"person@example.com","planType":"team","workspaceName":"Acme Team"}}}'` + "\n" +
 		`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"planType":"team"}}}'` + "\n"
 	mockexec.Write(t, path, script)
@@ -122,7 +126,7 @@ func TestProbeAccountWithoutAccountReadDoesNotReportWorkspaceName(t *testing.T) 
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "mock-codex-no-account")
 			script := "#!/bin/bash\n" +
-				"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n" +
+				probeInitReply + "read -r _ || true\nread -r _ || true\nread -r _ || true\n" +
 				accountFrame +
 				`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"planType":"team"}}}'` + "\n"
 			mockexec.Write(t, path, script)
@@ -141,8 +145,7 @@ func TestProbeIdentityReadsAccountWithoutRateLimitRequest(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "mock-codex-identity")
 	script := "#!/bin/bash\n" +
-		"read -r _ || true\nread -r _ || true\nread -r _ || true\n" +
-		`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}'` + "\n" +
+		probeInitReply + "read -r _ || true\nread -r _ || true\n" +
 		`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"identity@example.com","planType":"pro"},"requiresOpenaiAuth":true}}'` + "\n"
 	mockexec.Write(t, path, script)
 
@@ -456,7 +459,7 @@ func TestProbeAccountReturnsErrorWhenResponseMissing(t *testing.T) {
 	// well below the configured Timeout.
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "silent")
-	script := "#!/bin/bash\nread -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\nexit 0\n"
+	script := "#!/bin/bash\n" + probeInitReply + "read -r _ || true\nread -r _ || true\nread -r _ || true\nexit 0\n"
 	mockexec.Write(t, path, script)
 
 	const probeTimeout = 3 * time.Second
@@ -487,7 +490,7 @@ func TestProbeAccountRespectsConfigTimeout(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "slow")
 	script := "#!/bin/bash\n" +
-		"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n" +
+		probeInitReply + "read -r _ || true\nread -r _ || true\nread -r _ || true\n" +
 		"sleep 5\n"
 	mockexec.Write(t, path, script)
 

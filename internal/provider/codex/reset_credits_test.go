@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -63,7 +64,9 @@ func writeSpendScript(t *testing.T, consumeFrame string, accountDelay time.Durat
 	record := "IFS= read -r line || exit 0; printf '%s\\n' \"$line\" >> \"$log\"\n"
 	script := "#!/bin/bash\n" +
 		`log="` + transcript + `"` + "\n" +
-		record + record + record
+		record +
+		`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":` + providertest.CodexInitializeResult + `}'` + "\n" +
+		record + record
 	if accountDelay > 0 {
 		script += "sleep " + strings.TrimSuffix(accountDelay.String(), "s") + "\n"
 	}
@@ -287,7 +290,7 @@ func TestProbeAccountReturnsTheAccountReadWhenTheRateLimitReadFails(t *testing.T
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "mock-codex")
 	mockexec.Write(t, path, "#!/bin/bash\n"+
-		"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n"+
+		probeInitReply+"read -r _ || true\nread -r _ || true\nread -r _ || true\n"+
 		`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"person@example.com","planType":"pro"}}}'`+"\n"+
 		`printf '%s\n' '{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"usage unavailable"}}'`+"\n")
 	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: path, Reaper: procutiltest.Reaper(), WorkDir: probeWorkDir})

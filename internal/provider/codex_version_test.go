@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 func TestParseCodexCLIVersion(t *testing.T) {
@@ -171,16 +172,53 @@ func TestCodexVersionErrorMessages(t *testing.T) {
 			CodexVersionError{Path: "/opt/codex"},
 			"Agent Overflow could not read the version of Codex (/opt/codex). Update Codex to v0.154.0 or newer.",
 		},
-		{
-			CodexVersionError{Path: "/opt/codex", Raw: strings.Repeat("x", 200)},
-			`Agent Overflow could not read the version of Codex (/opt/codex) from "` + strings.Repeat("x", 120) + `...". Update Codex to v0.154.0 or newer.`,
-		},
 	}
 	for _, tc := range cases {
 		if got := tc.err.Error(); got != tc.want {
 			t.Errorf("Error() = %q, want %q", got, tc.want)
 		}
 	}
+}
+
+// TestCheckCodexVersionBoundsTheTextItKeeps builds refusals from long
+// version text on both branches: an unreadable version and a parsed one
+// below the minimum. Each keeps at most 120 bytes of each text, copied, so a
+// cached refusal neither pins nor repeats megabytes of provider output.
+func TestCheckCodexVersionBoundsTheTextItKeeps(t *testing.T) {
+	long := strings.Repeat("x", 4096)
+	t.Run("unreadable", func(t *testing.T) {
+		raw := "codex_cli_rs/" + long + " (Linux)"
+		var refusal *CodexVersionError
+		if !errors.As(CheckCodexVersion("/opt/codex", "", raw), &refusal) {
+			t.Fatal("an unreadable version was admitted")
+		}
+		if want := raw[:120] + "..."; refusal.Raw != want {
+			t.Fatalf("Raw = %q, want %q", refusal.Raw, want)
+		}
+		if unsafe.StringData(refusal.Raw) == unsafe.StringData(raw) {
+			t.Fatal("Raw shares the input's bytes")
+		}
+	})
+	t.Run("below the minimum", func(t *testing.T) {
+		version := "0.153.0-" + long
+		raw := "codex_cli_rs/" + version + " (Linux)"
+		var refusal *CodexVersionError
+		if !errors.As(CheckCodexVersion("/opt/codex", version, raw), &refusal) {
+			t.Fatal("a version below the minimum was admitted")
+		}
+		if want := version[:120] + "..."; refusal.Version != want {
+			t.Fatalf("Version = %q, want %q", refusal.Version, want)
+		}
+		if want := raw[:120] + "..."; refusal.Raw != want {
+			t.Fatalf("Raw = %q, want %q", refusal.Raw, want)
+		}
+		if unsafe.StringData(refusal.Version) == unsafe.StringData(version) {
+			t.Fatal("Version shares the input's bytes")
+		}
+		if len(refusal.Error()) > 400 {
+			t.Fatalf("message is %d bytes: %q", len(refusal.Error()), refusal.Error())
+		}
+	})
 }
 
 func TestCompareCodexPrereleaseIdentifier(t *testing.T) {

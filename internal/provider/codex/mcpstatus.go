@@ -89,7 +89,7 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 
 	// initialize is required before any other request — Codex enforces
 	// the JSON-RPC v2 handshake. The client info is for diagnostics; the
-	// response payload is ignored.
+	// reply is admitted like every other handshake's.
 	//
 	// Deliberately not codexInitializeParams: this fetcher makes exactly
 	// one non-experimental call (`mcpServerStatus/list`), so opting a
@@ -107,8 +107,12 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 			"version": "0.1.0",
 		},
 	}
-	if _, err := client.call(ctx, "initialize", initParams); err != nil {
+	initResp, err := client.call(ctx, "initialize", initParams)
+	if err != nil {
 		return nil, fmt.Errorf("codex mcp status initialize: %w", err)
+	}
+	if _, err := admitInitialize(cmd.Path, initResp); err != nil {
+		return nil, fmt.Errorf("codex mcp status: %w", err)
 	}
 
 	listParams := map[string]any{

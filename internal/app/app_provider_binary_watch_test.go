@@ -253,7 +253,7 @@ func writeCodexProbeMockAt(t *testing.T, path, noise string) {
 	t.Helper()
 	response := `{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","planType":"pro","primary":{},"secondary":{}}}}`
 	writeProviderBinaryFile(t, path,
-		"# "+noise+"\nread -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n"+
+		"# "+noise+"\n"+codexProbeInitReply+"read -r _ || true\nread -r _ || true\nread -r _ || true\n"+
 			"printf '%s\\n' '"+response+"'\nexit 0")
 }
 

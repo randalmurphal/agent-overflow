@@ -66,7 +66,7 @@ func DetectProvider(name, binaryPath string) ProviderStatus {
 
 	if versionErr != nil {
 		status.Status = "error"
-		status.Message = fmt.Sprintf("version check failed: %v", versionErr)
+		status.Message = fmt.Sprintf("version check of %s failed: %v", resolvedPath, versionErr)
 		return status
 	}
 

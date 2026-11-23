@@ -30,10 +30,13 @@ the RPC response. Preserve `clientUserMessageId` on sends and steers. Interrupt,
 revert, queued-turn, and replacement-session paths must reject responses whose
 session or history generation has changed.
 
-`Dial` and the one-shot client refuse an app-server whose initialize user
-agent reports a version below `provider.MinimumCodexCLIVersion`, or an empty
-or unparseable one, through `provider.CheckCodexVersion`. Raise that minimum
-instead of adding a per-method version gate. Mid-turn user messages use
+Every client that completes `initialize` (`Dial`, the one-shot client,
+sign-in, the account, identity and usage probes, MCP status) passes the
+reply to `admitInitialize` before any other request. It refuses an
+app-server whose user agent reports a build below
+`provider.MinimumCodexCLIVersion`, or an empty or unparseable one. A new
+handshake uses it too. Raise that minimum instead of adding a per-method
+version gate. Mid-turn user messages use
 `turn/steer`, never the provider queue.
 
 AO reads and deletes provider-owned queue entries but never adds, starts,

@@ -198,7 +198,7 @@ while IFS= read -r line; do
   case "$line" in
     *'"initialize"'*)
       id=$(printf '%s' "$line" | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"capabilities":{},"protocolVersion":"2025-06-18","serverInfo":{"name":"mock-codex","version":"0.0.0"}}}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"capabilities":{},"protocolVersion":"2025-06-18","serverInfo":{"name":"mock-codex","version":"0.0.0"},"userAgent":"` + providertest.CodexUserAgent + `"}}\n' "$id"
       ;;
     *'"mcpServerStatus/list"'*)
       id=$(printf '%s' "$line" | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+')

@@ -86,8 +86,8 @@ func TestDetectProviderVersionError(t *testing.T) {
 	if status.Version != "" {
 		t.Fatalf("expected empty Version on error, got %q", status.Version)
 	}
-	if status.Message == "" {
-		t.Fatal("expected Message to contain version error detail")
+	if want := "version check of " + script + " failed: exit status 1"; status.Message != want {
+		t.Fatalf("Message = %q, want %q", status.Message, want)
 	}
 }
 

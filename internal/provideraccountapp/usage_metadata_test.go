@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -38,13 +39,25 @@ func codexUsageProbe(t *testing.T) (binary, accountFrame string) {
 	rateLimits := `{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","planType":"team",` +
 		`"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":4102444800}}}}`
 	binary = mockexec.Write(t, filepath.Join(dir, "mock-codex"), "#!/bin/bash\n"+
-		"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n"+
+		codexInitReply+"read -r _ || true\nread -r _ || true\nread -r _ || true\n"+
 		"cat "+shellQuoteForTest(accountFrame)+"\n"+
 		"printf '%s\\n' '"+rateLimits+"'\n")
 	return binary, accountFrame
 }
 
 func shellQuoteForTest(s string) string { return "'" + s + "'" }
+
+// codexInitFrame answers a Codex client's initialize (id 1) as a supported
+// app-server. Every client waits for it before it sends anything else.
+const codexInitFrame = `{"jsonrpc":"2.0","id":1,"result":` + providertest.CodexInitializeResult + `}`
+
+// codexInitReply is the opening of a fake that reads requests in order: it
+// reads initialize and answers it.
+const codexInitReply = "read -r _ || true\nprintf '%s\\n' '" + codexInitFrame + "'\n"
+
+// codexInitCase is the initialize branch of a fake that matches requests in
+// a case statement.
+const codexInitCase = `*'"method":"initialize"'*) printf '%s\n' '` + codexInitFrame + `' ;;` + "\n"
 
 func writeAccountReadFrame(t *testing.T, path, frame string) {
 	t.Helper()

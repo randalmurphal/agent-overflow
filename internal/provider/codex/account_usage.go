@@ -221,28 +221,18 @@ func (f *AccountUsageFetcher) Fetch(ctx context.Context) (_ AccountUsage, retErr
 	// non-experimental call, so opting a throwaway into the experimental API
 	// would only change what the server is willing to emit. It still opts out
 	// of every notification, since it awaits none.
-	if err := writeJSONRPC(proc, map[string]any{
-		"jsonrpc": "2.0",
-		"id":      accountUsageInitializeID,
-		"method":  "initialize",
-		"params": map[string]any{
-			"protocolVersion": "2025-06-18",
-			"capabilities": map[string]any{
-				"optOutNotificationMethods": oneShotOptOutNotificationMethods(),
-			},
-			"clientInfo": map[string]any{
-				"name":    "agent_overflow_account_usage",
-				"version": "0.1.0",
-			},
+	lines := startLineReader(ctx, proc)
+	if err := lineHandshake(ctx, proc, lines, accountUsageInitializeID, map[string]any{
+		"protocolVersion": "2025-06-18",
+		"capabilities": map[string]any{
+			"optOutNotificationMethods": oneShotOptOutNotificationMethods(),
+		},
+		"clientInfo": map[string]any{
+			"name":    "agent_overflow_account_usage",
+			"version": "0.1.0",
 		},
 	}); err != nil {
-		return AccountUsage{}, fmt.Errorf("codex account usage: write initialize: %w", err)
-	}
-	if err := writeJSONRPC(proc, map[string]any{
-		"jsonrpc": "2.0",
-		"method":  "initialized",
-	}); err != nil {
-		return AccountUsage{}, fmt.Errorf("codex account usage: write initialized: %w", err)
+		return AccountUsage{}, fmt.Errorf("codex account usage: %w", err)
 	}
 	if err := writeJSONRPC(proc, map[string]any{
 		"jsonrpc": "2.0",
@@ -252,32 +242,13 @@ func (f *AccountUsageFetcher) Fetch(ctx context.Context) (_ AccountUsage, retErr
 		return AccountUsage{}, fmt.Errorf("codex account usage: write %s: %w", accountUsageMethod, err)
 	}
 
-	return readAccountUsageResponse(ctx, proc)
+	return readAccountUsageResponse(ctx, lines)
 }
 
 // readAccountUsageResponse reads NDJSON frames until the one matching the
-// usage request arrives, ignoring everything else (the initialize reply and
-// any notification the opt-out list did not cover).
-func readAccountUsageResponse(ctx context.Context, proc *provider.Process) (AccountUsage, error) {
-	type readResult struct {
-		line []byte
-		err  error
-	}
-	ch := make(chan readResult, 1)
-	go func() {
-		for {
-			line, err := proc.ReadLine()
-			select {
-			case ch <- readResult{line: line, err: err}:
-			case <-ctx.Done():
-				return
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
+// usage request arrives, ignoring everything else (any notification the
+// opt-out list did not cover).
+func readAccountUsageResponse(ctx context.Context, ch <-chan readResult) (AccountUsage, error) {
 	for {
 		select {
 		case <-ctx.Done():

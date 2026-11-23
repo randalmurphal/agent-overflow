@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // MinimumCodexCLIVersion is the oldest Codex AO runs. AO shares one
@@ -22,13 +23,15 @@ const MinimumCodexCLIVersion = "0.154.0"
 // version could not be read. It is final until the binary changes.
 var ErrCodexVersionUnsupported = errors.New("codex version unsupported")
 
-// codexVersionRawLimit bounds the version text quoted back to the user.
-const codexVersionRawLimit = 120
+// codexVersionTextLimit bounds each piece of version text a refusal keeps
+// and quotes back to the user.
+const codexVersionTextLimit = 120
 
 // CodexVersionError is a refusal of one Codex binary. Version is the
 // parsed version, "" when none could be read; Raw is the text it was read
 // from (`codex --version` output or the app-server's initialize user
-// agent); Path is the binary that was checked.
+// agent); Path is the binary that was checked. CheckCodexVersion builds it
+// with Version and Raw trimmed, copied and capped at codexVersionTextLimit.
 type CodexVersionError struct {
 	Path    string
 	Version string
@@ -46,19 +49,15 @@ func (e *CodexVersionError) Error() string {
 			e.Version, at, MinimumCodexCLIVersion,
 		)
 	}
-	raw := strings.TrimSpace(e.Raw)
-	if raw == "" {
+	if e.Raw == "" {
 		return fmt.Sprintf(
 			"Agent Overflow could not read the version of Codex%s. Update Codex to v%s or newer.",
 			at, MinimumCodexCLIVersion,
 		)
 	}
-	if len(raw) > codexVersionRawLimit {
-		raw = raw[:codexVersionRawLimit] + "..."
-	}
 	return fmt.Sprintf(
 		"Agent Overflow could not read the version of Codex%s from %q. Update Codex to v%s or newer.",
-		at, raw, MinimumCodexCLIVersion,
+		at, e.Raw, MinimumCodexCLIVersion,
 	)
 }
 
@@ -80,15 +79,47 @@ func (e *CodexVersionError) PublicDetails() (code, message string) {
 // otherwise; an unreadable version is unsupported.
 func CheckCodexVersion(path, version, raw string) error {
 	if _, ok := parseCodexSemver(normalizeCodexCLIVersion(version)); !ok {
-		return &CodexVersionError{Path: path, Raw: raw}
+		return &CodexVersionError{Path: path, Raw: codexVersionText(raw)}
 	}
 	if compareCodexCLIVersions(version, MinimumCodexCLIVersion) < 0 {
-		return &CodexVersionError{Path: path, Version: version, Raw: raw}
+		return &CodexVersionError{Path: path, Version: codexVersionText(version), Raw: codexVersionText(raw)}
 	}
 	return nil
 }
 
+// codexVersionText is version text as a refusal keeps it: trimmed, capped
+// and copied, so a cached or wrapped refusal never pins the buffer it came
+// from.
+func codexVersionText(text string) string {
+	text = strings.TrimSpace(text)
+	if len(text) > codexVersionTextLimit {
+		cut := codexVersionTextLimit
+		for cut > 0 && !utf8.RuneStart(text[cut]) {
+			cut--
+		}
+		return strings.Clone(text[:cut]) + "..."
+	}
+	return strings.Clone(text)
+}
+
 var codexVersionPattern = regexp.MustCompile(`\bv?(\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?)\b`)
+
+// codexBuildPattern is a whole Codex build version as Cargo writes it:
+// MAJOR.MINOR.PATCH with an optional pre-release.
+var codexBuildPattern = regexp.MustCompile(`^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$`)
+
+// ParseCodexBuildVersion returns token when the whole token is a Codex
+// build version and "" otherwise. It reads the build an app-server reports
+// at `initialize`, where a partial match must not admit the process.
+func ParseCodexBuildVersion(token string) string {
+	if !codexBuildPattern.MatchString(token) {
+		return ""
+	}
+	if _, ok := parseCodexSemver(token); !ok {
+		return ""
+	}
+	return token
+}
 
 type parsedCodexSemver struct {
 	major      int
@@ -247,12 +278,8 @@ func isNumericString(value string) bool {
 	return true
 }
 
-// ParseCodexCLIVersion extracts the first semver-shaped token from arbitrary
-// Codex version text — `codex --version` output, or the `userAgent` string the
-// app-server returns from `initialize` (`codex_cli_rs/0.149.0 (Linux …)`).
-// Returns "" when nothing parses, which callers must treat as "unknown", never
-// as "old" or "new".
-//
-// Exported so the codex adapter reads the version of the process it is
-// talking to with the same parser detection uses.
+// ParseCodexCLIVersion extracts the first semver-shaped token from
+// `codex --version` output. Returns "" when nothing parses, which callers
+// must treat as "unknown", never as "old" or "new". The app-server's
+// `initialize` user agent is read with ParseCodexBuildVersion instead.
 func ParseCodexCLIVersion(output string) string { return parseCodexCLIVersion(output) }

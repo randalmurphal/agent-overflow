@@ -62,10 +62,9 @@ func writeCodexAccountReadProbeBinary(t *testing.T, accountJSON string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "mock-codex")
 	script := "#!/bin/bash\n" +
+		codexProbeInitReply +
 		"read -r _ || true\n" +
 		"read -r _ || true\n" +
-		"read -r _ || true\n" +
-		"printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"v2\"}}'\n" +
 		"printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"account\":" + accountJSON + ",\"requiresOpenaiAuth\":true}}'\n" +
 		"exit 0\n"
 	mockexec.Write(t, path, script)

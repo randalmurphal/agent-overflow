@@ -163,7 +163,7 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 	}
 	go session.readLoop()
 
-	if _, err := session.call(ctx, "initialize", codexInitializeParams(
+	initResp, err := session.call(ctx, "initialize", codexInitializeParams(
 		"agent_overflow_login",
 		// account/login/completed is the ONE notification this client waits
 		// on. account/updated follows a success carrying {authMode, planType}
@@ -171,7 +171,11 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 		// login home for identity, which is authoritative and covers the
 		// cases this notification cannot describe.
 		oneShotOptOutNotificationMethods("account/login/completed"),
-	)); err != nil {
+	))
+	if err != nil {
+		return nil, errors.Join(err, session.Close())
+	}
+	if _, err := admitInitialize(proc.Path(), initResp); err != nil {
 		return nil, errors.Join(err, session.Close())
 	}
 	if err := session.notify("initialized", nil); err != nil {

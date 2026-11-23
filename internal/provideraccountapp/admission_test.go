@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/testutil"
 )
@@ -53,7 +54,7 @@ func TestLoginAdmissionOutlivesStartAndReleasesAfterCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 	binary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
-		"initialize":           `{"id":%s,"result":{"userAgent":"codex_cli_rs/0.151.0 (fake)"}}`,
+		"initialize":           `{"id":%s,"result":` + providertest.CodexInitializeResult + `}`,
 		"account/login/start":  `{"id":%s,"result":{"type":"chatgptDeviceCode","loginId":"login-device","verificationUrl":"https://chatgpt.com/device","userCode":"ABCD-EFGH"}}`,
 		"account/login/cancel": `{"id":%s,"result":{"status":"canceled"}}`,
 	})
@@ -80,6 +81,20 @@ func TestLoginAdmissionOutlivesStartAndReleasesAfterCancel(t *testing.T) {
 	}
 	if active.Load() != 0 {
 		t.Fatalf("active admissions after cleanup: %d", active.Load())
+	}
+	// A Codex below the minimum is refused at its handshake: the person gets
+	// the refusal, and the lease is released.
+	old := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
+		"initialize": `{"id":%s,"result":{"userAgent":"codex_cli_rs/0.153.4 (fake)"}}`,
+	})
+	manager.deps.ProviderBinary = func(string) string { return old }
+	_, err = manager.StartProviderLogin("codex", LoginMethodRemote)
+	var refusal *provider.CodexVersionError
+	if !errors.As(err, &refusal) || refusal.Version != "0.153.4" {
+		t.Fatalf("sign-in on Codex 0.153.4: %v, want the version refusal", err)
+	}
+	if active.Load() != 0 {
+		t.Fatalf("refused sign-in retained %d admissions", active.Load())
 	}
 	// A start that fails before the session driver launches also releases.
 	missing := filepath.Join(t.TempDir(), "missing-provider")

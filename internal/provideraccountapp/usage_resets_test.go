@@ -160,6 +160,7 @@ func newResetRig(t *testing.T, restartOf *resetRig) resetRig {
 		"dir="+shellQuoteForTest(rig.dir)+"\n"+
 		"while IFS= read -r line; do\n"+
 		`case "$line" in`+"\n"+
+		codexInitCase+
 		`*'"account/read"'*) [ -f "$dir/exit-at-account" ] && exit 0; cat "$dir/account.json" ;;`+"\n"+
 		`*rateLimitResetCredit/consume*)`+"\n"+
 		`  printf '%s\n' "$line" >> "$dir/consumes.log"`+"\n"+

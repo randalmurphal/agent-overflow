@@ -117,8 +117,7 @@ func (c *oneshotClient) initialize(ctx context.Context, spec oneshotSpec) error 
 	if err != nil {
 		return fmt.Errorf("codex: initialize for %s: %w", c.label, err)
 	}
-	userAgent := readNestedString(resp, "userAgent")
-	if err := provider.CheckCodexVersion(c.proc.Path(), parseAppServerVersion(userAgent), userAgent); err != nil {
+	if _, err := admitInitialize(c.proc.Path(), resp); err != nil {
 		return err
 	}
 	if err := c.notify("initialized", nil); err != nil {

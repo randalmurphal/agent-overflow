@@ -193,27 +193,14 @@ func runAccountProbe(ctx context.Context, cfg ProbeConfig, spend bool) (_ provid
 	}
 	defer func() { retErr = errors.Join(retErr, proc.Close()) }()
 
-	// 1) initialize request
-	if err := writeJSONRPC(proc, map[string]any{
-		"jsonrpc": "2.0",
-		"id":      probeInitializeID,
-		"method":  "initialize",
-		// Response-only client: account/read plus
-		// account/rateLimits/read, no notification is ever awaited.
-		"params": codexInitializeParams("agent_overflow_probe", oneShotOptOutNotificationMethods()),
-	}); err != nil {
-		return provider.AccountInfo{}, "", fmt.Errorf("codex: probe write initialize: %w", err)
-	}
-
-	// 2) initialized notification (no id, no response)
-	if err := writeJSONRPC(proc, map[string]any{
-		"jsonrpc": "2.0",
-		"method":  "initialized",
-	}); err != nil {
-		return provider.AccountInfo{}, "", fmt.Errorf("codex: probe write initialized: %w", err)
-	}
-
+	// 1) initialize, admitted before anything else is sent.
 	lines := startLineReader(probeCtx, proc)
+	// Response-only client: account/read plus account/rateLimits/read, no
+	// notification is ever awaited.
+	if err := lineHandshake(prepCtx, proc, lines, probeInitializeID,
+		codexInitializeParams("agent_overflow_probe", oneShotOptOutNotificationMethods())); err != nil {
+		return provider.AccountInfo{}, "", fmt.Errorf("codex: probe: %w", err)
+	}
 
 	// 3) a spend first reads whose login this is, and sends the consume only
 	// with what the caller admits for it; its answer comes before the

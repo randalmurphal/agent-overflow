@@ -43,21 +43,12 @@ func ProbeIdentity(ctx context.Context, cfg ProbeConfig) (_ provider.AccountInfo
 	}
 	defer func() { retErr = errors.Join(retErr, proc.Close()) }()
 
-	if err := writeJSONRPC(proc, map[string]any{
-		"jsonrpc": "2.0",
-		"id":      probeInitializeID,
-		"method":  "initialize",
-		// Response-only client: it reads account/read and never waits on
-		// a notification, so the whole catalogue is noise.
-		"params": codexInitializeParams("agent_overflow_probe", oneShotOptOutNotificationMethods()),
-	}); err != nil {
-		return provider.AccountInfo{}, fmt.Errorf("codex: identity probe initialize: %w", err)
-	}
-	if err := writeJSONRPC(proc, map[string]any{
-		"jsonrpc": "2.0",
-		"method":  "initialized",
-	}); err != nil {
-		return provider.AccountInfo{}, fmt.Errorf("codex: identity probe initialized: %w", err)
+	lines := startLineReader(probeCtx, proc)
+	// Response-only client: it reads account/read and never waits on a
+	// notification, so the whole catalogue is noise.
+	if err := lineHandshake(probeCtx, proc, lines, probeInitializeID,
+		codexInitializeParams("agent_overflow_probe", oneShotOptOutNotificationMethods())); err != nil {
+		return provider.AccountInfo{}, fmt.Errorf("codex: identity probe: %w", err)
 	}
 	if err := writeJSONRPC(proc, map[string]any{
 		"jsonrpc": "2.0",
@@ -67,29 +58,10 @@ func ProbeIdentity(ctx context.Context, cfg ProbeConfig) (_ provider.AccountInfo
 	}); err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("codex: identity probe account/read: %w", err)
 	}
-	return readIdentityResponse(probeCtx, proc)
+	return readIdentityResponse(probeCtx, lines)
 }
 
-func readIdentityResponse(ctx context.Context, proc *provider.Process) (provider.AccountInfo, error) {
-	type readResult struct {
-		line []byte
-		err  error
-	}
-	results := make(chan readResult, 1)
-	go func() {
-		for {
-			line, err := proc.ReadLine()
-			select {
-			case results <- readResult{line: line, err: err}:
-			case <-ctx.Done():
-				return
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
+func readIdentityResponse(ctx context.Context, results <-chan readResult) (provider.AccountInfo, error) {
 	for {
 		select {
 		case <-ctx.Done():
