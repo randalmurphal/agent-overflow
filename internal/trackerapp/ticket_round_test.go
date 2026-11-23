@@ -52,6 +52,71 @@ func TestIdleRoundCosts(t *testing.T) {
 	}
 }
 
+// A Linear round reads every shown ticket's document; when nothing changed
+// but the time the tracker answered, which moves HistoryTo, the round
+// rewrites no document and tells no view: the stored document keeps only
+// whether its history is final for the card's update. Once that changes,
+// the document is written again.
+func TestAnIdleRoundOfAdvancingAnswersRewritesNothing(t *testing.T) {
+	t.Parallel()
+	m, st, issues, _ := newRoundFixture(t, 3, false)
+	updated := st.cards[issues[0]].Updated
+	answerFrom := func(at time.Time) {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		st.answered = at
+	}
+	// Each round answers three documents, three minutes in all.
+	answerFrom(updated.Add(-30 * time.Minute))
+	docs := func() []string {
+		out := make([]string, len(issues))
+		for i, id := range issues {
+			d, ok, err := m.st.GetMirrorDetail(m.root(), string(id))
+			if err != nil || !ok {
+				t.Fatalf("the document of %s: %v, %v", id, ok, err)
+			}
+			out[i] = string(d.Data)
+		}
+		return out
+	}
+	// The answers are before the update: the history is not final for it,
+	// and the documents say so.
+	m.round(t)
+	notFinal, events := docs(), m.issueEventCount()
+	for range 3 {
+		m.round(t)
+	}
+	if got := docs(); !slices.Equal(got, notFinal) {
+		t.Fatal("a round that found nothing changed but the answer time rewrote a document")
+	}
+	if got := m.issueEventsSince(events); len(got) != 0 {
+		t.Fatalf("rounds of later answers told %+v", got)
+	}
+	// Answers past the update make the history final: written once.
+	answerFrom(updated.Add(5 * time.Minute))
+	m.round(t)
+	final := docs()
+	if slices.Equal(final, notFinal) {
+		t.Fatal("the history turned final and no document changed")
+	}
+	events = m.issueEventCount()
+	for range 3 {
+		m.round(t)
+	}
+	if got := docs(); !slices.Equal(got, final) {
+		t.Fatal("a round of later answers rewrote a final document")
+	}
+	if got := m.issueEventsSince(events); len(got) != 0 {
+		t.Fatalf("rounds of later answers told %+v", got)
+	}
+	st.mu.Lock()
+	answered := st.answered
+	st.mu.Unlock()
+	if !answered.After(updated.Add(15 * time.Minute)) {
+		t.Fatalf("the answers did not advance: %v", answered)
+	}
+}
+
 // One ticket of three changes: only it is read in full and only it emits.
 func TestARoundReadsOnlyTheChangedTicketInFull(t *testing.T) {
 	t.Parallel()

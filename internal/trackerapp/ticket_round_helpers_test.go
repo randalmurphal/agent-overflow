@@ -77,12 +77,16 @@ func quiet(t *testing.T, s *Service) {
 // trackerState is the scripted tracker's issues for ticket tests: each
 // issue's card, which its detail shows with a comment of its own, the
 // issue it links when it links one, and the issues it no longer returns.
+// When answered is set, each detail answers a minute after the one before
+// and is final through its answer less two minutes (HistoryTo), as a
+// provider derives it from the tracker's response time.
 type trackerState struct {
 	mu       sync.Mutex
 	cards    map[tracker.IssueID]tracker.Card
 	comments map[tracker.IssueID]string
 	links    map[tracker.IssueID]tracker.IssueID
 	gone     map[tracker.IssueID]bool
+	answered time.Time
 }
 
 func (s *trackerState) detail(id tracker.IssueID) (tracker.Detail, error) {
@@ -93,6 +97,10 @@ func (s *trackerState) detail(id tracker.IssueID) (tracker.Detail, error) {
 		return tracker.Detail{}, &trackerapi.StatusError{Tracker: "jira", Status: 404}
 	}
 	d := enteredAtStatusBegan(detailOfCard(c))
+	if !s.answered.IsZero() {
+		s.answered = s.answered.Add(time.Minute)
+		d.HistoryTo = s.answered.Add(-2 * time.Minute)
+	}
 	d.Comments.Comments[0].Body = s.comments[id]
 	// A ticket's view depends on its own issue alone unless it links one.
 	d.Links = nil

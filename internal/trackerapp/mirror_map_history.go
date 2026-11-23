@@ -157,8 +157,18 @@ func boundHistory(d *tracker.Detail) {
 	}
 }
 
-// mirrorDetail is d's blob as the store holds it.
+// mirrorDetail is d's blob as the store holds it. Of HistoryTo, a time
+// the provider derives from when the tracker answered, the blob keeps
+// only what its reader takes from it (statusSinceOf): whether History is
+// final through the card's update. It holds Card.Updated when it is and
+// zero when it is not, so a document read again with nothing changed is
+// the same bytes, whenever it was read.
 func mirrorDetail(d tracker.Detail) ([]byte, error) {
+	if !d.HistoryTo.IsZero() && !d.HistoryTo.Before(d.Card.Updated) {
+		d.HistoryTo = d.Card.Updated
+	} else {
+		d.HistoryTo = time.Time{}
+	}
 	return encodeBlob("detail", detailBlob{V: detailBlobVersion, Detail: d})
 }
 

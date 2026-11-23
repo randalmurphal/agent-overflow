@@ -497,7 +497,10 @@ its document's history holds (`tracker.Detail.StatusChanged`) and the
 mirror's card. When the document's history is final through the card's
 update (`Detail.HistoryTo`, the tracker's clock on the answer less its
 settle margin), its latest status change decides: its time when it went
-to the card's status, unknown when it went to another. Otherwise the
+to the card's status, unknown when it went to another. A stored document
+keeps only that fact (`HistoryTo` is the card's update when final, zero
+when not), so a document read again with nothing changed but the time
+of the answer is the same bytes and is not stored again. Otherwise the
 ticket shows the mirror's time, when the mirror's card is the version
 the document shows and the document's history does not contradict it;
 otherwise none. A document is stored only beside the card of its

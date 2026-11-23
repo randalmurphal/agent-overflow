@@ -182,11 +182,21 @@ func TestHistoryAndWorklogRoundTrip(t *testing.T) {
 
 func TestDetailRoundTrip(t *testing.T) {
 	t.Parallel()
-	for name, d := range map[string]tracker.Detail{"filled": filled[tracker.Detail](), "zero": {}} {
+	final, early := filled[tracker.Detail](), filled[tracker.Detail]()
+	final.HistoryTo = final.Card.Updated.Add(time.Hour)
+	early.HistoryTo = early.Card.Updated.Add(-time.Millisecond)
+	for name, d := range map[string]tracker.Detail{"final": final, "not final": early, "zero": {}} {
 		m := store.MirrorDetail{IssueID: string(d.Card.ID), Data: must[[]byte](t)(mirrorDetail(d))}
 		got, ok := detailOf(m)
 		if !ok {
 			t.Fatalf("%s: the blob was a miss", name)
+		}
+		// The store keeps whether the history is final through the card's
+		// update (statusSinceOf), not the time HistoryTo the tracker's
+		// answer gave.
+		d.HistoryTo = time.Time{}
+		if name == "final" {
+			d.HistoryTo = d.Card.Updated
 		}
 		same(t, name+" detail", got, d)
 	}
