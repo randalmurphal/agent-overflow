@@ -8,15 +8,12 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 func newWatchTestService(t *testing.T) (*Service, string) {
 	t.Helper()
-	database, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
+	database := storetest.Clone(t)
 	workspace := t.TempDir()
 	now := time.Now().UnixMilli()
 	if _, err := database.CreateProject(store.Project{ID: "project", Path: workspace, Name: "project", CreatedAt: now, UpdatedAt: now}); err != nil {
