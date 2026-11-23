@@ -26,27 +26,34 @@ func ShownHistoryRefusalSummary(err error) string {
 }
 
 // reportShownHistoryRefusal gives threadID the error row of err, at its
-// last turn, when err is a refusal. Any other error is the caller's.
-func (r *Router) reportShownHistoryRefusal(threadID string, err error) error {
+// last turn, when err is a refusal. told reports that the user was told of
+// the refusal: its row was saved or already there, or its own refused write
+// reached the unsaved-rows observer (persistItem). It is false for any
+// other error, which is the caller's, and when the last turn could not be
+// read, so no row was attempted.
+func (r *Router) reportShownHistoryRefusal(threadID string, err error) (told bool, reportErr error) {
 	if !store.IsShownHistoryRefusal(err) {
-		return nil
+		return false, nil
 	}
 	turnIndex, lookupErr := r.store.LastTurnIndex(threadID)
 	if lookupErr != nil {
-		return fmt.Errorf("report the refused provider report on %s: %w", threadID, lookupErr)
+		return false, fmt.Errorf("report the refused provider report on %s: %w", threadID, lookupErr)
 	}
-	if reportErr := r.persistProviderErrorItem(threadID, turnIndex, ShownHistoryRefusalSummary(err), nil, "", "", time.Now().UnixMilli()); reportErr != nil {
-		return fmt.Errorf("report the refused provider report on %s: %w", threadID, reportErr)
+	if persistErr := r.persistProviderErrorItem(threadID, turnIndex, ShownHistoryRefusalSummary(err), nil, "", "", time.Now().UnixMilli()); persistErr != nil {
+		return true, fmt.Errorf("report the refused provider report on %s: %w", threadID, persistErr)
 	}
-	return nil
+	return true, nil
 }
 
 // providerWriteFailed records the failed write of a provider report its
 // caller goes on without: the log keeps the error, and a refusal reaches
-// the thread (reportShownHistoryRefusal).
-func (r *Router) providerWriteFailed(threadID, what string, err error) {
+// the thread (reportShownHistoryRefusal). It reports whether the user was
+// told of err.
+func (r *Router) providerWriteFailed(threadID, what string, err error) (told bool) {
 	log.Printf("triage: %s: %v", what, err)
-	if reportErr := r.reportShownHistoryRefusal(threadID, err); reportErr != nil {
+	told, reportErr := r.reportShownHistoryRefusal(threadID, err)
+	if reportErr != nil {
 		log.Printf("triage: %s: %v", what, reportErr)
 	}
+	return told
 }

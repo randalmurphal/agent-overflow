@@ -922,11 +922,7 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 	if gate != nil {
 		gate(evt.ThreadID)
 	}
-	settled := true
-	if err := r.store.UpdateTurnCompleted(fields.logicalTurnID, now, fields.stopReason, fields.assistantMessageID, usageJSON, fields.errorMessage); err != nil {
-		settled = false
-		r.providerWriteFailed(evt.ThreadID, "update turn "+fields.logicalTurnID, err)
-	}
+	settled := r.writeTurnEnd(evt.ThreadID, fields.logicalTurnID, now, fields.stopReason, fields.assistantMessageID, usageJSON, fields.errorMessage, "update turn "+fields.logicalTurnID) == nil
 	usageErr := r.appendUsageLedger(evt, fields.logicalTurnID, meta, now)
 	if quiet {
 		if settled {
@@ -936,6 +932,31 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 		r.bumpThreadActivity(evt.ThreadID, now, "turn settle")
 	}
 	return usageErr
+}
+
+// writeTurnEnd writes turnID's end. Every write of a turn's end goes
+// through it, so the user hears of a failure the same way whichever path
+// wrote it (reportUnsavedTurnEnd), and a later end of the same turn that
+// saves withdraws what the user was told (reportSavedTurnEnd). Nothing
+// retries the write: an open row stays open until a later end saves or the
+// next boot's sweep settles it as interrupted (turn-lifecycle.md §Crash
+// behavior). The failure is reported here and returned.
+//
+// A turn's end has writers on more than one goroutine (the thread's event
+// worker, and a stop or replacement that ends the turn itself), so the
+// write and its report are one step under turnEndMu: the entry the user is
+// left with is the outcome of the write that landed last. The store's one
+// writer connection already runs the writes one at a time.
+func (r *Router) writeTurnEnd(threadID, turnID string, completedAt int64, stopReason, assistantMessageID, tokenUsageJSON, errorMessage, what string) error {
+	r.turnEndMu.Lock()
+	defer r.turnEndMu.Unlock()
+	if err := r.store.UpdateTurnCompleted(turnID, completedAt, stopReason, assistantMessageID, tokenUsageJSON, errorMessage); err != nil {
+		told := r.providerWriteFailed(threadID, what, err)
+		r.reportUnsavedTurnEnd(threadID, turnID, err, told)
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	r.reportSavedTurnEnd(threadID, turnID)
+	return nil
 }
 
 func turnCountsAsThreadActivity(evt provider.ProviderEvent) bool {
@@ -1601,8 +1622,7 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 		}
 	}
 	turnID := r.persistedTurnID(provider.ProviderEvent{ThreadID: threadID}, turnIndex)
-	if err := r.store.UpdateTurnCompleted(turnID, completedAt, stopReason, "", "", ""); err != nil {
-		log.Printf("triage: settle queued-echo predecessor turn %s: %v", turnID, err)
+	if err := r.writeTurnEnd(threadID, turnID, completedAt, stopReason, "", "", "", "settle queued-echo predecessor turn "+turnID); err != nil {
 		persistErr = errors.Join(persistErr, err)
 	}
 	r.finishTurnSpan(threadID, completedTurnOutcome(turnCompleteMeta{
