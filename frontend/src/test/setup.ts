@@ -48,8 +48,10 @@ import { resetBuildVariantPage } from './helpers/buildVariant';
 import { resetStagedBackends } from './helpers/backends';
 import { resetTelemetryFooterShapesForTest } from '../lib/stores/telemetryFooterShape.svelte';
 import { installWaitForBackoff } from './waitForBackoff';
+import { installRealTimeBudget } from './realTimeBudget';
 
 installWaitForBackoff();
+installRealTimeBudget();
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {

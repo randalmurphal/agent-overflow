@@ -1,7 +1,7 @@
-import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { runNodeWorkload } from '../../test/helpers/nodeWorkload';
 import { LIVE_WINDOW_KEEP_CHARS, LIVE_WINDOW_RECUT_CHARS } from './liveText';
 
 const liveTextUrl = pathToFileURL(resolve(import.meta.dirname, './liveText.ts')).href;
@@ -99,11 +99,7 @@ process.stdout.write(JSON.stringify({
 `;
 
 function retained(kind: 'window' | 'appended'): { retained: number; chars: number } {
-  const output = execFileSync(
-    process.execPath,
-    ['--expose-gc', '--input-type=module', '--eval', workload],
-    { encoding: 'utf8', env: { ...process.env, AO_LIVE_TEXT: kind }, timeout: 120_000 },
-  );
+  const output = runNodeWorkload(workload, { AO_LIVE_TEXT: kind });
   return JSON.parse(output) as { retained: number; chars: number };
 }
 

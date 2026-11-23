@@ -1,7 +1,7 @@
-import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { runNodeWorkload } from '../../test/helpers/nodeWorkload';
 
 const markedModuleUrl = pathToFileURL(
   resolve(
@@ -70,19 +70,11 @@ process.stdout.write(String(retained));
 `;
 
 function retainedHeapBytes(detach: boolean, chainedSource = false, fullWindow = false): number {
-  const output = execFileSync(
-    process.execPath,
-    ['--expose-gc', '--input-type=module', '--eval', workload],
-    {
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        AO_DETACH_PARSE_BLOCKS: detach ? '1' : '0',
-        AO_CHAIN_PARSE_SOURCE: chainedSource ? '1' : '0',
-        AO_FULL_PARSE_WINDOW: fullWindow ? '1' : '0',
-      },
-    },
-  );
+  const output = runNodeWorkload(workload, {
+    AO_DETACH_PARSE_BLOCKS: detach ? '1' : '0',
+    AO_CHAIN_PARSE_SOURCE: chainedSource ? '1' : '0',
+    AO_FULL_PARSE_WINDOW: fullWindow ? '1' : '0',
+  });
   const bytes = Number(output);
   if (!Number.isFinite(bytes)) {
     throw new Error(`parse-block retention subprocess returned ${JSON.stringify(output)}`);

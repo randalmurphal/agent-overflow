@@ -141,6 +141,15 @@ restore every global and prototype method it changes; prefer `vi.stubGlobal`.
 use `vi.mock`, `vi.doMock`, `vi.unmock` or `vi.resetModules` run in the
 `unit-isolated` project automatically.
 
+A unit test never waits on the wall clock. Pass a product timer on a fake clock
+(fake only the timers the code uses, beside real ones it needs), or wait for the
+condition; read the product's constant rather than repeating its value.
+`src/test/realTimeBudget.ts` fails a file whose tests sleep past its budget; a
+child process goes through `runNodeWorkload`. Randomized tests take their
+generator, seed count and loop from `src/test/helpers/seededRandom.ts`. A
+browser test whose assertion is not per painted frame drives the streaming
+reveal with `revealWithoutWaitingForFrames` (`src/test/helpers/browserFrames.ts`).
+
 Preserve unlisted exports when mocking shared modules with `importOriginal`.
 Prefer binding mocks over mocking through `.svelte.ts` import boundaries. Add
 passive-load bindings to the shared app defaults when every rendered app needs
