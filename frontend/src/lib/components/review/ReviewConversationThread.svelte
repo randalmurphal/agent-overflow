@@ -183,7 +183,7 @@
         <ReviewThreadComments {thread} {review} skipFirst />
       {/if}
 
-      <ReviewHeldReplies {review} replies={heldReplies} />
+      <ReviewHeldReplies {review} replies={heldReplies} path={thread.path} />
 
       <ReviewThreadFooter
         {thread}

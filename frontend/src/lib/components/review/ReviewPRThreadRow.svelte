@@ -192,7 +192,7 @@
       {/if}
 
       {#if !collapsed && review}
-        <ReviewHeldReplies {review} replies={heldReplies} findable />
+        <ReviewHeldReplies {review} replies={heldReplies} path={anchor.filePath} findable />
       {/if}
 
       {#if !collapsed || replying}

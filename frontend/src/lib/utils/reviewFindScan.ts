@@ -54,7 +54,7 @@ import {
   type ReviewFindAt, type ReviewFindFileSpot, type ReviewFindHit, type ReviewFindPlace,
 } from './reviewFindIdentity';
 import { findableBody } from './suggestionMarks';
-import { reviewInsertsByFile, type InsertRow } from './reviewRows';
+import { heldRepliesOf, reviewInsertsByFile, type InsertRow } from './reviewRows';
 
 export interface ReviewFindContent {
   readonly files: readonly ReviewFile[];
@@ -328,8 +328,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
         }
         // The thread's held replies, at its foot: shown, so revealed, with
         // the thread.
-        for (const draft of content.drafts) {
-          if (draft.status !== 'draft' || draft.replyThreadId !== thread.id) continue;
+        for (const draft of heldRepliesOf(thread, content.drafts)) {
           const rowKey = findDraftKey(draft.id);
           if (content.editing?.has(rowKey)) continue;
           if (spent()) await pause();

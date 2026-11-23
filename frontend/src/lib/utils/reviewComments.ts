@@ -1,4 +1,5 @@
 import type { DiffReviewComment, ReviewThread } from '../types/models';
+import { draftShownPath } from './reviewRows';
 
 // Comment counts and comment text helpers for the review pane: the file
 // tree badges and the toolbar tally count every PR review thread
@@ -156,7 +157,7 @@ export function countReviewComments(input: {
     if (state === 'draft') tally.drafts += 1;
   }
   for (const thread of input.prThreads) add(thread.path, threadState(thread));
-  for (const draft of input.drafts) add(draft.filePath, 'draft');
+  for (const draft of input.drafts) add(draftShownPath(draft, input.prThreads), 'draft');
   return { byFile, tally };
 }
 

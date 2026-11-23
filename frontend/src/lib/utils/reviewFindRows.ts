@@ -35,7 +35,7 @@ import {
   type ReviewFindHit,
   type ReviewFindPlace,
 } from './reviewFindIdentity';
-import { prThreadAnchor, REVIEW_LINE_HEIGHT_PX, reviewInsertsByFile, type InsertRow, type LineBlockRow, type ReviewRowsResult } from './reviewRows';
+import { draftShownPath, heldRepliesOf, isHeldReply, prThreadAnchor, REVIEW_LINE_HEIGHT_PX, reviewInsertsByFile, type InsertRow, type LineBlockRow, type ReviewRowsResult } from './reviewRows';
 
 /** The content a match is placed in. */
 export interface ReviewFindLocateContent {
@@ -167,7 +167,7 @@ function commentLines(file: ReviewFile, content: ReviewFindLocateContent): Map<s
     if (row.kind === 'comment-thread') return [findDraftKey(row.threadKey)];
     if (row.kind === 'pr-thread') {
       // The thread's comments, then its held replies at its foot.
-      const replies = content.drafts.filter((draft) => draft.status === 'draft' && draft.replyThreadId === row.thread.id).map((draft) => findDraftKey(draft.id));
+      const replies = heldRepliesOf(row.thread, content.drafts).map((draft) => findDraftKey(draft.id));
       return [...row.thread.comments.map((comment) => findThreadCommentKey(row.thread.id, reviewCommentKey(comment))), ...replies];
     }
     return [];
@@ -231,12 +231,14 @@ export function resolveReviewFindHit(shown: ReviewFindShown, hit: ReviewFindHit,
   }
   if (at.kind === 'draft') {
     const rowKey = findDraftKey(at.commentId);
-    const draft = shown.drafts.find((each) => each.id === at.commentId && each.status === 'draft' && each.filePath === file.path);
-    if (!draft || shown.editing.has(rowKey) || hit.run !== 0 || !has(draft.body)) return ABSENT;
-    if (!draft.replyThreadId) return present(rowKey, { kind: 'draft', commentId: at.commentId }, hit.occurrence);
-    // A held reply shows at its thread's foot, in this file's diff.
+    const draft = shown.drafts.find((each) => each.id === at.commentId && each.status === 'draft');
+    if (!draft || draftShownPath(draft, shown.prThreads) !== file.path) return ABSENT;
+    if (shown.editing.has(rowKey) || hit.run !== 0 || !has(draft.body)) return ABSENT;
+    if (!isHeldReply(draft)) return present(rowKey, { kind: 'draft', commentId: at.commentId }, hit.occurrence);
+    // A held reply shows at its thread's foot; one whose thread is gone is
+    // in no file's diff.
     const thread = shown.prThreads.find((each) => each.id === draft.replyThreadId);
-    if (!thread || prThreadAnchor(thread).filePath !== file.path) return ABSENT;
+    if (!thread) return ABSENT;
     return present(rowKey, { kind: 'thread', threadId: thread.id }, hit.occurrence);
   }
   if (at.kind === 'thread') {

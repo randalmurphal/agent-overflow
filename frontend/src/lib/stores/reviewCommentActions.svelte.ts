@@ -8,7 +8,7 @@ import { grantBlockedTitle } from '../transport/scopeRefusal';
 import type { EntityScopeGrant } from '../transport/scopes';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import { threadRange } from '../utils/reviewRange';
-import type { CommentAnchor } from '../utils/reviewRows';
+import { isHeldReply, type CommentAnchor } from '../utils/reviewRows';
 import type { DiffReviewComment, DiffReviewCommentInput, DiffReviewScope, DiffReviewThreadContext, ReviewThread } from '../types/models';
 
 // Send now or hold (docs/specs/pull-requests.md#sending-and-managing-comments)
@@ -160,7 +160,7 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
   const replyDrafts = $derived.by(() => {
     const out = new Map<string, DiffReviewComment[]>();
     for (const draft of host.drafts()) {
-      if (draft.replyThreadId) out.set(draft.replyThreadId, [...(out.get(draft.replyThreadId) ?? []), draft]);
+      if (isHeldReply(draft)) out.set(draft.replyThreadId!, [...(out.get(draft.replyThreadId!) ?? []), draft]);
     }
     for (const list of out.values()) list.sort((a, b) => a.createdAt - b.createdAt);
     return out;

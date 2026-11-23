@@ -166,6 +166,15 @@ describe('countReviewComments', () => {
     expect(counts.tally).toEqual({ unresolved: 2, drafts: 1, total: 5 });
   });
 
+  it('counts a held reply in its thread\'s file, and in the file it was held on once the thread is gone', () => {
+    const reply = { ...draft({ id: 'r1', filePath: 'src/a.ts', side: 'reply', newLine: 0 }), replyThreadId: 't1' };
+    const moved = countReviewComments({ prThreads: [thread({ id: 't1', path: 'src/b.ts' })], drafts: [reply] });
+    expect(moved.byFile.get('src/b.ts')).toEqual({ total: 2, unresolved: 1 });
+    expect(moved.byFile.has('src/a.ts')).toBe(false);
+    const gone = countReviewComments({ prThreads: [], drafts: [reply] });
+    expect(gone.byFile.get('src/a.ts')).toEqual({ total: 1, unresolved: 0 });
+  });
+
   it('is empty with nothing to count', () => {
     const counts = countReviewComments({ prThreads: [], drafts: [] });
     expect(counts.byFile.size).toBe(0);

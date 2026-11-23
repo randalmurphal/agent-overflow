@@ -296,7 +296,7 @@ export function reviewInsertsByFile(
   // shows there, and the review leaves it out (draftAnchorExists).
   // A held reply renders at the foot of its thread, not on a line.
   for (const comment of drafts) {
-    if (comment.status !== 'draft' || comment.side === 'reply') continue;
+    if (comment.status !== 'draft' || isHeldReply(comment)) continue;
     const anchor = commentAnchor(comment);
     slotsOf(comment.filePath).add({ kind: 'comment-thread', threadKey: comment.id, anchor }, anchor, true);
   }
@@ -596,6 +596,28 @@ function pushInsert(
 }
 
 /** Where a PR thread sits in the diff: its file and line, or its file. */
+/**
+ * A held reply: a draft that answers a forge thread. It shows at the foot of
+ * that thread, in the file the thread is in now; the file it was held on is
+ * only where it shows once the thread is gone.
+ */
+export function isHeldReply(draft: DiffReviewComment): boolean {
+  return !!draft.replyThreadId;
+}
+
+/** The held replies `thread` shows at its foot, in `drafts` order. */
+export function heldRepliesOf(thread: Pick<ReviewThread, 'id'>, drafts: readonly DiffReviewComment[]): DiffReviewComment[] {
+  return drafts.filter((draft) => draft.status === 'draft' && draft.replyThreadId === thread.id);
+}
+
+/** The file `draft` shows in: a held reply's thread's while `threads` lists
+ * it, else the file the draft was saved on. */
+export function draftShownPath(draft: DiffReviewComment, threads: readonly ReviewThread[]): string {
+  if (!isHeldReply(draft)) return draft.filePath;
+  const thread = threads.find((each) => each.id === draft.replyThreadId);
+  return thread ? prThreadAnchor(thread).filePath : draft.filePath;
+}
+
 export function prThreadAnchor(thread: ReviewThread): CommentAnchor {
   const line = thread.line ?? undefined;
   const side = thread.side === 'left' || thread.side === 'old' ? 'old' : 'new';

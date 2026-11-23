@@ -152,6 +152,32 @@ describe('resolveReviewFindHit', () => {
     expect([...resolved.values()]).toEqual([{ kind: 'absent' }]);
   });
 
+  it('a held reply found under its thread after the thread moves to another file is present there', async () => {
+    const reply: DiffReviewComment = {
+      id: 'r1', threadId: 'p1', scope: 'pr', sourceKey: 'k', filePath: 'src/a.test.ts', status: 'draft', side: 'reply',
+      replyThreadId: 'p1', selectedText: '', body: 'needle reply', createdAt: 0, updatedAt: 0,
+    };
+    const after = { ...diffContent(PATCHES.base), drafts: [reply], prThreads: [{ ...thread, path: 'src/b.ts', line: 100 }] };
+    const published = await seededScan(after);
+    const held = [...published.values()].map((each) => each.hit).filter((hit) => hit.at.kind === 'draft');
+    expect(held.map((hit) => hit.path)).toEqual(['src/b.ts']);
+    const resolved = await expectResolvesTo(held, after);
+    expect(at([...resolved.values()][0])).toMatchObject({ rowKey: 'dc:r1', place: { kind: 'thread', threadId: 'p1' } });
+  });
+
+  it('a held reply whose thread is gone is in no file\'s diff', async () => {
+    const reply: DiffReviewComment = {
+      id: 'r1', threadId: 'p1', scope: 'pr', sourceKey: 'k', filePath: 'src/a.test.ts', status: 'draft', side: 'reply',
+      replyThreadId: 'p1', selectedText: '', body: 'needle reply', createdAt: 0, updatedAt: 0,
+    };
+    const before = { ...diffContent(PATCHES.base), drafts: [reply] };
+    const published = await seededScan(before);
+    const held = [...published.values()].map((each) => each.hit).filter((hit) => hit.at.kind === 'draft');
+    expect(held.map((hit) => hit.path)).toEqual(['src/a.test.ts']);
+    const resolved = await expectResolvesTo(held, { ...before, prThreads: [] });
+    expect([...resolved.values()]).toEqual([{ kind: 'absent' }]);
+  });
+
   it('a comment without a forge id is keyed by its time and author', () => {
     const comment: ReviewComment = { authorLogin: 'a:b', body: 'x', createdAt: '2026-01-01T00:00:00Z', databaseID: 0, id: `n${0}`, viewerCanEdit: false, viewerCanDelete: false };
     expect(reviewCommentKey(comment)).toBe('@2026-01-01T00:00:00Z@a:b');

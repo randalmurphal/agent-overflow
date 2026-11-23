@@ -20,6 +20,9 @@
 
   interface Props {
     comment: DiffReviewComment;
+    /** The file a held reply shows in, its thread's; absent for one whose
+     * thread is gone, which names the file it was held on. */
+    path?: string;
     orphaned?: boolean;
     /** The unsaved text of this draft's open edit; null when not editing. */
     editBody: string | null;
@@ -39,7 +42,7 @@
     previewSource?: SuggestionSource | null;
   }
 
-  let { comment, orphaned = false, editBody, onEditBodyChange, onUpdate, onDelete, pulse = 0, findable = true, preview = null, previewSource = null }: Props = $props();
+  let { comment, path, orphaned = false, editBody, onEditBodyChange, onUpdate, onDelete, pulse = 0, findable = true, preview = null, previewSource = null }: Props = $props();
   let busy = $state(false);
   const editing = $derived(editBody !== null);
   const canSave = $derived((editBody ?? '').trim().length > 0 && !busy);
@@ -48,7 +51,8 @@
   const range = $derived(draftRange(comment));
 
   function commentLocation(comment: DiffReviewComment): string {
-    if (comment.side === 'file' || comment.side === 'reply') return comment.filePath;
+    if (comment.side === 'reply') return path ?? comment.filePath;
+    if (comment.side === 'file') return comment.filePath;
     const line = comment.side === 'old' ? comment.oldLine : (comment.newLine || comment.oldLine);
     return line ? `${comment.filePath}:${line}` : comment.filePath;
   }
