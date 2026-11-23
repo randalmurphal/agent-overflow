@@ -155,7 +155,7 @@ func TestALaunchNeedsAHomeAndASignInAnIsolatedOne(t *testing.T) {
 		t.Fatal("an isolated home without a directory was made")
 	}
 	if _, err := StartLogin(context.Background(), LoginConfig{
-		Binary: "agy",
+		Binary: filepath.Join(t.TempDir(), "agy-never-run"),
 		Home:   CanonicalHome(true),
 		Reaper: procutiltest.Reaper(),
 	}); err == nil || !strings.Contains(err.Error(), "isolated home") {

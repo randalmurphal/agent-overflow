@@ -80,10 +80,12 @@ func TestRunAccountProbeRunsAfterAdoptBeforeTheAccountEmit(t *testing.T) {
 // flag is set, and agy's default home, so the home variables are cleared. A
 // sign-in's isolated home is on file storage in its own directory.
 func TestAgyProbesRunOnTheManagersStoreAndHome(t *testing.T) {
+	manager, _, credentials := newTestManager(t)
+	// After the fixture, which detaches the provider homes: these stand for
+	// what the environment Agent Overflow inherited says.
 	t.Setenv("AGY_ACP_FORCE_FILE_STORAGE", "")
 	t.Setenv("GEMINI_HOME", filepath.Join(t.TempDir(), "other-gemini"))
 	t.Setenv("AGY_APP_DATA_DIR", filepath.Join(t.TempDir(), "other-app-data"))
-	manager, _, credentials := newTestManager(t)
 	binary, record := agyAccountProbeRecording(t)
 	agyName := string(provider.Agy)
 
@@ -106,7 +108,7 @@ func TestAgyProbesRunOnTheManagersStoreAndHome(t *testing.T) {
 	}
 	got = readAgyLaunchRecord(t, record)
 	want := "acp --gemini-dir " + filepath.Dir(ephemeral.Path) + " --app-data-dir " + filepath.Base(ephemeral.Path)
-	if got["AGY_ACP_FORCE_FILE_STORAGE"] != "1" || got["GEMINI_HOME"] != "<unset>" || got["args"] != want {
+	if got["AGY_ACP_FORCE_FILE_STORAGE"] != "1" || got["GEMINI_HOME"] != "<unset>" || got["AGY_APP_DATA_DIR"] != "<unset>" || got["args"] != want {
 		t.Fatalf("isolated probe launched with %v, want file storage in %s", got, ephemeral.Path)
 	}
 }
