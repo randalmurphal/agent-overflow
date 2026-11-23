@@ -53,6 +53,7 @@ import { HARNESS_TIMING, launchHarness, type HarnessApp, type HarnessMockEventDa
 import { headlessPairing, pairOwnDevice } from './headless-pairing-helpers.js';
 import { launchFrontendClient } from './frontend-client-helpers.js';
 import { startTogether } from './launch-helpers.js';
+import { primeTransferRecipient } from './conversation-transfer-helpers.js';
 import { centerInTimeline } from './standing-agent-home-contents-helpers.js';
 import { capture, captureAgentMessage } from './wake-rows-helpers.js';
 import type { ProviderOptionRow } from './thread-tools-helpers.js';
@@ -2243,6 +2244,7 @@ test('a thread moved to the other computer resolves there by its bare id', async
   const backend = (await home.rpc<Array<{ id: string; backendId: string }>>('ListBackends')).find(
     (row) => row.id === remoteID,
   )!;
+  await primeTransferRecipient(remote);
   const operation = randomUUID();
   const intent = await home.rpc<Record<string, unknown>>(
     'BeginThreadTransfer',

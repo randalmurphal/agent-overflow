@@ -3,6 +3,19 @@ import type { HarnessApp } from '../src/harness.js';
 
 export interface TransferRow { id: string; threadId: string; kind: string; phase: string; error?: string; targetThreadId: string }
 
+const PRIME_TIMEOUT_MS = 300_000;
+
+/**
+ * Builds the receiving backend's migrated database image (the first transfer a
+ * backend process receives builds it while validating the history, which on a
+ * loaded machine outlasts a transfer wait). Call it on the receiving backend
+ * before the transfer starts, so the build falls outside every completion poll.
+ */
+export async function primeTransferRecipient(destination: HarnessApp): Promise<void> {
+  // The build is a one-time migration chain; give it more than the default RPC bound.
+  await destination.rpcWithin(PRIME_TIMEOUT_MS, 'HarnessPrimeTransferTemplate');
+}
+
 /**
  * Waits for the source host's transfer of threadId (of kind, when given) to
  * complete, failing early with either host's error. A transfer is a durable

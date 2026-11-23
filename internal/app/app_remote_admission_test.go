@@ -415,7 +415,6 @@ func TestConversationLifecycleCancelsItsRemoteCommands(t *testing.T) {
 			case "archive":
 				err = archiveThread(source, threadID)
 			case "move":
-				prebuildTransferTemplate(t)
 				source.configDir = t.TempDir()
 				if err := source.startThreadTransfers(); err != nil {
 					t.Fatal(err)

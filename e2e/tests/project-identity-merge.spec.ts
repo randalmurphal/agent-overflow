@@ -13,7 +13,7 @@ import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpe
 import { startTogether } from './launch-helpers.js';
 import { seedForge, expectEveryForgeCallHandled } from './forge-helpers.js';
 import { harnessGit } from './worktree-removal-helpers.js';
-import { expectTransferComplete } from './conversation-transfer-helpers.js';
+import { expectTransferComplete, primeTransferRecipient } from './conversation-transfer-helpers.js';
 
 interface Seed { projects: Array<{ projectId: string; path: string }> }
 interface ProjectRow { project: { id: string; name: string; path: string; repositoryID?: string; identityError?: string } }
@@ -134,6 +134,7 @@ for (const renamed of [false, true]) test(`one repository at different paths mer
     // The bounded failure cache expires and verification can recover.
     await expect.poll(async () => (await remote!.rpc<{ repositoryID?: string }>('InspectProjectFolder', pickerClone)).repositoryID, { timeout: 15_000 }).toBe('github:github.com:101');
 
+    await primeTransferRecipient(remote);
     await pathInput.fill(pickerClone);
     await expect(add).toBeEnabled();
     await add.click();

@@ -35,6 +35,19 @@ func NewScratchFromTemplate(ctx context.Context, path string) (*Store, error) {
 	return processTemplate.open(ctx, path)
 }
 
+// PrimeMigratedTemplate builds the process's migrated image in a temporary
+// directory under parent when no earlier call has, and does nothing else:
+// it clones and opens no database. A caller that must not pay the build
+// inside a later wait, such as a test fixture, calls it first. A failed
+// build is returned and the next call builds again.
+func PrimeMigratedTemplate(ctx context.Context, parent string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, err := processTemplate.load(ctx, parent)
+	return err
+}
+
 // migratedTemplate builds a migrated image on first use and copies it.
 // lock is a one-slot semaphore rather than a mutex so a caller waiting
 // for another's build can give up when its context ends.

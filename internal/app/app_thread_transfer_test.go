@@ -33,16 +33,8 @@ import (
 // inside it. A transfer row does not move while that build runs.
 func prebuildTransferTemplate(t *testing.T) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "prebuild.db")
-	scratch, err := store.NewScratchFromTemplate(t.Context(), path)
-	if err != nil {
+	if err := store.PrimeMigratedTemplate(t.Context(), t.TempDir()); err != nil {
 		t.Fatalf("build the migrated database template: %v", err)
-	}
-	if err := scratch.Close(); err != nil {
-		t.Fatalf("close the prebuild database: %v", err)
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatalf("remove the prebuild database: %v", err)
 	}
 }
 

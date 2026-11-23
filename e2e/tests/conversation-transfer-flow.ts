@@ -9,7 +9,7 @@ import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { startTogether } from './launch-helpers.js';
 import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpers.js';
 import { PNG_BYTES } from './attachment-fixture.js';
-import { codexTransferScenario, expectTransferComplete } from './conversation-transfer-helpers.js';
+import { codexTransferScenario, expectTransferComplete, primeTransferRecipient } from './conversation-transfer-helpers.js';
 import { RESULT_LINE, claudeTurnsScenario, emit, listItems, textLines, toolResultLine, toolUseLine } from './agent-visibility-helpers.js';
 
 interface Seed { projects: Array<{ projectId: string; path: string; threadIds: string[] }> }
@@ -96,6 +96,7 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
           const upload = await fetch(new URL(uploadURL, source.url), { method: 'PUT', body: PNG_BYTES });
           expect(upload.status, await upload.text()).toBe(200);
           await writeFile(join(original.projects[0].path, 'untracked.txt'), 'Unsaved workspace change');
+          await primeTransferRecipient(destination);
           await source.open(page);
 
           for (const kind of ['copy', 'move']) {
@@ -188,6 +189,7 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
           expect(mockId, 'the session holding the job runs on a mock').toBeTruthy();
           expect(await recurringJobs()).toEqual([{ id: '5f0c1a2b', cron: '*/5 * * * *' }]);
 
+          await primeTransferRecipient(destination);
           await source.open(page);
           const row = page.getByTestId('thread-row-title').filter({ hasText: new RegExp(`^${title}$`) }).first();
           await expect(row).toBeVisible();

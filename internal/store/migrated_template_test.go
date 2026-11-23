@@ -378,3 +378,42 @@ func TestNewScratchFromTemplateRemovesADatabaseThatFailsToOpen(t *testing.T) {
 		t.Fatalf("failed open left %v", names)
 	}
 }
+
+// PrimeMigratedTemplate builds the process image and opens no database: the
+// parent directory holds nothing afterward, and a later clone reuses the image.
+func TestPrimeMigratedTemplateBuildsTheImageAndLeavesNothing(t *testing.T) {
+	dir := t.TempDir()
+	if err := PrimeMigratedTemplate(context.Background(), dir); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("priming left %d entries in %s", len(entries), dir)
+	}
+	// A second call builds nothing, so an unusable parent cannot fail it.
+	if err := PrimeMigratedTemplate(context.Background(), filepath.Join(dir, "missing")); err != nil {
+		t.Fatalf("a primed template needed its parent directory: %v", err)
+	}
+}
+
+// A failed build is returned by the priming call and the next call builds again.
+func TestPrimeFailureIsReturnedAndRetried(t *testing.T) {
+	fail := errors.New("build failed")
+	failing := true
+	tmpl := newMigratedTemplate(func(ctx context.Context, dir string) ([]byte, error) {
+		if failing {
+			return nil, fail
+		}
+		return sharedImage(ctx, dir)
+	})
+	if _, err := tmpl.load(context.Background(), t.TempDir()); !errors.Is(err, fail) {
+		t.Fatalf("first load = %v, want the build error", err)
+	}
+	failing = false
+	if _, err := tmpl.load(context.Background(), t.TempDir()); err != nil {
+		t.Fatalf("retry after a failed build: %v", err)
+	}
+}

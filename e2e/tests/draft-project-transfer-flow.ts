@@ -4,7 +4,7 @@ import { test, expect } from './base-test.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpers.js';
 import { PNG_BYTES } from './attachment-fixture.js';
-import { expectTransferComplete } from './conversation-transfer-helpers.js';
+import { expectTransferComplete, primeTransferRecipient } from './conversation-transfer-helpers.js';
 
 interface Seed { projects: Array<{ projectId: string; path: string }> }
 interface Thread { id: string; projectId: string; workspacePath: string; mode: string; model: string; runtimeMode: string }
@@ -31,6 +31,7 @@ export function draftProjectTransferFlow(): void {
       }
       const prompt = 'A draft for the other project [Image #1]';
       await source.rpc('SaveDraft', original.id, prompt, ids, [{ id: 'capture', label: 'shell', preview: 'captured', content: 'captured output', createdAt: 1 }], null);
+      await primeTransferRecipient(target);
       await source.open(page);
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await page.getByRole('tab', { name: 'Connect to a computer', exact: true }).click();

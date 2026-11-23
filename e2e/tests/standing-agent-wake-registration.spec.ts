@@ -31,7 +31,7 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { processRuns } from '../src/harness-process.js';
-import { codexTransferScenario } from './conversation-transfer-helpers.js';
+import { codexTransferScenario, primeTransferRecipient } from './conversation-transfer-helpers.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { wakeLoopNow } from './wake-rows-helpers.js';
@@ -863,6 +863,7 @@ test.describe('an assistant copied to another computer', () => {
       ];
       expect(dbWakes(sourceDir, thread)).toEqual(live);
 
+      await primeTransferRecipient(destination);
       await source.open(page);
       const name = page.getByTestId('thread-row-title').filter({ hasText: new RegExp(`^${title}$`) });
       await expect(name).toHaveCount(1);
