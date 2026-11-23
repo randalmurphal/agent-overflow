@@ -180,21 +180,78 @@ func (s *Store) RedeemPairingLink(tokenHash []byte, at int64, keyThumbprint stri
 	return link, nil
 }
 
-// PairingRedemption is what a redemption produced for its spent link: the
-// redeeming device's row, the unactivated session, and the refresh secret
-// issued with it.
-type PairingRedemption struct {
-	LinkID string
-	// Device is the redeeming device: created when NewDevice is set (a row
-	// built by NewPairedDevice), otherwise an existing row relabeled to the
+// DeviceSession is a session together with the device row it binds to,
+// written as one: a failed write adds or renames no device and leaves no
+// session or refresh secret.
+type DeviceSession struct {
+	// Device is created when NewDevice is set (a row built by
+	// NewPairedDevice); otherwise it is an existing row, relabeled to the
 	// Label and Platform it now reports.
 	Device    Device
 	NewDevice bool
-	// Session is the pending session, on Device; its ActivatedAt is zero.
+	// Session is on Device.
 	Session Session
 	// Refresh is the session's first renewal credential; a nil Hash issues
 	// none, for a device class that does not renew.
 	Refresh RefreshGrant
+}
+
+// writeDeviceSession writes d's device row or relabel, its session, and its
+// refresh secret inside the caller's transaction.
+func writeDeviceSession(tx sqlExecutor, d DeviceSession) error {
+	if d.Session.DeviceID != d.Device.ID {
+		return fmt.Errorf("session %s is not on device %s", d.Session.ID, d.Device.ID)
+	}
+	var err error
+	if d.NewDevice {
+		err = insertPairedDevice(tx, d.Device)
+	} else {
+		err = relabelDevice(tx, d.Device.ID, d.Device.Label, d.Device.Platform)
+	}
+	if err != nil {
+		return err
+	}
+	if err := createSession(tx, d.Session); err != nil {
+		return err
+	}
+	if d.Refresh.Hash != nil {
+		if _, err := insertRefreshSecret(tx, d.Session.ID, d.Refresh.Hash, d.Refresh.CreatedAt, d.Refresh.ExpiresAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CreateDeviceSession writes a live session with its device row or relabel
+// and its refresh secret, in one transaction. A pending session is refused:
+// it is written only with the link that names it (CompletePairingRedemption).
+func (s *Store) CreateDeviceSession(d DeviceSession) error {
+	switch {
+	case d.Session.ActivatedAt == 0:
+		return fmt.Errorf("store: create device session: session %s is not activated", d.Session.ID)
+	case d.Session.BindingClass == "loopback-only":
+		return fmt.Errorf("store: local sessions require EnsureLocalSession")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: create device session: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := writeDeviceSession(tx, d); err != nil {
+		return fmt.Errorf("store: create device session: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: create device session: commit: %w", err)
+	}
+	return nil
+}
+
+// PairingRedemption is what a redemption produced for its spent link: the
+// redeeming device's row and the unactivated session with its refresh
+// secret.
+type PairingRedemption struct {
+	LinkID string
+	DeviceSession
 }
 
 // RefreshGrant is a refresh secret to write: the hash of the secret only the
@@ -216,29 +273,13 @@ func (s *Store) CompletePairingRedemption(r PairingRedemption) error {
 	if r.Session.ActivatedAt != 0 {
 		return fmt.Errorf("store: complete pairing redemption: session %s is already activated", r.Session.ID)
 	}
-	if r.Session.DeviceID != r.Device.ID {
-		return fmt.Errorf("store: complete pairing redemption: session %s is not on device %s", r.Session.ID, r.Device.ID)
-	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("store: complete pairing redemption: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if r.NewDevice {
-		err = insertPairedDevice(tx, r.Device)
-	} else {
-		err = relabelDevice(tx, r.Device.ID, r.Device.Label, r.Device.Platform)
-	}
-	if err != nil {
+	if err := writeDeviceSession(tx, r.DeviceSession); err != nil {
 		return fmt.Errorf("store: complete pairing redemption: %w", err)
-	}
-	if err := createSession(tx, r.Session); err != nil {
-		return fmt.Errorf("store: complete pairing redemption: %w", err)
-	}
-	if r.Refresh.Hash != nil {
-		if _, err := insertRefreshSecret(tx, r.Session.ID, r.Refresh.Hash, r.Refresh.CreatedAt, r.Refresh.ExpiresAt); err != nil {
-			return fmt.Errorf("store: complete pairing redemption: %w", err)
-		}
 	}
 	if err := attachPairingRedemption(tx, r.LinkID, r.Session.DeviceID, r.Session.ID); err != nil {
 		return err

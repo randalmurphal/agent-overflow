@@ -24,12 +24,14 @@ import (
 //   - store.CreateSession — the device predicate is inside the INSERT;
 //   - store.CompletePairingRedemption - the same INSERT, inside the
 //     transaction that names the pending session on its link;
+//   - store.CreateDeviceSession - the same INSERT, inside the transaction
+//     that writes a passkey sign-in's device row with its live session;
 //   - store.EnsureLocalSession - inside its serialized initialization transaction;
 //   - store.ConfirmRedeemedPairing - the activation UPDATE's predicate, inside
 //     the confirmation's transaction;
 //   - store.RotateRefreshSecret — session/device predicates inside the durable transaction;
 //   - signClaims — reached only through newSession (whose row must then
-//     survive CreateSession or CompletePairingRedemption) or accessTokensFor
+//     survive CreateSession, CompletePairingRedemption or CreateDeviceSession) or accessTokensFor
 //     (which takes the device ROW and refuses a revoked one).
 //
 // So a new mint path built from these operations inherits the refusal. This test
@@ -44,6 +46,7 @@ func TestEveryCredentialProducingCallGoesThroughAChokepoint(t *testing.T) {
 	chokepoints := map[string][]string{
 		"CreateSession":             {"Sessions.Mint"},
 		"CompletePairingRedemption": {"Sessions.mintPendingSession"},
+		"CreateDeviceSession":       {"Sessions.FinishPasskeySignIn"},
 		"EnsureLocalSession":        {"Sessions.EnsureLocalChannelSession"},
 		"ConfirmRedeemedPairing":    {"Sessions.confirmPairing"},
 		"RotateRefreshSecret":       {"Sessions.Refresh"},

@@ -441,8 +441,7 @@ func (s *Store) CreatePairedDevice(userID, label, class, platform, thumbprint, p
 }
 
 // NewPairedDevice builds the row CreatePairedDevice writes, for a caller that
-// writes it together with what the device was created for
-// (CompletePairingRedemption).
+// writes it together with the session it was created for (DeviceSession).
 func NewPairedDevice(userID, label, class, platform, thumbprint, proofKind string) (Device, error) {
 	if strings.TrimSpace(userID) == "" {
 		return Device{}, fmt.Errorf("%w: device user id", ErrIdentityFieldRequired)

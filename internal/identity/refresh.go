@@ -344,42 +344,23 @@ func (s *Sessions) verifyDeviceProof(thumbprint string, presented DeviceProof) R
 	return s.admitProof(parsed, presented)
 }
 
-// issueFor signs the access credential for a session row and, when the
-// policy is renewable, mints the next refresh secret.
+// newTokens signs session's credential pair and returns the refresh secret
+// the caller must write, together with the session (newDeviceSession), before
+// handing the pair out. A device class that does not renew gets no secret
+// and a zero grant.
 //
-// The refresh secret is written BEFORE the credential is returned, so a
-// device never holds a credential whose renewal path does not exist yet.
+// It is the ONE function in this package that builds a first TokenSet,
+// which is what makes it the place the device half of the conjunction is
+// enforced at issuance (docs/specs/remote-access.md §2). Two consequences of
+// that shape are deliberate:
 //
-// It is the ONE function in this package that builds a TokenSet, which is
-// what makes it the place the device half of the conjunction is enforced
-// at issuance (docs/specs/remote-access.md §2). Two consequences of that
-// shape are deliberate:
-//
-//   - it takes the DEVICE ROW, not a policy. Every caller derived the
-//     policy from the same two values anyway, and passing the row means a
-//     caller cannot hand this function a policy from one device and a
-//     session from another — nor issue without having read a device at all.
+//   - it takes the DEVICE ROW, not a policy. Passing the row means a caller
+//     cannot hand this function a policy from one device and a session from
+//     another, nor issue without having read a device at all.
 //   - the refusal is hygiene, not the enforcement. A revocation can land
 //     the instant after this check, so what actually makes such a
 //     credential worthless is that every consult re-asks (Sessions.Live).
 //     Refusing here is what stops one being HANDED OUT in the first place.
-func (s *Sessions) issueFor(session store.Session, device store.Device, now int64) (TokenSet, error) {
-	tokens, grant, err := s.newTokens(session, device, now)
-	if err != nil {
-		return TokenSet{}, err
-	}
-	if grant.Hash != nil {
-		if _, err := s.store.CreateRefreshSecret(session.ID, grant.Hash, grant.CreatedAt, grant.ExpiresAt); err != nil {
-			return TokenSet{}, err
-		}
-	}
-	return tokens, nil
-}
-
-// newTokens signs session's credential pair and returns the refresh secret
-// the caller must write before handing the pair out: issueFor, or a pairing
-// redemption together with its session. A device class that does not renew
-// gets no secret and a zero grant.
 func (s *Sessions) newTokens(session store.Session, device store.Device, now int64) (TokenSet, store.RefreshGrant, error) {
 	if session.BindingClass == string(BindingLoopbackOnly) {
 		return TokenSet{}, store.RefreshGrant{}, fmt.Errorf("identity: local sessions cannot issue renewable credentials")

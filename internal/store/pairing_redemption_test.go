@@ -24,8 +24,8 @@ func spentLink(t *testing.T) (*Store, PairingRedemption) {
 	pending.ActivatedAt = 0
 	relabeled := device
 	relabeled.Label, relabeled.Platform = "Renamed by the redemption", "windows"
-	return s, PairingRedemption{LinkID: "link-1", Device: relabeled, Session: pending,
-		Refresh: RefreshGrant{Hash: []byte("refresh-1"), CreatedAt: 2000, ExpiresAt: 90000}}
+	return s, PairingRedemption{LinkID: "link-1", DeviceSession: DeviceSession{Device: relabeled, Session: pending,
+		Refresh: RefreshGrant{Hash: []byte("refresh-1"), CreatedAt: 2000, ExpiresAt: 90000}}}
 }
 
 // onNewDevice is r redeemed by a key this store has never seen: a new
@@ -134,6 +134,31 @@ func TestCompletePairingRedemptionWritesTheDeviceAndSessionWithItsLink(t *testin
 	})
 }
 
+// A live session is written with its device by CreateDeviceSession; a
+// pending one is refused there, because it exists only with its link.
+func TestCreateDeviceSessionWritesOnlyALiveSession(t *testing.T) {
+	eachDevice(t, func(t *testing.T, s *Store, r PairingRedemption) {
+		if err := s.CreateDeviceSession(r.DeviceSession); err == nil {
+			t.Fatal("CreateDeviceSession wrote a pending session")
+		}
+		requireNothingRedeemed(t, s, r)
+		live := r.DeviceSession
+		live.Session.ActivatedAt = live.Session.CreatedAt
+		if err := s.CreateDeviceSession(live); err != nil {
+			t.Fatalf("CreateDeviceSession: %v", err)
+		}
+		if device, err := s.GetDevice(live.Device.ID); err != nil || device.Label != live.Device.Label || device.Platform != live.Device.Platform {
+			t.Fatalf("the session's device = %+v (%v), want %+v", device, err, live.Device)
+		}
+		if session, err := s.GetSession(live.Session.ID); err != nil || session.ActivatedAt == 0 {
+			t.Fatalf("the written session = %+v (%v), want live", session, err)
+		}
+		if _, err := s.GetRefreshSecretByHash([]byte("refresh-1")); err != nil {
+			t.Fatalf("the session's refresh secret: %v", err)
+		}
+	})
+}
+
 // readyLink seeds a redeemed link whose pending session is attached.
 func readyLink(t *testing.T) (*Store, Session) {
 	t.Helper()
@@ -237,7 +262,7 @@ func TestConfirmRedeemedPairingWhoseMembershipIsRefusedCancelsInstead(t *testing
 			}
 			pending := newTestSession("sess-own", owner, device, key, 9000)
 			pending.ActivatedAt = 0
-			if err := s.CompletePairingRedemption(PairingRedemption{LinkID: link.ID, Device: device, Session: pending}); err != nil {
+			if err := s.CompletePairingRedemption(PairingRedemption{LinkID: link.ID, DeviceSession: DeviceSession{Device: device, Session: pending}}); err != nil {
 				t.Fatal(err)
 			}
 			refused.before(t, s)

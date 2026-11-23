@@ -363,7 +363,7 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 		return Redemption{}, ReasonUnknownCredential
 	}
 
-	device, newDevice, reason := s.resolveRedeemingDevice(pending, req, enrollment)
+	device, newDevice, reason := s.resolveDevice(pending.UserID, DeviceClass(pending.DeviceClass), req.Label, req.Platform, enrollment)
 	if reason.Refused() {
 		s.cancelRedeemedLink(pending.ID)
 		s.auditPairingRefusal(reason, req.Peer, pending.ID)
@@ -448,15 +448,17 @@ func (s *Sessions) enrollmentFor(presented DeviceProof) (deviceEnrollment, Reaso
 	return deviceEnrollment{thumbprint: parsed.thumbprint, kind: ProofSignedKey}, ReasonNone
 }
 
-// resolveRedeemingDevice finds the device row for a presented key, relabeled
-// to what the device now reports, or builds a new one; newDevice says which.
-// It writes nothing: mintPendingSession writes the row with the session.
-// See RedeemPairing for why an existing key is adopted and a revoked one is
+// resolveDevice finds the device row for a presented key, relabeled to what
+// the device now reports, or builds a new one of class for userID; newDevice
+// says which. It writes nothing: the row is written with the session it was
+// resolved for (newDeviceSession). Pairing redemption and passkey sign-in
+// both resolve here, so one rule answers "is this the same device". See
+// RedeemPairing for why an existing key is adopted and a revoked one is
 // refused.
-func (s *Sessions) resolveRedeemingDevice(link store.PairingLink, req RedemptionRequest, enrollment deviceEnrollment) (device store.Device, newDevice bool, reason Reason) {
-	label := strings.TrimSpace(req.Label)
+func (s *Sessions) resolveDevice(userID string, class DeviceClass, label, platform string, enrollment deviceEnrollment) (device store.Device, newDevice bool, reason Reason) {
+	label = strings.TrimSpace(label)
 	if label == "" {
-		label = defaultDeviceLabel(DeviceClass(link.DeviceClass))
+		label = defaultDeviceLabel(class)
 	}
 	existing, err := s.store.DeviceByKeyThumbprint(enrollment.thumbprint)
 	switch {
@@ -479,60 +481,71 @@ func (s *Sessions) resolveRedeemingDevice(link store.PairingLink, req Redemption
 			// device on the owner surface, then redeem a NEW link.
 			return store.Device{}, false, ReasonRevokedDevice
 		}
-		if existing.UserID != link.UserID {
+		if existing.UserID != userID {
 			return store.Device{}, false, ReasonKeyMismatch
 		}
-		existing.Label, existing.Platform = label, req.Platform
+		existing.Label, existing.Platform = label, platform
 		return existing, false, ReasonNone
 	case !errors.Is(err, sql.ErrNoRows):
 		log.Printf("identity: read device by thumbprint: %v", err)
 		return store.Device{}, false, ReasonKeyMismatch
 	}
 	device, err = store.NewPairedDevice(
-		link.UserID, label, link.DeviceClass, req.Platform,
+		userID, label, string(class), platform,
 		enrollment.thumbprint, string(enrollment.kind))
 	if err != nil {
-		log.Printf("identity: build paired device: %v", err)
+		log.Printf("identity: build device: %v", err)
 		return store.Device{}, false, ReasonKeyMismatch
 	}
 	return device, true, ReasonNone
 }
 
+// newDeviceSession builds the session req describes on device and its first
+// credential pair, for the caller to write together with the device row
+// (store.DeviceSession) before it hands the pair out.
+//
+// newSession's own credential is discarded: it carries no refresh secret,
+// and issuing the pair through newTokens keeps a device from ever holding an
+// access credential whose renewal row does not exist.
+func (s *Sessions) newDeviceSession(req MintRequest, device store.Device, newDevice bool, now int64) (store.DeviceSession, TokenSet, error) {
+	req.DeviceID = device.ID
+	session, _, err := s.newSession(req)
+	if err != nil {
+		return store.DeviceSession{}, TokenSet{}, err
+	}
+	tokens, grant, err := s.newTokens(session, device, now)
+	if err != nil {
+		return store.DeviceSession{}, TokenSet{}, err
+	}
+	return store.DeviceSession{Device: device, NewDevice: newDevice, Session: session, Refresh: grant}, tokens, nil
+}
+
 // mintPendingSession issues the unactivated session and its first
 // credential pair, written with the device row (created or relabeled) and
-// the link that names them in one store transaction. The window is the confirmation window, not the device
-// class's access TTL: an unconfirmed credential must not outlive the
-// decision it is waiting on. Confirm replaces it with the real one.
+// the link that names them in one store transaction. The window is the
+// confirmation window, not the device class's access TTL: an unconfirmed
+// credential must not outlive the decision it is waiting on. Confirm
+// replaces it with the real one.
 func (s *Sessions) mintPendingSession(link store.PairingLink, device store.Device, newDevice bool, now int64) (store.Session, TokenSet, error) {
 	scopes := make([]Scope, 0, len(link.Scopes))
 	for _, name := range link.Scopes {
 		scopes = append(scopes, Scope(name))
 	}
-	session, _, err := s.newSession(MintRequest{
+	written, tokens, err := s.newDeviceSession(MintRequest{
 		UserID:            link.UserID,
-		DeviceID:          device.ID,
 		BindingClass:      BindingClass(link.BindingClass),
 		Scopes:            scopes,
 		TTL:               PairingConfirmWindow,
 		AwaitConfirmation: true,
-	})
+	}, device, newDevice, now)
 	if err != nil {
 		return store.Session{}, TokenSet{}, err
 	}
-	// newSession's own credential is discarded: it carries no refresh
-	// secret, and issuing the pair through one path keeps a device from
-	// ever holding an access credential whose renewal row does not exist.
-	tokens, grant, err := s.newTokens(session, device, now)
-	if err != nil {
+	if err := s.store.CompletePairingRedemption(store.PairingRedemption{LinkID: link.ID, DeviceSession: written}); err != nil {
 		return store.Session{}, TokenSet{}, err
 	}
-	if err := s.store.CompletePairingRedemption(store.PairingRedemption{
-		LinkID: link.ID, Device: device, NewDevice: newDevice, Session: session, Refresh: grant,
-	}); err != nil {
-		return store.Session{}, TokenSet{}, err
-	}
-	s.auditMinted(session)
-	return session, tokens, nil
+	s.auditMinted(written.Session)
+	return written.Session, tokens, nil
 }
 
 // cancelRedeemedLink settles a link whose redemption could not complete, so
