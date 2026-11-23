@@ -72,7 +72,8 @@ alive. Rate-limit persistence and emission enter through narrow
   userinfo, under the ACP probe's bound (`agyIdentifyTimeout`), or by the
   email its credential carries; a failed lookup of a credential that
   carries none identified nothing, so reconciliation fails with it and the
-  next one asks again.
+  next one asks again, and a sign-in fails unsaved
+  (`agySignInUnidentifiedError`).
 - A usage reading of any managed provider, or a Codex spend, of the selected
   account whose canonical credential is not the recorded one reconciles
   first (`reconciledUsageStart`), under the lock it already holds, and runs

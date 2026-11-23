@@ -5,9 +5,10 @@ Antigravity CLI (`agy`) speaks Agent Client Protocol (ACP) v1 over newline-delim
 ## Process lifecycle and sharing
 
 - Launch: `agy acp` (single shared process per binary + environment + binary identity). Do not pass `--process-per-session` or `--dangerously-skip-permissions`.
-- Environment:
+- Environment (`agy.Home.Launch` builds every agy launch):
   - Pin `AGY_CLI_DISABLE_AUTO_UPDATE=1` so background self-updates do not replace the running binary mid-session.
   - Scrub ambient `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_CLOUD_PROJECT`, and `GOOGLE_APPLICATION_CREDENTIALS` unless explicitly configured by the user.
+  - Login store and home: a process for the canonical login runs on agy's default home under `HOME`, on the store the account manager reads (`provideraccountapp.Manager.AgyCanonicalHome`, decided at each launch): `AGY_ACP_FORCE_FILE_STORAGE=1` for the file, cleared for the macOS Keychain item. An inherited `GEMINI_HOME` and `AGY_APP_DATA_DIR` are always cleared. A sign-in, a probe of a temporary home, and an import from another directory pass `--gemini-dir`/`--app-data-dir` on file storage. All three variables are reserved in the custom environment.
   - Tests isolate credentials with `AGY_ACP_FORCE_FILE_STORAGE=1` and a detached `HOME` (unsetting `GEMINI_HOME` and `AGY_APP_DATA_DIR`).
 - Idle connections are kept warm in `sessionruntime.ConnPool` for 5 minutes and drained on binary upgrade or shutdown.
 
