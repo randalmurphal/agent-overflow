@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 // This file owns the mutations that move a credential between the canonical
-// native store and a saved slot: activation, sign-out, slot removal, and the
-// orphan sweep. The storage primitives they compose live in credentials.go.
+// native store and a saved slot: activation, sign-out, and slot removal. The
+// storage primitives they compose live in credentials.go.
 
 // Activate atomically replaces the canonical provider credential with the
 // selected account. When switching away from currentAccountID, the current
@@ -194,67 +196,15 @@ func (c *Credentials) removeAccountLocked(providerName, accountID string) error 
 	if err := root.RemoveAll(filepath.Join(accountDirectoryName, accountID)); err != nil {
 		return fmt.Errorf("provideraccounts: remove saved account credentials: %w", err)
 	}
+	// The removal is durable before the caller clears any record of the
+	// slot (a reservation, an account row), already-absent slot included:
+	// another process's removal may not have been synced.
+	if _, err := root.Lstat(accountDirectoryName); err == nil {
+		if err := atomicfile.SyncRootDir(root, accountDirectoryName); err != nil {
+			return fmt.Errorf("provideraccounts: make the %s slot removal durable: %w", providerName, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("provideraccounts: inspect managed account root: %w", err)
+	}
 	return c.removeConsumedMarker(providerName, accountID)
-}
-
-// PruneOrphanedAccounts removes credential slots that have no corresponding
-// metadata account and returns the IDs it removed, so the caller can record
-// each destruction. A crash can leave one slot behind between credential
-// creation and metadata commit; registered account directories are never
-// inspected or modified by this sweep.
-//
-// An empty keep-set prunes nothing. Zero registered accounts cannot be told
-// apart from a process reading a different metadata store than the one these
-// slots belong to — a fresh --data-dir, a test overriding the config root
-// but not the home — and the slots hold logins whose refresh tokens are
-// single-use and unrecoverable, so the sweep refuses to guess. The crash
-// orphan it exists for is cleaned on the first sweep after any account is
-// registered again.
-func (c *Credentials) PruneOrphanedAccounts(
-	providerName string,
-	keepAccountIDs map[string]bool,
-) ([]string, error) {
-	paths, err := c.Paths(providerName)
-	if err != nil {
-		return nil, err
-	}
-	rootPath := filepath.Join(paths.SharedHome, accountDirectoryName)
-	info, err := os.Lstat(rootPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("provideraccounts: inspect managed account root: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return nil, fmt.Errorf("provideraccounts: managed account root %s is not a directory", rootPath)
-	}
-	if len(keepAccountIDs) == 0 {
-		return nil, nil
-	}
-	entries, err := os.ReadDir(rootPath)
-	if err != nil {
-		return nil, fmt.Errorf("provideraccounts: list managed accounts: %w", err)
-	}
-	var pruned []string
-	var pruneErrs []error
-	for _, entry := range entries {
-		accountID := entry.Name()
-		if !safeAccountID.MatchString(accountID) {
-			pruneErrs = append(pruneErrs, fmt.Errorf(
-				"provideraccounts: invalid managed account entry %q",
-				accountID,
-			))
-			continue
-		}
-		if keepAccountIDs[accountID] {
-			continue
-		}
-		if err := c.RemoveAccount(providerName, accountID); err != nil {
-			pruneErrs = append(pruneErrs, err)
-			continue
-		}
-		pruned = append(pruned, accountID)
-	}
-	return pruned, errors.Join(pruneErrs...)
 }

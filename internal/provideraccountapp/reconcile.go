@@ -13,8 +13,6 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
-
-	"github.com/google/uuid"
 )
 
 // reconcileExternalProviderAccount detects a provider-native login completed
@@ -265,7 +263,12 @@ func (m *Manager) reconcileObservedAccountLocked(
 		}
 	}
 	if !found {
-		target.ID = uuid.NewString()
+		reservation, err := m.reserveAccount(providerName)
+		if err != nil {
+			return provideraccounts.Account{}, SignIn{}, false, err
+		}
+		defer reservation.settleOnFailure(&retErr)
+		target.ID = reservation.ID()
 		target.Provider = providerName
 	}
 	if !hasActive || target.ID != active.ID {
