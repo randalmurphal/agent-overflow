@@ -215,7 +215,7 @@ type Manager struct {
 	pageAdopted func()
 	// popupListing is a test seam: adoptPopup calls it between the hold that
 	// lists a popup's tab with the downloads the popup started and the
-	// application of their newest progress.
+	// application of their parked ends.
 	popupListing func()
 	// publishDecided is a test seam: publishPages calls it once it has
 	// decided to push, before the push.

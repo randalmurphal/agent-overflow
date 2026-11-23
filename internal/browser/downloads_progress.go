@@ -35,9 +35,9 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 	m.applyToRow(p, scope, event)
 }
 
-// applyToRow applies a download's progress to its row in p, which the
-// lookup found listed in scope or, with scope nil, gone with the row
-// waiting for its end. Either way the page may have left since, with the
+// applyToRow applies a download's progress to its row in p, which its
+// caller found listed in scope (a lookup, or a popup's listing) or, with
+// scope nil, gone with the row waiting for its end. Either way the page may have left since, with the
 // row waiting for this end (pageLeftLocked), so a row this settles stops
 // waiting whichever the lookup found.
 func (m *Manager) applyToRow(p *managedPage, scope *jarScope, event downloadProgress) {
@@ -82,19 +82,14 @@ func (m *Manager) applyHeldRow(p *managedPage, scope *jarScope, held *downloadLo
 		entry.TotalBytes = int64(event.Total)
 	}
 	saving := m.engine.DownloadSaving()
-	// Over the cap: running, it is canceled; finished, which a popup's
-	// download listed only at its finish can be (popup_parked.go), its
-	// file goes all the same.
+	// Over the cap: running, it is canceled; finished, its file goes all
+	// the same.
 	if saving == downloadsAsArtifacts && entry.Bytes > maxDownloadBytes && !event.State.stopped() {
-		if err := entry.settle(downloadStateCanceled); err != nil {
-			log.Printf("browser: %v", err)
-		}
-		entry.Error = fmt.Sprintf("download exceeds %d bytes", maxDownloadBytes)
+		settleOverCap(entry)
 		discard := entry.discard()
 		note := m.noteDownloadLocked(p, entry)
 		held.release()
 		m.publishDownloads(note)
-		// One parked past the cap was canceled then.
 		cancel := event.State.running() && scope != nil
 		go func() {
 			if cancel {
@@ -198,6 +193,15 @@ func (m *Manager) applyHeldRow(p *managedPage, scope *jarScope, held *downloadLo
 		m.finishDiscard(discard)
 	}
 	m.publishDownloads(note)
+}
+
+// settleOverCap settles entry canceled for passing maxDownloadBytes. The
+// caller holds its log.
+func settleOverCap(entry *DownloadInfo) {
+	if err := entry.settle(downloadStateCanceled); err != nil {
+		log.Printf("browser: %v", err)
+	}
+	entry.Error = fmt.Sprintf("download exceeds %d bytes", maxDownloadBytes)
 }
 
 // placeArtifact moves a finished artifact download from the file its engine

@@ -270,15 +270,19 @@ var receiptStates = []receiptState{
 		popup, _ := l.popup(opener, "https://example.test/popup")
 		l.awaitAttach("history PT-1")
 		return &receiptPage{page: popup, list: func(t *testing.T) string {
-			// The listing waits, its tab listed and its downloads' newest
-			// progress not applied, until the action takes the tab out in
-			// one m.mu hold; what else of the action waits for the listing
-			// runs after it.
+			// The listing waits, its tab listed with its downloads and their
+			// parked ends not applied, polling every millisecond until the
+			// action takes the tab out in one m.mu hold; what else of the
+			// action waits for the listing runs after it. An action that
+			// never takes the tab out fails the row.
 			inWindow := make(chan struct{})
 			l.manager.popupListing = func() {
 				close(inWindow)
-				for deadline := time.Now().Add(hostedTestDeadline); listed(l.manager, ids.PageHandle(popup)) && time.Now().Before(deadline); {
-					time.Sleep(time.Millisecond)
+				for deadline := time.Now().Add(hostedTestDeadline); listed(l.manager, ids.PageHandle(popup)); time.Sleep(time.Millisecond) {
+					if time.Now().After(deadline) {
+						t.Error("the action never took the popup's tab out during its listing")
+						return
+					}
 				}
 			}
 			release()

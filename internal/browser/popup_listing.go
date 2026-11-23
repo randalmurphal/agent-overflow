@@ -149,7 +149,7 @@ func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr er
 	}
 	listedCrashed, reserved := false, true
 	var released *jarScope
-	var downloads []adoptedDownload
+	var downloads []parkedRow
 	switch m.unlistedOutcomeLocked(p, listable, verdict) {
 	case listLive:
 		delete(r.scope.creating, p)
@@ -192,9 +192,9 @@ func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr er
 	if m.popupListing != nil {
 		m.popupListing()
 	}
-	// Its downloads' newest progress and starts, in the m.parkMu hold that
-	// a later report of them waits for (downloadProgress).
-	m.publishAdoptedParked(downloads)
+	// Its downloads' starts and parked ends, in the m.parkMu hold that a
+	// later report of them waits for (downloadProgress).
+	m.publishAdoptedParked(p, r.scope, downloads)
 	m.parkMu.Unlock()
 	// A new tab.
 	m.pageAdded(p)
