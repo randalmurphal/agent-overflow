@@ -679,3 +679,9 @@ func TestCodexReadLoopCleansPendingOnExit(t *testing.T) {
 		t.Fatal("timeout waiting for pending channel to be closed")
 	}
 }
+
+// isThreadWriterConflict reports whether err is a writer-ownership refusal.
+func isThreadWriterConflict(err error) bool {
+	var conflict *ThreadWriterConflictError
+	return errors.As(err, &conflict)
+}

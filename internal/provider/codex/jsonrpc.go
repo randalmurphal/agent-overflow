@@ -5,12 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log"
 	"strings"
 	"time"
-
-	"agent-overflow/internal/provider"
 )
 
 // sendRequest sends a JSON-RPC request and waits for a response. On
@@ -266,12 +262,6 @@ func (e *ThreadWriterConflictError) Unwrap() error {
 	return e.err
 }
 
-// isThreadWriterConflict reports whether err is a writer-ownership refusal.
-func isThreadWriterConflict(err error) bool {
-	var conflict *ThreadWriterConflictError
-	return errors.As(err, &conflict)
-}
-
 // classifyThreadWriterConflict upgrades a raw JSON-RPC refusal into
 // ThreadWriterConflictError, or returns err unchanged.
 //
@@ -393,25 +383,6 @@ func (s *Session) requestTimeout() time.Duration {
 	return defaultRequestTimeout
 }
 
-// writeNotification sends a JSON-RPC notification (no id, no response expected).
-func (s *Session) writeNotification(method string, params any) error {
-	if s.conn != nil {
-		return s.conn.writeNotification(method, params)
-	}
-	msg := map[string]any{
-		"jsonrpc": "2.0",
-		"method":  method,
-	}
-	if params != nil {
-		msg["params"] = params
-	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("codex: marshal notification: %w", err)
-	}
-	return s.proc.WriteLine(data)
-}
-
 // writeErrorResponse sends a JSON-RPC error response with the given code and message.
 func (s *Session) writeErrorResponse(id int64, code int, message string) error {
 	return s.writeErrorResponseWithData(id, code, message, nil)
@@ -477,104 +448,4 @@ func (s *Session) writeResponse(id int64, result any) error {
 		return fmt.Errorf("codex: marshal response: %w", err)
 	}
 	return s.proc.WriteLine(data)
-}
-
-// readLoop reads stdout and dispatches JSON-RPC messages (used only by
-// synthetic unit tests that construct a Session without Conn).
-func (s *Session) readLoop() {
-	defer func() {
-		defer s.finishReadDone()
-
-		// Unblock all pending requests.
-		s.mu.Lock()
-		for id, ch := range s.pending {
-			close(ch)
-			delete(s.pending, id)
-		}
-		s.mu.Unlock()
-
-		// If the app-server exits while an approval or user-input request is
-		// waiting, resolve it as lost so the frontend prompt does not linger.
-		// The process is already gone, so only emit local resolution events.
-		s.drainPendingApprovals("lost", true, false)
-
-		// Every notification has been dispatched, so a delivery still
-		// pending will not arrive in this process.
-		s.endSessionStartDeliveryAtTeardown()
-
-		// The abnormal-exit "error" (host did not initiate this close) plus
-		// the unconditional "disconnected" — shared with claude so the two
-		// read loops cannot drift on the signal triage gates its synthesized
-		// turn-complete on. See provider.EmitTeardownStatus.
-		provider.EmitTeardownStatus(s.emitEvent, s.threadID, s.proc, s.closing.Load())
-	}()
-
-	for {
-		line, err := s.proc.ReadLine()
-		if err != nil {
-			if err != io.EOF {
-				meta, _ := json.Marshal(map[string]any{"fatal": true})
-				s.emitEvent(provider.ProviderEvent{
-					Kind:      provider.EventError,
-					ThreadID:  s.threadID,
-					Content:   fmt.Sprintf("codex: read error: %v", err),
-					Meta:      meta,
-					Failure:   &provider.FailureMeta{Class: provider.FailureFatal, Boundary: provider.FailureBoundaryEvent},
-					Timestamp: time.Now(),
-				})
-			}
-			return
-		}
-
-		s.dispatchLine(line)
-	}
-}
-
-// dispatchLine classifies a JSON-RPC line and routes it.
-func (s *Session) dispatchLine(line []byte) {
-	var msg struct {
-		ID     *json.Number    `json:"id,omitempty"`
-		Method string          `json:"method,omitempty"`
-		Result json.RawMessage `json:"result,omitempty"`
-		Error  json.RawMessage `json:"error,omitempty"`
-		Params json.RawMessage `json:"params,omitempty"`
-	}
-
-	if err := json.Unmarshal(line, &msg); err != nil {
-		log.Printf("codex: invalid JSON line: %v", err)
-		return
-	}
-
-	// Response: has id, no method.
-	if msg.ID != nil && msg.Method == "" {
-		id, err := msg.ID.Int64()
-		if err != nil {
-			log.Printf("codex: response has non-integer ID %q: %v", msg.ID.String(), err)
-			return
-		}
-		s.mu.Lock()
-		ch, ok := s.pending[id]
-		s.mu.Unlock()
-		if ok {
-			// Non-blocking send: if the request already timed out and the channel
-			// was removed or is full, drop the response silently.
-			select {
-			case ch <- line:
-			default:
-			}
-		}
-		return
-	}
-
-	// Server request: has both id and method (approval flow).
-	if msg.ID != nil && msg.Method != "" {
-		s.dispatchServerRequest(msg.Method, msg.ID, msg.Params, line)
-		return
-	}
-
-	// Notification: has method, no id.
-	if msg.Method != "" {
-		s.dispatchNotification(msg.Method, msg.Params)
-		return
-	}
 }

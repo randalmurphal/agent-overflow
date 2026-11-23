@@ -592,13 +592,3 @@ func extractAccountInfoFromRateLimits(result json.RawMessage) provider.AccountIn
 		APIProvider:      "openai",
 	}
 }
-
-// ProbeCache aliases the shared `provider.ProbeCache` so existing callers
-// keep working. All cache logic lives in `internal/provider/probecache.go`.
-type ProbeCache = provider.ProbeCache
-
-// NewProbeCache returns a fresh cache with the given entry lifetime.
-// Thin wrapper around `provider.NewProbeCache` for call-site symmetry.
-func NewProbeCache(ttl time.Duration) *ProbeCache {
-	return provider.NewProbeCache(ttl)
-}

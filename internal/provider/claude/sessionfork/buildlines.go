@@ -3,7 +3,6 @@ package sessionfork
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,25 +15,6 @@ var stripFields = []string{
 	"agentName",
 	"slug",
 	"sourceToolAssistantUUID",
-}
-
-// BuildForkLines is the pure transform: reads JSONL from src, slices the
-// transcript at upToMessageUUID (inclusive), and returns the new session
-// id and the JSONL lines to write to the new session file. customTitle,
-// when empty, derives a default ("Forked session (fork)").
-//
-// upToMessageUUID == "" means clone the full transcript (no slice).
-func BuildForkLines(
-	src io.Reader,
-	srcSessionID string,
-	upToMessageUUID string,
-	customTitle string,
-) (newSessionID string, lines []string, err error) {
-	transcript, contentReplacements, err := ParseTranscript(src, srcSessionID)
-	if err != nil {
-		return "", nil, fmt.Errorf("sessionfork: parse transcript: %w", err)
-	}
-	return buildLines(transcript, contentReplacements, srcSessionID, upToMessageUUID, customTitle)
 }
 
 // buildLines is the core transform, a Go port of the Python SDK's

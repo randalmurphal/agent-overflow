@@ -399,3 +399,11 @@ func TestCodexDrainWritesTurnTransitionError(t *testing.T) {
 		t.Fatalf("error.code is zero — JSON-RPC error frames must carry a non-zero code")
 	}
 }
+
+// trackPendingApproval registers an interactive request. Uses the numeric
+// JSON-RPC id rendered as a string so dedup (Bug B9) and response routing
+// both use the same key — and so writeDrainResponse can parse it back into
+// the id the JSON-RPC reply has to carry.
+func (s *Session) trackPendingApproval(rpcID int64, resolveKind provider.EventKind, decisions ...*[]json.RawMessage) {
+	s.trackPendingApprovalScoped(rpcID, resolveKind, s.rootThreadID(), decisions...)
+}

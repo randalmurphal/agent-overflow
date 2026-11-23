@@ -262,3 +262,8 @@ func TestBuildApprovalResponseResultElicitation(t *testing.T) {
 		t.Error("expected non-nil _meta")
 	}
 }
+
+func buildApprovalResponseResult(resp provider.ApprovalResponse) (int64, any, error) {
+	rpcID, result, _, err := buildApprovalResponseResultAndDecision(resp)
+	return rpcID, result, err
+}

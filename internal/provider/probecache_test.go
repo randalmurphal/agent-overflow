@@ -5,12 +5,11 @@ import (
 	"time"
 )
 
-// The shared ProbeCache is exercised end-to-end via the Claude and Codex
-// probe test suites; this file isolates the eviction surface introduced
-// for the user-initiated recheck path. A bug in Invalidate (delete the
-// wrong key, no-op silently when the key exists) would mask itself in
-// the Recheck flow because the next Set immediately repopulates — only
-// a dedicated test catches it.
+// The ProbeCache both providers' account probes share. The eviction tests
+// matter for the user-initiated recheck path: a bug in Invalidate (delete
+// the wrong key, no-op silently when the key exists) would mask itself in
+// the Recheck flow because the next Set immediately repopulates — only a
+// dedicated test catches it.
 
 func claudeKey() ProbeCacheKey {
 	return ProbeCacheKey{Binary: "/usr/bin/claude", AccountID: "acct-1", WorkDir: "/home/u"}

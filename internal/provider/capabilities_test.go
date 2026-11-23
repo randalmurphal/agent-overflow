@@ -1,10 +1,13 @@
 package provider
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // TestProviderRegistryExhaustiveness pins that every ProviderKind in
-// AllProviders() is explicitly wired into capabilities, display naming,
-// usage family, context windows, and reasoning-effort sets.
+// AllProviders() is explicitly wired into capabilities, usage family,
+// context windows, and reasoning-effort sets.
 func TestProviderRegistryExhaustiveness(t *testing.T) {
 	t.Parallel()
 	if len(AllProviders()) == 0 {
@@ -28,14 +31,11 @@ func TestProviderRegistryExhaustiveness(t *testing.T) {
 		if !IsKnownProvider(name) {
 			t.Errorf("IsKnownProvider(%q) = false", name)
 		}
-		if ProviderDisplayName(name) == "" || ProviderDisplayName(name) == name {
-			t.Errorf("ProviderDisplayName(%q) = %q, want a human label", name, ProviderDisplayName(name))
-		}
 		caps := CapabilitiesForProvider(name)
 		if caps.UsageFamily == "" {
 			t.Errorf("CapabilitiesForProvider(%q).UsageFamily is empty", name)
 		}
-		if !IsStandaloneProvider(string(caps.UsageFamily)) {
+		if !slices.Contains(StandaloneProviders(), caps.UsageFamily) {
 			t.Errorf("CapabilitiesForProvider(%q).UsageFamily = %q, want a standalone provider", name, caps.UsageFamily)
 		}
 		if caps.StandardContextWindow <= 0 {
@@ -53,15 +53,12 @@ func TestProviderRegistryExhaustiveness(t *testing.T) {
 		if !seen[kind] {
 			t.Errorf("StandaloneProviders() contains %q which is absent from AllProviders()", kind)
 		}
-		if !IsStandaloneProvider(string(kind)) {
-			t.Errorf("IsStandaloneProvider(%q) = false", kind)
-		}
 	}
 
+	if slices.Contains(StandaloneProviders(), ClaudeTUI) {
+		t.Error("StandaloneProviders() lists dependent provider claude-tui")
+	}
 	if IsKnownProvider("unknown-provider") {
 		t.Error("IsKnownProvider accepted an unknown provider")
-	}
-	if IsStandaloneProvider(string(ClaudeTUI)) {
-		t.Error("IsStandaloneProvider accepted dependent provider claude-tui")
 	}
 }

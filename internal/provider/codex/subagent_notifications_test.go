@@ -824,3 +824,18 @@ func TestBuildSubagentNotificationMetaIncludesExtra(t *testing.T) {
 		t.Errorf("duration_ms: got %v, want 1234", meta["duration_ms"])
 	}
 }
+
+// parseSubagentNotifications is parseSubagentNotificationsWithCarrierRemainder
+// without the remainder.
+func parseSubagentNotifications(text string) []subagentNotification {
+	notifications, _ := parseSubagentNotificationsWithCarrierRemainder(text)
+	return notifications
+}
+
+// extractSubagentNotificationsFromUserMessage is
+// extractSubagentNotificationsAndRemainderFromUserMessage without the
+// remainder.
+func extractSubagentNotificationsFromUserMessage(params json.RawMessage) []subagentNotification {
+	notifications, _ := extractSubagentNotificationsAndRemainderFromUserMessage(params)
+	return notifications
+}

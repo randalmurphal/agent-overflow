@@ -26,13 +26,6 @@ type TransferCopy struct {
 	Files     []transferfiles.Source
 }
 
-// CopyTransferFiles clones one complete, quiescent native session into NEW
-// operation scratch. The destination installer relocates the root AND sidecars
-// into its own workspace slug. Never call this with a live provider directory.
-func CopyTransferFiles(ctx context.Context, operationID, sessionID, destination string, sources []transferfiles.Source) (result TransferCopy, err error) {
-	return CopyTransferFilesAt(ctx, TransferCopyCut{OperationID: operationID, SessionID: sessionID, Destination: destination}, sources)
-}
-
 type TransferCopyCut struct {
 	OperationID string
 	SessionID   string

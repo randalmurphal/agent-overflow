@@ -3,6 +3,8 @@ package sessionfork
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -455,4 +457,34 @@ func TestBuildForkLines_RejectsEmptyUUID(t *testing.T) {
 	if got, want := len(lines), 2; got != want {
 		t.Errorf("lines = %d, want %d (empty-uuid entry should be dropped)", got, want)
 	}
+}
+
+// BuildForkLines is the pure transform: reads JSONL from src, slices the
+// transcript at upToMessageUUID (inclusive), and returns the new session
+// id and the JSONL lines to write to the new session file. customTitle,
+// when empty, derives a default ("Forked session (fork)").
+//
+// upToMessageUUID == "" means clone the full transcript (no slice).
+func BuildForkLines(
+	src io.Reader,
+	srcSessionID string,
+	upToMessageUUID string,
+	customTitle string,
+) (newSessionID string, lines []string, err error) {
+	transcript, contentReplacements, err := ParseTranscript(src, srcSessionID)
+	if err != nil {
+		return "", nil, fmt.Errorf("sessionfork: parse transcript: %w", err)
+	}
+	return buildLines(transcript, contentReplacements, srcSessionID, upToMessageUUID, customTitle)
+}
+
+// parentUUIDForUserMessageUUIDInTranscript returns the parentUuid of
+// the entry entryForUserMessageUUIDInTranscript matches.
+func parentUUIDForUserMessageUUIDInTranscript(transcript []map[string]any, messageUUID string) (string, error) {
+	entry, err := entryForUserMessageUUIDInTranscript(transcript, messageUUID)
+	if err != nil {
+		return "", err
+	}
+	parent, _ := entry["parentUuid"].(string)
+	return parent, nil
 }

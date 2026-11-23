@@ -154,3 +154,12 @@ func TestTransferAcceptsProviderCanonicalHomeWithoutReadingOutside(t *testing.T)
 		t.Fatalf("home alias bypassed containment: %v", err)
 	}
 }
+
+// TransferFiles collects the referenced rollouts and their immutable history
+// prefixes. This is targeted export, never a fallback for the session catalog:
+// primary paths come from the provider, and filename discovery resolves only
+// history_base rollout IDs, which may not have thread-index rows of their own.
+func TransferFiles(ctx context.Context, codexHome string, references []TransferReference) ([]transferfiles.Source, error) {
+	_, files, err := collectTransferFiles(ctx, codexHome, references, nil)
+	return files, err
+}

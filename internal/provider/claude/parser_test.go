@@ -194,3 +194,15 @@ func TestParseLineUnknownEnvelopeOnNilParserIsSilent(t *testing.T) {
 		t.Fatalf("nil parser logged %q, want silence", out)
 	}
 }
+
+// isBackground reports whether the given tool_use ID was marked (either
+// origin). The Claude tool_use ↔ tool_result correlation is one-shot;
+// callers that consume a correlated event should also call
+// clearBackground to release the entry.
+func (p *Parser) isBackground(toolUseID string) bool {
+	return p.backgroundOrigin(toolUseID) != 0
+}
+
+func (r *recentMap[V]) len() int {
+	return len(r.current) + len(r.previous)
+}

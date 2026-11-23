@@ -225,3 +225,12 @@ func buildChain(t *testing.T, lines ...any) Branch {
 	}
 	return branches[0]
 }
+
+// newRows projects transcript entries in file order.
+func newRows(entries []map[string]any) []Row {
+	rows := make([]Row, 0, len(entries))
+	for i, e := range entries {
+		rows = append(rows, newRow(e, i))
+	}
+	return rows
+}

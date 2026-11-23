@@ -259,17 +259,6 @@ func writeForkOutput(srcPath, destDir, newID string, lines []string) (string, st
 	return newID, out, nil
 }
 
-// parentUUIDForUserMessageUUIDInTranscript returns the parentUuid of
-// the entry entryForUserMessageUUIDInTranscript matches.
-func parentUUIDForUserMessageUUIDInTranscript(transcript []map[string]any, messageUUID string) (string, error) {
-	entry, err := entryForUserMessageUUIDInTranscript(transcript, messageUUID)
-	if err != nil {
-		return "", err
-	}
-	parent, _ := entry["parentUuid"].(string)
-	return parent, nil
-}
-
 // entryForUserMessageUUIDInTranscript walks an already-parsed
 // transcript and returns the entry carrying the user message
 // identified by messageUUID. It operates on the in-memory transcript

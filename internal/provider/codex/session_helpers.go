@@ -242,12 +242,6 @@ func readRouteFields(params json.RawMessage) (string, string) {
 	return turnID, itemID
 }
 
-func buildApprovalMeta(threadID, turnID, method string, rpcID int64, params json.RawMessage) json.RawMessage {
-	approval := buildApprovalRequest(threadID, turnID, method, rpcID, params)
-	data, _ := json.Marshal(approval)
-	return data
-}
-
 func buildApprovalRequest(threadID, turnID, method string, rpcID int64, params json.RawMessage) provider.ApprovalRequest {
 	var parsed map[string]json.RawMessage
 	_ = json.Unmarshal(params, &parsed)

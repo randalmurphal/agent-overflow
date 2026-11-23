@@ -512,56 +512,6 @@ func TestProbeAccountRespectsConfigTimeout(t *testing.T) {
 	}
 }
 
-// --- ProbeCache (mirror of the Claude cache contract) ---
-
-func TestProbeCacheReturnsStored(t *testing.T) {
-	t.Parallel()
-	cache := NewProbeCache(5 * time.Minute)
-	info := provider.AccountInfo{SubscriptionType: "pro", APIProvider: "openai"}
-
-	cache.Set(provider.ProbeCacheKey{Binary: "/usr/bin/codex", WorkDir: probeWorkDir}, info)
-
-	got, ok := cache.Get(provider.ProbeCacheKey{Binary: "/usr/bin/codex", WorkDir: probeWorkDir})
-	if !ok {
-		t.Fatal("expected cache hit")
-	}
-	if got.SubscriptionType != "pro" {
-		t.Errorf("SubscriptionType: got %q, want pro", got.SubscriptionType)
-	}
-}
-
-func TestProbeCacheExpires(t *testing.T) {
-	t.Parallel()
-	cache := NewProbeCache(10 * time.Millisecond)
-	cache.Set(provider.ProbeCacheKey{Binary: "/usr/bin/codex", WorkDir: probeWorkDir}, provider.AccountInfo{SubscriptionType: "team"})
-
-	if _, ok := cache.Get(provider.ProbeCacheKey{Binary: "/usr/bin/codex", WorkDir: probeWorkDir}); !ok {
-		t.Fatal("expected immediate cache hit")
-	}
-
-	time.Sleep(50 * time.Millisecond)
-
-	if _, ok := cache.Get(provider.ProbeCacheKey{Binary: "/usr/bin/codex", WorkDir: probeWorkDir}); ok {
-		t.Fatal("expected cache miss after TTL expired")
-	}
-}
-
-func TestProbeCacheScopedPerBinary(t *testing.T) {
-	t.Parallel()
-	cache := NewProbeCache(5 * time.Minute)
-	cache.Set(provider.ProbeCacheKey{Binary: "/bin/a", WorkDir: probeWorkDir}, provider.AccountInfo{SubscriptionType: "alpha"})
-	cache.Set(provider.ProbeCacheKey{Binary: "/bin/b", WorkDir: probeWorkDir}, provider.AccountInfo{SubscriptionType: "beta"})
-
-	a, _ := cache.Get(provider.ProbeCacheKey{Binary: "/bin/a", WorkDir: probeWorkDir})
-	b, _ := cache.Get(provider.ProbeCacheKey{Binary: "/bin/b", WorkDir: probeWorkDir})
-	if a.SubscriptionType != "alpha" {
-		t.Errorf("/bin/a: got %q, want alpha", a.SubscriptionType)
-	}
-	if b.SubscriptionType != "beta" {
-		t.Errorf("/bin/b: got %q, want beta", b.SubscriptionType)
-	}
-}
-
 // --- extractAccountInfoFromRateLimits unit tests ---
 
 func TestExtractAccountInfoFromRateLimitsPopulatesPlanType(t *testing.T) {

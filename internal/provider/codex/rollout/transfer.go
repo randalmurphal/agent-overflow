@@ -29,17 +29,11 @@ func TransferFileSession(ctx context.Context, source transferfiles.Source) (stri
 	return meta.SessionID, err
 }
 
-// TransferFiles collects the referenced rollouts and their immutable history
+// TransferGraph collects the referenced rollouts and their immutable history
 // prefixes. This is targeted export, never a fallback for the session catalog:
 // primary paths come from the provider, and filename discovery resolves only
 // history_base rollout IDs, which may not have thread-index rows of their own.
-func TransferFiles(ctx context.Context, codexHome string, references []TransferReference) ([]transferfiles.Source, error) {
-	_, files, err := collectTransferFiles(ctx, codexHome, references, nil)
-	return files, err
-}
-
-// TransferGraph follows native collaboration references as well as history
-// prefixes. thread/fork does NOT clone children, and thread/list's spawn-edge
+// It follows native collaboration references as well as history prefixes. thread/fork does NOT clone children, and thread/list's spawn-edge
 // index can be empty after copying native files into a new home. The durable
 // records are necessary even when the provider's current child list is empty.
 // resolve must be a metadata-only provider thread/read, never a directory guess.
