@@ -364,40 +364,50 @@ func StopConfiguredGroup(command *exec.Cmd, grace time.Duration) error {
 }
 
 func stopGroup(cmd *exec.Cmd, grace time.Duration, kill func(*exec.Cmd) error) error {
+	return stopSequence(grace,
+		func() error { return terminateConfiguredGroup(cmd) },
+		func() error { return kill(cmd) },
+		func() bool { return ConfiguredGroupAlive(cmd) })
+}
+
+// stopSequence is the stop StopConfiguredGroup and StopGroup share: term,
+// a wait of up to grace for the group to empty, kill, and a wait of up to
+// groupKillJoin for the killed members to be reaped.
+func stopSequence(grace time.Duration, term, kill func() error, alive func() bool) error {
 	// A refused SIGTERM still gets the grace and the kill: some members may
 	// have taken it, and the kill reports what is left.
-	termErr := terminateConfiguredGroup(cmd)
+	termErr := term()
 	if errors.Is(termErr, os.ErrProcessDone) {
 		return termErr
 	}
-	if waitGroupGone(cmd, grace) {
+	if waitGroupGone(alive, grace) {
 		return nil
 	}
-	if err := kill(cmd); errors.Is(err, os.ErrProcessDone) {
+	if err := kill(); errors.Is(err, os.ErrProcessDone) {
 		return nil
 	} else if err != nil {
 		return errors.Join(termErr, err)
 	}
-	if waitGroupGone(cmd, groupKillJoin) {
+	if waitGroupGone(alive, groupKillJoin) {
 		return nil
 	}
 	return errGroupOutlivedKill
 }
 
-// waitGroupGone polls until no member of cmd's group remains or bound ends,
-// and reports whether the group is gone.
-func waitGroupGone(cmd *exec.Cmd, bound time.Duration) bool {
+// waitGroupGone polls until alive reports no member of the group remains or
+// bound ends, and reports whether the group is gone.
+func waitGroupGone(alive func() bool, bound time.Duration) bool {
 	deadline := time.NewTimer(bound)
 	defer deadline.Stop()
 	poll := time.NewTicker(50 * time.Millisecond)
 	defer poll.Stop()
 	for {
-		if !ConfiguredGroupAlive(cmd) {
+		if !alive() {
 			return true
 		}
 		select {
 		case <-deadline.C:
-			return !ConfiguredGroupAlive(cmd)
+			return !alive()
 		case <-poll.C:
 		}
 	}

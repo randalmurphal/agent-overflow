@@ -102,10 +102,12 @@ type Deps struct {
 type Manager struct {
 	deps Deps
 
-	mu           sync.RWMutex
-	store        *provideraccounts.Store
-	credentials  *provideraccounts.Credentials
-	fingerprints map[string][32]byte
+	mu          sync.RWMutex
+	store       *provideraccounts.Store
+	credentials *provideraccounts.Credentials
+	// canonical is the per-provider record of the canonical credential
+	// (recorded.go). Guarded by mu.
+	canonical map[string]canonicalRecord
 
 	reconcileLocksMu sync.Mutex
 	reconcileLocks   map[string]*reconcileLock
@@ -142,7 +144,7 @@ func (m *Manager) resetLockWait() time.Duration {
 // NewManager constructs an unattached manager. Attach installs the two stores
 // together during startup or focused-test setup; no App field retains either.
 func NewManager(deps Deps) *Manager {
-	return &Manager{deps: deps, fingerprints: make(map[string][32]byte)}
+	return &Manager{deps: deps, canonical: make(map[string]canonicalRecord)}
 }
 
 func (m *Manager) beginWork(ctx context.Context) (func(), error) {

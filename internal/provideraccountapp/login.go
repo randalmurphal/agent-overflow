@@ -102,7 +102,11 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 		}
 	}
 	if providerName == string(provider.Agy) {
-		info = m.identifyAgyCredential(m.context(), info, loginCredential.Bytes())
+		// A sign-in whose Google account the lookup could not name is saved
+		// under no email, as a login that names nobody is.
+		if info, err = m.identifyAgyCredential(m.context(), info, loginCredential.Bytes()); err != nil {
+			m.audit("saving the Antigravity sign-in under no email: %v", err)
+		}
 	}
 	if err := attempt.cleanup(); err != nil {
 		return ManagedAccount{}, err
@@ -270,7 +274,7 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	// A fresh sign-in is where the provider sets the session deadline this
 	// account will live by, so it is the first place worth reading it.
 	account = m.withRecordedLoginExpiry(account, loginCredential.Bytes())
-	m.rememberProviderCredentialFingerprintLocked(providerName, loginCredential.Bytes())
+	m.recordCanonicalLocked(providerName, loginCredential.Bytes())
 	generation := m.store.Generation(providerName)
 	m.mu.Unlock()
 	accountLocked = false

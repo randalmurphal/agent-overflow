@@ -134,10 +134,11 @@ jobs:
       # come from the package that declares it.
       - name: exhaustive on the files macOS compiles
         run: make go-lint GO_LINT_FLAGS="--enable-only exhaustive"
-      # The orphan reaper is a script macOS's own /bin/sh runs; no other job
-      # executes it there.
+      # The orphan reaper is a script macOS's own /bin/sh runs, and its sweep
+      # reads macOS's kernel process record; no other job executes either
+      # there.
       - name: Run the orphan reaper under macOS sh
-        run: make go-test GO_TEST_PKGS=./internal/orphanreaper GO_TEST_FLAGS='-count=1 -run Sidecar'
+        run: make go-test GO_TEST_PKGS=./internal/orphanreaper GO_TEST_FLAGS="-count=1 -run 'Sidecar|Identity|SweepReaps'"
       - uses: ./.github/actions/cache-save
 
   go-lint:

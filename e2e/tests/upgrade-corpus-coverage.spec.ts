@@ -34,7 +34,7 @@ test('the corpus and the top-up write everything the schema can hold, or the all
 
     const schema = await readSchema(info.dbPath);
     expect(schema.length).toBeGreaterThan(0);
-    const coverage = await measureCoverage(info.dbPath, schema);
+    const coverage = await measureCoverage(info.dbPath, schema, coverageAllowlist);
     const report = assertCoverage(schema, coverage, coverageAllowlist);
     expect(report).toEqual({ uncovered: [], stale: [] });
   } finally {

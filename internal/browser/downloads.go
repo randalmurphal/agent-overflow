@@ -233,7 +233,7 @@ func (m *Manager) departLocked(p *managedPage, entry *DownloadInfo, reason strin
 	if !entry.takesReports() {
 		return downloadNote{}, downloadDiscard{}, false
 	}
-	if entry.endReported != nil && entry.endReported() {
+	if entry.endReceived() {
 		to := rowEndPending
 		if entry.phase == rowCancelRequested {
 			to = rowEndPendingCancelRequested

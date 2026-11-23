@@ -1,6 +1,7 @@
 package provideraccountapp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
-	"agent-overflow/internal/provideraccounts"
 )
 
 var defaultProviderHTTPClient = &http.Client{}
@@ -157,6 +157,19 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 	// the probe must hold its process for the rotation even when the bytes on
 	// disk still look fresh.
 	refreshCfg.RotationExpected = true
+	// The CLI refreshes whatever the canonical store holds when it starts,
+	// so it starts only while that is still the credential this reading was
+	// admitted on. A sign-in landing after this check and before the CLI's
+	// own refresh cannot be excluded: the CLI's lock is its own while it
+	// runs. The refreshed credential is judged below like any unrecorded
+	// canonical login.
+	current, readErr := m.credentials.ReadCredentialSnapshot(string(provider.Claude), "", true)
+	if readErr != nil {
+		return provider.RateLimitsSnapshot{}, nil, fmt.Errorf("recheck Claude credentials before refreshing: %w", readErr)
+	}
+	if !bytes.Equal(current.Bytes(), credential) {
+		return provider.RateLimitsSnapshot{}, nil, credentialsChangedWhileRefreshing(string(provider.Claude))
+	}
 	info, refreshErr := claude.ProbeAccount(ctx, refreshCfg)
 	if refreshErr != nil {
 		return provider.RateLimitsSnapshot{}, nil, fmt.Errorf("refresh Claude credentials: %w", refreshErr)
@@ -165,7 +178,7 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 	// not return until an expected rotation has actually landed (see
 	// claude.ProbeConfig.ReadCredential). Without that, the read races the
 	// CLI's own credential write — and losing that race is not a stale read,
-	// it is a brick: these bytes go straight into CommitSelectedCredential,
+	// it is a brick: these bytes go straight into the commit,
 	// which would overwrite the CLI's freshly rotated pair with the retired
 	// one it just replaced.
 	//
@@ -225,10 +238,11 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 		return provider.RateLimitsSnapshot{}, nil, identifyErr
 	}
 	if err := m.assertSelectedClaudeIdentity(selection, info); err != nil {
-		// The one case whose rotation is not ours to keep: an external
-		// `claude login` landed a DIFFERENT account's pair in the canonical
-		// home. Committing it into this account's slot would pair one login's
-		// tokens with another's identity, so it stays where it is.
+		// The refreshed pair is not provably this account's: an external
+		// `claude login` landed another login, or one nothing attributes.
+		// Committing it into this account's slot would pair one login's
+		// tokens with another's identity, so it stays in the canonical store,
+		// and the changed fingerprint sends the next reconciliation to it.
 		return provider.RateLimitsSnapshot{}, nil, err
 	}
 	snapshot, retryErr := claude.ProbeRateLimitsFromCredentialData(
@@ -250,33 +264,33 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 }
 
 // assertSelectedClaudeIdentity refuses to attribute a canonical-home refresh
-// to the selected account when the CLI authenticated as someone else — an
-// external `claude login` during the probe. The comparison is
-// Identity.Contradicts, so a blank field can never condemn anything (Claude
-// reports an identity only once it has re-derived one for the installed
-// credential — the first post-switch probe is legitimately empty), while the
-// same email on a provably different organization (org ID axis; names are
-// display-only) refuses exactly like a different email does. This refusal
-// runs AFTER the refresh may have spent a single-use rotation, which is
-// why only provable contradictions may fire it.
+// to the selected account unless the refreshed credential's identity, the
+// profile answer for its own token, resolves to that account by the rule
+// reconciliation uses (resolveObservedLoginLocked): another login (an
+// external `claude login` during the probe) and one that names no saved
+// account for certain are both refused. This refusal runs after the refresh
+// may have spent a single-use rotation; the rotation stays in the canonical
+// store, where the CLI published it.
 func (m *Manager) assertSelectedClaudeIdentity(
 	selection Selection,
 	info provider.AccountInfo,
 ) error {
-	observed := provideraccounts.IdentityFromInfo(info)
-	if !provideraccounts.IdentityFromInfo(selection.Account).Contradicts(observed) {
+	if m.store == nil {
+		return nil
+	}
+	m.mu.Lock()
+	target, found, err := m.resolveObservedLoginLocked(string(provider.Claude), info)
+	m.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if found && target.ID == selection.AccountID {
 		return nil
 	}
 	return fmt.Errorf(
 		"the active Claude account changed to %s while refreshing usage; retry",
 		DescribeObservedAccount(info),
 	)
-}
-
-// AssertSelectedClaudeIdentity exposes the rotation attribution guard for
-// focused root integration tests.
-func (m *Manager) AssertSelectedClaudeIdentity(selection Selection, info provider.AccountInfo) error {
-	return m.assertSelectedClaudeIdentity(selection, info)
 }
 
 // probeInactiveClaudeRateLimits reads usage for an account that is NOT

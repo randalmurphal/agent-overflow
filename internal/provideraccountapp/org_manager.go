@@ -1,7 +1,6 @@
 package provideraccountapp
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -64,14 +63,14 @@ func (m *Manager) identifyCanonicalClaudeCredential(
 ) (provider.AccountInfo, error) {
 	claudeName := string(provider.Claude)
 	m.mu.RLock()
-	known, attributed := m.fingerprints[claudeName]
+	attributed := len(credential) > 0 && m.canonicalRecordedLocked(claudeName, credential)
 	var active provideraccounts.Account
 	hasActive := false
 	if m.store != nil {
 		active, hasActive = m.store.Active(claudeName, time.Now())
 	}
 	m.mu.RUnlock()
-	if attributed && hasActive && len(credential) > 0 && known == sha256.Sum256(credential) {
+	if attributed && hasActive {
 		info.Email, info.OrgID, info.OrgName = active.Email, active.OrgID, active.OrgName
 		return info, nil
 	}

@@ -39,7 +39,7 @@ func awaitGroupReleased(t *testing.T, registry *orphanreaper.Registry, pgid int)
 // requireWatchRecord checks that the record is the running group of watch.
 func requireWatchRecord(t *testing.T, record orphanreaper.Record, watch store.AgentWake) {
 	t.Helper()
-	if record.Owner != "agent-wake:"+watch.ID || record.PGID != record.PID || !groupRunning(record.PGID) {
+	if record.Owner != "agent-wake:"+watch.ID || !groupRunning(record.Leader) {
 		t.Fatalf("record %+v, want the running group of watch %s", record, watch.ID)
 	}
 }
@@ -74,7 +74,7 @@ func TestAnIntervalWatchScriptIsWatchedAndReleased(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("the cancelled watch never returned")
 	}
-	awaitGroupReleased(t, registry, record.PGID)
+	awaitGroupReleased(t, registry, record.Leader)
 }
 
 func TestALongRunningWatchProcessIsWatchedAndReleased(t *testing.T) {
@@ -92,5 +92,5 @@ func TestALongRunningWatchProcessIsWatchedAndReleased(t *testing.T) {
 	record := waitOrphanRecord(t, registry)
 	requireWatchRecord(t, record, watch)
 	a.stopAgentWakeRunsForThread(thread.ID)
-	awaitGroupReleased(t, registry, record.PGID)
+	awaitGroupReleased(t, registry, record.Leader)
 }
