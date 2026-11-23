@@ -7,6 +7,11 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { deriveTrayTasks, trayRemoteJob } from '../../utils/backgroundTray';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
+import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
+import { setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { UNSUPPORTED_SENTENCE } from '../../transport/dispatchRefusal';
+import { transportErrorFromFrame } from '../../transport/wsClient';
 
 const job = { computerId: 'nexus', requestId: 'job-1', workspace: '/workspace', error: '', warning: '', notification: '' };
 // The projection the desktop writes (app_remote_watch.go remoteTrayItems):
@@ -120,6 +125,31 @@ describe('remote jobs in the background tray', () => {
     setBindingMock('ReadThreadRemoteLog', async () => ({ ...chunk, text: '', expired: true }));
     await fireEvent.click(getByRole('button', { name: 'Refresh log' }));
     expect(await findByText('This log has expired.')).toBeInTheDocument();
+  });
+
+  // This page's computer (Desk) ran ReadThreadRemoteLog and Nexus refused
+  // it. The refusal is Desk's method's answer and names Nexus; the page
+  // shows it as Desk sent it and never words it as Desk's own refusal.
+  it.each([
+    ['this release', 'remote_unsupported', `Could not read the log of "python train.py" on Nexus: ${UNSUPPORTED_SENTENCE}`],
+    ['a release before it', 'method_not_found', 'Could not read the log of "python train.py" on Nexus: The destination could not complete the request. Its reported error: method not registered.'],
+  ])('shows a refusal forwarded by a computer on %s as that computer sent it', async (_release, code, message) => {
+    setBackendIdentityFromBootstrap('11111111-2222-4333-8444-555555555555', 'g1', 'Desk');
+    __setTransportHelloForTest({
+      protocolVersion: 1, capabilities: [], backendId: '', backendName: 'Desk', serverTimeMs: 0, clockSkewMs: 0,
+      bundleId: 'id', bundleVersion: '999.0.0', minShellBuild: 0,
+    });
+    try {
+      const frame = { code, message, detail: { ref: 'ref-1', method: 'ReadThreadRemoteLog', at: 1, chain: [] } };
+      setBindingMock('ReadThreadRemoteLog', async () => { throw transportErrorFromFrame(frame, HOME_BACKEND); });
+      const { getByRole, findByRole } = render(RemoteJobTrayRow, { task: remoteTask(), job, threadId: 'thread', isStopping: false, onStop: vi.fn() });
+      await fireEvent.click(getByRole('button', { name: /Show remote job log/ }));
+      const alert = await findByRole('alert');
+      expect(alert).toHaveTextContent(`Could not read remote log: ${message}`);
+      expect(alert.textContent).not.toContain('Desk');
+    } finally {
+      __setTransportHelloForTest(null);
+    }
   });
 
   it.each(['claude', 'codex'] as const)('stops a remote-only job without calling %s provider controls or scrolling', async (provider) => {

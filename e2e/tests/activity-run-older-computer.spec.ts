@@ -13,8 +13,9 @@
 // calls, and no error toast is raised. A computer restarted as the older
 // build and back while its thread is open here regroups that thread each
 // time. An action the older computer does not have, and no fallback
-// covers, fails with a toast that says the computer runs a different
-// version of Agent Overflow and what to do, never the wire's own text.
+// covers, fails with a toast that says the computer does not support it
+// and what the page knows about the two versions, never the wire's own
+// text.
 // Specs: docs/architecture/timeline-window-pages.md,
 // docs/architecture/activity-runs.md,
 // docs/architecture/transport.md#rpc-failures.
@@ -406,8 +407,13 @@ test('desktop: a computer restarted across the capability regroups the open thre
 });
 
 // SetThreadPlacement came after v0.0.19 and nothing stands in for it: the
-// refusal reaches the person, as the version mismatch it is.
-test('desktop: an action the older computer does not have says the versions differ', async ({ browser }) => {
+// refusal reaches the person, saying what happened and what the page knows
+// about the versions. The harness builds both computers from one bundle, so
+// the older computer's hello reports this page's own release: the sentence
+// says so and claims no difference. It reads "the same version" only when
+// the page's compiled-in release equals the one its bundle-release.json
+// stamps, which is what the computer reports.
+test('desktop: an action the older computer does not have says what happened', async ({ browser }) => {
   test.setTimeout(120_000);
   const result = await older.rpc<{ projects: SeededProject[] }>('HarnessSeed', {
     projects: [{
@@ -424,9 +430,15 @@ test('desktop: an action the older computer does not have says the versions diff
     const surfaced = await instrument(view);
     await home.open(view);
     await expect(sidebarRow(view, worker)).toBeVisible({ timeout: 60_000 });
+    const release = await view.evaluate(async () => {
+      const answer = await fetch('/bundle-release.json');
+      return ((await answer.json()) as { version: string }).version;
+    });
+    expect(release).toMatch(/^\d+\.\d+\.\d+/);
     await chooseRowMenuItem(view, 'desktop', worker, 'Remove from Sidebar');
-    const sentence = 'Old computer runs a different version of Agent Overflow than this page and does not support this.'
-      + ' Update Agent Overflow so both run the same version.';
+    const sentence = 'Old computer does not support this action.'
+      + ` Old computer runs the same version of Agent Overflow as this page (${release}).`
+      + ' Copy the details of this error and report it.';
     await expect(view.getByTestId('toast')).toContainText(sentence);
     expect(surfaced.errorToasts).toHaveLength(1);
     expect(surfaced.errorToasts[0]).toContain(sentence);

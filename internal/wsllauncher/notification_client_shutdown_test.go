@@ -1,6 +1,7 @@
 package wsllauncher
 
 import (
+	"agent-overflow/internal/dispatchrefusal"
 	"context"
 	"errors"
 	"testing"
@@ -85,7 +86,7 @@ func TestNotificationClientShutdownSurfacesRefusal(t *testing.T) {
 		return writeServerFrame(ctx, conn, notificationServerFrame{
 			Type:  "rpc",
 			ID:    frame.ID,
-			Error: &notificationFrameError{Code: "method_not_found", Message: "no such method"},
+			Error: &notificationFrameError{Code: "method_not_found", Message: "method not registered"},
 		})
 	})
 
@@ -99,7 +100,11 @@ func TestNotificationClientShutdownSurfacesRefusal(t *testing.T) {
 	if !errors.As(err, &refused) {
 		t.Fatalf("Shutdown error = %v, want an *RPCRefusedError", err)
 	}
-	if refused.Method != RPCShutdownBackend || refused.Code != "method_not_found" {
-		t.Fatalf("refusal = %+v, want the shutdown door refused as method_not_found", refused)
+	if refused.Method != RPCShutdownBackend || refused.Code != "method_not_found" || refused.Message != "method not registered" {
+		t.Fatalf("refusal = %+v, want the shutdown door refused as method_not_found, its wire text kept", refused)
+	}
+	// A backend still sending the old text reads as the version sentence.
+	if want := RPCShutdownBackend + " RPC method_not_found: " + dispatchrefusal.Unsupported; err.Error() != want {
+		t.Fatalf("Error() = %q, want %q", err.Error(), want)
 	}
 }

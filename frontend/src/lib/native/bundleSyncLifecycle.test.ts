@@ -94,7 +94,7 @@ describe('bundle selection across asynchronous boundaries', () => {
 
   it('removes a queued update and its notice when the selected host changes', async () => {
     hello();
-    await vi.waitFor(() => expect(mocks.ready).toHaveBeenCalled());
+    await vi.waitFor(() => expect(mocks.ready).toHaveBeenCalledWith('1.1.0'));
     expect(mocks.state.next).toBe(NEXT);
     mocks.clear.mockClear();
     hello(CURRENT, '1.0.0');

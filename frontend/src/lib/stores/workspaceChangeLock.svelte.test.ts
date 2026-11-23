@@ -477,7 +477,7 @@ describe('createWorkspaceChangeLockState', () => {
     await waitFor(() => {
       expect(state).toHaveAttribute('data-locked', 'true');
       expect(state.getAttribute('data-reason') ?? '').toBe(
-        'Cannot check for running background tasks: This computer now runs a different version of Agent Overflow than this page. Reload the page.',
+        `Cannot check for running background tasks: ${methodNotFound().message}`,
       );
     });
   });

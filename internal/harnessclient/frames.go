@@ -1,6 +1,10 @@
 package harnessclient
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"agent-overflow/internal/dispatchrefusal"
+)
 
 // The wire frames, mirroring internal/transport/frame.go. Only the
 // fields a client reads or writes are declared; the server tolerates
@@ -57,6 +61,9 @@ type eventEntry struct {
 type frameError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// Detail is read only for whether it is there: a dispatcher refusal
+	// carries none (internal/dispatchrefusal).
+	Detail json.RawMessage `json:"detail,omitempty"`
 }
 
 // RPCError is a method refusal or failure reported by the server.
@@ -64,8 +71,13 @@ type RPCError struct {
 	Method  string
 	Code    string
 	Message string
+	// Detailed says the refusal carried a method failure's diagnostic
+	// detail, which a dispatcher refusal never does.
+	Detailed bool
 }
 
+// Error names the method and code, and words a dispatcher refusal as
+// dispatchrefusal does whatever text the instance's release sent.
 func (e *RPCError) Error() string {
-	return e.Method + ": " + e.Code + ": " + e.Message
+	return e.Method + ": " + e.Code + ": " + dispatchrefusal.Message(e.Code, e.Message, e.Detailed)
 }

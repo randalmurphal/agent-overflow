@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"agent-overflow/internal/computerroute"
+	"agent-overflow/internal/dispatchrefusal"
 	"agent-overflow/internal/transport"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -133,25 +134,23 @@ func (c *Client) Advertises(capability string) bool {
 	return slices.Contains(c.capabilities, capability)
 }
 
-// Error is a refusal the far side answered: its wire code and message.
-type Error struct{ Code, Message string }
-
-// MethodUnavailableMessage is what a refusal with code method_not_found
-// says. The far side does not have the method the call named, so it runs a
-// different release of Agent Overflow and did not run the call. The frontend
-// says the same sentence (frontend/src/lib/transport/methodUnavailable.ts);
-// this package's tests pin the two together.
-const MethodUnavailableMessage = "The computer this reached runs a different version of Agent Overflow and does not support this. Update Agent Overflow so both run the same version."
-
-// Error is the far side's message, except for method_not_found, whose wire
-// text ("method not registered") says nothing a person can act on. Message
-// keeps the wire text for logs and diagnosis.
-func (e *Error) Error() string {
-	if e.Code == transport.ErrCodeMethodNotFound {
-		return MethodUnavailableMessage
-	}
-	return e.Message
+// Error is a refusal the far side answered: its wire code and message, and
+// whether it carried the diagnostic detail a method's failure carries.
+type Error struct {
+	Code, Message string
+	Detailed      bool
 }
+
+// Error is what a person reads: the far side's message, except for a
+// refusal its dispatcher gave before any method ran, which reads as
+// dispatchrefusal words it whatever text that computer sent. Message keeps
+// the wire text for logs and diagnosis.
+func (e *Error) Error() string { return dispatchrefusal.Message(e.Code, e.Message, e.Detailed) }
+
+// DispatchRefusal reports whether the far side's dispatcher refused the
+// call before any method ran: it does not have the method, or could not
+// read its arguments. Such a call did not run there.
+func (e *Error) DispatchRefusal() bool { return dispatchrefusal.Is(e.Code, e.Detailed) }
 
 // NotSentError marks a failed call whose request frame never reached the
 // socket, so the far side cannot have acted on it. Every other failure of
@@ -247,7 +246,7 @@ func (c *Client) await(ctx context.Context, id string, result any) error {
 			continue
 		}
 		if frame.Error != nil {
-			return &Error{Code: frame.Error.Code, Message: frame.Error.Message}
+			return &Error{Code: frame.Error.Code, Message: frame.Error.Message, Detailed: frame.Error.Detail != nil}
 		}
 		if result == nil {
 			return nil

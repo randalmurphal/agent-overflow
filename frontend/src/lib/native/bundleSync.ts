@@ -89,7 +89,8 @@ export type BundleDecision =
   /** Nothing to do: no bundle offered, or the offered one is already here. */
   | { kind: 'idle' }
   | { kind: 'discard'; id: string }
-  | { kind: 'ready'; id: string }
+  /** `id`, release `version`, is staged for the next start. */
+  | { kind: 'ready'; id: string; version: string }
   /** Already downloaded once and failed its first boot. Never again. */
   | { kind: 'rolled-back'; id: string }
   /** Tried and failed too many times this launch. Wait for a relaunch. */
@@ -131,7 +132,7 @@ export function decideBundleSync(input: BundleSyncInput): BundleDecision {
     return { kind: 'discard', id: input.state.next };
   }
   if (id === input.running || !isUpgrade(target, input.state)) return { kind: 'idle' };
-  if (id === input.state.next) return { kind: 'ready', id };
+  if (id === input.state.next) return { kind: 'ready', id, version: target.bundleVersion };
 
   if (input.state.rolledBack.includes(id)) return { kind: 'rolled-back', id };
 
@@ -334,7 +335,7 @@ function evaluate(): void {
   });
   switch (decision.kind) {
     case 'ready':
-      noteBundleReady();
+      noteBundleReady(decision.version);
       return;
     case 'discard':
       void discardPending(decision.id);

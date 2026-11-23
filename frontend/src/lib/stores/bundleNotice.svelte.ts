@@ -12,13 +12,22 @@ const MACHINE_NAME_MAX = 60;
 
 let notice = $state('');
 
-// Keep dismissal stable until the pending update is cancelled.
-let staged = false;
+// The release staged for the next start, or '' when none is. Keeps
+// dismissal stable until the pending update is cancelled.
+let staged = '';
 
 /** The native pending selection was cancelled; no restart is needed. */
 export function clearBundleNotice(): void {
-  staged = false;
+  staged = '';
   notice = '';
+}
+
+/**
+ * The release the next start of the app loads, or '' when none is staged.
+ * Not reactive: read when wording a refusal (stores/versionMismatch.ts).
+ */
+export function stagedBundleVersion(): string {
+  return staged;
 }
 
 /** The sentence to show, or '' when there is nothing to say. Reactive. */
@@ -27,12 +36,14 @@ export function getBundleNotice(): string {
 }
 
 /**
- * A bundle is downloaded, verified and staged. The next cold start picks
- * it up; nothing else is required and nothing is interrupted.
+ * A bundle of release `version` is downloaded, verified and staged. The
+ * next cold start picks it up; nothing else is required and nothing is
+ * interrupted.
  */
-export function noteBundleReady(): void {
-  if (staged) return;
-  staged = true;
+export function noteBundleReady(version: string): void {
+  const told = staged !== '';
+  staged = version;
+  if (told) return;
   notice = 'A newer Agent Overflow is ready. It loads the next time the app starts.';
 }
 
@@ -47,7 +58,7 @@ export function dismissBundleNotice(): void {
 }
 
 export function noteBundleTooOld(machineName: string): void {
-  if (staged) return;
+  if (staged !== '') return;
   const machine = clampString(machineName.trim() || 'this backend', MACHINE_NAME_MAX);
   notice = `This app is too old for ${machine}. Install a newer Agent Overflow on this phone.`;
 }
@@ -55,5 +66,5 @@ export function noteBundleTooOld(machineName: string): void {
 /** Test seam: forget what was published. */
 export function __resetBundleNoticeForTest(): void {
   notice = '';
-  staged = false;
+  staged = '';
 }

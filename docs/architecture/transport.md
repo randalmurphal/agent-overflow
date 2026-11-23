@@ -236,16 +236,27 @@ kept for the user's own actions rather than spent) and `resumeAt` (RFC 3339,
 when the forge may be asked again), from `forgeapi.RateLimitedError`, so a
 client words the pause without parsing the message.
 
-A call the backend does not have answers `method_not_found` with the
-message `method not registered`: the caller runs a different release. Its
-reader words it, once, where the refusal becomes an error, and keeps the code
-for branching and the wire text for diagnosis. In the frontend that is the
-`TransportError` constructor (`frontend/src/lib/transport/methodUnavailable.ts`),
-whose message names the computer, which side is older when both versions are
-known (the page's own `PAGE_VERSION` against the computer's hello
-`bundleVersion`), and what to do (`frontend/src/lib/stores/versionMismatch.ts`);
-the wire text is the error's `cause`. In Go it is `rpcclient.Error.Error()`,
-with the same nameless sentence. Nothing matches the wire text.
+The dispatcher refuses a call before any method runs in two ways: a call it
+does not have answers `method_not_found` (identically for an unregistered
+method and one hidden from a non-loopback origin), and a call whose
+arguments do not fit the method answers `bad_params`. Either way the call
+did not run, and the caller was usually built from a different release.
+Neither refusal carries `detail`; a failure a method returned always does,
+so a method that forwards another computer's refusal is never read as this
+computer's own. The message is a sentence a person can act on
+(`internal/dispatchrefusal`), so a page or client already shipped shows it
+as it is. Every reader of a refusal words it once, where the refusal becomes
+an error, and keeps the code for branching and the wire text for diagnosis,
+so a computer that still sends the old wire text reads the same. In Go that
+is `dispatchrefusal.Message`, used by `rpcclient.Error`, the Windows
+launcher's client and the harness client. In the frontend it is the
+`TransportError` constructor (`frontend/src/lib/transport/dispatchRefusal.ts`),
+whose message, built when it is first read, names the computer, says what the
+page knows about the two versions (the page's own `PAGE_VERSION` against the
+computer's hello `bundleVersion`) and gives the remedy that knowledge supports
+(`frontend/src/lib/stores/versionMismatch.ts`); the wire text is the error's
+`cause`. A computer that forwards another computer's dispatcher refusal
+answers `remote_unsupported`, with a message that names the destination. Nothing matches the wire text.
 
 The backend retains its recent log lines in memory (`logging.Output`).
 `GetErrorLogLines` (scope `threads:operate`, the grant that already lets a

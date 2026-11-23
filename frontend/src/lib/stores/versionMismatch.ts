@@ -1,13 +1,15 @@
-// What a person reads when a computer refused a call it does not have
-// (`method_not_found`): the page and that computer run different releases of
-// Agent Overflow. Every sentence for it is in `versionMismatchSentence`; the
-// transport carries the nameless default (transport/methodUnavailable.ts)
-// and calls the wording installed here from every `TransportError` it builds
-// for that code, so no surface words it again.
+// What a person reads when the computer a page called refused the call
+// before running it: it does not have the call, or could not read its
+// arguments (transport/dispatchRefusal.ts). Every sentence for it is in
+// `versionMismatchSentence`; the transport carries the nameless default and
+// asks the wording installed here when the refusal's message is first read,
+// so no surface words it again.
 //
-// The facts are ones the page already holds: its own release (PAGE_VERSION),
-// each computer's release from its hello (`bundleVersion`, which a computer
-// before v0.0.15 does not send), the computer's display name, and where this
+// The facts are ones the page already holds in memory: its own release
+// (PAGE_VERSION), each computer's release from its hello (`bundleVersion`,
+// which a computer before v0.0.15, or one that cannot build its bundle,
+// does not send), the computer's name, the release the phone app has
+// staged for its next start (stores/bundleNotice.svelte.ts), and where this
 // page's code came from, which decides the remedy:
 //
 //   served  the computer that answered this page's address served it (the
@@ -18,25 +20,26 @@
 //           the same release again.
 //   device  the phone app's own bundle, which updates from paired computers.
 //
-// Versions are compared as releases (native/bundleVersion.ts). A version
-// missing, unparseable or equal on both sides says "a different version"
-// rather than guess a direction.
+// A sentence says the versions differ only when both are known and differ,
+// and gives a direction only from the comparison that proves it.
 
 import { compareBundleVersions } from '../native/bundleVersion';
 import { isNativeShell } from '../native/platform';
 import { PAGE_VERSION } from '../pageVersion';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { installDispatchRefusalWording, type DispatchRefusalKind } from '../transport/dispatchRefusal';
 import { hasHomeEndpoint } from '../transport/homeEndpoint';
-import { installMethodUnavailableWording } from '../transport/methodUnavailable';
 import { isWebviewHosted } from '../transport/pageHost';
 import { isClientMode } from '../transport/runMode';
-import { attachedBackendEntry, backendDisplayName } from './attachedBackends.svelte';
+import { attachedBackendNameNow } from './attachedBackends.svelte';
+import { stagedBundleVersion } from './bundleNotice.svelte';
 import { getTransportHelloFor } from './transportStatus.svelte';
 
 export type PageSource = 'served' | 'local' | 'device';
 
 export interface VersionMismatchFacts {
-  /** The refusing computer's display name. */
+  kind: DispatchRefusalKind;
+  /** The refusing computer's name. */
   computer: string;
   /** Its release from its hello, or '' when it sent none. */
   computerVersion: string;
@@ -47,34 +50,55 @@ export interface VersionMismatchFacts {
   /** What the person calls what they are looking at. */
   page: 'window' | 'page' | 'app';
   source: PageSource;
-  /** For `served`: the computer that served this page, and its release now. */
-  server: string;
-  serverVersion: string;
+  /** For `served` when another computer served this page: its name and
+   * its release now, or '' when it sent none. Read only when needed. */
+  server: () => { name: string; version: string };
+  /** For `device`: the release the app loads at its next start, or ''. */
+  stagedVersion: string;
 }
 
 const PAGE_NOUN = { window: 'this window', page: 'this page', app: 'this app' } as const;
 
 /** The one table of sentences. Pure; never throws. */
 export function versionMismatchSentence(facts: VersionMismatchFacts): string {
-  const order = compareBundleVersions(facts.computerVersion, facts.pageVersion) ?? 0;
-  const relation = order > 0 ? 'a newer version' : order < 0 ? 'an older version' : 'a different version';
-  const reload = facts.page === 'window' ? 'reload the window' : 'reload the page';
+  const { computer, computerVersion, pageVersion } = facts;
+  const lead = facts.kind === 'unsupported'
+    ? `${computer} does not support this action.`
+    : `${computer} could not read this request.`;
   const here = PAGE_NOUN[facts.page];
-  if (facts.computerServedPage) {
-    return `${facts.computer} now runs ${relation} of Agent Overflow than ${here}. ${capitalize(reload)}.`;
+  const reload = facts.page === 'window' ? 'reload the window' : 'reload the page';
+  const order = compareBundleVersions(computerVersion, pageVersion);
+  if (order === null) {
+    const check = `This ${facts.page} cannot tell which version of Agent Overflow ${computer} runs. Check that ${computer} and ${here} run the same version, and update whichever is older.`;
+    return facts.computerServedPage
+      ? `${lead} ${check} If ${computer} was updated while ${here} was open, ${reload}.`
+      : `${lead} ${check}`;
   }
-  const what = `${facts.computer} runs ${relation} of Agent Overflow than ${here} and does not support this.`;
-  if (order < 0) return `${what} Update Agent Overflow on ${facts.computer}.`;
-  if (order === 0) return `${what} Update Agent Overflow so both run the same version.`;
+  if (order === 0) {
+    return `${lead} ${computer} runs the same version of Agent Overflow as ${here} (${pageVersion}). Copy the details of this error and report it.`;
+  }
+  const now = facts.computerServedPage ? 'now runs' : 'runs';
+  const relation = order < 0 ? 'older' : 'newer';
+  const what = `${lead} ${computer} ${now} Agent Overflow ${computerVersion}, ${relation} than ${here} (${pageVersion}).`;
+  if (facts.computerServedPage) return `${what} ${capitalize(reload)}.`;
+  if (order < 0) return `${what} Update Agent Overflow on ${computer}.`;
   switch (facts.source) {
-    case 'served':
-      return (compareBundleVersions(facts.serverVersion, facts.pageVersion) ?? 0) > 0
+    case 'served': {
+      const server = facts.server();
+      const serverOrder = compareBundleVersions(server.version, computerVersion);
+      if (serverOrder === null) {
+        return `${what} If ${server.name} runs ${computerVersion} or newer, ${reload}. If not, update Agent Overflow on ${server.name}, then ${reload}.`;
+      }
+      return serverOrder >= 0
         ? `${what} ${capitalize(reload)}.`
-        : `${what} Update Agent Overflow on ${facts.server}, then ${reload}.`;
+        : `${what} Update Agent Overflow on ${server.name}, then ${reload}.`;
+    }
     case 'local':
       return `${what} Update Agent Overflow on this computer.`;
     case 'device':
-      return `${what} Update Agent Overflow on this device.`;
+      return (compareBundleVersions(facts.stagedVersion, computerVersion) ?? -1) >= 0
+        ? `${what} Close and reopen the app to load ${facts.stagedVersion}.`
+        : `${what} Install a newer version of the Agent Overflow app on this device.`;
   }
 }
 
@@ -88,34 +112,33 @@ function pageSource(): PageSource {
   return 'served';
 }
 
-function displayName(backend: BackendKey): string | null {
-  const entry = attachedBackendEntry(backend);
-  return entry === undefined ? null : backendDisplayName(entry);
-}
-
 /**
- * The sentence for a `method_not_found` from `backend`, or null when that
- * computer, or the one that served this page, is no longer attached and has
- * no name to give, which leaves the transport's nameless sentence.
+ * The sentence for a refusal of `kind` from `backend`, or null when that
+ * computer has detached, which leaves the transport's nameless sentence.
+ * Looks up at most two names, the refusing computer's and, only when the
+ * remedy needs it, the one that served this page, by key from memory.
  */
-export function versionMismatchMessage(backend: BackendKey): string | null {
-  const computer = displayName(backend);
+export function versionMismatchMessage(kind: DispatchRefusalKind, backend: BackendKey): string | null {
+  const computer = attachedBackendNameNow(backend);
+  if (computer === null) return null;
   const source = pageSource();
-  const server = source === 'served' ? displayName(HOME_BACKEND) : '';
-  if (computer === null || server === null) return null;
   return versionMismatchSentence({
+    kind,
     computer,
     computerVersion: getTransportHelloFor(backend)?.bundleVersion ?? '',
     computerServedPage: source === 'served' && backend === HOME_BACKEND,
     pageVersion: PAGE_VERSION,
     page: isNativeShell() ? 'app' : isWebviewHosted() ? 'window' : 'page',
     source,
-    server,
-    serverVersion: getTransportHelloFor(HOME_BACKEND)?.bundleVersion ?? '',
+    server: () => ({
+      name: attachedBackendNameNow(HOME_BACKEND) ?? 'the computer that served this page',
+      version: getTransportHelloFor(HOME_BACKEND)?.bundleVersion ?? '',
+    }),
+    stagedVersion: source === 'device' ? stagedBundleVersion() : '',
   });
 }
 
 /** Called once at boot by `src/main.ts`. */
 export function installVersionMismatchWording(): void {
-  installMethodUnavailableWording(versionMismatchMessage);
+  installDispatchRefusalWording(versionMismatchMessage);
 }

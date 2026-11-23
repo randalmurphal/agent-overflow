@@ -1,6 +1,7 @@
 package harnessclient
 
 import (
+	"agent-overflow/internal/dispatchrefusal"
 	"context"
 	"encoding/json"
 	"errors"
@@ -105,11 +106,16 @@ func TestCallRawForwardsEncodedParamsVerbatim(t *testing.T) {
 func TestCallSurfacesTheServersErrorCode(t *testing.T) {
 	backend := newFakeBackend(t)
 	backend.handle = func(frame transport.ClientFrame) (json.RawMessage, *transport.FrameError) {
-		return nil, &transport.FrameError{Code: transport.ErrCodeMethodNotFound, Message: "no such method"}
+		return nil, &transport.FrameError{Code: transport.ErrCodeMethodNotFound, Message: "method not registered"}
 	}
 	client := backend.dial(t)
 
 	_, err := client.Call(testContext(t), "NoSuchMethod")
+	// An instance still sending the old text reads as the version sentence,
+	// beside the code a script branches on.
+	if want := "NoSuchMethod: method_not_found: " + dispatchrefusal.Unsupported; err == nil || err.Error() != want {
+		t.Fatalf("Call error = %v, want %q", err, want)
+	}
 	if err == nil {
 		t.Fatal("Call succeeded against a method_not_found")
 	}

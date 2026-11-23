@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/dispatchrefusal"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/transport"
@@ -44,21 +45,61 @@ func TestRemoteErrorsPreserveSafeDetailsAndExplainUncertainAcceptance(t *testing
 	}
 }
 
-// A destination without the method runs a different release and did not run
-// the call: a person or the model reads that, with what to do, and is not
-// told the call may have run.
-func TestRemoteErrorsSayAMissingMethodIsAVersionMismatch(t *testing.T) {
+// A destination's dispatcher that refused the call did not run it: it lacks
+// the method or could not read the arguments, and either way it usually runs
+// a different release. A person or the model reads that sentence, under a
+// code of this computer's own, and is not told the call may have run. A
+// computer that still sends the old wire text reads the same.
+func TestRemoteErrorsWordTheDestinationsDispatcherRefusal(t *testing.T) {
 	t.Parallel()
 	const id = "2018ba7a-359c-4a0b-92a2-0b7cae76a515"
-	missing := &rpcclient.Error{Code: transport.ErrCodeMethodNotFound, Message: "method not registered"}
-	code, message, uncertain := remoteErrorDetails("run", missing)
-	if code != transport.ErrCodeMethodNotFound || message != rpcclient.MethodUnavailableMessage || uncertain {
-		t.Fatalf("details = (%q, %q, uncertain %v), want the version mismatch, certain", code, message, uncertain)
+	for _, tc := range []struct {
+		name    string
+		refusal *rpcclient.Error
+		want    string
+	}{
+		{"a method it does not have, old text", &rpcclient.Error{Code: transport.ErrCodeMethodNotFound, Message: "method not registered"}, dispatchrefusal.Unsupported},
+		{"a method it does not have", &rpcclient.Error{Code: transport.ErrCodeMethodNotFound, Message: dispatchrefusal.Unsupported}, dispatchrefusal.Unsupported},
+		{"arguments it cannot read, old text", &rpcclient.Error{Code: transport.ErrCodeBadParams, Message: "App.RemoteCommandRun: expected 1 params, got 2"}, dispatchrefusal.Unreadable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, message, uncertain := remoteErrorDetails("run", tc.refusal)
+			if code != "remote_unsupported" || message != tc.want || uncertain {
+				t.Fatalf("details = (%q, %q, uncertain %v), want remote_unsupported, the sentence, certain", code, message, uncertain)
+			}
+			text := remoteErrorText(remoteOperationErrorFor("run", remoteRef{ComputerID: id, ComputerName: "Nexus", RequestID: id}, tc.refusal))
+			want := "[remote_unsupported] Remote run on Nexus (computer " + id + ") for request " + id + ": " + tc.want
+			if text != want {
+				t.Fatalf("tool error = %q, want %q", text, want)
+			}
+		})
 	}
-	text := remoteErrorText(remoteOperationErrorFor("run", remoteRef{ComputerID: id, ComputerName: "Nexus", RequestID: id}, missing))
-	want := "[method_not_found] Remote run on Nexus (computer " + id + ") for request " + id + ": " + rpcclient.MethodUnavailableMessage
-	if text != want {
-		t.Fatalf("tool error = %q, want %q", text, want)
+	// A refusal a method there returned under the same code carries detail:
+	// it is that method's own answer, kept as it is.
+	forwarded := &rpcclient.Error{Code: transport.ErrCodeBadParams, Message: "Use a label of 80 characters or fewer.", Detailed: true}
+	if code, message, uncertain := remoteErrorDetails("run", forwarded); code != transport.ErrCodeBadParams || message != forwarded.Message || uncertain {
+		t.Fatalf("a method's own refusal = (%q, %q, uncertain %v), want it kept", code, message, uncertain)
+	}
+}
+
+// The tray reads a remote job's log through this computer's
+// ReadThreadRemoteLog. When the job's computer refused, the failure is this
+// computer's method's answer: it names the job, keeps the destination's
+// sentence, and reaches the page under a code and with detail the page does
+// not take for a refusal by the computer it is connected to.
+func TestAForwardedRefusalIsNotThisComputersOwn(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	thread := remoteWatchThread(t, a, "codex")
+	watch := registeredRemoteWatch(t, a, thread)
+	refusal := &rpcclient.Error{Code: transport.ErrCodeMethodNotFound, Message: "method not registered"}
+	answer := transport.CallerError(a.remoteUserError("read the log of", watch.ComputerID, watch.RequestID, refusal))
+	want := `Could not read the log of "build --cross-platform": ` + dispatchrefusal.Unsupported
+	if answer.Code != "remote_unsupported" || !answer.Detailed || answer.Message != want {
+		t.Fatalf("answer = (%q, detailed %v, %q), want (remote_unsupported, detailed, %q)", answer.Code, answer.Detailed, answer.Message, want)
+	}
+	if dispatchrefusal.Is(answer.Code, answer.Detailed) {
+		t.Fatal("the forwarded refusal reads as the dispatcher's own")
 	}
 }
 

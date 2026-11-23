@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"agent-overflow/internal/dispatchrefusal"
 	"github.com/coder/websocket"
 )
 
@@ -358,7 +359,7 @@ func (c *Client) completeCall(frame serverFrame) {
 		return
 	}
 	if frame.Error != nil {
-		call.fail <- &RPCError{Method: call.method, Code: frame.Error.Code, Message: frame.Error.Message}
+		call.fail <- &RPCError{Method: call.method, Code: frame.Error.Code, Message: frame.Error.Message, Detailed: dispatchrefusal.Detailed(frame.Error.Detail)}
 		return
 	}
 	call.result <- frame.Result

@@ -443,7 +443,9 @@ const RANDOM_UUID_CALL = /\brandomUUID\s*\(/;
 // The wire text a computer answers a call it does not have with
 // (internal/transport/dispatcher.go). Production code neither matches nor
 // shows it: the code is the discriminator and the message is the sentence.
-const METHOD_NOT_FOUND_TEXT = /method not registered/;
+// The wire text of a dispatcher refusal from a computer before this
+// release: a call it does not have, or one whose arguments did not fit.
+const DISPATCH_REFUSAL_TEXT = /method not registered|params, got \d|too many parameters|bad parameter \d/;
 const RANDOM_ID_ALLOWLIST: Record<string, string> = {};
 
 // 7. A send is built by the one builder that mints its idempotency id.
@@ -721,7 +723,7 @@ describe('architecture', () => {
       callsEventsOn: EVENTS_ON_CALL.test(text),
       callsRandomUUID: RANDOM_UUID_CALL.test(text),
       namesSendOptionsType: SEND_OPTIONS_TYPE.test(text),
-      namesMethodNotFoundText: METHOD_NOT_FOUND_TEXT.test(text),
+      namesDispatchRefusalText: DISPATCH_REFUSAL_TEXT.test(text),
       inStores: file.startsWith(STORES_DIR + sep),
     };
   });
@@ -1139,21 +1141,30 @@ describe('architecture', () => {
     );
   });
 
-  it('says a call the computer does not have only through the transport', () => {
+  it('words a refusal by the computer\'s dispatcher only through the transport', () => {
     const offenders = new Map<string, string[]>();
     for (const source of sources) {
-      if (!source.namesMethodNotFoundText) continue;
-      offenders.set(source.path, ['matches or shows the wire text of method_not_found']);
+      if (!source.namesDispatchRefusalText) continue;
+      offenders.set(source.path, ['matches or shows the wire text of a dispatcher refusal']);
     }
     expectAllowlistExact(
       offenders,
       {},
       'New violations.',
       'Branch on the code with isMethodUnavailableError; the error\'s message is already the'
-      + ' version mismatch sentence (transport/methodUnavailable.ts).',
+      + ' sentence for the refusal (transport/dispatchRefusal.ts).',
     );
     const main = readFileSync(join(SRC_ROOT, 'main.ts'), 'utf8');
     expect(main, 'src/main.ts installs the named wording (stores/versionMismatch.ts)').toMatch(/^installVersionMismatchWording\(\);$/m);
+  });
+
+  it('keeps the refusal when a call for an older computer cannot do the action', () => {
+    // A fallback that threw its own Error would drop the computer's name,
+    // the remedy, and the code and cause a copied report lists. orOlder
+    // cannot refuse other throws itself: a fallback's own calls fail for
+    // their own reasons (ThreadsPartlyDeleted).
+    const bindings = readFileSync(join(SRC_ROOT, BINDINGS_WRAPPER), 'utf8');
+    expect(bindings, `${BINDINGS_WRAPPER} throws the refusal, with withNote for what the feature adds`).not.toMatch(/throw new Error\(/);
   });
 
   it('keeps every send on the builder that mints its idempotency id', () => {

@@ -135,15 +135,22 @@ func remoteErrorDetails(action string, err error) (code, message string, uncerta
 	if !known && errors.As(err, &remote) {
 		code = remote.Code
 		switch {
+		case remote.DispatchRefusal():
+			// The destination's dispatcher refused before any method ran:
+			// it lacks the method or cannot read its arguments. The code
+			// is this computer's own, so a reader of this failure never
+			// takes it for a refusal by the computer it reached.
+			code, message = "remote_unsupported", remote.Error()
 		case strings.HasPrefix(code, "remote_"), code == "workspace_not_registered":
 			message = remote.Message
 		case code == transport.ErrCodeScopeRequired:
 			message = "The pairing does not grant permission to run remote commands. Ask the user to reconnect with full device access."
 		case code == transport.ErrCodeAuthFailed:
 			message = "The destination refused this pairing's credentials. Reconnect the computer in Remote access."
-		case code == transport.ErrCodeMethodNotFound:
-			// The destination has no such method, so it did not run the call.
-			message = remote.Error()
+		case code == transport.ErrCodeBadParams:
+			// A method there refused its arguments, or one of them did not
+			// decode; either way nothing ran.
+			message = remote.Message
 		default:
 			message = "The destination could not complete the request. Its reported error: " + remote.Message + ". If it is running an older AO build, update it for detailed command errors."
 			uncertain = true

@@ -5,28 +5,19 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/dispatchrefusal"
 	"agent-overflow/internal/transport"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
 
-// methodUnavailableSentence is the text both sides show for a call the far
-// side does not have. Pinned here so a change to either side's sentence
-// fails this package.
-const methodUnavailableSentence = "The computer this reached runs a different version of Agent Overflow and does not support this. Update Agent Overflow so both run the same version."
-
-// TestMethodNotFoundSaysTheVersionMismatch: a computer that answers a call
-// with method_not_found reads, wherever its error is shown, as a version
-// mismatch with what to do, and keeps its wire text for diagnosis.
-func TestMethodNotFoundSaysTheVersionMismatch(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+// answerOnce serves one call with refusal and returns a client dialed to it.
+func answerOnce(t *testing.T, ctx context.Context, refusal *transport.FrameError) *Client {
+	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -39,46 +30,54 @@ func TestMethodNotFoundSaysTheVersionMismatch(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		reply := transport.ServerFrame{Type: "rpc", ID: request.ID, Error: &transport.FrameError{Code: transport.ErrCodeMethodNotFound, Message: "method not registered"}}
-		if err := wsjson.Write(ctx, conn, reply); err != nil {
+		if err := wsjson.Write(ctx, conn, transport.ServerFrame{Type: "rpc", ID: request.ID, Error: refusal}); err != nil {
 			t.Error(err)
 		}
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	client := New(conn)
-	defer client.Close()
-
-	err = client.Call(ctx, "AddedLater", nil)
-	var refused *Error
-	if !errors.As(err, &refused) {
-		t.Fatalf("Call = %v, want an answered refusal", err)
-	}
-	if got := err.Error(); got != methodUnavailableSentence {
-		t.Fatalf("Error() = %q, want %q", got, methodUnavailableSentence)
-	}
-	if refused.Code != transport.ErrCodeMethodNotFound || refused.Message != "method not registered" {
-		t.Fatalf("refusal = %+v, want the wire code and text kept", refused)
-	}
-	if got := (&Error{Code: transport.ErrCodeMethodError, Message: "disk full"}).Error(); got != "disk full" {
-		t.Fatalf("another refusal reads %q, want its own message", got)
-	}
+	t.Cleanup(func() { client.Close() })
+	return client
 }
 
-// TestFrontendSaysTheSameSentence: the frontend words the same refusal for a
-// window that has no name for the computer. Two implementations, one text.
-func TestFrontendSaysTheSameSentence(t *testing.T) {
-	if MethodUnavailableMessage != methodUnavailableSentence {
-		t.Fatalf("MethodUnavailableMessage = %q, want %q", MethodUnavailableMessage, methodUnavailableSentence)
-	}
-	source, err := os.ReadFile(filepath.Join("..", "..", "frontend", "src", "lib", "transport", "methodUnavailable.ts"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(source), "'"+methodUnavailableSentence+"'") {
-		t.Fatalf("frontend/src/lib/transport/methodUnavailable.ts METHOD_UNAVAILABLE_SENTENCE is not %q", methodUnavailableSentence)
+// A computer's dispatcher refusal reads, wherever its error is shown, as
+// the sentence a person can act on, whatever text that computer's release
+// sent, and keeps its wire text. A failure a method there returned under
+// the same code, which carries detail, keeps its own message: it is about
+// whatever that method called, not about the computer this reached.
+func TestADispatcherRefusalReadsAsTheSentence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	detail := &transport.ErrorDetail{Ref: "r1", Method: "ReadThreadRemoteLog", At: 1}
+	for _, tc := range []struct {
+		name      string
+		refusal   *transport.FrameError
+		want      string
+		refused   bool
+		wireLater string
+	}{
+		{"a release that sent the old text for a missing method", &transport.FrameError{Code: transport.ErrCodeMethodNotFound, Message: "method not registered"}, dispatchrefusal.Unsupported, true, "method not registered"},
+		{"a release that sent the old text for arguments it could not read", &transport.FrameError{Code: transport.ErrCodeBadParams, Message: "main.App.GitPush: expected 1 params, got 2"}, dispatchrefusal.Unreadable, true, "main.App.GitPush: expected 1 params, got 2"},
+		{"a method's failure forwarded under the same code", &transport.FrameError{Code: transport.ErrCodeMethodNotFound, Message: "Could not read the log on Nexus.", Detail: detail}, "Could not read the log on Nexus.", false, "Could not read the log on Nexus."},
+		{"a method's own refusal of its arguments", &transport.FrameError{Code: transport.ErrCodeBadParams, Message: "Choose at least one project.", Detail: detail}, "Choose at least one project.", false, "Choose at least one project."},
+		{"any other refusal", &transport.FrameError{Code: transport.ErrCodeMethodError, Message: "disk full", Detail: detail}, "disk full", false, "disk full"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := answerOnce(t, ctx, tc.refusal).Call(ctx, "Anything", nil)
+			var refused *Error
+			if !errors.As(err, &refused) {
+				t.Fatalf("Call = %v, want an answered refusal", err)
+			}
+			if got := err.Error(); got != tc.want {
+				t.Fatalf("Error() = %q, want %q", got, tc.want)
+			}
+			if refused.DispatchRefusal() != tc.refused || refused.Message != tc.wireLater || refused.Code != tc.refusal.Code {
+				t.Fatalf("refusal = %+v dispatch %v, want the wire code and text kept and dispatch %v", refused, refused.DispatchRefusal(), tc.refused)
+			}
+		})
 	}
 }

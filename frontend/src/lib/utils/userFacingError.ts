@@ -22,6 +22,7 @@
 // message, which the transport clamps. A reviewed message
 // (errorsx.Public) is already the sentence to show and is not split.
 
+import { dispatchRefusalKind } from '../transport/dispatchRefusal';
 import { scopeRefusalMessage } from '../transport/scopeRefusal';
 import { TransportError } from '../transport/wsClient';
 
@@ -36,10 +37,11 @@ export function userFacingError(err: unknown, fallback = 'Something went wrong.'
   // instead surface the tail of a server sentence and drift per surface.
   const refusal = scopeRefusalMessage(err);
   if (refusal !== null) return refusal;
-  // A call the computer does not have: the transport already wrote the
-  // whole sentence (transport/methodUnavailable.ts), and a computer's name
-  // in it may hold a colon or an id the trimming below would cut.
-  if (err instanceof TransportError && err.code === 'method_not_found') return err.message;
+  // The connected computer's dispatcher refused the call: the transport
+  // already wrote the whole sentence (transport/dispatchRefusal.ts), and a
+  // computer's name in it may hold a colon or an id the trimming below
+  // would cut.
+  if (err instanceof TransportError && dispatchRefusalKind(err.code, err.detail) !== null) return err.message;
   let raw = '';
   if (err instanceof Error) {
     raw = err.message;

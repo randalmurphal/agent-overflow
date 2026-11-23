@@ -6,7 +6,7 @@ import { hasScope, pageGrantsResolved } from '../transport/scopes';
 import { UI_TRACE_MAX_LINE_BYTES } from './uiTraceLimits';
 import { redactDiagnosticText } from './diagnosticRedaction';
 import { setClipboardDiagnosticsSink } from './clipboard';
-import { setMethodUnavailableDiagnosticsSink } from '../transport/methodUnavailable';
+import { setDispatchRefusalDiagnosticsSink } from '../transport/dispatchRefusal';
 
 /*
  * Always-on global error capture. Window `error` and `unhandledrejection`
@@ -86,7 +86,7 @@ export function installFrontendErrorCapture(): void {
   // stays free of stores/bindings dependencies.
   installDiagnosticsSinkEverywhere(reportFrontendDiagnostic);
   setClipboardDiagnosticsSink(reportFrontendDiagnostic);
-  setMethodUnavailableDiagnosticsSink(reportFrontendDiagnostic);
+  setDispatchRefusalDiagnosticsSink(reportFrontendDiagnostic);
 
   window.addEventListener('error', (event: ErrorEvent) => {
     // Synthetic or resource-flavored `error` events can arrive with no
@@ -367,7 +367,7 @@ function takeBatch(): string[] {
 export function resetFrontendErrorCaptureForTest(): void {
   installDiagnosticsSinkEverywhere(null);
   setClipboardDiagnosticsSink(null);
-  setMethodUnavailableDiagnosticsSink(null);
+  setDispatchRefusalDiagnosticsSink(null);
   signatureCounts.clear();
   pendingLines.length = 0;
   if (flushTimer !== null && typeof window !== 'undefined') {

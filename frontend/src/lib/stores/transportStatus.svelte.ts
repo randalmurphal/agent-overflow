@@ -28,6 +28,7 @@ import {
   onBackendsChanged,
 } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { dispatchRefusalKind } from '../transport/dispatchRefusal';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
   DisconnectedError,
@@ -379,9 +380,13 @@ export function isTemporarilyUnavailableError(err: unknown): boolean {
  * fingerprint which receivers exist. Only the harness bridge calls that
  * receiver, and only from a loopback page, so in the product the code
  * means the computer runs a different release. The error's message
- * already says so (transport/methodUnavailable.ts): a caller with a
+ * already says so (transport/dispatchRefusal.ts): a caller with a
  * fallback (`orOlder`) or a passive read that goes quiet branches on this,
  * and any other caller shows the error as it is.
+ *
+ * Only the connected computer's own refusal counts, which carries no
+ * diagnostic detail. A method that forwarded another computer's refusal
+ * under the same code ran here and failed, and carries detail.
  *
  * It is NOT how an ordinary App method is refused for want of a grant:
  * that is `scope_required`, which names the missing capability and is
@@ -389,7 +394,7 @@ export function isTemporarilyUnavailableError(err: unknown): boolean {
  * degrade quietly on either reads both.
  *
  * The discriminator is the wire error CODE (`ErrCodeMethodNotFound` in
- * `internal/transport/frame.go`), never message prose. Every other
+ * `internal/transport/frame.go`) with no detail, never message prose. Every other
  * failure carries a different code — a method that returned an error is
  * `method_error`, a decode failure is `bad_params`, an RPC timeout is
  * `timeout`, and a dead socket rejects with `DisconnectedError` (no code
@@ -403,9 +408,9 @@ export function isTemporarilyUnavailableError(err: unknown): boolean {
  * `frontend/AGENTS.md`.
  */
 export function isMethodUnavailableError(err: unknown): boolean {
-  return typeof err === 'object'
-    && err !== null
-    && (err as { code?: unknown }).code === 'method_not_found';
+  if (typeof err !== 'object' || err === null) return false;
+  const { code, detail } = err as { code?: unknown; detail?: unknown };
+  return dispatchRefusalKind(code, detail) === 'unsupported';
 }
 
 /**

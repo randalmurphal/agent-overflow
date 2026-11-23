@@ -249,12 +249,13 @@ describe('<CommitDialog> — file selection', () => {
     expect(m.rows()).toHaveLength(0);
   });
 
-  it('says a computer whose build has no file list runs a different version', async () => {
+  it('shows the refusal of a computer whose build has no file list as the transport words it', async () => {
     const m = await mount(() => {
       throw methodNotFound();
     });
     const alert = await m.findByTestId('commit-dialog-list-error');
-    expect(alert.textContent).toBe('This computer now runs a different version of Agent Overflow than this page. Reload the page.');
+    expect(alert.textContent).toBe(methodNotFound().message);
+    expect(alert.textContent).toContain('does not support this action.');
     await m.setSubject('Nothing listed');
     expect(m.commitButton().disabled).toBe(true);
   });

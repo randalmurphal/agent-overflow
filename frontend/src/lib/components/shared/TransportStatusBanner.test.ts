@@ -562,7 +562,7 @@ describe('<TransportStatusBanner> and the bundle notice', () => {
   });
 
   it('shows a staged bundle as a restart, with no button to press', async () => {
-    noteBundleReady();
+    noteBundleReady('0.0.21');
     const { getByTestId, queryByTestId } = render(TransportStatusBanner);
     await tick();
 
@@ -580,18 +580,18 @@ describe('<TransportStatusBanner> and the bundle notice', () => {
     // restart the person chooses. Without a dismiss the strip sat over
     // the compact thread header for the rest of the session, eating its
     // taps (first real-phone run, 2026-09-04).
-    noteBundleReady();
+    noteBundleReady('0.0.21');
     const { getByTestId, queryByTestId } = render(TransportStatusBanner);
     await tick();
 
     await fireEvent.click(getByTestId('transport-status-dismiss'));
     await tick();
     expect(queryByTestId('transport-status-banner')).toBeNull();
-    noteBundleReady();
+    noteBundleReady('0.0.21');
     await tick();
     expect(queryByTestId('transport-status-banner')).toBeNull();
     clearBundleNotice();
-    noteBundleReady();
+    noteBundleReady('0.0.21');
     await tick();
     expect(queryByTestId('transport-status-banner')).not.toBeNull();
     clearBundleNotice();
@@ -613,7 +613,7 @@ describe('<TransportStatusBanner> and the bundle notice', () => {
     // A restart is an action; "update from the app store" is not one
     // this app can perform, and replacing the actionable sentence with
     // the unactionable one would be the wrong trade.
-    noteBundleReady();
+    noteBundleReady('0.0.21');
     noteBundleTooOld('laptop');
     const { getByTestId } = render(TransportStatusBanner);
     await tick();

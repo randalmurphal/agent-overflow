@@ -1,6 +1,6 @@
 import { presentAuthReason } from './authReason';
 import { parseErrorDetail, type ErrorDetail } from './errorDetail';
-import { methodUnavailableMessage } from './methodUnavailable';
+import { dispatchRefusalKind, dispatchRefusalMessage, UNREADABLE_SENTENCE, UNSUPPORTED_SENTENCE } from './dispatchRefusal';
 import { createNetworkSocket } from './networkSocket';
 import { networkFetch } from './networkFetch';
 import { DamagedTrustError } from '../native/networkTrust';
@@ -55,6 +55,7 @@ import {
   type WatchScope,
   type ServerEventFrame,
   type ServerHelloFrame,
+  type ServerRPCFrame,
   type ServerFrame,
   clampString,
   extractRpcIdFromOversizedFrame,
@@ -506,11 +507,22 @@ export class TransportError extends Error {
   detail?: ErrorDetail;
   constructor(code: string, message: string, fields: TransportErrorFields = {}) {
     const { reason, scope, transfer, backgroundAgents, reserve, resumeAt, detail, backend = HOME_BACKEND } = fields;
-    // A call the computer does not have is a version mismatch, worded once
-    // here for every surface (./methodUnavailable.ts); the wire text stays
-    // as the cause, which Details and a copied report list.
-    if (code === 'method_not_found') {
-      super(methodUnavailableMessage(backend), { cause: message });
+    const parsedDetail = parseErrorDetail(detail, backend);
+    const refusal = dispatchRefusalKind(code, parsedDetail);
+    // The dispatcher's own refusal is worded once here for every surface
+    // (./dispatchRefusal.ts), with the wire text as the cause, which
+    // Details and a copied report list. The sentence is built when the
+    // message is first read: a caller that recovers from the refusal never
+    // reads it, and nothing the wording does can stop the call settling.
+    if (refusal !== null) {
+      super(refusal === 'unsupported' ? UNSUPPORTED_SENTENCE : UNREADABLE_SENTENCE, { cause: message });
+      let worded: string | undefined;
+      Object.defineProperty(this, 'message', {
+        configurable: true,
+        enumerable: false,
+        get: () => (worded ??= dispatchRefusalMessage(refusal, backend)),
+        set: (value: string) => { worded = value; },
+      });
     } else {
       super(code === 'auth_failed' ? presentAuthReason(reason).title : message);
     }
@@ -530,8 +542,22 @@ export class TransportError extends Error {
       this.reserve = reserve === true;
       if (typeof resumeAt === 'string' && resumeAt.length <= 64 && Number.isFinite(Date.parse(resumeAt))) this.resumeAt = resumeAt;
     }
-    this.detail = parseErrorDetail(detail, backend);
+    this.detail = parsedDetail;
   }
+}
+
+/** The rejection for an RPC frame's `error` from `backend`. */
+export function transportErrorFromFrame(error: NonNullable<ServerRPCFrame['error']>, backend: BackendKey): TransportError {
+  return new TransportError(error.code, clampString(error.message ?? ''), {
+    reason: error.reason,
+    scope: error.scope,
+    transfer: error.transfer,
+    backgroundAgents: error.backgroundAgents,
+    reserve: error.reserve,
+    resumeAt: error.resumeAt,
+    detail: error.detail,
+    backend,
+  });
 }
 
 /** The optional fields a FrameError carries beside its code and message. */
@@ -3104,22 +3130,7 @@ export class WSClient {
       this.pending.delete(frame.id);
       clearTimeout(pending.timer);
       if (frame.error) {
-        pending.reject(
-          new TransportError(
-            frame.error.code,
-            clampString(frame.error.message ?? ''),
-            {
-              reason: frame.error.reason,
-              scope: frame.error.scope,
-              transfer: frame.error.transfer,
-              backgroundAgents: frame.error.backgroundAgents,
-              reserve: frame.error.reserve,
-              resumeAt: frame.error.resumeAt,
-              detail: frame.error.detail,
-              backend: this.backend,
-            },
-          ),
-        );
+        pending.reject(transportErrorFromFrame(frame.error, this.backend));
         return;
       }
       pending.resolve(frame.result);

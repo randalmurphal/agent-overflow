@@ -14,11 +14,14 @@ export type SameComputer = <T>(issue: () => T) => T;
 /**
  * `call`'s answer, or `older`'s when the computer it reached does not have
  * the method. Called inside a `withBackendTarget`, `older` reaches the same
- * computer through `same`; unpinned, a fallback takes its own route.
+ * computer through `same`; unpinned, a fallback takes its own route. An
+ * `older` that cannot do the action throws `refusal`, with `withNote` for
+ * anything the feature adds, so the person still reads which computer
+ * refused and what to do, and a copied report keeps its code and cause.
  */
 export async function orOlder<T>(
   call: () => PromiseLike<T>,
-  older: (same: SameComputer) => T | PromiseLike<T>,
+  older: (same: SameComputer, refusal: Error) => T | PromiseLike<T>,
 ): Promise<T> {
   // Read before `call` dispatches, which drains the pin.
   const pinned = getPinnedBackend();
@@ -26,9 +29,15 @@ export async function orOlder<T>(
   try {
     return await call();
   } catch (err) {
-    if (!isMethodUnavailableError(err)) throw err;
-    return older(same);
+    if (!(err instanceof Error) || !isMethodUnavailableError(err)) throw err;
+    return older(same, err);
   }
+}
+
+/** `refusal`, its message followed by `note`. */
+export function withNote(refusal: Error, note: string): Error {
+  refusal.message = `${refusal.message} ${note}`;
+  return refusal;
 }
 
 /**

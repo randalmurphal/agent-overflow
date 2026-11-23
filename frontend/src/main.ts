@@ -41,9 +41,9 @@ installIOSInputZoomGuard();
 // from the first call — including the pairing screen's, which mounts
 // below without the rest of the app.
 installStepUpProof();
-// Names the computer, the side that is older and the remedy in the message
-// of every call a computer refused for not having it. The transport's own
-// sentence stands without it (transport/methodUnavailable.ts).
+// Names the computer, what the page knows about the two versions and the
+// remedy in the message of every call a computer's dispatcher refused. The
+// transport's own sentence stands without it (transport/dispatchRefusal.ts).
 installVersionMismatchWording();
 // On-demand memory accounting for console / CDP probes. The stub keeps
 // the collector chunk out of the startup graph entirely; the dynamic
