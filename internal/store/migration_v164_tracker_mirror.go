@@ -28,7 +28,11 @@ package store
 //     tracker_cache_issues.status_final_for is the update time whose
 //     status time a final read decided (MirrorStatusSince), backfilled
 //     for the rows whose stored history was final for their card, the
-//     rule v162 derived the time by. body_updated_at, body_read_at,
+//     rule v162 derived the time by. status_floor_at and status_read_at
+//     are the read orders of its evidence (mirrorStatusWriteSQL): the read
+//     of the card write that gave the issue its version or status, and
+//     the read behind a provisional time, never below the floor; a row
+//     stored before them holds 0, which refuses no read. body_updated_at, body_read_at,
 //     body_wall, body_opened_at and body_digest are the bookkeeping of the
 //     ticket body the issue holds in tracker_cache_issue_bodies, a body
 //     existing exactly when body_read_at and body_updated_at are over zero;
@@ -79,6 +83,8 @@ UPDATE tracker_cache_issues SET sprint_set = x'` + mirrorSprintSetPartial + `'
 DROP TABLE tracker_cache_issue_details;
 ALTER TABLE tracker_cache_issues ADD COLUMN status_final_for INTEGER NOT NULL DEFAULT 0 CHECK(status_final_for >= 0);
 UPDATE tracker_cache_issues SET status_final_for = updated_at WHERE history_for >= updated_at AND history_wait = 0;
+ALTER TABLE tracker_cache_issues ADD COLUMN status_read_at INTEGER NOT NULL DEFAULT 0 CHECK(status_read_at >= 0);
+ALTER TABLE tracker_cache_issues ADD COLUMN status_floor_at INTEGER NOT NULL DEFAULT 0 CHECK(status_floor_at BETWEEN 0 AND status_read_at);
 ALTER TABLE tracker_cache_issues ADD COLUMN body_updated_at INTEGER NOT NULL DEFAULT 0 CHECK(body_updated_at >= 0);
 ALTER TABLE tracker_cache_issues ADD COLUMN body_read_at INTEGER NOT NULL DEFAULT 0 CHECK(body_read_at >= 0);
 ALTER TABLE tracker_cache_issues ADD COLUMN body_wall INTEGER NOT NULL DEFAULT 0 CHECK(body_wall >= 0);

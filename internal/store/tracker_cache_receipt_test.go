@@ -29,7 +29,9 @@ func storedHistoryShape(t *testing.T, s *Store, root int64) string {
 // whatever its times say. The older answer is not final and lacks a
 // change the tracker listed late; the newer is final and holds it. Short
 // histories go through the batch, long ones through staging: switched in
-// when no history was stored, kept in place when one was. With the
+// when no history was stored, kept in place when one was. Over a stored
+// history the older answer holds its changes, so landing first it stores
+// times alone, which no view shows: unchanged, its receipt moved. With the
 // stored history's own times, the older answer is that history again and
 // writes nothing, so the newer one, its changes alone changed, is stored
 // after it and refuses the older one after it.
@@ -48,7 +50,7 @@ func TestMirrorHistoryOverlappingReadsLandInEitherOrder(t *testing.T) {
 		}{
 			{"none stored, older first", false, false, true, "changed", "superseded"},
 			{"none stored, newer first", false, false, false, "changed", "superseded"},
-			{"stored, older first", true, false, true, "changed", "superseded"},
+			{"stored, older first", true, false, true, "unchanged", "superseded"},
 			{"stored, newer first", true, false, false, "changed", "superseded"},
 			{"stored, same times, older first", true, true, true, "unchanged", "changed"},
 			{"stored, same times, newer first", true, true, false, "changed", "superseded"},
@@ -76,7 +78,7 @@ func TestMirrorHistoryOverlappingReadsLandInEitherOrder(t *testing.T) {
 					order = []MirrorHistory{older, newer}
 				}
 				for i, want := range []string{tc.first, tc.second} {
-					results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{order[i]}, MirrorCatalog{}, mirrorReadAt(0))
+					results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{order[i]}, MirrorCatalog{}, nextMirrorRead(s, root))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -116,7 +118,7 @@ func TestMirrorHistoryLateMissingIssueAnswerIsSuperseded(t *testing.T) {
 	found := listedAt(s, root, MirrorHistory{IssueID: "10001", AnsweredAt: 1_060_000,
 		Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 100_000, From: "1", To: "3"}}}, listed)
 	for i, h := range []MirrorHistory{found, missing} {
-		results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{h}, MirrorCatalog{}, mirrorReadAt(0))
+		results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{h}, MirrorCatalog{}, nextMirrorRead(s, root))
 		if err != nil || results[0].Superseded != (i == 1) || results[0].Changed != (i == 0) {
 			t.Fatalf("answer %d: %+v, %v", i+1, results, err)
 		}
@@ -148,7 +150,7 @@ func TestMirrorStagedHistoryWithAStaleReceiptIsDiscarded(t *testing.T) {
 			before := storedHistoryShape(t, s, root)
 			long := listedAt(s, root, statusHistory("10001", 2*clearMirrorChunk+100), receiptOf(t, s, root, "10001"))
 			mustExec(t, s.db, trigger)
-			results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{long}, MirrorCatalog{}, mirrorReadAt(0))
+			results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{long}, MirrorCatalog{}, nextMirrorRead(s, root))
 			if err != nil || results[0] != (MirrorHistoryResult{IssueID: "10001", Superseded: true}) {
 				t.Fatalf("a staged history whose receipt went stale: %+v, %v; want superseded", results, err)
 			}

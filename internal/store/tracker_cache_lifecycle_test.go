@@ -301,8 +301,8 @@ func TestCleanupSweepsIssuesWhoseLinksGo(t *testing.T) {
 
 // The sweep deletes leaf first in transactions of at most a chunk: an
 // issue whose changes do not fit has a batch of them deleted with its
-// history times reset, so an issue kept again midway has its history read
-// again; it is never deleted.
+// history times and the orders of its status evidence reset, so an issue
+// kept again midway has its history read again; it is never deleted.
 func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -331,8 +331,8 @@ func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 		if pauses++; pauses != 2 {
 			return
 		}
-		assertRows(t, s.db, `SELECT count(*) || ':' || (SELECT history_from || history_for || history_answered_at || history_wait || status_since
-			FROM tracker_cache_issues WHERE issue_id = '10001') FROM tracker_cache_changes WHERE issue_id = '10001'`, "0:00000")
+		assertRows(t, s.db, `SELECT count(*) || ':' || (SELECT history_from || history_for || history_answered_at || history_wait || status_since || status_floor_at || status_read_at
+			FROM tracker_cache_issues WHERE issue_id = '10001') FROM tracker_cache_changes WHERE issue_id = '10001'`, "0:0000000")
 		linkIssue(t, s, "relinked", "10001")
 	})
 	if err != nil {
@@ -348,7 +348,7 @@ func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 		t.Fatalf("history due = %v, %v; want the issue kept again", due, err)
 	}
 	stale := listedAt(s, root, statusHistory("10001", 3), 1)
-	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{stale}, MirrorCatalog{}, mirrorReadAt(0)); err != nil || !results[0].Superseded {
+	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{stale}, MirrorCatalog{}, nextMirrorRead(s, root)); err != nil || !results[0].Superseded {
 		t.Fatalf("a history listed before the reset = %+v, %v; want superseded", results, err)
 	}
 	mustReplaceHistory(t, s, root, statusHistory("10001", 3), MirrorWrite{Changed: true})

@@ -63,8 +63,8 @@ func TestARefusedTicketCardGivesNoStatusResult(t *testing.T) {
 // Two overlapping ticket reads of one update see the same card; the later
 // read saw the change to its status (inside the settle margin, so its
 // time is provisional), the earlier did not. Whichever lands first, the
-// record shows the later read's time: the earlier read's body is
-// superseded, and its provisional evidence replaces none of a later read.
+// record shows the later read's time: provisional evidence of an earlier
+// read replaces none of a later read (mirrorStatusWriteSQL).
 func TestAnOlderReadsProvisionalTimeNeverReplacesANewerOnes(t *testing.T) {
 	t.Parallel()
 	const u = 1_000_000
@@ -124,7 +124,7 @@ func TestAStagedHistoryAppliesItsResultOnlyToTheStatusItDescribes(t *testing.T) 
 		want MirrorWrite
 		due  bool
 	}{
-		"the card path":        {"status_id = '3', " + mirrorStatusKeptBy("'3'", "updated_at"), MirrorWrite{Superseded: true}, true},
+		"the card path":        {"status_id = '3', " + mirrorStatusKeptBy("'3'", "updated_at", "read_at"), MirrorWrite{Superseded: true}, true},
 		"a status write alone": {"status_id = '3', status_since = 0, status_final_for = 0", MirrorWrite{Changed: true}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -164,7 +164,7 @@ func TestAHistoryKeptInPlaceChecksItsReceipt(t *testing.T) {
 	more := h
 	more.Changes = append(slices.Clone(h.Changes), MirrorChange{Kind: MirrorChangeStatus, At: n + 1, To: "1"})
 	more.AnsweredAt++
-	in, err := newMirrorHistoryInput(dueHistories(s, root, []MirrorHistory{more})[0])
+	in, err := newMirrorHistoryInput(dueHistories(s, root, []MirrorHistory{more})[0], nextMirrorRead(s, root).rootOrder)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,8 +173,8 @@ func TestAHistoryKeptInPlaceChecksItsReceipt(t *testing.T) {
 	if err != nil || !admitted {
 		t.Fatalf("admitted %v, %v", admitted, err)
 	}
-	mustExec(t, s.db, `UPDATE tracker_cache_issues SET status_id = '3', `+mirrorStatusKeptBy("'3'", "updated_at")+` WHERE issue_id = '10001'`)
-	if err := s.writeStagedHistory(root, in, st, "test"); !errors.Is(err, errStaleReceipt) {
+	mustExec(t, s.db, `UPDATE tracker_cache_issues SET status_id = '3', `+mirrorStatusKeptBy("'3'", "updated_at", "read_at")+` WHERE issue_id = '10001'`)
+	if _, err := s.writeStagedHistory(root, in, st, "test"); !errors.Is(err, errStaleReceipt) {
 		t.Fatalf("the history kept in place after its receipt moved: %v; want its receipt stale", err)
 	}
 	if !dueFor(t, s, root, "10001") {

@@ -130,7 +130,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 	// shortened, identical, and a staging left for the cleanup.
 	for _, h := range []MirrorHistory{statusHistory("10002", clearMirrorChunk+100), statusHistory("10002", clearMirrorChunk+150),
 		statusHistory("10002", clearMirrorChunk+150), statusHistory("10002", 3)} {
-		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{h}), MirrorCatalog{}, mirrorReadAt(0)); err != nil {
+		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{h}), MirrorCatalog{}, nextMirrorRead(s, root)); err != nil {
 			t.Fatal(err)
 		}
 	}

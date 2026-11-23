@@ -136,7 +136,9 @@ func TestMirrorEstimateChangeHidesRowsReadBefore(t *testing.T) {
 		}
 		h := webHistory("10001")
 		h.BoardsRev = due[0].BoardsRev
-		mustReplaceHistory(t, s, root, h, MirrorWrite{Changed: true})
+		// The same history, read for the new boards revision: nothing shown
+		// changes.
+		mustReplaceHistory(t, s, root, h, MirrorWrite{})
 		read++
 	}
 	// The same definition read again resets nothing.

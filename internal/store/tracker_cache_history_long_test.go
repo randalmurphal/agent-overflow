@@ -63,9 +63,9 @@ func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 		recorder.reset()
 		var results []MirrorHistoryResult
 		var err error
-		sweep, histories := currentSweep(s, root), dueHistories(s, root, []MirrorHistory{step.history})
+		sweep, histories, read := currentSweep(s, root), dueHistories(s, root, []MirrorHistory{step.history}), nextMirrorRead(s, root)
 		statements := countMirrorStatements(t, func() {
-			results, _, err = s.ReplaceMirrorHistories(root, sweep, histories, MirrorCatalog{}, mirrorReadAt(0))
+			results, _, err = s.ReplaceMirrorHistories(root, sweep, histories, MirrorCatalog{}, read)
 		})
 		if err != nil || len(results) != 1 || results[0].Changed != step.changed {
 			t.Fatalf("%s: %+v, %v", step.name, results, err)
@@ -181,7 +181,7 @@ func TestMirrorStagingStoppedBetweenChunks(t *testing.T) {
 		{"after the switch", `BEFORE DELETE ON tracker_cache_changes WHEN OLD.gen = 1 AND OLD.seq = 2000`,
 			"10 answered 6010 since 10 other 3000 dirty 1",
 			func(s *Store, root int64) error {
-				_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{longHistory("10001", 10, 9000)}), MirrorCatalog{}, mirrorReadAt(0))
+				_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{longHistory("10001", 10, 9000)}), MirrorCatalog{}, nextMirrorRead(s, root))
 				return err
 			}},
 	} {
@@ -195,7 +195,7 @@ func TestMirrorStagingStoppedBetweenChunks(t *testing.T) {
 			next = longHistory("10001", 5000, 7000)
 		}
 		mustExec(t, s.db, fmt.Sprintf(`CREATE TRIGGER test_stop_staging %s BEGIN SELECT RAISE(ABORT, 'stopped'); END`, stop.trigger))
-		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{next}), MirrorCatalog{}, mirrorReadAt(0)); err == nil {
+		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{next}), MirrorCatalog{}, nextMirrorRead(s, root)); err == nil {
 			t.Fatalf("%s: the staging was not stopped", stop.name)
 		}
 		if got := mirrorHistoryShown(t, s); got != stop.shown {
@@ -229,7 +229,7 @@ func TestMirrorHistoryProbeStopsAtTheFirstDifference(t *testing.T) {
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
 	mustReplaceHistory(t, s, root, longHistory("10001", 11, 1), MirrorWrite{Changed: true})
-	in, err := newMirrorHistoryInput(answeredHistory(longHistory("10001", 100000, 1)))
+	in, err := newMirrorHistoryInput(answeredHistory(longHistory("10001", 100000, 1)), nextMirrorRead(s, root).rootOrder)
 	if err != nil {
 		t.Fatal(err)
 	}

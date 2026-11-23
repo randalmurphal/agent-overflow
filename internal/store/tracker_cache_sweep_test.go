@@ -28,12 +28,12 @@ func TestMirrorSweepFencesReadsOutsideABoard(t *testing.T) {
 			return err
 		}},
 		{"history", `tracker_cache_changes`, func(s *Store, root, sweep int64) error {
-			_, _, err := s.ReplaceMirrorHistories(root, sweep, dueHistories(s, root, []MirrorHistory{history}), MirrorCatalog{}, mirrorReadAt(0))
+			_, _, err := s.ReplaceMirrorHistories(root, sweep, dueHistories(s, root, []MirrorHistory{history}), MirrorCatalog{}, nextMirrorRead(s, root))
 			return err
 		}},
 		{"staged history", `tracker_cache_changes`, func(s *Store, root, sweep int64) error {
 			// The stage after the batch transaction, where a sweep can land.
-			in, err := newMirrorHistoryInput(answeredHistory(statusHistory("10001", clearMirrorChunk+100)))
+			in, err := newMirrorHistoryInput(answeredHistory(statusHistory("10001", clearMirrorChunk+100)), nextMirrorRead(s, root).rootOrder)
 			if err != nil {
 				return err
 			}
@@ -132,7 +132,7 @@ func TestMirrorSweepBetweenBatchAndStaging(t *testing.T) {
 		BEGIN UPDATE tracker_cache_roots SET sweep = sweep + 1; END`)
 	short := MirrorHistory{IssueID: "10002", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}
 	long := statusHistory("10001", clearMirrorChunk+100)
-	if _, _, err := s.ReplaceMirrorHistories(root, read, dueHistories(s, root, []MirrorHistory{long, short}), MirrorCatalog{}, mirrorReadAt(0)); !errors.Is(err, ErrTrackerCacheSwept) {
+	if _, _, err := s.ReplaceMirrorHistories(root, read, dueHistories(s, root, []MirrorHistory{long, short}), MirrorCatalog{}, nextMirrorRead(s, root)); !errors.Is(err, ErrTrackerCacheSwept) {
 		t.Fatalf("a staging after a sweep: %v; want it refused", err)
 	}
 	changes := func(issue string) string {
@@ -141,7 +141,7 @@ func TestMirrorSweepBetweenBatchAndStaging(t *testing.T) {
 	assertRows(t, s.db, changes("10001"), "0")
 	assertRows(t, s.db, changes("10002"), "1")
 	mustExec(t, s.db, `DROP TRIGGER test_sweep_between`)
-	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{long}), MirrorCatalog{}, mirrorReadAt(0)); err != nil {
+	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{long}), MirrorCatalog{}, nextMirrorRead(s, root)); err != nil {
 		t.Fatal(err)
 	}
 	assertRows(t, s.db, changes("10001"), "1")

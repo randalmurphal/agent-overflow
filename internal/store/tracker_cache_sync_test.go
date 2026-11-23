@@ -362,7 +362,7 @@ func TestMirrorSyncSaysWhetherHistoryIsDue(t *testing.T) {
 	if !due("10") || !due("") {
 		t.Fatal("an issue with no history is not due")
 	}
-	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{statusHistory("10001", 5)}), MirrorCatalog{}, mirrorReadAt(0)); err != nil {
+	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{statusHistory("10001", 5)}), MirrorCatalog{}, nextMirrorRead(s, root)); err != nil {
 		t.Fatal(err)
 	}
 	if due("10") {

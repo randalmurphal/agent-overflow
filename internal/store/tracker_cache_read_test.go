@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"maps"
@@ -22,6 +23,19 @@ func mirrorReadOf(root, at int64) MirrorRead {
 		return MirrorRead{}
 	}
 	return MirrorRead{root: root, rootOrder: at, wall: at}
+}
+
+// nextMirrorRead is a read of root begun after every read the root
+// stores, as the first read of a process begins (mirrorReadSeedSQL),
+// whatever reads the test made with mirrorReadAt: a history read listed
+// after the writes before it. A detached root, which seeds no clock and
+// whose writes are refused, gets the first read.
+func nextMirrorRead(s *Store, root int64) MirrorRead {
+	var last int64
+	if err := s.db.QueryRow(mirrorReadSeedSQL, root).Scan(&last); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		panic(err)
+	}
+	return mirrorReadOf(root, last+1)
 }
 
 // beginRead is BeginMirrorRead that fails the test on an error.

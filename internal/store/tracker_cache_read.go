@@ -68,7 +68,7 @@ var mirrorReadTimeColumns = []struct {
 	{"tracker_cache_statuses", []string{"read_at"}},
 	{"tracker_cache_boards", []string{"read_at", "rows_removed_at", "listing_read_at", "estimate_reset_at"}},
 	{"tracker_cache_board_unexplained", []string{"named_at"}},
-	{"tracker_cache_issues", []string{"read_at", "body_read_at", "body_opened_at"}},
+	{"tracker_cache_issues", []string{"read_at", "body_read_at", "body_opened_at", "status_read_at"}},
 	{"tracker_cache_board_issues", []string{"read_at"}},
 	{"tracker_cache_open_tickets", []string{"opened_at"}},
 	{"tracker_cache_worklog_days", []string{"read_at"}},
@@ -82,6 +82,7 @@ var mirrorBoundedReadTimes = map[string]string{
 	"tracker_cache_users.changed_at":         "changed_at BETWEEN 1 AND read_at",
 	"tracker_cache_statuses.changed_at":      "changed_at BETWEEN 1 AND read_at",
 	"tracker_cache_statuses.done_changed_at": "done_changed_at BETWEEN 0 AND changed_at",
+	"tracker_cache_issues.status_floor_at":   "status_floor_at BETWEEN 0 AND status_read_at",
 	"tracker_cache_sync.failed_at":           "outcome_at >= failed_at",
 }
 

@@ -23,7 +23,7 @@ func webHistory(issue string) MirrorHistory {
 
 // replaceHistory writes one history, as a batch of one.
 func replaceHistory(s *Store, root int64, h MirrorHistory) (MirrorWrite, error) {
-	results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{h}), MirrorCatalog{}, mirrorReadAt(0))
+	results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{h}), MirrorCatalog{}, nextMirrorRead(s, root))
 	if err != nil {
 		return MirrorWrite{}, err
 	}
@@ -60,10 +60,30 @@ func TestReplaceMirrorHistoryReportsChanges(t *testing.T) {
 	}, ","))
 	assertRows(t, s.db, `SELECT history_from || ':' || history_for || ':' || history_answered_at || ':' || history_wait FROM tracker_cache_issues`, "0:9:1:0")
 
+	// A history whose times alone differ stores them and advances the
+	// receipt, but changes nothing a view shows: not its changes, and not
+	// the card's status time (a read that is not final never replaces a
+	// final time, and the latest status change decides the time, not the
+	// history's start).
 	for name, edit := range map[string]func(*MirrorHistory){
 		"answered later": func(h *MirrorHistory) { h.AnsweredAt = 10 },
 		"not final":      func(h *MirrorHistory) { h.Wait = 60_000 },
 		"complete later": func(h *MirrorHistory) { h.CompleteFrom = 1 },
+	} {
+		s, _, root := newMirror(t)
+		writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 9, "a")})
+		mustReplaceHistory(t, s, root, webHistory("10001"), MirrorWrite{Changed: true})
+		receipt := receiptOf(t, s, root, "10001")
+		edited := webHistory("10001")
+		edit(&edited)
+		if got, err := replaceHistory(s, root, edited); err != nil || got != (MirrorWrite{}) {
+			t.Errorf("%s: %+v, %v; want unchanged", name, got, err)
+		}
+		if got := receiptOf(t, s, root, "10001"); got != receipt+1 {
+			t.Errorf("%s: receipt %d; want %d, the times stored", name, got, receipt+1)
+		}
+	}
+	for name, edit := range map[string]func(*MirrorHistory){
 		"author":         func(h *MirrorHistory) { h.Changes[0].AuthorID = "" },
 		"sprint set":     func(h *MirrorHistory) { h.Changes[1].ToSprints = []string{"21"} },
 		"estimate value": func(h *MirrorHistory) { h.Changes[3].ToNumber = nil },
@@ -139,7 +159,7 @@ func TestMirrorHistoryIsNeverReplacedByAnEarlierOne(t *testing.T) {
 	stored := countMirrorRows(t, s.db)["tracker_cache_changes"]
 
 	early := listedAt(s, root, statusHistory("10001", 3), listed)
-	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{early}, MirrorCatalog{}, mirrorReadAt(0)); err != nil || !results[0].Superseded {
+	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{early}, MirrorCatalog{}, nextMirrorRead(s, root)); err != nil || !results[0].Superseded {
 		t.Fatalf("a history listed before the stored one = %+v, %v; want superseded", results, err)
 	}
 	if n := countMirrorRows(t, s.db)["tracker_cache_changes"]; n != stored {
@@ -269,7 +289,7 @@ func TestReplaceMirrorHistoriesInBatches(t *testing.T) {
 	batch := dueHistories(s, root, []MirrorHistory{webHistory("10009"), webHistory("10003"), webHistory("10002"), webHistory("10004"), webHistory("10001")})
 	batch[1].Receipt = listed
 	commits := s.CommitCount()
-	results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), batch, MirrorCatalog{}, mirrorReadAt(0))
+	results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), batch, MirrorCatalog{}, nextMirrorRead(s, root))
 	want := []MirrorHistoryResult{{IssueID: "10009", Unkept: true}, {IssueID: "10003", Superseded: true}, {IssueID: "10002", Changed: true},
 		{IssueID: "10004", Unkept: true}, {IssueID: "10001"}}
 	if err != nil || !reflect.DeepEqual(results, want) {
@@ -283,7 +303,7 @@ func TestReplaceMirrorHistoriesInBatches(t *testing.T) {
 	mustReplaceHistory(t, s, root, statusHistory("10002", clearMirrorChunk), MirrorWrite{Changed: true})
 	recorder := recordMirrorWrites(t, s)
 	commits = s.CommitCount()
-	results, _, err = s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10001"}, {IssueID: "10002"}}), MirrorCatalog{}, mirrorReadAt(0))
+	results, _, err = s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10001"}, {IssueID: "10002"}}), MirrorCatalog{}, nextMirrorRead(s, root))
 	if err != nil || !reflect.DeepEqual(results, []MirrorHistoryResult{{IssueID: "10001", Changed: true}, {IssueID: "10002", Changed: true}}) {
 		t.Fatalf("emptying batch = %+v, %v", results, err)
 	}
@@ -301,7 +321,7 @@ func TestReplaceMirrorHistoriesInBatches(t *testing.T) {
 		"issue twice":        {webHistory("10001"), webHistory("10001")},
 		"one invalid":        {webHistory("10002"), {IssueID: "10001", For: -1}},
 	} {
-		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, batch), MirrorCatalog{}, mirrorReadAt(0)); !errors.Is(err, ErrInvalidTrackerCache) {
+		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, batch), MirrorCatalog{}, nextMirrorRead(s, root)); !errors.Is(err, ErrInvalidTrackerCache) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

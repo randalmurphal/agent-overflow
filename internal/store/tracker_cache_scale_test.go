@@ -209,7 +209,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 					batch[i] = benchHistory(d.IssueID, 100, benchChanges)
 					batch[i].For, batch[i].BoardsRev, batch[i].Receipt = d.UpdatedAt, d.BoardsRev, d.Receipt
 				}
-				if _, _, err := s.ReplaceMirrorHistories(root, sweep, batch, MirrorCatalog{}, mirrorReadAt(0)); err != nil {
+				if _, _, err := s.ReplaceMirrorHistories(root, sweep, batch, MirrorCatalog{}, nextMirrorRead(s, root)); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -307,7 +307,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 			batch[i] = benchHistory(d.IssueID, int64(3000+rep), benchChanges)
 			batch[i].For, batch[i].BoardsRev, batch[i].Receipt = d.UpdatedAt, d.BoardsRev, d.Receipt
 		}
-		_, _, err = s.ReplaceMirrorHistories(root, sweep, batch, MirrorCatalog{}, mirrorReadAt(0))
+		_, _, err = s.ReplaceMirrorHistories(root, sweep, batch, MirrorCatalog{}, mirrorReadOf(root, int64(1_000_000+rep)))
 		return err
 	})
 	out["board view, 3 sections"] = measureScale(t, rec, nil, func(int) error {

@@ -38,11 +38,9 @@ func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHi
 	}
 	readAt := times.at
 	named := len(catalog.Users)+len(catalog.Statuses) > 0
-	switch {
-	case len(histories) > mirrorHistoryBatch || sweep <= 0:
-		return nil, false, fmt.Errorf("%w: %d histories, over %d, or no sweep", ErrInvalidTrackerCache, len(histories), mirrorHistoryBatch)
-	case named && readAt <= 0:
-		return nil, false, fmt.Errorf("%w: a catalog with no read time", ErrInvalidTrackerCache)
+	if len(histories) > mirrorHistoryBatch || sweep <= 0 || readAt <= 0 {
+		return nil, false, fmt.Errorf("%w: %d histories, over %d, or no sweep or read time", ErrInvalidTrackerCache, len(histories),
+			mirrorHistoryBatch)
 	}
 	if err := catalog.check(); err != nil {
 		return nil, false, err
@@ -52,7 +50,7 @@ func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHi
 	results = make([]MirrorHistoryResult, len(histories))
 	index := make(map[string]int, len(histories))
 	for i, h := range histories {
-		in, err := newMirrorHistoryInput(h)
+		in, err := newMirrorHistoryInput(h, readAt)
 		if err != nil {
 			return nil, false, err
 		}
@@ -150,7 +148,7 @@ func replaceMirrorHistoriesTx(tx *sql.Tx, rootID int64, pending []mirrorHistoryI
 			staged = append(staged, in)
 			continue
 		case (st.removes > removeBudget || len(in.changes) > writeBudget) && len(write) > 0:
-			return pending[n:], staged, writeMirrorHistoriesTx(tx, rootID, write, changes, index, results)
+			return pending[n:], staged, writeMirrorHistoriesTx(tx, rootID, write, changes, states, index, results)
 		}
 		result.Unkept = false
 		removeBudget -= st.removes
@@ -158,7 +156,7 @@ func replaceMirrorHistoriesTx(tx *sql.Tx, rootID int64, pending []mirrorHistoryI
 		in.setGen(st.gen)
 		write, changes = append(write, st.rowOf(in, st.gen)), append(changes, in.changes...)
 	}
-	return nil, staged, writeMirrorHistoriesTx(tx, rootID, write, changes, index, results)
+	return nil, staged, writeMirrorHistoriesTx(tx, rootID, write, changes, states, index, results)
 }
 
 // mirrorHistoryState is an issue's stored history as a write of it reads
@@ -169,10 +167,15 @@ type mirrorHistoryState struct {
 	dirty, kept                                                        bool
 	removes                                                            int
 	// status and createdAt are the issue's card's, for the status result
-	// of a history read for its version (statusOf).
-	status    string
-	createdAt int64
+	// of a history read for its version (statusOf); since and finalFor its
+	// stored status time and the update time a final read decided it for.
+	status                     string
+	createdAt, since, finalFor int64
 }
+
+// final reports that a final read decided the stored status time for the
+// card's version.
+func (st mirrorHistoryState) final() bool { return st.finalFor >= st.updatedAt }
 
 // statusOf is the status result in gives the issue's card, of the
 // version and status st holds (MirrorStatusSince): none for a history read
@@ -241,7 +244,7 @@ func readMirrorHistoryStatesTx(q sqlQueryer, rootID int64, listed string) (map[s
 		var id string
 		var st mirrorHistoryState
 		err := r.Scan(&id, &st.storedFrom, &st.storedFor, &st.storedAnswered, &st.storedWait, &st.storedBoardsRev, &st.receipt,
-			&st.boardsRev, &st.updatedAt, &st.gen, &st.dirty, &st.kept, &st.removes, &st.status, &st.createdAt)
+			&st.boardsRev, &st.updatedAt, &st.gen, &st.dirty, &st.kept, &st.removes, &st.status, &st.createdAt, &st.since, &st.finalFor)
 		states[id] = st
 		return err
 	})
@@ -251,8 +254,12 @@ func readMirrorHistoryStatesTx(q sqlQueryer, rootID int64, listed string) (map[s
 	return states, nil
 }
 
-func writeMirrorHistoriesTx(tx *sql.Tx, rootID int64, write []mirrorHistoryRow, changes []mirrorChangeRow, index map[string]int,
-	results []MirrorHistoryResult) error {
+// writeMirrorHistoriesTx writes the histories write, with their changes,
+// over the issues' stored ones, whose state the transaction read
+// (states), and marks Changed each issue whose changes or shown status
+// changed.
+func writeMirrorHistoriesTx(tx *sql.Tx, rootID int64, write []mirrorHistoryRow, changes []mirrorChangeRow,
+	states map[string]mirrorHistoryState, index map[string]int, results []MirrorHistoryResult) error {
 	if len(write) == 0 {
 		return nil
 	}
@@ -266,18 +273,15 @@ func writeMirrorHistoriesTx(tx *sql.Tx, rootID int64, write []mirrorHistoryRow, 
 			return err
 		}
 	}
+	mark := func(changed []string) {
+		for _, id := range changed {
+			results[index[id]].Changed = true
+		}
+	}
 	for _, step := range []struct{ what, query, list string }{
 		{"write changes", mirrorChangesUpsertSQL, rows},
 		{"remove changes", mirrorChangesRemoveSQL, histories},
-		{"write history times", mirrorHistoryTimesSQL, histories},
 	} {
-		if step.query == mirrorHistoryTimesSQL {
-			// The times statement advances the receipt of an issue whose
-			// changes changed though its times did not.
-			if step.list, err = markChangedHistories(write, index, results, step.list); err != nil {
-				return err
-			}
-		}
 		if step.list == "" {
 			continue
 		}
@@ -285,10 +289,18 @@ func writeMirrorHistoriesTx(tx *sql.Tx, rootID int64, write []mirrorHistoryRow, 
 		if err != nil {
 			return fmt.Errorf("%s: %w", step.what, err)
 		}
-		for _, id := range changed {
-			results[index[id]].Changed = true
-		}
+		mark(changed)
 	}
+	// The times statement advances the receipt of an issue whose changes
+	// changed though its times did not.
+	if histories, err = markChangedHistories(write, index, results, histories); err != nil {
+		return err
+	}
+	changed, err := writeMirrorHistoryTimesTx(tx, rootID, histories, states)
+	if err != nil {
+		return fmt.Errorf("write history times: %w", err)
+	}
+	mark(changed)
 	return nil
 }
 

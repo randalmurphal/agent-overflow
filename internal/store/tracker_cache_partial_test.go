@@ -28,7 +28,7 @@ func TestReplaceMirrorHistoriesReportsWhatCommittedBeforeAFailure(t *testing.T) 
 		hs = append(hs, longHistory(fmt.Sprint(10001+i), per, 0))
 	}
 	failMirrorWrite(t, s, "INSERT", "tracker_cache_changes", "NEW.issue_id = '10005'")
-	results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, hs), MirrorCatalog{}, mirrorReadAt(0))
+	results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, hs), MirrorCatalog{}, nextMirrorRead(s, root))
 	if err == nil || len(results) != 5 {
 		t.Fatalf("results %+v, %v; want the failure with the five outcomes", results, err)
 	}

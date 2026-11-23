@@ -217,9 +217,9 @@ type mirrorTicketMove struct {
 var mirrorTicketMoveSQL = struct{ full, reads string }{mirrorTicketMoveOf(true), mirrorTicketMoveOf(false)}
 
 func mirrorTicketMoveOf(full bool) string {
-	since, finalFor := mirrorStatusWriteSQL("(h.value ->> 'x')", "(h.value ->> 's')", "(h.value ->> 'v')", "(h.value ->> 't')")
+	since, finalFor, statusRead := mirrorStatusWriteSQL("(h.value ->> 'x')", "(h.value ->> 's')", "(h.value ->> 'v')", "(h.value ->> 't')", "?3")
 	i := "tracker_cache_issues."
-	columns, versions := `(read_at, body_read_at, body_wall, body_digest, status_since, status_final_for`, ``
+	columns, versions := `(read_at, body_read_at, body_wall, body_digest, status_since, status_final_for, status_read_at`, ``
 	if full {
 		columns += `, body_updated_at, body_opened_at`
 		versions = `,
@@ -231,7 +231,7 @@ func mirrorTicketMoveOf(full bool) string {
 	         iif(h.value ->> 'b', ?3, ` + i + `body_read_at),
 	         iif(h.value ->> 'b', ?4, ` + i + `body_wall),
 	         iif(h.value ->> 'b', unhex(h.value ->> 'd'), ` + i + `body_digest),
-	         ` + since + `, ` + finalFor + versions + `)`
+	         ` + since + `, ` + finalFor + `, ` + statusRead + versions + `)`
 	return `WITH h AS MATERIALIZED (SELECT value FROM json_each(?2))
 	UPDATE tracker_cache_issues SET ` + columns + ` = ` + after + `
 	FROM h
@@ -424,13 +424,6 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 			if t.Status != nil && !st.refused {
 				var r mirrorStatusResult
 				r, m.S = mirrorStatusSince(*t.Status)
-				// A body superseded is of a read older than the one whose body
-				// the record holds, which brought its own evidence: a
-				// provisional result of the older read would replace that
-				// read's, so it gives none. A final one still decides.
-				if r == mirrorStatusProvisional && w.Body == MirrorBodySuperseded {
-					r, m.S = 0, 0
-				}
 				m.X, m.V, m.T = int(r), t.Card.UpdatedAt, t.Status.Status
 			}
 			moves = append(moves, m)

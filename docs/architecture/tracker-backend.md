@@ -553,7 +553,25 @@ card's status no more than the settle margin before the card's update,
 and unknown otherwise, since an older change may be a stay the issue
 left and came back to since. The result is written only for the version
 it was read for; a final result decides the version
-(`status_final_for`), and a provisional one never replaces it. A card
+(`status_final_for`), and a provisional one never replaces it. The one
+writer orders the evidence by the reads that brought it
+(`mirrorStatusWriteSQL`), whichever path brought it (a ticket's read, a
+history read in a batch or staged, and whether a body is held). A card
+write that moves the version or the status sets a floor at its own read
+(`status_floor_at`): evidence from a read that began before it, final or
+provisional, may be of a stay the issue left and came back to within one
+update time, so it gives no result, and the issue is due a history read
+that begins after the write. A provisional result enters only from a read
+no older than the one behind the stored provisional result
+(`status_read_at`), and a later read of the same time moves that order
+alone, which is not told as a change. A final result is ordered by the
+floor alone: a history read that began before a ticket's provisional read
+but answered after the settle margin still decides, since the history
+leaves the issue due nothing more. The service serializes a connection's
+history reads (its history lock); ticket reads run beside them, so the
+order is kept in the record, not by the caller. A history read is told as
+a change only when its changes or the shown status time or its finality
+changed. A card
 read that finds the same status at a newer update keeps the time it
 showed, no longer final, so an issue that left its status and came back
 between two card reads shows the earlier stay's time until a read of the

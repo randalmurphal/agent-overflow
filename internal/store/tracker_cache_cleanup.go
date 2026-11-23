@@ -321,15 +321,18 @@ var mirrorSweepCandidatesSQL = `SELECT i.issue_id,
 // mirrorSweepSQL are the statements of a sweep page's partial removal of
 // an issue, each of ?1 root, ?2 issue and ?3 the rows to delete, the
 // first ?3 by key. Removing changes resets the issue's history times and
-// status time, and moves its receipt, so a history read listed before it
+// status time with the read orders of its evidence (mirrorStatusWriteSQL),
+// and moves its receipt, so a history read listed before it
 // is superseded rather than written over the removal, and an issue kept
 // again has its history read again and never shows it in part. Removing
 // sprints sets sprint_set to mirrorSprintSetPartial, so the next write
 // that admits the issue's card replaces its sprints whatever it names.
 var mirrorSweepSQL = struct{ resetHistory, changes, partialSprints, sprints string }{
 	resetHistory: `UPDATE tracker_cache_issues SET history_from = 0, history_for = 0, history_answered_at = 0, history_wait = 0,
-		status_since = 0, status_final_for = 0, history_receipt = history_receipt + 1 WHERE root_id = ?1 AND issue_id = ?2
-		AND (history_from, history_for, history_answered_at, history_wait, status_since, status_final_for) IS NOT (0, 0, 0, 0, 0, 0)`,
+		status_since = 0, status_final_for = 0, status_floor_at = 0, status_read_at = 0, history_receipt = history_receipt + 1
+		WHERE root_id = ?1 AND issue_id = ?2
+		AND (history_from, history_for, history_answered_at, history_wait, status_since, status_final_for, status_floor_at, status_read_at)
+		    IS NOT (0, 0, 0, 0, 0, 0, 0, 0)`,
 	changes: `DELETE FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2
 		AND (gen, kind, seq) <= (SELECT gen, kind, seq FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2
 		                          ORDER BY gen, kind, seq LIMIT 1 OFFSET ?3 - 1)`,

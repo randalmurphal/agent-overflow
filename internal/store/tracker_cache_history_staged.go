@@ -40,12 +40,14 @@ var (
 	// mirrorHistorySwitchSQL makes generation ?3, complete from ?4, read
 	// for update time ?5 and boards revision ?6, answered at ?7 with a wait
 	// of ?8, the issue's history, with the status result ?10 giving ?11 it
-	// gives the card in status ?12 (mirrorStatusWriteSQL), when the issue's
-	// receipt is still ?9, and advances the receipt.
+	// gives the card in status ?12, from the read that began at ?13
+	// (mirrorStatusWriteSQL), when the issue's receipt is still ?9, and
+	// advances the receipt.
 	mirrorHistorySwitchSQL = func() string {
-		since, finalFor := mirrorStatusWriteSQL("?10", "?11", "?5", "?12")
+		since, finalFor, read := mirrorStatusWriteSQL("?10", "?11", "?5", "?12", "?13")
 		return `UPDATE tracker_cache_issues SET history_gen = ?3, history_from = ?4, history_for = ?5, history_boards_rev = ?6,
-		history_answered_at = ?7, history_wait = ?8, history_receipt = ?9 + 1, status_since = ` + since + `, status_final_for = ` + finalFor + `
+		history_answered_at = ?7, history_wait = ?8, history_receipt = ?9 + 1, status_since = ` + since + `, status_final_for = ` + finalFor + `,
+		status_read_at = ` + read + `
 		WHERE root_id = ?1 AND issue_id = ?2 AND history_receipt = ?9`
 	}()
 )
@@ -110,8 +112,12 @@ func (s *Store) replaceStagedHistory(rootID, sweep int64, in mirrorHistoryInput,
 		// Written between the admission and the mark: the mark is cleared.
 		return s.purgeMirrorHistoryGens(rootID, in.h.IssueID, st.gen, noMirrorPause)
 	}
+	// Changed while the write runs: a failure may leave it in part.
 	result.Changed = true
-	err = s.writeStagedHistory(rootID, in, st, action)
+	changed, err := s.writeStagedHistory(rootID, in, st, action)
+	if err == nil {
+		result.Changed = changed
+	}
 	if !errors.Is(err, errStaleReceipt) {
 		return err
 	}
@@ -124,7 +130,8 @@ func (s *Store) replaceStagedHistory(rootID, sweep int64, in mirrorHistoryInput,
 // writeIdenticalHistory writes in, a history whose changes and times the
 // issue's stored history holds, as a batch write writes it
 // (mirrorHistoryTimesSQL): the status result it gives the card, and the
-// receipt advanced, only when that result differs from the stored one. It
+// receipt advanced, only when that result or its order differs from the
+// stored one, and Changed only when the shown status does. It
 // reads the issue's state again in its transaction, so a write admitted
 // since the probe (which moved the receipt) supersedes it.
 func (s *Store) writeIdenticalHistory(rootID, sweep int64, in mirrorHistoryInput, result *MirrorHistoryResult, action string) error {
@@ -150,7 +157,7 @@ func (s *Store) writeIdenticalHistory(rootID, sweep int64, in mirrorHistoryInput
 		if err != nil {
 			return err
 		}
-		changed, err := queryIDs(tx, mirrorHistoryTimesSQL, rootID, row)
+		changed, err := writeMirrorHistoryTimesTx(tx, rootID, row, states)
 		if err != nil {
 			return fmt.Errorf("write history times: %w", err)
 		}
@@ -160,23 +167,25 @@ func (s *Store) writeIdenticalHistory(rootID, sweep int64, in mirrorHistoryInput
 }
 
 // writeStagedHistory writes in over the issue's stored history st, in
-// place or staged; either fails with errStaleReceipt when the issue's
-// receipt moved since st was read: in place before it writes anything, a
-// staged one at the switch, leaving its staged changes for the caller to
-// delete.
-func (s *Store) writeStagedHistory(rootID int64, in mirrorHistoryInput, st mirrorHistoryState, action string) error {
+// place or staged, and reports whether what a view shows changed: a
+// staged history replaces the changes, and one kept in place changes them
+// only when it adds some. Either fails with errStaleReceipt when the
+// issue's receipt moved since st was read: in place before it writes
+// anything, a staged one at the switch, leaving its staged changes for
+// the caller to delete.
+func (s *Store) writeStagedHistory(rootID int64, in mirrorHistoryInput, st mirrorHistoryState, action string) (changed bool, err error) {
 	if st.storedFor == 0 {
 		// No history is stored, so none of it can be kept in place.
-		return s.stageMirrorHistory(rootID, in, st, action)
+		return true, s.stageMirrorHistory(rootID, in, st, action)
 	}
 	probe, err := s.probeMirrorHistory(rootID, in, st.gen)
 	if err != nil {
-		return fmt.Errorf("%s: %w", action, err)
+		return true, fmt.Errorf("%s: %w", action, err)
 	}
 	if !probe.differs && !probe.extra && len(probe.missing) <= clearMirrorChunk {
 		return s.finishMirrorHistoryInPlace(rootID, in, st, probe.missing, action)
 	}
-	return s.stageMirrorHistory(rootID, in, st, action)
+	return true, s.stageMirrorHistory(rootID, in, st, action)
 }
 
 // stagedHistoryState reads the issue's stored history and records in
@@ -253,25 +262,29 @@ func (s *Store) probeMirrorHistory(rootID int64, in mirrorHistoryInput, gen int6
 // writes is encoded before. It runs after the admission that followed the
 // staging mark, with the cleanup's lock, so no history write moved the
 // receipt since; a card write may have (mirrorStatusKeptBy), and the
-// transaction then fails with errStaleReceipt before it writes.
-func (s *Store) finishMirrorHistoryInPlace(rootID int64, in mirrorHistoryInput, st mirrorHistoryState, missing []mirrorChangeRow, action string) error {
+// transaction then fails with errStaleReceipt before it writes. It
+// reports whether it added changes or changed the shown status, read in
+// its transaction (writeMirrorHistoryTimesTx).
+func (s *Store) finishMirrorHistoryInPlace(rootID int64, in mirrorHistoryInput, st mirrorHistoryState, missing []mirrorChangeRow,
+	action string) (changed bool, err error) {
 	rows, err := encodeMirrorJSON(missing)
 	if err != nil {
-		return err
+		return true, err
 	}
 	row := st.rowOf(in, st.gen)
 	// Called only for a history that differs from the stored one.
 	row.Changes = true
 	listed, err := encodeMirrorJSON([]mirrorHistoryRow{row})
 	if err != nil {
-		return err
+		return true, err
 	}
-	return s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
-		var receipt int64
-		if err := tx.QueryRow(`SELECT history_receipt FROM tracker_cache_issues WHERE root_id = ?1 AND issue_id = ?2`, rootID, in.h.IssueID).Scan(&receipt); err != nil {
+	err = s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
+		now := st
+		if err := tx.QueryRow(`SELECT history_receipt, updated_at, status_since, status_final_for FROM tracker_cache_issues
+			WHERE root_id = ?1 AND issue_id = ?2`, rootID, in.h.IssueID).Scan(&now.receipt, &now.updatedAt, &now.since, &now.finalFor); err != nil {
 			return fmt.Errorf("read the receipt: %w", err)
 		}
-		if receipt != st.receipt {
+		if now.receipt != st.receipt {
 			return errStaleReceipt
 		}
 		if len(missing) > 0 {
@@ -279,14 +292,20 @@ func (s *Store) finishMirrorHistoryInPlace(rootID int64, in mirrorHistoryInput, 
 				return fmt.Errorf("add changes: %w", err)
 			}
 		}
-		if _, err := tx.Exec(mirrorHistoryTimesSQL, rootID, listed); err != nil {
+		shown, err := writeMirrorHistoryTimesTx(tx, rootID, listed, map[string]mirrorHistoryState{in.h.IssueID: now})
+		if err != nil {
 			return fmt.Errorf("write history times: %w", err)
 		}
+		changed = len(missing) > 0 || len(shown) > 0
 		if _, err := tx.Exec(`UPDATE tracker_cache_issues SET history_dirty = 0 WHERE root_id = ?1 AND issue_id = ?2`, rootID, in.h.IssueID); err != nil {
 			return fmt.Errorf("clear the staging mark: %w", err)
 		}
 		return nil
 	})
+	if err != nil {
+		return true, err
+	}
+	return changed, nil
 }
 
 // stageMirrorHistory writes in's changes to generation st.gen+1 a chunk
@@ -314,7 +333,7 @@ func (s *Store) stageMirrorHistory(rootID int64, in mirrorHistoryInput, st mirro
 	}
 	err := s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
 		res, err := tx.Exec(mirrorHistorySwitchSQL, rootID, in.h.IssueID, next, in.h.CompleteFrom, in.h.For, in.h.BoardsRev,
-			in.h.AnsweredAt, in.h.Wait, in.h.Receipt, int(status), since, st.status)
+			in.h.AnsweredAt, in.h.Wait, in.h.Receipt, int(status), since, st.status, in.row.Read)
 		if err != nil {
 			return fmt.Errorf("make the staged history the issue's: %w", err)
 		}
