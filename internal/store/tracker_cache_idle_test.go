@@ -83,7 +83,7 @@ func TestIdleTickStatements(t *testing.T) {
 				_, err := s.UpsertMirrorCards(root, sweep, cards, MirrorCatalog{}, mirrorReadAt(at))
 				return err
 			})
-		}, 10, map[string]int{"tracker_cache_issues": n}, nil}, idleTick{fmt.Sprintf("a Linear round of %d tickets", n), func() {
+		}, 8, map[string]int{"tracker_cache_issues": n}, nil}, idleTick{fmt.Sprintf("a Linear round of %d tickets", n), func() {
 			call("GetMirrorSync", syncState(""))
 			call("StoreMirrorDetails", func() error {
 				_, err := s.StoreMirrorDetails(root, sweep, docs(n), mirrorReadAt(0), mirrorReadAt(at))
@@ -129,7 +129,7 @@ func TestIdleTickStatements(t *testing.T) {
 				return err
 			})
 			call("RecordMirrorSyncAttempt", record)
-		}, 12, map[string]int{"tracker_cache_board_issues": 1, "tracker_cache_issues": 1, "tracker_cache_sync": 2}, nil},
+		}, 10, map[string]int{"tracker_cache_board_issues": 1, "tracker_cache_issues": 1, "tracker_cache_sync": 2}, nil},
 	}, rounds...) {
 		if tick.before != nil {
 			tick.before()

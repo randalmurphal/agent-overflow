@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -48,13 +49,13 @@ func (l *loopStore) ListMirrorOffBoardLinkedIssues(root int64, after string, pol
 	return l.Store.ListMirrorOffBoardLinkedIssues(root, after, polled)
 }
 
-func (l *loopStore) FinishMirrorCleanup(pause store.ChunkPause) error {
+func (l *loopStore) FinishMirrorCleanup(ctx context.Context, pause store.ChunkPause) error {
 	var err error
 	l.count(func() { l.cleanups++; err = l.cleanupErr })
 	if err != nil {
 		return err
 	}
-	return l.Store.FinishMirrorCleanup(pause)
+	return l.Store.FinishMirrorCleanup(ctx, pause)
 }
 
 // clientConnected is the service's ClientConnected, counting its asks.

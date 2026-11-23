@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -107,7 +108,7 @@ func TestMirrorKeepsIssuesLinkedToOwnedThreads(t *testing.T) {
 	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 7)}, MirrorCatalog{}, mirrorReadAt(1)); err != nil || !reflect.DeepEqual(changes, MirrorChanges{}) {
 		t.Fatalf("same card again = %+v, %v", changes, err)
 	}
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues`, "10001")

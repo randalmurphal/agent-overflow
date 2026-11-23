@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -64,7 +65,7 @@ func TestDeleteTrackerConnectionDetachesItsMirror(t *testing.T) {
 	if _, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", MirrorSyncAttempt{ReadAt: mirrorReadAt(1)})); !errors.Is(err, ErrTrackerCacheGone) {
 		t.Fatalf("write after the removal: %v", err)
 	}
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if counts := countMirrorRows(t, s.db); mirrorRowTotal(counts) != 0 {
@@ -102,7 +103,7 @@ func TestFinishMirrorCleanupResumesAfterAFailure(t *testing.T) {
 			t.Error("the cleanup lock is free during a pause")
 		}
 	}
-	if err := s.FinishMirrorCleanup(pause); err == nil || !strings.Contains(err.Error(), "drain refused") {
+	if err := s.FinishMirrorCleanup(context.Background(), pause); err == nil || !strings.Contains(err.Error(), "drain refused") {
 		t.Fatalf("cleanup with a drain refused: %v", err)
 	}
 	assertRows(t, s.db, `SELECT id FROM tracker_cache_roots`, fmt.Sprint(root))
@@ -110,7 +111,7 @@ func TestFinishMirrorCleanupResumesAfterAFailure(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
 	for i := range errs {
-		wg.Go(func() { errs[i] = s.FinishMirrorCleanup(pause) })
+		wg.Go(func() { errs[i] = s.FinishMirrorCleanup(context.Background(), pause) })
 	}
 	wg.Wait()
 	if err := errors.Join(errs...); err != nil {
@@ -193,7 +194,7 @@ func TestUnlistedBoardIsRetiredThenDrained(t *testing.T) {
 		}
 	}
 
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if most, _ := recorder.mostDeletedInATransaction(); most > clearMirrorChunk {
@@ -224,7 +225,7 @@ func TestLateStructureCannotRestoreAnUnlistedBoard(t *testing.T) {
 		if _, err := s.WriteMirrorRows(root, currentPage(s, root, webPage("10", webRow("10001", 5, "a")))); !errors.Is(err, ErrTrackerCacheUnlisted) {
 			t.Fatalf("late rows, board %s: %v", stage, err)
 		}
-		if err := s.FinishMirrorCleanup(nil); err != nil {
+		if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -246,7 +247,7 @@ func TestLateStructureCannotRestoreAnUnlistedBoard(t *testing.T) {
 	if cards, err := s.ListMirrorCards(root, []string{"10001"}); err != nil || len(cards) != 0 {
 		t.Fatalf("cards of a board listed again before its drain = %+v, %v", cards, err)
 	}
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	mustReplaceStructure(t, s, root, captured, true)
@@ -292,7 +293,7 @@ func TestCleanupSweepsIssuesWhoseLinksGo(t *testing.T) {
 		t.Fatalf("cards after the links went = %d; want 10005 and 10006", len(got))
 	}
 	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues ORDER BY 1`, "10001,10002,10003,10004,10005,10006")
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues ORDER BY 1`, "10005,10006")
@@ -326,7 +327,7 @@ func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 	}
 	recorder := recordMirrorWrites(t, s)
 	pauses := 0
-	err := s.FinishMirrorCleanup(func() {
+	err := s.FinishMirrorCleanup(context.Background(), func() {
 		if pauses++; pauses != 2 {
 			return
 		}
@@ -366,7 +367,7 @@ func TestCleanupSweepPages(t *testing.T) {
 	linked := fmt.Sprintf("1%04d", mirrorSweepPage)
 	linkIssue(t, s, "linked", linked)
 	pauses := 0
-	if err := s.FinishMirrorCleanup(func() { pauses++ }); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), func() { pauses++ }); err != nil {
 		t.Fatal(err)
 	}
 	if pauses != 3 {
@@ -444,7 +445,7 @@ func TestEveryMirrorDeleteIsBounded(t *testing.T) {
 	}
 	check("worklog replace")
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID)
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	check("board drains and sweep")
@@ -453,7 +454,7 @@ func TestEveryMirrorDeleteIsBounded(t *testing.T) {
 	if _, err := s.DetachMirror(jira.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	check("root drain")

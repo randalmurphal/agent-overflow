@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"testing"
@@ -43,7 +44,7 @@ func (m *mirrorFixture) sweep(t *testing.T, threadID string) {
 	if _, err := m.st.ClearThreadTicket(threadID); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.st.FinishMirrorCleanup(nil); err != nil {
+	if err := m.st.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if after := m.sync("").Sweep; after == before {

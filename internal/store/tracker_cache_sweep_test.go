@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -52,7 +53,7 @@ func TestMirrorSweepFencesReadsOutsideABoard(t *testing.T) {
 		if _, err := s.ClearThreadTicket("linked"); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.FinishMirrorCleanup(nil); err != nil {
+		if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 			t.Fatal(err)
 		}
 		if got := currentSweep(s, root); got != read+1 {
@@ -101,7 +102,7 @@ func TestMirrorSweepThatDeletesNothingLeavesTheSweep(t *testing.T) {
 		t.Fatal(err)
 	}
 	pauses := 0
-	if err := s.FinishMirrorCleanup(func() {
+	if err := s.FinishMirrorCleanup(context.Background(), func() {
 		if pauses++; pauses == 1 {
 			linkIssue(t, s, "relinked", "10001")
 		}

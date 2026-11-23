@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"testing"
 )
@@ -142,8 +143,8 @@ func TestMirrorUnexplainedReferencesStopMakingTheStructureDue(t *testing.T) {
 	assertRows(t, s.db, mirrorMarksSQL, "1:77,2:acc-gone,3:99")
 	// The page is the one read at 4 again: it moves its row's and its
 	// card's read time, one statement each.
-	if changes, statements := writeDuePage(t, s, root, 6, odd); changes.StructureDue || statements != 9 {
-		t.Fatalf("a page naming marked references = %+v in %d statements; want not due in 9", changes, statements)
+	if changes, statements := writeDuePage(t, s, root, 6, odd); changes.StructureDue || statements != 7 {
+		t.Fatalf("a page naming marked references = %+v in %d statements; want not due in 7", changes, statements)
 	}
 	var many []MirrorRow
 	for r := range 6 {
@@ -184,7 +185,7 @@ func TestMirrorUnexplainedReferencesStopMakingTheStructureDue(t *testing.T) {
 		t.Fatalf("a sprint supplied and dropped again = %+v; want due", changes)
 	}
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "11", "12")
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_board_unexplained`, "0")

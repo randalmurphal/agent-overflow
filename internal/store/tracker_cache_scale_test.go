@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"maps"
 	"os"
@@ -443,7 +444,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	out["Jira round of 100, 10 changed"] = measureScale(t, rec, roundInputs(10, 1_000_000), jira)
 	out["Linear round of 100, idle"] = measureScale(t, rec, roundInputs(0, 0), linear)
 	out["Linear round of 100, 10 changed"] = measureScale(t, rec, roundInputs(10, 2_000_000), linear)
-	out["cleanup pass, nothing pending"] = measureScale(t, rec, nil, func(int) error { return s.FinishMirrorCleanup(nil) })
+	out["cleanup pass, nothing pending"] = measureScale(t, rec, nil, func(int) error { return s.FinishMirrorCleanup(context.Background(), nil) })
 	// A complete listing that leaves out a quarter of the board, whose rows
 	// a delta page reads back before each run (untimed), so a listing has
 	// named them: last, as its issues stay unkept.

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -144,7 +145,7 @@ func TestMirrorReadsTakeAHistoryReadSlot(t *testing.T) {
 		read{"CountMirrorSections", func() error { _, err := s.CountMirrorSections(root, "10"); return err }},
 		read{"GetMirrorBoard", func() error { _, _, err := s.GetMirrorBoard(root, "10"); return err }},
 		read{"ListMirrorOffBoardLinkedIssues", func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); return err }},
-		read{"FinishMirrorCleanup", func() error { return s.FinishMirrorCleanup(nil) }},
+		read{"FinishMirrorCleanup", func() error { return s.FinishMirrorCleanup(context.Background(), nil) }},
 	)
 	done := make([]chan error, len(reads))
 	for i, r := range reads {

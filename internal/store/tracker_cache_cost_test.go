@@ -10,11 +10,23 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // mirrorStatements are the texts of every cached statement naming a
 // mirror table that the package's tests have run.
 var mirrorStatements sync.Map
+
+// vmSteps holds, while countMirrorVMSteps counts, the VM steps the cached
+// statements ran, and each statement's step counter at its last run, so a
+// run's steps are the counter's growth since.
+var vmSteps struct {
+	mu       sync.Mutex
+	counting bool
+	total    int
+	last     map[uintptr]int
+}
 
 func init() {
 	checked := cachedStmtRan
@@ -23,11 +35,51 @@ func init() {
 			if _, own := statementCallSite(); own {
 				mirrorStatements.Store(query, true)
 			}
+			recordVMSteps(stmt)
 		}
 		if checked != nil {
 			checked(stmt, query)
 		}
 	}
+}
+
+// recordVMSteps adds the steps stmt ran since its last run to the count,
+// while counting. A counter that went back (statementVMSteps resets it)
+// counts from zero.
+func recordVMSteps(stmt driver.Stmt) {
+	tls, pstmt, err := sqliteStmtHandles(stmt)
+	if err != nil || pstmt == 0 {
+		return
+	}
+	now := int(sqlite3.Xsqlite3_stmt_status(tls, pstmt, sqlite3.SQLITE_STMTSTATUS_VM_STEP, 0))
+	vmSteps.mu.Lock()
+	defer vmSteps.mu.Unlock()
+	if vmSteps.last == nil {
+		vmSteps.last = map[uintptr]int{}
+	}
+	last := vmSteps.last[pstmt]
+	if now < last {
+		last = 0
+	}
+	if vmSteps.counting {
+		vmSteps.total += now - last
+	}
+	vmSteps.last[pstmt] = now
+}
+
+// countMirrorVMSteps runs fn and returns the VM steps of the cached mirror
+// statements it ran. Like countMirrorStatements its callers are not
+// parallel.
+func countMirrorVMSteps(t *testing.T, fn func()) int {
+	t.Helper()
+	vmSteps.mu.Lock()
+	vmSteps.counting, vmSteps.total = true, 0
+	vmSteps.mu.Unlock()
+	fn()
+	vmSteps.mu.Lock()
+	defer vmSteps.mu.Unlock()
+	vmSteps.counting = false
+	return vmSteps.total
 }
 
 // countMirrorStatements runs fn and returns the statements it ran. The
@@ -128,13 +180,13 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		t.Fatal(err)
 	}
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10")
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.DetachMirror(jira.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.GetOrCreateMirrorRoot(jira.ID); err != nil {

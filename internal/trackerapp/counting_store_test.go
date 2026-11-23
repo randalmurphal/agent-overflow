@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"context"
 	"maps"
 	"sync"
 	"time"
@@ -61,9 +62,9 @@ func (c *countingStore) DetachMirror(id string) (bool, error) {
 	return c.Store.DetachMirror(id)
 }
 
-func (c *countingStore) FinishMirrorCleanup(pause store.ChunkPause) error {
+func (c *countingStore) FinishMirrorCleanup(ctx context.Context, pause store.ChunkPause) error {
 	c.count("FinishMirrorCleanup")
-	return c.Store.FinishMirrorCleanup(pause)
+	return c.Store.FinishMirrorCleanup(ctx, pause)
 }
 
 func (c *countingStore) GetMirrorSync(root int64, board string, now int64) (store.MirrorSync, bool, error) {

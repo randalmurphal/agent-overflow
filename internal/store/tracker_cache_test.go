@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -41,7 +42,7 @@ func TestGetOrCreateMirrorRoot(t *testing.T) {
 	if detached, err := s.DetachMirror(jira.ID); err != nil || !detached {
 		t.Fatalf("detach = %v, %v", detached, err)
 	}
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if again, _, err := s.GetOrCreateMirrorRoot(jira.ID); err != nil || again <= root {
@@ -96,7 +97,7 @@ func TestDetachMirrorThenCleanupDrainsInBatches(t *testing.T) {
 	}
 
 	pauses := 0
-	if err := s.FinishMirrorCleanup(func() { pauses++ }); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), func() { pauses++ }); err != nil {
 		t.Fatal(err)
 	}
 	if most, total := recorder.mostDeletedInATransaction(); most > clearMirrorChunk || total != mirrorRowTotal(before) {
@@ -284,7 +285,7 @@ func TestMirrorWritesAfterADetachFailWithGone(t *testing.T) {
 	if _, err := s.DetachMirror(jira.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	for name, write := range writers {

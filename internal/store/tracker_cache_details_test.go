@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -386,7 +387,7 @@ func TestConfirmMirrorDetailRefusesADocumentFromBeforeASweep(t *testing.T) {
 	if _, err := s.ClearThreadTicket("linked"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	keep("relinked")

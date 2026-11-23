@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"testing"
@@ -135,7 +136,7 @@ func TestMirrorStagingStoppedBetweenChunks(t *testing.T) {
 	}{
 		{"before the switch", `BEFORE INSERT ON tracker_cache_changes WHEN NEW.gen = 3 AND NEW.seq = 3000`,
 			"10 answered 6010 since 10 other 3000 dirty 1",
-			func(s *Store, _ int64) error { return s.FinishMirrorCleanup(nil) }},
+			func(s *Store, _ int64) error { return s.FinishMirrorCleanup(context.Background(), nil) }},
 		{"after the switch", `BEFORE DELETE ON tracker_cache_changes WHEN OLD.gen = 1 AND OLD.seq = 2000`,
 			"10 answered 6010 since 10 other 3000 dirty 1",
 			func(s *Store, root int64) error {

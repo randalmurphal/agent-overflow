@@ -105,6 +105,12 @@ type Service struct {
 	steady     func() time.Time
 	steadyFrom int64
 	life       context.Context
+	// halting ends at Stop (halt) or with life: the mirror cleanup runs
+	// under it, so Stop ends a cleanup in flight before its next
+	// transaction rather than waiting for all of it. A run's calls end
+	// with life alone: one that Stop meets answers what it did.
+	halting context.Context
+	endHalt context.CancelFunc
 	// digestKey keys the token digests the credential sources keep. It is
 	// random per service and never leaves it.
 	digestKey []byte
@@ -193,9 +199,10 @@ func New(deps Deps) (*Service, error) {
 	// time.Since reads the monotonic clock of mono, which deps.Now's value
 	// may not carry.
 	mono, wall := time.Now(), deps.Now()
+	halting, endHalt := context.WithCancel(deps.Life)
 	s := &Service{
 		store: deps.Store, changed: deps.Changed, credentialsDir: deps.CredentialsDir,
-		origin: deps.Origin, version: deps.Version, now: deps.Now, life: deps.Life,
+		origin: deps.Origin, version: deps.Version, now: deps.Now, life: deps.Life, halting: halting, endHalt: endHalt,
 		steady: func() time.Time { return wall.Add(time.Since(mono)) }, steadyFrom: wall.UnixMilli(),
 		digestKey: key,
 		clients:   map[string]*clients{}, problems: map[string]Failure{},
@@ -234,6 +241,7 @@ func (s *Service) halt() map[string]*clients {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stopped = true
+	s.endHalt()
 	open := s.clients
 	s.clients = map[string]*clients{}
 	clear(s.problems)

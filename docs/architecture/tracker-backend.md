@@ -280,8 +280,10 @@ to the computer and are rows in `tracker_connections`.
 ## Tables
 
 The tracker tables are created by migration v162, frozen, v163, which
-adds `tracker_cache_open_tickets`, and v164, which adds
-`tracker_cache_read_leases`; a later tracker table is a later migration.
+adds `tracker_cache_open_tickets`, v164, which adds
+`tracker_cache_read_leases`, and v165, which adds
+`tracker_cache_issues.sprint_set`; a later tracker table or column is a
+later migration.
 
 Durable records, restored and kept like other application records:
 
@@ -341,7 +343,10 @@ For each board some app project lists:
   an issue carried through many sprints still names
   (`jiraprovider.Options.SprintsFrom`), and the store takes any number
   of memberships, and of users and statuses in a write's catalog, a
-  fixed number to a statement;
+  fixed number to a statement. A card's sprints are compared as one
+  digest (`sprint_set`), so a card read again naming the same sprints
+  reads and writes no membership, and a changed one reads its stored
+  memberships once and writes only the difference;
 - every status, sprint, estimate and assignee change the tracker recorded
   for those issues. What a sprint started with is rebuilt from changes made
   before it started, so changes are not cut at the window; they go when
@@ -386,7 +391,13 @@ An issue stays while it is on a listed board, a thread this computer owns
 links it on that connection's site, or its ticket is open
 (`mirrorIssueKept`, the one rule every read and write uses). It is absent
 to every read at once when its last keep goes; `FinishMirrorCleanup`
-deletes it, its changes first, in bounded transactions. No caller prunes.
+deletes it, its changes and sprints first, in bounded transactions: an
+issue with more than a transaction holds loses a chunk of them a
+transaction, so every sweep transaction deletes a row or moves past an
+issue, and one that does neither fails. An issue kept again midway has
+its history read again and its sprints replaced by its next card write.
+`trackerapp.Service.Stop` ends a cleanup in flight before its next
+transaction; the next cleanup finishes it. No caller prunes.
 
 An open ticket keeps its issue through one row of
 `tracker_cache_open_tickets` per ticket pump, whatever brought the person
@@ -735,13 +746,17 @@ answer, the ones a rate limit holds due when it lifts. A failure is told
 to each ticket once and cleared by its next success.
 
 Idle ticks write only read times, and send no event. N is the number of a
-connection's shown tickets:
+connection's shown tickets. A card write also stamps each user and status
+its cards name with its read, one statement per kind and one row per
+entry whether or not it changed (`TestChangedRoundStatements`), since the
+stamp orders the entry's later reads; the table is of cards that name
+none:
 
 | Tick that finds nothing changed | Requests | Store calls | Statements | Rows written |
 |---|---|---|---|---|
 | Shown board | 1 | 2 | 3 | 1 |
-| Shown board, the delta's overlap redelivering one identical row | 1 | 3 | 12 | 4 |
-| Jira round of N tickets (N up to 100) | 1 | 3 | 10 | N |
+| Shown board, the delta's overlap redelivering one identical row | 1 | 3 | 10 | 4 |
+| Jira round of N tickets (N up to 100) | 1 | 3 | 8 | N |
 | Linear round of N tickets | one per 10 tickets, plus each read a ticket's states, history or labels need past their first page | 2 | 4 | N |
 
 A Jira round checks every ticket with one cards read, decodes no stored
@@ -757,8 +772,8 @@ new document is owed (one cards request and one card write).
 
 | Round of 50 tickets, 10 changed | Requests | Store calls | Statements | Rows written |
 |---|---|---|---|---|
-| Jira | 21 | 6 | 24 | 50 card rows (40 of them read times), 10 documents |
-| Linear | 6 | 6 | 25 | 10 card rows, 50 document rows (40 of them read times) |
+| Jira | 21 | 6 | 25 | 50 card rows (40 of them read times), 10 documents, 4 users and 3 statuses (read times) |
+| Linear | 6 | 6 | 26 | 10 card rows, 50 document rows (40 of them read times), 4 users and 3 statuses (read times) |
 
 On Jira the 20 requests past the check are each changed issue and its
 comments; on Linear the one past the 5 details reads is the cards read

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -71,7 +72,7 @@ func TestAnOpenTicketKeepsItsIssue(t *testing.T) {
 	if cards := mustMirrorCards(t, s, root, "20001", "10001"); len(cards) != 1 || cards[0].IssueID != "10001" {
 		t.Fatalf("after the drops the mirror serves %+v; want the board's 10001 alone", cards)
 	}
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	assertRows(t, s.db, fmt.Sprintf(`SELECT issue_id FROM tracker_cache_issues WHERE root_id = %d`, root), "10001")

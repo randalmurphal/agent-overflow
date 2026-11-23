@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -58,7 +59,7 @@ func TestMirrorBoardLifetimeFencesItsReads(t *testing.T) {
 	refused("retired")
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "11", "12")
 	refused("listed again before its drain")
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	next := currentLifetime(s, root, "12")
@@ -77,7 +78,7 @@ func TestMirrorBoardLifetimeFencesItsReads(t *testing.T) {
 	// Unlisted and drained with no listing back, the board has no lifetime,
 	// and a lifetime of zero is refused as invalid.
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "11")
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_boards WHERE board_id = '12'`, "0")

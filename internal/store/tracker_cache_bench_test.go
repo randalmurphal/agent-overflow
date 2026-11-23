@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -185,11 +186,11 @@ func BenchmarkMirrorCountSections(b *testing.B) {
 func BenchmarkMirrorCleanupIdle(b *testing.B) {
 	b.Run("finish", func(b *testing.B) {
 		s, _ := openBenchMirror(b)
-		measureMirror(b, func(int) error { return s.FinishMirrorCleanup(nil) })
+		measureMirror(b, func(int) error { return s.FinishMirrorCleanup(context.Background(), nil) })
 	})
 	b.Run("sweep", func(b *testing.B) {
 		s, root := openBenchMirror(b)
-		measureMirror(b, func(int) error { return s.sweepMirrorRoot(root, func() {}) })
+		measureMirror(b, func(int) error { return s.sweepMirrorRoot(root, noMirrorPause) })
 	})
 }
 
@@ -260,7 +261,7 @@ func BenchmarkMirrorBoardLifetime(b *testing.B) {
 		if _, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, listing); err != nil {
 			return err
 		}
-		return s.FinishMirrorCleanup(nil)
+		return s.FinishMirrorCleanup(context.Background(), nil)
 	})
 }
 

@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -37,7 +38,7 @@ type MirrorStore interface {
 	GetOrCreateMirrorRoot(connectionID string) (int64, bool, error)
 	GetMirrorRoot(connectionID string) (int64, bool, error)
 	DetachMirror(connectionID string) (bool, error)
-	FinishMirrorCleanup(pause store.ChunkPause) error
+	FinishMirrorCleanup(ctx context.Context, pause store.ChunkPause) error
 	KeepMirrorTicket(rootID int64, issueID string, session, pump int64) error
 	DropMirrorTicket(session, pump int64) error
 	DropMirrorTicketsOfOtherSessions(session int64) (int64, error)

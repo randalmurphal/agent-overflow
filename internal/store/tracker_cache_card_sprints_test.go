@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"testing"
 )
@@ -82,88 +83,151 @@ func TestACardNamesAnyNumberOfSprints(t *testing.T) {
 	}
 }
 
-// A write whose cards name more memberships than one sprint statement
-// takes runs the sprint and mark statements a group of cards at a time
-// (mirrorSprintGroups), each group of at most mirrorSprintChunk
-// memberships or one card of more, and stores every membership: three
-// cards of 400 and one of 1,200 are three groups, two statements of each
-// statement kind more than one group, and replacing them all leaves
-// exactly the new lists.
-func TestCardSprintsAreWrittenInChunks(t *testing.T) {
-	if mirrorSprintChunk != 1000 {
-		t.Fatalf("the chunk is %d; the test's cards are sized for 1000", mirrorSprintChunk)
+// manySprintCards are n board cards of update at, each naming per sprints
+// from first on: issue i names first+i*10_000 onward.
+func manySprintCards(n, per int, at int64, first int) []MirrorCard {
+	out := make([]MirrorCard, n)
+	for i := range out {
+		out[i] = webCard(fmt.Sprint(20001+i), at, sprintsOf(first+i*10_000, per)...)
+	}
+	return out
+}
+
+// writeBoardCards writes cards as rows of board 10 read from at.
+func writeBoardCards(t *testing.T, s *Store, root int64, at int64, cards []MirrorCard) {
+	t.Helper()
+	page := MirrorRowPage{BoardID: "10", ReadAt: mirrorReadAt(at)}
+	for i, c := range cards {
+		page.Rows = append(page.Rows, MirrorRow{Card: c, OrderKey: fmt.Sprintf("a%04d", i)})
+	}
+	if _, err := s.WriteMirrorRowPage(root, currentPage(s, root, page), nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// totalSprints is how many memberships root holds.
+func totalSprints(t *testing.T, s *Store, root int64) int {
+	t.Helper()
+	var n int
+	if err := s.db.QueryRow(`SELECT count(*) FROM tracker_cache_issue_sprints WHERE root_id = ?`, root).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// 50 cards of 1,200 memberships each are written, replaced half by other
+// sprints, and then by none, in statements of at most mirrorSprintChunk
+// memberships added or clearMirrorChunk removed: 60,000 memberships are
+// added in 60 statements and removed in 120, a half replaced in at most
+// one removal per chunk of the 60,000 read and 30 additions, and each
+// write leaves exactly the lists the cards name.
+func TestManyMembershipsAreWrittenInBoundedStatements(t *testing.T) {
+	if mirrorSprintChunk != 1000 || clearMirrorChunk != 500 {
+		t.Fatalf("the chunks are %d and %d; the test is sized for 1000 and 500", mirrorSprintChunk, clearMirrorChunk)
 	}
 	s, _, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
-	ids := []string{"10001", "10002", "10003", "10004"}
-	sizes := []int{400, 400, 400, 1200}
-	var rows []MirrorRow
-	for i, id := range ids {
-		rows = append(rows, webRow(id, 1, fmt.Sprint("a", i)))
-	}
-	mustWriteRowPage(t, s, root, webPage("10", rows...), nil)
-	cards := func(at int64, first int) []MirrorCard {
-		out := make([]MirrorCard, len(ids))
-		for i, id := range ids {
-			out[i] = webCard(id, at, sprintsOf(first+i*10_000, sizes[i])...)
+	recorder := recordMirrorWrites(t, s)
+	check := func(what string, cards []MirrorCard, most, statements int, exact bool) {
+		t.Helper()
+		for _, c := range cards {
+			if got := storedSprints(t, s, root, c.IssueID); !slices.Equal(got, sortedSprints(c.Sprints)) {
+				t.Fatalf("%s: issue %s holds %d sprints; want %d", what, c.IssueID, len(got), len(c.Sprints))
+			}
 		}
-		return out
-	}
-	if groups := mirrorSprintGroups(rowsOf(cards(2, 100_000))); len(groups) != 3 || len(groups[0]) != 2 || len(groups[1]) != 1 || len(groups[2]) != 1 {
-		t.Fatalf("the groups %v", groupSizes(groups))
-	}
-	one := cards(2, 100_000)[:1]
-	baseline := countMirrorStatements(t, func() {
-		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), one, MirrorCatalog{}, mirrorReadAt(2)); err != nil {
-			t.Fatal(err)
+		gotMost, gotStatements := recorder.mostSprintWritesInAStatement()
+		t.Logf("%s: %d statements wrote memberships, at most %d each", what, gotStatements, gotMost)
+		if gotMost > most || gotStatements > statements || exact && gotStatements != statements {
+			t.Fatalf("%s: %d statements wrote memberships, at most %d each; want %d of at most %d", what, gotStatements, gotMost, statements, most)
 		}
-	})
-	all := cards(3, 200_000)
-	statements := countMirrorStatements(t, func() {
-		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), all, MirrorCatalog{}, mirrorReadAt(3)); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if statements != baseline+2*3 {
-		t.Fatalf("a write of three groups ran %d statements, one card's %d; want 6 more", statements, baseline)
+		recorder.reset()
 	}
-	for i, c := range all {
-		if got := storedSprints(t, s, root, c.IssueID); !slices.Equal(got, sortedSprints(c.Sprints)) {
-			t.Fatalf("issue %s holds %d sprints; want %d", c.IssueID, len(got), sizes[i])
-		}
+	cards := manySprintCards(50, 1200, 2, 100_000)
+	writeBoardCards(t, s, root, 2, cards)
+	check("the first write", cards, mirrorSprintChunk, 60, true)
+	// Each card keeps its last 600 sprints and names 600 others.
+	half := manySprintCards(50, 1200, 3, 100_600)
+	writeBoardCards(t, s, root, 3, half)
+	check("half replaced", half, mirrorSprintChunk, 120+30, false)
+	if n := totalSprints(t, s, root); n != 60_000 {
+		t.Fatalf("%d memberships after half replaced; want 60,000", n)
 	}
-	replaced := cards(4, 300_000)
-	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), replaced, MirrorCatalog{}, mirrorReadAt(4)); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range replaced {
-		if got := storedSprints(t, s, root, c.IssueID); !slices.Equal(got, sortedSprints(c.Sprints)) {
-			t.Fatalf("after the replace issue %s holds %d sprints; want %d", c.IssueID, len(got), len(c.Sprints))
-		}
-	}
-	total := 0
-	for _, c := range replaced {
-		total += len(storedSprints(t, s, root, c.IssueID))
-	}
-	if total != 2400 {
-		t.Fatalf("%d memberships; want 2400", total)
+	writeBoardCards(t, s, root, 4, manySprintCards(50, 0, 4, 0))
+	check("all removed", nil, clearMirrorChunk, 120, true)
+	if n := totalSprints(t, s, root); n != 0 {
+		t.Fatalf("%d memberships after every card named none", n)
 	}
 }
 
-func rowsOf(cards []MirrorCard) []mirrorCardRow {
-	out := make([]mirrorCardRow, len(cards))
-	for i, c := range cards {
-		out[i] = newMirrorCardRow(c)
+// A card read again naming the same sprints is compared by its digest
+// alone: its write reads and writes no membership and runs the statements
+// a card of one sprint runs, but for one more mark statement per
+// mirrorSprintChunk references (its sprints, status and assignee). Its VM
+// steps grow with its sprints only through the mark statement, which
+// probes each reference once, so linearly. Each size is measured on a
+// mirror of its own.
+func TestAnIdenticalMembershipSetIsOneComparison(t *testing.T) {
+	type cost struct{ statements, steps, sprintWrites int }
+	measure := func(per int) cost {
+		s, _, root := newMirror(t)
+		mustReplaceStructure(t, s, root, webStructure(), true)
+		cards := manySprintCards(1, per, 2, 100_000)
+		writeBoardCards(t, s, root, 2, cards)
+		recorder := recordMirrorWrites(t, s)
+		var c cost
+		c.steps = countMirrorVMSteps(t, func() {
+			c.statements = countMirrorStatements(t, func() {
+				changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), cards, MirrorCatalog{}, mirrorReadAt(3))
+				if err != nil || len(changes.Cards) != 0 {
+					t.Fatalf("an identical card read again: %+v, %v", changes, err)
+				}
+			})
+		})
+		c.sprintWrites = recorder.rowWrites()["tracker_cache_issue_sprints"]
+		if got := recorder.rowWrites(); !maps.Equal(got, map[string]int{"tracker_cache_issues": 1}) {
+			t.Fatalf("%d sprints: an identical card wrote %v; want its read time alone", per, got)
+		}
+		return c
 	}
-	return out
+	sizes := []int{1, 10, 100, 1000}
+	costs := make([]cost, len(sizes))
+	for i, per := range sizes {
+		costs[i] = measure(per)
+	}
+	t.Logf("identical redelivery of one card by its sprints %v: %+v", sizes, costs)
+	for i, c := range costs {
+		marks := (sizes[i]+2-1)/mirrorSprintChunk - (sizes[0]+2-1)/mirrorSprintChunk
+		if c.sprintWrites != 0 || c.statements != costs[0].statements+marks {
+			t.Fatalf("%d sprints: %+v; want no membership write and the %d statements of one sprint and %d more marks", sizes[i], c, costs[0].statements, marks)
+		}
+	}
+	// Linear: the steps from 100 to 1,000 sprints grow at most 12 times
+	// those from 10 to 100, where a comparison per membership pair grows
+	// 100 times.
+	if grow, base := costs[3].steps-costs[2].steps, costs[2].steps-costs[1].steps; base <= 0 || grow > 12*base {
+		t.Fatalf("steps %+v grow faster than the sprints", costs)
+	}
 }
 
-func groupSizes(groups [][]mirrorCardRow) []int {
-	out := make([]int, len(groups))
-	for i, g := range groups {
-		out[i] = len(g)
+// The digest is canonical: the order a card names its sprints in does not
+// change it, any other set does, and no set's digest is the sweep's mark.
+func TestTheSprintDigestIsTheSet(t *testing.T) {
+	t.Parallel()
+	if mirrorSprintSet(nil) != "" || mirrorSprintSet([]string{}) != "" {
+		t.Fatal("no sprints have a digest")
 	}
-	return out
+	a, b := mirrorSprintSet([]string{"21", "3", "100"}), mirrorSprintSet([]string{"100", "21", "3"})
+	if a != b || len(a) != 32 {
+		t.Fatalf("the digests of one set in two orders: %q, %q", a, b)
+	}
+	for _, other := range [][]string{{"21", "3"}, {"21", "3", "1000"}, {"213", "100"}, {"2", "13", "100"}} {
+		if mirrorSprintSet(other) == a {
+			t.Fatalf("%v digests to the set's", other)
+		}
+	}
+	if a == mirrorSprintSetPartial {
+		t.Fatal("a set digests to the sweep's mark")
+	}
 }
 
 // A catalog names any number of users and statuses, written

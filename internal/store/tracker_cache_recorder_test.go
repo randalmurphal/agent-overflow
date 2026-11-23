@@ -16,7 +16,9 @@ import (
 // writer connection, every row the writer inserts, updates or deletes,
 // triggers and foreign key actions included, and per committed
 // transaction the deletes of mirror rows and the writes of history changes,
-// of board marks and of board rows.
+// of board marks and of board rows, and per statement the writes of sprint
+// memberships. A statement is told apart by the count of cached statement
+// runs, so a test that reads the per-statement counts is not parallel.
 type mirrorWriteRecorder struct {
 	s       *Store
 	mu      sync.Mutex
@@ -25,6 +27,7 @@ type mirrorWriteRecorder struct {
 	changes map[uint64]int
 	marks   map[uint64]int
 	rows    map[uint64]int
+	sprints map[int64]int
 }
 
 func recordMirrorWrites(t *testing.T, s *Store) *mirrorWriteRecorder {
@@ -66,6 +69,8 @@ func recordMirrorWrites(t *testing.T, s *Store) *mirrorWriteRecorder {
 			r.marks[s.CommitCount()]++
 		case "tracker_cache_board_issues":
 			r.rows[s.CommitCount()]++
+		case "tracker_cache_issue_sprints":
+			r.sprints[cachedStmtRuns.Load()]++
 		}
 	})
 	t.Cleanup(func() { hook(nil) })
@@ -76,6 +81,19 @@ func (r *mirrorWriteRecorder) reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.writes, r.deletes, r.changes, r.marks, r.rows = map[string]int{}, map[uint64]int{}, map[uint64]int{}, map[uint64]int{}, map[uint64]int{}
+	r.sprints = map[int64]int{}
+}
+
+// mostSprintWritesInAStatement is the most sprint memberships one
+// statement wrote (inserted or deleted) since the last reset, and the
+// statements that wrote any.
+func (r *mirrorWriteRecorder) mostSprintWritesInAStatement() (most, statements int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, n := range r.sprints {
+		most = max(most, n)
+	}
+	return most, len(r.sprints)
 }
 
 // rowWrites are the rows written since the last reset, by table.

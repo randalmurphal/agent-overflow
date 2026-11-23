@@ -77,7 +77,7 @@ func (s *Store) replaceStagedHistory(rootID, sweep int64, in mirrorHistoryInput,
 		return err
 	}
 	if st.dirty {
-		if err := s.purgeMirrorHistoryGens(rootID, in.h.IssueID, st.gen, func() {}); err != nil {
+		if err := s.purgeMirrorHistoryGens(rootID, in.h.IssueID, st.gen, noMirrorPause); err != nil {
 			return fmt.Errorf("%s: %w", action, err)
 		}
 	}
@@ -107,7 +107,7 @@ func (s *Store) replaceStagedHistory(rootID, sweep int64, in mirrorHistoryInput,
 			return nil
 		}
 		// Written between the admission and the mark: the mark is cleared.
-		return s.purgeMirrorHistoryGens(rootID, in.h.IssueID, st.gen, func() {})
+		return s.purgeMirrorHistoryGens(rootID, in.h.IssueID, st.gen, noMirrorPause)
 	}
 	result.Changed = true
 	err = s.writeStagedHistory(rootID, in, st, action)
@@ -117,7 +117,7 @@ func (s *Store) replaceStagedHistory(rootID, sweep int64, in mirrorHistoryInput,
 	// Written meanwhile: what this history staged is deleted, leaving the
 	// issue's history as that write made it.
 	result.Changed, result.Superseded = false, true
-	return s.purgeMirrorHistoryGens(rootID, in.h.IssueID, st.gen, func() {})
+	return s.purgeMirrorHistoryGens(rootID, in.h.IssueID, st.gen, noMirrorPause)
 }
 
 // writeStagedHistory writes in over the issue's stored history st, in
@@ -276,17 +276,23 @@ func (s *Store) stageMirrorHistory(rootID int64, in mirrorHistoryInput, gen int6
 	if err != nil {
 		return err
 	}
-	return s.purgeMirrorHistoryGens(rootID, in.h.IssueID, next, func() {})
+	return s.purgeMirrorHistoryGens(rootID, in.h.IssueID, next, noMirrorPause)
 }
+
+// noMirrorPause is the between of a purge run inside a write: no pause,
+// no stop.
+func noMirrorPause() error { return nil }
 
 // purgeMirrorHistoryGens deletes the issue's changes of every generation
 // but keep, a chunk per transaction after between, and clears
 // history_dirty in the transaction that leaves none, while keep is still
-// the issue's generation.
-func (s *Store) purgeMirrorHistoryGens(rootID int64, issueID string, keep int64, between func()) error {
+// the issue's generation. An error from between stops it.
+func (s *Store) purgeMirrorHistoryGens(rootID int64, issueID string, keep int64, between func() error) error {
 	action := fmt.Sprintf("store: delete tracker mirror %d issue %s replaced history", rootID, issueID)
 	for done := false; !done; {
-		between()
+		if err := between(); err != nil {
+			return err
+		}
 		err := s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
 			res, err := tx.Exec(mirrorHistoryPurgeSQL, rootID, issueID, keep)
 			if err != nil {
