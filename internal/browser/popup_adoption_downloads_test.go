@@ -740,10 +740,10 @@ func TestAnAdoptionPublishesItsParkedDownloadsWithinOnePushEach(t *testing.T) {
 					t.Errorf("%s was announced %d times, want %d", name, announced[name], wantAnnounced)
 				}
 			}
-			if pushes > 2*n+1 || rows > n*(n+1)+n || whole > 3 {
-				t.Errorf("%d pushes carry %d download rows, %d of them all %d, want at most %d carrying %d, 3 of them all", pushes, rows, whole, n, 2*n+1, n*(n+1)+n)
+			// The adoption's one push of its downloads, and the new tab's.
+			if pushes != 2 || rows != 2*n || whole != 2 {
+				t.Errorf("%d pushes carry %d download rows, %d of them all %d, want 2 pushes carrying %d, each all %d", pushes, rows, whole, n, 2*n, n)
 			}
-			t.Logf("%d pushes carry %d download rows, %d of them all %d", pushes, rows, whole, n)
 		})
 	}
 }
