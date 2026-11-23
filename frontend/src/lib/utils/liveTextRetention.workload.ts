@@ -13,11 +13,12 @@ const TEXT_CHARS = 100_000;
 /** Streams TEXT_CHARS through a smoother into `keep`, then drops the smoother. */
 function stream(keep: (delta: string) => void): void {
   let now = 0;
-  let scheduled: ((at: number) => void) | null = null;
+  // A holder, so the loop reads what the smoother's calls to the clock set.
+  const frame: { scheduled: ((at: number) => void) | null } = { scheduled: null };
   const clock = {
     now: () => now,
-    schedule(callback: (at: number) => void) { scheduled = callback; return 1; },
-    cancel() { scheduled = null; },
+    schedule(callback: (at: number) => void) { frame.scheduled = callback; return 1; },
+    cancel() { frame.scheduled = null; },
   };
   const smoother = new PerItemSmoother({ clock, onReveal: keep });
   // The wire runs ahead of the reveal, as it does at speed, and a reader of
@@ -26,16 +27,16 @@ function stream(keep: (delta: string) => void): void {
   // as a slice of a joined string.
   let sent = 0;
   let line = 0;
-  for (let frame = 0; sent < TEXT_CHARS || scheduled; frame++) {
+  for (let index = 0; sent < TEXT_CHARS || frame.scheduled; index++) {
     for (let burst = 0; burst < 10 && sent < TEXT_CHARS; burst++) {
       const delta = ['reasoning step ', String(line++), ' reads frontend/src/lib/utils/liveText.ts next\n'].join('');
       smoother.appendDelta(delta);
       sent += delta.length;
     }
-    if (frame % 8 === 0) smoother.getReceived();
+    if (index % 8 === 0) smoother.getReceived();
     now += 16;
-    const tick: ((at: number) => void) | null = scheduled;
-    scheduled = null;
+    const tick = frame.scheduled;
+    frame.scheduled = null;
     tick?.(now);
   }
 }
