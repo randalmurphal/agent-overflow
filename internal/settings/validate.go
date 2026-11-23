@@ -801,9 +801,8 @@ func allowedTextGenerationEfforts(provider string) map[string]struct{} {
 //
 // Exported for TestTextGenerationEffortsMatchTheProviderSets in the root
 // package, the only place that can see both this copy and
-// provider.ReasoningEffortsForProvider: internal/settings must not import
-// internal/provider (cycle), so the tables above are duplicates, and this is
-// the same arrangement ReservedProviderEnvNames uses for the env deny-list.
+// provider.ReasoningEffortsForProvider: internal/settings does not import
+// internal/provider, so the tables above are duplicates.
 func AllowedTextGenerationEfforts(provider string) []string {
 	allowed := allowedTextGenerationEfforts(provider)
 	efforts := make([]string, 0, len(allowed))

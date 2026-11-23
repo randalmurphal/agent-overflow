@@ -209,28 +209,6 @@ func RedactProviderEnvVars(vars []ProviderEnvVar) []ProviderEnvVar {
 	return out
 }
 
-// ReservedProviderEnvNames returns the explicit reserved names for a provider
-// (upper-case, unordered). It does NOT include the AO_ prefix rule, which is a
-// prefix rather than a name — ValidateProviderEnvVarName enforces both.
-//
-// Exported for the root-package test that cross-checks this list against
-// provider.ReservedEnvNames in both directions; that test is what keeps the
-// duplication honest, since this package must not import internal/provider.
-func ReservedProviderEnvNames(providerName string) []string {
-	_, key, err := providerEnvSettingsField(providerName)
-	if err != nil {
-		return nil
-	}
-	out := make([]string, 0, len(deniedProviderEnvNames[""])+len(deniedProviderEnvNames[key]))
-	for name := range deniedProviderEnvNames[""] {
-		out = append(out, name)
-	}
-	for name := range deniedProviderEnvNames[key] {
-		out = append(out, name)
-	}
-	return out
-}
-
 // ValidateProviderEnvVarName is the single name rule, exported so the App-level
 // mutators can reject a bad name before touching the settings file and surface
 // the same message the strict save path would.
