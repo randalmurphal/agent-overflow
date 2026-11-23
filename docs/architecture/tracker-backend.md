@@ -813,7 +813,7 @@ comment above `TestMirrorAtScale`
 Counts are exact; no test pins them, so a run of the three is how they
 are checked. Times and heap are one development machine's (Intel Core
 Ultra 9 285HX, WSL2, Go 1.27.4), measured while other work held its load
-average near 50 on 24 CPUs: the first sync's is the fastest of three
+average near 16 on 24 CPUs: the first sync's is the fastest of three
 runs, a path's the fastest of three runs of five each. The peak heap is
 the sampled heap objects, collected garbage not yet swept included, so
 it grows when the collector falls behind.
@@ -824,10 +824,10 @@ it grows when the collector falls behind.
 | Provider calls (scripted) | 172 | 682 |
 | Requests, Jira through `trackerfake` | 239 | 944 |
 | Requests, Linear through `trackerfake` | 166 | 615 |
-| Write statements, in transactions | 790 in 179 | 3,115 in 704 |
-| Allocated, peak heap | 90 MB, 17.4 to 18.0 MB | 357 to 360 MB, 36.3 to 36.8 MB |
-| Time (scripted) | 2.12 s | 7.92 s |
-| Store file per issue, after a checkpoint | 925 B | 867 B |
+| Write statements, in transactions | 740 in 179 | 2,915 in 704 |
+| Allocated, peak heap | 91 MB, 10.2 to 10.3 MB | 365 MB, 29.0 to 29.5 MB |
+| Time (scripted) | 1.51 s | 6.41 s |
+| Store file per issue, after a checkpoint | 949 B | 890 B |
 
 Steady paths cost the same at both sizes, except the four that walk the
 board: the reconcile compares the whole listing, and the board view, the
@@ -840,23 +840,23 @@ named rows.
 
 | Path (store) | Statements | 5,000 | 20,000 |
 |---|---|---|---|
-| Idle tick | 3 | 84 µs | 94 µs |
-| Delta, 100 changed | 12 | 13.7 ms | 16.5 ms |
-| History, 50 due | 6 | 18.0 ms | 17.3 ms |
-| Reconcile, complete listing | 3 | 6.6 ms | 30.7 ms |
-| Board view, 3 sections | 10 | 17.9 ms | 68.6 ms |
-| Section page, middle of a column | 3 | 1.07 ms | 1.50 ms |
-| Section counts | 4 | 12.7 ms | 63.7 ms |
-| Patch read, 1 or 100 changed, totals moved | 8 | 13.2 to 17.0 ms | 61.4 to 62.7 ms |
-| Patch read, 1 or 100 changed, totals held | 5 | 0.09 to 1.12 ms | 0.10 to 1.20 ms |
-| Ticket open, stored | 15 | 0.65 ms | 0.57 ms |
-| Jira round, 100 tickets, 10 changed | 22 | 12.0 ms | 12.1 ms |
-| Linear round, 100 tickets, 10 changed | 23 | 5.4 ms | 5.8 ms |
-| `New` | 0 | 24.1 ms | 26.8 ms |
+| Idle tick | 3 | 85 µs | 76 µs |
+| Delta, 100 changed | 11 | 7.3 ms | 8.9 ms |
+| History, 50 due | 6 | 12.0 ms | 12.9 ms |
+| Reconcile, complete listing | 3 | 5.1 ms | 23.2 ms |
+| Board view, 3 sections | 10 | 13.8 ms | 46.4 ms |
+| Section page, middle of a column | 3 | 0.78 ms | 0.76 ms |
+| Section counts | 4 | 9.5 ms | 40.9 ms |
+| Patch read, 1 or 100 changed, totals moved | 8 | 9.9 to 10.0 ms | 39.2 to 41.7 ms |
+| Patch read, 1 or 100 changed, totals held | 5 | 0.07 to 0.81 ms | 0.06 to 0.70 ms |
+| Ticket open, stored | 13 | 0.32 ms | 0.37 ms |
+| Jira round, 100 tickets, 10 changed | 21 | 5.9 ms | 6.0 ms |
+| Linear round, 100 tickets, 10 changed | 22 | 3.2 ms | 3.1 ms |
+| `New` | 0 | 11.2 ms | 10.6 ms |
 
 A reconcile whose listing leaves out a quarter of the board removes
 those rows in 8 statements at 5,000 issues and 22 at 20,000. Five boards
-of 4,000 issues on one root view in 17.9 ms. Every
+of 4,000 issues on one root view in 11.7 ms. Every
 statement of the mirror plans the same at 20,000 issues as on a small
 mirror, with no `sqlite_stat1`. Through `trackerfake` at 20,000 an idle
 tick, a delta of 100 and a Jira history read of 100 are 1, 1 and 4
@@ -865,8 +865,8 @@ requests; a reconcile is 4 Jira requests or 41 Linear ones.
 Retention does not grow with a board, except a reconcile pass that
 spans ticks: its pump holds the candidates left, at most one listing's,
 until the pass ends. Five shown boards and 50 shown
-tickets hold 116 to 134 KB of heap and 56 goroutines (each pump and the
-round with one timer) at both sizes; once released, 66 to 90 KB stay
+tickets hold 130 to 137 KB of heap and 56 goroutines (each pump and the
+round with one timer) at both sizes; once released, 82 to 102 KB stay
 (the event log) and no goroutine.
 
 ## Writes
