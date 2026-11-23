@@ -34,7 +34,13 @@
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import ts from 'typescript';
-import { SRC_ROOT, expectAllowlistExact, repoPath, scannedSources, sourceText } from '../test/sourceScan';
+import { SRC_ROOT, expectAllowlistExact, repoPath, scannedSources } from '../test/sourceScan';
+
+// What this suite scans (test/sourceScan.ts).
+const SCANNED = scannedSources(import.meta.glob<string>(
+  ['/src/**/*.svelte', '!/src/test/**'],
+  { query: '?raw', import: 'default', eager: true },
+));
 
 /** Everything after the last `</script>`: the template half of the file. */
 function templateOf(source: string): string {
@@ -193,8 +199,8 @@ interface Scan {
 function scanTree(): Scan {
   const offenders = new Map<string, string[]>();
   let singleDep = 0;
-  for (const file of scannedSources(/\.svelte$/)) {
-    const source = sourceText(file);
+  for (const file of SCANNED.files(/\.svelte$/)) {
+    const source = SCANNED.text(file);
     const template = templateOf(source);
     const reactive = reactiveNames(scriptOf(source));
     for (const block of ifBlocks(template)) {
@@ -259,7 +265,7 @@ describe('nullable-guarded branches render total expressions', () => {
 
   for (const [file, name] of STILL_GATED) {
     it(`${file}: \`${name}\` still gates its branch`, () => {
-      const template = templateOf(sourceText(join(SRC_ROOT, ...file.split('/'))));
+      const template = templateOf(SCANNED.text(join(SRC_ROOT, ...file.split('/'))));
       const gated = ifBlocks(template).some((block) =>
         new RegExp(String.raw`(?<![.\w$])${name}(?![\w$.])`).test(block.condition),
       );

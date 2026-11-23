@@ -39,8 +39,13 @@ import {
   expectAllowlistExact,
   repoPath,
   scannedSources,
-  sourceText,
 } from '../test/sourceScan';
+
+// What this suite scans (test/sourceScan.ts).
+const SCANNED = scannedSources(import.meta.glob<string>(
+  ['/src/**/*.{ts,svelte,css}', '!/src/test/**', '!**/*.{test,spec}.{ts,js}', '!**/*.manual.ts'],
+  { query: '?raw', import: 'default', eager: true },
+));
 
 const SOURCE_EXTENSIONS = /\.(ts|svelte|css)$/;
 
@@ -210,7 +215,7 @@ const NON_COLOR_UTILITY_ALLOWLIST: Record<string, string> = {};
 // ---------------------------------------------------------------------------
 
 function themeBlock(): string {
-  const css = sourceText(join(SRC_ROOT, 'app.css')).replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const css = SCANNED.text(join(SRC_ROOT, 'app.css')).replace(/\/\*[\s\S]*?\*\//g, ' ');
   const start = css.indexOf('@theme');
   if (start < 0) throw new Error('app.css has no @theme block; the token rules would be vacuous');
   const open = css.indexOf('{', start);
@@ -327,9 +332,9 @@ function scan(): Scan {
   const rawClasses = new Map<string, string[]>();
   const hexes = new Map<string, string[]>();
 
-  for (const file of scannedSources(SOURCE_EXTENSIONS)) {
+  for (const file of SCANNED.files(SOURCE_EXTENSIONS)) {
     const path = repoPath(file);
-    const text = stripComments(sourceText(file), path);
+    const text = stripComments(SCANNED.text(file), path);
 
     const reasons: string[] = [];
     const palette = findAll(text, RAW_PALETTE_CLASS);

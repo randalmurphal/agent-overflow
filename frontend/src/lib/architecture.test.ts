@@ -18,12 +18,17 @@ import {
   expectAllowlistExact,
   repoPath,
   scannedSources,
-  sourceText,
 } from '../test/sourceScan';
 import browserCompanionActions from '../../../internal/app/app_browser_companion_action.go?raw';
 import { findCompositorSourceFindings } from '../test/compositorSourceScan';
 import { findContextMenuPropagationFindings } from '../test/contextMenuSourceScan';
 import { NUMBERED_KINDS } from './stores/browserActionWire';
+
+// What this suite scans (test/sourceScan.ts).
+const SCANNED = scannedSources(import.meta.glob<string>(
+  ['/src/**/*.{ts,svelte,css}', '!/src/test/**', '!**/*.{test,spec}.{ts,js}', '!**/*.manual.ts'],
+  { query: '?raw', import: 'default', eager: true },
+));
 
 const STORES_DIR = join(SRC_ROOT, 'lib', 'stores');
 const BINDINGS_MODULE = join(STORES_DIR, 'bindings');
@@ -709,8 +714,8 @@ describe('architecture', () => {
   // Each file's text is read, reduced to the two facts the rules need, and
   // dropped — holding ~800 whole sources for the lifetime of the suite bought
   // nothing but resident bytes.
-  const sources = scannedSources(SOURCE_EXTENSIONS).map((file) => {
-    const text = sourceText(file);
+  const sources = SCANNED.files(SOURCE_EXTENSIONS).map((file) => {
+    const text = SCANNED.text(file);
     return {
       file,
       path: repoPath(file),
@@ -970,9 +975,9 @@ describe('architecture', () => {
   });
 
   it('names the check of every browser binding the window can call', () => {
-    const routes = sourceText(join(SRC_ROOT, 'lib', 'transport', 'methodRoutes.ts'));
+    const routes = SCANNED.text(join(SRC_ROOT, 'lib', 'transport', 'methodRoutes.ts'));
     const methods = new Set([...routes.matchAll(/\/\/ (\w+)$/gm)].map((match) => match[1]));
-    const wrapper = sourceText(join(SRC_ROOT, BINDINGS_WRAPPER));
+    const wrapper = SCANNED.text(join(SRC_ROOT, BINDINGS_WRAPPER));
     const exported = [...wrapper.matchAll(/^\s+(\w*Browser\w*),?$/gm)].map((match) => match[1]);
     const browserBindings = exported.filter((name) => methods.has(name)).sort();
     expect(browserBindings).toEqual(Object.keys(BROWSER_BINDING_CHECKS).sort());
@@ -1175,12 +1180,12 @@ describe('architecture', () => {
 
   it('keeps scroll content free of authored compositor state', () => {
     const actual = new Set<string>();
-    for (const file of scannedSources(/\.(css|svelte|ts)$/)) {
+    for (const file of SCANNED.files(/\.(css|svelte|ts)$/)) {
       const path = repoPath(file);
       const inScrollPresentationTree =
         path === 'app.css'
         || SCROLL_PRESENTATION_PREFIXES.some((prefix) => path.startsWith(prefix));
-      for (const finding of findCompositorSourceFindings(sourceText(file))) {
+      for (const finding of findCompositorSourceFindings(SCANNED.text(file))) {
         const isPromotion = /^will(?:-change|Change)/.test(finding.kind);
         if (!isPromotion && !inScrollPresentationTree) continue;
         actual.add(`${path}|${finding.kind}|${finding.source}`);
@@ -1212,8 +1217,8 @@ describe('architecture', () => {
   it('keeps every contextmenu that stops propagation claimed first', () => {
     const offenders = new Map<string, string[]>();
     let handlersSeen = 0;
-    for (const file of scannedSources(SOURCE_EXTENSIONS)) {
-      const text = sourceText(file);
+    for (const file of SCANNED.files(SOURCE_EXTENSIONS)) {
+      const text = SCANNED.text(file);
       if (text.includes('contextmenu')) handlersSeen += 1;
       const findings = findContextMenuPropagationFindings(file, text);
       if (findings.length > 0) offenders.set(repoPath(file), findings);
@@ -1239,9 +1244,9 @@ describe('architecture', () => {
   it('reads the Enter key only through the local Enter rule', () => {
     const offenders = new Map<string, string[]>();
     let enterReads = 0;
-    for (const file of scannedSources(SOURCE_EXTENSIONS)) {
+    for (const file of SCANNED.files(SOURCE_EXTENSIONS)) {
       if (repoPath(file) === 'lib/utils/localEnter.ts') continue;
-      const lines = sourceText(file).split('\n');
+      const lines = SCANNED.text(file).split('\n');
       if (lines.some((line) => /\bis(?:Local)?Enter(?:Key)?\(/.test(line))) enterReads += 1;
       const findings: string[] = [];
       lines.forEach((line, index) => {
@@ -1275,8 +1280,8 @@ describe('architecture', () => {
   it('names the thread beside every workspace a ChatMarkdown is given', () => {
     const offenders = new Map<string, string[]>();
     let withWorkspace = 0;
-    for (const file of scannedSources(/\.svelte$/)) {
-      const text = sourceText(file);
+    for (const file of SCANNED.files(/\.svelte$/)) {
+      const text = SCANNED.text(file);
       const findings: string[] = [];
       for (const match of text.matchAll(/<ChatMarkdown\b[^>]*?(?:\/>|>)/gs)) {
         const tag = match[0];
@@ -1307,10 +1312,10 @@ describe('architecture', () => {
     const owner = 'lib/transport/scopeRefusal.ts';
     const offenders = new Map<string, string[]>();
     let ownerCalls = 0;
-    for (const file of scannedSources(SOURCE_EXTENSIONS)) {
+    for (const file of SCANNED.files(SOURCE_EXTENSIONS)) {
       if (repoPath(file) === owner) continue;
       const findings: string[] = [];
-      sourceText(file).split('\n').forEach((line, index) => {
+      SCANNED.text(file).split('\n').forEach((line, index) => {
         if (/granted to this device/i.test(line)) findings.push(`line ${index + 1}: writes the refusal sentence itself`);
         for (const call of line.matchAll(/(\?\s*)?\bgrantBlockedTitle\(\s*(['"`])?/g)) {
           ownerCalls += 1;
@@ -1340,10 +1345,10 @@ describe('architecture', () => {
   it('keeps the yes/no grant helpers out of components', () => {
     const offenders = new Map<string, string[]>();
     let grantReads = 0;
-    for (const file of scannedSources(SOURCE_EXTENSIONS)) {
+    for (const file of SCANNED.files(SOURCE_EXTENSIONS)) {
       if (!repoPath(file).startsWith('lib/components/')) continue;
       const findings: string[] = [];
-      sourceText(file).split('\n').forEach((line, index) => {
+      SCANNED.text(file).split('\n').forEach((line, index) => {
         if (/ScopeGrant\(|\bscopeGrant\(/.test(line)) grantReads += 1;
         if (/\b(?:threadHasScope|projectHasScope|workflowItemHasScope)\b/.test(line)) {
           findings.push(`line ${index + 1}: uses an entity's yes/no grant helper`);
