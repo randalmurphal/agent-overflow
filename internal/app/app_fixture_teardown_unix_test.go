@@ -45,7 +45,9 @@ func TestTheFixtureTeardownClosesALeftSessionAndReturnsItsCloseError(t *testing.
 	}
 
 	errs := closeLeftSessions(app)
-	if err := member.Wait(); err != nil {
+	// The member may have exited before the session's group was stopped or
+	// been ended by it; either way it stayed in the group, unwaited for.
+	if err := member.Wait(); err != nil && !errors.As(err, new(*exec.ExitError)) {
 		t.Errorf("the group member: %v", err)
 	}
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
