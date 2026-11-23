@@ -6,7 +6,7 @@ import { globSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { threadPaneTracker } from './src/test/config/threadPaneTracker.ts';
 import { testResetsPlugin } from './src/test/config/testResetsPlugin.ts';
-import { repoTextPlugin } from './src/test/config/repoTextPlugin.ts';
+import { rawImportsPlugin } from './src/test/config/rawImportsPlugin.ts';
 
 // There is no `svelte.config.js` (see vite.config.ts for why). Saying so
 // keeps the plugin from logging "no Svelte config found" once per project
@@ -34,10 +34,10 @@ const happyDomResolve = {
   ],
 };
 
-// Tests import repository files outside frontend/ (Go sources, shared test
-// vectors, harness scenarios), so `--changed` selects the tests that read
-// them. Only the test projects allow it; the app's dev server is
-// configured in vite.config.ts.
+// Tests import repository files outside frontend/ with `?raw` (Go sources,
+// shared test vectors, harness scenarios), which Vite refuses for a file
+// outside `server.fs.allow`. Only the test projects allow the repository;
+// the app's dev server is configured in vite.config.ts.
 const repoServer = { fs: { allow: ['..'] } };
 
 const unitInclude = ['src/**/*.{test,spec}.{ts,js}'];
@@ -130,7 +130,7 @@ export default defineConfig({
     forceRerunTriggers: [...configDefaults.forceRerunTriggers, '**/pnpm-lock.yaml', '**/tsconfig*.json', '**/src/test/config/**'],
     projects: [
       {
-        plugins: [svelte(svelteOptions), threadPaneTracker(import.meta.dirname), testResetsPlugin(import.meta.dirname), repoTextPlugin(import.meta.dirname)],
+        plugins: [svelte(svelteOptions), threadPaneTracker(import.meta.dirname), testResetsPlugin(import.meta.dirname), rawImportsPlugin()],
         server: repoServer,
         resolve: happyDomResolve,
         test: {
@@ -146,7 +146,7 @@ export default defineConfig({
         },
       },
       {
-        plugins: [svelte(svelteOptions), threadPaneTracker(import.meta.dirname), testResetsPlugin(import.meta.dirname), repoTextPlugin(import.meta.dirname)],
+        plugins: [svelte(svelteOptions), threadPaneTracker(import.meta.dirname), testResetsPlugin(import.meta.dirname), rawImportsPlugin()],
         server: repoServer,
         resolve: happyDomResolve,
         test: {
@@ -168,7 +168,7 @@ export default defineConfig({
         // mount throws. tailwindcss stays so app.css compiles against the real
         // cascade. Order: svelte first so .svelte transforms run before tailwind
         // post-processes the emitted CSS.
-        plugins: [svelte(svelteOptions), tailwindcss(), testResetsPlugin(import.meta.dirname), repoTextPlugin(import.meta.dirname)],
+        plugins: [svelte(svelteOptions), tailwindcss(), testResetsPlugin(import.meta.dirname), rawImportsPlugin()],
         server: repoServer,
         resolve: happyDomResolve,
         // Scan the browser test files (and their component imports) up front
@@ -226,7 +226,7 @@ export default defineConfig({
         // reach the same mocked bindings — with a disjoint include glob and a
         // timeout that lets a long sweep finish rather than being cut off
         // mid-corpus.
-        plugins: [svelte(svelteOptions), threadPaneTracker(import.meta.dirname), testResetsPlugin(import.meta.dirname), repoTextPlugin(import.meta.dirname)],
+        plugins: [svelte(svelteOptions), threadPaneTracker(import.meta.dirname), testResetsPlugin(import.meta.dirname), rawImportsPlugin()],
         server: repoServer,
         resolve: happyDomResolve,
         test: {
