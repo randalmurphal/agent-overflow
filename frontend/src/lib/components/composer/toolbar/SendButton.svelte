@@ -76,10 +76,10 @@
 
   // Treat the dispatch window the same as a wire-active turn for the Stop
   // affordance, but only when there's nothing meaningful to send. A draft
-  // typed mid-turn makes this a Send button by design: the message queues
-  // behind the turn (`Composer.send()` picks the enqueue branch when
-  // `isTurnActive` is true). The `thread.interrupt` command (Escape by
-  // default) still interrupts the turn then.
+  // typed mid-turn makes this a Send button by design: Send submits the
+  // draft to the thread's queue (`Composer.send()` picks the enqueue
+  // branch when `isTurnActive` is true). The `thread.interrupt` command
+  // (Escape by default) still interrupts the turn then.
   let operationBlocked = $derived(Boolean(disabledReason));
   let showPending = $derived(sendPending && !canSend);
   let showStop = $derived(!operationBlocked && !showPending && (isTurnActive || sendInFlight) && !canSend);
