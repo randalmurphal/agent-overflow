@@ -23,7 +23,12 @@ packages. Test-specific setup stays beside the test that owns it.
   the run naming the caller: the poison holds its caller while TestMain
   captures the goroutines waiting on a child process and the running tests.
   It also points SHELL at a stand-in
-  that skips login startup files, so a shell sync cannot reorder PATH. Every
+  that skips login startup files, so a shell sync cannot reorder PATH. On
+  Linux its Guard also fails the run when a process a test started is still
+  running five seconds after the tests, found by a variable in its
+  environment and named with its pid, working directory and command line;
+  a process started with a fresh environment, such as the orphan reaper's
+  sidecar, is not seen, and macOS checks nothing. Every
   test package that links a provider spawn package installs it;
   `TestEveryTestBinaryThatCanStartAProviderInstallsThePoison` fails one that
   does not. It imports only the standard library and internal packages

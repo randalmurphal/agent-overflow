@@ -17,6 +17,10 @@ import (
 	"agent-overflow/internal/testutil/reporoot"
 )
 
+// TestMain guards this package's tests as it guards every other's, so a
+// process they leave fails them too.
+func TestMain(m *testing.M) { os.Exit(Run(m)) }
+
 // spawnPackages hold the exec sites that run a provider CLI: provider
 // (DetectProvider's version probe, Spawn), the Claude, Claude TUI and Codex
 // session and probe code, and textgen's one-shot runs. Every other spawn goes
