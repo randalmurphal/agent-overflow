@@ -851,14 +851,16 @@ e2e-android: harness-build netns-tool
 # reports the numbers instead of failing on borrowed CPU; the gate is
 # where they must always run. vitest-unit and vitest-browser are the one
 # entry for each Vitest project: `make test`, `make verify` and CI's two
-# Vitest jobs run them.
+# Vitest jobs run them. VITEST_BASE=<ref> runs only the test files the
+# diff from <ref> can affect (frontend/scripts/vitest-changed.mjs), which
+# is what a pull request's jobs pass.
 test: $(FRONTEND_DEPS)
 	$(MAKE) go-test
 	$(MAKE) vitest-unit
 	$(MAKE) vitest-browser
 
 vitest-unit vitest-browser: netns-tool $(FRONTEND_DEPS)
-	cd frontend && AO_PERF_CONTRACT=1 $(NETNS) pnpm run $(if $(filter vitest-browser,$@),test:browser,test)
+	cd frontend && AO_PERF_CONTRACT=1 $(NETNS) pnpm run $(if $(filter vitest-browser,$@),test:browser,test)$(if $(VITEST_BASE),:affected '$(VITEST_BASE)')
 
 # script-tests runs the tests of the scripts under scripts/: every
 # scripts/*.test.mjs and the shell scripts' own tests.

@@ -126,7 +126,9 @@ and `cache-cleanup`. The jobs are one Linux job for `fmt-check`,
 `go-lint`, `go-lint-exhaustive` and `go-vuln`, the frontend job (`check`,
 `build`, `frontend-lint`), `go-test` in three shards by package weight
 (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`) plus `make go-test-noremote`, the
-Vitest projects as `make vitest-unit` and `make vitest-browser`, and one
+Vitest projects as `make vitest-unit` and `make vitest-browser` (on a
+pull request with `VITEST_BASE`, so only the test files its diff can
+affect run), and one
 `make harness-build` whose output eight Playwright shards run with
 `bin/ao-harness-e2e --shard=N/8` and three workers each
 (`AO_E2E_WORKERS`). `upgrade-lineage` runs `scripts/release-upgrade-check.sh`

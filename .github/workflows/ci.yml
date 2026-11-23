@@ -319,6 +319,11 @@ jobs:
             browsers: VITEST_BROWSERS
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # A pull request's checkout is GitHub's merge of its head into
+          # the base branch; the merge's parents are what its diff is read
+          # from.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - uses: ./.github/actions/setup
         with:
           go: "true"
@@ -327,7 +332,21 @@ jobs:
           browsers: ${{ matrix.browsers }}
           netns: "true"
           cache-name: netns
-      - run: make vitest-${{ matrix.project }}
+      # A pull request runs the test files its diff can affect; a push to
+      # main and a manual run run every file.
+      - env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          base=
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            if [[ "$(git rev-parse --verify --quiet 'HEAD^2')" != "$PR_HEAD" ]]; then
+              echo "::error title=Vitest::HEAD is not the merge of $PR_HEAD into the base branch, so the diff has no base"
+              exit 1
+            fi
+            base='HEAD^1'
+          fi
+          make vitest-${{ matrix.project }} VITEST_BASE="$base"
       - uses: ./.github/actions/cache-save
 
   # One build of the binaries and the frontend/dist they embed, which the
