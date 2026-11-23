@@ -14,7 +14,7 @@ import (
 // per visited thread (~150–300 MB RSS each for Claude with Opus-class
 // models). The reaper sweeps the session map on a slow cadence and
 // closes any session that has gone idleReapThreshold without activity,
-// is not mid-turn, and has no running background tool calls. The next
+// is not mid-turn, and has no running background tasks. The next
 // user send (or SwitchThread auto-resume) lazily respawns the
 // subprocess and reattaches via the persisted SessionRef.
 //
@@ -179,11 +179,11 @@ func (a *App) idleCloseSession(threadID string, cutoffNano int64) error {
 	if wakeAt, ok := a.triage.PendingWakeupAt(threadID); ok && now.Before(wakeAt.Add(a.wakeupReapGrace())) {
 		return nil
 	}
-	running, err := a.store.ListRunningBackgroundToolCalls(threadID)
+	running, err := a.hasRunningBackgroundTasks(threadID)
 	if err != nil {
-		return fmt.Errorf("list running background tool calls: %w", err)
+		return fmt.Errorf("count running background tasks: %w", err)
 	}
-	if len(running) > 0 {
+	if running {
 		return nil
 	}
 	sess, ok := a.sessionManager().takeIdle(threadID, cutoffNano)

@@ -1027,7 +1027,7 @@ func (p *Parser) parseTaskStartedEvent(
 // the ack classifies on it alone. The ack's EventToolComplete then
 // carries is_background:true, and triage's keep-running flip
 // (tool_lifecycle.go) makes it the resumed round's background carrier:
-// the row that keeps ListRunningBackgroundToolCalls non-empty (reaper
+// the row that keeps CountLiveRunningBackgroundToolCalls above zero (reaper
 // protection) while the resumed agent runs quiet. The ack always follows
 // this rebind: on stdout by wire order, and in the session mirror because
 // the call's result is written when it returns (claude-wire.md §E6).

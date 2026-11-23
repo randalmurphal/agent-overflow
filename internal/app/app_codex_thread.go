@@ -15,12 +15,15 @@ func (a *App) codexThreadService() *codexthread.Service {
 			ShutdownError:  ErrShuttingDown,
 			Store:          a.store,
 			Emit:           a.emit,
+			LockThread: func(ctx context.Context, threadID string) (func(), error) {
+				return a.threadLocks().LockCtx(ctx, threadID)
+			},
 			Session: func(threadID string) (codexthread.LiveSession, bool) {
 				sess, ok := a.sessionManager().get(threadID)
 				if !ok {
 					return codexthread.LiveSession{}, false
 				}
-				return codexthread.LiveSession{Token: sess.Token, Session: sess.Codex}, true
+				return codexLiveSession(sess), true
 			},
 		})
 	})
@@ -75,7 +78,7 @@ func (a *App) ReconcileCodexOnReopen(ctx context.Context, threadID string) (Reco
 type ReconcileResult struct {
 	ThreadID    string                 `json:"threadId"`
 	Status      codex.ThreadStatusKind `json:"status"`
-	Running     int                    `json:"running"`     // count of running background rows found
+	Running     int                    `json:"running"`     // count of live background launches found
 	Flipped     int                    `json:"flipped"`     // count we transitioned to errored/lost
 	NeedsResume bool                   `json:"needsResume"` // true when status=notLoaded
 }
@@ -88,8 +91,13 @@ func (a *App) recoverCodexBackgroundRuntimeOnStartup() error {
 	return a.codexThreadService().RecoverBackgroundRuntimeOnStartup()
 }
 
-func (a *App) reconcileCodexAfterStart(threadID string) {
-	a.codexThreadService().ReconcileAfterStart(threadID)
+func codexLiveSession(sess session) codexthread.LiveSession {
+	return codexthread.LiveSession{Token: sess.Token, Session: sess.Codex}
+}
+
+// reconcileCodexAfterStart reconciles the session a start registered.
+func (a *App) reconcileCodexAfterStart(threadID string, started session) {
+	a.codexThreadService().ReconcileAfterStart(threadID, codexLiveSession(started))
 }
 
 func (a *App) noteCodexThreadCost(threadID, sessionToken string) {
