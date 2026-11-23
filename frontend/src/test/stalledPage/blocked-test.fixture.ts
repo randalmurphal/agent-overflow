@@ -1,4 +1,4 @@
-// The blocked page for scripts/check-stalled-page-watchdog.mjs. Not a test
+// A test whose page blocks, for scripts/check-stalled-page-watchdog.mjs. Not a test
 // of the suite: only src/test/stalledPage/vitest.config.ts includes it.
 import { test } from 'vitest';
 

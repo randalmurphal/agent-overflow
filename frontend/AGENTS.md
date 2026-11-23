@@ -135,10 +135,10 @@ logic. Stateful APIs need transition coverage, including repeated attach and
 detach. Browser-only geometry, focus, and scroll behavior belongs in the browser
 project.
 
-A browser-project run whose page stops running JavaScript ends with a
-`stalled-page watchdog` error naming the file
+A browser-project run that stops reporting ends with a `stalled-page
+watchdog` error naming the silent file, or saying no file was running
 (`src/test/stalledPageWatchdog.ts`); `pnpm run check:stall-watchdog` checks
-the watchdog against a blocked page.
+the watchdog against blocked and live pages.
 
 Files in the `unit` Vitest project share a worker process, so a test must
 restore every global and prototype method it changes; prefer `vi.stubGlobal`.

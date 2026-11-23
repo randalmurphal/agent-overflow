@@ -83,9 +83,10 @@ const HANG_TIMEOUT_MS = 60_000;
 
 // A browser page that stops running JavaScript cannot fire its own test or
 // hook timeout, so its run would wait for the CI job's. A live page fails any
-// test or hook at HANG_TIMEOUT_MS and reports it; a running browser file that
-// reports nothing for this long has a stalled page, and the watchdog ends the
-// run naming it (src/test/stalledPageWatchdog.ts).
+// test or hook at HANG_TIMEOUT_MS and reports it, so a running browser file,
+// or a run with no file running, that reports nothing for this long usually
+// has a stalled page; the watchdog then ends the run naming what it saw
+// (src/test/stalledPageWatchdog.ts).
 const STALLED_PAGE_MS = 90_000;
 
 const unitTestOptions = {

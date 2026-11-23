@@ -1,5 +1,5 @@
-// Config for scripts/check-stalled-page-watchdog.mjs: one browser file whose
-// page blocks, under the real watchdog with a short bound.
+// Config for scripts/check-stalled-page-watchdog.mjs: browser files whose
+// pages block or stay live, under the real watchdog with a short bound.
 import { configDefaults, defineConfig } from 'vitest/config';
 import { playwright } from '@vitest/browser-playwright';
 import { StalledPageWatchdog } from '../stalledPageWatchdog.ts';
@@ -21,7 +21,7 @@ export default defineConfig({
   ],
   test: {
     reporters: [...configDefaults.reporters, new StalledPageWatchdog({ boundMs: CHECK_BOUND_MS, checkEveryMs: 1_000 })],
-    include: ['src/test/stalledPage/stall.fixture.ts'],
+    include: ['src/test/stalledPage/*.fixture.ts'],
     testTimeout: 5_000,
     hookTimeout: 5_000,
     browser: {
