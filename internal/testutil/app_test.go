@@ -230,8 +230,36 @@ func readLineWithTimeout(t *testing.T, r *bufio.Reader, d time.Duration) string 
 	}
 }
 
+// startMockTurn starts the mock Claude script at path and sends the user
+// line that begins its first turn. The script is killed when the test
+// ends: one that fails while the script waits at a gate would otherwise
+// wait on it forever, since closing stdin does not reach a script that is
+// not reading it.
+func startMockTurn(t *testing.T, path string) (*exec.Cmd, *bufio.Reader) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), path)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("StdinPipe: %v", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("StdoutPipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = cmd.Wait() })
+	if _, err := stdin.Write([]byte("user-hello\n")); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	return cmd, bufio.NewReader(stdout)
+}
+
 // TestWriteMockClaudeScriptHoldsATurnAtAWaitForFileLine: the lines before
-// the gate print at once, the ones after it only once the file exists.
+// the gate print at once, the ones after it only once the file exists. A
+// test that ends with the script at the gate, as one that fails there
+// does, ends the script.
 func TestWriteMockClaudeScriptHoldsATurnAtAWaitForFileLine(t *testing.T) {
 	t.Parallel()
 
@@ -240,20 +268,19 @@ func TestWriteMockClaudeScriptHoldsATurnAtAWaitForFileLine(t *testing.T) {
 	after := `{"type":"result","subtype":"success","is_error":false}`
 	path := WriteMockClaudeScript(t, t.TempDir(), [][]string{{before, MockWaitForFile(gate), after}})
 
-	cmd := exec.Command(path)
-	stdin, _ := cmd.StdinPipe()
-	stdout, _ := cmd.StdoutPipe()
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	// Closed first, so a test that fails before its own close ends the
-	// script instead of waiting on it forever.
-	defer func() { _ = stdin.Close(); _ = cmd.Wait() }()
-	if _, err := stdin.Write([]byte("user-hello\n")); err != nil {
-		t.Fatalf("write stdin: %v", err)
+	var held *exec.Cmd
+	t.Run("ended at the gate", func(t *testing.T) {
+		cmd, reader := startMockTurn(t, path)
+		if line := readLineWithTimeout(t, reader, 3*time.Second); line != before {
+			t.Fatalf("first line = %q, want the line before the gate", line)
+		}
+		held = cmd
+	})
+	if held != nil && held.ProcessState == nil {
+		t.Fatal("the script held at the gate is still running after its test ended")
 	}
 
-	reader := bufio.NewReader(stdout)
+	_, reader := startMockTurn(t, path)
 	if line := readLineWithTimeout(t, reader, 3*time.Second); line != before {
 		t.Fatalf("first line = %q, want the line before the gate", line)
 	}
@@ -282,5 +309,4 @@ func TestWriteMockClaudeScriptHoldsATurnAtAWaitForFileLine(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the turn did not resume once the gate file existed")
 	}
-	_ = stdin.Close()
 }
