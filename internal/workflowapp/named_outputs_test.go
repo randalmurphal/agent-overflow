@@ -52,12 +52,12 @@ func TestNamedOutputsTakeEachPhaseFromOneAttempt(t *testing.T) {
 		t.Fatalf("outputs = %v, want %v", got, want)
 	}
 
-	attempts := make([]engine.PhaseAttempt, 0, len(phases))
-	for _, phase := range phases {
-		attempts = append(attempts, engine.PhaseAttempt{PhaseID: phase.PhaseID, Attempt: phase.Attempt, Status: phase.Status, Envelope: phase.OutputEnvelope})
-	}
-	vars, err := engine.CompletedOutputs(attempts)
+	chosen, err := engine.SelectOutputs(phases, timelineAttempt, engine.Completed)
 	if err != nil {
+		t.Fatal(err)
+	}
+	vars := map[string]any{}
+	if err := engine.BindOutputs(vars, chosen); err != nil {
 		t.Fatal(err)
 	}
 	fromEngine := map[string]any{}
