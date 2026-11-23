@@ -1348,6 +1348,16 @@ var channelPolicies = []ChannelPolicy{
 			"payload doc bars per-process detail from ever joining it.",
 	},
 	{
+		Channel:   eventchan.TrackerConnectionsUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeTrackerRead,
+		Why: "Payload-less refetch nudge for the tracker connection list, " +
+			"the same shape as provider:accounts_changed: N retained frames " +
+			"would be N identical refetches. Scope: TrackerConnections, the " +
+			"pull half, is tracker:read and never carries a token.",
+	},
+	{
 		Channel:   eventchan.TerminalEndFailed,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

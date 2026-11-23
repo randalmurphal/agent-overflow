@@ -74,6 +74,14 @@ const (
 	// ScopeAccessAdmin covers the device list, revocation, audit read,
 	// and the provider-account surface (billing identity).
 	ScopeAccessAdmin Scope = "access:admin"
+	// ScopeTrackerRead covers reads of this computer's issue tracker
+	// connections: each one's site, account, verified identity, key file
+	// state and last problem, never its token. Observe tier.
+	ScopeTrackerRead Scope = "tracker:read"
+	// ScopeTrackerOperate covers adding, renaming, turning on and off,
+	// verifying and removing tracker connections and recording a token's
+	// expiry. Execute tier: a verification sends the token to the tracker.
+	ScopeTrackerOperate Scope = "tracker:operate"
 	// ScopeSession is the FLOOR: any connection that named a live session
 	// may call it (docs/specs/remote-access.md §6, "The session floor").
 	// It marks the calls whose real authority is decided per ARGUMENT —
@@ -99,7 +107,7 @@ var Scopes = []Scope{
 	ScopeThreadsRead, ScopeFilesRead, ScopeThreadsOperate, ScopeApprovalsRespond,
 	ScopeThreadsAutonomy, ScopeTerminalOperate, ScopePreviewOpen, ScopeGitOperate,
 	ScopeAttachmentsWrite, ScopeSettingsRead, ScopeSettingsWrite,
-	ScopeAccessAdmin, ScopeSession, ScopeHost,
+	ScopeAccessAdmin, ScopeTrackerRead, ScopeTrackerOperate, ScopeSession, ScopeHost,
 }
 
 // ScopeTier is the enforced boundary the scope names resolve to. Scope
@@ -133,13 +141,15 @@ const (
 	TierHost
 )
 
-// scopeTiers is §5's Tier column, declared once. Three observe entries,
+// scopeTiers is §5's Tier column, declared once. Four observe entries,
 // one floor entry, one host entry, and execute for everything else.
 var scopeTiers = map[Scope]ScopeTier{
 	ScopeSession:          TierSession,
 	ScopeThreadsRead:      TierObserve,
 	ScopeFilesRead:        TierObserve,
 	ScopeSettingsRead:     TierObserve,
+	ScopeTrackerRead:      TierObserve,
+	ScopeTrackerOperate:   TierExecute,
 	ScopeThreadsOperate:   TierExecute,
 	ScopeApprovalsRespond: TierExecute,
 	ScopeThreadsAutonomy:  TierExecute,

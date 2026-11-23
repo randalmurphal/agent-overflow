@@ -287,7 +287,7 @@ func settlePumps(t *testing.T, app *App) {
 	app.prUpdates.mu.Unlock()
 	for _, core := range cores {
 		// A pump that stopped runs no turn.
-		if err := app.requestPump(t.Context(), core, &prPumpRequest{}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) {
+		if err := core.Request(t.Context(), prPumpRequest{}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) {
 			t.Fatalf("settle the pumps: %v", err)
 		}
 	}

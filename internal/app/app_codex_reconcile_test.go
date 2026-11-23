@@ -398,7 +398,7 @@ func TestStartSessionTriggersCodexReconcileResumesOnNotLoaded(t *testing.T) {
 		},
 	)
 
-	a.reconcileCodexAfterStart(threadID)
+	a.reconcileCodexAfterStart(threadID, registeredSession(t, a, threadID))
 
 	if got := resumeCalls.Load(); got != 1 {
 		t.Fatalf("resumeCalls = %d, want 1 on notLoaded probe", got)
@@ -424,7 +424,7 @@ func TestStartSessionTriggersCodexReconcileSkipsResumeOnAlive(t *testing.T) {
 		},
 	)
 
-	a.reconcileCodexAfterStart(threadID)
+	a.reconcileCodexAfterStart(threadID, registeredSession(t, a, threadID))
 
 	if got := resumeCalls.Load(); got != 0 {
 		t.Fatalf("resumeCalls = %d, want 0 on idle probe", got)
@@ -456,11 +456,176 @@ func TestStartSessionTriggersCodexReconcileSkipsResumeOnSystemError(t *testing.T
 		},
 	)
 
-	a.reconcileCodexAfterStart(threadID)
+	a.reconcileCodexAfterStart(threadID, registeredSession(t, a, threadID))
 
 	if got := resumeCalls.Load(); got != 0 {
 		t.Fatalf("resumeCalls = %d, want 0 on systemError probe", got)
 	}
+}
+
+// putCodexSession seats a Codex test session under its own token, the way a
+// start does, so a test can replace one session with another.
+func putCodexSession(a *App, threadID, token string, probe func(context.Context) (codex.ProbeResult, error), resume func(context.Context) error) {
+	a.sessionManager().put(threadID, session{
+		Provider: "codex",
+		Token:    token,
+		Codex:    codex.NewProbeAndResumeTestSession(probe, resume),
+	})
+}
+
+// registeredSession is the thread's session as its start registered it.
+func registeredSession(t *testing.T, a *App, threadID string) session {
+	t.Helper()
+	sess, ok := a.sessionManager().get(threadID)
+	if !ok {
+		t.Fatalf("no session registered for %s", threadID)
+	}
+	return sess
+}
+
+// A start's reconcile is for the session that start registered. One that
+// runs after a restart replaced its session leaves the replacement alone.
+func TestReconcileCodexAfterStartKeepsToItsOwnSession(t *testing.T) {
+	t.Parallel()
+	st := storetest.Clone(t)
+	a := newAppWithStore(t, st)
+	threadID := seedCodexThread(t, st, "thread-reconcile-late-worker")
+
+	var oldResumes, newProbes, newResumes atomic.Int32
+	putCodexSession(a, threadID, "old", func(context.Context) (codex.ProbeResult, error) {
+		return codex.ProbeResult{Status: codex.ThreadStatusNotLoaded}, nil
+	}, func(context.Context) error { oldResumes.Add(1); return nil })
+	old := registeredSession(t, a, threadID)
+	putCodexSession(a, threadID, "new", func(context.Context) (codex.ProbeResult, error) {
+		newProbes.Add(1)
+		return codex.ProbeResult{Status: codex.ThreadStatusNotLoaded}, nil
+	}, func(context.Context) error { newResumes.Add(1); return nil })
+
+	a.reconcileCodexAfterStart(threadID, old)
+
+	if probes, resumes := newProbes.Load(), newResumes.Load(); probes != 0 || resumes != 0 {
+		t.Errorf("the replacement was probed %d times and resumed %d times by the old start's reconcile", probes, resumes)
+	}
+	if got := oldResumes.Load(); got != 0 {
+		t.Errorf("the replaced session was resumed %d times", got)
+	}
+}
+
+// A probe's verdict is about the session it probed. When a reconnect
+// replaces that session while the probe is out, the verdict resumes
+// nothing and retires nothing: the replacement's own start did both.
+func TestReconcileCodexDropsAVerdictForAReplacedSession(t *testing.T) {
+	t.Parallel()
+	for _, status := range []codex.ThreadStatusKind{codex.ThreadStatusNotLoaded, codex.ThreadStatusSystemError} {
+		t.Run(string(status), func(t *testing.T) {
+			t.Parallel()
+			st := storetest.Clone(t)
+			a := newAppWithStore(t, st)
+			threadID := seedCodexThread(t, st, "thread-reconcile-replaced-"+string(status))
+
+			var oldResumes, newResumes atomic.Int32
+			var replacementRow string
+			putCodexSession(a, threadID, "old", func(context.Context) (codex.ProbeResult, error) {
+				// The reconnect lands while thread/read is out, and the
+				// replacement starts background work of its own.
+				putCodexSession(a, threadID, "new",
+					func(context.Context) (codex.ProbeResult, error) {
+						return codex.ProbeResult{Status: codex.ThreadStatusIdle}, nil
+					},
+					func(context.Context) error { newResumes.Add(1); return nil })
+				replacementRow = seedRunningBackgroundTool(t, st, threadID, "tool-bg-replacement")
+				return codex.ProbeResult{Status: status}, nil
+			}, func(context.Context) error { oldResumes.Add(1); return nil })
+
+			a.reconcileCodexAfterStart(threadID, registeredSession(t, a, threadID))
+
+			if got := newResumes.Load(); got != 0 {
+				t.Errorf("the replacement was resumed %d times on the old session's verdict", got)
+			}
+			if got := oldResumes.Load(); got != 0 {
+				t.Errorf("the replaced session was resumed %d times", got)
+			}
+			if row, found, err := st.GetThreadItem(threadID, replacementRow); err != nil || !found || row.Status != "running" {
+				t.Errorf("the replacement's background row = %q (found=%v err=%v), want running: the old verdict retired it", row.Status, found, err)
+			}
+		})
+	}
+}
+
+// The retirement a systemError verdict asks for is decided under the thread
+// lock a restart holds, so a restart in flight finishes first and the
+// verdict is then checked against the session it left.
+func TestReconcileCodexRetiresUnderTheThreadLock(t *testing.T) {
+	t.Parallel()
+	st := storetest.Clone(t)
+	a := newAppWithStore(t, st)
+	threadID := seedCodexThread(t, st, "thread-reconcile-locked")
+	putCodexSession(a, threadID, "old", func(context.Context) (codex.ProbeResult, error) {
+		return codex.ProbeResult{Status: codex.ThreadStatusSystemError}, nil
+	}, func(context.Context) error { return nil })
+	old := registeredSession(t, a, threadID)
+
+	// A restart holds the thread lock from its stop through its start.
+	unlock := a.threadLocks().Lock(threadID)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.reconcileCodexAfterStart(threadID, old)
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for a.threadLocks().Refs(threadID) < 2 {
+		if time.Now().After(deadline) {
+			unlock()
+			t.Fatal("the reconcile never waited for the thread lock")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	putCodexSession(a, threadID, "new",
+		func(context.Context) (codex.ProbeResult, error) {
+			return codex.ProbeResult{Status: codex.ThreadStatusIdle}, nil
+		},
+		func(context.Context) error { return nil })
+	row := seedRunningBackgroundTool(t, st, threadID, "tool-bg-restarted")
+	unlock()
+	<-done
+
+	if got, found, err := st.GetThreadItem(threadID, row); err != nil || !found || got.Status != "running" {
+		t.Fatalf("the restarted session's background row = %q (found=%v err=%v), want running", got.Status, found, err)
+	}
+}
+
+// The resume a notLoaded verdict asks for is provider IO, so it runs without
+// the thread lock: a provider that stopped reading must not hold the lock a
+// reconnect needs to close it.
+func TestReconcileCodexResumesWithoutTheThreadLock(t *testing.T) {
+	t.Parallel()
+	st := storetest.Clone(t)
+	a := newAppWithStore(t, st)
+	threadID := seedCodexThread(t, st, "thread-reconcile-resume-unlocked")
+	resuming, release := make(chan struct{}), make(chan struct{})
+	putCodexSession(a, threadID, "only", func(context.Context) (codex.ProbeResult, error) {
+		return codex.ProbeResult{Status: codex.ThreadStatusNotLoaded}, nil
+	}, func(context.Context) error {
+		close(resuming)
+		<-release
+		return nil
+	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.reconcileCodexAfterStart(threadID, registeredSession(t, a, threadID))
+	}()
+	<-resuming
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
+	close(release)
+	<-done
+	if err != nil {
+		t.Fatalf("the thread lock was held across the resume: %v", err)
+	}
+	unlock()
 }
 
 // TestReconcileCodexOnStart_FlipsGhostBackgroundRows covers the Phase-4

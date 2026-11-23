@@ -1,0 +1,31 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Check the revised "
+        },
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "textColor",
+              "attrs": {
+                "color": "#bf2600"
+              }
+            }
+          ],
+          "text": "sources"
+        },
+        {
+          "type": "text",
+          "text": " daily."
+        }
+      ]
+    }
+  ]
+}

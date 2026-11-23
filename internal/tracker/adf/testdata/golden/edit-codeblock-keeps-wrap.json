@@ -1,0 +1,51 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Run this:"
+        }
+      ]
+    },
+    {
+      "type": "codeBlock",
+      "attrs": {
+        "language": "bash",
+        "localId": "cb1",
+        "wrap": true
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "make install PREFIX=~"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Then this:"
+        }
+      ]
+    },
+    {
+      "type": "codeBlock",
+      "attrs": {
+        "language": "go",
+        "wrap": true
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "make test"
+        }
+      ]
+    }
+  ]
+}

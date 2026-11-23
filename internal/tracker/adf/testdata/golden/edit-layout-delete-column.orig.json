@@ -1,0 +1,108 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Intro"
+        }
+      ]
+    },
+    {
+      "type": "layoutSection",
+      "content": [
+        {
+          "type": "layoutColumn",
+          "attrs": {
+            "width": 33.33
+          },
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Left text"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "layoutColumn",
+          "attrs": {
+            "width": 33.33
+          },
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Middle"
+                },
+                {
+                  "type": "text",
+                  "text": " "
+                },
+                {
+                  "type": "status",
+                  "attrs": {
+                    "text": "DOING",
+                    "color": "blue",
+                    "localId": "s-doing"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "layoutColumn",
+          "attrs": {
+            "width": 33.33
+          },
+          "content": [
+            {
+              "type": "extension",
+              "attrs": {
+                "extensionType": "com.atlassian.confluence.macro.core",
+                "extensionKey": "toc",
+                "parameters": {
+                  "macroParams": {
+                    "maxLevel": {
+                      "value": "2"
+                    }
+                  }
+                },
+                "layout": "default"
+              }
+            },
+            {
+              "type": "panel",
+              "attrs": {
+                "panelType": "custom",
+                "panelColor": "#ff0000",
+                "panelIcon": ":star:"
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Right panel"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

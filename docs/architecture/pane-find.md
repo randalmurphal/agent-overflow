@@ -22,7 +22,9 @@ filter and highlighter matches by `utils/findMatch.ts`, terminal find
 included.
 
 Find acts on the keyboard's pane (`stores/panes.svelte#paneCommandTarget`),
-and on no overlay above it; the store drops a pane's state and reads when
+and on no overlay above it; the chat header menu's Find in thread row opens
+its own pane's, through the same `openPaneFindForReader`
+(`utils/paneFindSeed.ts`). The store drops a pane's state and reads when
 the pane leaves the layout.
 
 - Thread timelines use `chat/ThreadPaneFind.svelte` over

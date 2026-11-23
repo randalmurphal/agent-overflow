@@ -1,0 +1,54 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "mention",
+          "attrs": {
+            "accessLevel": "",
+            "id": "acc-user3",
+            "text": "@User 3"
+          }
+        },
+        {
+          "type": "text",
+          "text": " owns this."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Thanks "
+        },
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "acc-user3",
+            "text": "@User 3"
+          }
+        },
+        {
+          "type": "text",
+          "text": " and "
+        },
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "acc-user1",
+            "text": "@User 1"
+          }
+        },
+        {
+          "type": "text",
+          "text": "."
+        }
+      ]
+    }
+  ]
+}

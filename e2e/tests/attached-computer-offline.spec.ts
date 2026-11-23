@@ -11,7 +11,7 @@
 // is as quiet: the closed Projects section gains no status line and runs no
 // animation through the retries, the computer's rows dim only after thirty
 // seconds down, and the Projects menu names its state.
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import type { SeedResult } from './fixtures.js';
@@ -67,6 +67,16 @@ test('an offline paired computer logs once per outage and a draft pane is never 
     }] });
     const localRow = page.getByTestId('thread-row').filter({ hasText: 'Local conversation' }).first();
     const laptopRow = page.getByTestId('thread-row').filter({ hasText: 'Laptop conversation' }).first();
+    // The Regenerate title row of the open thread's header menu, read while
+    // the menu is open. Opened from the keyboard: the offline banner lies
+    // over the header's controls.
+    const withRegenerateRow = async (check: (row: Locator) => Promise<void>) => {
+      await page.getByTestId('chat-header-more').focus();
+      await page.keyboard.press('Enter');
+      await check(page.locator('[data-popover]').getByRole('menuitem', { name: 'Regenerate title' }));
+      await page.keyboard.press('Escape');
+      await expect(page.locator('[data-popover]')).toHaveCount(0);
+    };
     const openLocal = async () => {
       await localRow.click();
       await expect(page.getByTestId('message-timeline-scroll')).toBeVisible();
@@ -83,7 +93,10 @@ test('an offline paired computer logs once per outage and a draft pane is never 
       await expect(input).toBeDisabled();
       await expect(input).toHaveAttribute('placeholder', / is offline$/);
       // No control on the thread says the laptop refused this device.
-      await expect(page.getByTestId('thread-title-regenerate')).not.toHaveAttribute('title', 'Not granted to this device');
+      await withRegenerateRow(async (row) => {
+        await expect(row).toHaveCount(1);
+        await expect(row).not.toHaveAttribute('title', 'Not granted to this device');
+      });
     };
     // The tray's own refresh trigger for the open thread.
     const poke = async () => {
@@ -166,9 +179,10 @@ test('an offline paired computer logs once per outage and a draft pane is never 
     // laptop's grant: still offline, never "read-only", and a control that
     // grant switches off says the laptop has to connect.
     await expectLaptopThreadSaysOffline();
-    const regenerate = page.getByTestId('thread-title-regenerate');
-    await expect(regenerate).toBeDisabled();
-    await expect(regenerate).toHaveAttribute('title', 'Unavailable until this computer connects');
+    await withRegenerateRow(async (row) => {
+      await expect(row).toBeDisabled();
+      await expect(row).toHaveAttribute('title', 'Unavailable until this computer connects');
+    });
   } finally {
     await page.close();
     await remote?.close();

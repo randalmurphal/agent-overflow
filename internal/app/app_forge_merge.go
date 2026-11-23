@@ -150,7 +150,7 @@ func (a *App) refreshPRSnapshot(ctx context.Context, pr gitops.PRReference) uint
 	if pump == nil {
 		return 0
 	}
-	if err := a.requestPump(ctx, &pump.pumpCore, &prPumpRequest{snapshot: true}); err != nil {
+	if err := pump.Request(ctx, prPumpRequest{snapshot: true}); err != nil {
 		if !errors.Is(err, errPRUpdatesUnknownSubscription) && !errors.Is(err, context.Canceled) {
 			log.Printf("pr updates: refresh after action failed for pr=%s: %v", prUpdateKey(pr), err)
 		}

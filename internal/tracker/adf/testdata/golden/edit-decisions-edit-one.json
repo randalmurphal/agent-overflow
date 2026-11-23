@@ -1,0 +1,71 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Outcomes"
+        }
+      ]
+    },
+    {
+      "type": "decisionList",
+      "attrs": {
+        "localId": "dl-1"
+      },
+      "content": [
+        {
+          "type": "decisionItem",
+          "attrs": {
+            "localId": "d-1",
+            "state": "DECIDED"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Ship the April release"
+            }
+          ]
+        },
+        {
+          "type": "decisionItem",
+          "attrs": {
+            "localId": "d-2",
+            "state": "DECIDED"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Freeze the schema"
+            }
+          ]
+        },
+        {
+          "type": "decisionItem",
+          "attrs": {
+            "localId": "d-3",
+            "state": "DECIDED"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Hire a second reviewer"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "End"
+        }
+      ]
+    }
+  ]
+}

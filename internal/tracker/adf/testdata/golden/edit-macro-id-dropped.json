@@ -1,0 +1,45 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "heading",
+      "attrs": {
+        "level": 2
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Open stories"
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "attrs": {
+        "level": 2
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Open bugs"
+        }
+      ]
+    },
+    {
+      "type": "extension",
+      "attrs": {
+        "extensionKey": "jira",
+        "extensionType": "com.atlassian.confluence.macro.core",
+        "localId": "j-1",
+        "parameters": {
+          "macroParams": {
+            "jqlQuery": {
+              "value": "type = Bug"
+            }
+          }
+        }
+      }
+    }
+  ]
+}
