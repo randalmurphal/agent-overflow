@@ -112,7 +112,7 @@ const TRANSITION_CORPUS = [
 describe('parseBlocks append differential', () => {
   it('keeps block-only list and table tokens free of render child arrays', () => {
     const list = '- first\n- second\n- third';
-    const listToken = markedListBlock.tokenizer.call(
+    const listToken = markedListBlock.tokenizer!.call(
       { lexer: { options: { gfm: true, pedantic: false } } } as never,
       list,
       [],
@@ -124,7 +124,7 @@ describe('parseBlocks append differential', () => {
     });
 
     const table = '| H | V |\n| --- | --- |\n| a | 1 |\n| b | 2 |';
-    const tableToken = markedTableBlock.tokenizer.call(
+    const tableToken = markedTableBlock.tokenizer!.call(
       {} as never,
       table,
       [],
@@ -201,13 +201,13 @@ describe('parseBlocks append differential', () => {
         .toBeUndefined();
       const footnotes = markedFootnote();
       const footnote = footnotes.find((extension) => extension.level === 'block');
-      expect(footnote?.tokenizer.call(
+      expect(footnote?.tokenizer!.call(
         { lexer: {} } as never,
         'Ordinary prose cannot open a footnote.',
         [],
       )).toBeUndefined();
       const footnoteRef = footnotes.find((extension) => extension.level === 'inline');
-      expect(footnoteRef?.tokenizer.call(
+      expect(footnoteRef?.tokenizer!.call(
         { lexer: {} } as never,
         'Ordinary prose cannot reference a footnote.',
         [],
@@ -215,13 +215,13 @@ describe('parseBlocks append differential', () => {
       const blockMath = markedMath.find((extension) => extension.level === 'block');
       const inlineMath = markedMath.find((extension) => extension.level === 'inline');
       for (const extension of [blockMath, inlineMath, markedSub, markedSup, markedBr, markedCitations]) {
-        expect(extension?.tokenizer.call(
+        expect(extension?.tokenizer!.call(
           { lexer: {} } as never,
           'Ordinary prose cannot open an inline extension.',
           [],
         )).toBeUndefined();
       }
-      expect(markedDl.tokenizer.call(
+      expect(markedDl.tokenizer!.call(
         {} as never,
         'Ordinary prose cannot open a description list.',
         [],

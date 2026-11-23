@@ -54,8 +54,8 @@ const noCompletionSiblingIndexedSQL = `NOT EXISTS (
 
 // liveBackgroundLaunchSQL is the top-level live background launch: a
 // backgrounded `tool_call` still marked running, at the top level, that no
-// session teardown has marked inactive. It is the row the tray advertises, the
-// flush queue waits on, and the reaper settles.
+// session teardown has marked inactive. It is the row the flush queue waits
+// on and a revert's cleanup marks inactive.
 //
 // The empty-`parent_id` term is the invariant-24 half — whether the tray SHOWS a nested
 // background Bash and whether that Bash blocks the queue are different
@@ -118,10 +118,10 @@ func (s *Store) HasRunningTopLevelForegroundToolCall(threadID string) (bool, err
 // Monitor, claude-wire.md §E7) is still running. A watch observes; it
 // never produces the result a queued user send could be waiting on, and a
 // persistent watch runs until session end, so counting it would starve
-// the flush queue for hours. Only the flush-queue drain uses this gate: the
-// reaper and revert gate keep the ListRunningBackgroundToolCalls /
-// CountLiveRunningBackgroundToolCalls views because closing or restarting
-// the session WOULD kill a running watch.
+// the flush queue for hours. Only the flush-queue drain uses this gate:
+// the gates on ending the session count a watch
+// (CountLiveRunningBackgroundToolCalls), because closing or restarting the
+// session WOULD kill it.
 func (s *Store) HasQueueBlockingBackgroundToolCall(threadID string) (bool, error) {
 	var exists int
 	if err := s.reader().QueryRow(
@@ -160,8 +160,11 @@ const countLiveBackgroundLaunchesSQL = `SELECT COUNT(*)
 // CountLiveRunningBackgroundToolCalls counts the live background launches
 // a session stop kills: every depth, since a background launch inside an
 // agent owns its own rows and outlives the agent's end (agent_rows.go). It
-// is the count a revert, a session restart and a workspace change confirm;
-// the flush queue and the reaper keep their top-level gates.
+// is the store's half of the count every gate on ending a session reads
+// (App.countRunningBackgroundTasks). A launch stays `running` after it
+// leaves the live set (a revert's cleanup, a parked run a resume retired, a
+// Codex child that ended), so a reader that leaves out the flag counts
+// work that is gone. The flush queue keeps its top-level gate.
 func (s *Store) CountLiveRunningBackgroundToolCalls(threadID string) (int, error) {
 	var count int
 	if err := s.reader().QueryRow(countLiveBackgroundLaunchesSQL, threadID).Scan(&count); err != nil {
@@ -362,48 +365,6 @@ func forceCloseRunningToolCallsTx(tx *sql.Tx, w *cardWrite, turnIndex int, summa
 	return flipped, nil
 }
 
-// ListRunningBackgroundToolCalls returns every still-`running` +
-// `is_background=1` `tool_call` row with no completion sibling for the
-// given thread. The on-reopen Codex reconciler uses it to scope its flip
-// when the probe reports a systemError — those are the only rows whose
-// disposition is uncertain after a session restart (inline tool calls
-// complete or error in the same turn; background rows with completion
-// siblings are already settled).
-//
-// The filter pushes down into SQLite (vs. fetching ListItems and
-// filtering in Go) so threads with deep history don't pay the
-// deserialization cost on every reopen. Reopen is a cold path today but
-// the query is narrow enough that a dedicated method is cheaper than a
-// full table hydration.
-func (s *Store) ListRunningBackgroundToolCalls(threadID string) ([]Item, error) {
-	rows, err := s.reader().Query(
-		`SELECT `+itemColumns+`
-		   FROM items
-		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id`+servedItemJoin+`
-		  WHERE items.thread_id = ?
-		    AND items.kind = 'tool_call'
-		    AND items.status = 'running'
-		    AND items.is_background = 1
-		    AND `+noCompletionSiblingSQL+`
-		  ORDER BY items.turn_index, items.item_index`,
-		threadID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: list running background tool calls for thread %s: %w", threadID, err)
-	}
-	defer rows.Close()
-
-	var items []Item
-	for rows.Next() {
-		it, err := scanItemRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan running bg tool call row: %w", err)
-		}
-		items = append(items, it)
-	}
-	return items, rows.Err()
-}
-
 func (s *Store) ListIncompleteCodexSubagentLaunches(threadID string) ([]Item, error) {
 	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
@@ -557,7 +518,7 @@ func (s *Store) listRecoverableClaudeBackgroundLaunches(threadID string) ([]Item
 		   FROM items
 		   JOIN threads ON threads.id = items.thread_id
 		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id` + servedItemJoin + `
-		  WHERE threads.provider IN ('claude', 'claude-tui')
+		  WHERE threads.provider IN ('claude', 'claude-tui', 'agy')
 		    AND items.kind = 'tool_call'
 		    AND items.status = 'running'
 		    AND items.is_background = 1

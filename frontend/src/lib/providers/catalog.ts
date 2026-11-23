@@ -16,6 +16,25 @@ export type ProviderBackgroundStop =
   | 'codex-background-terminals'
   | 'none';
 
+export type ProviderRollbackGranularity = 'turn' | 'item' | 'none';
+
+export type ProviderSlashSource = 'claude' | 'codex' | 'acp' | 'none';
+
+// Provider-level feature gates that default CLOSED (false/'none') for unknown
+// providers, decoupling settings sections, account management, text generation,
+// slash-command sources, and conversation transfers from PROVIDER_SETTINGS_ORDER.
+export interface ProviderFeatures {
+  accounts: boolean;
+  autoCompact: boolean;
+  promptOverrides: boolean;
+  disabledTools: boolean;
+  textGeneration: boolean;
+  ownMemory: boolean;
+  transfer: boolean;
+  rollbackGranularity: ProviderRollbackGranularity;
+  slashSource: ProviderSlashSource;
+}
+
 export interface ProviderEffortOption {
   value: ReasoningEffort;
   label: string;
@@ -96,18 +115,20 @@ export interface ProviderDefinition {
     // The provider's OWN enable flag — the key its Settings toggle writes.
     // Reads go through `providerIsEnabled`, never this key directly, so a
     // dependent provider's parent flag cannot be forgotten at a call site.
-    enabledKey: 'claudeEnabled' | 'codexEnabled' | 'claudeTuiEnabled';
-    pathKey: 'claudeBinaryPath' | 'codexBinaryPath';
-    standardCompactKey:
+    enabledKey: 'claudeEnabled' | 'codexEnabled' | 'claudeTuiEnabled' | 'agyEnabled';
+    pathKey: 'claudeBinaryPath' | 'codexBinaryPath' | 'agyBinaryPath';
+    standardCompactKey?:
       | 'claudeAutoCompactStandardPercent'
       | 'codexAutoCompactStandardPercent';
-    extendedCompactKey:
+    extendedCompactKey?:
       | 'claudeAutoCompactExtendedPercent'
       | 'codexAutoCompactExtendedPercent';
-    customEnvKey: 'claudeCustomEnv' | 'codexCustomEnv';
+    customEnvKey: 'claudeCustomEnv' | 'codexCustomEnv' | 'agyCustomEnv';
   };
+  customEnvPlaceholder?: string;
   backgroundStop: ProviderBackgroundStop;
   capabilities: ProviderCapabilities;
+  features: ProviderFeatures;
 }
 
 export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
@@ -136,8 +157,20 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       extendedCompactKey: 'claudeAutoCompactExtendedPercent',
       customEnvKey: 'claudeCustomEnv',
     },
+    customEnvPlaceholder: 'ANTHROPIC_BASE_URL',
     backgroundStop: 'claude-task',
     capabilities: FULL_CAPABILITIES,
+    features: {
+      accounts: true,
+      autoCompact: true,
+      promptOverrides: true,
+      disabledTools: true,
+      textGeneration: true,
+      ownMemory: true,
+      transfer: true,
+      rollbackGranularity: 'item',
+      slashSource: 'claude',
+    },
   },
   codex: {
     id: 'codex',
@@ -167,8 +200,20 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       extendedCompactKey: 'codexAutoCompactExtendedPercent',
       customEnvKey: 'codexCustomEnv',
     },
+    customEnvPlaceholder: 'HTTPS_PROXY',
     backgroundStop: 'codex-background-terminals',
     capabilities: FULL_CAPABILITIES,
+    features: {
+      accounts: true,
+      autoCompact: true,
+      promptOverrides: true,
+      disabledTools: true,
+      textGeneration: true,
+      ownMemory: true,
+      transfer: true,
+      rollbackGranularity: 'turn',
+      slashSource: 'codex',
+    },
   },
   // claude-tui reuses claude's binary, auth, model catalog, effort set, and
   // context tiers — the only difference is the interactive PTY surface. So its
@@ -210,8 +255,57 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       extendedCompactKey: 'claudeAutoCompactExtendedPercent',
       customEnvKey: 'claudeCustomEnv',
     },
+    customEnvPlaceholder: 'ANTHROPIC_BASE_URL',
     backgroundStop: 'none',
     capabilities: TUI_CAPABILITIES,
+    features: {
+      accounts: false,
+      autoCompact: true,
+      promptOverrides: true,
+      disabledTools: true,
+      textGeneration: false,
+      ownMemory: true,
+      transfer: false,
+      rollbackGranularity: 'none',
+      slashSource: 'claude',
+    },
+  },
+  agy: {
+    id: 'agy',
+    label: 'Antigravity',
+    cliLabel: 'Antigravity CLI',
+    shortLabel: 'A',
+    badgeClass: 'bg-provider-agy/10 text-provider-agy',
+    installActionLabel: 'Install Antigravity CLI',
+    textGenerationEffortOptions: [
+      { value: 'low', label: 'Low' },
+      { value: 'medium', label: 'Medium' },
+      { value: 'high', label: 'High' },
+      { value: 'xhigh', label: 'xHigh' },
+    ],
+    contextLabels: {
+      standard: '1m',
+      extended: '1m',
+    },
+    settings: {
+      enabledKey: 'agyEnabled',
+      pathKey: 'agyBinaryPath',
+      customEnvKey: 'agyCustomEnv',
+    },
+    customEnvPlaceholder: 'HTTPS_PROXY',
+    backgroundStop: 'none',
+    capabilities: FULL_CAPABILITIES,
+    features: {
+      accounts: true,
+      autoCompact: false,
+      promptOverrides: true,
+      disabledTools: false,
+      textGeneration: true,
+      ownMemory: false,
+      transfer: true,
+      rollbackGranularity: 'item',
+      slashSource: 'acp',
+    },
   },
 };
 
@@ -219,11 +313,11 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
 // catalog, accounts, context budgets. claude-tui is intentionally absent: it
 // has none of those (it reuses claude's), and its one setting, the enable
 // flag, renders inside claude's section via `dependentProviders`.
-export const PROVIDER_SETTINGS_ORDER: ProviderID[] = ['claude', 'codex'];
+export const PROVIDER_SETTINGS_ORDER: ProviderID[] = ['claude', 'codex', 'agy'];
 // claude-tui follows claude in the model picker so the two Claude surfaces read
 // as a pair. Membership here is layout only — whether an entry is actually
 // OFFERED is `providerIsEnabled`.
-export const PROVIDER_MODEL_MENU_ORDER: ProviderID[] = ['codex', 'claude', 'claude-tui'];
+export const PROVIDER_MODEL_MENU_ORDER: ProviderID[] = ['codex', 'claude', 'claude-tui', 'agy'];
 
 export function getProviderDefinition(provider: ProviderID): ProviderDefinition;
 export function getProviderDefinition(
@@ -317,4 +411,22 @@ export function providerSupports(
 ): boolean {
   const definition = getProviderDefinition(provider);
   return definition ? definition.capabilities[capability] : true;
+}
+
+type BooleanProviderFeature = {
+  [K in keyof ProviderFeatures]: ProviderFeatures[K] extends boolean ? K : never;
+}[keyof ProviderFeatures];
+
+export function providerHasFeature(
+  provider: string | null | undefined,
+  feature: BooleanProviderFeature,
+): boolean {
+  const definition = getProviderDefinition(provider);
+  return definition ? definition.features[feature] : false;
+}
+
+export function standaloneProvidersWithFeature(
+  feature: BooleanProviderFeature,
+): ProviderID[] {
+  return PROVIDER_SETTINGS_ORDER.filter((id) => PROVIDER_DEFINITIONS[id].features[feature]);
 }

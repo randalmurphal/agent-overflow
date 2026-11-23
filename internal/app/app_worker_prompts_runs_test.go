@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
@@ -96,7 +97,13 @@ func testWorkerPromptsByRun(t *testing.T, placement string) {
 			app, bus := setupE2EApp(t)
 			app.triage.SetPromptRouter(app.routeWorkerPrompt)
 			bus.mu.Lock()
-			bus.tap = app.tapWorkerPrompt
+			// The two taps of a.emit this test reads through, in its order:
+			// the Agents rows' record of a live worker is written by the
+			// second.
+			bus.tap = func(name eventchan.Channel, data any) {
+				app.tapWorkerPrompt(name, data)
+				app.tapThreadAgentRows(name, data)
+			}
 			bus.mu.Unlock()
 			// The rest passes are held back: the test ends the spawn's run itself.
 			r := &app.threadRequests

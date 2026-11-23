@@ -3,7 +3,8 @@
 // recover its history and accept new work without reloading or re-pairing.
 // Both processes are real isolated hosts; this does not stand in for OS- or
 // release-specific Windows/Android validation.
-import { expect, test, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { expect, test } from './base-test.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';

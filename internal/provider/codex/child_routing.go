@@ -287,13 +287,21 @@ func (s *Session) expireDeferredChildWireEvents(providerThreadID string) {
 
 func (s *Session) drainDeferredChildWireEvents(providerThreadIDs ...string) {
 	for _, providerThreadID := range providerThreadIDs {
-		for _, event := range s.takeDeferredChildWireEvents(providerThreadID) {
-			if event.RequestID == "" {
-				s.dispatchNotification(event.Method, event.Params)
-				continue
+		var needsFlush bool
+		if s.conn != nil {
+			if s.conn.registerChildRoute(providerThreadID, s) {
+				needsFlush = true
 			}
-			requestID := json.Number(event.RequestID)
-			s.dispatchServerRequest(event.Method, &requestID, event.Params, event.RawLine)
+		}
+		// Enqueue session-quarantined child frames through enqueueEarlyFrames
+		// (never through enqueueFrameIfPending's backpressure wait) so a
+		// re-entrant drain inside flushEarlyFrames can never wait on itself.
+		if events := s.takeDeferredChildWireEvents(providerThreadID); len(events) > 0 {
+			s.enqueueEarlyFrames(events)
+			needsFlush = true
+		}
+		if needsFlush {
+			s.flushEarlyFrames()
 		}
 	}
 }
@@ -344,6 +352,22 @@ func (s *Session) warnChildRoutingOverflow(providerThreadID, method string, requ
 }
 
 func (s *Session) dispatchServerRequest(method string, id *json.Number, params json.RawMessage, line []byte) {
+	var reqID string
+	if id != nil {
+		reqID = id.String()
+	}
+	if s.enqueueFrameIfPending(deferredChildWireEvent{
+		Method:    method,
+		RequestID: reqID,
+		Params:    params,
+		RawLine:   line,
+	}) {
+		return
+	}
+	s.dispatchServerRequestDirect(method, id, params, line)
+}
+
+func (s *Session) dispatchServerRequestDirect(method string, id *json.Number, params json.RawMessage, line []byte) {
 	providerThreadID := providerThreadIDFromParams(params)
 	requestID := ""
 	if id != nil {

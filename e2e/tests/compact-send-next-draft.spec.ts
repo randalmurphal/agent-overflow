@@ -1,6 +1,6 @@
 // Hold an outbound send while its cleared composer saves the next draft.
 // The real wire/host must consume the captured draft, never this newer one.
-import { expect, test } from '@playwright/test';
+import { expect, test } from './base-test.js';
 import { launchHarness } from '../src/harness.js';
 import { RESULT_LINE, advance, claudeScenario, emit, seedAgentThread, startMock, textLines, waitForGate } from './agent-visibility-helpers.js';
 import { confirmOnHost, mintInvite, nonLoopbackIPv4, redeemOnScreen } from './offhost-helpers.js';

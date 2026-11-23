@@ -83,6 +83,15 @@ func (a Identity) Confirms(b Identity) bool {
 		strings.EqualFold(a.Email, b.Email) && !a.Contradicts(b)
 }
 
+// Proves reports whether b is certainly a's login: emails known and equal,
+// and both workspace ids known and equal. Confirms accepts an observation
+// that names no workspace, which two saved accounts sharing one email can
+// both satisfy; a write only the account's own login may make, or a reset
+// spent on it, asks this instead.
+func (a Identity) Proves(b Identity) bool {
+	return a.Confirms(b) && a.OrgID != "" && b.OrgID != ""
+}
+
 // ErrAmbiguousIdentity reports that an observed identity matches more
 // than one saved account and nothing observed can pick between them —
 // several organizations share the email and the observation carries no

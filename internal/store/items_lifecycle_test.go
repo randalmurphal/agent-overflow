@@ -1606,15 +1606,11 @@ func TestItemsDecisionCHECKRejectsBogusValue(t *testing.T) {
 	}
 }
 
-// TestListRunningBackgroundToolCallsFiltersCorrectly exercises the
-// store-level query the on-reopen reconciler uses. We seed a mixed set
-// of item rows and assert only the running + is_background=1 +
-// kind=tool_call rows come back.
-//
-// Without the push-down filter the reconciler would have to scan every
-// item on every reopen; the test guards against a regression that
-// would accidentally return, e.g., completed rows or inline tool calls.
-func TestListRunningBackgroundToolCallsFiltersCorrectly(t *testing.T) {
+// TestCountLiveRunningBackgroundToolCallsFiltersCorrectly seeds a mixed
+// set of item rows and asserts the count holds only the live background
+// launch: running, is_background=1, kind=tool_call, not settled by a
+// completion sibling and not marked inactive.
+func TestCountLiveRunningBackgroundToolCallsFiltersCorrectly(t *testing.T) {
 	s := newTestStore(t)
 	now := int64(1)
 	if err := s.CreateThread(Thread{
@@ -1697,37 +1693,25 @@ func TestListRunningBackgroundToolCallsFiltersCorrectly(t *testing.T) {
 		t.Fatalf("seed skip-other-thread: %v", err)
 	}
 
-	got, err := s.ListRunningBackgroundToolCalls("t-reconcile")
-	if err != nil {
-		t.Fatalf("ListRunningBackgroundToolCalls: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("got %d rows, want 1", len(got))
-	}
-	if got[0].ID != "match-running-bg" {
-		t.Fatalf("got[0].ID = %q, want match-running-bg", got[0].ID)
-	}
-}
-
-// TestListRunningBackgroundToolCallsEmptyThread returns no rows and no
-// error when the thread has no items — the reconciler tolerates an
-// empty thread and this pins that contract.
-func TestListRunningBackgroundToolCallsEmptyThread(t *testing.T) {
-	s := newTestStore(t)
-	now := int64(1)
-	if err := s.CreateThread(Thread{
-		ID: "t-empty", ProjectID: defaultTestProjectID, Title: "Empty", Provider: "codex", WorkspacePath: "/tmp",
-		CreatedAt: now, UpdatedAt: now,
+	// Seed (should NOT match): a running background launch a writer took
+	// out of the live set. It keeps status=running and has no sibling.
+	if _, err := appendCarded(s, Item{
+		ID: "skip-inactive-bg", ThreadID: "t-reconcile", TurnIndex: 1,
+		Kind: "tool_call", Role: "assistant", Status: "running",
+		IsBackground: true, Summary: "Bash: left", ToolName: "Bash",
+		Meta: `{"live_background_active":false}`, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
-		t.Fatalf("create thread: %v", err)
+		t.Fatalf("seed skip-inactive-bg: %v", err)
 	}
 
-	got, err := s.ListRunningBackgroundToolCalls("t-empty")
-	if err != nil {
-		t.Fatalf("ListRunningBackgroundToolCalls: %v", err)
+	if got, err := s.CountLiveRunningBackgroundToolCalls("t-reconcile"); err != nil || got != 1 {
+		t.Fatalf("CountLiveRunningBackgroundToolCalls = %d, %v; want 1 (match-running-bg)", got, err)
 	}
-	if len(got) != 0 {
-		t.Fatalf("got %d rows on empty thread, want 0", len(got))
+	if err := s.DeleteThreadItem("t-reconcile", "match-running-bg"); err != nil {
+		t.Fatalf("delete match-running-bg: %v", err)
+	}
+	if got, err := s.CountLiveRunningBackgroundToolCalls("t-reconcile"); err != nil || got != 0 {
+		t.Fatalf("CountLiveRunningBackgroundToolCalls without the live launch = %d, %v; want 0", got, err)
 	}
 }
 
@@ -2633,7 +2617,7 @@ func TestCompletionSiblingProbesUseIndex(t *testing.T) {
 			args: []any{"thread-plan"},
 		},
 		{
-			// ListRunningBackgroundToolCalls / ListIncompleteCodexSubagentLaunches /
+			// ListIncompleteCodexSubagentLaunches /
 			// GetIncompleteCodexSubagentLaunch.
 			name: "payload left join list",
 			query: `SELECT ` + itemColumns + `
@@ -2641,7 +2625,7 @@ func TestCompletionSiblingProbesUseIndex(t *testing.T) {
 			   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id` + servedItemJoin + `
 			  WHERE items.thread_id = ?
 			    AND items.kind = 'tool_call'
-			    AND items.status = 'running'
+			    AND items.tool_name = 'collab_agent'
 			    AND items.is_background = 1
 			    AND ` + noCompletionSiblingSQL + `
 			  ORDER BY items.turn_index, items.item_index`,

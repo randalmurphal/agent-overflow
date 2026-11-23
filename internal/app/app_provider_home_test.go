@@ -75,11 +75,16 @@ func TestProviderHomeSeamPinsEveryProviderPathUnderTheOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("codexConfigTOMLPath: %v", err)
 	}
+	agyMCPJSON, err := app.agyMCPConfigJSONPath()
+	if err != nil {
+		t.Fatalf("agyMCPConfigJSONPath: %v", err)
+	}
 
 	for _, tc := range []struct{ name, got string }{
 		{"claude config json", claudeJSON},
 		{"claude projects dir", projects},
 		{"codex config toml", codexTOML},
+		{"agy mcp config json", agyMCPJSON},
 	} {
 		if !strings.HasPrefix(tc.got, pinned+string(os.PathSeparator)) {
 			t.Errorf("%s = %q, want it under the pinned home %q", tc.name, tc.got, pinned)
@@ -121,6 +126,7 @@ var providerHomeSeamScanRoots = []string{
 	"internal/provider",
 	"internal/claudeconfig",
 	"internal/codexconfig",
+	"internal/agyconfig",
 }
 
 // providerHomeSeamAllowlist names the files whose os.UserHomeDir() call was

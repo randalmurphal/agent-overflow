@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Duplex } from 'node:stream';
-import { test, expect } from '@playwright/test';
+import { test, expect } from './base-test.js';
 import { HARNESS_TIMING, launchHarness, type HarnessLaunchRecord } from '../src/harness.js';
 import { HarnessApp } from '../src/harness-app.js';
 import { BackendConsoleLog } from '../src/harness-console-log.js';
@@ -536,7 +536,7 @@ test('writes a backend console, launch record and own logs as diagnostics', asyn
   if (process.platform === 'linux') expect(await descriptorsOn(consoleLogPath(harness.bootstrap.dataRoot))).toBe(0);
 });
 
-// An agent session running the suite exports its live AO_TOKEN, and a
+// An agent session running the suite exports AO_IN_SESSION, and a
 // developer's shell holds provider and service keys. None may reach a
 // backend the suite starts.
 test('a launched backend inherits only the allowlisted environment', async ({}, testInfo) => {
@@ -544,7 +544,7 @@ test('a launched backend inherits only the allowlisted environment', async ({}, 
   // throwaway directory here, so even a backend that kept it would never
   // see the real one.
   const fakeHome = await mkdtemp(path.join(tmpdir(), 'ao-harness-fake-home-'));
-  const canaries = { AO_TOKEN: 'canary-token', FAKE_SECRET: 'canary-secret', AO_HARNESS_KEEP_HOME: '1', HOME: fakeHome };
+  const canaries = { AO_IN_SESSION: 'canary-in-session', AO_TOKEN: 'canary-token', FAKE_SECRET: 'canary-secret', AO_HARNESS_KEEP_HOME: '1', HOME: fakeHome };
   const previous = Object.fromEntries(Object.keys(canaries).map((name) => [name, process.env[name]]));
   Object.assign(process.env, canaries);
   let harness: Awaited<ReturnType<typeof launchHarness>>;
@@ -587,6 +587,7 @@ test('the launch environment keeps the allowlist and every override', async () =
     AO_HARNESS_DEBUG: '1',
     AO_HARNESS_KEEP_HOME: '1',
     AO_MOCKPROVIDER: '/mock',
+    AO_IN_SESSION: 'canary',
     AO_TOKEN: 'canary',
     AO_ENDPOINT: 'canary',
     AO_THREAD_ID: 'canary',

@@ -638,6 +638,20 @@ var channelPolicies = []ChannelPolicy{
 			"its quota has to say so rather than go quiet.",
 	},
 	{
+		Channel:   eventchan.ProviderAccountListing,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeAccessAdmin,
+		Why: "Payload-less refetch signal for the account LISTING when " +
+			"only what a card shows changed (its usage resets or an " +
+			"unsettled reset), not the set. Its own channel so a client " +
+			"re-reads the listing and drops nothing that follows the set " +
+			"(provider:accounts_changed also drops Claude command catalogs " +
+			"and re-reads dictation sources). Scope, audience and " +
+			"latest-only retention for provider:accounts_changed's reasons: " +
+			"it answers to ListProviderAccounts and carries nothing.",
+	},
+	{
 		Channel:   eventchan.ProviderAccountsChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,

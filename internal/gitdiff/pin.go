@@ -456,26 +456,28 @@ func (s *Sides) ReadWorktreeFile(path, blob string, buf []byte) error {
 	return nil
 }
 
-// HasFilter reports whether path has a `filter` attribute in the working
-// tree, so its bytes on disk are not the bytes git stores for it.
-func (s *Sides) HasFilter(ctx context.Context, path string) (bool, error) {
+// Filter answers the value of path's `filter` attribute in the working
+// tree, the name of the filter driver its bytes on disk pass through on
+// their way to and from git ("lfs" for Git LFS, "set" for the attribute
+// with no value), or "" when it has none.
+func (s *Sides) Filter(ctx context.Context, path string) (string, error) {
 	if _, err := CleanPath(path); err != nil {
-		return false, err
+		return "", err
 	}
 	stdout, _, _, err := runGit(ctx, s.workspace, nil, false, "check-attr", "-z", "filter", "--", path)
 	if err != nil {
-		return false, fmt.Errorf("gitdiff: read attributes of %s: %w", path, err)
+		return "", fmt.Errorf("gitdiff: read attributes of %s: %w", path, err)
 	}
 	// <path> NUL filter NUL <value> NUL
 	fields := strings.Split(strings.TrimSuffix(stdout, "\x00"), "\x00")
 	if len(fields) != 3 {
-		return false, fmt.Errorf("gitdiff: malformed check-attr output %q", stdout)
+		return "", fmt.Errorf("gitdiff: malformed check-attr output %q", stdout)
 	}
 	switch fields[2] {
 	case "unspecified", "unset":
-		return false, nil
+		return "", nil
 	}
-	return true, nil
+	return fields[2], nil
 }
 
 // lfsPointerPrefix opens every Git LFS pointer file
@@ -489,6 +491,52 @@ const MaxLFSPointerBytes = 1024
 // stores for a file whose content lives on an LFS server.
 func IsLFSPointer(data []byte) bool {
 	return len(data) < MaxLFSPointerBytes && bytes.HasPrefix(data, []byte(lfsPointerPrefix))
+}
+
+// LFSPointer is the object a Git LFS pointer names: its sha256, lowercase
+// hex, and its size in bytes.
+type LFSPointer struct {
+	OID  string
+	Size int64
+}
+
+// ParseLFSPointer reads data as a Git LFS pointer of exactly the spec's
+// v1 shape: the version line, "oid sha256:<64 lowercase hex>" and
+// "size <decimal>", each ending in a newline, and nothing else. A pointer
+// with extensions or other keys is false: its object is not the file's
+// content as committed.
+func ParseLFSPointer(data []byte) (LFSPointer, bool) {
+	if !IsLFSPointer(data) {
+		return LFSPointer{}, false
+	}
+	rest, ok := bytes.CutPrefix(data, []byte(lfsPointerPrefix+"oid sha256:"))
+	if !ok || len(rest) < 65 || rest[64] != '\n' {
+		return LFSPointer{}, false
+	}
+	oid := string(rest[:64])
+	for _, c := range oid {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return LFSPointer{}, false
+		}
+	}
+	size, ok := bytes.CutPrefix(rest[65:], []byte("size "))
+	if !ok {
+		return LFSPointer{}, false
+	}
+	size, ok = bytes.CutSuffix(size, []byte("\n"))
+	if !ok || len(size) == 0 || len(size) > 19 || (size[0] == '0' && len(size) > 1) {
+		return LFSPointer{}, false
+	}
+	for _, c := range size {
+		if c < '0' || c > '9' {
+			return LFSPointer{}, false
+		}
+	}
+	n, err := strconv.ParseInt(string(size), 10, 64)
+	if err != nil {
+		return LFSPointer{}, false
+	}
+	return LFSPointer{OID: oid, Size: n}, true
 }
 
 // BlobID is git's object ID of a blob holding data, in the hash whose hex

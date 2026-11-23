@@ -6,8 +6,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/google/uuid"
-
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/pump"
@@ -115,6 +113,7 @@ type prListPump struct {
 }
 
 type prListHandle struct {
+	tie transport.Tie
 	ref *pump.Handle[prPumpRequest]
 }
 
@@ -134,10 +133,14 @@ func prListCleanupKey(id string) string { return "pr-list:" + id }
 //ao:route selected
 //ao:callerbound
 func (a *App) SubscribePRList(ctx context.Context) (PRListSubscriptionResult, error) {
+	conn, err := transport.CallerConnection(ctx)
+	if err != nil {
+		return PRListSubscriptionResult{}, err
+	}
 	if a.shuttingDown.Load() {
 		return PRListSubscriptionResult{}, ErrShuttingDown
 	}
-	id, pump, start, published, seq, err := a.takePRListHandle()
+	id, pump, start, published, seq, err := a.takePRListHandle(conn)
 	if err != nil {
 		return PRListSubscriptionResult{}, err
 	}
@@ -145,12 +148,6 @@ func (a *App) SubscribePRList(ctx context.Context) (PRListSubscriptionResult, er
 		// The pump's first forge read follows the answer: it starts once
 		// the stored copy is read, on every path out.
 		defer a.prUpdates.wg.Go(func() { a.pumpPRList(pump) })
-	}
-	if state := transport.ConnStateFromContext(ctx); state != nil {
-		if !state.BindCleanup(prListCleanupKey(id), func() { a.unsubscribePRList(id) }) {
-			a.unsubscribePRList(id)
-			return PRListSubscriptionResult{}, errors.New("pr list: connection closing")
-		}
 	}
 	if published != nil {
 		return PRListSubscriptionResult{ID: id, Snapshot: *published}, nil
@@ -170,8 +167,10 @@ func (a *App) SubscribePRList(ctx context.Context) (PRListSubscriptionResult, er
 // takePRListHandle registers one handle on the live pump, creating it
 // when there is none; start is true when the caller launches it.
 // published is the pump's last frame when it has one; otherwise seq is
-// the sequence the caller's stored snapshot carries.
-func (a *App) takePRListHandle() (id string, pump *prListPump, start bool, published *PRListSnapshot, seq uint64, err error) {
+// the sequence the caller's stored snapshot carries. The handle is tied
+// to conn as it is published; a connection that is closing gets none,
+// and no pump is created for it.
+func (a *App) takePRListHandle(conn *transport.ConnState) (id string, pump *prListPump, start bool, published *PRListSnapshot, seq uint64, err error) {
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
 	if a.prUpdates.listHandles == nil {
@@ -180,6 +179,11 @@ func (a *App) takePRListHandle() (id string, pump *prListPump, start bool, publi
 	if len(a.prUpdates.listHandles) >= maxPRUpdateHandles {
 		return "", nil, false, nil, 0, ErrTooManyPRListSubscriptions
 	}
+	handle, err := bindPumpHandle(conn, "pr list", prListCleanupKey, a.unsubscribePRList)
+	if err != nil {
+		return "", nil, false, nil, 0, err
+	}
+	id, tie := handle.id, handle.tie
 	pump = a.prUpdates.list
 	if pump == nil || pump.DeadLocked() {
 		a.prUpdates.listGen++
@@ -187,8 +191,7 @@ func (a *App) takePRListHandle() (id string, pump *prListPump, start bool, publi
 		a.prUpdates.list = pump
 		start = true
 	}
-	id = uuid.NewString()
-	a.prUpdates.listHandles[id] = &prListHandle{ref: pump.TakeLocked()}
+	a.prUpdates.listHandles[id] = &prListHandle{tie: tie, ref: pump.TakeLocked()}
 	if pump.snapshot.Seq != 0 {
 		snapshot := pump.snapshot
 		return id, pump, start, &snapshot, 0, nil
@@ -231,10 +234,12 @@ func (a *App) RefreshPRList(ctx context.Context, subscriptionID string) error {
 	return pump.Request(ctx, prPumpRequest{snapshot: true})
 }
 
+// UnsubscribePRList releases a subscription, from whichever connection
+// asks; the connection that subscribed is untied with the handle.
+//
 //ao:scope git:operate
 //ao:route home
 func (a *App) UnsubscribePRList(ctx context.Context, subscriptionID string) error {
-	transport.ConnStateFromContext(ctx).UnbindCleanup(prListCleanupKey(subscriptionID))
 	a.unsubscribePRList(subscriptionID)
 	return nil
 }
@@ -248,6 +253,7 @@ func (a *App) unsubscribePRList(id string) {
 		return
 	}
 	delete(a.prUpdates.listHandles, id)
+	handle.tie.Untie()
 	if handle.ref.ReleaseLocked() {
 		a.prUpdates.list = nil
 	}
@@ -264,7 +270,10 @@ func (a *App) dropPRListPump(pump *prListPump) {
 	pump.StopLocked()
 	if a.prUpdates.list == pump {
 		a.prUpdates.list = nil
-		clear(a.prUpdates.listHandles)
+		for id, handle := range a.prUpdates.listHandles {
+			delete(a.prUpdates.listHandles, id)
+			handle.tie.Untie()
+		}
 	}
 	pump.snapshot, pump.encoded = PRListSnapshot{}, nil
 	pump.forge, pump.forgeErr, pump.projects = nil, nil, nil

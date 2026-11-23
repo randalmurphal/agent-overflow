@@ -67,6 +67,8 @@ import {
   reconcileConflictsWithHead,
 } from './prReviewConflicts.svelte';
 import { documentHidden } from '../utils/pageVisibility';
+import { dropForgeFacts, noteForgeFactsWorkspace, observePRFacts } from './forgeFacts.svelte';
+import type { WorkspaceRef } from '../types/git';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import type { CIPipeline, PRDetail, ReviewComment, ReviewEvent, ReviewThread } from '../types/models';
@@ -90,6 +92,9 @@ export interface PRSnapshot {
 /** What a source needs from whoever is holding the key. */
 export interface PRCtx {
   ref: PRRef;
+  /** The checkout of the pane holding it, where the PR's forge facts are
+   * read (forgeFacts.svelte.ts); the first holder's. */
+  workspace?: WorkspaceRef;
 }
 
 // Wire payload shape for "pr:updated". Wails generates no TS type for
@@ -424,6 +429,8 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
   onApply: (key, value) => {
     reconcileConflictsWithHead(key, refByKey.get(key), value.detail, value.headSHA);
     reconcileResolveOverrides(key, value.threads);
+    // The facts its bodies name, asked for before any body mounts.
+    observePRFacts(key, refByKey.get(key), value);
     notifySnapshotApplied(key, value);
   },
   // The state kept beside the snapshot: CI (with the log follows) and the
@@ -445,6 +452,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
     dropPRCIFollows(key);
     dropPRCI(key);
     dropPRConflicts(key);
+    dropForgeFacts(key);
     rejectReady(key, new Error('PR updates released'));
   },
 });
@@ -834,6 +842,7 @@ export interface PRAttachment {
 
 export function attachPR(key: string, ctx: PRCtx): PRAttachment {
   refByKey.set(key, ctx.ref);
+  noteForgeFactsWorkspace(key, ctx.workspace);
   // Before the attach can source the key: the subscribe result seeds it.
   ensurePRCI(key);
   const handle = store.attach(key, ctx);

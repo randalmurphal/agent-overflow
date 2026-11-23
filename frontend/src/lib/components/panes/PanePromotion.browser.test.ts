@@ -16,6 +16,7 @@ import PaneHost from './PaneHost.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import {
   focusPane,
+  moveFocusedPane,
   registerPaneForTest,
   revealPane,
   togglePanePromotion,
@@ -119,6 +120,15 @@ function settledPromoted(id: string): boolean {
 
 function settledDemoted(): boolean {
   return slots().length === 0 && host.querySelectorAll('[data-pane-promoted="true"]').length === 0;
+}
+
+// All of the pane shows, or for a pane wider than the strip (the minimum
+// pane width exceeds this strip), the strip shows nothing else.
+function onScreen(strip: HTMLElement, id: string): boolean {
+  const el = section(id);
+  const view = strip.scrollLeft;
+  const shown = Math.min(el.offsetLeft + el.offsetWidth, view + strip.clientWidth) - Math.max(el.offsetLeft, view);
+  return shown >= Math.min(el.offsetWidth, strip.clientWidth) - 0.5;
 }
 
 // Size changes of an element after its observer's first delivery.
@@ -236,6 +246,41 @@ it('the strip does not scroll under a promoted pane', async () => {
   expect(wheel(title, { deltaX: 80 })).toBe(false);
 });
 
+it('a layer inside a pane under the promoted one never paints over it', async () => {
+  const strip = await mountStrip(['a', 'b'], 'b');
+  // A stand-in for the message rail: an absolute z-30 layer in a positioned
+  // wrapper, in the pane after the promoted one, placed where the strip
+  // shows pane b.
+  const box = paddingBox(strip);
+  const b = section('b').getBoundingClientRect();
+  const visibleLeft = Math.max(b.left, box.left);
+  const visibleRight = Math.min(b.right, box.left + box.width, window.innerWidth);
+  expect(visibleRight - visibleLeft).toBeGreaterThan(20);
+  const wrapper = document.createElement('div');
+  wrapper.style.cssText = 'position:relative;flex:none;height:40px';
+  const layer = document.createElement('div');
+  layer.style.cssText = `position:absolute;left:${visibleLeft - b.left}px;top:0;width:12px;height:40px;z-index:30`;
+  wrapper.append(layer);
+  section('b').prepend(wrapper);
+  const r = layer.getBoundingClientRect();
+  const x = r.left + r.width / 2;
+  const y = r.top + r.height / 2;
+  const hit = (): Element | null => document.elementFromPoint(x, y);
+  // Demoted, the probe point is on the layer, so the check below can fail.
+  expect(hit()).toBe(layer);
+
+  togglePanePromotion('a');
+  await waitFor(() => settledPromoted('a'), 'the promote landed');
+  for (const z of ['30', '40']) {
+    layer.style.zIndex = z;
+    expect(section('a').contains(hit()), `z-index ${z}`).toBe(true);
+  }
+
+  togglePanePromotion('a');
+  await waitFor(settledDemoted, 'the demote landed');
+  expect(onScreen(strip, 'a')).toBe(true);
+});
+
 it('the title drag handle is inert while its pane is promoted', async () => {
   await mountStrip(['a', 'b'], 'b');
   const title = (): HTMLElement => section('b').querySelector<HTMLElement>('[data-testid="chat-header-title"]')!;
@@ -321,6 +366,61 @@ it('closing the promoted pane ends the promotion and its layer', async () => {
   expect(slots()).toHaveLength(0);
   const a = section('a').getBoundingClientRect();
   expect(airspaceIntersects(a, section('a'))).toBe(false);
+});
+
+
+it('a promoted pane moved along the strip demotes onto its new place, on screen', async () => {
+  const strip = await mountStrip(['a', 'b', 'c'], 'a');
+  togglePanePromotion('a');
+  await waitFor(() => settledPromoted('a'), 'the promote landed');
+  moveFocusedPane(1);
+  await tick();
+  moveFocusedPane(1);
+  await tick();
+  await raf();
+  expect(getPromotedPaneId()).toBe('a');
+  expect(rectOf(section('a'))).toEqual(paddingBox(strip));
+
+  togglePanePromotion('a');
+  await waitFor(settledDemoted, 'the demote landed');
+  // On screen as it lands, not after a glide that follows.
+  expect(onScreen(strip, 'a')).toBe(true);
+  expect(host.querySelector('[data-pane-id]:last-of-type')?.getAttribute('data-pane-id')).toBe('a');
+});
+
+it('a promoted pane whose neighbor closed demotes onto its new place, on screen', async () => {
+  const strip = await mountStrip(['a', 'b', 'c'], 'c');
+  togglePanePromotion('c');
+  await waitFor(() => settledPromoted('c'), 'the promote landed');
+  removePaneLayoutItem('a');
+  await tick();
+  await raf();
+
+  togglePanePromotion('c');
+  // The clip closes onto where the pane lands: no jump once it is back in
+  // the strip's flow.
+  const clips = await recordClips('c', settledDemoted);
+  expect(clips.length).toBeGreaterThan(3);
+  const last = clips[clips.length - 1];
+  const box = paddingBox(strip);
+  const landed = section('c').getBoundingClientRect();
+  expect(Math.abs(last.left - Math.max(landed.left, box.left))).toBeLessThan(4);
+  expect(Math.abs(last.right - Math.min(landed.right, box.left + box.width))).toBeLessThan(4);
+  expect(onScreen(strip, 'c')).toBe(true);
+  const scrolled = strip.scrollLeft;
+  await raf();
+  await raf();
+  expect(strip.scrollLeft).toBe(scrolled);
+});
+
+it('a pane promoted while partly off screen demotes onto screen', async () => {
+  const strip = await mountStrip(['a', 'b', 'c'], 'a');
+  expect(onScreen(strip, 'b')).toBe(false);
+  togglePanePromotion('b');
+  await waitFor(() => settledPromoted('b'), 'the promote landed');
+  togglePanePromotion('b');
+  await waitFor(settledDemoted, 'the demote landed');
+  expect(onScreen(strip, 'b')).toBe(true);
 });
 
 it('reduced motion lands in one pass with one size change', async () => {

@@ -265,7 +265,7 @@ func TestEvictionAndResetStopAHeldPin(t *testing.T) {
 				switch how {
 				case "eviction":
 					for range maxReviewDiffRecords - 1 {
-						record, _ := app.reviewDiffFiles.reserve("/elsewhere", nil, transport.ScopeFilesRead, func() {})
+						record, _, _ := app.reviewDiffFiles.reserve("/elsewhere", testConnection(t, connCtx(t)), transport.ScopeFilesRead, func() {})
 						close(record.done)
 					}
 					// The next open pushes the held record out and stops its pin.
@@ -307,8 +307,12 @@ func TestEvictionAndResetStopAHeldPin(t *testing.T) {
 func TestReviewDiffRecordsAreBounded(t *testing.T) {
 	t.Parallel()
 	var records reviewDiffRecords
+	owner := testConnection(t, connCtx(t))
 	reserve := func() *reviewDiffRecord {
-		record, evicted := records.reserve("/w", nil, transport.ScopeFilesRead, func() {})
+		record, evicted, err := records.reserve("/w", owner, transport.ScopeFilesRead, func() {})
+		if err != nil {
+			t.Fatal(err)
+		}
 		close(record.done)
 		for _, gone := range evicted {
 			stopReviewDiffRecords(gone)
@@ -321,17 +325,17 @@ func TestReviewDiffRecordsAreBounded(t *testing.T) {
 	for i := 1; i < maxReviewDiffRecords; i++ {
 		reserve()
 	}
-	if _, err := records.get(first.id, "/w", nil); err != nil {
+	if _, err := records.get(first.id, "/w", owner); err != nil {
 		t.Fatalf("the first record went before the bound: %v", err)
 	}
 	reserve()
 	if records.len() != maxReviewDiffRecords {
 		t.Fatalf("%d records, want %d", records.len(), maxReviewDiffRecords)
 	}
-	if _, err := records.get(first.id, "/w", nil); err != nil {
+	if _, err := records.get(first.id, "/w", owner); err != nil {
 		t.Fatalf("the recently used record was evicted: %v", err)
 	}
-	if _, err := records.get(first.id, "/other", nil); !errors.Is(err, errReviewDiffFilesGone) {
+	if _, err := records.get(first.id, "/other", owner); !errors.Is(err, errReviewDiffFilesGone) {
 		t.Fatalf("another workspace = %v, want the same refusal as a missing handle", err)
 	}
 	records.settle(first, committed, nil, false, "")
@@ -441,7 +445,7 @@ func manyPaths(prefix string, n, width int) []gitdiff.WorktreeBlob {
 
 func reserveSettled(t *testing.T, records *reviewDiffRecords, blobs []gitdiff.WorktreeBlob) *reviewDiffRecord {
 	t.Helper()
-	record, evicted := records.reserve("/w", nil, transport.ScopeFilesRead, func() {})
+	record, evicted, _ := records.reserve("/w", testConnection(t, connCtx(t)), transport.ScopeFilesRead, func() {})
 	stopReviewDiffRecords(evicted...)
 	victims := records.settle(record, gitdiff.Pin{Old: strings.Repeat("a", 40)}, blobs, false, "")
 	close(record.done)
@@ -567,7 +571,7 @@ func TestEvictingAPendingRecordStopsItsPin(t *testing.T) {
 func TestASettlingRecordNeverEvictsItself(t *testing.T) {
 	t.Parallel()
 	var records reviewDiffRecords
-	oldest, evicted := records.reserve("/w", nil, transport.ScopeFilesRead, func() {})
+	oldest, evicted, _ := records.reserve("/w", testConnection(t, connCtx(t)), transport.ScopeFilesRead, func() {})
 	stopReviewDiffRecords(evicted...)
 	close(oldest.done)
 	var newer []*reviewDiffRecord

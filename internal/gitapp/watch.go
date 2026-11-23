@@ -30,14 +30,29 @@ type statusPump struct {
 type statusState struct {
 	mu      sync.Mutex
 	pumps   map[string]*statusPump
-	handles map[string]*statusPump
+	handles map[string]*statusHandle
 	wg      sync.WaitGroup
 }
 
+// statusHandle is one caller's reference on a pump.
+type statusHandle struct {
+	pump *statusPump
+	// untie runs, outside the lock, once the handle is gone, however it
+	// goes: its Unsubscribe or its pump's end.
+	untie func()
+}
+
+// StatusTie ties a handle to its owner as Subscribe publishes it. It runs
+// in the critical section that publishes the handle, so it must not block
+// and must not call back into the Service; an error refuses the handle,
+// and nothing is published. Its answer runs once the handle is gone,
+// however it goes.
+type StatusTie func(id string) (untie func(), err error)
+
 // Subscribe begins one workspace-keyed status stream and returns its initial
-// snapshot. The caller owns connection-lifetime cleanup and must call
-// Unsubscribe if it cannot register that cleanup.
-func (s *Service) Subscribe(ctx context.Context, ref WorkspaceRef) (StatusSubscription, error) {
+// snapshot. tie binds the handle to its owner as it is published, so a
+// handle the caller receives is one its owner already holds.
+func (s *Service) Subscribe(ctx context.Context, ref WorkspaceRef, tie StatusTie) (StatusSubscription, error) {
 	if s.shuttingDown() {
 		if s.shuttingDownError != nil {
 			return StatusSubscription{}, s.shuttingDownError
@@ -73,6 +88,12 @@ func (s *Service) Subscribe(ctx context.Context, ref WorkspaceRef) (StatusSubscr
 		sub.Close()
 		return StatusSubscription{}, ErrTooManyStatusSubscriptions
 	}
+	untie, err := tie(id)
+	if err != nil {
+		s.status.mu.Unlock()
+		sub.Close()
+		return StatusSubscription{}, err
+	}
 	pump, shared := s.status.pumps[cwd]
 	if shared && pump.dead {
 		shared = false
@@ -83,7 +104,7 @@ func (s *Service) Subscribe(ctx context.Context, ref WorkspaceRef) (StatusSubscr
 		pump = &statusPump{cwd: cwd, sub: sub, done: make(chan struct{}), refs: 1}
 		s.status.pumps[cwd] = pump
 	}
-	s.status.handles[id] = pump
+	s.status.handles[id] = &statusHandle{pump: pump, untie: untie}
 	s.status.mu.Unlock()
 
 	if shared {
@@ -97,12 +118,13 @@ func (s *Service) Subscribe(ctx context.Context, ref WorkspaceRef) (StatusSubscr
 // Unsubscribe releases one caller handle. Unknown and repeated ids are no-ops.
 func (s *Service) Unsubscribe(id string) {
 	s.status.mu.Lock()
-	pump, ok := s.status.handles[id]
+	handle, ok := s.status.handles[id]
 	if !ok {
 		s.status.mu.Unlock()
 		return
 	}
 	delete(s.status.handles, id)
+	pump := handle.pump
 	pump.refs--
 	var teardown *statusPump
 	if pump.refs <= 0 {
@@ -112,6 +134,9 @@ func (s *Service) Unsubscribe(id string) {
 		}
 	}
 	s.status.mu.Unlock()
+	if handle.untie != nil {
+		handle.untie()
+	}
 	if teardown == nil {
 		return
 	}
@@ -148,15 +173,22 @@ func (s *Service) pumpStatus(pump *statusPump) {
 
 func (s *Service) dropStatusPump(pump *statusPump) {
 	s.status.mu.Lock()
-	defer s.status.mu.Unlock()
 	pump.dead = true
 	if s.status.pumps[pump.cwd] == pump {
 		delete(s.status.pumps, pump.cwd)
 	}
-	for id, held := range s.status.handles {
-		if held == pump {
+	var released []func()
+	for id, handle := range s.status.handles {
+		if handle.pump == pump {
 			delete(s.status.handles, id)
+			if handle.untie != nil {
+				released = append(released, handle.untie)
+			}
 		}
+	}
+	s.status.mu.Unlock()
+	for _, release := range released {
+		release()
 	}
 }
 

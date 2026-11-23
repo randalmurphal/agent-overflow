@@ -3,12 +3,17 @@
 	import Link from './Link.svelte';
 	import Image from './Image.svelte';
 	import Alert from './Alert.svelte';
+	import HtmlRegion from './HtmlRegion.svelte';
+	import SourceText from './SourceText.svelte';
 	import type { GenericToken, ProvenAppend, StreamdownToken } from '../../parser/index';
 	import Slot from './Slot.svelte';
-	import { useStreamdown } from '../context.svelte';
+	import { useBlockScope, useStreamdown } from '../context.svelte';
 	import { codespanClass } from '../codespan';
 	import FootnoteRef from './FootnoteRef.svelte';
-	import { tableCellRenders } from './url';
+	import { classifyLinkHref, tableCellRenders } from './url';
+	import { labelChipBorderStyle, labelChipKeyStyle } from '../../parser/extensions/labelChip';
+	import { headingAnchor, htmlAnchorName, readingFor, renderUnder } from '../../parser/documentScope';
+	import { fenceLanguage } from '../../parser/fenceLanguage';
 	let {
 		token,
 		children,
@@ -19,6 +24,7 @@
 		codeTextAppend?: ProvenAppend;
 	} = $props();
 	const streamdown = useStreamdown();
+	const blockScope = useBlockScope();
 
 	// The host owns code, mermaid and math rendering: the library ships no
 	// highlighter, no diagram engine and no TeX typesetter of its own. With
@@ -36,10 +42,6 @@
 	}
 </script>
 
-{#snippet sourceText(text: string)}
-	<pre class={streamdown.theme.code.pre}><code>{text}</code></pre>
-{/snippet}
-
 {#if token.type === 'heading'}
 	<Slot
 		props={{
@@ -49,27 +51,27 @@
 		render={streamdown.snippets.heading}
 	>
 		{#if token.depth === 1}
-			<h1 data-streamdown-heading-1={id} class={streamdown.theme[`h${token.depth}`].base}>
+			<h1 data-streamdown-heading-1={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h1>
 		{:else if token.depth === 2}
-			<h2 data-streamdown-heading-2={id} class={streamdown.theme[`h${token.depth}`].base}>
+			<h2 data-streamdown-heading-2={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h2>
 		{:else if token.depth === 3}
-			<h3 data-streamdown-heading-3={id} class={streamdown.theme[`h${token.depth}`].base}>
+			<h3 data-streamdown-heading-3={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h3>
 		{:else if token.depth === 4}
-			<h4 data-streamdown-heading-4={id} class={streamdown.theme[`h${token.depth}`].base}>
+			<h4 data-streamdown-heading-4={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h4>
 		{:else if token.depth === 5}
-			<h5 data-streamdown-heading-5={id} class={streamdown.theme[`h${token.depth}`].base}>
+			<h5 data-streamdown-heading-5={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h5>
 		{:else if token.depth === 6}
-			<h6 data-streamdown-heading-6={id} class={streamdown.theme[`h${token.depth}`].base}>
+			<h6 data-streamdown-heading-6={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h6>
 		{/if}
@@ -91,12 +93,12 @@
 			{@render children()}
 		</blockquote>
 	</Slot>
-{:else if token.type === 'code' && token.lang === 'mermaid'}
+{:else if token.type === 'code' && fenceLanguage(token.lang) === 'mermaid'}
 	<Slot props={{ children, token }} render={streamdown.snippets.code}>
 		{#if MermaidComponent}
 			<MermaidComponent {id} {token} />
 		{:else}
-			<div data-streamdown-mermaid={id}>{@render sourceText(token.text)}</div>
+			<div data-streamdown-mermaid={id}><SourceText text={token.text} /></div>
 		{/if}
 	</Slot>
 {:else if token.type === 'code'}
@@ -105,7 +107,7 @@
 			<CodeComponent {id} {token} textAppend={codeTextAppend} />
 		{:else}
 			<div data-streamdown-code={id} class={streamdown.theme.code.base}>
-				{@render sourceText(token.text)}
+				<SourceText text={token.text} />
 			</div>
 		{/if}
 	</Slot>
@@ -115,7 +117,11 @@
 			data-streamdown-codespan={id}
 			class={codespanClass(streamdown.theme.codespan.base, token.text)}
 		>
-			{@render children()}
+			{@render children()}{#if token.color}<span
+					data-streamdown-color-swatch
+					aria-hidden="true"
+					style:background-color={token.color}
+				></span>{/if}
 		</code>
 	</Slot>
 {:else if token.type === 'list'}
@@ -123,6 +129,7 @@
 		<Slot props={{ children, token }} render={streamdown.snippets.ol}>
 			<ol
 				data-streamdown-ol={id}
+				start={token.start === 1 ? undefined : token.start}
 				style:list-style-type={token.listType}
 				class={streamdown.theme.ol.base}
 			>
@@ -167,6 +174,8 @@
 			</table>
 		</div>
 	</Slot>
+{:else if token.type === 'caption'}
+	<caption data-streamdown-caption={id}>{@render children()}</caption>
 {:else if token.type === 'thead'}
 	<Slot props={{ token, children }} render={streamdown.snippets.thead}>
 		<thead data-streamdown-thead={id} class={streamdown.theme.thead.base}>
@@ -263,6 +272,14 @@
 	</Slot>
 {:else if token.type === 'br'}
 	<br data-streamdown-br={id} />
+{:else if token.type === 'checkbox'}
+	<input
+		data-streamdown-checkbox={id}
+		disabled
+		type="checkbox"
+		checked={token.checked}
+		class={streamdown.theme.li.checkbox}
+	/>
 {:else if token.type === 'math'}
 	<Slot
 		props={{
@@ -275,10 +292,10 @@
 			<MathComponent {id} {token} />
 		{:else if token.isInline}
 			<span data-streamdown-inline-math={id} class={streamdown.theme.math.inline}
-				><code>{token.text}</code></span
+				><SourceText text={token.text} inline /></span
 			>
 		{:else}
-			<div data-streamdown-block-math={id}>{@render sourceText(token.text)}</div>
+			<div data-streamdown-block-math={id}><SourceText text={token.text} /></div>
 		{/if}
 	</Slot>
 {:else if token.type === 'alert'}
@@ -341,15 +358,66 @@
 	<summary data-streamdown-summary={id}>
 		{@render children()}
 	</summary>
+{:else if token.type === 'inlineDiff'}
+	<!-- GitLab's inline diff (parser/extensions/inlineDiff.ts); app.css paints the class. -->
+	<svelte:element
+		this={token.change === 'added' ? 'ins' : 'del'}
+		data-streamdown-inline-diff={id}
+		class={`md-inline-diff md-inline-diff-${token.change}`}
+	>
+		{@render children()}
+	</svelte:element>
+{:else if token.type === 'labelChip'}
+	<!-- A label chip (parser/extensions/labelChip.ts); staticHtml.ts renders the same markup. -->
+	{@const chipLink = classifyLinkHref(token.href, streamdown.allowedLinkPrefixes ?? [], !!streamdown.document?.forge)}
+	<svelte:element
+		this={chipLink.kind === 'anchor' ? 'a' : 'span'}
+		data-streamdown-label-chip={id}
+		class={token.scope === null ? 'md-label-chip' : 'md-label-chip md-label-chip-scoped'}
+		href={chipLink.kind === 'anchor' ? chipLink.href : undefined}
+		target={chipLink.kind === 'anchor' ? '_blank' : undefined}
+		rel={chipLink.kind === 'anchor' ? 'noopener noreferrer' : undefined}
+		title={token.title ?? undefined}
+		style={labelChipBorderStyle(token) ?? undefined}
+		><span class="md-label-chip-key" style={labelChipKeyStyle(token) ?? undefined}>{token.scope ?? token.name}</span
+		>{#if token.scope !== null}<span class="md-label-chip-value">{token.name}</span>{/if}</svelte:element
+	>
+{:else if token.type === 'codeSnippet'}
+	<!-- A file excerpt (parser/extensions/codeSnippet.ts): its header and
+	     code render as themselves; staticHtml.ts renders the same markup. -->
+	<div data-streamdown-code-snippet={id} class="md-blk md-code-snippet">
+		{@render children()}
+	</div>
+{:else if token.type === 'htmlInline'}
+	<!-- The tag is one of the parser's fixed names, never authored text. -->
+	<!-- Its attributes are the ones the HTML policy keeps (htmlPolicy.ts). -->
+	<svelte:element this={token.tag} {...token.attrs} data-streamdown-html-inline={id} data-md-anchor={htmlAnchorName(token.raw, streamdown.document?.forge)}>
+		{@render children()}
+	</svelte:element>
 {:else if token.type === 'html'}
 	{#if streamdown.renderHtml}
-		{@const content =
-			typeof streamdown.renderHtml === 'function' ? streamdown.renderHtml(token) : token.raw}
+		<!-- The block's reading stays the same object while every key the
+		     last render read resolves alike, so only such a change renders
+		     (sanitizes) the token again. A render is a fresh box: a derived
+		     whose value comes out equal keeps its old version, and Svelte
+		     would run it again each time the reading is checked; the box's
+		     string is what the page compares. -->
+		{@const render = streamdown.renderHtml}
+		{@const reading = readingFor(token, blockScope())}
+		{@const rendered = { html: typeof render === 'function' ? renderUnder(reading, () => render(token, reading)) : token.raw }}
+		{@const content = rendered.html}
 		<!-- The host may own the injection (to hydrate claimed media inside
 		     the fragment); the fallback is the plain injection. -->
 		<Slot props={{ children, token, content }} render={streamdown.snippets.html}>
 			{@html content}
 		</Slot>
+	{/if}
+{:else if token.type === 'htmlRegion'}
+	<!-- Without `renderHtml`, a region shows its Markdown islands and no HTML. -->
+	{#if streamdown.renderHtml}
+		<HtmlRegion {token} />
+	{:else}
+		{@render children()}
 	{/if}
 {:else if token.type === 'mdx'}
 	{@const Component = streamdown.mdxComponents?.[token.tagName]}

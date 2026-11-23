@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
 )
 
@@ -21,6 +22,8 @@ func (s *Service) ProbeCodexAccount() (provider.AccountInfo, error) {
 	// runs with this configuration.
 	key, cfg := s.deps.CodexProbe(binary, selection.AccountID)
 	var observedSnapshot *provider.RateLimitsSnapshot
+	var credits *codex.ResetCredits
+	var creditsRead bool
 	return s.deps.RunAccountProbe(AccountProbeRequest{
 		ProviderName: providerName,
 		Cache:        s.caches.Codex,
@@ -30,8 +33,12 @@ func (s *Service) ProbeCodexAccount() (provider.AccountInfo, error) {
 				copy := cloneRateLimitsSnapshot(snapshot)
 				observedSnapshot = &copy
 			}
+			cfg.OnResetCredits = func(value *codex.ResetCredits) {
+				credits, creditsRead = value, true
+			}
 			return s.deps.ProbeCodex(ctx, cfg)
 		},
+		ResetCredits: func() (*codex.ResetCredits, bool) { return credits, creditsRead },
 		AfterAdopt: func(account provideraccounts.Account) {
 			if observedSnapshot == nil || s.deps.EmitRateLimits == nil {
 				return

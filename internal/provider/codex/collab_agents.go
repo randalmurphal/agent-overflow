@@ -1154,7 +1154,7 @@ func (s *Session) collabReceiverMetadataForThreads(receiverThreadIDs []string) [
 }
 
 func (s *Session) scheduleCollabMetadataRead(providerThreadID, parentToolUseID string, launchMeta collabLaunchMeta) {
-	if s.proc == nil || strings.TrimSpace(providerThreadID) == "" || strings.TrimSpace(parentToolUseID) == "" {
+	if !s.hasTransport() || strings.TrimSpace(providerThreadID) == "" || strings.TrimSpace(parentToolUseID) == "" {
 		return
 	}
 	ctx := s.ctx

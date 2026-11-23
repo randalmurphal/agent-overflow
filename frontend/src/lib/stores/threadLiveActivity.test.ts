@@ -8,8 +8,10 @@ import {
   getThreadStatus,
   projectApprovalRequest,
   projectApprovalResolution,
+  projectTurnCompleted,
   projectTurnStarted,
 } from './threadStatuses.svelte';
+import settling from '../../../../internal/app/testdata/turn_settling_snapshot.json';
 import { applyCompactingState, isThreadCompacting } from './compactingState.svelte';
 import { applySessionLive, threadSessionLive } from './threadSessionLive.svelte';
 import { hasScope } from '../transport/scopes';
@@ -308,4 +310,50 @@ it("drops a detached computer's read in flight, whose threads it no longer owns,
   } finally {
     __resetBackendsForTest();
   }
+});
+
+// The row ListThreadLiveActivity gives while a turn's end is written
+// carries the ending round (internal/app/testdata/turn_settling_snapshot.json,
+// captured by the Go test that holds a settle). provider:turn_completed
+// follows the write; whichever reaches this client first, the turn ends.
+describe('the row of a settling turn', () => {
+  const row = settling.liveActivity;
+  const { threadId, activeTurn } = row;
+  beforeEach(() => noteThread(threadId, 'gpu'));
+  const holdRead = () => {
+    let answer!: (rows: unknown[]) => void;
+    setBindingMock('ListThreadLiveActivity', () => new Promise<unknown[]>((resolve) => { answer = resolve; }));
+    return (rows: unknown[]) => answer(rows);
+  };
+
+  it('does not restart a turn whose completion landed while it was in flight', async () => {
+    projectTurnStarted(threadId, activeTurn.turnId, activeTurn.turnIndex, activeTurn.startedAt);
+    const answer = holdRead();
+    const pending = reconcileThreadLiveActivity('gpu');
+    projectTurnCompleted(threadId, activeTurn.turnId);
+    answer([row]);
+    await pending;
+    expect(getActiveTurn(threadId)).toBeNull();
+    expect(getThreadStatus(threadId)).toBe('idle');
+  });
+
+  it('does not start a turn this client only saw complete', async () => {
+    const answer = holdRead();
+    const pending = reconcileThreadLiveActivity('gpu');
+    projectTurnCompleted(threadId, activeTurn.turnId);
+    answer([row]);
+    await pending;
+    expect(getActiveTurn(threadId)).toBeNull();
+    expect(getThreadStatus(threadId)).toBe('idle');
+  });
+
+  it('shows the turn running until its completion lands', async () => {
+    setBindingMock('ListThreadLiveActivity', async () => [row]);
+    await reconcileThreadLiveActivity('gpu');
+    expect(getActiveTurn(threadId)?.turnId).toBe(activeTurn.turnId);
+    expect(getThreadStatus(threadId)).toBe('running');
+    projectTurnCompleted(threadId, activeTurn.turnId);
+    expect(getActiveTurn(threadId)).toBeNull();
+    expect(getThreadStatus(threadId)).toBe('idle');
+  });
 });

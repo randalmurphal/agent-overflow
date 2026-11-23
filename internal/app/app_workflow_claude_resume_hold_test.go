@@ -222,8 +222,6 @@ func TestWorkflowContinuationHoldsASendOffTheClaudeProof(t *testing.T) {
 	if err := <-sendErrs; err != nil {
 		t.Fatalf("send = %v", err)
 	}
-	// The send returns once its line is written to the CLI, which logs it
-	// once it reads it.
 	f.waitStdin(sent)
 	if usage, at := f.stdinIndex(`"subtype":"get_context_usage"`), f.stdinIndex(sent); usage < 0 || usage > at {
 		t.Fatalf("stdin = %q, want the content read before the send", f.stdinLines())

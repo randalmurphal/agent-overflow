@@ -111,6 +111,13 @@ export const SETTINGS_SECTIONS = [
       'The Codex CLI: binary, accounts, models and environment, plus the context, prompt and tool settings applied to every Codex thread.',
   },
   {
+    id: 'agy',
+    label: 'Antigravity',
+    group: 'Agents',
+    description:
+      'The Antigravity CLI (agy): binary, accounts, models, environment and prompt overrides applied to Antigravity threads.',
+  },
+  {
     id: 'commit-messages',
     label: 'Commit messages',
     group: 'Agents',
@@ -276,15 +283,15 @@ export function settingsSectionDef(id: SettingsSection): SettingsSectionDef {
  * deep link for it lands there. Throws on a provider with no page rather
  * than guessing, so a new provider cannot silently route to the wrong one.
  */
-export function providerSettingsSection(provider: ProviderID): 'claude' | 'codex' {
+export function providerSettingsSection(provider: ProviderID): 'claude' | 'codex' | 'agy' {
   const root = getProviderDefinition(provider).dependsOnProvider ?? provider;
-  if (root === 'claude' || root === 'codex') return root;
+  if (root === 'claude' || root === 'codex' || root === 'agy') return root;
   throw new Error(`no settings page for provider ${provider}`);
 }
 
 /** Pages that configure execution on a computer, rather than this frontend. */
 export function settingsUsesComputer(section: SettingsSection): boolean {
-  return ['performance', 'notifications', 'claude', 'codex', 'commit-messages',
+  return ['performance', 'notifications', 'claude', 'codex', 'agy', 'commit-messages',
     'browser', 'thread-tools', 'assistants', 'agent-guide', 'memory', 'projects', 'git', 'editor', 'remote', 'agent-access',
     'observability', 'storage', 'voice'].includes(section);
 }

@@ -2611,9 +2611,9 @@ the same text WITH its provider uuid, and
 `user:wire:<uuid>` copy below the answer it asked for.
 
 Why this matters operationally: AO's idle-session reaper closes a
-quiet session unless `ListRunningBackgroundToolCalls` is non-empty.
+quiet session unless `CountLiveRunningBackgroundToolCalls` is above zero.
 Without the carrier, the ORIGINAL launch already has its round-1
-sibling (`NOT EXISTS` completion predicate fails), so nothing keeps
+sibling (it left the live set), so nothing keeps
 the predicate satisfied during round 2, and a quiet resumed agent would
 get the whole session reaped mid-run. The carrier (backgrounded,
 running, no sibling until round-2 terminal) is what keeps the

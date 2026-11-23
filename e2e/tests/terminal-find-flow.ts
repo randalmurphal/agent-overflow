@@ -24,14 +24,10 @@ export async function replayOf(host: HarnessApp, threadId: string, index = 0): P
   return Buffer.from(replay.data, 'base64').toString();
 }
 
-/** The header's terminal toggle; under compact it is a row of the header menu. */
+/** The drawer terminal's toggle: the Terminal row of the chat header's actions menu. */
 export async function toggleTerminal(page: Page): Promise<void> {
-  if ((await page.locator('html').getAttribute('data-compact-screen')) === null) {
-    await page.getByTestId('terminal-toggle').click();
-    return;
-  }
   await page.getByTestId('chat-header-more').click();
-  await page.locator('[data-popover]').getByText('Terminal', { exact: true }).click();
+  await page.locator('[data-popover]').getByRole('menuitemcheckbox', { name: 'Terminal', exact: true }).click();
 }
 
 export async function openDrawerThread(page: Page, title: string): Promise<TerminalFindSetup> {

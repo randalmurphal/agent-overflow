@@ -3,6 +3,7 @@ package claudetui
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"testing"
 )
 
@@ -87,6 +88,43 @@ func TestFeedReorderReleasesMultipleToolUses(t *testing.T) {
 	}
 	if !released["toolu_a"] || !released["toolu_b"] {
 		t.Errorf("both held completions should release, got %v", released)
+	}
+}
+
+func heldIDs(t *testing.T, lines []json.RawMessage) []string {
+	t.Helper()
+	var ids []string
+	for _, line := range lines {
+		if id, ok := userToolResultID(line); ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// Completions for two tool_use ids come out in the order they arrived, both
+// when their starts release them and when the session's end flushes them.
+// Repeated, because an order taken from a map would pass some runs.
+func TestFeedReorderKeepsArrivalOrder(t *testing.T) {
+	assistant := `{"type":"assistant","message":{"role":"assistant","content":[` +
+		`{"type":"tool_use","id":"toolu_a","name":"Bash","input":{}},` +
+		`{"type":"tool_use","id":"toolu_b","name":"Read","input":{}}]}}`
+	compA := json.RawMessage(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_a","content":"a"}]}}`)
+	compB := json.RawMessage(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_b","content":"b"}]}}`)
+	want := []string{"toolu_b", "toolu_a"}
+	for range 20 {
+		fr := newFeedReorder()
+		fr.admit(compB)
+		fr.admit(compA)
+		if got := heldIDs(t, fr.flush()); !slices.Equal(got, want) {
+			t.Fatalf("flush = %v, want %v", got, want)
+		}
+
+		fr.admit(compB)
+		fr.admit(compA)
+		if got := heldIDs(t, fr.admit(json.RawMessage(assistant))); !slices.Equal(got, want) {
+			t.Fatalf("released by the start = %v, want %v", got, want)
+		}
 	}
 }
 

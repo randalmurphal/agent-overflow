@@ -15,6 +15,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "oxlint",
     "check:file": "node scripts/check-file.mjs",
+    "check:stall-watchdog": "node scripts/check-stalled-page-watchdog.mjs",
     "test": "vitest run --project unit --project unit-isolated",
     "test:watch": "vitest --project unit --project unit-isolated",
     "test:browser": "vitest run --project browser",

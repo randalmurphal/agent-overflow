@@ -1124,8 +1124,8 @@ func TestBackgroundTaskNotification_AsyncAgentLaunchStillGetsSibling(t *testing.
 // carrying task_id/resumes_tool_use_id/description) -> EventToolComplete
 // (ack, is_background:true) — and asserts the SendMessage row becomes
 // the resumed round's background carrier: bg=1, running, Summary
-// rewritten to the agent-centric form, and visible to the reaper's
-// ListRunningBackgroundToolCalls predicate. Round 2's terminal +
+// rewritten to the agent-centric form, and counted by the reaper's
+// CountLiveRunningBackgroundToolCalls gate. Round 2's terminal +
 // notification then produce a NEW sibling under the carrier while the
 // original launch keeps exactly its round-1 sibling untouched.
 func TestBackgroundTaskNotification_ResumeCarrierBecomesBackgroundCarrier(t *testing.T) {
@@ -1328,21 +1328,15 @@ func TestBackgroundTaskNotification_ResumeCarrierBecomesBackgroundCarrier(t *tes
 	}
 
 	// Reaper-protection pin: the carrier must be the row that keeps
-	// ListRunningBackgroundToolCalls non-empty while the resumed agent
-	// runs quiet. FAILS pre-fix: the carrier would be foreground
-	// (is_background=false) and excluded from this query entirely.
-	running, err := st.ListRunningBackgroundToolCalls("t1")
+	// CountLiveRunningBackgroundToolCalls above zero while the resumed
+	// agent runs quiet. The original launch settled with round 1, so the
+	// one live launch is the carrier.
+	running, err := st.CountLiveRunningBackgroundToolCalls("t1")
 	if err != nil {
-		t.Fatalf("ListRunningBackgroundToolCalls: %v", err)
+		t.Fatalf("CountLiveRunningBackgroundToolCalls: %v", err)
 	}
-	foundCarrier := false
-	for _, item := range running {
-		if item.ID == carrierID {
-			foundCarrier = true
-		}
-	}
-	if !foundCarrier {
-		t.Fatalf("ListRunningBackgroundToolCalls must include the carrier %s, got %+v", carrierID, running)
+	if running != 1 {
+		t.Fatalf("live background launches = %d, want 1: the carrier %s", running, carrierID)
 	}
 
 	// --- Round 2 terminal + notification: a NEW sibling under the

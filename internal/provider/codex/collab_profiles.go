@@ -23,7 +23,7 @@ import (
 func (s *Session) scheduleCollabProfileRead(providerThreadID, parentToolUseID string, launchMeta collabLaunchMeta) {
 	providerThreadID = strings.TrimSpace(providerThreadID)
 	parentToolUseID = strings.TrimSpace(parentToolUseID)
-	if s.proc == nil || providerThreadID == "" || parentToolUseID == "" {
+	if !s.hasTransport() || providerThreadID == "" || parentToolUseID == "" {
 		return
 	}
 	if !s.beginCollabProfileRead(providerThreadID) {

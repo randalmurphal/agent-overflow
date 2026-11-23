@@ -9,11 +9,10 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
-
-	"github.com/google/uuid"
 )
 
 type ManagedAccount struct {
@@ -40,6 +39,9 @@ type ManagedAccount struct {
 	// AutoSwitch reports that the account is in the provider's auto-switch
 	// pool.
 	AutoSwitch bool `json:"autoSwitch"`
+	// PendingReset is the account's usage reset spend Codex has not settled,
+	// which the card offers to finish. Set in listings only.
+	PendingReset *UnsettledReset `json:"pendingReset,omitempty"`
 }
 
 func (m *Manager) ListProviderAccounts() ([]ManagedAccount, error) {
@@ -49,15 +51,16 @@ func (m *Manager) ListProviderAccounts() ([]ManagedAccount, error) {
 	m.mu.RLock()
 	now := time.Now()
 	var out []ManagedAccount
-	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+	for _, providerName := range ManagedAccountProviders {
 		active, hasActive := m.store.Active(providerName, now)
 		generation := m.store.Generation(providerName)
 		for _, account := range m.store.List(providerName, now) {
 			out = append(out, ManagedAccount{
-				Account:    account,
-				Active:     hasActive && active.ID == account.ID,
-				Generation: generation,
-				AutoSwitch: m.store.AutoSwitch(providerName, account.ID),
+				Account:      account,
+				Active:       hasActive && active.ID == account.ID,
+				Generation:   generation,
+				AutoSwitch:   m.store.AutoSwitch(providerName, account.ID),
+				PendingReset: unsettledReset(m.store.PendingReset(providerName, account.ID)),
 			})
 		}
 	}
@@ -673,6 +676,9 @@ func (m *Manager) probeProviderAccountAtHome(providerName, binary, home string) 
 			binary,
 			map[string]string{"CODEX_HOME": home},
 		))
+	case string(provider.Agy):
+		geminiDir, appDataSubdir := splitAgyEphemeralHome(home)
+		return agy.ProbeAccount(m.context(), m.agyProbeConfig(binary, geminiDir, appDataSubdir, nil))
 	default:
 		return provider.AccountInfo{}, fmt.Errorf("unsupported provider %q", providerName)
 	}
@@ -720,7 +726,7 @@ func (m *Manager) adoptCurrentProviderAccountLocked(
 	providerName string,
 	info provider.AccountInfo,
 	credential *provideraccounts.CredentialSnapshot,
-) (provideraccounts.Account, SignIn, error) {
+) (_ provideraccounts.Account, _ SignIn, retErr error) {
 	if credential == nil {
 		return provideraccounts.Account{}, SignIn{}, nil
 	}
@@ -737,7 +743,12 @@ func (m *Manager) adoptCurrentProviderAccountLocked(
 	}
 	if _, hasActive := m.store.Active(providerName, time.Now()); !hasActive &&
 		strings.TrimSpace(info.Email) == "" {
-		accountID := uuid.NewString()
+		reservation, err := m.reserveAccount(providerName)
+		if err != nil {
+			return provideraccounts.Account{}, SignIn{}, err
+		}
+		defer reservation.settleOnFailure(&retErr)
+		accountID := reservation.ID()
 		saved, err := m.credentials.CaptureAccountCredential(providerName, accountID)
 		if err != nil {
 			return provideraccounts.Account{}, SignIn{}, err
@@ -776,7 +787,7 @@ func (m *Manager) adoptCurrentProviderAccountLocked(
 	return account, signIn, nil
 }
 
-func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary string) (SignIn, error) {
+func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary string) (_ SignIn, retErr error) {
 	if _, ok := m.store.Active(providerName, time.Now()); ok {
 		return SignIn{}, nil
 	}
@@ -823,8 +834,7 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 	// login we are adopting may already be saved under this identity from
 	// an earlier session; minting a fresh ID here would put the credential
 	// in a slot the metadata never references, leaving the real account on
-	// a stale credential until the next startup prune deleted the copy.
-	accountID := uuid.NewString()
+	// a stale credential.
 	m.backfillCodexOrgIDs(providerName, info.Email)
 	existing, found, err := m.findAccountByObservedIdentity(providerName, info)
 	if err != nil {
@@ -835,8 +845,14 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 			err,
 		)
 	}
-	if found {
-		accountID = existing.ID
+	accountID := existing.ID
+	if !found {
+		reservation, err := m.reserveAccount(providerName)
+		if err != nil {
+			return SignIn{}, err
+		}
+		defer reservation.settleOnFailure(&retErr)
+		accountID = reservation.ID()
 	}
 	saved, err := m.credentials.CaptureAccountCredential(providerName, accountID)
 	if err != nil {

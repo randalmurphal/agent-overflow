@@ -257,8 +257,16 @@ func TestARefusedRowThatLaterSavesIsReportedSaved(t *testing.T) {
 	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1})
 	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: "t1", Content: "an answer"})
 	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta()})
-	if got := recorder.savedRows(); len(got) != 1 {
-		t.Fatalf("saved = %v, want nothing for rows of other kinds", got)
+	// The turn's end is told saved as an entry of its own
+	// (reportSavedTurnEnd); of the timeline, only the notice was.
+	var rows []UnsavedRow
+	for _, row := range recorder.savedRows() {
+		if !strings.HasPrefix(row.ItemID, "turn-end:") {
+			rows = append(rows, row)
+		}
+	}
+	if len(rows) != 1 {
+		t.Fatalf("saved rows = %v, want nothing for rows of other kinds", rows)
 	}
 }
 

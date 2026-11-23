@@ -59,6 +59,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.PipelineUpdated,
 		eventchan.ProjectUpdated,
 		eventchan.ProviderAccount,
+		eventchan.ProviderAccountListing,
 		eventchan.ProviderAccountUsageError,
 		eventchan.ProviderAccountsChanged,
 		eventchan.ProviderAccountSignIn,

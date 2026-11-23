@@ -23,9 +23,15 @@ func fable(pct float64, reset int64) provider.RateLimitEntry {
 	return provider.RateLimitEntry{LimitID: "weekly_scoped:fable", LimitName: "Fable", UsedPercent: pct, WindowMins: 10080, ResetsAt: reset}
 }
 
+// codexLimit is Codex's provider-wide 5-hour window.
+func codexLimit(pct float64, reset int64) provider.RateLimitEntry {
+	return provider.RateLimitEntry{LimitID: "codex", UsedPercent: pct, WindowMins: 300, ResetsAt: reset}
+}
+
 const (
 	opusModel  = "claude-opus-4-8[1m]"
 	fableModel = "claude-fable-5-2"
+	codexModel = "gpt-5.5"
 )
 
 func TestProviderWide(t *testing.T) {
@@ -354,5 +360,88 @@ func TestEarliestServe(t *testing.T) {
 	when, who, ok := earliestServe("claude", "fable", accounts, 95, testNow)
 	if !ok || who.ID != "a" || !when.Equal(testNow.Add(3*time.Hour)) {
 		t.Fatalf("earliest = %v %q %v", when, who.ID, ok)
+	}
+}
+
+func TestAgyQuotaBucketPolicyAndAutoSwitch(t *testing.T) {
+	t.Parallel()
+	gemini5h := func(pct float64, reset int64) provider.RateLimitEntry {
+		return provider.RateLimitEntry{LimitID: "gemini-5h", LimitName: "Gemini · 5-hour", UsedPercent: pct, WindowMins: 300, ResetsAt: reset}
+	}
+	thirdParty5h := func(pct float64, reset int64) provider.RateLimitEntry {
+		return provider.RateLimitEntry{LimitID: "3p-5h", LimitName: "Claude & GPT (shared) · 5-hour", UsedPercent: pct, WindowMins: 300, ResetsAt: reset}
+	}
+
+	// Exhausted 3p-5h bucket triggers switch for claude-opus-5-5 on agy, but not for gemini-4-neon.
+	dClaude := decide(decideInput{
+		provider: "agy", selectedID: "a",
+		accounts: []candidate{
+			cand("a", gemini5h(15, at(2*time.Hour)), thirdParty5h(100, at(3*time.Hour))),
+			cand("b", gemini5h(10, at(2*time.Hour)), thirdParty5h(20, at(3*time.Hour))),
+		},
+		demand: buildDemand("agy", []string{"claude-opus-5-5"}), strategy: StrategySoonestReset, threshold: 95, now: testNow,
+	})
+	if dClaude.to.ID != "b" {
+		t.Fatalf("agy claude-opus-5-5 target = %q, want b", dClaude.to.ID)
+	}
+
+	dGemini := decide(decideInput{
+		provider: "agy", selectedID: "a",
+		accounts: []candidate{
+			cand("a", gemini5h(15, at(2*time.Hour)), thirdParty5h(100, at(3*time.Hour))),
+			cand("b", gemini5h(10, at(2*time.Hour)), thirdParty5h(20, at(3*time.Hour))),
+		},
+		demand: buildDemand("agy", []string{"gemini-4-neon"}), strategy: StrategySoonestReset, threshold: 95, now: testNow,
+	})
+	if dGemini.to.ID != "" {
+		t.Fatalf("agy gemini-4-neon unexpectedly switched to %q when only 3p-5h was exhausted", dGemini.to.ID)
+	}
+
+	// Reverse direction: exhausted gemini-5h must switch gemini-4-neon, NOT 3p claude/gpt threads.
+	dGeminiExhausted := decide(decideInput{
+		provider: "agy", selectedID: "a",
+		accounts: []candidate{
+			cand("a", gemini5h(100, at(2*time.Hour)), thirdParty5h(10, at(3*time.Hour))),
+			cand("b", gemini5h(10, at(2*time.Hour)), thirdParty5h(10, at(3*time.Hour))),
+		},
+		demand: buildDemand("agy", []string{"gemini-4-neon"}), strategy: StrategySoonestReset, threshold: 95, now: testNow,
+	})
+	if dGeminiExhausted.to.ID != "b" {
+		t.Fatalf("agy gemini-4-neon target = %q, want b when gemini-5h exhausted", dGeminiExhausted.to.ID)
+	}
+	dClaudeUnaffected := decide(decideInput{
+		provider: "agy", selectedID: "a",
+		accounts: []candidate{
+			cand("a", gemini5h(100, at(2*time.Hour)), thirdParty5h(10, at(3*time.Hour))),
+			cand("b", gemini5h(10, at(2*time.Hour)), thirdParty5h(10, at(3*time.Hour))),
+		},
+		demand: buildDemand("agy", []string{"claude-sonnet-4-6"}), strategy: StrategySoonestReset, threshold: 95, now: testNow,
+	})
+	if dClaudeUnaffected.to.ID != "" {
+		t.Fatalf("agy claude-sonnet-4-6 unexpectedly switched to %q when only gemini-5h was exhausted", dClaudeUnaffected.to.ID)
+	}
+
+	// Older-account fallback API groups all Gemini models into generic
+	// gemini-quota / gemini-weekly: Argon and Carbon MUST still match it, while
+	// 3p models remain unaffected.
+	geminiFallback := func(pct float64, reset int64) provider.RateLimitEntry {
+		return provider.RateLimitEntry{LimitID: "gemini-quota", LimitName: "Gemini", UsedPercent: pct, WindowMins: 300, ResetsAt: reset}
+	}
+	for _, model := range []string{"gemini-4-argon", "gemini-4-carbon"} {
+		dSub := decide(decideInput{
+			provider: "agy", selectedID: "a",
+			accounts: []candidate{
+				cand("a", geminiFallback(100, at(2*time.Hour))),
+				cand("b", geminiFallback(10, at(2*time.Hour))),
+			},
+			demand: buildDemand("agy", []string{model}), strategy: StrategySoonestReset, threshold: 95, now: testNow,
+		})
+		if dSub.to.ID != "b" {
+			t.Fatalf("agy %s did not match fallback gemini-quota bucket: got %q, want b", model, dSub.to.ID)
+		}
+	}
+
+	if got := providerTitle("agy"); got != "Antigravity" {
+		t.Fatalf("providerTitle(agy) = %q, want Antigravity", got)
 	}
 }

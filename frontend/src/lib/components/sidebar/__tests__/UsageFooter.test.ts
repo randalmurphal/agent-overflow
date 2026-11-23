@@ -43,9 +43,9 @@ describe('<UsageFooter>', () => {
     const { findAllByTestId } = render(UsageFooter, { props: {} });
     const rows = await findAllByTestId('usage-footer-row');
     expect(rows).toHaveLength(1);
-    // The label is rendered lowercase with a CSS `uppercase` transform
-    // (visual-only), so textContent stays lowercase.
-    expect(rows[0].textContent).toContain('claude');
+    // The label uses providerLabel() with CSS `uppercase` (visual-only),
+    // so textContent carries the provider's display label.
+    expect(rows[0].textContent).toContain('Claude');
     // Output tokens ONLY (1.1M), not in+out (4.1M) — the shared
     // usage-surface token metric. Cents always show (a bare "$42" or
     // "$118" reading as exact was a bug), with real spaces around the
@@ -64,9 +64,9 @@ describe('<UsageFooter>', () => {
     // Two block-level rows (not inline segments sharing one line — the
     // single-line layout truncated whichever provider came second).
     expect(rows).toHaveLength(2);
-    expect(rows[0].textContent).toContain('claude');
+    expect(rows[0].textContent).toContain('Claude');
     expect(rows[0].textContent).toContain('40.0k · $141.03');
-    expect(rows[1].textContent).toContain('codex');
+    expect(rows[1].textContent).toContain('Codex');
     expect(rows[1].textContent).toContain('500');
   });
 

@@ -41,6 +41,10 @@ is the drag handle. Open, close and placement belong to
   width a divider drag starts from) reads the slot, never the promoted
   section's box. Native browser views read the promoted layer through
   `utils/panePromotion.svelte.ts`.
+- Every pane section is its own stacking context (`isolate`): a z-index
+  inside a pane orders only that pane's layers. A surface that must paint
+  outside its pane (a menu, popover or dialog) mounts on the body, as
+  `Popover`, `Modal` and `ContextMenu` do.
 
 ## Find
 

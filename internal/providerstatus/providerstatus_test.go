@@ -222,6 +222,9 @@ func TestActionURLTable(t *testing.T) {
 		{string(provider.Claude), "unauthenticated", true},
 		{string(provider.Codex), "not_found", true},
 		{string(provider.Codex), "version_too_old", false}, // "upgrade + restart", no single URL
+		{string(provider.Agy), "not_found", true},
+		{string(provider.Agy), "unauthenticated", true},
+		{string(provider.Agy), "ready", false},
 		{string(provider.Claude), "ready", false},
 		{string(provider.Claude), "error", false},
 	}

@@ -38,7 +38,8 @@
 // LAN-bound backend. Both cases are one pairing on one device row, so they
 // run `.serial` and carry it forward rather than re-staging a ceremony.
 
-import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { type BrowserContext, type Page } from '@playwright/test';
+import { expect, test } from './base-test.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import {
@@ -183,7 +184,12 @@ test.describe.serial('off-host live thread state', () => {
     // open-in-editor names an editor on the host's screen, which this
     // device has no use for (the owner's phone over `adb reverse` — a
     // loopback peer — was offered it, 2026-09-04).
-    await expect(phone.getByTestId('chat-header-open-editor')).toHaveCount(0);
+    await phone.getByTestId('chat-header-more').click();
+    const actions = phone.getByRole('menu', { name: 'Thread actions' });
+    await expect(actions.getByRole('menuitem', { name: 'Regenerate title' })).toBeVisible();
+    await expect(actions.getByRole('menuitem', { name: /^Open in/ })).toHaveCount(0);
+    await phone.keyboard.press('Escape');
+    await expect(actions).toHaveCount(0);
 
     // The host queues a message the way its own composer does. Nothing is
     // sent to this page and nothing on it is clicked from here on, so the

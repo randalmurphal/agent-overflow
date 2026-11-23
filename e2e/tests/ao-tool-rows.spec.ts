@@ -16,9 +16,10 @@ import {
   LEAD_TITLE,
   SPAWN_TITLE,
   TARGET_TITLE,
-  atJumpChipEdge,
+  atOverlayEdge,
   driveAoToolRows,
   expandRow,
+  jumpChipOf,
   openLead,
   shootRow,
   toolRow,
@@ -115,7 +116,7 @@ for (const provider of ['claude', 'codex'] as const) {
     // Left with its toggle's center less than a pixel above the "Jump to
     // bottom" chip, where a mouse press reaches neither, the row still
     // opens through expandRow.
-    await atJumpChipEdge(loop, () => expandRow(loop));
+    await atOverlayEdge(loop, jumpChipOf(loop), () => expandRow(loop));
     await expect(loop.getByTestId('tool-call-card-ao-outcome')).toContainText('next');
     await shot('loop-expanded', loop);
 

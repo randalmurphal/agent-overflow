@@ -20,8 +20,10 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     gitlabSelfHostedHosts: [...SETTINGS_DEFAULTS.gitlabSelfHostedHosts],
     claudeHiddenModels: [...SETTINGS_DEFAULTS.claudeHiddenModels],
     codexHiddenModels: [...SETTINGS_DEFAULTS.codexHiddenModels],
+    agyHiddenModels: [...SETTINGS_DEFAULTS.agyHiddenModels],
     claudeCustomEnv: [...SETTINGS_DEFAULTS.claudeCustomEnv],
     codexCustomEnv: [...SETTINGS_DEFAULTS.codexCustomEnv],
+    agyCustomEnv: [...SETTINGS_DEFAULTS.agyCustomEnv],
     spinnerCustomVerbs: [...SETTINGS_DEFAULTS.spinnerCustomVerbs],
     spinnerDisabledAnimations: [...SETTINGS_DEFAULTS.spinnerDisabledAnimations],
     // A computer's roster is its own settings answer; none is assumed.

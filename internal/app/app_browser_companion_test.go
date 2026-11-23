@@ -331,7 +331,8 @@ type paneNumbers struct {
 // attachPane attaches a pane to the thread and answers its numbering.
 func attachPane(t *testing.T, app *App, threadID string) *paneNumbers {
 	t.Helper()
-	mount, err := app.BrowserCompanionPaneAttach(t.Context(), threadID)
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{HostWindow: true})
+	mount, err := app.BrowserCompanionPaneAttach(ctx, threadID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +460,7 @@ func TestBrowserCompanionJarUsesTheThreadsProject(t *testing.T) {
 	app.browser.manager = manager
 	t.Cleanup(func() { _ = manager.Close() })
 	thread := makeWorkspaceThread(t, app, "thread-companion-jar")
-	ctx := t.Context()
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{HostWindow: true})
 
 	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "new"}); err != nil {
 		t.Fatal(err)
@@ -504,7 +505,7 @@ func TestBrowserCompanionJarSwitchFromARetiredPaneChangesNothing(t *testing.T) {
 	app.browser.manager = manager
 	t.Cleanup(func() { _ = manager.Close() })
 	thread := makeWorkspaceThread(t, app, "thread-companion-jar-retired")
-	ctx := t.Context()
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{HostWindow: true})
 	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "new"}); err != nil {
 		t.Fatal(err)
 	}

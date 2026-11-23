@@ -99,6 +99,9 @@ func (s *Service) Notes(ctx context.Context, providerName string) (Notes, error)
 }
 
 func (s *Service) fetchNotes(ctx context.Context, providerName, installed, latest string) (Notes, error) {
+	if providerName == ProviderAgy {
+		return s.fetchAgyNotes(ctx, installed, latest)
+	}
 	repo := releaseRepos[providerName]
 	from, to := canonical(installed), canonical(latest)
 	if from == "" {
@@ -199,4 +202,42 @@ func (s *Service) fetchRelease(ctx context.Context, repo releaseRepo, token stri
 		Body:        release.Body,
 		URL:         release.HTMLURL,
 	}, nil
+}
+
+// fetchAgyNotes reads Antigravity's Markdown changelog and extracts the
+// "## Antigravity CLI" section as release notes.
+func (s *Service) fetchAgyNotes(ctx context.Context, installed, latest string) (Notes, error) {
+	body, err := s.get(ctx, AgyChangelogURL, manifestBodyLimit)
+	if err != nil {
+		return Notes{}, err
+	}
+	text := strings.TrimSpace(extractAgyChangelogSection(string(body)))
+	notes := Notes{
+		Provider:    ProviderAgy,
+		FromVersion: installed,
+		ToVersion:   latest,
+		URL:         "https://antigravity.google/docs/changelog",
+	}
+	if text != "" {
+		notes.Releases = []Note{{
+			Version: latest,
+			Name:    "Antigravity CLI " + latest,
+			Body:    text,
+			URL:     notes.URL,
+		}}
+	}
+	return notes, nil
+}
+
+func extractAgyChangelogSection(markdown string) string {
+	const header = "## Antigravity CLI"
+	idx := strings.Index(markdown, header)
+	if idx < 0 {
+		return strings.TrimSpace(markdown)
+	}
+	rest := markdown[idx+len(header):]
+	if next := strings.Index(rest, "\n## "); next >= 0 {
+		rest = rest[:next]
+	}
+	return strings.TrimSpace(rest)
 }

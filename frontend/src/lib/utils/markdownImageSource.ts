@@ -15,6 +15,15 @@ import { acquireLocalImage, fetchLocalImageBytes, localImageCacheKey } from './l
 import type { ImageSize, MediaBytes, MediaHandle } from './mediaBlobCache';
 import { pathBasename } from './pathDisplay';
 
+/**
+ * An image token a host extension claimed inside link text
+ * (`forgeAttachmentExtension.ts`, `pathLinkExtension.ts`) carries
+ * `inLink: true`. The author's link is then its one control: the host
+ * renders no anchor, button, player or lightbox of its own, and a click
+ * follows the link.
+ */
+export const claimedInLink = (token: object): boolean => (token as { inLink?: unknown }).inLink === true;
+
 export interface MarkdownImageVariant extends MediaBytes, ImageSize {
   originalWidth: number;
   originalHeight: number;

@@ -38,9 +38,9 @@ Anything that names a different mode is refused with a sentence saying so:
 `--soak`) the launcher-identity flags.
 
 Running `serve` from inside an Agent Overflow agent session is refused too.
-`AO_ENDPOINT` in the environment means this shell is already talking to a
-backend, and starting a second one from inside the first is almost never
-what somebody meant.
+`AO_IN_SESSION` in the environment means this shell was spawned by an active
+agent session, and starting a second backend from inside the first is almost
+never what somebody meant.
 
 ## What it does differently from a windowed boot
 

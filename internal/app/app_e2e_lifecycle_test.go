@@ -497,8 +497,9 @@ func waitForSessionStarts(sessions *sessionruntime.Manager, bound time.Duration)
 
 // closeLeftSessions takes the sessions the App holds in one step, as
 // Shutdown does, closes those that own a provider process through the
-// close every path uses, drains their events, waits for the settlements
-// they started, and returns what failed. A session a test built by hand to
+// close every path uses, closes the provider connections, drains the
+// sessions' events, waits for the settlements they started, and returns
+// what failed. A session a test built by hand to
 // stand in for one owns no process, and its constructor forbids Close.
 func closeLeftSessions(app *App) []error {
 	return closeLeftSessionsBy(app, func(threadID string, s session) error {
@@ -517,6 +518,9 @@ func closeLeftSessionsBy(app *App, closeSession func(threadID string, s session)
 		if err := closeSession(threadID, s); err != nil {
 			errs = append(errs, fmt.Errorf("close the session the test left open: %w", err))
 		}
+	}
+	if err := app.sessionManager().runtime.Connections().CloseAll(); err != nil {
+		errs = append(errs, fmt.Errorf("close provider connections: %w", err))
 	}
 	if err := app.providerEvents.drainAll(); err != nil {
 		errs = append(errs, fmt.Errorf("drain provider events: %w", err))

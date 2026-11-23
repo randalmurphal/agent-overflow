@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/editor"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
 )
@@ -30,8 +31,10 @@ func (a *App) GetProviderStatuses() ([]provider.ProviderStatus, error) {
 	// A status read reports what is installed now, not what the last tick
 	// saw: the settings page reads it after the user installs or moves codex.
 	a.invalidateDefaultCodexBinary()
-	identities := make(map[string]providerBinaryIdentity, 2)
-	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+	standalone := provider.StandaloneProviders()
+	identities := make(map[string]providerBinaryIdentity, len(standalone))
+	for _, kind := range standalone {
+		providerName := string(kind)
 		if identity, ok := a.resolveProviderBinaryIdentity(providerName); ok {
 			identities[providerName] = identity
 		}
@@ -104,8 +107,10 @@ func (a *App) GetSettings(ctx context.Context) (settings.Settings, error) {
 func (a *App) settingsForCaller(ctx context.Context, current settings.Settings) settings.Settings {
 	current.ClaudeCustomEnv = settings.RedactProviderEnvVars(current.ClaudeCustomEnv)
 	current.CodexCustomEnv = settings.RedactProviderEnvVars(current.CodexCustomEnv)
+	current.AgyCustomEnv = settings.RedactProviderEnvVars(current.AgyCustomEnv)
 	current.ClaudePromptOverrides = settings.PromptOverridesForWire(current.ClaudePromptOverrides)
 	current.CodexPromptOverrides = settings.PromptOverridesForWire(current.CodexPromptOverrides)
+	current.AgyPromptOverrides = settings.PromptOverridesForWire(current.AgyPromptOverrides)
 	if !a.callerHolds(ctx, transport.ScopeAccessAdmin) {
 		current.Network = settings.NetworkSettings{}
 		current.ObservabilityOtlpEndpoint = ""
@@ -227,7 +232,12 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 	}
 	if _, ok := patch["codexBinaryPath"]; ok {
 		a.invalidateDefaultCodexBinary()
+		a.drainCodexConnections()
 		a.refreshCodexModelCatalog()
+	}
+	if _, ok := patch["agyBinaryPath"]; ok {
+		a.drainAgyConnections()
+		a.refreshAgyModelCatalog()
 	}
 	if _, ok := patch["gitlabSelfHostedHosts"]; ok {
 		// The forge classifier reads from a Core-held snapshot; push
@@ -297,7 +307,11 @@ func (a *App) GetModelsForProvider(providerName string) (provider.ModelCatalog, 
 // Agent profiles, spawns and text generation resolve a model family from
 // it; it reads no usage ledger.
 func (a *App) modelCatalog(providerName string) (provider.ModelCatalog, error) {
-	catalog, err := a.providerDiscoveryService().ModelsForProvider(context.Background(), providerName)
+	return a.modelCatalogContext(context.Background(), providerName)
+}
+
+func (a *App) modelCatalogContext(ctx context.Context, providerName string) (provider.ModelCatalog, error) {
+	catalog, err := a.providerDiscoveryService().ModelsForProvider(ctx, providerName)
 	if err != nil {
 		return catalog, err
 	}
@@ -379,6 +393,10 @@ func (a *App) refreshCodexModelCatalog() {
 	a.providerDiscoveryService().RefreshCodexModelCatalog()
 }
 
+func (a *App) refreshAgyModelCatalog() {
+	a.providerDiscoveryService().RefreshAgyModelCatalog()
+}
+
 func (a *App) codexModelsForBinary(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
 	return a.providerDiscoveryService().CodexModelsForBinary(ctx, binary)
 }
@@ -408,6 +426,14 @@ func (a *App) providerBinaryPath(providerName string) string {
 		return settings.DefaultSettings.ClaudeBinaryPath
 	case string(provider.Codex):
 		return a.codexBinary().Path
+	case string(provider.Agy):
+		if path := strings.TrimSpace(cfg.AgyBinaryPath); path != "" && path != settings.DefaultSettings.AgyBinaryPath {
+			return path
+		}
+		if a.defaultProviderBinaryOverride != "" {
+			return a.defaultProviderBinaryOverride
+		}
+		return agy.ResolveBinary(settings.DefaultSettings.AgyBinaryPath)
 	default:
 		return ""
 	}

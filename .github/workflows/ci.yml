@@ -347,6 +347,12 @@ jobs:
             base='HEAD^1'
           fi
           make vitest-${{ matrix.project }} VITEST_BASE="$base"
+      # The stalled-page watchdog ends a blocked browser run through
+      # vitest.exit(); this fails the job when a Vitest change stops that.
+      - name: Check the stalled-page watchdog
+        if: matrix.project == 'browser'
+        working-directory: frontend
+        run: ../bin/ao-netns pnpm run check:stall-watchdog
       - uses: ./.github/actions/cache-save
 
   # One build of the binaries and the frontend/dist they embed, which the

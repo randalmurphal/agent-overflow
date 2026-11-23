@@ -4,7 +4,9 @@
 // and the timeline keeps the row it was reading at the top through both
 // width changes. A tool pane promotes from a double-click on its title and
 // restores from its header control. Moving focus to another pane while one
-// is promoted demotes first and lands focus there.
+// is promoted demotes first and lands focus there. A browser pane the
+// backend opens while a pane is promoted stays under it until the user's
+// header press brings it out.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 
@@ -165,4 +167,39 @@ test('a tool pane promotes from a double-click on its title and restores from it
   await expectPromoted(tool, false);
   expectBoxClose(await boxOf(tool), slot);
   await expect(tool.getByTestId('tool-pane-title')).toHaveAttribute('draggable', 'true');
+});
+
+test('a browser the backend opens under a promoted pane leaves it promoted until the header press', async ({ harness, page }) => {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'pane-promote-browser', repo: {}, threads: [
+      { title: 'Browsing task', turns: [{ userText: 'browse', items: [{ kind: 'assistant_text', summary: 'Browsing answer.' }] }] },
+    ] }],
+  });
+  const threadId = seed.projects[0].threadIds[0];
+  await harness.rpc('StartSession', threadId);
+  await harness.open(page);
+  await page.getByText('Browsing task').click();
+  const thread = page.locator('section[data-pane-kind="thread"]');
+  await expect(thread.getByText('Browsing answer.')).toBeVisible();
+  await thread.getByTestId('pane-promote').click();
+  await expectPromoted(thread, true);
+
+  // Opened from the backend, as an agent's browser tool does: the page asked
+  // for nothing, and the push opens the pane under the promoted one.
+  await harness.rpc('BrowserCompanionDo', threadId, { kind: 'new' });
+  const browser = page.locator('section[data-pane-kind="browser"]');
+  await expect(browser).toHaveCount(1);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expectPromoted(thread, true);
+  expectBoxClose(await boxOf(thread), await stripArea(page));
+  const toggle = thread.getByTestId('browser-companion-toggle');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+
+  // The user's press shows the pane: the promotion ends and the pane is on
+  // screen, not closed.
+  await toggle.click();
+  await expectPromoted(thread, false);
+  await expect(browser).toHaveCount(1);
+  await expect(browser.getByTestId('browser-pane')).toBeInViewport();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
 });

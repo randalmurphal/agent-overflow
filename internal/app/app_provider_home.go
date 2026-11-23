@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"agent-overflow/internal/agyconfig"
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/codexconfig"
 	"agent-overflow/internal/provider/claude/sessionfork"
@@ -90,4 +91,13 @@ func (a *App) codexConfigTOMLPath() (string, error) {
 		return "", err
 	}
 	return codexconfig.PathForHome(home), nil
+}
+
+// agyMCPConfigJSONPath is `<providerHome>/.gemini/config/mcp_config.json`.
+func (a *App) agyMCPConfigJSONPath() (string, error) {
+	home, err := a.providerHome()
+	if err != nil {
+		return "", err
+	}
+	return agyconfig.PathForHome(home), nil
 }

@@ -19,6 +19,14 @@ func (s *Service) ModelsForProvider(ctx context.Context, providerName string) (p
 			return provider.ModelCatalog{}, err
 		}
 		return provider.ModelCatalog{Models: models, Provenance: provider.CatalogLive}, nil
+	case provider.ACPLiveModelCatalog:
+		if models, ok := s.AgyModelsForBinary(ctx, s.deps.ProviderBinary(providerName)); ok {
+			return provider.ModelCatalog{Models: models, Provenance: provider.CatalogLive}, nil
+		}
+		return provider.ModelCatalog{
+			Models:     provider.ModelsForProvider(providerName),
+			Provenance: provider.CatalogShipped,
+		}, nil
 	case provider.ClaudeProbeEnrichedCatalog:
 		return s.ClaudeCatalog(providerName), nil
 	case provider.StaticModelCatalog:
@@ -54,4 +62,59 @@ func normalizedCodexBinary(binary string) string {
 // KnownCodexModel returns capability evidence without starting or joining a probe.
 func (s *Service) KnownCodexModel(binary, model string) (provider.ModelInfo, bool) {
 	return s.caches.CodexModels.KnownModel(normalizedCodexBinary(binary), model)
+}
+
+// AgyModelsForBinary returns cached or live-probed Antigravity models.
+// Returns (nil, false) when live probing is disabled or unavailable so callers
+// fall back to the shipped Antigravity model catalog.
+func (s *Service) AgyModelsForBinary(ctx context.Context, binary string) ([]provider.ModelInfo, bool) {
+	if s.caches.AgyModels == nil || s.caches.AgyModels.Disabled() {
+		return nil, false
+	}
+	key := normalizedAgyBinary(binary)
+	models, err := s.caches.AgyModels.GetOrProbe(ctx, key, s.deps.ProbeAgyModels)
+	if err != nil || len(models) == 0 {
+		return nil, false
+	}
+	return models, true
+}
+
+// KnownAgyModel returns cached Antigravity model metadata without spawning.
+func (s *Service) KnownAgyModel(binary, model string) (provider.ModelInfo, bool) {
+	if s.caches.AgyModels == nil {
+		return provider.ModelInfo{}, false
+	}
+	cached, ok := s.caches.AgyModels.Get(normalizedAgyBinary(binary))
+	if !ok {
+		return provider.ModelInfo{}, false
+	}
+	for _, m := range cached {
+		if m.Slug == model {
+			return m, true
+		}
+	}
+	return provider.ModelInfo{}, false
+}
+
+// CachedAgyModelsForBinary performs a nonblocking read of the Antigravity live
+// model catalog cache.
+func (s *Service) CachedAgyModelsForBinary(binary string) ([]provider.ModelInfo, bool) {
+	if s.caches.AgyModels == nil {
+		return nil, false
+	}
+	return s.caches.AgyModels.Get(normalizedAgyBinary(binary))
+}
+
+// RefreshAgyModelCatalog clears cached Antigravity model catalogs.
+func (s *Service) RefreshAgyModelCatalog() {
+	if s.caches.AgyModels != nil {
+		s.caches.AgyModels.Clear()
+	}
+}
+
+func normalizedAgyBinary(binary string) string {
+	if binary = strings.TrimSpace(binary); binary != "" {
+		return binary
+	}
+	return settings.DefaultSettings.AgyBinaryPath
 }

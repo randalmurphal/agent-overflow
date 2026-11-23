@@ -3,6 +3,7 @@ package harnessrpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -303,7 +304,7 @@ func TestHarnessUIQueryAnswersInsideTheGrace(t *testing.T) {
 func TestHarnessRegisterPageRejectsWrongMarker(t *testing.T) {
 	h, _, _ := newUIQueryHarness(t)
 	h.pageMarker = "instance-marker"
-	if _, err := h.HarnessRegisterPage(context.Background(), "page-1", "other-marker", "http://127.0.0.1:4321"); err == nil {
+	if _, err := h.HarnessRegisterPage(pageConnection(t), "page-1", "other-marker", "http://127.0.0.1:4321"); err == nil {
 		t.Fatal("a page from another harness instance must be refused")
 	}
 }
@@ -315,7 +316,7 @@ func TestHarnessUIQueryTargetsOneRegisteredPage(t *testing.T) {
 	host.eventBus = bus
 	h.pageMarker = "instance-marker"
 	for _, id := range []string{"page-1", "page-2"} {
-		if _, err := h.HarnessRegisterPage(context.Background(), id, h.pageMarker, "http://127.0.0.1:4321"); err != nil {
+		if _, err := h.HarnessRegisterPage(pageConnection(t), id, h.pageMarker, "http://127.0.0.1:4321"); err != nil {
 			t.Fatalf("register %s: %v", id, err)
 		}
 	}
@@ -369,7 +370,7 @@ func TestHarnessUIQueryNamingALoadingPageWaitsForItsRegistration(t *testing.T) {
 		done <- err
 	}()
 	time.Sleep(harnessUIQueryNoClientGrace / 5)
-	if _, err := h.HarnessRegisterPage(context.Background(), "page-1", h.pageMarker, "http://127.0.0.1:4321"); err != nil {
+	if _, err := h.HarnessRegisterPage(pageConnection(t), "page-1", h.pageMarker, "http://127.0.0.1:4321"); err != nil {
 		t.Fatalf("register page-1: %v", err)
 	}
 	event := mustEmittedQuery(t, emitted)
@@ -390,5 +391,78 @@ func TestHarnessUIQueryNamingALoadingPageWaitsForItsRegistration(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed < harnessUIQueryNoClientGrace || elapsed > 5*harnessUIQueryNoClientGrace {
 		t.Fatalf("absent page failed after %s, want the ~%s grace", elapsed, harnessUIQueryNoClientGrace)
+	}
+}
+
+// pageConnection is a call context on a connection of its own, which ends
+// with the test, as a page's socket does.
+func pageConnection(t *testing.T) context.Context {
+	t.Helper()
+	ctx, state := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	t.Cleanup(state.RunCleanups)
+	return ctx
+}
+
+// TestHarnessRegisterPageBelongsToItsConnection: a page registered over a
+// connection is removed when that connection ends; one that came over no
+// connection, or over a connection already closing, records nothing, since
+// nothing would remove it; and a page whose socket reconnected and
+// registered again is the new connection's alone, so the old one's end
+// leaves it registered.
+func TestHarnessRegisterPageBelongsToItsConnection(t *testing.T) {
+	h, _, _ := newUIQueryHarness(t)
+	h.pageMarker = "instance-marker"
+	register := func(ctx context.Context) error {
+		_, err := h.HarnessRegisterPage(ctx, "page-1", h.pageMarker, "http://127.0.0.1:4321")
+		return err
+	}
+	registered := func() bool {
+		for _, page := range h.ui.pageIDs() {
+			if page.PageID == "page-1" {
+				return true
+			}
+		}
+		return false
+	}
+
+	if err := register(context.Background()); !errors.Is(err, transport.ErrNoConnection) {
+		t.Fatalf("register over no connection = %v, want ErrNoConnection", err)
+	}
+	closing, closingState := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	closingState.RunCleanups()
+	if err := register(closing); !errors.Is(err, transport.ErrConnectionClosing) {
+		t.Fatalf("register over a closing connection = %v, want ErrConnectionClosing", err)
+	}
+	if registered() {
+		t.Fatal("a refused registration recorded the page")
+	}
+
+	first, firstState := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	if err := register(first); err != nil {
+		t.Fatal(err)
+	}
+	firstState.RunCleanups()
+	if registered() {
+		t.Fatal("the page outlived its connection")
+	}
+
+	old, oldState := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	reconnected, reconnectedState := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	if err := register(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := register(reconnected); err != nil {
+		t.Fatal(err)
+	}
+	if oldState.Bound("harness-page:page-1") {
+		t.Fatal("the connection the page moved away from still holds its release")
+	}
+	oldState.RunCleanups()
+	if !registered() {
+		t.Fatal("the old connection's end removed a page the new one holds")
+	}
+	reconnectedState.RunCleanups()
+	if registered() {
+		t.Fatal("the page outlived the connection that holds it")
 	}
 }

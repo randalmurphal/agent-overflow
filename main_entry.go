@@ -81,22 +81,22 @@ const superviseVerb = "supervise"
 //     launch state.
 //  2. A top-level CLI verb is a CLI invocation anywhere, session or not.
 //     `service` and `pair` are useful from a plain terminal.
-//  3. Outside a session (no AO_ENDPOINT) nothing else changes: this is the
+//  3. Outside a session (no AO_IN_SESSION) nothing else changes: this is the
 //     binary a user double-clicks, and an unrecognised argument has always
 //     landed in the desktop boot.
 //  4. Inside a session, a leading flag this binary defines (--harness,
 //     --connect, --data-dir, --listen, --print-url-fd, --mock-provider,
 //     --mock-forge) is a
 //     deliberate operator invocation and still boots — `make e2e` run from an
-//     agent session inherits AO_ENDPOINT and must keep working.
+//     agent session inherits AO_IN_SESSION and must keep working.
 //  5. Inside a session, anything else — no arguments at all, an unknown verb,
 //     an unknown flag — is refused. An agent that typed a command we do not
 //     have gets CLI help, never a second GUI process fighting the first one
 //     for the same SQLite file.
 func decideEntry(args []string, lookupEnv func(string) (string, bool)) entryMode {
 	inSession := func() bool {
-		endpoint, _ := lookupEnv(aocli.EnvEndpoint)
-		return strings.TrimSpace(endpoint) != ""
+		marker, _ := lookupEnv(aocli.EnvInSession)
+		return strings.TrimSpace(marker) != ""
 	}
 	if len(args) > 0 && args[0] == serveVerb {
 		if inSession() {
@@ -156,7 +156,7 @@ func isBootFlag(arg string) bool {
 func refuseInSessionBoot(args []string) {
 	fmt.Fprintf(os.Stderr,
 		"agent-overflow: %s is set, so this is an Agent Overflow session and the app is already running; %s.\n",
-		aocli.EnvEndpoint, inSessionComplaint(args))
+		aocli.EnvInSession, inSessionComplaint(args))
 	fmt.Fprint(os.Stderr, aocli.Usage())
 	os.Exit(2)
 }

@@ -130,7 +130,7 @@ func TestAThreadsCloseEndsItsMountsOrder(t *testing.T) {
 // lifetime it attached to, not to whichever is the thread's now.
 func TestAMountOfAClosedLifetimeOrdersNothingOfTheFreshOne(t *testing.T) {
 	m, access, _ := newTabsManager(t, addr("a"))
-	mount, err := m.AttachPane(access.Caller())
+	mount, err := m.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,17 +23,14 @@
   import type { ProviderEnvVar, Settings } from '../../types/settings';
   import type { ProviderDefinition } from '../../providers/catalog';
   import SettingsField from './SettingsField.svelte';
-  import type { ProviderFieldId } from './fields';
+  import { providerFieldId, type ProviderFieldId, type SettingsProvider } from './fields';
   import { INPUT_CLASS, PRIMARY_BUTTON_CLASS, GHOST_BUTTON_CLASS } from './styles';
   import { isImeComposingEvent } from '../../utils/imeComposition';
 
   let { provider }: { provider: ProviderDefinition } = $props();
 
-  // ProviderDefinition.id spans every provider; the field index only covers
-  // the two that have a page, and this section only ever renders on one of
-  // them. The ternary narrows without a cast.
   let fieldId = $derived<ProviderFieldId>(
-    provider.id === 'codex' ? 'codex.env' : 'claude.env',
+    providerFieldId(provider.id as SettingsProvider, 'env'),
   );
 
   let settings = $derived(getSettings());
@@ -47,12 +44,7 @@
   let draftError = $derived(validateName(draftName, vars));
   let canAdd = $derived(!busy && draftName.trim() !== '' && draftError === null);
 
-  // The placeholder is an example of a variable this provider actually reads
-  // — ANTHROPIC_BASE_URL on a Codex card would suggest a variable Codex
-  // ignores.
-  let namePlaceholder = $derived(
-    provider.settings.customEnvKey === 'codexCustomEnv' ? 'HTTPS_PROXY' : 'ANTHROPIC_BASE_URL',
-  );
+  let namePlaceholder = $derived(provider.customEnvPlaceholder ?? 'HTTPS_PROXY');
 
   function validateName(raw: string, current: ProviderEnvVar[]): string | null {
     const name = raw.trim();

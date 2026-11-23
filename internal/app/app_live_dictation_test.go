@@ -102,13 +102,13 @@ func TestLiveDictationNeedsAUsableKey(t *testing.T) {
 	if err != nil || sources.Live {
 		t.Fatalf("DictationSources without a key = %+v, %v", sources, err)
 	}
-	_, err = missing.BeginLiveDictation(context.Background())
+	_, err = missing.BeginLiveDictation(connCtx(t))
 	if err == nil || !strings.Contains(err.Error(), openaikey.Path(missing.configDir)) {
 		t.Fatalf("BeginLiveDictation without a key = %v; want where the key goes", err)
 	}
 
 	refused := newLiveDictationTestApp(t, openaifake.RefusedKey)
-	_, err = refused.BeginLiveDictation(context.Background())
+	_, err = refused.BeginLiveDictation(connCtx(t))
 	if !errors.Is(err, openai.ErrKeyRefused) || strings.Contains(err.Error(), openaifake.RefusedKey) {
 		t.Fatalf("BeginLiveDictation with a refused key = %v", err)
 	}
@@ -137,7 +137,7 @@ func TestLiveDictationRefusesASymlinkedKeyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	var refusal *openaikey.RefusedError
-	if _, err := app.BeginLiveDictation(context.Background()); !errors.As(err, &refusal) {
+	if _, err := app.BeginLiveDictation(connCtx(t)); !errors.As(err, &refusal) {
 		t.Fatalf("BeginLiveDictation with a symlinked key file = %v", err)
 	}
 	if sources, _ := app.DictationSources(); sources.Live {
@@ -338,6 +338,16 @@ func TestLiveDictationBelongsToItsConnection(t *testing.T) {
 	if err := app.CancelLiveDictation(other, id); !errors.Is(err, dictation.ErrUnknownLiveSession) {
 		t.Fatalf("another connection cancelled: %v", err)
 	}
+	// A call that came over no connection cannot have opened it either.
+	if _, err := app.AppendLiveDictation(context.Background(), id, 0, tenthOfASecond); !errors.Is(err, dictation.ErrUnknownLiveSession) {
+		t.Fatalf("a call with no connection appended: %v", err)
+	}
+	if _, err := app.FinishLiveDictation(context.Background(), id); !errors.Is(err, dictation.ErrUnknownLiveSession) {
+		t.Fatalf("a call with no connection finished: %v", err)
+	}
+	if err := app.CancelLiveDictation(context.Background(), id); !errors.Is(err, dictation.ErrUnknownLiveSession) {
+		t.Fatalf("a call with no connection cancelled: %v", err)
+	}
 	if _, err := app.AppendLiveDictation(owner, id, 0, tenthOfASecond); err != nil {
 		t.Fatalf("the owner's append after the refusals: %v", err)
 	}
@@ -345,7 +355,7 @@ func TestLiveDictationBelongsToItsConnection(t *testing.T) {
 	if _, err := app.AppendLiveDictation(owner, id, 1, tenthOfASecond); !errors.Is(err, dictation.ErrUnknownLiveSession) {
 		t.Fatalf("the session outlived its connection: %v", err)
 	}
-	if ownerState.HasCleanup(liveDictationCleanupKey(id)) {
+	if ownerState.Bound(liveDictationCleanupKey(id)) {
 		t.Fatal("the dropped session's cleanup is still bound")
 	}
 }
@@ -360,7 +370,7 @@ func TestAFinishedLiveDictationLeavesNoCleanupBehind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.HasCleanup(liveDictationCleanupKey(id)) {
+	if !state.Bound(liveDictationCleanupKey(id)) {
 		t.Fatal("an open session has no cleanup bound")
 	}
 	if _, err := app.AppendLiveDictation(ctx, id, 0, tenthOfASecond); err != nil {
@@ -369,7 +379,20 @@ func TestAFinishedLiveDictationLeavesNoCleanupBehind(t *testing.T) {
 	if _, err := app.FinishLiveDictation(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	if state.HasCleanup(liveDictationCleanupKey(id)) {
+	if state.Bound(liveDictationCleanupKey(id)) {
 		t.Fatal("a finished session's cleanup is still bound")
+	}
+}
+
+// liveDictationConnectionTie is BeginLiveDictation's row of
+// connectionTieChecks: a live session, which only its own connection
+// cancels.
+func liveDictationConnectionTie(t *testing.T) connectionTie {
+	app := newLiveDictationTestApp(t, liveTestKey)
+	return connectionTie{
+		open:    app.BeginLiveDictation,
+		held:    func() int { return app.liveDictations().Sessions() },
+		release: app.CancelLiveDictation,
+		key:     liveDictationCleanupKey,
 	}
 }

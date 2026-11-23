@@ -37,8 +37,6 @@ agent-overflow <command>
                                                running app or service; the six-digit code is
                                                confirmed on stdin. --json emits the invitation,
                                                verification and paired records for SSH setup
-  remote list|run|status|cancel                session command: commands on an enabled paired
-                                               computer (below)
   thread send <thread-id> <text> [--config-root|--wait <dur>]
                                                messages a thread on this computer from a script
                                                outside the app, through the owner's local control
@@ -47,26 +45,8 @@ agent-overflow <command>
                                                (docs/specs/standing-agents.md#wake-supervisor)
 ```
 
-Workflows, runs and campaign memory are not CLI commands. Agents reach them
-through the `ao-workflow-tools` MCP server
-([agent-workflow-tools.md](../specs/agent-workflow-tools.md), D77).
-
-## Commands on another computer
-
-`agent-overflow remote list` returns enabled paired computers and their registered
-projects as JSON, including an error for an unavailable computer. Use
-`remote run --computer <uuid> --project <uuid> [--workspace <registered-worktree>]
-[--id <request-uuid>] [--timeout <seconds>] -- <command> [args...]`. There is
-no time limit by default; `--timeout` allows up to seven days, with four
-concurrent commands per host.
-The generated request ID is printed before dispatch. After a missing reply,
-`remote status --computer <uuid> <request-uuid>` reconciles it; retrying run must
-reuse the same ID and exact arguments. `remote cancel` takes the same selectors.
-
-Agent access is opt-in at the originating computer, and phases also need the
-`remote-commands` grant. Status/cancel belongs to the initiating conversation.
-Jobs outlive frontend loss. Backend shutdown interrupts them; restart never
-reruns them. The compatibility CLI output is the last 128 KiB; SQLite keeps 128 finished tails,
-while accepted IDs remain to prevent old retries from executing again.
-
-Remote MCP agents additionally have durable disk-log read/search and artifact tools; see [remote-commands.md](../architecture/remote-commands.md).
+Workflows, runs, campaign memory and remote commands are not CLI commands.
+Agents reach them through the `ao-workflow-tools`
+([agent-workflow-tools.md](../specs/agent-workflow-tools.md), D77) and
+`ao-remote-tools` ([remote-commands.md](../architecture/remote-commands.md))
+MCP servers.

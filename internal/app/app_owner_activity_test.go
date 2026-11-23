@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"slices"
 	"strconv"
 	"testing"
@@ -19,6 +20,37 @@ func watchOwner(t *testing.T, feed *ownerActivity, id string) *deviceActivity {
 		t.Fatal(err)
 	}
 	return d
+}
+
+// A repeat request from the connection that holds a device's log is
+// refused once that connection's end has begun, even before the end's
+// release has removed the log: a closing connection is admitted to nothing,
+// whatever it held before.
+func TestOwnerActivityRefusesARepeatFromAClosingConnection(t *testing.T) {
+	t.Parallel()
+	var feed ownerActivity
+	_, socket := newTestConnection(t, transport.ConnPrincipal{})
+	feed.mu.Lock()
+	if _, _, err := feed.watchLocked("phone", socket); err != nil {
+		feed.mu.Unlock()
+		t.Fatal(err)
+	}
+	// The end's release takes feed.mu, which this test holds, so the end
+	// is begun and its release waits.
+	ended := make(chan struct{})
+	go func() { socket.RunCleanups(); close(ended) }()
+	for socket.Bound(ownerActivitySubscription) {
+		time.Sleep(time.Millisecond)
+	}
+	_, _, err := feed.watchLocked("phone", socket)
+	feed.mu.Unlock()
+	<-ended
+	if !errors.Is(err, transport.ErrConnectionClosing) {
+		t.Fatalf("a repeat request from a closing connection = %v, want transport.ErrConnectionClosing", err)
+	}
+	if feed.watching() {
+		t.Fatal("the closing connection's end left its log behind")
+	}
 }
 
 func TestOwnerActivityKeepsChangesUntilObserved(t *testing.T) {
@@ -47,13 +79,13 @@ func TestOwnerActivityKeepsChangesUntilObserved(t *testing.T) {
 	if !other.Reset {
 		t.Fatalf("restart without reset: %+v", other)
 	}
-	previous := desk.socket
+	previous := desk.tie.Conn()
 	replacement := watchOwner(t, &events, "desk")
 	previous.RunCleanups()
 	if events.devices["desk"] != replacement {
 		t.Fatal("closing the old socket discarded the replacement's activity")
 	}
-	replacement.socket.RunCleanups()
+	replacement.tie.Conn().RunCleanups()
 	events.note("desk", "after-disconnect", true)
 	if events.devices["desk"] != nil || events.devices["other"] == nil {
 		t.Fatal("disconnect must discard only that device’s activity")

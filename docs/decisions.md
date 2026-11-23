@@ -931,6 +931,24 @@ and anti-changes that live only here:
   every built-in theme; they are not dimmed to the hint tier, and the
   title is not enlarged. Opening a thread on the phone never focuses the
   composer; the keyboard rises only on a tap into the input.
+- Chat header actions menu (2026-11-19): the drawer terminal, a new
+  terminal pane, find in thread, title regeneration and open-in-editor (one
+  row per installed editor, the default first) are rows of the Thread
+  actions menu at the end of the cluster, on desktop and on the phone. Find
+  in thread opens that pane's own find bar (the `find.in-pane` chord's);
+  the search across every thread is a row on the phone only, which has no
+  chord for it. A desktop row names its command's chord. A draft has no
+  title regeneration row, and the phone offers a new terminal pane only
+  for a thread in a project, whose sidebar section is its way back to that
+  pane. The desktop
+  cluster keeps the PR and diff badges, git, and the assistant,
+  take-control and browser buttons; the phone keeps the diff badge and the
+  assistant button, and its menu also carries review, the PR, take-control
+  and git. A regeneration in flight shows a spinner beside the title on
+  both layouts. On desktop the project crumb shows its whole name (to a
+  14rem cap) or is left out under a 36rem header; the title is what
+  truncates, to a floor of 8rem or its own width, and the cluster takes a
+  second row only past that floor.
 - Phone menus (2026-09-13): every popover and context menu opens where it
   was tapped, anchored to its control or to the pressed point and clamped
   into the viewport. No bottom-sheet menus; the earlier sheet default is
@@ -1045,6 +1063,61 @@ and anti-changes that live only here:
   `<details>` body), which PR templates use routinely. Do not
   reintroduce direct third-party `<img>` fetches for private forge
   assets, and do not hide a reference the browser could open.
+- A PR/MR body or comment reads in the review pane as it reads on its
+  forge, by that forge's own grammar; a form one forge leaves as text
+  stays text on its surface. Both: HTML wrappers around Markdown (text
+  on an HTML block's own lines, up to the first blank line, is HTML, so
+  Markdown syntax there is literal), `<details>` in a quote or alert,
+  safe inline tags, entity references,
+  images in their line at their authored size and placement, emoji
+  shortcodes, `~` strikethrough, color chips, `` $`…`$ `` and `math`
+  fence math, `$$…$$` as display math, CommonMark list numbering, issue, PR/MR, commit, mention
+  and email references checked against the forge in one batched lookup
+  per PR update, before a body mounts (a target the forge says does not
+  exist is text, a found one carries its title; while the answer is out
+  or could not be had the reference links by shape, so only shapes that
+  cannot be prose link; a found answer is not asked for again until the
+  user reloads the PR), an image that names a file of the PR's own
+  repository (a relative path, or a blob or raw URL at the head branch,
+  the base branch or a commit) read from the local git objects at that
+  commit and boxed at its final size from the first paint (a Git LFS
+  pointer shows its object when the local LFS store has it; otherwise it
+  says so and links to the forge, and nothing is fetched; an SVG with
+  only a ratio fills its line, as a browser lays it out), relative
+  links resolved to the forge however the link is written, a numbered
+  footnotes section, and heading
+  anchors with `#name` jumps that stay inside the body clicked. GitHub:
+  a single newline is a line break, an alert needs its marker alone on
+  the first line of a top-level quote, a bare `ftp://` URL is text,
+  a `<picture>` source or `#gh-*-mode-only` image follows the app's
+  light or dark theme, and a bare permalink to lines of the PR's own
+  repository at a full commit id shows those lines, read from the local
+  git objects. GitLab: a label reference as a chip in the label's
+  colors, decided from the project's label list (its first 1,000
+  labels or 256 KiB of them, read once per project; past that a title is
+  looked up on its own; asked again ten minutes after its answer only while a body names
+  a label it lacks, which is text until then), milestone, snippet and
+  epic references,
+  the `{width=… height=…}` list, playable video and audio images,
+  inline diff as a highlight, `>>>` quotes, front matter, `[~]` and table-cell tasks,
+  description lists, JSON tables, titled alerts, `[[_TOC_]]`, and a
+  bare URL that ends before an unbalanced `}` or `]`. One
+  allowlist per forge decides which HTML elements and attributes
+  survive, in a paragraph and in an HTML block alike: an element off it
+  shows its text without the element, and scripts, styles, svg and
+  iframes show nothing. Text inside an HTML block gets the same emoji,
+  references, relative links and jump anchors as a paragraph. Agent
+  chat's own constructs (`:term:` lists, `^sup^`, `[center]`,
+  citations, MDX) are text on a forge surface. Agent chat renders no
+  HTML and keeps its own grammar (typed list numbers, `~` subscript,
+  italic quotes, footnote popovers). On every surface: reference-style
+  links resolve across the whole message, a link inside a link leaves
+  only the inner one linked, a fence's language is the first word of
+  its info string, a table column takes its authored alignment, a
+  block quote written left of a list item's content ends the list, an
+  authored image never loads from the app's own origin, and a formula
+  or diagram that cannot be drawn shows its source. Mechanism:
+  `frontend/src/lib/markdown/AGENTS.md`.
 - Forge reads and writes go directly over HTTPS with the token of the
   user's `gh`/`glab` login, read from the CLI at runtime and held in memory
   only: never on disk, in settings, in logs, in argv or environment, in

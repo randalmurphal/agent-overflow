@@ -83,15 +83,22 @@ func (f *requestFixture) mockClaude(t *testing.T, replies ...string) {
 	installMockClaudeReplies(t, f.app, replies...)
 }
 
-// mockClaudeAfterTheAck gives the fixture a provider whose one turn holds
-// its result until release runs. A turn that settles before a request's
-// ack is built has its answer delivered by the ack, so a test of the wake
-// that delivers it instead releases the turn after the ack, which release
-// checks carried no answer.
+// mockClaudeAfterTheAck is installMockClaudeAfterTheAck on the fixture's
+// app.
 func (f *requestFixture) mockClaudeAfterTheAck(t *testing.T, reply string) (release func(*testing.T, threadtools.RequestAck)) {
 	t.Helper()
+	return installMockClaudeAfterTheAck(t, f.app, reply)
+}
+
+// installMockClaudeAfterTheAck gives app, the one a request's thread runs
+// on, a provider whose one turn holds its result until release runs. A turn
+// that settles before a request's ack is built has its answer delivered by
+// the ack, so a test of the wake that delivers it instead releases the turn
+// after the ack, which release checks carried no answer.
+func installMockClaudeAfterTheAck(t *testing.T, app *App, reply string) (release func(*testing.T, threadtools.RequestAck)) {
+	t.Helper()
 	gate := filepath.Join(t.TempDir(), "release")
-	installMockClaudeTurns(t, f.app, [][]string{{
+	installMockClaudeTurns(t, app, [][]string{{
 		mockClaudeInitLine,
 		`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":` + quoteJSON(reply) + `}]}}`,
 		testutil.MockWaitForFile(gate),

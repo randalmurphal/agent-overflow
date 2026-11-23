@@ -105,6 +105,11 @@ describe('mcpTargetFor — entity keys', () => {
     expect(mcpTargetFor('codex', 't2', '/b', '')?.key).toBe(MCP_CODEX_KEY);
   });
 
+  it('keys Antigravity app-globally — its mcp_config.json is user-global', () => {
+    expect(mcpTargetFor('agy', 't1', '/a', '')?.key).toBe(' agy');
+    expect(mcpTargetFor('agy', 't2', '/b', '')?.key).toBe(' agy');
+  });
+
   it('has no Claude target without a workspace to walk from', () => {
     expect(mcpTargetFor('claude', 't1', '', '')).toBeNull();
     expect(mcpTargetFor('claude', 't1', '  ', '')).toBeNull();

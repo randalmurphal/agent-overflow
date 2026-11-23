@@ -10,10 +10,8 @@
 // first paint of the chunk that contains it, and the static path keeps
 // serializing everything as before.
 //
-// What it claims, and only this:
-//   - `[label](http://localhost:5173/x)`   markdown links
-//   - `http://localhost:5173/x`            gfm bare autolinks
-//   - `<http://localhost:5173/x>`          pointy autolinks
+// It is a destination hook, so it claims a link to such a URL however the
+// link was written: inline or by reference, a bare or a pointy autolink,
 // on `localhost`, `127.x.x.x`, `0.0.0.0`, `[::1]` and `[::]`, with an
 // EXPLICIT port. A URL with no port names a well-known service rather than
 // a dev server, and previewing it is not a thing anyone asked for.
@@ -25,44 +23,23 @@
 // gateway instead, so `0.0.0.0:5173` in agent prose is simply how that agent
 // spelled port 5173 on its own machine.
 //
-// Register this AHEAD of the path-link extension. That one claims every
-// `[…](…)` link it is handed — it returns the token unchanged when the href
-// is not path-shaped — so behind it this extension would never see one.
+// Register this AHEAD of the path-link extension: hooks run in list order
+// and the first claim wins.
 
-import type { Token, Tokens, TokensList } from '../markdown';
-import type { PreviewLinkRender, PreviewLinkToken } from '../markdown/render/previewLink';
+import type { DestinationHook } from '../markdown';
+import type { PreviewLinkRender } from '../markdown/render/previewLink';
 import { previewLinkTitle } from '../markdown/render/previewLink';
 import type { PreviewLinkTarget } from '../stores/devServers.svelte';
 
 interface PreviewLinkExtension {
   name: 'previewLink';
   level: 'inline';
-  tokenizer(
-    this: unknown,
-    src: string,
-    tokens: Token[] | TokensList,
-  ): PreviewLinkToken | undefined;
-}
-
-interface PreviewTokenizerContext {
-  lexer?: {
-    state?: { inLink?: boolean };
-    tokenizer?: {
-      link?: (src: string) => Tokens.Link | Tokens.Image | undefined;
-      url?: (src: string) => Tokens.Link | Tokens.Text | undefined;
-      autolink?: (src: string) => Tokens.Link | Tokens.Text | undefined;
-    };
-  };
+  destination: DestinationHook;
 }
 
 // Anchored cheap gate, run before anything constructs a URL. Every href this
 // extension can claim starts with one of these, and no other href does.
 const LOOPBACK_PREFIX_RE = /^https?:\/\/(?:localhost|127\.|0\.0\.0\.0|\[::)/i;
-
-const CHAR_BRACKET = 0x5b; // [
-const CHAR_LT = 0x3c; // <
-const CHAR_H_LOWER = 0x68;
-const CHAR_H_UPPER = 0x48;
 
 /**
  * Split a loopback dev-server URL into the port and the path a preview would
@@ -118,31 +95,8 @@ export function buildPreviewLinkExtension(
   return {
     name: 'previewLink',
     level: 'inline',
-    // No `start`. Marked's gfm inline `text` rule already stops at `[`,
-    // at `<` and at `protocol://`, so the tokenizer below is invoked at
-    // every position one of these links can begin — and a `start` would
-    // add a scan of the remaining tail at every OTHER position for nothing.
-    tokenizer(this: unknown, src) {
-      const context = this as PreviewTokenizerContext;
-      const tokenizer = context.lexer?.tokenizer;
-      if (!tokenizer) return undefined;
-
-      let token: Tokens.Link | Tokens.Image | Tokens.Text | undefined;
-      const code = src.charCodeAt(0);
-      if (code === CHAR_BRACKET) {
-        token = tokenizer.link?.(src);
-      } else if (code === CHAR_LT) {
-        token = tokenizer.autolink?.(src);
-      } else if (code === CHAR_H_LOWER || code === CHAR_H_UPPER) {
-        // Mirrors the lexer's own guard: a bare URL inside a link label is
-        // the label's text, not a second link.
-        if (context.lexer?.state?.inLink === true) return undefined;
-        token = tokenizer.url?.(src);
-      } else {
-        return undefined;
-      }
-      if (!token || token.type !== 'link') return undefined;
-
+    destination(token) {
+      if (token.type !== 'link') return undefined;
       const parsed = parsePreviewTarget(token.href);
       if (!parsed) return undefined;
 
@@ -158,7 +112,7 @@ export function buildPreviewLinkExtension(
       // The href stays the URL the agent wrote: copying the link, or
       // reading it in devtools, should say what the agent said. Where the
       // click goes is decided from the data attributes instead.
-      return { ...token, title: previewLinkTitle(preview), preview };
+      return { ...token, title: previewLinkTitle(preview), preview } as typeof token;
     },
   };
 }

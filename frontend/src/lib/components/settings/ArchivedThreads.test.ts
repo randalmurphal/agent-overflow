@@ -25,7 +25,7 @@ describe('<ArchivedThreads>', () => {
     ]);
 
     const { findByText } = render(ArchivedThreads);
-    expect(await findByText(/codex · GPT 5\.6 Sol/)).toBeTruthy();
+    expect(await findByText(/Codex · GPT 5\.6 Sol/)).toBeTruthy();
   });
 
   // While assistants are off, an archived assistant and the threads under

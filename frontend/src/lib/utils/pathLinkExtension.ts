@@ -30,7 +30,7 @@
 //     code spans (`` `src/foo.ts` ``) and fenced code blocks are
 //     correctly skipped without any DOM ancestry tests.
 
-import type { Token, Tokens, TokensList } from '../markdown';
+import type { DestinationHook, Token, Tokens, TokensList } from '../markdown';
 import type { PathRef } from '../types/models';
 import { openInEditorLabel } from './editorLinkLabel';
 import { isHTMLFile } from './htmlFile';
@@ -88,7 +88,8 @@ interface PathLinkExtension {
     this: unknown,
     src: string,
     tokens: Token[] | TokensList,
-  ): GenericLinkToken | GenericImageToken | undefined;
+  ): GenericLinkToken | undefined;
+  destination: DestinationHook;
   tokenizesAlike(previous: object, source: string): boolean;
 }
 
@@ -119,15 +120,14 @@ interface GenericLinkToken extends Tokens.Link {
 
 interface GenericImageToken extends Tokens.Image {
   type: 'image';
+  /** Claimed inside link text (markdownImageSource.ts#claimedInLink). */
+  inLink?: true;
 }
 
 interface PathLinkTokenizerContext {
   lexer?: {
     state?: {
       inLink?: boolean;
-    };
-    tokenizer?: {
-      link?: (src: string) => Tokens.Link | Tokens.Image | undefined;
     };
   };
 }
@@ -306,8 +306,9 @@ export function buildPathLinkExtension(
     // builds a new extension. Prose matching is literal on the allowlisted
     // paths, so a source containing none of the paths that differ tokenizes
     // the same under both. A markdown link's target is unescaped before the
-    // allowlist sees it and need not appear literally, so a source holding
-    // one is never claimed.
+    // allowlist sees it and need not appear literally, and a reference's
+    // target is not in the source at all, so a source holding a `]` is
+    // never claimed.
     tokenizesAlike(previous, source) {
       let changes = changesSince.get(previous);
       if (changes === undefined) {
@@ -322,26 +323,29 @@ export function buildPathLinkExtension(
       }
       if (changes === null) return false;
       if (changes.length === 0) return true;
-      if (source.includes('](')) return false;
+      if (source.includes(']')) return false;
       for (const path of changes) {
         if (source.includes(path)) return false;
       }
       return true;
     },
+    // A link or image destination, however it was written (inline, by
+    // reference, an autolink). Inside a link label only an image is
+    // claimed (a linked screenshot): a link holds no link. The claim says
+    // so, and the link stays the picture's one control.
+    destination(token, { inLink }) {
+      return localResourceDestination(
+        token,
+        parseAllowlistedTarget,
+        workspacePath,
+        effectiveImageWorkspace,
+        mode,
+        inLink,
+      );
+    },
     tokenizer(this: unknown, src, tokens) {
-      if (isInsideMarkdownLinkLabel(this)) return undefined;
-
-      if (src.startsWith('[') || src.startsWith('![')) {
-        return markdownLocalResourceToken(
-          src,
-          this,
-          parseAllowlistedTarget,
-          workspacePath,
-          effectiveImageWorkspace,
-          mode,
-        );
-      }
-      if (!bareRe || !wrappedRe) return undefined;
+      // A link label is not prose.
+      if (isInsideMarkdownLinkLabel(this) || !bareRe || !wrappedRe) return undefined;
 
       // Boundary check: marked invokes inline extensions at every
       // position it advances to — including positions reached by
@@ -545,32 +549,30 @@ function earliestPathLinkHit(src: string, scanRe: RegExp | null): number | undef
   return earliest === -1 ? undefined : earliest;
 }
 
-function markdownLocalResourceToken(
-  src: string,
-  ctx: unknown,
+function localResourceDestination(
+  token: Tokens.Link | Tokens.Image,
   parseAllowlistedTarget: (target: string) => ParsedPathTarget | null,
   workspacePath: string,
   imageWorkspacePath: string,
   mode: PathLinkMode,
+  inLink: boolean,
 ): GenericLinkToken | GenericImageToken | undefined {
-  const tokenizerContext = ctx as PathLinkTokenizerContext;
-  const token = tokenizerContext.lexer?.tokenizer?.link?.(src);
-  if (!token || (token.type !== 'link' && token.type !== 'image')) return undefined;
   const fileTarget = parseLocalFileHref(token.href, workspacePath);
   if (token.type === 'image') {
     // Every path shape, in every mode: the image host fetches the bytes
     // from the thread's machine (GetLocalImage), so a page with no
     // host desktop still shows what the agent showed.
     const path = fileTarget?.path ?? pathShapedImageSrc(token.href, workspacePath);
-    if (path === null) return token as GenericImageToken;
+    if (path === null) return undefined;
     return {
       ...token,
       href: buildLocalImageHref(path, imageWorkspacePath, token.href),
+      ...(inLink ? { inLink: true } : {}),
     } as GenericImageToken;
   }
-  if (mode === 'off') return token;
+  if (mode === 'off' || inLink) return undefined;
   const parsed = fileTarget ?? parseAllowlistedTarget(token.href) ?? parsePathShapedHref(token.href, workspacePath);
-  if (!parsed || (mode === 'html' && !isHTMLFile(parsed.path))) return token;
+  if (!parsed || (mode === 'html' && !isHTMLFile(parsed.path))) return undefined;
   return {
     ...token,
     href: buildPathLinkHref(parsed.path, parsed.line, parsed.col, workspacePath),

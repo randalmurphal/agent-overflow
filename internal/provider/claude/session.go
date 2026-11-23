@@ -339,6 +339,27 @@ func (s *Session) PID() int {
 	return s.proc.PID()
 }
 
+// Connection returns the single-process connection backing this Claude session.
+func (s *Session) Connection() provider.Connection {
+	if s == nil || s.proc == nil {
+		return nil
+	}
+	return provider.FuncConnection{
+		PIDFn:   s.PID,
+		DoneCh:  s.readDone,
+		CloseFn: s.Close,
+	}
+}
+
+// OwnedProcesses returns this session's subprocess root for dev-server attribution.
+func (s *Session) OwnedProcesses() []provider.OwnedProcess {
+	pid := s.PID()
+	if pid <= 0 {
+		return nil
+	}
+	return []provider.OwnedProcess{{PID: pid, PGID: pid}}
+}
+
 // Close shuts down the CLI process gracefully.
 // Closes stdin first for graceful shutdown, then cancels the context as fallback.
 func (s *Session) Close() error {

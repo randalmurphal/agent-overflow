@@ -165,6 +165,7 @@ func (p *threadProjector) thread(thread store.Thread) threadtools.Thread {
 		Assistant:     p.assistant(thread),
 		SpawnedBy:     thread.SpawnedByThreadID,
 
+		HasOpenTurn:               thread.HasOpenTurn,
 		HasIncompleteTurn:         thread.HasIncompleteTurn,
 		HasFailedTurn:             thread.HasFailedTurn,
 		HasActionableProposedPlan: thread.HasActionableProposedPlan,
@@ -522,7 +523,14 @@ func (t threadToolsApp) remoteDestination(computerID string) bool {
 
 // threadToolsProviders are the providers a thread tool spawn can run on,
 // in the order thread_options and the guide list them.
-var threadToolsProviders = []string{string(provider.Claude), string(provider.Codex)}
+var threadToolsProviders = func() []string {
+	kinds := provider.StandaloneProviders()
+	out := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		out = append(out, string(k))
+	}
+	return out
+}()
 
 // Catalog answers thread_options from the catalogs the app already keeps.
 func (t threadToolsApp) Catalog(ctx context.Context, q threadtools.CatalogQuery) (threadtools.Catalog, error) {
@@ -613,6 +621,8 @@ func threadToolsProviderName(name string) string {
 		return "Claude Code"
 	case string(provider.Codex):
 		return "Codex"
+	case string(provider.Agy):
+		return "Antigravity"
 	}
 	return name
 }

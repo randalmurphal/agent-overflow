@@ -29,6 +29,9 @@ type ManagedProviderAccount struct {
 	// AutoSwitch reports that the account is in the provider's auto-switch
 	// pool.
 	AutoSwitch bool `json:"autoSwitch"`
+	// PendingReset is the account's usage reset spend Codex has not settled,
+	// which the card offers to finish. Set in listings only.
+	PendingReset *provideraccountapp.UnsettledReset `json:"pendingReset,omitempty"`
 }
 
 //ao:scope access:admin
@@ -113,19 +116,31 @@ func (a *App) SetProviderAccountAutoSwitch(providerName, accountID string, enabl
 // no probe. Fire-and-forget like the startup probe: nothing waits on it, and
 // the runner reports failures on `provider:status`.
 func (a *App) probeSwitchedProviderAccount(providerName string) {
-	if providerName != string(provider.Claude) || a.shuttingDown.Load() {
+	if a.shuttingDown.Load() {
+		return
+	}
+	if providerName != string(provider.Claude) && providerName != string(provider.Agy) {
 		return
 	}
 	probe := a.switchedAccountProbeFn
 	if probe == nil {
-		probe = func() error {
-			_, err := a.ProbeClaudeAccount()
-			return err
+		switch providerName {
+		case string(provider.Claude):
+			probe = func() error {
+				_, err := a.ProbeClaudeAccount()
+				return err
+			}
+		case string(provider.Agy):
+			probe = func() error {
+				a.refreshAgyModelCatalog()
+				_, err := a.RecheckAgyAccount()
+				return err
+			}
 		}
 	}
 	go func() {
 		if err := probe(); err != nil {
-			log.Printf("provider accounts: probe switched claude account: %v", err)
+			log.Printf("provider accounts: probe switched %s account: %v", providerName, err)
 		}
 	}()
 }
@@ -234,6 +249,46 @@ func (a *App) RefreshProviderAccountUsage(providerName, accountID string) error 
 	return a.providerAccounts.RefreshProviderAccountUsage(providerName, accountID)
 }
 
+// SpendProviderAccountReset spends one of a saved account's usage resets,
+// chosen from its card's list at revision, then reads the account's usage
+// again. A list that changed since the person saw it is refused, and so is
+// any spend while the account has one Codex has not settled.
+//
+// Once this request's reset landed and the reading after it was recorded,
+// auto-switch forgets the usage-limit refusals it holds for the account.
+//
+//ao:scope access:admin
+//ao:route home
+//ao:budget 1m
+func (a *App) SpendProviderAccountReset(
+	ctx context.Context,
+	providerName, accountID, optionID string,
+	revision uint64,
+) (provideraccountapp.ResetSpendResult, error) {
+	if a.providerAccounts == nil {
+		return provideraccountapp.ResetSpendResult{}, errors.New("provider account storage is unavailable")
+	}
+	return a.providerAccounts.SpendProviderAccountReset(ctx, providerName, accountID, optionID, revision)
+}
+
+// FinishProviderAccountReset sends the account's unsettled reset spend
+// spendID (its card's pendingReset.id) again under the same key, which never
+// spends a second reset, then reads the account's usage again. When spendID
+// is not the account's unsettled spend it is refused and nothing is sent.
+//
+//ao:scope access:admin
+//ao:route home
+//ao:budget 1m
+func (a *App) FinishProviderAccountReset(
+	ctx context.Context,
+	providerName, accountID, spendID string,
+) (provideraccountapp.ResetSpendResult, error) {
+	if a.providerAccounts == nil {
+		return provideraccountapp.ResetSpendResult{}, errors.New("provider account storage is unavailable")
+	}
+	return a.providerAccounts.FinishProviderAccountReset(ctx, providerName, accountID, spendID)
+}
+
 func (a *App) refreshProviderAccountUsage(ctx context.Context, providerName, accountID string) error {
 	if a.providerAccounts == nil {
 		return errors.New("provider account storage is unavailable")
@@ -246,5 +301,6 @@ func managedProviderAccount(account provideraccountapp.ManagedAccount) ManagedPr
 		Account: account.Account, Active: account.Active,
 		Generation: account.Generation, NeedsLogin: account.NeedsLogin,
 		SignInRequired: account.SignInRequired, AutoSwitch: account.AutoSwitch,
+		PendingReset: account.PendingReset,
 	}
 }

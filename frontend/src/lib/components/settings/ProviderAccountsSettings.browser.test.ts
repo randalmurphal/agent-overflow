@@ -361,3 +361,26 @@ it.each(ACCOUNT_STATES.flatMap(([label, state]) => [1024, 1280].map((width) => [
     expect(overlapsVertically(login.rect, title)).toBe(true);
   },
 );
+
+// Where the resets button sits, and what it moves, is
+// ProviderAccountResetsPlacement.browser.test.ts.
+const WITH_RESETS = {
+  usageResets: { revision: 1, options: [{ id: 'a', kind: 'full', label: 'Full reset', refills: '', expiresAt: 0, usable: true }] },
+};
+
+// The button is part of the card's first paint when the saved listing holds
+// resets: nothing adds it later.
+it('paints the resets button with the card', async () => {
+  const seen: boolean[] = [];
+  const observer = new MutationObserver(() => {
+    const card = document.querySelector('[data-testid="provider-account-acct-1"]');
+    if (card && seen.length === 0) seen.push(!!card.querySelector('[data-testid="provider-account-resets-acct-1"]'));
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  try {
+    await renderAccounts(1280, { rows: [WITH_RESETS] }, DEFAULT_TEXT_SIZE, 'geist');
+  } finally {
+    observer.disconnect();
+  }
+  expect(seen).toEqual([true]);
+});

@@ -282,8 +282,8 @@ func routePatterns(t *testing.T, fset *token.FileSet, sources []scanned) map[str
 	patterns := map[string][]string{}
 
 	// Constants are collected per DIRECTORY, not per file: one
-	// directory is one package here, and transport's ScopedRPCPath is
-	// declared in httprpc.go but registered in server.go.
+	// directory is one package here, and route path constants may be
+	// declared in one file and registered in server.go.
 	byPackage := map[string]map[string]string{}
 	for _, source := range sources {
 		dir := packageDir(source.Rel)
@@ -355,7 +355,7 @@ func packageDir(rel string) string {
 }
 
 // stringConstants collects a file's package-level string constants,
-// which is how PageURLPath and ScopedRPCPath resolve.
+// which is how PageURLPath and sibling route path constants resolve.
 func stringConstants(file *ast.File) map[string]string {
 	consts := map[string]string{}
 	for _, decl := range file.Decls {

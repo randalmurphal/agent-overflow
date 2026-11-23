@@ -3,6 +3,7 @@ import { invalidateClaudeProbeCommands } from './providerCommands.svelte';
 import { applyDictationSourcesChanged } from './dictation.svelte';
 import { applyReadAloudSourceChanged } from './readAloudSource.svelte';
 import { refreshProviderMemory } from './providerMemory.svelte';
+import { providerLabel } from '../providers/catalog';
 import { installComputerHydration } from './computerHydration';
 import { applyProviderUpdatesEvent, type ProviderUpdateStatus } from './providerUpdates.svelte';
 // Composition root for backend event wiring. `setupEventListeners()` is the
@@ -324,7 +325,7 @@ export function setupEventListeners(): () => void {
     'provider:account_usage_error',
     (evt) => {
       if (!evt?.provider || !evt.accountId) return;
-      const label = evt.provider === 'claude' ? 'Claude' : 'Codex';
+      const label = providerLabel(evt.provider);
       addToast('warning', evt.message || `${label} connected, but usage could not be refreshed.`);
     },
   );
@@ -431,6 +432,12 @@ export function setupEventListeners(): () => void {
     invalidateClaudeProbeCommands(backend);
     applyProviderAccountsChanged(backend);
     applyDictationSourcesChanged(backend);
+  });
+  // provider:account_listing — only what a card shows moved (its usage
+  // resets, an unconfirmed reset), not the set: the listing is read again and
+  // nothing that follows the set is dropped.
+  const cancelProviderAccountListing = wailsEventOn('provider:account_listing', (_evt, origin) => {
+    applyProviderAccountsChanged(backendKeyForOrigin(origin.backendId));
   });
   // review:comments-changed — one inline review comment SET moved: a plan's
   // (keyed by plan item) or a diff review's (keyed by scope + source key).
@@ -873,6 +880,7 @@ export function setupEventListeners(): () => void {
     cancelKeybindingsUpdated();
     cancelNewThreadDefaults();
     cancelProviderAccountsChanged();
+    cancelProviderAccountListing();
     cancelReviewComments();
     cancelSessionDied();
     cancelTodoUpdate();

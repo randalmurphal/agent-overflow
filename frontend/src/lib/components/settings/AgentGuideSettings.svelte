@@ -13,7 +13,7 @@
       <SettingsField
         id="agent-guide.enabled"
         label="Append the app guide"
-        hint="Tell Claude and Codex what Agent Overflow renders and which built-in tools are on. Applies to sessions started after a change."
+        hint="Tell agents what Agent Overflow renders and which built-in tools are on. Applies to sessions started after a change."
       >
         <ToggleSwitch
           checked={settings.agentGuideEnabled}

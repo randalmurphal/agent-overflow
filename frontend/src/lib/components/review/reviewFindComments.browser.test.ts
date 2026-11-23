@@ -19,6 +19,11 @@ import { rawProps } from '../../../test/helpers/rawProps.svelte';
 import { holdReviewFindScans } from '../../../test/helpers/reviewFindHold';
 import type { ReviewFind } from '../../stores/reviewFind.svelte';
 import { indexReviewComments } from '../../utils/reviewRows';
+import { __setResolveForgeFactsForTest, forgeFactReader, observePRFacts } from '../../stores/forgeFacts.svelte';
+import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from '../chat/markdown/forgeAttachmentContext';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { prKey, type PRRef } from '../../utils/prReference';
+import type { ForgeFact } from '../../utils/forgeFacts';
 
 // The diff shows every draft as drafted and no file as an image.
 const NO_MEDIA_HOST = { renderedPaths: new Set<string>() };
@@ -152,6 +157,52 @@ describe('review find over a draft open in its editor', () => {
     } finally {
       files[0].body.segments[0].store.dispose();
     }
+  });
+});
+
+describe('review find over a comment whose forge facts arrive', () => {
+  const GITLAB: PRRef = { forge: 'gitlab', host: 'gitlab.example.invalid', namespace: 'group', repo: 'widget', number: 7 };
+  const KEY = prKey(GITLAB);
+
+  it('recounts when a label the comment names turns out not to exist', async () => {
+    const answers: ((facts: ForgeFact[]) => void)[] = [];
+    __setResolveForgeFactsForTest((_backend, _ws, _pr, _revision, keys) => new Promise((resolve) => answers.push((facts) => resolve({ facts: facts.length ? facts : keys.map((key) => ({ key, status: 'absent' as const })) }))));
+    const thread: ReviewThread = {
+      ...THREAD,
+      comments: [{ authorLogin: 'priya', body: 'tagged ~nolabel here', createdAt: '', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
+    };
+    observePRFacts(KEY, GITLAB, { detail: null, threads: [thread] });
+    const forge = () => ({ pr: GITLAB, backend: HOME_BACKEND, webBase: 'https://gitlab.example.invalid/group/widget/-/merge_requests/7', facts: forgeFactReader(KEY) });
+    const context = new Map([[FORGE_ATTACHMENT_SOURCE_CONTEXT, forge]]);
+    const host = document.createElement('div');
+    host.style.width = '700px';
+    document.body.appendChild(host);
+    render(ReviewThreadComments, { target: host, props: { thread, findKeys: true }, context });
+    // Asked: the label is a chip, which shows no tilde.
+    await waitFor(() => expect(host.querySelector('.md-label-chip')).not.toBeNull());
+    const review = {
+      shownDrafts: [], mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [thread], shownPRThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS,
+    } as unknown as ReviewPaneState;
+    const files = parseReviewFiles(PATCH);
+    onTestFinished(() => files[0].body.segments[0].store.dispose());
+    render(ReviewPaneFind, {
+      target: document.body,
+      context,
+      props: {
+        findKey: 'pane-facts', title: 'Review', review, view: 'diff', files, root: host,
+        diff: () => ({ findReadingPosition: () => null, revealFindPlace: () => false, scrollFindBy: () => {} }),
+        log: () => undefined,
+      },
+    });
+    const find = getPaneFindProvider('pane-facts')!;
+    openPaneFind('pane-facts');
+    setPaneFindQuery('pane-facts', '~nolabel');
+    await waitFor(() => expect([find.result.count, find.result.pending]).toEqual([0, false]));
+    // The forge has no such label: the comment shows the text as written.
+    expect(answers).toHaveLength(1);
+    answers[0]([]);
+    await waitFor(() => expect(host.querySelector('.md-label-chip')).toBeNull());
+    await waitFor(() => expect([find.result.count, find.result.pending]).toEqual([1, false]));
   });
 });
 

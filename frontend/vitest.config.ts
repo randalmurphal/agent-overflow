@@ -7,6 +7,7 @@ import { resolve } from 'node:path';
 import { threadPaneTracker } from './src/test/config/threadPaneTracker.ts';
 import { testResetsPlugin } from './src/test/config/testResetsPlugin.ts';
 import { rawImportsPlugin } from './src/test/config/rawImportsPlugin.ts';
+import { StalledPageWatchdog } from './src/test/stalledPageWatchdog.ts';
 
 // There is no `svelte.config.js` (see vite.config.ts for why). Saying so
 // keeps the plugin from logging "no Svelte config found" once per project
@@ -64,6 +65,14 @@ const HANG_TIMEOUT_MS = 60_000;
 // `.css?raw` too, so a test reading a stylesheet as text would read ''.
 // Processing `?raw` ids leaves them to Vite, which returns the text.
 const rawCss = { include: [/[?&]raw\b/] };
+
+// A browser page that stops running JavaScript cannot fire its own test or
+// hook timeout, so its run would wait for the CI job's. A live page fails any
+// test or hook at HANG_TIMEOUT_MS and reports it, so a running browser file,
+// or a run with no file running, that reports nothing for this long usually
+// has a stalled page; the watchdog then ends the run naming what it saw
+// (src/test/stalledPageWatchdog.ts).
+const STALLED_PAGE_MS = 90_000;
 
 const unitTestOptions = {
   environment: 'happy-dom',
@@ -125,8 +134,9 @@ export default defineConfig({
     // These inputs reach every test file without an import, so a change to
     // one runs everything: the frontend's lockfile (dependency versions), its
     // TypeScript config (transform options), and the files this config
-    // loads, all of which live in src/test/config/ (the transforms and the
-    // between-test contract), with its package.json and this config. They
+    // loads: those in src/test/config/ (the transforms and the between-test
+    // contract) and the stalled-page watchdog, with its package.json and
+    // this config. They
     // are this directory's own: Vitest's defaults match any package.json and
     // config in the repository, so e2e/package.json would run every file.
     forceRerunTriggers: [
@@ -135,7 +145,9 @@ export default defineConfig({
       resolve(import.meta.dirname, 'pnpm-lock.yaml'),
       resolve(import.meta.dirname, 'tsconfig*.json'),
       resolve(import.meta.dirname, 'src/test/config/**'),
+      resolve(import.meta.dirname, 'src/test/stalledPageWatchdog.ts'),
     ],
+    reporters: [...configDefaults.reporters, new StalledPageWatchdog({ boundMs: STALLED_PAGE_MS })],
     projects: [
       {
         plugins: [svelte(svelteOptions), threadPaneTracker(import.meta.dirname), testResetsPlugin(import.meta.dirname), rawImportsPlugin()],
@@ -217,6 +229,11 @@ export default defineConfig({
           // Chromium needs none of setup.ts's happy-dom polyfills — only the
           // cross-test resets of module-level stores/caches (see the file).
           setupFiles: ['./src/test/setup.browser.ts'],
+          // The page's server binds the IPv4 loopback, not `localhost`:
+          // where that name is ::1 alone the server does not answer on
+          // 127.0.0.1, and tests load an image from the page's other
+          // loopback name (Chromium reaches `localhost` on either address).
+          api: { host: '127.0.0.1' },
           browser: {
             enabled: true,
             provider: playwright(),

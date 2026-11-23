@@ -95,14 +95,13 @@ describe('<StreamdownImageHost>', () => {
     expect(getLocalImage).toHaveBeenCalledTimes(2);
   });
 
-  it('remembers the size an <img> decoded when the backend could not read the header', async () => {
-    mockLocalImage(() => ({ blob: new Blob(['<svg/>'], { type: 'image/svg+xml' }), width: 0, height: 0 }));
-    const href = buildLocalImageHref('/workspace/diagram.svg', '/workspace');
+  it('remembers the size a raster <img> decoded when the backend could not read the header', async () => {
+    mockLocalImage(() => ({ blob: new Blob(['raster'], { type: 'image/png' }), width: 0, height: 0 }));
+    const href = buildLocalImageHref('/workspace/diagram.png', '/workspace');
     const first = mountImage(href);
     __reportImageBoxForTest(800);
     await waitFor(() => expect(first.container.querySelector('img')).not.toBeNull());
     const img = first.container.querySelector('img')!;
-    expect(img.getAttribute('src')?.startsWith('data:image/svg+xml;base64,')).toBe(true);
     expect(img.hasAttribute('width')).toBe(false);
 
     Object.defineProperty(img, 'naturalWidth', { value: 120 });
@@ -112,6 +111,26 @@ describe('<StreamdownImageHost>', () => {
     const second = mountImage(href);
     expect(second.container.querySelector('img')?.getAttribute('width')).toBe('120');
     expect(second.container.querySelector('img')?.getAttribute('height')).toBe('80');
+  });
+
+  it('never remembers what an svg the backend did not size decoded at', async () => {
+    mockLocalImage(() => ({ blob: new Blob(['<svg/>'], { type: 'image/svg+xml' }), width: 0, height: 0 }));
+    const href = buildLocalImageHref('/workspace/diagram.svg', '/workspace');
+    const first = mountImage(href);
+    __reportImageBoxForTest(800);
+    await waitFor(() => expect(first.container.querySelector('img')).not.toBeNull());
+    const img = first.container.querySelector('img')!;
+    expect(img.getAttribute('src')?.startsWith('data:image/svg+xml;base64,')).toBe(true);
+
+    // The browser's default object size, not the image's.
+    Object.defineProperty(img, 'naturalWidth', { value: 267 });
+    Object.defineProperty(img, 'naturalHeight', { value: 150 });
+    img.dispatchEvent(new Event('load'));
+
+    const second = mountImage(href);
+    expect(second.container.querySelector('img')).not.toBeNull();
+    expect(second.container.querySelector('img')?.hasAttribute('width')).toBe(false);
+    expect(second.container.querySelector('img')?.hasAttribute('height')).toBe(false);
   });
 
   it('names the reason in the chip and keeps the whole message as its tooltip', async () => {

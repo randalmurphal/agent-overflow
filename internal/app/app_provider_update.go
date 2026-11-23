@@ -114,6 +114,8 @@ func (a *App) providerUpdateBinary(providerName string) providerupdate.Binary {
 	case string(provider.Codex):
 		native := a.codexBinary()
 		binary.Path, binary.Launcher = native.Path, native.Wrapper
+	case string(provider.Agy):
+		binary.Path = a.providerBinaryPath(providerName)
 	default:
 		return binary
 	}

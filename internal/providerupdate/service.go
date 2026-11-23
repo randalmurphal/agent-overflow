@@ -15,9 +15,10 @@ import (
 const (
 	ProviderClaude = "claude"
 	ProviderCodex  = "codex"
+	ProviderAgy    = "agy"
 )
 
-var providerOrder = []string{ProviderClaude, ProviderCodex}
+var providerOrder = []string{ProviderClaude, ProviderCodex, ProviderAgy}
 
 const (
 	checkInterval = time.Hour

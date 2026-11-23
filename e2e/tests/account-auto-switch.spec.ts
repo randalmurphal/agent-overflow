@@ -25,7 +25,8 @@
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect, test, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { expect, test } from './base-test.js';
 
 import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
 import type { HarnessMockEventData } from '../src/harness-app.js';

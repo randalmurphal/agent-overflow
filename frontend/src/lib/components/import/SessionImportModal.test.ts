@@ -190,7 +190,7 @@ describe('empty and error states', () => {
     await settle();
 
     expect(getByTestId('session-import-loading').textContent).toContain(
-      'Scanning Claude Code and Codex session files…',
+      'Scanning provider session files…',
     );
     expect(queryByTestId('session-import-toolbar')).toBeNull();
 

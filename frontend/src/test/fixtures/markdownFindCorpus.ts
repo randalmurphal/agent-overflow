@@ -96,6 +96,93 @@ export const CORPUS = [
   '[^n]: note\n```\n\n[a](https://example.com/a) w\n\n```\nx\n```',
   '- a\n  ```\n  x\n\n[b](https://example.com/q) c\n\n```\nq\n```',
   '````markdown\n[a](https://example.com/q) w\n```\nx\n```\n````',
+  // Embedded HTML a forge renders and review prose renders with it.
+  'Inline <ins>added words</ins>, <mark>marked words</mark>, <abbr title="hover title">short form</abbr> and <a name="top">anchor words</a>.',
+  'A <picture><source media="(prefers-color-scheme: dark)" srcset="https://example.com/d.png"><img src="https://example.com/l.png" alt="picture alt"></picture> picture.',
+  '<picture>\n<source srcset="https://example.com/d.png">\n<img src="https://example.com/l.png" alt="block alt">\n</picture>\n\nafter picture',
+  '<details><summary><h3>Heading summary</h3></summary>\n\nHeading body words\n\n</details>\n\nafter heading',
+  '> [!NOTE]\n> Before words\n>\n> <details>\n> <summary>Quoted summary</summary>\n>\n> Quoted body words\n>\n> </details>\n>\n> After words',
+  // An HTML wrapper around Markdown renders as one fragment (html regions).
+  '<details>\n<summary>Analysis chain</summary><blockquote>\n\nChain **needle** words.\n\n<details>\n<summary>Nested chain</summary>\n\nnested chain words\n\n</details>\n\n</blockquote></details>\n\nafter chain',
+  '<table>\n<tr><th>Head A</th><th>Head B</th></tr>\n<tr><td>\n\n**cell needle** words\n\n</td><td><code>cell code</code></td></tr>\n</table>\n\nafter table',
+  '<div align="center">\n\n**centered needle** inside div\n\n</div>\n\nafter div',
+  '<div>\n<details open><summary>authored summary</summary>\n\nregion body words\n\n<details><summary>island summary</summary>\n\nisland body words\n\n</details>\n\n</details>\nbetween words\n<details><summary>later summary</summary>later body words</details>\n\n- listed region words\n\n</div>',
+  // A line break ends the run it sits in.
+  'alpha\\\nbeta and gamma<br>delta then <p>x</p>',
+  // Authored text that spells what a text marker for an island would.
+  '<div>\n<p>&#1;0&#1;</p>\n\nneedle paragraph\n\n</div>',
+  // GitLab's image attribute lists (shown as text off GitLab).
+  `sized ![b](https://example.com/b.png){width=30 height=20px} after and ![u](/uploads/${HEX}/u.png){width=50%} end`,
+  // The list after any image, however written; a space keeps it text.
+  `listed <img src="https://example.com/i.png" alt="i">{width=20} and <img src="/uploads/${HEX}/v.png">{height=9} then ![s](https://example.com/s.png) {width=9} end`,
+  // Emoji shortcodes, by each forge's names and rules.
+  'Ship :rocket: and :tada::tada: then :shipit: done `:x:` a:b:c 10:30:00 \\:rocket\\: x:rocket:',
+  '## Head :sparkles:',
+  '| a |\n| --- |\n| b :x: |',
+  // Forge references, mentions and the shapes that are not references.
+  'Fixes !12+, group/widget#5 and group/other!7; see https://gitlab.com/group/widget/-/merge_requests/12/diffs, 0123456789abcdef0123456789abcdef01234567, @dev.one, a@b.example, [[Two Words]], [notes](docs/notes.md) and smb://host/share.',
+  'Not references: \\#12 a#12 pkg!12 $5 %1 ~bug deadbeef 1234567 `#12`',
+  // Themed and playable images, and an alt's plain text.
+  'Logo <picture><source media="(prefers-color-scheme: dark)" srcset="https://example.invalid/dark.png"><img alt="logo" src="https://example.invalid/default.png"></picture> end',
+  'before ![x](https://example.invalid/a.png#gh-dark-mode-only) after',
+  '<p>before <img src="https://example.invalid/x.png#gh-dark-mode-only"> after</p>',
+  'see ![clip](https://example.invalid/clip.mp4) after',
+  '![&copy; **alt**](https://example.invalid/i.png)',
+  // Each forge's own syntax.
+  'Struck ~one~ and ~~two~~',
+  'Diff {+ added +} and {- removed -}',
+  'Colors `#F00` and `\\#FF0000`',
+  '>>>\nquoted one\n\nquoted two\n>>>',
+  '- [~] skipped task\n- [ ]',
+  '| Done | Task |\n| --- | --- |\n| [x] | cell task |',
+  'Fruits\n: apple\n: orange',
+  '```json:table\n{"items": [{"a": "11", "b": "**22**"}], "markdown": true, "caption": "Numbers"}\n```',
+  '---\ntitle: About\n---\n\nbody',
+  // What needs the whole document: definitions, footnotes, headings.
+  'Use [ref] and [text][Ref].\n\n[ref]: https://example.invalid/ref "Title"\n\nAfter.',
+  'One[^b] two[^a] [^missing].\n\n[^a]: Alpha note.\n[^b]: Beta note\nlazy line.\n[^unused]: Unused words.',
+  '[[_TOC_]]\n\n# Heading one\n\n## Heading two\n\n[TOC]\n\nInline [toc] text.',
+  '# Sample\n\n<a name="custom"></a><a id="ided"></a>\n\n[jump](#sample) and [custom](#custom)',
+  // Block structure and HTML off the allowlist.
+  '1. a\n1. b',
+  '* a\n+ b',
+  '> [!warning] Title\n> body',
+  '$`c^2`$',
+  '```math\nx\n```',
+  'a <big>b</big> <script>x</script> c',
+  'c <textarea>t</textarea> d',
+  'Press <kbd><kbd>Ctrl</kbd>+<kbd>P</kbd></kbd>',
+  '<a href="https://example.invalid/">\n\n## H\n\n</a>',
+  '| a | b |\n| - | - |\n| x | ` |',
+  // Agent chat's own constructs, which a forge surface shows as text.
+  ':+1: nice work',
+  '- [ ] :construction: task',
+  'Power x^2^ here and H~2~O',
+  '[center]\n# Centered\n[/center]',
+  '>>> [!note] Things to consider\nYou should consider this\n>>>',
+  'Intro\n\n+++\nkey = 1\n+++',
+  // A link inside a link, an image label or an HTML anchor.
+  '[outer [inner](https://example.invalid/i) text](https://example.invalid/o)',
+  '![alt with [link](https://example.invalid/x)](https://example.invalid/y.png)',
+  'a <a href="https://example.invalid/out">[md](https://example.invalid/in)</a> z',
+  '<https://example.invalid/a\\b>',
+  // Forge text, anchors and the element policy inside raw HTML.
+  '<table><tr><td>:x: See #12 and @octo</td></tr></table>',
+  '<p><a href="#later">to heading</a></p>\n\n## Later',
+  '<div><a name="named"></a>Named</div>',
+  'a <span dir="rtl" lang="ar">r</span> <small>s</small> b',
+  'image lines\n\n<img src="https://example.invalid/a.png" alt="a">\n<img src="https://example.invalid/b.png" alt="b">\n\nafter lines',
+  'floated\n\n<img src="https://example.invalid/a.png" class="glfm-float-right" alt="a">\n\nafter float',
+  // Islands that fail to draw, tilde runs, and a fence's first word.
+  'Inline [[_TOC_]] after.',
+  '```mermaid title="flow"\ngraph TD\n  A --> B\n```',
+  'Invalid: $\\frac{1}{$ and $`\\undefinedmacro`$',
+  'Label: ~1, ~bug, ~"feature request", ~"priority::high", group/project~bug, /group/project~bug',
+  // The lines of an HTML block are HTML; Markdown resumes after a blank line.
+  '<details open><summary>Inline summary with `code` and **bold**</summary>\n<b>Bold</b> &amp; <code>x</code> and snake_case_name and 2 * 3 * 4\n\nmarkdown **after** words\n</details>',
+  '<details open>\n<summary>Tight</summary>\nbody with **stars** and `code`\n</details>',
+  '<figure><img src="https://example.invalid/f.png" alt="fig"><figcaption>Figure caption</figcaption></figure>\n\n<section><img src="https://example.invalid/s.png" alt="s">Section text</section>',
+  'Display $$a^2+b^2=c^2$$ in a line',
 ];
 
 // Markdown pieces whose reading depends on what is around them, for the

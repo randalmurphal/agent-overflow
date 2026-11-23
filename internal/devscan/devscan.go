@@ -112,6 +112,10 @@ type Owner struct {
 	// different one: a dev server that daemonised has left the ancestor
 	// chain and is still in the group.
 	PGID int
+	// WorkDir is the thread's workspace directory. When multiple threads share
+	// one multiplexed provider process (same PID/PGID), attribution breaks ties
+	// by deepest matching WorkDir ancestor of the listening process's CWD.
+	WorkDir string
 }
 
 // ErrUnsupported is what a platform with no enumerator answers. Returned

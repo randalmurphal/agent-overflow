@@ -48,12 +48,22 @@ func (a *App) resolveTextGenerationConfig(ctx context.Context) (textgen.Config, 
 
 	claudeBin := a.providerBinaryPath(string(provider.Claude))
 	codexBin := a.providerBinaryPath(string(provider.Codex))
+	agyBin := a.providerBinaryPath(string(provider.Agy))
 	lookPath := a.resolveLookPath()
-	chosen := textgen.PickAvailableProvider(preferred, claudeBin, codexBin, lookPath)
+	chosen := textgen.PickAvailableProviderOrdered(
+		preferred,
+		map[string]string{
+			string(provider.Claude): claudeBin,
+			string(provider.Codex):  codexBin,
+			string(provider.Agy):    agyBin,
+		},
+		textGenerationFallbackOrder(preferred),
+		lookPath,
+	)
 
-	// Effort is set from settings regardless of provider — both Codex's
-	// `--config model_reasoning_effort=...` and Claude commit-message's
-	// `--effort` flag consume it. (Claude's thread-title path ignores it.)
+	// Effort is set from settings regardless of provider — Codex's
+	// `--config model_reasoning_effort=...`, Claude's `--effort`, and Agy's
+	// `--effort` flag consume it.
 	effort := strings.TrimSpace(s.TextGenerationReasoningEffort)
 	if effort == "" {
 		effort = settings.DefaultSettings.TextGenerationReasoningEffort
@@ -78,6 +88,9 @@ func (a *App) resolveTextGenerationConfig(ctx context.Context) (textgen.Config, 
 	case string(provider.Claude):
 		cfg.Binary = claudeBin
 		cfg.ClaudeRetention = a.claudeRetention
+	case string(provider.Agy):
+		cfg.Binary = agyBin
+		cfg.Env = a.agyTextGenEnv(cfg.Env)
 	}
 	// User's TextGenerationModel only applies when we kept the configured
 	// provider. After a substitution the provider's own default runs: the
@@ -134,6 +147,13 @@ func (a *App) resolveTextGenerationConfigFor(ctx context.Context, providerName s
 			return textgen.Config{}, false
 		}
 		cfg.ClaudeRetention = a.claudeRetention
+	case string(provider.Agy):
+		cfg.Binary = a.providerBinaryPath(string(provider.Agy))
+		if cfg.Binary == "" || lookPath(cfg.Binary) != nil {
+			return textgen.Config{}, false
+		}
+		cfg.Model = textgen.DefaultAgyModel
+		cfg.Env = a.agyTextGenEnv(cfg.Env)
 	default:
 		return textgen.Config{}, false
 	}
@@ -145,6 +165,19 @@ func (a *App) resolveTextGenerationConfigFor(ctx context.Context, providerName s
 	cfg.Model = model.Slug
 	cfg.Effort = textGenerationEffort(cfg.Provider, cfg.Effort, model, true)
 	return cfg, true
+}
+
+func (a *App) agyTextGenEnv(base map[string]string) map[string]string {
+	if !a.hasManagedAgyCredentialFile() {
+		return base
+	}
+	out := make(map[string]string)
+	for k, v := range base {
+		out[k] = v
+	}
+	out["AGY_ACP_FORCE_FILE_STORAGE"] = "1"
+	out["SSH_CONNECTION"] = "127.0.0.1 0 127.0.0.1 0"
+	return out
 }
 
 // textGenerationDefaultModel is the catalog row of the model a run on
@@ -165,7 +198,7 @@ func (a *App) textGenerationDefaultModel(ctx context.Context, providerName strin
 	if providerName == string(provider.Claude) {
 		catalog, err = a.awaitClaudeModels(ctx)
 	} else {
-		catalog, err = a.modelCatalog(providerName)
+		catalog, err = a.modelCatalogContext(ctx, providerName)
 	}
 	if err != nil {
 		return provider.ModelInfo{}, fmt.Errorf("text generation: %s model list: %w", providerName, err)
@@ -249,7 +282,8 @@ func textGenerationEffort(providerName, effort string, model provider.ModelInfo,
 func (a *App) availableTextGenerationProviders() []string {
 	lookPath := a.resolveLookPath()
 	var available []string
-	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
+	for _, kind := range provider.StandaloneProviders() {
+		name := string(kind)
 		bin := a.providerBinaryPath(name)
 		if bin != "" && lookPath(bin) == nil {
 			available = append(available, name)
@@ -286,22 +320,37 @@ func runTextGenWithFallback[T any](
 	budget time.Duration,
 	runOnce func(cfg textgen.Config, deadline time.Time) (T, error),
 ) (T, error) {
-	// run runs runOnce on the config resolve returns, each run with a fresh
-	// budget. A run whose admission found the account selection moved since
-	// the config was resolved started no CLI, and one whose CLI an account
-	// change ended has no result; both are resolved and run again: a CLI runs
-	// only with the model chosen for the account it runs under. A failed resolve still returns its config, which names
-	// the provider. runOnce is called here and not handed on, so the budget
-	// walk (TestEveryMethodReachingALongStepDeclaresItsBudget) follows each
-	// caller's runOnce to its own run.
-	run := func(resolve func() (textgen.Config, error)) (textgen.Config, T, error) {
+	// Cap total wall time across primary + all fallbacks to 2*budget so a
+	// 3-provider fallback chain (e.g. commit messages with a 3m per-call
+	// budget and 7m RPC timeout) cannot outlive the caller's RPC deadline.
+	overallDeadline := time.Now().Add(budget * 2)
+
+	// run runs runOnce on the config resolve returns, each run with its
+	// attempt budget. A run whose admission found the account selection moved
+	// since the config was resolved started no CLI, and one whose CLI an
+	// account change ended has no result; both are resolved and run again: a
+	// CLI runs only with the model chosen for the account it runs under. A
+	// failed resolve still returns its config, which names the provider.
+	// runOnce is called here and not handed on, so the budget walk
+	// (TestEveryMethodReachingALongStepDeclaresItsBudget) follows each caller's
+	// runOnce to its own run.
+	run := func(attemptBudget time.Duration, resolve func(context.Context) (textgen.Config, error)) (textgen.Config, T, error) {
 		for {
-			cfg, err := resolve()
+			remaining := time.Until(overallDeadline)
+			if remaining <= 0 {
+				var zero T
+				return textgen.Config{}, zero, context.DeadlineExceeded
+			}
+			stepBudget := min(attemptBudget, remaining)
+			stepDeadline := time.Now().Add(stepBudget)
+			resolveCtx, cancelResolve := context.WithDeadline(ctx, stepDeadline)
+			cfg, err := resolve(resolveCtx)
+			cancelResolve()
 			if err != nil {
 				var zero T
 				return cfg, zero, err
 			}
-			result, err := runOnce(cfg, time.Now().Add(budget))
+			result, err := runOnce(cfg, stepDeadline)
 			if errors.Is(err, procutil.ErrGroupSurvived) {
 				// Logged here, once per run: a run an account change ended is
 				// run again and a primary's failure gives way to a fallback
@@ -317,8 +366,8 @@ func runTextGenWithFallback[T any](
 			}
 		}
 	}
-	primary, result, err := run(func() (textgen.Config, error) {
-		return a.resolveTextGenerationConfig(ctx)
+	primary, result, err := run(budget, func(stepCtx context.Context) (textgen.Config, error) {
+		return a.resolveTextGenerationConfig(stepCtx)
 	})
 	if err == nil {
 		return result, nil
@@ -334,30 +383,37 @@ func runTextGenWithFallback[T any](
 		// shape that leaves orphans behind.
 		return result, err
 	}
-	altName := otherProvider(primary.Provider)
-	if altName == "" {
-		return result, err
-	}
-	altCfg, altResult, altErr := run(func() (textgen.Config, error) {
-		cfg, ok := a.resolveTextGenerationConfigFor(ctx, altName)
-		if !ok {
-			return cfg, errNoTextGenerationAlternate
+	fallbacks := textGenerationFallbackOrder(primary.Provider)
+	for i, altName := range fallbacks {
+		remaining := time.Until(overallDeadline)
+		if remaining <= 0 {
+			break
 		}
-		return cfg, nil
-	})
-	if errors.Is(altErr, errNoTextGenerationAlternate) {
-		return result, err
-	}
-	if altErr != nil {
+		perAttempt := remaining / time.Duration(len(fallbacks)-i)
+		if perAttempt > budget {
+			perAttempt = budget
+		}
+		altCfg, altResult, altErr := run(perAttempt, func(stepCtx context.Context) (textgen.Config, error) {
+			cfg, ok := a.resolveTextGenerationConfigFor(stepCtx, altName)
+			if !ok {
+				return cfg, errNoTextGenerationAlternate
+			}
+			return cfg, nil
+		})
+		if errors.Is(altErr, errNoTextGenerationAlternate) {
+			continue
+		}
+		if altErr == nil {
+			return altResult, nil
+		}
 		// No budget in the line: a timeout error from textgen already
 		// names the CLI and the duration it was given.
 		log.Printf(
 			"textgen: fallback %s failed after primary %s error: %s",
 			altCfg.Provider, primary.Provider, textgen.RedactError(altErr),
 		)
-		return result, err
 	}
-	return altResult, nil
+	return result, err
 }
 
 var (
@@ -388,16 +444,16 @@ func (a *App) textGenerationAdmission(providerName string) textgen.Admission {
 	}
 }
 
-// otherProvider returns the two-provider universe's complement. Trivial,
-// but lives here so the call sites read like English.
-func otherProvider(name string) string {
-	switch name {
+func textGenerationFallbackOrder(primary string) []string {
+	switch primary {
 	case string(provider.Claude):
-		return string(provider.Codex)
+		return []string{string(provider.Codex), string(provider.Agy)}
 	case string(provider.Codex):
-		return string(provider.Claude)
+		return []string{string(provider.Claude), string(provider.Agy)}
+	case string(provider.Agy):
+		return []string{string(provider.Codex), string(provider.Claude)}
 	default:
-		return ""
+		return nil
 	}
 }
 

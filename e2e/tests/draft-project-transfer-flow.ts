@@ -1,6 +1,6 @@
 // A draft project change through the production picker between paired hosts.
 // Both hosts use isolated homes and mock providers; the draft executes no turn.
-import { test, expect } from '@playwright/test';
+import { test, expect } from './base-test.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpers.js';
 import { PNG_BYTES } from './attachment-fixture.js';

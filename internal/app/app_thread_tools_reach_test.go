@@ -1026,12 +1026,15 @@ func TestThreadToolsRemoteWakeNamesTheThreadAndComputerThatAnswered(t *testing.T
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	const answer = "the kernel build finished clean"
-	installMockClaudeReplies(t, pair.dest, answer)
+	// The other computer answers only after the spawn's ack: an answer the
+	// ack carries is delivered by it, and no wake is queued.
+	release := installMockClaudeAfterTheAck(t, pair.dest, answer)
 	// The wake starts the caller's own session to read it, so this
 	// computer needs a mock of its own.
 	installMockClaudeReplies(t, pair.source, "read the wake")
 
 	spawn := pair.spawnThere(t, "build the kernel", map[string]any{"title": "Kernel build", "notify": true})
+	release(t, spawn)
 	target := pair.collect(t, spawn.Token, answer)
 
 	var wake store.FlushQueueItem
