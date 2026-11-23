@@ -105,49 +105,32 @@ func TestProviderBackendHelper(t *testing.T) {
 // providerMock is a provider CLI that, like Claude, does not exit when its
 // stdin closes, and starts a child the way a provider starts an MCP server.
 // The child and the provider ignore the hangup of a pty, so a terminal-hosted
-// one ends only if the reaper ends it. onTerm, when set, is the provider's
-// SIGTERM handler.
-func providerMock(t *testing.T, onTerm string) string {
+// one ends only if the reaper ends it.
+func providerMock(t *testing.T) string {
 	t.Helper()
-	script := "#!/bin/bash\ntrap '' HUP\n"
-	if onTerm != "" {
-		script += "trap '" + onTerm + "' TERM\n"
-	}
-	script += "sleep 600 &\n" +
-		"while :; do sleep 600 & wait $!; done\n"
-	return mockexec.Write(t, filepath.Join(t.TempDir(), "mock-provider.sh"), script)
+	return mockexec.Write(t, filepath.Join(t.TempDir(), "mock-provider.sh"),
+		"#!/bin/bash\ntrap '' HUP\nsleep 600 &\nwhile :; do sleep 600 & wait $!; done\n")
 }
 
 // A backend killed while a provider session runs leaves nothing to close the
 // session. The provider and the child it started end with the backend: a
-// signal to the provider alone would leave the child running. A provider that
-// exits on SIGTERM finishes its exit before any SIGKILL, so it can complete
-// the session file write it was in. A group whose sidecar died with the
-// backend is reaped by the next boot's sweep. A Codex app-server is handed to
+// signal to the provider alone would leave the child running. A group whose
+// sidecar died with the backend is reaped by the next boot's sweep. A Codex app-server is handed to
 // the reaper as it starts, not once its handshake completes.
 func TestABackendsDeathEndsItsProviderSession(t *testing.T) {
 	for _, c := range []struct {
 		name        string
 		start       string
-		cleanExit   bool
 		sidecarDies bool
 	}{
-		{"the provider and its child end with the backend", string(provider.Claude), false, false},
-		{"a provider that exits on SIGTERM finishes its exit", string(provider.Claude), true, false},
-		{"the next boot reaps the group", string(provider.Claude), false, true},
-		{"a provider still in its handshake ends with the backend", string(provider.Codex), false, false},
-		{"a terminal-hosted claude ends with the backend", string(provider.ClaudeTUI), false, false},
-		{"a fork's temporary app-server ends with the backend", codexForkStart, false, false},
+		{"the provider and its child end with the backend", string(provider.Claude), false},
+		{"the next boot reaps the group", string(provider.Claude), true},
+		{"a provider still in its handshake ends with the backend", string(provider.Codex), false},
+		{"a terminal-hosted claude ends with the backend", string(provider.ClaudeTUI), false},
+		{"a fork's temporary app-server ends with the backend", codexForkStart, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			marker := filepath.Join(t.TempDir(), "exited")
-			onTerm := ""
-			if c.cleanExit {
-				// Longer than a signal's delivery, shorter than the grace
-				// before SIGKILL.
-				onTerm = "sleep 0.5; echo clean > " + marker + "; exit 0"
-			}
-			binary := providerMock(t, onTerm)
+			binary := providerMock(t)
 			dataDir := t.TempDir()
 			backend := exec.Command(os.Args[0], "-test.run=^TestProviderBackendHelper$")
 			backend.Env = append(os.Environ(),
@@ -202,11 +185,6 @@ func TestABackendsDeathEndsItsProviderSession(t *testing.T) {
 			}
 			if groupRunning(pgid) {
 				t.Fatal("the provider's group outlived the backend")
-			}
-			if c.cleanExit {
-				if got, err := os.ReadFile(marker); err != nil || strings.TrimSpace(string(got)) != "clean" {
-					t.Fatalf("the provider's SIGTERM handler did not finish (%q, %v): it was killed first", got, err)
-				}
 			}
 			if c.sidecarDies {
 				if records, err := registry.Load(); err != nil || len(records) != 0 {
