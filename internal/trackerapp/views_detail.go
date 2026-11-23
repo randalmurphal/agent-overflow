@@ -155,7 +155,7 @@ func (s *Service) issueDetail(ctx context.Context, id string, issue tracker.Issu
 		return DetailView{}, Changes{}, fmt.Errorf("%w: no issue named", ErrInvalidRequest)
 	}
 	rd := &ticketRead{issue: issue, full: full}
-	res, err := s.readDetails(ctx, id, []*ticketRead{rd}, u, millis(s.now()))
+	res, err := s.readDetails(ctx, id, []*ticketRead{rd}, u, true)
 	ch := res.ch
 	// An open ticket of the issue, or one whose view shows it, is told what
 	// the read stored.
@@ -190,6 +190,13 @@ func (s *Service) MirroredDetail(id string, issue tracker.IssueID) (DetailView, 
 		return DetailView{}, 0, err
 	}
 	defer s.leave()
+	opening, err := s.store.BeginMirrorRead(root, millis(s.now()))
+	switch {
+	case errors.Is(err, store.ErrTrackerCacheGone):
+		return DetailView{}, 0, fmt.Errorf("%w: the mirror of issue %s went while it was read", ErrNotMirrored, issue)
+	case err != nil:
+		return DetailView{}, 0, fmt.Errorf("trackerapp: begin the opening of %s: %w", issue, err)
+	}
 	for {
 		m, d, ok, err := s.storedDetail(root, issue)
 		switch {
@@ -198,7 +205,7 @@ func (s *Service) MirroredDetail(id string, issue tracker.IssueID) (DetailView, 
 		case !ok:
 			return DetailView{}, 0, fmt.Errorf("%w: the detail of issue %s", ErrNotMirrored, issue)
 		}
-		confirmed, err := s.store.ConfirmMirrorDetail(root, m, millis(s.now()))
+		confirmed, err := s.store.ConfirmMirrorDetail(root, m, opening)
 		switch {
 		case errors.Is(err, store.ErrTrackerCacheGone):
 			return DetailView{}, 0, fmt.Errorf("%w: the mirror of issue %s went while it was read", ErrNotMirrored, issue)

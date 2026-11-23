@@ -55,15 +55,15 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 	// shortened, identical, and a staging left for the cleanup.
 	for _, h := range []MirrorHistory{statusHistory("10002", clearMirrorChunk+100), statusHistory("10002", clearMirrorChunk+150),
 		statusHistory("10002", clearMirrorChunk+150), statusHistory("10002", 3)} {
-		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{h}), MirrorCatalog{}, 0); err != nil {
+		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{h}), MirrorCatalog{}, mirrorReadAt(0)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// A row naming a sprint the board lacks, and a complete structure read
 	// that marks it unexplained.
-	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10003", 5, "c", "98")}, ReadAt: 50}, nil)
+	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10003", 5, "c", "98")}, ReadAt: mirrorReadAt(50)}, nil)
 	complete := webStructure()
-	complete.ReadAt, complete.Complete = 51, true
+	complete.ReadAt, complete.Complete = mirrorReadAt(51), true
 	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, complete)); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 	mustWriteRows(t, s, rowsPage(s, root, 60, nil, webRow("10004", 5, "d")), root)
 	mustReconcile(t, s, root, []string{"10004"}, false, 61, 61)
 	assertRows(t, s.db, fmt.Sprintf(`SELECT listed FROM tracker_cache_board_issues WHERE root_id = %d AND issue_id = '10004' AND board_id = '10'`, root), "1")
-	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10004", 5, "d")}, ReadAt: 62}, nil)
+	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10004", 5, "d")}, ReadAt: mirrorReadAt(62)}, nil)
 	assertRows(t, s.db, fmt.Sprintf(`SELECT read_at FROM tracker_cache_issues WHERE root_id = %d AND issue_id = '10004'`, root), "62")
 	mustExec(t, s.db, `UPDATE tracker_cache_issues SET history_dirty = 1 WHERE issue_id = '10002'`)
 	reads := []func() error{
@@ -124,7 +124,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 	// Work for every cleanup stage: an unkept issue, a retired board and a
 	// detached root.
 	writeMirrorBoard(t, s, root, "11", []MirrorRow{webRow("20001", 5, "a")})
-	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10002"}, ReadAt: 3})); err != nil {
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10002"}, ReadAt: mirrorReadAt(3)})); err != nil {
 		t.Fatal(err)
 	}
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10")

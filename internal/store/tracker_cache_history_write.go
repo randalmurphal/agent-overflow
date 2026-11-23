@@ -31,7 +31,8 @@ import (
 // whatever it does about the error; the other outcomes of a failed call
 // say nothing.
 func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHistory, catalog MirrorCatalog,
-	readAt int64) (results []MirrorHistoryResult, catalogChanged bool, err error) {
+	read MirrorRead) (results []MirrorHistoryResult, catalogChanged bool, err error) {
+	readAt := read.at
 	named := len(catalog.Users)+len(catalog.Statuses) > 0
 	switch {
 	case len(histories) > mirrorHistoryBatch || sweep <= 0:

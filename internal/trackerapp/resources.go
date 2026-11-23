@@ -22,9 +22,9 @@ import (
 // transaction take.
 const readBatch = 100
 
-// mirrorRows is rows as one store page of board's rows, read from readAt.
-func mirrorRows(board tracker.BoardID, rows []tracker.Row, missing []tracker.IssueID, catalog tracker.Catalog, readAt int64) (store.MirrorRowPage, error) {
-	page := store.MirrorRowPage{BoardID: string(board), Missing: idStrings(missing), Rows: make([]store.MirrorRow, 0, len(rows)), ReadAt: readAt}
+// mirrorRows is rows as one store page of board's rows, read from read.
+func mirrorRows(board tracker.BoardID, rows []tracker.Row, missing []tracker.IssueID, catalog tracker.Catalog, read store.MirrorRead) (store.MirrorRowPage, error) {
+	page := store.MirrorRowPage{BoardID: string(board), Missing: idStrings(missing), Rows: make([]store.MirrorRow, 0, len(rows)), ReadAt: read}
 	for _, row := range rows {
 		m, err := mirrorRow(row)
 		if err != nil {
@@ -61,7 +61,10 @@ func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID) (out Ch
 		left := issues[i:next]
 		unsettled := func() []tracker.IssueID { return slices.Concat(left, issues[next:]) }
 		for again := false; len(left) > 0; again = true {
-			read := r.readAt()
+			read, err := r.beginRead()
+			if err != nil {
+				return out, found, unsettled(), err
+			}
 			r.calls++
 			rows, err := r.p.BoardRows(r.ctx, board, left)
 			if err != nil {
@@ -130,7 +133,10 @@ func (r *run) cardsNow(batch []tracker.IssueID) ([]tracker.Card, Changes, error)
 // cardsOf reads and stores the cards of one batch of issues, and returns
 // the cards read.
 func (r *run) cardsOf(batch []tracker.IssueID) ([]tracker.Card, Changes, error) {
-	readAt := r.readAt()
+	began, err := r.beginRead()
+	if err != nil {
+		return nil, Changes{}, err
+	}
 	r.calls++
 	read, err := r.p.Cards(r.ctx, batch)
 	if err != nil {
@@ -148,7 +154,7 @@ func (r *run) cardsOf(batch []tracker.IssueID) ([]tracker.Card, Changes, error) 
 	if err != nil {
 		return nil, Changes{}, err
 	}
-	stored, err := r.s.store.UpsertMirrorCards(r.root, r.state.Sweep, cards, catalog, readAt)
+	stored, err := r.s.store.UpsertMirrorCards(r.root, r.state.Sweep, cards, catalog, began)
 	if err != nil {
 		return nil, Changes{}, fmt.Errorf("trackerapp: store %d cards: %w", len(cards), err)
 	}
@@ -181,7 +187,10 @@ func (r *run) structure(board tracker.BoardID) (Changes, error) {
 	if err != nil {
 		return Changes{}, err
 	}
-	read := r.readAt()
+	read, err := r.beginRead()
+	if err != nil {
+		return Changes{}, err
+	}
 	r.calls++
 	st, err := r.p.Structure(r.ctx, board, r.window())
 	if err != nil {
@@ -222,7 +231,10 @@ func (r *run) worklogs(author tracker.UserID, from, to tracker.Date) error {
 	if tt == nil {
 		return fmt.Errorf("trackerapp: connection %s has no time tracking: %w", r.row.ID, tracker.ErrUnsupported)
 	}
-	read := r.readAt()
+	read, err := r.beginRead()
+	if err != nil {
+		return err
+	}
 	r.calls++
 	logs, err := tt.Worklogs(r.ctx, tracker.WorklogQuery{Author: author, From: from, To: to})
 	if err != nil {

@@ -39,7 +39,7 @@ func TestACardNamesAnyNumberOfSprints(t *testing.T) {
 	t.Parallel()
 	for name, write := range map[string]func(s *Store, root int64, at int64, cards ...MirrorCard) error{
 		"board rows": func(s *Store, root int64, at int64, cards ...MirrorCard) error {
-			page := MirrorRowPage{BoardID: "10", ReadAt: at}
+			page := MirrorRowPage{BoardID: "10", ReadAt: mirrorReadAt(at)}
 			for i, c := range cards {
 				page.Rows = append(page.Rows, MirrorRow{Card: c, OrderKey: fmt.Sprint("a", i)})
 			}
@@ -47,7 +47,7 @@ func TestACardNamesAnyNumberOfSprints(t *testing.T) {
 			return err
 		},
 		"cards by ID": func(s *Store, root int64, at int64, cards ...MirrorCard) error {
-			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), cards, MirrorCatalog{}, at)
+			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), cards, MirrorCatalog{}, mirrorReadAt(at))
 			return err
 		},
 	} {
@@ -114,13 +114,13 @@ func TestCardSprintsAreWrittenInChunks(t *testing.T) {
 	}
 	one := cards(2, 100_000)[:1]
 	baseline := countMirrorStatements(t, func() {
-		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), one, MirrorCatalog{}, 2); err != nil {
+		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), one, MirrorCatalog{}, mirrorReadAt(2)); err != nil {
 			t.Fatal(err)
 		}
 	})
 	all := cards(3, 200_000)
 	statements := countMirrorStatements(t, func() {
-		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), all, MirrorCatalog{}, 3); err != nil {
+		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), all, MirrorCatalog{}, mirrorReadAt(3)); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -133,7 +133,7 @@ func TestCardSprintsAreWrittenInChunks(t *testing.T) {
 		}
 	}
 	replaced := cards(4, 300_000)
-	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), replaced, MirrorCatalog{}, 4); err != nil {
+	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), replaced, MirrorCatalog{}, mirrorReadAt(4)); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range replaced {
@@ -185,12 +185,12 @@ func TestACatalogNamesAnyNumberOfEntries(t *testing.T) {
 		return c
 	}
 	small := countMirrorStatements(t, func() {
-		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 2)}, catalog(1, 1), 2); err != nil {
+		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 2)}, catalog(1, 1), mirrorReadAt(2)); err != nil {
 			t.Fatal(err)
 		}
 	})
 	large := countMirrorStatements(t, func() {
-		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 3)}, catalog(1200, 600), 3); err != nil {
+		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 3)}, catalog(1200, 600), mirrorReadAt(3)); err != nil {
 			t.Fatalf("a catalog of 1,200 users and 600 statuses: %v", err)
 		}
 	})

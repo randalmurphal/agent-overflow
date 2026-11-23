@@ -139,7 +139,8 @@ func readMirrorDetailStatesTx(tx *sql.Tx, rootID int64, docs []MirrorDetailDoc) 
 // nothing is written: the caller reads the detail again rather than show
 // d's document, which may predate a sweep. It never adds a detail, so it
 // drops none, and it never changes a document: only a detail read does.
-func (s *Store) ConfirmMirrorDetail(rootID int64, d MirrorDetail, openedAt int64) (result MirrorDetailWrite, err error) {
+func (s *Store) ConfirmMirrorDetail(rootID int64, d MirrorDetail, opened MirrorRead) (result MirrorDetailWrite, err error) {
+	openedAt := opened.at
 	if d.IssueID == "" || d.row <= 0 || d.sweep <= 0 || d.ReadAt <= 0 || openedAt <= 0 {
 		return MirrorDetailWrite{}, fmt.Errorf("%w: a confirmation needs a detail GetMirrorDetail read and the time it was opened", ErrInvalidTrackerCache)
 	}
@@ -186,8 +187,8 @@ type MirrorDetailDoc struct {
 // StoreMirrorDetail is StoreMirrorDetails of one document, returning its
 // outcome alone: a caller that must learn which other details the write
 // dropped calls StoreMirrorDetails.
-func (s *Store) StoreMirrorDetail(rootID, sweep int64, doc MirrorDetailDoc, openedAt, readAt int64) (MirrorDetailWrite, error) {
-	out, err := s.StoreMirrorDetails(rootID, sweep, []MirrorDetailDoc{doc}, openedAt, readAt)
+func (s *Store) StoreMirrorDetail(rootID, sweep int64, doc MirrorDetailDoc, opened, read MirrorRead) (MirrorDetailWrite, error) {
+	out, err := s.StoreMirrorDetails(rootID, sweep, []MirrorDetailDoc{doc}, opened, read)
 	if err != nil {
 		return MirrorDetailWrite{}, err
 	}
@@ -233,7 +234,8 @@ func (s *Store) StoreMirrorDetail(rootID, sweep int64, doc MirrorDetailDoc, open
 // beyond the mirrorDetailCap most recently opened, and the outcomes are of
 // the committed state: a document the cap dropped, by an opening of the
 // same write or another, is not Stored.
-func (s *Store) StoreMirrorDetails(rootID, sweep int64, docs []MirrorDetailDoc, openedAt, readAt int64) (out MirrorDetailWrites, err error) {
+func (s *Store) StoreMirrorDetails(rootID, sweep int64, docs []MirrorDetailDoc, opened, read MirrorRead) (out MirrorDetailWrites, err error) {
+	openedAt, readAt := opened.at, read.at
 	if len(docs) == 0 || readAt <= 0 || openedAt < 0 || sweep <= 0 {
 		return MirrorDetailWrites{}, fmt.Errorf("%w: a detail write needs documents, the time their read began and the root's sweep", ErrInvalidTrackerCache)
 	}

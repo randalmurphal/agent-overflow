@@ -104,11 +104,7 @@ func ticketInputs(tp *ticketPump, ch Changes, origin bool) (read, rebuild bool) 
 func (s *Service) readTickets(ctx context.Context, conn string, pumps []*ticketPump, u Urgency, full, opened bool) ticketsResult {
 	began, reads := s.ticketReads(pumps, full)
 	at := millis(s.now())
-	var openedAt int64
-	if opened {
-		openedAt = at
-	}
-	res, err := s.readDetails(ctx, conn, reads, u, openedAt)
+	res, err := s.readDetails(ctx, conn, reads, u, opened)
 	s.publish(res.root, res.gen, conn, res.ch, nil, &tickOrigin{tickets: pumps})
 	return s.settleTickets(ctx, conn, pumps, began, reads, res, err, at)
 }

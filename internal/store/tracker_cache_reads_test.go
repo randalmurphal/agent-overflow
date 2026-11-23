@@ -141,7 +141,7 @@ func TestMirrorBacklogFollowsStatusGroups(t *testing.T) {
 	}
 	listMirrorBoards(t, s, "p2", linear.ID, "10")
 	regrouped := webStructure()
-	regrouped.ReadAt = 2
+	regrouped.ReadAt = mirrorReadAt(2)
 	regrouped.Catalog.Statuses[1].Group = MirrorGroupDone
 	mustReplaceStructure(t, s, otherRoot, regrouped, true)
 	if got, n := backlog("10"); got != "10002,10004" || n != 2 {
@@ -193,7 +193,7 @@ func TestMirrorSectionContinuationIsRefusedAfterAChange(t *testing.T) {
 	structure := func(edit func(*MirrorStructure)) func(s *Store, root int64) error {
 		return func(s *Store, root int64) error {
 			st := webStructure()
-			st.ReadAt = 2
+			st.ReadAt = mirrorReadAt(2)
 			edit(&st)
 			_, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st))
 			return err
@@ -205,13 +205,13 @@ func TestMirrorSectionContinuationIsRefusedAfterAChange(t *testing.T) {
 			r.OrderKey = map[string]string{"10001": "a", "10002": "b", "10003": "c"}[id]
 			r.Card.UpdatedAt = 6
 			edit(&r)
-			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{r}, ReadAt: 2}), nil)
+			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{r}, ReadAt: mirrorReadAt(2)}), nil)
 			return err
 		}
 	}
 	catalog := func(st MirrorStatus) func(s *Store, root int64) error {
 		return func(s *Store, root int64) error {
-			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{st}}, 2)
+			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{st}}, mirrorReadAt(2))
 			return err
 		}
 	}
@@ -225,7 +225,7 @@ func TestMirrorSectionContinuationIsRefusedAfterAChange(t *testing.T) {
 			return err
 		}, true},
 		{"row removed", func(s *Store, root int64) error {
-			_, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10003"}, ReadAt: 2}))
+			_, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10003"}, ReadAt: mirrorReadAt(2)}))
 			return err
 		}, true},
 		{"row moved before the cursor", card("10003", func(r *MirrorRow) { r.OrderKey = "0" }), true},

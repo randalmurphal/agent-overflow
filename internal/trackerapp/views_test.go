@@ -256,7 +256,7 @@ func TestAnEditThatKeepsTheStatusKeepsWhenItBegan(t *testing.T) {
 		edit(&edited.Card)
 		stored := must[store.MirrorRow](t)(mirrorRow(edited))
 		must[store.MirrorChanges](t)(m.st.WriteMirrorRows(m.root(), store.MirrorRowPage{BoardID: string(testBoard), Lifetime: m.sync(testBoard).Lifetime,
-			Rows: []store.MirrorRow{stored}, ReadAt: m.now().UnixMilli() + updated}))
+			Rows: []store.MirrorRow{stored}, ReadAt: beginReadAt(t, m.st, m.root(), m.now().UnixMilli()+updated)}))
 		c := must[BoardView](t)(m.svc.Board(m.scope(), sprint)).Sections[0].Rows[0].Card
 		if c.Updated != updated || c.StatusSince != want {
 			t.Fatalf("%s: card updated %d shows its status since %d; want %d", what, c.Updated, c.StatusSince, want)
@@ -483,7 +483,7 @@ func TestAStaleCardShowsItsColumns(t *testing.T) {
 	m.seedBoard(t)
 	bad := must[store.MirrorRow](t)(mirrorRow(row("10002", 1_799_000_000_001, "b")))
 	bad.Card.Data = []byte(`{"v":0,"title":"old"}`)
-	must[store.MirrorChanges](t)(m.st.WriteMirrorRows(m.root(), store.MirrorRowPage{BoardID: string(testBoard), Lifetime: m.sync(testBoard).Lifetime, Rows: []store.MirrorRow{bad}, ReadAt: m.now().UnixMilli() + 1}))
+	must[store.MirrorChanges](t)(m.st.WriteMirrorRows(m.root(), store.MirrorRowPage{BoardID: string(testBoard), Lifetime: m.sync(testBoard).Lifetime, Rows: []store.MirrorRow{bad}, ReadAt: beginReadAt(t, m.st, m.root(), m.now().UnixMilli()+1)}))
 	page := must[SectionPage](t)(m.svc.SectionRows(m.scope(), Section{Kind: SectionBacklog}, nil))
 	if !slices.Equal(page.Stale, []string{"10002"}) || page.Rows[0].Card.Key != "WEB-2" || page.Rows[0].Card.Title != "" {
 		t.Fatalf("page %+v", page)

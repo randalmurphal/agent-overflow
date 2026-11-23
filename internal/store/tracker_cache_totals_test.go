@@ -149,7 +149,7 @@ func TestMirrorCountsMatchThePages(t *testing.T) {
 	structure := func(st MirrorStructure) {
 		t.Helper()
 		read++
-		st.ReadAt = read
+		st.ReadAt = mirrorReadAt(read)
 		mustReplaceStructure(t, s, root, st, true)
 	}
 	reset := webStructure()
@@ -157,7 +157,7 @@ func TestMirrorCountsMatchThePages(t *testing.T) {
 	structure(reset)
 	check("the estimate unit changed")
 	read++
-	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: rows[:4], ReadAt: read}, nil)
+	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: rows[:4], ReadAt: mirrorReadAt(read)}, nil)
 	check("some rows read again in the new unit")
 
 	moved := reset
@@ -184,17 +184,17 @@ func TestMirrorTotalsRevisionMovesWithTheTotals(t *testing.T) {
 	page := func(rows ...MirrorRow) func() {
 		return func() {
 			read++
-			mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: rows, ReadAt: read}, nil)
+			mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: rows, ReadAt: mirrorReadAt(read)}, nil)
 		}
 	}
-	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: rows, ReadAt: read}, nil)
+	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: rows, ReadAt: mirrorReadAt(read)}, nil)
 	// st is the board's structure as each structure step leaves it.
 	st := webStructure()
 	structure := func(change func()) func() {
 		return func() {
 			read++
 			change()
-			st.ReadAt = read
+			st.ReadAt = mirrorReadAt(read)
 			if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st)); err != nil {
 				t.Fatal(err)
 			}
@@ -222,7 +222,7 @@ func TestMirrorTotalsRevisionMovesWithTheTotals(t *testing.T) {
 		{"a row added", page(totalsRow("10004", "d", "1", 4)), true},
 		{"a row removed", func() {
 			read++
-			if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10004"}, ReadAt: read})); err != nil {
+			if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10004"}, ReadAt: mirrorReadAt(read)})); err != nil {
 				t.Fatal(err)
 			}
 		}, true},

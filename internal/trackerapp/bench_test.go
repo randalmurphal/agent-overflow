@@ -88,7 +88,7 @@ func BenchmarkMirrorRows100(b *testing.B) {
 	catalog := webStructure(testBoard).Catalog
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := mirrorRows(testBoard, rows, nil, catalog, 1); err != nil {
+		if _, err := mirrorRows(testBoard, rows, nil, catalog, store.MirrorRead{}); err != nil {
 			b.Fatal(err)
 		}
 	}

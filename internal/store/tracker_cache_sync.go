@@ -139,7 +139,8 @@ var (
 // read that began earlier repopulates it. A day a read that began later
 // replaced is left as it was and reported in SupersededDays; a replace
 // from the same read as the stored one writes nothing.
-func (s *Store) ReplaceMirrorWorklogs(rootID int64, authorID, fromDay, toDay string, readAt int64, logs []MirrorWorklog) (changes MirrorWorklogChanges, err error) {
+func (s *Store) ReplaceMirrorWorklogs(rootID int64, authorID, fromDay, toDay string, read MirrorRead, logs []MirrorWorklog) (changes MirrorWorklogChanges, err error) {
+	readAt := read.at
 	if err := checkMirrorWorklogRange(authorID, fromDay, toDay, readAt, logs); err != nil {
 		return MirrorWorklogChanges{}, err
 	}
@@ -353,14 +354,21 @@ func (s *Store) GetMirrorSync(rootID int64, boardID string, now int64) (MirrorSy
 // linked scope).
 type MirrorSyncAttempt struct {
 	Lifetime             int64
-	ReadAt, ReconciledAt int64
-	Failure              MirrorSyncFailure
+	ReadAt, ReconciledAt MirrorRead
+	Failure              MirrorAttemptFailure
+}
+
+// MirrorAttemptFailure is an attempt's failure: when the unit that failed
+// began, and its kind and sentence (MirrorSyncFailure as read back).
+type MirrorAttemptFailure struct {
+	At            MirrorRead
+	Kind, Message string
 }
 
 func (a MirrorSyncAttempt) check(boardID string) error {
-	f := a.Failure
+	f := MirrorSyncFailure{At: a.Failure.At.at, Kind: a.Failure.Kind, Message: a.Failure.Message}
 	switch {
-	case a.ReadAt < 0 || a.ReconciledAt < 0 || f.At < 0 || a.ReadAt+a.ReconciledAt+f.At == 0:
+	case a.ReadAt.at < 0 || a.ReconciledAt.at < 0 || f.At < 0 || a.ReadAt.at+a.ReconciledAt.at+f.At == 0:
 		return fmt.Errorf("%w: an attempt needs the time of its success or failure", ErrInvalidTrackerCache)
 	case boardID == "" && a.Lifetime != 0:
 		return fmt.Errorf("%w: the linked scope has no lifetime", ErrInvalidTrackerCache)
@@ -428,8 +436,8 @@ func (s *Store) RecordMirrorSyncAttempt(rootID int64, boardID string, a MirrorSy
 	action := fmt.Sprintf("store: record tracker mirror %d sync attempt of board %q", rootID, boardID)
 	write := func(tx *sql.Tx) error {
 		var err error
-		changed, err = execChangedTx(tx, mirrorSyncAttemptSQL, rootID, boardID, a.ReadAt, a.ReconciledAt,
-			a.Failure.At, a.Failure.Kind, a.Failure.Message)
+		changed, err = execChangedTx(tx, mirrorSyncAttemptSQL, rootID, boardID, a.ReadAt.at, a.ReconciledAt.at,
+			a.Failure.At.at, a.Failure.Kind, a.Failure.Message)
 		return err
 	}
 	if boardID == "" {

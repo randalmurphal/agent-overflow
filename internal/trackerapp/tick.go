@@ -195,18 +195,35 @@ func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, plan func(*r
 		return out, nil
 	}
 	done := 0
-	// began is when each unit of out.Ran began, the time it records.
-	began := make([]int64, 0, len(steps))
+	// began is when each unit of out.Ran began, the time it records, on
+	// the root's read clock. A begin that fails ends the tick as a failed
+	// record would: a root gone ends it.
+	began := make([]store.MirrorRead, 0, len(steps))
+	begin := func() error {
+		read, err := r.beginRead()
+		began = append(began, read)
+		return err
+	}
+	beginFailed := func(err error) (Outcome, error) {
+		if endsMirror(err) {
+			return ended(out), nil
+		}
+		return out, err
+	}
 	err = r.startErr
 	if err != nil {
 		out.Ran = append(out.Ran, UnitResult{Unit: steps[0].unit})
-		began = append(began, r.readAt())
+		if berr := begin(); berr != nil {
+			return beginFailed(berr)
+		}
 	}
 	for _, st := range steps {
 		if err != nil {
 			break
 		}
-		began = append(began, r.readAt())
+		if berr := begin(); berr != nil {
+			return beginFailed(berr)
+		}
 		var res UnitResult
 		res, err = r.runStep(st)
 		res.Unit = st.unit
@@ -249,11 +266,11 @@ type tickOrigin struct {
 // of a, as the store applies it: times only move forward, a success clears
 // a failure no later than it, and a's failure is the scope's.
 func syncAfter(st store.MirrorSync, a store.MirrorSyncAttempt) SyncView {
-	v := SyncView{ReadAt: max(st.ReadAt, a.ReadAt), ReconciledAt: max(st.ReconciledAt, a.ReconciledAt)}
+	v := SyncView{ReadAt: max(st.ReadAt, a.ReadAt.At()), ReconciledAt: max(st.ReconciledAt, a.ReconciledAt.At())}
 	switch f := st.Failure; {
-	case a.Failure.At > 0:
-		v.Failure = &FailureView{Kind: a.Failure.Kind, Message: a.Failure.Message, At: a.Failure.At}
-	case f.Kind != "" && f.At > max(a.ReadAt, a.ReconciledAt):
+	case a.Failure.At.At() > 0:
+		v.Failure = &FailureView{Kind: a.Failure.Kind, Message: a.Failure.Message, At: a.Failure.At.At()}
+	case f.Kind != "" && f.At > max(a.ReadAt.At(), a.ReconciledAt.At()):
 		v.Failure = &FailureView{Kind: f.Kind, Message: f.Message, At: f.At}
 	}
 	return v
@@ -278,7 +295,7 @@ func (r *run) runStep(st step) (UnitResult, error) {
 // at the time its unit began, so a failure is never older than a success
 // it follows. A tick with nothing to record writes nothing, and the store
 // writes nothing when the attempt changes nothing.
-func (r *run) record(done []step, began []int64, out Outcome) (store.MirrorSyncAttempt, error) {
+func (r *run) record(done []step, began []store.MirrorRead, out Outcome) (store.MirrorSyncAttempt, error) {
 	a := store.MirrorSyncAttempt{Lifetime: r.state.Lifetime}
 	for i, st := range done {
 		switch {
@@ -290,9 +307,9 @@ func (r *run) record(done []step, began []int64, out Outcome) (store.MirrorSyncA
 		}
 	}
 	if out.Failure != nil {
-		a.Failure = store.MirrorSyncFailure{At: began[len(out.Ran)-1], Kind: string(out.Failure.Kind), Message: out.Failure.Message}
+		a.Failure = store.MirrorAttemptFailure{At: began[len(out.Ran)-1], Kind: string(out.Failure.Kind), Message: out.Failure.Message}
 	}
-	if a.ReadAt == 0 && a.ReconciledAt == 0 && a.Failure.At == 0 {
+	if a == (store.MirrorSyncAttempt{Lifetime: a.Lifetime}) {
 		return a, nil
 	}
 	if _, err := r.s.store.RecordMirrorSyncAttempt(r.root, string(r.scope.Board), a); err != nil {

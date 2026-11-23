@@ -60,7 +60,7 @@ func webStructure() MirrorStructure {
 				{ID: "6", Name: "Won't do", Group: MirrorGroupCanceled},
 			},
 		},
-		ReadAt: 1,
+		ReadAt: mirrorReadAt(1),
 	}
 }
 
@@ -105,12 +105,12 @@ func heldDocs(t *testing.T, s *Store, root int64, docs []MirrorDetailDoc) []Mirr
 // mirror keeps (heldDoc).
 func storeDetail(t *testing.T, s *Store, root, sweep int64, issue string, openedAt, readAt int64, data []byte) (MirrorDetailWrite, error) {
 	t.Helper()
-	return s.StoreMirrorDetail(root, sweep, heldDoc(t, s, root, issue, data), openedAt, readAt)
+	return s.StoreMirrorDetail(root, sweep, heldDoc(t, s, root, issue, data), mirrorReadAt(openedAt), mirrorReadAt(readAt))
 }
 
 // webPage is a page of board's rows read at 1.
 func webPage(board string, rows ...MirrorRow) MirrorRowPage {
-	return MirrorRowPage{BoardID: board, Rows: rows, ReadAt: 1}
+	return MirrorRowPage{BoardID: board, Rows: rows, ReadAt: mirrorReadAt(1)}
 }
 
 // noMirrorLifetime is a lifetime no board has, for a board with none.
@@ -289,11 +289,14 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 	if _, err := storeDetail(t, s, root, currentSweep(s, root), "10001", 7, 7, []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", 1, []MirrorWorklog{
+	if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(1), []MirrorWorklog{
 		{ID: "w1", IssueID: "10001", AuthorID: "acc-user1", Day: "2026-01-05", SpentSeconds: 3600}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.KeepMirrorTicket(root, "10001", 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.BeginMirrorRead(root, 1); err != nil {
 		t.Fatal(err)
 	}
 	for table, n := range countMirrorRows(t, s.db) {

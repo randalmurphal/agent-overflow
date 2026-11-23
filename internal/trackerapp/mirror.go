@@ -42,18 +42,19 @@ type MirrorStore interface {
 	DropMirrorTicket(session, pump int64) error
 	DropMirrorTicketsOfOtherSessions(session int64) (int64, error)
 
+	BeginMirrorRead(rootID, now int64) (store.MirrorRead, error)
 	GetMirrorSync(rootID int64, boardID string, now int64) (store.MirrorSync, bool, error)
 	RecordMirrorSyncAttempt(rootID int64, boardID string, a store.MirrorSyncAttempt) (bool, error)
 
 	WriteMirrorRowPage(rootID int64, page store.MirrorRowPage, cursor []byte) (store.MirrorChanges, error)
 	WriteMirrorRows(rootID int64, page store.MirrorRowPage) (store.MirrorChanges, error)
-	UpsertMirrorCards(rootID, sweep int64, cards []store.MirrorCard, catalog store.MirrorCatalog, readAt int64) (store.MirrorChanges, error)
-	ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, readAt, settledAt int64) (store.MirrorReconcile, error)
+	UpsertMirrorCards(rootID, sweep int64, cards []store.MirrorCard, catalog store.MirrorCatalog, read store.MirrorRead) (store.MirrorChanges, error)
+	ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, read store.MirrorRead, lag time.Duration) (store.MirrorReconcile, error)
 	ReplaceMirrorStructure(rootID int64, st store.MirrorStructure) (store.MirrorStructureWrite, error)
-	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory, catalog store.MirrorCatalog, readAt int64) ([]store.MirrorHistoryResult, bool, error)
+	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, bool, error)
 	ListMirrorHistoryDue(rootID int64, now int64) ([]store.MirrorHistoryDue, bool, error)
-	StoreMirrorDetails(rootID, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) (store.MirrorDetailWrites, error)
-	ConfirmMirrorDetail(rootID int64, d store.MirrorDetail, openedAt int64) (store.MirrorDetailWrite, error)
+	StoreMirrorDetails(rootID, sweep int64, docs []store.MirrorDetailDoc, opened, read store.MirrorRead) (store.MirrorDetailWrites, error)
+	ConfirmMirrorDetail(rootID int64, d store.MirrorDetail, opened store.MirrorRead) (store.MirrorDetailWrite, error)
 
 	GetMirrorDetail(rootID int64, issueID string) (store.MirrorDetail, bool, error)
 	ListMirrorDetailStates(rootID int64, issueIDs []string) ([]store.MirrorDetail, error)
@@ -68,7 +69,7 @@ type MirrorStore interface {
 	ListMirrorIssueBoards(rootID int64, issueIDs, parentIDs []string) ([]store.MirrorIssueBoard, error)
 	ReadMirrorRefreshTargets(rootID int64, cardIDs, detailIDs, boardIDs []string) (store.MirrorRefreshTargets, error)
 
-	ReplaceMirrorWorklogs(rootID int64, authorID, fromDay, toDay string, readAt int64, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error)
+	ReplaceMirrorWorklogs(rootID int64, authorID, fromDay, toDay string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error)
 	ListMirrorWorklogs(rootID int64, authorID, fromDay, toDay string) ([]store.MirrorWorklog, bool, error)
 }
 

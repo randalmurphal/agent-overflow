@@ -426,10 +426,11 @@ func mirrorSprintGroups(cards []mirrorCardRow) [][]mirrorCardRow {
 // threads) by the same rule as a row page: a card is not replaced by one
 // with an earlier update time, or with the same one from a read that began
 // before the stored card's (Superseded). A card of an issue the mirror does not keep
-// (mirrorIssueKept) is not stored and is returned in Unkept. readAt is
-// when the read began, which orders the catalog, and sweep the root's sweep
-// captured before it (ErrTrackerCacheSwept).
-func (s *Store) UpsertMirrorCards(rootID, sweep int64, cards []MirrorCard, catalog MirrorCatalog, readAt int64) (changes MirrorChanges, err error) {
+// (mirrorIssueKept) is not stored and is returned in Unkept. read is
+// when the read began, which orders the cards and the catalog, and sweep
+// the root's sweep captured before it (ErrTrackerCacheSwept).
+func (s *Store) UpsertMirrorCards(rootID, sweep int64, cards []MirrorCard, catalog MirrorCatalog, read MirrorRead) (changes MirrorChanges, err error) {
+	readAt := read.at
 	if readAt <= 0 || sweep <= 0 || len(cards) > mirrorMaxPageRows {
 		return MirrorChanges{}, fmt.Errorf("%w: %d cards, over %d, or no read time or sweep", ErrInvalidTrackerCache, len(cards), mirrorMaxPageRows)
 	}

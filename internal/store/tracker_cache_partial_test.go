@@ -28,7 +28,7 @@ func TestReplaceMirrorHistoriesReportsWhatCommittedBeforeAFailure(t *testing.T) 
 		hs = append(hs, longHistory(fmt.Sprint(10001+i), per, 0))
 	}
 	failMirrorWrite(t, s, "INSERT", "tracker_cache_changes", "NEW.issue_id = '10005'")
-	results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, hs), MirrorCatalog{}, 0)
+	results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, hs), MirrorCatalog{}, mirrorReadAt(0))
 	if err == nil || len(results) != 5 {
 		t.Fatalf("results %+v, %v; want the failure with the five outcomes", results, err)
 	}
@@ -57,7 +57,7 @@ func TestReconcileMirrorBoardReportsWhatCommittedBeforeAFailure(t *testing.T) {
 	// transaction's.
 	last := fmt.Sprint(10001 + clearMirrorChunk)
 	failMirrorWrite(t, s, "DELETE", "tracker_cache_board_issues", "OLD.issue_id = '"+last+"'")
-	got, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, 5, 5)
+	got, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, mirrorReadAt(5), 0)
 	if err == nil || len(got.Removed) != clearMirrorChunk || len(got.Missing) != 0 {
 		t.Fatalf("removed %d, missing %d, %v; want the failure with the first transaction's %d removals", len(got.Removed), len(got.Missing), err, clearMirrorChunk)
 	}
@@ -85,11 +85,11 @@ func TestReplaceMirrorStructureReportsWhatCommittedBeforeAFailure(t *testing.T) 
 	odd := webRow("10001", 5, "a")
 	odd.Card.StatusID = "77"
 	page := webPage("10", odd)
-	page.ReadAt = 2
+	page.ReadAt = mirrorReadAt(2)
 	mustWriteRowPage(t, s, root, page, nil)
 	failMirrorWrite(t, s, "UPDATE", "tracker_cache_board_unexplained", "true")
 	st := webStructure()
-	st.Board.EstimateUnit, st.ReadAt, st.Complete = MirrorEstimateTime, 30, true
+	st.Board.EstimateUnit, st.ReadAt, st.Complete = MirrorEstimateTime, mirrorReadAt(30), true
 	got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st))
 	if err == nil || got != (MirrorStructureWrite{MirrorWrite: MirrorWrite{Changed: true}, EstimateResetAt: 30}) {
 		t.Fatalf("a structure whose marks failed = %+v, %v; want the failure with the change and the reset", got, err)
@@ -97,7 +97,7 @@ func TestReplaceMirrorStructureReportsWhatCommittedBeforeAFailure(t *testing.T) 
 	assertRows(t, s.db, `SELECT estimate_unit || ':' || estimate_reset_at FROM tracker_cache_boards WHERE board_id = '10'`, "2:30")
 	assertRows(t, s.db, `SELECT named_at FROM tracker_cache_board_unexplained`, "2")
 	mustExec(t, s.db, `DROP TRIGGER test_fail_write`)
-	st.ReadAt = 40
+	st.ReadAt = mirrorReadAt(40)
 	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st)); err != nil || got != (MirrorStructureWrite{EstimateResetAt: 30}) {
 		t.Fatalf("the same structure again = %+v, %v", got, err)
 	}
@@ -117,7 +117,7 @@ func TestAMarkAFailedSettlementLeftIsOwedNoRead(t *testing.T) {
 	odd.Card.StatusID = "77"
 	page := func(readAt int64) MirrorChanges {
 		t.Helper()
-		got, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{odd}, ReadAt: readAt}), nil)
+		got, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{odd}, ReadAt: mirrorReadAt(readAt)}), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -125,7 +125,7 @@ func TestAMarkAFailedSettlementLeftIsOwedNoRead(t *testing.T) {
 	}
 	complete := func(readAt int64) error {
 		st := webStructure()
-		st.ReadAt, st.Complete = readAt, true
+		st.ReadAt, st.Complete = mirrorReadAt(readAt), true
 		_, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st))
 		return err
 	}

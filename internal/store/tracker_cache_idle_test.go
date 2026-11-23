@@ -37,7 +37,7 @@ func TestIdleTickStatements(t *testing.T) {
 		return out
 	}())
 	docs := func(n int) []MirrorDetailDoc { return held[:n] }
-	if _, err := s.StoreMirrorDetails(root, currentSweep(s, root), docs(10)[1:], 7, 7); err != nil {
+	if _, err := s.StoreMirrorDetails(root, currentSweep(s, root), docs(10)[1:], mirrorReadAt(7), mirrorReadAt(7)); err != nil {
 		t.Fatal(err)
 	}
 	recorder := recordMirrorWrites(t, s)
@@ -58,7 +58,7 @@ func TestIdleTickStatements(t *testing.T) {
 	}
 	record := func() error {
 		a := attempt
-		a.ReadAt = at
+		a.ReadAt = mirrorReadAt(at)
 		_, err := s.RecordMirrorSyncAttempt(root, "10", a)
 		return err
 	}
@@ -80,13 +80,13 @@ func TestIdleTickStatements(t *testing.T) {
 			call("GetMirrorSync", syncState(""))
 			call("ListMirrorDetailStates", func() error { _, err := s.ListMirrorDetailStates(root, tickets[:n]); return err })
 			call("UpsertMirrorCards", func() error {
-				_, err := s.UpsertMirrorCards(root, sweep, cards, MirrorCatalog{}, at)
+				_, err := s.UpsertMirrorCards(root, sweep, cards, MirrorCatalog{}, mirrorReadAt(at))
 				return err
 			})
 		}, 10, map[string]int{"tracker_cache_issues": n}, nil}, idleTick{fmt.Sprintf("a Linear round of %d tickets", n), func() {
 			call("GetMirrorSync", syncState(""))
 			call("StoreMirrorDetails", func() error {
-				_, err := s.StoreMirrorDetails(root, sweep, docs(n), 0, at)
+				_, err := s.StoreMirrorDetails(root, sweep, docs(n), mirrorReadAt(0), mirrorReadAt(at))
 				return err
 			})
 		}, 4, map[string]int{"tracker_cache_issue_details": n}, nil})
@@ -124,7 +124,7 @@ func TestIdleTickStatements(t *testing.T) {
 			call("GetMirrorSync", syncState("10"))
 			call("WriteMirrorRowPage", func() error {
 				p := page
-				p.ReadAt = at
+				p.ReadAt = mirrorReadAt(at)
 				_, err := s.WriteMirrorRowPage(root, p, fmt.Appendf(nil, "c%d", at))
 				return err
 			})

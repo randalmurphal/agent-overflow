@@ -231,8 +231,8 @@ type boardBlob struct {
 	Choices []estimateChoiceBlob `json:"choices,omitempty"`
 }
 
-// mirrorStructure is st, read from readAt, as the store holds it.
-func mirrorStructure(st tracker.Structure, readAt int64) (store.MirrorStructure, error) {
+// mirrorStructure is st, read from read, as the store holds it.
+func mirrorStructure(st tracker.Structure, read store.MirrorRead) (store.MirrorStructure, error) {
 	blob := boardBlob{V: boardBlobVersion}
 	for _, ch := range st.Estimate.Choices {
 		blob.Choices = append(blob.Choices, estimateChoiceBlob(ch))
@@ -251,7 +251,7 @@ func mirrorStructure(st tracker.Structure, readAt int64) (store.MirrorStructure,
 			PlansSprints: st.Board.Sprints, EstimateUnit: int(st.Estimate.Unit), EstimateField: st.Estimate.Field, Data: data,
 		},
 		Catalog: catalog,
-		ReadAt:  readAt,
+		ReadAt:  read,
 		// A structure read lists everything it reads to the end or fails:
 		// Jira's sprint listing has no limit (jira.SprintList.Complete is
 		// false only for a limited one) and Linear's cycles and users are

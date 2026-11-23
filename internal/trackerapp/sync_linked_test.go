@@ -51,8 +51,9 @@ func TestLinkedCardsReadsTheLinkedIssues(t *testing.T) {
 		asked = append(asked, q)
 		return tracker.Cards{Cards: []tracker.Card{card("10005", 1_799_000_000_000)}}, nil
 	}
-	before := m.svc.readAtLast.Load()
+	before := m.read()
 	out := must[Outcome](t)(m.svc.tickCards(t.Context(), m.conn.ID, Background))
+	after := m.read()
 	if out.Failure != nil || out.More() || !slices.Equal(out.Changes().Cards, ids("10005")) || len(asked) != 1 || !slices.Equal(asked[0], ids("10001", "10005")) {
 		t.Fatalf("cards tick %+v, asked %v", out, asked)
 	}
@@ -60,8 +61,8 @@ func TestLinkedCardsReadsTheLinkedIssues(t *testing.T) {
 		t.Fatalf("the mirror holds %+v", cards)
 	}
 	// The read is recorded as it began: a begin time the tick took.
-	if st, _, _ := m.st.GetMirrorSync(m.root(), "", m.svc.steady().UnixMilli()); st.ReadAt <= before || st.ReadAt > m.svc.readAtLast.Load() || st.Failure.Kind != "" {
-		t.Fatalf("linked sync state %+v, the tick's reads began after %d", st, before)
+	if st, _, _ := m.st.GetMirrorSync(m.root(), "", m.svc.steady().UnixMilli()); st.ReadAt <= before.At() || st.ReadAt >= after.At() || st.Failure.Kind != "" {
+		t.Fatalf("linked sync state %+v, the tick's reads began after %d and before %d", st, before.At(), after.At())
 	}
 	m.p.set(func(p *scripted) {
 		p.cards = func([]tracker.IssueID) (tracker.Cards, error) {

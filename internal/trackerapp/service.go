@@ -10,7 +10,6 @@ import (
 	"hash/maphash"
 	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"agent-overflow/internal/keyfile"
@@ -156,8 +155,6 @@ type Service struct {
 	// digestSeed keys the digests an open ticket keeps of the view it last
 	// published (ticketPump.digest).
 	digestSeed maphash.Seed
-	// readAtLast is the last time a read of the tracker began (readAtNext).
-	readAtLast atomic.Int64
 	// session names this service's open tickets in the mirror, each a
 	// pump of it (keepTicket): the rows of another session were left by
 	// a process that ended, and StartLinkedSync drops them.

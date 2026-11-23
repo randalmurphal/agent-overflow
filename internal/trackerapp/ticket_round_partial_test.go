@@ -20,11 +20,11 @@ type ticketStore struct {
 	failDetails, failViews atomic.Bool
 }
 
-func (s *ticketStore) StoreMirrorDetails(root, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) (store.MirrorDetailWrites, error) {
+func (s *ticketStore) StoreMirrorDetails(root, sweep int64, docs []store.MirrorDetailDoc, opened, read store.MirrorRead) (store.MirrorDetailWrites, error) {
 	if s.failDetails.Load() {
 		return store.MirrorDetailWrites{}, errStoreDown
 	}
-	return s.Store.StoreMirrorDetails(root, sweep, docs, openedAt, readAt)
+	return s.Store.StoreMirrorDetails(root, sweep, docs, opened, read)
 }
 
 func (s *ticketStore) ListMirrorCards(root int64, issues []string) ([]store.MirrorCard, error) {

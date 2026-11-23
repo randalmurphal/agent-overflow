@@ -165,14 +165,14 @@ func TestMirrorBoardPatchMatchesTheSections(t *testing.T) {
 	write := func(page MirrorRowPage) {
 		t.Helper()
 		read++
-		page.BoardID, page.ReadAt = "10", read
+		page.BoardID, page.ReadAt = "10", mirrorReadAt(read)
 		mustWriteRowPage(t, s, root, page, nil)
 	}
 	structure := func(change func(*MirrorStructure)) {
 		t.Helper()
 		read++
 		st := webStructure()
-		st.Board.EstimateUnit, st.ReadAt = MirrorEstimateTime, read
+		st.Board.EstimateUnit, st.ReadAt = MirrorEstimateTime, mirrorReadAt(read)
 		change(&st)
 		mustReplaceStructure(t, s, root, st, true)
 	}
@@ -312,7 +312,7 @@ func TestMirrorIssueBoards(t *testing.T) {
 	if got, want := boards(nil, []string{"10002"}), []MirrorIssueBoard{{"10003", "11"}}; !slices.Equal(got, want) {
 		t.Fatalf("the children of 10002: %v, want %v", got, want)
 	}
-	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10002"}, ReadAt: 30})); err != nil {
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10002"}, ReadAt: mirrorReadAt(30)})); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := boards([]string{"10002"}, []string{"10002"}), []MirrorIssueBoard{{"10003", "11"}}; !slices.Equal(got, want) {

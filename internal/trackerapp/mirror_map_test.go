@@ -132,13 +132,10 @@ func TestCatalogAndStructureRoundTrip(t *testing.T) {
 		same(t, name+" catalog", catalogOf(must[store.MirrorCatalog](t)(mirrorCatalog(c))), c)
 	}
 	st := filled[tracker.Structure]()
-	m := must[store.MirrorStructure](t)(mirrorStructure(st, 5))
-	if m.ReadAt != 5 {
-		t.Errorf("structure read at %d", m.ReadAt)
-	}
+	m := must[store.MirrorStructure](t)(mirrorStructure(st, store.MirrorRead{}))
 	same(t, "structure", structureOf(m, catalogOf(m.Catalog)), st)
 	zero := tracker.Structure{}
-	mz := must[store.MirrorStructure](t)(mirrorStructure(zero, 5))
+	mz := must[store.MirrorStructure](t)(mirrorStructure(zero, store.MirrorRead{}))
 	same(t, "zero structure", structureOf(mz, tracker.Catalog{}), zero)
 }
 

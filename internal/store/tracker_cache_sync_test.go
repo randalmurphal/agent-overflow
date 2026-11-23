@@ -13,7 +13,7 @@ func webWorklog(id, day string, spent int64) MirrorWorklog {
 
 func mustReplaceWorklogs(t *testing.T, s *Store, root int64, from, to string, readAt int64, logs []MirrorWorklog, want MirrorWorklogChanges) {
 	t.Helper()
-	got, err := s.ReplaceMirrorWorklogs(root, "acc-user1", from, to, readAt, logs)
+	got, err := s.ReplaceMirrorWorklogs(root, "acc-user1", from, to, mirrorReadAt(readAt), logs)
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("replace %s to %s at %d = %+v, %v; want %+v", from, to, readAt, got, err, want)
 	}
@@ -28,7 +28,7 @@ func TestReplaceMirrorWorklogs(t *testing.T) {
 	mustReplaceWorklogs(t, s, root, "2026-01-05", "2026-01-09", 10, week, MirrorWorklogChanges{Changed: []string{"w1", "w2", "w3"}})
 	other := webWorklog("w9", "2026-01-06", 60)
 	other.AuthorID, other.IssueID = "acc-user2", "10002"
-	if _, err := s.ReplaceMirrorWorklogs(root, "acc-user2", "2026-01-06", "2026-01-06", 10, []MirrorWorklog{other}); err != nil {
+	if _, err := s.ReplaceMirrorWorklogs(root, "acc-user2", "2026-01-06", "2026-01-06", mirrorReadAt(10), []MirrorWorklog{other}); err != nil {
 		t.Fatal(err)
 	}
 	mustReplaceWorklogs(t, s, root, "2026-01-05", "2026-01-09", 10, week, MirrorWorklogChanges{})
@@ -50,35 +50,35 @@ func TestReplaceMirrorWorklogs(t *testing.T) {
 	}
 	for name, call := range map[string]func() error{
 		"bad day": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-01x", "2026-01-09", 1, nil)
+			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-01x", "2026-01-09", mirrorReadAt(1), nil)
 			return err
 		},
 		"bad last day": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-9", 1, nil)
+			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-9", mirrorReadAt(1), nil)
 			return err
 		},
 		"days backwards": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-09", "2026-01-05", 1, nil)
+			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-09", "2026-01-05", mirrorReadAt(1), nil)
 			return err
 		},
 		"too many days": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-01", "2026-02-01", 1, nil)
+			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-01", "2026-02-01", mirrorReadAt(1), nil)
 			return err
 		},
 		"too many logs": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-02-01", "2026-02-01", 1, month)
+			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-02-01", "2026-02-01", mirrorReadAt(1), month)
 			return err
 		},
 		"no author": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "", "2026-01-05", "2026-01-09", 1, nil)
+			_, err := s.ReplaceMirrorWorklogs(root, "", "2026-01-05", "2026-01-09", mirrorReadAt(1), nil)
 			return err
 		},
 		"no read time": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09", 0, nil)
+			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09", mirrorReadAt(0), nil)
 			return err
 		},
 		"another author": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09", 1, []MirrorWorklog{other})
+			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09", mirrorReadAt(1), []MirrorWorklog{other})
 			return err
 		},
 		"no issue":        func() error { w := week[0]; w.IssueID = ""; return replaceOne(s, root, w) },
@@ -87,11 +87,11 @@ func TestReplaceMirrorWorklogs(t *testing.T) {
 		"bad log day":     func() error { w := week[0]; w.Day = "2026-01-05T"; return replaceOne(s, root, w) },
 		"no time spent":   func() error { return replaceOne(s, root, webWorklog("w4", "2026-01-05", 0)) },
 		"outside the days": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-06", "2026-01-09", 1, week[:1])
+			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-06", "2026-01-09", mirrorReadAt(1), week[:1])
 			return err
 		},
 		"repeated": func() error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09", 1, []MirrorWorklog{week[0], week[0]})
+			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09", mirrorReadAt(1), []MirrorWorklog{week[0], week[0]})
 			return err
 		},
 	} {
@@ -102,7 +102,7 @@ func TestReplaceMirrorWorklogs(t *testing.T) {
 }
 
 func replaceOne(s *Store, root int64, w MirrorWorklog) error {
-	_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09", 1, []MirrorWorklog{w})
+	_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09", mirrorReadAt(1), []MirrorWorklog{w})
 	return err
 }
 
@@ -154,11 +154,11 @@ func TestMirrorWorklogsAreBounded(t *testing.T) {
 		for i := range n {
 			logs = append(logs, webWorklog(fmt.Sprintf("w%d-%04d", d, i), day, 60))
 		}
-		if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", day, day, 1, logs); err != nil {
+		if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", day, day, mirrorReadAt(1), logs); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-06", 2, nil); !errors.Is(err, ErrInvalidTrackerCache) {
+	if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-06", mirrorReadAt(2), nil); !errors.Is(err, ErrInvalidTrackerCache) {
 		t.Fatalf("a range holding 800 worklogs: %v", err)
 	}
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_worklogs`, "1001")
@@ -189,10 +189,10 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 	s, _, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	mustWriteRowPage(t, s, root, webPage("10"), []byte("c1"))
-	read := func(at int64) MirrorSyncAttempt { return MirrorSyncAttempt{ReadAt: at} }
-	reconcile := func(at int64) MirrorSyncAttempt { return MirrorSyncAttempt{ReconciledAt: at} }
+	read := func(at int64) MirrorSyncAttempt { return MirrorSyncAttempt{ReadAt: mirrorReadAt(at)} }
+	reconcile := func(at int64) MirrorSyncAttempt { return MirrorSyncAttempt{ReconciledAt: mirrorReadAt(at)} }
 	failed := func(at int64, kind, message string) MirrorSyncAttempt {
-		return MirrorSyncAttempt{Failure: MirrorSyncFailure{At: at, Kind: kind, Message: message}}
+		return MirrorSyncAttempt{Failure: MirrorAttemptFailure{At: mirrorReadAt(at), Kind: kind, Message: message}}
 	}
 	limited := failed(30, MirrorFailureRateLimited, "The tracker asked to wait.")
 	for _, step := range []struct {
@@ -241,7 +241,7 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 	}
 	assertRows(t, s.db, `SELECT read_at || ':' || reconciled_at || ':' || failure_kind || ':' || outcome_at FROM tracker_cache_sync WHERE board_id = '10'`, "60:55::55")
 	next := webPage("10")
-	next.ReadAt = 60
+	next.ReadAt = mirrorReadAt(60)
 	mustWriteRowPage(t, s, root, next, []byte("c2"))
 	want = MirrorSync{Lifetime: want.Lifetime, Sweep: 1, StructureReadAt: structureAt, Cursor: []byte("c2"), ReadAt: 60, ReconciledAt: 55}
 	if got, _, err := s.GetMirrorSync(root, "10", testNow); err != nil || !reflect.DeepEqual(got, want) {
@@ -263,9 +263,9 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 		"failure no time":      failed(0, MirrorFailureSetup, ""),
 		"message with no kind": failed(70, "", "x"),
 		"no time":              read(0),
-		"negative read":        {ReadAt: -1, ReconciledAt: 70},
-		"negative reconcile":   {ReadAt: 70, ReconciledAt: -1},
-		"negative failure":     {ReadAt: 70, Failure: MirrorSyncFailure{At: -1, Kind: MirrorFailureSetup}},
+		"negative read":        {ReadAt: mirrorReadAt(-1), ReconciledAt: mirrorReadAt(70)},
+		"negative reconcile":   {ReadAt: mirrorReadAt(70), ReconciledAt: mirrorReadAt(-1)},
+		"negative failure":     {ReadAt: mirrorReadAt(70), Failure: MirrorAttemptFailure{At: mirrorReadAt(-1), Kind: MirrorFailureSetup}},
 	} {
 		if _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", attempt)); !errors.Is(err, ErrInvalidTrackerCache) {
 			t.Errorf("%s: %v", name, err)
@@ -282,23 +282,25 @@ func TestMirrorSyncAttemptRecordsATickInOneStatement(t *testing.T) {
 	recorder := recordMirrorWrites(t, s)
 	state := `SELECT read_at || ':' || reconciled_at || ':' || failed_at || ':' || failure_kind || ':' || outcome_at
 		FROM tracker_cache_sync WHERE board_id = '10'`
-	failure := func(at int64, kind string) MirrorSyncFailure { return MirrorSyncFailure{At: at, Kind: kind} }
+	failure := func(at int64, kind string) MirrorAttemptFailure {
+		return MirrorAttemptFailure{At: mirrorReadAt(at), Kind: kind}
+	}
 	for _, step := range []struct {
 		name    string
 		attempt MirrorSyncAttempt
 		changed bool
 		state   string
 	}{
-		{"read then a failure", MirrorSyncAttempt{ReadAt: 10, Failure: failure(10, MirrorFailureTransient)}, true, "10:0:10:transient:10"},
-		{"the same tick again", MirrorSyncAttempt{ReadAt: 10, Failure: failure(10, MirrorFailureTransient)}, false, "10:0:10:transient:10"},
-		{"reconcile, read, then another failure", MirrorSyncAttempt{ReadAt: 20, ReconciledAt: 20, Failure: failure(21, MirrorFailureTracker)},
+		{"read then a failure", MirrorSyncAttempt{ReadAt: mirrorReadAt(10), Failure: failure(10, MirrorFailureTransient)}, true, "10:0:10:transient:10"},
+		{"the same tick again", MirrorSyncAttempt{ReadAt: mirrorReadAt(10), Failure: failure(10, MirrorFailureTransient)}, false, "10:0:10:transient:10"},
+		{"reconcile, read, then another failure", MirrorSyncAttempt{ReadAt: mirrorReadAt(20), ReconciledAt: mirrorReadAt(20), Failure: failure(21, MirrorFailureTracker)},
 			true, "20:20:21:tracker:21"},
-		{"a success clears it", MirrorSyncAttempt{ReadAt: 30}, true, "30:20:0::30"},
-		{"an earlier tick", MirrorSyncAttempt{ReadAt: 25, Failure: failure(25, MirrorFailureTransient)}, false, "30:20:0::30"},
-		{"a failure before the tick's read", MirrorSyncAttempt{ReadAt: 40, ReconciledAt: 35, Failure: failure(38, MirrorFailureSetup)},
+		{"a success clears it", MirrorSyncAttempt{ReadAt: mirrorReadAt(30)}, true, "30:20:0::30"},
+		{"an earlier tick", MirrorSyncAttempt{ReadAt: mirrorReadAt(25), Failure: failure(25, MirrorFailureTransient)}, false, "30:20:0::30"},
+		{"a failure before the tick's read", MirrorSyncAttempt{ReadAt: mirrorReadAt(40), ReconciledAt: mirrorReadAt(35), Failure: failure(38, MirrorFailureSetup)},
 			true, "40:35:0::30"},
 		{"a failure alone", MirrorSyncAttempt{Failure: failure(45, MirrorFailureRateLimited)}, true, "40:35:45:rate_limited:45"},
-		{"a reconcile that clears it", MirrorSyncAttempt{ReconciledAt: 50}, true, "40:50:0::50"},
+		{"a reconcile that clears it", MirrorSyncAttempt{ReconciledAt: mirrorReadAt(50)}, true, "40:50:0::50"},
 	} {
 		attempt := currentAttempt(s, root, "10", step.attempt)
 		recorder.reset()
@@ -360,7 +362,7 @@ func TestMirrorSyncSaysWhetherHistoryIsDue(t *testing.T) {
 	if !due("10") || !due("") {
 		t.Fatal("an issue with no history is not due")
 	}
-	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{statusHistory("10001", 5)}), MirrorCatalog{}, 0); err != nil {
+	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{statusHistory("10001", 5)}), MirrorCatalog{}, mirrorReadAt(0)); err != nil {
 		t.Fatal(err)
 	}
 	if due("10") {
@@ -370,7 +372,7 @@ func TestMirrorSyncSaysWhetherHistoryIsDue(t *testing.T) {
 	if !due("10") {
 		t.Fatal("an issue due on another board of the root is not due")
 	}
-	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "11", Missing: []string{"10002"}, ReadAt: 9})); err != nil {
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "11", Missing: []string{"10002"}, ReadAt: mirrorReadAt(9)})); err != nil {
 		t.Fatal(err)
 	}
 	if due("10") {

@@ -16,16 +16,16 @@ import (
 type partialStore struct{ *store.Store }
 
 func (s *partialStore) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog,
-	readAt int64) ([]store.MirrorHistoryResult, bool, error) {
-	res, changed, err := s.Store.ReplaceMirrorHistories(root, sweep, hs[:1], catalog, readAt)
+	read store.MirrorRead) ([]store.MirrorHistoryResult, bool, error) {
+	res, changed, err := s.Store.ReplaceMirrorHistories(root, sweep, hs[:1], catalog, read)
 	if err != nil {
 		return res, changed, err
 	}
 	return res, changed, errStoreDown
 }
 
-func (s *partialStore) ReconcileMirrorBoard(root int64, board string, lifetime int64, listed []string, complete bool, readAt, settledAt int64) (store.MirrorReconcile, error) {
-	res, err := s.Store.ReconcileMirrorBoard(root, board, lifetime, listed, complete, readAt, settledAt)
+func (s *partialStore) ReconcileMirrorBoard(root int64, board string, lifetime int64, listed []string, complete bool, read store.MirrorRead, lag time.Duration) (store.MirrorReconcile, error) {
+	res, err := s.Store.ReconcileMirrorBoard(root, board, lifetime, listed, complete, read, lag)
 	if err != nil {
 		return res, err
 	}

@@ -26,7 +26,7 @@ func TestAnOpenTicketKeepsItsIssue(t *testing.T) {
 		for _, id := range ids {
 			cards = append(cards, webCard(id, 7))
 		}
-		changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), cards, MirrorCatalog{}, 1)
+		changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), cards, MirrorCatalog{}, mirrorReadAt(1))
 		if err != nil {
 			t.Fatal(err)
 		}

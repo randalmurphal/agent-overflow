@@ -211,7 +211,7 @@ func TestBlobSizes(t *testing.T) {
 	}}}))
 	st := webStructure(testBoard)
 	st.Estimate = tracker.Estimate{Unit: tracker.UnitPoints, Choices: []tracker.EstimateChoice{{Value: 1}, {Value: 2}, {Value: 3}, {Value: 5}, {Value: 8}}}
-	board := must[store.MirrorStructure](t)(mirrorStructure(st, 1))
+	board := must[store.MirrorStructure](t)(mirrorStructure(st, store.MirrorRead{}))
 	detail := must[[]byte](t)(mirrorDetail(realisticDetail()))
 	sizes := map[string]int{"card": len(card.Data), "user": len(catalog.Users[0].Data), "board": len(board.Board.Data), "detail": len(detail)}
 	t.Logf("blob bytes: %s", describeCounts(sizes))
@@ -321,7 +321,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 				}
 				linked = append(linked, must[store.MirrorCard](t)(mirrorCard(c)))
 			}
-			must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, linked, store.MirrorCatalog{}, m.svc.readAtNext()))
+			must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, linked, store.MirrorCatalog{}, m.read()))
 			v, ch, err := m.svc.IssueDetail(t.Context(), m.conn.ID, issue, Interactive)
 			if err != nil || v.Links[1].Issue.Title != "Renamed" || len(ch.Details) != 0 || len(asked) != 1 {
 				t.Fatalf("the links: %+v, changes %+v, cards of %v, %v", v.Links, ch, asked, err)
@@ -341,7 +341,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 		{"detail, the mirror already newer", func(t *testing.T) {
 			held.Updated = held.Updated.Add(time.Minute)
 			newer := must[store.MirrorCard](t)(mirrorCard(held))
-			must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, []store.MirrorCard{newer}, store.MirrorCatalog{}, m.svc.readAtNext()))
+			must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, []store.MirrorCard{newer}, store.MirrorCatalog{}, m.read()))
 			detail(t)
 		}, costOf{
 			map[string]int{"Details": 1},

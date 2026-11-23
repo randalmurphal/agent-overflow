@@ -49,7 +49,7 @@ func TestMirrorRowThatLeavesAndReturnsRefusesAnEarlierRead(t *testing.T) {
 	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
 	write := func(readAt int64, rows []MirrorRow, missing ...string) MirrorChanges {
 		t.Helper()
-		changes, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: rows, Missing: missing, ReadAt: readAt}))
+		changes, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: rows, Missing: missing, ReadAt: mirrorReadAt(readAt)}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -75,7 +75,7 @@ func TestMirrorSprintThatLeavesAndReturnsRefusesAnEarlierStructure(t *testing.T)
 	s, _, root := newMirror(t)
 	structure := func(readAt int64, sprints ...MirrorSprint) MirrorStructure {
 		st := webStructure()
-		st.Sprints, st.ReadAt = sprints, readAt
+		st.Sprints, st.ReadAt = sprints, mirrorReadAt(readAt)
 		return st
 	}
 	closed := webStructure().Sprints[2]

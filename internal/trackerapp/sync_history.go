@@ -77,7 +77,11 @@ func (r *run) historyOf(due []store.MirrorHistoryDue) (Changes, error) {
 	}
 	slices.Sort(boards)
 	boards = slices.Compact(boards)
-	read, began := r.readAt(), r.steadyAt()
+	read, err := r.beginRead()
+	if err != nil {
+		return Changes{}, err
+	}
+	began := r.steadyAt()
 	r.calls++
 	h, err := r.p.History(r.ctx, tracker.HistoryQuery{Issues: issues, Boards: boards})
 	if err != nil {
@@ -152,7 +156,7 @@ func (r *run) historyFinal(d store.MirrorHistoryDue, completeTo time.Time, began
 // finds superseded (a later read stored one) or of an issue it no longer
 // keeps changes nothing and is no failure. A store call that failed part
 // way changed what it reports, which is returned with its error.
-func (r *run) storeHistories(hs []store.MirrorHistory, catalog store.MirrorCatalog, read int64) ([]tracker.IssueID, bool, error) {
+func (r *run) storeHistories(hs []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]tracker.IssueID, bool, error) {
 	results, catalogChanged, err := r.s.store.ReplaceMirrorHistories(r.root, r.state.Sweep, hs, catalog, read)
 	var changed []tracker.IssueID
 	for _, res := range results {

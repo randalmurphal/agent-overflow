@@ -377,6 +377,23 @@ func (m *mirrorFixture) scope() Scope { return Scope{Connection: m.conn.ID, Boar
 // now is the fixture's clock.
 func (m *mirrorFixture) now() time.Time { return m.svc.now() }
 
+// read begins a read of the connection's root now, as a run does.
+func (m *mirrorFixture) read() store.MirrorRead {
+	m.t.Helper()
+	return beginReadAt(m.t, m.st, m.root(), millis(m.now()))
+}
+
+// beginReadAt begins a read of root at now (Unix ms), as a run does
+// (store BeginMirrorRead), for a test's own write of the mirror.
+func beginReadAt(t testing.TB, st *store.Store, root, now int64) store.MirrorRead {
+	t.Helper()
+	read, err := st.BeginMirrorRead(root, now)
+	if err != nil {
+		t.Fatalf("begin a read of root %d: %v", root, err)
+	}
+	return read
+}
+
 // root is the connection's mirror root; 0 for none.
 func (m *mirrorFixture) root() int64 {
 	m.t.Helper()

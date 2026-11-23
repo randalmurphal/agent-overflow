@@ -20,7 +20,7 @@ func structureDue(t *testing.T, s *Store, root int64) int64 {
 // count is the package's.
 func writeDuePage(t *testing.T, s *Store, root, readAt int64, rows ...MirrorRow) (MirrorChanges, int) {
 	t.Helper()
-	page := currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: rows, ReadAt: readAt})
+	page := currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: rows, ReadAt: mirrorReadAt(readAt)})
 	var changes MirrorChanges
 	var err error
 	statements := countMirrorStatements(t, func() { changes, err = s.WriteMirrorRowPage(root, page, []byte(fmt.Sprint("c", readAt))) })
@@ -33,7 +33,7 @@ func writeDuePage(t *testing.T, s *Store, root, readAt int64, rows ...MirrorRow)
 func replaceDueStructure(t *testing.T, s *Store, root, readAt int64, complete bool, sprints ...MirrorSprint) {
 	t.Helper()
 	st := webStructure()
-	st.ReadAt, st.Complete, st.Sprints = readAt, complete, append(st.Sprints, sprints...)
+	st.ReadAt, st.Complete, st.Sprints = mirrorReadAt(readAt), complete, append(st.Sprints, sprints...)
 	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st)); err != nil {
 		t.Fatal(err)
 	}
@@ -59,8 +59,8 @@ func TestMirrorRowNamingAnUnknownSprintMakesTheStructureDue(t *testing.T) {
 		t.Fatalf("a later page naming known references = %+v in %d statements; want still due in 8", changes, statements)
 	}
 	for name, attempt := range map[string]MirrorSyncAttempt{
-		"a delta that succeeded":   {ReadAt: 7},
-		"a structure read failure": {Failure: MirrorSyncFailure{At: 8, Kind: MirrorFailureTransient, Message: "timed out"}},
+		"a delta that succeeded":   {ReadAt: mirrorReadAt(7)},
+		"a structure read failure": {Failure: MirrorAttemptFailure{At: mirrorReadAt(8), Kind: MirrorFailureTransient, Message: "timed out"}},
 	} {
 		if _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", attempt)); err != nil {
 			t.Fatal(err)
@@ -163,7 +163,7 @@ func TestMirrorUnexplainedReferencesStopMakingTheStructureDue(t *testing.T) {
 	for _, row := range many {
 		missing = append(missing, row.Card.IssueID)
 	}
-	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: missing, ReadAt: 10})); err != nil {
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: missing, ReadAt: mirrorReadAt(10)})); err != nil {
 		t.Fatal(err)
 	}
 	kept := []MirrorSprint{{ID: "99", OriginBoardID: "10", Name: "WEB Sprint 0", State: MirrorSprintClosed},
@@ -222,12 +222,12 @@ func TestMirrorMarksStayWithinAChunk(t *testing.T) {
 		assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_board_unexplained WHERE named_at = 0`, fmt.Sprint(cards*cardSprints))
 		recorder.reset()
 		page := storePageAccessesForTest(t, s, "page", func() error {
-			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10002", 5, "b", "24")}, ReadAt: 4}), nil)
+			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10002", 5, "b", "24")}, ReadAt: mirrorReadAt(4)}), nil)
 			return err
 		})
 		structure := storePageAccessesForTest(t, s, "structure", func() error {
 			st := webStructure()
-			st.ReadAt, st.Complete = 5, true
+			st.ReadAt, st.Complete = mirrorReadAt(5), true
 			_, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st))
 			return err
 		})

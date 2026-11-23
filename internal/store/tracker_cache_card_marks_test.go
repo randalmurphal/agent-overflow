@@ -17,11 +17,11 @@ func TestEveryCardWriterMarksWhatItsCardsLack(t *testing.T) {
 	t.Parallel()
 	writers := map[string]func(s *Store, root int64, card MirrorCard) error{
 		"board rows": func(s *Store, root int64, card MirrorCard) error {
-			_, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{{Card: card, OrderKey: "a"}}, ReadAt: 3}))
+			_, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{{Card: card, OrderKey: "a"}}, ReadAt: mirrorReadAt(3)}))
 			return err
 		},
 		"cards by ID": func(s *Store, root int64, card MirrorCard) error {
-			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{card}, MirrorCatalog{}, 3)
+			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{card}, MirrorCatalog{}, mirrorReadAt(3))
 			return err
 		},
 	}
@@ -76,7 +76,7 @@ func TestEveryCardWriterMarksWhatItsCardsLack(t *testing.T) {
 					t.Fatalf("after the move the board is due %d; want 3, the card's read", due)
 				}
 				st := webStructure()
-				st.ReadAt = 4
+				st.ReadAt = mirrorReadAt(4)
 				m.structure(&st)
 				mustReplaceStructure(t, s, root, st, true)
 				if c := counts(); c.Backlog.Rows != 0 || !m.placed(c) {
@@ -103,7 +103,7 @@ func TestACardMarksEachBoardItsIssueIsOn(t *testing.T) {
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a")), nil)
 	mustWriteRowPage(t, s, root, webPage("11", webRow("10001", 5, "a")), nil)
 	card := webCard("10001", 6, "23")
-	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{card}, MirrorCatalog{}, 3); err != nil {
+	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{card}, MirrorCatalog{}, mirrorReadAt(3)); err != nil {
 		t.Fatal(err)
 	}
 	assertRows(t, s.db, `SELECT group_concat(board_id || ':' || kind || ':' || ref_id || '@' || named_at, ',') FROM

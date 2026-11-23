@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 )
 
 // MirrorReconcile is what a reconcile of a board found and did: Missing
@@ -52,7 +53,8 @@ const (
 )
 
 // ReconcileMirrorBoard compares a listing of the issues on a board, read
-// from readAt, with the board's rows. It returns the listed issues that
+// from read, with the board's rows; readAt below is read's time and
+// settledAt is readAt less lag. It returns the listed issues that
 // have no row, marks listed the rows it names that no listing marked, and,
 // only when the listing judges the board's rows, removes the rows it does
 // not list that a listing marked and reads begun no later than settledAt
@@ -64,9 +66,9 @@ const (
 // the newest complete listing the board reconciled, which saw the rows it
 // leaves out; an incomplete or older one removes nothing and returns no
 // Unsettled. A listing that may show a row late (a search index) leaves
-// the rows read within that lag to a read by ID; settledAt equal to readAt
-// judges every marked row. One statement finds the rows to remove and to
-// mark; they are removed and marked in transactions of at most
+// the rows read within that lag, whole milliseconds, to a read by ID; a
+// lag of zero judges every marked row. One statement finds the rows to
+// remove and to mark; they are removed and marked in transactions of at most
 // clearMirrorChunk of each, each removing a row only while no read that
 // began after settledAt stored it and no newer complete listing was
 // reconciled. A reconcile with no row to remove or mark runs no statement
@@ -75,12 +77,13 @@ const (
 // fails after a transaction of it committed returns, with the error, the
 // rows those transactions removed and no Missing or Unsettled: the caller
 // tells the removals whatever it does about the error.
-func (s *Store) ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, readAt, settledAt int64) (result MirrorReconcile, err error) {
+func (s *Store) ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, read MirrorRead, lag time.Duration) (result MirrorReconcile, err error) {
+	readAt, settledAt := read.at, read.at-lag.Milliseconds()
 	switch {
 	case readAt <= 0:
 		return MirrorReconcile{}, fmt.Errorf("%w: a listing needs the time its read began", ErrInvalidTrackerCache)
-	case settledAt > readAt:
-		return MirrorReconcile{}, fmt.Errorf("%w: a listing's settled bound %d is after its read %d", ErrInvalidTrackerCache, settledAt, readAt)
+	case lag < 0 || lag%time.Millisecond != 0:
+		return MirrorReconcile{}, fmt.Errorf("%w: a listing's lag %s is negative or not whole milliseconds", ErrInvalidTrackerCache, lag)
 	}
 	seen := make(map[string]bool, len(listed))
 	for _, id := range listed {

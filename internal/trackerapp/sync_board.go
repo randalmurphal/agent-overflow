@@ -63,14 +63,19 @@ func (r *run) deltaPages(board tracker.BoardID, log *changeLog) (more bool, _ er
 			return true, nil
 		}
 		q := tracker.DeltaQuery{Board: board, From: cursor, Start: r.window()}
-		read := r.readAt()
+		read, err := r.beginRead()
+		if err != nil {
+			return false, err
+		}
 		r.calls++
 		page, err := r.p.ChangedRows(r.ctx, q)
 		if err != nil && pages == 0 && cursor != nil && errors.Is(err, tracker.ErrInvalidInput) {
 			// A cursor of an encoding the provider no longer reads: the walk
 			// starts over from the history window.
 			q.From, cursor = nil, nil
-			read = r.readAt()
+			if read, err = r.beginRead(); err != nil {
+				return false, err
+			}
 			r.calls++
 			page, err = r.p.ChangedRows(r.ctx, q)
 		}
@@ -163,7 +168,10 @@ func (r *run) reconcileReads(board tracker.BoardID, pass *reconcilePass, log *ch
 		return err
 	}
 	if len(pass.left) == 0 {
-		read := r.readAt()
+		read, err := r.beginRead()
+		if err != nil {
+			return err
+		}
 		r.calls++
 		listing, err := r.p.BoardIssues(r.ctx, board, r.window())
 		if err != nil {
@@ -173,8 +181,7 @@ func (r *run) reconcileReads(board tracker.BoardID, pass *reconcilePass, log *ch
 		// index), so the listing judges only the rows read before that; an
 		// unlisted row read since is read by ID, which removes it only when
 		// the board no longer holds it.
-		settled := read - tracker.DeltaOverlap.Milliseconds()
-		result, err := r.s.store.ReconcileMirrorBoard(r.root, string(board), pass.lifetime, idStrings(listing.IDs), listing.Complete, read, settled)
+		result, err := r.s.store.ReconcileMirrorBoard(r.root, string(board), pass.lifetime, idStrings(listing.IDs), listing.Complete, read, tracker.DeltaOverlap)
 		// A reconcile that failed part way removed what it reports.
 		log.add(Changes{Removed: issueIDs(result.Removed)})
 		if err != nil {

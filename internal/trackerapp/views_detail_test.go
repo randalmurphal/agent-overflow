@@ -128,10 +128,11 @@ func TestIssueDetail(t *testing.T) {
 	if held := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10001")); held.Card.Updated != millis(c.Updated) || held.Card.Title != "Renamed" {
 		t.Fatalf("the mirror's card %+v", held.Card)
 	}
-	// The detail's read began after the check's, which began at later: a
-	// millisecond after it on the frozen clock (Service.readAtNext).
-	if d, ok, err := m.st.GetMirrorDetail(m.root(), "10001"); err != nil || !ok || d.OpenedAt != later.UnixMilli()+1 || d.ReadAt != later.UnixMilli()+1 {
-		t.Fatalf("the detail read again: opened %d, read %d, want %d: %v", d.OpenedAt, d.ReadAt, later.UnixMilli()+1, err)
+	// The opening began at later, the check's read a millisecond after it
+	// and the detail's read one more on the frozen clock (store
+	// BeginMirrorRead); the opening is recorded as the read that served it.
+	if d, ok, err := m.st.GetMirrorDetail(m.root(), "10001"); err != nil || !ok || d.OpenedAt != later.UnixMilli()+2 || d.ReadAt != later.UnixMilli()+2 {
+		t.Fatalf("the detail read again: opened %d, read %d, want %d: %v", d.OpenedAt, d.ReadAt, later.UnixMilli()+2, err)
 	}
 	// A card the tracker does not return is no check: the detail is read.
 	m.p.set(func(p *scripted) {

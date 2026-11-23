@@ -19,7 +19,7 @@ func TestMirrorSweepFencesReadsOutsideABoard(t *testing.T) {
 		write  func(s *Store, root, sweep int64) error
 	}{
 		{"card", `tracker_cache_issues`, func(s *Store, root, sweep int64) error {
-			_, err := s.UpsertMirrorCards(root, sweep, []MirrorCard{webCard("10001", 9)}, MirrorCatalog{}, 2)
+			_, err := s.UpsertMirrorCards(root, sweep, []MirrorCard{webCard("10001", 9)}, MirrorCatalog{}, mirrorReadAt(2))
 			return err
 		}},
 		{"detail", `tracker_cache_issue_details`, func(s *Store, root, sweep int64) error {
@@ -27,7 +27,7 @@ func TestMirrorSweepFencesReadsOutsideABoard(t *testing.T) {
 			return err
 		}},
 		{"history", `tracker_cache_changes`, func(s *Store, root, sweep int64) error {
-			_, _, err := s.ReplaceMirrorHistories(root, sweep, dueHistories(s, root, []MirrorHistory{history}), MirrorCatalog{}, 0)
+			_, _, err := s.ReplaceMirrorHistories(root, sweep, dueHistories(s, root, []MirrorHistory{history}), MirrorCatalog{}, mirrorReadAt(0))
 			return err
 		}},
 		{"staged history", `tracker_cache_changes`, func(s *Store, root, sweep int64) error {
@@ -46,7 +46,7 @@ func TestMirrorSweepFencesReadsOutsideABoard(t *testing.T) {
 		stored := fmt.Sprintf(`SELECT count(*) > 0 FROM %s WHERE root_id = %d AND issue_id = '10001'`, kind.stored, root)
 		linkIssue(t, s, "linked", "10001")
 		read := currentSweep(s, root)
-		if _, err := s.UpsertMirrorCards(root, read, []MirrorCard{webCard("10001", 5)}, MirrorCatalog{}, 1); err != nil {
+		if _, err := s.UpsertMirrorCards(root, read, []MirrorCard{webCard("10001", 5)}, MirrorCatalog{}, mirrorReadAt(1)); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.ClearThreadTicket("linked"); err != nil {
@@ -62,7 +62,7 @@ func TestMirrorSweepFencesReadsOutsideABoard(t *testing.T) {
 		linkIssue(t, s, "relinked", "10001")
 		swept := currentSweep(s, root)
 		if kind.name != "card" {
-			if _, err := s.UpsertMirrorCards(root, swept, []MirrorCard{webCard("10001", 7)}, MirrorCatalog{}, 3); err != nil {
+			if _, err := s.UpsertMirrorCards(root, swept, []MirrorCard{webCard("10001", 7)}, MirrorCatalog{}, mirrorReadAt(3)); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -94,7 +94,7 @@ func TestMirrorSweepThatDeletesNothingLeavesTheSweep(t *testing.T) {
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	linkIssue(t, s, "linked", "10001")
 	read := currentSweep(s, root)
-	if _, err := s.UpsertMirrorCards(root, read, []MirrorCard{webCard("10001", 5)}, MirrorCatalog{}, 1); err != nil {
+	if _, err := s.UpsertMirrorCards(root, read, []MirrorCard{webCard("10001", 5)}, MirrorCatalog{}, mirrorReadAt(1)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ClearThreadTicket("linked"); err != nil {
@@ -124,14 +124,14 @@ func TestMirrorSweepBetweenBatchAndStaging(t *testing.T) {
 	linkIssue(t, s, "long", "10001")
 	linkIssue(t, s, "short", "10002")
 	read := currentSweep(s, root)
-	if _, err := s.UpsertMirrorCards(root, read, []MirrorCard{webCard("10001", 5), webCard("10002", 5)}, MirrorCatalog{}, 1); err != nil {
+	if _, err := s.UpsertMirrorCards(root, read, []MirrorCard{webCard("10001", 5), webCard("10002", 5)}, MirrorCatalog{}, mirrorReadAt(1)); err != nil {
 		t.Fatal(err)
 	}
 	mustExec(t, s.db, `CREATE TRIGGER test_sweep_between AFTER UPDATE OF history_for ON tracker_cache_issues WHEN NEW.issue_id = '10002'
 		BEGIN UPDATE tracker_cache_roots SET sweep = sweep + 1; END`)
 	short := MirrorHistory{IssueID: "10002", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}
 	long := statusHistory("10001", clearMirrorChunk+100)
-	if _, _, err := s.ReplaceMirrorHistories(root, read, dueHistories(s, root, []MirrorHistory{long, short}), MirrorCatalog{}, 0); !errors.Is(err, ErrTrackerCacheSwept) {
+	if _, _, err := s.ReplaceMirrorHistories(root, read, dueHistories(s, root, []MirrorHistory{long, short}), MirrorCatalog{}, mirrorReadAt(0)); !errors.Is(err, ErrTrackerCacheSwept) {
 		t.Fatalf("a staging after a sweep: %v; want it refused", err)
 	}
 	changes := func(issue string) string {
@@ -140,7 +140,7 @@ func TestMirrorSweepBetweenBatchAndStaging(t *testing.T) {
 	assertRows(t, s.db, changes("10001"), "0")
 	assertRows(t, s.db, changes("10002"), "1")
 	mustExec(t, s.db, `DROP TRIGGER test_sweep_between`)
-	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{long}), MirrorCatalog{}, 0); err != nil {
+	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{long}), MirrorCatalog{}, mirrorReadAt(0)); err != nil {
 		t.Fatal(err)
 	}
 	assertRows(t, s.db, changes("10001"), "1")

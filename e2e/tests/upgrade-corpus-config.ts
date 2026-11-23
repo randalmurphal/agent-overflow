@@ -823,6 +823,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'tracker_cache_worklog_days', reason: 'the latest read of a day of a tracker author\'s worklogs (v162); no app method syncs a tracker yet' },
   { table: 'tracker_cache_sync', reason: 'a tracker mirror scope\'s sync state (v162); no app method syncs a tracker yet' },
   { table: 'tracker_cache_open_tickets', reason: 'a tracker ticket a person has open, which keeps its issue in the mirror (v163); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_read_leases', reason: 'a tracker mirror root\'s read clock lease (v164); no app method syncs a tracker yet' },
   { table: 'chat_bar_favorites', values: { provider: ['codex', 'claude-tui'] }, reason: 'favorites of other providers; one favorite proves the table' },
   { table: 'chat_model_profiles', values: { provider: ['claude-tui'], reasoning_effort: ['none', 'minimal', 'low', 'high', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last; the claude-tui provider has no mock' },
 

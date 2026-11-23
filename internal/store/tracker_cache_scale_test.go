@@ -179,7 +179,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	next := func() int64 { at++; return at }
 	syncState := func(board string) error { _, _, err := s.GetMirrorSync(root, board, testNow); return err }
 	record := func() error {
-		_, err := s.RecordMirrorSyncAttempt(root, board, MirrorSyncAttempt{Lifetime: lifetime, ReadAt: next()})
+		_, err := s.RecordMirrorSyncAttempt(root, board, MirrorSyncAttempt{Lifetime: lifetime, ReadAt: mirrorReadAt(next())})
 		return err
 	}
 	// The rows of a delta that changed k issues spread over the board, at
@@ -208,7 +208,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 					batch[i] = benchHistory(d.IssueID, 100, benchChanges)
 					batch[i].For, batch[i].BoardsRev, batch[i].Receipt = d.UpdatedAt, d.BoardsRev, d.Receipt
 				}
-				if _, _, err := s.ReplaceMirrorHistories(root, sweep, batch, MirrorCatalog{}, 0); err != nil {
+				if _, _, err := s.ReplaceMirrorHistories(root, sweep, batch, MirrorCatalog{}, mirrorReadAt(0)); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -220,7 +220,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 				return err
 			}
 			rows := changed(k, rep)
-			page := MirrorRowPage{BoardID: board, Lifetime: lifetime, EstimateResetAt: reset, Rows: rows, ReadAt: next()}
+			page := MirrorRowPage{BoardID: board, Lifetime: lifetime, EstimateResetAt: reset, Rows: rows, ReadAt: mirrorReadAt(next())}
 			got, err := s.WriteMirrorRowPage(root, page, fmt.Appendf(nil, "cursor-%d", rep))
 			if err := benchApplied(got, err, k, 0); err != nil {
 				return err
@@ -267,7 +267,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		}
 	}
 	heldCards()
-	if _, err := s.StoreMirrorDetails(root, sweep, docs(tickets, 0), 7, 7); err != nil {
+	if _, err := s.StoreMirrorDetails(root, sweep, docs(tickets, 0), mirrorReadAt(7), mirrorReadAt(7)); err != nil {
 		t.Fatal(err)
 	}
 	cards := func(n int) []MirrorCard { return slices.Clone(held[:n]) }
@@ -289,7 +289,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	out["reconcile, complete listing"] = measureScale(t, rec, nil, func(int) error {
 		// The settled bound is the service's: a minute before the read.
 		at := next()
-		got, err := s.ReconcileMirrorBoard(root, board, lifetime, listing, true, at, at-60_000)
+		got, err := s.ReconcileMirrorBoard(root, board, lifetime, listing, true, mirrorReadAt(at), time.Minute)
 		if err == nil && len(got.Missing)+len(got.Removed)+len(got.Unsettled) > 0 {
 			err = fmt.Errorf("missing %d, removed %d, unsettled %d", len(got.Missing), len(got.Removed), len(got.Unsettled))
 		}
@@ -313,7 +313,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 			batch[i] = benchHistory(d.IssueID, int64(3000+rep), benchChanges)
 			batch[i].For, batch[i].BoardsRev, batch[i].Receipt = d.UpdatedAt, d.BoardsRev, d.Receipt
 		}
-		_, _, err = s.ReplaceMirrorHistories(root, sweep, batch, MirrorCatalog{}, 0)
+		_, _, err = s.ReplaceMirrorHistories(root, sweep, batch, MirrorCatalog{}, mirrorReadAt(0))
 		return err
 	})
 	out["board view, 3 sections"] = measureScale(t, rec, nil, func(int) error {
@@ -365,10 +365,10 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		if _, err := s.ListMirrorCards(root, tickets[:4]); err != nil {
 			return err
 		}
-		if _, err := s.UpsertMirrorCards(root, sweep, cards(1), MirrorCatalog{}, next()); err != nil {
+		if _, err := s.UpsertMirrorCards(root, sweep, cards(1), MirrorCatalog{}, mirrorReadAt(next())); err != nil {
 			return err
 		}
-		_, err = s.ConfirmMirrorDetail(root, d, next())
+		_, err = s.ConfirmMirrorDetail(root, d, mirrorReadAt(next()))
 		return err
 	})
 	// A round's inputs are built before its measured section: the cards
@@ -405,10 +405,10 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		if _, err := s.ListMirrorDetailStates(root, tickets); err != nil {
 			return err
 		}
-		if _, err := s.UpsertMirrorCards(root, sweep, roundCards, MirrorCatalog{}, next()); err != nil || len(owedDocs) == 0 {
+		if _, err := s.UpsertMirrorCards(root, sweep, roundCards, MirrorCatalog{}, mirrorReadAt(next())); err != nil || len(owedDocs) == 0 {
 			return err
 		}
-		_, err := s.StoreMirrorDetails(root, sweep, owedDocs, 0, next())
+		_, err := s.StoreMirrorDetails(root, sweep, owedDocs, mirrorReadAt(0), mirrorReadAt(next()))
 		return err
 	}
 	// A Linear round stores every ticket's document; those whose card
@@ -419,7 +419,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 			return err
 		}
 		at := next()
-		got, err := s.StoreMirrorDetails(root, sweep, roundDocs, 0, at)
+		got, err := s.StoreMirrorDetails(root, sweep, roundDocs, mirrorReadAt(0), mirrorReadAt(at))
 		if err != nil || len(owedDocs) == 0 {
 			return err
 		}
@@ -432,10 +432,10 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		if owed != len(owedDocs) {
 			return fmt.Errorf("%d documents owed their card; want %d", owed, len(owedDocs))
 		}
-		if _, err := s.UpsertMirrorCards(root, sweep, changedCards(), MirrorCatalog{}, next()); err != nil {
+		if _, err := s.UpsertMirrorCards(root, sweep, changedCards(), MirrorCatalog{}, mirrorReadAt(next())); err != nil {
 			return err
 		}
-		_, err = s.StoreMirrorDetails(root, sweep, owedDocs, 0, at)
+		_, err = s.StoreMirrorDetails(root, sweep, owedDocs, mirrorReadAt(0), mirrorReadAt(at))
 		return err
 	}
 	out["Jira round of 100, idle"] = measureScale(t, rec, roundInputs(0), jira)
@@ -453,13 +453,13 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	}
 	out["reconcile, a quarter unlisted"] = measureScale(t, rec, func(int) {
 		for page := range slices.Chunk(unlisted, mirrorMaxPageRows) {
-			if _, err := s.WriteMirrorRowPage(root, MirrorRowPage{BoardID: board, Lifetime: lifetime, Rows: page, ReadAt: next()}, nil); err != nil {
+			if _, err := s.WriteMirrorRowPage(root, MirrorRowPage{BoardID: board, Lifetime: lifetime, Rows: page, ReadAt: mirrorReadAt(next())}, nil); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}, func(int) error {
 		at := next()
-		got, err := s.ReconcileMirrorBoard(root, board, lifetime, listing[:size.issues-quarter], true, at, at)
+		got, err := s.ReconcileMirrorBoard(root, board, lifetime, listing[:size.issues-quarter], true, mirrorReadAt(at), 0)
 		if err == nil && len(got.Removed) != quarter {
 			err = fmt.Errorf("removed %d of %d unlisted", len(got.Removed), quarter)
 		}

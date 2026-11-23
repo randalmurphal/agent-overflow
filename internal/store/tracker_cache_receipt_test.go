@@ -76,7 +76,7 @@ func TestMirrorHistoryOverlappingReadsLandInEitherOrder(t *testing.T) {
 					order = []MirrorHistory{older, newer}
 				}
 				for i, want := range []string{tc.first, tc.second} {
-					results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{order[i]}, MirrorCatalog{}, 0)
+					results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{order[i]}, MirrorCatalog{}, mirrorReadAt(0))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -116,7 +116,7 @@ func TestMirrorHistoryLateMissingIssueAnswerIsSuperseded(t *testing.T) {
 	found := listedAt(s, root, MirrorHistory{IssueID: "10001", AnsweredAt: 1_060_000,
 		Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 100_000, From: "1", To: "3"}}}, listed)
 	for i, h := range []MirrorHistory{found, missing} {
-		results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{h}, MirrorCatalog{}, 0)
+		results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{h}, MirrorCatalog{}, mirrorReadAt(0))
 		if err != nil || results[0].Superseded != (i == 1) || results[0].Changed != (i == 0) {
 			t.Fatalf("answer %d: %+v, %v", i+1, results, err)
 		}
@@ -148,7 +148,7 @@ func TestMirrorStagedHistoryWithAStaleReceiptIsDiscarded(t *testing.T) {
 			before := storedHistoryShape(t, s, root)
 			long := listedAt(s, root, statusHistory("10001", 2*clearMirrorChunk+100), receiptOf(t, s, root, "10001"))
 			mustExec(t, s.db, trigger)
-			results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{long}, MirrorCatalog{}, 0)
+			results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{long}, MirrorCatalog{}, mirrorReadAt(0))
 			if err != nil || results[0] != (MirrorHistoryResult{IssueID: "10001", Superseded: true}) {
 				t.Fatalf("a staged history whose receipt went stale: %+v, %v; want superseded", results, err)
 			}

@@ -282,7 +282,7 @@ func (r *run) refreshDetails(f *refreshed, open []*ticketPump, cached []string, 
 	if len(f.reads) == 0 {
 		return nil
 	}
-	ch, err := r.verifiedDetails(f.reads, 0)
+	ch, err := r.verifiedDetails(f.reads, false)
 	f.ch.add(ch)
 	f.details = detailsRead{ch: ch, root: r.root, gen: r.gen, kind: r.row.Kind}
 	// A detail whose own read ended is refreshed however the others' did;

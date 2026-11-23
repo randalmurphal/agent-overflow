@@ -59,6 +59,9 @@ type Store struct {
 	reads atomic.Uint64
 	// readObserver is the function ObserveReads set, or nil.
 	readObserver atomic.Pointer[func()]
+	// mirrorReads is each tracker mirror root's read clock
+	// (BeginMirrorRead).
+	mirrorReads mirrorReadClocks
 	// assistantsPaused keeps the due reads off the threads that live under
 	// an assistant while assistants are turned off (assistants_paused.go).
 	assistantsPaused atomic.Bool

@@ -176,8 +176,8 @@ func (s *crossingStore) GetMirrorDetail(root int64, issue string) (store.MirrorD
 	return s.Store.GetMirrorDetail(root, issue)
 }
 
-func (s *crossingStore) StoreMirrorDetails(root, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) (store.MirrorDetailWrites, error) {
-	out, err := s.Store.StoreMirrorDetails(root, sweep, docs, openedAt, readAt)
+func (s *crossingStore) StoreMirrorDetails(root, sweep int64, docs []store.MirrorDetailDoc, opened, read store.MirrorRead) (store.MirrorDetailWrites, error) {
+	out, err := s.Store.StoreMirrorDetails(root, sweep, docs, opened, read)
 	if s.armed.Load() {
 		close(s.stored)
 		<-s.release

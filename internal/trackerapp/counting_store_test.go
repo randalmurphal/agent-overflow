@@ -3,6 +3,7 @@ package trackerapp
 import (
 	"maps"
 	"sync"
+	"time"
 
 	"agent-overflow/internal/store"
 )
@@ -85,14 +86,14 @@ func (c *countingStore) WriteMirrorRows(root int64, page store.MirrorRowPage) (s
 	return c.Store.WriteMirrorRows(root, page)
 }
 
-func (c *countingStore) UpsertMirrorCards(root, sweep int64, cards []store.MirrorCard, catalog store.MirrorCatalog, readAt int64) (store.MirrorChanges, error) {
+func (c *countingStore) UpsertMirrorCards(root, sweep int64, cards []store.MirrorCard, catalog store.MirrorCatalog, read store.MirrorRead) (store.MirrorChanges, error) {
 	c.count("UpsertMirrorCards")
-	return c.Store.UpsertMirrorCards(root, sweep, cards, catalog, readAt)
+	return c.Store.UpsertMirrorCards(root, sweep, cards, catalog, read)
 }
 
-func (c *countingStore) ReconcileMirrorBoard(root int64, board string, lifetime int64, listed []string, complete bool, readAt, settledAt int64) (store.MirrorReconcile, error) {
+func (c *countingStore) ReconcileMirrorBoard(root int64, board string, lifetime int64, listed []string, complete bool, read store.MirrorRead, lag time.Duration) (store.MirrorReconcile, error) {
 	c.count("ReconcileMirrorBoard")
-	return c.Store.ReconcileMirrorBoard(root, board, lifetime, listed, complete, readAt, settledAt)
+	return c.Store.ReconcileMirrorBoard(root, board, lifetime, listed, complete, read, lag)
 }
 
 func (c *countingStore) ReplaceMirrorStructure(root int64, st store.MirrorStructure) (store.MirrorStructureWrite, error) {
@@ -100,9 +101,9 @@ func (c *countingStore) ReplaceMirrorStructure(root int64, st store.MirrorStruct
 	return c.Store.ReplaceMirrorStructure(root, st)
 }
 
-func (c *countingStore) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog, readAt int64) ([]store.MirrorHistoryResult, bool, error) {
+func (c *countingStore) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, bool, error) {
 	c.count("ReplaceMirrorHistories")
-	return c.Store.ReplaceMirrorHistories(root, sweep, hs, catalog, readAt)
+	return c.Store.ReplaceMirrorHistories(root, sweep, hs, catalog, read)
 }
 
 func (c *countingStore) ListMirrorHistoryDue(root int64, now int64) ([]store.MirrorHistoryDue, bool, error) {
@@ -110,14 +111,14 @@ func (c *countingStore) ListMirrorHistoryDue(root int64, now int64) ([]store.Mir
 	return c.Store.ListMirrorHistoryDue(root, now)
 }
 
-func (c *countingStore) StoreMirrorDetails(root, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) (store.MirrorDetailWrites, error) {
+func (c *countingStore) StoreMirrorDetails(root, sweep int64, docs []store.MirrorDetailDoc, opened, read store.MirrorRead) (store.MirrorDetailWrites, error) {
 	c.count("StoreMirrorDetails")
-	return c.Store.StoreMirrorDetails(root, sweep, docs, openedAt, readAt)
+	return c.Store.StoreMirrorDetails(root, sweep, docs, opened, read)
 }
 
-func (c *countingStore) ConfirmMirrorDetail(root int64, d store.MirrorDetail, openedAt int64) (store.MirrorDetailWrite, error) {
+func (c *countingStore) ConfirmMirrorDetail(root int64, d store.MirrorDetail, opened store.MirrorRead) (store.MirrorDetailWrite, error) {
 	c.count("ConfirmMirrorDetail")
-	return c.Store.ConfirmMirrorDetail(root, d, openedAt)
+	return c.Store.ConfirmMirrorDetail(root, d, opened)
 }
 
 func (c *countingStore) ListMirrorDetailStates(root int64, issues []string) ([]store.MirrorDetail, error) {
@@ -180,9 +181,9 @@ func (c *countingStore) ReadMirrorRefreshTargets(root int64, cards, details, boa
 	return c.Store.ReadMirrorRefreshTargets(root, cards, details, boards)
 }
 
-func (c *countingStore) ReplaceMirrorWorklogs(root int64, author, from, to string, readAt int64, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error) {
+func (c *countingStore) ReplaceMirrorWorklogs(root int64, author, from, to string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error) {
 	c.count("ReplaceMirrorWorklogs")
-	return c.Store.ReplaceMirrorWorklogs(root, author, from, to, readAt, logs)
+	return c.Store.ReplaceMirrorWorklogs(root, author, from, to, read, logs)
 }
 
 func (c *countingStore) ListMirrorWorklogs(root int64, author, from, to string) ([]store.MirrorWorklog, bool, error) {

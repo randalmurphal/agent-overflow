@@ -35,7 +35,7 @@ func mirrorScopes(t *testing.T, s *Store, root int64) map[string]mirrorScope {
 		}
 	}
 	page := func(readAt int64, rows ...MirrorRow) MirrorRowPage {
-		return MirrorRowPage{BoardID: "10", Lifetime: lifetime, Rows: rows, ReadAt: readAt}
+		return MirrorRowPage{BoardID: "10", Lifetime: lifetime, Rows: rows, ReadAt: mirrorReadAt(readAt)}
 	}
 	// The card's update time, for scopes that are not only listed.
 	var cardAt int64
@@ -46,7 +46,7 @@ func mirrorScopes(t *testing.T, s *Store, root int64) map[string]mirrorScope {
 		"detail": {
 			store: func(readAt int64, v string) error {
 				doc := MirrorDetailDoc{IssueID: "10001", Data: []byte(`{"v":"` + v + `"}`), CardUpdatedAt: cardAt}
-				_, err := s.StoreMirrorDetail(root, sweep, doc, 10, readAt)
+				_, err := s.StoreMirrorDetail(root, sweep, doc, mirrorReadAt(10), mirrorReadAt(readAt))
 				return err
 			},
 			content: scalar(`SELECT data ->> 'v' FROM tracker_cache_issue_details`),
@@ -64,7 +64,7 @@ func mirrorScopes(t *testing.T, s *Store, root int64) map[string]mirrorScope {
 			store: func(readAt int64, v string) error {
 				card := webCard("10001", 5)
 				card.Key = "WEB-" + v
-				_, err := s.UpsertMirrorCards(root, sweep, []MirrorCard{card}, MirrorCatalog{}, readAt)
+				_, err := s.UpsertMirrorCards(root, sweep, []MirrorCard{card}, MirrorCatalog{}, mirrorReadAt(readAt))
 				return err
 			},
 			content: func() string {
@@ -83,7 +83,7 @@ func mirrorScopes(t *testing.T, s *Store, root int64) map[string]mirrorScope {
 		"structure": {
 			store: func(readAt int64, v string) error {
 				st := webStructure()
-				st.Board.Name, st.Catalog, st.ReadAt, st.Lifetime = v, MirrorCatalog{}, readAt, lifetime
+				st.Board.Name, st.Catalog, st.ReadAt, st.Lifetime = v, MirrorCatalog{}, mirrorReadAt(readAt), lifetime
 				_, err := s.ReplaceMirrorStructure(root, st)
 				return err
 			},
@@ -92,7 +92,7 @@ func mirrorScopes(t *testing.T, s *Store, root int64) map[string]mirrorScope {
 		},
 		"catalog user": {
 			store: func(readAt int64, v string) error {
-				_, err := s.UpsertMirrorCards(root, sweep, nil, MirrorCatalog{Users: []MirrorUser{{ID: "acc-user1", Name: v}}}, readAt)
+				_, err := s.UpsertMirrorCards(root, sweep, nil, MirrorCatalog{Users: []MirrorUser{{ID: "acc-user1", Name: v}}}, mirrorReadAt(readAt))
 				return err
 			},
 			content: scalar(`SELECT name FROM tracker_cache_users`),
@@ -100,7 +100,7 @@ func mirrorScopes(t *testing.T, s *Store, root int64) map[string]mirrorScope {
 		},
 		"catalog status": {
 			store: func(readAt int64, v string) error {
-				_, err := s.UpsertMirrorCards(root, sweep, nil, MirrorCatalog{Statuses: []MirrorStatus{{ID: "1", Name: v, Group: MirrorGroupToDo}}}, readAt)
+				_, err := s.UpsertMirrorCards(root, sweep, nil, MirrorCatalog{Statuses: []MirrorStatus{{ID: "1", Name: v, Group: MirrorGroupToDo}}}, mirrorReadAt(readAt))
 				return err
 			},
 			content: scalar(`SELECT name FROM tracker_cache_statuses WHERE status_id = '1'`),
@@ -109,7 +109,7 @@ func mirrorScopes(t *testing.T, s *Store, root int64) map[string]mirrorScope {
 		"worklogs": {
 			store: func(readAt int64, v string) error {
 				spent := map[string]int64{"a": 60, "b": 120}[v]
-				_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", readAt, []MirrorWorklog{webWorklog("w1", "2026-01-05", spent)})
+				_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(readAt), []MirrorWorklog{webWorklog("w1", "2026-01-05", spent)})
 				return err
 			},
 			content: func() string {
@@ -178,10 +178,10 @@ func TestMirrorAbsenceIsAdmitted(t *testing.T) {
 		lifetime := currentLifetime(s, root, "10")
 		absent := func() error {
 			if absence == "missing" {
-				_, err := s.WriteMirrorRows(root, MirrorRowPage{BoardID: "10", Lifetime: lifetime, Missing: []string{"10002"}, ReadAt: 30})
+				_, err := s.WriteMirrorRows(root, MirrorRowPage{BoardID: "10", Lifetime: lifetime, Missing: []string{"10002"}, ReadAt: mirrorReadAt(30)})
 				return err
 			}
-			_, err := s.ReconcileMirrorBoard(root, "10", lifetime, []string{"10001"}, true, 30, 30)
+			_, err := s.ReconcileMirrorBoard(root, "10", lifetime, []string{"10001"}, true, mirrorReadAt(30), 0)
 			return err
 		}
 		recorder := recordMirrorWrites(t, s)
@@ -195,7 +195,7 @@ func TestMirrorAbsenceIsAdmitted(t *testing.T) {
 		if err := absent(); err != nil || len(recorder.rowWrites()) > 0 {
 			t.Errorf("%s again wrote %v, %v", absence, recorder.rowWrites(), err)
 		}
-		got, err := s.WriteMirrorRows(root, MirrorRowPage{BoardID: "10", Lifetime: lifetime, Rows: []MirrorRow{webRow("10002", 5, "b")}, ReadAt: 20})
+		got, err := s.WriteMirrorRows(root, MirrorRowPage{BoardID: "10", Lifetime: lifetime, Rows: []MirrorRow{webRow("10002", 5, "b")}, ReadAt: mirrorReadAt(20)})
 		if err != nil || !reflect.DeepEqual(got, MirrorChanges{Superseded: []string{"10002"}, Refused: []string{"10002"}}) {
 			t.Errorf("%s: a read from before it = %+v, %v; want it refused", absence, got, err)
 		}
@@ -234,7 +234,9 @@ func TestStoreMirrorDetailRecordsTheOpening(t *testing.T) {
 		var got MirrorDetailWrite
 		var err error
 		doc := heldDoc(t, s, root, step.issue, []byte(step.doc))
-		statements := countMirrorStatements(t, func() { got, err = s.StoreMirrorDetail(root, sweep, doc, step.opened, step.read) })
+		statements := countMirrorStatements(t, func() {
+			got, err = s.StoreMirrorDetail(root, sweep, doc, mirrorReadAt(step.opened), mirrorReadAt(step.read))
+		})
 		writes := 0
 		for _, n := range recorder.rowWrites() {
 			writes += n

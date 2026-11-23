@@ -195,7 +195,7 @@ func (m *mirrorFixture) evictUntold(t *testing.T) Changes {
 		}
 		docs = append(docs, store.MirrorDetailDoc{IssueID: id, Data: data, CardUpdatedAt: millis(d.Card.Updated)})
 	}
-	at := m.svc.readAtNext()
+	at := m.read()
 	written, err := m.st.StoreMirrorDetails(m.root(), m.sync("").Sweep, docs, at, at)
 	if err != nil {
 		t.Error(err)
@@ -250,7 +250,7 @@ func (m *mirrorFixture) heldDetail(t *testing.T, issue string) bool {
 	if held := must[[]store.MirrorCard](t)(m.st.ListMirrorCards(m.root(), []string{issue})); len(held) == 1 {
 		doc.CardUpdatedAt = held[0].UpdatedAt
 	}
-	w := must[store.MirrorDetailWrite](t)(m.st.StoreMirrorDetail(m.root(), m.sync("").Sweep, doc, 0, m.svc.readAtNext()))
+	w := must[store.MirrorDetailWrite](t)(m.st.StoreMirrorDetail(m.root(), m.sync("").Sweep, doc, store.MirrorRead{}, m.read()))
 	return w.Stored
 }
 
@@ -326,7 +326,7 @@ func TestACheckShowsTheLinkedIssuesAsTheMirrorHasThem(t *testing.T) {
 	before, _, _ := m.storedDetail(t, "10001")
 	link := card("10002", 1_799_000_000_000)
 	link.Title, link.Status, link.Updated = "Issue 10002, renamed", "s2", link.Updated.Add(time.Minute)
-	must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, []store.MirrorCard{must[store.MirrorCard](t)(mirrorCard(link))}, store.MirrorCatalog{}, m.svc.readAtNext()))
+	must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, []store.MirrorCard{must[store.MirrorCard](t)(mirrorCard(link))}, store.MirrorCatalog{}, m.read()))
 	var asked [][]tracker.IssueID
 	m.p.updatedMovesWithDetail(func(ids []tracker.IssueID) (tracker.Cards, error) {
 		asked = append(asked, ids)
@@ -423,7 +423,7 @@ func TestADetailTheMirrorKnowsIsStaleIsRead(t *testing.T) {
 	m.openDetail(t, "10001")
 	c.Updated = c.Updated.Add(time.Minute)
 	newer := must[store.MirrorCard](t)(mirrorCard(c))
-	must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, []store.MirrorCard{newer}, store.MirrorCatalog{}, m.svc.readAtNext()))
+	must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, []store.MirrorCard{newer}, store.MirrorCatalog{}, m.read()))
 	if v, _ := m.openDetail(t, "10001"); v.Card.Updated != millis(c.Updated) || m.p.count("Cards") != 0 || m.p.count("Details") != 2 {
 		t.Fatalf("a newer mirror card: updated %d, %d card reads, %d detail reads", v.Card.Updated, m.p.count("Cards"), m.p.count("Details"))
 	}

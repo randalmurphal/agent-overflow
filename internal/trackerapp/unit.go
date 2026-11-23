@@ -271,9 +271,49 @@ func (r *run) finish() { r.stop() }
 // window is the start of the history window now (Service.window).
 func (r *run) window() time.Time { return r.s.window() }
 
-// readAt is the time a read begins, taken before its request, from the
-// service's one counter of read begins (Service.readAtNext).
-func (r *run) readAt() int64 { return r.s.readAtNext() }
+// beginRead begins a read of the tracker, before its request, on the
+// root's read clock (store BeginMirrorRead): every write of what a read
+// returned takes the read it began, so the store orders reads made
+// through every path, and every process, on one clock.
+func (r *run) beginRead() (store.MirrorRead, error) {
+	read, err := r.s.store.BeginMirrorRead(r.root, millis(r.s.now()))
+	if err != nil {
+		return store.MirrorRead{}, fmt.Errorf("trackerapp: begin a read of %s: %w", r.row.ID, err)
+	}
+	return read, nil
+}
+
+// The service's elapsed-time decisions, and the clock each reads:
+//
+//   - Since a read the root stored began (Service.sinceRead): the board's
+//     structure and reconcile intervals (boardDue) and a document's age
+//     (checkDetails, detailMaxAge). The wall clock against the stored
+//     begin time, which BeginMirrorRead keeps at or after the wall clock
+//     the read began at. After the wall clock steps back, a stored read
+//     is no time ago until the clock passes it again, so each interval
+//     stretches by the step: nothing is read sooner, and no write is
+//     refused, every read beginning after the stored ones. A person's
+//     refresh still reads in full. After a forward step an interval ends
+//     early: one read sooner. A burst of reads runs a millisecond a read
+//     ahead of the clock, which a stored read's age reads short by.
+//   - The history wait (store MirrorHistory.AnsweredAt and Wait, the now
+//     of GetMirrorSync and ListMirrorHistoryDue, historyFinal): the steady
+//     clock (Service.steady), monotonic within the process. A wait an
+//     earlier process answered is not counted (steadyFrom): it starts
+//     over.
+//   - A ticket round's due, hold and retry times, a rate limit's, and the
+//     pumps' and the linked loop's timers: times held in memory, compared
+//     with Deps.Now's; with time.Now they compare its monotonic reading,
+//     so a wall step moves none.
+//   - Whether a status time is trusted and a history complete (HistoryTo
+//     and CompleteTo against the card's update time): the tracker's own
+//     clock on both sides.
+//
+// sinceRead is how long ago at, the begin time of a read the root stored,
+// was by the wall clock: zero while the clock is behind it.
+func (s *Service) sinceRead(at int64) time.Duration {
+	return max(s.now().Sub(time.UnixMilli(at)), 0)
+}
 
 // steadyAt is now by the clock the history wait is measured on
 // (Service.steady), in Unix ms.

@@ -61,7 +61,7 @@ func TestDeleteTrackerConnectionDetachesItsMirror(t *testing.T) {
 			t.Fatalf("the removal deleted %s rows: %v, was %v", table, after, before)
 		}
 	}
-	if _, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", MirrorSyncAttempt{ReadAt: 1})); !errors.Is(err, ErrTrackerCacheGone) {
+	if _, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", MirrorSyncAttempt{ReadAt: mirrorReadAt(1)})); !errors.Is(err, ErrTrackerCacheGone) {
 		t.Fatalf("write after the removal: %v", err)
 	}
 	if err := s.FinishMirrorCleanup(nil); err != nil {
@@ -132,7 +132,7 @@ func TestUnlistedBoardIsRetiredThenDrained(t *testing.T) {
 	writeMirrorBoard(t, s, root, "11", mirrorRows(20000, 1, "a"))
 	listMirrorBoards(t, s, mustCreateTrackerProject(t, s, "p2"), jira.ID, "11")
 	for _, board := range []string{"10", "11"} {
-		if _, err := s.RecordMirrorSyncAttempt(root, board, currentAttempt(s, root, board, MirrorSyncAttempt{ReadAt: 5})); err != nil {
+		if _, err := s.RecordMirrorSyncAttempt(root, board, currentAttempt(s, root, board, MirrorSyncAttempt{ReadAt: mirrorReadAt(5)})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -180,11 +180,11 @@ func TestUnlistedBoardIsRetiredThenDrained(t *testing.T) {
 			return err
 		},
 		"reconcile": func() error {
-			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, 9, 9)
+			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, mirrorReadAt(9), 0)
 			return err
 		},
 		"sync": func() error {
-			_, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: 9}))
+			_, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: mirrorReadAt(9)}))
 			return err
 		},
 	} {
@@ -270,7 +270,7 @@ func TestCleanupSweepsIssuesWhoseLinksGo(t *testing.T) {
 	linkIssue(t, s, "kept", "10005")
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10006", 5, "a")), nil)
 	cards := []MirrorCard{webCard("10001", 5), webCard("10002", 5), webCard("10003", 5), webCard("10004", 5), webCard("10005", 5)}
-	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), cards, MirrorCatalog{}, 1); err != nil || len(changes.Cards) != len(cards) {
+	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), cards, MirrorCatalog{}, mirrorReadAt(1)); err != nil || len(changes.Cards) != len(cards) {
 		t.Fatalf("linked cards = %+v, %v", changes, err)
 	}
 	if linked, more, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); err != nil || more || strings.Join(linked, ",") != "10001,10002,10003,10004,10005" {
@@ -309,7 +309,7 @@ func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 	for _, id := range []string{"10001", "10002", "10003"} {
 		linkIssue(t, s, "link-"+id, id)
 	}
-	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 5), webCard("10002", 5), webCard("10003", 5)}, MirrorCatalog{}, 1); err != nil {
+	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 5), webCard("10002", 5), webCard("10003", 5)}, MirrorCatalog{}, mirrorReadAt(1)); err != nil {
 		t.Fatal(err)
 	}
 	for id, n := range map[string]int{"10001": clearMirrorChunk, "10002": 400, "10003": 10} {
@@ -347,7 +347,7 @@ func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 		t.Fatalf("history due = %v, %v; want the issue kept again", due, err)
 	}
 	stale := listedAt(s, root, statusHistory("10001", 3), 1)
-	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{stale}, MirrorCatalog{}, 0); err != nil || !results[0].Superseded {
+	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{stale}, MirrorCatalog{}, mirrorReadAt(0)); err != nil || !results[0].Superseded {
 		t.Fatalf("a history listed before the reset = %+v, %v; want superseded", results, err)
 	}
 	mustReplaceHistory(t, s, root, statusHistory("10001", 3), MirrorWrite{Changed: true})
@@ -399,7 +399,7 @@ func TestEveryMirrorDeleteIsBounded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{large[0].Card.IssueID}, true, 2, 2); err != nil {
+	if _, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{large[0].Card.IssueID}, true, mirrorReadAt(2), 0); err != nil {
 		t.Fatal(err)
 	}
 	check("reconcile")
@@ -408,7 +408,7 @@ func TestEveryMirrorDeleteIsBounded(t *testing.T) {
 	}
 	check("history replace")
 	full := webStructure()
-	full.Board.ID, full.Columns, full.Sprints, full.ReadAt = "12", nil, nil, 1
+	full.Board.ID, full.Columns, full.Sprints, full.ReadAt = "12", nil, nil, mirrorReadAt(1)
 	for i := range mirrorMaxColumns {
 		full.Columns = append(full.Columns, MirrorColumn{Name: fmt.Sprint(i)})
 	}
@@ -421,7 +421,7 @@ func TestEveryMirrorDeleteIsBounded(t *testing.T) {
 	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, full)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, MirrorStructure{Board: MirrorBoard{ID: "12"}, ReadAt: 2})); err != nil {
+	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, MirrorStructure{Board: MirrorBoard{ID: "12"}, ReadAt: mirrorReadAt(2)})); err != nil {
 		t.Fatal(err)
 	}
 	check("structure replace")
@@ -429,7 +429,7 @@ func TestEveryMirrorDeleteIsBounded(t *testing.T) {
 	for _, row := range large[len(large)-mirrorMaxPageRows:] {
 		missing = append(missing, row.Card.IssueID)
 	}
-	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "11", Missing: missing, ReadAt: 2})); err != nil {
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "11", Missing: missing, ReadAt: mirrorReadAt(2)})); err != nil {
 		t.Fatal(err)
 	}
 	check("missing rows")
@@ -438,7 +438,7 @@ func TestEveryMirrorDeleteIsBounded(t *testing.T) {
 		logs = append(logs, MirrorWorklog{ID: fmt.Sprintf("w%d", i), IssueID: "1", AuthorID: "acc-user1", Day: "2026-01-05", SpentSeconds: 60})
 	}
 	for i, l := range [][]MirrorWorklog{logs, nil} {
-		if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", int64(i+1), l); err != nil {
+		if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(int64(i+1)), l); err != nil {
 			t.Fatal(err)
 		}
 	}

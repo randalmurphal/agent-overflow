@@ -245,7 +245,7 @@ func (s *fakeScenario) refusedCursorRestarts(t *testing.T, scope Scope) {
 	}
 	fields["v"] = 1
 	older := must[[]byte](t)(json.Marshal(fields))
-	must[store.MirrorChanges](t)(s.st.WriteMirrorRowPage(root, store.MirrorRowPage{BoardID: string(scope.Board), Lifetime: st.Lifetime, ReadAt: time.Now().UnixMilli()}, older))
+	must[store.MirrorChanges](t)(s.st.WriteMirrorRowPage(root, store.MirrorRowPage{BoardID: string(scope.Board), Lifetime: st.Lifetime, ReadAt: beginReadAt(t, s.st, root, time.Now().UnixMilli())}, older))
 	routes := s.requestsOf(t, func() {
 		out := must[Outcome](t)(s.svc.tickDelta(t.Context(), scope, Background))
 		if out.Failure != nil || out.Ended || out.More() {

@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 )
 
 // rowsPage is a read by ID of board 10's rows begun at readAt: the rows it
 // found and the issues it found gone.
 func rowsPage(s *Store, root, readAt int64, missing []string, rows ...MirrorRow) MirrorRowPage {
-	return currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: rows, Missing: missing, ReadAt: readAt})
+	return currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: rows, Missing: missing, ReadAt: mirrorReadAt(readAt)})
 }
 
 func mustWriteRows(t *testing.T, s *Store, page MirrorRowPage, root int64) MirrorChanges {
@@ -23,7 +24,7 @@ func mustWriteRows(t *testing.T, s *Store, page MirrorRowPage, root int64) Mirro
 
 func mustReconcile(t *testing.T, s *Store, root int64, listed []string, complete bool, readAt, settledAt int64) MirrorReconcile {
 	t.Helper()
-	got, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), listed, complete, readAt, settledAt)
+	got, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), listed, complete, mirrorReadAt(readAt), time.Duration(readAt-settledAt)*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +51,7 @@ func TestAnAbsenceFromBeforeAListingIsOwedARead(t *testing.T) {
 	for _, order := range []string{"listing commits first", "absence commits first"} {
 		s, _, root := newMirror(t)
 		writeMirrorBoard(t, s, root, "10", nil)
-		mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10001", 5, "a")}, ReadAt: 5}, nil)
+		mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10001", 5, "a")}, ReadAt: mirrorReadAt(5)}, nil)
 		absence := rowsPage(s, root, 20, []string{"10001"}, webRow("10005", 5, "e"))
 		switch order {
 		case "listing commits first":
@@ -105,15 +106,15 @@ func TestAnIdenticalCardReadFencesAnOlderOne(t *testing.T) {
 				write := func(readAt int64, row MirrorRow) MirrorChanges {
 					t.Helper()
 					if entry == "board" {
-						return mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{row}, ReadAt: readAt}, nil)
+						return mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{row}, ReadAt: mirrorReadAt(readAt)}, nil)
 					}
-					got, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{row.Card}, MirrorCatalog{}, readAt)
+					got, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{row.Card}, MirrorCatalog{}, mirrorReadAt(readAt))
 					if err != nil {
 						t.Fatal(err)
 					}
 					return got
 				}
-				mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{stored}, ReadAt: 10}, nil)
+				mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{stored}, ReadAt: mirrorReadAt(10)}, nil)
 				what := fmt.Sprintf("%s, %s, %s", entry, order, name)
 				identical := func() {
 					t.Helper()
@@ -198,14 +199,14 @@ func TestARowNoListingNamedIsJudgedByID(t *testing.T) {
 			}
 			continue
 		case "delta page":
-			mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10004", 5, "d")}, ReadAt: placed + 500}, nil)
+			mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10004", 5, "d")}, ReadAt: mirrorReadAt(placed + 500)}, nil)
 		case "changed delta page":
-			mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10004", 5, "d1")}, ReadAt: placed + 500}, nil)
+			mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10004", 5, "d1")}, ReadAt: mirrorReadAt(placed + 500)}, nil)
 			assertRows(t, s.db, `SELECT order_key FROM tracker_cache_board_issues`, "d1")
 		case "superseded delta page":
 			// A read by ID that began later stored the row first.
 			mustWriteRows(t, s, rowsPage(s, root, placed+900, nil, webRow("10004", 5, "d2")), root)
-			mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10004", 5, "d")}, ReadAt: placed + 500}, nil)
+			mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10004", 5, "d")}, ReadAt: mirrorReadAt(placed + 500)}, nil)
 			assertRows(t, s.db, `SELECT order_key FROM tracker_cache_board_issues`, "d2")
 		case "listing", "incomplete listing":
 			if got := mustReconcile(t, s, root, []string{"10004"}, step == "listing", placed+500, placed+500); !reflect.DeepEqual(got, MirrorReconcile{}) {
@@ -291,7 +292,7 @@ func TestMirrorFenceStatements(t *testing.T) {
 	}
 	reconcile := func(listed []string, complete bool, readAt int64) func() error {
 		return func() error {
-			_, err := s.ReconcileMirrorBoard(root, "10", lifetime, listed, complete, readAt, readAt)
+			_, err := s.ReconcileMirrorBoard(root, "10", lifetime, listed, complete, mirrorReadAt(readAt), 0)
 			return err
 		}
 	}

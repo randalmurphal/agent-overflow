@@ -104,7 +104,7 @@ type MirrorStructure struct {
 	Columns  []MirrorColumn
 	Sprints  []MirrorSprint
 	Catalog  MirrorCatalog
-	ReadAt   int64
+	ReadAt   MirrorRead
 	Lifetime int64
 	Complete bool
 }
@@ -130,7 +130,7 @@ func (c MirrorCatalog) check() error {
 func (st MirrorStructure) check() error {
 	b := st.Board
 	switch {
-	case b.ID == "" || st.ReadAt <= 0:
+	case b.ID == "" || st.ReadAt.at <= 0:
 		return fmt.Errorf("%w: a board needs its ID and the time its read began", ErrInvalidTrackerCache)
 	case b.EstimateUnit < MirrorEstimateNone || b.EstimateUnit > MirrorEstimateTime:
 		return fmt.Errorf("%w: board %s has estimate unit %d", ErrInvalidTrackerCache, b.ID, b.EstimateUnit)
@@ -199,7 +199,7 @@ func (s *Store) ReplaceMirrorStructure(rootID int64, st MirrorStructure) (result
 	var before mirrorBoard
 	err = s.mirrorBoardWrite(rootID, st.Board.ID, st.Lifetime, action, false, func(tx *sql.Tx, board mirrorBoard) error {
 		before, result.EstimateResetAt = board, board.estimateResetAt
-		if st.ReadAt < board.readAt {
+		if st.ReadAt.at < board.readAt {
 			result.Superseded = true
 			return nil
 		}
@@ -207,7 +207,7 @@ func (s *Store) ReplaceMirrorStructure(rootID int64, st MirrorStructure) (result
 		var reset bool
 		result.Changed, result.Catalog, reset, err = replaceMirrorStructureTx(tx, rootID, st, board)
 		if reset {
-			result.EstimateResetAt = st.ReadAt
+			result.EstimateResetAt = st.ReadAt.at
 		}
 		return err
 	})
@@ -272,7 +272,7 @@ const (
 // the board's estimate definition.
 func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, board mirrorBoard) (changed, catalog, reset bool, err error) {
 	b := st.Board
-	if catalog, err = upsertMirrorCatalogTx(tx, rootID, st.Catalog, st.ReadAt); err != nil {
+	if catalog, err = upsertMirrorCatalogTx(tx, rootID, st.Catalog, st.ReadAt.at); err != nil {
 		return false, false, false, err
 	}
 	changed = catalog
@@ -322,9 +322,9 @@ func replaceMirrorStructureTx(tx *sql.Tx, rootID int64, st MirrorStructure, boar
 	// The read is the structure's latest, changed or not, and covers the
 	// pending marks no later than it: a narrow write of the board row,
 	// which no index or trigger reads.
-	if st.ReadAt > board.readAt {
+	if st.ReadAt.at > board.readAt {
 		if _, err := tx.Exec(`UPDATE tracker_cache_boards SET read_at = ?3 WHERE root_id = ?1 AND board_id = ?2`,
-			rootID, b.ID, st.ReadAt); err != nil {
+			rootID, b.ID, st.ReadAt.at); err != nil {
 			return false, false, false, fmt.Errorf("record the structure's read: %w", err)
 		}
 	}
@@ -382,7 +382,7 @@ func (s *Store) settleMirrorMarks(rootID int64, st MirrorStructure, board mirror
 		var explained []string
 		err := s.mirrorBoardWrite(rootID, st.Board.ID, st.Lifetime, action, false, func(tx *sql.Tx, _ mirrorBoard) error {
 			var err error
-			if explained, err = queryIDs(tx, mirrorMarksExplainSQL, rootID, st.Board.ID, st.ReadAt); err != nil {
+			if explained, err = queryIDs(tx, mirrorMarksExplainSQL, rootID, st.Board.ID, st.ReadAt.at); err != nil {
 				return fmt.Errorf("mark unexplained references: %w", err)
 			}
 			return nil
@@ -418,7 +418,7 @@ const mirrorBoardWriteRowSQL = `UPDATE tracker_cache_boards SET project_id = ?3,
 func writeMirrorBoardTx(tx *sql.Tx, rootID int64, st MirrorStructure) (changed, reset bool, err error) {
 	b := st.Board
 	err = tx.QueryRow(mirrorBoardWriteRowSQL, rootID, b.ID, b.ProjectID, b.Name, boolToInt(b.PlansSprints), b.EstimateUnit,
-		mirrorData(b.Data), st.ReadAt, b.EstimateField).Scan(&reset)
+		mirrorData(b.Data), st.ReadAt.at, b.EstimateField).Scan(&reset)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return false, false, nil

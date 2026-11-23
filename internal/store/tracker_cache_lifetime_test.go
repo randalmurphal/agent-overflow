@@ -27,18 +27,18 @@ func TestMirrorBoardLifetimeFencesItsReads(t *testing.T) {
 	after := MirrorRowKey{OrderKey: "a", IssueID: "10001", Lifetime: old, Revision: first.Revision}
 
 	late := webStructure()
-	late.ReadAt, late.Lifetime, late.Board.Name = 50, old, "Late name"
-	page := MirrorRowPage{BoardID: "12", Lifetime: old, Rows: []MirrorRow{webRow("10003", 9, "c")}, ReadAt: 50}
+	late.ReadAt, late.Lifetime, late.Board.Name = mirrorReadAt(50), old, "Late name"
+	page := MirrorRowPage{BoardID: "12", Lifetime: old, Rows: []MirrorRow{webRow("10003", 9, "c")}, ReadAt: mirrorReadAt(50)}
 	writes := map[string]func() error{
 		"structure": func() error { _, err := s.ReplaceMirrorStructure(root, late); return err },
 		"row page":  func() error { _, err := s.WriteMirrorRowPage(root, page, []byte("late")); return err },
 		"rows":      func() error { _, err := s.WriteMirrorRows(root, page); return err },
 		"reconcile": func() error {
-			_, err := s.ReconcileMirrorBoard(root, "12", old, []string{"10003"}, true, 50, 50)
+			_, err := s.ReconcileMirrorBoard(root, "12", old, []string{"10003"}, true, mirrorReadAt(50), 0)
 			return err
 		},
 		"sync": func() error {
-			_, err := s.RecordMirrorSyncAttempt(root, "12", MirrorSyncAttempt{Lifetime: old, ReadAt: 50})
+			_, err := s.RecordMirrorSyncAttempt(root, "12", MirrorSyncAttempt{Lifetime: old, ReadAt: mirrorReadAt(50)})
 			return err
 		},
 	}
@@ -84,7 +84,7 @@ func TestMirrorBoardLifetimeFencesItsReads(t *testing.T) {
 	if st, _, err := s.GetMirrorSync(root, "12", testNow); err != nil || st.Lifetime != 0 {
 		t.Fatalf("sync of an unlisted board = %+v, %v", st, err)
 	}
-	if _, err := s.ReconcileMirrorBoard(root, "12", 0, nil, true, 60, 60); !errors.Is(err, ErrInvalidTrackerCache) {
+	if _, err := s.ReconcileMirrorBoard(root, "12", 0, nil, true, mirrorReadAt(60), 0); !errors.Is(err, ErrInvalidTrackerCache) {
 		t.Fatalf("a write naming no lifetime: %v", err)
 	}
 }

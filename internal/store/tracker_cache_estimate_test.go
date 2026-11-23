@@ -60,14 +60,14 @@ func TestMirrorEstimateChangeHidesRowsReadBefore(t *testing.T) {
 	row := webRow("10001", 5, "a")
 	row.Estimate = &five
 	mustReplaceStructure(t, s, root, webStructure(), true)
-	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{row}, ReadAt: 2}, []byte("c1"))
+	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{row}, ReadAt: mirrorReadAt(2)}, []byte("c1"))
 	mustReplaceHistory(t, s, root, webHistory("10001"), MirrorWrite{Changed: true})
 	if got := mirrorEstimates(t, s, root); got != "row 5 issue row 5 total 5" {
 		t.Fatalf("before = %s", got)
 	}
 	structure := func(unit int, field string, readAt int64) MirrorStructure {
 		st := webStructure()
-		st.Board.EstimateUnit, st.Board.EstimateField, st.ReadAt = unit, field, readAt
+		st.Board.EstimateUnit, st.Board.EstimateField, st.ReadAt = unit, field, mirrorReadAt(readAt)
 		return st
 	}
 	read := int64(10)
@@ -97,10 +97,10 @@ func TestMirrorEstimateChangeHidesRowsReadBefore(t *testing.T) {
 		stale.Estimate = &three
 		for name, page := range map[string]MirrorRowPage{
 			// A walk captured before the reset, read before or after it.
-			"a page of the old walk read before the structure": {Lifetime: captured.Lifetime, EstimateResetAt: captured.EstimateResetAt, ReadAt: read - 1},
-			"a page of the old walk read after the structure":  {Lifetime: captured.Lifetime, EstimateResetAt: captured.EstimateResetAt, ReadAt: read + 1},
+			"a page of the old walk read before the structure": {Lifetime: captured.Lifetime, EstimateResetAt: captured.EstimateResetAt, ReadAt: mirrorReadAt(read - 1)},
+			"a page of the old walk read after the structure":  {Lifetime: captured.Lifetime, EstimateResetAt: captured.EstimateResetAt, ReadAt: mirrorReadAt(read + 1)},
 			// A walk captured after the reset, read in its millisecond.
-			"a page read in the structure's millisecond": {ReadAt: read},
+			"a page read in the structure's millisecond": {ReadAt: mirrorReadAt(read)},
 		} {
 			page.BoardID, page.Rows = "10", []MirrorRow{stale}
 			changes := mustWriteRowPage(t, s, root, page, []byte("c-stale"))
@@ -117,7 +117,7 @@ func TestMirrorEstimateChangeHidesRowsReadBefore(t *testing.T) {
 			t.Errorf("%s: the rows of the refused pages = %s", step.name, got)
 		}
 		read += 2
-		changes := mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{row}, ReadAt: read}, []byte("c2"))
+		changes := mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{row}, ReadAt: mirrorReadAt(read)}, []byte("c2"))
 		if changes.CursorRefused || mirrorCursor(t, s, root) != "c2" {
 			t.Errorf("%s: a page of the new walk = %+v, cursor %s; want c2 stored", step.name, changes, mirrorCursor(t, s, root))
 		}
@@ -165,13 +165,13 @@ func TestMirrorEstimateResetRefusesACursorWithNoSyncRow(t *testing.T) {
 	row := webRow("10001", 5, "a")
 	row.Estimate = &five
 	mustReplaceStructure(t, s, root, webStructure(), true)
-	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{row}, ReadAt: 2})); err != nil {
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{row}, ReadAt: mirrorReadAt(2)})); err != nil {
 		t.Fatal(err)
 	}
-	walk := currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{row}, ReadAt: 10})
+	walk := currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{row}, ReadAt: mirrorReadAt(10)})
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_sync`, "0")
 	st := webStructure()
-	st.Board.EstimateUnit, st.ReadAt = MirrorEstimateTime, 20
+	st.Board.EstimateUnit, st.ReadAt = MirrorEstimateTime, mirrorReadAt(20)
 	mustReplaceStructure(t, s, root, st, true)
 	changes, err := s.WriteMirrorRowPage(root, walk, []byte("c-old-unit"))
 	if err != nil || !changes.CursorRefused {

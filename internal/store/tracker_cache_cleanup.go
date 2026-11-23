@@ -34,6 +34,7 @@ var mirrorTableKeys = []struct{ table, keys string }{
 	{"tracker_cache_changes", "issue_id, gen, kind, seq"},
 	{"tracker_cache_issue_details", "rowid"},
 	{"tracker_cache_open_tickets", "session, pump"},
+	{"tracker_cache_read_leases", "rowid"},
 	{"tracker_cache_board_column_statuses", "board_id, status_id"},
 	{"tracker_cache_board_columns", "board_id, position"},
 	{"tracker_cache_sprints", "board_id, sprint_id"},

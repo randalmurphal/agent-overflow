@@ -13,13 +13,13 @@ func TestAnOlderListingRemovesNothing(t *testing.T) {
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", nil)
 	row := webPage("10", webRow("10001", 5, "a"))
-	row.ReadAt = 5
+	row.ReadAt = mirrorReadAt(5)
 	mustWriteRowPage(t, s, root, row, nil)
 	lifetime := currentLifetime(s, root, "10")
-	if got, err := s.ReconcileMirrorBoard(root, "10", lifetime, []string{"10001"}, true, 30, 30); err != nil || !reflect.DeepEqual(got, MirrorReconcile{}) {
+	if got, err := s.ReconcileMirrorBoard(root, "10", lifetime, []string{"10001"}, true, mirrorReadAt(30), 0); err != nil || !reflect.DeepEqual(got, MirrorReconcile{}) {
 		t.Fatalf("the newer listing = %+v, %v", got, err)
 	}
-	got, err := s.ReconcileMirrorBoard(root, "10", lifetime, []string{"10002"}, true, 20, 20)
+	got, err := s.ReconcileMirrorBoard(root, "10", lifetime, []string{"10002"}, true, mirrorReadAt(20), 0)
 	if err != nil || !reflect.DeepEqual(got, MirrorReconcile{Missing: []string{"10002"}}) {
 		t.Fatalf("the older listing = %+v, %v; want its missing issue and nothing removed", got, err)
 	}
@@ -43,7 +43,7 @@ func TestAListingsLaterChunksAreJudgedAgain(t *testing.T) {
 		// runs the change in the first chunk's transaction.
 		mustExec(t, s.db, fmt.Sprintf(`CREATE TRIGGER test_between AFTER DELETE ON tracker_cache_board_issues WHEN OLD.issue_id = '%s'
 			BEGIN %s; END`, first, between))
-		got, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, 20, 20)
+		got, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, mirrorReadAt(20), 0)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}

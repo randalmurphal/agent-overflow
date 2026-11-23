@@ -26,7 +26,7 @@ type removalBeforeWrite struct {
 
 func (s *removalBeforeWrite) remove(page store.MirrorRowPage) {
 	remove := func() {
-		gone := store.MirrorRowPage{BoardID: page.BoardID, Lifetime: page.Lifetime, Missing: []string{s.issue}, ReadAt: s.m.svc.readAtNext()}
+		gone := store.MirrorRowPage{BoardID: page.BoardID, Lifetime: page.Lifetime, Missing: []string{s.issue}, ReadAt: s.m.read()}
 		if _, err := s.Store.WriteMirrorRows(s.m.root(), gone); err != nil {
 			s.m.t.Error(err)
 		}
