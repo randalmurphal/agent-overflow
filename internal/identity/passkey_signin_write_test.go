@@ -60,7 +60,11 @@ func countSignInWrites(t *testing.T, raw *sql.DB) signInWrites {
 	if err != nil {
 		t.Fatalf("read device labels: %v", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			t.Errorf("close device labels: %v", err)
+		}
+	}()
 	for rows.Next() {
 		var label string
 		if err := rows.Scan(&label); err != nil {
