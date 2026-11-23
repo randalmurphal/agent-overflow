@@ -1,6 +1,6 @@
 // Claude turns the CLI starts on its own (claude-wire.md §E7 and §E11),
 // replayed from the 2.1.284 cron captures in
-// docs/references/fixtures/claude/ through the mock provider:
+// internal/provider/wirecaptures/claude/ through the mock provider:
 //
 //   - A session holding an armed recurring `CronCreate` job outlives the
 //     idle-reap threshold, the job's fire still reaches it, and
@@ -43,7 +43,7 @@ import {
   waitForGate,
 } from './agent-visibility-helpers.js';
 
-const FIXTURES = path.resolve(import.meta.dirname, '../../docs/references/fixtures/claude');
+const FIXTURES = path.resolve(import.meta.dirname, '../../internal/provider/wirecaptures/claude');
 const CRON_CAPTURE = 'cron_create_fire_20261010.ndjson';
 const LOOP_CAPTURE = 'cron_loop_midturn_20261010.ndjson';
 const CRON_PROMPT = 'Reply with exactly the text CRON-FIRED and call no tools.';

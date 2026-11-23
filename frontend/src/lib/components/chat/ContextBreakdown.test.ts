@@ -6,7 +6,7 @@ import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 // Shape mirrors the Go `ThreadContextUsage` wire type; the fixture numbers
 // are the real 2.1.219 capture in
-// docs/references/fixtures/claude/context_usage_control_20260803.summary.json.
+// internal/provider/wirecaptures/claude/context_usage_control_20260803.summary.json.
 function fixture() {
   return {
     available: true,

@@ -182,7 +182,7 @@ func TestParseTaskStartedEvent_WakeWithoutBindingOrForShellIsNoOp(t *testing.T) 
 // each followed by a stop. Pins the event shape triage's park model reads.
 func TestReplayLocalAgentOwnedShellWake(t *testing.T) {
 	const launch = "toolu_01RBwwkzBxziR7C1gV2rGxPp"
-	events := replayFixture(t, "../../../docs/references/fixtures/claude/local_agent_owned_shell_wake_20260908.ndjson")
+	events := replayFixture(t, "../wirecaptures/claude/local_agent_owned_shell_wake_20260908.ndjson")
 
 	var wakes []provider.ProviderEvent
 	for _, evt := range events {
@@ -248,7 +248,7 @@ func TestReplay2_1_280WakeAndStopCopy(t *testing.T) {
 			provider.SubagentProgressMeta{TotalTokens: 16585, ToolUses: 1, DurationMs: 1895}},
 	} {
 		t.Run(tc.fixture, func(t *testing.T) {
-			events := replayFixture(t, "../../../docs/references/fixtures/claude/"+tc.fixture)
+			events := replayFixture(t, "../wirecaptures/claude/"+tc.fixture)
 			var wakes []provider.ProviderEvent
 			type stop struct {
 				summary string

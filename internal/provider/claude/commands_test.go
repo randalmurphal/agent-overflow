@@ -11,7 +11,7 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-const localCommandFixture = "../../../docs/references/fixtures/claude/local_command_20260803.ndjson"
+const localCommandFixture = "../wirecaptures/claude/local_command_20260803.ndjson"
 
 func fixtureLines(t *testing.T, path string) [][]byte {
 	t.Helper()
@@ -329,7 +329,7 @@ func TestNormalizeWireCommandsBoundsTheList(t *testing.T) {
 	}
 }
 
-const effortLiveFixture = "../../../docs/references/fixtures/claude/effort_live_20260812.ndjson"
+const effortLiveFixture = "../wirecaptures/claude/effort_live_20260812.ndjson"
 
 // TestEffortLiveFixtureCorrelatesCommandResults replays the checked-in
 // live-config capture end to end and pins the correlation contract the

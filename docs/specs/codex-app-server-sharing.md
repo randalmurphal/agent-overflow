@@ -26,7 +26,7 @@ Its fix is part of this design and can ship first.
 Each finding is verified against codex-cli 0.162.1 by source at
 `rust-v0.162.1`; the instruction, channel and unload findings also by the
 spike in
-[`fixtures/codex/developer_instructions_shared_process_20261016.ndjson`](../references/fixtures/codex/developer_instructions_shared_process_20261016.ndjson)
+[`wirecaptures/codex/developer_instructions_shared_process_20261016.ndjson`](../internal/provider/wirecaptures/codex/developer_instructions_shared_process_20261016.ndjson)
 ([wire notes](../references/codex-wire.md#developer-instructions-across-a-restart-and-per-thread-channels-verified-01621)).
 
 ### Changed developer instructions do not reach a resumed thread

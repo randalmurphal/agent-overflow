@@ -138,7 +138,7 @@ func TestThinkingTagBoundsItsInput(t *testing.T) {
 
 // The 2.1.132 capture predates the tag: its signature is opaque.
 func TestThinkingTagIsAbsentFromThePreTagFixture(t *testing.T) {
-	const fixture = "../../../../docs/references/fixtures/claude/opus47_thinking_summarized.ndjson"
+	const fixture = "../../wirecaptures/claude/opus47_thinking_summarized.ndjson"
 	raw, err := os.ReadFile(fixture)
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)

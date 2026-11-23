@@ -1355,7 +1355,7 @@ Verified against `rust-v0.153.4`.
 ### Thread unload and cold resume (verified 0.162.1)
 
 Spike 2026-10-16, codex-cli 0.162.1, `gpt-6-luna`, one connection.
-Fixture: `fixtures/codex/thread_unload_cold_resume_20261016.ndjson`.
+Fixture: `internal/provider/wirecaptures/codex/thread_unload_cold_resume_20261016.ndjson`.
 
 - `thread/unsubscribe {threadId}` answers `{status}`: `unsubscribed`,
   `notSubscribed`, or `notLoaded` once the thread is gone. It removes only
@@ -1412,7 +1412,7 @@ Same spike. Several threads on one app-server:
 Spike 2026-10-16, codex-cli 0.162.1, `gpt-5.6-luna` (`gpt-6-luna` is
 refused for a ChatGPT account: "not supported when using Codex with a
 ChatGPT account"). Fixture:
-`fixtures/codex/developer_instructions_shared_process_20261016.ndjson`.
+`internal/provider/wirecaptures/codex/developer_instructions_shared_process_20261016.ndjson`.
 Each step asked for a reply ending in the token the current instructions
 name.
 
@@ -1651,7 +1651,7 @@ Available since codex 0.140.0; verified on 0.146.0 and 0.159.1.
 ### What a kill writes (verified 0.159.1)
 
 Spike 2026-10-15, codex-cli 0.159.1, `gpt-6-luna`. Fixtures under
-`docs/references/fixtures/codex/`, one run each:
+`internal/provider/wirecaptures/codex/`, one run each:
 
 | Fixture | Case |
 |---|---|

@@ -43,7 +43,7 @@ test('each change runs the suites that read it', () => {
 test('a path no class matches runs everything', () => {
   for (const path of ['Makefile', 'internal/app/testdata/agent_message_labels.json', 'internal/harness/scenario/library/x.json',
     // Playwright replays these captures; Go embeds the starter prompts.
-    'docs/references/fixtures/claude/cron_create_fire_20261010.ndjson', 'internal/workflow/starters/content/build-and-validate/implement.md',
+    'internal/provider/wirecaptures/claude/cron_create_fire_20261010.ndjson', 'internal/workflow/starters/content/build-and-validate/implement.md',
     'scripts/perfprobe/probe', '.github/workflows/ci.yml', 'ci/Dockerfile', 'mobile/package.json', 'build/config.yml']) {
     const result = run(['docs/x.md', path]);
     assert.deepEqual({ ...result, 'upgrade-lineage': false },

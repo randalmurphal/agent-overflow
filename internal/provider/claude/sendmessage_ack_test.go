@@ -7,7 +7,7 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-const fixtureSendMessageAck = "../../../docs/references/fixtures/claude/send_message_ack_20260904.ndjson"
+const fixtureSendMessageAck = "../wirecaptures/claude/send_message_ack_20260904.ndjson"
 
 func TestDecodeSendMessageAck(t *testing.T) {
 	cases := []struct {

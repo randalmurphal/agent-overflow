@@ -19,10 +19,10 @@ import (
 // provider-events log — so a drift in any of these shapes fails here
 // rather than silently degrading a card to "no progress ever arrives".
 const (
-	fixtureTaskProgress          = "../../../docs/references/fixtures/claude/task_progress_20260822.ndjson"
-	fixtureBackgroundTasksCtl    = "../../../docs/references/fixtures/claude/background_tasks_control_20260822.ndjson"
-	fixtureCanUseToolAgentID     = "../../../docs/references/fixtures/claude/can_use_tool_agent_id_20260822.ndjson"
-	fixtureForkedSkill           = "../../../docs/references/fixtures/claude/forked_skill_20260822.ndjson"
+	fixtureTaskProgress          = "../wirecaptures/claude/task_progress_20260822.ndjson"
+	fixtureBackgroundTasksCtl    = "../wirecaptures/claude/background_tasks_control_20260822.ndjson"
+	fixtureCanUseToolAgentID     = "../wirecaptures/claude/can_use_tool_agent_id_20260822.ndjson"
+	fixtureForkedSkill           = "../wirecaptures/claude/forked_skill_20260822.ndjson"
 	fixtureProgressLaunchToolUse = "toolu_01LQR6oybvv33HgSQ56rxSMN"
 	fixtureProgressTaskID        = "a75a87231e749bff1"
 )

@@ -9,7 +9,7 @@
 // (executes steps), and Go tests (author inline scenarios). Frames are
 // carried as raw wire lines — Claude stream-json NDJSON or Codex
 // app-server JSON-RPC — so the captured fixtures under
-// docs/references/fixtures/ can be replayed verbatim; the schema never
+// internal/provider/wirecaptures/ can be replayed verbatim; the schema never
 // re-models provider wire shapes.
 package scenario
 
@@ -360,7 +360,7 @@ type ApprovalStep struct {
 	// are load-bearing downstream: triage resolves AgentID to the launch
 	// tool_use so the prompt scopes to the agent's card rather than the
 	// main thread. Captured shape:
-	// docs/references/fixtures/claude/can_use_tool_agent_id_20260822.ndjson.
+	// internal/provider/wirecaptures/claude/can_use_tool_agent_id_20260822.ndjson.
 	// Omitted fields are left off the request, which is the top-level
 	// (main-agent) shape. Both support ${VAR} substitution.
 	ToolUseID string `json:"toolUseId,omitempty"`

@@ -15,7 +15,7 @@ import (
 // task_started; the resumed a431 then resumes the finished fork a533 from
 // stdout, and the resumed fork's rows reach only the mirror.
 const (
-	fixtureResumedByTypedFork = "../../../docs/references/fixtures/claude/local_agent_resumed_by_typed_fork_20261014.ndjson"
+	fixtureResumedByTypedFork = "../wirecaptures/claude/local_agent_resumed_by_typed_fork_20261014.ndjson"
 
 	resumeForkCommandUUID = "11111111-2222-4333-8444-555555555551"
 	resumeForkCommandRow  = "claude-command:" + resumeForkCommandUUID

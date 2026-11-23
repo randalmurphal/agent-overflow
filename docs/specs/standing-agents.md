@@ -2487,7 +2487,7 @@ hit:
 
 The ack and fire shapes were captured on claude 2.1.284 under the
 isolated spike policy (2026-10-10); slice 4 commits the sanitized
-captures to `docs/references/fixtures/claude/` and documents them in
+captures to `internal/provider/wirecaptures/claude/` and documents them in
 `claude-wire.md` as E11 (E10 was already `EnterWorktree`).
 
 ## Slices and verification

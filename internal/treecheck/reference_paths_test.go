@@ -146,19 +146,21 @@ func scanLocalPaths(root string) (found []string, files int, err error) {
 	return found, files, err
 }
 
-// The committed provider references and fixtures carry placeholders, not
-// the paths or host name of the machine that captured them.
+// The committed provider references and wire captures carry placeholders,
+// not the paths or host name of the machine that captured them.
 func TestReferencesCarryNoLocalPaths(t *testing.T) {
 	t.Parallel()
-	found, files, err := scanLocalPaths(reporoot.Path(t, "docs/references"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if files == 0 {
-		t.Fatal("no reference files scanned")
-	}
-	if len(found) > 0 {
-		t.Fatalf("replace with /home/user, /tmp/ao-fixture or a neutral host:\n%s", strings.Join(found, "\n"))
+	for _, dir := range []string{"docs/references", "internal/provider/wirecaptures"} {
+		found, files, err := scanLocalPaths(reporoot.Path(t, dir))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if files == 0 {
+			t.Fatalf("no files scanned under %s", dir)
+		}
+		if len(found) > 0 {
+			t.Errorf("replace with /home/user, /tmp/ao-fixture or a neutral host:\n%s", strings.Join(found, "\n"))
+		}
 	}
 }
 

@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	cronCaptureFixture = "../../../docs/references/fixtures/claude/cron_create_fire_20261010.ndjson"
-	cronLoopFixture    = "../../../docs/references/fixtures/claude/cron_loop_midturn_20261010.ndjson"
+	cronCaptureFixture = "../wirecaptures/claude/cron_create_fire_20261010.ndjson"
+	cronLoopFixture    = "../wirecaptures/claude/cron_loop_midturn_20261010.ndjson"
 	cronCapturePrompt  = "Reply with exactly the text CRON-FIRED and call no tools."
 )
 

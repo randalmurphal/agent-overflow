@@ -15,7 +15,7 @@ import (
 // terminal RPCs answer with what the real app-server writes for them.
 //
 // Modeled on the codex-cli 0.159.1 captures behind codex-wire.md
-// §Background terminals (docs/references/fixtures/codex/*_20261015.ndjson):
+// §Background terminals (internal/provider/wirecaptures/codex/*_20261015.ndjson):
 //
 //   - a running terminal is a `commandExecution` item/started with
 //     `source:"unifiedExecStartup"` and a `processId`, until an

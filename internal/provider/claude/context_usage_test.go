@@ -13,7 +13,7 @@ import (
 )
 
 // fixtureCategories is the verbatim `categories[]` array from
-// docs/references/fixtures/claude/context_usage_control_20260803.summary.json
+// internal/provider/wirecaptures/claude/context_usage_control_20260803.summary.json
 // (Claude Code 2.1.219). Keeping it inline as the wire JSON — rather than a
 // hand-built Go literal — means the test exercises the real decode path,
 // including the keys we deliberately drop (`color`) and the optional one we

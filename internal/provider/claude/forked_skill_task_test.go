@@ -8,20 +8,20 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// Live 2.1.284 captures (docs/references/fixtures/claude/README.md) of a
+// Live 2.1.284 captures (internal/provider/wirecaptures/claude/README.md) of a
 // forked skill that now runs as a local_agent task bound to its Skill call
 // (claude-wire.md §E9).
 const (
-	fixtureForkedSkillTaskStarted   = "../../../docs/references/fixtures/claude/forked_skill_task_started_20261014.ndjson"
-	fixtureForkedSkillDirectCommand = "../../../docs/references/fixtures/claude/forked_skill_direct_command_20261014.ndjson"
-	fixtureTypedForkStopTask        = "../../../docs/references/fixtures/claude/forked_skill_direct_command_stop_task_20261014.ndjson"
-	fixtureTypedForkInterrupt       = "../../../docs/references/fixtures/claude/forked_skill_direct_command_interrupt_20261014.ndjson"
+	fixtureForkedSkillTaskStarted   = "../wirecaptures/claude/forked_skill_task_started_20261014.ndjson"
+	fixtureForkedSkillDirectCommand = "../wirecaptures/claude/forked_skill_direct_command_20261014.ndjson"
+	fixtureTypedForkStopTask        = "../wirecaptures/claude/forked_skill_direct_command_stop_task_20261014.ndjson"
+	fixtureTypedForkInterrupt       = "../wirecaptures/claude/forked_skill_direct_command_interrupt_20261014.ndjson"
 	// Live 2.1.300 capture: after the typed fork's task_notification the
 	// CLI replays the fork's turns, and its Agent's, on stdout.
-	fixtureTypedForkStdoutReplay = "../../../docs/references/fixtures/claude/forked_skill_direct_command_stdout_replay_20261016.ndjson"
+	fixtureTypedForkStdoutReplay = "../wirecaptures/claude/forked_skill_direct_command_stdout_replay_20261016.ndjson"
 	// Live 2.1.300 capture: a fork the Skill tool launched streams its
 	// rows on stdout, now with agent_id.
-	fixtureSkillToolForkAgentID = "../../../docs/references/fixtures/claude/forked_skill_tool_agent_id_20261016.ndjson"
+	fixtureSkillToolForkAgentID = "../wirecaptures/claude/forked_skill_tool_agent_id_20261016.ndjson"
 )
 
 // resumePrompts are the §E6 resume prompt rows a replay emitted. A launch

@@ -592,7 +592,7 @@ the subagent scope: the main thread's write head is a later turn
 than the one the agent's rows keep landing on, so a sibling placed
 there would sort after everything the agent writes afterwards. The
 tray renders it on its own retention clock. See
-`docs/references/fixtures/claude/ndjson_outlives.log` for a captured example.
+`internal/provider/wirecaptures/claude/ndjson_outlives.log` for a captured example.
 
 ### Desired chat-history contract
 
@@ -1268,5 +1268,5 @@ counterpart "retry succeeded" wire signal from either provider.
 - Event taxonomy full routing: [`triage-routing.md`](triage-routing.md).
 - Data flow end-to-end: [`data-flow.md`](data-flow.md).
 - Invariants (authoritative guardrails): [`invariants.md`](invariants.md).
-- Captured wire samples: `docs/references/fixtures/claude/*.log`,
-  `docs/references/fixtures/claude/taskoutput_multi.ndjson`.
+- Captured wire samples: `internal/provider/wirecaptures/claude/*.log`,
+  `internal/provider/wirecaptures/claude/taskoutput_multi.ndjson`.

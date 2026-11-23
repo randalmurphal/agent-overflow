@@ -57,8 +57,7 @@ export function harnessTestPackages(declaration = readFileSync(join(root, 'build
 export function classify(path, harnessPackages) {
   const base = path.slice(path.lastIndexOf('/') + 1);
   // The prose class, and the only one: Markdown under docs/ and the guide
-  // files. Only Markdown of docs/ because Playwright replays the NDJSON
-  // captures under docs/references/fixtures.
+  // files. No suite reads anything under docs/.
   if ((path.startsWith('docs/') && path.endsWith('.md')) || base === 'AGENTS.md' || base === 'CLAUDE.md' || path === 'README.md') return 'docs';
   if (path.startsWith('e2e/')) return 'e2e';
   if (path.startsWith('frontend/')) {

@@ -184,7 +184,7 @@ var ClaudeModels = []ModelInfo{
 		// No reasoning efforts: the CLI's own model list on 2.1.219 reports
 		// Haiku with neither `supportsEffort` nor `supportedEffortLevels`,
 		// under both subscription and API-key auth (captured in
-		// docs/references/fixtures/claude/initialize_models_20260802.json).
+		// internal/provider/wirecaptures/claude/initialize_models_20260802.json).
 		// The catalog used to declare low/medium/high here — the one real
 		// catalog-vs-wire discrepancy the 2.7 spike turned up. An empty list
 		// is the honest encoding: internal/claudemodels would otherwise report

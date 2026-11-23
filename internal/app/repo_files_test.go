@@ -29,11 +29,11 @@ func TestTheTestsRunInThePackageDirectory(t *testing.T) {
 }
 
 // wireCapture reads a provider wire capture committed under
-// docs/references/fixtures, named by its provider directory and file name
+// internal/provider/wirecaptures, named by its provider directory and file name
 // (claude/x.ndjson).
 func wireCapture(t *testing.T, name string) []byte {
 	t.Helper()
-	data, err := os.ReadFile(reporoot.Path(t, path.Join("docs/references/fixtures", name)))
+	data, err := os.ReadFile(reporoot.Path(t, path.Join("internal/provider/wirecaptures", name)))
 	if err != nil {
 		t.Fatalf("read the %s wire capture: %v", name, err)
 	}

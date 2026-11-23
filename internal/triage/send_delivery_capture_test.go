@@ -20,7 +20,7 @@ import (
 // the way the app dispatched it, just before the CLI's `queued` ack for its
 // uuid: the app registers a send before it writes it.
 
-const captureDir = "../../docs/references/fixtures/claude/"
+const captureDir = "../provider/wirecaptures/claude/"
 
 // captureSend is how the app dispatched one message of a capture.
 type captureSend struct {

@@ -10,16 +10,16 @@ import (
 )
 
 const (
-	fixtureNDJSONBash             = "../../../docs/references/fixtures/claude/ndjson_bash.log"
-	fixtureNDJSONTask             = "../../../docs/references/fixtures/claude/ndjson_task.log"
-	fixtureNDJSONOutlives         = "../../../docs/references/fixtures/claude/ndjson_outlives.log"
-	fixtureNDJSONOutlivesTurn2    = "../../../docs/references/fixtures/claude/ndjson_outlives_turn2.log"
-	fixtureTaskOutputMulti        = "../../../docs/references/fixtures/claude/taskoutput_multi.ndjson"
-	fixtureLocalAgentOutlives     = "../../../docs/references/fixtures/claude/local_agent_outlives.ndjson"
-	fixtureLocalAgentUserInputMid = "../../../docs/references/fixtures/claude/local_agent_user_input_during_wait.ndjson"
-	fixtureLocalAgentPlusBgBash   = "../../../docs/references/fixtures/claude/local_agent_plus_bg_bash.ndjson"
-	fixtureLocalAgentAsyncLaunch  = "../../../docs/references/fixtures/claude/local_agent_async_launch.ndjson"
-	fixtureLocalAgentAsyncResume  = "../../../docs/references/fixtures/claude/local_agent_async_resume.ndjson"
+	fixtureNDJSONBash             = "../wirecaptures/claude/ndjson_bash.log"
+	fixtureNDJSONTask             = "../wirecaptures/claude/ndjson_task.log"
+	fixtureNDJSONOutlives         = "../wirecaptures/claude/ndjson_outlives.log"
+	fixtureNDJSONOutlivesTurn2    = "../wirecaptures/claude/ndjson_outlives_turn2.log"
+	fixtureTaskOutputMulti        = "../wirecaptures/claude/taskoutput_multi.ndjson"
+	fixtureLocalAgentOutlives     = "../wirecaptures/claude/local_agent_outlives.ndjson"
+	fixtureLocalAgentUserInputMid = "../wirecaptures/claude/local_agent_user_input_during_wait.ndjson"
+	fixtureLocalAgentPlusBgBash   = "../wirecaptures/claude/local_agent_plus_bg_bash.ndjson"
+	fixtureLocalAgentAsyncLaunch  = "../wirecaptures/claude/local_agent_async_launch.ndjson"
+	fixtureLocalAgentAsyncResume  = "../wirecaptures/claude/local_agent_async_resume.ndjson"
 )
 
 // These replay tests load captured Claude CLI NDJSON from the repo's
@@ -92,7 +92,7 @@ func filterKinds(events []provider.ProviderEvent, kinds ...provider.EventKind) [
 
 // TestReplay_NDJsonBash validates the backgrounded-Bash + foreground
 // Bash + Read + result scenario in
-// docs/references/fixtures/claude/ndjson_bash.log.
+// internal/provider/wirecaptures/claude/ndjson_bash.log.
 //
 // Expected lifecycle sequence (ignoring text/thinking/usage deltas):
 //
@@ -246,7 +246,7 @@ func TestReplay_NDJsonBash(t *testing.T) {
 }
 
 // TestReplay_NDJsonTask validates the Task subagent + TaskOutput scenario
-// in docs/references/fixtures/claude/ndjson_task.log.
+// in internal/provider/wirecaptures/claude/ndjson_task.log.
 //
 // Expected lifecycle:
 //
@@ -333,7 +333,7 @@ func TestReplay_NDJsonTask(t *testing.T) {
 }
 
 // TestReplay_NDJsonOutlives validates the outlives-turn scenario in
-// docs/references/fixtures/claude/ndjson_outlives.log: a backgrounded bash whose
+// internal/provider/wirecaptures/claude/ndjson_outlives.log: a backgrounded bash whose
 // `task_updated` / `task_notification` arrive AFTER the turn's
 // `result`. This is the canonical "turn closes while background work
 // is still in flight" shape (invariant 24).
@@ -420,7 +420,7 @@ func TestReplay_NDJsonOutlives(t *testing.T) {
 }
 
 // TestReplay_NDJsonTaskOutputMulti validates the scenario in
-// docs/references/fixtures/claude/taskoutput_multi.ndjson: two parallel
+// internal/provider/wirecaptures/claude/taskoutput_multi.ndjson: two parallel
 // `run_in_background:true` Bashes, then a blocking `TaskOutput` on the
 // longer one.
 //
@@ -521,7 +521,7 @@ func TestReplay_NDJsonTaskOutputMulti(t *testing.T) {
 
 // TestReplay_NDJsonOutlivesTurn2 extends the outlives scenario by
 // continuing the same parser session into a fresh turn 2 captured
-// separately in docs/references/fixtures/claude/ndjson_outlives_turn2.log.
+// separately in internal/provider/wirecaptures/claude/ndjson_outlives_turn2.log.
 //
 // The captured session_id matches ndjson_outlives.log, which means the
 // same parser instance would observe both streams in production: turn
@@ -535,10 +535,10 @@ func TestReplay_NDJsonTaskOutputMulti(t *testing.T) {
 // turn-1 bg launch.
 //
 // Fixtures:
-//   - docs/references/fixtures/claude/ndjson_outlives.log (turn 1 + task_updated
+//   - internal/provider/wirecaptures/claude/ndjson_outlives.log (turn 1 + task_updated
 //     after result; also contains the first re-init for turn 2 and
 //     its "Background task finished" result).
-//   - docs/references/fixtures/claude/ndjson_outlives_turn2.log (a second fresh
+//   - internal/provider/wirecaptures/claude/ndjson_outlives_turn2.log (a second fresh
 //     turn 2 capture for the same session — simulates the user typing
 //     "hi" and the agent responding while the parser has already
 //     forgotten the bg task in its task map).
@@ -1123,7 +1123,7 @@ func TestParseTaskStarted_FreshLocalAgentLaunchIsNotAResume(t *testing.T) {
 }
 
 // TestReplay_LocalAgentAsyncResume validates the resume-rebind carrier
-// scenario in docs/references/fixtures/claude/local_agent_async_resume.ndjson
+// scenario in internal/provider/wirecaptures/claude/local_agent_async_resume.ndjson
 // (claude-wire.md §E6): an idle async agent resumed via the harness's
 // SendMessage tool gets a FRESH `system/task_started` with the SAME
 // task_id but SendMessage's tool_use_id, carrying the original agent's

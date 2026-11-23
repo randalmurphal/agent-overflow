@@ -1,7 +1,7 @@
 # Codex Wire Fixtures
 
 Checked-in app-server JSON-RPC captures backing
-[`docs/references/codex-wire.md`](../../codex-wire.md). Client requests are
+[`docs/references/codex-wire.md`](../../../../docs/references/codex-wire.md). Client requests are
 interleaved at the position they were written; every other line is what the
 app-server wrote.
 

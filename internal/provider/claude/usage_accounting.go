@@ -11,7 +11,7 @@ import (
 // Per-turn usage accounting for `result` envelopes.
 //
 // Verified 2026-07-03 against live captures (fixtures
-// docs/references/fixtures/claude/multiturn_cost_cumulative_20260703.ndjson
+// internal/provider/wirecaptures/claude/multiturn_cost_cumulative_20260703.ndjson
 // and subagent_usage_inclusion_20260703.ndjson):
 //
 //   - `result.total_cost_usd` and `result.modelUsage` are SESSION-CUMULATIVE

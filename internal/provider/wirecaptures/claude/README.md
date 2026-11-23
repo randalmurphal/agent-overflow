@@ -2,7 +2,7 @@
 
 Checked-in NDJSON captures for Claude background-task and TaskOutput
 behavior. These back parser replay tests and the reference docs in
-[`docs/references/claude-wire.md`](../../claude-wire.md).
+[`docs/references/claude-wire.md`](../../../../docs/references/claude-wire.md).
 
 ## Files
 
@@ -253,7 +253,7 @@ behavior. These back parser replay tests and the reference docs in
   the active-branch and resume-filter sections of `claude-wire.md`,
   `sessionfork/rechain_test.go`, the
   `sessionleaf_branch.go` tests, and the draft upstream report
-  ([`claude-api-error-upstream-report.md`](../../claude-api-error-upstream-report.md)).
+  ([`claude-api-error-upstream-report.md`](../../../../docs/references/claude-api-error-upstream-report.md)).
   Dropped into `~/.claude/projects/<slug>/<id>.jsonl`, resume-at
   `a3-final` reproduces the pre-init hard failure on 2.1.170.
 - `multiturn_cost_cumulative_20260703.ndjson`: three trivial turns in
