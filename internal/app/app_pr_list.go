@@ -3,11 +3,8 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"time"
-
-	"github.com/google/uuid"
 
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
@@ -182,11 +179,11 @@ func (a *App) takePRListHandle(conn *transport.ConnState) (id string, pump *prLi
 	if len(a.prUpdates.listHandles) >= maxPRUpdateHandles {
 		return "", nil, false, nil, 0, ErrTooManyPRListSubscriptions
 	}
-	id = uuid.NewString()
-	tie, err := conn.Bind(prListCleanupKey(id), func() { a.unsubscribePRList(id) })
+	handle, err := bindPumpHandle(conn, "pr list", prListCleanupKey, a.unsubscribePRList)
 	if err != nil {
-		return "", nil, false, nil, 0, fmt.Errorf("pr list: %w", err)
+		return "", nil, false, nil, 0, err
 	}
+	id, tie := handle.id, handle.tie
 	pump = a.prUpdates.list
 	if pump == nil || pump.DeadLocked() {
 		a.prUpdates.listGen++

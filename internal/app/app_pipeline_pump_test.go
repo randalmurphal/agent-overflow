@@ -234,17 +234,21 @@ func TestPipelineFollowsFetchLogsUnderThePipelineKey(t *testing.T) {
 func pipelineConnectionTie(t *testing.T) connectionTie {
 	f := newPipelineFixture(t)
 	f.publish(pipelineWith(gitops.CIStatusSuccess), nil)
+	lifetime := newCountedLifetime()
+	f.app.appCtx = lifetime
 	t.Cleanup(f.app.closePRUpdatePumps)
 	return connectionTie{
 		open: func(ctx context.Context) (string, error) {
 			sub, err := f.app.SubscribePipeline(ctx, testPR.Repository(), "41")
 			return sub.ID, err
 		},
+		// The handle and its pump's lifetime context.
 		held: func() int {
 			f.app.prUpdates.mu.Lock()
 			defer f.app.prUpdates.mu.Unlock()
-			return len(f.app.prUpdates.pipelineHandles)
+			return len(f.app.prUpdates.pipelineHandles) + lifetime.count()
 		},
+		unit:      2,
 		release:   f.app.UnsubscribePipeline,
 		anyCaller: true,
 		key:       pipelineCleanupKey,

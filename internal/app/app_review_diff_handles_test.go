@@ -545,8 +545,26 @@ func TestAnOpenRefusedAfterItsRecordLeavesNothingTied(t *testing.T) {
 	}
 	t.Cleanup(func() { app.reviewDiffs.diffs = nil })
 	ctx, state := newTestConnection(t, transport.ConnPrincipal{})
-	if _, err := app.OpenWorkspaceDiff(ctx, ref, false); !errors.Is(err, ErrTooManyReviewDiffs) {
+	// The handle registry's lock holds the open at its hold, after its
+	// record was reserved, so the record's tie is seen before the refusal
+	// rolls it back: the rollback is proven only if there was a release.
+	app.reviewDiffs.mu.Lock()
+	refused := make(chan error, 1)
+	go func() {
+		_, err := app.OpenWorkspaceDiff(ctx, ref, false)
+		refused <- err
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(state.BoundKeys()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	tied := state.BoundKeys()
+	app.reviewDiffs.mu.Unlock()
+	if err := <-refused; !errors.Is(err, ErrTooManyReviewDiffs) {
 		t.Fatalf("open past the handle cap = %v, want ErrTooManyReviewDiffs", err)
+	}
+	if len(tied) != 1 {
+		t.Fatalf("the open's reserved record had %d releases bound before its refusal, want 1: %v", len(tied), tied)
 	}
 	if n := app.reviewDiffFiles.len(); n != 0 {
 		t.Fatalf("the refused open left %d records", n)

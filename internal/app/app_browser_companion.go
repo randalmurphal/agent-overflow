@@ -141,26 +141,19 @@ func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (
 	if err != nil {
 		return appbrowser.CompanionSubscription{}, err
 	}
-	result, err := manager.AttachPane(caller)
-	if err != nil {
-		return appbrowser.CompanionSubscription{}, err
-	}
-	mount := appbrowser.MountID(result.ID)
-	tie, err := conn.Bind(companionPaneCleanupKey(result.ID), func() { manager.DetachPane(mount) })
-	if err != nil {
-		manager.DetachPane(mount)
-		return appbrowser.CompanionSubscription{}, fmt.Errorf("browser: %w", err)
-	}
-	// The connection holds the mount until it is detached, by whichever
-	// connection asks.
-	if !manager.OnDetach(mount, tie.Untie) {
-		tie.Untie()
-	}
-	return result, nil
+	// The connection holds the mount from the moment it is published until
+	// it is detached, by whichever connection asks.
+	return manager.AttachPane(caller, func(mount appbrowser.MountID) (func(), error) {
+		tie, err := conn.Bind(companionPaneCleanupKey(string(mount)), func() { manager.DetachPane(mount) })
+		if err != nil {
+			return nil, fmt.Errorf("browser: %w", err)
+		}
+		return tie.Untie, nil
+	})
 }
 
 // BrowserCompanionPaneDetach releases a pane mount; the connection that
-// attached it is untied (browser.Manager.OnDetach).
+// attached it is untied (browser.PaneTie).
 //
 //ao:scope host
 //ao:route home

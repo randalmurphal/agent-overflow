@@ -154,9 +154,9 @@ type paneMount struct {
 	// order admits the numbered tab commands made in the mount in the
 	// user's order (selection.go).
 	order *turnorder.Order
-	// onDetach runs, outside the lock, once the mount is detached
-	// (OnDetach).
-	onDetach func()
+	// untie runs, outside the lock, once the mount is detached: what its
+	// PaneTie answered.
+	untie func()
 }
 
 // mountLocked answers the pane mount id when it is attached to the thread
@@ -176,8 +176,9 @@ func (m *Manager) mountLocked(tb *threadBrowser, id MountID) (paneMount, bool) {
 // state snapshot the pane renders its chrome from. The returned id is what
 // SetPaneRect addresses and what DetachPane (or connection cleanup) releases.
 //
-// The mount belongs to the thread's lifetime current at the attach.
-func (m *Manager) AttachPane(caller Caller) (CompanionSubscription, error) {
+// The mount belongs to the thread's lifetime current at the attach. tie
+// binds it to its owner as it is published (PaneTie).
+func (m *Manager) AttachPane(caller Caller, tie PaneTie) (CompanionSubscription, error) {
 	state := m.threadState(caller.ThreadID)
 	if len(state.Pages) == 0 {
 		return CompanionSubscription{}, fmt.Errorf("browser: thread has no open pages")
@@ -193,24 +194,27 @@ func (m *Manager) AttachPane(caller Caller) (CompanionSubscription, error) {
 		m.mu.Unlock()
 		return CompanionSubscription{}, fmt.Errorf("browser: too many mounted browser panes")
 	}
+	var untie func()
+	if tie != nil {
+		var err error
+		if untie, err = tie(id); err != nil {
+			m.mu.Unlock()
+			return CompanionSubscription{}, err
+		}
+	}
 	m.paneSeq++
-	m.panes[id] = paneMount{owner: tb, seq: m.paneSeq}
+	m.panes[id] = paneMount{owner: tb, seq: m.paneSeq, untie: untie}
 	m.mu.Unlock()
 	return CompanionSubscription{ID: string(id), State: state}, nil
 }
 
-// OnDetach sets what runs once the mount is detached, such as releasing
-// its connection's cleanup. False when it is already gone.
-func (m *Manager) OnDetach(id MountID, f func()) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	mount, ok := m.panes[id]
-	if ok {
-		mount.onDetach = f
-		m.panes[id] = mount
-	}
-	return ok
-}
+// PaneTie ties a mount to its owner as AttachPane publishes it. It runs in
+// the critical section that publishes the mount, so it must not block and
+// must not call back into the Manager; an error refuses the mount, and
+// nothing is published. Its answer runs once the mount is detached. A nil
+// PaneTie is for a caller that detaches the mount itself before it returns
+// (the harness's screenshot).
+type PaneTie func(id MountID) (untie func(), err error)
 
 // MountedPanesForTesting reports how many pane mounts are attached, for
 // root tests of the mount's connection tie.
@@ -248,8 +252,8 @@ func (m *Manager) DetachPane(id MountID) {
 		}
 	}
 	m.mu.Unlock()
-	if ok && mount.onDetach != nil {
-		mount.onDetach()
+	if ok && mount.untie != nil {
+		mount.untie()
 	}
 	for _, p := range recolor {
 		m.applyPageBase(p)

@@ -301,10 +301,9 @@ func (a *App) OpenOwnComputerPairing(ctx context.Context, networkChoice string) 
 	if err := a.ownPairingAdmin(ctx); err != nil {
 		return ComputerPairingWindow{}, err
 	}
-	if e := a.enableOwnDevices(); e != nil {
-		return ComputerPairingWindow{}, e
-	}
-	return a.openComputerPairing(conn, networkChoice, "full", "own-device")
+	// Own devices are enabled, which persists, only once the window's
+	// arguments are valid and its caller admitted (openComputerPairing).
+	return a.openComputerPairing(conn, networkChoice, "full", "own-device", a.enableOwnDevices)
 }
 
 //ao:scope session

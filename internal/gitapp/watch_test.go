@@ -2,6 +2,8 @@ package gitapp
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,9 +34,62 @@ func newWatchTestService(t *testing.T) (*Service, string) {
 	return service, workspace
 }
 
+// untiedStatus ties a test's handles to nothing.
+var untiedStatus StatusTie = func(string) (func(), error) { return nil, nil }
+
+// TestSubscribeTiesTheHandleAsItPublishesIt: a refused tie publishes no
+// handle and starts no stream, and the untie the tie answered runs once the
+// handle is gone, whether its Unsubscribe or its pump's end removes it. The
+// handle is tied before anything can remove it, so there is no moment a
+// published handle has no untie.
+func TestSubscribeTiesTheHandleAsItPublishesIt(t *testing.T) {
+	service, _ := newWatchTestService(t)
+	refused := errors.New("the owner is gone")
+	if _, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project"}, func(string) (func(), error) {
+		return nil, refused
+	}); !errors.Is(err, refused) {
+		t.Fatalf("subscribe with a refused tie = %v, want %v", err, refused)
+	}
+	service.status.mu.Lock()
+	handles, pumps := len(service.status.handles), len(service.status.pumps)
+	service.status.mu.Unlock()
+	if handles != 0 || pumps != 0 {
+		t.Fatalf("a refused tie left %d handles and %d streams", handles, pumps)
+	}
+
+	untied := map[string]int{}
+	var mu sync.Mutex
+	tie := func(id string) (func(), error) {
+		return func() {
+			mu.Lock()
+			untied[id]++
+			mu.Unlock()
+		}, nil
+	}
+	first, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project"}, tie)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project"}, tie)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.Unsubscribe(first.ID)
+	service.Unsubscribe(first.ID)
+	service.status.mu.Lock()
+	pump := service.status.handles[second.ID].pump
+	service.status.mu.Unlock()
+	service.dropStatusPump(pump)
+	mu.Lock()
+	defer mu.Unlock()
+	if untied[first.ID] != 1 || untied[second.ID] != 1 {
+		t.Fatalf("unties ran %v, want each handle's once", untied)
+	}
+}
+
 func TestSubscribeReplacesDeadPumpWithoutDroppingSuccessor(t *testing.T) {
 	service, _ := newWatchTestService(t)
-	first, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project"})
+	first, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project"}, untiedStatus)
 	if err != nil {
 		t.Fatalf("Subscribe first: %v", err)
 	}
@@ -48,7 +103,7 @@ func TestSubscribeReplacesDeadPumpWithoutDroppingSuccessor(t *testing.T) {
 	dying.dead = true
 	service.status.mu.Unlock()
 
-	second, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project"})
+	second, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project"}, untiedStatus)
 	if err != nil {
 		t.Fatalf("Subscribe second: %v", err)
 	}

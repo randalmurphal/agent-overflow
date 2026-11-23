@@ -113,15 +113,90 @@ func TestBindIsKeyed(t *testing.T) {
 	if err != nil || again != tie {
 		t.Fatalf("rebinding a bound key = %+v, %v; want the first Tie", again, err)
 	}
-	state.mu.Lock()
-	held := len(state.cleanups)
-	state.mu.Unlock()
-	if held != 1 {
+	if held := len(state.BoundKeys()); held != 1 {
 		t.Fatalf("a key bound twice holds %d releases, want 1", held)
 	}
 	state.RunCleanups()
 	if first.Load() != 1 || second.Load() != 0 {
 		t.Fatalf("releases ran first=%d second=%d, want the first once", first.Load(), second.Load())
+	}
+}
+
+// TestAnEarlierTieOfAReusedKeyUntiesNothing: a Tie names its own
+// registration. Once it is untied, the key bound again is a registration
+// of its own, which a repeated untie of the first Tie leaves bound, and the
+// connection's end runs.
+func TestAnEarlierTieOfAReusedKeyUntiesNothing(t *testing.T) {
+	t.Parallel()
+	_, state := WithConnState(context.Background(), ConnPrincipal{})
+	var ran atomic.Int32
+	first, err := state.Bind("pane", func() { t.Error("the untied registration ran") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Untie()
+	second, err := state.Bind("pane", func() { ran.Add(1) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second == first {
+		t.Fatal("the key bound again answered the untied registration's Tie")
+	}
+	first.Untie()
+	if !state.Bound("pane") {
+		t.Fatal("an untie of the earlier registration removed the key's next one")
+	}
+	state.RunCleanups()
+	if ran.Load() != 1 {
+		t.Fatalf("the connection's end ran the key's second registration %d times, want 1", ran.Load())
+	}
+}
+
+// TestBindAndUntieVisitNoEntries counts, rather than times, what binding
+// and untying cost: a Bind or an Untie reaches its one registration through
+// the key index, so 256 fresh registrations bound and untied in any order
+// visit no other entry; only the walks that answer every registration,
+// BoundKeys and the teardown, visit each once.
+func TestBindAndUntieVisitNoEntries(t *testing.T) {
+	t.Parallel()
+	_, state := WithConnState(context.Background(), ConnPrincipal{})
+	const n = 256
+	ties := make([]Tie, 0, n)
+	bind := func(round int) {
+		for i := range n {
+			tie, err := state.Bind(fmt.Sprintf("handle-%d-%d", round, i), func() {})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ties = append(ties, tie)
+		}
+	}
+	bind(0)
+	for _, tie := range ties {
+		tie.Untie()
+	}
+	ties = ties[:0]
+	bind(1)
+	for i := len(ties) - 1; i >= 0; i-- {
+		ties[i].Untie()
+	}
+	ties = ties[:0]
+	bind(2)
+	state.mu.Lock()
+	walked := state.walked
+	state.mu.Unlock()
+	if walked != 0 {
+		t.Fatalf("binding and untying %d registrations visited %d entries, want 0", 3*n, walked)
+	}
+	if keys := state.BoundKeys(); len(keys) != n {
+		t.Fatalf("%d bound, want %d", len(keys), n)
+	}
+	state.RunCleanups()
+	state.mu.Lock()
+	walked = state.walked
+	state.mu.Unlock()
+	if walked != 2*n {
+		t.Fatalf("BoundKeys and the teardown visited %d entries, want %d", walked, 2*n)
 	}
 }
 
@@ -197,10 +272,7 @@ func TestBindNeedsAKeyAndARelease(t *testing.T) {
 	if _, err := state.Bind("", func() {}); err == nil {
 		t.Fatal("Bind took an empty key")
 	}
-	state.mu.Lock()
-	held := len(state.cleanups)
-	state.mu.Unlock()
-	if held != 0 {
+	if held := len(state.BoundKeys()); held != 0 {
 		t.Fatalf("refused binds left %d releases", held)
 	}
 }

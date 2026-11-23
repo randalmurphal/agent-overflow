@@ -523,6 +523,10 @@ export function BrowserCompanionPaneAttach(threadID: string): $CancellablePromis
     });
 }
 
+/**
+ * BrowserCompanionPaneDetach releases a pane mount; the connection that
+ * attached it is untied (browser.PaneTie).
+ */
 export function BrowserCompanionPaneDetach(paneID: string): $CancellablePromise<void> {
     return $Call.ByID(3255514830, paneID);
 }
@@ -2945,9 +2949,10 @@ export function GitStatusSubscribe(ws: app$0.WorkspaceRef): $CancellablePromise<
 
 /**
  * GitStatusUnsubscribe releases a subscription previously created via
- * GitStatusSubscribe. Idempotent — unknown ids and double-unsubscribes
- * are no-ops because the connection-cleanup safety net may have run
- * first on disconnect.
+ * GitStatusSubscribe, from whichever connection asks; the connection that
+ * opened it is untied (gitapp.StatusTie). Idempotent — unknown ids
+ * and double-unsubscribes are no-ops because the connection-cleanup safety
+ * net may have run first on disconnect.
  */
 export function GitStatusUnsubscribe(subscriptionID: string): $CancellablePromise<void> {
     return $Call.ByID(3263989430, subscriptionID);
@@ -6826,14 +6831,26 @@ export function UnregisterPushToken(): $CancellablePromise<void> {
     return $Call.ByID(3065043012);
 }
 
+/**
+ * UnsubscribePRList releases a subscription, from whichever connection
+ * asks; the connection that subscribed is untied with the handle.
+ */
 export function UnsubscribePRList(subscriptionID: string): $CancellablePromise<void> {
     return $Call.ByID(3130440960, subscriptionID);
 }
 
+/**
+ * UnsubscribePRUpdates releases a subscription, from whichever connection
+ * asks; the connection that subscribed is untied with the handle.
+ */
 export function UnsubscribePRUpdates(subscriptionID: string): $CancellablePromise<void> {
     return $Call.ByID(2888550814, subscriptionID);
 }
 
+/**
+ * UnsubscribePipeline releases a subscription, from whichever connection
+ * asks; the connection that subscribed is untied with the handle.
+ */
 export function UnsubscribePipeline(subscriptionID: string): $CancellablePromise<void> {
     return $Call.ByID(2697678232, subscriptionID);
 }

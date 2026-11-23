@@ -82,9 +82,15 @@ type harnessUIBridge struct {
 	mu          sync.Mutex
 	seq         uint64
 	waiters     map[string]harnessUIWaiter
-	pages       map[string]HarnessPageIdentity
-	pageTies    map[string]transport.Tie
+	pages       map[string]harnessPage
 	pageChanged chan struct{}
+}
+
+// harnessPage is one registered page: who it is, and its tie to the
+// connection it registered on, whose end removes it.
+type harnessPage struct {
+	identity HarnessPageIdentity
+	tie      transport.Tie
 }
 
 type harnessUIWaiter struct {
@@ -113,7 +119,7 @@ func (b *harnessUIBridge) registerPage(identity HarnessPageIdentity, owner *tran
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	existing, exists := b.pages[identity.PageID]
-	if exists && existing != identity {
+	if exists && existing.identity != identity {
 		return fmt.Errorf("frontend page %q is already registered", identity.PageID)
 	}
 	tie, err := owner.Bind("harness-page:"+identity.PageID, func() { b.unregisterPage(identity.PageID, owner) })
@@ -121,18 +127,16 @@ func (b *harnessUIBridge) registerPage(identity HarnessPageIdentity, owner *tran
 		return fmt.Errorf("frontend page %q: %w", identity.PageID, err)
 	}
 	if exists {
-		if previous := b.pageTies[identity.PageID]; !previous.HeldBy(owner) {
-			previous.Untie()
+		if !existing.tie.HeldBy(owner) {
+			existing.tie.Untie()
 		}
-		b.pageTies[identity.PageID] = tie
+		b.pages[identity.PageID] = harnessPage{identity: identity, tie: tie}
 		return nil
 	}
 	if b.pages == nil {
-		b.pages = make(map[string]HarnessPageIdentity, 1)
-		b.pageTies = make(map[string]transport.Tie, 1)
+		b.pages = make(map[string]harnessPage, 1)
 	}
-	b.pages[identity.PageID] = identity
-	b.pageTies[identity.PageID] = tie
+	b.pages[identity.PageID] = harnessPage{identity: identity, tie: tie}
 	if b.pageChanged != nil {
 		close(b.pageChanged)
 	}
@@ -144,14 +148,13 @@ func (b *harnessUIBridge) registerPage(identity HarnessPageIdentity, owner *tran
 // the connection the page moved away from removes nothing.
 func (b *harnessUIBridge) unregisterPage(pageID string, owner *transport.ConnState) {
 	b.mu.Lock()
-	tie, ok := b.pageTies[pageID]
-	if !ok || !tie.HeldBy(owner) {
+	page, ok := b.pages[pageID]
+	if !ok || !page.tie.HeldBy(owner) {
 		b.mu.Unlock()
 		return
 	}
-	tie.Untie()
+	page.tie.Untie()
 	delete(b.pages, pageID)
-	delete(b.pageTies, pageID)
 	if b.pageChanged != nil {
 		close(b.pageChanged)
 	}
@@ -217,7 +220,7 @@ func (b *harnessUIBridge) pageIDs() []HarnessPageIdentity {
 	defer b.mu.Unlock()
 	pages := make([]HarnessPageIdentity, 0, len(b.pages))
 	for _, page := range b.pages {
-		pages = append(pages, page)
+		pages = append(pages, page.identity)
 	}
 	sort.Slice(pages, func(i, j int) bool { return pages[i].PageID < pages[j].PageID })
 	return pages

@@ -57,12 +57,9 @@ type computerPairingState struct {
 	// answers by this id until the cancellation is durable.
 	windowID string
 	// linkID fences the last minted invitation against confirmation once its
-	// window is gone, until its cancellation is durable. linkWindow is the
-	// window that minted it, so a close retires its own window's link and
-	// never a replacement's; empty for a link whose window is unknown.
-	linkID     string
-	linkWindow string
-	owner      *transport.ConnState
+	// window is gone, until its cancellation is durable.
+	linkID string
+	owner  *transport.ConnState
 }
 
 // OpenComputerPairing opens a short-lived invitation window. Merely discovering
@@ -77,12 +74,18 @@ func (a *App) OpenComputerPairing(ctx context.Context, networkChoice, access str
 	if err != nil {
 		return ComputerPairingWindow{}, err
 	}
-	return a.openComputerPairing(conn, networkChoice, access, "")
+	return a.openComputerPairing(conn, networkChoice, access, "", nil)
 }
 
+const computerPairingCleanupKey = "computer-pairing"
+
 // openComputerPairing opens the window for conn, which owns it: the
-// connection's end closes it.
-func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, access, purpose string) (ComputerPairingWindow, error) {
+// connection's end closes it. conn is admitted before anything is changed:
+// a connection that is already closing retires no other connection's
+// window, persists nothing through prepare, and exposes no invitation.
+// prepare, when set, runs once the caller is admitted and before the old
+// window is retired.
+func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, access, purpose string, prepare func() error) (ComputerPairingWindow, error) {
 	if networkChoice != "lan" && networkChoice != "tailnet" {
 		return ComputerPairingWindow{}, errors.New("choose Local network or Tailscale")
 	}
@@ -100,6 +103,27 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 	state := &a.computerPairing
 	state.ops.Lock()
 	defer state.ops.Unlock()
+	// Admission. The tie is the connection's for its life (the key is
+	// bound once) and closes whichever window the connection owns when it
+	// ends, so binding it before this connection owns one closes nothing.
+	if _, err := conn.Bind(computerPairingCleanupKey, func() {
+		state.mu.Lock()
+		id, owned := state.windowID, state.owner == conn
+		if owned {
+			state.owner = nil
+		}
+		state.mu.Unlock()
+		if owned {
+			a.closeComputerPairingWindow(id)
+		}
+	}); err != nil {
+		return ComputerPairingWindow{}, err
+	}
+	if prepare != nil {
+		if err := prepare(); err != nil {
+			return ComputerPairingWindow{}, err
+		}
+	}
 	state.mu.Lock()
 	if state.book == nil {
 		state.book = pairbootstrap.NewBook(a.cancelComputerPairingLink)
@@ -123,24 +147,15 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 		invite, err := a.mintDevicePairingPurpose("desktop", access, choice, purpose)
 		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
 	})
-	// The window becomes conn's in the same critical section that ties conn,
-	// so the connection's end finds it the owner however soon it comes.
-	// Binding is keyed: each connection binds once for its life.
+	// The window becomes conn's only while its tie is still bound, checked
+	// in the critical section the tie's release takes: a connection that
+	// ended while the window opened has already run that release, so the
+	// window it would have owned is closed here instead.
 	state.mu.Lock()
-	if _, err := conn.Bind("computer-pairing", func() {
-		state.mu.Lock()
-		id, owned := state.windowID, state.owner == conn
-		if owned {
-			state.owner = nil
-		}
-		state.mu.Unlock()
-		if owned {
-			a.closeComputerPairingWindow(id)
-		}
-	}); err != nil {
+	if !conn.Bound(computerPairingCleanupKey) {
 		state.mu.Unlock()
 		book.Close(view.WindowID)
-		return ComputerPairingWindow{}, err
+		return ComputerPairingWindow{}, transport.ErrConnectionClosing
 	}
 	state.windowID, state.owner, state.discoveryError = view.WindowID, conn, ""
 	state.mu.Unlock()
@@ -180,10 +195,7 @@ func (a *App) advertiseComputerPairing(book *pairbootstrap.Book, windowID string
 	}
 }
 
-// CloseComputerPairing retires only the named window and the link it
-// minted, never a replacement or the replacement's link: the window and
-// its fenced link are read in one critical section, so a window opened
-// while this close runs keeps its link.
+// CloseComputerPairing retires only the named window, never a replacement.
 //
 //ao:scope access:admin
 //ao:route home
@@ -191,22 +203,15 @@ func (a *App) CloseComputerPairing(id string) error {
 	state := &a.computerPairing
 	state.mu.Lock()
 	match := state.book != nil && state.windowID == id
-	var link string
 	if match {
 		state.owner = nil
-		if state.linkWindow == id || state.linkWindow == "" {
-			link = state.linkID
-		}
 	}
 	state.mu.Unlock()
 	if !match {
 		return nil
 	}
 	a.closeComputerPairingWindow(id)
-	if link == "" {
-		return nil
-	}
-	return a.retireComputerPairingLinkID(link)
+	return a.retireComputerPairingLink()
 }
 
 // closeComputerPairingWindow retires one window: the book cancels its
@@ -263,8 +268,7 @@ func (a *App) retireComputerPairingLink() error {
 }
 
 // retireComputerPairingLinkID cancels one link and keeps it fenced until the
-// cancellation is durable. A link already settled needs no second write. A
-// link it fences anew has lost its window.
+// cancellation is durable. A link already settled needs no second write.
 func (a *App) retireComputerPairingLinkID(id string) error {
 	err := a.CancelDevicePairing(id)
 	if errors.Is(err, identity.ErrPairingRefused) {
@@ -272,11 +276,10 @@ func (a *App) retireComputerPairingLinkID(id string) error {
 	}
 	s := &a.computerPairing
 	s.mu.Lock()
-	switch {
-	case err != nil && s.linkID != id:
-		s.linkID, s.linkWindow = id, ""
-	case err == nil && s.linkID == id:
-		s.linkID, s.linkWindow = "", ""
+	if err != nil {
+		s.linkID = id
+	} else if s.linkID == id {
+		s.linkID = ""
 	}
 	s.mu.Unlock()
 	return err
@@ -383,7 +386,7 @@ func (e authEndpoints) NearbyPair(_ context.Context, authority string, req pairb
 		// the callback, which fences it itself if that write fails.
 		if current := book.Snapshot(""); current.LinkID != "" {
 			s.mu.Lock()
-			s.linkID, s.linkWindow = current.LinkID, current.WindowID
+			s.linkID = current.LinkID
 			s.mu.Unlock()
 		}
 		return sealed, err

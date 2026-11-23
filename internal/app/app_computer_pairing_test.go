@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +20,7 @@ import (
 	"agent-overflow/internal/pairbootstrap"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/transport"
 )
 
 // Only the discovery window is installed directly: the fixture advertises no
@@ -476,65 +477,48 @@ func TestComputerPairingReportsDiscoveryFailureOnTheWindow(t *testing.T) {
 	}
 }
 
-// Try Again closes the window and opens its replacement at once. A close
-// that matched its window and stalled before retiring that window's link
-// retires only that link once it resumes, never the link the replacement
-// minted meanwhile.
-func TestComputerPairingCloseRacingItsReplacementKeepsTheReplacementsLink(t *testing.T) {
+// An own-device pairing window persists this computer's enrollment only
+// for a caller that is admitted with valid arguments: an open from a
+// connection that is already closing, or naming no network the window
+// can use, enrolls nothing, and an admitted open does.
+func TestAnOwnPairingOpenEnrollsOnlyOnceAdmitted(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
-	b := newPairedBackend(t)
-	a := b.app
-	s := &a.computerPairing
-	mint := func() (pairbootstrap.Invitation, error) {
-		invite, err := a.mintDevicePairing("browser", "full", "")
-		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
-	}
-	stalled, resume := make(chan struct{}), make(chan struct{})
-	var stall sync.Once
-	book := pairbootstrap.NewBook(func(id string) {
-		// The close of the first window stalls in the book's cancel of
-		// its link, after it matched the window.
-		stall.Do(func() {
-			close(stalled)
-			<-resume
-		})
-		a.cancelComputerPairingLink(id)
-	})
-	first := book.Open(mint)
-	s.mu.Lock()
-	s.book, s.windowID = book, first.WindowID
-	s.mu.Unlock()
-	firstInvite, _ := exchangeComputerPairing(t, b)
-
-	closed := make(chan error, 1)
-	go func() { closed <- a.CloseComputerPairing(first.WindowID) }()
-	<-stalled
-	// The replacement opens while the close stalls, as openComputerPairing
-	// does: retire the old window and its fenced link, open the next one,
-	// and a device takes its invitation.
-	a.closeComputerPairingWindow(first.WindowID)
-	if err := a.retireComputerPairingLink(); err != nil {
+	a, _ := computerPairingHost(t)
+	manager, err := newTestBackends(t, t.TempDir(), "Host", "test")
+	if err != nil {
 		t.Fatal(err)
 	}
-	second := book.Open(mint)
-	t.Cleanup(func() { book.Close(second.WindowID) })
-	s.mu.Lock()
-	s.windowID = second.WindowID
-	s.mu.Unlock()
-	secondInvite, _ := exchangeComputerPairing(t, b)
-	close(resume)
-	if err := <-closed; err != nil {
-		t.Fatalf("close of the first window: %v", err)
+	SetAttachedBackends(a, manager)
+	enrolled := func() bool {
+		t.Helper()
+		_, err := a.backends.OwnIdentity()
+		if err != nil && !errors.Is(err, deviceclient.ErrNoDeviceKey) {
+			t.Fatal(err)
+		}
+		return err == nil
 	}
-
-	if link, err := a.store.GetPairingLink(firstInvite.LinkID); err != nil || link.CanceledAt == 0 {
-		t.Fatal("the first window's invitation was not retired", err)
+	if enrolled() {
+		t.Fatal("the fixture's computer is enrolled before any open")
 	}
-	if link, err := a.store.GetPairingLink(secondInvite.LinkID); err != nil || link.CanceledAt != 0 {
-		t.Fatal("the first window's close retired the replacement's invitation", err)
+	closing, state := newTestConnection(t, transport.ConnPrincipal{})
+	state.RunCleanups()
+	if _, err := a.OpenOwnComputerPairing(closing, "lan"); !errors.Is(err, transport.ErrConnectionClosing) {
+		t.Fatalf("an own pairing open from a closing connection = %v, want transport.ErrConnectionClosing", err)
 	}
-	if status, err := a.ComputerPairingStatus(second.WindowID); err != nil || status.State != "verifying" {
-		t.Fatalf("the replacement window = %+v, %v; want it verifying its device", status, err)
+	if enrolled() {
+		t.Fatal("an open refused for its closing connection enrolled this computer")
+	}
+	if _, err := a.OpenOwnComputerPairing(connCtx(t), "bluetooth"); err == nil {
+		t.Fatal("an own pairing open on no usable network succeeded")
+	}
+	if enrolled() {
+		t.Fatal("an open refused for its network enrolled this computer")
+	}
+	if _, err := a.OpenOwnComputerPairing(connCtx(t), "lan"); err != nil {
+		t.Fatal(err)
+	}
+	if !enrolled() {
+		t.Fatal("an admitted own pairing open did not enroll this computer")
 	}
 }

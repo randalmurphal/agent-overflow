@@ -8,8 +8,10 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -88,13 +90,14 @@ func TestArmingMethodsAreTiedToTheirConnection(t *testing.T) {
 				}
 			}
 		}
-		if !callsCallerConnection(fn.Body) {
+		calls := callerConnectionCalls(fn.Body)
+		if calls == 0 {
 			continue
 		}
-		if !isAppMethod(fn) || !fn.Name.IsExported() || !opensWithCallerConnection(fn) {
-			t.Errorf("%s: %s calls transport.CallerConnection other than as a bound method's first statement, "+
-				"`conn, err := transport.CallerConnection(ctx)`; a callee takes the connection instead, "+
-				"so the refusal comes before anything is armed or spent", position, funcKey(fn))
+		if !isAppMethod(fn) || !fn.Name.IsExported() || !opensWithCallerConnection(fn) || calls != 1 {
+			t.Errorf("%s: %s calls transport.CallerConnection %d times, and other than once as a bound method's first "+
+				"statement, `conn, err := transport.CallerConnection(ctx)`; a callee takes the connection instead, "+
+				"so the refusal comes before anything is armed or spent", position, funcKey(fn), calls)
 			continue
 		}
 		openers[name] = true
@@ -190,16 +193,17 @@ func isCallerConnection(call *ast.CallExpr) bool {
 	return ok && pkg.Name == "transport" && sel.Sel.Name == "CallerConnection"
 }
 
-// callsCallerConnection reports whether body calls transport.CallerConnection.
-func callsCallerConnection(body *ast.BlockStmt) bool {
-	found := false
+// callerConnectionCalls counts body's calls of transport.CallerConnection,
+// in closures too.
+func callerConnectionCalls(body *ast.BlockStmt) int {
+	calls := 0
 	ast.Inspect(body, func(node ast.Node) bool {
 		if call, ok := node.(*ast.CallExpr); ok && isCallerConnection(call) {
-			found = true
+			calls++
 		}
-		return !found
+		return true
 	})
-	return found
+	return calls
 }
 
 // opensWithCallerConnection reports whether fn's first statement is
@@ -290,9 +294,12 @@ type connectionTie struct {
 	// release names ("" when it has none).
 	open func(ctx context.Context) (string, error)
 	// held counts the resources of this kind that exist: the resource
-	// itself (a pump handle, a mount, a recording, a claim, a window),
-	// never a record of its tie.
+	// itself (a pump handle, a mount, a recording, a claim, a window) and
+	// what it alone keeps alive (a pump's lifetime context), never a
+	// record of its tie.
 	held func() int
+	// unit is how many of held one open makes; zero means one.
+	unit int
 	// release gives the resource back by id from ctx's connection; nil
 	// when the client has no release by id.
 	release func(ctx context.Context, id string) error
@@ -406,23 +413,44 @@ func TestArmedResourcesFollowTheirConnection(t *testing.T) {
 //   - a release by id unties the connection that opened it, so a
 //     long-lived connection keeps no release per resource it ever held,
 //     and, unless any caller may release, another connection's release
-//     lands on nothing;
+//     lands on nothing; a release bound once for the connection's life
+//     (key nil) stays one registration however often it opens and
+//     releases;
 //   - an open on a connection that is already closing fails with
-//     transport.ErrConnectionClosing and leaves nothing armed by the time
-//     it returns.
+//     transport.ErrConnectionClosing and changes nothing by the time it
+//     returns: it arms nothing of its own, and another connection's live
+//     resource, which an open that replaces something (a pairing window,
+//     a device's activity log, the native network claim) would retire,
+//     survives it.
+//
+// What it does not prove: each connection is an in-process ConnState
+// whose end is a RunCleanups call, never a socket, so the transport's own
+// teardown is the transport's tests' to prove; and a release bound for the
+// connection's life (the provider terminal claims, a pairing window, the
+// native network claim, a device's activity log) is proven to run at the
+// connection's end and not to grow, never to be untied by a release by id,
+// which by design it is not.
 func checkConnectionTie(t *testing.T, tie connectionTie) {
 	t.Helper()
-	base := tie.held()
+	base, unit := tie.held(), max(tie.unit, 1)
 	open := func(ctx context.Context) string {
 		t.Helper()
 		id, err := tie.open(ctx)
 		if err != nil {
 			t.Fatalf("open: %v", err)
 		}
-		if got := tie.held(); got != base+1 {
-			t.Fatalf("an open holds %d resources, want %d", got, base+1)
+		if got := tie.held(); got != base+unit {
+			t.Fatalf("an open holds %d resources, want %d", got, base+unit)
 		}
 		return id
+	}
+	refuse := func(when string) {
+		t.Helper()
+		ctx, state := newTestConnection(t, tie.principal)
+		state.RunCleanups()
+		if _, err := tie.open(ctx); !errors.Is(err, transport.ErrConnectionClosing) {
+			t.Fatalf("an open on a closing connection %s = %v, want transport.ErrConnectionClosing", when, err)
+		}
 	}
 
 	ctx, state := newTestConnection(t, tie.principal)
@@ -433,6 +461,7 @@ func checkConnectionTie(t *testing.T, tie connectionTie) {
 	if tie.release != nil {
 		ctx, state = newTestConnection(t, tie.principal)
 		id := open(ctx)
+		bound := len(state.BoundKeys())
 		other, _ := newTestConnection(t, tie.principal)
 		releaser := ctx
 		if tie.anyCaller {
@@ -441,28 +470,53 @@ func checkConnectionTie(t *testing.T, tie connectionTie) {
 			// Its answer is the method's own (unknown, or nothing); what
 			// matters is that it released nothing.
 			_ = tie.release(other, id)
-			if got := tie.held(); got != base+1 || (tie.key != nil && !state.Bound(tie.key(id))) {
-				t.Fatalf("another connection's release landed: %d held, want %d", got, base+1)
+			if got := tie.held(); got != base+unit || len(state.BoundKeys()) != bound {
+				t.Fatalf("another connection's release landed: %d held, want %d", got, base+unit)
 			}
 		}
 		if err := tie.release(releaser, id); err != nil {
 			t.Fatalf("release: %v", err)
 		}
 		awaitHeld(t, tie, base, "after its release")
-		if tie.key != nil && state.Bound(tie.key(id)) {
-			t.Fatal("the connection that opened a released resource still holds its release")
+		if tie.key != nil {
+			if state.Bound(tie.key(id)) || len(state.BoundKeys()) != bound-1 {
+				t.Fatalf("the connection that opened a released resource still holds its release: %v", state.BoundKeys())
+			}
+		} else {
+			// The connection's one registration stays one: a second open
+			// and release on it bind nothing more.
+			id = open(ctx)
+			if err := tie.release(releaser, id); err != nil {
+				t.Fatalf("release: %v", err)
+			}
+			awaitHeld(t, tie, base, "after its second release")
+			if got := len(state.BoundKeys()); got != bound {
+				t.Fatalf("a connection that opened and released twice holds %d releases, want %d: %v", got, bound, state.BoundKeys())
+			}
 		}
 		state.RunCleanups()
 	}
 
-	ctx, state = newTestConnection(t, tie.principal)
-	state.RunCleanups()
-	if _, err := tie.open(ctx); !errors.Is(err, transport.ErrConnectionClosing) {
-		t.Fatalf("an open on a closing connection = %v, want transport.ErrConnectionClosing", err)
-	}
+	// With nothing live, where an open makes everything it needs anew.
+	refuse("with nothing open")
 	if got := tie.held(); got != base {
 		t.Fatalf("an open refused by a closing connection left %d held, want %d at once", got, base)
 	}
+
+	// Beside another connection's live resource, which a refused open must
+	// leave as it was.
+	liveCtx, live := newTestConnection(t, tie.principal)
+	open(liveCtx)
+	liveKeys := live.BoundKeys()
+	refuse("beside another connection's resource")
+	if got := tie.held(); got != base+unit {
+		t.Fatalf("an open refused by a closing connection left %d held, want %d at once: the other connection's resource and nothing more", got, base+unit)
+	}
+	if keys := live.BoundKeys(); !slices.Equal(keys, liveKeys) {
+		t.Fatalf("an open refused by a closing connection changed another connection's releases from %v to %v", liveKeys, keys)
+	}
+	live.RunCleanups()
+	awaitHeld(t, tie, base, "after the other connection ended")
 }
 
 // awaitHeld waits for held to come to want: a release that removes files
@@ -476,4 +530,46 @@ func awaitHeld(t *testing.T, tie connectionTie, want int, when string) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// countedLifetime is an app lifetime (App.appCtx) that counts the contexts
+// still derived from it, so a row's held can count what a pump keeps
+// alive. context.WithCancel on a parent that is no cancelCtx of its own
+// registers the child through the parent's AfterFunc and stops that
+// registration when the child is cancelled; count is registrations not yet
+// stopped. The lifetime itself never ends.
+type countedLifetime struct {
+	done chan struct{}
+	mu   sync.Mutex
+	live int
+}
+
+func newCountedLifetime() *countedLifetime { return &countedLifetime{done: make(chan struct{})} }
+
+func (l *countedLifetime) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (l *countedLifetime) Done() <-chan struct{}       { return l.done }
+func (l *countedLifetime) Err() error                  { return nil }
+func (l *countedLifetime) Value(any) any               { return nil }
+
+func (l *countedLifetime) AfterFunc(func()) func() bool {
+	l.mu.Lock()
+	l.live++
+	l.mu.Unlock()
+	var once sync.Once
+	return func() bool {
+		stopped := false
+		once.Do(func() {
+			l.mu.Lock()
+			l.live--
+			l.mu.Unlock()
+			stopped = true
+		})
+		return stopped
+	}
+}
+
+func (l *countedLifetime) count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.live
 }

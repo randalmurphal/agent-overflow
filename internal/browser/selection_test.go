@@ -12,7 +12,7 @@ func TestTheUsersOrderSurvivesDelayedDelivery(t *testing.T) {
 		// The user clicked b in the old pane; the request is held while the
 		// pane reconnects as a new mount, where the user clicks c.
 		m.DetachPane(MountID(oldMount))
-		next, err := m.AttachPane(access.Caller())
+		next, err := m.AttachPane(access.Caller(), untiedPane)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -54,7 +54,7 @@ func TestTheUsersOrderSurvivesDelayedDelivery(t *testing.T) {
 		for _, name := range []string{"a", "b", "c", "d"} {
 			ids = append(ids, mustOpen(t, m, access, addr(name)).ID)
 		}
-		mount, err := m.AttachPane(access.Caller())
+		mount, err := m.AttachPane(access.Caller(), untiedPane)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -141,7 +141,7 @@ func TestManyStepsBehindOneDelayedActivation(t *testing.T) {
 // Two mounts keep their own orders: one waiting does not hold the other.
 func TestTwoMountsKeepTheirOwnOrders(t *testing.T) {
 	m, access, ids, one := newSelectionManager(t)
-	other, err := m.AttachPane(access.Caller())
+	other, err := m.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestPassedSelectionsDoNothing(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	other := m.Bind(Caller{ThreadID: "other thread", Workspace: t.TempDir()})
 	mustOpen(t, m, other, addr("x"))
-	otherMount, err := m.AttachPane(other.Caller())
+	otherMount, err := m.AttachPane(other.Caller(), untiedPane)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -494,7 +494,7 @@ func TestFindIsRefusedWhereTheEngineHasNone(t *testing.T) {
 	if mode := manager.CompanionState(access.Caller()).FindMode; mode != "" {
 		t.Fatalf("state find mode = %q on an engine without find", mode)
 	}
-	pane, err := manager.AttachPane(access.Caller())
+	pane, err := manager.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatal(err)
 	}

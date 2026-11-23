@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
@@ -584,8 +582,11 @@ func (a *App) joinPRUpdatePump(prKey string, conn *transport.ConnState) (ref prU
 	if pump == nil {
 		return prUpdateReference{}, false, nil
 	}
-	ref, err = a.takePRUpdateReferenceLocked(pump, conn)
-	return ref, err == nil, err
+	handle, err := bindPumpHandle(conn, "pr updates", prUpdatesCleanupKey, a.unsubscribePRUpdates)
+	if err != nil {
+		return prUpdateReference{}, false, err
+	}
+	return a.takePRUpdateReferenceLocked(pump, handle), true, nil
 }
 
 // createPRUpdatePump registers a pump seeded with the caller's fetch. The
@@ -609,9 +610,14 @@ func (a *App) createPRUpdatePump(
 	if len(a.prUpdates.handles) >= maxPRUpdateHandles {
 		return prUpdateReference{}, nil, ErrTooManyPRUpdateSubscriptions
 	}
+	// The caller's handle comes first: a connection that is closing takes
+	// none, and then no pump is made or published for it either.
+	handle, err := bindPumpHandle(conn, "pr updates", prUpdatesCleanupKey, a.unsubscribePRUpdates)
+	if err != nil {
+		return prUpdateReference{}, nil, err
+	}
 	if existing := a.livePRUpdatePumpLocked(prKey); existing != nil {
-		ref, err = a.takePRUpdateReferenceLocked(existing, conn)
-		return ref, nil, err
+		return a.takePRUpdateReferenceLocked(existing, handle), nil, nil
 	}
 	pump := &prUpdatePump{
 		prKey:        prKey,
@@ -631,11 +637,7 @@ func (a *App) createPRUpdatePump(
 		},
 		failure: func(err error) prForgeFailure { return a.newPRForgeFailure(pr, err) },
 	}
-	// The caller's handle comes first: a connection that is closing takes
-	// none, and then no pump is published for it either.
-	if ref, err = a.takePRUpdateReferenceLocked(pump, conn); err != nil {
-		return prUpdateReference{}, nil, err
-	}
+	ref = a.takePRUpdateReferenceLocked(pump, handle)
 	a.prUpdates.pumps[prKey] = pump
 	return ref, pump, nil
 }
@@ -678,16 +680,12 @@ func (a *App) livePRUpdatePumpLocked(prKey string) *prUpdatePump {
 // — and resuming nudges the loop, or the poll this subscriber is waiting
 // for waits out a whole tick that the pause already made it miss.
 //
-// The handle is tied to conn as it is published, so the connection's end
-// finds it however soon it comes; a connection that is closing gets no
-// handle.
-func (a *App) takePRUpdateReferenceLocked(pump *prUpdatePump, conn *transport.ConnState) (prUpdateReference, error) {
-	id := uuid.NewString()
-	tie, err := conn.Bind(prUpdatesCleanupKey(id), func() { a.unsubscribePRUpdates(id) })
-	if err != nil {
-		return prUpdateReference{}, fmt.Errorf("pr updates: %w", err)
-	}
-	a.prUpdates.handles[id] = &prUpdateHandle{tie: tie, pump: pump, ref: pump.TakeLocked()}
+// handle is tied to its connection (bindPumpHandle) in the same
+// critical section, so the connection's end finds it however soon it
+// comes.
+func (a *App) takePRUpdateReferenceLocked(pump *prUpdatePump, handle pumpHandle) prUpdateReference {
+	id := handle.id
+	a.prUpdates.handles[id] = &prUpdateHandle{tie: handle.tie, pump: pump, ref: pump.TakeLocked()}
 	ref := prUpdateReference{
 		id:       id,
 		snapshot: pump.lastSnapshot,
@@ -699,7 +697,7 @@ func (a *App) takePRUpdateReferenceLocked(pump *prUpdatePump, conn *transport.Co
 		ci := pump.ci
 		ref.ci = &ci
 	}
-	return ref, nil
+	return ref
 }
 
 // UnsubscribePRUpdates releases a subscription, from whichever connection

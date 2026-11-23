@@ -1,10 +1,10 @@
 package transport
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"log"
-	"slices"
 	"sync"
 )
 
@@ -27,9 +27,19 @@ import (
 // receiver method's `context.Context` parameter — see
 // ConnStateFromContext.
 type ConnState struct {
-	mu       sync.Mutex
-	cleanups []connCleanup
-	closed   bool
+	mu sync.Mutex
+	// releases holds the bound releases in binding order, each a
+	// *registration, so teardown runs the last bound first; byKey indexes
+	// it, so a Bind or an Untie touches one entry whatever else is bound.
+	releases list.List
+	byKey    map[string]*list.Element
+	// lastID numbers registrations, so a Tie names the one it made and an
+	// Untie of an earlier registration under a reused key removes nothing.
+	lastID uint64
+	// walked counts the entries visited by walks of releases (each), the
+	// one cost that grows with what is bound; the transport tests read it.
+	walked int
+	closed bool
 
 	// principal is read at upgrade time and never written again, so it
 	// needs no lock: a connection cannot change which session admitted it
@@ -37,10 +47,20 @@ type ConnState struct {
 	principal ConnPrincipal
 }
 
-// connCleanup is one release bound to run when the connection ends.
-type connCleanup struct {
-	key string
-	fn  func()
+// registration is one release bound to run when the connection ends.
+type registration struct {
+	key     string
+	id      uint64
+	release func()
+}
+
+// each visits the bound releases in binding order. Every walk of releases
+// goes through it, so walked counts them all. The caller holds c.mu.
+func (c *ConnState) each(visit func(*registration)) {
+	for el := c.releases.Front(); el != nil; el = el.Next() {
+		c.walked++
+		visit(el.Value.(*registration))
+	}
 }
 
 // ConnPrincipal is who a connection is, resolved at upgrade time and fixed
@@ -190,13 +210,14 @@ func CallerConnection(ctx context.Context) (*ConnState, error) {
 	return state, nil
 }
 
-// Tie is one release bound to a connection under a key. The resource's
+// Tie is one registration of a release on a connection. The resource's
 // record keeps it, so whoever removes the record, by id from any caller or
 // on the resource's own end, unties the connection that holds it. The zero
 // Tie is bound to nothing.
 type Tie struct {
 	conn *ConnState
 	key  string
+	id   uint64
 }
 
 // Bind ties release to the connection under key: the connection's end
@@ -222,23 +243,36 @@ func (c *ConnState) Bind(key string, release func()) (Tie, error) {
 	if c.closed {
 		return Tie{}, ErrConnectionClosing
 	}
-	if !slices.ContainsFunc(c.cleanups, func(cleanup connCleanup) bool { return cleanup.key == key }) {
-		c.cleanups = append(c.cleanups, connCleanup{key: key, fn: release})
+	if el, ok := c.byKey[key]; ok {
+		return Tie{conn: c, key: key, id: el.Value.(*registration).id}, nil
 	}
-	return Tie{conn: c, key: key}, nil
+	c.lastID++
+	reg := &registration{key: key, id: c.lastID, release: release}
+	if c.byKey == nil {
+		c.byKey = make(map[string]*list.Element)
+	}
+	c.byKey[key] = c.releases.PushBack(reg)
+	return Tie{conn: c, key: key, id: reg.id}, nil
 }
 
-// Untie removes the tie's release from its connection, so a long-lived
-// connection keeps no release for a resource that is gone. Idempotent; it
-// does nothing for the zero Tie or once the cleanup pass has begun.
+// Untie removes the tie's registration from its connection, so a
+// long-lived connection keeps no release for a resource that is gone. A key
+// bound again after this tie's registration was removed is another
+// registration, which this leaves bound. Idempotent; it does nothing for
+// the zero Tie or once the cleanup pass has begun.
 func (t Tie) Untie() {
 	if t.conn == nil {
 		return
 	}
 	c := t.conn
 	c.mu.Lock()
-	c.cleanups = slices.DeleteFunc(c.cleanups, func(cleanup connCleanup) bool { return cleanup.key == t.key })
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	el, ok := c.byKey[t.key]
+	if !ok || el.Value.(*registration).id != t.id {
+		return
+	}
+	c.releases.Remove(el)
+	delete(c.byKey, t.key)
 }
 
 // HeldBy reports whether the tie binds to conn, which is what makes the
@@ -258,7 +292,8 @@ func (c *ConnState) Bound(key string) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return slices.ContainsFunc(c.cleanups, func(cleanup connCleanup) bool { return cleanup.key == key })
+	_, ok := c.byKey[key]
+	return ok
 }
 
 // BoundKeys answers the keys releases are bound under, in binding order:
@@ -269,10 +304,8 @@ func (c *ConnState) BoundKeys() []string {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	keys := make([]string, 0, len(c.cleanups))
-	for _, cleanup := range c.cleanups {
-		keys = append(keys, cleanup.key)
-	}
+	keys := make([]string, 0, c.releases.Len())
+	c.each(func(reg *registration) { keys = append(keys, reg.key) })
 	return keys
 }
 
@@ -288,12 +321,14 @@ func (c *ConnState) RunCleanups() {
 		return
 	}
 	c.closed = true
-	fns := c.cleanups
-	c.cleanups = nil
+	fns := make([]func(), 0, c.releases.Len())
+	c.each(func(reg *registration) { fns = append(fns, reg.release) })
+	c.releases.Init()
+	c.byKey = nil
 	c.mu.Unlock()
 
 	for i := len(fns) - 1; i >= 0; i-- {
-		fn := fns[i].fn
+		fn := fns[i]
 		func() {
 			defer func() {
 				if r := recover(); r != nil {

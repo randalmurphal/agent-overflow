@@ -74,31 +74,27 @@ func (a *App) GitStatusSubscribe(ctx context.Context, ws WorkspaceRef) (GitStatu
 		return GitStatusSubscriptionResult{}, ErrShuttingDown
 	}
 	git := a.gitApplication()
-	result, err := git.Subscribe(ctx, ws)
+	// The connection holds the subscription from the moment it is
+	// published until it is released, however that happens.
+	result, err := git.Subscribe(ctx, ws, func(id string) (func(), error) {
+		tie, err := conn.Bind(gitStatusCleanupKey(id), func() { git.Unsubscribe(id) })
+		if err != nil {
+			return nil, fmt.Errorf("gitwatch: %w", err)
+		}
+		return tie.Untie, nil
+	})
 	if err != nil {
 		if errors.Is(err, gitapp.ErrTooManyStatusSubscriptions) {
 			return GitStatusSubscriptionResult{}, ErrTooManyGitStatusSubscriptions
 		}
 		return GitStatusSubscriptionResult{}, err
 	}
-	tie, err := conn.Bind(gitStatusCleanupKey(result.ID), func() { git.Unsubscribe(result.ID) })
-	if err != nil {
-		git.Unsubscribe(result.ID)
-		return GitStatusSubscriptionResult{}, fmt.Errorf("gitwatch: %w", err)
-	}
-	// The connection holds the subscription until it is released, however
-	// that happens. One that ended meanwhile (its watcher stopped) leaves
-	// nothing tied, and the caller's handle names a stream that is gone, as
-	// any handle does once its watcher stops.
-	if !git.OnRelease(result.ID, tie.Untie) {
-		tie.Untie()
-	}
 	return GitStatusSubscriptionResult(result), nil
 }
 
 // GitStatusUnsubscribe releases a subscription previously created via
 // GitStatusSubscribe, from whichever connection asks; the connection that
-// opened it is untied (gitapp.Service.OnRelease). Idempotent — unknown ids
+// opened it is untied (gitapp.StatusTie). Idempotent — unknown ids
 // and double-unsubscribes are no-ops because the connection-cleanup safety
 // net may have run first on disconnect.
 //

@@ -471,17 +471,21 @@ func prUpdatesConnectionTie(t *testing.T) connectionTie {
 	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
+	lifetime := newCountedLifetime()
+	app.appCtx = lifetime
 	t.Cleanup(app.closePRUpdatePumps)
 	return connectionTie{
 		open: func(ctx context.Context) (string, error) {
 			sub, err := app.SubscribePRUpdates(ctx, testPR)
 			return sub.ID, err
 		},
+		// The handle and its pump's lifetime context.
 		held: func() int {
 			app.prUpdates.mu.Lock()
 			defer app.prUpdates.mu.Unlock()
-			return len(app.prUpdates.handles)
+			return len(app.prUpdates.handles) + lifetime.count()
 		},
+		unit:      2,
 		release:   app.UnsubscribePRUpdates,
 		anyCaller: true,
 		key:       prUpdatesCleanupKey,

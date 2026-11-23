@@ -85,29 +85,31 @@ func (o *ownerActivity) dropDevice(id string) {
 // watchLocked ties the log to the latest connection that asked for it, under
 // the revocation lock its release takes, in the same critical section that
 // publishes the log. When that connection ends, the next listener starts
-// with a full reconciliation. A connection that is closing is tied to
-// nothing and publishes nothing.
+// with a full reconciliation. Every request binds: the key is the
+// connection's once for its life, so a repeat request from the connection
+// that holds the log answers its own registration, and one from a
+// connection that is closing is refused and publishes nothing.
 func (o *ownerActivity) watchLocked(id string, socket *transport.ConnState) (*deviceActivity, bool, error) {
 	d := o.devices[id]
 	first := d == nil
 	if first {
 		d = &deviceActivity{entries: make(map[string]ownerEntry), changed: make(chan struct{})}
 	}
-	if !d.tie.HeldBy(socket) {
-		tie, err := socket.Bind(ownerActivitySubscription, func() {
-			o.mu.Lock()
-			defer o.mu.Unlock()
-			if o.devices[id] == d && d.tie.HeldBy(socket) {
-				delete(o.devices, id)
-				d.wake()
-			}
-		})
-		if err != nil {
-			return nil, false, err
+	tie, err := socket.Bind(ownerActivitySubscription, func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		if o.devices[id] == d && d.tie.HeldBy(socket) {
+			delete(o.devices, id)
+			d.wake()
 		}
-		d.tie.Untie()
-		d.tie = tie
+	})
+	if err != nil {
+		return nil, false, err
 	}
+	if !d.tie.HeldBy(socket) {
+		d.tie.Untie()
+	}
+	d.tie = tie
 	if first {
 		if o.devices == nil {
 			o.devices = make(map[string]*deviceActivity)

@@ -814,6 +814,7 @@ func TestSubscribePRListThatFailsItsStoredReadLeavesNothingTied(t *testing.T) {
 	// The pump the subscribe starts reads the projects too, later.
 	var once sync.Once
 	var taken []string
+	tiedDuringRead := false
 	projects := app.prUpdates.listProjectsFn
 	app.prUpdates.listProjectsFn = func(ctx context.Context) ([]ForgeProject, error) {
 		once.Do(func() {
@@ -822,6 +823,7 @@ func TestSubscribePRListThatFailsItsStoredReadLeavesNothingTied(t *testing.T) {
 				taken = append(taken, id)
 			}
 			app.prUpdates.mu.Unlock()
+			tiedDuringRead = len(taken) == 1 && state.Bound(prListCleanupKey(taken[0]))
 			cancel()
 		})
 		return projects(ctx)
@@ -831,6 +833,11 @@ func TestSubscribePRListThatFailsItsStoredReadLeavesNothingTied(t *testing.T) {
 	}
 	if len(taken) != 1 {
 		t.Fatalf("the subscribe held %d handles during its stored read, want 1", len(taken))
+	}
+	// The rollback below is only proven if there was a release to roll
+	// back: the handle was tied while the read ran.
+	if !tiedDuringRead {
+		t.Fatal("the handle was not tied to its connection while its stored read ran")
 	}
 	app.prUpdates.mu.Lock()
 	handles := len(app.prUpdates.listHandles)

@@ -8,8 +8,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/google/uuid"
-
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
@@ -163,8 +161,11 @@ func (a *App) joinPipelinePump(key string, conn *transport.ConnState) (PipelineS
 	if pump == nil {
 		return PipelineSubscriptionResult{}, false, nil
 	}
-	result, err := a.takePipelineReferenceLocked(pump, conn)
-	return result, err == nil, err
+	handle, err := bindPumpHandle(conn, "pipelines", pipelineCleanupKey, a.unsubscribePipeline)
+	if err != nil {
+		return PipelineSubscriptionResult{}, false, err
+	}
+	return a.takePipelineReferenceLocked(pump, handle), true, nil
 }
 
 // createPipelinePump registers a pump seeded with the caller's read, or
@@ -188,9 +189,14 @@ func (a *App) createPipelinePump(repo gitops.RepoReference, id, key string, pipe
 	if len(a.prUpdates.pipelineHandles) >= maxPRUpdateHandles {
 		return PipelineSubscriptionResult{}, nil, ErrTooManyPipelineSubscriptions
 	}
+	// The caller's handle comes first: a connection that is closing takes
+	// none, and then no pump is made or published for it either.
+	handle, err := bindPumpHandle(conn, "pipelines", pipelineCleanupKey, a.unsubscribePipeline)
+	if err != nil {
+		return PipelineSubscriptionResult{}, nil, err
+	}
 	if existing := a.livePipelinePumpLocked(key); existing != nil {
-		result, err := a.takePipelineReferenceLocked(existing, conn)
-		return result, nil, err
+		return a.takePipelineReferenceLocked(existing, handle), nil, nil
 	}
 	pump := &pipelinePump{key: key, repo: repo, id: id, pumpCore: a.newPumpCore()}
 	pump.ciPhase = ciPhase{
@@ -207,25 +213,16 @@ func (a *App) createPipelinePump(repo gitops.RepoReference, id, key string, pipe
 		pump.ci, pump.ciKnown, pump.ciLast = pipeline, true, encoded
 	}
 	pump.seq = a.nextPRUpdateSeqLocked()
-	// The caller's handle comes first: a connection that is closing takes
-	// none, and then no pump is published for it either.
-	result, err := a.takePipelineReferenceLocked(pump, conn)
-	if err != nil {
-		return PipelineSubscriptionResult{}, nil, err
-	}
+	result := a.takePipelineReferenceLocked(pump, handle)
 	a.prUpdates.pipelines[key] = pump
 	return result, pump, nil
 }
 
 // takePipelineReferenceLocked registers one handle against pump, tied to
-// conn as it is published (takePRUpdateReferenceLocked).
-func (a *App) takePipelineReferenceLocked(pump *pipelinePump, conn *transport.ConnState) (PipelineSubscriptionResult, error) {
-	id := uuid.NewString()
-	tie, err := conn.Bind(pipelineCleanupKey(id), func() { a.unsubscribePipeline(id) })
-	if err != nil {
-		return PipelineSubscriptionResult{}, fmt.Errorf("pipelines: %w", err)
-	}
-	a.prUpdates.pipelineHandles[id] = &pipelineHandle{tie: tie, pump: pump, ref: pump.TakeLocked()}
+// its connection in the same critical section (bindPumpHandle).
+func (a *App) takePipelineReferenceLocked(pump *pipelinePump, handle pumpHandle) PipelineSubscriptionResult {
+	id := handle.id
+	a.prUpdates.pipelineHandles[id] = &pipelineHandle{tie: handle.tie, pump: pump, ref: pump.TakeLocked()}
 	result := PipelineSubscriptionResult{
 		ID:        id,
 		Key:       pump.key,
@@ -239,7 +236,7 @@ func (a *App) takePipelineReferenceLocked(pump *pipelinePump, conn *transport.Co
 		pipeline := pump.ci
 		result.Pipeline = &pipeline
 	}
-	return result, nil
+	return result
 }
 
 // SetPipelineActive reports whether one subscriber currently shows its
