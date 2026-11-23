@@ -15,6 +15,7 @@ import {
   resyncPipelinesAfterGap,
 } from './pipelineCI.svelte';
 import { __resetPRReviewStoreForTest } from './prReviewStore.svelte';
+import { ciHandle } from './ciHandles';
 import { __setTransportStatusForTest } from './transportStatus.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { takePinnedBackend } from '../transport/backends';
@@ -93,6 +94,20 @@ describe('ciKeyFor', () => {
   it('keys a PR by its computer PR key and a pipeline by its repository and id', () => {
     expect(ciKeyFor({ kind: 'pr', backend: HOME_BACKEND, pr: { ...REPO, number: 4 } })).toBe(' gitlab:group/app:4');
     expect(ciKeyFor(pipelineSubject('laptop'))).toBe('laptop pipeline:gitlab:group/app:77');
+  });
+});
+
+describe('the pipeline test reset', () => {
+  it("drops a held pipeline's CI handle, and calls no backend", async () => {
+    const mocks = installMocks();
+    attachPipelineCI(HOME_BACKEND, REPO, '77');
+    await flush();
+    expect(ciHandle(ciKeyFor(pipelineSubject()))).not.toBeNull();
+
+    __resetPipelineCIForTest();
+    await flush();
+    expect(ciHandle(ciKeyFor(pipelineSubject()))).toBeNull();
+    expect(mocks.unsubscribe).not.toHaveBeenCalled();
   });
 });
 

@@ -819,6 +819,37 @@ describe('createEntityStore — invalidate / resetAll / suspend', () => {
     expect(next.current).toBe('v2');
   });
 
+  it('resetForTest removes what a source installed locally and calls no backend', async () => {
+    const events = new EventTarget();
+    const received: string[] = [];
+    const unsubscribe = vi.fn(async () => {});
+    let answer!: () => void;
+    const store = createEntityStore<string, void>({
+      backendForKey: () => '',
+      name: 'test',
+      source: async ({ key, signal }) => {
+        const listener = () => received.push(key);
+        events.addEventListener('ping', listener);
+        signal.addEventListener('abort', () => events.removeEventListener('ping', listener), { once: true });
+        if (key === 'acquiring') await new Promise<void>((done) => { answer = done; });
+        return unsubscribe;
+      },
+    });
+    store.attach('held', undefined);
+    store.attach('acquiring', undefined);
+    await flush();
+    events.dispatchEvent(new Event('ping'));
+    expect(received.sort()).toEqual(['acquiring', 'held']);
+
+    store.resetForTest();
+    answer();
+    await flush();
+    received.length = 0;
+    events.dispatchEvent(new Event('ping'));
+    expect(received).toEqual([]);
+    expect(unsubscribe).not.toHaveBeenCalled();
+  });
+
   // A failed release leaks a backend resource. While somebody is still
   // holding the key that is user-facing state, not only a console line —
   // the resource they are nominally attached to was never released.

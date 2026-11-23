@@ -134,11 +134,11 @@ export interface PRUpdatedEvent {
 // every `pr:*` frame routes through the map, the same shape gitStatusStore
 // uses for canonical cwds.
 //
-// The owner stamp is what makes it safe under re-sourcing: a superseded
-// run (invalidate, reconnect, retry) resolves late and then runs its own
-// cleanup; without ownership that cleanup deletes the alias the live run
-// installed, and the key goes on holding a subscription whose pushes route
-// nowhere.
+// The owner stamp is what makes it safe under re-sourcing: a run removes
+// its alias when it is aborted (invalidate, reconnect, retry, release), and
+// the stamp keeps that removal from deleting an alias a later run
+// installed, which would leave the key holding a subscription whose pushes
+// route nowhere.
 type AliasOwner = symbol;
 const localKeysByWireKey = new Map<string, Map<string, AliasOwner>>();
 
@@ -354,9 +354,6 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
         appliedSeq: () => appliedSeqByKey.get(key) ?? 0,
       };
       const cleanup = async (): Promise<void> => {
-        removeAlias(wireKey, key, owner);
-        clearPRSubscriptionId(key, id);
-        clearCIHandle(key, ciHandle);
         try {
           await withBackendTarget(backend, () => UnsubscribePRUpdates(id));
         } catch (err) {
@@ -375,6 +372,11 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
       addAlias(wireKey, key, owner);
       setPRSubscriptionId(key, id);
       setCIHandle(key, ciHandle);
+      signal.addEventListener('abort', () => {
+        removeAlias(wireKey, key, owner);
+        clearPRSubscriptionId(key, id);
+        clearCIHandle(key, ciHandle);
+      }, { once: true });
       // The result IS this key's applied state, so it is the watermark every
       // frame from here on is ranked against — the replay below included.
       appliedSeqByKey.set(key, Number(result.seq ?? 0));

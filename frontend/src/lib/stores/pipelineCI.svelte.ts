@@ -161,6 +161,17 @@ async function subscribePipeline({ key, getCtx, apply, signal }: PipelineSourceA
     appliedSeqByKey.delete(key);
     joiningByKey.set(key, { owner, pipeline: null, error: null });
     addAlias(expected, key, owner);
+    // What this run installs locally goes when it is aborted, a test reset
+    // included; the cleanup releases the subscription.
+    let installed: { wireKey: string; handle: CIHandle; id: string } | null = null;
+    signal.addEventListener('abort', () => {
+      closeJoin(key, owner);
+      removeAlias(expected, key, owner);
+      if (installed === null) return;
+      removeAlias(installed.wireKey, key, owner);
+      clearCIHandle(key, installed.handle);
+      if (subscriptionByKey.get(key)?.id === installed.id) subscriptionByKey.delete(key);
+    }, { once: true });
     let result;
     try {
       result = await withBackendTarget(backend, () => SubscribePipeline(repoReferenceWire(ctx.repo), ctx.pipelineId));
@@ -178,10 +189,6 @@ async function subscribePipeline({ key, getCtx, apply, signal }: PipelineSourceA
       appliedSeq: () => appliedSeqByKey.get(key) ?? 0,
     };
     const cleanup = async (): Promise<void> => {
-      removeAlias(expected, key, owner);
-      removeAlias(wireKey, key, owner);
-      clearCIHandle(key, handle);
-      if (subscriptionByKey.get(key)?.id === id) subscriptionByKey.delete(key);
       try {
         await withBackendTarget(backend, () => UnsubscribePipeline(id));
       } catch (err) {
@@ -190,10 +197,8 @@ async function subscribePipeline({ key, getCtx, apply, signal }: PipelineSourceA
         if (!isTransportClassError(err)) throw err;
       }
     };
-    if (signal.aborted) {
-      closeJoin(key, owner);
-      return cleanup;
-    }
+    if (signal.aborted) return cleanup;
+    installed = { wireKey, handle, id };
     if (wireKey !== expected) {
       // Frames in the join window went to the key this client spelled;
       // the backend's own spelling routes from here on.

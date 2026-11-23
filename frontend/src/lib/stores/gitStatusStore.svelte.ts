@@ -76,12 +76,12 @@ interface GitStatusEvent {
 // `git:status` frame by cwd alone would paint one machine's status onto the
 // other's header — silently, and only ever on a client attached to both.
 //
-// The owner stamp is what makes the map safe under re-sourcing. A superseded
-// run (invalidate, reconnect, retry) resolves LATE and then runs its own
-// cleanup; without ownership that cleanup deletes the alias the live run
-// installed, and the key goes on holding a subscription whose `git:status`
-// pushes route nowhere — a header frozen at whatever it last saw, healed
-// only by a full re-attach.
+// The owner stamp is what makes the map safe under re-sourcing. A run
+// removes its alias when it is aborted (invalidate, reconnect, retry,
+// release); the stamp keeps that removal from deleting an alias a later run
+// installed, which would leave the key holding a subscription whose
+// `git:status` pushes route nowhere — a header frozen at whatever it last
+// saw, healed only by a full re-attach.
 type AliasOwner = symbol;
 const localKeysByCwd = new Map<string, Map<string, AliasOwner>>();
 
@@ -193,17 +193,17 @@ const store = createEntityStore<GitStatus, GitStatusCtx>({
         GitStatusSubscribe(workspace),
       )) as GitStatusSubscriptionResult;
       const cwdKey = composeWorkspaceKey(backend, result.cwd);
-      // Only a run that is still the live one may claim the alias or apply;
-      // a superseded run's cleanup then finds an owner that is not its own
-      // and leaves the live routing alone.
+      // Only a run that is still the live one may claim the alias or apply.
+      // The alias is local routing, so it goes when the run is aborted, a
+      // test reset included; the cleanup releases the subscription.
       if (!signal.aborted) {
         addAlias(cwdKey, key, owner);
+        signal.addEventListener('abort', () => removeAlias(cwdKey, key, owner), { once: true });
         applyStatus(key, result.status as GitStatus);
         const kept = keptFramesByBackend.get(backend)?.get(cwdKey);
         if (kept) applyStatus(key, kept);
       }
       return async () => {
-        removeAlias(cwdKey, key, owner);
         try {
           // A subscription id is meaningful only on the connection that
           // minted it, and nothing in the id says which that was — hence the
