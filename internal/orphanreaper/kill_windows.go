@@ -4,15 +4,15 @@ package orphanreaper
 
 import (
 	"errors"
-	"syscall"
+	"time"
 )
 
-// killGroup refuses on Windows: the desktop binary never spawns provider
-// children there (the WSL-side Linux backend owns them, and the launcher
-// uses a Win32 Job Object for lifetime management). It exists so the
-// package compiles for Windows.
-func killGroup(pgid int, sig syscall.Signal) error {
-	_ = pgid
-	_ = sig
-	return errors.New("process groups are not signalled on windows")
-}
+// errNoGroups: the desktop binary never spawns provider children on Windows
+// (the WSL-side Linux backend owns them, and the launcher uses a Win32 Job
+// Object for lifetime management). These exist so the package compiles for
+// Windows.
+var errNoGroups = errors.New("process groups are not signalled on windows")
+
+func stopGroup(int, time.Duration) error { return errNoGroups }
+
+func probeGroup(int) error { return errNoGroups }

@@ -37,23 +37,24 @@ func TestSweepReapsTheRecordedLeaderAndNotAProcessThatReusedItsPid(t *testing.T)
 				_, _ = victim.Process.Wait()
 				close(exited)
 			}()
-			identity, err := Identify(pid)
+			// Recorded by a parent other than this process, as a leader whose
+			// backend died is.
+			leader, err := capture(SystemProcInfo(), pid, os.Getppid())
 			if err != nil {
 				t.Fatal(err)
 			}
 			if c.other {
-				identity.Start += "0"
+				leader.identity.Start += "0"
 			}
 			registry := NewRegistry(filepath.Join(t.TempDir(), "orphan-registry.json"))
-			// Recorded by a parent other than this process, as a leader whose
-			// backend died is.
-			if err := registry.Add(Record{
-				Owner: "test", PID: pid, PGID: pid, Identity: &identity, ParentPID: os.Getppid(),
-			}); err != nil {
+			if err := registry.Add("test", leader); err != nil {
 				t.Fatal(err)
 			}
 			if err := Sweep(registry, SystemProcInfo(), 50*time.Millisecond); err != nil {
 				t.Fatal(err)
+			}
+			if recs, err := registry.Load(); err != nil || len(recs) != 0 {
+				t.Fatalf("the sweep left %+v %v in the registry", recs, err)
 			}
 			select {
 			case <-exited:

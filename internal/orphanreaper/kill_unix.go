@@ -3,19 +3,29 @@
 package orphanreaper
 
 import (
-	"fmt"
-	"syscall"
+	"time"
+
+	"agent-overflow/internal/procutil"
 )
 
-// killGroup signals an entire process group via the negative-PID
-// convention from kill(2); signal 0 probes whether the group has members.
-// It needs only same-uid permission — no parent relationship — which is
-// exactly why the sidecar and the startup sweep can reach provider groups
-// they never spawned. pgid<=1 is refused so a corrupted value can never fan
-// out to every process (-1) or init (-1's neighbour, group 1).
-func killGroup(pgid int, sig syscall.Signal) error {
-	if pgid <= 1 {
-		return fmt.Errorf("refusing to signal process group %d", pgid)
+// stopGroup ends group pgid through procutil.StopGroup: SIGTERM, up to grace
+// for the group to empty, SIGKILL, and a short wait for the killed members
+// to be reaped. Signalling a group needs only same-uid permission, which is
+// why the startup sweep can reach groups it never spawned. A pgid outside
+// validLeader is refused, so a corrupted value can never fan out to every
+// process (-1) or init's group.
+func stopGroup(pgid int, grace time.Duration) error {
+	if err := validLeader(pgid); err != nil {
+		return err
 	}
-	return syscall.Kill(-pgid, sig)
+	return procutil.StopGroup(pgid, grace)
+}
+
+// probeGroup reports whether group pgid has a member that can still run:
+// os.ErrProcessDone when none can, as procutil.SignalGroup classifies it.
+func probeGroup(pgid int) error {
+	if err := validLeader(pgid); err != nil {
+		return err
+	}
+	return procutil.SignalGroup(pgid, 0)
 }

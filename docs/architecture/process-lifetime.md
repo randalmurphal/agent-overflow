@@ -18,12 +18,20 @@ then sends SIGTERM to every watched group and SIGKILL two seconds later.
 The backend also records each watched group's leader in a registry: pid,
 identity, and its own pid as the parent. The identity is the start the kernel
 stores for the process and, on Linux, the boot id, so no clock change moves
-it; a leader whose identity cannot be read is not recorded. The next launch
-kills a recorded group whose leader is alive, has the recorded identity, and
-is no longer the recording backend's child. An identity that differs means
-the pid was reused, and that process is left alone. Each group the sweep
-leaves is logged with the reason, including a group whose leader is gone
-while members still run, which the sweep cannot identify. The registry is the
+it; a leader whose identity cannot be read is not recorded. The record also
+carries the start time earlier versions compare, so an older build on the same
+data directory never mistakes a reused pid for the leader. The next launch
+stops a recorded group whose leader is alive, has the recorded identity, and
+is no longer the recording backend's child, with SIGTERM, SIGKILL after the
+grace once members remain, and a check that the group is gone; groups are
+stopped at once, so a launch with orphans waits at most the grace plus a
+second. An identity that differs means the pid now names another process, or
+that the sweep runs in another time namespace than the recording backend did
+(Linux shifts a start by the reader's boot-time offset); either way the process
+is left alone. A record whose leader cannot be read, or whose group the stop
+could not end, is kept for the next launch. Each group the sweep leaves or
+keeps is logged with the reason, including a group whose leader is gone while
+members still run, which the sweep cannot identify. The registry is the
 backstop for a sidecar that died with the backend.
 
 The sidecar hears of a group just after its leader forks, and the registry

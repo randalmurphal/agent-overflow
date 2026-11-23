@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
@@ -38,7 +39,7 @@ func TestTheHeadlessBrowserIsGivenTheOrphanReaper(t *testing.T) {
 	}
 	opts.Reaper.Watch(leader.Process.Pid)
 	records, err := registry.Load()
-	if err != nil || len(records) != 1 || records[0].PGID != leader.Process.Pid || records[0].Owner != "headless browser" {
+	if err != nil || len(records) != 1 || records[0].Leader != leader.Process.Pid || records[0].Owner != "headless browser" {
 		t.Fatalf("records %+v %v, want the browser's group", records, err)
 	}
 }
@@ -69,12 +70,12 @@ func TestAWatchedGroupIsRecordedOnlyWithItsLeadersIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity, err := orphanreaper.Identify(running.Process.Pid)
+	start, _, err := instanceinfo.ProcessStart(running.Process.Pid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 1 || records[0].PGID != running.Process.Pid || records[0].Identity == nil || *records[0].Identity != identity {
-		t.Fatalf("records %+v, want only the running leader with identity %+v", records, identity)
+	if len(records) != 1 || records[0].Leader != running.Process.Pid || records[0].Identity == nil || records[0].Identity.Start != start {
+		t.Fatalf("records %+v, want only the running leader with kernel start %q", records, start)
 	}
 }
 
@@ -107,7 +108,7 @@ func TestProviderServicesAreGivenTheOrphanReaper(t *testing.T) {
 			}
 			reaper.Watch(leader.Process.Pid)
 			records, err := registry.Load()
-			if err != nil || len(records) != 1 || records[0].PGID != leader.Process.Pid || records[0].Owner != c.owner {
+			if err != nil || len(records) != 1 || records[0].Leader != leader.Process.Pid || records[0].Owner != c.owner {
 				t.Fatalf("records %+v %v, want the group under %q", records, err, c.owner)
 			}
 		})

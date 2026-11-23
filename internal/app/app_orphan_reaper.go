@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"runtime"
 	"time"
@@ -94,19 +93,12 @@ func (a *App) watchProcessGroup(pgid int, owner string) {
 	if a.orphanRegistry == nil {
 		return
 	}
-	identity, err := orphanreaper.Identify(pgid)
+	leader, err := orphanreaper.CaptureLeader(pgid)
 	if err != nil {
 		log.Printf("orphanreaper: no registry record for pgid=%d (%s): %v", pgid, owner, err)
 		return
 	}
-	rec := orphanreaper.Record{
-		Owner:     owner,
-		PID:       pgid,
-		PGID:      pgid,
-		Identity:  &identity,
-		ParentPID: os.Getpid(),
-	}
-	if err := a.orphanRegistry.Add(rec); err != nil {
+	if err := a.orphanRegistry.Add(owner, leader); err != nil {
 		log.Printf("orphanreaper: registry add pgid=%d: %v", pgid, err)
 	}
 }
