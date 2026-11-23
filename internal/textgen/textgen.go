@@ -137,10 +137,10 @@ type Config struct {
 	// sweep, so it carries what a session in that workspace does
 	// (claude/retention.go). A Claude run refuses to start without it.
 	ClaudeRetention func(workspace string) claude.Retention
-	// AgyHome is the canonical Antigravity home an agy run reads its login
-	// from (provideraccountapp.Manager.AgyCanonicalHome). An agy run refuses
-	// to start without it.
-	AgyHome agy.Home
+	// AgyHome decides the canonical Antigravity home an agy run reads its
+	// login from (provideraccountapp.Manager.AgyCanonicalHome), as the run
+	// starts. An agy run refuses to start without it.
+	AgyHome agy.HomeSource
 	// Admit holds the CLI's whole run against state the caller read while
 	// building this config (CLISpec.Admit).
 	Admit Admission
@@ -574,11 +574,23 @@ func RunAgy(
 	if strings.TrimSpace(stdin) == "" {
 		return nil, fmt.Errorf("agy: empty prompt")
 	}
-	if cfg.AgyHome.Isolated() {
+	if cfg.AgyHome == nil {
+		return nil, errors.New("agy: text generation without a home")
+	}
+	// Decided here, as the run starts, so a store that changed while the
+	// caller chose the model is the one the run reads.
+	home, err := cfg.AgyHome(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if home.Isolated() {
 		return nil, errors.New("agy: text generation runs on the canonical home only")
 	}
-	launch, err := cfg.AgyHome.Launch(cfg.Env)
+	launch, err := home.Launch(cfg.Env)
 	if err != nil {
+		return nil, err
+	}
+	if err := launch.OnDefaultHome("-p"); err != nil {
 		return nil, err
 	}
 	args := []string{

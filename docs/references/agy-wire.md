@@ -4,11 +4,13 @@ Antigravity CLI (`agy`) speaks Agent Client Protocol (ACP) v1 over newline-delim
 
 ## Process lifecycle and sharing
 
-- Launch: `agy acp` (single shared process per binary + environment + binary identity). Do not pass `--process-per-session` or `--dangerously-skip-permissions`.
-- Environment (`agy.Home.Launch` builds every agy launch):
+- Launch: `agy acp` (single shared process per binary + environment + binary identity + login home). Do not pass `--process-per-session` or `--dangerously-skip-permissions`.
+- Environment (`agy.Home.Launch` builds every agy launch that reads the login: sessions, account and catalog probes, imports, sign-ins, `agy mcp list` and text generation):
   - Pin `AGY_CLI_DISABLE_AUTO_UPDATE=1` so background self-updates do not replace the running binary mid-session.
   - Scrub ambient `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_CLOUD_PROJECT`, and `GOOGLE_APPLICATION_CREDENTIALS` unless explicitly configured by the user.
-  - Login store and home: a process for the canonical login runs on agy's default home under `HOME`, on the store the account manager reads (`provideraccountapp.Manager.AgyCanonicalHome`, decided at each launch): `AGY_ACP_FORCE_FILE_STORAGE=1` for the file, cleared for the macOS Keychain item. An inherited `GEMINI_HOME` and `AGY_APP_DATA_DIR` are always cleared. A sign-in, a probe of a temporary home, and an import from another directory pass `--gemini-dir`/`--app-data-dir` on file storage. All three variables are reserved in the custom environment.
+  - Login store and home: a launcher decides its `agy.Home` as it starts, with its own context and inside its own time limit (`agy.HomeSource`). A process for the canonical login runs on the store the account manager reads (`provideraccountapp.Manager.AgyCanonicalHome`): `AGY_ACP_FORCE_FILE_STORAGE=1` and `SSH_CONNECTION` for the file, the flag cleared for the macOS Keychain item. Its home is agy's default under `HOME` when that holds the manager's directory, and otherwise (an isolated boot that keeps the person's `HOME`) that directory passed as `--gemini-dir`/`--app-data-dir`, which only the file store may do. Only `agy acp` is known to take those flags, so `agy mcp list` and `agy -p` refuse a home that names its directory. An inherited `GEMINI_HOME` and `AGY_APP_DATA_DIR` are always cleared. A sign-in, a probe of a temporary home, and an import from another directory pass `--gemini-dir`/`--app-data-dir` on file storage. These variables and `HOME` are reserved in the custom environment.
+  - A pooled server's key includes the home it started on, so a session start, a catalog probe or an import never reuses a server on another store or directory. Sessions already on a server whose store was left behind stay on it until they detach.
+  - `agy --version` and `agy update` are not routed through an `agy.Home`; nothing in the repo shows either reads the login.
   - Tests isolate credentials with `AGY_ACP_FORCE_FILE_STORAGE=1` and a detached `HOME` (unsetting `GEMINI_HOME` and `AGY_APP_DATA_DIR`).
 - Idle connections are kept warm in `sessionruntime.ConnPool` for 5 minutes and drained on binary upgrade or shutdown.
 

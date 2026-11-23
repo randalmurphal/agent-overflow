@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -109,6 +110,7 @@ var deniedProviderEnvNames = map[string]map[string]string{
 		"GEMINI_HOME":                 "Agent Overflow manages Antigravity's home isolation",
 		"AGY_APP_DATA_DIR":            "Agent Overflow manages Antigravity's app data directory",
 		"AGY_ACP_FORCE_FILE_STORAGE":  "Agent Overflow controls Antigravity's credential storage isolation",
+		"SSH_CONNECTION":              "Agent Overflow sets this with Antigravity's file credential storage on every launch that uses it",
 		"AGY_CLI_DISABLE_AUTO_UPDATE": "Agent Overflow pins this so background auto-updates do not replace the running ACP server mid-session",
 	},
 }
@@ -348,58 +350,40 @@ func validateProviderEnvVars(providerName string, vars []ProviderEnvVar) ([]Prov
 
 // sanitizeProviderEnvVars is the lenient load-time counterpart. A hand-edited
 // or downgraded file with one bad entry keeps its remaining variables instead
-// of stranding the whole list. It returns, with the kept list, one error per
-// entry it dropped and why: the caller logs them, and a load records them for
-// Service.ProviderEnvRefusedAtLoad (the variable the user expected simply not
-// being set is the confusing failure this avoids).
-func sanitizeProviderEnvVars(providerName string, vars []ProviderEnvVar) ([]ProviderEnvVar, []error) {
-	field, key, err := providerEnvSettingsField(providerName)
+// of stranding the whole list, and every drop is logged (the variable the user
+// expected simply not being set is the confusing failure this avoids).
+func sanitizeProviderEnvVars(providerName string, vars []ProviderEnvVar) []ProviderEnvVar {
+	field, _, err := providerEnvSettingsField(providerName)
 	if err != nil {
-		return nil, nil
+		return nil
 	}
 	if len(vars) == 0 {
-		return nil, nil
+		return nil
 	}
 	out := make([]ProviderEnvVar, 0, len(vars))
-	var dropped []error
 	seen := make(map[string]struct{}, len(vars))
-	for i, raw := range vars {
+	for _, raw := range vars {
 		v, err := validateProviderEnvVar(providerName, raw)
 		if err != nil {
-			dropped = append(dropped, fmt.Errorf("the saved %s environment variable %q is not applied: %w", key, raw.Name, err))
+			log.Printf("settings: dropping invalid %s entry %q: %v", field, raw.Name, err)
 			continue
 		}
 		upper := strings.ToUpper(v.Name)
 		if _, dup := seen[upper]; dup {
-			dropped = append(dropped, fmt.Errorf("the saved %s environment variable %q is not applied: it is saved twice", key, v.Name))
+			log.Printf("settings: dropping duplicate %s entry %q", field, v.Name)
 			continue
 		}
 		seen[upper] = struct{}{}
 		out = append(out, v)
 		if len(out) >= MaxProviderEnvVars {
-			if i+1 < len(vars) {
-				dropped = append(dropped, fmt.Errorf("the saved %s environment keeps its first %d variables (%s); the rest are not applied", key, MaxProviderEnvVars, field))
-			}
+			log.Printf("settings: %s truncated to %d entries", field, MaxProviderEnvVars)
 			break
 		}
 	}
 	if len(out) == 0 {
-		return nil, dropped
+		return nil
 	}
-	return out, dropped
-}
-
-// sanitizeLoadedProviderEnv applies sanitizeProviderEnvVars to every
-// provider's saved list in current and returns what it dropped.
-func sanitizeLoadedProviderEnv(current *Settings) []error {
-	var dropped []error
-	for _, providerName := range []string{"claude", "codex", "agy"} {
-		_, key, _ := providerEnvSettingsField(providerName)
-		vars, drops := sanitizeProviderEnvVars(providerName, current.ProviderEnvVars(providerName))
-		current.setProviderEnvVars(key, vars)
-		dropped = append(dropped, drops...)
-	}
-	return dropped
+	return out
 }
 
 // SetProviderEnvVar upserts one variable, preserving list position when the

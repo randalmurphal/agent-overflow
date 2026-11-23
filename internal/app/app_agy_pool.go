@@ -33,6 +33,7 @@ func agyPoolKey(
 	identity providerBinaryIdentity,
 	accountID string,
 	accountGen uint64,
+	home agy.Home,
 	env map[string]string,
 	isolateThreadID string,
 ) string {
@@ -46,6 +47,9 @@ func agyPoolKey(
 	writePart("mtime", fmt.Sprintf("%d", identity.modUnixNano))
 	writePart("account", accountID)
 	writePart("accountGen", fmt.Sprintf("%d", accountGen))
+	// A server reads the login from the store and home it started on, so
+	// a server on another one is never reused.
+	writePart("home", home.Identity())
 	if isolateThreadID != "" {
 		writePart("thread", isolateThreadID)
 	}
@@ -61,7 +65,8 @@ func agyPoolKey(
 }
 
 // acquireAgyConn returns a shared *acp.Conn for this thread's pool key,
-// dialing `agy acp` on first acquire. In isolated harness boots, each thread
+// dialing `agy acp` on first acquire. The canonical home is decided first,
+// with ctx, and is part of the key. In isolated harness boots, each thread
 // gets its own pool key to preserve single-engine mock isolation.
 func (a *App) acquireAgyConn(
 	ctx context.Context,
@@ -87,17 +92,17 @@ func (a *App) acquireAgyConn(
 		connWorkDir = workDir
 	}
 	resolvedBinary := agy.ResolveBinary(binary)
-	key := agyPoolKey(resolvedBinary, identity, selection.AccountID, selection.Generation, env, isolateThreadID)
+	home, err := a.ensureProviderAccountManager().AgyCanonicalHome(ctx)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	key := agyPoolKey(resolvedBinary, identity, selection.AccountID, selection.Generation, home, env, isolateThreadID)
 
 	rawConn, release, err := a.sessionManager().runtime.Connections().Acquire(
 		ctx,
 		key,
 		idleGrace,
 		func(dialCtx context.Context) (provider.Connection, error) {
-			home, err := a.ensureProviderAccountManager().AgyCanonicalHome()
-			if err != nil {
-				return nil, err
-			}
 			launch, err := home.Launch(env)
 			if err != nil {
 				return nil, err
@@ -123,10 +128,11 @@ func (a *App) acquireAgyConn(
 
 // borrowAgyConnForCurrentAccount borrows a warm pooled *acp.Conn ONLY when its
 // full pool identity (resolved binary + file identity + active account ID +
-// account generation + session process env) matches the current account state.
-// Never borrows across account generations, stale binaries, or harness-isolated
-// per-thread connections.
-func (a *App) borrowAgyConnForCurrentAccount(binary string) (*acp.Conn, func()) {
+// account generation + canonical home + session process env) matches the
+// current account state and home, the canonical home the caller decided for
+// this launch. Never borrows across account generations, stores, stale
+// binaries, or harness-isolated per-thread connections.
+func (a *App) borrowAgyConnForCurrentAccount(binary string, home agy.Home) (*acp.Conn, func()) {
 	if a.sessionRuntime == nil {
 		return nil, nil
 	}
@@ -140,7 +146,7 @@ func (a *App) borrowAgyConnForCurrentAccount(binary string) (*acp.Conn, func()) 
 	selection := a.captureProviderAccountSelection(string(provider.Agy))
 	// acquireAgyConn keys live pooled connections with sessionProcessEnv(agy, nil).
 	sessionEnv := a.sessionProcessEnv(string(provider.Agy), nil)
-	wantKey := agyPoolKey(resolvedBinary, identity, selection.AccountID, selection.Generation, sessionEnv, "")
+	wantKey := agyPoolKey(resolvedBinary, identity, selection.AccountID, selection.Generation, home, sessionEnv, "")
 	conn, release, ok := a.sessionRuntime.Connections().BorrowMatching(func(key string, c provider.Connection) bool {
 		if key != wantKey {
 			return false
@@ -175,8 +181,13 @@ func (a *App) withAgyImportConn(ctx context.Context, appDataDir, avoidSessionID 
 	binary := a.providerBinaryPath(string(provider.Agy))
 	canonicalDir := a.agyAppDataDir()
 	useCanonical := appDataDir == "" || (canonicalDir != "" && filepath.Clean(appDataDir) == filepath.Clean(canonicalDir))
+	var home agy.Home
+	var err error
 	if useCanonical {
-		if conn, release := a.borrowAgyConnForCurrentAccount(binary); conn != nil {
+		if home, err = a.ensureProviderAccountManager().AgyCanonicalHome(ctx); err != nil {
+			return err
+		}
+		if conn, release := a.borrowAgyConnForCurrentAccount(binary, home); conn != nil {
 			if avoidSessionID != "" && conn.HasActiveSession(avoidSessionID) {
 				// Never issue `session/load` for a session that is currently
 				// live on this pooled server: use an isolated one-shot conn
@@ -190,23 +201,12 @@ func (a *App) withAgyImportConn(ctx context.Context, appDataDir, avoidSessionID 
 				}
 			}
 		}
-	}
-	// A directory other than the canonical one, and the canonical one under
-	// an isolated boot's credential home, run as an isolated home there.
-	var home agy.Home
-	var err error
-	if !useCanonical || strings.TrimSpace(a.credentialHomeOverride) != "" {
-		dir := appDataDir
-		if dir == "" {
-			dir = canonicalDir
-		}
-		home, err = agy.IsolatedHome(dir)
-	} else {
-		home, err = a.ensureProviderAccountManager().AgyCanonicalHome()
-	}
-	if err != nil {
+	} else if home, err = agy.IsolatedHome(appDataDir); err != nil {
 		return err
 	}
+	// The import's own server, on the home decided above: the canonical one
+	// (which names its directory when it is not agy's default under the
+	// process HOME), or another directory's isolated one.
 	launch, err := home.Launch(a.ensureProviderAccountManager().ProbeEnv(string(provider.Agy), nil))
 	if err != nil {
 		return err

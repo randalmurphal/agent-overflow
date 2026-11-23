@@ -949,11 +949,6 @@ type Service struct {
 	// promptLoad is what the last loadFromFile learned about the prompt
 	// files. Written under s.mu, like unknownFields.
 	promptLoad promptLoad
-	// envRefused is every saved custom environment entry a load in this
-	// process dropped, with why, once each (ProviderEnvRefusedAtLoad). It
-	// outlives the write that rewrites the file without them. Written under
-	// s.mu.
-	envRefused []error
 	// store and backendBucket are the user/device residency, nil and empty
 	// until AttachTierStore runs. A store-less service keeps every tier in
 	// the file — the pre-phase-4 behaviour the pre-database boot readers in
@@ -1068,19 +1063,6 @@ func (s *Service) Get() Settings {
 	s.cachedState = currentState
 	s.cachedPromptFiles = s.promptLoad.stamps
 	return loaded
-}
-
-// ProviderEnvRefusedAtLoad is every entry of a saved custom environment that
-// a load in this process dropped, each with why: a name reserved since it was
-// saved, or an entry no save would accept. Load drops them so one stale entry
-// cannot stop startup, and the next write leaves them out of the file; the
-// boot reports them, so the person learns that a variable they set is not
-// reaching the provider.
-func (s *Service) ProviderEnvRefusedAtLoad() []error {
-	s.Get()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return slices.Clone(s.envRefused)
 }
 
 // cacheFreshLocked reports whether the cached snapshot still matches the
@@ -1257,18 +1239,10 @@ func (s *Service) loadFromFile() Settings {
 // finishLoad is the shared tail of loadFromFile's three exits: the user tier
 // over the file values, the load-time sanitizer, and then, with the store
 // attached, the prompt override texts from their files (promptfiles.go).
-// Records what the files said in s.promptLoad, and the custom environment
-// entries the sanitizer dropped in s.envRefused. Must be called with s.mu
+// Records what the files said in s.promptLoad. Must be called with s.mu
 // held.
 func (s *Service) finishLoad(fileValues Settings) Settings {
-	overlaid := s.overlayUserTier(fileValues)
-	refused := overlaid
-	for _, dropped := range sanitizeLoadedProviderEnv(&refused) {
-		if !slices.ContainsFunc(s.envRefused, func(seen error) bool { return seen.Error() == dropped.Error() }) {
-			s.envRefused = append(s.envRefused, dropped)
-		}
-	}
-	loaded := sanitizeLoadedSettings(overlaid)
+	loaded := sanitizeLoadedSettings(s.overlayUserTier(fileValues))
 	s.promptLoad = promptLoad{}
 	if s.store != nil {
 		s.promptLoad = s.fillPromptFiles(&loaded)

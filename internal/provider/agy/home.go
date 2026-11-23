@@ -1,7 +1,9 @@
 package agy
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,10 @@ const (
 	forceFileStorageEnv = "AGY_ACP_FORCE_FILE_STORAGE"
 	geminiHomeEnv       = "GEMINI_HOME"
 	appDataDirEnv       = "AGY_APP_DATA_DIR"
+	// sshConnectionEnv is set with forceFileStorageEnv on every file-store
+	// launch, as the sign-in flow has set it since it was added; the repo
+	// records no reason of its own for it.
+	sshConnectionEnv = "SSH_CONNECTION"
 )
 
 // ambientCredentialEnvVars are scrubbed from agy subprocess environments unless
@@ -30,37 +36,76 @@ var ambientCredentialEnvVars = []string{
 }
 
 // Home is the login store and home directory one agy process runs against.
-// The canonical home is agy's default under HOME, on the store the account
-// manager reads (provideraccountapp.Manager.AgyCanonicalHome is its only
-// maker); an isolated home is a directory of its own on file storage. The
-// zero value is no home, and Launch refuses it.
+// The canonical home is the login the account manager reads, on the store it
+// reads it from (provideraccountapp.Manager.AgyCanonicalHome is its only
+// maker); an isolated home is a sign-in's or a saved login's directory of its
+// own, on file storage. The zero value is no home, and Launch refuses it.
 type Home struct {
-	// appDataDir is the isolated home's app data directory, empty for the
-	// canonical home.
+	// appDataDir is the app data directory the launch names, empty for agy's
+	// default under the process HOME.
 	appDataDir  string
 	fileStorage bool
+	isolated    bool
 	set         bool
 }
 
-// CanonicalHome is agy's default home on the file store (fileStorage) or the
-// macOS Keychain. Only the account manager, which reads that store, calls it.
-func CanonicalHome(fileStorage bool) Home {
-	return Home{fileStorage: fileStorage, set: true}
+// HomeSource decides the Home of one launch. A launcher calls it with its own
+// context, inside its own time limit, immediately before it starts the
+// process, because the canonical store can change between launches.
+type HomeSource func(ctx context.Context) (Home, error)
+
+// Source is a HomeSource that answers h, for a home already decided.
+func (h Home) Source() HomeSource {
+	return func(context.Context) (Home, error) { return h, nil }
+}
+
+// CanonicalHome is the canonical login's home: agy's default under the
+// process HOME when appDataDir is empty, else appDataDir, on the file store
+// (fileStorage) or the macOS Keychain. Only the account manager, which reads
+// that store, calls it. A directory of its own is only ever the file store's:
+// what a named directory does to agy's Keychain login is unknown, and no boot
+// that names one uses the Keychain.
+func CanonicalHome(appDataDir string, fileStorage bool) (Home, error) {
+	if appDataDir == "" {
+		return Home{fileStorage: fileStorage, set: true}, nil
+	}
+	if !fileStorage {
+		return Home{}, fmt.Errorf("agy: the canonical home %s is not agy's default, and only the file store may name its directory", appDataDir)
+	}
+	dir, err := cleanAppDataDir(appDataDir)
+	if err != nil {
+		return Home{}, err
+	}
+	return Home{appDataDir: dir, fileStorage: true, set: true}, nil
 }
 
 // IsolatedHome is the home whose app data directory is appDataDir
 // (<geminiDir>/<appDataSubdir>), on file storage so nothing it does reaches the
 // Keychain item of the canonical login.
 func IsolatedHome(appDataDir string) (Home, error) {
-	cleaned := filepath.Clean(strings.TrimSpace(appDataDir))
-	if strings.TrimSpace(appDataDir) == "" || cleaned == "." {
-		return Home{}, errors.New("agy: an isolated home needs a directory")
+	dir, err := cleanAppDataDir(appDataDir)
+	if err != nil {
+		return Home{}, err
 	}
-	return Home{appDataDir: cleaned, fileStorage: true, set: true}, nil
+	return Home{appDataDir: dir, fileStorage: true, isolated: true, set: true}, nil
 }
 
-// Isolated reports a home of its own directory.
-func (h Home) Isolated() bool { return h.appDataDir != "" }
+func cleanAppDataDir(appDataDir string) (string, error) {
+	cleaned := filepath.Clean(strings.TrimSpace(appDataDir))
+	if strings.TrimSpace(appDataDir) == "" || cleaned == "." {
+		return "", errors.New("agy: a home needs a directory")
+	}
+	return cleaned, nil
+}
+
+// Isolated reports a sign-in's or a saved login's home, not the canonical one.
+func (h Home) Isolated() bool { return h.isolated }
+
+// Identity names the store and directory a process on h reads its login
+// from, for a key that must tell apart servers on different ones.
+func (h Home) Identity() string {
+	return fmt.Sprintf("set=%t isolated=%t file=%t dir=%s", h.set, h.isolated, h.fileStorage, h.appDataDir)
+}
 
 // Launch is what an agy command needs to run against one Home: the home
 // arguments to place after its subcommand, the environment overrides, and the
@@ -91,7 +136,7 @@ func (h Home) Launch(customEnv map[string]string) (Launch, error) {
 	delete(env, appDataDirEnv)
 	if h.fileStorage {
 		env[forceFileStorageEnv] = "1"
-		env["SSH_CONNECTION"] = "127.0.0.1 0 127.0.0.1 0"
+		env[sshConnectionEnv] = "127.0.0.1 0 127.0.0.1 0"
 	} else {
 		delete(env, forceFileStorageEnv)
 		unset = append(unset, forceFileStorageEnv)
@@ -105,10 +150,21 @@ func (h Home) Launch(customEnv map[string]string) (Launch, error) {
 		}
 	}
 	var args []string
-	if h.Isolated() {
+	if h.appDataDir != "" {
 		args = []string{"--gemini-dir", filepath.Dir(h.appDataDir), "--app-data-dir", filepath.Base(h.appDataDir)}
 	}
 	return Launch{Args: args, Env: env, Unset: unset}, nil
+}
+
+// OnDefaultHome refuses a launch that names its home directory, for a
+// command other than `agy acp`: only `acp` is known to take --gemini-dir and
+// --app-data-dir, so such a command cannot be pointed at that home and would
+// read agy's default under the process HOME instead.
+func (l Launch) OnDefaultHome(command string) error {
+	if len(l.Args) == 0 {
+		return nil
+	}
+	return fmt.Errorf("agy: `agy %s` runs only on agy's default home under HOME, and this login's home is %s", command, strings.Join(l.Args, " "))
 }
 
 // ACPArgs is the argv of a shared multiplexed `agy acp` server on this

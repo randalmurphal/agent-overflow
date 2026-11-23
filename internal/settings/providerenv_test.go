@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestSetProviderEnvVarRoundTripsNameValueAndSensitiveFlag(t *testing.T) {
@@ -136,6 +135,7 @@ func TestSetProviderEnvVarRejectsReservedNames(t *testing.T) {
 		{"agy", "GEMINI_HOME"},
 		{"agy", "AGY_APP_DATA_DIR"},
 		{"agy", "AGY_ACP_FORCE_FILE_STORAGE"},
+		{"agy", "SSH_CONNECTION"},
 	}
 	for _, test := range cases {
 		t.Run(test.provider+"/"+test.varName, func(t *testing.T) {
@@ -169,10 +169,9 @@ func TestSetProviderEnvVarRefusesHomeForEveryProvider(t *testing.T) {
 	}
 }
 
-// A HOME saved before it was reserved is not applied after an upgrade, and
-// the load says so: the person reads which variable of which provider is not
-// applied and why, instead of the variable silently vanishing.
-func TestASavedHomeIsReportedAndNotApplied(t *testing.T) {
+// A HOME saved before HOME was reserved is dropped at load: no provider
+// applies it, and the rest of that provider's list is kept.
+func TestASavedHomeIsDroppedAtLoad(t *testing.T) {
 	dir := t.TempDir()
 	raw := `{
 	  "claudeCustomEnv": [{"name": "HOME", "value": "/tmp/claude-home"}, {"name": "KEEP", "value": "1"}],
@@ -182,52 +181,12 @@ func TestASavedHomeIsReportedAndNotApplied(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	svc := NewService(dir)
-	got := svc.Get()
+	got := NewService(dir).Get()
 	assertEnvVars(t, got.ClaudeCustomEnv, []ProviderEnvVar{{Name: "KEEP", Value: "1"}})
 	for _, providerName := range []string{"claude", "codex", "agy"} {
 		if _, applied := got.ProviderEnvMap(providerName)["HOME"]; applied {
 			t.Errorf("%s applies the saved HOME", providerName)
 		}
-	}
-	refused := svc.ProviderEnvRefusedAtLoad()
-	if len(refused) != 3 {
-		t.Fatalf("refused at load = %v, want the three saved HOMEs", refused)
-	}
-	for i, providerName := range []string{"claude", "codex", "agy"} {
-		text := refused[i].Error()
-		if !strings.Contains(text, "saved "+providerName+" environment variable \"HOME\" is not applied") || !strings.Contains(text, "login and data") {
-			t.Errorf("refusal %d reads %q, want it to name %s's HOME and why", i, text, providerName)
-		}
-	}
-
-	// A reload of the same file reports each once.
-	later := time.Now().Add(time.Hour)
-	if err := os.Chtimes(filepath.Join(dir, "settings.json"), later, later); err != nil {
-		t.Fatal(err)
-	}
-	svc.Get()
-	if again := svc.ProviderEnvRefusedAtLoad(); len(again) != 3 {
-		t.Fatalf("refused after a reload = %v, want the same three", again)
-	}
-
-	// The next write leaves them out of the file; the report keeps them,
-	// once each, for the boot that reads it after that write.
-	mustSetEnvVar(t, svc, "claude", "KEEP_TOO", "2", false)
-	written, err := os.ReadFile(filepath.Join(dir, "settings.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(written), "HOME") {
-		t.Fatalf("settings.json after a write still holds HOME: %s", written)
-	}
-	later = later.Add(time.Hour)
-	if err := os.Chtimes(filepath.Join(dir, "settings.json"), later, later); err != nil {
-		t.Fatal(err)
-	}
-	svc.Get()
-	if again := svc.ProviderEnvRefusedAtLoad(); len(again) != 3 {
-		t.Fatalf("refused after the write = %v, want the same three", again)
 	}
 }
 

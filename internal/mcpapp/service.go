@@ -53,9 +53,9 @@ type Deps struct {
 	ClaudeSessions    func(workspacePath string) []ClaudeLiveSession
 	ProviderBinary    func(providerName string) string
 	SessionProcessEnv func(providerName string) map[string]string
-	// AgyCanonicalHome is the home and login store the account manager
-	// decides for a canonical agy process.
-	AgyCanonicalHome func() (agy.Home, error)
+	// AgyCanonicalHome decides the home and login store of a canonical agy
+	// process, as it starts (agy.HomeSource).
+	AgyCanonicalHome func(ctx context.Context) (agy.Home, error)
 	// ClaudeRetention is a Claude sign-in process's answer to the
 	// transcript sweep (claude.Config.Retention).
 	ClaudeRetention      func(workDir string) claude.Retention
@@ -133,11 +133,13 @@ func (a *Service) providerBinaryPath(providerName string) string {
 	return a.deps.ProviderBinary(providerName)
 }
 
-func (a *Service) agyCanonicalHome() (agy.Home, error) {
+// agyCanonicalHome is an agy.HomeSource, which the MCP status fetcher runs
+// only once it starts `agy mcp list`: a cached answer decides nothing.
+func (a *Service) agyCanonicalHome(ctx context.Context) (agy.Home, error) {
 	if a == nil || a.deps.AgyCanonicalHome == nil {
 		return agy.Home{}, errors.New("mcp status: the Antigravity home is unavailable")
 	}
-	return a.deps.AgyCanonicalHome()
+	return a.deps.AgyCanonicalHome(ctx)
 }
 
 func (a *Service) sessionProcessEnv(providerName string) map[string]string {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -259,14 +258,14 @@ func (m *Manager) StartProviderLogin(providerName string, method LoginMethod) (L
 
 	flow, notice, err := m.openLoginFlow(ctx, run, method, "")
 	if err != nil {
-		joined := errors.Join(err, run.teardown())
-		m.settleLoginRun(run, LoginPhaseFailed, loginProse(joined))
+		cleanupErr := run.teardown()
+		m.finishLoginRun(run, err, cleanupErr)
 		// driveLogin never ran, so this path owns the close. A cancel or the
 		// shutdown join can already be parked on run.done — the run was in
 		// the registry for the whole spawn — and every waiter waits forever
 		// without it.
 		close(run.done)
-		return m.ProviderLoginState(providerName), joined
+		return m.ProviderLoginState(providerName), errors.Join(err, cleanupErr)
 	}
 	state := m.publishLoginFlow(run, flow, notice)
 	transferred = true
@@ -394,15 +393,22 @@ func (m *Manager) ShutdownProviderLogins() {
 func (m *Manager) driveLogin(ctx context.Context, run *loginRun) {
 	defer close(run.done)
 	err := m.runLogin(ctx, run)
-	cleanupErr := run.teardown()
-	if err != nil {
-		m.settleLoginRun(run, LoginPhaseFailed, loginProse(errors.Join(err, cleanupErr)))
-		return
-	}
+	m.finishLoginRun(run, err, run.teardown())
+}
+
+// finishLoginRun settles a sign-in once its process and temporary home are
+// torn down, the one end of every sign-in that got a run. A teardown failure
+// is audited on every path, because the temporary home it leaves can hold the
+// new credential until the boot sweep removes it. A failed sign-in shows its
+// own sentence, followed by the teardown failure when there is one; a
+// successful one shows nothing of it, since the account it saved is in use.
+func (m *Manager) finishLoginRun(run *loginRun, err, cleanupErr error) {
 	if cleanupErr != nil {
-		// The account is switched and active. A leftover temporary home is
-		// the boot sweep's problem, not this user's.
-		log.Printf("provideraccountapp: %v", cleanupErr)
+		m.audit("the %s sign-in's teardown failed, so its temporary home stays until the next start: %v", run.provider, cleanupErr)
+	}
+	if err != nil {
+		m.settleLoginRun(run, LoginPhaseFailed, loginFailureProse(err, cleanupErr))
+		return
 	}
 	m.settleLoginRun(run, LoginPhaseSucceeded, "")
 }
@@ -725,7 +731,24 @@ func loginProse(err error) string {
 	case errors.Is(err, context.Canceled):
 		return loginCancelledNotice
 	}
-	message := strings.Join(strings.Fields(err.Error()), " ")
+	return boundLoginProse(err.Error())
+}
+
+// loginFailureProse is the sentence a failed sign-in shows: the sign-in
+// error's own (loginProse), followed by its teardown's failure when that
+// failed too.
+func loginFailureProse(err, cleanupErr error) string {
+	sentence := loginProse(err)
+	if cleanupErr == nil {
+		return sentence
+	}
+	return boundLoginProse(sentence + " " + cleanupErr.Error())
+}
+
+// boundLoginProse is text on one line, bounded so a page of output cannot
+// become the UI.
+func boundLoginProse(text string) string {
+	message := strings.Join(strings.Fields(text), " ")
 	runes := []rune(message)
 	if len(runes) > loginProseRunes {
 		return string(runes[:loginProseRunes]) + "…"

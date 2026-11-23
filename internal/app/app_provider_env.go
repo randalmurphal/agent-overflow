@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claudetui"
@@ -22,14 +21,6 @@ import (
 // values, so a read-mutate-write round trip through the generic patch path
 // would persist the redaction. settings.Service.Update rejects the keys, so
 // this is the only way in.
-
-// reportProviderEnvRefusedAtLoad is the boot's report of each saved custom
-// environment variable the settings do not apply (a name reserved since it
-// was saved, or an entry no save would accept). Load drops them so startup
-// goes on; this is how the person learns the provider runs without them.
-func (a *App) reportProviderEnvRefusedAtLoad() error {
-	return errors.Join(a.settings.ProviderEnvRefusedAtLoad()...)
-}
 
 // SetProviderCustomEnvVar adds or replaces one custom environment variable for
 // a provider and returns the projected settings snapshot the frontend store

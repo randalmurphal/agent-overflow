@@ -1,13 +1,16 @@
 package provideraccounts
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestGoKeyringPayloadRoundTrip(t *testing.T) {
@@ -185,7 +188,7 @@ func TestAgyFileKeychainForceStorageAndEncodedPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCredentialsWithFileKeychain: %v", err)
 	}
-	if fileStorage, err := creds.AgyCanonicalFileStorage(); err != nil || !fileStorage {
+	if fileStorage, err := creds.AgyCanonicalFileStorage(context.Background()); err != nil || !fileStorage {
 		t.Fatalf("file-backed store before the file = %v, %v; want file storage", fileStorage, err)
 	}
 	appData := filepath.Join(home, ".gemini", "antigravity-cli")
@@ -195,54 +198,133 @@ func TestAgyFileKeychainForceStorageAndEncodedPrefix(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(appData, agyCredentialFileName), []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if fileStorage, err := creds.AgyCanonicalFileStorage(); err != nil || !fileStorage {
+	if fileStorage, err := creds.AgyCanonicalFileStorage(context.Background()); err != nil || !fileStorage {
 		t.Fatalf("file-backed store with the file = %v, %v; want file storage", fileStorage, err)
 	}
 }
 
-// The macOS backend reads the canonical login from the Keychain item when
-// there is one and from the fallback file only when there is not, so an agy
-// process is put on file storage exactly then. A Keychain query that fails
-// decides neither store.
-func TestSecurityAgyKeychainCanonicalStoreFollowsWhatReadReads(t *testing.T) {
+// The macOS backend decides once where the canonical login is, and the
+// reader and the store an agy process runs on both follow it. For each
+// result: what the reader returns (as on main), and the store a launch gets.
+func TestSecurityAgyKeychainReaderAndLaunchFollowOneSource(t *testing.T) {
 	installFakeSecurity(t)
-	home := t.TempDir()
 	kc := securityAgyKeychain{}
 	raw := []byte(`{"id_token_email":"file@example.com","token":{"access_token":"f1","refresh_token":"rf"}}`)
 	item := []byte(`{"id_token_email":"keychain@example.com","token":{"access_token":"k1","refresh_token":"rk"}}`)
 	t.Setenv("FAKE_SECURITY_READ_PAYLOAD", string(encodeGoKeyringPayload(item)))
+	ctx := context.Background()
 
-	// No fallback file: agy's default store, whatever the Keychain holds.
-	t.Setenv("FAKE_SECURITY_FIND_EXIT", "36")
-	if fileStorage, err := kc.canonicalFileStorage(home); err != nil || fileStorage {
-		t.Fatalf("without the file = %v, %v; want the Keychain", fileStorage, err)
-	}
-
-	if err := os.WriteFile(filepath.Join(home, agyCredentialFileName), raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	cases := []struct {
-		exit        string
-		fileStorage bool
-		read        []byte
+		name string
+		// file writes the fallback file into home; nil writes none.
+		file func(t *testing.T, home string)
+		exit string
+		// read is the login the reader returns, "" for an error, and
+		// "missing" for ErrCredentialMissing.
+		read string
+		// store is "keychain", "file" or "" for a launch that fails.
+		store string
 	}{
-		{exit: "0", fileStorage: false, read: item},
-		{exit: "44", fileStorage: true, read: raw},
+		{name: "item, no file", exit: "0", read: string(item), store: "keychain"},
+		{name: "no item, no file", exit: "44", read: "missing", store: "keychain"},
+		{name: "item and file", file: writeFile(raw), exit: "0", read: string(item), store: "keychain"},
+		{name: "file, no item", file: writeFile(raw), exit: "44", read: string(raw), store: "file"},
+		{name: "empty file, no item", file: writeFile(nil), exit: "44", read: "", store: ""},
+		{name: "symlinked file, no item", file: symlinkFile(raw), exit: "44", read: "", store: ""},
+		{name: "symlinked file, item", file: symlinkFile(raw), exit: "0", read: string(item), store: "keychain"},
+		{name: "file, query fails", file: writeFile(raw), exit: "36", read: "", store: ""},
 	}
 	for _, c := range cases {
-		t.Setenv("FAKE_SECURITY_FIND_EXIT", c.exit)
-		fileStorage, err := kc.canonicalFileStorage(home)
-		if err != nil || fileStorage != c.fileStorage {
-			t.Fatalf("security exit %s: file storage = %v, %v; want %v", c.exit, fileStorage, err, c.fileStorage)
-		}
-		read, err := kc.read(home, true)
-		if err != nil || string(read) != string(c.read) {
-			t.Fatalf("security exit %s: read = %s, %v; want the login of the store chosen", c.exit, read, err)
+		t.Run(c.name, func(t *testing.T) {
+			home := t.TempDir()
+			if c.file != nil {
+				c.file(t, home)
+			}
+			t.Setenv("FAKE_SECURITY_FIND_EXIT", c.exit)
+			got, err := kc.read(home, true)
+			switch c.read {
+			case "":
+				if err == nil {
+					t.Errorf("read = %s, want an error", got)
+				}
+			case "missing":
+				if !errors.Is(err, ErrCredentialMissing) {
+					t.Errorf("read = %s, %v; want the login missing", got, err)
+				}
+			default:
+				if err != nil || string(got) != c.read {
+					t.Errorf("read = %s, %v; want %s", got, err, c.read)
+				}
+			}
+			fileStorage, err := kc.canonicalFileStorage(ctx, home)
+			store := "keychain"
+			if fileStorage {
+				store = "file"
+			}
+			if err != nil {
+				store = ""
+			}
+			if store != c.store {
+				t.Errorf("launch store = %q (%v), want %q", store, err, c.store)
+			}
+		})
+	}
+}
+
+func writeFile(data []byte) func(t *testing.T, home string) {
+	return func(t *testing.T, home string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(home, agyCredentialFileName), data, 0o600); err != nil {
+			t.Fatal(err)
 		}
 	}
+}
 
-	t.Setenv("FAKE_SECURITY_FIND_EXIT", "36")
-	if _, err := kc.canonicalFileStorage(home); err == nil {
-		t.Fatal("a failed Keychain query chose a store")
+func symlinkFile(data []byte) func(t *testing.T, home string) {
+	return func(t *testing.T, home string) {
+		t.Helper()
+		target := filepath.Join(t.TempDir(), "elsewhere")
+		if err := os.WriteFile(target, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(home, agyCredentialFileName)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Without a fallback file the launch is on the Keychain and asks
+// security(1) nothing; with one, a query that gets no answer in time fails
+// the decision and names the query and the bound, and the caller's
+// cancellation ends it too.
+func TestSecurityAgyKeychainQueryIsBounded(t *testing.T) {
+	installFakeSecurity(t)
+	kc := securityAgyKeychain{}
+	home := t.TempDir()
+	calls := filepath.Join(t.TempDir(), "calls")
+	t.Setenv("FAKE_SECURITY_LOG", calls)
+	t.Setenv("FAKE_SECURITY_FIND_SLEEP", "30")
+
+	if source, err := kc.loginSource(context.Background(), home, 50*time.Millisecond); err != nil || source.kind != agyLoginInKeychain {
+		t.Fatalf("without a file = %+v, %v; want the Keychain", source, err)
+	}
+	if _, err := os.Stat(calls); err == nil {
+		t.Fatal("deciding without a fallback file ran security(1)")
+	}
+
+	writeFile([]byte("{}"))(t, home)
+	start := time.Now()
+	_, err := kc.loginSource(context.Background(), home, 50*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "query Antigravity Keychain credential") || !strings.Contains(err.Error(), "within 50ms") {
+		t.Fatalf("a query with no answer = %v, want it named with its bound", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("the bounded query took %s", elapsed)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := kc.loginSource(ctx, home, time.Minute); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a query after the caller gave up = %v, want its cancellation", err)
 	}
 }

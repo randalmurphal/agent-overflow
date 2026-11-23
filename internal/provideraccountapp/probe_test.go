@@ -77,8 +77,10 @@ func TestRunAccountProbeRunsAfterAdoptBeforeTheAccountEmit(t *testing.T) {
 // Every canonical agy probe the manager starts (account probes, reconciliation,
 // the token refresh, the transfer check) runs on the store and home the
 // manager reads, whatever the process inherited: here the file store, so the
-// flag is set, and agy's default home, so the home variables are cleared. A
-// sign-in's isolated home is on file storage in its own directory.
+// flag is set, and the home variables are cleared. The home is agy's default
+// when the process HOME holds the manager's directory, and that directory
+// named when it does not. A sign-in's isolated home is on file storage in its
+// own directory.
 func TestAgyProbesRunOnTheManagersStoreAndHome(t *testing.T) {
 	manager, _, credentials := newTestManager(t)
 	// After the fixture, which detaches the provider homes: these stand for
@@ -89,11 +91,28 @@ func TestAgyProbesRunOnTheManagersStoreAndHome(t *testing.T) {
 	binary, record := agyAccountProbeRecording(t)
 	agyName := string(provider.Agy)
 
+	paths, err := credentials.Paths(agyName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	managerDir := paths.SharedHome
 	_, probe := manager.AgyAccountProbe(binary, "")
+
+	t.Setenv("HOME", t.TempDir())
 	if _, err := probe(context.Background()); err != nil {
 		t.Fatalf("canonical probe: %v", err)
 	}
 	got := readAgyLaunchRecord(t, record)
+	named := "acp --gemini-dir " + filepath.Dir(managerDir) + " --app-data-dir " + filepath.Base(managerDir)
+	if got["AGY_ACP_FORCE_FILE_STORAGE"] != "1" || got["GEMINI_HOME"] != "<unset>" || got["AGY_APP_DATA_DIR"] != "<unset>" || got["args"] != named {
+		t.Fatalf("canonical probe under another HOME launched with %v, want file storage in %s", got, managerDir)
+	}
+
+	t.Setenv("HOME", filepath.Dir(filepath.Dir(managerDir)))
+	if _, err := probe(context.Background()); err != nil {
+		t.Fatalf("canonical probe: %v", err)
+	}
+	got = readAgyLaunchRecord(t, record)
 	if got["AGY_ACP_FORCE_FILE_STORAGE"] != "1" || got["GEMINI_HOME"] != "<unset>" || got["AGY_APP_DATA_DIR"] != "<unset>" || got["args"] != "acp" {
 		t.Fatalf("canonical probe launched with %v, want file storage on agy's default home", got)
 	}
@@ -117,7 +136,7 @@ func TestAgyProbesRunOnTheManagersStoreAndHome(t *testing.T) {
 // store for one either.
 func TestAgyCanonicalHomeNeedsTheCredentialStore(t *testing.T) {
 	manager := NewManager(Deps{Reaper: procutiltest.Reaper()})
-	if _, err := manager.AgyCanonicalHome(); err == nil {
+	if _, err := manager.AgyCanonicalHome(context.Background()); err == nil {
 		t.Fatal("a manager without credentials chose an Antigravity store")
 	}
 }

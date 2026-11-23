@@ -722,7 +722,7 @@ func (m *Manager) probeProviderAccountAtHome(providerName, binary, home string) 
 		if err != nil {
 			return provider.AccountInfo{}, err
 		}
-		return agy.ProbeAccount(m.context(), m.agyProbeConfig(binary, isolated, m.providerCustomEnv(providerName)))
+		return agy.ProbeAccount(m.context(), m.agyProbeConfig(binary, isolated.Source(), m.providerCustomEnv(providerName)))
 	default:
 		return provider.AccountInfo{}, fmt.Errorf("unsupported provider %q", providerName)
 	}

@@ -434,15 +434,6 @@ const savedProviderHomes = `{
   "agyCustomEnv": [{"name": "HOME", "value": "/tmp/agy-home"}]
 }`
 
-func wantEveryProviderHomeNamed(t *testing.T, report string) {
-	t.Helper()
-	for _, providerName := range []string{"claude", "codex", "agy"} {
-		if !strings.Contains(report, "saved "+providerName+" environment variable \"HOME\" is not applied") {
-			t.Errorf("boot report %q does not name %s's HOME", report, providerName)
-		}
-	}
-}
-
 // A saved HOME reaches no provider process: each spawn environment carries
 // the process HOME, the home the account manager reads.
 func TestASavedProviderHomeIsNotApplied(t *testing.T) {
@@ -465,35 +456,4 @@ func TestASavedProviderHomeIsNotApplied(t *testing.T) {
 			t.Errorf("%s spawns with HOME=%q, want the process HOME %q", providerName, child, processHome)
 		}
 	}
-}
-
-// The boot's steps before clients, run as the boot runs them, report a saved
-// HOME through the boot failure every client shows, and the boot goes on.
-// Serial: the boot fixture sets HOME.
-func TestASavedProviderHomeIsReportedByTheBoot(t *testing.T) {
-	a := newBootTestApp(t)
-	dbDir := filepath.Join(a.dataDirOverride, "agent-overflow")
-	if err := os.MkdirAll(dbDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dbDir, "settings.json"), []byte(savedProviderHomes), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	progress := newRecordingBootProgress("")
-	SetBootProgress(a, progress)
-	ParkUnattendedWork(a)
-	t.Cleanup(func() {
-		if err := a.Shutdown(context.Background()); err != nil {
-			t.Errorf("Shutdown: %v", err)
-		}
-	})
-	if err := a.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	for i, step := range a.startBeforeClients() {
-		if err := step(); err != nil {
-			t.Fatalf("boot step %d: %v", i, err)
-		}
-	}
-	wantEveryProviderHomeNamed(t, strings.Join(progress.failures(), "\n"))
 }

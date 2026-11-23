@@ -184,7 +184,7 @@ func NewCredentialsWithFileKeychain(userHome string, policy Policy) (*Credential
 // the macOS Keychain item (false). An agy process launched for the canonical
 // login must use the same store (agy.CanonicalHome); a failed Keychain query
 // is returned, never answered as either store.
-func (c *Credentials) AgyCanonicalFileStorage() (bool, error) {
+func (c *Credentials) AgyCanonicalFileStorage(ctx context.Context) (bool, error) {
 	keychain, ok := c.keychainFor("agy")
 	if !ok {
 		return true, nil
@@ -197,7 +197,7 @@ func (c *Credentials) AgyCanonicalFileStorage() (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		fileStorage, err := backend.canonicalFileStorage(paths.SharedHome)
+		fileStorage, err := backend.canonicalFileStorage(ctx, paths.SharedHome)
 		if err != nil {
 			return false, fmt.Errorf("provideraccounts: query the macOS Keychain for the Antigravity login: %w", err)
 		}

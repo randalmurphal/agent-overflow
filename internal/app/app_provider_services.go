@@ -67,19 +67,21 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 			},
 			RememberClaudeCatalog: a.rememberClaudeCatalog,
 			ProbeAgyModels: func(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
-				if conn, release := a.borrowAgyConnForCurrentAccount(binary); conn != nil {
-					defer release()
-					return agy.ProbeCatalogOnConn(ctx, conn, providerProbeWorkDir())
-				}
-				home, err := a.ensureProviderAccountManager().AgyCanonicalHome()
+				// One decision for both: a warm server on this home, or a
+				// temporary one started on it.
+				home, err := a.ensureProviderAccountManager().AgyCanonicalHome(ctx)
 				if err != nil {
 					return nil, err
+				}
+				if conn, release := a.borrowAgyConnForCurrentAccount(binary, home); conn != nil {
+					defer release()
+					return agy.ProbeCatalogOnConn(ctx, conn, providerProbeWorkDir())
 				}
 				return agy.ProbeCatalog(
 					ctx,
 					binary,
 					providerProbeWorkDir(),
-					home,
+					home.Source(),
 					a.ensureProviderAccountManager().ProbeEnv(string(provider.Agy), nil),
 					a.groupReaper("agy model catalog"),
 				)

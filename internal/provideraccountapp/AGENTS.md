@@ -35,7 +35,9 @@ alive. Rate-limit persistence and emission enter through narrow
 - A Codex device flow may complete on another screen. Correlate completion by
   `loginId` through projected state rather than a blocking return.
 - Each attempt owns one provider process and closes it on success, failure,
-  cancellation, or replacement.
+  cancellation, or replacement. Every run ends in `finishLoginRun`: a
+  teardown that fails is audited on every exit, and a failed sign-in shows
+  that failure after its own sentence.
 - Adoption lands a login by its identity and never switches: a saved account
   is renewed in its slot, a new one is appended. Only a login for the selected
   account, or the first login when none is selected, replaces the canonical

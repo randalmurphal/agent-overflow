@@ -845,18 +845,25 @@ func assertFlagValue(t *testing.T, args []string, flag string, want []string) {
 
 func TestRunAgyAndDecodeStructured(t *testing.T) {
 	var got CLISpec
+	// The store is decided as the run starts: the config is built while the
+	// login is in the file, and the run starts after it moved to the
+	// Keychain.
+	fileStorage := true
 	cfg := Config{
 		Provider: "agy",
 		Binary:   "agy",
 		Model:    DefaultAgyModel,
 		Effort:   "low",
-		AgyHome:  agy.CanonicalHome(false),
+		AgyHome: func(context.Context) (agy.Home, error) {
+			return agy.CanonicalHome("", fileStorage)
+		},
 		Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
 			got = spec
 			return CLIResult{Stdout: `{"result":"{\"title\":\"Add Antigravity textgen\"}"}`}, nil
 		},
 	}
 
+	fileStorage = false
 	out, err := RunAgy(context.Background(), cfg, "/workspace", `{"type":"object"}`, nil, "prompt", time.Minute)
 	if err != nil {
 		t.Fatalf("RunAgy: %v", err)
@@ -881,7 +888,16 @@ func TestRunAgyAndDecodeStructured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, home := range map[string]agy.Home{"no home": {}, "an isolated home": isolated} {
+	named, err := agy.CanonicalHome(filepath.Join(t.TempDir(), ".gemini", "antigravity-cli"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, home := range map[string]agy.HomeSource{
+		"no source":                   nil,
+		"no home":                     agy.Home{}.Source(),
+		"an isolated home":            isolated.Source(),
+		"a home naming its directory": named.Source(),
+	} {
 		refused := cfg
 		refused.AgyHome = home
 		if _, err := RunAgy(context.Background(), refused, "/workspace", `{"type":"object"}`, nil, "prompt", time.Minute); err == nil {

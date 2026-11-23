@@ -131,3 +131,67 @@ func TestAnAgySignInWhoseLookupTimedOutNamesTheLookup(t *testing.T) {
 		t.Fatalf("public details = %q, %v; want the sign-in's own code", code, ok)
 	}
 }
+
+// A sign-in whose lookup failed and whose teardown then failed too, ended as
+// the coordinator ends every run: the person reads the lookup's sentence and
+// the teardown's failure, and the audit names the teardown, since the
+// temporary home it left holds the new credential.
+func TestAFailedSignInWhoseTeardownFailedSaysBoth(t *testing.T) {
+	rig := newAgyReadingRigAt(t, t.TempDir())
+	audit := filepath.Join(t.TempDir(), "audit.log")
+	rig.manager.auditPath = audit
+	rig.quota.answerUserinfo(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("userinfo unreachable for the test")
+	})
+	attempt := completedAgyLogin(t, rig, agyCredential("dev-new", ""))
+	run := &loginRun{provider: string(provider.Agy), attempt: attempt, done: make(chan struct{}), cancel: func() {}}
+	rig.manager.registerLoginRun(run)
+
+	_, err := rig.manager.adoptLogin(attempt)
+	if err == nil {
+		t.Fatal("adoptLogin saved a sign-in nobody could identify")
+	}
+	parent := filepath.Dir(attempt.home.Path)
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+	cleanupErr := run.teardown()
+	if cleanupErr == nil {
+		t.Fatal("the teardown removed the temporary home from a read-only directory")
+	}
+	rig.manager.finishLoginRun(run, err, cleanupErr)
+
+	state := rig.manager.ProviderLoginState(string(provider.Agy))
+	if state.Phase != LoginPhaseFailed || !strings.HasPrefix(state.Error, agySignInUnidentifiedSentence) || !strings.Contains(state.Error, "remove temporary agy home") {
+		t.Fatalf("sign-in state = %s %q, want the lookup's sentence and the teardown's failure", state.Phase, state.Error)
+	}
+	logged, readErr := os.ReadFile(audit)
+	if readErr != nil || !strings.Contains(string(logged), "teardown failed") {
+		t.Fatalf("audit = %q, %v; want the teardown failure", logged, readErr)
+	}
+}
+
+// Every failed sign-in shows its own sentence and then its teardown's
+// failure; the generic one reads as it always has.
+func TestEveryFailedSignInShowsItsTeardownFailure(t *testing.T) {
+	cleanup := errors.New("clean temporary agy login home: busy")
+	for name, err := range map[string]error{
+		"lookup":  agySignInUnidentifiedError{cause: context.DeadlineExceeded},
+		"timeout": context.DeadlineExceeded,
+		"cancel":  context.Canceled,
+		"generic": errors.New("agy login exited"),
+	} {
+		got := loginFailureProse(err, cleanup)
+		if !strings.HasPrefix(got, loginProse(err)) || !strings.HasSuffix(got, cleanup.Error()) {
+			t.Errorf("%s: failure reads %q, want %q followed by the teardown's failure", name, got, loginProse(err))
+		}
+		if loginFailureProse(err, nil) != loginProse(err) {
+			t.Errorf("%s: failure without a teardown failure reads %q", name, loginFailureProse(err, nil))
+		}
+	}
+	generic := errors.New("agy login exited")
+	if got, was := loginFailureProse(generic, cleanup), loginProse(errors.Join(generic, cleanup)); got != was {
+		t.Errorf("generic failure reads %q, was %q", got, was)
+	}
+}

@@ -23,18 +23,20 @@ func writeSharedPoolAgyBinary(t *testing.T, logPath string) string {
 }
 
 // writePoolAgyBinary is writeSharedPoolAgyBinary that, given a launchRecord
-// path, first writes there its argv and the variables through which agy
-// chooses its login store and home ("<unset>" for an unset one).
+// path, appends there one line per launch with its argv and the variables
+// through which agy chooses its login store and home ("<unset>" for an unset
+// one), and answers `agy mcp list` and `agy -p` too.
 func writePoolAgyBinary(t *testing.T, logPath, launchRecord string) string {
 	t.Helper()
 	record := ""
 	if launchRecord != "" {
-		record = `{
-  printf 'args=%s\n' "$*"
-  printf 'AGY_ACP_FORCE_FILE_STORAGE=%s\n' "${AGY_ACP_FORCE_FILE_STORAGE-<unset>}"
-  printf 'GEMINI_HOME=%s\n' "${GEMINI_HOME-<unset>}"
-  printf 'AGY_APP_DATA_DIR=%s\n' "${AGY_APP_DATA_DIR-<unset>}"
-} > '` + launchRecord + `'
+		// One line per launch: its argv and the variables agy chooses its
+		// login store and home from. `mcp list` and `-p` answer at once.
+		record = `printf 'args=%s|store=%s|gemini_home=%s|app_data_dir=%s\n' "$*" "${AGY_ACP_FORCE_FILE_STORAGE-<unset>}" "${GEMINI_HOME-<unset>}" "${AGY_APP_DATA_DIR-<unset>}" >> '` + launchRecord + `'
+case "$1" in
+mcp) echo 'No MCP servers configured.'; exit 0 ;;
+-p|--print*) echo '{"result":"{}"}'; exit 0 ;;
+esac
 `
 	}
 	script := `#!/bin/bash
@@ -190,7 +192,11 @@ func TestAgyPoolSharesOneACPServerAcrossThreadsAndAppliesLiveConfig(t *testing.T
 
 	// borrowAgyConnForCurrentAccount must hit the warm pooled connection matching
 	// the live session's full pool key instead of silently falling back to a cold spawn.
-	borrowed, releaseBorrowed := app.borrowAgyConnForCurrentAccount(binary)
+	home, err := app.ensureProviderAccountManager().AgyCanonicalHome(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	borrowed, releaseBorrowed := app.borrowAgyConnForCurrentAccount(binary, home)
 	if borrowed == nil {
 		t.Fatal("borrowAgyConnForCurrentAccount missed warm pooled agy connection")
 	}

@@ -40,9 +40,9 @@ func (l *limitedBuffer) String() string { return l.buf.String() }
 // statuses into AO's shared mcpstatus cache.
 type MCPStatusFetcher struct {
 	Binary string
-	// Home is the canonical home, whose MCP configuration Agent Overflow
-	// writes.
-	Home    Home
+	// Home decides the canonical home, whose MCP configuration Agent
+	// Overflow writes. It runs inside the fetch's time limit.
+	Home    HomeSource
 	Env     map[string]string
 	Cwd     string
 	Timeout time.Duration
@@ -61,11 +61,21 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	launch, err := f.Home.Launch(f.Env)
+	if f.Home == nil {
+		return nil, fmt.Errorf("agy mcp status: launch without a home")
+	}
+	home, err := f.Home(ctx)
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, bin, append(append([]string{}, launch.Args...), "mcp", "list")...)
+	launch, err := home.Launch(f.Env)
+	if err != nil {
+		return nil, err
+	}
+	if err := launch.OnDefaultHome("mcp list"); err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, bin, "mcp", "list")
 	if strings.TrimSpace(f.Cwd) != "" {
 		cmd.Dir = f.Cwd
 	}

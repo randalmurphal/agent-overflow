@@ -2,6 +2,7 @@ package agy
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -71,11 +73,20 @@ func probeWith(t *testing.T, binary string, home Home) {
 	if _, err := ProbeAccount(context.Background(), ProbeConfig{
 		Binary:  binary,
 		WorkDir: t.TempDir(),
-		Home:    home,
+		Home:    home.Source(),
 		Reaper:  procutiltest.Reaper(),
 	}); err != nil {
 		t.Fatalf("ProbeAccount: %v", err)
 	}
+}
+
+func canonical(t *testing.T, appDataDir string, fileStorage bool) Home {
+	t.Helper()
+	home, err := CanonicalHome(appDataDir, fileStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return home
 }
 
 func wantCleared(t *testing.T, got map[string]string, names ...string) {
@@ -94,7 +105,7 @@ func TestACanonicalKeychainLaunchClearsAnInheritedStoreAndHome(t *testing.T) {
 	inheritOtherAgyStore(t)
 	binary, record := recordingAgy(t)
 
-	probeWith(t, binary, CanonicalHome(false))
+	probeWith(t, binary, canonical(t, "", false))
 
 	got := readLaunchRecord(t, record)
 	wantCleared(t, got, "AGY_ACP_FORCE_FILE_STORAGE", "GEMINI_HOME", "AGY_APP_DATA_DIR")
@@ -109,7 +120,7 @@ func TestACanonicalFileLaunchSetsFileStorageAndClearsAnInheritedHome(t *testing.
 	inheritOtherAgyStore(t)
 	binary, record := recordingAgy(t)
 
-	probeWith(t, binary, CanonicalHome(true))
+	probeWith(t, binary, canonical(t, "", true))
 
 	got := readLaunchRecord(t, record)
 	if got["AGY_ACP_FORCE_FILE_STORAGE"] != "1" {
@@ -157,7 +168,7 @@ func TestALaunchNeedsAHomeAndASignInAnIsolatedOne(t *testing.T) {
 	}
 	if _, err := StartLogin(context.Background(), LoginConfig{
 		Binary: filepath.Join(t.TempDir(), "agy-never-run"),
-		Home:   CanonicalHome(true),
+		Home:   canonical(t, "", true),
 		Reaper: procutiltest.Reaper(),
 	}); err == nil || !strings.Contains(err.Error(), "isolated home") {
 		t.Fatalf("StartLogin on the canonical home = %v, want a refusal", err)
@@ -167,7 +178,7 @@ func TestALaunchNeedsAHomeAndASignInAnIsolatedOne(t *testing.T) {
 // HOME is reserved: a value in the custom environment never reaches agy, and
 // the process HOME, which agy's default home lies under, is never cleared.
 func TestALaunchKeepsTheProcessHome(t *testing.T) {
-	for _, home := range []Home{CanonicalHome(true), CanonicalHome(false)} {
+	for _, home := range []Home{canonical(t, "", true), canonical(t, "", false)} {
 		launch, err := home.Launch(map[string]string{"HOME": "/tmp/elsewhere"})
 		if err != nil {
 			t.Fatal(err)
@@ -178,5 +189,114 @@ func TestALaunchKeepsTheProcessHome(t *testing.T) {
 		if slices.Contains(launch.Unset, "HOME") {
 			t.Errorf("launch clears HOME: %v", launch.Unset)
 		}
+	}
+}
+
+// A canonical home that is not agy's default under the process HOME names
+// its directory and is still the canonical one; only the file store may name
+// one.
+func TestACanonicalHomeOutsideTheProcessHomeNamesItsDirectory(t *testing.T) {
+	inheritOtherAgyStore(t)
+	binary, record := recordingAgy(t)
+	appData := filepath.Join(t.TempDir(), "gemini", "antigravity-cli")
+	home := canonical(t, appData, true)
+	if home.Isolated() {
+		t.Fatal("a canonical home with a directory reads as isolated")
+	}
+
+	probeWith(t, binary, home)
+
+	got := readLaunchRecord(t, record)
+	want := "acp --gemini-dir " + filepath.Dir(appData) + " --app-data-dir antigravity-cli"
+	if got["args"] != want {
+		t.Errorf("canonical agy args = %q, want %q", got["args"], want)
+	}
+	if got["AGY_ACP_FORCE_FILE_STORAGE"] != "1" {
+		t.Errorf("AGY_ACP_FORCE_FILE_STORAGE = %q, want 1", got["AGY_ACP_FORCE_FILE_STORAGE"])
+	}
+	if _, err := CanonicalHome(appData, false); err == nil {
+		t.Fatal("a canonical home named its directory on the Keychain")
+	}
+}
+
+// A launcher decides its home inside its own time limit: the source sees
+// the probe's deadline, and its error stops the launch.
+func TestALauncherDecidesItsHomeInsideItsTimeLimit(t *testing.T) {
+	binary, record := recordingAgy(t)
+	var sawDeadline bool
+	_, err := ProbeAccount(context.Background(), ProbeConfig{
+		Binary:  binary,
+		WorkDir: t.TempDir(),
+		Home: func(ctx context.Context) (Home, error) {
+			_, sawDeadline = ctx.Deadline()
+			return Home{}, errors.New("store query failed")
+		},
+		Reaper: procutiltest.Reaper(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "store query failed") {
+		t.Fatalf("ProbeAccount = %v, want the home's error", err)
+	}
+	if !sawDeadline {
+		t.Error("the probe decided its home outside its time limit")
+	}
+	if _, statErr := os.Stat(record); statErr == nil {
+		t.Error("agy started although its home could not be decided")
+	}
+}
+
+// A name a launch sets or clears on purpose is reserved, so a custom
+// environment cannot ask for a value the launch would discard.
+func TestTheNamesALaunchSetsAreReserved(t *testing.T) {
+	reserved := provider.ReservedEnvNames(string(provider.Agy))
+	for _, name := range []string{forceFileStorageEnv, geminiHomeEnv, appDataDirEnv, sshConnectionEnv, "HOME"} {
+		if !slices.Contains(reserved, name) {
+			t.Errorf("%s is not reserved for Antigravity: %v", name, reserved)
+		}
+	}
+}
+
+// `agy mcp list` runs on the store its home names, inside the fetch's time
+// limit, and refuses a home that names its directory, which only `agy acp`
+// is known to take.
+func TestMCPListRunsOnItsHomeAndOnlyAgysDefault(t *testing.T) {
+	inheritOtherAgyStore(t)
+	dir := t.TempDir()
+	record := filepath.Join(dir, "launch.txt")
+	binary := mockexec.Write(t, filepath.Join(dir, "mock-agy"), `#!/bin/bash
+{
+  printf 'args=%s\n' "$*"
+  printf 'AGY_ACP_FORCE_FILE_STORAGE=%s\n' "${AGY_ACP_FORCE_FILE_STORAGE-<unset>}"
+  printf 'GEMINI_HOME=%s\n' "${GEMINI_HOME-<unset>}"
+  printf 'AGY_APP_DATA_DIR=%s\n' "${AGY_APP_DATA_DIR-<unset>}"
+} > '`+record+`'
+echo 'No MCP servers configured.'
+`)
+	var sawDeadline bool
+	fetcher := &MCPStatusFetcher{Binary: binary, Home: func(ctx context.Context) (Home, error) {
+		_, sawDeadline = ctx.Deadline()
+		return CanonicalHome("", false)
+	}}
+	if _, err := fetcher.Fetch(context.Background(), ""); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	got := readLaunchRecord(t, record)
+	wantCleared(t, got, "AGY_ACP_FORCE_FILE_STORAGE", "GEMINI_HOME", "AGY_APP_DATA_DIR")
+	if got["args"] != "mcp list" {
+		t.Errorf("agy mcp list args = %q", got["args"])
+	}
+	if !sawDeadline {
+		t.Error("the fetch decided its home outside its time limit")
+	}
+
+	if err := os.Remove(record); err != nil {
+		t.Fatal(err)
+	}
+	named := canonical(t, filepath.Join(t.TempDir(), "gemini", "antigravity-cli"), true)
+	fetcher.Home = named.Source()
+	if _, err := fetcher.Fetch(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "default home") {
+		t.Fatalf("Fetch on a home naming its directory = %v, want a refusal", err)
+	}
+	if _, err := os.Stat(record); err == nil {
+		t.Error("agy mcp list ran on a home it cannot be pointed at")
 	}
 }

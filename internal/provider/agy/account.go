@@ -205,9 +205,10 @@ func identifyAccountAtURL(
 type ProbeConfig struct {
 	Binary  string
 	WorkDir string
-	// Home is the canonical home the account manager reads, or the isolated
-	// home of a sign-in or a saved login.
-	Home   Home
+	// Home decides the canonical home the account manager reads, or answers
+	// the isolated home of a sign-in or a saved login. It runs inside the
+	// probe's time limit.
+	Home   HomeSource
 	Env    map[string]string
 	Reaper procutil.Reaper
 }
@@ -228,7 +229,14 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 		workDir = "."
 	}
 
-	launch, err := cfg.Home.Launch(cfg.Env)
+	if cfg.Home == nil {
+		return provider.AccountInfo{}, errors.New("agy: start account probe: launch without a home")
+	}
+	home, err := cfg.Home(probeCtx)
+	if err != nil {
+		return provider.AccountInfo{}, fmt.Errorf("agy: start account probe: %w", err)
+	}
+	launch, err := home.Launch(cfg.Env)
 	if err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("agy: start account probe: %w", err)
 	}

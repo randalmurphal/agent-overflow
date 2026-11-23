@@ -90,11 +90,7 @@ func (a *App) resolveTextGenerationConfig(ctx context.Context) (textgen.Config, 
 		cfg.ClaudeRetention = a.claudeRetention
 	case string(provider.Agy):
 		cfg.Binary = agyBin
-		home, err := a.ensureProviderAccountManager().AgyCanonicalHome()
-		if err != nil {
-			return cfg, err
-		}
-		cfg.AgyHome = home
+		cfg.AgyHome = a.ensureProviderAccountManager().AgyCanonicalHome
 	}
 	// User's TextGenerationModel only applies when we kept the configured
 	// provider. After a substitution the provider's own default runs: the
@@ -157,12 +153,7 @@ func (a *App) resolveTextGenerationConfigFor(ctx context.Context, providerName s
 			return textgen.Config{}, false
 		}
 		cfg.Model = textgen.DefaultAgyModel
-		home, err := a.ensureProviderAccountManager().AgyCanonicalHome()
-		if err != nil {
-			log.Printf("textgen: fallback %s skipped: %v", providerName, err)
-			return textgen.Config{}, false
-		}
-		cfg.AgyHome = home
+		cfg.AgyHome = a.ensureProviderAccountManager().AgyCanonicalHome
 	default:
 		return textgen.Config{}, false
 	}

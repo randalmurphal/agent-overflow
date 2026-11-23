@@ -141,8 +141,8 @@ func (a *App) mcpDeps() mcpapp.Deps {
 		SessionProcessEnv: func(providerName string) map[string]string {
 			return a.sessionProcessEnv(providerName, nil)
 		},
-		AgyCanonicalHome: func() (agy.Home, error) {
-			return a.ensureProviderAccountManager().AgyCanonicalHome()
+		AgyCanonicalHome: func(ctx context.Context) (agy.Home, error) {
+			return a.ensureProviderAccountManager().AgyCanonicalHome(ctx)
 		},
 		ClaudeRetention:      a.claudeRetention,
 		ReadClaudeCredential: a.readClaudeMCPCredential,

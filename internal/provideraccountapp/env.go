@@ -8,6 +8,7 @@ import (
 	"log"
 	"maps"
 	"os"
+	"path/filepath"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/agy"
@@ -239,22 +240,33 @@ func (m *Manager) CodexAccountProbe(binary, accountID string) (provider.ProbeCac
 	return providerProbeCacheKeyForAccountEnv(binary, accountID, custom), m.codexProbeConfigWith(binary, custom, nil)
 }
 
-// AgyCanonicalHome is the home every agy process for the canonical login
-// runs against: agy's default home, on the store this manager reads and
-// writes that login in. It is decided at each launch, because a login outside
-// the app can add or remove the Keychain item at any time.
-func (m *Manager) AgyCanonicalHome() (agy.Home, error) {
+// AgyCanonicalHome is an agy.HomeSource: the home every agy process for the
+// canonical login runs against, on the store this manager reads and writes
+// that login in, decided as each launch starts because a login outside the
+// app can add or remove the Keychain item at any time. The home is agy's
+// default under the process HOME when that is the directory this manager
+// reads, and that directory named otherwise (an isolated boot keeping the
+// person's HOME for its children).
+func (m *Manager) AgyCanonicalHome(ctx context.Context) (agy.Home, error) {
 	if m.credentials == nil {
 		return agy.Home{}, errors.New("provider account storage is unavailable")
 	}
-	fileStorage, err := m.credentials.AgyCanonicalFileStorage()
+	paths, err := m.credentials.Paths(string(provider.Agy))
+	if err != nil {
+		return agy.Home{}, err
+	}
+	fileStorage, err := m.credentials.AgyCanonicalFileStorage(ctx)
 	if err != nil {
 		return agy.Home{}, fmt.Errorf("choose the Antigravity login store: %w", err)
 	}
-	return agy.CanonicalHome(fileStorage), nil
+	dir := paths.SharedHome
+	if processHome, err := os.UserHomeDir(); err == nil && filepath.Clean(dir) == filepath.Join(processHome, ".gemini", agy.DefaultAppDataName) {
+		dir = ""
+	}
+	return agy.CanonicalHome(dir, fileStorage)
 }
 
-func (m *Manager) agyProbeConfig(binary string, home agy.Home, custom map[string]string) agy.ProbeConfig {
+func (m *Manager) agyProbeConfig(binary string, home agy.HomeSource, custom map[string]string) agy.ProbeConfig {
 	return agy.ProbeConfig{
 		Binary:  binary,
 		WorkDir: providerProbeWorkDir(),
@@ -265,13 +277,9 @@ func (m *Manager) agyProbeConfig(binary string, home agy.Home, custom map[string
 }
 
 // probeCanonicalAgy runs the Antigravity account probe against the canonical
-// home, with the store decided as it starts.
+// home, decided inside the probe's time limit.
 func (m *Manager) probeCanonicalAgy(ctx context.Context, binary string, custom map[string]string) (provider.AccountInfo, error) {
-	home, err := m.AgyCanonicalHome()
-	if err != nil {
-		return provider.AccountInfo{}, err
-	}
-	return agy.ProbeAccount(ctx, m.agyProbeConfig(binary, home, custom))
+	return agy.ProbeAccount(ctx, m.agyProbeConfig(binary, m.AgyCanonicalHome, custom))
 }
 
 // AgyAccountProbe is ClaudeAccountProbe for Antigravity: the cache key and
