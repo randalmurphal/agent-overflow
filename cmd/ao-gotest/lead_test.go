@@ -21,7 +21,7 @@ func TestAGoTestThatLeavesProcessesFailsAndNamesThem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status := r.run(plan(inv, nil, []string{"example/whole"}, t.TempDir()), 1); status != 1 {
+	if status := r.run(plan(inv, nil, []string{"example/whole"}, t.TempDir()), grant(1)); status != 1 {
 		t.Fatalf("status %d; want 1 for the processes the go test left, though it exited 0\nstderr:\n%s", status, stderr.String())
 	}
 	checkChildrenGone(t, kids, childrenPerRun(), false)
@@ -72,7 +72,7 @@ func TestAProcessOrphanedDuringARunIsGoneOnceItExits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status := r.run(plan(inv, nil, []string{"example/whole"}, t.TempDir()), 1); status != 0 {
+	if status := r.run(plan(inv, nil, []string{"example/whole"}, t.TempDir()), grant(1)); status != 0 {
 		t.Fatalf("status %d; want the go test's 0\nstderr:\n%s", status, stderr.String())
 	}
 }

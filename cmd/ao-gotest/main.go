@@ -23,25 +23,27 @@
 // Packages are matched by import path, as `make go-test` passes them.
 //
 // A split run reserves memory in the host's memory governor
-// (internal/harness/governor) before it builds anything, and runs W
-// buckets at once, W being the most the governor grants room for
-// (reservationTotals). With none to grant it says so once and asks again
-// until admitWait has passed, then fails: starting a bucket the host cannot
-// hold is what takes it down. The unsplit `go test` runs outside the
-// reservation from the start, as it did before this command existed.
+// (internal/harness/governor) for each of its two phases, which never
+// overlap (phase). The list steps run first, one at a time, under a lease
+// of the largest list step's declaration; it is released before the
+// buckets ask for theirs, which holds W buckets, W being the most the
+// governor grants room for (bucketTotals). While a phase is granted
+// nothing it says so once and asks again until admitWait has passed, then
+// fails: starting a process the host cannot hold is what takes it down.
+// The unsplit `go test` runs outside the reservation from the start, as it
+// did before this command existed.
 //
-// Under the reservation the list steps run first, one at a time: each
-// builds its package's test binary once per run, by the `go test -o P
-// -list` that reads its names, into a directory of this run's own on the
-// go command's work area (runDirParent). Then the buckets run, W at a time,
-// packages in declaration order, so the longest starts first. Each bucket
-// runs the binary through a hard link of its own (-o), so no bucket links.
-// A bucket whose package or a dependency changed after the list step builds
-// its own binary over its own link, never over the one the other buckets
-// run; the run fails that bucket and says why, since its tests ran
-// different code. Each bucket's and list step's largest process is read
-// from rusage; one over its package's declaration is named at the end of
-// the run, so the declaration can be raised.
+// Each list step builds its package's test binary once per run, by the `go
+// test -o P -list` that reads its names, into a directory of this run's own
+// on the go command's work area (runDirParent). Then the buckets run, W at
+// a time, packages in declaration order, so the longest starts first. Each
+// bucket runs the binary through a hard link of its own (-o), so no bucket
+// links. A bucket whose package or a dependency changed after the list
+// step builds its own binary over its own link, never over the one the
+// other buckets run; the run fails that bucket and says why, since its
+// tests ran different code. Each bucket's and list step's largest process
+// is read from rusage; one over its package's declaration is named at the
+// end of the run, so the declaration can be raised.
 //
 // Every `go test`, split or not, runs under a leader of its own (lead),
 // which ends the processes it started, however its `go test` ended and
@@ -276,7 +278,7 @@ func runInvocation(inv invocation, splits []split, stdout, stderr io.Writer) int
 	stopSignals := r.forwardSignals()
 	if inv.shardable && goflagsSplit(goflags) && len(declared) > 0 {
 		whole := slices.DeleteFunc(slices.Clone(inv.packages), func(pkg string) bool { return slices.Contains(names, pkg) })
-		r.runSplit(inv, declared, whole, names)
+		r.runSplit(inv, declared, whole)
 	} else {
 		r.runWhole(job{args: inv.argv[1:]})
 	}

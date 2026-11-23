@@ -50,22 +50,30 @@ one `go test` as before. The lock is process-wide in modernc.org/libc
 v1.77.1, and no modernc.org/sqlite release through v1.63.0 pins a libc
 with a per-thread allocator (v1.62.0 and v1.63.0 pin v1.80.1); once one
 does, measure one process of each package again, and remove the split if
-the lock is gone. A bucket's command line is the same however many run
-at once, so its cached result holds at any count. A fully cached run
-costs more split: 33.0 s and 32.5 s against 31.7 s and 29.9 s for one
-`go test` per package, on four cores, since each split package's test
-binary is still linked once, by the `go test -list` that reads its names.
+the lock is gone. Measure again too when internal/app is divided into
+smaller packages: packages already run as separate processes, so the
+split may no longer pay for itself. A bucket's command line is the same
+however many run at once, so its cached result holds at any count. A
+fully cached run costs more split: 33.0 s and 32.5 s against 31.7 s and
+29.9 s for one `go test` per package, on four cores, since each split
+package's test binary is still linked once, by the `go test -list` that
+reads its names.
 
 As many buckets run at once as the
 [harness memory governor](../../internal/harness/governor/AGENTS.md)
 grants across every run on the host, at most one per core and at most
 eight, one package's buckets; packages start in declaration order, the
-longest first. The list steps run first, one at a time, under the same
-reservation, so W buckets at once reserve the larger of the largest list
-step's MiB and the W buckets' MiB together, as the declaration gives
-them. While it grants none the run says why and waits, and after ten
-minutes fails. The other packages' `go test` runs outside the
-reservation, as it did before the split. A
+longest first. The two phases of a split run never overlap and take a
+lease each, one after the other: the list steps run first, one at a time,
+under the largest list step's declared MiB, released before the buckets
+reserve the declared MiB of W buckets together. A list step's figure is
+the compile of its package's tests, which a plain `go test` of the
+package pays too, without admission; the Makefile states the free memory
+each phase needs. While a phase is granted nothing the run says why and
+waits, and after ten minutes fails. Another run may take the memory
+between the phases, and this one then waits for its buckets. The other
+packages' `go test` runs outside the reservation, as it did before the
+split. A
 run whose bucket or list step went over its declaration says so at the
 end. Every `go test`, split or not, runs under a leader that ends every
 process it started when it ends, is signaled, or loses the launcher (on

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -28,8 +29,10 @@ type runner struct {
 	// whole process's output, at a time. It is never held while taking mu.
 	out sync.Mutex
 	// admitWait and admitPoll are the constants of the same names but in
-	// tests.
+	// tests, and cores the most buckets that run at once,
+	// runtime.GOMAXPROCS(0) but in tests.
 	admitWait, admitPoll time.Duration
+	cores                int
 
 	mu      sync.Mutex
 	running map[*exec.Cmd]bool
@@ -55,7 +58,7 @@ func newRunner(goCommand string, stdout, stderr io.Writer) (*runner, error) {
 	}
 	return &runner{
 		goCommand: goCommand, self: self, lifeline: lifeline, lifelineEnd: lifelineEnd,
-		stdout: stdout, stderr: stderr, admitWait: admitWait, admitPoll: admitPoll,
+		stdout: stdout, stderr: stderr, admitWait: admitWait, admitPoll: admitPoll, cores: runtime.GOMAXPROCS(0),
 		running: map[*exec.Cmd]bool{}, stopping: make(chan struct{}),
 		peaks: map[*splitPackage]uint64{}, listPeaks: map[*splitPackage]uint64{},
 	}, nil
@@ -91,11 +94,11 @@ func (r *runner) forwardSignals() (stop func()) {
 	}
 }
 
-// run runs p's unsplit `go test` and its split packages, w buckets at a
-// time.
-func (r *runner) run(p runPlan, w int) int {
+// run runs p's unsplit `go test` and its split packages, each phase of
+// them under what admit grants.
+func (r *runner) run(p runPlan, admit admitter) int {
 	waitWhole := r.startWhole(p.whole)
-	r.runPackages(p.split, w)
+	r.runPackages(p.split, admit)
 	waitWhole()
 	return r.status()
 }
@@ -111,17 +114,48 @@ func (r *runner) startWhole(j *job) (wait func()) {
 	return wg.Wait
 }
 
-// runPackages runs each package's list step, one after another, then their
-// buckets, w at a time, in the packages' order.
-func (r *runner) runPackages(packages []*splitPackage, w int) {
-	var all []bucket
+// runPackages runs each package's list step, one after another, under a
+// lease of the largest list step's unit, and releases it; then their
+// buckets, in the packages' order, as many at once as a second lease
+// holds.
+func (r *runner) runPackages(packages []*splitPackage, admit admitter) {
+	var list uint64
 	for _, sp := range packages {
-		bs, started := r.list(sp)
-		if !started {
-			return
+		list = max(list, sp.listUnit)
+	}
+	_, release, ok := r.admitPhase(admit, listPhase, []uint64{list})
+	if !ok {
+		return
+	}
+	var all []bucket
+	started := true
+	for _, sp := range packages {
+		var bs []bucket
+		if bs, started = r.list(sp); !started {
+			break
 		}
 		all = append(all, bs...)
 	}
+	r.releasePhase(listPhase, release)
+	if !started || len(all) == 0 {
+		return
+	}
+	units := make([]uint64, len(all))
+	for i, b := range all {
+		units[i] = b.pkg.bucketUnit
+	}
+	totals := bucketTotals(units, r.cores)
+	w, release, ok := r.admitPhase(admit, bucketPhase, totals)
+	if !ok {
+		return
+	}
+	names := make([]string, len(packages))
+	for i, sp := range packages {
+		names[i] = sp.pkg
+	}
+	r.out.Lock()
+	fmt.Fprintf(r.stderr, "ao-gotest: %s: %d buckets each, %d at a time (%d MiB reserved)\n", strings.Join(names, ", "), buckets, w, totals[w-1]>>20)
+	r.out.Unlock()
 	queue := make(chan bucket)
 	var wg sync.WaitGroup
 	for range w {
@@ -136,6 +170,7 @@ func (r *runner) runPackages(packages []*splitPackage, w int) {
 	}
 	close(queue)
 	wg.Wait()
+	r.releasePhase(bucketPhase, release)
 	for _, sp := range packages {
 		if peak := r.listPeaks[sp]; peak > sp.listUnit {
 			r.note("%s: its list step's largest process reached %d MiB, over the %d MiB its -split declares; raise it in GO_TEST_SPLIT in the Makefile", sp.pkg, peak>>20, sp.listUnit>>20)
@@ -143,6 +178,27 @@ func (r *runner) runPackages(packages []*splitPackage, w int) {
 		if peak := r.peaks[sp]; peak > sp.bucketUnit {
 			r.note("%s: a bucket's largest process reached %d MiB, over the %d MiB its -split declares; raise it in GO_TEST_SPLIT in the Makefile", sp.pkg, peak>>20, sp.bucketUnit>>20)
 		}
+	}
+}
+
+// admitPhase asks admit for p's lease and reports false, having recorded
+// why unless a signal ended the wait, when there is none.
+func (r *runner) admitPhase(admit admitter, p phase, totals []uint64) (int, func() error, bool) {
+	w, release, err := admit(p, totals)
+	if err != nil {
+		if !errors.Is(err, errStopped) {
+			r.fail("%v", err)
+		}
+		return 0, nil, false
+	}
+	return w, release, true
+}
+
+// releasePhase releases p's lease, noting a failure, which leaves the lease
+// held until this process exits.
+func (r *runner) releasePhase(p phase, release func() error) {
+	if err := release(); err != nil {
+		r.note("release the memory reservation for %s: %v", p.jobs, err)
 	}
 }
 

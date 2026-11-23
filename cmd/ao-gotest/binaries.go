@@ -10,7 +10,6 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -31,7 +30,7 @@ const runDirPrefix = "ao-gotest-"
 // runSplit runs inv with declared split: the unsplit `go test` of whole at
 // once, and the split packages under a reservation, in a directory of this
 // run's own that it removes once every process of the run has exited.
-func (r *runner) runSplit(inv invocation, declared []split, whole, names []string) {
+func (r *runner) runSplit(inv invocation, declared []split, whole []string) {
 	parent, err := runDirParent()
 	if err != nil {
 		r.fail("find the directory for the test binaries: %v", err)
@@ -57,26 +56,13 @@ func (r *runner) runSplit(inv invocation, declared []split, whole, names []strin
 		r.fail("pass the lock of %s to the test processes: %v", dir.Dir, err)
 		return
 	}
-	p := plan(inv, declared, whole, dir.Dir)
-	waitWhole := r.startWhole(p.whole)
-	defer waitWhole()
-	// W is what the governor grants; the unsplit `go test` started above is
-	// outside the reservation.
-	totals := reservationTotals(declared, runtime.GOMAXPROCS(0))
-	w, release, err := r.admit(dir.Dir, totals)
+	admit, err := r.admission(dir.Dir)
 	if err != nil {
-		if !errors.Is(err, errStopped) {
-			r.fail("%v", err)
-		}
+		r.fail("%v", err)
 		return
 	}
-	r.out.Lock()
-	fmt.Fprintf(r.stderr, "ao-gotest: %s: %d buckets each, %d at a time (%d MiB reserved)\n", strings.Join(names, ", "), buckets, w, totals[w-1]>>20)
-	r.out.Unlock()
-	r.runPackages(p.split, w)
-	if err := release(); err != nil {
-		r.note("release the memory reservation: %v", err)
-	}
+	// The unsplit `go test` runs outside the reservation.
+	r.run(plan(inv, declared, whole, dir.Dir), admit)
 }
 
 // runDirParent is where a run makes its directory: the go command's

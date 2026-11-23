@@ -2,9 +2,11 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -12,51 +14,127 @@ import (
 	"agent-overflow/internal/harness/governor"
 )
 
-// TestReservationTotalsCapAtOnePackagesBuckets: a run reserves for at most
-// a bucket per core and at most one package's buckets, the largest first,
-// and k buckets at once hold the larger of the largest list step and the k
-// buckets together, since no bucket runs beside a list step.
-func TestReservationTotalsCapAtOnePackagesBuckets(t *testing.T) {
+// TestBucketTotalsCapAtACorePerBucketAndOnePackagesBuckets: a run
+// reserves for at most a bucket per core and at most one package's
+// buckets, the largest first, and k buckets at once hold the k largest
+// units together.
+func TestBucketTotalsCapAtACorePerBucketAndOnePackagesBuckets(t *testing.T) {
 	t.Parallel()
-	app, store := split{"example/app", 1664 << 20, 7168 << 20}, split{"example/store", 640 << 20, 640 << 20}
-	mib := func(totals ...uint64) []uint64 {
-		for k := range totals {
-			totals[k] <<= 20
+	mib := func(units ...uint64) []uint64 {
+		for k := range units {
+			units[k] <<= 20
 		}
-		return totals
+		return units
 	}
+	appStore := append(mib(slices.Repeat([]uint64{640}, 8)...), mib(slices.Repeat([]uint64{1664}, 8)...)...)
 	for _, tc := range []struct {
-		declared []split
-		cores    int
-		want     []uint64
+		units []uint64
+		cores int
+		want  []uint64
 	}{
-		{[]split{app, store}, 24, mib(7168, 7168, 7168, 7168, 8320, 9984, 11648, 13312)},
-		{[]split{store, app}, 24, mib(7168, 7168, 7168, 7168, 8320, 9984, 11648, 13312)},
-		{[]split{app, store}, 4, mib(7168, 7168, 7168, 7168)},
-		{[]split{app, store}, 1, mib(7168)},
-		{[]split{store}, 24, mib(640, 1280, 1920, 2560, 3200, 3840, 4480, 5120)},
-		{[]split{{"example/small", 100 << 20, 150 << 20}}, 2, mib(150, 200)},
+		{appStore, 24, mib(1664, 3328, 4992, 6656, 8320, 9984, 11648, 13312)},
+		{appStore, 4, mib(1664, 3328, 4992, 6656)},
+		{appStore, 1, mib(1664)},
+		{appStore, 0, mib(1664)},
+		{mib(slices.Repeat([]uint64{640}, 8)...), 24, mib(640, 1280, 1920, 2560, 3200, 3840, 4480, 5120)},
+		{mib(640, 1664, 640), 8, mib(1664, 2304, 2944)},
 	} {
-		if got := reservationTotals(tc.declared, tc.cores); !slices.Equal(got, tc.want) {
-			t.Errorf("%v on %d cores: totals %v; want %v", tc.declared, tc.cores, got, tc.want)
+		if got := bucketTotals(tc.units, tc.cores); !slices.Equal(got, tc.want) {
+			t.Errorf("%v on %d cores: totals %v; want %v", tc.units, tc.cores, got, tc.want)
 		}
 	}
 }
 
-// fixedGovernor is a governor whose host has available bytes, with a
-// runner that asks it every 10ms, and the request a run makes.
-func fixedGovernor(t *testing.T, available uint64) (*fixedMemory, *governor.Manager, *runner, *lockedWriter, governor.Request) {
-	t.Helper()
-	memory := &fixedMemory{available: available}
-	m, err := governor.New(governor.Options{Dir: t.TempDir(), AvailableFloorBytes: 1 << 30, Memory: memory})
+// TestEachPhaseHoldsOnlyItsOwnLease runs a split package whose list step
+// is declared at 7168 MiB and its buckets at 1664 MiB, one bucket at a
+// time, with 7168 MiB free above the governor's floor. The list step runs
+// under a lease of 7168 MiB, released before the buckets ask for theirs;
+// while the bucket runs, the run holds 1664 MiB, and a second run can
+// reserve the 5504 MiB between them.
+func TestEachPhaseHoldsOnlyItsOwnLease(t *testing.T) {
+	const mib, floor = 1 << 20, 1 << 30
+	r, _, stderr, log := fakeRunner(t, fakeHoldEnv+"=1")
+	r.cores = 1
+	m := testGovernor(t, floor+7168*mib)
+	inner := r.admissionIn(m, governor.Request{RunID: "go-test", Worktree: t.TempDir(), DataRoot: t.TempDir(), OwnerPID: os.Getpid()})
+	var mu sync.Mutex
+	var leases []string
+	admit := func(p phase, totals []uint64) (int, func() error, error) {
+		w, release, err := inner(p, totals)
+		if err != nil {
+			return w, release, err
+		}
+		mu.Lock()
+		leases = append(leases, fmt.Sprintf("%s: %d MiB", p.jobs, totals[w-1]>>20))
+		mu.Unlock()
+		return w, func() error {
+			mu.Lock()
+			leases = append(leases, "released "+p.jobs)
+			mu.Unlock()
+			return release()
+		}, nil
+	}
+	inv, err := parseArgs([]string{"go", "test", "-count=1", "example/split"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	done := make(chan int, 1)
+	go func() {
+		done <- r.run(plan(inv, []split{{"example/split", 1664 * mib, 7168 * mib}}, nil, t.TempDir()), admit)
+	}()
+	deadline := time.Now().Add(time.Minute)
+	for strings.Count(readFile(t, log), "held ") < 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("no bucket held:\n%s\n%s", readFile(t, log), stderr.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if snap, err := m.Snapshot(); err != nil || len(snap.Leases) != 1 || snap.Leases[0].CeilingBytes != 1664*mib {
+		t.Fatalf("while a bucket runs: leases %+v, %v; want the run's one, of 1664 MiB", snap.Leases, err)
+	}
+	other, err := m.Reserve(governor.Request{RunID: "other", Worktree: "/elsewhere", DataRoot: t.TempDir(), OwnerPID: os.Getpid(), CeilingBytes: (7168 - 1664) * mib})
+	if err != nil {
+		t.Fatalf("a second run could not reserve the 5504 MiB the list step's lease no longer holds: %v", err)
+	}
+	if err := m.Release(other); err != nil {
+		t.Fatal(err)
+	}
+	r.signal(syscall.SIGTERM)
+	select {
+	case <-done:
+	case <-time.After(time.Minute):
+		t.Fatal("the run did not end after the signal")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"the list steps: 7168 MiB", "released the list steps", "the buckets: 1664 MiB", "released the buckets"}; !slices.Equal(leases, want) {
+		t.Errorf("leases %q; want %q", leases, want)
+	}
+	if snap, err := m.Snapshot(); err != nil || len(snap.Leases) != 0 {
+		t.Errorf("after the run: leases %+v, %v; want none", snap.Leases, err)
+	}
+}
+
+// testGovernor is a governor whose host has available bytes and keeps a
+// floor of 1 GiB.
+func testGovernor(t *testing.T, available uint64) *governor.Manager {
+	t.Helper()
+	m, err := governor.New(governor.Options{Dir: t.TempDir(), AvailableFloorBytes: 1 << 30, Memory: &fixedMemory{available: available}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// fixedGovernor is testGovernor, with a runner that asks it every 10ms,
+// and the request a run makes.
+func fixedGovernor(t *testing.T, available uint64) (*governor.Manager, *runner, *lockedWriter, governor.Request) {
+	t.Helper()
 	stderr := &lockedWriter{}
 	r := must(newRunner("go", &lockedWriter{}, stderr))
 	t.Cleanup(r.close)
 	r.admitPoll = 10 * time.Millisecond
-	return memory, m, r, stderr, governor.Request{RunID: "go-test", Worktree: t.TempDir(), DataRoot: t.TempDir(), OwnerPID: os.Getpid()}
+	return testGovernor(t, available), r, stderr, governor.Request{RunID: "go-test", Worktree: t.TempDir(), DataRoot: t.TempDir(), OwnerPID: os.Getpid()}
 }
 
 // TestAZeroGrantWaitsUntilAHolderReleases has another run hold all but
@@ -65,7 +143,7 @@ func fixedGovernor(t *testing.T, available uint64) (*fixedMemory, *governor.Mana
 func TestAZeroGrantWaitsUntilAHolderReleases(t *testing.T) {
 	t.Parallel()
 	const unit, floor = 100 << 20, 1 << 30
-	_, m, r, stderr, req := fixedGovernor(t, floor+5*unit/2)
+	m, r, stderr, req := fixedGovernor(t, floor+5*unit/2)
 	holder, err := m.Reserve(governor.Request{RunID: "holder", Worktree: "/elsewhere", DataRoot: t.TempDir(), OwnerPID: os.Getpid(), CeilingBytes: 2 * unit})
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +155,7 @@ func TestAZeroGrantWaitsUntilAHolderReleases(t *testing.T) {
 	}
 	granted := make(chan grant, 1)
 	go func() {
-		w, release, err := r.reserve(m, req, []uint64{unit, 2 * unit, 3 * unit, 4 * unit})
+		w, release, err := r.reserve(m, req, bucketPhase, []uint64{unit, 2 * unit, 3 * unit, 4 * unit})
 		granted <- grant{w, release, err}
 	}()
 	deadline := time.Now().Add(time.Minute)
@@ -92,7 +170,7 @@ func TestAZeroGrantWaitsUntilAHolderReleases(t *testing.T) {
 		t.Fatalf("granted %d (%v) while nothing fits; want a wait", g.w, g.err)
 	case <-time.After(100 * time.Millisecond):
 	}
-	want := "ao-gotest: waiting for memory for the buckets: one bucket and the list steps before it need 100 MiB and 50 MiB is free: 1274 MiB available less the 1024 MiB floor the host keeps and the 200 MiB other runs reserved (holder in /elsewhere holds 200 MiB)\n"
+	want := "ao-gotest: waiting for memory for the buckets: one bucket needs 100 MiB and 50 MiB is free: 1274 MiB available less the 1024 MiB floor the host keeps and the 200 MiB other runs reserved (holder in /elsewhere holds 200 MiB)\n"
 	if got := stderr.String(); got != want {
 		t.Fatalf("stderr %q; want %q, once", got, want)
 	}
@@ -113,10 +191,10 @@ func TestAZeroGrantWaitsUntilAHolderReleases(t *testing.T) {
 func TestARefusalPastItsBoundFailsWithTheReason(t *testing.T) {
 	t.Parallel()
 	const unit, floor = 100 << 20, 1 << 30
-	_, m, r, stderr, req := fixedGovernor(t, floor+unit/2)
+	m, r, stderr, req := fixedGovernor(t, floor+unit/2)
 	r.admitWait = 50 * time.Millisecond
-	w, _, err := r.reserve(m, req, []uint64{unit})
-	if w != 0 || err == nil || !strings.HasPrefix(err.Error(), "no memory for the buckets after 50ms: one bucket and the list steps before it need 100 MiB and 50 MiB is free") {
+	w, _, err := r.reserve(m, req, bucketPhase, []uint64{unit})
+	if w != 0 || err == nil || !strings.HasPrefix(err.Error(), "no memory for the buckets after 50ms: one bucket needs 100 MiB and 50 MiB is free") {
 		t.Fatalf("reserve = %d, %v; want the refusal", w, err)
 	}
 	if got := strings.Count(stderr.String(), "waiting for memory"); got != 1 {
@@ -132,10 +210,10 @@ func TestARefusalPastItsBoundFailsWithTheReason(t *testing.T) {
 func TestASignalEndsTheWaitForMemory(t *testing.T) {
 	t.Parallel()
 	const unit, floor = 100 << 20, 1 << 30
-	_, m, r, _, req := fixedGovernor(t, floor)
+	m, r, _, req := fixedGovernor(t, floor)
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := r.reserve(m, req, []uint64{unit})
+		_, _, err := r.reserve(m, req, bucketPhase, []uint64{unit})
 		done <- err
 	}()
 	r.signal(syscall.SIGTERM)

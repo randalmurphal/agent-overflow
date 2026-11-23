@@ -53,8 +53,9 @@ func runFixture(t *testing.T, goCommand string, w int) fixtureRun {
 	t.Helper()
 	out := &lockedWriter{}
 	r := must(newRunner(goCommand, out, out))
+	r.cores = buckets
 	t.Cleanup(r.close)
-	status := r.run(fixturePlan(t, goCommand), w)
+	status := r.run(fixturePlan(t, goCommand), grant(w))
 	run := fixtureRun{status: status, buckets: map[int]string{}, out: out.String()}
 	header := regexp.MustCompile(`(?m)^ao-gotest: example.com/fixture/split bucket (\d) of 8\n`)
 	marks := header.FindAllStringSubmatchIndex(run.out, -1)
@@ -168,10 +169,11 @@ func TestABucketThatBuildsItsOwnBinaryIsFailedAndTheSharedOneIsKept(t *testing.T
 	t.Setenv(proxyEditEnv, source+"="+strings.Replace(string(before), "Version = 1", "Version = 2", 1))
 	out := &lockedWriter{}
 	r := must(newRunner(os.Args[0], out, out))
+	r.cores = buckets
 	t.Cleanup(r.close)
 	p := fixturePlan(t, os.Args[0])
 	binary := p.split[0].binary
-	status := r.run(p, 2)
+	status := r.run(p, grant(2))
 	shared, err := os.Stat(binary)
 	if err != nil {
 		t.Fatal(err)

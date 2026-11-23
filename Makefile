@@ -234,14 +234,18 @@ gocache-trim-around = $(gocache-trim-pass); trap 'status=$$?; $(gocache-trim-pas
 # it when NETNS is given on the command line. gotest-tool builds it.
 # GO_TEST_SPLIT names the packages it runs as buckets, longest first, each
 # with the MiB one bucket holds and the MiB its list step, which builds and
-# vets the package's test binary, holds. The list steps run first, one at a
-# time, under the same reservation, so for W buckets at once the memory
-# governor reserves the larger of the largest list step's MiB and the W
-# buckets' together. Each is the largest process as rusage reported it,
-# plus the 118 MiB of the go command beside it, plus 25%, rounded up to 64
-# MiB; a list step's is measured after a change to the package's test
-# files, when it compiles them. A run whose bucket or list step goes over
-# its figure says so at the end.
+# vets the package's test binary, holds. The memory governor gives a split
+# run's two phases a lease each, one after the other: the list steps, one
+# at a time, under the largest list step's MiB, then W buckets at once
+# under the W buckets' MiB together. Each figure is the largest process as
+# rusage reported it, plus the 118 MiB of the go command beside it, plus
+# 25%, rounded up to 64 MiB. A list step's is measured after a change to
+# the package's test files: it is the compile of the package's tests, which
+# a plain `go test` of the package pays too, without admission. A run whose
+# bucket or list step goes over its figure says so at the end. The split
+# needs its figure free above the governor's 2048 MiB floor: for
+# internal/app 9216 MiB to list and 3712 MiB for one bucket, for
+# internal/store 4224 and 2688 MiB.
 #   internal/app:   buckets 1173 MiB measured, 1664 declared;
 #                   list    5603 MiB measured, 7168 declared
 #   internal/store: buckets  359 MiB measured,  640 declared;

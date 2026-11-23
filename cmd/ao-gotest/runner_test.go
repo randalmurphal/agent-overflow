@@ -25,8 +25,17 @@ func fakeRunner(t *testing.T, env ...string) (r *runner, stdout, stderr *lockedW
 	t.Setenv(standInsEnv, tieStandIns(t))
 	stdout, stderr = &lockedWriter{}, &lockedWriter{}
 	r = must(newRunner(os.Args[0], stdout, stderr))
+	r.cores = buckets
 	t.Cleanup(r.close)
 	return r, stdout, stderr, log
+}
+
+// grant is an admitter that grants each phase up to w of its jobs at once
+// and holds no memory.
+func grant(w int) admitter {
+	return func(_ phase, totals []uint64) (int, func() error, error) {
+		return min(w, len(totals)), func() error { return nil }, nil
+	}
 }
 
 // calls are the fake's logged calls, sorted, without the hold lines.
@@ -79,7 +88,7 @@ func wantCalls(dir string) []string {
 func TestASplitRunPrintsWholeLinesAndEachBucketWhole(t *testing.T) {
 	r, stdout, stderr, log := fakeRunner(t, fakeFailEnv+"=TestC")
 	dir := t.TempDir()
-	if status := r.run(testPlan(t, dir, 1<<40), 3); status != 3 {
+	if status := r.run(testPlan(t, dir, 1<<40), grant(3)); status != 3 {
 		t.Errorf("status %d; want 3, the failed bucket's", status)
 	}
 	if got, want := calls(t, log), wantCalls(dir); !slices.Equal(got, want) {
@@ -87,7 +96,12 @@ func TestASplitRunPrintsWholeLinesAndEachBucketWhole(t *testing.T) {
 	}
 	blocks := len(wantCalls(dir)) - 2
 	checkBlocks(t, "stdout", stdout.String(), "line", blocks, true)
-	checkBlocks(t, "stderr", stderr.String(), "err", blocks, false)
+	// Once its buckets are granted, the run says how many run at once.
+	granted := "ao-gotest: example/split: 8 buckets each, 3 at a time (3145728 MiB reserved)\n"
+	if n := strings.Count(stderr.String(), granted); n != 1 {
+		t.Fatalf("stderr says %d times %q; want once:\n%s", n, granted, stderr.String())
+	}
+	checkBlocks(t, "stderr", strings.Replace(stderr.String(), granted, "", 1), "err", blocks, false)
 	if info, err := os.Stat(filepath.Join(dir, "0-split.test")); err != nil || info.Mode().Perm() != 0o555 {
 		t.Fatalf("the shared binary: %v, %v; want it read-only", info, err)
 	}
@@ -103,7 +117,7 @@ func TestEveryListStepRunsBeforeAnyBucket(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := plan(inv, []split{{"example/split", 1 << 40, 1 << 40}, {"example/other", 1 << 40, 1 << 40}}, nil, t.TempDir())
-	if status := r.run(p, 8); status != 0 {
+	if status := r.run(p, grant(8)); status != 0 {
 		t.Fatalf("status %d", status)
 	}
 	var order []string
@@ -180,7 +194,7 @@ func checkBlocks(t *testing.T, stream, out, word string, blocks int, headed bool
 func TestAFailedListPrintsItsOutputOnceAndRunsNoBucket(t *testing.T) {
 	r, _, stderr, log := fakeRunner(t, fakeListEnv+"=2")
 	dir := t.TempDir()
-	if status := r.run(testPlan(t, dir, 1<<40), 3); status != 2 {
+	if status := r.run(testPlan(t, dir, 1<<40), grant(3)); status != 2 {
 		t.Errorf("status %d; want 2, the list step's", status)
 	}
 	want := []string{
@@ -200,7 +214,7 @@ func TestAFailedListPrintsItsOutputOnceAndRunsNoBucket(t *testing.T) {
 // list step: that bucket fails with the reason, and the others pass.
 func TestABucketThatBuildsItsOwnBinaryFailsAndSaysWhy(t *testing.T) {
 	r, _, stderr, _ := fakeRunner(t, fakeStaleEnv+"=TestC")
-	if status := r.run(testPlan(t, t.TempDir(), 1<<40), 3); status != 1 {
+	if status := r.run(testPlan(t, t.TempDir(), 1<<40), grant(3)); status != 1 {
 		t.Errorf("status %d; want 1", status)
 	}
 	label := fmt.Sprintf("example/split bucket %d of 8", bucketOf("TestC"))
@@ -218,7 +232,7 @@ func TestABucketOverItsUnitIsNamedAtTheEnd(t *testing.T) {
 		named bool
 	}{{1 << 20, true}, {1 << 40, false}} {
 		r, _, stderr, _ := fakeRunner(t)
-		if status := r.run(testPlan(t, t.TempDir(), tc.unit), 3); status != 0 {
+		if status := r.run(testPlan(t, t.TempDir(), tc.unit), grant(3)); status != 0 {
 			t.Fatalf("status %d", status)
 		}
 		r.printNotes()
@@ -245,7 +259,7 @@ func TestASignalReachesEveryRunningProcessAndStartsNoMore(t *testing.T) {
 	done := make(chan int)
 	// Two slots for more buckets: the rest are queued when the signal
 	// comes.
-	go func() { done <- r.run(testPlan(t, dir, 1<<40), 2) }()
+	go func() { done <- r.run(testPlan(t, dir, 1<<40), grant(2)) }()
 	// The unsplit run and the buckets in the two slots hold, each once its
 	// children and its signal handler are set.
 	deadline := time.Now().Add(time.Minute)
