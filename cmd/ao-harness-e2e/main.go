@@ -53,6 +53,9 @@ const (
 	modeTests runMode = iota
 	modeFlow
 	modeFreeze
+	// modeTypecheck checks the suite's types, records the pass and exits:
+	// CI's harness build, so no shard checks again (typecheck.go).
+	modeTypecheck
 )
 
 type launchOptions struct {
@@ -104,25 +107,23 @@ func run(args []string, stdout, stderr *os.File) int {
 		return 1
 	}
 
-	// Playwright (and the flow runner's node --experimental-transform-types)
-	// STRIP types per file, never check them: a typo'd property inside a spec
-	// helper's filter or predicate does not throw at runtime — it yields
-	// undefined and lets an emptiness assertion pass vacuously. Typecheck the
-	// whole suite first, before the memory reservation, so a type error fails
-	// in seconds without holding the gate's reservation. Fixed argv, same
-	// doctrine as the contained command; tsc's footprint does not need the
-	// suite's containment any more than the `go run` hosting this launcher.
-	typecheck := exec.Command("pnpm", "exec", "tsc", "--noEmit", "-p", ".")
-	typecheck.Dir = testDir
-	typecheck.Stdout = stdout
-	typecheck.Stderr = stderr
-	if err := typecheck.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			fmt.Fprintln(stderr, "ao-harness-e2e: E2E TypeScript check failed; fix the errors above")
-			return exitErr.ExitCode()
+	root := filepath.Dir(testDir)
+	if opts.mode == modeTypecheck {
+		if err := typecheck(root, testDir, stdout); err != nil {
+			fmt.Fprintln(stderr, "ao-harness-e2e:", err)
+			return 1
 		}
-		fmt.Fprintln(stderr, "ao-harness-e2e: run E2E TypeScript check:", err)
+		return 0
+	}
+	inputs, err := parseRunInputs(runInputsMk)
+	if err == nil {
+		err = preflight(root, testDir, opts, inputs, playwrightInstalls)
+	}
+	if err == nil {
+		err = ensureTypechecked(root, testDir, stdout)
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "ao-harness-e2e:", err)
 		return 1
 	}
 	isolate := needsIsolation(opts.hostNetwork, netisolate.Inside())
@@ -391,6 +392,8 @@ func parseArgs(args []string) (launchOptions, error) {
 			err = setMode(arg, modeFlow)
 		case arg == "--freeze-repro":
 			err = setMode(arg, modeFreeze)
+		case arg == "--typecheck":
+			err = setMode(arg, modeTypecheck)
 		case arg == "--host-network":
 			opts.hostNetwork = true
 		case arg == "--memory-limit-bytes":

@@ -1,4 +1,4 @@
-.PHONY: help vitest-unit vitest-browser script-tests go-test-noremote ao-harness-docs methodgen forge-schemas go-lint go-lint-exhaustive go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
+.PHONY: help vitest-unit vitest-browser script-tests go-test-noremote ao-harness-docs methodgen forge-schemas go-lint go-lint-exhaustive go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build e2e-browsers harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -239,22 +239,26 @@ go-test: netns-tool gocache-trim-tool
 	$(call go-prefetch,$(GO_PACKAGE_ROOTS)); \
 	$(NETNS) go test -timeout 30m $(GO_TEST_FLAGS) $$packages
 
-# go-test-noremote runs the tests compiled without remote access
-# (docs/architecture/noremote-build.md) for the packages whose own code the
-# noremote tag changes: one whose own file set differs under the tag, or
-# whose non-test code imports internal/buildvariant. Any other package runs
-# the same code as in `make go-test`; a dependency's behavior under the tag
-# is tested in that dependency's own package, which is in the set.
-# GO_TEST_FLAGS adds flags as for go-test.
+# go-test-noremote runs, compiled with -tags noremote
+# (docs/architecture/noremote-build.md), every package whose test binary the
+# tag changes: one that links a package whose own files differ under the
+# tag, that package included. A package's imports change only with its
+# files, so any other test binary is the one `make go-test` already ran.
+# GO_TEST_FLAGS adds flags as for go-test, but not tags: this target owns
+# them, and a caller's -tags would replace noremote.
 GO_FILE_SET := {{.ImportPath}} {{.GoFiles}} {{.CgoFiles}} {{.TestGoFiles}} {{.XTestGoFiles}}
 go-test-noremote:
 	@set -e; \
-	differ=$$( { go list -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS); go list -tags noremote -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS); } | sort | uniq -u | cut -d' ' -f1 ); \
-	branch=$$( for tags in "" noremote; do go list -tags "$$tags" -f '{{.ImportPath}}{{range .Imports}} {{.}}{{end}}' $(GO_PACKAGE_ROOTS); done | awk '/ agent-overflow\/internal\/buildvariant( |$$)/ { print $$1 }' ); \
-	built=$$(go list -tags noremote -f '{{if or .GoFiles .CgoFiles .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' $(GO_PACKAGE_ROOTS)); \
-	packages=$$(printf '%s\n' $$differ $$branch | sort -u | awk -v built="$$built" 'BEGIN { n = split(built, list); for (i = 1; i <= n; i++) keep[list[i]] = 1 } keep[$$0]'); \
-	if [ -z "$$packages" ]; then echo "ERROR: no package's own code changes under -tags noremote"; exit 1; fi; \
-	echo "go-test-noremote:" $$packages; \
+	case ' $(GO_TEST_FLAGS) ' in *' -tags'*|*' --tags'*) echo "ERROR: go-test-noremote sets the tags itself and cannot add others (GO_TEST_FLAGS=$(GO_TEST_FLAGS))"; exit 2;; esac; \
+	differ=$$( { go list -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS); go list -tags noremote -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS); } | sort | uniq -u | cut -d' ' -f1 | sort -u ); \
+	packages=$$(go list -tags noremote -deps -test -f '{{.ImportPath}}{{range .Deps}}|{{.}}{{end}}' $(GO_PACKAGE_ROOTS) | awk -F'|' -v differ="$$differ" ' \
+		BEGIN { n = split(differ, list, "\n"); for (i = 1; i <= n; i++) changed[list[i]] = 1 } \
+		$$1 ~ /^agent-overflow(\/.*)?\.test$$/ { \
+			pkg = substr($$1, 1, length($$1) - 5); hit = (pkg in changed); \
+			for (i = 2; i <= NF && !hit; i++) { dep = $$i; sub(/ \[.*$$/, "", dep); hit = (dep in changed) } \
+			if (hit) print pkg }' | sort -u); \
+	if [ -z "$$packages" ]; then echo "ERROR: no test binary changes under -tags noremote"; exit 1; fi; \
+	echo "go-test-noremote: $$(echo "$$packages" | wc -l) packages:" $$packages; \
 	$(MAKE) go-test GO_TEST_PKGS="$$(echo $$packages)" GO_TEST_FLAGS='-tags noremote $(GO_TEST_FLAGS)'
 
 # Static checks. Each is one CI job (.github/workflows/ci.yml) and runs the
@@ -772,7 +776,13 @@ endif
 E2E_ARGS ?=
 e2e e2e-mobile-browser: harness-build
 	cd e2e && pnpm install --frozen-lockfile
-	cd e2e && pnpm exec playwright install chromium webkit
+	$(MAKE) e2e-browsers
+
+# e2e-browsers installs what run-inputs.mk declares for the suite; a
+# present build is skipped. CI's Playwright shards run it after the e2e
+# dependencies.
+e2e-browsers:
+	cd e2e && pnpm exec playwright install $(E2E_BROWSERS)
 	bin/ao-harness-e2e $(E2E_ARGS) $(if $(filter e2e-mobile-browser,$@),tests/compact-browser-lock.spec.ts)
 
 # release-upgrade-check: the candidate migrates the corpus the previous
@@ -792,7 +802,7 @@ e2e e2e-mobile-browser: harness-build
 RELEASE_UPGRADE_SCALE ?= 1
 release-upgrade-check: harness-build
 	cd e2e && pnpm install --frozen-lockfile
-	cd e2e && pnpm exec playwright install chromium
+	cd e2e && pnpm exec playwright install $(E2E_BROWSERS_MANUAL)
 	scripts/release-upgrade-check.sh --scale "$(RELEASE_UPGRADE_SCALE)" \
 		$(if $(PREVIOUS_RELEASE),--previous "$(PREVIOUS_RELEASE)") \
 		$(if $(RELEASE_UPGRADE_BOOTSTRAP),--bootstrap) \
