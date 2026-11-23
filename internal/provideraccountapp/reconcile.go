@@ -385,6 +385,21 @@ func (m *Manager) rememberProviderCredentialFingerprintLocked(
 	m.fingerprints[providerName] = sha256.Sum256(credential)
 }
 
+// credentialRecordedLocked reports that credential is the canonical value AO
+// last recorded for the selected account, the only proof that canonical bytes
+// are that account's login without asking the provider. The caller holds mu.
+func (m *Manager) credentialRecordedLocked(providerName string, credential []byte) bool {
+	known, ok := m.fingerprints[providerName]
+	return ok && known == sha256.Sum256(credential)
+}
+
+// credentialRecorded is credentialRecordedLocked for a caller without mu.
+func (m *Manager) credentialRecorded(providerName string, credential []byte) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.credentialRecordedLocked(providerName, credential)
+}
+
 // verifyCanonicalProviderCredentialLocked confirms an activation still owns
 // the canonical native store before metadata is committed. External provider
 // login processes do not share mu, so every managed write needs

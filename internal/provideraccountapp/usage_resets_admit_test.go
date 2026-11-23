@@ -3,7 +3,6 @@ package provideraccountapp
 import (
 	"context"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -271,6 +270,8 @@ func selectedRig(t *testing.T) (resetRig, []byte) {
 	if _, err := rig.store.Activate(codexName, "picked"); err != nil {
 		t.Fatal(err)
 	}
+	// As the activation that selected it records it.
+	rig.manager.BlessCredentialForTest(codexName, seed)
 	return rig, seed
 }
 
@@ -292,11 +293,12 @@ func (r resetRig) resetsOf(t *testing.T, accountID string) *provideraccounts.Usa
 	return account.UsageResets
 }
 
-// A selected account's probe that does not prove whose login the canonical
-// credential is writes nothing: the canonical store and the slot keep what
-// they held, and its reset list is not recorded.
-func TestASelectedProbeThatNamesNoLoginWritesNothingOfTheAccounts(t *testing.T) {
-	rig, seed := selectedRig(t)
+// A selected account's probe that names no login still ran on the canonical
+// credential AO recorded for the account, which is what proves the
+// credential is the account's: its rotation reaches the canonical store and
+// the slot, and its reading is the account's.
+func TestASelectedProbeThatNamesNoLoginLandsOnTheRecordedCredential(t *testing.T) {
+	rig, _ := selectedRig(t)
 	rotated := `{"tokens":{"access_token":"rotated","refresh_token":"rotated-refresh","account_id":"ws-picked"},"last_refresh":"2030-01-01T00:00:00Z"}`
 	rig.write(t, "rotate.json", rotated)
 	rig.write(t, "account.json", `{"jsonrpc":"2.0","id":3,"result":{"account":null,"requiresOpenaiAuth":true}}`+"\n")
@@ -304,14 +306,14 @@ func TestASelectedProbeThatNamesNoLoginWritesNothingOfTheAccounts(t *testing.T) 
 	if err := rig.manager.RefreshProviderAccountUsage(codexName, "picked"); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
-	if got := rig.credential(t, "", true); got != string(seed) {
-		t.Fatalf("canonical = %s, want it untouched", got)
+	if got := rig.credential(t, "", true); got != rotated {
+		t.Fatalf("canonical = %s, want the rotation", got)
 	}
-	if got := rig.credential(t, "picked", false); got != string(seed) {
-		t.Fatalf("slot = %s, want it untouched", got)
+	if got := rig.credential(t, "picked", false); got != rotated {
+		t.Fatalf("slot = %s, want the rotation", got)
 	}
-	if got := rig.resetsOf(t, "picked"); got != nil {
-		t.Fatalf("an unproven reading recorded resets %+v", got)
+	if got := rig.resetsOf(t, "picked"); got == nil || len(got.Options) != 2 {
+		t.Fatalf("resets = %+v, want the reading's list", got)
 	}
 }
 
@@ -389,78 +391,121 @@ func TestAnAdoptingProbeRecordsItsResetsOnTheAccount(t *testing.T) {
 	}
 }
 
-// The outside sign-in sequence: A and B are saved under one email on two
-// workspaces, A is selected, someone signs in to B outside the app, and A's
-// usage is refreshed before reconciliation sees it. The probe runs B's login.
-// Whatever it reads (a good reading, a rotation with a failed reading, or
-// resets without usage windows), A's slot and A's list stay as they were.
-// With B's workspace on its credential the reading is B's; without it nothing
-// proves the reading is A's, so a reading that is not whole lands nothing.
-func TestARefreshUnderAnOutsideLoginOfAnotherWorkspaceLeavesTheAccountAlone(t *testing.T) {
-	const bWithWorkspace = `{"tokens":{"access_token":"b","refresh_token":"b-refresh","account_id":"ws-b"},"last_refresh":"2029-01-01T00:00:00Z"}`
-	const bWithoutWorkspace = `{"tokens":{"access_token":"b","refresh_token":"b-refresh"},"last_refresh":"2029-01-01T00:00:00Z"}`
-	readings := map[string]func(rig resetRig){
-		"good reading": func(rig resetRig) { rig.holdResets(t, lateCreditOnly) },
-		"rotation and a failed reading": func(rig resetRig) {
-			rig.write(t, "rotate.json", `{"tokens":{"access_token":"b2","refresh_token":"b2-refresh","account_id":"ws-b"},"last_refresh":"2030-01-01T00:00:00Z"}`)
-			rig.write(t, "ratelimits.json", "")
-		},
-		"resets without usage windows": func(rig resetRig) {
-			rig.write(t, "ratelimits.json", `{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","planType":"team"},"rateLimitResetCredits":`+lateCreditOnly+`}}`+"\n")
-		},
-	}
-	for _, credential := range []string{bWithWorkspace, bWithoutWorkspace} {
-		for name, read := range readings {
-			// A whole reading under a login that names no workspace is
-			// attributed by email, as every reading before this one was.
-			if credential == bWithoutWorkspace && name == "good reading" {
-				continue
-			}
-			t.Run(name+" workspace="+strconv.FormatBool(credential == bWithWorkspace), func(t *testing.T) {
-				rig := newResetRig(t, nil)
-				for _, account := range []provideraccounts.Account{
-					{ID: "a", Provider: codexName, Email: "shared@example.com", OrgID: "ws-a", SubscriptionType: "team"},
-					{ID: "b", Provider: codexName, Email: "shared@example.com", OrgID: "ws-b", SubscriptionType: "team"},
-				} {
-					if _, err := rig.store.Add(account); err != nil {
-						t.Fatal(err)
-					}
-				}
-				aSeed := `{"tokens":{"access_token":"a","refresh_token":"a-refresh","account_id":"ws-a"},"last_refresh":"2029-01-01T00:00:00Z"}`
-				if err := rig.creds.WriteAccountCredential(codexName, "a", []byte(aSeed)); err != nil {
-					t.Fatal(err)
-				}
-				if err := rig.creds.WriteNativeCredentialForTest(codexName, []byte(aSeed)); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := rig.store.Activate(codexName, "a"); err != nil {
-					t.Fatal(err)
-				}
-				before, _, err := rig.store.SetUsageResets(codexName, "a", provideraccounts.ResetReading{
-					Options: []provideraccounts.UsageResetOption{{ID: "RateLimitResetCredit_a", Kind: "codexRateLimits", Label: "Full reset", Usable: true}},
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
-				// The outside sign-in to B.
-				if err := rig.creds.WriteNativeCredentialForTest(codexName, []byte(credential)); err != nil {
-					t.Fatal(err)
-				}
-				rig.write(t, "account.json", chatgptAccountFrame("shared@example.com", "team", "")+"\n")
-				read(rig)
-				err = rig.manager.RefreshProviderAccountUsage(codexName, "a")
-				if got := rig.credential(t, "a", false); got != aSeed {
-					t.Fatalf("A's slot = %s (refresh err %v), want it as it was", got, err)
-				}
-				after := rig.resetsOf(t, "a")
-				if after == nil || after.Revision != before.UsageResets.Revision || len(after.Options) != 1 || after.Options[0].ID != "RateLimitResetCredit_a" {
-					t.Fatalf("A's list = %+v (refresh err %v), want it as it was", after, err)
-				}
-				if got := rig.credential(t, "", true); got != credential {
-					t.Fatalf("canonical = %s, want B's login as it was", got)
-				}
-			})
+// sharedEmailRig saves A and B under one email on two workspaces, with A
+// selected on its own login the way an activation leaves it, then signs in
+// to B outside the app with credential.
+func sharedEmailRig(t *testing.T, credential string) (rig resetRig, aSeed string, before *provideraccounts.UsageResets) {
+	t.Helper()
+	rig = newResetRig(t, nil)
+	for _, account := range []provideraccounts.Account{
+		{ID: "a", Provider: codexName, Email: "shared@example.com", OrgID: "ws-a", SubscriptionType: "team"},
+		{ID: "b", Provider: codexName, Email: "shared@example.com", OrgID: "ws-b", SubscriptionType: "team"},
+	} {
+		if _, err := rig.store.Add(account); err != nil {
+			t.Fatal(err)
 		}
+	}
+	aSeed = `{"tokens":{"access_token":"a","refresh_token":"a-refresh","account_id":"ws-a"},"last_refresh":"2029-01-01T00:00:00Z"}`
+	if err := rig.creds.WriteAccountCredential(codexName, "a", []byte(aSeed)); err != nil {
+		t.Fatal(err)
+	}
+	if err := rig.creds.WriteNativeCredentialForTest(codexName, []byte(aSeed)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rig.store.Activate(codexName, "a"); err != nil {
+		t.Fatal(err)
+	}
+	rig.manager.BlessCredentialForTest(codexName, []byte(aSeed))
+	saved, _, err := rig.store.SetUsageResets(codexName, "a", provideraccounts.ResetReading{
+		Options: []provideraccounts.UsageResetOption{{ID: "RateLimitResetCredit_a", Kind: "codexRateLimits", Label: "Full reset", Usable: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rig.creds.WriteNativeCredentialForTest(codexName, []byte(credential)); err != nil {
+		t.Fatal(err)
+	}
+	// Codex's account/read names the email only; the workspace is the
+	// credential's.
+	rig.write(t, "account.json", chatgptAccountFrame("shared@example.com", "team", "")+"\n")
+	return rig, aSeed, saved.UsageResets
+}
+
+// Someone signs in to B outside the app while A is selected, and A's usage is
+// refreshed. B's credential names B's workspace, so the reconciliation the
+// refresh starts with selects B, and A is then read from its own slot: A's
+// slot keeps A's login, B's slot takes B's, and A's list is A's own reading.
+func TestARefreshUnderAnOutsideLoginOfAnotherWorkspaceSelectsItFirst(t *testing.T) {
+	const bLogin = `{"tokens":{"access_token":"b","refresh_token":"b-refresh","account_id":"ws-b"},"last_refresh":"2029-01-01T00:00:00Z"}`
+	rig, aSeed, _ := sharedEmailRig(t, bLogin)
+	rig.holdResets(t, lateCreditOnly)
+	if err := rig.manager.RefreshProviderAccountUsage(codexName, "a"); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if active, ok := rig.store.Active(codexName, time.Now()); !ok || active.ID != "b" {
+		t.Fatalf("active = %+v, %v; want B, whose login Codex runs", active, ok)
+	}
+	if got := rig.credential(t, "a", false); got != aSeed {
+		t.Fatalf("A's slot = %s, want A's login", got)
+	}
+	if got := rig.credential(t, "b", false); got != bLogin {
+		t.Fatalf("B's slot = %s, want B's login", got)
+	}
+	if got := rig.credential(t, "", true); got != bLogin {
+		t.Fatalf("canonical = %s, want B's login as it was", got)
+	}
+	if after := rig.resetsOf(t, "a"); after == nil || len(after.Options) != 1 || after.Options[0].ID != "RateLimitResetCredit_late" {
+		t.Fatalf("A's list = %+v, want the reading of A's own login", after)
+	}
+}
+
+// B's credential names no workspace, so nothing tells it from A's: the
+// reconciliation the refresh starts with keeps it on the current assignment
+// (reconcileObservedAccountLocked), and the credential is then the recorded
+// one. A reading on it that is not whole is not attributed: A's list stays
+// as it was, while a rotation still lands where the credential is.
+func TestARefreshUnderAnOutsideLoginWithoutAWorkspaceAttributesNoPartialReading(t *testing.T) {
+	const bLogin = `{"tokens":{"access_token":"b","refresh_token":"b-refresh"},"last_refresh":"2029-01-01T00:00:00Z"}`
+	const bRotated = `{"tokens":{"access_token":"b2","refresh_token":"b2-refresh"},"last_refresh":"2030-01-01T00:00:00Z"}`
+	for name, tc := range map[string]struct {
+		read      func(rig resetRig)
+		canonical string
+	}{
+		"rotation and a failed reading": {
+			read: func(rig resetRig) {
+				rig.write(t, "rotate.json", bRotated)
+				rig.write(t, "ratelimits.json", "")
+			},
+			canonical: bRotated,
+		},
+		"resets without usage windows": {
+			read: func(rig resetRig) {
+				rig.write(t, "ratelimits.json", `{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","planType":"team"},"rateLimitResetCredits":`+lateCreditOnly+`}}`+"\n")
+			},
+			canonical: bLogin,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rig, _, before := sharedEmailRig(t, bLogin)
+			tc.read(rig)
+			err := rig.manager.RefreshProviderAccountUsage(codexName, "a")
+			if err == nil {
+				t.Fatal("a reading that is not whole reported no error")
+			}
+			if active, ok := rig.store.Active(codexName, time.Now()); !ok || active.ID != "a" {
+				t.Fatalf("active = %+v, %v; want the assignment kept", active, ok)
+			}
+			after := rig.resetsOf(t, "a")
+			if after == nil || after.Revision != before.Revision || len(after.Options) != 1 || after.Options[0].ID != "RateLimitResetCredit_a" {
+				t.Fatalf("A's list = %+v (refresh err %v), want it as it was", after, err)
+			}
+			if got := rig.credential(t, "", true); got != tc.canonical {
+				t.Fatalf("canonical = %s (refresh err %v), want %s", got, err, tc.canonical)
+			}
+			if got := rig.credential(t, "a", false); got != tc.canonical {
+				t.Fatalf("A's slot = %s (refresh err %v), want the credential kept on A", got, err)
+			}
+		})
 	}
 }
 

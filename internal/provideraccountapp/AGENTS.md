@@ -51,6 +51,16 @@ alive. Rate-limit persistence and emission enter through narrow
 - Build login and probe environments from the same layers: configured user
   environment, boot-mode overrides, then the isolated provider-home pin.
   Endpoint configuration is part of account identity.
+- The recorded fingerprint (`fingerprints`) is the one proof that canonical
+  bytes are the selected account's login; only a credential identified or
+  activated as that account's is recorded. A usage reading or spend of the
+  selected account whose canonical credential is not the recorded one
+  reconciles first, under the lock it already holds, and starts again as the
+  account then stands: an account no longer selected is read from its slot,
+  and a spend of it is refused unsent. The commit lands a selected reading's
+  credential, slot write and fingerprint only for the recorded credential or
+  its own rotation (`commitProviderUsageRefreshLocked`); the provider's
+  observation decides only whether the reading is the account's.
 - Transfer validation uses a fresh provider-specific probe under the reconcile
   lock. Display caches never prove that the destination can accept ownership.
   Successful probes adopt credential rotation through the normal transaction.

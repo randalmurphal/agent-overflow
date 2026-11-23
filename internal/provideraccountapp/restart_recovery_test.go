@@ -74,13 +74,24 @@ func openBackend(t *testing.T, userHome, dbDir, binary string) (*Manager, *provi
 // TestCrashedSelectedUsageRefreshHelper is the backend a crash kills: it
 // runs a manual usage refresh through production code and is killed while
 // the probe runs. It runs only when crashSelectedUsageRefresh starts it.
+//
+// It starts with the canonical credential recorded as the selected
+// account's, so the refresh seeds its home from it without reconciling
+// first: the registry entries an earlier release left behind, which recorded
+// an outside login that way and never reconciled before a refresh, are what
+// a boot after the upgrade has to handle.
 func TestCrashedSelectedUsageRefreshHelper(t *testing.T) {
 	userHome := os.Getenv(crashedRefreshUserHomeEnv)
 	if userHome == "" {
 		t.Skip("helper process only")
 	}
-	manager, _, _ := openBackend(t, userHome, os.Getenv(crashedRefreshDBDirEnv), os.Getenv(crashedRefreshBinaryEnv))
-	err := manager.RefreshProviderAccountUsage(string(provider.Codex), os.Getenv(crashedRefreshAccountEnv))
+	manager, _, credentials := openBackend(t, userHome, os.Getenv(crashedRefreshDBDirEnv), os.Getenv(crashedRefreshBinaryEnv))
+	canonical, err := credentials.ReadCredential(string(provider.Codex), "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.BlessCredentialForTest(string(provider.Codex), canonical)
+	err = manager.RefreshProviderAccountUsage(string(provider.Codex), os.Getenv(crashedRefreshAccountEnv))
 	t.Fatalf("refresh returned before the kill: %v", err)
 }
 

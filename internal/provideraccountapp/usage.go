@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -107,47 +106,29 @@ func (m *Manager) usageTransaction(
 		return err
 	}
 
-	m.mu.RLock()
-	account, exists := m.store.Get(providerName, accountID, time.Now())
-	if !exists {
-		m.mu.RUnlock()
-		return fmt.Errorf("%s account %q is not saved", providerName, accountID)
-	}
-	active, isActive := m.store.Active(providerName, time.Now())
-	isSelected := isActive && active.ID == accountID
-	generation := m.store.Generation(providerName)
-	selection := Selection{
-		Generation: generation,
-		AccountID:  accountID,
-		Account:    AccountInfo(account),
-	}
-	var credential, slotAtStart provideraccounts.CredentialSnapshot
-	var err error
-	if isSelected {
-		selection = m.selectionLocked(providerName)
-		credential, err = m.credentials.ReadCredentialSnapshot(
-			providerName,
-			"",
-			true,
-		)
-		if err == nil {
-			slotAtStart, err = m.credentials.ReadCredentialSnapshot(providerName, accountID, false)
-			if provideraccounts.IsCredentialMissing(err) {
-				err = nil
-			}
-		}
-	} else {
-		credential, err = m.credentials.ReadCredentialSnapshot(
-			providerName,
-			accountID,
-			false,
-		)
-	}
+	start, err := m.readUsageStart(providerName, accountID)
 	if err != nil {
-		m.mu.RUnlock()
-		return fmt.Errorf("read saved %s credentials for usage refresh: %w", providerName, err)
+		return err
 	}
-	m.mu.RUnlock()
+	// A selected reading starts from the canonical credential, which an
+	// outside sign-in can replace. Unless it is the credential AO recorded for
+	// the selected account, reconcile it first, under the lock this call
+	// already holds: that names its login and may move the selection, and the
+	// reading then starts over as the account now stands. Nothing runs here
+	// once a spend's record could exist.
+	if start.isSelected && !m.credentialRecorded(providerName, start.credential.Bytes()) {
+		if err := m.reconcileExternalProviderAccountWithMutexHeld(ctx, providerName); err != nil {
+			return err
+		}
+		if start, err = m.readUsageStart(providerName, accountID); err != nil {
+			return err
+		}
+		if spend != nil && !start.isSelected {
+			return m.resetSelectionMovedError(providerName, spend)
+		}
+	}
+	account, isSelected, generation, selection := start.account, start.isSelected, start.generation, start.selection
+	credential, slotAtStart := start.credential, start.slotAtStart
 
 	// The card shows an unsettled spend, so every write to it, and every
 	// change of the list, republishes the listing once on the way out.
@@ -295,7 +276,8 @@ func (m *Manager) usageTransaction(
 		}
 		// Whose login the app-server ran, on every exit that learned it,
 		// with the workspace of the credential it ran on (account/read names
-		// none): the commit attributes a rotation and a reset list by it.
+		// none): the commit attributes the reading and its reset list by it,
+		// and lands nothing when it names another login.
 		refresh.observed = EnrichCodexIdentity(providerName, info, credential.Bytes())
 		switch {
 		case codexErr != nil:
@@ -347,12 +329,12 @@ func (m *Manager) usageTransaction(
 	m.mu.Lock()
 	commit, commitErr := m.commitProviderUsageRefreshLocked(refresh)
 	readingLanded := commit.snapshotDescribesAccount && probeErr == nil
-	// The resets are the rate-limit answer's, recorded whenever that answer's
-	// credential is proven to be the account's, usage windows or not. After
+	// The resets are the rate-limit answer's, recorded whenever the commit
+	// attributed that answer to the account, usage windows or not. After
 	// a spend the credit its answer says is gone is not offered again, even
 	// by a reading that still lists it.
 	var resetsErr error
-	if providerName == string(provider.Codex) && commit.credentialProven && creditsRead {
+	if providerName == string(provider.Codex) && commit.snapshotDescribesAccount && creditsRead {
 		var changed bool
 		changed, resetsErr = m.recordCodexUsageResetsLocked(accountID, credits, spend.goneCreditID())
 		listingChanged = listingChanged || changed
@@ -385,6 +367,53 @@ func (m *Manager) usageTransaction(
 	return errors.Join(probeErr, commitErr, resetsErr)
 }
 
+// usageStart is what a usage reading starts from: the account, whether it is
+// selected, and the credential its probe runs on (the canonical one for the
+// selected account, its slot otherwise).
+type usageStart struct {
+	account     provideraccounts.Account
+	isSelected  bool
+	generation  uint64
+	selection   Selection
+	credential  provideraccounts.CredentialSnapshot
+	slotAtStart provideraccounts.CredentialSnapshot
+}
+
+// readUsageStart reads one account's usageStart. Caller holds the provider's
+// reconcile lock and no Manager lock.
+func (m *Manager) readUsageStart(providerName, accountID string) (usageStart, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	account, exists := m.store.Get(providerName, accountID, time.Now())
+	if !exists {
+		return usageStart{}, fmt.Errorf("%s account %q is not saved", providerName, accountID)
+	}
+	active, isActive := m.store.Active(providerName, time.Now())
+	start := usageStart{
+		account:    account,
+		isSelected: isActive && active.ID == accountID,
+		generation: m.store.Generation(providerName),
+	}
+	start.selection = Selection{Generation: start.generation, AccountID: accountID, Account: AccountInfo(account)}
+	var err error
+	if start.isSelected {
+		start.selection = m.selectionLocked(providerName)
+		start.credential, err = m.credentials.ReadCredentialSnapshot(providerName, "", true)
+		if err == nil {
+			start.slotAtStart, err = m.credentials.ReadCredentialSnapshot(providerName, accountID, false)
+			if provideraccounts.IsCredentialMissing(err) {
+				err = nil
+			}
+		}
+	} else {
+		start.credential, err = m.credentials.ReadCredentialSnapshot(providerName, accountID, false)
+	}
+	if err != nil {
+		return usageStart{}, fmt.Errorf("read saved %s credentials for usage refresh: %w", providerName, err)
+	}
+	return start, nil
+}
+
 // providerUsageRefresh is one usage probe awaiting commit.
 type providerUsageRefresh struct {
 	providerName string
@@ -406,22 +435,14 @@ type providerUsageRefresh struct {
 	observed provider.AccountInfo
 	// readingComplete reports a Codex reading that answered with usage
 	// windows. Any other reading reaches the commit only for a rotation or a
-	// reset list, and lands them only under proof of whose login it ran
+	// reset list; its rotation lands where its credential is proven, and its
+	// reset list only under proof of whose login it ran
 	// (commitProviderUsageRefreshLocked).
 	readingComplete bool
 	// slotPersisted records that the early slot write settled the rotation
 	// (written, or superseded by a later credential), so the commit's
 	// non-selected slot write is skipped.
 	slotPersisted bool
-}
-
-// credentialProven reports that the probed credential is the account's: an
-// inactive account's seed came from its own slot, and a selected Codex
-// account's canonical credential is its only when the probe reported a login
-// the commit attributed to it. A selected Codex probe that reported no login
-// proves nothing. Claude's commit is not decided by this.
-func (r providerUsageRefresh) credentialProven() bool {
-	return !r.isSelected || r.providerName != string(provider.Codex) || strings.TrimSpace(r.observed.Email) != ""
 }
 
 // slotNeedsRotation reports that an inactive account's probe rotated its
@@ -467,15 +488,13 @@ type providerUsageCommit struct {
 	account    *provideraccounts.Account
 	generation uint64
 	// snapshotDescribesAccount reports that this probe provably measured
-	// refresh.accountID, so its snapshot stays publishable even when the
-	// credential bookkeeping underneath failed. It is false only where the
-	// attribution itself is in doubt: a selection that moved under the probe,
+	// refresh.accountID on a credential that is the account's, so its
+	// snapshot and reset list stay recordable even when the credential
+	// bookkeeping underneath failed. It is false only where the attribution
+	// itself is in doubt: a selection that moved under the probe, a selected
+	// probe that started from a credential AO never recorded for the account,
 	// or a provider that authenticated as somebody else.
 	snapshotDescribesAccount bool
-	// credentialProven reports that the probed credential is
-	// refresh.accountID's (providerUsageRefresh.credentialProven), so its
-	// rotation may reach the account's slot and its reset list the row.
-	credentialProven bool
 }
 
 // commitProviderUsageRefreshLocked publishes the outcome of one usage probe:
@@ -494,15 +513,32 @@ func (m *Manager) commitProviderUsageRefreshLocked(
 	); err != nil {
 		return commit, err
 	}
-	if refresh.providerName == string(provider.Codex) {
-		// A reading without usage windows lands a rotation or a reset list
-		// only when it proves its login is the account's: the attribution
-		// below accepts an observation that names no workspace, which two
-		// saved accounts sharing one email both satisfy. An inactive
-		// account's rotation still reaches its own slot, which it came from.
-		if !refresh.readingComplete && !m.observationProvesAccountLocked(refresh) {
-			return commit, m.landSlotRotationLocked(refresh)
-		}
+	// The probed credential is the account's: an inactive account's came from
+	// its own slot, and a selected account's is the canonical credential only
+	// while it is the one AO recorded for the selected account. Anything else
+	// is another login that reached the canonical store since, and none of
+	// it (slot, fingerprint, snapshot, reset list) is the account's.
+	if refresh.isSelected && !m.credentialRecordedLocked(refresh.providerName, refresh.probed.Bytes()) {
+		return commit, fmt.Errorf("%s credentials changed while refreshing usage; retry", refresh.providerName)
+	}
+	// Past here the credential is the account's, so its rotation lands. The
+	// reading is the account's only when the provider's observation says so.
+	// A Codex reading without usage windows is attributed only when the
+	// observation proves its login is the account's: the attribution below
+	// accepts an observation that names no workspace, which two saved
+	// accounts sharing one email both satisfy. An unattributed reading lands
+	// neither its snapshot nor its reset list.
+	// An observation that contradicts the account lands nothing at all.
+	readingAttributed := refresh.providerName != string(provider.Codex) ||
+		refresh.readingComplete || m.observationProvesAccountLocked(refresh)
+	if !readingAttributed && m.observationContradictsAccountLocked(refresh) {
+		return commit, fmt.Errorf(
+			"Codex account %q authenticated as %s",
+			refresh.accountID,
+			DescribeObservedAccount(refresh.observed),
+		)
+	}
+	if refresh.providerName == string(provider.Codex) && readingAttributed {
 		observedAccountID, updated, err := m.accountIDForObservedIdentity(
 			refresh.providerName,
 			refresh.accountID,
@@ -526,11 +562,7 @@ func (m *Manager) commitProviderUsageRefreshLocked(
 	// all; the identity checks come first for that reason. Past this line the
 	// attribution holds, so the caller may publish the snapshot even if the
 	// credential work below fails.
-	commit.snapshotDescribesAccount = true
-	commit.credentialProven = refresh.credentialProven()
-	if !commit.credentialProven {
-		return commit, nil
-	}
+	commit.snapshotDescribesAccount = readingAttributed
 
 	canonical := refresh.canonicalCredential()
 	if refresh.isSelected {
@@ -626,6 +658,14 @@ func (m *Manager) commitProviderUsageRefreshLocked(
 func (m *Manager) observationProvesAccountLocked(refresh providerUsageRefresh) bool {
 	saved, ok := m.store.Get(refresh.providerName, refresh.accountID, time.Now())
 	return ok && provideraccounts.AccountIdentity(saved).Proves(provideraccounts.IdentityFromInfo(refresh.observed))
+}
+
+// observationContradictsAccountLocked reports that the login the probe
+// observed is provably not the refreshed account's
+// (provideraccounts.Identity.Contradicts). Caller holds mu.
+func (m *Manager) observationContradictsAccountLocked(refresh providerUsageRefresh) bool {
+	saved, ok := m.store.Get(refresh.providerName, refresh.accountID, time.Now())
+	return ok && provideraccounts.AccountIdentity(saved).Contradicts(provideraccounts.IdentityFromInfo(refresh.observed))
 }
 
 // landSlotRotationLocked writes an inactive account's rotation to its slot,
