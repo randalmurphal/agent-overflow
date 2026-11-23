@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -337,12 +338,36 @@ func TestCloseWaitsForAReadInFlightBeforeTruncating(t *testing.T) {
 		}
 	}
 	s.quiesceHooks.drained = func() { drained <- held.Load() }
+	// A regression fails here, not at the package timeout: every wait below
+	// is bounded, and a failure still ends the read and then joins the Close
+	// it holds, registered before Close starts.
+	const bound = time.Minute
 	closed := make(chan error, 1)
-	go func() { closed <- s.Close() }()
+	joined := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-joined:
+		case <-time.After(bound):
+			t.Errorf("Close did not return within %s of the read's end", bound)
+		}
+	})
+	t.Cleanup(func() {
+		if err := inFlight.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			t.Errorf("end the read in flight: %v", err)
+		}
+	})
+	go func() {
+		closed <- s.Close()
+		close(joined)
+	}()
 	select {
 	case <-waiting:
 	case <-drained:
 		t.Fatal("Close went on to the truncate with a read in flight")
+	case err := <-closed:
+		t.Fatalf("Close returned (%v) with a read in flight, without waiting for it", err)
+	case <-time.After(bound):
+		t.Fatalf("Close neither waited for the read in flight nor went on within %s", bound)
 	}
 	if _, err := late.Exec(`SELECT 1`); err == nil || err.Error() != "sql: database is closed" {
 		t.Fatalf("a read on the pool after it closed: %v; want it refused", err)
@@ -351,11 +376,21 @@ func TestCloseWaitsForAReadInFlightBeforeTruncating(t *testing.T) {
 	if err := inFlight.Rollback(); err != nil {
 		t.Fatal(err)
 	}
-	if <-drained {
-		t.Fatal("Close went on to the truncate with a read in flight")
+	select {
+	case readHeld := <-drained:
+		if readHeld {
+			t.Fatal("Close went on to the truncate with a read in flight")
+		}
+	case <-time.After(bound):
+		t.Fatalf("Close did not go on to the truncate within %s of the read's end", bound)
 	}
-	if err := <-closed; err != nil {
-		t.Fatalf("close: %v", err)
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	case <-time.After(bound):
+		t.Fatalf("Close did not return within %s of the read's end", bound)
 	}
 	if after := walSize(t, dbPath); after != 0 {
 		t.Fatalf("WAL = %d bytes after Close, want 0 (was %d): the truncation ran while the read held its mark", after, before)
