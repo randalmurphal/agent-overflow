@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,6 +38,9 @@ type driven struct {
 	emitted atomic.Int32
 	emits   chan struct{}
 	closed  atomic.Int32
+	// sourceClosed is closed when the loop first closes its source, which
+	// Close does after it has begun.
+	sourceClosed chan struct{}
 
 	mu      sync.Mutex
 	handled []string
@@ -48,9 +52,17 @@ type driven struct {
 
 func startDriven(t *testing.T, debounce time.Duration, clock *fswatchtest.Clock) *driven {
 	t.Helper()
+	return startGatedDriven(t, debounce, clock, nil)
+}
+
+// startGatedDriven is startDriven with gate run before each admission
+// (fswatch.StartGated).
+func startGatedDriven(t *testing.T, debounce time.Duration, clock *fswatchtest.Clock, gate func()) *driven {
+	t.Helper()
 	d := &driven{
 		clock: clock, events: make(chan fsnotify.Event), errors: make(chan error),
 		emits: make(chan struct{}, 8), held: make(chan string, 2), release: make(chan struct{}),
+		sourceClosed: make(chan struct{}),
 	}
 	config := fswatch.Config{Label: "test watcher", Debounce: debounce, Emit: func() {
 		d.emitted.Add(1)
@@ -60,10 +72,12 @@ func startDriven(t *testing.T, debounce time.Duration, clock *fswatchtest.Clock)
 		config.After = clock.After
 	}
 	source := fswatch.Source{Events: d.events, Errors: d.errors, Close: func() error {
-		d.closed.Add(1)
+		if d.closed.Add(1) == 1 {
+			close(d.sourceClosed)
+		}
 		return nil
 	}}
-	loop, err := fswatch.Start(config, source, d.handle)
+	loop, err := fswatch.StartGated(config, source, d.handle, gate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,38 +265,62 @@ func TestLoopCloseWaitsForTheLoop(t *testing.T) {
 	}
 }
 
-// TestLoopEmitsNothingOnceCloseHasBegun lets a wait lapse while the handler
-// holds the loop, begins Close, and only then releases the handler: the
-// loop finds the lapsed wait and the stop both ready. Go picks either case
-// of a select at random, so the sequence runs 64 times; a loop that emits
-// for the lapsed wait passes all of them about once in 1.8e19.
-func TestLoopEmitsNothingOnceCloseHasBegun(t *testing.T) {
-	for range 64 {
-		clock := &fswatchtest.Clock{}
-		d := startDriven(t, time.Hour, clock)
-		d.send(t, "a"+changeSuffix, fsnotify.Write)
-		go func() { d.events <- fsnotify.Event{Name: holdName, Op: fsnotify.Write} }()
-		if got := <-d.held; got != "parked" {
-			t.Fatalf("handler = %s, want parked", got)
-		}
-		clock.Fire(t, 0)
-		closed := make(chan error, 1)
-		go func() { closed <- d.loop.Close() }()
-		if got := <-d.held; got != "stopping" {
-			t.Fatalf("handler = %s, want stopping", got)
-		}
-		d.releaseHold()
-		select {
-		case err := <-closed:
-			if err != nil {
-				t.Fatal(err)
+// Close begins exactly between the loop's choice of a lapsed wait or a
+// change event and the admission of the Emit or handler call that follows:
+// the gate holds the loop there until Close has closed the source, which
+// it does only after it has begun. Neither call may start. Admissions run
+// one at a time on the loop goroutine, so the gate counts them: the change
+// and the settle are the first two, the call under test the third.
+func TestLoopStartsNoCallOnceCloseHasBegun(t *testing.T) {
+	for _, path := range []string{"emit", "handler"} {
+		t.Run(path, func(t *testing.T) {
+			clock := &fswatchtest.Clock{}
+			var admissions atomic.Int32
+			atGate, closing := make(chan struct{}), make(chan struct{})
+			d := startGatedDriven(t, time.Hour, clock, func() {
+				if admissions.Add(1) == 3 {
+					close(atGate)
+					<-closing
+				}
+			})
+			d.send(t, "a"+changeSuffix, fsnotify.Write)
+			d.settle(t)
+			switch path {
+			case "emit":
+				clock.Fire(t, 0)
+			case "handler":
+				go func() { d.events <- fsnotify.Event{Name: "b" + changeSuffix, Op: fsnotify.Write} }()
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("Close never returned")
-		}
-		if n := d.emitted.Load(); n != 0 {
-			t.Fatalf("emitted %d times after Close began", n)
-		}
+			select {
+			case <-atGate:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the loop never reached the admission")
+			}
+			closed := make(chan error, 1)
+			go func() { closed <- d.loop.Close() }()
+			select {
+			case <-d.sourceClosed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Close never began")
+			}
+			close(closing)
+			select {
+			case err := <-closed:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Close never returned")
+			}
+			if n := d.emitted.Load(); n != 0 {
+				t.Fatalf("emitted %d times after Close began", n)
+			}
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			if slices.Contains(d.handled, "b"+changeSuffix) {
+				t.Fatalf("the handler ran after Close began: %v", d.handled)
+			}
+		})
 	}
 }
 

@@ -7,9 +7,13 @@
 // reports as a change starts a new debounce wait and abandons the pending
 // one, so Emit runs once, after the wait started by the last change of a
 // burst lapses. Permission-only events never reach the handler. A watcher
-// error is logged with the watcher's label and the loop keeps running. Once
-// Close has begun nothing more is emitted, and Close returns once the loop
-// has exited.
+// error is logged with the watcher's label and the loop keeps running.
+//
+// Every handler and Emit call is admitted before it starts, under the same
+// lock Close takes to begin. Once Close has begun no call is admitted, and
+// a call admitted before that finishes before Close returns. So a handler
+// or Emit must never call Close on its own loop: Close would wait for the
+// call that is calling it.
 //
 // The handler and Emit run on the loop goroutine, one call at a time: the
 // handler is never called concurrently with itself or with Emit, so a
@@ -80,11 +84,22 @@ type Loop struct {
 	done      chan struct{}
 	closeOnce sync.Once
 	exited    sync.WaitGroup
+
+	// admission orders the admission of each handler and Emit call against
+	// the start of Close (admit); closing is set under it when Close begins.
+	admission sync.Mutex
+	closing   bool
+	// beforeAdmit, when set by a test, runs just before each admission.
+	beforeAdmit func()
 }
 
 // Start runs the loop on its own goroutine. Start owns source from the
 // call on: it closes source when it refuses to start, and Close closes it.
 func Start(config Config, source Source, handle Handler) (*Loop, error) {
+	return start(config, source, handle, nil)
+}
+
+func start(config Config, source Source, handle Handler, beforeAdmit func()) (*Loop, error) {
 	invalid := config.Validate()
 	switch {
 	case invalid != nil:
@@ -103,20 +118,24 @@ func Start(config Config, source Source, handle Handler) (*Loop, error) {
 	if after == nil {
 		after = time.After
 	}
-	loop := &Loop{config: config, source: source, handle: handle, after: after, done: make(chan struct{})}
+	loop := &Loop{config: config, source: source, handle: handle, after: after, done: make(chan struct{}), beforeAdmit: beforeAdmit}
 	loop.exited.Add(1)
 	go loop.run()
 	return loop, nil
 }
 
-// Close stops the loop and closes its source. Nothing is emitted once
-// Close has begun, including for a wait that lapsed while a handler held
-// the loop. Close returns after the loop goroutine has exited, and is safe
-// to call more than once.
+// Close stops the loop and closes its source. Once Close has begun no
+// handler or Emit call starts, including for a wait that lapsed while a
+// handler held the loop. Close returns after the loop goroutine has
+// exited, so after any call admitted before it began, and is safe to call
+// more than once.
 func (l *Loop) Close() error {
 	var closeErr error
 	l.closeOnce.Do(func() {
+		l.admission.Lock()
+		l.closing = true
 		close(l.done)
+		l.admission.Unlock()
 		closeErr = l.source.Close()
 		l.exited.Wait()
 	})
@@ -140,6 +159,9 @@ func (l *Loop) run() {
 			if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) == 0 {
 				continue
 			}
+			if !l.admit() {
+				return
+			}
 			if l.handle(event, l.done) {
 				wait = l.after(l.config.Debounce)
 			}
@@ -152,12 +174,22 @@ func (l *Loop) run() {
 			wait = nil
 			// A select with both ready picks either, so a wait that lapsed
 			// while a handler held the loop can be chosen after Close began.
-			select {
-			case <-l.done:
+			if !l.admit() {
 				return
-			default:
 			}
 			l.config.Emit()
 		}
 	}
+}
+
+// admit reports whether a handler or Emit call may start: true until Close
+// has begun. Close begins under the same lock, so a call is either admitted
+// before Close begins, and Close waits for it, or never starts.
+func (l *Loop) admit() bool {
+	if l.beforeAdmit != nil {
+		l.beforeAdmit()
+	}
+	l.admission.Lock()
+	defer l.admission.Unlock()
+	return !l.closing
 }
