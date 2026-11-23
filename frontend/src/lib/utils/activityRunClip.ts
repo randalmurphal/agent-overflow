@@ -87,7 +87,7 @@ export function activityRunClipMaxHeight(expandedPx: number): string {
 
 /**
  * The px the base cap is lifted by, read back from `clip`'s inline
- * `max-height`. Diagnostics and tests; the observer below is the writer.
+ * `max-height`. Tests read it; the observer below is the writer.
  */
 export function activityRunClipLiftPx(clip: HTMLElement): number {
   // The browser may reorder the calc's terms on readback; the lift is its

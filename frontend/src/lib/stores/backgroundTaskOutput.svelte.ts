@@ -269,7 +269,7 @@ export function attachBackgroundTaskOutput(
   return store.attach(backgroundTaskOutputKey(threadId, launchId), undefined);
 }
 
-/** Diagnostics and tests: the launches currently held. */
+/** Tests: the launches currently held. */
 export function backgroundTaskOutputKeys(): string[] {
   return store.keys();
 }

@@ -452,7 +452,7 @@ export async function triggerMcpAuth(target: MCPTarget, name: string): Promise<M
   return withBackendTarget(target.backend, () => TriggerWorkspaceMcpAuth(target.provider, target.workspacePath, name));
 }
 
-/** Diagnostics / tests: the entities currently held. */
+/** Tests: the entities currently held. */
 export function mcpServersKeys(): string[] {
   return store.keys();
 }

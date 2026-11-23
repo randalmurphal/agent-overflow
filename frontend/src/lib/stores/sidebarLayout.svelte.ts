@@ -130,9 +130,8 @@ export function persistSidebarWidth(): void {
 }
 
 /**
- * Convenience setter that updates and persists in one call. Preferred
- * for one-shot width changes (hydration sync, palette command); the
- * pointer-driven resizer uses the live/persist pair above instead.
+ * Updates and persists in one call. Only tests call it; the
+ * pointer-driven resizer uses the live/persist pair above.
  */
 export function setSidebarWidth(next: number): void {
   setSidebarWidthLive(next);

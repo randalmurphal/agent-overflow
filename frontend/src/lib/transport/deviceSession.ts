@@ -296,7 +296,7 @@ function endpointMatchesOrigin(payload: PairingPayload, origin: string): boolean
  *     scanning it. The endpoint is stored beside the session slot it is
  *     about, so the next launch knows where to present the credential.
  *
- * Which client this is comes off `homeEndpoint()`: a shell has set one
+ * Which client this is comes off `hasHomeEndpoint()`: a shell has set one
  * before any pairing surface mounts (its first-run screen does it from
  * the scanned payload), and no browser ever has.
  */
