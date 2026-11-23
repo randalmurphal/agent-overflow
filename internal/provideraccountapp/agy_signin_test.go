@@ -92,7 +92,7 @@ func TestAnAgySignInWhoseLookupFailedSavesNothingAndTheNextOneRenews(t *testing.
 	if err != nil {
 		t.Fatalf("sign-in with the lookup answering: %v", err)
 	}
-	if result.Account.ID != rig.devID || result.Account.Email != "dev@example.com" {
+	if result.ID != rig.devID || result.Email != "dev@example.com" {
 		t.Fatalf("sign-in landed on %+v, want dev renewed", result.Account)
 	}
 	if got := agyAccountIDs(rig); len(got) != 1 || got[0] != rig.devID {

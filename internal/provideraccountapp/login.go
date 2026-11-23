@@ -117,7 +117,7 @@ func (m *Manager) adoptLogin(ctx context.Context, attempt *loginAttempt) (_ Mana
 		return verifyFailed(fmt.Errorf("verify %s login: %w", providerName, err))
 	}
 	if providerName == string(provider.Claude) && providerstatus.ClaudeUnauthenticated(info) {
-		return verifyFailed(errors.New("Claude login completed without an authenticated account"))
+		return verifyFailed(errors.New("Claude login completed without an authenticated account")) //nolint:staticcheck // ST1005: the user sees this sentence as written.
 	}
 	loginCredential, err := m.credentials.ReadEphemeralCredential(loginHome)
 	if err != nil {
