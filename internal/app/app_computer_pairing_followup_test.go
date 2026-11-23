@@ -72,6 +72,65 @@ func TestComputerPairingCancelOfAnApprovedWindowInvitationIsRefused(t *testing.T
 	}
 }
 
+// A window approved on one surface and then canceled from another (the
+// store refuses the cancel) reads confirmed in its own dialog even once a
+// newer window opened: the status answers from the invitation's row, not
+// from the ending the cancel recorded.
+func TestComputerPairingAnApprovedWindowReadsConfirmedAfterARefusedCancelAndANewerWindow(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	a, _ := computerPairingHost(t)
+	window, invite := windowAwaitingApproval(t, a)
+	if err := a.ConfirmDevicePairing(invite.LinkID); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CancelDevicePairing(invite.LinkID); !errors.Is(err, identity.ErrPairingRefused) {
+		t.Fatalf("canceling the approved invitation = %v, want it refused", err)
+	}
+	if _, err := a.OpenComputerPairing(connCtx(t), "lan", "full"); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "confirmed" || status.LinkID != invite.LinkID {
+		t.Fatalf("the approved window after a newer one opened = %+v (%v), want it confirmed", status, err)
+	}
+}
+
+// A second approval of a device another owner view already approved tells
+// the owner the device is allowed, whether the window still holds its
+// invitation (the store refuses the write) or has closed (the gate refuses
+// it). Once the device's session is revoked, it is no longer reported as
+// allowed.
+func TestComputerPairingASecondApprovalSaysTheDeviceIsAlreadyAllowed(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	a, _ := computerPairingHost(t)
+	window, invite := windowAwaitingApproval(t, a)
+	if err := a.ConfirmDevicePairing(invite.LinkID); err != nil {
+		t.Fatal(err)
+	}
+	allowed := func(when string) {
+		t.Helper()
+		err := a.ConfirmDevicePairing(invite.LinkID)
+		if !errors.Is(err, identity.ErrPairingAlreadyConfirmed) {
+			t.Fatalf("%s: a second approval = %v, want identity.ErrPairingAlreadyConfirmed", when, err)
+		}
+		requirePersonSees(t, err, "this device is already allowed")
+	}
+	allowed("with the window open")
+	if err := a.CloseComputerPairing(window.ID); err != nil {
+		t.Fatal(err)
+	}
+	allowed("with the window closed")
+	link, err := a.store.GetPairingLink(invite.LinkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.RevokeAccessSession(link.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	refusedConfirmation(t, a, invite.LinkID, "after the device's session was revoked")
+}
+
 // A publication that retires a window the book is still admitting, between
 // the window's admission and its installation, leaves it installed expired:
 // it never reads open and admits no requester.
@@ -377,7 +436,7 @@ func TestComputerPairingTailscaleLeavingRetiresALANWindowWithARequester(t *testi
 	beginOnBook(t, book)
 	stop()
 	a.publishComputerRoutes()
-	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" || status.Ended != "addressChanged" {
+	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" || status.Ended != "networkChanged" {
 		t.Fatalf("the LAN window after Tailscale went away = %+v (%v), want it retired for the address change", status, err)
 	}
 	if _, err := book.Begin(pairbootstrapClient(t).Commitment()); !errors.Is(err, pairbootstrap.ErrClosed) {
@@ -416,7 +475,7 @@ func TestComputerPairingALANAddressMovingDuringARevealRetiresTheWindow(t *testin
 		t.Fatalf("the invitation = %s, want it on the address the window was admitted under", invite.URL)
 	}
 	a.publishComputerRoutes()
-	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" || status.Ended != "addressChanged" {
+	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" || status.Ended != "networkChanged" {
 		t.Fatalf("the window after its address moved = %+v (%v), want it retired for the address change", status, err)
 	}
 	requireCanceled(t, a, invite.LinkID)
@@ -475,4 +534,18 @@ func TestComputerPairingStatusSaysWhyAWindowEnded(t *testing.T) {
 	dropped := open(ctx)
 	conn.RunCleanups()
 	ended(dropped, "disconnected")
+}
+
+// An open on a network this computer cannot pair on, as Try again makes
+// once that network went away, says which network, why, and the other
+// choice.
+func TestComputerPairingAnOpenOnAnUnavailableNetworkSaysWhatToDo(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	a, _ := computerPairingHost(t)
+	_, err := a.OpenComputerPairing(connCtx(t), "tailnet", "full")
+	const want = "Tailscale is not available for pairing on this computer: connect this computer to Tailscale with HTTPS enabled before pairing. To pair now, close this and choose Local network"
+	if err == nil || err.Error() != want {
+		t.Fatalf("an open on Tailscale without it = %v, want %q", err, want)
+	}
 }

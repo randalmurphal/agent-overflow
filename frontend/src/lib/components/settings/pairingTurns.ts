@@ -1,3 +1,5 @@
+import { TransportError } from '../../transport/wsClient';
+
 // The rule both pairing dialogs (PairDeviceModal, ComputerPairingWindow)
 // apply to their asynchronous completions. A dialog begins a turn when it
 // opens and again for each invitation or window it starts, and ends its turns
@@ -31,6 +33,15 @@ export function pairingTurns(): PairingTurns {
       ++latest;
     },
   };
+}
+
+/**
+ * Whether an approval was refused because an earlier approval already
+ * allowed the device (ConfirmDevicePairing's `pairing_already_allowed`): the
+ * device has access, so the surface shows it as allowed, not as a failure.
+ */
+export function pairingAlreadyAllowed(err: unknown): boolean {
+  return err instanceof TransportError && err.code === 'pairing_already_allowed';
 }
 
 // The approval each computer's pairing window has in flight. Opening a new

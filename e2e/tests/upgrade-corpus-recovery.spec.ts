@@ -592,6 +592,8 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
         sql: `UPDATE thread_request_receipts SET source_thread_title = 'edited' WHERE token = 'rcpt-spawn-linked'` },
       { rule: 'ended-device-spawn-runs: a closed receipt retallied', table: 'thread_request_receipts',
         sql: `UPDATE thread_request_receipts SET run_tokens = 7 WHERE token = 'rcpt-spawn-linked'` },
+      { rule: 'ended-device-spawn-runs: a run closed without its totals', table: 'thread_request_receipts',
+        sql: `UPDATE thread_request_receipts SET run_tool_calls = NULL, run_tokens = NULL, run_turn_ms = NULL WHERE token = 'rcpt-run-open'` },
       { rule: 'ended-device-nudges', table: 'thread_receipt_nudges',
         sql: `INSERT INTO thread_receipt_nudges (token, link_token, target_thread_id, started_at, run_open, run_base_tool_calls, run_base_tokens, run_base_turn_ms, ended_at)
           SELECT token, link_token, target_thread_id, started_at + 1, run_open, run_base_tool_calls, run_base_tokens, run_base_turn_ms, ended_at FROM snap.thread_receipt_nudges` },

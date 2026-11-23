@@ -35,7 +35,7 @@ type ComputerPairingView struct {
 	DiscoveryError string `json:"discoveryError"`
 	// Ended says why a window in state "expired" is no longer open, one of
 	// pairbootstrap's Ending values: "deadline", "closed", "canceled",
-	// "replaced", "addressChanged", "disconnected" or "stopped". Empty
+	// "replaced", "networkChanged", "disconnected" or "stopped". Empty
 	// while the window is open, and when nothing records why it ended: a
 	// window from before this process started or older than the one before
 	// the last, or an invitation the store settled while its window was
@@ -380,9 +380,11 @@ func (a *App) computerPairingOpen() bool {
 // ComputerPairingStatus shows independently derived digits only on the owner
 // surface. Confirmation is enabled only after ordinary enrollment has completed.
 // A window that is gone still answers for the invitation it published while
-// it is the window opened last: a confirmation admitted before the window's
-// deadline whose write lands after it reads confirmed, so a dialog whose
-// approval reply was lost reaches the durable result.
+// the book names its ending (the window opened last or the one before it),
+// from the invitation's row first: a confirmation admitted before the
+// window's deadline whose write lands after it reads confirmed, so a dialog
+// whose approval reply was lost reaches the durable result, and a confirmed
+// pairing never reads as ended.
 //
 //ao:scope access:admin
 //ao:route home

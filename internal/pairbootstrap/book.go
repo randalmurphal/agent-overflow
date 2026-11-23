@@ -84,7 +84,7 @@ type Book struct {
 	// stopped being open, kept after the window is removed so a decision's
 	// result and the window's ending stay readable for it (Standing.LinkOf,
 	// Standing.EndingOf) until the next Open replaces it. previous is the
-	// window opened before it, kept for its ending alone.
+	// window opened before it, kept for its link and its ending.
 	last     lastWindow
 	previous lastWindow
 	cancel   func(linkID string) error
@@ -118,8 +118,10 @@ const (
 	EndedCanceled Ending = "canceled"
 	// EndedReplaced: a newer window was opened.
 	EndedReplaced Ending = "replaced"
-	// EndedAddressChanged: an address the window depends on changed.
-	EndedAddressChanged Ending = "addressChanged"
+	// EndedNetworkChanged: this computer's pairing set changed (an
+	// address, a network appearing or going, or LAN advertising), which
+	// every window depends on.
+	EndedNetworkChanged Ending = "networkChanged"
 	// EndedDisconnected: the connection that opened it ended.
 	EndedDisconnected Ending = "disconnected"
 	// EndedStopped: pairing stopped for shutdown (Stop).
@@ -488,13 +490,18 @@ type Standing struct {
 }
 
 // LinkOf is the link the named window published, while it is the window
-// opened last, open or not; "" for any other window or one that published
-// none.
+// opened last or the one before it, open or not: every window EndingOf can
+// name an ending for. "" for any other window or one that published none.
 func (s Standing) LinkOf(windowID string) string {
-	if windowID == "" || s.last.windowID != windowID {
+	switch windowID {
+	case "":
 		return ""
+	case s.last.windowID:
+		return s.last.linkID
+	case s.previous.windowID:
+		return s.previous.linkID
 	}
-	return s.last.linkID
+	return ""
 }
 
 // Refuses reports whether linkID belongs to a window that is no longer open:

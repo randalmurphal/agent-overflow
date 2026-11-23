@@ -8,7 +8,7 @@
   import { errString } from '../../utils/errors';
   import { backendNow } from '../../transport/backendClock';
   import { settingsComputer } from './settingsComputer';
-  import { pairingDecisionSettled, pairingTurns, recordPairingDecision, type PairingTurn } from './pairingTurns';
+  import { pairingAlreadyAllowed, pairingDecisionSettled, pairingTurns, recordPairingDecision, type PairingTurn } from './pairingTurns';
 
   let { networkChoice, access, ownEnroll, onChanged, onClose }: {
     networkChoice: string;
@@ -43,7 +43,7 @@
     switch (ended) {
       case 'deadline': return 'Pairing expired.';
       case 'canceled': return 'Pairing was canceled from Devices.';
-      case 'addressChanged': return `The address of ${name} changed, so this pairing was canceled. Try again to pair on the new address.`;
+      case 'networkChanged': return `The network of ${name} changed, so this pairing ended. Choose Try again to start a new one.`;
       case 'disconnected': return `Pairing stopped because the connection to ${name} dropped.`;
       case 'replaced': return `A newer pairing was started on ${name}, which ended this one.`;
       case 'closed': return 'Pairing was closed.';
@@ -64,6 +64,31 @@
     onChanged();
   }
 
+  // Whether the window on screen has ended, as the host or its deadline said.
+  const ended = (): boolean => expired || status?.state === 'expired';
+
+  // The one writer of what the host says about the window on screen, for the
+  // poll and the decision's follow-up read alike. What is shown only moves
+  // forward: waiting or ready, then ended, then confirmed. A reply of an
+  // earlier kind, which an older read in flight can bring after a later one,
+  // changes nothing and arms no poll. Answers whether the window is still
+  // followed.
+  function adopt(at: PairingTurn, next: NonNullable<typeof status>, pastDeadline: boolean): boolean {
+    if (!at.current || confirmed) return false;
+    if (next.state === 'confirmed') {
+      status = next;
+      adoptConfirmed();
+      return false;
+    }
+    if (ended()) return false;
+    status = next;
+    error = '';
+    if (pastDeadline) expired = true;
+    if (!ended()) return true;
+    clearTimeout(timer);
+    return false;
+  }
+
   // Follow one window's status until it is decided or expires. Past the
   // window's deadline one last read still runs, so an approval the host
   // admitted before the deadline, whose reply was lost, shows as paired.
@@ -72,21 +97,9 @@
     const pastDeadline = backendNow(backend) >= opened.expiresAtMs;
     try {
       const next = await call(() => ComputerPairingStatus(opened.id));
-      if (!at.current || confirmed) return;
-      if (next.state === 'confirmed') {
-        status = next;
-        adoptConfirmed();
-        return;
-      }
-      status = next;
-      error = '';
-      if (pastDeadline) {
-        expired = true;
-        return;
-      }
-      if (next.state === 'expired') return;
+      if (!adopt(at, next, pastDeadline)) return;
     } catch (err) {
-      if (!at.current) return;
+      if (!at.current || confirmed || ended()) return;
       if (pastDeadline) {
         expired = true;
         error = '';
@@ -96,7 +109,7 @@
       status = null;
       error = `Could not check pairing: ${errString(err)}. Retrying…`;
     }
-    if (at.current && !confirmed) timer = setTimeout(() => void poll(at, opened), 2_000);
+    timer = setTimeout(() => void poll(at, opened), 2_000);
   }
 
   // Open a window and follow it. Try again runs this once more with the
@@ -153,18 +166,20 @@
       await call(() => ConfirmDevicePairing(linkId));
       if (at.current) adoptConfirmed();
     } catch (err) {
+      // Another owner view approved it first: the computer is paired.
+      if (pairingAlreadyAllowed(err)) {
+        if (at.current) adoptConfirmed();
+        return;
+      }
       // The approval may have committed with its reply lost; the host's
       // status of this window is the decision's durable result.
       const after = await call(() => ComputerPairingStatus(windowId)).catch(() => null);
       if (after?.state === 'confirmed') {
-        if (at.current) adoptConfirmed();
+        adopt(at, after, false);
         return;
       }
       // A window that ended meanwhile says why, beside the refusal.
-      if (at.current && after?.state === 'expired') {
-        clearTimeout(timer);
-        status = after;
-      }
+      if (after) adopt(at, after, false);
       const message = `Could not allow this computer: ${errString(err)}`;
       // A dismissed dialog has nowhere to show it, so the failure is a toast.
       if (at.current) error = message;

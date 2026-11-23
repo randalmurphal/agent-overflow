@@ -83,7 +83,7 @@ The book keeps the last window's invitation after the window is gone, so an
 approval that committed reads confirmed, and the dialog reads the host once
 more at its deadline and after a failed approval. Whatever ends a window names
 why (`pairbootstrap.Ending`: its deadline, a close, a cancel from Devices, a
-newer window, an address change, its owner's connection ending, or shutdown);
+newer window, a change to this computer's pairing networks, its owner's connection ending, or shutdown);
 the book keeps the first reason for the last two windows, and the dialog says
 it, so only the deadline reads as "Pairing expired."
 

@@ -76,7 +76,7 @@ func TestComputerPairingALatePublicationKeepsTheNewerWindow(t *testing.T) {
 	if status, err := a.ComputerPairingStatus(newer.ID); err != nil || status.State == "expired" {
 		t.Fatalf("the newer window after the late publication = %+v (%v), want it open", status, err)
 	}
-	if status, err := a.ComputerPairingStatus(first.ID); err != nil || status.State != "expired" || status.Ended != "addressChanged" {
+	if status, err := a.ComputerPairingStatus(first.ID); err != nil || status.State != "expired" || status.Ended != "networkChanged" {
 		t.Fatalf("the first window = %+v (%v), want it retired for the address change", status, err)
 	}
 	// A publication that moves nothing, as a network-status poll makes,

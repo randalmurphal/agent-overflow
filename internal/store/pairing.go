@@ -410,6 +410,30 @@ func attachPairingRedemption(db sqlExecutor, linkID, deviceID, sessionID string)
 // instead; CompletePairingRedemption wrote nothing.
 var ErrPairingIncomplete = errors.New("store: the pairing could not be completed")
 
+// ErrPairingAlreadyConfirmed answers a confirmation of a link that was
+// already confirmed and whose session and device are still live: the device
+// is allowed, and nothing was written.
+var ErrPairingAlreadyConfirmed = errors.New("store: the pairing is already confirmed")
+
+// pairingAllowedSQL holds of a pairing_links row that was confirmed and whose
+// session and that session's device are unrevoked.
+const pairingAllowedSQL = `confirmed_at IS NOT NULL AND EXISTS (SELECT 1 FROM sessions
+	  WHERE sessions.id = pairing_links.session_id AND sessions.revoked_at IS NULL AND ` + sessionDeviceLive + `)`
+
+// PairingAllowed reports whether link id was confirmed and its session and
+// device are still live.
+func (s *Store) PairingAllowed(id string) (bool, error) {
+	return pairingAllowed(s.db, id)
+}
+
+func pairingAllowed(db sqlQueryer, id string) (bool, error) {
+	var allowed bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM pairing_links WHERE id = ? AND `+pairingAllowedSQL+`)`, id).Scan(&allowed); err != nil {
+		return false, fmt.Errorf("store: read whether pairing %s is allowed: %w", id, err)
+	}
+	return allowed, nil
+}
+
 // PairingConfirmation is what one ConfirmRedeemedPairing settled.
 type PairingConfirmation struct {
 	// Link is the confirmed link.
@@ -422,7 +446,9 @@ type PairingConfirmation struct {
 // and admits the device, in one transaction: the link is confirmed, its
 // session activated with accessExpiresAt, and a personal pairing's
 // membership admitted, or none of it is. Scoped to a redeemed link that
-// names its session and is unsettled; sql.ErrNoRows otherwise.
+// names its session and is unsettled; ErrPairingAlreadyConfirmed when it
+// was already confirmed and its session and device are live; sql.ErrNoRows
+// otherwise.
 //
 // A session that can no longer be activated (revoked, lapsed, or its device
 // revoked) or a membership that is no longer admissible cannot be completed
@@ -480,7 +506,8 @@ func (s *Store) ConfirmRedeemedPairing(id string, at int64, accessUntil func(dev
 
 // readConfirmableLink settles a personal pairing's member generation and
 // reads the link if it is redeemed, names its session and is unsettled;
-// sql.ErrNoRows otherwise.
+// ErrPairingAlreadyConfirmed for a link already confirmed whose session and
+// device are live (pairingAllowedSQL); sql.ErrNoRows otherwise.
 func readConfirmableLink(tx *sql.Tx, id string) (PairingLink, error) {
 	if err := prepareOwnPairing(tx, id); err != nil {
 		return PairingLink{}, err
@@ -490,6 +517,13 @@ func readConfirmableLink(tx *sql.Tx, id string) (PairingLink, error) {
 		  WHERE id = ? AND redeemed_at IS NOT NULL AND session_id <> ''
 		    AND confirmed_at IS NULL AND canceled_at IS NULL`, id))
 	if errors.Is(err, sql.ErrNoRows) {
+		allowed, readErr := pairingAllowed(tx, id)
+		switch {
+		case readErr != nil:
+			return PairingLink{}, readErr
+		case allowed:
+			return PairingLink{}, ErrPairingAlreadyConfirmed
+		}
 		return PairingLink{}, err
 	}
 	if err != nil {

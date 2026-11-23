@@ -3,6 +3,7 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import PairDeviceModal from './PairDeviceModal.svelte';
 import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { TransportError } from '../../transport/wsClient';
 
 const INVITE = {
   linkId: 'link-1',
@@ -335,6 +336,17 @@ describe('<PairDeviceModal> across a reopen', () => {
     expect(view.queryByLabelText('Pairing link')).toBeNull();
     expect(view.getByRole('button', { name: /Phone or tablet/ })).toBeEnabled();
     expect(poll).not.toHaveBeenCalled();
+  });
+
+  it('shows a device another owner view already approved as paired', async () => {
+    vi.useFakeTimers();
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    setBindingMock('DevicePairingStatus', async () => ({ state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs }));
+    setBindingMock('ConfirmDevicePairing', async () => { throw new TransportError('pairing_already_allowed', 'this device is already allowed'); });
+    const view = renderModal();
+    await verifyStage(view);
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    await view.findByText('Device paired');
   });
 
   it('does not complete a reopened modal with an approval sent before it closed', async () => {

@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 
@@ -83,13 +84,15 @@ func checkPairingNetwork(choice string) error {
 	return nil
 }
 
+// on is the address a window opened on choice shows, or, for a person
+// opening one, which network is unavailable, why, and the other choice.
 func (p pairingAddresses) on(choice string) (string, error) {
-	address, reason := p.lan, p.lanErr
+	address, reason, name, other := p.lan, p.lanErr, "Local network", "Tailscale"
 	if choice == "tailnet" {
-		address, reason = p.tailnet, p.tailnetErr
+		address, reason, name, other = p.tailnet, p.tailnetErr, "Tailscale", "Local network"
 	}
 	if address == "" {
-		return "", errors.New(reason)
+		return "", fmt.Errorf("%s is not available for pairing on this computer: %s. To pair now, close this and choose %s", name, reason, other)
 	}
 	return address, nil
 }
@@ -148,7 +151,7 @@ func (a *App) publishComputerRoutes() publishedNetwork {
 	retired := state.window
 	if retired.id != "" && retired.serial < state.serial {
 		state.window = admittedPairingWindow{}
-		retired.book.Expire(retired.id, pairbootstrap.EndedAddressChanged)
+		retired.book.Expire(retired.id, pairbootstrap.EndedNetworkChanged)
 	} else {
 		retired = admittedPairingWindow{}
 	}
@@ -160,7 +163,7 @@ func (a *App) publishComputerRoutes() publishedNetwork {
 	if retired.id != "" {
 		// A failed cancellation is logged by the book's callback and retried
 		// by the book.
-		_ = a.closeComputerPairingWindow(retired.id, pairbootstrap.EndedAddressChanged)
+		_ = a.closeComputerPairingWindow(retired.id, pairbootstrap.EndedNetworkChanged)
 	}
 	if routesChanged {
 		a.emit(eventchan.ComputerRoutesChanged, struct{}{})

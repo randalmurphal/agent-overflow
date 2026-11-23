@@ -308,6 +308,8 @@ func (a *App) ConfirmDevicePairing(linkID string) error {
 	switch {
 	case err == nil:
 		NotifyOwnDevices(a)
+	case errors.Is(err, identity.ErrPairingAlreadyConfirmed):
+		err = errorsx.Public("pairing_already_allowed", "this device is already allowed", err)
 	case errors.Is(err, identity.ErrPairingRefused):
 		err = errorsx.Public("pairing_closed", "this pairing is no longer open; start pairing again", err)
 	case errors.Is(err, identity.ErrPairingNotCompleted):

@@ -253,8 +253,8 @@ func TestConfirmRedeemedPairingRequiresAnAttachedRedemptionAndHappensOnce(t *tes
 	if session, err := s.GetSession(pending.ID); err != nil || session.ActivatedAt != 2500 || session.ExpiresAt != 900000 {
 		t.Fatalf("confirmation did not activate the session with its access window (%+v, %v)", session, err)
 	}
-	if _, err := s.ConfirmRedeemedPairing("link-1", 3000, accessUntil(900000)); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("second confirmation err = %v, want sql.ErrNoRows", err)
+	if _, err := s.ConfirmRedeemedPairing("link-1", 3000, accessUntil(900000)); !errors.Is(err, ErrPairingAlreadyConfirmed) {
+		t.Fatalf("second confirmation err = %v, want ErrPairingAlreadyConfirmed", err)
 	}
 	after, _ := s.GetPairingLink("link-1")
 	if after.ConfirmedAt != 2500 {

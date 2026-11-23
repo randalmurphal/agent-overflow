@@ -41,11 +41,11 @@ func TestExpireRefusesTheWindowAtOnce(t *testing.T) {
 	if !confirmed(t, b, "expiring") {
 		t.Fatal("the open window's invitation was refused before Expire")
 	}
-	b.Expire("another-window", EndedAddressChanged)
+	b.Expire("another-window", EndedNetworkChanged)
 	if !b.Snapshot(w.WindowID).Open {
 		t.Fatal("Expire of another id closed the window")
 	}
-	b.Expire(w.WindowID, EndedAddressChanged)
+	b.Expire(w.WindowID, EndedNetworkChanged)
 	if confirmed(t, b, "expiring") {
 		t.Fatal("an expired window's invitation was admitted")
 	}
@@ -116,8 +116,8 @@ func TestARevealPublishesOnlyBetweenReads(t *testing.T) {
 	}
 }
 
-// The last window's published link stays readable after the window is
-// removed, until the next Open replaces it.
+// A window's published link stays readable after the window is removed,
+// while the book names its ending: until a second later Open.
 func TestTheLastWindowsLinkOutlivesItsWindow(t *testing.T) {
 	b := NewBook(newLedger().cancel, time.Hour)
 	w := openWindow(t, b, mintOf("decided"))
@@ -132,8 +132,13 @@ func TestTheLastWindowsLinkOutlivesItsWindow(t *testing.T) {
 	}
 	next := openWindow(t, b, mintOf("next"))
 	_ = b.Read(func(s Standing) error { st = s; return nil })
-	if st.LinkOf(w.WindowID) != "" || st.LinkOf(next.WindowID) != "" {
-		t.Fatal("the next open kept the previous window's link, or named one before publishing")
+	if st.LinkOf(w.WindowID) != "decided" || st.LinkOf(next.WindowID) != "" {
+		t.Fatalf("after the next open, LinkOf = %q / %q, want the window before's link and none yet for the open one", st.LinkOf(w.WindowID), st.LinkOf(next.WindowID))
+	}
+	openWindow(t, b, mintOf("third"))
+	_ = b.Read(func(s Standing) error { st = s; return nil })
+	if st.LinkOf(w.WindowID) != "" {
+		t.Fatal("a second later open kept the first window's link")
 	}
 }
 
@@ -294,7 +299,7 @@ func TestAdmitOfAHeldLinkNeedsTheWindowThatHoldsIt(t *testing.T) {
 	if err := b.Admit("held", true, func() error { ran = true; return nil }); err != nil || !ran {
 		t.Fatalf("Admit of the window's own link = %v (ran %v), want it run", err, ran)
 	}
-	b.Expire(w.WindowID, EndedAddressChanged)
+	b.Expire(w.WindowID, EndedNetworkChanged)
 	ran = false
 	if err := b.Admit("held", true, func() error { ran = true; return nil }); !errors.Is(err, ErrClosed) || ran {
 		t.Fatalf("Admit of an expired window's link = %v (ran %v), want ErrClosed", err, ran)
@@ -348,16 +353,16 @@ func TestAWindowKeepsWhyItEnded(t *testing.T) {
 		if got := endingOf(t, b, first.WindowID); got != "" {
 			t.Fatalf("an open window ended %q", got)
 		}
-		b.Expire(first.WindowID, EndedAddressChanged)
+		b.Expire(first.WindowID, EndedNetworkChanged)
 		if err := b.Close(first.WindowID, EndedClosed); err != nil {
 			t.Fatal(err)
 		}
-		if got := endingOf(t, b, first.WindowID); got != EndedAddressChanged {
-			t.Fatalf("a window expired then closed ended %q, want %q", got, EndedAddressChanged)
+		if got := endingOf(t, b, first.WindowID); got != EndedNetworkChanged {
+			t.Fatalf("a window expired then closed ended %q, want %q", got, EndedNetworkChanged)
 		}
 		second := openWindow(t, b, mintOf("second"))
-		if got := endingOf(t, b, first.WindowID); got != EndedAddressChanged {
-			t.Fatalf("the window before the last ended %q, want %q", got, EndedAddressChanged)
+		if got := endingOf(t, b, first.WindowID); got != EndedNetworkChanged {
+			t.Fatalf("the window before the last ended %q, want %q", got, EndedNetworkChanged)
 		}
 		third := openWindow(t, b, mintOf("third"))
 		if got := endingOf(t, b, second.WindowID); got != EndedReplaced {

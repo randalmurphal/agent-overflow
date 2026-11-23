@@ -42,7 +42,7 @@
   import SettingsCallout from './SettingsCallout.svelte';
   import ComputerPairingWindow from './ComputerPairingWindow.svelte';
   import { INPUT_CLASS } from './styles';
-  import { pairingTurns, type PairingTurn } from './pairingTurns';
+  import { pairingAlreadyAllowed, pairingTurns, type PairingTurn } from './pairingTurns';
 
   interface Props {
     open: boolean;
@@ -271,7 +271,12 @@
     const linkId = stage.linkId;
     deciding = true;
     try {
-      await call(() => ConfirmDevicePairing(linkId));
+      try {
+        await call(() => ConfirmDevicePairing(linkId));
+      } catch (err) {
+        // Another owner view approved it first: the device is allowed.
+        if (!pairingAlreadyAllowed(err)) throw err;
+      }
       onChanged();
       if (!at.current) return;
       stopTimers();

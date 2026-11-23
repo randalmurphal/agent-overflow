@@ -35,7 +35,7 @@ func openAddressedWindow(t *testing.T, a *App, want string) ComputerPairingWindo
 // discovery.
 func requireWindowRetired(t *testing.T, a *App, window ComputerPairingWindow) {
 	t.Helper()
-	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" || status.Ended != "addressChanged" {
+	if status, err := a.ComputerPairingStatus(window.ID); err != nil || status.State != "expired" || status.Ended != "networkChanged" {
 		t.Fatalf("the window after its address moved = %+v (%v), want it ended for the address change", status, err)
 	}
 	requireNoPublishedWindow(t, a)

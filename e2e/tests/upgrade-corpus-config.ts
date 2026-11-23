@@ -544,7 +544,9 @@ export const recoveryRules: RecoveryRule[] = [
       AND r.target_thread_id = s.target_thread_id AND r.owner_device_id = s.owner_device_id
       AND r.source_thread_id = s.source_thread_id AND ${deviceLostItsLastSession('r.owner_device_id')})`,
     columns: ['run_open', 'run_tool_calls', 'run_tokens', 'run_turn_ms', 'spawn_link', 'track_spawn', 'updated_at'],
-    to: 'b.run_open = 0 AND b.spawn_link = 0 AND b.track_spawn = 0 AND (s.spawn_link = 1 OR b.updated_at IS s.updated_at)',
+    // The writer always writes the three totals (tallyFiguresSQL, never NULL).
+    to: `b.run_open = 0 AND b.run_tool_calls IS NOT NULL AND b.run_tokens IS NOT NULL AND b.run_turn_ms IS NOT NULL
+      AND b.spawn_link = 0 AND b.track_spawn = 0 AND (s.spawn_link = 1 OR b.updated_at IS s.updated_at)`,
   },
   {
     name: 'ended-device-nudges', writer: 'store.endSessionsTx, for the session ends above', table: 'thread_receipt_nudges',
