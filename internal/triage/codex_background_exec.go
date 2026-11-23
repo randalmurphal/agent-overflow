@@ -45,6 +45,170 @@ type unifiedExecTracker struct {
 	updatedAt    int64
 }
 
+// codexExecTrackers is the live unified-exec commands of one provider
+// process: the root thread's and every agent thread's. It is process
+// state (processBound), so a replacement session starts with none.
+// Every writer refuses a retired session's frame (frameRetiredLocked).
+type codexExecTrackers struct {
+	// byLaunch maps the command item id to its tracker.
+	byLaunch map[string]*unifiedExecTracker
+	// byProcess maps an owner and an app-server process id to the launch
+	// id, so TerminalInteraction events correlate without a scan. Each
+	// Codex thread numbers its own processes, so a process id names a
+	// command only together with its owner: "" for the root thread, the
+	// spawn launch id for an agent's thread (tracker.parentID).
+	byProcess map[codexProcessKey]string
+	// ended maps the item id of a command that left the live work before
+	// its item/completed arrived: a Stop found no process, its agent's
+	// thread is gone, or a revert cleaned it. Codex can still write the
+	// command's output and completion afterwards (it drops an exited
+	// process from its table before it writes the end, and a clean answers
+	// before the completions it causes), and they are that command's: they
+	// are handled as a live command's would be, and the completion removes
+	// the entry. An entry whose completion never comes lasts as long as
+	// the process; it keeps no output.
+	ended map[string]*unifiedExecTracker
+}
+
+type codexProcessKey struct {
+	owner     string
+	processID string
+}
+
+// codexExecIfPresent returns the thread's commands, or nil when it has
+// none, live or ended, without allocating. Caller holds r.mu.
+func (r *Router) codexExecIfPresent(threadID string) *codexExecTrackers {
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || len(st.codexExec.byLaunch) == 0 && len(st.codexExec.ended) == 0 {
+		return nil
+	}
+	return &st.codexExec
+}
+
+// codexExecForThread returns the thread's live commands, creating the maps.
+// Caller holds r.mu.
+func (r *Router) codexExecForThread(threadID string) *codexExecTrackers {
+	execs := &r.state(threadID).codexExec
+	if execs.byLaunch == nil {
+		execs.byLaunch = make(map[string]*unifiedExecTracker)
+		execs.byProcess = make(map[codexProcessKey]string)
+	}
+	return execs
+}
+
+// lookup returns the live tracker for a command item id; nil-safe.
+func (e *codexExecTrackers) lookup(launchID string) *unifiedExecTracker {
+	if e == nil {
+		return nil
+	}
+	return e.byLaunch[launchID]
+}
+
+// forOwnFrame returns the tracker that a command's own output or completion
+// updates, live or ended, and whether it is live; nil-safe.
+func (e *codexExecTrackers) forOwnFrame(launchID string) (tracker *unifiedExecTracker, live bool) {
+	if e == nil {
+		return nil, false
+	}
+	if tracker = e.byLaunch[launchID]; tracker != nil {
+		return tracker, true
+	}
+	return e.ended[launchID], false
+}
+
+func (e *codexExecTrackers) add(tracker *unifiedExecTracker) {
+	e.byLaunch[tracker.launchID] = tracker
+	if tracker.processID != "" {
+		e.byProcess[codexProcessKey{tracker.parentID, tracker.processID}] = tracker.launchID
+	}
+}
+
+// byProcessID returns owner's tracker for processID, repairing the index
+// from a scan when it is stale.
+func (e *codexExecTrackers) byProcessID(owner, processID string) *unifiedExecTracker {
+	processID = strings.TrimSpace(processID)
+	if e == nil || processID == "" {
+		return nil
+	}
+	key := codexProcessKey{owner, processID}
+	if launchID := e.byProcess[key]; launchID != "" {
+		if tracker := e.byLaunch[launchID]; tracker != nil && tracker.parentID == owner {
+			if tracker.processID == "" {
+				tracker.processID = processID
+			}
+			if tracker.processID == processID {
+				return tracker
+			}
+		}
+		delete(e.byProcess, key)
+	}
+	for _, tracker := range e.byLaunch {
+		if tracker.parentID == owner && tracker.processID == processID {
+			e.byProcess[key] = tracker.launchID
+			return tracker
+		}
+	}
+	return nil
+}
+
+func (e *codexExecTrackers) firstUnbound(owner string) *unifiedExecTracker {
+	for _, tracker := range e.byLaunch {
+		if tracker.parentID == owner && tracker.processID == "" {
+			return tracker
+		}
+	}
+	return nil
+}
+
+func (e *codexExecTrackers) rebind(tracker *unifiedExecTracker, processID string) {
+	processID = strings.TrimSpace(processID)
+	if tracker == nil || processID == "" || tracker.processID == processID {
+		return
+	}
+	if tracker.processID != "" {
+		delete(e.byProcess, codexProcessKey{tracker.parentID, tracker.processID})
+	}
+	tracker.processID = processID
+	e.byProcess[codexProcessKey{tracker.parentID, processID}] = tracker.launchID
+}
+
+// remove forgets tracker, live or ended. The process index entry goes only
+// when it still names tracker: an ended command's process id can belong to
+// a newer command by now.
+func (e *codexExecTrackers) remove(tracker *unifiedExecTracker) {
+	key := codexProcessKey{tracker.parentID, tracker.processID}
+	if tracker.processID != "" && e.byProcess[key] == tracker.launchID {
+		delete(e.byProcess, key)
+	}
+	delete(e.byLaunch, tracker.launchID)
+	delete(e.ended, tracker.launchID)
+}
+
+// end takes a live tracker out of the live work when its command stopped
+// before its item/completed arrived, and keeps it in ended for the frames
+// that can still come.
+func (e *codexExecTrackers) end(tracker *unifiedExecTracker) {
+	e.remove(tracker)
+	tracker.output = cappedCommandOutput{}
+	if e.ended == nil {
+		e.ended = make(map[string]*unifiedExecTracker)
+	}
+	e.ended[tracker.launchID] = tracker
+}
+
+// endOwnedBy ends every live command owner's thread runs and reports how
+// many it ended.
+func (e *codexExecTrackers) endOwnedBy(owner string) int {
+	ended := 0
+	for _, tracker := range e.byLaunch {
+		if tracker.parentID == owner {
+			e.end(tracker)
+			ended++
+		}
+	}
+	return ended
+}
+
 type cappedCommandOutput struct {
 	data  []byte
 	ring  bool
@@ -206,141 +370,46 @@ func (o cappedCommandOutput) Empty() bool {
 	return o.size == 0
 }
 
-func markCodexUnifiedExecTrackerYieldedLocked(state *codexBackgroundState, tracker *unifiedExecTracker, now int64) bool {
-	if state == nil || tracker == nil || tracker.backgrounded {
-		return false
-	}
-	tracker.backgrounded = true
-	tracker.updatedAt = now
-	return true
-}
-
-func (r *Router) markCodexUnifiedExecProcessBackgrounded(threadID, processID string) {
+// markCodexUnifiedExecProcessBackgrounded stamps the command whose process
+// a typed write_stdin poll named as backgrounded. The poll comes from the
+// thread that owns the process, so evt's parent scope names the owner.
+func (r *Router) markCodexUnifiedExecProcessBackgrounded(evt provider.ProviderEvent, processID string) {
 	processID = strings.TrimSpace(processID)
 	if processID == "" {
 		return
 	}
+	owner := eventParentID(evt)
 	changed := false
 	r.mu.Lock()
-	state := r.codexBackgroundIfPresent(threadID)
-	if state != nil {
-		tracker := codexUnifiedExecTrackerByProcessLocked(state, processID)
+	if execs := r.codexExecIfPresent(evt.ThreadID); execs != nil && !r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
+		tracker := execs.byProcessID(owner, processID)
 		if tracker == nil {
-			tracker = codexFirstUnboundUnifiedExecTrackerLocked(state)
-			if tracker != nil {
-				rebindCodexUnifiedExecProcessLocked(state, tracker, processID)
+			if tracker = execs.firstUnbound(owner); tracker != nil {
+				execs.rebind(tracker, processID)
 			}
 		}
-		if markCodexUnifiedExecTrackerYieldedLocked(state, tracker, time.Now().UnixMilli()) {
+		if tracker != nil && !tracker.backgrounded {
+			tracker.backgrounded = true
+			tracker.updatedAt = time.Now().UnixMilli()
 			changed = true
 		}
 	}
 	r.mu.Unlock()
 	if changed {
-		r.emitCodexBackgroundChanged(threadID)
+		r.emitCodexBackgroundChanged(evt.ThreadID)
 	}
 }
 
-func codexUnifiedExecTrackerByProcessLocked(state *codexBackgroundState, processID string) *unifiedExecTracker {
-	processID = strings.TrimSpace(processID)
-	if state == nil || processID == "" {
-		return nil
-	}
-	if launchID := state.unifiedExecByProcess[processID]; launchID != "" {
-		if tracker := state.unifiedExec[launchID]; tracker != nil {
-			if tracker.processID == "" {
-				tracker.processID = processID
-			}
-			if tracker.processID == processID {
-				return tracker
-			}
-		}
-		delete(state.unifiedExecByProcess, processID)
-	}
-	for _, tracker := range state.unifiedExec {
-		if tracker != nil && tracker.processID == processID {
-			state.unifiedExecByProcess[processID] = tracker.launchID
-			return tracker
-		}
-	}
-	return nil
-}
-
-func codexFirstUnboundUnifiedExecTrackerLocked(state *codexBackgroundState) *unifiedExecTracker {
-	if state == nil {
-		return nil
-	}
-	for _, tracker := range state.unifiedExec {
-		if tracker != nil && tracker.processID == "" {
-			return tracker
-		}
-	}
-	return nil
-}
-
-func (r *Router) hasCodexBackgroundTerminalForProcess(threadID, processID string) bool {
-	processID = strings.TrimSpace(processID)
-	if processID == "" {
-		return false
-	}
+// codexTerminalForProcess returns a copy of owner's live command for
+// processID.
+func (r *Router) codexTerminalForProcess(threadID, owner, processID string) (unifiedExecTracker, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state := r.codexBackgroundIfPresent(threadID)
-	if state == nil {
-		return false
-	}
-	tracker := codexUnifiedExecTrackerByProcessLocked(state, processID)
-	return tracker != nil && tracker.backgrounded
-}
-
-func (r *Router) codexTerminalSummaryForProcess(threadID, processID string) string {
-	processID = strings.TrimSpace(processID)
-	if processID == "" {
-		return ""
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	state := r.codexBackgroundIfPresent(threadID)
-	if state == nil {
-		return ""
-	}
-	launchID := state.unifiedExecByProcess[processID]
-	tracker := state.unifiedExec[launchID]
+	tracker := r.codexExecIfPresent(threadID).byProcessID(owner, processID)
 	if tracker == nil {
-		return ""
+		return unifiedExecTracker{}, false
 	}
-	return tracker.summary
-}
-
-func (r *Router) codexTerminalCommandForProcess(threadID, processID string) string {
-	processID = strings.TrimSpace(processID)
-	if processID == "" {
-		return ""
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	state := r.codexBackgroundIfPresent(threadID)
-	if state == nil {
-		return ""
-	}
-	launchID := state.unifiedExecByProcess[processID]
-	tracker := state.unifiedExec[launchID]
-	if tracker == nil {
-		return ""
-	}
-	return strings.TrimSpace(tracker.command)
-}
-
-func rebindCodexUnifiedExecProcessLocked(state *codexBackgroundState, tracker *unifiedExecTracker, processID string) {
-	processID = strings.TrimSpace(processID)
-	if state == nil || tracker == nil || processID == "" || tracker.processID == processID {
-		return
-	}
-	if tracker.processID != "" {
-		delete(state.unifiedExecByProcess, tracker.processID)
-	}
-	tracker.processID = processID
-	state.unifiedExecByProcess[processID] = tracker.launchID
+	return *tracker, true
 }
 
 func decodeCodexExecResultMeta(raw json.RawMessage) codexExecResultMeta {
@@ -367,14 +436,13 @@ func (r *Router) handleCodexExecResult(evt provider.ProviderEvent) error {
 	}
 
 	r.mu.Lock()
-	state := r.codexBackgroundIfPresent(evt.ThreadID)
-	if state != nil {
-		tracker := state.unifiedExec[itemID]
+	if execs := r.codexExecIfPresent(evt.ThreadID); execs != nil && !r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
+		tracker := execs.byLaunch[itemID]
 		if tracker == nil && meta.ProcessID != "" {
-			tracker = codexUnifiedExecTrackerByProcessLocked(state, meta.ProcessID)
+			tracker = execs.byProcessID(eventParentID(evt), meta.ProcessID)
 		}
 		if tracker != nil {
-			rebindCodexUnifiedExecProcessLocked(state, tracker, meta.ProcessID)
+			execs.rebind(tracker, meta.ProcessID)
 			if meta.Command != "" {
 				tracker.command = meta.Command
 			}
@@ -384,16 +452,6 @@ func (r *Router) handleCodexExecResult(evt provider.ProviderEvent) error {
 	}
 	r.mu.Unlock()
 	return nil
-}
-
-func removeCodexUnifiedExecTrackerLocked(state *codexBackgroundState, tracker *unifiedExecTracker) {
-	if state == nil || tracker == nil {
-		return
-	}
-	if tracker.processID != "" {
-		delete(state.unifiedExecByProcess, tracker.processID)
-	}
-	delete(state.unifiedExec, tracker.launchID)
 }
 
 // observeCodexCommandOutput buffers output for live Codex unified exec
@@ -407,18 +465,20 @@ func (r *Router) observeCodexCommandOutput(evt provider.ProviderEvent) bool {
 	meta := decodeCodexItemMeta(evt.Meta)
 	command := codexCommandFromMeta(evt.Meta)
 	r.mu.Lock()
-	state := r.codexBackgroundIfPresent(evt.ThreadID)
-	if state == nil {
-		r.mu.Unlock()
-		return false
-	}
-	now := eventTimestampMillis(evt)
-	tracker := state.unifiedExec[itemID]
+	execs := r.codexExecIfPresent(evt.ThreadID)
+	tracker, live := execs.forOwnFrame(itemID)
 	if tracker == nil {
 		r.mu.Unlock()
 		return false
 	}
-	rebindCodexUnifiedExecProcessLocked(state, tracker, meta.ProcessID)
+	if r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
+		r.mu.Unlock()
+		return true
+	}
+	now := eventTimestampMillis(evt)
+	if live {
+		execs.rebind(tracker, meta.ProcessID)
+	}
 	if evt.Replace {
 		tracker.output.Replace(evt.Content)
 	} else {
@@ -447,45 +507,48 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 	// Every tool completion of every provider passes here and few are a
 	// tracked unified exec, so that is checked before the meta is decoded.
 	r.mu.Lock()
-	state := r.codexBackgroundIfPresent(evt.ThreadID)
-	tracked := state != nil && state.unifiedExec[itemID] != nil
+	tracked, _ := r.codexExecIfPresent(evt.ThreadID).forOwnFrame(itemID)
 	r.mu.Unlock()
-	if !tracked {
+	if tracked == nil {
 		return false, nil
 	}
 
-	meta := decodeCodexItemMeta(evt.Meta)
 	command := codexCommandFromMeta(evt.Meta)
 	status := codexBackgroundCompletionStatus(evt.Meta)
 	exitCode := codexExitCodeFromMeta(evt.Meta)
 
 	var tracker unifiedExecTracker
-	handled := false
+	handled, wasLive := false, false
 	r.mu.Lock()
-	state = r.codexBackgroundIfPresent(evt.ThreadID)
+	// A retired session's completion ends nothing the replacement tracks.
+	if r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
+		r.mu.Unlock()
+		return true, nil
+	}
+	execs := r.codexExecIfPresent(evt.ThreadID)
 	now := eventTimestampMillis(evt)
-	if state != nil && state.unifiedExec[itemID] != nil {
-		live := state.unifiedExec[itemID]
-		handled = true
-		live.status = status
-		live.exitCode = exitCode
-		live.updatedAt = now
+	if own, live := execs.forOwnFrame(itemID); own != nil {
+		handled, wasLive = true, live
+		own.status = status
+		own.exitCode = exitCode
+		own.updatedAt = now
 		if strings.TrimSpace(command) != "" {
-			live.command = command
+			own.command = command
 		}
-		live.meta = mergeRawJSONObject(live.meta, evt.Meta)
-		rebindCodexUnifiedExecProcessLocked(state, live, meta.ProcessID)
+		own.meta = mergeRawJSONObject(own.meta, evt.Meta)
 		if evt.Content != "" {
-			live.output.Replace(evt.Content)
+			own.output.Replace(evt.Content)
 		}
-		tracker = *live
-		removeCodexUnifiedExecTrackerLocked(state, live)
+		tracker = *own
+		execs.remove(own)
 	}
 	r.mu.Unlock()
 	if !handled {
 		return false, nil
 	}
-	r.emitCodexBackgroundChanged(evt.ThreadID)
+	if wasLive {
+		r.emitCodexBackgroundChanged(evt.ThreadID)
+	}
 	turnIndex, ok := r.activeRoundTurnIndex(evt.ThreadID)
 	if !ok {
 		return true, nil

@@ -2556,7 +2556,10 @@ func TestClearLiveCodexBackgroundTasksDropsTransientTrayRows(t *testing.T) {
 	}
 }
 
-func TestCodexUnifiedExecSubagentCommandDoesNotEnterMainBackgroundTray(t *testing.T) {
+// An agent's command is live work of the thread: the tray lists it under
+// the agent's spawn launch and the count includes it, but it does not hold
+// the queue (codex_background_live.go).
+func TestCodexAgentCommandIsListedUnderItsAgent(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -2601,8 +2604,17 @@ func TestCodexUnifiedExecSubagentCommandDoesNotEnterMainBackgroundTray(t *testin
 	}
 
 	live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
-	if len(live) != 0 {
-		t.Fatalf("subagent command leaked into main tray: %+v", live)
+	if len(live) != 1 || live[0].ID != "child-cmd" || live[0].ParentID != "spawn-agent" {
+		t.Fatalf("tray rows = %+v, want the agent's command under spawn-agent", live)
+	}
+	if count := router.CountLiveCodexBackgroundTasks("t1"); count != 1 {
+		t.Fatalf("live count = %d, want the agent's command counted", count)
+	}
+	if ids := router.ThreadIDsWithLiveCodexBackgroundTasks(); len(ids) != 1 || ids[0] != "t1" {
+		t.Fatalf("threads with live work = %v, want [t1]", ids)
+	}
+	if blocked, err := router.hasQueueBlockingWork("t1"); err != nil || blocked {
+		t.Fatalf("queue blocked = %v (err %v) by an agent's command; only top-level commands hold it", blocked, err)
 	}
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -2625,6 +2637,9 @@ func TestCodexUnifiedExecSubagentCommandDoesNotEnterMainBackgroundTray(t *testin
 	}
 	if item.ParentID != "spawn-agent" {
 		t.Fatalf("child command parent_id = %q, want spawn-agent", item.ParentID)
+	}
+	if count := router.CountLiveCodexBackgroundTasks("t1"); count != 0 {
+		t.Fatalf("live count after the command's completion = %d, want 0", count)
 	}
 }
 

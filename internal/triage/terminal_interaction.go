@@ -3,6 +3,7 @@ package triage
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -37,12 +38,16 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	}
 	// The notification arrives after the poll returns, potentially after its
 	// turn was interrupted. Preserve process state without creating history.
-	r.markCodexUnifiedExecProcessBackgrounded(evt.ThreadID, meta.ProcessID)
+	r.markCodexUnifiedExecProcessBackgrounded(evt, meta.ProcessID)
 	if evt.Content == "" && meta.Stdin == "" {
 		return nil
 	}
 	turnIndex, ok := r.openTurnIndex(evt.ThreadID)
-	if !ok || !r.hasCodexBackgroundTerminalForProcess(evt.ThreadID, meta.ProcessID) {
+	if !ok {
+		return nil
+	}
+	terminal, tracked := r.codexTerminalForProcess(evt.ThreadID, eventParentID(evt), meta.ProcessID)
+	if !tracked || !terminal.backgrounded {
 		return nil
 	}
 	now := eventTimestampMillis(evt)
@@ -59,7 +64,7 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		"kind":       "terminal_interaction",
 		"has_stdin":  true,
 	}
-	if command := r.codexTerminalCommandForProcess(evt.ThreadID, meta.ProcessID); command != "" {
+	if command := strings.TrimSpace(terminal.command); command != "" {
 		metaMap["command"] = command
 	}
 	metaBlob, err := json.Marshal(metaMap)
@@ -67,8 +72,8 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		return fmt.Errorf("terminal interaction metadata: %w", err)
 	}
 	summary := "Interacted with background terminal"
-	if command := r.codexTerminalSummaryForProcess(evt.ThreadID, meta.ProcessID); command != "" {
-		summary += ": " + command
+	if terminal.summary != "" {
+		summary += ": " + terminal.summary
 	}
 	return r.persistItem(store.Item{
 		ID:        itemID,

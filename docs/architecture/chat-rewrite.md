@@ -1650,10 +1650,13 @@ time.
 - **Codex**: per-row Stop when a yielded unified-exec PTY carries
   `process_id` (`TerminateCodexBackgroundTerminal` →
   `thread/backgroundTerminals/terminate`, available since codex 0.140,
-  below AO's provider floor); Stop-all runs the single thread-wide
-  `thread/backgroundTerminals/clean`. The terminate response's
+  below AO's provider floor); Stop-all runs
+  `thread/backgroundTerminals/clean` once for each Codex thread that runs
+  a named command, the root thread's and each agent's. Both name the
+  thread that runs the command. The terminate response's
   `terminated: false` means "matched nothing" and surfaces as an info
-  toast, because no `item/completed` follows to change the row.
+  toast; no `item/completed` follows, so the command leaves the tray
+  then, as it does when the agent's thread is gone.
 - **Codex subagent rows**: per-row Stop interrupts the subagent's turn
   (`StopCodexSubagent`); Stop-all interrupts each named subagent.
 

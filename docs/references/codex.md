@@ -53,7 +53,11 @@ Codex has no `run_in_background` flag, but it does background work via
 - After yield, the PTY is tracked by `UnifiedExecProcessManager`;
   `spawn_exit_watcher` (`core/src/unified_exec/async_watcher.rs`) fires
   `ExecCommandEnd` when the process actually exits, potentially in a
-  later turn, up to `background_terminal_max_timeout` (1h default).
+  later turn. No lifetime cap ends it: `background_terminal_max_timeout`
+  (default 300000 ms) bounds one `write_stdin` poll window. Each thread,
+  an agent's included, has its own process manager, so an agent's command
+  lives in the agent's thread and ends with it
+  ([codex-wire.md](codex-wire.md#background-terminals)).
 - On the wire: one `item/*` pair. `item/started` (status `inProgress`),
   optional streaming output deltas, eventual `item/completed` (status
   flips in place, same `item_id`). No "yielded" event and no
@@ -106,7 +110,13 @@ cpuPercent?, rssKb?}`. `itemId` is the join key back to the transcript
 row; the three host-OS metrics are nullable and must not be rendered as
 zero when absent. `terminated: false` means the RPC matched no running
 process (already exited, or not this thread's). That is a state answer,
-not a failure.
+not a failure. `threadId` may name any loaded thread, an agent's
+included; one that is not loaded is refused with -32600
+`thread not found: <id>` (`load_thread` in
+`app-server/src/request_processors/thread_processor.rs`, rust-v0.150.1).
+A process id means something only in its own thread: each thread numbers
+its processes independently (random in 1000..100000), so a root command and
+an agent's can share an id.
 
 `processId` is a STRING on the wire that upstream parses as an `i32`
 (`thread_background_terminals_terminate_inner`), and it is the same
@@ -123,7 +133,9 @@ Types: `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`
 `codex-rs/app-server-protocol/src/protocol/common.rs`. Agent Overflow
 wraps all three in `internal/provider/codex/session_background.go`.
 `terminate` is bound as `App.TerminateCodexBackgroundTerminal` and backs
-the tray's per-row Stop button; `clean` backs Stop-all.
+the tray's per-row Stop button; `clean` backs Stop-all, revert and thread
+delete. Each call names the thread that runs the command: the root thread,
+or the agent's thread its spawn launch owns.
 Version floor: `terminate`/`list` shipped in 0.140.0, below AO's
 provider-wide minimum of 0.143.0, so no runtime capability probe is
 needed (guarded by

@@ -3,6 +3,7 @@ package codexapp
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,37 +18,49 @@ func TestBackgroundControlsDistinguishMissingMismatchAndForward(t *testing.T) {
 	missing := New(Deps{Reaper: procutiltest.Reaper(), Session: func(threadID string) (*codex.Session, bool) {
 		return nil, threadID == "other-provider"
 	}})
-	if err := missing.CleanBackgroundTerminals("missing"); err == nil || !strings.Contains(err.Error(), "no active session") {
+	if err := missing.CleanBackgroundTerminals("missing", ""); err == nil || !strings.Contains(err.Error(), "no active session") {
 		t.Fatalf("missing error = %v", err)
 	}
-	if _, err := missing.TerminateBackgroundTerminal("other-provider", "42"); err == nil || !strings.Contains(err.Error(), "not a Codex thread") {
+	if _, err := missing.TerminateBackgroundTerminal("other-provider", "", "42"); err == nil || !strings.Contains(err.Error(), "not a Codex thread") {
 		t.Fatalf("mismatch error = %v", err)
 	}
 
-	var cleanCalled atomic.Bool
-	var processID string
-	session := codex.NewCleanBackgroundTerminalsTestSession(func(ctx context.Context) error {
-		if _, ok := ctx.Deadline(); !ok {
-			t.Error("clean context has no deadline")
-		}
-		cleanCalled.Store(true)
-		return nil
+	var cleaned, terminated []string
+	session := codex.NewBackgroundTerminalsTestSession(codex.BackgroundTerminalsTestWire{
+		RootThreadID:        "root-provider-thread",
+		ChildThreadByLaunch: map[string]string{"spawn-1": "child-provider-thread"},
+		Clean: func(ctx context.Context, providerThreadID string) error {
+			if _, ok := ctx.Deadline(); !ok {
+				t.Error("clean context has no deadline")
+			}
+			cleaned = append(cleaned, providerThreadID)
+			return nil
+		},
+		Terminate: func(ctx context.Context, providerThreadID, processID string) (bool, error) {
+			if _, ok := ctx.Deadline(); !ok {
+				t.Error("terminate context has no deadline")
+			}
+			terminated = append(terminated, providerThreadID+"/"+processID)
+			return true, nil
+		},
 	})
-	cleanService := New(Deps{Reaper: procutiltest.Reaper(), Session: func(string) (*codex.Session, bool) { return session, true }})
-	if err := cleanService.CleanBackgroundTerminals("thread"); err != nil {
-		t.Fatalf("CleanBackgroundTerminals: %v", err)
+	service := New(Deps{Reaper: procutiltest.Reaper(), Session: func(string) (*codex.Session, bool) { return session, true }})
+	for _, owner := range []string{"", "spawn-1"} {
+		if err := service.CleanBackgroundTerminals("thread", owner); err != nil {
+			t.Fatalf("CleanBackgroundTerminals(%q): %v", owner, err)
+		}
+		if ok, err := service.TerminateBackgroundTerminal("thread", owner, "1734029"); err != nil || !ok {
+			t.Fatalf("TerminateBackgroundTerminal(%q) = (%v, %v)", owner, ok, err)
+		}
 	}
-	terminateSession := codex.NewTerminateBackgroundTerminalTestSession(func(ctx context.Context, id string) (bool, error) {
-		if _, ok := ctx.Deadline(); !ok {
-			t.Error("terminate context has no deadline")
-		}
-		processID = id
-		return true, nil
-	})
-	terminateService := New(Deps{Reaper: procutiltest.Reaper(), Session: func(string) (*codex.Session, bool) { return terminateSession, true }})
-	terminated, err := terminateService.TerminateBackgroundTerminal("thread", "1734029")
-	if err != nil || !terminated || processID != "1734029" || !cleanCalled.Load() {
-		t.Fatalf("terminate=%v id=%q clean=%v err=%v", terminated, processID, cleanCalled.Load(), err)
+	if want := []string{"root-provider-thread", "child-provider-thread"}; !slices.Equal(cleaned, want) {
+		t.Fatalf("cleaned threads = %v, want %v", cleaned, want)
+	}
+	if want := []string{"root-provider-thread/1734029", "child-provider-thread/1734029"}; !slices.Equal(terminated, want) {
+		t.Fatalf("terminated = %v, want %v", terminated, want)
+	}
+	if _, err := service.TerminateBackgroundTerminal("thread", "spawn-gone", "1734029"); !errors.Is(err, codex.ErrBackgroundTerminalOwnerGone) {
+		t.Fatalf("terminate for an unowned launch: err = %v, want ErrBackgroundTerminalOwnerGone", err)
 	}
 }
 

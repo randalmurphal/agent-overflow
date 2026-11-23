@@ -1,12 +1,14 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -18,7 +20,7 @@ import (
 // §E6b). The call names the launches the person saw, as a confirmed Stop
 // does, and each is stopped by its provider's primitive: Claude's
 // stop_task per task, Codex's subagent interrupt per agent and one
-// terminal cleanup. Every named launch gets one result.
+// terminal cleanup per Codex thread. Every named launch gets one result.
 
 // Background stop outcomes.
 const (
@@ -226,13 +228,21 @@ func stoppedOwner(row store.Item, byID map[string]store.Item, stoppedRoots map[s
 	return ""
 }
 
-// stopCodexBackgroundTasks interrupts each named live Codex subagent and,
-// when a named launch is a live background terminal, cleans the thread's
-// terminals once: Codex stops a terminal only thread-wide
-// (thread/backgroundTerminals/clean) or by process id.
+// stopCodexBackgroundTasks interrupts each named live Codex subagent and
+// cleans, once per Codex thread, the terminals of each thread that runs a
+// named live background terminal: Codex stops a terminal only thread-wide
+// (thread/backgroundTerminals/clean) or by process id, and each thread,
+// the root's and every agent's, has its own processes. An agent's
+// interrupt leaves its terminals running, so they are stopped in its
+// thread. A named terminal whose agent thread is gone has ended with it.
 func (a *App) stopCodexBackgroundTasks(threadID string, rows []store.Item, named []string) []BackgroundTaskStop {
 	now := time.Now().UnixMilli()
-	rows = append(rows, a.triage.ListLiveCodexBackgroundTasks(threadID, now, now-store.BackgroundTaskRetentionMillis)...)
+	// A live command's row is parented to the agent whose thread runs it.
+	commandOwner := make(map[string]string)
+	for _, row := range a.triage.ListLiveCodexBackgroundTasks(threadID, now, now-store.BackgroundTaskRetentionMillis) {
+		commandOwner[row.ID] = row.ParentID
+		rows = append(rows, row)
+	}
 	settled := make(map[string]bool)
 	for _, row := range rows {
 		if row.CompletionOf != "" {
@@ -252,20 +262,26 @@ func (a *App) stopCodexBackgroundTasks(threadID string, rows []store.Item, named
 	}
 
 	results := make([]BackgroundTaskStop, len(named))
-	var interrupts, cleaned []int
+	var interrupts []int
+	cleaned := make(map[string][]int)
+	var owners []string
 	for i, id := range named {
 		results[i] = BackgroundTaskStop{LaunchItemID: id, Outcome: BackgroundStopEnded}
 		switch {
 		case agents[id]:
 			interrupts = append(interrupts, i)
 		case terminals[id]:
-			cleaned = append(cleaned, i)
+			owner := commandOwner[id]
+			if _, ok := cleaned[owner]; !ok {
+				owners = append(owners, owner)
+			}
+			cleaned[owner] = append(cleaned[owner], i)
 		}
 	}
-	codex := a.codexAppService()
+	codexApp := a.codexAppService()
 	runBounded(len(interrupts), backgroundStopsInFlight, func(j int) {
 		i := interrupts[j]
-		stopped, err := codex.StopSubagent(threadID, named[i])
+		stopped, err := codexApp.StopSubagent(threadID, named[i])
 		switch {
 		case err != nil:
 			results[i] = BackgroundTaskStop{LaunchItemID: named[i], Outcome: BackgroundStopFailed, Error: err.Error()}
@@ -273,12 +289,18 @@ func (a *App) stopCodexBackgroundTasks(threadID string, rows []store.Item, named
 			results[i].Outcome = BackgroundStopStopping
 		}
 	})
-	if len(cleaned) > 0 {
-		err := codex.CleanBackgroundTerminals(threadID)
-		for _, i := range cleaned {
-			results[i].Outcome = BackgroundStopStopping
-			if err != nil {
+	for _, owner := range owners {
+		err := codexApp.CleanBackgroundTerminals(threadID, owner)
+		gone := errors.Is(err, codex.ErrBackgroundTerminalOwnerGone)
+		if gone {
+			err = a.settleGoneCodexAgent(threadID, owner, err)
+		}
+		for _, i := range cleaned[owner] {
+			switch {
+			case err != nil:
 				results[i] = BackgroundTaskStop{LaunchItemID: named[i], Outcome: BackgroundStopFailed, Error: err.Error()}
+			case !gone:
+				results[i].Outcome = BackgroundStopStopping
 			}
 		}
 	}

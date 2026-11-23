@@ -3,7 +3,9 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -99,12 +101,64 @@ type backgroundTerminalTerminateResponse struct {
 	Terminated bool `json:"terminated"`
 }
 
+// ErrBackgroundTerminalOwnerGone reports that the agent whose thread ran a
+// background terminal is gone: this session no longer owns a thread for
+// the launch, or Codex no longer has the thread loaded. Codex terminates a
+// thread's processes when it shuts the thread down, so nothing is left to
+// stop.
+var ErrBackgroundTerminalOwnerGone = errors.New("codex: the agent thread that ran the background terminal is gone")
+
+// backgroundTerminalThreads resolves the provider threads whose process
+// tables a background-terminal RPC for ownerLaunchID addresses: the root
+// thread for "", and otherwise the child threads the spawn launch owns.
+// Each Codex thread has its own process table, so a process id means
+// nothing outside the thread that started it.
+func (s *Session) backgroundTerminalThreads(method, ownerLaunchID string) ([]string, error) {
+	ownerLaunchID = strings.TrimSpace(ownerLaunchID)
+	if ownerLaunchID == "" {
+		rootThreadID := s.rootThreadID()
+		if rootThreadID == "" {
+			return nil, fmt.Errorf("codex: %s: session has no thread id", method)
+		}
+		return []string{rootThreadID}, nil
+	}
+	s.mu.Lock()
+	var threads []string
+	for childThreadID, launchID := range s.collab.childParentByThread {
+		if launchID == ownerLaunchID {
+			threads = append(threads, childThreadID)
+		}
+	}
+	s.mu.Unlock()
+	if len(threads) == 0 {
+		return nil, fmt.Errorf("codex: %s: launch %s owns no thread in this session: %w", method, ownerLaunchID, ErrBackgroundTerminalOwnerGone)
+	}
+	sort.Strings(threads)
+	return threads, nil
+}
+
+// backgroundTerminalOwnerGone turns the app-server's refusal to resolve an
+// agent's thread into ErrBackgroundTerminalOwnerGone. The background
+// terminal methods resolve their thread among the loaded ones and answer
+// -32600 "thread not found: <id>" for any other (Codex
+// thread_processor.rs load_thread). The root thread stays loaded while the
+// session lives, so only an agent scope is read this way.
+func backgroundTerminalOwnerGone(err error, ownerLaunchID string) error {
+	var rpcErr *RPCError
+	if ownerLaunchID != "" && errors.As(err, &rpcErr) && rpcErr.Code == -32600 &&
+		strings.HasPrefix(strings.TrimSpace(rpcErr.Message), "thread not found") {
+		return errors.Join(ErrBackgroundTerminalOwnerGone, err)
+	}
+	return err
+}
+
 // TerminateBackgroundTerminal kills ONE running background PTY by its
-// app-server process id and reports whether a process was actually
-// terminated. `false, nil` means the RPC succeeded but matched nothing —
-// the shell had already exited, or the id belongs to another thread.
-// That is a state answer, not a failure; callers refresh their list
-// rather than surfacing an error.
+// app-server process id in the thread that runs it (ownerLaunchID: "" for
+// the root thread, the spawn launch id for an agent's), and reports whether
+// a process was actually terminated. `false, nil` means the RPC succeeded
+// but matched nothing: the shell had already exited. That is a state
+// answer, not a failure. An agent thread that is gone is
+// ErrBackgroundTerminalOwnerGone.
 //
 // Wire contract (`thread/backgroundTerminals/terminate`, params
 // `{threadId, processId}` → `{terminated: bool}`) is upstream-typed at
@@ -112,7 +166,8 @@ type backgroundTerminalTerminateResponse struct {
 // (ThreadBackgroundTerminalsTerminateParams / …TerminateResponse) and
 // spike-confirmed on codex-cli 0.146.0: a request that omits processId
 // comes back as -32600 "Invalid request: missing field processId"
-// (capture 41-bgterminals-terminate-probe).
+// (capture 41-bgterminals-terminate-probe). The app-server resolves
+// threadId among every loaded thread, an agent's included.
 //
 // Version floor: the method shipped in codex 0.140.0, below AO's
 // provider-wide floor of provider.minimumCodexCLIVersion (0.143.0), so
@@ -120,24 +175,35 @@ type backgroundTerminalTerminateResponse struct {
 // to has it.
 // provider.TestMinimumCodexCLIVersionCoversBackgroundTerminalTerminate
 // fails if that floor is ever lowered past this method.
-func (s *Session) TerminateBackgroundTerminal(ctx context.Context, processID string) (bool, error) {
+func (s *Session) TerminateBackgroundTerminal(ctx context.Context, ownerLaunchID, processID string) (bool, error) {
+	const method = "thread/backgroundTerminals/terminate"
 	processID = strings.TrimSpace(processID)
 	if processID == "" {
-		return false, fmt.Errorf("codex: thread/backgroundTerminals/terminate: process id required")
+		return false, fmt.Errorf("codex: %s: process id required", method)
 	}
-	// Test-only seam, same shape as cleanBackgroundTerminalsFn. It stands in
-	// for the session/wire half only — argument validation above still runs,
-	// so a test session cannot accept a process id the real one refuses.
-	// Production NewSession never sets it.
+	threads, err := s.backgroundTerminalThreads(method, ownerLaunchID)
+	if err != nil {
+		return false, err
+	}
+	terminated := false
+	for _, threadID := range threads {
+		killed, err := s.terminateBackgroundTerminalIn(ctx, threadID, processID)
+		if err != nil {
+			return terminated, backgroundTerminalOwnerGone(err, ownerLaunchID)
+		}
+		terminated = terminated || killed
+	}
+	return terminated, nil
+}
+
+func (s *Session) terminateBackgroundTerminalIn(ctx context.Context, threadID, processID string) (bool, error) {
+	// Test-only seam for the wire write; ownership resolution and argument
+	// validation above still run. Production NewSession never sets it.
 	if s.terminateBackgroundTerminalFn != nil {
-		return s.terminateBackgroundTerminalFn(ctx, processID)
-	}
-	rootThreadID := s.rootThreadID()
-	if rootThreadID == "" {
-		return false, fmt.Errorf("codex: thread/backgroundTerminals/terminate: session has no thread id")
+		return s.terminateBackgroundTerminalFn(ctx, threadID, processID)
 	}
 	raw, err := s.sendRequest(ctx, "thread/backgroundTerminals/terminate", map[string]any{
-		"threadId":  rootThreadID,
+		"threadId":  threadID,
 		"processId": processID,
 	})
 	if err != nil {
@@ -156,42 +222,44 @@ func (s *Session) TerminateBackgroundTerminal(ctx context.Context, processID str
 }
 
 // CleanBackgroundTerminals asks the Codex app-server to terminate every
-// running unified-exec background PTY for this session's thread. It is the
-// thread-wide sibling of TerminateBackgroundTerminal — the right call for
-// "stop everything" (thread delete, tray-level stop-all), not for a
-// per-row stop.
+// running unified-exec background PTY of one thread: the root thread for
+// ownerLaunchID "", an agent's thread for its spawn launch id. It is the
+// thread-wide sibling of TerminateBackgroundTerminal, the right call for
+// "stop everything" (thread delete, revert), not for a per-row stop. An
+// agent thread that is gone is ErrBackgroundTerminalOwnerGone.
 //
 // Wire contract is owned by the Codex source of truth:
 // https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/thread.rs
 // (ThreadBackgroundTerminalsCleanParams / ThreadBackgroundTerminalsCleanResponse).
 // The response body is empty on success — the observable effect is a stream
 // of `item/completed` events for each terminated PTY that flow through our
-// existing triage path (Phase 2's sibling synthesis fires per completion).
+// existing triage path.
 //
 // Safe to call from any goroutine: sendRequest handles correlation under
 // the session's internal locks. Returns ctx.Err() on cancellation, or a
 // wrapped error on RPC failure.
-func (s *Session) CleanBackgroundTerminals(ctx context.Context) error {
-	// Tests install a cleanBackgroundTerminalsFn override so the binding
-	// layer can verify its session-lookup / provider-mismatch plumbing
-	// without spinning up a real app-server. Production NewSession never
-	// sets it; the wire path below is the only branch that runs in
-	// production.
-	if s.cleanBackgroundTerminalsFn != nil {
-		return s.cleanBackgroundTerminalsFn(ctx)
+func (s *Session) CleanBackgroundTerminals(ctx context.Context, ownerLaunchID string) error {
+	const method = "thread/backgroundTerminals/clean"
+	threads, err := s.backgroundTerminalThreads(method, ownerLaunchID)
+	if err != nil {
+		return err
 	}
-	// NewSession validates the root thread id during the start/resume
-	// handshake and Close's the session on failure, so a live Session always
-	// has this populated. The explicit guard mirrors Probe/Resume so a future
-	// caller that constructs a partial Session for testing still gets a
-	// specific error rather than the app-server rejecting an empty threadId
-	// with a less actionable message.
-	rootThreadID := s.rootThreadID()
-	if rootThreadID == "" {
-		return fmt.Errorf("codex: thread/backgroundTerminals/clean: session has no thread id")
+	for _, threadID := range threads {
+		if err := s.cleanBackgroundTerminalsIn(ctx, threadID); err != nil {
+			return backgroundTerminalOwnerGone(err, ownerLaunchID)
+		}
+	}
+	return nil
+}
+
+func (s *Session) cleanBackgroundTerminalsIn(ctx context.Context, threadID string) error {
+	// Test-only seam for the wire write; ownership resolution above still
+	// runs. Production NewSession never sets it.
+	if s.cleanBackgroundTerminalsFn != nil {
+		return s.cleanBackgroundTerminalsFn(ctx, threadID)
 	}
 	if _, err := s.sendRequest(ctx, "thread/backgroundTerminals/clean", map[string]any{
-		"threadId": rootThreadID,
+		"threadId": threadID,
 	}); err != nil {
 		return fmt.Errorf("codex: thread/backgroundTerminals/clean: %w", err)
 	}

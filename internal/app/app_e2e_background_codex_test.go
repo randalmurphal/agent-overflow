@@ -336,7 +336,7 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 	// call and returns nil. Stop-all must fire it exactly once for both
 	// rows, because Codex's primitive is thread-wide.
 	var cleanCalls atomic.Int32
-	fakeSess := codex.NewCleanBackgroundTerminalsTestSession(func(ctx context.Context) error {
+	fakeSess := codex.NewBackgroundTerminalsTestSession(codex.BackgroundTerminalsTestWire{RootThreadID: "test-root", Clean: func(ctx context.Context, _ string) error {
 		cleanCalls.Add(1)
 		if ctx == nil {
 			t.Error("nil context passed to CleanBackgroundTerminals")
@@ -345,7 +345,7 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 			t.Error("CleanBackgroundTerminals context missing deadline")
 		}
 		return nil
-	})
+	}})
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
 		Codex:    fakeSess,
@@ -502,8 +502,9 @@ func TestE2E_Codex_PerRowStop_TerminateRPC(t *testing.T) {
 
 	var terminateCalls atomic.Int32
 	var gotProcessID atomic.Value
-	fakeSess := codex.NewTerminateBackgroundTerminalTestSession(
-		func(ctx context.Context, processID string) (bool, error) {
+	fakeSess := codex.NewBackgroundTerminalsTestSession(codex.BackgroundTerminalsTestWire{
+		RootThreadID: "test-root",
+		Terminate: func(ctx context.Context, _, processID string) (bool, error) {
 			terminateCalls.Add(1)
 			if ctx == nil {
 				t.Error("nil context passed to TerminateBackgroundTerminal")
@@ -512,7 +513,8 @@ func TestE2E_Codex_PerRowStop_TerminateRPC(t *testing.T) {
 			}
 			gotProcessID.Store(processID)
 			return true, nil
-		})
+		},
+	})
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
 		Codex:    fakeSess,
@@ -774,14 +776,14 @@ func TestE2E_ThreadDelete_CleansCodexBackground(t *testing.T) {
 	// RPC has no transport.
 	var order []string
 	var cleanCalls atomic.Int32
-	fakeSess := codex.NewCleanBackgroundTerminalsTestSession(func(ctx context.Context) error {
+	fakeSess := codex.NewBackgroundTerminalsTestSession(codex.BackgroundTerminalsTestWire{RootThreadID: "test-root", Clean: func(ctx context.Context, _ string) error {
 		cleanCalls.Add(1)
 		order = append(order, "clean")
 		if ctx == nil {
 			t.Error("clean called with nil ctx")
 		}
 		return nil
-	})
+	}})
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
 		Token:    "delete-clean-token",

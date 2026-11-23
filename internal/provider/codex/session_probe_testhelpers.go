@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"errors"
 
 	"agent-overflow/internal/provider"
 )
@@ -46,38 +47,49 @@ func NewProbeAndResumeTestSession(
 	}
 }
 
-// NewCleanBackgroundTerminalsTestSession returns a *Session whose
-// CleanBackgroundTerminals method resolves exclusively from the supplied
-// function, skipping the app-server wire call. Like the probe-only
-// helper, the rest of the session is left at zero — callers MUST NOT
-// call Send / Interrupt / Close on it.
-//
-// The app-layer binding test (app_codex_background_test.go) uses this to
-// verify session lookup + provider-mismatch plumbing without spinning up
-// a real Codex app-server. Production code never constructs Session
-// through this path.
-func NewCleanBackgroundTerminalsTestSession(cleanFn func(ctx context.Context) error) *Session {
-	return &Session{
-		cleanBackgroundTerminalsFn: cleanFn,
-	}
+// BackgroundTerminalsTestWire stands in for the app-server side of the
+// background-terminal RPCs in NewBackgroundTerminalsTestSession. Each
+// function receives the provider thread the owner resolved to. A nil
+// function fails the call.
+type BackgroundTerminalsTestWire struct {
+	// RootThreadID is the session's root provider thread.
+	RootThreadID string
+	// ChildThreadByLaunch is the session's child ownership: spawn launch
+	// id → the child provider thread it owns.
+	ChildThreadByLaunch map[string]string
+	Clean               func(ctx context.Context, providerThreadID string) error
+	Terminate           func(ctx context.Context, providerThreadID, processID string) (bool, error)
 }
 
-// NewTerminateBackgroundTerminalTestSession is the per-row sibling of
-// NewCleanBackgroundTerminalsTestSession: the returned *Session resolves
-// TerminateBackgroundTerminal from the supplied function instead of the
-// app-server wire, so the binding test can assert that the tray's Stop
-// button forwards the right process id (and a deadline) without a real
-// subprocess. Argument validation still runs before the override, so a
-// blank process id is refused here exactly as it is in production.
-//
-// Same caveat as the other helpers: the rest of the session is zero, so
-// callers MUST NOT call Send / Interrupt / Close on it.
-func NewTerminateBackgroundTerminalTestSession(
-	terminateFn func(ctx context.Context, processID string) (bool, error),
-) *Session {
-	return &Session{
-		terminateBackgroundTerminalFn: terminateFn,
+// NewBackgroundTerminalsTestSession returns a *Session whose
+// CleanBackgroundTerminals and TerminateBackgroundTerminal resolve their
+// owner through the real ownership map and argument checks, then answer
+// from wire instead of an app-server. The app-layer binding tests use it
+// to assert which thread and process a stop reaches without a real
+// subprocess. The rest of the session is zero, so callers MUST NOT call
+// Send / Interrupt / Close on it.
+func NewBackgroundTerminalsTestSession(wire BackgroundTerminalsTestWire) *Session {
+	s := &Session{
+		threadID: "test-thread",
+		collab:   sessionCollabState{childParentByThread: map[string]string{}},
+		cleanBackgroundTerminalsFn: func(ctx context.Context, providerThreadID string) error {
+			if wire.Clean == nil {
+				return errors.New("codex test session: no clean wire")
+			}
+			return wire.Clean(ctx, providerThreadID)
+		},
+		terminateBackgroundTerminalFn: func(ctx context.Context, providerThreadID, processID string) (bool, error) {
+			if wire.Terminate == nil {
+				return false, errors.New("codex test session: no terminate wire")
+			}
+			return wire.Terminate(ctx, providerThreadID, processID)
+		},
 	}
+	for launchID, childThreadID := range wire.ChildThreadByLaunch {
+		s.collab.childParentByThread[childThreadID] = launchID
+	}
+	s.setRootThreadID(wire.RootThreadID)
+	return s
 }
 
 // NewInterruptSubagentTestSession returns a session with one pending child

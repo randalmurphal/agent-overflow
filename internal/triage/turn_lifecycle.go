@@ -2569,6 +2569,8 @@ func (r *Router) MarkThreadActive(threadID, sessionToken string) {
 	// just died is replaced (processBound).
 	st := r.threadStateIfPresent(threadID)
 	hadEffectiveModel := st != nil && st.effectiveModelSet
+	// The replaced process's commands end with it; the tray drops them.
+	hadCodexCommands := st != nil && len(st.codexExec.byLaunch) > 0
 	if st != nil {
 		st.processBound = processBound{}
 		// A Stop held for a turn of the previous process names an index
@@ -2590,6 +2592,9 @@ func (r *Router) MarkThreadActive(threadID, sessionToken string) {
 	r.mu.Unlock()
 	if hadEffectiveModel {
 		r.emit(eventchan.ProviderModelFallback, ModelFallbackEvent{ThreadID: threadID, Revision: effectiveModelRevision})
+	}
+	if hadCodexCommands {
+		r.emitCodexBackgroundChanged(threadID)
 	}
 }
 

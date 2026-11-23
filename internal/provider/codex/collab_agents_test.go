@@ -557,10 +557,63 @@ func TestDispatchLineCloseAgentKeepsOwnItemID(t *testing.T) {
 
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"close-call-1","type":"collabAgentToolCall","tool":"closeAgent","receiverThreadIds":["child-provider-1"],"status":"completed"}}}`))
 
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+	// The close's own row, then the closed child's status
+	// (TestCloseAgentReportsTheClosedChildUnloadedBeforeItsRouteGoes).
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
 	}
 	if events[0].ItemID != "close-call-1" {
 		t.Fatalf("ItemID: got %q, want %q", events[0].ItemID, "close-call-1")
+	}
+}
+
+// A V1 close_agent completion comes after Codex shut the child's thread
+// down, and the child's own notLoaded status can come after it, when the
+// close has already ended the child's route. So the close reports the
+// child notLoaded on its spawn launch itself, after its own row and before
+// the route goes: the child's commands and live execution settle whatever
+// order Codex's frames arrive in.
+func TestCloseAgentReportsTheClosedChildUnloadedBeforeItsRouteGoes(t *testing.T) {
+	t.Parallel()
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-provider-1": "call-collab-1", "child-provider-2": "call-collab-2"},
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"close-call-1","type":"collabAgentToolCall","tool":"closeAgent","receiverThreadIds":["child-provider-1"],"status":"completed"}}}`))
+
+	if len(events) != 2 || events[0].ItemID != "close-call-1" {
+		t.Fatalf("events = %+v, want the close row then the child's status", events)
+	}
+	status := events[1]
+	var meta struct {
+		AgentPath string `json:"agent_path"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(status.Meta, &meta); err != nil {
+		t.Fatal(err)
+	}
+	if status.Kind != provider.EventSubagentStatus || status.ItemID != "call-collab-1" || status.ParentToolUseID != "call-collab-1" || meta.AgentPath != "child-provider-1" || meta.Status != "notLoaded" {
+		t.Fatalf("status = %+v meta %+v, want notLoaded for child-provider-1 on call-collab-1", status, meta)
+	}
+	if got := s.parentToolUseForProviderThread("child-provider-1"); got != "" {
+		t.Fatalf("closed child still routes to %q", got)
+	}
+	if got := s.parentToolUseForProviderThread("child-provider-2"); got != "call-collab-2" {
+		t.Fatalf("a child the close did not name lost its route: %q", got)
+	}
+
+	// A close for a child whose route is already gone reports nothing.
+	events = nil
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"close-call-2","type":"collabAgentToolCall","tool":"closeAgent","receiverThreadIds":["child-provider-1"],"status":"completed"}}}`))
+	if len(events) != 1 || events[0].ItemID != "close-call-2" {
+		t.Fatalf("events = %+v, want only the second close's row", events)
 	}
 }

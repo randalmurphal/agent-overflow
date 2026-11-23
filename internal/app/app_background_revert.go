@@ -42,10 +42,13 @@ func (a *App) hasRunningBackgroundTasks(threadID string) (bool, error) {
 // cleanRunningBackgroundTasksBeforeProviderRevert terminates
 // provider-owned background work that a session stop alone would not
 // reach cleanly. Only Codex needs it: background terminals belong to
-// the app-server and the protocol exposes only the thread-wide clean
-// RPC, which requires the session to still be LIVE — so this must run
-// before the rollback stops it. Claude background tasks die with
-// stopSession's process-group close; no pre-stop step exists for them.
+// the app-server, a revert can keep the session live, and each Codex
+// thread's terminals are cleaned by its own thread-wide clean RPC, the
+// root thread's and every agent thread's that runs a live command
+// (CleanCodexBackgroundTerminals). The RPC requires the session to still
+// be LIVE, so this must run before the rollback can stop it. Claude
+// background tasks die with stopSession's process-group close; no
+// pre-stop step exists for them.
 func (a *App) cleanRunningBackgroundTasksBeforeProviderRevert(thread store.Thread, errorPrefix string) error {
 	caps := provider.CapabilitiesForProvider(thread.Provider)
 	if caps.BackgroundTerminalCleaner != provider.CodexBackgroundTerminalCleaner {

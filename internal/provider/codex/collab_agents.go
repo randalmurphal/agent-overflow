@@ -925,31 +925,49 @@ func (s *Session) maybeRememberCollabReceiverThreads(method string, params json.
 	if item == nil || readRawString(item, "type") != "collabAgentToolCall" {
 		return
 	}
-	tool := normalizeCollabToolName(readRawString(item, "tool"))
 	itemID := readRawString(item, "id")
 	receiverThreadIDs := readRawStringArray(item, "receiverThreadIds")
-	if itemID == "" || len(receiverThreadIDs) == 0 {
+	if normalizeCollabToolName(readRawString(item, "tool")) != "spawn_agent" || itemID == "" || len(receiverThreadIDs) == 0 {
 		return
 	}
+	launchMeta := collabLaunchMeta{
+		Prompt:            readRawString(item, "prompt"),
+		Model:             readRawString(item, "model"),
+		ReasoningEffort:   readRawString(item, "reasoningEffort"),
+		ReceiverThreadIDs: append([]string(nil), receiverThreadIDs...),
+	}
+	for _, receiverThreadID := range receiverThreadIDs {
+		if !s.registerChildOwnership(providerThreadIDFromParams(params), receiverThreadID, "", itemID) {
+			continue
+		}
+		s.scheduleCollabMetadataRead(receiverThreadID, itemID, launchMeta)
+	}
+}
 
-	switch tool {
-	case "spawn_agent":
-		launchMeta := collabLaunchMeta{
-			Prompt:            readRawString(item, "prompt"),
-			Model:             readRawString(item, "model"),
-			ReasoningEffort:   readRawString(item, "reasoningEffort"),
-			ReceiverThreadIDs: append([]string(nil), receiverThreadIDs...),
-		}
-		for _, receiverThreadID := range receiverThreadIDs {
-			if !s.registerChildOwnership(providerThreadIDFromParams(params), receiverThreadID, "", itemID) {
-				continue
+// retireClosedCollabReceivers ends the routes of the children a V1
+// close_agent completion names. Codex reports the close only after it shut
+// the child's thread down and with it the child's processes (Codex
+// shutdown_agent_tree), but the child's own notLoaded status can arrive
+// after this frame, when no route is left to carry it. The close stands in
+// for it: each closed child that still had a route reports notLoaded on
+// its spawn launch, so its commands and live execution settle, and then
+// the route goes. Runs after the close's own events have been emitted.
+func (s *Session) retireClosedCollabReceivers(method string, params json.RawMessage) {
+	if method != "item/completed" {
+		return
+	}
+	item := readNestedObject(params, "item")
+	if item == nil || readRawString(item, "type") != "collabAgentToolCall" ||
+		normalizeCollabToolName(readRawString(item, "tool")) != "close_agent" {
+		return
+	}
+	for _, receiverThreadID := range readRawStringArray(item, "receiverThreadIds") {
+		if parentToolUseID := s.parentToolUseForProviderThread(receiverThreadID); parentToolUseID != "" {
+			if event := s.childStatusEvent(receiverThreadID, parentToolUseID, "notLoaded"); event != nil {
+				s.observeAndEmitChildLifecycle(receiverThreadID, []provider.ProviderEvent{*event})
 			}
-			s.scheduleCollabMetadataRead(receiverThreadID, itemID, launchMeta)
 		}
-	case "close_agent":
-		for _, receiverThreadID := range receiverThreadIDs {
-			s.deleteParentToolUseForProviderThread(receiverThreadID)
-		}
+		s.deleteParentToolUseForProviderThread(receiverThreadID)
 	}
 }
 

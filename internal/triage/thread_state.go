@@ -180,15 +180,12 @@ type threadState struct {
 	// thread id.
 	turnSpan trace.Span
 
-	// codexBackground is the Codex-specific background-terminal projector
-	// state. Tracks inProgress unifiedExec items + spawn_agent rows with
-	// running children so we can stamp is_background=true on the first
-	// wire-typed yield signal (text / reasoning delta) or at
-	// turn/completed (the catchall). See codex_background.go for the
-	// lifecycle details and invariant 25 for the wire-typed-signal rule
-	// this implements. A restarted session never inherits trackers from a
-	// prior session — the wire replays item/started for still-inProgress
-	// items and the projector re-observes them fresh.
+	// codexBackground is the Codex agent half of the background
+	// projection: spawn_agent rows with running children, agent runtime,
+	// held completions and live tool counts. See codex_background.go for
+	// the lifecycle details and invariant 25 for the wire-typed-signal
+	// rule it implements. The command half is process state
+	// (processBound.codexExec).
 	codexBackground *codexBackgroundState
 
 	// terminalInteractionSeq counts terminal interaction carriers per

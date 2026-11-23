@@ -368,6 +368,7 @@ func (s *Session) classifyAndEmitNotification(
 	// reached triage so fast child output cannot race ahead of its parent card.
 	mappedChildThreadIDs = append(mappedChildThreadIDs, collabSpawnReceiverThreadIDs(method, params)...)
 	s.drainDeferredChildWireEvents(mappedChildThreadIDs...)
+	s.retireClosedCollabReceivers(method, params)
 }
 
 func (s *Session) emitSubagentNotificationsFromUserCarrier(method string, params json.RawMessage, events []provider.ProviderEvent) bool {

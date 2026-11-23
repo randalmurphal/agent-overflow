@@ -760,15 +760,18 @@ export function CheckThreadImportUpdates(threadID: string): $CancellablePromise<
 
 /**
  * CleanCodexBackgroundTerminals asks the Codex app-server to terminate
- * every running unified-exec background PTY for `threadID`. This is the
- * thread-wide "Stop all" primitive for Codex; the per-row stop is
- * TerminateCodexBackgroundTerminal below.
+ * every running unified-exec background PTY of `threadID`'s session: the
+ * root thread's, and those of each agent thread that runs a live command.
+ * Each Codex thread has its own processes, so a cleanup of the root thread
+ * alone leaves the agents' running. Thread delete and revert use it; the
+ * per-row stop is TerminateCodexBackgroundTerminal below.
  * 
  * After the RPC succeeds, Codex emits one `item/completed` notification
  * per terminated PTY. Those update triage's transient tray state; the
  * command output becomes transcript history only if the model explicitly
- * waits/polls the terminal with write_stdin. No follow-up work is needed
- * here.
+ * waits/polls the terminal with write_stdin. An agent thread that is
+ * already gone has nothing left to stop: its commands leave the tray and
+ * the log says so.
  * 
  * Returns typed errors for:
  * 
@@ -6713,17 +6716,19 @@ export function SyncThreadWindow(threadID: string, req: app$0.SyncThreadWindowRe
 /**
  * TerminateCodexBackgroundTerminal stops ONE running unified-exec
  * background PTY on `threadID`, identified by the app-server process id
- * the tray row carries as `meta.process_id`. It is the Codex counterpart
- * of StopClaudeTask — same tray affordance, different id namespace and a
- * different RPC (`thread/backgroundTerminals/terminate`), which is why
+ * the tray row carries as `meta.process_id`, in the Codex thread that runs
+ * it: the root thread or the agent's. It is the Codex counterpart of
+ * StopClaudeTask: the same tray affordance, a different id namespace and
+ * a different RPC (`thread/backgroundTerminals/terminate`), which is why
  * the frontend branches on provider rather than sharing one binding.
  * 
  * The bool is the wire's own answer, not a success flag: `false, nil`
- * means the RPC succeeded and matched no running process (the shell had
- * already exited, or the id belongs to another thread). Callers must
- * surface that as state — a stop that killed nothing emits no follow-up
- * `item/completed`, so silently discarding it would leave the user
- * staring at a row that never changes.
+ * means nothing was running to stop (the shell had already exited, or the
+ * agent thread that ran it is gone). Callers must surface that as state.
+ * Nothing says a follow-up `item/completed` will come, so the command
+ * leaves the tray here, and the log says so; a row that stayed running
+ * with nothing behind it could never be stopped. A completion that still
+ * comes is the command's own.
  * 
  * On a real termination Codex emits `item/completed` for that PTY, which
  * flows through the existing triage path and clears the tray row. No
@@ -6735,6 +6740,8 @@ export function SyncThreadWindow(threadID: string, req: app$0.SyncThreadWindowRe
  *     reached the binding before Start / after Close.
  *   - provider-mismatch: the thread exists but it's a Claude session.
  *     Claude's per-row stop is StopClaudeTask, keyed by task id.
+ *   - a process id two agents' live commands share: each Codex thread
+ *     numbers its own processes, and the id alone cannot say which.
  *   - blank process id / timeout / provider error: surfaced verbatim so
  *     the UI can render the CLI-supplied message.
  */

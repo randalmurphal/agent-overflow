@@ -291,6 +291,16 @@ func clearPendingCodexSpawnTrackersLocked(state *codexBackgroundState) bool {
 	return changed
 }
 
+// settleCommandsOfUnloadedCodexAgent removes the live commands of the agent
+// whose thread a notLoaded status reports unloaded. Codex terminates a
+// thread's processes when it shuts the thread down, and their own
+// item/completed frames may never reach this thread, so the status is the
+// last word on them. An agent's turn ending is not: its commands outlive
+// it. evt.ItemID is the agent's spawn launch, the owner its commands carry.
+func (r *Router) settleCommandsOfUnloadedCodexAgent(evt provider.ProviderEvent) {
+	r.settleCodexAgentTerminals(evt.ThreadID, evt.ItemID, evt.SessionToken)
+}
+
 // observeCodexSubagentStatus updates live execution state and records each
 // terminal child turn as a new completion. The spawn row remains unchanged.
 func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
@@ -298,6 +308,9 @@ func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 	childID, status := strings.TrimSpace(parsed.AgentPath), strings.TrimSpace(parsed.Status)
 	if childID == "" || status == "" {
 		return nil
+	}
+	if status == "notLoaded" {
+		r.settleCommandsOfUnloadedCodexAgent(evt)
 	}
 	launch, found, err := r.findPersistedCodexSpawnLaunchForStatus(evt.ThreadID, evt.ItemID, childID)
 	if err != nil || !found {

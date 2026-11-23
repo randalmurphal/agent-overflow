@@ -137,6 +137,32 @@ storing the input bytes. Existing historical wait rows remain readable.
 Codex messages end on their explicit item completion or turn termination;
 concurrent command starts and completions do not end those messages.
 
+The live command trackers belong to the provider process, not the thread
+(`processBound.codexExec`, `codex_background_exec.go`). They hold the root
+thread's commands and every agent's at any depth, keyed by the Codex
+thread that runs each one, because each Codex thread numbers its own
+processes. The tray lists an agent's command under its spawn launch, and
+every reader of live work counts it: the idle reaper, the account switch,
+rest, the background inventory and Stop All. The queue gate counts
+top-level commands only; `codex_background_live.go` states the rule and
+why. An agent's turn ending, erroring or being interrupted ends none of
+its commands. A command leaves the live work when:
+
+- its typed `item/completed` arrives;
+- its agent's thread reports `notLoaded`, which Codex publishes when it
+  shuts a thread down and kills its processes (a V1 `close_agent`
+  completion reports it for the closed child itself,
+  `retireClosedCollabReceivers`);
+- a replacement session starts, or the session ends;
+- a Stop or a clean, which targets the Codex thread that runs the command,
+  finds the process exited or the agent's thread gone;
+- a revert's clean ends it.
+
+A command that leaves the live work before its `item/completed` keeps a
+tracker without output until the session ends, so a completion Codex still
+writes stays that command's and follows the round rule above. Nothing is
+persisted while a command runs, so a restart starts with none.
+
 The retired `BackgroundClassifier` heuristic must not come back.
 Background authorization comes from the wire fields above; model
 text/thinking or turn completion is only the trigger that marks an
@@ -1241,7 +1267,7 @@ counterpart "retry succeeded" wire signal from either provider.
 | `MessageTimeline` (response divider) | Ordered timeline nodes | Separator rendered before assistant text directly below an activity run, in any turn. |
 | Launch row `backgrounded` indicator (`rowState.ts`) | `item.isBackground && item.status === 'running'` and `meta.live_background_active` not `false` | Three dots on the launch row until the launch settles, then the same box with the dots hidden (`settled`). |
 | `BackgroundTaskLiveTail` (open tray row) | `WatchBackgroundTaskOutput(threadId, launchId)`, then `provider:background_task_output` frames | Follows a running Claude command's `output_file` from the backend (`internal/tasktail`) while the row is open; released on collapse, ended by the tray delta that completes the launch. |
-| `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)`, then `provider:background_tray` deltas | Shows running launches and pending Codex unifiedExec commands; completed Codex commands leave the live tray when typed completion clears the transient tracker. |
+| `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)`, then `provider:background_tray` deltas | Shows running launches and pending Codex unifiedExec commands, an agent's under its spawn launch; a Codex command leaves the live tray when its typed completion arrives or it ends without one (§Codex background projection). |
 
 ## Anti-patterns (forbidden)
 

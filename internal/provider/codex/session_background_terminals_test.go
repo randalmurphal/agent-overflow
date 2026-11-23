@@ -333,7 +333,7 @@ func TestSession_TerminateBackgroundTerminal_RoundTrip(t *testing.T) {
 			}
 			done := make(chan terminateResult, 1)
 			go func() {
-				killed, err := s.TerminateBackgroundTerminal(context.Background(), "42")
+				killed, err := s.TerminateBackgroundTerminal(context.Background(), "", "42")
 				done <- terminateResult{killed: killed, err: err}
 			}()
 
@@ -373,7 +373,7 @@ func TestSession_TerminateBackgroundTerminal_RejectsBlankProcessID(t *testing.T)
 	s, capturePath := newCapturingSession(t, "codex-thread-blank")
 
 	for _, processID := range []string{"", "   "} {
-		killed, err := s.TerminateBackgroundTerminal(context.Background(), processID)
+		killed, err := s.TerminateBackgroundTerminal(context.Background(), "", processID)
 		if err == nil {
 			t.Fatalf("TerminateBackgroundTerminal(%q): expected an error, got nil", processID)
 		}
@@ -406,7 +406,7 @@ func TestSession_BackgroundTerminalRPCs_RequireThreadID(t *testing.T) {
 		!strings.Contains(err.Error(), "no thread id") {
 		t.Errorf("ListBackgroundTerminals without a thread id: got %v", err)
 	}
-	if _, err := s.TerminateBackgroundTerminal(context.Background(), "42"); err == nil ||
+	if _, err := s.TerminateBackgroundTerminal(context.Background(), "", "42"); err == nil ||
 		!strings.Contains(err.Error(), "no thread id") {
 		t.Errorf("TerminateBackgroundTerminal without a thread id: got %v", err)
 	}
@@ -426,7 +426,7 @@ func TestSession_TerminateBackgroundTerminal_ErrorResponse(t *testing.T) {
 	}
 	done := make(chan terminateResult, 1)
 	go func() {
-		killed, err := s.TerminateBackgroundTerminal(context.Background(), "42")
+		killed, err := s.TerminateBackgroundTerminal(context.Background(), "", "42")
 		done <- terminateResult{killed: killed, err: err}
 	}()
 

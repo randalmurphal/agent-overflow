@@ -501,18 +501,15 @@ type Session struct {
 	// path without needing a live app-server. Production NewSession
 	// never sets it.
 	resumeFn func(ctx context.Context) error
-	// cleanBackgroundTerminalsFn mirrors probeFn for
-	// CleanBackgroundTerminals(). Used by app_codex_background_test.go to
-	// verify the binding wires through to a Codex session without
-	// spinning up a real app-server. Production NewSession never sets it.
-	cleanBackgroundTerminalsFn func(ctx context.Context) error
-	// terminateBackgroundTerminalFn mirrors cleanBackgroundTerminalsFn for
-	// TerminateBackgroundTerminal(). Used by app_codex_background_test.go to
-	// verify the per-row stop binding forwards the process id and installs a
-	// deadline without spinning up a real app-server. Production NewSession
-	// never sets it; the wire shape itself is pinned by the in-package tests
-	// in session_background_terminals_test.go.
-	terminateBackgroundTerminalFn func(ctx context.Context, processID string) (bool, error)
+	// cleanBackgroundTerminalsFn and terminateBackgroundTerminalFn replace
+	// only the wire write of CleanBackgroundTerminals and
+	// TerminateBackgroundTerminal, for the provider thread the owner
+	// resolved to, in app-layer tests (NewBackgroundTerminalsTestSession).
+	// Owner resolution and argument validation still run. Production
+	// NewSession never sets them; the wire shape itself is pinned by the
+	// in-package tests in session_background_terminals_test.go.
+	cleanBackgroundTerminalsFn    func(ctx context.Context, providerThreadID string) error
+	terminateBackgroundTerminalFn func(ctx context.Context, providerThreadID, processID string) (bool, error)
 	// interruptChildTurnFn replaces only the turn/interrupt wire write in
 	// app-layer tests. Ownership and runtime-state validation still run.
 	interruptChildTurnFn func(ctx context.Context, childThreadID, turnID string) error

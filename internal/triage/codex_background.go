@@ -35,11 +35,15 @@ import (
 // completion.
 //
 // The correlation is bounded: unifiedExec entries are dropped after typed
-// item/completed clears the transient tracker,
-// pending spawn_agent starts are dropped at the turn boundary if no
-// terminal spawn completion arrived, completed spawn_agent entries are
-// dropped on wait/subagent notification, and all thread state clears on
-// CleanupThread. Nothing persists across sessions.
+// item/completed clears the transient tracker and when the session that
+// runs them ends or is replaced. A command that stops before its
+// item/completed (a Stop found no process, the agent thread that runs it is
+// shut down or unloaded, a revert cleaned it) leaves the live work then and
+// waits, without output, for that completion until the session ends;
+// pending spawn_agent starts are dropped at the turn
+// boundary if no terminal spawn completion arrived, completed spawn_agent
+// entries are dropped on wait/subagent notification, and all thread state
+// clears on CleanupThread. Nothing persists across sessions.
 //
 // Claude's handleBackgroundTaskTerminal remains the shape-of-truth for
 // persisted completion sibling rows. Codex unifiedExec intentionally
@@ -47,7 +51,8 @@ import (
 // Codex wire round is active, while TerminalInteraction persists only the
 // separate input interaction marker rows.
 //
-// This file holds what the two halves SHARE: the per-thread correlation state,
+// This file holds what the two halves SHARE: the per-thread agent
+// correlation state (command trackers are process state, processBound),
 // its constructor and accessor, the tray-changed emit, and the two
 // tool-lifecycle entry points (observeCodexToolStart / observeCodexToolComplete)
 // that dispatch into either half. The halves themselves are:
@@ -78,15 +83,6 @@ type BackgroundTasksChangedEvent struct {
 // their map reads/writes. Handle itself does not hold r.mu, so the
 // projector is responsible for its own synchronization.
 type codexBackgroundState struct {
-	// unifiedExec maps launchID → tracker for inProgress unifiedExec
-	// command_execution items. Typed item/completed removes the tracker and
-	// persists the command row only when the frontend-visible Codex task is
-	// still running.
-	unifiedExec map[string]*unifiedExecTracker
-	// unifiedExecByProcess maps process_id → launchID so
-	// TerminalInteraction events can correlate input marker rows without
-	// scanning every tracker in the hot path.
-	unifiedExecByProcess map[string]string
 	// spawnAgent maps launchID → tracker for collabAgentToolCall
 	// spawn_agent items that may outlive their parent turn.
 	spawnAgent map[string]*spawnAgentTracker
@@ -102,12 +98,10 @@ type codexBackgroundState struct {
 
 func newCodexBackgroundState() *codexBackgroundState {
 	return &codexBackgroundState{
-		unifiedExec:          make(map[string]*unifiedExecTracker),
-		unifiedExecByProcess: make(map[string]string),
-		spawnAgent:           make(map[string]*spawnAgentTracker),
-		agents:               make(map[string]store.Item),
-		pendingAnswer:        make(map[string]pendingCodexCompletion),
-		tools:                make(map[string]codexExecutionTools),
+		spawnAgent:    make(map[string]*spawnAgentTracker),
+		agents:        make(map[string]store.Item),
+		pendingAnswer: make(map[string]pendingCodexCompletion),
+		tools:         make(map[string]codexExecutionTools),
 	}
 }
 
@@ -200,13 +194,13 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 		r.mu.Unlock()
 		return true
 	}
-	state := r.codexBackgroundForThread(evt.ThreadID)
 	now := eventTimestampMillis(evt)
 
 	switch {
 	case meta.Source == "unifiedExecStartup":
-		if existing, ok := state.unifiedExec[itemID]; ok {
-			rebindCodexUnifiedExecProcessLocked(state, existing, meta.ProcessID)
+		execs := r.codexExecForThread(evt.ThreadID)
+		if existing := execs.lookup(itemID); existing != nil {
+			execs.rebind(existing, meta.ProcessID)
 			r.mu.Unlock()
 			if emitChanged {
 				r.emitCodexBackgroundChanged(evt.ThreadID)
@@ -218,9 +212,9 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 		if strings.TrimSpace(summary) == "" {
 			summary = "Bash"
 		}
-		state.unifiedExec[itemID] = &unifiedExecTracker{
+		execs.add(&unifiedExecTracker{
 			launchID:  itemID,
-			processID: meta.ProcessID,
+			processID: strings.TrimSpace(meta.ProcessID),
 			command:   codexCommandFromMeta(evt.Meta),
 			summary:   summary,
 			parentID:  eventParentID(evt),
@@ -228,10 +222,7 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 			meta:      evt.Meta,
 			createdAt: now,
 			updatedAt: now,
-		}
-		if meta.ProcessID != "" {
-			state.unifiedExecByProcess[meta.ProcessID] = itemID
-		}
+		})
 		emitChanged = true
 		r.mu.Unlock()
 		if emitChanged {
@@ -239,6 +230,7 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 		}
 		return true
 	case isSpawnAgentCandidate && meta.Tool == "spawn_agent":
+		state := r.codexBackgroundForThread(evt.ThreadID)
 		// Spawn_agent starts are pending-only. Codex TUI records the begin
 		// event internally and renders only CollabAgentSpawnEnd; doing the
 		// same here avoids persisted ghost rows when core rejects before it
@@ -259,14 +251,20 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 	return isSpawnAgentCandidate && meta.Tool == "spawn_agent"
 }
 
-// ClearLiveCodexBackgroundTasks clears native background terminals. Cleaning
-// terminals does not end agent executions; their own lifecycle still owns them.
+// ClearLiveCodexBackgroundTasks ends the thread's live commands and forgets
+// its held completions after a cleanup terminated its background terminals.
+// The completions the cleanup makes Codex write are the commands' own
+// (codexExecTrackers.ended). Cleaning terminals does not end agent
+// executions; their own lifecycle still owns them.
 func (r *Router) ClearLiveCodexBackgroundTasks(threadID string) {
 	r.mu.Lock()
-	if st := r.threadStateIfPresent(threadID); st != nil && st.codexBackground != nil {
-		prior := st.codexBackground
-		st.codexBackground = newCodexBackgroundState()
-		st.codexBackground.agents, st.codexBackground.spawnAgent, st.codexBackground.tools = prior.agents, prior.spawnAgent, prior.tools
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		for _, tracker := range st.codexExec.byLaunch {
+			st.codexExec.end(tracker)
+		}
+		if st.codexBackground != nil {
+			st.codexBackground.pendingAnswer = make(map[string]pendingCodexCompletion)
+		}
 	}
 	r.mu.Unlock()
 	r.emitCodexBackgroundChanged(threadID)

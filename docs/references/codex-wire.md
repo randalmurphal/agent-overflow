@@ -61,10 +61,17 @@ items. `exec_command` (`source: "unifiedExecStartup"`) yields to the
 model after `yield_time_ms` (default 10s) with whatever output
 accumulated, and the PTY keeps running in `UnifiedExecProcessManager`.
 The item stays `status: inProgress` until `spawn_exit_watcher` fires
-`ExecCommandEnd`, potentially across multiple turns, up to
-`background_terminal_max_timeout` (1h default). See
+`ExecCommandEnd`, potentially across multiple turns. No lifetime cap ends
+it: `background_terminal_max_timeout` (default 300000 ms) bounds one
+`write_stdin` poll window, not the process (`codex-rs/config/src/config_toml.rs`
+at rust-v0.150.1). The process ends when it exits, when a background-terminal
+RPC terminates it, when its session shuts down (`terminate_all_processes`),
+or when the session's 64-process limit prunes it. Each Codex thread, an
+agent's included, has its own process manager, so an agent's command runs
+in the agent's thread and ends with that thread. See
 `codex-rs/core/src/tools/handlers/unified_exec.rs`,
-`codex-rs/core/src/unified_exec/async_watcher.rs`.
+`codex-rs/core/src/unified_exec/async_watcher.rs`,
+`codex-rs/core/src/unified_exec/process_manager.rs`.
 
 **Implication for agent-overflow**:
 `source: "unifiedExecStartup"` is the wire-typed signal that an item may
@@ -1646,6 +1653,8 @@ Available since codex 0.140.0; verified on 0.146.0 and 0.159.1.
 - `osPid`, `cpuPercent`, `rssKb` are nullable, and absent is not zero.
 - `terminated: false` means no running process matched (already exited,
   or belongs to another thread). It is a state answer, not an error.
+- `threadId` names the thread whose processes the call reaches: the root
+  thread, or an agent's (§An agent's terminals below).
 - `list` paginates: pass a non-null `nextCursor` back as `cursor`.
 
 ### What a kill writes (verified 0.159.1)
@@ -1691,6 +1700,40 @@ Spike 2026-10-15, codex-cli 0.159.1, `gpt-6-luna`. Fixtures under
 AO reads the `item/completed` as the PTY's completion, which removes its
 live tray row (`observeCodexUnifiedExecComplete`). The mock writes the same
 frames from the terminals it announced (`cmd/ao-mockprovider/codex_terminals.go`).
+
+### An agent's terminals (source-verified rust-v0.150.1, not run)
+
+- Each Codex thread owns its own `UnifiedExecProcessManager`
+  (`core/src/state/service.rs`, `core/src/session/session.rs`), so an
+  agent's PTYs live in the agent's thread. The three RPCs resolve
+  `threadId` among the loaded threads (`load_thread` in
+  `app-server/src/request_processors/thread_processor.rs`), so they reach
+  an agent's terminals by the agent's thread id. A thread that is not
+  loaded is refused with -32600 `thread not found: <id>`.
+- Process ids are per thread (random in 1000..100000 per manager), so a
+  root PTY and an agent's can share one.
+- An agent's turn ending, erroring or being interrupted (V2
+  `interrupt_agent` is `Op::Interrupt`) kills none of its PTYs.
+- A thread's PTYs die when the thread shuts down: `Op::Shutdown` runs
+  `terminate_all_processes` (`core/src/session/handlers.rs`). A V1
+  `close_agent` shuts the agent and its live descendants down and waits
+  for them before its `item/completed` (`shutdown_agent_tree`,
+  `core/src/agent/control/legacy.rs`); V2 residency eviction shuts down an
+  idle completed, errored or interrupted agent
+  (`core/src/agent/control/residency.rs`). App-server then publishes
+  `thread/status/changed` `notLoaded` for each shut-down thread
+  (`note_thread_shutdown`, `app-server/src/thread_status.rs`). Whether a
+  killed PTY's own `item/completed` is written before the shutdown is not
+  established.
+
+AO counts an agent's commands as the thread's live work and lists them in
+the tray under the agent's spawn launch. An agent's `notLoaded` status
+removes its commands. A V1 `close_agent` completion ends the closed child's
+route, which would drop the child's later frames, so the adapter reports
+the child `notLoaded` itself, after the close's row and before the route
+goes (`retireClosedCollabReceivers`). A Stop names the thread that runs the
+command; one that finds the process exited or the agent's thread gone
+removes the command and logs it.
 
 ---
 

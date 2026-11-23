@@ -72,7 +72,10 @@ func New(deps Deps) *Service {
 	return &Service{deps: deps, skillsCache: skillsCache, usageCache: usageCache}
 }
 
-func (s *Service) CleanBackgroundTerminals(threadID string) error {
+// CleanBackgroundTerminals terminates every background terminal of one
+// Codex thread of threadID's session: the root thread for ownerLaunchID "",
+// an agent's thread for its spawn launch id.
+func (s *Service) CleanBackgroundTerminals(threadID, ownerLaunchID string) error {
 	session, active := s.session(threadID)
 	if !active {
 		return fmt.Errorf("app: clean codex background terminals: no active session for thread %s", threadID)
@@ -82,10 +85,13 @@ func (s *Service) CleanBackgroundTerminals(threadID string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), backgroundTerminalStopTimeout)
 	defer cancel()
-	return session.CleanBackgroundTerminals(ctx)
+	return session.CleanBackgroundTerminals(ctx, ownerLaunchID)
 }
 
-func (s *Service) TerminateBackgroundTerminal(threadID, processID string) (bool, error) {
+// TerminateBackgroundTerminal kills one background terminal by its process
+// id in the Codex thread that runs it (ownerLaunchID, as for
+// CleanBackgroundTerminals).
+func (s *Service) TerminateBackgroundTerminal(threadID, ownerLaunchID, processID string) (bool, error) {
 	session, active := s.session(threadID)
 	if !active {
 		return false, fmt.Errorf("app: terminate codex background terminal: no active session for thread %s", threadID)
@@ -95,7 +101,7 @@ func (s *Service) TerminateBackgroundTerminal(threadID, processID string) (bool,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), backgroundTerminalStopTimeout)
 	defer cancel()
-	return session.TerminateBackgroundTerminal(ctx, processID)
+	return session.TerminateBackgroundTerminal(ctx, ownerLaunchID, processID)
 }
 
 // StopSubagent interrupts the live child turn owned by launchID. Codex's
