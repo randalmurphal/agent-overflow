@@ -21,7 +21,7 @@ func modeApprovalPolicyOnTheWire(mode provider.RuntimeMode) string {
 // TestApprovalPolicyAcrossModes is the product decision in one table: the
 // wire approval policy each runtime mode sends. "untrusted" prompts for every
 // command since Codex retired its allowlist, so the supervised tiers send
-// "on-request" under a read-only sandbox (wireApprovalPolicy).
+// "on-request" under a read-only sandbox (codexApprovalPolicyOnRequest).
 func TestApprovalPolicyAcrossModes(t *testing.T) {
 	t.Parallel()
 	want := map[provider.RuntimeMode]string{
@@ -45,10 +45,10 @@ func TestApprovalPolicyAcrossModes(t *testing.T) {
 	}
 }
 
-// TestDefaultApprovalPolicyRemapsTheUnsetBranch: a Config that never set the
-// axis falls through to the sandbox pairing, which is "untrusted" for
-// read-only, and takes the same remap as an explicit one.
-func TestDefaultApprovalPolicyRemapsTheUnsetBranch(t *testing.T) {
+// TestDefaultApprovalPolicyPairsTheUnsetBranchWithItsSandbox: a Config that
+// never set the axis falls through to the policy its sandbox's tier sends,
+// and an explicit one is sent as given.
+func TestDefaultApprovalPolicyPairsTheUnsetBranchWithItsSandbox(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		policy, sandbox, want string
@@ -58,7 +58,6 @@ func TestDefaultApprovalPolicyRemapsTheUnsetBranch(t *testing.T) {
 		{"", "danger-full-access", "never"},
 		{"never", "read-only", "never"},
 		{"on-request", "read-only", "on-request"},
-		{"untrusted", "read-only", "on-request"},
 	}
 	for _, tc := range cases {
 		if got := defaultApprovalPolicy(tc.policy, tc.sandbox); got != tc.want {

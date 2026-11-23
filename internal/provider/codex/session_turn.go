@@ -87,10 +87,9 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		params["serviceTier"] = tierWrite.value
 	}
 	if cfg.ApprovalPolicy != "" {
-		// Remapped for the same reason thread/start is: a mid-session
-		// runtime-mode switch rewrites this axis (live_update.go). See
-		// wireApprovalPolicy.
-		params["approvalPolicy"] = wireApprovalPolicy(cfg.ApprovalPolicy)
+		// A mid-session runtime-mode switch rewrites this axis
+		// (live_update.go).
+		params["approvalPolicy"] = cfg.ApprovalPolicy
 	}
 	// Always sent, for the same reason buildThreadParams always sends it: the
 	// reviewer is thread state that persists until something overwrites it, so

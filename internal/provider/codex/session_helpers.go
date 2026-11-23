@@ -184,21 +184,15 @@ func normalizeThreadSandbox(sandbox string) string {
 
 // defaultApprovalPolicy resolves the approval policy that reaches the wire:
 // the caller's explicit choice when it has one, otherwise the sandbox's own
-// most-supervised pairing. Both halves run through the wire remap, so a
-// Config that never set the axis lands on the same wire value a Config that
-// set it to "untrusted" would.
+// pairing, the one codexApprovalPolicy gives that sandbox's tier.
 func defaultApprovalPolicy(policy string, sandbox string) string {
-	if policy == "" {
-		switch sandbox {
-		case "danger-full-access":
-			policy = "never"
-		case "workspace-write":
-			policy = codexApprovalPolicyOnRequest
-		default:
-			policy = codexApprovalPolicyUnlessTrusted
-		}
+	if policy != "" {
+		return policy
 	}
-	return wireApprovalPolicy(policy)
+	if sandbox == "danger-full-access" {
+		return "never"
+	}
+	return codexApprovalPolicyOnRequest
 }
 
 // turnSandboxPolicy is a turn's `sandboxPolicy` for sandbox. The

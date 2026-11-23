@@ -205,8 +205,23 @@ func TestCodexThreadHistoryModeSurvivesTheProcess(t *testing.T) {
 // startedHistoryMode stands in for a thread an older AO started without
 // asking for paginated history. The start records legacy even though this
 // build asks for paginated, and a resume in a later process still reads it.
+// The thread is first recorded paginated under the same id, so the resume
+// reads legacy only if the overriding start wrote it.
 func TestCodexStartedHistoryModeOverridesTheRequest(t *testing.T) {
 	home := t.TempDir()
+	plain := revertScenario("th-started-legacy")
+	if err := plain.Validate(); err != nil {
+		t.Fatalf("scenario: %v", err)
+	}
+	seeder := startMock(t, []string{"app-server"}, append(writeScenarioFile(t, plain, ""), control.EnvTranscriptHome+"="+home), t.TempDir())
+	seeder.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	seeder.expectLineContaining(`"id":1`, testTimeout)
+	seeder.send(`{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"historyMode":"paginated"}}`)
+	if got := seeder.expectLineContaining(`"id":2`, testTimeout); !strings.Contains(got, `"historyMode":"paginated"`) {
+		t.Fatalf("seeding thread/start response = %q, want paginated", got)
+	}
+	seeder.closeStdinAndExpectExit(0, testTimeout)
+
 	sc := revertScenario("th-started-legacy")
 	sc.Codex.StartedHistoryMode = "legacy"
 	if err := sc.Validate(); err != nil {

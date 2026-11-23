@@ -88,7 +88,7 @@ func collectTransferFiles(ctx context.Context, codexHome string, references []Tr
 		if err != nil {
 			return err
 		}
-		if meta.HistoryMode != "" && meta.HistoryMode != HistoryModeLegacy && meta.HistoryMode != HistoryModePaginated {
+		if !knownHistoryMode(meta.HistoryMode) {
 			return fmt.Errorf("codex transfer: unsupported history mode %q", meta.HistoryMode)
 		}
 		active[key] = true

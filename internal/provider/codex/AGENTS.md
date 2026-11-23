@@ -74,8 +74,8 @@ and retain bounded partial records. Fresh roots keep their raw subscriptions.
 
 Transfer discovery uses a threadless one-shot app-server after the source
 writer closes. It may call initialize, queue inspection, and metadata-only
-thread reads, but no execution verb. Queue method-not-found proves unsupported;
-other queue errors leave ownership unknown.
+thread reads, but no execution verb. Only a successful empty queue page proves
+the queue empty; any queue error leaves ownership unknown.
 
 Every native fork sends `excludeTurns:true`. An anchored fork validates its
 surviving tail with a bounded metadata-only read. `thread/revert` uses an exclusive

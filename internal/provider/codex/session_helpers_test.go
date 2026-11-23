@@ -634,13 +634,13 @@ func TestBuildThreadParamsUnknownSandbox(t *testing.T) {
 	params := buildThreadParams(Config{
 		Reaper:         procutiltest.Reaper(),
 		Sandbox:        "custom-sandbox",
-		ApprovalPolicy: "untrusted",
+		ApprovalPolicy: "on-request",
 	})
 	if params["sandbox"] != "read-only" {
 		t.Errorf("sandbox: got %v, want %q", params["sandbox"], "read-only")
 	}
 	if params["approvalPolicy"] != "on-request" {
-		t.Errorf("approvalPolicy: got %v, want %q (untrusted reaches the wire as on-request)", params["approvalPolicy"], "on-request")
+		t.Errorf("approvalPolicy: got %v, want %q", params["approvalPolicy"], "on-request")
 	}
 }
 

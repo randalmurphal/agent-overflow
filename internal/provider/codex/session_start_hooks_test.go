@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -53,14 +54,29 @@ func partsHook() *provider.SessionStartHook {
 	return &hook
 }
 
-// limitlessHandler is a handler without additionalContextLimit, the
-// identity the pinned Codex vectors below were captured for.
-func limitlessHandler(command string) sessionStartHandler {
-	return sessionStartHandler{command: command, timeout: provider.SessionStartHookTimeoutSeconds}
+// limitlessHash is the trust hash of a handler without
+// additionalContextLimit, the identity the pinned Codex vectors below were
+// captured for. It builds that identity in the canonical form trustHash
+// writes, with the same escaping, so the vectors pin the form and the
+// escaping; TestTheSpillIsOff pins the limit AO's handlers add to it.
+func limitlessHash(event, command, matcher string) string {
+	var identity strings.Builder
+	identity.WriteString(`{"event_name":`)
+	writeSerdeJSONString(&identity, event)
+	identity.WriteString(`,"hooks":[{"async":false,"command":`)
+	writeSerdeJSONString(&identity, command)
+	identity.WriteString(`,"timeout":` + strconv.Itoa(provider.SessionStartHookTimeoutSeconds) + `,"type":"command"}]`)
+	if matcher != "" {
+		identity.WriteString(`,"matcher":`)
+		writeSerdeJSONString(&identity, matcher)
+	}
+	identity.WriteString(`}`)
+	sum := sha256.Sum256([]byte(identity.String()))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func trustHash(command, matcher string) string {
-	return limitlessHandler(command).trustHash("session_start", matcher)
+	return limitlessHash("session_start", command, matcher)
 }
 
 // The vector is what `hooks/list` reported as currentHash for this command
@@ -90,12 +106,12 @@ func TestSessionStartHookTrustHashMatchesCodex(t *testing.T) {
 func TestPromptHookTrustHashMatchesCodex(t *testing.T) {
 	t.Parallel()
 	const command = "cat >/dev/null; printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"PINNED\"}}' # q\"uote <tag>& \\\\ é"
-	if got, want := limitlessHandler(command).trustHash("user_prompt_submit", ""), "sha256:a051f9b517b135714fcb8d71a8448ffbb4edfece9593cb4862ae01a6cb494389"; got != want {
+	if got, want := limitlessHash("user_prompt_submit", command, ""), "sha256:a051f9b517b135714fcb8d71a8448ffbb4edfece9593cb4862ae01a6cb494389"; got != want {
 		t.Fatalf("trust hash = %s, want %s", got, want)
 	}
 	identity := `{"event_name":"user_prompt_submit","hooks":[{"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}]}`
 	sum := sha256.Sum256([]byte(identity))
-	if got, want := limitlessHandler(`'/opt/a o/x' "q"`).trustHash("user_prompt_submit", ""), "sha256:"+hex.EncodeToString(sum[:]); got != want {
+	if got, want := limitlessHash("user_prompt_submit", `'/opt/a o/x' "q"`, ""), "sha256:"+hex.EncodeToString(sum[:]); got != want {
 		t.Fatalf("trust hash = %s, want %s", got, want)
 	}
 }

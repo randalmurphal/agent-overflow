@@ -75,54 +75,36 @@ func codexApprovalPolicy(mode provider.RuntimeMode) string {
 		// runs with nobody watching, so a prompt is a permanent stall.
 		return "never"
 	case provider.RuntimeApprovalRequired:
-		return codexApprovalPolicyUnlessTrusted
+		return codexApprovalPolicyOnRequest
 	case provider.RuntimeAutoAcceptEdits:
 		return codexApprovalPolicyOnRequest
 	case provider.RuntimeAuto:
 		// Deliberately identical to approval-required. `auto` differs from it
 		// on exactly one axis — who answers the escalation — and
 		// `approvalsReviewer` is the wire knob for precisely that. The two
-		// tiers therefore share this mapping, including its wire remap.
-		return codexApprovalPolicyUnlessTrusted
+		// tiers therefore share this mapping.
+		return codexApprovalPolicyOnRequest
 	case provider.RuntimeFullAccess:
 		return "never"
 	}
-	return codexApprovalPolicyUnlessTrusted
+	return codexApprovalPolicyOnRequest
 }
 
-// Codex's AskForApproval wire values that AO sends
-// (codex-rs/app-server-protocol/src/protocol/v2/shared.rs; the v2 enum is
-// kebab-case with `UnlessTrusted` explicitly renamed to "untrusted").
-const (
-	codexApprovalPolicyUnlessTrusted = "untrusted"
-	codexApprovalPolicyOnRequest     = "on-request"
-)
-
-// wireApprovalPolicy is the approval policy AO sends for policy.
+// codexApprovalPolicyOnRequest is the AskForApproval wire value the
+// supervised tiers send (codex-rs/app-server-protocol/src/protocol/v2/shared.rs).
 //
-// "untrusted" no longer means what approval-required and auto promise:
-// upstream 942af8447b, "Retire the untrusted approval policy" (#39630,
-// 0.149.0), deleted the known-safe command allowlist behind it
-// (`render_decision_for_unmatched_command` in codex-rs/core/src/exec_policy.rs),
-// so `UnlessTrusted` prompts for every command no exec-policy rule allows,
-// `ls` included. The wire value survives and is rejected only from a
-// `config.toml` `approval_policy` key, never from a thread or turn override.
-//
-// `OnRequest` under a restricted (read-only / workspace-write) sandbox is
-// what expresses the old intent: dangerous commands and anything that
-// `requests_sandbox_override()` prompt, and everything else runs with the
-// kernel sandbox as the enforcement. The escalation still reaches the human
-// in approval-required and Codex's reviewer subagent in auto, because
-// `approvalsReviewer` and the read-only sandbox are unchanged.
-//
-// Applied at the wire chokepoint so thread/start, thread/resume and every
-// turn/start cannot disagree.
-func wireApprovalPolicy(policy string) string {
-	if policy == codexApprovalPolicyUnlessTrusted {
-		return codexApprovalPolicyOnRequest
-	}
-	return policy
-}
+// Not "untrusted": upstream 942af8447b, "Retire the untrusted approval
+// policy" (#39630, 0.149.0), deleted the known-safe command allowlist behind
+// it (`render_decision_for_unmatched_command` in
+// codex-rs/core/src/exec_policy.rs), so `UnlessTrusted` prompts for every
+// command no exec-policy rule allows, `ls` included. `OnRequest` under a
+// restricted (read-only / workspace-write) sandbox is what expresses the old
+// intent: dangerous commands and anything that `requests_sandbox_override()`
+// prompt, and everything else runs with the kernel sandbox as the
+// enforcement. The escalation still reaches the human in approval-required
+// and Codex's reviewer subagent in auto, because `approvalsReviewer` and the
+// read-only sandbox are unchanged.
+const codexApprovalPolicyOnRequest = "on-request"
 
 func codexSandbox(mode provider.RuntimeMode) string {
 	switch mode {

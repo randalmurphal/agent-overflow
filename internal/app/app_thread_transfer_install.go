@@ -431,9 +431,6 @@ func validateTransferredNative(ctx context.Context, stage string, manifest trans
 	if len(expected) != 0 {
 		return errors.New("The transfer is missing native session files.")
 	}
-	if manifest.Thread.Provider == "codex" {
-		return rollout.ValidateTransferHistory(ctx, collected)
-	}
 	return nil
 }
 

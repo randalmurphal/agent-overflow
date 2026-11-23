@@ -91,14 +91,9 @@ func ReadTransferSnapshot(ctx context.Context, cfg TransferSnapshotConfig, sessi
 
 func checkTransferQueue(ctx context.Context, threadID string, request func(context.Context, string, any) (json.RawMessage, error)) error {
 	response, err := request(ctx, "thread/queue/list", map[string]any{"threadId": threadID, "limit": 1})
+	// Only a successful empty page is evidence that the queue is empty. A
+	// refusal of the read, method-not-found included, is unknown state.
 	if err != nil {
-		var rpc *RPCError
-		// A Codex without the queue route has no durable native queue.
-		// Every other refusal is unknown state, never evidence that the
-		// queue is empty.
-		if errors.As(err, &rpc) && rpc.Code == -32601 {
-			return nil
-		}
 		return err
 	}
 	var body struct {

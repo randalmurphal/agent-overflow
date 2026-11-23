@@ -791,7 +791,7 @@ type Config struct {
 	Binary         string // default: "codex"
 	Model          string
 	WorkDir        string
-	ApprovalPolicy string // "never", "on-failure", "on-request", "untrusted"
+	ApprovalPolicy string // "never" or "on-request" (codexApprovalPolicy)
 	Sandbox        string // "read-only", "workspace-write", "danger-full-access"
 	// ApprovalsReviewer routes this thread's approval requests: "user" (the
 	// human, Codex's protocol default) or "auto_review" (Codex's reviewer

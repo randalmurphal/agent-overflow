@@ -36,27 +36,22 @@ const sessionFlagsHookKeySource = "/<session-flags>/config.toml"
 
 // sessionStartHandler is a command handler of the hook: what the thread
 // config registers and what its trust hash covers.
+//
+// Every handler sets additionalContextLimit to 0, which turns off the spill
+// of its output to a file. A limit other than the default is part of the
+// identity Codex hashes.
 type sessionStartHandler struct {
 	command string
 	timeout int
-	// noSpill sets additionalContextLimit to 0, which turns off the spill
-	// of the handler's output to a file. Every handler AO registers sets
-	// it; the identity Codex hashes carries the key only when it is set.
-	noSpill bool
 }
 
-// newSessionStartHandler is the handler running command, with the spill
-// off.
+// newSessionStartHandler is the handler running command.
 func newSessionStartHandler(command string) sessionStartHandler {
-	return sessionStartHandler{command: command, timeout: provider.SessionStartHookTimeoutSeconds, noSpill: true}
+	return sessionStartHandler{command: command, timeout: provider.SessionStartHookTimeoutSeconds}
 }
 
 func (h sessionStartHandler) config() map[string]any {
-	config := map[string]any{"type": "command", "command": h.command, "timeout": h.timeout}
-	if h.noSpill {
-		config["additionalContextLimit"] = 0
-	}
-	return config
+	return map[string]any{"type": "command", "command": h.command, "timeout": h.timeout, "additionalContextLimit": 0}
 }
 
 // trustHash is the hash Codex trusts the handler by in a group of event,
@@ -72,11 +67,7 @@ func (h sessionStartHandler) trustHash(event, matcher string) string {
 	var identity strings.Builder
 	identity.WriteString(`{"event_name":`)
 	writeSerdeJSONString(&identity, event)
-	identity.WriteString(`,"hooks":[{`)
-	if h.noSpill {
-		identity.WriteString(`"additionalContextLimit":0,`)
-	}
-	identity.WriteString(`"async":false,"command":`)
+	identity.WriteString(`,"hooks":[{"additionalContextLimit":0,"async":false,"command":`)
 	writeSerdeJSONString(&identity, h.command)
 	identity.WriteString(`,"timeout":`)
 	identity.WriteString(strconv.Itoa(h.timeout))

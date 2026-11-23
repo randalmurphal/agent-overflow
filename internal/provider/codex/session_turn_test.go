@@ -488,7 +488,7 @@ func TestSessionSendIncludesRuntimeAccessPolicyForEveryMode(t *testing.T) {
 	}{
 		{
 			name:               "approval-required",
-			approvalPolicy:     "untrusted",
+			approvalPolicy:     "on-request",
 			wantApprovalPolicy: "on-request",
 			sandbox:            "read-only",
 			wantSandboxType:    "readOnly",

@@ -53,9 +53,9 @@ func TestCodexEffortFromOption(t *testing.T) {
 //     than letting a previous mode's choice survive the switch.
 var wantCodexRuntime = map[provider.RuntimeMode]codexRuntime{
 	provider.RuntimeReadOnly:         {ApprovalPolicy: "never", Sandbox: "read-only", ApprovalsReviewer: "user"},
-	provider.RuntimeApprovalRequired: {ApprovalPolicy: "untrusted", Sandbox: "read-only", ApprovalsReviewer: "user"},
+	provider.RuntimeApprovalRequired: {ApprovalPolicy: "on-request", Sandbox: "read-only", ApprovalsReviewer: "user"},
 	provider.RuntimeAutoAcceptEdits:  {ApprovalPolicy: "on-request", Sandbox: "workspace-write", ApprovalsReviewer: "user"},
-	provider.RuntimeAuto:             {ApprovalPolicy: "untrusted", Sandbox: "read-only", ApprovalsReviewer: "auto_review"},
+	provider.RuntimeAuto:             {ApprovalPolicy: "on-request", Sandbox: "read-only", ApprovalsReviewer: "auto_review"},
 	provider.RuntimeFullAccess:       {ApprovalPolicy: "never", Sandbox: "danger-full-access", ApprovalsReviewer: "user"},
 }
 

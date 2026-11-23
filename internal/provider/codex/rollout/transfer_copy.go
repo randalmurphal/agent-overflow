@@ -65,7 +65,7 @@ func CopyTransferFiles(ctx context.Context, operationID, destination string, sou
 			return result, err
 		}
 		metas[i] = meta
-		if meta.HistoryMode != "" && meta.HistoryMode != HistoryModeLegacy && meta.HistoryMode != HistoryModePaginated {
+		if !knownHistoryMode(meta.HistoryMode) {
 			return result, fmt.Errorf("codex transfer: unsupported history mode %q", meta.HistoryMode)
 		}
 		mapID(id)

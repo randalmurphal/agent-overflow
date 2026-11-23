@@ -15,7 +15,7 @@ func TestTransferQueueNeedsEvidenceOfAnEmptyNativeQueue(t *testing.T) {
 		allowed    bool
 	}{
 		{name: "empty", body: `{"data":[],"nextCursor":null}`, allowed: true},
-		{name: "old cli", requestErr: &RPCError{Code: -32601, Message: "method not found"}, allowed: true},
+		{name: "method not found", requestErr: &RPCError{Code: -32601, Message: "method not found"}},
 		{name: "queued", body: `{"data":[{"id":"message"}]}`},
 		{name: "remaining page", body: `{"data":[],"nextCursor":"more"}`},
 		{name: "unknown shape", body: `{}`},

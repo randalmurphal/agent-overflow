@@ -83,6 +83,12 @@ const (
 	HistoryModePaginated = "paginated"
 )
 
+// knownHistoryMode reports whether mode is one this build reads: empty
+// (legacy), legacy or paginated. A transfer refuses a member with any other.
+func knownHistoryMode(mode string) bool {
+	return mode == "" || mode == HistoryModeLegacy || mode == HistoryModePaginated
+}
+
 // MetaImportUnavailableKey is the ProviderEvent.Meta key this package stamps
 // when an item's detail existed once but cannot be recovered from the rollout.
 // The import writer strips it from the stored provider meta and re-stamps it

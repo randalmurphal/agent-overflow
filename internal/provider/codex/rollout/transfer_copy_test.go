@@ -298,3 +298,29 @@ func TestTransferCopyRefusesIncompleteRecordAndExistingDirectory(t *testing.T) {
 		t.Fatal("silently dropped partial native history")
 	}
 }
+
+// TransferGraph refuses a member whose history mode this build does not know,
+// a child included, after accepting legacy and paginated members.
+func TestTransferGraphRefusesAnUnknownHistoryModeIncludingAChild(t *testing.T) {
+	for _, mode := range []string{"", HistoryModeLegacy, HistoryModePaginated, "unknown-future-format"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, home := context.Background(), t.TempDir()
+			rootID, childID := uuid.NewString(), uuid.NewString()
+			spawn := nativeTransferRow("response_item", map[string]any{"type": "function_call", "call_id": "spawn", "name": "spawn_agent", "arguments": `{"prompt":"child"}`})
+			result := nativeTransferRow("response_item", map[string]any{"type": "function_call_output", "call_id": "spawn", "output": `{"agent_id":"` + childID + `"}`})
+			root := nativeTransferFixture(t, home, rootID, nativeTransferMeta(rootID, rootID, ""), spawn, result)
+			childMeta := nativeTransferMeta(childID, rootID, rootID)
+			childMeta["payload"].(map[string]any)["history_mode"] = mode
+			child := nativeTransferFixture(t, home, childID, childMeta)
+			_, _, err := TransferGraph(ctx, home, root, func(_ context.Context, id string) (TransferReference, error) {
+				if id != childID {
+					return TransferReference{}, fmt.Errorf("unexpected dependency %s", id)
+				}
+				return child, nil
+			})
+			if known := mode != "unknown-future-format"; (err == nil) != known {
+				t.Fatalf("history mode %q: err = %v", mode, err)
+			}
+		})
+	}
+}
