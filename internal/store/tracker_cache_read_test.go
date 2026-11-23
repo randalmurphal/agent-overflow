@@ -252,6 +252,8 @@ var mirrorNotReadTimes = map[string]string{
 	"tracker_cache_boards.totals_revision":         "a counter",
 	"tracker_cache_boards.retired":                 "a flag",
 	"tracker_cache_boards.structure_wall":          "a wall time (MirrorRead.Wall)",
+	"tracker_cache_sync.read_wall":                 "a wall time (MirrorRead.Wall)",
+	"tracker_cache_sync.failed_wall":               "a wall time (MirrorRead.Wall)",
 	"tracker_cache_board_unexplained.kind":         "an enum",
 	"tracker_cache_board_columns.position":         "a position",
 	"tracker_cache_board_column_statuses.position": "a position",

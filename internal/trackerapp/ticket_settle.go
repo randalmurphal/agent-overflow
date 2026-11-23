@@ -274,7 +274,7 @@ func (s *Service) settleTicketLocked(tp *ticketPump, began uint64, rd *ticketRea
 			tp.docs++
 			if began >= tp.inputs {
 				tp.shows = rd.shows
-				s.installViewLocked(tp, rd.view, rd.digest, rd.check.readAt, began)
+				s.installViewLocked(tp, rd.view, rd.digest, rd.check.wall, began)
 			}
 		}
 		tp.tellFailureLocked(nil)
@@ -295,11 +295,11 @@ func (tp *ticketPump) behindLocked() bool {
 
 // installViewLocked makes v (nil: not loaded), with digest, tp's view,
 // built from the document tp holds now (held by the pump when its check
-// holds it, the document's read begun at readAt) in a build that began at
+// holds it, the document's read begun at wall time wall) in a build that began at
 // stamp at. A view that differs from the one told, in content or in
 // being loaded, is due to be told. The caller holds subMu and has checked
 // that the view is current (settleTicketLocked, rebuildTicket).
-func (s *Service) installViewLocked(tp *ticketPump, v *DetailView, digest uint64, readAt int64, at uint64) {
+func (s *Service) installViewLocked(tp *ticketPump, v *DetailView, digest uint64, wall int64, at uint64) {
 	loaded := v != nil
 	if loaded != tp.view.loaded || digest != tp.view.digest {
 		tp.changed, tp.pending = true, true
@@ -307,7 +307,7 @@ func (s *Service) installViewLocked(tp *ticketPump, v *DetailView, digest uint64
 	tp.view = toldView{loaded: loaded, sinceKnown: loaded && v.Card.StatusSince != 0, digest: digest, docs: tp.docs, at: at}
 	tp.held = nil
 	if loaded && tp.check != nil && tp.check.held != nil {
-		tp.held = &heldDetail{view: *v, readAt: readAt}
+		tp.held = &heldDetail{view: *v, wall: wall}
 	}
 }
 
@@ -354,9 +354,9 @@ func (s *Service) rebuildTicket(tp *ticketPump) {
 	s.subMu.Lock()
 	b, docs := s.nextStampLocked(), tp.docs
 	var held *tracker.Detail
-	var readAt int64
+	var readAt, wall int64
 	if tp.check != nil {
-		held, readAt = tp.check.held, tp.check.readAt
+		held, readAt, wall = tp.check.held, tp.check.readAt, tp.check.wall
 	}
 	first := tp.settled == 0
 	s.subMu.Unlock()
@@ -391,10 +391,10 @@ func (s *Service) rebuildTicket(tp *ticketPump) {
 			// The mirror's copy is another read's document.
 			tp.check = &mirrored
 			tp.docs++
-			readAt = mirrored.readAt
+			wall = mirrored.wall
 		}
 		tp.shows = showsOf(d)
-		s.installViewLocked(tp, &v, s.digestOf(v), readAt, b)
+		s.installViewLocked(tp, &v, s.digestOf(v), wall, b)
 	}
 	s.flushTicketLocked(tp, false)
 }

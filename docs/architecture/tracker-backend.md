@@ -281,8 +281,9 @@ to the computer and are rows in `tracker_connections`.
 
 The tracker tables are created by migration v162, frozen, and v164,
 which adds `tracker_cache_open_tickets`, the wall times of the reads an
-interval is measured from (`tracker_cache_boards.structure_wall`,
-`tracker_cache_sync.reconciled_wall`,
+interval is measured from or a person is shown
+(`tracker_cache_boards.structure_wall`, `tracker_cache_sync.read_wall`,
+`reconciled_wall` and `failed_wall`,
 `tracker_cache_issue_details.read_wall`) and
 `tracker_cache_issues.sprint_set`; a later tracker table or column is a
 later migration.
@@ -480,7 +481,9 @@ service's elapsed-time decisions, and the clock each reads, are listed
 beside `Service.sinceWall`: an interval since a stored read is measured
 from the wall time the read began at, stored beside its order time, and
 is due when none is stored, when the clock is behind it or when it
-passed, so a clock step either way reads the scope once. Order times
+passed, so a clock step either way reads the scope once. A time a
+person is shown (a scope's read, reconcile and failure, an open
+ticket's read) is such a wall time, never an order time. Order times
 run ahead of the wall clock only while it is behind them, a millisecond
 a read, so a reconcile's settled bound (its order time less the
 listing's lag) leaves a row read less than the lag ago to a read by ID,

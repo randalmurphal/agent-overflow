@@ -9,6 +9,7 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // titleOf is the title of issue's card as the mirror serves it.
@@ -110,6 +111,78 @@ func TestAForwardClockStepOfAnHourRefreshesOnce(t *testing.T) {
 			t.Fatalf("%s: %s; want each read again once", what, got)
 		}
 	}
+}
+
+// Every time a person is shown is a wall time. After the wall clock steps
+// back past the stored reads, the board tick and the ticket read the step
+// makes due show the times they began by the clock, none ahead of it: the
+// board's read and reconcile in the pump's sync view and the board view, a
+// failure after them, and the open ticket's read; the order times those
+// reads stored run ahead of the clock.
+func TestNoShownTimeIsAheadOfTheClockAfterAStepBack(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Reconcile: time.Hour, Structure: time.Hour, Ticket: time.Hour, RetryBase: time.Hour})
+	r := row("10001", 1_799_000_000_000, "a")
+	m.tracks([]tracker.Row{r})
+	m.p.set(func(p *scripted) {
+		p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(r.Card), nil }
+	})
+	p := idlePump(m)
+	tick := func(what string, refresh bool) tickResult {
+		t.Helper()
+		res := m.svc.boardTick(p, refresh, Interactive)
+		t.Logf("%s: %+v", what, res)
+		return res
+	}
+	if res := tick("the first tick", false); res.failed {
+		t.Fatal("the first tick failed")
+	}
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001"))
+	quiet(t, m.svc)
+	m.pass(-2 * time.Hour)
+	if res := tick("the tick after the step", false); res.failed {
+		t.Fatal("the tick after the step failed")
+	}
+	m.round(t)
+	now := millis(m.now())
+	ahead := func(what string, at int64) {
+		t.Helper()
+		if at == 0 || at > now {
+			t.Errorf("%s shows %d; want a time no later than the clock's %d", what, at, now)
+		}
+	}
+	m.svc.subMu.Lock()
+	told := p.toldLocked()
+	m.svc.subMu.Unlock()
+	ahead("the pump's read", told.ReadAt)
+	ahead("the pump's reconcile", told.ReconciledAt)
+	board := must[BoardView](t)(m.svc.Board(m.scope(), nil))
+	ahead("the board view's read", board.Sync.ReadAt)
+	ahead("the board view's reconcile", board.Sync.ReconciledAt)
+	ahead("the open ticket's read", m.ticketView(t, sub.ID).ReadAt)
+	if st := m.sync(testBoard); st.ReadAt <= now {
+		t.Fatalf("the board's stored read is at order time %d, not ahead of the clock's %d: the step back was not past it", st.ReadAt, now)
+	}
+	m.p.set(func(p *scripted) {
+		p.changedRows = func(tracker.DeltaQuery) (tracker.RowPage, error) {
+			return tracker.RowPage{}, &trackerapi.StatusError{Tracker: "jira", Status: 503}
+		}
+	})
+	if res := tick("a refresh that fails", true); !res.failed {
+		t.Fatal("the failing refresh did not fail")
+	}
+	m.svc.subMu.Lock()
+	told = p.toldLocked()
+	m.svc.subMu.Unlock()
+	if told.Failure == nil {
+		t.Fatal("the pump shows no failure")
+	}
+	ahead("the pump's failure", told.Failure.At)
+	board = must[BoardView](t)(m.svc.Board(m.scope(), nil))
+	if board.Sync.Failure == nil {
+		t.Fatal("the board view shows no failure")
+	}
+	ahead("the board view's failure", board.Sync.Failure.At)
 }
 
 // beginRefused is the store with every read's begin failing with err.

@@ -175,7 +175,7 @@ func (s *Service) issueDetail(ctx context.Context, id string, issue tracker.Issu
 
 // MirroredDetail is issue's detail on connection id as the mirror holds
 // it, for a first paint before IssueDetail answers, with when its read
-// began (Unix milliseconds). It builds no client and makes no tracker
+// began (Unix milliseconds by this computer's wall clock). It builds no client and makes no tracker
 // call, and marks the detail opened now. It fails wrapping ErrNotMirrored
 // when the mirror holds no detail of the issue that this version reads. A
 // detail another read rewrote, or a sweep reached, between its read and
@@ -213,7 +213,7 @@ func (s *Service) MirroredDetail(id string, issue tracker.IssueID) (DetailView, 
 			return DetailView{}, 0, fmt.Errorf("trackerapp: mark the detail of %s opened: %w", issue, err)
 		case confirmed.Stored:
 			v, err := s.detailView(root, d)
-			return v, m.ReadAt, err
+			return v, m.ReadWall, err
 		}
 	}
 }

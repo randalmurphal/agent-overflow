@@ -217,7 +217,7 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 	if err := s.db.QueryRow(`SELECT structure_wall FROM tracker_cache_boards WHERE root_id = ? AND board_id = '10'`, root).Scan(&structureAt); err != nil || structureAt == 0 {
 		t.Fatalf("structure read at %d: %v", structureAt, err)
 	}
-	want := MirrorSync{Lifetime: currentLifetime(s, root, "10"), Sweep: 1, StructureWall: structureAt, Cursor: []byte("c1"), ReadAt: 10, ReconciledAt: 20, ReconciledWall: 20, Failure: MirrorSyncFailure{At: 30, Kind: MirrorFailureRateLimited, Message: "The tracker asked to wait."}}
+	want := MirrorSync{Lifetime: currentLifetime(s, root, "10"), Sweep: 1, StructureWall: structureAt, Cursor: []byte("c1"), ReadAt: 10, ReadWall: 10, ReconciledAt: 20, ReconciledWall: 20, Failure: MirrorSyncFailure{At: 30, Wall: 30, Kind: MirrorFailureRateLimited, Message: "The tracker asked to wait."}}
 	if got, ok, err := s.GetMirrorSync(root, "10", testNow); err != nil || !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("state = %+v, %v, %v\nwant %+v", got, ok, err, want)
 	}
@@ -243,7 +243,7 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 	next := webPage("10")
 	next.ReadAt = mirrorReadAt(60)
 	mustWriteRowPage(t, s, root, next, []byte("c2"))
-	want = MirrorSync{Lifetime: want.Lifetime, Sweep: 1, StructureWall: structureAt, Cursor: []byte("c2"), ReadAt: 60, ReconciledAt: 55, ReconciledWall: 55}
+	want = MirrorSync{Lifetime: want.Lifetime, Sweep: 1, StructureWall: structureAt, Cursor: []byte("c2"), ReadAt: 60, ReadWall: 60, ReconciledAt: 55, ReconciledWall: 55}
 	if got, _, err := s.GetMirrorSync(root, "10", testNow); err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("state = %+v, %v\nwant %+v", got, err, want)
 	}
@@ -252,7 +252,7 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 	// no project lists has none.
 	changed, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", read(40)))
 	mustSyncWrite(t, "linked scope read", changed, err, true)
-	if got, ok, err := s.GetMirrorSync(root, "", testNow); err != nil || !ok || !reflect.DeepEqual(got, MirrorSync{Sweep: 1, ReadAt: 40}) {
+	if got, ok, err := s.GetMirrorSync(root, "", testNow); err != nil || !ok || !reflect.DeepEqual(got, MirrorSync{Sweep: 1, ReadAt: 40, ReadWall: 40}) {
 		t.Fatalf("linked scope = %+v, %v, %v", got, ok, err)
 	}
 	if _, err := s.RecordMirrorSyncAttempt(root, "13", currentAttempt(s, root, "13", read(40))); !errors.Is(err, ErrTrackerCacheUnlisted) {

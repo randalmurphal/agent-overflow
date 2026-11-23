@@ -265,7 +265,7 @@ func TestAFailedCheckKeepsTheStoredDetail(t *testing.T) {
 				t.Fatalf("the stored detail changed: read %d, was %d", after.ReadAt, before.ReadAt)
 			}
 			v, readAt, err := m.svc.MirroredDetail(m.conn.ID, "10001")
-			if err != nil || readAt != before.ReadAt || v.Description != "Body" {
+			if err != nil || readAt != before.ReadWall || v.Description != "Body" {
 				t.Fatalf("the mirror's copy: read %d, %q, %v", readAt, v.Description, err)
 			}
 		})
@@ -337,8 +337,8 @@ func TestMirroredDetailBuildsNoClient(t *testing.T) {
 	}
 	stored, _, _ := m.storedDetail(t, "10001")
 	v, readAt, err := svc.MirroredDetail(m.conn.ID, "10001")
-	if err != nil || v.Card.ID != "10001" || readAt != stored.ReadAt {
-		t.Fatalf("the mirror's copy %+v read at %d (stored %d): %v", v.Card, readAt, stored.ReadAt, err)
+	if err != nil || v.Card.ID != "10001" || readAt != stored.ReadWall {
+		t.Fatalf("the mirror's copy %+v read at %d (stored %d): %v", v.Card, readAt, stored.ReadWall, err)
 	}
 	if opened, _, _ := m.storedDetail(t, "10001"); opened.OpenedAt != later.UnixMilli() {
 		t.Fatalf("the mirror's copy left the detail opened at %d", opened.OpenedAt)

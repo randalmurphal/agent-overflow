@@ -263,15 +263,22 @@ type tickOrigin struct {
 }
 
 // syncAfter is the sync view of a scope whose state was st after a record
-// of a, as the store applies it: times only move forward, a success clears
-// a failure no later than it, and a's failure is the scope's.
+// of a, as the store applies it: the order times decide, and only move
+// forward, a success clears a failure no later than it, and a's failure is
+// the scope's. Each time shown is the wall time of the read that won.
 func syncAfter(st store.MirrorSync, a store.MirrorSyncAttempt) SyncView {
-	v := SyncView{ReadAt: max(st.ReadAt, a.ReadAt.At()), ReconciledAt: max(st.ReconciledAt, a.ReconciledAt.At())}
+	v := SyncView{ReadAt: st.ReadWall, ReconciledAt: st.ReconciledWall}
+	if a.ReadAt.At() > st.ReadAt {
+		v.ReadAt = a.ReadAt.Wall()
+	}
+	if a.ReconciledAt.At() > st.ReconciledAt {
+		v.ReconciledAt = a.ReconciledAt.Wall()
+	}
 	switch f := st.Failure; {
 	case a.Failure.At.At() > 0:
-		v.Failure = &FailureView{Kind: a.Failure.Kind, Message: a.Failure.Message, At: a.Failure.At.At()}
+		v.Failure = &FailureView{Kind: a.Failure.Kind, Message: a.Failure.Message, At: a.Failure.At.Wall()}
 	case f.Kind != "" && f.At > max(a.ReadAt.At(), a.ReconciledAt.At()):
-		v.Failure = &FailureView{Kind: f.Kind, Message: f.Message, At: f.At}
+		v.Failure = &FailureView{Kind: f.Kind, Message: f.Message, At: f.Wall}
 	}
 	return v
 }

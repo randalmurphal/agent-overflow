@@ -15,13 +15,14 @@ package store
 //     (DropMirrorTicketsOfOtherSessions). The table cascades from its
 //     root and a restore empties it. idx_tracker_cache_open_tickets_issue
 //     serves the keep rule's probe and a root's drain.
-//   - The wall time of the reads whose interval decides the next one:
-//     tracker_cache_boards.structure_wall (the board's structure read),
-//     tracker_cache_sync.reconciled_wall (its last reconcile) and
-//     tracker_cache_issue_details.read_wall (a document's read), each the
-//     MirrorRead.Wall of the read whose order time the row already stores,
-//     written by the same statement. A row stored before them holds 0,
-//     which is due: each scope is read once.
+//   - The wall time of the reads whose interval decides the next one or
+//     that a person is shown: tracker_cache_boards.structure_wall (the
+//     board's structure read), tracker_cache_sync.read_wall,
+//     reconciled_wall and failed_wall (the scope's last read, reconcile
+//     and failure) and tracker_cache_issue_details.read_wall (a
+//     document's read), each the MirrorRead.Wall of the read whose order
+//     time the row already stores, written by the same statement. A row
+//     stored before them holds 0, which is due: each scope is read once.
 //   - tracker_cache_issues.sprint_set, the digest of the sprints an issue's
 //     card names (mirrorSprintSet), part of the card's content, so a card
 //     that names the same sprints costs one comparison and no membership
@@ -45,7 +46,9 @@ CREATE TABLE tracker_cache_open_tickets (
 );
 CREATE INDEX idx_tracker_cache_open_tickets_issue ON tracker_cache_open_tickets(root_id, issue_id);
 ALTER TABLE tracker_cache_boards ADD COLUMN structure_wall INTEGER NOT NULL DEFAULT 0 CHECK(structure_wall >= 0);
+ALTER TABLE tracker_cache_sync ADD COLUMN read_wall INTEGER NOT NULL DEFAULT 0 CHECK(read_wall >= 0);
 ALTER TABLE tracker_cache_sync ADD COLUMN reconciled_wall INTEGER NOT NULL DEFAULT 0 CHECK(reconciled_wall >= 0);
+ALTER TABLE tracker_cache_sync ADD COLUMN failed_wall INTEGER NOT NULL DEFAULT 0 CHECK(failed_wall >= 0);
 ALTER TABLE tracker_cache_issue_details ADD COLUMN read_wall INTEGER NOT NULL DEFAULT 0 CHECK(read_wall >= 0);
 ALTER TABLE tracker_cache_issues ADD COLUMN sprint_set BLOB NOT NULL DEFAULT x'';
 UPDATE tracker_cache_issues SET sprint_set = x'` + mirrorSprintSetPartial + `'

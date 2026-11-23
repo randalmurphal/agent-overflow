@@ -83,15 +83,17 @@ type toldView struct {
 	docs, at   uint64
 }
 
-// heldDetail is a view a ticket pump holds, with when its read began.
+// heldDetail is a view a ticket pump holds, with the wall time its read
+// began.
 type heldDetail struct {
-	view   DetailView
-	readAt int64
+	view DetailView
+	wall int64
 }
 
 // TicketView is an open ticket as its subscribers were last told of it:
 // its detail when the mirror, or the ticket's pump, holds one (Loaded),
-// with when its read began, and its failure, nil while its reads succeed.
+// with when its read began (Unix milliseconds by this computer's wall
+// clock), and its failure, nil while its reads succeed.
 type TicketView struct {
 	Loaded  bool         `json:"loaded"`
 	Detail  *DetailView  `json:"detail,omitempty"`
@@ -233,7 +235,7 @@ func (tp *ticketPump) toldLocked() TicketView {
 	v := TicketView{Failure: tp.failure}
 	if tp.held != nil {
 		view := tp.held.view
-		v.Loaded, v.Detail, v.ReadAt = true, &view, tp.held.readAt
+		v.Loaded, v.Detail, v.ReadAt = true, &view, tp.held.wall
 	}
 	return v
 }

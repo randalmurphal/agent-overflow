@@ -48,7 +48,7 @@ func TestTrackerMirrorMigration(t *testing.T) {
 	assertRows(t, db, `SELECT count(*) FROM tracker_cache_issue_sprints`, "2")
 	assertRows(t, db, `SELECT count(*) FROM tracker_cache_board_issues`, "2")
 	assertRows(t, db, `SELECT board_id || ':' || read_at || ':' || structure_wall FROM tracker_cache_boards`, "10:900:0")
-	assertRows(t, db, `SELECT read_at || ':' || reconciled_at || ':' || reconciled_wall FROM tracker_cache_sync`, "903:904:0")
+	assertRows(t, db, `SELECT read_at || ':' || read_wall || ':' || reconciled_at || ':' || reconciled_wall || ':' || failed_wall FROM tracker_cache_sync`, "903:0:904:0:0")
 	assertRows(t, db, `SELECT opened_at || ':' || read_at || ':' || read_wall || ':' || hex(data) FROM tracker_cache_issue_details`, "905:906:0:7B7D")
 	if upgraded, fresh := migrationSchema(t, db), migrationSchema(t, migrateThrough(t, trackerMirrorMigrationVersion)); !maps.Equal(upgraded, fresh) {
 		for name, sql := range fresh {
