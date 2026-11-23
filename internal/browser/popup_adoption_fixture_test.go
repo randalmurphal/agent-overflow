@@ -39,6 +39,8 @@ type adoptionEngine struct {
 	discarding  chan ids.PageHandle
 	// wrap, when set, answers the driver an attach returns.
 	wrap func(pageDriver) pageDriver
+	// onCancel, when set, answers each cancel once it is recorded.
+	onCancel func(downloadID) error
 }
 
 func newAdoptionManager(t *testing.T) (*Manager, *adoptionEngine, Access, ids.PageHandle) {
@@ -192,7 +194,11 @@ func (p *adoptionProfile) AttachPage(ctx context.Context, handle ids.PageHandle,
 func (p *adoptionProfile) CancelDownload(id downloadID) error {
 	p.engine.mu.Lock()
 	p.engine.canceled = append(p.engine.canceled, id)
+	onCancel := p.engine.onCancel
 	p.engine.mu.Unlock()
+	if onCancel != nil {
+		return onCancel(id)
+	}
 	return nil
 }
 

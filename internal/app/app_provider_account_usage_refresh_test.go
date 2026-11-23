@@ -68,6 +68,15 @@ func writeClaudeRefreshMockBinaryReporting(
 	return path
 }
 
+// selectedClaudeRotation is the credential a CLI refresh of the selected
+// account's login leaves, with its access token. A refresh keeps the login's
+// user:profile scope, so the fake profile endpoint names the account from it.
+func selectedClaudeRotation(nonce string) (credential, bearer string) {
+	bearer = claudefake.AccessToken("selected@example.com", "org-1", nonce)
+	return `{"claudeAiOauth":{"accessToken":"` + bearer + `","refreshToken":"` + nonce + `-rt",` +
+		`"scopes":["user:inference","user:profile"]}}`, bearer
+}
+
 // expiringUsageClient answers 401 for every bearer but wantBearer, which is
 // how the usage endpoint reports a token the provider has since rotated.
 func expiringUsageClient(t *testing.T, wantBearer string) *http.Client {
@@ -101,7 +110,7 @@ func TestSelectedClaudeUsageRefreshRotatesInTheCanonicalHome(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
-	rotated := `{"claudeAiOauth":{"accessToken":"rotated"}}`
+	rotated, rotatedBearer := selectedClaudeRotation("rotated")
 	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
 
 	canonical, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Claude))
@@ -112,7 +121,7 @@ func TestSelectedClaudeUsageRefreshRotatesInTheCanonicalHome(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
-	app.rateLimitProbeClientOverride = expiringUsageClient(t, "rotated")
+	app.rateLimitProbeClientOverride = expiringUsageClient(t, rotatedBearer)
 
 	var usage provider.UsageEvent
 	app.testEmitHook = func(name string, data any) {
@@ -507,7 +516,7 @@ func TestSelectedClaudeUsageRefreshCommitsRotationWhenRetryIsThrottled(t *testin
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
-	rotated := `{"claudeAiOauth":{"accessToken":"rotated"}}`
+	rotated, rotatedBearer := selectedClaudeRotation("rotated")
 	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
 
 	canonical, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Claude))
@@ -518,7 +527,7 @@ func TestSelectedClaudeUsageRefreshCommitsRotationWhenRetryIsThrottled(t *testin
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
-	app.rateLimitProbeClientOverride = rotatedThrottledUsageClient(t, "original", "rotated", "45")
+	app.rateLimitProbeClientOverride = rotatedThrottledUsageClient(t, "original", rotatedBearer, "45")
 
 	err = app.refreshProviderAccountUsage(
 		context.Background(),

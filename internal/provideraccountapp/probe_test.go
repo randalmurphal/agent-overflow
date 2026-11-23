@@ -88,7 +88,10 @@ func TestIdentifyAgyCredentialOfflineEmailFallback(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // force HTTP IdentifyAccount to fail offline immediately
 	cred := []byte(`{"access_token":"tok","refresh_token":"ref","id_token_email":"offline@example.com"}`)
-	got := manager.identifyAgyCredential(ctx, provider.AccountInfo{SubscriptionType: "Google AI Ultra"}, cred)
+	got, err := manager.identifyAgyCredential(ctx, provider.AccountInfo{SubscriptionType: "Google AI Ultra"}, cred)
+	if err != nil {
+		t.Fatalf("a failed lookup of a credential that carries its email = %v, want the email", err)
+	}
 	if got.Email != "offline@example.com" {
 		t.Fatalf("Email = %q, want offline@example.com", got.Email)
 	}

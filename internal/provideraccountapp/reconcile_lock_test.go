@@ -218,6 +218,8 @@ func (b *blockingQuotaRoundTripper) RoundTrip(req *http.Request) (*http.Response
 // waiting on the network, so account switches and sibling checks are never stalled.
 func TestAgyReadOnlyUsageRefreshDoesNotHoldReconcileLock(t *testing.T) {
 	manager, _, credentials := newTestManager(t)
+	agyBinary := agyAccountProbe(t)
+	manager.deps.ProviderBinary = func(string) string { return agyBinary }
 	agyName := string(provider.Agy)
 	cred := []byte(`{"access_token":"ya29.valid","refresh_token":"1//ref","id_token_email":"dev@example.com"}`)
 	if err := credentials.WriteNativeCredentialForTest(agyName, cred); err != nil {
@@ -271,25 +273,29 @@ func TestAgyReadOnlyUsageRefreshDoesNotHoldReconcileLock(t *testing.T) {
 		t.Fatalf("RefreshProviderAccountUsageContext(agy): %v", err)
 	}
 
-	// External login to account B must NEVER be accepted as a rotation of account A.
+	// After a refused request, only the same refresh token continues the
+	// login; another login of the same email does not.
 	credA := []byte(`{"access_token":"ya29.oldA","refresh_token":"1//refA","id_token_email":"alice@example.com"}`)
 	credARotated := []byte(`{"access_token":"ya29.newA","refresh_token":"1//refA","id_token_email":"alice@example.com"}`)
 	credB := []byte(`{"access_token":"ya29.newB","refresh_token":"1//refB","id_token_email":"bob@example.com"}`)
-	if !agyCredentialBelongsToAccount(credARotated, credA, "alice@example.com") {
-		t.Fatal("same-account rotation for alice was rejected")
+	credASecondSignIn := []byte(`{"access_token":"ya29.otherA","refresh_token":"1//refA2","id_token_email":"alice@example.com"}`)
+	if !agyLoginContinues(credARotated, credA) {
+		t.Fatal("a refresh that kept alice's refresh token was rejected")
 	}
-	if agyCredentialBelongsToAccount(credB, credA, "alice@example.com") {
-		t.Fatal("foreign account bob credential was accepted as alice rotation")
+	if agyLoginContinues(credASecondSignIn, credA) {
+		t.Fatal("another login of alice's email was accepted as the refreshed login")
 	}
 
 	// If an external CLI login replaces canonical with Bob's credential BEFORE
-	// Phase 1 snapshots selected account dev@example.com, refresh MUST fail
-	// without probing HTTP or overwriting dev's saved slot with Bob's bytes.
+	// Phase 1 snapshots selected account dev@example.com, reconciliation
+	// adopts Bob's login as its own account and selects it, as every outside
+	// login is; dev is then read from its own slot, and Bob's bytes never
+	// reach it.
 	if err := credentials.WriteNativeCredentialForTest(agyName, credB); err != nil {
 		t.Fatalf("overwrite canonical with bob: %v", err)
 	}
-	if err := manager.RefreshProviderAccountUsageContext(context.Background(), agyName, selection.AccountID); err == nil {
-		t.Fatal("expected usage refresh to reject foreign canonical credential before probing")
+	if err := manager.RefreshProviderAccountUsageContext(context.Background(), agyName, selection.AccountID); err != nil {
+		t.Fatalf("reading dev after bob's outside login = %v, want dev read from its slot", err)
 	}
 	slotAfter, err := credentials.ReadCredentialSnapshot(agyName, selection.AccountID, false)
 	if err != nil {
@@ -298,10 +304,29 @@ func TestAgyReadOnlyUsageRefreshDoesNotHoldReconcileLock(t *testing.T) {
 	if bytes.Equal(slotAfter.Bytes(), credB) {
 		t.Fatal("foreign account bob credential was copied into dev's saved slot")
 	}
+	if moved := manager.Selection(agyName); moved.AccountID == selection.AccountID || moved.Account.Email != "bob@example.com" {
+		t.Fatalf("selection = %+v, want bob's own account", moved)
+	}
 
-	// Missing saved slot AND blank saved email must also fail closed so a
-	// foreign canonical credential can never publish usage under an unanchored account.
+	// An account saved without an email, whose slot is gone, takes an outside
+	// login that nothing contradicts: the one rule for such an account
+	// (blankEmailAccountTakes). The reading then runs on that login as the
+	// account's, now under its email, and its slot holds it.
 	unanchoredManager, _, unanchoredCreds := newTestManager(t)
+	unanchoredManager.deps.ProviderBinary = func(string) string { return agyBinary }
+	// Google answers every request, userinfo included, with a body that
+	// names nobody: the seeded login is identified as nameless.
+	var httpCalled bool
+	unanchoredManager.deps.HTTPClient = func() *http.Client {
+		return &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			httpCalled = true
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewBufferString(`{"buckets":[{"bucketId":"gemini-argon-5h","window":"5h","remainingFraction":0.8}]}`)),
+			}, nil
+		})}
+	}
 	credNoEmail := []byte(`{"access_token":"ya29.noemail","refresh_token":"1//refNoEmail"}`)
 	if err := unanchoredCreds.WriteNativeCredentialForTest(agyName, credNoEmail); err != nil {
 		t.Fatalf("write initial unanchored canonical cred: %v", err)
@@ -332,22 +357,21 @@ func TestAgyReadOnlyUsageRefreshDoesNotHoldReconcileLock(t *testing.T) {
 	if err := unanchoredCreds.WriteNativeCredentialForTest(agyName, credB); err != nil {
 		t.Fatalf("overwrite unanchored canonical with bob: %v", err)
 	}
-	var httpCalled bool
-	unanchoredManager.deps.HTTPClient = func() *http.Client {
-		return &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-			httpCalled = true
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(bytes.NewBufferString(`{"buckets":[{"bucketId":"gemini-argon-5h","window":"5h","remainingFraction":0.8}]}`)),
-			}, nil
-		})}
+	httpCalled = false
+	if err := unanchoredManager.RefreshProviderAccountUsageContext(context.Background(), agyName, unanchoredSel.AccountID); err != nil {
+		t.Fatalf("reading the blank-email account after bob's outside login = %v, want it read as bob's", err)
 	}
-	if err := unanchoredManager.RefreshProviderAccountUsageContext(context.Background(), agyName, unanchoredSel.AccountID); err == nil {
-		t.Fatal("expected usage refresh to fail closed when saved slot is missing and saved email is blank")
+	if !httpCalled {
+		t.Fatal("the reading did not ask the quota endpoint")
 	}
-	if httpCalled {
-		t.Fatal("HTTP quota probe should not run when account ownership cannot be verified")
+	unanchoredManager.mu.RLock()
+	adopted, ok := unanchoredManager.store.Get(agyName, unanchoredSel.AccountID, time.Now())
+	unanchoredManager.mu.RUnlock()
+	if !ok || adopted.Email != "bob@example.com" {
+		t.Fatalf("blank-email account = %+v (%v), want it named bob", adopted, ok)
+	}
+	if slot, err := unanchoredCreds.ReadCredential(agyName, unanchoredSel.AccountID, false); err != nil || !bytes.Equal(slot, credB) {
+		t.Fatalf("blank-email account's slot = %s, %v; want bob's login", slot, err)
 	}
 }
 

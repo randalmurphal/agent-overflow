@@ -1,7 +1,9 @@
 package provideraccountapp
 
 import (
+	"fmt"
 	"maps"
+	"net/http"
 	"testing"
 
 	"agent-overflow/internal/kerneltest"
@@ -27,11 +29,21 @@ func newTestManager(t *testing.T) (*Manager, *provideraccounts.Store, *providera
 		Reaper:          procutiltest.Reaper(),
 		ProviderBinary:  func(string) string { return isolation.PoisonedBinary },
 		ClaudeRetention: func(string) claude.Retention { return claude.UserHomeRetention(0) },
+		// A test that makes a provider request answers it itself.
+		HTTPClient: func() *http.Client { return &http.Client{Transport: refuseProviderRequests{}} },
 	})
 	if err := manager.Attach(store, credentials, ""); err != nil {
 		t.Fatal(err)
 	}
 	return manager, store, credentials
+}
+
+// refuseProviderRequests fails every request it is given, so no test reaches
+// a provider's real endpoint.
+type refuseProviderRequests struct{}
+
+func (refuseProviderRequests) RoundTrip(req *http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("test: no provider request is answered here: %s %s", req.Method, req.URL)
 }
 
 func TestManagerSelectionProjectsOwnedStore(t *testing.T) {
