@@ -224,18 +224,50 @@ func (s *Store) ConfirmPairingLink(id string, at int64) (PairingLink, error) {
 // Cancellable before OR after redemption, and that is the point: the
 // refusal case the verification number exists for is a link that has
 // already been redeemed by a device the owner does not recognise.
-func (s *Store) CancelPairingLink(id string, at int64) (PairingLink, error) {
-	link, err := scanPairingLink(s.db.QueryRow(
+//
+// The link and the unconfirmed session its redemption created end in one
+// transaction, so a cancellation either did both or neither: a canceled
+// link never leaves its pending session behind, and a retry after a
+// failure finds the link still open. sql.ErrNoRows when the link is
+// unknown or already settled.
+func (s *Store) CancelPairingLink(id string, at int64) (PairingCancellation, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return PairingCancellation{}, fmt.Errorf("store: cancel pairing link: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	link, err := scanPairingLink(tx.QueryRow(
 		`UPDATE pairing_links SET canceled_at = ?
 		  WHERE id = ? AND confirmed_at IS NULL AND canceled_at IS NULL
 		 RETURNING `+pairingLinkColumns, at, id))
 	if errors.Is(err, sql.ErrNoRows) {
-		return PairingLink{}, err
+		return PairingCancellation{}, err
 	}
 	if err != nil {
-		return PairingLink{}, fmt.Errorf("store: cancel pairing link: %w", err)
+		return PairingCancellation{}, fmt.Errorf("store: cancel pairing link: %w", err)
 	}
-	return link, nil
+	out := PairingCancellation{Link: link}
+	if link.SessionID != "" {
+		ids, released, err := endSessionsTx(tx, revokeSessions, at, nil, `id = ?`, link.SessionID)
+		if err != nil {
+			return PairingCancellation{}, fmt.Errorf("store: cancel pairing link: revoke its pending session: %w", err)
+		}
+		out.SessionRevoked, out.Released = len(ids) > 0, released
+	}
+	if err := tx.Commit(); err != nil {
+		return PairingCancellation{}, fmt.Errorf("store: cancel pairing link: commit: %w", err)
+	}
+	return out, nil
+}
+
+// PairingCancellation is what one CancelPairingLink ended.
+type PairingCancellation struct {
+	Link PairingLink
+	// SessionRevoked reports that the link's unconfirmed session was
+	// revoked with it; Released names the threads whose spawn links that
+	// revocation released, as RevokeSession reports them.
+	SessionRevoked bool
+	Released       []string
 }
 
 // RetirePendingPairings runs before a restarted host serves credentials. An

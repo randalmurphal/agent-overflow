@@ -257,7 +257,7 @@ func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
 	}
 	return PairingStatusView{
 		LinkID:             link.ID,
-		State:              pairingState(link, state.sessions.Now()),
+		State:              a.pairingState(link, state.sessions.Now()),
 		VerificationNumber: a.computerPairingNumber(link.ID, number),
 		DeviceLabel:        a.pairedDeviceLabel(link),
 		ExpiresAtMs:        pairingDeadline(link),
@@ -574,7 +574,7 @@ func (a *App) pendingPairings(state *identityState, now int64) ([]PendingPairing
 	}
 	var out []PendingPairing
 	for _, link := range links {
-		if link.Settled() || pairingDeadline(link) <= now {
+		if standing := a.pairingState(link, now); standing != pairingStatePending && standing != pairingStateRedeemed {
 			continue
 		}
 		view := PendingPairing{
@@ -611,7 +611,11 @@ func (a *App) pairedDeviceLabel(link store.PairingLink) string {
 	return device.Label
 }
 
-// pairingState names where a link stands.
+// pairingState names where a link stands for the owner.
+//
+// A computer pairing window's invitation the book refuses is canceled
+// whatever its row says: its window is gone and its cancellation is still
+// unfinished, so nothing can approve it.
 //
 // The order is the contract. Settled first, because confirmed and
 // canceled are terminal and outlive every window. Redeemed BEFORE
@@ -620,11 +624,11 @@ func (a *App) pairedDeviceLabel(link store.PairingLink) string {
 // window (identity.PairingConfirmWindow), and reporting "expired" while
 // the owner still has minutes to match the number would take away the
 // step the exchange is waiting on.
-func pairingState(link store.PairingLink, now int64) string {
+func (a *App) pairingState(link store.PairingLink, now int64) string {
 	switch {
 	case link.ConfirmedAt != 0:
 		return pairingStateConfirmed
-	case link.CanceledAt != 0:
+	case link.CanceledAt != 0 || a.computerPairingRefuses(link.ID):
 		return pairingStateCanceled
 	case link.Redeemed():
 		if pairingDeadline(link) <= now {

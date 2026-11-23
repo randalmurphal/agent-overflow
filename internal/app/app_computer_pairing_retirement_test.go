@@ -11,15 +11,17 @@ import (
 	"agent-overflow/internal/pairbootstrap"
 )
 
-// heldMintWindow opens a window on the host's book whose mint waits on g,
-// starts a requester's reveal on it, and returns once the mint is held. The
-// minted link ID arrives on the returned channel, and the reveal's answer
-// on the other.
-func heldMintWindow(t *testing.T, a *App, g *testGate) (pairbootstrap.Snapshot, <-chan string, <-chan error) {
+// heldMintWindow opens a window on the host's book whose mint waits on the
+// returned gate, starts a requester's reveal on it, and returns once the
+// mint is held. The minted link ID arrives on the returned channel, and the
+// reveal's answer on the other. The gate's release is registered after the
+// window's close, so cleanup releases the mint before the close joins it.
+func heldMintWindow(t *testing.T, a *App) (pairbootstrap.Snapshot, *testGate, <-chan string, <-chan error) {
 	t.Helper()
 	book := a.computerPairingBook()
+	g := &testGate{reached: make(chan struct{}, 1), release: make(chan struct{})}
 	minted := make(chan string, 1)
-	view, err := book.Open(func() (pairbootstrap.Invitation, error) {
+	view, err := book.Open(func(string) (pairbootstrap.Invitation, error) {
 		g.wait()
 		invite, err := a.mintDevicePairing("desktop", "full", "")
 		minted <- invite.LinkID
@@ -29,6 +31,7 @@ func heldMintWindow(t *testing.T, a *App, g *testGate) (pairbootstrap.Snapshot, 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = book.Close(view.WindowID) })
+	t.Cleanup(g.open)
 	s := &a.computerPairing
 	s.mu.Lock()
 	s.windowID = view.WindowID
@@ -39,9 +42,32 @@ func heldMintWindow(t *testing.T, a *App, g *testGate) (pairbootstrap.Snapshot, 
 		t.Fatal(err)
 	}
 	revealed := make(chan error, 1)
-	go func() { _, err := book.Reveal(ch.ID, r); revealed <- err }()
+	go func() { _, err := book.Reveal(ch.ID, r, "lan"); revealed <- err }()
 	<-g.reached
-	return view, minted, revealed
+	return view, g, minted, revealed
+}
+
+// requireRefusedStanding checks what the owner is shown for an invitation
+// whose row is still open while its cancellation is unfinished: canceled,
+// with no number to compare, and absent from the pending pairings.
+func requireRefusedStanding(t *testing.T, a *App, linkID string) {
+	t.Helper()
+	if link, err := a.store.GetPairingLink(linkID); err != nil || link.Settled() {
+		t.Fatalf("invitation %s: want its row still unsettled (%+v, %v)", linkID, link, err)
+	}
+	status, err := a.DevicePairingStatus(linkID)
+	if err != nil || status.State != pairingStateCanceled || status.VerificationNumber != "" {
+		t.Fatalf("status of %s = %+v, %v; want canceled with no number", linkID, status, err)
+	}
+	overview, err := a.GetAccessOverview()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pending := range overview.PendingPairings {
+		if pending.LinkID == linkID {
+			t.Fatalf("the owner is offered %s as pending: %+v", linkID, pending)
+		}
+	}
 }
 
 func refusedConfirmation(t *testing.T, a *App, linkID, when string) {
@@ -61,8 +87,7 @@ func TestComputerPairingClosedInvitationIsNeverConfirmableWhileCancellationsFail
 	a, path := computerPairingHost(t)
 	ledger := countCancellations(a)
 	book := a.computerPairingBook()
-	g := newTestGate(t)
-	first, mintedFirst, revealedFirst := heldMintWindow(t, a, g)
+	first, g, mintedFirst, revealedFirst := heldMintWindow(t, a)
 	restore := rejectCancellations(t, path)
 	// Replace the first window while its mint is held.
 	replaced := make(chan error, 1)
@@ -82,7 +107,10 @@ func TestComputerPairingClosedInvitationIsNeverConfirmableWhileCancellationsFail
 	if book.Snapshot("").Open {
 		t.Fatal("a refused replacement left a window open")
 	}
-	refusedConfirmation(t, a, late, "late invitation while its cancellation fails")
+	// Nothing can redeem the late invitation, whose token never left the
+	// book, so only what the owner is shown is checked here: the redeemed
+	// invitation below is the one the book's refusal guards.
+	requireRefusedStanding(t, a, late)
 
 	restore()
 	second, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
@@ -98,6 +126,7 @@ func TestComputerPairingClosedInvitationIsNeverConfirmableWhileCancellationsFail
 		t.Fatal("a close whose cancellation the store refused reported success")
 	}
 	refusedConfirmation(t, a, invite.LinkID, "after its close failed")
+	requireRefusedStanding(t, a, invite.LinkID)
 	if _, err := a.OpenComputerPairing(connCtx(t), "lan", "full"); err == nil {
 		t.Fatal("a third window opened while the second's cancellation failed")
 	}
@@ -126,8 +155,7 @@ func TestComputerPairingCloseDuringAMintAnswersForTheLateInvitation(t *testing.T
 	a, path := computerPairingHost(t)
 	ledger := countCancellations(a)
 	book := a.computerPairingBook()
-	g := newTestGate(t)
-	window, minted, revealed := heldMintWindow(t, a, g)
+	window, g, minted, revealed := heldMintWindow(t, a)
 	restore := rejectCancellations(t, path)
 	closed := make(chan error, 1)
 	go func() { closed <- a.CloseComputerPairing(window.WindowID) }()
@@ -151,7 +179,7 @@ func TestComputerPairingCloseDuringAMintAnswersForTheLateInvitation(t *testing.T
 	if n := ledger.count(late); n != 2 {
 		t.Fatalf("the refused open retried %d statements in all, want 2", n)
 	}
-	refusedConfirmation(t, a, late, "late invitation while its cancellation fails")
+	requireRefusedStanding(t, a, late)
 	restore()
 	next, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
 	if err != nil {
@@ -202,12 +230,10 @@ func TestComputerPairingCloseReportsItsInvitationsRefusedCancellation(t *testing
 	requireCanceled(t, a, invite.LinkID)
 }
 
-// Try again closes the old window and opens a new one at the same time.
-// The old window's close, held inside its cancellation while the
-// replacement opens, cancels only the old window's invitation: the
-// replacement's invitation, revealed afterwards, stays ready and
-// confirmable, and the old close arriving again leaves it alone.
-func TestComputerPairingTryAgainKeepsTheReplacementsInvitation(t *testing.T) {
+// A close of a replaced window arrives after the replacement has revealed
+// its invitation and a device has redeemed it: it cancels only the old
+// window's invitation, and the replacement stays ready and confirmable.
+func TestComputerPairingAStaleCloseKeepsTheReplacementsInvitation(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	a, _ := computerPairingHost(t)
@@ -218,33 +244,9 @@ func TestComputerPairingTryAgainKeepsTheReplacementsInvitation(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := revealOnBook(t, book)
-	g := newTestGate(t)
-	ledger.mu.Lock()
-	ledger.hold = func(id string) {
-		if id == old.LinkID {
-			g.wait()
-		}
-	}
-	ledger.mu.Unlock()
-	closed := make(chan error, 1)
-	go func() { closed <- a.CloseComputerPairing(first.ID) }()
-	<-g.reached
-	type opened struct {
-		window ComputerPairingWindow
-		err    error
-	}
-	replaced := make(chan opened, 1)
-	go func() {
-		w, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
-		replaced <- opened{w, err}
-	}()
-	g.open()
-	if err := <-closed; err != nil {
-		t.Fatalf("closing the old window: %v", err)
-	}
-	next := <-replaced
-	if next.err != nil {
-		t.Fatalf("opening the replacement: %v", next.err)
+	next, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
+	if err != nil {
+		t.Fatal(err)
 	}
 	// The replacement's invitation goes through the HTTP adapter's path.
 	endpoints := authEndpoints{app: a}
@@ -271,9 +273,9 @@ func TestComputerPairingTryAgainKeepsTheReplacementsInvitation(t *testing.T) {
 	}
 	redeemOnHost(t, a, invite, "replacement-device")
 	if err := a.CloseComputerPairing(first.ID); err != nil {
-		t.Fatalf("the old close arriving again: %v", err)
+		t.Fatalf("the stale close: %v", err)
 	}
-	status, err := a.ComputerPairingStatus(next.window.ID)
+	status, err := a.ComputerPairingStatus(next.ID)
 	if err != nil || status.State != "ready" || status.LinkID != invite.LinkID {
 		t.Fatalf("replacement window = %+v, %v; want ready with its invitation", status, err)
 	}
@@ -283,6 +285,74 @@ func TestComputerPairingTryAgainKeepsTheReplacementsInvitation(t *testing.T) {
 	requireCanceled(t, a, old.LinkID)
 	if err := a.ConfirmDevicePairing(invite.LinkID); err != nil {
 		t.Fatalf("confirming the replacement's invitation: %v", err)
+	}
+}
+
+// A cancellation that ends the invitation's row but not its pending session
+// is not durable: the whole cancellation is retried until both end, and the
+// invitation stays refused meanwhile.
+func TestComputerPairingCancellationEndsThePendingSessionWithItsInvitation(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	a, path := computerPairingHost(t)
+	ledger := countCancellations(a)
+	window, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite := revealOnBook(t, a.computerPairingBook())
+	redeemOnHost(t, a, invite, "revocation-device")
+	execOnStore(t, path, `CREATE TRIGGER reject_session_revoke BEFORE UPDATE OF revoked_at ON sessions BEGIN SELECT RAISE(ABORT, 'test revocation failure'); END`)
+	if err := a.CloseComputerPairing(window.ID); err == nil || !strings.Contains(err.Error(), "test revocation failure") {
+		t.Fatalf("close = %v, want the refused session revocation", err)
+	}
+	requireRefusedStanding(t, a, invite.LinkID)
+	refusedConfirmation(t, a, invite.LinkID, "while its session revocation fails")
+	execOnStore(t, path, `DROP TRIGGER reject_session_revoke`)
+	if err := a.CloseComputerPairing(window.ID); err != nil {
+		t.Fatalf("closing again after storage recovered: %v", err)
+	}
+	requireCanceled(t, a, invite.LinkID)
+	if n := ledger.count(invite.LinkID); n != 2 {
+		t.Fatalf("%d cancellation statements, want 2", n)
+	}
+}
+
+// A listener change while a window opens retires the window that open would
+// publish, whose address that change made stale.
+func TestComputerPairingAListenerChangeDuringAnOpenRetiresItsWindow(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	a, _ := computerPairingHost(t)
+	countCancellations(a)
+	book := a.computerPairingBook()
+	first, g, _, revealed := heldMintWindow(t, a)
+	opened := make(chan error, 1)
+	go func() {
+		_, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
+		opened <- err
+	}()
+	// The open has chosen its address and is replacing the first window.
+	waitFor(t, "the open to remove the first window", func() bool { return !book.Snapshot(first.WindowID).Open })
+	s := &a.computerPairing
+	s.mu.Lock()
+	before := s.listeners
+	s.mu.Unlock()
+	changed := make(chan struct{})
+	go func() { a.closeComputerPairing(); close(changed) }()
+	waitFor(t, "the listener change", func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.listeners != before
+	})
+	g.open()
+	<-revealed
+	if err := <-opened; !errors.Is(err, errComputerPairingListenerChanged) {
+		t.Fatalf("open across a listener change = %v, want errComputerPairingListenerChanged", err)
+	}
+	<-changed
+	if book.Snapshot("").Open {
+		t.Fatal("a window with a stale address stayed open")
 	}
 }
 

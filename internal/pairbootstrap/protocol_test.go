@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestProtocolV1Vector(t *testing.T) {
@@ -45,17 +46,21 @@ func newClient(t *testing.T) *Client {
 	}
 	return c
 }
-func invitation() (Invitation, error) {
+func invitation(string) (Invitation, error) {
 	return Invitation{LinkID: "link", URL: "https://host/#secret-invitation"}, nil
 }
+
+// settledBook is a book whose every cancellation is already durable.
+func settledBook() *Book { return NewBook(func(string) error { return nil }, time.Hour) }
+
 func startBook(t *testing.T) (*Book, Snapshot) {
 	t.Helper()
-	b := NewBook(nil)
+	b := settledBook()
 	return b, openWindow(t, b, invitation)
 }
 
 // openWindow opens a window that the test closes when it ends.
-func openWindow(t *testing.T, b *Book, mint func() (Invitation, error)) Snapshot {
+func openWindow(t *testing.T, b *Book, mint func(string) (Invitation, error)) Snapshot {
 	t.Helper()
 	s, err := b.Open(mint)
 	if err != nil {
@@ -74,7 +79,7 @@ func handshake(t *testing.T, b *Book, c *Client) (Challenge, Reveal, SealedInvit
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := b.Reveal(ch.ID, r)
+	sealed, err := b.Reveal(ch.ID, r, "lan")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,8 +88,8 @@ func handshake(t *testing.T, b *Book, c *Client) (Challenge, Reveal, SealedInvit
 
 func TestExchangeAuthenticatesInvitationAndRetriesWithoutReminting(t *testing.T) {
 	var minted atomic.Int32
-	b := NewBook(nil)
-	s := openWindow(t, b, func() (Invitation, error) { minted.Add(1); return invitation() })
+	b := settledBook()
+	s := openWindow(t, b, func(route string) (Invitation, error) { minted.Add(1); return invitation(route) })
 	c := newClient(t)
 	ch, r, sealed := handshake(t, b, c)
 	invite, sas, err := c.Open(sealed)
@@ -94,7 +99,7 @@ func TestExchangeAuthenticatesInvitationAndRetriesWithoutReminting(t *testing.T)
 	if next, err := b.Begin(c.Commitment()); err != nil || next != ch {
 		t.Fatal("begin retry changed challenge", err)
 	}
-	if next, err := b.Reveal(ch.ID, r); err != nil || next != sealed || minted.Load() != 1 {
+	if next, err := b.Reveal(ch.ID, r, "lan"); err != nil || next != sealed || minted.Load() != 1 {
 		t.Fatal("reveal retry reminted", err)
 	}
 	if _, err := b.Begin(newClient(t).Commitment()); !errors.Is(err, ErrBusy) {
@@ -123,7 +128,7 @@ func TestCommitmentAndFrozenChallengeRejectTranscriptReplacement(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			bad := r
 			change(&bad)
-			if _, err := b.Reveal(ch.ID, bad); !errors.Is(err, ErrInvalid) {
+			if _, err := b.Reveal(ch.ID, bad, "lan"); !errors.Is(err, ErrInvalid) {
 				t.Fatal("modified commitment accepted", err)
 			}
 		})
@@ -133,7 +138,7 @@ func TestCommitmentAndFrozenChallengeRejectTranscriptReplacement(t *testing.T) {
 	if _, err := c.Reveal(other); !errors.Is(err, ErrInvalid) {
 		t.Fatal("client disclosed secret to replacement challenge")
 	}
-	if _, err := b.Reveal("different-request", r); !errors.Is(err, ErrInvalid) {
+	if _, err := b.Reveal("different-request", r, "lan"); !errors.Is(err, ErrInvalid) {
 		t.Fatal("cross-request reveal accepted")
 	}
 	bad := newClient(t)
@@ -141,7 +146,7 @@ func TestCommitmentAndFrozenChallengeRejectTranscriptReplacement(t *testing.T) {
 	bad.commitment = commit(bad.reveal)
 	b2, _ := startBook(t)
 	ch2, _ := b2.Begin(bad.Commitment())
-	if _, err := b2.Reveal(ch2.ID, bad.reveal); !errors.Is(err, ErrInvalid) {
+	if _, err := b2.Reveal(ch2.ID, bad.reveal, "lan"); !errors.Is(err, ErrInvalid) {
 		t.Fatal("invalid curve point accepted")
 	}
 }
@@ -215,7 +220,7 @@ func TestHTTPSExchangeAndNoRedirect(t *testing.T) {
 			}
 			json.NewEncoder(w).Encode(v)
 		case "reveal":
-			v, err := b.Reveal(req.ID, req.Reveal)
+			v, err := b.Reveal(req.ID, req.Reveal, "lan")
 			if err != nil {
 				http.Error(w, "bad", 400)
 				return

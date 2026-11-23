@@ -473,6 +473,13 @@ func (s *Sessions) RevokeSession(sessionID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	s.sessionRevoked(sessionID, moved, released)
+	return moved, nil
+}
+
+// sessionRevoked is the runtime half of a revocation the store committed:
+// the fast path, the sockets, the released spawn links and the audit row.
+func (s *Sessions) sessionRevoked(sessionID string, moved bool, released []string) {
 	s.forget(sessionID)
 	closed := s.closeConns(sessionID)
 	s.linksReleased(released)
@@ -482,7 +489,6 @@ func (s *Sessions) RevokeSession(sessionID string) (bool, error) {
 			SessionID: sessionID, Detail: fmt.Sprintf("closed %d connections", closed),
 		})
 	}
-	return moved, nil
 }
 
 // DeviceRevocation is what one RevokeDevice did, for a surface that has to

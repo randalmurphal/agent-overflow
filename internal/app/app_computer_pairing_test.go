@@ -37,7 +37,7 @@ func computerPairingBackend(t *testing.T) (*pairedBackend, pairbootstrap.Snapsho
 func computerPairingBackendAt(t *testing.T) (*pairedBackend, pairbootstrap.Snapshot, string) {
 	t.Helper()
 	b, path := servedIdentityApp(t)
-	b.app.computerPairing.book = pairbootstrap.NewBook(b.app.cancelComputerPairingLink)
+	b.app.computerPairing.book = pairbootstrap.NewBook(b.app.cancelComputerPairingLink, time.Hour)
 	return b, openTestWindow(t, b.app), path
 }
 
@@ -57,7 +57,7 @@ func openTestWindow(t *testing.T, a *App) pairbootstrap.Snapshot {
 	t.Helper()
 	s := &a.computerPairing
 	book := s.book
-	view, err := book.Open(func() (pairbootstrap.Invitation, error) {
+	view, err := book.Open(func(route string) (pairbootstrap.Invitation, error) {
 		invite, err := a.mintDevicePairing("browser", "full", "")
 		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
 	})
@@ -91,7 +91,8 @@ type cancellationLedger struct {
 }
 
 // countCancellations installs the host's book with its production cancel
-// callback, counted.
+// callback, counted. The book's own retries wait an hour, so every
+// statement a test counts is one it caused.
 func countCancellations(a *App) *cancellationLedger {
 	l := &cancellationLedger{calls: map[string]int{}}
 	s := &a.computerPairing
@@ -105,7 +106,7 @@ func countCancellations(a *App) *cancellationLedger {
 			hold(id)
 		}
 		return a.cancelComputerPairingLink(id)
-	})
+	}, time.Hour)
 	s.mu.Unlock()
 	return l
 }
@@ -118,7 +119,8 @@ func (l *cancellationLedger) count(id string) int {
 
 // testGate holds whatever waits on it until released. The test's cleanup
 // releases it, so a failure cannot leave a goroutine blocked until the
-// package timeout.
+// package timeout. Cleanups run last-registered first, so a gate must be
+// made after anything whose cleanup waits on what the gate holds.
 type testGate struct {
 	reached chan struct{}
 	release chan struct{}
@@ -150,7 +152,7 @@ func revealOnBook(t *testing.T, book *pairbootstrap.Book) pairbootstrap.Invitati
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := book.Reveal(ch.ID, r)
+	sealed, err := book.Reveal(ch.ID, r, "lan")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,11 +189,20 @@ func redeemOnHost(t *testing.T, a *App, invite pairbootstrap.Invitation, proof s
 	}
 }
 
+// requireCanceled checks that an invitation's cancellation is durable: its
+// row is canceled and so is the pending session its redemption created.
 func requireCanceled(t *testing.T, a *App, linkID string) {
 	t.Helper()
 	link, err := a.store.GetPairingLink(linkID)
 	if err != nil || link.CanceledAt == 0 {
 		t.Fatalf("invitation %s is not durably cancelled (%+v, %v)", linkID, link, err)
+	}
+	if link.SessionID == "" {
+		return
+	}
+	session, err := a.store.GetSession(link.SessionID)
+	if err != nil || session.RevokedAt == 0 {
+		t.Fatalf("invitation %s is canceled but its pending session is not revoked (%+v, %v)", linkID, session, err)
 	}
 }
 

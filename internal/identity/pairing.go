@@ -534,10 +534,26 @@ func (s *Sessions) mintPendingSession(link store.PairingLink, device store.Devic
 // cancelRedeemedLink settles a link whose redemption could not complete, so
 // the spent link cannot be presented again by anything.
 func (s *Sessions) cancelRedeemedLink(linkID string) {
-	if _, err := s.store.CancelPairingLink(linkID, s.now().UnixMilli()); err != nil &&
-		!errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.cancelLink(linkID); err != nil && !errors.Is(err, ErrPairingRefused) {
 		log.Printf("identity: cancel pairing link %s: %v", linkID, err)
 	}
+}
+
+// cancelLink ends a link and its redemption's pending session in one store
+// transaction, then tears down what the revocation ended at runtime. Only
+// a committed cancellation reaches the teardown.
+func (s *Sessions) cancelLink(linkID string) (store.PairingLink, error) {
+	canceled, err := s.store.CancelPairingLink(linkID, s.now().UnixMilli())
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.PairingLink{}, ErrPairingRefused
+	}
+	if err != nil {
+		return store.PairingLink{}, err
+	}
+	if canceled.Link.SessionID != "" {
+		s.sessionRevoked(canceled.Link.SessionID, canceled.SessionRevoked, canceled.Released)
+	}
+	return canceled.Link, nil
 }
 
 // ConfirmPairing activates the session a redemption created, after the
@@ -601,22 +617,15 @@ func (s *Sessions) confirmPairing(linkID string) (store.PairingLink, error) {
 // it was minted by mistake — and revokes whatever a redemption already
 // created.
 //
-// Revoking after cancelling, in that order, for the same reason
-// RevokeSession orders its own three steps: the link must stop admitting
-// anything before the session it created is torn down, or a redemption in
-// flight could mint a second one behind the teardown.
+// The link and its pending session end in one transaction, so a failure
+// leaves both for a retry and an answer of ErrPairingRefused means both
+// are settled. The link stops admitting anything in the same commit that
+// revokes the session it created, so no redemption in flight can mint a
+// second one behind the teardown.
 func (s *Sessions) CancelPairing(linkID string) (store.PairingLink, error) {
-	link, err := s.store.CancelPairingLink(linkID, s.now().UnixMilli())
-	if errors.Is(err, sql.ErrNoRows) {
-		return store.PairingLink{}, ErrPairingRefused
-	}
+	link, err := s.cancelLink(linkID)
 	if err != nil {
 		return store.PairingLink{}, err
-	}
-	if link.SessionID != "" {
-		if _, err := s.RevokeSession(link.SessionID); err != nil {
-			return store.PairingLink{}, err
-		}
 	}
 	s.audit(store.AuthAuditEntry{
 		Event: string(AuditPairingCanceled), Outcome: store.AuthAuditOutcomeAllowed,

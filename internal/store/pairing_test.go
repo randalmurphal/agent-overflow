@@ -226,11 +226,47 @@ func TestCancelPairingLinkWorksAfterRedemption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CancelPairingLink: %v", err)
 	}
-	if canceled.SessionID != "sess" {
+	if canceled.Link.SessionID != "sess" {
 		t.Fatalf("cancel lost the session the redemption created: %+v", canceled)
 	}
 	if _, err := s.ConfirmPairingLink("link-1", 2700); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatal("a canceled link accepted a confirmation")
+	}
+}
+
+// A cancellation ends the link and its redemption's pending session
+// together: a failed session revocation leaves the link open for the
+// retry, and the retry ends both.
+func TestCancelPairingLinkEndsItsPendingSessionInTheSameTransaction(t *testing.T) {
+	s, owner, device := seedOwnerDevice(t)
+	key := seedSigningKey(t, s)
+	pending := newTestSession("sess-pending", owner, device, key, 9000)
+	pending.ActivatedAt = 0
+	if err := s.CreateSession(pending); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	seedPairingLink(t, s, owner, []byte("hash-1"), 9000)
+	if _, err := s.RedeemPairingLink([]byte("hash-1"), 2000, "thumb"); err != nil {
+		t.Fatalf("RedeemPairingLink: %v", err)
+	}
+	if err := s.AttachPairingRedemption("link-1", device.ID, pending.ID); err != nil {
+		t.Fatalf("AttachPairingRedemption: %v", err)
+	}
+	mustExec(t, s.db, `CREATE TRIGGER reject_session_revoke BEFORE UPDATE OF revoked_at ON sessions BEGIN SELECT RAISE(ABORT, 'test revocation failure'); END`)
+	if _, err := s.CancelPairingLink("link-1", 2600); err == nil {
+		t.Fatal("a cancellation whose session revocation failed reported success")
+	}
+	if link, err := s.GetPairingLink("link-1"); err != nil || link.CanceledAt != 0 {
+		t.Fatalf("a failed revocation left the link canceled (%+v, %v)", link, err)
+	}
+	mustExec(t, s.db, `DROP TRIGGER reject_session_revoke`)
+	canceled, err := s.CancelPairingLink("link-1", 2700)
+	if err != nil || !canceled.SessionRevoked {
+		t.Fatalf("retry = %+v, %v; want the link and its session ended", canceled, err)
+	}
+	session, err := s.GetSession(pending.ID)
+	if err != nil || session.RevokedAt != 2700 {
+		t.Fatalf("pending session after the retry = %+v, %v", session, err)
 	}
 }
 
