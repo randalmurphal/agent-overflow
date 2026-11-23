@@ -2894,8 +2894,7 @@ func TestSessionDeathRetriesStaleRowCleanupForQueuedItem(t *testing.T) {
 // TestTeardownDeadPreInitSession_KeepsRequeuedItems pins R13-3 (round
 // 13, D13-1): the pre-init death teardown restores the queue BEFORE
 // CleanupThreadIfEpoch, but a cleanup-failed item is REQUEUED by that
-// restore — into exactly the map the cleanup's clearFlushQueueLocked
-// then wipes. The teardown must re-register requeued items after the
+// restore — into exactly the thread state the cleanup then drops. The teardown must re-register requeued items after the
 // cleanup so the replacement session's start-funnel flush (R12-2)
 // still finds them. The store is closed to make the stale-row cleanup
 // fail, which is the production shape that produces a requeue.

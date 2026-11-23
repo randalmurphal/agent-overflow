@@ -252,28 +252,10 @@ func subagentPromptFromInput(input json.RawMessage) (string, error) {
 	return decoded.Prompt, nil
 }
 
-// subagentScopedPromptState decodes the three facts every launch-scoped
-// prompt row carries: whether it is one at all (an OPENING prompt for the
-// agent, or the prompt that opened a resumed ROUND — both are scoped rows
-// whose provider uuid arrives later), whether it is still provisional,
-// and the uuid once bound.
-func subagentScopedPromptState(meta string) (scoped, provisional bool, providerItemID string, err error) {
-	if strings.TrimSpace(meta) == "" {
-		return false, false, "", nil
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(meta), &fields); err != nil {
-		return false, false, "", err
-	}
-	decode := userTextMeta(fields)
-	return decode.flag(provider.MetaSubagentOpeningPromptKey) || decode.flag(provider.MetaSubagentResumePromptKey),
-		decode.flag(provider.MetaSubagentPromptProvisionalKey),
-		decode.text("provider_item_id"), nil
-}
-
-// subagentOpeningPromptState answers the same question for the agent's
-// OPENING prompt specifically — the row whose identity is the launch
-// scope, which persistWireOnlySubagentPrompt claims by id.
+// subagentOpeningPromptState decodes the facts the agent's OPENING prompt
+// row carries: whether the row is that prompt (the row whose identity is the
+// launch scope, which persistWireOnlySubagentPrompt claims by id), whether it
+// is still provisional, and the provider uuid once bound.
 func subagentOpeningPromptState(meta string) (opening, provisional bool, providerItemID string, err error) {
 	if strings.TrimSpace(meta) == "" {
 		return false, false, "", nil

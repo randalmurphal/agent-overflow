@@ -1451,8 +1451,8 @@ func (a *App) teardownDeadPreInitSessionLocked(threadID, sessionToken string) er
 	}
 	a.emitProviderSessionDisconnected(threadID, sess.Provider)
 	if a.triage != nil {
-		// Restore before cleanup: the sweep's clearFlushQueueLocked
-		// discards queued items, and they only exist in router memory —
+		// Restore before cleanup: the sweep drops the thread's triage
+		// state, queued items included, and they only exist in router memory —
 		// without the restore the user's queued text would vanish.
 		var requeued []triage.UnconfirmedFlushItem
 		if a.triage.ThreadEpoch(threadID) == epoch {

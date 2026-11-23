@@ -4110,9 +4110,8 @@ re-dispatched. Residuals, recorded and left: `make apk` was not runnable
 on the WSL box (no JDK), so the manifest and rules file were reviewed by
 eye until the Mac pass ran the build and the emulator smoke (2026-09-03); an idle-reaper close of a thread whose queue
 held a requeued-after-failure message drops it, as it did before the
-row existed (the row now goes with it rather than resurrecting at boot);
-`triage.clearFlushQueueLocked` has no callers and is left for a triage
-cleanup. The former 64-message duplicate-detection cutoff was removed by v89: a
+row existed (the row now goes with it rather than resurrecting at boot).
+The former 64-message duplicate-detection cutoff was removed by v89: a
 retry from an offline frontend remains recognizable after newer messages arrive.
 
 **Quiet-when picker LANDED (2026-09-03).** The R5 pair

@@ -1110,7 +1110,7 @@ func TestInFlightEchoPoppedBeforeMark_SettlesInterrupted(t *testing.T) {
 
 	// Pop before the mark: the interrupt's pre-ack publish finds an
 	// empty FIFO.
-	popped, ok := router.consumeMatchingPendingSend("t1", "ao-uuid-1")
+	popped, ok := router.consumeMatchingPendingSend("t1", "ao-uuid-1", "")
 	if !ok {
 		t.Fatal("consume did not match the registered entry")
 	}

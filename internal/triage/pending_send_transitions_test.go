@@ -84,7 +84,7 @@ func TestPendingSendEchoStashes_AreCopyScopedAndIdempotent(t *testing.T) {
 	}
 	r.mu.Unlock()
 
-	popped, ok := r.consumeMatchingPendingSendForEcho("t1", "", "")
+	popped, ok := r.consumeMatchingPendingSend("t1", "", "")
 	if !ok {
 		t.Fatal("pending entry not consumed")
 	}

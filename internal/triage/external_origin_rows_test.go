@@ -252,11 +252,11 @@ func TestConsumeMatchingPendingSend_NoClientID_KeepsFIFO(t *testing.T) {
 	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
 	router.RegisterPendingSendWithExpectation("t1", "user:2", 2, PendingSendExpectation{})
 
-	head, ok := router.consumeMatchingPendingSendForEcho("t1", "codex-item-1", "")
+	head, ok := router.consumeMatchingPendingSend("t1", "codex-item-1", "")
 	if !ok || head.AOItemID != "user:1" {
 		t.Fatalf("head = %+v ok=%v, want user:1", head, ok)
 	}
-	next, ok := router.consumeMatchingPendingSendForEcho("t1", "codex-item-2", "")
+	next, ok := router.consumeMatchingPendingSend("t1", "codex-item-2", "")
 	if !ok || next.AOItemID != "user:2" {
 		t.Fatalf("next = %+v ok=%v, want user:2", next, ok)
 	}
@@ -268,7 +268,7 @@ func TestConsumeMatchingPendingSend_UnknownClientID_MatchesNothing(t *testing.T)
 	router, _, _ := newTestRouter(t)
 	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
 
-	if got, ok := router.consumeMatchingPendingSendForEcho("t1", "codex-item-1", "01994f2b-dead"); ok {
+	if got, ok := router.consumeMatchingPendingSend("t1", "codex-item-1", "01994f2b-dead"); ok {
 		t.Fatalf("an unknown client id popped %+v", got)
 	}
 	if !router.HasPendingSendForThread("t1") {

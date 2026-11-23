@@ -727,17 +727,6 @@ func (r *Router) hasActiveCodexUnifiedExec(threadID string) bool {
 	return false
 }
 
-// clearFlushQueueLocked drops every queued item for threadID. Caller
-// MUST hold r.mu. Called by CleanupThread — the queue is
-// session-scoped, so a torn-down session must not leak entries into
-// a fresh one.
-func (r *Router) clearFlushQueueLocked(threadID string) {
-	if st := r.threadStateIfPresent(threadID); st != nil {
-		st.queuedFlushItems = nil
-		r.noteSendsPendingLocked(threadID)
-	}
-}
-
 func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushItem {
 	if threadID == "" {
 		return nil

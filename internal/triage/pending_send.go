@@ -618,10 +618,9 @@ func (r *Router) consumePendingSendByProviderID(threadID, providerItemID string)
 //     provider-assigned, unknowable at dispatch) pops at the head,
 //     preserving the original ordering semantics.
 //
-// A third mode, client id, is reachable only through
-// consumeMatchingPendingSendForEcho and is documented there. It also
-// SUBTRACTS from both modes above: an entry expecting a client id is
-// invisible to an id-less echo, head or not.
+// A third mode, client id, is documented below. It also SUBTRACTS from
+// both modes above: an entry expecting a client id is invisible to an
+// id-less echo, head or not.
 //
 // Carve-out: an echo with NO providerItemID pops the head even in
 // identity mode. Injected envelopes always carry a top-level uuid, so an
@@ -633,13 +632,9 @@ func (r *Router) consumePendingSendByProviderID(threadID, providerItemID string)
 //
 // Returns (zero, false) when nothing matches; handleUserText then routes
 // the echo to the wire-only paths (subagent prompt / injected context).
-func (r *Router) consumeMatchingPendingSend(threadID, providerItemID string) (pendingSend, bool) {
-	return r.consumeMatchingPendingSendForEcho(threadID, providerItemID, "")
-}
-
-// consumeMatchingPendingSendForEcho is the full match, including the echo's
-// `client_id` — the third and STRONGEST key, and the only one that works on
-// Codex.
+//
+// The echo's `client_id` is the third and STRONGEST key, and the only one
+// that works on Codex.
 //
 // A Codex entry has no expected provider item id (item ids are
 // provider-assigned), so it falls to FIFO — and FIFO is wrong the moment the
@@ -677,7 +672,7 @@ func (r *Router) consumeMatchingPendingSend(threadID, providerItemID string) (pe
 // queued row and the queued send's echo arrived with nothing left to match, so
 // it persisted as "Injected provider context". Once every Codex send stamps an
 // id the mixed case disappears; until then the skip alone already prevents it.
-func (r *Router) consumeMatchingPendingSendForEcho(threadID, providerItemID, clientID string) (pendingSend, bool) {
+func (r *Router) consumeMatchingPendingSend(threadID, providerItemID, clientID string) (pendingSend, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	queue := r.pendingSendsLocked(threadID)
@@ -817,27 +812,6 @@ func (r *Router) ClearPendingSendForFailure(threadID, aoItemID string) {
 	}
 }
 
-// clearPendingSendsForThread sweeps every entry for threadID. Called
-// by CleanupThread on session teardown. Acquires r.mu — for the
-// CleanupThread codepath that already holds r.mu, see
-// clearPendingSendsLocked.
-func (r *Router) clearPendingSendsForThread(threadID string) {
-	r.mu.Lock()
-	r.clearPendingSendsLocked(threadID)
-	r.mu.Unlock()
-}
-
-// clearPendingSendsLocked is the no-lock variant of
-// clearPendingSendsForThread. Caller MUST hold r.mu. Used by
-// CleanupThread to keep the entire teardown inside one critical
-// section so a concurrent Handle observes a consistent snapshot.
-func (r *Router) clearPendingSendsLocked(threadID string) {
-	if st := r.threadStateIfPresent(threadID); st != nil {
-		st.pendingSends = nil
-		r.noteSendsPendingLocked(threadID)
-	}
-}
-
 // MaxPendingSendTurnIndex returns the highest TurnIndex across all
 // pending send entries for threadID. Returns (0, false) when no entries
 // exist. Used by the flush dispatch turn allocator to avoid assigning
@@ -932,14 +906,6 @@ func (r *Router) reinsertPendingSendHead(threadID string, entry pendingSend) {
 	st.pendingSends = append([]pendingSend{entry}, st.pendingSends...)
 	r.noteSendsPendingLocked(threadID)
 	r.mu.Unlock()
-}
-
-// clearWireOnlyUserTextLocked clears the dedup set for threadID. Caller must
-// hold r.mu.
-func (r *Router) clearWireOnlyUserTextLocked(threadID string) {
-	if st := r.threadStateIfPresent(threadID); st != nil {
-		st.wireOnlyUserTextSeen = nil
-	}
 }
 
 // EagerPersistedFlush describes a deferred flush send that was eagerly

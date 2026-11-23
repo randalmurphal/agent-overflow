@@ -150,15 +150,11 @@ func seedPayloadItem(
 	}
 }
 
-// idForTurn and idForTurnItem synthesize stable ids for the seed helpers.
+// idForTurn synthesizes stable ids for the seed helpers.
 // Sequential ids make the ordered-slice assertions human-readable when a
 // test fails.
 func idForTurn(turn int) string {
 	return "turn-" + strconv.Itoa(turn)
-}
-
-func idForTurnItem(turn, item int) string {
-	return "t" + strconv.Itoa(turn) + "-i" + strconv.Itoa(item)
 }
 
 func collectIDs(items []Item) []string {
@@ -654,10 +650,6 @@ func TestListThreadSliceAround_FiltersPlanUpdateNotifications(t *testing.T) {
 	if !equalStringSlice(gotIDs, wantIDs) {
 		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
 	}
-}
-
-func idForItem(turn, idx int) string {
-	return fmt.Sprintf("t%d-i%d", turn, idx)
 }
 
 func equalStringSlice(a, b []string) bool {

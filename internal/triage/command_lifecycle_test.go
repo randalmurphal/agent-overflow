@@ -170,8 +170,10 @@ func TestCommandLifecycle_StartedAfterEchoConsumedPendingSend(t *testing.T) {
 	if err := router.Handle(commandLifecycleEvent("t1", testCommandUUID, provider.CommandQueued)); err != nil {
 		t.Fatalf("queued: %v", err)
 	}
-	// Simulate the echo having consumed the FIFO entry.
-	router.clearPendingSendsForThread("t1")
+	// Simulate the echo having consumed the entry.
+	if _, ok := router.consumeMatchingPendingSend("t1", testCommandUUID, ""); !ok {
+		t.Fatal("the echo matched no pending send")
+	}
 
 	if err := router.Handle(commandLifecycleEvent("t1", testCommandUUID, provider.CommandStarted)); err != nil {
 		t.Fatalf("started: %v", err)

@@ -13,7 +13,7 @@ package triage
 // Two classes live here, and they have opposite locking rules:
 //
 //   - *pendingSend methods mutate the POPPED COPY the echo path owns.
-//     That copy left the registry at consumeMatchingPendingSendForEcho
+//     That copy left the registry at consumeMatchingPendingSend
 //     and is either dropped (the write landed) or handed back whole to
 //     reinsertPendingSendHead (the write failed). r.mu must NOT be held
 //     and would protect nothing: no other goroutine can see the copy.

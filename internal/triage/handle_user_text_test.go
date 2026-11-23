@@ -664,7 +664,7 @@ func TestHandleUserText_SubagentPromptDoesNotConsumePendingSend(t *testing.T) {
 		t.Fatalf("child ParentID = %q, want spawn-1", child.ParentID)
 	}
 
-	pending, ok := router.consumeMatchingPendingSend("t1", "")
+	pending, ok := router.consumeMatchingPendingSend("t1", "", "")
 	if !ok {
 		t.Fatalf("pending send was consumed by child prompt")
 	}
@@ -1044,7 +1044,7 @@ func TestHandleUserText_PendingMatchWithMissingTargetRow_LogsAndReturns(t *testi
 	}
 
 	// Pending FIFO should be drained — consuming the head should fail.
-	if _, ok := router.consumeMatchingPendingSend("t1", ""); ok {
+	if _, ok := router.consumeMatchingPendingSend("t1", "", ""); ok {
 		t.Fatalf("pending FIFO should be drained even when the row was missing")
 	}
 

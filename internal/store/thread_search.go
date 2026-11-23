@@ -771,12 +771,6 @@ func deleteItemsAndSearchRowsTx(tx *sql.Tx, threadID, query string, args []any, 
 	return int64(len(deleted)), nil
 }
 
-// deleteThreadSearchSourceTx removes one thread's index rows for one arm.
-// Detaching imported history uses it.
-func deleteThreadSearchSourceTx(tx *sql.Tx, threadID, source string) error {
-	return deleteThreadSearchWhereTx(tx, "thread_id = ? AND source = ?", []any{threadID, source})
-}
-
 // deleteThreadSearchThreadTx removes every index row for one thread,
 // title included. The paced thread delete calls it before the thread row goes,
 // so the FTS side is emptied rather than left to the mapping table's cascade.
@@ -845,42 +839,6 @@ func indexImportedHistoryTx(tx *sql.Tx, threadID, chunkID string) error {
 			continue
 		}
 		if _, err := buildThreadSearchRowTx(tx, row.threadID, row.itemID, ThreadSearchSourceImport, kind, row.summary); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// indexThreadItemsTx indexes every settled local item of one thread, leaving
-// rows already indexed alone. Materializing shared history calls it: the rows
-// it just copied into `items` carry the text the detached import arm held.
-func indexThreadItemsTx(tx *sql.Tx, threadID string) error {
-	rows, err := tx.Query(
-		`SELECT id, kind, status, summary FROM items WHERE thread_id = ?`, threadID)
-	if err != nil {
-		return fmt.Errorf("store: read thread %s items for search: %w", threadID, err)
-	}
-	type localRow struct{ itemID, kind, status, summary string }
-	local := []localRow{}
-	for rows.Next() {
-		var row localRow
-		if err := rows.Scan(&row.itemID, &row.kind, &row.status, &row.summary); err != nil {
-			rows.Close()
-			return fmt.Errorf("store: scan thread %s item for search: %w", threadID, err)
-		}
-		local = append(local, row)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("store: iterate thread %s items for search: %w", threadID, err)
-	}
-	rows.Close()
-	for _, row := range local {
-		kind, indexed := threadSearchItemKinds[row.kind]
-		if !indexed || !settledItemStatus(row.status) {
-			continue
-		}
-		if _, err := buildThreadSearchRowTx(tx, threadID, row.itemID, ThreadSearchSourceItem, kind, row.summary); err != nil {
 			return err
 		}
 	}

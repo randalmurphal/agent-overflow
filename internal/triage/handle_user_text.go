@@ -105,7 +105,7 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 			anchor := r.flushAnchor(evt.ThreadID)
 			anchor.Lock()
 			defer anchor.Unlock()
-			pending, ok := r.consumeMatchingPendingSendForEcho(
+			pending, ok := r.consumeMatchingPendingSend(
 				evt.ThreadID, providerItemID, meta.text(userEchoClientIDMetaKey))
 			if !ok {
 				return false, nil
