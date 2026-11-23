@@ -63,6 +63,24 @@ func Path(t testing.TB, rel string) string {
 	return filepath.Join(Dir(t), filepath.FromSlash(rel))
 }
 
+// Observe puts the files at rels, slash paths from the checkout's root, in
+// the calling test's cache key, for a test whose child process reads them,
+// as make reads the Makefile. The test cache keys a result on the files the
+// test process itself opens, so a pass recorded before such a file changed
+// would otherwise be reused.
+func Observe(t testing.TB, rels ...string) {
+	t.Helper()
+	for _, rel := range rels {
+		f, err := os.Open(Path(t, rel))
+		if err != nil {
+			t.Fatalf("reporoot: observe %s: %v", rel, err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("reporoot: observe %s: %v", rel, err)
+		}
+	}
+}
+
 // goSourceRoots are the directories under the checkout that hold Go packages,
 // beside the root package itself: the Makefile's GO_PACKAGE_ROOTS.
 var goSourceRoots = []string{"cmd", "internal"}

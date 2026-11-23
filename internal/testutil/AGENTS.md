@@ -14,8 +14,10 @@ packages. Test-specific setup stays beside the test that owns it.
   a repository file from a test; a path derived from `runtime.Caller` is
   module-relative under the Make targets' `-trimpath`. A test that inspects
   the tree through a child process such as `go list` calls
-  `ObserveGoSources` first; the test cache cannot see what a child reads and
-  would reuse a pass recorded before the tree changed. Standard library only.
+  `ObserveGoSources` first, and one whose child reads named files, as make
+  reads the Makefile, calls `Observe` with them; the test cache cannot see
+  what a child reads and would reuse a pass recorded before the tree
+  changed. Standard library only.
 - `providerpath/` puts poisoned `claude` and `codex` first on PATH from
   TestMain, so a bare provider name never reaches an installed CLI, and fails
   the run naming the caller: the poison holds its caller while TestMain
