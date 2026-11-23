@@ -7,8 +7,12 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -43,7 +47,8 @@ type reportingRuns struct {
 }
 
 // reportingRuns writes the workflow and its profile in thread's project and
-// starts the engine. The check is released when the test ends.
+// starts the engine. The check is released when the test ends, and the
+// test waits for every check it started to exit.
 func (f *requestFixture) reportingRuns(t *testing.T, threadID string) *reportingRuns {
 	t.Helper()
 	thread, err := f.app.store.GetThread(threadID)
@@ -75,8 +80,9 @@ cleanup: manual
 	if err := os.WriteFile(filepath.Join(dir, "tool-flow.yaml"), []byte(definition), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	gate := filepath.Join(t.TempDir(), "run-gate")
-	script := writeExecutable(t, "hold.sh", "#!/bin/sh\nwhile [ ! -e "+gate+" ]; do sleep 0.05; done\necho ok\n")
+	gateDir := t.TempDir()
+	gate, holds := filepath.Join(gateDir, "run-gate"), filepath.Join(gateDir, "holds")
+	script := writeExecutable(t, "hold.sh", "#!/bin/sh\necho $$ >> "+holds+"\nwhile [ ! -e "+gate+" ]; do sleep 0.05; done\necho ok\n")
 	profile := filepath.Join(root, "projects", project.Slug)
 	if err := os.MkdirAll(profile, 0o700); err != nil {
 		t.Fatal(err)
@@ -85,8 +91,45 @@ cleanup: manual
 		t.Fatal(err)
 	}
 	startWorkflowEngineForTest(t, f.app, root)
-	t.Cleanup(func() { _ = os.WriteFile(gate, nil, 0o600) })
+	t.Cleanup(func() {
+		release(t, gate)
+		awaitHoldsEnded(t, holds)
+	})
 	return &reportingRuns{f: f, project: project, gate: gate}
+}
+
+// awaitHoldsEnded waits for every check that recorded its pid in holds to
+// exit once released, and fails the test with any still running after 10 s,
+// which it kills. A check that had not yet seen its gate when the test's
+// directories were removed would otherwise wait for it forever.
+func awaitHoldsEnded(t *testing.T, holds string) {
+	t.Helper()
+	recorded, err := os.ReadFile(holds)
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range strings.Fields(string(recorded)) {
+		pid, err := strconv.Atoi(field)
+		if err != nil {
+			t.Fatalf("a check recorded its pid as %q", field)
+		}
+		process, err := os.FindProcess(pid)
+		if err != nil {
+			continue
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for process.Signal(syscall.Signal(0)) == nil {
+			if time.Now().After(deadline) {
+				t.Errorf("check %d is still running 10 s after its release, and is killed", pid)
+				_ = process.Kill()
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 }
 
 // start starts a run threadID asked for, as run_start does: agent-sourced
