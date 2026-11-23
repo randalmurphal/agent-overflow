@@ -99,7 +99,7 @@ func resolveGoBuildCache() string {
 // buildDriveGraph type-checks internal/app and every module package it
 // links from source, against their imports' export data.
 func buildDriveGraph() (*driveGraph, error) {
-	cmd := exec.Command("go", "list", "-e", "-json", "-export", "-compiled", "-deps", "./internal/app")
+	cmd := exec.Command("go", "list", "-e", "-json", "-export", "-compiled", "-deps", appPackagePath)
 	if goBuildCache != "" {
 		cmd.Env = append(os.Environ(), "GOCACHE="+goBuildCache)
 	}

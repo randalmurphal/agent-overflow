@@ -4,9 +4,12 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +17,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/sessionruntime"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
@@ -293,79 +297,164 @@ func setupE2EAppOn(t *testing.T, dbPath, settingsDir string) (*App, *capturedEve
 	// defaults. See isolateE2EProviderSpawns.
 	isolateE2EProviderSpawns(t, app)
 
-	// Ensure any sessions that remain open at test end are torn down, in
-	// Shutdown's order: joinBackgroundWorkAtCleanup, registered after
-	// this and so run before it, has refused new request work; session
-	// starts are refused before the close, and any settlement still in
-	// flight finishes before the store closes.
-	t.Cleanup(func() {
-		app.stopAgentNoticeWork()
-		sessions := make([]session, 0, len(app.sessionManager().runtime.Snapshot()))
-		for _, s := range app.sessionManager().runtime.Snapshot() {
-			sessions = append(sessions, s)
-		}
-		app.sessionManager().snapshotAndClear()
-		for _, s := range sessions {
-			if ps := s.ProviderSession(); ps != nil {
-				_ = ps.Close()
-			}
-		}
-		if err := app.providerEvents.drainAll(); err != nil {
-			t.Errorf("drain provider events: %v", err)
-		}
-		app.threadRequestSettling.Wait()
-	})
-
-	joinBackgroundWorkAtCleanup(t, app)
-
+	tearDownTestAppAtCleanup(t, app)
 	return app, bus
 }
 
-// The fixture's teardown joins the notice work and request settlements a
-// test leaves running, as Shutdown does, so none of them uses the store
-// after it closes or writes into a temporary directory being removed.
-func TestE2EFixtureTeardownJoinsBackgroundWork(t *testing.T) {
+// Every App fixture's teardown ends what a test leaves running, as Shutdown
+// does: it closes the sessions the App still holds, and it joins the notice
+// work and request settlements, so none of them uses the store after it
+// closes or writes into a temporary directory being removed. The fixtures
+// share one teardown, so each kind of work is started on one fixture of its
+// own: the settlement join also outlasts notice work started beside it.
+func TestAppFixtureTeardownEndsBackgroundWorkAndSessions(t *testing.T) {
 	t.Parallel()
+	e2eApp := func(t *testing.T) *App { app, _ := setupE2EApp(t); return app }
 	for _, tc := range []struct {
 		name  string
+		app   func(t *testing.T) *App
 		start func(app *App, work func()) bool
 	}{
-		{"notice work", func(app *App, work func()) bool { return app.goAgentNoticeWork("teardown", work) }},
-		{"request settlement", func(app *App, work func()) bool { app.goThreadRequestSettling(work); return true }},
+		{"setupE2EApp notice work", e2eApp, func(app *App, work func()) bool { return app.goAgentNoticeWork("teardown", work) }},
+		{"setupE2EApp request settlement", e2eApp, (*App).goThreadRequestSettling},
+		{"newTestApp", newTestApp, nil},
+		{"newTestAppWithStore", newTestAppWithStore, nil},
+		{"setupCascadeApp", func(t *testing.T) *App { app, _, _ := setupCascadeApp(t); return app }, nil},
 	} {
-		var (
-			done    bool
-			readErr error
-		)
 		t.Run(tc.name, func(t *testing.T) {
-			app, _ := setupE2EApp(t)
-			// The work outlasts the test body, so it is still running when
-			// the teardown begins.
-			if !tc.start(app, func() {
-				time.Sleep(200 * time.Millisecond)
-				_, readErr = app.store.ListProjects()
-				done = true
-			}) {
-				t.Fatal("the work was refused before the test ended")
+			t.Parallel()
+			var (
+				app     *App
+				done    bool
+				readErr error
+			)
+			t.Run("test", func(t *testing.T) {
+				app = tc.app(t)
+				app.sessionManager().put("teardown-thread", session{Provider: "claude"})
+				// The work outlasts the test body, so it is still running
+				// when the teardown begins.
+				if tc.start != nil && !tc.start(app, func() {
+					time.Sleep(200 * time.Millisecond)
+					_, readErr = app.store.ListProjects()
+					done = true
+				}) {
+					t.Fatal("the work was refused before the test ended")
+				}
+			})
+			if tc.start != nil && (!done || readErr != nil) {
+				t.Errorf("the teardown did not wait for the work (finished %v, store read %v)", done, readErr)
+			}
+			if open := len(app.sessionManager().runtime.Snapshot()); open != 0 {
+				t.Errorf("the App holds %d sessions after its test ended", open)
+			}
+			// A session start that begins after the teardown's wait is
+			// refused at startSessionNow's admission, by this cancel.
+			if app.lifeCtx().Err() == nil {
+				t.Error("the App's lifetime context is live after its test ended")
 			}
 		})
-		if !done || readErr != nil {
-			t.Errorf("%s: the teardown did not wait for it (finished %v, store read %v)", tc.name, done, readErr)
-		}
 	}
 }
 
-// joinBackgroundWorkAtCleanup ends the App's session-starting background
-// work when the test ends, as Shutdown does: thread request settlements and
-// wake deliveries, and the flush dispatch workers that start a session for a
-// message queued without one. Work that outlived the test would run against
-// its removed directories and closed store.
+// The teardown refuses a session start that work it waits for sets off, as
+// Shutdown's first step does. Without the refusal, a notice in flight at the
+// teardown started a session, that start queued a flush worker after the
+// teardown had joined the flush workers, and the worker started a second
+// session after the teardown had taken the sessions.
+func TestAppFixtureTeardownRefusesTheSessionStartsItSetsOff(t *testing.T) {
+	t.Parallel()
+	var (
+		started  bool
+		startErr error
+	)
+	t.Run("test", func(t *testing.T) {
+		app, _ := setupE2EApp(t)
+		thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
+		if err != nil {
+			t.Fatal(err)
+		}
+		app.startSessionFn = func(threadID string) error {
+			started = true
+			app.sessionManager().put(threadID, session{Provider: string(provider.Claude)})
+			return nil
+		}
+		// The work goes on once the teardown has begun, which cancels the App.
+		if !app.goAgentNoticeWork("teardown", func() {
+			<-app.lifeCtx().Done()
+			startErr = app.startSession(context.Background(), thread.ID)
+		}) {
+			t.Fatal("the notice work was refused before the test ended")
+		}
+	})
+	if started || !errors.Is(startErr, ErrShuttingDown) {
+		t.Errorf("a session start the teardown set off ran (started %v, error %v), want it refused", started, startErr)
+	}
+}
+
+// The teardown's take returns each session's Close error, and leaves the App
+// holding none of the sessions it took, one whose Close failed included.
+func TestCloseLeftSessionsReturnsEachCloseError(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	app.sessionManager().put("fails-thread", session{Provider: string(provider.Claude)})
+	app.sessionManager().put("closes-thread", session{Provider: string(provider.Claude)})
+	refused := errors.New("the provider would not end")
+	var closed []string
+	errs := closeLeftSessionsBy(app, func(threadID string, _ session) error {
+		closed = append(closed, threadID)
+		if threadID == "fails-thread" {
+			return refused
+		}
+		return nil
+	})
+	if slices.Sort(closed); !slices.Equal(closed, []string{"closes-thread", "fails-thread"}) {
+		t.Errorf("the take closed %v; want both sessions it took", closed)
+	}
+	if len(errs) != 1 || !errors.Is(errs[0], refused) {
+		t.Errorf("the take returned %v; want the one Close error", errs)
+	}
+	if open := len(app.sessionManager().runtime.Snapshot()); open != 0 {
+		t.Errorf("the App holds %d sessions after the take", open)
+	}
+}
+
+// The teardown's wait for session starts fails at its bound and names each
+// thread still starting.
+func TestWaitForSessionStartsNamesTheThreadsStillStartingAtItsBound(t *testing.T) {
+	t.Parallel()
+	sessions := sessionruntime.New()
+	start, _ := sessions.BeginStart("held-thread")
+	defer sessions.FinishStart("held-thread", start)
+	if err := waitForSessionStarts(sessions, 10*time.Millisecond); err == nil || !strings.Contains(err.Error(), "held-thread") {
+		t.Fatalf("wait = %v, want a failure naming held-thread", err)
+	}
+}
+
+// tearDownTestAppAtCleanup ends, when the test ends, what an App the test
+// built still runs, in Shutdown's order. It refuses new session starts as
+// Shutdown's first step does, so a start that work joined below sets off
+// (a flush worker's, queued by a notice's session start) is refused. It
+// cancels the App and joins its session-starting background work: thread
+// request settlements, wake deliveries, the flush dispatch workers that
+// start a session for a message queued without one, and notice work. It
+// waits out the session starts that passed the refusal before it, closes
+// the sessions the App holds that own a provider process, drains their
+// events and waits for the settlements they started. Work that outlived the
+// test would run against its removed directories and closed store, and a
+// session left open keeps its provider process writing into them.
 //
-// Call it after the fixture's other cleanups are registered, so it runs
-// before the store closes and before sessions are torn down.
-func joinBackgroundWorkAtCleanup(t *testing.T, app *App) {
+// An App without a lifetime context is given one, as the boot gives it, so
+// the cancel reaches startSessionNow's admission.
+//
+// Every App fixture calls it once, after the cleanups that close its store
+// and remove its directories are registered, so it runs before them.
+func tearDownTestAppAtCleanup(t *testing.T, app *App) {
 	t.Helper()
+	if app.appCtx == nil {
+		app.appCtx, app.appCancel = context.WithCancel(context.Background())
+	}
 	t.Cleanup(func() {
+		app.shuttingDown.Store(true)
 		if app.appCancel != nil {
 			app.appCancel()
 		}
@@ -373,7 +462,67 @@ func joinBackgroundWorkAtCleanup(t *testing.T, app *App) {
 		if err := app.drainFlushDispatch(context.Background(), 30*time.Second); err != nil {
 			t.Errorf("join flush dispatch workers: %v", err)
 		}
+		app.stopAgentNoticeWork()
+		// Shutdown does not wait here (sessionruntime StartsInFlight).
+		if err := waitForSessionStarts(app.sessionManager().runtime, sessionStartsBound); err != nil {
+			t.Error(err)
+		}
+		for _, err := range closeLeftSessions(app) {
+			t.Error(err)
+		}
 	})
+}
+
+// sessionStartsBound is how long the teardown waits for the session starts
+// in flight. A start a test holds past its end fails the teardown here.
+const sessionStartsBound = 30 * time.Second
+
+// waitForSessionStarts returns once every session start in flight has
+// finished, or fails at bound naming the threads still starting. One pass
+// is enough after the teardown has cancelled the App: a start that passed
+// shuttingDown's check before it was set, and begins after this read,
+// reaches startSessionNow's admission after the cancel and is refused there.
+func waitForSessionStarts(sessions *sessionruntime.Manager, bound time.Duration) error {
+	deadline := time.NewTimer(bound)
+	defer deadline.Stop()
+	for _, start := range sessions.StartsInFlight() {
+		select {
+		case <-start.Done:
+		case <-deadline.C:
+			return fmt.Errorf("session starts still in flight %s after the test ended, for threads %v", bound, slices.Sorted(maps.Keys(sessions.StartsInFlight())))
+		}
+	}
+	return nil
+}
+
+// closeLeftSessions takes the sessions the App holds in one step, as
+// Shutdown does, closes those that own a provider process through the
+// close every path uses, drains their events, waits for the settlements
+// they started, and returns what failed. A session a test built by hand to
+// stand in for one owns no process, and its constructor forbids Close.
+func closeLeftSessions(app *App) []error {
+	return closeLeftSessionsBy(app, func(threadID string, s session) error {
+		if ps := s.ProviderSession(); ps == nil || ps.PID() == 0 {
+			return nil
+		}
+		return app.closeProviderSession(threadID, s)
+	})
+}
+
+// closeLeftSessionsBy is closeLeftSessions closing each session it takes
+// through closeSession.
+func closeLeftSessionsBy(app *App, closeSession func(threadID string, s session) error) []error {
+	var errs []error
+	for threadID, s := range app.sessionManager().snapshotAndClear() {
+		if err := closeSession(threadID, s); err != nil {
+			errs = append(errs, fmt.Errorf("close the session the test left open: %w", err))
+		}
+	}
+	if err := app.providerEvents.drainAll(); err != nil {
+		errs = append(errs, fmt.Errorf("drain provider events: %w", err))
+	}
+	app.threadRequestSettling.Wait()
+	return errs
 }
 
 // e2eThread builds a thread record suitable for E2E tests. Caller must insert

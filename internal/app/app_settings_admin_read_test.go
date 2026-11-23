@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -16,6 +14,7 @@ import (
 	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // Values a settings read withholds from a caller without access:admin
@@ -158,20 +157,15 @@ func TestSettingsWritesEmitNoSettingsValues(t *testing.T) {
 // settingsForCaller, and settingsReads exercises each one.
 func TestEverySettingsReturningMethodProjectsForItsCaller(t *testing.T) {
 	t.Parallel()
-	// This suite runs from the repository root (see TestMain).
 	const packageDir = "internal/app"
-	entries, err := os.ReadDir(packageDir)
-	if err != nil {
-		t.Fatalf("read package dir: %v", err)
-	}
 	fset := token.NewFileSet()
 	var methods []string
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+	for _, path := range reporoot.Files(t, packageDir, "*.go") {
+		name := filepath.Base(path)
+		if strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		file, err := parser.ParseFile(fset, filepath.Join(packageDir, name), nil, 0)
+		file, err := reporoot.ParseGoFile(t, fset, path, 0)
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}

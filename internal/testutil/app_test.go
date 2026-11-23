@@ -31,7 +31,9 @@ func TestWriteMockClaudeInitEmitsInitLine(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer func() { _ = cmd.Wait() }()
+	// Closed first, so a test that fails before its own close ends the
+	// script instead of waiting on it forever.
+	defer func() { _ = stdin.Close(); _ = cmd.Wait() }()
 
 	reader := bufio.NewReader(stdout)
 	out := readLineWithTimeout(t, reader, 3*time.Second)
@@ -62,7 +64,9 @@ func TestWriteMockClaudeSessionEmitsAllEvents(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer func() { _ = cmd.Wait() }()
+	// Closed first, so a test that fails before its own close ends the
+	// script instead of waiting on it forever.
+	defer func() { _ = stdin.Close(); _ = cmd.Wait() }()
 
 	// Send a user message so the script's initial read completes.
 	if _, err := stdin.Write([]byte("user-hello\n")); err != nil {
@@ -80,7 +84,9 @@ func TestWriteMockClaudeSessionEmitsAllEvents(t *testing.T) {
 }
 
 // TestWriteMockCodexSessionRespondsToInitialize verifies the mock responds
-// with a matching id for the initialize JSON-RPC request.
+// with a matching id for the initialize JSON-RPC request, answers a method
+// it was not given "method not found" at once, and answers neither a
+// request whose template is empty nor the client's answer to a request.
 func TestWriteMockCodexSessionRespondsToInitialize(t *testing.T) {
 	t.Parallel()
 
@@ -88,6 +94,7 @@ func TestWriteMockCodexSessionRespondsToInitialize(t *testing.T) {
 		`"method":"initialize"`:    `{"jsonrpc":"2.0","id":%s,"result":{}}`,
 		`"method":"thread/start"`:  `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"t-1"}}}`,
 		`"method":"thread/resume"`: `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"t-1"}}}`,
+		`"method":"turn/start"`:    "",
 	})
 
 	cmd := exec.Command(path)
@@ -96,7 +103,9 @@ func TestWriteMockCodexSessionRespondsToInitialize(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer func() { _ = cmd.Wait() }()
+	// Closed first, so a test that fails before its own close ends the
+	// script instead of waiting on it forever.
+	defer func() { _ = stdin.Close(); _ = cmd.Wait() }()
 
 	// Send an initialize request.
 	req := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n"
@@ -119,6 +128,22 @@ func TestWriteMockCodexSessionRespondsToInitialize(t *testing.T) {
 	line = readLineWithTimeout(t, reader, 3*time.Second)
 	if !strings.Contains(line, `"id":2`) || !strings.Contains(line, `"t-1"`) {
 		t.Fatalf("thread/start response = %q", line)
+	}
+
+	// Unanswered lines first: the next line read answers the request after
+	// them.
+	for _, req := range []string{
+		`{"jsonrpc":"2.0","id":3,"method":"turn/start","params":{}}`,
+		`{"jsonrpc":"2.0","id":4,"result":{"decision":"accept"}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"model/list","params":{}}`,
+	} {
+		if _, err := stdin.Write([]byte(req + "\n")); err != nil {
+			t.Fatalf("write stdin: %v", err)
+		}
+	}
+	line = readLineWithTimeout(t, reader, 3*time.Second)
+	if want := `{"jsonrpc":"2.0","id":5,"error":{"code":-32601,"message":"Method not found"}}`; line != want {
+		t.Fatalf("after turn/start, a client answer and model/list: %q; want only model/list's %q", line, want)
 	}
 
 	_ = stdin.Close()
@@ -205,8 +230,36 @@ func readLineWithTimeout(t *testing.T, r *bufio.Reader, d time.Duration) string 
 	}
 }
 
+// startMockTurn starts the mock Claude script at path and sends the user
+// line that begins its first turn. The script is killed when the test
+// ends: one that fails while the script waits at a gate would otherwise
+// wait on it forever, since closing stdin does not reach a script that is
+// not reading it.
+func startMockTurn(t *testing.T, path string) (*exec.Cmd, *bufio.Reader) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), path)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("StdinPipe: %v", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("StdoutPipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = cmd.Wait() })
+	if _, err := stdin.Write([]byte("user-hello\n")); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	return cmd, bufio.NewReader(stdout)
+}
+
 // TestWriteMockClaudeScriptHoldsATurnAtAWaitForFileLine: the lines before
-// the gate print at once, the ones after it only once the file exists.
+// the gate print at once, the ones after it only once the file exists. A
+// test that ends with the script at the gate, as one that fails there
+// does, ends the script.
 func TestWriteMockClaudeScriptHoldsATurnAtAWaitForFileLine(t *testing.T) {
 	t.Parallel()
 
@@ -215,18 +268,19 @@ func TestWriteMockClaudeScriptHoldsATurnAtAWaitForFileLine(t *testing.T) {
 	after := `{"type":"result","subtype":"success","is_error":false}`
 	path := WriteMockClaudeScript(t, t.TempDir(), [][]string{{before, MockWaitForFile(gate), after}})
 
-	cmd := exec.Command(path)
-	stdin, _ := cmd.StdinPipe()
-	stdout, _ := cmd.StdoutPipe()
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = cmd.Wait() }()
-	if _, err := stdin.Write([]byte("user-hello\n")); err != nil {
-		t.Fatalf("write stdin: %v", err)
+	var held *exec.Cmd
+	t.Run("ended at the gate", func(t *testing.T) {
+		cmd, reader := startMockTurn(t, path)
+		if line := readLineWithTimeout(t, reader, 3*time.Second); line != before {
+			t.Fatalf("first line = %q, want the line before the gate", line)
+		}
+		held = cmd
+	})
+	if held != nil && held.ProcessState == nil {
+		t.Fatal("the script held at the gate is still running after its test ended")
 	}
 
-	reader := bufio.NewReader(stdout)
+	_, reader := startMockTurn(t, path)
 	if line := readLineWithTimeout(t, reader, 3*time.Second); line != before {
 		t.Fatalf("first line = %q, want the line before the gate", line)
 	}
@@ -255,5 +309,4 @@ func TestWriteMockClaudeScriptHoldsATurnAtAWaitForFileLine(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the turn did not resume once the gate file existed")
 	}
-	_ = stdin.Close()
 }

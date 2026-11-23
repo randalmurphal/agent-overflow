@@ -9,6 +9,7 @@ import (
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil"
 )
 
@@ -17,11 +18,7 @@ import (
 // reach a provider binary or a real provider home.
 func newResolveTestService(t *testing.T) (service *Service, project string, worktree string) {
 	t.Helper()
-	database, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
+	database := storetest.Clone(t)
 
 	project = testutil.InitGitRepo(t)
 	worktree = filepath.Join(t.TempDir(), "wt")

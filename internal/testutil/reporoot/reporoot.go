@@ -66,9 +66,79 @@ func Path(t testing.TB, rel string) string {
 	return filepath.Join(Dir(t), filepath.FromSlash(rel))
 }
 
-// goSourceRoots are the directories under the checkout that hold Go packages,
-// beside the root package itself: the Makefile's GO_PACKAGE_ROOTS.
-var goSourceRoots = []string{"cmd", "internal"}
+// Observe puts the files at rels, slash paths from the checkout's root, in
+// the calling test's cache key, for a test whose child process reads them,
+// as make reads the Makefile. The test cache keys a result on the files the
+// test process itself opens, so a pass recorded before such a file changed
+// would otherwise be reused.
+func Observe(t testing.TB, rels ...string) {
+	t.Helper()
+	for _, rel := range rels {
+		f, err := os.Open(Path(t, rel))
+		if err != nil {
+			t.Fatalf("reporoot: observe %s: %v", rel, err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("reporoot: observe %s: %v", rel, err)
+		}
+	}
+}
+
+// goSourceRoots are the directories under the checkout whose trees hold Go
+// packages, beside the root package itself, read from the Makefile's
+// GO_PACKAGE_ROOTS: the one declaration of where the build's packages are.
+var goSourceRoots = sync.OnceValues(func() ([]string, error) {
+	if rootErr != nil {
+		return nil, rootErr
+	}
+	makefile, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		return nil, fmt.Errorf("reporoot: read GO_PACKAGE_ROOTS: %w", err)
+	}
+	return packageRoots(makefile)
+})
+
+// packageRoots reads the line `GO_PACKAGE_ROOTS := . ./dir/... ...` from a
+// Makefile, the root package and each directory whose tree holds packages,
+// and returns those directories. It fails on any other form, which GoFiles
+// and ObserveGoSources would read wrongly.
+func packageRoots(makefile []byte) ([]string, error) {
+	const prefix = "GO_PACKAGE_ROOTS := "
+	for line := range strings.Lines(string(makefile)) {
+		value, ok := strings.CutPrefix(line, prefix)
+		if !ok {
+			continue
+		}
+		var dirs []string
+		rootPackage := false
+		for _, field := range strings.Fields(value) {
+			dir, tree := strings.CutSuffix(strings.TrimPrefix(field, "./"), "/...")
+			switch {
+			case field == ".":
+				rootPackage = true
+			case tree && strings.HasPrefix(field, "./") && fs.ValidPath(dir) && dir != "." && !strings.Contains(dir, "$"):
+				dirs = append(dirs, dir)
+			default:
+				return nil, fmt.Errorf("reporoot: GO_PACKAGE_ROOTS names %q; a root is . or ./dir/...", field)
+			}
+		}
+		if !rootPackage {
+			return nil, fmt.Errorf("reporoot: GO_PACKAGE_ROOTS (%s) leaves out the root package, which GoFiles lists", strings.TrimSpace(value))
+		}
+		return dirs, nil
+	}
+	return nil, fmt.Errorf("reporoot: the Makefile has no %q line", strings.TrimSpace(prefix))
+}
+
+// sourceRoots is goSourceRoots for a test.
+func sourceRoots(t testing.TB) []string {
+	t.Helper()
+	dirs, err := goSourceRoots()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dirs
+}
 
 // ObserveGoSources puts the Go source tree in the calling test's cache key.
 //
@@ -84,7 +154,7 @@ func ObserveGoSources(t testing.TB) {
 	if _, err := os.ReadDir(dir); err != nil {
 		t.Fatalf("reporoot: read %s: %v", dir, err)
 	}
-	for _, sourceRoot := range goSourceRoots {
+	for _, sourceRoot := range sourceRoots(t) {
 		err := Walk(t, sourceRoot, func(_ string, _ fs.DirEntry, err error) error {
 			return err
 		})

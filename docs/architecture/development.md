@@ -41,6 +41,20 @@ the developer's running app; goals that launch an app (`make dev`,
 under `bin/ao-netns`, whose private temp directory and on-disk Go work
 directory are described with the
 [isolation](../specs/testing-harness.md#isolation-network-temp-directory-and-priority).
+
+Without `-parallel`, `internal/app` and `internal/store` run at most four
+parallel tests at once (`internal/testutil/testparallel`, from each
+TestMain); a `-parallel` given is kept. Their tests open many SQLite stores
+in one process, modernc.org/libc takes one process-wide lock for every
+allocation, and each connection parses the schema, so more tests at once
+cost CPU and finish later. `internal/app` alone, uncached, on 24 cores ran
+554 s at `-parallel 4` (user 1,160 s), 721 s at 8 (user 1,793 s) and 882 s
+at the default (user 2,658 s); `internal/store` ran 249 s at 4 (user
+303 s) and 279 s at the default (user 506 s). Measure again, and remove the
+cap if it no longer pays, once a modernc.org/sqlite release pins a libc
+with a per-thread allocator, or once `internal/app` is divided into
+packages.
+
 Go trims its build cache only by age, so `go-build`, `go-test` and
 `test-race` run a `cmd/ao-gocache-trim` pass before their build or test and
 another when it ends. A pass walks the cache at most every five minutes,

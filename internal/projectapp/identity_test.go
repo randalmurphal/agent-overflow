@@ -11,6 +11,7 @@ import (
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 type identityAnswer struct {
@@ -45,11 +46,7 @@ func repo(id, source string) identityAnswer {
 
 func newIdentityService(t *testing.T, fake *fakeIdentity) (*Service, *store.Store) {
 	t.Helper()
-	database, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
+	database := storetest.Clone(t)
 	return New(Deps{
 		Store:    database,
 		Now:      func() time.Time { return time.UnixMilli(1234) },

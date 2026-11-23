@@ -9,6 +9,7 @@ import (
 
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // The SHARED decision table. Two gates now answer "may this moment interrupt
@@ -77,7 +78,7 @@ var gateRefusals = map[string]NotificationErrorCode{
 
 func loadGateCases(t *testing.T) []gateCase {
 	t.Helper()
-	raw, err := os.ReadFile(gateCasesPath)
+	raw, err := os.ReadFile(reporoot.Path(t, gateCasesPath))
 	if err != nil {
 		t.Fatalf("read the shared gate table: %v", err)
 	}

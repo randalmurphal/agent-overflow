@@ -7,16 +7,12 @@ import (
 	"testing"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 func newTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	s, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	return s
+	return storetest.Clone(t)
 }
 
 func TestEnsureForWorkspaceRejectsNilStore(t *testing.T) {

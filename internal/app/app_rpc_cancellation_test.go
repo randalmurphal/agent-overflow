@@ -4,12 +4,11 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/testutil/reporoot"
 	"agent-overflow/internal/transport"
 )
 
@@ -58,17 +57,11 @@ var callerBoundMethods = map[string]string{
 func TestCallerBoundMethodsAreReviewed(t *testing.T) {
 	t.Parallel()
 	takesContext := map[string]bool{}
-	entries, err := os.ReadDir("internal/app")
-	if err != nil {
-		t.Fatalf("read internal/app: %v", err)
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+	for _, path := range reporoot.Files(t, "internal/app", "*.go") {
+		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		path := filepath.Join("internal/app", name)
-		parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+		parsed, err := reporoot.ParseGoFile(t, token.NewFileSet(), path, parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}

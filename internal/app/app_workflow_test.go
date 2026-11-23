@@ -1426,10 +1426,86 @@ func startWorkflowEngineForTest(t *testing.T, app *App, configRoot string) {
 		// The timers stop first for the same reason they do in production: a
 		// resume must not be able to fire into an engine that is closing.
 		app.workflowApplication().StopAutoResumes()
+		// As Shutdown does, a tool command is stopped, and its reaper joined,
+		// before the engine it reports to closes.
+		if runner := app.workflowApplication().Runner(); runner != nil {
+			runner.StopTools()
+		}
 		if app.workflowApplication().Engine() != nil {
 			_ = app.workflowApplication().Engine().Close()
 		}
 	})
+}
+
+// startToolFlowEngine writes the tool-flow workflow, whose one phase runs
+// the check hold, project's profile, which runs script as hold, and starts
+// the engine. The check passing routes the run to done.
+func startToolFlowEngine(t *testing.T, app *App, project store.Project, script string) {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, "workflows")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	definition := `id: tool-flow
+name: Tool flow
+phases:
+  - id: check
+    driver: tool
+    check: hold
+    gate:
+      routes:
+        - when:
+            eq:
+              ref: check.passed
+              value: true
+          to: done
+        - to: failed
+cleanup: manual
+`
+	if err := os.WriteFile(filepath.Join(dir, "tool-flow.yaml"), []byte(definition), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	profile := filepath.Join(root, "projects", project.Slug)
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profile, "profile.yaml"), []byte("checks:\n  hold: [\""+script+"\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	startWorkflowEngineForTest(t, app, root)
+}
+
+// The engine fixture stops a tool check still running when its test ends,
+// and waits for it to exit, before the engine closes, as Shutdown does.
+// Without the stop, the check runs on past the engine's close until the
+// App's teardown cancels its lifetime, and nothing waits for it then.
+func TestTheWorkflowEngineFixtureEndsAHeldToolCheckBeforeTheEngineCloses(t *testing.T) {
+	t.Parallel()
+	marks := t.TempDir()
+	started, ended := filepath.Join(marks, "started"), filepath.Join(marks, "ended")
+	var endedBeforeTheApp bool
+	t.Run("test", func(t *testing.T) {
+		app, _ := setupE2EApp(t)
+		// Runs after the engine fixture's teardown, before the App's.
+		t.Cleanup(func() {
+			_, err := os.Stat(ended)
+			endedBeforeTheApp = err == nil
+		})
+		project := mustReloadProject(t, app.store, testutil.EnsureProject(t, app.store, t.TempDir()).ID)
+		script := writeExecutable(t, "hold.sh", "#!/bin/sh\ntrap 'echo > "+ended+"; exit 143' TERM\necho > "+started+"\nwhile :; do sleep 0.05; done\n")
+		startToolFlowEngine(t, app, project, script)
+		if _, err := app.WorkflowStartRun(project.ID, "tool-flow", "shared", "hold", json.RawMessage(`{}`), nil, "", false); err != nil {
+			t.Fatal(err)
+		}
+		waitUntil(t, 10*time.Second, func() bool {
+			_, err := os.Stat(started)
+			return err == nil
+		})
+	})
+	if !endedBeforeTheApp {
+		t.Error("the held check had not exited when the engine fixture's teardown returned")
+	}
 }
 
 func mustReloadProject(t *testing.T, database *store.Store, projectID string) store.Project {

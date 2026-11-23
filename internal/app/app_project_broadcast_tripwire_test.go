@@ -2,13 +2,13 @@ package app
 
 import (
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // The classification every exported projectapp.Service method must carry.
@@ -42,27 +42,22 @@ var (
 	}
 )
 
-// These suites run from the repository root (see TestMain), so packages are
-// named explicitly rather than scanned as ".".
+// The packages these scans read, named from the repository root.
 const (
 	appPackageDir        = "internal/app"
-	projectAppPackageDir = "../projectapp"
+	projectAppPackageDir = "internal/projectapp"
 )
 
 func parsePackageFiles(t *testing.T, dir string) map[string]*ast.File {
 	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read %s: %v", dir, err)
-	}
 	fset := token.NewFileSet()
-	files := make(map[string]*ast.File, len(entries))
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+	files := map[string]*ast.File{}
+	for _, path := range reporoot.Files(t, dir, "*.go") {
+		name := filepath.Base(path)
+		if strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, 0)
+		file, err := reporoot.ParseGoFile(t, fset, path, 0)
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}
@@ -95,7 +90,7 @@ func isServiceMethod(fn *ast.FuncDecl) bool {
 func TestEveryProjectServiceMethodIsClassified(t *testing.T) {
 	t.Parallel()
 	var found []string
-	for _, file := range parsePackageFiles(t, filepath.Join(appPackageDir, projectAppPackageDir)) {
+	for _, file := range parsePackageFiles(t, projectAppPackageDir) {
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || !fn.Name.IsExported() || !isServiceMethod(fn) {

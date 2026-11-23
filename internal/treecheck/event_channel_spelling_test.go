@@ -1,9 +1,8 @@
-package app
+package treecheck
 
 import (
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"sort"
 	"strings"
@@ -44,9 +43,9 @@ var nonChannelEmitters = []string{
 	"internal/mcpstatus/",
 }
 
-// TestEmitSitesNameAnEventChannelConstant walks every production Go
-// source under the build's package roots and fails on an emit call whose
-// channel argument is a bare string literal — or a named UNTYPED string
+// emitSiteCheck reads every production Go source under the build's
+// package roots and fails on an emit call whose channel argument is a bare
+// string literal — or a named UNTYPED string
 // constant from the same package, which is the same hole one indirection
 // away: `const fooChannel = "provider:foo"` is assignable to
 // eventchan.Channel without a conversion, so it evades the newtype AND
@@ -62,88 +61,85 @@ var nonChannelEmitters = []string{
 // a plain literal), and a CROSS-PACKAGE exported untyped const spelled
 // as a SelectorExpr. Closing them needs go/types resolution; revisit if
 // one ever appears.
-func TestEmitSitesNameAnEventChannelConstant(t *testing.T) {
-	t.Parallel()
-	fset := token.NewFileSet()
+func emitSiteCheck() goFileCheck {
 	var offenders []string
-
-	// Pass 1: per-directory (= per-package) names of constants declared
-	// as an untyped string literal. Only those are assignable to
+	// Per-directory (= per-package) names of constants declared as an
+	// untyped string literal. Only those are assignable to
 	// eventchan.Channel without a conversion — `const x string = "…"`
 	// would not compile at an emit site.
 	untypedStringConsts := map[string]map[string]bool{}
-	sources := collectGoSources(t)
-	parsed := make(map[string]*ast.File, len(sources))
-	for _, path := range sources {
-		if strings.HasSuffix(path, "_test.go") || skipEmitScan(path) {
-			continue
-		}
-		file, err := parser.ParseFile(fset, path, nil, 0)
-		if err != nil {
-			t.Fatalf("parse %s: %v", path, err)
-		}
-		parsed[path] = file
-		dir := sourceDir(path)
-		for _, decl := range file.Decls {
-			gen, ok := decl.(*ast.GenDecl)
-			if !ok || gen.Tok != token.CONST {
-				continue
+	// An emit site that names an identifier, decided once every file of
+	// its package has been read.
+	type identSite struct{ dir, name, at, call string }
+	var identSites []identSite
+	return goFileCheck{
+		name: "EmitSitesNameAnEventChannelConstant",
+		visit: func(fset *token.FileSet, path string, file *ast.File) {
+			if strings.HasSuffix(path, "_test.go") || skipEmitScan(path) {
+				return
 			}
-			for _, spec := range gen.Specs {
-				value, ok := spec.(*ast.ValueSpec)
-				if !ok || value.Type != nil {
+			dir := sourceDir(path)
+			for _, decl := range file.Decls {
+				gen, ok := decl.(*ast.GenDecl)
+				if !ok || gen.Tok != token.CONST {
 					continue
 				}
-				for i, name := range value.Names {
-					if i >= len(value.Values) {
+				for _, spec := range gen.Specs {
+					value, ok := spec.(*ast.ValueSpec)
+					if !ok || value.Type != nil {
 						continue
 					}
-					if lit, ok := value.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
-						if untypedStringConsts[dir] == nil {
-							untypedStringConsts[dir] = map[string]bool{}
+					for i, name := range value.Names {
+						if i >= len(value.Values) {
+							continue
 						}
-						untypedStringConsts[dir][name.Name] = true
+						if lit, ok := value.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+							if untypedStringConsts[dir] == nil {
+								untypedStringConsts[dir] = map[string]bool{}
+							}
+							untypedStringConsts[dir][name.Name] = true
+						}
 					}
 				}
 			}
-		}
-	}
-
-	for path, file := range parsed {
-		dir := sourceDir(path)
-		ast.Inspect(file, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok || len(call.Args) == 0 {
-				return true
-			}
-			if !eventEmitFuncNames[emitCallName(call.Fun)] {
-				return true
-			}
-			switch arg := call.Args[0].(type) {
-			case *ast.BasicLit:
-				if arg.Kind == token.STRING {
-					offenders = append(offenders, fmt.Sprintf("%s: %s(%s, …)",
-						fset.Position(call.Pos()), emitCallName(call.Fun), arg.Value))
+			ast.Inspect(file, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok || len(call.Args) == 0 {
+					return true
 				}
-			case *ast.Ident:
-				if untypedStringConsts[dir][arg.Name] {
+				if !eventEmitFuncNames[emitCallName(call.Fun)] {
+					return true
+				}
+				switch arg := call.Args[0].(type) {
+				case *ast.BasicLit:
+					if arg.Kind == token.STRING {
+						offenders = append(offenders, fmt.Sprintf("%s: %s(%s, …)",
+							fset.Position(call.Pos()), emitCallName(call.Fun), arg.Value))
+					}
+				case *ast.Ident:
+					identSites = append(identSites, identSite{dir, arg.Name, fset.Position(call.Pos()).String(), emitCallName(call.Fun)})
+				}
+				return true
+			})
+		},
+		report: func(t *testing.T) {
+			for _, site := range identSites {
+				if untypedStringConsts[site.dir][site.name] {
 					offenders = append(offenders, fmt.Sprintf("%s: %s(%s, …) — %s is an untyped string constant",
-						fset.Position(call.Pos()), emitCallName(call.Fun), arg.Name, arg.Name))
+						site.at, site.call, site.name, site.name))
 				}
 			}
-			return true
-		})
+			if len(offenders) == 0 {
+				return
+			}
+			sort.Strings(offenders)
+			t.Errorf("%d emit site(s) name a channel as a bare string literal:\n  %s\n\n"+
+				"Use the internal/eventchan constant instead. If the channel is genuinely "+
+				"caller-named (the harness escape hatches), spell eventchan.Channel(name) so "+
+				"the fail-closed loopback-only default is a visible choice.",
+				len(offenders), strings.Join(offenders, "\n  "))
+		},
 	}
-
-	if len(offenders) == 0 {
-		return
-	}
-	sort.Strings(offenders)
-	t.Errorf("%d emit site(s) name a channel as a bare string literal:\n  %s\n\n"+
-		"Use the internal/eventchan constant instead. If the channel is genuinely "+
-		"caller-named (the harness escape hatches), spell eventchan.Channel(name) so "+
-		"the fail-closed loopback-only default is a visible choice.",
-		len(offenders), strings.Join(offenders, "\n  "))
 }
 
 // sourceDir is the per-package grouping key for the untyped-const scan:

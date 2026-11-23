@@ -6,8 +6,6 @@ package app
 // rows of their own with counts of their own.
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -88,10 +86,7 @@ func TestADelegatingWorkerRowCountsItsOwnSpend(t *testing.T) {
 	f := newRequestFixture(t)
 	f.watchAgentRows()
 	f.holdCallerSession()
-	data, err := os.ReadFile(filepath.Join("docs", "references", "fixtures", "claude", "subagent_usage_inclusion_20260703.ndjson"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := wireCapture(t, "claude/subagent_usage_inclusion_20260703.ndjson")
 	turn := strings.Split(strings.TrimSpace(string(data)), "\n")
 	installMockClaudeTurns(t, f.app, [][]string{turn})
 	ack := f.spawnWorker(t, "work out 17*23 with a helper")

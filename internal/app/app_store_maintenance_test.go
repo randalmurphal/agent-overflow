@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/fixturedir"
 )
 
 // The auto_vacuum conversion's wait exists to pick a moment the user cannot
@@ -134,14 +134,8 @@ func TestStoreSwapReadyTreatsALiveTurnAsActivity(t *testing.T) {
 // upgraded install's is.
 func useLegacyStore(t *testing.T, app *App) {
 	t.Helper()
-	legacyStoreTemplate.once.Do(func() {
-		legacyStoreTemplate.path, legacyStoreTemplate.err = buildLegacyStoreTemplate()
-	})
-	if legacyStoreTemplate.err != nil {
-		t.Fatalf("build legacy store template: %v", legacyStoreTemplate.err)
-	}
 	path := filepath.Join(t.TempDir(), "legacy.db")
-	if err := copyTemplateFile(legacyStoreTemplate.path, path, 0o600); err != nil {
+	if err := copyTemplateFile(legacyStoreTemplate.Path(t), path, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	st, err := store.New(path)
@@ -159,43 +153,38 @@ func useLegacyStore(t *testing.T, app *App) {
 // legacyStoreTemplate is the migrated legacy file, built once: the chain
 // takes about a second on a new file, and copying the result is the same
 // database. Store.Close checkpoints, so the copy is the one file.
-var legacyStoreTemplate struct {
-	once sync.Once
-	path string
-	err  error
-}
-
-func buildLegacyStoreTemplate() (string, error) {
-	dir, err := newFixtureTemplateDir()
-	if err != nil {
-		return "", err
+var legacyStoreTemplate = fixturedir.New("legacy.db", func(tb testing.TB, path string) {
+	if err := buildLegacyStoreTemplate(path); err != nil {
+		tb.Fatalf("build legacy store template: %v", err)
 	}
-	path := filepath.Join(dir, "legacy.db")
+})
+
+func buildLegacyStoreTemplate(path string) error {
 	raw, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
-		return "", err
+		return err
 	}
 	var journal string
 	if err := raw.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&journal); err != nil {
-		return "", errors.Join(err, raw.Close())
+		return errors.Join(err, raw.Close())
 	}
 	if _, err := raw.Exec(`CREATE TABLE legacy_seed (x INTEGER)`); err != nil {
-		return "", errors.Join(err, raw.Close())
+		return errors.Join(err, raw.Close())
 	}
 	if err := raw.Close(); err != nil {
-		return "", err
+		return err
 	}
 	st, err := store.New(path)
 	if err != nil {
-		return "", err
+		return err
 	}
 	if err := st.Close(); err != nil {
-		return "", err
+		return err
 	}
 	if info, err := os.Stat(path + "-wal"); err == nil && info.Size() > 0 {
-		return "", fmt.Errorf("legacy template WAL survived Close with %d bytes", info.Size())
+		return fmt.Errorf("legacy template WAL survived Close with %d bytes", info.Size())
 	}
-	return path, nil
+	return nil
 }
 
 // setDeferredWatermark writes the deferred phase watermark through a second

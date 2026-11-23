@@ -4,7 +4,6 @@ import (
 	"context"
 	"go/ast"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +12,7 @@ import (
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/reporoot"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
 )
@@ -488,12 +488,8 @@ func TestEveryThreadDrivingMethodIsListed(t *testing.T) {
 // testFunctionExists reports whether internal/app declares a test named name.
 func testFunctionExists(t *testing.T, name string) bool {
 	t.Helper()
-	files, err := filepath.Glob("internal/app/*_test.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, file := range files {
-		source, err := os.ReadFile(file)
+	for _, file := range reporoot.Files(t, "internal/app", "*_test.go") {
+		source, err := os.ReadFile(reporoot.Path(t, file))
 		if err != nil {
 			t.Fatal(err)
 		}

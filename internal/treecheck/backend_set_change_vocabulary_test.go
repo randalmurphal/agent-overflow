@@ -1,17 +1,19 @@
-package app
+package treecheck
 
 import (
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"go/types"
+	"maps"
 	"os"
-	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // The backend:set-changed frame is declared once, in
@@ -61,12 +63,12 @@ func TestBackendSetChangeVocabularyMatchesTheFrontend(t *testing.T) {
 		if len(declared) == 0 || len(mirrored) == 0 {
 			t.Fatalf("%s/%s: declared=%v mirrored=%v; one side is empty", pair.goType, pair.tsField, declared, mirrored)
 		}
-		for _, name := range sortedKeys(declared) {
+		for _, name := range slices.Sorted(maps.Keys(declared)) {
 			if !mirrored[name] {
 				t.Errorf("%s declares %q and %s's %s union does not", pair.goType, name, setChangeMirrorPath, pair.tsField)
 			}
 		}
-		for _, name := range sortedKeys(mirrored) {
+		for _, name := range slices.Sorted(maps.Keys(mirrored)) {
 			if !declared[name] {
 				t.Errorf("%s's %s union names %q and %s.%s does not", setChangeMirrorPath, pair.tsField, name, setChangePackageDir, pair.goType)
 			}
@@ -86,7 +88,7 @@ func TestBackendSetChangeEmitsCarryTheTypedFrame(t *testing.T) {
 	for _, dir := range append([]string{setChangePackageDir}, setChangeEmitters...) {
 		sites := 0
 		for _, path := range productionGoFiles(t, dir) {
-			file, err := parser.ParseFile(fset, path, nil, 0)
+			file, err := reporoot.ParseGoFile(t, fset, path, 0)
 			if err != nil {
 				t.Fatalf("parse %s: %v", path, err)
 			}
@@ -205,7 +207,7 @@ func setChangeConstants(t *testing.T, typeName string) map[string]bool {
 	fset := token.NewFileSet()
 	out := map[string]bool{}
 	for _, path := range productionGoFiles(t, setChangePackageDir) {
-		file, err := parser.ParseFile(fset, path, nil, 0)
+		file, err := reporoot.ParseGoFile(t, fset, path, 0)
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}
@@ -240,7 +242,7 @@ func setChangeConstants(t *testing.T, typeName string) map[string]bool {
 // BackendSetChangeEvent interface in the frontend store.
 func setChangeMirrorUnion(t *testing.T, field string) map[string]bool {
 	t.Helper()
-	source, err := os.ReadFile(setChangeMirrorPath)
+	source, err := os.ReadFile(reporoot.Path(t, setChangeMirrorPath))
 	if err != nil {
 		t.Fatalf("read %s: %v", setChangeMirrorPath, err)
 	}
@@ -264,17 +266,11 @@ func setChangeMirrorUnion(t *testing.T, field string) map[string]bool {
 // productionGoFiles lists one package directory's non-test Go sources.
 func productionGoFiles(t *testing.T, dir string) []string {
 	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read %s: %v", dir, err)
-	}
 	var files []string
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
+	for _, path := range reporoot.Files(t, dir, "*.go") {
+		if !strings.HasSuffix(path, "_test.go") {
+			files = append(files, path)
 		}
-		files = append(files, filepath.Join(dir, name))
 	}
 	return files
 }

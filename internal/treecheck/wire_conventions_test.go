@@ -1,16 +1,16 @@
-package app
+package treecheck
 
 import (
+	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // Server-push payloads are addressed by the ENTITY they describe — a cwd, a PR
@@ -27,11 +27,6 @@ import (
 //
 // Doctrine: internal/transport/AGENTS.md → "Events are entity-keyed";
 // frontend/CLAUDE.md → "State Boundaries".
-
-// goSourceRoots mirrors GO_PACKAGE_ROOTS in the Makefile: the root package,
-// cmd/, and internal/. A new Go tree added to the build has to be added here
-// too, or the convention stops being enforced where it was added.
-var goSourceRoots = []string{".", "cmd", "internal"}
 
 // bannedWireNames are the serialized names no field may carry, compared
 // lowercased so SubscriptionId / subscriptionID / SubscriptionID all trip
@@ -65,50 +60,56 @@ var exemptWireNames = map[string]map[string]bool{
 	"internal/webview2host/cdpframe.go": {"streamid": true},
 }
 
-func TestWirePayloadsAreEntityKeyedNotSubscriptionKeyed(t *testing.T) {
-	t.Parallel()
-	for _, file := range collectGoSources(t) {
-		exempt := exemptWireNames[filepath.ToSlash(file)]
-		fileSet := token.NewFileSet()
-		parsed, err := parser.ParseFile(fileSet, file, nil, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatalf("parse %s: %v", file, err)
-		}
-		ast.Inspect(parsed, func(node ast.Node) bool {
-			structType, ok := node.(*ast.StructType)
-			if !ok || structType.Fields == nil {
+// wirePayloadCheck fails on a serialized field named by a per-caller
+// handle. Test files are scanned too: a fixture that reintroduces the shape
+// is as much a regression as production code doing it.
+func wirePayloadCheck() goFileCheck {
+	var found []string
+	return goFileCheck{
+		name: "WirePayloadsAreEntityKeyedNotSubscriptionKeyed",
+		visit: func(fset *token.FileSet, path string, file *ast.File) {
+			exempt := exemptWireNames[path]
+			ast.Inspect(file, func(node ast.Node) bool {
+				structType, ok := node.(*ast.StructType)
+				if !ok || structType.Fields == nil {
+					return true
+				}
+				// An untagged field on a serialized struct still goes over the wire
+				// under its Go name, so untagged fields are checked too — but only
+				// on structs that are demonstrably wire shapes (at least one json
+				// tag). Go-internal bookkeeping that tracks subscription handles by
+				// field name is not this rule's business.
+				wireShape := structHasJSONTag(structType)
+				for _, field := range structType.Fields.List {
+					name, tagged, serialized := jsonFieldName(field)
+					if !serialized || (!tagged && !wireShape) {
+						continue
+					}
+					kind, banned := bannedWireNames[strings.ToLower(name)]
+					if !banned || exempt[strings.ToLower(name)] {
+						continue
+					}
+					found = append(found, fmt.Sprintf(
+						"%s:%d serializes %q (a %s) — events are keyed by their entity (cwd, PR key, thread id), "+
+							"never by a per-caller handle; see internal/transport/AGENTS.md",
+						path, fset.Position(field.Pos()).Line, name, kind,
+					))
+				}
 				return true
+			})
+		},
+		report: func(t *testing.T) {
+			for _, finding := range found {
+				t.Error(finding)
 			}
-			// An untagged field on a serialized struct still goes over the wire
-			// under its Go name, so untagged fields are checked too — but only
-			// on structs that are demonstrably wire shapes (at least one json
-			// tag). Go-internal bookkeeping that tracks subscription handles by
-			// field name is not this rule's business.
-			wireShape := structHasJSONTag(structType)
-			for _, field := range structType.Fields.List {
-				name, tagged, serialized := jsonFieldName(field)
-				if !serialized || (!tagged && !wireShape) {
-					continue
+			// A carve-out for a file that no longer exists is dead prose that would
+			// quietly re-arm somewhere else if the path were ever reused.
+			for file := range exemptWireNames {
+				if _, err := os.Stat(reporoot.Path(t, file)); err != nil {
+					t.Errorf("wire-name exemption names %s, which is not there: %v", file, err)
 				}
-				kind, banned := bannedWireNames[strings.ToLower(name)]
-				if !banned || exempt[strings.ToLower(name)] {
-					continue
-				}
-				t.Errorf(
-					"%s:%d serializes %q (a %s) — events are keyed by their entity (cwd, PR key, thread id), "+
-						"never by a per-caller handle; see internal/transport/AGENTS.md",
-					file, fileSet.Position(field.Pos()).Line, name, kind,
-				)
 			}
-			return true
-		})
-	}
-	// A carve-out for a file that no longer exists is dead prose that would
-	// quietly re-arm somewhere else if the path were ever reused.
-	for file := range exemptWireNames {
-		if _, err := os.Stat(file); err != nil {
-			t.Errorf("wire-name exemption names %s, which is not there: %v", file, err)
-		}
+		},
 	}
 }
 
@@ -156,49 +157,4 @@ func jsonTag(field *ast.Field) (string, bool) {
 		panic("unquotable struct tag literal: " + field.Tag.Value)
 	}
 	return reflect.StructTag(raw).Lookup("json")
-}
-
-// collectGoSources returns every .go file the Makefile's package roots build,
-// tests included — a fixture that reintroduces the shape is as much a
-// regression as production code doing it.
-func collectGoSources(t *testing.T) []string {
-	t.Helper()
-	var files []string
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read repo root: %v", err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
-			continue
-		}
-		files = append(files, entry.Name())
-	}
-	for _, root := range goSourceRoots {
-		if root == "." {
-			continue
-		}
-		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.IsDir() {
-				if path != root && strings.HasPrefix(entry.Name(), ".") {
-					return fs.SkipDir
-				}
-				return nil
-			}
-			if strings.HasSuffix(entry.Name(), ".go") {
-				files = append(files, path)
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("walk %s: %v", root, err)
-		}
-	}
-	if len(files) == 0 {
-		t.Fatal("no Go sources found; the convention would pass vacuously")
-	}
-	return files
 }

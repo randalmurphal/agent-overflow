@@ -1,15 +1,9 @@
 package app
 
 import (
-	"agent-overflow/internal/procutil/procutiltest"
-	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,9 +11,11 @@ import (
 	"time"
 
 	"agent-overflow/internal/itemmeta"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/triage"
 )
 
@@ -819,81 +815,6 @@ func TestOwnsLegacyProviderQueuedClientIDRequiresThisAppsRow(t *testing.T) {
 	other := providerQueueReconcileThread(t, app, "flush-queue-ownership-other")
 	if app.ownsLegacyProviderQueuedClientID(other.ID, "user:7:flush:1") {
 		t.Error("a row on another thread answered for this one")
-	}
-}
-
-// TestNoProductionCodePathReachesTheProviderQueueWrites is the grep-level half
-// of the rule the whole revert exists for: AO dispatches every mid-turn message
-// with `turn/steer` and must NEVER write to the app-server's own queue, not
-// even as a fallback. Two dispatchers for one message is how a queued prompt
-// runs twice, hours after the user typed it.
-//
-// The wrapper is already gone (`codex.Session` has no QueueAdd), so this is a
-// guard against it growing back somewhere the compiler cannot see — a raw
-// `sendRequest`, a method name assembled from a constant. It reads STRING
-// LITERALS out of the AST rather than grepping text, so the many comments that
-// legitimately explain the retired path do not have to be phrased around it.
-//
-// Two files are exempt by design and named here so the exemption stays honest:
-// the harness mock, whose refusal of both methods is what turns a regrown
-// caller into a failing harness run, and the fake app-server in this package,
-// which mirrors it.
-func TestNoProductionCodePathReachesTheProviderQueueWrites(t *testing.T) {
-	t.Parallel()
-	forbidden := []string{"thread/queue/add", "thread/queue/start"}
-	skipDirs := map[string]bool{
-		".git": true, "node_modules": true, "frontend": true, "e2e": true,
-		"docs": true, ".claude": true, "dist": true, "bin": true, "build": true,
-	}
-	// The mock's tripwire IS the string, and it must keep being the string —
-	// asserted below rather than merely skipped.
-	tripwire := filepath.Join("cmd", "ao-mockprovider", "codex_queue.go")
-
-	fset := token.NewFileSet()
-	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if skipDirs[d.Name()] {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || path == tripwire {
-			return nil
-		}
-		file, parseErr := parser.ParseFile(fset, path, nil, 0)
-		if parseErr != nil {
-			return fmt.Errorf("parse %s: %w", path, parseErr)
-		}
-		ast.Inspect(file, func(n ast.Node) bool {
-			lit, ok := n.(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
-				return true
-			}
-			for _, method := range forbidden {
-				if strings.Contains(lit.Value, method) {
-					t.Errorf("%s: a string literal names %s; Agent Overflow dispatches mid-turn messages with turn/steer and must never write to the provider's queue",
-						fset.Position(lit.Pos()), method)
-				}
-			}
-			return true
-		})
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk the repository: %v", err)
-	}
-
-	raw, err := os.ReadFile(tripwire)
-	if err != nil {
-		t.Fatalf("read the mock's queue tripwire: %v", err)
-	}
-	for _, method := range forbidden {
-		if !strings.Contains(string(raw), method) {
-			t.Errorf("%s no longer refuses %s; the exemption above is now hiding nothing", tripwire, method)
-		}
 	}
 }
 

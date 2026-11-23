@@ -42,8 +42,7 @@ func newTestApp(t *testing.T) *App {
 	// last, once nothing is still in flight.
 	isolateE2EProviderSpawns(t, app)
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
-	t.Cleanup(app.appCancel)
-	joinBackgroundWorkAtCleanup(t, app)
+	tearDownTestAppAtCleanup(t, app)
 	return app
 }
 

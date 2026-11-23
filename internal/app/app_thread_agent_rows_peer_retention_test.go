@@ -201,6 +201,11 @@ func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 	if err := pair.dest.SendMessage(context.Background(), child, "now also update the changelog", nil); err != nil {
 		t.Fatalf("SendMessage there: %v", err)
 	}
+	// The turn's row there reports the run open before its turn is open,
+	// so the check after Stop All waits for the turn first.
+	waitUntil(t, 10*time.Second, func() bool {
+		return threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn
+	})
 	waitUntil(t, 20*time.Second, func() bool { return readRemoteSpawnRow(t, pair, spawn.Token).nested })
 	if listing, err := pair.source.ListThreadAgentRows(t.Context(), pair.caller.ID); err != nil || len(listing.Rows) != 0 {
 		t.Fatalf("listing %+v, %v; want no row for the person's run there", listing.Rows, err)

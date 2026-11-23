@@ -2,12 +2,15 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1695,25 +1698,77 @@ func TestV12ChannelMaxTurnsColumn(t *testing.T) {
 // migrateThrough opens an in-memory DB configured like production
 // (SetMaxOpenConns(1), so the single shared :memory: connection is reused
 // across calls and the rebuild migration's pinned-connection FK toggle
-// lands on it) and applies every migration up to and including target. It
-// is the pre-image builder for migration-transition tests: seed against
-// the schema at `target`, then drive the next migration.
+// lands on it) holding the schema every migration up to and including
+// target leaves. It is the pre-image builder for migration-transition
+// tests: seed against the schema at `target`, then drive the next
+// migration. The database is a copy of migratedImage(target), so the
+// chain up to a version runs once per test process, not once per test.
 func migrateThrough(t *testing.T, target int) *sql.DB {
+	t.Helper()
+	image := migratedImage(t, target)
+	db := openMigrationDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	if err := deserialize(db, image); err != nil {
+		t.Fatalf("copy the v%d image: %v", target, err)
+	}
+	return db
+}
+
+// openMigrationDB is the one-connection :memory: database migrateThrough
+// hands out and builds its images on.
+func openMigrationDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", poolDSN(":memory:", writerConnPragmas))
 	if err != nil {
 		t.Fatalf("open sqlite db: %v", err)
 	}
 	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
 
-	if err := configureDatabase(db, writerConnPragmas); err != nil {
-		t.Fatalf("configure database: %v", err)
+// migratedImages are the serialized databases the chain leaves at each
+// version a test asked migrateThrough for, built from the nearest lower
+// one. mu is held while one is built, so a version is built once.
+var migratedImages struct {
+	mu        sync.Mutex
+	byVersion map[int][]byte
+}
+
+// migratedImage is the database every migration up to and including
+// target leaves on a new in-memory database, serialized.
+func migratedImage(t *testing.T, target int) []byte {
+	t.Helper()
+	migratedImages.mu.Lock()
+	defer migratedImages.mu.Unlock()
+	if image, ok := migratedImages.byVersion[target]; ok {
+		return image
 	}
-	if err := ensureMigrationTable(db); err != nil {
-		t.Fatalf("ensure migration table: %v", err)
+	base := 0
+	for version := range migratedImages.byVersion {
+		if version < target && version > base {
+			base = version
+		}
+	}
+	db := openMigrationDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close the v%d image's database: %v", target, err)
+		}
+	}()
+	if base == 0 {
+		if err := configureDatabase(db, writerConnPragmas); err != nil {
+			t.Fatalf("configure database: %v", err)
+		}
+		if err := ensureMigrationTable(db); err != nil {
+			t.Fatalf("ensure migration table: %v", err)
+		}
+	} else if err := deserialize(db, migratedImages.byVersion[base]); err != nil {
+		t.Fatalf("copy the v%d image: %v", base, err)
 	}
 	for _, m := range migrations {
+		if m.Version <= base {
+			continue
+		}
 		if m.Version > target {
 			break
 		}
@@ -1725,7 +1780,65 @@ func migrateThrough(t *testing.T, target int) *sql.DB {
 			t.Fatalf("apply migration v%d: %v", m.Version, err)
 		}
 	}
-	return db
+	image, err := serialize(db)
+	if err != nil {
+		t.Fatalf("serialize the v%d database: %v", target, err)
+	}
+	if migratedImages.byVersion == nil {
+		migratedImages.byVersion = map[int][]byte{}
+	}
+	migratedImages.byVersion[target] = image
+	return image
+}
+
+// serializer is modernc.org/sqlite's connection: it copies its main
+// database out of and into memory.
+type serializer interface {
+	Serialize() ([]byte, error)
+	Deserialize([]byte) error
+}
+
+// serialize and deserialize copy the main database of db's one connection
+// out of and into memory.
+func serialize(db *sql.DB) ([]byte, error) {
+	var image []byte
+	err := rawConn(db, func(c serializer) error {
+		var err error
+		image, err = c.Serialize()
+		return err
+	})
+	return image, err
+}
+
+// deserialize replaces the main database, which resets the settings SQLite
+// keeps per database, such as synchronous, to their defaults; it applies the
+// writer's pragmas again and verifies them, so the connection is configured
+// as openMigrationDB opened it.
+func deserialize(db *sql.DB, image []byte) error {
+	if err := rawConn(db, func(c serializer) error { return c.Deserialize(image) }); err != nil {
+		return err
+	}
+	for _, p := range writerConnPragmas {
+		if _, err := db.Exec("PRAGMA " + p.name + "=" + p.dsnValue); err != nil {
+			return fmt.Errorf("apply PRAGMA %s: %w", p.name, err)
+		}
+	}
+	return verifyConnPragmas(db, writerConnPragmas)
+}
+
+func rawConn(db *sql.DB, fn func(serializer) error) error {
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		return err
+	}
+	err = conn.Raw(func(driverConn any) error {
+		c, ok := driverConn.(serializer)
+		if !ok {
+			return fmt.Errorf("driver connection %T cannot serialize", driverConn)
+		}
+		return fn(c)
+	})
+	return errors.Join(err, conn.Close())
 }
 
 // migratedDB is migrateThrough to the last migration for a test that
@@ -1853,7 +1966,7 @@ func migrationByVersion(t *testing.T, v int) Migration {
 	return Migration{}
 }
 
-func mustExec(t *testing.T, db *sql.DB, query string, args ...any) {
+func mustExec(t testing.TB, db *sql.DB, query string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(query, args...); err != nil {
 		t.Fatalf("exec %q: %v", query, err)

@@ -202,8 +202,12 @@ func MockWaitForFile(path string) string {
 // The map is keyed by substring probe ("initialize", "thread/start",
 // "thread/resume", "turn/start", etc.). The associated value is a single JSON-RPC
 // response template with `%d` placeholders where the matching request's
-// numeric id should be substituted. The first matching key wins; use an empty
-// key "" for a fallback response.
+// numeric id should be substituted, or empty for a request the mock reads and
+// never answers. The first matching key wins; use an empty key "" for a
+// fallback response. Without one, a request no key matches gets the error
+// app-server gives a method it does not have (-32601), so its caller fails
+// at once rather than waiting out a timeout; a line with no "method", the
+// client's answer to a request of the server's, gets nothing.
 //
 // The script exits when stdin closes.
 func WriteMockCodexSession(t *testing.T, dir string, responses map[string]string) string {
@@ -229,12 +233,18 @@ func WriteMockCodexSession(t *testing.T, dir string, responses map[string]string
 	for _, key := range keys {
 		tmpl := responses[key]
 		fmt.Fprintf(&b, "  if /bin/echo \"$line\" | /usr/bin/grep -q %s; then\n", stringsx.ShellQuote(key))
-		fmt.Fprintf(&b, "    printf %s \"$id\"\n", stringsx.ShellQuote(tmpl+"\n"))
+		if tmpl != "" {
+			fmt.Fprintf(&b, "    printf %s \"$id\"\n", stringsx.ShellQuote(tmpl+"\n"))
+		}
 		b.WriteString("    continue\n")
 		b.WriteString("  fi\n")
 	}
 	if hasFallback {
 		fmt.Fprintf(&b, "  printf %s \"$id\"\n", stringsx.ShellQuote(fallback+"\n"))
+	} else {
+		b.WriteString("  if /bin/echo \"$line\" | /usr/bin/grep -q '\"method\"'; then\n")
+		fmt.Fprintf(&b, "    printf %s \"$id\"\n", stringsx.ShellQuote(`{"jsonrpc":"2.0","id":%d,"error":{"code":-32601,"message":"Method not found"}}`+"\n"))
+		b.WriteString("  fi\n")
 	}
 	b.WriteString("done\n")
 	b.WriteString("exit 0\n")

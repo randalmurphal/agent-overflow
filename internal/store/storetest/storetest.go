@@ -6,65 +6,27 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 
-	"agent-overflow/internal/ownedtemp"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/fixturedir"
 )
 
-// templatePath holds the migrated template built by Run. Written once before
-// m.Run and read from every test goroutine, so it is an atomic rather than a
-// plain package var.
-var templatePath atomic.Pointer[string]
+// template is the migrated database the clones copy, built by the first
+// clone of a run in the run's fixture directory.
+var template = fixturedir.New("storetest-template.sqlite", func(tb testing.TB, path string) {
+	if err := buildTemplate(path); err != nil {
+		tb.Fatalf("storetest: build template: %v", err)
+	}
+})
 
-// templatePrefix names the template directories, one per test process.
-const templatePrefix = "agent-overflow-storetest-template-"
-
-// Run builds one migrated template database, runs the package's tests against
-// it, and removes the template directory, and those of test processes that
-// exited without removing theirs (ownedtemp): killed, timed out, or a helper
-// process that ended in os.Exit. Use it as the whole body of TestMain:
+// Run runs the package's tests with the fixture directory the template is
+// built in (fixturedir.Guard). A run with no clone, such as a helper
+// process the package's tests start, migrates nothing. Use it as the whole
+// body of TestMain:
 //
 //	func TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }
-func Run(m *testing.M) int {
-	sweepTemplates()
-	dir, release, err := ownedtemp.Make("", templatePrefix)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "storetest: create template directory: %v\n", err)
-		return 1
-	}
-	path := filepath.Join(dir, "template.sqlite")
-	if err := buildTemplate(path); err != nil {
-		fmt.Fprintf(os.Stderr, "storetest: build template: %v\n", err)
-		if removeErr := release(); removeErr != nil {
-			fmt.Fprintf(os.Stderr, "storetest: remove failed template: %v\n", removeErr)
-		}
-		return 1
-	}
-	templatePath.Store(&path)
-
-	code := m.Run()
-
-	templatePath.Store(nil)
-	if err := release(); err != nil {
-		fmt.Fprintf(os.Stderr, "storetest: remove template: %v\n", err)
-		if code == 0 {
-			code = 1
-		}
-	}
-	sweepTemplates()
-	return code
-}
-
-// sweepTemplates removes the template directories of exited test
-// processes. A failure leaves a directory, not a wrong result, so it is
-// reported rather than failing the run.
-func sweepTemplates() {
-	if err := ownedtemp.Sweep("", templatePrefix); err != nil {
-		fmt.Fprintf(os.Stderr, "storetest: remove the templates of exited test processes: %v\n", err)
-	}
-}
+func Run(m *testing.M) int { return fixturedir.Guard(m.Run) }
 
 // buildTemplate opens a store at path (which applies the migration chain) and
 // closes it. Store.Close runs a TRUNCATE checkpoint, so the WAL is merged back
@@ -147,12 +109,9 @@ func rowsStoringServedSubagentKeysAt(path string) ([]string, error) {
 // without opening it, for tests that open (or reopen) the file themselves.
 func ClonePath(tb testing.TB) string {
 	tb.Helper()
-	source := templatePath.Load()
-	if source == nil {
-		tb.Fatalf("storetest: no template; add to this package:\n\nfunc TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }")
-	}
+	source := template.Path(tb)
 	path := filepath.Join(tb.TempDir(), "store.sqlite")
-	if err := copyTemplate(*source, path); err != nil {
+	if err := copyTemplate(source, path); err != nil {
 		tb.Fatalf("storetest: clone template: %v", err)
 	}
 	return path

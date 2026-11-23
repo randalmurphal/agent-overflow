@@ -1,6 +1,7 @@
 package sessionruntime
 
 import (
+	"maps"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -274,6 +275,19 @@ func (m *Manager) StartState(threadID string) (*Start, bool) {
 	defer m.mu.Unlock()
 	start, ok := m.starting[threadID]
 	return start, ok
+}
+
+// StartsInFlight returns, by thread, the starts that have begun and not
+// finished. Once each Done has closed, every start that began before the
+// call has registered its session or failed. Only the test fixtures'
+// teardown calls it, to take the sessions such starts register. Shutdown
+// takes the sessions without waiting for a start in flight: one whose
+// session registers after that take leaves its provider process to the
+// orphan reaper, which ends it when the backend exits.
+func (m *Manager) StartsInFlight() map[string]*Start {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return maps.Clone(m.starting)
 }
 
 func (m *Manager) ThreadIDsForProviderOrStarting(providerName string) []string {

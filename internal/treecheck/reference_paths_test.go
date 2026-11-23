@@ -1,4 +1,4 @@
-package app
+package treecheck
 
 import (
 	"encoding/json"
@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // localPathPatterns match what a capture carries from the machine that
@@ -148,7 +150,7 @@ func scanLocalPaths(root string) (found []string, files int, err error) {
 // the paths or host name of the machine that captured them.
 func TestReferencesCarryNoLocalPaths(t *testing.T) {
 	t.Parallel()
-	found, files, err := scanLocalPaths(filepath.Join("docs", "references"))
+	found, files, err := scanLocalPaths(reporoot.Path(t, "docs/references"))
 	if err != nil {
 		t.Fatal(err)
 	}

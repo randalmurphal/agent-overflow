@@ -14,6 +14,7 @@ import (
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/reporoot"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/workflow/engine"
 )
@@ -226,7 +227,7 @@ func TestProjectDeletionSourceCallsNoBranchDeletion(t *testing.T) {
 	}
 	for _, name := range files {
 		fileSet := token.NewFileSet()
-		parsed, err := parser.ParseFile(fileSet, name, nil, parser.SkipObjectResolution)
+		parsed, err := reporoot.ParseGoFile(t, fileSet, name, parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}
