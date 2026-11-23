@@ -66,16 +66,14 @@
   }
 
   // Open a window and follow it. Try again runs this once more with the
-  // same network choice: the previous window is closed on the host so an
-  // expired or unopenable one is not left to time out on its own.
+  // same network choice. The host's open retires the window it replaces,
+  // so Try again sends the open alone; a close is only for dismissal.
   async function start(): Promise<void> {
-    const previous = window;
     clearTimeout(timer);
     window = null;
     status = null;
     error = '';
     expired = false;
-    if (previous) void closeWindow(previous.id);
     try {
       const opened = await call(() => access === 'full' && ownEnroll ? OpenOwnComputerPairing(networkChoice) : OpenComputerPairing(networkChoice, access));
       if (disposed) { await closeWindow(opened.id); return; }
@@ -92,8 +90,10 @@
     return () => {
       disposed = true;
       clearTimeout(timer);
-      // Once confirmation is dispatched it may already have succeeded remotely.
-      if (window && !deciding) void closeWindow(window.id);
+      // Dismissal always closes the window. The host orders the close after
+      // an approval already writing, and closing an approved pairing keeps
+      // the device's access.
+      if (window) void closeWindow(window.id);
     };
   });
 
@@ -109,7 +109,10 @@
       clearTimeout(timer);
       onChanged();
     } catch (err) {
-      if (!disposed) error = `Could not allow this computer: ${errString(err)}`;
+      const message = `Could not allow this computer: ${errString(err)}`;
+      // A dismissed dialog has nowhere to show it, so the failure is a toast.
+      if (disposed) addToast('error', message);
+      else error = message;
     } finally {
       deciding = false;
     }

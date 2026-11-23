@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
+import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 import ComputerPairingWindow from './ComputerPairingWindow.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 
@@ -20,7 +21,7 @@ describe('computer pairing window', () => {
     setBindingMock('OpenComputerPairing', async () => WINDOW);
     setBindingMock('CloseComputerPairing', async () => {});
   });
-  afterEach(() => { __setTransportHelloForTest(null); cleanup(); vi.useRealTimers(); resetBindingMocks(); });
+  afterEach(() => { __setTransportHelloForTest(null); cleanup(); vi.useRealTimers(); resetBindingMocks(); resetToastsForTest(); });
 
   it('opens personal pairing where the modal established this caller may enroll', async () => {
     __setTransportHelloForTest({ backendId: '', backendName: 'My computers', capabilities: ['own-devices.v1'], protocolVersion: 1,
@@ -104,7 +105,9 @@ describe('computer pairing window', () => {
     expect(close).toHaveBeenCalledExactlyOnceWith(WINDOW.id);
   });
 
-  it('does not revoke an ambiguous confirmation when its dialog closes before the response', async () => {
+  // The host orders the close after an approval already writing, and
+  // closing an approved pairing keeps the device's access.
+  it('closes its window when dismissed while an approval is outstanding', async () => {
     setBindingMock('ComputerPairingStatus', async () => READY);
     let resolve!: () => void;
     setBindingMock('ConfirmDevicePairing', () => new Promise<void>((done) => { resolve = done; }));
@@ -113,9 +116,24 @@ describe('computer pairing window', () => {
     await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
     await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
     view.unmount();
+    expect(close).toHaveBeenCalledExactlyOnceWith(WINDOW.id);
     resolve();
     await tick();
-    expect(close).not.toHaveBeenCalled();
+    expect(getToasts()).toHaveLength(0);
+  });
+
+  it('reports an approval that fails after its dialog was dismissed', async () => {
+    setBindingMock('ComputerPairingStatus', async () => READY);
+    let reject!: (err: Error) => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((_, fail) => { reject = fail; }));
+    const close = setBindingMock('CloseComputerPairing', async () => {});
+    const view = show();
+    await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    view.unmount();
+    reject(new Error('the pairing was closed'));
+    await vi.waitFor(() => expect(getToasts().map((toast) => toast.message)).toContain('Could not allow this computer: the pairing was closed'));
+    expect(close).toHaveBeenCalledExactlyOnceWith(WINDOW.id);
   });
 
   it('reopens a window in place, with the same network choice, after the first one expires', async () => {
@@ -132,8 +150,8 @@ describe('computer pairing window', () => {
     expect(view.queryByText('Pairing expired.')).toBeNull();
     expect(open).toHaveBeenCalledTimes(2);
     expect(open).toHaveBeenLastCalledWith('tailnet', 'view-only');
-    // The expired window is closed on the host rather than left to lapse.
-    expect(close).toHaveBeenCalledExactlyOnceWith('window-0');
+    // The host's open retires the window it replaces: Try again sends no close.
+    expect(close).not.toHaveBeenCalled();
   });
 
   it('offers Try again when the window could not be opened', async () => {
