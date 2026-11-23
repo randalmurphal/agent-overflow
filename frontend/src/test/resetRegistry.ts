@@ -16,13 +16,35 @@
 import { afterAll, afterEach, beforeEach } from 'vitest';
 import { FIRST, POSTURE, RESET_REGISTRY_KEY, STORAGE, type Exports, type Step } from './config/testResets';
 
+// A module instance, held weakly: through its exported functions, which
+// stay reachable while anything references the instance. An instance
+// something still references is reset after every test; one nothing
+// references is dropped once it is collected.
 type Loaded = {
   readonly key: string;
-  readonly exports: Exports;
+  readonly exports: ReadonlyMap<string, WeakRef<WeakKey>>;
   readonly auto: readonly string[];
-  /** Loaded outside a test: by the file's imports or a beforeAll hook. */
-  readonly held: boolean;
 };
+
+/** The instance's exports, or null once it has been collected. */
+function exportsOf(loaded: Loaded): Exports | null {
+  const out: Exports = {};
+  for (const [name, ref] of loaded.exports) {
+    const value = ref.deref();
+    if (value === undefined) return null;
+    out[name] = value;
+  }
+  return out;
+}
+
+function weakly(exports: Exports): Map<string, WeakRef<WeakKey>> {
+  const held = new Map<string, WeakRef<WeakKey>>();
+  for (const [name, value] of Object.entries(exports)) {
+    if (typeof value !== 'function') throw new Error(`a registered export must be a function: ${name} is ${typeof value}`);
+    held.set(name, new WeakRef(value));
+  }
+  return held;
+}
 
 export type ResetRegistry = {
   loaded(key: string, exports: Exports, auto: readonly string[]): void;
@@ -73,17 +95,12 @@ function fail(errors: unknown[]): void {
 
 function install(): ResetRegistry {
   // In load order. A module evaluated again in the same file (after
-  // vi.resetModules) is a second instance. An instance loaded outside a test
-  // is reset after every test, since the file holds it. Of the instances
-  // tests loaded, each is reset after the test that loaded it, and then only
-  // the newest of each module is kept: a test that holds an older one
-  // across later tests is not supported.
+  // vi.resetModules) is a second instance.
   let modules: Loaded[] = [];
-  // Set from the first step before a test to the last step after it.
-  let inTest = false;
-  // POSTURE steps of modules loaded during a test, in load order, that have
-  // not run: a step that reads a module still loading (an import cycle)
-  // waits for the next module to load.
+  // POSTURE steps of modules that loaded, in load order, that have not run:
+  // a step that reads a module still loading (an import cycle) waits for
+  // the next module to load. Steps waiting when a test starts run with the
+  // test's own POSTURE.
   let pending: { readonly loaded: Loaded; readonly step: Step }[] = [];
   // Whom an unanswered binding call made now is charged to.
   let during = 'while the test file loaded';
@@ -102,8 +119,10 @@ function install(): ResetRegistry {
       }
       for (const loaded of modules) {
         if (loaded.key !== entry.module) continue;
+        const exports = exportsOf(loaded);
+        if (exports === null) continue;
         try {
-          await call(entry, loaded.exports);
+          await call(entry, exports);
         } catch (error) {
           errors.push(error);
         }
@@ -114,8 +133,9 @@ function install(): ResetRegistry {
   function runPending(): void {
     while (pending.length > 0) {
       const { loaded, step } = pending[0];
+      const exports = exportsOf(loaded);
       try {
-        call(step, loaded.exports);
+        if (exports !== null) call(step, exports);
       } catch (error) {
         if (error instanceof ReferenceError) return;
         throw error;
@@ -133,19 +153,20 @@ function install(): ResetRegistry {
     const errors: unknown[] = [];
     await runSteps(POSTURE, errors);
     fail(errors);
-    inTest = true;
   });
 
   afterEach(async ({ task }) => {
-    inTest = false;
     const errors: unknown[] = pending.map(({ loaded, step }) => new Error(
       `${loaded.key} loaded during the test, and its posture step ${step.name} could not run before the test ended: it read a module that was still loading`,
     ));
     pending = [];
     await runSteps(FIRST, errors);
     const ran = new Set<unknown>();
-    for (const { exports, auto } of [...modules]) {
-      for (const name of auto) {
+    // A copy: a reset may load a module.
+    for (const loaded of [...modules]) {
+      const exports = exportsOf(loaded);
+      if (exports === null) continue;
+      for (const name of loaded.auto) {
         const fn = exports[name] as () => unknown;
         if (ran.has(fn)) continue;
         ran.add(fn);
@@ -156,9 +177,7 @@ function install(): ResetRegistry {
         }
       }
     }
-    const newest = new Map<string, Loaded>();
-    for (const loaded of modules) if (!loaded.held) newest.set(loaded.key, loaded);
-    modules = modules.filter((loaded) => loaded.held || newest.get(loaded.key) === loaded);
+    modules = modules.filter((loaded) => exportsOf(loaded) !== null);
     const calls = unansweredError(takeUnanswered());
     if (calls) errors.push(calls);
     during = `after "${task.fullTestName}" (${task.file.name}) ended`;
@@ -173,16 +192,15 @@ function install(): ResetRegistry {
 
   return {
     loaded(key, exports, auto) {
-      const loaded = { key, exports, auto, held: !inTest };
+      const loaded = { key, exports: weakly(exports), auto };
       modules.push(loaded);
-      if (!inTest) return;
       for (const step of POSTURE) if (step.module === key) pending.push({ loaded, step });
       runPending();
     },
     settled() {
-      if (inTest) runPending();
+      runPending();
     },
-    keys: () => [...new Set(modules.map((loaded) => loaded.key))],
+    keys: () => [...new Set(modules.filter((loaded) => exportsOf(loaded) !== null).map((loaded) => loaded.key))],
     unansweredBinding(name) {
       unanswered.push({ binding: name, during });
     },

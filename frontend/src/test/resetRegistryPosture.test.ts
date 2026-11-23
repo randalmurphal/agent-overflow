@@ -1,11 +1,27 @@
-import { expect, it, vi } from 'vitest';
+import { beforeAll, expect, it, vi } from 'vitest';
 
 // The posture of config/testResets.ts holds for a module however it first
-// loads: at its first import inside a test, when a later test reuses it, and
-// for the fresh instance an import after vi.resetModules() makes.
+// loads: in a beforeAll hook, at its first import inside a test, when a
+// later test reuses it, and for the fresh instance an import after
+// vi.resetModules() makes.
 type TransportStatus = typeof import('../lib/stores/transportStatus.svelte');
 type Scopes = typeof import('../lib/transport/scopes');
 let first: TransportStatus | null = null;
+let hostInBeforeAll: boolean | Error = new Error('beforeAll did not run');
+
+beforeAll(async () => {
+  vi.resetModules();
+  const scopes: Scopes = await import('../lib/transport/scopes');
+  try {
+    hostInBeforeAll = scopes.hasScope('host');
+  } catch (error) {
+    hostInBeforeAll = error as Error;
+  }
+});
+
+it('applies to a module first imported in a beforeAll hook, during the hook', () => {
+  expect(hostInBeforeAll).toBe(true);
+});
 
 // The tests run in order: each reads what the one before it left.
 it('applies to a module first imported during the test', async () => {
