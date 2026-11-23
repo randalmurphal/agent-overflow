@@ -120,13 +120,13 @@ describe('browser monitor hosts', () => {
     const inputHost = createBuiltinMonitor(spec('input-to-render', ['input', 'animation-frame']), input.context)!;
     document.dispatchEvent(new Event('input'));
     callbacks.get(1)?.(1);
-    expect((inputHost.stop?.(2) as { counts: { inputToRenderMs: number } }).counts.inputToRenderMs).toBe(1);
+    expect((inputHost.stop!(2) as { counts: { inputToRenderMs: number } }).counts.inputToRenderMs).toBe(1);
 
     const scroll = context('scroll-response', ['scroll', 'animation-frame']);
     const scrollHost = createBuiltinMonitor(spec('scroll-response', ['scroll', 'animation-frame']), scroll.context)!;
     document.dispatchEvent(new Event('scroll'));
     callbacks.get(2)?.(3);
-    expect((scrollHost.stop?.(4) as { counts: { scrollToRenderMs: number } }).counts.scrollToRenderMs).toBe(1);
+    expect((scrollHost.stop!(4) as { counts: { scrollToRenderMs: number } }).counts.scrollToRenderMs).toBe(1);
   });
 
   it('records long-task entries and observer setup faults', () => {
