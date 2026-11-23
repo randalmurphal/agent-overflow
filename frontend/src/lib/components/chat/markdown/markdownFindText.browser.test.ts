@@ -75,6 +75,12 @@ beforeEach(() => {
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none']);
   setBindingMock('HighlightPatch', async () => ({ lines: [] }));
+  // The attachments these sources name are uploads the forge does not hold,
+  // so each fetch fails and its chip shows the failed state. A test about a
+  // loading chip answers with a fetch that never settles.
+  setBindingMock('FetchForgeAttachment', async () => {
+    throw new Error('fetch forge attachment: 404 Not Found');
+  });
   document.body.innerHTML = '';
 });
 
@@ -233,14 +239,6 @@ describe('markdownFindText', () => {
 // each <details> toggled, and a toggle renumbers no run.
 describe('markdownFindText over generated comments', () => {
   const SEEDS = Array.from({ length: 60 }, (_, i) => i + 1);
-
-  // The generated attachments name uploads the forge does not hold, so each
-  // fetch fails and the chip shows its failed state.
-  beforeEach(() => {
-    setBindingMock('FetchForgeAttachment', async () => {
-      throw new Error('fetch forge attachment: 404 Not Found');
-    });
-  });
 
   it('generates alignment blocks of both kinds, closed and unclosed', () => {
     const sources = SEEDS.map(generatedMarkdown);
