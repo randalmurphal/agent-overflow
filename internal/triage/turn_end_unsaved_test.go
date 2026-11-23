@@ -3,6 +3,7 @@ package triage
 import (
 	"database/sql"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -246,5 +247,85 @@ func TestASavedTurnEndWithdrawsTheEntry(t *testing.T) {
 	turn, found, err := router.store.GetTurn("t1:1")
 	if err != nil || !found || turn.CompletedAt == nil {
 		t.Fatalf("turn t1:1 = %+v, found %v, err %v; want it saved complete", turn, found, err)
+	}
+}
+
+// heldTurnEndObserver records the outcomes of turn-end writes in the order
+// they reach it, and holds the first saved report until released.
+type heldTurnEndObserver struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+
+	mu       sync.Mutex
+	outcomes []string
+}
+
+func (o *heldTurnEndObserver) record(outcome string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.outcomes = append(o.outcomes, outcome)
+}
+
+func (o *heldTurnEndObserver) RowRefused(row UnsavedRow, _ error) {
+	if strings.HasPrefix(row.ItemID, "turn-end:") {
+		o.record("refused")
+	}
+}
+
+func (o *heldTurnEndObserver) RowSaved(row UnsavedRow) {
+	if !strings.HasPrefix(row.ItemID, "turn-end:") {
+		return
+	}
+	o.once.Do(func() {
+		close(o.entered)
+		<-o.release
+	})
+	o.record("saved")
+}
+
+// Two writers can end one turn: the thread's event worker, and a stop or
+// replacement that ends the turn itself. The entry the user is left with is
+// the outcome of the write that landed last, so an earlier save whose
+// report is delivered late does not withdraw a later failure's entry.
+func TestALateSavedReportDoesNotWithdrawANewerUnsavedEnd(t *testing.T) {
+	router, _, raw, _, _ := newUnsavedRowRouter(t)
+	observer := &heldTurnEndObserver{entered: make(chan struct{}), release: make(chan struct{})}
+	router.SetUnsavedRowObserver(observer)
+	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1})
+	releaseOnce := sync.OnceFunc(func() { close(observer.release) })
+	t.Cleanup(releaseOnce)
+
+	now := time.Now().UnixMilli()
+	saved := make(chan error, 1)
+	go func() { saved <- router.writeTurnEnd("t1", "t1:1", now, "interrupted", "", "", "", "the first end") }()
+	select {
+	case <-observer.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first end's saved report never reached the observer")
+	}
+	refuseTurnEnds(t, raw, "database or disk is full")
+	refused := make(chan error, 1)
+	go func() { refused <- router.writeTurnEnd("t1", "t1:1", now+1, "end_turn", "", "", "", "the second end") }()
+	// The second write waits for the first one's report. A write that did
+	// not wait gets the time to finish before that report is released.
+	select {
+	case err := <-refused:
+		refused <- err
+	case <-time.After(200 * time.Millisecond):
+	}
+	releaseOnce()
+
+	if err := <-saved; err != nil {
+		t.Fatalf("the first end = %v, want it saved", err)
+	}
+	if err := <-refused; err == nil {
+		t.Fatal("the second end saved, want it refused")
+	}
+	observer.mu.Lock()
+	outcomes := append([]string(nil), observer.outcomes...)
+	observer.mu.Unlock()
+	if len(outcomes) != 2 || outcomes[0] != "saved" || outcomes[1] != "refused" {
+		t.Fatalf("turn end outcomes reached the observer as %q, want the save and then the refusal that followed it", outcomes)
 	}
 }

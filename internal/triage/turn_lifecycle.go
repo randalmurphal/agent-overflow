@@ -941,7 +941,15 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 // retries the write: an open row stays open until a later end saves or the
 // next boot's sweep settles it as interrupted (turn-lifecycle.md §Crash
 // behavior). The failure is reported here and returned.
+//
+// A turn's end has writers on more than one goroutine (the thread's event
+// worker, and a stop or replacement that ends the turn itself), so the
+// write and its report are one step under turnEndMu: the entry the user is
+// left with is the outcome of the write that landed last. The store's one
+// writer connection already runs the writes one at a time.
 func (r *Router) writeTurnEnd(threadID, turnID string, completedAt int64, stopReason, assistantMessageID, tokenUsageJSON, errorMessage, what string) error {
+	r.turnEndMu.Lock()
+	defer r.turnEndMu.Unlock()
 	if err := r.store.UpdateTurnCompleted(turnID, completedAt, stopReason, assistantMessageID, tokenUsageJSON, errorMessage); err != nil {
 		told := r.providerWriteFailed(threadID, what, err)
 		r.reportUnsavedTurnEnd(threadID, turnID, err, told)

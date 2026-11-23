@@ -260,6 +260,10 @@ type Router struct {
 	// the provider read loop; implementations must not block. Wired via
 	// SetUnsavedRowObserver at router construction.
 	unsavedRows UnsavedRowObserver
+	// turnEndMu orders each write of a turn's end with the report of its
+	// outcome to unsavedRows (writeTurnEnd), so the last report is the last
+	// write's. Taken only there.
+	turnEndMu sync.Mutex
 	// codeSpanEnricher builds the persisted `codeSpans` meta value for
 	// a settled assistant text (see code_spans.go). Wired via
 	// SetCodeSpanEnricher at router construction; nil disables it.

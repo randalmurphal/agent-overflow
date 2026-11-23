@@ -83,12 +83,13 @@ func (r *Router) reportSavedRow(item store.Item) {
 }
 
 // UnsavedTurnEndSummary is the entry of a turn whose end the store
-// refused. It holds whatever the row was: a row still open reads as
-// running to every reader of the thread's newest turn row (the thread
-// tools, send placement, revert) while it is the newest, and a row an
-// earlier end completed keeps that end. It promises nothing about a
-// restart, whose sweep can fail as well.
-const UnsavedTurnEndSummary = "This turn is over, but the app could not save how it ended. " +
+// refused. It describes the failed write, and holds whatever the row was
+// and whatever the turn does next: a row still open reads as running to
+// every reader of the thread's newest turn row (the thread tools, send
+// placement, revert) while it is the newest, a row an earlier end
+// completed keeps that end, and a soft-closed turn can run on. It promises
+// nothing about a restart, whose sweep can fail as well.
+const UnsavedTurnEndSummary = "The app could not save how this turn ended. " +
 	"Agents and tools may still see the thread as running."
 
 // unsavedTurnEndRow is the observer's entry for turnID's unsaved end: one
