@@ -34,15 +34,8 @@ function monitorCapabilities(): ReadonlySet<MonitorCapability> {
   if (supported.includes('long-animation-frame')) capabilities.add('performance:long-animation-frame');
   if (supported.includes('event')) capabilities.add('performance:event');
   if (supported.includes('layout-shift')) capabilities.add('performance:layout-shift');
-  const host = globalThis as {
-    __aoMonitorSourceSignals?: { read?: unknown };
-    __aoMonitorCompositorCounters?: { read?: unknown };
-  };
-  if (typeof host.__aoMonitorSourceSignals?.read === 'function') {
-    capabilities.add('source-rewind');
-    capabilities.add('parser-boundary');
-  }
-  if (typeof host.__aoMonitorCompositorCounters?.read === 'function') capabilities.add('compositor-counters');
+  const host = globalThis as { __aoMonitorSourceSignals?: { read?: unknown } };
+  if (typeof host.__aoMonitorSourceSignals?.read === 'function') capabilities.add('parser-boundary');
   return capabilities;
 }
 
@@ -96,15 +89,6 @@ function monitorProbes(): MonitorProbeReader {
           if (typeof source?.read !== 'function') return { atMs, kind: request.kind, available: false, error: 'source adapter is unavailable' };
           try {
             return { atMs, kind: request.kind, available: true, value: source.read() };
-          } catch (error) {
-            return { atMs, kind: request.kind, available: false, error: String(error) };
-          }
-        }
-        case 'compositor': {
-          const compositor = (globalThis as { __aoMonitorCompositorCounters?: { read?: unknown } }).__aoMonitorCompositorCounters;
-          if (typeof compositor?.read !== 'function') return { atMs, kind: request.kind, available: false, error: 'compositor adapter is unavailable' };
-          try {
-            return { atMs, kind: request.kind, available: true, value: compositor.read() };
           } catch (error) {
             return { atMs, kind: request.kind, available: false, error: String(error) };
           }

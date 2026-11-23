@@ -9,8 +9,8 @@ describe('monitor bridge', () => {
       monitors: Array<Record<string, unknown>>;
     };
     expect(result.v).toBe(1);
-    expect(result.monitors).toHaveLength(13);
-    expect(result.monitors.map((monitor) => monitor.id)).toContain('compositor-counters');
+    expect(result.monitors).toHaveLength(11);
+    expect(result.monitors.map((monitor) => monitor.id)).toContain('parser-boundary');
     expect(result.monitors.some((monitor) => 'create' in monitor)).toBe(false);
   });
 
@@ -20,7 +20,7 @@ describe('monitor bridge', () => {
       kind: 'monitor',
       op: 'start',
       runId: 'source-run',
-      monitorIds: ['source-rewind'],
+      monitorIds: ['parser-boundary'],
     }) as { error?: string };
     expect(result.error).toMatch(/requires unavailable capabilities/);
   });

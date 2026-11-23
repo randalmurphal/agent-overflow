@@ -1,5 +1,4 @@
 import type {
-  CompositorMonitorSignal,
   MonitorContext,
   MonitorInstance,
   MonitorSpec,
@@ -28,7 +27,6 @@ interface HostState {
 }
 
 type SourceAdapter = { read: () => SourceMonitorSignal };
-type CompositorAdapter = { read: () => CompositorMonitorSignal };
 
 /** Installs an owned source/parser adapter for provider-side evidence. */
 export function installSourceMonitorAdapter(read: () => SourceMonitorSignal): () => void {
@@ -40,19 +38,6 @@ export function installSourceMonitorAdapter(read: () => SourceMonitorSignal): ()
     if (host.__aoMonitorSourceSignals !== adapter) return;
     if (previous) host.__aoMonitorSourceSignals = previous;
     else delete host.__aoMonitorSourceSignals;
-  };
-}
-
-/** Installs an owned compositor adapter supplied by a capable platform host. */
-export function installCompositorMonitorAdapter(read: () => CompositorMonitorSignal): () => void {
-  const host = globalThis as { __aoMonitorCompositorCounters?: CompositorAdapter };
-  const previous = host.__aoMonitorCompositorCounters;
-  const adapter: CompositorAdapter = { read };
-  host.__aoMonitorCompositorCounters = adapter;
-  return () => {
-    if (host.__aoMonitorCompositorCounters !== adapter) return;
-    if (previous) host.__aoMonitorCompositorCounters = previous;
-    else delete host.__aoMonitorCompositorCounters;
   };
 }
 
@@ -90,12 +75,8 @@ export function createBuiltinMonitor(spec: MonitorSpec, context: MonitorContext)
     case 'focus-clipping-settledness':
       armFocusClippingSettledness(state);
       break;
-    case 'source-rewind':
     case 'parser-boundary':
-      armSourceAdapter(state, spec.id);
-      break;
-    case 'compositor-counters':
-      armCompositorAdapter(state);
+      armParserBoundary(state);
       break;
   }
   return {
@@ -320,10 +301,10 @@ function armFocusClippingSettledness(state: HostState): void {
   });
 }
 
-function armSourceAdapter(state: HostState, monitorId: string): void {
+function armParserBoundary(state: HostState): void {
   const source = (globalThis as { __aoMonitorSourceSignals?: { read: () => SourceMonitorSignal } }).__aoMonitorSourceSignals;
   if (!source || typeof source.read !== 'function') {
-    state.context.fail(`${monitorId} source adapter is unavailable`);
+    state.context.fail('parser-boundary source adapter is unavailable');
     return;
   }
   let lastCursor: number | null = null;
@@ -332,41 +313,21 @@ function armSourceAdapter(state: HostState, monitorId: string): void {
     try {
       const signal = source.read();
       if (!signal || typeof signal !== 'object' || !Number.isFinite(signal.cursor)) throw new Error('source signal has no finite cursor');
-      if (monitorId === 'parser-boundary' && !Number.isFinite(signal.parserBoundaries)) throw new Error('parser signal has no finite boundary count');
+      const boundaries = signal.parserBoundaries;
+      if (boundaries === undefined || !Number.isFinite(boundaries)) throw new Error('parser signal has no finite boundary count');
+      if (boundaries < 0) throw new Error('source signal has an invalid parser boundary count');
       if (lastCursor !== null && signal.cursor < lastCursor) increment(state, 'rewinds');
-      if (signal.parserBoundaries !== undefined) {
-        if (!Number.isFinite(signal.parserBoundaries) || signal.parserBoundaries < 0) throw new Error('source signal has an invalid parser boundary count');
-        if (lastBoundary !== null && signal.parserBoundaries < lastBoundary) increment(state, 'parserBoundaryRewinds');
-        lastBoundary = signal.parserBoundaries;
-      }
+      if (lastBoundary !== null && boundaries < lastBoundary) increment(state, 'parserBoundaryRewinds');
+      lastBoundary = boundaries;
       lastCursor = signal.cursor;
-      state.values[monitorId] = signal;
+      state.values['parser-boundary'] = signal;
       increment(state, 'sourceSamples');
     } catch (error) {
-      state.context.fail(`${monitorId} source adapter failed: ${error instanceof Error ? error.message : String(error)}`);
+      state.context.fail(`parser-boundary source adapter failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
   sample();
   state.refresh = sample;
-}
-
-function armCompositorAdapter(state: HostState): void {
-  const adapter = (globalThis as { __aoMonitorCompositorCounters?: { read: () => CompositorMonitorSignal } }).__aoMonitorCompositorCounters;
-  if (!adapter || typeof adapter.read !== 'function') {
-    state.context.fail('compositor counter adapter is unavailable on this platform');
-    return;
-  }
-  state.refresh = () => {
-    try {
-      const signal = adapter.read();
-      if (!signal || typeof signal !== 'object') throw new Error('compositor signal is not an object');
-      state.values.compositor = signal;
-      increment(state, 'compositorSamples');
-    } catch (error) {
-      state.context.fail(`compositor counter adapter failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-  state.refresh();
 }
 
 function summary(state: HostState, atMs: number): Record<string, unknown> {

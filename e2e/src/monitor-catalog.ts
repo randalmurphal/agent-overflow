@@ -3,8 +3,7 @@ export const MONITOR_SPEC_VERSION = 1 as const;
 export type MonitorId =
   | 'frame-pacing' | 'skipped-frames' | 'long-task' | 'long-animation-frame'
   | 'input-to-render' | 'scroll-response' | 'layout-shift' | 'animation-continuity'
-  | 'source-rewind' | 'parser-boundary' | 'semantic-dom-stability'
-  | 'focus-clipping-settledness' | 'compositor-counters';
+  | 'parser-boundary' | 'semantic-dom-stability' | 'focus-clipping-settledness';
 
 export type CompatibilityLeg = 'clean-renderer' | 'instrumented-renderer' | 'functional' | 'provider-source' | 'platform';
 export const COMPATIBILITY_LEGS: readonly CompatibilityLeg[] = ['clean-renderer', 'instrumented-renderer', 'functional', 'provider-source', 'platform'];
@@ -30,11 +29,9 @@ export const MONITOR_CATALOG: readonly MonitorSpec[] = Object.freeze([
   define('scroll-response', 'Scroll response', 'instrumented-renderer', 'event-listener', 'scroll', 'animation-frame'),
   define('layout-shift', 'Layout shift', 'instrumented-renderer', 'performance-observer', 'performance:layout-shift'),
   define('animation-continuity', 'Animation continuity', 'instrumented-renderer', 'animation-frame', 'animation-frame'),
-  define('source-rewind', 'Source rewind', 'provider-source', 'source-instrumentation', 'source-rewind'),
   define('parser-boundary', 'Parser boundary', 'provider-source', 'source-instrumentation', 'parser-boundary'),
   define('semantic-dom-stability', 'Semantic DOM stability', 'functional', 'dom-observer', 'dom', 'semantic-dom'),
   define('focus-clipping-settledness', 'Focus, clipping and settledness', 'functional', 'layout-read', 'dom', 'focus'),
-  define('compositor-counters', 'Compositor counters', 'platform', 'platform-counter', 'compositor-counters'),
 ]);
 
 const byID = new Map(MONITOR_CATALOG.map((spec) => [spec.id, spec]));

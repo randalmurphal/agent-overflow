@@ -37,9 +37,7 @@ export type MonitorCapability =
   | 'scroll'
   | 'semantic-dom'
   | 'focus'
-  | 'source-rewind'
-  | 'parser-boundary'
-  | 'compositor-counters';
+  | 'parser-boundary';
 
 export const MONITOR_CAPABILITIES: readonly MonitorCapability[] = [
   'animation-frame',
@@ -52,9 +50,7 @@ export const MONITOR_CAPABILITIES: readonly MonitorCapability[] = [
   'scroll',
   'semantic-dom',
   'focus',
-  'source-rewind',
   'parser-boundary',
-  'compositor-counters',
 ];
 
 export const MONITOR_COMPATIBILITY_LEGS: readonly MonitorCompatibilityLeg[] = [
@@ -77,8 +73,7 @@ export type MonitorProbeKind =
   | 'source'
   | 'parser'
   | 'semantic-dom'
-  | 'focus-clipping-settledness'
-  | 'compositor';
+  | 'focus-clipping-settledness';
 
 export interface MonitorProbeRequest<K extends MonitorProbeKind = MonitorProbeKind> {
   readonly kind: K;
@@ -97,12 +92,6 @@ export interface SourceMonitorSignal {
   readonly cursor: number;
   readonly rewinds?: number;
   readonly parserBoundaries?: number;
-}
-
-export interface CompositorMonitorSignal {
-  readonly presentedFrames?: number;
-  readonly droppedFrames?: number;
-  readonly checkerboardFrames?: number;
 }
 
 export interface MonitorProbeReader {

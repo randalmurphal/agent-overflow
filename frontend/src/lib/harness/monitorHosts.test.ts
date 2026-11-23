@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createBuiltinMonitor, installCompositorMonitorAdapter, installSourceMonitorAdapter } from './monitorHosts';
+import { createBuiltinMonitor, installSourceMonitorAdapter } from './monitorHosts';
 import type { MonitorCapability, MonitorContext, MonitorSpec } from './monitorTypes';
 
 const contexts: MonitorContext[] = [];
@@ -167,34 +167,29 @@ describe('browser monitor hosts', () => {
     expect(summary.cumulativeLayoutShift).toBe(0.25);
   });
 
-  it('uses typed source and compositor adapters and refuses malformed source data', () => {
+  it('counts cursor and parser boundary rewinds from the source adapter', () => {
     let cursor = 4;
     const removeSource = installSourceMonitorAdapter(() => ({ cursor, parserBoundaries: cursor }));
-    const source = context('source-rewind', ['source-rewind']);
-    const sourceHost = createBuiltinMonitor(spec('source-rewind', ['source-rewind']), source.context)!;
+    const source = context('parser-boundary', ['parser-boundary']);
+    const sourceHost = createBuiltinMonitor(spec('parser-boundary', ['parser-boundary']), source.context)!;
     cursor = 2;
     sourceHost.heartbeat?.(10);
-    const sourceSummary = sourceHost.stop?.(20) as { 'source-rewind': { cursor: number }; counts: { rewinds: number } };
-    expect(sourceSummary['source-rewind'].cursor).toBe(2);
+    const sourceSummary = sourceHost.stop?.(20) as { 'parser-boundary': { cursor: number }; counts: { rewinds: number; parserBoundaryRewinds: number } };
+    expect(sourceSummary['parser-boundary'].cursor).toBe(2);
     expect(sourceSummary.counts.rewinds).toBe(1);
+    expect(sourceSummary.counts.parserBoundaryRewinds).toBe(1);
+    expect(source.errors).toEqual([]);
     removeSource();
-
-    const removeCompositor = installCompositorMonitorAdapter(() => ({ presentedFrames: 2, droppedFrames: 1 }));
-    const compositor = context('compositor-counters', ['compositor-counters']);
-    const compositorHost = createBuiltinMonitor(spec('compositor-counters', ['compositor-counters']), compositor.context)!;
-    const compositorSummary = compositorHost.stop?.(20) as { compositor: { droppedFrames: number } };
-    expect(compositorSummary.compositor.droppedFrames).toBe(1);
-    removeCompositor();
   });
 
   it('restores a previous adapter after nested replacement cleanup', () => {
-    const removeFirst = installSourceMonitorAdapter(() => ({ cursor: 1 }));
-    const removeSecond = installSourceMonitorAdapter(() => ({ cursor: 2 }));
+    const removeFirst = installSourceMonitorAdapter(() => ({ cursor: 1, parserBoundaries: 1 }));
+    const removeSecond = installSourceMonitorAdapter(() => ({ cursor: 2, parserBoundaries: 2 }));
     removeSecond();
-    const source = context('source-rewind', ['source-rewind']);
-    const host = createBuiltinMonitor(spec('source-rewind', ['source-rewind']), source.context)!;
-    const summary = host.stop?.(10) as { 'source-rewind': { cursor: number } };
-    expect(summary['source-rewind'].cursor).toBe(1);
+    const source = context('parser-boundary', ['parser-boundary']);
+    const host = createBuiltinMonitor(spec('parser-boundary', ['parser-boundary']), source.context)!;
+    const summary = host.stop?.(10) as { 'parser-boundary': { cursor: number } };
+    expect(summary['parser-boundary'].cursor).toBe(1);
     removeFirst();
   });
 });
