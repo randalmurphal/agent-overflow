@@ -66,7 +66,7 @@ func newGoWorkDir() (*ownedtemp.Shared, error) {
 // processes have all exited (ownedtemp). What it cannot do goes to stderr.
 func sweepRunDirs(stderr io.Writer) {
 	parent := diskParent()
-	for _, prefix := range []string{goWorkPrefix, diskTempPrefix} {
+	for _, prefix := range []string{goWorkPrefix, diskTempPrefix, diskDirPrefix} {
 		if err := ownedtemp.Sweep(parent, prefix); err != nil {
 			warn(stderr, "netisolate: remove an earlier run's directories:", err)
 		}

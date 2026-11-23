@@ -43,6 +43,9 @@ const (
 	// diskTempArg names the directory on disk the helper mounts as the temp
 	// directory instead of a tmpfs (reserveRAMTemp).
 	diskTempArg = "--disk-temp="
+	// diskDirArg names the run's disk directory, which the helper mounts at
+	// DiskDir.
+	diskDirArg = "--disk-dir="
 	// ownedArg names a run directory (ownedtemp), one per argument, that
 	// the helper keeps owned while its mount namespace has a process.
 	ownedArg = "--owned="
@@ -110,6 +113,12 @@ func Command(command *exec.Cmd, stderr io.Writer) (release func() error, err err
 		dirs = append(dirs, goWork)
 		options.goWork = goWork.Dir
 	}
+	diskDir, err := ownedtemp.MakeShared(diskParent(), diskDirPrefix)
+	if err != nil {
+		return noop, errors.Join(fmt.Errorf("create the run's disk directory: %w", err), release())
+	}
+	dirs = append(dirs, diskDir)
+	options.diskDir = diskDir.Dir
 	if reservation, reason := reserveRAMTemp(stderr); reservation != nil {
 		dirs = append(dirs, reservation)
 	} else {
@@ -138,6 +147,7 @@ type helperOptions struct {
 	keepTemp bool
 	goWork   string
 	diskTemp string
+	diskDir  string
 	owned    []string
 }
 
@@ -151,6 +161,9 @@ func (o helperOptions) args() []string {
 	}
 	if o.diskTemp != "" {
 		args = append(args, diskTempArg+o.diskTemp)
+	}
+	if o.diskDir != "" {
+		args = append(args, diskDirArg+o.diskDir)
 	}
 	for _, dir := range o.owned {
 		args = append(args, ownedArg+dir)
@@ -168,6 +181,8 @@ func parseHelperOptions(args []string) (helperOptions, []string) {
 			o.goWork = strings.TrimPrefix(args[0], goWorkArg)
 		case strings.HasPrefix(args[0], diskTempArg):
 			o.diskTemp = strings.TrimPrefix(args[0], diskTempArg)
+		case strings.HasPrefix(args[0], diskDirArg):
+			o.diskDir = strings.TrimPrefix(args[0], diskDirArg)
 		case strings.HasPrefix(args[0], ownedArg):
 			o.owned = append(o.owned, strings.TrimPrefix(args[0], ownedArg))
 		default:
@@ -273,6 +288,12 @@ func RunHelper(args []string, stderr io.Writer) int {
 			return 1
 		}
 	}
+	if options.diskDir != "" {
+		if err := mountDiskDir(options.diskDir); err != nil {
+			warn(stderr, "netisolate: mount the run's disk directory:", explainMountError(err))
+			return 1
+		}
+	}
 	if err := unix.Prctl(unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0); err != nil {
 		warn(stderr, "netisolate: clear ambient capabilities:", err)
 		return 1
@@ -281,7 +302,7 @@ func RunHelper(args []string, stderr io.Writer) int {
 		return 0
 	}
 	if len(args) < 3 || args[1] != "--" {
-		warn(stderr, "netisolate: helper needs `[--keep-temp] [--go-work=DIR] [--disk-temp=DIR] [--owned=DIR...] path -- argv...`")
+		warn(stderr, "netisolate: helper needs `[--keep-temp] [--go-work=DIR] [--disk-temp=DIR] [--disk-dir=DIR] [--owned=DIR...] path -- argv...`")
 		return 2
 	}
 	if err := unix.Setpriority(unix.PRIO_PROCESS, 0, Niceness); err != nil {

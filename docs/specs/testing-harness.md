@@ -307,7 +307,9 @@ the same on every run because the Go test cache keys a result by the
 107 bytes. `/tmp` itself is the host's, so paths a caller passes in stay
 readable. `AO_NETISOLATE_HOST_TMPDIR` names the host's temp directory for
 a file that must outlive the run, such as a data root
-`AO_E2E_KEEP_FAILED_ROOT` keeps.
+`AO_E2E_KEEP_FAILED_ROOT` keeps. A test that needs storage writes, which a
+tmpfs never makes, uses `netisolate.DiskDir`: a directory on disk the run
+owns, mounted at `/tmp/aot-<uid>/.ao-disk` and removed with the run.
 
 The go command's work directory, test binaries included, would add
 several GB to the tmpfs, so each run gets one on disk under the host's

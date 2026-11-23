@@ -357,6 +357,9 @@ type tempProbe struct {
 	GoTmpDirEnv  string
 	GoWorkFile   string
 	GoWorkError  string
+	DiskFile     string
+	DiskError    string
+	DiskFS       bool
 	NestedTemp   string
 	NestedSeen   bool
 	NestedStderr string
@@ -398,6 +401,17 @@ func runTempProbe(out io.Writer) int {
 		probe.GoWorkError = err.Error()
 	} else {
 		probe.GoWorkFile = file.Name()
+	}
+	if file, err := os.CreateTemp(DiskDir(), "probe-disk-"); err != nil {
+		probe.DiskError = err.Error()
+	} else if err := file.Close(); err != nil {
+		probe.DiskError = err.Error()
+	} else {
+		probe.DiskFile = file.Name()
+		var disk unix.Statfs_t
+		if err := unix.Statfs(DiskDir(), &disk); err == nil {
+			probe.DiskFS = disk.Type != unix.TMPFS_MAGIC && disk.Type != unix.RAMFS_MAGIC
+		}
 	}
 	probe.PdeathSig = parentDeathSignal()
 	return encodeProbe(out, probe)

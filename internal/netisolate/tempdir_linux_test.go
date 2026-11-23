@@ -238,8 +238,20 @@ func TestLowMemoryRunGetsItsTempDirOnDisk(t *testing.T) {
 	t.Run("plenty", func(t *testing.T) {
 		withMemoryLimits(t, memoryLimits{available: ramTempThreshold, total: 64 << 30})
 		probe, stderr, release := run(t)
+		// The run's disk directory is on disk however its temp directory
+		// is, at the fixed DiskDir, and goes with the run.
+		if probe.DiskFile == "" || !probe.DiskFS || filepath.Dir(probe.DiskFile) != DiskDir() {
+			t.Fatalf("probe wrote %q in the disk directory (on disk %v; %s), want a file in %s on disk", probe.DiskFile, probe.DiskFS, probe.DiskError, DiskDir())
+		}
+		written, err := filepath.Glob(filepath.Join(diskParent(), diskDirPrefix+"*", filepath.Base(probe.DiskFile)))
+		if err != nil || len(written) != 1 {
+			t.Fatalf("the probe's disk file in %s: %v, %v; want it in the run's directory there", diskParent(), written, err)
+		}
 		if err := release(); err != nil {
 			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Dir(written[0])); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("the run's disk directory outlived it: %v", err)
 		}
 		if !probe.TempFS || probe.TempDir != TempDir() || strings.Contains(stderr, "on disk") {
 			t.Fatalf("TMPDIR = %q (tmpfs %v), stderr %q; want a tmpfs at %q and no notice", probe.TempDir, probe.TempFS, stderr, TempDir())

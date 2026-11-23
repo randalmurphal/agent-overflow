@@ -20,11 +20,12 @@ import (
 
 // holdReport is what the hold probe writes to holdReportName in the
 // control directory: its pid, the run directories whose lock files its
-// descriptors hold, and the run's Go work directory.
+// descriptors hold, and the run's Go work and disk directories.
 type holdReport struct {
 	Pid      int
 	LockDirs []string
 	GoWork   string
+	DiskDir  string
 	Error    string
 }
 
@@ -65,6 +66,9 @@ func runHold() int {
 		}
 	}
 	if report.GoWork, err = mountSource(goWorkPath()); err != nil {
+		report.Error = err.Error()
+	}
+	if report.DiskDir, err = mountSource(DiskDir()); err != nil {
 		report.Error = err.Error()
 	}
 	data, err := json.Marshal(report)
@@ -137,6 +141,10 @@ func testGrandchildKeepsTheRun(t *testing.T, binary string, ram bool, intermedia
 		t.Fatalf("grandchild report %+v, want its Go work directory", report)
 	}
 	dirs := []string{report.GoWork}
+	if !strings.HasPrefix(filepath.Base(report.DiskDir), diskDirPrefix) {
+		t.Fatalf("grandchild report %+v, want its disk directory", report)
+	}
+	dirs = append(dirs, report.DiskDir)
 	notice := diskNotice.FindStringSubmatch(notices.String())
 	switch {
 	case ram && notice == nil:
@@ -207,8 +215,8 @@ func TestGoGrandchildKeepsTheRun(t *testing.T) {
 			binary := grandchildEnv(t)
 			intermediate := exec.Command(binary, "-test.run=^$")
 			intermediate.Env = append(os.Environ(), isolationProbeEnv+"=spawn")
-			if locks := testGrandchildKeepsTheRun(t, binary, temp.ram, intermediate); len(locks) != 2 {
-				t.Fatalf("the grandchild holds the locks of %v; want both run directories'", locks)
+			if locks := testGrandchildKeepsTheRun(t, binary, temp.ram, intermediate); len(locks) != 3 {
+				t.Fatalf("the grandchild holds the locks of %v; want all three run directories'", locks)
 			}
 		})
 	}
