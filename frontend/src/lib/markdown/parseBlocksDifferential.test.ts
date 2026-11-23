@@ -319,6 +319,15 @@ describe('parseBlocks append differential', () => {
     expect(parseBlocks(`${first}| c`)).toEqual([first, '| c']);
   });
 
+  // A lone marker lexes as an empty list item; text right after it, with no
+  // space, makes the line a paragraph, which keeps its trailing space.
+  it.each(['-', '*', '1.'])('streams a %s marker followed by text as a paragraph', (marker) => {
+    const cache = createParseBlocksCache();
+    parseBlocks(marker, [], cache, createProvenAppend('', marker));
+    const next = `${marker}m `;
+    expect(parseBlocks(next, [], cache, createProvenAppend(marker, 'm '))).toEqual(parseBlocks(next, []));
+  });
+
   it.each([
     ['task items', '- [ ] pending\n- [x] done\n- final item'],
     ['loose items', '- first\n\n  continuation\n\n- second\n\n  more'],

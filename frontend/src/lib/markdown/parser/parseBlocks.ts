@@ -44,6 +44,8 @@ const INITIAL_HEADING = /^ {0,3}#{1,6}(?:[ \t]+|$)/;
 // A blank line: a line ending, optional spaces or tabs, then another line
 // ending. A CR that begins a CRLF is not a line ending of its own.
 const BLANK_LINE = /(?:\r\n|\n|\r(?!\n))[ \t]*(?:\r\n|\n|\r)/;
+// A list item's line with text: its marker, then a space or a tab.
+const LIST_ITEM_LINE = /^ {0,3}(?:[*+-]|\d{1,9}[.)])[ \t]/;
 // Seeds a boundary without a Lexer, so only where no alignment is in force:
 // its list geometry does not stop at a closer.
 const initialBlockToken = (markdown: string, extensions: Extension[], alignStart: Alignment): BlockToken | null => {
@@ -213,11 +215,14 @@ const parseBlocksCached = (
                 const combinedTrailingWhitespace = trailingWhitespace === appendDelta.length
                     ? trailingWhitespace + (t.normalized ? 1 : 0)
                     : trailingWhitespace;
-                if (combinedTrailingWhitespace <= 1) {
+                const appended = t.normalized
+                    ? priorRaw.slice(0, -1) + priorSourceWhitespace + appendDelta
+                    : priorRaw + appendDelta;
+                // A lone marker is an empty item; text right after it makes
+                // the line a paragraph.
+                if (combinedTrailingWhitespace <= 1 && LIST_ITEM_LINE.test(appended)) {
                     const blockAppend = createProvenAppend(priorRaw, appendDelta);
-                    let nextRaw = t.normalized
-                        ? priorRaw.slice(0, -1) + priorSourceWhitespace + appendDelta
-                        : blockAppend.next;
+                    let nextRaw = t.normalized ? appended : blockAppend.next;
                     const normalized = combinedTrailingWhitespace === 1;
                     if (normalized) {
                         // Marked's built-in block list parser normalizes one
