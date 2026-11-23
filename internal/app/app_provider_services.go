@@ -41,6 +41,7 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 					Unauthenticated: request.Unauthenticated,
 					EmitUnauth:      request.EmitUnauth,
 					AfterAdopt:      request.AfterAdopt,
+					ResetCredits:    request.ResetCredits,
 				})
 			},
 			ClaudeProbe: func(binary, accountID string) (provider.ProbeCacheKey, claude.ProbeConfig) {

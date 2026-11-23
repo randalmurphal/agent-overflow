@@ -28,6 +28,8 @@ import {
   applyProviderAccountSignIn,
   applyProviderAccountAutoSwitch,
   setProviderAccountAutoSwitch,
+  spendProviderAccountReset,
+  finishProviderAccountReset,
   resetForTest as resetProviderAccounts,
   switchProviderAccount,
 } from './providerAccounts.svelte';
@@ -774,6 +776,125 @@ describe('refreshProviderAccountUsage', () => {
 
     expect(toastMessages()).toContain('Usage endpoint 503.');
     expect(getProviderAccountActions('claude').refreshingID).toBe('');
+  });
+});
+
+describe('spendProviderAccountReset', () => {
+  const choice = { accountId: 'codex-a', optionId: 'RateLimitResetCredit_1', revision: 7 };
+  const option = { id: 'RateLimitResetCredit_1', kind: 'full', label: 'Full reset', refills: 'Refills your current Codex usage limits.', expiresAt: 0, usable: true };
+  const withResets = () => account({
+    id: 'codex-a', provider: 'codex', usageResets: { revision: 8, options: [option] },
+  } as Partial<ManagedProviderAccount>);
+
+  it('spends what the person confirmed, toasts the outcome, and reloads', async () => {
+    const calls: string[] = [];
+    setBindingMock('ListProviderAccounts', async () => {
+      calls.push('list');
+      return [withResets()];
+    });
+    const spend = setBindingMock('SpendProviderAccountReset', async () => {
+      calls.push('spend');
+      return { message: 'Reset used. Your Codex usage limits are refilled.', spent: true, readingLanded: true };
+    });
+    await loadProviderAccounts();
+    calls.length = 0;
+
+    // The listing is at revision 8 by now; the confirm showed 7.
+    await spendProviderAccountReset('codex', choice);
+
+    expect(spend).toHaveBeenCalledWith('codex', 'codex-a', 'RateLimitResetCredit_1', 7);
+    expect(calls).toEqual(['spend', 'list']);
+    expect(getToasts().map((toast) => [toast.type, toast.message])).toEqual([
+      ['success', 'Reset used. Your Codex usage limits are refilled.'],
+    ]);
+    expect(getProviderAccountActions('codex').spendingResetID).toBe('');
+  });
+
+  it('says so when the spend used nothing', async () => {
+    setBindingMock('ListProviderAccounts', async () => [withResets()]);
+    setBindingMock('SpendProviderAccountReset', async () => ({
+      message: "This account isn't at a usage limit, so there was nothing to reset. The reset wasn't used.", spent: false, readingLanded: true,
+    }));
+    await loadProviderAccounts();
+
+    await spendProviderAccountReset('codex', choice);
+
+    expect(getToasts().map((toast) => toast.type)).toEqual(['info']);
+  });
+
+  // A refused or unconfirmed spend still re-reads: the card then shows the
+  // current list, or Finish for the reset Codex did not confirm.
+  it('reports a failed spend and reads the listing again', async () => {
+    const list = setBindingMock('ListProviderAccounts', async () => [withResets()]);
+    setBindingMock('SpendProviderAccountReset', async () => {
+      throw new Error('Codex did not confirm the reset. Press Finish on the account to complete it; Finish never uses a second reset.');
+    });
+    await loadProviderAccounts();
+    list.mockClear();
+
+    await spendProviderAccountReset('codex', choice);
+
+    expect(toastMessages()).toEqual(['Codex did not confirm the reset. Press Finish on the account to complete it; Finish never uses a second reset.']);
+    expect(list).toHaveBeenCalledOnce();
+    expect(getProviderAccountActions('codex').spendingResetID).toBe('');
+  });
+
+  it('sends one reset call at a time, a spend or a Finish', async () => {
+    setBindingMock('ListProviderAccounts', async () => [withResets()]);
+    const gate = deferred<unknown>();
+    const spend = setBindingMock('SpendProviderAccountReset', () => gate.promise);
+    const finish = setBindingMock('FinishProviderAccountReset', async () => ({ message: 'x', spent: true, readingLanded: true }));
+    await loadProviderAccounts();
+
+    const first = spendProviderAccountReset('codex', choice);
+    expect(getProviderAccountActions('codex').spendingResetID).toBe('codex-a');
+    await spendProviderAccountReset('codex', choice);
+    await finishProviderAccountReset('codex', 'codex-a', 'spend-1');
+    gate.resolve({ message: 'Reset used.', spent: true, readingLanded: true });
+    await first;
+
+    expect(spend).toHaveBeenCalledOnce();
+    expect(finish).not.toHaveBeenCalled();
+  });
+});
+
+describe('finishProviderAccountReset', () => {
+  it('sends Finish for the spend, toasts the outcome, and reloads', async () => {
+    const calls: string[] = [];
+    setBindingMock('ListProviderAccounts', async () => {
+      calls.push('list');
+      return [account({ id: 'codex-a', provider: 'codex' })];
+    });
+    const finish = setBindingMock('FinishProviderAccountReset', async () => {
+      calls.push('finish');
+      return { message: 'This reset is no longer available: the first request used it, or it expired.', spent: false, readingLanded: true };
+    });
+    await loadProviderAccounts();
+    calls.length = 0;
+
+    await finishProviderAccountReset('codex', 'codex-a', 'spend-1');
+
+    expect(finish).toHaveBeenCalledWith('codex', 'codex-a', 'spend-1');
+    expect(calls).toEqual(['finish', 'list']);
+    expect(getToasts().map((toast) => [toast.type, toast.message])).toEqual([
+      ['info', 'This reset is no longer available: the first request used it, or it expired.'],
+    ]);
+  });
+
+  // A refusal because nothing is unsettled (another client finished it)
+  // reloads the card, which then offers the resets again.
+  it('reports a refused Finish and reads the listing again', async () => {
+    const list = setBindingMock('ListProviderAccounts', async () => [account({ id: 'codex-a', provider: 'codex' })]);
+    setBindingMock('FinishProviderAccountReset', async () => {
+      throw new Error('This reset is already settled, so nothing was sent.');
+    });
+    await loadProviderAccounts();
+    list.mockClear();
+
+    await finishProviderAccountReset('codex', 'codex-a', 'spend-1');
+
+    expect(toastMessages()).toEqual(['This reset is already settled, so nothing was sent.']);
+    expect(list).toHaveBeenCalledOnce();
   });
 });
 

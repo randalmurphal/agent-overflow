@@ -168,6 +168,32 @@ func TestTurnRefusedMarkSeenByBeforeSend(t *testing.T) {
 	}
 }
 
+func TestLimitsResetForgetsTheAccountsRefusalMarks(t *testing.T) {
+	// a is selected and b is free to switch to, so a mark on a alone
+	// switches (TestTurnRefusedMarkSeenByBeforeSend). c's mark is another
+	// account's.
+	f := newFakeApp("codex", "a", "a", "b", "c")
+	f.setReading("codex", "a", testNow, codexLimit(20, at(48*time.Hour)))
+	f.setReading("codex", "b", testNow, codexLimit(10, at(48*time.Hour)))
+	f.setReading("codex", "c", testNow, codexLimit(10, at(48*time.Hour)))
+	c := New(f.deps())
+
+	c.TurnRefused("codex", "t1", codexModel, "a")
+	c.TurnRefused("codex", "t2", codexModel, "c")
+	c.LimitsReset("codex", "a")
+	settle(c)
+	c.BeforeSend("codex", "t1", codexModel, false)
+	if switches, _, _, _ := f.snapshot(); len(switches) != 0 {
+		t.Fatalf("switched away from an account whose limits were reset: %v", switches)
+	}
+	c.mu.Lock()
+	marksC := len(c.marks[accountKey{"codex", "c"}])
+	c.mu.Unlock()
+	if marksC == 0 {
+		t.Fatal("a reset of one account forgot another's marks")
+	}
+}
+
 func TestStaleTargetRefreshedOffPath(t *testing.T) {
 	cases := []struct {
 		name       string

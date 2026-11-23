@@ -101,7 +101,11 @@ account as exhausted for the refused thread's model family. The mark lasts
 until the reset time of the most used limit that applies to the model, or of
 the most used limit of any kind when none applies, or one hour when the
 account has no reading. When that limit is provider-wide and past the
-threshold the mark covers every model. Marks are kept in memory.
+threshold the mark covers every model. Marks are kept in memory. A usage
+reset or Finish from Settings that Codex answers `reset`, and whose reading
+after it landed, drops the account's marks (`Coordinator.LimitsReset`): that
+reading says what is left. An answer that the reset was already used, and a
+reset whose reading failed, drop nothing.
 
 A provider does not say which account refused a request, and a request in
 flight at a switch can still be refused on the previous account. For two
