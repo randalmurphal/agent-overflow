@@ -40,6 +40,8 @@ func providerLabel(providerName string) string {
 		return "Claude"
 	case string(provider.Codex):
 		return "Codex"
+	case string(provider.Agy):
+		return "Antigravity"
 	default:
 		return providerName
 	}

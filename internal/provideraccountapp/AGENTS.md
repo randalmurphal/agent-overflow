@@ -51,9 +51,9 @@ alive. Rate-limit persistence and emission enter through narrow
 - Build login and probe environments from the same layers: configured user
   environment, boot-mode overrides, then the isolated provider-home pin.
   Endpoint configuration is part of account identity.
-- The canonical record (`recorded.go`) is the one proof that canonical bytes
-  are the selected account's login; only a credential identified or
-  activated as that account's is recorded. Beside it is the verdict on a
+- The canonical record (`recorded.go`) is the one proof, for every managed
+  provider, that canonical bytes are the selected account's login; only a
+  credential identified or activated as that account's is recorded. Beside it is the verdict on a
   canonical login reconciliation identified and could not attribute to one
   saved account (`unresolvedLoginError`), keyed by the credential's digest
   and the saved identities: another credential, a changed identity or a
@@ -63,14 +63,16 @@ alive. Rate-limit persistence and emission enter through narrow
   (`ReconcileBeforeSend`), and a switch, removal or sign-in goes through and
   preserves nothing from them.
 - One resolver (`resolveObservedLoginLocked`) attributes an unrecorded
-  canonical login, for reconciliation and for the selected Claude refresh.
+  canonical login of any managed provider, for reconciliation and for the
+  selected Claude refresh.
   An account saved without an email takes an observed login, named or not,
   only while nothing the login carries contradicts it
   (`blankEmailAccountTakes`, also session attribution's rule). An email
   several saved accounts share, with no organization named, is nobody's for
   certain.
-- A usage reading or spend of the selected account whose canonical
-  credential is not the recorded one reconciles first, under the lock it
+- A Claude or Codex usage reading, or a Codex spend, of the selected
+  account whose canonical credential is not the recorded one reconciles
+  first, under the lock it
   already holds, and runs on exactly the credential reconciliation
   accepted: an account no longer selected is read from its slot, and a
   spend of it is refused unsent. The commit lands a selected reading's slot
@@ -78,8 +80,9 @@ alive. Rate-limit persistence and emission enter through narrow
   (`commitProviderUsageRefreshLocked`). A Codex rotation is placed only by
   the credential store's settle, live and at boot; the commit learns where
   it went.
-- A saved slot whose credential names another workspace than its account
-  (`savedLoginOfAnotherWorkspace`) is never activated: an inactive reading
+- A saved Codex slot whose credential names another workspace than its
+  account (`savedLoginOfAnotherWorkspace`; only a Codex credential carries
+  one) is never activated: an inactive reading
   and a switch refuse it before anything is written, auto-switch reads that
   refusal as an account that needs a sign-in (`IsNeedsLogin`), and removal
   passes over it when it picks the replacement.

@@ -1063,26 +1063,46 @@ func TestSweepRemovesStrandedLeases(t *testing.T) {
 	}
 }
 
-// A crashed Codex login home owns no account. Its credential is never
-// adopted anywhere, but the home and its live credential are removed.
-func TestSweepRemovesACrashedCodexLoginHome(t *testing.T) {
-	credentials := chainFixture(t)
-	home, err := credentials.NewEphemeralHome("codex")
+// A crashed login home owns no account. Its credential is never adopted
+// anywhere, but the home and its live credential are removed. Antigravity
+// creates no other temporary home with a credential.
+func TestSweepRemovesACrashedLoginHome(t *testing.T) {
+	for _, tc := range []struct{ provider, login string }{
+		{"codex", "pos:5"},
+		{"agy", `{"access_token":"ya29.signed-in","refresh_token":"1//signed-in"}`},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			credentials := chainFixture(t)
+			home, err := credentials.NewEphemeralHome(tc.provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := credentials.storeCredentialAt(tc.provider, home.Path, false, []byte(tc.login)); err != nil {
+				t.Fatal(err)
+			}
+			abandonEphemeralHome(t, home)
+
+			results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
+			if err != nil || len(results) != 1 || results[0].Action != "discarded" {
+				t.Fatalf("sweep = %+v, %v; want the login home discarded", results, err)
+			}
+			if _, err := os.Stat(home.Path); !os.IsNotExist(err) {
+				t.Fatalf("crashed login home survived: %v", err)
+			}
+			if slots, err := os.ReadDir(filepath.Dir(mustAccountDir(t, credentials, tc.provider))); err == nil && len(slots) != 0 {
+				t.Fatalf("the sweep saved the login home's credential in %d slots", len(slots))
+			}
+		})
+	}
+}
+
+func mustAccountDir(t *testing.T, c *Credentials, providerName string) string {
+	t.Helper()
+	dir, err := c.accountDirectory(providerName, "probe")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home.Path, "auth.json"), []byte("pos:5"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	abandonEphemeralHome(t, home)
-
-	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
-	if err != nil || len(results) != 1 || results[0].Action != "discarded" {
-		t.Fatalf("sweep = %+v, %v; want the login home discarded", results, err)
-	}
-	if _, err := os.Stat(home.Path); !os.IsNotExist(err) {
-		t.Fatalf("crashed login home survived: %v", err)
-	}
+	return dir
 }
 
 // A login home whose owner died before any sign-in landed holds nothing;

@@ -67,35 +67,83 @@ done
 	return path
 }
 
-// While the canonical Codex login is one reconciliation could not attribute
-// to one saved account, a send is refused with that verdict's sentence
-// before any provider process starts. A switch to another saved account
-// still goes through, and the next send runs on it.
+// agyLogin is an Antigravity OAuth credential; email, when set, is the
+// id_token_email the CLI persists, the only identity the app reads while
+// Google's userinfo is unreachable (as in every test).
+func agyLogin(token, email string) []byte {
+	if email == "" {
+		return []byte(`{"access_token":"ya29.` + token + `","refresh_token":"1//` + token + `"}`)
+	}
+	return []byte(`{"access_token":"ya29.` + token + `","refresh_token":"1//` + token + `","id_token_email":"` + email + `"}`)
+}
+
+// unresolvedSendCase is one provider's half of the unresolved-send test:
+// its saved logins, the outside login, the binary that identifies the
+// outside login, and the binary that runs a turn.
+type unresolvedSendCase struct {
+	name, provider, settingsKey, model string
+	// firstEmail and firstOrg are the selected account's; the other saved
+	// account is secondEmail in secondOrg.
+	firstEmail, firstOrg, secondEmail, secondOrg string
+	firstLogin, secondLogin, outsideLogin        []byte
+	identify                                     func(t *testing.T) string
+	turns                                        func(t *testing.T, capture string) string
+	want                                         string
+}
+
+// While the canonical login is one reconciliation could not attribute to
+// one saved account, a send is refused with that verdict's sentence before
+// any provider process starts. A switch to another saved account still goes
+// through, and the next send runs on it.
 func TestASendUnderAnUnresolvedLoginIsRefusedUntilASwitch(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		name string
-		// firstEmail and firstOrg are the selected account's; the other
-		// saved account is second@example.com in ws-2 unless sharedEmail.
-		firstEmail, firstOrg string
-		secondEmail          string
-		// observed is the outside login's account/read answer.
-		observed string
-		want     string
-	}{
+	codexLogin := func(token string) []byte {
+		return []byte(`{"tokens":{"access_token":"` + token + `","refresh_token":"rt-` + token + `"}}`)
+	}
+	codexTurns := func(email string) func(*testing.T, string) string {
+		return func(t *testing.T, capture string) string {
+			return writeCodexTurnBinary(t, `{"type":"chatgpt","email":"`+email+`","planType":"pro"}`, capture)
+		}
+	}
+	agyIdentify := func(t *testing.T) string { return writeSharedPoolAgyBinary(t, "") }
+	cases := []unresolvedSendCase{
 		{
-			name:       "a login that names no account",
-			firstEmail: "first@example.com", firstOrg: "ws-1",
-			secondEmail: "second@example.com",
-			observed:    `{"type":"chatgpt","planType":"pro"}`,
-			want:        "names no account",
+			name: "a Codex login that names no account", provider: string(provider.Codex), settingsKey: "codexBinaryPath",
+			firstEmail: "first@example.com", firstOrg: "ws-1", secondEmail: "second@example.com", secondOrg: "ws-2",
+			firstLogin: codexLogin("first"), secondLogin: codexLogin("second"), outsideLogin: codexLogin("outside"),
+			identify: func(t *testing.T) string {
+				return writeCodexAccountReadProbeBinary(t, `{"type":"chatgpt","planType":"pro"}`)
+			},
+			turns: codexTurns("second@example.com"),
+			want:  "The Codex login in use names no account",
 		},
 		{
-			name:       "a login whose email two saved accounts share",
-			firstEmail: "shared@example.com", firstOrg: "ws-1",
-			secondEmail: "shared@example.com",
-			observed:    `{"type":"chatgpt","email":"shared@example.com","planType":"pro"}`,
-			want:        "an email more than one saved account uses",
+			name: "a Codex login whose email two saved accounts share", provider: string(provider.Codex), settingsKey: "codexBinaryPath",
+			firstEmail: "shared@example.com", firstOrg: "ws-1", secondEmail: "shared@example.com", secondOrg: "ws-2",
+			firstLogin: codexLogin("first"), secondLogin: codexLogin("second"), outsideLogin: codexLogin("outside"),
+			identify: func(t *testing.T) string {
+				return writeCodexAccountReadProbeBinary(t, `{"type":"chatgpt","email":"shared@example.com","planType":"pro"}`)
+			},
+			turns: codexTurns("shared@example.com"),
+			want:  "an email more than one saved account uses",
+		},
+		{
+			name: "an Antigravity login that names no account", provider: string(provider.Agy), settingsKey: "agyBinaryPath",
+			model:      "gemini-3.1-pro-high",
+			firstEmail: "first@example.com", firstOrg: "g-1", secondEmail: "second@example.com", secondOrg: "g-2",
+			firstLogin: agyLogin("first", "first@example.com"), secondLogin: agyLogin("second", "second@example.com"),
+			outsideLogin: agyLogin("outside", ""),
+			identify:     agyIdentify, turns: writeSharedPoolAgyBinary,
+			want: "The Antigravity login in use names no account",
+		},
+		{
+			name: "an Antigravity login whose email two saved accounts share", provider: string(provider.Agy), settingsKey: "agyBinaryPath",
+			model:      "gemini-3.1-pro-high",
+			firstEmail: "shared@example.com", firstOrg: "g-1", secondEmail: "shared@example.com", secondOrg: "g-2",
+			firstLogin: agyLogin("first", "shared@example.com"), secondLogin: agyLogin("second", "shared@example.com"),
+			outsideLogin: agyLogin("outside", "shared@example.com"),
+			identify:     agyIdentify, turns: writeSharedPoolAgyBinary,
+			want: "The Antigravity login in use is shared@example.com, an email more than one saved account uses",
 		},
 	}
 	for _, tc := range cases {
@@ -104,9 +152,6 @@ func TestASendUnderAnUnresolvedLoginIsRefusedUntilASwitch(t *testing.T) {
 			app := newTestAppWithStore(t)
 			app.settings = settings.NewService(t.TempDir())
 			app.ensureTriageRouter()
-			codexName := string(provider.Codex)
-			firstLogin := []byte(`{"tokens":{"access_token":"first","refresh_token":"rt-first"}}`)
-			secondLogin := []byte(`{"tokens":{"access_token":"second","refresh_token":"rt-second"}}`)
 			accounts, err := provideraccounts.NewStore(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
@@ -116,52 +161,56 @@ func TestASendUnderAnUnresolvedLoginIsRefusedUntilASwitch(t *testing.T) {
 				account provideraccounts.Account
 				login   []byte
 			}{
-				{provideraccounts.Account{ID: "second", Provider: codexName, Email: tc.secondEmail, OrgID: "ws-2"}, secondLogin},
-				{provideraccounts.Account{ID: "first", Provider: codexName, Email: tc.firstEmail, OrgID: tc.firstOrg}, firstLogin},
+				{provideraccounts.Account{ID: "second", Provider: tc.provider, Email: tc.secondEmail, OrgID: tc.secondOrg}, tc.secondLogin},
+				{provideraccounts.Account{ID: "first", Provider: tc.provider, Email: tc.firstEmail, OrgID: tc.firstOrg}, tc.firstLogin},
 			} {
-				if err := credentials.WriteAccountCredential(codexName, saved.account.ID, saved.login); err != nil {
+				if err := credentials.WriteAccountCredential(tc.provider, saved.account.ID, saved.login); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := accounts.UpsertAndActivate(saved.account); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if err := credentials.WriteNativeCredentialForTest(codexName, firstLogin); err != nil {
+			if err := credentials.WriteNativeCredentialForTest(tc.provider, tc.firstLogin); err != nil {
 				t.Fatal(err)
 			}
 			attachProviderAccountStoresForTest(t, app, accounts, credentials)
-			app.providerAccounts.BlessCredentialForTest(codexName, firstLogin)
+			app.providerAccounts.BlessCredentialForTest(tc.provider, tc.firstLogin)
 
 			thread := testThread("unresolved-send")
+			thread.Provider = tc.provider
+			if tc.model != "" {
+				thread.Model = tc.model
+			}
 			thread.WorkspacePath = t.TempDir()
 			if err := app.store.CreateThread(thread); err != nil {
 				t.Fatal(err)
 			}
 			marker := filepath.Join(t.TempDir(), "started")
-			setCodex := func(binary string) {
+			setBinary := func(binary string) {
 				t.Helper()
-				if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+				if _, err := app.settings.Update(map[string]any{tc.settingsKey: binary}); err != nil {
 					t.Fatal(err)
 				}
 			}
 
 			// The recorded login is not refused.
-			setCodex(writeCodexMarkerBinary(t, marker))
+			setBinary(writeCodexMarkerBinary(t, marker))
 			if err := app.ensureProviderAccountReadyForSendLocked(thread); err != nil {
 				t.Fatalf("send readiness on the recorded login = %v, want none", err)
 			}
 
 			// A login from outside the app replaces the canonical one, and
 			// reconciliation leaves it unattributed.
-			if err := credentials.WriteNativeCredentialForTest(codexName, []byte(`{"tokens":{"access_token":"outside","refresh_token":"rt-outside"}}`)); err != nil {
+			if err := credentials.WriteNativeCredentialForTest(tc.provider, tc.outsideLogin); err != nil {
 				t.Fatal(err)
 			}
-			setCodex(writeCodexAccountReadProbeBinary(t, tc.observed))
-			if err := app.providerAccounts.ReconcileExternalProviderAccount(codexName); err != nil {
+			setBinary(tc.identify(t))
+			if err := app.providerAccounts.ReconcileExternalProviderAccount(tc.provider); err != nil {
 				t.Fatalf("reconcile = %v, want the login left unattributed quietly", err)
 			}
 
-			setCodex(writeCodexMarkerBinary(t, marker))
+			setBinary(writeCodexMarkerBinary(t, marker))
 			err = app.SendMessage(context.Background(), thread.ID, "hello", nil)
 			code, message, _ := errorsx.PublicDetails(err)
 			if code != "account_login_unresolved" || !strings.Contains(message, tc.want) ||
@@ -178,11 +227,11 @@ func TestASendUnderAnUnresolvedLoginIsRefusedUntilASwitch(t *testing.T) {
 				t.Fatalf("thread rows = %+v, %v; want none", items, err)
 			}
 
-			if _, err := app.providerAccounts.SwitchProviderAccount(codexName, "second"); err != nil {
+			if _, err := app.providerAccounts.SwitchProviderAccount(tc.provider, "second"); err != nil {
 				t.Fatalf("switch = %v, want it to go through", err)
 			}
 			capture := filepath.Join(t.TempDir(), "turns")
-			setCodex(writeCodexTurnBinary(t, `{"type":"chatgpt","email":"`+tc.secondEmail+`","planType":"pro"}`, capture))
+			setBinary(tc.turns(t, capture))
 			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
 			if err := app.SendMessage(context.Background(), thread.ID, "hello", nil); err != nil {
 				t.Fatalf("send after the switch = %v, want it sent", err)
@@ -230,9 +279,9 @@ done
 func TestASendWithNoSavedAccountGoesOutOnALoginThatNamesNobody(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name, provider, settingsKey string
-		login                       string
-		binary                      func(t *testing.T, capture string) string
+		name, provider, settingsKey, model string
+		login                              string
+		binary                             func(t *testing.T, capture string) string
 	}{
 		{
 			name: "a Codex API key", provider: string(provider.Codex), settingsKey: "codexBinaryPath",
@@ -246,6 +295,12 @@ func TestASendWithNoSavedAccountGoesOutOnALoginThatNamesNobody(t *testing.T) {
 			login: fmt.Sprintf(`{"claudeAiOauth":{"accessToken":%q,"refreshToken":"unscoped-rt","expiresAt":%d,"scopes":["user:inference"]}}`,
 				claudefake.AccessToken("someone@example.com", "org-1", "unscoped"), time.Now().Add(time.Hour).UnixMilli()),
 			binary: writeClaudeTurnBinary,
+		},
+		{
+			name: "an Antigravity login that names no account", provider: string(provider.Agy), settingsKey: "agyBinaryPath",
+			model:  "gemini-3.1-pro-high",
+			login:  string(agyLogin("nameless", "")),
+			binary: writeSharedPoolAgyBinary,
 		},
 	}
 	for _, tc := range cases {
@@ -269,6 +324,9 @@ func TestASendWithNoSavedAccountGoesOutOnALoginThatNamesNobody(t *testing.T) {
 			}
 			thread := testThread("nameless-send")
 			thread.Provider = tc.provider
+			if tc.model != "" {
+				thread.Model = tc.model
+			}
 			thread.WorkspacePath = t.TempDir()
 			if err := app.store.CreateThread(thread); err != nil {
 				t.Fatal(err)

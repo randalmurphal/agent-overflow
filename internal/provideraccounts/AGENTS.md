@@ -90,10 +90,12 @@ argv, as Claude Code's own write does. The item's ACL trusts only
 every switch. Moving the login to the plaintext file instead would expose it
 longer to the same readers.
 
-Every ephemeral home, Claude or Codex, is registered with a lease the
-owning process holds before a credential can exist in it
+Every ephemeral home, Claude, Codex or Antigravity, is registered with a
+lease the owning process holds before a credential can exist in it
 (`ephemeral_registry.go`). The boot sweep acts only on homes whose lease it
-can take.
+can take. Only a Codex usage probe seeds a home with an account's login; a
+sign-in home of any provider owns no account, and the sweep discards what
+it holds.
 
 Each registry entry records the fingerprint of the refresh token its home
 was seeded with (`TokenFingerprint`, provider-owned: the provider rewrites
