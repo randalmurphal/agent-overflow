@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"encoding/json"
 	"errors"
@@ -37,6 +38,10 @@ func writeInjectAppServer(t *testing.T, dir, requestLog, configured, failMethod 
 		"  id=$(printf '%s' \"$line\" | grep -o '\"id\":[0-9]*' | head -1 | grep -o '[0-9]*')\n" +
 		"  if [ -z \"$id\" ]; then continue; fi\n" +
 		failClause +
+		"  if printf '%s' \"$line\" | grep -q '\"method\":\"initialize\"'; then\n" +
+		"    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":" + providertest.CodexInitializeResult + "}\\n' \"$id\"\n" +
+		"    continue\n" +
+		"  fi\n" +
 		"  if printf '%s' \"$line\" | grep -q '\"method\":\"config/read\"'; then\n" +
 		"    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"config\":{\"developer_instructions\":\"" + configured + "\"}}}\\n' \"$id\"\n" +
 		"  else\n" +

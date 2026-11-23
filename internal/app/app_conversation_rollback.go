@@ -226,10 +226,9 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 // the stopped-thread gate (invariant 29) so straggler wire events cannot land
 // rows on the timeline the caller is about to truncate.
 //
-// The cut itself is whichever of upstream's two usable truncations the
-// connected app-server and this thread support — `thread/revert` in
-// place where it is available (codex >= 0.148 AND a paginated-history
-// thread), `thread/fork` plus repoint everywhere else. A successful in-place
+// The cut itself is whichever of upstream's two usable truncations this
+// thread supports — `thread/revert` in place on a paginated-history
+// thread, `thread/fork` plus repoint everywhere else. A successful in-place
 // revert keeps SessionRef and the live session. A fallback stops that session
 // before forking. Either way the next send sees provider history ending at the
 // kept prefix.

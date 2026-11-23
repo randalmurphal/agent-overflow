@@ -19,20 +19,21 @@ orders settings and turn pipe writes. `settingsSync.mu` is a leaf lock.
 remain held across `onEvent`; `mu` never may. Keep read-loop coordination
 values on their existing atomics.
 
-`NewSession` completes initialize, version checks, and exactly one
+`NewSession` completes initialize, the version check, and exactly one
 `thread/start` or `thread/resume` before exposing the session. A resume sends
 `excludeTurns:true`; AO owns rendered history and must not replay provider
-turns. Metadata-only reads use `includeTurns:false`. Paginated history and
-revert require their declared version gates; legacy sessions keep legacy
-fallback behavior.
+turns. Metadata-only reads use `includeTurns:false`. Revert requires a
+paginated thread; a legacy-history thread keeps the fork fallback.
 
 `Send` claims a turn before writing because `turn/started` can arrive before
 the RPC response. Preserve `clientUserMessageId` on sends and steers. Interrupt,
 revert, queued-turn, and replacement-session paths must reject responses whose
 session or history generation has changed.
 
-Use the connected app-server's initialize user agent for every version gate.
-Treat empty or unparseable versions as unsupported. Mid-turn user messages use
+`Dial` and the one-shot client refuse an app-server whose initialize user
+agent reports a version below `provider.MinimumCodexCLIVersion`, or an empty
+or unparseable one, through `provider.CheckCodexVersion`. Raise that minimum
+instead of adding a per-method version gate. Mid-turn user messages use
 `turn/steer`, never the provider queue.
 
 AO reads and deletes provider-owned queue entries but never adds, starts,

@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"os"
 	"path/filepath"
@@ -25,7 +26,7 @@ while IFS= read -r line; do
   case "$line" in
     *'"initialize"'*)
       id=$(printf '%s' "$line" | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"capabilities":{}}}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}\n' "$id"
       ;;
     *'"mcpServer/oauth/login"'*)
       id=$(printf '%s' "$line" | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+')

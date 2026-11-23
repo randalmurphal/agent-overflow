@@ -1,13 +1,11 @@
 {
   "version": 1,
   "name": "codex-revert-legacy",
-  "description": "The same answered turn against an app-server that predates thread/revert: the initialize override reports codex_cli_rs/0.147.0, so AO never asks for paginated history and the thread is legacy for life. Edit-and-resend must fall back to thread/fork, which repoints the thread at a NEW provider thread id.",
+  "description": "The same answered turn on a thread an older Agent Overflow started before it asked for paginated history: the mock records the thread as legacy at thread/start, and upstream keeps that mode for life. Edit-and-resend must fall back to thread/fork, which repoints the thread at a NEW provider thread id.",
   "provider": "codex",
   "codex": {
     "threadId": "mock-codex-revert-legacy",
-    "responses": {
-      "initialize": "{\"jsonrpc\":\"2.0\",\"id\":${REQUEST_ID},\"result\":{\"userAgent\":\"codex_cli_rs/0.147.0 (mock; ao-mockprovider)\"}}"
-    }
+    "startedHistoryMode": "legacy"
   },
   "turns": [
     {

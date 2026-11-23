@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -65,7 +66,7 @@ func runTransferTestServer() error {
 		var result any = map[string]any{}
 		switch request.Method {
 		case "initialize":
-			result = map[string]any{"userAgent": "codex/0.153.4"}
+			result = map[string]any{"userAgent": providertest.CodexUserAgent}
 		case "initialized":
 			continue
 		case "account/read":

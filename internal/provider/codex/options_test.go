@@ -208,7 +208,7 @@ func TestConfigFromOptionsServiceTierComesFromTheModelTier(t *testing.T) {
 
 func TestBuildThreadParamsThreadsServiceTier(t *testing.T) {
 	t.Parallel()
-	params := buildThreadParams(Config{Reaper: procutiltest.Reaper(), ServiceTier: "priority"}, "")
+	params := buildThreadParams(Config{Reaper: procutiltest.Reaper(), ServiceTier: "priority"})
 	if params["serviceTier"] != "priority" {
 		t.Errorf("serviceTier = %v, want priority", params["serviceTier"])
 	}
@@ -346,7 +346,7 @@ func TestConfigFromOptionsReasoningEffortLands(t *testing.T) {
 // the `config` override bag when ReasoningEffort is non-empty.
 func TestBuildThreadParamsThreadsReasoningEffort(t *testing.T) {
 	t.Parallel()
-	params := buildThreadParams(Config{Reaper: procutiltest.Reaper(), ReasoningEffort: "xhigh"}, "")
+	params := buildThreadParams(Config{Reaper: procutiltest.Reaper(), ReasoningEffort: "xhigh"})
 	cfg, ok := params["config"].(map[string]any)
 	if !ok {
 		t.Fatalf("config override bag missing: %+v", params)
@@ -362,7 +362,7 @@ func TestBuildThreadParamsThreadsContextOverrides(t *testing.T) {
 		Reaper:                procutiltest.Reaper(),
 		ContextWindow:         provider.CodexExtendedContextWindow,
 		AutoCompactTokenLimit: 800000,
-	}, "")
+	})
 	cfg, ok := params["config"].(map[string]any)
 	if !ok {
 		t.Fatalf("config override bag missing: %+v", params)
@@ -379,7 +379,7 @@ func TestBuildThreadParamsThreadsContextOverrides(t *testing.T) {
 // NOT leak a bogus override value into the thread/start handshake.
 func TestBuildThreadParamsOmitsReasoningEffortWhenEmpty(t *testing.T) {
 	t.Parallel()
-	params := buildThreadParams(Config{Reaper: procutiltest.Reaper()}, "")
+	params := buildThreadParams(Config{Reaper: procutiltest.Reaper()})
 	cfg, _ := params["config"].(map[string]any)
 	if _, ok := cfg["model_reasoning_effort"]; ok {
 		t.Errorf("empty effort should not emit model_reasoning_effort; got %+v", params)
@@ -396,7 +396,7 @@ func TestBuildThreadParamsMergesMCPServersAndEffort(t *testing.T) {
 		Reaper:          procutiltest.Reaper(),
 		MCPServers:      mcp,
 		ReasoningEffort: "high",
-	}, "")
+	})
 	cfg, ok := params["config"].(map[string]any)
 	if !ok {
 		t.Fatalf("config bag missing: %+v", params)
@@ -413,7 +413,7 @@ func TestBuildThreadParamsMergesMCPServersAndEffort(t *testing.T) {
 // baseInstructions key (camelCase). Matches ThreadStartParams.json.
 func TestBuildThreadParamsBaseInstructions(t *testing.T) {
 	t.Parallel()
-	params := buildThreadParams(Config{Reaper: procutiltest.Reaper(), SystemPrompt: "hello"}, "")
+	params := buildThreadParams(Config{Reaper: procutiltest.Reaper(), SystemPrompt: "hello"})
 	if params["baseInstructions"] != "hello" {
 		t.Errorf("baseInstructions = %v, want hello", params["baseInstructions"])
 	}

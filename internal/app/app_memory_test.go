@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"encoding/json"
 	"errors"
@@ -268,7 +269,7 @@ func TestThreadToolForksDecideOwnMemoryFromTheirCaller(t *testing.T) {
 	t.Cleanup(func() { _ = f.app.threadMCPServer().Close() })
 	requests := filepath.Join(t.TempDir(), "codex.jsonl")
 	inner := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
-		`"method":"initialize"`:    `{"jsonrpc":"2.0","id":%s,"result":{}}`,
+		`"method":"initialize"`:    `{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}`,
 		`"method":"thread/start"`:  `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"codex-memory-fork"}}}`,
 		`"method":"thread/resume"`: `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"codex-memory-fork"}}}`,
 		`"method":"thread/fork"`:   `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"codex-memory-fork"}}}`,

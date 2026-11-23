@@ -40,13 +40,6 @@ import (
 // codex-rs/tui/src/lib.rs:426,583, and the same one the background-terminal
 // RPCs ride).
 
-// threadQueueMinimumCodexVersion is the floor for the whole `thread/queue/*`
-// family. The methods do not exist below it, so a call to a 0.147 app-server
-// is a hard `method not found`, not a graceful degradation — exactly the
-// shape `appServerAtLeast` exists to gate. An unknown version reads as too
-// old and AO keeps its own in-process queue.
-const threadQueueMinimumCodexVersion = "0.148.0"
-
 // maxReportedForeignSubmissions bounds the foreign-submission dedupe set,
 // which is fed straight from the wire (every `thread/queue/changed` re-lists)
 // and so needs a bound of its own. Unlike the claim ledger, overrunning this
@@ -58,19 +51,6 @@ const maxReportedForeignSubmissions = 64
 // pathological queue cannot be read in one frame; this caps the number of
 // pages AO will follow before it reports what it has.
 const queueListPageCap = 8
-
-// ErrThreadQueueUnsupported is returned by every queue method when the
-// connected app-server predates the family. Callers fall back to AO's own
-// queue rather than surfacing an error to the user: the capability is a
-// property of the binary, not of the request.
-var ErrThreadQueueUnsupported = errors.New("codex: thread/queue is unavailable on this app-server")
-
-// isThreadQueueUnsupported reports the version-gate refusal without importing
-// the sentinel by value. Unexported: AO no longer writes to the provider's
-// queue, so every branch on it lives inside this package.
-func isThreadQueueUnsupported(err error) bool {
-	return errors.Is(err, ErrThreadQueueUnsupported)
-}
 
 // ErrThreadQueueListIncomplete says a `thread/queue/list` walk stopped before
 // the server ran out of pages — the page cap was reached, or the server
@@ -134,30 +114,6 @@ type QueuedSubmission struct {
 	ClientUserMessageID string
 }
 
-// ThreadQueueNative reports whether the connected app-server HAS the
-// `thread/queue/*` family at all — i.e. whether `list` and `delete` are
-// callable on this session.
-//
-// It stopped being a dispatch decision when AO left the provider's queue: a
-// mid-turn message goes to `turn/steer` either way. What it still gates is
-// recovery. A rollback has to purge rows a foreign producer left in codex's
-// SQLite, and on an app-server that cannot list them there is nothing to
-// attempt — which is a state the app layer must be able to see rather than a
-// failure to swallow.
-//
-// Decided ONCE, at handshake time (`recordThreadQueueSupport`), and never
-// re-evaluated: a value that could flip mid-session would let one caller
-// believe the queue is readable and the next believe it is not, with no way
-// to reconcile what either of them concluded.
-func (s *Session) ThreadQueueNative() bool { return s.threadQueueNative.Load() }
-
-// recordThreadQueueSupport freezes the queue decision for this session.
-// Called exactly once, straight after recordAppServerVersion, so every later
-// reader sees a value that cannot change under it.
-func (s *Session) recordThreadQueueSupport() {
-	s.threadQueueNative.Store(s.appServerAtLeast(threadQueueMinimumCodexVersion))
-}
-
 // QueueList reads the provider's queue for this thread, following
 // `nextCursor` up to queueListPageCap pages.
 //
@@ -170,9 +126,6 @@ func (s *Session) recordThreadQueueSupport() {
 // the queue" with a prefix is the one shape that silently corrupts both
 // callers — see that sentinel's doc.
 func (s *Session) QueueList(ctx context.Context) ([]QueuedSubmission, error) {
-	if !s.ThreadQueueNative() {
-		return nil, ErrThreadQueueUnsupported
-	}
 	var out []QueuedSubmission
 	cursor := ""
 	for page := 0; page < queueListPageCap; page++ {
@@ -236,9 +189,6 @@ func (s *Session) QueueList(ctx context.Context) ([]QueuedSubmission, error) {
 // rollback truncates history over a submission that may still be armed. A
 // pointer makes absence and null distinguishable from a genuine `false`.
 func (s *Session) QueueDelete(ctx context.Context, submissionID string) (bool, error) {
-	if !s.ThreadQueueNative() {
-		return false, ErrThreadQueueUnsupported
-	}
 	if strings.TrimSpace(submissionID) == "" {
 		return false, fmt.Errorf("codex: thread/queue/delete: empty submission id")
 	}
@@ -308,9 +258,6 @@ type QueuePurge struct {
 // rollback AND takes A back, so an abandoned rollback still loses nothing of
 // the user's own.
 func (s *Session) PurgeQueue(ctx context.Context) (QueuePurge, error) {
-	if !s.ThreadQueueNative() {
-		return QueuePurge{}, ErrThreadQueueUnsupported
-	}
 	submissions, listErr := s.QueueList(ctx)
 	if listErr != nil && len(submissions) == 0 {
 		return QueuePurge{}, listErr
@@ -417,7 +364,8 @@ func parseQueuedSubmission(raw json.RawMessage) (QueuedSubmission, error) {
 // The list runs on its own goroutine because this is the read loop: a
 // synchronous request here would deadlock on its own response.
 func (s *Session) reconcileThreadQueueChange(events []provider.ProviderEvent) []provider.ProviderEvent {
-	if !s.ThreadQueueNative() {
+	if !s.hasTransport() {
+		// Nothing to list on: the notification's own notice stands.
 		return events
 	}
 	s.startQueueReconcile()

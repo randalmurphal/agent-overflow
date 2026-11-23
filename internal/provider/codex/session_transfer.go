@@ -93,8 +93,9 @@ func checkTransferQueue(ctx context.Context, threadID string, request func(conte
 	response, err := request(ctx, "thread/queue/list", map[string]any{"threadId": threadID, "limit": 1})
 	if err != nil {
 		var rpc *RPCError
-		// Pre-0.148 binaries have no durable native queue. Every other
-		// refusal is unknown state, never evidence that the queue is empty.
+		// A Codex without the queue route has no durable native queue.
+		// Every other refusal is unknown state, never evidence that the
+		// queue is empty.
 		if errors.As(err, &rpc) && rpc.Code == -32601 {
 			return nil
 		}

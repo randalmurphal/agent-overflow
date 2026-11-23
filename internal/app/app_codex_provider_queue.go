@@ -94,8 +94,7 @@ func (a *App) legacyProviderQueuedRowsForThread(threadID string) ([]store.Item, 
 // sunsetLegacyProviderQueueRows retires the rows AO left in the provider's
 // queue while it briefly dispatched there (2026-08-21..24). It is the body of
 // `Config.BeforeResume` (app_session.go) and runs in that hook's one window:
-// after the handshake has frozen `ThreadQueueNative`, before the
-// `thread/resume` that loads the thread and lets its idle hook dispatch.
+// before the `thread/resume` that loads the thread and lets its idle hook dispatch.
 //
 // Deleting and restoring, rather than leaving them to run, is the whole point.
 // A row left in place dispatches as a `turn/started` this connection never
@@ -109,10 +108,6 @@ func (a *App) legacyProviderQueuedRowsForThread(threadID string) ([]store.Item, 
 // Ordering is load-bearing: the DELETE lands before the restore. A restore
 // that ran first would offer the user a re-send of a message codex is still
 // holding, which is the one duplicate this whole path exists to avoid.
-//
-// A pre-0.148 app-server has no `thread/queue/*` at all, so it cannot see or
-// delete them; the rows are named in the log and left exactly where they are,
-// for a later session on a newer binary to retire.
 func (a *App) sunsetLegacyProviderQueueRows(threadID string, sess *codex.Session) {
 	if a == nil || a.store == nil || sess == nil {
 		return
@@ -125,16 +120,6 @@ func (a *App) sunsetLegacyProviderQueueRows(threadID string, sess *codex.Session
 	if len(rows) == 0 {
 		return
 	}
-	if !sess.ThreadQueueNative() {
-		ids := make([]string, 0, len(rows))
-		for _, row := range rows {
-			ids = append(ids, row.ID)
-		}
-		log.Printf("codex queue: thread %s: %d message(s) are held by a Codex queue this app-server has no API for (%s); they stay there until a newer Codex opens this thread",
-			threadID, len(ids), strings.Join(ids, ", "))
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), codexQueueRequestTimeout)
 	defer cancel()
 	submissions, listErr := sess.QueueList(ctx)
@@ -220,45 +205,12 @@ func (a *App) sunsetLegacyProviderQueueRows(threadID string, sess *codex.Session
 // call handles only the case where AO already holds a connection, and the two
 // are deliberately allowed to overlap: after a successful purge here the
 // second one lists an empty queue and deletes nothing.
-//
-// A live session on a PRE-0.148 app-server is the one case with no purge to
-// attempt at all, and it is not automatically safe: this thread may still hold
-// legacy rows a newer Codex accepted, which that Codex will dispatch the next
-// time it opens the thread. The store is asked, because it is the only thing
-// here that can see them, and the rollback is refused if any exist. Refusing
-// is recoverable (run them, or upgrade); a message replaying onto history the
-// user deleted is not.
 func (a *App) purgeCodexProviderQueueForRollback(threadID string) error {
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok || sess.Codex == nil {
 		return nil
 	}
-	if !sess.Codex.ThreadQueueNative() {
-		return a.refuseRollbackOverUnreachableQueue(threadID)
-	}
 	return a.purgeCodexProviderQueue(threadID, sess.Codex)
-}
-
-// refuseRollbackOverUnreachableQueue is the pre-0.148 half of the same check.
-//
-// Store-only by necessity: there is no `thread/queue/list` on this connection,
-// so the legacy rows AO marked before each add are the only evidence that
-// anything is parked. A read error refuses too — an unknown queue state is
-// exactly what the caller must not truncate over.
-func (a *App) refuseRollbackOverUnreachableQueue(threadID string) error {
-	if a.store == nil {
-		return nil
-	}
-	stranded, err := a.store.ListUnclaimedProviderQueuedUserItemIDs(threadID)
-	if err != nil {
-		return fmt.Errorf("could not check whether Codex still has messages queued for this thread: %w", err)
-	}
-	if len(stranded) == 0 {
-		return nil
-	}
-	return fmt.Errorf(
-		"this thread has %d message(s) held by a newer Codex's message queue, and the connected Codex has no way to remove them; they would re-run after the rollback. Upgrade Codex to 0.148 or later, or let them run first",
-		len(stranded))
 }
 
 // purgeCodexQueueBeforeCut is the same purge over the app-server connection
@@ -286,7 +238,7 @@ func (a *App) refuseRollbackOverUnreachableQueue(threadID string) error {
 // truncation, because a cut landing over an unpurged queue is the exact shape
 // this purge exists to prevent — see purgeCodexProviderQueue.
 func (a *App) purgeCodexQueueBeforeCut(threadID string, sess *codex.Session) error {
-	if sess == nil || !sess.ThreadQueueNative() {
+	if sess == nil {
 		return nil
 	}
 	return a.purgeCodexProviderQueue(threadID, sess)

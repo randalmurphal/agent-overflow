@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"errors"
 	"maps"
@@ -25,7 +26,7 @@ while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
   case "$line" in
     *'"method":"initialize"'*)
-      printf '{"id":%s,"result":{"userAgent":"codex_cli_rs/0.151.0 (fake)"}}\n' "$id"
+      printf '{"id":%s,"result":` + providertest.CodexInitializeResult + `}\n' "$id"
       ;;
     *'"type":"chatgptDeviceCode"'*)
       printf '{"id":%s,"result":{"type":"chatgptDeviceCode","loginId":"login-device","verificationUrl":"https://chatgpt.com/device","userCode":"ABCD-EFGH"}}\n' "$id"

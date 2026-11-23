@@ -12,7 +12,7 @@ import (
 // CheckTransferReadiness verifies the target provider before preparation is
 // acknowledged. Use fresh account checks, never the five-minute display cache.
 // No source credential travels with the conversation.
-func (s *Service) CheckTransferReadiness(ctx context.Context, name, minimumCodexVersion string) error {
+func (s *Service) CheckTransferReadiness(ctx context.Context, name string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -28,15 +28,12 @@ func (s *Service) CheckTransferReadiness(ctx context.Context, name, minimumCodex
 		if s.deps.EmitStatus != nil {
 			s.deps.EmitStatus(providerstatus.EventFromDetect(status))
 		}
+		if name == string(provider.Codex) && (status.Status == "version_too_old" || status.Status == "error") && status.Message != "" {
+			// The detection message names the installed version, the
+			// minimum and the binary.
+			return fmt.Errorf("This computer cannot receive the conversation yet. %s", status.Message)
+		}
 		return fmt.Errorf("Set up %s on this computer before receiving the conversation (%s).", name, status.Status)
-	}
-	if minimumCodexVersion != "" {
-		if name != string(provider.Codex) {
-			return errors.New("Unsupported provider format requirement.")
-		}
-		if !provider.CodexCLIVersionAtLeast(provider.ParseCodexCLIVersion(status.Version), minimumCodexVersion) {
-			return fmt.Errorf("This conversation uses paginated Codex history. Update Codex on this computer to %s or newer before receiving it.", minimumCodexVersion)
-		}
 	}
 	if name == string(provider.Claude) && s.deps.CheckClaudeTransferAccount != nil {
 		return s.deps.CheckClaudeTransferAccount(ctx, binary)

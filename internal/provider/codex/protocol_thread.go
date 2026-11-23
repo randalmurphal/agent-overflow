@@ -68,16 +68,12 @@ func classifyThreadNotification(threadID, method string, params json.RawMessage,
 		// (codex-rs/app-server-protocol/src/protocol/v2/thread.rs @
 		// rust-v0.149.0) — there is no depth, no item id, no message text.
 		//
-		// So this event is the answer for a connection that cannot ask:
-		// classification is pure and version-blind, and on an app-server
-		// below 0.148 there is no `thread/queue/list` to ask with. The notice
-		// therefore says only what the notification knows, and the injected
-		// turn carries the content moments later.
-		//
-		// On a queue-native session the SESSION layer drops this event and
+		// So classification is pure: the notice says only what the
+		// notification knows, and the injected turn carries the content
+		// moments later. A session with a transport drops this event and
 		// replaces it with an evidence-driven one built from a
 		// `thread/queue/list` diffed against AO's own client ids — see
-		// thread_queue.go — because there the change is more often AO's own
+		// thread_queue.go — because the change is more often AO's own
 		// write than a foreign producer's.
 		return []provider.ProviderEvent{{
 			Kind:     provider.EventNotification,

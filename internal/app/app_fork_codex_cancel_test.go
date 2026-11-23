@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"fmt"
 	"os"
@@ -27,7 +28,7 @@ while IFS= read -r line; do
         continue
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
-        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+        printf '{"jsonrpc":"2.0","id":%%s,"result":`+providertest.CodexInitializeResult+`}\n' "$id"
         continue
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/fork"'; then

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"database/sql"
@@ -247,7 +248,7 @@ set -euo pipefail
 while IFS= read -r line; do
   id="$(printf '%s\n' "$line" | sed -n 's/.*"id":[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
   if [[ "$line" == *'"method":"initialize"'* ]]; then
-    printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+    printf '{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}\n' "$id"
   elif [[ "$line" == *'"method":"model/list"'* ]]; then
     printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"model":"gpt-5.5","displayName":"GPT-5.5","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high","serviceTiers":[{"id":"priority","name":"Fast","description":"1.5x speed, increased usage"}]}],"nextCursor":null}}\n' "$id"
   fi
@@ -270,7 +271,7 @@ printf '%%s\n' "$((count + 1))" > %[1]q
 while IFS= read -r line; do
   id="$(printf '%%s\n' "$line" | sed -n 's/.*"id":[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
   if [[ "$line" == *'"method":"initialize"'* ]]; then
-    printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+    printf '{"jsonrpc":"2.0","id":%%s,"result":`+providertest.CodexInitializeResult+`}\n' "$id"
   elif [[ "$line" == *'"method":"model/list"'* ]]; then
     printf '{"jsonrpc":"2.0","id":%%s,"result":{"data":[{"model":%[2]q,"displayName":%[2]q,"hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high","serviceTiers":[{"id":"priority","name":"Fast","description":"1.5x speed, increased usage"}]}],"nextCursor":null}}\n' "$id"
   fi

@@ -115,8 +115,8 @@ type backgroundTerminalTerminateResponse struct {
 // (capture 41-bgterminals-terminate-probe).
 //
 // Version floor: the method shipped in codex 0.140.0, below AO's
-// provider-wide floor of provider.minimumCodexCLIVersion (0.143.0), so
-// no runtime capability probe is needed — every Codex build AO will talk
+// provider-wide floor (provider.MinimumCodexCLIVersion), so no runtime
+// capability probe is needed — every Codex build AO will talk
 // to has it.
 // provider.TestMinimumCodexCLIVersionCoversBackgroundTerminalTerminate
 // fails if that floor is ever lowered past this method.

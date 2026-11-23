@@ -13,7 +13,7 @@ import "agent-overflow/internal/providerupdate/updatefake"
 //     any trimmed non-empty output (no minimum-version gate).
 //   - Codex: internal/provider/codex_version.go parseCodexCLIVersion
 //     takes the FIRST semver-looking token and gates it against
-//     minimumCodexCLIVersion (0.143.0). Leading "99.0.0" parses as
+//     MinimumCodexCLIVersion. Leading "99.0.0" parses as
 //     99.0.0, far above the gate, and the trailing text is ignored.
 //
 // TestVersionSatisfiesBothProviders pins this against the real

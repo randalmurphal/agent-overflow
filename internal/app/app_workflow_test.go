@@ -5,6 +5,7 @@ import (
 	projectpkg "agent-overflow/internal/project"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil"
@@ -413,7 +414,7 @@ while IFS= read -r line; do
   id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
   if [ -z "$id" ]; then continue; fi
   if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
-    printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+    printf '{"jsonrpc":"2.0","id":%%s,"result":`+providertest.CodexInitializeResult+`}\n' "$id"
     continue
   fi
   if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/start"'; then

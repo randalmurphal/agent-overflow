@@ -1637,8 +1637,8 @@ export function GetClaudeTranscriptRetention(retentionDays: number): $Cancellabl
  * section" rather than "render zeros":
  * 
  *   - the installed codex predates `account/usage/read` (it landed in 0.138.0,
- *     below AO's 0.143 provider floor, so this is only reachable when the
- *     floor itself is bypassed);
+ *     below AO's minimum Codex, so this is only reachable when the minimum
+ *     itself is bypassed);
  *   - the signed-in account is not a ChatGPT account, so it has no usage
  *     profile at all (an API-key login);
  *   - the backend answered with an empty profile (a brand-new account).

@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -52,15 +53,14 @@ func partsHook() *provider.SessionStartHook {
 	return &hook
 }
 
-// olderCodex predates additionalContextLimit, the last release before the
-// first that reads it (rust-v0.145.0); newerCodex reads it.
-const (
-	olderCodex = "0.144.0"
-	newerCodex = "0.157.1"
-)
+// limitlessHandler is a handler without additionalContextLimit, the
+// identity the pinned Codex vectors below were captured for.
+func limitlessHandler(command string) sessionStartHandler {
+	return sessionStartHandler{command: command, timeout: provider.SessionStartHookTimeoutSeconds}
+}
 
 func trustHash(command, matcher string) string {
-	return newSessionStartHandler(command, olderCodex).trustHash("session_start", matcher)
+	return limitlessHandler(command).trustHash("session_start", matcher)
 }
 
 // The vector is what `hooks/list` reported as currentHash for this command
@@ -90,56 +90,40 @@ func TestSessionStartHookTrustHashMatchesCodex(t *testing.T) {
 func TestPromptHookTrustHashMatchesCodex(t *testing.T) {
 	t.Parallel()
 	const command = "cat >/dev/null; printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"PINNED\"}}' # q\"uote <tag>& \\\\ é"
-	if got, want := newSessionStartHandler(command, olderCodex).trustHash("user_prompt_submit", ""), "sha256:a051f9b517b135714fcb8d71a8448ffbb4edfece9593cb4862ae01a6cb494389"; got != want {
+	if got, want := limitlessHandler(command).trustHash("user_prompt_submit", ""), "sha256:a051f9b517b135714fcb8d71a8448ffbb4edfece9593cb4862ae01a6cb494389"; got != want {
 		t.Fatalf("trust hash = %s, want %s", got, want)
 	}
 	identity := `{"event_name":"user_prompt_submit","hooks":[{"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}]}`
 	sum := sha256.Sum256([]byte(identity))
-	if got, want := newSessionStartHandler(`'/opt/a o/x' "q"`, olderCodex).trustHash("user_prompt_submit", ""), "sha256:"+hex.EncodeToString(sum[:]); got != want {
+	if got, want := limitlessHandler(`'/opt/a o/x' "q"`).trustHash("user_prompt_submit", ""), "sha256:"+hex.EncodeToString(sum[:]); got != want {
 		t.Fatalf("trust hash = %s, want %s", got, want)
 	}
 }
 
-// A Codex that reads additionalContextLimit gets each handler with the spill
-// off (0), and the limit, which is not the default, is part of the
-// identity Codex hashes, its key sorted first. An older Codex, and one
-// whose version is unknown, get the handler and hash they always did.
-func TestTheSpillIsOffWhereCodexReadsTheKey(t *testing.T) {
+// Each handler AO registers has the spill off (0), and the limit, which
+// is not the default, is part of the identity Codex hashes, its key sorted
+// first.
+func TestTheSpillIsOff(t *testing.T) {
 	t.Parallel()
 	const command = `'/opt/a o/x' "q"`
 	hash := func(identity string) string {
 		sum := sha256.Sum256([]byte(identity))
 		return "sha256:" + hex.EncodeToString(sum[:])
 	}
-	for _, tc := range []struct {
-		version string
-		config  string
-		start   string
-		prompt  string
-	}{
-		{newerCodex, `{"additionalContextLimit":0,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}`,
-			`{"event_name":"session_start","hooks":[{"additionalContextLimit":0,"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}],"matcher":"startup|compact|clear"}`,
-			`{"event_name":"user_prompt_submit","hooks":[{"additionalContextLimit":0,"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}]}`},
-		{"0.145.0", `{"additionalContextLimit":0,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}`,
-			`{"event_name":"session_start","hooks":[{"additionalContextLimit":0,"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}],"matcher":"startup|compact|clear"}`,
-			`{"event_name":"user_prompt_submit","hooks":[{"additionalContextLimit":0,"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}]}`},
-		{olderCodex, `{"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}`,
-			`{"event_name":"session_start","hooks":[{"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}],"matcher":"startup|compact|clear"}`,
-			`{"event_name":"user_prompt_submit","hooks":[{"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}]}`},
-		{"", `{"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}`,
-			`{"event_name":"session_start","hooks":[{"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}],"matcher":"startup|compact|clear"}`,
-			`{"event_name":"user_prompt_submit","hooks":[{"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}]}`},
-	} {
-		handler := newSessionStartHandler(command, tc.version)
-		if got := sessionStartHooksJSON(t, handler.config()); got != tc.config {
-			t.Errorf("%q: handler %s, want %s", tc.version, got, tc.config)
-		}
-		if got := handler.trustHash("session_start", provider.SessionStartHookSources); got != hash(tc.start) {
-			t.Errorf("%q: SessionStart hash %s, want the hash of %s", tc.version, got, tc.start)
-		}
-		if got := handler.trustHash("user_prompt_submit", ""); got != hash(tc.prompt) {
-			t.Errorf("%q: UserPromptSubmit hash %s, want the hash of %s", tc.version, got, tc.prompt)
-		}
+	const (
+		config = `{"additionalContextLimit":0,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}`
+		start  = `{"event_name":"session_start","hooks":[{"additionalContextLimit":0,"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}],"matcher":"startup|compact|clear"}`
+		prompt = `{"event_name":"user_prompt_submit","hooks":[{"additionalContextLimit":0,"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}]}`
+	)
+	handler := newSessionStartHandler(command)
+	if got := sessionStartHooksJSON(t, handler.config()); got != config {
+		t.Errorf("handler %s, want %s", got, config)
+	}
+	if got := handler.trustHash("session_start", provider.SessionStartHookSources); got != hash(start) {
+		t.Errorf("SessionStart hash %s, want the hash of %s", got, start)
+	}
+	if got := handler.trustHash("user_prompt_submit", ""); got != hash(prompt) {
+		t.Errorf("UserPromptSubmit hash %s, want the hash of %s", got, prompt)
 	}
 }
 
@@ -173,19 +157,15 @@ func sessionStartHooksJSON(t *testing.T, hooks any) string {
 }
 
 // wantSessionStartHook is the `hooks` config registering
-// testPartsHook for a Codex of version: a SessionStart group of its
+// testPartsHook: a SessionStart group of its
 // own holding each part's command, whose matcher is the resume one when
 // resume is set, and a UserPromptSubmit group holding each part's
 // PromptCommand, each handler trusted by its hash under its index.
-func wantSessionStartHook(t *testing.T, resume bool, version string) string {
+func wantSessionStartHook(t *testing.T, resume bool) string {
 	t.Helper()
 	matcher := provider.SessionStartMatcher(resume)
 	handler := func(command string) map[string]any {
-		h := map[string]any{"type": "command", "command": command, "timeout": 60}
-		if version == newerCodex {
-			h["additionalContextLimit"] = 0
-		}
-		return h
+		return map[string]any{"type": "command", "command": command, "timeout": 60, "additionalContextLimit": 0}
 	}
 	one, two := testPartsHook.Parts[0], testPartsHook.Parts[1]
 	return sessionStartHooksJSON(t, map[string]any{
@@ -197,10 +177,10 @@ func wantSessionStartHook(t *testing.T, resume bool, version string) string {
 			"hooks": []any{handler(one.PromptCommand), handler(two.PromptCommand)},
 		}},
 		"state": map[string]any{
-			"/<session-flags>/config.toml:session_start:0:0":      map[string]any{"trusted_hash": newSessionStartHandler(one.Command, version).trustHash("session_start", matcher)},
-			"/<session-flags>/config.toml:session_start:0:1":      map[string]any{"trusted_hash": newSessionStartHandler(two.Command, version).trustHash("session_start", matcher)},
-			"/<session-flags>/config.toml:user_prompt_submit:0:0": map[string]any{"trusted_hash": newSessionStartHandler(one.PromptCommand, version).trustHash("user_prompt_submit", "")},
-			"/<session-flags>/config.toml:user_prompt_submit:0:1": map[string]any{"trusted_hash": newSessionStartHandler(two.PromptCommand, version).trustHash("user_prompt_submit", "")},
+			"/<session-flags>/config.toml:session_start:0:0":      map[string]any{"trusted_hash": newSessionStartHandler(one.Command).trustHash("session_start", matcher)},
+			"/<session-flags>/config.toml:session_start:0:1":      map[string]any{"trusted_hash": newSessionStartHandler(two.Command).trustHash("session_start", matcher)},
+			"/<session-flags>/config.toml:user_prompt_submit:0:0": map[string]any{"trusted_hash": newSessionStartHandler(one.PromptCommand).trustHash("user_prompt_submit", "")},
+			"/<session-flags>/config.toml:user_prompt_submit:0:1": map[string]any{"trusted_hash": newSessionStartHandler(two.PromptCommand).trustHash("user_prompt_submit", "")},
 		},
 	})
 }
@@ -209,20 +189,14 @@ func wantSessionStartHook(t *testing.T, resume bool, version string) string {
 // a SessionStart group of its own, and each part's PromptCommand as a
 // handler of a UserPromptSubmit group, in order, and trusts each by its
 // hash under the key Codex gives the session-flags layer's handler at that
-// index. The spill is off only on a Codex that reads the key.
+// index, each with the spill off.
 func TestThreadParamsCarryTheSessionStartHook(t *testing.T) {
 	t.Parallel()
-	for _, version := range []string{newerCodex, olderCodex} {
-		config := buildThreadParams(Config{SessionStartHook: partsHook()}, version)["config"].(map[string]any)
-		if got, want := sessionStartHooksJSON(t, config["hooks"]), wantSessionStartHook(t, false, version); got != want {
-			t.Fatalf("%s: hooks = %s\nwant    %s", version, got, want)
-		}
-		if got := strings.Contains(sessionStartHooksJSON(t, config["hooks"]), `"additionalContextLimit":0`); got != (version == newerCodex) {
-			t.Fatalf("%s: spill off = %v", version, got)
-		}
+	config := buildThreadParams(Config{SessionStartHook: partsHook()})["config"].(map[string]any)
+	if got, want := sessionStartHooksJSON(t, config["hooks"]), wantSessionStartHook(t, false); got != want {
+		t.Fatalf("hooks = %s\nwant    %s", got, want)
 	}
-	config := buildThreadParams(Config{SessionStartHook: partsHook()}, newerCodex)["config"].(map[string]any)
-	without := buildThreadParams(Config{}, newerCodex)["config"].(map[string]any)
+	without := buildThreadParams(Config{})["config"].(map[string]any)
 	if _, ok := without["hooks"]; ok {
 		t.Fatalf("a thread without the hook carries %v", without["hooks"])
 	}
@@ -237,15 +211,15 @@ func TestThreadParamsCarryTheSessionStartHook(t *testing.T) {
 
 	// A load that runs the hook at its resume copies the params rather than
 	// editing the ones Resume keeps.
-	params := buildThreadParams(Config{SessionStartHook: partsHook()}, newerCodex)
-	resumed := withSessionStartHook(params, partsHook(), true, newerCodex)
-	if got, want := sessionStartHooksJSON(t, resumed["config"].(map[string]any)["hooks"]), wantSessionStartHook(t, true, newerCodex); got != want {
+	params := buildThreadParams(Config{SessionStartHook: partsHook()})
+	resumed := withSessionStartHook(params, partsHook(), true)
+	if got, want := sessionStartHooksJSON(t, resumed["config"].(map[string]any)["hooks"]), wantSessionStartHook(t, true); got != want {
 		t.Fatalf("resume hooks = %s\nwant          %s", got, want)
 	}
-	if got, want := sessionStartHooksJSON(t, params["config"].(map[string]any)["hooks"]), wantSessionStartHook(t, false, newerCodex); got != want {
+	if got, want := sessionStartHooksJSON(t, params["config"].(map[string]any)["hooks"]), wantSessionStartHook(t, false); got != want {
 		t.Fatalf("withSessionStartHook edited its input: %s", got)
 	}
-	if got := withSessionStartHook(params, nil, true, newerCodex); sessionStartHooksJSON(t, got) != sessionStartHooksJSON(t, params) {
+	if got := withSessionStartHook(params, nil, true); sessionStartHooksJSON(t, got) != sessionStartHooksJSON(t, params) {
 		t.Fatalf("withSessionStartHook without a hook = %v", got)
 	}
 }
@@ -305,7 +279,7 @@ func TestNewSessionRegistersTheHookTheLoadRuns(t *testing.T) {
 			config, _ := findRequestParams(t, requestLog, tc.method)["config"].(map[string]any)
 			want := "null"
 			if tc.hook != nil {
-				want = wantSessionStartHook(t, tc.resumeHook, olderCodex)
+				want = wantSessionStartHook(t, tc.resumeHook)
 			}
 			if got := sessionStartHooksJSON(t, config["hooks"]); got != want {
 				t.Errorf("hooks = %s\nwant    %s", got, want)
@@ -359,7 +333,7 @@ func TestATurnRunBeforeTheStartAnswerSettlesTheStart(t *testing.T) {
 		line("hook/completed", map[string]any{"turnId": "t0", "run": run}) +
 		line("turn/completed", map[string]any{"turn": map[string]any{"id": "t0", "status": "completed", "items": []any{}}})
 	binary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
-		`"method":"initialize"`:   `{"jsonrpc":"2.0","id":%s,"result":{}}`,
+		`"method":"initialize"`:   `{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}`,
 		`"method":"thread/start"`: early + `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"` + root + `"}}}`,
 		"":                        `{"jsonrpc":"2.0","id":%s,"result":{}}`,
 	})
@@ -416,7 +390,7 @@ func TestResumeRegistersTheHookWhileTheDeliveryWaitsForIt(t *testing.T) {
 	}
 	for i, resume := range []bool{true, false} {
 		config, _ := resumes[i]["config"].(map[string]any)
-		if got, want := sessionStartHooksJSON(t, config["hooks"]), wantSessionStartHook(t, resume, olderCodex); got != want {
+		if got, want := sessionStartHooksJSON(t, config["hooks"]), wantSessionStartHook(t, resume); got != want {
 			t.Errorf("resume %d hooks = %s\nwant       %s", i, got, want)
 		}
 	}
@@ -989,7 +963,7 @@ func TestCodexForgetsAPendingDeliveryWhenTheSessionEnds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			binary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
-				`"method":"initialize"`:    `{"jsonrpc":"2.0","id":%s,"result":{}}`,
+				`"method":"initialize"`:    `{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}`,
 				`"method":"thread/resume"`: tc.early + `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"` + root + `"}}}`,
 				"":                         `{"jsonrpc":"2.0","id":%s,"result":{}}`,
 			})

@@ -559,9 +559,8 @@ holds the process after the app closes its stdin, capped at 2.5s (below
 the app's close grace), so the window while a session shuts down is
 drivable. `providerVersion`
 downgrades the version the mock claims (Codex `initialize` userAgent,
-Claude `system/init.claude_code_version`), which is what every
-per-method version gate reads; the default is above every gate, so this
-is the only way a spec exercises a gate's fails-closed branch. It does
+Claude `system/init.claude_code_version`); the default is above every
+minimum, and the app refuses a Codex below its minimum at `initialize`. It does
 not reach `--version`, the account probe, one-shot text generation, or
 the Claude sign-in. Those invocations answer and exit before a scenario
 loads. `sessionStartHooksOff` runs none of the SessionStart hooks the
@@ -594,6 +593,10 @@ the thread's rollout when it takes it in. A later mock process that
 resumes the thread posts one `history_resumed` report per recorded input,
 so a spec can show what a resumed agent already holds, including a
 message the app never saw confirmed.
+
+`codex.startedHistoryMode` records that history mode at `thread/start` in
+place of the one the app asked for. `legacy` stands in for a thread an
+older AO started before it asked for paginated history.
 
 A Codex sign-in is the exception among those: its argv is a plain
 `app-server`, so it reaches the ordinary adapter and DOES register on
@@ -685,8 +688,8 @@ the typed stream alone cannot express. Read the scenario's own
 | `codex-collab-send-message-queueonly` | `send_message` (QueueOnly): the parent messages a running child, no child turn starts, and the typed wire is indistinguishable from `followup_task`. The raw function-call name is the only verb evidence. |
 | `codex-collab-reload-after-unload` | A terminal child re-loaded by `followup_task`, which re-fires the SAME spawn activity. The repeated ownership registration must not mint a second spawn event. |
 | `codex-steer-while-running` | A turn that parks mid-stream so sends reach it through `turn/steer`. The mock answers each steer with the `userMessage` echo carrying the `clientUserMessageId` back as `clientId`, the identity every codex pending send is registered by. |
-| `codex-revert-paginated` | A thread on a current app-server that takes the paginated history AO asks for at >= 0.148, so edit-and-resend cuts it in place with `thread/revert`. |
-| `codex-revert-legacy` | The same thread against an app-server reporting `codex_cli_rs/0.147.0`: legacy history for life, so edit-and-resend must fall back to `thread/fork` and repoint at a new provider thread id. |
+| `codex-revert-paginated` | A thread that takes the paginated history AO asks for at every start, so edit-and-resend cuts it in place with `thread/revert`. |
+| `codex-revert-legacy` | The same thread recorded as legacy at `thread/start` (`codex.startedHistoryMode`), standing in for a thread an older AO started: legacy history for life, so edit-and-resend must fall back to `thread/fork` and repoint at a new provider thread id. |
 
 ### Claude framing contract
 

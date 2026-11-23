@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"encoding/json"
 	"os"
@@ -56,7 +57,7 @@ while IFS= read -r line; do
         continue
     fi
     if echo "$line" | grep -q '"method":"initialize"'; then
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":` + providertest.CodexInitializeResultQuoted + `}"
         continue
     fi
     if echo "$line" | grep -q '"method":"thread/start"'; then
@@ -223,7 +224,7 @@ while IFS= read -r line; do
         continue
     fi
     if echo "$line" | grep -q '"method":"initialize"'; then
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":` + providertest.CodexInitializeResultQuoted + `}"
         continue
     fi
     if echo "$line" | grep -q '"method":"thread/start"'; then
@@ -275,7 +276,7 @@ while IFS= read -r line; do
         continue
     fi
     if echo "$line" | grep -q '"method":"initialize"'; then
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":` + providertest.CodexInitializeResultQuoted + `}"
         continue
     fi
     if echo "$line" | grep -q '"method":"thread/fork"'; then

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -344,7 +345,7 @@ while IFS= read -r line; do
   if [ -z "$id" ]; then continue; fi
   if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
     if [ "$edited" = 0 ]; then printf 'edited during the spawn\n' > ` + shellQuote(entries[0].Path) + `; edited=1; fi
-    printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"; continue
+    printf '{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}\n' "$id"; continue
   fi
   if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/start"'; then
     printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"codex-stale-spawn"}}}\n' "$id"; continue

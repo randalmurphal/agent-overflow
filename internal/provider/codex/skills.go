@@ -21,7 +21,7 @@ import (
 // (codex-rs/app-server-protocol/src/protocol/common.rs, rust-v0.146.0-alpha.4),
 // so it is global: no thread, no turn, no model tokens, and no
 // `#[experimental]` gate. It has shipped since codex 0.73.0, far below AO's
-// 0.143 provider floor, so there is no runtime capability probe.
+// minimum Codex, so there is no runtime capability probe.
 //
 // Skills REPLACED custom prompts, which upstream removed in 0.118 — there
 // is no `customPrompts/list` to fall back to.

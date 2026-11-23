@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -28,6 +29,7 @@ while IFS= read -r line; do
     if [ -z "$id" ]; then
         continue
     fi
+    case "$line" in *'"method":"initialize"'*) echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":`+providertest.CodexInitializeResultQuoted+`}"; continue;; esac
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/start"'; then
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s"}}}\n' "$id"
         continue

@@ -80,13 +80,11 @@ type Scenario struct {
 	// process still exits on its own rather than testing the kill.
 	ExitDelayMs int `json:"exitDelayMs,omitempty"`
 
-	// ProviderVersion overrides the version the mock claims to be, which
-	// is what every per-method version gate in the app reads: Codex's
-	// `initialize` userAgent (`codex_cli_rs/<version>`, parsed by
-	// internal/provider/codex/app_server_version.go) and Claude's
+	// ProviderVersion overrides the version the mock claims to be: Codex's
+	// `initialize` userAgent (`codex_cli_rs/<version>`), which the app
+	// refuses below provider.MinimumCodexCLIVersion, and Claude's
 	// `system/init.claude_code_version`. The mock otherwise reports a
-	// version above every gate, so a downgrade is the only way a spec can
-	// exercise the fails-closed branch of one.
+	// version above every minimum.
 	//
 	// It does NOT reach `--version`, the account probe, or one-shot text
 	// generation: none of those invocations loads a scenario at all (they
@@ -146,6 +144,12 @@ type CodexOptions struct {
 	// messages the resumed agent holds, whether or not the app saw them
 	// confirmed.
 	KeepHistory bool `json:"keepHistory,omitempty"`
+	// StartedHistoryMode is the history mode the mock records at
+	// `thread/start` in place of the one the app asked for. "legacy" stands
+	// in for a thread an older Agent Overflow started before it asked for
+	// paginated history; upstream fixes the mode at creation, so such a
+	// thread stays legacy. Empty records what `thread/start` asked for.
+	StartedHistoryMode string `json:"startedHistoryMode,omitempty"`
 }
 
 // Turn is the step list for one user turn.
@@ -520,7 +524,15 @@ func (s *Scenario) Validate() error {
 		return fmt.Errorf(
 			"scenario %q: providerVersion %q must be a dotted version like %q "+
 				"(it is interpolated into a userAgent string the app parses)",
-			s.Name, s.ProviderVersion, "0.147.0")
+			s.Name, s.ProviderVersion, "0.154.0")
+	}
+	if s.Codex != nil {
+		switch s.Codex.StartedHistoryMode {
+		case "", "legacy", "paginated":
+		default:
+			return fmt.Errorf("scenario %q: codex.startedHistoryMode %q must be %q or %q",
+				s.Name, s.Codex.StartedHistoryMode, "legacy", "paginated")
+		}
 	}
 	if len(s.Turns) == 0 && len(s.OnStart) == 0 {
 		return fmt.Errorf("scenario %q: needs at least one turn or onStart step", s.Name)

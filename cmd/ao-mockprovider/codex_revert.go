@@ -12,7 +12,7 @@ import (
 )
 
 // The Codex thread's HISTORY CONTRACT and the in-place cut that depends
-// on it (`thread/revert`, app-server >= 0.148).
+// on it (`thread/revert`).
 //
 // Upstream keeps two history modes on a thread and picks between them at
 // `thread/start` (rust-v0.149.0
@@ -22,8 +22,8 @@ import (
 // (codex-rs/app-server/src/request_processors/thread_processor.rs
 // `thread_revert_response`). That refusal is the whole reason this mock
 // has to model the mode at all: AO now asks for `historyMode:
-// "paginated"` whenever the handshake reports >= 0.148 and falls back to
-// `thread/fork` when the thread is legacy, so a mock that echoed nothing
+// "paginated"` on every start and falls back to `thread/fork` when the
+// thread is legacy, so a mock that echoed nothing
 // would send every harness rollback down the fork path and the in-place
 // cut would never be exercised.
 //
@@ -70,6 +70,9 @@ func historyModeFromStartParams(params json.RawMessage) string {
 // persists it under the started thread's id.
 func (a *codexAdapter) noteThreadStart(params json.RawMessage) {
 	mode := historyModeFromStartParams(params)
+	if a.startedHistoryMode != "" {
+		mode = a.startedHistoryMode
+	}
 	a.mu.Lock()
 	a.historyMode = mode
 	a.resumedThread = false

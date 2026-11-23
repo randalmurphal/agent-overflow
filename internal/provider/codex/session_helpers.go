@@ -9,14 +9,7 @@ import (
 )
 
 // buildThreadParams shapes the `thread/start` / `thread/resume` params.
-//
-// codexVersion is the build of the app-server this session is talking to
-// (Session.AppServerVersion, off the `initialize` handshake — see
-// app_server_version.go). It is a parameter rather than a Config field
-// because Config is built before the process exists; see
-// approvalPolicyForCodexVersion in options.go for what it changes and why an
-// empty value must keep the pre-0.149 wire value.
-func buildThreadParams(cfg Config, codexVersion string) map[string]any {
+func buildThreadParams(cfg Config) map[string]any {
 	params := map[string]any{}
 
 	if cfg.WorkDir != "" {
@@ -32,7 +25,7 @@ func buildThreadParams(cfg Config, codexVersion string) map[string]any {
 
 	if cfg.Sandbox != "" {
 		sandbox := normalizeThreadSandbox(cfg.Sandbox)
-		params["approvalPolicy"] = defaultApprovalPolicy(cfg.ApprovalPolicy, sandbox, codexVersion)
+		params["approvalPolicy"] = defaultApprovalPolicy(cfg.ApprovalPolicy, sandbox)
 		params["sandbox"] = sandbox
 	}
 
@@ -89,7 +82,7 @@ func buildThreadParams(cfg Config, codexVersion string) map[string]any {
 	// Shared with thread/resume like the tool overrides: a resumed thread
 	// that compacts runs the hook too, and runs the prompt hook at each
 	// turn.
-	if hooks := sessionStartHookConfig(cfg.SessionStartHook, false, codexVersion); hooks != nil {
+	if hooks := sessionStartHookConfig(cfg.SessionStartHook, false); hooks != nil {
 		configOverrides["hooks"] = hooks
 	}
 	params["config"] = configOverrides
@@ -151,8 +144,8 @@ func threadApprovalsReviewer(cfg Config) string {
 // version or capability list to gate on, and `thread/started` does not carry
 // the reviewer, so the start/resume RESPONSE is the sole source of truth at
 // handshake time. (Later drift is reconciled from `thread/settings/updated`
-// in thread_settings.go.) AO's provider floor is codex 0.143, well above the
-// 0.124 where the field became reliable, so on every supported binary the echo
+// in thread_settings.go.) AO's minimum Codex is well above the 0.124 where
+// the field became reliable, so on every supported binary the echo
 // is present and this reduces to a byte comparison.
 //
 // An absent echo is read as the protocol default rather than as "unknown":
@@ -191,10 +184,10 @@ func normalizeThreadSandbox(sandbox string) string {
 
 // defaultApprovalPolicy resolves the approval policy that reaches the wire:
 // the caller's explicit choice when it has one, otherwise the sandbox's own
-// most-supervised pairing. Both halves run through the version remap, so a
+// most-supervised pairing. Both halves run through the wire remap, so a
 // Config that never set the axis lands on the same wire value a Config that
 // set it to "untrusted" would.
-func defaultApprovalPolicy(policy string, sandbox string, codexVersion string) string {
+func defaultApprovalPolicy(policy string, sandbox string) string {
 	if policy == "" {
 		switch sandbox {
 		case "danger-full-access":
@@ -205,7 +198,7 @@ func defaultApprovalPolicy(policy string, sandbox string, codexVersion string) s
 			policy = codexApprovalPolicyUnlessTrusted
 		}
 	}
-	return approvalPolicyForCodexVersion(policy, codexVersion)
+	return wireApprovalPolicy(policy)
 }
 
 // turnSandboxPolicy is a turn's `sandboxPolicy` for sandbox. The

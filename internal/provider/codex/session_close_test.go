@@ -187,7 +187,6 @@ var sessionCloseFieldDispositions = map[string]string{
 	"threadHistoryMode": "wire fact, atomic",
 	"pendingRevert":     "atomic pointer, one small expectation",
 	"revertEpoch":       "root control-operation generation, atomic",
-	"threadQueueNative": "wire fact, atomic",
 }
 
 // TestSessionFieldsHaveACloseDisposition is the completeness half of the

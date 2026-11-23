@@ -77,9 +77,11 @@ account availability. A failed check keeps the source unretired; fixing the
 account and retrying finishes the same accepted operation. Claude credential
 checks share the managed rotation transaction. Codex reads `account/read` without
 refreshing credentials or starting a thread, including custom endpoints that do
-not require an OpenAI login. Native-format admission derives its floor from every graph member: legacy
-Codex files use AO's normal CLI floor, and paginated history requires 0.148.0.
-Unknown history modes refuse before preparation. An isolated 0.153.4 → 0.148.0
+not require an OpenAI login. Native-format admission reads every graph member's
+history mode and refuses an unknown one before preparation. The destination's
+Codex must meet AO's minimum, which reads both history modes; an older one fails
+the provider check with "This computer cannot receive the conversation yet."
+followed by the detection message. An isolated 0.153.4 → 0.148.0
 Go-export probe preserved Move/Copy history, model context and old-turn reverts;
 matching source and destination CLI versions is not required.
 

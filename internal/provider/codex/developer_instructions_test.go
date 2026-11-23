@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"encoding/json"
 	"os"
@@ -28,6 +29,10 @@ func writeDeveloperInstructionsAppServer(t *testing.T, dir, requestLog, configur
 		"  printf '%s\\n' \"$line\" >> '" + requestLog + "'\n" +
 		"  id=$(printf '%s' \"$line\" | grep -o '\"id\":[0-9]*' | head -1 | grep -o '[0-9]*')\n" +
 		"  if [ -z \"$id\" ]; then continue; fi\n" +
+		"  if printf '%s' \"$line\" | grep -q '\"method\":\"initialize\"'; then\n" +
+		"    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":" + providertest.CodexInitializeResult + "}\\n' \"$id\"\n" +
+		"    continue\n" +
+		"  fi\n" +
 		"  if printf '%s' \"$line\" | grep -q '\"method\":\"config/read\"'; then\n" +
 		"    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"config\":{\"developer_instructions\":\"" + configured + "\"}}}\\n' \"$id\"\n" +
 		"  else\n" +
@@ -136,11 +141,11 @@ func TestThreadStartOmitsDeveloperInstructionsWithoutAGuide(t *testing.T) {
 // field's presence rule is pinned on the shared builder too.
 func TestBuildThreadParamsCarriesDeveloperInstructionsOnlyWhenSet(t *testing.T) {
 	t.Parallel()
-	params := buildThreadParams(Config{Reaper: procutiltest.Reaper(), WorkDir: "/tmp/x", DeveloperInstructions: "guide"}, "0.153.4")
+	params := buildThreadParams(Config{Reaper: procutiltest.Reaper(), WorkDir: "/tmp/x", DeveloperInstructions: "guide"})
 	if params["developerInstructions"] != "guide" {
 		t.Errorf("developerInstructions = %v, want the composed text", params["developerInstructions"])
 	}
-	params = buildThreadParams(Config{Reaper: procutiltest.Reaper(), WorkDir: "/tmp/x"}, "0.153.4")
+	params = buildThreadParams(Config{Reaper: procutiltest.Reaper(), WorkDir: "/tmp/x"})
 	if _, present := params["developerInstructions"]; present {
 		t.Error("an empty value still reached the wire")
 	}
@@ -214,6 +219,10 @@ func writeDeveloperInstructionsReadFailureAppServer(t *testing.T, dir, requestLo
 		"  printf '%s\\n' \"$line\" >> '" + requestLog + "'\n" +
 		"  id=$(printf '%s' \"$line\" | grep -o '\"id\":[0-9]*' | head -1 | grep -o '[0-9]*')\n" +
 		"  if [ -z \"$id\" ]; then continue; fi\n" +
+		"  if printf '%s' \"$line\" | grep -q '\"method\":\"initialize\"'; then\n" +
+		"    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":" + providertest.CodexInitializeResult + "}\\n' \"$id\"\n" +
+		"    continue\n" +
+		"  fi\n" +
 		"  if printf '%s' \"$line\" | grep -q '\"method\":\"config/read\"'; then\n" +
 		"    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"error\":{\"code\":-32603,\"message\":\"config unreadable\"}}\\n' \"$id\"\n" +
 		"  else\n" +

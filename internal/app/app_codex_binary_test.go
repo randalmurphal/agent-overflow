@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"os"
 	"os/exec"
@@ -118,7 +119,7 @@ func TestDefaultCodexSettingSpawnsTheNpmWrappersNativeBinary(t *testing.T) {
 	app, bus := setupE2EApp(t)
 	f := newCodexNpmFixture(t, t.TempDir())
 	session := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
-		`"method":"initialize"`:   `{"jsonrpc":"2.0","id":%s,"result":{}}`,
+		`"method":"initialize"`:   `{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}`,
 		`"method":"thread/start"`: `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"codex-thread-native"}}}`,
 		`"method":"config/read"`:  `{"jsonrpc":"2.0","id":%s,"result":{"config":{},"origins":{}}}`,
 	})

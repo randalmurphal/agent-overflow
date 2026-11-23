@@ -756,11 +756,11 @@ export class PromptRoute {
  *   - "ready"           — binary resolved and passed every version check.
  *   - "not_found"       — exec.LookPath(binaryPath) failed.
  *   - "version_too_old" — binary ran but its version is below the minimum we support
- *     (Codex: see minimumCodexCLIVersion).
+ *     (Codex: see MinimumCodexCLIVersion).
  *   - "unauthenticated" — binary is present and new enough but has no logged-in
  *     account (Claude: ProbeAccount returned a zero-value AccountInfo).
  *   - "error"           — the version check itself failed (binary exited non-zero,
- *     garbled output, etc.).
+ *     garbled output, etc.), or Codex printed a version that cannot be read.
  */
 export class ProviderStatus {
     "provider": string;

@@ -86,6 +86,9 @@ type codexAdapter struct {
 	// keepHistory records each turn/start input in the thread store
 	// (scenario.CodexOptions.KeepHistory, codex_revert.go).
 	keepHistory bool
+	// startedHistoryMode replaces the mode a `thread/start` asked for when
+	// the scenario sets one (scenario.CodexOptions.StartedHistoryMode).
+	startedHistoryMode string
 
 	// sessionStart holds the trusted SessionStart hooks of the thread's
 	// config, and pendingSessionStart the source a thread/start, a
@@ -132,15 +135,10 @@ func newCodexAdapter(e *engine, w *lineWriter, opts *scenario.CodexOptions) *cod
 	// only what they need. Templates are full response lines with
 	// ${REQUEST_ID} substituted verbatim (number or string id).
 	responses := map[string]string{
-		// The userAgent is what the app parses its VERSION off
-		// (`app_server_version.go`), and several method gates fail closed
-		// without it — thread/queue, thread/revert, thread-scoped usage, and
-		// the >= 0.149 approval-policy remap. The mock answers `--version`
-		// with 99.0.0 and says the same here, so a harness session behaves
-		// like the newest supported app-server rather than an unknown one.
-		// A scenario's `providerVersion` pins it LOWER, which is the only
-		// way a spec can drive the fails-closed side of one of those gates
-		// — the mock otherwise answers above every gate there is.
+		// The userAgent is what the app parses Codex's version off, and it
+		// refuses a version below provider.MinimumCodexCLIVersion. The mock
+		// answers `--version` with 99.0.0 and says the same here. A
+		// scenario's `providerVersion` pins it lower.
 		"initialize": `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"userAgent":"codex_cli_rs/` + e.providerVersion() + ` (mock; ao-mockprovider)"}}`,
 		// ${HISTORY_MODE} is bound by respond(), not by a scenario: the
 		// thread's history contract is decided by the thread/start params
@@ -165,7 +163,10 @@ func newCodexAdapter(e *engine, w *lineWriter, opts *scenario.CodexOptions) *cod
 		waiters:   make(map[int64]chan approvalAnswer),
 		forkTurns: make(map[string][]string),
 	}
-	a.keepHistory = opts != nil && opts.KeepHistory
+	if opts != nil {
+		a.keepHistory = opts.KeepHistory
+		a.startedHistoryMode = opts.StartedHistoryMode
+	}
 	a.approvalSeq.Store(codexApprovalIDBase)
 	w.onLine(a.noteFrame)
 	return a

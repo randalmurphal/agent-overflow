@@ -30,8 +30,8 @@ type SendOptions struct {
 	// back to the row that produced it without relying on ordering.
 	//
 	// Codex sends it as `clientUserMessageId` on every `turn/start` and
-	// `turn/steer` (supported since codex 0.136; AO's provider floor is
-	// 0.143, so there is no version gate) and echoes it back on the
+	// `turn/steer` (supported since codex 0.136, below AO's minimum, so
+	// there is no version gate) and echoes it back on the
 	// `userMessage` ThreadItem as `clientId`. It is deliberately NOT
 	// UserMessageUUID: that field is the provider-assigned message id
 	// Claude accepts on its stream-json envelope and must be a UUID, while

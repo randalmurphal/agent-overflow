@@ -395,6 +395,10 @@ func isClosedPipeErr(err error) bool {
 		errors.Is(err, syscall.EPIPE)
 }
 
+// Path is the executable the process runs, after the PATH lookup Spawn
+// made: the binary a version check names.
+func (p *Process) Path() string { return p.cmd.Path }
+
 // Done returns a channel that closes when the process exits.
 func (p *Process) Done() <-chan struct{} {
 	return p.done

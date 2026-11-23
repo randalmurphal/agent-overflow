@@ -111,7 +111,6 @@ func TestUnrepresentedCollabResultRemainsVisibleWithoutInventingSuccess(t *testi
 	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) { events = append(events, e) })
-	s.recordAppServerVersion(json.RawMessage(`{"userAgent":"codex_cli_rs/0.153.4"}`))
 	s.dispatchNotification("rawResponseItem/completed", json.RawMessage(`{"threadId":"root-provider-thread","turnId":"root-turn","item":{"type":"function_call","namespace":"collaboration","name":"send_message","call_id":"send","arguments":"{\"target\":\"missing\",\"message\":\"secret-ciphertext\"}"}}`))
 	s.dispatchNotification("rawResponseItem/completed", json.RawMessage(`{"threadId":"root-provider-thread","turnId":"root-turn","item":{"type":"function_call_output","call_id":"send","output":"target not found"}}`))
 	if len(events) != 1 || events[0].ItemID != "send" || events[0].Content != "target not found" || !strings.Contains(string(events[0].Meta), `"outcome":"unknown"`) || strings.Contains(string(events[0].Meta), "secret-ciphertext") {
@@ -151,7 +150,6 @@ func TestSpawnOutputBehindStartedActivityEmitsNoResultRow(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) { events = append(events, e) })
-	s.recordAppServerVersion(json.RawMessage(`{"userAgent":"codex_cli_rs/0.153.4"}`))
 	s.dispatchNotification("rawResponseItem/completed", json.RawMessage(`{"threadId":"root-provider-thread","turnId":"root-turn","item":{"type":"function_call","namespace":"collaboration","name":"spawn_agent","call_id":"spawn","arguments":"{\"task_name\":\"reviewer\",\"fork_turns\":\"all\",\"message\":\"ciphertext\"}"}}`))
 	s.dispatchNotification("item/completed", json.RawMessage(`{"threadId":"root-provider-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn","kind":"started","agentThreadId":"child","agentPath":"/root/reviewer"}}`))
 	if len(events) == 0 {

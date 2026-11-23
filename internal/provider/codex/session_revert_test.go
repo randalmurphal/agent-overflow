@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"encoding/json"
 	"errors"
@@ -123,7 +124,7 @@ while IFS= read -r line; do
     fi
 done
 `,
-		bashJSON(`{"userAgent":"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0"}`),
+		bashJSON(providertest.CodexInitializeResult),
 		bashJSON(fmt.Sprintf(`{"thread":{"id":%q,"historyMode":"paginated"}}`, threadID)),
 		capturePath,
 		bashJSON(page2),
@@ -159,7 +160,7 @@ func TestSessionRevertSendsBeforeTurnIdAndAwaitsEcho(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		providertest.CodexUserAgent,
 		"codex-thread-revert", "paginated", revertOKReply, capture, true)
 
 	s := newRevertSession(t, binary)
@@ -195,30 +196,6 @@ func TestSessionRevertSendsBeforeTurnIdAndAwaitsEcho(t *testing.T) {
 	}
 }
 
-// TestSessionRevertRefusesBelowTheVersionFloor pins the gate as a PRE-RPC
-// one: a 0.147 app-server must never see the request at all, because its
-// answer would be an error and the caller's fallback would then have to
-// reason about whether anything was mutated.
-func TestSessionRevertRefusesBelowTheVersionFloor(t *testing.T) {
-	t.Parallel()
-	capture := t.TempDir() + "/revert-request.json"
-	binary := revertFakeScript(t,
-		"codex_cli_rs/0.147.0 (Ubuntu 24.04; x86_64) some/1.0",
-		"codex-thread-revert", "paginated", revertOKReply, capture, true)
-
-	s := newRevertSession(t, binary)
-	if s.SupportsThreadRevert() {
-		t.Fatal("SupportsThreadRevert() = true on a 0.147 app-server")
-	}
-	_, err := s.Revert(context.Background(), "turn-c")
-	if !errors.Is(err, ErrThreadRevertUnsupported) {
-		t.Fatalf("Revert error = %v, want ErrThreadRevertUnsupported", err)
-	}
-	if _, statErr := os.Stat(capture); statErr == nil {
-		t.Fatal("a below-floor Revert sent thread/revert anyway")
-	}
-}
-
 // TestSessionRevertRefusesLegacyHistoryThreads is the gate that matters most
 // in practice: AO does not pass `historyMode` on thread/start, upstream
 // defaults to legacy, and upstream refuses a legacy revert.
@@ -226,7 +203,7 @@ func TestSessionRevertRefusesLegacyHistoryThreads(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		providertest.CodexUserAgent,
 		"codex-thread-revert", "legacy", revertOKReply, capture, true)
 
 	s := newRevertSession(t, binary)
@@ -248,7 +225,7 @@ func TestSessionRevertTreatsAnAbsentHistoryModeAsUnsupported(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	raw := revertFakeScriptBody(
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		providertest.CodexUserAgent,
 		"codex-thread-revert", "", revertOKReply, capture, true)
 	// historyMode "" is emitted as an empty string rather than an absent
 	// key; drop it so the response really lacks the field.
@@ -274,7 +251,7 @@ func TestSessionRevertAllowsMidTurn(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		providertest.CodexUserAgent,
 		"codex-thread-revert", "paginated", revertOKReply, capture, true)
 
 	s := newRevertSession(t, binary)
@@ -298,7 +275,7 @@ func TestSessionRevertAfterInterruptAckDoesNotWaitForClientQuiescence(t *testing
 	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		providertest.CodexUserAgent,
 		"codex-thread-revert", "paginated", revertOKReply, capture, true)
 
 	s := newRevertSession(t, binary)
@@ -322,7 +299,7 @@ func TestSessionRevertRequiresAnAnchor(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		providertest.CodexUserAgent,
 		"codex-thread-revert", "paginated", revertOKReply, capture, true)
 
 	s := newRevertSession(t, binary)
@@ -339,7 +316,7 @@ func TestSessionRevertTreatsAForeignThreadIdentityAsAnAppliedCut(t *testing.T) {
 	capture := t.TempDir() + "/revert-request.json"
 	reply := `"result":{"thread":{"id":"some-other-thread","turns":[]}}`
 	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		providertest.CodexUserAgent,
 		// echo=true: a real server sends the notification right after
 		// the response, so the mismatch under test is the RESPONSE body,
 		// not a missing echo.
@@ -364,7 +341,7 @@ func TestSessionRevertTreatsAnUndecodableResponseAsAnAppliedCut(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		providertest.CodexUserAgent,
 		"codex-thread-revert", "paginated", `"result":{"unexpected":true}`, capture, true)
 
 	s := newRevertSession(t, binary)
@@ -387,7 +364,7 @@ func TestSessionRevertReportsAnUnansweredCutAsUnknown(t *testing.T) {
 	// A server that answers the handshake and then goes silent on the
 	// cut is exactly the lost-response shape.
 	binary := silentRevertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		providertest.CodexUserAgent,
 		"codex-thread-revert", "paginated")
 
 	s := newRevertSession(t, binary)
@@ -417,7 +394,7 @@ func TestSessionRevertRefusesAConcurrentCut(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		providertest.CodexUserAgent,
 		"codex-thread-revert", "paginated", revertOKReply, capture, true)
 
 	s := newRevertSession(t, binary)
@@ -454,7 +431,7 @@ func TestSessionRevertMapsUpstreamPaginatedRefusal(t *testing.T) {
 	capture := t.TempDir() + "/revert-request.json"
 	reply := `"error":{"code":-32600,"message":"thread/revert only supports paginated threads"}`
 	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		providertest.CodexUserAgent,
 		"codex-thread-revert", "paginated", reply, capture, false)
 
 	s := newRevertSession(t, binary)
@@ -595,7 +572,7 @@ func TestSessionRevertKeepsTheExpectationArmedForALateEcho(t *testing.T) {
 	// echo=false: the mock answers the RPC and never sends the
 	// notification, which is exactly the timed-out shape.
 	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		providertest.CodexUserAgent,
 		"codex-thread-revert", "paginated", revertOKReply, capture, false)
 
 	s := newRevertSession(t, binary)
@@ -628,7 +605,7 @@ func TestSessionRevertForgetsTheExpectationWhenTheCutFailed(t *testing.T) {
 	capture := t.TempDir() + "/revert-request.json"
 	reply := `"error":{"code":-32600,"message":"thread/revert only supports paginated threads"}`
 	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		providertest.CodexUserAgent,
 		"codex-thread-revert", "paginated", reply, capture, false)
 
 	s := newRevertSession(t, binary)
@@ -871,7 +848,7 @@ func TestThreadStartRequestsPaginatedHistoryOnCodex0149(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/thread-start.jsonl"
 	binary := startFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		providertest.CodexUserAgent,
 		"codex-thread-paginated", "paginated", capture, false)
 
 	s := newRevertSession(t, binary)
@@ -891,31 +868,6 @@ func TestThreadStartRequestsPaginatedHistoryOnCodex0149(t *testing.T) {
 	}
 }
 
-// TestThreadStartOmitsHistoryModeBelowTheFloor: a 0.147 app-server has no
-// `thread/revert`, so a paginated thread would carry the behavioral
-// differences with none of the benefit. Say nothing and take the server's
-// default, exactly as before the opt-in existed.
-func TestThreadStartOmitsHistoryModeBelowTheFloor(t *testing.T) {
-	t.Parallel()
-	capture := t.TempDir() + "/thread-start.jsonl"
-	binary := startFakeScript(t,
-		"codex_cli_rs/0.147.0 (Ubuntu 24.04; x86_64) some/1.0",
-		"codex-thread-legacy", "legacy", capture, false)
-
-	s := newRevertSession(t, binary)
-
-	frames := readCapturedStarts(t, capture)
-	if len(frames) != 1 {
-		t.Fatalf("thread/start frames = %d, want 1", len(frames))
-	}
-	if _, present := frames[0]["historyMode"]; present {
-		t.Fatalf("thread/start carried historyMode on a 0.147 server: %v", frames[0])
-	}
-	if s.SupportsThreadRevert() {
-		t.Fatal("SupportsThreadRevert() = true below the 0.148 floor")
-	}
-}
-
 // TestThreadStartFallsBackWhenPaginatedHistoryIsRefused: the refusal AO can
 // actually provoke on a new-enough binary is store-shaped — an app-server
 // whose thread store has no SQLite state database cannot serve
@@ -927,7 +879,7 @@ func TestThreadStartFallsBackWhenPaginatedHistoryIsRefused(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/thread-start.jsonl"
 	binary := startFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		providertest.CodexUserAgent,
 		"codex-thread-legacy", "legacy", capture, true)
 
 	s := newRevertSession(t, binary)
@@ -947,27 +899,6 @@ func TestThreadStartFallsBackWhenPaginatedHistoryIsRefused(t *testing.T) {
 	}
 	if s.SupportsThreadRevert() {
 		t.Fatal("SupportsThreadRevert() = true on the legacy thread the downgrade produced")
-	}
-}
-
-// TestThreadStartHistoryMode pins the gate itself, including the fail-closed
-// answer for an app-server whose build could not be read.
-func TestThreadStartHistoryMode(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		version string
-		want    string
-	}{
-		{"", ""},
-		{"0.147.0", ""},
-		{"0.147.9", ""},
-		{"0.148.0", "paginated"},
-		{"0.149.0", "paginated"},
-		{"1.0.0", "paginated"},
-	} {
-		if got := threadStartHistoryMode(tc.version); got != tc.want {
-			t.Errorf("threadStartHistoryMode(%q) = %q, want %q", tc.version, got, tc.want)
-		}
 	}
 }
 

@@ -10,7 +10,7 @@ import (
 
 // session_start.go — the sequence that turns a spawned `codex app-server`
 // process into a session with a thread: the constructor (spawn, `initialize`
-// handshake, version + queue-support records, `initialized`), the
+// handshake and its version check, `initialized`), the
 // `BeforeResume` window a resume opens before the thread is loaded, and the
 // one `thread/start` / `thread/resume` RPC plus everything that has to be
 // true about its response — the paginated-history downgrade retry, the
@@ -66,9 +66,7 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 	s.developerInstructionsComposed = developerInstructions
 	s.mu.Unlock()
 
-	// The version comes from the handshake recorded moments ago — the
-	// connected process's own statement of its build.
-	threadParams := buildThreadParams(cfg, s.AppServerVersion())
+	threadParams := buildThreadParams(cfg)
 	s.mu.Lock()
 	s.rehydrateParams = threadRehydrateParams(threadParams)
 	s.mu.Unlock()
@@ -88,13 +86,12 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 		method = "thread/start"
 		threadParams["experimentalRawEvents"] = true
 		// A new thread's persisted history contract is decided HERE and
-		// nowhere else — `thread/resume` has no such field, and upstream's
-		// default is legacy. Asking for paginated is what makes the
-		// in-place `thread/revert` cut available to this thread for the
-		// rest of its life (session_revert.go).
-		if historyMode := threadStartHistoryMode(s.AppServerVersion()); historyMode != "" {
-			threadParams["historyMode"] = historyMode
-		}
+		// nowhere else: `thread/resume` has no such field (a resumed thread
+		// keeps the mode its rollout recorded), and upstream's default is
+		// legacy (`ThreadHistoryMode::default()`). Asking for paginated is
+		// what makes the in-place `thread/revert` cut available to this
+		// thread for the rest of its life (session_revert.go).
+		threadParams["historyMode"] = paginatedThreadHistoryMode
 	}
 
 	// Presence, not truthiness: the retry below has to know whether AO ASKED

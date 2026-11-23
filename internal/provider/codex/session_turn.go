@@ -27,8 +27,8 @@ import (
 // It is upstream's `Option<String>` correlation handle on TurnStartParams and
 // TurnSteerParams alike, echoed back on the `userMessage` ThreadItem as
 // `clientId` — which is how a caller matches an echo to the row it sent
-// without relying on ordering. Supported since codex 0.136; AO's provider
-// floor is 0.143, so it is unconditional and there is no version gate.
+// without relying on ordering. Supported since codex 0.136, below AO's
+// minimum Codex, so it is unconditional and there is no version gate.
 
 // Send sends a user turn via turn/start.
 //
@@ -87,11 +87,10 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		params["serviceTier"] = tierWrite.value
 	}
 	if cfg.ApprovalPolicy != "" {
-		// Remapped per connected version for the same reason thread/start is:
-		// a mid-session runtime-mode switch rewrites this axis
-		// (live_update.go) and must land on the value THIS app-server
-		// actually implements. See approvalPolicyForCodexVersion.
-		params["approvalPolicy"] = approvalPolicyForCodexVersion(cfg.ApprovalPolicy, s.AppServerVersion())
+		// Remapped for the same reason thread/start is: a mid-session
+		// runtime-mode switch rewrites this axis (live_update.go). See
+		// wireApprovalPolicy.
+		params["approvalPolicy"] = wireApprovalPolicy(cfg.ApprovalPolicy)
 	}
 	// Always sent, for the same reason buildThreadParams always sends it: the
 	// reviewer is thread state that persists until something overwrites it, so

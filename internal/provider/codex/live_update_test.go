@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -358,6 +359,10 @@ func codexTurnCaptureScript(path string) string {
 while IFS= read -r line; do
     printf '%%s\n' "$line" >> %q
     id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if echo "$line" | grep -q '"method":"initialize"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":`+providertest.CodexInitializeResultQuoted+`}"
+        continue
+    fi
     if [ -z "$id" ]; then
         continue
     fi

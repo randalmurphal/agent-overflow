@@ -1,14 +1,13 @@
 // Edit-and-resend on a Codex thread, and which of upstream's two history
 // cuts the app chooses.
 //
-// `thread/revert` (app-server >= 0.148) truncates the thread IN PLACE:
+// `thread/revert` truncates the thread IN PLACE:
 // same provider thread id, so SessionRef, provider-side thread cost and
 // any external `codex resume` of it all keep pointing at the thread the
 // user is editing. `thread/fork` answers the same question with a NEW
-// thread and AO repoints SessionRef at it. The choice is gated twice —
-// the app-server's handshake version AND the thread's own history mode,
-// which is decided once at `thread/start` and is legacy by default — and
-// that is exactly the kind of thing unit tests cannot settle: the cut
+// thread and AO repoints SessionRef at it. The choice follows the
+// thread's own history mode, which is decided once at `thread/start` and is
+// legacy by default, and that is exactly the kind of thing unit tests cannot settle: the cut
 // runs through a THROWAWAY RESUME session (the rollback stops the live
 // one first), a second provider process that never saw the start. Only a
 // run where the mock owns its own thread store can prove the resumed
@@ -116,7 +115,7 @@ test('editing a message on a paginated codex thread cuts it in place', async ({ 
     ]);
 });
 
-test('editing a message falls back to a fork when the app-server predates thread/revert', async ({
+test('editing a message falls back to a fork on a legacy-history thread', async ({
   harness,
 }) => {
   const threadId = await twoTurnCodexThread(harness, 'codex-revert-legacy');
@@ -128,9 +127,8 @@ test('editing a message falls back to a fork when the app-server predates thread
     content: 'second question, rephrased',
   });
 
-  // No revert was even attempted: the 0.147 handshake closes the version
-  // gate before any RPC, and the thread it started is legacy anyway. The
-  // fork's anchor is the LAST KEPT turn, one turn below the revert's.
+  // No revert was even attempted: the resumed thread reports legacy
+  // history, which upstream refuses to revert. The fork's anchor is the LAST KEPT turn, one turn below the revert's.
   const cut = await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (ev) => ev.report.kind === 'history_cut',

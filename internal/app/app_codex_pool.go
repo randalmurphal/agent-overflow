@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/harness/control"
@@ -54,6 +55,39 @@ func codexPoolKey(
 	return fmt.Sprintf("codex|%s|%s", accountSelection.AccountID, hex.EncodeToString(h.Sum(nil)[:16]))
 }
 
+// codexVersionRefusal holds the identity of the Codex binary the last
+// shared dial refused for its version, with the refusal. A start against
+// the same file answers that refusal without launching it again, so a
+// loop, a watch or a notice retry cannot relaunch a binary that cannot
+// pass; a changed file (an update, a different configured path) has
+// another identity and is dialed.
+type codexVersionRefusal struct {
+	mu       sync.Mutex
+	identity providerBinaryIdentity
+	err      error
+}
+
+func (r *codexVersionRefusal) refusal(identity providerBinaryIdentity) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err != nil && r.identity == identity {
+		return r.err
+	}
+	return nil
+}
+
+// note records a dial's outcome for identity: a version refusal is kept,
+// anything else forgets the refusal it held.
+func (r *codexVersionRefusal) note(identity providerBinaryIdentity, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if errors.Is(err, provider.ErrCodexVersionUnsupported) {
+		r.identity, r.err = identity, err
+		return
+	}
+	r.identity, r.err = providerBinaryIdentity{}, nil
+}
+
 // acquireCodexConn returns a shared *codex.Conn for this thread's pool key,
 // dialing and verifying the account on first acquire. In isolated harness
 // boots, each thread gets its own pool key to preserve single-engine mock
@@ -66,7 +100,12 @@ func (a *App) acquireCodexConn(
 	env map[string]string,
 	accountSelection *providerAccountSelection,
 ) (*codex.Conn, func(), string, error) {
-	identity, _ := a.resolveProviderBinaryIdentity(string(provider.Codex))
+	identity, identified := a.resolveProviderBinaryIdentity(string(provider.Codex))
+	if identified {
+		if err := a.codexRefusal.refusal(identity); err != nil {
+			return nil, nil, "", err
+		}
+	}
 	isolateThreadID := ""
 	idleGrace := codexConnIdleGrace
 	connWorkDir := providerProbeWorkDir()
@@ -90,6 +129,9 @@ func (a *App) acquireCodexConn(
 				Reaper:      a.groupReaper("codex session"),
 				ThreadID:    "codex-conn",
 			})
+			if identified {
+				a.codexRefusal.note(identity, dialErr)
+			}
 			if dialErr != nil {
 				return nil, dialErr
 			}

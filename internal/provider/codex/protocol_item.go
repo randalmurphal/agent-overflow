@@ -861,7 +861,7 @@ func normalizeCollabToolName(raw string) string {
 //
 // Carried onto the content-block-stop meta for the frontend to render as
 // non-final (no UI built here). Absent on every message that is NOT an
-// interjection, including every message from a pre-0.149 app-server, so the
+// interjection, so the
 // key is omitted rather than defaulted — a reader must not conclude
 // "delivery != async ⇒ this is the final answer".
 const AgentMessageDeliveryAsync = "async"

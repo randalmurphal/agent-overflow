@@ -1,18 +1,92 @@
 package provider
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 )
 
-// minimumCodexCLIVersion gates the Codex provider on `thread/fork`
-// accepting `lastTurnId` (added in 0.143.0), which every revert / fork
-// flow relies on since the `thread/rollback` migration — upstream
-// deprecated rollback in 0.144 and will remove it. Older CLIs lack any
-// non-rollback way to cut history at a turn boundary.
-const minimumCodexCLIVersion = "0.143.0"
+// MinimumCodexCLIVersion is the oldest Codex AO runs. AO shares one
+// app-server per account and launches it with `thread_unload_delay_secs=0`
+// (codex/launch.go) so a thread unloads the moment its last subscriber
+// leaves; the setting first ships in rust-v0.154.0. An older app-server
+// ignores the unknown key and keeps the thread loaded for 30 minutes, so
+// every close that waits for `thread/closed` times out. Pre-releases of
+// 0.154.0 order below it and are refused.
+const MinimumCodexCLIVersion = "0.154.0"
+
+// ErrCodexVersionUnsupported is the sentinel every *CodexVersionError
+// unwraps to: the Codex binary is below MinimumCodexCLIVersion or its
+// version could not be read. It is final until the binary changes.
+var ErrCodexVersionUnsupported = errors.New("codex version unsupported")
+
+// codexVersionRawLimit bounds the version text quoted back to the user.
+const codexVersionRawLimit = 120
+
+// CodexVersionError is a refusal of one Codex binary. Version is the
+// parsed version, "" when none could be read; Raw is the text it was read
+// from (`codex --version` output or the app-server's initialize user
+// agent); Path is the binary that was checked.
+type CodexVersionError struct {
+	Path    string
+	Version string
+	Raw     string
+}
+
+func (e *CodexVersionError) Error() string {
+	at := ""
+	if e.Path != "" {
+		at = " (" + e.Path + ")"
+	}
+	if e.Version != "" {
+		return fmt.Sprintf(
+			"Codex v%s%s is installed; Agent Overflow needs v%s or newer. Update Codex.",
+			e.Version, at, MinimumCodexCLIVersion,
+		)
+	}
+	raw := strings.TrimSpace(e.Raw)
+	if raw == "" {
+		return fmt.Sprintf(
+			"Agent Overflow could not read the version of Codex%s. Update Codex to v%s or newer.",
+			at, MinimumCodexCLIVersion,
+		)
+	}
+	if len(raw) > codexVersionRawLimit {
+		raw = raw[:codexVersionRawLimit] + "..."
+	}
+	return fmt.Sprintf(
+		"Agent Overflow could not read the version of Codex%s from %q. Update Codex to v%s or newer.",
+		at, raw, MinimumCodexCLIVersion,
+	)
+}
+
+func (e *CodexVersionError) Unwrap() error { return ErrCodexVersionUnsupported }
+
+// CodexVersionUnsupportedCode is the wire code a refused Codex answers a
+// call with.
+const CodexVersionUnsupportedCode = "codex_version_unsupported"
+
+// PublicDetails makes the refusal the caller's answer as written, without
+// the wrapping each caller adds (errorsx.Detailed).
+func (e *CodexVersionError) PublicDetails() (code, message string) {
+	return CodexVersionUnsupportedCode, e.Error()
+}
+
+// CheckCodexVersion admits a Codex binary. version is the parsed version
+// ("" when unreadable), raw the text it came from and path the binary
+// checked. It returns nil for a supported version and a *CodexVersionError
+// otherwise; an unreadable version is unsupported.
+func CheckCodexVersion(path, version, raw string) error {
+	if _, ok := parseCodexSemver(normalizeCodexCLIVersion(version)); !ok {
+		return &CodexVersionError{Path: path, Raw: raw}
+	}
+	if compareCodexCLIVersions(version, MinimumCodexCLIVersion) < 0 {
+		return &CodexVersionError{Path: path, Version: version, Raw: raw}
+	}
+	return nil
+}
 
 var codexVersionPattern = regexp.MustCompile(`\bv?(\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?)\b`)
 
@@ -161,24 +235,6 @@ func compareCodexPrereleaseIdentifier(left, right string) int {
 	}
 }
 
-func isCodexCLIVersionSupported(version string) bool {
-	return compareCodexCLIVersions(version, minimumCodexCLIVersion) >= 0
-}
-
-func formatCodexCLIUpgradeMessage(version string) string {
-	if version == "" {
-		return fmt.Sprintf(
-			"Codex CLI is too old for Agent Overflow. Upgrade to v%s or newer and restart the app.",
-			minimumCodexCLIVersion,
-		)
-	}
-	return fmt.Sprintf(
-		"Codex CLI v%s is too old for Agent Overflow. Upgrade to v%s or newer and restart the app.",
-		version,
-		minimumCodexCLIVersion,
-	)
-}
-
 func isNumericString(value string) bool {
 	if value == "" {
 		return false
@@ -197,20 +253,6 @@ func isNumericString(value string) bool {
 // Returns "" when nothing parses, which callers must treat as "unknown", never
 // as "old" or "new".
 //
-// Exported so the codex adapter can gate a per-method floor on the version of
-// the process it is actually talking to without duplicating the parser. The
-// package-wide floor (minimumCodexCLIVersion) stays private: it is a
-// launch-time admission decision, not a per-call one.
+// Exported so the codex adapter reads the version of the process it is
+// talking to with the same parser detection uses.
 func ParseCodexCLIVersion(output string) string { return parseCodexCLIVersion(output) }
-
-// CodexCLIVersionAtLeast reports whether version is >= floor under the same
-// semver ordering DetectProvider admits binaries with. An unparseable version
-// is NOT at least anything: a method floor must fail closed, because sending a
-// newer method's params to an older app-server is a hard JSON-RPC error rather
-// than an ignored field.
-func CodexCLIVersionAtLeast(version, floor string) bool {
-	if _, ok := parseCodexSemver(normalizeCodexCLIVersion(version)); !ok {
-		return false
-	}
-	return compareCodexCLIVersions(version, floor) >= 0
-}

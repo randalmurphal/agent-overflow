@@ -200,3 +200,39 @@ func TestCodexThreadHistoryModeSurvivesTheProcess(t *testing.T) {
 	fresh.closeStdinAndExpectExit(0, testTimeout)
 	resumer.closeStdinAndExpectExit(0, testTimeout)
 }
+
+// TestCodexStartedHistoryModeOverridesTheRequest: a scenario's
+// startedHistoryMode stands in for a thread an older AO started without
+// asking for paginated history. The start records legacy even though this
+// build asks for paginated, and a resume in a later process still reads it.
+func TestCodexStartedHistoryModeOverridesTheRequest(t *testing.T) {
+	home := t.TempDir()
+	sc := revertScenario("th-started-legacy")
+	sc.Codex.StartedHistoryMode = "legacy"
+	if err := sc.Validate(); err != nil {
+		t.Fatalf("scenario: %v", err)
+	}
+	env := append(writeScenarioFile(t, sc, ""), control.EnvTranscriptHome+"="+home)
+
+	starter := startMock(t, []string{"app-server"}, env, t.TempDir())
+	starter.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	starter.expectLineContaining(`"id":1`, testTimeout)
+	starter.send(`{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"historyMode":"paginated"}}`)
+	if got := starter.expectLineContaining(`"id":2`, testTimeout); !strings.Contains(got, `"historyMode":"legacy"`) {
+		t.Fatalf("thread/start response = %q, want the scenario's legacy mode", got)
+	}
+	starter.closeStdinAndExpectExit(0, testTimeout)
+
+	resumer := startMock(t, []string{"app-server"}, env, t.TempDir())
+	resumer.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	resumer.expectLineContaining(`"id":1`, testTimeout)
+	resumer.send(`{"jsonrpc":"2.0","id":2,"method":"thread/resume","params":{"threadId":"th-started-legacy"}}`)
+	if got := resumer.expectLineContaining(`"id":2`, testTimeout); !strings.Contains(got, `"historyMode":"legacy"`) {
+		t.Fatalf("thread/resume response = %q, want the legacy mode the start recorded", got)
+	}
+	resumer.send(`{"jsonrpc":"2.0","id":3,"method":"thread/revert","params":{"threadId":"th-started-legacy","beforeTurnId":"turn-1"}}`)
+	if got := resumer.expectLineContaining(`"id":3`, testTimeout); !strings.Contains(got, "thread/revert only supports paginated threads") {
+		t.Fatalf("thread/revert = %q, want the legacy refusal", got)
+	}
+	resumer.closeStdinAndExpectExit(0, testTimeout)
+}

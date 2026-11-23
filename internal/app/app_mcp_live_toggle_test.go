@@ -2,6 +2,7 @@ package app
 
 import (
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
@@ -326,7 +327,7 @@ while IFS= read -r line; do
         continue
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
-        printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+        printf '{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}\n' "$id"
         continue
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/start"'; then

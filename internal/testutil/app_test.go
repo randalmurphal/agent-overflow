@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"bufio"
 	"os"
 	"os/exec"
@@ -85,7 +86,7 @@ func TestWriteMockCodexSessionRespondsToInitialize(t *testing.T) {
 	t.Parallel()
 
 	path := WriteMockCodexSession(t, t.TempDir(), map[string]string{
-		`"method":"initialize"`:    `{"jsonrpc":"2.0","id":%s,"result":{}}`,
+		`"method":"initialize"`:    `{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}`,
 		`"method":"thread/start"`:  `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"t-1"}}}`,
 		`"method":"thread/resume"`: `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"t-1"}}}`,
 	})
@@ -96,7 +97,10 @@ func TestWriteMockCodexSessionRespondsToInitialize(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer func() { _ = cmd.Wait() }()
+	defer func() {
+		_ = stdin.Close()
+		_ = cmd.Wait()
+	}()
 
 	// Send an initialize request.
 	req := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n"
@@ -108,8 +112,8 @@ func TestWriteMockCodexSessionRespondsToInitialize(t *testing.T) {
 	if !strings.Contains(line, `"id":1`) {
 		t.Fatalf("response = %q, missing id=1", line)
 	}
-	if !strings.Contains(line, `"result":{}`) {
-		t.Fatalf("response = %q, expected empty result", line)
+	if !strings.Contains(line, providertest.CodexUserAgent) {
+		t.Fatalf("response = %q, want the user agent the template carries", line)
 	}
 
 	req2 := `{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{}}` + "\n"

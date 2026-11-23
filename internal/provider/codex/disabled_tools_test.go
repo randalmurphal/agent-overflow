@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/testutil/reporoot"
 )
@@ -75,7 +76,7 @@ func TestBuildThreadParamsCarriesDisabledToolConfigKeys(t *testing.T) {
 		Reaper:          procutiltest.Reaper(),
 		DisabledTools:   []string{"update_plan", "collab_agents"},
 		ReasoningEffort: "high",
-	}, "")
+	})
 	config, ok := params["config"].(map[string]any)
 	if !ok {
 		t.Fatalf("params[config] = %T, want map", params["config"])
@@ -338,6 +339,7 @@ func requestLoggingCodex(t *testing.T) (binary, requestLog string) {
 		"  printf '%s\\n' \"$line\" >> '" + requestLog + "'\n" +
 		"  id=$(printf '%s' \"$line\" | grep -o '\"id\":[0-9]*' | head -1 | grep -o '[0-9]*')\n" +
 		"  if [ -z \"$id\" ]; then continue; fi\n" +
+		"  case \"$line\" in *'\"method\":\"initialize\"'*) printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":%s}\\n' \"$id\" '" + providertest.CodexInitializeResult + "'; continue;; esac\n" +
 		"  printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"thread\":{\"id\":\"mock-thread\"}}}\\n' \"$id\"\n" +
 		"done\n"
 	binary = filepath.Join(dir, "codex")

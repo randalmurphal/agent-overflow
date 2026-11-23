@@ -394,6 +394,10 @@ func TestSendImageOnlyTurnStartFormat(t *testing.T) {
 while IFS= read -r line; do
     printf '%%s\n' "$line" >> %q
     id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if echo "$line" | grep -q '"method":"initialize"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":`+providertest.CodexInitializeResultQuoted+`}"
+        continue
+    fi
     if [ -z "$id" ]; then
         continue
     fi
@@ -476,28 +480,32 @@ done
 func TestSessionSendIncludesRuntimeAccessPolicyForEveryMode(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name            string
-		approvalPolicy  string
-		sandbox         string
-		wantSandboxType string
+		name               string
+		approvalPolicy     string
+		wantApprovalPolicy string
+		sandbox            string
+		wantSandboxType    string
 	}{
 		{
-			name:            "approval-required",
-			approvalPolicy:  "untrusted",
-			sandbox:         "read-only",
-			wantSandboxType: "readOnly",
+			name:               "approval-required",
+			approvalPolicy:     "untrusted",
+			wantApprovalPolicy: "on-request",
+			sandbox:            "read-only",
+			wantSandboxType:    "readOnly",
 		},
 		{
-			name:            "auto-accept-edits",
-			approvalPolicy:  "on-request",
-			sandbox:         "workspace-write",
-			wantSandboxType: "workspaceWrite",
+			name:               "auto-accept-edits",
+			approvalPolicy:     "on-request",
+			wantApprovalPolicy: "on-request",
+			sandbox:            "workspace-write",
+			wantSandboxType:    "workspaceWrite",
 		},
 		{
-			name:            "full-access",
-			approvalPolicy:  "never",
-			sandbox:         "danger-full-access",
-			wantSandboxType: "dangerFullAccess",
+			name:               "full-access",
+			approvalPolicy:     "never",
+			wantApprovalPolicy: "never",
+			sandbox:            "danger-full-access",
+			wantSandboxType:    "dangerFullAccess",
 		},
 	}
 
@@ -508,6 +516,10 @@ func TestSessionSendIncludesRuntimeAccessPolicyForEveryMode(t *testing.T) {
 while IFS= read -r line; do
     printf '%%s\n' "$line" >> %q
     id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if echo "$line" | grep -q '"method":"initialize"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":`+providertest.CodexInitializeResultQuoted+`}"
+        continue
+    fi
     if [ -z "$id" ]; then
         continue
     fi
@@ -557,8 +569,8 @@ done
 				t.Fatalf("captured no turn/start request: %s", string(captured))
 			}
 			params := turnStart["params"].(map[string]any)
-			if params["approvalPolicy"] != tc.approvalPolicy {
-				t.Fatalf("approvalPolicy = %v, want %s", params["approvalPolicy"], tc.approvalPolicy)
+			if params["approvalPolicy"] != tc.wantApprovalPolicy {
+				t.Fatalf("approvalPolicy = %v, want %s", params["approvalPolicy"], tc.wantApprovalPolicy)
 			}
 			sandboxPolicy := params["sandboxPolicy"].(map[string]any)
 			if sandboxPolicy["type"] != tc.wantSandboxType {
@@ -586,6 +598,10 @@ func TestSessionSendIncludesCollaborationMode(t *testing.T) {
 while IFS= read -r line; do
     printf '%%s\n' "$line" >> %q
     id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if echo "$line" | grep -q '"method":"initialize"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":`+providertest.CodexInitializeResultQuoted+`}"
+        continue
+    fi
     if [ -z "$id" ]; then
         continue
     fi

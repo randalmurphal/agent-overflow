@@ -23,12 +23,12 @@ func TestNativeMemoryOffRidesEveryThreadLoad(t *testing.T) {
 		"start":  {NativeMemoryOff: true},
 		"resume": {NativeMemoryOff: true, ResumeThreadID: "thread-1"},
 	} {
-		config := buildThreadParams(cfg, "0.157.1")["config"].(map[string]any)
+		config := buildThreadParams(cfg)["config"].(map[string]any)
 		if config["features.memories"] != false || config["memories.generate_memories"] != false {
 			t.Errorf("%s: config = %v", name, config)
 		}
 		cfg.NativeMemoryOff = false
-		config = buildThreadParams(cfg, "0.157.1")["config"].(map[string]any)
+		config = buildThreadParams(cfg)["config"].(map[string]any)
 		for _, key := range []string{"features.memories", "memories.generate_memories"} {
 			if _, ok := config[key]; ok {
 				t.Errorf("%s without NativeMemoryOff sends %s", name, key)

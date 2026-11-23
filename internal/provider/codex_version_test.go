@@ -1,6 +1,10 @@
 package provider
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 func TestParseCodexCLIVersion(t *testing.T) {
 	tests := []struct {
@@ -105,17 +109,77 @@ func TestCompareCodexCLIVersions(t *testing.T) {
 	}
 }
 
-func TestFormatCodexCLIUpgradeMessage(t *testing.T) {
-	got := formatCodexCLIUpgradeMessage("0.36.0")
-	want := "Codex CLI v0.36.0 is too old for Agent Overflow. Upgrade to v0.143.0 or newer and restart the app."
-	if got != want {
-		t.Fatalf("formatCodexCLIUpgradeMessage() = %q, want %q", got, want)
+// TestCheckCodexVersionBoundary pins the minimum: the last release before
+// it is refused, the minimum and later releases are admitted, a
+// pre-release of the minimum orders below it and is refused, and an
+// unreadable version is refused as unreadable.
+func TestCheckCodexVersionBoundary(t *testing.T) {
+	cases := []struct {
+		version  string
+		admitted bool
+	}{
+		{"0.153.4", false},
+		{"0.154.0-alpha.10", false},
+		{"0.154.0", true},
+		{"0.154.1", true},
+		{"0.168.0", true},
+		{"", false},
+		{"garbage", false},
 	}
+	for _, tc := range cases {
+		err := CheckCodexVersion("/opt/codex", tc.version, "codex-cli "+tc.version)
+		if tc.admitted {
+			if err != nil {
+				t.Errorf("CheckCodexVersion(%q) = %v, want admitted", tc.version, err)
+			}
+			continue
+		}
+		var versionErr *CodexVersionError
+		if !errors.As(err, &versionErr) || !errors.Is(err, ErrCodexVersionUnsupported) {
+			t.Errorf("CheckCodexVersion(%q) = %v, want a *CodexVersionError", tc.version, err)
+			continue
+		}
+		readable := tc.version != "" && tc.version != "garbage"
+		if (versionErr.Version != "") != readable {
+			t.Errorf("CheckCodexVersion(%q).Version = %q, readable %v", tc.version, versionErr.Version, readable)
+		}
+	}
+}
 
-	got = formatCodexCLIUpgradeMessage("")
-	want = "Codex CLI is too old for Agent Overflow. Upgrade to v0.143.0 or newer and restart the app."
-	if got != want {
-		t.Fatalf("formatCodexCLIUpgradeMessage(empty) = %q, want %q", got, want)
+func TestCodexVersionErrorMessages(t *testing.T) {
+	cases := []struct {
+		err  CodexVersionError
+		want string
+	}{
+		{
+			CodexVersionError{Path: "/home/me/.local/bin/codex", Version: "0.150.0"},
+			"Codex v0.150.0 (/home/me/.local/bin/codex) is installed; Agent Overflow needs v0.154.0 or newer. Update Codex.",
+		},
+		{
+			CodexVersionError{Path: "/Users/me/My Tools/codex", Version: "0.150.0"},
+			"Codex v0.150.0 (/Users/me/My Tools/codex) is installed; Agent Overflow needs v0.154.0 or newer. Update Codex.",
+		},
+		{
+			CodexVersionError{Version: "0.150.0"},
+			"Codex v0.150.0 is installed; Agent Overflow needs v0.154.0 or newer. Update Codex.",
+		},
+		{
+			CodexVersionError{Path: "/opt/codex", Raw: "codex_cli_rs/dev (Linux)"},
+			`Agent Overflow could not read the version of Codex (/opt/codex) from "codex_cli_rs/dev (Linux)". Update Codex to v0.154.0 or newer.`,
+		},
+		{
+			CodexVersionError{Path: "/opt/codex"},
+			"Agent Overflow could not read the version of Codex (/opt/codex). Update Codex to v0.154.0 or newer.",
+		},
+		{
+			CodexVersionError{Path: "/opt/codex", Raw: strings.Repeat("x", 200)},
+			`Agent Overflow could not read the version of Codex (/opt/codex) from "` + strings.Repeat("x", 120) + `...". Update Codex to v0.154.0 or newer.`,
+		},
+	}
+	for _, tc := range cases {
+		if got := tc.err.Error(); got != tc.want {
+			t.Errorf("Error() = %q, want %q", got, tc.want)
+		}
 	}
 }
 
@@ -189,17 +253,17 @@ func TestIsNumericString(t *testing.T) {
 // `thread/backgroundTerminals/terminate` shipped in codex 0.140.0, and
 // TerminateBackgroundTerminal calls it with no runtime capability probe
 // because the provider-wide floor already excludes anything older.
-// Lowering minimumCodexCLIVersion below 0.140.0 would silently reintroduce
+// Lowering MinimumCodexCLIVersion below 0.140.0 would silently reintroduce
 // a "method not found" failure on the per-row stop path, so it fails here
 // instead.
 func TestMinimumCodexCLIVersionCoversBackgroundTerminalTerminate(t *testing.T) {
 	const backgroundTerminalTerminateFloor = "0.140.0"
-	if compareCodexCLIVersions(minimumCodexCLIVersion, backgroundTerminalTerminateFloor) < 0 {
+	if compareCodexCLIVersions(MinimumCodexCLIVersion, backgroundTerminalTerminateFloor) < 0 {
 		t.Fatalf(
-			"minimumCodexCLIVersion = %q is below the %q floor required by "+
+			"MinimumCodexCLIVersion = %q is below the %q floor required by "+
 				"thread/backgroundTerminals/terminate; either raise the minimum or "+
 				"add a runtime capability check in internal/provider/codex/session_background.go",
-			minimumCodexCLIVersion, backgroundTerminalTerminateFloor,
+			MinimumCodexCLIVersion, backgroundTerminalTerminateFloor,
 		)
 	}
 }

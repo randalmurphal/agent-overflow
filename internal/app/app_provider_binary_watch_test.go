@@ -661,3 +661,60 @@ func TestProviderBinaryWatchFollowsTheNpmWrappersNativeBinary(t *testing.T) {
 		t.Fatalf("installed = %+v, want the wrapper at 0.163.0", installed)
 	}
 }
+
+// An update past the Codex minimum clears the version banner and the
+// settings row without a restart: the tick that sees the new binary
+// announces its ready status. A probe that leaves the status where it was
+// announces nothing, and a downgrade announces the refusal.
+func TestProviderBinaryWatchAnnouncesAStatusChange(t *testing.T) {
+	app := newTestAppWithStore(t)
+	binary := filepath.Join(t.TempDir(), "codex")
+	writeProviderBinaryFile(t, binary, "exit 0 # 0.153.0")
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatalf("set codex binary: %v", err)
+	}
+	codexStatus := provider.ProviderStatus{Status: "version_too_old", Version: "0.153.0"}
+	previous := providerBinaryDetectFn
+	providerBinaryDetectFn = func(providerName, binaryPath string) provider.ProviderStatus {
+		status := provider.ProviderStatus{Status: "ready", Version: "2.1.100"}
+		if providerName == string(provider.Codex) {
+			status = codexStatus
+		}
+		status.Provider, status.Installed, status.BinaryPath = providerName, true, binaryPath
+		return status
+	}
+	t.Cleanup(func() { providerBinaryDetectFn = previous })
+	var announced []providerstatus.Event
+	app.testEmitHook = func(name string, data any) {
+		if evt, ok := data.(providerstatus.Event); ok && name == "provider:status" && evt.Provider == string(provider.Codex) {
+			announced = append(announced, evt)
+		}
+	}
+
+	app.sweepProviderBinaries()
+	if len(announced) != 0 {
+		t.Fatalf("baseline announced %+v; the boot status is GetProviderStatuses' to report", announced)
+	}
+
+	writeProviderBinaryFile(t, binary, "exit 0 # 0.154.0, updated")
+	codexStatus = provider.ProviderStatus{Status: "ready", Version: "0.154.0"}
+	app.sweepProviderBinaries()
+	app.sweepProviderBinaries()
+	if len(announced) != 1 || announced[0].Status != "ready" {
+		t.Fatalf("after the update announced %+v, want one ready status", announced)
+	}
+
+	writeProviderBinaryFile(t, binary, "exit 0 # 0.154.1, same status")
+	codexStatus = provider.ProviderStatus{Status: "ready", Version: "0.154.1"}
+	app.sweepProviderBinaries()
+	if len(announced) != 1 {
+		t.Fatalf("an unchanged status was announced again: %+v", announced)
+	}
+
+	writeProviderBinaryFile(t, binary, "exit 0 # 0.150.0, downgraded")
+	codexStatus = provider.ProviderStatus{Status: "version_too_old", Version: "0.150.0", Message: "too old"}
+	app.sweepProviderBinaries()
+	if len(announced) != 2 || announced[1].Status != "version_too_old" || announced[1].Message != "too old" {
+		t.Fatalf("after the downgrade announced %+v, want the refusal", announced)
+	}
+}

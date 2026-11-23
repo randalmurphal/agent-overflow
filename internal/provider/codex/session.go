@@ -407,7 +407,7 @@ type Session struct {
 	// session state while the app layer runs.
 	//
 	// codexThreadID, appServerVersion, threadHistoryMode, pendingRevert,
-	// revertEpoch, threadQueueNative, closing and nextID are atomics precisely
+	// revertEpoch, closing and nextID are atomics precisely
 	// so their readers never have to enter this order at all.
 	// settingsWireMu precedes mu and never nests with controlMu.
 	// It orders snapshots and pipe writes, not response waits.
@@ -552,13 +552,10 @@ type Session struct {
 	// binary-scoped read (skills) can match on it rather than assuming the
 	// current setting still describes a process that started earlier.
 	binary string
-	// appServerVersion is the codex build the LIVE process reports at
-	// `initialize` (`InitializeResponse.userAgent`), parsed by
-	// recordAppServerVersion. Atomic for the same reason codexThreadID is:
-	// readLoop is already running when the handshake answers, and a
-	// per-method version gate must be readable from any goroutine without
-	// taking mu. "" means "could not be determined", which every gate
-	// treats as too old — see app_server_version.go.
+	// appServerVersion is the codex build the LIVE process reported at
+	// `initialize` (`InitializeResponse.userAgent`), copied from its Conn,
+	// which admitted it (app_server_version.go). Atomic so the binary watch
+	// reads it from any goroutine without taking mu.
 	appServerVersion atomic.Pointer[string]
 	// threadHistoryMode is the `thread.historyMode` this session's thread
 	// reported on its start/resume response, recorded by
@@ -576,14 +573,6 @@ type Session struct {
 	// change means the turn it intended to stop crossed a revert boundary and
 	// the stale interrupt must not hit the resulting thread runtime.
 	revertEpoch atomic.Uint64
-	// threadQueueNative freezes, at handshake time, whether this session
-	// hands mid-turn user messages to the provider's own `thread/queue/*`
-	// (codex >= 0.148) instead of AO's in-process flushqueue. Atomic for the
-	// same reason appServerVersion is — the app-layer dispatcher reads it off
-	// its own goroutine — and written exactly once, by
-	// recordThreadQueueSupport, because the two queues must be mutually
-	// exclusive for the whole life of the session.
-	threadQueueNative atomic.Bool
 
 	// conn is the multiplexed app-server connection this session runs on (nil
 	// only in synthetic unit-test Sessions constructed without Dial/NewSession).

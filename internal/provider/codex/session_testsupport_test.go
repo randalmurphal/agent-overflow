@@ -234,7 +234,9 @@ while IFS= read -r line; do
     if [ -z "$id" ]; then
         continue
     fi
-    if echo "$line" | grep -q '"method":"turn/start"'; then
+    if echo "$line" | grep -q '"method":"initialize"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":`+providertest.CodexInitializeResultQuoted+`}"
+    elif echo "$line" | grep -q '"method":"turn/start"'; then
         echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"turn\":{\"id\":\"turn-reviewer\"}}}"
     elif echo "$line" | grep -qE '"method":"thread/(start|resume)"'; then
         echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":%s}"

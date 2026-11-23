@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -79,7 +80,7 @@ func newThreadUsageSession(t *testing.T, binary string) *Session {
 }
 
 // TestSession_ReadThreadUsage_PresentEstimate is the whole feature on the
-// happy path: a 0.149 app-server, a thread-scoped request carrying the ROOT
+// happy path: a supported app-server, a thread-scoped request carrying the ROOT
 // codex thread id, and a USD figure that comes back verbatim in micros.
 func TestSession_ReadThreadUsage_PresentEstimate(t *testing.T) {
 	t.Parallel()
@@ -88,11 +89,11 @@ func TestSession_ReadThreadUsage_PresentEstimate(t *testing.T) {
 		`"threadId":"codex-thread-usage","estimatedUsageCreditsMicros":4200000,` +
 		`"estimatedUsageUsdMicros":137500,"groups":[{"model":"gpt-5.6-codex",` +
 		`"reasoningEffort":"high","estimatedUsageCreditsMicros":4200000,"outputTokens":9001}]}}`
-	binary := threadUsageFakeScript(t, "codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0", "codex-thread-usage", reply, capture)
+	binary := threadUsageFakeScript(t, providertest.CodexUserAgent, "codex-thread-usage", reply, capture)
 
 	s := newThreadUsageSession(t, binary)
-	if got := s.AppServerVersion(); got != "0.149.0" {
-		t.Fatalf("AppServerVersion() = %q, want 0.149.0", got)
+	if got := s.AppServerVersion(); got != provider.MinimumCodexCLIVersion {
+		t.Fatalf("AppServerVersion() = %q, want %s", got, provider.MinimumCodexCLIVersion)
 	}
 
 	usage, err := s.ReadThreadUsage(context.Background())
@@ -143,7 +144,7 @@ func TestSession_ReadThreadUsage_NullThreadUsage(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/usage-request.json"
 	reply := `"result":{"summary":{},"dailyUsageBuckets":null,"threadUsage":null}`
-	binary := threadUsageFakeScript(t, "codex_cli_rs/0.148.0 (Linux)", "codex-thread-usage", reply, capture)
+	binary := threadUsageFakeScript(t, providertest.CodexUserAgent, "codex-thread-usage", reply, capture)
 
 	s := newThreadUsageSession(t, binary)
 	_, err := s.ReadThreadUsage(context.Background())
@@ -159,7 +160,7 @@ func TestSession_ReadThreadUsage_AbsentThreadUsage(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/usage-request.json"
 	reply := `"result":{"summary":{},"dailyUsageBuckets":null}`
-	binary := threadUsageFakeScript(t, "codex_cli_rs/0.148.0 (Linux)", "codex-thread-usage", reply, capture)
+	binary := threadUsageFakeScript(t, providertest.CodexUserAgent, "codex-thread-usage", reply, capture)
 
 	s := newThreadUsageSession(t, binary)
 	_, err := s.ReadThreadUsage(context.Background())
@@ -177,56 +178,12 @@ func TestSession_ReadThreadUsage_CreditsOnly(t *testing.T) {
 	capture := t.TempDir() + "/usage-request.json"
 	reply := `"result":{"summary":{},"threadUsage":{"threadId":"codex-thread-usage",` +
 		`"estimatedUsageCreditsMicros":900000,"estimatedUsageUsdMicros":null,"groups":[]}}`
-	binary := threadUsageFakeScript(t, "codex_cli_rs/0.148.0 (Linux)", "codex-thread-usage", reply, capture)
+	binary := threadUsageFakeScript(t, providertest.CodexUserAgent, "codex-thread-usage", reply, capture)
 
 	s := newThreadUsageSession(t, binary)
 	_, err := s.ReadThreadUsage(context.Background())
 	if !errors.Is(err, ErrThreadUsageUnavailable) {
 		t.Fatalf("ReadThreadUsage error = %v, want ErrThreadUsageUnavailable", err)
-	}
-}
-
-// TestSession_ReadThreadUsage_OldVersionSendsNothing is the version gate. On
-// 0.147 the method's params are `Option<()>`, so a `{threadId}` request is a
-// guaranteed invalid-params error — the gate has to refuse BEFORE the write,
-// not learn from the failure. The absent capture file is the assertion: no
-// request left the client.
-func TestSession_ReadThreadUsage_OldVersionSendsNothing(t *testing.T) {
-	t.Parallel()
-	capture := t.TempDir() + "/usage-request.json"
-	reply := `"result":{"summary":{}}`
-	binary := threadUsageFakeScript(t, "codex_cli_rs/0.147.0 (Linux)", "codex-thread-usage", reply, capture)
-
-	s := newThreadUsageSession(t, binary)
-	_, err := s.ReadThreadUsage(context.Background())
-	if !errors.Is(err, ErrThreadUsageUnavailable) {
-		t.Fatalf("ReadThreadUsage error = %v, want ErrThreadUsageUnavailable", err)
-	}
-	if _, statErr := os.Stat(capture); statErr == nil {
-		t.Fatal("a request reached the app-server on a pre-0.148 build; the gate must refuse before writing")
-	}
-}
-
-// TestSession_ReadThreadUsage_UnknownVersionSendsNothing pins the fail-closed
-// direction for a handshake that stated no parseable version at all — every
-// existing fake app-server in this package answers initialize with `{}`, so
-// this is not a hypothetical shape.
-func TestSession_ReadThreadUsage_UnknownVersionSendsNothing(t *testing.T) {
-	t.Parallel()
-	capture := t.TempDir() + "/usage-request.json"
-	reply := `"result":{"summary":{}}`
-	binary := threadUsageFakeScript(t, "", "codex-thread-usage", reply, capture)
-
-	s := newThreadUsageSession(t, binary)
-	if got := s.AppServerVersion(); got != "" {
-		t.Fatalf("AppServerVersion() = %q, want empty", got)
-	}
-	_, err := s.ReadThreadUsage(context.Background())
-	if !errors.Is(err, ErrThreadUsageUnavailable) {
-		t.Fatalf("ReadThreadUsage error = %v, want ErrThreadUsageUnavailable", err)
-	}
-	if _, statErr := os.Stat(capture); statErr == nil {
-		t.Fatal("a request reached the app-server on an unknown build; the gate must fail closed")
 	}
 }
 
@@ -237,7 +194,7 @@ func TestSession_ReadThreadUsage_RPCError(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/usage-request.json"
 	reply := `"error":{"code":-32603,"message":"failed to fetch thread usage: upstream 500"}`
-	binary := threadUsageFakeScript(t, "codex_cli_rs/0.149.0 (Linux)", "codex-thread-usage", reply, capture)
+	binary := threadUsageFakeScript(t, providertest.CodexUserAgent, "codex-thread-usage", reply, capture)
 
 	s := newThreadUsageSession(t, binary)
 	_, err := s.ReadThreadUsage(context.Background())
@@ -257,7 +214,7 @@ func TestSession_ReadThreadUsage_AuthRefusalIsAState(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/usage-request.json"
 	reply := `"error":{"code":-32602,"message":"chatgpt authentication required to read token usage"}`
-	binary := threadUsageFakeScript(t, "codex_cli_rs/0.149.0 (Linux)", "codex-thread-usage", reply, capture)
+	binary := threadUsageFakeScript(t, providertest.CodexUserAgent, "codex-thread-usage", reply, capture)
 
 	s := newThreadUsageSession(t, binary)
 	_, err := s.ReadThreadUsage(context.Background())
@@ -275,7 +232,7 @@ func TestSession_ReadThreadUsage_ThreadIDMismatchIsAFault(t *testing.T) {
 	capture := t.TempDir() + "/usage-request.json"
 	reply := `"result":{"threadUsage":{"threadId":"some-other-thread",` +
 		`"estimatedUsageCreditsMicros":1,"estimatedUsageUsdMicros":1,"groups":[]}}`
-	binary := threadUsageFakeScript(t, "codex_cli_rs/0.149.0 (Linux)", "codex-thread-usage", reply, capture)
+	binary := threadUsageFakeScript(t, providertest.CodexUserAgent, "codex-thread-usage", reply, capture)
 
 	s := newThreadUsageSession(t, binary)
 	_, err := s.ReadThreadUsage(context.Background())
@@ -315,20 +272,6 @@ func TestParseAppServerVersion(t *testing.T) {
 				t.Fatalf("parseAppServerVersion(%q) = %q, want %q", tc.userAgent, got, tc.want)
 			}
 		})
-	}
-}
-
-// TestThreadUsageFloorIsAboveTheProviderFloor states the relationship between
-// the two version numbers in play: the package-wide launch floor admits
-// binaries this method does not exist on, which is exactly why the per-method
-// gate has to exist. If a future release raises the provider floor past
-// 0.148, this gate becomes dead code and should be deleted rather than left to
-// rot.
-func TestThreadUsageFloorIsAboveTheProviderFloor(t *testing.T) {
-	t.Parallel()
-	if provider.CodexCLIVersionAtLeast("0.143.0", threadUsageMinimumCodexVersion) {
-		t.Fatalf("the provider launch floor now covers %s; the per-method gate is dead code",
-			threadUsageMinimumCodexVersion)
 	}
 }
 

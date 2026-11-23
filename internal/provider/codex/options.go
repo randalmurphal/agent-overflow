@@ -82,7 +82,7 @@ func codexApprovalPolicy(mode provider.RuntimeMode) string {
 		// Deliberately identical to approval-required. `auto` differs from it
 		// on exactly one axis — who answers the escalation — and
 		// `approvalsReviewer` is the wire knob for precisely that. The two
-		// tiers therefore share this mapping, including its version remap.
+		// tiers therefore share this mapping, including its wire remap.
 		return codexApprovalPolicyUnlessTrusted
 	case provider.RuntimeFullAccess:
 		return "never"
@@ -98,58 +98,27 @@ const (
 	codexApprovalPolicyOnRequest     = "on-request"
 )
 
-// codexOnRequestApprovalFloor is the first Codex release where "untrusted"
-// stopped meaning what approval-required and auto promised, and "on-request"
-// started meaning it.
+// wireApprovalPolicy is the approval policy AO sends for policy.
 //
-// Upstream 942af8447b, "Retire the untrusted approval policy" (#39630), landed
-// in 0.149.0. The wire VALUE survives — `AskForApproval::UnlessTrusted` still
-// serializes as "untrusted", and the app-server only rejects it when it comes
-// from a `config.toml` `approval_policy` key, never from a thread/turn
-// override (`UnsupportedUntrustedApprovalPolicyError` is raised on
-// `cfg.approval_policy`, not on `approval_policy_override`, in
-// codex-rs/core/src/config/mod.rs) — but the known-safe command allowlist it
-// depended on was DELETED. Compare `render_decision_for_unmatched_command`
-// (codex-rs/core/src/exec_policy.rs) across the change:
+// "untrusted" no longer means what approval-required and auto promise:
+// upstream 942af8447b, "Retire the untrusted approval policy" (#39630,
+// 0.149.0), deleted the known-safe command allowlist behind it
+// (`render_decision_for_unmatched_command` in codex-rs/core/src/exec_policy.rs),
+// so `UnlessTrusted` prompts for every command no exec-policy rule allows,
+// `ls` included. The wire value survives and is rejected only from a
+// `config.toml` `approval_policy` key, never from a thread or turn override.
 //
-//   - ≤ 0.148: `is_known_safe_command` short-circuits to Allow under
-//     `UnlessTrusted`, so `ls` / `cat` / `rg` run and only non-read commands
-//     escalate.
-//   - ≥ 0.149: that branch is gone. `UnlessTrusted` returns Prompt for EVERY
-//     command no explicit exec-policy rule allows — including `ls`.
-//
-// `OnRequest` under a RESTRICTED (read-only / workspace-write) sandbox is what
-// now expresses the old intent: dangerous commands Prompt, anything that
-// `requests_sandbox_override()` — a write or a network escape out of a
-// read-only sandbox — Prompts, and everything else is allowed to run with the
-// kernel sandbox as the enforcement. The escalation still reaches the human in
-// approval-required and Codex's reviewer subagent in auto, because
+// `OnRequest` under a restricted (read-only / workspace-write) sandbox is
+// what expresses the old intent: dangerous commands and anything that
+// `requests_sandbox_override()` prompt, and everything else runs with the
+// kernel sandbox as the enforcement. The escalation still reaches the human
+// in approval-required and Codex's reviewer subagent in auto, because
 // `approvalsReviewer` and the read-only sandbox are unchanged.
-const codexOnRequestApprovalFloor = "0.149.0"
-
-// approvalPolicyForCodexVersion remaps the policy AO computed for a runtime
-// mode onto what the CONNECTED app-server actually implements.
 //
-// Only "untrusted" moves, and it moves for every tier that produces it
-// (approval-required, auto, and the unreachable fallback) — which is exactly
-// the mode-level remap, expressed once at the wire chokepoint so
-// thread/start, thread/resume and every turn/start cannot disagree.
-//
-// An EMPTY or unparseable version keeps "untrusted". That is the safe
-// direction and it is not symmetric: sending "on-request" to a ≤ 0.148 binary
-// would silently let non-read commands run unapproved in a tier whose whole
-// promise is that they do not, whereas sending "untrusted" to a 0.149 binary
-// costs prompts, not permission. `provider.CodexCLIVersionAtLeast` already
-// fails closed on an unparseable version; the explicit empty check is here so
-// the intent is readable rather than inferred.
-func approvalPolicyForCodexVersion(policy, codexVersion string) string {
-	if policy != codexApprovalPolicyUnlessTrusted {
-		return policy
-	}
-	if codexVersion == "" {
-		return policy
-	}
-	if provider.CodexCLIVersionAtLeast(codexVersion, codexOnRequestApprovalFloor) {
+// Applied at the wire chokepoint so thread/start, thread/resume and every
+// turn/start cannot disagree.
+func wireApprovalPolicy(policy string) string {
+	if policy == codexApprovalPolicyUnlessTrusted {
 		return codexApprovalPolicyOnRequest
 	}
 	return policy

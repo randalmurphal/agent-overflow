@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -56,13 +57,6 @@ type codexQueueBinaryOpts struct {
 	// rollback can abort with some rows already out of codex's queue and
 	// nothing left to run them.
 	deleteRefused string
-	// preQueue makes the handshake report a build from BEFORE the queue
-	// family shipped, and refuses every `thread/queue/*` method with the
-	// `-32601` a server with no such route answers. Both halves together:
-	// the version is what closes `ThreadQueueNative`, and the refusal is what
-	// turns a caller that ignored the gate into a visible failure rather than
-	// a silently empty queue.
-	preQueue bool
 	// steerNotSteerable answers `turn/steer` with upstream's
 	// `ActiveTurnNotSteerable` refusal — a turn IS running and cannot take
 	// input, because it is a review or a compaction — for as long as the
@@ -79,9 +73,8 @@ func steerRefusalTogglePath(capturePath string) string {
 	return filepath.Join(filepath.Dir(capturePath), "steer-not-steerable")
 }
 
-// writeCodexProviderQueueBinary is a fake app-server that reports a 0.149
-// build on the handshake — which is what opens the `thread/queue` gate — and
-// records every request frame to capturePath so a test can prove which verb
+// writeCodexProviderQueueBinary is a fake app-server that reports the
+// minimum supported build on the handshake and records every request frame to capturePath so a test can prove which verb
 // the flush dispatcher chose.
 //
 // Its `thread/queue/add` branch is a TRIPWIRE, mirroring the harness mock
@@ -102,19 +95,6 @@ func writeCodexProviderQueueBinary(
 	t *testing.T, threadID, capturePath string, opts codexQueueBinaryOpts,
 ) (binary, queueStatePath string) {
 	t.Helper()
-	// The version the handshake reports, and — for a pre-queue build — the
-	// blanket refusal that stands in for routes this app-server does not have.
-	userAgent := "codex_cli_rs/0.149.0 (test)"
-	queueRefusalBranch := ""
-	if opts.preQueue {
-		userAgent = "codex_cli_rs/0.147.0 (test)"
-		queueRefusalBranch = `
-    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/queue/'; then
-        /bin/echo "$line" >> ` + fmt.Sprintf("%q", capturePath) + `
-        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"Method not found"}}\n' "$id"
-        continue
-    fi`
-	}
 	steerBranch := `printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"`
 	if opts.steerNotSteerable {
 		toggle := steerRefusalTogglePath(capturePath)
@@ -166,7 +146,7 @@ while IFS= read -r line; do
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"userAgent":"%s"}}\n' "$id"
         continue
-    fi%s
+    fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/start"'; then
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s"}}}\n' "$id"
         continue
@@ -214,7 +194,7 @@ while IFS= read -r line; do
     fi
     printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
 done
-`, userAgent, queueRefusalBranch, threadID, capturePath, capturePath, listBranch, capturePath,
+`, providertest.CodexUserAgent, threadID, capturePath, capturePath, listBranch, capturePath,
 		deleteRefusalBranch, queueState, queueState, queueState, queueState, queueState,
 		capturePath, threadID, threadID, capturePath, steerBranch)
 
@@ -456,9 +436,6 @@ func TestFlushDispatch_CodexSteersTheMessageIntoTheRunningTurn(t *testing.T) {
 
 	capture := filepath.Join(t.TempDir(), "requests.jsonl")
 	codexSess := newProviderQueueSession(t, thread, capture)
-	if !codexSess.ThreadQueueNative() {
-		t.Fatal("ThreadQueueNative() = false; the 0.149 handshake should have opened the gate")
-	}
 	sess := session{Provider: string(provider.Codex), Codex: codexSess}
 	app.sessionManager().put(thread.ID, sess)
 
@@ -655,15 +632,12 @@ func TestCodexSessionStartSunsetsTheLegacyProviderQueueRows(t *testing.T) {
 		"never taken", markedQueueRowMeta(t, false))
 
 	capture := filepath.Join(t.TempDir(), "requests.jsonl")
-	sess := newProviderQueueResumeSession(t, app, thread, capture, codexQueueBinaryOpts{
+	newProviderQueueResumeSession(t, app, thread, capture, codexQueueBinaryOpts{
 		rows: []queuedRow{
 			{id: "sub-mine", clientID: "user:7:flush:1", text: "still queued"},
 			{id: "sub-theirs", clientID: foreignQueueClientID, text: "somebody else's"},
 		},
 	})
-	if !sess.ThreadQueueNative() {
-		t.Fatal("ThreadQueueNative() = false on a 0.149 handshake")
-	}
 
 	// The queue keeps exactly what is not AO's.
 	binaryQueueState := ""
@@ -719,59 +693,6 @@ func TestCodexSessionStartSunsetsTheLegacyProviderQueueRows(t *testing.T) {
 	}
 	if len(restored[0].UserItemIDs) != 2 {
 		t.Errorf("restored ids = %v, want both rows nothing else will run", restored[0].UserItemIDs)
-	}
-}
-
-// TestSunsetLeavesTheRowsAPreQueueAppServerCannotSee is the version-downgrade
-// half. A pre-0.148 app-server has no `thread/queue/*` at all: it can neither
-// list nor delete, so the rows stay exactly where the newer build left them for
-// a later session to retire. Restoring them here would hand the user a draft of
-// a message a newer Codex still holds and will run.
-func TestSunsetLeavesTheRowsAPreQueueAppServerCannotSee(t *testing.T) {
-	t.Parallel()
-	app, rec := newAppForFlushQueueRPC(t)
-	thread := providerQueueReconcileThread(t, app, "flush-queue-legacy-downgrade")
-	thread.SessionRef = thread.ID + "-codex"
-	if err := app.store.UpdateThread(thread); err != nil {
-		t.Fatalf("UpdateThread: %v", err)
-	}
-	insertUserItemWithMeta(t, app.store, thread.ID, "user:7:flush:1", 7,
-		"still queued", markedQueueRowMeta(t, true))
-
-	capture := filepath.Join(t.TempDir(), "requests.jsonl")
-	sess := newProviderQueueResumeSession(t, app, thread, capture, codexQueueBinaryOpts{
-		preQueue: true,
-		// Seeded but unreachable, which is the point: the row exists and
-		// nothing on this connection can see it.
-		rows: []queuedRow{{id: "sub-mine", clientID: "user:7:flush:1", text: "still queued"}},
-	})
-	if sess.ThreadQueueNative() {
-		t.Fatal("ThreadQueueNative() = true on a 0.147 handshake; the gate must fail closed")
-	}
-
-	// Nothing was asked of the provider queue. A call that ignored the gate
-	// would be a -32601 in the capture, not a silent no-op.
-	for _, frame := range capturedFrames(t, capture) {
-		if strings.Contains(frame, `"method":"thread/queue/`) {
-			t.Fatalf("a pre-0.148 session called a thread/queue method:\n\t%s", frame)
-		}
-	}
-	row, found, err := app.store.GetThreadItem(thread.ID, "user:7:flush:1")
-	if err != nil || !found {
-		t.Fatalf("the row was dropped: found=%v err=%v", found, err)
-	}
-	if !itemmeta.IsProviderQueued(row.Meta) {
-		t.Errorf("row meta = %q, want the provider-queued marker retained", row.Meta)
-	}
-	draft, _, err := app.store.GetThreadDraft(thread.ID)
-	if err != nil {
-		t.Fatalf("GetThreadDraft: %v", err)
-	}
-	if strings.TrimSpace(draft.Content) != "" {
-		t.Errorf("draft = %q; a message a newer Codex still holds must not come back as a draft", draft.Content)
-	}
-	if restored := emittedQueueRestored(rec); len(restored) != 0 {
-		t.Errorf("queue restored events = %+v, want none", restored)
 	}
 }
 

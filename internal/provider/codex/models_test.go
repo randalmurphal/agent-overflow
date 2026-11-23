@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"path/filepath"
 	"strings"
@@ -262,7 +263,7 @@ set -euo pipefail
 while IFS= read -r line; do
   id="$(printf '%s\n' "$line" | sed -n 's/.*"id":[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
   if [[ "$line" == *'"method":"initialize"'* ]]; then
-    printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+    printf '{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}\n' "$id"
   elif [[ "$line" == *'"method":"model/list"'* ]]; then
     printf '{"jsonrpc":"2.0","id":%s,"result":{"data":%s,"nextCursor":null}}\n' "$id" '` + modelsJSON + `'
   fi
@@ -278,7 +279,7 @@ set -euo pipefail
 while IFS= read -r line; do
   id="$(printf '%s\n' "$line" | sed -n 's/.*"id":[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
   if [[ "$line" == *'"method":"initialize"'* ]]; then
-    printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+    printf '{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}\n' "$id"
   elif [[ "$line" == *'"cursor":"1"'* ]]; then
     printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"model":"gpt-5.4-mini","displayName":"GPT-5.4 Mini","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high","serviceTiers":[]}],"nextCursor":null}}\n' "$id"
   elif [[ "$line" == *'"method":"model/list"'* ]]; then
@@ -296,7 +297,7 @@ set -euo pipefail
 while IFS= read -r line; do
   id="$(printf '%s\n' "$line" | sed -n 's/.*"id":[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
   if [[ "$line" == *'"method":"initialize"'* ]]; then
-    printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+    printf '{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}\n' "$id"
   elif [[ "$line" == *'"method":"model/list"'* ]]; then
     printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[],"nextCursor":"loop"}}\n' "$id"
   fi
@@ -312,7 +313,7 @@ set -euo pipefail
 while IFS= read -r line; do
   id="$(printf '%s\n' "$line" | sed -n 's/.*"id":[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
   if [[ "$line" == *'"method":"initialize"'* ]]; then
-    printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+    printf '{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}\n' "$id"
   elif [[ "$line" == *'"method":"model/list"'* ]]; then
     printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[],"nextCursor":"cursor-%s"}}\n' "$id" "$id"
   fi

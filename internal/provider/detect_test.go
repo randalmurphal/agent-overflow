@@ -2,6 +2,9 @@ package provider
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -57,14 +60,14 @@ func TestRunVersionCommandWithMock(t *testing.T) {
 }
 
 func TestDetectProviderCodexReadyWithMock(t *testing.T) {
-	script := createMockBinary(t, "#!/bin/sh\necho 'codex 0.143.0'")
+	script := createMockBinary(t, "#!/bin/sh\necho 'codex-cli 0.154.0'")
 
 	status := DetectProvider("codex", script)
-	if !status.Installed || status.Status != "ready" {
+	if !status.Installed || status.Status != "ready" || status.Message != "" {
 		t.Fatalf("expected ready codex status, got %+v", status)
 	}
-	if status.Version != "codex 0.143.0" {
-		t.Fatalf("expected version 'codex 0.143.0', got %q", status.Version)
+	if status.Version != "codex-cli 0.154.0" {
+		t.Fatalf("expected version 'codex-cli 0.154.0', got %q", status.Version)
 	}
 }
 
@@ -88,23 +91,60 @@ func TestDetectProviderVersionError(t *testing.T) {
 	}
 }
 
-func TestDetectProviderCodexUnsupportedVersion(t *testing.T) {
-	script := createMockBinary(t, "#!/bin/sh\necho 'codex 0.36.0'")
-
-	status := DetectProvider("codex", script)
-
-	if !status.Installed {
-		t.Fatal("expected Installed=true when binary exists")
+// TestDetectProviderCodexBelowMinimum pins the settings row's and the
+// banner's text at the minimum's boundary: the status, the installed
+// version, the minimum and the path of the binary that was run. A path with
+// a space reads whole because the message puts it in parentheses.
+func TestDetectProviderCodexBelowMinimum(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock shell scripts require unix")
 	}
-	if status.Status != "version_too_old" {
-		t.Fatalf("expected Status 'version_too_old' for unsupported Codex CLI, got %q", status.Status)
+	dir := filepath.Join(t.TempDir(), "Codex Tools")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if status.Version != "codex 0.36.0" {
-		t.Fatalf("expected raw Version to be preserved, got %q", status.Version)
+	cases := []struct {
+		name       string
+		output     string
+		wantStatus string
+		wantText   string
+	}{
+		{
+			name:       "last release before the minimum",
+			output:     "codex-cli 0.153.4",
+			wantStatus: "version_too_old",
+			wantText:   "Codex v0.153.4 (%s) is installed; Agent Overflow needs v0.154.0 or newer. Update Codex.",
+		},
+		{
+			name:       "pre-release of the minimum",
+			output:     "codex-cli 0.154.0-alpha.1",
+			wantStatus: "version_too_old",
+			wantText:   "Codex v0.154.0-alpha.1 (%s) is installed; Agent Overflow needs v0.154.0 or newer. Update Codex.",
+		},
+		{
+			name:       "unreadable version",
+			output:     "codex version unknown",
+			wantStatus: "error",
+			wantText:   `Agent Overflow could not read the version of Codex (%s) from "codex version unknown". Update Codex to v0.154.0 or newer.`,
+		},
+		{
+			name:       "no output",
+			output:     "",
+			wantStatus: "error",
+			wantText:   "Agent Overflow could not read the version of Codex (%s). Update Codex to v0.154.0 or newer.",
+		},
 	}
-	wantMessage := "Codex CLI v0.36.0 is too old for Agent Overflow. Upgrade to v0.143.0 or newer and restart the app."
-	if status.Message != wantMessage {
-		t.Fatalf("Message = %q, want %q", status.Message, wantMessage)
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			script := mockexec.WriteIn(t, dir, fmt.Sprintf("codex %d", i), "#!/bin/sh\nprintf '%s' '"+tc.output+"'\n")
+			status := DetectProvider("codex", script)
+			if !status.Installed || status.Status != tc.wantStatus {
+				t.Fatalf("status = %+v, want status %q", status, tc.wantStatus)
+			}
+			if want := fmt.Sprintf(tc.wantText, script); status.Message != want {
+				t.Fatalf("Message = %q, want %q", status.Message, want)
+			}
+		})
 	}
 }
 

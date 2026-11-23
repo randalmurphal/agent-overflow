@@ -22,8 +22,8 @@ func (s *Session) Fork(ctx context.Context) (string, error) {
 // callers point their resume cursor at the returned fork ID.
 //
 // This is the replacement for the deprecated `thread/rollback` flow.
-// The `lastTurnId` param exists from Codex 0.143.0 (enforced by
-// provider.minimumCodexCLIVersion); an unknown turn id fails the RPC
+// The `lastTurnId` param exists from Codex 0.143.0, below
+// provider.MinimumCodexCLIVersion; an unknown turn id fails the RPC
 // loudly rather than silently full-forking. Both behaviors, the
 // camelCase param shape, and the inclusive-cut semantics are
 // spike-verified against codex-cli 0.144
@@ -61,8 +61,8 @@ func (s *Session) Fork(ctx context.Context) (string, error) {
 // The response deliberately excludes turns. AO owns its rendered transcript
 // in SQLite, and asking Codex to serialize the provider's full history into one
 // JSON-RPC response can exceed the process line cap on a long thread.
-// `thread/fork.excludeTurns` and `thread/turns/list` both exist at AO's 0.143
-// minimum (source-verified at rust-v0.143.0 and rust-v0.150.1), so this needs
+// `thread/fork.excludeTurns` and `thread/turns/list` both exist from 0.143,
+// below AO's minimum (source-verified at rust-v0.143.0 and rust-v0.150.1), so this needs
 // no capability downgrade. An anchored fork validates its surviving tail with
 // one metadata-only descending page instead: a mismatch would mean the fork
 // kept turns we asked to drop (or vice versa), and building local truncation on

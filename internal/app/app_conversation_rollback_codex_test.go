@@ -2,6 +2,7 @@ package app
 
 import (
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 	"cmp"
 	"context"
@@ -539,18 +540,14 @@ func readCodexForkRequest(t *testing.T, requestLogPath string) string {
 // forkTailTurnID overrides the requested lastTurnId to simulate a server
 // whose fork survives through a different turn than the requested anchor.
 //
-// The zero value is a pre-0.148 legacy-history server: no userAgent (so
-// AO reads the build as unknown and every per-method floor fails closed)
-// and no historyMode on the resumed thread. Threads created before AO's
-// paginated-history opt-in keep this shape for life.
+// The zero value is a legacy-history server: no historyMode on the resumed
+// thread. Threads created before AO's paginated-history opt-in keep this
+// shape for life.
 type codexForkMock struct {
 	resumedThreadID string
 	forkedThreadID  string
 	requestLogPath  string
 	forkTailTurnID  string
-	// userAgent is what the server states at `initialize`; the ONLY
-	// in-band statement of its build, and what appServerAtLeast reads.
-	userAgent string
 	// historyMode is the resumed thread's persisted history contract.
 	// `thread/revert` needs "paginated"; anything else is refused
 	// upstream, so anything else must keep AO on the fork cut.
@@ -617,10 +614,6 @@ func writeCodexForkAtBinary(t *testing.T, mock codexForkMock) string {
 	tailExpr := `"$cut"`
 	if mock.forkTailTurnID != "" {
 		tailExpr = fmt.Sprintf(`'%s'`, mock.forkTailTurnID)
-	}
-	initializeResult := "{}"
-	if mock.userAgent != "" {
-		initializeResult = fmt.Sprintf(`{"userAgent":"%s"}`, mock.userAgent)
 	}
 	resumedHistoryMode := ""
 	if mock.historyMode != "" {
@@ -742,7 +735,7 @@ while IFS= read -r line; do
         continue
     fi
 done
-`, mock.turnsTail, turnStartClause+injectClauses+memoryModeClause, initializeResult, logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
+`, mock.turnsTail, turnStartClause+injectClauses+memoryModeClause, providertest.CodexInitializeResult, logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
 		logRevertRequest, revertReply, logInterruptRequest, logForkRequest, tailExpr,
 		mock.forkedThreadID)
 
@@ -814,7 +807,6 @@ func TestConversationRollbackCodexRevertsInPlaceWhenSupported(t *testing.T) {
 		forkedThreadID:  "forked-provider-thread",
 		requestLogPath:  filepath.Join(logDir, "fork-requests.jsonl"),
 		revertLogPath:   filepath.Join(logDir, "revert-requests.jsonl"),
-		userAgent:       "codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
 		historyMode:     "paginated",
 	}
 	thread := paginatedRevertThread(t, app, "codex-inplace-revert", mock)
@@ -891,7 +883,6 @@ func TestConversationRollbackCodexLiveRevertForgetsToolCallLinks(t *testing.T) {
 	binary := writeCodexForkAtBinary(t, codexForkMock{
 		resumedThreadID: thread.SessionRef,
 		forkedThreadID:  "unused-fork",
-		userAgent:       "codex_cli_rs/0.149.0 (Linux; x86_64)",
 		historyMode:     "paginated",
 		revertLogPath:   revertLog,
 	})
@@ -969,7 +960,6 @@ func requireLiveRevertRestoresDeveloperInstructions(t *testing.T, name string, b
 	mock := base
 	mock.resumedThreadID = thread.SessionRef
 	mock.forkedThreadID = "unused-fork"
-	mock.userAgent = "codex_cli_rs/0.149.0 (Linux; x86_64)"
 	mock.historyMode = "paginated"
 	mock.revertLogPath = wireLog
 	mock.injectLogPath = wireLog
@@ -1046,38 +1036,6 @@ func wireMethods(t *testing.T, path string) []string {
 	return methods
 }
 
-// TestConversationRollbackCodexForksBelowTheRevertFloor: 0.147 has no
-// `thread/revert` at all, so the fork cut has to still be there.
-func TestConversationRollbackCodexForksBelowTheRevertFloor(t *testing.T) {
-	t.Parallel()
-	app := newTestApp(t)
-	logDir := t.TempDir()
-	mock := codexForkMock{
-		resumedThreadID: "provider-old-server",
-		forkedThreadID:  "forked-provider-thread",
-		requestLogPath:  filepath.Join(logDir, "fork-requests.jsonl"),
-		revertLogPath:   filepath.Join(logDir, "revert-requests.jsonl"),
-		userAgent:       "codex_cli_rs/0.147.0 (Ubuntu 24.04; x86_64) some/1.0",
-		historyMode:     "paginated",
-	}
-	thread := paginatedRevertThread(t, app, "codex-old-server", mock)
-
-	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
-		t.Fatalf("revert: %v", err)
-	}
-	requireNoCodexRequest(t, mock.revertLogPath, "thread/revert")
-	if forkRequest := readCodexForkRequest(t, mock.requestLogPath); !strings.Contains(forkRequest, `"lastTurnId":"turn-a"`) {
-		t.Fatalf("fork request = %s, want the inclusive anchor turn-a", forkRequest)
-	}
-	updated, err := app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("get thread: %v", err)
-	}
-	if updated.SessionRef != "forked-provider-thread" {
-		t.Fatalf("SessionRef = %q, want the fork", updated.SessionRef)
-	}
-}
-
 // TestConversationRollbackCodexForksOnLegacyHistoryThreads covers threads
 // created before AO's paginated-history opt-in. Upstream fixes history mode
 // at creation and refuses a legacy revert, so a new binary alone must not
@@ -1091,7 +1049,6 @@ func TestConversationRollbackCodexForksOnLegacyHistoryThreads(t *testing.T) {
 		forkedThreadID:  "forked-provider-thread",
 		requestLogPath:  filepath.Join(logDir, "fork-requests.jsonl"),
 		revertLogPath:   filepath.Join(logDir, "revert-requests.jsonl"),
-		userAgent:       "codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
 		historyMode:     "legacy",
 	}
 	thread := paginatedRevertThread(t, app, "codex-legacy-history", mock)
@@ -1123,7 +1080,6 @@ func TestConversationRollbackCodexFallsBackToForkOnRefusedRevert(t *testing.T) {
 		forkedThreadID:     "forked-provider-thread",
 		requestLogPath:     filepath.Join(logDir, "fork-requests.jsonl"),
 		revertLogPath:      filepath.Join(logDir, "revert-requests.jsonl"),
-		userAgent:          "codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
 		historyMode:        "paginated",
 		revertErrorMessage: "thread/revert only supports paginated threads",
 	}
@@ -1160,7 +1116,6 @@ func TestConversationRollbackCodexStopsLiveSessionBeforeForkFallback(t *testing.
 		forkedThreadID:     "forked-provider-thread",
 		requestLogPath:     filepath.Join(logDir, "fork-requests.jsonl"),
 		revertLogPath:      filepath.Join(logDir, "revert-requests.jsonl"),
-		userAgent:          "codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
 		historyMode:        "paginated",
 		revertErrorMessage: "thread/revert only supports paginated threads",
 	}
@@ -1216,7 +1171,6 @@ func TestConversationRollbackCodexAbortsOnNonRefusalRevertFailure(t *testing.T) 
 		forkedThreadID:     "forked-provider-thread",
 		requestLogPath:     filepath.Join(logDir, "fork-requests.jsonl"),
 		revertLogPath:      filepath.Join(logDir, "revert-requests.jsonl"),
-		userAgent:          "codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
 		historyMode:        "paginated",
 		revertErrorMessage: "timed out shutting down thread before revert",
 	}

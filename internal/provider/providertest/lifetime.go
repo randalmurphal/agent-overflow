@@ -1,5 +1,6 @@
 // Package providertest supplies what tests hand to provider launches that
-// refuse to start without it. Production code must not import it.
+// refuse to start without it, and what fake providers answer with. Production
+// code must not import it.
 package providertest
 
 import (

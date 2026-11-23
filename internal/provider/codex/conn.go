@@ -56,12 +56,11 @@ type Conn struct {
 	binary string
 	done   chan struct{}
 
-	closing           atomic.Bool
-	closeOnce         sync.Once
-	closeErr          error
-	appServerVersion  atomic.Pointer[string]
-	threadQueueNative atomic.Bool
-	requestTimeoutFn  func() time.Duration
+	closing          atomic.Bool
+	closeOnce        sync.Once
+	closeErr         error
+	appServerVersion atomic.Pointer[string]
+	requestTimeoutFn func() time.Duration
 
 	nextID    atomic.Int64
 	pendingMu sync.Mutex
@@ -127,9 +126,12 @@ func Dial(ctx context.Context, cfg ConnConfig) (*Conn, error) {
 		_ = c.Close()
 		return nil, fmt.Errorf("codex: initialize handshake failed: %w", err)
 	}
-	version := parseAppServerVersion(readNestedString(initResp, "userAgent"))
+	userAgent := readNestedString(initResp, "userAgent")
+	version := parseAppServerVersion(userAgent)
+	if err := provider.CheckCodexVersion(proc.Path(), version, userAgent); err != nil {
+		return nil, errors.Join(err, c.Close())
+	}
 	c.appServerVersion.Store(&version)
-	c.threadQueueNative.Store(provider.CodexCLIVersionAtLeast(version, threadQueueMinimumCodexVersion))
 
 	if err := c.writeNotification("initialized", nil); err != nil {
 		_ = c.Close()
@@ -377,7 +379,6 @@ func (c *Conn) open(
 	if v := c.AppServerVersion(); v != "" {
 		s.appServerVersion.Store(&v)
 	}
-	s.threadQueueNative.Store(c.threadQueueNative.Load())
 
 	if delivery := cfg.DeveloperInstructionsDelivery; delivery != nil {
 		s.developerInstructionsRecord = delivery.Record

@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"encoding/json"
 	"path/filepath"
@@ -18,6 +19,10 @@ func TestCodexNewSessionWithMock(t *testing.T) {
 	script := `#!/bin/bash
 while IFS= read -r line; do
     id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if echo "$line" | grep -q '"method":"initialize"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":` + providertest.CodexInitializeResultQuoted + `}"
+        continue
+    fi
     if [ -n "$id" ]; then
         echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"mock-thread-123\",\"sessionId\":\"mock-session-123\"}}}"
     fi

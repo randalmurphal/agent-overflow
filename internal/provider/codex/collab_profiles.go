@@ -31,10 +31,7 @@ func (s *Session) scheduleCollabProfileRead(providerThreadID, parentToolUseID st
 	}
 	if !s.startCollabAsync(func() {
 		defer s.finishCollabProfileRead(providerThreadID)
-		ctx := s.ctx
-		if ctx == nil {
-			ctx = context.Background()
-		}
+		ctx := s.requestContext()
 		if !s.acquireCollabProfileRead(ctx) {
 			return
 		}

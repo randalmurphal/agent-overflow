@@ -338,27 +338,12 @@ func matchAccountUsageFrame(line []byte) (json.RawMessage, bool, error) {
 // Thread usage (`account/usage/read {threadId}`)
 // ---------------------------------------------------------------------------
 
-// threadUsageMinimumCodexVersion is the first codex release whose
-// `account/usage/read` accepts params at all. Through 0.147 the method's
-// params are typed `Option<()>`
-// (codex-rs/app-server-protocol/src/protocol/common.rs `GetAccountTokenUsage`),
-// so a `{"threadId": …}` request does not degrade to an account-wide read —
-// it fails deserialization and comes back as a JSON-RPC error. 0.148 retyped
-// them `Option<GetAccountTokenUsageParams>` and added `thread_usage` to the
-// response.
-//
-// This is a per-METHOD floor, unrelated to the provider-wide launch floor
-// (provider.minimumCodexCLIVersion, 0.143): a codex between the two is
-// perfectly usable, it just cannot answer this question.
-const threadUsageMinimumCodexVersion = "0.148.0"
-
 // ErrThreadUsageUnavailable means Codex has no thread-level usage estimate to
 // report. Like ErrAccountUsageUnavailable this is a STATE answer rather than a
 // failure — the caller keeps whatever it already had (for AO: the
-// internal/usagecost table price) instead of showing nothing. Four shapes
+// internal/usagecost table price) instead of showing nothing. Three shapes
 // reach it:
 //
-//   - the connected app-server predates threadUsageMinimumCodexVersion;
 //   - the signed-in account is not a ChatGPT account (an API-key login has no
 //     billing route);
 //   - the backend answered 403/404 for this thread, which upstream maps to
@@ -476,23 +461,11 @@ func classifyThreadUsageError(err error) error {
 // ReadThreadUsage asks this session's app-server what Codex itself estimates
 // the session's ROOT thread has cost, cumulatively.
 //
-// Requires codex >= threadUsageMinimumCodexVersion; an older app-server
-// returns ErrThreadUsageUnavailable without a request being sent, because on
-// those builds the request is a guaranteed JSON-RPC error rather than a
-// graceful degradation.
-//
 // Safe to call while a turn is running — the method is global
 // (`serialization: None`), touches no thread state and starts no turn — but
 // callers should not: the estimate only moves when a turn settles, and the
 // app-server forwards every call to the ChatGPT backend.
 func (s *Session) ReadThreadUsage(ctx context.Context) (ThreadUsage, error) {
-	if !s.appServerAtLeast(threadUsageMinimumCodexVersion) {
-		return ThreadUsage{}, fmt.Errorf(
-			"%w: codex %q predates %s params on %s",
-			ErrThreadUsageUnavailable, s.AppServerVersion(),
-			threadUsageMinimumCodexVersion, accountUsageMethod,
-		)
-	}
 	threadID := s.rootThreadID()
 	if threadID == "" {
 		return ThreadUsage{}, fmt.Errorf("%w: session has no codex thread id yet", ErrThreadUsageUnavailable)

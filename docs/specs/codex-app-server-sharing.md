@@ -122,8 +122,8 @@ binary, its environment, its `-c` flags and its auth.
 
 Every notification and server request that concerns a thread carries
 `threadId`. `thread/started` also carries `sessionId`, "shared by threads
-that belong to the same session tree" (`v2/thread_data.rs`, present at
-AO's floor 0.143), so a spawned child names its root. A `thread/start`
+that belong to the same session tree" (`v2/thread_data.rs`, present since
+0.143, below AO's minimum), so a spawned child names its root. A `thread/start`
 attaches the thread's listener before it writes the response
 (`thread_processor.rs`), so frames of a new thread can precede the response
 that names it. A `thread/resume` names the thread in its request. Child
@@ -316,7 +316,9 @@ The idle reaper keeps its policy and its per-session decision
 unloads the thread; it no longer kills a process. AO spawns its app-servers
 with `-c thread_unload_delay_secs=0`: AO is the only client, every thread
 it is not using is unsubscribed on purpose, and holding an unsubscribed
-thread loaded only keeps its writer lock and MCP children alive.
+thread loaded only keeps its writer lock and MCP children alive. Codex
+reads the key from 0.154.0, AO's minimum: `Dial` refuses an app-server whose
+`initialize` user agent reports an older or unreadable version.
 
 ### End Session
 

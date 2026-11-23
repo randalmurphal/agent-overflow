@@ -103,8 +103,7 @@ func (a *App) cutCodexThreadHistory(source store.Thread, lastKeptTurnID, firstDr
 		// a rolled-back message on the next resume. Loading the thread is what
 		// arms its idle hook, so on the throwaway connection this is the only
 		// point where the rows can be dropped without the drain racing the cut.
-		// No-op on a pre-0.148 app-server, and no-op again when the live purge
-		// already emptied it.
+		// No-op when the live purge already emptied it.
 		purgeErr = a.purgeCodexQueueBeforeCut(source.ID, session)
 	}, func(session *codex.Session) error {
 		// A queue this connection could not empty is a set of messages armed

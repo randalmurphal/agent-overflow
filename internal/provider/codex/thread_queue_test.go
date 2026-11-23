@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -145,53 +146,6 @@ func requestParams(t *testing.T, frame map[string]any) map[string]any {
 	return params
 }
 
-// TestThreadQueueIsGatedOnTheHandshakeVersion is the whole version-gating
-// decision in one test: the flag is frozen at handshake time off the
-// app-server's own userAgent, and every method refuses rather than sending a
-// request an older app-server would answer with invalid_params.
-func TestThreadQueueIsGatedOnTheHandshakeVersion(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name      string
-		userAgent string
-		native    bool
-	}{
-		{"at the floor", "codex_cli_rs/0.148.0 (Ubuntu 24.04; x86_64) codex_cli_rs/0.148.0", true},
-		{"above the floor", "codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) codex_cli_rs/0.149.0", true},
-		{"below the floor", "codex_cli_rs/0.147.0 (Ubuntu 24.04; x86_64) codex_cli_rs/0.147.0", false},
-		{"no userAgent at all", "", false},
-		{"unparseable", "who knows", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			capture := t.TempDir() + "/queue-requests.jsonl"
-			binary := queueFakeScript(t, tc.userAgent, "codex-thread-q", capture, nil)
-			s := newQueueSession(t, binary, nil)
-
-			if got := s.ThreadQueueNative(); got != tc.native {
-				t.Fatalf("ThreadQueueNative() = %v, want %v for userAgent %q", got, tc.native, tc.userAgent)
-			}
-			if tc.native {
-				return
-			}
-			// Every entry point refuses with the same typed sentinel, so the
-			// caller has one thing to branch on.
-			if _, err := s.QueueList(context.Background()); !isThreadQueueUnsupported(err) {
-				t.Errorf("QueueList err = %v, want ErrThreadQueueUnsupported", err)
-			}
-			if _, err := s.QueueDelete(context.Background(), "sub-1"); !isThreadQueueUnsupported(err) {
-				t.Errorf("QueueDelete err = %v, want ErrThreadQueueUnsupported", err)
-			}
-			if _, err := s.PurgeQueue(context.Background()); !isThreadQueueUnsupported(err) {
-				t.Errorf("PurgeQueue err = %v, want ErrThreadQueueUnsupported", err)
-			}
-			// A refusal must not have put anything on the wire.
-			if _, err := os.Stat(capture); !os.IsNotExist(err) {
-				t.Errorf("a gated-off session still sent a thread/queue request: %v", err)
-			}
-		})
-	}
-}
-
 // TestQueueDeleteReportsTheMatchedState pins that `deleted:false` is a STATE
 // (the row was already dispatched or already gone), not an error.
 func TestQueueDeleteReportsTheMatchedState(t *testing.T) {
@@ -206,7 +160,7 @@ func TestQueueDeleteReportsTheMatchedState(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			capture := t.TempDir() + "/queue-requests.jsonl"
-			binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
+			binary := queueFakeScript(t, providertest.CodexUserAgent, "codex-thread-q", capture, map[string]string{
 				"thread/queue/delete": tc.reply,
 			})
 			s := newQueueSession(t, binary, nil)
@@ -240,7 +194,7 @@ func TestQueueDeleteReportsTheMatchedState(t *testing.T) {
 func TestQueueListReportsAPrefixAsIncompleteNotAsTheWholeQueue(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/queue-requests.jsonl"
-	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
+	binary := queueFakeScript(t, providertest.CodexUserAgent, "codex-thread-q", capture, map[string]string{
 		"thread/queue/list": `{"data":[{"id":"sub-1","input":[{"type":"text","text":"one"}],` +
 			`"clientUserMessageId":"user:1"}],"nextCursor":"stuck"}`,
 	})
@@ -269,7 +223,7 @@ func TestQueueListReportsAPrefixAsIncompleteNotAsTheWholeQueue(t *testing.T) {
 func TestPurgeQueueRefusesToReportACompletePurgeOverAPartialList(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/queue-requests.jsonl"
-	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
+	binary := queueFakeScript(t, providertest.CodexUserAgent, "codex-thread-q", capture, map[string]string{
 		"thread/queue/list": `{"data":[{"id":"sub-1","input":[{"type":"text","text":"one"}],` +
 			`"clientUserMessageId":"user:1"}],"nextCursor":"stuck"}`,
 		"thread/queue/delete": `{"deleted":true}`,
@@ -297,7 +251,7 @@ func TestPurgeQueueRefusesToReportACompletePurgeOverAPartialList(t *testing.T) {
 func TestQueueChangedIsSilentForASubmissionTheAppOwns(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/queue-requests.jsonl"
-	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
+	binary := queueFakeScript(t, providertest.CodexUserAgent, "codex-thread-q", capture, map[string]string{
 		"thread/queue/list": `{"data":[{"id":"sub-7","input":[{"type":"text","text":"hi"}],` +
 			`"clientUserMessageId":"user:1"}],"nextCursor":null}`,
 	})
@@ -352,7 +306,7 @@ func TestQueueChangedIsSilentForASubmissionTheAppOwns(t *testing.T) {
 func TestQueueChangedWithNoOwnershipPredicateReportsEverySubmission(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/queue-requests.jsonl"
-	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
+	binary := queueFakeScript(t, providertest.CodexUserAgent, "codex-thread-q", capture, map[string]string{
 		"thread/queue/list": `{"data":[{"id":"sub-7","input":[{"type":"text","text":"hi"}],` +
 			`"clientUserMessageId":"user:1"}],"nextCursor":null}`,
 	})
@@ -392,7 +346,7 @@ func TestQueueChangedWithNoOwnershipPredicateReportsEverySubmission(t *testing.T
 func TestQueueChangedReportsAForeignSubmissionOnce(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/queue-requests.jsonl"
-	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
+	binary := queueFakeScript(t, providertest.CodexUserAgent, "codex-thread-q", capture, map[string]string{
 		"thread/queue/list": `{"data":[{"id":"sub-foreign","input":[{"type":"text","text":"from the cli"}],` +
 			`"clientUserMessageId":"cli-uuid-1"}],"nextCursor":null}`,
 	})
@@ -472,7 +426,7 @@ func TestQueueStartIsNeverCalled(t *testing.T) {
 func TestPurgeQueueDropsEveryRowAndCountsTheForeignOnes(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/queue-requests.jsonl"
-	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
+	binary := queueFakeScript(t, providertest.CodexUserAgent, "codex-thread-q", capture, map[string]string{
 		"thread/queue/list": `{"data":[` +
 			`{"id":"sub-1","input":[{"type":"text","text":"mine"}],"clientUserMessageId":"user:4:flush:1"},` +
 			`{"id":"sub-2","input":[{"type":"text","text":"theirs"}],` +
@@ -512,7 +466,7 @@ func TestPurgeQueueDropsEveryRowAndCountsTheForeignOnes(t *testing.T) {
 func TestBeforeResumeRunsAheadOfTheThreadLoad(t *testing.T) {
 	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "requests.jsonl")
-	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-resume", capture,
+	binary := queueFakeScript(t, providertest.CodexUserAgent, "codex-thread-resume", capture,
 		map[string]string{
 			"thread/queue/list": `{"data":[],"nextCursor":null}`,
 			"thread/resume":     `{"thread":{"id":"codex-thread-resume","turns":[]},"approvalsReviewer":"user"}`,
@@ -523,11 +477,6 @@ func TestBeforeResumeRunsAheadOfTheThreadLoad(t *testing.T) {
 		cfg.ResumeThreadID = "codex-thread-resume"
 		cfg.BeforeResume = func(s *Session) {
 			hookRan = true
-			// The handshake is behind us, so the version gate is already
-			// frozen and the queue methods are usable.
-			if !s.ThreadQueueNative() {
-				t.Error("BeforeResume ran before the queue gate was decided")
-			}
 			if _, err := s.QueueList(context.Background()); err != nil {
 				t.Errorf("thread/queue/list from the pre-resume hook: %v", err)
 			}
@@ -565,7 +514,7 @@ func TestBeforeResumeRunsAheadOfTheThreadLoad(t *testing.T) {
 func TestBeforeResumeIsNotCalledOnAFreshThread(t *testing.T) {
 	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "requests.jsonl")
-	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-fresh", capture, nil)
+	binary := queueFakeScript(t, providertest.CodexUserAgent, "codex-thread-fresh", capture, nil)
 	ran := false
 	newQueueSessionWithConfig(t, binary, nil, func(cfg *Config) {
 		cfg.BeforeResume = func(*Session) { ran = true }
@@ -590,7 +539,7 @@ while IFS= read -r line; do
         continue
     fi
     if echo "$line" | grep -q '"method":"initialize"'; then
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"userAgent\":\"codex_cli_rs/0.149.0 (test)\"}}"
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":`+providertest.CodexInitializeResultQuoted+`}"
         continue
     fi
     if echo "$line" | grep -q '"method":"thread/start"'; then
@@ -669,7 +618,7 @@ func TestPurgeQueueNamesTheRowsItDeletedWhenALaterDeleteFails(t *testing.T) {
 func TestQueueListReportsAMalformedSubmissionInsteadOfAnAbsentRow(t *testing.T) {
 	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "queue-requests.jsonl")
-	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
+	binary := queueFakeScript(t, providertest.CodexUserAgent, "codex-thread-q", capture, map[string]string{
 		// `id` typed as a number: upstream's own QueuedSubmission types all
 		// three fields as required, non-Option, so this is a wire fault.
 		"thread/queue/list": `{"data":[` +
@@ -711,7 +660,7 @@ func TestQueueListReportsAMalformedSubmissionInsteadOfAnAbsentRow(t *testing.T) 
 func TestQueueListRefusesASubmissionWithNoID(t *testing.T) {
 	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "queue-requests.jsonl")
-	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
+	binary := queueFakeScript(t, providertest.CodexUserAgent, "codex-thread-q", capture, map[string]string{
 		"thread/queue/list": `{"data":[{"id":"","input":[{"type":"text","text":"one"}],` +
 			`"clientUserMessageId":"user:1"}],"nextCursor":null}`,
 	})
@@ -744,7 +693,7 @@ func TestQueueDeleteRefusesAResponseWithoutTheDeletedField(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			capture := filepath.Join(t.TempDir(), "queue-requests.jsonl")
-			binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
+			binary := queueFakeScript(t, providertest.CodexUserAgent, "codex-thread-q", capture, map[string]string{
 				"thread/queue/list": `{"data":[{"id":"sub-a","input":[{"type":"text","text":"one"}],` +
 					`"clientUserMessageId":"user:1"}],"nextCursor":null}`,
 				"thread/queue/delete": tc.reply,

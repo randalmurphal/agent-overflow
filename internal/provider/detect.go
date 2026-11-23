@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -18,11 +19,11 @@ const versionTimeout = 5 * time.Second
 //   - "ready"           — binary resolved and passed every version check.
 //   - "not_found"       — exec.LookPath(binaryPath) failed.
 //   - "version_too_old" — binary ran but its version is below the minimum we support
-//     (Codex: see minimumCodexCLIVersion).
+//     (Codex: see MinimumCodexCLIVersion).
 //   - "unauthenticated" — binary is present and new enough but has no logged-in
 //     account (Claude: ProbeAccount returned a zero-value AccountInfo).
 //   - "error"           — the version check itself failed (binary exited non-zero,
-//     garbled output, etc.).
+//     garbled output, etc.), or Codex printed a version that cannot be read.
 type ProviderStatus struct {
 	Provider   string `json:"provider"`
 	Installed  bool   `json:"installed"`
@@ -70,10 +71,13 @@ func DetectProvider(name, binaryPath string) ProviderStatus {
 	}
 
 	if name == string(Codex) {
-		parsedVersion := parseCodexCLIVersion(version)
-		if parsedVersion != "" && !isCodexCLIVersionSupported(parsedVersion) {
-			status.Status = "version_too_old"
-			status.Message = formatCodexCLIUpgradeMessage(parsedVersion)
+		if err := CheckCodexVersion(resolvedPath, parseCodexCLIVersion(version), version); err != nil {
+			var versionErr *CodexVersionError
+			status.Status = "error"
+			if errors.As(err, &versionErr) && versionErr.Version != "" {
+				status.Status = "version_too_old"
+			}
+			status.Message = err.Error()
 		}
 	}
 

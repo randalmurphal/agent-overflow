@@ -3,6 +3,7 @@
 package supervise_test
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -73,7 +74,7 @@ func TestProductionServiceArtifact(t *testing.T) {
 	// Mock those explicit boundaries; PATH remains poisoned for lost settings.
 	providerSettings["claudeBinaryPath"] = testutil.WriteMockClaudeInit(t, t.TempDir(), "")
 	providerSettings["codexBinaryPath"] = testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
-		"initialize": `{"jsonrpc":"2.0","id":%d,"result":{}}`,
+		"initialize": `{"jsonrpc":"2.0","id":%d,"result":` + providertest.CodexInitializeResult + `}`,
 		"model/list": `{"jsonrpc":"2.0","id":%d,"result":{"data":[]}}`,
 		"":           `{"jsonrpc":"2.0","id":%d,"error":{"code":-32601,"message":"not a startup probe"}}`,
 	})

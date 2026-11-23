@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"agent-overflow/internal/provider"
 )
 
 // The `thread/revert` cut: the only one of upstream's three history
@@ -30,11 +28,9 @@ import (
 //   - It is refused outright on a LEGACY-history thread ("thread/revert
 //     only supports paginated threads"), before it touches anything.
 //     Upstream's default IS legacy, so a client that says nothing gets a
-//     thread that can never be reverted; that is why AO now asks for
-//     `historyMode: "paginated"` on `thread/start` wherever the server is
-//     new enough (threadStartHistoryMode below). Threads AO created before
-//     that — and every thread created by a pre-0.148 binary — stay legacy
-//     for life, because `thread/resume` has no history-mode field to
+//     thread that can never be reverted; that is why AO asks for
+//     `historyMode: "paginated"` on every `thread/start`. Threads AO created
+//     before it asked stay legacy for life, because `thread/resume` has no history-mode field to
 //     change it with. Those keep falling back to the fork cut. The refusal
 //     precedes shutdown and history mutation, which makes fallback safe.
 //   - It accepts a running turn. It submits shutdown, waits for the thread
@@ -53,12 +49,6 @@ const (
 	// threadRevertedMethod is the notification upstream sends immediately
 	// after a successful revert response, on the same connection.
 	threadRevertedMethod = "thread/reverted"
-
-	// threadRevertMinimumCodexVersion is the first codex release carrying
-	// `thread/revert`. A per-METHOD floor read off the handshake
-	// (app_server_version.go), never a second probe, and never the
-	// package-wide launch floor.
-	threadRevertMinimumCodexVersion = "0.148.0"
 
 	// paginatedThreadHistoryMode is the `thread.historyMode` value
 	// upstream requires for a revert. Anything else — including the empty
@@ -227,8 +217,7 @@ func revertAnsweredUpstream(err error) bool {
 // The field is `#[experimental("thread.historyMode")]` upstream, so it
 // only arrives because every AO handshake sets `experimentalApi`
 // (notification_catalog.go). An app-server that omits it leaves ""
-// behind, which reads as "not paginated" — the same fail-closed posture
-// every version gate takes.
+// behind, which reads as "not paginated" and keeps the fork cut.
 func (s *Session) recordThreadHistoryMode(threadResponse json.RawMessage) {
 	mode := strings.TrimSpace(readNestedString(threadResponse, "thread", "historyMode"))
 	s.threadHistoryMode.Store(&mode)
@@ -245,12 +234,11 @@ func (s *Session) ThreadHistoryMode() string {
 }
 
 // SupportsThreadRevert reports whether an in-place cut is available on
-// this connection AND this thread. Callers use it to choose between the
-// two cuts before paying for a round trip; Revert re-checks both
-// conditions itself, so this is an optimisation, not the guard.
+// this thread. Callers use it to choose between the two cuts before paying
+// for a round trip; Revert re-checks it itself, so this is an
+// optimisation, not the guard.
 func (s *Session) SupportsThreadRevert() bool {
-	return s.appServerAtLeast(threadRevertMinimumCodexVersion) &&
-		s.ThreadHistoryMode() == paginatedThreadHistoryMode
+	return s.ThreadHistoryMode() == paginatedThreadHistoryMode
 }
 
 // Revert truncates THIS thread's durable history to the prefix before
@@ -270,8 +258,7 @@ func (s *Session) SupportsThreadRevert() bool {
 //   - No anchor: refused. An empty beforeTurnId is not "revert nothing",
 //     it is a params error upstream, and treating it as a no-op here
 //     would let a caller with a lost anchor believe history was cut.
-//   - Too-old app-server / non-paginated thread:
-//     ErrThreadRevertUnsupported, before any RPC.
+//   - Non-paginated thread: ErrThreadRevertUnsupported, before any RPC.
 //   - Turn in flight: accepted. Upstream owns shutdown, persistence, history
 //     replacement and runtime reload as one operation.
 //   - Upstream's own "only supports paginated threads" refusal is
@@ -289,12 +276,6 @@ func (s *Session) Revert(ctx context.Context, beforeTurnID string) (RevertedThre
 	threadID := s.rootThreadID()
 	if threadID == "" {
 		return RevertedThread{}, fmt.Errorf("codex: %s: session has no thread id yet", threadRevertMethod)
-	}
-	if !s.appServerAtLeast(threadRevertMinimumCodexVersion) {
-		return RevertedThread{}, fmt.Errorf(
-			"%w: app-server %q predates %s",
-			ErrThreadRevertUnsupported, s.AppServerVersion(), threadRevertMinimumCodexVersion,
-		)
 	}
 	if mode := s.ThreadHistoryMode(); mode != paginatedThreadHistoryMode {
 		return RevertedThread{}, fmt.Errorf(
@@ -646,8 +627,8 @@ func classifyThreadRevertError(err error) error {
 	var rpcErr *RPCError
 	if errors.As(err, &rpcErr) {
 		switch {
-		// The method itself is unknown: a codex below 0.148, or one whose
-		// experimental surface is off. Both are "use the other cut".
+		// The method itself is unknown: a codex whose experimental surface
+		// is off. That is "use the other cut".
 		case rpcErr.Code == -32601:
 			return fmt.Errorf("%w: %s", ErrThreadRevertUnsupported, rpcErr.Message)
 		// invalid_request from the paginated-history gate, which upstream
@@ -697,43 +678,6 @@ func parseThreadRevertResponse(data json.RawMessage) (RevertedThread, error) {
 		return RevertedThread{}, errors.New("response missing thread.id")
 	}
 	return RevertedThread{ThreadID: response.Thread.ID}, nil
-}
-
-// threadStartHistoryModeMinimumCodexVersion is the floor at which AO asks
-// for a paginated thread on `thread/start`.
-//
-// `thread/start.historyMode` itself is older than this — the field shipped
-// with paginated history in 0.143, and the codex TUI has requested
-// `paginated` for every non-ephemeral thread since (rust-v0.149.0,
-// codex-rs/tui/src/app_server_session.rs:1689; `codex exec` does the same
-// at codex-rs/exec/src/lib.rs:1187). AO nonetheless gates the opt-in at
-// the `thread/revert` floor: paginated history is only worth its
-// behavioral differences here because it is what makes the in-place cut
-// available, and a paginated thread born on a server with no
-// `thread/revert` would carry the differences with none of the benefit
-// until the user upgraded.
-const threadStartHistoryModeMinimumCodexVersion = threadRevertMinimumCodexVersion
-
-// threadStartHistoryMode returns the `historyMode` to request on
-// `thread/start`, or "" to say nothing and take the server's default.
-//
-// Upstream's default is Legacy — `ThreadHistoryMode::default()` is
-// `Legacy` (rust-v0.149.0
-// codex-rs/app-server-protocol/src/protocol/v2/thread_data.rs:73) and the
-// local thread store does not override `default_history_mode`
-// (codex-rs/thread-store/src/store.rs:76). Omitting the field is
-// therefore not neutral: it is an explicit vote for legacy history, and
-// it is why AO's own threads have never been revertible.
-//
-// The field is only valid on `thread/start`. `ThreadResumeParams` has no
-// history-mode member at all (same file, :332) — a resumed thread keeps
-// whatever contract its rollout recorded, so this must never be merged
-// into the shared thread params bag.
-func threadStartHistoryMode(codexVersion string) string {
-	if !provider.CodexCLIVersionAtLeast(codexVersion, threadStartHistoryModeMinimumCodexVersion) {
-		return ""
-	}
-	return paginatedThreadHistoryMode
 }
 
 // isHistoryPaginationUnsupported reports whether a `thread/start` failure

@@ -387,3 +387,20 @@ func TestDrainQueuedInputValidation(t *testing.T) {
 		t.Fatalf("parsed %+v lost the hold fields", parsed)
 	}
 }
+
+func TestCodexStartedHistoryModeValidation(t *testing.T) {
+	for _, mode := range []string{"", "legacy", "paginated"} {
+		s := &Scenario{Version: CurrentVersion, Name: "x", Provider: ProviderCodex,
+			Codex: &CodexOptions{StartedHistoryMode: mode},
+			Turns: []Turn{{Steps: []Step{{DelayMs: 1}}}}}
+		if err := s.Validate(); err != nil {
+			t.Errorf("startedHistoryMode %q was rejected: %v", mode, err)
+		}
+	}
+	s := &Scenario{Version: CurrentVersion, Name: "x", Provider: ProviderCodex,
+		Codex: &CodexOptions{StartedHistoryMode: "Paginated"},
+		Turns: []Turn{{Steps: []Step{{DelayMs: 1}}}}}
+	if err := s.Validate(); err == nil {
+		t.Error("startedHistoryMode \"Paginated\" was accepted")
+	}
+}

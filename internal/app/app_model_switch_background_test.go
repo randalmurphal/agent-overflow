@@ -2,6 +2,7 @@ package app
 
 import (
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
@@ -173,6 +174,10 @@ while IFS= read -r line; do
   *'"request_id"'*)
    reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
    printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"
+   ;;
+  *'"method":"initialize"'*)
+   reqid=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+   printf '{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}\n' "$reqid"
    ;;
   *'"id"'*)
    reqid=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')

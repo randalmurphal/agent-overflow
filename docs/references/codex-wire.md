@@ -146,7 +146,7 @@ Authoritative method list from
 | `thread/status/changed` | Session-level. Thread status transitions; emits `EventSessionStatus`. |
 | `thread/archived`, `thread/unarchived`, `thread/closed` | Recognised, no event. |
 | `thread/reverted` | The echo `thread/revert` waits on. Releases the RPC's bounded wait; an UNSOLICITED one is logged and never acted on (it carries a thread id and no boundary). See §History truncation below. |
-| `thread/queue/changed` | 0.148. The thread's provider-side queue changed. `{threadId}` and nothing else: no depth, no item id, no text. Below 0.148 the classifier's own notice is the answer; on a queue-native session the session layer replaces it with a `thread/queue/list` diffed against AO's own client ids. See §Externally queued turns in the package guide. |
+| `thread/queue/changed` | 0.148. The thread's provider-side queue changed. `{threadId}` and nothing else: no depth, no item id, no text. The session layer answers it with a `thread/queue/list` diffed against AO's own client ids. See §Externally queued turns in the package guide. |
 | `thread/compacted` | Thread housekeeping. Compaction boundary event (deprecated upstream in favour of the `contextCompaction` item; both feed `EventCompactBoundary`). |
 | `thread/name/updated` | Thread housekeeping. Thread name/title changed. |
 | `thread/tokenUsage/updated` | Thread housekeeping. Rolling CUMULATIVE token-usage snapshot; per-turn deltas are derived (`usage_accounting.go`). On a SPAWNED CHILD thread it is the one thread-wide notification not suppressed. It is re-scoped onto that spawn's live background projection as `EventSubagentProgress` and never meters the parent. See below. |
@@ -1137,8 +1137,8 @@ and `interrupted -> stop_reason=interrupted, aborted=true`.
 ## `turn/steer` and client message identity
 
 `turn/start` and `turn/steer` both take `clientUserMessageId`
-(`Option<String>` on both params structs since 0.136, below AO's 0.143
-floor, so no version gate). The `userMessage` ThreadItem the turn produces
+(`Option<String>` on both params structs since 0.136, below AO's
+minimum, so no version gate). The `userMessage` ThreadItem the turn produces
 echoes it back as `clientId` (`ThreadItem::UserMessage`,
 `codex-rs/app-server-protocol/src/protocol/v2/item.rs:236` @ rust-v0.149.0),
 which is how a caller matches an echo to the row that produced it without
@@ -1244,7 +1244,8 @@ success response. There is no capability handshake to gate on:
 
 - pre-0.115: field unknown, **silently dropped**.
 - 0.115–0.123: field known, value rejected: `-32600`, unknown variant.
-- 0.143+ (AO's floor, `internal/provider/codex_version.go`): accepted.
+- 0.143+: accepted. AO's minimum (`MinimumCodexCLIVersion`,
+  `internal/provider/codex_version.go`) is above it.
 
 So the start/resume **response** is the only probe. AO reads
 `approvalsReviewer` back off it (`verifyApprovalsReviewerEcho`,
@@ -1472,7 +1473,7 @@ compaction drops it. An unknown thread is refused with
 item with `-32600` `items[<n>] is not a valid response item: ...`
 (`app-server/src/request_processors/turn_processor.rs`
 `thread_inject_items_response_inner`). The method exists throughout AO's
-supported range (0.143+) and is not experimental. The experimental
+supported range and is not experimental. The experimental
 `turn/start` `additionalContext` also reaches the model, but each value is
 middle-truncated to 1,000 tokens and is not re-emitted after a compaction
 while unchanged, so it cannot carry AO's guide.
@@ -1591,7 +1592,7 @@ each server's attempt has settled, so "no evidence" means failed, never
 - `serverInfo` (`Option<McpServerInfo>`: name / title / version, no
   secrets) is populated whenever `initialize` succeeded, at ALL detail
   levels including `toolsAndAuthOnly`, on every version from
-  `rust-v0.143.0` (AO's floor). MCP makes `serverInfo` mandatory in a
+  `rust-v0.143.0`, below AO's minimum. MCP makes `serverInfo` mandatory in a
   successful `initialize` response, so its presence proves
   initialization and its absence on a settled attempt proves failure.
 - **Tool count proves nothing on its own.** Zero tools is a legitimate
@@ -1714,7 +1715,7 @@ against `rust-v0.146.0-alpha.4`.
 
 `SkillsList => "skills/list"` with `serialization:
 global_shared_read("config")`. It is **global**, no thread, no turn, no
-`#[experimental]` gate. Since codex 0.73.0, far below AO's 0.143 floor, so
+`#[experimental]` gate. Since codex 0.73.0, far below AO's minimum, so
 no capability probe is needed.
 
 ```json
@@ -2049,8 +2050,8 @@ thread's cwd lists none of the thread config's hooks.
 
 ### UserPromptSubmit
 
-Source read at `rust-v0.143.0` and `rust-v0.162.1`; AO's minimum Codex,
-0.143.0, has it.
+Source read at `rust-v0.143.0` and `rust-v0.162.1`; AO's minimum Codex
+has it.
 
 - Each user input a turn takes runs the hooks before it is recorded: the
   turn's own prompt, after the SessionStart hooks the turn runs, and each
@@ -2092,9 +2093,8 @@ the text as it was at the last start or compaction.
   or `startup|compact|clear|resume|fork` for a rehydrate below, holding
   one handler per part of the delivery, and a UserPromptSubmit group with
   each part's prompt command, each handler under its trust hash
-  (`sessionStartHookConfig`). On a Codex whose app-server reports 0.145.0
-  or later each handler carries `additionalContextLimit` 0, and its hash
-  covers it; an older or unknown version gets handlers without the key. The
+  (`sessionStartHookConfig`). Each handler carries `additionalContextLimit` 0,
+  which every supported Codex reads, and its hash covers it. The
   command quotes its words in POSIX single quotes, which sh, bash and zsh
   read verbatim. A fish user's hooks run under zsh or bash; only the
   `$SHELL -lc` fallback can reach fish, which reads the quotes the same
@@ -2262,10 +2262,7 @@ Five facts that decide how a client must call it:
   is fixed at creation (`ThreadResumeParams` has no history-mode field).
   Upstream's default is legacy, so a client that never sends
   `historyMode` gets threads that can never be reverted, which is why
-  AO asks for `"paginated"` on `thread/start` from 0.148 up. The floor is
-  the REVERT floor, not the field's own (paginated shipped in 0.147): a
-  paginated thread on a server with no `thread/revert` carries the
-  differences with none of the benefit. An app-server whose thread store
+  AO asks for `"paginated"` on every `thread/start`. An app-server whose thread store
   has no SQLite state database refuses the field itself ("paginated
   threads require thread/turns/list and thread/items/list support"),
   raised while destructuring the params, so the client retries once
@@ -2324,8 +2321,8 @@ Checked against rust-v0.150.1 for every consumer of thread shape:
   after a compaction it is the compacted window, which is what the model had.
 - Live turn and item notifications do not depend on the mode.
 - Downgrade hazard: a paginated rollout is unreadable by a codex older than
-  0.143 (`reject_unknown_thread_history_mode`), which is also AO's provider
-  floor, so every supported app-server understands the mode.
+  0.143 (`reject_unknown_thread_history_mode`), below AO's minimum, so every
+  supported app-server understands the mode.
 
 ---
 

@@ -12,8 +12,17 @@ import (
 // It never projects unrelated transcript items or assigns a send call as a spawn.
 const maxOwnershipRecoveryPages = 32
 
+// requestContext is the session's context for its own asynchronous reads;
+// a session built without one reads under the background context.
+func (s *Session) requestContext() context.Context {
+	if s.ctx == nil {
+		return context.Background()
+	}
+	return s.ctx
+}
+
 func (s *Session) scheduleChildOwnershipRecovery(childID string) {
-	if !s.appServerAtLeast("0.153.4") || s.closing.Load() || s.isUnrelatedProviderThread(childID) {
+	if !s.hasTransport() || s.closing.Load() || s.isUnrelatedProviderThread(childID) {
 		return
 	}
 	s.mu.Lock()
@@ -43,7 +52,7 @@ func (s *Session) scheduleChildOwnershipRecovery(childID string) {
 			id := s.childRouting.recoveryQueue[0]
 			s.childRouting.recoveryQueue = s.childRouting.recoveryQueue[1:]
 			s.mu.Unlock()
-			ctx, cancel := context.WithTimeout(s.ctx, 8*time.Second)
+			ctx, cancel := context.WithTimeout(s.requestContext(), 8*time.Second)
 			err := s.recoverChildOwnership(ctx, id, make(map[string]bool))
 			cancel()
 
@@ -145,11 +154,11 @@ func (s *Session) recoverChildOwnership(ctx context.Context, childID string, see
 
 // Discover descendants on resume even if AO never received their launch event.
 func (s *Session) discoverResumedChildren() {
-	if !s.appServerAtLeast("0.153.4") {
+	if !s.hasTransport() {
 		return
 	}
 	s.startCollabAsync(func() {
-		ctx, cancel := context.WithTimeout(s.ctx, 8*time.Second)
+		ctx, cancel := context.WithTimeout(s.requestContext(), 8*time.Second)
 		defer cancel()
 		cursor := ""
 		for page := 0; page < maxOwnershipRecoveryPages; page++ {

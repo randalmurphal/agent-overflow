@@ -702,7 +702,7 @@ func readFlexibleStringArray(m map[string]json.RawMessage, key string) []string 
 // Some collaboration operations emit no typed activity, including refusals.
 // Preserve the returned text without guessing success from model-facing prose.
 func (s *Session) emitUnrepresentedCollabResult(call rawToolCall, params json.RawMessage, item map[string]json.RawMessage) {
-	if call.TypedActivity || !s.appServerAtLeast("0.153.4") {
+	if call.TypedActivity {
 		return
 	}
 	switch call.Name {

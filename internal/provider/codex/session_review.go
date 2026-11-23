@@ -13,8 +13,8 @@ import (
 // `ReviewStart => "review/start"` with `serialization:
 // thread_id(params.thread_id)`
 // (codex-rs/app-server-protocol/src/protocol/common.rs, rust-v0.146.0-alpha.4),
-// not `#[experimental]`. Shipped in codex 0.59.0, below AO's 0.143 provider
-// floor, so there is no runtime capability probe. AO omits `delivery`;
+// not `#[experimental]`. Shipped in codex 0.59.0, below AO's minimum Codex,
+// so there is no runtime capability probe. AO omits `delivery`;
 // inline is the protocol default.
 const reviewStartMethod = "review/start"
 

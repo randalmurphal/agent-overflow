@@ -21,9 +21,9 @@ import (
 // when the config's `hooks.state` holds its trust hash, so the map carries
 // each handler's hash: the trust covers exactly these commands and nothing
 // else the user configured (docs/references/codex-wire.md, SessionStart
-// hooks). Where the running Codex reads it, each handler turns off the
-// spill of its output to a file (additionalContextLimit 0), so a part over
-// the default limit still reaches the model whole. The runs are followed by
+// hooks). Each handler turns off the spill of its output to a file
+// (additionalContextLimit 0), so a part over the default limit still
+// reaches the model whole. The runs are followed by
 // observeSessionStartHooks.
 //
 // Codex keeps the hooks a load queued only in the loaded thread, so a
@@ -34,30 +34,21 @@ import (
 // layer's hooks (codex-rs/hooks/src/engine/discovery.rs, 0.153 to 0.162).
 const sessionFlagsHookKeySource = "/<session-flags>/config.toml"
 
-// additionalContextLimitMinimumCodexVersion is the first Codex whose
-// command handlers take additionalContextLimit (rust-v0.145.0). An older
-// one has the fixed limit, and a handler carrying the key there would
-// hash, and so be trusted, differently from the one it reads.
-const additionalContextLimitMinimumCodexVersion = "0.145.0"
-
 // sessionStartHandler is a command handler of the hook: what the thread
 // config registers and what its trust hash covers.
 type sessionStartHandler struct {
 	command string
 	timeout int
 	// noSpill sets additionalContextLimit to 0, which turns off the spill
-	// of the handler's output to a file.
+	// of the handler's output to a file. Every handler AO registers sets
+	// it; the identity Codex hashes carries the key only when it is set.
 	noSpill bool
 }
 
-// newSessionStartHandler is the handler running command for a Codex of
-// codexVersion: with the spill off where that Codex reads the key.
-func newSessionStartHandler(command, codexVersion string) sessionStartHandler {
-	return sessionStartHandler{
-		command: command,
-		timeout: provider.SessionStartHookTimeoutSeconds,
-		noSpill: provider.CodexCLIVersionAtLeast(codexVersion, additionalContextLimitMinimumCodexVersion),
-	}
+// newSessionStartHandler is the handler running command, with the spill
+// off.
+func newSessionStartHandler(command string) sessionStartHandler {
+	return sessionStartHandler{command: command, timeout: provider.SessionStartHookTimeoutSeconds, noSpill: true}
 }
 
 func (h sessionStartHandler) config() map[string]any {
@@ -106,12 +97,12 @@ func hookKey(event string, h int) string {
 	return sessionFlagsHookKeySource + ":" + event + ":0:" + strconv.Itoa(h)
 }
 
-// sessionStartHookConfig is the `hooks` value of the thread config for a
-// Codex of codexVersion: one SessionStart matcher group holding a command
-// handler per part, with the resume sources when resume is set, one
-// UserPromptSubmit group holding each part's PromptCommand, and the
-// handlers' trust state. nil without a hook.
-func sessionStartHookConfig(hook *provider.SessionStartHook, resume bool, codexVersion string) map[string]any {
+// sessionStartHookConfig is the `hooks` value of the thread config: one
+// SessionStart matcher group holding a command handler per part, with the
+// resume sources when resume is set, one UserPromptSubmit group holding
+// each part's PromptCommand, and the handlers' trust state. nil without a
+// hook.
+func sessionStartHookConfig(hook *provider.SessionStartHook, resume bool) map[string]any {
 	if hook == nil {
 		return nil
 	}
@@ -119,11 +110,11 @@ func sessionStartHookConfig(hook *provider.SessionStartHook, resume bool, codexV
 	state := map[string]any{}
 	var starts, prompts []any
 	for _, part := range hook.Parts {
-		handler := newSessionStartHandler(part.Command, codexVersion)
+		handler := newSessionStartHandler(part.Command)
 		state[hookKey("session_start", len(starts))] = map[string]any{"trusted_hash": handler.trustHash("session_start", matcher)}
 		starts = append(starts, handler.config())
 		if part.PromptCommand != "" {
-			prompt := newSessionStartHandler(part.PromptCommand, codexVersion)
+			prompt := newSessionStartHandler(part.PromptCommand)
 			state[hookKey("user_prompt_submit", len(prompts))] = map[string]any{"trusted_hash": prompt.trustHash("user_prompt_submit", "")}
 			prompts = append(prompts, prompt.config())
 		}
@@ -139,9 +130,8 @@ func sessionStartHookConfig(hook *provider.SessionStartHook, resume bool, codexV
 }
 
 // withSessionStartHook is a copy of a thread's params whose `config`
-// registers hook for a Codex of codexVersion, for its resume as well when
-// resume is set.
-func withSessionStartHook(params map[string]any, hook *provider.SessionStartHook, resume bool, codexVersion string) map[string]any {
+// registers hook, for its resume as well when resume is set.
+func withSessionStartHook(params map[string]any, hook *provider.SessionStartHook, resume bool) map[string]any {
 	if hook == nil {
 		return params
 	}
@@ -150,7 +140,7 @@ func withSessionStartHook(params map[string]any, hook *provider.SessionStartHook
 	if config == nil {
 		config = map[string]any{}
 	}
-	config["hooks"] = sessionStartHookConfig(hook, resume, codexVersion)
+	config["hooks"] = sessionStartHookConfig(hook, resume)
 	params = maps.Clone(params)
 	params["config"] = config
 	return params

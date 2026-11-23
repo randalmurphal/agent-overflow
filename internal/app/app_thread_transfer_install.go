@@ -97,12 +97,11 @@ func (installer appTransferInstaller) Prepare(ctx context.Context, row store.Thr
 		return nil, err
 	}
 	defer nativeUnlock()
-	minimumCodexVersion, err := validateTransferredNative(ctx, stage, manifest, files)
-	if err != nil {
+	if err := validateTransferredNative(ctx, stage, manifest, files); err != nil {
 		return nil, err
 	}
 	if len(manifest.Native) > 0 {
-		if err := a.providerDiscoveryService().CheckTransferReadiness(ctx, manifest.Thread.Provider, minimumCodexVersion); err != nil {
+		if err := a.providerDiscoveryService().CheckTransferReadiness(ctx, manifest.Thread.Provider); err != nil {
 			return nil, err
 		}
 		if err := a.store.BindThreadTransferSessions(row.ID, manifest.Native); err != nil {
@@ -346,42 +345,42 @@ func transferInstallTargets(manifest transferManifest, target store.Thread, file
 	return targets, nil
 }
 
-func validateTransferredNative(ctx context.Context, stage string, manifest transferManifest, files []transferfiles.File) (string, error) {
+func validateTransferredNative(ctx context.Context, stage string, manifest transferManifest, files []transferfiles.File) error {
 	if manifest.SessionRef == "" {
 		if len(manifest.Native) != 0 || len(manifest.NativePaths) != 0 {
-			return "", errors.New("A new conversation cannot contain another native session.")
+			return errors.New("A new conversation cannot contain another native session.")
 		}
 	} else if len(manifest.Native) == 0 || len(manifest.NativePaths) != len(manifest.Native) {
-		return "", errors.New("The native conversation graph is incomplete.")
+		return errors.New("The native conversation graph is incomplete.")
 	}
 	seen := make(map[string]bool, len(manifest.Native))
 	for _, ref := range manifest.Native {
 		if _, err := uuid.Parse(ref.Ref); err != nil || ref.Provider != manifest.Thread.Provider || seen[ref.Ref] {
-			return "", errors.New("The native conversation identity is invalid.")
+			return errors.New("The native conversation identity is invalid.")
 		}
 		seen[ref.Ref] = true
 		name := manifest.NativePaths[ref.Ref]
 		if !transferfiles.ValidName(name) || !strings.HasPrefix(name, "native/"+ref.Provider+"/") {
-			return "", errors.New("A native session points outside its transfer directory.")
+			return errors.New("A native session points outside its transfer directory.")
 		}
 	}
 	var collected []transferfiles.Source
 	if manifest.SessionRef != "" {
 		if !seen[manifest.SessionRef] {
-			return "", errors.New("The native root session is missing.")
+			return errors.New("The native root session is missing.")
 		}
 		switch manifest.Thread.Provider {
 		case "claude":
 			if len(seen) != 1 {
-				return "", errors.New("Claude child sessions must be inside their parent session directory.")
+				return errors.New("Claude child sessions must be inside their parent session directory.")
 			}
 			var err error
 			collected, err = sessionfork.TransferFiles(ctx, filepath.Join(stage, "native", "claude"), manifest.SessionRef, "")
 			if err != nil {
-				return "", err
+				return err
 			}
 			if len(collected) == 0 || collected[0].Name != manifest.NativePaths[manifest.SessionRef] {
-				return "", errors.New("The Claude transcript does not match the selected native root.")
+				return errors.New("The Claude transcript does not match the selected native root.")
 			}
 		case "codex":
 			resolve := func(ctx context.Context, id string) (rollout.TransferReference, error) {
@@ -393,27 +392,27 @@ func validateTransferredNative(ctx context.Context, stage string, manifest trans
 			}
 			root, err := resolve(ctx, manifest.SessionRef)
 			if err != nil {
-				return "", err
+				return err
 			}
 			refs, source, err := rollout.TransferGraph(ctx, filepath.Join(stage, "native", "codex"), root, resolve)
 			if err != nil {
-				return "", err
+				return err
 			}
 			if len(refs) != len(seen) {
-				return "", errors.New("The native transfer includes an unrelated session.")
+				return errors.New("The native transfer includes an unrelated session.")
 			}
 			collected = source
 		case "agy":
 			if len(seen) != 1 {
-				return "", errors.New("agy transfers include only one root conversation")
+				return errors.New("agy transfers include only one root conversation")
 			}
 			var err error
 			collected, err = agy.ValidateStagedTransferFiles(ctx, filepath.Join(stage, "native", "agy"), manifest.SessionRef)
 			if err != nil {
-				return "", err
+				return err
 			}
 			if len(collected) == 0 || collected[0].Name != manifest.NativePaths[manifest.SessionRef] {
-				return "", errors.New("staged Antigravity conversation does not match the selected native root")
+				return errors.New("staged Antigravity conversation does not match the selected native root")
 			}
 		}
 	}
@@ -424,18 +423,18 @@ func validateTransferredNative(ctx context.Context, stage string, manifest trans
 	for _, file := range files {
 		if strings.HasPrefix(file.Name, "native/") {
 			if !expected[file.Name] {
-				return "", fmt.Errorf("Unexpected native transfer file: %s", file.Name)
+				return fmt.Errorf("Unexpected native transfer file: %s", file.Name)
 			}
 			delete(expected, file.Name)
 		}
 	}
 	if len(expected) != 0 {
-		return "", errors.New("The transfer is missing native session files.")
+		return errors.New("The transfer is missing native session files.")
 	}
 	if manifest.Thread.Provider == "codex" {
-		return rollout.TransferMinimumVersion(ctx, collected)
+		return rollout.ValidateTransferHistory(ctx, collected)
 	}
-	return "", nil
+	return nil
 }
 
 func validateTransferredHistory(ctx context.Context, stage string, target store.Thread, attachments []store.Attachment, destination *store.Store) error {

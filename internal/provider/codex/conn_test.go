@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"encoding/json"
 	"errors"
@@ -366,7 +367,7 @@ for line in sys.stdin:
     mid = msg.get("id")
     method = msg.get("method")
     if method == "initialize":
-        emit({"jsonrpc": "2.0", "id": mid, "result": {"userAgent": "codex-old"}})
+        emit({"jsonrpc": "2.0", "id": mid, "result": {"userAgent": "` + providertest.CodexUserAgent + `"}})
     elif method == "thread/start":
         emit({"jsonrpc": "2.0", "id": mid, "result": {"thread": {"id": "codex-thr-loaded"}}})
         emit({"jsonrpc": "2.0", "method": "thread/started", "params": {"thread": {"id": "codex-thr-loaded"}}})

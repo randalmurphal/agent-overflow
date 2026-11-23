@@ -34,7 +34,7 @@ while IFS= read -r line; do
         continue
     fi
     if echo "$line" | grep -q '"method":"initialize"'; then
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":`+providertest.CodexInitializeResultQuoted+`}"
         continue
     fi
     if echo "$line" | grep -q '"method":"thread/start"'; then

@@ -38,13 +38,10 @@ func TestClosedSessionDispatchRefusesAsErrSessionClosed(t *testing.T) {
 		pending:  make(map[int64]chan json.RawMessage),
 		cancel:   cancel,
 	}
-	// Satisfy Revert's preflights (thread id, app-server version, paginated
-	// history) so the test proves the closing guard refuses, not an earlier
-	// unrelated check.
+	// Satisfy Revert's preflights (thread id, paginated history) so the
+	// test proves the closing guard refuses, not an earlier unrelated check.
 	codexThread := "codex-thread-1"
 	s.codexThreadID.Store(&codexThread)
-	version := threadRevertMinimumCodexVersion
-	s.appServerVersion.Store(&version)
 	mode := paginatedThreadHistoryMode
 	s.threadHistoryMode.Store(&mode)
 

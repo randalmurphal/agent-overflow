@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestTransferVersionFollowsHistoryFormatIncludingChildren(t *testing.T) {
+func TestTransferHistoryRefusesUnknownFormatIncludingChildren(t *testing.T) {
 	home := t.TempDir()
 	var files []transferfiles.Source
 	for _, mode := range []string{HistoryModeLegacy, HistoryModePaginated, "unknown-future-format"} {
@@ -22,19 +22,15 @@ func TestTransferVersionFollowsHistoryFormatIncludingChildren(t *testing.T) {
 			t.Fatal(err)
 		}
 		files = append(files, file)
-		minimum, err := TransferMinimumVersion(context.Background(), files)
+		err = ValidateTransferHistory(context.Background(), files)
 		switch mode {
-		case HistoryModeLegacy:
-			if err != nil || minimum != "" {
-				t.Fatal("legacy inherited producer version", minimum, err)
-			}
-		case HistoryModePaginated:
-			if err != nil || minimum != "0.148.0" {
-				t.Fatal("paginated child lost format floor", minimum, err)
+		case HistoryModeLegacy, HistoryModePaginated:
+			if err != nil {
+				t.Fatal(mode, "history refused", err)
 			}
 		default:
 			if err == nil {
-				t.Fatal("unknown format accepted after known paginated child")
+				t.Fatal("unknown format accepted after known children")
 			}
 		}
 	}

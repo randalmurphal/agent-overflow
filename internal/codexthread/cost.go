@@ -300,10 +300,10 @@ func (a *Service) readThreadCost(parent context.Context, threadID, sessionToken 
 	usage, err := sess.Session.ReadThreadUsage(ctx)
 	if err != nil {
 		if errors.Is(err, codex.ErrThreadUsageUnavailable) {
-			// A state answer, not a failure: old binary, no ChatGPT login, no
-			// billing route, or credits-only pricing. The rate-table estimate
-			// stays. Not logged at all — on a pre-0.148 codex this would be
-			// one line per settled turn forever.
+			// A state answer, not a failure: no ChatGPT login, no billing
+			// route, or credits-only pricing. The rate-table estimate stays.
+			// Not logged at all: it would be one line per settled turn
+			// forever.
 			return false
 		}
 		if parent.Err() != nil {

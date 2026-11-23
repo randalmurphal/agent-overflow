@@ -619,7 +619,7 @@ func TestBuildThreadParamsReadOnly(t *testing.T) {
 		Reaper:         procutiltest.Reaper(),
 		Sandbox:        "read-only",
 		ApprovalPolicy: "on-request",
-	}, "")
+	})
 	if params["sandbox"] != "read-only" {
 		t.Errorf("sandbox: got %v, want %q", params["sandbox"], "read-only")
 	}
@@ -635,12 +635,12 @@ func TestBuildThreadParamsUnknownSandbox(t *testing.T) {
 		Reaper:         procutiltest.Reaper(),
 		Sandbox:        "custom-sandbox",
 		ApprovalPolicy: "untrusted",
-	}, "")
+	})
 	if params["sandbox"] != "read-only" {
 		t.Errorf("sandbox: got %v, want %q", params["sandbox"], "read-only")
 	}
-	if params["approvalPolicy"] != "untrusted" {
-		t.Errorf("approvalPolicy: got %v, want %q", params["approvalPolicy"], "untrusted")
+	if params["approvalPolicy"] != "on-request" {
+		t.Errorf("approvalPolicy: got %v, want %q (untrusted reaches the wire as on-request)", params["approvalPolicy"], "on-request")
 	}
 }
 
@@ -654,7 +654,7 @@ func TestBuildThreadParamsUnknownSandbox(t *testing.T) {
 // default must not change how a steer lands.
 func TestBuildThreadParamsMinimal(t *testing.T) {
 	t.Parallel()
-	params := buildThreadParams(Config{Reaper: procutiltest.Reaper()}, "")
+	params := buildThreadParams(Config{Reaper: procutiltest.Reaper()})
 	if len(params) != 2 {
 		t.Errorf("expected only the reviewer and the pinned features for zero config, got %v", params)
 	}
@@ -681,7 +681,7 @@ func TestBuildThreadParamsAlwaysSendsReviewer(t *testing.T) {
 			// A resume carries the same Config a fresh start does; the only
 			// difference upstream is the threadId key NewSession adds.
 			cfg.ResumeThreadID = "thread-abc"
-			params := buildThreadParams(cfg, "")
+			params := buildThreadParams(cfg)
 			want := codexApprovalsReviewer(mode)
 			if params["approvalsReviewer"] != want {
 				t.Errorf("approvalsReviewer = %v, want %q", params["approvalsReviewer"], want)
@@ -734,7 +734,7 @@ func TestVerifyApprovalsReviewerEcho(t *testing.T) {
 
 func TestBuildThreadParamsWorkDir(t *testing.T) {
 	t.Parallel()
-	params := buildThreadParams(Config{Reaper: procutiltest.Reaper(), WorkDir: "/home/user/project"}, "")
+	params := buildThreadParams(Config{Reaper: procutiltest.Reaper(), WorkDir: "/home/user/project"})
 	if params["cwd"] != "/home/user/project" {
 		t.Errorf("cwd: got %v, want %q", params["cwd"], "/home/user/project")
 	}
@@ -747,7 +747,7 @@ func TestBuildThreadParamsIncludesMCPServers(t *testing.T) {
 		MCPServers: map[string]any{
 			"browser": map[string]any{"url": "http://127.0.0.1:1234/mcp/thread"},
 		},
-	}, "")
+	})
 
 	config, ok := params["config"].(map[string]any)
 	if !ok {
@@ -791,7 +791,7 @@ func TestBuildThreadParams(t *testing.T) {
 		SystemPrompt:   "Be helpful",
 	}
 
-	params := buildThreadParams(cfg, "")
+	params := buildThreadParams(cfg)
 
 	if params["model"] != "gpt-4.1" {
 		t.Errorf("model: got %v, want %q", params["model"], "gpt-4.1")
@@ -810,7 +810,7 @@ func TestBuildThreadParams(t *testing.T) {
 func TestBuildThreadParamsDangerMode(t *testing.T) {
 	t.Parallel()
 	cfg := Config{Reaper: procutiltest.Reaper(), Sandbox: "danger-full-access"}
-	params := buildThreadParams(cfg, "")
+	params := buildThreadParams(cfg)
 
 	if params["approvalPolicy"] != "never" {
 		t.Errorf("approvalPolicy: got %v, want %q", params["approvalPolicy"], "never")

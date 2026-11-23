@@ -1,6 +1,7 @@
 package codex_test
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"errors"
 	"os"
@@ -45,7 +46,7 @@ while IFS= read -r line; do
     if [ "$AO_TEST_REJECT_INITIALIZE" = 1 ]; then
       printf '%s\n' '{"id":1,"error":{"code":-32603,"message":"test handshake rejection"}}'
     else
-      printf '%s\n' '{"id":1,"result":{"userAgent":"codex_cli_rs/0.151.0 (fake)"}}'
+      printf '%s\n' '{"id":1,"result":` + providertest.CodexInitializeResult + `}'
     fi ;;
 
   *'"method":"account/read"'*) printf '{"id":%s,"result":{"account":{"type":"chatgpt","email":"person@example.test"}}}\n' "${AO_TEST_ACCOUNT_READ_ID:-3}" ;;

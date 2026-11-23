@@ -128,12 +128,12 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 // That field is authoritative and can report every runtime phase, including
 // starting and notStarted. It is null when the configuration changed and is
 // absent on older servers and ephemeral reads. Those cases retain the settled
-// serverInfo/tools/authStatus inference used since AO's 0.143 floor.
+// serverInfo/tools/authStatus inference.
 //
 // ServerInfo presence is the primary liveness signal: MCP requires a
 // successful `initialize` response to carry serverInfo, and codex
 // populates the field at every detail level (toolsAndAuthOnly included)
-// on every version from AO's 0.143 floor. A non-empty tools map is the
+// on every version AO supports. A non-empty tools map is the
 // safety net — tools also can only exist past a completed initialize.
 // It takes the whole entry, like MCPStatusFromNotif, so a caller cannot
 // destructure the record and lose a signal. Rules:

@@ -126,7 +126,7 @@ wraps all three in `internal/provider/codex/session_background.go`.
 `terminate` is bound as `App.TerminateCodexBackgroundTerminal` and backs
 the tray's per-row Stop button; `clean` backs Stop-all.
 Version floor: `terminate`/`list` shipped in 0.140.0, below AO's
-provider-wide minimum of 0.143.0, so no runtime capability probe is
+minimum Codex, so no runtime capability probe is
 needed (guarded by
 `provider.TestMinimumCodexCLIVersionCoversBackgroundTerminalTerminate`).
 
@@ -153,7 +153,7 @@ cannot be combined). 0.148.0 added a third,
 (`#[experimental("thread/revert")]`), which replaces the thread's durable
 history in place and emits `thread/reverted`; AO prefers it for
 edit-and-resend wherever the thread supports it, and asks for the
-paginated history it requires on `thread/start` at the same 0.148 floor
+paginated history it requires on every `thread/start`
 (see [Codex history truncation](codex-wire.md#history-truncation-threadrevert-and-historymode)).
 **All three cut on TURN boundaries**, so the consequence below is
 unchanged by any of them. codex-rs core already has a

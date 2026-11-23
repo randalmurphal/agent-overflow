@@ -65,9 +65,9 @@ WebKit. For a server or a computer used without a desktop window, follow the
 
 1. Install at least one provider on the computer that will run your agents:
    [Claude Code](https://code.claude.com/docs/en/quickstart) or
-   [Codex CLI](https://developers.openai.com/codex/cli). Install Git if it is
-   not already available. On Windows, do this inside the WSL distribution
-   selected in Agent Overflow.
+   [Codex CLI](https://developers.openai.com/codex/cli) 0.154.0 or newer.
+   Install Git if it is not already available. On Windows, do this inside
+   the WSL distribution selected in Agent Overflow.
 2. Sign in through the provider's CLI. Agent Overflow detects existing native
    logins. You can also sign in from the **Accounts** section under
    **Settings → Claude Code** or **Settings → Codex**.

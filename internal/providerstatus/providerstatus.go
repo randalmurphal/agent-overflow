@@ -41,8 +41,8 @@ type Event struct {
 
 	// ActionURL is a deep-link / external URL the UI can open from
 	// the primary action button. Empty when no URL makes sense (for
-	// version_too_old the guidance is "upgrade + restart the app",
-	// which doesn't map to a single URL).
+	// version_too_old the guidance is "update Codex", which doesn't map
+	// to a single URL).
 	ActionURL string `json:"actionUrl,omitempty"`
 
 	// Kind is the closed vocabulary the frontend branches on BEFORE

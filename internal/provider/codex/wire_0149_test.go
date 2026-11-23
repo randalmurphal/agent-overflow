@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider/providertest"
 	"context"
 	"encoding/json"
 	"strings"
@@ -169,7 +170,7 @@ while IFS= read -r line; do
         continue
     fi
     if echo "$line" | grep -q '"method":"initialize"'; then
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"userAgent\":\"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) codex_cli_rs\"}}"
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":` + providertest.CodexInitializeResultQuoted + `}"
         continue
     fi
     if echo "$line" | grep -q '"method":"thread/start"'; then
@@ -195,8 +196,8 @@ done
 			t.Errorf("rootThreadID = %q, want mock-thread-123", got)
 		}
 		// Same handshake proves the version read that drives item 3.
-		if got := s.AppServerVersion(); got != "0.149.0" {
-			t.Errorf("AppServerVersion = %q, want 0.149.0", got)
+		if got := s.AppServerVersion(); got != provider.MinimumCodexCLIVersion {
+			t.Errorf("AppServerVersion = %q, want %s", got, provider.MinimumCodexCLIVersion)
 		}
 	})
 }

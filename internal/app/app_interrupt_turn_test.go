@@ -526,7 +526,6 @@ func TestInterruptTurnDropsIntentThatWaitedAcrossCodexRevert(t *testing.T) {
 	binary := writeCodexForkAtBinary(t, codexForkMock{
 		resumedThreadID:  thread.SessionRef,
 		forkedThreadID:   "unused-fork",
-		userAgent:        "codex_cli_rs/0.149.0 (Linux; x86_64)",
 		historyMode:      "paginated",
 		interruptLogPath: interruptLog,
 		activeTurnID:     "turn-live",
