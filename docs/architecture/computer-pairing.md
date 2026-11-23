@@ -90,8 +90,9 @@ finish starting. An open checks that its network has an address, closes the
 previous window, runs a personal open's enrollment, and is admitted inside the
 book's open against the publication as it stands then, showing the address read
 there. A personal open's enrollment is left behind only when the network loses
-its address, or the owner's connection ends, while that enrollment runs; every
-other failure changes no enrollment, registration or membership generation.
+its address, the owner's connection ends, or the app shuts down while that
+enrollment runs; every other failure changes no enrollment, registration or
+membership generation.
 
 Each step of the invitation's store state is one transaction: a redemption's
 new or relabeled device row, pending session, refresh secret and the link
