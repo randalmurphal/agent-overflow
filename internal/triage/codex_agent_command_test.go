@@ -463,3 +463,38 @@ func TestCodexAgentCommandFromAnEarlierExecutionIsNotCountedByALaterOne(t *testi
 		t.Fatalf("B's interaction is tagged %v, want B, the execution that wrote it", tag)
 	}
 }
+
+// A completion whose meta is valid JSON but no object merges to no meta
+// fields: the command is still saved, with its output and execution tag,
+// as a command with empty meta is saved elsewhere.
+func TestCodexAgentCommandCompletionWithNonObjectMetaIsSaved(t *testing.T) {
+	for _, meta := range []string{`[]`, `null`} {
+		t.Run(meta, func(t *testing.T) {
+			r, st, _ := newTestRouter(t)
+			createCodexBackgroundTestThread(t, st, "t1")
+			seedOpenTurn(t, r, st, "t1", 0)
+			seedAgentSpawnRow(t, st, "t1", "spawn-agent", 0)
+			startAgentCommand(t, r, "t1", "spawn-agent", "child-cmd", "pid-child", "child-turn")
+			if err := r.Handle(provider.ProviderEvent{
+				Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "child-cmd",
+				ItemType: "commandExecution", TurnID: "child-turn", ParentToolUseID: "spawn-agent",
+				Content: "done\n", Meta: json.RawMessage(meta), Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("agent command complete: %v", err)
+			}
+			row, found, err := st.GetThreadItem("t1", "child-cmd")
+			if err != nil || !found {
+				t.Fatalf("command row with %s meta: found=%v err=%v", meta, found, err)
+			}
+			if row.ParentID != "spawn-agent" || row.TurnIndex != 0 || row.PayloadID == "" {
+				t.Fatalf("command row = %+v, want under spawn-agent on turn 0 with its output", row)
+			}
+			if tag := decodeItemMetaMap(t, row.Meta)[store.CodexExecutionTurnMetaKey]; tag != "child-turn" {
+				t.Fatalf("command tag = %v, want child-turn", tag)
+			}
+			if data, err := st.GetPayloadData("t1", row.PayloadID); err != nil || string(data) != "done\n" {
+				t.Fatalf("command output = %q, %v", data, err)
+			}
+		})
+	}
+}

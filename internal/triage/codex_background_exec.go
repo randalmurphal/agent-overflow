@@ -540,8 +540,13 @@ func (r *Router) persistCodexAgentCommand(evt provider.ProviderEvent, item store
 }
 
 // decodeCodexAgentMeta decodes an agent row's meta object for
-// store.CodexAgentRow, which encodes it.
+// store.CodexAgentRow, which encodes it. An empty meta, the sentinel
+// validJSONObjectString returns for a meta that is no object, has no
+// fields, as an empty item meta is stored ({}) on every other path.
 func decodeCodexAgentMeta(meta string) (map[string]json.RawMessage, error) {
+	if meta == "" {
+		return nil, nil
+	}
 	var decoded map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(meta), &decoded); err != nil {
 		return nil, fmt.Errorf("decode meta: %w", err)
