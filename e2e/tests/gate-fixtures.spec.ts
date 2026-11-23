@@ -1,17 +1,22 @@
-// The gate's own rules at run time (tests/fixtures.ts): a page sleep throws,
-// and an event watch counts for the test that made it and no longer. Events
-// are fed in as wire frames, so nothing here waits on the backend.
+// The gate's own rules at run time (tests/base-test.ts): a page sleep throws,
+// and an event watch serves one assertion and counts for the test that made
+// it and no longer. The watches are the ones HarnessApp.watchEvents makes
+// (watchEventsIn), handed events directly, so no test here needs a backend.
 import type { Page } from '@playwright/test';
-import { test, expect } from './fixtures.js';
-import type { EventWatch, HarnessApp } from '../src/harness.js';
-
-test.describe.configure({ mode: 'serial' });
+import { test, expect } from './base-test.js';
+import { currentEventWatchScope, EventWatchScope, openEventWatchScope, watchEventsIn, type WireEvent } from '../src/harness.js';
 
 const PROBE = 'e2e:watch-probe';
 
-/** Hands `harness` an event frame as its socket would. */
-function feed(harness: HarnessApp, data: unknown, channel = PROBE): void {
-  (harness as unknown as { onFrame(raw: string): void }).onFrame(JSON.stringify({ type: 'event', channel, seq: 1, data }));
+/** Event waiters as a HarnessApp keeps them, and a feed that hands each of them an event. */
+function probeEvents(): { waiters: Set<(ev: WireEvent) => void>; feed: (data: unknown, channel?: string) => void } {
+  const waiters = new Set<(ev: WireEvent) => void>();
+  return {
+    waiters,
+    feed: (data, channel = PROBE) => {
+      for (const waiter of [...waiters]) waiter({ channel, seq: 1, data });
+    },
+  };
 }
 
 /** The sleep the fixture refuses; the wait scan allows it here alone (WAIT_ALLOWED). */
@@ -30,50 +35,76 @@ test('a page sleep throws and names the way to wait', async ({ page, browser }) 
   }
 });
 
-test.beforeAll(({ harnessWorker }) => {
-  expect(() => harnessWorker.watchEvents(PROBE), 'a watch outside a test has nothing to end it').toThrow(/scoped to a test/);
+test.beforeAll(() => {
+  expect(() => currentEventWatchScope(), 'a watch outside a test has nothing to end it').toThrow(/scoped to a test/);
 });
 
-test('a watch counts its matches and keeps only the first, cut short', async ({ harness }) => {
-  const watch = harness.watchEvents<{ n: number; pad: string }>(PROBE, (data) => data.n > 0);
-  for (const n of [1, 0, 2, 3]) feed(harness, { n, pad: 'x'.repeat(100_000) });
-  feed(harness, { n: 9 }, 'e2e:other-probe');
+test('each test runs in a watch scope of its own', () => {
+  expect(() => currentEventWatchScope()).not.toThrow();
+  expect(() => openEventWatchScope(), 'the fixture opened none for this test').toThrow(/already open/);
+});
+
+test('a watch counts its matches and keeps only the first, cut short', async () => {
+  const { waiters, feed } = probeEvents();
+  const watch = watchEventsIn<{ n: number; pad: string }>(currentEventWatchScope(), waiters, PROBE, (data) => data.n > 0);
+  for (const n of [1, 0, 2, 3]) feed({ n, pad: 'x'.repeat(100_000) });
+  feed({ n: 9 }, 'e2e:other-probe');
   expect(watch.count()).toBe(3);
   const error = await watch.expectNoneThrough(async () => {}, 'probe').then(() => undefined, (e: Error) => e);
   expect(error?.message).toMatch(/^probe: 3 e2e:watch-probe event\(s\) arrived before the barrier finished, want 0, first \{"n":1,"pad":"x+$/);
   expect(error!.message.length).toBeLessThan(700);
 
-  const exact = harness.watchEvents(PROBE);
-  feed(harness, { n: 1 });
-  feed(harness, { n: 2 });
+  const exact = watchEventsIn(currentEventWatchScope(), waiters, PROBE);
+  feed({ n: 1 });
+  feed({ n: 2 });
   await exact.expectExactlyThrough(2, async () => {}, 'two probes');
 });
 
-test('a watch serves one assertion and stops counting at it', async ({ harness }) => {
-  const watch = harness.watchEvents(PROBE);
+test('a watch serves one assertion and stops counting at it', async () => {
+  const { waiters, feed } = probeEvents();
+  const watch = watchEventsIn(currentEventWatchScope(), waiters, PROBE);
   await watch.expectNoneThrough(async () => {}, 'none yet');
-  feed(harness, { n: 1 });
+  feed({ n: 1 });
   expect(watch.count(), 'an asserted watch kept counting').toBe(0);
   await expect(watch.expectNoneThrough(async () => {}, 'again')).rejects.toThrow(/already ended; make a new watch/);
 });
 
-test('a barrier that fails ends its watch and its error stands', async ({ harness }) => {
-  const watch = harness.watchEvents(PROBE);
+test('an assertion claims its watch when it is called, so an overlapping one is refused', async () => {
+  const { waiters, feed } = probeEvents();
+  const watch = watchEventsIn(currentEventWatchScope(), waiters, PROBE);
+  let finishBarrier!: () => void;
+  const barrier = new Promise<void>((resolve) => {
+    finishBarrier = resolve;
+  });
+  const first = watch.expectExactlyThrough(1, () => barrier, 'first');
+  await expect(watch.expectNoneThrough(async () => {}, 'overlap')).rejects.toThrow(/^overlap: this e2e:watch-probe watch is serving another assertion/);
+  feed({ n: 1 });
+  finishBarrier();
+  await first;
+});
+
+test('a barrier that fails ends its watch and its error stands', async () => {
+  const { waiters, feed } = probeEvents();
+  const watch = watchEventsIn(currentEventWatchScope(), waiters, PROBE);
   await expect(watch.expectExactlyThrough(1, async () => { throw new Error('barrier broke'); }, 'probe')).rejects.toThrow('barrier broke');
-  feed(harness, { n: 1 });
+  feed({ n: 1 });
   expect(watch.count()).toBe(0);
+  expect(waiters.size, 'an ended watch kept its waiter').toBe(0);
 });
 
-let leftover: EventWatch | undefined;
-
-test('a watch the test never asserts on', async ({ harness }) => {
-  leftover = harness.watchEvents(PROBE);
-  feed(harness, { n: 1 });
-  expect(leftover.count()).toBe(1);
-});
-
-test('the next test sees none of it', async ({ harness }) => {
-  feed(harness, { n: 2 });
-  expect(leftover!.count(), 'the earlier test\'s watch counted into this one').toBe(1);
-  await expect(leftover!.expectNoneThrough(async () => {}, 'leftover')).rejects.toThrow(/already ended/);
+test('ending the test\'s scope ends every watch it holds, asserted or not', async () => {
+  const { waiters, feed } = probeEvents();
+  // The scope the fixture ends at teardown, ended here by the same call.
+  const scope = currentEventWatchScope();
+  const left = watchEventsIn(scope, waiters, PROBE);
+  const other = watchEventsIn(scope, waiters, PROBE);
+  const outside = watchEventsIn(new EventWatchScope(), waiters, PROBE);
+  feed({ n: 1 });
+  scope.end();
+  feed({ n: 2 });
+  expect(left.count(), 'an ended watch kept counting').toBe(1);
+  expect(other.count(), 'an ended watch kept counting').toBe(1);
+  expect(outside.count(), 'a watch in another scope was ended').toBe(2);
+  await expect(left.expectNoneThrough(async () => {}, 'left')).rejects.toThrow(/already ended/);
+  expect(() => currentEventWatchScope(), 'the ended scope stayed open').toThrow(/scoped to a test/);
 });

@@ -50,11 +50,11 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   // into the next test.
   eventWatches: [
     async ({}, use) => {
-      const end = openEventWatchScope();
+      const scope = openEventWatchScope();
       try {
         await use();
       } finally {
-        end();
+        scope.end();
       }
     },
     { auto: true, box: true },

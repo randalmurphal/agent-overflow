@@ -42,9 +42,17 @@ import type { HarnessBootstrap, HarnessLaunchRecord, LaunchOptions } from './har
 import { HarnessApp } from './harness-app.ts';
 
 export type { HarnessBootstrap, HarnessLaunchRecord, LaunchOptions } from './harness-types.ts';
-export { HarnessApp, installTestInfoReader, openEventWatchScope } from './harness-app.ts';
+export {
+  currentEventWatchScope,
+  EventWatchScope,
+  HarnessApp,
+  installTestInfoReader,
+  openEventWatchScope,
+  watchEventsIn,
+} from './harness-app.ts';
 export type {
   EventWatch,
+  WireEvent,
   HarnessMockReport,
   HarnessMockEventData,
   McpResultFilter,

@@ -22,7 +22,7 @@ import type { HarnessBootstrap, HarnessLaunchRecord } from './harness-types.ts';
 // instead of being replaced by a generic client timeout.
 const RPC_TIMEOUT_MS = 15_000;
 
-interface WireEvent {
+export interface WireEvent {
   channel: string;
   seq: number;
   data: unknown;
@@ -33,15 +33,11 @@ interface WireEvent {
 }
 
 /**
- * One mock progress report, exactly as it rides a `harness:mock` bus
- * event (internal/harness/control.Report).
- */
-/** A count of matching events from `HarnessApp.watchEvents` on. */
-/**
  * A count of matching events from the moment it was made. It holds the
- * count and the first match, never the payloads. It ends at its assertion,
- * or with the test that made it (tests/fixtures.ts), whichever is first;
- * an assertion on a watch that ended throws.
+ * count and the first match, never the payloads. It serves one assertion:
+ * the first `expect…Through` call claims it, and a second call, overlapping
+ * the first or after it, throws. It ends at its assertion or with the test
+ * that made it (tests/base-test.ts), whichever is first.
  */
 export interface EventWatch {
   count(): number;
@@ -64,27 +60,102 @@ export function installTestInfoReader(read: () => TestInfo): void {
   readTestInfo = read;
 }
 
-/**
- * The running test's open watches, ended by the gate fixture's teardown
- * (`openEventWatchScope`). Undefined outside a test the fixture runs.
- */
-let watchScope: Set<() => void> | undefined;
+/** The watches one test made, which the gate fixture ends with the test. */
+export class EventWatchScope {
+  private readonly ends = new Set<() => void>();
+
+  /** Holds a watch's end until the scope ends. */
+  hold(end: () => void): void {
+    this.ends.add(end);
+  }
+
+  /** Lets go of a watch that ended on its own. */
+  release(end: () => void): void {
+    this.ends.delete(end);
+  }
+
+  /** Ends every watch the scope holds; the running test's scope also closes. */
+  end(): void {
+    for (const end of this.ends) end();
+    this.ends.clear();
+    if (watchScope === this) watchScope = undefined;
+  }
+}
 
 /**
- * Opens the running test's watch scope; the returned function ends every
- * watch the test made. tests/base-test.ts calls it around each test.
+ * The running test's watch scope, opened and ended by the gate fixture
+ * (tests/base-test.ts). Undefined outside a test the fixture runs.
  */
-export function openEventWatchScope(): () => void {
+let watchScope: EventWatchScope | undefined;
+
+/** Opens the running test's watch scope; tests/base-test.ts calls it around each test and ends it after. */
+export function openEventWatchScope(): EventWatchScope {
   if (watchScope) throw new Error('an event watch scope is already open: a test fixture ran twice');
-  const scope = new Set<() => void>();
-  watchScope = scope;
-  return () => {
-    for (const end of scope) end();
-    scope.clear();
-    if (watchScope === scope) watchScope = undefined;
+  watchScope = new EventWatchScope();
+  return watchScope;
+}
+
+/** The running test's watch scope; throws outside a test the gate fixture runs. */
+export function currentEventWatchScope(): EventWatchScope {
+  if (!watchScope) throw new Error('watchEvents is scoped to a test by tests/base-test.ts; import test from there or from tests/fixtures.ts');
+  return watchScope;
+}
+
+/**
+ * A watch in `scope` over the events `waiters` is handed: the mechanism
+ * behind `HarnessApp.watchEvents`, which hands it the app's event waiters
+ * and the running test's scope.
+ */
+export function watchEventsIn<T = unknown>(
+  scope: EventWatchScope,
+  waiters: Set<(ev: WireEvent) => void>,
+  channel: string,
+  predicate?: (data: T) => boolean,
+): EventWatch {
+  let seen = 0;
+  let first = '';
+  // open, then claimed by its one assertion, then ended.
+  let state: 'open' | 'claimed' | 'ended' = 'open';
+  const waiter = (ev: WireEvent) => {
+    if (ev.channel !== channel || (predicate && !predicate(ev.data as T))) return;
+    if (seen === 0) first = JSON.stringify(ev.data).slice(0, 500);
+    seen += 1;
+  };
+  const end = () => {
+    state = 'ended';
+    waiters.delete(waiter);
+    scope.release(end);
+  };
+  waiters.add(waiter);
+  scope.hold(end);
+  // Not async: the claim is taken in the call itself, so a second call made
+  // while the first's barrier runs is refused rather than sharing the count.
+  const through = (n: number, barrier: () => Promise<unknown>, message: string): Promise<void> => {
+    if (state === 'claimed') return Promise.reject(new Error(`${message}: this ${channel} watch is serving another assertion; make a new watch for a second one`));
+    if (state === 'ended') return Promise.reject(new Error(`${message}: this ${channel} watch already ended; make a new watch for a second assertion`));
+    state = 'claimed';
+    return (async () => {
+      try {
+        await barrier();
+      } finally {
+        end();
+      }
+      if (seen !== n) {
+        throw new Error(`${message}: ${seen} ${channel} event(s) arrived before the barrier finished, want ${n}${seen > 0 ? `, first ${first}` : ''}`);
+      }
+    })();
+  };
+  return {
+    count: () => seen,
+    expectNoneThrough: (barrier, message) => through(0, barrier, message),
+    expectExactlyThrough: (n, barrier, message) => through(n, barrier, message),
   };
 }
 
+/**
+ * One mock progress report, exactly as it rides a `harness:mock` bus
+ * event (internal/harness/control.Report).
+ */
 export interface HarnessMockReport {
   kind: string;
   turn?: number;
@@ -482,39 +553,7 @@ export class HarnessApp {
    * fixture ends the watch with the test.
    */
   watchEvents<T = unknown>(channel: string, predicate?: (data: T) => boolean): EventWatch {
-    const scope = watchScope;
-    if (!scope) throw new Error('watchEvents is scoped to a test by tests/base-test.ts; import test from there or from tests/fixtures.ts');
-    let seen = 0;
-    let first = '';
-    let ended = false;
-    const waiter = (ev: WireEvent) => {
-      if (ev.channel !== channel || (predicate && !predicate(ev.data as T))) return;
-      if (seen === 0) first = JSON.stringify(ev.data).slice(0, 500);
-      seen += 1;
-    };
-    const end = () => {
-      ended = true;
-      this.eventWaiters.delete(waiter);
-      scope.delete(end);
-    };
-    this.eventWaiters.add(waiter);
-    scope.add(end);
-    const through = async (n: number, barrier: () => Promise<unknown>, message: string) => {
-      if (ended) throw new Error(`${message}: this ${channel} watch already ended; make a new watch for a second assertion`);
-      try {
-        await barrier();
-      } finally {
-        end();
-      }
-      if (seen !== n) {
-        throw new Error(`${message}: ${seen} ${channel} event(s) arrived before the barrier finished, want ${n}${seen > 0 ? `, first ${first}` : ''}`);
-      }
-    };
-    return {
-      count: () => seen,
-      expectNoneThrough: (barrier, message) => through(0, barrier, message),
-      expectExactlyThrough: (n, barrier, message) => through(n, barrier, message),
-    };
+    return watchEventsIn(currentEventWatchScope(), this.eventWaiters, channel, predicate);
   }
 
   /**
