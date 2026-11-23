@@ -318,6 +318,10 @@ func (h *harnessHost) StopSession(threadID string) error {
 }
 
 func (h *harnessHost) AwaitSessionEndWork() []string {
+	// First, because a restore after a session's unexpected end can queue
+	// the request and notice work joined below, and its reconnect registers
+	// a session the list must name.
+	h.app.sessionDeathWork.Wait()
 	h.app.threadRequestSettling.Wait()
 	h.app.agentNoticeWork.wg.Wait()
 	live := make([]string, 0)

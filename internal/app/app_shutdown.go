@@ -277,11 +277,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// it took back to a settlement goroutine.
 	a.stopIdleSessionReaper()
 	record("stop idle session reaper", nil)
-	// After the app context is cancelled, so a reconnect's Codex start in
-	// flight ends, and before the request and notice work a restore can
-	// queue is joined; a reconnect's start registers before Step 4's snapshot.
-	a.sessionDeathWork.Close()
-	record("stop session death work", nil)
 	// The request sweep writes rows and can queue a wake, so it is joined
 	// beside the remote watches and before the store is closed. Closing
 	// it refuses the settlements a later session close would start.
@@ -317,7 +312,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// Step 3c: stop the retention TTL sweep. The sweep writes to
 	// SQLite (cascading thread deletes) and deletes threads (deleteThreadPaced),
 	// which mutates a.sessions via stopSession — running it concurrently
-	// with Step 4's snapshotAndClear would race the session map, and
+	// with Step 4's sealAndSnapshot would race the session map, and
 	// running it past Step 9's store close would write to a torn-down
 	// store. stopRetentionCleanup is idempotent and blocks until the
 	// goroutine returns.
@@ -402,7 +397,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	record("stop provider logins", nil)
 
 	// Step 4: stop provider sessions, then close any idle pooled provider connections.
-	sessions := a.sessionManager().snapshotAndClear()
+	sessions := a.sessionManager().sealAndSnapshot()
 	sessionErrs := closeSessionsParallel(a, sessions, sessionShutdownTimeout)
 	if a.sessionRuntime != nil {
 		if poolErr := a.sessionRuntime.Connections().CloseAllWithTimeout(sessionShutdownTimeout); poolErr != nil {
@@ -425,6 +420,15 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// session-teardown window. No-op when inactive.
 	a.stopOrphanReaper()
 	record("stop orphan reaper", nil)
+
+	// Join the work a session's unexpected end started, before the store
+	// closes. A reconnect's start blocked on a pooled connection is released
+	// by Step 4's pool close, one on a dedicated Codex process by the close
+	// armed on the app context (closeWhenAppEnds) and by the sidecar's reap
+	// above, and a restore's SQLite wait by the store's busy timeout; a start
+	// that finishes now finds the registry sealed and closes what it started.
+	a.sessionDeathWork.Close()
+	record("stop session death work", nil)
 
 	// Step 5b: stop gitwatch subscriptions. Connection-tied subs were
 	// already drained at Step 0 (transport drain runs ConnState

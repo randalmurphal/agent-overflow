@@ -3935,12 +3935,14 @@ func TestSessionReplacementReturnsDiscardedSends(t *testing.T) {
 }
 
 // TestAutoReconnectAfterDeathRestoresTheQueueFirst: a death hands queued
-// messages back to the composer, and the auto-reconnect that follows stops
-// the thread first, which drops its queue. Whichever goroutine reaches the
-// thread lock first, every thread's queued message ends in its draft.
+// messages back to the composer before the auto-reconnect that follows
+// starts the thread again. Whichever goroutine reaches the thread lock
+// first, every thread's queued message ends in its draft. The reconnect's
+// own stop is a no-op here, so only the death's restores can put it there.
 func TestAutoReconnectAfterDeathRestoresTheQueueFirst(t *testing.T) {
 	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
+	app.stopSessionFn = func(string) error { return nil }
 	var started atomic.Int32
 	app.startSessionFn = func(string) error {
 		started.Add(1)

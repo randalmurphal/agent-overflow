@@ -34,9 +34,15 @@ func (a *App) sessionManager() sessionManager {
 }
 
 func (m sessionManager) get(threadID string) (session, bool) { return m.runtime.Get(threadID) }
-func (m sessionManager) put(threadID string, entry session) {
-	m.runtime.Put(threadID, entry)
+
+// put registers entry and reports whether it did; a sealed registry
+// (sealAndSnapshot) registers nothing.
+func (m sessionManager) put(threadID string, entry session) bool {
+	if !m.runtime.Put(threadID, entry) {
+		return false
+	}
 	m.changed(threadID)
+	return true
 }
 func (m sessionManager) take(threadID string) (session, bool) {
 	entry, ok := m.runtime.Take(threadID)
@@ -107,8 +113,8 @@ func (m sessionManager) takeIdle(threadID string, cutoffNano int64) (session, bo
 	return entry, ok
 }
 func (m sessionManager) snapshot() map[string]session { return m.runtime.Snapshot() }
-func (m sessionManager) snapshotAndClear() map[string]session {
-	cleared := m.runtime.SnapshotAndClear()
+func (m sessionManager) sealAndSnapshot() map[string]session {
+	cleared := m.runtime.SealAndSnapshot()
 	for threadID := range cleared {
 		m.changed(threadID)
 	}

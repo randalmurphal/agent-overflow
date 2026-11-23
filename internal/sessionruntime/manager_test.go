@@ -105,16 +105,32 @@ func TestThreadIDsForProviderOrStartingIncludesStartingOnly(t *testing.T) {
 	}
 }
 
-func TestSnapshotAndClearRemovesAllEntries(t *testing.T) {
+func TestSealAndSnapshotRemovesAllEntries(t *testing.T) {
 	manager := New()
 	manager.Put("claude", Entry{Provider: string(provider.Claude)})
 	manager.Put("codex", Entry{Provider: string(provider.Codex)})
 
-	if got := len(manager.SnapshotAndClear()); got != 2 {
+	if got := len(manager.SealAndSnapshot()); got != 2 {
 		t.Fatalf("snapshot size = %d, want 2", got)
 	}
 	if got := len(manager.Snapshot()); got != 0 {
 		t.Fatalf("remaining sessions = %d, want 0", got)
+	}
+}
+
+// Once sealed, the registry registers nothing: the start that brought the
+// session up is told, so it can close what it started.
+func TestPutAfterSealIsRefused(t *testing.T) {
+	manager := New()
+	if !manager.Put("before", Entry{Token: "before"}) {
+		t.Fatal("Put before the seal was refused")
+	}
+	manager.SealAndSnapshot()
+	if manager.Put("after", Entry{Token: "after"}) {
+		t.Fatal("Put after the seal reported a registration")
+	}
+	if got := manager.Snapshot(); len(got) != 0 {
+		t.Fatalf("registry after a refused Put = %v, want empty", got)
 	}
 }
 

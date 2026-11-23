@@ -694,11 +694,11 @@ type App struct {
 	// Test-only injection points for binding helpers that need to observe start/stop.
 	startSessionFn func(string) error
 	stopSessionFn  func(string) error
-	// closeBrowserPagesFn and closeProviderSessionFn, when set, answer
-	// closeThreadBrowserPages and a teardown's provider close in place of the
-	// real ones, which the fakes and mock CLIs cannot make fail.
-	// closeProviderSessionFn stands in only for closing a session the
-	// registry held (a non-empty token, closeTornDownSession).
+	// closeBrowserPagesFn answers closeThreadBrowserPages in place of the
+	// real one. closeProviderSessionFn is the result of a teardown's close
+	// of a session the registry held (a non-empty token,
+	// closeTornDownSession), returned after the real close ran. Both stand
+	// in for failures the fakes and mock CLIs cannot produce.
 	closeBrowserPagesFn    func(threadID string) error
 	closeProviderSessionFn func(threadID string) error
 	sendMessageFn          func(string, string, []string) error

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"maps"
 	"slices"
@@ -375,7 +376,9 @@ func (a *App) startSessionNow(threadID string) error {
 	if mem.Hook != nil {
 		newSess.MemoryPlan = mem.Plan
 	}
-	a.sessionManager().put(threadID, newSess)
+	if err := a.registerStartedSession(threadID, newSess); err != nil {
+		return err
+	}
 	registeredTools = true
 	// Codex reports its thread in an EventInit emitted before NewSession
 	// returns, and callers act on the started session as soon as this
@@ -476,6 +479,47 @@ func resolveClaudeForkResumeAt(projectsDir, sourceRef, workDir, pin string) (str
 	}
 	log.Printf("start session: fork cut %s never reached source session %s — pinning at the on-disk cursor %s instead", pin, sourceRef, last.Cursor)
 	return last.Cursor, nil
+}
+
+// registerStartedSession registers the session a start brought up. Once
+// shutdown's session close has sealed the registry it registers nothing:
+// the start closes what it started and fails with ErrShuttingDown, joined
+// with the close's failure when there is one.
+func (a *App) registerStartedSession(threadID string, sess session) error {
+	if a.sessionManager().put(threadID, sess) {
+		return nil
+	}
+	return errors.Join(
+		fmt.Errorf("start session for thread %s: %w", threadID, ErrShuttingDown),
+		a.closeProviderSession(threadID, sess),
+	)
+}
+
+// refuseOpenAfterAppEnd settles a Codex open on a process closeWhenAppEnds
+// guards, disarming that close. If the app's end closed the process first,
+// shutdown refused the open whatever it answered: an opened session is
+// closed, and a failure the process close caused is reported as the
+// refusal. closeOpened runs only for an open that succeeded.
+func refuseOpenAfterAppEnd(disarm func() bool, threadID string, err error, closeOpened func() error) error {
+	if disarm() {
+		return err
+	}
+	refused := fmt.Errorf("codex: open thread %s: %w", threadID, ErrShuttingDown)
+	if err != nil {
+		return fmt.Errorf("%w; the open answered: %v", refused, err)
+	}
+	return errors.Join(refused, closeOpened())
+}
+
+// closeWhenAppEnds closes conn if the app's life ends before the returned
+// disarm is called. disarm reports whether it stopped the close in time; a
+// false answer means conn was closed. A close failure is logged under label.
+func (a *App) closeWhenAppEnds(conn io.Closer, label string) (disarm func() bool) {
+	return context.AfterFunc(a.lifeCtx(), func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("app: close %s at shutdown: %v", label, err)
+		}
+	})
 }
 
 // stopExistingSessionLocked tears down any prior session for the thread
@@ -736,6 +780,9 @@ func (a *App) spawnProviderSession(
 			if dialErr != nil {
 				return session{}, dialErr
 			}
+			// No pool owns this process, and a request's write to it takes
+			// no context, so until the session owns it the app's end closes it.
+			disarm := a.closeWhenAppEnds(dedicatedConn, "dedicated Codex app-server for "+threadID)
 			if accountSelection.AccountID != "" {
 				accountCtx, cancelAccountRead := context.WithTimeout(a.lifeCtx(), codexAccountReadTimeout)
 				accountInfo, accountErr := dedicatedConn.AccountInfo(accountCtx)
@@ -764,6 +811,7 @@ func (a *App) spawnProviderSession(
 					}
 				}
 				if accountErr != nil {
+					disarm()
 					return session{}, errors.Join(accountErr, dedicatedConn.Close())
 				}
 			}
@@ -777,6 +825,7 @@ func (a *App) spawnProviderSession(
 				a.handleCodexMCPOAuthCompleted("", serverName, success, errMsg)
 			})
 			sess, err = dedicatedConn.OpenOwned(a.lifeCtx(), threadID, cfg, onEvent)
+			err = refuseOpenAfterAppEnd(disarm, threadID, err, func() error { return sess.Close() })
 			if err != nil {
 				return session{}, errors.Join(err, dedicatedConn.Close())
 			}
@@ -1602,10 +1651,11 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool,
 // closeTornDownSession is a teardown's provider close, answered by the
 // closeProviderSessionFn test hook where its rule says so.
 func (a *App) closeTornDownSession(threadID string, sess session) error {
+	err := a.closeProviderSession(threadID, sess)
 	if a.closeProviderSessionFn != nil && sess.Token != "" {
 		return a.closeProviderSessionFn(threadID)
 	}
-	return a.closeProviderSession(threadID, sess)
+	return err
 }
 
 // settleQueueForTeardown empties the thread's queue for a teardown, durable

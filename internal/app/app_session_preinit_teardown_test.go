@@ -95,16 +95,15 @@ func TestEnsureProvenSessionOwnsTheTeardownTheReaperRaces(t *testing.T) {
 		f.queueForTheStart()
 		f.letTheReaperRunFirst()
 		injected := errors.New("injected provider close failure")
-		f.app.closeProviderSessionFn = func(string) error {
-			// The process is ended here, since the injected close leaves it.
-			_ = syscall.Kill(f.mockPID(), syscall.SIGKILL)
-			return injected
-		}
+		// The hook supplies the close's result after the real close ran, so
+		// the teardown is as complete as without it.
+		f.app.closeProviderSessionFn = func(string) error { return injected }
 
 		_, err := f.app.ensureProvenSession(t.Context(), f.thread.ID, func() error { return nil })
 		if !errors.Is(err, injected) || !strings.Contains(err.Error(), "No conversation found") {
 			t.Fatalf("proof = %v, want the close failure with the start's outcome", err)
 		}
+		f.requireTornDown()
 	})
 }
 

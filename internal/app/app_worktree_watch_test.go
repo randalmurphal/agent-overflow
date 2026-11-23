@@ -416,7 +416,7 @@ func startWorktreeWatchForTest(t *testing.T, app *App) {
 // death banner alone would leave the user guessing why nothing came back.
 func TestAutoReconnectFailureSurfacesOnThread(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
+	app := newTestAppWithTriage(t)
 	thread := testThread("thread-auto-reconnect-fails")
 	thread.SessionRef = "claude-resume-fails"
 	if err := app.store.CreateThread(thread); err != nil {

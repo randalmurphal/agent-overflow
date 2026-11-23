@@ -64,10 +64,11 @@ type Host interface {
 	// either.
 	BroadcastThreadRow(threadID string)
 	StopSession(threadID string) error
-	// AwaitSessionEndWork waits for the work stopped sessions set off (a
-	// request a stop settled, the wake that answer owes another thread, and
-	// the session that wake starts) and returns the threads with a live
-	// session afterwards.
+	// AwaitSessionEndWork waits for the work ended sessions set off (the
+	// queue restore and reconnect after an unexpected end, a request a stop
+	// settled, the wake that answer owes another thread, and the session
+	// that wake starts) and returns the threads with a live session
+	// afterwards.
 	AwaitSessionEndWork() []string
 	DeleteProject(projectID string) error
 	// DeleteThread deletes a thread as the sidebar's Delete does: an

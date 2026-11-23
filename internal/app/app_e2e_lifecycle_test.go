@@ -4,6 +4,7 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -293,19 +294,14 @@ func setupE2EAppOn(t *testing.T, dbPath, settingsDir string) (*App, *capturedEve
 	// defaults. See isolateE2EProviderSpawns.
 	isolateE2EProviderSpawns(t, app)
 
-	// Ensure any sessions that remain open at test end are torn down, in
-	// Shutdown's order: joinBackgroundWorkAtCleanup, registered after
-	// this and so run before it, has refused new request work; session
-	// starts are refused before the close, and any settlement still in
-	// flight finishes before the store closes.
+	// Ensure any sessions that remain open at test end are torn down.
+	// joinBackgroundWorkAtCleanup, registered after this and so run before
+	// it, has joined the session-starting work; a start it left behind finds
+	// the registry sealed and closes what it started, and any settlement
+	// still in flight finishes before the store closes.
 	t.Cleanup(func() {
 		app.stopAgentNoticeWork()
-		sessions := make([]session, 0, len(app.sessionManager().runtime.Snapshot()))
-		for _, s := range app.sessionManager().runtime.Snapshot() {
-			sessions = append(sessions, s)
-		}
-		app.sessionManager().snapshotAndClear()
-		for _, s := range sessions {
+		for _, s := range app.sessionManager().sealAndSnapshot() {
 			if ps := s.ProviderSession(); ps != nil {
 				_ = ps.Close()
 			}
@@ -343,10 +339,17 @@ func TestE2EFixtureTeardownJoinsBackgroundWork(t *testing.T) {
 		)
 		t.Run(tc.name, func(t *testing.T) {
 			app, _ := setupE2EApp(t)
-			// The work outlasts the test body, so it is still running when
-			// the teardown begins.
+			// Registered after the fixture's cleanups, so it runs first: the
+			// work is still running when the teardown begins.
+			teardownBegan := make(chan struct{})
+			t.Cleanup(func() { close(teardownBegan) })
 			if !tc.start(app, func() {
-				time.Sleep(200 * time.Millisecond)
+				select {
+				case <-teardownBegan:
+				case <-time.After(30 * time.Second):
+					readErr = errors.New("the teardown never began")
+					return
+				}
 				_, readErr = app.store.ListProjects()
 				done = true
 			}) {
@@ -366,7 +369,10 @@ func TestE2EFixtureTeardownJoinsBackgroundWork(t *testing.T) {
 // its removed directories and closed store.
 //
 // Call it after the fixture's other cleanups are registered, so it runs
-// before the store closes and before sessions are torn down.
+// before the store closes and before sessions are torn down. Shutdown joins
+// the death work after the session close instead, because a real provider
+// can leave a write blocked until that close; a test's fakes and mock CLIs
+// answer, so here a reconnect's session registers and the fixture closes it.
 func joinBackgroundWorkAtCleanup(t *testing.T, app *App) {
 	t.Helper()
 	t.Cleanup(func() {

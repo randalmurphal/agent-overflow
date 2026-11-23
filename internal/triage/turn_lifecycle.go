@@ -2608,3 +2608,12 @@ func (r *Router) ThreadEpoch(threadID string) uint64 {
 	}
 	return 0
 }
+
+// ThreadStopped reports whether CleanupThread stopped the thread and no
+// session start has made it active since (MarkThreadActive).
+func (r *Router) ThreadStopped(threadID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id := r.identityIfPresent(threadID)
+	return id != nil && id.stopped
+}

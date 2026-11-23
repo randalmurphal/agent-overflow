@@ -4378,6 +4378,32 @@ func TestCleanupThreadIfEpochRunsWhenUnchanged(t *testing.T) {
 	}
 }
 
+// ThreadStopped holds from a cleanup until the next session start, and a
+// natural session end does not set it.
+func TestThreadStoppedFromCleanupUntilTheNextStart(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "stopped")
+
+	if router.ThreadStopped("stopped") {
+		t.Fatal("a thread nothing has touched is stopped")
+	}
+	router.MarkThreadActive("stopped", "tok-1")
+	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: "stopped", SessionToken: "tok-1", Content: "error", Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if router.ThreadStopped("stopped") {
+		t.Fatal("a session's death stopped the thread")
+	}
+	router.CleanupThread("stopped")
+	if !router.ThreadStopped("stopped") {
+		t.Fatal("CleanupThread did not stop the thread")
+	}
+	router.MarkThreadActive("stopped", "tok-2")
+	if router.ThreadStopped("stopped") {
+		t.Fatal("a session start left the thread stopped")
+	}
+}
+
 // TestPersistedErrorSummaryIsClamped: provider error strings are
 // unbounded boundary input; the persisted items.summary must be capped
 // at a rune boundary so a pathological payload doesn't ride along on

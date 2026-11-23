@@ -74,7 +74,7 @@ import (
 //     convergence to the deferred restart.
 //
 // Entries are keyed to the session token and purged whenever the session
-// leaves the registry (unregister, take, takeIdle, snapshotAndClear), and
+// leaves the registry (unregister, take, takeIdle, sealAndSnapshot), and
 // the replacement session spawns from the thread row, which already holds
 // the requested config — so a session that dies with an apply outstanding
 // needs no watchdog verdict. The 24h insert-time eviction is a backstop for

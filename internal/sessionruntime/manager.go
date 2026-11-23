@@ -79,7 +79,9 @@ type liveApplyKey struct {
 type Manager struct {
 	mu sync.Mutex
 
-	sessions                            map[string]Entry
+	sessions map[string]Entry
+	// sealed is set by SealAndSnapshot, after which Put registers nothing.
+	sealed                              bool
 	starting                            map[string]*Start
 	reconnecting                        map[string]bool
 	autoReconnectAttempted              map[string]bool
@@ -169,8 +171,15 @@ func (m *Manager) Account(threadID string) (AccountSnapshot, bool) {
 	}, true
 }
 
-func (m *Manager) Put(threadID string, entry Entry) {
+// Put registers entry as the thread's live session and reports whether it
+// did: once the registry is sealed it registers nothing, and the caller owns
+// closing what it started.
+func (m *Manager) Put(threadID string, entry Entry) bool {
 	m.mu.Lock()
+	if m.sealed {
+		m.mu.Unlock()
+		return false
+	}
 	if displaced, ok := m.sessions[threadID]; ok {
 		m.purgeClaudeLiveConfigState(displaced.Token)
 	}
@@ -179,6 +188,7 @@ func (m *Manager) Put(threadID string, entry Entry) {
 		start.Registered = entry
 	}
 	m.mu.Unlock()
+	return true
 }
 
 func (m *Manager) Take(threadID string) (Entry, bool) {
@@ -493,9 +503,14 @@ func (m *Manager) TakeIdle(threadID string, cutoffNano int64) (Entry, bool) {
 	return entry, true
 }
 
-func (m *Manager) SnapshotAndClear() map[string]Entry {
+// SealAndSnapshot takes every registered session out for the caller to close
+// and seals the registry: a later Put registers nothing, so a start that
+// finishes after shutdown's session close cannot leave a session nobody
+// closes. Only the end of the App's life calls it; a harness reset does not.
+func (m *Manager) SealAndSnapshot() map[string]Entry {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.sealed = true
 	result := make(map[string]Entry, len(m.sessions))
 	for threadID, entry := range m.sessions {
 		result[threadID] = entry

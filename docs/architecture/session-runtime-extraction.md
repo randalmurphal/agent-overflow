@@ -8,7 +8,7 @@ why the registry must never be split back into independently locked slices.
 ## Atomic invariants
 
 `sessionManager.put`, `take`, `unregister`, `takeIdle`, and
-`snapshotAndClear` mutate the live session map in the same critical section as
+`sealAndSnapshot` mutate the live session map in the same critical section as
 the scoped `ao` token registry and Claude live-config cleanup. A session token
 must become resolvable exactly when its process enters the registry and become
 unresolvable exactly when that process leaves. Pending/degraded live-config
@@ -50,8 +50,10 @@ the same change; two authorities may never coexist.
 - `Entry` is a non-wire runtime value containing provider name, session token,
   typed Claude/Codex/Claude-TUI handles, launch options, credential attribution,
   `ao` authority, and liveness. Root constructs it after spawning.
-- `Put`, `Take`, `Unregister`, `TakeIdle`, and `SnapshotAndClear` own registry,
-  authority, and live-config cleanup atomically.
+- `Put`, `Take`, `Unregister`, `TakeIdle`, and `SealAndSnapshot` own registry,
+  authority, and live-config cleanup atomically. `SealAndSnapshot` runs only at
+  the end of the App's life; `Put` after it registers nothing and reports so,
+  and the caller closes what it started.
 - `BeginStart` / `FinishStart` and `ThreadIDsForProviderOrStarting` own the
   spawn-to-registry handoff.
 - Typed readers (`Claude`, `Codex`, `ProviderSession`, provider/account
