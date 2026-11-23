@@ -35,3 +35,24 @@ func TestFilesMatchesNamesInOneDirectory(t *testing.T) {
 		t.Fatalf("positions name %s, want %s", name, got[0])
 	}
 }
+
+func TestPackageRootsAreTheMakefilesDeclaration(t *testing.T) {
+	for _, tc := range []struct {
+		makefile string
+		want     []string
+		fails    bool
+	}{
+		{"X := 1\nGO_PACKAGE_ROOTS := . ./cmd/... ./internal/...\n", []string{"cmd", "internal"}, false},
+		{"GO_PACKAGE_ROOTS := . ./internal/app/...\n", []string{"internal/app"}, false},
+		{"GO_PACKAGE_ROOTS := ./cmd/...\n", nil, true},
+		{"GO_PACKAGE_ROOTS := . ./cmd\n", nil, true},
+		{"GO_PACKAGE_ROOTS := . ../x/...\n", nil, true},
+		{"GO_PACKAGE_ROOTS := . ./$(DIR)/...\n", nil, true},
+		{"GO_PACKAGE_ROOTS ?= . ./cmd/...\n", nil, true},
+	} {
+		got, err := packageRoots([]byte(tc.makefile))
+		if (err != nil) != tc.fails || !slices.Equal(got, tc.want) {
+			t.Errorf("packageRoots(%q) = %v, %v; want %v, failure %v", tc.makefile, got, err, tc.want, tc.fails)
+		}
+	}
+}

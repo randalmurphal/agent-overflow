@@ -90,6 +90,8 @@ endif
 WSL_BUILD_MODE ?= build
 WSL_VERSION ?= $(VERSION)
 
+# internal/testutil/reporoot reads this line, so the tests that read the
+# Go tree read these packages.
 GO_PACKAGE_ROOTS := . ./cmd/... ./internal/...
 
 # Builds and tests run at the lowest CPU priority, so they yield to the

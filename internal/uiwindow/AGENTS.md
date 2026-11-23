@@ -25,5 +25,5 @@ window that shows the saved placement without owning it), and ticket
 vocabulary in internal/pagehost. Flush the tracker's in-memory state on close
 instead of reading a window during teardown.
 
-The no-GUI WSL backend must not import this package. Tests retain the guard
+The no-GUI WSL backend must not import this package. internal/treecheck keeps the guard
 against direct zero-argument Window.Restore calls in Wails code.

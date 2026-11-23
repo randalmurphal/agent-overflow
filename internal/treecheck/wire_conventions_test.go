@@ -1,8 +1,8 @@
 package treecheck
 
 import (
+	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"os"
 	"reflect"
@@ -60,52 +60,56 @@ var exemptWireNames = map[string]map[string]bool{
 	"internal/webview2host/cdpframe.go": {"streamid": true},
 }
 
-func TestWirePayloadsAreEntityKeyedNotSubscriptionKeyed(t *testing.T) {
-	t.Parallel()
-	// Test files are scanned too: a fixture that reintroduces the shape is as
-	// much a regression as production code doing it.
-	for _, file := range reporoot.GoFiles(t) {
-		exempt := exemptWireNames[file]
-		fileSet := token.NewFileSet()
-		parsed, err := reporoot.ParseGoFile(t, fileSet, file, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatalf("parse %s: %v", file, err)
-		}
-		ast.Inspect(parsed, func(node ast.Node) bool {
-			structType, ok := node.(*ast.StructType)
-			if !ok || structType.Fields == nil {
+// wirePayloadCheck fails on a serialized field named by a per-caller
+// handle. Test files are scanned too: a fixture that reintroduces the shape
+// is as much a regression as production code doing it.
+func wirePayloadCheck() goFileCheck {
+	var found []string
+	return goFileCheck{
+		name: "WirePayloadsAreEntityKeyedNotSubscriptionKeyed",
+		visit: func(fset *token.FileSet, path string, file *ast.File) {
+			exempt := exemptWireNames[path]
+			ast.Inspect(file, func(node ast.Node) bool {
+				structType, ok := node.(*ast.StructType)
+				if !ok || structType.Fields == nil {
+					return true
+				}
+				// An untagged field on a serialized struct still goes over the wire
+				// under its Go name, so untagged fields are checked too — but only
+				// on structs that are demonstrably wire shapes (at least one json
+				// tag). Go-internal bookkeeping that tracks subscription handles by
+				// field name is not this rule's business.
+				wireShape := structHasJSONTag(structType)
+				for _, field := range structType.Fields.List {
+					name, tagged, serialized := jsonFieldName(field)
+					if !serialized || (!tagged && !wireShape) {
+						continue
+					}
+					kind, banned := bannedWireNames[strings.ToLower(name)]
+					if !banned || exempt[strings.ToLower(name)] {
+						continue
+					}
+					found = append(found, fmt.Sprintf(
+						"%s:%d serializes %q (a %s) — events are keyed by their entity (cwd, PR key, thread id), "+
+							"never by a per-caller handle; see internal/transport/AGENTS.md",
+						path, fset.Position(field.Pos()).Line, name, kind,
+					))
+				}
 				return true
+			})
+		},
+		report: func(t *testing.T) {
+			for _, finding := range found {
+				t.Error(finding)
 			}
-			// An untagged field on a serialized struct still goes over the wire
-			// under its Go name, so untagged fields are checked too — but only
-			// on structs that are demonstrably wire shapes (at least one json
-			// tag). Go-internal bookkeeping that tracks subscription handles by
-			// field name is not this rule's business.
-			wireShape := structHasJSONTag(structType)
-			for _, field := range structType.Fields.List {
-				name, tagged, serialized := jsonFieldName(field)
-				if !serialized || (!tagged && !wireShape) {
-					continue
+			// A carve-out for a file that no longer exists is dead prose that would
+			// quietly re-arm somewhere else if the path were ever reused.
+			for file := range exemptWireNames {
+				if _, err := os.Stat(reporoot.Path(t, file)); err != nil {
+					t.Errorf("wire-name exemption names %s, which is not there: %v", file, err)
 				}
-				kind, banned := bannedWireNames[strings.ToLower(name)]
-				if !banned || exempt[strings.ToLower(name)] {
-					continue
-				}
-				t.Errorf(
-					"%s:%d serializes %q (a %s) — events are keyed by their entity (cwd, PR key, thread id), "+
-						"never by a per-caller handle; see internal/transport/AGENTS.md",
-					file, fileSet.Position(field.Pos()).Line, name, kind,
-				)
 			}
-			return true
-		})
-	}
-	// A carve-out for a file that no longer exists is dead prose that would
-	// quietly re-arm somewhere else if the path were ever reused.
-	for file := range exemptWireNames {
-		if _, err := os.Stat(reporoot.Path(t, file)); err != nil {
-			t.Errorf("wire-name exemption names %s, which is not there: %v", file, err)
-		}
+		},
 	}
 }
 

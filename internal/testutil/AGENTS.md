@@ -30,7 +30,9 @@ packages. Test-specific setup stays beside the test that owns it.
   that do too.
 - A test reads a file outside its package through `reporoot/`: `Path`,
   `Files` for one directory, `GoFiles` for the whole Go source tree, and
-  `ParseGoFile`, each naming files by their slash path from the root. No
+  `ParseGoFile`, each naming files by their slash path from the root.
+  `GoFiles` reads the package roots from the Makefile's `GO_PACKAGE_ROOTS`,
+  their one declaration; a test does not list them itself. No
   TestMain changes directory. The test cache keys a pass on the files a test
   opens, resolved against the package directory, so a file opened through a
   path relative to another directory is left out of the key and a cached

@@ -58,7 +58,7 @@ func GoFiles(t testing.TB) []string {
 	if err != nil {
 		t.Fatalf("reporoot: list the root package: %v", err)
 	}
-	for _, sourceRoot := range goSourceRoots {
+	for _, sourceRoot := range sourceRoots(t) {
 		err := fs.WalkDir(tree, sourceRoot, func(name string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return err
