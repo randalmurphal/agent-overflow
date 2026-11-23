@@ -272,7 +272,16 @@ describe('defaultBootstrap', () => {
     await expect(defaultBootstrap()).rejects.toThrow(/unknown timer/);
   });
 
-  it.each([[{ 'some-timer': 10 }], [{ 'agent-row-linger': 0 }], [{ 'agent-row-linger': '3s' }], [[1]]])(
+  it.each([
+    [{ 'some-timer': 10 }],
+    [{ 'agent-row-linger': 0 }],
+    [{ 'agent-row-linger': '3s' }],
+    [[1]],
+    // setTimeout holds a whole number of milliseconds up to 2^31-1.
+    [{ 'agent-row-linger': 1.5 }],
+    [{ 'agent-row-linger': 0.5 }],
+    [{ 'agent-row-linger': 2 ** 31 }],
+  ])(
     'refuses harness timing this build cannot read: %j',
     async (harnessTiming) => {
       vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harness: true, harnessTiming })));
@@ -280,6 +289,12 @@ describe('defaultBootstrap', () => {
       expect(harnessInterval('agent-row-linger', 60_000)).toBe(60_000);
     },
   );
+
+  it.each([1, 2 ** 31 - 1])('takes a page timer of %d ms, the ends of what setTimeout holds', async (ms) => {
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harness: true, harnessTiming: { 'agent-row-linger': ms } })));
+    await defaultBootstrap();
+    expect(harnessInterval('agent-row-linger', 60_000)).toBe(ms);
+  });
 
   // A page whose window this application owns is handed its ticket by
   // injection, so nothing credential-shaped is on its URL and there is

@@ -59,8 +59,9 @@ const (
 	// boot, so an end-to-end test does not wait out a cadence it is not
 	// about: comma-separated name=duration entries such as
 	// "pairing-probe=250ms,watermark=500ms". Test isolation only: honored
-	// solely by a harness boot, which refuses to start on an unknown name
-	// or a duration that is not positive.
+	// solely by a harness boot, which refuses to start on an unknown name,
+	// a duration that is not positive, or one the timer's destination
+	// cannot hold exactly (main_harness.go harnessTimers).
 	HarnessTiming = "AO_HARNESS_TIMING"
 )
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 
@@ -18,6 +19,10 @@ import (
 )
 
 const defaultPRUpdateInterval = 45 * time.Second
+
+// MaxPRUpdateInterval is the longest IsolationConfig.PRUpdateInterval: a
+// pump's retry (pump.NextDelay) and the CI retry double a delay it caps.
+const MaxPRUpdateInterval = time.Duration(math.MaxInt64 / 2)
 
 // defaultPRUpdateRetryBase is the first retry delay after a failed poll;
 // it doubles per failure up to the regular interval. A forge that was

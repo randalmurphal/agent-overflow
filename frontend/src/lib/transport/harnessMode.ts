@@ -72,11 +72,19 @@ export function harnessInterval(timer: HarnessFrontendTimer, productMs: number):
 }
 
 /**
+ * The longest timer setTimeout arms as given: its delay is a signed 32-bit
+ * count of milliseconds, and a longer one wraps and fires at once
+ * (transport.MaxFrontendTimingMs on the backend).
+ */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
  * A manifest's frontend timer overrides, validated. Timing without the
  * harness bit is no timing: only a harness boot may shorten a product
  * timer. An entry this build does not name, or a duration that is not a
- * positive number, is a defect in the boot that served it and throws, so
- * the manifest that carried it is refused.
+ * whole number of milliseconds from 1 to MAX_TIMER_MS, is a defect in the
+ * boot that served it and throws, so the manifest that carried it is
+ * refused.
  */
 function harnessTimingOf(isHarness: boolean, value: unknown): ReadonlyMap<HarnessFrontendTimer, number> {
   const next = new Map<HarnessFrontendTimer, number>();
@@ -86,8 +94,8 @@ function harnessTimingOf(isHarness: boolean, value: unknown): ReadonlyMap<Harnes
   }
   for (const [name, ms] of Object.entries(value)) {
     if (!FRONTEND_TIMERS.has(name)) throw new Error(`bootstrap harnessTiming names an unknown timer ${JSON.stringify(name)}`);
-    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) {
-      throw new Error(`bootstrap harnessTiming ${name} needs a positive duration, got ${JSON.stringify(ms)}`);
+    if (typeof ms !== 'number' || !Number.isInteger(ms) || ms <= 0 || ms > MAX_TIMER_MS) {
+      throw new Error(`bootstrap harnessTiming ${name} needs a whole number of milliseconds from 1 to ${MAX_TIMER_MS}, got ${JSON.stringify(ms)}`);
     }
     next.set(name as HarnessFrontendTimer, ms);
   }

@@ -2308,6 +2308,13 @@ func TestServer_BootstrapServesFrontendTimingOnlyInHarnessMode(t *testing.T) {
 	if got := bootstrapDoc(t, timed).HarnessTiming; len(got) != 1 || got["unreachable-settle"] != 2000 {
 		t.Fatalf("harness manifest timing = %v, want unreachable-settle 2000", got)
 	}
+	longest := newServerFixtureWith(t, func(cfg *Config) {
+		cfg.Harness = true
+		cfg.FrontendTiming = map[string]int64{"agent-row-linger": MaxFrontendTimingMs}
+	})
+	if got := bootstrapDoc(t, longest).HarnessTiming["agent-row-linger"]; got != MaxFrontendTimingMs {
+		t.Fatalf("the longest page timer served as %d, want %d", got, MaxFrontendTimingMs)
+	}
 
 	empty := func(cfg *Config) { cfg.FrontendTiming = map[string]int64{} }
 	for name, cfg := range map[string]func(*Config){
@@ -2335,6 +2342,7 @@ func TestServer_BootstrapServesFrontendTimingOnlyInHarnessMode(t *testing.T) {
 	for name, cfg := range map[string]Config{
 		"without harness":  {FrontendTiming: map[string]int64{"agent-row-linger": 3000}},
 		"nonpositive time": {Harness: true, FrontendTiming: map[string]int64{"agent-row-linger": 0}},
+		"past setTimeout":  {Harness: true, FrontendTiming: map[string]int64{"agent-row-linger": MaxFrontendTimingMs + 1}},
 		"unnamed":          {Harness: true, FrontendTiming: map[string]int64{" ": 3000}},
 	} {
 		cfg.Dispatcher = NewDispatcher()

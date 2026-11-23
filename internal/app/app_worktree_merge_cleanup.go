@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -65,8 +66,10 @@ const (
 	// background fetch does.
 	mergedPRPollInitialDelay = 45 * time.Second
 	// mergedPRPollBackoffMax caps the wait after consecutive failed reads
-	// of one repository.
-	mergedPRPollBackoffMax = 30 * time.Minute
+	// of one repository; mergedPRPollBackoffDoublings caps how often the
+	// interval doubles toward it.
+	mergedPRPollBackoffMax       = 30 * time.Minute
+	mergedPRPollBackoffDoublings = 8
 	// mergedPRForgeTimeout bounds one forge read the cleanup makes.
 	mergedPRForgeTimeout = time.Minute
 )
@@ -90,8 +93,13 @@ func (b *mergedPRBackoff) fail(now time.Time, base time.Duration, err error) {
 		b.next = limited.Until
 		return
 	}
-	b.next = now.Add(min(base<<min(b.failures, 8), max(mergedPRPollBackoffMax, base)))
+	b.next = now.Add(min(base<<min(b.failures, mergedPRPollBackoffDoublings), max(mergedPRPollBackoffMax, base)))
 }
+
+// MaxMergedPRPollInterval is the longest
+// IsolationConfig.MergedPRPollInterval a failed read's backoff can double
+// mergedPRPollBackoffDoublings times.
+const MaxMergedPRPollInterval = time.Duration(math.MaxInt64 >> mergedPRPollBackoffDoublings)
 
 // mergedPRCleanupState is the cleanup's state. observed, act and logged
 // are handed over under mu; reads, lookups, removals and noneRead belong
