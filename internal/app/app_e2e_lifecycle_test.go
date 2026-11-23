@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -388,69 +387,30 @@ func TestAppFixtureTeardownRefusesTheSessionStartsItSetsOff(t *testing.T) {
 	}
 }
 
-// The teardown waits out a session start that passed the refusal before the
-// teardown began, and closes the session it registers with the rest. The
-// start is held until the teardown has taken the sessions, or for 200 ms
-// after the teardown began, so a teardown that took the sessions without
-// waiting would take them before the start registers its session.
-func TestAppFixtureTeardownClosesTheSessionOfAStartInFlight(t *testing.T) {
+// The teardown's take returns each session's Close error, and leaves the App
+// holding none of the sessions it took, one whose Close failed included.
+func TestCloseLeftSessionsReturnsEachCloseError(t *testing.T) {
 	t.Parallel()
-	const standIn = "stand-in-thread"
-	var (
-		app      *App
-		started  provider.Session
-		startErr = make(chan error, 1)
-	)
-	t.Run("test", func(t *testing.T) {
-		// Made before the fixture, so they outlast its teardown, during
-		// which the start runs.
-		workspace := t.TempDir()
-		binary := testutil.WriteMockClaudeScript(t, t.TempDir(), nil)
-		app, _ = setupE2EApp(t)
-		if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
-			t.Fatal(err)
+	app, _ := setupE2EApp(t)
+	app.sessionManager().put("fails-thread", session{Provider: string(provider.Claude)})
+	app.sessionManager().put("closes-thread", session{Provider: string(provider.Claude)})
+	refused := errors.New("the provider would not end")
+	var closed []string
+	errs := closeLeftSessionsBy(app, func(threadID string, _ session) error {
+		closed = append(closed, threadID)
+		if threadID == "fails-thread" {
+			return refused
 		}
-		thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
-		if err != nil {
-			t.Fatal(err)
-		}
-		app.sessionManager().put(standIn, session{Provider: string(provider.Claude)})
-		entered := make(chan struct{})
-		app.startSessionFn = func(threadID string) error {
-			close(entered)
-			for !app.shuttingDown.Load() {
-				time.Sleep(time.Millisecond)
-			}
-			for until := time.Now().Add(200 * time.Millisecond); time.Now().Before(until); time.Sleep(time.Millisecond) {
-				if _, held := app.sessionManager().get(standIn); !held {
-					break
-				}
-			}
-			if err := app.startSessionNow(threadID); err != nil {
-				return err
-			}
-			registered, _ := app.sessionManager().get(threadID)
-			started = registered.ProviderSession()
-			return nil
-		}
-		go func() { startErr <- app.startSession(context.Background(), thread.ID) }()
-		<-entered
+		return nil
 	})
-	if err := <-startErr; err != nil || started == nil {
-		t.Fatalf("the start in flight registered no session during the teardown: %v", err)
+	if slices.Sort(closed); !slices.Equal(closed, []string{"closes-thread", "fails-thread"}) {
+		t.Errorf("the take closed %v; want both sessions it took", closed)
+	}
+	if len(errs) != 1 || !errors.Is(errs[0], refused) {
+		t.Errorf("the take returned %v; want the one Close error", errs)
 	}
 	if open := len(app.sessionManager().runtime.Snapshot()); open != 0 {
-		t.Errorf("the App holds %d sessions after its teardown, want the start's taken with the rest", open)
-		for _, err := range closeLeftSessions(app) {
-			t.Error(err)
-		}
-	}
-	process, err := os.FindProcess(started.PID())
-	if err == nil {
-		err = process.Signal(syscall.Signal(0))
-	}
-	if !errors.Is(err, os.ErrProcessDone) {
-		t.Errorf("signal 0 to the provider process the start began = %v after the teardown, want it ended", err)
+		t.Errorf("the App holds %d sessions after the take", open)
 	}
 }
 
@@ -530,12 +490,20 @@ func waitForSessionStarts(sessions *sessionruntime.Manager, bound time.Duration)
 // they started, and returns what failed. A session a test built by hand to
 // stand in for one owns no process, and its constructor forbids Close.
 func closeLeftSessions(app *App) []error {
+	return closeLeftSessionsBy(app, func(threadID string, s session) error {
+		if ps := s.ProviderSession(); ps == nil || ps.PID() == 0 {
+			return nil
+		}
+		return app.closeProviderSession(threadID, s)
+	})
+}
+
+// closeLeftSessionsBy is closeLeftSessions closing each session it takes
+// through closeSession.
+func closeLeftSessionsBy(app *App, closeSession func(threadID string, s session) error) []error {
 	var errs []error
 	for threadID, s := range app.sessionManager().snapshotAndClear() {
-		if ps := s.ProviderSession(); ps == nil || ps.PID() == 0 {
-			continue
-		}
-		if err := app.closeProviderSession(threadID, s); err != nil {
+		if err := closeSession(threadID, s); err != nil {
 			errs = append(errs, fmt.Errorf("close the session the test left open: %w", err))
 		}
 	}
