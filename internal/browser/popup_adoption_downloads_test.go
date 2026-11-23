@@ -134,7 +134,9 @@ func TestAPopupsDownloadEndsBeforeItsCloseInEveryOrder(t *testing.T) {
 // end already received is kept, one parking stopped over the cap stays
 // canceled for it, and anything else is canceled with the leave's reason,
 // its file removed and its reservation returned. Its engine is asked to
-// cancel it once, by whichever stopped it.
+// cancel it by whatever stopped it: the leave, or for one over the cap,
+// parking's stop and the stop of the row it is listed as, which retries a
+// cancel that failed (stopOverCap).
 func TestAPopupsTabTakenOutBeforeItsDownloadsSettleKeepsThem(t *testing.T) {
 	removers := []struct {
 		name, reason string
@@ -161,16 +163,16 @@ func TestAPopupsTabTakenOutBeforeItsDownloadsSettleKeepsThem(t *testing.T) {
 		// want is the popup's row as "id state bytes cause" once reason's
 		// leave settled it.
 		want func(reason string, saving downloadSaving) string
-		// cancels is how often its engine is asked to cancel it; kept is
-		// whether its file stays.
-		cancels int
+		// cancels is what its engine is asked to cancel; kept is whether
+		// its file stays.
+		cancels []downloadID
 		kept    bool
 		// artifactsOnly is set for a kind only an engine whose downloads
 		// are AO's has.
 		artifactsOnly bool
 	}
 	kinds := []kind{
-		{name: "running", progress: progressOf("dl-1", downloadInProgress, 10), cancels: 1, want: func(reason string, _ downloadSaving) string {
+		{name: "running", progress: progressOf("dl-1", downloadInProgress, 10), cancels: []downloadID{"dl-1"}, want: func(reason string, _ downloadSaving) string {
 			return "dl-1 canceled 10 " + reason
 		}},
 		{name: "completed", progress: progressOf("dl-1", downloadCompleted, 5), kept: true, want: func(_ string, saving downloadSaving) string {
@@ -179,7 +181,7 @@ func TestAPopupsTabTakenOutBeforeItsDownloadsSettleKeepsThem(t *testing.T) {
 			}
 			return "dl-1 completed 5 saved elsewhere"
 		}},
-		{name: "stopped over the cap while parked", progress: progressOf("dl-1", downloadInProgress, maxDownloadBytes+1), cancels: 1, artifactsOnly: true, want: func(string, downloadSaving) string {
+		{name: "stopped over the cap while parked", progress: progressOf("dl-1", downloadInProgress, maxDownloadBytes+1), cancels: []downloadID{"dl-1", "dl-1"}, artifactsOnly: true, want: func(string, downloadSaving) string {
 			return fmt.Sprintf("dl-1 canceled %d download exceeds %d bytes", maxDownloadBytes+1, maxDownloadBytes)
 		}},
 	}
@@ -204,6 +206,14 @@ func TestAPopupsTabTakenOutBeforeItsDownloadsSettleKeepsThem(t *testing.T) {
 						t.Fatal("the popup's download was refused")
 					}
 					manager.downloadProgress(kind.progress)
+					if len(kind.cancels) > 1 {
+						// Parking's stop: its cancel, then its discard of the
+						// file, before the listing.
+						awaitRemoved(t, file)
+						if got := engine.cancels(); !slices.Equal(got, []downloadID{"dl-1"}) {
+							t.Fatalf("parking's stop asked to cancel %q, want dl-1", got)
+						}
+					}
 					want := kind.want(remover.reason, saving)
 					manager.mu.Lock()
 					openerTab := manager.pageByHandleLocked(opener)
@@ -224,8 +234,8 @@ func TestAPopupsTabTakenOutBeforeItsDownloadsSettleKeepsThem(t *testing.T) {
 							}
 						})
 						// The remover takes the tab out in one m.mu hold,
-						// which this polls for; what of it waits for this
-						// listing finishes after.
+						// which this polls for every millisecond; what of it
+						// waits for this listing finishes after.
 						for deadline := time.Now().Add(hostedTestDeadline); listed(manager, "popup"); time.Sleep(time.Millisecond) {
 							if time.Now().After(deadline) {
 								t.Error("the remover never took the popup's tab out")
@@ -237,6 +247,22 @@ func TestAPopupsTabTakenOutBeforeItsDownloadsSettleKeepsThem(t *testing.T) {
 					wg.Wait()
 					if tab == nil {
 						t.FailNow()
+					}
+					// The tab's teardown, which stops what its leave
+					// canceled, is done once no jar holds it closing.
+					for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
+						manager.mu.Lock()
+						closing := false
+						for _, scope := range manager.scopes {
+							closing = closing || scope.closing[tab.id] != nil
+						}
+						manager.mu.Unlock()
+						if !closing {
+							break
+						}
+						if time.Now().After(deadline) {
+							t.Fatal("the popup's tab never finished closing")
+						}
 					}
 					var got []string
 					for _, d := range tab.downloads.list() {
@@ -271,19 +297,17 @@ func TestAPopupsTabTakenOutBeforeItsDownloadsSettleKeepsThem(t *testing.T) {
 						} else {
 							awaitRemoved(t, file)
 						}
-						// Every cancel comes before the discard that settles
-						// the reservation, so the count below is final.
+						// Every stop's cancel comes before its discard, and
+						// the last discard settles the reservation, so the
+						// cancels below are final.
 						for deadline := time.Now().Add(hostedTestDeadline); manager.artifactBytes.Used() != wantUsed; time.Sleep(time.Millisecond) {
 							if time.Now().After(deadline) {
 								t.Fatalf("%d artifact bytes are reserved, want %d", manager.artifactBytes.Used(), wantUsed)
 							}
 						}
 					}
-					for deadline := time.Now().Add(hostedTestDeadline); len(engine.cancels()) < kind.cancels && time.Now().Before(deadline); {
-						time.Sleep(time.Millisecond)
-					}
-					if got := engine.cancels(); len(got) != kind.cancels {
-						t.Fatalf("the engine was asked to cancel %q, want dl-1 %d times", got, kind.cancels)
+					if got := engine.cancels(); !slices.Equal(got, kind.cancels) {
+						t.Fatalf("the engine was asked to cancel %q, want %q", got, kind.cancels)
 					}
 				})
 			}
@@ -323,16 +347,16 @@ func TestAParkedDownloadIsBoundedBeforeItsFate(t *testing.T) {
 	}
 	manager.adoptPopup(engine.popup(opener, "popup"))
 	wantDownloads(t, manager, "popup", fmt.Sprintf("dl-1 canceled %d", maxDownloadBytes+1))
-	// The stop's discard settles the reservation once its file is gone,
-	// after the stop's cancel; a cancel of whatever else held it would come
-	// before its own discard too.
+	// Its row's stop settles the reservation once its file is gone, after
+	// that stop's own cancel, which retries parking's in case it failed
+	// (stopOverCap): two cancels, and none after.
 	for deadline := time.Now().Add(hostedTestDeadline); manager.artifactBytes.Used() != before; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("after the fate %d artifact bytes are reserved, want %d", manager.artifactBytes.Used(), before)
 		}
 	}
-	if got := engine.cancels(); !slices.Equal(got, []downloadID{"dl-1"}) {
-		t.Fatalf("the engine was asked to cancel %q, want dl-1 once, by the stop", got)
+	if got := engine.cancels(); !slices.Equal(got, []downloadID{"dl-1", "dl-1"}) {
+		t.Fatalf("the engine was asked to cancel %q, want dl-1 by parking's stop and by its row's", got)
 	}
 }
 
@@ -398,7 +422,7 @@ func TestAParkedDownloadHoldsItsWorkspacesAllowance(t *testing.T) {
 
 // A parked download's listing takes its reservation over: its row holds the
 // very reservation the download parked with, so with the artifact quota
-// taken up from before the listing, the download its popup finished is
+// taken up before the adoption, the download its popup finished is
 // listed as it is, not canceled over quota, and holds its size of the
 // quotas after.
 func TestAParkedDownloadsListingKeepsItsReservation(t *testing.T) {
@@ -568,13 +592,43 @@ func TestTheBrowsersCloseDropsParkedDownloads(t *testing.T) {
 // the jar's download directory with it, finished or not, and its
 // reservation: no row lists it, and nothing else would remove it.
 func TestTheBrowsersCloseRemovesParkedArtifacts(t *testing.T) {
-	for _, state := range []downloadState{downloadCompleted, downloadInProgress} {
-		t.Run(state.String(), func(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		progress downloadProgress
+		// holdCancel holds the stop's cancel, and so its discard, until
+		// the test ends: the close alone must remove what the download
+		// kept.
+		holdCancel bool
+	}{
+		{name: "completed", progress: progressOf("dl-1", downloadCompleted, 100)},
+		{name: "inProgress", progress: progressOf("dl-1", downloadInProgress, 100)},
+		{name: "completed over the cap", progress: progressOf("dl-1", downloadCompleted, maxDownloadBytes+1)},
+		{name: "over the cap, its stop's cancel unanswered", progress: progressOf("dl-1", downloadInProgress, maxDownloadBytes+1), holdCancel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			manager, engine, _, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
+			if tc.holdCancel {
+				held, canceling := make(chan struct{}), make(chan struct{}, 1)
+				t.Cleanup(func() { close(held) })
+				engine.mu.Lock()
+				engine.onCancel = func(downloadID) error {
+					canceling <- struct{}{}
+					<-held
+					return nil
+				}
+				engine.mu.Unlock()
+				defer func() {
+					select {
+					case <-canceling:
+					case <-time.After(hostedTestDeadline):
+						t.Error("the stop never asked to cancel the download")
+					}
+				}()
+			}
 			before := manager.artifactBytes.Used()
 			file := engineArtifact(t, manager, "dl-1")
 			popupDownload(manager, engine, "popup", "dl-1", opener)
-			manager.downloadProgress(progressOf("dl-1", state, 100))
+			manager.downloadProgress(tc.progress)
 			if err := manager.closeBrowser(t.Context()); err != nil {
 				t.Fatal(err)
 			}
@@ -588,42 +642,134 @@ func TestTheBrowsersCloseRemovesParkedArtifacts(t *testing.T) {
 	}
 }
 
-// An unraced adoption publishes the downloads its popup started and
-// finished before its listing in one push of their starts and one push per
-// end, besides the push of the tab's addition: no more pushes, and no more
-// rows in them, than listing them one by one, each with its end, made.
+// An unraced adoption shows a client each download its popup started
+// before its listing, in the first push that lists it, as parking left it:
+// a finished one completed, announced once after that push, and a running
+// one running with its counts. Its pushes stay within what listing the
+// downloads one by one, each with its end, made: for download i an end's
+// push and a start's push of i rows, then the tab addition's of all n,
+// three of them carrying all n rows.
 func TestAnAdoptionPublishesItsParkedDownloadsWithinOnePushEach(t *testing.T) {
-	manager, engine, _, opener := newAdoptionManager(t)
-	for i := range maxParkedDownloads {
-		id := downloadID(fmt.Sprintf("dl-%d", i+1))
-		if !popupDownload(manager, engine, "popup", id, opener) {
-			t.Fatalf("the popup's download %s was refused", id)
-		}
-		manager.downloadProgress(progressOf(id, downloadCompleted, 5))
+	n := maxParkedDownloads
+	for _, tc := range []struct {
+		name  string
+		state downloadState
+		// want is a row's state and bytes in the first push that lists it.
+		want     string
+		received float64
+	}{
+		{name: "finished", state: downloadCompleted, want: downloadStateCompleted, received: 5},
+		{name: "running", state: downloadInProgress, want: downloadStateRunning, received: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, engine, _, opener := newAdoptionManager(t)
+			for i := range n {
+				id := downloadID(fmt.Sprintf("dl-%d", i+1))
+				if !popupDownload(manager, engine, "popup", id, opener) {
+					t.Fatalf("the popup's download %s was refused", id)
+				}
+				manager.downloadProgress(progressOf(id, tc.state, tc.received))
+			}
+			// events is what a client receives: each push's downloads, or an
+			// announcement, in order.
+			type event struct {
+				push         []ThreadDownload
+				announcement *ThreadDownload
+			}
+			var mu sync.Mutex
+			var events []event
+			manager.SetEventSink(func(e CompanionEvent) {
+				mu.Lock()
+				defer mu.Unlock()
+				switch {
+				case e.Kind == "state" && len(e.Downloads) > 0:
+					events = append(events, event{push: slices.Clone(e.Downloads)})
+				case e.Kind == "download" && e.Download != nil:
+					announced := *e.Download
+					events = append(events, event{announcement: &announced})
+				}
+			})
+			manager.adoptPopup(engine.popup(opener, "popup"))
+			mu.Lock()
+			defer mu.Unlock()
+			firstShown := map[string]int{}
+			pushes, rows, whole := 0, 0, 0
+			for i, e := range events {
+				if e.push == nil {
+					continue
+				}
+				pushes++
+				rows += len(e.push)
+				if len(e.push) == n {
+					whole++
+				}
+				for _, d := range e.push {
+					if _, seen := firstShown[d.Name]; seen {
+						continue
+					}
+					firstShown[d.Name] = i
+					if got := fmt.Sprintf("%s %d", d.State, d.ReceivedBytes); got != fmt.Sprintf("%s %d", tc.want, int64(tc.received)) {
+						t.Errorf("the first push that lists %s shows it %s, want %s %d", d.Name, got, tc.want, int64(tc.received))
+					}
+				}
+			}
+			announced := map[string]int{}
+			for i, e := range events {
+				if e.announcement == nil {
+					continue
+				}
+				a := e.announcement
+				announced[a.Name]++
+				if shown, ok := firstShown[a.Name]; !ok || shown > i {
+					t.Errorf("%s was announced before a push listed it", a.Name)
+				}
+				if a.State != tc.want {
+					t.Errorf("%s was announced %s, want %s", a.Name, a.State, tc.want)
+				}
+			}
+			for i := range n {
+				name := fmt.Sprintf("dl-%d", i+1)
+				if _, ok := firstShown[name]; !ok {
+					t.Errorf("no push listed %s", name)
+				}
+				wantAnnounced := 0
+				if tc.state == downloadCompleted {
+					wantAnnounced = 1
+				}
+				if announced[name] != wantAnnounced {
+					t.Errorf("%s was announced %d times, want %d", name, announced[name], wantAnnounced)
+				}
+			}
+			if pushes > 2*n+1 || rows > n*(n+1)+n || whole > 3 {
+				t.Errorf("%d pushes carry %d download rows, %d of them all %d, want at most %d carrying %d, 3 of them all", pushes, rows, whole, n, 2*n+1, n*(n+1)+n)
+			}
+			t.Logf("%d pushes carry %d download rows, %d of them all %d", pushes, rows, whole, n)
+		})
 	}
-	var mu sync.Mutex
-	pushes, rows := 0, 0
-	manager.SetEventSink(func(event CompanionEvent) {
-		if event.Kind != "state" || len(event.Downloads) == 0 {
+}
+
+// The user's cancel of a download whose end its popup's listing has
+// received and not yet applied is declined: the download is listed with
+// that end, and its engine is never asked to cancel it.
+func TestACancelOfAParkedDownloadWhoseEndIsKnownIsDeclined(t *testing.T) {
+	manager, engine, access, opener := newAdoptionManager(t)
+	if !popupDownload(manager, engine, "popup", "dl-1", opener) {
+		t.Fatal("the popup's download was refused")
+	}
+	manager.downloadProgress(progressOf("dl-1", downloadCompleted, 5))
+	manager.popupListing = func() {
+		listed := manager.CompanionState(access.Caller()).Downloads
+		if len(listed) != 1 {
+			t.Errorf("the thread lists %+v at the popup's listing, want its download", listed)
 			return
 		}
-		mu.Lock()
-		pushes++
-		rows += len(event.Downloads)
-		mu.Unlock()
-	})
-	manager.adoptPopup(engine.popup(opener, "popup"))
-	var want []string
-	for i := range maxParkedDownloads {
-		want = append(want, fmt.Sprintf("dl-%d completed 5", i+1))
+		if err := manager.CancelThreadDownload(access, DownloadKey(listed[0].ID)); err != nil {
+			t.Errorf("cancel the download: %v", err)
+		}
 	}
-	wantDownloads(t, manager, "popup", want...)
-	mu.Lock()
-	defer mu.Unlock()
-	// One by one: for download i, its end's push and its start's, each of
-	// i rows, then the addition's of all n.
-	n := maxParkedDownloads
-	if wantPushes, wantRows := 2*n+1, n*(n+1)+n; pushes > wantPushes || rows > wantRows {
-		t.Fatalf("%d pushes carry %d download rows, want at most %d carrying %d", pushes, rows, wantPushes, wantRows)
+	manager.adoptPopup(engine.popup(opener, "popup"))
+	wantDownloads(t, manager, "popup", "dl-1 completed 5")
+	if got := engine.cancels(); len(got) != 0 {
+		t.Fatalf("the engine was asked to cancel %q", got)
 	}
 }

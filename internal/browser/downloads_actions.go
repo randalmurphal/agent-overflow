@@ -58,11 +58,12 @@ func (m *Manager) CancelThreadDownload(access Access, id DownloadKey) error {
 	}
 	held := p.downloads.hold()
 	entry := held.entry(item.engineID)
-	if entry == nil || entry.advance(rowCancelRequested) != nil {
+	if entry == nil || entry.endReceived() || entry.advance(rowCancelRequested) != nil {
 		// Only a running row is canceled: a cancel already with the engine
 		// stays its request, which only its own refusal withdraws, never a
-		// later request's answer, and a finished file being published, or
-		// an ended download, has its end.
+		// later request's answer, and a finished file being published, an
+		// ended download, or one whose end was received and is on its way
+		// to the row, has its end.
 		held.release()
 		return nil
 	}

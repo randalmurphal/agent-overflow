@@ -485,8 +485,9 @@ func (l *popupLauncher) tabPage(access Access, tab string) *managedPage {
 // listed tab's processing before or after the action; a tab being created
 // or restored, or a popup being adopted, also before its listing (only
 // before or after a close before the listing); a popup being adopted whose
-// tab the action takes out before its downloads' newest progress is
-// applied, before its listing or after the action; a popup whose close was
+// tab the action takes out between the hold that lists the tab with its
+// downloads and the application of their parked ends, the processing
+// before its listing or after the action; a popup whose close was
 // received, its engine page held until after the action, or retired
 // before it and settled by the Manager after (360 rows). A popup never
 // listed whose close was not received has no row: its fate, not a

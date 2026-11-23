@@ -41,12 +41,13 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 // row waiting for this end (pageLeftLocked), so a row this settles stops
 // waiting whichever the lookup found.
 func (m *Manager) applyToRow(p *managedPage, scope *jarScope, event downloadProgress) {
-	m.applyHeldRow(p, scope, p.downloads.hold(), event)
+	m.publishDownloads(m.applyHeldRow(p, scope, p.downloads.hold(), event))
 }
 
 // applyHeldRow is applyToRow for a caller that holds p's download log,
-// which this releases.
-func (m *Manager) applyHeldRow(p *managedPage, scope *jarScope, held *downloadLogHold, event downloadProgress) {
+// which this releases, and publishes the note it answers once it holds no
+// lock (publishDownloads).
+func (m *Manager) applyHeldRow(p *managedPage, scope *jarScope, held *downloadLogHold, event downloadProgress) downloadNote {
 	defer m.endDelivered(p, event.ID)
 	entry := held.entry(event.ID)
 	// A settled download takes no further report: AO stopped it (a quota,
@@ -54,7 +55,7 @@ func (m *Manager) applyHeldRow(p *managedPage, scope *jarScope, held *downloadLo
 	// One being published has had its finish.
 	if entry == nil || !entry.takesReports() {
 		held.release()
-		return
+		return downloadNote{}
 	}
 	if event.State == downloadCancelRefused {
 		// The engine refused the cancel after taking it: the download runs
@@ -69,8 +70,7 @@ func (m *Manager) applyHeldRow(p *managedPage, scope *jarScope, held *downloadLo
 		entry.Error = event.Error
 		note := m.noteDownloadLocked(p, entry)
 		held.release()
-		m.publishDownloads(note)
-		return
+		return note
 	}
 	if event.State != downloadInProgress {
 		// A running row carries only a refused cancel's reason, which its
@@ -89,21 +89,11 @@ func (m *Manager) applyHeldRow(p *managedPage, scope *jarScope, held *downloadLo
 		discard := entry.discard()
 		note := m.noteDownloadLocked(p, entry)
 		held.release()
-		m.publishDownloads(note)
-		cancel := event.State.running() && scope != nil
-		go func() {
-			if cancel {
-				if err := scope.profile.CancelDownload(event.ID); err != nil && !errors.Is(err, errDownloadEnded) {
-					log.Printf("browser: cancel download %s over its size cap: %v", event.ID, err)
-				}
-			}
-			m.finishDiscard(discard)
-		}()
-		return
+		m.stopOverCap(scope, event.ID, event.State.running(), discard)
+		return note
 	}
 	if event.State == downloadCompleted && saving == downloadsStaged {
-		m.publishFinishedDownload(p, held, entry, event)
-		return
+		return m.publishFinishedDownload(p, held, entry, event)
 	}
 	// keep is false for an end that keeps no file: what the engine wrote,
 	// staged or an artifact, is a partial file, which goes.
@@ -192,16 +182,34 @@ func (m *Manager) applyHeldRow(p *managedPage, scope *jarScope, held *downloadLo
 		// The engine reported its end, so it writes the file no more.
 		m.finishDiscard(discard)
 	}
-	m.publishDownloads(note)
+	return note
 }
 
-// settleOverCap settles entry canceled for passing maxDownloadBytes. The
-// caller holds its log.
+// settleOverCap settles entry canceled for passing maxDownloadBytes; its
+// caller takes the row's discard and stops it (stopOverCap). The caller
+// holds its log.
 func settleOverCap(entry *DownloadInfo) {
 	if err := entry.settle(downloadStateCanceled); err != nil {
 		log.Printf("browser: %v", err)
 	}
 	entry.Error = fmt.Sprintf("download exceeds %d bytes", maxDownloadBytes)
+}
+
+// stopOverCap stops download id, whose row settled over the cap
+// (settleOverCap): while it ran and scope is the jar it runs in, the
+// engine is asked to cancel it, which retries a cancel an earlier stop
+// sent; then discard, the row's file and reservation, finishes. Off the
+// caller's locks, since a cancel may wait on the engine's UI thread.
+func (m *Manager) stopOverCap(scope *jarScope, id downloadID, running bool, discard downloadDiscard) {
+	cancel := running && scope != nil
+	go func() {
+		if cancel {
+			if err := scope.profile.CancelDownload(id); err != nil && !errors.Is(err, errDownloadEnded) {
+				log.Printf("browser: cancel download %s over its size cap: %v", id, err)
+			}
+		}
+		m.finishDiscard(discard)
+	}()
 }
 
 // placeArtifact moves a finished artifact download from the file its engine
@@ -254,8 +262,9 @@ func (m *Manager) placeArtifact(source, dir, name string) (path string, file os.
 // (CancelThreadDownload) leave it to this, its one settlement, and Close
 // waits for it (waitPublishes). A finish received before p left reaches
 // here from the row's end pending, and publishes all the same. The caller
-// holds p's download log, which this releases.
-func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold, entry *DownloadInfo, event downloadProgress) {
+// holds p's download log, which this releases, and publishes the note it
+// answers (publishDownloads).
+func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold, entry *DownloadInfo, event downloadProgress) downloadNote {
 	// The staged file the row has owned since its admission (entry.source)
 	// is the one published.
 	source := ""
@@ -278,14 +287,13 @@ func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold,
 		note := m.noteDownloadLocked(p, entry)
 		held.release()
 		m.finishDiscard(discard)
-		m.publishDownloads(note)
-		return
+		return note
 	}
 	if err := entry.advance(rowPublishing); err != nil {
 		// The caller checked it takes reports, which a publish begins from.
 		log.Printf("browser: %v", err)
 		held.release()
-		return
+		return downloadNote{}
 	}
 	name := entry.SuggestedName
 	m.beginPublish()
@@ -300,7 +308,7 @@ func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold,
 		held.release()
 		m.endPublish()
 		log.Printf("browser: %v; its publish answered %q, %v", lookupErr, path, err)
-		return
+		return downloadNote{}
 	}
 	// Its staged file is released, published or not.
 	entry.source = downloadFile{}
@@ -316,7 +324,7 @@ func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold,
 	note := m.noteDownloadLocked(p, entry)
 	held.release()
 	m.endPublish()
-	m.publishDownloads(note)
+	return note
 }
 
 // beginPublish and endPublish count the publishes in flight, which Close
