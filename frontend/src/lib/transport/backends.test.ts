@@ -61,7 +61,7 @@ import {
   threadGroupBackend,
 } from './entityIndex';
 import { onBackendDetached, type BackendDetachment } from './backends';
-import { backendClockSkew, resetBackendClocksForTest } from './backendClock';
+import { backendClockSkew } from './backendClock';
 import { Events } from './runtime';
 import type { WSClient } from './wsClient';
 
@@ -133,8 +133,9 @@ function deliverHome(channel: string, data: unknown, sequence?: number): void {
 }
 
 beforeEach(() => {
+  // The home entry registered its clock at module load and keeps it; a
+  // detached entry drops its own (testResets.ts NOT_BETWEEN_TESTS).
   __attachBackendForTest(HOME_DESCRIPTOR, homeClient as never);
-  resetBackendClocksForTest();
   homeHandlers = new Map();
   for (const fn of Object.values(homeClient)) (fn as { mockReset?: () => void }).mockReset?.();
   homeClient.getStatus.mockReturnValue({ status: 'connected', nextAttemptAt: null });
@@ -304,6 +305,11 @@ describe('the registry', () => {
     setWatchedThreadsEverywhere([], [scope]);
     const { client } = attachFake();
     expect(client.setWatchedThreads).toHaveBeenCalledWith([], [scope]);
+  });
+
+  it("publishes the home backend's clock from its hello", () => {
+    homeClient.getHello.mockReturnValue({ clockSkewMs: 90_000 } as never);
+    expect(backendClockSkew(HOME_BACKEND)).toBe(90_000);
   });
 
   it('publishes an attached backend’s clock and drops it on detach', () => {
