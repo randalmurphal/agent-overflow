@@ -8,13 +8,13 @@ import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
 
-import { HARNESS_TIMING, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, type HarnessApp } from '../src/harness.js';
 import { expect } from './fixtures.js';
-import { forgeInvocations, publishBranch, seedForge, type ForgePull, type ForgeRepo } from './forge-helpers.js';
+import { forgeInvocations, publishBranch, seedForge, type ForgeInvocation, type ForgePull, type ForgeRepo } from './forge-helpers.js';
 import { attachWorktree, seedWorktreeProject } from './worktree-removal-helpers.js';
 
 /** The harness timing with the cleanup's per-repository poll at `poll`. */
-export const mergePollTiming = (poll: string) => `${HARNESS_TIMING},merged-pr-poll=${poll}`;
+export const mergePollTiming = (poll: string) => harnessTiming({ 'merged-pr-poll': poll });
 
 export type Forge = 'github' | 'gitlab';
 
@@ -40,14 +40,14 @@ export const prLabel = (forge: Forge, number: number) => (forge === 'gitlab' ? `
  */
 export async function seedMergeFixture(
   harness: HarnessApp,
-  opts: { forge: Forge; name: string; titles: string[]; branch: string; number: number },
+  opts: { forge: Forge; name: string; titles: string[]; branch: string; number: number; nodeId?: string },
 ): Promise<MergeFixture> {
   const project = await seedWorktreeProject(harness, opts.name, opts.titles, [opts.branch]);
   const bound = await attachWorktree(harness, project.threadIds[0], opts.branch);
   const repo: ForgeRepo = {
     forge: opts.forge,
     project: opts.forge === 'github' ? `acme/${opts.name}` : `grp/${opts.name}`,
-    pulls: [{ number: opts.number, title: `Merge ${opts.name}`, headRef: opts.branch, baseRef: 'main' }],
+    pulls: [{ number: opts.number, title: `Merge ${opts.name}`, headRef: opts.branch, baseRef: 'main', ...(opts.nodeId ? { nodeId: opts.nodeId } : {}) }],
   };
   await publishBranch(harness, bound.worktreePath!, repo, opts.branch);
   return {
@@ -126,22 +126,36 @@ export async function movePR(harness: HarnessApp, fixture: MergeFixture, pull: P
 export const mergePR = (harness: HarnessApp, fixture: MergeFixture, at = new Date()) =>
   movePR(harness, fixture, { state: 'merged', mergedAt: at.toISOString() });
 
-/** The batched state reads the backend made of the fake forge. */
+const isStateRead = (call: ForgeInvocation) =>
+  call.via === 'http' && (call.operation === 'PRStates' || (call.route === 'glab api merge request list' && call.path.includes('iids')));
+
+/** The state reads the backend made of the fake forge. */
 export async function stateReads(harness: HarnessApp): Promise<number> {
-  return (await forgeInvocations(harness)).filter(
-    (call) => call.via === 'http' && (call.operation === 'PRStates' || (call.route === 'glab api merge request list' && call.path.includes('iids'))),
-  ).length;
+  return (await forgeInvocations(harness)).filter(isStateRead).length;
 }
 
 /**
- * Prove no read is made for a while: the cleanup polls every `pollMs`, so
- * four polls' time with no new read means it stopped asking. An absence has
- * no event to wait for.
+ * Prove the cleanup no longer reads a pull request it settled, through a
+ * poll pass that would have read it had it still been tracked. A
+ * repository's read comes due a poll interval (`pollMs`, the harness's
+ * merged-pr-poll) after the pass that last read it (mergedPRPoll), and the
+ * read that settled the pull request was its last. The poll reports when
+ * its last pass that ran to its end began (HarnessMergedPRPoll), so the
+ * wait ends once a pass that began at or past that moment has ended: that
+ * pass visited every repository still tracked. The fake's history is read
+ * from a cursor, not again from the start.
  */
 export async function expectNoMoreStateReads(harness: HarnessApp, pollMs: number): Promise<void> {
-  const before = await stateReads(harness);
-  await new Promise((resolve) => setTimeout(resolve, pollMs * 4 + 500));
-  expect(await stateReads(harness), 'the cleanup kept reading a pull request it had settled').toBe(before);
+  const history = await forgeInvocations(harness);
+  const cursor = history.at(-1)?.seq ?? 0;
+  const lastRead = history.filter(isStateRead).at(-1);
+  const due = (lastRead ? Date.parse(lastRead.at) : Date.now()) + pollMs;
+  await expect.poll(async () => (await harness.rpc<{ lastPassStartedAt: number }>('HarnessMergedPRPoll')).lastPassStartedAt, {
+    timeout: 15_000, message: 'no cleanup pass came due for the settled pull request',
+  }).toBeGreaterThanOrEqual(due);
+  const reread = (await forgeInvocations(harness, cursor)).filter(isStateRead)
+    .map((call) => (call.via === 'http' ? `${call.path} ${call.operation ?? ''}` : call.route));
+  expect(reread, 'the cleanup kept reading a pull request it had settled').toEqual([]);
 }
 
 /** The timeline notices of the open thread whose text mentions `text`. */

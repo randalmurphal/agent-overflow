@@ -897,34 +897,6 @@ func TestUncoalescedEmitStaysOneWritePerLine(t *testing.T) {
 	}
 }
 
-// TestStartupDelayHoldsTheFirstFrameOnce: startupDelayMs exists to
-// reproduce a slow provider start, which is only observable BEFORE the
-// first frame. It must also be paid once — a per-frame sleep would turn
-// a 5s spawn-delay scenario into a 5s-per-turn scenario.
-func TestStartupDelayHoldsTheFirstFrameOnce(t *testing.T) {
-	var buf bytes.Buffer
-	sc := &scenario.Scenario{
-		Version:        scenario.CurrentVersion,
-		Name:           "slow-start",
-		Provider:       scenario.ProviderClaude,
-		StartupDelayMs: 40,
-	}
-	e := newEngine(sc, t.TempDir(), t.TempDir(), newLineWriter(&buf), &reporter{}, scenario.Vars{"SESSION_ID": "s1"})
-
-	start := time.Now()
-	e.awaitStartupDelay()
-	first := time.Since(start)
-	if first < 30*time.Millisecond {
-		t.Fatalf("first frame waited %v, want roughly the scenario's 40ms", first)
-	}
-
-	start = time.Now()
-	e.awaitStartupDelay()
-	if second := time.Since(start); second > 20*time.Millisecond {
-		t.Fatalf("the delay was paid again (%v); it must hold only the FIRST frame", second)
-	}
-}
-
 // TestExitDelayHoldsTheExit: exitDelayMs reproduces a CLI that takes a
 // while to exit after the app closes its stdin.
 func TestExitDelayHoldsTheExit(t *testing.T) {

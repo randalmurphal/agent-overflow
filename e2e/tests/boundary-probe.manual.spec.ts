@@ -13,7 +13,7 @@
 // Run:
 //   make harness-build UI_TRACE=1
 //   cd e2e && pnpm exec playwright install webkit
-//   BOUNDARY_PROBE=1 pnpm exec playwright test boundary-probe
+//   BOUNDARY_PROBE=1 bin/ao-harness-e2e --config=playwright.manual.config.ts tests/boundary-probe.manual.spec.ts
 import { mkdir, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { chromium, webkit, type BrowserType } from '@playwright/test';

@@ -320,6 +320,50 @@ func TestMockInfoProjectsGateState(t *testing.T) {
 	}
 }
 
+// TestMockInfoProjectsTheStartupGateBesideTheStepGate: a mock can hold its
+// first frame behind its startupGate while an onStart step waits on a gate
+// of its own. Each is reported by its own field, releasing one leaves the
+// other reported, and a turn boundary, which resyncs the step gate, leaves
+// the startup gate alone.
+func TestMockInfoProjectsTheStartupGateBesideTheStepGate(t *testing.T) {
+	srv := bareServer(t)
+	conn := srv.addMock("mock-1", 1, 0)
+	apply := func(rep Report) {
+		srv.mu.Lock()
+		srv.applyReportLocked(conn, rep)
+		srv.mu.Unlock()
+	}
+	expect := func(when, step, startup string) {
+		t.Helper()
+		got := srv.Mocks()
+		if len(got) != 1 || got[0].OpenGate != step || got[0].StartupGate != startup {
+			t.Fatalf("%s: mocks = %+v, want openGate %q and startupGate %q", when, got, step, startup)
+		}
+	}
+
+	apply(Report{Kind: ReportWaitingSignal, Detail: "boot"})
+	apply(Report{Kind: ReportWaitingSignal, Detail: "held-start", Startup: true})
+	expect("both open", "boot", "held-start")
+
+	apply(Report{Kind: ReportAdvanceReleased, Gate: "boot"})
+	expect("the step gate released", "", "held-start")
+
+	apply(Report{Kind: ReportTurnStarted, Turn: 1})
+	expect("after a turn boundary", "", "held-start")
+
+	apply(Report{Kind: ReportWaitingSignal, Turn: 1, Detail: "step"})
+	apply(Report{Kind: ReportAdvanceReleased, Turn: 1, Gate: "held-start", Startup: true})
+	expect("the startup gate released", "step", "")
+
+	// A second advance for the released startup gate is discarded; it
+	// neither joins the step gate's backlog nor moves its gate.
+	apply(Report{Kind: ReportAdvanceBuffered, Turn: 1, Gate: "held-start", Detail: AdvanceDroppedDetail, Startup: true})
+	expect("a discarded startup advance", "step", "")
+	if pending := srv.Mocks()[0].PendingAdvances; len(pending) != 0 {
+		t.Fatalf("a discarded startup advance joined the backlog: %v", pending)
+	}
+}
+
 // TestMockInfoLatchesInjectedItems: the messages a Codex mock received
 // through thread/inject_items accumulate on its row in arrival order, so a
 // spec can read them after the fact, and the row stays bounded.

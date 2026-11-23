@@ -153,13 +153,13 @@ job the plan selected succeeded and every job it excluded was skipped, so
 a selected job that was skipped fails the run.
 
 The harness build job builds the binaries and the `frontend/dist` they
-embed, typechecks the suite with `bin/ao-harness-e2e --typecheck`, and
-only then packs both into one artifact, kept 7 days, so a type error
-publishes nothing. The Playwright shards and `upgrade-lineage` run that
-artifact with `AO_E2E_TYPECHECKED=1`, which makes the launcher skip its
-typecheck, so no shard compiles, bundles or typechecks. Elsewhere the
-launcher always typechecks, with tsc's incremental state under
-`e2e/node_modules/.cache`. Re-running failed jobs reuses the run's
+embed, runs the suite's source checks (the typecheck and the wait rules)
+with `bin/ao-harness-e2e --typecheck`, and only then packs both into one
+artifact, kept 7 days, so a failed check publishes nothing. The Playwright
+shards and `upgrade-lineage` run that artifact with `AO_E2E_TYPECHECKED=1`,
+which makes the launcher skip both checks, so no shard compiles, bundles or
+typechecks. Elsewhere the launcher always runs them, with tsc's incremental
+state under `e2e/node_modules/.cache`. Re-running failed jobs reuses the run's
 artifact; after 7 days a shard fails at its first step and says to re-run
 the harness build job, which re-runs the jobs that need it.
 

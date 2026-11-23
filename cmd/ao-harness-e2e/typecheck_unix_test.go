@@ -11,8 +11,9 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 )
 
-// The check runs tsc with its incremental state unless AO_E2E_TYPECHECKED
-// is exactly "1", and says so when it skips.
+// The checks run, tsc with its incremental state and then the wait rules,
+// unless AO_E2E_TYPECHECKED is exactly "1", and the launcher says so when it
+// skips them.
 func TestTheTypecheckRunsUnlessTheVariableIsOne(t *testing.T) {
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "calls")
@@ -45,8 +46,8 @@ echo "$*" >> "$AO_TEST_CALLS"
 				t.Fatal(err)
 			}
 			var out strings.Builder
-			if code, err := ensureTypechecked(dir, &out, &out); code != 0 || err != nil {
-				t.Fatalf("ensureTypechecked = %d, %v:\n%s", code, err, out.String())
+			if code, err := ensureSuiteChecked(dir, &out, &out); code != 0 || err != nil {
+				t.Fatalf("ensureSuiteChecked = %d, %v:\n%s", code, err, out.String())
 			}
 			ran, _ := os.ReadFile(calls)
 			if !tc.checks {
@@ -55,7 +56,7 @@ echo "$*" >> "$AO_TEST_CALLS"
 				}
 				return
 			}
-			want := "exec tsc --noEmit --incremental --tsBuildInfoFile " + tsBuildInfo + " -p .\n"
+			want := "exec tsc --noEmit --incremental --tsBuildInfoFile " + tsBuildInfo + " -p .\nexec node scripts/check-waits.ts\n"
 			if string(ran) != want || strings.Contains(out.String(), "skipping") {
 				t.Fatalf("with %s=%q ran %q, want %q; output %q", typecheckedEnv, tc.value, ran, want, out.String())
 			}
@@ -63,23 +64,51 @@ echo "$*" >> "$AO_TEST_CALLS"
 	}
 }
 
-// A failed check returns tsc's exit code. typecheck, which --typecheck
-// runs, ignores the variable: the harness build is what makes it true.
-func TestAFailedTypecheckFailsTheLauncher(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "playwright.config.ts"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	bin := filepath.Join(dir, "bin")
-	mockexec.WriteIn(t, bin, "pnpm", `#!/bin/sh
-echo "tests/x.spec.ts(1,1): error TS2339"
-exit 2
+// Each check stops the run with its own exit code and names itself, and a
+// check after a failed one does not run. checkSuite, which --typecheck runs,
+// ignores the variable: the harness build is what makes it true.
+func TestCheckSuiteStopsAtTheFirstFailingCheck(t *testing.T) {
+	for _, tc := range []struct {
+		failing string
+		code    int
+		says    string
+		ran     string
+	}{
+		{"", 0, "", "tsc\ncheck-waits\n"},
+		{"tsc", 3, "E2E TypeScript check failed", "tsc\n"},
+		{"check-waits", 4, "E2E wait rules failed", "tsc\ncheck-waits\n"},
+	} {
+		t.Run("failing="+tc.failing, func(t *testing.T) {
+			dir := t.TempDir()
+			ran := filepath.Join(dir, "ran")
+			bin := filepath.Join(dir, "bin")
+			mockexec.WriteIn(t, bin, "pnpm", `#!/bin/sh
+case "$*" in
+  *tsc*) echo tsc >> "$AO_TEST_RAN"; [ "$AO_TEST_FAIL" = tsc ] && exit 3 ;;
+  *check-waits*) echo check-waits >> "$AO_TEST_RAN"; [ "$AO_TEST_FAIL" = check-waits ] && exit 4 ;;
+  *) echo "unexpected: $*" >> "$AO_TEST_RAN"; exit 9 ;;
+esac
+exit 0
 `)
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv(typecheckedEnv, "1")
-	var out strings.Builder
-	code, err := typecheck(dir, &out, &out)
-	if code != 2 || err == nil || !strings.Contains(out.String(), "TS2339") {
-		t.Fatalf("typecheck with a type error = %d, %v:\n%s", code, err, out.String())
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("AO_TEST_RAN", ran)
+			t.Setenv("AO_TEST_FAIL", tc.failing)
+			t.Setenv(typecheckedEnv, "1")
+			var out strings.Builder
+			code, err := checkSuite(dir, &out, &out)
+			if code != tc.code {
+				t.Fatalf("checkSuite = %d, %v, want %d; output:\n%s", code, err, tc.code, out.String())
+			}
+			if (err == nil) != (tc.says == "") || (err != nil && !strings.Contains(err.Error(), tc.says)) {
+				t.Fatalf("checkSuite error %v, want one saying %q", err, tc.says)
+			}
+			got, readErr := os.ReadFile(ran)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(got) != tc.ran {
+				t.Fatalf("checks run = %q, want %q", got, tc.ran)
+			}
+		})
 	}
 }

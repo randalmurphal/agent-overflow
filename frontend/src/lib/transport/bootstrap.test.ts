@@ -20,6 +20,9 @@ import { clearPairedSession, redeemPairing } from './deviceSession';
 import { isHostWindow } from './pageHost';
 import { setHomeEndpoint } from './homeEndpoint';
 import { fetchBackendManifest } from './manifestBackends';
+import { __resetHarnessModeForTest, harnessInterval, harnessPageMarker, isHarnessSession } from './harnessMode';
+import { getBackendIdentity } from './backendIdentity';
+import { manifestBackendDescriptors } from './manifestBackends';
 import { BackendStartingError, STARTUP_REPORT_LIMIT_BYTES } from './startupProgress';
 
 describe('isLoopbackHostname', () => {
@@ -230,6 +233,93 @@ describe('defaultBootstrap', () => {
     vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS })));
     await defaultBootstrap();
     expect(isHostWindow()).toBe(false);
+  });
+
+  // Only a manifest that says harness can shorten a frontend timer; an
+  // ordinary or soak boot's manifest that carried timing anyway is ignored.
+  it('reads harness timing only from a harness manifest', async () => {
+    const timing = { 'unreachable-settle': 2000 };
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harnessTiming: timing })));
+    await defaultBootstrap();
+    expect(harnessInterval('unreachable-settle', 30_000)).toBe(30_000);
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harness: true, harnessTiming: timing })));
+    await defaultBootstrap();
+    expect(harnessInterval('unreachable-settle', 30_000)).toBe(2000);
+    expect(harnessInterval('agent-row-linger', 8_000)).toBe(8_000);
+  });
+
+  // Every accepted manifest replaces the page's timing: a later value wins,
+  // a manifest without overrides restores the product timers, and a later
+  // manifest naming a timer this build cannot read is refused.
+  it('replaces harness timing on every manifest', async () => {
+    const serve = (fields: Record<string, unknown>) =>
+      vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, ...fields })));
+    serve({ harness: true, harnessTiming: { 'agent-row-linger': 1000 } });
+    await defaultBootstrap();
+    expect(harnessInterval('agent-row-linger', 60_000)).toBe(1000);
+    serve({ harness: true, harnessTiming: { 'agent-row-linger': 3000 } });
+    await defaultBootstrap();
+    expect(harnessInterval('agent-row-linger', 60_000)).toBe(3000);
+    serve({ harness: true });
+    await defaultBootstrap();
+    expect(harnessInterval('agent-row-linger', 60_000)).toBe(60_000);
+    serve({ harness: true, harnessTiming: { 'unreachable-settle': 2000 } });
+    await defaultBootstrap();
+    serve({ wsUrl: SAME_ORIGIN_WS });
+    await defaultBootstrap();
+    expect(harnessInterval('unreachable-settle', 30_000)).toBe(30_000);
+    serve({ harness: true, harnessTiming: { 'unreachable-settle': 2000 } });
+    await defaultBootstrap();
+    serve({ harness: true, harnessTiming: { 'some-timer': 10 } });
+    await expect(defaultBootstrap()).rejects.toThrow(/unknown timer/);
+  });
+
+  it.each([
+    [{ 'some-timer': 10 }],
+    [{ 'agent-row-linger': 0 }],
+    [{ 'agent-row-linger': '3s' }],
+    [[1]],
+    // setTimeout holds a whole number of milliseconds up to 2^31-1.
+    [{ 'agent-row-linger': 1.5 }],
+    [{ 'agent-row-linger': 0.5 }],
+    [{ 'agent-row-linger': 2 ** 31 }],
+  ])(
+    'refuses harness timing this build cannot read: %j',
+    async (harnessTiming) => {
+      vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harness: true, harnessTiming })));
+      await expect(defaultBootstrap()).rejects.toThrow(/harnessTiming/);
+      expect(harnessInterval('agent-row-linger', 60_000)).toBe(60_000);
+    },
+  );
+
+  // A manifest refused for its timing publishes none of its other fields.
+  it('publishes nothing from a manifest it refuses', async () => {
+    __resetHarnessModeForTest();
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, backendId: 'kept', replicaGeneration: 'g1' })));
+    await defaultBootstrap();
+    const before = { identity: getBackendIdentity(), backends: manifestBackendDescriptors() };
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({
+      wsUrl: SAME_ORIGIN_WS,
+      backendId: 'refused',
+      replicaGeneration: 'g2',
+      hostWindow: true,
+      harness: true,
+      pageMarker: 'refused-page',
+      backends: [{ id: 'other', wsUrl: SAME_ORIGIN_WS, bootstrapUrl: '/bootstrap.json' }],
+      harnessTiming: { 'agent-row-linger': 0.5 },
+    })));
+    await expect(defaultBootstrap()).rejects.toThrow(/harnessTiming/);
+    expect(isHostWindow(), 'host window').toBe(false);
+    expect(isHarnessSession(), 'harness session').toBe(false);
+    expect(harnessPageMarker(), 'page marker').toBe('');
+    expect(getBackendIdentity(), 'backend identity').toEqual(before.identity);
+    expect(manifestBackendDescriptors(), 'manifest backends').toEqual(before.backends);
+  });
+
+  it.each([1, 2 ** 31 - 1])('takes a page timer of %d ms, the ends of what setTimeout holds', async (ms) => {
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harness: true, harnessTiming: { 'agent-row-linger': ms } })));
+    await defaultBootstrap();
+    expect(harnessInterval('agent-row-linger', 60_000)).toBe(ms);
   });
 
   // A page whose window this application owns is handed its ticket by

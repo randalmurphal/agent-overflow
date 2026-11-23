@@ -60,6 +60,16 @@ const (
 	threadAgentPeerServeTimeout = threadAgentPeerListTimeout / 2
 )
 
+// threadAgentPeerListBound is the bound on a forwarded listing:
+// threadAgentPeerListTimeout, or what a test set
+// (threadAgentPeerListOverride).
+func (a *App) threadAgentPeerListBound() time.Duration {
+	if a.threadAgentPeerListOverride > 0 {
+		return a.threadAgentPeerListOverride
+	}
+	return threadAgentPeerListTimeout
+}
+
 // threadAgentPeerArgs are the forwarded Agents tools' arguments.
 type threadAgentPeerArgs struct {
 	ThreadID string `json:"thread_id"`
@@ -121,7 +131,7 @@ func (a *App) callThreadAgentPeer(ctx context.Context, method, computerID, sourc
 	if err != nil {
 		return attachedbackends.PeerRead{}, fmt.Errorf("encode %s: %w", method, err)
 	}
-	tool, timeout := threadAgentPeerRows, threadAgentPeerListTimeout
+	tool, timeout := threadAgentPeerRows, a.threadAgentPeerListBound()
 	if method == "ThreadToolCall" {
 		tool, timeout = threadAgentPeerStop, threadAgentPeerStopTimeout
 	}

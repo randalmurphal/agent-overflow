@@ -1,6 +1,8 @@
 // Shared Playwright fixtures: one harness backend per worker, reset to
-// a blank slate before every test. Import { test, expect } from here
-// instead of '@playwright/test'.
+// a blank slate before every test, and the page error and CSP checks. They
+// extend tests/base-test.ts, which carries the gate's rules. Import
+// { test, expect } from here, or from tests/base-test.ts in a spec that
+// launches its own harnesses, never from '@playwright/test'.
 import { test as base, expect } from './base-test.js';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { webkitKeychainHome } from '../src/webkit-keychain.js';

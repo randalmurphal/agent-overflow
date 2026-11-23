@@ -67,7 +67,7 @@ test('a worker waiting on the user badges its assistant row until answered', asy
   await harness.rpc('StopSession', agent);
   await setScenario(harness, home, {
     ...threadToolsScenario({ name: 'need-you-slow', provider: 'claude', turns: [{ text: 'unreached' }] }),
-    startupDelayMs: 30_000,
+    startupGate: 'held-start',
   });
   await advanceGate(harness, askGate.mockId, 'ask');
   const wake = await wakeInput(harness, home, 'It asks for approval to use');

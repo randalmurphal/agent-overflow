@@ -438,7 +438,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         await harness.rpc('StopSession', agent);
         await setScenario(harness, home, {
           ...threadToolsScenario({ name: `handback-slow-${provider}`, provider, turns: [{ text: 'unreached' }] }),
-          startupDelayMs: 30_000,
+          startupGate: 'held-start',
         });
       }
       const handedBack = harness.waitForEvent<NotificationSend>(

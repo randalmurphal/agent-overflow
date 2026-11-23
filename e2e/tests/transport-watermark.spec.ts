@@ -16,7 +16,7 @@
 // the page reloads everything.
 import { test, expect } from './fixtures.js';
 import type { Page } from '@playwright/test';
-import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { RESULT_LINE, claudeScenario, emit, seedAgentThread, startMock, textLines } from './agent-visibility-helpers.js';
 import { readWire, recordWire, watchedNow } from './transport-watch-helpers.js';
 
@@ -27,7 +27,7 @@ test('a page watching an idle thread reconnects from the head of a channel anoth
   page,
 }) => {
   test.setTimeout(120_000);
-  const harness = await launchHarness({ env: { AO_HARNESS_TIMING: `${HARNESS_TIMING},watermark=${WATERMARK_EVERY_MS}ms` } });
+  const harness = await launchHarness({ env: harnessTiming({ watermark: `${WATERMARK_EVERY_MS}ms` }) });
   try {
     await watermarkCase(harness, page);
   } finally {

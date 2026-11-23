@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -71,5 +72,111 @@ func TestIsolationReachesTheOlderOwnerOpsPeer(t *testing.T) {
 	ConfigureIsolation(f.app, IsolationConfig{OmitOwnerOps: true})
 	if !f.app.ownerOpsOmitted {
 		t.Fatal("the older owner operations peer was not configured")
+	}
+}
+
+func TestThreadWakeRetryDelayScalesWithItsBase(t *testing.T) {
+	ladder := func(a *App) []time.Duration {
+		var out []time.Duration
+		for attempts := int64(1); attempts <= threadWakeRetryAttempts; attempts++ {
+			out = append(out, a.threadWakeRetryDelay(attempts))
+		}
+		return out
+	}
+	product := ladder(&App{})
+	if product[0] != 30*time.Second || product[len(product)-1] != 10*time.Minute {
+		t.Fatalf("product wake retry ladder = %v; want 30s up to a 10m ceiling", product)
+	}
+	short := ladder(&App{wakeRetryBaseOverride: 2 * time.Second})
+	for i := range product {
+		if short[i]*15 != product[i] {
+			t.Fatalf("2s wake retry ladder = %v; want the product ladder %v scaled by 2/30", short, product)
+		}
+	}
+}
+
+func TestAgentSettledWindowSpan(t *testing.T) {
+	if got := (&App{}).agentSettledWindowSpan(); got != 30*time.Second {
+		t.Fatalf("product settled window = %v; want 30s", got)
+	}
+	if got := (&App{agentSettledWindowOverride: time.Second}).agentSettledWindowSpan(); got != time.Second {
+		t.Fatalf("settled window with a 1s override = %v", got)
+	}
+}
+
+// isolationConsumers reads each IsolationConfig interval where the code
+// that runs on it reads it. Keyed by field name and written apart from
+// ConfigureIsolation, so a field applied to the wrong consumer, or not
+// applied, reads the wrong value here.
+var isolationConsumers = map[string]func(a *App) time.Duration{
+	"ThreadRequestPoll":       (*App).threadPollNormal,
+	"TransferPendingRetry":    func(a *App) time.Duration { return a.transferPendingRetry },
+	"PRUpdateInterval":        (*App).prUpdatePollInterval,
+	"PRUpdateRetryBase":       (*App).prUpdateRetryBase,
+	"PRCILiveInterval":        (*App).prCILiveInterval,
+	"PRCIFollowInterval":      (*App).prCIFollowInterval,
+	"PRCILogWaitInterval":     (*App).prCILogWaitInterval,
+	"MergedPRPollInterval":    func(a *App) time.Duration { return a.mergedPRs.pollInterval() },
+	"PRLookupRetryBase":       func(a *App) time.Duration { return a.prLookupRetryBase },
+	"IdleReapThreshold":       (*App).idleReapThreshold,
+	"IdleReapInterval":        (*App).idleReapInterval,
+	"WakeupReapGrace":         (*App).wakeupReapGrace,
+	"AgentWakeFloor":          (*App).agentWakeFloor,
+	"AgentWatchFailureWindow": (*App).agentWatchFailureWindow,
+	"RemoteWatchPoll":         (*App).remoteWatchPollInterval,
+	"ProviderEventDrainStall": func(a *App) time.Duration { return a.providerEvents.drainStallBound() },
+	"UsageProbeGap":           func(a *App) time.Duration { return a.usageProbeGap },
+	"UsagePollInterval":       func(a *App) time.Duration { return a.usagePollInterval },
+	"ThreadWakeRetryBase":     func(a *App) time.Duration { return a.threadWakeRetryDelay(1) },
+	"AgentSettledWindow":      (*App).agentSettledWindowSpan,
+}
+
+// isolationDerived names the consumers that follow another interval by
+// design: an unset log wait paces at the PR update cadence.
+var isolationDerived = map[string]string{"PRCILogWaitInterval": "PRUpdateInterval"}
+
+// TestEveryIsolationIntervalReachesItsConsumer: an interval set through
+// ConfigureIsolation is the one its consumer runs on, it moves no other
+// consumer, and unset it leaves every consumer on the product value.
+func TestEveryIsolationIntervalReachesItsConsumer(t *testing.T) {
+	const sentinel = 7 * time.Millisecond
+	read := func(config IsolationConfig) map[string]time.Duration {
+		a := &App{}
+		ConfigureIsolation(a, config)
+		got := map[string]time.Duration{}
+		for field, consumer := range isolationConsumers {
+			got[field] = consumer(a)
+		}
+		return got
+	}
+	product := read(IsolationConfig{})
+	unconfigured := &App{}
+	for field, consumer := range isolationConsumers {
+		if want := consumer(unconfigured); product[field] != want {
+			t.Errorf("%s: an isolated boot with no interval set runs on %v; the product runs on %v", field, product[field], want)
+		}
+	}
+	configType := reflect.TypeFor[IsolationConfig]()
+	for i := range configType.NumField() {
+		field := configType.Field(i)
+		if field.Type != reflect.TypeFor[time.Duration]() {
+			continue
+		}
+		if _, ok := isolationConsumers[field.Name]; !ok {
+			t.Errorf("IsolationConfig.%s has no consumer in isolationConsumers", field.Name)
+			continue
+		}
+		var config IsolationConfig
+		reflect.ValueOf(&config).Elem().Field(i).Set(reflect.ValueOf(sentinel))
+		for consumer, got := range read(config) {
+			switch {
+			case consumer == field.Name && got != sentinel:
+				t.Errorf("IsolationConfig.%s = %v: its consumer runs on %v", field.Name, sentinel, got)
+			case consumer != field.Name && isolationDerived[consumer] == field.Name && got != sentinel:
+				t.Errorf("IsolationConfig.%s = %v: %s, which follows it, runs on %v", field.Name, sentinel, consumer, got)
+			case consumer != field.Name && isolationDerived[consumer] != field.Name && got != product[consumer]:
+				t.Errorf("IsolationConfig.%s = %v moved %s to %v", field.Name, sentinel, consumer, got)
+			}
+		}
 	}
 }

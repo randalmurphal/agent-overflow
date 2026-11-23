@@ -25,6 +25,7 @@
 // thinking block cut the same way.
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import { test, expect } from './fixtures.js';
+import { trackPageCalls } from './offhost-helpers.js';
 import {
   RESULT_LINE,
   advance,
@@ -476,6 +477,10 @@ test('a cold load holds discarded reasoning, its record and the retry as one run
       if (typeof frame.payload === 'string' && frame.payload.includes('"activity_run_stale"')) staleRefusals += 1;
     });
   });
+  const calls = await trackPageCalls(page);
+  // The page clock runs as the real one does; the stub refresh's cycles
+  // are run below by moving it on.
+  await page.clock.install();
   await harness.open(page);
   const timeline = page.getByTestId('message-timeline-scroll');
   await page.getByTestId('thread-row').getByText('Reasoning retried', { exact: true }).click();
@@ -483,9 +488,10 @@ test('a cold load holds discarded reasoning, its record and the retry as one run
 
   await expect(timeline.getByTestId('activity-run')).toHaveCount(1);
   await expect(timeline.getByTestId('activity-run-header-counts')).toHaveText(/^1 Bash, 1 notification, 2 thinking$/);
-  // Several of the stub refresh's 200ms cycles: the disagreement was
-  // refused on every one.
-  await page.waitForTimeout(1500);
+  // Several of the stub refresh's 200ms cycles, and every read they made
+  // answered: none was refused.
+  await page.clock.runFor(1500);
+  await calls.drain('a member read was never answered', 'ListActivityRunMembers');
   expect(staleRefusals, 'activity-run member reads the store refused').toBe(0);
 });
 

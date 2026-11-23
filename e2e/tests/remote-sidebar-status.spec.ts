@@ -5,13 +5,14 @@
 // message and its echo has to come from provider:sends_pending. Once the
 // turns end, the row reads idle, as it does on the computer that ran them.
 //
-// Once the computer has been unreachable for thirty seconds its row keeps
-// the last status it reported, shown still and labelled as such; a shorter
-// drop leaves the row as it was. The reconnect snapshot
-// corrects it: the frames that would otherwise correct it are withheld.
+// Once the computer has been unreachable for the settle time (thirty
+// seconds in the product, shortened here) its row keeps the last status it
+// reported, shown still and labelled as such; until then the row is as it
+// was. The reconnect snapshot corrects it: the frames that would otherwise
+// correct it are withheld.
 import { type WebSocketRoute } from '@playwright/test';
 import { expect, test } from './base-test.js';
-import { launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { socketAnswers } from './offhost-helpers.js';
 import {
@@ -20,6 +21,8 @@ import {
 import type { SeedResult } from './fixtures.js';
 
 const QUEUED = 'Queued on the laptop: also update the changelog.';
+// The unreachable settle (UNREACHABLE_SETTLE_MS) for this page.
+const SETTLE_MS = 5_000;
 
 test('a remote thread with no pane here settles to idle after its queued message, and holds still while unreachable', async ({ page }) => {
   test.setTimeout(180_000);
@@ -57,7 +60,7 @@ test('a remote thread with no pane here settles to idle after its queued message
     socket.onMessage((message) => server.send(message));
   });
   try {
-    home = await launchHarness();
+    home = await launchHarness({ env: harnessTiming({ 'unreachable-settle': `${SETTLE_MS}ms` }) });
     remote = await launchHarness();
     const pairing = await headlessPairing(remote);
     try {
@@ -125,12 +128,13 @@ test('a remote thread with no pane here settles to idle after its queued message
     const outageStart = Date.now();
     await remoteSocket!.page.close({ code: 1012, reason: 'test network outage' });
     await remoteSocket!.server.close();
-    // A drop shorter than thirty seconds changes nothing on the row.
-    await page.waitForTimeout(5_000);
+    // A drop shorter than the settle time changes nothing on the row: it
+    // reads as it did when the drop began, and changes no sooner than the
+    // settle time after.
     await expect(laptopRow).not.toHaveAttribute('data-machine-unreachable', 'true');
     await expect(dot).toHaveClass(/animate-pulse/);
-    await expect(laptopRow).toHaveAttribute('data-machine-unreachable', 'true', { timeout: 40_000 });
-    expect(Date.now() - outageStart).toBeGreaterThanOrEqual(30_000);
+    await expect(laptopRow).toHaveAttribute('data-machine-unreachable', 'true', { timeout: SETTLE_MS + 10_000 });
+    expect(Date.now() - outageStart).toBeGreaterThanOrEqual(SETTLE_MS);
     // The last report, shown still and labelled; its place in the list is
     // the one it had.
     await expect(dot).toHaveAttribute('data-status', 'running');

@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { type Page } from '@playwright/test';
 import { expect, test } from './base-test.js';
 
-import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import type { HarnessMockEventData } from '../src/harness-app.js';
 import {
   RESULT_LINE,
@@ -229,7 +229,7 @@ test.describe.serial('Claude account auto-switch', () => {
   test.beforeAll(async ({ browser }) => {
     // The usage poll never ticks: every reading is one a case set, so what
     // a case asserts after a reading is that reading's doing.
-    harness = await launchHarness({ env: { AO_HARNESS_TIMING: `${HARNESS_TIMING},usage-poll=24h` } });
+    harness = await launchHarness({ env: harnessTiming({ 'usage-poll': '24h' }) });
     await seedNativeClaudeLogin(harness, A, Date.now() + 20 * 24 * 3600_000);
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
       projects: THREADS.map((spec) => ({

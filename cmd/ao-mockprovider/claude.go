@@ -633,11 +633,11 @@ func (a *claudeAdapter) sendInterruptedTurn(vars scenario.Vars) {
 // json.Marshal so cwd/session values survive any characters.
 //
 // This is the frame that tells AO the provider is up (triage opens the
-// logical turn on it), so it is where a scenario's startupDelayMs is
-// spent, once, before the first one. Print mode awaits the start's
+// logical turn on it), so it is where a scenario's startupGate holds,
+// once, before the first one. Print mode awaits the start's
 // SessionStart hooks before its first init, so they run there too.
 func (a *claudeAdapter) writeInit(vars scenario.Vars) {
-	a.e.awaitStartupDelay()
+	a.e.awaitStartup()
 	a.startHooks.Do(func() { a.runSessionStartHooks(vars, a.startSource) })
 	a.w.writeLine(mustJSON(map[string]any{
 		"type":                "system",

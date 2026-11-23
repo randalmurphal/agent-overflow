@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -251,7 +252,8 @@ func holdHarnessStartup(ctx context.Context, begin func(phase, detail string) (e
 
 // harnessTiming is a harness boot's diagenv.HarnessTiming: product
 // intervals shortened so a test does not wait out a cadence it is not
-// about. A zero field keeps the product interval.
+// about. A zero duration keeps the product interval. Every entry is a row
+// of harnessTimers, which says where its value goes.
 type harnessTiming struct {
 	// PairingProbe is how often a pending pairing asks whether the owner
 	// confirmed it (deviceclient.WithProbeInterval).
@@ -259,60 +261,64 @@ type harnessTiming struct {
 	// Watermark is the transport's watermark tick
 	// (transport.Config.WatermarkInterval).
 	Watermark time.Duration
-	// ThreadPoll is the agent thread request poll cadence
-	// (app.IsolationConfig.ThreadRequestPoll).
-	ThreadPoll time.Duration
-	// TransferRetry is how soon a pending outgoing conversation transfer
-	// asks again (app.IsolationConfig.TransferPendingRetry).
-	TransferRetry time.Duration
-	// PRUpdate is the pull request poll cadence
-	// (app.IsolationConfig.PRUpdateInterval); PRUpdateRetry is the first
-	// retry delay after a poll fails (app.IsolationConfig.PRUpdateRetryBase).
-	PRUpdate      time.Duration
-	PRUpdateRetry time.Duration
-	// PRCILive and PRCIFollow are the pull request pipeline poll cadences
-	// while a job is live and while a job log is followed
-	// (app.IsolationConfig.PRCILiveInterval / PRCIFollowInterval).
-	PRCILive   time.Duration
-	PRCIFollow time.Duration
-	// PRCILogWait is how often a followed job's log the forge has still not
-	// published is asked for once the quick retries ran out
-	// (app.IsolationConfig.PRCILogWaitInterval).
-	PRCILogWait time.Duration
-	// MergedPRPoll is how often the merged-PR worktree cleanup reads one
-	// repository's tracked pull requests
-	// (app.IsolationConfig.MergedPRPollInterval).
-	MergedPRPoll time.Duration
-	// PRLookupRetry is how long a first failed open-PR lookup is cached
-	// before the forge is asked again
-	// (app.IsolationConfig.PRLookupRetryBase).
-	PRLookupRetry time.Duration
-	// IdleReap, IdleReapSweep and WakeupGrace are the idle-session
-	// reaper's inactivity window, sweep cadence and scheduled-wakeup grace
-	// (app.IsolationConfig.IdleReapThreshold / IdleReapInterval /
-	// WakeupReapGrace).
-	IdleReap      time.Duration
-	IdleReapSweep time.Duration
-	WakeupGrace   time.Duration
-	// WakeFloor is the shortest interval a loop or watch may register
-	// (app.IsolationConfig.AgentWakeFloor).
-	WakeFloor time.Duration
-	// WatchFailureWindow is how long a watch keeps failing before the person
-	// is told (app.IsolationConfig.AgentWatchFailureWindow).
-	WatchFailureWindow time.Duration
-	// RemoteWatchPoll is how often the remote-job watcher asks the
-	// destination about a running job (app.IsolationConfig.RemoteWatchPoll).
-	RemoteWatchPoll time.Duration
-	// DrainStall is how long a session stop waits for a thread's provider
-	// event worker to handle its next event
-	// (app.IsolationConfig.ProviderEventDrainStall).
-	DrainStall time.Duration
-	// UsageProbeGap is the shortest gap between two usage probes of one
-	// provider (app.IsolationConfig.UsageProbeGap).
-	UsageProbeGap time.Duration
-	// UsagePoll is the usage poll's tick while a provider has a turn in
-	// flight or completed one (app.IsolationConfig.UsagePollInterval).
-	UsagePoll time.Duration
+	// Isolation holds the App's timer overrides, each documented on its
+	// appservice.IsolationConfig field; isolationConfig starts from it.
+	Isolation appservice.IsolationConfig
+	// Frontend is the page's timer overrides in milliseconds by entry name,
+	// served in the bootstrap manifest (transport.Config.FrontendTiming).
+	// Nil when none is set.
+	Frontend map[string]int64
+}
+
+// harnessTimer is one diagenv.HarnessTiming entry: its name and the field
+// its value replaces, or for a page timer none, since the page reads it by
+// name from the manifest (frontend/src/lib/transport/harnessMode.ts
+// FRONTEND_TIMERS names the same set; TestFrontendTimersMatchThePage).
+type harnessTimer struct {
+	name  string
+	field func(*harnessTiming) *time.Duration
+	// max is the longest value the timer's destination takes, when its
+	// arithmetic or its representation bounds it; zero is any Duration.
+	max time.Duration
+	// unit is what the value must be a whole number of, when its
+	// destination holds it in a coarser unit than a Duration; zero is any.
+	unit time.Duration
+}
+
+// pageTimerMax is the longest page timer: the page arms it with setTimeout
+// (transport.MaxFrontendTimingMs).
+const pageTimerMax = transport.MaxFrontendTimingMs * time.Millisecond
+
+// harnessTimers is the one table of harness timers: parseHarnessTiming,
+// isolationConfig and the bootstrap manifest all read it, so a timer is
+// added here and nowhere else in the boot.
+var harnessTimers = []harnessTimer{
+	{name: "pairing-probe", field: func(t *harnessTiming) *time.Duration { return &t.PairingProbe }},
+	{name: "watermark", field: func(t *harnessTiming) *time.Duration { return &t.Watermark }},
+	{name: "thread-poll", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.ThreadRequestPoll }, max: appservice.MaxThreadRequestPoll},
+	{name: "transfer-retry", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.TransferPendingRetry }},
+	{name: "pr-update", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.PRUpdateInterval }, max: appservice.MaxPRUpdateInterval},
+	{name: "pr-update-retry", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.PRUpdateRetryBase }},
+	{name: "pr-ci-live", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.PRCILiveInterval }, max: appservice.MaxPRCILiveInterval},
+	{name: "pr-ci-follow", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.PRCIFollowInterval }},
+	{name: "pr-ci-log-wait", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.PRCILogWaitInterval }},
+	{name: "merged-pr-poll", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.MergedPRPollInterval }, max: appservice.MaxMergedPRPollInterval},
+	{name: "pr-lookup-retry", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.PRLookupRetryBase }},
+	{name: "idle-reap", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.IdleReapThreshold }},
+	{name: "idle-reap-sweep", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.IdleReapInterval }},
+	{name: "wakeup-grace", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.WakeupReapGrace }},
+	{name: "wake-floor", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.AgentWakeFloor }, unit: appservice.AgentWakeFloorUnit},
+	{name: "watch-failure-window", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.AgentWatchFailureWindow }},
+	{name: "remote-watch-poll", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.RemoteWatchPoll }},
+	{name: "drain-stall", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.ProviderEventDrainStall }},
+	{name: "usage-probe-gap", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.UsageProbeGap }},
+	{name: "usage-poll", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.UsagePollInterval }},
+	{name: "wake-retry", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.ThreadWakeRetryBase }, max: appservice.MaxThreadWakeRetryBase},
+	{name: "agent-settled-window", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.AgentSettledWindow }},
+	// Page timers: how long a computer stays unreachable before the screen
+	// says so, and how long a settled Agents row stays.
+	{name: "unreachable-settle", max: pageTimerMax, unit: time.Millisecond},
+	{name: "agent-row-linger", max: pageTimerMax, unit: time.Millisecond},
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -320,46 +326,41 @@ type harnessTiming struct {
 // test cannot pass while running at the cadence it meant to replace.
 func parseHarnessTiming(value string) (harnessTiming, error) {
 	var timing harnessTiming
-	fields := map[string]*time.Duration{
-		"pairing-probe":        &timing.PairingProbe,
-		"watermark":            &timing.Watermark,
-		"thread-poll":          &timing.ThreadPoll,
-		"transfer-retry":       &timing.TransferRetry,
-		"pr-update":            &timing.PRUpdate,
-		"pr-update-retry":      &timing.PRUpdateRetry,
-		"pr-ci-live":           &timing.PRCILive,
-		"pr-ci-follow":         &timing.PRCIFollow,
-		"pr-ci-log-wait":       &timing.PRCILogWait,
-		"merged-pr-poll":       &timing.MergedPRPoll,
-		"pr-lookup-retry":      &timing.PRLookupRetry,
-		"idle-reap":            &timing.IdleReap,
-		"idle-reap-sweep":      &timing.IdleReapSweep,
-		"wakeup-grace":         &timing.WakeupGrace,
-		"wake-floor":           &timing.WakeFloor,
-		"watch-failure-window": &timing.WatchFailureWindow,
-		"remote-watch-poll":    &timing.RemoteWatchPoll,
-		"drain-stall":          &timing.DrainStall,
-		"usage-probe-gap":      &timing.UsageProbeGap,
-		"usage-poll":           &timing.UsagePoll,
-	}
+	seen := map[string]bool{}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
 		}
-		name, raw, ok := strings.Cut(entry, "=")
-		field := fields[strings.TrimSpace(name)]
-		if !ok || field == nil {
+		raw, value, ok := strings.Cut(entry, "=")
+		name := strings.TrimSpace(raw)
+		row := slices.IndexFunc(harnessTimers, func(t harnessTimer) bool { return t.name == name })
+		if !ok || row < 0 {
 			return harnessTiming{}, fmt.Errorf("%s: unknown entry %q", diagenv.HarnessTiming, entry)
 		}
-		if *field != 0 {
-			return harnessTiming{}, fmt.Errorf("%s: %s is given twice", diagenv.HarnessTiming, strings.TrimSpace(name))
+		if seen[name] {
+			return harnessTiming{}, fmt.Errorf("%s: %s is given twice", diagenv.HarnessTiming, name)
 		}
-		interval, err := time.ParseDuration(strings.TrimSpace(raw))
+		seen[name] = true
+		timer := harnessTimers[row]
+		interval, err := time.ParseDuration(strings.TrimSpace(value))
 		if err != nil || interval <= 0 {
-			return harnessTiming{}, fmt.Errorf("%s: %s needs a positive duration, got %q", diagenv.HarnessTiming, strings.TrimSpace(name), strings.TrimSpace(raw))
+			return harnessTiming{}, fmt.Errorf("%s: %s needs a positive duration, got %q", diagenv.HarnessTiming, name, strings.TrimSpace(value))
 		}
-		*field = interval
+		if timer.unit > 0 && interval%timer.unit != 0 {
+			return harnessTiming{}, fmt.Errorf("%s: %s must be a whole number of %s, got %s", diagenv.HarnessTiming, name, timer.unit, interval)
+		}
+		if timer.max > 0 && interval > timer.max {
+			return harnessTiming{}, fmt.Errorf("%s: %s must be at most %s, got %s", diagenv.HarnessTiming, name, timer.max, interval)
+		}
+		if field := timer.field; field != nil {
+			*field(&timing) = interval
+			continue
+		}
+		if timing.Frontend == nil {
+			timing.Frontend = map[string]int64{}
+		}
+		timing.Frontend[name] = interval.Milliseconds()
 	}
 	return timing, nil
 }
@@ -478,48 +479,30 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 // isolationConfig maps a mocked boot's paths and options to the isolation
 // the App applies (newIsolatedProviderApp).
 func isolationConfig(paths harnessPaths, opts isolationOptions) appservice.IsolationConfig {
-	return appservice.IsolationConfig{
-		ProviderBinary:         paths.MockProvider,
-		CredentialHome:         paths.CredentialHome,
-		UseFileKeychain:        true,
-		DisableBackgroundFetch: true,
-		DisableRetentionSweep:  true,
-		// Default-ON, and lifted only by the manual gate below. A mocked boot
-		// is normally headless and unattended, so the fake engine is what
-		// keeps the companion pane's chrome, tab strip and host rect
-		// renderable (spec §10) with no browser behind them — and what keeps
-		// `make go-test` / `make e2e` display-free.
-		MockBrowserEngine: !opts.RealBrowserEngine,
-		// Workspace boundary; see internal/app/app_isolated_workspace.go.
-		WorkspaceRoot: paths.DataRoot,
-		// gh and glab; see internal/git/forge_cli.go.
-		ForgeCLI: paths.MockForge,
-		// Dev-server discovery; see internal/app/app_preview.go.
-		ScanScopePIDs:           opts.ScanScopePIDs,
-		ThreadRequestPoll:       opts.Timing.ThreadPoll,
-		TransferPendingRetry:    opts.Timing.TransferRetry,
-		PRUpdateInterval:        opts.Timing.PRUpdate,
-		PRUpdateRetryBase:       opts.Timing.PRUpdateRetry,
-		PRCILiveInterval:        opts.Timing.PRCILive,
-		PRCIFollowInterval:      opts.Timing.PRCIFollow,
-		PRCILogWaitInterval:     opts.Timing.PRCILogWait,
-		MergedPRPollInterval:    opts.Timing.MergedPRPoll,
-		PRLookupRetryBase:       opts.Timing.PRLookupRetry,
-		IdleReapThreshold:       opts.Timing.IdleReap,
-		IdleReapInterval:        opts.Timing.IdleReapSweep,
-		WakeupReapGrace:         opts.Timing.WakeupGrace,
-		AgentWakeFloor:          opts.Timing.WakeFloor,
-		AgentWatchFailureWindow: opts.Timing.WatchFailureWindow,
-		RemoteWatchPoll:         opts.Timing.RemoteWatchPoll,
-		ProviderEventDrainStall: opts.Timing.DrainStall,
-		UsageProbeGap:           opts.Timing.UsageProbeGap,
-		UsagePollInterval:       opts.Timing.UsagePoll,
-		OmitOwnerOps:            opts.OlderComputer,
-		// v0.0.19 groups agent messages by the absorbed rule and never
-		// reads agentMessageMembers; bootTransport leaves the capability
-		// out of its hello for the same boot.
-		OmitAgentMessageRunMembers: opts.OlderComputer,
-	}
+	config := opts.Timing.Isolation
+	config.ProviderBinary = paths.MockProvider
+	config.CredentialHome = paths.CredentialHome
+	config.UseFileKeychain = true
+	config.DisableBackgroundFetch = true
+	config.DisableRetentionSweep = true
+	// Default-ON, and lifted only by the manual gate below. A mocked boot
+	// is normally headless and unattended, so the fake engine is what
+	// keeps the companion pane's chrome, tab strip and host rect
+	// renderable (spec §10) with no browser behind them — and what keeps
+	// `make go-test` / `make e2e` display-free.
+	config.MockBrowserEngine = !opts.RealBrowserEngine
+	// Workspace boundary; see internal/app/app_isolated_workspace.go.
+	config.WorkspaceRoot = paths.DataRoot
+	// gh and glab; see internal/git/forge_cli.go.
+	config.ForgeCLI = paths.MockForge
+	// Dev-server discovery; see internal/app/app_preview.go.
+	config.ScanScopePIDs = opts.ScanScopePIDs
+	config.OmitOwnerOps = opts.OlderComputer
+	// v0.0.19 groups agent messages by the absorbed rule and never
+	// reads agentMessageMembers; bootTransport leaves the capability
+	// out of its hello for the same boot.
+	config.OmitAgentMessageRunMembers = opts.OlderComputer
+	return config
 }
 
 // realBrowserEngineRequested answers whether this isolated boot may host a

@@ -4,7 +4,8 @@
 // GitHub pull request and a GitLab merge request opened pinned from the
 // Pull requests page. Covered: the list's age is the created age under
 // the Created sort and the updated age otherwise, and its hover text
-// names both times; a comment the forge gains while the pane is open
+// names both times; a pull request the forge gains in another project
+// joins the open list with no press; a comment the forge gains while the pane is open
 // appears in the feed with no press, and with the reader scrolled into
 // the feed it joins above without moving the card at the top of the
 // section's viewport, behind an up-arrow "N new" chip that scrolls to it
@@ -19,7 +20,7 @@
 import { randomBytes } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
 
-import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import {
   expectEveryForgeCallHandled,
@@ -149,7 +150,7 @@ export function conversationLiveFlow({ compact }: ConversationSurface): void {
       test.setTimeout(120_000);
       // The PR pump polls every second, so a comment the forge gains
       // arrives as a background update.
-      const harness = await launchHarness({ env: { AO_HARNESS_TIMING: [...HARNESS_TIMING.split(','), 'pr-update=1s'].join(',') } });
+      const harness = await launchHarness({ env: harnessTiming({ 'pr-update': '1s' }) });
       try {
         const seeded = await seedPullRequest(harness, forge);
         await harness.open(page);
@@ -170,6 +171,11 @@ export function conversationLiveFlow({ compact }: ConversationSurface): void {
         await press(pane.getByTestId('pulls-sort'));
         await press(page.getByTestId('pulls-sort-updated'));
         await expect(age).toContainText('2h');
+
+        // A pull request the forge gains in another project joins the open
+        // list on the pump's next read, with no press.
+        await seedPullRequest(harness, forge, OTHER[forge]);
+        await expect(row(page, OTHER[forge])).toBeVisible({ timeout: 20_000 });
 
         // The page is on screen: the row opens the review pinned to it.
         await press(row(page, NUMBER[forge]).getByRole('button').first());
@@ -208,6 +214,9 @@ export function conversationLiveFlow({ compact }: ConversationSurface): void {
     test(`${forge}: refresh shows the forge's new comment with no chip, and Hide resolved threads hides the resolved one`, async ({ harness, page }, testInfo: TestInfo) => {
       test.setTimeout(120_000);
       const seeded = await seedPullRequest(harness, forge);
+      // The PR opened after the choice is listed from the start: the list
+      // learning of a new one is the poll's, proven above on a 1s pump.
+      await seedPullRequest(harness, forge, OTHER[forge]);
       await harness.open(page);
       await useDarkTheme(page);
       const review = await openPinnedReview(page, NUMBER[forge], compact);
@@ -245,7 +254,6 @@ export function conversationLiveFlow({ compact }: ConversationSurface): void {
 
       // The choice is remembered: another PR opened now starts with its
       // resolved thread hidden.
-      await seedPullRequest(harness, forge, OTHER[forge]);
       if (compact) await press(page.getByTestId('pulls-back'));
       await press(row(page, OTHER[forge]).getByRole('button').first());
       await expect(review.getByTestId('review-pr-header')).toContainText(`${OTHER[forge]}`);

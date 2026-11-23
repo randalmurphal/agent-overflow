@@ -53,8 +53,9 @@ const (
 	modeTests runMode = iota
 	modeFlow
 	modeFreeze
-	// modeTypecheck typechecks the suite and exits: CI's harness build,
-	// before it packs the artifact the Playwright jobs run (typecheck.go).
+	// modeTypecheck runs the suite's source checks and exits: CI's harness
+	// build, before it packs the artifact the Playwright jobs run
+	// (typecheck.go).
 	modeTypecheck
 )
 
@@ -108,13 +109,13 @@ func run(args []string, stdout, stderr *os.File) int {
 	}
 
 	if opts.mode == modeTypecheck {
-		if code, err := typecheck(testDir, stdout, stderr); err != nil {
+		if code, err := checkSuite(testDir, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, "ao-harness-e2e:", err)
 			return code
 		}
 		return 0
 	}
-	if code, err := ensureTypechecked(testDir, stdout, stderr); err != nil {
+	if code, err := ensureSuiteChecked(testDir, stdout, stderr); err != nil {
 		fmt.Fprintln(stderr, "ao-harness-e2e:", err)
 		return code
 	}

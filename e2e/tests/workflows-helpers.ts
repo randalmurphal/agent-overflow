@@ -1,3 +1,4 @@
+import { expect } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import type { SeedResult } from './fixtures.js';
 
@@ -584,19 +585,15 @@ export async function mockSessions(
   protocol: string,
   expected: number,
 ): Promise<MockInfo[]> {
-  const deadline = Date.now() + 15_000;
   let seen: MockInfo[] = [];
-  while (Date.now() < deadline) {
-    const mocks = await harness.rpc<MockInfo[]>('HarnessListMocks');
-    seen = mocks.filter(
-      (mock) => mock.registration.protocol === protocol && mock.sessionConfig,
-    );
-    if (seen.length >= expected) return seen;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(
-    `expected ${expected} ${protocol} session configs, saw ${seen.length}: ${JSON.stringify(seen)}`,
-  );
+  await expect
+    .poll(async () => {
+      const mocks = await harness.rpc<MockInfo[]>('HarnessListMocks');
+      seen = mocks.filter((mock) => mock.registration.protocol === protocol && mock.sessionConfig);
+      return seen.length;
+    }, { timeout: 15_000, intervals: [100], message: `expected ${expected} ${protocol} session configs` })
+    .toBeGreaterThanOrEqual(expected);
+  return seen;
 }
 
 export async function sessionConfigs(

@@ -193,7 +193,7 @@ func startCodexLoginMock(t *testing.T) (*codex.LoginSession, *control.Server, st
 		Version:  scenario.CurrentVersion,
 		Name:     "codex-login",
 		Provider: scenario.ProviderCodex,
-		Turns:    []scenario.Turn{{Label: "idle", Steps: []scenario.Step{}}},
+		Turns:    []scenario.Turn{{Label: "idle", Steps: []scenario.Step{{DelayMs: 1}}}},
 	})
 	if err != nil {
 		t.Fatalf("marshal scenario: %v", err)

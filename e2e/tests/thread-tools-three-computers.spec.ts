@@ -19,6 +19,7 @@ import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../sr
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { advanceGate, awaitGate, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 import { backgroundShellSteps } from './agents-tray-helpers.js';
+import { laterMessage } from './standing-agent-wake-helpers.js';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -310,17 +311,22 @@ test('the Agents segment nests a spawn two computers away and its Stop cascades 
     'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === grand.path, 90_000);
   // The cascade disarms the child's own spawn there: the person stopped
   // the child's work, so the child takes no new turn for it.
-  const childWoken = studio.waitForEvent<HarnessMockEventData>(
+  const childWoken = studio.watchEvents<HarnessMockEventData>(
     'harness:mock',
     (ev) => ev.report.kind === 'user_input' && ev.cwd === child.path && (ev.report.input ?? '').includes(nested.value!.token),
-    30_000).then(() => true, () => false);
+  );
   await childRow.getByTestId('agent-tray-row-stop').click();
   await expect(page.getByTestId('toast-message').filter({ hasText: 'Stopped Studio child' }))
     .toHaveText('Stopped Studio child: its turn, 1 background task and 1 agent of its own.', { timeout: 60_000 });
   await childInterrupted;
   await grandInterrupted;
   await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('stopped', { timeout: 60_000 });
-  expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
+  // A later message to the child, read by its session, is the barrier: a
+  // wake for the stopped grandchild would reach the child's session before it.
+  await childWoken.expectNoneThrough(
+    () => laterMessage(studio, spawn.value!.thread_id, child.path),
+    'the child took a turn for the agent the person stopped',
+  );
 });
 
 /** A thread on the computer that holds it: its placement and archive state, null once it is gone. */

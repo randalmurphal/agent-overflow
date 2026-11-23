@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
@@ -64,6 +65,10 @@ type Bootstrap struct {
 	// CDP consumers require it in addition to the origin, so another page on
 	// the same debugger endpoint cannot be mistaken for this instance.
 	PageMarker string `json:"pageMarker,omitempty"`
+	// HarnessTiming is the harness boot's frontend timer overrides
+	// (Config.FrontendTiming), in milliseconds by name. Served only with
+	// Harness; frontend/src/lib/transport/harnessMode.ts reads it.
+	HarnessTiming map[string]int64 `json:"harnessTiming,omitempty"`
 	// BackendID and ReplicaGeneration identify the backend's history
 	// store for the client-side thread replica
 	// (docs/architecture/thread-replica-sync.md §3.3): the first keys the
@@ -339,6 +344,12 @@ type Config struct {
 	// Test knob, like KeepaliveInterval: only a harness boot sets it
 	// (diagenv.HarnessTiming).
 	WatermarkInterval time.Duration
+	// FrontendTiming is the frontend timer overrides a harness boot serves
+	// in its bootstrap manifest (Bootstrap.HarnessTiming), in milliseconds
+	// by diagenv.HarnessTiming name, each 1 to MaxFrontendTimingMs. New
+	// refuses it without Harness, so no other boot can put a page into
+	// shortened timing.
+	FrontendTiming map[string]int64
 	// CoalesceWindow overrides DefaultCoalesceWindow. Zero defaults to it.
 	// Test knob, like KeepaliveInterval.
 	CoalesceWindow time.Duration
@@ -647,6 +658,11 @@ type Server struct {
 	speechTickets *ticketBook
 }
 
+// MaxFrontendTimingMs is the longest Config.FrontendTiming value: the page
+// arms each timer with setTimeout, whose delay is a signed 32-bit count of
+// milliseconds, so a longer one wraps and fires at once.
+const MaxFrontendTimingMs = 1<<31 - 1
+
 // New constructs a Server. Generates a token if one wasn't provided.
 // Does not start listening — caller invokes Start.
 func New(cfg Config) (*Server, error) {
@@ -661,6 +677,20 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.Port < 0 || cfg.Port > 65535 {
 		return nil, fmt.Errorf("transport: Config.Port %d out of range", cfg.Port)
+	}
+	// The server keeps its own copy: a later write to the caller's map is
+	// never served, and an empty map is no timing at all.
+	cfg.FrontendTiming = maps.Clone(cfg.FrontendTiming)
+	if len(cfg.FrontendTiming) == 0 {
+		cfg.FrontendTiming = nil
+	}
+	if cfg.FrontendTiming != nil && !cfg.Harness {
+		return nil, fmt.Errorf("transport: Config.FrontendTiming is served only by a harness boot (Config.Harness)")
+	}
+	for name, ms := range cfg.FrontendTiming {
+		if strings.TrimSpace(name) == "" || ms <= 0 || ms > MaxFrontendTimingMs {
+			return nil, fmt.Errorf("transport: Config.FrontendTiming %q needs a name and a duration of 1 to %dms, got %dms", name, MaxFrontendTimingMs, ms)
+		}
 	}
 	if cfg.HTTPReadHeaderTimeout == 0 {
 		cfg.HTTPReadHeaderTimeout = 10 * time.Second
@@ -1968,6 +1998,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		Harness:           s.cfg.Harness,
 		HostWindow:        s.hostWindow(r, pageAuthed, windowAuthed),
 		PageMarker:        s.cfg.PageMarker,
+		HarnessTiming:     s.cfg.FrontendTiming,
 		BackendID:         backendID,
 		BackendName:       s.backendName(),
 		ReplicaGeneration: replicaGeneration,

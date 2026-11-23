@@ -456,8 +456,16 @@ export async function clearForgeRefusal(harness: HarnessApp, route: string): Pro
   await harness.rpc('HarnessForgeRefuse', { route, status: 0 });
 }
 
-export async function forgeInvocations(harness: HarnessApp): Promise<ForgeInvocation[]> {
-  const log = await harness.rpc<{ invocations: ForgeInvocation[] }>('HarnessForgeInvocations', 0);
+/**
+ * The fake's recorded invocations, oldest first: all of them, or those after
+ * the `since` sequence number. Fails when the fake's log bound evicted any of
+ * them before this read, since a count or a scan of the rest would miss them.
+ */
+export async function forgeInvocations(harness: HarnessApp, since = 0): Promise<ForgeInvocation[]> {
+  const log = await harness.rpc<{ invocations: ForgeInvocation[]; dropped: number }>('HarnessForgeInvocations', since);
+  if (log.dropped > 0) {
+    throw new Error(`the fake forge's log bound evicted ${log.dropped} invocation(s) recorded after sequence ${since} before they were read`);
+  }
   return log.invocations;
 }
 

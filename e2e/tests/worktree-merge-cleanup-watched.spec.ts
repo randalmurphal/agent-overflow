@@ -16,7 +16,7 @@ import { existsSync } from 'node:fs';
 const test = base.extend<object, { harnessWorker: HarnessApp }>({
   harnessWorker: [
     async ({}, use) => {
-      const app = await launchHarness({ env: { AO_HARNESS_TIMING: mergePollTiming('10m') } });
+      const app = await launchHarness({ env: mergePollTiming('10m') });
       await use(app);
       await app.close();
     },

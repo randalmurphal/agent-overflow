@@ -122,6 +122,8 @@ func (h *harnessHost) RecheckProviderUpdates() { h.app.providerUpdateService().C
 
 func (h *harnessHost) PauseMergedPRCleanup() (resume func()) { return h.app.pauseMergedPRCleanup() }
 
+func (h *harnessHost) MergedPRPolled() time.Time { return h.app.mergedPRPolled() }
+
 func (h *harnessHost) ReplayLog() *replaylog.Manager { return h.app.replay }
 
 func (h *harnessHost) Shutdown(ctx context.Context) error { return h.app.Shutdown(ctx) }

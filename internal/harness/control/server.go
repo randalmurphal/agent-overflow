@@ -105,6 +105,11 @@ type MockInfo struct {
 	// advance_released reports: the mock is the only process that knows,
 	// and it is by definition parked when the answer is interesting.
 	OpenGate string `json:"openGate"`
+	// StartupGate names the scenario's startupGate while the mock holds its
+	// first provider frame behind it, empty otherwise. It is held beside
+	// OpenGate, so releasing either leaves the other reported, and no turn
+	// boundary clears it.
+	StartupGate string `json:"startupGate"`
 	// PendingAdvances lists the advance commands the mock buffered
 	// against a gate that had not opened yet, in arrival order. The
 	// buffer is per-turn and the mock discards it at every turn boundary,
@@ -536,11 +541,24 @@ func (s *Server) applyReportLocked(conn *mockConn, rep Report) {
 			conn.info.SessionStartRuns = append(conn.info.SessionStartRuns, run)
 		}
 	case ReportWaitingSignal:
+		if rep.Startup {
+			conn.info.StartupGate = rep.Detail
+			return
+		}
 		conn.info.OpenGate = rep.Detail
 	case ReportAdvanceReleased:
+		if rep.Startup {
+			conn.info.StartupGate = ""
+			return
+		}
 		conn.info.OpenGate = ""
 		conn.info.PendingAdvances = dropFirstMatchingAdvance(conn.info.PendingAdvances, rep.Gate)
 	case ReportAdvanceBuffered:
+		if rep.Startup {
+			// An advance for a startup gate already released: discarded,
+			// and it touches no step gate's state.
+			return
+		}
 		conn.info.OpenGate = rep.OpenGate
 		if rep.Detail == AdvanceDroppedDetail {
 			return

@@ -168,8 +168,8 @@ func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushIt
 	// resurrect a message whose dispatch has already settled.
 	a.triage.ReleaseFlushClaim(threadID, items)
 	if stale {
-		a.flushDispatch.wg.Add(1)
-		go a.restoreStaleFlushHandoff(threadID, slices.Clone(items))
+		restore := slices.Clone(items)
+		a.flushDispatch.wg.Go(func() { a.restoreStaleFlushHandoff(threadID, restore) })
 	} else {
 		a.startFlushDispatchWorkerLocked(threadID)
 	}
@@ -186,7 +186,6 @@ func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushIt
 // (discardFlushDispatch), which the restore holds from its check through
 // its writes.
 func (a *App) restoreStaleFlushHandoff(threadID string, items []triage.QueuedFlushItem) {
-	defer a.flushDispatch.wg.Done()
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 	unlockMutations := a.threadApplication().LockMutations(threadID)
@@ -226,12 +225,10 @@ func (a *App) startFlushDispatchWorkerLocked(threadID string) {
 		return
 	}
 	a.flushDispatch.running[threadID] = true
-	a.flushDispatch.wg.Add(1)
-	go a.runFlushDispatchWorker(threadID)
+	a.flushDispatch.wg.Go(func() { a.runFlushDispatchWorker(threadID) })
 }
 
 func (a *App) runFlushDispatchWorker(threadID string) {
-	defer a.flushDispatch.wg.Done()
 	for {
 		a.flushDispatch.mu.Lock()
 		queue := a.flushDispatch.queues[threadID]

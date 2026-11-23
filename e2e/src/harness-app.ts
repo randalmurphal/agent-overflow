@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 
-import { test, type Page, type TestInfo } from '@playwright/test';
+import { expect, type Page, type TestInfo } from '@playwright/test';
 
 import {
   type ProcessIdentity,
@@ -22,7 +22,7 @@ import type { HarnessBootstrap, HarnessLaunchRecord } from './harness-types.ts';
 // instead of being replaced by a generic client timeout.
 const RPC_TIMEOUT_MS = 15_000;
 
-interface WireEvent {
+export interface WireEvent {
   channel: string;
   seq: number;
   data: unknown;
@@ -30,6 +30,194 @@ interface WireEvent {
   consumed?: boolean;
   /** When this client received the event, in Date.now() milliseconds. */
   receivedAt?: number;
+}
+
+/**
+ * A count of matching events from the moment it was made. It holds the
+ * count and the first match, never the payloads. It serves one assertion:
+ * the first `expect…Through` call claims it, and a second call, overlapping
+ * the first or after it, throws. It ends at its assertion or with the test
+ * that made it (tests/base-test.ts), whichever is first.
+ */
+export interface EventWatch {
+  count(): number;
+  /** Run `barrier`; fail with `message` when a match arrived before it finished. */
+  expectNoneThrough(barrier: () => Promise<unknown>, message: string): Promise<void>;
+  /** Run `barrier`; fail with `message` unless exactly `n` matches arrived before it finished. */
+  expectExactlyThrough(n: number, barrier: () => Promise<unknown>, message: string): Promise<void>;
+}
+
+/**
+ * Reads the running test's TestInfo, throwing outside a test. Only
+ * tests/base-test.ts reaches Playwright's `test` (src/wait-scan.ts), so it
+ * installs the reader when it loads; a driver script that never loads it
+ * runs outside any test.
+ */
+let readTestInfo: (() => TestInfo) | undefined;
+
+/** Installs the reader of the running test's TestInfo; tests/base-test.ts calls it once. */
+export function installTestInfoReader(read: () => TestInfo): void {
+  readTestInfo = read;
+}
+
+/**
+ * The watches and waits one test made, which the gate fixture ends with the
+ * test: neither counts, consumes, nor times out into the next test.
+ */
+export class EventWatchScope {
+  private readonly ends = new Set<() => void>();
+  private readonly waits = new Map<() => void, string>();
+
+  /** Holds a watch's end until the scope ends. */
+  hold(end: () => void): void {
+    this.ends.add(end);
+  }
+
+  /** Lets go of a watch that ended on its own. */
+  release(end: () => void): void {
+    this.ends.delete(end);
+  }
+
+  /** Holds the cancel of a pending wait on `channel` until it settles or the scope ends. */
+  holdWait(cancel: () => void, channel: string): void {
+    this.waits.set(cancel, channel);
+  }
+
+  /** Lets go of a wait that settled. */
+  releaseWait(cancel: () => void): void {
+    this.waits.delete(cancel);
+  }
+
+  /**
+   * Ends every watch the scope holds and cancels every wait still pending,
+   * whose promises then never settle; the running test's scope also closes.
+   * Returns the channel of each wait it cancelled.
+   */
+  end(): string[] {
+    for (const end of this.ends) end();
+    this.ends.clear();
+    const cancelled = [...this.waits.values()];
+    for (const cancel of this.waits.keys()) cancel();
+    this.waits.clear();
+    if (watchScope === this) watchScope = undefined;
+    return cancelled;
+  }
+}
+
+/**
+ * The running test's watch scope, opened and ended by the gate fixture
+ * (tests/base-test.ts). Undefined outside a test the fixture runs.
+ */
+let watchScope: EventWatchScope | undefined;
+
+/** Opens the running test's watch scope; tests/base-test.ts calls it around each test and ends it after. */
+export function openEventWatchScope(): EventWatchScope {
+  if (watchScope) throw new Error('an event watch scope is already open: a test fixture ran twice');
+  watchScope = new EventWatchScope();
+  return watchScope;
+}
+
+/** The running test's watch scope; throws outside a test the gate fixture runs. */
+export function currentEventWatchScope(): EventWatchScope {
+  if (!watchScope) throw new Error('watchEvents is scoped to a test by tests/base-test.ts; import test from there or from tests/fixtures.ts');
+  return watchScope;
+}
+
+/**
+ * The first event in `log`, or handed to `waiters` later, on `channel` and
+ * matching `predicate` that no wait has consumed; it consumes it. The
+ * mechanism behind `HarnessApp.waitForEvent`. Inside a test it is held by
+ * the test's scope, so a wait the test never reached the await of, because
+ * an action before it failed, is cancelled at the test's end instead of
+ * timing out into a later test; outside a test (`scope` undefined) its
+ * caller owns it.
+ */
+export function waitForEventIn<T = unknown>(
+  scope: EventWatchScope | undefined,
+  log: readonly WireEvent[],
+  waiters: Set<(ev: WireEvent) => void>,
+  channel: string,
+  predicate: ((data: T) => boolean) | undefined,
+  timeoutMs: number,
+): Promise<T> {
+  const matches = (ev: WireEvent) =>
+    !ev.consumed && ev.channel === channel && (!predicate || predicate(ev.data as T));
+  const seen = log.find(matches);
+  if (seen) {
+    seen.consumed = true;
+    return Promise.resolve(seen.data as T);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const cancel = () => {
+      clearTimeout(timer);
+      waiters.delete(waiter);
+      scope?.releaseWait(cancel);
+    };
+    const timer = setTimeout(() => {
+      cancel();
+      const recent = log.slice(-20).map((e) => e.channel).join(', ');
+      reject(new Error(`timeout waiting for ${channel} event after ${timeoutMs}ms (recent channels: ${recent})`));
+    }, timeoutMs);
+    const waiter = (ev: WireEvent) => {
+      if (!matches(ev)) return;
+      ev.consumed = true;
+      cancel();
+      resolve(ev.data as T);
+    };
+    waiters.add(waiter);
+    scope?.holdWait(cancel, channel);
+  });
+}
+
+/**
+ * A watch in `scope` over the events `waiters` is handed: the mechanism
+ * behind `HarnessApp.watchEvents`, which hands it the app's event waiters
+ * and the running test's scope.
+ */
+export function watchEventsIn<T = unknown>(
+  scope: EventWatchScope,
+  waiters: Set<(ev: WireEvent) => void>,
+  channel: string,
+  predicate?: (data: T) => boolean,
+): EventWatch {
+  let seen = 0;
+  let first = '';
+  // open, then claimed by its one assertion, then ended.
+  let state: 'open' | 'claimed' | 'ended' = 'open';
+  const waiter = (ev: WireEvent) => {
+    if (ev.channel !== channel || (predicate && !predicate(ev.data as T))) return;
+    if (seen === 0) first = JSON.stringify(ev.data).slice(0, 500);
+    seen += 1;
+  };
+  const end = () => {
+    state = 'ended';
+    waiters.delete(waiter);
+    scope.release(end);
+  };
+  waiters.add(waiter);
+  scope.hold(end);
+  // Not async: the claim is taken in the call itself, so a second call made
+  // while the first's barrier runs is refused rather than sharing the count.
+  const through = (n: number, barrier: () => Promise<unknown>, message: string): Promise<void> => {
+    if (state === 'claimed') return Promise.reject(new Error(`${message}: this ${channel} watch is serving another assertion; make a new watch for a second one`));
+    if (state === 'ended') return Promise.reject(new Error(`${message}: this ${channel} watch already ended; make a new watch for a second assertion`));
+    state = 'claimed';
+    return (async () => {
+      try {
+        await barrier();
+      } finally {
+        end();
+      }
+      if (seen !== n) {
+        throw new Error(`${message}: ${seen} ${channel} event(s) arrived before the barrier finished, want ${n}${seen > 0 ? `, first ${first}` : ''}`);
+      }
+    })();
+  };
+  return {
+    count: () => seen,
+    expectNoneThrough: (barrier, message) => through(0, barrier, message),
+    expectExactlyThrough: (n, barrier, message) => through(n, barrier, message),
+  };
 }
 
 /**
@@ -47,6 +235,8 @@ export interface HarnessMockReport {
   sessionRef?: string;
   gate?: string;
   openGate?: string;
+  /** Set when the report is about the scenario's startupGate rather than a step gate. */
+  startup?: boolean;
   /** Set on `mcp_result`: the text the tool returned, or the error text. */
   result?: string;
   /** Set on `mcp_result`: whether the call failed. */
@@ -257,16 +447,13 @@ export class HarnessApp {
    * fails here, only later.
    */
   async awaitNoPages(timeoutMs = 15_000): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-      const info = await this.rpc<{ frontendPages?: unknown[] }>('HarnessInfo');
-      const count = info.frontendPages?.length ?? 0;
-      if (count === 0) return;
-      if (Date.now() >= deadline) {
-        throw new Error(`${count} frontend page(s) still registered after ${timeoutMs}ms`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
+    await expect
+      .poll(async () => (await this.rpc<{ frontendPages?: unknown[] }>('HarnessInfo')).frontendPages?.length ?? 0, {
+        timeout: timeoutMs,
+        intervals: [25],
+        message: `frontend pages still registered after ${timeoutMs}ms`,
+      })
+      .toBe(0);
   }
 
   async startWatchdog(memoryLimitBytes: number): Promise<void> {
@@ -390,45 +577,28 @@ export class HarnessApp {
     predicate?: (data: T) => boolean,
     timeoutMs = 15_000,
   ): Promise<T> {
-    const matches = (ev: WireEvent) =>
-      !ev.consumed && ev.channel === channel && (!predicate || predicate(ev.data as T));
-    const seen = this.eventLog.find(matches);
-    if (seen) {
-      seen.consumed = true;
-      return seen.data as T;
-    }
-    return await new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.eventWaiters.delete(waiter);
-        const recent = this.eventLog
-          .slice(-20)
-          .map((e) => e.channel)
-          .join(', ');
-        reject(
-          new Error(
-            `timeout waiting for ${channel} event after ${timeoutMs}ms (recent channels: ${recent})`,
-          ),
-        );
-      }, timeoutMs);
-      const waiter = (ev: WireEvent) => {
-        if (!matches(ev)) return;
-        ev.consumed = true;
-        clearTimeout(timer);
-        this.eventWaiters.delete(waiter);
-        resolve(ev.data as T);
-      };
-      this.eventWaiters.add(waiter);
-    });
+    return await waitForEventIn(watchScope, this.eventLog, this.eventWaiters, channel, predicate, timeoutMs);
   }
 
   /**
-   * Count events seen on a channel, consumed or not.
-   *
-   * The absence half of an event assertion: `waitForEvent` can only prove
-   * something happened, and a test that needs to prove something did NOT
-   * happen has to read the log directly rather than wait on a timeout. Pair
-   * it with a barrier that guarantees the backend is past the point where
-   * the event would have fired.
+   * The absence half of an event assertion. Call it before the action that
+   * could cause the event: from then on it counts every event on `channel`
+   * matching `predicate`, consumed or not. `expectNoneThrough` runs a
+   * barrier, an action whose own effect is ordered after the moment the
+   * event would have fired (a later message through the same queue, a turn
+   * that can only start once the thread is idle), and fails when a match
+   * arrived before the barrier finished; `expectExactlyThrough` asks for a
+   * count. A wait that has to time out cannot prove absence; a barrier can.
+   * Only a test the gate fixture runs (tests/fixtures.ts) may watch: the
+   * fixture ends the watch with the test.
+   */
+  watchEvents<T = unknown>(channel: string, predicate?: (data: T) => boolean): EventWatch {
+    return watchEventsIn(currentEventWatchScope(), this.eventWaiters, channel, predicate);
+  }
+
+  /**
+   * Count remembered events on a channel, consumed or not. To prove an
+   * event did not happen, use `watchEvents` with a barrier.
    */
   countEvents<T = unknown>(channel: string, predicate?: (data: T) => boolean): number {
     return this.eventLog.filter(
@@ -564,7 +734,7 @@ export class HarnessApp {
     // it only for a failure.
     let info: TestInfo | undefined;
     try {
-      info = test.info();
+      info = readTestInfo?.();
     } catch {
       // Outside a test: a worker fixture's teardown or a driver script.
     }

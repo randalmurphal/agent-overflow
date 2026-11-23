@@ -2293,6 +2293,66 @@ func TestServer_BootstrapAnnouncesHarnessMode(t *testing.T) {
 	}
 }
 
+// TestServer_BootstrapServesFrontendTimingOnlyInHarnessMode: a harness boot
+// serves its frontend timer overrides; a harness or soak boot with none
+// serves no field, and no other boot can be configured to serve one.
+func TestServer_BootstrapServesFrontendTimingOnlyInHarnessMode(t *testing.T) {
+	callers := map[string]int64{"unreachable-settle": 2000}
+	timed := newServerFixtureWith(t, func(cfg *Config) {
+		cfg.Harness = true
+		cfg.FrontendTiming = callers
+	})
+	// The server serves what it was built with, not the caller's map.
+	callers["unreachable-settle"] = 1
+	callers["agent-row-linger"] = 1
+	if got := bootstrapDoc(t, timed).HarnessTiming; len(got) != 1 || got["unreachable-settle"] != 2000 {
+		t.Fatalf("harness manifest timing = %v, want unreachable-settle 2000", got)
+	}
+	longest := newServerFixtureWith(t, func(cfg *Config) {
+		cfg.Harness = true
+		cfg.FrontendTiming = map[string]int64{"agent-row-linger": MaxFrontendTimingMs}
+	})
+	if got := bootstrapDoc(t, longest).HarnessTiming["agent-row-linger"]; got != MaxFrontendTimingMs {
+		t.Fatalf("the longest page timer served as %d, want %d", got, MaxFrontendTimingMs)
+	}
+
+	empty := func(cfg *Config) { cfg.FrontendTiming = map[string]int64{} }
+	for name, cfg := range map[string]func(*Config){
+		"ordinary":           func(*Config) {},
+		"ordinary empty map": empty,
+		"soak":               func(cfg *Config) { cfg.Harness = true },
+		"soak empty map": func(cfg *Config) {
+			cfg.Harness = true
+			empty(cfg)
+		},
+	} {
+		f := newServerFixtureWith(t, cfg)
+		resp := getBootstrap(t, f.srv.Addr())
+		var raw map[string]json.RawMessage
+		err := json.NewDecoder(resp.Body).Decode(&raw)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("%s: decode manifest: %v", name, err)
+		}
+		if timing, ok := raw["harnessTiming"]; ok {
+			t.Errorf("%s boot served harnessTiming %s", name, timing)
+		}
+	}
+
+	for name, cfg := range map[string]Config{
+		"without harness":  {FrontendTiming: map[string]int64{"agent-row-linger": 3000}},
+		"nonpositive time": {Harness: true, FrontendTiming: map[string]int64{"agent-row-linger": 0}},
+		"past setTimeout":  {Harness: true, FrontendTiming: map[string]int64{"agent-row-linger": MaxFrontendTimingMs + 1}},
+		"unnamed":          {Harness: true, FrontendTiming: map[string]int64{" ": 3000}},
+	} {
+		cfg.Dispatcher = NewDispatcher()
+		cfg.EventBus = NewEventBus(20)
+		if _, err := New(cfg); err == nil {
+			t.Errorf("New accepted frontend timing %s", name)
+		}
+	}
+}
+
 func bootstrapDoc(t *testing.T, f *serverFixture) Bootstrap {
 	t.Helper()
 	resp := getBootstrap(t, f.srv.Addr())

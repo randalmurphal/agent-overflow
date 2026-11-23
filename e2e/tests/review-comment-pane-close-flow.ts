@@ -9,6 +9,7 @@
 // editor on that line.
 import type { Locator, Page } from '@playwright/test';
 
+import { TOAST_MS } from '../../frontend/src/lib/pageTiming.ts';
 import type { HarnessApp } from '../src/harness.js';
 import { expect } from './fixtures.js';
 import { expectEveryForgeCallHandled, forgeInvocations, openPullRequestReview, refuseForgeRoute, releaseForgeRoute } from './forge-helpers.js';
@@ -17,7 +18,6 @@ import { openEditor, ROUTES, seedPull } from './review-comment-actions-flow.js';
 const FORGE = 'gitlab';
 const TITLE = 'Pane close review';
 const TEXT = 'Five needs a test.';
-const DEFAULT_TOAST_MS = 5_000;
 
 /** Every call on `route`, refused ones included. */
 async function routeCalls(harness: HarnessApp, route: string): Promise<number> {
@@ -49,6 +49,9 @@ async function openCompanion(page: Page, compact: boolean, fromSidebar: boolean)
 export async function failAfterPaneCloses(harness: HarnessApp, page: Page, compact: boolean, outcome: 'refused' | 'lost'): Promise<void> {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(harness.url).origin });
   await seedPull(harness, FORGE, `pane-close-${compact ? 'compact' : 'desktop'}-${outcome}`, TITLE);
+  // The page clock runs as the real one does; a toast's lifetime is crossed
+  // below by moving it on.
+  await page.clock.install();
   await harness.open(page);
   const route = ROUTES[FORGE].lineComment;
   let review = await openCompanion(page, compact, true);
@@ -87,7 +90,11 @@ export async function failAfterPaneCloses(harness: HarnessApp, page: Page, compa
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(TEXT);
   await expect(toast).toHaveCount(1);
   // Held past an ordinary toast's lifetime: the property under test is time.
-  await page.waitForTimeout(DEFAULT_TOAST_MS + 1_000);
+  // Any toast waits while the pointer or focus is on it (ToastItem), as both
+  // are after the copy, so both leave it first.
+  await page.mouse.move(0, 0);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.clock.fastForward(TOAST_MS);
   await expect(toast).toHaveCount(1);
 
   // The review opened again has a fresh editor on that line.

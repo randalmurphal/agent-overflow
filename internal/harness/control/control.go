@@ -180,6 +180,11 @@ type Report struct {
 	// gate was open at all, which is the ordinary racing-ahead case.
 	// Set only on ReportAdvanceBuffered.
 	OpenGate string `json:"openGate,omitempty"`
+	// Startup marks a waiting_signal, advance_released or advance_buffered
+	// report about the scenario's startupGate rather than a step gate. The
+	// startup gate is held once per process, beside any step gate, so it
+	// is projected on its own (MockInfo.StartupGate).
+	Startup bool `json:"startup,omitempty"`
 }
 
 // Report kinds. Tests await these via harness:mock events; renaming any

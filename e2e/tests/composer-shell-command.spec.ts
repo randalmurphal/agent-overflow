@@ -116,7 +116,7 @@ test('a !command runs in the workspace, shows its output while it runs, and is s
   expect(rows[rows.length - 1].summary).toBe(`!${command}`);
 
   await expect(page.getByText('Three steps ran and the README is the only file.')).toBeVisible();
-  await harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId).catch(() => undefined);
+  await harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
   await shoot(page, testInfo, 'sent');
 });
 

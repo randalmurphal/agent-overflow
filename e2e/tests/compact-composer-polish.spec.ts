@@ -16,6 +16,9 @@ test('phone meters, attachments, workspace and command details remain usable', a
     toolResultLine('tool-command', 'the complete command output'),
     claudeUsageResult(123456, 45678),
   ])]) });
+  // The page clock runs as the real one does; the tooltip's close timer is
+  // crossed below by moving it on.
+  await page.clock.install();
   await harness.open(page);
   await page.getByTestId('thread-row').click();
   await startMock(harness, threadId);
@@ -26,9 +29,10 @@ test('phone meters, attachments, workspace and command details remain usable', a
   await ring.tap();
   const tooltip = page.getByRole('tooltip');
   await expect(tooltip).toBeVisible();
-  // The shared hover-close timer is 140ms. Observe beyond it so a synthetic
-  // touch mouseleave cannot make a transient opening pass this assertion.
-  await page.waitForTimeout(300);
+  // The shared hover-close timer is 140ms. Move the page clock beyond it so
+  // a synthetic touch mouseleave cannot make a transient opening pass this
+  // assertion.
+  await page.clock.fastForward(300);
   await expect(tooltip).toBeVisible();
   // Anchored at the ring, not a sheet at the bottom edge.
   const ringBox = (await ring.boundingBox())!;

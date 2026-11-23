@@ -210,21 +210,10 @@ func (a *App) AutoResumeThread(threadID string) error {
 	return nil
 }
 
-// markThreadFocused stamps the thread's read-state in the background.
-// Registration happens synchronously under a.markThreadRead.mu so the
-// WaitGroup can never be joined by a stamp that was accepted after
-// stopMarkThreadReads decided nothing more would run.
+// markThreadFocused stamps the thread's read-state in the background. Once
+// stopMarkThreadReads has begun it starts nothing.
 func (a *App) markThreadFocused(threadID string) {
-	a.markThreadRead.mu.Lock()
-	if a.markThreadRead.stopped {
-		a.markThreadRead.mu.Unlock()
-		return
-	}
-	a.markThreadRead.wg.Add(1)
-	a.markThreadRead.mu.Unlock()
-
-	go func() {
-		defer a.markThreadRead.wg.Done()
+	a.markThreadRead.wg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 		defer cancel()
 		row, changed, err := a.store.MarkThreadReadNow(ctx, threadID)
@@ -251,7 +240,7 @@ func (a *App) markThreadFocused(threadID string) {
 		if changed {
 			a.threadAnnouncer().AnnounceWithin(a.lifeCtx(), a.emitEvent, triage.ThreadActionFull, row.ID)
 		}
-	}()
+	})
 }
 
 // waitMarkThreadReads blocks until every read-state stamp already
@@ -266,10 +255,7 @@ func (a *App) waitMarkThreadReads() {
 // writes to SQLite, and markThreadReadTimeout caps how long that wait
 // can add to quit latency.
 func (a *App) stopMarkThreadReads() {
-	a.markThreadRead.mu.Lock()
-	a.markThreadRead.stopped = true
-	a.markThreadRead.mu.Unlock()
-	a.markThreadRead.wg.Wait()
+	a.markThreadRead.wg.Close()
 }
 
 func (a *App) loadThreadForFocus(threadID string) (store.Thread, error) {

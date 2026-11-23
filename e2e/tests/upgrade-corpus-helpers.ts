@@ -413,19 +413,18 @@ export interface StoreStatus {
  * that skipped an item is a migration defect, not a slow one.
  */
 export async function awaitDeferredSettled(candidate: HarnessApp, timeoutMs: number): Promise<StoreStatus> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const status = await candidate.rpc<StoreStatus>('HarnessStoreStatus');
-    if (status.deferredFailure) {
-      throw new Error(`deferred migration v${status.deferredFailure.version} (${status.deferredFailure.title}) failed ` +
-        `${status.deferredFailure.failures} time(s): ${status.deferredFailure.firstError}`);
-    }
-    if (!status.deferredPending) return status;
-    if (Date.now() > deadline) {
-      throw new Error(`deferred migrations still pending after ${timeoutMs}ms: watermark ${status.deferredWatermark}, latest ${status.deferredLatest}`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  let status!: StoreStatus;
+  await expect
+    .poll(async () => {
+      status = await candidate.rpc<StoreStatus>('HarnessStoreStatus');
+      return status.deferredFailure !== null || !status.deferredPending;
+    }, { timeout: timeoutMs, message: 'deferred migrations still pending' })
+    .toBe(true);
+  if (status.deferredFailure) {
+    throw new Error(`deferred migration v${status.deferredFailure.version} (${status.deferredFailure.title}) failed ` +
+      `${status.deferredFailure.failures} time(s): ${status.deferredFailure.firstError}`);
   }
+  return status;
 }
 
 /**

@@ -23,6 +23,22 @@
 
 let harness = false;
 let pageMarker = '';
+
+/**
+ * The frontend timers a harness boot may shorten, by their
+ * AO_HARNESS_TIMING names: the page rows of main_harness.go `harnessTimers`,
+ * which TestFrontendTimersMatchThePage holds to this set. Each one's product
+ * constant stays the default; its owner reads it through `harnessInterval`
+ * when it arms.
+ */
+export type HarnessFrontendTimer = 'unreachable-settle' | 'agent-row-linger';
+const FRONTEND_TIMERS: ReadonlySet<string> = new Set<HarnessFrontendTimer>([
+  'unreachable-settle',
+  'agent-row-linger',
+]);
+/** A manifest's frontend timer overrides, read by `readHarnessTimingFromBootstrap`. */
+export type HarnessTiming = ReadonlyMap<HarnessFrontendTimer, number>;
+let timing: HarnessTiming = new Map();
 const waiting = new Set<() => void>();
 
 /** Whether this session is attached to a --harness / --soak backend. */
@@ -49,6 +65,55 @@ export function setHarnessSessionFromBootstrap(value: boolean): void {
 }
 
 
+/**
+ * The home boot's override for `timer`, or `productMs`: the page timers
+ * follow the boot that served this page.
+ */
+export function harnessInterval(timer: HarnessFrontendTimer, productMs: number): number {
+  return timing.get(timer) ?? productMs;
+}
+
+/**
+ * The longest timer setTimeout arms as given: its delay is a signed 32-bit
+ * count of milliseconds, and a longer one wraps and fires at once
+ * (transport.MaxFrontendTimingMs on the backend).
+ */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * A manifest's frontend timer overrides, validated and not yet published.
+ * Timing without the harness bit is no timing: only a harness boot may
+ * shorten a product timer. An entry this build does not name, or a
+ * duration that is not a whole number of milliseconds from 1 to
+ * MAX_TIMER_MS, is a defect in the boot that served it and throws, so the
+ * manifest that carried it is refused. bootstrap.ts reads it before it
+ * publishes anything from the manifest.
+ */
+export function readHarnessTimingFromBootstrap(isHarness: boolean, value: unknown): HarnessTiming {
+  const next = new Map<HarnessFrontendTimer, number>();
+  if (!isHarness || value === undefined) return next;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`bootstrap harnessTiming is not an object: ${JSON.stringify(value)}`);
+  }
+  for (const [name, ms] of Object.entries(value)) {
+    if (!FRONTEND_TIMERS.has(name)) throw new Error(`bootstrap harnessTiming names an unknown timer ${JSON.stringify(name)}`);
+    if (typeof ms !== 'number' || !Number.isInteger(ms) || ms <= 0 || ms > MAX_TIMER_MS) {
+      throw new Error(`bootstrap harnessTiming ${name} needs a whole number of milliseconds from 1 to ${MAX_TIMER_MS}, got ${JSON.stringify(ms)}`);
+    }
+    next.set(name as HarnessFrontendTimer, ms);
+  }
+  return next;
+}
+
+// Called by bootstrap.ts with each accepted home manifest's timing
+// (readHarnessTimingFromBootstrap). Every manifest replaces the page's
+// timing: a later manifest's values win, and one without overrides restores
+// the product timers. An owner reads its timer when it arms, so a timer
+// already armed keeps the value it armed with.
+export function setHarnessTimingFromBootstrap(next: HarnessTiming): void {
+  timing = next;
+}
+
 export function setHarnessPageMarkerFromBootstrap(value: unknown): void {
   if (typeof value === 'string' && value !== '') pageMarker = value;
 }
@@ -74,5 +139,6 @@ export function whenHarnessSession(arm: () => void): () => void {
 export function __resetHarnessModeForTest(): void {
   harness = false;
   pageMarker = '';
+  timing = new Map();
   waiting.clear();
 }

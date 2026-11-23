@@ -394,15 +394,7 @@ func (a *App) reportMemoryProblems(threadID string, problems []memoryProblem) {
 // shutdown before the store closes. False when shutdown has begun and fn
 // did not run.
 func (a *App) goMemoryReport(threadID string, fn func()) bool {
-	w := &a.memoryReports
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.stopped {
-		return false
-	}
-	w.wg.Add(1)
-	go func() {
-		defer w.wg.Done()
+	return a.memoryReports.wg.Go(func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				log.Printf("memory %s: the report panicked: %v\n%s", threadID, recovered, debug.Stack())
@@ -410,8 +402,7 @@ func (a *App) goMemoryReport(threadID string, fn func()) bool {
 			}
 		}()
 		fn()
-	}()
-	return true
+	})
 }
 
 // waitMemoryReports blocks until the reports already begun have finished,
@@ -422,8 +413,5 @@ func (a *App) waitMemoryReports() {
 
 // stopMemoryReports refuses new reports and waits out the ones in flight.
 func (a *App) stopMemoryReports() {
-	a.memoryReports.mu.Lock()
-	a.memoryReports.stopped = true
-	a.memoryReports.mu.Unlock()
-	a.memoryReports.wg.Wait()
+	a.memoryReports.wg.Close()
 }

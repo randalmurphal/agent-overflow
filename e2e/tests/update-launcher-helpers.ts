@@ -6,6 +6,7 @@
 // launcher probes it. update-trial.spec.ts drives the v118 fixture through
 // it; the release upgrade check drives the corpus through it and holds
 // every run to the launcher's stall window, ceiling and probe deadline.
+import { expect } from '@playwright/test';
 import { type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -260,28 +261,39 @@ export interface SettledBootstrap {
  * checkpoint and sweeps, so the overall deadline is the caller's.
  */
 export async function settledBootstrap(b: HeadlessBackend, timeoutMs: number, progressDeadlineMs: number): Promise<SettledBootstrap> {
-  const deadline = Date.now() + timeoutMs;
   let lastBody = '';
   let lastChange = Date.now();
   let maxProgressGapMs = 0;
-  for (;;) {
-    const resp = await fetch(`http://127.0.0.1:${b.port}/bootstrap.json`, {
-      headers: { authorization: `Bearer ${b.token}` },
-    });
-    const body = await resp.text();
-    const now = Date.now();
-    if (body !== lastBody) {
-      maxProgressGapMs = Math.max(maxProgressGapMs, now - lastChange);
-      lastBody = body;
-      lastChange = now;
-    }
-    if (resp.status !== 503) return { status: resp.status, cacheControl: resp.headers.get('cache-control'), body, maxProgressGapMs };
-    if (now - lastChange > progressDeadlineMs) {
-      throw new Error(`the boot reported no progress for ${now - lastChange}ms; the launcher gives up after ${progressDeadlineMs}ms: ${body}\n${b.stderr()}`);
-    }
-    if (now > deadline) throw new Error(`the boot was still starting after ${timeoutMs}ms: ${body}\n${b.stderr()}`);
-    await new Promise((resolve) => setTimeout(resolve, 250));
+  let settled: SettledBootstrap | undefined;
+  let stalled = '';
+  try {
+    // The launcher's own cadence: one read every 250ms.
+    await expect.poll(async () => {
+      const resp = await fetch(`http://127.0.0.1:${b.port}/bootstrap.json`, {
+        headers: { authorization: `Bearer ${b.token}` },
+      });
+      const body = await resp.text();
+      const now = Date.now();
+      if (body !== lastBody) {
+        maxProgressGapMs = Math.max(maxProgressGapMs, now - lastChange);
+        lastBody = body;
+        lastChange = now;
+      }
+      if (resp.status !== 503) {
+        settled = { status: resp.status, cacheControl: resp.headers.get('cache-control'), body, maxProgressGapMs };
+        return 'settled';
+      }
+      if (now - lastChange > progressDeadlineMs) {
+        stalled = `the boot reported no progress for ${now - lastChange}ms; the launcher gives up after ${progressDeadlineMs}ms: ${body}`;
+        return 'stalled';
+      }
+      return 'starting';
+    }, { timeout: timeoutMs, intervals: [250] }).not.toBe('starting');
+  } catch (error) {
+    throw new Error(`the boot was still starting after ${timeoutMs}ms: ${lastBody}\n${b.stderr()}`, { cause: error });
   }
+  if (stalled !== '') throw new Error(`${stalled}\n${b.stderr()}`);
+  return settled!;
 }
 
 /** stopHeadless stops the backend as a signal does and waits for it to exit. */

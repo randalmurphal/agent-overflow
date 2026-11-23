@@ -84,11 +84,12 @@ interface SeedResult {
 // bounds.
 // ---------------------------------------------------------------------
 
-// A stopped reconnect ladder publishes no further status. RECONNECT_INITIAL_MS
-// is 250ms and the ladder grows from there, so this window is ~8 attempts
-// at its FASTEST step: a ladder that were still running could not stay
-// silent across it.
+// A stopped reconnect ladder dials nothing more. The revocation leaves the
+// ladder on its first rungs (RECONNECT_INITIAL_MS is 250ms, doubling, with
+// full jitter), so a ladder still running would dial inside this window.
 const LADDER_SILENCE_MS = 2_000;
+/** A path no backend serves, fetched as the end of that window. */
+const LADDER_PROBE = '/__ladder-silence-probe';
 
 /** The two states the client latches on and stops the ladder for. */
 const TERMINAL_STATUSES = ['unauthorized', 'pairing-required'];
@@ -154,6 +155,9 @@ test.describe.serial('remote device lifecycle', () => {
 
     phoneContext = await browser.newContext();
     phone = await phoneContext.newPage();
+    // The phone's clock runs as the real one does; the ladder's silence
+    // below is shown by moving it on.
+    await phone.clock.install();
     surfaced = await instrument(phone);
   });
 
@@ -280,12 +284,32 @@ test.describe.serial('remote device lifecycle', () => {
     const latched = surfaced.transportStatuses.at(-1)!;
     const publishedByThen = surfaced.transportStatuses.length;
 
-    // Stopped, not slow. A ladder still running republishes within
-    // RECONNECT_INITIAL_MS; nothing is published across this window.
-    await phone.waitForTimeout(LADDER_SILENCE_MS);
+    // Stopped, not slow. A ladder still running dials within
+    // RECONNECT_INITIAL_MS of the page clock, whose timers it runs, and the
+    // latch would keep its status as it is, so the dials themselves are
+    // counted: every request and socket the phone opens across the window.
+    // The probe the page fetches after the window is the barrier: a dial a
+    // ladder timer started inside it was requested first.
+    const dials: string[] = [];
+    const noteRequest = (request: { url(): string }) => {
+      if (!request.url().endsWith(LADDER_PROBE)) dials.push(new URL(request.url()).pathname);
+    };
+    const noteSocket = (socket: { url(): string }) => dials.push(new URL(socket.url()).pathname);
+    phone.on('request', noteRequest);
+    phone.on('websocket', noteSocket);
+    await phone.route(`**${LADDER_PROBE}`, (route) => route.fulfill({ status: 204 }));
+    try {
+      await phone.clock.runFor(LADDER_SILENCE_MS);
+      await phone.evaluate((probe) => fetch(probe).then(() => undefined), LADDER_PROBE);
+    } finally {
+      phone.off('request', noteRequest);
+      phone.off('websocket', noteSocket);
+      await phone.unroute(`**${LADDER_PROBE}`);
+    }
+    expect(dials, 'a latched client must not re-enter the reconnect ladder').toEqual([]);
     expect(
       surfaced.transportStatuses.slice(publishedByThen),
-      'a latched client must not re-enter the reconnect ladder',
+      'a latched client must not publish another status',
     ).toEqual([]);
     await expect(banner).toHaveAttribute('data-status', latched);
 

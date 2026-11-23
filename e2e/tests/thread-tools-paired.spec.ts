@@ -55,6 +55,7 @@ import { launchFrontendClient } from './frontend-client-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { centerInTimeline } from './standing-agent-home-contents-helpers.js';
 import { capture, captureAgentMessage } from './wake-rows-helpers.js';
+import { laterMessage } from './standing-agent-wake-helpers.js';
 import type { ProviderOptionRow } from './thread-tools-helpers.js';
 import { backgroundShellSteps, heldSendIds, openPast, pastRow, pastTotal } from './agents-tray-helpers.js';
 import { toolResultLine, toolUseLine } from './agent-visibility-helpers.js';
@@ -1267,10 +1268,10 @@ test('the Agents segment nests a spawn on the other computer and its Stop cascad
     'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === grand.path, 90_000);
   // The cascade disarms the child's own spawn there: the person stopped
   // the child's work, so the child takes no new turn for it.
-  const childWoken = remote.waitForEvent<HarnessMockEventData>(
+  const childWoken = remote.watchEvents<HarnessMockEventData>(
     'harness:mock',
     (ev) => ev.report.kind === 'user_input' && ev.cwd === child.path && (ev.report.input ?? '').includes(nested.value!.token),
-    30_000).then(() => true, () => false);
+  );
   await childRow.getByTestId('agent-tray-row-stop').click();
   await expect(page.getByTestId('toast-message').filter({ hasText: 'Stopped Remote child' }))
     .toHaveText('Stopped Remote child: its turn, 1 background task and 1 agent of its own.', { timeout: 60_000 });
@@ -1279,7 +1280,12 @@ test('the Agents segment nests a spawn on the other computer and its Stop cascad
   await expect.poll(async () => (await remote.rpc<{ status: string }[]>('ListLiveBackgroundTasks', spawn.value!.thread_id))
     .filter((item) => item.status === 'running').length).toBe(0);
   await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('stopped', { timeout: 60_000 });
-  expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
+  // A later message to the child, read by its session, is the barrier: a
+  // wake for the stopped grandchild would reach the child's session before it.
+  await childWoken.expectNoneThrough(
+    () => laterMessage(remote, spawn.value!.thread_id, child.path),
+    'the child took a turn for the agent the person stopped',
+  );
 });
 
 // A worker there replied and keeps working, then its computer stops
@@ -1800,14 +1806,15 @@ test("with the spawner's computer stopped, a question over there stays the spawn
   await expect.poll(async () => (await approvals())[0]?.routedTo?.threadId ?? '').toBe(caller.threadIds[0]);
 
   // Stopped, the spawner's computer answers nothing; the worker's computer
-  // keeps the question routed to the spawner, not to the person there. No
-  // timer moves it, so the wait only has to cover several of that
-  // computer's reads of the spawner's prompts.
+  // keeps the question routed to the spawner, not to the person there. It
+  // keeps no lease on the route and no timer moves it (the contract in
+  // internal/app/app_worker_prompts_peer.go), and its reads of a stopped
+  // computer stall rather than fail, so holding the stop longer shows
+  // nothing more.
   const pid = home.bootstrap.pid;
   expect(pid).toBeGreaterThan(0);
   process.kill(pid, 'SIGSTOP');
   try {
-    await new Promise((resolve) => setTimeout(resolve, 15_000));
     expect((await approvals())[0]?.routedTo?.threadId).toBe(caller.threadIds[0]);
   } finally {
     process.kill(pid, 'SIGCONT');

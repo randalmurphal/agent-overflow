@@ -104,7 +104,7 @@ func TestRepeatStepValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			step := tc.step
-			err := step.validate(false)
+			err := step.validate(stepRules{})
 			if err == nil {
 				t.Fatalf("validate accepted %+v", tc.step)
 			}
@@ -115,18 +115,18 @@ func TestRepeatStepValidation(t *testing.T) {
 	}
 
 	paced := Step{Repeat: &RepeatStep{Count: 0, Steps: []Step{{DelayMs: 100}, emit}}}
-	if err := paced.validate(false); err != nil {
+	if err := paced.validate(stepRules{}); err != nil {
 		t.Fatalf("paced infinite repeat rejected: %v", err)
 	}
 	bounded := Step{Repeat: &RepeatStep{Count: 3, Steps: []Step{emit}}}
-	if err := bounded.validate(false); err != nil {
+	if err := bounded.validate(stepRules{}); err != nil {
 		t.Fatalf("bounded repeat without pacing rejected: %v", err)
 	}
 	// An emit that paces itself between lines counts.
 	selfPaced := Step{Repeat: &RepeatStep{Count: 0, Steps: []Step{
 		{Emit: &EmitStep{Lines: []string{`{"a":1}`, `{"b":2}`}, DelayBetweenMs: 50}},
 	}}}
-	if err := selfPaced.validate(false); err != nil {
+	if err := selfPaced.validate(stepRules{}); err != nil {
 		t.Fatalf("self-paced infinite repeat rejected: %v", err)
 	}
 }
@@ -147,23 +147,40 @@ func TestRepeatFixturePathsAreCollected(t *testing.T) {
 	}
 }
 
-// TestStartupDelayValidation: the field is a deliberate stall, so its
-// bounds are what stop a typo (a stray zero, a negative) from becoming a
-// harness run that looks hung rather than slow.
-func TestStartupDelayValidation(t *testing.T) {
-	doc := func(ms string) string {
-		return `{"version":1,"name":"x","provider":"claude","startupDelayMs":` + ms +
-			`,"turns":[{"steps":[{"delayMs":1}]}]}`
+// TestStartupGateValidation: a gate named with stray space could never be
+// released by the advance a spec sends.
+func TestStartupGateValidation(t *testing.T) {
+	doc := func(gate string) string {
+		return `{"version":1,"name":"x","provider":"claude","startupGate":"` + gate +
+			`","turns":[{"steps":[{"delayMs":1}]}]}`
 	}
-	for _, ms := range []string{"0", "1", "30000"} {
-		if _, err := Parse([]byte(doc(ms))); err != nil {
-			t.Errorf("startupDelayMs %s was rejected: %v", ms, err)
+	for _, gate := range []string{"", "held-start"} {
+		if _, err := Parse([]byte(doc(gate))); err != nil {
+			t.Errorf("startupGate %q was rejected: %v", gate, err)
 		}
 	}
-	for _, ms := range []string{"-1", "30001", "600000"} {
-		if _, err := Parse([]byte(doc(ms))); err == nil {
-			t.Errorf("startupDelayMs %s was accepted; the cap is %d", ms, MaxStartupDelayMs)
+	if _, err := Parse([]byte(doc(" held"))); err == nil {
+		t.Errorf("startupGate with surrounding space was accepted")
+	}
+	// An advance naming the startup gate releases only the startup gate, so
+	// a waitSignal of that name, at any depth, could never be released.
+	for where, steps := range map[string]string{
+		"turn":   `"turns":[{"steps":[{"waitSignal":{"name":"held-start"}}]}]`,
+		"repeat": `"onStart":[{"repeat":{"count":1,"steps":[{"waitSignal":{"name":"held-start"}}]}}]`,
+	} {
+		_, err := Parse([]byte(`{"version":1,"name":"x","provider":"claude","startupGate":"held-start",` + steps + `}`))
+		if err == nil || !strings.Contains(err.Error(), `"held-start" is the startupGate's name`) {
+			t.Errorf("a %s waitSignal named like the startupGate: err = %v", where, err)
 		}
+	}
+}
+
+// TestTheRetiredStartupDelayNamesItsReplacement: no compatibility for the
+// old field, and the refusal says what holds a start now.
+func TestTheRetiredStartupDelayNamesItsReplacement(t *testing.T) {
+	_, err := Parse([]byte(`{"version":1,"name":"x","provider":"claude","startupDelayMs":500,"turns":[{"steps":[{"delayMs":1}]}]}`))
+	if err == nil || !strings.Contains(err.Error(), "startupGate") {
+		t.Fatalf("Parse(startupDelayMs) = %v, want a refusal naming startupGate", err)
 	}
 }
 
@@ -238,8 +255,8 @@ func TestNewFieldsDefaultToOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if s.StartupDelayMs != 0 || s.ProviderVersion != "" {
-		t.Fatalf("scenario defaults changed: startupDelayMs=%d providerVersion=%q", s.StartupDelayMs, s.ProviderVersion)
+	if s.StartupGate != "" || s.ProviderVersion != "" {
+		t.Fatalf("scenario defaults changed: startupGate=%q providerVersion=%q", s.StartupGate, s.ProviderVersion)
 	}
 	for _, turn := range s.Turns {
 		for _, st := range turn.Steps {
@@ -271,7 +288,7 @@ func TestMcpCallStepValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			step := tc.step
-			err := step.validate(false)
+			err := step.validate(stepRules{})
 			if err == nil {
 				t.Fatalf("validate accepted %+v", tc.step)
 			}
@@ -284,11 +301,11 @@ func TestMcpCallStepValidation(t *testing.T) {
 	// Args are optional, and a ${VAR} token inside a JSON string keeps
 	// the object valid before substitution.
 	ok := Step{McpCall: &McpCallStep{Server: "ao-thread-tools", Tool: "thread_note", Args: []byte(`{"text":"${USER_INPUT}"}`)}}
-	if err := ok.validate(false); err != nil {
+	if err := ok.validate(stepRules{}); err != nil {
 		t.Fatalf("valid mcpCall rejected: %v", err)
 	}
 	bare := Step{McpCall: &McpCallStep{Server: "ao-thread-tools", Tool: "thread_note"}}
-	if err := bare.validate(false); err != nil {
+	if err := bare.validate(stepRules{}); err != nil {
 		t.Fatalf("mcpCall without args rejected: %v", err)
 	}
 }
@@ -328,7 +345,7 @@ func TestMcpCallDoesNotPaceARepeat(t *testing.T) {
 	loop := Step{Repeat: &RepeatStep{Count: 0, Steps: []Step{
 		{McpCall: &McpCallStep{Server: "ao-thread-tools", Tool: "thread_note"}},
 	}}}
-	err := loop.validate(false)
+	err := loop.validate(stepRules{})
 	if err == nil || !strings.Contains(err.Error(), "pacing step") {
 		t.Fatalf("unbounded repeat of mcpCall accepted: %v", err)
 	}

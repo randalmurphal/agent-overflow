@@ -358,9 +358,10 @@ jobs:
 
   # One build of the binaries and the frontend/dist they embed, which the
   # Playwright shards and the upgrade lineage check download as one unit.
-  # It typechecks the suite before it packs, so a type error publishes no
-  # artifact, and the jobs that run it set AO_E2E_TYPECHECKED=1: a shard
-  # compiles no Go, runs no vite and no tsc. tar keeps the executable bits
+  # It typechecks the suite and runs its wait rules before it packs, so a
+  # failed check publishes no artifact, and the jobs that run it set
+  # AO_E2E_TYPECHECKED=1: a shard compiles no Go, runs no vite and no tsc
+  # and no wait scan. tar keeps the executable bits
   # an artifact would drop. The artifact lives 7 days. Re-running failed
   # jobs reuses it and does not rerun this job, so after that, re-run this
   # job, which re-runs the jobs that need it.
@@ -387,7 +388,7 @@ jobs:
           e2e-deps: "true"
           cache-name: harness
       - run: make harness-build
-      - name: Typecheck the Playwright suite before packing it
+      - name: Typecheck the Playwright suite and run its wait rules before packing it
         run: bin/ao-harness-e2e --typecheck
       - name: Pack what a Playwright run reads
         run: tar --zstd -cf "$RUNNER_TEMP/harness-bin.tar.zst" bin frontend/dist

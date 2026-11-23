@@ -258,6 +258,10 @@ func TestAThreadDeletedDuringItsListingIsRefused(t *testing.T) {
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	spawn, child := remoteRestedWorker(t, pair)
+	// The delete runs inside the listing, which gives up at its bound: the
+	// refusal is what is under test, so a busy machine's slow delete must
+	// not turn it into "did not answer in time".
+	pair.source.threadAgentPeerListOverride = time.Minute
 	pair.dest.peerAgentsReachedForTest = func(threadID string) {
 		if threadID != child {
 			return

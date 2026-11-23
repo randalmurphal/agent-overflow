@@ -59,7 +59,7 @@ const POLL_MS = 400;
 const test = base.extend<object, { harnessWorker: HarnessApp }>({
   harnessWorker: [
     async ({}, use) => {
-      const app = await launchHarness({ env: { AO_HARNESS_TIMING: mergePollTiming(`${POLL_MS}ms`) } });
+      const app = await launchHarness({ env: mergePollTiming(`${POLL_MS}ms`) });
       await use(app);
       await app.close();
     },
@@ -356,9 +356,11 @@ test('with background fetch off a merged PR no pane shows is not read, and turni
 
   await harness.rpc('UpdateSettings', { backgroundGitFetch: false });
   try {
+    // Off, no poll runs to read it (internal/app
+    // TestMergedPRPollFollowsTheBackgroundFetchSetting); turning it on
+    // below is what reads it.
     const before = await stateReads(harness);
     await mergePR(harness, fixture);
-    await expectNoMoreStateReads(harness, POLL_MS);
     expect(await stateReads(harness)).toBe(before);
     expect(trackedRow(harness, threadId)?.merged_at, 'the merge was read with the setting off').toBe(0);
     await expectWorktreeKept(harness, threadId, fixture);
@@ -397,8 +399,9 @@ test('a turn running when the PR merges delays the cleanup until it ends', async
 
   await mergePR(harness, fixture);
   await expect.poll(() => trackedRow(harness, threadId)?.merged_at ?? 0).toBeGreaterThan(0);
-  // Several polls later the turn still runs and the worktree stays.
-  await new Promise((resolve) => setTimeout(resolve, POLL_MS * 4));
+  // Polls go on through one that came due for the merged pull request, the
+  // turn still runs and the worktree stays.
+  await expectNoMoreStateReads(harness, POLL_MS);
   expect(trackedRow(harness, threadId)?.handled_at).toBe(0);
   await expectWorktreeKept(harness, threadId, fixture);
 

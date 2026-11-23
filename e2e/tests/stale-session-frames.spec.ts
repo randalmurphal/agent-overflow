@@ -21,7 +21,7 @@
 // (internal/triage/session_token_gate_test.go) and in the host
 // (internal/app/app_provider_events_test.go).
 
-import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test } from './fixtures.js';
 import { listItems, seedAgentThread, startMock, textLines, toolResultLine, toolUseLine } from './agent-visibility-helpers.js';
 import { threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
@@ -56,7 +56,7 @@ function pendingEvents(harness: HarnessApp, threadId: string): Promise<number> {
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
   test(`${provider}: a stopped session's queued frames never reach its replacement`, async ({ page }) => {
     test.setTimeout(90_000);
-    const harness = await launchHarness({ env: { AO_HARNESS_TIMING: `${HARNESS_TIMING},drain-stall=${DRAIN_STALL}` } });
+    const harness = await launchHarness({ env: harnessTiming({ 'drain-stall': DRAIN_STALL }) });
     try {
       await harness.rpc('HarnessSetScenario', {
         scenario: threadToolsScenario({

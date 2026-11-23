@@ -97,7 +97,10 @@ func main() {
 	}
 
 	resumeRef := flagValue(args, "--resume")
-	src := acquireScenario(protocol, cwd, resumeRef)
+	src, err := acquireScenario(protocol, cwd, resumeRef)
+	if err != nil {
+		log.Fatalf("ao-mockprovider: %v", err)
+	}
 
 	w := newLineWriter(os.Stdout)
 	rep := &reporter{client: src.client}

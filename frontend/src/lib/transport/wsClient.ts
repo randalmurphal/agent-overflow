@@ -60,6 +60,17 @@ import {
 } from './frames';
 import { isEntityFilteredChannel } from './entityFilteredChannels';
 import { DEFAULT_METHOD_BUDGET_MS, METHOD_ANSWER_MARGIN_MS, METHOD_BUDGETS_MS } from './methodRoutes';
+import {
+  RECONNECT_FLOOR_MS,
+  RECONNECT_INITIAL_MS,
+  RECONNECT_MAX_LOCAL_MS,
+  RECONNECT_MAX_REMOTE_MS,
+  REPLAY_RETIRED_WARNING,
+  REPLAY_TIMEOUT_MS,
+  RPC_TIMEOUT_MS,
+  STALE_CHECK_INTERVAL_MS,
+  STALE_TRAFFIC_THRESHOLD_MS,
+} from '../pageTiming';
 import { getConnectionId, getDeviceId } from './clientIdentity';
 import { hasPairedSession, mintDialTicket, renewPairedSessionIfDue } from './deviceSession';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
@@ -96,47 +107,26 @@ function withClientIdentity(wsUrl: string): string {
   }
 }
 
-// Test-visible exports for the bound constants. We keep the const
-// names for the production code paths (clearer at the call site than
-// a member-access) and re-export the values so tests can derive
-// boundaries from the same source rather than hard-coding numerals.
-// RPC_TIMEOUT_MS is the wait for a method that declares no budget: the
-// default server budget (one git, gh or glab subprocess, or one forge
-// request) and the answer margin, so the backend's descriptive error
-// ("gh ... timed out after 45s") wins the race against this opaque one.
-// rpcWaitMs gives a budgeted method its own. The timer is the last-resort
-// guard for a live-but-stuck server; dead connections are handled by the
-// WS close path rejecting all pending RPCs.
-export const RPC_TIMEOUT_MS = DEFAULT_METHOD_BUDGET_MS + METHOD_ANSWER_MARGIN_MS;
-export const RECONNECT_INITIAL_MS = 250;
-// Backoff cap by backend locality (bootstrap `remote` flag). The 30s
-// cap is remote-client sizing — polite to a LAN server that may be
-// genuinely down. Against a same-machine backend a failed attempt is a
-// refused loopback connect (~µs), so a long cap buys nothing and costs
-// stale event streams: demand collapse is paced by the rung
-// (collapseBackoffForDemand), so a passive viewer would otherwise stare
-// at a frozen stream for up to the cap after a relay flap.
-export const RECONNECT_MAX_LOCAL_MS = 5_000;
-export const RECONNECT_MAX_REMOTE_MS = 30_000;
-// Stale-socket watchdog. The server heartbeats every 10s — 3× that
-// cadence with no traffic at all means the socket is half-open; the
-// full rationale lives in internal/transport/AGENTS.md §Keepalive.
-// Armed per connection by the heartbeat capability or its first ping.
-// Version/deployment skew must not turn an
-// idle-but-healthy connection into a reconnect loop. Check cadence is
-// coarse — precision is not the point.
-export const STALE_TRAFFIC_THRESHOLD_MS = 30_000;
-export const STALE_CHECK_INTERVAL_MS = 10_000;
+// The socket's timers live in pageTiming.ts, which the end-to-end suite
+// reads too; they are re-exported here so the transport's callers and
+// tests derive boundaries from the same source rather than hard-coding
+// numerals.
+export {
+  RECONNECT_FLOOR_MS,
+  RECONNECT_INITIAL_MS,
+  RECONNECT_MAX_LOCAL_MS,
+  RECONNECT_MAX_REMOTE_MS,
+  REPLAY_TIMEOUT_MS,
+  RPC_TIMEOUT_MS,
+  STALE_CHECK_INTERVAL_MS,
+  STALE_TRAFFIC_THRESHOLD_MS,
+};
 // Paired-session renewal. The backend judges every call on the session's
 // current access window, and an open socket outlives one (15 minutes for
 // a browser). Each tick renews the stored session once it is inside
 // deviceSession's renewal margin, so the socket stays authorized without
 // a re-dial. Coarse on purpose: the check is one localStorage read.
 export const SESSION_RENEWAL_CHECK_INTERVAL_MS = 30_000;
-// Live events and heartbeats can overtake replay; only its completion marker
-// proves recovery finished. Bound that wait separately from socket traffic,
-// allowing the same full transfer budget as an RPC on a slow remote link.
-export const REPLAY_TIMEOUT_MS = RPC_TIMEOUT_MS;
 // Consecutive close-before-open failures that invalidate the cached
 // bootstrap (see preOpenFailures).
 export const BOOTSTRAP_INVALIDATE_AFTER_FAILURES = 2;
@@ -1847,7 +1837,7 @@ export class WSClient {
     if (!this.ws || this.ws.readyState !== WS_OPEN) return;
     if (this.replayBuffer && Date.now() - this.replayStartedAt >= REPLAY_TIMEOUT_MS) {
       this.diagnosticsSink?.('transport: replay did not complete; forcing reconnect');
-      console.warn('wsClient: replay did not complete; forcing reconnect');
+      console.warn(REPLAY_RETIRED_WARNING);
       this.forceReconnect('replay did not complete');
       return;
     }
@@ -2905,10 +2895,8 @@ export class WSClient {
     } else {
       const cap = this.remoteBackend ? RECONNECT_MAX_REMOTE_MS : RECONNECT_MAX_LOCAL_MS;
       const base = Math.min(RECONNECT_INITIAL_MS * 2 ** attempt, cap);
-      // Full jitter — picked uniformly in [0, base]. Floor protects
-      // against zero-delay reconnect on Math.random() => 0; without it
-      // a degenerate RNG could spin a tight reconnect loop.
-      delay = Math.max(50, Math.floor(Math.random() * base));
+      // Full jitter — picked uniformly in [0, base], never below the floor.
+      delay = Math.max(RECONNECT_FLOOR_MS, Math.floor(Math.random() * base));
       demandFloorMs = base;
     }
     // A dormant client whose whole app is BACKGROUNDED probes nothing at

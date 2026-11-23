@@ -267,9 +267,13 @@ async function openReview(page: Page, compact: boolean): Promise<Locator> {
     const r = el.getBoundingClientRect();
     return r.left >= 0 && r.right <= window.innerWidth ? `${r.left}` : 'moving';
   })).not.toBe('moving');
-  const left = await review.evaluate((el) => el.getBoundingClientRect().left);
-  await page.waitForTimeout(100);
-  expect(await review.evaluate((el) => el.getBoundingClientRect().left)).toBe(left);
+  // Stopped: nothing on the page animates, and the pane holds its place
+  // from one frame to the next.
+  await expect.poll(() => page.evaluate(() => document.getAnimations().filter((a) => a.playState === 'running').length)).toBe(0);
+  expect(await review.evaluate((el) => new Promise<number>((done) => {
+    const left = el.getBoundingClientRect().left;
+    requestAnimationFrame(() => requestAnimationFrame(() => done(el.getBoundingClientRect().left - left)));
+  }))).toBe(0);
   return review;
 }
 

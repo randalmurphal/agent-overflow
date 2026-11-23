@@ -288,8 +288,10 @@ type App struct {
 	// tailnet loop. Each ends with the app context.
 	unattendedLoops workGroup
 	// permissionModeFollowWG joins the goroutines that move a thread onto
-	// the permission mode Claude moved to (followClaudePermissionMode).
-	permissionModeFollowWG sync.WaitGroup
+	// the permission mode Claude moved to (followClaudePermissionMode). They
+	// start from the provider event worker while shutdown waits on them. It
+	// is never closed, so Go always starts its member.
+	permissionModeFollowWG workGroup
 	// threadSearchIndex is the boot-time search index build.
 	threadSearchIndex threadSearchIndexBuild
 	// pendingThreadDeletes completes interrupted thread deletes at boot.
@@ -1007,6 +1009,10 @@ type App struct {
 	// it owes paired computers (ownerOpReach) for a test. Zero keeps the
 	// product bound.
 	ownerOpReachOverride time.Duration
+	// threadAgentPeerListOverride replaces threadAgentPeerListTimeout, the
+	// bound on a forwarded Agents listing (threadAgentPeerListBound), for a
+	// test. Zero keeps the product bound.
+	threadAgentPeerListOverride time.Duration
 	// ownerOpsOmitted answers agent_owner_op as a build before owner
 	// operations does (IsolationConfig.OmitOwnerOps). False serves them.
 	ownerOpsOmitted bool
@@ -1019,6 +1025,14 @@ type App struct {
 	// running job (IsolationConfig.RemoteWatchPoll). Zero keeps the
 	// product cadence.
 	remoteWatchPoll time.Duration
+	// wakeRetryBaseOverride replaces the first wake retry wait
+	// (IsolationConfig.ThreadWakeRetryBase); read through
+	// threadWakeRetryDelay. Zero keeps the product wait.
+	wakeRetryBaseOverride time.Duration
+	// agentSettledWindowOverride replaces how long a settled request stays in an
+	// Agents listing (IsolationConfig.AgentSettledWindow); read through
+	// agentSettledWindowSpan. Zero keeps the product window.
+	agentSettledWindowOverride time.Duration
 	// idleReap holds an isolated test boot's idle-session reaper timing
 	// (IsolationConfig). Zero fields keep the product values.
 	idleReap idleReapTiming

@@ -156,6 +156,9 @@ test('a warm return keeps its cached activity hidden until the backend verifies 
     ] }] },
     { title: 'Away', turns: [{ userText: 'Other', items: [{ kind: 'assistant_text', summary: 'Away answer.' }] }] },
   ] }] });
+  // The page clock runs as the real one does; the warm-up failsafe is
+  // crossed below by moving it on.
+  await page.clock.install();
   await harness.open(page);
   const open = () => page.getByTestId('thread-row').getByText('Active return', { exact: true }).click();
   await open();
@@ -181,7 +184,7 @@ test('a warm return keeps its cached activity hidden until the backend verifies 
   await expect(page.getByRole('status').getByText('Loading thread...')).toBeVisible();
   // Cross the warm-up failsafe while the response is held. Its expiry
   // must not reveal the unverified cached run on a slow connection.
-  await page.waitForTimeout(2700);
+  await page.clock.fastForward(2700);
   await expect(page.getByTestId('activity-run')).toHaveCount(0);
   expect(await page.evaluate(() => (window as typeof window & { unverifiedPaints: number }).unverifiedPaints)).toBe(0);
   await page.evaluate(() => {

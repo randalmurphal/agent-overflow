@@ -23,7 +23,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import {
-  HARNESS_TIMING,
+  harnessTiming,
   launchHarness,
   type HarnessApp,
   type HarnessMockEventData,
@@ -44,6 +44,7 @@ import {
 import {
   startBreaker,
   wakeInput,
+  laterMessage,
   countInputs,
   completionRows,
   openRunsFor,
@@ -71,6 +72,16 @@ function workspaceAway(cwd: string) {
     },
   };
 }
+
+/** A user_input carrying `text` on the mock at `cwd`. */
+const inputWith = (cwd: string, text: string) => (ev: HarnessMockEventData) =>
+  ev.report.kind === 'user_input' && ev.cwd === cwd && (ev.report.input ?? '').includes(text);
+
+// The first rung of the wake retry ladder a session end books a completion
+// on (threadWakeRetryBase, half a minute in the product). The ladder's
+// product length is a unit test's (internal/app).
+const WAKE_RETRY_MS = 3_000;
+const SHORT_WAKE_RETRY = { env: harnessTiming({ 'wake-retry': `${WAKE_RETRY_MS}ms` }) };
 
 // A thread request's answer and a remote job's completion still queued when
 // the app quits are not the person's words: the next boot gives them back to
@@ -285,8 +296,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const input = await wakeInput(harness, callerPath, completion, 60_000);
       expect(input.report.input).toContain(`${aoMessageOpening('the remote job "nightly build" on "Build box"')}Remote job finished on Build box: nightly build`);
       expect(input.report.input).toContain('build 812 finished: green');
+      const again = harness.watchEvents('harness:mock', inputWith(callerPath, completion));
       await awaitTurnCompleted(harness, caller);
-      await new Promise((resolve) => setTimeout(resolve, 4_000));
       expect(deliveries()).toBe(1);
       expect(countInputs(harness, callerPath, ANSWER)).toBe(0);
       expect(queued()).toEqual([]);
@@ -311,18 +322,22 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StopSession', caller);
-      await harness.rpc('StartSession', caller);
-      await harness.rpc('SendMessage', caller, 'did the notes come back?', null);
-      const status = await awaitToolAnswer<{ requests?: { token: string; answer?: string }[] }>(harness, {
-        tool: 'thread_status',
-        cwd: callerPath,
-        timeoutMs: 60_000,
-      });
-      expect(status.isError, status.text).toBe(false);
-      expect(status.value!.requests![0].token).toBe(token);
-      expect(status.value!.requests![0].answer).toContain(ANSWER);
-      await awaitTurnCompleted(harness, caller);
+      // The thread_status turn is the barrier: a second delivery queued
+      // for the thread reaches its session before that turn's message.
+      await again.expectNoneThrough(async () => {
+        await harness!.rpc('StopSession', caller);
+        await harness!.rpc('StartSession', caller);
+        await harness!.rpc('SendMessage', caller, 'did the notes come back?', null);
+        const status = await awaitToolAnswer<{ requests?: { token: string; answer?: string }[] }>(harness!, {
+          tool: 'thread_status',
+          cwd: callerPath,
+          timeoutMs: 60_000,
+        });
+        expect(status.isError, status.text).toBe(false);
+        expect(status.value!.requests![0].token).toBe(token);
+        expect(status.value!.requests![0].answer).toContain(ANSWER);
+        await awaitTurnCompleted(harness!, caller);
+      }, 'the completion was delivered again');
       expect(countInputs(harness, callerPath, ANSWER)).toBe(0);
 
       await harness.open(page);
@@ -474,23 +489,22 @@ async function giveBackCaller(app: () => HarnessApp, remote: HarnessApp, provide
       };
       const watch = conn
         .prepare(
-          `SELECT confirmed_at IS NOT NULL AS confirmed, wake_attempts AS attempts, next_check AS nextCheck FROM remote_watches WHERE request_id = ?`,
+          `SELECT confirmed_at IS NOT NULL AS confirmed, wake_attempts AS attempts FROM remote_watches WHERE request_id = ?`,
         )
-        .get(requestId) as { confirmed: number; attempts: number; nextCheck: number };
-      return { answer: request.confirmed, completion: watch.confirmed, attempts: watch.attempts, nextCheck: watch.nextCheck };
+        .get(requestId) as { confirmed: number; attempts: number };
+      return { answer: request.confirmed, completion: watch.confirmed, attempts: watch.attempts };
     } finally {
       conn.close();
     }
   };
-  // Each message starts a session that reads it and holds, never echoing
-  // it: Claude's still starting, Codex's in a turn held at its first step.
-  const holdNextSession = async (scenario: string) => {
-    await app().rpc('StopSession', caller);
-    await setScenario(
+  // The next session started reads a message and holds, never echoing it:
+  // Claude's still starting, Codex's in a turn held at its first step.
+  const held = (scenario: string) =>
+    setScenario(
       app(),
       callerPath,
       provider === 'claude'
-        ? { ...threadToolsScenario({ name: scenario, provider, turns: [{ text: 'unreached' }] }), startupDelayMs: 30_000 }
+        ? { ...threadToolsScenario({ name: scenario, provider, turns: [{ text: 'unreached' }] }), startupGate: 'held-start' }
         : threadToolsScenario({
             name: scenario,
             provider,
@@ -499,6 +513,10 @@ async function giveBackCaller(app: () => HarnessApp, remote: HarnessApp, provide
             afterTurns: 'silent',
           }),
     );
+  // Each message starts a session that holds as `held` says.
+  const holdNextSession = async (scenario: string) => {
+    await app().rpc('StopSession', caller);
+    await held(scenario);
   };
   // The mock can hold before the app settles the write that reached it, so
   // the queue row a delivery removes is polled for, not read once.
@@ -521,6 +539,7 @@ async function giveBackCaller(app: () => HarnessApp, remote: HarnessApp, provide
     completion: `request_id: ${requestId}`,
     state,
     marks,
+    held,
     holdNextSession,
     heldMock,
     healthy,
@@ -542,7 +561,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
   }) => {
     test.setTimeout(300_000);
     const ANSWER = 'The release notes are ready: five fixes.';
-    const [harness, remote] = await startTogether(launchHarness(), launchHarness());
+    const [harness, remote] = await startTogether(launchHarness(SHORT_WAKE_RETRY), launchHarness());
     try {
       const g = await giveBackCaller(() => harness, remote, provider, 'give-back-death', ANSWER);
 
@@ -553,54 +572,55 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const answerMock = await g.heldMock(answerInput);
       await expect.poll(() => g.state()).toMatchObject({ request: { delivered: 1, how: 'queued', notify: 1 }, rows: 0 });
       expect(g.marks().answer).toBe(0);
-      await g.healthy(`give-back-death-answer-after-${provider}`);
+      // The death's teardown starts the thread's session again, and that
+      // session is the one the completion reaches, so it holds too. No Stop
+      // comes between: StopSession takes a registered session only, and the
+      // restart may still be starting.
+      await g.held(`give-back-death-completion-held-${provider}`);
       const answerDeath = harness.waitForEvent<NotificationSend>(
         'notification:send',
         (data) => !data.retract && data.kind === 'error' && data.id === `thread:${g.caller}`,
         30_000,
       );
+      const answerAgain = harness.watchEvents('harness:mock', inputWith(g.callerPath, ANSWER));
       await harness.rpc('HarnessMockCommand', answerMock, { type: 'exit', code: 1 });
       expect((await answerDeath).body).toBe('The provider stopped. Open the thread to see why.');
       await expect
         .poll(() => g.state().request, { timeout: 30_000 })
         .toEqual({ delivered: 0, how: '', notify: 0 });
-      await new Promise((resolve) => setTimeout(resolve, 4_000));
       expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '', rows: 0 });
-      expect(countInputs(harness, g.callerPath, ANSWER)).toBe(1);
 
-      // ---- The completion.
-      await g.holdNextSession(`give-back-death-completion-held-${provider}`);
-      await writeFile(g.release, '');
-      const completionInput = await wakeInput(harness, g.callerPath, g.completion, 60_000);
+      // ---- The completion. Its delivery is the answer's barrier: an answer
+      // queued again would reach the next session before it.
+      let completionInput!: HarnessMockEventData;
+      await answerAgain.expectNoneThrough(async () => {
+        await writeFile(g.release, '');
+        completionInput = await wakeInput(harness, g.callerPath, g.completion, 60_000);
+      }, 'the answer a dying session never took in was delivered again');
+      expect(g.state().draft).toBe('');
       const completionMock = await g.heldMock(completionInput);
       await expect.poll(() => g.state()).toMatchObject({ watch: 'queued', rows: 0 });
       await g.healthy(`give-back-death-completion-after-${provider}`);
       // The first death's notification may still stand (Claude's held start
       // never retracts it), so this one is not waited for.
+      const died = Date.now();
       await harness.rpc('HarnessMockCommand', completionMock, { type: 'exit', code: 1 });
-      // The watch is pending again with its first redelivery booked half a
-      // minute out, and the watcher, which polls every two seconds, leaves it
-      // alone until then.
-      await expect.poll(() => ({ watch: g.state().watch, attempts: g.marks().attempts }), { timeout: 30_000 }).toEqual({
-        watch: 'pending',
-        attempts: 1,
-      });
-      const booked = g.marks().nextCheck;
-      const out = booked - Date.now();
-      expect(out).toBeGreaterThan(20_000);
-      expect(out).toBeLessThanOrEqual(30_000);
-      await new Promise((resolve) => setTimeout(resolve, 10_000));
-      expect(countInputs(harness, g.callerPath, g.completion)).toBe(1);
-      expect(g.state().watch).toBe('pending');
-      // Then it is delivered once to the session the watcher starts, and the
-      // echo confirms it.
+      // The watch goes pending again with its first redelivery booked one
+      // rung of the wake retry ladder out, and the watcher, which polls every
+      // two seconds, leaves it alone until then. It is delivered once to the
+      // session the watcher starts, and the echo confirms it. The rung count
+      // stays on the row through the delivery; the booked moment does not
+      // (the watcher's check of the job books its next one), so the
+      // redelivery is held to the rung itself.
       await expect.poll(() => countInputs(harness, g.callerPath, g.completion), { timeout: 60_000 }).toBe(2);
-      expect(Date.now()).toBeGreaterThanOrEqual(booked);
+      expect(g.marks().attempts, 'the redelivery was booked on another rung of the ladder').toBe(1);
+      const [, redelivered] = harness.eventTimes('harness:mock', inputWith(g.callerPath, g.completion));
+      expect(redelivered, 'the watcher delivered the completion short of one rung').toBeGreaterThanOrEqual(died + WAKE_RETRY_MS);
+      const third = harness.watchEvents('harness:mock', inputWith(g.callerPath, g.completion));
       await awaitTurnCompleted(harness, g.caller);
-      await new Promise((resolve) => setTimeout(resolve, 4_000));
-      expect(countInputs(harness, g.callerPath, g.completion)).toBe(2);
       expect(g.state()).toEqual({ request: { delivered: 0, how: '', notify: 0 }, watch: 'queued', draft: '', rows: 0 });
       expect(g.marks().completion).toBe(1);
+      await third.expectNoneThrough(() => laterMessage(harness, g.caller, g.callerPath), 'the completion was delivered a third time');
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
@@ -636,34 +656,37 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await g.heldMock(await wakeInput(harness, g.callerPath, ANSWER, 60_000));
       await expect.poll(() => g.state()).toMatchObject({ request: { delivered: 1, how: 'queued', notify: 1 }, rows: 0 });
       expect(g.marks().answer).toBe(0);
+      const answerAgain = harness.watchEvents('harness:mock', inputWith(g.callerPath, ANSWER));
       await harness.rpc('StopSession', g.caller);
       expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '', rows: 0 });
-      await new Promise((resolve) => setTimeout(resolve, 4_000));
-      expect(countInputs(harness, g.callerPath, ANSWER)).toBe(1);
-      expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '', rows: 0 });
 
-      // ---- The completion, and an archive.
-      await g.holdNextSession(`give-back-stop-completion-held-${provider}`);
-      await writeFile(g.release, '');
-      await g.heldMock(await wakeInput(harness, g.callerPath, g.completion, 60_000));
+      // ---- The completion, and an archive. Its delivery is the answer's
+      // barrier: an answer queued again would reach the next session first.
+      let completionInput!: HarnessMockEventData;
+      await answerAgain.expectNoneThrough(async () => {
+        await g.holdNextSession(`give-back-stop-completion-held-${provider}`);
+        await writeFile(g.release, '');
+        completionInput = await wakeInput(harness, g.callerPath, g.completion, 60_000);
+      }, 'the answer the Stop gave back was delivered again');
+      expect(g.state().draft).toBe('');
+      await g.heldMock(completionInput);
       await expect.poll(() => g.state()).toMatchObject({ watch: 'queued', rows: 0 });
       expect(g.marks().completion).toBe(0);
       await g.healthy(`give-back-stop-completion-after-${provider}`);
       await harness.rpc('ArchiveThread', g.caller);
+      // Due at once, not booked on the ladder; the watcher's due query
+      // (internal/store remoteWatchCheckable) skips an archived thread's
+      // watches, so it waits for the unarchive.
       expect(g.state()).toMatchObject({ watch: 'pending', draft: '', rows: 0 });
       expect(g.marks().attempts).toBe(0);
-      // The watcher skips an archived thread's watches.
-      await new Promise((resolve) => setTimeout(resolve, 6_000));
-      expect(countInputs(harness, g.callerPath, g.completion)).toBe(1);
-      expect(g.state().watch).toBe('pending');
 
       await harness.rpc('UnarchiveThread', g.caller);
       await expect.poll(() => countInputs(harness, g.callerPath, g.completion), { timeout: 20_000 }).toBe(2);
+      const third = harness.watchEvents('harness:mock', inputWith(g.callerPath, g.completion));
       await awaitTurnCompleted(harness, g.caller);
-      await new Promise((resolve) => setTimeout(resolve, 4_000));
-      expect(countInputs(harness, g.callerPath, g.completion)).toBe(2);
       expect(g.state()).toEqual({ request: { delivered: 0, how: '', notify: 0 }, watch: 'queued', draft: '', rows: 0 });
       expect(g.marks()).toMatchObject({ completion: 1, attempts: 0 });
+      await third.expectNoneThrough(() => laterMessage(harness, g.caller, g.callerPath), 'the completion was delivered a third time');
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
@@ -738,8 +761,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await app.rpc('StartSession', g.caller);
       const input = await wakeInput(app, g.callerPath, g.completion, 60_000);
       expect(input.report.input).toContain('build 812 finished: green');
+      const again = app.watchEvents('harness:mock', inputWith(g.callerPath, g.completion));
       await awaitTurnCompleted(app, g.caller);
-      await new Promise((resolve) => setTimeout(resolve, 4_000));
       expect(deliveries()).toBe(1);
       expect(countInputs(app, g.callerPath, ANSWER)).toBe(0);
       expect(g.state()).toEqual({ request: { delivered: 0, how: '', notify: 0 }, watch: 'queued', draft: '', rows: 0 });
@@ -762,18 +785,23 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await app.rpc('StopSession', g.caller);
-      await app.rpc('StartSession', g.caller);
-      await app.rpc('SendMessage', g.caller, 'did the notes come back?', null);
-      const status = await awaitToolAnswer<{ requests?: { token: string; answer?: string }[] }>(app, {
-        tool: 'thread_status',
-        cwd: g.callerPath,
-        timeoutMs: 60_000,
-      });
-      expect(status.isError, status.text).toBe(false);
-      expect(status.value!.requests![0].token).toBe(g.token);
-      expect(status.value!.requests![0].answer).toContain(ANSWER);
-      await awaitTurnCompleted(app, g.caller);
+      // The thread_status turn is the barrier: a second delivery queued for
+      // the thread reaches its session before that turn's message.
+      await again.expectNoneThrough(async () => {
+        await app.rpc('StopSession', g.caller);
+        await app.rpc('StartSession', g.caller);
+        await app.rpc('SendMessage', g.caller, 'did the notes come back?', null);
+        const status = await awaitToolAnswer<{ requests?: { token: string; answer?: string }[] }>(app, {
+          tool: 'thread_status',
+          cwd: g.callerPath,
+          timeoutMs: 60_000,
+        });
+        expect(status.isError, status.text).toBe(false);
+        expect(status.value!.requests![0].token).toBe(g.token);
+        expect(status.value!.requests![0].answer).toContain(ANSWER);
+        await awaitTurnCompleted(app, g.caller);
+      }, 'the completion was delivered again');
+      expect(countInputs(app, g.callerPath, ANSWER)).toBe(0);
 
       await app.open(page);
       await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
@@ -802,7 +830,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 test('codex: a completion the provider took in before its session died reaches the agent twice and the person once', async ({ page }) => {
   test.setTimeout(300_000);
   const provider = 'codex';
-  const [harness, remote] = await startTogether(launchHarness(), launchHarness());
+  const [harness, remote] = await startTogether(launchHarness(SHORT_WAKE_RETRY), launchHarness());
   try {
     const g = await giveBackCaller(() => harness, remote, provider, 'give-back-duplicate', 'Unused.');
     // A session that records each message in its thread as it takes it in,
@@ -834,8 +862,9 @@ test('codex: a completion the provider took in before its session died reaches t
         (ev) => ev.report.kind === 'history_resumed' && ev.cwd === g.callerPath && (ev.report.input ?? '').includes(g.completion),
       );
     await expect.poll(() => countInputs(harness, g.callerPath, g.completion), { timeout: 90_000 }).toBe(2);
+    const third = harness.watchEvents('harness:mock', inputWith(g.callerPath, g.completion));
     await awaitTurnCompleted(harness, g.caller);
-    await new Promise((resolve) => setTimeout(resolve, 4_000));
+    await third.expectNoneThrough(() => laterMessage(harness, g.caller, g.callerPath), 'the completion was delivered a third time');
     expect(
       { resumed: resumed(), redelivered: countInputs(harness, g.callerPath, g.completion) - 1 },
       'the resumed session holds the completion from its thread and from the redelivery',
@@ -877,7 +906,6 @@ test('codex: a completion the provider took in before its session died reaches t
 // so the mock cannot hold it, and the archive never waits behind one.
 test('codex: an answer queued while an archive waits behind a start goes back to its request', async ({ page }) => {
   test.setTimeout(180_000);
-  const HOLD_MS = 20_000;
   const ANSWER = 'The release notes are ready: three fixes and one feature.';
   const harness = await launchHarness();
   try {
@@ -995,18 +1023,13 @@ test('codex: an answer queued while an archive waits behind a start goes back to
         turns: [{ text: 'Started.' }],
         afterTurns: 'silent',
       }),
-      startupDelayMs: HOLD_MS,
+      startupGate: 'held-start',
     });
-    const started = Date.now();
     let settled = '';
-    const starting = harness.rpcWithin(HOLD_MS + 30_000, 'StartSession', caller).then(() => (settled ||= 'start'));
-    const held = await harness.waitForEvent<HarnessMockEventData>(
-      'harness:mock',
-      (ev) => ev.report.kind === 'registered' && ev.cwd === callerPath && ev.mockId !== first.mockId,
-      15_000,
-    );
-    expect(held.mockId).not.toBe('');
-    const archiving = harness.rpcWithin(HOLD_MS + 30_000, 'ArchiveThread', caller).then(() => (settled ||= 'archive'));
+    const starting = harness.rpcWithin(60_000, 'StartSession', caller).then(() => (settled ||= 'start'));
+    const held = await awaitGate(harness, 'held-start', callerPath);
+    expect(held.mockId).not.toBe(first.mockId);
+    const archiving = harness.rpcWithin(60_000, 'ArchiveThread', caller).then(() => (settled ||= 'archive'));
 
     // The answer arrives: its wake is written while the thread is still
     // unarchived, before the archive's flip.
@@ -1016,17 +1039,19 @@ test('codex: an answer queued while an archive waits behind a start goes back to
     expect(archived()).toBe(0);
     expect(settled, 'the held start and the archive were both still waiting when the answer was queued').toBe('');
 
+    await advanceGate(harness, held.mockId, 'held-start');
     await Promise.all([starting, archiving]);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(HOLD_MS);
-    const owedAndDisarmed = () => ({ queued: queued(), request: request(), archived: archived() });
-    const want = { queued: [], request: { delivered: 0, how: '', notify: 0 }, archived: 1 };
-    expect(owedAndDisarmed()).toEqual(want);
-    // The dispatch the start's flush queued behind the archive finds nothing
-    // to send, and nothing is left for the next start.
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
-    expect(owedAndDisarmed()).toEqual(want);
+    expect({ queued: queued(), request: request(), archived: archived() }).toEqual({
+      queued: [],
+      request: { delivered: 0, how: '', notify: 0 },
+      archived: 1,
+    });
     expect((await harness.rpc<unknown[] | null>('GetQueueState', caller)) ?? []).toEqual([]);
     expect(countInputs(harness, callerPath, ANSWER)).toBe(0);
+    // The dispatch the start's flush queued behind the archive already waits
+    // on the thread's action lock, which the unarchive and the start below
+    // take after it: a row it put back would be in the queue they flush, and
+    // the start would deliver it before the person's message.
 
     // Unarchived and started, the thread gets nothing it did not ask for; the
     // agent still reads the answer with thread_status.
@@ -1212,13 +1237,11 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         }),
       );
       await harness.rpc('StopSession', caller);
-      const owedAndDisarmed = () => ({ queued: queued(), request: request() });
-      const want = { queued: [], request: { delivered: 0, how: '', notify: 0 } };
-      expect(owedAndDisarmed()).toEqual(want);
-      await new Promise((resolve) => setTimeout(resolve, 4_000));
-      expect(owedAndDisarmed()).toEqual(want);
+      expect({ queued: queued(), request: request() }).toEqual({ queued: [], request: { delivered: 0, how: '', notify: 0 } });
       expect((await harness.rpc<unknown[] | null>('GetQueueState', caller)) ?? []).toEqual([]);
       expect(countInputs(harness, callerPath, ANSWER)).toBe(0);
+      // The start below is the barrier: an answer the Stop left queued, or a
+      // start of its own, reaches the session before the person's message.
 
       await harness.rpc('StartSession', caller);
       await harness.rpc('SendMessage', caller, 'did the notes come back?', null);
@@ -1355,6 +1378,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
+      // Every delivery from the Stop on is counted, however soon it comes.
+      const deliveries = harness.watchEvents('harness:mock', inputWith(cwd, completion));
       await harness.rpc('StopSession', thread);
       // Back at its watch, or already queued again by the watcher's next
       // pass; never queued with nothing left to deliver it.
@@ -1370,10 +1395,11 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(input.report.input).toContain('Remote job finished on Build box: nightly build');
       expect(input.report.input).toContain('build 812 finished: green');
       await awaitTurnCompleted(harness, thread);
-      await new Promise((resolve) => setTimeout(resolve, 4_000));
-      expect(countInputs(harness, cwd, completion)).toBe(1);
+      // Queued, the watch is out of the watcher's due list; a delivery
+      // already on its way reaches the session before a later message.
       expect(queued()).toEqual([]);
       expect(watch()).toBe('queued');
+      await deliveries.expectExactlyThrough(1, () => laterMessage(harness, thread, cwd), 'the completion was not delivered once');
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Remote builder', { exact: true }).click();
@@ -1396,7 +1422,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
  * reply, for the unarchive.
  */
 /** Harness timing whose remote-job watcher checks a running job every two minutes. */
-const WATCHER_PAUSED = { env: { AO_HARNESS_TIMING: `${HARNESS_TIMING},remote-watch-poll=120s` } };
+const WATCHER_PAUSED = { env: harnessTiming({ 'remote-watch-poll': '120s' }) };
 
 async function archiveJustAfterARemoteFinish(provider: ProviderName, harness: HarnessApp, remote: HarnessApp, title: string) {
   await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
@@ -1487,8 +1513,9 @@ async function archiveJustAfterARemoteFinish(provider: ProviderName, harness: Ha
   expect(watch(soak).notification).toBe('dismissed');
   await expect.poll(() => destinationState(soak), { timeout: 15_000 }).toBe('canceled');
 
-  // The watcher leaves an archived thread's result where it is.
-  await new Promise((resolve) => setTimeout(resolve, 6_000));
+  // The result stays pending for the unarchive, and nothing is queued. The
+  // watcher's due query skipping an archived thread's watches is
+  // internal/store's TestWithdrawnRemoteCompletionIsOwedAgainOnceItsThreadIsUnarchived.
   expect(watch(build).notification).toBe('pending');
   expect(queued()).toEqual([]);
   expect(countInputs(harness, cwd, `request_id: ${build}`)).toBe(0);
@@ -1515,16 +1542,20 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
+      // Every delivery from the unarchive on is counted, however soon it comes.
+      const deliveries = harness.watchEvents(
+        'harness:mock',
+        (ev: HarnessMockEventData) => inputWith(cwd, `request_id: ${build}`)(ev) || inputWith(cwd, `request_id: ${soak}`)(ev),
+      );
       await harness.rpc('UnarchiveThread', thread);
       const input = await wakeInput(harness, cwd, `request_id: ${build}`);
       expect(input.report.input).toContain('Remote job finished on Build box: nightly build');
       expect(input.report.input).toContain('build 812 finished: green');
       await awaitTurnCompleted(harness, thread);
-      await new Promise((resolve) => setTimeout(resolve, 4_000));
-      expect(countInputs(harness, cwd, `request_id: ${build}`)).toBe(1);
       expect(countInputs(harness, cwd, `request_id: ${soak}`)).toBe(0);
       expect(queued()).toEqual([]);
       expect(watch(build).notification).toBe('queued');
+      await deliveries.expectExactlyThrough(1, () => laterMessage(harness, thread, cwd), 'the finished job did not reach the thread once');
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Nightly checks', { exact: true }).click();
@@ -1572,8 +1603,10 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(await harness.rpc<Array<{ id: string }>>('ListBackends')).toHaveLength(0);
       expect(watch(build).notification).toBe('dismissed');
 
+      // Dismissed, the result is out of the watcher's due list
+      // (remoteWatchCheckable), so the unarchive's nudge finds nothing.
       await harness.rpc('UnarchiveThread', thread);
-      await new Promise((resolve) => setTimeout(resolve, 6_000));
+      expect(watch(build).notification).toBe('dismissed');
       expect(countInputs(harness, cwd, `request_id: ${build}`)).toBe(0);
       expect(queued()).toEqual([]);
     } finally {

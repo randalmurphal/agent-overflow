@@ -959,11 +959,11 @@ func TestACompletionASessionEndGaveBackWaitsOnTheLadder(t *testing.T) {
 	requireBooked := func(attempts int64, before time.Time) {
 		t.Helper()
 		saved := watch()
-		earliest := before.Add(threadWakeRetryDelay(attempts)).UnixMilli()
-		latest := time.Now().Add(threadWakeRetryDelay(attempts)).UnixMilli()
+		earliest := before.Add(f.app.threadWakeRetryDelay(attempts)).UnixMilli()
+		latest := time.Now().Add(f.app.threadWakeRetryDelay(attempts)).UnixMilli()
 		if saved.Notification != "pending" || saved.WakeAttempts != attempts || saved.NextCheck < earliest || saved.NextCheck > latest {
 			t.Fatalf("after %d session ends the watch is %q, due %d after %d; want pending, due in %v",
-				attempts, saved.Notification, saved.NextCheck, saved.WakeAttempts, threadWakeRetryDelay(attempts))
+				attempts, saved.Notification, saved.NextCheck, saved.WakeAttempts, f.app.threadWakeRetryDelay(attempts))
 		}
 		due, err := f.app.store.ListRemoteWatches("", time.Now().UnixMilli(), 256)
 		if err != nil || len(due) != 0 {

@@ -542,9 +542,7 @@ func (a *App) reviewDiffPinWait() time.Duration {
 // holds the sides' snapshot until it exits (release), and closes
 // record.done last.
 func (a *App) startReviewDiffPin(ctx context.Context, record *reviewDiffRecord, sides *gitdiff.Sides, release func() error) {
-	a.reviewDiffFiles.pins.Add(1)
-	go func() {
-		defer a.reviewDiffFiles.pins.Done()
+	a.reviewDiffFiles.pins.Go(func() {
 		defer close(record.done)
 		defer record.cancel()
 		defer func() { logReviewDiffCloseError(release()) }()
@@ -563,7 +561,7 @@ func (a *App) startReviewDiffPin(ctx context.Context, record *reviewDiffRecord, 
 		// Records this one pushed out are stopped after it settled; none is
 		// this pin, so joining them cannot wait on itself.
 		stopReviewDiffRecords(a.reviewDiffFiles.settle(record, sides.Pin(), blobs, truncated, failure)...)
-	}()
+	})
 }
 
 // lastTurnEditOfPath answers the turn's last edit that changes path: its
