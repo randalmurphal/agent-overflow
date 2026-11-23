@@ -364,22 +364,9 @@ func tearDownTestAppAtCleanup(t *testing.T, app *App) {
 	t.Helper()
 	t.Cleanup(func() {
 		app.stopAgentNoticeWork()
-		sessions := make([]session, 0, len(app.sessionManager().runtime.Snapshot()))
-		for _, s := range app.sessionManager().runtime.Snapshot() {
-			sessions = append(sessions, s)
+		for _, err := range closeLeftSessions(app) {
+			t.Error(err)
 		}
-		app.sessionManager().snapshotAndClear()
-		for _, s := range sessions {
-			// A session a test built by hand to stand in for one owns no
-			// process, and its constructor forbids Close.
-			if ps := s.ProviderSession(); ps != nil && ps.PID() != 0 {
-				_ = ps.Close()
-			}
-		}
-		if err := app.providerEvents.drainAll(); err != nil {
-			t.Errorf("drain provider events: %v", err)
-		}
-		app.threadRequestSettling.Wait()
 	})
 	t.Cleanup(func() {
 		if app.appCancel != nil {
@@ -390,6 +377,28 @@ func tearDownTestAppAtCleanup(t *testing.T, app *App) {
 			t.Errorf("join flush dispatch workers: %v", err)
 		}
 	})
+}
+
+// closeLeftSessions takes the sessions the App holds in one step, as
+// Shutdown does, closes those that own a provider process through the
+// close every path uses, drains their events, waits for the settlements
+// they started, and returns what failed. A session a test built by hand to
+// stand in for one owns no process, and its constructor forbids Close.
+func closeLeftSessions(app *App) []error {
+	var errs []error
+	for threadID, s := range app.sessionManager().snapshotAndClear() {
+		if ps := s.ProviderSession(); ps == nil || ps.PID() == 0 {
+			continue
+		}
+		if err := app.closeProviderSession(threadID, s); err != nil {
+			errs = append(errs, fmt.Errorf("close the session the test left open: %w", err))
+		}
+	}
+	if err := app.providerEvents.drainAll(); err != nil {
+		errs = append(errs, fmt.Errorf("drain provider events: %w", err))
+	}
+	app.threadRequestSettling.Wait()
+	return errs
 }
 
 // e2eThread builds a thread record suitable for E2E tests. Caller must insert
