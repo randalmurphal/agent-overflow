@@ -40,9 +40,9 @@ type terminalThreads struct {
 	// shells ended with that process (endTerminalThreadsAtBoot). An entry
 	// lives until the thread's row is deleted.
 	started map[string]struct{}
-	// stopped refuses new ends once shutdown joins them; wg joins them.
-	stopped bool
-	wg      sync.WaitGroup
+	// wg is the ends, which start from each PTY's exit while shutdown or a
+	// test waits on them; Close is shutdown's refusal.
+	wg workGroup
 }
 
 func (t *terminalThreads) noteStarted(threadID string) {
@@ -105,22 +105,14 @@ func (a *App) endTerminalThreadAfterExit(threadID string) {
 	if a.store == nil || a.terminals == nil || isDraftPlaceholderThreadID(threadID) {
 		return
 	}
-	t := &a.terminalThreads
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.stopped {
-		return
-	}
-	t.wg.Add(1)
-	go func() {
-		defer t.wg.Done()
+	a.terminalThreads.wg.Go(func() {
 		ctx := a.lifeCtx()
 		title, err := a.endTerminalThread(ctx, threadID)
 		// A failure while shutting down is the next boot's to end.
 		if err != nil && ctx.Err() == nil {
 			a.reportTerminalEndFailed(threadID, title, err)
 		}
-	}()
+	})
 }
 
 // endTerminalThread deletes threadID if it is a terminal thread that has
@@ -198,11 +190,7 @@ func (a *App) terminalThreadEnded(threadID string) bool {
 // Shutdown cancels the app context first, so an end still waiting for a
 // thread lock returns.
 func (a *App) stopTerminalThreadEnds() {
-	t := &a.terminalThreads
-	t.mu.Lock()
-	t.stopped = true
-	t.mu.Unlock()
-	t.wg.Wait()
+	a.terminalThreads.wg.Close()
 }
 
 // endTerminalThreadsAtBoot deletes the terminal threads the last run left:

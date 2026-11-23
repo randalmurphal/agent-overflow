@@ -237,16 +237,14 @@ func (a *App) scheduleBrowserSettings(next settings.Settings) {
 		a.browser.mcp.SetEnabled(false)
 	}
 	generation := a.browser.settingsGeneration.Add(1)
-	a.browser.applyWG.Add(1)
-	go func() {
-		defer a.browser.applyWG.Done()
+	a.browser.applyWG.Go(func() {
 		a.browser.applyMu.Lock()
 		defer a.browser.applyMu.Unlock()
 		if generation != a.browser.settingsGeneration.Load() {
 			return
 		}
 		a.applyBrowserSettings(next)
-	}()
+	})
 }
 
 func (a *App) applyBrowserSettings(next settings.Settings) {

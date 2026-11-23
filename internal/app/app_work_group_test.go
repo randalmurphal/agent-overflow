@@ -16,8 +16,11 @@ import (
 
 // Work may start as the last member ends while shutdown, the harness or a
 // test waits on the group: the emit path starts a request drain from
-// whatever goroutine emitted, and a send, a stop or a delete starts notice
-// work from its own. The Wait returns at the moment the count reached
+// whatever goroutine emitted, a send, a stop or a delete starts notice work
+// from its own, a queued message's handoff starts a flush dispatch worker
+// from the triage callback, a subscribe or a CI action starts a PR update
+// pump from its RPC, and each group below starts its members from a request,
+// a PTY exit or the provider event worker. The Wait returns at the moment the count reached
 // zero, and the new member is counted for the next one. With one P the
 // waiter cannot run between the Done and the Add, which is the order a
 // sync.WaitGroup panics on ("WaitGroup is reused before previous Wait has
@@ -26,8 +29,17 @@ func TestWorkMayStartAsAWaitReturns(t *testing.T) {
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 	var a App
 	for name, g := range map[string]*workGroup{
-		"request work": &a.threadRequestsWG,
-		"notice work":  &a.agentNoticeWork.wg,
+		"request work":            &a.threadRequestsWG,
+		"notice work":             &a.agentNoticeWork.wg,
+		"flush dispatch":          &a.flushDispatch.wg,
+		"PR updates":              &a.prUpdates.wg,
+		"terminal thread ends":    &a.terminalThreads.wg,
+		"review diff pins":        &a.reviewDiffFiles.pins,
+		"browser settings":        &a.browser.applyWG,
+		"permission mode follows": &a.permissionModeFollowWG,
+		"read-state stamps":       &a.markThreadRead.wg,
+		"memory reports":          &a.memoryReports.wg,
+		"sends pending worker":    &a.sendsPending.wg,
 	} {
 		t.Run(name, func(t *testing.T) { memberMayStartAsAWaitReturns(t, g) })
 	}

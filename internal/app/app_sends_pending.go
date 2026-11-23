@@ -53,7 +53,10 @@ type appSendsPendingState struct {
 	dirty   map[string]struct{}
 	running bool
 	stopped bool
-	wg      sync.WaitGroup
+	// wg is the worker, which a mark from any goroutine starts while
+	// shutdown or a test waits on it. It is never closed (stopped refuses
+	// the marks), so Go always starts its member.
+	wg workGroup
 	// publishMu guards pending, every thread last published as pending,
 	// which ListThreadLiveActivity reports. Held across the emit so the set
 	// never runs ahead of the frames, and so publishers emit in the order
@@ -87,13 +90,11 @@ func (a *App) markSendsPendingDirty(threadID string) {
 		return
 	}
 	s.running = true
-	s.wg.Add(1)
-	go a.runSendsPendingWorker()
+	s.wg.Go(a.runSendsPendingWorker)
 }
 
 func (a *App) runSendsPendingWorker() {
 	s := &a.sendsPending
-	defer s.wg.Done()
 	for {
 		s.mu.Lock()
 		if len(s.dirty) == 0 || s.stopped {

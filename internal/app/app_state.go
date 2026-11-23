@@ -70,7 +70,10 @@ type appFlushDispatchState struct {
 	// publishSendsPending emits that frame for a listed thread even when
 	// the published answer did not change.
 	flushUnsettled map[string]struct{}
-	wg             sync.WaitGroup
+	// wg is the dispatch workers and stale-handoff restores, which start
+	// from any goroutine while shutdown or a test teardown waits on it. It
+	// is never closed, so Go always starts its member.
+	wg workGroup
 	// handoffMu serializes RegisterQueueItem's enqueue→flush handoff
 	// against pendingFlushWorkCount's read of the queued / in-flight
 	// counters. tryFlushQueue deletes a batch from the triage queue before
@@ -97,7 +100,10 @@ type appPRUpdateState struct {
 	// SubscribePRUpdates id to its reference on that pump, which is what
 	// UnsubscribePRUpdates, SetPRUpdatesActive, and the per-connection
 	// cleanup act on. Both maps are guarded by mu; wg tracks pump goroutines
-	// so Shutdown drains them before returning. seq stamps every stored pump
+	// so Shutdown drains them before returning. A pump starts from any
+	// goroutine (a subscribe, a CI action) while that drain or a test waits,
+	// so wg is a workGroup; it is never closed, so Go always starts its
+	// member. seq stamps every stored pump
 	// state so a subscriber can order the frames it sees against the state
 	// its subscribe returned; it is GLOBAL rather than per-pump because a
 	// pump can be replaced under its key (a dead pump's successor), and a
@@ -107,7 +113,7 @@ type appPRUpdateState struct {
 	pumps     map[string]*prUpdatePump
 	handles   map[string]*prUpdateHandle
 	seq       uint64
-	wg        sync.WaitGroup
+	wg        workGroup
 	interval  time.Duration
 	retryBase time.Duration
 	// ciLiveInterval, ciFollowInterval and ciLogWaitInterval are the CI
@@ -197,9 +203,12 @@ type appBrowserState struct {
 	// a view in. Set once before Start by the serve boot alone
 	// (UseHeadlessBrowserEngine), and NEVER inferred from nativeWindow being
 	// nil — that nil is what every test and every `--connect` backend has.
-	headlessChromium   bool
-	applyMu            sync.Mutex
-	applyWG            sync.WaitGroup
+	headlessChromium bool
+	applyMu          sync.Mutex
+	// applyWG is the settings applies, which start from any settings save
+	// while shutdown or a test waits on them. It is never closed, so Go
+	// always starts its member.
+	applyWG            workGroup
 	settingsGeneration atomic.Uint64
 	liveEnabled        atomic.Bool
 }
@@ -218,28 +227,23 @@ type appTurnObserverState struct {
 // appMarkThreadReadState joins the background thread read-state stamps
 // (`app_session_bindings.go`).
 type appMarkThreadReadState struct {
-	// SwitchThread registers one stamp per focus so the RPC the UI blocks on
-	// doesn't queue behind the store's single writer connection. stopped is
-	// set inside the same critical section that the WaitGroup is joined from,
-	// so no stamp can register after the wait has begun; Shutdown joins them
-	// before the store closes.
-	mu      sync.Mutex
-	stopped bool
-	wg      sync.WaitGroup
+	// SwitchThread starts one stamp per focus so the RPC the UI blocks on
+	// doesn't queue behind the store's single writer connection. Stamps
+	// start from any focus while shutdown or a test waits on them; Close is
+	// shutdown's refusal, and joins them before the store closes.
+	wg workGroup
+}
+
+// appMemoryReportsState joins the reads of a thread's memory for its
+// warning rows that run off a session start or the provider event worker
+// (goMemoryReport), which start while shutdown or a test waits on them.
+// Close is shutdown's refusal.
+type appMemoryReportsState struct {
+	wg workGroup
 }
 
 // appAgentNoticeWorkState joins what a notice runs after it is accepted
-// (`app_agent_notice.go`). stopped is set under mu, which is also where the
-// work registers, so none can register after Shutdown began its join.
-// appMemoryReportsState joins the reads of a thread's memory for its
-// warning rows that run off a session start or the provider event worker
-// (goMemoryReport).
-type appMemoryReportsState struct {
-	mu      sync.Mutex
-	stopped bool
-	wg      sync.WaitGroup
-}
-
+// (`app_agent_notice.go`).
 type appAgentNoticeWorkState struct {
 	mu sync.Mutex
 	// wg is the work notices start from any goroutine while shutdown, the

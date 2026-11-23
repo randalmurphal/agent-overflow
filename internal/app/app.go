@@ -288,8 +288,10 @@ type App struct {
 	// tailnet loop. Each ends with the app context.
 	unattendedLoops workGroup
 	// permissionModeFollowWG joins the goroutines that move a thread onto
-	// the permission mode Claude moved to (followClaudePermissionMode).
-	permissionModeFollowWG sync.WaitGroup
+	// the permission mode Claude moved to (followClaudePermissionMode). They
+	// start from the provider event worker while shutdown waits on them. It
+	// is never closed, so Go always starts its member.
+	permissionModeFollowWG workGroup
 	// threadSearchIndex is the boot-time search index build.
 	threadSearchIndex threadSearchIndexBuild
 	// pendingThreadDeletes completes interrupted thread deletes at boot.
