@@ -68,23 +68,33 @@ alive. Rate-limit persistence and emission enter through narrow
   observed login, named or not, only while nothing the login carries
   contradicts it (`blankEmailAccountTakes`, also session attribution's
   rule). An email several saved accounts share, with no organization named,
-  is nobody's for certain.
+  is nobody's for certain. An Antigravity login is named by Google's
+  userinfo, under the ACP probe's bound (`agyIdentifyTimeout`), or by the
+  email its credential carries; a failed lookup of a credential that
+  carries none identified nothing, so reconciliation fails with it and the
+  next one asks again.
 - A usage reading of any managed provider, or a Codex spend, of the selected
   account whose canonical credential is not the recorded one reconciles
   first (`reconciledUsageStart`), under the lock it already holds, and runs
   on exactly the credential reconciliation accepted: an account no longer
   selected is read from its slot, and a spend of it is refused unsent. An
-  Antigravity reading releases the lock before its quota request. The commit
+  Antigravity reading releases the lock before its quota request; after a
+  refused one, the canonical credential is the account's refreshed login
+  only with the same refresh token (`agyLoginContinues`), and anything else
+  fails the reading with a retryable answer for the next reading to
+  reconcile. The commit
   lands a selected reading's slot write and record only for the recorded
   credential (`commitProviderUsageRefreshLocked`). A Codex rotation is
   placed only by the credential store's settle, live and at boot; the commit
   learns where it went.
-- A saved Codex slot whose credential names another workspace than its
-  account (`savedLoginOfAnotherWorkspace`; only a Codex credential carries
-  one) is never activated: an inactive reading and a switch refuse it before
-  anything is written, auto-switch reads that refusal as an account that
-  needs a sign-in (`IsNeedsLogin`), and removal passes over it when it picks
-  the replacement.
+- A saved slot whose credential carries another identity than its account
+  (`savedLoginOfAnotherAccount`; what a credential carries is
+  `credentialIdentity`: a Codex workspace, an Antigravity email, nothing for
+  Claude) is never read or activated: a reading of an account that is not
+  selected and a switch refuse it before anything runs or is written,
+  auto-switch reads that refusal as an account that needs a sign-in
+  (`IsNeedsLogin`), and removal passes over it when it picks the
+  replacement.
 - The selected Claude refresh starts the CLI only while the canonical store
   still holds the credential the reading was admitted on. A sign-in landing
   between that check and the CLI's own refresh cannot be excluded: the

@@ -5,8 +5,29 @@ import (
 	"strings"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/provideraccounts"
 )
+
+// credentialIdentity is the identity a provider's credential carries in its
+// own bytes: a Codex credential names its workspace, an Antigravity
+// credential its email (id_token_email), and a Claude credential nothing.
+// A credential that names nothing contradicts no account.
+func credentialIdentity(providerName string, credential []byte) provideraccounts.Identity {
+	switch providerName {
+	case string(provider.Codex):
+		return provideraccounts.IdentityFromInfo(EnrichCodexIdentity(providerName, provider.AccountInfo{}, credential))
+	case string(provider.Agy):
+		parsed, err := agy.ParseCredential(credential)
+		if err != nil {
+			return provideraccounts.Identity{}
+		}
+		return provideraccounts.Identity{Email: strings.TrimSpace(parsed.Email)}
+	default:
+		return provideraccounts.Identity{}
+	}
+}
 
 // EnrichCodexIdentity reads the workspace id carried by verified credential
 // bytes into an otherwise incomplete Codex identity.

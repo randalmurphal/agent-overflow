@@ -168,7 +168,7 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 		return provider.RateLimitsSnapshot{}, nil, fmt.Errorf("recheck Claude credentials before refreshing: %w", readErr)
 	}
 	if !bytes.Equal(current.Bytes(), credential) {
-		return provider.RateLimitsSnapshot{}, nil, errors.New("claude credentials changed while refreshing usage; retry")
+		return provider.RateLimitsSnapshot{}, nil, credentialsChangedWhileRefreshing(string(provider.Claude))
 	}
 	info, refreshErr := claude.ProbeAccount(ctx, refreshCfg)
 	if refreshErr != nil {

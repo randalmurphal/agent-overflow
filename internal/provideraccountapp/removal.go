@@ -81,10 +81,10 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 				// still validates for real.
 				usable = true
 			}
-			// A slot holding another workspace's login is passed over like a
+			// A slot holding another account's login is passed over like a
 			// husk: refusing the removal would lock the selected account in
 			// place for an unrelated card's sake.
-			if usable && m.savedSlotOfAnotherWorkspaceLocked(providerName, candidate) {
+			if usable && m.savedSlotOfAnotherAccountLocked(providerName, candidate) {
 				usable = false
 			}
 			if usable {
@@ -255,10 +255,10 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 	return nil
 }
 
-// savedSlotOfAnotherWorkspaceLocked reports that account's saved slot holds
-// a login savedLoginOfAnotherWorkspace refuses. A slot that cannot be read
+// savedSlotOfAnotherAccountLocked reports that account's saved slot holds
+// a login savedLoginOfAnotherAccount refuses. A slot that cannot be read
 // is no verdict here; its activation reads it again. The caller holds mu.
-func (m *Manager) savedSlotOfAnotherWorkspaceLocked(providerName string, account provideraccounts.Account) bool {
+func (m *Manager) savedSlotOfAnotherAccountLocked(providerName string, account provideraccounts.Account) bool {
 	slot, err := m.credentials.ReadCredentialSnapshot(providerName, account.ID, false)
-	return err == nil && savedLoginOfAnotherWorkspace(providerName, account, slot.Bytes()) != nil
+	return err == nil && savedLoginOfAnotherAccount(providerName, account, slot.Bytes()) != nil
 }

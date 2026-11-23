@@ -78,7 +78,7 @@ func (m *Manager) refreshAgyAccountUsage(
 	probeRan = true
 	snapshot, probeErr = agy.ProbeRateLimitsFromCredentialData(ctx, m.providerHTTPClient(), credential.Bytes())
 	if refresh.refreshesInCanonicalHome() && errors.Is(probeErr, agy.ErrOAuthUnauthorized) {
-		rotated, refreshErr := m.refreshSelectedAgyCanonicalToken(ctx, accountID, account.Email, generation, credential.Bytes(), backoffHold)
+		rotated, refreshErr := m.refreshSelectedAgyCanonicalToken(ctx, accountID, generation, credential.Bytes(), backoffHold)
 		if refreshErr != nil {
 			probeErr = refreshErr
 		} else {
@@ -116,48 +116,36 @@ func (m *Manager) refreshAgyAccountUsage(
 	return errors.Join(probeErr, commitErr)
 }
 
-// agyCredentialBelongsToAccount verifies that candidate bytes positively belong
-// to the same Antigravity account as staleCred / expectedEmail so an external
-// CLI login to account B during an unlocked probe can NEVER be copied into
-// account A's saved slot.
-func agyCredentialBelongsToAccount(candidate, staleCred []byte, expectedEmail string) bool {
-	cand, err := agy.ParseCredential(candidate)
-	if err != nil || cand.AccessToken == "" {
+// agyLoginContinues reports that candidate is provably the login probed
+// was after a token refresh: the same refresh token. An email proves
+// nothing here: a second sign-in to the same Google account carries it too,
+// and so may an outside sign-in to another account saved under that email.
+func agyLoginContinues(candidate, probed []byte) bool {
+	next, err := agy.ParseCredential(candidate)
+	if err != nil {
 		return false
 	}
-	stale, _ := agy.ParseCredential(staleCred)
-	expectedEmail = strings.TrimSpace(expectedEmail)
-	if expectedEmail == "" {
-		expectedEmail = strings.TrimSpace(stale.Email)
-	}
-	candEmail := strings.TrimSpace(cand.Email)
-	if expectedEmail != "" && candEmail != "" && !strings.EqualFold(candEmail, expectedEmail) {
+	prev, err := agy.ParseCredential(probed)
+	if err != nil {
 		return false
 	}
-	if len(staleCred) > 0 && bytes.Equal(candidate, staleCred) {
-		return true
-	}
-	if stale.RefreshToken != "" && cand.RefreshToken != "" && cand.RefreshToken == stale.RefreshToken {
-		return true
-	}
-	if expectedEmail != "" && candEmail != "" && strings.EqualFold(candEmail, expectedEmail) {
-		return true
-	}
-	return false
+	return next.RefreshToken != "" && next.RefreshToken == prev.RefreshToken
 }
 
 // refreshSelectedAgyCanonicalToken refreshes the selected account's OAuth
-// token under reconcileMutex. If another goroutine already rotated the same
-// account's canonical credential while waiting for the lock, it reuses those
-// bytes instead of spawning a second cold agy acp process. If an external
-// login replaced canonical with a different account, it refuses to adopt the
-// foreign credential under accountID.
+// token under reconcileMutex after its quota request was refused. The
+// canonical credential is the account's only while it continues the login
+// the request was made with (agyLoginContinues): another goroutine's
+// refresh of it is reused instead of spawning a second cold agy acp
+// process, and agy's own refresh is taken. Anything else, including a
+// refresh in which Google rotated the refresh token, writes nothing and
+// fails the reading with a retryable answer; the next reading reconciles
+// the canonical credential first.
 func (m *Manager) refreshSelectedAgyCanonicalToken(
 	ctx context.Context,
 	accountID string,
-	accountEmail string,
 	startGen uint64,
-	staleCred []byte,
+	probed []byte,
 	backoffHold func() error,
 ) ([]byte, error) {
 	providerName := string(provider.Agy)
@@ -171,22 +159,24 @@ func (m *Manager) refreshSelectedAgyCanonicalToken(
 		return nil, err
 	}
 	m.mu.RLock()
-	curGen := m.store.Generation(providerName)
-	active, isActive := m.store.Active(providerName, time.Now())
+	err := m.validateProviderUsageRefreshSelectionLocked(providerName, accountID, startGen, true)
 	m.mu.RUnlock()
-	if curGen != startGen || !isActive || active.ID != accountID {
-		return nil, agy.ErrOAuthUnauthorized
+	if err != nil {
+		return nil, err
 	}
 
-	if cur, present, readErr := m.readCanonicalCredentialIfPresent(providerName); readErr == nil && present {
-		if curBytes := cur.Bytes(); len(curBytes) > 0 && !bytes.Equal(curBytes, staleCred) {
-			if agyCredentialBelongsToAccount(curBytes, staleCred, accountEmail) {
-				return curBytes, nil
-			}
-			// Canonical store changed to a different or unverified account
-			// externally; never write it into accountID's slot.
-			return nil, agy.ErrOAuthUnauthorized
+	cur, present, err := m.readCanonicalCredentialIfPresent(providerName)
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		return nil, credentialsChangedWhileRefreshing(providerName)
+	}
+	if !bytes.Equal(cur.Bytes(), probed) {
+		if agyLoginContinues(cur.Bytes(), probed) {
+			return cur.Bytes(), nil
 		}
+		return nil, credentialsChangedWhileRefreshing(providerName)
 	}
 
 	binary := m.providerBinaryPath(providerName)
@@ -194,28 +184,42 @@ func (m *Manager) refreshSelectedAgyCanonicalToken(
 		return nil, fmt.Errorf("refresh Antigravity OAuth token: %w", refreshErr)
 	}
 	refreshed, present, readErr := m.readCanonicalCredentialIfPresent(providerName)
-	if readErr != nil || !present {
+	if readErr != nil {
+		return nil, readErr
+	}
+	if !present {
 		return nil, errors.New("missing Antigravity credentials after refresh; sign in again")
 	}
 	rotated := refreshed.Bytes()
-	if !agyCredentialBelongsToAccount(rotated, staleCred, accountEmail) {
-		return nil, agy.ErrOAuthUnauthorized
+	if !bytes.Equal(rotated, probed) && !agyLoginContinues(rotated, probed) {
+		return nil, credentialsChangedWhileRefreshing(providerName)
 	}
 	return rotated, nil
 }
 
+// agyIdentifyTimeout bounds the Google userinfo lookup. Reconciliation runs
+// it under the reconcile lock right after the ACP probe, so it has the
+// probe's own bound (agy.ProbeAccount).
+var agyIdentifyTimeout = 25 * time.Second
+
 // identifyAgyCredential enriches a probed Antigravity AccountInfo with email,
-// display name, and Google account/workspace identity from userinfo when
-// available. Non-fatal on offline/test networks if tier info is already present.
+// display name, and Google account identity from userinfo. When the lookup
+// fails, the email agy keeps inside the credential (id_token_email) still
+// names the login. A failed lookup of a credential that carries no email is
+// an error, never a login that names nobody: only a lookup that answered
+// may say that.
 func (m *Manager) identifyAgyCredential(
 	ctx context.Context,
 	info provider.AccountInfo,
 	credential []byte,
-) provider.AccountInfo {
+) (provider.AccountInfo, error) {
 	if len(credential) == 0 {
-		return info
+		return info, nil
 	}
-	if identified, err := agy.IdentifyAccount(ctx, m.providerHTTPClient(), credential); err == nil {
+	lookupCtx, cancel := context.WithTimeout(ctx, agyIdentifyTimeout)
+	identified, lookupErr := agy.IdentifyAccount(lookupCtx, m.providerHTTPClient(), credential)
+	cancel()
+	if lookupErr == nil {
 		if identified.Email != "" {
 			info.Email = identified.Email
 		}
@@ -236,14 +240,13 @@ func (m *Manager) identifyAgyCredential(
 			info.APIProvider = identified.APIProvider
 		}
 	}
-	// Offline / network-failure fallback: agy persists id_token_email inside
-	// the OAuth token payload itself.
 	if info.Email == "" {
-		if cred, err := agy.ParseCredential(credential); err == nil && cred.Email != "" {
-			info.Email = cred.Email
-		}
+		info.Email = credentialIdentity(string(provider.Agy), credential).Email
 	}
-	return info
+	if lookupErr != nil && info.Email == "" {
+		return info, fmt.Errorf("look up the Google account of the Antigravity login: %w", lookupErr)
+	}
+	return info, nil
 }
 
 func splitAgyEphemeralHome(home string) (geminiDir, appDataSubdir string) {

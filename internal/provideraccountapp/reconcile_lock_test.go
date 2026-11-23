@@ -273,15 +273,17 @@ func TestAgyReadOnlyUsageRefreshDoesNotHoldReconcileLock(t *testing.T) {
 		t.Fatalf("RefreshProviderAccountUsageContext(agy): %v", err)
 	}
 
-	// External login to account B must NEVER be accepted as a rotation of account A.
+	// After a refused request, only the same refresh token continues the
+	// login; another login of the same email does not.
 	credA := []byte(`{"access_token":"ya29.oldA","refresh_token":"1//refA","id_token_email":"alice@example.com"}`)
 	credARotated := []byte(`{"access_token":"ya29.newA","refresh_token":"1//refA","id_token_email":"alice@example.com"}`)
 	credB := []byte(`{"access_token":"ya29.newB","refresh_token":"1//refB","id_token_email":"bob@example.com"}`)
-	if !agyCredentialBelongsToAccount(credARotated, credA, "alice@example.com") {
-		t.Fatal("same-account rotation for alice was rejected")
+	credASecondSignIn := []byte(`{"access_token":"ya29.otherA","refresh_token":"1//refA2","id_token_email":"alice@example.com"}`)
+	if !agyLoginContinues(credARotated, credA) {
+		t.Fatal("a refresh that kept alice's refresh token was rejected")
 	}
-	if agyCredentialBelongsToAccount(credB, credA, "alice@example.com") {
-		t.Fatal("foreign account bob credential was accepted as alice rotation")
+	if agyLoginContinues(credASecondSignIn, credA) {
+		t.Fatal("another login of alice's email was accepted as the refreshed login")
 	}
 
 	// If an external CLI login replaces canonical with Bob's credential BEFORE
@@ -312,6 +314,19 @@ func TestAgyReadOnlyUsageRefreshDoesNotHoldReconcileLock(t *testing.T) {
 	// account's, now under its email, and its slot holds it.
 	unanchoredManager, _, unanchoredCreds := newTestManager(t)
 	unanchoredManager.deps.ProviderBinary = func(string) string { return agyBinary }
+	// Google answers every request, userinfo included, with a body that
+	// names nobody: the seeded login is identified as nameless.
+	var httpCalled bool
+	unanchoredManager.deps.HTTPClient = func() *http.Client {
+		return &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			httpCalled = true
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewBufferString(`{"buckets":[{"bucketId":"gemini-argon-5h","window":"5h","remainingFraction":0.8}]}`)),
+			}, nil
+		})}
+	}
 	credNoEmail := []byte(`{"access_token":"ya29.noemail","refresh_token":"1//refNoEmail"}`)
 	if err := unanchoredCreds.WriteNativeCredentialForTest(agyName, credNoEmail); err != nil {
 		t.Fatalf("write initial unanchored canonical cred: %v", err)
@@ -342,17 +357,7 @@ func TestAgyReadOnlyUsageRefreshDoesNotHoldReconcileLock(t *testing.T) {
 	if err := unanchoredCreds.WriteNativeCredentialForTest(agyName, credB); err != nil {
 		t.Fatalf("overwrite unanchored canonical with bob: %v", err)
 	}
-	var httpCalled bool
-	unanchoredManager.deps.HTTPClient = func() *http.Client {
-		return &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-			httpCalled = true
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(bytes.NewBufferString(`{"buckets":[{"bucketId":"gemini-argon-5h","window":"5h","remainingFraction":0.8}]}`)),
-			}, nil
-		})}
-	}
+	httpCalled = false
 	if err := unanchoredManager.RefreshProviderAccountUsageContext(context.Background(), agyName, unanchoredSel.AccountID); err != nil {
 		t.Fatalf("reading the blank-email account after bob's outside login = %v, want it read as bob's", err)
 	}

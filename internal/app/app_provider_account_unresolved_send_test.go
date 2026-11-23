@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,13 +70,27 @@ done
 }
 
 // agyLogin is an Antigravity OAuth credential; email, when set, is the
-// id_token_email the CLI persists, the only identity the app reads while
-// Google's userinfo is unreachable (as in every test).
+// id_token_email the CLI persists. Google's userinfo is unreachable in an
+// isolated boot, so a test of a login that names nobody answers it with
+// googleUserinfoNamesNobody.
 func agyLogin(token, email string) []byte {
 	if email == "" {
 		return []byte(`{"access_token":"ya29.` + token + `","refresh_token":"1//` + token + `"}`)
 	}
 	return []byte(`{"access_token":"ya29.` + token + `","refresh_token":"1//` + token + `","id_token_email":"` + email + `"}`)
+}
+
+// googleUserinfoNamesNobody answers Google's userinfo with a body that
+// names nobody, and every other request the way an isolated boot does.
+var googleUserinfoNamesNobody = &http.Client{Transport: userinfoNamesNobody{}}
+
+type userinfoNamesNobody struct{}
+
+func (userinfoNamesNobody) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Host == "www.googleapis.com" && req.URL.Path == "/oauth2/v2/userinfo" {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: req}, nil
+	}
+	return isolatedHTTPClient.Transport.RoundTrip(req)
 }
 
 // unresolvedSendCase is one provider's half of the unresolved-send test:
@@ -150,6 +166,7 @@ func TestASendUnderAnUnresolvedLoginIsRefusedUntilASwitch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			app := newTestAppWithStore(t)
+			app.rateLimitProbeClientOverride = googleUserinfoNamesNobody
 			app.settings = settings.NewService(t.TempDir())
 			app.ensureTriageRouter()
 			accounts, err := provideraccounts.NewStore(t.TempDir())
@@ -307,6 +324,7 @@ func TestASendWithNoSavedAccountGoesOutOnALoginThatNamesNobody(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			app := newTestAppWithStore(t)
+			app.rateLimitProbeClientOverride = googleUserinfoNamesNobody
 			app.settings = settings.NewService(t.TempDir())
 			app.ensureTriageRouter()
 			accounts, err := provideraccounts.NewStore(t.TempDir())
@@ -371,5 +389,54 @@ func TestASendWithNoSavedAccountGoesOutOnALoginThatNamesNobody(t *testing.T) {
 				t.Fatalf("the adopted account's slot = %s, %v; want the login", slot, err)
 			}
 		})
+	}
+}
+
+// A lookup of Google's userinfo that fails, for an Antigravity login that
+// carries no email, identified nothing: a send on it is refused with that
+// failure, not as a login that names nobody, and no turn starts.
+func TestASendOnAnAgyLoginWhoseLookupFailedIsRefusedWithTheFailure(t *testing.T) {
+	t.Parallel()
+	agyName := string(provider.Agy)
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	app.ensureTriageRouter()
+	accounts, err := provideraccounts.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials := newTestProviderCredentials(t, t.TempDir())
+	if err := credentials.WriteNativeCredentialForTest(agyName, agyLogin("nameless", "")); err != nil {
+		t.Fatal(err)
+	}
+	attachProviderAccountStoresForTest(t, app, accounts, credentials)
+	capture := filepath.Join(t.TempDir(), "turns")
+	if _, err := app.settings.Update(map[string]any{"agyBinaryPath": writeSharedPoolAgyBinary(t, capture)}); err != nil {
+		t.Fatal(err)
+	}
+	thread := testThread("lookup-failed-send")
+	thread.Provider = agyName
+	thread.Model = "gemini-3.1-pro-high"
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+
+	err = app.SendMessage(context.Background(), thread.ID, "hello", nil)
+	if code, _, _ := errorsx.PublicDetails(err); code == "account_login_unresolved" || err == nil ||
+		!strings.Contains(err.Error(), "look up the Google account of the Antigravity login") {
+		t.Fatalf("send = %v (code %q), want the failed lookup named", err, code)
+	}
+	// Reconciliation's identity probe is the only agy run; the message
+	// never reaches one.
+	if text, readErr := os.ReadFile(capture); strings.Contains(string(text), "hello") || (readErr != nil && !os.IsNotExist(readErr)) {
+		t.Fatalf("agy saw %q, %v; want no turn", text, readErr)
+	}
+	if _, live := app.sessionManager().get(thread.ID); live {
+		t.Fatal("a session started for the refused send")
+	}
+	if saved := app.providerAccounts.List(agyName, time.Now()); len(saved) != 0 {
+		t.Fatalf("saved accounts = %+v, want none", saved)
 	}
 }

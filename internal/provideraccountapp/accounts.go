@@ -131,24 +131,23 @@ type needsLoginError struct{ message string }
 
 func (e needsLoginError) Error() string { return e.message }
 
-// savedLoginOfAnotherWorkspace refuses a saved slot whose credential carries
-// an identity (a Codex workspace) that is provably not its account's: an
-// older build could save one login under another account. Every path that
-// runs or installs a slot's credential asks it first: an inactive account's
-// reading, a switch or auto-switch to the account, and the replacement a
-// removal picks.
-func savedLoginOfAnotherWorkspace(providerName string, account provideraccounts.Account, credential []byte) error {
-	carried := provideraccounts.IdentityFromInfo(EnrichCodexIdentity(providerName, provider.AccountInfo{}, credential))
-	if !provideraccounts.AccountIdentity(account).Contradicts(carried) {
+// savedLoginOfAnotherAccount refuses a saved slot whose credential carries
+// an identity (credentialIdentity: a Codex workspace, an Antigravity email)
+// that is provably not its account's: an older build could save one login
+// under another account. Every path that runs or installs a slot's
+// credential asks it first: an inactive account's reading, a switch or
+// auto-switch to the account, and the replacement a removal picks.
+func savedLoginOfAnotherAccount(providerName string, account provideraccounts.Account, credential []byte) error {
+	if !provideraccounts.AccountIdentity(account).Contradicts(credentialIdentity(providerName, credential)) {
 		return nil
 	}
 	name := describeProviderAccount(account)
 	return savedLoginMismatchError{sentence: fmt.Sprintf(
-		"The login saved for %s belongs to another workspace. Sign in to %s again.", name, name,
+		"The login saved for %s is another account's. Sign in to %s again.", name, name,
 	)}
 }
 
-// savedLoginMismatchError is the type of savedLoginOfAnotherWorkspace's
+// savedLoginMismatchError is the type of savedLoginOfAnotherAccount's
 // refusal: the account needs a sign-in, as one whose login is gone does.
 type savedLoginMismatchError struct{ sentence string }
 
@@ -161,7 +160,7 @@ func (e savedLoginMismatchError) PublicDetails() (code, message string) {
 
 // IsNeedsLogin reports whether err says the switch target can be used only
 // after a fresh sign-in because its saved credential is missing, signed out,
-// or another workspace's login. A switch reports an expired target through
+// or another account's login. A switch reports an expired target through
 // SignInRequired instead. The login sentinels are not matched: a switch wraps
 // the reconcile of the current account with %w, and that verdict is not
 // about the target.
@@ -538,8 +537,8 @@ func (m *Manager) planSwitchLocked(providerName, accountID string, kind switchKi
 		)
 		return switchPlan{}, errProviderAccountNeedsLogin(providerName, target)
 	}
-	if err := savedLoginOfAnotherWorkspace(providerName, target, targetCredential.Bytes()); err != nil {
-		m.audit("refused to %s to %s account %s: its saved credential names another workspace", kind, providerName, accountID)
+	if err := savedLoginOfAnotherAccount(providerName, target, targetCredential.Bytes()); err != nil {
+		m.audit("refused to %s to %s account %s: its saved credential names another account", kind, providerName, accountID)
 		return switchPlan{}, err
 	}
 	// An expired login is not yet a husk — the tokens are all still there —

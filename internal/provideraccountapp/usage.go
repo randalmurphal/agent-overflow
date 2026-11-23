@@ -125,15 +125,6 @@ func (m *Manager) usageTransaction(
 			m.emitProviderAccountListingChanged(providerName)
 		}
 	}()
-	// An inactive account's slot is its own login only while nothing it
-	// carries names another one: Codex credentials carry their workspace.
-	// Refused before Codex starts, so a login saved under the wrong account
-	// is never rotated or read for it.
-	if !isSelected && providerName == string(provider.Codex) {
-		if err := savedLoginOfAnotherWorkspace(providerName, account, credential.Bytes()); err != nil {
-			return err
-		}
-	}
 	if spend != nil {
 		// Refused here, before Codex starts, when it could not be admitted;
 		// admitResetSpend asks the same store rule again before the write.
@@ -386,12 +377,17 @@ type usageStart struct {
 // that is the selected account's login; moved reports that reconciliation
 // moved the selection off accountID, which is then read from its slot. A
 // canonical login reconciliation refuses is the reading's answer while the
-// account stays selected. Caller holds the provider's reconcile lock and no
-// Manager lock.
+// account stays selected. A slot is read only while nothing its credential
+// carries names another account (savedLoginOfAnotherAccount), refused
+// before any provider process or request runs on it. Caller holds the
+// provider's reconcile lock and no Manager lock.
 func (m *Manager) reconciledUsageStart(ctx context.Context, providerName, accountID string) (start usageStart, moved bool, err error) {
 	start, err = m.readUsageStart(providerName, accountID, nil)
-	if err != nil || !start.isSelected {
-		return start, false, err
+	if err != nil {
+		return usageStart{}, false, err
+	}
+	if !start.isSelected {
+		return slotUsageStart(providerName, start, false)
 	}
 	state, err := m.reconcileCanonicalWithMutexHeld(ctx, providerName, start.credential)
 	if err != nil {
@@ -403,12 +399,27 @@ func (m *Manager) reconciledUsageStart(ctx context.Context, providerName, accoun
 		}
 	}
 	if !start.isSelected {
-		return start, true, nil
+		return slotUsageStart(providerName, start, true)
 	}
 	if state.refusal != nil {
 		return usageStart{}, false, mapProviderAccountLoginError(providerName, start.account, state.refusal)
 	}
 	return start, false, nil
+}
+
+// credentialsChangedWhileRefreshing is the retryable answer to a reading
+// whose credential was replaced by another login before it could commit.
+func credentialsChangedWhileRefreshing(providerName string) error {
+	return fmt.Errorf("%s credentials changed while refreshing usage; retry", providerName)
+}
+
+// slotUsageStart admits the reading of an account that is not selected,
+// which runs on its slot, only while the slot's credential names nobody else.
+func slotUsageStart(providerName string, start usageStart, moved bool) (usageStart, bool, error) {
+	if err := savedLoginOfAnotherAccount(providerName, start.account, start.credential.Bytes()); err != nil {
+		return usageStart{}, false, err
+	}
+	return start, moved, nil
 }
 
 // readUsageStart reads one account's usageStart. canonical, when set, is the
@@ -548,7 +559,7 @@ func (m *Manager) commitProviderUsageRefreshLocked(
 	// is another login that reached the canonical store since, and none of
 	// it (slot, fingerprint, snapshot, reset list) is the account's.
 	if refresh.isSelected && !m.canonicalRecordedLocked(refresh.providerName, refresh.probed.Bytes()) {
-		return commit, fmt.Errorf("%s credentials changed while refreshing usage; retry", refresh.providerName)
+		return commit, credentialsChangedWhileRefreshing(refresh.providerName)
 	}
 	// Past here the credential is the account's. The reading is the
 	// account's only when the provider's observation says so. A Codex
@@ -617,7 +628,7 @@ func (m *Manager) commitProviderUsageRefreshLocked(
 		// left to reconciliation.
 		if !refresh.landing.Canonical {
 			m.forgetCanonicalLocked(refresh.providerName)
-			return commit, fmt.Errorf("%s credentials changed while refreshing usage; retry", refresh.providerName)
+			return commit, credentialsChangedWhileRefreshing(refresh.providerName)
 		}
 		advanced, err := m.store.AdvanceActiveCredential(refresh.providerName, refresh.accountID)
 		if err != nil {

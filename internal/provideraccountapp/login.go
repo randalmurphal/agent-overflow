@@ -102,7 +102,11 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 		}
 	}
 	if providerName == string(provider.Agy) {
-		info = m.identifyAgyCredential(m.context(), info, loginCredential.Bytes())
+		// A sign-in whose Google account the lookup could not name is saved
+		// under no email, as a login that names nobody is.
+		if info, err = m.identifyAgyCredential(m.context(), info, loginCredential.Bytes()); err != nil {
+			m.audit("saving the Antigravity sign-in under no email: %v", err)
+		}
 	}
 	if err := attempt.cleanup(); err != nil {
 		return ManagedAccount{}, err
