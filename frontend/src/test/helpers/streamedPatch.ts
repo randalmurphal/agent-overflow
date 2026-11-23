@@ -130,7 +130,8 @@ export interface FakeDiff {
 /** A fake backend serving `patch`, text or raw bytes (which may hold
  * invalid UTF-8). */
 export function fakeDiff(patch: string | Uint8Array): FakeDiff {
-  const bytes = typeof patch === 'string' ? new TextEncoder().encode(patch) : patch;
+  // A copy: what the caller does to its array later is not served.
+  const bytes = typeof patch === 'string' ? new TextEncoder().encode(patch) : patch.slice();
   // The key at each boundary read so far.
   const keys = new Map<number, PatchTextKey>([[0, { hash: FNV_OFFSET_BASIS_32, units: 0 }]]);
   // A read is the same for the same offset and window, and a store with a
@@ -154,7 +155,9 @@ export function fakeDiff(patch: string | Uint8Array): FakeDiff {
         chunk = { data: text, key, offset, nextOffset: next, eof: next === bytes.length };
         reads.set(id, chunk);
       }
-      return keyed ? { ...chunk } : unkeyed(chunk);
+      // Each reply its own objects: what a reader does to one is not
+      // in the next reply, nor in the keys of later reads.
+      return keyed ? { ...chunk, key: { ...chunk.key! } } : unkeyed(chunk);
     },
   };
 }
