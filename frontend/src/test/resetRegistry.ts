@@ -6,7 +6,13 @@
 import { afterEach, beforeEach } from 'vitest';
 import { FIRST, POSTURE, RESET_REGISTRY_KEY, STORAGE, type Exports, type Step } from './config/testResets';
 
-type Loaded = { readonly key: string; readonly exports: Exports; readonly auto: readonly string[] };
+type Loaded = {
+  readonly key: string;
+  readonly exports: Exports;
+  readonly auto: readonly string[];
+  /** Loaded outside a test: by the file's imports or a beforeAll hook. */
+  readonly held: boolean;
+};
 
 export type ResetRegistry = {
   loaded(key: string, exports: Exports, auto: readonly string[]): void;
@@ -34,9 +40,12 @@ function fail(errors: unknown[]): void {
 
 function install(): ResetRegistry {
   // In load order. A module evaluated again in the same file (after
-  // vi.resetModules) is a second instance, and both are reset: the test
-  // may still hold the first.
-  const modules: Loaded[] = [];
+  // vi.resetModules) is a second instance. An instance loaded outside a test
+  // is reset after every test, since the file holds it. Of the instances
+  // tests loaded, each is reset after the test that loaded it, and then only
+  // the newest of each module is kept: a test that holds an older one
+  // across later tests is not supported.
+  let modules: Loaded[] = [];
   // Set from the first step before a test to the last step after it.
   let inTest = false;
   // POSTURE steps of modules loaded during a test, in load order, that have
@@ -102,12 +111,15 @@ function install(): ResetRegistry {
         }
       }
     }
+    const newest = new Map<string, Loaded>();
+    for (const loaded of modules) if (!loaded.held) newest.set(loaded.key, loaded);
+    modules = modules.filter((loaded) => loaded.held || newest.get(loaded.key) === loaded);
     fail(errors);
   });
 
   return {
     loaded(key, exports, auto) {
-      const loaded = { key, exports, auto };
+      const loaded = { key, exports, auto, held: !inTest };
       modules.push(loaded);
       if (!inTest) return;
       for (const step of POSTURE) if (step.module === key) pending.push({ loaded, step });
