@@ -82,6 +82,10 @@ function count(runs: readonly string[], query: string): number {
   return runs.reduce((total, run) => total + countFindMatches(run, needle), 0);
 }
 
+// Mermaid and code fences, inline code, math, images and embeds (the
+// attachment chips), and every upload link.
+const DEFERRED_ISLAND = /`|\$|!\[|<img|<video|\/uploads\/|user-attachments/;
+
 async function mounted(source: string, forge: ForgeAttachmentSource = FORGE): Promise<Element> {
   const host = document.createElement('div');
   host.style.width = '600px';
@@ -92,8 +96,9 @@ async function mounted(source: string, forge: ForgeAttachmentSource = FORGE): Pr
     context: new Map([[FORGE_ATTACHMENT_SOURCE_CONTEXT, () => forge]]),
   });
   await waitFor(() => expect(container.querySelector('.markdown-body')?.textContent?.trim()).toBeTruthy());
-  // Let deferred islands (diagrams, formulas, attachments) settle.
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // Let deferred islands (diagrams, formulas, attachments, highlighted
+  // code) settle. A source that spells none renders nothing later.
+  if (DEFERRED_ISLAND.test(source)) await new Promise((resolve) => setTimeout(resolve, 50));
   return container.querySelector('.markdown-body')!;
 }
 
