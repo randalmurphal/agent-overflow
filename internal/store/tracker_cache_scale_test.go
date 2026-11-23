@@ -373,17 +373,18 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	})
 	// A round's inputs are built before its measured section: the cards
 	// and documents the tracker answered, changedTickets of them (every
-	// tenth) at a new update time with a new document.
+	// tenth) at a new update time with a new document: since, plus the
+	// rep, after every update an earlier path stored.
 	var roundCards []MirrorCard
 	var roundDocs, owedDocs []MirrorDetailDoc
-	roundInputs := func(changedTickets int) func(rep int) {
+	roundInputs := func(changedTickets int, since int64) func(rep int) {
 		return func(rep int) {
 			heldCards()
 			roundCards, roundDocs, owedDocs = cards(len(tickets)), docs(tickets, 0), nil
 			for i := range changedTickets {
 				at := i * 10
-				roundCards[at].UpdatedAt = int64(1_000_000 + rep)
-				roundDocs[at] = MirrorDetailDoc{IssueID: tickets[at], Data: doc(tickets[at], 1+rep), CardUpdatedAt: int64(1_000_000 + rep)}
+				roundCards[at].UpdatedAt = since + int64(rep)
+				roundDocs[at] = MirrorDetailDoc{IssueID: tickets[at], Data: doc(tickets[at], 1+rep), CardUpdatedAt: since + int64(rep)}
 				owedDocs = append(owedDocs, roundDocs[at])
 			}
 		}
@@ -438,10 +439,10 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		_, err = s.StoreMirrorDetails(root, sweep, owedDocs, mirrorReadAt(0), mirrorReadAt(at))
 		return err
 	}
-	out["Jira round of 100, idle"] = measureScale(t, rec, roundInputs(0), jira)
-	out["Jira round of 100, 10 changed"] = measureScale(t, rec, roundInputs(10), jira)
-	out["Linear round of 100, idle"] = measureScale(t, rec, roundInputs(0), linear)
-	out["Linear round of 100, 10 changed"] = measureScale(t, rec, roundInputs(10), linear)
+	out["Jira round of 100, idle"] = measureScale(t, rec, roundInputs(0, 0), jira)
+	out["Jira round of 100, 10 changed"] = measureScale(t, rec, roundInputs(10, 1_000_000), jira)
+	out["Linear round of 100, idle"] = measureScale(t, rec, roundInputs(0, 0), linear)
+	out["Linear round of 100, 10 changed"] = measureScale(t, rec, roundInputs(10, 2_000_000), linear)
 	out["cleanup pass, nothing pending"] = measureScale(t, rec, nil, func(int) error { return s.FinishMirrorCleanup(nil) })
 	// A complete listing that leaves out a quarter of the board, whose rows
 	// a delta page reads back before each run (untimed), so a listing has

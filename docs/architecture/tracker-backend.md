@@ -755,11 +755,31 @@ that marks the boards its cards need a structure read for. A ticket that
 changed adds its own full read, and on Linear the read of the card its
 new document is owed (one cards request and one card write).
 
+| Round of 50 tickets, 10 changed | Requests | Store calls | Statements | Rows written |
+|---|---|---|---|---|
+| Jira | 21 | 6 | 24 | 50 card rows (40 of them read times), 10 documents |
+| Linear | 6 | 6 | 25 | 10 card rows, 50 document rows (40 of them read times) |
+
+On Jira the 20 requests past the check are each changed issue and its
+comments; on Linear the one past the 5 details reads is the cards read
+of the 10 owed cards. Both rounds' 6 store calls include the cards and
+catalog read that builds the 10 changed views. The table is of tickets
+whose boards no one shows; a shown board of the connection adds the
+change funnel's lookup of the changed cards' boards, one more store call
+(`ListMirrorIssueBoards`, derived from `publish`; `TestServiceAtScale`'s
+shown rounds make it, and no test pins it).
+
 A changed row is redelivered by the delta's overlap of one minute
 (`tracker.DeltaOverlap`), so about six Jira ticks after a change take the
 redelivery row's cost. The trackerapp cost tests pin the provider and
-store calls, the providers' cost tests the requests, and the store's
-`TestIdleTickStatements` the statements and row writes.
+store calls (`TestIdleRoundCosts`, `TestChangedRoundCosts`), the
+providers' cost tests and `TestFakeRoundRequests` the requests, and the
+store's `TestIdleTickStatements` and `TestChangedRoundStatements` the
+statements and row writes. After a change, a round whose ticket shows
+no time in its status adds a history read (`roundHistory`), and an
+update inside the settle margin a second one once the margin passes;
+their cost is the linked history unit's, derived from the code and
+pinned by no round test.
 
 ### Costs at scale
 
@@ -772,9 +792,13 @@ clients against `trackerfake`). The command that runs one is in the
 comment above `TestMirrorAtScale`
 ([`tracker_cache_scale_test.go`](../../internal/store/tracker_cache_scale_test.go)).
 
-Counts are exact. Times are one development machine's (Intel Core Ultra 9
-285HX, WSL2, Go 1.27.4): the first sync's is the fastest of three runs, a
-path's the fastest of three runs of five each.
+Counts are exact; no test pins them, so a run of the three is how they
+are checked. Times and heap are one development machine's (Intel Core
+Ultra 9 285HX, WSL2, Go 1.27.4), measured while other work held its load
+average near 50 on 24 CPUs: the first sync's is the fastest of three
+runs, a path's the fastest of three runs of five each. The peak heap is
+the sampled heap objects, collected garbage not yet swept included, so
+it grows when the collector falls behind.
 
 | First sync, one board | 5,000 | 20,000 |
 |---|---|---|
@@ -782,9 +806,9 @@ path's the fastest of three runs of five each.
 | Provider calls (scripted) | 172 | 682 |
 | Requests, Jira through `trackerfake` | 239 | 944 |
 | Requests, Linear through `trackerfake` | 166 | 615 |
-| Write statements, in transactions | 739 in 178 | 2,914 in 703 |
-| Allocated, peak heap | 90 MB, 9.8 to 10.3 MB | 358 MB, 29.0 to 29.4 MB |
-| Time (scripted) | 1.28 s | 5.25 s |
+| Write statements, in transactions | 790 in 179 | 3,115 in 704 |
+| Allocated, peak heap | 90 MB, 17.4 to 18.0 MB | 357 to 360 MB, 36.3 to 36.8 MB |
+| Time (scripted) | 2.12 s | 7.92 s |
 | Store file per issue, after a checkpoint | 925 B | 867 B |
 
 Steady paths cost the same at both sizes, except the four that walk the
@@ -798,23 +822,23 @@ named rows.
 
 | Path (store) | Statements | 5,000 | 20,000 |
 |---|---|---|---|
-| Idle tick | 3 | 60 µs | 63 µs |
-| Delta, 100 changed | 11 | 6.7 ms | 9.2 ms |
-| History, 50 due | 6 | 11.2 ms | 11.3 ms |
-| Reconcile, complete listing | 3 | 4.3 ms | 22.4 ms |
-| Board view, 3 sections | 10 | 11.2 ms | 44.8 ms |
-| Section page, middle of a column | 3 | 0.70 ms | 0.72 ms |
-| Section counts | 4 | 8.4 ms | 39.2 ms |
-| Patch read, 1 or 100 changed, totals moved | 8 | 8.7 to 9.9 ms | 40.6 to 41.2 ms |
-| Patch read, 1 or 100 changed, totals held | 5 | 0.07 to 0.73 ms | 0.07 to 0.76 ms |
-| Ticket open, stored | 14 | 0.29 ms | 0.33 ms |
-| Jira round, 100 tickets, 10 changed | 21 | 5.4 ms | 5.5 ms |
-| Linear round, 100 tickets, 10 changed | 14 | 2.9 ms | 2.7 ms |
-| `New` | 0 | 13.8 ms | 15.2 ms |
+| Idle tick | 3 | 84 µs | 94 µs |
+| Delta, 100 changed | 12 | 13.7 ms | 16.5 ms |
+| History, 50 due | 6 | 18.0 ms | 17.3 ms |
+| Reconcile, complete listing | 3 | 6.6 ms | 30.7 ms |
+| Board view, 3 sections | 10 | 17.9 ms | 68.6 ms |
+| Section page, middle of a column | 3 | 1.07 ms | 1.50 ms |
+| Section counts | 4 | 12.7 ms | 63.7 ms |
+| Patch read, 1 or 100 changed, totals moved | 8 | 13.2 to 17.0 ms | 61.4 to 62.7 ms |
+| Patch read, 1 or 100 changed, totals held | 5 | 0.09 to 1.12 ms | 0.10 to 1.20 ms |
+| Ticket open, stored | 15 | 0.65 ms | 0.57 ms |
+| Jira round, 100 tickets, 10 changed | 22 | 12.0 ms | 12.1 ms |
+| Linear round, 100 tickets, 10 changed | 23 | 5.4 ms | 5.8 ms |
+| `New` | 0 | 24.1 ms | 26.8 ms |
 
 A reconcile whose listing leaves out a quarter of the board removes
 those rows in 8 statements at 5,000 issues and 22 at 20,000. Five boards
-of 4,000 issues on one root view in 10.6 ms. Every
+of 4,000 issues on one root view in 17.9 ms. Every
 statement of the mirror plans the same at 20,000 issues as on a small
 mirror, with no `sqlite_stat1`. Through `trackerfake` at 20,000 an idle
 tick, a delta of 100 and a Jira history read of 100 are 1, 1 and 4
@@ -823,8 +847,8 @@ requests; a reconcile is 4 Jira requests or 41 Linear ones.
 Retention does not grow with a board, except a reconcile pass that
 spans ticks: its pump holds the candidates left, at most one listing's,
 until the pass ends. Five shown boards and 50 shown
-tickets hold 123 to 145 KB of heap and 56 goroutines (each pump and the
-round with one timer) at both sizes; once released, 65 to 88 KB stay
+tickets hold 116 to 134 KB of heap and 56 goroutines (each pump and the
+round with one timer) at both sizes; once released, 66 to 90 KB stay
 (the event log) and no goroutine.
 
 ## Writes
