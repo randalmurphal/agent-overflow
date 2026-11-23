@@ -36,7 +36,7 @@ import {
   SubscribePRUpdates,
   UnsubscribePRUpdates,
 } from './bindings';
-import { __resetCIHandlesForTest, clearCIHandle, setCIHandle, type CIHandle } from './ciHandles';
+import { clearCIHandle, setCIHandle, type CIHandle } from './ciHandles';
 import { createPumpVotes } from './pumpVotes';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
@@ -45,7 +45,6 @@ import { createEntityStore } from './entityStore.svelte';
 import { isTransportClassError, onBackendStatusChange } from './transportStatus.svelte';
 import { forgeFailureFrom, type ForgeFailure, type ForgeFailureWire } from '../utils/forgeFailure';
 import {
-  __resetPRCIForTest,
   applyPRCIUpdated,
   dropPRCI,
   ensurePRCI,
@@ -54,19 +53,16 @@ import {
   type PRCIUpdatedEvent,
 } from './prReviewCI.svelte';
 import {
-  __resetPRCIFollowsForTest,
   applyPRCILogFrame,
   dropPRCIFollows,
   resendPRCILogFollows,
 } from './prReviewCIFollows.svelte';
 import {
-  __resetPRSubscriptionsForTest,
   clearPRSubscriptionId,
   prSubscriptions,
   setPRSubscriptionId,
 } from './prReviewSubscriptions';
 import {
-  __resetPRConflictsForTest,
   dropPRConflicts,
   reconcileConflictsWithHead,
 } from './prReviewConflicts.svelte';
@@ -916,18 +912,10 @@ export function __resetPRReviewStoreForTest(): void {
   for (const key of readyByKey.keys()) rejectReady(key, new Error('store reset'));
   refByKey.clear();
   failureByKey.clear();
-  __resetPRSubscriptionsForTest();
   localKeysByWireKey.clear();
   resolveOverridesByKey.clear();
   bufferedFrameByWireKey.clear();
   appliedSeqByKey.clear();
   pumpVotes.resetForTest();
-  __resetCIHandlesForTest();
   snapshotAppliedObservers = [];
-  // onDrop clears these for every key an entry existed for; a test that
-  // seeded CI or opened conflicts without ever attaching has no entry to
-  // drop, so the caches are reset directly too.
-  __resetPRCIFollowsForTest();
-  __resetPRCIForTest();
-  __resetPRConflictsForTest();
 }

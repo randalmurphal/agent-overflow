@@ -4,8 +4,8 @@ import { tick } from 'svelte';
 import Composer from './Composer.svelte';
 import {
   createComposerDraftStore,
-  resetComposerDraftSnapshotsForTest,
 } from '../../stores/composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import { __setSmoothingClockForTest, createThreadPane } from '../../stores/thread.svelte';
 import { FakeSmoothingClock } from '../../../test/helpers/smoothingClock';
 import { applyThreadUpdated } from '../../stores/eventsThreadRows';
@@ -223,7 +223,7 @@ function deferred<T>() {
 describe('<Composer>', () => {
   beforeEach(() => {
     resetBindingMocks();
-    resetComposerDraftSnapshotsForTest();
+    resetComposerDraftSnapshotStateForTest();
     resetProposedPlanCacheForTests();
     resetWorktreeIntent();
     resetSendQueueForTest();

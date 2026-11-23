@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import {
   createComposerDraftStore,
-  resetComposerDraftSnapshotsForTest,
   type ComposerDraftStore,
   type DraftStoreOptions,
 } from './composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from './composerDraftSnapshots';
 import type { Attachment } from '../types/attachment';
 import { getToasts, resetToastsForTest } from './toast.svelte';
 import { flushFrontendErrors, resetFrontendErrorCaptureForTest } from '../utils/frontendErrorCapture';
@@ -59,7 +59,7 @@ function sampleAttachment(id: string): Attachment {
 
 describe('composerDraft store', () => {
   beforeEach(() => {
-    resetComposerDraftSnapshotsForTest();
+    resetComposerDraftSnapshotStateForTest();
     installMocks({ content: '', attachmentIds: [], terminalChips: [] });
   });
 
@@ -195,7 +195,7 @@ describe('composerDraft store', () => {
 
     // The page dies before SendMessage reaches the host. A new store loads
     // the saved draft rather than relying on the lost optimistic snapshot.
-    resetComposerDraftSnapshotsForTest();
+    resetComposerDraftSnapshotStateForTest();
     const reopened = createStore({ debounceMs: 0 });
     await reopened.setThread('thread-1');
     expect(reopened.content).toBe('send [Image #1]');
@@ -789,7 +789,7 @@ describe('empty-draft cleanup of a thread another screen may hold', () => {
   let reports: string[];
 
   beforeEach(() => {
-    resetComposerDraftSnapshotsForTest();
+    resetComposerDraftSnapshotStateForTest();
     resetToastsForTest();
     resetFrontendErrorCaptureForTest();
     installMocks({ content: '', attachmentIds: [], terminalChips: [] });

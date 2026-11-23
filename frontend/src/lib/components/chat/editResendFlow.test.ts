@@ -29,7 +29,7 @@ vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => {
 import ChatView from './ChatView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
-import { resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import {
   getComposerDraftForPane,
   resetComposerDraftRegistryForTest,
@@ -95,7 +95,7 @@ beforeEach(() => {
   resetCompanionPanesForTest();
   resetPanesForTest();
   resetThreadStatuses();
-  resetComposerDraftSnapshotsForTest();
+  resetComposerDraftSnapshotStateForTest();
   resetComposerDraftRegistryForTest();
   resetResendRevertMarkersForTest();
   resetEditResendExecutionForTest();

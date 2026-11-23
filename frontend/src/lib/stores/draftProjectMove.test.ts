@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
-import { createComposerDraftStore, resetComposerDraftSnapshotsForTest } from './composerDraft.svelte';
+import { createComposerDraftStore } from './composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from './composerDraftSnapshots';
 import { registerComposerDraft, getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { moveDraftProject } from './draftProjectMove';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -30,7 +31,7 @@ let pane: ThreadPane;
 let draft: ReturnType<typeof createComposerDraftStore>;
 
 beforeEach(async () => {
-  resetComposerDraftSnapshotsForTest();
+  resetComposerDraftSnapshotStateForTest();
   resetWorktreeIntents();
   saved = new Map([[source.id, { ...empty(source.id), content: 'original prompt' }]]);
   noteProject(source.projectId!, HOME_BACKEND);

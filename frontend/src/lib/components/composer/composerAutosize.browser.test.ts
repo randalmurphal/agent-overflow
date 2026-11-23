@@ -15,7 +15,8 @@ import { tick } from 'svelte';
 import '../../../app.css';
 import ComposerInputSurface from './ComposerInputSurface.svelte';
 import ComposerControlledInputHarness from './ComposerControlledInputHarness.svelte';
-import { createComposerDraftStore, resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
+import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import { buildPane } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentUpload } from '../../../test/mocks/attachmentTransfer';
@@ -106,7 +107,7 @@ describe('composer textarea autosize (native)', () => {
     resetPanesForTest();
     resetPaneLayoutForTest();
     resetCompanionPanesForTest();
-    resetComposerDraftSnapshotsForTest();
+    resetComposerDraftSnapshotStateForTest();
     installMocks();
   });
 

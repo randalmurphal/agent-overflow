@@ -29,7 +29,7 @@ import {
   SubscribePipeline,
   UnsubscribePipeline,
 } from './bindings';
-import { __resetCIHandlesForTest, clearCIHandle, setCIHandle, type CIHandle } from './ciHandles';
+import { clearCIHandle, setCIHandle, type CIHandle } from './ciHandles';
 import { ciKeyFor } from './ciSubject.svelte';
 import { createEntityStore } from './entityStore.svelte';
 import { applyPRCIUpdated, dropPRCI, ensurePRCI, seedPRCI } from './prReviewCI.svelte';
@@ -301,5 +301,4 @@ export function __resetPipelineCIForTest(): void {
   joiningByKey.clear();
   subscriptionByKey.clear();
   votes.resetForTest();
-  __resetCIHandlesForTest();
 }

@@ -48,7 +48,6 @@
   // flashing plain for the round trip.
 
   import type { EncodedLine } from '../../../utils/syntaxSpans';
-  import { resetCompletedCodeBlockRenderersForTest } from './staticCodeBlock';
 
   /** Minimum spacing between request fires. Requests serialize on the
    * in-flight one, so this floor only matters when the round trip is
@@ -88,7 +87,6 @@
   export function __resetStreamdownCodeHostForTest(): void {
     lastAdopted.clear();
     lastAdoptedChars = 0;
-    resetCompletedCodeBlockRenderersForTest();
   }
 
   export function __streamdownCodeHostStatsForTest(): { lastAdopted: number; chars: number } {

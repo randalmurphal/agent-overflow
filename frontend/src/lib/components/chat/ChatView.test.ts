@@ -18,7 +18,7 @@ import { makeSettings } from '../../../test/helpers/settings';
 import '../terminal/TerminalView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
-import { resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import { getThreads } from '../../stores/threads.svelte';
 import { loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
 import {
@@ -85,7 +85,7 @@ beforeEach(() => {
   resetCompanionPanesForTest();
   resetPanesForTest();
   resetThreadStatuses();
-  resetComposerDraftSnapshotsForTest();
+  resetComposerDraftSnapshotStateForTest();
   resetResendRevertMarkersForTest();
   // The per-thread execute lane is module-level and released on settle;
   // tests that park the destructive RPC forever never settle, so the

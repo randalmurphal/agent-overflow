@@ -11,8 +11,8 @@ import { tick } from 'svelte';
 import Composer from './Composer.svelte';
 import {
   createComposerDraftStore,
-  resetComposerDraftSnapshotsForTest,
 } from '../../stores/composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { modelCatalog } from '../../../test/helpers/modelCatalog';
@@ -110,7 +110,7 @@ function optionNames(getAll: (id: string) => HTMLElement[]): string[] {
 describe('composer command menu', () => {
   beforeEach(() => {
     resetBindingMocks();
-    resetComposerDraftSnapshotsForTest();
+    resetComposerDraftSnapshotStateForTest();
     resetProposedPlanCacheForTests();
     resetWorktreeIntent();
     resetThreadStatuses();

@@ -13,7 +13,6 @@ import {
   markPRDiffReviewCommentsSent,
   prDraftsKey,
   refreshPRDiffReviewComments,
-  resetPRDiffReviewCommentsForTest,
   sendPRDiffReviewComments,
   updatePRDiffReviewComment,
   type PRDraftsTarget,
@@ -3948,7 +3947,6 @@ export function __resetReviewPaneStateForTest(): void {
   for (const state of statesBySourcePane.values()) state.dispose();
   statesBySourcePane.clear();
   heldPRByRow.clear();
-  resetPRDiffReviewCommentsForTest();
 }
 
 export type { CommentAnchor };

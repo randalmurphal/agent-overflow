@@ -8,7 +8,6 @@ import {
   hasQueueItems,
   isRegisteringQueueItem,
   onRegistrationSendsPending,
-  resetForTest as resetSendQueueForTest,
 } from './sendQueue.svelte';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
@@ -16,31 +15,24 @@ import { onBackendDetached } from '../transport/backends';
 import { currentThreadEvent, onThreadOwnershipChanged, threadBackend } from '../transport/entityIndex';
 import {
   clearFastModeStateForThread,
-  resetForTest as resetFastModeStateForTest,
 } from './fastModeState.svelte';
 import {
   clearCompactingForThread,
-  resetForTest as resetCompactingStateForTest,
 } from './compactingState.svelte';
 import {
   clearSessionLiveForThread,
-  resetForTest as resetSessionLiveForTest,
 } from './threadSessionLive.svelte';
 import {
   clearSubagentProgressForThread,
-  resetForTest as resetSubagentProgressForTest,
 } from './subagentProgress.svelte';
 import {
   cancelBackgroundKillConfirmationForThread,
-  resetForTest as resetBackgroundKillConfirmationForTest,
 } from './backgroundKillConfirmation.svelte';
 import {
   clearSubagentRunStatesForThread,
-  resetForTest as resetSubagentRunStatesForTest,
 } from './subagentRunState.svelte';
 import {
   clearProviderCommandsForThread,
-  resetForTest as resetProviderCommandsForTest,
 } from './providerCommands.svelte';
 
 /**
@@ -1036,8 +1028,8 @@ export function projectThreadViewed(threadId: string): void {
 
 /**
  * Wipe the entire map. Only intended for test isolation — production
- * code should use clearThreadStatus per id. Also wipes the per-thread
- * send queue because `isThreadWorking` reads that bridge state.
+ * code should use clearThreadStatus per id. The per-thread stores this
+ * module reads (the send queue among them) reset through their own seams.
  */
 export function resetForTest(): void {
   activeTurns.reset();
@@ -1057,14 +1049,6 @@ export function resetForTest(): void {
   errorThreads.clear();
   interruptedThreads.clear();
   liveStateHydrationTokenByThread.clear();
-  resetSendQueueForTest();
-  resetFastModeStateForTest();
-  resetCompactingStateForTest();
-  resetSessionLiveForTest();
-  resetSubagentProgressForTest();
-  resetSubagentRunStatesForTest();
-  resetBackgroundKillConfirmationForTest();
-  resetProviderCommandsForTest();
   liveStateHydratingThreads.reset();
   statuses.reset();
 }

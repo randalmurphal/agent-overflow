@@ -15,8 +15,8 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import {
   createComposerDraftStore,
-  resetComposerDraftSnapshotsForTest,
 } from '../../stores/composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import type { ComposerDraftSnapshot } from '../../stores/composerDraftSnapshots';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
@@ -134,7 +134,7 @@ describe('<UserMessageEditor>', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetBindingMocks();
-    resetComposerDraftSnapshotsForTest();
+    resetComposerDraftSnapshotStateForTest();
     resetPanesForTest();
     resetPaneLayoutForTest();
     resetCompanionPanesForTest();

@@ -67,6 +67,17 @@ describe('registration', () => {
     expect(seen).toEqual([['src/test/helpers/backends.ts', { resetStagedBackends: 1, stageBackend: 2 }, []]]);
   });
 
+  it('rejects a reset that calls another module\'s reset', () => {
+    const code = [
+      "import { count, resetForTest as resetLeafForTest } from './leaf';",
+      'export function resetCountForTest() { count(); resetLeafForTest(); }',
+    ].join('\n');
+    expect(() => registration(STORE, code)).toThrow(
+      `${STORE}: resetCountForTest calls resetLeafForTest from ./leaf; the registry runs that module's reset itself, so a reset resets its own module only`,
+    );
+    expect(registration(STORE, "import { count } from './leaf';\nexport function resetCountForTest() { count(); }")).not.toBeNull();
+  });
+
   it('leaves a module without resets untouched', () => {
     expect(registration(STORE, 'export function count() {}')).toBeNull();
   });

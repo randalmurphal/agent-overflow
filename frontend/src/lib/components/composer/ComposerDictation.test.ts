@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Composer from './Composer.svelte';
-import { createComposerDraftStore, resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
+import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
@@ -60,7 +61,7 @@ async function mountComposer() {
 describe('<Composer> dictation', () => {
   beforeEach(() => {
     resetBindingMocks();
-    resetComposerDraftSnapshotsForTest();
+    resetComposerDraftSnapshotStateForTest();
     resetPanesForTest();
     resetPaneLayoutForTest();
     resetToLocalPage();
@@ -211,7 +212,7 @@ describe('<Composer> dictation', () => {
 describe('<Composer> live caption', () => {
   beforeEach(() => {
     resetBindingMocks();
-    resetComposerDraftSnapshotsForTest();
+    resetComposerDraftSnapshotStateForTest();
     resetPanesForTest();
     resetPaneLayoutForTest();
     resetToLocalPage();

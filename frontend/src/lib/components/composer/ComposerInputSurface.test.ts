@@ -11,9 +11,9 @@ import ComposerInputSurface from './ComposerInputSurface.svelte';
 import type { ComposerInputSurfaceHandle } from './composerInputSurface';
 import {
   createComposerDraftStore,
-  resetComposerDraftSnapshotsForTest,
   type ComposerDraftStore,
 } from '../../stores/composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import { buildPane } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
@@ -194,7 +194,7 @@ describe('<ComposerInputSurface>', () => {
   });
   beforeEach(() => {
     resetBindingMocks();
-    resetComposerDraftSnapshotsForTest();
+    resetComposerDraftSnapshotStateForTest();
     resetPanesForTest();
     resetPaneLayoutForTest();
     resetCompanionPanesForTest();

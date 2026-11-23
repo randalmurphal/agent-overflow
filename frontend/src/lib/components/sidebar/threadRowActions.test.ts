@@ -17,7 +17,8 @@ import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { buildPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 import { getPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { createComposerDraftStore, resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
+import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
 import { TransportError } from '../../transport/wsClient';
 import type { Draft } from '../../types/draft';
@@ -519,7 +520,7 @@ describe('standing agent actions', () => {
   });
 
   it('saves the text typed just before New Thread, Same Assistant and holds the composer until the handoff ends', async () => {
-    resetComposerDraftSnapshotsForTest();
+    resetComposerDraftSnapshotStateForTest();
     const saved = new Map<string, Draft>();
     const order: string[] = [];
     setBindingMock('GetDraft', async (id: string) => saved.get(id) ?? { threadId: id, content: '', attachmentIds: [], terminalChips: [], sourceProposedPlan: null, updatedAt: 0 });
@@ -585,7 +586,7 @@ describe('standing agent actions', () => {
   });
 
   it('starts one handoff when the successor\'s header is clicked after the frame moved the pane and before the call returned', async () => {
-    resetComposerDraftSnapshotsForTest();
+    resetComposerDraftSnapshotStateForTest();
     setBindingMock('GetDraft', async (id: string) => ({ threadId: id, content: '', attachmentIds: [], terminalChips: [], sourceProposedPlan: null, updatedAt: 0 }));
     setBindingMock('ListAttachments', async () => []);
     setBindingMock('SaveDraft', async () => {});
