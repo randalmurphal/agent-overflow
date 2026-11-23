@@ -331,8 +331,9 @@ export function getEffectiveThreadStatus(
 /**
  * Mark that the frontend has asked the backend for this thread's live
  * state and is waiting on the authoritative answer. During this gap the
- * sidebar must not promote durable `hasIncompleteTurn` to Interrupted:
- * the incomplete row may simply be the current active provider turn.
+ * sidebar must not promote durable `hasIncompleteTurn` to Interrupted: on
+ * an older paired build the incomplete row may simply be the current
+ * active provider turn (EffectiveThreadStatusOptions).
  *
  * Returns a token so overlapping hydrations for the same thread cannot
  * clear each other's guard out of order.

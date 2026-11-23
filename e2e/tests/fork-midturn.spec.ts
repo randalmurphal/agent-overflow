@@ -27,8 +27,8 @@ import { access, rm } from 'node:fs/promises';
 import * as path from 'node:path';
 
 // Liveness is read off the ITEM rows, never `Thread.hasIncompleteTurn`:
-// that flag is derived against `last_read_at`, so merely opening the
-// thread in the UI flips it to false while the turn is still streaming.
+// that flag is a settled interruption the user has not read, false while
+// the turn still streams and again once the UI opens the thread.
 // The row status is what the fork's settle actually rewrites, and it is
 // the same on both surfaces.
 interface Thread {

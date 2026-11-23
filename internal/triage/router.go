@@ -91,6 +91,11 @@ type Router struct {
 	// progress (woke false) and right after that start ends, before the
 	// state is read again (woke true). Read under mu. Nil in production.
 	interruptWaitHook func(threadID string, woke bool)
+	// turnSettleGate is a test-only hook (SetTurnSettleGate) called right
+	// before settleTurnRow writes a turn's end, after the round is taken:
+	// the window in which the turn has ended on the wire and not in the
+	// store. Read under mu. Nil in production.
+	turnSettleGate func(threadID string)
 	// delays holds the router's debounce and throttle intervals, the
 	// production values from NewRouter. A same-package test lengthens
 	// one so its timer cannot fire inside a window that asserts what a
@@ -479,6 +484,16 @@ func (r *Router) SetEventHook(hook func(provider.ProviderEvent)) {
 func (r *Router) SetTurnRowWrittenGate(gate func(threadID string)) {
 	r.mu.Lock()
 	r.turnRowWrittenGate = gate
+	r.mu.Unlock()
+}
+
+// SetTurnSettleGate installs a test-only hook called right before
+// settleTurnRow writes a turn's end, so a test can hold a completion in the
+// window between the round's end and the row's. Production code must leave
+// this nil. Pass nil to clear.
+func (r *Router) SetTurnSettleGate(gate func(threadID string)) {
+	r.mu.Lock()
+	r.turnSettleGate = gate
 	r.mu.Unlock()
 }
 
