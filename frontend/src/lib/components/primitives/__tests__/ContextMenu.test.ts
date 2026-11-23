@@ -11,16 +11,28 @@ afterEach(() => {
   setCompactLayoutForTest(false);
 });
 
-function surface(container: HTMLElement): HTMLElement {
-  const el = container.querySelector<HTMLElement>('[data-context-menu]');
+// The menu mounts on the body, so it is looked up in the document.
+function surface(): HTMLElement {
+  const el = document.querySelector<HTMLElement>('[data-context-menu]');
   if (!el) throw new Error('context menu not rendered');
   return el;
 }
 
 describe('<ContextMenu>', () => {
+  it('mounts on the body, outside its owner, and leaves with its owner', () => {
+    // An owner inside a stacking context (a pane section) would cap the
+    // menu's z-index, so a neighboring pane painted over it.
+    const { container, unmount } = render(Harness);
+    const el = surface();
+    expect(el.parentElement).toBe(document.body);
+    expect(container.contains(el)).toBe(false);
+    unmount();
+    expect(document.querySelector('[data-context-menu]')).toBeNull();
+  });
+
   it('anchors to the point on the desktop', () => {
-    const { container } = render(Harness, { props: { x: 40, y: 60 } });
-    const el = surface(container);
+    render(Harness, { props: { x: 40, y: 60 } });
+    const el = surface();
     expect(el.dataset.placement).toBe('point');
     expect(el.style.left).toBe('40px');
     expect(el.style.top).toBe('60px');
@@ -28,8 +40,8 @@ describe('<ContextMenu>', () => {
 
   it('anchors to the point under the compact layout too', () => {
     setCompactLayoutForTest(true);
-    const { container } = render(Harness, { props: { x: 40, y: 60 } });
-    const el = surface(container);
+    render(Harness, { props: { x: 40, y: 60 } });
+    const el = surface();
     expect(el.dataset.placement).toBe('point');
     expect(el.style.left).toBe('40px');
     expect(el.style.top).toBe('60px');
@@ -49,12 +61,12 @@ describe('<ContextMenu>', () => {
     for (const compact of [false, true]) {
       setCompactLayoutForTest(compact);
       const onDismiss = vi.fn();
-      const { container, getByText, unmount } = render(Harness, { props: { onDismiss } });
+      const { getByText, unmount } = render(Harness, { props: { onDismiss } });
       await fireEvent.mouseDown(getByText('Apple'));
       expect(onDismiss).not.toHaveBeenCalled();
       await fireEvent.mouseDown(document.body);
       expect(onDismiss).toHaveBeenCalledTimes(1);
-      await fireEvent.keyDown(surface(container), { key: 'Escape' });
+      await fireEvent.keyDown(surface(), { key: 'Escape' });
       expect(onDismiss).toHaveBeenCalledTimes(2);
       unmount();
     }
@@ -89,8 +101,8 @@ describe('<ContextMenu>', () => {
       configurable: true,
     });
     try {
-      const { container } = render(Harness, { props: { x: 40, y: 700 } });
-      const el = surface(container);
+      render(Harness, { props: { x: 40, y: 700 } });
+      const el = surface();
       // happy-dom measures the menu at zero height, so the clamp is the
       // viewport height less the margin.
       expect(el.style.top).toBe('296px');

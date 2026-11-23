@@ -931,6 +931,24 @@ and anti-changes that live only here:
   every built-in theme; they are not dimmed to the hint tier, and the
   title is not enlarged. Opening a thread on the phone never focuses the
   composer; the keyboard rises only on a tap into the input.
+- Chat header actions menu (2026-11-19): the drawer terminal, a new
+  terminal pane, find in thread, title regeneration and open-in-editor (one
+  row per installed editor, the default first) are rows of the Thread
+  actions menu at the end of the cluster, on desktop and on the phone. Find
+  in thread opens that pane's own find bar (the `find.in-pane` chord's);
+  the search across every thread is a row on the phone only, which has no
+  chord for it. A desktop row names its command's chord. A draft has no
+  title regeneration row, and the phone offers a new terminal pane only
+  for a thread in a project, whose sidebar section is its way back to that
+  pane. The desktop
+  cluster keeps the PR and diff badges, git, and the assistant,
+  take-control and browser buttons; the phone keeps the diff badge and the
+  assistant button, and its menu also carries review, the PR, take-control
+  and git. A regeneration in flight shows a spinner beside the title on
+  both layouts. On desktop the project crumb shows its whole name (to a
+  14rem cap) or is left out under a 36rem header; the title is what
+  truncates, to a floor of 8rem or its own width, and the cluster takes a
+  second row only past that floor.
 - Phone menus (2026-09-13): every popover and context menu opens where it
   was tapped, anchored to its control or to the pressed point and clamped
   into the viewport. No bottom-sheet menus; the earlier sheet default is

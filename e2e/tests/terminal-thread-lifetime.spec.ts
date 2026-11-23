@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import { launchFrontendClient } from './frontend-client-helpers.js';
+import { toggleTerminal } from './terminal-find-flow.js';
 import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpers.js';
 import {
   SHELL_ENV,
@@ -42,7 +43,7 @@ test('a drawer terminal exiting collapses the drawer and keeps the chat thread',
     const threadId = seed.projects[0].threadIds[0];
     await host.open(page);
     await openThread(page, 'Chat with a drawer');
-    await page.getByTestId('terminal-toggle').click();
+    await toggleTerminal(page);
     await expect(terminalTabs(page)).toHaveCount(1);
 
     await exitShell(page, host, threadId);
@@ -55,7 +56,7 @@ test('a drawer terminal exiting collapses the drawer and keeps the chat thread',
     expect(await rowIds(host)).toContain(threadId);
     expect(await host.rpc<unknown[]>('ListTerminals', threadId)).toEqual([]);
 
-    await page.getByTestId('terminal-toggle').click();
+    await toggleTerminal(page);
     await expect(terminalTabs(page)).toHaveCount(1);
     expect(await host.rpc<unknown[]>('ListTerminals', threadId)).toHaveLength(1);
   } finally {

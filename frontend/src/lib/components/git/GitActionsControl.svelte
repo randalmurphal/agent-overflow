@@ -71,10 +71,9 @@
   const workspaceLock = createWorkspaceChangeLockState(() => pane);
 
   // Split-button chrome (both segments, 24px height, header-cluster font +
-  // focus ring) lives in ../primitives/splitButton so the Open-in-editor
-  // control shares the exact same base — see SPLIT_BTN_BASE there for why the
-  // height is load-bearing. Per-segment padding / rounded corners / middle
-  // border are appended at each use site below.
+  // focus ring) lives in ../primitives/splitButton: see SPLIT_BTN_BASE there
+  // for why the height is load-bearing. Per-segment padding / rounded
+  // corners / middle border are appended at each use site below.
 
   // The checkout every action here acts on. Null means this pane names no
   // checkout at all (a terminal-only thread): the control does not render,

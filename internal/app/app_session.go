@@ -421,7 +421,7 @@ func (a *App) startSessionNow(threadID string) error {
 	// user-perceivable. The pattern mirrors probeStartupProviderStatuses
 	// in ServiceStartup.
 	if newSess.Codex != nil && opts.Resume != "" {
-		go a.reconcileCodexAfterStart(threadID)
+		go a.reconcileCodexAfterStart(threadID, newSess)
 	}
 
 	return nil
