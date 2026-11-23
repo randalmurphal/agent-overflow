@@ -8,7 +8,6 @@ import (
 	"agent-overflow/internal/memory"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil/providerpath"
-	"agent-overflow/internal/testutil/testshard"
 	"agent-overflow/internal/wsldistro"
 )
 
@@ -24,7 +23,6 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == memory.HookSubcommand {
 		os.Exit(memory.RunHook(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	}
-	testshard.Select(m)
 	// A test run started from a terminal inside the app inherits the Windows
 	// launcher's exports. Left set, a save or a WSL settings write under test
 	// would reach the developer's real Windows Downloads folder or wsl.json.

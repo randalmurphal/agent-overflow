@@ -1,51 +1,84 @@
 // Command ao-gotest runs the `go test` command line it is given, for `make
-// go-test`, inside the test namespace (bin/ao-netns). Each package whose
-// TestMain calls testshard.Select (internal/testutil/testshard) runs as one
-// `go test` per core, each running the tests whose names hash to it with
-// -parallel 1, and the other packages run in one `go test` beside them.
+// go-test`, inside the test namespace (bin/ao-netns). A package named by a
+// -split flag runs as buckets: `go test -list` prints its top-level tests,
+// each goes to one of a fixed number of buckets by a hash of its name, and
+// each bucket that has tests runs as one `go test -parallel 1 -run
+// '^(?:names)$'`. The other packages run in one `go test` beside them.
 //
-//	ao-gotest <go command> test [go test flag or package]...
+//	ao-gotest [-split importpath=MiB]... <go command> test [go test flag or package]...
 //
-// K, the number of processes a package is split into, is GOMAXPROCS: the
-// cores this process may use, as Go counts them for -p and -parallel. So
-// the run keeps the concurrency one `go test` has, one test per core, but
-// no two of a package's tests share a process.
+// A package is split when its tests open so many SQLite stores that one
+// process cannot use more cores: modernc's allocator lock serializes them.
+// The bucket count is fixed, not the number of cores, so a bucket's command
+// line, and with it its entry in the test cache, is the same whatever ran
+// beside it: a result cached at one worker count is cached at any other,
+// and a failed bucket reruns without hiding behind another's pass.
+//
+// W, the number of buckets running at once, is what the memory governor
+// (internal/harness/governor) grants across every run on the host, at most
+// one bucket per core: one lease holding a unit, the MiB a package's -split
+// flag declares one of its buckets holds, for each of the W largest
+// buckets, since no W buckets at once hold more. W is never below 1, so a
+// host with nothing to spare runs the buckets one after another. Each
+// bucket's largest process is read from rusage when it exits; a package
+// whose bucket went over its unit is named at the end of the run, so its
+// declaration can be raised.
+//
+// A split package's test binary is built once per run, by the `go test -o
+// P -list` that reads its names, into a directory of this run's own, so a
+// fully cached run still links it once. Each bucket runs it through a hard
+// link of its own (-o), so no bucket links. A bucket whose package or a
+// dependency changed after the list step builds its own binary over its own
+// link, never over the one the other buckets run; the run fails that
+// bucket and says why, since its tests ran different code.
 //
 // Nothing is split, and this process becomes exactly the command line it
-// was given, when K is 1, when no package calls Select, or when a flag is
-// outside shardFlags: one that narrows the run (-run, -list, -bench,
-// -fuzz), sets its concurrency (-parallel, -cpu), needs one binary or one
-// process per package (-c, -o, -exec, profiles, coverage, -race) or that
-// this command does not know.
+// was given, when no package it names is declared, or when a flag is
+// outside shardFlags: one that narrows the run (-run, -list, -bench, -fuzz),
+// sets its concurrency (-parallel, -cpu), needs one binary or one process
+// per package (-c, -o, -exec, profiles, coverage, -race) or that this
+// command does not know. Packages are matched by import path, as `make
+// go-test` passes them.
 //
-// A split package's tests are compiled and vetted once (`go test -c -o
-// /dev/null`) before its processes start, so they do not compile it K times
-// over; a package that fails that build runs unsplit instead, which reports
-// the failure once. The unsplit `go test` streams its output line by line;
-// each process of a split package prints its output whole when it ends,
-// after a header line unless -json is given, so lines of different
-// processes never interleave. The exit status is the worst of the `go
-// test` processes'. Each has the -timeout the flags give. A signal this
-// command receives goes to every `go test` it started, no new one starts,
-// and it exits once they have.
+// The unsplit `go test` streams its output line by line; each bucket prints
+// its output whole when it ends, after a header line unless -json is given,
+// so lines of different processes never interleave. The exit status is the
+// worst of the `go test` processes'. Each has the -timeout the flags give.
+// A signal this command receives goes to every `go test` it started, no new
+// one starts, and it exits once they have.
 package main
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
+	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
+	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 
-	"agent-overflow/internal/testutil/testshard/shardspec"
+	"agent-overflow/internal/harness/governor"
+	"agent-overflow/internal/ownedtemp"
 )
+
+// buckets is how many buckets a split package's tests are hashed into. It
+// bounds how many of one package's processes can run at once.
+const buckets = 8
+
+// runDirPrefix names the directory each run builds its binaries in.
+const runDirPrefix = "ao-gotest-"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -68,8 +101,41 @@ var shardFlags = map[string]bool{
 	"vet":      true,
 }
 
-// buildFlags are the shardFlags that change what `go test -c` builds.
-var buildFlags = []string{"tags", "vet"}
+// buildFlags are the shardFlags the list step, which builds and vets, takes.
+var buildFlags = []string{"p", "tags", "vet"}
+
+// split is a -split flag: a package to run as buckets and the bytes one of
+// its buckets is declared to hold.
+type split struct {
+	pkg  string
+	unit uint64
+}
+
+type splitFlags []split
+
+func (s *splitFlags) String() string { return fmt.Sprint(*s) }
+
+func (s *splitFlags) Set(value string) error {
+	pkg, mib, ok := strings.Cut(value, "=")
+	n, err := strconv.ParseUint(mib, 10, 32)
+	if !ok || pkg == "" || err != nil || n == 0 {
+		return fmt.Errorf("want importpath=MiB with a positive whole MiB, got %q", value)
+	}
+	*s = append(*s, split{pkg: pkg, unit: n << 20})
+	return nil
+}
+
+// parseSplits reads this command's own flags, up to the go command.
+func parseSplits(args []string) ([]split, []string, error) {
+	var splits splitFlags
+	flags := flag.NewFlagSet("ao-gotest", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.Var(&splits, "split", "run the package as buckets, each declared to hold MiB")
+	if err := flags.Parse(args); err != nil {
+		return nil, nil, fmt.Errorf("-split: %w", err)
+	}
+	return splits, flags.Args(), nil
+}
 
 // invocation is a `go test` command line, argv, read as go test reads it.
 type invocation struct {
@@ -93,7 +159,7 @@ type parsedFlag struct {
 // every other argument as a package.
 func parseArgs(argv []string) (invocation, error) {
 	if len(argv) < 2 || argv[1] != "test" {
-		return invocation{}, fmt.Errorf("usage: ao-gotest <go command> test [go test flag or package]...; got %q", argv)
+		return invocation{}, fmt.Errorf("usage: ao-gotest [-split importpath=MiB]... <go command> test [go test flag or package]...; got %q", argv)
 	}
 	inv := invocation{argv: argv, shardable: true}
 	args := argv[2:]
@@ -121,25 +187,98 @@ func parseArgs(argv []string) (invocation, error) {
 }
 
 func run(argv []string, stdout, stderr io.Writer) int {
-	inv, err := parseArgs(argv)
-	if err != nil {
-		fmt.Fprintln(stderr, "ao-gotest:", err)
-		return 2
+	splits, rest, err := parseSplits(argv)
+	if err == nil {
+		var inv invocation
+		inv, err = parseArgs(rest)
+		if err == nil {
+			return runInvocation(inv, splits, stdout, stderr)
+		}
 	}
-	k := runtime.GOMAXPROCS(0)
-	if k == 1 || !inv.shardable {
+	fmt.Fprintln(stderr, "ao-gotest:", err)
+	return 2
+}
+
+func runInvocation(inv invocation, splits []split, stdout, stderr io.Writer) int {
+	if !inv.shardable {
 		return passThrough(inv.argv, stderr)
 	}
-	split, whole, err := optedIn(inv, stderr)
+	// Declaration order is the order the packages are listed and their
+	// buckets start in, so the longest goes first.
+	var declared []split
+	var names []string
+	var units []uint64
+	for _, s := range splits {
+		if slices.Contains(inv.packages, s.pkg) {
+			declared = append(declared, s)
+			names = append(names, s.pkg)
+			for range buckets {
+				units = append(units, s.unit)
+			}
+		}
+	}
+	if len(declared) == 0 {
+		return passThrough(inv.argv, stderr)
+	}
+	whole := slices.DeleteFunc(slices.Clone(inv.packages), func(pkg string) bool { return slices.Contains(names, pkg) })
+	r := newRunner(inv.argv[0], stdout, stderr)
+	// A run that was killed left its directory; a live one keeps its own.
+	if err := ownedtemp.Sweep("", runDirPrefix); err != nil {
+		r.note("remove a killed run's test binaries: %v", err)
+	}
+	dir, removeDir, err := ownedtemp.Make("", runDirPrefix)
 	if err != nil {
-		fmt.Fprintln(stderr, "ao-gotest:", err)
+		fmt.Fprintln(stderr, "ao-gotest: make the directory for the test binaries:", err)
 		return 1
 	}
-	if len(split) == 0 {
-		return passThrough(inv.argv, stderr)
+	slices.SortFunc(units, func(a, b uint64) int { return cmp.Compare(b, a) })
+	w, release, granted := r.workers(dir, units[:min(runtime.GOMAXPROCS(0), len(units))])
+	fmt.Fprintf(stderr, "ao-gotest: %s: %d buckets each, %d at a time (%s)\n", strings.Join(names, ", "), buckets, w, granted)
+	status := r.run(plan(inv, declared, whole, dir), w)
+	if err := release(); err != nil {
+		r.note("release the memory reservation: %v", err)
 	}
-	r := newRunner(inv.argv[0], stdout, stderr)
-	return r.run(plan(inv, split, whole, k))
+	if err := removeDir(); err != nil {
+		r.note("remove the test binaries: %v", err)
+	}
+	r.printNotes()
+	return status
+}
+
+// workers reserves memory in the host's governor for as many buckets at
+// once as units has, largest first, and returns how many may run at once,
+// the release of the reservation and what was reserved.
+func (r *runner) workers(dir string, units []uint64) (int, func() error, string) {
+	manager, err := governor.New(governor.Options{})
+	var worktree string
+	if err == nil {
+		worktree, err = os.Getwd()
+	}
+	if err != nil {
+		r.note("reserve memory for the buckets: %v; they ran one at a time", err)
+		return 1, func() error { return nil }, "no reservation"
+	}
+	return reserveWorkers(r, manager, governor.Request{
+		RunID:    "go-test-" + strconv.Itoa(os.Getpid()),
+		Worktree: worktree,
+		DataRoot: dir,
+		OwnerPID: os.Getpid(),
+	}, units)
+}
+
+// reserveWorkers is workers' reservation in m. W is what m granted, or 1
+// when it granted none or failed: one bucket at a time holds no lease, as
+// one unsplit `go test` holds none, so a run never waits for memory.
+func reserveWorkers(r *runner, m *governor.Manager, req governor.Request, units []uint64) (int, func() error, string) {
+	lease, granted, err := m.ReserveUpTo(req, units)
+	if err != nil {
+		r.note("reserve memory for the buckets: %v; they ran one at a time", err)
+		return 1, func() error { return nil }, "no reservation"
+	}
+	if granted == 0 {
+		return 1, func() error { return nil }, fmt.Sprintf("no %d MiB free above the host's floor and other runs' reservations", units[0]>>20)
+	}
+	return granted, func() error { return m.Release(lease) }, fmt.Sprintf("%d MiB reserved", lease.CeilingBytes>>20)
 }
 
 // passThrough replaces this process with argv, the one `go test` of every
@@ -156,62 +295,40 @@ func passThrough(argv []string, stderr io.Writer) int {
 	return 1
 }
 
-// optedIn splits the packages, in order, into those whose test files
-// import testshard, and so call Select, and the rest.
-func optedIn(inv invocation, stderr io.Writer) (split, whole []string, err error) {
-	args := []string{"list", "-f", "{{.ImportPath}}{{range .TestImports}} {{.}}{{end}}{{range .XTestImports}} {{.}}{{end}}"}
-	for _, f := range inv.flags {
-		if f.name == "tags" {
-			args = append(args, f.args...)
-		}
-	}
-	var out bytes.Buffer
-	list := exec.Command(inv.argv[0], append(args, inv.packages...)...)
-	list.Stdout, list.Stderr = &out, stderr
-	if err := list.Run(); err != nil {
-		return nil, nil, fmt.Errorf("go list the packages' test imports: %w", err)
-	}
-	for line := range strings.Lines(out.String()) {
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		if slices.Contains(fields[1:], shardspec.SelectPackage) {
-			split = append(split, fields[0])
-		} else {
-			whole = append(whole, fields[0])
-		}
-	}
-	return split, whole, nil
-}
-
-// job is one `go test`: its arguments after the go command, and for a
-// process of a split package its shard, "i/K".
+// job is one `go test`: its arguments after the go command.
 type job struct {
 	args  []string
-	shard string
 	label string
 }
 
-// splitPackage is a package split into K processes, and how it runs when
-// its build fails.
+// splitPackage is a package run as buckets.
 type splitPackage struct {
-	prebuild job
-	shards   []job
-	whole    job
+	split
+	// list builds binary, lists the tests and leaves binary in place.
+	list   job
+	binary string
+	// test is the go test arguments every bucket starts with.
+	test []string
+}
+
+// bucket is one bucket's `go test` and the link it runs the package's
+// binary through.
+type bucket struct {
+	job
+	pkg  *splitPackage
+	link string
 }
 
 type runPlan struct {
 	// whole runs the packages that are not split, if any.
 	whole *job
-	split []splitPackage
-	k     int
+	split []*splitPackage
 	json  bool
 }
 
-func plan(inv invocation, split, whole []string, k int) runPlan {
-	p := runPlan{k: k}
-	build := []string{"test", "-c", "-o", os.DevNull}
+func plan(inv invocation, declared []split, whole []string, dir string) runPlan {
+	var p runPlan
+	build := []string{"test"}
 	test := []string{"test"}
 	for _, f := range inv.flags {
 		if f.name == "json" && f.value != "false" {
@@ -225,22 +342,52 @@ func plan(inv invocation, split, whole []string, k int) runPlan {
 	if len(whole) > 0 {
 		p.whole = &job{args: append(slices.Clone(test), whole...)}
 	}
-	for _, pkg := range split {
-		sp := splitPackage{
-			prebuild: job{args: append(slices.Clone(build), pkg), label: pkg},
-			whole:    job{args: append(slices.Clone(test), pkg), label: pkg},
-		}
-		for i := range k {
-			shard := shardspec.Format(i, k)
-			sp.shards = append(sp.shards, job{
-				args:  append(slices.Clone(test), "-parallel", "1", pkg),
-				shard: shard,
-				label: pkg + " shard " + shard,
-			})
-		}
-		p.split = append(p.split, sp)
+	for i, s := range declared {
+		binary := filepath.Join(dir, strconv.Itoa(i)+"-"+path.Base(s.pkg)+".test")
+		p.split = append(p.split, &splitPackage{
+			split:  s,
+			list:   job{args: append(slices.Clone(build), "-o", binary, "-list", ".", s.pkg), label: s.pkg + " list"},
+			binary: binary,
+			test:   test,
+		})
 	}
 	return p
+}
+
+// bucketOf is the bucket a test name runs in.
+func bucketOf(name string) int {
+	h := fnv.New64a()
+	h.Write([]byte(name))
+	return int(h.Sum64() % buckets)
+}
+
+// bucketRun is the -run pattern that selects exactly names.
+func bucketRun(names []string) string {
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = regexp.QuoteMeta(name)
+	}
+	return "^(?:" + strings.Join(quoted, "|") + ")$"
+}
+
+// testName is a line `go test -list` prints for a test, benchmark, fuzz
+// test or example: go finds only functions named so.
+var testName = regexp.MustCompile(`^(?:Test|Benchmark|Fuzz|Example)[\p{L}\p{N}_]*$`)
+
+// parseList reads the names `go test -list .` printed for pkg, one per
+// line, before its `ok` line. go test prints what the binary writes to
+// stderr there too, such as a TestMain's log, so the other lines are left.
+func parseList(out []byte, pkg string) ([]string, error) {
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	last := lines[len(lines)-1]
+	if fields := strings.Fields(last); len(fields) < 2 || fields[0] != "ok" || fields[1] != pkg {
+		return nil, fmt.Errorf("the list ends with %q, not the ok line of %s", last, pkg)
+	}
+	names := slices.DeleteFunc(lines[:len(lines)-1], func(line string) bool { return !testName.MatchString(line) })
+	if len(names) == 0 {
+		return nil, fmt.Errorf("%s has no tests to split", pkg)
+	}
+	return names, nil
 }
 
 // runner starts the jobs and serializes their output.
@@ -257,13 +404,19 @@ type runner struct {
 	running map[*exec.Cmd]bool
 	stopped bool
 	worst   int
+	// notes are printed when the run ends.
+	notes []string
+	// peaks is each split package's largest bucket process.
+	peaks map[*splitPackage]uint64
 }
 
 func newRunner(goCommand string, stdout, stderr io.Writer) *runner {
-	return &runner{goCommand: goCommand, stdout: stdout, stderr: stderr, running: map[*exec.Cmd]bool{}}
+	return &runner{goCommand: goCommand, stdout: stdout, stderr: stderr, running: map[*exec.Cmd]bool{}, peaks: map[*splitPackage]uint64{}}
 }
 
-func (r *runner) run(p runPlan) int {
+// run runs p's unsplit `go test` beside the split packages: each package's
+// list step, one after another, then its buckets, w at a time.
+func (r *runner) run(p runPlan, w int) int {
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
 	defer signal.Stop(signals)
@@ -284,49 +437,129 @@ func (r *runner) run(p runPlan) int {
 	if p.whole != nil {
 		wg.Go(func() { r.runWhole(*p.whole) })
 	}
-	queue := make(chan job)
-	for range p.k {
+	// Room for every bucket, so listing a package never waits for the
+	// buckets of the one before it to start.
+	queue := make(chan bucket, buckets*len(p.split))
+	for range w {
 		wg.Go(func() {
-			for j := range queue {
-				r.runShard(j, p.json)
+			for b := range queue {
+				r.runBucket(b, p.json)
 			}
 		})
 	}
 	for _, sp := range p.split {
-		if status, started := r.start(sp.prebuild, io.Discard, io.Discard, false); !started {
+		bs, started := r.list(sp)
+		if !started {
 			break
-		} else if status != 0 {
-			// One unsplit run reports the failure once, in the format the
-			// flags ask for.
-			r.runWhole(sp.whole)
-			continue
 		}
-		for _, j := range sp.shards {
-			queue <- j
+		for _, b := range bs {
+			queue <- b
 		}
 	}
 	close(queue)
 	wg.Wait()
+	for _, sp := range p.split {
+		if peak := r.peaks[sp]; peak > sp.unit {
+			r.note("%s: a bucket's largest process reached %d MiB, over the %d MiB its -split declares; raise it in GO_TEST_SPLIT in the Makefile", sp.pkg, peak>>20, sp.unit>>20)
+		}
+	}
 	return r.worst
+}
+
+// list runs sp's list step and returns its buckets, none when it failed,
+// whose output it prints. started is false once a signal has arrived.
+func (r *runner) list(sp *splitPackage) (bs []bucket, started bool) {
+	var stdout, stderr bytes.Buffer
+	status, started := r.start(sp.list, &stdout, &stderr, nil)
+	if !started {
+		return nil, false
+	}
+	var names []string
+	err := fmt.Errorf("exit status %d", status)
+	if status == 0 {
+		names, err = parseList(stdout.Bytes(), sp.pkg)
+	}
+	if err == nil {
+		// The buckets run the binary through links. Read-only, it cannot
+		// be truncated through one: a bucket that builds its own replaces
+		// its link instead.
+		err = os.Chmod(sp.binary, 0o555)
+	}
+	if err != nil {
+		r.record(max(status, 1))
+		r.out.Lock()
+		fmt.Fprintf(r.stderr, "ao-gotest: list the tests of %s: %v\n", sp.pkg, err)
+		_, _ = r.stderr.Write(stdout.Bytes())
+		_, _ = r.stderr.Write(stderr.Bytes())
+		r.out.Unlock()
+		return nil, true
+	}
+	if stderr.Len() > 0 {
+		r.out.Lock()
+		fmt.Fprintf(r.stderr, "ao-gotest: %s:\n", sp.list.label)
+		_, _ = r.stderr.Write(stderr.Bytes())
+		r.out.Unlock()
+	}
+	byBucket := make([][]string, buckets)
+	for _, name := range names {
+		i := bucketOf(name)
+		byBucket[i] = append(byBucket[i], name)
+	}
+	for i, names := range byBucket {
+		if len(names) == 0 {
+			continue
+		}
+		link := strings.TrimSuffix(sp.binary, ".test") + "-" + strconv.Itoa(i) + ".test"
+		if err := os.Link(sp.binary, link); err != nil {
+			r.record(1)
+			r.out.Lock()
+			fmt.Fprintf(r.stderr, "ao-gotest: link the test binary of %s for bucket %d: %v\n", sp.pkg, i, err)
+			r.out.Unlock()
+			continue
+		}
+		args := append(slices.Clone(sp.test), "-o", link, "-parallel", "1", "-run", bucketRun(names), sp.pkg)
+		bs = append(bs, bucket{job: job{args: args, label: fmt.Sprintf("%s bucket %d of %d", sp.pkg, i, buckets)}, pkg: sp, link: link})
+	}
+	return bs, true
 }
 
 func (r *runner) runWhole(j job) {
 	lines := &lineWriter{out: &r.out}
 	errLines := &lineWriter{out: &r.out}
 	lines.w, errLines.w = r.stdout, r.stderr
-	r.start(j, lines, errLines, true)
+	if status, started := r.start(j, lines, errLines, nil); started {
+		r.record(status)
+	}
 	lines.flush()
 	errLines.flush()
 }
 
-func (r *runner) runShard(j job, json bool) {
+func (r *runner) runBucket(b bucket, json bool) {
 	var stdout, stderr bytes.Buffer
 	if !json {
-		stdout.WriteString("ao-gotest: " + j.label + "\n")
+		stdout.WriteString("ao-gotest: " + b.label + "\n")
 	}
-	if _, started := r.start(j, &stdout, &stderr, true); !started {
+	var peak uint64
+	status, started := r.start(b.job, &stdout, &stderr, &peak)
+	if !started {
 		return
 	}
+	stale, err := replacedLink(b.pkg.binary, b.link)
+	switch {
+	case err != nil:
+		fmt.Fprintf(&stderr, "ao-gotest: %s: %v\n", b.label, err)
+		status = max(status, 1)
+	case stale:
+		fmt.Fprintf(&stderr, "ao-gotest: %s built its own test binary: %s or a package it imports changed after this run listed its tests, so this bucket tested other code than the rest; run again to test one version\n", b.label, b.pkg.pkg)
+		status = max(status, 1)
+	case status == 0:
+		// A bucket that built its own binary, or failed to, peaked in the
+		// build; one that passed on the shared binary measures its tests.
+		r.mu.Lock()
+		r.peaks[b.pkg] = max(r.peaks[b.pkg], peak)
+		r.mu.Unlock()
+	}
+	r.record(status)
 	r.out.Lock()
 	_, errOut := r.stdout.Write(stdout.Bytes())
 	_, errErr := r.stderr.Write(stderr.Bytes())
@@ -336,12 +569,26 @@ func (r *runner) runShard(j job, json bool) {
 	}
 }
 
-// start runs j to completion and, when counted, records its status. It
-// starts nothing once a signal has arrived.
-func (r *runner) start(j job, stdout, stderr io.Writer, counted bool) (status int, started bool) {
+// replacedLink reports whether the go command replaced link, a link to
+// binary, with a binary of its own, as it does when binary is stale.
+func replacedLink(binary, link string) (bool, error) {
+	shared, err := os.Stat(binary)
+	if err != nil {
+		return false, err
+	}
+	linked, err := os.Stat(link)
+	if err != nil {
+		return false, err
+	}
+	return !os.SameFile(shared, linked), nil
+}
+
+// start runs j to completion and returns its status, and when peak is not
+// nil sets it to the largest process's resident set. It starts nothing
+// once a signal has arrived.
+func (r *runner) start(j job, stdout, stderr io.Writer, peak *uint64) (status int, started bool) {
 	command := exec.Command(r.goCommand, j.args...)
 	command.Stdout, command.Stderr = stdout, stderr
-	command.Env = environ(j.shard)
 	// The parent-death signal fires when the thread that started the
 	// child exits, so that thread lives until the child has.
 	runtime.LockOSThread()
@@ -368,17 +615,37 @@ func (r *runner) start(j job, stdout, stderr io.Writer, counted bool) (status in
 	r.mu.Lock()
 	delete(r.running, command)
 	r.mu.Unlock()
-	status = exitStatus(command, err)
-	if counted {
-		r.record(status)
+	if peak != nil {
+		if usage, ok := command.ProcessState.SysUsage().(*syscall.Rusage); ok {
+			*peak = maxRSSBytes(usage)
+		}
 	}
-	return status, true
+	return exitStatus(command, err), true
 }
 
 func (r *runner) record(status int) {
 	r.mu.Lock()
 	r.worst = max(r.worst, status)
 	r.mu.Unlock()
+}
+
+// note keeps a line for the end of the run, where it is not lost among the
+// packages' output.
+func (r *runner) note(format string, args ...any) {
+	r.mu.Lock()
+	r.notes = append(r.notes, fmt.Sprintf("ao-gotest: "+format, args...))
+	r.mu.Unlock()
+}
+
+func (r *runner) printNotes() {
+	r.mu.Lock()
+	notes := r.notes
+	r.mu.Unlock()
+	r.out.Lock()
+	defer r.out.Unlock()
+	for _, line := range notes {
+		fmt.Fprintln(r.stderr, line)
+	}
 }
 
 func (r *runner) signal(sig os.Signal) {
@@ -397,16 +664,6 @@ func (r *runner) signal(sig os.Signal) {
 	for _, line := range failed {
 		fmt.Fprint(r.stderr, line)
 	}
-}
-
-// environ is this process's environment for a job: shardspec.Env names
-// the job's shard, and is unset for the unsplit run.
-func environ(shard string) []string {
-	env := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, shardspec.Env+"=") })
-	if shard != "" {
-		env = append(env, shardspec.Env+"="+shard)
-	}
-	return env
 }
 
 func exitStatus(command *exec.Cmd, err error) int {

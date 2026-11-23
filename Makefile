@@ -184,9 +184,9 @@ go-build: gocache-trim-tool
 # WSL networking mode, and its temp files land in a private RAM directory
 # that goes with the namespace. `go test` itself runs under bin/ao-netns rather than
 # through `-exec`, which would disable the test cache. bin/ao-gotest
-# (cmd/ao-gotest) starts it inside the namespace: a package whose TestMain
-# calls testshard.Select runs as one `go test` per core, and the rest as
-# one `go test` as before. go-prefetch fetches,
+# (cmd/ao-gotest) starts it inside the namespace: a package GO_TEST_SPLIT
+# names runs as fixed buckets of its tests, as many at once as the memory
+# governor grants, and the rest as one `go test` as before. go-prefetch fetches,
 # on the host network first, what every package of the module and its tests
 # import plus the module's tools, since a test may run `go tool wails3` and
 # a whole-tree contract test (TestThreadUpdatedFramesComeFromTheAnnouncer)
@@ -228,9 +228,17 @@ gocache-trim-around = $(gocache-trim-pass); trap 'status=$$?; $(gocache-trim-pas
 # go-test's `go test` line starts with NETNS, so go-test appends the
 # launcher there and it runs that line inside the namespace; override keeps
 # it when NETNS is given on the command line. gotest-tool builds it.
+# GO_TEST_SPLIT names the packages it runs as buckets, longest first, each
+# with the MiB one bucket holds, which the memory governor reserves per
+# bucket running at once: the largest process of its buckets as rusage
+# reported it, plus the 118 MiB of the go command beside it, plus 25%,
+# rounded up to 64 MiB. A run whose bucket goes over it says so at the end.
+#   internal/app:   1173 MiB measured, 1664 declared
+#   internal/store:  359 MiB measured,  640 declared
+GO_TEST_SPLIT := agent-overflow/internal/app=1664 agent-overflow/internal/store=640
 .PHONY: gotest-tool
 GOTEST := $(CURDIR)/bin/ao-gotest
-go-test: override NETNS += $(GOTEST)
+go-test: override NETNS += $(GOTEST) $(addprefix -split=,$(GO_TEST_SPLIT))
 go-test: gotest-tool
 gotest-tool:
 	go build -o bin/ao-gotest ./cmd/ao-gotest

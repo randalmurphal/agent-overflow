@@ -35,7 +35,7 @@ func TestMakeGoTestTrimsBeforeAndAfterTheTests(t *testing.T) {
 [ "$(grep -c '^trim' "$LOG")" -eq 2 ] && exit "${TRIM_AFTER_STATUS:-0}"
 exit 0
 `)
-	netns := script("netns", `echo "netns ${1##*/} $2 $3" >> "$LOG"
+	netns := script("netns", `program=${1##*/}; shift; echo "netns $program $*" >> "$LOG"
 exit "$NETNS_STATUS"
 `)
 	run := func(netnsStatus, trimAfterStatus string) (string, error) {
@@ -44,7 +44,7 @@ exit "$NETNS_STATUS"
 			t.Fatal(err)
 		}
 		cmd := exec.Command(make, "--no-print-directory", "-C", reporoot.Dir(t), "go-test",
-			"GO_TEST_PKGS=./cmd/ao-gocache-trim", "NETNS="+netns, "GOCACHE_TRIM="+trim)
+			"GO_TEST_PKGS=./cmd/ao-gocache-trim", "GO_TEST_FLAGS=", "GO_TEST_SPLIT=example/a=1 example/b=2", "NETNS="+netns, "GOCACHE_TRIM="+trim)
 		var env []string
 		for _, kv := range os.Environ() {
 			// A make running this test passes its own goals and variables.
@@ -60,7 +60,8 @@ exit "$NETNS_STATUS"
 		}
 		return string(logged), runErr
 	}
-	const want = "trim -warn\nnetns ao-gotest go test\ntrim -warn\n"
+	// The launcher gets each GO_TEST_SPLIT entry before the go command.
+	const want = "trim -warn\nnetns ao-gotest -split=example/a=1 -split=example/b=2 go test -timeout 30m agent-overflow/cmd/ao-gocache-trim\ntrim -warn\n"
 	for _, tc := range []struct {
 		name, netnsStatus, trimAfterStatus string
 		fails                              bool

@@ -33,13 +33,6 @@ packages. Test-specific setup stays beside the test that owns it.
   opens, resolved against the package directory, so a file opened through a
   path relative to another directory is left out of the key and a cached
   pass outlives a change to it.
-- `testshard/` splits one package's top-level tests across processes, by a
-  hash of each test's name, when `make go-test` (`cmd/ao-gotest`) sets
-  `AO_TEST_SHARD`. A package opts in by calling `testshard.Select(m)` first
-  in its TestMain, which is all it exports; one whose tests open many SQLite
-  stores needs it, because modernc's allocator lock stops one process from
-  using more cores. `shardspec/` holds the variable's format, which
-  `cmd/ao-gotest` shares. Standard library only.
 - A per-process directory a shared fixture makes in TestMain (the poison,
   store templates, the detached home) is an `internal/ownedtemp`
   directory, swept again after the run, so one left by a killed test

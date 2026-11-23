@@ -41,11 +41,22 @@ the developer's running app; goals that launch an app (`make dev`,
 under `bin/ao-netns`, whose private temp directory and on-disk Go work
 directory are described with the
 [isolation](../specs/testing-harness.md#isolation-network-temp-directory-and-priority).
-`go-test` starts `go test` through `cmd/ao-gotest` inside the namespace: a
-package whose TestMain calls `testshard.Select` runs as one process per
-core, each running the top-level tests whose names hash to it, and the
-other packages run in one `go test` as before. With one core, `-run`, or a
-flag the command does not split on, it runs that one `go test`.
+`go-test` starts `go test` through `cmd/ao-gotest` inside the namespace. A
+package that `GO_TEST_SPLIT` in the Makefile names runs as eight fixed
+buckets of its top-level tests, each a `go test -parallel 1 -run` of the
+names that hash to it, since modernc's allocator lock keeps one process
+of many SQLite stores from using more cores; the other packages run in
+one `go test` as before. A bucket's command line is the same however many
+run at once, so its cached result holds at any count. As many run at once
+as the [harness memory governor](../../internal/harness/governor/AGENTS.md)
+grants across every run on the host, at the MiB per bucket the
+declaration gives, at most one per core and at least one; a run whose
+bucket went over its declaration says so at the end. Each split package's
+test binary is linked once per run, by the `go test -list` that reads its
+names, so a fully cached run still links it once. A bucket prints its
+output when it ends, so one that hangs shows nothing until its `-timeout`.
+With `-run`, a profile, or another flag the command does not split on, it
+runs the one `go test` it was given, as a bare `go test` outside make does.
 Go trims its build cache only by age, so `go-build`, `go-test` and
 `test-race` run a `cmd/ao-gocache-trim` pass before their build or test and
 another when it ends. A pass walks the cache at most every five minutes,
