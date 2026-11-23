@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	appservice "agent-overflow/internal/app"
 )
 
 func TestParseHarnessTiming(t *testing.T) {
@@ -106,56 +104,85 @@ func TestHarnessTimingOnlyInHarnessBoot(t *testing.T) {
 	}
 }
 
-// Every harness timer reaches exactly one owner, and no other timer's: a
-// timer the boot hands on, one field of the App's isolation, or the page's
-// manifest entry of its name. Set alone, each changes that and nothing else.
-func TestEveryHarnessTimerReachesOneOwner(t *testing.T) {
+// harnessTimerOwners is what each harness timer name means: the boot
+// field, the App isolation field (whose consumer
+// internal/app TestEveryIsolationIntervalReachesItsConsumer reads) or the
+// page timer it sets. Written apart from harnessTimers, so a row pointed
+// at the wrong owner reads the wrong owner here.
+var harnessTimerOwners = map[string]string{
+	"pairing-probe":        "PairingProbe",
+	"watermark":            "Watermark",
+	"thread-poll":          "Isolation.ThreadRequestPoll",
+	"transfer-retry":       "Isolation.TransferPendingRetry",
+	"pr-update":            "Isolation.PRUpdateInterval",
+	"pr-update-retry":      "Isolation.PRUpdateRetryBase",
+	"pr-ci-live":           "Isolation.PRCILiveInterval",
+	"pr-ci-follow":         "Isolation.PRCIFollowInterval",
+	"pr-ci-log-wait":       "Isolation.PRCILogWaitInterval",
+	"merged-pr-poll":       "Isolation.MergedPRPollInterval",
+	"pr-lookup-retry":      "Isolation.PRLookupRetryBase",
+	"idle-reap":            "Isolation.IdleReapThreshold",
+	"idle-reap-sweep":      "Isolation.IdleReapInterval",
+	"wakeup-grace":         "Isolation.WakeupReapGrace",
+	"wake-floor":           "Isolation.AgentWakeFloor",
+	"watch-failure-window": "Isolation.AgentWatchFailureWindow",
+	"remote-watch-poll":    "Isolation.RemoteWatchPoll",
+	"drain-stall":          "Isolation.ProviderEventDrainStall",
+	"usage-probe-gap":      "Isolation.UsageProbeGap",
+	"usage-poll":           "Isolation.UsagePollInterval",
+	"wake-retry":           "Isolation.ThreadWakeRetryBase",
+	"agent-settled-window": "Isolation.AgentSettledWindow",
+	"unreachable-settle":   "page unreachable-settle",
+	"agent-row-linger":     "page agent-row-linger",
+	"replay-timeout":       "page replay-timeout",
+}
+
+// Set alone through the boot's own path (parseHarnessTiming, then
+// isolationConfig), each harness timer reaches the owner its name means and
+// nothing else; every name has a meaning and every meaning a name.
+func TestEveryHarnessTimerReachesItsOwner(t *testing.T) {
 	const sentinel = 7 * time.Millisecond
-	durations := func(config appservice.IsolationConfig) []string {
+	reached := func(timing harnessTiming) []string {
 		var set []string
-		v := reflect.ValueOf(config)
+		if timing.PairingProbe == sentinel {
+			set = append(set, "PairingProbe")
+		}
+		if timing.Watermark == sentinel {
+			set = append(set, "Watermark")
+		}
+		v := reflect.ValueOf(isolationConfig(harnessPaths{}, isolationOptions{Timing: timing}))
 		for i := range v.NumField() {
 			if d, ok := v.Field(i).Interface().(time.Duration); ok && d == sentinel {
-				set = append(set, v.Type().Field(i).Name)
+				set = append(set, "Isolation."+v.Type().Field(i).Name)
+			}
+		}
+		for name, ms := range timing.Frontend {
+			if ms == sentinel.Milliseconds() {
+				set = append(set, "page "+name)
 			}
 		}
 		return set
 	}
-	owners := map[string]string{}
+	named := map[string]bool{}
 	for _, timer := range harnessTimers {
+		named[timer.name] = true
+		want, ok := harnessTimerOwners[timer.name]
+		if !ok {
+			t.Errorf("%s has no owner in harnessTimerOwners", timer.name)
+			continue
+		}
 		timing, err := parseHarnessTiming(timer.name + "=7ms")
 		if err != nil {
 			t.Fatalf("%s: %v", timer.name, err)
 		}
-		isolated := durations(isolationConfig(harnessPaths{}, isolationOptions{Timing: timing}))
-		booted := 0
-		if timing.PairingProbe == sentinel {
-			booted++
+		if got := reached(timing); !slices.Equal(got, []string{want}) {
+			t.Errorf("%s reaches %v; want %s", timer.name, got, want)
 		}
-		if timing.Watermark == sentinel {
-			booted++
+	}
+	for name := range harnessTimerOwners {
+		if !named[name] {
+			t.Errorf("harnessTimerOwners names %s, which harnessTimers does not hold", name)
 		}
-		paged := 0
-		if timing.Frontend[timer.name] == sentinel.Milliseconds() {
-			paged = len(timing.Frontend)
-		}
-		if n := len(isolated) + booted + paged; n != 1 {
-			t.Errorf("%s reaches %d owners (isolation %v, boot %d, page %d); want one", timer.name, n, isolated, booted, paged)
-			continue
-		}
-		owner := "page " + timer.name
-		switch {
-		case len(isolated) == 1:
-			owner = isolated[0]
-		case timing.PairingProbe == sentinel:
-			owner = "PairingProbe"
-		case timing.Watermark == sentinel:
-			owner = "Watermark"
-		}
-		if other, taken := owners[owner]; taken {
-			t.Errorf("%s and %s both set %s", other, timer.name, owner)
-		}
-		owners[owner] = timer.name
 	}
 }
 

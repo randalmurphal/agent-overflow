@@ -2297,17 +2297,27 @@ func TestServer_BootstrapAnnouncesHarnessMode(t *testing.T) {
 // serves its frontend timer overrides; a harness or soak boot with none
 // serves no field, and no other boot can be configured to serve one.
 func TestServer_BootstrapServesFrontendTimingOnlyInHarnessMode(t *testing.T) {
+	callers := map[string]int64{"unreachable-settle": 2000}
 	timed := newServerFixtureWith(t, func(cfg *Config) {
 		cfg.Harness = true
-		cfg.FrontendTiming = map[string]int64{"unreachable-settle": 2000}
+		cfg.FrontendTiming = callers
 	})
+	// The server serves what it was built with, not the caller's map.
+	callers["unreachable-settle"] = 1
+	callers["replay-timeout"] = 1
 	if got := bootstrapDoc(t, timed).HarnessTiming; len(got) != 1 || got["unreachable-settle"] != 2000 {
 		t.Fatalf("harness manifest timing = %v, want unreachable-settle 2000", got)
 	}
 
+	empty := func(cfg *Config) { cfg.FrontendTiming = map[string]int64{} }
 	for name, cfg := range map[string]func(*Config){
-		"ordinary": func(*Config) {},
-		"soak":     func(cfg *Config) { cfg.Harness = true },
+		"ordinary":           func(*Config) {},
+		"ordinary empty map": empty,
+		"soak":               func(cfg *Config) { cfg.Harness = true },
+		"soak empty map": func(cfg *Config) {
+			cfg.Harness = true
+			empty(cfg)
+		},
 	} {
 		f := newServerFixtureWith(t, cfg)
 		resp := getBootstrap(t, f.srv.Addr())
@@ -2325,6 +2335,7 @@ func TestServer_BootstrapServesFrontendTimingOnlyInHarnessMode(t *testing.T) {
 	for name, cfg := range map[string]Config{
 		"without harness":  {FrontendTiming: map[string]int64{"replay-timeout": 3000}},
 		"nonpositive time": {Harness: true, FrontendTiming: map[string]int64{"replay-timeout": 0}},
+		"unnamed":          {Harness: true, FrontendTiming: map[string]int64{" ": 3000}},
 	} {
 		cfg.Dispatcher = NewDispatcher()
 		cfg.EventBus = NewEventBus(20)

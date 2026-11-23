@@ -65,26 +65,29 @@ export function setHarnessSessionFromBootstrap(value: boolean): void {
 
 
 /**
- * The harness boot's override for `timer`, or `productMs`. Only a manifest
- * that says harness carries overrides (internal/transport Config.FrontendTiming),
- * so an ordinary boot always answers the product value.
+ * The home boot's override for `timer`, or `productMs`: the page timers
+ * (unreachable-settle, agent-row-linger) follow the boot that served this
+ * page. A timer of one connection reads its own manifest's override instead
+ * (`harnessTimingOf`), so one computer's harness timing never moves another
+ * computer's connection.
  */
 export function harnessInterval(timer: HarnessFrontendTimer, productMs: number): number {
   return timing.get(timer) ?? productMs;
 }
 
-// Called by bootstrap.ts with the validated manifest's harness bit and its
-// `harnessTiming`. Timing without the harness bit is ignored: only a harness
-// boot may shorten a product timer. Latches like the harness bit, so a
-// refetched manifest cannot move a timer an owner already armed with. An
-// entry this build does not name, or a duration that is not a positive
-// number, is a defect in the boot that served it and throws.
-export function setHarnessTimingFromBootstrap(isHarness: boolean, value: unknown): void {
-  if (!isHarness || value === undefined || timing.size > 0) return;
+/**
+ * A validated manifest's frontend timer overrides. Timing without the
+ * harness bit is no timing: only a harness boot may shorten a product
+ * timer. An entry this build does not name, or a duration that is not a
+ * positive number, is a defect in the boot that served it and throws, so
+ * the manifest that carried it is refused.
+ */
+export function harnessTimingOf(isHarness: boolean, value: unknown): ReadonlyMap<HarnessFrontendTimer, number> {
+  const next = new Map<HarnessFrontendTimer, number>();
+  if (!isHarness || value === undefined) return next;
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`bootstrap harnessTiming is not an object: ${JSON.stringify(value)}`);
   }
-  const next = new Map<HarnessFrontendTimer, number>();
   for (const [name, ms] of Object.entries(value)) {
     if (!FRONTEND_TIMERS.has(name)) throw new Error(`bootstrap harnessTiming names an unknown timer ${JSON.stringify(name)}`);
     if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) {
@@ -92,7 +95,16 @@ export function setHarnessTimingFromBootstrap(isHarness: boolean, value: unknown
     }
     next.set(name as HarnessFrontendTimer, ms);
   }
-  timing = next;
+  return next;
+}
+
+// Called by bootstrap.ts with each accepted home manifest's harness bit and
+// `harnessTiming`. Every manifest replaces the page's timing: a later
+// manifest's values win, and one without overrides restores the product
+// timers. An owner reads its timer when it arms, so a timer already armed
+// keeps the value it armed with.
+export function setHarnessTimingFromBootstrap(isHarness: boolean, value: unknown): void {
+  timing = harnessTimingOf(isHarness, value);
 }
 
 export function setHarnessPageMarkerFromBootstrap(value: unknown): void {

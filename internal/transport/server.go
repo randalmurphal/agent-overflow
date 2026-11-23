@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
@@ -679,12 +680,18 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Port < 0 || cfg.Port > 65535 {
 		return nil, fmt.Errorf("transport: Config.Port %d out of range", cfg.Port)
 	}
-	if len(cfg.FrontendTiming) > 0 && !cfg.Harness {
+	// The server keeps its own copy: a later write to the caller's map is
+	// never served, and an empty map is no timing at all.
+	cfg.FrontendTiming = maps.Clone(cfg.FrontendTiming)
+	if len(cfg.FrontendTiming) == 0 {
+		cfg.FrontendTiming = nil
+	}
+	if cfg.FrontendTiming != nil && !cfg.Harness {
 		return nil, fmt.Errorf("transport: Config.FrontendTiming is served only by a harness boot (Config.Harness)")
 	}
 	for name, ms := range cfg.FrontendTiming {
-		if ms <= 0 {
-			return nil, fmt.Errorf("transport: Config.FrontendTiming %s needs a positive duration, got %dms", name, ms)
+		if strings.TrimSpace(name) == "" || ms <= 0 {
+			return nil, fmt.Errorf("transport: Config.FrontendTiming %q needs a name and a positive duration, got %dms", name, ms)
 		}
 	}
 	if cfg.HTTPReadHeaderTimeout == 0 {

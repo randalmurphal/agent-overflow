@@ -249,6 +249,32 @@ describe('defaultBootstrap', () => {
     expect(harnessInterval('agent-row-linger', 8_000)).toBe(8_000);
   });
 
+  // Every accepted manifest replaces the page's timing: a later value wins,
+  // a manifest without overrides restores the product timers, and a later
+  // manifest naming a timer this build cannot read is refused.
+  it('replaces harness timing on every manifest', async () => {
+    const serve = (fields: Record<string, unknown>) =>
+      vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, ...fields })));
+    serve({ harness: true, harnessTiming: { 'replay-timeout': 1000 } });
+    await defaultBootstrap();
+    expect(harnessInterval('replay-timeout', 60_000)).toBe(1000);
+    serve({ harness: true, harnessTiming: { 'replay-timeout': 3000 } });
+    await defaultBootstrap();
+    expect(harnessInterval('replay-timeout', 60_000)).toBe(3000);
+    serve({ harness: true });
+    await defaultBootstrap();
+    expect(harnessInterval('replay-timeout', 60_000)).toBe(60_000);
+    serve({ harness: true, harnessTiming: { 'unreachable-settle': 2000 } });
+    await defaultBootstrap();
+    serve({ wsUrl: SAME_ORIGIN_WS });
+    await defaultBootstrap();
+    expect(harnessInterval('unreachable-settle', 30_000)).toBe(30_000);
+    serve({ harness: true, harnessTiming: { 'unreachable-settle': 2000 } });
+    await defaultBootstrap();
+    serve({ harness: true, harnessTiming: { 'some-timer': 10 } });
+    await expect(defaultBootstrap()).rejects.toThrow(/unknown timer/);
+  });
+
   it('refuses harness timing this build cannot read', async () => {
     for (const harnessTiming of [{ 'some-timer': 10 }, { 'replay-timeout': 0 }, { 'replay-timeout': '3s' }, [1]]) {
       __resetHarnessModeForTest();

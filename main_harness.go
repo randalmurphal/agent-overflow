@@ -305,7 +305,6 @@ var harnessTimers = []harnessTimer{
 	{"usage-poll", func(t *harnessTiming) *time.Duration { return &t.Isolation.UsagePollInterval }},
 	{"wake-retry", func(t *harnessTiming) *time.Duration { return &t.Isolation.ThreadWakeRetryBase }},
 	{"agent-settled-window", func(t *harnessTiming) *time.Duration { return &t.Isolation.AgentSettledWindow }},
-	{"peer-list-timeout", func(t *harnessTiming) *time.Duration { return &t.Isolation.PeerListTimeout }},
 	// Page timers: how long a computer stays unreachable before the screen
 	// says so, how long a settled Agents row stays, and how long a replay
 	// may run before the socket is dropped.

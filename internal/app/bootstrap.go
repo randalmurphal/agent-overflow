@@ -124,10 +124,6 @@ type IsolationConfig struct {
 	// settled request stays in an Agents listing. Zero keeps the product
 	// window.
 	AgentSettledWindow time.Duration
-	// PeerListTimeout replaces threadAgentPeerListTimeout, the bound on a
-	// forwarded Agents listing, and with it every bound derived from it
-	// (threadAgentPeerBound). Zero keeps the product bound.
-	PeerListTimeout time.Duration
 	// OmitOwnerOps makes this computer answer agent_owner_op as a build
 	// before owner operations does, an unknown write call, so a paired
 	// spawner's archive or delete names it as running an older version.
@@ -184,7 +180,6 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.remoteWatchPoll = config.RemoteWatchPoll
 	a.wakeRetryBaseOverride = config.ThreadWakeRetryBase
 	a.agentSettledWindowOverride = config.AgentSettledWindow
-	a.threadAgentPeers.bound = threadAgentPeerBound(config.PeerListTimeout)
 	a.providerEvents.drainStall = config.ProviderEventDrainStall
 	a.mergedPRs.interval = config.MergedPRPollInterval
 	// The mock provider's credential carries a mock bearer. The Claude usage
