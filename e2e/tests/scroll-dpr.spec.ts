@@ -1,4 +1,5 @@
-import { test, expect, type Browser } from '@playwright/test';
+import { expect, type Browser } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 import { startCompositorTrace, summarizeCompositorWindow } from '../src/compositorTrace.js';
 
 const DPR_VALUES = [1, 1.25, 1.5, 2] as const;

@@ -13,7 +13,8 @@
 // Owns its backend: it adopts provider accounts, which is process-wide state
 // no other spec should inherit. The cases are one sequence on one machine.
 
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import {

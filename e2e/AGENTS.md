@@ -31,9 +31,11 @@ states its own coverage; do not maintain a duplicate spec catalog here.
 - `src/harness-launch-step.ts` bounds each step of starting a suite-owned
   process. A new launch path runs every step through `launchStep`; a bound
   that grows keeps `launchBudgetMs()` under the worker fixture timeout.
-- `tests/fixtures.ts` owns the worker backend and per-test reset. Before reset,
-  wait until the previous context's page registration is gone; a leaked page is
-  a test failure.
+- `tests/fixtures.ts` owns every spec's `test`: `gateTest` carries the gate's
+  run-time rules (a page sleep throws; event watches end with their test), and
+  `test` adds the worker backend, per-test reset, and the page error and CSP
+  checks. Before reset, wait until the previous context's page registration is
+  gone; a leaked page is a test failure.
 - `frontend-client-helpers.ts` owns production frontend-controller fixtures.
   Execution hosts remain separate harness processes, and cold-start cases reuse
   only the intended disposable device profile.
@@ -189,15 +191,19 @@ binaries.
 
 - Assert the user-visible result and the production state or wire boundary that
   caused it.
-- Never sleep or wait for a timeout to pass; `scripts/check-waits.ts` fails the
-  run on `waitForTimeout`, a timer-resolved promise, or a wait whose timeout is
-  turned into a value. A product timer the spec crosses gets a
-  `harnessTimers` knob, or the page clock (`page.clock`) when it lives in
-  the page alone; a settle polls its condition; an absence ends at a barrier
-  through `HarnessApp.watchEvents`, an action ordered after the moment the
-  event would have fired. A mock start held for a spec uses the scenario's
-  `startupGate`. A spec about a timer's length scales its bounds with the
-  knob it sets.
+- Never sleep or wait for a timeout to pass. The launcher's source checks
+  (`scripts/check-waits.ts`, rules in `src/wait-scan.ts`) fail the run on
+  `waitForTimeout`, a timer-resolved promise, a wait whose timeout is turned
+  into a value, or a `test` taken from `@playwright/test` instead of
+  `tests/fixtures.ts`; a page's `waitForTimeout` also throws at run time. A
+  product timer the spec crosses gets a `harnessTimers` knob, or the page
+  clock (`page.clock`) when it lives in the page alone; a settle polls its
+  condition; an absence ends at a barrier through `HarnessApp.watchEvents`, an
+  action ordered after the moment the event would have fired, and the barrier
+  is proved by breaking the product so the event fires and watching the spec
+  fail. A mock start held for a spec uses the scenario's `startupGate`. A spec
+  about a timer's length scales its bounds with the knob it sets. A site that
+  must hold for a time is a `WAIT_ALLOWED` entry with its reason.
 - Use unique IDs and await specific events so parallel workers cannot satisfy
   each other's assertions.
 - Register event waits before triggering operations that may complete inside an

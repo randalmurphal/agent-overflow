@@ -2,7 +2,8 @@
 // despite live traffic. Switch threads and send during that second attempt.
 // The real watchdog must restore the watched timeline and active-turn state
 // without a reload, duplicate send, lost draft, or borrowing the other thread.
-import { expect, test, type WebSocketRoute } from '@playwright/test';
+import { expect, type WebSocketRoute } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 import { harnessTiming, launchHarness } from '../src/harness.js';
 import {
   RESULT_LINE, advance, claudeScenario, emit, seedAgentThread, startMock, textLines, waitForGate,

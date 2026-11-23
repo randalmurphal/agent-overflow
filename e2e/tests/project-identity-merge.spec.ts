@@ -5,7 +5,8 @@
 // Matching requires verified forge IDs. The renamed case uses renamed repositories,
 // an SSH alias and a credential-bearing locator. Two harness backends and the
 // production frontend; git runs with each harness home.
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { launchHarness, type HarnessApp } from '../src/harness.js';

@@ -33,7 +33,8 @@
 // host, then mint a single-use `/ws` ticket. `fetch` can set a header and
 // the WHATWG `WebSocket` cannot, which is exactly why that ticket exists.
 
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import {

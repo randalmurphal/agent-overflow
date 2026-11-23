@@ -13,7 +13,8 @@
 // Specs: docs/specs/agent-thread-tools.md ("Addressing threads and
 // computers", `thread_search`), docs/specs/standing-agents.md ("Agents
 // segment", "Owned workers").
-import { test, expect, devices, type Page } from '@playwright/test';
+import { expect, devices, type Page } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { advanceGate, awaitGate, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';

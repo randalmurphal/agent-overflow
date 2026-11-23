@@ -6,7 +6,8 @@
 // not name a request to abandon.
 // Specs: docs/specs/agent-thread-tools.md ("Request identity and
 // durability").
-import { test, expect } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';

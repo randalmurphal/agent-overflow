@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 import { writeFile } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { launchHarness } from '../src/harness.js';

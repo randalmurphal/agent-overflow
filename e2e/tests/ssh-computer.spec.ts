@@ -2,7 +2,8 @@
 // transport replaced. AO_E2E_SSH_CONFIG opts into an isolated real sshd fixture
 // defining gpu-test, its identity file and pinned known_hosts. Never use a real
 // user's config; the default gate needs no daemon or SSH credentials.
-import { test, expect } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, delimiter, isAbsolute } from 'node:path';

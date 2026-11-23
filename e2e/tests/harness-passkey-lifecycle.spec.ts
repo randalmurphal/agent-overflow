@@ -78,11 +78,11 @@
 import {
   chromium,
   expect,
-  test,
   type Browser,
   type BrowserContext,
   type Page,
 } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { attachAuthenticator, type Authenticator, type VirtualCredential } from './passkey-helpers.js';

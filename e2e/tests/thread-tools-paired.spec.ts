@@ -43,7 +43,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { test, expect, devices, type Page } from '@playwright/test';
+import { expect, devices, type Page } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

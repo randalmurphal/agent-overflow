@@ -32,7 +32,8 @@
 // rebinds the listener, and `harness.reset()` undoes neither — the same
 // reason `harness-remote-device-lifecycle.spec.ts` owns its instance.
 
-import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { expect, type BrowserContext, type Page } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import {

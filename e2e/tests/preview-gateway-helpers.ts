@@ -47,11 +47,11 @@ import { hostname } from 'node:os';
 import {
   expect,
   request,
-  test,
   type BrowserContext,
   type Locator,
   type Page,
 } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import {

@@ -1,6 +1,7 @@
 // Real computer enrollment and authorization in both directions. The frontend
 // controls each source independently; no model or remote command is executed.
-import { test, expect } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import type { PairingInvite } from './offhost-helpers.js';

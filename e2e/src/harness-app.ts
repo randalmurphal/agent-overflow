@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 
-import { test, type Page, type TestInfo } from '@playwright/test';
+import { expect, test, type Page, type TestInfo } from '@playwright/test';
 
 import {
   type ProcessIdentity,
@@ -37,10 +37,39 @@ interface WireEvent {
  * event (internal/harness/control.Report).
  */
 /** A count of matching events from `HarnessApp.watchEvents` on. */
+/**
+ * A count of matching events from the moment it was made. It holds the
+ * count and the first match, never the payloads. It ends at its assertion,
+ * or with the test that made it (tests/fixtures.ts), whichever is first;
+ * an assertion on a watch that ended throws.
+ */
 export interface EventWatch {
   count(): number;
   /** Run `barrier`; fail with `message` when a match arrived before it finished. */
   expectNoneThrough(barrier: () => Promise<unknown>, message: string): Promise<void>;
+  /** Run `barrier`; fail with `message` unless exactly `n` matches arrived before it finished. */
+  expectExactlyThrough(n: number, barrier: () => Promise<unknown>, message: string): Promise<void>;
+}
+
+/**
+ * The running test's open watches, ended by the gate fixture's teardown
+ * (`openEventWatchScope`). Undefined outside a test the fixture runs.
+ */
+let watchScope: Set<() => void> | undefined;
+
+/**
+ * Opens the running test's watch scope; the returned function ends every
+ * watch the test made. tests/fixtures.ts calls it around each test.
+ */
+export function openEventWatchScope(): () => void {
+  if (watchScope) throw new Error('an event watch scope is already open: a test fixture ran twice');
+  const scope = new Set<() => void>();
+  watchScope = scope;
+  return () => {
+    for (const end of scope) end();
+    scope.clear();
+    if (watchScope === scope) watchScope = undefined;
+  };
 }
 
 export interface HarnessMockReport {
@@ -264,16 +293,13 @@ export class HarnessApp {
    * fails here, only later.
    */
   async awaitNoPages(timeoutMs = 15_000): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-      const info = await this.rpc<{ frontendPages?: unknown[] }>('HarnessInfo');
-      const count = info.frontendPages?.length ?? 0;
-      if (count === 0) return;
-      if (Date.now() >= deadline) {
-        throw new Error(`${count} frontend page(s) still registered after ${timeoutMs}ms`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
+    await expect
+      .poll(async () => (await this.rpc<{ frontendPages?: unknown[] }>('HarnessInfo')).frontendPages?.length ?? 0, {
+        timeout: timeoutMs,
+        intervals: [25],
+        message: `frontend pages still registered after ${timeoutMs}ms`,
+      })
+      .toBe(0);
   }
 
   async startWatchdog(memoryLimitBytes: number): Promise<void> {
@@ -435,27 +461,44 @@ export class HarnessApp {
    * barrier, an action whose own effect is ordered after the moment the
    * event would have fired (a later message through the same queue, a turn
    * that can only start once the thread is idle), and fails when a match
-   * arrived before the barrier finished. A wait that has to time out cannot
-   * prove absence; a barrier can, and this is the only way to ask.
+   * arrived before the barrier finished; `expectExactlyThrough` asks for a
+   * count. A wait that has to time out cannot prove absence; a barrier can.
+   * Only a test the gate fixture runs (tests/fixtures.ts) may watch: the
+   * fixture ends the watch with the test.
    */
   watchEvents<T = unknown>(channel: string, predicate?: (data: T) => boolean): EventWatch {
-    const seen: unknown[] = [];
+    const scope = watchScope;
+    if (!scope) throw new Error('watchEvents is scoped to a test by tests/fixtures.ts; import test from there');
+    let seen = 0;
+    let first = '';
+    let ended = false;
     const waiter = (ev: WireEvent) => {
-      if (ev.channel === channel && (!predicate || predicate(ev.data as T))) seen.push(ev.data);
+      if (ev.channel !== channel || (predicate && !predicate(ev.data as T))) return;
+      if (seen === 0) first = JSON.stringify(ev.data).slice(0, 500);
+      seen += 1;
+    };
+    const end = () => {
+      ended = true;
+      this.eventWaiters.delete(waiter);
+      scope.delete(end);
     };
     this.eventWaiters.add(waiter);
+    scope.add(end);
+    const through = async (n: number, barrier: () => Promise<unknown>, message: string) => {
+      if (ended) throw new Error(`${message}: this ${channel} watch already ended; make a new watch for a second assertion`);
+      try {
+        await barrier();
+      } finally {
+        end();
+      }
+      if (seen !== n) {
+        throw new Error(`${message}: ${seen} ${channel} event(s) arrived before the barrier finished, want ${n}${seen > 0 ? `, first ${first}` : ''}`);
+      }
+    };
     return {
-      count: () => seen.length,
-      expectNoneThrough: async (barrier, message) => {
-        try {
-          await barrier();
-        } finally {
-          this.eventWaiters.delete(waiter);
-        }
-        if (seen.length > 0) {
-          throw new Error(`${message}: ${seen.length} ${channel} event(s) arrived before the barrier finished, first ${JSON.stringify(seen[0]).slice(0, 500)}`);
-        }
-      },
+      count: () => seen,
+      expectNoneThrough: (barrier, message) => through(0, barrier, message),
+      expectExactlyThrough: (n, barrier, message) => through(n, barrier, message),
     };
   }
 

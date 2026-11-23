@@ -1,12 +1,21 @@
-// Shared Playwright fixtures: one harness backend per worker, reset to
-// a blank slate before every test. Import { test, expect } from here
-// instead of '@playwright/test'.
-import { test as base, expect } from '@playwright/test';
-import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
+// Shared Playwright fixtures. Every spec imports its `test` from here, never
+// from '@playwright/test' (the wait scan, src/wait-scan.ts, rejects that):
+//
+//   - `gateTest` is the gate's rules alone: no page sleeps, and event watches
+//     that end with their test. A spec that launches its own harnesses uses it.
+//   - `test` adds one harness backend per worker, reset to a blank slate
+//     before every test, and the page error and CSP checks.
+import { test as base, expect, type Page } from '@playwright/test';
+import { launchHarness, openEventWatchScope, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { webkitKeychainHome } from '../src/webkit-keychain.js';
 
 interface WorkerFixtures {
   harnessWorker: HarnessApp;
+}
+
+interface GateFixtures {
+  /** Ends every HarnessApp.watchEvents watch the test made, at its end. */
+  eventWatches: void;
 }
 
 interface TestFixtures {
@@ -32,6 +41,17 @@ interface TestFixtures {
  */
 let currentPageErrors: string[] | undefined;
 
+/** Makes `page.waitForTimeout` throw with the reason and the alternatives. */
+function banPageSleep(page: Page): void {
+  page.waitForTimeout = async (ms: number) => {
+    throw new Error(
+      `page.waitForTimeout(${ms}) is a sleep, which the gate does not run: give the product timer a knob ` +
+        '(harnessTiming), advance the page clock (page.clock), poll the condition (expect.poll), or end an ' +
+        'absence at a barrier (HarnessApp.watchEvents). See e2e/AGENTS.md "Writing specs".',
+    );
+  };
+}
+
 /**
  * The worker backend fixture's own timeout. It sits above `launchBudgetMs()`
  * (src/harness-launch-step.ts), so a launch step that stalls fails naming
@@ -39,7 +59,42 @@ let currentPageErrors: string[] | undefined;
  */
 export const HARNESS_WORKER_TIMEOUT_MS = 90_000;
 
-export const test = base.extend<TestFixtures, WorkerFixtures>({
+export const gateTest = base.extend<GateFixtures>({
+  // A watch counts events for the test that made it; one the test never
+  // asserted on, or abandoned at a failure, ends here rather than counting
+  // into the next test.
+  eventWatches: [
+    async ({}, use) => {
+      const end = openEventWatchScope();
+      try {
+        await use();
+      } finally {
+        end();
+      }
+    },
+    { auto: true, box: true },
+  ],
+  // The browser hands every context it creates to the running test's
+  // page-error list, when `test` keeps one, and each page in that context
+  // reports into it. No page sleeps: `waitForTimeout` on any page of the test
+  // throws with the way to wait instead. The one timed hold the gate allows
+  // is src/pointer.ts pressToDragText, which needs no page.
+  browser: [
+    async ({ browser }, use) => {
+      browser.on('context', (context) => {
+        const errors = currentPageErrors;
+        context.on('page', (page) => {
+          banPageSleep(page);
+          if (errors) page.on('pageerror', (error) => errors.push(error.stack ?? error.message));
+        });
+      });
+      await use(browser);
+    },
+    { scope: 'worker' },
+  ],
+});
+
+export const test = gateTest.extend<TestFixtures, WorkerFixtures>({
   harnessWorker: [
     async ({}, use) => {
       const app = await launchHarness();
@@ -95,26 +150,15 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     await use(harnessWorker);
     if (testInfo.status !== testInfo.expectedStatus) await harnessWorker.attachStderr(testInfo);
   },
-  // Every test is also an uncaught-exception check. A component that throws
+  // Every test is also an uncaught-exception check (the browser fixture of
+  // `gateTest` hands each page to the running test's list). A component that throws
   // mid-render leaves stale DOM behind, which a functional assertion only
   // reports as a timeout. The browser hands every context it creates to the
   // running test's list, and each page in that context reports into it: the
   // `page` fixture's page, a second page the spec opens, and a page in a
   // context the spec creates itself. A page listener survives navigation and
   // reconnect, so nothing a page threw earlier in the test is lost.
-  browser: [
-    async ({ browser }, use) => {
-      browser.on('context', (context) => {
-        const errors = currentPageErrors;
-        if (!errors) return;
-        context.on('page', (page) => {
-          page.on('pageerror', (error) => errors.push(error.stack ?? error.message));
-        });
-      });
-      await use(browser);
-    },
-    { scope: 'worker' },
-  ],
+
   expectPageErrors: [false, { option: true }],
   pageErrors: [
     async ({ expectPageErrors }, use) => {

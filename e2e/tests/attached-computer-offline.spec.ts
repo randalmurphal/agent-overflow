@@ -12,7 +12,8 @@
 // animation through the retries, the computer's rows dim only once it has
 // been down the settle time (thirty seconds in the product, shortened
 // here), and the Projects menu names its state.
-import { test, expect, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import type { SeedResult } from './fixtures.js';

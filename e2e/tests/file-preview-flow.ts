@@ -1,6 +1,7 @@
 // Real generated documents run at a separate origin, with relative assets,
 // reload, session revocation and service-worker refusal on both layouts.
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 import { launchHarness } from '../src/harness.js';
 import type { SeedResult } from './fixtures.js';
 import { confirmOnHost, mintInvite, nonLoopbackIPv4, redeemOnScreen, solePairedDevice } from './offhost-helpers.js';

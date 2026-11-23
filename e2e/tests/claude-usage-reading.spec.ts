@@ -6,7 +6,8 @@
 // Owns its backend: it seeds a native Claude login, which a probe can adopt
 // as a saved account, process-wide state no other spec should inherit.
 
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { seedAgentThread } from './agent-visibility-helpers.js';

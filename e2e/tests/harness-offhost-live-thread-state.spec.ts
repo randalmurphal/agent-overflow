@@ -38,7 +38,8 @@
 // LAN-bound backend. Both cases are one pairing on one device row, so they
 // run `.serial` and carry it forward rather than re-staging a ceremony.
 
-import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { expect, type BrowserContext, type Page } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import {

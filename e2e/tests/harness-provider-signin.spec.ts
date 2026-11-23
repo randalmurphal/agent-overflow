@@ -32,7 +32,8 @@
 // should inherit. The two cases are one choreography on one paired
 // device, so they run `.serial`.
 
-import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { expect, type BrowserContext, type Page } from '@playwright/test';
+import { gateTest as test } from './fixtures.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { instrument, mintLink, nonLoopbackIPv4, type Surfaced } from './offhost-helpers.js';

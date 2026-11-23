@@ -104,43 +104,8 @@ func run(args []string, stdout, stderr *os.File) int {
 		return 1
 	}
 
-	// Playwright (and the flow runner's node --experimental-transform-types)
-	// STRIP types per file, never check them: a typo'd property inside a spec
-	// helper's filter or predicate does not throw at runtime — it yields
-	// undefined and lets an emptiness assertion pass vacuously. Typecheck the
-	// whole suite first, before the memory reservation, so a type error fails
-	// in seconds without holding the gate's reservation. Fixed argv, same
-	// doctrine as the contained command; tsc's footprint does not need the
-	// suite's containment any more than the `go run` hosting this launcher.
-	typecheck := exec.Command("pnpm", "exec", "tsc", "--noEmit", "-p", ".")
-	typecheck.Dir = testDir
-	typecheck.Stdout = stdout
-	typecheck.Stderr = stderr
-	if err := typecheck.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			fmt.Fprintln(stderr, "ao-harness-e2e: E2E TypeScript check failed; fix the errors above")
-			return exitErr.ExitCode()
-		}
-		fmt.Fprintln(stderr, "ao-harness-e2e: run E2E TypeScript check:", err)
-		return 1
-	}
-	// The gate's wait rules (e2e/src/wait-scan.ts): no sleep and no wait
-	// that passes by timing out. A source read, so it fails every run and
-	// every CI shard in about a second rather than one spec's worker
-	// minutes in.
-	waits := exec.Command("pnpm", "exec", "node", "scripts/check-waits.ts")
-	waits.Dir = testDir
-	waits.Stdout = stdout
-	waits.Stderr = stderr
-	if err := waits.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			fmt.Fprintln(stderr, "ao-harness-e2e: E2E wait rules failed; fix the findings above")
-			return exitErr.ExitCode()
-		}
-		fmt.Fprintln(stderr, "ao-harness-e2e: run E2E wait rules:", err)
-		return 1
+	if code := checkSuite(testDir, stdout, stderr); code != 0 {
+		return code
 	}
 	isolate := needsIsolation(opts.hostNetwork, netisolate.Inside())
 	if isolate {
@@ -446,4 +411,43 @@ func parseArgs(args []string) (launchOptions, error) {
 // a second would cut it off from the processes it shares that one with.
 func needsIsolation(hostNetwork, inside bool) bool {
 	return !hostNetwork && !inside
+}
+
+// checkSuite runs the suite's source checks, each a fixed argv in the suite
+// dir, before the memory reservation, so a failure costs seconds and holds
+// nothing. Their footprint does not need the suite's containment any more
+// than the `go run` hosting this launcher does.
+//
+//   - The typecheck: Playwright (and the flow runner's node
+//     --experimental-transform-types) STRIP types per file, never check them,
+//     so a typo'd property inside a spec helper's filter or predicate yields
+//     undefined at run time and lets an emptiness assertion pass vacuously.
+//   - The wait rules (e2e/src/wait-scan.ts): no sleep, no wait that passes by
+//     timing out, and no test outside the gate's fixtures.
+//
+// It returns the exit code to stop with, or 0.
+func checkSuite(testDir string, stdout, stderr io.Writer) int {
+	for _, check := range []struct {
+		name string
+		argv []string
+		fix  string
+	}{
+		{"E2E TypeScript check", []string{"pnpm", "exec", "tsc", "--noEmit", "-p", "."}, "fix the errors above"},
+		{"E2E wait rules", []string{"pnpm", "exec", "node", "scripts/check-waits.ts"}, "fix the findings above"},
+	} {
+		cmd := exec.Command(check.argv[0], check.argv[1:]...)
+		cmd.Dir = testDir
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+		if err := cmd.Run(); err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				fmt.Fprintf(stderr, "ao-harness-e2e: %s failed; %s\n", check.name, check.fix)
+				return exitErr.ExitCode()
+			}
+			fmt.Fprintf(stderr, "ao-harness-e2e: run %s: %v\n", check.name, err)
+			return 1
+		}
+	}
+	return 0
 }
