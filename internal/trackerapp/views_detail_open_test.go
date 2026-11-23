@@ -207,7 +207,7 @@ func (m *mirrorFixture) openLater(t *testing.T, first int, tickets bool) Changes
 	for i := range 200 {
 		id := fmt.Sprintf("%05d", first+i)
 		if tickets {
-			if _, err := m.st.KeepMirrorTicket(m.root(), id, m.svc.session, 1<<40+int64(first+i), bind); err != nil {
+			if _, _, err := m.st.KeepMirrorTicket(m.root(), id, m.svc.session, 1<<40+int64(first+i), bind); err != nil {
 				t.Fatal(err)
 			}
 		}

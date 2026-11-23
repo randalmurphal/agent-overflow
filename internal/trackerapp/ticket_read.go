@@ -43,6 +43,9 @@ type ticketRead struct {
 	prior  *detailCheck
 	full   bool
 	nudged bool
+	// bind is the bind of tp the read is made under (boundDetails), zero
+	// for IssueDetail's read.
+	bind store.MirrorBind
 
 	// check is the ticket's check after the read; detail is the document
 	// when the read read or decoded it, nil when the check confirmed the
@@ -185,12 +188,25 @@ func showsOf(d tracker.Detail) []tracker.IssueID {
 
 // boundDetails binds the open tickets of reads the mirror does not keep
 // yet (bindTickets) and reads the others as the tracker says they are now
-// (verifiedDetails): a ticket whose bind failed is answered with its
-// failure and not read.
+// (verifiedDetails), each open ticket's under its pump's bind
+// (ticketRead.bind): a ticket whose bind failed is answered with its
+// failure and not read, and so is one whose pump ended before it was ever
+// bound.
 func (r *run) boundDetails(reads []*ticketRead, opened bool) error {
 	if err := r.bindTickets(reads); err != nil {
 		return err
 	}
+	r.s.opMu.Lock()
+	for _, rd := range reads {
+		switch {
+		case rd.tp == nil || rd.answered:
+		case rd.tp.bind == 0:
+			rd.err, rd.answered = ErrSubscriptionEnded, true
+		default:
+			rd.bind = rd.tp.bind
+		}
+	}
+	r.s.opMu.Unlock()
 	pending := slices.DeleteFunc(slices.Clone(reads), func(rd *ticketRead) bool { return rd.answered })
 	if len(pending) == 0 {
 		return nil
@@ -258,15 +274,11 @@ func (r *run) checkDetails(reads []*ticketRead, opening store.MirrorRead) ([]*ti
 		}
 	}
 	for batch := range slices.Chunk(checked, readBatch) {
-		issues := make([]tracker.IssueID, len(batch))
-		for i, rd := range batch {
-			issues[i] = rd.issue
-		}
 		var cards []tracker.Card
 		var receipts []store.MirrorTicketWrite
 		err := r.againIfSwept(func() error {
 			var err error
-			cards, receipts, err = r.ticketCards(issues, opening)
+			cards, receipts, err = r.ticketCards(batch, opening)
 			return err
 		})
 		if err != nil {
@@ -299,13 +311,17 @@ func (r *run) checkDetails(reads []*ticketRead, opening store.MirrorRead) ([]*ti
 	return toRead, nil
 }
 
-// ticketCards reads the cards of issues (at most readBatch) and stores
-// them with each ticket's record, a ticket write that brings no body
-// (store StoreMirrorTickets), which records opening (the zero read for
-// none) on each body the record holds. It returns the cards the tracker
-// returned and each one's receipt, in the same order, and tells what the
-// write stored.
-func (r *run) ticketCards(issues []tracker.IssueID, opening store.MirrorRead) ([]tracker.Card, []store.MirrorTicketWrite, error) {
+// ticketCards reads the cards of the issues of reads (at most readBatch)
+// and stores them with each ticket's record under its read's bind, a
+// ticket write that brings no body (store StoreMirrorTickets), which
+// records opening (the zero read for none) on each body the record holds.
+// It returns the cards the tracker returned and each one's receipt, in
+// the same order, and tells what the write stored.
+func (r *run) ticketCards(reads []*ticketRead, opening store.MirrorRead) ([]tracker.Card, []store.MirrorTicketWrite, error) {
+	issues := make([]tracker.IssueID, len(reads))
+	for i, rd := range reads {
+		issues[i] = rd.issue
+	}
 	began, err := r.beginRead()
 	if err != nil {
 		return nil, nil, err
@@ -320,13 +336,15 @@ func (r *run) ticketCards(issues []tracker.IssueID, opening store.MirrorRead) ([
 	}
 	tickets := make([]store.MirrorTicket, len(read.Cards))
 	for i, c := range read.Cards {
-		if !slices.Contains(issues, c.ID) || slices.ContainsFunc(read.Cards[:i], func(o tracker.Card) bool { return o.ID == c.ID }) {
+		at := slices.Index(issues, c.ID)
+		if at < 0 || slices.ContainsFunc(read.Cards[:i], func(o tracker.Card) bool { return o.ID == c.ID }) {
 			return nil, nil, fmt.Errorf("trackerapp: the cards of %d issues: %w", len(issues),
 				call(fmt.Errorf("the tracker answered with issue %q", c.ID)))
 		}
 		if tickets[i].Card, err = mirrorCard(c); err != nil {
 			return nil, nil, err
 		}
+		tickets[i].Bind = reads[at].bind
 	}
 	catalog, err := mirrorCatalog(read.Catalog)
 	if err != nil {
@@ -395,10 +413,11 @@ func (r *run) mirrorMoved(reads []*ticketRead) error {
 // with the catalog entries the card names; its body, by the record's order
 // of bodies; and the evidence of its status time, taken before
 // boundHistory. A person's opening (opening set) is recorded as this
-// read, the read that serves it. A body the record does not keep (the
-// mirror does not keep the issue, or holds no body of it and the read is
-// neither an opening nor begun after its open ticket's bind, or the cap
-// dropped it) is held by the read's check; one the record holds a later
+// read, the read that serves it. Each open ticket's read is written under
+// its read's bind (ticketRead.bind). A body the record does not keep (the
+// mirror does not keep the issue, the bind is not the issue's current one,
+// a read no open ticket made is not an opening while the record holds no
+// body, or the cap dropped it) is held by the read's check; one the record holds a later
 // read's of in place of is not shown, and the next read checks the
 // record's. A ticket the tracker did not return fails with
 // ErrIssueNotFound.
@@ -452,7 +471,7 @@ func (r *run) details(reads []*ticketRead, opening store.MirrorRead) error {
 		if err != nil {
 			return err
 		}
-		tickets = append(tickets, store.MirrorTicket{Card: card, Body: body, Status: &evidence})
+		tickets = append(tickets, store.MirrorTicket{Card: card, Body: body, Status: &evidence, Bind: rd.bind})
 		read = append(read, rd)
 		cardNames(&named, d)
 		rd.err, rd.detail = nil, &ticketDoc{d: d, version: millis(d.Card.Updated), status: &evidence}

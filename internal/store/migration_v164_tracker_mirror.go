@@ -10,12 +10,15 @@ package store
 //     as its pump lives, whatever else keeps it or not. session names the
 //     process that wrote the row and pump the pump within it, and
 //     opened_at is the order time of the root's read clock when the pump
-//     bound it: a read that began no earlier may start the ticket's body.
-//     The pump writes its row before its first read and deletes it when it
-//     ends, and the rows of other sessions, left by a process that ended
-//     without deleting them, are deleted by the first operation of the
-//     next process (DropMirrorTicketsOfOtherSessions). The table cascades from its
-//     root and a restore empties it. idx_tracker_cache_open_tickets_issue
+//     bound it, which names the bind (MirrorBind): a body is admitted
+//     from a read made under the issue's row's bind alone. The pump writes
+//     its row before its first read and deletes it when it ends; a bind
+//     deletes the issue's earlier rows, so an issue has one
+//     (idx_tracker_cache_open_tickets_issue is unique). The rows of other
+//     sessions, left by a process that ended without deleting them, are
+//     deleted by the first operation of the next process
+//     (DropMirrorTicketsOfOtherSessions). The table cascades from its root
+//     and a restore empties it. idx_tracker_cache_open_tickets_issue
 //     serves the keep rule's probe and a root's drain.
 //   - The wall time of the reads whose interval decides the next one or
 //     that a person is shown: tracker_cache_boards.structure_wall (the
@@ -68,7 +71,7 @@ CREATE TABLE tracker_cache_open_tickets (
  opened_at INTEGER NOT NULL CHECK(opened_at > 0),
  PRIMARY KEY (session, pump)
 );
-CREATE INDEX idx_tracker_cache_open_tickets_issue ON tracker_cache_open_tickets(root_id, issue_id);
+CREATE UNIQUE INDEX idx_tracker_cache_open_tickets_issue ON tracker_cache_open_tickets(root_id, issue_id);
 ALTER TABLE tracker_cache_boards ADD COLUMN structure_wall INTEGER NOT NULL DEFAULT 0 CHECK(structure_wall >= 0);
 ALTER TABLE tracker_cache_sync ADD COLUMN read_wall INTEGER NOT NULL DEFAULT 0 CHECK(read_wall >= 0);
 ALTER TABLE tracker_cache_sync ADD COLUMN reconciled_wall INTEGER NOT NULL DEFAULT 0 CHECK(reconciled_wall >= 0);

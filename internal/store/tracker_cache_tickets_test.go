@@ -93,65 +93,143 @@ func TestATicketsBodyFollowsItsVersionAndRead(t *testing.T) {
 	}
 }
 
-// An open ticket's bind admits a body from any read that began no earlier
-// than it, an automatic one included; a read that began before it, or a
-// bind of an earlier lifetime closed since, does not start one.
+// An open ticket's read starts and replaces a body only under the bind
+// that is the issue's (KeepMirrorTicket), an automatic read included;
+// a read no open ticket made starts one only as a person's opening. A
+// close and a reopen make a new bind: a read of the closed lifetime starts
+// no body and replaces none, however late it began, and the new
+// lifetime's does.
 func TestAnOpenTicketsBindAdmitsItsBody(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
 	sweep := currentSweep(s, root)
-	if _, err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadAt(100)); err != nil {
-		t.Fatal(err)
+	first, _, err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadAt(100))
+	if err != nil || first != 100 {
+		t.Fatalf("the bind: %d, %v; want the bind's read 100", first, err)
 	}
-	if w, err := storeTicket(t, s, root, sweep, "10001", 0, 90, []byte(`{"v":"before"}`)); err != nil || w.Body != MirrorBodyNotKept {
-		t.Fatalf("a read before the bind: %+v, %v", w, err)
+	if w, err := storeTicket(t, s, root, sweep, "10001", 0, 110, []byte(`{"v":"direct"}`)); err != nil || w.Body != MirrorBodyNotKept {
+		t.Fatalf("a read no open ticket made, not an opening: %+v, %v", w, err)
 	}
-	if w, err := storeTicket(t, s, root, sweep, "10001", 0, 110, []byte(`{"v":"after"}`)); err != nil || w.Body != MirrorBodyStored {
-		t.Fatalf("a read after the bind: %+v, %v", w, err)
+	if w := storeBoundTicket(t, s, root, sweep, "10001", first, 110, []byte(`{"v":"after"}`)); w.Body != MirrorBodyStored {
+		t.Fatalf("a read under the bind: %+v", w)
 	}
 	if got := bodyOf(t, s, root, "10001"); got != "5 110 100 after" {
 		t.Fatalf("the record holds %s", got)
 	}
-	// A close and a reopen: a new lifetime, bound later. The held body is
-	// read again by any read; a body evicted meanwhile is started only by a
-	// read after the new bind.
 	if _, err := s.DropMirrorTicket(1, 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.KeepMirrorTicket(root, "10001", 1, 2, mirrorReadAt(300)); err != nil {
-		t.Fatal(err)
+	second, _, err := s.KeepMirrorTicket(root, "10001", 1, 2, mirrorReadAt(300))
+	if err != nil || second != 300 {
+		t.Fatalf("the bind of the reopening: %d, %v; want 300", second, err)
+	}
+	// Held: the closed lifetime's read, begun after the new bind, replaces
+	// nothing.
+	if w := storeBoundTicket(t, s, root, sweep, "10001", first, 320, []byte(`{"v":"closed"}`)); w.Body != MirrorBodyNotKept {
+		t.Fatalf("a read of the closed lifetime over a held body: %+v", w)
 	}
 	mustExec(t, s.db, `DELETE FROM tracker_cache_issue_bodies`)
 	mustExec(t, s.db, `UPDATE tracker_cache_issues SET body_updated_at = 0, body_read_at = 0, body_wall = 0, body_opened_at = 0, body_digest = x''`)
-	if w, err := storeTicket(t, s, root, sweep, "10001", 0, 200, []byte(`{"v":"closed"}`)); err != nil || w.Body != MirrorBodyNotKept {
-		t.Fatalf("a read from the closed lifetime: %+v, %v", w, err)
+	if w := storeBoundTicket(t, s, root, sweep, "10001", first, 330, []byte(`{"v":"closed"}`)); w.Body != MirrorBodyNotKept {
+		t.Fatalf("a read of the closed lifetime with no body held: %+v", w)
 	}
-	if w, err := storeTicket(t, s, root, sweep, "10001", 0, 310, []byte(`{"v":"reopened"}`)); err != nil || w.Body != MirrorBodyStored {
-		t.Fatalf("a read of the new lifetime: %+v, %v", w, err)
+	if w := storeBoundTicket(t, s, root, sweep, "10001", second, 310, []byte(`{"v":"reopened"}`)); w.Body != MirrorBodyStored {
+		t.Fatalf("a read of the new lifetime: %+v", w)
+	}
+	if got := bodyOf(t, s, root, "10001"); got != "5 310 300 reopened" {
+		t.Fatalf("the record holds %s", got)
 	}
 	checkBodiesHeld(t, s, "the reopen")
 }
 
-// A ticket opened again while the closing pump's keep still stands (its
-// read in flight): a read begun under the closed lifetime that lands after
-// the new bind starts no body, as the latest bind is the fence; the new
-// lifetime's read starts it.
-func TestAReadOfAClosedLifetimeStartsNoBodyAfterTheReopen(t *testing.T) {
+// A cards-only ticket write (a check that confirmed the held body) records
+// its opening on the body, and so its place in the cap, only under the
+// issue's current bind: a closed lifetime's check, an opening included,
+// leaves the body's opening as it was.
+func TestACardsOnlyWriteOfAClosedLifetimeRecordsNoOpening(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
 	sweep := currentSweep(s, root)
-	for pump, at := range map[int64]int64{1: 100, 2: 300} {
-		if _, err := s.KeepMirrorTicket(root, "10001", 1, pump, mirrorReadAt(at)); err != nil {
+	first := keepOf(t, s, root, 1, 100)
+	if _, err := s.DropMirrorTicket(1, 1); err != nil {
+		t.Fatal(err)
+	}
+	second := keepOf(t, s, root, 2, 300)
+	if w := storeBoundTicket(t, s, root, sweep, "10001", second, 310, []byte(`{"v":"reopened"}`)); w.Body != MirrorBodyStored {
+		t.Fatalf("a read of the new lifetime: %+v", w)
+	}
+	check := func(bind MirrorBind, at int64) {
+		t.Helper()
+		ticket := heldTicket(t, s, root, "10001", nil)
+		ticket.Bind = bind
+		if _, err := s.StoreMirrorTickets(root, sweep, []MirrorTicket{ticket}, MirrorCatalog{}, mirrorReadOf(root, at), mirrorReadOf(root, at)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if w, err := storeTicket(t, s, root, sweep, "10001", 0, 200, []byte(`{"v":"closed"}`)); err != nil || w.Body != MirrorBodyNotKept {
-		t.Fatalf("a read of the closed lifetime after the reopen: %+v, %v; want no body started", w, err)
+	check(first, 400)
+	if got := bodyOf(t, s, root, "10001"); got != "5 310 300 reopened" {
+		t.Fatalf("after the closed lifetime's check the record holds %s; want the reopened body's opening", got)
 	}
-	if w, err := storeTicket(t, s, root, sweep, "10001", 0, 310, []byte(`{"v":"reopened"}`)); err != nil || w.Body != MirrorBodyStored {
-		t.Fatalf("a read of the new lifetime: %+v, %v", w, err)
+	check(second, 410)
+	if got := bodyOf(t, s, root, "10001"); got != "5 310 410 reopened" {
+		t.Fatalf("after the current bind's check the record holds %s; want its opening", got)
+	}
+}
+
+// keepOf binds 10001 for pump of session 1 at a read begun at at.
+func keepOf(t *testing.T, s *Store, root, pump, at int64) MirrorBind {
+	t.Helper()
+	bind, _, err := s.KeepMirrorTicket(root, "10001", 1, pump, mirrorReadAt(at))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bind
+}
+
+// A ticket opened again while the closing pump's keep still stands (its
+// drop owed): the new bind takes the issue's row, so the closed lifetime
+// never admits again, whichever row goes first and though its own drop
+// comes last; a pump earlier than the bound one cannot bind the issue.
+func TestAReadOfAClosedLifetimeStartsNoBodyAfterTheReopen(t *testing.T) {
+	t.Parallel()
+	for _, newerDroppedFirst := range []bool{false, true} {
+		s, _, root := newMirror(t)
+		writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
+		sweep := currentSweep(s, root)
+		first, _, err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadAt(100))
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, _, err := s.KeepMirrorTicket(root, "10001", 1, 2, mirrorReadAt(300))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertRows(t, s.db, `SELECT pump FROM tracker_cache_open_tickets`, "2")
+		if _, _, err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadAt(400)); !errors.Is(err, ErrInvalidTrackerCache) {
+			t.Fatalf("the earlier pump's bind after the later one: %v; want refused", err)
+		}
+		if w := storeBoundTicket(t, s, root, sweep, "10001", first, 350, []byte(`{"v":"closed"}`)); w.Body != MirrorBodyNotKept {
+			t.Fatalf("a read of the closed lifetime after the reopen: %+v; want no body started", w)
+		}
+		if newerDroppedFirst {
+			// The reopened ticket closes too, and the owed drop of the first
+			// comes after: no bind stands, and the first never admits.
+			for _, pump := range []int64{2, 1} {
+				if _, err := s.DropMirrorTicket(1, pump); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Board 10 still keeps the issue.
+			if w := storeBoundTicket(t, s, root, sweep, "10001", first, 360, []byte(`{"v":"closed"}`)); w.Body != MirrorBodyNotKept {
+				t.Fatalf("a read of the first lifetime after both drops: %+v", w)
+			}
+			continue
+		}
+		if w := storeBoundTicket(t, s, root, sweep, "10001", second, 310, []byte(`{"v":"reopened"}`)); w.Body != MirrorBodyStored {
+			t.Fatalf("a read of the new lifetime: %+v", w)
+		}
 	}
 }
 
@@ -165,7 +243,7 @@ func TestTheBodyCapKeepsTheOpenTicketsAndTheMostRecentlyOpened(t *testing.T) {
 	writeMirrorBoard(t, s, root, "10", mirrorRows(10000, mirrorBodyCap+3, "a"))
 	sweep := currentSweep(s, root)
 	// 10000 is opened first, and stays open as a ticket.
-	if _, err := s.KeepMirrorTicket(root, "10000", 1, 1, mirrorReadAt(5)); err != nil {
+	if _, _, err := s.KeepMirrorTicket(root, "10000", 1, 1, mirrorReadAt(5)); err != nil {
 		t.Fatal(err)
 	}
 	for i := range mirrorBodyCap + 1 {
@@ -185,7 +263,7 @@ func TestTheBodyCapKeepsTheOpenTicketsAndTheMostRecentlyOpened(t *testing.T) {
 	// One write that starts two bodies opened before every other, one of
 	// them an open ticket's, and reads a held one again: it drops the body
 	// it started with no keep row and the least recently opened held one.
-	if _, err := s.KeepMirrorTicket(root, fmt.Sprint(10000+mirrorBodyCap+2), 1, 2, mirrorReadAt(900)); err != nil {
+	if _, _, err := s.KeepMirrorTicket(root, fmt.Sprint(10000+mirrorBodyCap+2), 1, 2, mirrorReadAt(900)); err != nil {
 		t.Fatal(err)
 	}
 	tickets := heldTickets(t, s, root, []string{fmt.Sprint(10000 + mirrorBodyCap + 1), fmt.Sprint(10000 + mirrorBodyCap + 2), "10003"}, []byte(`{"v":"1"}`))

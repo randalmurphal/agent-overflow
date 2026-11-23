@@ -186,7 +186,7 @@ func (c *countingStore) ListMirrorWorklogs(root int64, author, from, to string) 
 	return c.Store.ListMirrorWorklogs(root, author, from, to)
 }
 
-func (c *countingStore) KeepMirrorTicket(root int64, issue string, session, pump int64, opened store.MirrorRead) (bool, error) {
+func (c *countingStore) KeepMirrorTicket(root int64, issue string, session, pump int64, opened store.MirrorRead) (store.MirrorBind, bool, error) {
 	c.count("KeepMirrorTicket")
 	return c.Store.KeepMirrorTicket(root, issue, session, pump, opened)
 }

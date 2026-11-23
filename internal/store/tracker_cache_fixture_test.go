@@ -118,6 +118,19 @@ func storeTicket(t *testing.T, s *Store, root, sweep int64, issue string, opened
 	return w.Tickets[0], nil
 }
 
+// storeBoundTicket stores issue's ticket with body data (heldTicket), read
+// by the open ticket of bind with a read begun at readAt and no opening.
+func storeBoundTicket(t *testing.T, s *Store, root, sweep int64, issue string, bind MirrorBind, readAt int64, data []byte) MirrorTicketWrite {
+	t.Helper()
+	ticket := heldTicket(t, s, root, issue, data)
+	ticket.Bind = bind
+	w, err := s.StoreMirrorTickets(root, sweep, []MirrorTicket{ticket}, MirrorCatalog{}, MirrorRead{}, mirrorReadOf(root, readAt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w.Tickets[0]
+}
+
 // webPage is a page of board's rows read at 1.
 func webPage(board string, rows ...MirrorRow) MirrorRowPage {
 	return MirrorRowPage{BoardID: board, Rows: rows, ReadAt: mirrorReadAt(1)}
@@ -316,7 +329,7 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 		{ID: "w1", IssueID: "10001", AuthorID: "acc-user1", Day: "2026-01-05", SpentSeconds: 3600}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadOf(root, 7)); err != nil {
+	if _, _, err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadOf(root, 7)); err != nil {
 		t.Fatal(err)
 	}
 	for table, n := range countMirrorRows(t, s.db) {

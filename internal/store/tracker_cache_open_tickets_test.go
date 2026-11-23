@@ -37,7 +37,7 @@ func TestAnOpenTicketKeepsItsIssue(t *testing.T) {
 	if ch := write("20001"); !reflect.DeepEqual(ch.Unkept, []string{"20001"}) {
 		t.Fatalf("a card no ticket keeps was stored: %+v", ch)
 	}
-	if _, err := s.KeepMirrorTicket(other, "20001", 1, 9, mirrorReadOf(other, 5)); err != nil {
+	if _, _, err := s.KeepMirrorTicket(other, "20001", 1, 9, mirrorReadOf(other, 5)); err != nil {
 		t.Fatal(err)
 	}
 	if ch := write("20001"); !reflect.DeepEqual(ch.Unkept, []string{"20001"}) {
@@ -46,7 +46,7 @@ func TestAnOpenTicketKeepsItsIssue(t *testing.T) {
 	// No record of 20001 is held, and the board keeps 10001: neither keep
 	// shows a record again.
 	for pump, id := range map[int64]string{1: "20001", 2: "10001"} {
-		if shown, err := s.KeepMirrorTicket(root, id, 1, pump, mirrorReadOf(root, 5)); err != nil || shown {
+		if _, shown, err := s.KeepMirrorTicket(root, id, 1, pump, mirrorReadOf(root, 5)); err != nil || shown {
 			t.Fatalf("the keep of %s: shown %v, %v; want false", id, shown, err)
 		}
 	}
@@ -57,10 +57,10 @@ func TestAnOpenTicketKeepsItsIssue(t *testing.T) {
 		t.Fatalf("the open ticket's card is not served: %+v", cards)
 	}
 	// A pump keeps one issue: a keep of another fails and keeps 20001.
-	if _, err := s.KeepMirrorTicket(root, "20002", 1, 1, mirrorReadOf(root, 5)); !errors.Is(err, ErrInvalidTrackerCache) {
+	if _, _, err := s.KeepMirrorTicket(root, "20002", 1, 1, mirrorReadOf(root, 5)); !errors.Is(err, ErrInvalidTrackerCache) {
 		t.Fatalf("a pump's keep of a second issue: %v", err)
 	}
-	if shown, err := s.KeepMirrorTicket(root, "20001", 1, 1, mirrorReadOf(root, 5)); err != nil || shown {
+	if _, shown, err := s.KeepMirrorTicket(root, "20001", 1, 1, mirrorReadOf(root, 5)); err != nil || shown {
 		t.Fatalf("the same keep again: shown %v, %v", shown, err)
 	}
 	if cards := mustMirrorCards(t, s, root, "20001"); len(cards) != 1 {
@@ -74,16 +74,16 @@ func TestAnOpenTicketKeepsItsIssue(t *testing.T) {
 	}
 	// Opened again before the cleanup, 20001's held record is shown again,
 	// once, and a keep of another root shows nothing here.
-	if shown, err := s.KeepMirrorTicket(other, "20001", 1, 8, mirrorReadOf(other, 5)); err != nil || shown {
+	if _, shown, err := s.KeepMirrorTicket(other, "20001", 1, 10, mirrorReadOf(other, 5)); err != nil || shown {
 		t.Fatalf("a keep of another root: shown %v, %v", shown, err)
 	}
-	if shown, err := s.KeepMirrorTicket(root, "20001", 1, 3, mirrorReadOf(root, 5)); err != nil || !shown {
+	if _, shown, err := s.KeepMirrorTicket(root, "20001", 1, 3, mirrorReadOf(root, 5)); err != nil || !shown {
 		t.Fatalf("the reopening before the cleanup: shown %v, %v; want true", shown, err)
 	}
 	if cards := mustMirrorCards(t, s, root, "20001"); len(cards) != 1 {
 		t.Fatalf("the reopened ticket's card is not served: %+v", cards)
 	}
-	if shown, err := s.KeepMirrorTicket(root, "20001", 1, 4, mirrorReadOf(root, 5)); err != nil || shown {
+	if _, shown, err := s.KeepMirrorTicket(root, "20001", 1, 4, mirrorReadOf(root, 5)); err != nil || shown {
 		t.Fatalf("a second keep of a kept issue: shown %v, %v; want false", shown, err)
 	}
 	for _, pump := range []int64{3, 4} {
@@ -101,7 +101,7 @@ func TestAnOpenTicketKeepsItsIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRows(t, s.db, fmt.Sprintf(`SELECT issue_id FROM tracker_cache_issues WHERE root_id = %d`, root), "10001")
-	if _, err := s.KeepMirrorTicket(root, "", 1, 3, mirrorReadOf(root, 5)); !errors.Is(err, ErrInvalidTrackerCache) {
+	if _, _, err := s.KeepMirrorTicket(root, "", 1, 3, mirrorReadOf(root, 5)); !errors.Is(err, ErrInvalidTrackerCache) {
 		t.Fatalf("a keep of no issue: %v", err)
 	}
 }
@@ -123,7 +123,7 @@ func TestTheBootDropsTheOpenTicketsOfOtherSessions(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
 	for _, keep := range []struct{ session, pump int64 }{{1, 1}, {1, 2}, {2, 1}, {3, 1}} {
-		if _, err := s.KeepMirrorTicket(root, fmt.Sprint(20000+keep.session*10+keep.pump), keep.session, keep.pump, mirrorReadOf(root, 5)); err != nil {
+		if _, _, err := s.KeepMirrorTicket(root, fmt.Sprint(20000+keep.session*10+keep.pump), keep.session, keep.pump, mirrorReadOf(root, 5)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -149,16 +149,16 @@ func TestOpenTicketKeepCosts(t *testing.T) {
 		writes     map[string]int
 	}{
 		{"open", func() error {
-			_, err := s.KeepMirrorTicket(root, "20001", 1, 1, mirrorReadOf(root, 5))
+			_, _, err := s.KeepMirrorTicket(root, "20001", 1, 1, mirrorReadOf(root, 5))
 			return err
 		}, 2, open},
 		{"the same keep", func() error {
-			_, err := s.KeepMirrorTicket(root, "20001", 1, 1, mirrorReadOf(root, 5))
+			_, _, err := s.KeepMirrorTicket(root, "20001", 1, 1, mirrorReadOf(root, 5))
 			return err
 		}, 3, map[string]int{}},
 		{"close", func() error { _, err := s.DropMirrorTicket(1, 1); return err }, 2, open},
 		{"an earlier process's row", func() error {
-			_, err := s.KeepMirrorTicket(root, "20003", 2, 1, mirrorReadOf(root, 5))
+			_, _, err := s.KeepMirrorTicket(root, "20003", 2, 1, mirrorReadOf(root, 5))
 			return err
 		}, 2, open},
 		{"the boot's drop", func() error { _, err := s.DropMirrorTicketsOfOtherSessions(1); return err }, 1, open},

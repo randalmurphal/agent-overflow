@@ -335,7 +335,7 @@ func (s *fakeScenario) earlierRows(t *testing.T, conn Connection, issue tracker.
 	}
 	read := must[store.MirrorRead](t)(s.st.BeginMirrorRead(root, 1))
 	for i := range n {
-		if _, err := s.st.KeepMirrorTicket(root, string(issue), s.svc.session+1, int64(i+1), read); err != nil {
+		if _, _, err := s.st.KeepMirrorTicket(root, string(issue), s.svc.session+1, int64(i+1), read); err != nil {
 			t.Fatal(err)
 		}
 	}

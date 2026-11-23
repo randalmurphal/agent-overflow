@@ -365,8 +365,8 @@ func (m *mirrorFixture) refuseKeeps() {
 // next read retries (bindTickets).
 type keepRefused struct{ *store.Store }
 
-func (keepRefused) KeepMirrorTicket(int64, string, int64, int64, store.MirrorRead) (bool, error) {
-	return false, errors.New("test: the store refused the keep")
+func (keepRefused) KeepMirrorTicket(int64, string, int64, int64, store.MirrorRead) (store.MirrorBind, bool, error) {
+	return 0, false, errors.New("test: the store refused the keep")
 }
 
 // keepsMade records the issues of the open tickets the store kept, and
@@ -379,22 +379,22 @@ type keepsMade struct {
 	issues  []string
 }
 
-func (k *keepsMade) KeepMirrorTicket(root int64, issue string, session, pump int64, opened store.MirrorRead) (bool, error) {
+func (k *keepsMade) KeepMirrorTicket(root int64, issue string, session, pump int64, opened store.MirrorRead) (store.MirrorBind, bool, error) {
 	k.mu.Lock()
 	refuse := issue == k.refuse && !k.refused
 	k.refused = k.refused || refuse
 	k.mu.Unlock()
 	if refuse {
-		return false, errors.New("test: the store refused the keep")
+		return 0, false, errors.New("test: the store refused the keep")
 	}
-	shown, err := k.Store.KeepMirrorTicket(root, issue, session, pump, opened)
+	bind, shown, err := k.Store.KeepMirrorTicket(root, issue, session, pump, opened)
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.issues = append(k.issues, issue)
-	return shown, nil
+	return bind, shown, nil
 }
 
 // since is the issues kept since the last call, sorted.
@@ -413,13 +413,13 @@ func (m *mirrorFixture) loseKeeps() {
 }
 
 // keepsLost is a store whose bind of an open ticket succeeds and writes no
-// row, as a mirror that no longer keeps the issue does (the cap, with more
-// open tickets than it keeps bodies): the ticket's reads store no body,
-// and its pump holds the content it shows.
+// row: the bind it returns names none, so it is never the issue's current
+// bind, the ticket's reads store no body, and its pump holds the content
+// it shows.
 type keepsLost struct{ *store.Store }
 
-func (keepsLost) KeepMirrorTicket(int64, string, int64, int64, store.MirrorRead) (bool, error) {
-	return false, nil
+func (keepsLost) KeepMirrorTicket(_ int64, _ string, _, _ int64, opened store.MirrorRead) (store.MirrorBind, bool, error) {
+	return store.MirrorBind(opened.At()), false, nil
 }
 
 // testBoards are the boards a mirror fixture's connection lists.

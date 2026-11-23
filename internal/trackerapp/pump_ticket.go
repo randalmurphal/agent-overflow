@@ -25,11 +25,14 @@ type ticketPump struct {
 	// number names the pump within the service's session: its row in the
 	// mirror's open tickets, the ticket's one record of its lifetime.
 	// bound reports that the row is written under root (bindTickets,
-	// keepTicketsAgainLocked); dropped that the pump ended and deleted it
+	// keepTicketsAgainLocked), and bind is the bind the store gave it, the
+	// last one once the pump ended, which every read of the ticket carries
+	// (store MirrorTicket.Bind); dropped that the pump ended and deleted it
 	// (dropTicket), after which nothing binds it again. They are under
 	// opMu, as is every write of the row.
 	number  int64
 	bound   bool
+	bind    store.MirrorBind
 	dropped bool
 	root    int64
 	// gen is the mirror generation the pump shows (genLocked).
@@ -425,11 +428,11 @@ func (r *run) bindTickets(reads []*ticketRead) error {
 // KeepMirrorTicket), and reports whether it showed the issue's held record
 // again. The caller holds opMu.
 func (s *Service) keepTicketLocked(tp *ticketPump, root int64, opened store.MirrorRead) (bool, error) {
-	shown, err := s.store.KeepMirrorTicket(root, string(tp.key.issue), s.session, tp.number, opened)
+	bind, shown, err := s.store.KeepMirrorTicket(root, string(tp.key.issue), s.session, tp.number, opened)
 	if err != nil {
 		return false, err
 	}
-	tp.bound, tp.root = true, root
+	tp.bound, tp.bind, tp.root = true, bind, root
 	return shown, nil
 }
 

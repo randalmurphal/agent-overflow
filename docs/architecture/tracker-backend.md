@@ -441,18 +441,29 @@ An open ticket keeps its issue through one row of
 to it: a search, a parent or a link opened from another ticket, a done
 issue older than the window, an issue a reconcile dropped from its board,
 or one on a board not read yet. The row is the ticket's one record of its
-lifetime: a read binds a ticket the mirror does not keep yet before it
-reads it (`trackerapp.bindTickets`), at a read begun on the root's clock
-(`opened_at`) that admits a body from every read that begins after it, so
-a close and a reopen is a new lifetime that no earlier read reaches: the
-latest bind of the issue's rows admits, so a closing pump's row that
-still stands beside the reopened ticket's admits nothing older. The
-pump's goroutine deletes the row as it returns, the one place each end
-of the pump comes to (its last subscription released, its connection
-turned off or removed, `Stop`), and no bind follows; the bind is a
-probe of the issue's keep and an insert of one row, the delete two
-statements
-(`TestOpenTicketKeepCosts`). When the delete leaves the issue kept by
+lifetime, its bind: a read binds a ticket the mirror does not keep yet
+before it reads it (`trackerapp.bindTickets`), and the store names the
+bind by the order time of the read that made it (`opened_at`,
+`store.MirrorBind`). An issue has at most one row: a bind deletes the
+issue's other rows, whose pumps ended, and a pump of the session earlier
+than the one holding the issue's row cannot bind it, so a bind that was
+replaced is never current again, whatever order the rows are dropped in.
+Every read an open ticket makes carries its pump's bind
+(`store.MirrorTicket.Bind`), and the write admits its body, and on a
+cards-only write its opening and the record's cap order, only while that
+bind is the issue's row: a read of a closed ticket, held across a close
+or a close and reopen, stores no body, and the reopened ticket's first
+read stores its own. A read no open ticket made (`IssueDetail`'s) carries
+no bind and is ordered by (version, read) alone, and its body is the
+shared cached body: a first paint or a Jira prior check may show it as
+the cached body, and a higher provider version from a direct read begun
+earlier than an open ticket's read wins over that read's. The pump's
+goroutine deletes the row as it returns, the one place each end of the
+pump comes to (its last subscription released, its connection turned off
+or removed, `Stop`), and no bind follows; the bind is a probe of the
+issue's keep and rows and an insert of one row, with a delete when the
+issue has another row, the drop two statements
+(`TestOpenTicketKeepCosts`). When the drop leaves the issue kept by
 nothing, or a bind keeps a record the mirror held unkept, every view that
 shows it as a parent or a link is told (`Changes.Visibility`). A pump
 keeps one issue; a bind of another fails. A bind that fails is the

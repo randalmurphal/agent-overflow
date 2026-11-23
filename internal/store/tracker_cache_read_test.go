@@ -474,7 +474,7 @@ func TestEveryMirrorWriterRefusesAReadOfAnotherRoot(t *testing.T) {
 			return err
 		}},
 		{"KeepMirrorTicket", func(read MirrorRead) error {
-			_, err := s.KeepMirrorTicket(root, "10001", 7, 1, read)
+			_, _, err := s.KeepMirrorTicket(root, "10001", 7, 1, read)
 			return err
 		}},
 		{"RecordMirrorSyncAttempt read", func(read MirrorRead) error {

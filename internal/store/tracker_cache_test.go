@@ -233,7 +233,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"KeepMirrorTicket": func(root int64) error {
-			_, err := s.KeepMirrorTicket(root, "10001", 2, 1, mirrorReadOf(root, 9))
+			_, _, err := s.KeepMirrorTicket(root, "10001", 2, 1, mirrorReadOf(root, 9))
 			return err
 		},
 	}
