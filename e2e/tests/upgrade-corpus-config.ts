@@ -204,6 +204,32 @@ const incompleteOwnAdmission = (x: string) => `${x}.purpose <> '' AND ${x}.confi
 const deviceLostItsLastSession = (device: string) => `EXISTS (SELECT 1 FROM mig.sessions k WHERE k.device_id = ${device} AND k.revoked_at IS NULL)
   AND NOT EXISTS (SELECT 1 FROM main.sessions k WHERE k.device_id = ${device} AND k.revoked_at IS NULL)`;
 /**
+ * The three totals store.tallyFiguresSQL gives thread `t` at `now`: its
+ * tool calls; its tokens with its pending usage; and its runtime with its
+ * newest turn's span to `now` while that turn is open. Read from the tables
+ * as the migrations left them, which is what the session ends read:
+ * identity.Bootstrap (app.initIdentity) runs before every other boot writer.
+ */
+const tallyFigures = (t: string, now: string) => ({
+  toolCalls: `COALESCE((SELECT tool_calls FROM mig.thread_tallies WHERE thread_id = ${t}), 0)`,
+  tokens: `(COALESCE((SELECT tokens FROM mig.thread_tallies WHERE thread_id = ${t}), 0)
+    + COALESCE((SELECT SUM(input_tokens + cache_creation_input_tokens + output_tokens) FROM mig.usage_pending WHERE thread_id = ${t}), 0))`,
+  turnMs: `(COALESCE((SELECT turn_ms FROM mig.thread_tallies WHERE thread_id = ${t}), 0)
+    + COALESCE((SELECT CASE WHEN nt.completed_at IS NULL THEN MAX(0, ${now} - nt.started_at) END
+      FROM mig.turns nt WHERE nt.thread_id = ${t} ORDER BY nt.turn_index DESC LIMIT 1), 0))`,
+});
+/**
+ * When releaseSpawnLinksTx ended the run row `x`: it stamps the links it
+ * releases (ended-device-spawn-links) with the same moment it ends their
+ * source thread's runs with.
+ */
+const runReleasedAt = (x: string) => `(SELECT MAX(l.updated_at) FROM main.thread_request_receipts l
+  JOIN mig.thread_request_receipts ml ON ml.token = l.token
+  WHERE ml.spawn_link = 1 AND l.spawn_link = 0 AND ml.target_thread_id = ${x}.target_thread_id
+    AND ml.owner_device_id = ${x}.owner_device_id AND ml.source_thread_id = ${x}.source_thread_id)`;
+const releasedRunTotals = tallyFigures('s.target_thread_id', runReleasedAt('s'));
+
+/**
  * Whether `json` is a JSON array, and the array or an empty one, so
  * json_each never reads a corrupt value. CASE keeps the JSON functions
  * from running on one: SQLite may evaluate both sides of an AND.
@@ -544,8 +570,9 @@ export const recoveryRules: RecoveryRule[] = [
       AND r.target_thread_id = s.target_thread_id AND r.owner_device_id = s.owner_device_id
       AND r.source_thread_id = s.source_thread_id AND ${deviceLostItsLastSession('r.owner_device_id')})`,
     columns: ['run_open', 'run_tool_calls', 'run_tokens', 'run_turn_ms', 'spawn_link', 'track_spawn', 'updated_at'],
-    // The writer always writes the three totals (tallyFiguresSQL, never NULL).
-    to: `b.run_open = 0 AND b.run_tool_calls IS NOT NULL AND b.run_tokens IS NOT NULL AND b.run_turn_ms IS NOT NULL
+    // Each total is the thread's figure at the release (tallyFiguresSQL).
+    to: `b.run_open = 0 AND b.run_tool_calls = ${releasedRunTotals.toolCalls} AND b.run_tokens = ${releasedRunTotals.tokens}
+      AND b.run_turn_ms = ${releasedRunTotals.turnMs}
       AND b.spawn_link = 0 AND b.track_spawn = 0 AND (s.spawn_link = 1 OR b.updated_at IS s.updated_at)`,
   },
   {

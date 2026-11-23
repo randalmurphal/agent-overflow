@@ -4,6 +4,7 @@ import (
 	"crypto/ecdh"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -153,6 +154,11 @@ type retirement struct {
 // ErrStopped answers an Open or Close after Stop.
 var ErrStopped = errors.New("this computer is shutting down; pair again after Agent Overflow restarts")
 
+// ErrCancellationUnfinished wraps cancel's failure to cancel a retired
+// window's invitation, as Open, Close and Stop answer it: the invitation
+// stays refused and the book retries its cancellation.
+var ErrCancellationUnfinished = errors.New("pairbootstrap: the invitation's cancellation is unfinished")
+
 type request struct {
 	commitment Commitment
 	challenge  Challenge
@@ -190,12 +196,13 @@ type settledError struct{ err error }
 func (e settledError) Error() string { return e.err.Error() }
 func (e settledError) Unwrap() error { return e.err }
 
-// durable is err with a settled refusal read as the durable answer it is.
+// durable is err with a settled refusal read as the durable answer it is,
+// and any other failure as ErrCancellationUnfinished.
 func durable(err error) error {
-	if errors.As(err, new(settledError)) {
+	if err == nil || errors.As(err, new(settledError)) {
 		return nil
 	}
-	return err
+	return fmt.Errorf("%w: %w", ErrCancellationUnfinished, err)
 }
 
 // NewBook returns a book whose cancel is the one store decision for one

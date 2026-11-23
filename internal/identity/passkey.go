@@ -502,14 +502,14 @@ func (s *Sessions) FinishPasskeySignIn(req PasskeySignInRequest) (PasskeySignIn,
 	}, device, newDevice, now)
 	if err != nil {
 		log.Printf("identity: build passkey session for %s: %v", device.ID, err)
-		return PasskeySignIn{}, ReasonUnknownCredential
+		return PasskeySignIn{}, ReasonTemporarilyUnavailable
 	}
 	// The device row or its relabel, the session and its refresh secret
 	// commit together, so a failed sign-in adds or renames no device and
 	// leaves no session.
 	if err := s.store.CreateDeviceSession(written); err != nil {
 		log.Printf("identity: write passkey session for %s: %v", device.ID, err)
-		return PasskeySignIn{}, ReasonUnknownCredential
+		return PasskeySignIn{}, ReasonTemporarilyUnavailable
 	}
 	session := written.Session
 	s.auditMinted(session)

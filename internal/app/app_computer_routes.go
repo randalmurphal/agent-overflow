@@ -85,16 +85,23 @@ func checkPairingNetwork(choice string) error {
 }
 
 // on is the address a window opened on choice shows, or, for a person
-// opening one, which network is unavailable, why, and the other choice.
+// opening one, which network is unavailable and why, then the other choice
+// when this pairing set has it, or else why the other is unavailable too.
+// Each reason says what to turn on (network.PairingAddressOnNetwork).
 func (p pairingAddresses) on(choice string) (string, error) {
-	address, reason, name, other := p.lan, p.lanErr, "Local network", "Tailscale"
+	address, reason, name := p.lan, p.lanErr, "Local network"
+	otherAddress, otherReason, other := p.tailnet, p.tailnetErr, "Tailscale"
 	if choice == "tailnet" {
-		address, reason, name, other = p.tailnet, p.tailnetErr, "Tailscale", "Local network"
+		address, reason, name = p.tailnet, p.tailnetErr, "Tailscale"
+		otherAddress, otherReason, other = p.lan, p.lanErr, "Local network"
 	}
-	if address == "" {
+	switch {
+	case address != "":
+		return address, nil
+	case otherAddress != "":
 		return "", fmt.Errorf("%s is not available for pairing on this computer: %s. To pair now, close this and choose %s", name, reason, other)
 	}
-	return address, nil
+	return "", fmt.Errorf("%s is not available for pairing on this computer: %s. %s is not available either: %s", name, reason, other, otherReason)
 }
 
 // pageOn is the page an invitation minted on choice sends the device to, or

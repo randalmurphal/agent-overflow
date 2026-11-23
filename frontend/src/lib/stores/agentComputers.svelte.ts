@@ -10,6 +10,7 @@ import { hasScope as computerHasScope } from '../transport/scopes';
 import { ListAgentComputers, SetAgentComputerEnabled, PairAgentComputer, MintDevicePairing, DevicePairingStatus, ConfirmDevicePairing, CancelDevicePairing } from './bindings';
 import type { AgentComputer } from '../../../bindings/agent-overflow/internal/app/models';
 import { errString } from '../utils/errors';
+import { pairingAlreadyAllowed } from '../components/settings/pairingTurns';
 
 export function createAgentComputers(backend: BackendKey) {
   const call = <T>(issue: () => PromiseLike<T>) => withBackendTarget(backend, issue);
@@ -69,7 +70,12 @@ export function createAgentComputers(backend: BackendKey) {
       const peer = await call(() => PairAgentComputer(invite.url));
       const status = await withBackendTarget(destinationKey, () => DevicePairingStatus(invite.linkId));
       if (peer.id !== destinationID || !status.verificationNumber || peer.verificationNumber !== status.verificationNumber) throw new Error('The computer pairing could not be verified. Try again.');
-      await withBackendTarget(destinationKey, () => ConfirmDevicePairing(invite.linkId));
+      try { await withBackendTarget(destinationKey, () => ConfirmDevicePairing(invite.linkId)); }
+      catch (err) {
+        // The operator allowed this invitation on the destination first,
+        // after this comparison matched: the pairing stands.
+        if (!pairingAlreadyAllowed(err)) throw err;
+      }
       confirmed = true;
       await call(() => SetAgentComputerEnabled(peer.id, true));
       await load(); return true;

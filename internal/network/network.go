@@ -706,7 +706,7 @@ func PairingAddressOnNetwork(srv *transport.Server, s Settings, reach Reach, cho
 	}
 	if choice == "tailnet" {
 		if !s.Tailnet.Running || !s.Tailnet.HTTPS || s.Tailnet.DNSName == "" {
-			return "", fmt.Errorf("connect this computer to Tailscale with HTTPS enabled before pairing")
+			return "", fmt.Errorf("turn on Join my tailnet in Tailscale settings, and turn HTTPS on in your tailnet's admin panel, before pairing")
 		}
 		return "https://" + strings.TrimSuffix(s.Tailnet.DNSName, "."), nil
 	}

@@ -225,6 +225,26 @@ describe('redeemPairing', () => {
     await expect(redeemPairing(PAYLOAD, 'My phone', bare as unknown as typeof fetch))
       .rejects.toThrow('The computer refused the request (HTTP 502). Try again, and pair this device again if it keeps happening.');
   });
+
+  // The auth rate limit answers before any credential is judged, in plain
+  // text: the person waits, and pairing again would spend the same budget.
+  it('reads the rate limit as a wait, with the time it names, and never as a new pairing', async () => {
+    const limited = (retryAfter?: string) => async () => new Response('too many requests\n', {
+      status: 429, headers: { 'Content-Type': 'text/plain', ...(retryAfter ? { 'Retry-After': retryAfter } : {}) },
+    });
+    await expect(redeemPairing(PAYLOAD, 'My phone', limited('30') as unknown as typeof fetch))
+      .rejects.toThrow(/^This computer is limiting pairing attempts\. Wait 30 seconds, then try again\.$/);
+    await expect(redeemPairing(PAYLOAD, 'My phone', limited('120') as unknown as typeof fetch))
+      .rejects.toThrow(/^This computer is limiting pairing attempts\. Wait 2 minutes, then try again\.$/);
+    await expect(redeemPairing(PAYLOAD, 'My phone', limited() as unknown as typeof fetch))
+      .rejects.toThrow(/^This computer is limiting pairing attempts\. Wait a moment, then try again\.$/);
+  });
+
+  it('reads a pairing the computer could not save as that, not as a sign-in renewal', async () => {
+    const unsaved = async () => new Response(JSON.stringify({ reason: 'temporarily_unavailable' }), { status: 503 });
+    await expect(redeemPairing(PAYLOAD, 'My phone', unsaved as unknown as typeof fetch))
+      .rejects.toThrow(/^This computer could not save this pairing\. Try again in a moment\.$/);
+  });
 });
 
 async function pairFirst(): Promise<void> {
@@ -453,6 +473,27 @@ describe('signInWithPasskey', () => {
     // No finish, and nothing stored: a dismissed prompt leaves this
     // browser exactly as it was.
     expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(hasPairedSession()).toBe(false);
+  });
+
+  // A sign-in refusal is worded for signing in: a save that failed on the
+  // computer, the rate limit, and an answer with no reason never send the
+  // person to pair again.
+  it('words a sign-in the computer could not save, a rate limit and a bare refusal for signing in', async () => {
+    installAuthenticator();
+    const begun = () => new Response(JSON.stringify({ ceremonyId: 'cer-1', options: { challenge: 'AQID' } }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+    const unsaved = vi.fn().mockResolvedValueOnce(begun())
+      .mockResolvedValueOnce(new Response(JSON.stringify({ reason: 'temporarily_unavailable' }), { status: 503 }));
+    await expect(signInWithPasskey('Phone', unsaved as unknown as typeof fetch))
+      .rejects.toThrow(/^This computer could not save your sign-in\. Try signing in again in a moment\.$/);
+    const limited = vi.fn().mockResolvedValueOnce(new Response('too many requests\n', { status: 429, headers: { 'Retry-After': '5' } }));
+    await expect(signInWithPasskey('Phone', limited as unknown as typeof fetch))
+      .rejects.toThrow(/^This computer is limiting sign-in attempts\. Wait 5 seconds, then try again\.$/);
+    const bare = vi.fn().mockResolvedValueOnce(begun()).mockResolvedValueOnce(new Response('{}', { status: 502 }));
+    await expect(signInWithPasskey('Phone', bare as unknown as typeof fetch))
+      .rejects.toThrow(/^The computer refused the sign-in \(HTTP 502\)\. Try signing in again\.$/);
     expect(hasPairedSession()).toBe(false);
   });
 

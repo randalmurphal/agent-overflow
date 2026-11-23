@@ -601,9 +601,38 @@ func TestComputerPairingAnOpenOnAnUnavailableNetworkSaysWhatToDo(t *testing.T) {
 	remotetest.Require(t)
 	a, _ := computerPairingHost(t)
 	_, err := a.OpenComputerPairing(connCtx(t), "tailnet", "full")
-	const want = "Tailscale is not available for pairing on this computer: connect this computer to Tailscale with HTTPS enabled before pairing. To pair now, close this and choose Local network"
+	const want = "Tailscale is not available for pairing on this computer: turn on Join my tailnet in Tailscale settings, and turn HTTPS on in your tailnet's admin panel, before pairing. To pair now, close this and choose Local network"
 	if err == nil || err.Error() != want {
 		t.Fatalf("an open on Tailscale without it = %v, want %q", err, want)
+	}
+}
+
+// An unavailable network's message offers the other network only when this
+// computer's pairing set has it, and otherwise says why the other is
+// unavailable too, which names what to turn on.
+func TestTheUnavailableNetworkMessageOffersOnlyAnAvailableNetwork(t *testing.T) {
+	const lanOff = "enable Allow LAN connections before pairing"
+	const tailnetOff = "turn on Join my tailnet in Tailscale settings, and turn HTTPS on in your tailnet's admin panel, before pairing"
+	for _, test := range []struct {
+		name   string
+		set    pairingAddresses
+		choice string
+		want   string
+	}{
+		{"Tailscale off, Local network on", pairingAddresses{lan: "https://192.168.1.5:8123", tailnetErr: tailnetOff}, "tailnet",
+			"Tailscale is not available for pairing on this computer: " + tailnetOff + ". To pair now, close this and choose Local network"},
+		{"Local network off, Tailscale on", pairingAddresses{tailnet: "https://desk.example.ts.net", lanErr: lanOff}, "lan",
+			"Local network is not available for pairing on this computer: " + lanOff + ". To pair now, close this and choose Tailscale"},
+		{"both off, Tailscale chosen", pairingAddresses{lanErr: lanOff, tailnetErr: tailnetOff}, "tailnet",
+			"Tailscale is not available for pairing on this computer: " + tailnetOff + ". Local network is not available either: " + lanOff},
+		{"both off, Local network chosen", pairingAddresses{lanErr: lanOff, tailnetErr: tailnetOff}, "lan",
+			"Local network is not available for pairing on this computer: " + lanOff + ". Tailscale is not available either: " + tailnetOff},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := test.set.on(test.choice); err == nil || err.Error() != test.want {
+				t.Fatalf("on(%s) = %v, want %q", test.choice, err, test.want)
+			}
+		})
 	}
 }
 
@@ -657,5 +686,22 @@ func TestComputerPairingAnUnsavedCancellationSaysWhatHappensNext(t *testing.T) {
 	restore := rejectCancellations(t, path)
 	defer restore()
 	requirePersonSees(t, a.CancelDevicePairing(invite.LinkID), "this computer could not save the cancellation; try Cancel again")
-	requirePersonSees(t, a.CloseComputerPairing(window.ID), "this computer could not save the cancellation yet; it keeps the pairing refused and tries again on its own")
+	const unsaved = "this computer could not save the cancellation yet; it keeps the pairing refused and tries again on its own"
+	requirePersonSees(t, a.CloseComputerPairing(window.ID), unsaved)
+	// A reopen retires the same invitation and reads the same failure.
+	_, err = a.OpenComputerPairing(connCtx(t), "lan", "full")
+	requirePersonSees(t, err, unsaved)
+}
+
+// A reopen that replaces an open window whose invitation's cancellation
+// cannot be saved says what happens next, as a close of it does.
+func TestComputerPairingAReopenOverAnUnsavedCancellationSaysWhatHappensNext(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	a, path := computerPairingHost(t)
+	windowAwaitingApproval(t, a)
+	restore := rejectCancellations(t, path)
+	defer restore()
+	_, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
+	requirePersonSees(t, err, "this computer could not save the cancellation yet; it keeps the pairing refused and tries again on its own")
 }

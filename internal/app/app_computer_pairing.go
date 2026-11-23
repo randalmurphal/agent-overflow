@@ -147,7 +147,7 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 	// cancellation is durable: the close answers for the previous window,
 	// and the book's open for any other still unfinished.
 	if err := a.closeComputerPairingWindow(previous, pairbootstrap.EndedReplaced); err != nil {
-		return ComputerPairingWindow{}, err
+		return ComputerPairingWindow{}, cancellationUnfinished(err)
 	}
 	// The publication, and the close of any window it retires, run first;
 	// the last reads before prepare are the published address, the
@@ -286,11 +286,17 @@ func (a *App) CloseComputerPairing(id string) error {
 		state.owner = nil
 	}
 	state.mu.Unlock()
-	err := a.closeComputerPairingWindow(id, pairbootstrap.EndedClosed)
-	if err != nil && !errors.Is(err, pairbootstrap.ErrStopped) {
-		// The window is closed and its invitation refused; the book retries
-		// the cancellation on its own.
-		err = errorsx.Public("pairing_close_unfinished", "this computer could not save the cancellation yet; it keeps the pairing refused and tries again on its own", err)
+	return cancellationUnfinished(a.closeComputerPairingWindow(id, pairbootstrap.EndedClosed))
+}
+
+// cancellationUnfinished is what a person is told when retiring a window
+// could not save its invitation's cancellation
+// (pairbootstrap.ErrCancellationUnfinished), on a close or an open alike:
+// the window is gone, its invitation stays refused, and the book retries the
+// cancellation on its own. Any other err is returned as it is.
+func cancellationUnfinished(err error) error {
+	if errors.Is(err, pairbootstrap.ErrCancellationUnfinished) {
+		return errorsx.Public("pairing_close_unfinished", "this computer could not save the cancellation yet; it keeps the pairing refused and tries again on its own", err)
 	}
 	return err
 }

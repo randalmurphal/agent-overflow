@@ -71,6 +71,21 @@ describe('computer pairing window', () => {
     await vi.waitFor(() => expect(close).toHaveBeenCalledExactlyOnceWith(WINDOW.id));
   });
 
+  // The host explains an unsaved cancellation on its own: the window closed
+  // and its pairing stays refused, which "it will expire" would contradict.
+  it("shows the host's sentence alone when the close could not save its cancellation", async () => {
+    setBindingMock('ComputerPairingStatus', async () => WAITING);
+    setBindingMock('CloseComputerPairing', async () => {
+      throw new TransportError('pairing_close_unfinished', 'this computer could not save the cancellation yet; it keeps the pairing refused and tries again on its own');
+    });
+    const view = show();
+    await vi.waitFor(() => expect(view.getByRole('status')).toHaveTextContent('Waiting for a computer'));
+    view.unmount();
+    await vi.waitFor(() => expect(getToasts().map((toast) => [toast.type, toast.message])).toEqual([
+      ['warning', 'This computer could not save the cancellation yet; it keeps the pairing refused and tries again on its own.'],
+    ]));
+  });
+
   it('closes a window whose open response arrives after the dialog was dismissed', async () => {
     let resolve!: (value: typeof WINDOW) => void;
     const open = setBindingMock('OpenComputerPairing', () => new Promise<typeof WINDOW>((done) => { resolve = done; }));
@@ -352,6 +367,34 @@ describe('computer pairing window decisions', () => {
     expect(view.getByRole('alert')).toHaveTextContent('Could not allow this computer: this device was allowed, and its access has since been removed or expired; pair it again');
     expect(view.queryByText('Computer paired')).toBeNull();
     expect(view.getByRole('button', { name: 'Try again' })).toBeEnabled();
+  });
+
+  // An approval sent just before the deadline; the deadline's read fails, so
+  // the dialog ends the window itself; the host then says why it ended.
+  it("replaces its own expiry with the host's ending, and keeps the approval controls ended", async () => {
+    setBindingMock('OpenComputerPairing', async () => ({ ...WINDOW, expiresAtMs: Date.now() + 3_000 }));
+    const poll = setBindingMock('ComputerPairingStatus', async () => READY);
+    let refuse!: () => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((_, reject) => {
+      refuse = () => reject(new Error('this pairing is no longer open; start pairing again'));
+    }));
+    const view = show();
+    await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
+    await vi.advanceTimersByTimeAsync(2_000);
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    poll.mockRejectedValue(new Error('connection lost'));
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.waitFor(() => expect(view.getByText('Pairing expired.')).toBeTruthy());
+    poll.mockResolvedValue({ ...WAITING, state: 'expired', ended: 'networkChanged' });
+    refuse();
+    await vi.waitFor(() => expect(view.getByText(/The network of this computer changed/)).toBeTruthy());
+    expect(view.queryByText('Pairing expired.')).toBeNull();
+    expect(view.getByRole('alert')).toHaveTextContent('Could not allow this computer: this pairing is no longer open; start pairing again');
+    expect(view.queryByLabelText('Verification number')).toBeNull();
+    expect(view.queryByRole('button', { name: 'It matches — allow' })).toBeNull();
+    poll.mockResolvedValue(READY);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(view.queryByLabelText('Verification number')).toBeNull();
   });
 
   it('shows a computer another owner view already approved as paired', async () => {

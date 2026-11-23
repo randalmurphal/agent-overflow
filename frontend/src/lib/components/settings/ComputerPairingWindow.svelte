@@ -6,6 +6,8 @@
   import { getTransportHelloFor } from '../../stores/transportStatus.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
+  import { asSentence } from '../../utils/userFacingError';
+  import { TransportError } from '../../transport/wsClient';
   import { backendNow } from '../../transport/backendClock';
   import { settingsComputer } from './settingsComputer';
   import { pairingAlreadyAllowed, pairingDecisionSettled, pairingTurns, recordPairingDecision, type PairingTurn } from './pairingTurns';
@@ -55,7 +57,13 @@
 
   async function closeWindow(id: string): Promise<void> {
     try { await call(() => CloseComputerPairing(id)); }
-    catch (err) { addToast('warning', `Could not close pairing. It will expire automatically: ${errString(err)}`); }
+    catch (err) {
+      // An unsaved cancellation is the host's to explain: the window is
+      // closed and its pairing stays refused while the host retries.
+      addToast('warning', err instanceof TransportError && err.code === 'pairing_close_unfinished'
+        ? asSentence(errString(err))
+        : `Could not close pairing. It will expire automatically: ${errString(err)}`);
+    }
   }
 
   function adoptConfirmed(): void {
@@ -72,8 +80,9 @@
   // poll and the decision's follow-up read alike. What is shown only moves
   // forward: waiting or ready, then ended, then confirmed. A reply of an
   // earlier kind, which an older read in flight can bring after a later one,
-  // changes nothing and arms no poll. Answers whether the window is still
-  // followed.
+  // changes nothing and arms no poll, except that the host's stated ending
+  // replaces this dialog's own deadline fallback. Answers whether the window
+  // is still followed.
   function adopt(at: PairingTurn, next: NonNullable<typeof status>, pastDeadline: boolean): boolean {
     if (!at.current || confirmed) return false;
     if (next.state === 'confirmed') {
@@ -81,7 +90,10 @@
       adoptConfirmed();
       return false;
     }
-    if (ended()) return false;
+    if (ended()) {
+      if (next.state === 'expired' && status?.state !== 'expired') status = next;
+      return false;
+    }
     status = next;
     error = '';
     if (pastDeadline) expired = true;

@@ -14,7 +14,16 @@ import (
 
 	"agent-overflow/internal/localcontrol"
 	"agent-overflow/internal/network"
+	"agent-overflow/internal/rpcclient"
 )
+
+// pairingAlreadyAllowed reports ConfirmDevicePairing's answer for an
+// invitation an earlier approval already allowed, whose device can use its
+// access (app's pairing_already_allowed).
+func pairingAlreadyAllowed(err error) bool {
+	var refused *rpcclient.Error
+	return errors.As(err, &refused) && refused.Code == "pairing_already_allowed"
+}
 
 type pairingCaller interface {
 	Call(context.Context, string, any, ...any) error
@@ -171,7 +180,9 @@ func runPairingConsole(ctx context.Context, client pairingCaller, class string, 
 					return errors.New("verification did not match; the pairing was canceled")
 				}
 			}
-			if err := call("ConfirmDevicePairing", nil, invite.LinkID); err != nil {
+			// Another owner view may have allowed this invitation first,
+			// after the person compared the same number here.
+			if err := call("ConfirmDevicePairing", nil, invite.LinkID); err != nil && !pairingAlreadyAllowed(err) {
 				return err
 			}
 			confirmed = true

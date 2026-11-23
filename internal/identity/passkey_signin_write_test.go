@@ -80,7 +80,8 @@ func countSignInWrites(t *testing.T, raw *sql.DB) signInWrites {
 
 // A sign-in that fails at any of its writes leaves nothing: no new device,
 // no renamed device, no session (live or revoked), no refresh secret, and
-// no audit entry saying a session was minted.
+// no audit entry saying a session was minted. It answers that this computer
+// could not save the sign-in, never that the credential was refused.
 func TestAPasskeySignInThatFailsAtAnyWriteLeavesNothing(t *testing.T) {
 	writes := []struct {
 		name, newDevice, existingDevice string
@@ -111,8 +112,8 @@ func TestAPasskeySignInThatFailsAtAnyWriteLeavesNothing(t *testing.T) {
 				}
 
 				_, reason := signInAs(t, sessions, auth, "thumb-laptop", "Renamed browser", "windows")
-				if reason != ReasonUnknownCredential {
-					t.Fatalf("a sign-in whose %s write failed = %s, want %s", write.name, reason, ReasonUnknownCredential)
+				if reason != ReasonTemporarilyUnavailable {
+					t.Fatalf("a sign-in whose %s write failed = %s, want %s", write.name, reason, ReasonTemporarilyUnavailable)
 				}
 				after := countSignInWrites(t, raw)
 				if after.devices != before.devices || !slices.Equal(after.labels, before.labels) {

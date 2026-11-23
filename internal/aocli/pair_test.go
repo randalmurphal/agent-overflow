@@ -7,12 +7,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/rpcclient"
 )
 
 type pairingScript struct {
 	methods             []string
 	confirmed, canceled bool
 	states              []string
+	confirmErr          error
 }
 
 func (s *pairingScript) Call(_ context.Context, method string, result any, _ ...any) error {
@@ -28,6 +31,7 @@ func (s *pairingScript) Call(_ context.Context, method string, result any, _ ...
 		*(result.(*consolePairingStatus)) = consolePairingStatus{State: state, VerificationNumber: "123456", DeviceLabel: "Phone"}
 	case "ConfirmDevicePairing":
 		s.confirmed = true
+		return s.confirmErr
 	case "CancelDevicePairing":
 		s.canceled = true
 	}
@@ -78,5 +82,23 @@ func TestPairingConsoleSaysAnApprovalWhoseAccessEndedIsNotPaired(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "Device connected") || script.confirmed {
 		t.Fatalf("the console reported or confirmed a pairing whose access ended: %q, %+v", output.String(), script)
+	}
+}
+
+// An invitation another owner view allowed while the console waited for the
+// typed number is paired, and its link is not canceled. Any other refusal
+// still fails the console and cancels.
+func TestPairingConsoleTreatsAnAlreadyAllowedInvitationAsPaired(t *testing.T) {
+	script := &pairingScript{confirmErr: &rpcclient.Error{Code: "pairing_already_allowed", Message: "this device is already allowed"}}
+	var output bytes.Buffer
+	if err := runPairingConsole(t.Context(), script, "desktop", false, false, strings.NewReader("123456\n"), &output, time.Millisecond); err != nil {
+		t.Fatalf("the console's answer = %v, want paired", err)
+	}
+	if !strings.Contains(output.String(), "Device connected") || script.canceled {
+		t.Fatalf("the console = %q, %+v, want it paired and its link kept", output.String(), script)
+	}
+	refused := &pairingScript{confirmErr: &rpcclient.Error{Code: "pairing_closed", Message: "this pairing is no longer open; start pairing again"}}
+	if err := runPairingConsole(t.Context(), refused, "desktop", false, false, strings.NewReader("123456\n"), &output, time.Millisecond); err == nil || !refused.canceled {
+		t.Fatalf("a refused approval = %v, %+v, want it failed and canceled", err, refused)
 	}
 }
