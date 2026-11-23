@@ -21,7 +21,14 @@
 // A file's clock starts at queued, so it also covers importing the file and
 // its setup files, which no Vitest timer bounds. Across 10 passing CI runs
 // the slowest browser file took 48 s in total, imports included, so a bound
-// well above the 60 s test timeout leaves that phase room as well.
+// well above the 60 s test timeout leaves that phase room as well. A test
+// that sets its own timeout at or above the bound would be reported as a
+// stall while it legitimately runs.
+//
+// Public reporter events do not show when a browser session has finished,
+// so a page that hangs in Vitest's cleanup after its file's last result is
+// caught only once every other file has stopped reporting, and the report
+// cannot name it: the run still ends, later and without the file name.
 import type {
   Reporter,
   ReportedHookContext,
@@ -31,6 +38,8 @@ import type {
   TestSuite,
   Vitest,
 } from 'vitest/node';
+
+type UserConsoleLog = Parameters<NonNullable<Reporter['onUserConsoleLog']>>[0];
 
 export interface StalledPageWatchdogOptions {
   /** Silence that counts as a stalled run or a stalled browser file. */
@@ -52,6 +61,8 @@ interface RunState {
   /** Files of this run, by key. */
   running: Map<string, RunningFile>;
   ended: Set<string>;
+  /** File key of each module, suite and test id seen, to attribute console logs. */
+  taskFile: Map<string, string>;
 }
 
 export class StalledPageWatchdog implements Reporter {
@@ -92,7 +103,13 @@ export class StalledPageWatchdog implements Reporter {
   }
 
   onTestRunStart(): void {
-    this.run = { lastEventAt: this.now(), browserFileRan: false, running: new Map(), ended: new Set() };
+    this.run = {
+      lastEventAt: this.now(),
+      browserFileRan: false,
+      running: new Map(),
+      ended: new Set(),
+      taskFile: new Map(),
+    };
     this.fired = false;
     clearInterval(this.timer);
     this.timer = setInterval(() => this.check(), this.checkEveryMs);
@@ -127,47 +144,62 @@ export class StalledPageWatchdog implements Reporter {
   }
 
   onHookStart(hook: ReportedHookContext): void {
-    this.heard(moduleOf(hook.entity));
+    this.heard(moduleOf(hook.entity), hook.entity.id);
   }
 
   onHookEnd(hook: ReportedHookContext): void {
-    this.heard(moduleOf(hook.entity));
+    this.heard(moduleOf(hook.entity), hook.entity.id);
   }
 
   onTestSuiteReady(suite: TestSuite): void {
-    this.heard(suite.module);
+    this.heard(suite.module, suite.id);
   }
 
   onTestSuiteResult(suite: TestSuite): void {
-    this.heard(suite.module);
+    this.heard(suite.module, suite.id);
   }
 
   onTestCaseReady(test: TestCase): void {
-    this.heard(test.module);
+    this.heard(test.module, test.id);
   }
 
   onTestCaseResult(test: TestCase): void {
-    this.heard(test.module);
+    this.heard(test.module, test.id);
   }
 
   onTestCaseAnnotate(test: TestCase): void {
-    this.heard(test.module);
+    this.heard(test.module, test.id);
   }
 
   onTestCaseArtifactRecord(test: TestCase): void {
-    this.heard(test.module);
+    this.heard(test.module, test.id);
   }
 
-  onUserConsoleLog(): void {
-    if (this.run) this.run.lastEventAt = this.now();
+  // A console log proves its page runs JavaScript. It refreshes the file of
+  // the task it names, or every running browser file when it names none
+  // this reporter has seen.
+  onUserConsoleLog(log: UserConsoleLog): void {
+    const run = this.run;
+    if (!run) return;
+    const now = this.now();
+    run.lastEventAt = now;
+    const key = log.taskId === undefined ? undefined : run.taskFile.get(log.taskId);
+    if (key !== undefined) {
+      const file = run.running.get(key);
+      if (file) file.lastEventAt = now;
+      return;
+    }
+    for (const file of run.running.values()) if (file.browser) file.lastEventAt = now;
   }
 
-  private heard(module: TestModule): void {
+  private heard(module: TestModule, taskId?: string): void {
     const run = this.run;
     if (!run) return;
     const now = this.now();
     run.lastEventAt = now;
     const key = fileKey(module);
+    run.taskFile.set(module.id, key);
+    if (taskId !== undefined) run.taskFile.set(taskId, key);
     // An event that arrives after the file ended must not revive it.
     if (run.ended.has(key)) return;
     const browser = isBrowserProject(module.project);
