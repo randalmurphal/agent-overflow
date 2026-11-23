@@ -192,16 +192,7 @@ go-prefetch = go list -e -deps -test $(1) tool > /dev/null
 GO_TEST_PKGS ?= $(GO_PACKAGE_ROOTS)
 GO_TEST_FLAGS ?=
 
-# go-build-tool builds a tool into bin/ and replaces the file only when its
-# bytes changed, so an unchanged tool keeps its time. `go build -o` rewrites
-# its output on every run, and Go keys a cached test result by the times of
-# the entries of every directory a test lists, so a test that lists bin/
-# would rerun after each `make go-test` otherwise. The build goes to a
-# directory outside bin/, so an unchanged tool leaves bin/'s listing as it
-# was. Without VCS stamping the bytes change only with the tool's code, and
-# the build runs no `git status` (see the go-test GOFLAGS below).
-go-build-tool = tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && go build -buildvcs=false -o "$$tmp/tool" $(2) && \
-	{ cmp -s "$$tmp/tool" $(1) || { mkdir -p $(dir $(1)) && cp "$$tmp/tool" $(1).new && mv -f $(1).new $(1); }; }
+include build/go-build-tool.mk
 
 netns-tool:
 	@$(call go-build-tool,bin/ao-netns,./cmd/ao-netns)
