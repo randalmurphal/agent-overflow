@@ -67,7 +67,7 @@ func TestNativeEngineRealPageBase(t *testing.T) {
 	if _, err := manager.Visibility(ctx, access, &show, PageID(blank.ID)); err != nil {
 		t.Fatalf("show the pane: %v", err)
 	}
-	mount, err := manager.AttachPane(access.Caller())
+	mount, err := manager.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestNativeEngineRealHiddenPageBase(t *testing.T) {
 	if _, err := manager.Visibility(ctx, access, &show, PageID(blank.ID)); err != nil {
 		t.Fatalf("show the pane: %v", err)
 	}
-	mount, err := manager.AttachPane(access.Caller())
+	mount, err := manager.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestNativeEngineRealHeldBase(t *testing.T) {
 	if _, err := manager.Visibility(ctx, access, &show, PageID(blank.ID)); err != nil {
 		t.Fatalf("show the pane: %v", err)
 	}
-	mount, err := manager.AttachPane(access.Caller())
+	mount, err := manager.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestNativeEngineRealStaticPageShowsAgain(t *testing.T) {
 		X: 200, Y: 100, Width: 640, Height: 400, ClipX: 200, ClipY: 100, ClipWidth: 640, ClipHeight: 400,
 		ViewportWidth: 1280, ViewportHeight: 800, Visible: true, Background: "#1e1e2e",
 	}
-	mount, err := manager.AttachPane(access.Caller())
+	mount, err := manager.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestNativeEngineRealStaticPageShowsAgain(t *testing.T) {
 
 	manager.DetachPane(MountID(mount.ID))
 	shows("2-pane-detached", blue, false)
-	if mount, err = manager.AttachPane(access.Caller()); err != nil {
+	if mount, err = manager.AttachPane(access.Caller(), untiedPane); err != nil {
 		t.Fatalf("mount the pane again: %v", err)
 	}
 	place(rect)

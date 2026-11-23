@@ -156,7 +156,7 @@ func newFocusWorld(t *testing.T) *focusWorld {
 // have, so the presentation runs inside SetPaneRect. It answers the mount.
 func remountPane(t *testing.T, m *Manager, access Access) string {
 	t.Helper()
-	mount, err := m.AttachPane(access.Caller())
+	mount, err := m.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatalf("mount the pane again: %v", err)
 	}

@@ -148,7 +148,7 @@ func TestAShowWhosePaneDetachesBeforeItsCommitDoesNothing(t *testing.T) {
 		m, _ := newLifecycleManager(t)
 		access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 		page := mustOpen(t, m, access, addr("a"))
-		mount, err := m.AttachPane(access.Caller())
+		mount, err := m.AttachPane(access.Caller(), untiedPane)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -184,7 +184,7 @@ func TestAShowWhosePaneDetachesDuringASwitchDoesNothing(t *testing.T) {
 		proj := newProject(t, "P")
 		access := proj.access(manager, "a", proj.one)
 		page := mustOpen(t, manager, access, addr("a"))
-		mount, err := manager.AttachPane(access.Caller())
+		mount, err := manager.AttachPane(access.Caller(), untiedPane)
 		if err != nil {
 			t.Fatal(err)
 		}

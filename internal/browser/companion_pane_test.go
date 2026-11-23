@@ -148,7 +148,7 @@ func TestPanePresentationHidesOthersThenSendsBoundsBeforeShow(t *testing.T) {
 	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
-	mount, err := manager.AttachPane(access.Caller())
+	mount, err := manager.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestPanePresentationStaysHiddenWithoutAPaintableRect(t *testing.T) {
 	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
-	mount, err := manager.AttachPane(access.Caller())
+	mount, err := manager.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestPaneRectClipDefaultsAndEmptyClipHides(t *testing.T) {
 	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
-	mount, err := manager.AttachPane(access.Caller())
+	mount, err := manager.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}
@@ -299,7 +299,7 @@ func attachSizedPane(t *testing.T, manager *Manager, engine *recordingPaneHost, 
 	t.Helper()
 	applied := make(chan string, 16)
 	manager.viewportApplied = func(threadID ThreadID) { applied <- string(threadID) }
-	mount, err := manager.AttachPane(access.Caller())
+	mount, err := manager.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}

@@ -113,12 +113,12 @@ func TestDictationNeedsAChatGPTSignIn(t *testing.T) {
 	if err != nil || sources.Subscription || sources.ChatGPTSignIn {
 		t.Fatalf("DictationSources = %+v, %v; want none", sources, err)
 	}
-	id, err := app.BeginDictation(context.Background(), "audio/webm")
+	id, err := app.BeginDictation(connCtx(t), "audio/webm")
 	if err != nil {
 		t.Fatal(err)
 	}
 	uploadDictation(t, app, id, "frames")
-	if _, err := app.FinishDictation(context.Background(), id, 1); !errors.Is(err, provideraccountapp.ErrNoCodexChatGPTLogin) {
+	if _, err := app.FinishDictation(connCtx(t), id, 1); !errors.Is(err, provideraccountapp.ErrNoCodexChatGPTLogin) {
 		t.Fatalf("FinishDictation err = %v, want ErrNoCodexChatGPTLogin", err)
 	}
 }
@@ -144,6 +144,16 @@ func TestDictationRecordingsBelongToTheirConnection(t *testing.T) {
 	}
 	if err := app.CancelDictation(other, id); !errors.Is(err, dictation.ErrUnknownRecording) {
 		t.Fatalf("another connection cancelled the recording: %v", err)
+	}
+	// A call that came over no connection cannot have opened it either.
+	if _, err := app.MintDictationChunkTicket(context.Background(), id, 0, 4); !errors.Is(err, dictation.ErrUnknownRecording) {
+		t.Fatalf("a call with no connection minted a ticket: %v", err)
+	}
+	if _, err := app.FinishDictation(context.Background(), id, 0); !errors.Is(err, dictation.ErrUnknownRecording) {
+		t.Fatalf("a call with no connection finished the recording: %v", err)
+	}
+	if err := app.CancelDictation(context.Background(), id); !errors.Is(err, dictation.ErrUnknownRecording) {
+		t.Fatalf("a call with no connection cancelled the recording: %v", err)
 	}
 	if app.dictationRecordings().Open() != 1 {
 		t.Fatal("another connection's calls changed the recording")
@@ -172,7 +182,7 @@ func TestCancelDictationReleasesTheRecording(t *testing.T) {
 	if err := app.CancelDictation(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	if app.dictationRecordings().Open() != 0 || state.HasCleanup(dictationCleanupKey(id)) {
+	if app.dictationRecordings().Open() != 0 || state.Bound(dictationCleanupKey(id)) {
 		t.Fatal("a cancelled recording is still held")
 	}
 	if _, err := app.FinishDictation(ctx, id, 0); !errors.Is(err, dictation.ErrUnknownRecording) {
@@ -222,12 +232,12 @@ func TestDictationRefreshesARefusedSignInOnce(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			id, err := app.BeginDictation(context.Background(), "audio/webm")
+			id, err := app.BeginDictation(connCtx(t), "audio/webm")
 			if err != nil {
 				t.Fatal(err)
 			}
 			uploadDictation(t, app, id, "frames")
-			text, err := app.FinishDictation(context.Background(), id, 1)
+			text, err := app.FinishDictation(connCtx(t), id, 1)
 			if tc.refreshed {
 				if err != nil || text != "Heard 6 bytes of audio/webm" {
 					t.Fatalf("FinishDictation = %q, %v", text, err)
@@ -626,5 +636,17 @@ func TestARefusedTranscriptionRefreshesNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(ran); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the Codex CLI ran a refresh for a 403 (stat err = %v)", err)
+	}
+}
+
+// dictationConnectionTie is BeginDictation's row of connectionTieChecks: a
+// recording, which only its own connection cancels.
+func dictationConnectionTie(t *testing.T) connectionTie {
+	app := newDictationTestApp(t, "fresh")
+	return connectionTie{
+		open:    func(ctx context.Context) (string, error) { return app.BeginDictation(ctx, "audio/webm") },
+		held:    func() int { return app.dictationRecordings().Open() },
+		release: app.CancelDictation,
+		key:     dictationCleanupKey,
 	}
 }

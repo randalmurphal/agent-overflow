@@ -241,11 +241,10 @@ func TestOneConnectionArmsOneCleanup(t *testing.T) {
 	if err := app.ProviderTerminalSetControl(ctx, threadID, true); err != nil {
 		t.Fatalf("SetControl(true): %v", err)
 	}
-	app.providerTerminals.mu.Lock()
-	armed := len(app.providerTerminals.armed)
-	app.providerTerminals.mu.Unlock()
-	if armed != 1 {
-		t.Fatalf("one connection should be armed once, got %d", armed)
+	// Binding is keyed, so the connection holds one release under the key
+	// however many attaches bound it (transport.TestBindIsKeyed).
+	if !state.Bound(providerTerminalsCleanupKey) {
+		t.Fatal("the connection holds no release for its claims")
 	}
 
 	state.RunCleanups()
@@ -257,9 +256,28 @@ func TestOneConnectionArmsOneCleanup(t *testing.T) {
 		t.Error("the connection's one cleanup must release the claim it held")
 	}
 	app.providerTerminals.mu.Lock()
-	armed, claims := len(app.providerTerminals.armed), len(app.providerTerminals.byCaller)
+	claims := len(app.providerTerminals.byCaller)
 	app.providerTerminals.mu.Unlock()
-	if armed != 0 || claims != 0 {
-		t.Errorf("a dead connection leaves no bookkeeping behind: armed=%d claims=%d", armed, claims)
+	if claims != 0 {
+		t.Errorf("a dead connection leaves no bookkeeping behind: claims=%d", claims)
+	}
+}
+
+// providerTerminalConnectionTie is ProviderTerminalAttach's row of
+// connectionTieChecks: a claim on the thread's PTY, which only its own
+// connection detaches; the connection binds one release for its life.
+func providerTerminalConnectionTie(t *testing.T) connectionTie {
+	app, threadID := newTakeControlFixture(t)
+	return connectionTie{
+		open: func(ctx context.Context) (string, error) {
+			_, err := app.ProviderTerminalAttach(ctx, threadID)
+			return threadID, err
+		},
+		held: func() int {
+			app.providerTerminals.mu.Lock()
+			defer app.providerTerminals.mu.Unlock()
+			return len(app.providerTerminals.byCaller)
+		},
+		release: app.ProviderTerminalDetach,
 	}
 }

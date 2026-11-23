@@ -154,7 +154,7 @@ func TestAPassedCloseClosesNothing(t *testing.T) {
 		}
 	}
 	m.DetachPane(MountID(mount))
-	next, err := m.AttachPane(access.Caller())
+	next, err := m.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestAReloadOfATabClosedMeanwhileDoesNothing(t *testing.T) {
 func mustAttachEmpty(t *testing.T, m *Manager, access Access) string {
 	t.Helper()
 	page := mustOpen(t, m, access, addr("e"))
-	mount, err := m.AttachPane(access.Caller())
+	mount, err := m.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatal(err)
 	}

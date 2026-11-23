@@ -68,7 +68,7 @@ func TestGitStatusAnswersAreTheStreamsPublishedStatus(t *testing.T) {
 	})
 	t.Cleanup(f.app.gitWatch.Close)
 	events, mu := captureGitStatusEmissions(f.app)
-	res, err := f.app.GitStatusSubscribe(context.Background(), f.ref)
+	res, err := f.app.GitStatusSubscribe(connCtx(t), f.ref)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestCheckoutWhileStatusIsHeldAnswersItsOwnRead(t *testing.T) {
 		FastStatusFn: func(_ context.Context, cwd string) (gitops.GitStatus, error) { return core.StatusFast(cwd) },
 	})
 	t.Cleanup(f.app.gitWatch.Close)
-	res, err := f.app.GitStatusSubscribe(context.Background(), f.ref)
+	res, err := f.app.GitStatusSubscribe(connCtx(t), f.ref)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestCheckoutRefreshesTheWorkspaceStatusStream(t *testing.T) {
 		},
 	})
 	t.Cleanup(f.app.gitWatch.Close)
-	res, err := f.app.GitStatusSubscribe(context.Background(), f.ref)
+	res, err := f.app.GitStatusSubscribe(connCtx(t), f.ref)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}

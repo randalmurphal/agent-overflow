@@ -75,7 +75,7 @@ func TestPRActionRefreshPollsInteractively(t *testing.T) {
 		mu.Unlock()
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: pr.Number, HeadSHA: "head"}}, nil
 	}
-	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestSettlePRActionRefreshesWhenThePRChanged(t *testing.T) {
 		fetches.Add(1)
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head", Mergeability: gitops.MergeabilityClean}}, nil
 	}
-	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}

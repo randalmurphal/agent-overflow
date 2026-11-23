@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -19,6 +20,7 @@ import (
 	"agent-overflow/internal/pairbootstrap"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/transport"
 )
 
 // Only the discovery window is installed directly: the fixture advertises no
@@ -234,9 +236,13 @@ func TestComputerPairingRestartRetiresLostComparisonButKeepsExistingDevice(t *te
 	}
 }
 
-func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
-	t.Parallel()
-	remotetest.Require(t)
+// computerPairingHost is a host OpenComputerPairing opens windows on: an
+// identity, a listener bound to every interface, LAN sharing on, and a
+// synthetic native ingress backed by that listener, which keeps the test
+// independent of physical interfaces and suppresses multicast on Open. It
+// answers the store's path too.
+func computerPairingHost(t *testing.T) (*App, string) {
+	t.Helper()
 	a, path := newTestAppWithStorePath(t)
 	if err := a.initIdentity("backend-under-test"); err != nil {
 		t.Fatal(err)
@@ -254,10 +260,42 @@ func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
 	if _, err := a.settings.SetNetwork(settings.NetworkSettings{BindAll: true}); err != nil {
 		t.Fatal(err)
 	}
-	// A synthetic native ingress backed by a LAN listener keeps this test
-	// independent of physical interfaces and suppresses multicast on Open.
 	a.nativeNetwork.seen = true
 	a.nativeNetwork.addresses = []string{fmt.Sprintf("https://192.168.1.55:%d", portFromAddr(srv.Addr()))}
+	t.Cleanup(a.closeComputerPairing)
+	return a, path
+}
+
+// computerPairingConnectionTie is an OpenComputerPairing method's row of
+// connectionTieChecks: the window, which any caller closes by its id; the
+// connection binds one release for its life. setup, when set, prepares
+// what the method needs beyond the host.
+func computerPairingConnectionTie(t *testing.T, setup func(*testing.T, *App), open func(*App, context.Context) (ComputerPairingWindow, error)) connectionTie {
+	remotetest.Require(t)
+	a, _ := computerPairingHost(t)
+	if setup != nil {
+		setup(t, a)
+	}
+	return connectionTie{
+		open: func(ctx context.Context) (string, error) {
+			window, err := open(a, ctx)
+			return window.ID, err
+		},
+		held: func() int {
+			if a.computerPairingOpen() {
+				return 1
+			}
+			return 0
+		},
+		release:   func(_ context.Context, id string) error { return a.CloseComputerPairing(id) },
+		anyCaller: true,
+	}
+}
+
+func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	a, path := computerPairingHost(t)
 	s := &a.computerPairing
 	s.book = pairbootstrap.NewBook(func(id string) { _ = a.CancelDevicePairing(id) })
 	w := s.book.Open(func() (pairbootstrap.Invitation, error) {
@@ -301,7 +339,7 @@ func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
 	if _, err := raw.Exec(`CREATE TRIGGER reject_pairing_cancel BEFORE UPDATE OF canceled_at ON pairing_links BEGIN SELECT RAISE(ABORT, 'test cancellation failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.OpenComputerPairing(context.Background(), "lan", "full"); err == nil {
+	if _, err := a.OpenComputerPairing(connCtx(t), "lan", "full"); err == nil {
 		t.Fatal("replacement discarded unresolved invitation fence")
 	}
 	if s.book.Snapshot(w.WindowID).Open {
@@ -316,7 +354,7 @@ func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
 	if _, err := raw.Exec(`DROP TRIGGER reject_pairing_cancel`); err != nil {
 		t.Fatal(err)
 	}
-	next, err := a.OpenComputerPairing(context.Background(), "lan", "full")
+	next, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
 	if err != nil {
 		t.Fatal("replacement did not recover after storage recovered", err)
 	}
@@ -409,7 +447,7 @@ func TestComputerPairingReportsDiscoveryFailureOnTheWindow(t *testing.T) {
 	}
 	// No multicast-capable interface: the responders cannot start.
 	nearby.Interfaces = func() ([]net.Interface, error) { return nil, nil }
-	w, err := a.OpenComputerPairing(context.Background(), "lan", "full")
+	w, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
 	if err != nil {
 		t.Fatalf("a discovery failure closed the typed-address path: %v", err)
 	}
@@ -436,5 +474,51 @@ func TestComputerPairingReportsDiscoveryFailureOnTheWindow(t *testing.T) {
 	}
 	if status, _ := a.ComputerPairingStatus(w.ID); status.State != "expired" || status.DiscoveryError != "" {
 		t.Fatalf("closed window reports %+v", status)
+	}
+}
+
+// An own-device pairing window persists this computer's enrollment only
+// for a caller that is admitted with valid arguments: an open from a
+// connection that is already closing, or naming no network the window
+// can use, enrolls nothing, and an admitted open does.
+func TestAnOwnPairingOpenEnrollsOnlyOnceAdmitted(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	a, _ := computerPairingHost(t)
+	manager, err := newTestBackends(t, t.TempDir(), "Host", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetAttachedBackends(a, manager)
+	enrolled := func() bool {
+		t.Helper()
+		_, err := a.backends.OwnIdentity()
+		if err != nil && !errors.Is(err, deviceclient.ErrNoDeviceKey) {
+			t.Fatal(err)
+		}
+		return err == nil
+	}
+	if enrolled() {
+		t.Fatal("the fixture's computer is enrolled before any open")
+	}
+	closing, state := newTestConnection(t, transport.ConnPrincipal{})
+	state.RunCleanups()
+	if _, err := a.OpenOwnComputerPairing(closing, "lan"); !errors.Is(err, transport.ErrConnectionClosing) {
+		t.Fatalf("an own pairing open from a closing connection = %v, want transport.ErrConnectionClosing", err)
+	}
+	if enrolled() {
+		t.Fatal("an open refused for its closing connection enrolled this computer")
+	}
+	if _, err := a.OpenOwnComputerPairing(connCtx(t), "bluetooth"); err == nil {
+		t.Fatal("an own pairing open on no usable network succeeded")
+	}
+	if enrolled() {
+		t.Fatal("an open refused for its network enrolled this computer")
+	}
+	if _, err := a.OpenOwnComputerPairing(connCtx(t), "lan"); err != nil {
+		t.Fatal(err)
+	}
+	if !enrolled() {
+		t.Fatal("an admitted own pairing open did not enroll this computer")
 	}
 }

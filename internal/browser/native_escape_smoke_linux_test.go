@@ -59,7 +59,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	if _, err := manager.Visibility(ctx, access, &show, PageID(page.ID)); err != nil {
 		t.Fatalf("show the page: %v", err)
 	}
-	mount, err := manager.AttachPane(access.Caller())
+	mount, err := manager.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}

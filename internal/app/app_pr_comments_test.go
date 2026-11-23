@@ -112,7 +112,7 @@ func TestPRCommentActionsSettleOnTheFrameThatShowsThem(t *testing.T) {
 			c.seedTheirThread(t, false)
 			stubPRCIFetch(c.app)
 			events := capturePRUpdates(t, c.app)
-			ctx := context.Background()
+			ctx := connCtx(t)
 			sub, err := c.app.SubscribePRUpdates(ctx, c.pr)
 			if err != nil {
 				t.Fatal(err)
@@ -319,7 +319,7 @@ func TestPRCommentCreatesWithALostAnswerAreUnconfirmed(t *testing.T) {
 			c.seedTheirThread(t, false)
 			stubPRCIFetch(c.app)
 			events := capturePRUpdates(t, c.app)
-			ctx := context.Background()
+			ctx := connCtx(t)
 			sub, err := c.app.SubscribePRUpdates(ctx, c.pr)
 			if err != nil {
 				t.Fatal(err)
@@ -456,7 +456,7 @@ func TestSetPRThreadResolvedChecksThePullAndSettles(t *testing.T) {
 	c := newReviewSubmitCase(t, "github")
 	c.seedTheirThread(t, false)
 	stubPRCIFetch(c.app)
-	sub, err := c.app.SubscribePRUpdates(context.Background(), c.pr)
+	sub, err := c.app.SubscribePRUpdates(connCtx(t), c.pr)
 	if err != nil {
 		t.Fatal(err)
 	}

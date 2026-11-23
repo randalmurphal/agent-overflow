@@ -168,7 +168,7 @@ func TestOpenCommitFileDiff_ReadsOneFile(t *testing.T) {
 	writeWorkspaceFile(t, workspace, "README.txt", "hello\nedited\n")
 	writeWorkspaceFile(t, workspace, "other.txt", "other\n")
 
-	opened, err := app.OpenCommitFileDiff(context.Background(), ref, []string{"other.txt"})
+	opened, err := app.OpenCommitFileDiff(connCtx(t), ref, []string{"other.txt"})
 	if err != nil {
 		t.Fatalf("OpenCommitFileDiff: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestOpenCommitFileDiff_ReadsOneFile(t *testing.T) {
 	if !strings.Contains(opened.Chunk.Data, "+other") || strings.Contains(opened.Chunk.Data, "README") {
 		t.Fatalf("patch = %q", opened.Chunk.Data)
 	}
-	if _, err := app.OpenCommitFileDiff(context.Background(), ref, nil); err == nil {
+	if _, err := app.OpenCommitFileDiff(connCtx(t), ref, nil); err == nil {
 		t.Fatal("opened a diff of no paths")
 	}
 }
