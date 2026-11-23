@@ -92,9 +92,15 @@ func heldMintWindow(t *testing.T, b *Book, id string) (Snapshot, *gate, <-chan e
 	return view, g, revealed
 }
 
-// waitFor yields until cond holds; the test's own timeout bounds it.
-func waitFor(cond func() bool) {
+// waitFor polls until cond holds. The bound only ends a test whose
+// condition never comes.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
 	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
 		time.Sleep(time.Millisecond)
 	}
 }
@@ -134,7 +140,7 @@ func TestCloseJoinsAnInFlightMintAndAnswersForItsInvitation(t *testing.T) {
 	closed := make(chan error, 1)
 	go func() { closed <- b.Close(old.WindowID) }()
 	// The window is removed before its mint finishes.
-	waitFor(func() bool { return !b.Snapshot(old.WindowID).Open })
+	waitFor(t, "the close to remove the window", func() bool { return !b.Snapshot(old.WindowID).Open })
 	g.open()
 	if err := <-closed; !errors.Is(err, errStorage) {
 		t.Fatalf("close during the mint = %v, want the late invitation's cancellation error", err)
@@ -220,7 +226,7 @@ func TestAFailedCancellationRetriesItselfUntilDurable(t *testing.T) {
 	if err := b.Close(w.WindowID); !errors.Is(err, errStorage) {
 		t.Fatalf("close = %v, want the storage error", err)
 	}
-	waitFor(func() bool { return l.count("retried") >= 3 })
+	waitFor(t, "two retries", func() bool { return l.count("retried") >= 3 })
 	b.mu.Lock()
 	wait := b.pending.wait
 	b.mu.Unlock()
@@ -231,7 +237,7 @@ func TestAFailedCancellationRetriesItselfUntilDurable(t *testing.T) {
 		t.Fatal("an invitation was confirmable while its retries failed")
 	}
 	l.fail(false)
-	waitFor(func() bool { return b.pendingLink() == "" })
+	waitFor(t, "a durable retry", func() bool { return b.pendingLink() == "" })
 }
 
 // A cancellation made durable by a close while a retry is scheduled ends
@@ -267,7 +273,7 @@ func TestExpiryRetiresTheInvitation(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = b.Close(w.WindowID) })
 	handshake(t, b, newClient(t))
-	waitFor(func() bool { return l.count("expiring") == 1 })
+	waitFor(t, "expiry to cancel the invitation", func() bool { return l.count("expiring") == 1 })
 	if b.Snapshot(w.WindowID).Open {
 		t.Fatal("expired window remained open")
 	}
@@ -339,7 +345,7 @@ func TestAReplacementWaitsForAnEarlierCloseToFinish(t *testing.T) {
 	l.fail(true)
 	closed := make(chan error, 1)
 	go func() { closed <- b.Close(old.WindowID) }()
-	waitFor(func() bool { return !b.Snapshot(old.WindowID).Open })
+	waitFor(t, "the close to remove the window", func() bool { return !b.Snapshot(old.WindowID).Open })
 	replacementWaits := make(chan struct{}, 1)
 	// Set before the replacement starts; the close holds turn already.
 	b.turn.waiting = func() {
