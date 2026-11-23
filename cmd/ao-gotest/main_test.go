@@ -610,29 +610,33 @@ func TestGOFLAGSDecidesASplitAsTheCommandLineDoes(t *testing.T) {
 	}
 }
 
-// TestReservationUnitsCapAtOnePackagesBuckets: a run reserves at most a
-// unit per core and at most one package's buckets, the largest first, the
-// first raised to the largest list step.
-func TestReservationUnitsCapAtOnePackagesBuckets(t *testing.T) {
+// TestReservationTotalsCapAtOnePackagesBuckets: a run reserves for at most
+// a bucket per core and at most one package's buckets, the largest first,
+// and k buckets at once hold the larger of the largest list step and the k
+// buckets together, since no bucket runs beside a list step.
+func TestReservationTotalsCapAtOnePackagesBuckets(t *testing.T) {
 	t.Parallel()
-	app, store := split{"example/app", 1664 << 20, 2432 << 20}, split{"example/store", 640 << 20, 640 << 20}
-	repeat := func(first, rest uint64, n int) []uint64 {
-		return append([]uint64{first << 20}, slices.Repeat([]uint64{rest << 20}, n-1)...)
+	app, store := split{"example/app", 1664 << 20, 7168 << 20}, split{"example/store", 640 << 20, 640 << 20}
+	mib := func(totals ...uint64) []uint64 {
+		for k := range totals {
+			totals[k] <<= 20
+		}
+		return totals
 	}
 	for _, tc := range []struct {
 		declared []split
 		cores    int
 		want     []uint64
 	}{
-		{[]split{app, store}, 24, repeat(2432, 1664, 8)},
-		{[]split{store, app}, 24, repeat(2432, 1664, 8)},
-		{[]split{app, store}, 4, repeat(2432, 1664, 4)},
-		{[]split{app, store}, 1, repeat(2432, 1664, 1)},
-		{[]split{store}, 24, repeat(640, 640, 8)},
-		{[]split{{"example/small", 100 << 20, 300 << 20}}, 2, repeat(300, 100, 2)},
+		{[]split{app, store}, 24, mib(7168, 7168, 7168, 7168, 8320, 9984, 11648, 13312)},
+		{[]split{store, app}, 24, mib(7168, 7168, 7168, 7168, 8320, 9984, 11648, 13312)},
+		{[]split{app, store}, 4, mib(7168, 7168, 7168, 7168)},
+		{[]split{app, store}, 1, mib(7168)},
+		{[]split{store}, 24, mib(640, 1280, 1920, 2560, 3200, 3840, 4480, 5120)},
+		{[]split{{"example/small", 100 << 20, 150 << 20}}, 2, mib(150, 200)},
 	} {
-		if got := reservationUnits(tc.declared, tc.cores); !slices.Equal(got, tc.want) {
-			t.Errorf("%v on %d cores: units %v; want %v", tc.declared, tc.cores, got, tc.want)
+		if got := reservationTotals(tc.declared, tc.cores); !slices.Equal(got, tc.want) {
+			t.Errorf("%v on %d cores: totals %v; want %v", tc.declared, tc.cores, got, tc.want)
 		}
 	}
 }
@@ -671,7 +675,7 @@ func TestAZeroGrantWaitsUntilAHolderReleases(t *testing.T) {
 	}
 	granted := make(chan grant, 1)
 	go func() {
-		w, release, err := r.reserve(m, req, []uint64{unit, unit, unit, unit})
+		w, release, err := r.reserve(m, req, []uint64{unit, 2 * unit, 3 * unit, 4 * unit})
 		granted <- grant{w, release, err}
 	}()
 	deadline := time.Now().Add(time.Minute)
@@ -686,7 +690,7 @@ func TestAZeroGrantWaitsUntilAHolderReleases(t *testing.T) {
 		t.Fatalf("granted %d (%v) while nothing fits; want a wait", g.w, g.err)
 	case <-time.After(100 * time.Millisecond):
 	}
-	want := "ao-gotest: waiting for memory for the buckets: one bucket needs 100 MiB and 50 MiB is free: 1274 MiB available less the 1024 MiB floor the host keeps and the 200 MiB other runs reserved (holder in /elsewhere holds 200 MiB)\n"
+	want := "ao-gotest: waiting for memory for the buckets: one bucket and the list steps before it need 100 MiB and 50 MiB is free: 1274 MiB available less the 1024 MiB floor the host keeps and the 200 MiB other runs reserved (holder in /elsewhere holds 200 MiB)\n"
 	if got := stderr.String(); got != want {
 		t.Fatalf("stderr %q; want %q, once", got, want)
 	}
@@ -710,7 +714,7 @@ func TestARefusalPastItsBoundFailsWithTheReason(t *testing.T) {
 	_, m, r, stderr, req := fixedGovernor(t, floor+unit/2)
 	r.admitWait = 50 * time.Millisecond
 	w, _, err := r.reserve(m, req, []uint64{unit})
-	if w != 0 || err == nil || !strings.HasPrefix(err.Error(), "no memory for the buckets after 50ms: one bucket needs 100 MiB and 50 MiB is free") {
+	if w != 0 || err == nil || !strings.HasPrefix(err.Error(), "no memory for the buckets after 50ms: one bucket and the list steps before it need 100 MiB and 50 MiB is free") {
 		t.Fatalf("reserve = %d, %v; want the refusal", w, err)
 	}
 	if got := strings.Count(stderr.String(), "waiting for memory"); got != 1 {

@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-// TestACgroupLimitBelowTheHostsHeadroomCapsTheGrant reserves 1 GiB units on
-// a host with 64 GiB available, from a cgroup with 3 GiB of room left: the
-// grant is what the cgroup has room for.
+// TestACgroupLimitBelowTheHostsHeadroomCapsTheGrant reserves up to eight
+// things of 1 GiB each on a host with 64 GiB available, from a cgroup with
+// 3 GiB of room left: the grant is what the cgroup has room for.
 func TestACgroupLimitBelowTheHostsHeadroomCapsTheGrant(t *testing.T) {
 	const gib = 1 << 30
 	root := t.TempDir()
@@ -33,9 +33,9 @@ func TestACgroupLimitBelowTheHostsHeadroomCapsTheGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	units := []uint64{gib, gib, gib, gib, gib, gib, gib, gib}
-	lease, granted, err := m.ReserveUpTo(Request{RunID: "run", Worktree: t.TempDir(), DataRoot: t.TempDir(), OwnerPID: os.Getpid()}, units)
+	totals := []uint64{gib, 2 * gib, 3 * gib, 4 * gib, 5 * gib, 6 * gib, 7 * gib, 8 * gib}
+	lease, granted, err := m.ReserveUpTo(Request{RunID: "run", Worktree: t.TempDir(), DataRoot: t.TempDir(), OwnerPID: os.Getpid()}, totals)
 	if err != nil || granted != 2 || lease.CeilingBytes != 2*gib {
-		t.Fatalf("granted %d (%d bytes), %v; want the 2 units below the cgroup's 3 GiB of room less the floor", granted, lease.CeilingBytes, err)
+		t.Fatalf("granted %d (%d bytes), %v; want the 2 GiB below the cgroup's 3 GiB of room less the floor", granted, lease.CeilingBytes, err)
 	}
 }

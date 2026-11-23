@@ -24,8 +24,8 @@
 //
 // A split run reserves memory in the host's memory governor
 // (internal/harness/governor) before it builds anything, and runs W
-// buckets at once, W being the units the governor grants
-// (reservationUnits). With none to grant it says so once and asks again
+// buckets at once, W being the most the governor grants room for
+// (reservationTotals). With none to grant it says so once and asks again
 // until admitWait has passed, then fails: starting a bucket the host cannot
 // hold is what takes it down. The unsplit `go test` runs outside the
 // reservation from the start, as it did before this command existed.
@@ -349,8 +349,8 @@ func (r *runner) runSplit(inv invocation, declared []split, whole, names []strin
 	defer waitWhole()
 	// W is what the governor grants; the unsplit `go test` started above is
 	// outside the reservation.
-	units := reservationUnits(declared, runtime.GOMAXPROCS(0))
-	w, release, err := r.admit(dir.Dir, units)
+	totals := reservationTotals(declared, runtime.GOMAXPROCS(0))
+	w, release, err := r.admit(dir.Dir, totals)
 	if err != nil {
 		if !errors.Is(err, errStopped) {
 			r.fail("%v", err)
@@ -358,7 +358,7 @@ func (r *runner) runSplit(inv invocation, declared []split, whole, names []strin
 		return
 	}
 	r.out.Lock()
-	fmt.Fprintf(r.stderr, "ao-gotest: %s: %d buckets each, %d at a time (%d MiB reserved)\n", strings.Join(names, ", "), buckets, w, sum(units[:w])>>20)
+	fmt.Fprintf(r.stderr, "ao-gotest: %s: %d buckets each, %d at a time (%d MiB reserved)\n", strings.Join(names, ", "), buckets, w, totals[w-1]>>20)
 	r.out.Unlock()
 	r.runPackages(p.split, w)
 	if err := release(); err != nil {
@@ -374,13 +374,14 @@ func runDirParent() (string, error) {
 	return goenvfile.Getenv("GOTMPDIR")
 }
 
-// reservationUnits is what a run of declared reserves to run buckets at
-// once on cores: the bucket units of the largest buckets, at most one per
-// core and at most one package's bucket count, since the buckets start in
-// declaration order and no more of the largest package's run at once. The
-// governor grants a prefix of them, and the list steps run first, alone,
-// under that lease, so the first unit is raised to the largest list step's.
-func reservationUnits(declared []split, cores int) []uint64 {
+// reservationTotals is what a run of declared reserves to run 1, 2, ...
+// buckets at once on cores: at most one per core and at most one package's
+// bucket count, since the buckets start in declaration order and no more of
+// the largest package's run at once. The list steps run first, one at a
+// time, under the same lease, and no bucket starts until they end, so k
+// buckets need the larger of the largest list step's unit and the k
+// largest bucket units together.
+func reservationTotals(declared []split, cores int) []uint64 {
 	var units []uint64
 	var list uint64
 	for _, s := range declared {
@@ -390,25 +391,21 @@ func reservationUnits(declared []split, cores int) []uint64 {
 		}
 	}
 	slices.SortFunc(units, func(a, b uint64) int { return cmp.Compare(b, a) })
-	units = units[:min(max(cores, 1), buckets, len(units))]
-	units[0] = max(units[0], list)
-	return units
-}
-
-func sum(units []uint64) uint64 {
-	var total uint64
-	for _, unit := range units {
-		total += unit
+	totals := make([]uint64, min(max(cores, 1), buckets, len(units)))
+	var held uint64
+	for k := range totals {
+		held += units[k]
+		totals[k] = max(list, held)
 	}
-	return total
+	return totals
 }
 
 // errStopped is admit's error when a signal ended the wait.
 var errStopped = errors.New("stopped by a signal")
 
-// admit reserves units in the host's governor, for the run whose binaries
-// are in dir.
-func (r *runner) admit(dir string, units []uint64) (int, func() error, error) {
+// admit reserves the largest of totals that fits in the host's governor,
+// for the run whose binaries are in dir.
+func (r *runner) admit(dir string, totals []uint64) (int, func() error, error) {
 	manager, err := governor.New(governor.Options{})
 	if err != nil {
 		return 0, nil, fmt.Errorf("reserve memory for the buckets: %w", err)
@@ -422,24 +419,25 @@ func (r *runner) admit(dir string, units []uint64) (int, func() error, error) {
 		Worktree: worktree,
 		DataRoot: dir,
 		OwnerPID: os.Getpid(),
-	}, units)
+	}, totals)
 }
 
-// reserve asks m for the longest prefix of units, W of them, and returns W
-// and the lease's release. While m grants none it says once why and asks
-// again every admitPoll; after admitWait it fails with the reason.
-func (r *runner) reserve(m *governor.Manager, req governor.Request, units []uint64) (int, func() error, error) {
+// reserve asks m for the largest of totals that fits, W buckets' (see
+// reservationTotals), and returns W and the lease's release. While m grants
+// none it says once why and asks again every admitPoll; after admitWait it
+// fails with the reason.
+func (r *runner) reserve(m *governor.Manager, req governor.Request, totals []uint64) (int, func() error, error) {
 	deadline := time.Now().Add(r.admitWait)
 	told := false
 	for {
-		lease, granted, err := m.ReserveUpTo(req, units)
+		lease, granted, err := m.ReserveUpTo(req, totals)
 		if err != nil {
 			return 0, nil, fmt.Errorf("reserve memory for the buckets: %w", err)
 		}
 		if granted > 0 {
 			return granted, func() error { return m.Release(lease) }, nil
 		}
-		why := refusal(m, units[0])
+		why := refusal(m, totals[0])
 		if !time.Now().Before(deadline) {
 			return 0, nil, fmt.Errorf("no memory for the buckets after %v: %s", r.admitWait, why)
 		}
@@ -457,12 +455,12 @@ func (r *runner) reserve(m *governor.Manager, req governor.Request, units []uint
 	}
 }
 
-// refusal says why m grants no unit of size need: what is free, and who
-// holds the rest.
+// refusal says why m grants not even need, one bucket's total: what is
+// free, and who holds the rest.
 func refusal(m *governor.Manager, need uint64) string {
 	snap, err := m.Snapshot()
 	if err != nil {
-		return fmt.Sprintf("one bucket needs %d MiB, which is not free, and the reservations could not be read: %v", need>>20, err)
+		return fmt.Sprintf("one bucket and the list steps before it need %d MiB, which is not free, and the reservations could not be read: %v", need>>20, err)
 	}
 	var free uint64
 	if kept := snap.AvailableFloorBytes + snap.ReservedBytes; snap.AvailableBytes > kept {
@@ -476,7 +474,7 @@ func refusal(m *governor.Manager, need uint64) string {
 		}
 		holders = strings.Join(held, "; ")
 	}
-	return fmt.Sprintf("one bucket needs %d MiB and %d MiB is free: %d MiB available less the %d MiB floor the host keeps and the %d MiB other runs reserved (%s)",
+	return fmt.Sprintf("one bucket and the list steps before it need %d MiB and %d MiB is free: %d MiB available less the %d MiB floor the host keeps and the %d MiB other runs reserved (%s)",
 		need>>20, free>>20, snap.AvailableBytes>>20, snap.AvailableFloorBytes>>20, snap.ReservedBytes>>20, holders)
 }
 

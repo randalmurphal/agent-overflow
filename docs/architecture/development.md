@@ -58,12 +58,14 @@ once, by the `go test -list` that reads its names.
 
 As many buckets run at once as the
 [harness memory governor](../../internal/harness/governor/AGENTS.md)
-grants across every run on the host, at the MiB per bucket the
-declaration gives, at most one per core and at most eight, one package's
-buckets; packages start in declaration order, the longest first. While
-it grants none the run says why and waits, and after ten minutes fails.
-The list steps run first, one at a time, under the same reservation; the
-other packages' `go test` runs outside it, as it did before the split. A
+grants across every run on the host, at most one per core and at most
+eight, one package's buckets; packages start in declaration order, the
+longest first. The list steps run first, one at a time, under the same
+reservation, so W buckets at once reserve the larger of the largest list
+step's MiB and the W buckets' MiB together, as the declaration gives
+them. While it grants none the run says why and waits, and after ten
+minutes fails. The other packages' `go test` runs outside the
+reservation, as it did before the split. A
 run whose bucket or list step went over its declaration says so at the
 end. Each `go test` runs under a leader that ends every process it
 started when it ends, is signaled, or loses the launcher (on macOS, the

@@ -108,32 +108,33 @@ func (m *Manager) Reserve(req Request) (Lease, error) {
 	})
 }
 
-// ReserveUpTo claims the longest prefix of units, sizes in bytes, that
-// fits, in one lease, under the same lock and checks as Reserve, and
-// returns how many units it claimed. A caller that runs up to n things at
-// once, each holding at most one unit, passes the n largest units first.
-// When none fit it records nothing and returns the zero Lease. The lease's
-// size is the claim, so req.CeilingBytes must be zero.
-func (m *Manager) ReserveUpTo(req Request, units []uint64) (Lease, int, error) {
+// ReserveUpTo claims, in one lease, under the same lock and checks as
+// Reserve, the largest of totals that fits, and returns how many things it
+// is for: totals[k-1] is what a caller running k things at once holds, in
+// bytes, so totals are positive and never fall. When none fits it records
+// nothing and returns the zero Lease. The lease's size is the claim, so
+// req.CeilingBytes must be zero.
+func (m *Manager) ReserveUpTo(req Request, totals []uint64) (Lease, int, error) {
 	if req.CeilingBytes != 0 {
 		return Lease{}, 0, errors.New("harness governor: ReserveUpTo sizes the lease; leave CeilingBytes zero")
 	}
-	if len(units) == 0 || slices.Contains(units, 0) {
-		return Lease{}, 0, fmt.Errorf("harness governor: ReserveUpTo needs positive units, got %v", units)
+	if len(totals) == 0 || totals[0] == 0 || !slices.IsSorted(totals) {
+		return Lease{}, 0, fmt.Errorf("harness governor: ReserveUpTo needs positive totals that never fall, got %v", totals)
 	}
 	var granted int
 	lease, err := m.reserve(req, func(free uint64) (uint64, error) {
-		var claim uint64
-		for _, unit := range units {
-			if unit > free-claim {
-				break
-			}
-			claim += unit
+		for granted < len(totals) && totals[granted] <= free {
 			granted++
 		}
-		return claim, nil
+		if granted == 0 {
+			return 0, nil
+		}
+		return totals[granted-1], nil
 	})
-	return lease, granted, err
+	if err != nil {
+		return Lease{}, 0, err
+	}
+	return lease, granted, nil
 }
 
 // reserve is Reserve and ReserveUpTo: size gets the bytes left above the

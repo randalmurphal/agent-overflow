@@ -231,18 +231,20 @@ gocache-trim-around = $(gocache-trim-pass); trap 'status=$$?; $(gocache-trim-pas
 # launcher there and it runs that line inside the namespace; override keeps
 # it when NETNS is given on the command line. gotest-tool builds it.
 # GO_TEST_SPLIT names the packages it runs as buckets, longest first, each
-# with the MiB one bucket holds and the MiB its list step, which links the
-# package's test binary, holds. The memory governor reserves a bucket's per
-# bucket running at once, the first raised to the largest list step's,
-# since the list steps run first under the same reservation. Each is the
-# largest process as rusage reported it, plus the 118 MiB of the go
-# command beside it, plus 25%, rounded up to 64 MiB. A run whose bucket or
-# list step goes over its figure says so at the end.
+# with the MiB one bucket holds and the MiB its list step, which builds and
+# vets the package's test binary, holds. The list steps run first, one at a
+# time, under the same reservation, so for W buckets at once the memory
+# governor reserves the larger of the largest list step's MiB and the W
+# buckets' together. Each is the largest process as rusage reported it,
+# plus the 118 MiB of the go command beside it, plus 25%, rounded up to 64
+# MiB; a list step's is measured after a change to the package's test
+# files, when it compiles them. A run whose bucket or list step goes over
+# its figure says so at the end.
 #   internal/app:   buckets 1173 MiB measured, 1664 declared;
-#                   list    1824 MiB measured, 2432 declared
+#                   list    5603 MiB measured, 7168 declared
 #   internal/store: buckets  359 MiB measured,  640 declared;
-#                   list     379 MiB measured,  640 declared
-GO_TEST_SPLIT := agent-overflow/internal/app=1664,2432 agent-overflow/internal/store=640,640
+#                   list    1593 MiB measured, 2176 declared
+GO_TEST_SPLIT := agent-overflow/internal/app=1664,7168 agent-overflow/internal/store=640,2176
 .PHONY: gotest-tool
 GOTEST := $(CURDIR)/bin/ao-gotest
 go-test: override NETNS += $(GOTEST) $(addprefix -split=,$(GO_TEST_SPLIT))
