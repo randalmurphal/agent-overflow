@@ -96,8 +96,10 @@ const (
 type Settlement struct {
 	AccountID string
 	Outcome   SettlementOutcome
-	// Cleared reports that the reservation is gone from the saved metadata.
-	// A removal or a listing whose save failed has Cleared false.
+	// Cleared reports that the save clearing the reservation succeeded.
+	// After a failed save it is false and memory keeps the reservation; the
+	// file may hold either, since a save can fail after replacing it, and
+	// the next settle finds the reservation again only if it is still there.
 	Cleared bool
 }
 

@@ -93,7 +93,7 @@ func (m *Manager) settleReservations(providerName, accountID string) error {
 func (m *Manager) auditSettlement(providerName string, settlement provideraccounts.Settlement) {
 	cleared := "its reservation is cleared"
 	if !settlement.Cleared {
-		cleared = "its reservation could not be cleared and stays for the next boot"
+		cleared = "saving the account metadata failed, so the next boot settles its reservation again if it is still there"
 	}
 	switch settlement.Outcome {
 	case provideraccounts.SettlementRemoved:
