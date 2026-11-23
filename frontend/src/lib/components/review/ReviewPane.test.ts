@@ -1129,6 +1129,7 @@ describe('<ReviewPane>', () => {
     }));
     setReviewDiffMock('OpenTurnEditsDiff', async () => patch());
     const payload = setReviewDiffMock('OpenEditDiff', async () => patch());
+    setBindingMock('VerifyEditDiffs', async () => ({ verified: [] }));
 
     const view = render(ReviewPane, { ctx: makeCtx() });
     await waitFor(() => {
@@ -1897,6 +1898,11 @@ describe('<ReviewPane> syntax colors across rebuilds', () => {
 
 describe('<ReviewPane> CI', () => {
   const PR = 'github:owner/repo:5';
+
+  // The PR scope reads the PR's diff.
+  beforeEach(() => {
+    setReviewDiffMock('OpenPRDiff', async () => patch());
+  });
 
   function pipelineWith(jobStatus: string, stepStatus: string): CIPipeline {
     return {

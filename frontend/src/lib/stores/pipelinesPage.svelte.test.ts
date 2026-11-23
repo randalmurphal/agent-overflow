@@ -646,6 +646,11 @@ describe('the list find query', () => {
     stageBackend();
     await grantBackendScopes('laptop', ['git:operate']);
     installMocks({ p1: [summary(1), summary(3, { refKind: 'tag', ref: 'v1' })], p2: [summary(2, { ref: 'release-train' })] });
+    // Selecting a pipeline follows it.
+    setBindingMock('SubscribePipeline', async (_repo: unknown, id: string) => ({
+      id: `pipe-${id}`, key: `gitlab:group/app:pipeline:${id}`, pipeline: { id, status: 'running', stages: [] }, error: '', errorKind: '', reserve: false, resumeAt: '', seq: 1,
+    }));
+    setBindingMock('UnsubscribePipeline', async () => undefined);
     attachPipelinesPage(PANE, 'laptop');
     attachPipelinesPage('tools-other', 'laptop');
     await settle();

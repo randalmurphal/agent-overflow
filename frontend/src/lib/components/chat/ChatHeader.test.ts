@@ -25,7 +25,7 @@ import {
 } from '../../stores/keybindings.svelte';
 import { projectTurnStarted, setThreadStatus } from '../../stores/threadStatuses.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { setBindingMock, resetBindingMocks, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import {
   addProjectLocal,
   resetProjectsForTest,
@@ -236,6 +236,8 @@ describe('<ChatHeader>', () => {
 
   it('toggles the review pane via the Diffs button', async () => {
     const pane = await buildPane();
+    // Opening review reads the workspace diff: no changes.
+    setReviewDiffMock('OpenWorkspaceDiff', () => '');
     setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     const { getByTestId } = render(ChatHeader, { props: { pane } });
     await tick();

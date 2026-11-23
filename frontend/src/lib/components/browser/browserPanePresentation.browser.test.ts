@@ -27,6 +27,7 @@ import Toast from '../shared/Toast.svelte';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
 import { mountBrowserPaneStrip, type BrowserPaneStrip } from '../../../test/helpers/browserPaneStrip';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { makeThread } from '../../../test/helpers/chat';
 import { forgetBackendEntities, forgetThread, noteThread } from '../../transport/entityIndex';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
@@ -143,6 +144,8 @@ it('detaches the native view when two computers claim the thread, and attaches a
     return { id: 'mount-2', state: shown };
   });
   stageBackend({ id: 'remote', backendId: 'remote' });
+  // A thread two computers claim is read again to learn whose it is.
+  setBindingMock('GetThread', async (id: string) => makeThread({ id }));
   try {
     noteThread(THREAD, HOME_BACKEND, 4);
     noteThread(THREAD, 'remote', 4);

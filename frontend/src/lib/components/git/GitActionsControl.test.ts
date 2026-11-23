@@ -371,6 +371,8 @@ describe('<GitActionsControl> palette dialog event', () => {
     resetPanesForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    // The Commit dialog lists the uncommitted changes as it opens.
+    setBindingMock('ListCommitFiles', async () => ({ files: [], total: 0, wholeOnly: false }));
     await loadSettings();
   });
 

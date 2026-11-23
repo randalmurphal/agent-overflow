@@ -234,6 +234,14 @@ describe('markdownFindText', () => {
 describe('markdownFindText over generated comments', () => {
   const SEEDS = Array.from({ length: 60 }, (_, i) => i + 1);
 
+  // The generated attachments name uploads the forge does not hold, so each
+  // fetch fails and the chip shows its failed state.
+  beforeEach(() => {
+    setBindingMock('FetchForgeAttachment', async () => {
+      throw new Error('fetch forge attachment: 404 Not Found');
+    });
+  });
+
   it('generates alignment blocks of both kinds, closed and unclosed', () => {
     const sources = SEEDS.map(generatedMarkdown);
     expect(sources.join('\n')).toContain('[/center]');

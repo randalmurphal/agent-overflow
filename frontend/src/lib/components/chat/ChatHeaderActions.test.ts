@@ -17,7 +17,7 @@ import { closeCompanion, companionForSource, installCompanionPanes, resetCompani
 import type { GitStatus } from '../../types/git';
 import type { Project, Thread } from '../../types/models';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock, getBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { commitList } from '../../../test/helpers/commitList';
 import { __setTransportHelloForTest, __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
@@ -157,6 +157,8 @@ describe('<ChatHeaderActions> badge gating', () => {
 
   it('clicking the workspace +/- opens review on the workspace scope', async () => {
     const pane = await buildPane();
+    // Opening review reads the workspace diff: no changes.
+    setReviewDiffMock('OpenWorkspaceDiff', () => '');
     setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     installSubscribeMock(status({ insertions: 2, deletions: 0 }));
     const { getByTestId } = render(ChatHeaderActions, { props: { pane } });

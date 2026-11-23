@@ -176,8 +176,10 @@ it('reads the browser state again on every home connection edge, and on no other
   const gpu = stageBackend({ id: 'gpu', status: 'reconnecting', hello: { backendId: 'gpu' } as TransportHello });
   __setTransportHelloForTest({ backendId: '' } as TransportHello, HOME_BACKEND);
   __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
-  // Each home connection edge reads the keybindings again too.
+  // Each home connection edge reads the keybindings and the provider
+  // update status again too.
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
+  setBindingMock('GetProviderUpdates', async () => []);
   stop = installComputerHydration();
   await Promise.resolve();
   vi.mocked(refreshBrowserCompanionStates).mockClear();

@@ -130,6 +130,10 @@ describe('<MachinePicker>', () => {
     noteProject('project-2', 'laptop');
     const pane = buildPlaceholderPane();
     const defaults = setBindingMock('GetThreadDefaults', async () => ({}));
+    // The folder picker lists the chosen computer's home folder.
+    setBindingMock('BrowseDirectory', async () => ({
+      path: '/home/me', parent: '/home', separator: '/', entries: [], truncated: false, exists: true,
+    }));
     const { getByTestId, findByRole } = render(MachinePicker, { props: { pane } });
     await fireEvent.click(getByTestId('machine-picker-trigger'));
     await fireEvent.click(await findByRole('menuitem', { name: /Laptop/ }));
@@ -166,6 +170,10 @@ describe('<MachinePicker>', () => {
     const pane = buildPlaceholderPane();
     const defaults = setBindingMock('GetThreadDefaults', async () => ({ provider: 'claude', model: 'm' }));
 
+    // The folder picker lists the chosen computer's home folder.
+    setBindingMock('BrowseDirectory', async () => ({
+      path: '/home/me', parent: '/home', separator: '/', entries: [], truncated: false, exists: true,
+    }));
     const { getByTestId, findByRole } = render(MachinePicker, { props: { pane } });
     await fireEvent.click(getByTestId('machine-picker-trigger'));
     await fireEvent.click(await findByRole('menuitem', { name: /Laptop/ }));

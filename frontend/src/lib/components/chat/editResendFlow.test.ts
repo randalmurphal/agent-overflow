@@ -44,6 +44,7 @@ import { DisconnectedError, TransportError } from '../../transport/wsClient';
 import { resetEditResendExecutionForTest } from './editResendFlow.svelte';
 import type { Item, Thread } from '../../types/models';
 import { setAttachmentThumbnailMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { mockAttachmentUpload } from '../../../test/mocks/attachmentTransfer';
 import {
   installPaneMocks,
@@ -87,6 +88,8 @@ beforeAll(() => {
 beforeEach(() => {
   // The composer loads the thumbnail of each image a test uploads.
   setAttachmentThumbnailMock();
+  // The composer loads its provider's model list.
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   Object.defineProperty(window, 'innerWidth', {
     configurable: true,
     writable: true,

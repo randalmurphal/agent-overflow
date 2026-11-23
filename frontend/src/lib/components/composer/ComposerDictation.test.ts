@@ -11,6 +11,7 @@ import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
 import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
@@ -32,6 +33,8 @@ vi.mock('../../dictation/browserDictation', () => ({
 const { dictationFixture } = await import('../../../test/helpers/dictation');
 
 function installComposerMocks(): void {
+  // The composer loads its provider's model list.
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   setBindingMock('GetDraft', async (threadId: string) => ({
     threadId, content: '', attachmentIds: [], terminalChips: [], updatedAt: 0,
   }));

@@ -24,6 +24,7 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { buildPane, installPaneMocks, makeItem, makeThread } from '../../../test/helpers/chat';
 import { createThreadPane } from '../../stores/thread.svelte';
 import type { Item } from '../../types/models';
@@ -161,6 +162,11 @@ beforeEach(async () => {
   createdStickControllers.length = 0;
   resetBindingMocks();
   clearThreadScrollSnapshotsForTest();
+  // The composer loads its provider's model list.
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
+  // The composer reads its thread's saved draft and attachments: none.
+  setBindingMock('GetDraft', async (threadId: string) => ({ threadId, content: '', attachmentIds: [], terminalChips: [], updatedAt: 0 }));
+  setBindingMock('ListAttachments', async () => []);
   clearAllThreadSizePriorsForTest();
   setBindingMock('GetSettings', async () => null);
   await loadSettings();

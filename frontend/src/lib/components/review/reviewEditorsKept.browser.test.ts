@@ -239,6 +239,8 @@ describe('open comment editors across a row unmount', () => {
     }));
     setBindingMock('UnsubscribePRUpdates', async () => undefined);
     setReviewDiffMock('OpenPRDiff', async () => patch());
+    // Reloading the review re-reads the PR's detail.
+    setBindingMock('GetPRDetail', async () => detail());
     setBindingMock('ListPRCommits', async () => commitList([]));
     setBindingMock('ListPRReviewThreads', async () => [THREAD]);
     setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
@@ -300,6 +302,8 @@ describe('open comment editors across a row unmount', () => {
     }));
     setBindingMock('UnsubscribePRUpdates', async () => undefined);
     setReviewDiffMock('OpenPRDiff', async () => patch());
+    // Reloading the review re-reads the PR's detail.
+    setBindingMock('GetPRDetail', async () => detail());
     setReviewDiffMock('OpenPRCommitDiff', async () => patch());
     const commit = 'c'.repeat(40);
     setBindingMock('ListPRCommits', async () => commitList([{ sha: commit, shortSha: 'ccccccc', subject: 'One', author: 'octocat', authoredAt: 1 }]));

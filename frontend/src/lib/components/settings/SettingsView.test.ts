@@ -117,6 +117,9 @@ describe('<SettingsView> tabs', () => {
   });
 
   it('names the computer the Voice page configures', async () => {
+    // The page reads the key file and voices: no key file written yet.
+    setBindingMock('OpenAIKeyFile', async () => ({ path: '/data/credentials/openai-api-key', state: 'missing' }));
+    setBindingMock('ReadAloudSource', async () => ({ available: false, voices: [] }));
     const { getByTestId, getByRole } = render(SettingsView, { onClose: vi.fn() });
     await fireEvent.click(getByRole('tab', { name: 'Voice' }));
     const header = getByTestId('settings-page-header');
@@ -125,6 +128,8 @@ describe('<SettingsView> tabs', () => {
   });
 
   it('switches to the Observability page when clicked', async () => {
+    // The page reads whether tracing is on, and was at launch: off.
+    setBindingMock('GetObservabilityTracing', async () => ({ value: false, launched: false }));
     const { getByRole, findByLabelText } = render(SettingsView, { onClose: vi.fn() });
     await fireEvent.click(getByRole('tab', { name: 'Observability' }));
 

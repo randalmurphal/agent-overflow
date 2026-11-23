@@ -34,6 +34,11 @@ beforeEach(async () => {
   for (const backend of ['tower', 'laptop']) await grantBackendScopes(backend, ['threads:read', 'threads:operate', 'git:operate']);
   noteThread(thread.id, 'tower', 0); noteProject('project-source', 'tower'); noteProject('project-target', 'laptop');
   setBindingMock('GetThreadTransfers', async () => { takePinnedBackend(); return []; });
+  // Opening the dialog asks the source for the conversation's recurring jobs
+  // and standing agent: none (app_thread_transfer_status.go,
+  // app_standing_agents.go).
+  setBindingMock('ListThreadRecurringJobs', async () => { takePinnedBackend(); return []; });
+  setBindingMock('GetStandingAgent', async () => { takePinnedBackend(); return null; });
 });
 afterEach(() => {
   stop(); stop = () => {}; resetConversationTransfersForTest(); resetStagedBackends();

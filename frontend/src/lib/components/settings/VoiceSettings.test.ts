@@ -36,10 +36,19 @@ async function seed(overrides: Partial<Settings>): Promise<void> {
   await loadSettings();
 }
 
+// The page reads the computer's OpenAI key file and its read-aloud voices.
+// With no key file written, read aloud through OpenAI is unavailable
+// (app_openai_key.go, app_read_aloud.go).
+function answerNoKeyFile(): void {
+  setBindingMock('OpenAIKeyFile', async () => ({ path: '/data/credentials/openai-api-key', state: 'missing' }));
+  setBindingMock('ReadAloudSource', async () => ({ available: false, voices: [{ id: 'marin', name: 'Marin' }] }));
+}
+
 describe('<VoiceSettings>', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetToLocalPage();
+    answerNoKeyFile();
   });
   afterEach(() => {
     resetToLocalPage();
@@ -97,6 +106,7 @@ describe('<VoiceSettings> read aloud', () => {
     fake = fakeSpeechEngine(2);
     watchReadAloudVoices(fake.engine);
     await settleSpeech();
+    answerNoKeyFile();
     await seed({});
     setBindingMock('DictationSources', async () => ({ subscription: false, chatGPTSignIn: false }));
   });
@@ -182,6 +192,7 @@ describe('<VoiceSettings> live dictation', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetToLocalPage();
+    answerNoKeyFile();
     setBindingMock('DictationSources', async () => ({ subscription: false, live: false, chatGPTSignIn: false }));
     setBindingMock('OpenAIKeyFile', async () => keyFile('present'));
   });

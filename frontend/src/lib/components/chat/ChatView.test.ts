@@ -34,6 +34,7 @@ import {
 } from '../../stores/eventsMessageRevert';
 import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { installPaneMocks, installThreadSwitchMocks, makeItem } from '../../../test/helpers/chat';
 import { resetLayoutMetricsForTest } from '../../stores/layoutMetrics.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
@@ -80,6 +81,8 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.stubGlobal('innerWidth', 1400);
+  // The composer loads its provider's model list.
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   resetLayoutMetricsForTest();
   resetPaneLayoutForTest();
   resetCompanionPanesForTest();

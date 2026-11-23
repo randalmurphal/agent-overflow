@@ -115,6 +115,8 @@ describe('<ComposerToolbar>', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetProviderAccounts();
+    // The composer loads its provider's model list.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     const frame = vi.spyOn(window, 'requestAnimationFrame')
       .mockImplementation((callback: FrameRequestCallback) => {
         callback(0);
@@ -186,9 +188,6 @@ describe('<ComposerToolbar>', () => {
     const effortTrigger = getByTestId('composer-effort-trigger');
     expect(effortTrigger.closest('[data-composer-toolbar-pickers]')).not.toBeNull();
     expect(effortTrigger).toHaveAttribute('aria-expanded', 'false');
-
-    // The effort picker reads the provider's model list as it opens.
-    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     await fireEvent.click(getByTestId('composer-pickers-rollup'));
     expect(queryByRole('menuitem', { name: 'Model…' })).toBeNull();
     await fireEvent.click(getByRole('menuitem', { name: /^Effort…/ }));
@@ -406,6 +405,8 @@ describe('<ComposerToolbar>', () => {
 describe('<ComposerToolbar> usage rings', () => {
   beforeEach(() => {
     resetBindingMocks();
+    // The composer loads its provider's model list.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     resetProviderAccounts();
     resetRateLimits();
   });
@@ -511,7 +512,11 @@ describe('<ComposerToolbar> usage rings', () => {
 // Outside the suite above, whose synchronous animation frames spin the
 // popover's anchor tracking.
 describe('<ComposerToolbar> context meter', () => {
-  beforeEach(resetBindingMocks);
+  beforeEach(() => {
+    resetBindingMocks();
+    // The composer loads its provider's model list.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
+  });
 
   // The exact breakdown reads the thread's live session. A draft placeholder
   // has none, so only the materialized row offers it.

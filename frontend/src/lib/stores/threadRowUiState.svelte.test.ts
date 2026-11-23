@@ -1097,7 +1097,8 @@ describe('createThreadRowUiState', () => {
     });
 
     it('reflects an expanded payload handle', async () => {
-      setBindingMock('GetPayloadData', async () => ({ data: 'x' }));
+      // Expanding reads the payload's preview.
+      setBindingMock('GetPayloadPreview', async () => ({ data: 'x', nextOffset: 1, totalSize: 1, isComplete: true }));
       const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
       const handle = rowUiState.expansionStateForPayload('payload-a', 'thread-a', 1);
       await handle.expand();

@@ -115,6 +115,7 @@ describe('SettingsFooter notification-sound toggle', () => {
   // The muted reading is the non-default one, so it is what the icon, the
   // pressed state and the label all have to announce.
   it('reads as muted once the setting is off, and offers the unmute', async () => {
+    setBindingMock('UpdateSettings', async () => undefined);
     await updateSetting('notificationSoundsEnabled', false);
     const view = render(SettingsFooter, { onOpenSettings: () => {} });
     const button = view.getByTestId('sidebar-sound-toggle');

@@ -96,6 +96,8 @@ async function mountWithDraft(submit: (wire: unknown, review: { drafts?: { ids: 
   setBindingMock('ListPRCommits', async () => commitList([]));
   setBindingMock('ListPRReviewThreads', async () => []);
   setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
+  // A review the forge did not confirm re-reads the PR's detail.
+  setBindingMock('GetPRDetail', async () => detail());
   const fake = installPRDraftsFake();
   let sourceKey = '';
   setBindingMock('ListPRDiffReviewComments', async (_wire: unknown, scope: string, key: string) => {
@@ -141,6 +143,8 @@ describe('the send strip of a PR review', () => {
     setBindingMock('ListPRCommits', async () => commitList([]));
     setBindingMock('ListPRReviewThreads', async () => []);
     setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
+    // The reload and the refused review re-read the PR's detail.
+    setBindingMock('GetPRDetail', async () => detail());
     const fake = installPRDraftsFake();
     let sourceKey = '';
     setBindingMock('ListPRDiffReviewComments', async (_wire: unknown, scope: string, key: string) => {

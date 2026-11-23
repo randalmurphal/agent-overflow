@@ -78,7 +78,7 @@ import {
   resetThreadTerminalStatesForTest,
   terminalStateKeyForPane,
 } from '../components/terminal/terminalStore.svelte';
-import { setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
 import { attachBrowserPaneForTest } from '../../test/helpers/browserPane';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { withEmptyDraftCleanup } from './emptyDraftCleanup';
@@ -274,6 +274,8 @@ describe('review.toggle command', () => {
 
   it('toggles the review companion on the command context pane', () => {
     const pane = readyPane({ projectId: 'project-1' });
+    // Opening review reads the workspace diff: no changes.
+    setReviewDiffMock('OpenWorkspaceDiff', () => '');
     setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     registerFixtureCommands(pane);
 

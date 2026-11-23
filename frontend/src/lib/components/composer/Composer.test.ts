@@ -11,6 +11,7 @@ import { FakeSmoothingClock } from '../../../test/helpers/smoothingClock';
 import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { buildPane, makeItem, makeThread as makeTestThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setAttachmentThumbnailMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../../test/helpers/scopes';
 import type { Attachment } from '../../types/attachment';
@@ -225,6 +226,8 @@ describe('<Composer>', () => {
     resetBindingMocks();
     // The composer loads the thumbnail of each image a test uploads.
     setAttachmentThumbnailMock();
+    // The composer loads its provider's model list.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     resetComposerDraftSnapshotStateForTest();
     resetProposedPlanCacheForTests();
     resetWorktreeIntent();

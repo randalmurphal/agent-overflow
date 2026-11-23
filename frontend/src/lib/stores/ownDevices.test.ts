@@ -111,6 +111,18 @@ describe('own device connections', () => {
       ? { ...group([A, B]), members: [member(A), member(B), member(C, true)] }
       : group([A, B, C]));
     const introduce = setBindingMock('IntroduceOwnDevice', async (id: string) => invite(id));
+    // A's removal of C reaches the sponsors that still list it: each merges
+    // the rows it is sent, a newer generation or, at the same one, a removal
+    // winning, and answers its list.
+    setBindingMock('SyncOwnDevices', async (members: ReturnType<typeof member>[]) => {
+      takePinnedBackend();
+      const merged = new Map(group([A, B, C]).members.map((row) => [row.keyThumbprint, row]));
+      for (const row of members) {
+        const held = merged.get(row.keyThumbprint);
+        if (!held || row.generation > held.generation || (row.generation === held.generation && row.removed)) merged.set(row.keyThumbprint, row);
+      }
+      return { ...group([A, B, C]), members: [...merged.values()] };
+    });
     stop = installOwnDeviceSync();
     await vi.waitFor(() => expect(pairedSessionId(C)).toBeNull());
     expect(ownDeviceConnectionExcluded(C)).toBe(true);

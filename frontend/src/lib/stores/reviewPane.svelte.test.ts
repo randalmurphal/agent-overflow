@@ -1629,6 +1629,8 @@ describe('reviewPane store — PR scope', () => {
       paths: ['main.go'],
       messages: [],
     }));
+    // The conflict view reads each conflicted file.
+    setBindingMock('GetMergeConflictFile', async () => ['<<<<<<< ours', 'left', '=======', 'right', '>>>>>>> theirs'].join('\n'));
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
@@ -4782,6 +4784,8 @@ describe('reviewPane store — PR read intent', () => {
 
   it('reads attended for the entry points a person drove', async () => {
     const { list, diff, commitDiff } = installIntentMocks();
+    // A reload a person asked for re-reads the PR's detail.
+    setBindingMock('GetPRDetail', async () => prDetailStub());
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
 
@@ -6084,6 +6088,9 @@ describe('reviewPane store — the PR under the pane changing', () => {
       headSHA: `sha-${pr.Number}`,
       seq: 1,
     }));
+    // A write answered with no frame to wait for re-reads its PR's detail.
+    setBindingMock('GetPRDetail', async (pr: { Number: number }) =>
+      prDetailStub({ number: pr.Number, url: `https://github.com/owner/repo/pull/${pr.Number}`, headSHA: `sha-${pr.Number}` }));
   }
 
   async function prPane(): Promise<ReturnType<typeof reviewStateForPane>> {
