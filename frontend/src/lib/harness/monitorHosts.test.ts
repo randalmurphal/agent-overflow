@@ -10,7 +10,6 @@ function context(id: string, capabilities: readonly MonitorCapability[]): { cont
   const monitorContext: MonitorContext = {
     runId: 'host-test', monitorId: id, startedAtMs: 0,
     capabilities: new Set(capabilities),
-    probes: { read: (request) => ({ kind: request.kind, atMs: 0, available: false }) },
     now: () => 0,
     observe: (value) => observations.push(value),
     fail: (message) => errors.push(message),

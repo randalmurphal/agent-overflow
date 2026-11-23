@@ -12,7 +12,6 @@ import {
   type MonitorInstance,
   type MonitorLastReceipt,
   type MonitorOverlap,
-  type MonitorProbeReader,
   type MonitorResult,
   type MonitorRunResult,
   type MonitorSpec,
@@ -157,7 +156,7 @@ export class MonitorRegistry {
             `monitor ${JSON.stringify(spec.id)} is declared but has no typed host implementation`,
           );
         }
-        const monitor = this.createMonitor(run, spec, capabilities, request.probes);
+        const monitor = this.createMonitor(run, spec, capabilities);
         run.monitors.push(monitor);
         monitor.instance.start?.();
       }
@@ -308,7 +307,6 @@ export class MonitorRegistry {
     run: LiveRun,
     spec: MonitorSpec,
     capabilities: ReadonlySet<MonitorCapability>,
-    probes?: MonitorProbeReader,
   ): LiveMonitor {
     const monitor: LiveMonitor = {
       spec,
@@ -325,7 +323,6 @@ export class MonitorRegistry {
       monitorId: spec.id,
       startedAtMs: run.startedAtMs,
       capabilities,
-      probes: probes ?? { read: () => ({ atMs: run.lastHeartbeatAtMs, kind: 'frame', available: false, error: 'no probe supplied' }) },
       now: () => run.lastHeartbeatAtMs,
       observe: (value) => {
         this.recordObservation(monitor, run.lastHeartbeatAtMs, value, 'observe');

@@ -1,9 +1,10 @@
 /**
  * Stable types for app-feel monitors.
  *
- * A monitor is an observation contract, not a browser script. The probe
- * surface is deliberately finite, so a custom monitor cannot smuggle
- * arbitrary JavaScript evaluation or screenshots into a harness run.
+ * A monitor is an observation contract, not a browser script. Its context
+ * carries the page's capabilities, the run clock, and `observe` and `fail`,
+ * so a custom monitor cannot smuggle arbitrary JavaScript evaluation or
+ * screenshots into a harness run.
  */
 
 export const MONITOR_SPEC_VERSION = 1 as const;
@@ -56,40 +57,11 @@ export const MONITOR_PERTURBATIONS: readonly MeasurementPerturbation[] = [
   'layout-read',
 ];
 
-export type MonitorProbeKind =
-  | 'frame'
-  | 'long-task'
-  | 'long-animation-frame'
-  | 'input-to-render'
-  | 'scroll'
-  | 'layout-shift'
-  | 'animation'
-  | 'semantic-dom'
-  | 'focus-clipping-settledness';
-
-export interface MonitorProbeRequest<K extends MonitorProbeKind = MonitorProbeKind> {
-  readonly kind: K;
-  readonly selector?: string;
-}
-
-export interface MonitorProbeResult {
-  readonly atMs: number;
-  readonly kind: MonitorProbeKind;
-  readonly available: boolean;
-  readonly value?: unknown;
-  readonly error?: string;
-}
-
-export interface MonitorProbeReader {
-  read<K extends MonitorProbeKind>(request: MonitorProbeRequest<K>): MonitorProbeResult;
-}
-
 export interface MonitorContext {
   readonly runId: string;
   readonly monitorId: string;
   readonly startedAtMs: number;
   readonly capabilities: ReadonlySet<MonitorCapability>;
-  readonly probes: MonitorProbeReader;
   now(): number;
   observe(value: unknown): void;
   fail(message: string): void;
@@ -125,8 +97,6 @@ export interface MonitorStartRequest {
   readonly capabilities: ReadonlySet<MonitorCapability>;
   readonly heartbeatTimeoutMs?: number;
   readonly atMs?: number;
-  /** Typed host probes only. There is no string-eval or screenshot escape hatch. */
-  readonly probes?: MonitorProbeReader;
   readonly compatibilityLeg?: MonitorCompatibilityLeg;
 }
 

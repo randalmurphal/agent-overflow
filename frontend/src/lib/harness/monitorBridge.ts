@@ -1,5 +1,5 @@
 import { defaultMonitorRegistry } from './monitorRegistry';
-import type { MonitorCapability, MonitorCompatibilityLeg, MonitorProbeReader, MonitorProbeResult } from './monitorTypes';
+import type { MonitorCapability, MonitorCompatibilityLeg } from './monitorTypes';
 
 function fail(message: string): { error: string } {
   return { error: message };
@@ -37,55 +37,6 @@ function monitorCapabilities(): ReadonlySet<MonitorCapability> {
   return capabilities;
 }
 
-// The monitor API receives this finite, typed reader rather than an eval
-// escape hatch. Custom monitors can ask for structural browser facts while
-// the bridge retains control of the actual DOM and platform operations.
-function monitorProbes(): MonitorProbeReader {
-  return {
-    read: (request): MonitorProbeResult => {
-      const atMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      switch (request.kind) {
-        case 'frame':
-        case 'animation':
-          return { atMs, kind: request.kind, available: typeof requestAnimationFrame === 'function' };
-        case 'long-task':
-          return { atMs, kind: request.kind, available: typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes?.includes('longtask') };
-        case 'long-animation-frame':
-          return { atMs, kind: request.kind, available: typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes?.includes('long-animation-frame') };
-        case 'layout-shift':
-          return { atMs, kind: request.kind, available: typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes?.includes('layout-shift') };
-        case 'input-to-render':
-          return { atMs, kind: request.kind, available: typeof document !== 'undefined' };
-        case 'scroll':
-          return { atMs, kind: request.kind, available: typeof document !== 'undefined' };
-        case 'semantic-dom':
-          if (typeof document === 'undefined') return { atMs, kind: request.kind, available: false, error: 'document is unavailable' };
-          if (!request.selector) return { atMs, kind: request.kind, available: true, value: { count: document.querySelectorAll('[data-item-id]').length } };
-          try {
-            const elements = document.querySelectorAll(request.selector);
-            const first = elements.item(0);
-            const rect = first?.getBoundingClientRect();
-            return {
-              atMs,
-              kind: request.kind,
-              available: true,
-              value: { count: elements.length, visible: first ? !!rect && rect.width > 0 && rect.height > 0 : false },
-            };
-          } catch (error) {
-            return { atMs, kind: request.kind, available: false, error: `invalid selector: ${String(error)}` };
-          }
-        case 'focus-clipping-settledness': {
-          if (typeof document === 'undefined') return { atMs, kind: request.kind, available: false, error: 'document is unavailable' };
-          const active = document.activeElement;
-          if (!(active instanceof HTMLElement)) return { atMs, kind: request.kind, available: true, value: { focused: false } };
-          const rect = active.getBoundingClientRect();
-          return { atMs, kind: request.kind, available: true, value: { focused: true, clipped: rect.bottom < 0 || rect.top > window.innerHeight } };
-        }
-      }
-    },
-  };
-}
-
 function monitorRunId(spec: Record<string, unknown>): string {
   const runId = str(spec, 'runId');
   if (!runId) throw new Error('monitor operation requires a runId');
@@ -120,7 +71,6 @@ export function dispatchMonitor(spec: Record<string, unknown>): unknown {
         runId: str(spec, 'runId') || undefined,
         monitorIds: monitorIDs(spec),
         capabilities: monitorCapabilities(),
-        probes: monitorProbes(),
         heartbeatTimeoutMs: num(spec, 'heartbeatTimeoutMs', 3000),
         atMs: num(spec, 'atMs', typeof performance !== 'undefined' ? performance.now() : Date.now()),
         compatibilityLeg: (str(spec, 'compatibilityLeg') || undefined) as MonitorCompatibilityLeg | undefined,
