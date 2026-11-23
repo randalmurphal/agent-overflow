@@ -3,13 +3,16 @@
 // Live session state, never history: Claude emits a `task_progress` tick
 // after every tool round of a running agent; for Codex, triage sends a
 // frame per child token-usage update and per tool call the child makes.
-// The agent card reads the latest tick while the agent runs (tool count,
-// tokens, elapsed, activity line); once the execution settles, the final
-// numbers live on its completion meta
-// (`meta.subagentProgress`, persisted by triage at the terminal) and the
-// card reads those instead — see `utils/subagentProgress.ts`. The settled
+// Three surfaces read the latest tick while the agent runs (tool count,
+// tokens, elapsed, activity line): the agent card, the background task
+// tray row and the agent pane's composer strip. Once the execution
+// settles, the final numbers live on its completion meta
+// (`meta.subagentProgress`, persisted by triage at the terminal) and all
+// three show those instead (`utils/subagentProgress.ts`). The settled
 // launch's last tick stays here until the next snapshot omits it or the
-// thread is cleared; the card no longer reads it.
+// thread is cleared. The card stops reading it at settlement; the tray row
+// and the composer strip still show its counters, without the activity
+// line, when the settled launch persisted no final numbers.
 //
 // One reactive box per (thread, launch) via keyedSignalRegistry: every
 // agent card on screen reads its own key, and a shared map would wake all
