@@ -3,7 +3,17 @@
 // config/testResetsPlugin.ts appends to its test transform), so the setup
 // file imports no app module. Import this first in a setup file: a module
 // that loads before it fails its registration.
-import { afterEach, beforeEach } from 'vitest';
+//
+// It also fails the test that called a binding with no mock installed
+// (mocks/bindings-app.ts records each such call here). A call is charged to
+// the test running when it was made, or, made between tests, to the test
+// that ended last; the first check after it fails: the end of that test, the
+// start of the next, or the end of the file. The record lives on the
+// worker's global, so a call a file's modules make after the file ended
+// fails the next file run in the same worker. A call made after the last
+// file of a worker, or after a file with a context of its own (unit-isolated,
+// browser) ended, has no later check to fail.
+import { afterAll, afterEach, beforeEach } from 'vitest';
 import { FIRST, POSTURE, RESET_REGISTRY_KEY, STORAGE, type Exports, type Step } from './config/testResets';
 
 type Loaded = {
@@ -20,7 +30,30 @@ export type ResetRegistry = {
   settled(): void;
   /** Keys of the modules this file loaded, in load order. */
   keys(): string[];
+  /** A binding was called with no mock installed. */
+  unansweredBinding(name: string): void;
+  /** The unanswered calls recorded since the last check, each with the
+   * test it is charged to, and clears them. */
+  takeUnansweredBindings(): string[];
 };
+
+type UnansweredCall = { readonly binding: string; readonly during: string };
+
+// One list per worker global, shared by every file's registry instance.
+const UNANSWERED = Symbol.for('agent-overflow.test.unansweredBindings');
+
+function unansweredCalls(): UnansweredCall[] {
+  const holder = globalThis as { [UNANSWERED]?: UnansweredCall[] };
+  return (holder[UNANSWERED] ??= []);
+}
+
+function unansweredError(calls: readonly string[]): Error | null {
+  if (calls.length === 0) return null;
+  return new Error(
+    `${calls.length} binding call${calls.length === 1 ? '' : 's'} had no mock installed:\n  ${calls.join('\n  ')}\n` +
+    'Install an answer with setBindingMock in the test. A test that needs a binding absent installs a mock that rejects with the error the backend gives.',
+  );
+}
 
 function call(entry: Step, exports: Exports): unknown {
   const fn = exports[entry.name];
@@ -52,6 +85,14 @@ function install(): ResetRegistry {
   // not run: a step that reads a module still loading (an import cycle)
   // waits for the next module to load.
   let pending: { readonly loaded: Loaded; readonly step: Step }[] = [];
+  // Whom an unanswered binding call made now is charged to.
+  let during = 'while the test file loaded';
+  let file = 'its test file';
+  const unanswered = unansweredCalls();
+
+  function takeUnanswered(): string[] {
+    return unanswered.splice(0).map(({ binding, during: at }) => `${binding}, ${at}`);
+  }
 
   async function runSteps(steps: readonly (Step | typeof STORAGE)[], errors: unknown[]): Promise<void> {
     for (const entry of steps) {
@@ -83,7 +124,11 @@ function install(): ResetRegistry {
     }
   }
 
-  beforeEach(async () => {
+  beforeEach(async ({ task }) => {
+    const earlier = unansweredError(takeUnanswered());
+    if (earlier) throw earlier;
+    file = task.file.name;
+    during = `in "${task.fullTestName}" (${file})`;
     pending = [];
     const errors: unknown[] = [];
     await runSteps(POSTURE, errors);
@@ -91,7 +136,7 @@ function install(): ResetRegistry {
     inTest = true;
   });
 
-  afterEach(async () => {
+  afterEach(async ({ task }) => {
     inTest = false;
     const errors: unknown[] = pending.map(({ loaded, step }) => new Error(
       `${loaded.key} loaded during the test, and its posture step ${step.name} could not run before the test ended: it read a module that was still loading`,
@@ -114,7 +159,16 @@ function install(): ResetRegistry {
     const newest = new Map<string, Loaded>();
     for (const loaded of modules) if (!loaded.held) newest.set(loaded.key, loaded);
     modules = modules.filter((loaded) => loaded.held || newest.get(loaded.key) === loaded);
+    const calls = unansweredError(takeUnanswered());
+    if (calls) errors.push(calls);
+    during = `after "${task.fullTestName}" (${task.file.name}) ended`;
     fail(errors);
+  });
+
+  afterAll(() => {
+    const calls = unansweredError(takeUnanswered());
+    during = `after ${file} ended`;
+    if (calls) throw calls;
   });
 
   return {
@@ -129,6 +183,10 @@ function install(): ResetRegistry {
       if (inTest) runPending();
     },
     keys: () => [...new Set(modules.map((loaded) => loaded.key))],
+    unansweredBinding(name) {
+      unanswered.push({ binding: name, during });
+    },
+    takeUnansweredBindings: takeUnanswered,
   };
 }
 

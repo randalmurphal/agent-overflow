@@ -24,6 +24,7 @@ const mockMachinery = new Set([
   'getBindingMock',
   'resetBindingMocks',
   '__bindingMocksInternal',
+  'unansweredBinding',
 ]);
 
 function generatedFunctionNames(): Set<string> {
@@ -82,8 +83,6 @@ describe('bindings-app passive loads', () => {
     await expect(mockBindings.GetSoundFiles()).resolves.toBe('own');
     mockBindings.resetBindingMocks();
     await expect(mockBindings.GetSoundFiles()).resolves.toEqual({ dir: '/tmp/sounds', sounds: [], warnings: [] });
-    // Any other binding still rejects unmocked.
-    expect(() => mockBindings.GitCommit('/w', '', [], '', '')).toThrow('Binding GitCommit called without a mock');
   });
 
   it('list no MCP servers, as for a provider with no built-in servers', async () => {

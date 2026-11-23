@@ -2,14 +2,34 @@
 // bindings that the real app imports via `lib/stores/bindings.ts`.
 //
 // Tests call `setBindingMock('ListItems', impl)` to stub specific RPC methods.
-// Anything not explicitly mocked rejects with a clear error so an untested
-// code path can't silently no-op, except the passive loads below.
+// A call to anything not mocked, except the passive loads below, throws, and
+// the reset registry fails the test that made it, even when the code under
+// test catches the error. A test that needs a binding absent installs a mock
+// that rejects.
 
 import { vi, type Mock } from 'vitest';
+import { RESET_REGISTRY_KEY } from '../config/testResets';
+import type { ResetRegistry } from '../resetRegistry';
 
 type MockedFn = Mock<(...args: unknown[]) => unknown>;
 
 const mocks: Map<string, MockedFn> = new Map();
+
+const registry = (globalThis as { [key: symbol]: ResetRegistry | undefined })[Symbol.for(RESET_REGISTRY_KEY)];
+if (registry === undefined) {
+  throw new Error('bindings-app.ts loaded without the reset registry: the setup file must import src/test/resetRegistry.ts first');
+}
+
+/**
+ * Records a call to a binding with no mock installed, which fails the test
+ * that made it, and returns the error the call fails with.
+ */
+export function unansweredBinding(name: string): Error {
+  registry!.unansweredBinding(name);
+  return new Error(
+    `Binding ${name} called without a mock. Install one via setBindingMock('${name}', impl) in the test.`,
+  );
+}
 
 /**
  * Internal export of the mocks registry. Imported by the wailsio-runtime
@@ -257,11 +277,7 @@ installPassiveLoads();
 function dispatch(name: string) {
   return (...args: unknown[]) => {
     const fn = mocks.get(name);
-    if (!fn) {
-      throw new Error(
-        `Binding ${name} called without a mock. Install one via setBindingMock('${name}', impl) in the test.`,
-      );
-    }
+    if (!fn) throw unansweredBinding(name);
     return fn(...args);
   };
 }

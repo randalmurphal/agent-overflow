@@ -15,7 +15,8 @@
 // `runtime.test.ts` enforces the static-helper surface match so accidental
 // drift fails CI rather than only showing up in production.
 
-import { __bindingMocksInternal } from './bindings-app';
+import * as bindings from './bindings-app';
+import { __bindingMocksInternal, unansweredBinding } from './bindings-app';
 import { methodId } from '../../lib/transport/methodId';
 import { getBackendIdentity } from '../../lib/transport/backendIdentity';
 import type { EventOrigin } from '../../lib/transport/handle';
@@ -123,13 +124,7 @@ export const Call = {
     // either shape via setBindingMock.
     const key = name.replace(/^main\.App\./, '');
     const fn = __bindingMocksInternal.get(key);
-    if (!fn) {
-      return Promise.reject(
-        new Error(
-          `Call.ByName: no mock for ${name}. Install one via setBindingMock('${key}', impl).`,
-        ),
-      );
-    }
+    if (!fn) return Promise.reject(unansweredBinding(key));
     return Promise.resolve(fn(...args));
   },
   // A wrapper that calls by id (stores/bindings.ts, ArchiveThread) reaches
@@ -145,7 +140,8 @@ export const Call = {
         return Promise.reject(err);
       }
     }
-    return Promise.reject(new Error(`Call.ByID: no mock for method ${id}. Install one via setBindingMock(name, impl).`));
+    const name = Object.keys(bindings).find((each) => methodId(each) === id);
+    return Promise.reject(unansweredBinding(name ?? `the method with id ${id}`));
   },
 };
 

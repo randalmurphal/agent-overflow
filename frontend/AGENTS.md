@@ -158,9 +158,13 @@ browser test whose assertion is not per painted frame drives the streaming
 reveal with `revealWithoutWaitingForFrames` (`src/test/helpers/browserFrames.ts`).
 
 Preserve unlisted exports when mocking shared modules with `importOriginal`.
-Prefer binding mocks over mocking through `.svelte.ts` import boundaries. Add
-passive-load bindings to the shared app defaults when every rendered app needs
-them.
+Prefer binding mocks over mocking through `.svelte.ts` import boundaries. A
+call to a binding with no mock fails the test that made it, even when the code
+under test catches the failure. A load that a surface or store starts with no
+user action gets a default in `src/test/mocks/bindings-app.ts` that answers as
+the Go side does for a backend with nothing recorded. The test answers what its
+own action calls. A test that needs a binding absent installs a mock that
+rejects with the backend's error.
 
 Do not edit `node_modules`. Temporary fixes for active dependencies live in
 versioned pnpm patches; adopted dormant code lives under `src/` with its license.
