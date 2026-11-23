@@ -2,7 +2,6 @@ export const FAKE_OUTER_HEIGHT = 1500;
 export const FAKE_INNER_HEIGHT = 1418;
 export const FAKE_SOURCE_SWAP_HEIGHT = 1234;
 export const FAKE_STALE_RETRY_HEIGHT = 999;
-export const FAKE_RENDERED_HEIGHT = FAKE_INNER_HEIGHT;
 
 let restorePerTestAnimationFrame: (() => void) | undefined;
 let restorePerTestOffsetHeight: (() => void) | undefined;

@@ -54,7 +54,7 @@ import { resetLayoutMetricsForTest } from '../../lib/stores/layoutMetrics.svelte
 import { resetComposerDraftSnapshotStateForTest } from '../../lib/stores/composerDraftSnapshots';
 import { resetForTest as resetThreadStatuses, projectSendStarted } from '../../lib/stores/threadStatuses.svelte';
 import { __resetReviewPaneStateForTest } from '../../lib/stores/reviewPane.svelte';
-import { resetForTest as resetDiffReviewCommentsForTest } from '../../lib/stores/diffReviewComments.svelte';
+import { resetDiffReviewCommentsForTest } from '../../lib/stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../lib/stores/appStorage';
 import {
   resetForTest as resetAccountInfoForTest,
