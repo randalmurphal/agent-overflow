@@ -27,6 +27,7 @@ type listener struct {
 	PPID int
 	PGID int
 	Comm string
+	CWD  string
 }
 
 func enumerateListeners(_ string) ([]listener, map[int]int, error) {

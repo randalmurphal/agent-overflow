@@ -16,7 +16,7 @@ func (s *Service) CheckTransferReadiness(ctx context.Context, name, minimumCodex
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if name != string(provider.Claude) && name != string(provider.Codex) {
+	if name != string(provider.Claude) && name != string(provider.Codex) && name != string(provider.Agy) {
 		return errors.New("Unsupported conversation provider.")
 	}
 	binary := s.deps.ProviderBinary(name)
@@ -43,6 +43,12 @@ func (s *Service) CheckTransferReadiness(ctx context.Context, name, minimumCodex
 	}
 	if name == string(provider.Codex) && s.deps.CheckCodexTransferAccount != nil {
 		return s.deps.CheckCodexTransferAccount(ctx, binary)
+	}
+	if name == string(provider.Agy) {
+		if s.deps.CheckAgyTransferAccount != nil {
+			return s.deps.CheckAgyTransferAccount(ctx, binary)
+		}
+		return nil
 	}
 	return errors.New("Provider account checks are unavailable while this computer is starting.")
 }

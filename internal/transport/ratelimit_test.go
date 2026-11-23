@@ -332,13 +332,13 @@ func TestHealthAndAssetsAreNotRateLimited(t *testing.T) {
 }
 
 // TestRateLimitersAreSeparatePerSurface — a reconnect ladder hammering
-// the manifest must not lock the same user's CLI out of /rpc.
+// A client hammering bootstrap must not lock the same user out of /pageurl or /auth.
 func TestRateLimitersAreSeparatePerSurface(t *testing.T) {
 	srv, err := New(Config{Dispatcher: NewDispatcher(), EventBus: NewEventBus(4), Token: "t"})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
-	limiters := []*rateLimiter{srv.bootstrapLimit, srv.pageURLLimit, srv.scopedRPCLimit}
+	limiters := []*rateLimiter{srv.bootstrapLimit, srv.pageURLLimit, srv.authLimit}
 	for i, limiter := range limiters {
 		if limiter == nil {
 			t.Fatalf("limiter %d was not built", i)
@@ -359,8 +359,8 @@ func TestRateLimitersAreSeparatePerSurface(t *testing.T) {
 	if ok, _ := srv.pageURLLimit.allow("10.0.0.1"); !ok {
 		t.Fatal("spending the bootstrap budget refused a /pageurl request")
 	}
-	if ok, _ := srv.scopedRPCLimit.allow("10.0.0.1"); !ok {
-		t.Fatal("spending the bootstrap budget refused a /rpc request")
+	if ok, _ := srv.authLimit.allow("10.0.0.1"); !ok {
+		t.Fatal("spending the bootstrap budget refused an /auth request")
 	}
 }
 

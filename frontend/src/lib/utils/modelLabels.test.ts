@@ -45,6 +45,20 @@ describe('displayModelLabel', () => {
     expect(displayModelLabel('codex', 'custom-model', 'Custom Model')).toBe('Custom Model');
     expect(displayModelLabel('codex', 'GPTurbo', 'GPTurbo')).toBe('GPTurbo');
   });
+
+  it('formats Antigravity slugs and catalog names cleanly', () => {
+    expect(displayModelLabel('agy', 'gemini-4-neon')).toBe('Gemini 4 Neon');
+    expect(displayModelLabel('agy', 'gemini-4-hydrogen')).toBe('Gemini 4 Hydrogen');
+    expect(displayModelLabel('agy', 'gemini-4-hydrogen-tiered')).toBe('Gemini 4 Hydrogen');
+    expect(displayModelLabel('agy', 'gemini-3.1-pro-high')).toBe('Gemini 3.1 Pro High');
+    expect(displayModelLabel('agy', 'gemini-3.1-pro-high', 'Gemini 3.1 Pro (High)')).toBe('Gemini 3.1 Pro (High)');
+    expect(displayModelLabel('agy', 'gemini-3-flash')).toBe('Gemini 3 Flash');
+    expect(displayModelLabel('agy', 'gemini-4-neon', 'Gemini 4 Neon')).toBe('Gemini 4 Neon');
+    expect(displayModelLabel('agy', 'claude-sonnet-4-6')).toBe('Claude Sonnet 4.6');
+    expect(displayModelLabel('agy', 'flash')).toBe('Flash');
+    expect(displayModelLabel('agy', 'flash_lite')).toBe('Flash Lite');
+    expect(displayModelLabel('agy', 'pro')).toBe('Pro');
+  });
 });
 
 describe('displayUsageModelLabel', () => {
@@ -68,6 +82,12 @@ describe('displayUsageModelLabel', () => {
     expect(displayUsageModelLabel('gpt-5.6-sol')).toBe('GPT 5.6 Sol');
     expect(displayUsageModelLabel('gpt-5.4-mini')).toBe('GPT 5.4 Mini');
     expect(displayUsageModelLabel('gpt-5.3-codex-spark')).toBe('GPT 5.3 Codex Spark');
+  });
+
+  it('formats Gemini usage slugs with the same friendly aliases as the picker', () => {
+    expect(displayUsageModelLabel('gemini-4-neon')).toBe('Gemini 4 Neon');
+    expect(displayUsageModelLabel('gemini-4-hydrogen')).toBe('Gemini 4 Hydrogen');
+    expect(displayUsageModelLabel('gemini-3.1-pro-high')).toBe('Gemini 3.1 Pro High');
   });
 
   it('passes unrecognized slugs through untouched', () => {

@@ -95,7 +95,7 @@ func TestACodexTransferSnapshotsAppServerIsRecordedWhileItRuns(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		thread := store.Thread{Provider: string(provider.Codex), SessionRef: "thr-transfer"}
-		_, _, err := app.collectTransferNative(ctx, thread, map[string]string{})
+		_, _, err := app.collectTransferNative(ctx, thread, t.TempDir(), map[string]string{})
 		done <- err
 	}()
 	record := waitOrphanRecord(t, registry)

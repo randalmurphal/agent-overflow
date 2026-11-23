@@ -178,6 +178,11 @@ func ActionURL(providerName, status string) string {
 		case "not_found":
 			return "https://github.com/openai/codex#installation"
 		}
+	case string(provider.Agy):
+		switch status {
+		case "not_found", "unauthenticated":
+			return "https://antigravity.google/docs/cli"
+		}
 	}
 	return ""
 }

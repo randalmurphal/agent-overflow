@@ -646,6 +646,8 @@ func ProviderDisplayName(providerName string) string {
 		return "Claude"
 	case "codex":
 		return "Codex"
+	case "agy":
+		return "Antigravity"
 	default:
 		return SummaryLine(providerName, MaxToolNameRunes)
 	}

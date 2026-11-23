@@ -44,10 +44,10 @@ func TestDetectProviderWithRealBinary(t *testing.T) {
 	}
 }
 
-func TestDetectClaudeVersionWithMock(t *testing.T) {
+func TestRunVersionCommandWithMock(t *testing.T) {
 	script := createMockBinary(t, "#!/bin/sh\necho 'claude-code 1.2.3'")
 
-	version, err := detectClaudeVersion(script)
+	version, err := runVersionCommand(script, "--version")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -56,15 +56,15 @@ func TestDetectClaudeVersionWithMock(t *testing.T) {
 	}
 }
 
-func TestDetectCodexVersionWithMock(t *testing.T) {
-	script := createMockBinary(t, "#!/bin/sh\necho 'codex 0.9.1'")
+func TestDetectProviderCodexReadyWithMock(t *testing.T) {
+	script := createMockBinary(t, "#!/bin/sh\necho 'codex 0.143.0'")
 
-	version, err := detectCodexVersion(script)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	status := DetectProvider("codex", script)
+	if !status.Installed || status.Status != "ready" {
+		t.Fatalf("expected ready codex status, got %+v", status)
 	}
-	if version != "codex 0.9.1" {
-		t.Fatalf("expected version 'codex 0.9.1', got %q", version)
+	if status.Version != "codex 0.143.0" {
+		t.Fatalf("expected version 'codex 0.143.0', got %q", status.Version)
 	}
 }
 

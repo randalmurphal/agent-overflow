@@ -1,7 +1,8 @@
 # Codex app-server sharing
 
-Status: design, not scheduled. Nothing here is implemented. Wire facts are
-in [codex-wire.md](../references/codex-wire.md) and
+Status: implemented on this branch (`internal/sessionruntime/connpool.go`,
+`internal/provider/codex/conn.go`, `internal/app/app_codex_pool.go`). Wire facts
+are in [codex-wire.md](../references/codex-wire.md) and
 [codex.md](../references/codex.md#app-server-process-cost-measured-01621);
 this spec cites them rather than repeating them.
 
@@ -385,6 +386,8 @@ restart needs no process restart: the start is a cold resume on the same
 connection.
 
 ## Identity
+
+> Note: the `agent-overflow remote` CLI and per-session `AO_ENDPOINT` / `AO_TOKEN` / `AO_THREAD_ID` credentials described in this historical section were subsequently retired. Provider processes no longer receive `AO_*` credentials in either the spawn environment or `shell_environment_policy`.
 
 At stage 1 the `ao` credential stays in the spawn environment, as today:
 the key holds one thread per process, so the environment is still that

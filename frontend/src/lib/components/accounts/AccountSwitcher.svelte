@@ -41,7 +41,7 @@
   } from '../../stores/providerAccounts.svelte';
   import { getProviderRateLimits } from '../../stores/rateLimitsInfo.svelte';
   import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
-  import { PROVIDER_SETTINGS_ORDER } from '../../providers/catalog';
+  import { standaloneProvidersWithFeature } from '../../providers/catalog';
   import { scopeGrant } from '../../transport/scopes';
   import type { ProviderID } from '../../types/providers';
   import { isImeComposingEvent } from '../../utils/imeComposition';
@@ -101,7 +101,7 @@
   // one flow, two windows onto it. Failed flows are included, because the
   // reason is what the user needs before trying again.
   let activeLogins = $derived(
-    PROVIDER_SETTINGS_ORDER.filter(
+    standaloneProvidersWithFeature('accounts').filter(
       (provider) =>
         isProviderLoginActive(provider, backend) || getProviderLogin(provider, backend).phase === 'failed',
     ),

@@ -21,6 +21,7 @@ import (
 const (
 	ProviderClaude = "claude"
 	ProviderCodex  = "codex"
+	ProviderAgy    = "agy"
 )
 
 // originRuneCap bounds Row.Origin. The marker is provider-file text this
@@ -47,6 +48,12 @@ type Deps struct {
 	// CodexHome is the directory holding Codex's thread index (normally
 	// `~/.codex`). Empty is the same "unavailable, not broken" state.
 	CodexHome string
+	// AgyListSessions enumerates Antigravity sessions via ACP `session/list`.
+	// Nil means this host has no Antigravity home configured.
+	AgyListSessions func(ctx context.Context) ([]AgySessionSummary, error)
+	// AgyReplaySession replays one indexed Antigravity session via ACP
+	// `session/load` into provider events.
+	AgyReplaySession func(ctx context.Context, sessionID, workDir string) ([]provider.ProviderEvent, error)
 	// EnsureProject finds or creates the project for a session's recorded
 	// workspace. Injected so an imported project is created by the owner
 	// of project creation (projectapp), which records its repository
@@ -230,7 +237,7 @@ func Scan(ctx context.Context, d Deps, filter Filter) (ScanResult, error) {
 	}
 
 	result := ScanResult{}
-	for _, providerName := range scanProviders(filter.Provider) {
+	for _, providerName := range scanProviders(filter.Provider, d.AgyListSessions != nil) {
 		status := ProviderStatus{Provider: providerName}
 		rows, warnings, err := scanProvider(ctx, d, providerName, known)
 		switch {
@@ -278,13 +285,18 @@ func Scan(ctx context.Context, d Deps, filter Filter) (ScanResult, error) {
 }
 
 // scanProviders resolves the filter into the providers to read.
-func scanProviders(filtered string) []string {
+func scanProviders(filtered string, includeAgy bool) []string {
 	switch strings.TrimSpace(filtered) {
 	case ProviderClaude:
 		return []string{ProviderClaude}
 	case ProviderCodex:
 		return []string{ProviderCodex}
+	case ProviderAgy:
+		return []string{ProviderAgy}
 	default:
+		if includeAgy {
+			return []string{ProviderClaude, ProviderCodex, ProviderAgy}
+		}
 		return []string{ProviderClaude, ProviderCodex}
 	}
 }
@@ -297,6 +309,8 @@ func scanProvider(
 		return scanClaude(ctx, d, known)
 	case ProviderCodex:
 		return scanCodex(ctx, d, known)
+	case ProviderAgy:
+		return scanAgy(ctx, d, known)
 	default:
 		return nil, nil, fmt.Errorf("sessionimport: unknown provider %q", providerName)
 	}

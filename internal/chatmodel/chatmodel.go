@@ -36,17 +36,14 @@ func FallbackProvider(availableProviders ...string) string {
 	if len(availableProviders) == 0 {
 		return string(provider.Claude)
 	}
-	hasCodex := false
+	available := make(map[string]struct{}, len(availableProviders))
 	for _, p := range availableProviders {
-		switch p {
-		case string(provider.Claude):
-			return string(provider.Claude)
-		case string(provider.Codex):
-			hasCodex = true
-		}
+		available[p] = struct{}{}
 	}
-	if hasCodex {
-		return string(provider.Codex)
+	for _, candidate := range provider.StandaloneProviders() {
+		if _, ok := available[string(candidate)]; ok {
+			return string(candidate)
+		}
 	}
 	return string(provider.Claude)
 }

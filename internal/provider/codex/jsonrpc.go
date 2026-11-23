@@ -31,6 +31,9 @@ func (s *Session) sendRequest(ctx context.Context, method string, params any) (j
 // startRequest separates ordered pipe writes from response waits. The caller
 // must invoke the returned function exactly once to settle the pending request.
 func (s *Session) startRequest(method string, params any) (func(context.Context) (json.RawMessage, error), error) {
+	if s.conn != nil {
+		return s.conn.startRequestWithTimeout(method, params, s.requestTimeoutOverride)
+	}
 	id := s.nextID.Add(1)
 
 	ch := make(chan json.RawMessage, 1)
@@ -392,6 +395,9 @@ func (s *Session) requestTimeout() time.Duration {
 
 // writeNotification sends a JSON-RPC notification (no id, no response expected).
 func (s *Session) writeNotification(method string, params any) error {
+	if s.conn != nil {
+		return s.conn.writeNotification(method, params)
+	}
 	msg := map[string]any{
 		"jsonrpc": "2.0",
 		"method":  method,
@@ -420,6 +426,9 @@ func (s *Session) writeErrorResponse(id int64, code int, message string) error {
 // 2447 for exec approval, 2494 for user input, 2603 for MCP
 // elicitation, 2680 for permissions).
 func (s *Session) writeErrorResponseWithData(id int64, code int, message string, data any) error {
+	if s.conn != nil {
+		return s.conn.writeErrorResponseWithData(id, code, message, data)
+	}
 	errFields := map[string]any{
 		"code":    code,
 		"message": message,
@@ -455,6 +464,9 @@ const codexTurnTransitionReason = "turnTransition"
 
 // writeResponse sends a JSON-RPC response (to server requests like approvals).
 func (s *Session) writeResponse(id int64, result any) error {
+	if s.conn != nil {
+		return s.conn.writeResponse(id, result)
+	}
 	msg := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
@@ -467,12 +479,11 @@ func (s *Session) writeResponse(id int64, result any) error {
 	return s.proc.WriteLine(data)
 }
 
-// readLoop reads stdout and dispatches JSON-RPC messages.
+// readLoop reads stdout and dispatches JSON-RPC messages (used only by
+// synthetic unit tests that construct a Session without Conn).
 func (s *Session) readLoop() {
 	defer func() {
-		if s.readDone != nil {
-			defer close(s.readDone)
-		}
+		defer s.finishReadDone()
 
 		// Unblock all pending requests.
 		s.mu.Lock()

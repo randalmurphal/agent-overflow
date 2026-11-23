@@ -2,11 +2,8 @@ package codex
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"slices"
-	"time"
 
 	"agent-overflow/internal/provider"
 )
@@ -23,150 +20,30 @@ import (
 // The Session struct these two build, and its teardown, are in session.go;
 // the turn verbs a live session then serves are in session_turn.go.
 
-// NewSession spawns codex app-server, performs the initialize handshake,
-// and starts (or resumes) a thread. Returns after handshake completes.
+// NewSession spawns a dedicated codex app-server Conn, performs the initialize
+// handshake, and opens a thread on it. Closing the returned Session closes
+// that dedicated Conn. For multiplexed production sessions, use Dial + Conn.Open.
 func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(provider.ProviderEvent)) (*Session, error) {
-	binary := cfg.Binary
-	if binary == "" {
-		binary = "codex"
-	}
-	sessionStart, err := provider.NewSessionStartDelivery(cfg.SessionStartHook, cfg.SessionStartForget)
-	if err != nil {
+	if _, err := provider.NewSessionStartDelivery(cfg.SessionStartHook, cfg.SessionStartForget); err != nil {
 		return nil, fmt.Errorf("codex: %w", err)
 	}
-
-	childCtx, cancel := context.WithCancel(ctx)
-
-	proc, err := provider.Spawn(childCtx, provider.Watched(cfg.Reaper), provider.SpawnConfig{
-		Binary:           binary,
-		Args:             codexAppServerArgs(),
-		Dir:              cfg.WorkDir,
-		Env:              cfg.Env,
-		UnsetEnv:         []string{"CODEX_HOME"},
-		EventLogger:      cfg.EventLogger,
-		EventLogRedactor: newCodexProviderEventLogRedactor(),
-		ThreadID:         threadID,
-		Provider:         string(provider.Codex),
+	conn, err := Dial(ctx, ConnConfig{
+		Binary:      cfg.Binary,
+		WorkDir:     cfg.WorkDir,
+		Env:         cfg.Env,
+		EventLogger: cfg.EventLogger,
+		Reaper:      cfg.Reaper,
+		ThreadID:    threadID,
 	})
 	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("codex: spawn: %w", err)
-	}
-
-	s := &Session{
-		proc:      proc,
-		ctx:       childCtx,
-		threadID:  threadID,
-		workDir:   cfg.WorkDir,
-		binary:    binary,
-		usageAcct: newUsageAccounting(cfg.ResumeThreadID != ""),
-		turnConfig: sessionTurnConfig{
-			model:               cfg.Model,
-			reasoningEffort:     cfg.ReasoningEffort,
-			serviceTier:         cfg.ServiceTier,
-			assertedServiceTier: cfg.ServiceTier,
-			approvalPolicy:      cfg.ApprovalPolicy,
-			sandbox:             cfg.Sandbox,
-			approvalsReviewer:   threadApprovalsReviewer(cfg),
-		},
-		writableRoots:   slices.Clone(cfg.WritableRoots),
-		nativeMemoryOff: cfg.NativeMemoryOff,
-		pending:         make(map[int64]chan json.RawMessage),
-		onEvent:         onEvent,
-		sessionStart:    sessionStart,
-		cancel:          cancel,
-		readDone:        make(chan struct{}),
-		collab: sessionCollabState{
-			childParentByThread:       make(map[string]string),
-			childParentByAgentPath:    make(map[string]string),
-			childThreadByAgentPath:    make(map[string]string),
-			childPathOwnerLive:        make(map[string]bool),
-			agentPathByThread:         make(map[string]string),
-			agentMetaByThread:         make(map[string]collabReceiverMeta),
-			subagentNotificationDedup: make(map[subagentNotificationDedupKey]struct{}),
-			childRuntimeByThread:      make(map[string]childRuntimeState),
-		},
-		collabMetadataReads: make(chan struct{}, 4),
-		rawCalls: sessionRawToolCallState{
-			byID:                  make(map[string]rawToolCall),
-			waitReceiverIDsByCall: make(map[string][]string),
-		},
-		childRouting: sessionChildRoutingState{
-			deferredChildWireEvents: make(map[string][]deferredChildWireEvent),
-			deferredChildDeadlines:  make(map[string]*time.Timer),
-		},
-		collabHistory: sessionCollabHistoryState{
-			generation: 1,
-			visited:    make(map[string]uint64),
-		},
-		planBuffersByItemID: make(map[string]*planBuffer),
-		planBuffersByTurnID: make(map[string]*planBuffer),
-		ownsQueuedClient:    cfg.OwnsQueuedClientID,
-	}
-	if delivery := cfg.DeveloperInstructionsDelivery; delivery != nil {
-		s.developerInstructionsRecord = delivery.Record
-		if cfg.ResumeThreadID != "" {
-			s.developerInstructionsReceived = delivery.Received
-		}
-	}
-	// On resume the root provider id is already durable in AO. Seed it before
-	// the read loop starts so child notifications racing the thread/resume
-	// response are quarantined instead of being mistaken for root events. A
-	// fresh thread cannot have children before NewSession returns.
-	if cfg.ResumeThreadID != "" {
-		s.setRootThreadID(cfg.ResumeThreadID)
-	}
-
-	// Start stdout reader goroutine before sending any requests.
-	go s.readLoop()
-
-	// Initialize handshake. The opt-out list is the complement of what
-	// this package consumes, so Codex stops emitting the ~30 notification
-	// methods we would otherwise parse, route and drop per app-server
-	// (one per thread).
-	initializeResp, err := s.sendRequest(ctx, "initialize",
-		codexInitializeParams(provider.CodexClientOrigin, sessionOptOutNotificationMethods()))
-	if err != nil {
-		s.Close()
-		return nil, fmt.Errorf("codex: initialize handshake failed: %w", err)
-	}
-	// The handshake response is the only place a live app-server states its
-	// own build. Per-method version floors read it; never a second probe.
-	s.recordAppServerVersion(initializeResp)
-	// Same handshake, one derived decision: which queue owns a message the
-	// user sends while this session is busy. Frozen here so nothing can
-	// observe it change mid-session (thread_queue.go).
-	s.recordThreadQueueSupport()
-
-	// Send initialized notification (no id, no response expected).
-	if err := s.writeNotification("initialized", nil); err != nil {
-		s.Close()
-		return nil, fmt.Errorf("codex: send initialized notification: %w", err)
-	}
-
-	// The last moment before the thread is loaded — see Config.BeforeResume.
-	if cfg.ResumeThreadID != "" && cfg.BeforeResume != nil {
-		cfg.BeforeResume(s)
-	}
-
-	if err := s.startOrResumeThread(ctx, cfg); err != nil {
-		s.Close()
 		return nil, err
 	}
-
-	meta, _ := json.Marshal(provider.SessionInfo{
-		SessionID: s.rootThreadID(),
-		Model:     cfg.Model,
-		CWD:       cfg.WorkDir,
-	})
-	s.emitEvent(provider.ProviderEvent{
-		Kind:      provider.EventInit,
-		ThreadID:  threadID,
-		Meta:      meta,
-		Timestamp: time.Now(),
-	})
-
-	return s, nil
+	sess, err := conn.open(ctx, threadID, cfg, onEvent, true, nil)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return sess, nil
 }
 
 // startOrResumeThread runs the ONE RPC that gives this session a thread, and

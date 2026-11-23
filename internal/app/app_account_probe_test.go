@@ -67,6 +67,7 @@ func TestProbeStartupAccountInfoEmitsPerProvider(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{
 		"claudeBinaryPath": claudeBin,
 		"codexBinaryPath":  codexBin,
+		"agyBinaryPath":    "/nonexistent/agy-missing-xyz-12345",
 	}); err != nil {
 		t.Fatalf("update settings: %v", err)
 	}
@@ -105,6 +106,7 @@ func TestProbeStartupAccountInfoSwallowsFailure(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{
 		"claudeBinaryPath": claudeBin,
 		"codexBinaryPath":  "/nonexistent/codex-missing-xyz-12345",
+		"agyBinaryPath":    "/nonexistent/agy-missing-xyz-12345",
 	}); err != nil {
 		t.Fatalf("update settings: %v", err)
 	}

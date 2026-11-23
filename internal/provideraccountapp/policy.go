@@ -5,10 +5,19 @@ import (
 	"strings"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
 )
+
+// ManagedAccountProviders enumerates every provider with managed multi-account
+// storage, login flows, and quota polling.
+var ManagedAccountProviders = []string{
+	string(provider.Claude),
+	string(provider.Codex),
+	string(provider.Agy),
+}
 
 // CredentialSignedOut identifies provider-native bytes that represent a
 // completed sign-out rather than a usable login.
@@ -29,6 +38,8 @@ func CredentialChainPosition(providerName string, data []byte) (int64, bool) {
 			return 0, false
 		}
 		return refreshed.UnixMilli(), true
+	case string(provider.Agy):
+		return agy.CredentialExpiresAt(data)
 	default:
 		return 0, false
 	}
@@ -59,6 +70,8 @@ func CredentialRefreshTokenFingerprint(providerName string, data []byte) (string
 		return claude.CredentialRefreshTokenFingerprint(data)
 	case string(provider.Codex):
 		return codex.CredentialRefreshTokenFingerprint(data)
+	case string(provider.Agy):
+		return agy.CredentialRefreshTokenFingerprint(data)
 	default:
 		return "", false
 	}
@@ -105,12 +118,12 @@ func AccountInfo(account provideraccounts.Account) provider.AccountInfo {
 	}
 }
 
-// ValidateProvider restricts managed accounts to the two implemented CLIs.
+// ValidateProvider restricts managed accounts to the implemented providers.
 func ValidateProvider(providerName string) error {
-	switch providerName {
-	case string(provider.Claude), string(provider.Codex):
-		return nil
-	default:
-		return fmt.Errorf("unsupported account provider %q", providerName)
+	for _, p := range ManagedAccountProviders {
+		if providerName == p {
+			return nil
+		}
 	}
+	return fmt.Errorf("unsupported account provider %q", providerName)
 }

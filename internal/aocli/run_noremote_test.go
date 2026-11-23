@@ -17,7 +17,6 @@ func TestNoremoteRefusesRemoteCommands(t *testing.T) {
 	noEnv := func(string) (string, bool) { return "", false }
 	for _, args := range [][]string{
 		{"pair", "--lan"},
-		{"remote", "list"},
 		{"service", "install"},
 	} {
 		var stdout, stderr bytes.Buffer
@@ -32,7 +31,7 @@ func TestNoremoteRefusesRemoteCommands(t *testing.T) {
 			t.Errorf("%v wrote to stdout: %q", args, stdout.String())
 		}
 	}
-	for _, offered := range []string{"  serve ", "service install", "pair --lan", "  remote "} {
+	for _, offered := range []string{"  serve ", "service install", "pair --lan"} {
 		if strings.Contains(rootUsage, offered) {
 			t.Errorf("help offers %q in a build without remote access:\n%s", offered, rootUsage)
 		}

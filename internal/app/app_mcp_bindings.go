@@ -138,12 +138,13 @@ func (a *App) mcpDeps() mcpapp.Deps {
 		},
 		ProviderBinary: a.providerBinaryPath,
 		SessionProcessEnv: func(providerName string) map[string]string {
-			return a.sessionProcessEnv(providerName, nil, aoSessionCredential{})
+			return a.sessionProcessEnv(providerName, nil)
 		},
 		ClaudeRetention:      a.claudeRetention,
 		ReadClaudeCredential: a.readClaudeMCPCredential,
 		ClaudeConfigPath:     a.claudeConfigJSONPath,
 		CodexConfigPath:      a.codexConfigTOMLPath,
+		AgyConfigPath:        a.agyMCPConfigJSONPath,
 		Emit:                 a.emit,
 		EmitThreadError:      a.emitErrorToThread,
 		EmitWireError:        a.emitWireErrorToThread,

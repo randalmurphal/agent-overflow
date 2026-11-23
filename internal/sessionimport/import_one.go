@@ -85,6 +85,8 @@ func ImportOne(ctx context.Context, d Deps, row Row) (ImportOutcome, error) {
 		return importClaude(ctx, d.Store, row, proj)
 	case ProviderCodex:
 		return importCodex(ctx, d, row, proj)
+	case ProviderAgy:
+		return importAgy(ctx, d, row, proj)
 	default:
 		return ImportOutcome{}, fmt.Errorf("sessionimport: %s names unknown provider %q", row.ID, row.Provider)
 	}

@@ -3,6 +3,7 @@ import { safeRepositoryMetadata } from '../utils/repositoryCoordinates';
 // identity token, connection, failure latch and purge lifecycle.
 import { validOwnershipEpoch } from '../transport/entityIndex';
 import type { ProjectWithCounts, Thread, ThreadGroup } from '../types/models';
+import { isProviderID } from '../types/providers';
 
 export interface CatalogRows { projects: ProjectWithCounts; threads: Thread; groups: ThreadGroup }
 export type CatalogKind = keyof CatalogRows;
@@ -37,7 +38,7 @@ function validRow(row: unknown, kind: CatalogKind): boolean {
   if (kind === 'groups') return fields(row, ['id', 'name', 'projectId'], ['createdAt', 'updatedAt']);
   return fields(row, ['id', 'title', 'provider', 'workspacePath', 'projectPath', 'model'], ['createdAt', 'updatedAt'], ['archived'])
     && (row.ownershipEpoch === undefined || validOwnershipEpoch(row.ownershipEpoch))
-    && (row.provider === 'claude' || row.provider === 'codex')
+    && isProviderID(row.provider)
     && (row.attention == null || (object(row.attention) && fields(row.attention, ['kind', 'reason'], ['at'])))
     && optional(row, ['sessionRef', 'pendingForkRef', 'projectId', 'worktreePath', 'branch', 'prRef', 'mode',
       'reasoningEffort', 'runtimeMode', 'forkedFromThreadId', 'lastTokenUsage',

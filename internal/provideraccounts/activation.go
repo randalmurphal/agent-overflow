@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"agent-overflow/internal/atomicfile"
 )
@@ -132,8 +131,8 @@ func (c *Credentials) RemoveActive(providerName string) error {
 		return err
 	}
 	defer release()
-	if runtime.GOOS == "darwin" && providerName == "claude" {
-		return c.keychain.remove(paths.SharedHome, true)
+	if kc, ok := c.keychainFor(providerName); ok {
+		return kc.remove(paths.SharedHome, true)
 	}
 	activePath, err := c.ActiveCredentialPath(providerName)
 	if err != nil {
@@ -181,8 +180,8 @@ func (c *Credentials) removeAccountLocked(providerName, accountID string) error 
 	if err != nil {
 		return err
 	}
-	if runtime.GOOS == "darwin" && providerName == "claude" {
-		if err := c.keychain.remove(accountDir, false); err != nil {
+	if kc, ok := c.keychainFor(providerName); ok {
+		if err := kc.remove(accountDir, false); err != nil {
 			return err
 		}
 	}

@@ -23,6 +23,7 @@ var (
 	allowedTextGenerationProviders = map[string]struct{}{
 		"claude": {},
 		"codex":  {},
+		"agy":    {},
 	}
 	// textGenerationDefaultFamilies are the model families text generation
 	// runs the newest listed model of when TextGenerationModel is blank
@@ -33,6 +34,7 @@ var (
 	textGenerationDefaultFamilies = map[string]string{
 		"claude": "claude-haiku",
 		"codex":  "gpt-luna",
+		"agy":    "gemini-4-hydrogen",
 	}
 	// Text-generation efforts are provider-specific. Claude has no "none",
 	// "minimal", or "ultra". Duplicated here to keep internal/settings
@@ -61,6 +63,12 @@ var (
 		"high":   {},
 		"xhigh":  {},
 		"max":    {},
+	}
+	allowedAgyTextGenerationEfforts = map[string]struct{}{
+		"low":    {},
+		"medium": {},
+		"high":   {},
+		"xhigh":  {},
 	}
 	allowedThreadEnvModes = map[string]struct{}{
 		"local":    {},
@@ -134,6 +142,7 @@ func validateSettings(current Settings) (Settings, error) {
 
 	current.ClaudeBinaryPath = normalizeBinaryPath(current.ClaudeBinaryPath, DefaultSettings.ClaudeBinaryPath)
 	current.CodexBinaryPath = normalizeBinaryPath(current.CodexBinaryPath, DefaultSettings.CodexBinaryPath)
+	current.AgyBinaryPath = normalizeBinaryPath(current.AgyBinaryPath, DefaultSettings.AgyBinaryPath)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
 	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)
 
@@ -299,8 +308,15 @@ func validateSettings(current Settings) (Settings, error) {
 			len(current.CodexHiddenModels), MaxHiddenModels,
 		)
 	}
+	if len(current.AgyHiddenModels) > MaxHiddenModels {
+		return Settings{}, fmt.Errorf(
+			"agyHiddenModels has %d entries, max is %d",
+			len(current.AgyHiddenModels), MaxHiddenModels,
+		)
+	}
 	current.ClaudeHiddenModels = dedupeTrimmed(current.ClaudeHiddenModels, MaxHiddenModels)
 	current.CodexHiddenModels = dedupeTrimmed(current.CodexHiddenModels, MaxHiddenModels)
+	current.AgyHiddenModels = dedupeTrimmed(current.AgyHiddenModels, MaxHiddenModels)
 
 	current.ClaudeCustomEnv, err = validateProviderEnvVars("claude", current.ClaudeCustomEnv)
 	if err != nil {
@@ -310,12 +326,20 @@ func validateSettings(current Settings) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
+	current.AgyCustomEnv, err = validateProviderEnvVars("agy", current.AgyCustomEnv)
+	if err != nil {
+		return Settings{}, err
+	}
 
 	current.ClaudePromptOverrides, err = validatePromptOverrides("claudePromptOverrides", current.ClaudePromptOverrides)
 	if err != nil {
 		return Settings{}, err
 	}
 	current.CodexPromptOverrides, err = validatePromptOverrides("codexPromptOverrides", current.CodexPromptOverrides)
+	if err != nil {
+		return Settings{}, err
+	}
+	current.AgyPromptOverrides, err = validatePromptOverrides("agyPromptOverrides", current.AgyPromptOverrides)
 	if err != nil {
 		return Settings{}, err
 	}
@@ -423,12 +447,18 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		current.CodexBinaryPath,
 		DefaultSettings.CodexBinaryPath,
 	)
+	current.AgyBinaryPath = sanitizeBinaryPath(
+		"agyBinaryPath",
+		current.AgyBinaryPath,
+		DefaultSettings.AgyBinaryPath,
+	)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
 	current.BrowserChromiumPath = sanitizeChromiumPath(current.BrowserChromiumPath)
 	current.GitLabSelfHostedHosts = sanitizeGitLabHosts(current.GitLabSelfHostedHosts)
 	current.Network = sanitizeNetwork(current.Network)
 	current.ClaudeHiddenModels = dedupeTrimmed(current.ClaudeHiddenModels, MaxHiddenModels)
 	current.CodexHiddenModels = dedupeTrimmed(current.CodexHiddenModels, MaxHiddenModels)
+	current.AgyHiddenModels = dedupeTrimmed(current.AgyHiddenModels, MaxHiddenModels)
 	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)
 
 	current.DefaultThreadEnvMode = sanitizeOption(
@@ -533,8 +563,10 @@ func sanitizeLoadedSettings(current Settings) Settings {
 	)
 	current.ClaudeCustomEnv = sanitizeProviderEnvVars("claude", current.ClaudeCustomEnv)
 	current.CodexCustomEnv = sanitizeProviderEnvVars("codex", current.CodexCustomEnv)
+	current.AgyCustomEnv = sanitizeProviderEnvVars("agy", current.AgyCustomEnv)
 	current.ClaudePromptOverrides = sanitizePromptOverrides("claudePromptOverrides", current.ClaudePromptOverrides)
 	current.CodexPromptOverrides = sanitizePromptOverrides("codexPromptOverrides", current.CodexPromptOverrides)
+	current.AgyPromptOverrides = sanitizePromptOverrides("agyPromptOverrides", current.AgyPromptOverrides)
 	sanitizePromptOverrideIDsAcrossProviders(&current)
 	current.ClaudeDisabledTools = sanitizeDisabledTools("claudeDisabledTools", current.ClaudeDisabledTools)
 	current.CodexDisabledTools = sanitizeDisabledTools("codexDisabledTools", current.CodexDisabledTools)
@@ -753,8 +785,12 @@ func allowedTextGenerationEfforts(provider string) map[string]struct{} {
 	switch provider {
 	case "claude":
 		return allowedClaudeTextGenerationEfforts
-	default:
+	case "codex":
 		return allowedCodexTextGenerationEfforts
+	case "agy":
+		return allowedAgyTextGenerationEfforts
+	default:
+		return nil
 	}
 }
 
@@ -1116,13 +1152,14 @@ func truncateRuneSafe(s string, maxBytes int) string {
 
 func joinAllowedValues(values map[string]struct{}) string {
 	options := make([]string, 0, len(values))
-	// Ordered candidate list so error messages render deterministically.
-	// Any value in `values` not in this list is skipped — new enums must
-	// be appended here.
+	seen := make(map[string]struct{}, len(values))
+	// Ordered candidate list so error messages render deterministically; any
+	// remaining value not listed here is still appended sorted rather than
+	// silently dropped.
 	candidates := []string{
 		"system", "light", "dark",
 		"locale", "12-hour", "24-hour",
-		"claude", "codex",
+		"claude", "codex", "agy",
 		"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 		"local", "worktree",
 		"compact", "comfortable", "spacious",
@@ -1132,7 +1169,16 @@ func joinAllowedValues(values map[string]struct{}) string {
 	for _, candidate := range candidates {
 		if _, ok := values[candidate]; ok {
 			options = append(options, candidate)
+			seen[candidate] = struct{}{}
 		}
 	}
+	var extras []string
+	for value := range values {
+		if _, ok := seen[value]; !ok {
+			extras = append(extras, value)
+		}
+	}
+	sort.Strings(extras)
+	options = append(options, extras...)
 	return strings.Join(options, ", ")
 }

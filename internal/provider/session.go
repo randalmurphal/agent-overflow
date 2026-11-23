@@ -103,14 +103,59 @@ type ImageAttachment struct {
 	Path     string
 }
 
-// Session is the minimal interface both provider.{claude,codex}.Session
-// satisfy. The app layer uses this to avoid branching on
-// `switch { case sess.claude != nil: ...; case sess.codex != nil: ... }`
-// for the handful of methods every provider session exposes the same
-// way. Anything that's only on one provider (e.g. Claude's
-// CanonicalLeafUUID(), Codex's SetDynamicToolHandler) stays behind the
-// concrete type; the wrapper in app.go still carries the typed
-// pointers so those call sites are unaffected.
+// Connection is one live provider process (or multiplexed transport).
+// Providers that multiplex conversations onto one process (Codex app-server,
+// ACP / Antigravity) share a Connection across many Sessions; single-session
+// providers (Claude, claude-tui) wrap their one process as a Connection.
+type Connection interface {
+	// PID is the OS process-group leader id, or 0 once the process has exited.
+	PID() int
+	// Done closes after the process has exited and every session on it has
+	// received its teardown events.
+	Done() <-chan struct{}
+	// Close ends the process.
+	Close() error
+}
+
+// OwnedProcess is one process root a listening socket of a session can
+// descend from, for dev-server attribution (internal/devscan).
+type OwnedProcess struct {
+	PID     int
+	PGID    int
+	WorkDir string
+}
+
+// FuncConnection wraps callback-backed PID, Done, and Close functions as a
+// Connection. Single-session providers (Claude, claude-tui) use this so they
+// do not duplicate a trivial wrapper struct.
+type FuncConnection struct {
+	PIDFn   func() int
+	DoneCh  <-chan struct{}
+	CloseFn func() error
+}
+
+func (c FuncConnection) PID() int {
+	if c.PIDFn == nil {
+		return 0
+	}
+	return c.PIDFn()
+}
+
+func (c FuncConnection) Done() <-chan struct{} {
+	return c.DoneCh
+}
+
+func (c FuncConnection) Close() error {
+	if c.CloseFn == nil {
+		return nil
+	}
+	return c.CloseFn()
+}
+
+// Session is the minimal interface every provider session satisfies.
+// The app layer uses this to avoid branching on concrete provider pointers
+// for the methods every provider session exposes the same way. Provider-only
+// capabilities remain behind their concrete session types.
 type Session interface {
 	// Send delivers a user turn to the provider.
 	Send(ctx context.Context, content string, opts SendOptions) error
@@ -123,11 +168,16 @@ type Session interface {
 	// request back to the provider.
 	RespondToUserInput(ctx context.Context, resp UserInputResponse) error
 	// PID returns the OS process id of the session's provider subprocess,
-	// or 0 if no process is live. Because the subprocess is its own
-	// process-group leader (Setpgid), this doubles as the group id for a
-	// negative-PID group kill — the orphan reaper uses it to tear down a
-	// session's whole process tree if the app dies ungracefully.
+	// or 0 if no process is live.
 	PID() int
-	// Close tears down the session and any provider subprocess it owns.
+	// Connection returns the underlying provider process connection, or nil
+	// when the session has no live transport.
+	Connection() Connection
+	// OwnedProcesses returns the process roots a listening socket of this
+	// conversation can descend from, for dev-server attribution.
+	OwnedProcesses() []OwnedProcess
+	// Close tears down the session and releases its provider-side resources.
+	// On a shared connection, Close detaches this conversation without ending
+	// the connection other sessions use.
 	Close() error
 }

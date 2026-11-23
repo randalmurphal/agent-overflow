@@ -181,16 +181,20 @@ func TestIsolateSpawnsInstallsBothLayers(t *testing.T) {
 	}
 }
 
-func TestProviderBinarySettingsCoversBothProviders(t *testing.T) {
+func TestProviderBinarySettingsCoversAllProviders(t *testing.T) {
 	patch := ProviderBinarySettings("/poison")
 
-	if len(patch) != 2 {
-		t.Fatalf("patch = %v, want exactly the two binary keys", patch)
+	wantKeys := []string{"claudeBinaryPath", "codexBinaryPath", "agyBinaryPath"}
+	if len(patch) != len(wantKeys) {
+		t.Fatalf("patch = %v, want %d binary keys", patch, len(wantKeys))
 	}
-	for _, key := range []string{"claudeBinaryPath", "codexBinaryPath"} {
+	for _, key := range wantKeys {
 		if patch[key] != "/poison" {
 			t.Errorf("%s = %v, want /poison", key, patch[key])
 		}
+	}
+	if !DisabledAgyModelCatalog().Disabled() {
+		t.Error("DisabledAgyModelCatalog().Disabled() = false, want true")
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/atomicfile"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/itemmeta"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/provider/codex"
@@ -111,7 +112,7 @@ func (a *App) snapshotThreadTransfer(ctx context.Context, row store.ThreadTransf
 	if private.DraftToConsume != nil {
 		manifest.DraftMCP = details.DraftMCP
 	}
-	native, refs, err := a.collectTransferNative(ctx, thread, manifest.NativePaths)
+	native, refs, err := a.collectTransferNative(ctx, thread, scratch, manifest.NativePaths)
 	if err != nil {
 		return completed, err
 	}
@@ -183,6 +184,13 @@ func (a *App) snapshotThreadTransfer(ctx context.Context, row store.ThreadTransf
 			for i := range refs {
 				refs[i].Ref = copied.IDs[refs[i].Ref]
 			}
+		case "agy":
+			copied, err := agy.CopyTransferFiles(ctx, row.ID, manifest.SessionRef, copyDir, native)
+			if err != nil {
+				return completed, err
+			}
+			manifest.SessionRef, native = copied.SessionID, copied.Files
+			refs = []store.TransferSession{{Provider: "agy", Ref: copied.SessionID}}
 		}
 		paths := make(map[string]string, len(manifest.NativePaths))
 		for id, name := range manifest.NativePaths {
@@ -287,7 +295,7 @@ func (a *App) finishTransferSnapshot(ctx context.Context, row store.ThreadTransf
 	return receipt, atomicfile.WriteJSON(filepath.Join(directory, "snapshot-complete.json"), receipt)
 }
 
-func (a *App) collectTransferNative(ctx context.Context, thread store.Thread, paths map[string]string) ([]transferfiles.Source, []store.TransferSession, error) {
+func (a *App) collectTransferNative(ctx context.Context, thread store.Thread, scratch string, paths map[string]string) ([]transferfiles.Source, []store.TransferSession, error) {
 	if thread.PendingForkRef != "" && thread.Provider != "claude" {
 		return nil, nil, errors.New("This provider's pending fork format cannot be transferred.")
 	}
@@ -330,6 +338,16 @@ func (a *App) collectTransferNative(ctx context.Context, thread store.Thread, pa
 			}
 		}
 		return snapshot.Files, refs, nil
+	case "agy":
+		ref := thread.ResolvedSessionRef()
+		files, err := agy.TransferFiles(ctx, a.agyAppDataDir(), ref, filepath.Join(scratch, "agy-native"))
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(files) > 0 {
+			paths[ref] = files[0].Name
+		}
+		return files, []store.TransferSession{{Provider: "agy", Ref: ref}}, nil
 	}
 	return nil, nil, errors.New("This provider cannot transfer native conversations.")
 }

@@ -47,6 +47,7 @@ type listener struct {
 	PPID int
 	PGID int
 	Comm string
+	CWD  string
 }
 
 // enumerateListeners returns this machine's loopback/wildcard LISTEN
@@ -66,6 +67,7 @@ func enumerateListeners(_ string) ([]listener, map[int]int, error) {
 
 	stats, parents := parsePSTable(table)
 	listeners := parseLSOF(sockets)
+	cwds := readListenerCWDs(listeners)
 	for i := range listeners {
 		if stat, ok := stats[listeners[i].PID]; ok {
 			listeners[i].PPID = stat.ppid
@@ -74,8 +76,66 @@ func enumerateListeners(_ string) ([]listener, map[int]int, error) {
 				listeners[i].Comm = stat.comm
 			}
 		}
+		if cwd, ok := cwds[listeners[i].PID]; ok {
+			listeners[i].CWD = cwd
+		}
 	}
 	return listeners, parents, nil
+}
+
+// readListenerCWDs reads the current working directory of each distinct
+// listening PID in one bounded lsof call. Failures are non-fatal: single-owner
+// attribution does not need CWD, and multi-owner attribution declines cleanly
+// when CWD is absent.
+func readListenerCWDs(listeners []listener) map[int]string {
+	if len(listeners) == 0 {
+		return nil
+	}
+	seen := make(map[int]struct{}, len(listeners))
+	pids := make([]string, 0, len(listeners))
+	for _, l := range listeners {
+		if l.PID <= 0 {
+			continue
+		}
+		if _, ok := seen[l.PID]; ok {
+			continue
+		}
+		seen[l.PID] = struct{}{}
+		pids = append(pids, strconv.Itoa(l.PID))
+	}
+	if len(pids) == 0 {
+		return nil
+	}
+	out, err := runEnumerator("lsof", "-a", "-p", strings.Join(pids, ","), "-d", "cwd", "-Fn")
+	if err != nil {
+		return nil
+	}
+	return parseLSOFCWDs(out)
+}
+
+// parseLSOFCWDs parses `lsof -d cwd -Fn` output into a pid -> cwd map.
+func parseLSOFCWDs(output string) map[int]string {
+	cwds := make(map[int]string)
+	pid := 0
+	for _, line := range strings.Split(output, "\n") {
+		if len(line) < 2 {
+			continue
+		}
+		switch line[0] {
+		case 'p':
+			parsed, err := strconv.Atoi(line[1:])
+			if err != nil || parsed <= 0 {
+				pid = 0
+				continue
+			}
+			pid = parsed
+		case 'n':
+			if pid > 0 && line[1:] != "" {
+				cwds[pid] = line[1:]
+			}
+		}
+	}
+	return cwds
 }
 
 // runEnumerator executes one read-only platform tool under a deadline.

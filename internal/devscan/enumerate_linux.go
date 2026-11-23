@@ -43,6 +43,7 @@ type listener struct {
 	PPID int
 	PGID int
 	Comm string
+	CWD  string
 }
 
 // enumerateListeners returns this machine's loopback/wildcard LISTEN
@@ -86,13 +87,14 @@ func enumerateListeners(procRoot string) ([]listener, map[int]int, error) {
 			listeners = append(listeners, listener{Port: sock.port, Addr: sock.addr})
 			continue
 		}
+		cwd, _ := os.Readlink(filepath.Join(procRoot, strconv.Itoa(pid), "cwd"))
 		stat, ok := readStatCached(procRoot, pid, stats)
 		if !ok {
-			listeners = append(listeners, listener{Port: sock.port, Addr: sock.addr, PID: pid})
+			listeners = append(listeners, listener{Port: sock.port, Addr: sock.addr, PID: pid, CWD: cwd})
 			continue
 		}
 		listeners = append(listeners, listener{
-			Port: sock.port, Addr: sock.addr, PID: pid, PPID: stat.ppid, PGID: stat.pgid, Comm: stat.comm,
+			Port: sock.port, Addr: sock.addr, PID: pid, PPID: stat.ppid, PGID: stat.pgid, Comm: stat.comm, CWD: cwd,
 		})
 	}
 

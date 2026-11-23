@@ -54,11 +54,6 @@ var (
 	// navigation somebody asked for: a reload keybinding, `ao-harness
 	// open`, an e2e worker opening a page.
 	pageURLRateLimit = rateLimit{burst: 120, perSecond: 4}
-	// scopedRPCRateLimit covers the CLI route, whose legitimate callers
-	// are scripts. The budget is the loosest of the three because the
-	// surface is loopback-only and its methods are already narrowed to
-	// the scoped table.
-	scopedRPCRateLimit = rateLimit{burst: 300, perSecond: 30}
 	// authRateLimit covers the three device-facing credential routes
 	// (/auth/pair, /auth/token, /auth/ticket) TOGETHER, on one table:
 	// they are alternative ways for the same peer to ask this backend for

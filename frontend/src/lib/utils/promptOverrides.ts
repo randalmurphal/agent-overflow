@@ -11,7 +11,8 @@ import type { PromptOverride, Settings } from '../types/settings';
 
 export type PromptOverridesSettingsKey =
   | 'claudePromptOverrides'
-  | 'codexPromptOverrides';
+  | 'codexPromptOverrides'
+  | 'agyPromptOverrides';
 
 export type DisabledToolsSettingsKey =
   | 'claudeDisabledTools'
@@ -31,6 +32,8 @@ export function promptOverridesSettingsKey(
       return 'claudePromptOverrides';
     case 'codex':
       return 'codexPromptOverrides';
+    case 'agy':
+      return 'agyPromptOverrides';
     default:
       return null;
   }

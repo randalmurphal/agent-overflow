@@ -59,6 +59,10 @@ func (s *Service) InvalidateProbe(providerName string, key provider.ProbeCacheKe
 		s.caches.Claude.Invalidate(key)
 	case string(provider.Codex):
 		s.caches.Codex.Invalidate(key)
+	case string(provider.Agy):
+		if s.caches.Agy != nil {
+			s.caches.Agy.Invalidate(key)
+		}
 	}
 }
 

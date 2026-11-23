@@ -396,11 +396,14 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 	record("stop provider logins", nil)
 
-	// Step 4: stop provider sessions. Session closers aggregate their errors via
-	// closeSessionsParallel — we surface them under a single
-	// "close provider sessions" step so the order spy sees one entry.
+	// Step 4: stop provider sessions, then close any idle pooled provider connections.
 	sessions := a.sessionManager().snapshotAndClear()
 	sessionErrs := closeSessionsParallel(a, sessions, sessionShutdownTimeout)
+	if a.sessionRuntime != nil {
+		if poolErr := a.sessionRuntime.Connections().CloseAllWithTimeout(sessionShutdownTimeout); poolErr != nil {
+			sessionErrs = append(sessionErrs, poolErr)
+		}
+	}
 	record("close provider sessions", errors.Join(sessionErrs...))
 
 	// Step 4a: every provider event already read is handled before the
