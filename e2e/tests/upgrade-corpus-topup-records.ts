@@ -287,7 +287,9 @@ export async function writePeerSpawns(harness: HarnessApp, version: string, nonc
     // The paired computer's first renewal activates its pairing and spends
     // the refresh secret its redemption was issued. It probes for that on
     // an interval and closing it ends the probe, so the renewal is awaited.
-    await expect.poll(() => renewals(harness), {
+    // A store an earlier top-up wrote keeps that pairing's spent secrets,
+    // so only this computer's count.
+    await expect.poll(() => renewals(harness, workers), {
       message: 'top-up: the paired computer never renewed the session its pairing opened',
       timeout: TURN_TIMEOUT_MS,
     }).toBeGreaterThan(0);
@@ -328,12 +330,20 @@ function receiptRuns(harness: HarnessApp, workers: string[]): Array<{ run_open: 
   }
 }
 
-/** How many refresh secrets a renewal spent here: the spent secret names its successor and the device key that spent it. */
-function renewals(harness: HarnessApp): number {
+/**
+ * How many refresh secrets a renewal of the paired computer that spawned
+ * `workers` spent here, its device named by their spawn receipts: the spent
+ * secret names its successor and the device key that spent it.
+ */
+function renewals(harness: HarnessApp, workers: string[]): number {
   const database = new DatabaseSync(path.join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
   try {
-    const row = database.prepare(`SELECT count(*) AS n FROM refresh_secrets
-      WHERE consumed_at IS NOT NULL AND consumed_by IS NOT NULL AND next_secret_hash IS NOT NULL`).get() as { n: number };
+    const row = database.prepare(`SELECT count(*) AS n FROM refresh_secrets r
+        JOIN sessions s ON s.id = r.session_id
+      WHERE s.device_id IN (SELECT owner_device_id FROM thread_request_receipts
+                             WHERE kind = 'spawn' AND target_thread_id IN (SELECT value FROM json_each(?)))
+        AND r.consumed_at IS NOT NULL AND r.consumed_by IS NOT NULL AND r.next_secret_hash IS NOT NULL`)
+      .get(JSON.stringify(workers)) as { n: number };
     return row.n;
   } finally {
     database.close();

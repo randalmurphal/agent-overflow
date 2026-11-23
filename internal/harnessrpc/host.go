@@ -139,6 +139,9 @@ type Host interface {
 	// RequestWaits reads the thread tools' wait registry: for each request
 	// token, whether a tool call holds it now.
 	RequestWaits(tokens []string) map[string]bool
+	// ThreadWork reads what threadID still runs or owes from the app's
+	// own answer to what a thread waits on (ThreadWork).
+	ThreadWork(threadID string) ThreadWork
 	// ClaudeUsageFake is the isolated boot's Claude usage endpoint, nil on a
 	// boot without one. ReadClaudeUsage reads the selected Claude account's
 	// usage and returns once the reading is cached and auto-switch has

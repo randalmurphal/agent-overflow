@@ -67,15 +67,19 @@ export interface Coverage {
   /** `table.column=value` to the rows carrying that CHECK value. */
   values: Record<string, number>;
   /**
-   * An allowlisted `table.column` or `table.column=value` the store writes
-   * after all, to the first rows that carry it, so the failure names them.
+   * An allowlisted table, `table.column` or `table.column=value` the store
+   * writes after all, to the first rows that carry it, read with its count,
+   * so the failure names them.
    */
   carriers: Record<string, string[]>;
 }
 
 /**
- * measureCoverage counts what `dbPath` holds of `schema`, and reads the
- * rows that carry each column or value of `allowlist` the store writes.
+ * measureCoverage counts what `dbPath` holds of `schema`, one statement per
+ * table, which also reads the first rows that carry each table, column or
+ * value of `allowlist` it counts: one statement reads one snapshot, so a
+ * row that settles while the store is measured cannot leave a count with no
+ * row to name.
  */
 export async function measureCoverage(dbPath: string, schema: SchemaTable[], allowlist: CoverageAllowance[]): Promise<Coverage> {
   const coverage: Coverage = { rows: {}, columns: {}, values: {}, carriers: {} };
@@ -88,29 +92,37 @@ export async function measureCoverage(dbPath: string, schema: SchemaTable[], all
         terms.push(`COALESCE(SUM(${q} = ${sqlLiteral(value)}), 0) AS "v:${column.name}=${value}"`);
       }
     }
-    const [row] = await dbQuery<Record<string, number>>(dbPath, `SELECT ${terms.join(', ')} FROM "${table.name}"`);
-    coverage.rows[table.name] = row.rows;
+    for (const [key, where] of allowedHere(table, allowlist)) {
+      terms.push(`CASE WHEN COALESCE(SUM(${where}), 0) > 0 THEN (${carriersSQL(table, where)}) END AS "w:${key}"`);
+    }
+    const [row] = await dbQuery<Record<string, number | string | null>>(dbPath, `SELECT ${terms.join(', ')} FROM "${table.name}"`);
+    coverage.rows[table.name] = row.rows as number;
     for (const [key, n] of Object.entries(row)) {
-      if (key.startsWith('c:')) coverage.columns[`${table.name}.${key.slice(2)}`] = n;
-      else if (key.startsWith('v:')) coverage.values[`${table.name}.${key.slice(2)}`] = n;
-    }
-  }
-  for (const entry of allowlist) {
-    const table = schema.find((t) => t.name === entry.table);
-    if (!table) continue;
-    for (const name of entry.columns ?? []) {
-      const column = table.columns.find((c) => c.name === name);
-      const key = `${table.name}.${name}`;
-      if (column && coverage.columns[key] > 0) coverage.carriers[key] = await carriers(dbPath, table, nonDefaultSQL(column));
-    }
-    for (const [name, list] of Object.entries(entry.values ?? {})) {
-      for (const value of list) {
-        const key = `${table.name}.${name}=${value}`;
-        if (coverage.values[key] > 0) coverage.carriers[key] = await carriers(dbPath, table, `"${name}" = ${sqlLiteral(value)}`);
-      }
+      if (key.startsWith('c:')) coverage.columns[`${table.name}.${key.slice(2)}`] = n as number;
+      else if (key.startsWith('v:')) coverage.values[`${table.name}.${key.slice(2)}`] = n as number;
+      else if (key.startsWith('w:') && typeof n === 'string') coverage.carriers[key.slice(2)] = describeCarriers(n);
     }
   }
   return coverage;
+}
+
+/** The keys `allowlist` declares on `table` that the schema has, each with the SQL that holds on a row carrying it. */
+function allowedHere(table: SchemaTable, allowlist: CoverageAllowance[]): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  for (const entry of allowlist) {
+    if (entry.table !== table.name) continue;
+    if (!entry.columns && !entry.values) out.push([table.name, '1']);
+    for (const name of entry.columns ?? []) {
+      const column = table.columns.find((c) => c.name === name);
+      if (column) out.push([`${table.name}.${name}`, nonDefaultSQL(column)]);
+    }
+    for (const [name, list] of Object.entries(entry.values ?? {})) {
+      for (const value of list) {
+        if ((table.checks[name] ?? []).includes(value)) out.push([`${table.name}.${name}=${value}`, `"${name}" = ${sqlLiteral(value)}`]);
+      }
+    }
+  }
+  return out;
 }
 
 /** The SQL that holds where `column` is set to a non-default, non-empty value. */
@@ -121,15 +133,26 @@ function nonDefaultSQL(column: SchemaColumn): string {
     : `${q} IS NOT NULL AND ${q} IS NOT (${column.dflt}) AND ${q} != ''`;
 }
 
-/** The first rows of `table` where `where` holds, each by its primary key and, when it has one, its thread's title. */
-async function carriers(dbPath: string, table: SchemaTable, where: string): Promise<string[]> {
+/**
+ * A subquery answering, as a JSON array, the first rows of `table` where
+ * `where` holds, each by its primary key and, when it has one, its
+ * thread's title.
+ */
+function carriersSQL(table: SchemaTable, where: string): string {
   const key = table.columns.filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name);
-  const named = key.length > 0 ? key : ['rowid'];
-  const thread = table.columns.some((c) => c.name === 'thread_id') && table.name !== 'threads'
-    ? `, (SELECT title FROM threads WHERE id = t.thread_id) AS "thread title"` : '';
-  const rows = await dbQuery<Record<string, unknown>>(dbPath,
-    `SELECT ${named.map((c) => `t."${c}"`).join(', ')}${thread} FROM "${table.name}" AS t WHERE ${where} LIMIT 3`);
-  return rows.map((row) => Object.entries(row).map(([column, value]) => `${column} ${JSON.stringify(value)}`).join(', '));
+  const fields = (key.length > 0 ? key : ['rowid']).map((c) => `'${c}', t."${c}"`);
+  if (table.columns.some((c) => c.name === 'thread_id') && table.name !== 'threads') {
+    fields.push(`'thread title', (SELECT title FROM threads WHERE id = t.thread_id)`);
+  }
+  return `SELECT json_group_array(w) FROM (SELECT json_object(${fields.join(', ')}) AS w FROM "${table.name}" AS t WHERE ${where} LIMIT 3)`;
+}
+
+/** The rows a carriersSQL answer names, one line each. */
+function describeCarriers(json: string): string[] {
+  return (JSON.parse(json) as Array<string | Record<string, unknown>>).map((row) => {
+    const fields = typeof row === 'string' ? (JSON.parse(row) as Record<string, unknown>) : row;
+    return Object.entries(fields).map(([column, value]) => `${column} ${JSON.stringify(value)}`).join(', ');
+  });
 }
 
 function sqlLiteral(value: string | number): string {
@@ -162,7 +185,7 @@ export function assertCoverage(schema: SchemaTable[], coverage: Coverage, allowl
     }
     if (!entry.columns && !entry.values) {
       wholeTables.add(entry.table);
-      if (coverage.rows[entry.table] > 0) stale.push(`${entry.table}: the store writes it now; remove the entry`);
+      if (coverage.rows[entry.table] > 0) stale.push(`${entry.table}: the store writes it now; remove the entry${carriedBy(coverage, entry.table)}`);
       continue;
     }
     for (const column of entry.columns ?? []) {

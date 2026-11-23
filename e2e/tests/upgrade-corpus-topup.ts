@@ -77,10 +77,12 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
   // A thread the store held before the top-up is not one of its own: in
   // the release check a loop an earlier top-up armed can wake it.
   const inherited = storeThreads(harness);
+  // `atRest` is what the checks took together.
+  ms.atRest = 0;
   const step = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
     const done = await timed(run);
     ms[name] = done.ms;
-    await assertAtRest(harness, name, inherited);
+    ms.atRest += (await timed(() => assertAtRest(harness, name, inherited))).ms;
     return done.value;
   };
   const library = await harness.rpc<{ library: LibraryEntry[] }>('HarnessListScenarios');
@@ -457,14 +459,17 @@ async function runScenarioTurn(
     mode: 'chat',
   });
   await harness.rpc('StartSession', thread.id);
-  const registered = await harness.waitForEvent<MockEvent>('harness:mock', (ev) => ev.report.kind === 'registered');
+  await harness.waitForEvent<MockEvent>('harness:mock', (ev) => ev.report.kind === 'registered');
   const approval = scenario.approve
     ? harness.waitForEvent<ApprovalEvent>('provider:approval',
       (ev) => ev.action === 'request' && ev.request?.threadId === thread.id, TURN_TIMEOUT_MS)
     : undefined;
+  // A session that dies ends its turn when the backend handles the death,
+  // after the frames before it: the mock's own exit report travels apart
+  // from them and can arrive before the turn has opened.
   const ended = scenario.exits
-    ? harness.waitForEvent<MockEvent>('harness:mock',
-      (ev) => ev.report.kind === 'exiting' && ev.mockId === registered.mockId, TURN_TIMEOUT_MS)
+    ? harness.waitForEvent<{ threadId?: string }>('provider:session_died',
+      (ev) => ev.threadId === thread.id, TURN_TIMEOUT_MS)
     : harness.waitForEvent<{ threadId?: string }>('provider:turn_completed',
       (ev) => ev.threadId === thread.id, TURN_TIMEOUT_MS);
   await harness.rpc('SendMessage', thread.id, `Top-up turn for ${scenario.name}.`, null);
@@ -480,17 +485,17 @@ async function runScenarioTurn(
   return thread.id;
 }
 
-interface LiveActivity {
+/** What one thread still runs or owes (HarnessThreadsWorking). */
+interface ThreadWork {
   threadId: string;
-  activeTurn?: { turnId?: string };
-  sendsPending?: boolean;
-  approvalRequestIds: string[];
-  userInputRequestIds: string[];
-  compactingSinceUnixMs?: number;
+  activeTurn: boolean;
+  pendingSends: boolean;
+  waitingOn?: string;
+  compacting: boolean;
 }
 
-/** The ids of the threads in `harness`'s store. */
-function storeThreads(harness: HarnessApp): Set<string> {
+/** The ids of the threads in `harness`'s store: one walk of the threads table's key, about a thousand rows at the release check's scale. */
+export function storeThreads(harness: HarnessApp): Set<string> {
   const database = new DatabaseSync(path.join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
   try {
     return new Set((database.prepare('SELECT id FROM threads').all() as Array<{ id: string }>).map((row) => row.id));
@@ -500,47 +505,40 @@ function storeThreads(harness: HarnessApp): Set<string> {
 }
 
 /**
- * assertAtRest fails unless no turn runs in a thread of the top-up's, any
- * thread of `harness`'s store but the `inherited` ones: none has a live
- * turn, a send waiting for one, or a request waiting on the person, none
- * has an open turn row, and none has a row streaming, running or parked
- * but a background tool call. Each step waits for the turns it starts, and
- * runs this when it returns, so a step that returns while a turn of its
- * own still runs fails here, naming the step and the thread, instead of
- * leaving a mid-turn row for whatever reads the store next. The loops,
- * watches and runs the top-up leaves armed or open on purpose are not
- * turns.
+ * assertAtRest fails unless no thread of the top-up's runs or owes a turn:
+ * every thread of `harness`'s store but the `inherited` ones, workflow
+ * phase threads and the helpers a tool spawned included. Whether a thread
+ * runs or owes one is the backend's own answer (HarnessThreadsWorking): an
+ * open turn, a message queued or written with its turn still to open, a
+ * prompt waiting, or a compaction. Each
+ * step waits for the turns it starts and runs this when it returns, so a
+ * step that returns mid-turn fails here, naming the step and the thread,
+ * instead of leaving a mid-turn row for whatever reads the store next. The
+ * loops, watches and runs the top-up leaves armed or open on purpose are
+ * not turns. `step` names the caller in the failure.
  */
-async function assertAtRest(harness: HarnessApp, step: string, inherited: Set<string>): Promise<void> {
-  const own = (row: { threadId?: string; thread_id?: string }) => !inherited.has(row.threadId ?? row.thread_id ?? '');
-  const live = (await harness.rpc<LiveActivity[]>('ListThreadLiveActivity')).filter(own);
+export async function assertAtRest(harness: HarnessApp, step: string, inherited: Set<string>): Promise<void> {
+  const own = [...storeThreads(harness)].filter((id) => !inherited.has(id));
+  if (own.length === 0) return;
+  const working = await harness.rpc<ThreadWork[]>('HarnessThreadsWorking', own);
+  if (working.length === 0) return;
   const database = new DatabaseSync(path.join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+  let lines: string[];
   try {
     const title = (threadId: string) =>
       (database.prepare('SELECT title FROM threads WHERE id = ?').get(threadId) as { title: string } | undefined)?.title ?? '(no row)';
-    const running: string[] = [];
-    for (const row of live) {
+    lines = working.map((work) => {
       const what = [
-        row.activeTurn ? `turn ${row.activeTurn.turnId ?? ''} is live` : '',
-        row.sendsPending ? 'a send waits for its turn' : '',
-        row.approvalRequestIds.length > 0 ? `${row.approvalRequestIds.length} approval(s) wait` : '',
-        row.userInputRequestIds.length > 0 ? `${row.userInputRequestIds.length} question(s) wait` : '',
-        row.compactingSinceUnixMs ? 'it is compacting' : '',
+        work.activeTurn ? 'a turn is open' : '',
+        work.pendingSends ? 'a message is queued or its turn is still to open' : '',
+        work.waitingOn ? `an ${work.waitingOn} waits` : '',
+        work.compacting ? 'it is compacting' : '',
       ].filter(Boolean);
-      if (what.length > 0) running.push(`"${title(row.threadId)}" (${row.threadId}): ${what.join(', ')}`);
-    }
-    const open = (database.prepare(`SELECT thread_id, turn_index FROM turns WHERE completed_at IS NULL ORDER BY thread_id, turn_index`)
-      .all() as Array<{ thread_id: string; turn_index: number }>).filter(own);
-    for (const row of open) running.push(`"${title(row.thread_id)}" (${row.thread_id}): turn ${row.turn_index} is open in the store`);
-    const rows = (database.prepare(`SELECT thread_id, id, kind, status FROM items
-        WHERE status IN ('streaming', 'running', 'parked') AND NOT (kind = 'tool_call' AND is_background = 1)
-        ORDER BY thread_id, turn_index, item_index`).all() as Array<{ thread_id: string; id: string; kind: string; status: string }>).filter(own);
-    for (const row of rows) running.push(`"${title(row.thread_id)}" (${row.thread_id}): ${row.kind} row ${row.id} is ${row.status}`);
-    if (running.length > 0) {
-      throw new Error(`top-up step ${step} returned while ${running.length} thing(s) still run; it waits for each turn it starts to end:\n` +
-        running.map((line) => `  - ${line}`).join('\n'));
-    }
+      return `  - "${title(work.threadId)}" (${work.threadId}): ${what.join(', ')}`;
+    });
   } finally {
     database.close();
   }
+  throw new Error(`top-up step ${step} returned while ${working.length} thread(s) still run or owe a turn; ` +
+    `it waits for each turn it starts to end:\n${lines.join('\n')}`);
 }
