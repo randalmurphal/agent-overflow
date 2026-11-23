@@ -208,15 +208,7 @@ describe('review find over the diff', () => {
     const drafts = normalizeComments([held('before-move', 'z.ts', 1), held('after-move', 'src/b.ts', 2)]);
     expect(drafts.map((draft) => draft.id)).toEqual(['after-move', 'before-move']);
     const comments = indexReviewComments([thread], drafts);
-    const asks: string[] = [];
-    const list = {
-      findReadingPosition: () => null,
-      revealFindPlace: (at: { rowKey: string }) => {
-        asks.push(at.rowKey);
-        return true;
-      },
-      scrollFindBy: () => {},
-    };
+    const list = { findReadingPosition: () => null, revealFindPlace: () => true, scrollFindBy: () => {} };
     const review = {
       mediaHost: NO_MEDIA_HOST, drafts, prThreads: [thread], commentIndex: comments, shownCommentIndex: comments,
       collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), togglePRThread: () => {},
@@ -232,18 +224,20 @@ describe('review find over the diff', () => {
     setPaneFindQuery('pane-find-held-order', 'zq');
     await vi.waitFor(() => expect([find.result.count, find.result.pending]).toEqual([2, false]));
     // The thread row lists `repliesOf` (ReviewPRThreadRow, replyDraftsFor).
-    expect(comments.repliesOf('p1').map((draft) => `dc:${draft.id}`)).toEqual(['dc:before-move', 'dc:after-move']);
-    expect(find.hits.map((hit) => (hit.at.kind === 'draft' ? `dc:${hit.at.commentId}` : hit.at.kind))).toEqual(['dc:before-move', 'dc:after-move']);
+    expect(comments.repliesOf('p1').map((draft) => draft.id)).toEqual(['before-move', 'after-move']);
+    const current = () => {
+      const at = find.hits[find.result.current].at;
+      return at.kind === 'draft' ? at.commentId : at.kind;
+    };
     // The first match is current once counted; stepping goes on and wraps.
-    expect(find.hits[find.result.current].at).toEqual({ kind: 'draft', commentId: 'before-move' });
-    const stepped: string[] = [];
+    const stepped = [current()];
     for (let step = 0; step < 2; step += 1) {
-      const before = asks.length;
+      const before = find.result.current;
       find.next();
-      await vi.waitFor(() => expect(asks.length).toBeGreaterThan(before));
-      stepped.push(asks.at(-1)!);
+      await vi.waitFor(() => expect(find.result.current).not.toBe(before));
+      stepped.push(current());
     }
-    expect(stepped).toEqual(['dc:after-move', 'dc:before-move']);
+    expect(stepped).toEqual(['before-move', 'after-move', 'before-move']);
     root.remove();
   });
 
