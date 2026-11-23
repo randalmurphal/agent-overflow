@@ -57,6 +57,35 @@ function sessionStarts(harness: HarnessApp, cwd: string): number {
   return harness.countEvents<HarnessMockEventData>('harness:mock', (ev) => ev.report.kind === 'registered' && ev.cwd === cwd);
 }
 
+/** The one live mock in cwd: its id and the process id it registered with. */
+async function liveMockIn(harness: HarnessApp, cwd: string): Promise<{ mockId: string; pid: number }> {
+  const mocks = await harness.rpc<{ mockId: string; exited: boolean; registration: { cwd: string; pid: number } }[]>('HarnessListMocks');
+  const live = mocks.filter((mock) => mock.registration.cwd === cwd && !mock.exited);
+  expect(live, `one live session in ${cwd}`).toHaveLength(1);
+  expect(live[0].registration.pid, 'the session registered a process id').toBeGreaterThan(0);
+  return { mockId: live[0].mockId, pid: live[0].registration.pid };
+}
+
+/**
+ * Whether the process is gone, probed as the harness's own registry probes
+ * it (internal/harness/control/alive_unix.go): it reads exited however it
+ * ended, a mock's report before exit or not.
+ */
+function processGone(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+}
+
+/** Whether the thread holds an assistant reply with this text. */
+async function hasReply(harness: HarnessApp, threadId: string, text: string): Promise<boolean> {
+  const items = await harness.rpc<{ kind: string; summary: string }[]>('ListItems', threadId, true);
+  return items.some((item) => item.kind === 'assistant_text' && item.summary.includes(text));
+}
+
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
   test(`${provider}: rows list, nest, block, settle and leave; a row's Stop brings the child to rest`, async ({ harness, page }) => {
     test.setTimeout(300_000);
@@ -140,15 +169,14 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const leadWoken = awaitMockInput(harness, { cwd: tree.leadPath, includes: [started.childToken, USER_STOP] });
     const childWoken = awaitMockInput(harness, { cwd: tree.childPath, includes: [started.grandToken], timeoutMs: 20_000 }).then(() => true, () => false);
     const startsAtStop = sessionStarts(harness, tree.childPath);
+    // The child's session. The rest ends it, and in the harness that ends
+    // its process: every Codex thread gets its own app-server with no idle
+    // grace (acquireCodexConn), and a Claude session is its own process.
+    const { mockId: original, pid: originalPid } = await liveMockIn(harness, tree.childPath);
     await child.getByTestId('agent-tray-row-stop').click();
     await expect(page.getByTestId('toast-message').filter({ hasText: `Stopped ${CHILD}` }))
       .toHaveText(`Stopped ${CHILD}: its turn, 1 background task and 1 agent of its own.`, { timeout: 30_000 });
-    // The mock that reported the interrupt is the child's session; the rest
-    // ends it, so that process exits.
-    const original = (await childInterrupted).mockId;
-    const originalExited = harness.waitForEvent<HarnessMockEventData>(
-      'harness:mock', (ev) => ev.mockId === original && ev.report.kind === 'exiting', 30_000,
-    );
+    expect((await childInterrupted).mockId, 'the stop interrupted the child\'s session').toBe(original);
     await grandInterrupted;
     await leadWoken;
     const lead = ledgerRow(harness, started.childToken)!;
@@ -171,15 +199,17 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
     // The child is at rest: its session ended with its shell, and nothing
     // started another one. A later message starts exactly one and is answered.
-    await originalExited;
+    await expect.poll(() => processGone(originalPid), { message: 'the stopped child\'s process is gone', timeout: 30_000 }).toBe(true);
     expect(sessionStarts(harness, tree.childPath), 'the stopped child came back').toBe(startsAtStop);
     await setScenario(harness, tree.childPath, threadToolsScenario({
       name: `agents-${provider}-child-again`, provider, echoUserMessage: true, turns: [{ text: 'Back on it.' }],
     }));
-    const answered = awaitTurnCompleted(harness, started.child);
+    const taken = awaitMockInput(harness, { cwd: tree.childPath, includes: 'one more thing' });
     expect(sessionStarts(harness, tree.childPath), 'a session started before the message').toBe(startsAtStop);
     await harness.rpc('SendMessage', started.child, 'one more thing', null);
-    await answered;
+    // A new session took the message and answered it on the child's thread.
+    expect((await taken).mockId, 'the message reached a new session').not.toBe(original);
+    await expect.poll(() => hasReply(harness, started.child, 'Back on it.'), { timeout: 30_000 }).toBe(true);
     // The registration report rides its own path to the event stream, so
     // it can land after the turn's completion.
     await harness.waitForEvent<HarnessMockEventData>(
