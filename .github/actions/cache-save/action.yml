@@ -2,8 +2,9 @@ name: Save caches
 description: >-
   The last step of a job that ran .github/actions/setup. On a push to main
   it saves the caches setup restored: the Go build cache cut to the entries
-  this job used (scripts/ci-go-cache.mjs), and off the toolchain image the
-  Go module cache and the pnpm store when their key was missed. Any other
+  this job used (scripts/ci-go-cache.mjs), the frontend bundle, and off the
+  toolchain image the Go module cache and the pnpm store, each of these
+  three only when its key was missed. Any other
   event saves nothing, so a pull request never writes a cache.
 
 runs:
@@ -34,3 +35,10 @@ runs:
       with:
         path: ${{ env.AO_PNPM_STORE_PATH }}
         key: ${{ env.AO_PNPM_STORE_KEY }}
+
+    - name: Save the frontend bundle
+      if: github.event_name == 'push' && env.AO_FRONTEND_DIST_KEY != '' && env.AO_FRONTEND_DIST_HIT != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: frontend/dist
+        key: ${{ env.AO_FRONTEND_DIST_KEY }}

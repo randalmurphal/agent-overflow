@@ -195,13 +195,37 @@ runs:
     # pnpm switches itself to the packageManager pin, so a bumped pin still
     # installs in the image; the baked store answers what the lockfile
     # names and the registry supplies the rest.
+    # The bundle depends only on frontend/ (its sources, bindings, config
+    # and lockfile), so it is restored by an exact hash of that tree and
+    # built, with its dependencies, only when no main run built the same
+    # tree. A change outside frontend/ then installs and builds nothing.
+    - name: Restore the frontend bundle
+      if: inputs.frontend-dist == 'true'
+      id: frontend-dist
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: frontend/dist
+        key: frontend-dist-${{ runner.os }}-${{ hashFiles('frontend/**', '!frontend/node_modules/**', '!frontend/dist/**') }}
+
+    - name: Record the frontend bundle
+      if: inputs.frontend-dist == 'true'
+      shell: bash
+      env:
+        KEY: frontend-dist-${{ runner.os }}-${{ hashFiles('frontend/**', '!frontend/node_modules/**', '!frontend/dist/**') }}
+        HIT: ${{ steps.frontend-dist.outputs.cache-hit }}
+      run: |
+        {
+          echo "AO_FRONTEND_DIST_KEY=$KEY"
+          echo "AO_FRONTEND_DIST_HIT=$HIT"
+        } >> "$GITHUB_ENV"
+
     - name: Install frontend dependencies
-      if: inputs.frontend-deps == 'true' || inputs.frontend-dist == 'true'
+      if: inputs.frontend-deps == 'true' || (inputs.frontend-dist == 'true' && steps.frontend-dist.outputs.cache-hit != 'true')
       shell: bash
       run: pnpm --dir frontend install --frozen-lockfile
 
     - name: Build the frontend bundle
-      if: inputs.frontend-dist == 'true'
+      if: inputs.frontend-dist == 'true' && steps.frontend-dist.outputs.cache-hit != 'true'
       shell: bash
       run: pnpm --dir frontend run build
 

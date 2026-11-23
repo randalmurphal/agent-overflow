@@ -157,7 +157,9 @@ Every job restores its caches and only a push to `main` saves them, through
 `.github/actions/cache-save` as the job's last step: the Go build cache of
 its slot, cut to the entries that job used (`scripts/ci-go-cache.mjs`), and
 off the image the Go module cache and the pnpm store. A pull request
-restores the newest `main` entry of each slot. The Go test cache then
+restores the newest `main` entry of each slot. A job whose Go build embeds
+the frontend bundle restores `frontend/dist` by the hash of `frontend/`,
+and installs and builds it only when no `main` run built that tree. The Go test cache then
 reports a package as `(cached)` when its code, its dependencies and the
 files its tests read are unchanged; `scripts/ci-stable-mtimes.mjs` sets the
 checkout's file times from content first, since Go compares a read file by
