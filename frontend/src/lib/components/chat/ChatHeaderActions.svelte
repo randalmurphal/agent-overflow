@@ -190,10 +190,11 @@
   {#if !compact && browserButton.rendered}
     {@const intent = browserButton.intent}
     <!-- Browser companion toggle, on the desktop only (the compact menu has
-         no browser row). Pressed while the pane is in the layout, and a
-         press then hides it; otherwise a press shows the tabs, or opens the
-         pane on a new tab when there are none. Closing the pane never closes
-         the pages. -->
+         no browser row). Pressed while the pane is in the layout and on
+         screen, and a press then hides it; otherwise a press shows the
+         tabs, or opens the pane on a new tab when there are none, and
+         brings it out from under a maximized pane. Closing the pane never
+         closes the pages. -->
     <Button
       variant="secondary"
       size="xs"

@@ -7,7 +7,11 @@
 // placeholder with the section's flex style takes its slot, so no other
 // pane moves and the strip's widths and `scrollLeft` are untouched. The
 // strip does not scroll while a pane is shown; `holdStrip` puts back any
-// scroll that happens anyway.
+// scroll that happens anyway. The one exception is the start of a demote
+// from a fully revealed pane: the strip is hidden under it, so the strip
+// and the lock move together to bring the slot into view, and the pane
+// lands where it can be seen even if it moved, or the panes around it
+// changed, while it was shown.
 //
 // No transform: the timeline virtualizer reads bounding-rect differences
 // as scroll compensation. Promote applies the layout in one pass, with a
@@ -50,6 +54,8 @@ export interface PanePromotionOptions {
   sectionOf(paneId: string): HTMLElement | null;
   /** A pane's slot placeholder (`data-pane-slot`) while it is shown. */
   slotOf(paneId: string): HTMLElement | null;
+  /** The strip's scroll range from its flow alone, without the shown section. */
+  flowScrollMax(host: HTMLElement): number;
   /** A pane is about to be shown: the strip stops moving. */
   onCapture(): void;
   /** No pane is shown any more. */
@@ -294,9 +300,38 @@ export function createPanePromotion(options: PanePromotionOptions) {
     run();
   }
 
+  // Scrolls the strip, hidden under the fully revealed pane, so the shown
+  // pane's slot is in view, and moves the lock with it so the section stays
+  // put. Nothing is drawn differently until the clip starts closing onto
+  // the slot.
+  function bringSlotIntoView(): void {
+    const host = options.getHostEl();
+    const slot = shownId === null ? null : options.slotOf(shownId);
+    if (!host || !slot) return;
+    const view = host.scrollLeft;
+    const width = host.clientWidth;
+    const left = slot.offsetLeft;
+    const right = left + slot.offsetWidth;
+    // On screen: all of it, or for a slot wider than the strip, the whole
+    // strip's width of it.
+    const fits = slot.offsetWidth <= width;
+    const shown = Math.min(right, view + width) - Math.max(left, view);
+    if (shown >= Math.min(slot.offsetWidth, width) - 0.5) return;
+    // The nearer edge: a slot that fits aligns the edge that is off
+    // screen, a wider one the edge that is on screen.
+    const want = (left < view) === fits ? left : right - width;
+    const next = clamp(want, 0, options.flowScrollMax(host));
+    host.scrollLeft = next;
+    // The lock follows what the strip took: the browser rounds.
+    lockedLeft = host.scrollLeft;
+  }
+
   function startDemote(): void {
     if (direction !== -1) {
-      if (direction === 0) resetPath();
+      if (direction === 0) {
+        if (progress === 1) bringSlotIntoView();
+        resetPath();
+      }
       turn(-1);
     }
     run();

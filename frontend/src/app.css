@@ -524,6 +524,15 @@ pre, code, kbd, samp, .ansi-body {
   background: transparent;
 }
 
+/* The same for Firefox, which has no ::-webkit-scrollbar. Only there: an
+   engine that honors scrollbar-color drops its ::-webkit-scrollbar
+   styles, and the bar's 10px height with them. */
+@supports not selector(::-webkit-scrollbar) {
+  .pane-host-promoted {
+    scrollbar-color: transparent transparent;
+  }
+}
+
 /*
  * Pane scroll surfaces: the chat timeline and the activity-run and
  * subagent clips (MessageTimeline.svelte, ActivityRun.svelte,

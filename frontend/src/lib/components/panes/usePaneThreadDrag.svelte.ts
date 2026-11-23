@@ -377,11 +377,14 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   }
 
   // A drag over the strip that this document did not start (another
-  // window's) is shielded while it is over the strip.
+  // window's) is shielded while it is over the strip, and demotes as a
+  // dragstart here does: its drop slots are in the strip under a promoted
+  // pane.
   function onHostDragOver(event: DragEvent): void {
     if (isThreadDrag(event)) {
       event.preventDefault();
       setShield(started, true);
+      demotePane();
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
       updateThreadDropTarget(event);
       updateDragAutoScroll(event.clientX);
@@ -390,6 +393,7 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     if (isToolDrag(event)) {
       event.preventDefault();
       setShield(started, true);
+      demotePane();
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
       updateToolDropTarget(event);
       updateDragAutoScroll(event.clientX);
