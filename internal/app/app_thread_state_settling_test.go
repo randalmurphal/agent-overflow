@@ -218,6 +218,12 @@ func TestThreadStateOfCrashLeftTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
+	// A new thread is read as of its creation, and the sweep ends a turn
+	// with no items at its start: unread here, so a turn started in the
+	// creation's millisecond is still one the user has not read.
+	if _, _, err := f.app.store.MarkThreadUnread(thread.ID); err != nil {
+		t.Fatalf("MarkThreadUnread: %v", err)
+	}
 	if err := f.app.store.InsertTurn(store.Turn{
 		TurnID: "crashed-turn", ThreadID: thread.ID, TurnIndex: 0, StartedAt: time.Now().UnixMilli(),
 	}); err != nil {
