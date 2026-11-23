@@ -130,7 +130,7 @@ func (a *App) hasManagedAgyCredentialFileAt(appData string) bool {
 
 // borrowAgyConnForCurrentAccount borrows a warm pooled *acp.Conn ONLY when its
 // full pool identity (resolved binary + file identity + active account ID +
-// account generation + effective probe env) matches the current account state.
+// account generation + session process env) matches the current account state.
 // Never borrows across account generations, stale binaries, or harness-isolated
 // per-thread connections.
 func (a *App) borrowAgyConnForCurrentAccount(binary string) (*acp.Conn, func()) {
@@ -145,8 +145,9 @@ func (a *App) borrowAgyConnForCurrentAccount(binary string) (*acp.Conn, func()) 
 	resolvedBinary := agy.ResolveBinary(binary)
 	identity, _ := a.resolveProviderBinaryIdentity(string(provider.Agy))
 	selection := a.captureProviderAccountSelection(string(provider.Agy))
-	probeEnv := a.ensureProviderAccountManager().ProbeEnv(string(provider.Agy), nil)
-	wantKey := agyPoolKey(resolvedBinary, identity, selection.AccountID, selection.Generation, probeEnv, "")
+	// acquireAgyConn keys live pooled connections with sessionProcessEnv(agy, nil).
+	sessionEnv := a.sessionProcessEnv(string(provider.Agy), nil)
+	wantKey := agyPoolKey(resolvedBinary, identity, selection.AccountID, selection.Generation, sessionEnv, "")
 	conn, release, ok := a.sessionRuntime.Connections().BorrowMatching(func(key string, c provider.Connection) bool {
 		if key != wantKey {
 			return false

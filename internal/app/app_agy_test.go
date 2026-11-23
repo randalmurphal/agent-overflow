@@ -169,6 +169,18 @@ func TestAgyPoolSharesOneACPServerAcrossThreadsAndAppliesLiveConfig(t *testing.T
 		t.Fatal("timed out waiting for Antigravity assistant response on timeline")
 	}
 
+	// borrowAgyConnForCurrentAccount must hit the warm pooled connection matching
+	// the live session's full pool key instead of silently falling back to a cold spawn.
+	borrowed, releaseBorrowed := app.borrowAgyConnForCurrentAccount(binary)
+	if borrowed == nil {
+		t.Fatal("borrowAgyConnForCurrentAccount missed warm pooled agy connection")
+	}
+	if borrowed.PID() != pidA {
+		releaseBorrowed()
+		t.Fatalf("borrowed agy conn PID = %d, want pooled PID %d", borrowed.PID(), pidA)
+	}
+	releaseBorrowed()
+
 	// Drain and stop cleanly without deadlock.
 	app.drainAgyConnections()
 	if err := app.StopSession(threadA.ID); err != nil {
