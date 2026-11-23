@@ -6,8 +6,7 @@ import "encoding/json"
 // own queue has taken ownership of: a Codex `thread/queue/add` on an
 // app-server >= 0.148. This app no longer queues that way (mid-turn
 // messages go to `turn/steer`), so the rows that carry the marker are ones
-// an earlier version wrote; the readers below still serve them, and the
-// writers exist for the tests that seed such rows.
+// an earlier version wrote, and the readers below still serve them.
 //
 // It exists because that ownership outlives every in-process record of
 // it. Once the add is accepted the message is durable in codex's own
@@ -38,7 +37,7 @@ const providerQueuedKey = "providerQueued"
 // providerQueueHandoffKey rides alongside it while the handover is
 // still UNPROVEN.
 //
-// The marker above has to go on BEFORE the `thread/queue/add` write —
+// The marker above had to go on BEFORE the `thread/queue/add` write —
 // an add that lands and is never acked is exactly the case where this
 // process may not come back to stamp anything — so on its own it
 // cannot tell "the provider has this message" from "AO was about to
@@ -55,32 +54,12 @@ const providerQueuedKey = "providerQueued"
 // marked provider-owned, so every recovery path steps around it, and
 // the provider it names never took it.
 //
-// Set before the write and cleared the moment the app-server's ack (or
-// a `thread/queue/list` read-back) proves the row exists. An ambiguous
-// add — written, never acked, and unverifiable — deliberately leaves it
-// set: the next session start asks the queue instead of guessing.
+// The earlier version set it true before the write and wrote it false
+// the moment the app-server's ack (or a `thread/queue/list` read-back)
+// proved the row exists. An ambiguous add — written, never acked, and
+// unverifiable — left it true: the next session start asks the queue
+// instead of guessing.
 const providerQueueHandoffKey = "providerQueueHandoff"
-
-// MarkProviderQueued returns raw with the provider-queued marker set
-// and the handover recorded as PROVEN, as an earlier version wrote it
-// where the row's ownership was established before it was written.
-//
-// An empty meta becomes a one-key object. Malformed meta is an error —
-// the caller is about to persist the row that IS the ownership record
-// and must not silently drop the marker.
-func MarkProviderQueued(raw string) (string, error) {
-	return mergeKeys(raw, map[string]any{providerQueuedKey: true})
-}
-
-// MarkProviderQueueHandoff returns raw marked provider-queued with the
-// handover still unproven, as an earlier version stamped it BEFORE
-// `thread/queue/add`.
-func MarkProviderQueueHandoff(raw string) (string, error) {
-	return mergeKeys(raw, map[string]any{
-		providerQueuedKey:       true,
-		providerQueueHandoffKey: true,
-	})
-}
 
 // IsProviderQueueHandoffPending reports whether raw names a row whose
 // hand-off to the provider queue was never confirmed.
