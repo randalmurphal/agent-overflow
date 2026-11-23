@@ -260,25 +260,13 @@ type childRuntimeState struct {
 	generation uint64
 }
 
-// sessionChildRoutingState quarantines notifications and server requests from
-// provider threads whose spawn ownership has not arrived yet. Codex
-// MultiAgentV2 starts the child before it emits the parent's canonical
-// subAgentActivity item, so child output can legitimately win that race.
-// Nothing in this queue may reach the AO parent projection until a typed
-// ownership edge maps the provider thread to its spawn card. Guarded by mu;
-// Close stops the deadline timers and then zeroes the group.
+// sessionChildRoutingState is the ownership recovery for provider threads
+// whose spawn ownership has not arrived yet; the connection holds their frames
+// (Conn.holdChildFrame). Guarded by mu; Close zeroes the group.
 type sessionChildRoutingState struct {
-	recoveryPending         map[string]bool
-	recoveryQueue           []string
-	recoveryRunning         bool
-	unrelatedThreads        map[string]struct{}
-	unrelatedOrder          []string
-	deferredChildWireEvents map[string][]deferredChildWireEvent
-	deferredChildWireCount  int
-	deferredChildWireBytes  int
-	deferredChildDeadlines  map[string]*time.Timer
-	// warned dedupes the routing-overflow log to once per session.
-	warned bool
+	recoveryPending map[string]bool
+	recoveryQueue   []string
+	recoveryRunning bool
 }
 
 // sessionCollabHistoryState is the sequential metadata recovery a resume runs
@@ -738,12 +726,6 @@ func (s *Session) rootSessionID() string {
 }
 
 func (s *Session) setRootSessionID(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.rootSessionID() != id {
-		s.childRouting.unrelatedThreads = nil
-		s.childRouting.unrelatedOrder = nil
-	}
 	s.codexSessionID.Store(&id)
 }
 
@@ -1130,16 +1112,6 @@ func (s *Session) Close() error {
 	// TestCloseReleasesSessionScopedState pins that, and lists the state this
 	// deliberately leaves alone.
 	s.mu.Lock()
-	deferredChildEvents := 0
-	for _, queued := range s.childRouting.deferredChildWireEvents {
-		deferredChildEvents += len(queued)
-	}
-	if deferredChildEvents > 0 {
-		log.Printf("codex: closing with %d quarantined child events whose spawn ownership never arrived", deferredChildEvents)
-	}
-	for _, timer := range s.childRouting.deferredChildDeadlines {
-		timer.Stop()
-	}
 	s.turn = sessionTurnState{}
 	s.review = nil
 	s.collab = sessionCollabState{}

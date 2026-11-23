@@ -22,9 +22,9 @@ const rootThreadHandshakeTimeout = 15 * time.Second
 // read/write and `go test -race` failed roughly one run in ten with no
 // stable reproducer.
 //
-// The reader side drives the three shapes of read that exist: through the
-// real dispatch entry point, through the unrelated-thread predicate, and
-// through a reader that is already holding s.mu.
+// The reader side drives the two shapes of read that exist: through the
+// real dispatch entry point, and through a reader that is already holding
+// s.mu.
 func TestRootThreadIDSurvivesHandshakeWindow(t *testing.T) {
 	t.Parallel()
 	const rootThread = "019fc2ff-9050-7971-ac4e-b902cc3b9f00"
@@ -37,11 +37,9 @@ func TestRootThreadIDSurvivesHandshakeWindow(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 200; i++ {
-			// Root-thread params on purpose: a foreign thread id would take
-			// the deferral path and leave an ownership-timeout timer running
-			// past the end of the test.
+			// Root-thread params on purpose: a foreign thread id would be
+			// handed to the connection, which this bare Session has none of.
 			s.dispatchNotification("thread/settings/updated", params)
-			s.isUnrelatedProviderThread(rootThread)
 			s.mu.Lock()
 			_ = s.rootThreadID()
 			s.mu.Unlock()

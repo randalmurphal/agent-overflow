@@ -56,35 +56,21 @@ func (s *Session) dispatchNotificationDirect(method string, params json.RawMessa
 		return
 	}
 	providerThreadID := providerThreadIDFromParams(params)
-	if method == "thread/started" && s.discardUnrelatedProviderThread(
-		providerThreadID,
-		readNestedString(params, "thread", "sessionId"),
-		readNestedString(params, "thread", "parentThreadId"),
-	) {
-		return
-	}
-	switch s.routeChildWireEvent(providerThreadID, deferredChildWireEvent{
+	if dispatch, held := s.dispatchesWireThread(providerThreadID, deferredChildWireEvent{
 		Method: method,
 		Params: params,
-	}) {
-	case childWireUnrelated:
-		return
-	case childWireDeferred:
+	}, nil); !dispatch {
+		if !held {
+			return
+		}
 		// MultiAgentV2 creates the child thread before it emits the parent-side
-		// subAgentActivity ownership item. Retain display metadata only after
-		// the bounded quarantine accepts the event.
+		// subAgentActivity ownership item. Its display metadata is kept while
+		// the connection holds the frame, so the spawn row can show it.
 		if method == "thread/started" {
 			s.rememberAgentMetaForProviderThread(providerThreadID, params)
 		}
 		s.scheduleChildOwnershipRecovery(providerThreadID)
 		return
-	case childWireOverflow:
-		s.warnChildRoutingOverflow(providerThreadID, method, nil)
-		return
-	case childWireRoutable:
-		// Continue with the root or owned child route below.
-	default:
-		panic("codex: invalid child wire route")
 	}
 
 	s.dispatchRoutableNotification(method, params, providerThreadID)

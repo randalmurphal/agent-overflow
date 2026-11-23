@@ -24,15 +24,7 @@ func newMultiAgentV2RoutingSession(t *testing.T, onEvent func(provider.ProviderE
 	t.Helper()
 	fx := newConnFixture(t)
 	answerChildProfileReads(fx)
-	s := fx.session("ao-thread", "root-provider-thread", onEvent)
-	t.Cleanup(func() {
-		s.mu.Lock()
-		for _, timer := range s.childRouting.deferredChildDeadlines {
-			timer.Stop()
-		}
-		s.mu.Unlock()
-	})
-	return s
+	return fx.session("ao-thread", "root-provider-thread", onEvent)
 }
 
 // v2ActivityParams is the `params` object codex >= 0.146 sends on BOTH legs of
@@ -640,16 +632,20 @@ func TestMultiAgentV2QuarantineExpiryDropsUnownedNotifications(t *testing.T) {
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
 	})
+	fx := fixtureFor(t, s)
 	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"unknown-child","agentNickname":"Orphan"}}}`))
 	if len(s.collabReceiverMetadataForThreads([]string{"unknown-child"})) != 1 {
 		t.Fatal("accepted quarantine did not retain child display metadata")
 	}
-	s.expireDeferredChildWireEvents("unknown-child")
-	if s.childRouting.deferredChildWireCount != 0 || len(s.childRouting.deferredChildWireEvents) != 0 {
-		t.Fatalf("expired quarantine retained data: count=%d queues=%d", s.childRouting.deferredChildWireCount, len(s.childRouting.deferredChildWireEvents))
+	fx.conn.expireDeferredChild("unknown-child")
+	fx.conn.routesMu.Lock()
+	held, count := len(fx.conn.deferredChild), fx.conn.deferredChildCount
+	fx.conn.routesMu.Unlock()
+	if held != 0 || count != 0 {
+		t.Fatalf("expired quarantine retained data: count=%d queues=%d", count, held)
 	}
-	if len(events) != 1 || events[0].Kind != provider.EventNotification {
-		t.Fatalf("expiry warning = %+v", events)
+	if len(events) != 0 {
+		t.Fatalf("expiry reached the thread: %+v", events)
 	}
 	if len(s.collabReceiverMetadataForThreads([]string{"unknown-child"})) != 0 {
 		t.Fatal("expired quarantine retained child display metadata")

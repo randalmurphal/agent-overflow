@@ -434,10 +434,6 @@ func (c *Conn) newSession(
 			byID:                  make(map[string]rawToolCall),
 			waitReceiverIDsByCall: make(map[string][]string),
 		},
-		childRouting: sessionChildRoutingState{
-			deferredChildWireEvents: make(map[string][]deferredChildWireEvent),
-			deferredChildDeadlines:  make(map[string]*time.Timer),
-		},
 		collabHistory: sessionCollabHistoryState{
 			generation: 1,
 			visited:    make(map[string]uint64),
@@ -1161,32 +1157,53 @@ func (c *Conn) routeOrQuarantine(
 	ev deferredChildWireEvent,
 	requestID *json.Number,
 ) *Session {
-	trimmedID := strings.TrimSpace(providerThreadID)
-	evBytes := ev.sizeBytes()
-
 	c.routesMu.Lock()
 	if target := c.routeTargetLocked(providerThreadID, sessionID, parentThreadID, allowStartingFallback); target != nil {
 		c.routesMu.Unlock()
 		return target
 	}
+	rejection := c.quarantineLocked(providerThreadID, ev)
+	c.routesMu.Unlock()
+	if rejection != "" {
+		c.rejectQuarantinedRequest(requestID, rejection)
+	}
+	return nil
+}
+
+// holdChildFrame holds a frame a session received for a non-root thread it
+// does not own, in the same queue, bounds and deadline as routeOrQuarantine,
+// so the session's claim (drainDeferredChildWireEvents) releases it with the
+// thread's other held frames. It reports whether the frame is held; a frame
+// the bounds refuse is rejected when it is a request and dropped otherwise.
+func (c *Conn) holdChildFrame(providerThreadID string, ev deferredChildWireEvent, requestID *json.Number) bool {
+	c.routesMu.Lock()
+	rejection := c.quarantineLocked(providerThreadID, ev)
+	c.routesMu.Unlock()
+	if rejection != "" {
+		c.rejectQuarantinedRequest(requestID, rejection)
+		return false
+	}
+	return true
+}
+
+// quarantineLocked queues ev under providerThreadID and arms the thread's
+// deadline. It returns the rejection for a frame it could not hold. Caller
+// holds routesMu.
+func (c *Conn) quarantineLocked(providerThreadID string, ev deferredChildWireEvent) string {
+	trimmedID := strings.TrimSpace(providerThreadID)
+	evBytes := ev.sizeBytes()
 	if trimmedID == "" || len(trimmedID) > maxDeferredChildThreadIDBytes {
-		c.routesMu.Unlock()
-		c.rejectQuarantinedRequest(requestID, "subagent ownership was not available")
-		return nil
+		return "subagent ownership was not available"
 	}
 	if c.deferredChild == nil {
-		c.routesMu.Unlock()
-		c.rejectQuarantinedRequest(requestID, "connection closed")
-		return nil
+		return "connection closed"
 	}
 	queued := c.deferredChild[trimmedID]
 	if len(queued) >= maxDeferredChildEventsPerThread ||
 		c.deferredChildCount >= maxDeferredChildEventsTotal ||
 		evBytes > maxDeferredChildEventBytes ||
 		c.deferredChildBytes > maxDeferredChildEventBytes-evBytes {
-		c.routesMu.Unlock()
-		c.rejectQuarantinedRequest(requestID, "subagent ownership was not available before the routing buffer filled")
-		return nil
+		return "subagent ownership was not available before the routing buffer filled"
 	}
 	ev.Params = append(json.RawMessage(nil), ev.Params...)
 	ev.RawLine = append(json.RawMessage(nil), ev.RawLine...)
@@ -1199,21 +1216,42 @@ func (c *Conn) routeOrQuarantine(
 			c.expireDeferredChild(tid)
 		})
 	}
-	c.routesMu.Unlock()
-	return nil
+	return ""
 }
 
 func (c *Conn) expireDeferredChild(providerThreadID string) {
 	c.routesMu.Lock()
 	events := c.takeDeferredChildLocked(providerThreadID)
+	sessions := make([]*Session, 0, len(c.allSessions))
+	for s := range c.allSessions {
+		sessions = append(sessions, s)
+	}
 	c.routesMu.Unlock()
+	if len(events) == 0 {
+		return
+	}
+	rejected := 0
 	for _, ev := range events {
 		if ev.RequestID == "" {
 			continue
 		}
+		rejected++
 		id := json.Number(ev.RequestID)
 		c.rejectQuarantinedRequest(&id, "subagent ownership did not arrive before the routing deadline")
 	}
+	threadIDs := make([]string, 0, len(sessions))
+	for _, s := range sessions {
+		threadIDs = append(threadIDs, s.threadID)
+		s.forgetUnclaimedChild(providerThreadID)
+	}
+	slices.Sort(threadIDs)
+	// A held frame names only its own thread, so the connection cannot tell
+	// which root the thread belonged to: the expiry is logged, never shown on
+	// a guessed thread.
+	log.Printf(
+		"codex: no spawn claimed provider thread %s before the routing deadline: rejected %d requests, dropped %d notifications; sessions on the connection: %v",
+		providerThreadID, rejected, len(events)-rejected, threadIDs,
+	)
 }
 
 func (c *Conn) rejectQuarantinedRequest(id *json.Number, message string) {
