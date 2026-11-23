@@ -185,12 +185,7 @@ go-build: gocache-trim-tool
 # every interface or dials out reaches nothing beyond the namespace in any
 # WSL networking mode, and its temp files land in a private RAM directory
 # that goes with the namespace. `go test` itself runs under bin/ao-netns rather than
-# through `-exec`, which would disable the test cache. bin/ao-gotest
-# (cmd/ao-gotest) starts it inside the namespace: a package GO_TEST_SPLIT
-# names runs as fixed buckets of its tests, as many at once as the memory
-# governor grants, and the rest as one `go test`. Every `go test` runs
-# under a leader that ends what it leaves, and a process left running
-# fails the run, named. go-prefetch fetches,
+# through `-exec`, which would disable the test cache. go-prefetch fetches,
 # on the host network first, what every package of the module and its tests
 # import plus the module's tools, since a test may run `go tool wails3` and
 # a whole-tree contract test (TestThreadUpdatedFramesComeFromTheAnnouncer)
@@ -228,35 +223,6 @@ gocache-trim: gocache-trim-tool
 # unless that pass fails.
 gocache-trim-pass = { [ -n "$$CI" ] || $(GOCACHE_TRIM) -warn; }
 gocache-trim-around = $(gocache-trim-pass); trap 'status=$$?; $(gocache-trim-pass) || status=$$?; exit $$status' EXIT
-
-# go-test's `go test` line starts with NETNS, so go-test appends the
-# launcher there and it runs that line inside the namespace; override keeps
-# it when NETNS is given on the command line. gotest-tool builds it.
-# GO_TEST_SPLIT names the packages it runs as buckets, longest first, each
-# with the MiB one bucket holds and the MiB its list step, which builds and
-# vets the package's test binary, holds. The memory governor gives a split
-# run's two phases a lease each, one after the other: the list steps, one
-# at a time, under the largest list step's MiB, then W buckets at once
-# under the W buckets' MiB together. Each figure is the largest process as
-# rusage reported it, plus the 118 MiB of the go command beside it, plus
-# 25%, rounded up to 64 MiB. A list step's is measured after a change to
-# the package's test files: it is the compile of the package's tests, which
-# a plain `go test` of the package pays too, without admission. A run whose
-# bucket or list step goes over its figure says so at the end. The split
-# needs its figure free above the governor's 2048 MiB floor: for
-# internal/app 9216 MiB to list and 3712 MiB for one bucket, for
-# internal/store 4224 and 2688 MiB.
-#   internal/app:   buckets 1173 MiB measured, 1664 declared;
-#                   list    5603 MiB measured, 7168 declared
-#   internal/store: buckets  359 MiB measured,  640 declared;
-#                   list    1593 MiB measured, 2176 declared
-GO_TEST_SPLIT := agent-overflow/internal/app=1664,7168 agent-overflow/internal/store=640,2176
-.PHONY: gotest-tool
-GOTEST := $(CURDIR)/bin/ao-gotest
-go-test: override NETNS += $(GOTEST) $(addprefix -split=,$(GO_TEST_SPLIT))
-go-test: gotest-tool
-gotest-tool:
-	go build -o bin/ao-gotest ./cmd/ao-gotest
 
 # GO_TEST_EXCLUDE is an extended regexp over import paths to leave out,
 # for CI shards that run the heavy packages on their own runners.

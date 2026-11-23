@@ -3,24 +3,39 @@
 package governor
 
 import (
+	"bufio"
 	"fmt"
-
-	"agent-overflow/internal/hostmemory"
+	"os"
+	"strconv"
+	"strings"
 )
 
-// linuxMemory reads the host at /proc and the cgroup file system mounted at
-// cgroup (hostmemory.ReadAt).
-type linuxMemory struct{ proc, cgroup string }
+type linuxMemory struct{}
 
-// AvailableMemory is what this process can still allocate: MemAvailable, or
-// its cgroups' headroom when that is lower, as on a large host whose run is
-// confined to a small cgroup.
-func (m linuxMemory) AvailableMemory() (uint64, error) {
-	r, err := hostmemory.ReadAt(m.proc, m.cgroup)
+func (linuxMemory) AvailableMemory() (uint64, error) {
+	f, err := os.Open("/proc/meminfo")
 	if err != nil {
-		return 0, fmt.Errorf("harness governor: %w", err)
+		return 0, fmt.Errorf("harness governor: open /proc/meminfo: %w", err)
 	}
-	return r.Headroom(), nil
+	defer f.Close()
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		fields := strings.Fields(s.Text())
+		if len(fields) >= 2 && fields[0] == "MemAvailable:" {
+			kb, err := strconv.ParseUint(fields[1], 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("harness governor: parse MemAvailable: %w", err)
+			}
+			if kb > ^uint64(0)/1024 {
+				return 0, fmt.Errorf("harness governor: MemAvailable overflows bytes")
+			}
+			return kb * 1024, nil
+		}
+	}
+	if err := s.Err(); err != nil {
+		return 0, fmt.Errorf("harness governor: read /proc/meminfo: %w", err)
+	}
+	return 0, fmt.Errorf("harness governor: /proc/meminfo has no MemAvailable")
 }
 
-func defaultMemory() MemoryReader { return linuxMemory{proc: "/proc", cgroup: "/sys/fs/cgroup"} }
+func defaultMemory() MemoryReader { return linuxMemory{} }

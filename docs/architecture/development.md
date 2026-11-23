@@ -41,56 +41,6 @@ the developer's running app; goals that launch an app (`make dev`,
 under `bin/ao-netns`, whose private temp directory and on-disk Go work
 directory are described with the
 [isolation](../specs/testing-harness.md#isolation-network-temp-directory-and-priority).
-`go-test` starts `go test` through `cmd/ao-gotest` inside the namespace. A
-package that `GO_TEST_SPLIT` in the Makefile names runs as eight fixed
-buckets of its top-level tests, each a `go test -parallel 1 -run` of the
-names that hash to it, since modernc's allocator lock keeps one process
-of many SQLite stores from using more cores; the other packages run in
-one `go test` as before. The lock is process-wide in modernc.org/libc
-v1.77.1, and no modernc.org/sqlite release through v1.63.0 pins a libc
-with a per-thread allocator (v1.62.0 and v1.63.0 pin v1.80.1); once one
-does, measure one process of each package again, and remove the split if
-the lock is gone. Measure again too when internal/app is divided into
-smaller packages: packages already run as separate processes, so the
-split may no longer pay for itself. A bucket's command line is the same
-however many run at once, so its cached result holds at any count. A
-fully cached run costs more split: 29.0 s and 25.9 s against 22.7 s and
-22.9 s for one `go test` per package, on four cores, since each split
-package's test binary is still linked once, by the `go test -list` that
-reads its names.
-
-As many buckets run at once as the
-[harness memory governor](../../internal/harness/governor/AGENTS.md)
-grants across every run on the host, at most one per core and at most
-eight, one package's buckets; packages start in declaration order, the
-longest first. The two phases of a split run never overlap and take a
-lease each, one after the other: the list steps run first, one at a time,
-under the largest list step's declared MiB, released before the buckets
-reserve the declared MiB of W buckets together. A list step's figure is
-the compile of its package's tests, which a plain `go test` of the
-package pays too, without admission; the Makefile states the free memory
-each phase needs. While a phase is granted nothing the run says why and
-waits, and after ten minutes fails. Another run may take the memory
-between the phases, and this one then waits for its buckets. The other
-packages' `go test` runs outside the reservation, as it did before the
-split. A
-run whose bucket or list step went over its declaration says so at the
-end. Every `go test`, split or not, runs under a leader that ends every
-process it started when it ends, is signaled, or loses the launcher (on
-macOS, the processes of its process group), and the reservation and the
-binaries' directory, on the namespace's disk-backed Go work directory,
-last until every leader has exited. A process left running by a `go test`
-that ended on its own fails the run even when every test passed: the
-leader ends it and names its pid, its command line and the temp
-directory of the test that a path in it names, so the test or fixture
-that started it is fixed to end it. A bucket writes its output to a file
-and prints it when it ends, so one that hangs shows nothing until its
-`-timeout`. Only `-count`, `-timeout`, `-tags`, `-short`, `-v`, `-vet`,
-`-shuffle` and `-skip`, and in `GOFLAGS` also `-trimpath`, `-mod`,
-`-modcacherw` and `-buildvcs`, keep a run split; with any other flag, such
-as `-run`, `-json`, `-failfast`, `-p` or a profile, it runs the one `go
-test` it was given, under a leader, which passes its output on line by
-line as it comes.
 Go trims its build cache only by age, so `go-build`, `go-test` and
 `test-race` run a `cmd/ao-gocache-trim` pass before their build or test and
 another when it ends. A pass walks the cache at most every five minutes,

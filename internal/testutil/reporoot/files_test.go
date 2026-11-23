@@ -9,7 +9,7 @@ import (
 
 func TestGoFilesListsEveryPackageRoot(t *testing.T) {
 	files := GoFiles(t)
-	for _, want := range []string{"main.go", "cmd/ao-gotest/main.go", "internal/testutil/reporoot/files.go", "internal/testutil/reporoot/files_test.go"} {
+	for _, want := range []string{"main.go", "cmd/ao-gocache-trim/main.go", "internal/testutil/reporoot/files.go", "internal/testutil/reporoot/files_test.go"} {
 		if !slices.Contains(files, want) {
 			t.Errorf("GoFiles lacks %s", want)
 		}

@@ -3,15 +3,21 @@
 package netisolate
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/filelock"
-	"agent-overflow/internal/hostmemory"
 	"agent-overflow/internal/ownedtemp"
 )
 
@@ -111,8 +117,25 @@ var reservationsDir = func() string { return TempDir() + "-ram" }
 // readMemoryLimits reads the limits the admission rule needs. Tests stand
 // in for the host through it.
 var readMemoryLimits = func() (memoryLimits, error) {
-	r, err := hostmemory.Read()
-	return memoryLimits{available: r.Available, total: r.Total, cgroupLimit: r.CgroupLimit}, err
+	meminfo, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return memoryLimits{}, err
+	}
+	var m memoryLimits
+	if m.available, err = parseMeminfo(meminfo, "MemAvailable"); err != nil {
+		return memoryLimits{}, err
+	}
+	if m.total, err = parseMeminfo(meminfo, "MemTotal"); err != nil {
+		return memoryLimits{}, err
+	}
+	cgroups, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return memoryLimits{}, fmt.Errorf("read the launcher's cgroup: %w", err)
+	}
+	if m.cgroupLimit, err = cgroupMemoryLimit(cgroups, "/sys/fs/cgroup"); err != nil {
+		return memoryLimits{}, err
+	}
+	return m, nil
 }
 
 // reserveRAMTemp admits this run to a RAM temp directory or says why not.
@@ -152,4 +175,89 @@ func reserveRAMTemp(stderr io.Writer) (reservation *ownedtemp.Shared, reason str
 		return unreserved(err)
 	}
 	return reservation, ""
+}
+
+// parseMeminfo reads the line of /proc/meminfo for key, in bytes.
+func parseMeminfo(meminfo []byte, key string) (uint64, error) {
+	scanner := bufio.NewScanner(bytes.NewReader(meminfo))
+	for scanner.Scan() {
+		value, ok := strings.CutPrefix(scanner.Text(), key+":")
+		if !ok {
+			continue
+		}
+		kB, ok := strings.CutSuffix(strings.TrimSpace(value), " kB")
+		if !ok {
+			return 0, fmt.Errorf("%s %q is not in kB", key, strings.TrimSpace(value))
+		}
+		n, err := strconv.ParseUint(kB, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", key, err)
+		}
+		return n << 10, nil
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+	return 0, fmt.Errorf("no %s in /proc/meminfo", key)
+}
+
+// cgroupMemoryLimit returns the lowest memory limit set on the cgroup
+// procCgroup (/proc/self/cgroup) names or any of its ancestors, under the
+// cgroup file system mounted at root, or 0 when none is: the v1 memory
+// controller's memory.limit_in_bytes when that controller is mounted, else
+// the v2 memory.max. "max", and the v1 near-2^63 "unlimited", mean none;
+// any limit at or above MemTotal does not change the budget. A level
+// without the file, as the root has, sets none.
+func cgroupMemoryLimit(procCgroup []byte, root string) (uint64, error) {
+	var v1, v2 string
+	haveV1, haveV2 := false, false
+	for _, line := range strings.Split(string(procCgroup), "\n") {
+		fields := strings.SplitN(line, ":", 3)
+		if len(fields) != 3 {
+			continue
+		}
+		if fields[0] == "0" && fields[1] == "" {
+			v2, haveV2 = fields[2], true
+		}
+		for _, controller := range strings.Split(fields[1], ",") {
+			if controller == "memory" {
+				v1, haveV1 = fields[2], true
+			}
+		}
+	}
+	var base, cgroup, file string
+	switch {
+	case haveV1:
+		base, cgroup, file = filepath.Join(root, "memory"), v1, "memory.limit_in_bytes"
+	case haveV2:
+		base, cgroup, file = root, v2, "memory.max"
+	default:
+		return 0, nil
+	}
+	var limit uint64
+	for dir := path.Clean("/" + cgroup); ; dir = path.Dir(dir) {
+		data, err := os.ReadFile(filepath.Join(base, dir, file))
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
+			return 0, fmt.Errorf("read the cgroup memory limit: %w", err)
+		default:
+			value := strings.TrimSpace(string(data))
+			if value != "max" {
+				n, err := strconv.ParseUint(value, 10, 64)
+				if err != nil {
+					return 0, fmt.Errorf("cgroup memory limit %s: %w", filepath.Join(base, dir, file), err)
+				}
+				// A limit of 0 is set, unlike memoryLimits' 0; one byte
+				// gives the same empty budget.
+				n = max(n, 1)
+				if limit == 0 || n < limit {
+					limit = n
+				}
+			}
+		}
+		if dir == "/" {
+			return limit, nil
+		}
+	}
 }
