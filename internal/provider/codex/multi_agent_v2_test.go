@@ -897,9 +897,23 @@ func TestCollabHistoryTerminalReconciliation(t *testing.T) {
 				}
 				return
 			}
-			if len(events) != 1 || events[0].Kind != provider.EventSubagentStatus ||
+			// A thread that is not loaded is gone with its processes: its
+			// unload is reported after its last turn's outcome, as a live
+			// session reports it.
+			wantEvents := 1
+			if tt.snapshot.Status == "notLoaded" {
+				wantEvents = 2
+			}
+			if len(events) != wantEvents || events[0].Kind != provider.EventSubagentStatus ||
 				events[0].ItemID != "spawn-a" || events[0].ParentToolUseID != "spawn-a" {
 				t.Fatalf("recovery event = %+v", events)
+			}
+			if wantEvents == 2 {
+				unload := events[1]
+				if unload.Kind != provider.EventSubagentStatus || unload.ItemID != "spawn-a" || unload.ProcessScope != (provider.ProcessScope{ID: "child-a", Addressable: true}) ||
+					!strings.Contains(string(unload.Meta), `"status":"notLoaded"`) {
+					t.Fatalf("recovered unload = %+v, want notLoaded for child-a's process scope", unload)
+				}
 			}
 			var meta struct {
 				AgentPath string `json:"agent_path"`

@@ -163,7 +163,7 @@ func (s *Session) routeChildWireEvent(providerThreadID string, event deferredChi
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.collab.childParentByThread[providerThreadID] != "" {
+	if s.collab.childParentByThread[providerThreadID] != "" && !s.childRouting.backlogOpen[providerThreadID] {
 		return childWireRoutable
 	}
 	if _, unrelated := s.childRouting.unrelatedThreads[providerThreadID]; unrelated {
@@ -205,10 +205,6 @@ func (s *Session) routeChildWireEvent(providerThreadID string, event deferredChi
 		})
 	}
 	return childWireDeferred
-}
-
-func (s *Session) takeDeferredChildWireEvents(providerThreadID string) []deferredChildWireEvent {
-	return s.takeDeferredChildWireEventsUnlessClosing(providerThreadID, false)
 }
 
 // takeDeferredChildWireEventsUnlessClosing removes and returns one child
@@ -285,25 +281,55 @@ func (s *Session) expireDeferredChildWireEvents(providerThreadID string) {
 	s.warnChildRoutingOverflow(providerThreadID, "ownership timeout", nil)
 }
 
+// drainDeferredChildWireEvents delivers each child's quarantined frames in
+// wire order, once the child's route is registered. A frame that arrives
+// while a gated backlog is delivered (gateChildBacklog) joins the queue, so
+// the loop takes the queue again until it is empty and opens the route in
+// the same step. A drained frame already passed the checks dispatch runs
+// before routing, and its route is known, so it goes straight to the
+// routed dispatch: through the gate it would only be queued again.
 func (s *Session) drainDeferredChildWireEvents(providerThreadIDs ...string) {
 	for _, providerThreadID := range providerThreadIDs {
-		var needsFlush bool
-		if s.conn != nil {
-			if s.conn.registerChildRoute(providerThreadID, s) {
-				needsFlush = true
-			}
+		providerThreadID = strings.TrimSpace(providerThreadID)
+		needsFlush := false
+		if s.conn != nil && s.conn.registerChildRoute(providerThreadID, s) {
+			needsFlush = true
 		}
-		// Enqueue session-quarantined child frames through enqueueEarlyFrames
-		// (never through enqueueFrameIfPending's backpressure wait) so a
-		// re-entrant drain inside flushEarlyFrames can never wait on itself.
-		if events := s.takeDeferredChildWireEvents(providerThreadID); len(events) > 0 {
+		s.mu.Lock()
+		if events := s.takeDeferredChildWireEventsLocked(providerThreadID); len(events) > 0 {
 			s.enqueueEarlyFrames(events)
 			needsFlush = true
 		}
+		delete(s.childRouting.backlogOpen, providerThreadID)
+		s.mu.Unlock()
 		if needsFlush {
 			s.flushEarlyFrames()
 		}
 	}
+}
+
+// releaseChildBacklogGate opens a gate whose route was never registered:
+// the child's frames stay quarantined until their ownership deadline, as
+// any unowned child's do.
+func (s *Session) releaseChildBacklogGate(providerThreadID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.childRouting.backlogOpen, providerThreadID)
+}
+
+// gateChildBacklog holds a child's new frames in its quarantine queue until
+// drainDeferredChildWireEvents has delivered the frames queued before them.
+// A recovery that publishes a route off the read loop calls it before the
+// route exists: otherwise the read loop routes a later frame (a command's
+// completion, the thread's notLoaded) ahead of the backlog that holds the
+// command's start.
+func (s *Session) gateChildBacklog(providerThreadID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.childRouting.backlogOpen == nil {
+		s.childRouting.backlogOpen = make(map[string]bool)
+	}
+	s.childRouting.backlogOpen[providerThreadID] = true
 }
 
 func (s *Session) warnChildRoutingOverflow(providerThreadID, method string, requestID *json.Number) {

@@ -219,7 +219,11 @@ type sessionSettingsState struct {
 // yield or at the turn-close catchall — this session package only
 // surfaces the wire fields; it doesn't project them.
 type sessionCollabState struct {
-	childParentByThread    map[string]string
+	childParentByThread map[string]string
+	// closedChildren holds the children a V1 close_agent item named whose
+	// thread Codex has not yet reported gone (noteClosedCollabReceivers);
+	// each keeps its route until then.
+	closedChildren         map[string]bool
 	childParentByAgentPath map[string]string
 	childThreadByAgentPath map[string]string
 	childPathOwnerLive     map[string]bool
@@ -277,6 +281,11 @@ type sessionChildRoutingState struct {
 	deferredChildWireCount  int
 	deferredChildWireBytes  int
 	deferredChildDeadlines  map[string]*time.Timer
+	// backlogOpen holds the children whose route an off-read-loop recovery
+	// published while their quarantined frames are still being delivered:
+	// a new frame for one queues behind that backlog rather than passing
+	// it (gateChildBacklog, drainDeferredChildWireEvents).
+	backlogOpen map[string]bool
 	// warned dedupes the routing-overflow log to once per session.
 	warned bool
 }
@@ -501,15 +510,17 @@ type Session struct {
 	// path without needing a live app-server. Production NewSession
 	// never sets it.
 	resumeFn func(ctx context.Context) error
-	// cleanBackgroundTerminalsFn and terminateBackgroundTerminalFn replace
-	// only the wire write of CleanBackgroundTerminals and
-	// TerminateBackgroundTerminal, for the provider thread the owner
-	// resolved to, in app-layer tests (NewBackgroundTerminalsTestSession).
-	// Owner resolution and argument validation still run. Production
+	// cleanBackgroundTerminalsFn, terminateBackgroundTerminalFn and
+	// listBackgroundTerminalsFn replace only the wire exchange of
+	// CleanBackgroundTerminals, TerminateBackgroundTerminal and one
+	// ListBackgroundTerminals page in app-layer tests
+	// (NewBackgroundTerminalsTestSession). Scope validation, argument
+	// validation and the not-loaded reading still run. Production
 	// NewSession never sets them; the wire shape itself is pinned by the
 	// in-package tests in session_background_terminals_test.go.
 	cleanBackgroundTerminalsFn    func(ctx context.Context, providerThreadID string) error
 	terminateBackgroundTerminalFn func(ctx context.Context, providerThreadID, processID string) (bool, error)
+	listBackgroundTerminalsFn     func(ctx context.Context, providerThreadID, cursor string) (json.RawMessage, error)
 	// interruptChildTurnFn replaces only the turn/interrupt wire write in
 	// app-layer tests. Ownership and runtime-state validation still run.
 	interruptChildTurnFn func(ctx context.Context, childThreadID, turnID string) error
@@ -1254,7 +1265,7 @@ func (s *Session) closeShared() error {
 
 		// 2. Best-effort background terminal cleanup for this thread only.
 		cleanCtx, cancelClean := context.WithTimeout(context.Background(), codexCloseInterruptTimeout)
-		if err := s.CleanBackgroundTerminals(cleanCtx); err != nil && !IsMethodUnsupported(err, "thread/backgroundTerminals/clean") {
+		if err := s.CleanBackgroundTerminals(cleanCtx, rootThreadID); err != nil && !IsMethodUnsupported(err, "thread/backgroundTerminals/clean") {
 			log.Printf("codex: shared close background terminal clean %s: %v", rootThreadID, err)
 		}
 		cancelClean()

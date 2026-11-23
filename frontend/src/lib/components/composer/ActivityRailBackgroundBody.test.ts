@@ -97,9 +97,46 @@ describe('Stop All in the background tray', () => {
     expect(toasts()).toEqual([]);
   });
 
-  // Codex cleans terminals thread-wide, so an agent pane's tray must not
-  // name its terminals in the bulk call: that would stop the thread's
-  // other terminals too.
+  // A computer whose rows stop by item id stops each named command alone in
+  // Stop All, so an agent pane's tray names its commands in the bulk call,
+  // and a row's own Stop names the command by item id, the agent's included.
+  it('stops a scoped Codex tray’s item-id commands in the bulk call and by item id from the row', async () => {
+    const agentCommand = shell('agent-cmd', { parentId: 'agent', meta: JSON.stringify({ stop_by_item: true }) });
+    const rootCommand = shell('root-cmd', { meta: JSON.stringify({ stop_by_item: true, process_id: 'pid-9' }) });
+    const stopAll = setBindingMock('StopBackgroundTasks', async (_thread: string, ids: string[]) =>
+      ids.map((launchItemId) => ({ launchItemId, outcome: 'stopping' })));
+    const stopCommand = setBindingMock('StopCodexBackgroundCommand', async () => true);
+    const terminate = setBindingMock('TerminateCodexBackgroundTerminal', async () => true);
+    const props = { tasks: trayTasks([agentCommand, rootCommand]), provider: 'codex' as const, threadId: 'thread', runningCount: 2 };
+
+    const scopedView = render(ActivityRailBackgroundBody, { ...props, scoped: true, idPrefix: 'agent-pane' });
+    await fireEvent.click(scopedView.getByTestId('agent-pane-background-stop-all'));
+    await waitFor(() => expect(stopAll).toHaveBeenCalledWith('thread', ['agent-cmd', 'root-cmd']));
+    expect(stopCommand).not.toHaveBeenCalled();
+    scopedView.unmount();
+
+    const threadView = render(ActivityRailBackgroundBody, props);
+    for (const id of ['agent-cmd', 'root-cmd']) {
+      await fireEvent.click(rowStop(threadView, id));
+      await waitFor(() => expect(stopCommand).toHaveBeenLastCalledWith('thread', id));
+    }
+    expect(terminate).not.toHaveBeenCalled();
+    expect(toasts()).toEqual([]);
+  });
+
+  it('says so when a Codex command stopped by item id had already ended', async () => {
+    setBindingMock('StopCodexBackgroundCommand', async () => false);
+    const view = render(ActivityRailBackgroundBody, {
+      tasks: trayTasks([shell('agent-cmd', { meta: JSON.stringify({ stop_by_item: true }) })]),
+      provider: 'codex', threadId: 'thread', runningCount: 1,
+    });
+    await fireEvent.click(rowStop(view, 'agent-cmd'));
+    await waitFor(() => expect(toasts()).toEqual([['info', 'That background terminal had already exited.']]));
+  });
+
+  // A computer older than the item-id Stop cleans terminals thread-wide in
+  // Stop All, so an agent pane's tray must not name its terminals in the
+  // bulk call: that would stop the thread's other terminals too.
   it('stops a scoped Codex tray’s terminals one by one and names only its subagents', async () => {
     const terminal = shell('term', { meta: JSON.stringify({ process_id: 'pid-7' }) });
     const agent = shell('agent', { toolName: 'collab_agent', meta: JSON.stringify({ input: { tool: 'spawn_agent' } }) });

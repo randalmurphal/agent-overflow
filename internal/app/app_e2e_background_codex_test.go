@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -251,7 +253,11 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 // events (one per terminated PTY) that persist command rows and clear
 // the live tray. Verifies exactly one RPC fired: the primitive is
 // thread-wide, not per row.
-func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
+// e2eRootScope is the process scope the Codex provider stamps on the root
+// thread's frames, for the fake session's root thread.
+var e2eRootScope = provider.ProcessScope{ID: "test-root", Addressable: true}
+
+func TestE2E_Codex_StopAll_TerminatesEachNamedCommand(t *testing.T) {
 	t.Parallel()
 	app, bus := setupE2EApp(t)
 
@@ -291,13 +297,13 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 		if err := app.triage.Handle(provider.ProviderEvent{
 			Kind: provider.EventToolStart, ThreadID: thread.ID, ItemID: id,
 			ItemType: "commandExecution", TurnID: "turn-0", Meta: startMeta,
-			Timestamp: time.Now(),
+			ProcessScope: e2eRootScope, Timestamp: time.Now(),
 		}); err != nil {
 			t.Fatalf("tool start %s: %v", id, err)
 		}
 		if err := app.triage.Handle(provider.ProviderEvent{
 			Kind: provider.EventCodexExecResult, ThreadID: thread.ID, ItemID: id,
-			TurnID:    "turn-0",
+			TurnID: "turn-0", ProcessScope: e2eRootScope,
 			Meta:      codexE2EExecResultMeta(t, "running", "pid-"+id, command),
 			Timestamp: time.Now(),
 		}); err != nil {
@@ -306,7 +312,7 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 		// A poll of the terminal backgrounds it; Stop All stops only
 		// background terminals.
 		if err := app.triage.Handle(provider.ProviderEvent{
-			Kind: provider.EventTerminalInteraction, ThreadID: thread.ID,
+			Kind: provider.EventTerminalInteraction, ThreadID: thread.ID, ProcessScope: e2eRootScope,
 			Meta: json.RawMessage(`{"process_id":"pid-` + id + `"}`), Timestamp: time.Now(),
 		}); err != nil {
 			t.Fatalf("terminal poll %s: %v", id, err)
@@ -332,20 +338,28 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 		return err == nil && len(live) == 2 && live[0].IsBackground && live[1].IsBackground
 	})
 
-	// Install a fake Codex session whose Clean callback records the
-	// call and returns nil. Stop-all must fire it exactly once for both
-	// rows, because Codex's primitive is thread-wide.
+	// Install a fake Codex session that records each call. Stop All
+	// terminates each named command by its process in its own thread; a
+	// thread-wide clean would also kill commands nobody named.
 	var cleanCalls atomic.Int32
-	fakeSess := codex.NewBackgroundTerminalsTestSession(codex.BackgroundTerminalsTestWire{RootThreadID: "test-root", Clean: func(ctx context.Context, _ string) error {
-		cleanCalls.Add(1)
-		if ctx == nil {
-			t.Error("nil context passed to CleanBackgroundTerminals")
-		}
-		if _, ok := ctx.Deadline(); !ok {
-			t.Error("CleanBackgroundTerminals context missing deadline")
-		}
-		return nil
-	}})
+	var mu sync.Mutex
+	var terminated []string
+	fakeSess := codex.NewBackgroundTerminalsTestSession(codex.BackgroundTerminalsTestWire{
+		RootThreadID: "test-root",
+		Clean: func(context.Context, string) error {
+			cleanCalls.Add(1)
+			return nil
+		},
+		Terminate: func(ctx context.Context, providerThreadID, processID string) (bool, error) {
+			if _, ok := ctx.Deadline(); !ok {
+				t.Error("TerminateBackgroundTerminal context missing deadline")
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			terminated = append(terminated, providerThreadID+"/"+processID)
+			return true, nil
+		},
+	})
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
 		Codex:    fakeSess,
@@ -365,8 +379,12 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 	if !reflect.DeepEqual(results, want) {
 		t.Fatalf("StopBackgroundTasks results = %+v, want %+v", results, want)
 	}
-	if got := cleanCalls.Load(); got != 1 {
-		t.Fatalf("CleanBackgroundTerminals calls = %d, want 1 (thread-wide primitive)", got)
+	mu.Lock()
+	gotTerminated := slices.Clone(terminated)
+	mu.Unlock()
+	slices.Sort(gotTerminated)
+	if got := cleanCalls.Load(); got != 0 || !slices.Equal(gotTerminated, []string{"test-root/pid-cmd-stop-1", "test-root/pid-cmd-stop-2"}) {
+		t.Fatalf("clean calls = %d, terminated = %v, want each named command terminated and no clean", got, gotTerminated)
 	}
 
 	// The app-server responds by emitting item/completed for each
@@ -381,7 +399,7 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 		if err := app.triage.Handle(provider.ProviderEvent{
 			Kind: provider.EventToolComplete, ThreadID: thread.ID, ItemID: id,
 			ItemType: "commandExecution", TurnID: "turn-0", Meta: completeMeta,
-			Timestamp: time.Now(),
+			ProcessScope: e2eRootScope, Timestamp: time.Now(),
 		}); err != nil {
 			t.Fatalf("tool complete %s: %v", id, err)
 		}
@@ -458,13 +476,13 @@ func TestE2E_Codex_PerRowStop_TerminateRPC(t *testing.T) {
 		if err := app.triage.Handle(provider.ProviderEvent{
 			Kind: provider.EventToolStart, ThreadID: thread.ID, ItemID: id,
 			ItemType: "commandExecution", TurnID: "turn-0", Meta: startMeta,
-			Timestamp: time.Now(),
+			ProcessScope: e2eRootScope, Timestamp: time.Now(),
 		}); err != nil {
 			t.Fatalf("tool start %s: %v", id, err)
 		}
 		if err := app.triage.Handle(provider.ProviderEvent{
 			Kind: provider.EventCodexExecResult, ThreadID: thread.ID, ItemID: id,
-			TurnID:    "turn-0",
+			TurnID: "turn-0", ProcessScope: e2eRootScope,
 			Meta:      codexE2EExecResultMeta(t, "running", "pid-"+id, command),
 			Timestamp: time.Now(),
 		}); err != nil {
@@ -544,7 +562,7 @@ func TestE2E_Codex_PerRowStop_TerminateRPC(t *testing.T) {
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind: provider.EventToolComplete, ThreadID: thread.ID, ItemID: stopID,
 		ItemType: "commandExecution", TurnID: "turn-0", Meta: completeMeta,
-		Timestamp: time.Now(),
+		ProcessScope: e2eRootScope, Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("tool complete %s: %v", stopID, err)
 	}

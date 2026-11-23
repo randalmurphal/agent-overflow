@@ -2460,6 +2460,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	// answerless before the runtime it belonged to is forgotten.
 	r.persistHeldCodexCompletionsAnswerless(threadID, heldCodexCompletions)
 	r.finishClosedCodexAgents(closedCodexAgents, cleanupAt)
+	r.signalCodexExecChanged(threadID)
 	r.emit(eventchan.ProviderBackgroundTasksChanged, BackgroundTasksChangedEvent{ThreadID: threadID, ResetCodexAgents: true})
 	r.emitBackgroundTrayRefresh(threadID)
 

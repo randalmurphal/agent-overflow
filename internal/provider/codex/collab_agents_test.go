@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -557,23 +558,21 @@ func TestDispatchLineCloseAgentKeepsOwnItemID(t *testing.T) {
 
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"close-call-1","type":"collabAgentToolCall","tool":"closeAgent","receiverThreadIds":["child-provider-1"],"status":"completed"}}}`))
 
-	// The close's own row, then the closed child's status
-	// (TestCloseAgentReportsTheClosedChildUnloadedBeforeItsRouteGoes).
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events, got %d", len(events))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
 	}
 	if events[0].ItemID != "close-call-1" {
 		t.Fatalf("ItemID: got %q, want %q", events[0].ItemID, "close-call-1")
 	}
 }
 
-// A V1 close_agent completion comes after Codex shut the child's thread
-// down, and the child's own notLoaded status can come after it, when the
-// close has already ended the child's route. So the close reports the
-// child notLoaded on its spawn launch itself, after its own row and before
-// the route goes: the child's commands and live execution settle whatever
-// order Codex's frames arrive in.
-func TestCloseAgentReportsTheClosedChildUnloadedBeforeItsRouteGoes(t *testing.T) {
+// A V1 close item is not proof the child's thread is gone: Codex writes it
+// with the child's previous status when the close fails. So the close
+// keeps the child's route and only notes it; the child's own notLoaded, or
+// a background-terminal call's "thread not found", retires it then. A
+// child no close named keeps its route through notLoaded, because Codex
+// loads an idle agent again when it is addressed.
+func TestCloseAgentRetiresTheChildRouteOnlyWhenItsThreadIsGone(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
 	s := &Session{
@@ -583,37 +582,69 @@ func TestCloseAgentReportsTheClosedChildUnloadedBeforeItsRouteGoes(t *testing.T)
 			events = append(events, evt)
 		},
 		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-provider-1": "call-collab-1", "child-provider-2": "call-collab-2"},
+			childParentByThread:  map[string]string{"child-provider-1": "call-collab-1", "child-provider-2": "call-collab-2"},
+			childRuntimeByThread: map[string]childRuntimeState{},
 		},
 	}
+	s.setRootThreadID("provider-parent")
 
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"close-call-1","type":"collabAgentToolCall","tool":"closeAgent","receiverThreadIds":["child-provider-1"],"status":"completed"}}}`))
+	if len(events) != 1 || events[0].ItemID != "close-call-1" {
+		t.Fatalf("events = %+v, want only the close's own row", events)
+	}
+	if got := s.parentToolUseForProviderThread("child-provider-1"); got != "call-collab-1" {
+		t.Fatalf("closed child's route = %q right after the close item, want call-collab-1 kept", got)
+	}
 
-	if len(events) != 2 || events[0].ItemID != "close-call-1" {
-		t.Fatalf("events = %+v, want the close row then the child's status", events)
+	events = nil
+	for _, child := range []string{"child-provider-1", "child-provider-2"} {
+		s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/status/changed","params":{"threadId":"` + child + `","status":{"type":"notLoaded"}}}`))
 	}
-	status := events[1]
-	var meta struct {
-		AgentPath string `json:"agent_path"`
-		Status    string `json:"status"`
+	if len(events) != 2 {
+		t.Fatalf("events = %+v, want one status per child", events)
 	}
-	if err := json.Unmarshal(status.Meta, &meta); err != nil {
-		t.Fatal(err)
-	}
-	if status.Kind != provider.EventSubagentStatus || status.ItemID != "call-collab-1" || status.ParentToolUseID != "call-collab-1" || meta.AgentPath != "child-provider-1" || meta.Status != "notLoaded" {
-		t.Fatalf("status = %+v meta %+v, want notLoaded for child-provider-1 on call-collab-1", status, meta)
+	for i, want := range []provider.ProcessScope{{ID: "child-provider-1", Addressable: true}, {ID: "child-provider-2", Addressable: true}} {
+		if events[i].Kind != provider.EventSubagentStatus || events[i].ProcessScope != want {
+			t.Fatalf("status %d = %+v, want notLoaded naming process scope %+v", i, events[i], want)
+		}
 	}
 	if got := s.parentToolUseForProviderThread("child-provider-1"); got != "" {
-		t.Fatalf("closed child still routes to %q", got)
+		t.Fatalf("closed child still routes to %q after its notLoaded", got)
 	}
 	if got := s.parentToolUseForProviderThread("child-provider-2"); got != "call-collab-2" {
-		t.Fatalf("a child the close did not name lost its route: %q", got)
+		t.Fatalf("a child no close named lost its route at notLoaded: %q", got)
 	}
+}
 
-	// A close for a child whose route is already gone reports nothing.
-	events = nil
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"close-call-2","type":"collabAgentToolCall","tool":"closeAgent","receiverThreadIds":["child-provider-1"],"status":"completed"}}}`))
-	if len(events) != 1 || events[0].ItemID != "close-call-2" {
-		t.Fatalf("events = %+v, want only the second close's row", events)
+// Triage asks for the closed child's list as the close item reaches it, and
+// the "thread not found" answer can come back before the close frame's
+// dispatch returns. The child is noted closed before the item is delivered,
+// so that answer retires its route.
+func TestCloseAgentNotesTheChildBeforeTheCloseItemIsDelivered(t *testing.T) {
+	t.Parallel()
+	var s *Session
+	answered := false
+	s = &Session{
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
+		onEvent: func(evt provider.ProviderEvent) {
+			if evt.ItemType == "close_agent" && evt.Kind == provider.EventToolComplete {
+				err := s.backgroundTerminalThreadGone("child-provider-1", &RPCError{Code: -32600, Message: "thread not found: child-provider-1"})
+				answered = errors.Is(err, ErrBackgroundTerminalThreadNotLoaded)
+			}
+		},
+		collab: sessionCollabState{
+			childParentByThread:  map[string]string{"child-provider-1": "call-collab-1"},
+			childRuntimeByThread: map[string]childRuntimeState{},
+		},
+	}
+	s.setRootThreadID("provider-parent")
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"close-call-1","type":"collabAgentToolCall","tool":"closeAgent","receiverThreadIds":["child-provider-1"],"status":"completed"}}}`))
+	if !answered {
+		t.Fatal("the close item never reached the event sink with a not-loaded answer")
+	}
+	if got := s.parentToolUseForProviderThread("child-provider-1"); got != "" {
+		t.Fatalf("closed child still routes to %q after a not-found answered during its close item", got)
 	}
 }

@@ -179,14 +179,14 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 		}, func(r *Router) bool { return codexCommandTracked(r, threadID, "exec-1") }},
 		// The writers below act on a command the live session-b started.
 		{"codex commands", "codex command backgrounded", func(t *testing.T, r *Router, token string) {
-			startCodexCommandFromSession(t, r, threadID, "exec-1", "pid-1", "", "session-b")
-			r.markCodexUnifiedExecProcessBackgrounded(fromSession(provider.ProviderEvent{ThreadID: threadID}, token), "pid-1")
+			startCodexCommandFromSession(t, r, threadID, "exec-1", "pid-1", "", threadScope("root"), "session-b")
+			r.markCodexUnifiedExecProcessBackgrounded(fromSession(provider.ProviderEvent{ThreadID: threadID, ProcessScope: threadScope("root")}, token), "pid-1")
 		}, func(r *Router) bool {
-			tracker, ok := r.codexTerminalForProcess(threadID, "", "pid-1")
+			tracker, ok := r.codexTerminalForProcess(threadID, "root", "pid-1")
 			return ok && tracker.backgrounded
 		}},
 		{"codex commands", "codex command output", func(t *testing.T, r *Router, token string) {
-			startCodexCommandFromSession(t, r, threadID, "exec-1", "pid-1", "", "session-b")
+			startCodexCommandFromSession(t, r, threadID, "exec-1", "pid-1", "", threadScope("root"), "session-b")
 			r.observeCodexCommandOutput(fromSession(provider.ProviderEvent{Kind: provider.EventCommandOutput, ThreadID: threadID, ItemID: "exec-1", Content: "line", Timestamp: time.Now()}, token))
 		}, func(r *Router) bool {
 			r.mu.Lock()
@@ -195,28 +195,28 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 			return tracker != nil && !tracker.output.Empty()
 		}},
 		{"codex commands", "codex exec result", func(t *testing.T, r *Router, token string) {
-			startCodexCommandFromSession(t, r, threadID, "exec-1", "pid-1", "", "session-b")
+			startCodexCommandFromSession(t, r, threadID, "exec-1", "pid-1", "", threadScope("root"), "session-b")
 			meta, err := json.Marshal(codexExecResultMeta{ProcessID: "pid-1", Result: codexExecResultRunning, Command: "sleep 61"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := r.handleCodexExecResult(fromSession(provider.ProviderEvent{ThreadID: threadID, ItemID: "exec-1", Meta: meta, Timestamp: time.Now()}, token)); err != nil {
+			if err := r.handleCodexExecResult(fromSession(provider.ProviderEvent{ThreadID: threadID, ItemID: "exec-1", ProcessScope: threadScope("root"), Meta: meta, Timestamp: time.Now()}, token)); err != nil {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool {
-			tracker, ok := r.codexTerminalForProcess(threadID, "", "pid-1")
+			tracker, ok := r.codexTerminalForProcess(threadID, "root", "pid-1")
 			return ok && tracker.command == "sleep 61"
 		}},
 		{"codex commands", "codex command completion", func(t *testing.T, r *Router, token string) {
-			startCodexCommandFromSession(t, r, threadID, "exec-1", "pid-1", "", "session-b")
+			startCodexCommandFromSession(t, r, threadID, "exec-1", "pid-1", "", threadScope("root"), "session-b")
 			complete := provider.ProviderEvent{Kind: provider.EventToolComplete, ThreadID: threadID, ItemID: "exec-1", ItemType: "commandExecution", Meta: buildUnifiedExecCompleteMeta(t, "completed", "pid-1", "sleep 60", 0), Timestamp: time.Now()}
 			if _, err := r.observeCodexUnifiedExecComplete(fromSession(complete, token)); err != nil {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool { return !codexCommandTracked(r, threadID, "exec-1") }},
 		{"codex commands", "codex agent thread unloaded", func(t *testing.T, r *Router, token string) {
-			startCodexCommandFromSession(t, r, threadID, "exec-1", "pid-1", "spawn-1", "session-b")
-			status := provider.ProviderEvent{Kind: provider.EventSubagentStatus, ThreadID: threadID, ItemID: "spawn-1", ParentToolUseID: "spawn-1", Meta: json.RawMessage(`{"agent_path":"child-1","status":"notLoaded"}`), Timestamp: time.Now()}
+			startCodexCommandFromSession(t, r, threadID, "exec-1", "pid-1", "spawn-1", threadScope("child-1"), "session-b")
+			status := provider.ProviderEvent{Kind: provider.EventSubagentStatus, ThreadID: threadID, ItemID: "spawn-1", ParentToolUseID: "spawn-1", ProcessScope: threadScope("child-1"), Meta: json.RawMessage(`{"agent_path":"child-1","status":"notLoaded"}`), Timestamp: time.Now()}
 			if err := r.observeCodexSubagentStatus(fromSession(status, token)); err != nil {
 				t.Fatal(err)
 			}

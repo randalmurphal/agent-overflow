@@ -227,6 +227,12 @@ func (s *Session) reconcileCollabHistoryTerminal(job collabHistoryJob, snapshot 
 	if responseThreadID == "" || responseThreadID != providerThreadID {
 		return "", fmt.Errorf("child recovery snapshot thread mismatch: got %q, want %q", responseThreadID, providerThreadID)
 	}
+	if snapshot.Status == "notLoaded" {
+		// The thread is gone, and its processes with it. That is a fact of
+		// its own, apart from the outcome of its last turn reported below,
+		// and it is reported after that outcome, as a live session sees it.
+		defer s.emitRecoveredChildUnload(providerThreadID, parentToolUseID, snapshot.LatestTurnID, expectedLifecycleRevision)
+	}
 	var status string
 	switch snapshot.Status {
 	case "active":
@@ -264,6 +270,16 @@ func (s *Session) reconcileCollabHistoryTerminal(job collabHistoryJob, snapshot 
 	}
 	s.emitRecoveredChildStatus(providerThreadID, expectedLifecycleRevision, *event)
 	return snapshot.Status, nil
+}
+
+func (s *Session) emitRecoveredChildUnload(providerThreadID, parentToolUseID, turnID string, expectedLifecycleRevision uint64) {
+	event := s.childStatusEvent(providerThreadID, parentToolUseID, "notLoaded")
+	if event == nil {
+		return
+	}
+	event.TurnID = turnID
+	event.Meta = mergeMetaKeys(event.Meta, map[string]any{"recovered": true})
+	s.emitRecoveredChildStatus(providerThreadID, expectedLifecycleRevision, *event)
 }
 
 func (s *Session) readCollabHistoryWithRetry(providerThreadID string) (collabThreadSnapshot, error) {

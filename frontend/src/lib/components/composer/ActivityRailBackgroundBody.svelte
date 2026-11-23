@@ -2,9 +2,10 @@
   // Expanded body for the activity rail's Background segment. Lists
   // tray-eligible background tasks with a per-row stop and a bulk Stop
   // All. A row's stop takes its provider's primitive: Claude stops a task
-  // by its task id (`StopClaudeTask`), Codex terminates one unified-exec
-  // PTY by its process id (`TerminateCodexBackgroundTerminal`) or
-  // interrupts an owned subagent turn by launch id (`StopCodexSubagent`).
+  // by its task id (`StopClaudeTask`), Codex stops one command by its item
+  // id (`StopCodexBackgroundCommand`; on an older computer a root command
+  // by its process id, `TerminateCodexBackgroundTerminal`) or interrupts
+  // an owned subagent turn by launch id (`StopCodexSubagent`).
   // Stop All is one `StopBackgroundTasks` call naming the provider rows,
   // however many there are, and renders the result it returns for each:
   // a failed stop on its row, a task that had already ended in a notice.
@@ -16,6 +17,7 @@
     CancelThreadRemoteCommand,
     StopBackgroundTasks,
     StopClaudeTask,
+    StopCodexBackgroundCommand,
     StopCodexSubagent,
     TerminateCodexBackgroundTerminal,
     type BackgroundTaskStop,
@@ -27,6 +29,7 @@
     type ProviderID,
   } from '../../providers/catalog';
   import {
+    codexCommandStopsByItem,
     isCodexStoppableTask,
     isCodexSubagentTask,
     trayRemoteJob,
@@ -203,11 +206,12 @@
           if (!stopped) addToast('info', 'That subagent had already stopped.');
           return;
         }
-        // The boolean is the wire's own answer: false means the RPC
-        // matched no running process. No item/completed follows, so the
-        // row would sit at "running" with no explanation — say so
-        // instead of letting the click look ignored.
-        const terminated = await TerminateCodexBackgroundTerminal(threadId, stopTarget);
+        // False: the command had already ended, so nothing was stopped,
+        // and the row leaves the tray. Say so instead of letting the click
+        // look ignored.
+        const terminated = task.launch && codexCommandStopsByItem(task.launch)
+          ? await StopCodexBackgroundCommand(threadId, stopTarget)
+          : await TerminateCodexBackgroundTerminal(threadId, stopTarget);
         if (!terminated) {
           addToast('info', 'That background terminal had already exited.');
         }
@@ -271,10 +275,12 @@
   async function onStopAll() {
     if (!threadId) return;
     const id = threadId;
-    // Codex cleans background terminals thread-wide, so a scoped tray
-    // stops its own terminals one by one and names only the rest.
+    // A computer older than the item-id Stop cleans Codex background
+    // terminals thread-wide in Stop All, so a scoped tray stops those rows
+    // one by one and names only the rest. A row that stops by item id comes
+    // from a computer whose Stop All stops each named command alone.
     const oneByOne = scoped && backgroundStop === 'codex-background-terminals'
-      ? stopAllTasks.filter((task) => !isCodexSubagentTask(task))
+      ? stopAllTasks.filter((task) => !isCodexSubagentTask(task) && !(task.launch && codexCommandStopsByItem(task.launch)))
       : [];
     const named = stopAllTasks.filter((task) => !oneByOne.includes(task));
     const remotes = remoteTasks;

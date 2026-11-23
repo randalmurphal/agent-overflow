@@ -336,7 +336,10 @@ func (s *Session) childStatusEvent(providerThreadID, parentToolUseID, status str
 		ItemID:          parentToolUseID,
 		ParentToolUseID: parentToolUseID,
 		Meta:            meta,
-		Timestamp:       time.Now(),
+		// The child's thread is its commands' process table; a notLoaded
+		// status ends it (stampProcessScope).
+		ProcessScope: provider.ProcessScope{ID: providerThreadID, Addressable: true},
+		Timestamp:    time.Now(),
 	}
 }
 
@@ -944,15 +947,16 @@ func (s *Session) maybeRememberCollabReceiverThreads(method string, params json.
 	}
 }
 
-// retireClosedCollabReceivers ends the routes of the children a V1
-// close_agent completion names. Codex reports the close only after it shut
-// the child's thread down and with it the child's processes (Codex
-// shutdown_agent_tree), but the child's own notLoaded status can arrive
-// after this frame, when no route is left to carry it. The close stands in
-// for it: each closed child that still had a route reports notLoaded on
-// its spawn launch, so its commands and live execution settle, and then
-// the route goes. Runs after the close's own events have been emitted.
-func (s *Session) retireClosedCollabReceivers(method string, params json.RawMessage) {
+// noteClosedCollabReceivers records the children a V1 close_agent
+// completion names. The close item is no proof the child ended: Codex
+// writes it, with the child's previous status, even when the close failed
+// before the child was shut down (core tools/handlers/multi_agents
+// close_agent.rs, agent/control/legacy.rs flush_rollout). So the child keeps
+// its route, and with it its own frames, until Codex says the thread is
+// gone: its notLoaded status or a background-terminal call answered
+// "thread not found" (retireUnloadedClosedChild). Triage reads the close
+// item as a hint and asks the latter.
+func (s *Session) noteClosedCollabReceivers(method string, params json.RawMessage) {
 	if method != "item/completed" {
 		return
 	}
@@ -961,13 +965,30 @@ func (s *Session) retireClosedCollabReceivers(method string, params json.RawMess
 		normalizeCollabToolName(readRawString(item, "tool")) != "close_agent" {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, receiverThreadID := range readRawStringArray(item, "receiverThreadIds") {
-		if parentToolUseID := s.parentToolUseForProviderThread(receiverThreadID); parentToolUseID != "" {
-			if event := s.childStatusEvent(receiverThreadID, parentToolUseID, "notLoaded"); event != nil {
-				s.observeAndEmitChildLifecycle(receiverThreadID, []provider.ProviderEvent{*event})
-			}
+		if s.collab.childParentByThread[receiverThreadID] == "" {
+			continue
 		}
-		s.deleteParentToolUseForProviderThread(receiverThreadID)
+		if s.collab.closedChildren == nil {
+			s.collab.closedChildren = make(map[string]bool)
+		}
+		s.collab.closedChildren[receiverThreadID] = true
+	}
+}
+
+// retireUnloadedClosedChild ends the route of a child a close item named
+// once Codex says the thread is gone. A child no close named keeps its
+// route: Codex unloads an idle MultiAgentV2 agent and loads it again when
+// it is addressed (core agent/control/residency.rs).
+func (s *Session) retireUnloadedClosedChild(providerThreadID string) {
+	s.mu.Lock()
+	closed := s.collab.closedChildren[providerThreadID]
+	delete(s.collab.closedChildren, providerThreadID)
+	s.mu.Unlock()
+	if closed {
+		s.deleteParentToolUseForProviderThread(providerThreadID)
 	}
 }
 

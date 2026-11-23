@@ -225,6 +225,9 @@ func (s *Session) interceptChildNotification(
 			event.Meta = meta
 			s.observeAndEmitChildLifecycle(providerThreadID, []provider.ProviderEvent{*event})
 		}
+		if status == "notLoaded" {
+			s.retireUnloadedClosedChild(providerThreadID)
+		}
 		return true
 	}
 	if method == "thread/tokenUsage/updated" {
@@ -331,8 +334,13 @@ func (s *Session) classifyAndEmitNotification(
 	if method == safetyBufferingMethod && len(events) > 0 && !s.claimSafetyBufferingNotice(events[0].TurnID) {
 		events = nil
 	}
+	s.stampProcessScope(events, providerThreadID)
 	events = s.scopeReviewEvents(events)
 	suppressSubagentNotificationCarrier := s.emitSubagentNotificationsFromUserCarrier(method, params, events)
+	// Before the close item reaches triage: the check triage asks for on
+	// it can come back "thread not found" before this frame's dispatch
+	// returns, and only a noted child's route retires on that answer.
+	s.noteClosedCollabReceivers(method, params)
 
 	for i := range events {
 		evt := &events[i]
@@ -368,7 +376,43 @@ func (s *Session) classifyAndEmitNotification(
 	// reached triage so fast child output cannot race ahead of its parent card.
 	mappedChildThreadIDs = append(mappedChildThreadIDs, collabSpawnReceiverThreadIDs(method, params)...)
 	s.drainDeferredChildWireEvents(mappedChildThreadIDs...)
-	s.retireClosedCollabReceivers(method, params)
+}
+
+// stampProcessScope names, on every command event, the process table that
+// holds the command: each Codex thread has its own (core
+// session/session.rs, one UnifiedExecProcessManager per thread), so it is
+// the provider thread the frame came from. scopeReviewEvents then moves a
+// review's commands to the review run's table.
+func (s *Session) stampProcessScope(events []provider.ProviderEvent, providerThreadID string) {
+	scope := s.threadProcessScope(providerThreadID)
+	if scope.ID == "" {
+		return
+	}
+	for i := range events {
+		if kind := events[i].Kind; kind == provider.EventToolStart || kind == provider.EventToolComplete ||
+			kind == provider.EventCommandOutput || kind == provider.EventTerminalInteraction {
+			events[i].ProcessScope = scope
+		}
+	}
+}
+
+// RootProcessScope is the root thread's process table, which a clean of
+// the session's own commands names.
+func (s *Session) RootProcessScope() provider.ProcessScope {
+	return s.threadProcessScope("")
+}
+
+// threadProcessScope is the process table of the Codex thread a frame came
+// from: a frame without a thread id is the root thread's.
+func (s *Session) threadProcessScope(providerThreadID string) provider.ProcessScope {
+	scopeID := strings.TrimSpace(providerThreadID)
+	if scopeID == "" {
+		scopeID = s.rootThreadID()
+	}
+	if scopeID == "" {
+		return provider.ProcessScope{}
+	}
+	return provider.ProcessScope{ID: scopeID, Addressable: true}
 }
 
 func (s *Session) emitSubagentNotificationsFromUserCarrier(method string, params json.RawMessage, events []provider.ProviderEvent) bool {

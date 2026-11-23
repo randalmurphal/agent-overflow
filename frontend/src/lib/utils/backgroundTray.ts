@@ -7,7 +7,7 @@ import type { ProviderBackgroundStop } from '../providers/catalog';
 import type { Item } from '../types/models';
 import { parseJsonObject } from './parseJsonObject';
 import { extractClaudeTaskID } from './claudeTaskMeta';
-import { extractCodexProcessID } from './codexProcessMeta';
+import { codexCommandStopsByItem, extractCodexProcessID } from './codexProcessMeta';
 import {
   agentScopeRootId,
   claudeResumeTranscriptRootId,
@@ -18,7 +18,7 @@ import {
 } from './subagentLaunch';
 
 export { extractClaudeTaskID } from './claudeTaskMeta';
-export { extractCodexProcessID } from './codexProcessMeta';
+export { codexCommandStopsByItem, extractCodexProcessID } from './codexProcessMeta';
 
 export interface TrayTask {
   /** Stable id used for the row key and scroll-to-item request. */
@@ -137,10 +137,12 @@ export function isCodexStoppableTask(task: TrayTask): boolean {
 
 /**
  * Resolve the id a row's Stop button would target, or null when the row
- * has no per-row stop at all. The id namespace is per provider — a
- * Claude task id for `claude-task`, a Codex PTY process id for
- * `codex-background-terminals` — and the caller pairs it with the
- * matching binding.
+ * has no per-row stop at all. The id namespace is per provider: a
+ * Claude task id for `claude-task`; for `codex-background-terminals` a
+ * subagent's launch id, a command's item id when its row stops by item
+ * (`codexCommandStopsByItem`), or, on a computer older than that, a root
+ * command's PTY process id. The caller pairs it with the matching
+ * binding (`isCodexSubagentTask`, `codexCommandStopsByItem`).
  *
  * Only running rows with a live launch are stoppable: a completed row
  * has nothing to kill, and a launch that has already been pruned from
@@ -156,7 +158,8 @@ export function trayRowStopTarget(
       return extractClaudeTaskID(task.launch);
     case 'codex-background-terminals':
       if (!isCodexStoppableTask(task)) return null;
-      return isCodexSubagentTask(task) ? task.launch.id : extractCodexProcessID(task.launch);
+      if (isCodexSubagentTask(task) || codexCommandStopsByItem(task.launch)) return task.launch.id;
+      return extractCodexProcessID(task.launch);
     case 'none':
       return null;
   }

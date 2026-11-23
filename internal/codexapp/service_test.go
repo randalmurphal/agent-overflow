@@ -15,56 +15,73 @@ import (
 )
 
 func TestBackgroundControlsDistinguishMissingMismatchAndForward(t *testing.T) {
+	ctx := context.Background()
 	missing := New(Deps{Reaper: procutiltest.Reaper(), Session: func(threadID string) (*codex.Session, bool) {
 		return nil, threadID == "other-provider"
 	}})
-	if err := missing.CleanBackgroundTerminals("missing", ""); err == nil || !strings.Contains(err.Error(), "no active session") {
+	if err := missing.CleanBackgroundTerminals(ctx, "missing", "root-provider-thread"); err == nil || !strings.Contains(err.Error(), "no active session") {
 		t.Fatalf("missing error = %v", err)
 	}
-	if _, err := missing.TerminateBackgroundTerminal("other-provider", "", "42"); err == nil || !strings.Contains(err.Error(), "not a Codex thread") {
+	if _, err := missing.TerminateBackgroundTerminal(ctx, "other-provider", "root-provider-thread", "42"); err == nil || !strings.Contains(err.Error(), "not a Codex thread") {
 		t.Fatalf("mismatch error = %v", err)
 	}
+	if _, err := missing.RootProcessScope("missing"); err == nil || !strings.Contains(err.Error(), "no active session") {
+		t.Fatalf("root scope of a missing session: err = %v", err)
+	}
 
-	var cleaned, terminated []string
+	type deadlineKey struct{}
+	callCtx := context.WithValue(ctx, deadlineKey{}, "caller")
+	var cleaned, terminated, listed []string
+	sawCaller := func(ctx context.Context) {
+		if ctx.Value(deadlineKey{}) != "caller" {
+			t.Error("a call did not run under the caller's context")
+		}
+	}
 	session := codex.NewBackgroundTerminalsTestSession(codex.BackgroundTerminalsTestWire{
-		RootThreadID:        "root-provider-thread",
-		ChildThreadByLaunch: map[string]string{"spawn-1": "child-provider-thread"},
+		RootThreadID: "root-provider-thread",
 		Clean: func(ctx context.Context, providerThreadID string) error {
-			if _, ok := ctx.Deadline(); !ok {
-				t.Error("clean context has no deadline")
-			}
+			sawCaller(ctx)
 			cleaned = append(cleaned, providerThreadID)
 			return nil
 		},
 		Terminate: func(ctx context.Context, providerThreadID, processID string) (bool, error) {
-			if _, ok := ctx.Deadline(); !ok {
-				t.Error("terminate context has no deadline")
-			}
+			sawCaller(ctx)
 			terminated = append(terminated, providerThreadID+"/"+processID)
 			return true, nil
 		},
+		List: func(ctx context.Context, providerThreadID string) ([]string, error) {
+			sawCaller(ctx)
+			listed = append(listed, providerThreadID)
+			return []string{"cmd-" + providerThreadID}, nil
+		},
 	})
 	service := New(Deps{Reaper: procutiltest.Reaper(), Session: func(string) (*codex.Session, bool) { return session, true }})
-	for _, owner := range []string{"", "spawn-1"} {
-		if err := service.CleanBackgroundTerminals("thread", owner); err != nil {
-			t.Fatalf("CleanBackgroundTerminals(%q): %v", owner, err)
+	root, err := service.RootProcessScope("thread")
+	if err != nil || root != "root-provider-thread" {
+		t.Fatalf("RootProcessScope = (%q, %v), want root-provider-thread", root, err)
+	}
+	for _, scope := range []string{root, "child-provider-thread"} {
+		if err := service.CleanBackgroundTerminals(callCtx, "thread", scope); err != nil {
+			t.Fatalf("CleanBackgroundTerminals(%q): %v", scope, err)
 		}
-		if ok, err := service.TerminateBackgroundTerminal("thread", owner, "1734029"); err != nil || !ok {
-			t.Fatalf("TerminateBackgroundTerminal(%q) = (%v, %v)", owner, ok, err)
+		if ok, err := service.TerminateBackgroundTerminal(callCtx, "thread", scope, "1734029"); err != nil || !ok {
+			t.Fatalf("TerminateBackgroundTerminal(%q) = (%v, %v)", scope, ok, err)
+		}
+		terminals, err := service.ListBackgroundTerminals(callCtx, "thread", scope)
+		if err != nil || len(terminals) != 1 || terminals[0].ItemID != "cmd-"+scope {
+			t.Fatalf("ListBackgroundTerminals(%q) = (%+v, %v)", scope, terminals, err)
 		}
 	}
-	if want := []string{"root-provider-thread", "child-provider-thread"}; !slices.Equal(cleaned, want) {
-		t.Fatalf("cleaned threads = %v, want %v", cleaned, want)
+	want := []string{"root-provider-thread", "child-provider-thread"}
+	if !slices.Equal(cleaned, want) || !slices.Equal(listed, want) {
+		t.Fatalf("cleaned %v, listed %v, want %v", cleaned, listed, want)
 	}
 	if want := []string{"root-provider-thread/1734029", "child-provider-thread/1734029"}; !slices.Equal(terminated, want) {
 		t.Fatalf("terminated = %v, want %v", terminated, want)
 	}
-	if _, err := service.TerminateBackgroundTerminal("thread", "spawn-gone", "1734029"); !errors.Is(err, codex.ErrBackgroundTerminalOwnerGone) {
-		t.Fatalf("terminate for an unowned launch: err = %v, want ErrBackgroundTerminalOwnerGone", err)
-	}
 }
 
-func TestStopSubagentForwardsOwnedLaunchUnderDeadline(t *testing.T) {
+func TestStopSubagentForwardsOwnedLaunchUnderCallerContext(t *testing.T) {
 	var called atomic.Bool
 	var sawDeadline bool
 	fake := codex.NewInterruptSubagentTestSession("spawn-1", func(ctx context.Context, childThreadID, turnID string) error {
@@ -76,14 +93,16 @@ func TestStopSubagentForwardsOwnedLaunchUnderDeadline(t *testing.T) {
 		return nil
 	})
 	service := New(Deps{Reaper: procutiltest.Reaper(), Session: func(string) (*codex.Session, bool) { return fake, true }})
-	stopped, err := service.StopSubagent("codex-thread", "spawn-1")
+	ctx, cancel := context.WithTimeout(context.Background(), BackgroundTerminalStopTimeout)
+	defer cancel()
+	stopped, err := service.StopSubagent(ctx, "codex-thread", "spawn-1")
 	if err != nil || !stopped {
 		t.Fatalf("StopSubagent = (%v, %v), want (true, nil)", stopped, err)
 	}
 	if !called.Load() || !sawDeadline {
 		t.Fatalf("interrupt called=%v deadline=%v", called.Load(), sawDeadline)
 	}
-	stopped, err = service.StopSubagent("codex-thread", "spawn-1")
+	stopped, err = service.StopSubagent(ctx, "codex-thread", "spawn-1")
 	if err != nil || stopped {
 		t.Fatalf("repeated StopSubagent = (%v, %v), want (false, nil)", stopped, err)
 	}

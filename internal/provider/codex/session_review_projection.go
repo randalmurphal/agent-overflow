@@ -287,6 +287,9 @@ func (s *Session) handleReviewOuterTurnCompleted(params json.RawMessage) bool {
 		TurnID: outerTurnID, TurnIndex: copy.turnIndex, ItemID: copy.launchID,
 		ItemType: codexReviewToolName, Meta: encodedComplete, Timestamp: now,
 	})
+	if ended := reviewRunEndedEvent(s.threadID, copy.launchID, now); ended != nil {
+		events = append(events, *ended)
+	}
 	resultMeta, _ := json.Marshal(provider.CommandResultMeta{
 		AgentResult: &provider.CommandAgentResultMeta{
 			LaunchID: copy.launchID, SourceKind: "review", SourceName: "Code review",
@@ -325,6 +328,43 @@ func (s *Session) handleReviewOuterTurnCompleted(params json.RawMessage) bool {
 	return true
 }
 
+// reviewProcessScopePrefix starts the process scope of a review run. A
+// review's commands arrive on the root thread's frames, but they run in the
+// review's one-shot delegate session (core codex_delegate.rs), whose
+// process table no background-terminal call reaches, so a stop by process
+// id on the root thread could hit a root command that shares the id. Codex
+// shuts the delegate down when its turn ends, completed or aborted
+// (codex_delegate.rs, the event bridge), and its processes with it; the
+// review run's completion reports that end (reviewRunEndedEvent).
+const reviewProcessScopePrefix = "codex-review-run:"
+
+func reviewProcessScope(launchID string) provider.ProcessScope {
+	return provider.ProcessScope{ID: reviewProcessScopePrefix + launchID}
+}
+
+func isReviewProcessScope(scopeID string) bool {
+	return strings.HasPrefix(scopeID, reviewProcessScopePrefix)
+}
+
+// reviewRunEndedEvent reports that the review run's process table ended
+// with the run, in the shape of a thread's unload.
+func reviewRunEndedEvent(threadID, launchID string, now time.Time) *provider.ProviderEvent {
+	launchID = strings.TrimSpace(launchID)
+	if launchID == "" {
+		return nil
+	}
+	scope := reviewProcessScope(launchID)
+	meta, err := json.Marshal(map[string]string{"agent_path": scope.ID, "status": "notLoaded"})
+	if err != nil {
+		return nil
+	}
+	return &provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: threadID,
+		ItemID: launchID, ParentToolUseID: launchID, Meta: meta,
+		ProcessScope: scope, Timestamp: now,
+	}
+}
+
 func (s *Session) scopeReviewEvents(events []provider.ProviderEvent) []provider.ProviderEvent {
 	if len(events) == 0 {
 		return events
@@ -351,6 +391,9 @@ func (s *Session) scopeReviewEvents(events []provider.ProviderEvent) []provider.
 		}
 		evt.ParentToolUseID = launchID
 		evt.TurnIndex = turnIndex
+		if evt.ProcessScope.ID != "" {
+			evt.ProcessScope = reviewProcessScope(launchID)
+		}
 		if evt.Kind == provider.EventError {
 			evt.Meta = mergeMetaKeys(evt.Meta, map[string]any{"fatal": false})
 			if evt.Failure != nil {

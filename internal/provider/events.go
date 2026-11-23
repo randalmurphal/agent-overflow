@@ -361,6 +361,20 @@ type ProviderEvent struct {
 	// resolves that prompt and no later one asked under the same request
 	// id. Provider frames carry none.
 	PromptOccurrence PromptOccurrence `json:"-"`
+	// ProcessScope names the process table that holds the command a
+	// command event refers to, or, on an EventSubagentStatus `notLoaded`,
+	// the table that just ended with every process in it. Codex sets it;
+	// it is never persisted.
+	ProcessScope ProcessScope `json:"-"`
+}
+
+// ProcessScope is a provider's name for one process table. Equal IDs name
+// one table. Addressable reports whether the provider's own stop and list
+// methods reach it; a command in a table they cannot reach ends only with
+// its table.
+type ProcessScope struct {
+	ID          string
+	Addressable bool
 }
 
 // MetaTranscriptMirroredKey marks a subagent launch whose sidechain is

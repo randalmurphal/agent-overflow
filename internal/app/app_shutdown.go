@@ -411,6 +411,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// session that exited on its own and whose final events are still
 	// queued (app_provider_event_queue.go).
 	record("drain provider events", a.providerEvents.drainAll())
+	// No provider event is left to ask for a Codex scope check, and the
+	// checks running end with their sessions' requests.
+	a.codexScopeChecks.Close()
 
 	// Step 4b: stop the orphan-reaper sidecar. Sessions whose process exited
 	// above each released their group; any whose Close was abandoned

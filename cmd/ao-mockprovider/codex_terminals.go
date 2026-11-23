@@ -36,10 +36,19 @@ import (
 //     shell-wrapped one;
 //   - `turn/interrupt` kills none of them.
 //
+// A V1 close_agent's item/completed removes each receiver's thread, as
+// upstream's shutdown_live_agent does once the close has shut it down (core
+// agent/control/legacy.rs): its terminals go with it, with no frame of their
+// own, and list, terminate and clean on it answer -32600 "thread not found:
+// <id>" (app-server thread_processor.rs load_thread). Like a Codex build that
+// publishes no notLoaded for a closed agent, the mock writes no status for it.
+//
 // Guarded by the writer's lock: observe runs as the writer's observer, and
 // every read happens inside lineWriter.locked.
 type codexTerminalLedger struct {
 	running []*codexTerminal
+	// closed holds the threads a close_agent removed.
+	closed map[string]bool
 }
 
 type codexTerminal struct {
@@ -56,6 +65,10 @@ type codexTerminal struct {
 // observe reads one written frame. Called under the writer lock, in wire
 // order.
 func (l *codexTerminalLedger) observe(line string) {
+	if strings.Contains(line, `"closeAgent"`) {
+		l.observeClose(line)
+		return
+	}
 	if !strings.Contains(line, `"commandExecution"`) {
 		return
 	}
@@ -88,6 +101,31 @@ func (l *codexTerminalLedger) observe(line string) {
 		})
 	case "item/completed":
 		l.remove(itemID)
+	}
+}
+
+// observeClose removes the threads a close_agent item/completed names.
+func (l *codexTerminalLedger) observeClose(line string) {
+	var frame struct {
+		Method string `json:"method"`
+		Params struct {
+			Item struct {
+				Type              string   `json:"type"`
+				Tool              string   `json:"tool"`
+				ReceiverThreadIDs []string `json:"receiverThreadIds"`
+			} `json:"item"`
+		} `json:"params"`
+	}
+	if json.Unmarshal([]byte(line), &frame) != nil || frame.Method != "item/completed" ||
+		frame.Params.Item.Type != "collabAgentToolCall" || frame.Params.Item.Tool != "closeAgent" {
+		return
+	}
+	for _, threadID := range frame.Params.Item.ReceiverThreadIDs {
+		if l.closed == nil {
+			l.closed = make(map[string]bool)
+		}
+		l.closed[threadID] = true
+		l.running = slices.DeleteFunc(l.running, func(terminal *codexTerminal) bool { return terminal.threadID == threadID })
 	}
 }
 
@@ -152,6 +190,10 @@ func (a *codexAdapter) handleTerminalRequest(id json.RawMessage, method string, 
 		}
 	}
 	a.w.locked(func(write func(string)) {
+		if a.terminals.closed[threadID] {
+			write(rpcErrorLine(id, -32600, "thread not found: "+threadID))
+			return
+		}
 		running := a.terminals.ofThread(threadID)
 		now := time.Now()
 		switch method {

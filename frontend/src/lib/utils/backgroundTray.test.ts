@@ -236,6 +236,28 @@ describe('trayRowStopTarget', () => {
     ).toBe('1734029');
   });
 
+  it('resolves a Codex command that stops by item id to its item id', () => {
+    const command = (id: string, meta: Record<string, unknown>) =>
+      makeTrayTask({
+        launch: makeItem({ id, isBackground: true, toolName: 'exec_command', meta: JSON.stringify(meta) }),
+      });
+    // A root command carries both handles; the item id wins.
+    expect(
+      trayRowStopTarget(command('root-cmd', { stop_by_item: true, process_id: '42' }), 'codex-background-terminals'),
+    ).toBe('root-cmd');
+    // An agent's command has no process id on its row, only the item-id Stop.
+    expect(trayRowStopTarget(command('agent-cmd', { stop_by_item: true }), 'codex-background-terminals')).toBe(
+      'agent-cmd',
+    );
+    // A row from an older computer, or one whose flag is not true, keeps the process id.
+    expect(trayRowStopTarget(command('old', { process_id: '42' }), 'codex-background-terminals')).toBe('42');
+    expect(
+      trayRowStopTarget(command('flag-off', { stop_by_item: 'true', process_id: '42' }), 'codex-background-terminals'),
+    ).toBe('42');
+    // The flag never gives a Claude row a Codex handle.
+    expect(trayRowStopTarget(command('claude', { stop_by_item: true }), 'claude-task')).toBeNull();
+  });
+
   it('never crosses the two id namespaces', () => {
     // A Claude row's task_id must not be offered to the Codex terminate
     // RPC (which parses the id as an i32 and would refuse it), and a

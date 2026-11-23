@@ -113,12 +113,15 @@ func (s *Session) recoverChildOwnership(ctx context.Context, childID string, see
 			if s.parentToolUseForProviderThread(childID) != "" {
 				return nil
 			}
+			s.gateChildBacklog(childID)
 			if !s.registerHistoricalChildOwnership(parentID, childID, activity.AgentPath, activity.ItemID) {
+				s.releaseChildBacklogGate(childID)
 				return fmt.Errorf("conflicting recovered ownership for %s", childID)
 			}
 			s.rememberSubAgentActivityProfile(activity)
 			params, err := json.Marshal(map[string]any{"threadId": parentID, "turnId": entry.TurnID, "item": entry.Item})
 			if err != nil {
+				s.drainDeferredChildWireEvents(childID)
 				return err
 			}
 			for _, event := range classifySubAgentActivityCompleted(s.threadID, params, time.Now()) {

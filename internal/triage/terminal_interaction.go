@@ -46,7 +46,7 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	if !ok {
 		return nil
 	}
-	terminal, tracked := r.codexTerminalForProcess(evt.ThreadID, eventParentID(evt), meta.ProcessID)
+	terminal, tracked := r.codexTerminalForProcess(evt.ThreadID, evt.ProcessScope.ID, meta.ProcessID)
 	if !tracked || !terminal.backgrounded {
 		return nil
 	}

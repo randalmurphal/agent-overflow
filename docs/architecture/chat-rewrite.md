@@ -643,8 +643,8 @@ Stop controls split by scope:
   upstream).
 - **Claude background task**: `stop_task` control_request keyed by
   `task_id`.
-- **Codex background tray**: `thread/backgroundTerminals/clean`
-  (thread-wide only; no per-row terminal/subagent stop upstream).
+- **Codex background tray**: `thread/backgroundTerminals/terminate` per
+  command and `turn/interrupt` per subagent ([Background tray](#background-tray)).
 
 **Cascade behavior: what survives a user interrupt** (verified
 against codex-source and claude-code-source-code; tables below
@@ -1647,16 +1647,18 @@ time.
 
 - **Claude**: per-row Stop when the launch meta carries `task_id`
   (`StopClaudeTask`); Stop-all sends `stop_task` per named task.
-- **Codex**: per-row Stop when a yielded unified-exec PTY carries
-  `process_id` (`TerminateCodexBackgroundTerminal` →
-  `thread/backgroundTerminals/terminate`, available since codex 0.140,
-  below AO's provider floor); Stop-all runs
-  `thread/backgroundTerminals/clean` once for each Codex thread that runs
-  a named command, the root thread's and each agent's. Both name the
-  thread that runs the command. The terminate response's
-  `terminated: false` means "matched nothing" and surfaces as an info
-  toast; no `item/completed` follows, so the command leaves the tray
-  then, as it does when the agent's thread is gone.
+- **Codex**: per-row Stop when a yielded unified-exec PTY's row carries
+  `stop_by_item` (`StopCodexBackgroundCommand` with the row's item id →
+  `thread/backgroundTerminals/terminate` in the Codex thread that runs the
+  command, the root thread's or the agent's; available since codex 0.140,
+  below AO's provider floor). Stop-all terminates each named command the
+  same way. Codex's `terminated: false` is not proof the process is gone,
+  so the stop checks that thread's list: a command the list omits had
+  already ended, leaves the tray and surfaces as an info toast; one still
+  listed is a failed stop shown under its row. A command inside a code
+  review has no Stop and ends with the review. A row from a computer that
+  predates `StopCodexBackgroundCommand` carries `process_id` only for a
+  root command, stopped through `TerminateCodexBackgroundTerminal`.
 - **Codex subagent rows**: per-row Stop interrupts the subagent's turn
   (`StopCodexSubagent`); Stop-all interrupts each named subagent.
 

@@ -497,6 +497,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1698485705: 'thread', // SteerMessageWithOptions
 	2580445357: 'thread', // StopBackgroundTasks
 	536320598: 'thread', // StopClaudeTask
+	1463917393: 'thread', // StopCodexBackgroundCommand
 	4232843083: 'thread', // StopCodexSubagent
 	3838500111: 'thread', // StopSession
 	860377738: 'thread', // StopThreadAgentIncoming

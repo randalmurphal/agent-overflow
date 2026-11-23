@@ -219,16 +219,7 @@ type memoryWaits struct {
 func (a *App) memoryWaits(threadID string) memoryWaits {
 	var mem memoryWaits
 	if a.triage != nil {
-		live := a.triage.ListLiveCodexBackgroundTasks(threadID, 0, 0)
-		if len(live) == 0 {
-			live = a.triage.ListLiveCodexAgentTasks(threadID)
-		}
-		if len(live) > 0 {
-			mem.background = true
-			if mem.backgroundDetail = live[0].Summary; mem.backgroundDetail == "" {
-				mem.backgroundDetail = live[0].ToolName
-			}
-		}
+		mem.background, mem.backgroundDetail = a.triage.CodexLiveWork(threadID)
 	}
 	return mem
 }

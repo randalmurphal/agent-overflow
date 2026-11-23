@@ -121,10 +121,15 @@ export {
 
   // Background tasks. The per-row stops are deliberately separate
   // bindings: they take different id namespaces (Claude task id vs Codex
-  // PTY process id vs Codex subagent launch id) and drive different
-  // provider RPCs, so callers branch on provider. Stop All is one
-  // thread-level call naming the launches, with a result per launch.
+  // command item id vs Codex subagent launch id) and drive different
+  // provider RPCs, so callers branch on provider. A tray row from a
+  // computer older than StopCodexBackgroundCommand carries no item-id
+  // Stop, only a root command's process id for
+  // TerminateCodexBackgroundTerminal, so the row decides which one runs.
+  // Stop All is one thread-level call naming the launches, with a result
+  // per launch.
   StopClaudeTask,
+  StopCodexBackgroundCommand,
   TerminateCodexBackgroundTerminal,
   StopCodexSubagent,
   StopBackgroundTasks,

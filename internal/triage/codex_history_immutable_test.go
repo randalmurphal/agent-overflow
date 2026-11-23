@@ -138,9 +138,9 @@ func TestCodexCleanupCompletesCurrentExecutionWithoutRewritingSpawn(t *testing.T
 	if err := r.Handle(provider.ProviderEvent{Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn", TurnID: "A", Meta: json.RawMessage(`{"agent_path":"child","status":"running"}`), Timestamp: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	r.ClearLiveCodexBackgroundTasks("t1")
+	r.DropHeldCodexCompletions("t1")
 	if len(r.ListLiveCodexAgentTasks("t1")) != 1 {
-		t.Fatal("cleaning terminals stopped the agent")
+		t.Fatal("a revert's drop of held completions stopped the agent")
 	}
 	r.CleanupThread("t1")
 	after, _, err := st.GetThreadItem("t1", "spawn")

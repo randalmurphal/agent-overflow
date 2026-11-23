@@ -549,6 +549,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SteerMessageWithOptions", ID: 1698485705, Scope: "threads:operate", Route: "thread"},                                             // main.App.SteerMessageWithOptions
 	{Name: "StopBackgroundTasks", ID: 2580445357, Scope: "threads:operate", Route: "thread"},                                                 // main.App.StopBackgroundTasks
 	{Name: "StopClaudeTask", ID: 536320598, Scope: "threads:operate", Route: "thread"},                                                       // main.App.StopClaudeTask
+	{Name: "StopCodexBackgroundCommand", ID: 1463917393, Scope: "threads:operate", Route: "thread"},                                          // main.App.StopCodexBackgroundCommand
 	{Name: "StopCodexSubagent", ID: 4232843083, Scope: "threads:operate", Route: "thread"},                                                   // main.App.StopCodexSubagent
 	{Name: "StopSession", ID: 3838500111, Scope: "threads:operate", Route: "thread"},                                                         // main.App.StopSession
 	{Name: "StopThreadAgentIncoming", ID: 860377738, Scope: "threads:operate", Route: "thread"},                                              // main.App.StopThreadAgentIncoming

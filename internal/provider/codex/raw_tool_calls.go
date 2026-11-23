@@ -157,6 +157,7 @@ func (s *Session) handleRawExecCommandOutput(call rawToolCall, params json.RawMe
 		ItemID:          call.CallID,
 		ItemType:        "commandExecution",
 		ParentToolUseID: parentToolUseID,
+		ProcessScope:    s.threadProcessScope(providerThreadID),
 		Meta:            encoded,
 		Timestamp:       time.Now(),
 	})

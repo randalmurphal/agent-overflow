@@ -186,7 +186,7 @@ func TestSession_ListBackgroundTerminals_DecodesEveryWireField(t *testing.T) {
 	}
 	done := make(chan listResult, 1)
 	go func() {
-		terminals, err := s.ListBackgroundTerminals(context.Background())
+		terminals, err := s.ListBackgroundTerminals(context.Background(), "codex-thread-list")
 		done <- listResult{terminals: terminals, err: err}
 	}()
 
@@ -247,7 +247,7 @@ func TestSession_ListBackgroundTerminals_FollowsCursor(t *testing.T) {
 	done := make(chan []BackgroundTerminal, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		terminals, err := s.ListBackgroundTerminals(context.Background())
+		terminals, err := s.ListBackgroundTerminals(context.Background(), "codex-thread-pages")
 		if err != nil {
 			errCh <- err
 			return
@@ -289,7 +289,7 @@ func TestSession_ListBackgroundTerminals_RepeatedCursorFailsLoudly(t *testing.T)
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := s.ListBackgroundTerminals(context.Background())
+		_, err := s.ListBackgroundTerminals(context.Background(), "codex-thread-stuck")
 		errCh <- err
 	}()
 
@@ -333,7 +333,7 @@ func TestSession_TerminateBackgroundTerminal_RoundTrip(t *testing.T) {
 			}
 			done := make(chan terminateResult, 1)
 			go func() {
-				killed, err := s.TerminateBackgroundTerminal(context.Background(), "", "42")
+				killed, err := s.TerminateBackgroundTerminal(context.Background(), "codex-thread-term", "42")
 				done <- terminateResult{killed: killed, err: err}
 			}()
 
@@ -373,7 +373,7 @@ func TestSession_TerminateBackgroundTerminal_RejectsBlankProcessID(t *testing.T)
 	s, capturePath := newCapturingSession(t, "codex-thread-blank")
 
 	for _, processID := range []string{"", "   "} {
-		killed, err := s.TerminateBackgroundTerminal(context.Background(), "", processID)
+		killed, err := s.TerminateBackgroundTerminal(context.Background(), "codex-thread-blank", processID)
 		if err == nil {
 			t.Fatalf("TerminateBackgroundTerminal(%q): expected an error, got nil", processID)
 		}
@@ -390,11 +390,12 @@ func TestSession_TerminateBackgroundTerminal_RejectsBlankProcessID(t *testing.T)
 	}
 }
 
-// TestSession_BackgroundTerminalRPCs_RequireThreadID pins the partial
-// Session guard both per-row RPCs share with CleanBackgroundTerminals: a
-// session whose handshake never produced a Codex thread id must fail with
-// our own message, not send `{"threadId":""}` and let the server answer.
-func TestSession_BackgroundTerminalRPCs_RequireThreadID(t *testing.T) {
+// TestSession_BackgroundTerminalRPCs_RequireProcessScope pins the guard
+// every background-terminal RPC shares: a call that names no process scope
+// fails with our own message, not `{"threadId":""}` for the server to
+// answer. This session has no process, so a call that reached the wire
+// would fail on the write instead.
+func TestSession_BackgroundTerminalRPCs_RequireProcessScope(t *testing.T) {
 	t.Parallel()
 	s := &Session{
 		threadID: testThread,
@@ -402,13 +403,17 @@ func TestSession_BackgroundTerminalRPCs_RequireThreadID(t *testing.T) {
 		onEvent:  func(provider.ProviderEvent) {},
 	}
 
-	if _, err := s.ListBackgroundTerminals(context.Background()); err == nil ||
-		!strings.Contains(err.Error(), "no thread id") {
-		t.Errorf("ListBackgroundTerminals without a thread id: got %v", err)
+	if _, err := s.ListBackgroundTerminals(context.Background(), ""); err == nil ||
+		!strings.Contains(err.Error(), "process scope required") {
+		t.Errorf("ListBackgroundTerminals without a scope: got %v", err)
 	}
 	if _, err := s.TerminateBackgroundTerminal(context.Background(), "", "42"); err == nil ||
-		!strings.Contains(err.Error(), "no thread id") {
-		t.Errorf("TerminateBackgroundTerminal without a thread id: got %v", err)
+		!strings.Contains(err.Error(), "process scope required") {
+		t.Errorf("TerminateBackgroundTerminal without a scope: got %v", err)
+	}
+	if err := s.CleanBackgroundTerminals(context.Background(), ""); err == nil ||
+		!strings.Contains(err.Error(), "process scope required") {
+		t.Errorf("CleanBackgroundTerminals without a scope: got %v", err)
 	}
 }
 
@@ -426,7 +431,7 @@ func TestSession_TerminateBackgroundTerminal_ErrorResponse(t *testing.T) {
 	}
 	done := make(chan terminateResult, 1)
 	go func() {
-		killed, err := s.TerminateBackgroundTerminal(context.Background(), "", "42")
+		killed, err := s.TerminateBackgroundTerminal(context.Background(), "codex-thread-term-err", "42")
 		done <- terminateResult{killed: killed, err: err}
 	}()
 

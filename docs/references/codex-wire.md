@@ -1647,12 +1647,15 @@ Available since codex 0.140.0; verified on 0.146.0 and 0.159.1.
 ```
 
 - `processId` is the app-server handle, not the OS pid; it is the same
-  value the `commandExecution` item carries and AO stores as
-  `meta.process_id`. Omitting it from `terminate` returns
+  value the `commandExecution` item carries and AO's live command tracker
+  keeps (a root command's tray row also shows it as `meta.process_id`).
+  Omitting it from `terminate` returns
   `-32600 "Invalid request: missing field processId"`.
 - `osPid`, `cpuPercent`, `rssKb` are nullable, and absent is not zero.
 - `terminated: false` means no running process matched (already exited,
-  or belongs to another thread). It is a state answer, not an error.
+  or belongs to another thread), or terminating it failed. It is a state
+  answer, not an error, and not proof the process is gone: only `list`
+  says which (§An agent's terminals below).
 - `threadId` names the thread whose processes the call reaches: the root
   thread, or an agent's (§An agent's terminals below).
 - `list` paginates: pass a non-null `nextCursor` back as `cursor`.
@@ -1715,25 +1718,41 @@ frames from the terminals it announced (`cmd/ao-mockprovider/codex_terminals.go`
 - An agent's turn ending, erroring or being interrupted (V2
   `interrupt_agent` is `Op::Interrupt`) kills none of its PTYs.
 - A thread's PTYs die when the thread shuts down: `Op::Shutdown` runs
-  `terminate_all_processes` (`core/src/session/handlers.rs`). A V1
-  `close_agent` shuts the agent and its live descendants down and waits
-  for them before its `item/completed` (`shutdown_agent_tree`,
-  `core/src/agent/control/legacy.rs`); V2 residency eviction shuts down an
-  idle completed, errored or interrupted agent
+  `terminate_all_processes` (`core/src/session/handlers.rs`), and the
+  thread is removed only after that (`shutdown_live_agent`,
+  `core/src/agent/control/legacy.rs`). A V1 `close_agent` shuts the agent
+  and its live descendants down (`shutdown_agent_tree`) and then writes
+  its `item/completed` with the agent's status from before the close,
+  whether or not the shutdown succeeded
+  (`core/src/tools/handlers/multi_agents/close_agent.rs`). V2 residency
+  eviction shuts down an idle completed, errored or interrupted agent
   (`core/src/agent/control/residency.rs`). App-server then publishes
   `thread/status/changed` `notLoaded` for each shut-down thread
   (`note_thread_shutdown`, `app-server/src/thread_status.rs`). Whether a
   killed PTY's own `item/completed` is written before the shutdown is not
   established.
+- `terminate` answers false both when the thread has no such process and
+  when terminating one failed (`terminate_process` in
+  `core/src/unified_exec/process_manager.rs`). `list` omits a process that
+  has exited, and `clean`'s `{}` reports no outcome.
+- `exec_command` writes the command's `item/started` before it stores the
+  process (`process_manager.rs`, the Begin emit then `store_process`), so a
+  `list` Codex handles between the two omits a command already announced.
 
 AO counts an agent's commands as the thread's live work and lists them in
-the tray under the agent's spawn launch. An agent's `notLoaded` status
-removes its commands. A V1 `close_agent` completion ends the closed child's
-route, which would drop the child's later frames, so the adapter reports
-the child `notLoaded` itself, after the close's row and before the route
-goes (`retireClosedCollabReceivers`). A Stop names the thread that runs the
-command; one that finds the process exited or the agent's thread gone
-removes the command and logs it.
+the tray under the agent's spawn launch. A command leaves the live work on
+its `item/completed`, its thread's `notLoaded`, the session's end, or a
+check that its thread's list omits it or that the thread is not loaded
+([turn lifecycle](../architecture/turn-lifecycle.md)). A Stop names the
+thread that runs the command and checks a false answer against the list.
+A V1 `close_agent` completion is a hint: triage asks for that check of
+each closed agent's thread that holds live commands, and the adapter keeps
+the closed agent's route until Codex says the thread is gone, by its
+`notLoaded` or a "thread not found" answer (`noteClosedCollabReceivers`).
+The check covers only the receivers the close item names; a descendant the
+close also shut down ends its commands through its own `notLoaded`. A
+check that lands in the window above ends a command that has just
+started; its `item/completed` still writes its row.
 
 ---
 

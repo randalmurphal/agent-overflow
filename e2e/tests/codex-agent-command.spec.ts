@@ -1,10 +1,11 @@
 // A command a Codex agent starts runs in the agent's own thread and outlives
 // the agent's turn. The tray lists it, the session counts it as running
-// work, and a Stop ends it in the agent's thread, whose process table holds
-// it. A V1 close_agent shuts the agent's thread down with its commands, and
-// the command leaves the tray with it, though the mock, like a Codex build
-// that publishes no notLoaded for a closed agent, sends no frame for the
-// command itself.
+// work, and its row's Stop names it by item id and ends it in the agent's
+// thread, whose process table holds it. A V1 close_agent shuts the agent's
+// thread down with its commands. The mock, like a Codex build that
+// publishes no notLoaded for a closed agent, sends no frame for the command;
+// the close item ends nothing by itself, so the command leaves the tray when
+// the closed agent's terminal list answers that its thread is gone.
 import { test, expect } from './fixtures.js';
 import { seedAgentThread, startMock, waitForGate } from './agent-visibility-helpers.js';
 import type { HarnessApp } from '../src/harness.js';

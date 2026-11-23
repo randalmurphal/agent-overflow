@@ -109,8 +109,9 @@ The client-callable surface, all `#[experimental]` (needs
 cpuPercent?, rssKb?}`. `itemId` is the join key back to the transcript
 row; the three host-OS metrics are nullable and must not be rendered as
 zero when absent. `terminated: false` means the RPC matched no running
-process (already exited, or not this thread's). That is a state answer,
-not a failure. `threadId` may name any loaded thread, an agent's
+process (already exited, or not this thread's) or failed to terminate it.
+That is a state answer, not a failure, and only `list` says whether the
+process still runs. `threadId` may name any loaded thread, an agent's
 included; one that is not loaded is refused with -32600
 `thread not found: <id>` (`load_thread` in
 `app-server/src/request_processors/thread_processor.rs`, rust-v0.150.1).
@@ -132,10 +133,14 @@ Types: `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`
 (`ThreadBackgroundTerminals*`); dispatch table
 `codex-rs/app-server-protocol/src/protocol/common.rs`. Agent Overflow
 wraps all three in `internal/provider/codex/session_background.go`.
-`terminate` is bound as `App.TerminateCodexBackgroundTerminal` and backs
-the tray's per-row Stop button; `clean` backs Stop-all, revert and thread
-delete. Each call names the thread that runs the command: the root thread,
-or the agent's thread its spawn launch owns.
+`terminate` backs `App.StopCodexBackgroundCommand`, which takes the
+command's item id, and Stop-all; a false answer is checked with `list`.
+`clean` backs revert and thread delete. Each call names the thread that
+runs the command: the root thread, or the agent's thread its spawn launch
+owns. `App.TerminateCodexBackgroundTerminal` takes a process id and is the
+Stop of a window that predates `StopCodexBackgroundCommand`; it reaches
+only root commands, and a process id Codex reused in the root thread
+names the newer command.
 Version floor: `terminate`/`list` shipped in 0.140.0, below AO's
 provider-wide minimum of 0.143.0, so no runtime capability probe is
 needed (guarded by

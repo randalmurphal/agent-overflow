@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"log"
 	"strings"
 
 	"agent-overflow/internal/eventchan"
@@ -34,13 +35,10 @@ import (
 // becomes transcript history only when Codex emits the terminal spawn
 // completion.
 //
-// The correlation is bounded: unifiedExec entries are dropped after typed
-// item/completed clears the transient tracker and when the session that
-// runs them ends or is replaced. A command that stops before its
-// item/completed (a Stop found no process, the agent thread that runs it is
-// shut down or unloaded, a revert cleaned it) leaves the live work then and
-// waits, without output, for that completion until the session ends;
-// pending spawn_agent starts are dropped at the turn
+// The correlation is bounded: a unifiedExec command leaves the live work by
+// the four ways codexExecTrackers names, and one that leaves before its own
+// item/completed keeps a small record for that completion until it comes or
+// the session ends; pending spawn_agent starts are dropped at the turn
 // boundary if no terminal spawn completion arrived, completed spawn_agent
 // entries are dropped on wait/subagent notification, and all thread state
 // clears on CleanupThread. Nothing persists across sessions.
@@ -144,6 +142,7 @@ func (r *Router) emitBackgroundTasksChangedNudge(threadID string) {
 // background projection: the nudge, and a tray refresh, because the tray
 // reads the projection's runtime records, which no delta carries.
 func (r *Router) emitCodexBackgroundChanged(threadID string) {
+	r.signalCodexExecChanged(threadID)
 	r.emitBackgroundTasksChangedNudge(threadID)
 	r.emitBackgroundTrayRefresh(threadID)
 }
@@ -212,12 +211,18 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 		if strings.TrimSpace(summary) == "" {
 			summary = "Bash"
 		}
+		if strings.TrimSpace(evt.ProcessScope.ID) == "" {
+			// Nothing can stop or confirm such a command; only its own
+			// completion or the session's end removes it.
+			log.Printf("triage: Codex command %s on thread %s names no process scope", itemID, evt.ThreadID)
+		}
 		execs.add(&unifiedExecTracker{
 			launchID:  itemID,
 			processID: strings.TrimSpace(meta.ProcessID),
 			command:   codexCommandFromMeta(evt.Meta),
 			summary:   summary,
 			parentID:  eventParentID(evt),
+			scope:     evt.ProcessScope,
 			status:    statusRunning,
 			meta:      evt.Meta,
 			createdAt: now,
@@ -251,23 +256,16 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 	return isSpawnAgentCandidate && meta.Tool == "spawn_agent"
 }
 
-// ClearLiveCodexBackgroundTasks ends the thread's live commands and forgets
-// its held completions after a cleanup terminated its background terminals.
-// The completions the cleanup makes Codex write are the commands' own
-// (codexExecTrackers.ended). Cleaning terminals does not end agent
-// executions; their own lifecycle still owns them.
-func (r *Router) ClearLiveCodexBackgroundTasks(threadID string) {
+// DropHeldCodexCompletions forgets the agent completions held for an answer
+// (codex_answer_completion.go) before a revert truncates the turns they
+// belong to. Commands are not touched: each leaves the live work by its own
+// way (codexExecTrackers), and agent executions by their own lifecycle.
+func (r *Router) DropHeldCodexCompletions(threadID string) {
 	r.mu.Lock()
-	if st := r.threadStateIfPresent(threadID); st != nil {
-		for _, tracker := range st.codexExec.byLaunch {
-			st.codexExec.end(tracker)
-		}
-		if st.codexBackground != nil {
-			st.codexBackground.pendingAnswer = make(map[string]pendingCodexCompletion)
-		}
+	if state := r.codexBackgroundIfPresent(threadID); state != nil {
+		state.pendingAnswer = make(map[string]pendingCodexCompletion)
 	}
 	r.mu.Unlock()
-	r.emitCodexBackgroundChanged(threadID)
 }
 
 // observeCodexToolComplete handles spawn_agent and wait_agent completion:
@@ -323,6 +321,10 @@ func (r *Router) observeCodexToolComplete(evt provider.ProviderEvent) error {
 		}
 	}
 
+	if evt.ItemType == "close_agent" {
+		r.checkClosedCodexScopes(evt)
+	}
+
 	// wait_agent completion: the parent just resumed after blocking on
 	// children. Each awaited child is terminal per the wait's
 	// agentsStates map. Find any backgrounded spawn_agent trackers
@@ -332,6 +334,23 @@ func (r *Router) observeCodexToolComplete(evt provider.ProviderEvent) error {
 		return r.resolveSubagentsForWait(evt)
 	}
 	return nil
+}
+
+// checkClosedCodexScopes asks for a check of each thread a close item names
+// that holds live commands. The item does not say the thread is gone: Codex
+// writes it with the agent's previous status when the close fails
+// (core tools/handlers/multi_agents/close_agent.rs). On a close that
+// succeeded the thread is already removed, and its list answers that it is
+// not loaded (ConfirmCodexScope).
+func (r *Router) checkClosedCodexScopes(evt provider.ProviderEvent) {
+	if r.codexScopeCheck == nil || r.frameRetired(evt.ThreadID, evt.SessionToken) {
+		return
+	}
+	for _, receiver := range decodeCodexItemMeta(evt.Meta).ReceiverThreadIDs {
+		if check, ok := r.CodexScopeCheckFor(evt.ThreadID, strings.TrimSpace(receiver)); ok {
+			r.codexScopeCheck(evt.ThreadID, check)
+		}
+	}
 }
 
 // observeCodexTurnComplete clears pending agent starts and releases held

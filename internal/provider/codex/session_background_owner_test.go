@@ -9,16 +9,15 @@ import (
 )
 
 // An agent's terminal lives in the agent's own Codex thread, whose process
-// table is separate from the root's, so a stop of it must name that thread.
-// The owner launch resolves through the session's child ownership.
-func TestBackgroundTerminalRPCsTargetTheOwnerThread(t *testing.T) {
+// table is separate from the root's, so each call names the thread its
+// command's process scope names.
+func TestBackgroundTerminalRPCsTargetTheScopeThread(t *testing.T) {
 	t.Parallel()
 	s, capturePath := newCapturingSession(t, "codex-root-thread")
-	s.collab.childParentByThread = map[string]string{"codex-child-thread": "spawn-1"}
 
-	done := make(chan error, 2)
+	done := make(chan error, 1)
 	go func() {
-		killed, err := s.TerminateBackgroundTerminal(context.Background(), "spawn-1", "42")
+		killed, err := s.TerminateBackgroundTerminal(context.Background(), "codex-child-thread", "42")
 		if err == nil && !killed {
 			err = errors.New("terminated = false, want the wire's true")
 		}
@@ -29,34 +28,61 @@ func TestBackgroundTerminalRPCsTargetTheOwnerThread(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("TerminateBackgroundTerminal: %v", err)
 	}
-	go func() { done <- s.CleanBackgroundTerminals(context.Background(), "spawn-1") }()
+	go func() { done <- s.CleanBackgroundTerminals(context.Background(), "codex-child-thread") }()
 	answerer.answer(t, `{}`)
 	if err := <-done; err != nil {
 		t.Fatalf("CleanBackgroundTerminals: %v", err)
 	}
+	go func() {
+		_, err := s.ListBackgroundTerminals(context.Background(), "codex-child-thread")
+		done <- err
+	}()
+	answerer.answer(t, `{"data":[],"nextCursor":null}`)
+	if err := <-done; err != nil {
+		t.Fatalf("ListBackgroundTerminals: %v", err)
+	}
 
-	frames := waitForCapturedFrames(t, capturePath, 2, backgroundTerminalTestTimeout)
-	for i, want := range []string{"thread/backgroundTerminals/terminate", "thread/backgroundTerminals/clean"} {
+	frames := waitForCapturedFrames(t, capturePath, 3, backgroundTerminalTestTimeout)
+	for i, want := range []string{"thread/backgroundTerminals/terminate", "thread/backgroundTerminals/clean", "thread/backgroundTerminals/list"} {
 		if frames[i].Method != want || frames[i].Params.ThreadID != "codex-child-thread" {
 			t.Errorf("frame %d = %s on %q, want %s on the agent's thread codex-child-thread", i, frames[i].Method, frames[i].Params.ThreadID, want)
 		}
 	}
 }
 
-// A launch this session owns no thread for, and an agent thread the
-// app-server no longer has loaded, are the same answer: the agent is gone
-// and nothing of it is left to stop. The root thread's refusal is not.
-func TestBackgroundTerminalRPCsReportAGoneOwner(t *testing.T) {
+// A scope no request can reach is refused before anything is sent: a
+// review run's processes are the review delegate's, which has no thread
+// the app-server resolves, and a command without a scope names none.
+func TestBackgroundTerminalRPCsRefuseAnUnaddressableScope(t *testing.T) {
 	t.Parallel()
 	s, capturePath := newCapturingSession(t, "codex-root-thread")
-	s.collab.childParentByThread = map[string]string{"codex-child-thread": "spawn-1"}
+	review := reviewProcessScope("review-launch").ID
+	for _, scope := range []string{review, " "} {
+		if _, err := s.TerminateBackgroundTerminal(context.Background(), scope, "42"); err == nil {
+			t.Errorf("terminate in scope %q: err = nil, want a refusal", scope)
+		}
+		if err := s.CleanBackgroundTerminals(context.Background(), scope); err == nil {
+			t.Errorf("clean in scope %q: err = nil, want a refusal", scope)
+		}
+		if _, err := s.ListBackgroundTerminals(context.Background(), scope); err == nil {
+			t.Errorf("list in scope %q: err = nil, want a refusal", scope)
+		}
+	}
+	if frames := readCapturedRawFrames(t, capturePath); len(frames) != 0 {
+		t.Fatalf("sent %d frames for scopes no request reaches, want none", len(frames))
+	}
+}
 
-	if _, err := s.TerminateBackgroundTerminal(context.Background(), "spawn-unowned", "42"); !errors.Is(err, ErrBackgroundTerminalOwnerGone) {
-		t.Fatalf("terminate for an unowned launch: err = %v, want ErrBackgroundTerminalOwnerGone", err)
-	}
-	if err := s.CleanBackgroundTerminals(context.Background(), "spawn-unowned"); !errors.Is(err, ErrBackgroundTerminalOwnerGone) {
-		t.Fatalf("clean for an unowned launch: err = %v, want ErrBackgroundTerminalOwnerGone", err)
-	}
+// An agent thread the app-server no longer has loaded answers "thread not
+// found", which says none of its processes is left. The route of an agent
+// a close item named ends with that answer; an agent no close named keeps
+// its route, because Codex loads an idle agent again when it is addressed.
+// The root thread's refusal is a plain error.
+func TestBackgroundTerminalRPCsReadAnUnloadedAgentThread(t *testing.T) {
+	t.Parallel()
+	s, capturePath := newCapturingSession(t, "codex-root-thread")
+	s.collab.childParentByThread = map[string]string{"codex-closed-thread": "spawn-1", "codex-idle-thread": "spawn-2"}
+	s.collab.closedChildren = map[string]bool{"codex-closed-thread": true}
 
 	refuse := func(threadID string) {
 		t.Helper()
@@ -64,18 +90,27 @@ func TestBackgroundTerminalRPCsReportAGoneOwner(t *testing.T) {
 		ch <- json.RawMessage(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"error":{"code":-32600,"message":"thread not found: %s"}}`, rpcID, threadID))
 	}
 	done := make(chan error, 1)
-	go func() {
-		_, err := s.TerminateBackgroundTerminal(context.Background(), "spawn-1", "42")
-		done <- err
-	}()
-	refuse("codex-child-thread")
-	if err := <-done; !errors.Is(err, ErrBackgroundTerminalOwnerGone) {
-		t.Fatalf("terminate in an unloaded agent thread: err = %v, want ErrBackgroundTerminalOwnerGone", err)
+	for _, threadID := range []string{"codex-closed-thread", "codex-idle-thread"} {
+		go func() {
+			_, err := s.TerminateBackgroundTerminal(context.Background(), threadID, "42")
+			done <- err
+		}()
+		refuse(threadID)
+		if err := <-done; !errors.Is(err, ErrBackgroundTerminalThreadNotLoaded) {
+			t.Fatalf("terminate in unloaded %s: err = %v, want ErrBackgroundTerminalThreadNotLoaded", threadID, err)
+		}
 	}
-	go func() { done <- s.CleanBackgroundTerminals(context.Background(), "") }()
+	if parent := s.parentToolUseForProviderThread("codex-closed-thread"); parent != "" {
+		t.Fatalf("closed agent's route = %q after Codex said its thread is gone, want none", parent)
+	}
+	if parent := s.parentToolUseForProviderThread("codex-idle-thread"); parent != "spawn-2" {
+		t.Fatalf("idle agent's route = %q, want spawn-2 kept: no close named it", parent)
+	}
+
+	go func() { done <- s.CleanBackgroundTerminals(context.Background(), "codex-root-thread") }()
 	refuse("codex-root-thread")
-	if err := <-done; err == nil || errors.Is(err, ErrBackgroundTerminalOwnerGone) {
+	if err := <-done; err == nil || errors.Is(err, ErrBackgroundTerminalThreadNotLoaded) {
 		t.Fatalf("clean refused for the root thread: err = %v, want a plain error", err)
 	}
-	waitForCapturedFrames(t, capturePath, 2, backgroundTerminalTestTimeout)
+	waitForCapturedFrames(t, capturePath, 3, backgroundTerminalTestTimeout)
 }

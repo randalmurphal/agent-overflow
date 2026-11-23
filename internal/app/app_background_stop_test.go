@@ -197,9 +197,9 @@ func TestStopBackgroundTasksReportsAMissingSessionPerTask(t *testing.T) {
 	}
 }
 
-// A Codex thread interrupts each named live subagent and cleans its
-// terminals once for the named terminals; with no live session each stop
-// fails with the reason. A launch that is not live has ended.
+// A Codex thread interrupts each named live subagent and terminates each
+// named live command; with no live session each stop fails with the
+// reason. A launch that is not live has ended.
 func TestStopBackgroundTasksClassifiesCodexLaunches(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
@@ -209,7 +209,7 @@ func TestStopBackgroundTasksClassifiesCodexLaunches(t *testing.T) {
 	}
 	now := time.Now().UnixMilli()
 	seedCodexSubagentLaunchRow(t, app, thread.ID, "spawn-1", now)
-	seedClaudeBackgroundTaskRow(t, app, thread.ID, "terminal-1", "", now)
+	seedCodexCommand(t, app, thread.ID, "terminal-1", "1001", "", codexScope(rootCodexThread))
 
 	results, err := app.StopBackgroundTasks(thread.ID, []string{"spawn-1", "terminal-1", "gone"})
 	if err != nil {
@@ -227,8 +227,8 @@ func TestStopBackgroundTasksClassifiesCodexLaunches(t *testing.T) {
 	if r := outcomes["gone"]; r.Outcome != BackgroundStopEnded {
 		t.Errorf("gone: %+v, want ended", r)
 	}
-	if !strings.Contains(outcomes["spawn-1"].Error, "stop Codex subagent") || !strings.Contains(outcomes["terminal-1"].Error, "clean codex background terminals") {
-		t.Errorf("spawn-1 %q and terminal-1 %q, want the subagent interrupted and the terminals cleaned", outcomes["spawn-1"].Error, outcomes["terminal-1"].Error)
+	if !strings.Contains(outcomes["spawn-1"].Error, "stop Codex subagent") || !strings.Contains(outcomes["terminal-1"].Error, "terminate codex background terminal") {
+		t.Errorf("spawn-1 %q and terminal-1 %q, want the subagent interrupted and the command terminated", outcomes["spawn-1"].Error, outcomes["terminal-1"].Error)
 	}
 }
 

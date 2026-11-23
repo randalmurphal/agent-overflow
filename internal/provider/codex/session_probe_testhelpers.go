@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"agent-overflow/internal/provider"
@@ -49,25 +50,30 @@ func NewProbeAndResumeTestSession(
 
 // BackgroundTerminalsTestWire stands in for the app-server side of the
 // background-terminal RPCs in NewBackgroundTerminalsTestSession. Each
-// function receives the provider thread the owner resolved to. A nil
-// function fails the call.
+// function receives the provider thread the call named. A nil function
+// fails the call. List answers with the running terminals' item ids; an
+// error from any of them goes through the same not-loaded reading as a
+// wire error (TestRPCError builds Codex's).
 type BackgroundTerminalsTestWire struct {
 	// RootThreadID is the session's root provider thread.
 	RootThreadID string
-	// ChildThreadByLaunch is the session's child ownership: spawn launch
-	// id → the child provider thread it owns.
-	ChildThreadByLaunch map[string]string
-	Clean               func(ctx context.Context, providerThreadID string) error
-	Terminate           func(ctx context.Context, providerThreadID, processID string) (bool, error)
+	Clean        func(ctx context.Context, providerThreadID string) error
+	Terminate    func(ctx context.Context, providerThreadID, processID string) (bool, error)
+	List         func(ctx context.Context, providerThreadID string) ([]string, error)
+}
+
+// TestRPCError is the JSON-RPC error a test wire answers with, such as
+// Codex's -32600 "thread not found: <id>" for a thread it has not loaded.
+func TestRPCError(code int, message string) error {
+	return &RPCError{Code: code, Message: message}
 }
 
 // NewBackgroundTerminalsTestSession returns a *Session whose
-// CleanBackgroundTerminals and TerminateBackgroundTerminal resolve their
-// owner through the real ownership map and argument checks, then answer
-// from wire instead of an app-server. The app-layer binding tests use it
-// to assert which thread and process a stop reaches without a real
-// subprocess. The rest of the session is zero, so callers MUST NOT call
-// Send / Interrupt / Close on it.
+// background-terminal methods run their real scope and argument checks and
+// their real reading of the answer, then answer from wire instead of an
+// app-server. The app-layer binding tests use it to assert which thread and
+// process a stop reaches without a real subprocess. The rest of the
+// session is zero, so callers MUST NOT call Send / Interrupt / Close on it.
 func NewBackgroundTerminalsTestSession(wire BackgroundTerminalsTestWire) *Session {
 	s := &Session{
 		threadID: "test-thread",
@@ -84,9 +90,20 @@ func NewBackgroundTerminalsTestSession(wire BackgroundTerminalsTestWire) *Sessio
 			}
 			return wire.Terminate(ctx, providerThreadID, processID)
 		},
-	}
-	for launchID, childThreadID := range wire.ChildThreadByLaunch {
-		s.collab.childParentByThread[childThreadID] = launchID
+		listBackgroundTerminalsFn: func(ctx context.Context, providerThreadID, _ string) (json.RawMessage, error) {
+			if wire.List == nil {
+				return nil, errors.New("codex test session: no list wire")
+			}
+			itemIDs, err := wire.List(ctx, providerThreadID)
+			if err != nil {
+				return nil, err
+			}
+			rows := make([]BackgroundTerminal, 0, len(itemIDs))
+			for _, itemID := range itemIDs {
+				rows = append(rows, BackgroundTerminal{ItemID: itemID})
+			}
+			return json.Marshal(backgroundTerminalListResponse{Data: rows})
+		},
 	}
 	s.setRootThreadID(wire.RootThreadID)
 	return s

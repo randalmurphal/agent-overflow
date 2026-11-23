@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 )
 
@@ -41,9 +40,11 @@ type backgroundTerminalListResponse struct {
 	NextCursor *string              `json:"nextCursor"`
 }
 
-// ListBackgroundTerminals returns every running background PTY for this
-// session's thread, following `nextCursor` until the server reports the
-// end of the list.
+// ListBackgroundTerminals returns every running background PTY of one
+// Codex thread (scopeID, a command's ProcessScope.ID: the root thread or an
+// agent's), following `nextCursor` until the server reports the end of the
+// list. A thread Codex no longer has loaded is
+// ErrBackgroundTerminalThreadNotLoaded.
 //
 // Wire contract (verified on codex-cli 0.146.0, spike-codex capture
 // 10-bgterminals-list; type definitions at
@@ -53,30 +54,27 @@ type backgroundTerminalListResponse struct {
 // The method is `#[experimental]` and needs `capabilities.experimentalApi`,
 // which every AO app-server handshake sets.
 //
-// An empty result is normal and not an error: it means the model has no
+// An empty result is normal and not an error: it means the thread has no
 // backgrounded shells right now.
-func (s *Session) ListBackgroundTerminals(ctx context.Context) ([]BackgroundTerminal, error) {
-	rootThreadID := s.rootThreadID()
-	if rootThreadID == "" {
-		return nil, fmt.Errorf("codex: thread/backgroundTerminals/list: session has no thread id")
+func (s *Session) ListBackgroundTerminals(ctx context.Context, scopeID string) ([]BackgroundTerminal, error) {
+	const method = "thread/backgroundTerminals/list"
+	threadID, err := s.backgroundTerminalThread(method, scopeID)
+	if err != nil {
+		return nil, err
 	}
 	var (
 		terminals []BackgroundTerminal
 		cursor    string
 	)
 	for page := 0; page < backgroundTerminalListPageLimit; page++ {
-		params := map[string]any{"threadId": rootThreadID}
-		if cursor != "" {
-			params["cursor"] = cursor
-		}
-		raw, err := s.sendRequest(ctx, "thread/backgroundTerminals/list", params)
+		raw, err := s.listBackgroundTerminalsPage(ctx, threadID, cursor)
 		if err != nil {
-			return nil, fmt.Errorf("codex: thread/backgroundTerminals/list: %w", err)
+			return nil, s.backgroundTerminalThreadGone(threadID, fmt.Errorf("codex: %s: %w", method, err))
 		}
 		var resp backgroundTerminalListResponse
 		if len(raw) > 0 {
 			if err := json.Unmarshal(raw, &resp); err != nil {
-				return nil, fmt.Errorf("codex: thread/backgroundTerminals/list: decode response: %w", err)
+				return nil, fmt.Errorf("codex: %s: decode response: %w", method, err)
 			}
 		}
 		terminals = append(terminals, resp.Data...)
@@ -84,81 +82,75 @@ func (s *Session) ListBackgroundTerminals(ctx context.Context) ([]BackgroundTerm
 			return terminals, nil
 		}
 		if *resp.NextCursor == cursor {
-			return nil, fmt.Errorf(
-				"codex: thread/backgroundTerminals/list: server repeated cursor %q",
-				cursor,
-			)
+			return nil, fmt.Errorf("codex: %s: server repeated cursor %q", method, cursor)
 		}
 		cursor = *resp.NextCursor
 	}
-	return nil, fmt.Errorf(
-		"codex: thread/backgroundTerminals/list: cursor did not terminate after %d pages",
-		backgroundTerminalListPageLimit,
-	)
+	return nil, fmt.Errorf("codex: %s: cursor did not terminate after %d pages", method, backgroundTerminalListPageLimit)
+}
+
+func (s *Session) listBackgroundTerminalsPage(ctx context.Context, threadID, cursor string) (json.RawMessage, error) {
+	// Test-only seam for the wire read; scope validation above still runs.
+	// Production NewSession never sets it.
+	if s.listBackgroundTerminalsFn != nil {
+		return s.listBackgroundTerminalsFn(ctx, threadID, cursor)
+	}
+	params := map[string]any{"threadId": threadID}
+	if cursor != "" {
+		params["cursor"] = cursor
+	}
+	return s.sendRequest(ctx, "thread/backgroundTerminals/list", params)
 }
 
 type backgroundTerminalTerminateResponse struct {
 	Terminated bool `json:"terminated"`
 }
 
-// ErrBackgroundTerminalOwnerGone reports that the agent whose thread ran a
-// background terminal is gone: this session no longer owns a thread for
-// the launch, or Codex no longer has the thread loaded. Codex terminates a
-// thread's processes when it shuts the thread down, so nothing is left to
-// stop.
-var ErrBackgroundTerminalOwnerGone = errors.New("codex: the agent thread that ran the background terminal is gone")
+// ErrBackgroundTerminalThreadNotLoaded reports that Codex no longer has the
+// agent thread a background-terminal call named loaded. Codex terminates a
+// thread's processes when it shuts the thread down and drops the thread only
+// after that (core agent/control legacy.rs shutdown_live_agent), so none of
+// its processes is left.
+var ErrBackgroundTerminalThreadNotLoaded = errors.New("codex: the agent thread is no longer loaded")
 
-// backgroundTerminalThreads resolves the provider threads whose process
-// tables a background-terminal RPC for ownerLaunchID addresses: the root
-// thread for "", and otherwise the child threads the spawn launch owns.
-// Each Codex thread has its own process table, so a process id means
-// nothing outside the thread that started it.
-func (s *Session) backgroundTerminalThreads(method, ownerLaunchID string) ([]string, error) {
-	ownerLaunchID = strings.TrimSpace(ownerLaunchID)
-	if ownerLaunchID == "" {
-		rootThreadID := s.rootThreadID()
-		if rootThreadID == "" {
-			return nil, fmt.Errorf("codex: %s: session has no thread id", method)
-		}
-		return []string{rootThreadID}, nil
+// backgroundTerminalThread validates the thread a background-terminal call
+// names: scopeID is a command's ProcessScope.ID. A review run's scope is
+// not addressable (reviewProcessScope), so a caller that sends one has
+// skipped ProcessScope.Addressable.
+func (s *Session) backgroundTerminalThread(method, scopeID string) (string, error) {
+	scopeID = strings.TrimSpace(scopeID)
+	if scopeID == "" {
+		return "", fmt.Errorf("codex: %s: process scope required", method)
 	}
-	s.mu.Lock()
-	var threads []string
-	for childThreadID, launchID := range s.collab.childParentByThread {
-		if launchID == ownerLaunchID {
-			threads = append(threads, childThreadID)
-		}
+	if isReviewProcessScope(scopeID) {
+		return "", fmt.Errorf("codex: %s: %s runs inside a code review, which no background-terminal call reaches", method, scopeID)
 	}
-	s.mu.Unlock()
-	if len(threads) == 0 {
-		return nil, fmt.Errorf("codex: %s: launch %s owns no thread in this session: %w", method, ownerLaunchID, ErrBackgroundTerminalOwnerGone)
-	}
-	sort.Strings(threads)
-	return threads, nil
+	return scopeID, nil
 }
 
-// backgroundTerminalOwnerGone turns the app-server's refusal to resolve an
-// agent's thread into ErrBackgroundTerminalOwnerGone. The background
-// terminal methods resolve their thread among the loaded ones and answer
-// -32600 "thread not found: <id>" for any other (Codex
-// thread_processor.rs load_thread). The root thread stays loaded while the
-// session lives, so only an agent scope is read this way.
-func backgroundTerminalOwnerGone(err error, ownerLaunchID string) error {
+// backgroundTerminalThreadGone reads the app-server's refusal to resolve a
+// thread. The background terminal methods resolve their thread among the
+// loaded ones and answer -32600 "thread not found: <id>" for any other
+// (Codex thread_processor.rs load_thread). The root thread stays loaded
+// while the session lives, so only an agent's thread is read this way, and
+// a closed agent's route goes with it (retireUnloadedClosedChild).
+func (s *Session) backgroundTerminalThreadGone(threadID string, err error) error {
 	var rpcErr *RPCError
-	if ownerLaunchID != "" && errors.As(err, &rpcErr) && rpcErr.Code == -32600 &&
-		strings.HasPrefix(strings.TrimSpace(rpcErr.Message), "thread not found") {
-		return errors.Join(ErrBackgroundTerminalOwnerGone, err)
+	if threadID == s.rootThreadID() || !errors.As(err, &rpcErr) || rpcErr.Code != -32600 ||
+		!strings.HasPrefix(strings.TrimSpace(rpcErr.Message), "thread not found") {
+		return err
 	}
-	return err
+	s.retireUnloadedClosedChild(threadID)
+	return errors.Join(ErrBackgroundTerminalThreadNotLoaded, err)
 }
 
-// TerminateBackgroundTerminal kills ONE running background PTY by its
-// app-server process id in the thread that runs it (ownerLaunchID: "" for
-// the root thread, the spawn launch id for an agent's), and reports whether
-// a process was actually terminated. `false, nil` means the RPC succeeded
-// but matched nothing: the shell had already exited. That is a state
-// answer, not a failure. An agent thread that is gone is
-// ErrBackgroundTerminalOwnerGone.
+// TerminateBackgroundTerminal asks Codex to kill ONE running background PTY
+// by its app-server process id in the thread that runs it (scopeID, the
+// command's ProcessScope.ID). `false, nil` is not proof the process is
+// gone: Codex answers false both when the thread has no such process and
+// when it failed to terminate one (core unified_exec process_manager.rs
+// terminate_process). Only the thread's list says which. A thread Codex no
+// longer has loaded is ErrBackgroundTerminalThreadNotLoaded.
 //
 // Wire contract (`thread/backgroundTerminals/terminate`, params
 // `{threadId, processId}` → `{terminated: bool}`) is upstream-typed at
@@ -175,23 +167,19 @@ func backgroundTerminalOwnerGone(err error, ownerLaunchID string) error {
 // to has it.
 // provider.TestMinimumCodexCLIVersionCoversBackgroundTerminalTerminate
 // fails if that floor is ever lowered past this method.
-func (s *Session) TerminateBackgroundTerminal(ctx context.Context, ownerLaunchID, processID string) (bool, error) {
+func (s *Session) TerminateBackgroundTerminal(ctx context.Context, scopeID, processID string) (bool, error) {
 	const method = "thread/backgroundTerminals/terminate"
 	processID = strings.TrimSpace(processID)
 	if processID == "" {
 		return false, fmt.Errorf("codex: %s: process id required", method)
 	}
-	threads, err := s.backgroundTerminalThreads(method, ownerLaunchID)
+	threadID, err := s.backgroundTerminalThread(method, scopeID)
 	if err != nil {
 		return false, err
 	}
-	terminated := false
-	for _, threadID := range threads {
-		killed, err := s.terminateBackgroundTerminalIn(ctx, threadID, processID)
-		if err != nil {
-			return terminated, backgroundTerminalOwnerGone(err, ownerLaunchID)
-		}
-		terminated = terminated || killed
+	terminated, err := s.terminateBackgroundTerminalIn(ctx, threadID, processID)
+	if err != nil {
+		return false, s.backgroundTerminalThreadGone(threadID, err)
 	}
 	return terminated, nil
 }
@@ -222,11 +210,13 @@ func (s *Session) terminateBackgroundTerminalIn(ctx context.Context, threadID, p
 }
 
 // CleanBackgroundTerminals asks the Codex app-server to terminate every
-// running unified-exec background PTY of one thread: the root thread for
-// ownerLaunchID "", an agent's thread for its spawn launch id. It is the
-// thread-wide sibling of TerminateBackgroundTerminal, the right call for
-// "stop everything" (thread delete, revert), not for a per-row stop. An
-// agent thread that is gone is ErrBackgroundTerminalOwnerGone.
+// running unified-exec background PTY of one thread (scopeID, a command's
+// ProcessScope.ID). It is the thread-wide sibling of
+// TerminateBackgroundTerminal, the right call for "stop everything" (thread
+// delete, revert), not for a per-row stop. Its answer only acknowledges that
+// Codex took the request (thread_processor.rs submits
+// Op::CleanBackgroundTerminals and returns). A thread Codex no longer has
+// loaded is ErrBackgroundTerminalThreadNotLoaded.
 //
 // Wire contract is owned by the Codex source of truth:
 // https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/thread.rs
@@ -238,16 +228,13 @@ func (s *Session) terminateBackgroundTerminalIn(ctx context.Context, threadID, p
 // Safe to call from any goroutine: sendRequest handles correlation under
 // the session's internal locks. Returns ctx.Err() on cancellation, or a
 // wrapped error on RPC failure.
-func (s *Session) CleanBackgroundTerminals(ctx context.Context, ownerLaunchID string) error {
-	const method = "thread/backgroundTerminals/clean"
-	threads, err := s.backgroundTerminalThreads(method, ownerLaunchID)
+func (s *Session) CleanBackgroundTerminals(ctx context.Context, scopeID string) error {
+	threadID, err := s.backgroundTerminalThread("thread/backgroundTerminals/clean", scopeID)
 	if err != nil {
 		return err
 	}
-	for _, threadID := range threads {
-		if err := s.cleanBackgroundTerminalsIn(ctx, threadID); err != nil {
-			return backgroundTerminalOwnerGone(err, ownerLaunchID)
-		}
+	if err := s.cleanBackgroundTerminalsIn(ctx, threadID); err != nil {
+		return s.backgroundTerminalThreadGone(threadID, err)
 	}
 	return nil
 }
