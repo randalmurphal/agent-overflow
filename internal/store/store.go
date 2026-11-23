@@ -140,8 +140,11 @@ type Options struct {
 	scratch bool
 }
 
-// New opens (or creates) the SQLite database at the given path and runs migrations.
-// Pass ":memory:" for tests.
+// New opens (or creates) the SQLite database at the given path and runs
+// migrations. ":memory:" opens a private in-memory database on one
+// connection, with no read pool, and runs the whole migration chain on it.
+// A test that wants a migrated store clones a template instead
+// (storetest.Clone, or newTestStore in this package's tests).
 func New(dbPath string) (*Store, error) {
 	return NewWithOptions(dbPath, Options{})
 }

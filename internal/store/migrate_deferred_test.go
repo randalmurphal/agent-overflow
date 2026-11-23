@@ -113,11 +113,8 @@ func TestNewDatabaseHasNoPendingDeferredMigrations(t *testing.T) {
 	if latestDeferredVersion == 0 {
 		t.Fatal("no migration carries a deferred phase")
 	}
-	s, err := New(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	// The template is a new database New migrated.
+	s := newTestStore(t)
 	if deferredPending(t, s) {
 		t.Fatal("a new database has a pending deferred migration")
 	}

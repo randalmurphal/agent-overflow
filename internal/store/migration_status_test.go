@@ -1,21 +1,14 @@
 package store
 
-import (
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
 // TestMigrationStatusReportsAMigratedDatabaseAtItsBuild: a store this build
-// opened and migrated reports the chain's latest version applied and no
-// deferred phase pending, and the deferred figures agree with
-// DeferredMigrationsPending.
+// opened and migrated, the test template, reports the chain's latest
+// version applied and no deferred phase pending, and the deferred figures
+// agree with DeferredMigrationsPending.
 func TestMigrationStatusReportsAMigratedDatabaseAtItsBuild(t *testing.T) {
 	t.Parallel()
-	s, err := New(filepath.Join(t.TempDir(), "status.db"))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
+	s := newTestStore(t)
 
 	status, err := s.MigrationStatus()
 	if err != nil {

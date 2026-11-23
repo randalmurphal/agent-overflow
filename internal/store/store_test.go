@@ -85,11 +85,14 @@ func sweepStoreTemplates() {
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	clonePath := filepath.Join(t.TempDir(), "store.sqlite")
-	if err := copyTestStoreTemplate(clonePath); err != nil {
-		t.Fatalf("clone store template: %v", err)
-	}
-	s, err := New(clonePath)
+	return openTestStore(t, newTestStorePath(t))
+}
+
+// openTestStore opens the store at path, a clone or a fixture copy, and
+// closes it when the test ends.
+func openTestStore(t *testing.T, path string) *Store {
+	t.Helper()
+	s, err := New(path)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}

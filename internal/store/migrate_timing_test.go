@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -66,7 +65,7 @@ func TestMigrationsLogTheirDurations(t *testing.T) {
 // waits on the close-time one, so both say how long they took.
 func TestStoreLogsItsCheckpointDurations(t *testing.T) {
 	logged := captureLog(t)
-	s, err := New(filepath.Join(t.TempDir(), "agent-overflow.db"))
+	s, err := New(newTestStorePath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
