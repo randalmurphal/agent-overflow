@@ -92,7 +92,7 @@ func (s *trackerState) detail(id tracker.IssueID) (tracker.Detail, error) {
 	if !ok || s.gone[id] {
 		return tracker.Detail{}, &trackerapi.StatusError{Tracker: "jira", Status: 404}
 	}
-	d := detailOfCard(c)
+	d := enteredAtStatusBegan(detailOfCard(c))
 	d.Comments.Comments[0].Body = s.comments[id]
 	// A ticket's view depends on its own issue alone unless it links one.
 	d.Links = nil

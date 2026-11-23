@@ -25,7 +25,7 @@ const (
 	cardBlobVersion   = 1
 	userBlobVersion   = 1
 	boardBlobVersion  = 1
-	detailBlobVersion = 1
+	detailBlobVersion = 2
 )
 
 // millis is t in Unix milliseconds, 0 for the zero time.

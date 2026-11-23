@@ -207,7 +207,9 @@ func TestCardShowsWhenItsStatusBegan(t *testing.T) {
 		t.Fatalf("issue card status since %d", v.Card.StatusSince)
 	}
 	c := seededCard()
-	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return tracker.Detail{Card: c}, nil }
+	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) {
+		return enteredAtStatusBegan(tracker.Detail{Card: c}), nil
+	}
 	for _, path := range []string{"read through", "checked", "the mirror's copy"} {
 		var v DetailView
 		var err error
@@ -312,7 +314,7 @@ func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
 			m.p.detail = func(tracker.IssueID) (tracker.Detail, error) {
 				c := card("10001", tc.updated)
 				c.Status = tc.status
-				return tracker.Detail{Card: c}, nil
+				return enteredAtStatusBegan(tracker.Detail{Card: c}), nil
 			}
 			answerCardsFromDetails(m.p)
 			for _, mirrored := range []bool{false, true} {
@@ -378,25 +380,58 @@ func TestATicketDoesNotShowAnEarlierStaysTime(t *testing.T) {
 	}
 }
 
-// A ticket takes when its status began from the mirror's card only when
-// that card is the version it shows.
+// A ticket's status time follows statusSinceOf's three rules: a trusted
+// history's latest status change decides; else the mirror's time of this
+// version, when the history does not contradict it; else unknown. The
+// card was updated at U and created at C, in status s1; the mirror's time
+// is T, and the history, when trusted, is final through U.
 func TestStatusSinceOf(t *testing.T) {
 	t.Parallel()
-	m := store.MirrorCard{StatusID: "s1", UpdatedAt: 1_799_000_000_000, StatusSince: 7}
+	const created, began, updated = 1_798_000_000_000, 1_798_500_000_000, 1_799_000_000_000
+	at := func(ms int64) time.Time { return time.UnixMilli(ms).UTC() }
+	mirror := store.MirrorCard{StatusID: "s1", UpdatedAt: updated, StatusSince: began}
+	into := func(to tracker.StatusID, ms int64) tracker.StatusChange {
+		return tracker.StatusChange{Change: tracker.Change{At: at(ms)}, From: "s0", To: to}
+	}
 	for name, tc := range map[string]struct {
-		updated int64
+		mirror  *store.MirrorCard
 		status  tracker.StatusID
+		updated int64
+		from    int64
+		to      int64
+		latest  tracker.StatusChange
 		want    int64
 	}{
-		"the mirror's version":      {m.UpdatedAt, "s1", 7},
-		"another status":            {m.UpdatedAt, "s2", 0},
-		"an earlier version":        {m.UpdatedAt - 1, "s1", 0},
-		"a version not stored yet":  {m.UpdatedAt + 1, "s1", 0},
-		"a later one, other status": {m.UpdatedAt + 1, "s2", 0},
+		// Rule 1.
+		"a trusted change into the status":        {nil, "s1", updated, 0, updated, into("s1", began+1), began + 1},
+		"a trusted change over the mirror's time": {&mirror, "s1", updated, 0, updated, into("s1", began+1), began + 1},
+		"a trusted change into another status":    {&mirror, "s1", updated, 0, updated, into("s2", began), 0},
+		"a history final past the update":         {nil, "s1", updated, 0, updated + 60_000, into("s1", began), began},
+		// Rule 2.
+		"no change, the mirror's time at creation":   {&store.MirrorCard{StatusID: "s1", UpdatedAt: updated, StatusSince: created}, "s1", updated, 0, updated, tracker.StatusChange{}, created},
+		"no change, the mirror's time later":         {&mirror, "s1", updated, 0, updated, tracker.StatusChange{}, 0},
+		"no change since a later start":              {&mirror, "s1", updated, began + 1, updated, tracker.StatusChange{}, began},
+		"untrusted, its change at the mirror's time": {&mirror, "s1", updated, 0, updated - 1, into("s1", began), began},
+		"untrusted, a newer stay":                    {&mirror, "s1", updated, 0, updated - 1, into("s1", began+1), 0},
+		"untrusted, another status":                  {&mirror, "s1", updated, 0, updated - 1, into("s2", began), 0},
+		"no time named, the mirror's":                {&mirror, "s1", updated, 0, 0, into("s1", began), began},
+		"the mirror's other status":                  {&mirror, "s2", updated, 0, updated - 1, into("s2", began), 0},
+		"an earlier version":                         {&mirror, "s1", updated + 1, 0, updated - 1, into("s1", began), 0},
+		"a version not stored yet":                   {&mirror, "s1", updated - 1, 0, 0, into("s1", began), 0},
+		// Rule 3.
+		"untrusted with no mirror card": {nil, "s1", updated, 0, updated - 1, into("s1", began), 0},
+		"no change and no mirror card":  {nil, "s1", updated, 0, updated, tracker.StatusChange{}, 0},
 	} {
 		c := card("10001", tc.updated)
-		c.Status = tc.status
-		if got := statusSinceOf(m, c); got != tc.want {
+		c.Status, c.Created = tc.status, at(created)
+		d := tracker.Detail{Card: c, StatusChanged: tc.latest}
+		if tc.from > 0 {
+			d.HistoryFrom = at(tc.from)
+		}
+		if tc.to > 0 {
+			d.HistoryTo = at(tc.to)
+		}
+		if got := statusSinceOf(tc.mirror, d); got != tc.want {
 			t.Errorf("%s: %d; want %d", name, got, tc.want)
 		}
 	}

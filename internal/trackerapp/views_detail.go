@@ -368,9 +368,7 @@ func (sd shownDetail) view(mirrored catalogNames) DetailView {
 		}
 	}
 	card := cardView(d.Card, names)
-	if sd.own != nil {
-		card.StatusSince = statusSinceOf(*sd.own, d.Card)
-	}
+	card.StatusSince = statusSinceOf(sd.own, d)
 	if d.Card.Parent != "" {
 		card.Parent = &ParentView{ID: string(d.Card.Parent)}
 		if p := sd.parent; p != nil {
@@ -416,16 +414,51 @@ func (sd shownDetail) view(mirrored catalogNames) DetailView {
 	return v
 }
 
-// statusSinceOf is when c's status began, from m, the mirror's card of
-// the same issue, when m is the version c shows: the same update time and
-// status. Otherwise it is unknown (0): the mirror's time belongs to
-// another status, or to an earlier or a later stay in this one. The store
-// alone decides the time a card keeps (mirrorStatusSinceSQL); a document
-// is stored only once the mirror holds its card's version (store
-// StoreMirrorDetails, trackerapp payOwedCards), so only a document of an
-// issue the mirror does not keep, or one the pump holds, shows none.
-func statusSinceOf(m store.MirrorCard, c tracker.Card) int64 {
-	if m.StatusID != string(c.Status) || m.UpdatedAt != millis(c.Updated) {
+// statusSinceOf is when the status d's card shows began, as a ticket shows
+// it, from d's own history and m, the mirror's card of the issue (nil when
+// the mirror keeps none); zero is unknown. It is the one place that
+// decides it, by three rules in order:
+//
+//  1. When d's history is trusted and holds a status change, the latest
+//     one decides: its time when it went to the card's status, unknown
+//     when it went to another (the card and the history disagree).
+//  2. Otherwise the mirror's time, when m is the version d shows (the
+//     same update time and status) and d's history does not contradict
+//     it: the latest status change it holds went to this status at that
+//     time, or it holds none and the time is no later than where it
+//     starts (HistoryFrom, or the creation when it is complete from it),
+//     since a later time is a change the history would hold.
+//  3. Otherwise unknown.
+//
+// d's history is trusted when it is final through the card's update
+// (HistoryTo, the tracker's clock less its settle margin, at or after
+// Card.Updated): a document read sooner after an edit may lack the newest
+// change. The store decides the time a board card keeps
+// (mirrorStatusSinceSQL) from its stored history; for the settle window
+// after a status change a ticket's document can see a newer stay than the
+// mirror's stored history, so a board card can show the earlier stay's
+// time while the open ticket shows the newer one.
+func statusSinceOf(m *store.MirrorCard, d tracker.Detail) int64 {
+	c, latest := d.Card, d.StatusChanged
+	trusted := !d.HistoryTo.IsZero() && !d.HistoryTo.Before(c.Updated)
+	switch {
+	case trusted && latest.To != "" && latest.To != c.Status:
+		return 0
+	case trusted && latest.To != "":
+		return millis(latest.At)
+	case m == nil || m.StatusID != string(c.Status) || m.UpdatedAt != millis(c.Updated):
+		return 0
+	case latest.To != "":
+		if latest.To != c.Status || millis(latest.At) != m.StatusSince {
+			return 0
+		}
+		return m.StatusSince
+	}
+	from := d.HistoryFrom
+	if from.IsZero() {
+		from = c.Created
+	}
+	if m.StatusSince > millis(from) {
 		return 0
 	}
 	return m.StatusSince

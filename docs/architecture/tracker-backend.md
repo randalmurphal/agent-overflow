@@ -449,13 +449,23 @@ of either. While no final history read for the card's update is stored,
 the time stands as long as the card keeps its status and is unknown once
 the status changes: an edit to another field does not blank it. An issue
 that left its status and came back between two reads of its card shows
-the earlier stay's time until that history is stored. A ticket shows the
-time only when the mirror's card is the version its document shows. A
-document is stored only beside the card of its version, so the time
-stands across an edit on every read of a kept issue: a Jira round's
-check, a full read,
-a refresh, a write's re-read and every Linear ticket read. A ticket of an
-issue the mirror does not keep shows none, since its card is not stored.
+the earlier stay's time until that history is stored. A ticket's time
+is decided in one place (`statusSinceOf`), from the latest status change
+its document's history holds (`tracker.Detail.StatusChanged`) and the
+mirror's card. When the document's history is final through the card's
+update (`Detail.HistoryTo`, the tracker's clock on the answer less its
+settle margin), its latest status change decides: its time when it went
+to the card's status, unknown when it went to another. Otherwise the
+ticket shows the mirror's time, when the mirror's card is the version
+the document shows and the document's history does not contradict it;
+otherwise none. A document is stored only beside the card of its
+version, so the time stands across an edit on every read of a kept
+issue: a Jira round's check, a full read, a refresh, a write's re-read
+and every Linear ticket read. A ticket of an issue the mirror does not
+keep shows the time its document's history gives. For the settle window
+after an issue leaves its status and comes back, a board card can show
+the earlier stay's time while the open ticket shows the newer one: the
+ticket's document holds the return before a history read stores it.
 A detail's read time starts at its opening, so a document read before the
 opening is superseded.
 

@@ -141,11 +141,22 @@ func (n names) detail(d *linear.IssueDetail, states []linear.WorkflowState, olde
 	for _, r := range d.Relations {
 		out.Links = append(out.Links, link(d.ID, r))
 	}
+	entry := func(e *linear.HistoryEntry) {
+		out.History = append(out.History, n.events(e)...)
+		// The latest by time, whatever order the pages list entries in.
+		if e.State != nil && (out.StatusChanged.To == "" || e.CreatedAt.After(out.StatusChanged.At)) {
+			out.StatusChanged = tracker.StatusChange{Change: tracker.Change{At: e.CreatedAt, Author: tracker.UserID(e.ActorID)},
+				From: tracker.StatusID(e.State.From), To: tracker.StatusID(e.State.To)}
+		}
+	}
 	for i := len(older) - 1; i >= 0; i-- {
-		out.History = append(out.History, n.events(&older[i])...)
+		entry(&older[i])
 	}
 	for i := len(d.History.Items) - 1; i >= 0; i-- {
-		out.History = append(out.History, n.events(&d.History.Items[i].HistoryEntry)...)
+		entry(&d.History.Items[i].HistoryEntry)
+	}
+	if !d.History.Served.IsZero() {
+		out.HistoryTo = d.History.Served.Add(-settleMargin)
 	}
 	for _, s := range states {
 		out.Statuses = append(out.Statuses, status(s))

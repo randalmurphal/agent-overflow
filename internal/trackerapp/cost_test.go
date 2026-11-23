@@ -215,7 +215,7 @@ func TestBlobSizes(t *testing.T) {
 	detail := must[[]byte](t)(mirrorDetail(realisticDetail()))
 	sizes := map[string]int{"card": len(card.Data), "user": len(catalog.Users[0].Data), "board": len(board.Board.Data), "detail": len(detail)}
 	t.Logf("blob bytes: %s", describeCounts(sizes))
-	want := map[string]int{"card": 211, "user": 108, "board": 79, "detail": 16582}
+	want := map[string]int{"card": 211, "user": 108, "board": 79, "detail": 16693}
 	if !maps.Equal(sizes, want) {
 		t.Errorf("blob bytes %s, pinned %s", describeCounts(sizes), describeCounts(want))
 	}

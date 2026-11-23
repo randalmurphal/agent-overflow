@@ -329,7 +329,14 @@ type Detail struct {
 	Attachments []Attachment
 	History     []Event
 	HistoryFrom time.Time
-	Moves       []Move
+	// HistoryTo is when History is final through, by the tracker's clock,
+	// as IssueHistory.CompleteTo is: a change made after it may be
+	// missing. Zero when the answer named no time.
+	HistoryTo time.Time
+	// StatusChanged is the latest status change History holds, with the
+	// status it went to; zero when it holds none.
+	StatusChanged StatusChange
+	Moves         []Move
 	Catalog
 }
 

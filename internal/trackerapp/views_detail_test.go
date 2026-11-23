@@ -26,6 +26,20 @@ func detailOfCard(c tracker.Card) tracker.Detail {
 	}
 }
 
+// statusBegan is when the tests' status histories have an issue enter
+// its status (a history read's StatusChange into s1).
+var statusBegan = time.UnixMilli(1_798_500_000_000).UTC()
+
+// enteredAtStatusBegan is d with its history's latest status change, into
+// its card's status at statusBegan, as a document of an issue whose
+// history the tests read holds it; with no HistoryTo, the history is not
+// trusted alone, so the ticket shows the time only once the mirror's
+// card of the version has it too (statusSinceOf).
+func enteredAtStatusBegan(d tracker.Detail) tracker.Detail {
+	d.StatusChanged = tracker.StatusChange{Change: tracker.Change{At: statusBegan}, From: "s2", To: d.Card.Status}
+	return d
+}
+
 // openDetail opens issue's detail through IssueDetail and fails on an
 // error.
 func (m *mirrorFixture) openDetail(t *testing.T, issue tracker.IssueID) (DetailView, Changes) {
