@@ -289,6 +289,68 @@ func TestCloseTruncatesTheWAL(t *testing.T) {
 	t.Logf("WAL bytes across Close: %d -> %d", before, after)
 }
 
+// A read running on the pool when Close starts holds a mark on the WAL.
+// Close closes the pool, waits for that read and then truncates the WAL,
+// with no settle pause: a read that took the pool from reader() before
+// Close and starts after the pool closed fails instead of opening a read
+// transaction of its own.
+func TestCloseWaitsForAReadInFlightBeforeTruncating(t *testing.T) {
+	dbPath := newTestStorePath(t)
+	s, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	before := growWAL(t, s, dbPath)
+	// As in TestCloseTruncatesTheWAL: the last connection's own checkpoint
+	// must not be what removes the WAL.
+	guard, err := sql.Open("sqlite", poolDSN(dbPath, readerConnPragmas))
+	if err != nil {
+		t.Fatalf("open guard: %v", err)
+	}
+	defer guard.Close()
+	if err := guard.Ping(); err != nil {
+		t.Fatalf("guard probe: %v", err)
+	}
+	late := s.reader()
+	if late != s.read {
+		t.Fatal("reads do not go to the pool")
+	}
+	inFlight, err := s.read.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := inFlight.QueryRow(`SELECT count(*) FROM ui_state`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close() }()
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(time.Millisecond) {
+		err := late.Ping()
+		if err != nil && err.Error() == "sql: database is closed" {
+			break
+		}
+		if err != nil {
+			t.Fatalf("ping the pool: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Close never closed the read pool")
+		}
+	}
+	if _, err := late.Exec(`SELECT 1`); err == nil || err.Error() != "sql: database is closed" {
+		t.Fatalf("a read on the pool after it closed: %v; want it refused", err)
+	}
+	if err := inFlight.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-closed; err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if after := walSize(t, dbPath); after != 0 {
+		t.Fatalf("WAL = %d bytes after Close, want 0 (was %d): the truncation ran while the read held its mark", after, before)
+	}
+}
+
 // A hard-killed process leaves its WAL on disk at whatever high-water
 // mark it reached — no Close ran, so nothing truncated it. The next boot
 // has to be what reclaims it, which is the whole reason the Windows Job
