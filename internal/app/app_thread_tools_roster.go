@@ -153,6 +153,10 @@ func (a *App) providerOffered(name string) bool {
 		if !current.CodexEnabled {
 			return false
 		}
+	case string(provider.Agy):
+		if !current.AgyEnabled {
+			return false
+		}
 	default:
 		return false
 	}
@@ -209,6 +213,8 @@ func nativeSubagentTools(providerName string) []string {
 		return claude.SubagentLaunchTools
 	case string(provider.Codex):
 		return []string{codex.ToggleCollabAgents}
+	case string(provider.Agy):
+		return []string{"invoke_subagent"}
 	}
 	return nil
 }
@@ -273,8 +279,7 @@ func refuseInstructionsUnappended(providerName, instructions string) error {
 	if instructions == "" {
 		return nil
 	}
-	switch providerName {
-	case string(provider.Claude), string(provider.ClaudeTUI), string(provider.Codex):
+	if provider.CapabilitiesForProvider(providerName).SupportsAppendSystemPrompt {
 		return nil
 	}
 	return errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(

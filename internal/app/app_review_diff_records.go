@@ -71,7 +71,9 @@ func reviewDiffFileRefused(why string) error {
 type reviewDiffRecord struct {
 	id        string
 	workspace string
-	owner     *transport.ConnState
+	// tie binds the record's removal to the connection that opened it;
+	// stopping the record unties it.
+	tie transport.Tie
 	// scope is the one the Open method required; every read requires it
 	// again.
 	scope transport.Scope
@@ -103,16 +105,24 @@ type reviewDiffRecords struct {
 	closed bool
 }
 
-// reserve makes a pending record; the caller starts its pin, which must
-// close done. evicted are the records it pushed out, still to be stopped
-// outside the lock. The record is nil once the records are closed.
-func (r *reviewDiffRecords) reserve(workspace string, owner *transport.ConnState, scope transport.Scope, cancel context.CancelFunc) (record *reviewDiffRecord, evicted []*reviewDiffRecord) {
+// reserve makes a pending record for owner, tied to owner's connection as
+// it is published, so the connection's end removes it however soon it
+// comes; the caller starts its pin, which must close done. evicted are the
+// records it pushed out, still to be stopped outside the lock. It refuses
+// with ErrShuttingDown once the records are closed, and with the tie's
+// refusal when owner is closing; either way nothing is reserved.
+func (r *reviewDiffRecords) reserve(workspace string, owner *transport.ConnState, scope transport.Scope, cancel context.CancelFunc) (record *reviewDiffRecord, evicted []*reviewDiffRecord, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return nil, nil
+		return nil, nil, ErrShuttingDown
 	}
-	record = &reviewDiffRecord{id: uuid.NewString(), workspace: workspace, owner: owner, scope: scope, cancel: cancel, done: make(chan struct{})}
+	id := uuid.NewString()
+	tie, err := owner.Bind(reviewDiffFilesCleanupKey(id), func() { stopReviewDiffRecords(r.remove(id)) })
+	if err != nil {
+		return nil, nil, err
+	}
+	record = &reviewDiffRecord{id: id, workspace: workspace, tie: tie, scope: scope, cancel: cancel, done: make(chan struct{})}
 	if r.byID == nil {
 		r.byID = map[string]*reviewDiffRecord{}
 		r.lru = list.New()
@@ -122,7 +132,7 @@ func (r *reviewDiffRecords) reserve(workspace string, owner *transport.ConnState
 	}
 	record.elem = r.lru.PushFront(record)
 	r.byID[record.id] = record
-	return record, evicted
+	return record, evicted, nil
 }
 
 // settle publishes a pin's outcome on its record, unless the record was
@@ -180,7 +190,7 @@ func (r *reviewDiffRecords) get(id, workspace string, owner *transport.ConnState
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	record, ok := r.byID[id]
-	if !ok || record.owner != owner || record.workspace != workspace {
+	if !ok || !record.tie.HeldBy(owner) || record.workspace != workspace {
 		return nil, errReviewDiffFilesGone
 	}
 	r.lru.MoveToFront(record.elem)
@@ -243,15 +253,16 @@ func (r *reviewDiffRecords) removeLocked(record *reviewDiffRecord) *reviewDiffRe
 }
 
 // stopReviewDiffRecords cancels and joins the pins of removed records and
-// unbinds their owners' teardown, so nothing of theirs outlives the call.
+// unties their owners' connections, so nothing of theirs outlives the
+// call. It is the one stop of a removed record, however it was removed.
 func stopReviewDiffRecords(records ...*reviewDiffRecord) {
 	for _, record := range records {
 		if record == nil {
 			continue
 		}
+		record.tie.Untie()
 		record.cancel()
 		<-record.done
-		record.owner.UnbindCleanup(reviewDiffFilesCleanupKey(record.id))
 	}
 }
 

@@ -166,7 +166,7 @@ func testBootRecoversASelectedCodexRotation(t *testing.T, foreignSweep bool, use
 		if err := sweeper.Attach(foreignStore, foreignCredentials, ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := sweeper.ReconcileProviderHome(sweepDir, userHome); err != nil {
+		if err := sweeper.ReconcileProviderHome(userHome); err != nil {
 			t.Fatal(err)
 		}
 		slot, err := credentials.ReadCredential(string(provider.Codex), "acct-1", false)
@@ -178,7 +178,7 @@ func testBootRecoversASelectedCodexRotation(t *testing.T, foreignSweep bool, use
 			t.Fatalf("another store's sweep wrote the canonical credential (err %v)", err)
 		}
 	}
-	if err := manager.ReconcileProviderHome(dbDir, userHome); err != nil {
+	if err := manager.ReconcileProviderHome(userHome); err != nil {
 		t.Fatal(err)
 	}
 	canonical, err := credentials.ReadCredential(string(provider.Codex), "", true)

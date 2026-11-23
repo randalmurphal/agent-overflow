@@ -4,6 +4,7 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 // that computer, so navigation cannot redirect a credential mutation.
 import {
   CancelProviderLogin,
+  FinishProviderAccountReset,
   GetProviderLoginState,
   ListProviderAccounts,
   ProviderLoginMethod,
@@ -13,18 +14,19 @@ import {
   RemoveProviderAccount,
   ReorderProviderAccounts,
   SetProviderAccountAutoSwitch,
+  SpendProviderAccountReset,
   StartProviderLogin,
   SubmitProviderLoginCode,
   SwitchProviderAccount,
 } from './bindings';
-import type { ManagedProviderAccount } from './bindings';
+import type { ManagedProviderAccount, ProviderAccountResetResult } from './bindings';
 import type { ProviderAccountAutoSwitchEvent, ProviderAccountSignInEvent } from '../types/events';
 import { canUseHostOpenExternalURL } from '../utils/externalLinks';
 import { clearProviderAccount, setProviderAccount } from './accountInfo.svelte';
 import { clearProviderRateLimits, setProviderRateLimits } from './rateLimitsInfo.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { recheckProviderAccount } from '../providers/actions';
-import { PROVIDER_SETTINGS_ORDER } from '../providers/catalog';
+import { standaloneProvidersWithFeature } from '../providers/catalog';
 import { hasScope, pageGrantsResolved } from '../transport/scopes';
 import { PROVIDER_IDS, type ProviderID } from '../types/providers';
 import { userFacingError } from '../utils/userFacingError';
@@ -42,6 +44,19 @@ export interface ProviderAccountActions {
   refreshingID: string;
   /** Account id being removed. Empty string = nothing in flight. */
   removingID: string;
+  /** Account id whose usage reset is being spent or finished. Empty string = nothing. */
+  spendingResetID: string;
+}
+
+/**
+ * The reset a person confirmed: the option and the list revision as the
+ * card showed them when the confirm opened, so a list that changed while it
+ * was open is refused rather than spent from.
+ */
+export interface ProviderAccountResetChoice {
+  accountId: string;
+  optionId: string;
+  revision: number;
 }
 export interface ProviderAccountGroup {
   provider: ProviderID;
@@ -66,10 +81,10 @@ export class ComputerAccounts {
   }
   // Providers that own native logins. claude-tui reuses Claude's credentials and
   // has no account surface of its own, so it never appears here.
-  private ACCOUNT_PROVIDERS: readonly ProviderID[] = PROVIDER_SETTINGS_ORDER;
+  private ACCOUNT_PROVIDERS: readonly ProviderID[] = standaloneProvidersWithFeature('accounts');
 
   private idleActions(): ProviderAccountActions {
-    return { loggingIn: false, switchingID: '', refreshingID: '', removingID: '' };
+    return { loggingIn: false, switchingID: '', refreshingID: '', removingID: '', spendingResetID: '' };
   }
 
   private seedActions(): Record<ProviderID, ProviderAccountActions> {
@@ -425,6 +440,53 @@ export class ComputerAccounts {
     } finally {
       action.refreshingID = '';
     }
+  }
+
+  /**
+   * Spend one of an account's usage resets. The caller owns the confirmation
+   * and passes what it confirmed.
+   */
+  spendProviderAccountReset(provider: ProviderID, choice: ProviderAccountResetChoice): Promise<void> {
+    return this.runResetCall(provider, choice.accountId, () =>
+      SpendProviderAccountReset(provider, choice.accountId, choice.optionId, choice.revision),
+    );
+  }
+
+  /**
+   * Send the account's unconfirmed reset spendId (its card's pendingReset.id)
+   * again under its key, which never uses a second reset. No confirmation: it
+   * can only settle what the person already confirmed, and the backend
+   * refuses it when the unconfirmed reset is another one.
+   */
+  finishProviderAccountReset(provider: ProviderID, accountId: string, spendId: string): Promise<void> {
+    return this.runResetCall(provider, accountId, () => FinishProviderAccountReset(provider, accountId, spendId));
+  }
+
+  // One reset call at a time per provider, and none during a refresh. Every
+  // outcome is a toast, and the listing is read again either way: a spend, a
+  // Finish, or a refusal because the card was stale all leave the card
+  // showing what is current.
+  private async runResetCall(
+    provider: ProviderID,
+    accountId: string,
+    issue: () => PromiseLike<ProviderAccountResetResult>,
+  ): Promise<void> {
+    const action = this.actions[provider];
+    if (action.spendingResetID || action.refreshingID) return;
+    const label = providerLabel(provider);
+    action.spendingResetID = accountId;
+    try {
+      const result = await this.call(issue);
+      addToast(result.spent ? 'success' : 'info', result.message);
+    } catch (error) {
+      if (this.disposed) return;
+      console.error(`${label} usage reset failed:`, error);
+      addErrorToast(userFacingError(error, `Failed to use the ${label} reset.`), error);
+    } finally {
+      action.spendingResetID = '';
+    }
+    if (this.disposed) return;
+    await this.reloadProviderAccounts();
   }
 
   /**

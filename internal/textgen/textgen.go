@@ -5,6 +5,7 @@
 package textgen
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/stringsx"
 )
@@ -32,7 +34,41 @@ const (
 	// by `codex exec --output-last-message`. 256 KiB is generous for a
 	// JSON object but small enough that a misbehaving CLI can't OOM us.
 	JSONOutputLimit = 256 * 1024
+
+	// DefaultAgyModel is the default Antigravity model for short structured
+	// text generation runs.
+	DefaultAgyModel = "gemini-4-hydrogen"
 )
+
+// PickAvailableProviderOrdered returns preferred when its binary resolves,
+// otherwise the first provider in order whose binary resolves, otherwise
+// preferred unchanged.
+func PickAvailableProviderOrdered(
+	preferred string,
+	binaries map[string]string,
+	order []string,
+	lookPath func(string) error,
+) string {
+	if lookPath == nil {
+		return preferred
+	}
+	available := func(name string) bool {
+		bin := strings.TrimSpace(binaries[name])
+		return bin != "" && lookPath(bin) == nil
+	}
+	if available(preferred) {
+		return preferred
+	}
+	for _, candidate := range order {
+		if candidate == preferred {
+			continue
+		}
+		if available(candidate) {
+			return candidate
+		}
+	}
+	return preferred
+}
 
 // PickAvailableProvider returns the preferred provider's name when its
 // binary resolves on the local system, otherwise the alternate provider's
@@ -513,6 +549,142 @@ func RunClaude(
 		return nil, fmt.Errorf("claude CLI failed: %s", FirstNonEmptyMessage(result.Stderr, result.Stdout, "exit code "+fmt.Sprint(result.ExitCode)))
 	}
 	return []byte(result.Stdout), nil
+}
+
+// RunAgy drives `agy --output-format json --json-schema ... --print=<prompt>`
+// for one-shot structured output. `agy`'s `-p`/`--print` flag takes the prompt
+// as its value rather than reading stdin; passing `--print=<prompt>` avoids
+// flag-parsing ambiguity for prompts starting with `-`.
+// `--disable-slash-commands` prevents prompt text starting with `/` from
+// expanding as a slash command or skill, and AGY_CLI_DISABLE_AUTO_UPDATE=1
+// keeps background self-updates off during the run.
+func RunAgy(
+	ctx context.Context,
+	cfg Config,
+	workspace string,
+	schemaJSON string,
+	extraArgs []string,
+	stdin string,
+	timeout time.Duration,
+) ([]byte, error) {
+	if strings.TrimSpace(stdin) == "" {
+		return nil, fmt.Errorf("agy: empty prompt")
+	}
+	args := []string{
+		"--output-format", "json",
+		"--json-schema", schemaJSON,
+		"--disable-slash-commands",
+	}
+	if cfg.Model != "" {
+		args = append(args, "--model", cfg.Model)
+	}
+	if cfg.Effort != "" {
+		args = append(args, "--effort", cfg.Effort)
+	}
+	args = append(args, extraArgs...)
+	args = append(args, "--print="+stdin)
+
+	env, unsetEnv := agy.LaunchEnv(cfg.Env, nil)
+
+	result, err := cfg.Exec(ctx, CLISpec{
+		Binary:   cfg.Binary,
+		Args:     args,
+		Cwd:      workspace,
+		Env:      env,
+		UnsetEnv: unsetEnv,
+		Admit:    cfg.Admit,
+	})
+	if err != nil {
+		return nil, TranslateCLINotFound("agy", timeout, err)
+	}
+	if result.ExitCode != 0 {
+		return nil, fmt.Errorf("agy CLI failed: %s", FirstNonEmptyMessage(result.Stderr, result.Stdout, "exit code "+fmt.Sprint(result.ExitCode)))
+	}
+	return []byte(result.Stdout), nil
+}
+
+// DecodeAgyStructured pulls a structured payload of type T out of `agy -p
+// --output-format json --json-schema` stdout. Handles wrapped envelopes
+// (`structured_output`, `result`, `response`, `text`) as well as direct JSON
+// payloads on the final non-empty JSON line.
+func DecodeAgyStructured[T any](stdout []byte) (T, error) {
+	var zero T
+	trimmed := strings.TrimSpace(string(stdout))
+	if trimmed == "" {
+		return zero, fmt.Errorf("agy returned empty output")
+	}
+
+	candidate := trimmed
+	if !json.Valid([]byte(candidate)) {
+		lines := strings.Split(trimmed, "\n")
+		found := ""
+		for i := len(lines) - 1; i >= 0; i-- {
+			line := strings.TrimSpace(lines[i])
+			if line != "" && json.Valid([]byte(line)) {
+				found = line
+				break
+			}
+		}
+		if found == "" {
+			return zero, fmt.Errorf("agy returned no valid JSON output")
+		}
+		candidate = found
+	}
+
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(candidate), &envelope); err != nil {
+		return zero, fmt.Errorf("decode agy structured output: %w", err)
+	}
+	if errRaw, hasErr := envelope["error"]; hasErr && len(errRaw) > 0 && string(bytes.TrimSpace(errRaw)) != "null" && string(bytes.TrimSpace(errRaw)) != `""` {
+		return zero, fmt.Errorf("agy returned error envelope: %s", strings.TrimSpace(string(errRaw)))
+	}
+	if statusRaw, hasStatus := envelope["status"]; hasStatus {
+		var status string
+		if json.Unmarshal(statusRaw, &status) == nil && strings.EqualFold(strings.TrimSpace(status), "error") {
+			return zero, fmt.Errorf("agy returned error status envelope: %s", candidate)
+		}
+	}
+	if raw, ok := envelope["structured_output"]; ok && len(raw) > 0 && string(raw) != "null" {
+		var out T
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return zero, fmt.Errorf("decode agy structured_output: %w", err)
+		}
+		return out, nil
+	}
+	for _, key := range []string{"result", "response", "text"} {
+		raw, ok := envelope[key]
+		if !ok || len(raw) == 0 || string(raw) == "null" {
+			continue
+		}
+		var out T
+		if err := json.Unmarshal(raw, &out); err == nil {
+			return out, nil
+		}
+		var asString string
+		if err := json.Unmarshal(raw, &asString); err == nil {
+			cleaned := stripJSONCodeFence(asString)
+			if err := json.Unmarshal([]byte(cleaned), &out); err == nil {
+				return out, nil
+			}
+		}
+	}
+	var direct T
+	if err := json.Unmarshal([]byte(candidate), &direct); err != nil {
+		return zero, fmt.Errorf("decode agy structured output: %w", err)
+	}
+	return direct, nil
+}
+
+func stripJSONCodeFence(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if !strings.HasPrefix(trimmed, "```") {
+		return trimmed
+	}
+	if nl := strings.IndexByte(trimmed, '\n'); nl >= 0 {
+		trimmed = trimmed[nl+1:]
+	}
+	trimmed = strings.TrimSuffix(strings.TrimSpace(trimmed), "```")
+	return strings.TrimSpace(trimmed)
 }
 
 // DecodeClaudeStructuredLastLine pulls the structured_output envelope

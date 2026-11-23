@@ -136,7 +136,7 @@ func (s *Store) SetThreadImportState(state ThreadImportState) error {
 	if strings.TrimSpace(state.ThreadID) == "" {
 		return fmt.Errorf("store: set thread import state: thread id is required")
 	}
-	if state.Provider != "claude" && state.Provider != "codex" {
+	if state.Provider != "claude" && state.Provider != "codex" && state.Provider != "agy" {
 		return fmt.Errorf("%w: %q", ErrInvalidImportProvider, state.Provider)
 	}
 	state.SourceSessionID = strings.TrimSpace(state.SourceSessionID)

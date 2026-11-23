@@ -75,6 +75,11 @@ func (s *Service) StartCodexPoll() {
 	s.startPoll(stringProviderCodex, s.codexUsageGate().Request)
 }
 
+// StartAgyPoll starts the activity-gated Antigravity usage cadence.
+func (s *Service) StartAgyPoll() {
+	s.startPoll(stringProviderAgy, s.agyUsageGate().Request)
+}
+
 func (s *Service) startPoll(providerName string, probe func()) {
 	s.StartProbeLoop(s.pollLoop(providerName, probe))
 }
@@ -110,6 +115,8 @@ func (s *Service) RequestReading(providerName string) {
 		gate = s.claudeUsageGate()
 	case stringProviderCodex:
 		gate = s.codexUsageGate()
+	case stringProviderAgy:
+		gate = s.agyUsageGate()
 	default:
 		return
 	}
@@ -119,4 +126,5 @@ func (s *Service) RequestReading(providerName string) {
 const (
 	stringProviderClaude = "claude"
 	stringProviderCodex  = "codex"
+	stringProviderAgy    = "agy"
 )

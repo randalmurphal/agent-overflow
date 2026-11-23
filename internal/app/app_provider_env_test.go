@@ -25,6 +25,7 @@ func TestReservedEnvNamesMatchTheProviderPins(t *testing.T) {
 		string(provider.Claude),
 		string(provider.ClaudeTUI),
 		string(provider.Codex),
+		string(provider.Agy),
 	} {
 		t.Run(providerName, func(t *testing.T) {
 			pinned := upperSet(provider.ReservedEnvNames(providerName))
@@ -69,7 +70,7 @@ func TestSessionProcessEnvFollowsCustomEnvAcrossTransitions(t *testing.T) {
 	app := newTestAppWithStore(t)
 
 	// Off: nothing injected.
-	if got := app.sessionProcessEnv(string(provider.Claude), nil, aoSessionCredential{}); got["ANTHROPIC_BASE_URL"] != "" {
+	if got := app.sessionProcessEnv(string(provider.Claude), nil); got["ANTHROPIC_BASE_URL"] != "" {
 		t.Fatalf("unset custom env leaked %q", got["ANTHROPIC_BASE_URL"])
 	}
 
@@ -78,12 +79,12 @@ func TestSessionProcessEnvFollowsCustomEnvAcrossTransitions(t *testing.T) {
 		t.Fatalf("SetProviderCustomEnvVar() error = %v", err)
 	}
 	for _, providerName := range []string{string(provider.Claude), string(provider.ClaudeTUI)} {
-		got := app.sessionProcessEnv(providerName, nil, aoSessionCredential{})
+		got := app.sessionProcessEnv(providerName, nil)
 		if got["ANTHROPIC_BASE_URL"] != "https://gw.test" {
 			t.Fatalf("%s env = %#v, want the custom base URL", providerName, got)
 		}
 	}
-	if got := app.sessionProcessEnv(string(provider.Codex), nil, aoSessionCredential{}); got["ANTHROPIC_BASE_URL"] != "" {
+	if got := app.sessionProcessEnv(string(provider.Codex), nil); got["ANTHROPIC_BASE_URL"] != "" {
 		t.Fatalf("Claude's custom env leaked into Codex: %#v", got)
 	}
 
@@ -91,10 +92,10 @@ func TestSessionProcessEnvFollowsCustomEnvAcrossTransitions(t *testing.T) {
 	if _, err := app.SetProviderCustomEnvVar(context.Background(), "codex", "HTTPS_PROXY", "http://proxy.test:8080", false); err != nil {
 		t.Fatalf("SetProviderCustomEnvVar() error = %v", err)
 	}
-	if got := app.sessionProcessEnv(string(provider.Codex), nil, aoSessionCredential{}); got["HTTPS_PROXY"] != "http://proxy.test:8080" {
+	if got := app.sessionProcessEnv(string(provider.Codex), nil); got["HTTPS_PROXY"] != "http://proxy.test:8080" {
 		t.Fatalf("codex env = %#v, want the proxy", got)
 	}
-	if got := app.sessionProcessEnv(string(provider.Claude), nil, aoSessionCredential{}); got["HTTPS_PROXY"] != "" {
+	if got := app.sessionProcessEnv(string(provider.Claude), nil); got["HTTPS_PROXY"] != "" {
 		t.Fatalf("Codex's custom env leaked into Claude: %#v", got)
 	}
 
@@ -103,13 +104,13 @@ func TestSessionProcessEnvFollowsCustomEnvAcrossTransitions(t *testing.T) {
 		t.Fatalf("DeleteProviderCustomEnvVar() error = %v", err)
 	}
 	for _, providerName := range []string{string(provider.Claude), string(provider.ClaudeTUI)} {
-		got := app.sessionProcessEnv(providerName, nil, aoSessionCredential{})
+		got := app.sessionProcessEnv(providerName, nil)
 		if _, present := got["ANTHROPIC_BASE_URL"]; present {
 			t.Fatalf("%s kept the removed variable: %#v", providerName, got)
 		}
 	}
 	// The other provider is untouched by the removal.
-	if got := app.sessionProcessEnv(string(provider.Codex), nil, aoSessionCredential{}); got["HTTPS_PROXY"] == "" {
+	if got := app.sessionProcessEnv(string(provider.Codex), nil); got["HTTPS_PROXY"] == "" {
 		t.Fatalf("removing a Claude variable cleared Codex's: %#v", got)
 	}
 }
@@ -126,21 +127,18 @@ func TestSessionProcessEnvPrecedenceAroundCustomEnv(t *testing.T) {
 	got := app.sessionProcessEnv(
 		string(provider.Claude),
 		map[string]string{"SHARED": "provider-config"},
-		aoSessionCredential{},
 	)
 	if got["SHARED"] != "user" {
 		t.Fatalf("SHARED = %q, want the user's value to outrank the provider config", got["SHARED"])
 	}
 
 	app.providerExtraEnv = map[string]string{"SHARED": "harness"}
-	got = app.sessionProcessEnv(string(provider.Claude), nil, aoSessionCredential{
-		env: map[string]string{aocli.EnvToken: "tok"},
-	})
+	got = app.sessionProcessEnv(string(provider.Claude), nil)
 	if got["SHARED"] != "harness" {
 		t.Fatalf("SHARED = %q, want the boot-mode override to outrank user settings", got["SHARED"])
 	}
-	if got[aocli.EnvToken] != "tok" {
-		t.Fatalf("the ao credential did not survive: %#v", got)
+	if got[aocli.EnvInSession] != "1" {
+		t.Fatalf("the in-session marker did not survive: %#v", got)
 	}
 }
 

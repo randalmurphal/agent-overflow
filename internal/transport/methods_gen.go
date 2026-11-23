@@ -175,6 +175,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "FinishLiveDictation", ID: 3774452621, Scope: "threads:operate", Route: "selected"},                                               // main.App.FinishLiveDictation
 	{Name: "FinishPasskeyRegistration", ID: 1601396603, Scope: "access:admin", Route: "home", Remote: true},                                  // main.App.FinishPasskeyRegistration
 	{Name: "FinishPasskeyStepUp", ID: 1569276637, Scope: "session", Route: "home"},                                                           // main.App.FinishPasskeyStepUp
+	{Name: "FinishProviderAccountReset", ID: 3520335973, Scope: "access:admin", Route: "home", Budget: 1 * time.Minute},                      // main.App.FinishProviderAccountReset
 	{Name: "ForgetAccessDevice", ID: 516065248, Scope: "access:admin", Route: "home"},                                                        // main.App.ForgetAccessDevice
 	{Name: "ForgetTailnetNode", ID: 767560289, Scope: "host", Route: "home"},                                                                 // main.App.ForgetTailnetNode
 	{Name: "ForkSideChat", ID: 2246569884, Scope: "threads:operate", Route: "thread", Budget: 2 * time.Minute},                               // main.App.ForkSideChat
@@ -201,6 +202,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetEditorSettings", ID: 1655853383, Scope: "settings:read", Route: "selected"},                                                   // main.App.GetEditorSettings
 	{Name: "GetErrorLogLines", ID: 1581952506, Scope: "threads:operate", Route: "home"},                                                      // main.App.GetErrorLogLines
 	{Name: "GetGitActionOutcome", ID: 2541596437, Scope: "git:operate", Route: "workspace", CallerBound: true, Budget: 12 * time.Minute},     // main.App.GetGitActionOutcome
+	{Name: "GetGitBlobImage", ID: 3812666095, Scope: "files:read", Route: "workspace"},                                                       // main.App.GetGitBlobImage
 	{Name: "GetGitStatus", ID: 4123560639, Scope: "git:operate", Route: "workspace"},                                                         // main.App.GetGitStatus
 	{Name: "GetKeybindings", ID: 3015840904, Scope: "settings:read", Route: "home"},                                                          // main.App.GetKeybindings
 	{Name: "GetLocalImage", ID: 1709188995, Scope: "files:read", Route: "selected"},                                                          // main.App.GetLocalImage
@@ -397,6 +399,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "PostPRLineComment", ID: 1583250136, Scope: "git:operate", Route: "selected"},                                                     // main.App.PostPRLineComment
 	{Name: "PrepareThreadWorktree", ID: 2870364785, Scope: "git:operate", Route: "thread", Budget: 12 * time.Minute},                         // main.App.PrepareThreadWorktree
 	{Name: "PreviewNotificationSound", ID: 2105157519, Scope: "host", Route: "home"},                                                         // main.App.PreviewNotificationSound
+	{Name: "ProbeAgyAccount", ID: 633322787, Scope: "access:admin", Route: "home"},                                                           // main.App.ProbeAgyAccount
 	{Name: "ProbeClaudeAccount", ID: 1313986574, Scope: "access:admin", Route: "home"},                                                       // main.App.ProbeClaudeAccount
 	{Name: "ProbeCodexAccount", ID: 2614227175, Scope: "access:admin", Route: "home"},                                                        // main.App.ProbeCodexAccount
 	{Name: "ProjectDeletionPreview", ID: 2575010484, Scope: "git:operate", Route: "project"},                                                 // main.App.ProjectDeletionPreview
@@ -414,6 +417,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ReadReviewDiff", ID: 2473150982, Scope: "session", Route: "home", CallerBound: true},                                             // main.App.ReadReviewDiff
 	{Name: "ReadShellAttachmentOutput", ID: 3285994337, Scope: "threads:read", Route: "thread"},                                              // main.App.ReadShellAttachmentOutput
 	{Name: "ReadThreadRemoteLog", ID: 2424974671, Scope: "terminal:operate", Route: "thread"},                                                // main.App.ReadThreadRemoteLog
+	{Name: "RecheckAgyAccount", ID: 4079519754, Scope: "access:admin", Route: "home"},                                                        // main.App.RecheckAgyAccount
 	{Name: "RecheckClaudeAccount", ID: 2274850917, Scope: "access:admin", Route: "home"},                                                     // main.App.RecheckClaudeAccount
 	{Name: "RecheckCodexAccount", ID: 227978482, Scope: "access:admin", Route: "home"},                                                       // main.App.RecheckCodexAccount
 	{Name: "ReconfigureObservability", ID: 225050321, Scope: "host", Route: "home"},                                                          // main.App.ReconfigureObservability
@@ -463,6 +467,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RerequestPRReview", ID: 2068518611, Scope: "git:operate", Route: "selected"},                                                     // main.App.RerequestPRReview
 	{Name: "ResetKeybindings", ID: 2775767393, Scope: "settings:write", Route: "home"},                                                       // main.App.ResetKeybindings
 	{Name: "ResizeTerminal", ID: 1887984285, Scope: "terminal:operate", Route: "home"},                                                       // main.App.ResizeTerminal
+	{Name: "ResolveForgeFacts", ID: 1279729209, Scope: "git:operate", Route: "workspace"},                                                    // main.App.ResolveForgeFacts
 	{Name: "RespondToApproval", ID: 1919237704, Scope: "approvals:respond", Route: "thread"},                                                 // main.App.RespondToApproval
 	{Name: "RespondToUserInput", ID: 1071592868, Scope: "approvals:respond", Route: "thread"},                                                // main.App.RespondToUserInput
 	{Name: "RestartToUpdate", ID: 3141913084, Scope: "host", Route: "home"},                                                                  // main.App.RestartToUpdate
@@ -482,6 +487,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SaveCIArtifacts", ID: 1986917811, Scope: "git:operate", Route: "selected", Budget: 30 * time.Minute},                             // main.App.SaveCIArtifacts
 	{Name: "SaveDraft", ID: 3025273299, Scope: "threads:operate", Route: "thread"},                                                           // main.App.SaveDraft
 	{Name: "SaveForgeAttachment", ID: 2960563266, Scope: "git:operate", Route: "selected", Budget: 11 * time.Minute},                         // main.App.SaveForgeAttachment
+	{Name: "SaveGitBlobImage", ID: 3614441608, Scope: "files:read", Route: "workspace"},                                                      // main.App.SaveGitBlobImage
 	{Name: "SaveLocalImage", ID: 1040176720, Scope: "files:read", Route: "selected"},                                                         // main.App.SaveLocalImage
 	{Name: "SavePRCIJobLog", ID: 1537914193, Scope: "git:operate", Route: "selected", Budget: 15 * time.Minute},                              // main.App.SavePRCIJobLog
 	{Name: "SavePRCIJobLogSection", ID: 1281545488, Scope: "git:operate", Route: "selected"},                                                 // main.App.SavePRCIJobLogSection
@@ -532,6 +538,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetWindowBackgroundColor", ID: 3648660014, Scope: "host", Route: "home"},                                                         // main.App.SetWindowBackgroundColor
 	{Name: "SetWorkspaceMcpServerEnabled", ID: 2181574220, Scope: "settings:write", Route: "selected", StepUp: true},                         // main.App.SetWorkspaceMcpServerEnabled
 	{Name: "ShutdownBackend", ID: 2115861089, Scope: "host", Route: "home"},                                                                  // main.App.ShutdownBackend
+	{Name: "SpendProviderAccountReset", ID: 1201673152, Scope: "access:admin", Route: "home", Budget: 1 * time.Minute},                       // main.App.SpendProviderAccountReset
 	{Name: "StartCodexReview", ID: 1913732562, Scope: "threads:operate", Route: "thread"},                                                    // main.App.StartCodexReview
 	{Name: "StartNextAssistantThread", ID: 4173453878, Scope: "threads:autonomy", Route: "thread"},                                           // main.App.StartNextAssistantThread
 	{Name: "StartProviderLogin", ID: 1484798083, Scope: "access:admin", Route: "home"},                                                       // main.App.StartProviderLogin

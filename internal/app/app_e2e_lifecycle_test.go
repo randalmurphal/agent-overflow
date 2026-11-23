@@ -310,6 +310,9 @@ func setupE2EAppOn(t *testing.T, dbPath, settingsDir string) (*App, *capturedEve
 				_ = ps.Close()
 			}
 		}
+		if err := app.sessionManager().runtime.Connections().CloseAll(); err != nil {
+			t.Errorf("close provider connections: %v", err)
+		}
 		if err := app.providerEvents.drainAll(); err != nil {
 			t.Errorf("drain provider events: %v", err)
 		}

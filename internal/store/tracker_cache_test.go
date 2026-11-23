@@ -120,7 +120,7 @@ func TestDetachMirrorThenCleanupDrainsInBatches(t *testing.T) {
 // board.
 func TestMirrorDrainCoversEveryTable(t *testing.T) {
 	t.Parallel()
-	db := migrateThrough(t, trackerMirrorClockMigrationVersion)
+	db := migrateThrough(t, trackerMirrorMigrationVersion)
 	tables, err := queryIDs(db, `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'tracker\_cache\_%' ESCAPE '\'
 		AND name <> 'tracker_cache_roots' ORDER BY name`)
 	if err != nil {
@@ -374,7 +374,7 @@ func mirrorCascadeViolations(t *testing.T, db *sql.DB) []string {
 // table.
 func TestTrackerCacheTablesCascadeFromTheRoot(t *testing.T) {
 	t.Parallel()
-	db := migrateThrough(t, trackerMirrorClockMigrationVersion)
+	db := migrateThrough(t, trackerMirrorMigrationVersion)
 	if violations := mirrorCascadeViolations(t, db); len(violations) > 0 {
 		t.Fatalf("schema violations:\n%s", strings.Join(violations, "\n"))
 	}

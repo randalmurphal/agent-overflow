@@ -20,6 +20,12 @@ and `ClaudeCatalog`.
 one place a keyed sibling map is forgotten. A new one deletes its entry there
 too.
 
+`Account.UsageResets` is the reset list the card offers, written only by
+`SetUsageResets`, `BeginResetSpend` and `SettleResetSpend`; every other row
+write carries it over, and an inserted row starts without one. An account's
+unsettled spend, with its key, lives beside the rows in
+`ProviderState.PendingResets`; `PendingReset` states what ends one.
+
 A saved catalog is bound to the binary identity that produced it. It is
 metadata, not a promise: a consumer serves it only while the configured path
 and the resolved file, size and mtime still match.
@@ -115,6 +121,16 @@ Credential bytes travel as `CredentialSnapshot` or `secret.Bytes`, which
 print as `<redacted>` from any field. A raw `[]byte` credential is a
 function argument, never a struct field.
 
-Pruning requires a matching `providerHome` ownership stamp. Tests and harness
-runs use temporary homes and the file-backed keychain seam; they never inspect
-or modify real provider homes.
+Every data root on a machine shares the provider home's slots, so a slot
+that a root's account list does not name is usually another root's live
+login. A root deletes a slot without a user's removal only when it reserved
+that id and does not list it (`reserved_slots.go`): `ReserveAccountID` is the
+only source of a new account id and persists it, with the data root and the
+provider home of its slot, before any slot byte exists; inserting the row
+clears it. Only that data root settles a reservation, only under that home,
+and a slot removal is synced before its record is cleared. The
+`providerHome` stamp is read only by earlier releases. Two data roots
+listing one account id (a copied `provider-accounts.json`) are unsupported:
+removal in either deletes the slot. Tests and harness runs use temporary
+homes and the file-backed keychain seam; they never inspect or modify real
+provider homes.

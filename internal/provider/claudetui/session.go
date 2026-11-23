@@ -492,6 +492,27 @@ func (s *Session) PID() int {
 	return s.pid
 }
 
+// Connection returns the single-PTY connection backing this claude-tui session.
+func (s *Session) Connection() provider.Connection {
+	if s == nil {
+		return nil
+	}
+	return provider.FuncConnection{
+		PIDFn:   s.PID,
+		DoneCh:  s.done,
+		CloseFn: s.Close,
+	}
+}
+
+// OwnedProcesses returns this PTY session's process root for dev-server attribution.
+func (s *Session) OwnedProcesses() []provider.OwnedProcess {
+	pid := s.PID()
+	if pid <= 0 {
+		return nil
+	}
+	return []provider.OwnedProcess{{PID: pid, PGID: pid}}
+}
+
 // SessionID returns the provider session ref, learned from the SessionStart
 // hook or the reconstructed init. Empty until one of those arrives.
 func (s *Session) SessionID() string {

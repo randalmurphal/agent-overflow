@@ -351,8 +351,8 @@ func TestEveryFrameCarriesEveryProvider(t *testing.T) {
 		t.Fatalf("frames = %d, want two checks, running and the outcome at least", len(frames))
 	}
 	for i, frame := range frames {
-		if len(frame) != 2 || frame[0].Provider != ProviderClaude || frame[1].Provider != ProviderCodex {
-			t.Fatalf("frame %d = %+v, want claude then codex", i, frame)
+		if len(frame) != 3 || frame[0].Provider != ProviderClaude || frame[1].Provider != ProviderCodex || frame[2].Provider != ProviderAgy {
+			t.Fatalf("frame %d = %+v, want claude, codex, then agy", i, frame)
 		}
 	}
 	// The codex half of a claude frame is codex's own state, not a blank.

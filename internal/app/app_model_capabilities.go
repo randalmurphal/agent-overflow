@@ -15,7 +15,7 @@ import (
 func (a *App) supportsFastModeForModel(providerName, model string) bool {
 	candidate, found := a.modelInfoForProvider(providerName, model)
 	supported := supportsFastModeFromModelInfo(providerName, model, candidate, found)
-	if !supported && providerName == string(provider.Codex) && a.store != nil {
+	if !supported && provider.CapabilitiesForProvider(providerName).ModelCatalog.IsLive() && a.store != nil {
 		if profile, ok := a.rememberedModelProfile(providerName, model); ok {
 			return profile.FastMode
 		}
@@ -25,8 +25,8 @@ func (a *App) supportsFastModeForModel(providerName, model string) bool {
 
 // supportsFastModeFromModelInfo judges fast mode by the catalog entry the
 // caller resolved: the provider's own report merged over the shipped list.
-// A model no catalog lists can run fast only on Codex, whose accepted
-// choices outlive catalog availability.
+// A model no catalog lists can run fast only on live-catalog providers, whose
+// accepted choices outlive catalog availability.
 func supportsFastModeFromModelInfo(
 	providerName, model string,
 	candidate provider.ModelInfo,
@@ -35,7 +35,7 @@ func supportsFastModeFromModelInfo(
 	if found {
 		return chatmodel.HasCapability(candidate, provider.ModelCapabilityFastMode)
 	}
-	return providerName == string(provider.Codex) && strings.TrimSpace(model) != ""
+	return provider.CapabilitiesForProvider(providerName).ModelCatalog.IsLive() && strings.TrimSpace(model) != ""
 }
 
 // fastModeTierIDForModel resolves the wire service-tier id a fast-mode turn on
@@ -57,7 +57,7 @@ func (a *App) reasoningEffortSupportedForModel(providerName, model, effort strin
 		if provider.ModelInfoSupportsReasoningEffort(candidate, effort) {
 			return true
 		}
-		if providerName == string(provider.Codex) && a.store != nil && string(provider.NormalizeReasoningEffort(effort)) == effort {
+		if provider.CapabilitiesForProvider(providerName).ModelCatalog.IsLive() && a.store != nil && string(provider.NormalizeReasoningEffort(effort)) == effort {
 			if profile, ok := a.rememberedModelProfile(providerName, model); ok {
 				return profile.ReasoningEffort == effort
 			}
@@ -68,7 +68,7 @@ func (a *App) reasoningEffortSupportedForModel(providerName, model, effort strin
 }
 
 func (a *App) coerceReasoningEffortForModel(providerName, model, effort string) string {
-	if providerName == string(provider.Codex) && a.reasoningEffortSupportedForModel(providerName, model, effort) {
+	if provider.CapabilitiesForProvider(providerName).ModelCatalog.IsLive() && a.reasoningEffortSupportedForModel(providerName, model, effort) {
 		return effort
 	}
 	candidate, found := a.modelInfoForProvider(providerName, model)
@@ -87,10 +87,10 @@ func coerceReasoningEffortFromModelInfo(
 	return string(provider.CoerceReasoningEffortForModel(providerName, model, normalized))
 }
 
-// draftModelDefaults preserves remembered Codex choices and uses one local
-// Claude catalog snapshot to resolve its model-derived settings.
+// draftModelDefaults preserves remembered choices for live-catalog providers
+// and uses the local catalog snapshot for static/probe-enriched providers.
 func (a *App) draftModelDefaults(providerName, model, effort string, fastMode bool) (string, bool) {
-	if providerName == string(provider.Codex) {
+	if provider.CapabilitiesForProvider(providerName).ModelCatalog.IsLive() {
 		return string(provider.NormalizeReasoningEffort(effort)), fastMode
 	}
 	candidate, found := a.modelInfoForProvider(providerName, model)
@@ -99,11 +99,11 @@ func (a *App) draftModelDefaults(providerName, model, effort string, fastMode bo
 	return effort, fastMode
 }
 
-// sanitizeChatModelProfile normalizes stored values without revoking Codex
-// selections when catalog availability changes.
+// sanitizeChatModelProfile normalizes stored values without revoking
+// live-catalog selections when catalog availability changes.
 func (a *App) sanitizeChatModelProfile(profile store.ChatModelProfile) store.ChatModelProfile {
 	profile = chatmodel.SanitizeProfile(profile)
-	if profile.Provider == string(provider.Codex) {
+	if provider.CapabilitiesForProvider(profile.Provider).ModelCatalog.IsLive() {
 		return profile
 	}
 	if profile.FastMode && !a.savedFastModeStands(profile.Provider, profile.Model) {
@@ -209,10 +209,16 @@ func (a *App) savedFastModeStands(providerName, model string) bool {
 func (a *App) modelInfoForProvider(providerName, model string) (info provider.ModelInfo, found bool) {
 	providerName = strings.TrimSpace(providerName)
 	model = provider.NormalizeModelSlug(providerName, strings.TrimSpace(model))
-	if provider.CapabilitiesForProvider(providerName).ModelCatalog == provider.CodexLiveModelCatalog {
+	switch provider.CapabilitiesForProvider(providerName).ModelCatalog {
+	case provider.CodexLiveModelCatalog:
 		if candidate, ok := a.providerDiscoveryService().KnownCodexModel(a.providerBinaryPath(providerName), model); ok {
 			return candidate, true
 		}
+	case provider.ACPLiveModelCatalog:
+		if candidate, ok := a.providerDiscoveryService().KnownAgyModel(a.providerBinaryPath(providerName), model); ok {
+			return candidate, true
+		}
+	case provider.StaticModelCatalog, provider.ClaudeProbeEnrichedCatalog:
 	}
 	return a.modelInfoWithoutLiveCodex(providerName, model)
 }

@@ -348,9 +348,12 @@ func (h *Harness) seedThread(projectID string, spec HarnessSeedThread, spawnerID
 	}
 	model := spec.Model
 	if model == "" {
-		if providerName == "codex" {
+		switch providerName {
+		case "codex":
 			model = "gpt-5.2-codex"
-		} else {
+		case "agy":
+			model = "gemini-4-neon"
+		default:
 			model = "claude-opus-4-7"
 		}
 	}
@@ -691,6 +694,9 @@ func (h *Harness) HarnessReset() (err error) {
 	if err := h.resetProviderUpdates(); err != nil {
 		return err
 	}
+	if err := h.resetCodexResetCredits(); err != nil {
+		return err
+	}
 	if replayer != nil {
 		replayer.Stop()
 	}
@@ -828,6 +834,9 @@ func (h *Harness) HarnessReset() (err error) {
 	// meter would otherwise draw in the next spec's composer. A sign-in a
 	// spec left open would be rejoined by the next page that loads.
 	h.config.Host.ResetProviderUsage()
+	if err := h.config.Host.ResetProviderConnections(); err != nil {
+		return fmt.Errorf("reset provider connections: %w", err)
+	}
 	h.config.Host.CancelProviderLogins()
 	// A repository's fetch freshness and failure backoff are keyed by its
 	// path, which the next fixture can reuse for another repository.
@@ -874,7 +883,7 @@ func (h *Harness) HarnessReset() (err error) {
 	// these trees survives. The empty-path guard covers test fixtures
 	// that build a Harness without a provider home.
 	if h.config.CredentialHome != "" {
-		for _, name := range []string{".claude", ".claude.json", ".codex"} {
+		for _, name := range []string{".claude", ".claude.json", ".codex", ".gemini"} {
 			p := filepath.Join(h.config.CredentialHome, name)
 			if err := os.RemoveAll(p); err != nil {
 				return fmt.Errorf("remove provider home state %q: %w", p, err)

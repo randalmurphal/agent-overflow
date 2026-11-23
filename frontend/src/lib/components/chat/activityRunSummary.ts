@@ -208,6 +208,7 @@ function nativeToolPresentation(
     }
     case 'claude':
     case 'claude-tui':
+    case 'agy':
     case null:
     case undefined:
       return {

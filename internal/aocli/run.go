@@ -16,6 +16,11 @@ const (
 	exitOK       = 0
 	exitFindings = 1
 	exitError    = 2
+
+	// EnvInSession is set to "1" in every provider session's process
+	// environment so the app binary refuses to boot a second instance from
+	// inside a session (main_entry.go).
+	EnvInSession = "AO_IN_SESSION"
 )
 
 // topLevelCommand is one row of the root dispatch table. Every top-level verb
@@ -42,9 +47,6 @@ type topLevelCommand struct {
 // the verb set this package owns still would not own that one. The argument
 // lives beside the code that routes it, at serveVerb in main_entry.go.
 var topLevelCommands = []topLevelCommand{
-	{name: "remote", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
-		return remoteCommand(args, lookupEnv, stdout, stderr)
-	}, remote: true},
 	{name: "pair", run: func(args []string, root string, _ func(string) (string, bool), stdout, stderr io.Writer) int {
 		return pairCommand(args, root, os.Stdin, stdout, stderr)
 	}, remote: true},

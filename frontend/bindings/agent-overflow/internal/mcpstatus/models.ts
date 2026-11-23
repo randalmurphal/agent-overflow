@@ -18,6 +18,7 @@ export enum Provider {
 
     ProviderClaude = "claude",
     ProviderCodex = "codex",
+    ProviderAgy = "agy",
 };
 
 /**

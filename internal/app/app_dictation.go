@@ -65,6 +65,10 @@ func (a *App) dictationSubscriptionOn() bool {
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) BeginDictation(ctx context.Context, mimeType string) (string, error) {
+	conn, err := transport.CallerConnection(ctx)
+	if err != nil {
+		return "", err
+	}
 	if a.settings == nil {
 		return "", ErrDictationOff
 	}
@@ -78,18 +82,17 @@ func (a *App) BeginDictation(ctx context.Context, mimeType string) (string, erro
 	if err != nil {
 		return "", dictationSwitchedOff(err)
 	}
-	if state := transport.ConnStateFromContext(ctx); state != nil {
-		key := dictationCleanupKey(id)
-		if !state.BindCleanup(key, func() { a.dictationRecordings().Cancel(id) }) {
-			a.dictationRecordings().Cancel(id)
-			return "", errors.New("dictation: connection closing")
-		}
-		// The connection owns the recording until the recording is released,
-		// however that happens.
-		if !a.dictationRecordings().OnRelease(id, func() { state.UnbindCleanup(key) }) {
-			state.UnbindCleanup(key)
-			return "", dictation.ErrUnknownRecording
-		}
+	recordings := a.dictationRecordings()
+	tie, err := conn.Bind(dictationCleanupKey(id), func() { recordings.Cancel(id) })
+	if err != nil {
+		recordings.Cancel(id)
+		return "", fmt.Errorf("dictation: %w", err)
+	}
+	// The connection owns the recording until the recording is released,
+	// however that happens.
+	if !recordings.OnRelease(id, tie.Untie) {
+		tie.Untie()
+		return "", dictation.ErrUnknownRecording
 	}
 	return id, nil
 }
@@ -205,12 +208,11 @@ func dictationCleanupKey(recordingID string) string {
 	return "dictation:" + recordingID
 }
 
-// ownsConnectionResource refuses a recording another connection opened,
-// answering unknown as if it were gone. An in-process caller has no
-// connection and owns any recording.
+// ownsConnectionResource refuses a recording the calling connection did not
+// open, answering unknown as if it were gone. A call that came over no
+// connection owns none: one cannot open a recording.
 func ownsConnectionResource(ctx context.Context, cleanupKey string, unknown error) error {
-	state := transport.ConnStateFromContext(ctx)
-	if state == nil || state.HasCleanup(cleanupKey) {
+	if transport.ConnStateFromContext(ctx).Bound(cleanupKey) {
 		return nil
 	}
 	return unknown

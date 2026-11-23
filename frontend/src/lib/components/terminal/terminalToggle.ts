@@ -4,8 +4,8 @@ import { getTerminalFocused } from './terminalStore.svelte';
 
 /**
  * VS Code-style terminal toggle shared by the ⌘`/⌘J chord (`terminal.toggle`)
- * and the chat-header terminal button, so both open AND focus the terminal
- * identically instead of the button being visibility-only.
+ * and the chat header menu's Terminal row, so both open AND focus the terminal
+ * identically instead of the row being visibility-only.
  *
  * Open: latch the focus intent on the pane, then show the drawer.
  * ThreadTerminalDrawer reads-and-clears that intent in its onMount — whenever

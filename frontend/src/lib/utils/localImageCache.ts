@@ -22,9 +22,11 @@ import type { BackendKey } from '../transport/backendKey';
 import {
   acquireMediaBlob,
   objectOrDataUrl,
+  paintedSize,
   type ImageSize,
   type MediaBytes,
   type MediaHandle,
+  type MediaSizeSink,
 } from './mediaBlobCache';
 
 export interface LocalImage extends MediaBytes, ImageSize {
@@ -84,7 +86,7 @@ export function acquireLocalImage(
 ): LocalImageHandle {
   return acquireMediaBlob(
     JSON.stringify([...localImageFile(backend, path, workspacePath), tier]),
-    () => loadLocalImage(backend, path, workspacePath, tier),
+    (sized) => loadLocalImage(backend, path, workspacePath, tier, sized),
   );
 }
 
@@ -111,8 +113,9 @@ async function loadLocalImage(
   path: string,
   workspacePath: string,
   tier: number,
+  sized?: MediaSizeSink,
 ): Promise<LocalImage> {
-  const { result, blob } = await mintAndFetch(backend, path, workspacePath, tier);
+  const { result, blob } = await mintAndFetch(backend, path, workspacePath, tier, undefined, sized);
   return {
     url: await objectOrDataUrl(blob, result.mimeType),
     mimeType: result.mimeType,
@@ -123,6 +126,7 @@ async function loadLocalImage(
     originalHeight: result.originalHeight,
     originalBytes: result.originalBytes,
     derived: result.derived,
+    ...(result.fluid === true ? { fluid: true } : {}),
   };
 }
 
@@ -135,9 +139,12 @@ async function mintAndFetch(
   workspacePath: string,
   maxWidth: number,
   signal?: AbortSignal,
+  sized?: MediaSizeSink,
 ) {
   const mint = () => withBackendTarget(backend, () => GetLocalImage(path, workspacePath, maxWidth));
   let result = await mint();
+  // The box the bytes will paint in, known before they cross.
+  sized?.(paintedSize(result));
   let bytes: Blob;
   try {
     bytes = await fetchTicketedBytes(backend, result.url, 'Could not load image', signal);

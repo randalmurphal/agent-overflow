@@ -279,10 +279,10 @@ to the computer and are rows in `tracker_connections`.
 
 ## Tables
 
-The tracker tables are created by migration v162, frozen, v163, which
-adds `tracker_cache_open_tickets`, and v164, which adds the wall times
-of the reads an interval is measured from
-(`tracker_cache_boards.structure_wall`, `tracker_cache_sync.reconciled_wall`,
+The tracker tables are created by migration v162, frozen, and v164,
+which adds `tracker_cache_open_tickets`, the wall times of the reads an
+interval is measured from (`tracker_cache_boards.structure_wall`,
+`tracker_cache_sync.reconciled_wall`,
 `tracker_cache_issue_details.read_wall`) and
 `tracker_cache_issues.sprint_set`; a later tracker table or column is a
 later migration.

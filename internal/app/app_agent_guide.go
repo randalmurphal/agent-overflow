@@ -88,9 +88,7 @@ func (a *App) agentGuideServersOn(threadID string, registered map[string]any) ma
 // is off, the thread is a workflow session, or the provider is not one the
 // guide reaches.
 func (a *App) agentGuideFor(thread store.Thread, registered map[string]any) (string, error) {
-	switch thread.Provider {
-	case string(provider.Claude), string(provider.ClaudeTUI), string(provider.Codex):
-	default:
+	if !provider.CapabilitiesForProvider(thread.Provider).SupportsAppendSystemPrompt {
 		return "", nil
 	}
 	if !a.currentSettings().AgentGuideEnabled {

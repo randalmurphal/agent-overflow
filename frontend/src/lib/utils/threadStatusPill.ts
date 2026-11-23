@@ -41,8 +41,12 @@ export interface ThreadStatusPill {
 export interface EffectiveThreadStatusOptions {
   /**
    * Suppress the durable interrupted fallback while the backend live-state
-   * snapshot is in flight. Without this, a refresh can briefly label an
-   * actually-running turn as Interrupted from stale row metadata.
+   * snapshot is in flight. A backend of this build sets hasIncompleteTurn
+   * only for an interruption its newest turn row recorded, but an older
+   * paired build also sets it for an open turn the user has not read, which
+   * is a running turn. No capability tells the two apart, so the guard
+   * applies to every backend: until the snapshot lands, such a row does not
+   * read as Interrupted.
    */
   suppressDurableInterrupted?: boolean;
 }

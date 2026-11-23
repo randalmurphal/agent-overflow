@@ -22,6 +22,7 @@
   import { getTelemetryFooterShape, recordTelemetryFooterShape, telemetryFooterShapeKey } from '../../stores/telemetryFooterShape.svelte';
   import { formatTokens } from '../../utils/format';
   import { formatUsageCostOrNull } from '../../utils/usageDisplay';
+  import { providerLabel } from '../../providers/catalog';
   import LazyOverlay from '../primitives/LazyOverlay.svelte';
 
   interface ProviderRow {
@@ -123,8 +124,8 @@
         <span class="text-fg-subtle" data-testid="usage-footer-empty">{waiting ? 'Loading usage…' : 'No usage in this selection'}</span>
       {/if}
       {#each rows as row (row.provider)}
-        <span class="grid grid-cols-[3.5rem_1fr] items-center gap-2" data-testid="usage-footer-row">
-          <span class="text-fg-subtle uppercase tracking-[0.12em]">{row.provider}</span>
+        <span class="grid grid-cols-[minmax(3.5rem,auto)_1fr] items-center gap-2" data-testid="usage-footer-row">
+          <span class="text-fg-subtle uppercase tracking-[0.12em] truncate">{providerLabel(row.provider)}</span>
           <span class="text-center tabular-nums whitespace-pre truncate">{row.valueLabel}</span>
         </span>
       {/each}

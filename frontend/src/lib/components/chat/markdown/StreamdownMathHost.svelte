@@ -33,6 +33,7 @@
   import Math from '../../../markdown/render/elements/Math.svelte';
   import { readMathRenderedHeight, writeMathRenderedHeight } from './renderedHeightCache';
   import { createRenderedHeightRecorder } from './renderedHeightMeasurement';
+  import { watchIslandSettled } from './islandSettled';
 
   // Per-source rendered-height cache. The source-text fallback alone
   // only protects the FIRST mount: it sizes the wrapper to the
@@ -76,12 +77,12 @@
   const hostClass = $derived(token.isInline ? 'math-inline' : 'math-display');
 
   // Block-math swap tracking. `mathRendered` flips once KaTeX has put
-  // a `.katex` node anywhere inside the wrapper — that's the signal
-  // that the real renderer has produced its content and the source
-  // fallback can be hidden.
+  // a `.katex` node anywhere inside the wrapper, or the renderer has
+  // shown the source of a formula KaTeX rejected (`watchIslandSettled`):
+  // the renderer's box then replaces the source fallback.
   //
   // Initial value is derived from the cache: cache HIT → start true,
-  // so the source fallback is `display: none` from frame 0 and the
+  // so the source fallback is absent from frame 0 and the
   // wrapper sizes to the cached `min-height` until KaTeX content
   // replaces it. Cache MISS → start false so the source-text
   // fallback is the layout authority until the renderer lands. This
@@ -126,22 +127,10 @@
       heightRecorder.record();
     };
 
-    // Synchronous check first — when the KaTeX cache hits, the inner
-    // html is already in the DOM by the time this effect runs and
-    // we never need to attach an observer.
-    if (wrapperEl.querySelector('.katex')) {
-      markRendered();
-      return heightRecorder.cancel;
-    }
-    const observer = new MutationObserver(() => {
-      if (wrapperEl?.querySelector('.katex')) {
-        observer.disconnect();
-        markRendered();
-      }
-    });
-    observer.observe(wrapperEl, { childList: true, subtree: true });
+    // KaTeX's output, or the source it shows when it rejects the formula.
+    const stopWatching = watchIslandSettled(wrapperEl, '.katex', markRendered);
     return () => {
-      observer.disconnect();
+      stopWatching();
       heightRecorder.cancel();
     };
   });
@@ -160,7 +149,9 @@
     data-find-skip
     style:--math-cached-min-h={cachedRenderedHeight ? `${cachedRenderedHeight}px` : null}
   >
-    <pre class="math-source-fallback" aria-hidden="true">{token.text}</pre>
+    {#if !mathRendered}
+      <pre class="math-source-fallback" aria-hidden="true">{token.text}</pre>
+    {/if}
     <Math {token} {id} />
   </div>
 {/if}
@@ -180,12 +171,6 @@
   .math-host-with-fallback > :global([data-streamdown-block-math]) {
     grid-area: 1 / 1;
   }
-  /* Once KaTeX has rendered, drop the source fallback out of the
-     layout so the wrapper sizes to KaTeX (no stale whitespace below
-     a short render). */
-  .math-host-with-fallback.math-rendered > .math-source-fallback {
-    display: none;
-  }
   /* Until KaTeX renders, hide its empty wrapper so the fallback
      alone determines what the user sees. Once `math-rendered` flips
      the wrapper becomes visible and the fallback is removed. */
@@ -197,8 +182,8 @@
      runs exactly once. Applied UNCONDITIONALLY — including after
      `.math-rendered` flips — because the script sync-initializes
      `mathRendered = true` whenever the cache hits. Without this
-     unconditional rule the math-rendered class drops the
-     fallback (display:none) and the `:not(.math-rendered)`
+     unconditional rule the math-rendered class removes the
+     fallback and the `:not(.math-rendered)`
      visibility:hidden on the inner wrapper, so the wrapper would
      collapse to inner=0 while KaTeX is loading async and then
      jump back up — the same oscillation the cache exists to

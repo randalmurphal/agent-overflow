@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
@@ -53,4 +54,27 @@ func (m *Manager) CheckCodexTransferAccount(ctx context.Context, binary string) 
 	}
 	defer lock.Unlock()
 	return codex.CheckTransferAccount(ctx, m.CodexProbeConfig(binary, nil))
+}
+
+// CheckAgyTransferAccount verifies that Antigravity on this computer is
+// authenticated before accepting an incoming Antigravity conversation transfer.
+func (m *Manager) CheckAgyTransferAccount(ctx context.Context, binary string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	endWork, err := m.beginWork(ctx)
+	if err != nil {
+		return err
+	}
+	defer endWork()
+	lock := m.reconcileMutex(string(provider.Agy))
+	if err := lock.LockContext(ctx); err != nil {
+		return fmt.Errorf("wait for the agy account lock to check the transfer's Antigravity account: %w", err)
+	}
+	defer lock.Unlock()
+	_, err = agy.ProbeAccount(ctx, m.AgyProbeConfig(binary, nil))
+	if err != nil {
+		return fmt.Errorf("sign in to Antigravity on this computer before receiving the conversation: %w", err)
+	}
+	return nil
 }

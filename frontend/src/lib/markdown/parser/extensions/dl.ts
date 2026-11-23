@@ -74,7 +74,9 @@ export type DescriptionListToken = {
 export type DescriptionToken = {
     type: 'description';
     raw: string;
-    tokens: [DescriptionTermToken, DescriptionDetailToken];
+    /** A term and its details: one here, one or more in GitLab's lists
+     * (descriptionLists.ts). */
+    tokens: [DescriptionTermToken, ...DescriptionDetailToken[]];
 };
 export type DescriptionTermToken = {
     type: 'descriptionTerm';

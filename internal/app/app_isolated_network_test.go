@@ -103,7 +103,7 @@ func TestLoopbackReachSendsNoMulticast(t *testing.T) {
 			t.Fatalf("pairing link on %q is %q, want one on %s", choice, page, origin)
 		}
 	}
-	w, err := a.OpenComputerPairing(context.Background(), "lan", "full")
+	w, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestLoopbackReachSendsNoMulticast(t *testing.T) {
 		t.Fatalf("DiscoverComputers error = %v, want %v", err, nearby.ErrIsolated)
 	}
 
-	cfg, err := a.GetNativeNetworkConfig(context.Background())
+	cfg, err := a.GetNativeNetworkConfig(connCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}

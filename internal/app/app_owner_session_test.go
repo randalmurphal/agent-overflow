@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/identity"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 )
@@ -120,13 +121,13 @@ func TestRevokingAWatchingDeviceDiscardsItsActivity(t *testing.T) {
 	}
 	feed := &p.dest.ownerActivity
 	feed.mu.Lock()
-	socket := feed.devices[owner].socket
+	socket := feed.devices[owner].tie.Conn()
 	feed.mu.Unlock()
 	// Session revocation can return while the WebSocket handler is unwinding.
 	allowCleanup := make(chan struct{})
 	defer close(allowCleanup)
-	if !socket.BindCleanup("hold-test-unwind", func() { <-allowCleanup }) {
-		t.Fatal("watching socket already closed")
+	if _, err := socket.Bind("hold-test-unwind", func() { <-allowCleanup }); err != nil {
+		t.Fatalf("watching socket: %v", err)
 	}
 	if _, err := p.dest.RevokeAccessDevice(owner); err != nil {
 		t.Fatal(err)
@@ -305,5 +306,26 @@ func TestReplacementCarrierOnSameLaunchReceivesAFreshCursor(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("replacement did not reconcile")
+	}
+}
+
+// ownerChangesConnectionTie is ThreadOwnerChanges' row of
+// connectionTieChecks: the paired device's activity log, which follows the
+// latest connection that asked for it and ends with that connection.
+func ownerChangesConnectionTie(t *testing.T) connectionTie {
+	a := identityApp(t)
+	a.SetTransportServer(startTestTransportServer(t))
+	session := pairSessionWithScopes(t, a, "owner-activity-tie", []identity.Scope{identity.ScopeThreadsRead})
+	return connectionTie{
+		open: func(ctx context.Context) (string, error) {
+			_, err := a.ThreadOwnerChanges(ctx, OwnerCursor{})
+			return "", err
+		},
+		held: func() int {
+			a.ownerActivity.mu.Lock()
+			defer a.ownerActivity.mu.Unlock()
+			return len(a.ownerActivity.devices)
+		},
+		principal: transport.ConnPrincipal{SessionID: session.ID},
 	}
 }

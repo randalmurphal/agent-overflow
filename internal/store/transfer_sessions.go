@@ -36,7 +36,7 @@ func (s *Store) LockNativeSessions(ctx context.Context, refs []TransferSession) 
 		if provider == "claude-tui" {
 			provider = "claude"
 		}
-		if len(ref.Ref) > 256 || strings.ContainsAny(ref.Ref, "\x00\r\n") || (provider != "claude" && provider != "codex") {
+		if len(ref.Ref) > 256 || strings.ContainsAny(ref.Ref, "\x00\r\n") || (provider != "claude" && provider != "codex" && provider != "agy") {
 			return nil, errors.New("transfer: invalid native session reference")
 		}
 		keys = append(keys, provider+"\x00"+ref.Ref)
@@ -77,7 +77,7 @@ func (s *Store) BindThreadTransferSessions(id string, refs []TransferSession) er
 		return strings.Compare(a.Ref, b.Ref)
 	})
 	for i, ref := range ordered {
-		if (ref.Provider != "claude" && ref.Provider != "codex") || ref.Ref == "" || len(ref.Ref) > 256 ||
+		if (ref.Provider != "claude" && ref.Provider != "codex" && ref.Provider != "agy") || ref.Ref == "" || len(ref.Ref) > 256 ||
 			strings.ContainsAny(ref.Ref, "\x00\r\n") || (i > 0 && ref == ordered[i-1]) {
 			return errors.New("transfer: invalid native session reference")
 		}

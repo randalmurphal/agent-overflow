@@ -9,11 +9,10 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
-
-	"github.com/google/uuid"
 )
 
 // reconcileExternalProviderAccount detects a provider-native login completed
@@ -31,7 +30,7 @@ func (m *Manager) reconcileExternalProviderAccount(ctx context.Context, provider
 	if m.store == nil || m.credentials == nil {
 		return nil
 	}
-	if providerName != string(provider.Claude) && providerName != string(provider.Codex) {
+	if ValidateProvider(providerName) != nil {
 		return nil
 	}
 	endWork, err := m.beginWork(ctx)
@@ -189,6 +188,8 @@ func (m *Manager) canonicalProviderAccountProbe(
 			return claude.ProbeAccount(ctx, m.claudeProbeConfig(binary, nil))
 		case string(provider.Codex):
 			return codex.ProbeIdentity(ctx, m.codexProbeConfig(binary, nil))
+		case string(provider.Agy):
+			return agy.ProbeAccount(ctx, m.agyProbeConfig(binary, "", "", nil))
 		default:
 			return provider.AccountInfo{}, fmt.Errorf("unsupported provider %q", providerName)
 		}
@@ -262,7 +263,12 @@ func (m *Manager) reconcileObservedAccountLocked(
 		}
 	}
 	if !found {
-		target.ID = uuid.NewString()
+		reservation, err := m.reserveAccount(providerName)
+		if err != nil {
+			return provideraccounts.Account{}, SignIn{}, false, err
+		}
+		defer reservation.settleOnFailure(&retErr)
+		target.ID = reservation.ID()
 		target.Provider = providerName
 	}
 	if !hasActive || target.ID != active.ID {

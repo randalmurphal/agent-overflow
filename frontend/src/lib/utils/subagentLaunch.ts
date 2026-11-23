@@ -224,7 +224,7 @@ export type SubagentLaunchKind = 'agent' | 'skill';
 
 export interface SubagentLaunchInfo {
   kind: SubagentLaunchKind;
-  provider: 'claude' | 'codex';
+  provider: 'claude' | 'codex' | 'agy';
   /**
    * The launch runs asynchronously — the main turn is not blocked on it.
    * Codex children are always async; a Claude agent is async when the CLI
@@ -245,9 +245,13 @@ export interface SubagentLaunchInfo {
 /**
  * What the predicate needs from the caller: whether any LOADED row is
  * attributed to `itemId`. Only forked-Skill detection consults it.
+ * `threadProvider` disambiguates shared normalized tool names (e.g. `Agent`
+ * from both Claude and Antigravity) when older persisted rows lack
+ * `meta.provider`.
  */
 export interface SubagentLaunchContext {
   hasChildren(itemId: string): boolean;
+  threadProvider?: string;
 }
 
 /**
@@ -517,9 +521,13 @@ export function subagentLaunchInfo(
   if (toolName === 'Agent' || toolName === 'Task') {
     const input = readClaudeSubagentInputFromStrings(item.payloadMeta, item.meta);
     const agentType = trimmedInputString(input, 'subagent_type');
+    const provider: 'claude' | 'agy' =
+      ctx.threadProvider === 'agy' || parseJsonObject(item.meta)?.provider === 'agy'
+        ? 'agy'
+        : 'claude';
     return {
       kind: 'agent',
-      provider: 'claude',
+      provider,
       // Optional on the wire: undefined and false both mean awaited, so
       // this is deliberately not a strict `=== false` negation.
       background: item.isBackground === true,
@@ -618,9 +626,13 @@ export function isCodexAgentLaunchItem(item: Item): boolean {
 export function completionAnswerPreview(
   launch: Item | null | undefined,
   completion: Item | null | undefined,
+  threadProvider?: string,
 ): string {
   if (!launch || !completion) return '';
-  const info = subagentLaunchInfo(launch, NO_LOADED_SUBAGENT_CHILDREN);
+  const ctx: SubagentLaunchContext = threadProvider
+    ? { hasChildren: NO_LOADED_SUBAGENT_CHILDREN.hasChildren, threadProvider }
+    : NO_LOADED_SUBAGENT_CHILDREN;
+  const info = subagentLaunchInfo(launch, ctx);
   if (!info) return '';
   if (info.provider === 'claude' && parseJsonObject(completion.meta)?.notification_output_loaded !== true) {
     return '';

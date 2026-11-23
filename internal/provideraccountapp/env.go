@@ -5,8 +5,10 @@ import (
 	"log"
 	"maps"
 	"os"
+	"strings"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
@@ -233,6 +235,49 @@ func (m *Manager) CodexProbeConfig(binary string, pins map[string]string) codex.
 func (m *Manager) CodexAccountProbe(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig) {
 	custom := m.providerCustomEnv(string(provider.Codex))
 	return providerProbeCacheKeyForAccountEnv(binary, accountID, custom), m.codexProbeConfigWith(binary, custom, nil)
+}
+
+func (m *Manager) agyProbeConfig(binary, geminiDir, appDataSubdir string, pins map[string]string) agy.ProbeConfig {
+	return m.agyProbeConfigWith(binary, geminiDir, appDataSubdir, m.providerCustomEnv(string(provider.Agy)), pins)
+}
+
+func (m *Manager) agyProbeConfigWith(binary, geminiDir, appDataSubdir string, custom, pins map[string]string) agy.ProbeConfig {
+	forceFile := strings.TrimSpace(geminiDir) != ""
+	if !forceFile && m != nil && m.credentials != nil {
+		forceFile = m.credentials.AgyShouldForceFileStorage("")
+	}
+	return agy.ProbeConfig{
+		Binary:        binary,
+		WorkDir:       providerProbeWorkDir(),
+		GeminiDir:     geminiDir,
+		AppDataSubdir: appDataSubdir,
+		Env:           probeEnvWith(custom, pins),
+		Reaper:        m.deps.Reaper,
+		ForceFileAuth: forceFile,
+	}
+}
+
+// AgyProbeConfig constructs the canonical Antigravity account probe configuration.
+func (m *Manager) AgyProbeConfig(binary string, pins map[string]string) agy.ProbeConfig {
+	return m.agyProbeConfig(binary, "", "", pins)
+}
+
+// AgyAccountProbe is ClaudeAccountProbe for Antigravity, returning the cache
+// key and probe configuration from one read of settings.
+func (m *Manager) AgyAccountProbe(binary, accountID string) (provider.ProbeCacheKey, agy.ProbeConfig) {
+	custom := m.providerCustomEnv(string(provider.Agy))
+	return providerProbeCacheKeyForAccountEnv(binary, accountID, custom), m.agyProbeConfigWith(binary, "", "", custom, nil)
+}
+
+// AgyShouldForceFileStorage reports whether launching `agy` against appDataDir
+// should force file-backed auth to match this Manager's configured credential
+// backend (respecting file-backed `serve` and harness boots without touching
+// the desktop macOS Keychain).
+func (m *Manager) AgyShouldForceFileStorage(appDataDir string) bool {
+	if m != nil && m.credentials != nil {
+		return m.credentials.AgyShouldForceFileStorage(appDataDir)
+	}
+	return provideraccounts.AgyShouldForceFileStorage(appDataDir)
 }
 
 // ProbeWorkDir is Claude's user scope and the parent for isolated Codex account directories.

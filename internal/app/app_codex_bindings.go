@@ -200,6 +200,8 @@ func (a *App) codexAppDeps() codexapp.Deps {
 			session, active := a.sessionManager().get(threadID)
 			return session.Codex, active
 		},
+		ConnForBinary:    a.borrowCodexConnForBinary,
+		AnyConn:          a.borrowCodexConnForAccount,
 		SessionForBinary: a.sessionManager().codexSessionForBinary,
 		AnySession:       a.sessionManager().anyCodexSession,
 		Binary: func() string {

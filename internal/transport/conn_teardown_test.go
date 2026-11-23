@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +26,8 @@ type teardownApp struct {
 	// when the connection's cleanup ran.
 	loopsAtCleanup int
 	done           chan struct{}
+	// binds numbers the cleanups, each under its own key.
+	binds atomic.Uint64
 }
 
 func newTeardownApp() *teardownApp {
@@ -46,20 +49,18 @@ func (a *teardownApp) lines() []string {
 // registerCleanup records the cleanup and how many connection goroutines
 // it found still running.
 func (a *teardownApp) registerCleanup(ctx context.Context) error {
-	state := ConnStateFromContext(ctx)
-	if state == nil {
-		return fmt.Errorf("call has no connection state")
+	state, err := CallerConnection(ctx)
+	if err != nil {
+		return err
 	}
-	if !state.RegisterCleanup(func() {
+	_, err = state.Bind(fmt.Sprintf("teardown-%d", a.binds.Add(1)), func() {
 		a.mu.Lock()
 		a.loopsAtCleanup = connGoroutines()
 		a.log = append(a.log, "cleanup")
 		a.mu.Unlock()
 		a.done <- struct{}{}
-	}) {
-		return fmt.Errorf("connection already tearing down")
-	}
-	return nil
+	})
+	return err
 }
 
 // Block waits for its caller to go away.

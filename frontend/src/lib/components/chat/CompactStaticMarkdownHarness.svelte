@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Streamdown, type Extension } from '../../markdown';
+  import { Streamdown, type DocumentContext, type Extension } from '../../markdown';
   import { chatMarkdownTheme } from './markdown/streamdownTheme';
 
   // `allowedLinkPrefixes` is a prop so a corpus can drive the
@@ -15,10 +15,13 @@
     source,
     allowedLinkPrefixes = ['*'],
     extensions = undefined,
+    document = null,
   }: {
     source: string;
     allowedLinkPrefixes?: string[];
     extensions?: Extension[];
+    /** What the whole source defines, for each block's lex. */
+    document?: DocumentContext | null;
   } = $props();
 </script>
 
@@ -32,6 +35,7 @@
     renderHtml={false}
     {compactStaticHtml}
     {extensions}
+    {document}
   />
 {/snippet}
 

@@ -40,7 +40,7 @@ type credentialUse struct {
 // that has none.
 func (m *Manager) uses(providerName string) (*credentialUses, error) {
 	switch providerName {
-	case string(provider.Claude), string(provider.Codex):
+	case string(provider.Claude), string(provider.Codex), string(provider.Agy):
 		return &m.reconcileMutex(providerName).uses, nil
 	default:
 		return nil, fmt.Errorf("no provider account selection for %q", providerName)

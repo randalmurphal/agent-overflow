@@ -10,9 +10,11 @@ import (
 // and emits each non-ready status so pull and push consumers observe the
 // same answer.
 func (s *Service) ProviderStatuses() []provider.ProviderStatus {
-	statuses := []provider.ProviderStatus{
-		s.deps.DetectProvider(string(provider.Claude), s.deps.ProviderBinary(string(provider.Claude))),
-		s.deps.DetectProvider(string(provider.Codex), s.deps.ProviderBinary(string(provider.Codex))),
+	standalone := provider.StandaloneProviders()
+	statuses := make([]provider.ProviderStatus, 0, len(standalone))
+	for _, kind := range standalone {
+		name := string(kind)
+		statuses = append(statuses, s.deps.DetectProvider(name, s.deps.ProviderBinary(name)))
 	}
 	for _, status := range statuses {
 		if status.Status != "ready" && s.deps.EmitStatus != nil {

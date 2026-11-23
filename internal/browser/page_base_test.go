@@ -92,7 +92,7 @@ func newBaseManager(t *testing.T, showFirst bool) (*Manager, *baseLog, Access, s
 	if _, err := manager.Visibility(t.Context(), access, &show, PageID(shown)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
-	mount, err := manager.AttachPane(access.Caller())
+	mount, err := manager.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestThePresentingPanesColorIsTheBase(t *testing.T) {
 	manager, log, access, _, secondID, mountID := newBaseManager(t, true)
 	handle := paneHandle(manager, access, secondID)
 	waitForBase(t, log, handle, basePane)
-	later, err := manager.AttachPane(access.Caller())
+	later, err := manager.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatal(err)
 	}

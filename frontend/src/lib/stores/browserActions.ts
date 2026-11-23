@@ -2,8 +2,8 @@ import { type BrowserCompanionEvent, type BrowserPageInfo } from './bindings';
 import {
   browserCompanionState,
   browserPaneAttachment,
+  browserPaneOnScreen,
   browserPaneOpen,
-  browserPaneShown,
   browserShownPage,
   browserSourcePaneShown,
   canPresentNativeBrowser,
@@ -11,6 +11,7 @@ import {
   isCurrentBrowserPane,
   noteBrowserPaneError,
   observeBrowserCompanion,
+  revealBrowserPane,
   type BrowserMountId,
   type BrowserPaneAttachment,
 } from './browserCompanion.svelte';
@@ -191,9 +192,13 @@ export interface NewTabOptions {
  * the pane. From a link, with no pane in hand, it applies in arrival order;
  * from a pane, openBrowserTabInPane numbers it.
  */
-export function openBrowserTab(threadId: string, options: NewTabOptions = {}): Promise<BrowserActionFailure | null> {
+export async function openBrowserTab(threadId: string, options: NewTabOptions = {}): Promise<BrowserActionFailure | null> {
   const action = browserAction.newTab(options.address);
-  return openTab(threadId, options, browserPaneAttachment(threadId), () => sendForThread(threadId, action));
+  const failure = await openTab(threadId, options, browserPaneAttachment(threadId), () => sendForThread(threadId, action));
+  // Asked for from outside the pane (a link): the tab is shown even when
+  // its pane is under a maximized pane.
+  if (!failure) revealBrowserPane(threadId);
+  return failure;
 }
 
 /** openBrowserTab from the pane `pane`, in its mount's order. */
@@ -352,9 +357,13 @@ export function browserHeaderButton(threadId: string): BrowserHeaderButton {
   };
 }
 
-/** What a header press means now: hide the pane this layout shows, else show the browser. */
+/**
+ * What a header press means now: hide the pane this layout shows, else show
+ * the browser. A pane under a maximized pane is not shown: the press brings
+ * it into view rather than closing a pane the user cannot see.
+ */
 export function browserHeaderIntent(threadId: string): BrowserHeaderIntent {
-  return browserPaneShown(threadId) ? { kind: 'hide', threadId } : { kind: 'show', threadId };
+  return browserPaneOnScreen(threadId) ? { kind: 'hide', threadId } : { kind: 'show', threadId };
 }
 
 /**
@@ -417,6 +426,7 @@ async function showBrowserFromHeader(threadId: string): Promise<void> {
   settleAddressFocus(focus, failure ? '' : (state?.pageId ?? ''));
   // An older backend refuses the kind ("unsupported companion action").
   if (failure) toastHeaderFailure(failure);
+  else revealBrowserPane(threadId);
 }
 
 observeBrowserCompanion({

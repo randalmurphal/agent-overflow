@@ -18,6 +18,7 @@
   import IconButton from '../primitives/IconButton.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import ProviderAccountLimits from '../shared/ProviderAccountLimits.svelte';
+  import ProviderAccountResets from './ProviderAccountResets.svelte';
   import ProviderLoginFlow from '../accounts/ProviderLoginFlow.svelte';
   import type { ManagedProviderAccount } from '../../stores/bindings';
   import {
@@ -383,7 +384,7 @@
         {@const held = drag?.moving === true && drag.from === index}
         {@const offset = cardOffset(index)}
         <div
-          class="relative rounded-[var(--radius-field)] border px-3 py-2.5 {account.needsLogin
+          class="relative rounded-[var(--radius-field)] border px-3 py-2.5 [--card-pad-bottom:0.625rem] {account.needsLogin
             ? 'border-warning/40 bg-surface-0'
             : account.active
               ? 'border-accent/45 bg-accent/5'
@@ -554,7 +555,10 @@
             </div>
           </div>
 
-          <ProviderAccountLimits {limits} />
+          {#snippet resets()}
+            <ProviderAccountResets {account} {backend} {admin} {credentialOpInFlight} {ungrantedTitle} />
+          {/snippet}
+          <ProviderAccountLimits {limits} lineEnd={provider === 'codex' ? resets : undefined} />
         </div>
       {/each}
     </div>

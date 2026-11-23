@@ -12,7 +12,7 @@
 // TerminalSurface.find.test.ts, terminalFind.browser.test.ts.
 import { expect, test } from './fixtures.js';
 import { terminalInput, terminalTabs } from './terminal-thread-lifetime-flow.js';
-import { QUERY, drawer, findRectangles, openDrawerThread, printTangos, replayOf, runInShell } from './terminal-find-flow.js';
+import { QUERY, drawer, findRectangles, openDrawerThread, printTangos, replayOf, runInShell, toggleTerminal } from './terminal-find-flow.js';
 
 test('the terminal finds from its button, and ctrl+f stays the shell\'s', async ({ page }) => {
   test.setTimeout(120_000);
@@ -95,7 +95,7 @@ test('the terminal finds from its button, and ctrl+f stays the shell\'s', async 
     // reopen activates the newest tab, which has no find open.
     await page.getByTestId('terminal-collapse').click();
     await expect(drawer(page)).toHaveCount(0);
-    await page.getByTestId('terminal-toggle').click();
+    await toggleTerminal(page);
     await expect(terminalTabs(page)).toHaveCount(2);
     await expect(terminalTabs(page).last()).toHaveAttribute('aria-selected', 'true');
     await expect(drawer(page).getByTestId('pane-find-bar')).toHaveCount(0);

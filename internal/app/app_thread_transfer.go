@@ -253,7 +253,7 @@ func (a *App) CreateThreadTransferOffer(ctx context.Context, intent ThreadTransf
 	backendID, _ := a.backendIdentity()
 	if intent.DestinationBackendID != backendID || !entityid.Valid(intent.SourceBackendID) || intent.SourceBackendID == backendID || !entityid.Valid(intent.OperationID) ||
 		intent.SourceThreadID == "" || intent.TargetThreadID == "" || !transferwire.ValidDigest(intent.ActivationHash) || (intent.Kind != "move" && intent.Kind != "copy") ||
-		(intent.Provider != "codex" && intent.Provider != "claude") || (intent.Kind == "move" && intent.SourceThreadID != intent.TargetThreadID) || (intent.Kind == "copy" && intent.SourceThreadID == intent.TargetThreadID) {
+		(intent.Provider != "codex" && intent.Provider != "claude" && intent.Provider != "agy") || (intent.Kind == "move" && intent.SourceThreadID != intent.TargetThreadID) || (intent.Kind == "copy" && intent.SourceThreadID == intent.TargetThreadID) {
 		return transferclient.Offer{}, errors.New("The transfer request does not match this computer.")
 	}
 	mode, err := threadmode.ParseRuntime(intent.RuntimeMode)

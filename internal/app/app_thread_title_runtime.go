@@ -110,8 +110,10 @@ func (a *App) runThreadTitleOnce(
 		return a.generateCodexThreadTitle(ctx, cfg, thread, prompt, imagePaths)
 	case string(provider.Claude):
 		return a.generateClaudeThreadTitle(ctx, cfg, thread, prompt)
+	case string(provider.Agy):
+		return a.generateAgyThreadTitle(ctx, cfg, thread, prompt)
 	default:
-		return "", fmt.Errorf("generate thread title: unsupported provider %q; expected 'codex' or 'claude'", cfg.Provider)
+		return "", fmt.Errorf("generate thread title: unsupported provider %q; expected 'codex', 'claude', or 'agy'", cfg.Provider)
 	}
 }
 
@@ -167,6 +169,30 @@ func (a *App) generateClaudeThreadTitle(
 		return "", err
 	}
 	title, err := threadtitle.DecodeClaude(stdout)
+	if err != nil {
+		return "", err
+	}
+	return threadtitle.Sanitize(title), nil
+}
+
+func (a *App) generateAgyThreadTitle(
+	ctx context.Context,
+	cfg textgen.Config,
+	thread store.Thread,
+	prompt string,
+) (string, error) {
+	_, workspace, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return "", err
+	}
+	stdout, err := textgen.RunAgy(
+		ctx, cfg, workspace, threadtitle.ClaudeSchemaJSON,
+		nil, prompt, threadtitle.Timeout,
+	)
+	if err != nil {
+		return "", err
+	}
+	title, err := threadtitle.DecodeAgy(stdout)
 	if err != nil {
 		return "", err
 	}

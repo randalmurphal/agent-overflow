@@ -59,6 +59,14 @@ while IFS= read -r line; do
     printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"%s","turn":{"id":"turn-%%s","status":"completed"}}}\n' "$turn"
     continue
   fi
+  if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/unsubscribe"'; then
+    tid=$(/bin/echo "$line" | /usr/bin/grep -o '"threadId":"[^"]*"' | /usr/bin/head -1 | /usr/bin/cut -d'"' -f4)
+    printf '{"jsonrpc":"2.0","id":%%s,"result":{"status":"unloaded"}}\n' "$id"
+    if [ -n "$tid" ]; then
+      printf '{"jsonrpc":"2.0","method":"thread/closed","params":{"threadId":"%%s"}}\n' "$tid"
+    fi
+    continue
+  fi
   printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
 done
 `,

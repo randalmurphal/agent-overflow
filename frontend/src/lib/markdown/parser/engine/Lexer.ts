@@ -2,7 +2,7 @@
  * The block/inline lexer.
  *
  * Absorbed from marked 16.4.2 (`src/Lexer.ts`, MIT — see `../../LICENSE`),
- * with three classes of deliberate divergence, each commented at its site:
+ * with four classes of deliberate divergence, each commented at its site:
  *
  * - **Allocation-free extension dispatch** (previously
  *   `patches/marked@16.4.2.patch`): one typed receiver per Lexer and indexed
@@ -16,6 +16,9 @@
  * - **Honest class surface** for the two pieces of per-document state this
  *   tree hangs on a Lexer: `inlineQueue` (marked declared it private; the
  *   list extension has to rewind it) and `footnotes`.
+ * - **Linear block and inline runs**: the runs in progress are published
+ *   (`blockRun`, `inlineRun`) so an extension can scan a run once, and
+ *   paragraph clipping runs only where a paragraph is built.
  *
  * marked's `Parser`, `Renderer`, `Hooks`, `Instance` and the `marked()`
  * façade are NOT absorbed: this tree renders tokens itself.
@@ -24,18 +27,33 @@ import { Tokenizer } from './Tokenizer';
 import { defaultOptions } from './options';
 import { other, block, inline } from './rules';
 import type { Token, TokensList, Tokens } from './tokens';
-import type { LexerOptions, TokenizerThis } from './options';
+import type { LexerOptions, TokenizerExtensionFunction, TokenizerStartFunction, TokenizerThis } from './options';
 // Type-only, and the one place the engine names an extension: the footnote
 // tables are per-DOCUMENT state, so they belong on the Lexer instance rather
 // than in a module-level map that would leak across documents.
 import type { FootnoteMaps } from '../extensions/footnotes';
+import type { DocumentReading, DocumentScope } from '../documentScope';
 
 export class Lexer {
   tokens: TokensList;
   options: LexerOptions;
   state: {
     inLink: boolean;
+    /**
+     * Lexing the text of a link token being built. A link in it would nest
+     * anchors, so no tokenizer builds one while this is set. Unlike
+     * `inLink`, a raw `<a>` or `</a>` tag does not change it.
+     */
+    inLinkText: boolean;
+    /**
+     * A Markdown link was met in the link text being lexed, built in an
+     * image label or refused while `inLinkText` was set. CommonMark's
+     * innermost link wins: that text's own link is then not a link.
+     */
+    linkInText: boolean;
     inRawBlock: boolean;
+    /** Lexing a text run of HTML (`htmlTextTokens`), which holds no Markdown. */
+    inHtmlText: boolean;
     top: boolean;
   };
 
@@ -56,12 +74,44 @@ export class Lexer {
    */
   footnotes: FootnoteMaps | null = null;
 
+  /**
+   * What the rest of the document defines, when this Lexer lexes one block
+   * of it (`../documentScope.ts` installs it), and the keys of it this run
+   * read. A block's output may change only when a read key resolves
+   * differently.
+   */
+  document: DocumentScope | null = null;
+  documentReads: Set<string> | null = null;
+  /** An inline tokenizer made a token that stands as a block where it
+   * sits alone in a paragraph's run (`liftsTo`, extensions/codeSnippet.ts):
+   * the finished lex splits paragraphs around it. */
+  lifts = false;
+
   /** The `[center]` / `[right]` alignment in force at the current top-level
    * position (extensions/align.ts); seed it to lex from inside one. */
   align: 'center' | 'right' | null = null;
 
   /** How many `blockTokens` calls are running: 1 at the top level. */
   blockDepth = 0;
+
+  /**
+   * The block run in progress: the source of the innermost running
+   * `blockTokens` call and the offset its loop has reached. While the loop
+   * asks block extensions, the `src` they get is `src.slice(at)`; a
+   * tokenizer that asks outside the loop (`blockExtensionToken`) sees null.
+   * A rule that scans ahead keys what it learned on this object, so later
+   * positions of the same run reuse it.
+   */
+  blockRun: BlockRun | null = null;
+
+  /**
+   * The inline run in progress: the source of the innermost running
+   * `inlineTokens` call, its `maskInline` mask and the offset its loop has
+   * reached, so an inline extension's `src` is `src.slice(at)`. A delimiter
+   * rule that pairs runs reads the whole run here once
+   * (extensions/strikethrough.ts). Null outside an `inlineTokens` loop.
+   */
+  inlineRun: InlineRun | null = null;
 
   /**
    * Owned per Lexer, never cached on the shared options object. marked
@@ -94,7 +144,10 @@ export class Lexer {
     this.inlineQueue = [];
     this.state = {
       inLink: false,
+      inLinkText: false,
+      linkInText: false,
       inRawBlock: false,
+      inHtmlText: false,
       top: true,
     };
 
@@ -153,39 +206,79 @@ export class Lexer {
   blockTokens(src: string, tokens?: Token[], lastParagraphClipped?: boolean): Token[];
   blockTokens(src: string, tokens?: TokensList, lastParagraphClipped?: boolean): TokensList;
   blockTokens(src: string, tokens: Token[] = [], lastParagraphClipped = false) {
+    return this.runBlockTokens(src, tokens, lastParagraphClipped, false);
+  }
+
+  /** `blockTokens`; with `lone`, this run's loop ends once its tokens
+   * cannot be a single paragraph (`loneParagraph`). */
+  private runBlockTokens(src: string, tokens: Token[], lastParagraphClipped: boolean, lone: boolean): Token[] {
     if (this.options.pedantic) {
       src = src.replace(other.tabCharGlobal, '    ').replace(other.spaceLine, '');
     }
 
     this.blockDepth++;
+    const outer = this.blockRun;
+    const run: BlockRunState = { src, at: 0, lone, setext: null };
+    this.blockRun = run;
     try {
-      return this.blockTokensAtDepth(src, tokens, lastParagraphClipped);
+      return this.blockTokensAtDepth(src, tokens, lastParagraphClipped, run);
     } finally {
       this.blockDepth--;
+      this.blockRun = outer;
     }
   }
 
-  private blockTokensAtDepth(src: string, tokens: Token[], lastParagraphClipped: boolean) {
+  /**
+   * `src` as a paragraph token when it lexes as exactly one, else undefined.
+   * The lex stops at the first token that rules that out, so a long run of
+   * other blocks costs one token. For a throwaway Lexer: the inline work it
+   * queues is not run.
+   */
+  loneParagraph(src: string): Tokens.Paragraph | undefined {
+    const tokens = this.runBlockTokens(src, [], false, true);
+    const only = tokens.length === 1 ? tokens[0] : undefined;
+    return only?.type === 'paragraph' && only.raw === src ? (only as Tokens.Paragraph) : undefined;
+  }
+
+  /**
+   * The token a block extension claims at the start of `src`, if any. The
+   * block loop asks this first at every position; a tokenizer that builds a
+   * block token outside that loop asks it too, so the token is the one the
+   * loop would have produced there.
+   */
+  blockExtensionToken(src: string, tokens: Token[]): Tokens.Generic | undefined {
+    const run = this.blockRun;
+    this.blockRun = null;
+    try {
+      return this.claimBlock(src, tokens);
+    } finally {
+      this.blockRun = run;
+    }
+  }
+
+  private claimBlock(src: string, tokens: Token[]): Tokens.Generic | undefined {
     const blockExtensions = this.options.extensions?.block;
+    if (!blockExtensions) return undefined;
+    for (let i = 0; i < blockExtensions.length; i++) {
+      const token = blockExtensions[i].call(this.tokenizerContext, src, tokens);
+      if (token) return token;
+    }
+    return undefined;
+  }
+
+  private blockTokensAtDepth(src: string, tokens: Token[], lastParagraphClipped: boolean, run: BlockRunState) {
     const startBlock = this.options.extensions?.startBlock;
 
     while (src) {
       let token: Tokens.Generic | undefined;
+      run.at = run.src.length - src.length;
+      if (run.lone && tokens.length > 0 && (tokens.length > 1 || tokens[0].type !== 'paragraph')) break;
 
       // extensions
-      if (blockExtensions) {
-        let matched = false;
-        for (let i = 0; i < blockExtensions.length; i++) {
-          if ((token = blockExtensions[i].call(this.tokenizerContext, src, tokens))) {
-            src = src.substring(token.raw.length);
-            tokens.push(token);
-            matched = true;
-            break;
-          }
-        }
-        if (matched) {
-          continue;
-        }
+      if ((token = this.claimBlock(src, tokens))) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
       }
 
       // newline
@@ -285,7 +378,7 @@ export class Lexer {
       }
 
       // lheading
-      if ((token = this.tokenizer.lheading(src))) {
+      if (setextMayFollow(src, run) && (token = this.tokenizer.lheading(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
@@ -293,8 +386,11 @@ export class Lexer {
 
       // top-level paragraph
       // prevent paragraph consuming extensions by clipping 'src' to extension start
+      // DIVERGENCE: only where a paragraph is built. Below the top level each
+      // line is a `text` token, and scanning the start functions to the end of
+      // the run from every line is quadratic in its length.
       let cutSrc = src;
-      if (startBlock) {
+      if (startBlock && this.state.top) {
         let startIndex = Infinity;
         const tempSrc = src.slice(1);
         for (let i = 0; i < startBlock.length; i++) {
@@ -358,10 +454,12 @@ export class Lexer {
   }
 
   /**
-   * Lexing/Compiling
+   * `src` as the delimiter rules read it, one character for each: reference
+   * links, escaped characters, links, code spans and HTML tags masked, so a
+   * delimiter inside one is not seen. `emStrong` and the forge
+   * strikethrough (extensions/strikethrough.ts) read delimiter runs here.
    */
-  inlineTokens(src: string, tokens: Token[] = []): Token[] {
-    // String with links masked to avoid interference with em and strong
+  maskInline(src: string): string {
     let maskedSrc = src;
 
     // PORTED from marked 18.0.7 (#4017) and 18.0.11 (#4040): all three masks
@@ -371,10 +469,11 @@ export class Lexer {
     // The reflink preamble additionally allocated an `Object.keys` array per
     // call — on prose with no `[` at all, for a table that is usually empty.
 
-    // Mask out reflinks
+    // Mask out reflinks. `in`, not `Object.hasOwn`: a block's table
+    // inherits the document's definitions (../documentScope.ts).
     if (this.tokens.links && src.includes('[')) {
       maskedSrc = maskedSrc.replace(this.tokenizer.rules.inline.reflinkSearch, match0 =>
-        Object.hasOwn(this.tokens.links, match0.slice(match0.lastIndexOf('[') + 1, -1))
+        match0.slice(match0.lastIndexOf('[') + 1, -1) in this.tokens.links
           ? '[' + 'a'.repeat(match0.length - 2) + ']'
           : match0);
     }
@@ -391,13 +490,34 @@ export class Lexer {
       const offset = context ? context.length : 0;
       return match0.slice(0, offset) + '[' + 'a'.repeat(match0.length - offset - 2) + ']';
     });
+    return maskedSrc;
+  }
 
+  /**
+   * Lexing/Compiling
+   */
+  inlineTokens(src: string, tokens: Token[] = []): Token[] {
+    // String with links masked to avoid interference with em and strong
+    const maskedSrc = this.maskInline(src);
+    const outer = this.inlineRun;
+    const run: InlineRun = { src, masked: maskedSrc, at: 0 };
+    this.inlineRun = run;
+    try {
+      return this.inlineTokensInRun(src, tokens, run);
+    } finally {
+      this.inlineRun = outer;
+    }
+  }
+
+  private inlineTokensInRun(src: string, tokens: Token[], run: InlineRun): Token[] {
+    const maskedSrc = run.masked;
     const inlineExtensions = this.options.extensions?.inline;
     const startInline = this.options.extensions?.startInline;
 
     let keepPrevChar = false;
     let prevChar = '';
     while (src) {
+      run.at = run.src.length - src.length;
       if (!keepPrevChar) {
         prevChar = '';
       }
@@ -484,7 +604,7 @@ export class Lexer {
       }
 
       // autolink
-      if ((token = this.tokenizer.autolink(src))) {
+      if (!this.state.inLinkText && (token = this.tokenizer.autolink(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
@@ -542,4 +662,134 @@ export class Lexer {
 
     return tokens;
   }
+
+  /**
+   * `src`, a text run of HTML, as the tokens `extensions` claim in it and
+   * text between; null when none claims anything. HTML text holds no
+   * Markdown, so no grammar rule runs, and `state.inHtmlText` is set for an
+   * extension that reads such text by another rule. Unless `linkable`,
+   * `state.inLink` is set too. Each extension's next start is scanned for
+   * once and kept until the run passes it, so the cost is linear in `src`.
+   * Under `reading`, a fact or definition an extension reads comes from its
+   * scope and is recorded in its reads, as in a block's lex.
+   */
+  htmlTextTokens(src: string, extensions: readonly HtmlTextExtension[], linkable: boolean, reading: DocumentReading | null = null): Token[] | null {
+    const tokens: Token[] = [];
+    const state = this.state;
+    const outer = { inLink: state.inLink, inHtmlText: state.inHtmlText, inlineRun: this.inlineRun, document: this.document, reads: this.documentReads };
+    this.document = reading?.scope ?? null;
+    this.documentReads = reading?.reads ?? null;
+    state.inHtmlText = true;
+    state.inLink = !linkable;
+    // Its extensions read `src`, not an inline run.
+    this.inlineRun = null;
+    try {
+      // Where each extension may claim next, as an index into the run.
+      const next = extensions.map(() => -1);
+      let at = 0;
+      let claimed = false;
+      while (src) {
+        let token: Tokens.Generic | undefined;
+        for (const extension of extensions) {
+          if ((token = extension.tokenizer?.call(this.tokenizerContext, src, tokens))) break;
+        }
+        if (token) {
+          src = src.substring(token.raw.length);
+          at += token.raw.length;
+          tokens.push(token as Token);
+          claimed = true;
+          continue;
+        }
+        let end = at + src.length;
+        for (let i = 0; i < extensions.length; i++) {
+          if (next[i] <= at) {
+            const start = extensions[i].start?.call(this.tokenizerContext, src.slice(1));
+            next[i] = typeof start === 'number' && start >= 0 ? at + 1 + start : Infinity;
+          }
+          end = Math.min(end, next[i]);
+        }
+        const text = src.slice(0, end - at);
+        src = src.substring(text.length);
+        at = end;
+        const last = tokens.at(-1);
+        if (last?.type === 'text') {
+          last.raw += text;
+          last.text += text;
+        } else {
+          tokens.push({ type: 'text', raw: text, text });
+        }
+      }
+      return claimed ? tokens : null;
+    } finally {
+      state.inLink = outer.inLink;
+      state.inHtmlText = outer.inHtmlText;
+      this.inlineRun = outer.inlineRun;
+      this.document = outer.document;
+      this.documentReads = outer.reads;
+    }
+  }
+}
+
+/** `Lexer.blockRun`. */
+export interface BlockRun {
+  readonly src: string;
+  at: number;
+}
+
+/** A block run as its loop keeps it. */
+interface BlockRunState extends BlockRun {
+  /** Run by `loneParagraph`: it stops once its tokens cannot be one paragraph. */
+  readonly lone: boolean;
+  /** The last `setextMayFollow` scan: run offsets of the line it started on
+   * and of the line it stopped at, an underline or a blank line or the end. */
+  setext: { from: number; to: number; underline: boolean } | null;
+}
+
+const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+) *$/;
+// `lheading` ends its text before a line of whitespace followed by a newline.
+const SETEXT_BLANK = /^\s*$/;
+
+/**
+ * Whether a setext underline line follows the first line of `src` before a
+ * blank line; where none does, `lheading` cannot match. A scan answers each
+ * later position of the run whose second line it read, so a run of lines
+ * lexed one at a time (tight content) is read once.
+ */
+const setextMayFollow = (src: string, run: BlockRunState): boolean => {
+  const first = src.indexOf('\n') + 1;
+  if (first === 0) return false;
+  const scan = run.setext;
+  if (scan && run.at + first >= scan.from && run.at + first <= scan.to) return scan.underline;
+  let start = first;
+  let underline = false;
+  while (start < src.length) {
+    const newline = src.indexOf('\n', start);
+    if (newline === -1) {
+      underline = SETEXT_UNDERLINE.test(src.slice(start));
+      if (!underline) start = src.length;
+      break;
+    }
+    const line = src.slice(start, newline);
+    if (SETEXT_UNDERLINE.test(line)) {
+      underline = true;
+      break;
+    }
+    if (SETEXT_BLANK.test(line)) break;
+    start = newline + 1;
+  }
+  run.setext = { from: run.at + first, to: run.at + start, underline };
+  return underline;
+};
+
+/** `Lexer.inlineRun`. */
+export interface InlineRun {
+  readonly src: string;
+  readonly masked: string;
+  at: number;
+}
+
+/** An inline extension as `htmlTextTokens` runs it. */
+export interface HtmlTextExtension {
+  tokenizer?: TokenizerExtensionFunction;
+  start?: TokenizerStartFunction;
 }

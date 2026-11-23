@@ -42,6 +42,22 @@
   let adjustedX = $state(0);
   let adjustedY = $state(0);
 
+  // Moved to `document.body` on mount, as Modal and Popover are. A menu is
+  // rendered where its owner sits, and an owner inside a stacking context
+  // (every pane section, a header's `z-10`) would cap the menu's z-index
+  // at that context's level, so a neighboring pane or the composer overlay
+  // painted over the part of the menu that reached it. Declared before the
+  // clamp so the clamp measures the menu where it is shown. The node is
+  // removed explicitly because Svelte only knows its original parent.
+  $effect(() => {
+    if (!menuEl) return;
+    const node = menuEl;
+    document.body.appendChild(node);
+    return () => {
+      node.remove();
+    };
+  });
+
   $effect(() => {
     const rect = menuEl?.getBoundingClientRect();
     // The visual viewport, not the layout one: with the soft keyboard up a

@@ -1,6 +1,9 @@
-// DOM reads `find.in-pane` makes when it opens a pane's find bar: the pane's
-// element, the text the reader selected inside it (the seed), and whether
-// focus already sits in the bar.
+// Opening a pane's find bar for the reader (`openPaneFindForReader`: the
+// `find.in-pane` command and the chat header menu's Find in thread row), and
+// the DOM reads that takes: the pane's element, the text the reader selected
+// inside it (the seed), and whether focus already sits in the bar.
+
+import { hasPaneFindProvider, openPaneFind, paneFindRegionElement, paneOfFindKey } from '../stores/paneFind.svelte';
 
 /** Marks a find bar's root; a press from inside it keeps the bar's state. */
 export const PANE_FIND_BAR_ATTR = 'data-pane-find-bar';
@@ -38,4 +41,27 @@ export function findSeedIn(pane: HTMLElement): string {
   const range = selection.getRangeAt(0);
   if (!pane.contains(range.commonAncestorContainer)) return '';
   return usableSeed(selection.toString());
+}
+
+/** The text the reader has selected inside the find of `key` (a layout
+ * pane id or a region key), or ''. */
+export function paneFindSeed(key: string): string {
+  const root = paneFindRegionElement(key) ?? paneElement(paneOfFindKey(key));
+  return root ? findSeedIn(root) : '';
+}
+
+/**
+ * Opens the find of `key` for the reader: seeded with the text they
+ * selected inside it, and returning focus on close to the element that
+ * holds it now. A caller whose own controls take focus before it runs (a
+ * menu) reads `paneFindSeed` while the selection still holds and passes it.
+ * False when `key` has no find.
+ */
+export function openPaneFindForReader(key: string, seed: string = paneFindSeed(key)): boolean {
+  if (!hasPaneFindProvider(key)) return false;
+  const active = typeof document === 'undefined' ? null : document.activeElement;
+  return openPaneFind(key, {
+    seed,
+    returnFocus: active instanceof HTMLElement && !isInFindBar(active) ? active : null,
+  });
 }

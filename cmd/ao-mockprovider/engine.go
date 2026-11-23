@@ -332,6 +332,18 @@ func (e *engine) enqueueTurn(n int) {
 	}
 }
 
+// turnDoneChan returns the channel closed when turn n finishes running.
+func (e *engine) turnDoneChan(n int) <-chan struct{} {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if t := e.turns[n]; t != nil {
+		return t.done
+	}
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+
 // run is the engine goroutine: onStart steps, then queued turns forever
 // (process lifetime is owned by stdin EOF / exit steps / signals).
 func (e *engine) run() {

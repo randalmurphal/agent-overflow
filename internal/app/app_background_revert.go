@@ -15,6 +15,10 @@ func (a *App) CountRunningBackgroundTasks(threadID string) (int, error) {
 	return a.countRunningBackgroundTasks(threadID)
 }
 
+// countRunningBackgroundTasks counts the background work ending the
+// thread's session would lose: the store's live launches and the Codex
+// agents and commands only the router holds. Every gate on ending a
+// session reads it, so a source added here reaches all of them.
 func (a *App) countRunningBackgroundTasks(threadID string) (int, error) {
 	total, err := a.store.CountLiveRunningBackgroundToolCalls(threadID)
 	if err != nil {

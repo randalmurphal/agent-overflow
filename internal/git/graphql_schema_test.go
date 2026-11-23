@@ -80,7 +80,7 @@ func registered(docs []forgeapi.Document) string {
 // initTimeDocumentBuilders are the functions that may call
 // forgeapi.NewDocument: each is called from a package-level var's
 // initializer, so its documents are registered at init.
-var initTimeDocumentBuilders = map[string]bool{"gitlabPullsQuery": true}
+var initTimeDocumentBuilders = map[string]bool{"gitlabPullsQuery": true, "githubFactsQuery": true, "gitlabFactsQuery": true}
 
 // The registry TestGraphQLDocumentsMatchForgeSchemas reads holds only the
 // documents made by the time it runs, so every forgeapi.NewDocument call
@@ -167,7 +167,9 @@ func TestGraphQLDocumentsAreMadeAtInit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls < len(forgeapi.Documents())-len(gitlabPullsReads)+1 {
+	// A builder's one call makes each of its documents.
+	built := len(gitlabPullsReads) - 1 + len(githubFactsQueries) - 1 + len(gitlabFactsQueries) - 1
+	if calls < len(forgeapi.Documents())-built {
 		t.Fatalf("found %d NewDocument calls for %d registered documents: the scan misses source", calls, len(forgeapi.Documents()))
 	}
 }

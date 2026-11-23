@@ -14,6 +14,12 @@ type recordingAccountSink struct {
 	signIns []SignIn
 	// changed is the provider of each PublishAccountsChanged.
 	changed []string
+	// listings is the provider of each PublishListingChanged.
+	listings []string
+	// limitsReset is the account of each PublishLimitsReset.
+	limitsReset []string
+	// onListing, when set, runs at each PublishListingChanged.
+	onListing func()
 }
 
 func (s *recordingAccountSink) PublishAccount(string, provideraccounts.Account, provider.AccountInfo, uint64) {
@@ -23,6 +29,17 @@ func (s *recordingAccountSink) PublishCleared(string, uint64) { s.events = appen
 func (s *recordingAccountSink) PublishAccountsChanged(providerName string) {
 	s.events = append(s.events, "changed")
 	s.changed = append(s.changed, providerName)
+}
+func (s *recordingAccountSink) PublishListingChanged(providerName string) {
+	s.events = append(s.events, "listing")
+	s.listings = append(s.listings, providerName)
+	if s.onListing != nil {
+		s.onListing()
+	}
+}
+func (s *recordingAccountSink) PublishLimitsReset(_, accountID string) {
+	s.events = append(s.events, "limits-reset")
+	s.limitsReset = append(s.limitsReset, accountID)
 }
 func (s *recordingAccountSink) PublishUsageError(string, string, error) {
 	s.events = append(s.events, "usage-error")
@@ -51,5 +68,31 @@ func TestRunAccountProbeRunsAfterAdoptBeforeTheAccountEmit(t *testing.T) {
 	}
 	if len(sink.events) != 2 || sink.events[0] != "after-adopt" || sink.events[1] != "account" {
 		t.Fatalf("events = %v, want [after-adopt account]", sink.events)
+	}
+}
+
+func TestAgyProbeConfigForceFileAuthOnlyForEphemeralHomes(t *testing.T) {
+	manager := NewManager(Deps{Reaper: procutiltest.Reaper()})
+	canonical := manager.AgyProbeConfig("agy", nil)
+	if canonical.ForceFileAuth {
+		t.Fatal("canonical AgyProbeConfig must not force file auth (breaks macOS Keychain logins)")
+	}
+	ephemeral := manager.agyProbeConfig("agy", "/tmp/isolated-gemini", "antigravity-cli", nil)
+	if !ephemeral.ForceFileAuth {
+		t.Fatal("ephemeral agyProbeConfig must force file auth so isolated homes never touch global Keychain")
+	}
+}
+
+func TestIdentifyAgyCredentialOfflineEmailFallback(t *testing.T) {
+	manager := NewManager(Deps{Reaper: procutiltest.Reaper()})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // force HTTP IdentifyAccount to fail offline immediately
+	cred := []byte(`{"access_token":"tok","refresh_token":"ref","id_token_email":"offline@example.com"}`)
+	got := manager.identifyAgyCredential(ctx, provider.AccountInfo{SubscriptionType: "Google AI Ultra"}, cred)
+	if got.Email != "offline@example.com" {
+		t.Fatalf("Email = %q, want offline@example.com", got.Email)
+	}
+	if got.SubscriptionType != "Google AI Ultra" {
+		t.Fatalf("SubscriptionType = %q, want Google AI Ultra", got.SubscriptionType)
 	}
 }

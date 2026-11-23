@@ -36,7 +36,7 @@
 
   let { open, onClose }: Props = $props();
 
-  type ProviderFilter = '' | 'claude' | 'codex';
+  type ProviderFilter = '' | 'claude' | 'codex' | 'agy';
 
   let providerFilter: ProviderFilter = $state('');
   let projectFilter = $state('');
@@ -48,6 +48,7 @@
     { value: '', label: 'All' },
     { value: 'claude', label: 'Claude' },
     { value: 'codex', label: 'Codex' },
+    { value: 'agy', label: 'Antigravity' },
   ];
 
   // Labels happen to match the period values themselves ('day', 'week',

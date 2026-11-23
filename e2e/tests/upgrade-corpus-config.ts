@@ -653,6 +653,7 @@ export const topUpScenarios: TopUpScenario[] = [
   { name: 'codex-collab-parallel-children' },
   { name: 'codex-revert-paginated' },
   { name: 'usage-limit-codex' },
+  { name: 'agy-basic' },
 ];
 
 export const excludedScenarios: Record<string, string> = {
@@ -796,7 +797,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'threads', columns: ['import_source'], reason: 'a thread imported from a provider home' },
 
   // Plans and reviews.
-  { table: 'threads', values: { mode: ['terminal', 'workflow-studio', 'workflow-triage', 'holder', 'scratch'], provider: ['claude-tui'] }, reason: 'threads their owning saga creates (a terminal, the workflow studio and triage, a fork holder, an unpromoted side chat) and the claude-tui provider, which no mock speaks' },
+  { table: 'threads', values: { mode: ['terminal', 'workflow-studio', 'workflow-triage', 'holder', 'scratch'] }, reason: 'threads their owning saga creates (a terminal, the workflow studio and triage, a fork holder, an unpromoted side chat)' },
   { table: 'proposed_plans', reason: 'a plan a Claude turn proposes through ExitPlanMode, which no library scenario emits' },
   { table: 'proposed_plan_comments', reason: 'review comments on a proposed plan' },
   { table: 'thread_drafts', columns: ['pending_plan_implementation'], values: { has_content: [0] }, reason: 'a draft seeded from an accepted plan, and an empty draft that only holds attachments' },
@@ -822,9 +823,8 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'tracker_cache_worklogs', reason: 'time logged in a tracker (v162); no app method syncs a tracker yet' },
   { table: 'tracker_cache_worklog_days', reason: 'the latest read of a day of a tracker author\'s worklogs (v162); no app method syncs a tracker yet' },
   { table: 'tracker_cache_sync', reason: 'a tracker mirror scope\'s sync state (v162); no app method syncs a tracker yet' },
-  { table: 'tracker_cache_open_tickets', reason: 'a tracker ticket a person has open, which keeps its issue in the mirror (v163); no app method syncs a tracker yet' },
-  { table: 'chat_bar_favorites', values: { provider: ['codex', 'claude-tui'] }, reason: 'favorites of other providers; one favorite proves the table' },
-  { table: 'chat_model_profiles', values: { provider: ['claude-tui'], reasoning_effort: ['none', 'minimal', 'low', 'high', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last; the claude-tui provider has no mock' },
+  { table: 'tracker_cache_open_tickets', reason: 'a tracker ticket a person has open, which keeps its issue in the mirror (v164); no app method syncs a tracker yet' },
+  { table: 'chat_model_profiles', values: { reasoning_effort: ['none', 'minimal', 'low', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last' },
 
   // Provider accounting the mock does not report.
   { table: 'usage_ledger', reason: 'token usage the provider reports; the mock reports none' },
@@ -832,7 +832,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'thread_tallies', columns: ['tokens'], reason: "the tokens a thread spent itself, counted from the own usage the provider reports with a turn's settlement; the mock reports none" },
   { table: 'provider_thread_cost', reason: 'cost the provider reports; the mock reports none' },
   { table: 'turns', columns: ['token_usage_json'], reason: 'token usage the provider reports; the mock reports none' },
-  { table: 'threads', columns: ['last_token_usage', 'live_todo'], reason: 'token usage and a TodoWrite list, which no library scenario emits' },
+  { table: 'threads', columns: ['live_todo'], reason: 'a TodoWrite list, which no library scenario emits' },
   { table: 'workflow_provider_usage_scopes', reason: 'a workflow run parked on a provider usage limit' },
   { table: 'workflow_provider_usage_attention', reason: 'a workflow run parked on a provider usage limit' },
 

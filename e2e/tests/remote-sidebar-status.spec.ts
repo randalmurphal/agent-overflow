@@ -9,7 +9,8 @@
 // the last status it reported, shown still and labelled as such; a shorter
 // drop leaves the row as it was. The reconnect snapshot
 // corrects it: the frames that would otherwise correct it are withheld.
-import { expect, test, type WebSocketRoute } from '@playwright/test';
+import { type WebSocketRoute } from '@playwright/test';
+import { expect, test } from './base-test.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { socketAnswers } from './offhost-helpers.js';

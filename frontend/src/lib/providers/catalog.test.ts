@@ -8,8 +8,10 @@ import {
   PROVIDER_MODEL_MENU_ORDER,
   PROVIDER_SETTINGS_ORDER,
   providerCliLabel,
+  providerHasFeature,
   providerIsEnabled,
   providerSupports,
+  standaloneProvidersWithFeature,
   type ProviderCapabilities,
   type ProviderEnablementSettings,
 } from './catalog';
@@ -21,6 +23,7 @@ function enablement(
     claudeEnabled: true,
     codexEnabled: true,
     claudeTuiEnabled: true,
+    agyEnabled: true,
     ...overrides,
   };
 }
@@ -38,15 +41,16 @@ describe('provider catalog', () => {
     expect(asProviderID('claude')).toBe('claude');
     expect(asProviderID('codex')).toBe('codex');
     expect(asProviderID('claude-tui')).toBe('claude-tui');
+    expect(asProviderID('agy')).toBe('agy');
     expect(asProviderID('other')).toBeNull();
   });
 
   it('keeps provider-specific defaults in one catalog', () => {
-    expect(PROVIDER_SETTINGS_ORDER).toEqual(['claude', 'codex']);
+    expect(PROVIDER_SETTINGS_ORDER).toEqual(['claude', 'codex', 'agy']);
     // claude-tui follows claude in the model picker but stays out of the
     // settings order — it has no binary/account settings of its own, and its
     // enable toggle rides inside claude's section instead.
-    expect(PROVIDER_MODEL_MENU_ORDER).toEqual(['codex', 'claude', 'claude-tui']);
+    expect(PROVIDER_MODEL_MENU_ORDER).toEqual(['codex', 'claude', 'claude-tui', 'agy']);
     expect(PROVIDER_DEFINITIONS.claude.contextLabels.standard).toBe('200k');
     expect(PROVIDER_DEFINITIONS.codex.contextLabels.standard).toBe('272k');
     expect(PROVIDER_DEFINITIONS.claude.backgroundStop).toBe('claude-task');
@@ -147,5 +151,25 @@ describe('provider catalog', () => {
     expect(getProviderDefinition('unknown')).toBeNull();
     expect(providerCliLabel('unknown')).toBe('unknown');
     expect(providerCliLabel(null)).toBe('Provider');
+  });
+
+  it('keeps provider feature gates total and fail-closed for unknown providers', () => {
+    for (const id of PROVIDER_IDS) {
+      const def = PROVIDER_DEFINITIONS[id];
+      expect(def.features).toBeDefined();
+      if (def.features.autoCompact) {
+        expect(def.settings.standardCompactKey).toBeDefined();
+        expect(def.settings.extendedCompactKey).toBeDefined();
+      }
+    }
+    expect(standaloneProvidersWithFeature('accounts')).toEqual(['claude', 'codex', 'agy']);
+    expect(standaloneProvidersWithFeature('textGeneration')).toEqual(['claude', 'codex', 'agy']);
+    expect(providerHasFeature('claude', 'transfer')).toBe(true);
+    expect(providerHasFeature('codex', 'transfer')).toBe(true);
+    expect(providerHasFeature('agy', 'transfer')).toBe(true);
+    expect(providerHasFeature('claude-tui', 'transfer')).toBe(false);
+    expect(providerHasFeature('unknown', 'accounts')).toBe(false);
+    expect(providerHasFeature('unknown', 'transfer')).toBe(false);
+    expect(providerHasFeature(null, 'ownMemory')).toBe(false);
   });
 });

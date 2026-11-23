@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -22,8 +23,33 @@ import (
 // It returns the recorded calls in order and the script's stderr.
 func recordSidecar(t *testing.T, input string) (calls []string, stderr string) {
 	t.Helper()
-	control, feed, err := os.Pipe()
+	calls, stderr, err := recordStart(t, input, func(cmd *exec.Cmd) error {
+		return startSidecar(cmd, recorders+sidecarScript)
+	})
 	if err != nil {
+		t.Fatalf("sidecar exit: %v (stderr %q)", err, stderr)
+	}
+	return calls, stderr
+}
+
+// recorders replaces kill and sleep with functions that write their
+// arguments to fd 4.
+const recorders = `kill() { echo "kill $*" >&4; }; sleep() { echo "sleep $*" >&4; }` + "\n"
+
+// recordStart runs a sidecar command that start starts, with input as its
+// control lines and fd 4 recorded, and returns how the shell exited. The
+// control lines come from a file, so a shell that never reads them, and
+// input of any size, hold nothing up.
+func recordStart(t *testing.T, input string, start func(*exec.Cmd) error) (calls []string, stderr string, exit error) {
+	t.Helper()
+	control, err := os.Create(filepath.Join(t.TempDir(), "control"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.WriteString(input); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Seek(0, io.SeekStart); err != nil {
 		t.Fatal(err)
 	}
 	recorded, record, err := os.Pipe()
@@ -31,31 +57,24 @@ func recordSidecar(t *testing.T, input string) (calls []string, stderr string) {
 		t.Fatal(err)
 	}
 	cmd := sidecarCommand(control, 7*time.Second)
-	cmd.Stdin = strings.NewReader(`kill() { echo "kill $*" >&4; }; sleep() { echo "sleep $*" >&4; }` + "\n" + sidecarScript)
 	cmd.ExtraFiles = append(cmd.ExtraFiles, record) // fd 4
 	var errOut bytes.Buffer
 	cmd.Stderr = &errOut
-	if err := cmd.Start(); err != nil {
+	if err := start(cmd); err != nil {
 		t.Fatal(err)
 	}
 	_ = control.Close()
 	_ = record.Close()
-	if _, err := io.WriteString(feed, input); err != nil {
-		t.Fatal(err)
-	}
-	_ = feed.Close()
 	out, err := io.ReadAll(recorded)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = recorded.Close()
-	if err := cmd.Wait(); err != nil {
-		t.Fatalf("sidecar exit: %v (stderr %q)", err, errOut.String())
-	}
+	exit = cmd.Wait()
 	for line := range strings.Lines(string(out)) {
 		calls = append(calls, strings.TrimSuffix(line, "\n"))
 	}
-	return calls, errOut.String()
+	return calls, errOut.String(), exit
 }
 
 func TestSidecarReapsOnlyUnreleasedOnEOF(t *testing.T) {
@@ -82,10 +101,9 @@ func TestSidecarKillsWhenTheShellExitsAtTheGrace(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := sidecarCommand(control, 7*time.Second)
-	cmd.Stdin = strings.NewReader(`kill() { echo "kill $*"; }; sleep() { exit 254; }` + "\n" + sidecarScript)
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
-	if err := cmd.Start(); err != nil {
+	if err := startSidecar(cmd, `kill() { echo "kill $*"; }; sleep() { exit 254; }`+"\n"+sidecarScript); err != nil {
 		t.Fatal(err)
 	}
 	_ = control.Close()
@@ -141,7 +159,7 @@ func TestSidecarKillsRealGroupsOnParentEOF(t *testing.T) {
 		t.Fatal(err)
 	}
 	sidecar := sidecarCommand(control, time.Second)
-	if err := sidecar.Start(); err != nil {
+	if err := startSidecar(sidecar, sidecarScript); err != nil {
 		t.Fatalf("start sidecar: %v", err)
 	}
 	_ = control.Close()
@@ -198,7 +216,7 @@ func TestSidecarIgnoresFunctionsExportedInTheEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	sidecar := sidecarCommand(control, time.Second)
-	if err := sidecar.Start(); err != nil {
+	if err := startSidecar(sidecar, sidecarScript); err != nil {
 		t.Fatalf("start sidecar: %v", err)
 	}
 	_ = control.Close()

@@ -59,7 +59,7 @@ func TestARetiredMountReachesNothingOfAFreshLifetime(t *testing.T) {
 
 	// A stop made through the retired lifetime's Access ends no search of
 	// the fresh one, whichever mount it names.
-	mount, err := m.AttachPane(fresh.Caller())
+	mount, err := m.AttachPane(fresh.Caller(), untiedPane)
 	if err != nil {
 		t.Fatal(err)
 	}

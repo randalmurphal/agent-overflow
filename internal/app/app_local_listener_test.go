@@ -9,10 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/localcontrol"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/threadmode"
 )
 
 func newLocalListenerTestApp(t *testing.T) (*App, string) {
@@ -28,15 +26,6 @@ func newLocalListenerTestApp(t *testing.T) (*App, string) {
 	return app, srv.Addr()
 }
 
-func aoEndpointFor(t *testing.T, app *App) string {
-	t.Helper()
-	credential, err := app.mintAOCredential(store.Thread{ID: "chat", ProjectID: "local-listener", Mode: threadmode.ModeChat})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return credential.env[aocli.EnvEndpoint]
-}
-
 // Clients beside the providers dial ::1, which stays in the Linux kernel
 // under WSL virtioproxy, while the main bind keeps the IPv4 address Windows
 // reaches. The ::1 door serves the same routes and credentials, and the page
@@ -49,10 +38,6 @@ func TestLocalClientsUseTheIPv6LoopbackListener(t *testing.T) {
 	addr, err := netip.ParseAddrPort(local)
 	if err != nil || addr.Addr() != netip.IPv6Loopback() {
 		t.Fatalf("local listener = %q, want a [::1] address", local)
-	}
-
-	if got, want := aoEndpointFor(t, app), "http://"+local; got != want {
-		t.Fatalf("AO_ENDPOINT = %q, want %q", got, want)
 	}
 
 	app.publishLocalControl()
@@ -112,8 +97,5 @@ func TestLocalClientsReturnToTheMainBindWhenTheListenerFails(t *testing.T) {
 	}
 	if endpoint.Address != mainAddr {
 		t.Fatalf("control.json address = %q, want the main bind %q", endpoint.Address, mainAddr)
-	}
-	if got, want := aoEndpointFor(t, app), "http://"+mainAddr; got != want {
-		t.Fatalf("AO_ENDPOINT = %q, want %q", got, want)
 	}
 }

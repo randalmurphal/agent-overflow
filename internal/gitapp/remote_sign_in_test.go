@@ -71,12 +71,12 @@ func TestBackgroundFetchSignInFailureReachesEveryWorkspaceStream(t *testing.T) {
 	})
 	t.Cleanup(service.CloseStatus)
 
-	root, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project"})
+	root, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project"}, untiedStatus)
 	if err != nil {
 		t.Fatalf("Subscribe root: %v", err)
 	}
 	defer service.Unsubscribe(root.ID)
-	worktree, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project", WorkspacePath: linked})
+	worktree, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project", WorkspacePath: linked}, untiedStatus)
 	if err != nil {
 		t.Fatalf("Subscribe worktree: %v", err)
 	}

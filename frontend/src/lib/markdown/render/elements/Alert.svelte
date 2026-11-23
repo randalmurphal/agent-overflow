@@ -44,7 +44,12 @@
 	>
 		<div data-alert-title class={streamdown.theme.alert.title}>
 			{@render (streamdown.icons?.[token.variant] || icon)()}
-			{streamdown.translations?.alert?.[token.variant] || token.variant}
+			{#if token.title === undefined}
+				{streamdown.translations?.alert?.[token.variant] || token.variant}
+			{:else}
+				<!-- An authored title keeps its own case. -->
+				<span style:text-transform="none">{token.title}</span>
+			{/if}
 		</div>
 		{@render children()}
 	</div>

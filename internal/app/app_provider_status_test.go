@@ -40,6 +40,7 @@ func TestGetProviderStatusesEmitsNotFoundForMissingBinary(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{
 		"claudeBinaryPath": "/nonexistent/claude-missing-binary-xyz",
 		"codexBinaryPath":  "/nonexistent/codex-missing-binary-xyz",
+		"agyBinaryPath":    "/nonexistent/agy-missing-binary-xyz",
 	}); err != nil {
 		t.Fatalf("settings.Update: %v", err)
 	}
@@ -49,23 +50,29 @@ func TestGetProviderStatusesEmitsNotFoundForMissingBinary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetProviderStatuses: %v", err)
 	}
-	if len(statuses) != 2 {
-		t.Fatalf("want 2 statuses, got %d", len(statuses))
+	if len(statuses) != 3 {
+		t.Fatalf("want 3 statuses, got %d", len(statuses))
 	}
 
-	// Both providers should emit — neither resolves to a real binary.
-	if len(*events) != 2 {
-		t.Fatalf("want 2 provider:status emissions, got %d", len(*events))
+	// All three providers should emit — none resolves to a real binary.
+	if len(*events) != 3 {
+		t.Fatalf("want 3 provider:status emissions, got %d", len(*events))
 	}
 
-	var claudeEvent *providerstatus.Event
+	var claudeEvent, agyEvent *providerstatus.Event
 	for i, ev := range *events {
-		if ev.Provider == string(provider.Claude) {
+		switch ev.Provider {
+		case string(provider.Claude):
 			claudeEvent = &(*events)[i]
+		case string(provider.Agy):
+			agyEvent = &(*events)[i]
 		}
 	}
 	if claudeEvent == nil {
 		t.Fatalf("no claude event in emissions: %+v", *events)
+	}
+	if agyEvent == nil || agyEvent.Status != "not_found" || agyEvent.ActionURL == "" {
+		t.Fatalf("agy event = %+v, want not_found with ActionURL", agyEvent)
 	}
 	if claudeEvent.Status != "not_found" {
 		t.Fatalf("claude status = %q, want not_found", claudeEvent.Status)
@@ -95,6 +102,7 @@ func TestGetProviderStatusesDoesNotEmitForReadyProvider(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{
 		"claudeBinaryPath": "echo",
 		"codexBinaryPath":  "echo",
+		"agyBinaryPath":    "echo",
 	}); err != nil {
 		t.Fatalf("settings.Update: %v", err)
 	}

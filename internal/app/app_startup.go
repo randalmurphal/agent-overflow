@@ -179,7 +179,7 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 // have run, so a committed trial, which reports it through bootPhaseFailed,
 // still releases its workflow starts and admits its clients.
 func (a *App) startBeforeClients() []bootStep {
-	return []bootStep{
+	steps := []bootStep{
 		// Guard against the process groups the app starts outliving an
 		// ungraceful app death (every platform but Windows, whose backend
 		// runs in WSL). First, so its startup sweep of the last run's process
@@ -193,10 +193,9 @@ func (a *App) startBeforeClients() []bootStep {
 		// Every prompt file here belongs to a process that exited without
 		// closing its sessions.
 		a.reportedBootStep("", "", func() error { return sweepClaudePromptFiles(a.configDir) }),
-		// Prune the credential slots no saved account references and sweep
-		// the ephemeral homes a crash left, before any session or probe reads
-		// them.
-		a.reconcileProviderHome,
+	}
+	steps = append(steps, a.providerAccountBootSteps()...)
+	return append(steps,
 		// Publish this executable as the `agent-overflow` command, so the
 		// very first session already has it on PATH. Best-effort by design:
 		// the helper logs its own failure and returns "", which
@@ -219,6 +218,20 @@ func (a *App) startBeforeClients() []bootStep {
 		// phase's session finds its prompt files swept and the command on
 		// PATH.
 		a.reportedBootStep("", "", a.releaseWorkflowStartsHeldForBoot),
+	)
+}
+
+// providerAccountBootSteps clean up what the last run left in the provider
+// homes, before any session or probe reads them. First the credential slots
+// of sign-ins this data root started that never saved their account: a slot
+// that cannot be removed is reported and stays reserved for the next boot,
+// and nothing after it depends on it. Then the account metadata is stamped
+// with its provider home, which fails the boot when it cannot be written,
+// and the ephemeral homes a crash left are swept.
+func (a *App) providerAccountBootSteps() []bootStep {
+	return []bootStep{
+		a.reportedBootStep("", "", func() error { return a.providerAccounts.SettleReservedSlots() }),
+		a.reconcileProviderHome,
 	}
 }
 
@@ -245,21 +258,15 @@ func (a *App) reportedBootStep(phase, detail string, run func() error) bootStep 
 	}
 }
 
-// reconcileProviderHome binds the provider account metadata to this
-// process's provider home, prunes the credential slots no saved account
-// references and sweeps the ephemeral homes a crash left. It deletes
-// credentials, which live outside the database.
-//
-// A metadata store paired with the WRONG provider home would delete slots
-// that were never its to manage. The stamp binds store to home on first
-// contact; on mismatch the prune is skipped outright, because orphan slots
-// are benign and destroyed logins are not.
+// reconcileProviderHome stamps the provider account metadata with this
+// process's provider home and sweeps the ephemeral homes a crash left. It
+// deletes credentials, which live outside the database.
 func (a *App) reconcileProviderHome() error {
 	userHome, err := a.providerHome()
 	if err != nil {
 		return fmt.Errorf("failed to locate provider credential home: %w", err)
 	}
-	return a.providerAccounts.ReconcileProviderHome(a.configDir, userHome)
+	return a.providerAccounts.ReconcileProviderHome(userHome)
 }
 
 // startUnattendedWork starts every subsystem that can take an action nobody
@@ -322,6 +329,7 @@ func (a *App) startUnattendedWork() []bootStep {
 		// covered by probeStartupAccountInfo; this loop keeps the rings fresh
 		// while Codex sessions are active.
 		infallibleBootStep(a.startCodexRateLimitProbeLoop),
+		infallibleBootStep(a.startAgyRateLimitProbeLoop),
 		// Start the idle-session reaper. Walks a.sessions every
 		// IdleReapInterval and closes provider subprocesses that have been
 		// idle past IdleReapThreshold so leaked subprocesses can't pile up

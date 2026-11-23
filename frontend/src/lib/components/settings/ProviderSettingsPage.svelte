@@ -321,31 +321,39 @@
     <ProviderCustomEnvSection provider={definition} />
   </section>
 
-  <section>
-    <ProviderAccountsSettings {provider} />
-    <AccountAutoSwitchSettings {provider} />
-  </section>
+  {#if definition.features.accounts}
+    <section>
+      <ProviderAccountsSettings {provider} />
+      <AccountAutoSwitchSettings {provider} />
+    </section>
+  {/if}
 
-  <section>
-    <SettingsHeader title="Context window" />
-    <ProviderContextSettings {provider} />
-  </section>
+  {#if definition.features.autoCompact}
+    <section>
+      <SettingsHeader title="Context window" />
+      <ProviderContextSettings {provider} />
+    </section>
+  {/if}
 
-  <section>
-    <SettingsHeader title="System prompt" description={promptTiming} />
-    <ProviderPromptSection provider={definition} />
-  </section>
+  {#if definition.features.promptOverrides}
+    <section>
+      <SettingsHeader title="System prompt" description={promptTiming} />
+      <ProviderPromptSection provider={definition} />
+    </section>
+  {/if}
 
-  <section>
-    <SettingsHeader title="Tools" description="Applies to sessions started later." />
-    {#if provider === 'codex'}
-      <CodexDisabledToolsEditor provider={definition} />
-    {:else}
-      <ClaudeDisabledToolsEditor provider={definition} />
-      <!-- Both Claude transports read it: one binary, one variable. -->
-      <ClaudeCommandTimeoutField />
-    {/if}
-  </section>
+  {#if definition.features.disabledTools}
+    <section>
+      <SettingsHeader title="Tools" description="Applies to sessions started later." />
+      {#if provider === 'codex'}
+        <CodexDisabledToolsEditor provider={definition} />
+      {:else if provider === 'claude'}
+        <ClaudeDisabledToolsEditor provider={definition} />
+        <!-- Both Claude transports read it: one binary, one variable. -->
+        <ClaudeCommandTimeoutField />
+      {/if}
+    </section>
+  {/if}
 
   <!--
     Headless Claude only. claude-tui launches through a PTY with no

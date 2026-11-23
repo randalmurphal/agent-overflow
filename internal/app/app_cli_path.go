@@ -34,9 +34,7 @@ const (
 
 // ensureCLIBinDir publishes this executable under its canonical name and
 // returns the directory to prepend to a session's PATH. An empty return means
-// the command is not reachable — sessions then run without it, which the
-// `/workflow` composer block reports rather than leaving the agent to discover
-// as "command not found".
+// the command is not reachable on PATH for agent shells.
 //
 // Failure is loud but never fatal: an app that cannot write one symlink is
 // still an app, and refusing to boot over it would trade a degraded feature
@@ -92,7 +90,8 @@ func ensureCLISymlink(configDir, executable string) (string, error) {
 	// The pid suffix keeps two app processes booting at once from fighting over
 	// one staging name; the rename makes whichever lands last the winner. Which
 	// build wins does not matter to a caller: the CLI carries no state about the
-	// app it belongs to, it POSTs to whatever AO_ENDPOINT its session env names.
+	// app it belongs to and locates the running backend via the local control
+	// file.
 	staging := link + ".staging." + strconv.Itoa(os.Getpid())
 	if err := os.Remove(staging); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return "", fmt.Errorf("publish CLI command: clear %s: %w", staging, err)

@@ -40,6 +40,8 @@ type Deps struct {
 	// backend dies first.
 	Reaper           procutil.Reaper
 	Session          SessionLookup
+	ConnForBinary    func(binary string) (*codex.Conn, func())
+	AnyConn          func(accountID string) (*codex.Conn, func())
 	SessionForBinary func(binary string) *codex.Session
 	AnySession       func() (session *codex.Session, accountID string)
 	Binary           func() string
@@ -146,7 +148,18 @@ func (s *Service) Skills(ctx context.Context, workspacePath string, forceReload 
 
 func (s *Service) readSkills(ctx context.Context, binary, cwd string, forceReload bool) (codexskills.CwdSkills, error) {
 	cwds := []string{cwd}
-	if s.deps.SessionForBinary != nil {
+	if s.deps.ConnForBinary != nil {
+		if conn, release := s.deps.ConnForBinary(binary); conn != nil {
+			entries, err := conn.ListSkills(ctx, cwds, forceReload)
+			if release != nil {
+				release()
+			}
+			if err == nil {
+				return skillsEntryForCwd(entries, cwd)
+			}
+			log.Printf("codex skills: live connection read failed, falling back to a fresh process: %v", err)
+		}
+	} else if s.deps.SessionForBinary != nil {
 		if session := s.deps.SessionForBinary(binary); session != nil {
 			entries, err := session.ListSkills(ctx, cwds, forceReload)
 			if err == nil {
@@ -224,7 +237,18 @@ func (s *Service) AccountUsage() (*AccountUsageResult, error) {
 }
 
 func (s *Service) readAccountUsage(ctx context.Context, binary, accountID string) (codex.AccountUsage, error) {
-	if s.deps.AnySession != nil {
+	if s.deps.AnyConn != nil {
+		if conn, release := s.deps.AnyConn(accountID); conn != nil {
+			usage, err := conn.ReadAccountUsage(ctx)
+			if release != nil {
+				release()
+			}
+			if err == nil || errors.Is(err, codex.ErrAccountUsageUnavailable) {
+				return usage, err
+			}
+			log.Printf("codex account usage: live connection read failed, falling back to a fresh process: %v", err)
+		}
+	} else if s.deps.AnySession != nil {
 		if session, sessionAccountID := s.deps.AnySession(); session != nil && sessionAccountID == accountID {
 			usage, err := session.ReadAccountUsage(ctx)
 			if err == nil || errors.Is(err, codex.ErrAccountUsageUnavailable) {
