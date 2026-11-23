@@ -219,7 +219,12 @@ func (g *driveGraph) resolveSites() {
 	}
 	for i, site := range g.sites {
 		g.edge(site.param, site.value)
-		if g.invokes[site.param] {
+		// A function that hands its own parameter on to one that calls it
+		// invokes that parameter too (the loop above), so each of its
+		// callers is linked to the value it passed. Linking the forwarder
+		// to its parameter's holder as well would merge every caller's
+		// value into each call.
+		if g.invokes[site.param] && !strings.HasPrefix(site.value, "param:") {
 			via := "via:" + site.param + "@" + strconv.Itoa(i)
 			g.edge(site.owner, via)
 			g.edge(via, site.value)
