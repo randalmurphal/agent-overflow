@@ -33,7 +33,8 @@ type Session struct {
 	// systemPromptPath and appendSystemPromptPath are the files
 	// cfg.SystemPrompt and cfg.AppendSystemPrompt were written to for
 	// `--system-prompt-file` and `--append-system-prompt-file`, or "" for
-	// the one the session does not carry. Removed by Close; see
+	// the one the session does not carry. Removed when the read loop ends,
+	// which Close waits for; see
 	// WriteSystemPromptFile for why a prompt does not travel in argv.
 	systemPromptPath       string
 	appendSystemPromptPath string
@@ -368,14 +369,10 @@ func (s *Session) Close() error {
 	s.clearPendingControlRequests()
 	err := s.proc.Close()
 	s.cancel()
+	// The read loop's end removes the prompt files.
 	if s.readDone != nil {
 		<-s.readDone
 	}
-	// After the process is gone: the CLI reads the file at startup, but
-	// removing it while a wedged process might still be starting up would
-	// turn a slow spawn into a missing system prompt.
-	RemoveSystemPromptFile(s.systemPromptPath)
-	RemoveSystemPromptFile(s.appendSystemPromptPath)
 	// Release parser-owned state so the dedup sets
 	// (completedToolUseIDs, completedTasks, backgroundToolUses, etc.)
 	// don't linger after the readLoop exits.

@@ -39,6 +39,12 @@ func (s *Session) readLoop() {
 		// read loops cannot drift on the signal triage gates its synthesized
 		// turn-complete on. See provider.EmitTeardownStatus.
 		provider.EmitTeardownStatus(s.onEvent, s.threadID, s.proc, s.closing.Load())
+
+		// Here rather than in Close, so a process that ends on its own
+		// removes them too; Close waits for readDone. The loop ends when the
+		// CLI's output ends, after the startup that reads them.
+		RemoveSystemPromptFile(s.systemPromptPath)
+		RemoveSystemPromptFile(s.appendSystemPromptPath)
 	}()
 
 	for {

@@ -58,8 +58,14 @@ type Session struct {
 	feed chan json.RawMessage
 	done chan struct{}
 	// feedDone closes when the parser goroutine has returned; nil until
-	// startFeedLoop. Close waits on it before it releases parser state.
+	// startFeedLoop. teardown waits on it before it releases parser state.
 	feedDone chan struct{}
+
+	// teardownOnce runs teardown for whichever end of the session comes
+	// first: Close, or the PTY process ending on its own (onPTYExit). A
+	// later release waits for that run to finish and returns its error.
+	teardownOnce sync.Once
+	teardownErr  error
 
 	// recMu guards the reconstructor's cross-request state (turn-usage
 	// accumulation, session identity, the subagent launch registry).
@@ -88,10 +94,10 @@ type Session struct {
 	// systemPromptPath and appendSystemPromptPath are the files
 	// cfg.SystemPrompt and cfg.AppendSystemPrompt were written to for
 	// `--system-prompt-file` and `--append-system-prompt-file`, or "" for
-	// the one the session does not carry. Removed by Close — which the
-	// NewSession failure path also runs, so every failed-launch path drops
-	// them too. Each is recorded under mu the moment it is written, before
-	// the next write, so a failure between the two still removes the first.
+	// the one the session does not carry. Removed by teardown, which Close,
+	// the NewSession failure path and the process's own exit all reach.
+	// Each is recorded under mu the moment it is written, before the next
+	// write, so a failure between the two still removes the first.
 	systemPromptPath       string
 	appendSystemPromptPath string
 
@@ -521,8 +527,8 @@ func (s *Session) SessionID() string {
 	return s.sessionID
 }
 
-// Close tears down the PTY, gateway, relay, and parser. Idempotent and
-// nil-safe so the NewSession failure path can reuse it.
+// Close ends the PTY and releases the session. Idempotent and nil-safe so
+// the NewSession failure path can reuse it: a second call returns nil.
 func (s *Session) Close() error {
 	s.mu.Lock()
 	if s.closing {
@@ -530,6 +536,26 @@ func (s *Session) Close() error {
 		return nil
 	}
 	s.closing = true
+	s.mu.Unlock()
+	return s.release()
+}
+
+// release runs teardown once. A caller that arrives while another runs it
+// waits for that run and returns its error.
+func (s *Session) release() error {
+	s.teardownOnce.Do(func() { s.teardownErr = s.teardown() })
+	return s.teardownErr
+}
+
+// teardown stops the feed loop, ends the PTY, shuts the gateway and relay,
+// releases parser state, and removes the prompt files. It runs on Close's
+// goroutine or on the terminal's output goroutine (onPTYExit) and waits on
+// neither of them: the terminal's Close waits for the process, not for its
+// output goroutine. After a self-exit the terminal has already dropped the PTY, so
+// its Close is a no-op, and a process that exits before NewSession records
+// terminalID leaves it empty.
+func (s *Session) teardown() error {
+	s.mu.Lock()
 	terminalID := s.terminalID
 	systemPromptPath := s.systemPromptPath
 	appendSystemPromptPath := s.appendSystemPromptPath
@@ -540,7 +566,7 @@ func (s *Session) Close() error {
 	// whole memory.
 	s.sessionStartMu.Lock()
 	if after := s.sessionStart.Expecting(); after != "" {
-		s.logf("claudetui: session closed before a model request showed whether its SessionStart hooks delivered after its %s", after)
+		s.logf("claudetui: session ended before a model request showed whether its SessionStart hooks delivered after its %s", after)
 		if warning := s.sessionStart.ForgetWhilePending(); warning != "" {
 			s.emitNonFatalError(warning)
 		}
@@ -603,15 +629,25 @@ func (s *Session) onPTYOutput(threadID, terminalID string, sequence uint64, data
 	}
 }
 
-// onPTYExit surfaces interactive-claude death. A non-host-initiated exit (the
-// process died or the user quit it in take-control) emits the "error"
-// session-status triage promotes to session_died + a truncated turn-complete;
-// the trailing "disconnected" clears live state. A host-initiated Close skips
-// the error and just disconnects.
+// onPTYExit releases the session and surfaces interactive-claude death. A
+// non-host-initiated exit (the process died or the user quit it in
+// take-control) emits the "error" session-status triage promotes to
+// session_died + a truncated turn-complete; the trailing "disconnected" clears
+// live state. A host-initiated Close skips the error and just disconnects.
 func (s *Session) onPTYExit(threadID, terminalID string, status terminal.ExitStatus) {
 	s.mu.Lock()
 	closing := s.closing
 	s.mu.Unlock()
+
+	// The process is gone, so the session releases what it held for it
+	// whether or not Close asked; while Close runs the release this waits
+	// for it. Releasing first joins the feed loop and waits out the
+	// gateway's and relay's handlers within their shutdown grace, so nothing
+	// they emit follows "disconnected". A Close caller gets the release's
+	// error from Close; a self-exit has no caller, so the thread gets it.
+	if err := s.release(); err != nil && !closing {
+		s.emitNonFatalError(fmt.Sprintf("release the session after its process ended: %v", err))
+	}
 
 	// Same two events, same order, same reason as both stdio read loops —
 	// only the meta source differs (a PTY exit status, not a subprocess

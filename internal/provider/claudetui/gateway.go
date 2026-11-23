@@ -139,11 +139,16 @@ func (g *gateway) start() {
 	}()
 }
 
-// close shuts the proxy down. Safe to call once.
+// close shuts the proxy down and closes its idle upstream connections. Safe
+// to call once.
 func (g *gateway) close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	return g.server.Shutdown(ctx)
+	err := g.server.Shutdown(ctx)
+	// After Shutdown, so the handlers it waited for have returned their
+	// connections to the pool.
+	g.client.CloseIdleConnections()
+	return err
 }
 
 func (g *gateway) handle(w http.ResponseWriter, r *http.Request) {
