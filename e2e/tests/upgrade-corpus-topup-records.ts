@@ -16,6 +16,14 @@ import { FOOTER_TOKEN_PATTERN, THREAD_TOOLS_SERVER, awaitToolAnswer, awaitTurnCo
 
 const TURN_TIMEOUT_MS = 120_000;
 
+/** The mock gates writePeerSpawns holds two workers' turns at. */
+export interface PeerSpawnHolds {
+  /** The Codex worker's spawn turn, whose run stays open. */
+  spawn: string;
+  /** The nudged worker's nudge turn, whose run stays open. */
+  nudge: string;
+}
+
 /**
  * Review drafts on `threadId`, a thread whose session takes more turns: a
  * range on each half and on a context line, a file comment and a held reply,
@@ -213,9 +221,14 @@ export async function writeThreadRequests(harness: HarnessApp, version: string, 
  * spawn's link (thread_receipt_nudges) until that computer takes it, which
  * it never does once closed: one ends at rest with its figures (run_open
  * 0), the other arms a loop, so it stays open (run_open 1). Returns the
- * project and the workers' threads.
+ * project and the workers' threads, each at rest.
+ *
+ * `hold` names the mock gates two of those turns stop at after the loop
+ * each arms, with their runs already open: the Codex worker's spawn turn
+ * and the nudged worker's nudge turn. Only a spec that proves the step
+ * waits for them passes it (upgrade-corpus-peer-spawns.spec.ts).
  */
-export async function writePeerSpawns(harness: HarnessApp, version: string, nonce: string): Promise<{ projectId: string; threadIds: string[] }> {
+export async function writePeerSpawns(harness: HarnessApp, version: string, nonce: string, hold?: PeerSpawnHolds): Promise<{ projectId: string; threadIds: string[] }> {
   const name = `topup-peer-spawns-v${version}-${nonce}`;
   const seeded = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{ name, repo: { commits: [{ message: 'init', files: { 'README.md': `# Top-up peer spawns v${version}\n` } }] }, threads: [] }],
@@ -239,14 +252,26 @@ export async function writePeerSpawns(harness: HarnessApp, version: string, nonc
       provider: 'claude',
       turns: [
         { text: 'Finished over here.' },
-        { steps: [{ call: { tool: 'thread_loop', args: { label: 'peer-notes', note: 'look at the notes', every_seconds: 3600 } } }], text: 'Watching the notes.' },
+        {
+          steps: [
+            { call: { tool: 'thread_loop', args: { label: 'peer-notes', note: 'look at the notes', every_seconds: 3600 } } },
+            ...(hold ? [{ gate: hold.nudge }] : []),
+          ],
+          text: 'Watching the notes.',
+        },
       ],
       afterTurns: 'repeatLast',
     }));
     await setScenario(harness, cwd, threadToolsScenario({
       name: `topup-peer-open-${nonce}`,
       provider: 'codex',
-      turns: [{ steps: [{ call: { tool: 'thread_loop', args: { label: 'peer-board', note: 'look at the board', every_seconds: 3600 } } }], text: 'Watching the board.' }],
+      turns: [{
+        steps: [
+          { call: { tool: 'thread_loop', args: { label: 'peer-board', note: 'look at the board', every_seconds: 3600 } } },
+          ...(hold ? [{ gate: hold.spawn }] : []),
+        ],
+        text: 'Watching the board.',
+      }],
       afterTurns: 'silent',
     }));
     const spawn = (title: string, provider: string) => ({

@@ -505,40 +505,68 @@ export function storeThreads(harness: HarnessApp): Set<string> {
 }
 
 /**
- * assertAtRest fails unless no thread of the top-up's runs or owes a turn:
- * every thread of `harness`'s store but the `inherited` ones, workflow
- * phase threads and the helpers a tool spawned included. Whether a thread
- * runs or owes one is the backend's own answer (HarnessThreadsWorking): an
- * open turn, a message queued or written with its turn still to open, a
- * prompt waiting, or a compaction. Each
- * step waits for the turns it starts and runs this when it returns, so a
- * step that returns mid-turn fails here, naming the step and the thread,
- * instead of leaving a mid-turn row for whatever reads the store next. The
- * loops, watches and runs the top-up leaves armed or open on purpose are
- * not turns. `step` names the caller in the failure.
+ * The open turn rows of the threads a JSON array names, through the
+ * partial index of open turns (idx_turns_inflight).
+ */
+export const OPEN_TURNS_SQL = `SELECT thread_id, turn_index FROM turns
+  WHERE thread_id IN (SELECT value FROM json_each(?)) AND completed_at IS NULL
+  ORDER BY thread_id, turn_index`;
+
+/**
+ * The streaming and running rows of the threads a JSON array names, through
+ * the partial index of unsettled rows (idx_items_unsettled), whose predicate
+ * the status term repeats so the planner can use it. A background tool
+ * call runs past its turn on purpose; a parked stop is history.
+ */
+export const UNSETTLED_ROWS_SQL = `SELECT thread_id, id, kind, status FROM items
+  WHERE thread_id IN (SELECT value FROM json_each(?)) AND status IN ('running', 'streaming')
+    AND NOT (kind = 'tool_call' AND is_background = 1)
+  ORDER BY thread_id, turn_index, item_index`;
+
+/**
+ * assertAtRest fails unless no thread of the top-up's runs or owes a turn,
+ * live or in the store: every thread of `harness`'s store but the
+ * `inherited` ones, workflow phase threads and the helpers a tool spawned
+ * included. The live half is the backend's own answer
+ * (HarnessThreadsWorking): an open turn, a message queued or written with
+ * its turn still to open, a prompt waiting, or a compaction. The durable
+ * half is what the store says, which a reader of the store after the
+ * top-up meets, the archive included: an open turn row, or a streaming or
+ * running row. The two part when a settlement write fails, since triage
+ * ends the live turn either way. Each step waits for the turns it starts
+ * and runs this when it returns, so a step that returns mid-turn fails
+ * here, naming the step and the thread. The loops, watches and runs the
+ * top-up leaves armed or open on purpose are not turns. `step` names the
+ * caller in the failure.
  */
 export async function assertAtRest(harness: HarnessApp, step: string, inherited: Set<string>): Promise<void> {
   const own = [...storeThreads(harness)].filter((id) => !inherited.has(id));
   if (own.length === 0) return;
   const working = await harness.rpc<ThreadWork[]>('HarnessThreadsWorking', own);
-  if (working.length === 0) return;
   const database = new DatabaseSync(path.join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
-  let lines: string[];
+  const lines: string[] = [];
   try {
+    const ids = JSON.stringify(own);
+    const open = database.prepare(OPEN_TURNS_SQL).all(ids) as Array<{ thread_id: string; turn_index: number }>;
+    const unsettled = database.prepare(UNSETTLED_ROWS_SQL).all(ids) as Array<{ thread_id: string; id: string; kind: string; status: string }>;
+    if (working.length === 0 && open.length === 0 && unsettled.length === 0) return;
     const title = (threadId: string) =>
       (database.prepare('SELECT title FROM threads WHERE id = ?').get(threadId) as { title: string } | undefined)?.title ?? '(no row)';
-    lines = working.map((work) => {
+    const name = (threadId: string) => `"${title(threadId)}" (${threadId})`;
+    for (const work of working) {
       const what = [
         work.activeTurn ? 'a turn is open' : '',
         work.pendingSends ? 'a message is queued or its turn is still to open' : '',
         work.waitingOn ? `an ${work.waitingOn} waits` : '',
         work.compacting ? 'it is compacting' : '',
       ].filter(Boolean);
-      return `  - "${title(work.threadId)}" (${work.threadId}): ${what.join(', ')}`;
-    });
+      lines.push(`  - ${name(work.threadId)}: ${what.join(', ')}`);
+    }
+    for (const row of open) lines.push(`  - ${name(row.thread_id)}: turn ${row.turn_index} is open in the store`);
+    for (const row of unsettled) lines.push(`  - ${name(row.thread_id)}: ${row.kind} row ${row.id} is ${row.status} in the store`);
   } finally {
     database.close();
   }
-  throw new Error(`top-up step ${step} returned while ${working.length} thread(s) still run or owe a turn; ` +
+  throw new Error(`top-up step ${step} returned while a turn of its own still runs or is owed, live or in the store; ` +
     `it waits for each turn it starts to end:\n${lines.join('\n')}`);
 }

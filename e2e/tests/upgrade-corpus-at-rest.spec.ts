@@ -3,7 +3,11 @@
 // and the coverage gate's naming of the rows a stale allowlist entry is on
 // (upgrade-corpus-coverage.ts). A turn held at a gate after its streaming
 // row is written, and a sent message whose turn has not opened because
-// the backend holds the provider's frames, each fail the check naming their thread, and pass it once they end. An
+// the backend holds the provider's frames, each fail the check naming
+// their thread, and pass it once they end. So do a turn whose end write
+// the store refused and a row whose settle it refused, which the backend
+// reads at rest: the check's store half names them, through the partial
+// indexes of open turns and unsettled rows. An
 // entry the store writes after all fails the gate naming the rows that
 // carry it, a whole-table entry included.
 import { randomBytes } from 'node:crypto';
@@ -13,7 +17,7 @@ import type { HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import { awaitTurnCompleted, plainScenario, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 import { assertCoverage, measureCoverage, readSchema } from './upgrade-corpus-coverage.js';
-import { assertAtRest, storeThreads } from './upgrade-corpus-topup.js';
+import { OPEN_TURNS_SQL, UNSETTLED_ROWS_SQL, assertAtRest, storeThreads } from './upgrade-corpus-topup.js';
 
 const TURN_TIMEOUT_MS = 30_000;
 
@@ -75,7 +79,7 @@ test('the at-rest check names a thread whose turn is held mid-stream, and passes
   }).toBeGreaterThan(0);
 
   await expect(assertAtRest(harness, 'held', inherited)).rejects.toThrow(
-    new RegExp(`top-up step held returned while 1 thread\\(s\\) still run or owe a turn; .*\\n  - "${title}" \\(${threadId}\\): a turn is open`, 's'));
+    new RegExp(`top-up step held returned while a turn of its own still runs .*\\n  - "${title}" \\(${threadId}\\): a turn is open`, 's'));
 
   const ended = awaitTurnCompleted(harness, threadId, TURN_TIMEOUT_MS);
   await harness.rpc('HarnessMockCommand', parked.mockId, { type: 'advance', name: gate });
@@ -127,5 +131,86 @@ test('the at-rest check names a thread whose sent message has not opened its tur
     await assertAtRest(harness, 'handled', inherited);
   } finally {
     if (!released) await harness.rpc('HarnessReleaseProviderEvents', threadId);
+  }
+});
+
+/**
+ * Runs `body` with a trigger on the live store that refuses the writes
+ * `when` names on `table`, as a full disk would, and drops it after.
+ */
+async function refusingWrites(harness: HarnessApp, name: string, table: string, when: string, body: () => Promise<void>): Promise<void> {
+  const database = new DatabaseSync(path.join(harness.bootstrap.dataDir, 'agent-overflow.db'));
+  try {
+    database.exec('PRAGMA busy_timeout = 10000');
+    database.exec(`CREATE TRIGGER "${name}" BEFORE UPDATE ON ${table} WHEN ${when} BEGIN SELECT RAISE(ABORT, 'refused by the spec'); END`);
+    try {
+      await body();
+    } finally {
+      database.exec(`DROP TRIGGER IF EXISTS "${name}"`);
+    }
+  } finally {
+    database.close();
+  }
+}
+
+/** Writes `sql` on the live store, for a settle the backend's own write was refused. */
+function writeStore(harness: HarnessApp, sql: string, ...params: string[]): void {
+  const database = new DatabaseSync(path.join(harness.bootstrap.dataDir, 'agent-overflow.db'));
+  try {
+    database.exec('PRAGMA busy_timeout = 10000');
+    database.prepare(sql).run(...params);
+  } finally {
+    database.close();
+  }
+}
+
+test('the at-rest check names a turn whose end the store refused, which the backend reads at rest', async ({ harness }) => {
+  const inherited = storeThreads(harness);
+  const title = 'At rest: turn end refused';
+  const { cwd, threadId } = await seedThread(harness, title);
+  await setScenario(harness, cwd, plainScenario({ name: `at-rest-refused-${randomBytes(3).toString('hex')}`, provider: 'claude', texts: ['Answered.'] }));
+  await harness.rpc('StartSession', threadId);
+  await refusingWrites(harness, `refuse_turn_end_${threadId}`, 'turns',
+    `NEW.thread_id = '${threadId}' AND OLD.completed_at IS NULL AND NEW.completed_at IS NOT NULL`, async () => {
+      const ended = awaitTurnCompleted(harness, threadId, TURN_TIMEOUT_MS);
+      await harness.rpc('SendMessage', threadId, 'Answer once.', null);
+      await ended;
+    });
+  expect(await harness.rpc('HarnessThreadsWorking', [threadId]), 'the backend no longer reads the turn as live').toEqual([]);
+  await expect(assertAtRest(harness, 'refused', inherited)).rejects.toThrow(
+    new RegExp(`\\n  - "${title}" \\(${threadId}\\): turn \\d+ is open in the store`));
+  // The spec settles the row the backend's write could not.
+  writeStore(harness, `UPDATE turns SET completed_at = started_at WHERE thread_id = ? AND completed_at IS NULL`, threadId);
+  await assertAtRest(harness, 'settled', inherited);
+});
+
+test('the at-rest check names a streaming row whose settle the store refused', async ({ harness }) => {
+  const inherited = storeThreads(harness);
+  const title = 'At rest: row settle refused';
+  const { cwd, threadId } = await seedThread(harness, title);
+  await setScenario(harness, cwd, plainScenario({ name: `at-rest-row-${randomBytes(3).toString('hex')}`, provider: 'claude', texts: ['Answered.'] }));
+  await harness.rpc('StartSession', threadId);
+  await refusingWrites(harness, `refuse_row_settle_${threadId}`, 'items',
+    `NEW.thread_id = '${threadId}' AND OLD.status = 'streaming' AND NEW.status <> 'streaming'`, async () => {
+      const ended = awaitTurnCompleted(harness, threadId, TURN_TIMEOUT_MS);
+      await harness.rpc('SendMessage', threadId, 'Answer once.', null);
+      await ended;
+    });
+  expect(await harness.rpc('HarnessThreadsWorking', [threadId]), 'the backend no longer reads the turn as live').toEqual([]);
+  await expect(assertAtRest(harness, 'refused', inherited)).rejects.toThrow(
+    new RegExp(`\\n  - "${title}" \\(${threadId}\\): assistant_text row \\S+ is streaming in the store`));
+  // The item triggers call functions only the backend registers, so the
+  // spec cannot settle the row itself; the next reset deletes the thread.
+});
+
+test("the at-rest check's store reads go through the partial indexes of open turns and unsettled rows", async ({ harness }) => {
+  const database = new DatabaseSync(path.join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+  try {
+    const plan = (sql: string) => (database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all('["a","b"]') as Array<{ detail: string }>)
+      .map((row) => row.detail).join('\n');
+    expect(plan(OPEN_TURNS_SQL)).toMatch(/SEARCH turns USING (COVERING )?INDEX idx_turns_inflight \(thread_id=\?\)/);
+    expect(plan(UNSETTLED_ROWS_SQL)).toMatch(/SEARCH items USING INDEX idx_items_unsettled \(thread_id=\?\)/);
+  } finally {
+    database.close();
   }
 });

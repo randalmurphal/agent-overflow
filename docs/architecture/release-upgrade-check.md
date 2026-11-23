@@ -77,9 +77,11 @@ the next release's migrations of its tables, not the candidate's; a table
 the previous corpus left empty is proved for this release only by a clone.
 Every step returns with the turns it started at rest, which `topUp` checks
 after each step by asking the backend which of its threads still run or owe
-a turn (`assertAtRest`, `HarnessThreadsWorking`), so no mid-turn row reaches
-the gate or the archive; the loops, watches and runs it leaves armed or open
-are not turns.
+a turn (`HarnessThreadsWorking`) and by reading their open turn rows and
+streaming or running rows in the store, which part from the live answer when
+a settlement write fails (`assertAtRest`), so no mid-turn row reaches the
+gate or the archive; the loops, watches and runs it leaves armed or open are
+not turns.
 
 The coverage gate, `e2e/tests/upgrade-corpus-coverage.spec.ts` in `make e2e`,
 holds the seed and the top-up to the schema on every pull request: it

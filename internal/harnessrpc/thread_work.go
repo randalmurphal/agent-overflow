@@ -7,9 +7,10 @@ import (
 
 // ThreadWork is what one thread still runs or owes, from what the app holds
 // in memory: the answer the thread tools and the Agents rows read
-// (App.threadWaitingOn). The zero value is a thread at rest. A loop, a
-// watch or a run kept open is no turn and does not appear here, and
-// neither does a provider frame still queued after its turn ended.
+// (App.threadWaitingOn), with that read's limits. The zero value is a
+// thread at rest now. A loop, a watch or a run kept open is no turn and
+// does not appear here. Provider frames the backend has not handled yet
+// are not read: one can still reopen a turn a Claude soft close settled.
 type ThreadWork struct {
 	// ActiveTurn is whether a turn's round is open.
 	ActiveTurn bool `json:"activeTurn"`
