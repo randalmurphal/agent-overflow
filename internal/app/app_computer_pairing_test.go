@@ -117,20 +117,18 @@ func (l *cancellationLedger) count(id string) int {
 	return l.calls[id]
 }
 
-// testGate holds whatever waits on it until released. The test's cleanup
-// releases it, so a failure cannot leave a goroutine blocked until the
-// package timeout. Cleanups run last-registered first, so a gate must be
-// made after anything whose cleanup waits on what the gate holds.
+// testGate holds whatever waits on it until released. Its user registers
+// open as a cleanup after anything whose cleanup waits on what the gate
+// holds: cleanups run last-registered first, so a failure cannot leave a
+// goroutine blocked until the package timeout.
 type testGate struct {
 	reached chan struct{}
 	release chan struct{}
 	once    sync.Once
 }
 
-func newTestGate(t *testing.T) *testGate {
-	g := &testGate{reached: make(chan struct{}, 1), release: make(chan struct{})}
-	t.Cleanup(g.open)
-	return g
+func newTestGate() *testGate {
+	return &testGate{reached: make(chan struct{}, 1), release: make(chan struct{})}
 }
 
 func (g *testGate) wait() {

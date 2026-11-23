@@ -19,7 +19,7 @@ import (
 func heldMintWindow(t *testing.T, a *App) (pairbootstrap.Snapshot, *testGate, <-chan string, <-chan error) {
 	t.Helper()
 	book := a.computerPairingBook()
-	g := &testGate{reached: make(chan struct{}, 1), release: make(chan struct{})}
+	g := newTestGate()
 	minted := make(chan string, 1)
 	view, err := book.Open(func(string) (pairbootstrap.Invitation, error) {
 		g.wait()
