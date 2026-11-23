@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -95,6 +96,50 @@ func New(opts Options) (*Manager, error) {
 // while the OS lock is held, so concurrent worktrees cannot pass the same
 // capacity check.
 func (m *Manager) Reserve(req Request) (Lease, error) {
+	ceiling := req.CeilingBytes
+	if ceiling == 0 {
+		ceiling = m.defaultCeiling
+	}
+	return m.reserve(req, func(free uint64) (uint64, error) {
+		if ceiling > free {
+			return 0, fmt.Errorf("%w: requested=%d", ErrCapacityExceeded, ceiling)
+		}
+		return ceiling, nil
+	})
+}
+
+// ReserveUpTo claims the longest prefix of units, sizes in bytes, that
+// fits, in one lease, under the same lock and checks as Reserve, and
+// returns how many units it claimed. A caller that runs up to n things at
+// once, each holding at most one unit, passes the n largest units first.
+// When none fit it records nothing and returns the zero Lease. The lease's
+// size is the claim, so req.CeilingBytes must be zero.
+func (m *Manager) ReserveUpTo(req Request, units []uint64) (Lease, int, error) {
+	if req.CeilingBytes != 0 {
+		return Lease{}, 0, errors.New("harness governor: ReserveUpTo sizes the lease; leave CeilingBytes zero")
+	}
+	if len(units) == 0 || slices.Contains(units, 0) {
+		return Lease{}, 0, fmt.Errorf("harness governor: ReserveUpTo needs positive units, got %v", units)
+	}
+	var granted int
+	lease, err := m.reserve(req, func(free uint64) (uint64, error) {
+		var claim uint64
+		for _, unit := range units {
+			if unit > free-claim {
+				break
+			}
+			claim += unit
+			granted++
+		}
+		return claim, nil
+	})
+	return lease, granted, err
+}
+
+// reserve is Reserve and ReserveUpTo: size gets the bytes left above the
+// floor and every live lease, and returns the claim to record, zero for
+// none.
+func (m *Manager) reserve(req Request, size func(free uint64) (uint64, error)) (Lease, error) {
 	if err := validateRequest(req); err != nil {
 		return Lease{}, err
 	}
@@ -122,13 +167,17 @@ func (m *Manager) Reserve(req Request) (Lease, error) {
 	if err != nil {
 		return Lease{}, fmt.Errorf("harness governor: sample available memory: %w", err)
 	}
-	ceiling := req.CeilingBytes
-	if ceiling == 0 {
-		ceiling = m.defaultCeiling
-	}
 	reserved := sumCeilings(state.Leases)
-	if available < m.floor || available-m.floor < reserved || ceiling > available-m.floor-reserved {
-		return Lease{}, fmt.Errorf("%w: available=%d floor=%d reserved=%d requested=%d", ErrCapacityExceeded, available, m.floor, reserved, ceiling)
+	var free uint64
+	if available >= m.floor && available-m.floor >= reserved {
+		free = available - m.floor - reserved
+	}
+	ceiling, err := size(free)
+	if err != nil {
+		return Lease{}, fmt.Errorf("%w available=%d floor=%d reserved=%d", err, available, m.floor, reserved)
+	}
+	if ceiling == 0 {
+		return Lease{}, nil
 	}
 	birthID := req.OwnerBirthID
 	owner, probeErr := m.processes.State(req.OwnerPID)

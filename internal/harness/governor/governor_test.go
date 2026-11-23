@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -222,6 +223,72 @@ func TestDeadLeaseReleasesCapacityBeforeTTL(t *testing.T) {
 	}
 	if len(snapshot.Leases) != 0 {
 		t.Fatalf("dead lease remains before TTL: %+v", snapshot.Leases)
+	}
+}
+
+// TestReserveUpToGrantsWhatFitsAndADeadHoldersUnitsComeBack has three
+// holders ask for up to four 10-byte units with 65 bytes above the floor:
+// they get four, two and none, the last recording no lease, and once the
+// first holder dies a fourth gets its four. Units of different sizes are
+// claimed largest first, as passed, up to the first that does not fit.
+func TestReserveUpToGrantsWhatFitsAndADeadHoldersUnitsComeBack(t *testing.T) {
+	now := time.Unix(100, 0)
+	proc := &fakeProcesses{states: map[int]ProcessState{}}
+	m := testManager(t, &fakeMemory{available: 100 + 65}, proc, &now)
+	holder := func(n int) Request {
+		req := request()
+		req.RunID = "run-" + strconv.Itoa(n)
+		req.OwnerPID = 42 + n
+		req.OwnerBirthID = "boot-" + strconv.Itoa(n)
+		proc.mu.Lock()
+		proc.states[req.OwnerPID] = ProcessState{Alive: true, BirthID: req.OwnerBirthID}
+		proc.mu.Unlock()
+		return req
+	}
+	four := []uint64{10, 10, 10, 10}
+	var first Lease
+	for n, want := range []int{4, 2, 0} {
+		lease, units, err := m.ReserveUpTo(holder(n), four)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if units != want || lease.CeilingBytes != uint64(10*want) || (want == 0) != (lease.ID == "") {
+			t.Fatalf("holder %d: %d units in lease %+v; want %d", n, units, lease, want)
+		}
+		if n == 0 {
+			first = lease
+		}
+	}
+	if snap, err := m.Snapshot(); err != nil {
+		t.Fatal(err)
+	} else if len(snap.Leases) != 2 || snap.ReservedBytes != 60 {
+		t.Fatalf("leases %+v; want the two that were granted, 60 bytes", snap.Leases)
+	}
+	proc.mu.Lock()
+	proc.states[first.OwnerPID] = ProcessState{}
+	proc.mu.Unlock()
+	if _, units, err := m.ReserveUpTo(holder(3), four); err != nil || units != 4 {
+		t.Fatalf("after the first holder died: %d units, %v; want 4", units, err)
+	}
+	// 5 bytes are left: 4 fits, 20 does not, and the 1 after it, which
+	// would, is not reached.
+	if lease, units, err := m.ReserveUpTo(holder(4), []uint64{4, 20, 1}); err != nil || units != 1 || lease.CeilingBytes != 4 {
+		t.Fatalf("mixed units: %d in %+v, %v; want the first, 4 bytes", units, lease, err)
+	}
+}
+
+func TestReserveUpToRejectsAFixedCeilingOrAnEmptyUnit(t *testing.T) {
+	now := time.Unix(100, 0)
+	m := testManager(t, &fakeMemory{available: 500}, &fakeProcesses{states: map[int]ProcessState{}}, &now)
+	sized := request()
+	sized.CeilingBytes = 10
+	for _, tc := range []struct {
+		req   Request
+		units []uint64
+	}{{sized, []uint64{10}}, {request(), []uint64{10, 0}}, {request(), nil}} {
+		if _, _, err := m.ReserveUpTo(tc.req, tc.units); err == nil {
+			t.Errorf("ReserveUpTo(ceiling %d, units %v) succeeded; want an error", tc.req.CeilingBytes, tc.units)
+		}
 	}
 }
 
