@@ -6,13 +6,9 @@
   // The normal send/interrupt path stays on one `<button>` so focus
   // remains stable when a turn starts mid-click. Plan follow-up actions
   // can opt into a split menu for secondary actions like "new thread" or
-  // "send without comments". An assistant's current thread gets a session
-  // menu beside the button instead: Interrupt, which keeps the session, and
-  // End Session, which ends the provider process with its background work
-  // (docs/specs/standing-agents.md, "Interrupt and end session").
+  // "send without comments".
 
   import ArrowUp from '@lucide/svelte/icons/arrow-up';
-  import type { ControlAccess } from '../../../transport/scopes';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Play from '@lucide/svelte/icons/play';
   import Square from '@lucide/svelte/icons/square';
@@ -22,7 +18,6 @@
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import type { SendButtonAction } from './sendButtonTypes';
-  import { grantBlockedTitle } from '../../../transport/scopeRefusal';
 
   interface Props {
     canSend: boolean;
@@ -57,18 +52,6 @@
      * stops a background task) override it.
      */
     interruptLabel?: string;
-    /** Set on an assistant's current thread: the session menu's End Session. */
-    onEndSession?: () => void;
-    /**
-     * Whether the thread has a provider session; End Session is disabled
-     * without one. Undefined when the computer does not say.
-     */
-    sessionLive?: boolean;
-    /**
-     * This device's `threads:operate` there. Both items are inert unless
-     * `granted`, and say why only when the grant is known to lack it.
-     */
-    sessionAccess?: ControlAccess;
   }
 
   let {
@@ -85,9 +68,6 @@
     onSendInNewThread,
     onInterrupt,
     interruptLabel = 'Interrupt current turn',
-    onEndSession,
-    sessionLive,
-    sessionAccess = 'granted',
   }: Props = $props();
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
   let menuOpen = $state(false);
@@ -157,19 +137,6 @@
     closeMenu();
     onSendWithoutPlanComments?.();
   }
-
-  let turnRunning = $derived(isTurnActive || sendInFlight);
-  let showSessionMenu = $derived(Boolean(onEndSession) && !showImplementMenu && !showCommentsMenu);
-
-  function handleMenuInterrupt(): void {
-    closeMenu();
-    onInterrupt();
-  }
-
-  function handleEndSession(): void {
-    closeMenu();
-    onEndSession?.();
-  }
 </script>
 
 {#snippet pendingSpinner()}
@@ -178,53 +145,6 @@
       <SteppedSpinner size={16} class="opacity-100" />
     </span>
   {/if}
-{/snippet}
-
-{#snippet mainButton(split: boolean)}
-  <button
-    type="button"
-    onclick={handleClick}
-    onpointerdown={keepInputFocus}
-    {disabled}
-    data-testid={showStop ? 'composer-interrupt' : 'composer-send'}
-    data-pending={showPending || null}
-    aria-busy={showPending}
-    aria-label={showPending ? PENDING_LABEL : showStop ? interruptLabel : idleLabel}
-    title={showPending ? PENDING_LABEL : showStop ? interruptLabel : (disabledReason ?? idleLabel)}
-    class={[
-      'relative inline-flex h-8 compact:h-10 items-center justify-center shrink-0',
-      split ? 'rounded-l-full' : 'rounded-full',
-      label && !showStop ? 'px-3 text-xs font-medium' : 'w-8 compact:w-10',
-      'transition-[background-color,transform,opacity] duration-150 cursor-pointer',
-      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:ring-accent/50',
-      split ? '' : 'hover:scale-105 active:scale-95',
-      showStop
-        ? 'bg-error text-surface-0 hover:bg-error/85'
-        : 'bg-accent text-surface-0 hover:bg-accent/85',
-      disabledClass,
-    ].join(' ')}
-  >
-    {#if showStop}
-      <Icon icon={Square} size={12} strokeWidth={2.5} class="opacity-100" />
-    {:else}
-      {@render pendingSpinner()}
-      <span class={['inline-flex items-center gap-1.5', showPending ? 'invisible' : ''].join(' ')} data-testid="composer-send-content">
-        {#if action === 'implement'}
-          <Icon icon={Play} size={13} strokeWidth={2.5} class="opacity-100" />
-          <span>{label}</span>
-        {:else if label}
-          <span>{label}</span>
-          {#if showCommentCount}
-            <span class="inline-flex min-w-4 items-center justify-center rounded-full bg-surface-0/20 px-1 text-[0.625rem] font-semibold leading-4 text-surface-0">
-              {planCommentCount}
-            </span>
-          {/if}
-        {:else}
-          <Icon icon={ArrowUp} size={16} strokeWidth={2.5} class="opacity-100" />
-        {/if}
-      </span>
-    {/if}
-  </button>
 {/snippet}
 
 {#if showImplementMenu || showCommentsMenu}
@@ -299,53 +219,48 @@
       </Menu>
     {/snippet}
   </Popover>
-{:else if showSessionMenu}
-  <div class="flex">
-    {@render mainButton(true)}
-    <button
-      bind:this={menuTriggerEl}
-      type="button"
-      onclick={() => (menuOpen = !menuOpen)}
-      aria-label="Interrupt or end the session"
-      title="Interrupt or end the session"
-      aria-haspopup="menu"
-      aria-expanded={menuOpen}
-      class={[
-        'inline-flex h-8 w-7 compact:h-10 compact:w-9 items-center justify-center rounded-r-full border-l border-surface-0/20',
-        'transition-colors cursor-pointer text-surface-0',
-        showStop ? 'bg-error hover:bg-error/85' : 'bg-accent hover:bg-accent/85',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:ring-accent/50',
-      ].join(' ')}
-      data-testid="composer-session-menu"
-    >
-      <Icon icon={ChevronDown} size={13} strokeWidth={2.5} />
-    </button>
-  </div>
-
-  <Popover
-    anchor={menuTriggerEl}
-    open={menuOpen}
-    onClose={closeMenu}
-    placement="top-end"
-    role="none"
-  >
-    {#snippet children()}
-      <Menu ariaLabel="Session" onClose={closeMenu}>
-        <MenuItem
-          label="Interrupt"
-          disabled={!turnRunning || sessionAccess !== 'granted'}
-          title={grantBlockedTitle(sessionAccess)}
-          onSelect={handleMenuInterrupt}
-        />
-        <MenuItem
-          label="End Session"
-          disabled={sessionLive === false || sessionAccess !== 'granted'}
-          title={grantBlockedTitle(sessionAccess) ?? (sessionLive === false ? 'No session is running' : undefined)}
-          onSelect={handleEndSession}
-        />
-      </Menu>
-    {/snippet}
-  </Popover>
 {:else}
-  {@render mainButton(false)}
+  <button
+    type="button"
+    onclick={handleClick}
+    onpointerdown={keepInputFocus}
+    {disabled}
+    data-testid={showStop ? 'composer-interrupt' : 'composer-send'}
+    data-pending={showPending || null}
+    aria-busy={showPending}
+    aria-label={showPending ? PENDING_LABEL : showStop ? interruptLabel : idleLabel}
+    title={showPending ? PENDING_LABEL : showStop ? interruptLabel : (disabledReason ?? idleLabel)}
+    class={[
+      'relative inline-flex h-8 compact:h-10 items-center justify-center rounded-full shrink-0',
+      label && !showStop ? 'px-3 text-xs font-medium' : 'w-8 compact:w-10',
+      'transition-[background-color,transform,opacity] duration-150 cursor-pointer',
+      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:ring-accent/50',
+      'hover:scale-105 active:scale-95',
+      showStop
+        ? 'bg-error text-surface-0 hover:bg-error/85'
+        : 'bg-accent text-surface-0 hover:bg-accent/85',
+      disabledClass,
+    ].join(' ')}
+  >
+    {#if showStop}
+      <Icon icon={Square} size={12} strokeWidth={2.5} class="opacity-100" />
+    {:else}
+      {@render pendingSpinner()}
+      <span class={['inline-flex items-center gap-1.5', showPending ? 'invisible' : ''].join(' ')} data-testid="composer-send-content">
+        {#if action === 'implement'}
+          <Icon icon={Play} size={13} strokeWidth={2.5} class="opacity-100" />
+          <span>{label}</span>
+        {:else if label}
+          <span>{label}</span>
+          {#if showCommentCount}
+            <span class="inline-flex min-w-4 items-center justify-center rounded-full bg-surface-0/20 px-1 text-[0.625rem] font-semibold leading-4 text-surface-0">
+              {planCommentCount}
+            </span>
+          {/if}
+        {:else}
+          <Icon icon={ArrowUp} size={16} strokeWidth={2.5} class="opacity-100" />
+        {/if}
+      </span>
+    {/if}
+  </button>
 {/if}

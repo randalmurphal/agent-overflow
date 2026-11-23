@@ -49,13 +49,14 @@ import {
   seedAgentsTree,
   startTree,
 } from './agents-tray-helpers.js';
+import type { MockInfo } from './workflows-helpers.js';
 
 const USER_STOP = 'The user stopped it from the Agents tray';
 
-/** Whether the thread has a provider session live or starting. */
-async function sessionLive(harness: HarnessApp, threadID: string): Promise<boolean> {
-  const live = await harness.rpc<{ threadId: string; sessionLive?: boolean }[]>('ListThreadLiveActivity');
-  return live.some((row) => row.threadId === threadID && row.sessionLive === true);
+/** Whether a provider session runs in cwd: a mock that registered there and has not exited. */
+async function liveIn(harness: HarnessApp, cwd: string): Promise<boolean> {
+  const mocks = await harness.rpc<(MockInfo & { exited: boolean })[]>('HarnessListMocks');
+  return mocks.some((mock) => mock.registration.cwd === cwd && !mock.exited);
 }
 
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
@@ -166,14 +167,14 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
     // The child is at rest: its session ended with its shell, and nothing
     // brought it back. A later message starts it again and is answered.
-    expect(await sessionLive(harness, started.child), 'the stopped child came back').toBe(false);
+    await expect.poll(() => liveIn(harness, tree.childPath), { message: 'the stopped child came back', timeout: 30_000 }).toBe(false);
     await setScenario(harness, tree.childPath, threadToolsScenario({
       name: `agents-${provider}-child-again`, provider, echoUserMessage: true, turns: [{ text: 'Back on it.' }],
     }));
     const answered = awaitTurnCompleted(harness, started.child);
     await harness.rpc('SendMessage', started.child, 'one more thing', null);
     await answered;
-    await expect.poll(() => sessionLive(harness, started.child), { timeout: 30_000 }).toBe(true);
+    await expect.poll(() => liveIn(harness, tree.childPath), { timeout: 30_000 }).toBe(true);
   });
 
   test(`${provider}: Stop All brings each spawn to rest; Background's Stop All and the thread's own Stop leave the rows`, async ({ harness, page }) => {

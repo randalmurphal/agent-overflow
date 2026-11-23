@@ -1,7 +1,7 @@
 # Standing agents
 
 Status: design signed off 2026-10-10; assistant identity and creation
-(rulings 22 to 29) signed off 2026-10-15. The build is split
+(rulings 22 to 28) signed off 2026-10-15. The build is split
 into the slices in [Slices and verification](#slices-and-verification);
 each lands as its own pull request against the `personal-assistant`
 branch and nothing merges without the user's review.
@@ -217,10 +217,6 @@ Rulings of 2026-10-15 (slice 14):
 28. **An assistant's workers open beside it.** An Agents row opens its
     thread in one companion pane beside the current pane, with that
     thread's own composer and Stop.
-29. **Interrupt and end session are two actions.** Wherever an assistant
-    thread or a workflow pause offers Stop, Interrupt stops the turn and
-    keeps the session, and End Session ends the process and its
-    background items.
 
 Rulings of 2026-10-16 (sidebar hierarchy):
 
@@ -1240,7 +1236,7 @@ thread:
    `cancelled: thread "<title>" stopped the thread`) and dismisses the
    remote completions its agent has not taken in, queued or not.
 3. Pauses every workflow run that reports to it (bound to it, whoever
-   started the run and whatever its source), with Pause and End Sessions ([Interrupt and end session](#interrupt-and-end-session)):
+   started the run and whatever its source), with Pause and End Sessions ([Workflow pause and end sessions](#workflow-pause-and-end-sessions)):
    the run reads paused, its members' sessions end, and it stays bound
    to the thread and resumable from the workflows view. The run's wakes
    to the thread are held from before anything moves it, so the rest the
@@ -2403,28 +2399,17 @@ so. An agent message's sender chip opens in the focused pane under the
 same rule. Under the compact layout the pane is a screen of the
 strip like any companion.
 
-#### Interrupt and end session
+#### Workflow pause and end sessions
 
-Ruling 29. In an assistant's current thread, wherever the thread offers
-Stop it offers two actions: Interrupt (`InterruptTurn`), which stops the
-turn and keeps the session, and End Session (`StopSession`), which ends
-the provider process with its background agents and shells. The
-composer's Stop is Interrupt with a menu beside it holding both; the
-working indicator's Stop is Interrupt; the menu stays beside Send while
-no turn runs, with Interrupt disabled and End Session available, since
-an idle session can still hold background work. End Session is
-disabled, titled "No session is running", while the thread has no
-session live or starting (`provider:session_live`, capability
-`session-live.v1`, restated by `ListThreadLiveActivity`'s
-`sessionLive`); against a computer that does not publish it, End
-Session stays enabled. A workflow run's Pause is Interrupt for its
-members (it keeps their sessions, as it did); Pause and End Sessions
-also ends the session of every member of the tree that has not ended,
-running or already parked, a running descendant of a parked root
-included, as the engine names them once the pause is made, and Resume
-starts them again on the same provider threads. A Stop that brings a thread to rest
-makes the same Pause and End Sessions of the runs that report to it. The Agents row's Stop on a spawned
-thread brings it to rest ([At rest](#at-rest)), which ends its session.
+A workflow run's Pause interrupts its members' turns and keeps their
+sessions. Pause and End Sessions also ends the session of every member
+of the tree that has not ended, running or already parked, a running
+descendant of a parked root included, as the engine names them once the
+pause is made, and Resume starts them again on the same provider
+threads. A Stop that brings a thread to rest makes the same Pause and
+End Sessions of the runs that report to it. The Agents row's Stop on a
+spawned thread brings it to rest ([At rest](#at-rest)), which ends its
+session.
 
 ### Workflows to MCP
 
@@ -2518,7 +2503,7 @@ ticket keys.
 | 8 | MR lead migration | 2, 3b, 5, 6, 14 | An assistant created for the lead read the old lead thread with `thread_show`, keeps the lead's notes in its home, set its own loop and watches, and ran a week | The user |
 | 9 | Agent home contents | 5, 6 | A standing agent's sessions on Claude, claude-tui and Codex carry the same block whatever the home files hold; footers and wakes name a standing agent with its role line and tell a worker its questions go to its agent; `home_files` attaches files on spawn and send and is refused for a non-agent, an escaping path, a missing file and a total past 32 KiB; thread rows carry `standing_agent` and `spawned_by`. Home file delivery moved to slice 15 | `standing-agent-home-contents.spec.ts` on both mock providers (the session block, a worker's first message carrying `home_files`, the footer role line between an agent and an ordinary thread); app tests reading the claude-tui argv and append file, since no mock speaks claude-tui |
 | 10 | Agents segment | 3b, 9 | The Agents segment lists a thread's spawns and owed sends and asks with title, provider, state, elapsed and what blocks them, nested by spawn to four levels and across paired computers; settled rows linger 8 s and leave for Past, which counts them and pages them 8 and then 20 at a time and back to 8 on Show less, a click opens the target or the answer, Open in Agent Pane opens any row's thread beside and Show in Sidebar gives an owned worker its row; Stop cancels the request for the user with the caller's wake armed and brings a spawned thread to rest, here or on a paired computer, and Stop All does the same; incoming agent messages list until delivered and withdraw; Background's Stop All and the thread's own Stop leave the rows; the segment fits every rail density | `agents-tray.spec.ts`, `agents-tray-past.spec.ts` and `compact-agents-tray.spec.ts` on both mock providers (Past, its paging and an ask in it, Open in Agent Pane on a past and an archived worker, Show in Sidebar, a worker's prompt routed to an ordinary spawner, rows, nesting, a blocked approval, settle and linger, click, per-row Stop cascade with the caller's user-cancelled wake and the nested wakes disarmed, Stop All, Background's Stop All and the thread's own Stop leaving the rows); the cascade across computers in `thread-tools-paired.spec.ts`; workers owned on another computer (no row, Show in Sidebar and Remove from Sidebar on their own computer, a window attached only to the spawner's, the waiting line, the wake, archive and delete with that computer stopped or older) in `thread-tools-paired.spec.ts`, `thread-tools-three-computers.spec.ts` and `assistants-toggle-paired.spec.ts`; screenshots of running, blocked, nested and settled rows and the digest, desktop and compact |
-| 14 | Assistant identity and creation | 9, 10, 13 | Standing agents are records (`agents`, `agent_past_threads`, v155); promotion and demotion are gone from the app, the bindings and the docs; New Assistant (desktop and compact, sidebar and project menu) creates the record, the home and a thread whose app-written opening starts the role discussion; the name is the title, unique per computer, a clash across paired computers shows `<name>-<computer>`; New Thread, Same Assistant moves loops, watches, reminders, requests and workers to the successor and opens it with the handoff block; app-written messages to a past thread reach the current one; `thread_search` `agents` and name addressing; `thread_new_assistant` for assistants only; Agents rows open in the `agent-thread` companion pane; Interrupt and End Session are separate for assistant threads and workflow pauses | `assistant-creation.spec.ts`, `assistant-handoff.spec.ts`, `assistant-companion.spec.ts` and their compact twins on both mock providers; the name clash and name addressing in `thread-tools-paired.spec.ts`; `thread_new_assistant` in `thread-tools.spec.ts`; regression on the standing-agent, agents-tray, thread-tools and upgrade-corpus specs; screenshots of the dialog, the opening discussion, the handoff, the companion pane and the Stop menu, desktop and compact |
+| 14 | Assistant identity and creation | 9, 10, 13 | Standing agents are records (`agents`, `agent_past_threads`, v155); promotion and demotion are gone from the app, the bindings and the docs; New Assistant (desktop and compact, sidebar and project menu) creates the record, the home and a thread whose app-written opening starts the role discussion; the name is the title, unique per computer, a clash across paired computers shows `<name>-<computer>`; New Thread, Same Assistant moves loops, watches, reminders, requests and workers to the successor and opens it with the handoff block; app-written messages to a past thread reach the current one; `thread_search` `agents` and name addressing; `thread_new_assistant` for assistants only; Agents rows open in the `agent-thread` companion pane; a workflow pause can keep or end its members' sessions | `assistant-creation.spec.ts`, `assistant-handoff.spec.ts`, `assistant-companion.spec.ts` and their compact twins on both mock providers; the name clash and name addressing in `thread-tools-paired.spec.ts`; `thread_new_assistant` in `thread-tools.spec.ts`; regression on the standing-agent, agents-tray, thread-tools and upgrade-corpus specs; screenshots of the dialog, the opening discussion, the handoff and the companion pane, desktop and compact |
 | 15 | Memory and assistants above projects | 9, 14 | No built-in skills or Skills page; memory scopes, facts, the built index, a whole delivery per start and compaction with the write rules, what changed at each prompt, nothing cut past the size limit, and maintenance warnings for assistants only ([memory](memory.md)); shared memory and the provider memory settings on Claude, claude-tui and Codex; assistants with projects and no project of their own, running in their home, helpers under the assistant and project work under its row in the project, delete and project removal as ruled (rulings 37 to 40); the Assistants and Projects sidebar sections | Unit tests named in [memory](memory.md#verification); `standing-agent-home-contents.spec.ts`, the standing-agent sidebar and spawn-placement specs and the assistant specs on both mock providers, desktop and compact; screenshots of the Assistants section, an assistant's row in a project and the Projects checklist |
 
 Slices 1 and 3a start together, with the slice 4 spike beside them.
