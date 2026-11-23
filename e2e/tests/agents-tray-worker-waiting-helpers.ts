@@ -20,6 +20,7 @@ import type { Locator, Page } from '@playwright/test';
 
 import { expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
+import { STALE_CHECK_INTERVAL_MS, STALE_TRAFFIC_THRESHOLD_MS } from '../../frontend/src/lib/pageTiming.ts';
 import {
   FOOTER_TOKEN_PATTERN,
   advanceGate,
@@ -193,10 +194,10 @@ const FACTS_SHELL = /tail -f build\.log|tail the build log/;
 const FACTS_READ = /cat build\.log/;
 /**
  * How far the page clock moves on with a worker between turns to see its
- * runtime stand still: well past a tick of its elapsed time, short of the
- * thirty seconds the socket's staleness check would read as a dead link.
+ * runtime stand still: well past a tick of its elapsed time, and a staleness
+ * check short of the silence the socket would read as a dead link.
  */
-const IDLE_MS = 20_000;
+const IDLE_MS = STALE_TRAFFIC_THRESHOLD_MS - STALE_CHECK_INTERVAL_MS;
 
 /** A row's runtime as AgentTrayRow writes it (formatElapsed). */
 function ranFor(ms: number): string {

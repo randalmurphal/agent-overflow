@@ -1,4 +1,5 @@
 import { DisconnectedError, type TransportStatus } from '../transport/wsClient';
+import { COMPUTER_READ_DEADLINE_MS } from '../pageTiming';
 import { beginCatalogRead, type CatalogRead } from './computerCatalogReads';
 // A failed list read is not an empty computer. Read each computer's share
 // independently and retain only that computer's cached rows on failure.
@@ -37,9 +38,9 @@ export interface KeptRows<T> {
   readonly provenance: HeldProvenance;
 }
 
-// The startup read budget: past it, a computer's answer commits late and
-// the boot proceeds without it.
-export const COMPUTER_READ_DEADLINE_MS = 2500;
+// The startup read budget lives in pageTiming.ts, which the end-to-end
+// suite reads too.
+export { COMPUTER_READ_DEADLINE_MS };
 
 /** How one catalog is read from each computer and committed. */
 export interface CatalogPart<T> {

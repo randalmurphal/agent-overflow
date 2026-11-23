@@ -1,4 +1,5 @@
 import { test, expect } from './base-test.js';
+import { COMPUTER_READ_DEADLINE_MS } from '../../frontend/src/lib/pageTiming.ts';
 import { launchHarness } from '../src/harness.js';
 import { seedAgentThread } from './agent-visibility-helpers.js';
 import { PAIRED_APP_MOUNT_MS, confirmOnHost, mintInvite, nonLoopbackIPv4, redeemOnScreen, socketAnswers } from './offhost-helpers.js';
@@ -20,17 +21,18 @@ export function offlineStartupFlow(): void {
     // attempts are run below, one at a time, by moving it on. Installed
     // before the deadline tracker below, which wraps the clock's timers.
     await page.clock.install();
-    await page.addInitScript(() => {
-      // Boot reads race a 2.5s deadline (COMPUTER_READ_DEADLINE_MS and the
-      // UI-state read, both through readBeforeDeadline). Track every timer
-      // of that length so the outage can end once each has fired or been
-      // cleared, instead of after a fixed sleep.
+    await page.addInitScript((readDeadlineMs) => {
+      // Boot reads race the startup read budget (COMPUTER_READ_DEADLINE_MS,
+      // for the catalog rows and the UI state, both through
+      // readBeforeDeadline). Track every timer of that length so the outage
+      // can end once each has fired or been cleared, instead of after a
+      // fixed sleep.
       const deadlines = { armed: 0, fired: 0, pending: new Set<unknown>() };
       (window as unknown as { __bootDeadlines: typeof deadlines }).__bootDeadlines = deadlines;
       const nativeSet = window.setTimeout.bind(window);
       const nativeClear = window.clearTimeout.bind(window);
       window.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
-        if (delay !== 2500 || typeof handler !== 'function') return nativeSet(handler, delay, ...args);
+        if (delay !== readDeadlineMs || typeof handler !== 'function') return nativeSet(handler, delay, ...args);
         deadlines.armed++;
         const id = nativeSet(() => {
           deadlines.pending.delete(id);
@@ -53,7 +55,7 @@ export function offlineStartupFlow(): void {
           (window as unknown as { __recordStartupToast(text: string): void }).__recordStartupToast(text);
         }
       }).observe(document, { subtree: true, childList: true });
-    });
+    }, COMPUTER_READ_DEADLINE_MS);
     const answers = socketAnswers();
     let refused = 0;
     await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {

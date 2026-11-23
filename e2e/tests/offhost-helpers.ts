@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, type Page, type WebSocketRoute } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
+import { RECONNECT_MAX_REMOTE_MS } from '../../frontend/src/lib/pageTiming.ts';
 
 /** The refusal for a method a peer may not even see. */
 export const UNENUMERABLE = { code: 'method_not_found', message: 'method not registered' };
@@ -263,9 +264,9 @@ export const PAIRED_APP_MOUNT_MS = 20_000;
 // A spec that refuses a paired computer's dials and then lets them through
 // waits this long for the next dial. Nothing tells the page the computer
 // answers again, so it dials on its reconnect ladder's next rung, and for a
-// remote computer one rung can be wsClient's RECONNECT_MAX_REMOTE_MS (30s)
-// away. The rest is margin for a slow runner.
-export const PAIRED_REDIAL_MS = 35_000;
+// remote computer one rung can be RECONNECT_MAX_REMOTE_MS away. The rest is
+// margin for a slow runner.
+export const PAIRED_REDIAL_MS = RECONNECT_MAX_REMOTE_MS + 5_000;
 
 /**
  * Counts the routed sockets the backend has answered on. A dial let through

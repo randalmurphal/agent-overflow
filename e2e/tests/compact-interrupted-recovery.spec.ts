@@ -11,22 +11,19 @@
 import { type WebSocketRoute } from '@playwright/test';
 import { expect, test } from './base-test.js';
 import { launchHarness } from '../src/harness.js';
+import { REPLAY_RETIRED_WARNING, REPLAY_TIMEOUT_MS, STALE_CHECK_INTERVAL_MS } from '../../frontend/src/lib/pageTiming.ts';
 import {
   RESULT_LINE, advance, claudeScenario, emit, seedAgentThread, startMock, textLines, waitForGate,
 } from './agent-visibility-helpers.js';
 import { confirmOnHost, instrument, mintInvite, nonLoopbackIPv4, redeemOnScreen } from './offhost-helpers.js';
 import { COMPACT_SURFACE } from './preview-gateway-helpers.js';
 
-// The product's replay deadline is a minute, read on a ten-second
-// staleness tick. A jump of the page clock fires a due tick once, at its
-// end: the first jump leaves the stall well short of the deadline (the
-// steps under it take a few seconds), the second carries it past.
-const SHORT_OF_REPLAY_DEADLINE_MS = 45_000;
-const PAST_REPLAY_DEADLINE_MS = 30_000;
-// The page's word that its watchdog retired a replay (wsClient.ts). The
-// tick logs it inside the clock jump that fired it, so it has reached this
-// process by the time that jump returns.
-const REPLAY_RETIRED = 'wsClient: replay did not complete; forcing reconnect';
+// The product's replay deadline is read on the staleness tick. A jump of the
+// page clock fires a due tick once, at its end: the first jump leaves the
+// stall a tick and a half short of the deadline (the steps under it take a
+// few seconds), the second carries it a tick and a half past.
+const SHORT_OF_REPLAY_DEADLINE_MS = REPLAY_TIMEOUT_MS - 1.5 * STALE_CHECK_INTERVAL_MS;
+const PAST_REPLAY_DEADLINE_MS = 3 * STALE_CHECK_INTERVAL_MS;
 
 test('interrupted then stalled replay recovers a changed thread and an accepted send', async ({ page }) => {
   test.skip(nonLoopbackIPv4() === null, 'requires a LAN interface for a paired browser');
@@ -81,7 +78,10 @@ test('interrupted then stalled replay recovers a changed thread and an accepted 
   });
   try {
     let retiredWarnings = 0;
-    page.on('console', (message) => { if (message.text() === REPLAY_RETIRED) retiredWarnings++; });
+    // The page's word that its watchdog retired a replay. The tick logs it
+    // inside the clock jump that fired it, so it has reached this process by
+    // the time that jump returns.
+    page.on('console', (message) => { if (message.text() === REPLAY_RETIRED_WARNING) retiredWarnings++; });
     await page.clock.install();
     await harness.rpc('SetNetworkSettings', { bindAll: true });
     const first = await seedAgentThread(harness, 'interrupted-first', 'First recovery thread');

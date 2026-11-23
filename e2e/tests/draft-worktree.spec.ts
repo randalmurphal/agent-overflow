@@ -14,6 +14,7 @@ import type { Browser, Page } from '@playwright/test';
 import { realpath } from 'node:fs/promises';
 import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
+import { DRAFT_SAVE_DEBOUNCE_MS } from '../../frontend/src/lib/pageTiming.ts';
 import { callsInFlight, methodIdByName } from './offhost-helpers.js';
 
 const PROJECT = 'draft-worktree-app';
@@ -464,12 +465,11 @@ async function eraseWithDeleteHeld(harness: HarnessApp, page: Page, hold: Awaite
 }
 
 /**
- * Longer than the composer's save debounce (composerDraft.svelte.ts
- * DEFAULT_DEBOUNCE_MS, half a second), and short of the transport's
- * thirty-second silence verdict, so moving a page clock this far runs every
- * save a page still had due and nothing else of the connection.
+ * The composer's save debounce: every save a page still had due falls due
+ * within it, so moving a page clock this far runs them, and it is far short
+ * of anything else of the connection.
  */
-const PAST_DRAFT_DEBOUNCE_MS = 5_000;
+const PAST_DRAFT_DEBOUNCE_MS = DRAFT_SAVE_DEBOUNCE_MS;
 
 test('typing again while the erased draft is being deleted keeps every character in the replacement thread', async ({
   harness,

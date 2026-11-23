@@ -25,6 +25,7 @@
 // project reply or the thread reply held, a project has no header and no
 // rows, and header and rows appear together in one arrangement.
 import type { Page } from '@playwright/test';
+import { COMPUTER_READ_DEADLINE_MS } from '../../frontend/src/lib/pageTiming.ts';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { attachWorktree, seedWorktreeProject } from './worktree-removal-helpers.js';
 
@@ -556,9 +557,6 @@ for (const held of ['projects', 'threads'] as const) {
   });
 }
 
-// The page's startup read budget (computerRows.ts COMPUTER_READ_DEADLINE_MS).
-const READ_DEADLINE_MS = 2500;
-
 // A listed project whose frames were lost re-reads its threads and groups.
 // With the group reply held past the read deadline, the rows stay as they
 // were, without moving, until it lands, and then change arrangement once:
@@ -620,7 +618,7 @@ test('a refresh whose group answer is late moves the rows once, when it lands', 
   await expect.poll(() => heldReplies.length).toBeGreaterThan(0);
   // The deadline passing is what this case is about: the thread answer is
   // in, the group answer is not, and the page has given up waiting on time.
-  await page.clock.fastForward(READ_DEADLINE_MS + 500);
+  await page.clock.fastForward(COMPUTER_READ_DEADLINE_MS);
   await nextFrames(page, 2);
   const held = (await sidebarRecord(page)).frames.slice(listedAt);
   expect(arrangements(held)).toEqual(initial);

@@ -9,6 +9,7 @@
 // editor on that line.
 import type { Locator, Page } from '@playwright/test';
 
+import { TOAST_MS } from '../../frontend/src/lib/pageTiming.ts';
 import type { HarnessApp } from '../src/harness.js';
 import { expect } from './fixtures.js';
 import { expectEveryForgeCallHandled, forgeInvocations, openPullRequestReview, refuseForgeRoute, releaseForgeRoute } from './forge-helpers.js';
@@ -17,7 +18,6 @@ import { openEditor, ROUTES, seedPull } from './review-comment-actions-flow.js';
 const FORGE = 'gitlab';
 const TITLE = 'Pane close review';
 const TEXT = 'Five needs a test.';
-const DEFAULT_TOAST_MS = 5_000;
 
 /** Every call on `route`, refused ones included. */
 async function routeCalls(harness: HarnessApp, route: string): Promise<number> {
@@ -94,7 +94,7 @@ export async function failAfterPaneCloses(harness: HarnessApp, page: Page, compa
   // are after the copy, so both leave it first.
   await page.mouse.move(0, 0);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await page.clock.fastForward(DEFAULT_TOAST_MS + 1_000);
+  await page.clock.fastForward(TOAST_MS);
   await expect(toast).toHaveCount(1);
 
   // The review opened again has a fresh editor on that line.
