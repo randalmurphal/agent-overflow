@@ -436,17 +436,20 @@ describe('<CommitDialog> — pending operation notice', () => {
   });
 
   it('lists once on open, not once per effect', async () => {
-    const m = await mount();
-    await waitFor(() => expect(m.rows()).toHaveLength(3));
-    // Past the scheduler's delay and its longest wait: a second listing
-    // asked for by a later effect would have run.
+    // On the fake clock from before the mount, so a second listing that an
+    // effect asks for during it waits on this clock.
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     try {
-      await vi.advanceTimersByTimeAsync(2_000);
+      const m = await mount();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(m.rows()).toHaveLength(3);
+      // Past the scheduler's delay (250 ms), its longest wait (1 s) and its
+      // spacing between listings (1 s): a second listing would have run.
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(m.list).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
-    expect(m.list).toHaveBeenCalledTimes(1);
   });
 
   it('renders no notice when no operation is pending', async () => {
