@@ -5,7 +5,15 @@
 //
 // Resets by name: after every test, each export named `reset…ForTest` or
 // `clear…ForTest` (with or without a leading `__`) of a loaded module
-// runs, when the transform sees that it takes no required argument. An
+// runs, when the transform sees that it takes no required argument.
+//
+// The contract of such an export: it returns its own module to the state
+// the module had just after it loaded, and it breaks no other module's
+// registration (a listener, a step or a source another module installed,
+// at its load or when it made something that outlives these steps), and
+// it calls no backend. It resets its own module only; another module's
+// state is that module's own reset's. An export that cannot keep the
+// contract is listed in NOT_BETWEEN_TESTS with the reason. An
 // export that requires an argument is never called by name; a module opts
 // it in by naming it in POSTURE or FIRST below with a `run` that passes the
 // argument.
@@ -103,6 +111,7 @@ export const NOT_BETWEEN_TESTS: Readonly<Record<string, string>> = {
   'src/lib/stores/transportStatus.svelte.ts#resetTransportStatusForTest': 'tears down the backend status subscriptions the module makes when it loads, for a test that seeds a fresh client',
   'src/lib/stores/watchedThreads.ts#resetWatchedThreadSourcesForTest': 'drops the watch sources other modules register when they load, which they do not register again',
   'src/lib/transport/clientPurge.ts#__resetClientPurgeForTest': 'drops the purge steps other modules register when they load, which they do not register again',
+  'src/lib/transport/backendClock.ts#resetBackendClocksForTest': 'drops the clock each backend entry registers when it is made; the home entry outlives the between-test steps and does not register again',
 };
 
 /** Every module this file names, with the exports it names. */
