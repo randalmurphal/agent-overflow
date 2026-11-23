@@ -5,7 +5,7 @@ import { makeItem } from '../../../test/helpers/chat';
 import { normalizedTextContent } from '../../../test/helpers/textContent';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { deriveTrayTasks } from '../../utils/backgroundTray';
-import { getToasts, removeToast } from '../../stores/toast.svelte';
+import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 import type { Item } from '../../types/models';
 
 function shell(id: string, overrides: Partial<Item> = {}): Item {
@@ -36,7 +36,7 @@ function toasts() {
 describe('Stop All in the background tray', () => {
   beforeEach(() => {
     resetBindingMocks();
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    resetToastsForTest();
   });
 
   it('renders each launch\'s result: a failed stop on its row, an ended task in a notice', async () => {

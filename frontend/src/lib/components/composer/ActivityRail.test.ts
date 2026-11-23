@@ -699,13 +699,15 @@ describe('<ActivityRail>', () => {
     expect(perTask).toBe(0);
   });
 
-  it('Stop All on a Codex thread names a terminal with no process id and never calls StopClaudeTask', async () => {
+  it('Stop All on a Codex thread names a command stopped by its item id, with no process id, and never calls StopClaudeTask', async () => {
+    // An agent's command carries no process id: its row is stopped by its
+    // item id, which the backend marks.
     const exec = backgroundLaunch({
       id: 'exec',
       summary: 'exec_command',
       toolName: 'exec_command',
       payloadKind: 'command_output',
-      meta: JSON.stringify({ source: 'unifiedExecStartup' }),
+      meta: JSON.stringify({ source: 'unifiedExecStartup', stop_by_item: true }),
     });
     setBindingMock('ListLiveBackgroundTasks', async () => [exec]);
     let claudeCalls = 0;
@@ -778,9 +780,10 @@ describe('<ActivityRail>', () => {
     expect(claudeCalls).toBe(0);
   });
 
-  it('renders no per-row Stop for a Codex background row the wire has not named a process for', async () => {
-    // Stop-all still applies (it is thread-wide and needs no id), but a
-    // per-row button would have nothing to terminate.
+  it('renders no Stop, per row or Stop All, for a Codex background row the wire has not named a process for', async () => {
+    // Stop All names exactly the rows that show a Stop, so a row with
+    // neither a process id nor the item-id Stop mark has nothing for
+    // either button to stop.
     let terminateCalls = 0;
     setBindingMock('TerminateCodexBackgroundTerminal', async () => { terminateCalls++; return true; });
 
@@ -790,7 +793,7 @@ describe('<ActivityRail>', () => {
 
     expect(await findByTestId('background-task-tray-row')).toBeInTheDocument();
     expect(queryByTestId('background-task-tray-row-stop')).toBeNull();
-    expect(await findByTestId('activity-rail-background-stop-all')).toBeInTheDocument();
+    expect(queryByTestId('activity-rail-background-stop-all')).toBeNull();
     expect(terminateCalls).toBe(0);
   });
 

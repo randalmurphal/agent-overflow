@@ -37,7 +37,9 @@ for (const provider of ['codex', 'claude'] as const) {
       ],
     }));
     await setScenario(harness, targetPath, threadToolsScenario({
-      name: 'unwatched-target', provider, turns: [
+      // A Codex message that reaches the thread after its turn ended opens
+      // a turn of its own, which settles on that turn's echo.
+      name: 'unwatched-target', provider, echoUserMessage: true, turns: [
         { steps: [{ gate: 'review' }], text: 'Reviewed.' },
         { text: 'Read the change.' },
         { text: 'Rechecked.' },
