@@ -7,7 +7,9 @@
 // tokens, elapsed, activity line); once the execution settles, the final
 // numbers live on its completion meta
 // (`meta.subagentProgress`, persisted by triage at the terminal) and the
-// card reads those instead — see `utils/subagentProgress.ts`.
+// card reads those instead — see `utils/subagentProgress.ts`. The settled
+// launch's last tick stays here until the next snapshot omits it or the
+// thread is cleared; the card no longer reads it.
 //
 // One reactive box per (thread, launch) via keyedSignalRegistry: every
 // agent card on screen reads its own key, and a shared map would wake all
@@ -50,7 +52,7 @@ export function hydrateCodexAgents(threadId: string, items: Item[], revision: nu
 
 const keysByThread = new Map<string, Set<string>>();
 // Revisions of a thread's live ticks: the thread's latest change, each
-// launch's latest tick or drop, and the thread's latest clear. A snapshot
+// launch's latest tick, and the thread's latest clear. A snapshot
 // read at an older revision never undoes a change that landed after the
 // read (hydrateSubagentProgress). A thread's launch revisions die with its
 // clear.
@@ -73,9 +75,9 @@ function noteProgressChange(threadId: string, itemId: string): void {
  * Install a thread's live ticks from a GetThreadLiveState snapshot read at
  * `revision`. The snapshot answers for every launch that has not changed
  * since the read: it sets the ones it lists and drops the ones it omits,
- * which have settled. A launch that ticked or settled after the read keeps
- * this client's state, and a snapshot read before the thread was cleared
- * is refused.
+ * which have settled. A launch that ticked after the read keeps this
+ * client's state, and a snapshot read before the thread was cleared is
+ * refused.
  */
 export function hydrateSubagentProgress(threadId: string, entries: readonly SubagentProgressEvent[], revision: number): void {
   if (!threadId || revision < (clearRevisions.get(threadId) ?? 0)) return;
@@ -130,16 +132,6 @@ export function applySubagentProgress(evt: SubagentProgressEvent | undefined): v
     keysByThread.set(evt.threadId, keys);
   }
   keys.add(key);
-}
-
-/** Drop one launch's live tick — its row settled and the persisted final
- * numbers take over. */
-export function dropSubagentProgress(threadId: string, itemId: string): void {
-  if (!threadId || !itemId) return;
-  const key = progressKey(threadId, itemId);
-  progressByKey.drop(key);
-  noteProgressChange(threadId, itemId);
-  if (!codexAgents.get(key)) keysByThread.get(threadId)?.delete(key);
 }
 
 /** Drop a thread's ticks — session teardown, thread delete/archive. */
