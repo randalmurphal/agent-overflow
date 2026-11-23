@@ -401,14 +401,6 @@ func TestComputerPairingAnOpenAcrossARebindShowsTheMovedAddress(t *testing.T) {
 	}
 }
 
-// publishedSerial is the address publication's current serial.
-func publishedSerial(a *App) uint64 {
-	state := &a.computerRoutesPublished
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	return state.serial
-}
-
 // moveListener saves a new listen port, which rebinds the listener.
 func moveListener(t *testing.T, a *App) error {
 	l, err := net.Listen("tcp", "127.0.0.1:0")

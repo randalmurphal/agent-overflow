@@ -610,7 +610,9 @@ export function BypassPRRequestedChanges(pr: git$0.PRReference): $CancellablePro
 /**
  * CancelDevicePairing refuses a link and revokes whatever a redemption
  * already created — the number did not match, or the link was minted by
- * mistake.
+ * mistake. Every owner cancellation goes through the computer pairing book
+ * (Book.CancelLink): a link a window minted retires that window, with its
+ * LAN responders, and any other is canceled directly.
  */
 export function CancelDevicePairing(linkID: string): $CancellablePromise<void> {
     return $Call.ByID(2608316491, linkID);
@@ -862,6 +864,11 @@ export function CompactCodexThread(threadID: string): $CancellablePromise<void> 
 /**
  * ComputerPairingStatus shows independently derived digits only on the owner
  * surface. Confirmation is enabled only after ordinary enrollment has completed.
+ * 
+ * A window that is gone still answers for the invitation it published while
+ * it is the window opened last: a confirmation admitted before the window's
+ * deadline whose write lands after it reads confirmed, so a dialog whose
+ * approval reply was lost reaches the durable result.
  */
 export function ComputerPairingStatus(id: string): $CancellablePromise<app$0.ComputerPairingView> {
     return $Call.ByID(2151872702, id).then(($result: any) => {
