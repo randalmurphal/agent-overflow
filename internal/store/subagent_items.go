@@ -1254,10 +1254,8 @@ func (s *Store) SubagentCompletedChildIndex(threadID, launchID string) (int, err
 // SnapshotSubagentExecutionMeta returns immutable aggregates for one completed
 // execution, and its tool count. The caller persists the result on its new
 // completion item only. Child coordinates belong to the original spawn's AO
-// turn. One walk of the agent's rows partitions the execution for both: the
-// rows in (startIndex, endIndex] of turnIndex, less the rows directly under
-// the launch that are tagged with another execution (CodexExecutionMember);
-// the tool count is their tool_call rows directly under the launch, the rows
+// turn. One walk of the execution's members (forEachCodexExecutionRow) gives
+// both; the tool count is their tool_call rows directly under the launch, the rows
 // the live count (subagentExecutionToolCalls) and the card's digest
 // (resolveTimelineDigest) read under the same bounds.
 func (s *Store) SnapshotSubagentExecutionMeta(threadID, launchID, executionTurnID, itemMeta string, turnIndex, startIndex, endIndex int) (string, int, error) {
@@ -1268,10 +1266,7 @@ func (s *Store) SnapshotSubagentExecutionMeta(threadID, launchID, executionTurnI
 	got, err := readSnapshot(s.reader(), "subagent execution snapshot", func(q sqlQueryer) (snapshot, error) {
 		var acc subagentAggregateAccumulator
 		tools := 0
-		err := forEachCodexExecutionRow(q, threadID, launchID, turnIndex, startIndex, endIndex, func(row subagentAggregateRow) {
-			if row.direct && !CodexExecutionMember(row.executionTag, executionTurnID) {
-				return
-			}
+		err := forEachCodexExecutionRow(q, threadID, launchID, executionTurnID, turnIndex, startIndex, endIndex, func(row subagentAggregateRow) {
 			acc.add(row)
 			if row.direct && row.kind == "tool_call" {
 				tools++
@@ -1309,17 +1304,13 @@ func (s *Store) SubagentExecutionToolCallsAfter(threadID, launchID, executionTur
 // the execution its tag names (codexExecutionMemberSQL).
 const CodexExecutionTurnMetaKey = "codex_execution_turn_id"
 
-// CodexExecutionMember reports whether a row tagged tag (its
-// CodexExecutionTurnMetaKey, "" when untagged) is a member of the Codex
-// execution executionTurnID: unless the row is tagged with another
-// execution. An empty execution turn id (an execution recorded without one)
-// keeps every row in its bounds, as does an untagged row.
-func CodexExecutionMember(tag, executionTurnID string) bool {
-	return executionTurnID == "" || tag == "" || tag == executionTurnID
-}
-
-// codexExecutionMemberSQL is CodexExecutionMember in SQL, binding the
-// execution turn id twice.
+// codexExecutionMemberSQL is the store's rule for whether a row belongs to
+// the Codex execution whose turn id it binds, twice: unless the row is
+// tagged (CodexExecutionTurnMetaKey) with another execution. An empty turn
+// id (an execution recorded without one) keeps every row in its bounds, as
+// does an untagged row. Every store reader applies it: an execution's live
+// seed (subagentExecutionToolCalls), its snapshot (forEachCodexExecutionRow)
+// and its card's digest (TimelineDigestContext.filter).
 func codexExecutionMemberSQL(alias string) string {
 	return "(? = '' OR COALESCE(" + jsonFieldExpr(alias+"meta", "$."+CodexExecutionTurnMetaKey) + ", '') IN ('', ?))"
 }

@@ -528,19 +528,23 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 // agent, in the agent's turn, whether or not the root is running: the root's
 // later round is not the agent's history, and reverting it must not delete
 // the agent's command. A cut that removed the agent writes nothing
-// (persistItemUnderScope). The row carries the agent execution that started
+// (persistCodexAgentRow). The row carries the agent execution that started
 // it, so only that execution's card counts it.
 func (r *Router) persistCodexAgentCommand(evt provider.ProviderEvent, item store.Item, tracker unifiedExecTracker) error {
-	item.Meta = withCodexExecutionTurnMeta(item.Meta, tracker.executionTurnID)
-	output := tracker.output.String()
-	if output == "" {
-		_, _, err := r.persistItemUnderScope(item, nil)
-		return err
+	row := store.CodexAgentRow{
+		ThreadID: item.ThreadID, ParentID: item.ParentID, ID: item.ID,
+		Status: item.Status, Summary: item.Summary,
+		Meta:      withCodexExecutionTurnMeta(item.Meta, tracker.executionTurnID),
+		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 	}
-	outputEvt := evt
-	outputEvt.Content = output
-	item, payload := withWholePayload(item, outputEvt, "command_output", AttachedPayloadID("command_output", item.ID), item.Summary)
-	_, _, err := r.persistItemUnderScope(item, &payload)
+	if output := tracker.output.String(); output != "" {
+		outputEvt := evt
+		outputEvt.Content = output
+		row.Output = &store.CodexAgentOutput{
+			Meta: BuildPayloadMeta("command_output", outputEvt), Data: []byte(output), CreatedAt: eventTimestampMillis(evt),
+		}
+	}
+	_, _, err := r.persistCodexAgentRow(row)
 	return err
 }
 

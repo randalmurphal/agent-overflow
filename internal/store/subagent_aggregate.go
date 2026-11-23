@@ -16,11 +16,9 @@ var subagentPreviewKindPredicate = "items.kind IN ('" + strings.Join(subagentPre
 type subagentAggregateRow struct {
 	root, id, kind, summary string
 	turnIndex, itemIndex    int
-	// direct and executionTag are read only by the Codex execution walk
-	// (forEachCodexExecutionRow): whether the row is directly under the
-	// root, and its CodexExecutionTurnMetaKey tag when it is.
-	direct       bool
-	executionTag string
+	// direct is read only by the Codex execution walk
+	// (forEachCodexExecutionRow): whether the row is directly under the root.
+	direct bool
 }
 
 var subagentAggregateColumns = `rel.root, items.id, items.kind,
@@ -28,13 +26,9 @@ var subagentAggregateColumns = `rel.root, items.id, items.kind,
 	items.turn_index, items.item_index`
 
 // codexExecutionAggregateColumns adds to subagentAggregateColumns whether
-// the row is directly under the root and, for such a row whose meta names
-// one, its execution tag. The instr test keeps the JSON parse to the rows
-// that carry the key.
+// the row is directly under the root.
 var codexExecutionAggregateColumns = subagentAggregateColumns + `,
-	items.parent_id = rel.root,
-	CASE WHEN items.parent_id = rel.root AND instr(items.meta, '"` + CodexExecutionTurnMetaKey + `"') > 0
-	     THEN COALESCE(` + jsonFieldExpr("items.meta", "$."+CodexExecutionTurnMetaKey) + `, '') ELSE '' END`
+	items.parent_id = rel.root`
 
 func forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootIDs []string, visit func(subagentAggregateRow)) error {
 	return walkSubagentAggregateRows(q, threadID, rootIDs, subagentAggregateColumns, "", nil, func(rows *sql.Rows, row *subagentAggregateRow) error {
@@ -42,17 +36,22 @@ func forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootIDs []string
 	}, visit)
 }
 
-// forEachCodexExecutionRow is forEachSubagentAggregateRow over one Codex
-// execution: the rows reachable from rootID that sit in turnIndex with
-// item_index in (startIndex, endIndex], each with its direct and
-// executionTag. The bounds select the result rows in SQL, so the tag is
-// read only for the execution's own rows; the walk that reaches them is
-// unchanged.
-func forEachCodexExecutionRow(q sqlQueryer, threadID, rootID string, turnIndex, startIndex, endIndex int, visit func(subagentAggregateRow)) error {
+// forEachCodexExecutionRow is forEachSubagentAggregateRow over the members
+// of one Codex execution: the rows reachable from rootID that sit in
+// turnIndex with item_index in (startIndex, endIndex], less the rows
+// directly under rootID that another execution owns
+// (codexExecutionMemberSQL, bound to executionTurnID), each with its
+// direct. The result selection applies both in SQL, so membership is read
+// only for the execution's own direct rows; the walk that reaches them is
+// unchanged, and a row under a nested agent stays a member through its
+// ancestry wherever that agent's own row sits.
+func forEachCodexExecutionRow(q sqlQueryer, threadID, rootID, executionTurnID string, turnIndex, startIndex, endIndex int, visit func(subagentAggregateRow)) error {
 	return walkSubagentAggregateRows(q, threadID, []string{rootID}, codexExecutionAggregateColumns,
-		" AND items.turn_index = ? AND items.item_index > ? AND items.item_index <= ?", []any{turnIndex, startIndex, endIndex},
+		` AND items.turn_index = ? AND items.item_index > ? AND items.item_index <= ?
+		  AND (items.parent_id <> rel.root OR `+codexExecutionMemberSQL("items.")+`)`,
+		[]any{turnIndex, startIndex, endIndex, executionTurnID, executionTurnID},
 		func(rows *sql.Rows, row *subagentAggregateRow) error {
-			return rows.Scan(&row.root, &row.id, &row.kind, &row.summary, &row.turnIndex, &row.itemIndex, &row.direct, &row.executionTag)
+			return rows.Scan(&row.root, &row.id, &row.kind, &row.summary, &row.turnIndex, &row.itemIndex, &row.direct)
 		}, visit)
 }
 

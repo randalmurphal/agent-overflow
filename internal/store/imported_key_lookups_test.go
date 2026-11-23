@@ -455,9 +455,10 @@ func keyedLookups(th string) []keyedLookup {
 		{name: "AppendItem", turn: true, run: func(t *testing.T, s *Store) {
 			must[int](t, "append")(s.AppendItem(Item{ID: "appended-1", ThreadID: th, TurnIndex: 1, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "late"}))
 		}},
-		{name: "AppendItemUnderParent", turn: true, run: func(t *testing.T, s *Store) {
+		{name: "AppendCodexAgentRow", turn: true, run: func(t *testing.T, s *Store) {
 			if err := s.WithSubagentCard(th, "launch-1", func(card *SubagentCard) error {
-				_, written, err := s.AppendItemUnderParent(Item{ID: "scoped-append-1", ThreadID: th, Kind: "tool_call", Role: "assistant", Status: "completed", Summary: "cmd", ParentID: "launch-1", SubagentCard: card}, nil)
+				_, written, err := s.AppendCodexAgentRow(CodexAgentRow{ThreadID: th, ParentID: "launch-1", ID: "scoped-append-1", Status: "completed", Summary: "cmd", Card: card,
+					Output: &CodexAgentOutput{Data: []byte("out")}})
 				if err == nil && !written {
 					t.Errorf("append under launch-1 wrote nothing")
 				}

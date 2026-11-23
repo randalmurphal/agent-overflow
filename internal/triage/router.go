@@ -87,10 +87,10 @@ type Router struct {
 	// out. Read under mu. Nil in production.
 	turnRowWrittenGate func(threadID string)
 	// scopedWriteGate is a test-only hook (SetScopedWriteGate) called by
-	// persistItemUnderScope right before the store write, so a test can
+	// persistCodexAgentRow right before the store write, so a test can
 	// cut the conversation between the router's work and the write. Read
 	// under mu. Nil in production.
-	scopedWriteGate func(item store.Item)
+	scopedWriteGate func(itemID string)
 	// interruptWaitHook is a test-only hook (SetInterruptWaitHook) called
 	// by SampleInterrupt right before it waits on a turn start in
 	// progress (woke false) and right after that start ends, before the
@@ -486,10 +486,10 @@ func (r *Router) SetEventHook(hook func(provider.ProviderEvent)) {
 	r.mu.Unlock()
 }
 
-// SetScopedWriteGate installs a test-only hook persistItemUnderScope calls
+// SetScopedWriteGate installs a test-only hook persistCodexAgentRow calls
 // right before its store write. Production code must leave this nil. Pass
 // nil to clear.
-func (r *Router) SetScopedWriteGate(gate func(item store.Item)) {
+func (r *Router) SetScopedWriteGate(gate func(itemID string)) {
 	r.mu.Lock()
 	r.scopedWriteGate = gate
 	r.mu.Unlock()
@@ -1654,40 +1654,43 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 	return persisted, nil
 }
 
-// persistItemUnderScope appends a new scoped row only while its scope row is
-// in history, in the scope's turn (store.AppendItemUnderParent); a scope a
-// conversation cut removed, or a row the store refuses (store.ErrItemNotAppended),
-// writes nothing, which is logged. Each caller writes its row once under a
-// fresh id: the command's completion takes the command's tracker before it
-// writes, and the interaction reserves its id (reserveItemID). Only rows that
-// can still arrive from a Codex agent that finished before an in-place
-// revert cut its spawn use it, its background command's completion and
-// stdin interaction: the revert gate counts a running agent and kills it
-// with consent, but not a finished agent's terminal.
-func (r *Router) persistItemUnderScope(item store.Item, payload *store.Payload) (persisted store.Item, written bool, err error) {
-	err = r.withSubagentCard(item.ThreadID, item.ParentID, func(card *store.SubagentCard) error {
-		item.SubagentCard = card
+// persistCodexAgentRow appends a Codex agent's command or stdin interaction
+// row only while its agent's row is in history, in the agent's turn
+// (store.AppendCodexAgentRow); an agent a conversation cut removed, or a row
+// the store refuses (store.ErrItemNotAppended), writes nothing, which is
+// logged. Each caller writes its row once under a fresh id: the command's
+// completion takes the command's tracker before it writes, and the
+// interaction reserves its id (reserveItemID). These are the rows that can
+// still arrive from a Codex agent that finished before an in-place revert
+// cut its spawn: the revert gate counts a running agent and kills it with
+// consent, but not a finished agent's terminal.
+func (r *Router) persistCodexAgentRow(row store.CodexAgentRow) (persisted store.Item, written bool, err error) {
+	err = r.withSubagentCard(row.ThreadID, row.ParentID, func(card *store.SubagentCard) error {
+		row.Card = card
 		r.mu.Lock()
 		gate := r.scopedWriteGate
 		r.mu.Unlock()
 		if gate != nil {
-			gate(item)
+			gate(row.ID)
 		}
 		var err error
-		persisted, written, err = r.store.AppendItemUnderParent(item, payload)
+		persisted, written, err = r.store.AppendCodexAgentRow(row)
 		return err
 	})
 	if errors.Is(err, store.ErrItemNotAppended) {
-		log.Printf("triage: refusing %s on thread %s: %v", item.ID, item.ThreadID, err)
+		log.Printf("triage: refusing %s on thread %s: %v", row.ID, row.ThreadID, err)
 		return store.Item{}, false, nil
 	}
 	if err != nil {
-		r.reportUnsavedRow(item, err)
 		return store.Item{}, false, err
 	}
 	if !written {
-		log.Printf("triage: dropping %s on thread %s: scope %s is no longer in history", item.ID, item.ThreadID, item.ParentID)
+		log.Printf("triage: dropping %s on thread %s: scope %s is no longer in history", row.ID, row.ThreadID, row.ParentID)
 		return store.Item{}, false, nil
+	}
+	var payload *store.Payload
+	if row.Output != nil {
+		payload = &store.Payload{ID: persisted.PayloadID, Kind: "command_output"}
 	}
 	r.afterItemPersisted(persisted, payload, nil, false, true)
 	return persisted, true, nil

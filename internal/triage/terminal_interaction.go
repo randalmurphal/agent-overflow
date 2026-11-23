@@ -51,7 +51,7 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	var turnIndex int
 	if scope != "" {
 		// The scope's turn names the row; the write itself checks the
-		// scope and takes its turn (persistItemUnderScope).
+		// scope and takes its turn (persistCodexAgentRow).
 		link, _, err := r.lookupItemLink(evt.ThreadID, scope)
 		if err != nil {
 			return fmt.Errorf("terminal interaction scope %s: %w", scope, err)
@@ -107,8 +107,12 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	}
 	// The interaction belongs to the execution that wrote the stdin, which
 	// Codex names on the event, not to the one that started the command.
-	item.Meta = withCodexExecutionTurnMeta(item.Meta, evt.TurnID)
-	_, _, err = r.persistItemUnderScope(item, nil)
+	_, _, err = r.persistCodexAgentRow(store.CodexAgentRow{
+		ThreadID: item.ThreadID, ParentID: scope, ID: item.ID, Interaction: true,
+		Status: item.Status, Summary: item.Summary,
+		Meta:      withCodexExecutionTurnMeta(item.Meta, evt.TurnID),
+		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
+	})
 	return err
 }
 

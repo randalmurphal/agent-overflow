@@ -110,7 +110,7 @@ func forkLookups(fork string) []keyedLookup {
 	var lookups []keyedLookup
 	for _, lookup := range keyedLookups(fork) {
 		switch lookup.name {
-		case "AppendItem", "AppendItemUnderParent", "UpsertItemAtTurnHead", "PlaceUserItemsAfterBoundary":
+		case "AppendItem", "AppendCodexAgentRow", "UpsertItemAtTurnHead", "PlaceUserItemsAfterBoundary":
 			continue
 		case "DeleteConversationFromItem":
 			lookups = append(lookups,

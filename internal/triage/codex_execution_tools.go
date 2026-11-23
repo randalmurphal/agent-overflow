@@ -101,9 +101,12 @@ func (r *Router) countCodexExecutionToolCall(item store.Item) {
 	})
 }
 
-// codexExecutionMember reports whether item belongs to the execution named
-// by executionTurnID (store.CodexExecutionMember of the row's tag). A meta
-// that does not decode carries no tag.
+// codexExecutionMember reports whether item, a row just written, belongs to
+// the execution named by executionTurnID: unless it is tagged
+// (store.CodexExecutionTurnMetaKey) with another execution. It is the live
+// counter's copy of the store's rule (codexExecutionMemberSQL), applied to a
+// row in memory before any read. A meta that does not decode carries no
+// tag.
 func codexExecutionMember(item store.Item, executionTurnID string) bool {
 	if executionTurnID == "" || !strings.Contains(item.Meta, store.CodexExecutionTurnMetaKey) {
 		return true
@@ -116,5 +119,5 @@ func codexExecutionMember(item store.Item, executionTurnID string) bool {
 	if json.Unmarshal(tagged[store.CodexExecutionTurnMetaKey], &tag) != nil {
 		return true
 	}
-	return store.CodexExecutionMember(tag, executionTurnID)
+	return tag == "" || tag == executionTurnID
 }

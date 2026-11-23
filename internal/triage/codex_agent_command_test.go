@@ -153,8 +153,8 @@ func TestCodexAgentCommandCompletionWritesNothingOnceACutRemovedItsAgent(t *test
 				}
 			case "held":
 				held := false
-				r.SetScopedWriteGate(func(item store.Item) {
-					if item.ID == "child-cmd" && !held {
+				r.SetScopedWriteGate(func(itemID string) {
+					if itemID == "child-cmd" && !held {
 						held = true
 						cut()
 					}
@@ -292,7 +292,7 @@ func TestCodexAgentTerminalInteractionLandsOnAgentTurn(t *testing.T) {
 			case tc.rootRunning:
 				seedOpenTurn(t, r, st, "t1", 1)
 			case tc.held:
-				r.SetScopedWriteGate(func(store.Item) { cut() })
+				r.SetScopedWriteGate(func(string) { cut() })
 				defer r.SetScopedWriteGate(nil)
 			case tc.cut:
 				cut()
