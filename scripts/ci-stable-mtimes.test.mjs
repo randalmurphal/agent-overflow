@@ -6,9 +6,11 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { blobTime, directoryTime, moved, stamp } from './ci-stable-mtimes.mjs';
 
+// The fixtures only stage files: the stamp reads the index, and no commit
+// means no signing or hook the developer's git config could start.
 const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], {
   encoding: 'utf8',
-  env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.invalid', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.invalid' },
+  env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
 });
 
 function repo(t, files) {
@@ -21,14 +23,13 @@ function repo(t, files) {
   }
   symlinkSync('AGENTS.md', join(dir, 'CLAUDE.md'));
   git(dir, 'add', '-A');
-  git(dir, 'commit', '-qm', 'tree');
   return dir;
 }
 
 const ns = path => statSync(path, { bigint: true }).mtimeNs;
 const linkNs = path => lstatSync(path, { bigint: true }).mtimeNs;
 const seconds = path => Number(ns(path)) / 1e9;
-const oid = (dir, path) => git(dir, 'rev-parse', `HEAD:${path}`).trim();
+const oid = (dir, path) => git(dir, 'rev-parse', `:${path}`).trim();
 
 test('a tracked file gets its blob time, the same in every checkout', t => {
   const files = { 'AGENTS.md': 'guide\n', 'internal/x/x.go': 'package x\n' };
@@ -61,7 +62,7 @@ test('directories get the fixed time, untracked files keep theirs', t => {
   writeFileSync(join(dir, 'bin', 'tool'), 'binary');
   writeFileSync(join(dir, 'internal', 'scratch.txt'), 'untracked');
   const before = ns(join(dir, 'bin', 'tool'));
-  const counts = stamp(dir);
+  const { counts } = stamp(dir);
   assert.deepEqual(counts, { files: 2, directories: 3, untracked: 2 });
   for (const path of ['.', 'internal', 'internal/x', 'bin', '.git']) {
     assert.equal(seconds(join(dir, path)), directoryTime, path);
@@ -74,11 +75,13 @@ test('a malformed object id fails', () => {
   assert.throws(() => blobTime('not-an-id'), /not a git object id/);
 });
 
-test('moved names the stamped paths a later step changed', t => {
-  const dir = repo(t, { 'AGENTS.md': 'guide\n', 'internal/x/x.go': 'package x\n', 'internal/y/y.go': 'package y\n' });
+test('moved names the stamped paths a later step changed or removed', t => {
+  const dir = repo(t, {
+    'AGENTS.md': 'guide\n', 'internal/x/x.go': 'package x\n', 'internal/y/y.go': 'package y\n', 'internal/z/z.go': 'package z\n',
+  });
   mkdirSync(join(dir, 'bin'));
-  stamp(dir);
-  assert.deepEqual(moved(dir), []);
+  const { stamped } = stamp(dir);
+  assert.deepEqual(moved(dir, stamped), []);
   // A test that makes and removes a directory in its package directory.
   mkdirSync(join(dir, 'internal', 'x', '.scratch'));
   rmSync(join(dir, 'internal', 'x', '.scratch'), { recursive: true });
@@ -87,5 +90,7 @@ test('moved names the stamped paths a later step changed', t => {
   writeFileSync(join(dir, 'bin', 'tool'), 'binary');
   // An untracked file is not checked; the directory it was made in moved.
   writeFileSync(join(dir, 'internal', 'y', 'scratch.txt'), 'untracked');
-  assert.deepEqual(moved(dir).sort(), ['AGENTS.md', 'bin', 'internal/x', 'internal/y']);
+  // A step that removes a tracked directory: its paths and its parent.
+  rmSync(join(dir, 'internal', 'z'), { recursive: true });
+  assert.deepEqual(moved(dir, stamped).sort(), ['AGENTS.md', 'bin', 'internal', 'internal/x', 'internal/y', 'internal/z', 'internal/z/z.go']);
 });
