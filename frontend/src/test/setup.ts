@@ -9,10 +9,8 @@ import './openThreadPanes';
 import '@testing-library/jest-dom/vitest';
 import './helpers/firstDivergence';
 import { installWaitForBackoff } from './waitForBackoff';
-import { installRealTimeBudget } from './realTimeBudget';
 
 installWaitForBackoff();
-installRealTimeBudget();
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {
