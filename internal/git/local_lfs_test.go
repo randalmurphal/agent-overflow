@@ -244,12 +244,15 @@ func (l *lfsLookups) expect(t *testing.T, step string, reads int64, runs ...stri
 
 const batchCheckRun = "cat-file --batch-check=%(objectname) %(objecttype) %(objectsize)"
 
+// walkRun is the walk that finds which of a commit's paths are local.
+const walkRun = "rev-list --objects"
+
 // Whether a pointer's object is local is decided on every lookup, so a
 // pull or a prune shows on the next one with the clock stopped. What the
 // pointer is, the store's directory, and a present object's header are
 // held: a repeat lookup runs no `git cat-file blob` and no `git config`
 // and reads no object bytes. A fact read through a pointer is never held,
-// so each call costs one batch-check to find the key's blob.
+// so each call costs one walk and one batch-check to find the key's blob.
 func TestLocalFactsLFSObjectIsLookedUpEveryTime(t *testing.T) {
 	t.Parallel()
 	r := newLFSRepo(t)
@@ -281,21 +284,21 @@ func TestLocalFactsLFSObjectIsLookedUpEveryTime(t *testing.T) {
 	}
 
 	lookup("not pulled", notLocal)
-	l.expect(t, "the first lookup", 0, batchCheckRun, "cat-file blob", "config -z")
+	l.expect(t, "the first lookup", 0, batchCheckRun, "cat-file blob", "config -z", walkRun)
 	lookup("not pulled, again", notLocal)
-	l.expect(t, "a repeat lookup of a pointer not local", 0, batchCheckRun)
+	l.expect(t, "a repeat lookup of a pointer not local", 0, batchCheckRun, walkRun)
 
 	path := writeLFSObject(t, r.store, sha256Hex(pulled), pulled)
 	lookup("pulled", found)
-	l.expect(t, "the lookup after the pull", 1, batchCheckRun)
+	l.expect(t, "the lookup after the pull", 1, batchCheckRun, walkRun)
 	lookup("pulled, again", found)
-	l.expect(t, "a repeat lookup of a present object", 0, batchCheckRun)
+	l.expect(t, "a repeat lookup of a present object", 0, batchCheckRun, walkRun)
 
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
 	lookup("pruned", notLocal)
-	l.expect(t, "the lookup after the prune", 0, batchCheckRun)
+	l.expect(t, "the lookup after the prune", 0, batchCheckRun, walkRun)
 	// Pulled again: another file, so its header is read again.
 	path = writeLFSObject(t, r.store, sha256Hex(pulled), pulled)
 	later := time.Now().Add(time.Hour)
@@ -303,7 +306,7 @@ func TestLocalFactsLFSObjectIsLookedUpEveryTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	lookup("pulled again", found)
-	l.expect(t, "the lookup after a second pull", 1, batchCheckRun)
+	l.expect(t, "the lookup after a second pull", 1, batchCheckRun, walkRun)
 }
 
 // A file of the pointer's size that is not its object is classified by
@@ -389,7 +392,7 @@ func TestLocalFactsLFSStoreDirectoryIsHeldForTheWindow(t *testing.T) {
 	if got := resolveLocal(t, core, r.dir, rev, key)[key]; got.LFS || got.Width != 6 {
 		t.Fatalf("present = %+v", got)
 	}
-	l.expect(t, "the first lookup", 1, batchCheckRun, "cat-file blob", "config -z")
+	l.expect(t, "the first lookup", 1, batchCheckRun, "cat-file blob", "config -z", walkRun)
 
 	testutil.RunGit(t, r.dir, "config", "lfs.storage", "elsewhere")
 	l.offset.Store(int64(changingFactTTL - time.Second))
@@ -399,7 +402,7 @@ func TestLocalFactsLFSStoreDirectoryIsHeldForTheWindow(t *testing.T) {
 	if image, err := core.BlobImage(t.Context(), r.dir, blob); err != nil || image.LFS {
 		t.Fatalf("BlobImage within the window = %+v, %v", image, err)
 	}
-	l.expect(t, "within the window", 0, batchCheckRun)
+	l.expect(t, "within the window", 0, batchCheckRun, walkRun)
 
 	l.offset.Store(int64(changingFactTTL))
 	if got := resolveLocal(t, core, r.dir, rev, key)[key]; !got.LFS {
@@ -408,5 +411,5 @@ func TestLocalFactsLFSStoreDirectoryIsHeldForTheWindow(t *testing.T) {
 	if image, err := core.BlobImage(t.Context(), r.dir, blob); err != nil || !image.LFS {
 		t.Fatalf("BlobImage after the window = %+v, %v", image, err)
 	}
-	l.expect(t, "after the window", 0, batchCheckRun, "config -z")
+	l.expect(t, "after the window", 0, batchCheckRun, "config -z", walkRun)
 }

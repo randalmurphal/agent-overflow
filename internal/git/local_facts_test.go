@@ -208,10 +208,11 @@ func TestLocalFactsAnswerEveryKind(t *testing.T) {
 		}
 	}
 	runs := calls.take()
-	// One batch-check, one batch read, one header read per blob an image
+	// One walk per commit a path key names, one batch-check, one batch
+	// read, one header read per blob an image
 	// key names, one config read for the LFS pointer's store, and one
 	// ls-tree per commit with a path the batch-check called missing.
-	if want := []string{"cat-file --batch", "cat-file --batch-check=%(objectname) %(objecttype) %(objectsize)", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "config -z", "ls-tree -z", "ls-tree -z"}; !slices.Equal(runs, want) {
+	if want := []string{"cat-file --batch", "cat-file --batch-check=%(objectname) %(objecttype) %(objectsize)", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "config -z", "ls-tree -z", "ls-tree -z", "rev-list --objects", "rev-list --objects", "rev-list --objects"}; !slices.Equal(runs, want) {
 		t.Fatalf("git runs = %q\nwant %q", runs, want)
 	}
 
@@ -226,8 +227,8 @@ func TestLocalFactsAnswerEveryKind(t *testing.T) {
 			t.Errorf("cached %s = %+v", w.Key, again[w.Key])
 		}
 	}
-	if runs := calls.take(); len(runs) != 1 || runs[0] != "cat-file --batch-check=%(objectname) %(objecttype) %(objectsize)" {
-		t.Fatalf("the cached call ran %q, want only the batch-check of the unavailable keys", runs)
+	if runs, want := calls.take(), []string{"cat-file --batch-check=%(objectname) %(objecttype) %(objectsize)", "rev-list --objects", "rev-list --objects"}; !slices.Equal(runs, want) {
+		t.Fatalf("the cached call ran %q, want only the walks and the batch-check of the unavailable keys", runs)
 	}
 }
 
@@ -297,8 +298,8 @@ func TestLocalFactsOneBatchCheckPerCall(t *testing.T) {
 			checks++
 		}
 	}
-	if checks != 1 || len(runs) != 2 {
-		t.Fatalf("%d keys ran %q, want one batch-check and one batch read", len(keys), runs)
+	if checks != 1 || len(runs) != 3 {
+		t.Fatalf("%d keys ran %q, want one walk, one batch-check and one batch read", len(keys), runs)
 	}
 }
 
@@ -406,48 +407,67 @@ func TestLocalFactsPartialCloneDoesNotFetch(t *testing.T) {
 	}
 }
 
-// A git that tries the fetch of a promised object (2.43 as Ubuntu 24.04
-// ships it, where the fetch GIT_NO_LAZY_FETCH refuses ends the whole
-// batch-check) costs only the keys of the objects that are not local.
-// The git here is this machine's with the variable dropped and the
-// promisor remote gone, which dies the same way.
-func TestLocalFactsWhereGitDiesOnAPromisedObject(t *testing.T) {
+// A git that does not honor GIT_NO_LAZY_FETCH fetches a promised object
+// it is asked for, and git 2.43 as Ubuntu 24.04 ships it, refused the
+// fetch, dies with the whole batch-check. Neither happens: cat-file is
+// asked only for the paths a walk found local. The git here is this
+// machine's with the variable dropped, against a promisor remote that
+// would serve the fetch and against one that is gone.
+func TestLocalFactsAskGitOnlyForLocalObjects(t *testing.T) {
 	real, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := newFactsRepo(t)
-	testutil.RunGit(t, r.dir, "config", "uploadpack.allowFilter", "true")
-	clone := filepath.Join(t.TempDir(), "clone")
-	testutil.RunGit(t, t.TempDir(), "clone", "-q", "--no-checkout", "--filter=blob:none", "file://"+r.dir, clone)
-	testutil.RunGit(t, clone, "remote", "set-url", "origin", "file://"+filepath.Join(t.TempDir(), "gone"))
-	installMockGit(t, "#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '"+real+"' \"$@\"\n")
-	core := NewCore()
-	calls := countFactGit(core)
-	keys := map[string]string{
-		"image:head:docs/head.png": FactUnavailable, "lines:" + r.head + ":code.go:1-1": FactUnavailable,
-		"image:head:docs/none.png": FactAbsent, "commit:" + r.head[:8]: FactFound,
-		"image:base:docs/base.png": FactUnavailable, "commit:" + r.base[:8]: FactFound,
-	}
-	got := resolveLocal(t, core, clone, r.rev(), slices.Collect(maps.Keys(keys))...)
-	for key, want := range keys {
-		if got[key].Status != want {
-			t.Errorf("%s = %+v, want %s", key, got[key], want)
-		}
-	}
-	if got["commit:"+r.head[:8]].Title == "" {
-		t.Errorf("the head commit has no subject: %+v", got["commit:"+r.head[:8]])
-	}
-	// One run per object git died on, and one more unless the last query
-	// was one of the three.
-	checks := 0
-	for _, run := range calls.take() {
-		if strings.HasPrefix(run, "cat-file --batch-check") {
-			checks++
-		}
-	}
-	if checks != 3 && checks != 4 {
-		t.Errorf("%d batch-checks ran, want 3 or 4: git did not die on each promised object", checks)
+	for _, remote := range []string{"reachable", "gone"} {
+		t.Run(remote, func(t *testing.T) {
+			r := newFactsRepo(t)
+			testutil.RunGit(t, r.dir, "config", "uploadpack.allowFilter", "true")
+			clone := filepath.Join(t.TempDir(), "clone")
+			testutil.RunGit(t, t.TempDir(), "clone", "-q", "--no-checkout", "--filter=blob:none", "file://"+r.dir, clone)
+			// One blob is local, as after a checkout of its path.
+			testutil.RunGit(t, clone, "cat-file", "-e", r.head+":docs/icon.svg")
+			if remote == "gone" {
+				testutil.RunGit(t, clone, "remote", "set-url", "origin", "file://"+filepath.Join(t.TempDir(), "gone"))
+			}
+			local := func(path string) bool {
+				cmd := exec.Command(real, "cat-file", "-e", r.blob(t, r.head, path))
+				cmd.Dir, cmd.Env = clone, append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
+				return cmd.Run() == nil
+			}
+			if local("docs/head.png") || !local("docs/icon.svg") {
+				t.Fatal("the clone does not hold docs/icon.svg alone")
+			}
+			installMockGit(t, "#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '"+real+"' \"$@\"\n")
+			core := NewCore()
+			calls := countFactGit(core)
+			keys := map[string]string{
+				"image:head:docs/head.png": FactUnavailable, "lines:" + r.head + ":code.go:1-1": FactUnavailable,
+				"image:head:docs/none.png": FactAbsent, "commit:" + r.head[:8]: FactFound,
+				"image:base:docs/base.png": FactUnavailable, "commit:" + r.base[:8]: FactFound,
+				"image:head:docs/icon.svg": FactFound, "image:head:docs": FactAbsent,
+			}
+			got := resolveLocal(t, core, clone, r.rev(), slices.Collect(maps.Keys(keys))...)
+			for key, want := range keys {
+				if got[key].Status != want {
+					t.Errorf("%s = %+v, want %s", key, got[key], want)
+				}
+			}
+			if got["commit:"+r.head[:8]].Title == "" {
+				t.Errorf("the head commit has no subject: %+v", got["commit:"+r.head[:8]])
+			}
+			if local("docs/head.png") || local("code.go") {
+				t.Error("resolving the facts fetched a blob")
+			}
+			checks := 0
+			for _, run := range calls.take() {
+				if strings.HasPrefix(run, "cat-file --batch-check") {
+					checks++
+				}
+			}
+			if checks != 1 {
+				t.Errorf("%d batch-checks ran, want 1", checks)
+			}
+		})
 	}
 }
 

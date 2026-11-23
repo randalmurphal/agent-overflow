@@ -21,9 +21,11 @@ import (
 
 // Local facts: commit:, image: and lines: keys, read from the
 // workspace's repository without touching the network
-// (GIT_NO_LAZY_FETCH=1, no fetch): an object that is not local answers
-// unavailable. One call's misses cost one `git cat-file --batch-check`
-// for every key's object, one `git cat-file --batch` for the commits'
+// (GIT_NO_LAZY_FETCH=1 and no transport allowed): an object that is not
+// local answers unavailable. One call's misses cost one `git rev-list`
+// per commit a path key names, which finds the paths whose objects are
+// local without fetching, one `git cat-file --batch-check` for every
+// commit and those paths' objects, one `git cat-file --batch` for the commits'
 // subjects and the lines ranges' blobs (streamed: no blob is held whole),
 // one header read per image blob the blob image cache lacks, one lstat per
 // Git LFS pointer blob (local_lfs.go) and one `git config` when the
@@ -54,7 +56,8 @@ const (
 	// image blob a header read reads before it stops git.
 	factImageHead      = 4096
 	factImageHeaderMax = 1 << 20
-	// factImageReads bounds the header reads one call runs at once.
+	// factImageReads bounds the header reads, and the commit walks, one
+	// call runs at once.
 	factImageReads = 4
 	// factCommitBytes is how much of a commit object is read for its
 	// subject.
@@ -279,13 +282,27 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 			queries = append(queries, query)
 		}
 	}
+	// The paths the keys name in each commit, once each.
+	pathsOf := map[string][]string{}
+	named := map[string]bool{}
+	for _, k := range keys {
+		if k.kind != "commit" && !named[k.commit+":"+k.path] {
+			named[k.commit+":"+k.path] = true
+			pathsOf[k.commit] = append(pathsOf[k.commit], k.path)
+		}
+	}
+	local, walkErrs := c.localPathsOf(ctx, cwd, pathsOf)
 	for _, k := range keys {
 		if k.kind == "commit" {
 			ask(k.hex + "^{commit}")
 			continue
 		}
 		ask(k.commit + "^{commit}")
-		ask(k.commit + ":" + k.path)
+		// cat-file is asked for a path only when its object is local: a
+		// path it is not asked for reads as missing below.
+		if local[k.commit][k.path] {
+			ask(k.commit + ":" + k.path)
+		}
 	}
 	objects, err := c.batchCheck(ctx, cwd, queries)
 	if err != nil {
@@ -294,6 +311,12 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 			facts[i] = unavailableFact(k.key)
 		}
 		return facts, holds
+	}
+	for commit, err := range walkErrs {
+		// A commit that is not local fails its walk and answers below.
+		if objects[commit+"^{commit}"].kind == "commit" {
+			log.Printf("local facts: rev-list: %d paths unavailable: %v", len(pathsOf[commit]), err)
+		}
 	}
 	var (
 		commits = map[string]*commitSink{}
@@ -323,9 +346,9 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 		if objects[k.commit+"^{commit}"].kind != "commit" {
 			continue
 		}
-		obj := objects[k.commit+":"+k.path]
+		obj, asked := objects[k.commit+":"+k.path]
 		switch {
-		case obj.missing:
+		case !asked, obj.missing:
 			missing[k.commit] = append(missing[k.commit], i)
 			continue
 		case obj.kind != "blob":
@@ -470,126 +493,160 @@ func imageFact(key string, image BlobImage) ForgeFact {
 }
 
 // factGit runs one read-only git command of the facts reads: under ctx
-// and localFactsTimeout, with lazy fetching off.
+// and localFactsTimeout, with lazy fetching off and every transport
+// refused, so a git that does not know GIT_NO_LAZY_FETCH cannot fetch
+// either.
 func (c *Core) factGit(ctx context.Context, cwd string, spec commandSpec) (commandResult, error) {
-	result, err := c.factGitRun(ctx, cwd, spec)
-	if err == nil && result.exitCode != 0 {
-		err = commandFailure("git "+spec.args[0], result)
-	}
-	return result, err
-}
-
-// factGitRun is factGit that leaves a non-zero exit to its caller.
-func (c *Core) factGitRun(ctx context.Context, cwd string, spec commandSpec) (commandResult, error) {
 	spec.binary, spec.cwd, spec.ctx = "git", cwd, ctx
-	spec.extraEnv = append(spec.extraEnv, "GIT_NO_LAZY_FETCH=1")
+	spec.extraEnv = append(spec.extraEnv, "GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=")
 	if spec.timeout == 0 {
 		spec.timeout = localFactsTimeout
 	}
 	if hook := c.beforeFactGit; hook != nil {
 		hook(spec.args)
 	}
-	return c.runSpec(spec)
+	result, err := c.runSpec(spec)
+	if err == nil && result.exitCode != 0 {
+		err = commandFailure("git "+spec.args[0], result)
+	}
+	return result, err
 }
 
-// batchCheckProbe leads every batch-check's input: a name git answers
-// (missing) without reading an object, so a run that printed nothing
-// failed before it read any query.
-const batchCheckProbe = "refs/agent-overflow/batch-check-probe"
-
-// gitDied is the exit status of git's die.
-const gitDied = 128
-
-// batchCheck answers each query's object with `git cat-file
-// --batch-check`: a query git cannot resolve (missing, ambiguous, or not
-// local) answers missing.
-//
-// It is one run where git answers a promised object that is not local as
-// missing (2.52 does, under GIT_NO_LAZY_FETCH). Git 2.43 as Ubuntu 24.04
-// ships it tries the fetch, is refused, and dies at that query with the
-// ones before it answered; that query answers missing and the rest are
-// asked again, so such a git costs one more run per object that is not
-// local.
+// batchCheck answers each query's object in one `git cat-file
+// --batch-check`: a query git cannot resolve (missing or ambiguous)
+// answers missing. A caller in a partial clone asks only for objects it
+// knows are local (localPaths): asked for a promised object that is not,
+// git 2.43 tries the fetch and dies with the whole batch.
 func (c *Core) batchCheck(ctx context.Context, cwd string, queries []string) (map[string]objectInfo, error) {
-	objects := make(map[string]objectInfo, len(queries))
-	deaths, lastDeath := 0, ""
-	for rest := queries; len(rest) > 0; {
-		result, err := c.factGitRun(ctx, cwd, commandSpec{
-			stdin:    batchCheckProbe + "\n" + strings.Join(rest, "\n") + "\n",
-			maxBytes: int64(len(rest)+1)*(gitdiff.MaxEntryPathBytes/16) + 1<<20,
-			args:     []string{"cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"},
-		})
-		if err != nil {
-			return nil, err
-		}
-		// Whole lines: a run that died can have cut its last one.
-		lines := strings.Split(result.stdout, "\n")
-		lines = lines[:len(lines)-1]
-		died := result.exitCode == gitDied && len(lines) > 0 && len(lines) <= len(rest)
-		switch {
-		case died:
-		case result.exitCode != 0:
-			return nil, commandFailure("git cat-file", result)
-		case len(lines) != len(rest)+1:
-			return nil, fmt.Errorf("cat-file --batch-check answered %d of %d objects", max(len(lines)-1, 0), len(rest))
-		}
-		for i, line := range lines[1:] {
-			query := rest[i]
-			if line == query+" missing" || line == query+" ambiguous" {
-				objects[query] = objectInfo{missing: true}
-				continue
-			}
-			fields := strings.Fields(line)
-			if len(fields) != 3 || !gitdiff.IsFullOID(fields[0]) {
-				return nil, fmt.Errorf("cat-file --batch-check: malformed answer %q", stringsx.ClipRunes(line, 200))
-			}
-			size, err := strconv.ParseInt(fields[2], 10, 64)
-			if err != nil || size < 0 {
-				return nil, fmt.Errorf("cat-file --batch-check: malformed size %q", fields[2])
-			}
-			objects[query] = objectInfo{oid: fields[0], kind: fields[1], size: size}
-		}
-		if !died {
-			break
-		}
-		at := len(lines) - 1
-		objects[rest[at]] = objectInfo{missing: true}
-		rest = rest[at+1:]
-		deaths++
-		lastDeath = result.stderr
+	result, err := c.factGit(ctx, cwd, commandSpec{
+		stdin:    strings.Join(queries, "\n") + "\n",
+		maxBytes: int64(len(queries))*(gitdiff.MaxEntryPathBytes/16) + 1<<20,
+		args:     []string{"cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"},
+	})
+	if err != nil {
+		return nil, err
 	}
-	if deaths > 0 {
-		log.Printf("local facts: cat-file --batch-check died on %d of %d objects, read as not local: %s", deaths, len(queries), stringsx.ClipRunes(strings.TrimSpace(lastDeath), 300))
+	lines := strings.Split(strings.TrimSuffix(result.stdout, "\n"), "\n")
+	if len(lines) != len(queries) {
+		return nil, fmt.Errorf("cat-file --batch-check answered %d of %d objects", len(lines), len(queries))
+	}
+	objects := make(map[string]objectInfo, len(queries))
+	for i, line := range lines {
+		query := queries[i]
+		if line == query+" missing" || line == query+" ambiguous" {
+			objects[query] = objectInfo{missing: true}
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 3 || !gitdiff.IsFullOID(fields[0]) {
+			return nil, fmt.Errorf("cat-file --batch-check: malformed answer %q", stringsx.ClipRunes(line, 200))
+		}
+		size, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil || size < 0 {
+			return nil, fmt.Errorf("cat-file --batch-check: malformed size %q", fields[2])
+		}
+		objects[query] = objectInfo{oid: fields[0], kind: fields[1], size: size}
 	}
 	return objects, nil
 }
 
-// treePaths answers which of paths commit's tree holds, in `git ls-tree`
-// runs of at most gitdiff.MaxEntryPaths paths totaling at most
-// gitdiff.MaxEntryPathBytes (the paths ride argv), which read trees and
-// never blobs.
-func (c *Core) treePaths(ctx context.Context, cwd, commit string, paths []string) (map[string]bool, error) {
-	present := make(map[string]bool, len(paths))
+// pathRuns calls run with paths in batches of at most
+// gitdiff.MaxEntryPaths paths totaling at most gitdiff.MaxEntryPathBytes
+// (the paths ride argv). A path is at most 4096 bytes (gitdiff.CleanPath),
+// so each batch takes at least one.
+func pathRuns(paths []string, run func(batch []string) error) error {
 	for start := 0; start < len(paths); {
 		end, total := start, 0
-		// A path is at most 4096 bytes (gitdiff.CleanPath), so each run
-		// takes at least one.
 		for end < len(paths) && end-start < gitdiff.MaxEntryPaths && (end == start || total+len(paths[end]) <= gitdiff.MaxEntryPathBytes) {
 			total += len(paths[end])
 			end++
 		}
-		batch := paths[start:end]
+		if err := run(paths[start:end]); err != nil {
+			return err
+		}
 		start = end
+	}
+	return nil
+}
+
+// localPathsMaxBytes bounds one localPaths run's listing. A path that
+// names a directory lists everything under it.
+const localPathsMaxBytes = 4 << 20
+
+// localPaths answers which of paths commit's tree holds as an object that
+// is local, in `git rev-list --objects --missing=print` runs over the
+// tree (pathRuns). The walk reads trees and never fetches on any git: an
+// object that is not local is printed as missing, without its path.
+func (c *Core) localPaths(ctx context.Context, cwd, commit string, paths []string) (map[string]bool, error) {
+	local := make(map[string]bool, len(paths))
+	err := pathRuns(paths, func(batch []string) error {
+		args := append([]string{"rev-list", "--objects", "--missing=print", "--no-walk", commit + "^{tree}", "--"}, batch...)
+		result, err := c.factGit(ctx, cwd, commandSpec{extraEnv: []string{"GIT_LITERAL_PATHSPECS=1"}, maxBytes: localPathsMaxBytes, args: args})
+		if err != nil {
+			return err
+		}
+		for line := range strings.SplitSeq(result.stdout, "\n") {
+			// "<oid> <path>" for an object that is local, "?<oid>" for
+			// one that is not.
+			if _, path, ok := strings.Cut(line, " "); ok && path != "" && !strings.HasPrefix(line, "?") {
+				local[path] = true
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return local, nil
+}
+
+// localPathsOf answers localPaths for each commit's paths, factImageReads
+// commits at a time, and the error of each commit whose walk failed.
+func (c *Core) localPathsOf(ctx context.Context, cwd string, pathsOf map[string][]string) (map[string]map[string]bool, map[string]error) {
+	var (
+		local = make(map[string]map[string]bool, len(pathsOf))
+		errs  = map[string]error{}
+		mu    sync.Mutex
+		wg    sync.WaitGroup
+		slots = make(chan struct{}, factImageReads)
+	)
+	for commit, paths := range pathsOf {
+		wg.Go(func() {
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			present, err := c.localPaths(ctx, cwd, commit, paths)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs[commit] = err
+				return
+			}
+			local[commit] = present
+		})
+	}
+	wg.Wait()
+	return local, errs
+}
+
+// treePaths answers which of paths commit's tree holds, in `git ls-tree`
+// runs (pathRuns), which read trees and never blobs.
+func (c *Core) treePaths(ctx context.Context, cwd, commit string, paths []string) (map[string]bool, error) {
+	present := make(map[string]bool, len(paths))
+	err := pathRuns(paths, func(batch []string) error {
 		args := append([]string{"ls-tree", "-z", "--name-only", "--full-tree", commit, "--"}, batch...)
 		result, err := c.factGit(ctx, cwd, commandSpec{extraEnv: []string{"GIT_LITERAL_PATHSPECS=1"}, args: args})
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for name := range strings.SplitSeq(strings.TrimSuffix(result.stdout, "\x00"), "\x00") {
 			if name != "" {
 				present[name] = true
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return present, nil
 }
