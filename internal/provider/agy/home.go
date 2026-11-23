@@ -91,9 +91,12 @@ func IsolatedHome(appDataDir string) (Home, error) {
 }
 
 func cleanAppDataDir(appDataDir string) (string, error) {
-	cleaned := filepath.Clean(strings.TrimSpace(appDataDir))
-	if strings.TrimSpace(appDataDir) == "" || cleaned == "." {
+	if strings.TrimSpace(appDataDir) == "" {
 		return "", errors.New("agy: a home needs a directory")
+	}
+	cleaned := filepath.Clean(strings.TrimSpace(appDataDir))
+	if !filepath.IsAbs(cleaned) {
+		return "", fmt.Errorf("agy: the home directory %q is not an absolute path", appDataDir)
 	}
 	return cleaned, nil
 }
@@ -134,6 +137,9 @@ func (h Home) Launch(customEnv map[string]string) (Launch, error) {
 	delete(env, "HOME")
 	delete(env, geminiHomeEnv)
 	delete(env, appDataDirEnv)
+	// SSH_CONNECTION is set only with the file store; a value in the custom
+	// environment never reaches agy, and an inherited one is left alone.
+	delete(env, sshConnectionEnv)
 	if h.fileStorage {
 		env[forceFileStorageEnv] = "1"
 		env[sshConnectionEnv] = "127.0.0.1 0 127.0.0.1 0"

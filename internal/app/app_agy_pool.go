@@ -147,17 +147,16 @@ func (a *App) borrowAgyConnForCurrentAccount(binary string, home agy.Home) (*acp
 	// acquireAgyConn keys live pooled connections with sessionProcessEnv(agy, nil).
 	sessionEnv := a.sessionProcessEnv(string(provider.Agy), nil)
 	wantKey := agyPoolKey(resolvedBinary, identity, selection.AccountID, selection.Generation, home, sessionEnv, "")
-	conn, release, ok := a.sessionRuntime.Connections().BorrowMatching(func(key string, c provider.Connection) bool {
-		if key != wantKey {
-			return false
-		}
-		_, isACP := c.(*acp.Conn)
-		return isACP
-	})
+	conn, release, ok := a.sessionRuntime.Connections().Borrow(wantKey)
 	if !ok {
 		return nil, nil
 	}
-	return conn.(*acp.Conn), release
+	acpConn, isACP := conn.(*acp.Conn)
+	if !isACP {
+		release()
+		return nil, nil
+	}
+	return acpConn, release
 }
 
 func (a *App) drainAgyConnections() {

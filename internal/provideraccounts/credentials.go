@@ -197,7 +197,7 @@ func (c *Credentials) AgyCanonicalFileStorage(ctx context.Context) (bool, error)
 		if err != nil {
 			return false, err
 		}
-		fileStorage, err := backend.canonicalFileStorage(ctx, paths.SharedHome)
+		fileStorage, err := backend.canonicalFileStorage(ctx, paths.SharedHome, agyKeychainQueryTimeout)
 		if err != nil {
 			return false, fmt.Errorf("provideraccounts: query the macOS Keychain for the Antigravity login: %w", err)
 		}

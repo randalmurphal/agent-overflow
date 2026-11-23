@@ -141,6 +141,29 @@ func TestAgyCanonicalHomeNeedsTheCredentialStore(t *testing.T) {
 	}
 }
 
+// A relative process HOME is not agy's default home: the canonical home is
+// then the manager's directory, which under that HOME is relative too, and
+// is refused rather than launched.
+func TestAgyCanonicalHomeRefusesARelativeHome(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", "relative-home")
+	store, err := provideraccounts.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := provideraccounts.NewCredentialsWithFileKeychain("relative-home", CredentialPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(Deps{Reaper: procutiltest.Reaper()})
+	if err := manager.Attach(store, credentials, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.AgyCanonicalHome(context.Background()); err == nil || !strings.Contains(err.Error(), "is not an absolute path") {
+		t.Fatalf("AgyCanonicalHome under a relative HOME = %v, want the relative directory refused", err)
+	}
+}
+
 func readAgyLaunchRecord(t *testing.T, record string) map[string]string {
 	t.Helper()
 	data, err := os.ReadFile(record)

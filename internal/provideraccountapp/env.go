@@ -260,7 +260,10 @@ func (m *Manager) AgyCanonicalHome(ctx context.Context) (agy.Home, error) {
 		return agy.Home{}, fmt.Errorf("choose the Antigravity login store: %w", err)
 	}
 	dir := paths.SharedHome
-	if processHome, err := os.UserHomeDir(); err == nil && filepath.Clean(dir) == filepath.Join(processHome, ".gemini", agy.DefaultAppDataName) {
+	// agy resolves its default home under the process HOME only when that is
+	// an absolute path; otherwise the directory is named, and a relative one
+	// is refused (agy.CanonicalHome).
+	if processHome, err := os.UserHomeDir(); err == nil && filepath.IsAbs(processHome) && filepath.Clean(dir) == filepath.Join(processHome, ".gemini", agy.DefaultAppDataName) {
 		dir = ""
 	}
 	return agy.CanonicalHome(dir, fileStorage)

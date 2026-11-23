@@ -56,15 +56,6 @@ func (s securityAgyKeychain) read(configHome string, active bool) ([]byte, error
 	if !active {
 		return fileAgyKeychain{}.read(configHome, false)
 	}
-	source, err := s.loginSource(context.Background(), configHome, agyKeychainQueryTimeout)
-	if err != nil {
-		return nil, err
-	}
-	if source.kind != agyLoginInKeychain {
-		// The file, read or failing to be read as it is: an unreadable one
-		// answers with its own error.
-		return fileAgyKeychain{}.read(configHome, true)
-	}
 	return s.readItem(configHome)
 }
 
@@ -101,80 +92,39 @@ func (securityAgyKeychain) readItem(configHome string) ([]byte, error) {
 }
 
 // agyKeychainQueryTimeout bounds one attribute-only Keychain query (no -w,
-// so it reads no secret and shows no access prompt) that decides where the
-// canonical login is. It answers in well under a second; the bound keeps a
-// stuck security(1) from holding a launch or a credential read, which then
-// fails as a failed query.
+// so it reads no secret and shows no access prompt): the presence check that
+// picks the store an agy process for the canonical login runs on, and
+// present. It answers in well under a second; the bound keeps a stuck
+// security(1) from holding a launch, which then fails as a failed query. The
+// credential read (readItem, with -w) has no bound: it can wait on a
+// Keychain unlock prompt.
 const agyKeychainQueryTimeout = 10 * time.Second
-
-type agyLoginSourceKind int
-
-const (
-	// agyLoginInKeychain is the Keychain item, or, with no fallback file,
-	// agy's default store whether or not the item exists yet.
-	agyLoginInKeychain agyLoginSourceKind = iota
-	// agyLoginInFile is the fallback file, with no Keychain item.
-	agyLoginInFile
-	// agyLoginFileUnreadable is a fallback file that cannot be read as a
-	// login, with no Keychain item.
-	agyLoginFileUnreadable
-)
-
-// agyLoginSource is where the canonical login is read from.
-type agyLoginSource struct {
-	kind agyLoginSourceKind
-	// unreadable is why the fallback file cannot be read, for
-	// agyLoginFileUnreadable.
-	unreadable error
-}
-
-// loginSource decides where the canonical login is read from, the one rule
-// for read(configHome, true) and for the store an agy process for that login
-// runs on: the Keychain item when there is one, else the fallback file. With
-// no fallback file it is the Keychain and asks security(1) nothing. A
-// Keychain query that fails, or gets no answer within timeout, is returned,
-// never answered as either store.
-func (s securityAgyKeychain) loginSource(ctx context.Context, configHome string, timeout time.Duration) (agyLoginSource, error) {
-	path := fileAgyKeychain{}.path(configHome)
-	info, statErr := os.Lstat(path)
-	if errors.Is(statErr, os.ErrNotExist) {
-		return agyLoginSource{kind: agyLoginInKeychain}, nil
-	}
-	itemPresent, err := s.itemPresent(ctx, timeout)
-	if err != nil {
-		return agyLoginSource{}, err
-	}
-	if itemPresent {
-		return agyLoginSource{kind: agyLoginInKeychain}, nil
-	}
-	switch {
-	case statErr != nil:
-		return agyLoginSource{kind: agyLoginFileUnreadable, unreadable: statErr}, nil
-	case info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular():
-		return agyLoginSource{kind: agyLoginFileUnreadable, unreadable: fmt.Errorf("%s is not a regular file", path)}, nil
-	case info.Size() == 0:
-		return agyLoginSource{kind: agyLoginFileUnreadable, unreadable: fmt.Errorf("%s is empty", path)}, nil
-	}
-	return agyLoginSource{kind: agyLoginInFile}, nil
-}
 
 // canonicalFileStorage reports whether an agy process for the canonical
 // login runs on the file store (true) or the Keychain (false): the store
-// loginSource reads it from. A fallback file that cannot be read is an error,
-// since read fails on it too.
-func (s securityAgyKeychain) canonicalFileStorage(ctx context.Context, configHome string) (bool, error) {
-	source, err := s.loginSource(ctx, configHome, agyKeychainQueryTimeout)
+// readItem reads that login from. That is the Keychain item when there is
+// one, else the fallback file; with no fallback file it is the Keychain and
+// security(1) is not asked. A fallback file the reader would refuse
+// (readCredentialSnapshot) is an error here too, and so is a Keychain query
+// that fails or gets no answer within timeout: neither is answered as a
+// store.
+func (s securityAgyKeychain) canonicalFileStorage(ctx context.Context, configHome string, timeout time.Duration) (bool, error) {
+	path := fileAgyKeychain{}.path(configHome)
+	_, fileErr := readCredentialSnapshot(path)
+	if errors.Is(fileErr, os.ErrNotExist) {
+		return false, nil
+	}
+	itemPresent, err := s.itemPresent(ctx, timeout)
 	if err != nil {
 		return false, err
 	}
-	switch source.kind {
-	case agyLoginInFile:
-		return true, nil
-	case agyLoginFileUnreadable:
-		return false, fmt.Errorf("provideraccounts: the Keychain holds no Antigravity login and its fallback file cannot be read: %w", source.unreadable)
-	default:
+	if itemPresent {
 		return false, nil
 	}
+	if fileErr != nil {
+		return false, fmt.Errorf("provideraccounts: the Keychain holds no Antigravity login and its fallback file cannot be read: %w", fileErr)
+	}
+	return true, nil
 }
 
 // itemPresent asks security(1) whether the Keychain item exists, without

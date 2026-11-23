@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/agy"
@@ -239,5 +240,50 @@ func TestAnAgyPoolKeyNamesTheServersHome(t *testing.T) {
 			t.Fatalf("servers on the %s and %s homes share a key", name, other)
 		}
 		keys[key] = name
+	}
+}
+
+// notACPConn is a pooled connection that is not an agy ACP server.
+type notACPConn struct{ closed chan struct{} }
+
+func (c *notACPConn) PID() int              { return 0 }
+func (c *notACPConn) Done() <-chan struct{} { return nil }
+func (c *notACPConn) Close() error          { close(c.closed); return nil }
+
+// A connection under the agy key that is not an ACP server is not borrowed,
+// and the borrow hands its reference back, so the pool still closes it once
+// it idles.
+func TestAnAgyBorrowReleasesAConnectionThatIsNotACP(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	attachFileAccountStoresForTest(t, app)
+	binary := writePoolAgyBinary(t, "", "")
+	if _, err := app.settings.Update(map[string]any{"agyBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	home, err := app.ensureProviderAccountManager().AgyCanonicalHome(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, _ := app.resolveProviderBinaryIdentity(string(provider.Agy))
+	selection := app.captureProviderAccountSelection(string(provider.Agy))
+	key := agyPoolKey(agy.ResolveBinary(binary), identity, selection.AccountID, selection.Generation, home, app.sessionProcessEnv(string(provider.Agy), nil), "")
+	fake := &notACPConn{closed: make(chan struct{})}
+	_, release, err := app.sessionManager().runtime.Connections().Acquire(ctx, key, 50*time.Millisecond, func(context.Context) (provider.Connection, error) {
+		return fake, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if conn, _ := app.borrowAgyConnForCurrentAccount(binary, home); conn != nil {
+		t.Fatal("borrowed a connection that is not an ACP server")
+	}
+	release()
+	select {
+	case <-fake.closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pool kept a connection the borrow never handed back")
 	}
 }

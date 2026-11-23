@@ -233,6 +233,9 @@ func TestSecurityAgyKeychainReaderAndLaunchFollowOneSource(t *testing.T) {
 		{name: "symlinked file, no item", file: symlinkFile(raw), exit: "44", read: "", store: ""},
 		{name: "symlinked file, item", file: symlinkFile(raw), exit: "0", read: string(item), store: "keychain"},
 		{name: "file, query fails", file: writeFile(raw), exit: "36", read: "", store: ""},
+		{name: "oversized file, no item", file: writeFile(make([]byte, maxCredentialBytes+1)), exit: "44", read: "", store: ""},
+		{name: "oversized file, item", file: writeFile(make([]byte, maxCredentialBytes+1)), exit: "0", read: string(item), store: "keychain"},
+		{name: "unopenable file, no item", file: unopenableFile(raw), exit: "44", read: "", store: ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -256,7 +259,7 @@ func TestSecurityAgyKeychainReaderAndLaunchFollowOneSource(t *testing.T) {
 					t.Errorf("read = %s, %v; want %s", got, err, c.read)
 				}
 			}
-			fileStorage, err := kc.canonicalFileStorage(ctx, home)
+			fileStorage, err := kc.canonicalFileStorage(ctx, home, agyKeychainQueryTimeout)
 			store := "keychain"
 			if fileStorage {
 				store = "file"
@@ -275,6 +278,23 @@ func writeFile(data []byte) func(t *testing.T, home string) {
 	return func(t *testing.T, home string) {
 		t.Helper()
 		if err := os.WriteFile(filepath.Join(home, agyCredentialFileName), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// unopenableFile is a fallback file nobody may open.
+func unopenableFile(data []byte) func(t *testing.T, home string) {
+	return func(t *testing.T, home string) {
+		t.Helper()
+		if os.Geteuid() == 0 {
+			t.Skip("root opens a file whatever its mode")
+		}
+		path := filepath.Join(home, agyCredentialFileName)
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -305,8 +325,8 @@ func TestSecurityAgyKeychainQueryIsBounded(t *testing.T) {
 	t.Setenv("FAKE_SECURITY_LOG", calls)
 	t.Setenv("FAKE_SECURITY_FIND_SLEEP", "30")
 
-	if source, err := kc.loginSource(context.Background(), home, 50*time.Millisecond); err != nil || source.kind != agyLoginInKeychain {
-		t.Fatalf("without a file = %+v, %v; want the Keychain", source, err)
+	if fileStorage, err := kc.canonicalFileStorage(context.Background(), home, 50*time.Millisecond); err != nil || fileStorage {
+		t.Fatalf("without a file = %v, %v; want the Keychain", fileStorage, err)
 	}
 	if _, err := os.Stat(calls); err == nil {
 		t.Fatal("deciding without a fallback file ran security(1)")
@@ -314,7 +334,7 @@ func TestSecurityAgyKeychainQueryIsBounded(t *testing.T) {
 
 	writeFile([]byte("{}"))(t, home)
 	start := time.Now()
-	_, err := kc.loginSource(context.Background(), home, 50*time.Millisecond)
+	_, err := kc.canonicalFileStorage(context.Background(), home, 50*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "query Antigravity Keychain credential") || !strings.Contains(err.Error(), "within 50ms") {
 		t.Fatalf("a query with no answer = %v, want it named with its bound", err)
 	}
@@ -324,7 +344,34 @@ func TestSecurityAgyKeychainQueryIsBounded(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := kc.loginSource(ctx, home, time.Minute); !errors.Is(err, context.Canceled) {
+	if _, err := kc.canonicalFileStorage(ctx, home, time.Minute); !errors.Is(err, context.Canceled) {
 		t.Fatalf("a query after the caller gave up = %v, want its cancellation", err)
+	}
+}
+
+// A canonical read is one exchange with security(1), whatever the two
+// stores hold: the item read, which falls back to the file when there is no
+// item.
+func TestSecurityAgyKeychainCanonicalReadIsOneExchange(t *testing.T) {
+	installFakeSecurity(t)
+	kc := securityAgyKeychain{}
+	item := []byte(`{"id_token_email":"keychain@example.com","token":{"access_token":"k1","refresh_token":"rk"}}`)
+	t.Setenv("FAKE_SECURITY_READ_PAYLOAD", string(encodeGoKeyringPayload(item)))
+	for _, exit := range []string{"0", "44"} {
+		home := t.TempDir()
+		writeFile([]byte(`{"token":{"access_token":"f1"}}`))(t, home)
+		calls := filepath.Join(t.TempDir(), "calls")
+		t.Setenv("FAKE_SECURITY_LOG", calls)
+		t.Setenv("FAKE_SECURITY_FIND_EXIT", exit)
+		if _, err := kc.read(home, true); err != nil {
+			t.Fatalf("security exit %s: read: %v", exit, err)
+		}
+		logged, err := os.ReadFile(calls)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := strings.Count(string(logged), "\n"); n != 1 {
+			t.Fatalf("security exit %s: a canonical read ran security(1) %d times:\n%s", exit, n, logged)
+		}
 	}
 }

@@ -300,3 +300,38 @@ echo 'No MCP servers configured.'
 		t.Error("agy mcp list ran on a home it cannot be pointed at")
 	}
 }
+
+// A home's directory is absolute: a relative one is refused, by name, for
+// the canonical home and an isolated one alike.
+func TestAHomeDirectoryIsAbsolute(t *testing.T) {
+	if _, err := CanonicalHome("relative/.gemini/antigravity-cli", true); err == nil || !strings.Contains(err.Error(), `"relative/.gemini/antigravity-cli" is not an absolute path`) {
+		t.Fatalf("CanonicalHome on a relative directory = %v, want a refusal naming it", err)
+	}
+	if _, err := IsolatedHome("relative/antigravity-cli"); err == nil || !strings.Contains(err.Error(), "is not an absolute path") {
+		t.Fatalf("IsolatedHome on a relative directory = %v, want a refusal", err)
+	}
+}
+
+// SSH_CONNECTION in a custom environment never reaches agy: a file-store
+// launch sets its own, and a Keychain launch drops it and leaves an inherited
+// one alone.
+func TestALaunchOwnsSSHConnection(t *testing.T) {
+	custom := map[string]string{sshConnectionEnv: "10.0.0.1 22 10.0.0.2 22"}
+	keychain, err := canonical(t, "", false).Launch(custom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, set := keychain.Env[sshConnectionEnv]; set {
+		t.Errorf("a Keychain launch sets SSH_CONNECTION=%q from the custom environment", value)
+	}
+	if slices.Contains(keychain.Unset, sshConnectionEnv) {
+		t.Errorf("a Keychain launch clears the inherited SSH_CONNECTION: %v", keychain.Unset)
+	}
+	file, err := canonical(t, "", true).Launch(custom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := file.Env[sshConnectionEnv]; got != "127.0.0.1 0 127.0.0.1 0" {
+		t.Errorf("a file-store launch sets SSH_CONNECTION=%q, want its own", got)
+	}
+}

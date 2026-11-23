@@ -156,19 +156,45 @@ func TestAFailedSignInWhoseTeardownFailedSaysBoth(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
-	cleanupErr := run.teardown()
-	if cleanupErr == nil {
+	down := run.teardown()
+	if down.homeErr == nil {
 		t.Fatal("the teardown removed the temporary home from a read-only directory")
 	}
-	rig.manager.finishLoginRun(run, err, cleanupErr)
+	rig.manager.finishLoginRun(run, err, down)
 
 	state := rig.manager.ProviderLoginState(string(provider.Agy))
 	if state.Phase != LoginPhaseFailed || !strings.HasPrefix(state.Error, agySignInUnidentifiedSentence) || !strings.Contains(state.Error, "remove temporary agy home") {
 		t.Fatalf("sign-in state = %s %q, want the lookup's sentence and the teardown's failure", state.Phase, state.Error)
 	}
 	logged, readErr := os.ReadFile(audit)
-	if readErr != nil || !strings.Contains(string(logged), "teardown failed") {
-		t.Fatalf("audit = %q, %v; want the teardown failure", logged, readErr)
+	if readErr != nil || !strings.Contains(string(logged), "temporary home could not be removed") || strings.Contains(string(logged), "did not close") {
+		t.Fatalf("audit = %q, %v; want the home's removal failure and nothing else", logged, readErr)
+	}
+}
+
+// A sign-in error longer than its bound still leaves the teardown failure
+// visible after it, and a process that did not close is audited as that, not
+// as a temporary home left behind.
+func TestALongSignInErrorKeepsItsTeardownFailureVisible(t *testing.T) {
+	manager, _, _ := newTestManager(t)
+	audit := filepath.Join(t.TempDir(), "audit.log")
+	manager.auditPath = audit
+	run := &loginRun{provider: string(provider.Agy), done: make(chan struct{}), cancel: func() {}}
+	manager.registerLoginRun(run)
+	long := errors.New(strings.Repeat("the provider said something long. ", 20))
+	if n := len([]rune(long.Error())); n <= loginProseRunes {
+		t.Fatalf("the sign-in error is %d runes, want more than %d", n, loginProseRunes)
+	}
+
+	manager.finishLoginRun(run, long, loginTeardown{closeErr: errors.New("close the agy sign-in process: broken pipe")})
+
+	state := manager.ProviderLoginState(string(provider.Agy))
+	if state.Phase != LoginPhaseFailed || !strings.HasPrefix(state.Error, "the provider said something long.") || !strings.HasSuffix(state.Error, "close the agy sign-in process: broken pipe") {
+		t.Fatalf("sign-in state = %s %q, want the bounded sign-in error and then the teardown failure", state.Phase, state.Error)
+	}
+	logged, err := os.ReadFile(audit)
+	if err != nil || !strings.Contains(string(logged), "process did not close cleanly") || strings.Contains(string(logged), "temporary home") {
+		t.Fatalf("audit = %q, %v; want the process close failure and no home", logged, err)
 	}
 }
 
