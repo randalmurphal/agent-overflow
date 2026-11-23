@@ -77,7 +77,7 @@ func (m *Manager) promoteSelectedSlot(providerName, accountID string) error {
 		return nil
 	}
 	m.mu.Lock()
-	m.rememberProviderCredentialFingerprintLocked(providerName, promoted.Bytes())
+	m.recordCanonicalLocked(providerName, promoted.Bytes())
 	m.mu.Unlock()
 	m.audit("restored the later saved %s credential of account %s to the canonical home", providerName, accountID)
 	return nil

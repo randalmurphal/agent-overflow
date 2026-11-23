@@ -58,7 +58,11 @@ every secureStorage mutation, including a sign-in or a sign-out that never
 refreshes. Each lock keeps the CLI's own stale threshold. A write that lands
 inside a CLI refresh makes that CLI adopt the disk value and drop the rotation
 it just performed. `ErrCredentialLockBusy` is the answer when the CLI still
-holds them after the wait.
+holds them after the wait. A write that replaces the canonical credential
+only while it holds a given token (`replaceActiveCredentialHolding`) checks
+and writes under those locks in one operation. Codex has no such lock: a
+`codex login` or a running Codex can write its canonical credential between
+any check and write, and nothing here excludes it.
 
 `Account.RefreshTokenExpiresAt` is metadata, not a credential: when the
 login stops working (`claude.LoginExpiresAt`), the later of the refresh
@@ -93,29 +97,33 @@ can take.
 
 Each registry entry records the fingerprint of the refresh token its home
 was seeded with (`TokenFingerprint`, provider-owned: the provider rewrites
-its credential file for other reasons and keeps the token). A selected
-account's home is seeded from the canonical credential, which an outside
-sign-in can replace, so the seed proves nothing about whose login it is.
-The sweep restores a crash-orphaned credential only when it rotated that
-token, and only into a store that still holds it: there the orphan is the
-same login moved forward. No other evidence (chain position, an empty or
-signed-out slot, the entry's owner) lets it write a slot. An adoption first
+its credential file for other reasons and keeps the token), and of the one
+the owner's slot held then (`slotToken`). `settleRotation` (`rotation.go`)
+is the one writer of a Codex rotation, for a live usage probe as it
+finishes and for the boot sweep after a crash. It places a rotation by
+descent, never by whose login anything says it is: every store that holds
+the seed's token takes it (the canonical credential only from the store
+that selected the owner, and every saved slot), and the owner's slot takes
+it while it still holds what it held at seeding. Each slot write first
 records the seed's token as consumed beside the slot's lock
 (`consumed.go`), and no slot write ever lands a credential holding it
 again: a switch's preserve, an adoption, a delayed commit. A recovery
 record that cannot be read stops every write to its slot.
 
-Only the store that selected an account writes the canonical credential
-for it. Its sweep also restores a selected account's orphan into the
-canonical home while that still holds the consumed token. Another data
-root's sweep restores the slot alone, and keeps an orphan neither store
-took while the canonical store holds the consumed token, reporting it once,
-so the owner's next boot restores it. While the canonical store still holds
-the consumed token, the owner promotes the slot (`PromoteSlotOverCanonical`):
-at boot, before reconciliation, before an account probe, before a
-selected usage probe and before a dictation token refresh. Coherence of the
-shared canonical credential across stores otherwise belongs to
-external-login reconciliation.
+A rotation nothing took is deleted only on evidence that nothing needs it:
+a store already holds it, or the owner's slot holds neither recorded token.
+Otherwise the home and its entry are kept (`ErrRotationKept`), reported
+once, and settled again at the next boot. A missing or unreadable slot is
+no evidence. Entries v0.0.19 wrote carry no `slotToken`, so one whose
+rotation cannot be placed stays until its account is removed
+(`ForgetAccountEphemerals`, called by account removal).
+
+While the canonical store still holds the consumed token, the owner
+promotes the slot (`PromoteSlotOverCanonical`): at boot, before
+reconciliation, before an account probe, before a selected usage probe and
+before a dictation token refresh. Coherence of the shared canonical
+credential across stores otherwise belongs to external-login
+reconciliation.
 
 Every slot write and removal holds the slot's lock (`lockSlot`); a writer
 that decides from the slot's contents holds it from the read to the write.

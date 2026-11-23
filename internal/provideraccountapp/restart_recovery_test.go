@@ -90,6 +90,9 @@ func TestCrashedSelectedUsageRefreshHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The previous release recorded whatever canonical credential it last
+	// saw for the selected account; this build records only one it
+	// identified as the account's, so the record is forced here.
 	manager.BlessCredentialForTest(string(provider.Codex), canonical)
 	err = manager.RefreshProviderAccountUsage(string(provider.Codex), os.Getenv(crashedRefreshAccountEnv))
 	t.Fatalf("refresh returned before the kill: %v", err)
@@ -160,6 +163,37 @@ func crashSelectedUsageRefresh(t *testing.T, userHome, dbDir, accountID string, 
 	return homePath
 }
 
+// asPreviousReleaseEntries rewrites the Codex registry entries under userHome
+// into the shape the previous release wrote: without the token the owner's
+// slot held at seeding. That release could seed a selected account's home
+// from another login's canonical credential, so only its entries carry such
+// a seed.
+func asPreviousReleaseEntries(t *testing.T, userHome string) {
+	t.Helper()
+	dir := filepath.Join(userHome, ".codex", "agent-overflow-ephemerals")
+	paths, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("registry entries in %s: %v, %v", dir, paths, err)
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var entry map[string]any
+		if err := json.Unmarshal(data, &entry); err != nil {
+			t.Fatal(err)
+		}
+		delete(entry, "slotToken")
+		if data, err = json.Marshal(entry); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func mustReadCredential(t *testing.T, credentials *provideraccounts.Credentials, accountID string, active bool) string {
 	t.Helper()
 	data, err := credentials.ReadCredential(string(provider.Codex), accountID, active)
@@ -205,7 +239,7 @@ func testRestartAfterACrashedSelectedRefresh(t *testing.T, rotated bool, bEmail 
 	if err := credentials.WriteAccountCredential(codexName, "acct-a", aLogin); err != nil {
 		t.Fatal(err)
 	}
-	if err := credentials.CommitSelectedCredential(codexName, "acct-a", aLogin, aLogin); err != nil {
+	if err := credentials.CommitSelectedCredentialForTest(codexName, "acct-a", aLogin, aLogin); err != nil {
 		t.Fatal(err)
 	}
 	if err := credentials.WriteAccountCredential(codexName, "acct-b", bSaved); err != nil {
@@ -219,6 +253,7 @@ func testRestartAfterACrashedSelectedRefresh(t *testing.T, rotated bool, bEmail 
 		probeResult = bRotated
 	}
 	homePath := crashSelectedUsageRefresh(t, userHome, dbDir, "acct-a", probeResult)
+	asPreviousReleaseEntries(t, userHome)
 
 	if otherRootFirst {
 		otherDB := t.TempDir()
@@ -272,22 +307,32 @@ func codexIdentityProbe(t *testing.T, email string) string {
 		"cat "+shellQuoteForTest(frame)+"\n")
 }
 
-// The Codex CLI rotated the selected account's login in place, so the
-// canonical credential is ahead of the slot, and a usage refresh died after
-// its probe rotated the canonical credential again in its temporary home.
-// The sweep cannot prove the rotation is the slot's login and leaves the
-// slot alone; it restores the canonical credential, and the reconciliation
-// that follows identifies it and brings the slot to it. When another data
-// root sweeps first it keeps the entry, and the owner's boot does the same.
+// The selected account's slot lags its canonical credential (the CLI
+// rotated the canonical copy in place), and its usage probe crashes after
+// rotating that canonical credential in its temporary home. The boot sweep
+// of the store that selected it restores the rotation to the canonical
+// credential, and to the lagging slot through the token the slot held when
+// the probe started, whichever data root sweeps first. A sign-in to another
+// login before the owner boots leaves the slot to take it alone.
 func TestBootBringsALaggingSelectedSlotToTheRecoveredRotation(t *testing.T) {
-	for _, otherRootFirst := range []bool{false, true} {
-		t.Run("other_root_first="+strconv.FormatBool(otherRootFirst), func(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		otherRootFirst bool
+		signInFirst    bool
+	}{
+		{name: "owner first"},
+		{name: "other root first", otherRootFirst: true},
+		{name: "sign-in before the owner boots", signInFirst: true},
+		{name: "other root first, then a sign-in", otherRootFirst: true, signInFirst: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			kerneltest.IsolateSpawns(t)
 			codexName := string(provider.Codex)
 			userHome, dbDir := t.TempDir(), t.TempDir()
 			slotLogin := codexWorkspaceLogin(t, "a@example.com", "ws-a", "rt-a1", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
 			cliRotated := codexWorkspaceLogin(t, "a@example.com", "ws-a", "rt-a2", time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC))
 			probeRotated := codexWorkspaceLogin(t, "a@example.com", "ws-a", "rt-a3", time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+			cLogin := codexWorkspaceLogin(t, "c@example.com", "ws-c", "rt-c1", time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC))
 
 			_, store, credentials := openBackend(t, userHome, dbDir, "")
 			if _, err := store.UpsertAndActivate(provideraccounts.Account{ID: "acct-a", Provider: codexName, Email: "a@example.com", OrgID: "ws-a"}); err != nil {
@@ -296,7 +341,7 @@ func TestBootBringsALaggingSelectedSlotToTheRecoveredRotation(t *testing.T) {
 			if err := credentials.WriteAccountCredential(codexName, "acct-a", slotLogin); err != nil {
 				t.Fatal(err)
 			}
-			if err := credentials.CommitSelectedCredential(codexName, "acct-a", slotLogin, slotLogin); err != nil {
+			if err := credentials.CommitSelectedCredentialForTest(codexName, "acct-a", slotLogin, slotLogin); err != nil {
 				t.Fatal(err)
 			}
 			if err := credentials.WriteNativeCredentialForTest(codexName, cliRotated); err != nil {
@@ -304,7 +349,7 @@ func TestBootBringsALaggingSelectedSlotToTheRecoveredRotation(t *testing.T) {
 			}
 			crashSelectedUsageRefresh(t, userHome, dbDir, "acct-a", probeRotated)
 
-			if otherRootFirst {
+			if tc.otherRootFirst {
 				otherDB := t.TempDir()
 				other, _, _ := openBackend(t, userHome, otherDB, "")
 				if err := other.ReconcileProviderHome(otherDB, userHome); err != nil {
@@ -314,22 +359,29 @@ func TestBootBringsALaggingSelectedSlotToTheRecoveredRotation(t *testing.T) {
 					t.Fatal("another data root's sweep wrote the canonical credential")
 				}
 			}
+			wantCanonical := probeRotated
+			if tc.signInFirst {
+				if err := credentials.WriteNativeCredentialForTest(codexName, cLogin); err != nil {
+					t.Fatal(err)
+				}
+				wantCanonical = cLogin
+			}
 
 			manager, store, credentials := openBackend(t, userHome, dbDir, codexIdentityProbe(t, "a@example.com"))
 			if err := manager.ReconcileProviderHome(dbDir, userHome); err != nil {
 				t.Fatal(err)
 			}
-			if got := mustReadCredential(t, credentials, "", true); got != string(probeRotated) {
-				t.Fatal("the boot sweep did not restore the rotation to the canonical credential")
+			if got := mustReadCredential(t, credentials, "", true); got != string(wantCanonical) {
+				t.Fatal("the boot sweep left the canonical credential on the wrong login")
 			}
-			if got := mustReadCredential(t, credentials, "acct-a", false); got != string(slotLogin) {
-				t.Fatal("the boot sweep wrote a slot that never held the seed")
+			if got := mustReadCredential(t, credentials, "acct-a", false); got != string(probeRotated) {
+				t.Fatal("the lagging slot did not take the recovered rotation")
+			}
+			if tc.signInFirst {
+				return
 			}
 			if err := manager.ReconcileExternalProviderAccount(codexName); err != nil {
 				t.Fatal(err)
-			}
-			if got := mustReadCredential(t, credentials, "acct-a", false); got != string(probeRotated) {
-				t.Fatal("reconciliation did not bring the slot to the recovered rotation")
 			}
 			if active, ok := store.Active(codexName, time.Now()); !ok || active.ID != "acct-a" {
 				t.Fatalf("selection after reconciliation = %+v, %v; want acct-a", active, ok)

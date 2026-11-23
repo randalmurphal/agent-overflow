@@ -83,7 +83,7 @@ func seedClaudeAccounts(
 		t.Fatal(err)
 	}
 	manager.mu.Lock()
-	manager.rememberProviderCredentialFingerprintLocked(claudeName, canonical)
+	manager.recordCanonicalLocked(claudeName, canonical)
 	manager.mu.Unlock()
 }
 
@@ -260,7 +260,7 @@ func TestExternalReconciliationStandsDownOnAnExpiredLogin(t *testing.T) {
 		t.Fatalf("ReconcileExternalProviderAccount on an expired login = %v, want a quiet stand-down", err)
 	}
 	manager.mu.RLock()
-	_, observed := manager.fingerprints[claudeName]
+	observed := manager.canonical[claudeName].hasRecorded
 	manager.mu.RUnlock()
 	if observed {
 		t.Fatal("the expired credential was blessed as observed; a later sign-in would not reconcile")

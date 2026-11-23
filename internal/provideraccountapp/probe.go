@@ -3,6 +3,7 @@ package provideraccountapp
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -102,6 +103,17 @@ func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) 
 
 	m.emitUnauthenticatedIfNoLogin(r, info)
 	account, signIn, move, err := m.adoptCurrentProviderAccount(r.ProviderName, info, credential)
+	if errors.As(err, new(unresolvedLoginError)) {
+		// The provider answered for a login no saved account is known to
+		// own: its answer is returned, and nothing of it (the account, a
+		// reading, a catalog) is filed under a saved account.
+		reconcileMu.Unlock()
+		m.audit("left the canonical %s login unattributed: %v", r.ProviderName, err)
+		if r.Cache != nil {
+			r.Cache.Set(r.Key, info)
+		}
+		return info, nil
+	}
 	if err != nil {
 		reconcileMu.Unlock()
 		return provider.AccountInfo{}, err

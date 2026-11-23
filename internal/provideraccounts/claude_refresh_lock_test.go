@@ -290,3 +290,47 @@ func assertLocksReleased(t *testing.T, claudeHome string) {
 		}
 	}
 }
+
+// A conditional canonical write checks its condition under the CLI's locks:
+// a sign-in the CLI completes while AO waits for them is what AO then reads,
+// and it is left alone.
+func TestAConditionalCanonicalWriteChecksUnderTheCLIsLocks(t *testing.T) {
+	userHome := t.TempDir()
+	credentials, err := NewCredentials(userHome, Policy{SignedOut: literalHuskDetector, TokenFingerprint: testTokenFingerprint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claudeHome := filepath.Join(userHome, ".claude")
+	if err := os.MkdirAll(claudeHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.WriteNativeCredentialForTest("claude", []byte("seed")); err != nil {
+		t.Fatal(err)
+	}
+	seed, _ := testTokenFingerprint("claude", []byte("seed"))
+	refreshLock, _, _ := lockPaths(t, claudeHome)
+	takeLockLikeTheCLI(t, refreshLock, 0)
+
+	// The CLI finishes a sign-in under its lock once AO is waiting for it.
+	lockHeldForTest = func(string) {
+		lockHeldForTest = nil
+		if err := credentials.storeCredentialAt("claude", claudeHome, true, []byte("sign-in")); err != nil {
+			t.Error(err)
+		}
+		if err := os.Remove(refreshLock); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { lockHeldForTest = nil })
+	wrote, err := credentials.replaceActiveCredentialHolding("claude", seed, []byte("rotation"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrote {
+		t.Fatal("the write landed over a sign-in that finished while it waited for the lock")
+	}
+	if data, err := credentials.ReadCredential("claude", "", true); err != nil || string(data) != "sign-in" {
+		t.Fatalf("canonical = %q, %v; want the sign-in", data, err)
+	}
+	assertLocksReleased(t, claudeHome)
+}

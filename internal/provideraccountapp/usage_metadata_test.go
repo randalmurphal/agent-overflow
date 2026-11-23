@@ -85,8 +85,9 @@ func newCodexUsageMetadataManager(t *testing.T, saved provideraccounts.Account) 
 
 // A usage refresh of a saved, inactive Codex account is the one place that
 // account's account/read is seen until it is selected again, so the workspace
-// name and plan it reports land on the saved card there, and a card is
-// published only when the stored row changed.
+// name and plan it reports land on the saved card there. The listing is
+// republished only when the stored row changed, and the card never travels on
+// the selected account's event, which every client shows as the one in use.
 func TestCodexUsageRefreshRecordsObservedWorkspaceName(t *testing.T) {
 	codexName := string(provider.Codex)
 	manager, store, sink, accountFrame := newCodexUsageMetadataManager(t, provideraccounts.Account{
@@ -110,7 +111,7 @@ func TestCodexUsageRefreshRecordsObservedWorkspaceName(t *testing.T) {
 	}
 	for _, step := range steps {
 		writeAccountReadFrame(t, accountFrame, step.frame)
-		before := len(sink.published)
+		before := len(sink.listings)
 		if err := manager.RefreshProviderAccountUsage(codexName, "inactive"); err != nil {
 			t.Fatalf("%s: RefreshProviderAccountUsage: %v", step.name, err)
 		}
@@ -125,13 +126,15 @@ func TestCodexUsageRefreshRecordsObservedWorkspaceName(t *testing.T) {
 		if _, active := store.Active(codexName, time.Now()); active {
 			t.Fatalf("%s: usage refresh selected the account", step.name)
 		}
-		published := sink.published[before:]
+		wantListings := 0
 		if step.wantPublished {
-			if len(published) != 1 || published[0].OrgName != step.wantOrgName {
-				t.Fatalf("%s: published = %+v, want one card with OrgName %q", step.name, published, step.wantOrgName)
-			}
-		} else if len(published) != 0 {
-			t.Fatalf("%s: published %+v for an unchanged row", step.name, published)
+			wantListings = 1
+		}
+		if listings := len(sink.listings) - before; listings != wantListings {
+			t.Fatalf("%s: listing changes = %d, want %d", step.name, listings, wantListings)
+		}
+		if len(sink.published) != 0 {
+			t.Fatalf("%s: an inactive card went out as the selected account: %+v", step.name, sink.published)
 		}
 	}
 }
@@ -172,7 +175,8 @@ func TestCodexUsageRefreshKeepsWorkspaceNameWithoutAnAccountRead(t *testing.T) {
 }
 
 // A refresh whose login turns out to be another saved account fails, but what
-// it observed is that account's and is recorded and published there.
+// it observed is that account's and is recorded there, and the listing says
+// so.
 func TestCodexUsageRefreshRecordsMetadataOnTheAccountItObserved(t *testing.T) {
 	codexName := string(provider.Codex)
 	manager, store, sink, accountFrame := newCodexUsageMetadataManager(t, provideraccounts.Account{
@@ -187,7 +191,7 @@ func TestCodexUsageRefreshRecordsMetadataOnTheAccountItObserved(t *testing.T) {
 		chatgptAccountFrame("other@example.com", "team", `,"workspaceName":"Other Co"`))
 
 	err := manager.RefreshProviderAccountUsage(codexName, "refreshed")
-	if err == nil || !strings.Contains(err.Error(), `authenticated as saved account "other"`) {
+	if err == nil || !strings.Contains(err.Error(), "is other@example.com (Other Co)'s") {
 		t.Fatalf("RefreshProviderAccountUsage = %v, want the attribution failure", err)
 	}
 	if refreshed, _ := store.Get(codexName, "refreshed", time.Now()); refreshed.OrgName != "" {
@@ -197,7 +201,8 @@ func TestCodexUsageRefreshRecordsMetadataOnTheAccountItObserved(t *testing.T) {
 	if other.OrgName != "Other Co" {
 		t.Fatalf("observed account = %+v, want OrgName Other Co", other)
 	}
-	if len(sink.published) != 1 || sink.published[0].ID != "other" || sink.published[0].OrgName != "Other Co" {
-		t.Fatalf("published = %+v, want the observed account's card once", sink.published)
+	if len(sink.listings) != 1 || len(sink.published) != 0 {
+		t.Fatalf("listing changes = %v, cards published = %+v; want one listing change and no selected-account card",
+			sink.listings, sink.published)
 	}
 }

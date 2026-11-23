@@ -1,7 +1,6 @@
 package provideraccountapp
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log"
@@ -428,7 +427,7 @@ func (m *Manager) switchProviderAccount(
 		m.recordLoginExpiry(providerName, preserveID, currentCredential.Bytes())
 	}
 	binary := m.providerBinaryPath(providerName)
-	m.rememberProviderCredentialFingerprintLocked(providerName, targetCredential.Bytes())
+	m.recordCanonicalLocked(providerName, targetCredential.Bytes())
 	generation := m.store.Generation(providerName)
 	m.mu.Unlock()
 	if kind == automaticSwitch {
@@ -562,7 +561,7 @@ func (m *Manager) reconciledActiveCredentialLocked(
 		return "", nil, nil
 	}
 	snapshot, err := m.verifiedActiveCredentialLocked(providerName)
-	if errors.Is(err, errActiveCredentialSignedOut) {
+	if errors.Is(err, errActiveCredentialSignedOut) || errors.Is(err, errActiveCredentialUnattributed) {
 		return "", nil, nil
 	}
 	if err != nil {
@@ -579,6 +578,12 @@ func (m *Manager) reconciledActiveCredentialLocked(
 // inside the app ever replaces the husk.
 var errActiveCredentialSignedOut = errors.New("active provider credential was signed out by the provider")
 
+// errActiveCredentialUnattributed reports that the canonical credential is an
+// outside login reconciliation could not attribute to one saved account
+// (unresolvedLoginError). Like a sign-out, it is nothing to preserve into the
+// outgoing account's slot, and the account change proceeds over it.
+var errActiveCredentialUnattributed = errors.New("active provider credential is an outside login no saved account is known to own")
+
 func (m *Manager) verifiedActiveCredentialLocked(
 	providerName string,
 ) (provideraccounts.CredentialSnapshot, error) {
@@ -590,21 +595,24 @@ func (m *Manager) verifiedActiveCredentialLocked(
 			err,
 		)
 	}
-	// Checked before the fingerprint: a husk can never match the remembered
-	// fingerprint, and "changed; retry" would misdiagnose a sign-out as a
-	// concurrent login.
+	// Checked before the record: a husk can never be the recorded credential,
+	// and "changed; retry" would misdiagnose a sign-out as a concurrent login.
 	if providerName == string(provider.Claude) && claude.CredentialsSignedOut(snapshot.Bytes()) {
 		return provideraccounts.CredentialSnapshot{}, errActiveCredentialSignedOut
 	}
-	fingerprint := sha256.Sum256(snapshot.Bytes())
-	known, ok := m.fingerprints[providerName]
-	if !ok || known != fingerprint {
-		return provideraccounts.CredentialSnapshot{}, fmt.Errorf(
-			"%s credentials changed while updating accounts; retry",
-			providerName,
-		)
+	if m.canonicalRecordedLocked(providerName, snapshot.Bytes()) {
+		return snapshot, nil
 	}
-	return snapshot, nil
+	// An outside login reconciliation could not attribute is no account's to
+	// preserve; the change installs a saved login over it, which is what the
+	// unresolved verdict tells the person to do.
+	if m.unresolvedLocked(providerName, snapshot.Bytes()) != nil {
+		return provideraccounts.CredentialSnapshot{}, errActiveCredentialUnattributed
+	}
+	return provideraccounts.CredentialSnapshot{}, fmt.Errorf(
+		"%s credentials changed while updating accounts; retry",
+		providerName,
+	)
 }
 
 // recordLoginExpiry keeps one account's stored OAuth session deadline equal to
@@ -772,7 +780,7 @@ func (m *Manager) adoptCurrentProviderAccountLocked(
 			return provideraccounts.Account{}, SignIn{}, errors.Join(err, cleanupErr)
 		}
 		account = m.withRecordedLoginExpiry(account, credential.Bytes())
-		m.rememberProviderCredentialFingerprintLocked(providerName, credential.Bytes())
+		m.recordCanonicalLocked(providerName, credential.Bytes())
 		return account, SignIn{Provider: providerName, Account: account, Added: true, Active: true}, nil
 	}
 	account, signIn, _, err := m.reconcileObservedAccountLocked(
@@ -780,10 +788,15 @@ func (m *Manager) adoptCurrentProviderAccountLocked(
 		info,
 		*credential,
 	)
+	var unresolved unresolvedLoginError
+	if errors.As(err, &unresolved) {
+		m.markUnresolvedLocked(providerName, credential.Bytes(), err)
+		return provideraccounts.Account{}, SignIn{}, err
+	}
 	if err != nil {
 		return provideraccounts.Account{}, SignIn{}, err
 	}
-	m.rememberProviderCredentialFingerprintLocked(providerName, credential.Bytes())
+	m.recordCanonicalLocked(providerName, credential.Bytes())
 	return account, signIn, nil
 }
 
@@ -877,7 +890,7 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 		return SignIn{}, err
 	}
 	account = m.withRecordedLoginExpiry(account, credential.Bytes())
-	m.rememberProviderCredentialFingerprintLocked(providerName, credential.Bytes())
+	m.recordCanonicalLocked(providerName, credential.Bytes())
 	return SignIn{Provider: providerName, Account: account, Added: !found, Active: true}, nil
 }
 

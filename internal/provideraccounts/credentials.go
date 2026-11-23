@@ -758,35 +758,6 @@ func (c *Credentials) WriteAccountCredential(providerName, accountID string, dat
 	return c.writeCredential(providerName, accountID, false, data)
 }
 
-// CommitSelectedCredential publishes a refreshed credential to the canonical
-// native store before updating its saved account slot. Canonical-first ordering
-// keeps the active account usable if the secondary slot write fails; a later
-// reconciliation can repair the slot from canonical state.
-//
-// The slot is replaced only while it still holds expectedSlot, what the
-// caller read before it refreshed: once the canonical credential is
-// published another process can rotate it further and switch away, saving
-// the later credential into this slot, and that is not to be rewound. A slot
-// that moved on, or is gone, is left as it stands.
-func (c *Credentials) CommitSelectedCredential(
-	providerName string,
-	accountID string,
-	expectedSlot []byte,
-	data []byte,
-) error {
-	if err := c.writeActiveCredential(providerName, data); err != nil {
-		return fmt.Errorf("provideraccounts: activate refreshed %s credentials: %w", providerName, err)
-	}
-	if _, err := c.ReplaceAccountCredential(providerName, accountID, expectedSlot, data); err != nil {
-		return fmt.Errorf(
-			"provideraccounts: save refreshed %s account after canonical activation: %w",
-			providerName,
-			err,
-		)
-	}
-	return nil
-}
-
 func (c *Credentials) writeActiveCredential(providerName string, data []byte) error {
 	if c.credentialSignedOut(providerName, data) {
 		return fmt.Errorf("%w (%s)", ErrSignedOutCredential, providerName)
@@ -811,6 +782,49 @@ func (c *Credentials) storeActiveCredential(providerName string, data []byte) er
 		return err
 	}
 	defer release()
+	return c.storeActiveCredentialLocked(providerName, paths, data)
+}
+
+// replaceActiveCredentialHolding writes data as the canonical credential only
+// while the canonical credential still holds the refresh token token
+// fingerprints, and reports whether it wrote. The check and the write are
+// one operation under the provider's credential-write locks: for Claude the
+// CLI's own, so a sign-in or a refresh lands wholly before the check or after
+// the write. Codex takes no lock AO can share, so a native Codex writer
+// cannot be excluded: its check and write run back to back, and a sign-in
+// that completes between them is replaced.
+func (c *Credentials) replaceActiveCredentialHolding(providerName, token string, data []byte) (bool, error) {
+	if c.credentialSignedOut(providerName, data) {
+		return false, fmt.Errorf("%w (%s)", ErrSignedOutCredential, providerName)
+	}
+	paths, err := c.Paths(providerName)
+	if err != nil {
+		return false, err
+	}
+	release, err := c.lockCanonicalCredentialWrite(providerName, paths.SharedHome)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	current, err := c.readCredentialAt(providerName, paths.SharedHome, true)
+	if IsCredentialMissing(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("provideraccounts: inspect canonical %s credential: %w", providerName, err)
+	}
+	if !c.holdsConsumed(providerName, current.Bytes(), token) {
+		return false, nil
+	}
+	if err := c.storeActiveCredentialLocked(providerName, paths, data); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// storeActiveCredentialLocked is the canonical write itself, for a caller
+// holding the provider's credential-write locks.
+func (c *Credentials) storeActiveCredentialLocked(providerName string, paths ProviderPaths, data []byte) error {
 	if _, ok := c.keychainFor(providerName); !ok {
 		activePath := filepath.Join(paths.SharedHome, paths.CredentialFile)
 		if info, statErr := os.Lstat(activePath); statErr == nil && info.Mode()&os.ModeSymlink != 0 {

@@ -205,7 +205,7 @@ func codexOutsideLoginRig(t *testing.T, bEmail string) (manager *Manager, store 
 	if err := credentials.WriteAccountCredential(codexName, "acct-a", aLogin); err != nil {
 		t.Fatal(err)
 	}
-	if err := credentials.CommitSelectedCredential(codexName, "acct-a", aLogin, aLogin); err != nil {
+	if err := credentials.CommitSelectedCredentialForTest(codexName, "acct-a", aLogin, aLogin); err != nil {
 		t.Fatal(err)
 	}
 	if err := credentials.WriteAccountCredential(codexName, "acct-b", bOld); err != nil {

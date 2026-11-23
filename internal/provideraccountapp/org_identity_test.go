@@ -53,7 +53,7 @@ func sameEmailOrgs(t *testing.T, transport http.RoundTripper) (
 		t.Fatal(err)
 	}
 	manager.mu.Lock()
-	manager.rememberProviderCredentialFingerprintLocked(claudeName, loginA)
+	manager.recordCanonicalLocked(claudeName, loginA)
 	manager.mu.Unlock()
 	return manager, store, credentials, loginA, loginB
 }

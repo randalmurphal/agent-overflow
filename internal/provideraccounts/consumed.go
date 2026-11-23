@@ -134,15 +134,12 @@ func (c *Credentials) PromoteSlotOverCanonical(providerName, accountID string) (
 	if err != nil || consumed == "" {
 		return CredentialSnapshot{}, false, err
 	}
-	held, err := c.canonicalHoldsToken(providerName, consumed)
+	promoted, err := c.replaceActiveCredentialHolding(providerName, consumed, slot.Bytes())
 	if err != nil {
-		return CredentialSnapshot{}, false, fmt.Errorf("provideraccounts: before promoting %s slot %s: %w", providerName, accountID, err)
-	}
-	if !held {
-		return CredentialSnapshot{}, false, nil
-	}
-	if err := c.writeActiveCredential(providerName, slot.Bytes()); err != nil {
 		return CredentialSnapshot{}, false, fmt.Errorf("provideraccounts: restore %s slot %s to the canonical home: %w", providerName, accountID, err)
+	}
+	if !promoted {
+		return CredentialSnapshot{}, false, nil
 	}
 	return slot, true, nil
 }

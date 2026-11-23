@@ -185,7 +185,10 @@ func TestReconciliationAbsorbsARotationDuringTheIdentityProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const rotated = `{"claudeAiOauth":{"accessToken":"rotated"}}`
+	// The rotation keeps the login's user:profile scope, so the profile
+	// endpoint names its account.
+	rotated := `{"claudeAiOauth":{"accessToken":"` + claudefake.AccessToken("first@example.com", "org-1", "rotated") +
+		`","scopes":["user:inference","user:profile"]}}`
 	binary := writeRotatingProbeMockBinary(
 		t,
 		activePath,
@@ -878,7 +881,10 @@ func TestExternalCodexSameWorkspaceRelandsOnSavedAccount(t *testing.T) {
 // every tick: when the active account carries the observed email and
 // nothing contradicts it, the credential re-lands on the current
 // assignment.
-func TestReconcileAmbiguousIdentityKeepsTheActiveAccount(t *testing.T) {
+// An outside login whose email two saved accounts share, naming no
+// workspace, is neither's for certain: the selection stays and nothing of it
+// reaches the selected account's slot.
+func TestReconcileAmbiguousIdentityKeepsTheActiveAccountAndItsSlot(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -929,8 +935,8 @@ func TestReconcileAmbiguousIdentityKeepsTheActiveAccount(t *testing.T) {
 		t.Fatalf("active = %+v, want acct-a still active with ws-a", active)
 	}
 	saved, err := providerCredentialsForTest(t, app).ReadCredential(string(provider.Codex), "acct-a", false)
-	if err != nil || string(saved) != `{"OPENAI_API_KEY":"k2"}` {
-		t.Fatalf("acct-a slot = %q, %v; want the refreshed credential", saved, err)
+	if err != nil || string(saved) != `{"OPENAI_API_KEY":"k1"}` {
+		t.Fatalf("acct-a slot = %q, %v; want its own login kept", saved, err)
 	}
 }
 
@@ -1003,37 +1009,6 @@ func TestAccountIDForObservedIdentityDisambiguatesByOrg(t *testing.T) {
 		}
 		if err != nil || got != tc.wantID {
 			t.Errorf("%s: got (%q, %v), want %q", tc.name, got, err, tc.wantID)
-		}
-	}
-}
-
-func TestAssertSelectedClaudeIdentityUsesOrgContradiction(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	selection := providerAccountSelection{
-		AccountID: "acct-a",
-		Account:   provider.AccountInfo{Email: "e@x.com", OrgID: "org-1", OrgName: "Alpha"},
-	}
-	cases := []struct {
-		name    string
-		info    provider.AccountInfo
-		wantErr bool
-	}{
-		{"empty post-switch identity", provider.AccountInfo{}, false},
-		{"same login", provider.AccountInfo{Email: "E@X.com", OrgID: "org-1"}, false},
-		{"same email different org id", provider.AccountInfo{Email: "e@x.com", OrgID: "org-2"}, true},
-		// A differing display name is a rename or a source-formatting
-		// difference, never proof of a different login: refusing here would
-		// drop the token rotation this refresh just spent (2026-08-18
-		// incident shape).
-		{"same email different org name without ids", provider.AccountInfo{Email: "e@x.com", OrgName: "Beta"}, false},
-		{"different email", provider.AccountInfo{Email: "other@x.com"}, true},
-		{"rename under the same org id", provider.AccountInfo{Email: "e@x.com", OrgID: "org-1", OrgName: "Renamed"}, false},
-	}
-	for _, tc := range cases {
-		err := app.assertSelectedClaudeIdentity(selection, tc.info)
-		if (err != nil) != tc.wantErr {
-			t.Errorf("%s: err = %v, wantErr %v", tc.name, err, tc.wantErr)
 		}
 	}
 }

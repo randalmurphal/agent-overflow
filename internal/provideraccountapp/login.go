@@ -270,7 +270,7 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	// A fresh sign-in is where the provider sets the session deadline this
 	// account will live by, so it is the first place worth reading it.
 	account = m.withRecordedLoginExpiry(account, loginCredential.Bytes())
-	m.rememberProviderCredentialFingerprintLocked(providerName, loginCredential.Bytes())
+	m.recordCanonicalLocked(providerName, loginCredential.Bytes())
 	generation := m.store.Generation(providerName)
 	m.mu.Unlock()
 	accountLocked = false

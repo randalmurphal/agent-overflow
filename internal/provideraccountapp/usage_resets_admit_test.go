@@ -2,11 +2,13 @@ package provideraccountapp
 
 import (
 	"context"
+	"crypto/sha256"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
@@ -318,9 +320,11 @@ func TestASelectedProbeThatNamesNoLoginLandsOnTheRecordedCredential(t *testing.T
 }
 
 // A selected account's probe whose reading failed still says whose login it
-// ran: another saved account's rotation reaches neither this account's slot
-// nor the canonical store.
-func TestAFailedSelectedProbeOfAnotherLoginKeepsItsRotationOutOfTheSlot(t *testing.T) {
+// ran. The rotation descends from the credential recorded for the account,
+// so it lands where that credential was (dropping it would retire the
+// chain), but the refresh says the login is another account's, and the
+// rotation is not recorded as this account's.
+func TestAFailedSelectedProbeOfAnotherLoginLandsItsRotationAndSaysSo(t *testing.T) {
 	rig, seed := selectedRig(t)
 	if _, err := rig.store.Add(provideraccounts.Account{ID: "other", Provider: codexName, Email: "other@example.com", SubscriptionType: "team"}); err != nil {
 		t.Fatal(err)
@@ -329,14 +333,18 @@ func TestAFailedSelectedProbeOfAnotherLoginKeepsItsRotationOutOfTheSlot(t *testi
 	rig.write(t, "rotate.json", rotated)
 	rig.write(t, "account.json", chatgptAccountFrame("other@example.com", "team", "")+"\n")
 	rig.write(t, "ratelimits.json", "")
-	if err := rig.manager.RefreshProviderAccountUsage(codexName, "picked"); err == nil {
-		t.Fatal("a failed reading reported no error")
+	err := rig.manager.RefreshProviderAccountUsage(codexName, "picked")
+	if code, _, ok := errorsx.PublicDetails(err); !ok || code != "account_login_mismatch" || !strings.Contains(err.Error(), "other@example.com") {
+		t.Fatalf("refresh = %v, want the other login named", err)
 	}
-	if got := rig.credential(t, "picked", false); got != string(seed) {
-		t.Fatalf("slot = %s, want another login's rotation kept out", got)
+	if got := rig.credential(t, "picked", false); got != rotated {
+		t.Fatalf("slot = %s, want the rotation of the credential it held", got)
 	}
-	if got := rig.credential(t, "", true); got != string(seed) {
-		t.Fatalf("canonical = %s, want it untouched", got)
+	if got := rig.credential(t, "", true); got != rotated {
+		t.Fatalf("canonical = %s, want the rotation of the recorded credential", got)
+	}
+	if fingerprint, ok := rig.manager.CredentialFingerprintForTest(codexName); !ok || fingerprint != sha256.Sum256(seed) {
+		t.Fatal("the rotation of another account's login was recorded as this account's")
 	}
 }
 
@@ -459,53 +467,51 @@ func TestARefreshUnderAnOutsideLoginOfAnotherWorkspaceSelectsItFirst(t *testing.
 	}
 }
 
-// B's credential names no workspace, so nothing tells it from A's: the
-// reconciliation the refresh starts with keeps it on the current assignment
-// (reconcileObservedAccountLocked), and the credential is then the recorded
-// one. A reading on it that is not whole is not attributed: A's list stays
-// as it was, while a rotation still lands where the credential is.
-func TestARefreshUnderAnOutsideLoginWithoutAWorkspaceAttributesNoPartialReading(t *testing.T) {
+// B's credential names no workspace, so nothing tells it from A's. The
+// reconciliation the refresh starts with leaves it unattributed: the
+// selection stays, nothing of the login reaches A's slot or the record, and
+// the refresh reads nothing under it and says why. What the sentence offers
+// works: a switch to another saved account installs that account's login
+// over it, and A's slot still holds A's.
+func TestARefreshUnderAnAmbiguousOutsideLoginReadsNothing(t *testing.T) {
 	const bLogin = `{"tokens":{"access_token":"b","refresh_token":"b-refresh"},"last_refresh":"2029-01-01T00:00:00Z"}`
-	const bRotated = `{"tokens":{"access_token":"b2","refresh_token":"b2-refresh"},"last_refresh":"2030-01-01T00:00:00Z"}`
-	for name, tc := range map[string]struct {
-		read      func(rig resetRig)
-		canonical string
-	}{
-		"rotation and a failed reading": {
-			read: func(rig resetRig) {
-				rig.write(t, "rotate.json", bRotated)
-				rig.write(t, "ratelimits.json", "")
-			},
-			canonical: bRotated,
-		},
-		"resets without usage windows": {
-			read: func(rig resetRig) {
-				rig.write(t, "ratelimits.json", `{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","planType":"team"},"rateLimitResetCredits":`+lateCreditOnly+`}}`+"\n")
-			},
-			canonical: bLogin,
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			rig, _, before := sharedEmailRig(t, bLogin)
-			tc.read(rig)
-			err := rig.manager.RefreshProviderAccountUsage(codexName, "a")
-			if err == nil {
-				t.Fatal("a reading that is not whole reported no error")
-			}
-			if active, ok := rig.store.Active(codexName, time.Now()); !ok || active.ID != "a" {
-				t.Fatalf("active = %+v, %v; want the assignment kept", active, ok)
-			}
-			after := rig.resetsOf(t, "a")
-			if after == nil || after.Revision != before.Revision || len(after.Options) != 1 || after.Options[0].ID != "RateLimitResetCredit_a" {
-				t.Fatalf("A's list = %+v (refresh err %v), want it as it was", after, err)
-			}
-			if got := rig.credential(t, "", true); got != tc.canonical {
-				t.Fatalf("canonical = %s (refresh err %v), want %s", got, err, tc.canonical)
-			}
-			if got := rig.credential(t, "a", false); got != tc.canonical {
-				t.Fatalf("A's slot = %s (refresh err %v), want the credential kept on A", got, err)
-			}
-		})
+	const bSaved = `{"tokens":{"access_token":"b0","refresh_token":"b0-refresh","account_id":"ws-b"},"last_refresh":"2028-01-01T00:00:00Z"}`
+	rig, aSeed, before := sharedEmailRig(t, bLogin)
+	if err := rig.creds.WriteAccountCredential(codexName, "b", []byte(bSaved)); err != nil {
+		t.Fatal(err)
+	}
+	// A reading, had one started on B's login, would rotate it.
+	rig.write(t, "rotate.json", `{"tokens":{"access_token":"b2","refresh_token":"b2-refresh"},"last_refresh":"2030-01-01T00:00:00Z"}`)
+	rig.write(t, "ratelimits.json", `{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","planType":"team"},"rateLimitResetCredits":`+lateCreditOnly+`}}`+"\n")
+
+	err := rig.manager.RefreshProviderAccountUsage(codexName, "a")
+	if code, _, ok := errorsx.PublicDetails(err); !ok || code != "account_login_unresolved" || !strings.Contains(err.Error(), "Sign in from the app, or switch to another saved account") {
+		t.Fatalf("refresh = %v, want the unresolved login named", err)
+	}
+	if active, ok := rig.store.Active(codexName, time.Now()); !ok || active.ID != "a" {
+		t.Fatalf("active = %+v, %v; want the selection kept", active, ok)
+	}
+	if got := rig.credential(t, "a", false); got != aSeed {
+		t.Fatalf("A's slot = %s, want A's own login", got)
+	}
+	if got := rig.credential(t, "", true); got != bLogin {
+		t.Fatalf("canonical = %s, want B's login, unread and unrotated", got)
+	}
+	if fingerprint, ok := rig.manager.CredentialFingerprintForTest(codexName); ok && fingerprint == sha256.Sum256([]byte(bLogin)) {
+		t.Fatal("the unattributed login was recorded as A's")
+	}
+	if after := rig.resetsOf(t, "a"); after == nil || after.Revision != before.Revision {
+		t.Fatalf("A's list = %+v, want it as it was", after)
+	}
+
+	if _, err := rig.manager.SwitchProviderAccount(codexName, "b"); err != nil {
+		t.Fatalf("switch to B under the unattributed login: %v", err)
+	}
+	if got := rig.credential(t, "", true); got != bSaved {
+		t.Fatalf("canonical after the switch = %s, want B's saved login", got)
+	}
+	if got := rig.credential(t, "a", false); got != aSeed {
+		t.Fatalf("A's slot after the switch = %s, want A's own login, not the outside one", got)
 	}
 }
 

@@ -59,10 +59,6 @@ func (a *App) RecheckClaudeAccount() (provider.AccountInfo, error) {
 	return a.providerDiscoveryService().RecheckClaudeAccount()
 }
 
-func (a *App) assertSelectedClaudeIdentity(selection providerAccountSelection, info provider.AccountInfo) error {
-	return a.providerAccounts.AssertSelectedClaudeIdentity(selection, info)
-}
-
 func (a *App) probeClaudeRateLimits(ctx context.Context) error {
 	return a.providerLifecycleService().ProbeClaudeRateLimits(ctx)
 }

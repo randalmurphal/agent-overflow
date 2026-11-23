@@ -32,3 +32,58 @@ func DescribeObservedAccount(info provider.AccountInfo) string {
 	}
 	return fmt.Sprintf("%s (%s)", email, org)
 }
+
+// providerLabel is a provider's name as a person reads it.
+func providerLabel(providerName string) string {
+	switch providerName {
+	case string(provider.Claude):
+		return "Claude"
+	case string(provider.Codex):
+		return "Codex"
+	default:
+		return providerName
+	}
+}
+
+// unresolvedLoginError reports a canonical login that names no saved account
+// for certain: several saved accounts match it, or it carries no identity
+// and the selected account does. Its text is the sentence a person reads;
+// the selection stays and nothing of the login is saved.
+type unresolvedLoginError struct{ sentence string }
+
+func (e unresolvedLoginError) Error() string { return e.sentence }
+
+// PublicDetails makes the sentence the client-safe text (errorsx.Detailed).
+func (e unresolvedLoginError) PublicDetails() (code, message string) {
+	return "account_login_unresolved", e.sentence
+}
+
+// replaceUnresolvedLogin is what a person can do about an unresolved login:
+// a sign-in from the app, or a switch, installs a saved login over it.
+const replaceUnresolvedLogin = "Sign in from the app, or switch to another saved account, to replace it."
+
+// errAmbiguousLogin is the unresolved verdict for a login whose email more
+// than one saved account uses, naming no organization to tell them apart.
+func errAmbiguousLogin(providerName string, info provider.AccountInfo) error {
+	unit := "organization"
+	if providerName == string(provider.Codex) {
+		unit = "workspace"
+	}
+	return unresolvedLoginError{sentence: fmt.Sprintf(
+		"%s is signed in outside the app as %s, which more than one saved account uses, and the login names no %s, so the app can't tell which account it is. %s",
+		providerLabel(providerName), strings.TrimSpace(info.Email), unit, replaceUnresolvedLogin,
+	)}
+}
+
+// errIdentitylessLogin is the unresolved verdict for a login that carries no
+// account identity, while the selected account has one.
+func errIdentitylessLogin(providerName string, selected string) error {
+	example := ""
+	if providerName == string(provider.Codex) {
+		example = ", such as an API key"
+	}
+	return unresolvedLoginError{sentence: fmt.Sprintf(
+		"%s is signed in outside the app with a login that names no account%s, so the app doesn't read usage for %s while it is active. %s",
+		providerLabel(providerName), example, selected, replaceUnresolvedLogin,
+	)}
+}

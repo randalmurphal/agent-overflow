@@ -25,24 +25,43 @@ type EphemeralHome struct {
 	// lives (ephemeral_registry.go).
 	lease   *os.File
 	cleaned bool
+	// from and selected are what settleRotation needs to place the home's
+	// rotation; landing is its answer, once Settle has run.
+	from     ephemeralProvenance
+	selected bool
+	landing  *RotationLanding
+}
+
+// EphemeralOwner is the account a seeded temporary home probes.
+type EphemeralOwner struct {
+	AccountID string
+	// Slot is the credential the owner's slot holds as the home is seeded:
+	// the seed itself for an inactive account, and possibly an earlier one
+	// for the selected account, whose seed is the canonical credential.
+	Slot []byte
+	// Selected reports that this store selected the owner, so a rotation
+	// may replace the canonical credential (only the selecting store writes
+	// it).
+	Selected bool
 }
 
 // NewEphemeralHome creates an isolated provider home for a new login. Only the
 // small provider configuration files required to preserve native login
 // behavior are copied; session history and caches stay in the canonical home.
 func (c *Credentials) NewEphemeralHome(providerName string) (*EphemeralHome, error) {
-	return c.newEphemeralHome(providerName, nil, "")
+	return c.newEphemeralHome(providerName, nil, EphemeralOwner{})
 }
 
 // NewEphemeralHomeWithCredential creates an isolated provider home seeded with
-// one caller-verified opaque credential snapshot. It is used for inactive
-// account probes without rereading mutable account storage after the caller
-// releases its selection lock. ownerAccountID names the slot the seed came
-// from so the boot sweep can restore a crash-orphaned rotation to it.
+// one caller-verified opaque credential snapshot, the owner's login: for an
+// inactive account its slot, for the selected account the canonical
+// credential recorded for it. The registry entry records what the seed and
+// the owner's slot held, so a rotation is settled by the same rule live
+// (Settle) and after a crash (SweepEphemeralCredentials).
 func (c *Credentials) NewEphemeralHomeWithCredential(
 	providerName string,
 	credential []byte,
-	ownerAccountID string,
+	owner EphemeralOwner,
 ) (*EphemeralHome, error) {
 	if len(credential) == 0 {
 		return nil, errors.New("provideraccounts: empty temporary credential snapshot")
@@ -54,13 +73,13 @@ func (c *Credentials) NewEphemeralHomeWithCredential(
 	if c.credentialSignedOut(providerName, credential) {
 		return nil, fmt.Errorf("%w (%s)", ErrSignedOutCredential, providerName)
 	}
-	return c.newEphemeralHome(providerName, credential, ownerAccountID)
+	return c.newEphemeralHome(providerName, credential, owner)
 }
 
 func (c *Credentials) newEphemeralHome(
 	providerName string,
 	credential []byte,
-	ownerAccountID string,
+	owner EphemeralOwner,
 ) (*EphemeralHome, error) {
 	paths, err := c.Paths(providerName)
 	if err != nil {
@@ -70,10 +89,19 @@ func (c *Credentials) newEphemeralHome(
 	if err != nil {
 		return nil, fmt.Errorf("provideraccounts: create temporary %s home: %w", providerName, err)
 	}
+	from := ephemeralProvenance{AccountID: owner.AccountID}
+	if credential != nil {
+		from.SeedToken, _ = c.tokenFingerprint(providerName, credential)
+		if !c.credentialSignedOut(providerName, owner.Slot) {
+			from.SlotToken, _ = c.tokenFingerprint(providerName, owner.Slot)
+		}
+	}
 	home := &EphemeralHome{
 		Path:         path,
 		providerName: providerName,
 		credentials:  c,
+		from:         from,
+		selected:     owner.Selected,
 	}
 	cleanupOnError := func(cause error) (*EphemeralHome, error) {
 		if cleanupErr := home.Cleanup(); cleanupErr != nil {
@@ -85,11 +113,7 @@ func (c *Credentials) newEphemeralHome(
 	// the home — the CLI in a login home writes one on its own — because
 	// an unrecorded home that crashes is invisible to the boot sweep
 	// forever (ephemeral_registry.go).
-	seedDigest := ""
-	if credential != nil {
-		seedDigest, _ = c.tokenFingerprint(providerName, credential)
-	}
-	lease, err := c.registerEphemeralHome(providerName, path, ownerAccountID, seedDigest)
+	lease, err := c.registerEphemeralHome(providerName, path, from)
 	if err != nil {
 		// Never registered, so nothing outlives the directory.
 		if removeErr := os.RemoveAll(path); removeErr != nil {
@@ -209,9 +233,45 @@ func (c *Credentials) ReadEphemeralCredential(home *EphemeralHome) (CredentialSn
 	return c.readCredentialAt(home.providerName, home.Path, false)
 }
 
+// Settle places the home's rotation, if it holds one, by the rule the boot
+// sweep uses (settleRotation), and reports where it went. It runs once;
+// Cleanup runs it too for a home nobody settled.
+func (h *EphemeralHome) Settle() (RotationLanding, error) {
+	if h == nil || h.cleaned {
+		return RotationLanding{}, errors.New("provideraccounts: invalid temporary provider home")
+	}
+	if h.landing != nil {
+		return *h.landing, nil
+	}
+	credential, err := h.credentials.readCredentialAt(h.providerName, h.Path, false)
+	if IsCredentialMissing(err) {
+		h.landing = &RotationLanding{}
+		return *h.landing, nil
+	}
+	if err != nil {
+		return RotationLanding{}, fmt.Errorf("provideraccounts: read the temporary %s home's credential: %w", h.providerName, err)
+	}
+	landing, err := h.credentials.settleRotation(h.providerName, h.from, credential.Bytes(), h.selected)
+	if err != nil {
+		return landing, err
+	}
+	h.landing = &landing
+	return landing, nil
+}
+
+// Cleanup removes the home once its rotation is settled. A home whose
+// rotation nothing took (RotationLanding.Kept), or that could not be
+// settled, is kept with its entry for the boot sweep: its lease is released
+// so the sweep can claim it, and the error says so.
 func (h *EphemeralHome) Cleanup() error {
 	if h == nil || h.cleaned {
 		return nil
+	}
+	if h.lease != nil {
+		landing, err := h.Settle()
+		if err != nil || landing.Kept {
+			return h.keepForSweep(err)
+		}
 	}
 	var cleanupErrs []error
 	if kc, ok := h.credentials.keychainFor(h.providerName); ok {
@@ -235,4 +295,30 @@ func (h *EphemeralHome) Cleanup() error {
 		h.lease = nil
 	}
 	return err
+}
+
+// ErrRotationKept reports that a temporary home holds a refreshed login no
+// durable store took, and is kept for the next boot's sweep.
+var ErrRotationKept = errors.New("provideraccounts: a refreshed login could not be saved and is kept for the next start")
+
+// keepForSweep leaves the home and its entry, marked kept so the sweep
+// reports it no second time, and releases the lease so the sweep may claim
+// it.
+func (h *EphemeralHome) keepForSweep(cause error) error {
+	errs := []error{ErrRotationKept, cause}
+	dir, err := h.credentials.ephemeralRegistryDir(h.providerName)
+	if err == nil {
+		entryPath := filepath.Join(dir, ephemeralRegistryFileName(h.Path))
+		var entry ephemeralRegistryEntry
+		if found, readErr := atomicfile.ReadJSON(entryPath, &entry); readErr != nil || !found {
+			err = errors.Join(readErr, errors.New("provideraccounts: the kept home's registry entry is gone"))
+		} else {
+			entry.Kept = true
+			err = atomicfile.WriteJSON(entryPath, entry)
+		}
+	}
+	errs = append(errs, err, releaseLease(h.lease))
+	h.cleaned = true
+	h.lease = nil
+	return errors.Join(errs...)
 }

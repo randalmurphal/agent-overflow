@@ -51,16 +51,40 @@ alive. Rate-limit persistence and emission enter through narrow
 - Build login and probe environments from the same layers: configured user
   environment, boot-mode overrides, then the isolated provider-home pin.
   Endpoint configuration is part of account identity.
-- The recorded fingerprint (`fingerprints`) is the one proof that canonical
-  bytes are the selected account's login; only a credential identified or
-  activated as that account's is recorded. A usage reading or spend of the
-  selected account whose canonical credential is not the recorded one
-  reconciles first, under the lock it already holds, and starts again as the
-  account then stands: an account no longer selected is read from its slot,
-  and a spend of it is refused unsent. The commit lands a selected reading's
-  credential, slot write and fingerprint only for the recorded credential or
-  its own rotation (`commitProviderUsageRefreshLocked`); the provider's
-  observation decides only whether the reading is the account's.
+- The canonical record (`recorded.go`) is the one proof that canonical bytes
+  are the selected account's login; only a credential identified or
+  activated as that account's is recorded. Beside it is the verdict on a
+  canonical login reconciliation identified and could not attribute to one
+  saved account (`unresolvedLoginError`), keyed by the credential's digest
+  and the saved identities: another credential, a changed identity or a
+  removal forgets it. Until then no reconciliation identifies those bytes
+  again, every reading and spend of the selected account answers with its
+  sentence, and a switch, removal or sign-in preserves nothing from them.
+- One resolver (`resolveObservedLoginLocked`) attributes an unrecorded
+  canonical login, for reconciliation and for the selected Claude refresh.
+  A login that names no account goes only to a selected account saved
+  without an email, and only while nothing the credential carries
+  contradicts it. An email several saved accounts share, with no
+  organization named, is nobody's for certain.
+- A usage reading or spend of the selected account whose canonical
+  credential is not the recorded one reconciles first, under the lock it
+  already holds, and runs on exactly the credential reconciliation
+  accepted: an account no longer selected is read from its slot, and a
+  spend of it is refused unsent. The commit lands a selected reading's slot
+  write and record only for the recorded credential
+  (`commitProviderUsageRefreshLocked`). A Codex rotation is placed only by
+  the credential store's settle, live and at boot; the commit learns where
+  it went. An inactive Codex slot whose credential names another workspace
+  is refused before Codex starts.
+- The selected Claude refresh starts the CLI only while the canonical store
+  still holds the credential the reading was admitted on. A sign-in landing
+  between that check and the CLI's own refresh cannot be excluded: the
+  CLI's lock is its own while it runs, so the refreshed credential is judged
+  by the resolver. A saved Claude slot that already holds another account's
+  login is not detected; its bytes name nobody without a profile request.
+- `provider:account` carries the selected account only, which every client
+  shows as the one in use. Any other card's change publishes the listing
+  (`provider:account_listing`).
 - Transfer validation uses a fresh provider-specific probe under the reconcile
   lock. Display caches never prove that the destination can accept ownership.
   Successful probes adopt credential rotation through the normal transaction.
