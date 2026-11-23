@@ -139,6 +139,10 @@ type ProviderState struct {
 	// (PendingReset says what ends one). Backend state: a key is no business
 	// of a client's. Remove forgets it.
 	PendingResets map[string]PendingReset `json:"pendingResets,omitempty"`
+	// ReservedSlots holds the ids ReserveAccountID minted whose row does not
+	// exist yet, each with the data root and provider home it was reserved
+	// under (reserved_slots.go). Inserting the row clears its id.
+	ReservedSlots map[string]ReservedSlot `json:"reservedSlots,omitempty"`
 }
 
 // selectAccount makes accountID the selection and records whether
@@ -155,13 +159,10 @@ func (state *ProviderState) selectAccount(accountID string, auto bool) bool {
 
 type persistedState struct {
 	Version int `json:"version"`
-	// ProviderHome is the user home directory whose provider trees
-	// (~/.claude, ~/.codex) hold the credential slots this metadata
-	// describes. Stamped on first claim so a process pairing this store
-	// with a DIFFERENT home — a scratch --data-dir against a real home,
-	// or vice versa — can be detected before it acts on slots that were
-	// never its to manage (the orphan-slot prune is the destructive
-	// consumer). Absent in stores written before the stamp existed.
+	// ProviderHome is the user home directory this store first ran against,
+	// written once by ClaimProviderHome. This build reads nothing from it;
+	// it is kept because earlier releases that open this data root (a
+	// downgrade) read it and delete no unlisted slot under any other home.
 	ProviderHome string                   `json:"providerHome,omitempty"`
 	Providers    map[string]ProviderState `json:"providers"`
 }
@@ -169,8 +170,11 @@ type persistedState struct {
 // Store persists account metadata only. It is safe for concurrent probe,
 // login, switch, and rate-limit goroutines.
 type Store struct {
-	mu    sync.RWMutex
-	path  string
+	mu   sync.RWMutex
+	path string
+	// root is the absolute directory holding path: the data root that a
+	// reservation made here names (reserved_slots.go).
+	root  string
 	state persistedState
 	// guard, when set, may refuse a write that changes a provider's selected
 	// account (GuardSelection).
@@ -201,8 +205,13 @@ func NewStore(configDir string) (*Store, error) {
 	if strings.TrimSpace(configDir) == "" {
 		return nil, errors.New("provideraccounts: empty config directory")
 	}
+	root, err := filepath.Abs(configDir)
+	if err != nil {
+		return nil, fmt.Errorf("provideraccounts: resolve config directory: %w", err)
+	}
 	s := &Store{
-		path: filepath.Join(configDir, stateFilename),
+		path: filepath.Join(root, stateFilename),
+		root: root,
 		state: persistedState{
 			Version:   stateVersion,
 			Providers: make(map[string]ProviderState),
@@ -357,6 +366,7 @@ func (s *Store) upsertAndActivate(
 		state.Accounts[index] = cloneAccount(account)
 	} else {
 		state.Accounts = append(state.Accounts, cloneAccount(account))
+		state.clearReservation(account.ID)
 	}
 	selected, err := s.selectLocked(account.Provider, &state, account.ID, false)
 	if err != nil {
@@ -411,6 +421,7 @@ func (s *Store) Add(account Account) (Account, error) {
 	// SetUsageResets is the only writer of a row's list.
 	account.UsageResets = nil
 	state.Accounts = append(state.Accounts, cloneAccount(account))
+	state.clearReservation(account.ID)
 	s.state.Providers[account.Provider] = state
 	if err := s.saveLocked(); err != nil {
 		restoreProviderState(s.state.Providers, account.Provider, previous, existed)
@@ -858,29 +869,24 @@ func (s *Store) ClaudeCatalog(accountID string) (ClaudeCatalogRecord, bool) {
 	return cloneClaudeCatalogRecord(record), true
 }
 
-// ClaimProviderHome binds this metadata store to userHome, the home whose
-// provider trees hold the credential slots it describes. The first claim
-// wins and is persisted; later claims only compare. It returns the home the
-// store is bound to and whether that matches userHome — callers gate slot
-// destruction (the orphan prune) on a true match, so a store paired with a
-// foreign home degrades to "never prune" rather than "prune someone else's
-// logins".
-func (s *Store) ClaimProviderHome(userHome string) (string, bool, error) {
-	cleaned := filepath.Clean(userHome)
+// ClaimProviderHome records userHome as the home this store runs against,
+// once: the first claim is persisted and later claims change nothing. It is
+// the only writer of the stamp, which earlier releases read (persistedState).
+func (s *Store) ClaimProviderHome(userHome string) error {
 	if strings.TrimSpace(userHome) == "" {
-		return "", false, errors.New("provideraccounts: empty provider home claim")
+		return errors.New("provideraccounts: empty provider home claim")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.state.ProviderHome == "" {
-		s.state.ProviderHome = cleaned
-		if err := s.saveLocked(); err != nil {
-			s.state.ProviderHome = ""
-			return "", false, err
-		}
-		return cleaned, true, nil
+	if s.state.ProviderHome != "" {
+		return nil
 	}
-	return s.state.ProviderHome, s.state.ProviderHome == cleaned, nil
+	s.state.ProviderHome = filepath.Clean(userHome)
+	if err := s.saveLocked(); err != nil {
+		s.state.ProviderHome = ""
+		return err
+	}
+	return nil
 }
 
 func (s *Store) saveLocked() error {
@@ -936,6 +942,7 @@ func cloneProviderState(state ProviderState) ProviderState {
 	state.ClaudeCatalogs = cloneClaudeCatalogs(state.ClaudeCatalogs)
 	state.AutoSwitchOff = maps.Clone(state.AutoSwitchOff)
 	state.PendingResets = clonePendingResets(state.PendingResets)
+	state.ReservedSlots = maps.Clone(state.ReservedSlots)
 	return state
 }
 
