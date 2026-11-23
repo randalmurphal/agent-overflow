@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { cleanup, render } from '@testing-library/svelte';
 import '../../../app.css';
 import SettingsFooter from './SettingsFooter.svelte';
 import { SIDEBAR_MIN_WIDTH } from '../../stores/sidebarLayout.svelte';
@@ -17,6 +17,7 @@ beforeEach(() => {
   document.body.append(host);
 });
 afterEach(() => {
+  cleanup();
   host.remove();
 });
 

@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
-import { fireEvent, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import ProjectItem from './ProjectItem.svelte';
 import ProjectList from './ProjectList.svelte';
 import { addProjectLocal, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
@@ -59,6 +59,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   resetToLocalPage();
 });
 

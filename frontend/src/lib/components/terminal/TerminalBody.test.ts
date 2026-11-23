@@ -1002,6 +1002,7 @@ describe('TerminalBody compact key row', () => {
   });
 
   afterEach(() => {
+    cleanup();
     setCompactLayoutForTest(false);
   });
 
@@ -1199,6 +1200,7 @@ describe('TerminalBody with its find bar focused', () => {
   });
 
   afterEach(() => {
+    cleanup();
     setCompactLayoutForTest(false);
   });
 

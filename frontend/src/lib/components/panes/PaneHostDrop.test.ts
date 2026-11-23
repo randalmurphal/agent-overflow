@@ -3,7 +3,7 @@
 // they resolve, what the indicator shows and where the drop lands. A
 // tools-row drag is in ToolPane.test.ts; real geometry is in
 // paneDropTermination.browser.test.ts and e2e/tests/pane-strip-drop.spec.ts.
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -64,6 +64,7 @@ describe('PaneHost drag and drop', () => {
   });
 
   afterEach(() => {
+    cleanup();
     endThreadRowDrag();
     vi.restoreAllMocks();
     resetAll();

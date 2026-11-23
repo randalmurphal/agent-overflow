@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import TakeControlTerminal from './TakeControlTerminal.svelte';
 import { encodeTerminalInput } from '../../types/terminal';
@@ -249,6 +249,7 @@ describe('<TakeControlTerminal>', () => {
   });
 
   afterEach(() => {
+    cleanup();
     restoreRaf?.();
     restoreRaf = undefined;
   });

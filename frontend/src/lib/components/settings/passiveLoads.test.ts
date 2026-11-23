@@ -27,7 +27,7 @@
 // the negative while having broken the owner's own screen.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { render, waitFor } from '@testing-library/svelte';
+import { cleanup, render, waitFor } from '@testing-library/svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { resetRunMode } from '../../../test/runMode';
@@ -130,6 +130,7 @@ describe('settings sections issue no passive RPC they were not granted', () => {
   });
 
   afterEach(() => {
+    cleanup();
     resetToLocalPage();
     resetRunMode();
     resetWSLSectionCache();

@@ -1,4 +1,4 @@
-import { render } from '@testing-library/svelte';
+import { cleanup, render } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import PaneDivider from './PaneDivider.svelte';
@@ -141,6 +141,7 @@ describe('PaneDivider', () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
     resetPaneLayoutForTest();
     document.body.style.cursor = '';

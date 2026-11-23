@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import PlanSidebar from './PlanSidebar.svelte';
 import { buildPane, emitItemEventUpsert, makeItem, makeThread } from '../../../test/helpers/chat';
@@ -27,6 +27,7 @@ describe('<PlanSidebar>', () => {
   });
 
   afterEach(() => {
+    cleanup();
     resetProposedPlanCacheForTests();
     cleanupEvents?.();
   });

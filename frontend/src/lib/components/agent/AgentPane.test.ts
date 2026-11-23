@@ -5,7 +5,7 @@ import { applySubagentProgress } from '../../stores/subagentProgress.svelte';
 // These tests drive it with a real ThreadPane so the scoped projection,
 // the breadcrumb, the self-close rule, and the composer shell's Stop gate
 // run against the same state the chat surface uses.
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -85,6 +85,7 @@ describe('<AgentPane>', () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
   });
 

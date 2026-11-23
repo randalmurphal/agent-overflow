@@ -75,6 +75,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   cleanupEvents?.();
   cleanupEvents = null;
   vi.mocked(reportFrontendDiagnostic).mockClear();

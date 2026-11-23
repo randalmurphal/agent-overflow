@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { within } from '@testing-library/svelte';
 import SystemsSection from './SystemsSection.svelte';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
@@ -32,6 +32,7 @@ describe('<SystemsSection>', () => {
   });
 
   afterEach(() => {
+    cleanup();
     __setTransportHelloForTest(null);
     resetRunMode();
   });

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { cleanup, render } from '@testing-library/svelte';
 // Real production stylesheet: these assertions are cascade-coupled to the
 // utilities the panel uses -- `content-start` on the option column and the
 // stacked `col-start-1 row-start-1 / invisible` preview layers. Drop either
@@ -24,6 +24,7 @@ import type { UserInputRequest } from '../../types/events';
 const mounted: HTMLElement[] = [];
 
 afterEach(() => {
+  cleanup();
   for (const el of mounted.splice(0)) el.remove();
 });
 

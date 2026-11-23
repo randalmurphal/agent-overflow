@@ -3,7 +3,7 @@
 // card's width and the controls a row beneath it, wrapping within the card
 // with each label whole; on desktop the controls sit beside the name.
 import { afterEach, beforeAll, beforeEach, expect, it } from 'vitest';
-import { render, waitFor } from '@testing-library/svelte';
+import { cleanup, render, waitFor } from '@testing-library/svelte';
 import '../../../app.css';
 import SettingsView from './SettingsView.svelte';
 import { seedSettingsPages } from '../../../test/helpers/settingsPages';
@@ -57,6 +57,7 @@ beforeEach(async () => {
   document.body.append(host);
 });
 afterEach(() => {
+  cleanup();
   host.remove();
   setCompactLayoutForTest(false);
   applyFonts('geist', 'geist');

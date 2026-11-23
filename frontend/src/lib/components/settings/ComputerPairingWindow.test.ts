@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import ComputerPairingWindow from './ComputerPairingWindow.svelte';
@@ -19,7 +19,7 @@ describe('computer pairing window', () => {
     setBindingMock('OpenComputerPairing', async () => WINDOW);
     setBindingMock('CloseComputerPairing', async () => {});
   });
-  afterEach(() => { __setTransportHelloForTest(null); vi.useRealTimers(); });
+  afterEach(() => { __setTransportHelloForTest(null); cleanup(); vi.useRealTimers(); });
 
   it('opens personal pairing where the modal established this caller may enroll', async () => {
     __setTransportHelloForTest({ backendId: '', backendName: 'My computers', capabilities: ['own-devices.v1'], protocolVersion: 1,

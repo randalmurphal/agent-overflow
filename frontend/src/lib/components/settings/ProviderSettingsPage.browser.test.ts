@@ -3,7 +3,7 @@
 // state moves nothing below the header. Where it does not, they wrap under
 // the pill: nothing overlaps and nothing leaves the page's width.
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { render, waitFor } from '@testing-library/svelte';
+import { cleanup, render, waitFor } from '@testing-library/svelte';
 import '../../../app.css';
 import ClaudeSettings from './ClaudeSettings.svelte';
 import { seedSettingsPages } from '../../../test/helpers/settingsPages';
@@ -31,6 +31,7 @@ beforeEach(async () => {
   document.body.append(host);
 });
 afterEach(() => {
+  cleanup();
   host.remove();
   setCompactLayoutForTest(false);
 });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import BrowserLockSection from './BrowserLockSection.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
@@ -15,6 +15,7 @@ beforeEach(() => {
   setPasskeysAvailableFromBootstrap(false);
 });
 afterEach(() => {
+  cleanup();
   dispose?.();
   dispose = undefined;
   vi.unstubAllGlobals();

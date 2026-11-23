@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -117,6 +117,7 @@ describe('tool panes in the strip', () => {
   });
 
   afterEach(() => {
+    cleanup();
     resetAll();
     setCompactLayoutForTest(false);
     vi.unstubAllGlobals();
@@ -248,6 +249,7 @@ describe('a tool dragged from the tools row', () => {
   });
 
   afterEach(() => {
+    cleanup();
     endToolPaneDrag();
     resetAll();
     vi.unstubAllGlobals();
@@ -376,6 +378,7 @@ describe('tool panes under compact', () => {
   });
 
   afterEach(() => {
+    cleanup();
     resetAll();
     setCompactLayoutForTest(false);
     vi.unstubAllGlobals();

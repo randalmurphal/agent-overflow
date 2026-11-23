@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/svelte';
+import { cleanup, render, waitFor } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -89,6 +89,7 @@ describe('PaneHost', () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
     if (originalResizeObserver) {
       (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =

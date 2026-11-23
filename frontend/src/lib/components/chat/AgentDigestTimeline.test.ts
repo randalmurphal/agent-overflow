@@ -1,6 +1,6 @@
 // The digest regroups its scope only when the scope's structure changes:
 // settled content and patches reach the mounted rows through their boxes.
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import AgentDigestTimeline from './AgentDigestTimeline.svelte';
@@ -32,7 +32,7 @@ beforeEach(async () => {
   setBindingMock('GetSettings', async () => makeSettings({ activityRunDefault: 'expanded' }));
   await loadSettings();
 });
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 it('regroups on structural changes only', async () => {
   const rows = [tool('t1', 1), tool('t2', 2), tool('t3', 3)];

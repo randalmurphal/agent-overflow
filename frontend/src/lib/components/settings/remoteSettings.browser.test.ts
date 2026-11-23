@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import { cleanup, render, fireEvent, waitFor } from '@testing-library/svelte';
 import '../../../app.css';
 import SettingsView from './SettingsView.svelte';
 import SystemsSection from './SystemsSection.svelte';
@@ -16,7 +16,7 @@ beforeEach(async () => {
   host.style.cssText = 'width:360px;height:800px;background:var(--color-surface-0);color:var(--color-fg)';
   document.body.append(host);
 });
-afterEach(() => { host.remove(); setCompactLayoutForTest(false); });
+afterEach(() => { cleanup(); host.remove(); setCompactLayoutForTest(false); });
 
 it.each([360, 1280])('separates outgoing connections from incoming access at %ipx', async (width) => {
   host.style.width = `${width}px`;

@@ -4,7 +4,7 @@
 // call names the recorded workspace.
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import AdvisorRow from './AdvisorRow.svelte';
 import AskUserQuestionCard from './AskUserQuestionCard.svelte';
 import AssistantMessage from './AssistantMessage.svelte';
@@ -33,6 +33,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   resetProposedPlanCacheForTests();
 });
 

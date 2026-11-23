@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, expect, it } from 'vitest';
-import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import { cleanup, render, fireEvent, waitFor } from '@testing-library/svelte';
 import ComputerActions from './ComputerActions.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { stageBackend } from '../../../test/helpers/backends';
@@ -8,7 +8,7 @@ import { saveComputerSSH, computerSSH } from '../../stores/computerSSH.svelte';
 import { detachBackend } from '../../transport/backends';
 
 beforeEach(() => { resetToLocalPage(); });
-afterEach(() => { resetToLocalPage(); });
+afterEach(() => { cleanup(); resetToLocalPage(); });
 
 it('starts a remembered offline computer without spending another pairing', async () => {
   const remote = stageBackend({ status: 'reconnecting' });

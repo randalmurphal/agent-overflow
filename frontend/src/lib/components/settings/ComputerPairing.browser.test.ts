@@ -1,12 +1,12 @@
 import { afterEach, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import '../../../app.css';
 import PairDeviceModal from './PairDeviceModal.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 
-afterEach(() => { __setTransportHelloForTest(null); });
+afterEach(() => { cleanup(); __setTransportHelloForTest(null); });
 
 it.each([360, 1280])('keeps computer verification readable and approval reachable at %ipx', async (width) => {
   await page.viewport(width, 800);

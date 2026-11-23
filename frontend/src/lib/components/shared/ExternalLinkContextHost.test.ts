@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { cleanup, render, fireEvent } from '@testing-library/svelte';
 import ExternalLinkContextHost from './ExternalLinkContextHost.svelte';
 import { buildPathLinkHref } from '../../utils/pathLinkExtension';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -44,6 +44,7 @@ describe('ExternalLinkContextHost', () => {
   });
 
   afterEach(() => {
+    cleanup();
     document.body.innerHTML = '';
   });
 

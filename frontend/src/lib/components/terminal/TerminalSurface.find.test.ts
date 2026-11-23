@@ -6,7 +6,7 @@
 // call by terminal; the provider itself is terminalFind.svelte.test.ts and,
 // over a real xterm, terminalFind.browser.test.ts.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import TerminalSurface from './TerminalSurface.svelte';
 import {
@@ -112,6 +112,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   vi.unstubAllGlobals();
   resetPaneLayoutForTest();
   document.body.replaceChildren();

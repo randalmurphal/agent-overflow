@@ -1,6 +1,6 @@
 import { tick } from 'svelte';
 import { beforeEach, afterEach, expect, it } from 'vitest';
-import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import { cleanup, render, fireEvent, waitFor } from '@testing-library/svelte';
 import AgentComputersSection from './AgentComputersSection.svelte';
 import ComputerSettingsPage from './ComputerSettingsPage.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -19,7 +19,7 @@ const hello = (id: string): TransportHello => ({
 });
 
 beforeEach(() => { resetBindingMocks(); resetStagedBackends(); resetToLocalPage(); __setTransportHelloForTest(hello(mac)); __setBackendStatusForTest('', { status: 'connected', nextAttemptAt: null }); });
-afterEach(() => { __setTransportHelloForTest(null); resetToLocalPage(); });
+afterEach(() => { cleanup(); __setTransportHelloForTest(null); resetToLocalPage(); });
 
 it('keeps unsupported hosts visible and disabled without issuing their new RPCs', () => {
   __setTransportHelloForTest({ ...hello(mac), capabilities: [] });

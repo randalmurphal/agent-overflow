@@ -5,7 +5,7 @@
 // outlived its domain, a counter anomaly, and a removal that ends no
 // session. The registration ceremony itself is passkey.test.ts's subject.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { setPasskeysAvailableFromBootstrap } from '../../transport/passkey';
 import { getToasts } from '../../stores/toast.svelte';
@@ -44,6 +44,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   setPasskeysAvailableFromBootstrap(false);
   Reflect.deleteProperty(window, 'PublicKeyCredential');
   Reflect.deleteProperty(navigator, 'credentials');
