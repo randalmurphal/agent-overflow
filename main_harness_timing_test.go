@@ -11,14 +11,14 @@ import (
 )
 
 func TestParseHarnessTiming(t *testing.T) {
-	got, err := parseHarnessTiming(" pairing-probe=500ms, watermark=1s ,thread-poll=250ms,wake-retry=2s,unreachable-settle=3s,replay-timeout=4s,")
+	got, err := parseHarnessTiming(" pairing-probe=500ms, watermark=1s ,thread-poll=250ms,wake-retry=2s,unreachable-settle=3s,agent-row-linger=4s,")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var want harnessTiming
 	want.PairingProbe, want.Watermark = 500*time.Millisecond, time.Second
 	want.Isolation.ThreadRequestPoll, want.Isolation.ThreadWakeRetryBase = 250*time.Millisecond, 2*time.Second
-	want.Frontend = map[string]int64{"unreachable-settle": 3000, "replay-timeout": 4000}
+	want.Frontend = map[string]int64{"unreachable-settle": 3000, "agent-row-linger": 4000}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parsed %+v, want %+v", got, want)
 	}
@@ -33,7 +33,7 @@ func TestParseHarnessTiming(t *testing.T) {
 		"pairing-probe=-1s",
 		"probe=1s",
 		"watermark=1s,watermark=2s",
-		"replay-timeout=1s,replay-timeout=2s",
+		"agent-row-linger=1s,agent-row-linger=2s",
 	} {
 		if _, err := parseHarnessTiming(bad); err == nil {
 			t.Errorf("parseHarnessTiming(%q) accepted a malformed value", bad)
@@ -134,7 +134,6 @@ var harnessTimerOwners = map[string]string{
 	"agent-settled-window": "Isolation.AgentSettledWindow",
 	"unreachable-settle":   "page unreachable-settle",
 	"agent-row-linger":     "page agent-row-linger",
-	"replay-timeout":       "page replay-timeout",
 }
 
 // Set alone through the boot's own path (parseHarnessTiming, then

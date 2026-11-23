@@ -67,7 +67,6 @@ import { homeWsUrl } from './homeEndpoint';
 import { refreshGrantedScopes } from './scopes';
 import { randomId } from '../utils/randomId';
 import { ReplayBuffer } from './replayBuffer';
-import { harnessTimingOf } from './harnessMode';
 import { parseBootFailures, sameBootFailures, type BootFailure } from './bootFailures';
 import {
   BackendStartingError,
@@ -947,10 +946,6 @@ interface OutageRecord {
 // instance via `createWSClient` if they want a sandboxed one.
 export class WSClient {
   private readonly fetchBootstrap: BootstrapFetcher;
-  // How long a replay may run before the socket is dropped: the product
-  // REPLAY_TIMEOUT_MS, or the override of the manifest this connection
-  // last accepted (harnessTimingOf).
-  private replayTimeoutMs = REPLAY_TIMEOUT_MS;
   private readonly createSocket: (url: string) => WSLike;
   private readonly maxFrameBytes: number;
   private readonly probeLoopbackOrigin: () => boolean;
@@ -1850,7 +1845,7 @@ export class WSClient {
     // resume path refreshes lastFrameAt before verdicts resume.
     if (documentHidden() || this.lease === 'background') return;
     if (!this.ws || this.ws.readyState !== WS_OPEN) return;
-    if (this.replayBuffer && Date.now() - this.replayStartedAt >= this.replayTimeoutMs) {
+    if (this.replayBuffer && Date.now() - this.replayStartedAt >= REPLAY_TIMEOUT_MS) {
       this.diagnosticsSink?.('transport: replay did not complete; forcing reconnect');
       console.warn('wsClient: replay did not complete; forcing reconnect');
       this.forceReconnect('replay did not complete');
@@ -3000,12 +2995,8 @@ export class WSClient {
         // the cache, and a superseded fetch landing late must not
         // overwrite the newer fetch's result (or flip remoteBackend).
         if (this.bootstrapPromise === p) {
-          // This connection's own backend sets its replay deadline: a
-          // manifest that refuses to parse refuses the connection.
-          const timing = harnessTimingOf(b.harness === true, b.harnessTiming);
           this.bootstrap = b;
           this.remoteBackend = b.remote === true;
-          this.replayTimeoutMs = timing.get('replay-timeout') ?? REPLAY_TIMEOUT_MS;
         }
         return b;
       });

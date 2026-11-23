@@ -238,14 +238,13 @@ describe('defaultBootstrap', () => {
   // Only a manifest that says harness can shorten a frontend timer; an
   // ordinary or soak boot's manifest that carried timing anyway is ignored.
   it('reads harness timing only from a harness manifest', async () => {
-    const timing = { 'unreachable-settle': 2000, 'replay-timeout': 3000 };
+    const timing = { 'unreachable-settle': 2000 };
     vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harnessTiming: timing })));
     await defaultBootstrap();
     expect(harnessInterval('unreachable-settle', 30_000)).toBe(30_000);
     vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harness: true, harnessTiming: timing })));
     await defaultBootstrap();
     expect(harnessInterval('unreachable-settle', 30_000)).toBe(2000);
-    expect(harnessInterval('replay-timeout', 60_000)).toBe(3000);
     expect(harnessInterval('agent-row-linger', 8_000)).toBe(8_000);
   });
 
@@ -255,15 +254,15 @@ describe('defaultBootstrap', () => {
   it('replaces harness timing on every manifest', async () => {
     const serve = (fields: Record<string, unknown>) =>
       vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, ...fields })));
-    serve({ harness: true, harnessTiming: { 'replay-timeout': 1000 } });
+    serve({ harness: true, harnessTiming: { 'agent-row-linger': 1000 } });
     await defaultBootstrap();
-    expect(harnessInterval('replay-timeout', 60_000)).toBe(1000);
-    serve({ harness: true, harnessTiming: { 'replay-timeout': 3000 } });
+    expect(harnessInterval('agent-row-linger', 60_000)).toBe(1000);
+    serve({ harness: true, harnessTiming: { 'agent-row-linger': 3000 } });
     await defaultBootstrap();
-    expect(harnessInterval('replay-timeout', 60_000)).toBe(3000);
+    expect(harnessInterval('agent-row-linger', 60_000)).toBe(3000);
     serve({ harness: true });
     await defaultBootstrap();
-    expect(harnessInterval('replay-timeout', 60_000)).toBe(60_000);
+    expect(harnessInterval('agent-row-linger', 60_000)).toBe(60_000);
     serve({ harness: true, harnessTiming: { 'unreachable-settle': 2000 } });
     await defaultBootstrap();
     serve({ wsUrl: SAME_ORIGIN_WS });
@@ -276,11 +275,11 @@ describe('defaultBootstrap', () => {
   });
 
   it('refuses harness timing this build cannot read', async () => {
-    for (const harnessTiming of [{ 'some-timer': 10 }, { 'replay-timeout': 0 }, { 'replay-timeout': '3s' }, [1]]) {
+    for (const harnessTiming of [{ 'some-timer': 10 }, { 'agent-row-linger': 0 }, { 'agent-row-linger': '3s' }, [1]]) {
       __resetHarnessModeForTest();
       vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harness: true, harnessTiming })));
       await expect(defaultBootstrap()).rejects.toThrow(/harnessTiming/);
-      expect(harnessInterval('replay-timeout', 60_000)).toBe(60_000);
+      expect(harnessInterval('agent-row-linger', 60_000)).toBe(60_000);
     }
   });
 

@@ -2304,7 +2304,7 @@ func TestServer_BootstrapServesFrontendTimingOnlyInHarnessMode(t *testing.T) {
 	})
 	// The server serves what it was built with, not the caller's map.
 	callers["unreachable-settle"] = 1
-	callers["replay-timeout"] = 1
+	callers["agent-row-linger"] = 1
 	if got := bootstrapDoc(t, timed).HarnessTiming; len(got) != 1 || got["unreachable-settle"] != 2000 {
 		t.Fatalf("harness manifest timing = %v, want unreachable-settle 2000", got)
 	}
@@ -2333,8 +2333,8 @@ func TestServer_BootstrapServesFrontendTimingOnlyInHarnessMode(t *testing.T) {
 	}
 
 	for name, cfg := range map[string]Config{
-		"without harness":  {FrontendTiming: map[string]int64{"replay-timeout": 3000}},
-		"nonpositive time": {Harness: true, FrontendTiming: map[string]int64{"replay-timeout": 0}},
+		"without harness":  {FrontendTiming: map[string]int64{"agent-row-linger": 3000}},
+		"nonpositive time": {Harness: true, FrontendTiming: map[string]int64{"agent-row-linger": 0}},
 		"unnamed":          {Harness: true, FrontendTiming: map[string]int64{" ": 3000}},
 	} {
 		cfg.Dispatcher = NewDispatcher()

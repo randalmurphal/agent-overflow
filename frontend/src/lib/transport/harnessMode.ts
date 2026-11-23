@@ -31,11 +31,10 @@ let pageMarker = '';
  * constant stays the default; its owner reads it through `harnessInterval`
  * when it arms.
  */
-export type HarnessFrontendTimer = 'unreachable-settle' | 'agent-row-linger' | 'replay-timeout';
+export type HarnessFrontendTimer = 'unreachable-settle' | 'agent-row-linger';
 const FRONTEND_TIMERS: ReadonlySet<string> = new Set<HarnessFrontendTimer>([
   'unreachable-settle',
   'agent-row-linger',
-  'replay-timeout',
 ]);
 let timing: ReadonlyMap<HarnessFrontendTimer, number> = new Map();
 const waiting = new Set<() => void>();
@@ -66,23 +65,20 @@ export function setHarnessSessionFromBootstrap(value: boolean): void {
 
 /**
  * The home boot's override for `timer`, or `productMs`: the page timers
- * (unreachable-settle, agent-row-linger) follow the boot that served this
- * page. A timer of one connection reads its own manifest's override instead
- * (`harnessTimingOf`), so one computer's harness timing never moves another
- * computer's connection.
+ * follow the boot that served this page.
  */
 export function harnessInterval(timer: HarnessFrontendTimer, productMs: number): number {
   return timing.get(timer) ?? productMs;
 }
 
 /**
- * A validated manifest's frontend timer overrides. Timing without the
+ * A manifest's frontend timer overrides, validated. Timing without the
  * harness bit is no timing: only a harness boot may shorten a product
  * timer. An entry this build does not name, or a duration that is not a
  * positive number, is a defect in the boot that served it and throws, so
  * the manifest that carried it is refused.
  */
-export function harnessTimingOf(isHarness: boolean, value: unknown): ReadonlyMap<HarnessFrontendTimer, number> {
+function harnessTimingOf(isHarness: boolean, value: unknown): ReadonlyMap<HarnessFrontendTimer, number> {
   const next = new Map<HarnessFrontendTimer, number>();
   if (!isHarness || value === undefined) return next;
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {

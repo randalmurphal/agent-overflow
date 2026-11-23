@@ -306,11 +306,9 @@ var harnessTimers = []harnessTimer{
 	{"wake-retry", func(t *harnessTiming) *time.Duration { return &t.Isolation.ThreadWakeRetryBase }},
 	{"agent-settled-window", func(t *harnessTiming) *time.Duration { return &t.Isolation.AgentSettledWindow }},
 	// Page timers: how long a computer stays unreachable before the screen
-	// says so, how long a settled Agents row stays, and how long a replay
-	// may run before the socket is dropped.
+	// says so, and how long a settled Agents row stays.
 	{"unreachable-settle", nil},
 	{"agent-row-linger", nil},
-	{"replay-timeout", nil},
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the

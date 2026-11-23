@@ -96,7 +96,6 @@ import {
 } from './wsClient';
 import { DEFAULT_METHOD_BUDGET_MS, METHOD_ANSWER_MARGIN_MS, METHOD_BUDGETS_MS } from './methodRoutes';
 import { __resetRunModeForTest } from './runMode';
-import { __resetHarnessModeForTest, setHarnessTimingFromBootstrap } from './harnessMode';
 import { grantedScopes, hasScope } from './scopes';
 import { getConnectionId, getDeviceId } from './clientIdentity';
 import { clearPairedSession, hasPairedSession, pairedSessionHeaders, redeemPairing } from './deviceSession';
@@ -1552,40 +1551,6 @@ describe('WSClient', () => {
     expect(third.readyState).toBe(1);
     expect(MockWebSocket.instances).toHaveLength(3);
     client.close();
-  });
-
-  // The replay deadline is the connection's own: the manifest of the backend
-  // it dials sets it, and another backend's harness timing (the page's,
-  // here) never moves it.
-  it('runs the replay deadline its own manifest sets', async () => {
-    vi.useFakeTimers();
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const SHORT = 15_000;
-    setHarnessTimingFromBootstrap(true, { 'replay-timeout': SHORT });
-    try {
-      const manifest = { harness: true, harnessTiming: { 'replay-timeout': SHORT } };
-      const timed = createWSClient({ WebSocketCtor: FakeCtor, bootstrap: async () => ({ ...(await bootstrap()), ...manifest }) });
-      timed.subscribe('x', () => {});
-      await vi.advanceTimersByTimeAsync(0);
-      const timedSocket = MockWebSocket.instances.at(-1);
-      const plain = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
-      plain.subscribe('x', () => {});
-      await vi.advanceTimersByTimeAsync(0);
-      const plainSocket = MockWebSocket.instances.at(-1);
-      expect(plainSocket).not.toBe(timedSocket);
-      timedSocket!.acceptOpen();
-      plainSocket!.acceptOpen();
-      timedSocket!.pushFrame({ type: 'ping' });
-      plainSocket!.pushFrame({ type: 'ping' });
-      await vi.advanceTimersByTimeAsync(SHORT + STALE_CHECK_INTERVAL_MS);
-      expect(timedSocket!.readyState, 'the shortened replay deadline did not drop the stalled replay').not.toBe(1);
-      expect(plainSocket!.readyState, 'another backend\'s harness timing moved this connection').toBe(1);
-
-      timed.close();
-      plain.close();
-    } finally {
-      __resetHarnessModeForTest();
-    }
   });
 
   it.each(['document', 'native'] as const)('gives paused %s replay a full completion window after resume', async (lifecycle) => {
