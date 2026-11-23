@@ -1557,9 +1557,10 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool,
 	var held []ownedMessage
 	var requests teardownRequests
 	var restore flushRestore
-	// The cleanup below drops triage's Codex commands with the session. A
-	// close Codex does not confirm names the ones that may still run, so
-	// they are read first.
+	// The cleanup below drops triage's Codex commands with the session and
+	// marks the thread stopped, after which triage drops the frames the
+	// close dispatches. A close Codex does not confirm names the commands
+	// that may still run, so they are read first, and the error says when.
 	var codexCommands []triage.CodexCommand
 	if a.triage != nil && sess.Provider == string(provider.Codex) {
 		codexCommands = a.triage.LiveCodexCommands(threadID)

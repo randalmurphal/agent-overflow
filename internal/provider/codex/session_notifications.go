@@ -188,14 +188,18 @@ func (s *Session) interceptChildNotification(
 	if parentToolUseID == "" {
 		return false
 	}
-	if method == "thread/status/changed" {
+	if method == "thread/status/changed" || method == "thread/closed" {
 		var wire struct {
 			Status struct {
 				Type        string   `json:"type"`
 				ActiveFlags []string `json:"activeFlags"`
 			} `json:"status"`
 		}
-		if err := json.Unmarshal(params, &wire); err != nil {
+		if method == "thread/closed" {
+			// Codex unloaded the thread: the same fact as its notLoaded
+			// status, which a thread/closed need not come with.
+			wire.Status.Type = "notLoaded"
+		} else if err := json.Unmarshal(params, &wire); err != nil {
 			s.warnCollabHistory("Codex child status could not be decoded", err)
 			return true
 		}

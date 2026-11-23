@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/store"
 )
 
 // The Codex threads of the fake app-server in these tests: the session's
@@ -621,6 +622,80 @@ func TestRevertStopsTheAgentsAndCountsTheirLastCommand(t *testing.T) {
 	}
 	if _, live := app.triage.LiveCodexCommand(threadID, "last-agent-cmd"); live {
 		t.Fatal("the revert returned with the agent's last command still live")
+	}
+}
+
+// A revert whose thread's provider events stop being handled fails: what
+// the stalled queue holds, here the start of the agent's last command, is
+// unknown, so the revert does not go on as if nothing ran.
+func TestRevertFailsWhenTheThreadsEventsAreNotHandled(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	app.providerEvents.drainStall = 50 * time.Millisecond
+	threadID := createCodexAgentCommandThread(t, app, "thread-agent-command-revert-stall")
+	seedCodexSubagentLaunchRow(t, app, threadID, "spawn-live", time.Now().UnixMilli())
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	wire := &terminalWire{
+		onInterrupt: func(string) {
+			start := provider.ProviderEvent{Kind: provider.EventToolStart, ThreadID: threadID, ItemID: "last-agent-cmd", ItemType: "commandExecution", ParentToolUseID: "spawn-live", ProcessScope: codexScope("child-1"), SessionToken: "tok", Timestamp: time.Now()}
+			app.providerEvents.enqueue(threadID, start, func(provider.ProviderEvent) { <-release })
+		},
+	}
+	putCodexWire(app, threadID, wire)
+
+	err := revertCodexCommands(t, app, threadID, 5*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "the events Codex sent were not all handled") {
+		t.Fatalf("revert's stop with a stalled event queue = %v, want a failure", err)
+	}
+}
+
+// An agent that became active while the revert waited for the thread's
+// events, as another agent's last message can wake it, is interrupted
+// before the revert goes on.
+func TestRevertStopsAnAgentThatBecameActiveAfterTheInterrupts(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	threadID := createCodexAgentCommandThread(t, app, "thread-agent-command-revert-woken")
+	now := time.Now().UnixMilli()
+	seedCodexSubagentLaunchRow(t, app, threadID, "spawn-live", now)
+	if err := app.store.InsertItem(store.Item{
+		ID: "spawn-1", ThreadID: threadID, TurnIndex: 0, ItemIndex: 1, Kind: "tool_call", Role: "assistant",
+		Status: "completed", Summary: "spawn_agent", IsBackground: true, ToolName: "collab_agent",
+		Meta:      `{"input":{"tool":"spawn_agent","receiverThreadIds":["` + childCodexThread + `"],"agentsStates":{"` + childCodexThread + `":{"status":"completed"}}}}`,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed the second agent's launch: %v", err)
+	}
+	woken := provider.ProviderEvent{
+		Kind: provider.EventSubagentStatus, ThreadID: threadID, ItemID: "spawn-1", TurnID: "woken-turn", SessionToken: "tok",
+		Meta: json.RawMessage(`{"agent_path":"` + childCodexThread + `","status":"running"}`), Timestamp: time.Now(),
+	}
+	wire := &terminalWire{
+		onInterrupt: func(childThreadID string) {
+			if childThreadID != "child-1" {
+				return
+			}
+			app.providerEvents.enqueue(threadID, woken, func(evt provider.ProviderEvent) {
+				if err := app.triage.Handle(evt); err != nil {
+					t.Errorf("the second agent's status: %v", err)
+				}
+			})
+		},
+	}
+	putCodexWire(app, threadID, wire)
+
+	if err := revertCodexCommands(t, app, threadID, 5*time.Second); err != nil {
+		t.Fatalf("revert's stop: %v", err)
+	}
+	wire.mu.Lock()
+	interrupted := slices.Clone(wire.interrupted)
+	wire.mu.Unlock()
+	if !slices.Equal(interrupted, []string{"child-1", childCodexThread}) {
+		t.Fatalf("interrupted agents = %v, want the active agent's thread, then the one that became active", interrupted)
+	}
+	if agents, _ := app.triage.CodexLiveWorkCounts(threadID); agents != 0 {
+		t.Fatalf("active agents after the revert's stop = %d, want 0", agents)
 	}
 }
 

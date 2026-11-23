@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestProviderEventDrainWaitsForABacklogThatKeepsMoving(t *testing.T) {
 		enqueueWithin(t, &qs, threadID, seqEvent(seq, 0), slowHandler(rec))
 	}
 	start := time.Now()
-	if err := qs.drain(threadID); err != nil {
+	if err := qs.drain(context.Background(), threadID); err != nil {
 		t.Fatalf("drain after %s: %v", time.Since(start), err)
 	}
 	if elapsed := time.Since(start); elapsed < 2*drainTestStall {

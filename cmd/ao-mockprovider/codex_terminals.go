@@ -42,12 +42,15 @@ import (
 // own, and list, terminate and clean on it answer -32600 "thread not found:
 // <id>" (app-server thread_processor.rs load_thread). Like a Codex build that
 // publishes no notLoaded for a closed agent, the mock writes no status for it.
+// A V1 resume_agent's item/completed loads each receiver's thread again
+// (core tools/handlers/multi_agents/resume_agent.rs), with no terminals.
 //
 // Guarded by the writer's lock: observe runs as the writer's observer, and
 // every read happens inside lineWriter.locked.
 type codexTerminalLedger struct {
 	running []*codexTerminal
-	// closed holds the threads a close_agent removed.
+	// closed holds the threads a close_agent removed and no resume_agent
+	// loaded since.
 	closed map[string]bool
 }
 
@@ -65,8 +68,8 @@ type codexTerminal struct {
 // observe reads one written frame. Called under the writer lock, in wire
 // order.
 func (l *codexTerminalLedger) observe(line string) {
-	if strings.Contains(line, `"closeAgent"`) {
-		l.observeClose(line)
+	if strings.Contains(line, `"closeAgent"`) || strings.Contains(line, `"resumeAgent"`) {
+		l.observeResidency(line)
 		return
 	}
 	if !strings.Contains(line, `"commandExecution"`) {
@@ -104,8 +107,9 @@ func (l *codexTerminalLedger) observe(line string) {
 	}
 }
 
-// observeClose removes the threads a close_agent item/completed names.
-func (l *codexTerminalLedger) observeClose(line string) {
+// observeResidency removes the threads a close_agent item/completed names,
+// and loads again the ones a resume_agent item/completed names.
+func (l *codexTerminalLedger) observeResidency(line string) {
 	var frame struct {
 		Method string `json:"method"`
 		Params struct {
@@ -116,8 +120,17 @@ func (l *codexTerminalLedger) observeClose(line string) {
 			} `json:"item"`
 		} `json:"params"`
 	}
-	if json.Unmarshal([]byte(line), &frame) != nil || frame.Method != "item/completed" ||
-		frame.Params.Item.Type != "collabAgentToolCall" || frame.Params.Item.Tool != "closeAgent" {
+	if json.Unmarshal([]byte(line), &frame) != nil || frame.Method != "item/completed" || frame.Params.Item.Type != "collabAgentToolCall" {
+		return
+	}
+	switch frame.Params.Item.Tool {
+	case "closeAgent":
+	case "resumeAgent":
+		for _, threadID := range frame.Params.Item.ReceiverThreadIDs {
+			delete(l.closed, threadID)
+		}
+		return
+	default:
 		return
 	}
 	for _, threadID := range frame.Params.Item.ReceiverThreadIDs {

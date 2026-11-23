@@ -1,8 +1,10 @@
 package codex
 
 import (
+	"context"
 	"encoding/json"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -80,7 +82,8 @@ func TestAPublisherWaitingForTheTokenGivesUpWhenTheSessionCloses(t *testing.T) {
 
 // The queue behind a token holder is bounded: a frame that finds it full
 // waits for the holder to take a batch, and is delivered in order after it.
-// A closing session lets it in without waiting.
+// A closing session does not keep the reader waiting and keeps the bound:
+// it refuses the frame and counts it for Close's error.
 func TestAFullQueueHoldsTheReaderUntilTheHolderTakesABatch(t *testing.T) {
 	t.Parallel()
 	for _, closing := range []bool{false, true} {
@@ -112,6 +115,12 @@ func TestAFullQueueHoldsTheReaderUntilTheHolderTakesABatch(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("a frame kept waiting on the full queue after the session closed")
 			}
+			s.earlyFramesMu.Lock()
+			queued := len(s.earlyFrames)
+			s.earlyFramesMu.Unlock()
+			if queued != earlyFramesMaxBuffered {
+				t.Fatalf("closing: %d frames queued after the session closed, want the bound %d", queued, earlyFramesMaxBuffered)
+			}
 		}
 		s.endDispatch()
 		<-last
@@ -122,8 +131,120 @@ func TestAFullQueueHoldsTheReaderUntilTheHolderTakesABatch(t *testing.T) {
 			t.Fatalf("closing=%v: after the holder let go: token held %v, %d frames queued; want neither", closing, held, queued)
 		}
 		texts := textDeltas(log.snapshot())
-		if len(texts) != earlyFramesMaxBuffered+1 || texts[len(texts)-1] != "last" {
-			t.Fatalf("closing=%v: delivered %v, want %d frames ending with the frame that waited", closing, texts, earlyFramesMaxBuffered+1)
+		want, dropped := earlyFramesMaxBuffered+1, 0
+		if closing {
+			want, dropped = earlyFramesMaxBuffered, 1
 		}
+		if len(texts) != want || closing == (texts[len(texts)-1] == "last") {
+			t.Fatalf("closing=%v: delivered %v, want %d frames", closing, texts, want)
+		}
+		if got := s.takeDroppedFrames(); got != dropped {
+			t.Fatalf("closing=%v: refused frames counted = %d, want %d", closing, got, dropped)
+		}
+	}
+}
+
+// A holder that delivers the queue lets the token go after the batch in
+// hand when a publisher waits for it, so a thread whose frames keep coming
+// cannot keep the publisher out; the publisher then delivers the rest.
+func TestAHolderGivesTheTokenToAWaitingPublisherAfterTheBatchInHand(t *testing.T) {
+	t.Parallel()
+	var (
+		s       *Session
+		orderMu sync.Mutex
+		order   []string
+	)
+	note := func(step string) {
+		orderMu.Lock()
+		defer orderMu.Unlock()
+		order = append(order, step)
+	}
+	took := make(chan bool, 1)
+	s = newMultiAgentV2RoutingSession(t, func(evt provider.ProviderEvent) {
+		if evt.Kind != provider.EventTextDelta {
+			return
+		}
+		note(evt.Content)
+		// Each frame delivered brings another, as a busy thread does.
+		if evt.Content == "first" {
+			go s.dispatchNotification("item/agentMessage/delta", rootDelta("second"))
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				s.earlyFramesMu.Lock()
+				n := len(s.earlyFrames)
+				s.earlyFramesMu.Unlock()
+				if n == 1 || time.Now().After(deadline) {
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
+		}
+	})
+	s.earlyFramesMu.Lock()
+	s.dispatching = true
+	s.earlyFramesMu.Unlock()
+	s.dispatchNotification("item/agentMessage/delta", rootDelta("first"))
+	published := make(chan struct{})
+	go func() {
+		defer close(published)
+		ok := s.takeDispatch()
+		took <- ok
+		if ok {
+			note("publisher")
+			s.endDispatch()
+		}
+	}()
+	for {
+		s.earlyFramesMu.Lock()
+		waiting := s.dispatchWaiters
+		s.earlyFramesMu.Unlock()
+		if waiting == 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	s.endDispatch()
+	if !<-took {
+		t.Fatal("the waiting publisher did not get the token")
+	}
+	<-published
+	orderMu.Lock()
+	got := append([]string(nil), order...)
+	orderMu.Unlock()
+	if !sameOrder(got, []string{"first", "publisher", "second"}) {
+		t.Fatalf("order = %v, want the publisher's turn between the batch in hand and the frame that came during it", got)
+	}
+}
+
+// DispatchReadFrames returns once the frames that reached the session before
+// it are dispatched, the ones a holder still had queued included, and gives
+// up with an error at its context's end.
+func TestDispatchReadFramesWaitsForTheFramesBeforeIt(t *testing.T) {
+	t.Parallel()
+	var log eventLog
+	s := newMultiAgentV2RoutingSession(t, log.add)
+	s.earlyFramesMu.Lock()
+	s.dispatching = true
+	s.earlyFramesMu.Unlock()
+	s.dispatchNotification("item/agentMessage/delta", rootDelta("queued"))
+
+	expired, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := s.DispatchReadFrames(expired); err == nil {
+		t.Fatal("DispatchReadFrames = nil while the holder still had the frame queued")
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.DispatchReadFrames(context.Background()) }()
+	select {
+	case err := <-done:
+		t.Fatalf("DispatchReadFrames = %v before the holder delivered the frame", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	s.endDispatch()
+	if err := <-done; err != nil {
+		t.Fatalf("DispatchReadFrames: %v", err)
+	}
+	if texts := textDeltas(log.snapshot()); !sameOrder(texts, []string{"queued"}) {
+		t.Fatalf("delivered = %v, want the queued frame", texts)
 	}
 }

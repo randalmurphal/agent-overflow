@@ -288,9 +288,7 @@ func (s *Session) emitRecoveredChildUnload(providerThreadID, parentToolUseID, tu
 	}
 	event.TurnID = turnID
 	event.Meta = mergeMetaKeys(event.Meta, map[string]any{"recovered": true})
-	if s.emitRecoveredChildStatus(providerThreadID, expectedLifecycleRevision, *event) {
-		s.noteChildUnloaded(providerThreadID, true)
-	}
+	s.emitRecoveredChildStatus(providerThreadID, expectedLifecycleRevision, *event)
 }
 
 func (s *Session) readCollabHistoryWithRetry(providerThreadID string) (collabThreadSnapshot, error) {

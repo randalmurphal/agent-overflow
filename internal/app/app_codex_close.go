@@ -23,9 +23,11 @@ func codexCommandNames(commands []triage.CodexCommand) []string {
 // codexUnclosedThreadsError is the error End Session leaves on a Codex
 // thread when Codex did not confirm that it unloaded some of the session's
 // threads (codex.ThreadsNotClosed): it names each such thread and the
-// commands that ran in it, which may still be running. commands are the
-// thread's live commands as triage read them before the session's end
-// dropped them. It reports false when Codex confirmed every unload.
+// commands it was running when the session began to end, which may still be
+// running. commands are the thread's live commands as triage read them
+// then: the session's end drops them and every frame the close dispatches,
+// so a command started during the close is not known, and the error says
+// so. It reports false when Codex confirmed every unload.
 func codexUnclosedThreadsError(closeErr error, commands []triage.CodexCommand) (string, bool) {
 	notClosed := codex.ThreadsNotClosed(closeErr)
 	if len(notClosed) == 0 {
@@ -36,7 +38,7 @@ func codexUnclosedThreadsError(closeErr error, commands []triage.CodexCommand) (
 		byScope[command.ScopeID] = append(byScope[command.ScopeID], command)
 	}
 	var b strings.Builder
-	b.WriteString("Ending the session: Codex did not confirm that it closed these threads, so their commands may still be running:")
+	b.WriteString("Ending the session: Codex did not confirm that it closed these threads, so their commands may still be running. Each thread lists the commands it was running when the session began to end; a command started after that is not listed:")
 	causes := make([]string, 0, len(notClosed))
 	for _, thread := range notClosed {
 		name := "an agent"
@@ -45,7 +47,7 @@ func codexUnclosedThreadsError(closeErr error, commands []triage.CodexCommand) (
 		} else if thread.Agent != "" {
 			name = "agent " + thread.Agent
 		}
-		running := "no command was running"
+		running := "no command was running when the session began to end"
 		if names := codexCommandNames(byScope[thread.ThreadID]); len(names) > 0 {
 			running = strings.Join(names, ", ")
 		}

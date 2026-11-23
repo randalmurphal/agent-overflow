@@ -149,7 +149,8 @@ Authoritative method list from
 | `hook/started`, `hook/completed` | Hook lifecycle; one notification row each, except the runs of the thread's own SessionStart and UserPromptSubmit hooks (`source` `sessionFlags`), which render none. `run.eventName` and `run.status` are camelCase (`HookEventName`, `HookRunStatus`: `running`, `completed`, `failed`, `blocked`, `stopped`). `preModelRequest` and `postModelRequest` (0.164) fire around every model request, so they get no row on `hook/started` and a row on `hook/completed` only when the status is not `completed`. Codex does not write hook runs to the rollout. See §SessionStart hooks. |
 | `thread/started` | Session-level. First notification on a new thread; emits `EventSessionInit`. |
 | `thread/status/changed` | Session-level. Thread status transitions; emits `EventSessionStatus`. |
-| `thread/archived`, `thread/unarchived`, `thread/closed` | Recognised, no event. |
+| `thread/archived`, `thread/unarchived` | Recognised, no event. |
+| `thread/closed` | The unload an unsubscribe waits on. For an owned agent's thread it is also that agent's unload, read as its `notLoaded` status at that position in the stream. |
 | `thread/reverted` | The echo `thread/revert` waits on. Releases the RPC's bounded wait; an UNSOLICITED one is logged and never acted on (it carries a thread id and no boundary). See §History truncation below. |
 | `thread/queue/changed` | 0.148. The thread's provider-side queue changed. `{threadId}` and nothing else: no depth, no item id, no text. Below 0.148 the classifier's own notice is the answer; on a queue-native session the session layer replaces it with a `thread/queue/list` diffed against AO's own client ids. See §Externally queued turns in the package guide. |
 | `thread/compacted` | Thread housekeeping. Compaction boundary event (deprecated upstream in favour of the `contextCompaction` item; both feed `EventCompactBoundary`). |
@@ -1747,16 +1748,21 @@ frames from the terminals it announced (`cmd/ao-mockprovider/codex_terminals.go`
 
 AO counts an agent's commands as the thread's live work and lists them in
 the tray under the agent's spawn launch. A command leaves the live work on
-its own `item/completed`, its thread's unload (`notLoaded`, or a "thread
-not found" answer in the session that runs it), or the session's end or
-replacement ([turn lifecycle](../architecture/turn-lifecycle.md)). A
+its own `item/completed`, its thread's unload (`notLoaded`, `thread/closed`,
+or a "thread not found" answer in the session that runs it, each at the
+position in the stream where the read loop read it), or the session's end
+or replacement ([turn lifecycle](../architecture/turn-lifecycle.md)). A
 list's absence ends nothing: it omits a command that has exited and one
 that is starting alike. A Stop names the thread that runs the command; a
 false answer leaves the command live, and the Stop says Codex did not stop
-it. A V1 `close_agent` completion is a hint: the adapter asks the closed
-agent's thread for its terminals once, only to hear "thread not found"
-(`probeClosedChild`), and retires the agent's route when both the close
-and the unload are known, in either order (`childResidency`). A revert
+it. The session writes a terminal call only for its root thread or an
+agent thread it owns, and none once End Session has begun. A V1
+`close_agent` completion is a hint: the adapter asks the closed agent's
+thread for one entry of its terminals once, only to hear "thread not
+found" (`probeClosedChild`), and retires the agent's route when both the
+close and the unload are known, in either order (`childResidency`). A V1
+`resume_agent` that names a retired agent opens its route again under the
+agent's spawn launch, which the session keeps for its life. A revert
 that waits for its commands' completions cannot prove their processes
 died, because an exec-server process's completion is written either way.
 Whether a running PTY keeps a thread active, and so loaded after its last

@@ -68,7 +68,7 @@ func (s *Session) ListBackgroundTerminals(ctx context.Context, scopeID string) (
 		cursor    string
 	)
 	for page := 0; page < backgroundTerminalListPageLimit; page++ {
-		raw, err := s.listBackgroundTerminalsPage(ctx, threadID, cursor)
+		raw, err := s.sendTerminalRequest(ctx, threadID, s.listPageCall(threadID, cursor, 0))
 		if err != nil {
 			return nil, s.backgroundTerminalThreadGone(threadID, fmt.Errorf("codex: %s: %w", method, err))
 		}
@@ -90,17 +90,131 @@ func (s *Session) ListBackgroundTerminals(ctx context.Context, scopeID string) (
 	return nil, fmt.Errorf("codex: %s: cursor did not terminate after %d pages", method, backgroundTerminalListPageLimit)
 }
 
-func (s *Session) listBackgroundTerminalsPage(ctx context.Context, threadID, cursor string) (json.RawMessage, error) {
-	// Test-only seam for the wire read; scope validation above still runs.
-	// Production NewSession never sets it.
-	if s.listBackgroundTerminalsFn != nil {
-		return s.listBackgroundTerminalsFn(ctx, threadID, cursor)
-	}
+// listPageCall is one `thread/backgroundTerminals/list` page of threadID
+// from cursor, at most limit rows when limit is above zero.
+func (s *Session) listPageCall(threadID, cursor string, limit int) terminalCall {
 	params := map[string]any{"threadId": threadID}
 	if cursor != "" {
 		params["cursor"] = cursor
 	}
-	return s.sendRequest(ctx, "thread/backgroundTerminals/list", params)
+	if limit > 0 {
+		params["limit"] = limit
+	}
+	call := terminalCall{method: "thread/backgroundTerminals/list", params: params}
+	// Test-only seam for the wire read; admission and the reading of the
+	// answer still run. Production NewSession never sets it.
+	if s.listBackgroundTerminalsFn != nil {
+		call.wire = func(ctx context.Context) (json.RawMessage, error) {
+			return s.listBackgroundTerminalsFn(ctx, threadID, cursor)
+		}
+	}
+	return call
+}
+
+// terminalCall is one background-terminal request: its method and params,
+// and the test wire that answers it in place of the app-server (nil in
+// production).
+type terminalCall struct {
+	method string
+	params map[string]any
+	wire   func(ctx context.Context) (json.RawMessage, error)
+}
+
+// sendTerminalRequest sends call to threadID, if the session may (see
+// admitTerminalRequest), and waits for the answer.
+func (s *Session) sendTerminalRequest(ctx context.Context, threadID string, call terminalCall) (json.RawMessage, error) {
+	release, err := s.admitTerminalRequest(call.method, threadID)
+	if err != nil {
+		return nil, err
+	}
+	wait, err := s.startTerminalRequest(threadID, call)
+	release()
+	if err != nil {
+		return nil, err
+	}
+	return wait(ctx)
+}
+
+// admitTerminalRequest admits a background-terminal request to threadID:
+// the session's own thread or an agent thread it owns now, and only before
+// Close began. The caller writes the request and then calls release. Close
+// marks the session closed under terminalWriteMu's write lock, so a request
+// admitted before has been written by then and none is written after: a
+// session that ended cannot reach a thread that another session holds now.
+func (s *Session) admitTerminalRequest(method, threadID string) (release func(), err error) {
+	s.terminalWriteMu.RLock()
+	if s.terminalsClosed {
+		s.terminalWriteMu.RUnlock()
+		return nil, fmt.Errorf("codex: %s: the session is ending", method)
+	}
+	if !s.runsThread(threadID) {
+		s.terminalWriteMu.RUnlock()
+		return nil, fmt.Errorf("codex: %s: thread %s is neither this session's own thread nor an agent's it runs", method, threadID)
+	}
+	return s.terminalWriteMu.RUnlock, nil
+}
+
+// closeTerminalRequests is Close's first step for the background-terminal
+// requests: once it returns, every admitted request has been written and no
+// other will be (admitTerminalRequest).
+func (s *Session) closeTerminalRequests() {
+	s.terminalWriteMu.Lock()
+	s.terminalsClosed = true
+	s.terminalWriteMu.Unlock()
+}
+
+// runsThread reports whether threadID is the session's root thread or an
+// agent thread it owns now.
+func (s *Session) runsThread(threadID string) bool {
+	if threadID == "" {
+		return false
+	}
+	if threadID == s.rootThreadID() {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.collab.childParentByThread[threadID] != ""
+}
+
+// startTerminalRequest writes call to threadID and returns the wait for its
+// answer. Codex's answer that it has no such thread loaded is that agent
+// thread's unload, and the read loop dispatches it at the answer's place in
+// the stream, before it reads the next frame (noteTerminalAnswer): a frame
+// Codex wrote after the answer, such as the same thread loaded again and
+// starting a command, comes after the unload. A test wire's answer is read
+// when the wire answers.
+func (s *Session) startTerminalRequest(threadID string, call terminalCall) (func(context.Context) (json.RawMessage, error), error) {
+	if call.wire != nil {
+		return func(ctx context.Context) (json.RawMessage, error) {
+			raw, err := call.wire(ctx)
+			s.noteTerminalAnswer(threadID, err)
+			return raw, err
+		}, nil
+	}
+	return s.startRequestObserved(call.method, call.params, func(line json.RawMessage) {
+		_, err := decodeRPCReply(call.method, line)
+		s.noteTerminalAnswer(threadID, err)
+	})
+}
+
+// noteTerminalAnswer reads a background-terminal answer from threadID: a
+// refusal that Codex has no such thread loaded is an agent thread's unload
+// (observeChildThreadGone).
+func (s *Session) noteTerminalAnswer(threadID string, err error) {
+	if threadID != s.rootThreadID() && isThreadNotLoadedAnswer(err) {
+		s.observeChildThreadGone(threadID)
+	}
+}
+
+// isThreadNotLoadedAnswer reports Codex's refusal to resolve a thread it
+// has not loaded: the background terminal methods resolve their thread among
+// the loaded ones and answer -32600 "thread not found: <id>" for any other
+// (Codex thread_processor.rs load_thread).
+func isThreadNotLoadedAnswer(err error) bool {
+	var rpcErr *RPCError
+	return errors.As(err, &rpcErr) && rpcErr.Code == -32600 &&
+		strings.HasPrefix(strings.TrimSpace(rpcErr.Message), "thread not found")
 }
 
 type backgroundTerminalTerminateResponse struct {
@@ -129,29 +243,25 @@ func (s *Session) backgroundTerminalThread(method, scopeID string) (string, erro
 	return scopeID, nil
 }
 
-// backgroundTerminalThreadGone reads the app-server's refusal to resolve a
-// thread. The background terminal methods resolve their thread among the
-// loaded ones and answer -32600 "thread not found: <id>" for any other
-// (Codex thread_processor.rs load_thread). The root thread stays loaded
-// while the session lives, so only an agent's thread is read this way: it
-// is the thread's unload, reported in the thread's frame order
-// (observeChildThreadGone).
+// backgroundTerminalThreadGone is the caller's error for Codex's refusal to
+// resolve an agent thread (isThreadNotLoadedAnswer):
+// ErrBackgroundTerminalThreadNotLoaded, the thread's unload having been
+// dispatched where the answer was read (startTerminalRequest). The root
+// thread stays loaded while the session lives, so its refusal is a plain
+// error.
 func (s *Session) backgroundTerminalThreadGone(threadID string, err error) error {
-	var rpcErr *RPCError
-	if threadID == s.rootThreadID() || !errors.As(err, &rpcErr) || rpcErr.Code != -32600 ||
-		!strings.HasPrefix(strings.TrimSpace(rpcErr.Message), "thread not found") {
+	if threadID == s.rootThreadID() || !isThreadNotLoadedAnswer(err) {
 		return err
 	}
-	s.observeChildThreadGone(threadID)
 	return errors.Join(ErrBackgroundTerminalThreadNotLoaded, err)
 }
 
-// observeChildThreadGone handles Codex's answer that it has no agent thread
-// providerThreadID loaded as the thread's own notLoaded status: the same
-// fact, through the same path, in the same order. The read loop has handed
-// every frame it read before the answer to the session by the time the
-// caller has it, so the status is dispatched after the thread's command
-// starts, behind any of them still queued. A thread with no route has
+// observeChildThreadGone dispatches an agent thread's unload that Codex said
+// other than by the thread's notLoaded status, a "thread not found" answer
+// or a thread/closed, as that status: the same fact, through the same path.
+// It is called where the fact was read, before the next frame is, so the
+// status comes after every frame of the thread read before it, behind any
+// still queued, and before any read after it. A thread with no route has
 // nothing to end: its route retires only after its unload was reported.
 func (s *Session) observeChildThreadGone(providerThreadID string) {
 	const method = "thread/status/changed"
@@ -203,33 +313,26 @@ func (s *Session) TerminateBackgroundTerminal(ctx context.Context, scopeID, proc
 	if err != nil {
 		return false, err
 	}
-	terminated, err := s.terminateBackgroundTerminalIn(ctx, threadID, processID)
-	if err != nil {
-		return false, s.backgroundTerminalThreadGone(threadID, err)
-	}
-	return terminated, nil
-}
-
-func (s *Session) terminateBackgroundTerminalIn(ctx context.Context, threadID, processID string) (bool, error) {
-	// Test-only seam for the wire write; ownership resolution and argument
-	// validation above still run. Production NewSession never sets it.
+	call := terminalCall{method: method, params: map[string]any{"threadId": threadID, "processId": processID}}
+	// Test-only seam for the wire write; admission, argument validation and
+	// the reading of the answer still run. Production NewSession never sets it.
 	if s.terminateBackgroundTerminalFn != nil {
-		return s.terminateBackgroundTerminalFn(ctx, threadID, processID)
+		call.wire = func(ctx context.Context) (json.RawMessage, error) {
+			terminated, err := s.terminateBackgroundTerminalFn(ctx, threadID, processID)
+			if err != nil {
+				return nil, err
+			}
+			return json.Marshal(backgroundTerminalTerminateResponse{Terminated: terminated})
+		}
 	}
-	raw, err := s.sendRequest(ctx, "thread/backgroundTerminals/terminate", map[string]any{
-		"threadId":  threadID,
-		"processId": processID,
-	})
+	raw, err := s.sendTerminalRequest(ctx, threadID, call)
 	if err != nil {
-		return false, fmt.Errorf("codex: thread/backgroundTerminals/terminate %s: %w", processID, err)
+		return false, s.backgroundTerminalThreadGone(threadID, fmt.Errorf("codex: %s %s: %w", method, processID, err))
 	}
 	var resp backgroundTerminalTerminateResponse
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &resp); err != nil {
-			return false, fmt.Errorf(
-				"codex: thread/backgroundTerminals/terminate %s: decode response: %w",
-				processID, err,
-			)
+			return false, fmt.Errorf("codex: %s %s: decode response: %w", method, processID, err)
 		}
 	}
 	return resp.Terminated, nil
@@ -259,22 +362,49 @@ func (s *Session) CleanBackgroundTerminals(ctx context.Context, scopeID string) 
 	if err != nil {
 		return err
 	}
-	if err := s.cleanBackgroundTerminalsIn(ctx, threadID); err != nil {
-		return s.backgroundTerminalThreadGone(threadID, err)
-	}
-	return nil
+	_, err = s.sendTerminalRequest(ctx, threadID, s.cleanCall(threadID))
+	return s.cleanAnswer(threadID, err)
 }
 
-func (s *Session) cleanBackgroundTerminalsIn(ctx context.Context, threadID string) error {
-	// Test-only seam for the wire write; ownership resolution above still
-	// runs. Production NewSession never sets it.
+// cleanCall is a `thread/backgroundTerminals/clean` of threadID.
+func (s *Session) cleanCall(threadID string) terminalCall {
+	call := terminalCall{method: "thread/backgroundTerminals/clean", params: map[string]any{"threadId": threadID}}
+	// Test-only seam for the wire write; admission and the reading of the
+	// answer still run. Production NewSession never sets it.
 	if s.cleanBackgroundTerminalsFn != nil {
-		return s.cleanBackgroundTerminalsFn(ctx, threadID)
+		call.wire = func(ctx context.Context) (json.RawMessage, error) {
+			return nil, s.cleanBackgroundTerminalsFn(ctx, threadID)
+		}
 	}
-	if _, err := s.sendRequest(ctx, "thread/backgroundTerminals/clean", map[string]any{
-		"threadId": threadID,
-	}); err != nil {
-		return fmt.Errorf("codex: thread/backgroundTerminals/clean: %w", err)
+	return call
+}
+
+// cleanAnswer is a clean's error for its caller.
+func (s *Session) cleanAnswer(threadID string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return s.backgroundTerminalThreadGone(threadID, fmt.Errorf("codex: thread/backgroundTerminals/clean: %w", err))
+}
+
+// cleanForClose is Close's clean of threadID's terminals: Close has stopped
+// admitting requests (closeTerminalRequests), so it writes its own.
+func (s *Session) cleanForClose(ctx context.Context, threadID string) error {
+	wait, err := s.startTerminalRequest(threadID, s.cleanCall(threadID))
+	if err == nil {
+		_, err = wait(ctx)
+	}
+	return s.cleanAnswer(threadID, err)
+}
+
+// probeChildThread asks Codex whether it still has an agent thread loaded,
+// with the smallest request that answers it: one list page of at most one
+// row. Its "thread not found" is the thread's unload (startTerminalRequest);
+// any other error is returned.
+func (s *Session) probeChildThread(ctx context.Context, threadID string) error {
+	_, err := s.sendTerminalRequest(ctx, threadID, s.listPageCall(threadID, "", 1))
+	if err != nil {
+		return s.backgroundTerminalThreadGone(threadID, fmt.Errorf("codex: thread/backgroundTerminals/list: %w", err))
 	}
 	return nil
 }

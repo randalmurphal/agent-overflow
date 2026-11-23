@@ -152,11 +152,12 @@ why. An agent's turn ending, erroring or being interrupted ends none of
 its commands. A command leaves the live work in one of three ways:
 
 - its typed `item/completed` arrives;
-- its table unloads: the thread's `notLoaded` status, which Codex
-  publishes when it shuts a thread down and kills its processes, a
-  "thread not found" answer to a request for the thread in the session
-  that runs it (the adapter reports it as the thread's `notLoaded`), or
-  the review run's end;
+- its table unloads: the thread's `notLoaded` status or `thread/closed`,
+  which Codex publishes when it shuts a thread down and kills its
+  processes, a "thread not found" answer to a request for the thread in
+  the session that runs it (the adapter reports either as the thread's
+  `notLoaded`, at the position in the stream where the read loop read
+  it), or the review run's end;
 - a replacement session starts, or the session ends.
 
 Nothing else ends a command, because Codex announces a command before it
@@ -170,16 +171,19 @@ status whether or not the close shut the agent down, so it ends nothing
 here and the adapter asks the agent's thread whether Codex still has it
 loaded. A clean's kills arrive as `item/completed`.
 
-A revert stops the thread's active agents first, handles the events read
-before their interrupts were answered, cleans every table that runs a
-command, and waits for each command to leave by one of the three ways; at
-its deadline it fails, naming the commands still running, before anything
-is truncated.
+A revert repeats one pass until no agent is active and no command is
+live: it interrupts every active agent, handles every frame Codex sent
+before the answers and every provider event already read, cleans the
+root table on the first pass and each table that runs a command started
+since its last clean, and looks. A pass that finds work waits for the
+next change to it. A queue that stops being handled fails the revert,
+since what it holds is unknown; at its deadline the revert fails, naming
+the agents and commands still running, before anything is truncated.
 
-A command that leaves the live work before its `item/completed` keeps
-nothing, so a completion Codex writes after its table unloaded writes no
-row. Nothing is persisted while a command runs, so a restart starts with
-none.
+An agent's or a review's command whose `item/completed` or output arrives
+with no live tracker writes no row: its table unloaded or its session
+ended before Codex wrote it. Nothing is persisted while a command runs,
+so a restart starts with none.
 
 The retired `BackgroundClassifier` heuristic must not come back.
 Background authorization comes from the wire fields above; model

@@ -101,6 +101,7 @@ var sessionCloseFieldDispositions = map[string]string{
 
 	// Deliberately kept, bounded maps.
 	"pending":                    "kept as an EMPTY map so a late sendRequest does not panic writing to nil; see Close",
+	"replyObservers":             "one entry per pending request, removed with it; the read loop's exit drops the map",
 	"unclaimedNotifications":     "bounded by maxUnclaimedNotificationMethods; kept — clearing is a behavior change",
 	"reportedForeignSubmissions": "bounded by maxReportedForeignSubmissions; kept",
 	"planBuffersByItemID":        "bounded by maxPlanDeltaBuffers; kept",
@@ -175,6 +176,11 @@ var sessionCloseFieldDispositions = map[string]string{
 	"dispatchWaiters":     "count of publishers waiting for the token; each waiter leaves it as it returns",
 	"earlyFrames":         "bounded early-frame slice cleared by Close",
 	"earlyFramesBytes":    "byte tally for earlyFrames cleared by Close",
+	"framesAccepted":      "frame counter; Close settles framesDispatched to it",
+	"framesDispatched":    "frame counter; Close settles it to framesAccepted",
+	"framesDropped":       "count of frames a closing session refused; closeShared reports and resets it",
+	"terminalWriteMu":     "lock ordering background-terminal writes against Close",
+	"terminalsClosed":     "the background-terminal admission latch Close sets",
 	"rolloutObserverWG":   "joined by Close",
 	"collabMetadataReads": "serialization channel",
 	"collabAsyncMu":       "lock",

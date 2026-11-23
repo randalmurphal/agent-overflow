@@ -80,7 +80,7 @@ func (a *App) ensureProviderAccountSelectionReadyForSendLocked(
 		// The checks below read triage, which trails the wire by the events
 		// still queued for it: a whole turn that started a command can be
 		// waiting there. Handle what was read before deciding.
-		if err := a.providerEvents.drain(thread.ID); err != nil {
+		if err := a.providerEvents.drain(context.Background(), thread.ID); err != nil {
 			return fmt.Errorf("switch %s account for this thread: its provider events are still being handled: %w", label, err)
 		}
 		// The session's own counter follows the wire, so it leads triage

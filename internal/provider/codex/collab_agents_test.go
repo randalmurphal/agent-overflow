@@ -580,7 +580,8 @@ func TestDispatchLineCloseAgentKeepsOwnItemID(t *testing.T) {
 // writes it with the child's previous status when the close fails; for a
 // child not yet known unloaded, the close asks Codex whether it still has
 // the thread. A child no close named keeps its route through notLoaded,
-// because Codex loads an idle agent again when it is addressed.
+// because Codex loads an idle agent again when it is addressed. A resume of
+// a retired child opens its route again: Codex resumes the same thread.
 func TestAChildRouteRetiresWhenItIsClosedAndUnloadedInEitherOrder(t *testing.T) {
 	t.Parallel()
 	const (
@@ -597,6 +598,7 @@ func TestAChildRouteRetiresWhenItIsClosedAndUnloadedInEitherOrder(t *testing.T) 
 	}{
 		{name: "closed then unloaded", frames: []string{closeItem, unloaded}, retired: true, probes: 1},
 		{name: "unloaded then closed", frames: []string{unloaded, closeItem}, retired: true},
+		{name: "unloaded, closed, then resumed", frames: []string{unloaded, closeItem, resumeItem}},
 		{name: "unloaded, loaded again, then closed", frames: []string{unloaded, loaded, closeItem}, probes: 1},
 		{name: "closed, resumed, then unloaded", frames: []string{closeItem, resumeItem, unloaded}, probes: 1},
 		{name: "unloaded and never closed", frames: []string{unloaded}},
@@ -611,6 +613,7 @@ func TestAChildRouteRetiresWhenItIsClosedAndUnloadedInEitherOrder(t *testing.T) 
 				onEvent:  func(provider.ProviderEvent) {},
 				collab: sessionCollabState{
 					childParentByThread:  map[string]string{"child-provider-1": "call-collab-1"},
+					childSpawnByThread:   map[string]string{"child-provider-1": "call-collab-1"},
 					childRuntimeByThread: map[string]childRuntimeState{},
 				},
 				// The closed thread is still loaded: the close failed.
@@ -625,14 +628,61 @@ func TestAChildRouteRetiresWhenItIsClosedAndUnloadedInEitherOrder(t *testing.T) 
 			s.setRootThreadID("provider-parent")
 			for _, frame := range tc.frames {
 				s.dispatchLine([]byte(frame))
+				// The close's question is answered before the next frame.
+				s.collabAsyncWG.Wait()
 			}
-			s.collabAsyncWG.Wait()
 			route := s.parentToolUseForProviderThread("child-provider-1")
 			if tc.retired && route != "" || !tc.retired && route != "call-collab-1" {
 				t.Fatalf("route = %q, want retired=%v", route, tc.retired)
 			}
 			if got := int(probes.Load()); got != tc.probes {
 				t.Fatalf("Codex was asked about the closed thread %d times, want %d", got, tc.probes)
+			}
+		})
+	}
+}
+
+// An agent whose route retired, closed and unloaded, and that its parent
+// then resumed, is the same Codex thread under the same spawn: its command,
+// whether Codex writes it before or after the resume item, reaches the
+// spawn's tray.
+func TestAResumedAgentGetsItsRouteBack(t *testing.T) {
+	t.Parallel()
+	const (
+		spawnItem  = `{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"id":"spawn-1","type":"collabAgentToolCall","tool":"spawnAgent","receiverThreadIds":["codex-child-thread"],"status":"completed"}}}`
+		unloaded   = `{"jsonrpc":"2.0","method":"thread/status/changed","params":{"threadId":"codex-child-thread","status":{"type":"notLoaded"}}}`
+		closeItem  = `{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"id":"close-1","type":"collabAgentToolCall","tool":"closeAgent","receiverThreadIds":["codex-child-thread"],"status":"completed"}}}`
+		resumeItem = `{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"id":"resume-1","type":"collabAgentToolCall","tool":"resumeAgent","receiverThreadIds":["codex-child-thread"],"status":"completed"}}}`
+	)
+	command := `{"jsonrpc":"2.0","method":"item/started","params":` + string(childCommandFrame("codex-child-thread", "cmd-2", "inProgress")) + `}`
+	for _, tc := range []struct {
+		name  string
+		after []string
+	}{
+		{name: "command after the resume item", after: []string{resumeItem, command}},
+		{name: "command before the resume item", after: []string{command, resumeItem}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var log eventLog
+			s := newMultiAgentV2RoutingSession(t, log.add)
+			for _, frame := range []string{spawnItem, unloaded, closeItem} {
+				s.dispatchLine([]byte(frame))
+			}
+			if route := s.parentToolUseForProviderThread("codex-child-thread"); route != "" {
+				t.Fatalf("route = %q after the close and the unload, want it retired", route)
+			}
+			for _, frame := range tc.after {
+				s.dispatchLine([]byte(frame))
+			}
+			var started *provider.ProviderEvent
+			for _, evt := range log.snapshot() {
+				if evt.Kind == provider.EventToolStart && evt.ItemID == "cmd-2" {
+					started = &evt
+				}
+			}
+			if started == nil || started.ParentToolUseID != "spawn-1" || started.ProcessScope.ID != "codex-child-thread" {
+				t.Fatalf("command start = %+v, want cmd-2 under spawn-1 in codex-child-thread's table", started)
 			}
 		})
 	}

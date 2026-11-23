@@ -66,6 +66,35 @@ func TestEndSessionNamesTheCommandsCodexMayStillRun(t *testing.T) {
 	}
 }
 
+// The commands the error names were read when the session began to end:
+// the session's end drops the frames its close dispatches, so a command an
+// agent started during the close is not known. The error says when it
+// looked, and a thread that ran nothing then is not said to run nothing.
+func TestEndSessionSaysWhenItSawTheCommands(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	threadID := createCodexAgentCommandThread(t, app, "thread-end-session-late-command")
+	app.sessionManager().put(threadID, session{Provider: string(provider.Codex), Token: "tok"})
+	app.closeProviderSessionFn = func(string) error {
+		return fmt.Errorf("close codex session for thread %s: %w", threadID, &codex.ThreadNotClosedError{
+			ThreadID: childCodexThread, Agent: "Reviewer", Err: errors.New("codex: timed out waiting for thread/closed on " + childCodexThread),
+		})
+	}
+
+	if err := app.StopSession(threadID); err == nil {
+		t.Fatal("StopSession = nil, want the close's error")
+	}
+	rows := codexCloseErrorRows(t, app, threadID)
+	if len(rows) != 1 {
+		t.Fatalf("error rows = %q, want one", rows)
+	}
+	for _, want := range []string{"agent Reviewer: no command was running when the session began to end", "a command started after that is not listed"} {
+		if !strings.Contains(rows[0], want) {
+			t.Fatalf("error row = %q, want it to contain %q", rows[0], want)
+		}
+	}
+}
+
 // A close Codex confirmed leaves no such row.
 func TestEndSessionThatCodexConfirmsLeavesNoCloseError(t *testing.T) {
 	t.Parallel()

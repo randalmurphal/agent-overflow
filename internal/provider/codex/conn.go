@@ -66,6 +66,12 @@ type Conn struct {
 	nextID    atomic.Int64
 	pendingMu sync.Mutex
 	pending   map[int64]chan json.RawMessage
+	// replyObservers holds the observer of each pending request that has one
+	// (startRequestWithTimeout): the read loop applies it to the request's
+	// answer before it reads the next line, so what the answer says lands at
+	// the answer's place in the stream. Guarded by pendingMu, removed with the
+	// pending entry.
+	replyObservers map[int64]func(json.RawMessage)
 
 	// startMu serializes fresh thread/start requests so frames that race ahead
 	// of the thread/start response unambiguously route to the single starting
@@ -489,10 +495,14 @@ func (c *Conn) sendRequest(ctx context.Context, method string, params any) (json
 }
 
 func (c *Conn) startRequest(method string, params any) (func(context.Context) (json.RawMessage, error), error) {
-	return c.startRequestWithTimeout(method, params, 0)
+	return c.startRequestWithTimeout(method, params, 0, nil)
 }
 
-func (c *Conn) startRequestWithTimeout(method string, params any, timeout time.Duration) (func(context.Context) (json.RawMessage, error), error) {
+// startRequestWithTimeout writes one request and returns the wait for its
+// answer. observe, when set, runs on the read loop with the answer's line
+// before the waiter gets it and before the next line is read; it must not
+// wait on the read loop.
+func (c *Conn) startRequestWithTimeout(method string, params any, timeout time.Duration, observe func(json.RawMessage)) (func(context.Context) (json.RawMessage, error), error) {
 	if timeout <= 0 {
 		timeout = c.requestTimeout()
 	}
@@ -505,11 +515,18 @@ func (c *Conn) startRequestWithTimeout(method string, params any, timeout time.D
 		return nil, fmt.Errorf("codex: %s: session stopped before request completed", method)
 	}
 	c.pending[id] = ch
+	if observe != nil {
+		if c.replyObservers == nil {
+			c.replyObservers = make(map[int64]func(json.RawMessage))
+		}
+		c.replyObservers[id] = observe
+	}
 	c.pendingMu.Unlock()
 
 	abandon := func() {
 		c.pendingMu.Lock()
 		delete(c.pending, id)
+		delete(c.replyObservers, id)
 		c.pendingMu.Unlock()
 		select {
 		case <-ch:
@@ -543,32 +560,12 @@ func (c *Conn) startRequestWithTimeout(method string, params any, timeout time.D
 		case resp, ok := <-ch:
 			c.pendingMu.Lock()
 			delete(c.pending, id)
+			delete(c.replyObservers, id)
 			c.pendingMu.Unlock()
 			if !ok {
 				return nil, fmt.Errorf("codex: %s: session stopped before request completed", method)
 			}
-			var rpcResp struct {
-				Error *struct {
-					Code    int             `json:"code"`
-					Message string          `json:"message"`
-					Data    json.RawMessage `json:"data,omitempty"`
-				} `json:"error,omitempty"`
-				Result json.RawMessage `json:"result,omitempty"`
-			}
-			if err := json.Unmarshal(resp, &rpcResp); err == nil {
-				if rpcResp.Error != nil {
-					return nil, &RPCError{
-						Method:  method,
-						Code:    rpcResp.Error.Code,
-						Message: rpcResp.Error.Message,
-						Data:    rpcResp.Error.Data,
-					}
-				}
-				if len(rpcResp.Result) > 0 {
-					return rpcResp.Result, nil
-				}
-			}
-			return resp, nil
+			return decodeRPCReply(method, resp)
 		case <-time.After(timeout):
 			abandon()
 			return nil, &RequestTimeoutError{Method: method}
@@ -624,14 +621,19 @@ func (c *Conn) writeErrorResponseWithData(id int64, code int, message string, da
 	return c.proc.WriteLine(encoded)
 }
 
+// isThreadLoaded reports whether Codex has providerThreadID loaded on this
+// connection: a root thread a session opened and Codex has not closed
+// (loaded), or an agent thread its session owns and Codex has not reported
+// unloaded (Session.childLoaded, the one record of that).
 func (c *Conn) isThreadLoaded(providerThreadID string) bool {
 	if providerThreadID == "" {
 		return false
 	}
 	c.routesMu.Lock()
-	_, ok := c.loaded[providerThreadID]
+	_, root := c.loaded[providerThreadID]
+	owner := c.byThread[providerThreadID]
 	c.routesMu.Unlock()
-	return ok
+	return root || (owner != nil && owner.childLoaded(providerThreadID))
 }
 
 func (c *Conn) markThreadClosed(providerThreadID string) {
@@ -729,7 +731,6 @@ func (c *Conn) registerChildRoute(childThreadID string, s *Session) bool {
 	var hasHeld bool
 	c.routesMu.Lock()
 	c.byThread[childThreadID] = s
-	c.loaded[childThreadID] = struct{}{}
 	if held := c.takeDeferredChildLocked(childThreadID); len(held) > 0 {
 		// Enqueue BEFORE releasing routesMu so any subsequent frame routed to s
 		// on the reader goroutine drains these quarantined frames first in FIFO order.
@@ -810,6 +811,7 @@ func (c *Conn) readLoop() {
 			delete(c.pending, id)
 		}
 		c.pending = nil
+		c.replyObservers = nil
 		c.pendingMu.Unlock()
 
 		// Release any thread/closed waiters and deferred child timers.
@@ -898,7 +900,12 @@ func (c *Conn) dispatchLine(line []byte) {
 		}
 		c.pendingMu.Lock()
 		ch, ok := c.pending[id]
+		observe := c.replyObservers[id]
+		delete(c.replyObservers, id)
 		c.pendingMu.Unlock()
+		if observe != nil {
+			observe(line)
+		}
 		if ok {
 			select {
 			case ch <- line:
@@ -947,7 +954,16 @@ func (c *Conn) dispatchServerRequest(method string, id *json.Number, params json
 
 func (c *Conn) dispatchNotification(method string, params json.RawMessage) {
 	if method == "thread/closed" {
-		c.markThreadClosed(providerThreadIDFromParams(params))
+		threadID := providerThreadIDFromParams(params)
+		c.markThreadClosed(threadID)
+		// The session that owns the thread reads it too, at its place in the
+		// stream: an agent thread's thread/closed is its unload.
+		c.routesMu.Lock()
+		owner := c.byThread[strings.TrimSpace(threadID)]
+		c.routesMu.Unlock()
+		if owner != nil {
+			owner.dispatchNotification(method, params)
+		}
 		return
 	}
 

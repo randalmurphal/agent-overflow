@@ -17,7 +17,8 @@ session-scoped state group and settle pending requests.
 
 Lock order is `controlMu -> mu -> childLifecycleMu -> eventMu`.
 `settingsWireMu` also precedes `mu`, never nests with `controlMu`, and only
-orders settings and turn pipe writes. `settingsSync.mu` is a leaf lock.
+orders settings and turn pipe writes. `terminalWriteMu` precedes `mu` and
+orders background-terminal writes against `Close`. `settingsSync.mu` is a leaf lock.
 `ApprovalRegistry` and `collabAsyncMu` are leaf locks. Only `eventMu` may
 remain held across `onEvent`; `mu` never may. Keep read-loop coordination
 values on their existing atomics.

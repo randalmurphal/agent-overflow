@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -220,6 +221,12 @@ type sessionSettingsState struct {
 // surfaces the wire fields; it doesn't project them.
 type sessionCollabState struct {
 	childParentByThread map[string]string
+	// childSpawnByThread is each child's spawn launch, kept for the
+	// session's life apart from its route (childParentByThread), which
+	// retires with an incarnation of the child: a resume_agent item that
+	// names a retired child opens its route again under the same launch,
+	// since Codex resumes the existing thread (noteCollabReceiverResidency).
+	childSpawnByThread map[string]string
 	// childResidency holds, per owned child, whether a close item named it
 	// and whether Codex reported it unloaded; a child keeps its route until
 	// both are known (childResidency).
@@ -415,11 +422,16 @@ type Session struct {
 	// so their readers never have to enter this order at all.
 	// settingsWireMu precedes mu and never nests with controlMu.
 	// It orders snapshots and pipe writes, not response waits.
-	settingsWireMu     sync.Mutex
-	settingsSync       settingsSyncState
-	controlMu          sync.Mutex
-	mu                 sync.Mutex
-	pending            map[int64]chan json.RawMessage
+	// terminalWriteMu precedes mu and nests with no other lock; it orders
+	// background-terminal writes against Close, not their response waits.
+	settingsWireMu sync.Mutex
+	settingsSync   settingsSyncState
+	controlMu      sync.Mutex
+	mu             sync.Mutex
+	pending        map[int64]chan json.RawMessage
+	// replyObservers is Conn.replyObservers for a session that reads its own
+	// process (no Conn). Guarded by mu.
+	replyObservers     map[int64]func(json.RawMessage)
 	onEvent            func(provider.ProviderEvent)
 	eventMu            sync.Mutex
 	dynamicToolHandler DynamicToolHandler
@@ -517,6 +529,12 @@ type Session struct {
 	cleanBackgroundTerminalsFn    func(ctx context.Context, providerThreadID string) error
 	terminateBackgroundTerminalFn func(ctx context.Context, providerThreadID, processID string) (bool, error)
 	listBackgroundTerminalsFn     func(ctx context.Context, providerThreadID, cursor string) (json.RawMessage, error)
+	// terminalWriteMu orders the background-terminal requests against Close:
+	// one is admitted and written under its read lock, and Close sets
+	// terminalsClosed under its write lock (admitTerminalRequest). It
+	// precedes mu, which admission takes for the thread's ownership.
+	terminalWriteMu sync.RWMutex
+	terminalsClosed bool
 	// interruptChildTurnFn replaces only the turn/interrupt wire write in
 	// app-layer tests. Ownership and runtime-state validation still run.
 	interruptChildTurnFn func(ctx context.Context, childThreadID, turnID string) error
@@ -619,18 +637,27 @@ type Session struct {
 	// a spawn row among them, have reached triage.
 	//
 	// dispatchWaiters counts publishers waiting for the token; while one
-	// waits, the read loop queues instead of taking it, so a publisher is not
-	// starved by a busy thread. earlyFramesMu is a leaf mutex protecting ONLY
-	// these fields and is never held during dispatch, so re-entrant child-route
-	// registration during delivery cannot deadlock. earlyFramesCond bounds the
-	// queue by both count and bytes via backpressure, and wakes publishers
-	// waiting for the token.
+	// waits, the read loop queues instead of taking it, and the holder lets
+	// the token go after the batch in hand, so a publisher is not starved by
+	// a busy thread. earlyFramesMu is a leaf mutex protecting ONLY these
+	// fields and is never held during dispatch, so re-entrant child-route
+	// registration during delivery cannot deadlock. earlyFramesCond bounds
+	// the queue by both count and bytes via backpressure, and wakes
+	// publishers waiting for the token and callers of DispatchReadFrames.
+	//
+	// framesAccepted counts the frames that reached the session and
+	// framesDispatched the ones dispatched, so DispatchReadFrames can wait for
+	// what reached the session before it. framesDropped counts the frames a
+	// closing session refused because its queue was full (dispatchFrame).
 	earlyFramesMu    sync.Mutex
 	earlyFramesCond  *sync.Cond
 	dispatching      bool
 	dispatchWaiters  int
 	earlyFrames      []deferredChildWireEvent
 	earlyFramesBytes int
+	framesAccepted   uint64
+	framesDispatched uint64
+	framesDropped    int
 }
 
 func (s *Session) earlyFramesCondLocked() *sync.Cond {
@@ -654,6 +681,7 @@ func (s *Session) enqueueEarlyFrames(frames []deferredChildWireEvent) {
 	s.earlyFramesMu.Lock()
 	s.earlyFrames = append(s.earlyFrames, frames...)
 	s.earlyFramesBytes += addedBytes
+	s.framesAccepted += uint64(len(frames))
 	s.earlyFramesMu.Unlock()
 }
 
@@ -671,23 +699,37 @@ const (
 // the holder, or the publisher waiting for the token, delivers it, and when
 // there is neither, the caller takes the token and delivers the queue, ev
 // last. While the queue is full and a holder is delivering it, the caller
-// waits for a batch to leave it, unless the session is closing.
+// waits for a batch to leave it.
+//
+// A closing session does not make the caller wait: the read loop must go on
+// reading the answers and the thread/closed frames Close waits for, which
+// never enter a session's queue. It refuses ev instead when the queue is
+// full, and Close reports how many it refused.
 func (s *Session) dispatchFrame(ev deferredChildWireEvent) {
 	evBytes := ev.sizeBytes()
 	s.earlyFramesMu.Lock()
 	if !s.dispatching && s.dispatchWaiters == 0 && len(s.earlyFrames) == 0 {
 		s.dispatching = true
+		s.framesAccepted++
 		s.earlyFramesMu.Unlock()
 		s.dispatchFrameDirect(ev)
-		s.endDispatch()
+		s.endDispatchAfter(1)
 		return
 	}
-	for s.dispatching && !s.closing.Load() &&
-		(len(s.earlyFrames) >= earlyFramesMaxBuffered || (len(s.earlyFrames) > 0 && s.earlyFramesBytes+evBytes > earlyFramesMaxBytes)) {
+	full := func() bool {
+		return len(s.earlyFrames) >= earlyFramesMaxBuffered || (len(s.earlyFrames) > 0 && s.earlyFramesBytes+evBytes > earlyFramesMaxBytes)
+	}
+	for s.dispatching && !s.closing.Load() && full() {
 		s.earlyFramesCondLocked().Wait()
+	}
+	if s.dispatching && full() {
+		s.framesDropped++
+		s.earlyFramesMu.Unlock()
+		return
 	}
 	s.earlyFrames = append(s.earlyFrames, ev)
 	s.earlyFramesBytes += evBytes
+	s.framesAccepted++
 	if s.dispatching || s.dispatchWaiters > 0 {
 		s.earlyFramesMu.Unlock()
 		return
@@ -733,10 +775,18 @@ func (s *Session) takeDispatch() bool {
 
 // endDispatch is the token holder's last step: it delivers the queue in
 // order, the frames queued while it delivers included, and lets the token go
-// once the queue is empty. A publisher off the read loop returns from it
-// after the backlog it published has been dispatched.
+// once the queue is empty, or after the batch in hand when a publisher waits
+// for the token, which then delivers the rest. A publisher off the read loop
+// returns from it after the backlog it published has been dispatched.
 func (s *Session) endDispatch() {
+	s.endDispatchAfter(0)
+}
+
+// endDispatchAfter is endDispatch for a holder that has dispatched done
+// frames itself.
+func (s *Session) endDispatchAfter(done uint64) {
 	s.earlyFramesMu.Lock()
+	s.framesDispatched += done
 	for len(s.earlyFrames) > 0 {
 		frames := s.earlyFrames
 		s.earlyFrames = nil
@@ -747,10 +797,61 @@ func (s *Session) endDispatch() {
 			s.dispatchFrameDirect(ev)
 		}
 		s.earlyFramesMu.Lock()
+		s.framesDispatched += uint64(len(frames))
+		if s.dispatchWaiters > 0 {
+			break
+		}
 	}
 	s.dispatching = false
 	s.earlyFramesCondLocked().Broadcast()
 	s.earlyFramesMu.Unlock()
+}
+
+// DispatchReadFrames returns once every frame that reached the session before
+// the call has been dispatched to its event sink, or with ctx's error. A
+// caller that has an answer from Codex uses it to see every frame Codex
+// wrote before that answer: the read loop hands a frame to the session before
+// it reads the next line. It must not be called from a dispatch.
+func (s *Session) DispatchReadFrames(ctx context.Context) error {
+	s.earlyFramesMu.Lock()
+	target := s.framesAccepted
+	if s.framesDispatched >= target {
+		s.earlyFramesMu.Unlock()
+		return nil
+	}
+	stop := context.AfterFunc(ctx, func() {
+		s.earlyFramesMu.Lock()
+		s.earlyFramesCondLocked().Broadcast()
+		s.earlyFramesMu.Unlock()
+	})
+	defer stop()
+	for s.framesDispatched < target {
+		if !s.dispatching && s.dispatchWaiters == 0 && len(s.earlyFrames) > 0 {
+			s.dispatching = true
+			s.earlyFramesMu.Unlock()
+			s.endDispatch()
+			s.earlyFramesMu.Lock()
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			pending := target - s.framesDispatched
+			s.earlyFramesMu.Unlock()
+			return fmt.Errorf("codex: %d frames Codex sent were still waiting to be handled: %w", pending, err)
+		}
+		s.earlyFramesCondLocked().Wait()
+	}
+	s.earlyFramesMu.Unlock()
+	return nil
+}
+
+// takeDroppedFrames returns how many frames the closing session refused
+// (dispatchFrame) and resets the count.
+func (s *Session) takeDroppedFrames() int {
+	s.earlyFramesMu.Lock()
+	defer s.earlyFramesMu.Unlock()
+	dropped := s.framesDropped
+	s.framesDropped = 0
+	return dropped
 }
 
 // flushEarlyFrames delivers the queue when no goroutine holds the dispatch
@@ -1170,6 +1271,7 @@ func (s *Session) releasePoolRef() {
 // routes, and releases its pool reference without ending the Conn.
 func (s *Session) Close() error {
 	s.closing.Store(true)
+	s.closeTerminalRequests()
 	s.settingsSync.mu.Lock()
 	s.settingsSync.closing = true
 	s.settingsSync.pending = ThreadSettingsPush{}
@@ -1253,6 +1355,8 @@ func (s *Session) Close() error {
 	s.earlyFrames = nil
 	s.earlyFramesBytes = 0
 	s.dispatching = false
+	// The frames dropped with the queue are no longer waited for.
+	s.framesDispatched = s.framesAccepted
 	if s.earlyFramesCond != nil {
 		s.earlyFramesCond.Broadcast()
 	}
@@ -1317,15 +1421,92 @@ func (s *Session) agentLabelLocked(childThreadID string) string {
 	return ""
 }
 
-// loadedThreads returns the threads of ids the connection has loaded.
-func (s *Session) loadedThreads(ids []string) []string {
-	loaded := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if s.conn.isThreadLoaded(id) {
-			loaded = append(loaded, id)
+// closeChild is an agent thread End Session ends, with how the user knows it.
+type closeChild struct {
+	threadID string
+	label    string
+}
+
+// childLoaded reports whether threadID is an agent thread the session owns
+// and Codex has not reported unloaded. The session's residency record is the
+// one owner of that fact (childResidency): the Conn asks it for an agent's
+// thread (Conn.isThreadLoaded), and End Session closes by it.
+func (s *Session) childLoaded(threadID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.collab.childParentByThread[threadID] != "" && !s.collab.childResidency[threadID].unloaded
+}
+
+// loadedChildren returns the owned agent threads Codex has loaded, in thread
+// id order.
+func (s *Session) loadedChildren() []closeChild {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	children := make([]closeChild, 0, len(s.collab.childParentByThread))
+	for threadID := range s.collab.childParentByThread {
+		if !s.collab.childResidency[threadID].unloaded {
+			children = append(children, closeChild{threadID: threadID, label: s.agentLabelLocked(threadID)})
 		}
 	}
-	return loaded
+	sort.Slice(children, func(i, j int) bool { return children[i].threadID < children[j].threadID })
+	return children
+}
+
+// liveChildTargets returns the owned agents whose turn is starting or
+// running and that skip does not hold.
+func (s *Session) liveChildTargets(skip map[string]bool) []childInterruptTarget {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var targets []childInterruptTarget
+	for threadID, rt := range s.collab.childRuntimeByThread {
+		if skip[threadID] || s.collab.childParentByThread[threadID] == "" ||
+			(rt.phase != childRuntimePending && rt.phase != childRuntimeRunning) {
+			continue
+		}
+		targets = append(targets, childInterruptTarget{threadID: threadID, turnID: rt.turnID})
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].threadID < targets[j].threadID })
+	return targets
+}
+
+// stopForClose is End Session's first step: it interrupts the root thread's
+// active turn and every live agent's, and stops anything that could start
+// more work. Codex answers an interrupt when the turn has ended, so once
+// the frames Codex wrote before the answers are dispatched, the session
+// knows every agent those turns started; any of them still live is
+// interrupted in turn, until a look finds none. The interrupts are best
+// effort within one bound: the unloads that follow end whatever they did
+// not, and End Session's last look reports an agent it never asked Codex to
+// close.
+func (s *Session) stopForClose(rootThreadID, activeTurnID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), codexCloseInterruptTimeout)
+	defer cancel()
+	interrupt := func(threadID, turnID string) {
+		if _, err := s.conn.sendRequest(ctx, "turn/interrupt", map[string]any{"threadId": threadID, "turnId": turnID}); err != nil {
+			log.Printf("codex: close of thread %s: interrupt of thread %s: %v; its unload ends the turn", rootThreadID, threadID, err)
+		}
+	}
+	if activeTurnID != "" {
+		interrupt(rootThreadID, activeTurnID)
+	}
+	interrupted := map[string]bool{}
+	for {
+		if err := s.DispatchReadFrames(ctx); err != nil {
+			log.Printf("codex: close of thread %s: %v; stopping its agents with what it read", rootThreadID, err)
+		}
+		targets := s.liveChildTargets(interrupted)
+		if len(targets) == 0 {
+			return
+		}
+		if ctx.Err() != nil {
+			log.Printf("codex: close of thread %s: %d agents were still starting or running when the bound ended", rootThreadID, len(targets))
+			return
+		}
+		for _, target := range targets {
+			interrupt(target.threadID, target.turnID)
+			interrupted[target.threadID] = true
+		}
+	}
 }
 
 func (s *Session) closeShared() error {
@@ -1334,19 +1515,6 @@ func (s *Session) closeShared() error {
 
 	s.mu.Lock()
 	activeTurnID := s.turn.activeTurnID
-	childTargets := make([]childInterruptTarget, 0, len(s.collab.childRuntimeByThread))
-	childIDs := make([]string, 0, len(s.collab.childParentByThread))
-	agents := make(map[string]string, len(s.collab.childParentByThread))
-	for childID := range s.collab.childParentByThread {
-		childIDs = append(childIDs, childID)
-		agents[childID] = s.agentLabelLocked(childID)
-		if rt, ok := s.collab.childRuntimeByThread[childID]; ok && (rt.phase == childRuntimePending || rt.phase == childRuntimeRunning) {
-			childTargets = append(childTargets, childInterruptTarget{
-				threadID: childID,
-				turnID:   rt.turnID,
-			})
-		}
-	}
 	s.mu.Unlock()
 
 	// Settle any pending approvals with turnTransition so the server drops
@@ -1363,53 +1531,63 @@ func (s *Session) closeShared() error {
 	}
 
 	if connAlive && rootThreadID != "" {
-		// 1. Best-effort interrupt of active root and child turns.
-		if activeTurnID != "" {
-			intCtx, cancel := context.WithTimeout(context.Background(), codexCloseInterruptTimeout)
-			_, _ = s.conn.sendRequest(intCtx, "turn/interrupt", map[string]any{
-				"threadId": rootThreadID,
-				"turnId":   activeTurnID,
-			})
-			cancel()
-		}
-		for _, target := range childTargets {
-			intCtx, cancel := context.WithTimeout(context.Background(), codexCloseInterruptTimeout)
-			_, _ = s.conn.sendRequest(intCtx, "turn/interrupt", map[string]any{
-				"threadId": target.threadID,
-				"turnId":   target.turnID,
-			})
-			cancel()
-		}
+		// 1. Stop the root's turn and every agent's (stopForClose).
+		s.stopForClose(rootThreadID, activeTurnID)
 
 		// 2. Kill the background terminals of the root thread and of every
-		// owned child Codex has loaded, within one bound. Each thread is its
-		// own process table, so the root's clean leaves an agent's
+		// owned agent thread Codex has loaded, within one bound. Each thread
+		// is its own process table, so the root's clean leaves an agent's
 		// terminals running. A clean that fails is logged: the thread's
 		// unload below ends its commands, and an unload Codex does not
 		// confirm is the close's error.
+		children := s.loadedChildren()
 		cleanCtx, cancelClean := context.WithTimeout(context.Background(), codexCloseInterruptTimeout)
-		for _, threadID := range append([]string{rootThreadID}, s.loadedThreads(childIDs)...) {
-			if err := s.CleanBackgroundTerminals(cleanCtx, threadID); err != nil &&
+		threads := make([]string, 0, len(children)+1)
+		threads = append(threads, rootThreadID)
+		for _, child := range children {
+			threads = append(threads, child.threadID)
+		}
+		for _, threadID := range threads {
+			if err := s.cleanForClose(cleanCtx, threadID); err != nil &&
 				!IsMethodUnsupported(err, "thread/backgroundTerminals/clean") && !errors.Is(err, ErrBackgroundTerminalThreadNotLoaded) {
 				log.Printf("codex: shared close background terminal clean %s: %v", threadID, err)
 			}
 		}
 		cancelClean()
 
-		// 3. Unsubscribe loaded children, then the root thread, waiting for thread/closed.
-		for _, childID := range childIDs {
-			if s.conn.isThreadLoaded(childID) {
-				if err := s.conn.unsubscribeAndWait(context.Background(), childID); err != nil {
-					closeErrs = append(closeErrs, &ThreadNotClosedError{ThreadID: childID, Agent: agents[childID], Err: err})
-				}
+		// 3. Unsubscribe the agents' threads, then the root thread, waiting
+		// for thread/closed.
+		closed := make(map[string]bool, len(children))
+		for _, child := range children {
+			closed[child.threadID] = true
+			if err := s.conn.unsubscribeAndWait(context.Background(), child.threadID); err != nil {
+				closeErrs = append(closeErrs, &ThreadNotClosedError{ThreadID: child.threadID, Agent: child.label, Err: err})
 			}
 		}
 		if err := s.conn.unsubscribeAndWait(context.Background(), rootThreadID); err != nil {
 			closeErrs = append(closeErrs, &ThreadNotClosedError{ThreadID: rootThreadID, Root: true, Err: err})
 		}
+
+		// 4. An agent Codex started after the first step's last look was
+		// neither cleaned nor asked to close.
+		for _, child := range s.loadedChildren() {
+			if !closed[child.threadID] {
+				closeErrs = append(closeErrs, &ThreadNotClosedError{ThreadID: child.threadID, Agent: child.label,
+					Err: fmt.Errorf("codex: agent thread %s started while the session was ending, after its threads were asked to close", child.threadID)})
+			}
+		}
 	}
 
+	s.mu.Lock()
+	childIDs := make([]string, 0, len(s.collab.childParentByThread))
+	for childID := range s.collab.childParentByThread {
+		childIDs = append(childIDs, childID)
+	}
+	s.mu.Unlock()
 	s.conn.detachSession(s, rootThreadID, rootSessionID, childIDs)
+	if dropped := s.takeDroppedFrames(); dropped > 0 {
+		closeErrs = append(closeErrs, fmt.Errorf("codex: %d frames Codex sent while the session was ending were not recorded: the session's frame queue was full", dropped))
+	}
 	s.emitTeardownOnce(nil, true)
 	s.finishReadDone()
 	if s.releaseConn != nil {

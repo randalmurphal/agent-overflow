@@ -134,10 +134,13 @@ Types: `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`
 `codex-rs/app-server-protocol/src/protocol/common.rs`. Agent Overflow
 wraps all three in `internal/provider/codex/session_background.go`.
 `terminate` backs `App.StopCodexBackgroundCommand`, which takes the
-command's item id, and Stop-all; a false answer is checked with `list`.
-`clean` backs revert and thread delete. Each call names the thread that
-runs the command: the root thread, or the agent's thread its spawn launch
-owns. `App.TerminateCodexBackgroundTerminal` takes a process id and is the
+command's item id, and Stop-all; a false answer leaves the command live
+and asks nothing more, since a command that is starting is not in the
+table yet. `clean` backs revert, thread delete and End Session. A `list`
+of one entry asks whether Codex still has a closed agent's thread. Each
+call names the thread that runs the command: the root thread, or the
+agent's thread its spawn launch owns, and the session refuses any other.
+`App.TerminateCodexBackgroundTerminal` takes a process id and is the
 Stop of a window that predates `StopCodexBackgroundCommand`; it reaches
 only root commands, and a process id Codex reused in the root thread
 names the newer command.

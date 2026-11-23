@@ -93,6 +93,31 @@ func (r *Router) ListLiveCodexBackgroundTasks(threadID string, _ int64, _ int64)
 	return items
 }
 
+// CodexLiveWorkCounts returns the thread's active Codex agents and its live
+// commands, apart; the commands are counted without a scan.
+func (r *Router) CodexLiveWorkCounts(threadID string) (agents, commands int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return 0, 0
+	}
+	commands = len(st.codexExec.byLaunch)
+	return codexLiveWorkLocked(st, false) - commands, commands
+}
+
+// CodexCommandsStarted counts the Codex commands that have started in the
+// thread's provider process, so a waiter can tell, without a scan, whether
+// one started since it last looked.
+func (r *Router) CodexCommandsStarted(threadID string) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		return st.codexExec.started
+	}
+	return 0
+}
+
 // CountLiveCodexBackgroundTasks counts the thread's Codex live work.
 func (r *Router) CountLiveCodexBackgroundTasks(threadID string) int {
 	r.mu.Lock()

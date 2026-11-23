@@ -233,6 +233,50 @@ func TestCodexCloseAgentRemovesTheAgentThread(t *testing.T) {
 	p.closeStdinAndExpectExit(0, testTimeout)
 }
 
+// A V1 resume_agent loads a closed agent's thread again: the terminal calls
+// on it answer from the terminals it starts after, and none of its old ones.
+func TestCodexResumeAgentLoadsAClosedThreadAgain(t *testing.T) {
+	collabItem := func(id, tool string) string {
+		return `{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"${THREAD_ID}","turnId":"${TURN_ID}","item":{"id":"` + id + `","type":"collabAgentToolCall","tool":"` + tool + `","status":"completed","senderThreadId":"${THREAD_ID}","receiverThreadIds":["child-a"],"agentsStates":{}}}}`
+	}
+	childShell := func(id, processID string) string {
+		return `{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"child-a","turnId":"child-turn","item":{"id":"` + id + `","type":"commandExecution","source":"unifiedExecStartup","processId":"` + processID + `","status":"inProgress","command":"tail -f c.log"}}}`
+	}
+	turnStarted := `{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}`
+	turnCompleted := `{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}","status":"completed"}}}`
+	sc := &scenario.Scenario{
+		Version:  scenario.CurrentVersion,
+		Name:     "codex-resume-agent-terminals",
+		Provider: scenario.ProviderCodex,
+		Turns: []scenario.Turn{
+			{Steps: []scenario.Step{{Emit: &scenario.EmitStep{Lines: []string{
+				turnStarted, childShell("old-shell", "77"), collabItem("close-1", "closeAgent"), turnCompleted,
+			}}}}},
+			{Steps: []scenario.Step{{Emit: &scenario.EmitStep{Lines: []string{
+				turnStarted, collabItem("resume-1", "resumeAgent"), childShell("new-shell", "78"), turnCompleted,
+			}}}}},
+		},
+		Codex: &scenario.CodexOptions{ThreadID: "th-terminals"},
+	}
+	p := startMock(t, []string{"app-server"}, writeScenarioFile(t, sc, ""), t.TempDir())
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"thread/start","params":{}}`)
+	p.expectLineContaining(`"id":1`, testTimeout)
+	p.send(`{"jsonrpc":"2.0","id":2,"method":"turn/start","params":{"threadId":"th-terminals","input":[]}}`)
+	p.expectLineContaining(`"id":2`, testTimeout)
+	p.expectLineContaining(`"turn/completed"`, testTimeout)
+	p.send(`{"jsonrpc":"2.0","id":3,"method":"thread/backgroundTerminals/list","params":{"threadId":"child-a"}}`)
+	if got := p.expectLine(testTimeout); !strings.Contains(got, "thread not found: child-a") {
+		t.Fatalf("list on the closed agent's thread = %q, want thread not found", got)
+	}
+
+	p.send(`{"jsonrpc":"2.0","id":4,"method":"turn/start","params":{"threadId":"th-terminals","input":[]}}`)
+	p.expectLineContaining(`"id":4`, testTimeout)
+	p.expectLineContaining(`"turn/completed"`, testTimeout)
+	p.send(`{"jsonrpc":"2.0","id":5,"method":"thread/backgroundTerminals/list","params":{"threadId":"child-a"}}`)
+	expectTerminalList(t, p, 5, "78:new-shell:tail -f c.log")
+	p.closeStdinAndExpectExit(0, testTimeout)
+}
+
 // clean answers `{}`, then writes the item/completed of every running
 // terminal; a second clean finds none.
 func TestCodexBackgroundTerminalsClean(t *testing.T) {

@@ -196,26 +196,78 @@ func TestCodexAgentCommandDoesNotOutliveTheRouter(t *testing.T) {
 }
 
 // A command whose thread unloaded leaves nothing behind: Codex can still
-// write its completion afterwards, and that completion is handled like any
-// untracked one.
+// write its output and its completion afterwards, and neither writes a row,
+// as for a command a review run's end ended.
 func TestCodexUnloadedThreadKeepsNothingOfItsCommands(t *testing.T) {
 	t.Parallel()
 	r, st, _ := newTestRouter(t)
 	const threadID = "thread-unload-nothing"
 	createCodexBackgroundTestThread(t, st, threadID)
 	r.MarkThreadActive(threadID, "session-a")
+	seedOpenTurn(t, r, st, threadID, 0)
+	review := provider.ProcessScope{ID: "review:review-1"}
 	startCodexCommandFromSession(t, r, threadID, "agent-cmd", "1001", "spawn-1", threadScope("child-1"), "session-a")
+	startCodexCommandFromSession(t, r, threadID, "review-cmd", "1002", "review-1", review, "session-a")
 	unloadCodexScope(t, r, threadID, "spawn-1", "child-1", "session-a")
+	r.endCodexScope(fromSession(provider.ProviderEvent{ThreadID: threadID, ProcessScope: review}, "session-a"))
 	if held := r.codexCommandStateHeld(threadID); held != 0 {
-		t.Fatalf("the unloaded thread's command left %d entries behind", held)
+		t.Fatalf("the ended tables' commands left %d entries behind", held)
 	}
-	meta := buildUnifiedExecCompleteMeta(t, "completed", "1001", "sleep 60", 0)
-	late := provider.ProviderEvent{Kind: provider.EventToolComplete, ThreadID: threadID, ItemID: "agent-cmd", ItemType: "commandExecution", ParentToolUseID: "spawn-1", ProcessScope: threadScope("child-1"), Meta: meta, Timestamp: time.Now()}
-	if err := r.Handle(fromSession(late, "session-a")); err != nil {
-		t.Fatal(err)
+	for _, late := range []struct {
+		item, parent string
+		scope        provider.ProcessScope
+	}{{"agent-cmd", "spawn-1", threadScope("child-1")}, {"review-cmd", "review-1", review}} {
+		// Codex writes the full output just before the completion.
+		output := provider.ProviderEvent{Kind: provider.EventCommandOutput, ThreadID: threadID, ItemID: late.item, ItemType: "commandExecution", ParentToolUseID: late.parent, ProcessScope: late.scope, Content: "done\n", Replace: true, Meta: buildUnifiedExecStartMeta(t, "1001", "sleep 60"), Timestamp: time.Now()}
+		complete := provider.ProviderEvent{Kind: provider.EventToolComplete, ThreadID: threadID, ItemID: late.item, ItemType: "commandExecution", ParentToolUseID: late.parent, ProcessScope: late.scope, Meta: buildUnifiedExecCompleteMeta(t, "completed", "1001", "sleep 60", 0), Timestamp: time.Now()}
+		for _, evt := range []provider.ProviderEvent{output, complete} {
+			if err := r.Handle(fromSession(evt, "session-a")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, found, err := st.GetThreadItem(threadID, late.item); err != nil || found {
+			t.Fatalf("%s's late output and completion wrote a row: found=%v err=%v", late.item, found, err)
+		}
 	}
 	if held := r.codexCommandStateHeld(threadID); held != 0 {
-		t.Fatalf("the late completion left %d entries behind", held)
+		t.Fatalf("the late events left %d entries behind", held)
+	}
+}
+
+// The end of one process table visits only that table's commands, and the
+// counts a waiter reads take no scan: the live commands, the active
+// agents, and how many commands have started.
+func TestCodexCommandsAreHeldByTheirTable(t *testing.T) {
+	t.Parallel()
+	r, st, _ := newTestRouter(t)
+	const threadID = "thread-commands-by-table"
+	createCodexBackgroundTestThread(t, st, threadID)
+	r.MarkThreadActive(threadID, "session-a")
+	startCodexCommandFromSession(t, r, threadID, "root-cmd", "1001", "", threadScope("root"), "session-a")
+	startCodexCommandFromSession(t, r, threadID, "agent-cmd-1", "1002", "spawn-1", threadScope("child-1"), "session-a")
+	startCodexCommandFromSession(t, r, threadID, "agent-cmd-2", "1003", "spawn-1", threadScope("child-1"), "session-a")
+	r.mu.Lock()
+	tables := len(r.codexExecIfPresent(threadID).byScope)
+	inChild := len(r.codexExecIfPresent(threadID).byScope["child-1"])
+	r.mu.Unlock()
+	if tables != 2 || inChild != 2 {
+		t.Fatalf("tables = %d, child-1's commands = %d; want 2 tables, 2 commands in child-1's", tables, inChild)
+	}
+	if agents, commands := r.CodexLiveWorkCounts(threadID); agents != 0 || commands != 3 {
+		t.Fatalf("live work = %d agents, %d commands; want 0 and 3", agents, commands)
+	}
+	if started := r.CodexCommandsStarted(threadID); started != 3 {
+		t.Fatalf("commands started = %d, want 3", started)
+	}
+	unloadCodexScope(t, r, threadID, "spawn-1", "child-1", "session-a")
+	r.mu.Lock()
+	_, childTable := r.codexExecIfPresent(threadID).byScope["child-1"]
+	r.mu.Unlock()
+	if childTable || !codexCommandTracked(r, threadID, "root-cmd") {
+		t.Fatalf("after child-1's unload: its table kept=%v, root command tracked=%v; want the table gone and the root's command live", childTable, codexCommandTracked(r, threadID, "root-cmd"))
+	}
+	if _, commands := r.CodexLiveWorkCounts(threadID); commands != 1 || r.CodexCommandsStarted(threadID) != 3 {
+		t.Fatalf("after the unload: %d commands, %d started; want 1 and 3", commands, r.CodexCommandsStarted(threadID))
 	}
 }
 
