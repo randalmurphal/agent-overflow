@@ -112,8 +112,13 @@ type engine struct {
 	// past the last scripted one runs the same steps and finishes just as
 	// completely, so a once-per-process latch left turns 2..N reporting
 	// nothing and a per-turn await hanging forever.
-	doneTurns       map[int]bool
-	gate            *gate
+	doneTurns map[int]bool
+	// gate is the open waitSignal/stall block of the step goroutine (run).
+	gate *gate
+	// startupGate is the open startupGate hold of the adapter goroutine,
+	// which announces the provider while run may be blocked in an onStart
+	// step: a slot of its own, so neither hold replaces the other.
+	startupGate     *gate
 	pendingAdvances []pendingAdvance
 
 	turnCh chan int
@@ -127,22 +132,39 @@ type engine struct {
 
 // awaitStartup holds behind the scenario's startupGate the FIRST time an
 // adapter is about to announce itself, and returns immediately every time
-// after. See scenario.Scenario.StartupGate.
+// after. See scenario.Scenario.StartupGate. The hold is the adapter's, in
+// its own slot (engine.startupGate), so it and an onStart step's gate can
+// be open together in either order; only an advance naming it releases it.
 func (e *engine) awaitStartup() {
 	e.startup.Do(func() {
 		name := e.sc.StartupGate
 		if name == "" {
 			return
 		}
-		e.mu.Lock()
-		turn := e.currentTurnLocked()
-		e.mu.Unlock()
 		log.Printf("startupGate: holding the first provider frame behind %q", name)
+		turn, ch := e.openStartupGate(name)
 		e.rep.report(control.Report{Kind: control.ReportWaitingSignal, Turn: turn, Detail: name})
-		if ch := e.openGate(turn, name); ch != nil {
+		if ch != nil {
 			<-ch
 		}
 	})
+}
+
+// openStartupGate registers the startup hold, or consumes a buffered
+// advance naming it (nil channel = don't block).
+func (e *engine) openStartupGate(name string) (int, <-chan struct{}) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	turn := e.currentTurnLocked()
+	for i, pending := range e.pendingAdvances {
+		if pending.turn == turn && pending.name == name {
+			e.pendingAdvances = append(e.pendingAdvances[:i], e.pendingAdvances[i+1:]...)
+			return turn, nil
+		}
+	}
+	g := &gate{turn: turn, name: name, ch: make(chan struct{})}
+	e.startupGate = g
+	return turn, g.ch
 }
 
 // awaitExitDelay blocks for the scenario's exitDelayMs once the app has
@@ -627,6 +649,15 @@ type loginCompleter interface {
 // identical to a command that was never delivered.
 func (e *engine) advance(name string) {
 	e.mu.Lock()
+	// The startup hold first: it is released by its own name only, which
+	// an unnamed step gate would otherwise take.
+	if g := e.startupGate; g != nil && name == g.name {
+		e.startupGate = nil
+		e.mu.Unlock()
+		close(g.ch)
+		e.rep.report(control.Report{Kind: control.ReportAdvanceReleased, Turn: g.turn, Gate: g.name})
+		return
+	}
 	if g := e.gate; g != nil && gateMatches(g.name, name) {
 		e.gate = nil
 		released := g.name

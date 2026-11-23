@@ -36,7 +36,9 @@ control channel aligned with verified provider behavior.
 ## Session contracts
 
 - Acquire scenarios from the authenticated control assignment, then an explicit
-  scenario file, then the built-in provider fallback.
+  scenario file, then the built-in provider fallback when neither names one.
+  A named scenario that cannot run (unreadable, invalid, other provider)
+  fails the start; it never runs the fallback in its place.
 - The engine owns common step execution, interrupt state, gate buffering, and
   progress reports. Adapters own provider framing and terminal responses.
 - The Claude adapter follows the background tasks the process announced off

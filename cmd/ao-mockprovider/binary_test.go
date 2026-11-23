@@ -668,6 +668,40 @@ func TestClaudeBuiltinFallbackWithoutScenario(t *testing.T) {
 	validateClaudeFrames(t, p.all)
 }
 
+// TestANamedScenarioThatCannotRunFailsTheStart: a scenario file that is
+// unreadable, does not parse (a version-1 file with the retired
+// startupDelayMs among them) or is for the other provider ends the mock
+// with the reason, instead of running the builtin script in its place.
+func TestANamedScenarioThatCannotRunFailsTheStart(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, doc string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	cases := []struct{ name, path, reason string }{
+		{"unreadable", filepath.Join(dir, "missing.json"), "missing.json"},
+		{"invalid", write("delay.json", `{"version":1,"name":"slow","provider":"claude","startupDelayMs":500,"turns":[{"steps":[{"delayMs":1}]}]}`), "scenario invalid"},
+		{"other provider", write("codex.json", `{"version":1,"name":"codex-only","provider":"codex","turns":[{"steps":[{"delayMs":1}]}]}`), `targets provider "codex"`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := startMock(t, claudeSessionArgs, []string{envScenarioFile + "=" + c.path}, t.TempDir())
+			p.expectExit(1, testTimeout)
+			if !strings.Contains(p.stderr.String(), c.reason) || strings.Contains(p.stderr.String(), "fallback") {
+				t.Fatalf("the start did not fail with the reason %q:\n%s", c.reason, p.stderr.String())
+			}
+			for _, line := range p.all {
+				if strings.Contains(line, fallbackResponseText) {
+					t.Fatalf("the builtin script ran: %s", line)
+				}
+			}
+		})
+	}
+}
+
 func TestClaudeProbeInvocation(t *testing.T) {
 	args := []string{"--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--max-turns", "0"}
 	p := startMock(t, args, nil, t.TempDir())

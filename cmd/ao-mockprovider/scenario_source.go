@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 
@@ -24,10 +25,14 @@ type scenarioSource struct {
 }
 
 // acquireScenario resolves the scenario in priority order: control
-// channel → AO_MOCK_SCENARIO_FILE → built-in fallback. Every failure
-// logs loudly and degrades — the app must never hang on a silent mock,
-// so this function always returns a runnable scenario.
-func acquireScenario(protocol, cwd, resumeRef string) scenarioSource {
+// channel, then AO_MOCK_SCENARIO_FILE, then the built-in fallback when
+// neither names one. A scenario that was named but cannot run (unreadable,
+// invalid, or for the other provider) is an error: running a different
+// script than the one assigned would pass or fail a spec for the wrong
+// reason. A control plane that refuses the registration still degrades to
+// the file or the fallback, as before: the app must never hang on a mock
+// whose harness is gone.
+func acquireScenario(protocol, cwd, resumeRef string) (scenarioSource, error) {
 	if client, ok := control.FromEnv(); ok {
 		resp, err := client.Register(control.Registration{
 			Protocol:  protocol,
@@ -38,44 +43,40 @@ func acquireScenario(protocol, cwd, resumeRef string) scenarioSource {
 		if err != nil {
 			log.Printf("control register failed: %v (falling back to %s/builtin scenario)", err, envScenarioFile)
 		} else {
-			if sc := parseAssignedScenario(resp.Scenario, protocol, "control-assigned"); sc != nil {
-				return scenarioSource{sc: sc, fixtureRoot: resp.FixtureRoot, client: client}
+			sc, err := parseAssignedScenario(resp.Scenario, protocol, "control-assigned")
+			if err != nil {
+				return scenarioSource{}, err
 			}
-			// Keep the client: commands and reports still work against
-			// the builtin script, and the harness sees the degradation
-			// on stderr.
-			return scenarioSource{sc: builtinScenario(protocol), client: client}
+			return scenarioSource{sc: sc, fixtureRoot: resp.FixtureRoot, client: client}, nil
 		}
 	}
 
 	if path := os.Getenv(envScenarioFile); path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			log.Printf("read %s=%q failed: %v (using builtin fallback)", envScenarioFile, path, err)
-		} else if sc := parseAssignedScenario(data, protocol, path); sc != nil {
-			return scenarioSource{sc: sc, fixtureRoot: os.Getenv(envFixtureRoot)}
+			return scenarioSource{}, fmt.Errorf("read %s=%q: %w", envScenarioFile, path, err)
 		}
-		return scenarioSource{sc: builtinScenario(protocol)}
+		sc, err := parseAssignedScenario(data, protocol, path)
+		if err != nil {
+			return scenarioSource{}, err
+		}
+		return scenarioSource{sc: sc, fixtureRoot: os.Getenv(envFixtureRoot)}, nil
 	}
 
 	log.Printf("no control channel and no %s; running builtin %s fallback scenario", envScenarioFile, protocol)
-	return scenarioSource{sc: builtinScenario(protocol)}
+	return scenarioSource{sc: builtinScenario(protocol)}, nil
 }
 
-// parseAssignedScenario parses + provider-checks a scenario document,
-// returning nil (after loud logging) when it can't be used.
-func parseAssignedScenario(data []byte, protocol, origin string) *scenario.Scenario {
+// parseAssignedScenario parses and provider-checks a scenario document.
+func parseAssignedScenario(data []byte, protocol, origin string) (*scenario.Scenario, error) {
 	sc, err := scenario.Parse(data)
 	if err != nil {
-		log.Printf("%s scenario invalid: %v (using builtin %s fallback)", origin, err, protocol)
-		return nil
+		return nil, fmt.Errorf("%s scenario invalid: %w", origin, err)
 	}
 	if sc.Provider != protocol {
-		log.Printf("%s scenario %q targets provider %q but this mock detected %q (using builtin fallback)",
-			origin, sc.Name, sc.Provider, protocol)
-		return nil
+		return nil, fmt.Errorf("%s scenario %q targets provider %q but this mock runs %q", origin, sc.Name, sc.Provider, protocol)
 	}
-	return sc
+	return sc, nil
 }
 
 // fallbackResponseText is the assistant text both builtin scenarios

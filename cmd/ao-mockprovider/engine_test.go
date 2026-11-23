@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -898,11 +897,153 @@ func TestUncoalescedEmitStaysOneWritePerLine(t *testing.T) {
 	}
 }
 
-// TestStartupGateHoldsTheFirstFrameOnce: startupGate exists to hold a
-// provider start until the spec has seen what a slow start does, which is
-// only observable BEFORE the first frame. It reports the gate it waits on,
-// holds until an advance names it, and is paid once: a per-frame hold
-// would turn every later turn into a held start.
+// startupRig is a mock whose scenario holds its start behind "held-start"
+// and whose onStart waits on "boot", driven through its adapter's stdin
+// handler with the engine goroutine running, as main runs them.
+type startupRig struct {
+	t       *testing.T
+	e       *engine
+	out     *syncBuffer
+	reports chan control.Report
+	// announce feeds the adapter the stdin line that makes it write its
+	// first frame; announced is closed once that handler returned.
+	announce  func()
+	announced chan struct{}
+	// first is a fragment of the frame that proves the provider is up.
+	first string
+}
+
+func newStartupRig(t *testing.T, provider string) *startupRig {
+	t.Helper()
+	out := &syncBuffer{}
+	sc := &scenario.Scenario{
+		Version:     scenario.CurrentVersion,
+		Name:        "slow-start",
+		Provider:    provider,
+		StartupGate: "held-start",
+		OnStart:     []scenario.Step{{WaitSignal: &scenario.WaitSignalStep{Name: "boot"}}},
+	}
+	reports := make(chan control.Report, 64)
+	e := newEngine(sc, t.TempDir(), t.TempDir(), newLineWriter(out), &reporter{observe: func(r control.Report) { reports <- r }},
+		scenario.Vars{"SESSION_ID": "s1", "THREAD_ID": "th-1", "CWD": "/ws"})
+	e.exitFn = func(code int) { t.Errorf("unexpected exit(%d)", code) }
+	r := &startupRig{t: t, e: e, out: out, reports: reports, announced: make(chan struct{})}
+	switch provider {
+	case scenario.ProviderClaude:
+		a := newClaudeAdapter(e, newLineWriter(out), nil)
+		e.adapter = a
+		r.announce = func() { a.handleLine([]byte(userLine)) }
+		r.first = `"subtype":"init"`
+	case scenario.ProviderCodex:
+		a := newCodexAdapter(e, newLineWriter(out), nil)
+		e.adapter = a
+		r.announce = func() { a.handleLine([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)) }
+		r.first = `"id":1`
+	}
+	return r
+}
+
+func (r *startupRig) startAdapter() {
+	go func() {
+		r.announce()
+		close(r.announced)
+	}()
+}
+
+// waitingOn waits for the waiting_signal report naming gate.
+func (r *startupRig) waitingOn(gate string) {
+	r.t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case rep := <-r.reports:
+			if rep.Kind == control.ReportWaitingSignal && rep.Detail == gate {
+				return
+			}
+		case <-deadline:
+			r.t.Fatalf("no waiting_signal for %q within 5s", gate)
+		}
+	}
+}
+
+// released waits for the advance_released report naming gate.
+func (r *startupRig) released(gate string) {
+	r.t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case rep := <-r.reports:
+			if rep.Kind == control.ReportAdvanceReleased && rep.Gate == gate {
+				return
+			}
+		case <-deadline:
+			r.t.Fatalf("the advance of %q released nothing within 5s", gate)
+		}
+	}
+}
+
+func (r *startupRig) expectAnnounced() {
+	r.t.Helper()
+	select {
+	case <-r.announced:
+	case <-time.After(5 * time.Second):
+		r.t.Fatal("the provider never announced itself after its start was advanced")
+	}
+	if !strings.Contains(r.out.String(), r.first) {
+		r.t.Fatalf("the first frame %s was not written:\n%s", r.first, r.out.String())
+	}
+}
+
+func (r *startupRig) expectHeld() {
+	r.t.Helper()
+	select {
+	case <-r.announced:
+		r.t.Fatal("the provider announced itself before its start was advanced")
+	default:
+	}
+	if strings.Contains(r.out.String(), r.first) {
+		r.t.Fatalf("the first frame was written before its start was advanced:\n%s", r.out.String())
+	}
+}
+
+// TestStartupGateAndOnStartGateHoldTogether: a startupGate holds the
+// adapter's first frame while an onStart step waits on a signal of its own,
+// in either opening order, and each is released by the advance naming it.
+// Both used to share the engine's one gate slot, so the later one orphaned
+// the other's channel and that hold never ended.
+func TestStartupGateAndOnStartGateHoldTogether(t *testing.T) {
+	for _, provider := range []string{scenario.ProviderClaude, scenario.ProviderCodex} {
+		t.Run(provider+"/onStart first", func(t *testing.T) {
+			r := newStartupRig(t, provider)
+			go r.e.run()
+			r.waitingOn("boot")
+			r.startAdapter()
+			r.waitingOn("held-start")
+			r.expectHeld()
+			r.e.advance("held-start")
+			r.released("held-start")
+			r.expectAnnounced()
+			r.e.advance("boot")
+			r.released("boot")
+		})
+		t.Run(provider+"/start first", func(t *testing.T) {
+			r := newStartupRig(t, provider)
+			r.startAdapter()
+			r.waitingOn("held-start")
+			go r.e.run()
+			r.waitingOn("boot")
+			r.e.advance("boot")
+			r.released("boot")
+			r.expectHeld()
+			r.e.advance("held-start")
+			r.released("held-start")
+			r.expectAnnounced()
+		})
+	}
+}
+
+// TestStartupGateHoldsTheFirstFrameOnce: the hold is paid once; a
+// per-frame hold would turn every later turn into a held start.
 func TestStartupGateHoldsTheFirstFrameOnce(t *testing.T) {
 	var buf bytes.Buffer
 	sc := &scenario.Scenario{
@@ -911,43 +1052,25 @@ func TestStartupGateHoldsTheFirstFrameOnce(t *testing.T) {
 		Provider:    scenario.ProviderClaude,
 		StartupGate: "held-start",
 	}
-	reports := make(chan control.Report, 8)
-	e := newEngine(sc, t.TempDir(), t.TempDir(), newLineWriter(&buf), &reporter{observe: func(r control.Report) { reports <- r }}, scenario.Vars{"SESSION_ID": "s1"})
-
-	released := make(chan struct{})
-	go func() {
-		e.awaitStartup()
-		close(released)
-	}()
-	if r := <-reports; r.Kind != control.ReportWaitingSignal || r.Detail != "held-start" {
-		t.Fatalf("first report = %+v; want waiting_signal held-start", r)
-	}
-	// The gate opens after its report; once it is open the start is held.
-	for open := false; !open; {
-		e.mu.Lock()
-		open = e.gate != nil && e.gate.name == "held-start"
-		e.mu.Unlock()
-		runtime.Gosched()
-	}
-	select {
-	case <-released:
-		t.Fatal("the start went ahead before its gate was advanced")
-	default:
-	}
+	e := newEngine(sc, t.TempDir(), t.TempDir(), newLineWriter(&buf), &reporter{}, scenario.Vars{"SESSION_ID": "s1"})
 	e.advance("held-start")
-	select {
-	case <-released:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the advance did not release the start")
-	}
-
-	done := make(chan struct{})
+	held := make(chan struct{})
 	go func() {
 		e.awaitStartup()
-		close(done)
+		close(held)
 	}()
 	select {
-	case <-done:
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("an advance buffered before the hold did not release it")
+	}
+	again := make(chan struct{})
+	go func() {
+		e.awaitStartup()
+		close(again)
+	}()
+	select {
+	case <-again:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the gate held a second frame; it must hold only the FIRST")
 	}
