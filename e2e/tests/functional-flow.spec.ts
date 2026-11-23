@@ -100,6 +100,12 @@ test('requires explicit typed monitor identity and compatibility leg', async () 
     actions: [],
     monitors: [{ id: 'custom', target: { testId: 'x' }, compatibilityLeg: 'bogus', durationMs: 10 }],
   })).toThrow('compatibilityLeg requires an explicit monitorId');
+  expect(() => parseFunctionalScenario({
+    v: 1,
+    id: 'platform-leg',
+    actions: [],
+    monitors: [{ id: 'frame-pacing', monitorId: 'frame-pacing', compatibilityLeg: 'platform', durationMs: 10 }],
+  })).toThrow('unknown compatibility leg "platform"');
 });
 
 test('hidden and absent semantic targets settle without a timeout', async ({ page }) => {

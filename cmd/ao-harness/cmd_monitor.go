@@ -121,7 +121,7 @@ func finiteNonNegative(value float64) bool {
 
 func validMonitorLeg(value string) bool {
 	switch value {
-	case "clean-renderer", "instrumented-renderer", "functional", "provider-source", "platform":
+	case "clean-renderer", "instrumented-renderer", "functional", "provider-source":
 		return true
 	default:
 		return false

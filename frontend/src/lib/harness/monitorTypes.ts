@@ -13,8 +13,7 @@ export type MonitorCompatibilityLeg =
   | 'clean-renderer'
   | 'instrumented-renderer'
   | 'functional'
-  | 'provider-source'
-  | 'platform';
+  | 'provider-source';
 
 export type MeasurementPerturbation =
   | 'none'
@@ -23,8 +22,7 @@ export type MeasurementPerturbation =
   | 'event-listener'
   | 'dom-observer'
   | 'layout-read'
-  | 'source-instrumentation'
-  | 'platform-counter';
+  | 'source-instrumentation';
 
 export type MonitorCapability =
   | 'animation-frame'
@@ -52,12 +50,12 @@ export const MONITOR_CAPABILITIES: readonly MonitorCapability[] = [
 ];
 
 export const MONITOR_COMPATIBILITY_LEGS: readonly MonitorCompatibilityLeg[] = [
-  'clean-renderer', 'instrumented-renderer', 'functional', 'provider-source', 'platform',
+  'clean-renderer', 'instrumented-renderer', 'functional', 'provider-source',
 ];
 
 export const MONITOR_PERTURBATIONS: readonly MeasurementPerturbation[] = [
   'none', 'animation-frame', 'performance-observer', 'event-listener', 'dom-observer',
-  'layout-read', 'source-instrumentation', 'platform-counter',
+  'layout-read', 'source-instrumentation',
 ];
 
 export type MonitorProbeKind =

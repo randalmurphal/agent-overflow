@@ -88,6 +88,7 @@ func TestMonitorOptionParserRejectsUnsafeInputs(t *testing.T) {
 		{"bad run", []string{"--run-id", " bad"}, "identifier"},
 		{"bad timestamp", []string{"--run-id", "run", "--at-ms", "NaN"}, "finite"},
 		{"bad timeout", []string{"--run-id", "run", "--heartbeat-timeout-ms", "0"}, "positive"},
+		{"platform leg", []string{"--run-id", "run", "--leg", "platform"}, "unknown monitor compatibility leg"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, _, _ := testEnv(t.TempDir())
