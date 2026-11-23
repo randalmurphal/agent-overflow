@@ -253,6 +253,7 @@ func TestWhetherAFailedPeerAttemptMayHaveStartedTheRequest(t *testing.T) {
 	}{
 		{"the destination refuses it", &rpcclient.Error{Code: threadtools.CodeInvalidRequest, Message: "That request could not be started: not a git repository."}, false},
 		{"the destination's transport refuses the pairing", &rpcclient.Error{Code: transport.ErrCodeScopeRequired, Message: "scope missing"}, false},
+		{"the destination does not have the method", &rpcclient.Error{Code: transport.ErrCodeMethodNotFound, Message: "method not registered"}, false},
 		{"the destination fails in a way this computer cannot read", &rpcclient.Error{Code: transport.ErrCodeMethodError, Message: "method failed (id: trace)"}, true},
 		{"the reply is lost", errors.New("the answer was lost on the way back"), true},
 		{"the wait for the reply ends", context.DeadlineExceeded, true},

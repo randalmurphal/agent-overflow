@@ -133,9 +133,25 @@ func (c *Client) Advertises(capability string) bool {
 	return slices.Contains(c.capabilities, capability)
 }
 
+// Error is a refusal the far side answered: its wire code and message.
 type Error struct{ Code, Message string }
 
-func (e *Error) Error() string { return e.Message }
+// MethodUnavailableMessage is what a refusal with code method_not_found
+// says. The far side does not have the method the call named, so it runs a
+// different release of Agent Overflow and did not run the call. The frontend
+// says the same sentence (frontend/src/lib/transport/methodUnavailable.ts);
+// this package's tests pin the two together.
+const MethodUnavailableMessage = "The computer this reached runs a different version of Agent Overflow and does not support this. Update Agent Overflow so both run the same version."
+
+// Error is the far side's message, except for method_not_found, whose wire
+// text ("method not registered") says nothing a person can act on. Message
+// keeps the wire text for logs and diagnosis.
+func (e *Error) Error() string {
+	if e.Code == transport.ErrCodeMethodNotFound {
+		return MethodUnavailableMessage
+	}
+	return e.Message
+}
 
 // NotSentError marks a failed call whose request frame never reached the
 // socket, so the far side cannot have acted on it. Every other failure of

@@ -31,6 +31,7 @@
 //   - The id is the hex SHA-256 over `path\x00sha256\n` per file.
 
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { compareBundleVersions } from '../src/lib/native/bundleVersion.ts';
@@ -150,9 +151,26 @@ export async function stampBundle(root: string, version: unknown): Promise<void>
 }
 
 /**
- * The Vite plugin: stamp release metadata, then hash and stamp the content id.
- * The version is `bundleReleaseVersion` of the package version, so only a
- * build that says it is a release publishes the bare package version.
+ * The name the page reads its own release under (`src/lib/pageVersion.ts`).
+ * Vite replaces it with the value `buildReleaseVersion` answered.
+ */
+export const PAGE_VERSION_GLOBAL = '__AO_PAGE_VERSION__';
+
+/**
+ * The release this build is: `bundleReleaseVersion` of the package at
+ * `packagePath`, a release only when `AO_RELEASE_BUILD=1`. Computed once per
+ * build so the version compiled into the page (`PAGE_VERSION_GLOBAL`) and
+ * the one stamped into `bundle-release.json` are the same value.
+ */
+export function buildReleaseVersion(packagePath: string, nowMs = Date.now()): string {
+  const pkg: { version?: unknown } = JSON.parse(readFileSync(packagePath, 'utf8'));
+  return bundleReleaseVersion(pkg.version, process.env[RELEASE_BUILD_ENV] === '1', nowMs);
+}
+
+/**
+ * The Vite plugin: stamp `version` as the release metadata, then hash and
+ * stamp the content id. `version` is the build's one `buildReleaseVersion`,
+ * the same value `vite.config.ts` compiles into the page.
  *
  * `closeBundle` rather than `writeBundle`, so every asset — including the
  * ones plugins emit late — is on disk before the walk. Build only: a dev
@@ -163,24 +181,22 @@ export async function stampBundle(root: string, version: unknown): Promise<void>
  * which is exactly the failure nobody would notice until a phone was on
  * a metered link.
  */
-export function bundleIdPlugin(): {
+export function bundleIdPlugin(version: string): {
   name: string;
   apply: 'build';
   closeBundle: () => Promise<void>;
   configResolved: (config: { build: { outDir: string }; root: string }) => void;
 } {
+  const release = requireReleaseVersion(version);
   let outDir = '';
-  let packagePath = '';
   return {
     name: 'agent-overflow:bundle-id',
     apply: 'build',
     configResolved(config) {
       outDir = path.resolve(config.root, config.build.outDir);
-      packagePath = path.resolve(config.root, 'package.json');
     },
     async closeBundle() {
-      const pkg: { version?: unknown } = JSON.parse(await readFile(packagePath, 'utf8'));
-      await stampBundle(outDir, bundleReleaseVersion(pkg.version, process.env[RELEASE_BUILD_ENV] === '1'));
+      await stampBundle(outDir, release);
     },
   };
 }

@@ -6,6 +6,7 @@ import { hasScope, pageGrantsResolved } from '../transport/scopes';
 import { UI_TRACE_MAX_LINE_BYTES } from './uiTraceLimits';
 import { redactDiagnosticText } from './diagnosticRedaction';
 import { setClipboardDiagnosticsSink } from './clipboard';
+import { setMethodUnavailableDiagnosticsSink } from '../transport/methodUnavailable';
 
 /*
  * Always-on global error capture. Window `error` and `unhandledrejection`
@@ -85,6 +86,7 @@ export function installFrontendErrorCapture(): void {
   // stays free of stores/bindings dependencies.
   installDiagnosticsSinkEverywhere(reportFrontendDiagnostic);
   setClipboardDiagnosticsSink(reportFrontendDiagnostic);
+  setMethodUnavailableDiagnosticsSink(reportFrontendDiagnostic);
 
   window.addEventListener('error', (event: ErrorEvent) => {
     // Synthetic or resource-flavored `error` events can arrive with no
@@ -313,7 +315,7 @@ export async function flushFrontendErrors(): Promise<void> {
         await ReportFrontendErrorBatch(batch);
         consecutiveFlushFailures = 0;
       } catch (err) {
-        if (isMethodUnavailable(err) || isScopeRefusal(err)) {
+        if (isMethodUnavailableError(err) || isScopeRefusal(err)) {
           // The backend will refuse this connection for its whole life.
           standDown('the backend refuses error persistence for this connection');
           return;
@@ -361,22 +363,11 @@ function takeBatch(): string[] {
   return pendingLines.splice(0, count);
 }
 
-function isMethodUnavailable(err: unknown): boolean {
-  if (isMethodUnavailableError(err)) return true;
-  // Message fallback, kept only for this sink: dropping error reporting is
-  // cheap to get wrong in the tolerant direction and expensive in the strict
-  // one (a refused ReportFrontendErrorBatch would otherwise retry forever
-  // against a backend that will never accept it). Callers deciding user-facing
-  // behaviour should use the code-only predicate above.
-  if (!err || typeof err !== 'object') return false;
-  const message = (err as { message?: unknown }).message;
-  return typeof message === 'string' && message.includes('method not registered');
-}
-
 /** Test hook: detach listeners and reset module state between cases. */
 export function resetFrontendErrorCaptureForTest(): void {
   installDiagnosticsSinkEverywhere(null);
   setClipboardDiagnosticsSink(null);
+  setMethodUnavailableDiagnosticsSink(null);
   signatureCounts.clear();
   pendingLines.length = 0;
   if (flushTimer !== null && typeof window !== 'undefined') {

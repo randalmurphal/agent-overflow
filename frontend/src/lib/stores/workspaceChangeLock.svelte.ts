@@ -66,7 +66,6 @@ import { hasScope } from '../transport/scopes';
 import { getActiveTurn } from './threadStatuses.svelte';
 import { isShellRunActive } from './shellCommands.svelte';
 import { createEntityStore } from './entityStore.svelte';
-import { isMethodUnavailableError } from './transportStatus.svelte';
 import { createRefreshScheduler } from '../utils/refreshScheduler';
 import {
   workspaceKeyBackend,
@@ -87,20 +86,6 @@ const TURN_REASON = 'Workspace changes are unavailable while the agent is respon
 const TASKS_REASON = 'Workspace changes are unavailable while background tasks are running.';
 const SHELL_REASON = 'Workspace changes are unavailable while a shell command is running.';
 const CHECKING_REASON = 'Checking workspace availability...';
-// A backend that does not register GetWorkspaceActivity at all cannot
-// verify a workspace, and never will on this connection — the refusal is a
-// standing property rather than a failure to report. Unverified stays
-// LOCKED; only the reason changes, because "method not registered" reads
-// as a broken app rather than as a posture (workflows UI-SPEC §10). This is
-// no longer the ordinary remote answer: the per-method origin partition is
-// gone, so a session that simply lacks `git:operate` is answered by the
-// scope check in the refresh below and never reaches this sentence.
-const LOCAL_ONLY_REASON = 'Workspace changes are only available on this computer.';
-
-function activityError(err: unknown): unknown {
-  return isMethodUnavailableError(err) ? new Error(LOCAL_ONLY_REASON) : err;
-}
-
 // Value is the workspace's live activity. `null` (no observation yet) and an
 // error both mean "unverified", which is locked.
 const store = createEntityStore<WorkspaceActivity, void>({
@@ -149,7 +134,7 @@ const store = createEntityStore<WorkspaceActivity, void>({
           // Adding an invalidate() here reset that curve on every inbound
           // event, so a broken backend under a streaming thread never backed
           // off — it just re-polled forever at the event rate.
-          if (token.isCurrent()) fail(activityError(err));
+          if (token.isCurrent()) fail(err);
         }
       },
     });
@@ -270,12 +255,11 @@ export function createWorkspaceChangeLockState(
   // lock truthful about threads this pane cannot see.
   const localTurnActive = (): boolean => getActiveTurn(getPane().threadId) !== null;
 
-  // Both views share the unverified / failed / local-only legs: a fetch that
+  // Both views share the unverified and failed legs: a fetch that
   // has not answered (or cannot) says nothing about either entity, and
   // fail-safe means locked for both. Only the verified branch diverges.
   const unverifiedReason = (key: string): string | null => {
     const error = store.peekError(key);
-    if (error === LOCAL_ONLY_REASON) return error;
     if (error !== null) return `Cannot check for running background tasks: ${error}`;
     if (store.peek(key) === null) return CHECKING_REASON;
     return null;

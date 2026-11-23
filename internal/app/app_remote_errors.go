@@ -141,6 +141,9 @@ func remoteErrorDetails(action string, err error) (code, message string, uncerta
 			message = "The pairing does not grant permission to run remote commands. Ask the user to reconnect with full device access."
 		case code == transport.ErrCodeAuthFailed:
 			message = "The destination refused this pairing's credentials. Reconnect the computer in Remote access."
+		case code == transport.ErrCodeMethodNotFound:
+			// The destination has no such method, so it did not run the call.
+			message = remote.Error()
 		default:
 			message = "The destination could not complete the request. Its reported error: " + remote.Message + ". If it is running an older AO build, update it for detailed command errors."
 			uncertain = true

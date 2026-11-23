@@ -45,7 +45,10 @@ through `stores/layoutMode.svelte.ts`.
   one its settings answer does not name (`computerHasSetting` in
   `stores/settings.svelte.ts`): nothing writes that key there, and a page for
   it shows `SettingsOlderComputer` instead of its editors. Tests answer as
-  v0.0.19 with `test/helpers/olderComputer.ts`.
+  v0.0.19 with `test/helpers/olderComputer.ts`. Any other call it lacks fails
+  with a message that already says the computer runs a different version
+  and what to do ([RPC failures](../docs/architecture/transport.md#rpc-failures));
+  a surface shows that error as it is and never words the code itself.
 
 ## Compact layout
 

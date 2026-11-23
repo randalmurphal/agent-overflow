@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { methodNotFound } from '../../../test/helpers/olderComputer';
 import { render, fireEvent, waitFor, within } from '@testing-library/svelte';
 import CommitDialog from './CommitDialog.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
@@ -248,12 +249,12 @@ describe('<CommitDialog> — file selection', () => {
     expect(m.rows()).toHaveLength(0);
   });
 
-  it('says to update a connected computer whose build has no file list', async () => {
+  it('says a computer whose build has no file list runs a different version', async () => {
     const m = await mount(() => {
-      throw Object.assign(new Error('method not found'), { code: 'method_not_found' });
+      throw methodNotFound();
     });
     const alert = await m.findByTestId('commit-dialog-list-error');
-    expect(alert.textContent).toBe('Update Agent Overflow on this computer to commit from here.');
+    expect(alert.textContent).toBe('This computer now runs a different version of Agent Overflow than this page. Reload the page.');
     await m.setSubject('Nothing listed');
     expect(m.commitButton().disabled).toBe(true);
   });

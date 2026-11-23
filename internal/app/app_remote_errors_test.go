@@ -44,6 +44,24 @@ func TestRemoteErrorsPreserveSafeDetailsAndExplainUncertainAcceptance(t *testing
 	}
 }
 
+// A destination without the method runs a different release and did not run
+// the call: a person or the model reads that, with what to do, and is not
+// told the call may have run.
+func TestRemoteErrorsSayAMissingMethodIsAVersionMismatch(t *testing.T) {
+	t.Parallel()
+	const id = "2018ba7a-359c-4a0b-92a2-0b7cae76a515"
+	missing := &rpcclient.Error{Code: transport.ErrCodeMethodNotFound, Message: "method not registered"}
+	code, message, uncertain := remoteErrorDetails("run", missing)
+	if code != transport.ErrCodeMethodNotFound || message != rpcclient.MethodUnavailableMessage || uncertain {
+		t.Fatalf("details = (%q, %q, uncertain %v), want the version mismatch, certain", code, message, uncertain)
+	}
+	text := remoteErrorText(remoteOperationErrorFor("run", remoteRef{ComputerID: id, ComputerName: "Nexus", RequestID: id}, missing))
+	want := "[method_not_found] Remote run on Nexus (computer " + id + ") for request " + id + ": " + rpcclient.MethodUnavailableMessage
+	if text != want {
+		t.Fatalf("tool error = %q, want %q", text, want)
+	}
+}
+
 // A person reads a computer and a job by name; the model retries by id. The
 // tool error carries both, and the text a row shows carries neither.
 func TestRemoteErrorsNameTheComputerAndTheJobForPeopleAndKeepIDsForTheModel(t *testing.T) {

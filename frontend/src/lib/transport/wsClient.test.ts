@@ -253,7 +253,10 @@ describe('WSClient', () => {
     }
     expect(caught).toBeInstanceOf(TransportError);
     expect((caught as TransportError).code).toBe('method_not_found');
-    expect((caught as TransportError).message).toBe('missing');
+    // A call the computer does not have reads as the version mismatch it
+    // is; the wire text stays as the cause (./methodUnavailable.ts).
+    expect((caught as TransportError).message).toBe('This computer now runs a different version of Agent Overflow than this page. Reload the page.');
+    expect((caught as TransportError).cause).toBe('missing');
 
     client.close();
   });

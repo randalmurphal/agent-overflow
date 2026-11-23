@@ -376,9 +376,12 @@ export function isTemporarilyUnavailableError(err: unknown): boolean {
  * harness's, registered `RegisterOptions{LocalOnly: true}`) refused to a
  * non-loopback peer. `internal/transport/dispatcher.go` returns the
  * identical `method_not_found` envelope for both so a scanner cannot
- * fingerprint which receivers exist. Callers therefore read it as "this
- * capability isn't available on this session", never as a failure to
- * report.
+ * fingerprint which receivers exist. Only the harness bridge calls that
+ * receiver, and only from a loopback page, so in the product the code
+ * means the computer runs a different release. The error's message
+ * already says so (transport/methodUnavailable.ts): a caller with a
+ * fallback (`orOlder`) or a passive read that goes quiet branches on this,
+ * and any other caller shows the error as it is.
  *
  * It is NOT how an ordinary App method is refused for want of a grant:
  * that is `scope_required`, which names the missing capability and is

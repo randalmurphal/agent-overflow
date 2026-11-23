@@ -1482,8 +1482,9 @@ Mechanics, as built:
   project, and a thread outside every project has no row.
 - The harness seeds lineage with `HarnessSeedThread.spawnedBy`, the
   title of a thread seeded earlier in the same project, or
-  `spawnedById`, the id of one seeded before in any project, and an
-  assistant with `HarnessSeedThread.assistant`.
+  `spawnedById`, the id of one seeded before in any project, owned by its
+  spawner unless `placement` is `standalone`, and an assistant with
+  `HarnessSeedThread.assistant`.
 
 ### Wake supervisor
 

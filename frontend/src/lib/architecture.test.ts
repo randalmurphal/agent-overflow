@@ -440,6 +440,10 @@ const RANDOM_ID_OWNER = 'lib/utils/randomId.ts';
 // A CALL, not the word: the comments at the converted call sites name the API
 // they no longer reach for, and must not read as offenders.
 const RANDOM_UUID_CALL = /\brandomUUID\s*\(/;
+// The wire text a computer answers a call it does not have with
+// (internal/transport/dispatcher.go). Production code neither matches nor
+// shows it: the code is the discriminator and the message is the sentence.
+const METHOD_NOT_FOUND_TEXT = /method not registered/;
 const RANDOM_ID_ALLOWLIST: Record<string, string> = {};
 
 // 7. A send is built by the one builder that mints its idempotency id.
@@ -717,6 +721,7 @@ describe('architecture', () => {
       callsEventsOn: EVENTS_ON_CALL.test(text),
       callsRandomUUID: RANDOM_UUID_CALL.test(text),
       namesSendOptionsType: SEND_OPTIONS_TYPE.test(text),
+      namesMethodNotFoundText: METHOD_NOT_FOUND_TEXT.test(text),
       inStores: file.startsWith(STORES_DIR + sep),
     };
   });
@@ -1132,6 +1137,23 @@ describe('architecture', () => {
       `Call randomId() from ${RANDOM_ID_OWNER}, which falls back to crypto.getRandomValues`
       + ' on the pages where crypto.randomUUID does not exist.',
     );
+  });
+
+  it('says a call the computer does not have only through the transport', () => {
+    const offenders = new Map<string, string[]>();
+    for (const source of sources) {
+      if (!source.namesMethodNotFoundText) continue;
+      offenders.set(source.path, ['matches or shows the wire text of method_not_found']);
+    }
+    expectAllowlistExact(
+      offenders,
+      {},
+      'New violations.',
+      'Branch on the code with isMethodUnavailableError; the error\'s message is already the'
+      + ' version mismatch sentence (transport/methodUnavailable.ts).',
+    );
+    const main = readFileSync(join(SRC_ROOT, 'main.ts'), 'utf8');
+    expect(main, 'src/main.ts installs the named wording (stores/versionMismatch.ts)').toMatch(/^installVersionMismatchWording\(\);$/m);
   });
 
   it('keeps every send on the builder that mints its idempotency id', () => {

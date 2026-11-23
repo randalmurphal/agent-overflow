@@ -1,5 +1,6 @@
 import { presentAuthReason } from './authReason';
 import { parseErrorDetail, type ErrorDetail } from './errorDetail';
+import { methodUnavailableMessage } from './methodUnavailable';
 import { createNetworkSocket } from './networkSocket';
 import { networkFetch } from './networkFetch';
 import { DamagedTrustError } from '../native/networkTrust';
@@ -505,7 +506,14 @@ export class TransportError extends Error {
   detail?: ErrorDetail;
   constructor(code: string, message: string, fields: TransportErrorFields = {}) {
     const { reason, scope, transfer, backgroundAgents, reserve, resumeAt, detail, backend = HOME_BACKEND } = fields;
-    super(code === 'auth_failed' ? presentAuthReason(reason).title : message);
+    // A call the computer does not have is a version mismatch, worded once
+    // here for every surface (./methodUnavailable.ts); the wire text stays
+    // as the cause, which Details and a copied report list.
+    if (code === 'method_not_found') {
+      super(methodUnavailableMessage(backend), { cause: message });
+    } else {
+      super(code === 'auth_failed' ? presentAuthReason(reason).title : message);
+    }
     this.name = 'TransportError';
     this.code = code;
     this.reason = reason;
@@ -791,8 +799,9 @@ export interface TransportHello {
    *  running (lib/native/bundleSync.ts); every other client ignores it.
    *  '' is "no bundle here", never a wildcard. */
   bundleId: string;
-  /** That bundle's app version, or ''. Compared only to pick the newest
-   *  among several attached backends — nothing gates on it. */
+  /** That bundle's app version, or ''. Compared to pick the newest among
+   *  several attached backends, and to word a version mismatch
+   *  (stores/versionMismatch.ts); nothing gates on it. */
   bundleVersion: string;
   /** The lowest Android `versionCode` the bundle's native seams can run
    *  on, or 0 for "no floor stated". */
