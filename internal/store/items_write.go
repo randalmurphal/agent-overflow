@@ -302,60 +302,58 @@ func (s *Store) UpsertUnsettledItem(item Item, resultPayload, inputPayload *Payl
 	return s.upsertItemWithInputPayload(item, resultPayload, inputPayload, true)
 }
 
-// ErrItemParent refuses a write UpsertItemUnderParent does not own.
-var ErrItemParent = errors.New("store: invalid item parent")
+// ErrItemNotAppended refuses a row AppendItemUnderParent does not append.
+var ErrItemNotAppended = errors.New("store: item not appended under its parent")
 
-// UpsertItemUnderParent writes item under its parent, in the parent's turn,
-// while the parent row is in the thread's history. It does one of two
-// things: append a new row under a parent that passes ItemParentProblem, or
-// update the same row already stored under that parent in that turn, in
-// place. It refuses anything else with ErrItemParent and writes nothing: a
-// parent ItemParentProblem rejects, or a stored row with item's id under
-// another parent or in another turn; it never moves a row. The parent
-// check, the turn and the write share one transaction, so a conversation
-// cut either precedes the check (nothing is written; written is false) or
-// follows the write (the cut removes the row with its parent).
-// item.TurnIndex is ignored.
-func (s *Store) UpsertItemUnderParent(item Item, resultPayload *Payload) (persisted Item, written bool, err error) {
+// AppendItemUnderParent appends item as a new row under its parent, in the
+// parent's turn, while the parent row is in the thread's history. It keeps
+// two things true: it never changes a stored row, and it never writes a
+// row under a parent ItemParentProblem rejects. So it refuses, with
+// ErrItemNotAppended and writing nothing, an id already stored anywhere in
+// the thread's history and a rejected parent. The parent check, the turn
+// and the insert share one transaction, so a conversation cut either
+// precedes the check (nothing is written; written is false) or follows the
+// insert (the cut removes the row with its parent). item.TurnIndex is
+// ignored.
+func (s *Store) AppendItemUnderParent(item Item, resultPayload *Payload) (persisted Item, written bool, err error) {
 	if strings.TrimSpace(item.ParentID) == "" {
-		return Item{}, false, fmt.Errorf("store: upsert item %s under parent: no parent", item.ID)
+		return Item{}, false, fmt.Errorf("store: append item %s under parent: no parent", item.ID)
 	}
 	applyItemDefaults(&item)
-	err = s.groupWriteItems(item.ThreadID, item.SubagentCard, "upsert item under parent", func(tx *sql.Tx, w *cardWrite) error {
-		parent, found, err := s.getThreadItem(tx, item.ThreadID, item.ParentID)
+	err = s.groupWriteItems(item.ThreadID, item.SubagentCard, "append item under parent", func(tx *sql.Tx, w *cardWrite) error {
+		parent, found, err := itemLinkTx(tx, item.ThreadID, item.ParentID)
 		if err != nil || !found {
 			return err
 		}
+		if _, stored, err := itemLinkTx(tx, item.ThreadID, item.ID); err != nil {
+			return err
+		} else if stored {
+			return fmt.Errorf("%w: %s/%s is already stored", ErrItemNotAppended, item.ThreadID, item.ID)
+		}
 		problem, err := ItemParentProblem(item.ID, item.ParentID, func(id string) (ItemParentLink, bool, error) {
-			row := parent
-			found := true
-			if id != parent.ID {
-				var err error
-				if row, found, err = s.getThreadItem(tx, item.ThreadID, id); err != nil {
-					return ItemParentLink{}, false, err
-				}
+			if id == item.ParentID {
+				return parent.ItemParentLink, true, nil
 			}
-			return ItemParentLink{Kind: row.Kind, ParentID: row.ParentID}, found, nil
+			link, found, err := itemLinkTx(tx, item.ThreadID, id)
+			return link.ItemParentLink, found, err
 		})
 		if err != nil {
 			return err
 		}
 		if problem != "" {
-			return fmt.Errorf("%w: %s/%s under %s: %s", ErrItemParent, item.ThreadID, item.ID, item.ParentID, problem)
+			return fmt.Errorf("%w: %s/%s under %s: %s", ErrItemNotAppended, item.ThreadID, item.ID, item.ParentID, problem)
 		}
-		stored, found, err := s.getThreadItem(tx, item.ThreadID, item.ID)
-		if err != nil {
-			return err
-		}
-		if found && (stored.ParentID != item.ParentID || stored.TurnIndex != parent.TurnIndex) {
-			return fmt.Errorf("%w: %s/%s is stored under %q in turn %d, not under %q in turn %d",
-				ErrItemParent, item.ThreadID, item.ID, stored.ParentID, stored.TurnIndex, item.ParentID, parent.TurnIndex)
-		}
-		item.TurnIndex = parent.TurnIndex
+		item.TurnIndex = parent.turnIndex
 		if err := upsertPayload(tx, resultPayload, &item); err != nil {
 			return err
 		}
-		persisted, err = writeItemAndReadBack(tx, w, &item, nextItemIndexTx)
+		if err := insertNewItem(tx, w, &item, nextItemIndexTx); err != nil {
+			return err
+		}
+		if err := w.finish(); err != nil {
+			return err
+		}
+		persisted, err = readBackUpsertedItem(tx, item.ThreadID, item.ID)
 		written = err == nil
 		return err
 	})
@@ -363,6 +361,35 @@ func (s *Store) UpsertItemUnderParent(item Item, resultPayload *Payload) (persis
 		return Item{}, false, err
 	}
 	return persisted, written, nil
+}
+
+// itemLink is what AppendItemUnderParent reads of a row: its parent link
+// and its turn.
+type itemLink struct {
+	ItemParentLink
+	turnIndex int
+}
+
+// itemLinkTx reads the parent link and turn of the row id shows in the
+// thread's history, local, imported or inherited, and nothing else.
+func itemLinkTx(q sqlQueryer, threadID, id string) (itemLink, bool, error) {
+	query, args, err := timelineArms(q, threadID, timelineSelection{
+		Columns:  func(string, string) string { return "items.kind, items.parent_id, items.turn_index" },
+		KeyFirst: true,
+		Where:    "items.id = ?", WhereArgs: []any{id},
+	})
+	if err != nil {
+		return itemLink{}, false, err
+	}
+	var link itemLink
+	err = q.QueryRow(query, args...).Scan(&link.Kind, &link.ParentID, &link.turnIndex)
+	if errors.Is(err, sql.ErrNoRows) {
+		return itemLink{}, false, nil
+	}
+	if err != nil {
+		return itemLink{}, false, fmt.Errorf("store: read item link %s/%s: %w", threadID, id, err)
+	}
+	return link, true, nil
 }
 
 func (s *Store) upsertItemWithInputPayload(item Item, resultPayload, inputPayload *Payload, preserveTerminal bool) (Item, error) {

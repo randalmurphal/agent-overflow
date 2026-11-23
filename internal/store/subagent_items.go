@@ -1266,14 +1266,10 @@ func (s *Store) SnapshotSubagentExecutionMeta(threadID, launchID, executionTurnI
 		tools int
 	}
 	got, err := readSnapshot(s.reader(), "subagent execution snapshot", func(q sqlQueryer) (snapshot, error) {
-		bound := subagentRoundBounds{
-			lo: &TimelineCursor{TurnIndex: turnIndex, ItemIndex: startIndex + 1},
-			hi: &TimelineCursor{TurnIndex: turnIndex, ItemIndex: endIndex + 1},
-		}
 		var acc subagentAggregateAccumulator
 		tools := 0
-		err := forEachCodexExecutionRow(q, threadID, launchID, func(row subagentAggregateRow) {
-			if !subagentBoundContains(bound, row) || (row.direct && !CodexExecutionMember(row.executionTag, executionTurnID)) {
+		err := forEachCodexExecutionRow(q, threadID, launchID, turnIndex, startIndex, endIndex, func(row subagentAggregateRow) {
+			if row.direct && !CodexExecutionMember(row.executionTag, executionTurnID) {
 				return
 			}
 			acc.add(row)

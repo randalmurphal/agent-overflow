@@ -192,7 +192,7 @@ func TestCodexAgentCommandCompletionWritesNothingOnceACutRemovedItsAgent(t *test
 }
 
 // The store refuses an agent's command whose scope row is not a tool_call,
-// or whose id is already stored on another turn (as the newest-turn
+// or whose id is already stored (here on another turn, as the newest-turn
 // fallback before the scoped write could leave it): the completion writes
 // nothing, leaves the stored row as it was, and says so.
 func TestCodexAgentCommandTheStoreRefusesWritesNothing(t *testing.T) {
@@ -223,7 +223,7 @@ func TestCodexAgentCommandTheStoreRefusesWritesNothing(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			want: `is stored under "spawn-agent" in turn 1, not under "spawn-agent" in turn 0`,
+			want: `t1/child-cmd is already stored`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

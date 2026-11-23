@@ -37,30 +37,40 @@ var codexExecutionAggregateColumns = subagentAggregateColumns + `,
 	     THEN COALESCE(` + jsonFieldExpr("items.meta", "$."+CodexExecutionTurnMetaKey) + `, '') ELSE '' END`
 
 func forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootIDs []string, visit func(subagentAggregateRow)) error {
-	return walkSubagentAggregateRows(q, threadID, rootIDs, subagentAggregateColumns, func(rows *sql.Rows, row *subagentAggregateRow) error {
+	return walkSubagentAggregateRows(q, threadID, rootIDs, subagentAggregateColumns, "", nil, func(rows *sql.Rows, row *subagentAggregateRow) error {
 		return rows.Scan(&row.root, &row.id, &row.kind, &row.summary, &row.turnIndex, &row.itemIndex)
 	}, visit)
 }
 
-// forEachCodexExecutionRow is forEachSubagentAggregateRow with each row's
-// direct and executionTag.
-func forEachCodexExecutionRow(q sqlQueryer, threadID, rootID string, visit func(subagentAggregateRow)) error {
-	return walkSubagentAggregateRows(q, threadID, []string{rootID}, codexExecutionAggregateColumns, func(rows *sql.Rows, row *subagentAggregateRow) error {
-		return rows.Scan(&row.root, &row.id, &row.kind, &row.summary, &row.turnIndex, &row.itemIndex, &row.direct, &row.executionTag)
-	}, visit)
+// forEachCodexExecutionRow is forEachSubagentAggregateRow over one Codex
+// execution: the rows reachable from rootID that sit in turnIndex with
+// item_index in (startIndex, endIndex], each with its direct and
+// executionTag. The bounds select the result rows in SQL, so the tag is
+// read only for the execution's own rows; the walk that reaches them is
+// unchanged.
+func forEachCodexExecutionRow(q sqlQueryer, threadID, rootID string, turnIndex, startIndex, endIndex int, visit func(subagentAggregateRow)) error {
+	return walkSubagentAggregateRows(q, threadID, []string{rootID}, codexExecutionAggregateColumns,
+		" AND items.turn_index = ? AND items.item_index > ? AND items.item_index <= ?", []any{turnIndex, startIndex, endIndex},
+		func(rows *sql.Rows, row *subagentAggregateRow) error {
+			return rows.Scan(&row.root, &row.id, &row.kind, &row.summary, &row.turnIndex, &row.itemIndex, &row.direct, &row.executionTag)
+		}, visit)
 }
 
+// walkSubagentAggregateRows walks the rows reachable from rootIDs and
+// visits the ones the result selection keeps: every one, or those that
+// also match where (bound with whereArgs).
 func walkSubagentAggregateRows(
-	q sqlQueryer, threadID string, rootIDs []string, columns string,
+	q sqlQueryer, threadID string, rootIDs []string, columns, where string, whereArgs []any,
 	scan func(*sql.Rows, *subagentAggregateRow) error, visit func(subagentAggregateRow),
 ) error {
 	if len(rootIDs) == 0 {
 		return nil
 	}
 	resolvedSQL, resolvedArgs, err := timelineArms(q, threadID, timelineSelection{
-		Columns: func(string, string) string { return columns },
-		Source:  "rel",
-		Where:   "items.id = rel.id",
+		Columns:   func(string, string) string { return columns },
+		Source:    "rel",
+		Where:     "items.id = rel.id" + where,
+		WhereArgs: whereArgs,
 	})
 	if err != nil {
 		return err

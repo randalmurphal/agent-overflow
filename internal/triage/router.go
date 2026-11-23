@@ -1654,10 +1654,12 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 	return persisted, nil
 }
 
-// persistItemUnderScope writes a scoped row only while its scope row is in
-// history, in the scope's turn (store.UpsertItemUnderParent); a scope a
-// conversation cut removed, or a write the store refuses (store.ErrItemParent),
-// writes nothing, which is logged. Only rows that
+// persistItemUnderScope appends a new scoped row only while its scope row is
+// in history, in the scope's turn (store.AppendItemUnderParent); a scope a
+// conversation cut removed, or a row the store refuses (store.ErrItemNotAppended),
+// writes nothing, which is logged. Each caller writes its row once under a
+// fresh id: the command's completion takes the command's tracker before it
+// writes, and the interaction reserves its id (reserveItemID). Only rows that
 // can still arrive from a Codex agent that finished before an in-place
 // revert cut its spawn use it, its background command's completion and
 // stdin interaction: the revert gate counts a running agent and kills it
@@ -1672,10 +1674,10 @@ func (r *Router) persistItemUnderScope(item store.Item, payload *store.Payload) 
 			gate(item)
 		}
 		var err error
-		persisted, written, err = r.store.UpsertItemUnderParent(item, payload)
+		persisted, written, err = r.store.AppendItemUnderParent(item, payload)
 		return err
 	})
-	if errors.Is(err, store.ErrItemParent) {
+	if errors.Is(err, store.ErrItemNotAppended) {
 		log.Printf("triage: refusing %s on thread %s: %v", item.ID, item.ThreadID, err)
 		return store.Item{}, false, nil
 	}
