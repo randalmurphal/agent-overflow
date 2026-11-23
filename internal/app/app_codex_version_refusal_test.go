@@ -14,11 +14,13 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
+	"agent-overflow/internal/threadmode"
 )
 
 // versionedCodex is a fake app-server whose bytes are the file itself
@@ -426,4 +428,34 @@ func TestCodexVersionRefusalAnswersASpawnWhoseStartIsRefused(t *testing.T) {
 	if !strings.Contains(got, "was created for it and its prompt did not run") {
 		t.Fatalf("thread_spawn answered %q, want it to name the created thread", got)
 	}
+}
+
+// A paired send to an idle Codex thread on a computer whose Codex is below
+// the minimum is refused there when its session starts. That computer
+// answers with a thread refusal that carries the message, so the sender
+// gets the message once and does not dispatch the send again.
+func TestCodexVersionRefusalReachesAPairedSenderOnce(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair, faults := newFaultyReachPair(t)
+	fake := newVersionedCodex(t, "0.153.4")
+	fake.write(t)
+	if _, err := pair.dest.settings.Update(map[string]any{"codexBinaryPath": fake.path}); err != nil {
+		t.Fatal(err)
+	}
+	target, err := createTestThread(t, pair.dest, string(provider.Codex), t.TempDir(), "gpt-5.5", threadmode.ModeChat)
+	if err != nil {
+		t.Fatalf("create the destination's Codex thread: %v", err)
+	}
+
+	_, err = pair.callRaw(t, "thread_send", `{"thread_id":"`+target.ID+`","message":"hello"}`)
+
+	_, message, ok := errorsx.PublicDetails(err)
+	if want := wantCodexVersionMessage(fake.path, "0.153.4"); !ok || !strings.Contains(message, want) {
+		t.Fatalf("thread_send answered %v, want it to carry %q", err, want)
+	}
+	if n := faults.entered.Load(); n != 1 {
+		t.Fatalf("the destination received the send %d times, want once", n)
+	}
+	requireLaunches(t, fake, 1)
 }

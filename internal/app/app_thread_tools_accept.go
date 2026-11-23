@@ -262,12 +262,23 @@ func (t threadToolsApp) refuseRequest(token, message string, agent *store.Thread
 // `spawned` is the thread a spawn created before its prompt failed to reach
 // it. The refusal names it, because a caller told to make the request again
 // would spawn a second thread beside the first.
+//
+// The refusal always carries a thread tools code. A paired caller reads only
+// that code as this computer's answer (threadErrorDetails), so a reviewed
+// cause with a code of its own, such as Codex's version refusal, crosses
+// with its words under CodeInvalidRequest and is not sent again.
 func threadRequestRefusal(cause error, spawned string) error {
 	code, said, reviewed := errorsx.PublicDetails(cause)
+	threadCode := strings.HasPrefix(code, "thread_")
+	if reviewed && !threadCode {
+		code = threadtools.CodeInvalidRequest
+	}
 	next := " Nothing ran under it; fix the cause and make the request again."
 	switch {
-	case reviewed && spawned == "":
+	case reviewed && spawned == "" && threadCode:
 		return cause
+	case reviewed && spawned == "":
+		return errorsx.Public(code, said, cause)
 	case reviewed:
 	case store.IsDatabaseFailure(cause):
 		log.Printf("thread tools: a request could not be started: %v", cause)
