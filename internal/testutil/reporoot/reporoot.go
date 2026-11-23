@@ -13,9 +13,14 @@ package reporoot
 import (
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,9 +68,79 @@ func Path(t testing.TB, rel string) string {
 	return filepath.Join(Dir(t), filepath.FromSlash(rel))
 }
 
+// Files lists the entries of the directory dir, a slash path from the
+// checkout's root, that are files whose names match pattern (path.Match), as
+// slash paths from the root. It fails when none does, so a scan cannot pass
+// by reading nothing.
+func Files(t testing.TB, dir, pattern string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(Path(t, dir))
+	if err != nil {
+		t.Fatalf("reporoot: read %s: %v", dir, err)
+	}
+	var files []string
+	for _, entry := range entries {
+		matched, err := path.Match(pattern, entry.Name())
+		if err != nil {
+			t.Fatalf("reporoot: match %q: %v", pattern, err)
+		}
+		if matched && !entry.IsDir() {
+			files = append(files, path.Join(dir, entry.Name()))
+		}
+	}
+	if len(files) == 0 {
+		t.Fatalf("reporoot: no file in %s matches %s", dir, pattern)
+	}
+	return files
+}
+
+// ParseGoFile parses the Go file at rel, a slash path from the checkout's
+// root, naming its positions by rel.
+func ParseGoFile(t testing.TB, fset *token.FileSet, rel string, mode parser.Mode) (*ast.File, error) {
+	t.Helper()
+	src, err := os.ReadFile(Path(t, rel))
+	if err != nil {
+		return nil, err
+	}
+	return parser.ParseFile(fset, rel, src, mode)
+}
+
 // goSourceRoots are the directories under the checkout that hold Go packages,
 // beside the root package itself: the Makefile's GO_PACKAGE_ROOTS.
 var goSourceRoots = []string{"cmd", "internal"}
+
+// GoFiles lists every Go file the Makefile's package roots hold, tests and
+// testdata included, as slash paths from the checkout's root: the root
+// package's, and those under the package roots outside dot-directories.
+func GoFiles(t testing.TB) []string {
+	t.Helper()
+	tree := os.DirFS(Dir(t))
+	files, err := fs.Glob(tree, "*.go")
+	if err != nil {
+		t.Fatalf("reporoot: list the root package: %v", err)
+	}
+	for _, sourceRoot := range goSourceRoots {
+		err := fs.WalkDir(tree, sourceRoot, func(name string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				if name != sourceRoot && strings.HasPrefix(entry.Name(), ".") {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if strings.HasSuffix(name, ".go") {
+				files = append(files, name)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("reporoot: walk %s: %v", sourceRoot, err)
+		}
+	}
+	return files
+}
 
 // ObserveGoSources puts the Go source tree in the calling test's cache key.
 //
@@ -77,16 +152,5 @@ var goSourceRoots = []string{"cmd", "internal"}
 // entry's name, size and modification time.
 func ObserveGoSources(t testing.TB) {
 	t.Helper()
-	dir := Dir(t)
-	if _, err := os.ReadDir(dir); err != nil {
-		t.Fatalf("reporoot: read %s: %v", dir, err)
-	}
-	for _, sourceRoot := range goSourceRoots {
-		err := filepath.WalkDir(filepath.Join(dir, sourceRoot), func(_ string, _ fs.DirEntry, err error) error {
-			return err
-		})
-		if err != nil {
-			t.Fatalf("reporoot: walk %s: %v", sourceRoot, err)
-		}
-	}
+	GoFiles(t)
 }

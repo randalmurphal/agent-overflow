@@ -1,13 +1,14 @@
-package app
+package treecheck
 
 import (
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"sort"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // Go's untyped string constants are the hole the eventchan.Channel
@@ -72,13 +73,13 @@ func TestEmitSitesNameAnEventChannelConstant(t *testing.T) {
 	// eventchan.Channel without a conversion — `const x string = "…"`
 	// would not compile at an emit site.
 	untypedStringConsts := map[string]map[string]bool{}
-	sources := collectGoSources(t)
+	sources := reporoot.GoFiles(t)
 	parsed := make(map[string]*ast.File, len(sources))
 	for _, path := range sources {
 		if strings.HasSuffix(path, "_test.go") || skipEmitScan(path) {
 			continue
 		}
-		file, err := parser.ParseFile(fset, path, nil, 0)
+		file, err := reporoot.ParseGoFile(t, fset, path, 0)
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}

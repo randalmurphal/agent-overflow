@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"agent-overflow/internal/memory"
@@ -13,10 +12,11 @@ import (
 	"agent-overflow/internal/wsldistro"
 )
 
-// App integration tests historically execute from the repository root: source
-// contract scans and committed fixtures use root-relative paths. Preserve that
-// contract after relocating the package, then run against the shared migrated
-// store template so the suite does not replay every migration per fixture.
+// TestMain runs the tests against the shared migrated store template, so the
+// suite does not replay every migration per fixture. It leaves the working
+// directory where go test started the binary, the package directory: the
+// test cache records each file a test opens by that directory, so a test
+// reads a file outside the package through reporoot (repo_files_test.go).
 func TestMain(m *testing.M) {
 	// A session that receives memory runs this binary as its SessionStart
 	// hook (os.Executable in readSessionMemory), as main() handles in the
@@ -25,14 +25,6 @@ func TestMain(m *testing.M) {
 		os.Exit(memory.RunHook(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	}
 	testshard.Select(m)
-	packageDir, err := os.Getwd()
-	if err != nil {
-		panic(err)
-	}
-	repoRoot := filepath.Clean(filepath.Join(packageDir, "..", ".."))
-	if err := os.Chdir(repoRoot); err != nil {
-		panic(err)
-	}
 	// A test run started from a terminal inside the app inherits the Windows
 	// launcher's exports. Left set, a save or a WSL settings write under test
 	// would reach the developer's real Windows Downloads folder or wsl.json.

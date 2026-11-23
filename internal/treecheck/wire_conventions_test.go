@@ -1,16 +1,16 @@
-package app
+package treecheck
 
 import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // Server-push payloads are addressed by the ENTITY they describe — a cwd, a PR
@@ -27,11 +27,6 @@ import (
 //
 // Doctrine: internal/transport/AGENTS.md → "Events are entity-keyed";
 // frontend/CLAUDE.md → "State Boundaries".
-
-// goSourceRoots mirrors GO_PACKAGE_ROOTS in the Makefile: the root package,
-// cmd/, and internal/. A new Go tree added to the build has to be added here
-// too, or the convention stops being enforced where it was added.
-var goSourceRoots = []string{".", "cmd", "internal"}
 
 // bannedWireNames are the serialized names no field may carry, compared
 // lowercased so SubscriptionId / subscriptionID / SubscriptionID all trip
@@ -67,10 +62,12 @@ var exemptWireNames = map[string]map[string]bool{
 
 func TestWirePayloadsAreEntityKeyedNotSubscriptionKeyed(t *testing.T) {
 	t.Parallel()
-	for _, file := range collectGoSources(t) {
-		exempt := exemptWireNames[filepath.ToSlash(file)]
+	// Test files are scanned too: a fixture that reintroduces the shape is as
+	// much a regression as production code doing it.
+	for _, file := range reporoot.GoFiles(t) {
+		exempt := exemptWireNames[file]
 		fileSet := token.NewFileSet()
-		parsed, err := parser.ParseFile(fileSet, file, nil, parser.SkipObjectResolution)
+		parsed, err := reporoot.ParseGoFile(t, fileSet, file, parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatalf("parse %s: %v", file, err)
 		}
@@ -106,7 +103,7 @@ func TestWirePayloadsAreEntityKeyedNotSubscriptionKeyed(t *testing.T) {
 	// A carve-out for a file that no longer exists is dead prose that would
 	// quietly re-arm somewhere else if the path were ever reused.
 	for file := range exemptWireNames {
-		if _, err := os.Stat(file); err != nil {
+		if _, err := os.Stat(reporoot.Path(t, file)); err != nil {
 			t.Errorf("wire-name exemption names %s, which is not there: %v", file, err)
 		}
 	}
@@ -156,49 +153,4 @@ func jsonTag(field *ast.Field) (string, bool) {
 		panic("unquotable struct tag literal: " + field.Tag.Value)
 	}
 	return reflect.StructTag(raw).Lookup("json")
-}
-
-// collectGoSources returns every .go file the Makefile's package roots build,
-// tests included — a fixture that reintroduces the shape is as much a
-// regression as production code doing it.
-func collectGoSources(t *testing.T) []string {
-	t.Helper()
-	var files []string
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read repo root: %v", err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
-			continue
-		}
-		files = append(files, entry.Name())
-	}
-	for _, root := range goSourceRoots {
-		if root == "." {
-			continue
-		}
-		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.IsDir() {
-				if path != root && strings.HasPrefix(entry.Name(), ".") {
-					return fs.SkipDir
-				}
-				return nil
-			}
-			if strings.HasSuffix(entry.Name(), ".go") {
-				files = append(files, path)
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("walk %s: %v", root, err)
-		}
-	}
-	if len(files) == 0 {
-		t.Fatal("no Go sources found; the convention would pass vacuously")
-	}
-	return files
 }

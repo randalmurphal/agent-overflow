@@ -4,10 +4,10 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // interactiveForgeCalls names the forge call each user-initiated path makes
@@ -29,18 +29,12 @@ var interactiveForgeCalls = map[string]struct{ owner, call string }{
 
 func TestUserForgeCallsAreMarkedInteractive(t *testing.T) {
 	t.Parallel()
-	entries, err := os.ReadDir("internal/app")
-	if err != nil {
-		t.Fatalf("read internal/app: %v", err)
-	}
 	found := map[string]bool{}
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+	for _, path := range reporoot.Files(t, "internal/app", "*.go") {
+		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		path := filepath.Join("internal/app", name)
-		parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+		parsed, err := reporoot.ParseGoFile(t, token.NewFileSet(), path, parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}

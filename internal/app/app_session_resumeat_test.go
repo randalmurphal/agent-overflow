@@ -1,7 +1,6 @@
 package app
 
 import (
-	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -34,10 +33,7 @@ var coldResumeTranscripts = map[string]string{
 // resume filters, so no tail shape can make it reject the start.
 func TestColdClaudeResumePassesNoResumeCursor(t *testing.T) {
 	t.Parallel()
-	offBranch, err := os.ReadFile(filepath.FromSlash("docs/references/fixtures/claude/session_api_error_offbranch.jsonl"))
-	if err != nil {
-		t.Fatalf("read off-branch fixture: %v", err)
-	}
+	offBranch := wireCapture(t, "claude/session_api_error_offbranch.jsonl")
 	shapes := map[string]string{"api_error off-branch tail": string(offBranch)}
 	for name, jsonl := range coldResumeTranscripts {
 		shapes[name] = jsonl

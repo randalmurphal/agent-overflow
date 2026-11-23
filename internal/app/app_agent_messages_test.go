@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/reporoot"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
@@ -31,7 +32,7 @@ type agentMessageMeta struct {
 
 func loadAgentMessageMetas(t *testing.T) []agentMessageMeta {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("internal", "usermessage", "testdata", "agent_message_metas.json"))
+	data, err := os.ReadFile(reporoot.Path(t, "internal/usermessage/testdata/agent_message_metas.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

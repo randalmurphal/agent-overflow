@@ -1,8 +1,11 @@
 package reporoot
 
 import (
+	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -44,5 +47,34 @@ func TestFindFailsWithNoGoModAbove(t *testing.T) {
 	volumeRoot := filepath.VolumeName(os.TempDir()) + string(filepath.Separator)
 	if dir, err := find(volumeRoot); err == nil {
 		t.Fatalf("find(%s) = %s, want an error naming the missing go.mod", volumeRoot, dir)
+	}
+}
+
+func TestGoFilesListsEveryPackageRoot(t *testing.T) {
+	files := GoFiles(t)
+	for _, want := range []string{"main.go", "cmd/ao-gotest/main.go", "internal/testutil/reporoot/reporoot.go", "internal/testutil/reporoot/reporoot_test.go"} {
+		if !slices.Contains(files, want) {
+			t.Errorf("GoFiles lacks %s", want)
+		}
+	}
+	for _, file := range files {
+		if strings.Contains("/"+file, "/.") {
+			t.Errorf("GoFiles lists %s, under a dot-directory", file)
+		}
+	}
+}
+
+func TestFilesMatchesNamesInOneDirectory(t *testing.T) {
+	got := Files(t, "internal/testutil/reporoot", "*_test.go")
+	if !slices.Equal(got, []string{"internal/testutil/reporoot/reporoot_test.go"}) {
+		t.Fatalf("Files = %v, want this test file alone", got)
+	}
+	fset := token.NewFileSet()
+	file, err := ParseGoFile(t, fset, got[0], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name := fset.Position(file.Package).Filename; name != got[0] {
+		t.Fatalf("positions name %s, want %s", name, got[0])
 	}
 }

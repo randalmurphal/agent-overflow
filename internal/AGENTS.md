@@ -35,6 +35,7 @@ All non-main Go packages live under `internal/`. Root `main*.go` and
 | Provider CLI update checks, release notes and update runs | `providerupdate/` (package comment); app wiring in `app/app_provider_update.go` |
 | Account auto-switch and continue after a usage limit | `accountswitch/` (package comment); contract in [account-auto-switch.md](../docs/specs/account-auto-switch.md) |
 | Test fixtures and provider isolation | [kerneltest/](kerneltest/AGENTS.md), [testutil/](testutil/AGENTS.md) |
+| Tests that check the whole checkout: Go source conventions, reference hygiene | `treecheck/` (package comment) |
 | Backend harness and scenarios | [harness/](harness/AGENTS.md) |
 
 For smaller packages, read the package comment and exported API contracts.
