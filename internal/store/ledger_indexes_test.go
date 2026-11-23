@@ -196,16 +196,11 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 // column, and a plan that read one expires at every rebind.
 func TestThreadAgentTreeCompilesOnceWithStatistics(t *testing.T) {
 	t.Parallel()
-	for _, shape := range []agentTreeShape{
-		{history: 5_000, open: 2_000, spawns: 2_000},
-		{history: 50_000, open: 200, spawns: 5_000, openSpawns: 2_000, deep: 500, busy: 2_000},
-	} {
-		for _, namedFirst := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%v, named first %v", shape, namedFirst), func(t *testing.T) {
-				t.Parallel()
-				compilesOnceWithStatistics(t, shape, namedFirst)
-			})
-		}
+	for _, namedFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("named first %v", namedFirst), func(t *testing.T) {
+			t.Parallel()
+			compilesOnceWithStatistics(t, agentTreeEveryKind, namedFirst)
+		})
 	}
 }
 

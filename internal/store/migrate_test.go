@@ -1966,7 +1966,7 @@ func migrationByVersion(t *testing.T, v int) Migration {
 	return Migration{}
 }
 
-func mustExec(t *testing.T, db *sql.DB, query string, args ...any) {
+func mustExec(t testing.TB, db *sql.DB, query string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(query, args...); err != nil {
 		t.Fatalf("exec %q: %v", query, err)

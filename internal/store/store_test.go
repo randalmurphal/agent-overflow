@@ -61,7 +61,7 @@ func newTestStore(t *testing.T) *Store {
 
 // openTestStore opens the store at path, a clone or a fixture copy, and
 // closes it when the test ends.
-func openTestStore(t *testing.T, path string) *Store {
+func openTestStore(t testing.TB, path string) *Store {
 	t.Helper()
 	s, err := New(path)
 	if err != nil {
@@ -156,7 +156,7 @@ func makeThread(id, provider string) Thread {
 // mustCreateThread seeds a minimal thread row. Payload mutators need one
 // to exist: they advance that thread's history_rev (migration v55) and
 // refuse to write for a thread that isn't there.
-func mustCreateThread(t *testing.T, s *Store, id string) {
+func mustCreateThread(t testing.TB, s *Store, id string) {
 	t.Helper()
 	if err := s.CreateThread(makeThread(id, "claude")); err != nil {
 		t.Fatalf("create thread %s: %v", id, err)

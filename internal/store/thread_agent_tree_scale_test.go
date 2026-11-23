@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func (shape agentTreeShape) String() string {
 	return strings.Join(parts, ", ")
 }
 
-func agentTreeSpawnHistory(t *testing.T, s *Store, shape agentTreeShape) (chief string, since int64) {
+func agentTreeSpawnHistory(t testing.TB, s *Store, shape agentTreeShape) (chief string, since int64) {
 	t.Helper()
 	agentTreeSpawnBase(t, s, shape.history)
 	return agentTreeSpawnRest(t, s, shape)
@@ -44,7 +45,7 @@ func agentTreeSpawnHistory(t *testing.T, s *Store, shape agentTreeShape) (chief 
 // agentTreeSpawnBase seeds the chief, its three managers and ten workers,
 // and the settled history: the part of a shape most of its rows and bytes
 // are in.
-func agentTreeSpawnBase(t *testing.T, s *Store, history int) {
+func agentTreeSpawnBase(t testing.TB, s *Store, history int) {
 	t.Helper()
 	chief := "chief"
 	mustCreateThread(t, s, chief)
@@ -68,7 +69,7 @@ func agentTreeSpawnBase(t *testing.T, s *Store, history int) {
 
 // agentTreeSpawnRest seeds the rest of shape on a store agentTreeSpawnBase
 // seeded, created after the base's rows.
-func agentTreeSpawnRest(t *testing.T, s *Store, shape agentTreeShape) (chief string, since int64) {
+func agentTreeSpawnRest(t testing.TB, s *Store, shape agentTreeShape) (chief string, since int64) {
 	t.Helper()
 	// The base's 13 spawns and its history, created from 1.
 	created := int64(14 + shape.history)
@@ -103,7 +104,7 @@ func agentTreeSpawnRest(t *testing.T, s *Store, shape agentTreeShape) (chief str
 // seedAgentTreeBatch inserts n requests of one kind from caller to target,
 // SQL expressions of the row number i, settled at settled or open when it
 // is nil, created from created on. A settled answer is 4 KiB.
-func seedAgentTreeBatch(t *testing.T, s *Store, prefix, caller, kind, target string, n int, settled any, created int64) {
+func seedAgentTreeBatch(t testing.TB, s *Store, prefix, caller, kind, target string, n int, settled any, created int64) {
 	t.Helper()
 	mustExec(t, s.db, `WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ?1)
 		INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, notify, state, answer, answer_kind,
@@ -116,81 +117,122 @@ func seedAgentTreeBatch(t *testing.T, s *Store, prefix, caller, kind, target str
 		n, prefix, kind, settled, created)
 }
 
+// agentTreeEveryKind is a shape with rows of every kind, each past the
+// listing's limit of 128 and deep enough for a named read two spawns down:
+// what the listing and the named read are checked over. The shapes in
+// agentTreeScaleShapes add volume, which changes their times and not their
+// answers.
+var agentTreeEveryKind = agentTreeShape{history: 300, open: 200, spawns: 200, openSpawns: 200, deep: 200, busy: 200}
+
+// agentTreeScaleShapes are the ledgers BenchmarkListThreadAgentTree times.
+var agentTreeScaleShapes = []agentTreeShape{
+	{history: 3_000, open: 200}, {history: 3_000, open: 2_200},
+	{history: 50_000, open: 200}, {history: 50_000, open: 2_200},
+	{history: 50_000, open: 200, spawns: 1_500}, {history: 50_000, open: 200, spawns: 5_000},
+	{history: 50_000, open: 200, busy: 2_000}, {history: 50_000, open: 200, busy: 20_000},
+	{history: 50_000, open: 200, openSpawns: 2_000}, {history: 50_000, open: 200, deep: 500},
+	{history: 50_000, open: 200, spawns: 5_000, openSpawns: 2_000, deep: 500},
+}
+
+// agentTreeNamedReads are the rows a named read is checked and timed on:
+// one at the top of the tree and, when the shape has deep work, one two
+// spawns down.
+func agentTreeNamedReads(shape agentTreeShape) []agentTreeNamedRead {
+	named := []agentTreeNamedRead{{"recent-000050", 0}}
+	if shape.deep > 0 {
+		named = append(named, agentTreeNamedRead{"deep-000100", 2})
+	}
+	return named
+}
+
+type agentTreeNamedRead struct {
+	token string
+	depth int
+}
+
 // The listing and a read of one named row, at the top of the tree or two
 // spawns down, answer the same rows over the chief's history, its open
 // spawns, the open work below it and the open work of threads outside its
-// tree, before and after ANALYZE. Their times are logged, not gated.
-func TestListThreadAgentTreeAtScale(t *testing.T) {
-	if testing.Short() {
-		t.Skip("seeds up to 57,000 requests")
+// tree, before and after ANALYZE.
+func TestListThreadAgentTreeOverEveryKindOfRow(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	chief, since := agentTreeSpawnHistory(t, s, agentTreeEveryKind)
+	read := ThreadAgentTreeRead{Root: chief, SettledSince: since, Depth: 4, Limit: 128, AnswerHead: 160}
+	for _, analyzed := range []bool{false, true} {
+		if analyzed {
+			mustExec(t, s.db, `ANALYZE`)
+		}
+		rows, more, err := s.ListThreadAgentTree(read)
+		if err != nil || len(rows) != read.Limit || !more {
+			t.Fatalf("analyzed %v: listing %d rows, more %v, %v", analyzed, len(rows), more, err)
+		}
+		for _, row := range agentTreeNamedReads(agentTreeEveryKind) {
+			one := read
+			one.Tokens = []string{row.token}
+			rows, _, err := s.ListThreadAgentTree(one)
+			if err != nil || len(rows) != 1 || rows[0].Token != row.token || rows[0].Depth != row.depth {
+				t.Fatalf("analyzed %v: named read of %s: %+v, %v", analyzed, row.token, rows, err)
+			}
+		}
 	}
-	for _, shape := range []agentTreeShape{
-		{history: 3_000, open: 200}, {history: 3_000, open: 2_200},
-		{history: 50_000, open: 200}, {history: 50_000, open: 2_200},
-		{history: 50_000, open: 200, spawns: 1_500}, {history: 50_000, open: 200, spawns: 5_000},
-		{history: 50_000, open: 200, busy: 2_000}, {history: 50_000, open: 200, busy: 20_000},
-		{history: 50_000, open: 200, openSpawns: 2_000}, {history: 50_000, open: 200, deep: 500},
-		{history: 50_000, open: 200, spawns: 5_000, openSpawns: 2_000, deep: 500},
-	} {
-		// A subtest per shape removes each shape's database, a few hundred
-		// MB, before the next is seeded. The shapes of one history size
-		// share its base, seeded once and copied.
-		t.Run(shape.String(), func(t *testing.T) {
-			path := fixtureCopy(t, fmt.Sprintf("agent-tree-history-%d.sqlite", shape.history), func(t *testing.T, path string) {
-				if err := copyTestStoreTemplate(t, path); err != nil {
-					t.Fatal(err)
+}
+
+// BenchmarkListThreadAgentTree times the listing and each named read over
+// each shape, before and after ANALYZE. The shapes of one history size
+// share its base, seeded once and copied.
+func BenchmarkListThreadAgentTree(b *testing.B) {
+	dir := b.TempDir()
+	bases := map[int]string{}
+	for _, shape := range agentTreeScaleShapes {
+		b.Run(shape.String(), func(b *testing.B) {
+			base, ok := bases[shape.history]
+			if !ok {
+				base = filepath.Join(dir, fmt.Sprintf("history-%d.sqlite", shape.history))
+				if err := copyTestStoreTemplate(b, base); err != nil {
+					b.Fatal(err)
 				}
-				base, err := New(path)
+				seeded, err := New(base)
 				if err != nil {
-					t.Fatal(err)
+					b.Fatal(err)
 				}
-				agentTreeSpawnBase(t, base, shape.history)
-				if err := base.Close(); err != nil {
-					t.Fatal(err)
+				agentTreeSpawnBase(b, seeded, shape.history)
+				if err := seeded.Close(); err != nil {
+					b.Fatal(err)
 				}
-			})
-			s := openTestStore(t, path)
-			chief, since := agentTreeSpawnRest(t, s, shape)
+				bases[shape.history] = base
+			}
+			// Each shape's database, a few hundred MB, is removed before
+			// the next is seeded.
+			path := filepath.Join(b.TempDir(), "store.sqlite")
+			if err := copyStoreFile(base, path); err != nil {
+				b.Fatal(err)
+			}
+			s := openTestStore(b, path)
+			chief, since := agentTreeSpawnRest(b, s, shape)
 			read := ThreadAgentTreeRead{Root: chief, SettledSince: since, Depth: 4, Limit: 128, AnswerHead: 160}
-			timed := func(call func()) time.Duration {
-				start := time.Now()
-				call()
-				return time.Since(start)
-			}
-			named := []struct {
-				token string
-				depth int
-			}{{"recent-000050", 0}}
-			if shape.deep > 0 {
-				named = append(named, struct {
-					token string
-					depth int
-				}{"deep-000100", 2})
-			}
 			for _, analyzed := range []bool{false, true} {
 				if analyzed {
-					mustExec(t, s.db, `ANALYZE`)
+					mustExec(b, s.db, `ANALYZE`)
 				}
-				name := fmt.Sprintf("%v, analyzed %v", shape, analyzed)
-				listing := timed(func() {
-					rows, more, err := s.ListThreadAgentTree(read)
-					if err != nil || len(rows) != read.Limit || !more {
-						t.Fatalf("%s: listing %d rows, more %v, %v", name, len(rows), more, err)
+				b.Run(fmt.Sprintf("analyzed %v/listing", analyzed), func(b *testing.B) {
+					for b.Loop() {
+						if _, _, err := s.ListThreadAgentTree(read); err != nil {
+							b.Fatal(err)
+						}
 					}
 				})
-				report := fmt.Sprintf("listing %v", listing)
-				for _, row := range named {
+				for _, row := range agentTreeNamedReads(shape) {
 					one := read
 					one.Tokens = []string{row.token}
-					took := timed(func() {
-						rows, _, err := s.ListThreadAgentTree(one)
-						if err != nil || len(rows) != 1 || rows[0].Token != row.token || rows[0].Depth != row.depth {
-							t.Fatalf("%s: named read of %s: %+v, %v", name, row.token, rows, err)
+					b.Run(fmt.Sprintf("analyzed %v/%s", analyzed, row.token), func(b *testing.B) {
+						for b.Loop() {
+							if _, _, err := s.ListThreadAgentTree(one); err != nil {
+								b.Fatal(err)
+							}
 						}
 					})
-					report += fmt.Sprintf(", %s %v", row.token, took)
 				}
-				t.Logf("%s: %s", name, report)
 			}
 		})
 	}
@@ -233,7 +275,7 @@ func TestAgentTreeMarksCascadeAtScale(t *testing.T) {
 
 // agentTreeThreadColumns is every column of threads but id, for copying a
 // thread's row.
-func agentTreeThreadColumns(t *testing.T, s *Store) string {
+func agentTreeThreadColumns(t testing.TB, s *Store) string {
 	t.Helper()
 	columns, err := s.db.Query(`SELECT name FROM pragma_table_info('threads') WHERE name <> 'id'`)
 	if err != nil {

@@ -29,7 +29,7 @@ func listAgentRequests(s *Store, caller string, waiting []string, since int64, l
 	return out, more, err
 }
 
-func seedAgentRequest(t *testing.T, s *Store, token, caller, kind, target string, notify bool, createdAt int64) {
+func seedAgentRequest(t testing.TB, s *Store, token, caller, kind, target string, notify bool, createdAt int64) {
 	t.Helper()
 	request := ThreadRequest{
 		Token: token, CallerThreadID: caller, Kind: kind, TargetThreadID: target, Notify: notify,
