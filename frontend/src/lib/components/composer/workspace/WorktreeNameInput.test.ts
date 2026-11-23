@@ -120,6 +120,8 @@ describe('<WorktreeNameInput>', () => {
       workspacePath: '/repo',
       branch: 'feat/enter',
     }));
+    // Then it reads the thread's row on the new branch.
+    setBindingMock('GetThread', async () => ({ ...pane.thread, branch: 'feat/enter' }));
 
     const { getByTestId } = render(WorktreeNameInput, {
       props: { pane, workspaceLock: makeWorkspaceLock() },

@@ -2047,8 +2047,7 @@ describe('thread.fork command', () => {
     const continuity = await import('./sidebarEntryContinuity.svelte');
     continuity.setEntryExpanded('project-fork', false);
 
-    setBindingMock('ListItems', async () => []);
-    setBindingMock('SwitchThread', async () => ({
+    const forked = {
       id: 'fork-1',
       title: 'Test thread (fork)',
       provider: 'claude',
@@ -2060,23 +2059,15 @@ describe('thread.fork command', () => {
       createdAt: 1,
       updatedAt: 1,
       archived: false,
-    }));
+    };
+    setBindingMock('ListItems', async () => []);
+    setBindingMock('SwitchThread', async () => forked);
+    // The new thread is auto-pinned.
+    setBindingMock('PinThread', async () => forked);
 
     const pane = readyPane({ projectId: 'project-fork' });
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 123 });
-    setBindingMock('ForkThread', async () => ({
-      id: 'fork-1',
-      title: 'Test thread (fork)',
-      provider: 'claude',
-      projectId: 'project-fork',
-      workspacePath: '/tmp',
-      projectPath: '/tmp',
-      mode: 'chat',
-      model: 'claude-sonnet-4-6',
-      createdAt: 1,
-      updatedAt: 1,
-      archived: false,
-    }));
+    setBindingMock('ForkThread', async () => forked);
 
     registerFixtureCommands(pane);
     const command = getCommand('thread.fork');

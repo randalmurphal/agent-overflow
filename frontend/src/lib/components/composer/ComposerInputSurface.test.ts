@@ -15,7 +15,7 @@ import {
 } from '../../stores/composerDraft.svelte';
 import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import { buildPane } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { resetBindingMocks, setAttachmentThumbnailMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
@@ -194,6 +194,8 @@ describe('<ComposerInputSurface>', () => {
   });
   beforeEach(() => {
     resetBindingMocks();
+    // The composer loads the thumbnail of each image a test uploads.
+    setAttachmentThumbnailMock();
     resetComposerDraftSnapshotStateForTest();
     resetPanesForTest();
     resetPaneLayoutForTest();

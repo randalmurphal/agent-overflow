@@ -79,6 +79,8 @@ function buildPlaceholderPane(branch = 'main', paneId?: string) {
 describe('<BranchPicker>', () => {
   beforeEach(() => {
     resetBindingMocks();
+    // Opening the picker fetches stale remotes first; these are fresh.
+    setBindingMock('GitMaybeFetchRemotes', async () => false);
     resetWorktreeIntent();
     resetAppStorageForTest();
     resetPanesForTest();

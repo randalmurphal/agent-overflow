@@ -13,6 +13,7 @@ import {
 } from '../../../stores/rateLimitsInfo.svelte';
 import { makeItem } from '../../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../../test/helpers/modelCatalog';
 import { ThreadMCPServer } from '../../../stores/bindings';
 import { refreshMcpServers } from '../../../stores/mcpServers.svelte';
 import type { Thread } from '../../../types/models';
@@ -186,6 +187,8 @@ describe('<ComposerToolbar>', () => {
     expect(effortTrigger.closest('[data-composer-toolbar-pickers]')).not.toBeNull();
     expect(effortTrigger).toHaveAttribute('aria-expanded', 'false');
 
+    // The effort picker reads the provider's model list as it opens.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     await fireEvent.click(getByTestId('composer-pickers-rollup'));
     expect(queryByRole('menuitem', { name: 'Model…' })).toBeNull();
     await fireEvent.click(getByRole('menuitem', { name: /^Effort…/ }));

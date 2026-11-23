@@ -886,6 +886,7 @@ describe('<ThreadRow> worktree metadata', () => {
       id: 'worktree-thread',
       worktreePath: '/tmp/agent-overflow-worktrees/feature-demo',
     });
+    installThreadSwitchMocks(thread);
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
 

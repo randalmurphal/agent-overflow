@@ -10,7 +10,7 @@ import { __setSmoothingClockForTest, createThreadPane } from '../../stores/threa
 import { FakeSmoothingClock } from '../../../test/helpers/smoothingClock';
 import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { buildPane, makeItem, makeThread as makeTestThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { resetBindingMocks, setAttachmentThumbnailMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../../test/helpers/scopes';
 import type { Attachment } from '../../types/attachment';
@@ -223,6 +223,8 @@ function deferred<T>() {
 describe('<Composer>', () => {
   beforeEach(() => {
     resetBindingMocks();
+    // The composer loads the thumbnail of each image a test uploads.
+    setAttachmentThumbnailMock();
     resetComposerDraftSnapshotStateForTest();
     resetProposedPlanCacheForTests();
     resetWorktreeIntent();
@@ -2876,7 +2878,7 @@ describe('<Composer>', () => {
     ]));
 
     await waitFor(() => expect(upload).toHaveBeenCalledTimes(2));
-    expect(draft.content).toBe('please inspect [Image #1] [Image #2]');
+    await waitFor(() => expect(draft.content).toBe('please inspect [Image #1] [Image #2]'));
     expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['att-1', 'att-2']);
 
     await fireEvent.click(getByTestId('composer-send'));

@@ -203,6 +203,8 @@ describe('<AccountSwitcher> — selection', () => {
 
   it('refreshes one account’s usage without leaving the picker', async () => {
     const refreshMock = setBindingMock('RefreshProviderAccountUsage', async () => undefined);
+    // The refresh then probes who the account is.
+    setBindingMock('RecheckClaudeAccount', async () => ({}));
     const onClose = vi.fn();
     const { findByTestId } = render(AccountSwitcher, { open: true, onClose });
 
@@ -275,6 +277,8 @@ describe('<AccountSwitcher> — keyboard', () => {
     // would eat the focused button's own activation.
     const switchMock = setBindingMock('SwitchProviderAccount', async () => undefined);
     const refreshMock = setBindingMock('RefreshProviderAccountUsage', async () => undefined);
+    // The refresh then probes who the account is.
+    setBindingMock('RecheckCodexAccount', async () => ({}));
     const { findByTestId, getByTestId } = render(AccountSwitcher, {
       open: true,
       onClose: () => {},

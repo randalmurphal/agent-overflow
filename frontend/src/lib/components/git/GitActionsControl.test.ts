@@ -197,6 +197,8 @@ describe('<GitActionsControl> consumer rendering', () => {
       return { action: 'push' };
     });
     __seedGitStatusForTest(WORKSPACE, status({ branch: 'feature', hasUpstream: false, aheadCount: 0 }));
+    // The push sets the upstream, and the control reads the status again.
+    setBindingMock('GetGitStatus', async () => status({ branch: 'feature', hasUpstream: true, aheadCount: 0 }));
     const { findByLabelText, findByRole } = render(GitActionsControl, { props: { pane } });
     await fireEvent.click(await findByLabelText('More git actions'));
     await fireEvent.click(await findByRole('menuitem', { name: 'Push' }));
@@ -672,6 +674,8 @@ describe('<GitActionsControl> palette dialog event', () => {
     });
     // Behind upstream with nothing to commit → the primary action is Pull.
     __seedGitStatusForTest(WORKSPACE, status({ hasChanges: false, behindCount: 3 }));
+    // The pull catches up, and the control reads the status again.
+    setBindingMock('GetGitStatus', async () => status({ hasChanges: false, behindCount: 0 }));
     const { container } = render(GitActionsControl, { props: { pane } });
     await flush();
 

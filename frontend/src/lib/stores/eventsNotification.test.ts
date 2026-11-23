@@ -34,6 +34,8 @@ describe('notification activation wiring', () => {
     resetNotificationActivationForTest();
     setBindingMock('ListRecentTurns', async () => []);
     setBindingMock('GetThread', async () => null);
+    // Opening a target switches a pane to its thread.
+    setBindingMock('SwitchThread', async (id: string) => thread(id));
   });
 
   afterEach(() => {

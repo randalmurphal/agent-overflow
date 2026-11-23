@@ -43,7 +43,7 @@ import { getToasts } from '../../stores/toast.svelte';
 import { DisconnectedError, TransportError } from '../../transport/wsClient';
 import { resetEditResendExecutionForTest } from './editResendFlow.svelte';
 import type { Item, Thread } from '../../types/models';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { setAttachmentThumbnailMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentUpload } from '../../../test/mocks/attachmentTransfer';
 import {
   installPaneMocks,
@@ -85,6 +85,8 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  // The composer loads the thumbnail of each image a test uploads.
+  setAttachmentThumbnailMock();
   Object.defineProperty(window, 'innerWidth', {
     configurable: true,
     writable: true,

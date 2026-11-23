@@ -388,6 +388,8 @@ describe('<ChatHeaderActions> compact header menu', () => {
     resetEditorsForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    // The observed branch is persisted; the rows already agree, so none change.
+    setBindingMock('UpdateThreadBranch', async () => []);
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     await loadSettings();
@@ -466,6 +468,8 @@ describe('<ChatHeaderActions> terminal controls without terminal:operate', () =>
     resetEditorsForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    // The observed branch is persisted; the rows already agree, so none change.
+    setBindingMock('UpdateThreadBranch', async () => []);
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     await loadSettings();
@@ -531,6 +535,8 @@ describe('<ChatHeaderActions> New Thread, Same Assistant with assistants off', (
     resetEditorsForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    // The observed branch is persisted; the rows already agree, so none change.
+    setBindingMock('UpdateThreadBranch', async () => []);
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     await loadSettings();
@@ -591,6 +597,8 @@ describe('<ChatHeaderActions> browser toggle', () => {
     installCompanionPanes();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    // The observed branch is persisted; the rows already agree, so none change.
+    setBindingMock('UpdateThreadBranch', async () => []);
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     setBindingMock('BrowserCompanionThreadState', async () => shown(1));
