@@ -88,7 +88,9 @@ async function nestedReports(project: string, outputDir: string): Promise<Map<st
       const reports = result.attachments.filter((attachment) => attachment.name === 'stalled page');
       expect(reports, where).toHaveLength(1);
       const body = Buffer.from(reports[0]!.body ?? '', 'base64').toString('utf8');
-      expect(body, where).toContain(`did not answer a trivial evaluate within ${STALL_CAPTURE_BOUNDS.probeMs} ms`);
+      expect(body, where).toContain(`did not answer a trivial evaluate (page.evaluate) within ${STALL_CAPTURE_BOUNDS.probeMs} ms`);
+      // The held requests reach the test without the page's main thread.
+      expect(body, where).toMatch(/Last thing the page did .*: request GET http:\/\/127\.0\.0\.1:\d+\/hold, \d+ ms before the probe gave up/);
       // The capture adds at most its bound to a failure.
       expect(result.duration, where).toBeLessThan(NESTED_TEST_TIMEOUT_MS + CAPTURE_BOUND_MS + 5_000);
       bodies.set(spec.title, body);
@@ -116,6 +118,10 @@ test('a failed test attaches the stack of each Chromium page that stopped runnin
   }
   const unpaused = bodies.get('a page blocked where a pause cannot land');
   expect(unpaused).toContain(`Debugger.pause did not land within ${STALL_CAPTURE_BOUNDS.pauseMs} ms`);
+  expect(unpaused).toMatch(/ {2}Debugger\.pause: reply (answered|failed|not answered)/);
+  expect(unpaused).toContain(
+    `  Debugger.paused event: Debugger.paused did not answer within ${STALL_CAPTURE_BOUNDS.pauseMs} ms`,
+  );
   expect(unpaused).not.toContain('#0 ');
 });
 

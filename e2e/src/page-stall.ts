@@ -8,14 +8,16 @@
 // whose Debugger domain was enabled before the block, and only when the
 // blocked code reaches one of V8's interrupt checks: a loop of back-to-back
 // synchronous requests stops reaching them a few seconds in, while one that
-// also reads page state between requests keeps reaching them. `armDebugger` therefore
-// runs while the page is healthy, with breakpoints deactivated so `debugger;`
+// also reads page state between requests keeps reaching them. `armDebugger`
+// therefore runs while the page is healthy, with breakpoints deactivated so `debugger;`
 // statements in page code never stop it. While paused, the inspector answers
 // `Debugger.getScriptSource`, which gives each frame its bundle text.
 //
 // tests/fixtures.ts arms every page a test opens and pauses the ones that do
 // not answer when the test fails; tests/freeze-repro-probe.ts arms its replay
-// page and samples the stack of a wedge.
+// page and samples the stack of a wedge. The failure capture sees only pages
+// still open at teardown: a page in a context the test closed itself before
+// failing (an expect that timed out, then a finally that closed it) is gone.
 
 import type { BrowserContext, CDPSession, Page, TestInfo } from '@playwright/test';
 
@@ -76,7 +78,12 @@ export interface StackFrame {
 
 export type PausedStack =
   | { paused: true; pausedAfterMs: number; frames: StackFrame[]; resumeError?: string }
-  | { paused: false; error: string };
+  | {
+      paused: false;
+      error: string;
+      /** What became of the `Debugger.pause` command's own reply. */
+      pauseReply: string;
+    };
 
 export interface PauseOptions {
   /** How long to wait for `Debugger.pause` to land. */
@@ -119,10 +126,20 @@ export async function pauseAndReadStack(armed: ArmedDebugger, options: PauseOpti
     session.once('Debugger.paused', resolve);
   });
   let event: { callFrames: WirePausedFrame[] };
+  let pauseReply = `not answered within ${options.pauseMs} ms`;
   try {
     // Wait for the event, not the command's reply: the reply can trail the
     // pause. A command that fails (no Debugger domain) still ends the wait.
-    const refused = session.send('Debugger.pause').then(() => new Promise<never>(() => undefined));
+    const refused = session.send('Debugger.pause').then(
+      () => {
+        pauseReply = `answered after ${Date.now() - startedAt} ms`;
+        return new Promise<never>(() => undefined);
+      },
+      (err: unknown) => {
+        pauseReply = `failed after ${Date.now() - startedAt} ms: ${errorText(err)}`;
+        throw err;
+      },
+    );
     event = await withDeadline(Promise.race([paused, refused]), options.pauseMs, 'Debugger.paused');
   } catch (err) {
     if (onPaused) session.off('Debugger.paused', onPaused);
@@ -132,7 +149,7 @@ export async function pauseAndReadStack(armed: ArmedDebugger, options: PauseOpti
     session.once('Debugger.paused', () => {
       session.send('Debugger.resume').catch(() => undefined);
     });
-    return { paused: false, error: errorText(err) };
+    return { paused: false, error: errorText(err), pauseReply };
   }
   const pausedAfterMs = Date.now() - startedAt;
 
@@ -227,13 +244,28 @@ type ArmResult = { armed: ArmedDebugger } | { error: string };
 export class StalledPageCapture {
   private readonly contexts = new Set<BrowserContext>();
   private readonly armed = new WeakMap<Page, Promise<ArmResult>>();
+  /** The last thing each page did that reaches the test without its main thread's help. */
+  private readonly lastActivity = new WeakMap<Page, { what: string; at: number }>();
   private captured = false;
 
   /** Call for each browser context created while the test runs. */
   trackContext(context: BrowserContext): void {
     this.contexts.add(context);
     context.on('close', () => this.contexts.delete(context));
-    context.on('page', (page) => this.armPage(context, page));
+    context.on('page', (page) => {
+      this.trackActivity(page);
+      this.armPage(context, page);
+    });
+  }
+
+  private trackActivity(page: Page): void {
+    const saw = (what: string) => this.lastActivity.set(page, { what: what.slice(0, 300), at: Date.now() });
+    saw('opened');
+    page.on('request', (request) => saw(`request ${request.method()} ${request.url()}`));
+    page.on('console', (message) => saw(`console.${message.type()}`));
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) saw(`navigated to ${frame.url()}`);
+    });
   }
 
   private armPage(context: BrowserContext, page: Page): void {
@@ -284,8 +316,15 @@ export class StalledPageCapture {
     if (answer !== 'silent') return undefined;
     const lines = [
       `page ${index + 1} of ${count}: ${page.url()}`,
-      `The page did not answer a trivial evaluate within ${bounds.probeMs} ms, so its main thread is not running this test's work.`,
+      `The page did not answer a trivial evaluate (page.evaluate) within ${bounds.probeMs} ms, so its main thread is not running this test's work.`,
     ];
+    const activity = this.lastActivity.get(page);
+    if (activity) {
+      lines.push(
+        `Last thing the page did that the test saw (a request, a console message or a main-frame navigation): ` +
+          `${activity.what}, ${Date.now() - activity.at} ms before the probe gave up.`,
+      );
+    }
     if (!ready) {
       lines.push(
         hasCdp(page.context())
@@ -301,9 +340,13 @@ export class StalledPageCapture {
     const stack = await pauseAndReadStack(ready.armed, bounds);
     if (!stack.paused) {
       lines.push(
-        `Debugger.pause did not land within ${bounds.pauseMs} ms (${stack.error}). V8 takes a pause only at its own ` +
+        `Debugger.pause did not land within ${bounds.pauseMs} ms. V8 takes a pause only at its own ` +
           'interrupt checks: the main thread is either outside JavaScript (layout, a native call, the renderer ' +
           'itself) or in a loop of native calls that reaches no check, such as back-to-back synchronous requests.',
+        'CDP calls tried on the debugger session armed when the page opened:',
+        `  Debugger.pause: reply ${stack.pauseReply}`,
+        `  Debugger.paused event: ${stack.error}`,
+        '  A pause that lands later is resumed at once.',
       );
       return lines.join('\n');
     }
