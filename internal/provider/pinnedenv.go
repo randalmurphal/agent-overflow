@@ -111,6 +111,11 @@ import "strings"
 //	                      then describe tasks a different thread owns.
 //	                      Every other Claude command line clears it, as it
 //	                      clears the two cross-session names.
+//	GEMINI_HOME, AGY_APP_DATA_DIR, AGY_ACP_FORCE_FILE_STORAGE
+//	                    — set or cleared by agy.Home.Launch, the one
+//	                      builder of every agy launch: the home variables
+//	                      are always cleared, and the store flag follows
+//	                      the store the account manager reads.
 //	CODEX_HOME          — cleared by codex.NewSession (session.go),
 //	                      ProbeAccount / ProbeIdentity, the model catalog
 //	                      fetcher, the MCP status fetcher and
@@ -170,6 +175,7 @@ func ReservedEnvNames(providerName string) []string {
 	case string(Agy):
 		return append(shared,
 			"GEMINI_HOME",
+			"AGY_APP_DATA_DIR",
 			"AGY_ACP_FORCE_FILE_STORAGE",
 			"AGY_CLI_DISABLE_AUTO_UPDATE",
 		)

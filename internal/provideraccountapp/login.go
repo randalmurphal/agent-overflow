@@ -55,6 +55,24 @@ func (m *Manager) beginLogin(providerName string) (*loginAttempt, error) {
 	return &loginAttempt{provider: providerName, binary: binary, home: home}, nil
 }
 
+// agySignInUnidentifiedError is a sign-in that ended before anything was
+// saved because the lookup of its Google account failed. Its sentence is what
+// the person reads (loginProse); the cause stays in the chain for the log.
+type agySignInUnidentifiedError struct{ cause error }
+
+const agySignInUnidentifiedSentence = "Agent Overflow could not look up which Google account this Antigravity sign-in belongs to, so nothing was saved. Check the connection and try again."
+
+func (e agySignInUnidentifiedError) Error() string {
+	return agySignInUnidentifiedSentence + ": " + e.cause.Error()
+}
+
+func (e agySignInUnidentifiedError) Unwrap() error { return e.cause }
+
+// PublicDetails makes the sentence the client-safe text (errorsx.Detailed).
+func (e agySignInUnidentifiedError) PublicDetails() (code, message string) {
+	return "agy_sign_in_unidentified", agySignInUnidentifiedSentence
+}
+
 // cleanup removes the temporary home. Adoption cleans up as soon as it has
 // read everything it needs, so the coordinator's own teardown call is usually
 // a no-op — which is exactly why it is safe on every exit path.
@@ -102,10 +120,12 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 		}
 	}
 	if providerName == string(provider.Agy) {
-		// A sign-in whose Google account the lookup could not name is saved
-		// under no email, as a login that names nobody is.
+		// A failed lookup names nobody for certain, so nothing of the
+		// sign-in is saved; a lookup that answered and named nobody is
+		// saved under no email.
 		if info, err = m.identifyAgyCredential(m.context(), info, loginCredential.Bytes()); err != nil {
-			m.audit("saving the Antigravity sign-in under no email: %v", err)
+			m.audit("did not save the Antigravity sign-in: %v", err)
+			return ManagedAccount{}, agySignInUnidentifiedError{cause: err}
 		}
 	}
 	if err := attempt.cleanup(); err != nil {

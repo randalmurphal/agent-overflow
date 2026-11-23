@@ -19,8 +19,26 @@ import (
 
 func writeSharedPoolAgyBinary(t *testing.T, logPath string) string {
 	t.Helper()
+	return writePoolAgyBinary(t, logPath, "")
+}
+
+// writePoolAgyBinary is writeSharedPoolAgyBinary that, given a launchRecord
+// path, first writes there its argv and the variables through which agy
+// chooses its login store and home ("<unset>" for an unset one).
+func writePoolAgyBinary(t *testing.T, logPath, launchRecord string) string {
+	t.Helper()
+	record := ""
+	if launchRecord != "" {
+		record = `{
+  printf 'args=%s\n' "$*"
+  printf 'AGY_ACP_FORCE_FILE_STORAGE=%s\n' "${AGY_ACP_FORCE_FILE_STORAGE-<unset>}"
+  printf 'GEMINI_HOME=%s\n' "${GEMINI_HOME-<unset>}"
+  printf 'AGY_APP_DATA_DIR=%s\n' "${AGY_APP_DATA_DIR-<unset>}"
+} > '` + launchRecord + `'
+`
+	}
 	script := `#!/bin/bash
-LOG_FILE="` + logPath + `"
+` + record + `LOG_FILE="` + logPath + `"
 n=0
 while IFS= read -r line; do
   if [ -n "$LOG_FILE" ]; then
@@ -58,6 +76,7 @@ done
 func TestAgyPoolSharesOneACPServerAcrossThreadsAndAppliesLiveConfig(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
+	attachFileAccountStoresForTest(t, app)
 	logPath := filepath.Join(t.TempDir(), "wire.log")
 	binary := writeSharedPoolAgyBinary(t, logPath)
 	if _, err := app.settings.Update(map[string]any{"agyBinaryPath": binary}); err != nil {
@@ -311,6 +330,7 @@ func TestAgyGeneratedImageImportContainment(t *testing.T) {
 func TestAgyModelPickerReconnectTurnUniquenessAndAskQuestionForkOrdinal(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
+	attachFileAccountStoresForTest(t, app)
 	app.configureTriageQueueCallbacks()
 	binary := writeSharedPoolAgyBinary(t, filepath.Join(t.TempDir(), "wire.log"))
 	if _, err := app.settings.Update(map[string]any{"agyBinaryPath": binary}); err != nil {

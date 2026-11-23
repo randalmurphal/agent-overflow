@@ -107,6 +107,7 @@ var deniedProviderEnvNames = map[string]map[string]string{
 	},
 	"agy": {
 		"GEMINI_HOME":                 "Agent Overflow manages Antigravity's home isolation",
+		"AGY_APP_DATA_DIR":            "Agent Overflow manages Antigravity's app data directory",
 		"AGY_ACP_FORCE_FILE_STORAGE":  "Agent Overflow controls Antigravity's credential storage isolation",
 		"AGY_CLI_DISABLE_AUTO_UPDATE": "Agent Overflow pins this so background auto-updates do not replace the running ACP server mid-session",
 	},

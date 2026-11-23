@@ -718,8 +718,11 @@ func (m *Manager) probeProviderAccountAtHome(providerName, binary, home string) 
 			map[string]string{"CODEX_HOME": home},
 		))
 	case string(provider.Agy):
-		geminiDir, appDataSubdir := splitAgyEphemeralHome(home)
-		return agy.ProbeAccount(m.context(), m.agyProbeConfig(binary, geminiDir, appDataSubdir, nil))
+		isolated, err := agy.IsolatedHome(home)
+		if err != nil {
+			return provider.AccountInfo{}, err
+		}
+		return agy.ProbeAccount(m.context(), m.agyProbeConfig(binary, isolated, m.providerCustomEnv(providerName)))
 	default:
 		return provider.AccountInfo{}, fmt.Errorf("unsupported provider %q", providerName)
 	}

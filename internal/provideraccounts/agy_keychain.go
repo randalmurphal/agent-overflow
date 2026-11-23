@@ -35,31 +35,6 @@ func defaultAgyKeychain() providerKeychain {
 	return securityAgyKeychain{}
 }
 
-// AgyShouldForceFileStorage reports whether launching `agy` against appDataDir
-// should set AGY_ACP_FORCE_FILE_STORAGE=1 so the subprocess reads the exact
-// same credential source that provideraccounts reads.
-//
-// On macOS production runs, provideraccounts prefers the macOS Keychain item
-// and falls back to <appDataDir>/antigravity-oauth-token only when Keychain
-// has no item. Forcing file storage only when Keychain is absent (or on
-// non-macOS / tests) prevents the UI and subprocess from using different
-// accounts when both a Keychain item and a stale token file exist.
-func AgyShouldForceFileStorage(appDataDir string) bool {
-	if strings.TrimSpace(appDataDir) == "" {
-		return false
-	}
-	info, err := os.Stat(filepath.Join(appDataDir, agyCredentialFileName))
-	if err != nil || info.IsDir() {
-		return false
-	}
-	if runtime.GOOS == "darwin" && !testing.Testing() {
-		if present, kcErr := (securityAgyKeychain{}).itemPresent(); kcErr == nil && present {
-			return false
-		}
-	}
-	return true
-}
-
 // securityAgyKeychain is the production macOS backend for Antigravity (`agy`).
 //
 // Unlike Claude Code (which scopes non-default config dirs into hashed Keychain
@@ -106,6 +81,21 @@ func (securityAgyKeychain) read(configHome string, active bool) ([]byte, error) 
 		return nil, errors.New("provideraccounts: Antigravity Keychain credential exceeds size limit")
 	}
 	return decoded, nil
+}
+
+// canonicalFileStorage reports which store read(configHome, true) reads the
+// canonical login from: the file when Keychain has no item and the file is
+// there, the Keychain item otherwise (with neither present, agy's default
+// store, the Keychain). A failed Keychain query decides nothing.
+func (s securityAgyKeychain) canonicalFileStorage(configHome string) (bool, error) {
+	if present, _ := (fileAgyKeychain{}).present(configHome, true); !present {
+		return false, nil
+	}
+	itemPresent, err := s.itemPresent()
+	if err != nil {
+		return false, err
+	}
+	return !itemPresent, nil
 }
 
 func (securityAgyKeychain) itemPresent() (bool, error) {

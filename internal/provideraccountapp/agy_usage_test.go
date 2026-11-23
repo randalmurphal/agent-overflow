@@ -28,8 +28,30 @@ import (
 func agyAccountProbe(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "mock-agy")
-	mockexec.Write(t, path, `#!/bin/bash
-while IFS= read -r line; do
+	mockexec.Write(t, path, "#!/bin/bash\n"+agyAccountProbeLoop)
+	return path
+}
+
+// agyAccountProbeRecording is agyAccountProbe that first writes, to the file
+// it returns, its argv and the variables through which agy chooses its login
+// store and home ("<unset>" for an unset one).
+func agyAccountProbeRecording(t *testing.T) (binary, record string) {
+	t.Helper()
+	dir := t.TempDir()
+	record = filepath.Join(dir, "launch.txt")
+	binary = mockexec.Write(t, filepath.Join(dir, "mock-agy"), `#!/bin/bash
+{
+  printf 'args=%s\n' "$*"
+  printf 'AGY_ACP_FORCE_FILE_STORAGE=%s\n' "${AGY_ACP_FORCE_FILE_STORAGE-<unset>}"
+  printf 'GEMINI_HOME=%s\n' "${GEMINI_HOME-<unset>}"
+  printf 'AGY_APP_DATA_DIR=%s\n' "${AGY_APP_DATA_DIR-<unset>}"
+} > '`+record+`'
+`+agyAccountProbeLoop)
+	return binary, record
+}
+
+// agyAccountProbeLoop answers `agy acp`'s account probe.
+const agyAccountProbeLoop = `while IFS= read -r line; do
   id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
   if [ -z "$id" ]; then continue; fi
   if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
@@ -40,9 +62,7 @@ while IFS= read -r line; do
     printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
   fi
 done
-`)
-	return path
-}
+`
 
 // agyRequest is one request an Antigravity test answered: its URL and the
 // access token it carried.

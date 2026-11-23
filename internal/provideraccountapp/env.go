@@ -1,11 +1,13 @@
 package provideraccountapp
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"maps"
 	"os"
-	"strings"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/agy"
@@ -237,47 +239,48 @@ func (m *Manager) CodexAccountProbe(binary, accountID string) (provider.ProbeCac
 	return providerProbeCacheKeyForAccountEnv(binary, accountID, custom), m.codexProbeConfigWith(binary, custom, nil)
 }
 
-func (m *Manager) agyProbeConfig(binary, geminiDir, appDataSubdir string, pins map[string]string) agy.ProbeConfig {
-	return m.agyProbeConfigWith(binary, geminiDir, appDataSubdir, m.providerCustomEnv(string(provider.Agy)), pins)
+// AgyCanonicalHome is the home every agy process for the canonical login
+// runs against: agy's default home, on the store this manager reads and
+// writes that login in. It is decided at each launch, because a login outside
+// the app can add or remove the Keychain item at any time.
+func (m *Manager) AgyCanonicalHome() (agy.Home, error) {
+	if m.credentials == nil {
+		return agy.Home{}, errors.New("provider account storage is unavailable")
+	}
+	fileStorage, err := m.credentials.AgyCanonicalFileStorage()
+	if err != nil {
+		return agy.Home{}, fmt.Errorf("choose the Antigravity login store: %w", err)
+	}
+	return agy.CanonicalHome(fileStorage), nil
 }
 
-func (m *Manager) agyProbeConfigWith(binary, geminiDir, appDataSubdir string, custom, pins map[string]string) agy.ProbeConfig {
-	forceFile := strings.TrimSpace(geminiDir) != ""
-	if !forceFile && m != nil && m.credentials != nil {
-		forceFile = m.credentials.AgyShouldForceFileStorage("")
-	}
+func (m *Manager) agyProbeConfig(binary string, home agy.Home, custom map[string]string) agy.ProbeConfig {
 	return agy.ProbeConfig{
-		Binary:        binary,
-		WorkDir:       providerProbeWorkDir(),
-		GeminiDir:     geminiDir,
-		AppDataSubdir: appDataSubdir,
-		Env:           probeEnvWith(custom, pins),
-		Reaper:        m.deps.Reaper,
-		ForceFileAuth: forceFile,
+		Binary:  binary,
+		WorkDir: providerProbeWorkDir(),
+		Home:    home,
+		Env:     probeEnvWith(custom, nil),
+		Reaper:  m.deps.Reaper,
 	}
 }
 
-// AgyProbeConfig constructs the canonical Antigravity account probe configuration.
-func (m *Manager) AgyProbeConfig(binary string, pins map[string]string) agy.ProbeConfig {
-	return m.agyProbeConfig(binary, "", "", pins)
+// probeCanonicalAgy runs the Antigravity account probe against the canonical
+// home, with the store decided as it starts.
+func (m *Manager) probeCanonicalAgy(ctx context.Context, binary string, custom map[string]string) (provider.AccountInfo, error) {
+	home, err := m.AgyCanonicalHome()
+	if err != nil {
+		return provider.AccountInfo{}, err
+	}
+	return agy.ProbeAccount(ctx, m.agyProbeConfig(binary, home, custom))
 }
 
-// AgyAccountProbe is ClaudeAccountProbe for Antigravity, returning the cache
-// key and probe configuration from one read of settings.
-func (m *Manager) AgyAccountProbe(binary, accountID string) (provider.ProbeCacheKey, agy.ProbeConfig) {
+// AgyAccountProbe is ClaudeAccountProbe for Antigravity: the cache key and
+// the canonical probe, from one read of settings.
+func (m *Manager) AgyAccountProbe(binary, accountID string) (provider.ProbeCacheKey, func(context.Context) (provider.AccountInfo, error)) {
 	custom := m.providerCustomEnv(string(provider.Agy))
-	return providerProbeCacheKeyForAccountEnv(binary, accountID, custom), m.agyProbeConfigWith(binary, "", "", custom, nil)
-}
-
-// AgyShouldForceFileStorage reports whether launching `agy` against appDataDir
-// should force file-backed auth to match this Manager's configured credential
-// backend (respecting file-backed `serve` and harness boots without touching
-// the desktop macOS Keychain).
-func (m *Manager) AgyShouldForceFileStorage(appDataDir string) bool {
-	if m != nil && m.credentials != nil {
-		return m.credentials.AgyShouldForceFileStorage(appDataDir)
+	return providerProbeCacheKeyForAccountEnv(binary, accountID, custom), func(ctx context.Context) (provider.AccountInfo, error) {
+		return m.probeCanonicalAgy(ctx, binary, custom)
 	}
-	return provideraccounts.AgyShouldForceFileStorage(appDataDir)
 }
 
 // ProbeWorkDir is Claude's user scope and the parent for isolated Codex account directories.

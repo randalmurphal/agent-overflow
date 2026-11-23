@@ -51,7 +51,7 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 			CodexProbe: func(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig) {
 				return a.ensureProviderAccountManager().CodexAccountProbe(binary, accountID)
 			},
-			AgyProbe: func(binary, accountID string) (provider.ProbeCacheKey, agy.ProbeConfig) {
+			AgyProbe: func(binary, accountID string) (provider.ProbeCacheKey, func(context.Context) (provider.AccountInfo, error)) {
 				return a.ensureProviderAccountManager().AgyAccountProbe(binary, accountID)
 			},
 			EmitStatus:     a.emitProviderStatus,
@@ -71,21 +71,16 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 					defer release()
 					return agy.ProbeCatalogOnConn(ctx, conn, providerProbeWorkDir())
 				}
-				env := a.ensureProviderAccountManager().ProbeEnv(string(provider.Agy), nil)
-				if a.hasManagedAgyCredentialFile() {
-					merged := make(map[string]string, len(env)+2)
-					for k, v := range env {
-						merged[k] = v
-					}
-					merged["AGY_ACP_FORCE_FILE_STORAGE"] = "1"
-					merged["SSH_CONNECTION"] = "127.0.0.1 0 127.0.0.1 0"
-					env = merged
+				home, err := a.ensureProviderAccountManager().AgyCanonicalHome()
+				if err != nil {
+					return nil, err
 				}
 				return agy.ProbeCatalog(
 					ctx,
 					binary,
 					providerProbeWorkDir(),
-					env,
+					home,
+					a.ensureProviderAccountManager().ProbeEnv(string(provider.Agy), nil),
 					a.groupReaper("agy model catalog"),
 				)
 			},

@@ -573,14 +573,16 @@ func (m *Manager) openAgyLoginFlow(
 		_ = run.agy.Close()
 		run.agy = nil
 	}
-	geminiDir, appDataSubdir := splitAgyEphemeralHome(run.attempt.home.Path)
+	home, err := agy.IsolatedHome(run.attempt.home.Path)
+	if err != nil {
+		return loginFlow{}, "", err
+	}
 	session, err := agy.StartLogin(ctx, agy.LoginConfig{
-		Binary:        run.attempt.binary,
-		WorkDir:       providerProbeWorkDir(),
-		GeminiDir:     geminiDir,
-		AppDataSubdir: appDataSubdir,
-		Env:           m.providerLoginEnv(run.provider, nil),
-		Reaper:        m.deps.Reaper,
+		Binary:  run.attempt.binary,
+		WorkDir: providerProbeWorkDir(),
+		Home:    home,
+		Env:     m.providerLoginEnv(run.provider, nil),
+		Reaper:  m.deps.Reaper,
 	})
 	if err != nil {
 		return loginFlow{}, "", err
@@ -709,9 +711,15 @@ func splitLoginPaste(pasted string) (code, state string, err error) {
 // a rejected code says more than anything we could substitute — bounded so a
 // page of output cannot become the UI.
 func loginProse(err error) string {
+	var unidentified agySignInUnidentifiedError
 	switch {
 	case err == nil:
 		return ""
+	case errors.As(err, &unidentified):
+		// Before the timeout case: a lookup that ran out of time is a failed
+		// lookup, not a sign-in that ran out of time.
+		_, sentence := unidentified.PublicDetails()
+		return sentence
 	case errors.Is(err, context.DeadlineExceeded):
 		return loginTimedOutNotice
 	case errors.Is(err, context.Canceled):

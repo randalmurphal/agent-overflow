@@ -30,12 +30,12 @@ var (
 // LoginConfig configures one `agy acp --login` sign-in process targeting an
 // isolated temporary directory.
 type LoginConfig struct {
-	Binary        string
-	WorkDir       string
-	GeminiDir     string
-	AppDataSubdir string
-	Env           map[string]string
-	Reaper        procutil.Reaper
+	Binary  string
+	WorkDir string
+	// Home is the isolated home the sign-in writes its credential into.
+	Home   Home
+	Env    map[string]string
+	Reaper procutil.Reaper
 }
 
 // LoginSession drives `agy acp --login` over stdio: captures the printed Google
@@ -58,29 +58,27 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 	if strings.TrimSpace(binary) == "" {
 		return nil, errors.New("agy login: binary path is empty")
 	}
-	if strings.TrimSpace(cfg.GeminiDir) == "" {
-		return nil, errors.New("agy login: isolated GeminiDir is required")
+	if !cfg.Home.Isolated() {
+		return nil, errors.New("agy login: an isolated home is required")
 	}
 	workDir := cfg.WorkDir
 	if strings.TrimSpace(workDir) == "" {
 		workDir = "."
 	}
 
-	args := append(LaunchArgs(cfg.GeminiDir, cfg.AppDataSubdir), "--login")
-	// Force file-backed OAuth token storage so the isolated login lands in
-	// `<GeminiDir>/<AppDataSubdir>/antigravity-oauth-token` instead of overwriting
-	// the user's global OS keyring slot.
-	launchEnv, unset := LaunchEnv(cfg.Env, map[string]string{
-		"AGY_ACP_FORCE_FILE_STORAGE": "1",
-		"SSH_CONNECTION":             "127.0.0.1 0 127.0.0.1 0",
-	})
+	// An isolated home is on file storage, so the login lands in its
+	// `antigravity-oauth-token` instead of the user's global OS keyring slot.
+	launch, err := cfg.Home.Launch(cfg.Env)
+	if err != nil {
+		return nil, fmt.Errorf("agy login: %w", err)
+	}
 
 	proc, err := provider.Spawn(ctx, provider.Watched(cfg.Reaper), provider.SpawnConfig{
 		Binary:         binary,
-		Args:           args,
+		Args:           launch.ACPArgs("--login"),
 		Dir:            workDir,
-		Env:            launchEnv,
-		UnsetEnv:       unset,
+		Env:            launch.Env,
+		UnsetEnv:       launch.Unset,
 		Provider:       string(provider.Agy),
 		ThreadID:       "agy-login",
 		GracefulCancel: true,

@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 )
 
@@ -849,6 +850,7 @@ func TestRunAgyAndDecodeStructured(t *testing.T) {
 		Binary:   "agy",
 		Model:    DefaultAgyModel,
 		Effort:   "low",
+		AgyHome:  agy.CanonicalHome(false),
 		Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
 			got = spec
 			return CLIResult{Stdout: `{"result":"{\"title\":\"Add Antigravity textgen\"}"}`}, nil
@@ -869,6 +871,22 @@ func TestRunAgyAndDecodeStructured(t *testing.T) {
 	}
 	if got.Env["AGY_CLI_DISABLE_AUTO_UPDATE"] != "1" {
 		t.Errorf("AGY_CLI_DISABLE_AUTO_UPDATE = %q, want 1", got.Env["AGY_CLI_DISABLE_AUTO_UPDATE"])
+	}
+	// The run reads the login from the store its home names: the Keychain
+	// here, so an inherited file-storage flag is cleared.
+	if !slices.Contains(got.UnsetEnv, "AGY_ACP_FORCE_FILE_STORAGE") {
+		t.Errorf("agy unset = %v, want the file-storage flag cleared", got.UnsetEnv)
+	}
+	isolated, err := agy.IsolatedHome(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, home := range map[string]agy.Home{"no home": {}, "an isolated home": isolated} {
+		refused := cfg
+		refused.AgyHome = home
+		if _, err := RunAgy(context.Background(), refused, "/workspace", `{"type":"object"}`, nil, "prompt", time.Minute); err == nil {
+			t.Errorf("RunAgy ran with %s", name)
+		}
 	}
 
 	type titlePayload struct {

@@ -39,7 +39,10 @@ func (l *limitedBuffer) String() string { return l.buf.String() }
 // MCPStatusFetcher runs `agy mcp list` and projects the configured server
 // statuses into AO's shared mcpstatus cache.
 type MCPStatusFetcher struct {
-	Binary  string
+	Binary string
+	// Home is the canonical home, whose MCP configuration Agent Overflow
+	// writes.
+	Home    Home
 	Env     map[string]string
 	Cwd     string
 	Timeout time.Duration
@@ -58,12 +61,15 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, bin, "mcp", "list")
+	launch, err := f.Home.Launch(f.Env)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, bin, append(append([]string{}, launch.Args...), "mcp", "list")...)
 	if strings.TrimSpace(f.Cwd) != "" {
 		cmd.Dir = f.Cwd
 	}
-	launchEnv, unset := LaunchEnv(f.Env, nil)
-	cmd.Env = provider.BuildEnvironment(launchEnv, unset...)
+	cmd.Env = provider.BuildEnvironment(launch.Env, launch.Unset...)
 	cmd.Cancel = func() error {
 		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 			return cmd.Process.Kill()

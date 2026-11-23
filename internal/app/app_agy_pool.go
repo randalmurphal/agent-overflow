@@ -89,24 +89,25 @@ func (a *App) acquireAgyConn(
 	resolvedBinary := agy.ResolveBinary(binary)
 	key := agyPoolKey(resolvedBinary, identity, selection.AccountID, selection.Generation, env, isolateThreadID)
 
-	extra := map[string]string{}
-	if a.hasManagedAgyCredentialFile() {
-		extra["AGY_ACP_FORCE_FILE_STORAGE"] = "1"
-		extra["SSH_CONNECTION"] = "127.0.0.1 0 127.0.0.1 0"
-	}
-
 	rawConn, release, err := a.sessionManager().runtime.Connections().Acquire(
 		ctx,
 		key,
 		idleGrace,
 		func(dialCtx context.Context) (provider.Connection, error) {
-			launchEnv, unset := agy.LaunchEnv(env, extra)
+			home, err := a.ensureProviderAccountManager().AgyCanonicalHome()
+			if err != nil {
+				return nil, err
+			}
+			launch, err := home.Launch(env)
+			if err != nil {
+				return nil, err
+			}
 			return acp.Dial(dialCtx, acp.ConnConfig{
 				Binary:       resolvedBinary,
-				Args:         agy.LaunchArgs("", ""),
+				Args:         launch.ACPArgs(),
 				WorkDir:      connWorkDir,
-				Env:          launchEnv,
-				UnsetEnv:     unset,
+				Env:          launch.Env,
+				UnsetEnv:     launch.Unset,
 				EventLogger:  a.logger,
 				Reaper:       a.groupReaper("agy session"),
 				ThreadID:     "agy-conn",
@@ -118,14 +119,6 @@ func (a *App) acquireAgyConn(
 		return nil, nil, "", err
 	}
 	return rawConn.(*acp.Conn), release, key, nil
-}
-
-func (a *App) hasManagedAgyCredentialFile() bool {
-	return a.hasManagedAgyCredentialFileAt(a.agyAppDataDir())
-}
-
-func (a *App) hasManagedAgyCredentialFileAt(appData string) bool {
-	return a.ensureProviderAccountManager().AgyShouldForceFileStorage(appData)
 }
 
 // borrowAgyConnForCurrentAccount borrows a warm pooled *acp.Conn ONLY when its
@@ -198,26 +191,32 @@ func (a *App) withAgyImportConn(ctx context.Context, appDataDir, avoidSessionID 
 			}
 		}
 	}
-	var geminiDir, appDataSubdir string
+	// A directory other than the canonical one, and the canonical one under
+	// an isolated boot's credential home, run as an isolated home there.
+	var home agy.Home
+	var err error
 	if !useCanonical || strings.TrimSpace(a.credentialHomeOverride) != "" {
-		cleaned := filepath.Clean(appDataDir)
-		geminiDir = filepath.Dir(cleaned)
-		appDataSubdir = filepath.Base(cleaned)
-	}
-	var extra map[string]string
-	if geminiDir != "" || a.hasManagedAgyCredentialFileAt(appDataDir) {
-		extra = map[string]string{
-			"AGY_ACP_FORCE_FILE_STORAGE": "1",
-			"SSH_CONNECTION":             "127.0.0.1 0 127.0.0.1 0",
+		dir := appDataDir
+		if dir == "" {
+			dir = canonicalDir
 		}
+		home, err = agy.IsolatedHome(dir)
+	} else {
+		home, err = a.ensureProviderAccountManager().AgyCanonicalHome()
 	}
-	env, unset := agy.LaunchEnv(a.ensureProviderAccountManager().ProbeEnv(string(provider.Agy), nil), extra)
+	if err != nil {
+		return err
+	}
+	launch, err := home.Launch(a.ensureProviderAccountManager().ProbeEnv(string(provider.Agy), nil))
+	if err != nil {
+		return err
+	}
 	conn, err := acp.Dial(ctx, acp.ConnConfig{
 		Binary:       agy.ResolveBinary(binary),
-		Args:         agy.LaunchArgs(geminiDir, appDataSubdir),
+		Args:         launch.ACPArgs(),
 		WorkDir:      providerProbeWorkDir(),
-		Env:          env,
-		UnsetEnv:     unset,
+		Env:          launch.Env,
+		UnsetEnv:     launch.Unset,
 		Reaper:       a.groupReaper("agy session import"),
 		ProviderName: string(provider.Agy),
 	})

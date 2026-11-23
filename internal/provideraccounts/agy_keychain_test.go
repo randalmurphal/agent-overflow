@@ -177,24 +177,72 @@ func TestAgyFileKeychainForceStorageAndEncodedPrefix(t *testing.T) {
 		t.Fatalf("decodeGoKeyringPayload(encoded) = %q, %v; want %q", got, err, raw)
 	}
 
-	// 2. NewCredentialsWithFileKeychain forces file storage unconditionally
-	// (even before any token file exists) without ever invoking security(1).
+	// 2. A file-backed store reads the canonical login from the file, so agy
+	// is launched on file storage, before and after the file exists, without
+	// ever invoking security(1).
 	home := t.TempDir()
 	creds, err := NewCredentialsWithFileKeychain(home, Policy{})
 	if err != nil {
 		t.Fatalf("NewCredentialsWithFileKeychain: %v", err)
 	}
-	appData := filepath.Join(home, ".gemini", "antigravity-cli")
-	if !creds.AgyShouldForceFileStorage(appData) {
-		t.Fatal("expected NewCredentialsWithFileKeychain to force file storage even when token file is absent")
+	if fileStorage, err := creds.AgyCanonicalFileStorage(); err != nil || !fileStorage {
+		t.Fatalf("file-backed store before the file = %v, %v; want file storage", fileStorage, err)
 	}
+	appData := filepath.Join(home, ".gemini", "antigravity-cli")
 	if err := os.MkdirAll(appData, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(appData, agyCredentialFileName), []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !creds.AgyShouldForceFileStorage(appData) {
-		t.Fatal("expected NewCredentialsWithFileKeychain to force file storage when token file exists")
+	if fileStorage, err := creds.AgyCanonicalFileStorage(); err != nil || !fileStorage {
+		t.Fatalf("file-backed store with the file = %v, %v; want file storage", fileStorage, err)
+	}
+}
+
+// The macOS backend reads the canonical login from the Keychain item when
+// there is one and from the fallback file only when there is not, so an agy
+// process is put on file storage exactly then. A Keychain query that fails
+// decides neither store.
+func TestSecurityAgyKeychainCanonicalStoreFollowsWhatReadReads(t *testing.T) {
+	installFakeSecurity(t)
+	home := t.TempDir()
+	kc := securityAgyKeychain{}
+	raw := []byte(`{"id_token_email":"file@example.com","token":{"access_token":"f1","refresh_token":"rf"}}`)
+	item := []byte(`{"id_token_email":"keychain@example.com","token":{"access_token":"k1","refresh_token":"rk"}}`)
+	t.Setenv("FAKE_SECURITY_READ_PAYLOAD", string(encodeGoKeyringPayload(item)))
+
+	// No fallback file: agy's default store, whatever the Keychain holds.
+	t.Setenv("FAKE_SECURITY_FIND_EXIT", "36")
+	if fileStorage, err := kc.canonicalFileStorage(home); err != nil || fileStorage {
+		t.Fatalf("without the file = %v, %v; want the Keychain", fileStorage, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(home, agyCredentialFileName), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		exit        string
+		fileStorage bool
+		read        []byte
+	}{
+		{exit: "0", fileStorage: false, read: item},
+		{exit: "44", fileStorage: true, read: raw},
+	}
+	for _, c := range cases {
+		t.Setenv("FAKE_SECURITY_FIND_EXIT", c.exit)
+		fileStorage, err := kc.canonicalFileStorage(home)
+		if err != nil || fileStorage != c.fileStorage {
+			t.Fatalf("security exit %s: file storage = %v, %v; want %v", c.exit, fileStorage, err, c.fileStorage)
+		}
+		read, err := kc.read(home, true)
+		if err != nil || string(read) != string(c.read) {
+			t.Fatalf("security exit %s: read = %s, %v; want the login of the store chosen", c.exit, read, err)
+		}
+	}
+
+	t.Setenv("FAKE_SECURITY_FIND_EXIT", "36")
+	if _, err := kc.canonicalFileStorage(home); err == nil {
+		t.Fatal("a failed Keychain query chose a store")
 	}
 }

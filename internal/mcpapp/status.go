@@ -228,7 +228,11 @@ func (a *Service) mcpStatusFetcher(prov mcpstatus.Provider, cwd string) (mcpstat
 		if bin == "" {
 			return nil, fmt.Errorf("mcp status: agy binary not configured")
 		}
-		return &agy.MCPStatusFetcher{Binary: bin, Env: a.sessionProcessEnv(string(provider.Agy)), Cwd: cwd}, nil
+		home, err := a.agyCanonicalHome()
+		if err != nil {
+			return nil, err
+		}
+		return &agy.MCPStatusFetcher{Binary: bin, Home: home, Env: a.sessionProcessEnv(string(provider.Agy)), Cwd: cwd}, nil
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrMCPProviderUnsupported, prov)
 	}

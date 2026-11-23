@@ -2,6 +2,9 @@ package provideraccountapp
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/procutil/procutiltest"
@@ -71,16 +74,64 @@ func TestRunAccountProbeRunsAfterAdoptBeforeTheAccountEmit(t *testing.T) {
 	}
 }
 
-func TestAgyProbeConfigForceFileAuthOnlyForEphemeralHomes(t *testing.T) {
+// Every canonical agy probe the manager starts (account probes, reconciliation,
+// the token refresh, the transfer check) runs on the store and home the
+// manager reads, whatever the process inherited: here the file store, so the
+// flag is set, and agy's default home, so the home variables are cleared. A
+// sign-in's isolated home is on file storage in its own directory.
+func TestAgyProbesRunOnTheManagersStoreAndHome(t *testing.T) {
+	t.Setenv("AGY_ACP_FORCE_FILE_STORAGE", "")
+	t.Setenv("GEMINI_HOME", filepath.Join(t.TempDir(), "other-gemini"))
+	t.Setenv("AGY_APP_DATA_DIR", filepath.Join(t.TempDir(), "other-app-data"))
+	manager, _, credentials := newTestManager(t)
+	binary, record := agyAccountProbeRecording(t)
+	agyName := string(provider.Agy)
+
+	_, probe := manager.AgyAccountProbe(binary, "")
+	if _, err := probe(context.Background()); err != nil {
+		t.Fatalf("canonical probe: %v", err)
+	}
+	got := readAgyLaunchRecord(t, record)
+	if got["AGY_ACP_FORCE_FILE_STORAGE"] != "1" || got["GEMINI_HOME"] != "<unset>" || got["AGY_APP_DATA_DIR"] != "<unset>" || got["args"] != "acp" {
+		t.Fatalf("canonical probe launched with %v, want file storage on agy's default home", got)
+	}
+
+	ephemeral, err := credentials.NewEphemeralHome(agyName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ephemeral.Cleanup() })
+	if _, err := manager.probeProviderAccountAtHome(agyName, binary, ephemeral.Path); err != nil {
+		t.Fatalf("isolated probe: %v", err)
+	}
+	got = readAgyLaunchRecord(t, record)
+	want := "acp --gemini-dir " + filepath.Dir(ephemeral.Path) + " --app-data-dir " + filepath.Base(ephemeral.Path)
+	if got["AGY_ACP_FORCE_FILE_STORAGE"] != "1" || got["GEMINI_HOME"] != "<unset>" || got["args"] != want {
+		t.Fatalf("isolated probe launched with %v, want file storage in %s", got, ephemeral.Path)
+	}
+}
+
+// Without its credential store the manager reads no login, so it names no
+// store for one either.
+func TestAgyCanonicalHomeNeedsTheCredentialStore(t *testing.T) {
 	manager := NewManager(Deps{Reaper: procutiltest.Reaper()})
-	canonical := manager.AgyProbeConfig("agy", nil)
-	if canonical.ForceFileAuth {
-		t.Fatal("canonical AgyProbeConfig must not force file auth (breaks macOS Keychain logins)")
+	if _, err := manager.AgyCanonicalHome(); err == nil {
+		t.Fatal("a manager without credentials chose an Antigravity store")
 	}
-	ephemeral := manager.agyProbeConfig("agy", "/tmp/isolated-gemini", "antigravity-cli", nil)
-	if !ephemeral.ForceFileAuth {
-		t.Fatal("ephemeral agyProbeConfig must force file auth so isolated homes never touch global Keychain")
+}
+
+func readAgyLaunchRecord(t *testing.T, record string) map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("read the mock agy's launch record: %v", err)
 	}
+	out := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		name, value, _ := strings.Cut(line, "=")
+		out[name] = value
+	}
+	return out
 }
 
 func TestIdentifyAgyCredentialOfflineEmailFallback(t *testing.T) {
