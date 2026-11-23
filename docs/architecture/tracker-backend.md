@@ -450,16 +450,21 @@ of the pump comes to (its last subscription released, its connection
 turned off or removed, `Stop`), and no bind follows; the bind is one
 statement and one row, the delete two statements
 (`TestOpenTicketKeepCosts`). When the delete leaves the issue kept by
-nothing, every view that shows it as a parent or a link is told
-(`Changes.Unkept`). A bind that fails is the ticket's failure, a failure
+nothing, or a bind keeps a record the mirror held unkept, every view that
+shows it as a parent or a link is told (`Changes.Visibility`). A pump
+keeps one issue; a bind of another fails. A bind that fails is the
+ticket's failure, a failure
 outside the tracker that its next read retries; until a bind succeeds the
 ticket is not read. A pump has one row, so the table holds at most the
 cap of open tickets (64) of the live process. Rows a process left when it
 ended without deleting them are deleted by this process's first run
 (`trackerapp.dropEarlierTickets`): every run passes that step as it
-starts and every bind is made in a run, so the delete completes before any
-row of this process is written; a delete that fails fails its run, and
-the next run tries it again. The cleanup then removes what nothing else
+starts and every bind is made in a run, a view read included, so the
+delete completes before any row of this process is written; a delete
+that fails fails its run, and the next run tries it again. A pump's
+delete that fails stays owed: each run's start tries it again, and
+`Stop` makes a last try whose failure is logged, the next process's
+first run deleting what it left. The cleanup then removes what nothing else
 keeps. A restore empties the table with the mirror while pumps live: the
 run that makes the connection's new root binds every live open ticket of
 its mirror generation again, one whose earlier bind failed included
@@ -521,11 +526,10 @@ passed, so a clock step either way reads the scope once. A time a
 person is shown (a scope's read, reconcile and failure, an open
 ticket's read) is such a wall time, never an order time. Order times
 run ahead of the wall clock only while it is behind them, a millisecond
-a read, so a reconcile's settled bound (its order time less the
-listing's lag) leaves a row read less than the lag ago to a read by ID,
-after a restart or a step back too. An issue's row on
-a board records whether a listing has named it (`listed`): a delta page,
-which is a search of the same index, or a listing a reconcile was given.
+a read. An issue's row on a board records whether a listing has named
+it (`listed`): a delta page, which is a search of the same index, or a
+listing a reconcile was given; no rule reads it since a reconcile removes
+no row.
 A section page carries the board's revision; continuing it at another
 revision fails with `ErrTrackerCacheStale`. A board view's first paint
 reads structure, totals, first pages and what their cards name (statuses,
@@ -595,14 +599,22 @@ and writes share:
   edited, an issue is deleted, a board is newly listed while its issues are
   already cards from another board. A reconcile lists the IDs on the board,
   reads the board rows of every listed ID that has no row on this board,
-  and removes the rows no longer listed that a listing has named and that
-  were read at least `tracker.DeltaOverlap` before the listing began. A
-  list may miss an issue its index has not caught up with (Jira, after a
-  create), so an unlisted row read more recently, or one no listing has
-  named (a row only a read by ID placed, such as a create's), is not
-  judged by the listing: the store reports it
-  (`MirrorReconcile.Unsettled`) and the pass reads it through the board's
-  rows, which keeps or removes it. A pass attempts
+  and reads the same way every row the listing leaves out that a read
+  begun no later than the listing stored (`MirrorReconcile.Unsettled`).
+  The listing removes no row itself: a list may miss an issue its index
+  has not caught up with (Jira's lists come from its search index, which
+  showed a new issue from 0.6 to 23 seconds after its create), and how
+  late is no interval an order time measures. The read by ID is the
+  answer: its rows keep the rows the board holds and its Missing removes
+  the rest (`WriteMirrorRows`). It is trusted for that because it reads
+  no index that lags: Jira's rows read confirms each issue the list left
+  out with `jql/match`, which judges the issue as it is (it answered a
+  new issue correctly 0.3 s after its create, and agreed with the board's
+  list on every sample), and Linear's reads by ID show an issue as soon as
+  it exists. A read by ID that is wrong anyway (a match that judged before
+  a change) is corrected by the next pass, which reads the row again, and
+  a row it removed that the board still holds comes back with the next
+  listing that names it. A pass attempts
   each of its candidates (the listed issues with no row and the unsettled
   rows) once, 1,000 a tick; a board's pump keeps the candidates left
   between its ticks and goes on with them without listing again, so a
@@ -616,14 +628,20 @@ and writes share:
   asks `jql/match` about an issue the list left out and fails when the
   match cannot judge the board (after reading the board's configuration
   again once), so a miss never removes a row on the list's word alone. A listing the
-  provider reports as incomplete adds and never removes, and so does one
-  that began before the newest complete listing the board reconciled,
-  which saw the rows it leaves out (checked in every removal
-  transaction). A read by ID that began before that listing removes no
-  row the listing may have named: its absence is read once more, from
-  after the listing (`MirrorChanges.Refused`). One statement finds the
-  rows to remove; they go in transactions of at most 500, each judging
-  them again. It runs at a board's first read, on its interval, while a
+  provider reports as incomplete adds and reads no row it leaves out,
+  and so does one that began before the newest complete listing the
+  board reconciled, which saw the rows it leaves out. A read by ID that
+  began before that listing removes no row the listing may have named:
+  its absence is read once more, from after the listing
+  (`MirrorChanges.Refused`). One statement finds the listed issues with
+  no row and the rows to read; the listed rows no listing marked are
+  marked in transactions of at most 500. The rows a listing leaves out
+  cost a rows read by ID (Jira: one match request per 50 left out, and a
+  bulk fetch when any is placed; Linear: one request per 250); a listing
+  that leaves out one row the board no longer holds is 3 requests on
+  each tracker, the listing included (`TestFakeJiraRequestCosts`,
+  `TestFakeLinearRequestCosts`, "reconcile gone"). It
+  runs at a board's first read, on its interval, while a
   pass is open and on request, and waits while the tick's delta walk
   has more pages to read, so a first sync reads each row once and lists
   the board once.
@@ -798,39 +816,61 @@ connection's shown tickets. A card write also stamps each user and status
 its cards name with its read, one statement per kind and one row per
 entry whether or not it changed (`TestChangedRoundStatements`), since the
 stamp orders the entry's later reads; the table is of cards that name
-none:
+none (`TestIdleTickStatements`):
 
 | Tick that finds nothing changed | Requests | Store calls | Statements | Rows written |
 |---|---|---|---|---|
 | Shown board | 1 | 2 | 3 | 1 |
 | Shown board, the delta's overlap redelivering one identical row | 1 | 3 | 10 | 4 |
-| Jira round of N tickets (N up to 100) | 1 | 3 | 8 | N |
-| Linear round of N tickets | one per 10 tickets, plus each read a ticket's states, history or labels need past their first page | 2 | 4 | N |
+| Jira round of N tickets (N up to 100) | 1 | 2 | 6 | N |
+| Linear round of N tickets | one per 10 tickets, plus each read a ticket's states, history or labels need past their first page | 2 | 6 | N |
 
 A Jira round checks every ticket with one cards read, decodes no stored
-document, reads none in full and moves the read time of the unchanged
-cards in one statement; a Linear round reads every ticket in full,
-stores them in one transaction, which reads every document's state with
-its card's update time in one statement and moves the read times of the
-unchanged documents in one more, and writes no card. Every card write,
-the redelivered row and the Jira check included, runs the statement
-that marks the boards its cards need a structure read for. A ticket that
-changed adds its own full read, and on Linear the read of the card its
-new document is owed (one cards request and one card write).
+body, reads none in full and moves the read time of the unchanged
+records in one statement; a Linear round reads every ticket in full and
+stores them in one transaction, which reads every record's state, its
+body's digest included, in one statement and moves the read times in one
+more, and writes no body bytes: a body read again is compared by its
+digest. Every card write, the redelivered row and the Jira check
+included, runs the statement that marks the boards its cards need a
+structure read for. A ticket that changed adds its own full read.
 
 | Round of 50 tickets, 10 changed | Requests | Store calls | Statements | Rows written |
 |---|---|---|---|---|
-| Jira | 21 | 6 | 25 | 50 card rows (40 of them read times), 10 documents, 4 users and 3 statuses (read times) |
-| Linear | 6 | 6 | 26 | 10 card rows, 50 document rows (40 of them read times), 4 users and 3 statuses (read times) |
+| Jira | 21 | 5 | 27 | 60 issue rows (50 read times, then the 10 read in full), 10 bodies, 8 users and 6 statuses (read times, stamped by each of the two writes) |
+| Linear | 5 | 4 | 20 | 60 issue rows, 10 bodies, 4 users and 3 statuses (read times) |
 
 On Jira the 20 requests past the check are each changed issue and its
-comments; on Linear the one past the 5 details reads is the cards read
-of the 10 owed cards. Both rounds' 6 store calls include the cards and
-catalog read that builds the 10 changed views. The table is of tickets
-whose boards no one shows; a shown board of the connection adds the
-change funnel's lookup of the changed cards' boards, one more store call
-(`ListMirrorIssueBoards`, derived from `publish`; `TestServiceAtScale`'s
-shown rounds make it, and no test pins it).
+comments; Linear's 5 details reads read the changed tickets already,
+cards and bodies in one write. Both rounds' store calls include the cards
+and catalog read that builds the 10 changed views. The table is of
+tickets whose boards no one shows; a shown board of the connection adds
+the change funnel's lookup of the changed cards' boards, one more store
+call per write that changed any (`ListMirrorIssueBoards`, derived from
+`publish`; `TestServiceAtScale`'s shown rounds make it, and no test pins
+it).
+
+An idle round rewrites one page of the issues table per open ticket,
+whose record holds the ticket's read times, and one page of each catalog
+table for their stamps; it writes no body bytes and no page of the
+bodies' index (`mirrorTicketMoveSQL.reads`), pinned at a root of 2,000
+issues with each tracker's measured card size
+(`TestAnIdleRoundRewritesOnePagePerOpenTicket`: 50, 1 and 1). The WAL an
+idle round of 50 tickets wrote, measured by the frames it appended, with
+the catalog of the round test, before the issue record (the tickets' read
+times in their own document rows) and now:
+
+| Idle round of 50 tickets, root size | Jira before | Jira now | Linear before | Linear now |
+|---|---|---|---|---|
+| 50 issues | 6 pages | 7 pages, 28,872 B | 2 pages | 7 pages, 28,872 B |
+| 2,000 issues | 52 pages, 214,272 B | 52 pages, 214,272 B | 2 pages, 8,272 B | 52 pages, 214,272 B |
+| 20,000 issues | 52 pages, 214,272 B | 52 pages, 214,272 B | 2 pages, 8,272 B | 52 pages, 214,272 B |
+
+A page is 4,096 bytes and a frame 4,120. At 50 issues the records share
+5 pages; from 2,000 each ticket's record is on a page of its own, and the
+other 2 pages are the catalog's stamps. Linear's cost rose from the 2
+pages of the document table, whose rows sat together, to the issue
+pages, since the read times now live in the one record.
 
 A changed row is redelivered by the delta's overlap of one minute
 (`tracker.DeltaOverlap`), so about six Jira ticks after a change take the
@@ -899,8 +939,10 @@ named rows.
 | Linear round, 100 tickets, 10 changed | 22 | 3.2 ms | 3.1 ms |
 | `New` | 0 | 11.2 ms | 10.6 ms |
 
-A reconcile whose listing leaves out a quarter of the board removes
-those rows in 8 statements at 5,000 issues and 22 at 20,000. Five boards
+A reconcile whose listing leaves out rows removes none itself: it reads
+them by ID, 100 a rows read and 1,000 a tick, and that read's write
+removes the rows the board no longer holds; its cost at these sizes has
+not been measured since. Five boards
 of 4,000 issues on one root view in 11.7 ms. Every
 statement of the mirror plans the same at 20,000 issues as on a small
 mirror, with no `sqlite_stat1`. Through `trackerfake` at 20,000 an idle
@@ -1055,6 +1097,12 @@ funnel (`trackerapp/funnel.go`):
   its view shows, the users and statuses) rebuilds its view with no
   tracker call. A ticket detail read outside a subscription
   (`IssueDetail`) publishes what it stored too.
+- Each store write of a run is published as it returns (`run.told`),
+  before any later call of the run can wait or fail: a tick's pages,
+  history and structure, a write's refresh, a ticket's read and a Jira
+  round's check alike, so a later failure holds back no committed change.
+  A shown board adds one lookup of the changed cards' boards per write
+  that changed any (`ListMirrorIssueBoards`).
 - The root a change is published under is the one the run that stored it
   held, so a connection change during the read cannot lose it. A change
   reaches only the subscriptions of that mirror: the connection's mirror
@@ -1062,9 +1110,10 @@ funnel (`trackerapp/funnel.go`):
   its root and a pump when it is made, and the funnel tells only the
   pumps of the run's generation. A change stored under a mirror a turn
   off detached reaches no subscription made after the turn on.
-- A write's refresh publishes once, with the changes of each board it read
-  through as that board's own, and settles the open tickets it read
-  itself instead of nudging them.
+- A write's refresh publishes each board's write as that board's own,
+  and settles the open tickets it read itself instead of nudging them. A
+  ticket whose bind failed is not refreshed: the write reports its
+  detail stale with the bind's failure.
 
 ### Writes and form reads
 

@@ -39,8 +39,8 @@ func TestChangedRoundStatements(t *testing.T) {
 	}
 	stamped := map[string]int{"tracker_cache_users": 4, "tracker_cache_statuses": 3}
 	pinned := map[string]cost{
-		"a Jira round":         {28, map[string]int{"tracker_cache_issue_bodies": 10, "tracker_cache_issues": 60, "tracker_cache_users": 8, "tracker_cache_statuses": 6}},
-		"a Linear round":       {21, map[string]int{"tracker_cache_issue_bodies": 10, "tracker_cache_issues": 60}},
+		"a Jira round":         {27, map[string]int{"tracker_cache_issue_bodies": 10, "tracker_cache_issues": 60, "tracker_cache_users": 8, "tracker_cache_statuses": 6}},
+		"a Linear round":       {20, map[string]int{"tracker_cache_issue_bodies": 10, "tracker_cache_issues": 60}},
 		"an idle Jira round":   {8, map[string]int{"tracker_cache_issues": 50}},
 		"an idle Linear round": {8, map[string]int{"tracker_cache_issues": 50}},
 	}
@@ -144,6 +144,123 @@ func TestChangedRoundStatements(t *testing.T) {
 				t.Errorf("%s wrote %d body bytes; want %d, the changed bodies'", name, bodyBytes, want)
 			}
 		})
+	}
+}
+
+// The ticket move (mirrorTicketMoveSQL) finds each ticket's row by key
+// from the list it parses once, so its VM steps grow linearly with the
+// tickets: an idle round (the read times alone, .reads) and an opening
+// round (the opening too, .full) of 50, 200 and 500 tickets each run it
+// once, and each ticket from 200 to 500 costs at most 5/4 of what each
+// from 50 to 200 does, where a lookup that scans the list per row costs
+// each ticket in proportion to the list. The root's other issues cost
+// nothing: 50 tickets on a root of 2,000 issues cost at most 11/10 of 50
+// on a root of 50, where a search of the root's rows costs each of them.
+func TestTheTicketMoveGrowsLinearly(t *testing.T) {
+	sizes := []int{50, 200, 500}
+	type cost struct{ reads, full int }
+	measure := func(n, held int) cost {
+		s, _, root := newMirror(t)
+		mustReplaceStructure(t, s, root, webStructure(), true)
+		for page := range slices.Chunk(mirrorRows(20001, held, "z"), mirrorMaxPageRows) {
+			mustWriteRowPage(t, s, root, webPage("10", page...), nil)
+		}
+		issues := make([]string, n)
+		for i := range issues {
+			issues[i] = fmt.Sprint(20001 + i)
+		}
+		sweep := currentSweep(s, root)
+		tickets := heldTickets(t, s, root, issues, []byte(`{"v":1}`))
+		for i := range tickets {
+			c := tickets[i].Card
+			tickets[i].Status = &MirrorStatusEvidence{Status: c.StatusID, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Complete: true, Final: true}
+		}
+		if _, err := s.StoreMirrorTickets(root, sweep, tickets, MirrorCatalog{}, mirrorReadAt(7), mirrorReadAt(7)); err != nil {
+			t.Fatal(err)
+		}
+		var c cost
+		for _, step := range []struct {
+			query          string
+			steps          *int
+			opened, readAt int64
+		}{{mirrorTicketMoveSQL.reads, &c.reads, 0, 100}, {mirrorTicketMoveSQL.full, &c.full, 200, 200}} {
+			opened := MirrorRead{}
+			if step.opened > 0 {
+				opened = mirrorReadAt(step.opened)
+			}
+			var err error
+			runs, steps := countStatementRuns(t, step.query, func() {
+				_, err = s.StoreMirrorTickets(root, sweep, tickets, MirrorCatalog{}, opened, mirrorReadAt(step.readAt))
+			})
+			if err != nil || runs != 1 {
+				t.Fatalf("%d tickets: the move ran %d times, %v; want once", n, runs, err)
+			}
+			*step.steps = steps
+		}
+		return c
+	}
+	costs := make([]cost, len(sizes))
+	for i, n := range sizes {
+		costs[i] = measure(n, n)
+	}
+	wide := measure(50, 2000)
+	t.Logf("the ticket move's VM steps at %v tickets: %+v; 50 tickets of 2,000 issues: %+v", sizes, costs, wide)
+	if 10*wide.reads > 11*costs[0].reads || 10*wide.full > 11*costs[0].full {
+		t.Fatalf("50 tickets on a root of 2,000 issues cost %+v, on a root of 50 %+v; want the root's other issues to cost nothing", wide, costs[0])
+	}
+	for _, kind := range []struct {
+		name string
+		of   func(cost) int
+	}{{"reads", func(c cost) int { return c.reads }}, {"full", func(c cost) int { return c.full }}} {
+		low := float64(kind.of(costs[1])-kind.of(costs[0])) / float64(sizes[1]-sizes[0])
+		high := float64(kind.of(costs[2])-kind.of(costs[1])) / float64(sizes[2]-sizes[1])
+		if low <= 0 || high > 1.25*low {
+			t.Fatalf("the %s move's steps per ticket: %.0f from 50 to 200, %.0f from 200 to 500; want linear", kind.name, low, high)
+		}
+	}
+}
+
+// The history times write (mirrorHistoryTimesSQL) finds each history's
+// issue by key from the list it parses once, as the ticket move does: one
+// write of 10, 25 and 50 histories (mirrorHistoryBatch) runs it once,
+// each history from 25 to 50 costs at most 5/4 of what each from 10 to 25
+// does, and 50 histories on a root of 2,000 issues cost at most 11/10 of
+// 50 on a root of 50.
+func TestTheHistoryTimesWriteGrowsLinearly(t *testing.T) {
+	measure := func(n, held int) int {
+		s, _, root := newMirror(t)
+		mustReplaceStructure(t, s, root, webStructure(), true)
+		for page := range slices.Chunk(mirrorRows(20001, held, "z"), mirrorMaxPageRows) {
+			mustWriteRowPage(t, s, root, webPage("10", page...), nil)
+		}
+		histories := make([]MirrorHistory, n)
+		for i := range histories {
+			histories[i] = MirrorHistory{IssueID: fmt.Sprint(20001 + i), AnsweredAt: testNow}
+		}
+		histories = dueHistories(s, root, histories)
+		var err error
+		runs, steps := countStatementRuns(t, mirrorHistoryTimesSQL, func() {
+			_, _, err = s.ReplaceMirrorHistories(root, currentSweep(s, root), histories, MirrorCatalog{}, mirrorReadAt(9))
+		})
+		if err != nil || runs != 1 {
+			t.Fatalf("%d histories: the times write ran %d times, %v; want once", n, runs, err)
+		}
+		return steps
+	}
+	sizes := []int{10, 25, mirrorHistoryBatch}
+	steps := make([]int, len(sizes))
+	for i, n := range sizes {
+		steps[i] = measure(n, mirrorHistoryBatch)
+	}
+	wide := measure(mirrorHistoryBatch, 2000)
+	t.Logf("the history times write's VM steps at %v histories: %v; %d on a root of 2,000: %d", sizes, steps, mirrorHistoryBatch, wide)
+	low := float64(steps[1]-steps[0]) / float64(sizes[1]-sizes[0])
+	high := float64(steps[2]-steps[1]) / float64(sizes[2]-sizes[1])
+	if low <= 0 || high > 1.25*low {
+		t.Fatalf("the times write's steps per history: %.0f from 10 to 25, %.0f from 25 to 50; want linear", low, high)
+	}
+	if 10*wide > 11*steps[2] {
+		t.Fatalf("%d histories on a root of 2,000 issues cost %d steps, on a root of 50 %d; want the root's other issues to cost nothing", mirrorHistoryBatch, wide, steps[2])
 	}
 }
 

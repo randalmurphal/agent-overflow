@@ -204,26 +204,28 @@ var (
 		RETURNING issue_id`
 	// mirrorHistoryTimesSQL writes each listed issue's times and the
 	// status result they give its card (mirrorStatusWriteSQL), and
-	// advances its receipt when they or its changes changed, finding each
-	// issue by key from the list; an UPDATE FROM the list would walk the
-	// root's issues.
-	mirrorHistoryTimesSQL = `UPDATE tracker_cache_issues
+	// advances its receipt when they or its changes changed. The list,
+	// materialized, drives the join and finds each issue by its primary
+	// key (as the ticket move does, mirrorTicketMoveSQL); it names an
+	// issue once.
+	mirrorHistoryTimesSQL = `WITH h AS MATERIALIZED (SELECT value FROM json_each(?2))
+		UPDATE tracker_cache_issues
 		SET (history_from, history_for, history_answered_at, history_wait, history_boards_rev, status_since, status_final_for,
 		     history_receipt) = (` + mirrorHistoryTimesOf(", tracker_cache_issues.history_receipt + 1") + `)
-		WHERE root_id = ?1 AND issue_id IN (SELECT value ->> 'i' FROM json_each(?2))
+		FROM h
+		WHERE root_id = ?1 AND issue_id = h.value ->> 'i'
 		  AND ((history_from, history_for, history_answered_at, history_wait, history_boards_rev, status_since, status_final_for) IS NOT (` +
 		mirrorHistoryTimesOf("") + `)
-		    OR coalesce((SELECT h.value ->> 'c' FROM json_each(?2) h WHERE h.value ->> 'i' = tracker_cache_issues.issue_id), 0))
+		    OR coalesce(h.value ->> 'c', 0))
 		RETURNING issue_id`
 )
 
-// mirrorHistoryTimesOf reads the times the list holds for the issue being
-// updated, the status time and its finality their result gives its card,
-// and then extra.
+// mirrorHistoryTimesOf lists the times the list's entry h holds for the
+// issue being updated, the status time and its finality their result
+// gives its card, and then extra.
 func mirrorHistoryTimesOf(extra string) string {
 	since, finalFor := mirrorStatusWriteSQL("(h.value ->> 'x')", "(h.value ->> 's')", "(h.value ->> 'v')", "(h.value ->> 't')")
-	return `SELECT h.value ->> 'f', h.value ->> 'v', h.value ->> 'a', h.value ->> 'w', h.value ->> 'b', ` + since + `, ` + finalFor +
-		extra + ` FROM json_each(?2) h WHERE h.value ->> 'i' = tracker_cache_issues.issue_id`
+	return `h.value ->> 'f', h.value ->> 'v', h.value ->> 'a', h.value ->> 'w', h.value ->> 'b', ` + since + `, ` + finalFor + extra
 }
 
 // mirrorHistoryInput is one checked history, encoded at generation 0; a

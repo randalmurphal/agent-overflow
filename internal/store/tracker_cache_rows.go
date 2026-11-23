@@ -107,8 +107,9 @@ var (
 	// (identical content stored by an earlier read, whose read time alone
 	// moves, or, on a delta page, a row no listing marked that the write
 	// does not reach), whether the stored card admits its card from
-	// an earlier read (mirrorCardAdvancesSQL), and whether it is new on
-	// the board (gained when the page may add rows, refused when not).
+	// an earlier read (mirrorCardAdvancesSQL), whether it is new on
+	// the board (gained when the page may add rows, refused when not),
+	// and whether the card names other sprints (mirrorCardSprintsMovedSQL).
 	mirrorRowsStateSQL = `SELECT c.value ->> 'i',
 		    (b.root_id IS NULL AND NOT ?5) OR ` + mirrorCardRefusedSQL("?4") + `
 		      OR (b.read_at > ?4 AND (b.order_key IS NOT c.value ->> 'o' OR b.estimate IS NOT c.value ->> 'e')),
@@ -117,7 +118,7 @@ var (
 		    (b.read_at < ?4 AND b.order_key IS c.value ->> 'o' AND b.estimate IS c.value ->> 'e')
 		      OR (?6 AND b.listed = 0 AND (b.read_at > ?4 OR (b.order_key IS c.value ->> 'o' AND b.estimate IS c.value ->> 'e'))),
 		    (b.root_id IS NOT NULL OR ?5) AND ` + mirrorCardAdvancesSQL("?4") + `,
-		    b.root_id IS NULL
+		    b.root_id IS NULL, ` + mirrorCardSprintsMovedSQL + `
 		  FROM json_each(?2) c
 		  LEFT JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = c.value ->> 'i'
 		  LEFT JOIN tracker_cache_board_issues b ON b.root_id = ?1 AND b.issue_id = c.value ->> 'i' AND b.board_id = ?3`
@@ -211,15 +212,19 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, readAt int64, rows []mirrorCardRow, encoded string, addsRows, listing bool,
 	board mirrorBoard, changes *MirrorChanges) error {
 	var write bool
-	var advance, advancing []string
+	var advance, advancing, moved []string
 	err := scanMirrorRows(tx, mirrorRowsStateSQL, []any{rootID, encoded, page.BoardID, readAt, addsRows, listing}, func(r rowScanner) error {
 		var id string
 		var superseded, writes, advances, cardAdvances, fresh sql.NullBool
-		if err := r.Scan(&id, &superseded, &writes, &advances, &cardAdvances, &fresh); err != nil {
+		var sprintsMoved bool
+		if err := r.Scan(&id, &superseded, &writes, &advances, &cardAdvances, &fresh, &sprintsMoved); err != nil {
 			return err
 		}
 		if cardAdvances.Bool {
 			advancing = append(advancing, id)
+		}
+		if sprintsMoved {
+			moved = append(moved, id)
 		}
 		if superseded.Bool {
 			changes.Superseded = append(changes.Superseded, id)
@@ -240,7 +245,8 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, readAt int6
 		return fmt.Errorf("sort rows: %w", err)
 	}
 	slices.Sort(advancing)
-	stored, err := storeMirrorCardsTx(tx, mirrorRowCards, rootID, rows, encoded, readAt, mirrorCardReadMove(tx, rootID, readAt, advancing),
+	slices.Sort(moved)
+	stored, err := storeMirrorCardsTx(tx, mirrorRowCards, rootID, rows, encoded, readAt, moved, mirrorCardReadMove(tx, rootID, readAt, advancing),
 		page.BoardID, addsRows)
 	if err != nil {
 		return err

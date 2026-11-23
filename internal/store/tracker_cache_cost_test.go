@@ -18,14 +18,16 @@ import (
 // mirror table that the package's tests have run.
 var mirrorStatements sync.Map
 
-// vmSteps holds, while countMirrorVMSteps counts, the VM steps the cached
-// statements ran, and each statement's step counter at its last run, so a
-// run's steps are the counter's growth since.
+// vmSteps holds, while countMirrorVMSteps or countStatementRuns counts,
+// the VM steps the cached statements ran (of query alone when it is set)
+// and the runs of query, and each statement's step counter at its last
+// run, so a run's steps are the counter's growth since.
 var vmSteps struct {
-	mu       sync.Mutex
-	counting bool
-	total    int
-	last     map[uintptr]int
+	mu          sync.Mutex
+	counting    bool
+	query       string
+	total, runs int
+	last        map[uintptr]int
 }
 
 func init() {
@@ -35,7 +37,7 @@ func init() {
 			if _, own := statementCallSite(); own {
 				mirrorStatements.Store(query, true)
 			}
-			recordVMSteps(stmt)
+			recordVMSteps(stmt, query)
 		}
 		if checked != nil {
 			checked(stmt, query)
@@ -46,7 +48,7 @@ func init() {
 // recordVMSteps adds the steps stmt ran since its last run to the count,
 // while counting. A counter that went back (statementVMSteps resets it)
 // counts from zero.
-func recordVMSteps(stmt driver.Stmt) {
+func recordVMSteps(stmt driver.Stmt, query string) {
 	tls, pstmt, err := sqliteStmtHandles(stmt)
 	if err != nil || pstmt == 0 {
 		return
@@ -61,8 +63,9 @@ func recordVMSteps(stmt driver.Stmt) {
 	if now < last {
 		last = 0
 	}
-	if vmSteps.counting {
+	if vmSteps.counting && (vmSteps.query == "" || vmSteps.query == query) {
 		vmSteps.total += now - last
+		vmSteps.runs++
 	}
 	vmSteps.last[pstmt] = now
 }
@@ -80,6 +83,21 @@ func countMirrorVMSteps(t *testing.T, fn func()) int {
 	defer vmSteps.mu.Unlock()
 	vmSteps.counting = false
 	return vmSteps.total
+}
+
+// countStatementRuns runs fn and returns how many times it ran the cached
+// mirror statement query, and the VM steps of those runs. Like
+// countMirrorVMSteps its callers are not parallel.
+func countStatementRuns(t *testing.T, query string, fn func()) (runs, steps int) {
+	t.Helper()
+	vmSteps.mu.Lock()
+	vmSteps.counting, vmSteps.query, vmSteps.total, vmSteps.runs = true, query, 0, 0
+	vmSteps.mu.Unlock()
+	fn()
+	vmSteps.mu.Lock()
+	defer vmSteps.mu.Unlock()
+	vmSteps.counting, vmSteps.query = false, ""
+	return vmSteps.runs, vmSteps.total
 }
 
 // countMirrorStatements runs fn and returns the statements it ran. The
@@ -275,6 +293,8 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 		"every entry of the partial index is due a history read, and the probe stops at the first one kept"},
 	{"FROM tracker_cache_issues i\n\t\t  WHERE i.root_id = ?1 AND (i.history_for < i.updated_at", "SEARCH i USING INDEX idx_tracker_cache_issues_history_due (root_id=?)",
 		"every entry of the partial index is due a history read, and the listing stops at a page"},
+	{"WITH h AS MATERIALIZED (SELECT value FROM json_each(?2))", "SCAN h",
+		"a write's bound list (the ticket move's, the history times'), read once; it drives the issue lookups by primary key"},
 	{"i.status_id IN (SELECT value FROM json_each(?2))", "SEARCH i USING COVERING INDEX idx_tracker_cache_issues_status (root_id=?)",
 		"a status entering or leaving the done groups is rare; finding the boards whose rows have it walks the root's statuses once, " +
 			"in the index the counts read"},

@@ -231,6 +231,10 @@ an atomic persistence decision; they must not become a business-logic layer.
   `sqlite_stat1`, and without it a plain `JOIN` can drive the step from a
   `thread_id` prefix and read the whole thread per queued row
   (`TestRecursiveWalksProbeTheQueuedKey` pins each walk).
+- An `UPDATE ... FROM` a bound list materializes the list
+  (`WITH h AS MATERIALIZED (SELECT value FROM json_each(?2))`): joined as
+  `json_each`, the planner searches the target's key prefix and scans the
+  list for every row (`mirrorTicketMoveSQL`, `TestTheTicketMoveGrowsLinearly`).
 - Window sizes, run members and has-more probes use the same timeline
   selection: top-level rows for the main thread, direct children for an agent
   scope. Keep selection separate from wire page shape.

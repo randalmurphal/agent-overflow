@@ -93,6 +93,7 @@ func (r *run) deltaPages(board tracker.BoardID, log *changeLog) (more bool, _ er
 				return false, fmt.Errorf("trackerapp: store a page of board %s: %w", board, err)
 			}
 			r.markStructureDue(stored)
+			r.told(board, changesOf(stored))
 			log.add(changesOf(stored))
 			if stored.CursorRefused {
 				return true, nil

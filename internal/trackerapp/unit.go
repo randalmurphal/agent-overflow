@@ -52,11 +52,29 @@ type run struct {
 	// through, captured before its reads (refreshTargets); a tick names its
 	// own board's from state.
 	lifetimes map[tracker.BoardID]int64
-	// tell passes what one write of a read of tickets stored through the
-	// change funnel as the write commits, before any later call of the
-	// read can fail; set by readDetails, whose writes alone call it.
-	tell func(Changes)
-	stop func()
+	// origin is the pump the run's changes are for (tickOrigin): a tick's
+	// pump, or the open tickets a read or a write's refresh settles; nil
+	// for none. tell, when set, collects what each write stored, which
+	// told has published already.
+	origin *tickOrigin
+	tell   func(Changes)
+	stop   func()
+}
+
+// told passes ch, what one store write of the run committed, through
+// the change funnel as the write returns, before any later call of the
+// run can fail or wait: the one rule of every path's publication (a
+// tick's units, a write's refresh, a read of tickets). board is the board
+// the write's read went through, none for a read of cards or tickets;
+// every write of a board's tick is its board's (ownOf).
+func (r *run) told(board tracker.BoardID, ch Changes) {
+	if r.scope.Board != "" {
+		board = r.scope.Board
+	}
+	r.s.publish(r.root, r.gen, r.row.ID, ch, ownOf(Scope{Connection: r.row.ID, Board: board}, ch), r.origin)
+	if r.tell != nil {
+		r.tell(ch)
+	}
 }
 
 // connHold is what ticks of a connection reuse until a change to it made
@@ -338,9 +356,9 @@ func (r *run) beginRead() (store.MirrorRead, error) {
 //     it (it stepped back), or when the interval passed: after a step
 //     either way the scope is read once and measured from that read. The
 //     order times stay ordered across the step and a restart
-//     (BeginMirrorRead), and a reconcile's settled bound counts no row
-//     read within the listing's lag as settled (store
-//     ReconcileMirrorBoard), so a step back removes no row.
+//     (BeginMirrorRead), and a reconcile removes no row on its
+//     listing's word (store ReconcileMirrorBoard), so a step back removes
+//     no row.
 //   - The history wait (store MirrorHistory.AnsweredAt and Wait, the now
 //     of GetMirrorSync and ListMirrorHistoryDue, historyFinal): the steady
 //     clock (Service.steady), monotonic within the process. A wait an

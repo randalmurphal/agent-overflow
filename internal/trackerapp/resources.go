@@ -80,6 +80,7 @@ func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID) (out Ch
 				return out, found, unsettled(), fmt.Errorf("trackerapp: store rows of board %s: %w", board, err)
 			}
 			r.markStructureDue(stored)
+			r.told(board, changesOf(stored))
 			out.add(changesOf(stored))
 			for _, row := range rows.Rows {
 				if _, refused := slices.BinarySearch(stored.Refused, string(row.Card.ID)); !refused {
@@ -141,6 +142,7 @@ func (r *run) cardsOf(batch []tracker.IssueID) (Changes, error) {
 	if err != nil {
 		return Changes{}, fmt.Errorf("trackerapp: store %d cards: %w", len(cards), err)
 	}
+	r.told("", changesOf(stored))
 	return changesOf(stored), nil
 }
 
@@ -193,6 +195,7 @@ func (r *run) structure(board tracker.BoardID) (Changes, error) {
 	// later one is the store's whether or not the call failed.
 	stored, err := r.s.store.ReplaceMirrorStructure(r.root, m)
 	ch := Changes{Structure: stored.Changed, Catalog: stored.Catalog}
+	r.told(board, ch)
 	if board == r.scope.Board && stored.EstimateResetAt > r.state.EstimateResetAt {
 		r.state.EstimateResetAt, r.state.Cursor = stored.EstimateResetAt, nil
 	}

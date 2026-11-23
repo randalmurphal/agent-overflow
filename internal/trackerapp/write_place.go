@@ -128,6 +128,7 @@ func (r *run) storePlaced(f *refreshed, br tracker.BoardRow, cat tracker.Catalog
 		return false, fmt.Errorf("trackerapp: store the new issue's row on board %s: %w", br.Board, err)
 	}
 	r.markStructureDue(stored)
-	f.add(br.Board, changesOf(stored))
+	r.told(br.Board, changesOf(stored))
+	f.ch.add(changesOf(stored))
 	return !slices.Contains(stored.Superseded, string(br.Row.Card.ID)), nil
 }

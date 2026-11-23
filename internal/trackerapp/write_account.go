@@ -38,10 +38,9 @@ var errUnaccounted = errors.New("trackerapp: the refresh after a write made no r
 
 // refreshed is what a write's refresh did.
 type refreshed struct {
-	// ch is everything it stored, and own what its reads through each
-	// board stored.
-	ch  Changes
-	own []boardChanges
+	// ch is everything it stored, each write told as it returned
+	// (run.told).
+	ch Changes
 	// pumps are the open tickets whose detail it read, began the read's
 	// place among those settled into ticket pumps, and reads their reads
 	// in the order of pumps, then those of the details only the mirror

@@ -28,8 +28,9 @@ func ownOf(scope Scope, ch Changes) []boardChanges {
 	return []boardChanges{{board: scope.Board, ch: ch}}
 }
 
-// publish is the change funnel: every tick's changes (tick.go) and every
-// read of open tickets pass through it, and it turns them into what each
+// publish is the change funnel: every write of a tick, a write's refresh
+// and a read of open tickets passes through it as it returns (run.told),
+// and it turns what each stored into what each
 // subscription of the connection needs, under subMu:
 //
 //   - the board of the change's own scope gets its changed rows, cards and

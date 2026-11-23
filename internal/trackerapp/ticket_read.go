@@ -16,7 +16,7 @@ import (
 // connection's round (ticket_round.go) every shown ticket together. Every
 // read stores what it found in the issue record (store StoreMirrorTickets),
 // the card, the body and the evidence of the status time together, and
-// each write's changes are told as it commits (run.tell).
+// each write's changes are told as it commits (run.told).
 
 // detailCheck is what a ticket's next read checks it against without
 // decoding a body: the body the ticket shows, named by when its read began
@@ -110,10 +110,8 @@ func (s *Service) readDetails(ctx context.Context, id string, reads []*ticketRea
 	}
 	defer r.finish()
 	var out detailsRead
-	r.tell = func(ch Changes) {
-		out.ch.add(ch)
-		s.publish(r.root, r.gen, id, ch, nil, origin)
-	}
+	r.origin = origin
+	r.tell = func(ch Changes) { out.ch.add(ch) }
 	// The linked scope's sync state carries the root's sweep the tickets'
 	// writes name.
 	r.scope = Scope{Connection: id}
@@ -332,7 +330,7 @@ func (r *run) ticketCards(issues []tracker.IssueID, opening store.MirrorRead) ([
 	if err != nil {
 		return nil, nil, fmt.Errorf("trackerapp: store the cards of %d tickets: %w", len(tickets), err)
 	}
-	r.tell(ticketChanges(tickets, w))
+	r.told("", ticketChanges(tickets, w))
 	return read.Cards, w.Tickets, nil
 }
 
@@ -476,7 +474,7 @@ func (r *run) details(reads []*ticketRead, opening store.MirrorRead) error {
 	if err != nil {
 		return fmt.Errorf("trackerapp: store the tickets of %d issues: %w", len(tickets), err)
 	}
-	r.tell(ticketChanges(tickets, written))
+	r.told("", ticketChanges(tickets, written))
 	for i, w := range written.Tickets {
 		rd := read[i]
 		rd.answered = true

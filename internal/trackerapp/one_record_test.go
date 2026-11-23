@@ -436,6 +436,88 @@ func TestAShownTicketsHistoryIsReadFirst(t *testing.T) {
 	if !slices.Contains(asked[0], last.ID) {
 		t.Fatalf("the first history read names %d issues without the shown ticket's %s", len(asked[0]), last.ID)
 	}
+	// The shown ticket's read shares the board's batches: no read of its
+	// own, the first full, and no more reads than a history tick makes.
+	if len(asked[0]) != historyBatch || len(asked) > historyBatches {
+		t.Fatalf("the round read history in %d reads, the first of %d issues; want the shown ticket in a full batch of %d and at most %d reads",
+			len(asked), len(asked[0]), historyBatch, historyBatches)
+	}
+}
+
+// A ticket read's final status evidence decides the record's status time
+// and leaves the issue's history due: the board's sprint, estimate and
+// assignee history needs the history read, which the evidence does not
+// discharge.
+func TestStatusEvidenceLeavesTheBoardsHistoryDue(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.seedBoard(t)
+	m.statusHistory("10001", statusBegan)
+	must[Outcome](t)(m.svc.tickHistory(t.Context(), m.scope(), Background))
+	if slices.Contains(m.due(), "10001") {
+		t.Fatal("the issue is due a history read after its history read")
+	}
+	c := seededCard()
+	c.Updated = c.Updated.Add(time.Hour)
+	m.p.set(func(p *scripted) {
+		p.changedRows = func(tracker.DeltaQuery) (tracker.RowPage, error) {
+			return tracker.RowPage{Rows: []tracker.Row{{Card: c, Order: "a"}}, Next: cursorAfter("10001")}, nil
+		}
+		p.detail = func(tracker.IssueID) (tracker.Detail, error) {
+			d := detailOfCard(c)
+			d.StatusChanged = tracker.StatusChange{Change: tracker.Change{At: statusBegan}, From: "s2", To: c.Status}
+			d.HistoryTo = c.Updated.Add(time.Minute)
+			return d, nil
+		}
+	})
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	m.openDetail(t, "10001")
+	if r := m.recordOf(t, "10001"); !r.StatusFinal || r.StatusSince != statusBegan.UnixMilli() {
+		t.Fatalf("the record after a final ticket read holds since %d final %v; want %d final", r.StatusSince, r.StatusFinal, statusBegan.UnixMilli())
+	}
+	if !slices.Contains(m.due(), "10001") {
+		t.Fatalf("the issue's history is not due after the status evidence: %v", m.due())
+	}
+}
+
+// A shown ticket whose read decided, finally, that its status time is
+// unknown (Linear's folded opening) costs no further read: the rounds
+// after it read no history for it.
+func TestAFinalUnknownStatusTimeCostsNoFurtherRead(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour, RetryBase: time.Hour})
+	m.seedBoard(t)
+	c := seededCard()
+	var mu sync.Mutex
+	reads := 0
+	m.p.set(func(p *scripted) {
+		p.detail = func(tracker.IssueID) (tracker.Detail, error) {
+			d := detailOfCard(c)
+			d.HistoryFrom, d.HistoryTo = c.Created.Add(time.Second), c.Updated.Add(time.Minute)
+			return d, nil
+		}
+		p.history = func(tracker.HistoryQuery) (tracker.History, error) {
+			mu.Lock()
+			reads++
+			mu.Unlock()
+			return tracker.History{}, nil
+		}
+	})
+	must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, c.ID))
+	m.settledTickets(t)
+	quiet(t, m.svc)
+	if r := m.recordOf(t, "10001"); !r.StatusFinal || r.StatusSince != 0 {
+		t.Fatalf("the record holds since %d final %v; want a final unknown", r.StatusSince, r.StatusFinal)
+	}
+	for range 2 {
+		m.readSoon(c.ID)
+		quiet(t, m.svc)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if reads != 0 {
+		t.Fatalf("the rounds of a ticket whose status time is a final unknown read history %d times; want none", reads)
+	}
 }
 
 // statusRead makes m's detail reads answer c, a version of issue 10001,

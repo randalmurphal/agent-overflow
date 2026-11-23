@@ -17,13 +17,15 @@ import (
 // of the same issue, column for column and in the blob a view decodes, on
 // each provider: every read stores its card in the one issue record
 // through the same card path, so a difference would make the record
-// change with the path that read it last. The two reads also leave out
-// the same issues: a trashed Linear issue has no card and no detail. Each
-// issue the board shows is compared with its row, and the issues carry a
-// parent, labels their history shows changing, a sprint or cycle, an
-// estimate and a resolution; on Jira one names a sprint that closed
-// before the history window (the cutoff), and on Linear one carries more
-// labels than a read's nested page of 250 holds (the cap), which the
+// change with the path that read it last. The two reads also take and
+// leave out the same issues: a trashed Linear issue has no card and no
+// detail, and an archived one has both and no board row. Each issue the
+// board shows is compared with its row, and the issues carry a parent,
+// labels their history shows changing, a sprint or cycle, an estimate and
+// a resolution; on Jira one names a sprint that closed before the history
+// window (the cutoff) and one's changelog is longer than a page, which
+// the detail reads past the embedded newest, and on Linear one carries
+// more labels than a read's nested page of 250 holds (the cap), which the
 // reads name past the page.
 func TestFakeDetailCardIsTheReadCard(t *testing.T) {
 	t.Parallel()
@@ -55,6 +57,12 @@ func TestFakeDetailCardIsTheReadCard(t *testing.T) {
 				site.Issues[0].Sprints = []int64{90, 1}
 				site.Issues = append(site.Issues, trackerfake.JiraIssue{ID: "10104", Key: "WEB-4", Project: "WEB", Type: "10000",
 					Summary: "The epic", Status: "10000", Created: day, Updated: day})
+				// A changelog longer than a page, read past the embedded newest.
+				for i := range 120 {
+					from, to := fmt.Sprint("Title ", i), fmt.Sprint("Title ", i+1)
+					site.Issues[1].Changelog = append(site.Issues[1].Changelog, trackerfake.JiraChange{ID: fmt.Sprint(30000 + i), Author: "acc-user1",
+						Created: day.Add(time.Duration(i) * time.Minute), Items: []trackerfake.JiraChangeItem{{FieldID: "summary", Field: "summary", FieldType: "jira", FromString: &from, ToString: &to}}})
+				}
 				return trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}
 			},
 			sites: []string{"example.atlassian.net"},
@@ -86,6 +94,8 @@ func TestFakeDetailCardIsTheReadCard(t *testing.T) {
 					many.Labels = append(many.Labels, lid(1000+i))
 				}
 				ws.Issues = append(ws.Issues, many)
+				ws.Issues = append(ws.Issues, trackerfake.LinearIssue{ID: lid(65), Team: lid(10), Number: 6, Title: "Archived idea", State: lid(20),
+					Creator: lid(1), SortOrder: 600, CreatedAt: at.Add(-96 * time.Hour), UpdatedAt: at.Add(-24 * time.Hour), ArchivedAt: at.Add(-24 * time.Hour)})
 				done := at.Add(-time.Hour)
 				ws.Issues[2].State, ws.Issues[2].CompletedAt, ws.Issues[2].UpdatedAt = lid(23), done, done
 				return trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{ws}}
@@ -96,8 +106,10 @@ func TestFakeDetailCardIsTheReadCard(t *testing.T) {
 				return conn
 			},
 			board:  tracker.BoardID(lid(10)),
-			issues: ids(lid(60), lid(61), lid(62), lid(64)),
+			issues: ids(lid(60), lid(61), lid(62), lid(64), lid(65)),
 			gone:   ids(lid(63)),
+			// An archived issue is on no board.
+			offBoard: ids(lid(65)),
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -123,7 +135,7 @@ func TestFakeDetailCardIsTheReadCard(t *testing.T) {
 			for _, r := range rows.Rows {
 				onBoard[r.Card.ID] = stored(r.Card)
 			}
-			var parent, labelled, sprinted, resolved, relabelled, capped bool
+			var parent, labelled, sprinted, resolved, relabelled, capped, paged bool
 			for _, d := range details.Details {
 				got := stored(d.Card)
 				if want, ok := read[d.Card.ID]; !ok || !reflect.DeepEqual(got, want) {
@@ -141,10 +153,11 @@ func TestFakeDetailCardIsTheReadCard(t *testing.T) {
 				}
 				resolved = resolved || got.ResolvedAt > 0
 				relabelled = relabelled || slices.ContainsFunc(d.History, func(e tracker.Event) bool { return strings.EqualFold(e.Field, "labels") })
+				paged = paged || len(d.History) > 100
 			}
-			if !parent || !labelled || !sprinted || !resolved || !relabelled || name == "linear" && !capped {
-				t.Fatalf("the issues compared: a parent %v, labels %v, a sprint %v, a resolution %v, a label change %v, past the label cap %v",
-					parent, labelled, sprinted, resolved, relabelled, capped)
+			if !parent || !labelled || !sprinted || !resolved || !relabelled || name == "linear" && !capped || name == "jira" && !paged {
+				t.Fatalf("the issues compared: a parent %v, labels %v, a sprint %v, a resolution %v, a label change %v, past the label cap %v, a paged changelog %v",
+					parent, labelled, sprinted, resolved, relabelled, capped, paged)
 			}
 		})
 	}

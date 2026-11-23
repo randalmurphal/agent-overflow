@@ -211,7 +211,8 @@ func (p *Provider) listIDs(ctx context.Context, b board, ids []tracker.IssueID, 
 	return res.Issues, nil
 }
 
-// Cards reads issues with no board, a hundred to a request. An issue Jira
+// Cards reads issues with no board in one bulk fetch (jira.BulkFetch, up
+// to 500 issues a request with the card fields). An issue Jira
 // does not return is Missing; one it says it could not read fails the
 // call, since it may exist.
 func (p *Provider) Cards(ctx context.Context, issues []tracker.IssueID) (tracker.Cards, error) {

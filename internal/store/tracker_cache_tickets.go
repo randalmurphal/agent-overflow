@@ -123,11 +123,13 @@ type MirrorTicketsWrite struct {
 // mirrorCardState is a card's issue as a write of the card reads it before
 // it writes: whether the mirror keeps it, holds its row (present),
 // refuses the card (mirrorCardRefusedSQL) or admits it from an earlier
-// read (mirrorCardAdvancesSQL); the record's update time and status time
+// read (mirrorCardAdvancesSQL), and whether the card names other sprints
+// (mirrorCardSprintsMovedSQL); the record's update time and status time
 // with its finality; its body's bookkeeping; and the earliest bind of an
 // open ticket of the issue (keepOpened, an order time, zero for none).
 type mirrorCardState struct {
 	kept, present, refused, advances bool
+	sprintsMoved                     bool
 	updatedAt, since, finalFor       int64
 	body                             MirrorBodyState
 	bodyOpened, keepOpened           int64
@@ -138,7 +140,7 @@ type mirrorCardState struct {
 // ?3 by its place in the list, its issue's state (mirrorCardState), the
 // list driving the join.
 var mirrorCardStatesSQL = `SELECT c.key, ` + mirrorIssueKept("?1", "c.value ->> 'i'") + `, i.rowid IS NOT NULL,
-	    coalesce(` + mirrorCardRefusedSQL("?3") + `, 0), coalesce(` + mirrorCardAdvancesSQL("?3") + `, 0),
+	    coalesce(` + mirrorCardRefusedSQL("?3") + `, 0), coalesce(` + mirrorCardAdvancesSQL("?3") + `, 0), ` + mirrorCardSprintsMovedSQL + `,
 	    coalesce(i.updated_at, 0), coalesce(i.status_since, 0), coalesce(i.status_final_for, 0),
 	    coalesce(i.body_updated_at, 0), coalesce(i.body_read_at, 0), coalesce(i.body_wall, 0), coalesce(i.body_opened_at, 0),
 	    coalesce(i.body_digest, x''),
@@ -154,7 +156,7 @@ func readMirrorCardStatesTx(tx *sql.Tx, rootID int64, encoded string, n int, rea
 	err := scanMirrorRows(tx, mirrorCardStatesSQL, []any{rootID, encoded, readAt}, func(r rowScanner) error {
 		var at int
 		var st mirrorCardState
-		if err := r.Scan(&at, &st.kept, &st.present, &st.refused, &st.advances, &st.updatedAt, &st.since, &st.finalFor,
+		if err := r.Scan(&at, &st.kept, &st.present, &st.refused, &st.advances, &st.sprintsMoved, &st.updatedAt, &st.since, &st.finalFor,
 			&st.body.UpdatedAt, &st.body.ReadAt, &st.body.Wall, &st.bodyOpened, &st.digest, &st.keepOpened); err != nil {
 			return err
 		}
@@ -193,9 +195,15 @@ type mirrorTicketMove struct {
 // mirrorTicketMoveSQL writes, for each kept ticket of the JSON list ?2 of
 // mirrorTicketMove read from ?3 at wall time ?4, the card's read, the
 // body's bookkeeping and the status result, as the issue row holds them
-// when it runs (after the card upsert), in one statement, each issue found
-// by key from the list, and returns each row it changed as it left it: a
-// row the move leaves as it was is not written (an identical read again).
+// when it runs (after the card upsert), in one statement that joins the
+// list, parsed once, to the issue rows, each found by key from its entry,
+// and returns each row it changed as it left it: a row the move leaves as
+// it was is not written (an identical read again). The list names an
+// issue once (StoreMirrorTickets refuses a ticket read twice), so each
+// row joins one entry. The list is materialized, so the join is driven
+// from it and finds each row by its primary key; joined as json_each, the
+// planner searches every row of the root and scans the list for each
+// (TestTheTicketMoveGrowsLinearly).
 // A stored body's bookkeeping is the admitted body's own (bodyOutcome
 // admits only a body of a later (update time, read) pair than the held
 // one): its version, its read, its wall time and its digest.
@@ -217,15 +225,15 @@ func mirrorTicketMoveOf(full bool) string {
 	         iif(h.value ->> 'b' OR ` + i + `body_read_at > 0, max(` + i + `body_opened_at, h.value ->> 'o'), ` + i + `body_opened_at)`
 	}
 	columns += `)`
-	after := `(
-	  SELECT iif(h.value ->> 'a', max(` + i + `read_at, ?3), ` + i + `read_at),
+	after := `(iif(h.value ->> 'a', max(` + i + `read_at, ?3), ` + i + `read_at),
 	         iif(h.value ->> 'b', ?3, ` + i + `body_read_at),
 	         iif(h.value ->> 'b', ?4, ` + i + `body_wall),
 	         iif(h.value ->> 'b', unhex(h.value ->> 'd'), ` + i + `body_digest),
-	         ` + since + `, ` + finalFor + versions + `
-	    FROM json_each(?2) h WHERE h.value ->> 'i' = ` + i + `issue_id)`
-	return `UPDATE tracker_cache_issues SET ` + columns + ` = ` + after + `
-	WHERE root_id = ?1 AND issue_id IN (SELECT value ->> 'i' FROM json_each(?2)) AND ` + columns + ` IS NOT ` + after + `
+	         ` + since + `, ` + finalFor + versions + `)`
+	return `WITH h AS MATERIALIZED (SELECT value FROM json_each(?2))
+	UPDATE tracker_cache_issues SET ` + columns + ` = ` + after + `
+	FROM h
+	WHERE root_id = ?1 AND issue_id = h.value ->> 'i' AND ` + columns + ` IS NOT ` + after + `
 	RETURNING ` + mirrorRecordAfterColumns
 }
 
@@ -368,11 +376,15 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 		// holds (mirrorTicketMoveSQL.full).
 		versions := false
 		var bodies []int
+		var moved []string
 		started := false
 		for i, t := range tickets {
 			st, w := states[i], &out.Tickets[i]
 			id := t.Card.IssueID
 			w.Kept = st.kept
+			if st.sprintsMoved {
+				moved = append(moved, id)
+			}
 			if !st.kept {
 				out.Changes.Unkept = append(out.Changes.Unkept, id)
 				if t.Body != nil {
@@ -441,7 +453,8 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 			}
 			return nil
 		}
-		stored, err := storeMirrorCardsTx(tx, mirrorLinkedCards, rootID, rows, encoded, readAt, move)
+		slices.Sort(moved)
+		stored, err := storeMirrorCardsTx(tx, mirrorLinkedCards, rootID, rows, encoded, readAt, moved, move)
 		if err != nil {
 			return err
 		}

@@ -16,9 +16,10 @@ import (
 // Bounds of one write of cards or rows. A page's rows and missing issues
 // bound the rows it adds and removes. A card names any number of sprints:
 // an issue's sprints are compared as one digest (sprint_set,
-// mirrorSprintSet), and only the cards whose content or sprints changed
-// read and write memberships (replaceMirrorCardSprintsTx), each statement
-// of at most mirrorSprintChunk memberships whatever one card names.
+// mirrorSprintSet), and only the stored cards whose digest moved read and
+// write memberships (mirrorCardSprintsMovedSQL, replaceMirrorCardSprintsTx),
+// each statement of at most mirrorSprintChunk memberships whatever one
+// card names.
 const (
 	mirrorSprintChunk = 1000
 	mirrorMaxPageRows = 500
@@ -199,6 +200,14 @@ func mirrorJSONCard(column, key string) string {
 	}
 	return `c.value ->> '` + key + `'`
 }
+
+// mirrorCardSprintsMovedSQL holds for a card c of a JSON list whose
+// sprints' digest is not the stored issue i's, a new issue's being none
+// (its memberships are none): every card writer's classification reads
+// it before the upsert, and of the cards the upsert stores those alone
+// have their memberships read and replaced (storeMirrorCardsTx), so a
+// card whose other content changed reads no membership.
+var mirrorCardSprintsMovedSQL = `coalesce(i.sprint_set, x'') IS NOT ` + mirrorJSONCard("sprint_set", "h")
 
 // mirrorCardRefusedSQL holds for a card c of a JSON list, read from
 // readAt, that the stored issue i supersedes while holding other content
@@ -459,7 +468,7 @@ var (
 )
 
 // mirrorCardsStored is what storeMirrorCardsTx did: the issues whose card
-// or sprints changed, each as the upsert left it (after), and the boards
+// changed, each as the upsert left it (after), and the boards
 // on which it marked a reference the mirror lacks (mirrorCardMarkSQL),
 // each sorted.
 type mirrorCardsStored struct {
@@ -469,9 +478,11 @@ type mirrorCardsStored struct {
 
 // storeMirrorCardsTx runs statements over cards, encoded, read from readAt,
 // with the filter's arguments. The upsert stores each admitted card whose
-// content or sprints changed, and those cards alone have their sprints
-// replaced (replaceMirrorCardSprintsTx): an identical card costs the
-// upsert's comparison and no membership read or write. Then move runs,
+// content changed, and of those the cards of moved, sorted, which the
+// writer's classification found naming other sprints than stored
+// (mirrorCardSprintsMovedSQL), alone have their sprints replaced
+// (replaceMirrorCardSprintsTx): a card whose sprints stay costs the
+// digests' comparison and no membership read or write. Then move runs,
 // given the cards the upsert stored: the card writers' move
 // (mirrorCardReadMove) records the read as the latest of the stored cards
 // it admits from an earlier read and did not replace, so an identical
@@ -484,7 +495,7 @@ type mirrorCardsStored struct {
 // to a status, user or sprint the mirror has not read makes the boards
 // showing it due a structure read, whichever read brought it.
 func storeMirrorCardsTx(tx *sql.Tx, statements mirrorCardStatements, rootID int64, cards []mirrorCardRow, encoded string, readAt int64,
-	move func(stored []string) error, filter ...any) (out mirrorCardsStored, err error) {
+	moved []string, move func(stored []string) error, filter ...any) (out mirrorCardsStored, err error) {
 	args := append([]any{rootID, encoded, readAt}, filter...)
 	out.after = map[string]mirrorRecordAfter{}
 	stored, err := scanMirrorRecordsAfter(tx, statements.upsert, out.after, args...)
@@ -493,7 +504,13 @@ func storeMirrorCardsTx(tx *sql.Tx, statements mirrorCardStatements, rootID int6
 	}
 	slices.Sort(stored)
 	out.changed = stored
-	if err := replaceMirrorCardSprintsTx(tx, rootID, cards, stored); err != nil {
+	var sprinted []string
+	for _, id := range stored {
+		if _, found := slices.BinarySearch(moved, id); found {
+			sprinted = append(sprinted, id)
+		}
+	}
+	if err := replaceMirrorCardSprintsTx(tx, rootID, cards, sprinted); err != nil {
 		return mirrorCardsStored{}, err
 	}
 	if err := move(stored); err != nil {
@@ -589,7 +606,7 @@ func (s *Store) UpsertMirrorCards(rootID, sweep int64, cards []MirrorCard, catal
 		if err != nil {
 			return err
 		}
-		var advancing []string
+		var advancing, moved []string
 		for i, st := range states {
 			id := rows[i].ID
 			switch {
@@ -601,11 +618,15 @@ func (s *Store) UpsertMirrorCards(rootID, sweep int64, cards []MirrorCard, catal
 			if st.kept && st.advances {
 				advancing = append(advancing, id)
 			}
+			if st.sprintsMoved {
+				moved = append(moved, id)
+			}
 		}
 		slices.Sort(changes.Unkept)
 		slices.Sort(changes.Superseded)
 		slices.Sort(advancing)
-		stored, err := storeMirrorCardsTx(tx, mirrorLinkedCards, rootID, rows, encoded, readAt, mirrorCardReadMove(tx, rootID, readAt, advancing))
+		slices.Sort(moved)
+		stored, err := storeMirrorCardsTx(tx, mirrorLinkedCards, rootID, rows, encoded, readAt, moved, mirrorCardReadMove(tx, rootID, readAt, advancing))
 		changes.Cards = stored.changed
 		return err
 	})

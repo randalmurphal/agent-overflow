@@ -165,9 +165,9 @@ func (s *Service) syncLinked(ctx context.Context, id string, due LinkedDue, u Ur
 // tick runs the steps plan chooses on scope under its lock and one hold
 // of its connection, then settles and records the outcome once. plan runs
 // after the tick read the scope's sync state; a plan with no step ends
-// the tick there. What the tick stored passes through the change funnel
-// (publish) before it returns, whatever its outcome; origin is the pump
-// that runs it, nil for any other caller.
+// the tick there. Each write of the tick passes what it stored through
+// the change funnel as it returns (run.told), whatever the tick's
+// outcome; origin is the pump that runs it, nil for any other caller.
 func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, plan func(*run) []step, origin *tickOrigin) (out Outcome, err error) {
 	out = Outcome{Ran: []UnitResult{}}
 	unlock, err := s.lock(ctx, lockKey{scope: scope})
@@ -183,11 +183,7 @@ func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, plan func(*r
 		return out, err
 	}
 	defer r.finish()
-	defer func() {
-		ch := out.Changes()
-		s.publish(r.root, r.gen, scope.Connection, ch, ownOf(scope, ch), origin)
-	}()
-	r.scope = scope
+	r.scope, r.origin = scope, origin
 	if origin != nil && origin.board != nil {
 		r.pass = &origin.board.pass
 	}

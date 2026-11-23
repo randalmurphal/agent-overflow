@@ -20,14 +20,21 @@ type heldCall struct {
 }
 
 // holdNext holds p's next call of name.
-func holdNext(p *scripted, name string) *heldCall {
+func holdNext(p *scripted, name string) *heldCall { return holdNth(p, name, 1) }
+
+// holdNth holds p's n-th call of name from now.
+func holdNth(p *scripted, name string, n int) *heldCall {
 	h := &heldCall{arrived: make(chan struct{}), release: make(chan struct{})}
-	var once sync.Once
+	var mu sync.Mutex
+	calls := 0
 	p.set(func(p *scripted) {
 		p.block = func(ctx context.Context, called string) error {
 			held := false
 			if called == name {
-				once.Do(func() { held = true })
+				mu.Lock()
+				calls++
+				held = calls == n
+				mu.Unlock()
 			}
 			if !held {
 				return nil

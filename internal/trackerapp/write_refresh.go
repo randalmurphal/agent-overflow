@@ -117,6 +117,9 @@ func (r *run) refreshMirrored(f *refreshed, p refreshPlan) error {
 	// opened after the connection was turned off and on again is one of a
 	// later mirror, which the targets read then refuses.
 	open := r.s.openTickets(r.row.ID, p.details)
+	// The open tickets settle with everything the refresh stored
+	// (Service.write), so its writes are told to them as their own.
+	r.origin = &tickOrigin{tickets: open}
 	boards := slices.Concat(slices.Collect(maps.Keys(p.rows)), p.structures)
 	var place []tracker.BoardID
 	if p.created.issue != "" {
@@ -143,7 +146,7 @@ func (r *run) refreshMirrored(f *refreshed, p refreshPlan) error {
 			continue
 		}
 		ch, err := r.structure(b)
-		f.add(b, ch)
+		f.ch.add(ch)
 		switch {
 		case err == nil:
 			f.covered(tracker.StructureOf(b))
@@ -216,7 +219,7 @@ func (r *run) refreshRows(f *refreshed, p refreshPlan, t store.MirrorRefreshTarg
 	for _, b := range slices.Sorted(maps.Keys(asked)) {
 		ids := sortedUnique(asked[b])
 		ch, read, unread, err := r.boardRows(b, ids)
-		f.add(b, ch)
+		f.ch.add(ch)
 		for _, id := range read {
 			returned[id] = true
 		}
@@ -282,8 +285,6 @@ func (r *run) refreshDetails(f *refreshed, open []*ticketPump, cached []string, 
 	if len(f.reads) == 0 {
 		return nil
 	}
-	// The refresh's changes are published once, with its own boards', as
-	// the write returns (Service.write).
 	var ch Changes
 	r.tell = func(stored Changes) { ch.add(stored) }
 	err := r.boundDetails(f.reads, false)
@@ -343,17 +344,6 @@ func rowResources(b tracker.BoardID, ids []tracker.IssueID) []tracker.Resource {
 		out[i] = tracker.RowOf(b, id)
 	}
 	return out
-}
-
-// add merges ch, stored by a read through board b.
-func (f *refreshed) add(b tracker.BoardID, ch Changes) {
-	f.ch.add(ch)
-	i := slices.IndexFunc(f.own, func(o boardChanges) bool { return o.board == b })
-	if i < 0 {
-		f.own = append(f.own, boardChanges{board: b})
-		i = len(f.own) - 1
-	}
-	f.own[i].ch.add(ch)
 }
 
 // refreshTargets reads where the mirror holds the cards, details and

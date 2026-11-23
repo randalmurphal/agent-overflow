@@ -51,6 +51,14 @@ func TestACardNamesAnyNumberOfSprints(t *testing.T) {
 			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), cards, MirrorCatalog{}, mirrorReadAt(at))
 			return err
 		},
+		"tickets": func(s *Store, root int64, at int64, cards ...MirrorCard) error {
+			tickets := make([]MirrorTicket, len(cards))
+			for i, c := range cards {
+				tickets[i] = MirrorTicket{Card: c}
+			}
+			_, err := s.StoreMirrorTickets(root, currentSweep(s, root), tickets, MirrorCatalog{}, MirrorRead{}, mirrorReadAt(at))
+			return err
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -156,6 +164,70 @@ func TestManyMembershipsAreWrittenInBoundedStatements(t *testing.T) {
 	check("all removed", nil, clearMirrorChunk, 120, true)
 	if n := totalSprints(t, s, root); n != 0 {
 		t.Fatalf("%d memberships after every card named none", n)
+	}
+}
+
+// A card whose other content changes and whose sprints stay reads and
+// writes no membership, on every card writer: the writer's classification
+// compares the sprints' digests before the upsert
+// (mirrorCardSprintsMovedSQL). 50 board cards of 1,200 memberships each,
+// edited in update time and title alone, are all stored, and no statement
+// reads their 60,000 memberships.
+func TestATitleEditReadsNoMembership(t *testing.T) {
+	cards := manySprintCards(50, 1200, 2, 100_000)
+	edited := make([]MirrorCard, len(cards))
+	for i, c := range cards {
+		c.UpdatedAt, c.Data = 3, []byte(`{"title":"Renamed `+c.IssueID+`"}`)
+		edited[i] = c
+	}
+	for _, name := range []string{"board rows", "cards by ID", "tickets"} {
+		t.Run(name, func(t *testing.T) {
+			s, _, root := newMirror(t)
+			mustReplaceStructure(t, s, root, webStructure(), true)
+			writeBoardCards(t, s, root, 2, cards)
+			recorder := recordMirrorWrites(t, s)
+			var changed []string
+			var err error
+			runs, _ := countStatementRuns(t, mirrorCardSprintsOfSQL, func() {
+				switch name {
+				case "board rows":
+					page := MirrorRowPage{BoardID: "10", ReadAt: mirrorReadAt(3)}
+					for i, c := range edited {
+						page.Rows = append(page.Rows, MirrorRow{Card: c, OrderKey: fmt.Sprintf("a%04d", i)})
+					}
+					var ch MirrorChanges
+					ch, err = s.WriteMirrorRowPage(root, currentPage(s, root, page), nil)
+					changed = ch.Cards
+				case "cards by ID":
+					var ch MirrorChanges
+					ch, err = s.UpsertMirrorCards(root, currentSweep(s, root), edited, MirrorCatalog{}, mirrorReadAt(3))
+					changed = ch.Cards
+				default:
+					tickets := make([]MirrorTicket, len(edited))
+					for i, c := range edited {
+						tickets[i] = MirrorTicket{Card: c}
+					}
+					var w MirrorTicketsWrite
+					w, err = s.StoreMirrorTickets(root, currentSweep(s, root), tickets, MirrorCatalog{}, MirrorRead{}, mirrorReadAt(3))
+					changed = w.Changes.Cards
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(changed) != len(edited) {
+				t.Fatalf("the edit stored %d of %d cards", len(changed), len(edited))
+			}
+			if runs != 0 {
+				t.Fatalf("a title edit of 50 cards read their memberships in %d statements; want none", runs)
+			}
+			if n := recorder.rowWrites()["tracker_cache_issue_sprints"]; n != 0 {
+				t.Fatalf("a title edit wrote %d memberships", n)
+			}
+			if n := totalSprints(t, s, root); n != 60_000 {
+				t.Fatalf("%d memberships after a title edit; want 60,000", n)
+			}
+		})
 	}
 }
 
