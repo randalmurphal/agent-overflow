@@ -248,9 +248,8 @@ func TestClaudeMemoryDirErrorsOnAMissingWorkspace(t *testing.T) {
 // token only the legend knows renders literally into the prompt the model
 // reads, a token only Go knows is a substitution the user is never told
 // exists, and a meaning or provider set that differs tells the user one
-// thing in Settings and another in the prompts directory README. Same
-// two-sided-copy pin as TestReservedEnvNamesMatchTheProviderPins, parsing
-// the mirror the way internal/highlight pins its JS hash parity.
+// thing in Settings and another in the prompts directory README. The test
+// parses the mirror the way internal/highlight pins its JS hash parity.
 func TestPlaceholdersMatchTheFrontendMirror(t *testing.T) {
 	const mirror = "frontend/src/lib/utils/promptOverrides.ts"
 	source := readRepoFile(t, mirror)

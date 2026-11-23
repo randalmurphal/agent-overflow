@@ -16,43 +16,6 @@ import (
 	"agent-overflow/internal/settings"
 )
 
-// The settings layer cannot import internal/provider, so its reserved-name
-// table is a copy. This is the cross-check that keeps the copy honest in both
-// directions: a pin added to a spawn path that nobody deny-listed would be
-// silently overridable, and a name deny-listed here that no spawn path pins
-// would refuse a configuration for no reason.
-func TestReservedEnvNamesMatchTheProviderPins(t *testing.T) {
-	t.Parallel()
-	for _, providerName := range []string{
-		string(provider.Claude),
-		string(provider.ClaudeTUI),
-		string(provider.Codex),
-		string(provider.Agy),
-	} {
-		t.Run(providerName, func(t *testing.T) {
-			pinned := upperSet(provider.ReservedEnvNames(providerName))
-			denied := upperSet(settings.ReservedProviderEnvNames(providerName))
-			for name := range pinned {
-				if _, ok := denied[name]; !ok {
-					t.Errorf("%s pins %s but the settings deny-list does not reject it", providerName, name)
-				}
-			}
-			for name := range denied {
-				if _, ok := pinned[name]; !ok {
-					t.Errorf("settings rejects %s for %s but no spawn path pins it", name, providerName)
-				}
-			}
-			// Every pinned name is actually refused end to end, not merely
-			// listed in a table.
-			for name := range pinned {
-				if err := settings.ValidateProviderEnvVarName(providerName, name); err == nil {
-					t.Errorf("%s accepted the reserved name %s", providerName, name)
-				}
-			}
-		})
-	}
-}
-
 // claude-tui pins ANTHROPIC_BASE_URL on the child process, but reserving the
 // name would break the feature's primary use case; the app routes it to the
 // gateway upstream instead. Pin that the exception stays an exception.
@@ -417,14 +380,6 @@ func TestSensitiveCustomEnvSurvivesAReload(t *testing.T) {
 	if got := reloaded.ProviderEnvMap(string(provider.Codex))["PROXY_TOKEN"]; got != "hunter2" {
 		t.Fatalf("reloaded value = %q, want the stored secret", got)
 	}
-}
-
-func upperSet(names []string) map[string]struct{} {
-	out := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		out[strings.ToUpper(name)] = struct{}{}
-	}
-	return out
 }
 
 func claudeAccountProbeCache() *provider.ProbeCache {

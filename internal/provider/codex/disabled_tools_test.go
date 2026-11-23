@@ -258,8 +258,8 @@ func TestSessionResumeRepeatsTheThreadScopedOverrides(t *testing.T) {
 // ID SET — an id only the frontend knows renders a switch that disables
 // nothing (the spawn path skips it with a log line the user never sees), and
 // an id only Go knows is a capability the settings UI cannot turn off at
-// all. Same two-sided-copy pin as TestReservedEnvNamesMatchTheProviderPins,
-// parsing the mirror the way internal/highlight pins its JS hash parity.
+// all. The test parses the mirror the way internal/highlight pins its JS
+// hash parity.
 func TestDisabledToolTogglesMatchTheFrontendMirror(t *testing.T) {
 	t.Parallel()
 	const mirror = "frontend/src/lib/utils/promptOverrides.ts"

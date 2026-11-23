@@ -76,11 +76,18 @@ const providerEnvReservedPrefix = "AO_"
 // for). Rejecting at validation time is the point — a name that is silently
 // dropped at spawn time looks like a bug in the feature.
 //
-// Cross-checked against provider.ReservedEnvNames by
-// TestReservedEnvNamesMatchTheProviderPins (root package): internal/settings
-// must not import internal/provider, so the two lists are kept honest — in both
-// directions — by a test that can see both, the same arrangement the
-// reasoning-effort tables use.
+// This table is the one list of reserved names. A change to a spawn path that
+// starts pinning or clearing a name adds the name here in the same change.
+//
+// Some names are set by a spawn path and deliberately NOT reserved, because
+// the value is a default the user may override rather than a pin:
+// CLAUDE_CODE_ENABLE_TODO_TOOLS, CLAUDE_CODE_TODO_REMINDER_MODE,
+// BASH_MAX_TIMEOUT_MS and CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH are set only
+// when the custom environment does not name them. ANTHROPIC_BASE_URL is pinned
+// on claude-tui's child, but the app routes a user value to that session's
+// gateway upstream instead, and redirecting the backend is what the custom
+// environment is for. The AO_ prefix is reserved by prefix
+// (providerEnvReservedPrefix), not by name.
 var deniedProviderEnvNames = map[string]map[string]string{
 	// Applies to every provider.
 	"": {

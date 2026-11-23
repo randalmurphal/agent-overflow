@@ -64,10 +64,10 @@ import (
 // !d`), which AO never sets. With the variable unset the flag is false,
 // the extra pass does not run, and this mirror stays exact.
 //
-// That is not left to chance: the name is in
-// `provider.ReservedEnvNames` for the Claude providers, so a user's custom
-// environment cannot turn it on behind the mirror's back, and
-// `internal/settings/providerenv.go` refuses the save with that reason.
+// That is not left to chance: the name is reserved for the Claude providers
+// in `internal/settings/providerenv.go`, which refuses a custom environment
+// that sets it, with that reason, so it cannot turn on behind the mirror's
+// back.
 // It is the only entry on that list reserved for THIS file's benefit
 // rather than to protect a value AO itself sets. If AO ever opts into
 // resuming an interrupted turn, this mirror has to grow the pass and the

@@ -161,7 +161,7 @@ func TestReservedNamesAreScopedToTheirProvider(t *testing.T) {
 
 // ANTHROPIC_BASE_URL is the feature's primary use case. claude-tui pins the
 // child's copy, but that pin is routed to the gateway upstream instead of
-// reserving the name — see provider.ReservedEnvNames.
+// reserving the name — see deniedProviderEnvNames.
 func TestBaseURLIsNotReserved(t *testing.T) {
 	svc := NewService(t.TempDir())
 	if _, err := svc.SetProviderEnvVar("claude", "ANTHROPIC_BASE_URL", "https://gw.test", false); err != nil {

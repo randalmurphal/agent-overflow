@@ -288,7 +288,7 @@ const TaskListIDEnv = claudeTaskListIDEnvVar
 // bind. The plain variable is what the spike drove and what worked
 // (2026-08-21, 2.1.237, /tmp/spike-xsession) — `system/init` then carries
 // `messaging_socket_path` and `ListAgents` joins `tools[]`. Reserving the
-// name in provider.ReservedEnvNames is what keeps a user's custom
+// name (internal/settings/providerenv.go) is what keeps a user's custom
 // environment from setting it behind the setting's back.
 //
 // Absent when off — never "0". The variable's presence is the signal a
@@ -310,7 +310,7 @@ func withClaudeCrossSessionEnv(env map[string]string, cfg Config) map[string]str
 // claudePeerSessionNameEnv is the CLI's environment spelling of the
 // peer-visible name. AO always states the name as `--name` instead
 // (peerSessionNameArgs), which is why it is a reserved name a user's custom
-// environment may not set (provider.ReservedEnvNames).
+// environment may not set (internal/settings/providerenv.go).
 const claudePeerSessionNameEnv = "CLAUDE_CODE_SESSION_NAME"
 
 // CrossSessionUnsetEnv names the INHERITED variables a Claude spawn must
@@ -568,8 +568,8 @@ const claudeAutoPermissionMode = "auto"
 // `~/.claude/settings.json` `env` block over inherited values during init
 // (managedEnv.ts → applySafeConfigEnvironmentVariables), so a value put
 // in the child's real environment can be silently overwritten while one
-// put here cannot. All of them are pinned in
-// `provider.ReservedEnvNames`, so a user's custom environment cannot
+// put here cannot. All of them are reserved names
+// (internal/settings/providerenv.go), so a user's custom environment cannot
 // fight the setting that renders them.
 const (
 	claudeAutoCompactPctEnv    = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"

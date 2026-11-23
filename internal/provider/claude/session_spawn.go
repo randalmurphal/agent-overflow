@@ -283,7 +283,8 @@ func NativeMemoryOffEnv(off bool) map[string]string {
 
 // withClaudeTaskListEnv pins CLAUDE_CODE_TASK_LIST_ID to taskListID,
 // overriding any caller value: the id is the thread's identity, not a
-// preference (provider.ReservedEnvNames). An empty id leaves env alone.
+// preference, and a reserved name (internal/settings/providerenv.go). An
+// empty id leaves env alone.
 func withClaudeTaskListEnv(env map[string]string, taskListID string) map[string]string {
 	if taskListID == "" {
 		return env
@@ -322,10 +323,10 @@ const claudeCodeEntrypointEnvVar = "CLAUDE_CODE_ENTRYPOINT"
 // tools produce, so a session spawned without the opt-in silently
 // loses the feature.
 //
-// Deliberately NOT in provider.ReservedEnvNames: it is a default, not
-// a pin — a user who wants the vendor's stock tool surface can set it
-// to "false" in the provider's custom environment, which lands in
-// cfg.Env before withClaudeSessionEnvDefaults applies.
+// Deliberately NOT a reserved name (internal/settings/providerenv.go): it
+// is a default, not a pin — a user who wants the vendor's stock tool
+// surface can set it to "false" in the provider's custom environment,
+// which lands in cfg.Env before withClaudeSessionEnvDefaults applies.
 const claudeTodoToolsEnvVar = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
 
 // claudeTodoReminderModeEnvVar controls the CLI's periodic "track your

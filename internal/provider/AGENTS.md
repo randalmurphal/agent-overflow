@@ -10,8 +10,10 @@ package.
 
 `BuildEnvironment`, `FilterEnvironment`, and version detection must apply
 `appimage.Scrub`. Build additive `PATH` values from the scrubbed base.
-`ReservedEnvNames` is the source of truth for values AO pins or clears; keep
-the settings copy and its drift test synchronized.
+The names a user's custom environment may not set live in one list, the
+settings deny-list (`deniedProviderEnvNames`, `internal/settings/providerenv.go`),
+and settings enforces it by refusing a write that names one. A spawn path that
+starts pinning or clearing a name adds it to that list in the same change.
 
 `Spawn` takes a required `Lifetime`: `Watched` for a process that runs until
 its owner closes it, `Bounded` for one that finishes within its context's

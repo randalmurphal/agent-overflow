@@ -856,7 +856,7 @@ func TestCrossSessionGateIsNotInheritedWhenDisabled(t *testing.T) {
 // The task list is keyed by thread on every Claude spawn: the id travels
 // SessionOptions.ThreadID -> Config.TaskListID -> CLAUDE_CODE_TASK_LIST_ID,
 // and it outranks a caller value because it is the thread's identity, not a
-// preference (provider.ReservedEnvNames).
+// preference (a reserved name in internal/settings/providerenv.go).
 func TestTaskListIDIsPinnedToTheThread(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", ThreadID: "thread-1", Model: "claude-opus-4-7"})
 	cfg.Reaper = procutiltest.Reaper()

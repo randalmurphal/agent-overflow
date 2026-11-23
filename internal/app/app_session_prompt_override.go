@@ -241,7 +241,7 @@ func (a *App) promptOverrideGitFacts(workDir string, needBlock bool) (isRepo, bl
 // The home is App.providerHome() — ordinarily the OS home, because that
 // is what the spawned CLI itself resolves: the headless spawn clears
 // CLAUDE_CONFIG_DIR outright and both Claude providers refuse it from a
-// user's custom environment (provider.ReservedEnvNames), so `~/.claude`
+// user's custom environment (internal/settings/providerenv.go), so `~/.claude`
 // under $HOME is the home the session will read its memory from. Under an
 // isolated boot it is the pinned harness home, so the mkdir below can
 // never reach the developer's real `~/.claude/projects`.
