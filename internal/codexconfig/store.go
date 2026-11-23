@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 
+	"agent-overflow/internal/atomicfile"
+
 	"github.com/BurntSushi/toml"
 )
 
@@ -158,7 +160,7 @@ type snapshot struct {
 }
 
 func (s *Store) load() (*snapshot, error) {
-	data, info, err := readFileWithStat(s.path)
+	data, info, err := atomicfile.ReadWithStat(s.path)
 	if err != nil {
 		return nil, err
 	}
@@ -170,46 +172,6 @@ func (s *Store) load() (*snapshot, error) {
 		return nil, fmt.Errorf("parse %s: %w", s.path, err)
 	}
 	return &snapshot{data: data, tree: tree, stat: info}, nil
-}
-
-// readFileWithStat returns (contents, info, nil) when the file exists.
-// A missing file returns (nil, nil, nil).
-//
-// The TOCTOU-safe ordering is stat-read-stat: a writer who atomically
-// renames a new version over ours between the read and the post-read
-// stat would otherwise hand us v1 bytes paired with v2 metadata, which
-// would silently pass writeIfUnchanged on save and clobber the
-// concurrent write. When the bracketing stats don't match we retry up
-// to a small bounded number of times.
-func readFileWithStat(path string) ([]byte, os.FileInfo, error) {
-	const maxAttempts = 5
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		before, statErr := os.Stat(path)
-		if statErr != nil {
-			if errors.Is(statErr, os.ErrNotExist) {
-				return nil, nil, nil
-			}
-			return nil, nil, fmt.Errorf("stat %s: %w", path, statErr)
-		}
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			if errors.Is(readErr, os.ErrNotExist) {
-				return nil, nil, nil
-			}
-			return nil, nil, fmt.Errorf("read %s: %w", path, readErr)
-		}
-		after, statErr := os.Stat(path)
-		if statErr != nil {
-			if errors.Is(statErr, os.ErrNotExist) {
-				return nil, nil, nil
-			}
-			return nil, nil, fmt.Errorf("re-stat %s: %w", path, statErr)
-		}
-		if before.Size() == after.Size() && before.ModTime().Equal(after.ModTime()) {
-			return data, before, nil
-		}
-	}
-	return nil, nil, fmt.Errorf("read %s: file changed during read across %d attempts", path, maxAttempts)
 }
 
 func decodeMcpServers(tree map[string]any) map[string]map[string]any {
@@ -301,7 +263,7 @@ func (s *Store) modify(fn func([]byte) ([]byte, error)) error {
 		if err != nil {
 			return err
 		}
-		ok, err := writeIfUnchanged(s.path, nextData, snap.stat)
+		ok, err := atomicfile.WriteIfUnchanged(s.path, nextData, snap.stat)
 		if err != nil {
 			return err
 		}
@@ -310,49 +272,4 @@ func (s *Store) modify(fn func([]byte) ([]byte, error)) error {
 		}
 	}
 	return ErrConcurrentWrite
-}
-
-func writeIfUnchanged(path string, data []byte, before os.FileInfo) (bool, error) {
-	if before != nil {
-		current, err := os.Stat(path)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return false, fmt.Errorf("recheck %s: %w", path, err)
-		}
-		if err == nil && (current.Size() != before.Size() || !current.ModTime().Equal(before.ModTime())) {
-			return false, nil
-		}
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return false, fmt.Errorf("create parent: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, "config.toml.tmp.*")
-	if err != nil {
-		return false, fmt.Errorf("create temp: %w", err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpPath) }
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return false, fmt.Errorf("write temp: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return false, fmt.Errorf("sync temp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return false, fmt.Errorf("close temp: %w", err)
-	}
-	if err := os.Chmod(tmpPath, 0o600); err != nil {
-		cleanup()
-		return false, fmt.Errorf("chmod temp: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		cleanup()
-		return false, fmt.Errorf("rename: %w", err)
-	}
-	return true, nil
 }

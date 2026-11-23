@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 // Each test uses a fresh t.TempDir() file so the package never reads
@@ -341,9 +343,9 @@ func TestConcurrentWriteDetected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	ok, err := writeIfUnchanged(store.path, out, snap.stat)
+	ok, err := atomicfile.WriteIfUnchanged(store.path, out, snap.stat)
 	if err != nil {
-		t.Fatalf("writeIfUnchanged: %v", err)
+		t.Fatalf("WriteIfUnchanged: %v", err)
 	}
 	if ok {
 		t.Fatalf("write should have been refused on stale snapshot")

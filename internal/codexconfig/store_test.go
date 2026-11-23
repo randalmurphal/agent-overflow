@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 func newStoreWithFile(t *testing.T, body string) *Store {
@@ -141,9 +143,9 @@ func TestConcurrentWriteDetected(t *testing.T) {
 	if err := os.Chtimes(store.path, mt, mt); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}
-	ok, err := writeIfUnchanged(store.path, []byte("x"), snap.stat)
+	ok, err := atomicfile.WriteIfUnchanged(store.path, []byte("x"), snap.stat)
 	if err != nil {
-		t.Fatalf("writeIfUnchanged: %v", err)
+		t.Fatalf("WriteIfUnchanged: %v", err)
 	}
 	if ok {
 		t.Fatalf("write should have been refused on stale snapshot")
