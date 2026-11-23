@@ -13,9 +13,10 @@ import (
 // interleaving this refusal closes.
 var ErrDeviceRevoked = errors.New("store: the device is revoked")
 
-// CreateSession writes a session row. The caller owns the id, because the
-// same id is signed into the claims that travel with it and the two must
-// be minted together.
+// createSession writes a session row inside the caller's transaction
+// (CreateDeviceSession, CompletePairingRedemption, EnsureLocalSession). The
+// caller owns the id, because the same id is signed into the claims that
+// travel with it and the two must be minted together.
 //
 // Refused rather than defaulted: an empty id, user, device, or binding
 // class, and an expiry at or before creation. A session that is already
@@ -31,17 +32,6 @@ var ErrDeviceRevoked = errors.New("store: the device is revoked")
 // written. A caller-side check could only ever be a read that the
 // revocation then invalidates — which is exactly how a paired browser
 // outlived its revocation (incident 2026-08-31).
-func (s *Store) CreateSession(session Session) error {
-	if session.BindingClass == "loopback-only" {
-		return fmt.Errorf("store: local sessions require EnsureLocalSession")
-	}
-	err := createSession(s.db, session)
-	if errors.Is(err, ErrDeviceRevoked) {
-		return s.diagnoseDeviceRefusal(session.DeviceID)
-	}
-	return err
-}
-
 func createSession(db sqlExecutor, session Session) error {
 	switch {
 	case strings.TrimSpace(session.ID) == "":
@@ -82,21 +72,10 @@ func createSession(db sqlExecutor, session Session) error {
 		return fmt.Errorf("store: create session: rows affected: %w", err)
 	}
 	if written == 0 {
-		// Diagnosed only on the refusal path, so the ordinary insert stays
-		// one statement. Both answers refuse; naming which one lets a
-		// caller tell "that device is gone" from "the owner revoked it".
 		return fmt.Errorf("store: create session for device %s: %w",
 			session.DeviceID, ErrDeviceRevoked)
 	}
 	return nil
-}
-
-// diagnoseDeviceRefusal names why a device-gated write matched no device.
-func (s *Store) diagnoseDeviceRefusal(deviceID string) error {
-	if _, err := s.GetDevice(deviceID); errors.Is(err, sql.ErrNoRows) {
-		return sql.ErrNoRows
-	}
-	return ErrDeviceRevoked
 }
 
 // activateSession stamps the moment a session became presentable, which is

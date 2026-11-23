@@ -511,14 +511,14 @@ func TestPairingAuditTrailNamesEveryStep(t *testing.T) {
 	}
 }
 
-// A pending session is written only with the link naming it, so Mint, which
-// writes a session alone, refuses to make one.
-func TestMintRefusesAPendingSession(t *testing.T) {
+// A pending session is written only with the link naming it, so the write
+// of a live session with its device refuses to make one.
+func TestALiveSessionWriteRefusesAPendingSession(t *testing.T) {
 	sessions, _, _, owner, device := newFixture(t)
-	if _, _, err := sessions.Mint(MintRequest{
-		UserID: owner.ID, DeviceID: device.ID, BindingClass: BindingDeviceBound,
+	if _, _, err := mintOn(sessions, device, MintRequest{
+		UserID: owner.ID, BindingClass: BindingDeviceBound,
 		Scopes: []Scope{ScopeThreadsRead}, TTL: time.Minute, AwaitConfirmation: true,
 	}); err == nil {
-		t.Fatal("Mint wrote a pending session with no link naming it")
+		t.Fatal("a pending session was written with no link naming it")
 	}
 }

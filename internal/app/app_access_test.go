@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/transport"
 )
 
@@ -733,17 +734,11 @@ func TestRevokeReachesSocketsWhenTheTransportBootsFirst(t *testing.T) {
 // mintSessionFor issues a second session on an EXISTING device row.
 func mintSessionFor(t *testing.T, app *App, device store.Device) store.Session {
 	t.Helper()
-	session, _, err := app.identityState().sessions.Mint(identity.MintRequest{
-		UserID:       device.UserID,
-		DeviceID:     device.ID,
-		BindingClass: identity.BindingDeviceBound,
-		Scopes:       identity.Scopes,
-		TTL:          time.Hour,
-	})
-	if err != nil {
-		t.Fatalf("Mint: %v", err)
+	scopes := make([]string, 0, len(identity.Scopes))
+	for _, scope := range identity.Scopes {
+		scopes = append(scopes, string(scope))
 	}
-	return session
+	return storetest.LiveSession(t, app.store, device, scopes, time.Hour)
 }
 
 // TestRevokeAccessDevice_RefusesTheLocalPageChannel — that row is not a

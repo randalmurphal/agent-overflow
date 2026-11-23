@@ -88,7 +88,8 @@ Rules:
   built: `store.sessionSelect` JOINs the device's revocation stamp
   onto every session read and `Session.Live` folds it in — one extra
   integer comparison per RPC, no second lookup or round trip;
-  `CreateSession` is an `INSERT ... WHERE EXISTS (device un-revoked)`
+  the session write every session transaction goes through
+  (`createSession`) is an `INSERT ... WHERE EXISTS (device un-revoked)`
   and Activate/Extend/Touch carry the same predicate inside their own
   statements, atomic against the single-transaction mark-and-sweep;
   `RevokeDevice` re-sweeps when already revoked and moves the

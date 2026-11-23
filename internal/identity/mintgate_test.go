@@ -21,8 +21,8 @@ import (
 // calls are what bring a credential into existence or keep one alive, and
 // each carries the device gate at the point of the write:
 //
-//   - store.CreateSession — the device predicate is inside the INSERT;
-//   - store.CompletePairingRedemption - the same INSERT, inside the
+//   - store.CompletePairingRedemption - the session INSERT, whose device
+//     predicate is inside the statement, inside the
 //     transaction that names the pending session on its link, and for an
 //     own-device introduction the activation UPDATE's predicate as well;
 //   - store.CreateDeviceSession - the same INSERT, inside the transaction
@@ -31,9 +31,7 @@ import (
 //   - store.ConfirmRedeemedPairing - the activation UPDATE's predicate, inside
 //     the confirmation's transaction;
 //   - store.RotateRefreshSecret — session/device predicates inside the durable transaction;
-//   - signClaims — reached only through newSession (whose row must then
-//     survive CreateSession, CompletePairingRedemption or CreateDeviceSession);
-//   - renderClaims - reached only through signClaims or an accessSigner,
+//   - renderClaims - reached only through an accessSigner,
 //     whose only constructor, accessSignerFor, takes the device ROW and
 //     refuses a revoked one; its signAccess is called only by
 //     accessTokensFor and by Refresh, which resolves it before its rotation
@@ -49,14 +47,12 @@ import (
 // for a device the owner revoked.
 func TestEveryCredentialProducingCallGoesThroughAChokepoint(t *testing.T) {
 	chokepoints := map[string][]string{
-		"CreateSession":             {"Sessions.Mint"},
 		"CompletePairingRedemption": {"Sessions.mintRedemptionSession"},
 		"CreateDeviceSession":       {"Sessions.FinishPasskeySignIn"},
 		"EnsureLocalSession":        {"Sessions.EnsureLocalChannelSession"},
 		"ConfirmRedeemedPairing":    {"Sessions.confirmPairing"},
 		"RotateRefreshSecret":       {"Sessions.Refresh"},
-		"signClaims":                {"Sessions.newSession"},
-		"renderClaims":              {"accessSigner.signAccess", "signClaims"},
+		"renderClaims":              {"accessSigner.signAccess"},
 		"signAccess":                {"Sessions.Refresh", "Sessions.accessTokensFor"},
 	}
 	found := map[string][]string{}

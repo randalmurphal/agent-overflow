@@ -186,7 +186,6 @@ func (s *Sessions) EnsureSigningKey() (store.SigningKey, error) {
 // MintRequest describes a session to issue.
 type MintRequest struct {
 	UserID       string
-	DeviceID     string
 	BindingClass BindingClass
 	Scopes       []Scope
 	// TTL bounds the session. Required: a credential with no expiry is one
@@ -198,8 +197,7 @@ type MintRequest struct {
 	// stamps `sessions.activated_at`.
 	//
 	// Set only by pairing redemption, which writes the row together with
-	// the link naming it (store.CompletePairingRedemption); Mint refuses
-	// it. The credential is handed to the new device immediately so it can
+	// the link naming it (store.CompletePairingRedemption). The credential is handed to the new device immediately so it can
 	// simply keep trying while the owner checks the verification number,
 	// rather than holding a second secret to poll with — the confirmation
 	// gate lives on the row, where one predicate covers every presentation
@@ -207,80 +205,45 @@ type MintRequest struct {
 	AwaitConfirmation bool
 }
 
-// Mint issues a session and returns the row plus the credential string.
-// The credential is returned exactly once and never stored — the row holds
-// no material that could reconstruct it.
-//
+// newSession builds the session row req describes on deviceID, for the
+// transaction that writes it together with its device (newDeviceSession).
 // The session id is minted here rather than by the store because the same
 // id is signed into the claims; two independent mints could not agree.
-//
-// It is the only caller of store.CreateSession, which is what makes it the
-// single mint chokepoint for a session ROW — and the device gate lives
-// inside that statement rather than as a read here (see CreateSession).
-// A revoked device therefore fails the write itself, so a mint path added
-// later inherits the refusal instead of having to restate it.
-func (s *Sessions) Mint(req MintRequest) (store.Session, string, error) {
-	if req.AwaitConfirmation {
-		return store.Session{}, "", fmt.Errorf("identity: a pending session is written only with its pairing link")
-	}
-	session, credential, err := s.newSession(req)
-	if err != nil {
-		return store.Session{}, "", err
-	}
-	if err := s.store.CreateSession(session); err != nil {
-		return store.Session{}, "", fmt.Errorf("identity: mint session: %w", err)
-	}
-	s.auditMinted(session)
-	return session, credential, nil
-}
-
-// newSession builds and signs the session req describes, which the caller
-// writes: Mint, or a pairing redemption together with its link.
-func (s *Sessions) newSession(req MintRequest) (store.Session, string, error) {
+func (s *Sessions) newSession(req MintRequest, deviceID string) (store.Session, error) {
 	if !req.BindingClass.Valid() {
-		return store.Session{}, "", fmt.Errorf("identity: %q is not a declared binding class", string(req.BindingClass))
+		return store.Session{}, fmt.Errorf("identity: %q is not a declared binding class", string(req.BindingClass))
 	}
 	if req.BindingClass == BindingLoopbackOnly {
-		return store.Session{}, "", fmt.Errorf("identity: local credentials require EnsureLocalChannelSession")
+		return store.Session{}, fmt.Errorf("identity: local credentials require EnsureLocalChannelSession")
 	}
 	if req.TTL <= 0 {
-		return store.Session{}, "", fmt.Errorf("identity: session ttl %s is not positive", req.TTL)
+		return store.Session{}, fmt.Errorf("identity: session ttl %s is not positive", req.TTL)
 	}
 	scopes, err := ValidateScopes(req.Scopes)
 	if err != nil {
-		return store.Session{}, "", err
+		return store.Session{}, err
 	}
 	key, err := s.EnsureSigningKey()
 	if err != nil {
-		return store.Session{}, "", err
+		return store.Session{}, err
 	}
 	now := s.now().UnixMilli()
 	activatedAt := now
 	if req.AwaitConfirmation {
 		activatedAt = 0
 	}
-	session := store.Session{
+	s.rememberKey(key)
+	return store.Session{
 		ID:           uuid.NewString(),
 		UserID:       req.UserID,
-		DeviceID:     req.DeviceID,
+		DeviceID:     deviceID,
 		BindingClass: string(req.BindingClass),
 		Scopes:       scopes,
 		SigningKeyID: key.ID,
 		CreatedAt:    now,
 		ExpiresAt:    now + req.TTL.Milliseconds(),
 		ActivatedAt:  activatedAt,
-	}
-	credential, err := signClaims(Claims{
-		KeyID:     key.ID,
-		SessionID: session.ID,
-		IssuedAt:  session.CreatedAt,
-		ExpiresAt: session.ExpiresAt,
-	}, key.Secret.Reveal(), s.backendID)
-	if err != nil {
-		return store.Session{}, "", err
-	}
-	s.rememberKey(key)
-	return session, credential, nil
+	}, nil
 }
 
 func (s *Sessions) auditMinted(session store.Session) {

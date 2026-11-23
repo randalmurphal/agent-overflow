@@ -98,22 +98,14 @@ func (v verifiedClaims) withinWindow(now int64) Reason {
 	return ReasonNone
 }
 
-// signClaims renders a credential. secret is the signing key's bytes and
-// backendID binds the MAC to this backend.
+// renderClaims signs an encoded payload into a credential. secret is the
+// signing key's bytes and backendID binds the MAC to this backend.
 //
 // Binding to the backend id is what makes a database restored under a new
 // identity refuse every session it imported, which is the re-pairing
 // recovery the spec already states (§12) rather than a second mechanism.
-func signClaims(claims Claims, secret []byte, backendID string) (string, error) {
-	payload, err := encodeClaims(claims)
-	if err != nil {
-		return "", err
-	}
-	return renderClaims(payload, secret, backendID), nil
-}
-
-// renderClaims signs an encoded payload. It cannot fail: everything that
-// can is decided by encodeClaims.
+//
+// It cannot fail: everything that can is decided by encodeClaims.
 func renderClaims(payload [claimsPayloadLen]byte, secret []byte, backendID string) string {
 	mac := claimsMAC(payload[:], secret, backendID)
 	out := make([]byte, 0, len(claimsPrefix)+

@@ -113,15 +113,6 @@ func TestARevokedDeviceCannotRegainAccess(t *testing.T) {
 		t.Fatalf("re-pairing a revoked device = %s, want revoked_device", reason)
 	}
 
-	// Mint a fresh session straight onto the device row.
-	if _, _, err := state.sessions.Mint(identity.MintRequest{
-		UserID: device.UserID, DeviceID: device.ID,
-		BindingClass: identity.BindingDeviceBound, Scopes: identity.Scopes,
-		TTL: identity.PairingConfirmWindow,
-	}); err == nil {
-		t.Fatal("Mint issued a fresh credential on a revoked device row")
-	}
-
 	// Restore re-admits the KEY to pairing and moves no credential, so the
 	// session the revoke ended stays ended.
 	if err := app.RestoreAccessDevice(device.ID); err != nil {

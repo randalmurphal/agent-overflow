@@ -98,8 +98,12 @@ func TestLocalInitializationIsConcurrentAndIdempotent(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("live rows=%d", len(rows))
 	}
-	if _, _, err := s.Mint(MintRequest{UserID: owner.ID, DeviceID: rows[0].DeviceID, BindingClass: BindingLoopbackOnly, TTL: time.Hour}); err == nil {
-		t.Fatal("generic mint issued local credential")
+	device, err := st.GetDevice(rows[0].DeviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := mintOn(s, device, MintRequest{UserID: owner.ID, BindingClass: BindingLoopbackOnly, TTL: time.Hour}); err == nil {
+		t.Fatal("a device session was issued as a local credential")
 	}
 	if _, err := s.MintPairingLink(PairingRequest{UserID: owner.ID, DeviceClass: DeviceBrowser, BindingClass: BindingLoopbackOnly}); err == nil {
 		t.Fatal("pairing issued local binding")

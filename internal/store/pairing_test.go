@@ -1,8 +1,11 @@
 package store
 
 import (
+	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"strconv"
 	"sync"
 	"testing"
 )
@@ -24,19 +27,37 @@ func seedPairingLink(t *testing.T, s *Store, owner User, hash []byte, expires in
 	return link
 }
 
+// seedPendingSession writes session, unactivated, the way a redemption does:
+// on its existing device, named by a redeemed link (link-1, which the test
+// must not have created).
+func seedPendingSession(t *testing.T, s *Store, owner User, session Session) PairingLink {
+	t.Helper()
+	link := seedPairingLink(t, s, owner, []byte("hash-pending"), session.ExpiresAt)
+	if _, err := s.RedeemPairingLink([]byte("hash-pending"), session.CreatedAt, "thumb-pending"); err != nil {
+		t.Fatalf("RedeemPairingLink: %v", err)
+	}
+	device, err := s.GetDevice(session.DeviceID)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	session.ActivatedAt = 0
+	if err := s.CompletePairingRedemption(PairingRedemption{LinkID: link.ID,
+		DeviceSession: DeviceSession{Device: device, Session: session}}); err != nil {
+		t.Fatalf("CompletePairingRedemption: %v", err)
+	}
+	return link
+}
+
 func TestRetirePendingPairingsRollsBackIfLinkRetirementFails(t *testing.T) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
 	link := seedPairingLink(t, s, owner, []byte("hash"), 9000)
 	session := newTestSession("pending", owner, device, key, 9000)
 	session.ActivatedAt = 0
-	if err := s.CreateSession(session); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := s.RedeemPairingLink([]byte("hash"), 2000, "key"); err != nil {
 		t.Fatal(err)
 	}
-	if err := attachPairingRedemption(s.db, link.ID, device.ID, session.ID); err != nil {
+	if err := s.CompletePairingRedemption(PairingRedemption{LinkID: link.ID, DeviceSession: DeviceSession{Device: device, Session: session}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.Exec(`CREATE TRIGGER reject_pairing_retirement BEFORE UPDATE OF canceled_at ON pairing_links BEGIN SELECT RAISE(ABORT, 'test failure'); END`); err != nil {
@@ -255,14 +276,11 @@ func TestCancelPairingLinkEndsItsPendingSessionInTheSameTransaction(t *testing.T
 	key := seedSigningKey(t, s)
 	pending := newTestSession("sess-pending", owner, device, key, 9000)
 	pending.ActivatedAt = 0
-	if err := s.CreateSession(pending); err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
 	seedPairingLink(t, s, owner, []byte("hash-1"), 9000)
 	if _, err := s.RedeemPairingLink([]byte("hash-1"), 2000, "thumb"); err != nil {
 		t.Fatalf("RedeemPairingLink: %v", err)
 	}
-	if err := attachPairingRedemption(s.db, "link-1", device.ID, pending.ID); err != nil {
+	if err := s.CompletePairingRedemption(PairingRedemption{LinkID: "link-1", DeviceSession: DeviceSession{Device: device, Session: pending}}); err != nil {
 		t.Fatalf("AttachPairingRedemption: %v", err)
 	}
 	mustExec(t, s.db, `CREATE TRIGGER reject_session_revoke BEFORE UPDATE OF revoked_at ON sessions BEGIN SELECT RAISE(ABORT, 'test revocation failure'); END`)
@@ -320,32 +338,48 @@ func TestDeletePairingLinksKeepsRedeemedOnes(t *testing.T) {
 	}
 }
 
-func seedRefreshSession(t *testing.T) (*Store, Session) {
+// refreshHash is the digest a renewal stores for the secret named name.
+func refreshHash(name string) []byte {
+	digest := sha256.Sum256([]byte(name))
+	return digest[:]
+}
+
+// seedRefreshSession writes a live session with its first refresh secret,
+// hashed from name and valid until expires, in the transaction production
+// issues one with.
+func seedRefreshSession(t *testing.T, name string, expires int64) (*Store, Session) {
 	t.Helper()
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
 	session := newTestSession("sess-1", owner, device, key, 900000)
-	if err := s.CreateSession(session); err != nil {
-		t.Fatalf("CreateSession: %v", err)
+	if err := s.CreateDeviceSession(DeviceSession{Device: device, Session: session,
+		Refresh: RefreshGrant{Hash: refreshHash(name), CreatedAt: 1000, ExpiresAt: expires}}); err != nil {
+		t.Fatalf("seed session: %v", err)
 	}
 	return s, session
 }
 
-func TestRefreshSecretRotationSpendsThePredecessor(t *testing.T) {
-	s, session := seedRefreshSession(t)
-	first, err := s.CreateRefreshSecret(session.ID, []byte("secret-1"), 1000, 90000)
-	if err != nil {
-		t.Fatalf("CreateRefreshSecret: %v", err)
+// renew spends session's secret old and issues next at at, as a renewal from
+// a client that lets the backend choose its next secret does.
+func renew(s *Store, session Session, old, next string, at int64) error {
+	_, err := s.RotateRefreshSecret(context.Background(), RefreshRotation{
+		SessionID: session.ID, DeviceID: session.DeviceID, OldHash: refreshHash(old), NextHash: refreshHash(next),
+		Now: at, AccessUntil: at + 1000000, RefreshUntil: at + 2000000,
+	})
+	return err
+}
+
+func TestRefreshRotationSpendsThePredecessor(t *testing.T) {
+	s, session := seedRefreshSession(t, "secret-1", 90000)
+	if err := renew(s, session, "secret-1", "secret-2", 2000); err != nil {
+		t.Fatalf("renew: %v", err)
 	}
-	spent, err := s.ConsumeRefreshSecret([]byte("secret-1"), 2000, "thumb")
-	if err != nil {
-		t.Fatalf("ConsumeRefreshSecret: %v", err)
+	spent, err := s.GetRefreshSecretByHash(refreshHash("secret-1"))
+	if err != nil || !spent.Spent() || spent.ConsumedBy != session.DeviceID {
+		t.Fatalf("the renewal did not record the spend: %+v (%v)", spent, err)
 	}
-	if spent.ID != first.ID || !spent.Spent() || spent.ConsumedBy != "thumb" {
-		t.Fatalf("consumption did not record the spend: %+v", spent)
-	}
-	if _, err := s.ConsumeRefreshSecret([]byte("secret-1"), 2500, "thumb"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("second consumption err = %v, want sql.ErrNoRows", err)
+	if err := renew(s, session, "secret-1", "secret-3", 2500); !errors.Is(err, ErrRefreshReuse) {
+		t.Fatalf("a second renewal with the spent secret = %v, want ErrRefreshReuse", err)
 	}
 }
 
@@ -353,34 +387,28 @@ func TestRefreshSecretRotationSpendsThePredecessor(t *testing.T) {
 // row surviving its own consumption. If the spend deleted it, a replay
 // would read as a credential that never existed.
 func TestSpentRefreshSecretStaysReadable(t *testing.T) {
-	s, session := seedRefreshSession(t)
-	if _, err := s.CreateRefreshSecret(session.ID, []byte("secret-1"), 1000, 90000); err != nil {
-		t.Fatalf("CreateRefreshSecret: %v", err)
+	s, session := seedRefreshSession(t, "secret-1", 90000)
+	if err := renew(s, session, "secret-1", "secret-2", 2000); err != nil {
+		t.Fatalf("renew: %v", err)
 	}
-	if _, err := s.ConsumeRefreshSecret([]byte("secret-1"), 2000, "thumb"); err != nil {
-		t.Fatalf("ConsumeRefreshSecret: %v", err)
-	}
-	read, err := s.GetRefreshSecretByHash([]byte("secret-1"))
+	read, err := s.GetRefreshSecretByHash(refreshHash("secret-1"))
 	if err != nil {
 		t.Fatalf("GetRefreshSecretByHash: %v", err)
 	}
 	if !read.Spent() || read.SessionID != session.ID {
 		t.Fatalf("spent secret did not survive readable: %+v", read)
 	}
-	if _, err := s.GetRefreshSecretByHash([]byte("never-issued")); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.GetRefreshSecretByHash(refreshHash("never-issued")); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("an unissued hash read as %v, want sql.ErrNoRows", err)
 	}
 }
 
-func TestConsumeRefreshSecretRefusesAnExpiredOne(t *testing.T) {
-	s, session := seedRefreshSession(t)
-	if _, err := s.CreateRefreshSecret(session.ID, []byte("secret-1"), 1000, 3000); err != nil {
-		t.Fatalf("CreateRefreshSecret: %v", err)
+func TestRefreshRotationRefusesAnExpiredSecret(t *testing.T) {
+	s, session := seedRefreshSession(t, "secret-1", 3000)
+	if err := renew(s, session, "secret-1", "secret-2", 3000); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("an expired refresh secret was exchanged: %v", err)
 	}
-	if _, err := s.ConsumeRefreshSecret([]byte("secret-1"), 3000, "thumb"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatal("an expired refresh secret was exchanged")
-	}
-	read, err := s.GetRefreshSecretByHash([]byte("secret-1"))
+	read, err := s.GetRefreshSecretByHash(refreshHash("secret-1"))
 	if err != nil {
 		t.Fatalf("GetRefreshSecretByHash: %v", err)
 	}
@@ -389,11 +417,8 @@ func TestConsumeRefreshSecretRefusesAnExpiredOne(t *testing.T) {
 	}
 }
 
-func TestConsumeRefreshSecretUnderConcurrency(t *testing.T) {
-	s, session := seedRefreshSession(t)
-	if _, err := s.CreateRefreshSecret(session.ID, []byte("secret-1"), 1000, 90000); err != nil {
-		t.Fatalf("CreateRefreshSecret: %v", err)
-	}
+func TestRefreshRotationUnderConcurrency(t *testing.T) {
+	s, session := seedRefreshSession(t, "secret-1", 90000)
 	const racers = 8
 	var wg sync.WaitGroup
 	won := make([]bool, racers)
@@ -401,8 +426,7 @@ func TestConsumeRefreshSecretUnderConcurrency(t *testing.T) {
 	for i := range racers {
 		go func() {
 			defer wg.Done()
-			_, err := s.ConsumeRefreshSecret([]byte("secret-1"), 2000, "thumb")
-			won[i] = err == nil
+			won[i] = renew(s, session, "secret-1", "next-"+strconv.Itoa(i), 2000) == nil
 		}()
 	}
 	wg.Wait()
@@ -418,21 +442,19 @@ func TestConsumeRefreshSecretUnderConcurrency(t *testing.T) {
 }
 
 func TestSpendRefreshSecretsForSessionClearsTheOutstandingChain(t *testing.T) {
-	s, session := seedRefreshSession(t)
-	for _, hash := range [][]byte{[]byte("s-1"), []byte("s-2"), []byte("s-3")} {
-		if _, err := s.CreateRefreshSecret(session.ID, hash, 1000, 90000); err != nil {
-			t.Fatalf("CreateRefreshSecret: %v", err)
-		}
+	s, session := seedRefreshSession(t, "s-1", 90000)
+	if err := renew(s, session, "s-1", "s-2", 1500); err != nil {
+		t.Fatalf("renew: %v", err)
 	}
-	if _, err := s.ConsumeRefreshSecret([]byte("s-1"), 1500, "thumb"); err != nil {
-		t.Fatalf("ConsumeRefreshSecret: %v", err)
+	if err := renew(s, session, "s-2", "s-3", 1600); err != nil {
+		t.Fatalf("renew: %v", err)
 	}
 	moved, err := s.SpendRefreshSecretsForSession(session.ID, 2000, "reuse-detected")
 	if err != nil {
 		t.Fatalf("SpendRefreshSecretsForSession: %v", err)
 	}
-	if moved != 2 {
-		t.Fatalf("spent %d secrets, want the 2 still outstanding", moved)
+	if moved != 1 {
+		t.Fatalf("spent %d secrets, want the 1 still outstanding", moved)
 	}
 	chain, err := s.ListRefreshSecretsForSession(session.ID)
 	if err != nil {
@@ -446,35 +468,36 @@ func TestSpendRefreshSecretsForSessionClearsTheOutstandingChain(t *testing.T) {
 			t.Fatalf("secret %s survived the family spend", secret.ID)
 		}
 	}
-	first, _ := s.GetRefreshSecretByHash([]byte("s-1"))
-	if first.ConsumedBy != "thumb" {
+	first, _ := s.GetRefreshSecretByHash(refreshHash("s-1"))
+	if first.ConsumedBy != session.DeviceID {
 		t.Fatalf("the family spend rewrote an earlier attribution to %q", first.ConsumedBy)
 	}
 }
 
 func TestRefreshSecretsCascadeWithTheirSession(t *testing.T) {
-	s, session := seedRefreshSession(t)
-	if _, err := s.CreateRefreshSecret(session.ID, []byte("secret-1"), 1000, 90000); err != nil {
-		t.Fatalf("CreateRefreshSecret: %v", err)
-	}
+	s, session := seedRefreshSession(t, "secret-1", 90000)
 	if _, err := s.db.Exec(`DELETE FROM sessions WHERE id = ?`, session.ID); err != nil {
 		t.Fatalf("delete session: %v", err)
 	}
-	if _, err := s.GetRefreshSecretByHash([]byte("secret-1")); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.GetRefreshSecretByHash(refreshHash("secret-1")); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatal("a refresh secret outlived the session it renews")
 	}
 }
 
 func TestDeleteRefreshSecretsKeepsSpentOnesInsideTheirWindow(t *testing.T) {
-	s, session := seedRefreshSession(t)
-	if _, err := s.CreateRefreshSecret(session.ID, []byte("live"), 1000, 90000); err != nil {
-		t.Fatalf("CreateRefreshSecret: %v", err)
+	s, session := seedRefreshSession(t, "live", 90000)
+	if err := renew(s, session, "live", "live-next", 2000); err != nil {
+		t.Fatalf("renew: %v", err)
 	}
-	if _, err := s.CreateRefreshSecret(session.ID, []byte("stale"), 1000, 3000); err != nil {
-		t.Fatalf("CreateRefreshSecret: %v", err)
+	device, err := s.GetDevice(session.DeviceID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := s.ConsumeRefreshSecret([]byte("live"), 2000, "thumb"); err != nil {
-		t.Fatalf("ConsumeRefreshSecret: %v", err)
+	other := session
+	other.ID = "sess-2"
+	if err := s.CreateDeviceSession(DeviceSession{Device: device, Session: other,
+		Refresh: RefreshGrant{Hash: refreshHash("stale"), CreatedAt: 1000, ExpiresAt: 3000}}); err != nil {
+		t.Fatalf("seed the second session: %v", err)
 	}
 	dropped, err := s.DeleteRefreshSecretsExpiredBefore(5000)
 	if err != nil {
@@ -483,7 +506,7 @@ func TestDeleteRefreshSecretsKeepsSpentOnesInsideTheirWindow(t *testing.T) {
 	if dropped != 1 {
 		t.Fatalf("dropped %d secrets, want only the expired one", dropped)
 	}
-	if _, err := s.GetRefreshSecretByHash([]byte("live")); err != nil {
+	if _, err := s.GetRefreshSecretByHash(refreshHash("live")); err != nil {
 		t.Fatalf("a spent secret inside its window was pruned, which would blind the reuse detector: %v", err)
 	}
 }
@@ -561,9 +584,7 @@ func TestSessionActivationGatesLiveness(t *testing.T) {
 	key := seedSigningKey(t, s)
 	pending := newTestSession("sess-pending", owner, device, key, 900000)
 	pending.ActivatedAt = 0
-	if err := s.CreateSession(pending); err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
+	seedPendingSession(t, s, owner, pending)
 	read, err := s.GetSession("sess-pending")
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
@@ -602,9 +623,7 @@ func TestActivateSessionRefusesARevokedRow(t *testing.T) {
 	key := seedSigningKey(t, s)
 	pending := newTestSession("sess-pending", owner, device, key, 900000)
 	pending.ActivatedAt = 0
-	if err := s.CreateSession(pending); err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
+	seedPendingSession(t, s, owner, pending)
 	if _, _, err := s.RevokeSession("sess-pending", 2000); err != nil {
 		t.Fatalf("RevokeSession: %v", err)
 	}
@@ -618,7 +637,7 @@ func TestActivateSessionRefusesARevokedRow(t *testing.T) {
 }
 
 func TestExtendSessionOnlyMovesALiveWindowForward(t *testing.T) {
-	s, session := seedRefreshSession(t)
+	s, session := seedRefreshSession(t, "secret-1", 90000)
 	moved, err := s.ExtendSession(session.ID, 950000, 2000)
 	if err != nil {
 		t.Fatalf("ExtendSession: %v", err)
@@ -650,8 +669,8 @@ func TestDeleteSessionsExpiredBeforeKeepsLiveAndRevokedRows(t *testing.T) {
 	key := seedSigningKey(t, s)
 	for id, expires := range map[string]int64{"old": 2000, "live": 900000, "revoked": 900000} {
 		session := newTestSession(id, owner, device, key, expires)
-		if err := s.CreateSession(session); err != nil {
-			t.Fatalf("CreateSession %s: %v", id, err)
+		if err := seedLiveSession(s, session); err != nil {
+			t.Fatalf("seed session %s: %v", id, err)
 		}
 	}
 	if _, _, err := s.RevokeSession("revoked", 2500); err != nil {

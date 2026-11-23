@@ -71,14 +71,14 @@ func TestEndingADevicesLastSessionReleasesItsLinks(t *testing.T) {
 					expires = w.expires(i)
 				}
 				session := newTestSession(endSessionID(i), owner, device, key, expires)
-				if err := s.CreateSession(session); err != nil {
+				if err := seedLiveSession(s, session); err != nil {
 					t.Fatal(err)
 				}
 				if w.prepare != nil {
 					w.prepare(t, s, i, session)
 				}
 			}
-			if err := s.CreateSession(newTestSession("other-session", owner, other, key, 99000)); err != nil {
+			if err := seedLiveSession(s, newTestSession("other-session", owner, other, key, 99000)); err != nil {
 				t.Fatal(err)
 			}
 			mustCreateThread(t, s, "worker")

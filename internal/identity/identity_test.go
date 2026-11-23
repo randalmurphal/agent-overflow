@@ -55,16 +55,30 @@ func bearerProof(thumbprint string) DeviceProof {
 	return DeviceProof{Value: thumbprint}
 }
 
+// mintOn writes the live session req describes on an existing device, with
+// its first credential pair, through the builder and transaction a passkey
+// sign-in uses.
+func mintOn(s *Sessions, device store.Device, req MintRequest) (store.Session, TokenSet, error) {
+	written, tokens, err := s.newDeviceSession(req, device, false, s.now().UnixMilli())
+	if err != nil {
+		return store.Session{}, TokenSet{}, err
+	}
+	if err := s.store.CreateDeviceSession(written); err != nil {
+		return store.Session{}, TokenSet{}, err
+	}
+	return written.Session, tokens, nil
+}
+
 func mustMint(t *testing.T, s *Sessions, owner store.User, device store.Device, ttl time.Duration) (store.Session, string) {
 	t.Helper()
-	session, credential, err := s.Mint(MintRequest{
-		UserID: owner.ID, DeviceID: device.ID,
+	session, tokens, err := mintOn(s, device, MintRequest{
+		UserID:       owner.ID,
 		BindingClass: BindingDeviceBound,
 		Scopes:       []Scope{ScopeThreadsRead, ScopeFilesRead},
 		TTL:          ttl,
 	})
 	if err != nil {
-		t.Fatalf("Mint: %v", err)
+		t.Fatalf("mint: %v", err)
 	}
-	return session, credential
+	return session, tokens.Credential
 }

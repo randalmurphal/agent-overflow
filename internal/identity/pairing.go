@@ -503,14 +503,10 @@ func (s *Sessions) resolveDevice(userID string, class DeviceClass, label, platfo
 
 // newDeviceSession builds the session req describes on device and its first
 // credential pair, for the caller to write together with the device row
-// (store.DeviceSession) before it hands the pair out.
-//
-// newSession's own credential is discarded: it carries no refresh secret,
-// and issuing the pair through newTokens keeps a device from ever holding an
-// access credential whose renewal row does not exist.
+// (store.DeviceSession) before it hands the pair out, so a device never
+// holds an access credential whose renewal row does not exist.
 func (s *Sessions) newDeviceSession(req MintRequest, device store.Device, newDevice bool, now int64) (store.DeviceSession, TokenSet, error) {
-	req.DeviceID = device.ID
-	session, _, err := s.newSession(req)
+	session, err := s.newSession(req, device.ID)
 	if err != nil {
 		return store.DeviceSession{}, TokenSet{}, err
 	}

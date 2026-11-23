@@ -18,8 +18,8 @@ func TestRevokeDeviceReSweepsAnAlreadyRevokedDevice(t *testing.T) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
 
-	if err := s.CreateSession(newTestSession("sess-first", owner, device, key, 9000)); err != nil {
-		t.Fatalf("CreateSession: %v", err)
+	if err := seedLiveSession(s, newTestSession("sess-first", owner, device, key, 9000)); err != nil {
+		t.Fatalf("seed session: %v", err)
 	}
 	ids, err := s.RevokeDevice(device.ID, 2000)
 	if err != nil {
@@ -30,12 +30,12 @@ func TestRevokeDeviceReSweepsAnAlreadyRevokedDevice(t *testing.T) {
 	}
 
 	// The straggler: an un-revoked session row for the already-revoked
-	// device. Written behind CreateSession's back, because no production
+	// device. Written behind the store's back, because no production
 	// path may produce one any more — but a database written by a build
 	// that predates that gate can hold one, and reaching it is the whole
 	// point of re-sweeping.
-	if err := s.CreateSession(newTestSession("sess-straggler", owner, device, key, 9000)); err == nil {
-		t.Fatal("CreateSession minted a session for a revoked device")
+	if err := seedLiveSession(s, newTestSession("sess-straggler", owner, device, key, 9000)); err == nil {
+		t.Fatal("a session was written for a revoked device")
 	}
 	if _, err := s.db.Exec(
 		`INSERT INTO sessions (id, user_id, device_id, binding_class, scopes,
@@ -70,40 +70,43 @@ func TestRevokeDeviceReSweepsAnAlreadyRevokedDevice(t *testing.T) {
 	}
 }
 
-// TestCreateSessionRefusesARevokedDevice — the other end: the row cannot
-// be written at all. The predicate is inside the INSERT, so a revocation
-// committing between a caller's device read and its mint refuses the mint
-// rather than racing it.
-func TestCreateSessionRefusesARevokedDevice(t *testing.T) {
+// TestCreateDeviceSessionRefusesARevokedDevice — the other end: the row
+// cannot be written at all. The predicate is inside the INSERT, so a
+// revocation committing between a caller's device read and its mint
+// refuses the mint rather than racing it.
+func TestCreateDeviceSessionRefusesARevokedDevice(t *testing.T) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
 	if _, err := s.RevokeDevice(device.ID, 2000); err != nil {
 		t.Fatalf("RevokeDevice: %v", err)
 	}
-	err := s.CreateSession(newTestSession("sess-after", owner, device, key, 9000))
+	// The device as the caller read it before the revocation.
+	err := s.CreateDeviceSession(DeviceSession{Device: device, Session: newTestSession("sess-after", owner, device, key, 9000)})
 	if !errors.Is(err, ErrDeviceRevoked) {
-		t.Fatalf("CreateSession for a revoked device = %v, want ErrDeviceRevoked", err)
+		t.Fatalf("CreateDeviceSession for a revoked device = %v, want ErrDeviceRevoked", err)
 	}
-	if err := s.CreateSession(newTestSession("sess-nodevice", owner, Device{ID: "no-such-device"}, key, 9000)); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("CreateSession for a missing device = %v, want sql.ErrNoRows", err)
+	missing := Device{ID: "no-such-device", Label: "Gone"}
+	if err := s.CreateDeviceSession(DeviceSession{Device: missing, Session: newTestSession("sess-nodevice", owner, missing, key, 9000)}); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("CreateDeviceSession for a missing device = %v, want sql.ErrNoRows", err)
+	}
+	if sessions, err := s.ListSessionsForDevice(device.ID); err != nil || len(sessions) != 0 {
+		t.Fatalf("the refused writes left %d sessions (%v)", len(sessions), err)
 	}
 }
 
 // TestActivateAndExtendRefuseARevokedDevice — a pairing confirmation must
 // not turn an inert row into a live credential, and a rotation must not
 // move a window a revocation just closed. Both predicates are in the
-// UPDATE, for the same reason CreateSession's is in the INSERT.
+// UPDATE, for the same reason the session write's is in its INSERT.
 func TestActivateAndExtendRefuseARevokedDevice(t *testing.T) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
 
 	pending := newTestSession("sess-pending", owner, device, key, 9000)
 	pending.ActivatedAt = 0
-	if err := s.CreateSession(pending); err != nil {
-		t.Fatalf("CreateSession(pending): %v", err)
-	}
-	if err := s.CreateSession(newTestSession("sess-live", owner, device, key, 9000)); err != nil {
-		t.Fatalf("CreateSession(live): %v", err)
+	seedPendingSession(t, s, owner, pending)
+	if err := seedLiveSession(s, newTestSession("sess-live", owner, device, key, 9000)); err != nil {
+		t.Fatalf("seed session(live): %v", err)
 	}
 	if _, err := s.RevokeDevice(device.ID, 2000); err != nil {
 		t.Fatalf("RevokeDevice: %v", err)
@@ -143,8 +146,8 @@ func TestActivateAndExtendRefuseARevokedDevice(t *testing.T) {
 func TestSessionReadsCarryTheDeviceRevocation(t *testing.T) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
-	if err := s.CreateSession(newTestSession("sess-1", owner, device, key, 9000)); err != nil {
-		t.Fatalf("CreateSession: %v", err)
+	if err := seedLiveSession(s, newTestSession("sess-1", owner, device, key, 9000)); err != nil {
+		t.Fatalf("seed session: %v", err)
 	}
 	if _, err := s.RevokeDevice(device.ID, 2000); err != nil {
 		t.Fatalf("RevokeDevice: %v", err)

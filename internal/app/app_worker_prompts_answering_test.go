@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
 )
@@ -226,13 +227,8 @@ func narrowSessionThere(t *testing.T, p *remotePromptPair) context.Context {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, _, err := p.dest.identityState().sessions.Mint(identity.MintRequest{
-		UserID: device.UserID, DeviceID: device.ID, BindingClass: identity.BindingDeviceBound,
-		Scopes: []identity.Scope{identity.ScopeThreadsRead, identity.ScopeTerminalOperate}, TTL: time.Hour,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	session := storetest.LiveSession(t, p.dest.store, device,
+		[]string{string(identity.ScopeThreadsRead), string(identity.ScopeTerminalOperate)}, time.Hour)
 	ctx, _ := transport.WithConnState(t.Context(), transport.ConnPrincipal{SessionID: session.ID})
 	return ctx
 }

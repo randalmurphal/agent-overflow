@@ -603,13 +603,10 @@ func scanPairingLink(sc interface{ Scan(...any) error }) (PairingLink, error) {
 	return link, nil
 }
 
-// CreateRefreshSecret writes one issued renewal credential. The id is
-// minted here; the hash is the caller's, because only the caller ever sees
-// the secret.
-func (s *Store) CreateRefreshSecret(sessionID string, secretHash []byte, createdAt, expiresAt int64) (RefreshSecret, error) {
-	return insertRefreshSecret(s.db, sessionID, secretHash, createdAt, expiresAt)
-}
-
+// insertRefreshSecret writes a session's first renewal credential inside the
+// transaction that writes the session (writeDeviceSession). The id is minted
+// here; the hash is the caller's, because only the caller ever sees the
+// secret.
 func insertRefreshSecret(db sqlExecutor, sessionID string, secretHash []byte, createdAt, expiresAt int64) (RefreshSecret, error) {
 	switch {
 	case strings.TrimSpace(sessionID) == "":
@@ -637,36 +634,10 @@ func insertRefreshSecret(db sqlExecutor, sessionID string, secretHash []byte, cr
 	return secret, nil
 }
 
-// ConsumeRefreshSecret spends one unspent, unexpired secret and returns it.
-//
-// ONE statement again: the two predicates ARE the rotation rule, and
-// SQLite decides which of two concurrent presentations wins. The loser
-// gets sql.ErrNoRows and the caller then asks GetRefreshSecretByHash what
-// happened — which is how a spent secret becomes a detected reuse rather
-// than a generic refusal.
-func (s *Store) ConsumeRefreshSecret(secretHash []byte, at int64, byThumbprint string) (RefreshSecret, error) {
-	if len(secretHash) == 0 {
-		return RefreshSecret{}, fmt.Errorf("%w: refresh secret hash", ErrIdentityFieldRequired)
-	}
-	secret, err := scanRefreshSecret(s.db.QueryRow(
-		`UPDATE refresh_secrets SET consumed_at = ?, consumed_by = ?
-		  WHERE secret_hash = ? AND consumed_at IS NULL AND expires_at > ?
-		 RETURNING `+refreshSecretColumns,
-		at, byThumbprint, secretHash, at))
-	if errors.Is(err, sql.ErrNoRows) {
-		return RefreshSecret{}, err
-	}
-	if err != nil {
-		return RefreshSecret{}, fmt.Errorf("store: consume refresh secret: %w", err)
-	}
-	return secret, nil
-}
-
-// GetRefreshSecretByHash reads a secret whatever its state. Only the
-// failure path of ConsumeRefreshSecret calls it, and only to answer one
-// question: was this a secret that never existed, or one the real device
-// already spent? The two have different consequences and the same
-// symptom.
+// GetRefreshSecretByHash reads a secret whatever its state. A renewal reads
+// it before it rotates, to answer one question: was this a secret that never
+// existed, or one the real device already spent? The two have different
+// consequences and the same symptom.
 func (s *Store) GetRefreshSecretByHash(secretHash []byte) (RefreshSecret, error) {
 	if len(secretHash) == 0 {
 		return RefreshSecret{}, fmt.Errorf("%w: refresh secret hash", ErrIdentityFieldRequired)

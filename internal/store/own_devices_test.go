@@ -15,9 +15,6 @@ func approvedOwnPair(t *testing.T) (*Store, PairingLink) {
 	key := seedSigningKey(t, s)
 	session := newTestSession("own-session", owner, device, key, 9000)
 	session.ActivatedAt = 0
-	if e := s.CreateSession(session); e != nil {
-		t.Fatal(e)
-	}
 	link := PairingLink{ID: "own-link", UserID: owner.ID, Scopes: []string{"threads:read"}, BindingClass: "device-bound", DeviceClass: "phone", Purpose: "own-device", CreatedAt: 1000, ExpiresAt: 9000}
 	if e := s.CreatePairingLink(link, []byte("hash-own")); e != nil {
 		t.Fatal(e)
@@ -25,7 +22,7 @@ func approvedOwnPair(t *testing.T) (*Store, PairingLink) {
 	if _, e := s.RedeemPairingLink([]byte("hash-own"), 2000, ownKey()); e != nil {
 		t.Fatal(e)
 	}
-	if e := attachPairingRedemption(s.db, link.ID, device.ID, session.ID); e != nil {
+	if e := s.CompletePairingRedemption(PairingRedemption{LinkID: link.ID, DeviceSession: DeviceSession{Device: device, Session: session}}); e != nil {
 		t.Fatal(e)
 	}
 	confirmed, e := s.ConfirmRedeemedPairing(link.ID, 2100, 9000)

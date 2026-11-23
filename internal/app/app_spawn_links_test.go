@@ -4,10 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
-	"agent-overflow/internal/secret"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/triage"
 )
 
@@ -19,20 +17,7 @@ func reachableDevice(t *testing.T, s *store.Store) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	device, err := s.CreateDevice(owner.ID, "Paired computer", "backend-peer", "linux")
-	if err != nil {
-		t.Fatal(err)
-	}
-	key := store.SigningKey{ID: uuid.NewString(), Secret: secret.New([]byte("0123456789abcdef")), CreatedAt: 1}
-	if err := s.InsertSigningKey(key); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CreateSession(store.Session{
-		ID: uuid.NewString(), UserID: owner.ID, DeviceID: device.ID, BindingClass: "device-bound",
-		Scopes: []string{"threads:read"}, SigningKeyID: key.ID, CreatedAt: 1, ExpiresAt: 1 << 50, ActivatedAt: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	device, _ := storetest.PairedDevice(t, s, owner.ID, "Paired computer", "backend-peer", "threads:read")
 	return device.ID
 }
 
