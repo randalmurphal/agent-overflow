@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -208,11 +209,11 @@ func TestLocalFactsAnswerEveryKind(t *testing.T) {
 		}
 	}
 	runs := calls.take()
-	// One read of the local commits, one ls-tree and one walk per local
-	// commit a path key names, one batch-check, one batch read, one header
-	// read per blob an image key names, and one config read for the LFS
-	// pointer's store.
-	if want := []string{"cat-file --batch", batchCheckRun, "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "config -z", entriesRun, entriesRun, commitsRun, walkRun, walkRun}; !slices.Equal(runs, want) {
+	// One read of the local commits, one ls-tree per local commit a path
+	// key names, one read of the local blobs, one batch-check, one batch
+	// read, one header read per blob an image key names, and one config
+	// read for the LFS pointer's store.
+	if want := []string{"cat-file --batch", batchCheckRun, "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "cat-file blob", "config -z", entriesRun, entriesRun, commitsRun, blobsRun}; !slices.Equal(runs, want) {
 		t.Fatalf("git runs = %q\nwant %q", runs, want)
 	}
 
@@ -229,8 +230,9 @@ func TestLocalFactsAnswerEveryKind(t *testing.T) {
 	}
 	// The unavailable keys are read again (an abbreviation's batch-check,
 	// a commit that is not local), and the LFS pointer's object is looked
-	// up again: its commit and its entry, its blob's record being held.
-	if runs, want := calls.take(), []string{batchCheckRun, entriesRun, commitsRun}; !slices.Equal(runs, want) {
+	// up again: its commit, its entry and whether its blob is local, the
+	// blob's record being held.
+	if runs, want := calls.take(), []string{batchCheckRun, entriesRun, commitsRun, blobsRun}; !slices.Equal(runs, want) {
 		t.Fatalf("the cached call ran %q, want %q", runs, want)
 	}
 }
@@ -408,6 +410,11 @@ func TestLocalFactsPartialCloneDoesNotFetch(t *testing.T) {
 		t.Fatal("the clone holds the blob")
 	}
 	core := NewCore()
+	// What the blob is as an image is held from another checkout of the
+	// repository: it is still not local in this one.
+	if got := resolveLocal(t, core, r.dir, r.rev(), "image:head:docs/head.png"); got["image:head:docs/head.png"].Status != FactFound {
+		t.Fatalf("the source's image = %+v", got)
+	}
 	got := resolveLocal(t, core, clone, r.rev(), "image:head:docs/head.png", "lines:"+r.head+":code.go:1-1", "image:head:docs/none.png", "commit:"+r.head[:8])
 	for key, want := range map[string]string{
 		"image:head:docs/head.png": FactUnavailable, "lines:" + r.head + ":code.go:1-1": FactUnavailable,
@@ -516,8 +523,6 @@ func TestLocalFactsAskGitOnlyForLocalObjects(t *testing.T) {
 					case len(args) < 2:
 					case strings.HasPrefix(args[1], "--batch-check"):
 						checks++
-					case args[0] == "rev-list" && args[1] == "--objects" && slices.Contains(args, "docs"):
-						t.Errorf("a walk was given a directory: %q", args)
 					}
 				}
 				got := resolveLocal(t, core, f.clone, f.rev, slices.Collect(maps.Keys(f.want))...)
@@ -893,12 +898,17 @@ func TestPathEntriesNameTheirOwnEntry(t *testing.T) {
 			t.Errorf("%s: entries = %v\nwant %v", name, entries, tc.want)
 		}
 	}
-	local, err := core.localObjects(t.Context(), r.dir, head, []string{"docs/head.png", "docs/twin.png", "docs/deep/more/leaf.txt"})
+	missing := strings.Repeat("e", 40)
+	local, err := core.localObjects(t.Context(), r.dir, []string{png, leaf, missing})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !local[png] || !local[leaf] {
+	if len(local) != 2 || !local[png] || !local[leaf] {
 		t.Fatalf("local objects = %v, want %s and %s", local, png, leaf)
+	}
+	// An id that names a tree lists what the tree holds: the run fails.
+	if local, err := core.localObjects(t.Context(), r.dir, []string{strings.TrimSpace(runGitStdout(t, r.dir, "rev-parse", head+"^{tree}"))}); err == nil {
+		t.Fatalf("a tree's id answered %v", local)
 	}
 	got := resolveLocal(t, core, r.dir, PRRevision{HeadSHA: head}, "image:head:docs/head.png", "image:head:docs/twin.png", "image:head:docs", "image:head:module")
 	for key, want := range map[string]string{
@@ -908,5 +918,97 @@ func TestPathEntriesNameTheirOwnEntry(t *testing.T) {
 		if got[key].Status != want {
 			t.Errorf("%s = %+v, want %s", key, got[key], want)
 		}
+	}
+}
+
+// Two directories that hold the same files are one tree to git: a path in
+// each still answers.
+func TestLocalFactsInDirectoriesOfOneTree(t *testing.T) {
+	t.Parallel()
+	repo := initGitRepo(t)
+	for _, dir := range []string{"a", "b"} {
+		writeFactFile(t, repo, dir+"/one.txt", []byte("one\n"))
+		writeFactFile(t, repo, dir+"/two.txt", []byte("two\n"))
+	}
+	testutil.RunGit(t, repo, "add", ".")
+	testutil.RunGit(t, repo, "commit", "-q", "-m", "twins")
+	head := strings.TrimSpace(runGitStdout(t, repo, "rev-parse", "HEAD"))
+	one, two := "lines:"+head+":a/one.txt:1-1", "lines:"+head+":b/two.txt:1-1"
+	got := resolveLocal(t, NewCore(), repo, PRRevision{}, one, two)
+	if got[one].Text != "one" || got[two].Text != "two" {
+		t.Fatalf("lines = %+v and %+v", got[one], got[two])
+	}
+}
+
+// wideRepo is a repository whose directory "wide" holds n files of long
+// names besides images i0.png to i5.png, and outside.txt at its root; it
+// answers the repository and its head.
+func wideRepo(t *testing.T, n int) (string, string) {
+	t.Helper()
+	repo := initGitRepo(t)
+	writeFactFile(t, repo, "outside.txt", []byte("outside\n"))
+	for i := range 6 {
+		writeFactFile(t, repo, fmt.Sprintf("wide/i%d.png", i), pngOf(t, 3+i, 2))
+	}
+	testutil.RunGit(t, repo, "add", ".")
+	blob := strings.TrimSpace(runGitStdout(t, repo, "rev-parse", ":outside.txt"))
+	var index strings.Builder
+	for i := range n {
+		fmt.Fprintf(&index, "100644 %s\twide/%s%06d\n", blob, strings.Repeat("x", 230), i)
+	}
+	cmd := exec.Command("git", "update-index", "--index-info")
+	cmd.Dir, cmd.Stdin = repo, strings.NewReader(index.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("update-index: %v %s", err, out)
+	}
+	testutil.RunGit(t, repo, "commit", "-q", "-m", "wide")
+	return repo, strings.TrimSpace(runGitStdout(t, repo, "rev-parse", "HEAD"))
+}
+
+// A directory named beside a path under it makes git list the directory
+// whole. However wide it is, its paths and the other paths of the call
+// still answer.
+func TestLocalFactsBesideAWideDirectory(t *testing.T) {
+	t.Parallel()
+	repo, head := wideRepo(t, 20000)
+	rev := PRRevision{HeadSHA: head}
+	outside := "lines:" + head + ":outside.txt:1-1"
+	got := resolveLocal(t, NewCore(), repo, rev, "image:head:wide", "image:head:wide/none.png", "image:head:wide/i0.png", outside)
+	for key, want := range map[string]string{
+		"image:head:wide": FactAbsent, "image:head:wide/none.png": FactAbsent,
+		"image:head:wide/i0.png": FactFound, outside: FactFound,
+	} {
+		if got[key].Status != want {
+			t.Errorf("%s = %+v, want %s", key, got[key], want)
+		}
+	}
+}
+
+// What a call holds afterwards is its facts, not git's listing: six
+// lookups that each made git list a wide directory hold none of it. It
+// reads the process's heap, so it runs alone.
+func TestLocalFactsHoldNoneOfGitsListing(t *testing.T) {
+	repo, head := wideRepo(t, 6000)
+	rev := PRRevision{HeadSHA: head}
+	core := NewCore()
+	heap := func() uint64 {
+		runtime.GC()
+		runtime.GC()
+		var stats runtime.MemStats
+		runtime.ReadMemStats(&stats)
+		return stats.HeapAlloc
+	}
+	before := heap()
+	for i := range 6 {
+		key := fmt.Sprintf("image:head:wide/i%d.png", i)
+		if got := resolveLocal(t, core, repo, rev, "image:head:wide", key); got[key].Status != FactFound {
+			t.Fatalf("%s = %+v", key, got[key])
+		}
+	}
+	after := heap()
+	runtime.KeepAlive(core)
+	// Each listing is about 1.7 MiB.
+	if after > before && after-before > 1<<20 {
+		t.Fatalf("six lookups left %d bytes on the heap, want under 1 MiB", after-before)
 	}
 }

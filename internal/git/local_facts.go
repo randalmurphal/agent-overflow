@@ -25,10 +25,10 @@ import (
 // local answers unavailable. One call's misses cost, to learn which
 // objects are local without fetching (local_residency.go), one `git
 // rev-list --no-walk` when a key names a full commit id, one `git ls-tree`
-// per local commit a path key names, and one `git rev-list --objects` per
-// commit with a blob to read (every lines key's, and an image key's the
-// blob image cache lacks); then one `git cat-file --batch-check` for the
-// commits and those blobs that are local, one `git cat-file --batch` for
+// per local commit a path key names, and one `git rev-list --objects` for
+// the blobs those paths hold; then one `git cat-file --batch-check` for
+// the commits and the local blobs it has to size (every lines key's, and
+// an image key's the blob image cache lacks), one `git cat-file --batch` for
 // the commits' subjects and the lines ranges' blobs (streamed: no blob is
 // held whole), one header read per image blob the blob image cache lacks,
 // one lstat per Git LFS pointer blob (local_lfs.go) and one `git config`
@@ -59,7 +59,7 @@ const (
 	factImageHead      = 4096
 	factImageHeaderMax = 1 << 20
 	// factImageReads bounds the header reads, and the commits whose trees
-	// are read (perCommit), one call runs at once.
+	// are read (pathEntriesOf), one call runs at once.
 	factImageReads = 4
 	// factCommitBytes is how much of a commit object is read for its
 	// subject.
@@ -268,7 +268,7 @@ type localHold struct {
 // how long each fact that can change may be held, by key (absent: without
 // expiry). It asks which objects are local (local_residency.go) before it
 // reads any: the commits, then each path's entry in its commit's tree,
-// then the blobs it has to read.
+// then those entries' blobs.
 func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactKey) ([]ForgeFact, map[string]localHold) {
 	ctx, cancel := context.WithTimeout(ctx, localFactsTimeout)
 	defer cancel()
@@ -309,20 +309,17 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 			pathsOf[k.commit] = append(pathsOf[k.commit], k.path)
 		}
 	}
-	entries, errs := perCommit(pathsOf, func(commit string, paths []string) (map[string]pathEntry, error) {
-		return c.pathEntries(ctx, cwd, commit, paths)
-	})
+	entries, errs := c.pathEntriesOf(ctx, cwd, pathsOf)
 	for _, err := range errs {
 		log.Printf("local facts: ls-tree: unavailable: %v", err)
 	}
 
-	// Each path key's blob, and the paths whose blob is read: every lines
-	// key's, and an image key's unless what the blob is as an image is
-	// held.
+	// Each path key's blob, and which of the blobs are local here. What a
+	// blob is as an image may be held from another checkout of the
+	// repository, which says nothing of whether this one has the blob.
 	blobOf := make([]string, len(keys))
-	held := map[string]BlobImage{}
-	readsOf := map[string][]string{}
-	clear(named)
+	var blobs []string
+	clear(listed)
 	for i, k := range keys {
 		at, ok := entries[k.commit]
 		if k.kind == "commit" || !ok {
@@ -334,39 +331,41 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 			continue
 		}
 		blobOf[i] = entry.oid
-		if k.kind == "image" {
-			if _, ok := held[entry.oid]; ok {
-				continue
-			}
-			if record, ok := c.blobImages.get(entry.oid, now); ok {
-				held[entry.oid] = record
-				continue
-			}
-		}
-		if name := k.commit + ":" + k.path; !named[name] {
-			named[name] = true
-			readsOf[k.commit] = append(readsOf[k.commit], k.path)
+		if !listed[entry.oid] {
+			listed[entry.oid] = true
+			blobs = append(blobs, entry.oid)
 		}
 	}
-	localBlobs, errs := perCommit(readsOf, func(commit string, paths []string) (map[string]bool, error) {
-		return c.localObjects(ctx, cwd, commit, paths)
-	})
-	for _, err := range errs {
-		log.Printf("local facts: rev-list --objects: unavailable: %v", err)
+	localBlobs, err := c.localObjects(ctx, cwd, blobs)
+	if err != nil {
+		log.Printf("local facts: rev-list --objects: %d blobs unavailable: %v", len(blobs), err)
 	}
 
-	// cat-file is asked only for objects that are local.
+	// cat-file is asked only for objects that are local: each commit, and
+	// each blob but one only image keys name whose image record is held.
+	held := map[string]BlobImage{}
 	var queries []string
 	asked := map[string]bool{}
 	for i, k := range keys {
-		query := ""
+		query, oid := "", blobOf[i]
 		switch {
 		case k.kind == "commit":
 			if !gitdiff.IsFullOID(k.hex) || local.has(k.hex) {
 				query = k.hex + "^{commit}"
 			}
-		case blobOf[i] != "" && localBlobs[k.commit][blobOf[i]]:
-			query = blobOf[i]
+		case !localBlobs[oid]:
+		case k.kind == "lines":
+			query = oid
+		default:
+			record, ok := held[oid]
+			if !ok {
+				if record, ok = c.blobImages.get(oid, now); ok {
+					held[oid] = record
+				}
+			}
+			if !ok {
+				query = oid
+			}
 		}
 		if query != "" && !asked[query] {
 			asked[query] = true
@@ -400,10 +399,8 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 			}
 			continue
 		}
+		// A blob that is not local is neither held nor asked for above.
 		oid := blobOf[i]
-		if oid == "" {
-			continue
-		}
 		if record, ok := held[oid]; ok && k.kind == "image" {
 			if record.pointer.OID == "" {
 				facts[i] = imageFact(k.key, record)
@@ -413,7 +410,6 @@ func (c *Core) readLocalFacts(ctx context.Context, cwd string, keys []localFactK
 			}
 			continue
 		}
-		// A blob that is not local was not asked for: it stays unavailable.
 		obj := objects[oid]
 		if obj.kind != "blob" {
 			continue
@@ -595,7 +591,8 @@ func (c *Core) batchCheck(ctx context.Context, cwd string, queries []string) (ma
 		if err != nil || size < 0 {
 			return nil, fmt.Errorf("cat-file --batch-check: malformed size %q", fields[2])
 		}
-		objects[query] = objectInfo{oid: fields[0], kind: fields[1], size: size}
+		// Copied out of git's output: a cache holds the id.
+		objects[query] = objectInfo{oid: strings.Clone(fields[0]), kind: strings.Clone(fields[1]), size: size}
 	}
 	return objects, nil
 }
