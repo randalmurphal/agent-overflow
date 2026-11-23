@@ -325,7 +325,9 @@ thread loaded only keeps its writer lock and MCP children alive.
 1. interrupt the thread's active turn and each live owned child's turn
    (`turn/interrupt`), and settle its pending approvals with
    `turnTransition` as `Close` does today;
-2. `thread/backgroundTerminals/clean`, which kills the thread's PTYs
+2. `thread/backgroundTerminals/clean` for the root and every owned child
+   the connection has loaded, under one 3 s bound, which kills each
+   thread's PTYs
    ([background terminals](../references/codex-wire.md#background-terminals));
 3. `thread/unsubscribe` for the root and every loaded child it owns;
 4. wait for `thread/closed` for each, bounded at 10 s;
@@ -333,7 +335,10 @@ thread loaded only keeps its writer lock and MCP children alive.
    its registry count.
 
 A `thread/closed` that does not arrive in time is an error returned to the
-caller and shown on the thread. The connection keeps the thread marked as
+caller. The thread shows an error row that names each thread Codex did not
+confirm closed (the session's own or an agent's) and the commands it ran
+that may still be running; the session's end still drops their live state.
+The connection keeps the thread marked as
 loaded, and a later start of that thread first unloads it there (another
 process would be refused by the thread's writer lock): `thread/unsubscribe`
 again and wait for `thread/closed` on the old connection, then start on the

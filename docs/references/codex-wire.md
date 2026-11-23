@@ -1759,6 +1759,9 @@ agent's thread for its terminals once, only to hear "thread not found"
 and the unload are known, in either order (`childResidency`). A revert
 that waits for its commands' completions cannot prove their processes
 died, because an exec-server process's completion is written either way.
+Whether a running PTY keeps a thread active, and so loaded after its last
+unsubscribe, is not established; End Session cleans every thread it owns
+before it unsubscribes, so this matters only when a clean fails.
 
 ---
 

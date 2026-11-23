@@ -40,9 +40,16 @@ func handleCodexFrame(t *testing.T, app *App, threadID string, evt provider.Prov
 // ending the session sees once the main agent's turn is over.
 func seedCodexCommand(t *testing.T, app *App, threadID, itemID, processID, owner string, scope provider.ProcessScope) {
 	t.Helper()
+	seedCodexCommandRunning(t, app, threadID, itemID, processID, owner, scope, "pnpm run dev")
+}
+
+// seedCodexCommandRunning is seedCodexCommand for a command that runs
+// command.
+func seedCodexCommandRunning(t *testing.T, app *App, threadID, itemID, processID, owner string, scope provider.ProcessScope, command string) {
+	t.Helper()
 	startMeta, err := json.Marshal(map[string]any{
 		"source": "unifiedExecStartup", "item_status": "inProgress", "process_id": processID,
-		"toolName": "command_execution", "input": map[string]any{"command": "pnpm run dev"},
+		"toolName": "command_execution", "input": map[string]any{"command": command},
 	})
 	if err != nil {
 		t.Fatal(err)

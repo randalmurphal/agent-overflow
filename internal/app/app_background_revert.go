@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -128,14 +127,11 @@ func (a *App) stopCodexCommandsBeforeRevert(ctx context.Context, threadID string
 func (a *App) codexCommandsStillRunning(threadID string, cause error) error {
 	var names []string
 	if a.triage != nil {
-		for _, command := range a.triage.LiveCodexCommands(threadID) {
-			names = append(names, fmt.Sprintf("%q", command.Summary))
-		}
+		names = codexCommandNames(a.triage.LiveCodexCommands(threadID))
 	}
 	if len(names) == 0 {
 		return cause
 	}
-	sort.Strings(names)
 	return fmt.Errorf("these commands are still running: %s; stop them and try again: %w", strings.Join(names, ", "), cause)
 }
 

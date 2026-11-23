@@ -1261,6 +1261,73 @@ func (s *Session) Close() error {
 	return err
 }
 
+// ThreadNotClosedError is a thread a shared close asked Codex to unload
+// whose unload Codex did not confirm: thread/unsubscribe failed, or its
+// thread/closed did not arrive in time. Its commands may still be running.
+type ThreadNotClosedError struct {
+	// ThreadID is the Codex thread: the process scope its commands ran in.
+	ThreadID string
+	// Root is true for the session's own thread, false for an agent's.
+	Root bool
+	// Agent names the agent whose thread it is (agentLabelLocked), when
+	// Codex reported a name for it.
+	Agent string
+	Err   error
+}
+
+func (e *ThreadNotClosedError) Error() string { return e.Err.Error() }
+
+func (e *ThreadNotClosedError) Unwrap() error { return e.Err }
+
+// ThreadsNotClosed returns every ThreadNotClosedError in err's tree, in the
+// order the close met them.
+func ThreadsNotClosed(err error) []*ThreadNotClosedError {
+	var out []*ThreadNotClosedError
+	var walk func(error)
+	walk = func(err error) {
+		if err == nil {
+			return
+		}
+		if notClosed, ok := err.(*ThreadNotClosedError); ok {
+			out = append(out, notClosed)
+			return
+		}
+		switch wrapped := err.(type) {
+		case interface{ Unwrap() []error }:
+			for _, inner := range wrapped.Unwrap() {
+				walk(inner)
+			}
+		case interface{ Unwrap() error }:
+			walk(wrapped.Unwrap())
+		}
+	}
+	walk(err)
+	return out
+}
+
+// agentLabelLocked is how the user knows an owned child: its nickname, its
+// role, or its agent path, in that order of preference. Caller holds mu.
+func (s *Session) agentLabelLocked(childThreadID string) string {
+	meta := s.collab.agentMetaByThread[childThreadID]
+	for _, label := range []string{meta.AgentNickname, meta.AgentRole, s.collab.agentPathByThread[childThreadID]} {
+		if label = strings.TrimSpace(label); label != "" {
+			return label
+		}
+	}
+	return ""
+}
+
+// loadedThreads returns the threads of ids the connection has loaded.
+func (s *Session) loadedThreads(ids []string) []string {
+	loaded := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if s.conn.isThreadLoaded(id) {
+			loaded = append(loaded, id)
+		}
+	}
+	return loaded
+}
+
 func (s *Session) closeShared() error {
 	rootThreadID := s.rootThreadID()
 	rootSessionID := s.rootSessionID()
@@ -1269,8 +1336,10 @@ func (s *Session) closeShared() error {
 	activeTurnID := s.turn.activeTurnID
 	childTargets := make([]childInterruptTarget, 0, len(s.collab.childRuntimeByThread))
 	childIDs := make([]string, 0, len(s.collab.childParentByThread))
+	agents := make(map[string]string, len(s.collab.childParentByThread))
 	for childID := range s.collab.childParentByThread {
 		childIDs = append(childIDs, childID)
+		agents[childID] = s.agentLabelLocked(childID)
 		if rt, ok := s.collab.childRuntimeByThread[childID]; ok && (rt.phase == childRuntimePending || rt.phase == childRuntimeRunning) {
 			childTargets = append(childTargets, childInterruptTarget{
 				threadID: childID,
@@ -1312,10 +1381,18 @@ func (s *Session) closeShared() error {
 			cancel()
 		}
 
-		// 2. Best-effort background terminal cleanup for this thread only.
+		// 2. Kill the background terminals of the root thread and of every
+		// owned child Codex has loaded, within one bound. Each thread is its
+		// own process table, so the root's clean leaves an agent's
+		// terminals running. A clean that fails is logged: the thread's
+		// unload below ends its commands, and an unload Codex does not
+		// confirm is the close's error.
 		cleanCtx, cancelClean := context.WithTimeout(context.Background(), codexCloseInterruptTimeout)
-		if err := s.CleanBackgroundTerminals(cleanCtx, rootThreadID); err != nil && !IsMethodUnsupported(err, "thread/backgroundTerminals/clean") {
-			log.Printf("codex: shared close background terminal clean %s: %v", rootThreadID, err)
+		for _, threadID := range append([]string{rootThreadID}, s.loadedThreads(childIDs)...) {
+			if err := s.CleanBackgroundTerminals(cleanCtx, threadID); err != nil &&
+				!IsMethodUnsupported(err, "thread/backgroundTerminals/clean") && !errors.Is(err, ErrBackgroundTerminalThreadNotLoaded) {
+				log.Printf("codex: shared close background terminal clean %s: %v", threadID, err)
+			}
 		}
 		cancelClean()
 
@@ -1323,12 +1400,12 @@ func (s *Session) closeShared() error {
 		for _, childID := range childIDs {
 			if s.conn.isThreadLoaded(childID) {
 				if err := s.conn.unsubscribeAndWait(context.Background(), childID); err != nil {
-					closeErrs = append(closeErrs, err)
+					closeErrs = append(closeErrs, &ThreadNotClosedError{ThreadID: childID, Agent: agents[childID], Err: err})
 				}
 			}
 		}
 		if err := s.conn.unsubscribeAndWait(context.Background(), rootThreadID); err != nil {
-			closeErrs = append(closeErrs, err)
+			closeErrs = append(closeErrs, &ThreadNotClosedError{ThreadID: rootThreadID, Root: true, Err: err})
 		}
 	}
 
