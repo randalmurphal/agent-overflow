@@ -13,8 +13,9 @@
 // statements in page code never stop it. While paused, the inspector answers
 // `Debugger.getScriptSource`, which gives each frame its bundle text.
 //
-// tests/base-test.ts, which every spec builds on, arms every page a test
-// opens and pauses the ones that do not answer when the test fails;
+// tests/base-test.ts, which every spec builds on, arms every page its worker
+// opens, a `beforeAll`'s included, and pauses the open ones that do not
+// answer when a test fails;
 // tests/freeze-repro-probe.ts arms its replay page and samples the stack of
 // a wedge. What the failure capture does not cover:
 //   - a page in a context the test closed itself before failing (an expect
@@ -23,10 +24,11 @@
 //     `connectOverCDP`, as tests/browser-lifecycle-helpers.ts and
 //     tests/harness-passkey-lifecycle.spec.ts do), and manual specs, which
 //     keep their own setup;
-//   - a page that stalls before its session is armed. The `page` fixture
-//     waits for arming before handing its page over; a page the test opens
-//     itself is armed from its page event, usually within milliseconds, and
-//     a popup cannot be armed before its first document runs.
+//   - a page that stalls before its session is armed. Arming starts from the
+//     page event, usually done within milliseconds; the `page` fixture waits
+//     up to STALL_ARM_MS for it and then hands the page over armed or not,
+//     and a popup cannot be armed before its first document runs. The
+//     capture reports a page it could not arm as not armed, without a stack.
 
 import type { BrowserContext, CDPSession, Page, TestInfo } from '@playwright/test';
 
@@ -88,6 +90,9 @@ export const STALL_CAPTURE_LIMITS = {
   sourceCharsPerFailure: 8 * 2 ** 20,
 } as const;
 
+/** What `Debugger.getScriptSource` gave for each script id. */
+export type SourceCache = Map<string, { source: string } | { error: string }>;
+
 /** Source characters a capture may still fetch; shared by the pages of one failure. */
 export interface SourceBudget {
   remainingChars: number;
@@ -112,6 +117,8 @@ interface PausedEvent {
 class PauseOwner {
   private waiter: ((event: PausedEvent) => void) | undefined;
   private lateResumeErrors: string[] = [];
+  /** The pause request in flight; the next one starts after it settles. */
+  private inFlight: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly session: CDPSession) {
     session.on('Debugger.paused', (event) => this.paused(event as PausedEvent));
@@ -131,7 +138,18 @@ class PauseOwner {
     });
   }
 
-  /** Wait for the next pause. A request still waiting is retired first. */
+  /**
+   * Run one pause request after the one in flight has finished, so two
+   * requests never wait on the same `Debugger.paused` or resume each
+   * other's pause.
+   */
+  exclusive<T>(request: () => Promise<T>): Promise<T> {
+    const run = this.inFlight.then(request);
+    this.inFlight = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Wait for the next pause. Called only inside `exclusive`. */
   next(): Promise<PausedEvent> {
     return new Promise((resolve) => {
       this.waiter = resolve;
@@ -151,8 +169,8 @@ class PauseOwner {
 
 interface ScriptRecord {
   url: string;
-  /** Source length in characters, as Debugger.scriptParsed reports it. */
-  length: number;
+  /** Source length in characters, as Debugger.scriptParsed reports it; absent when it reports none. */
+  length?: number;
 }
 
 export interface ArmedDebugger {
@@ -162,14 +180,31 @@ export interface ArmedDebugger {
   pauses: PauseOwner;
 }
 
-/** Enable the Debugger domain on a page session while the page still answers. */
-export async function armDebugger(session: CDPSession): Promise<ArmedDebugger> {
+const armedSessions = new WeakMap<CDPSession, Promise<ArmedDebugger>>();
+
+/**
+ * Enable the Debugger domain on a page session while the page still answers.
+ * A session has one owner of its pauses: arming it again returns the first
+ * arming. One whose arming failed can be armed again.
+ */
+export function armDebugger(session: CDPSession): Promise<ArmedDebugger> {
+  const existing = armedSessions.get(session);
+  if (existing) return existing;
+  const armed = arm(session);
+  armedSessions.set(session, armed);
+  armed.catch(() => {
+    if (armedSessions.get(session) === armed) armedSessions.delete(session);
+  });
+  return armed;
+}
+
+async function arm(session: CDPSession): Promise<ArmedDebugger> {
   const scripts = new Map<string, ScriptRecord>();
   session.on('Debugger.scriptParsed', (event) => {
     // Frames need a url only for scripts that have one; eval'd and inline
     // scripts are most of what parses and are left out.
     if (!event.scriptId || !event.url) return;
-    scripts.set(event.scriptId, { url: event.url.slice(0, STALL_CAPTURE_LIMITS.scriptUrlChars), length: event.length ?? 0 });
+    scripts.set(event.scriptId, { url: event.url.slice(0, STALL_CAPTURE_LIMITS.scriptUrlChars), length: event.length });
     if (scripts.size > STALL_CAPTURE_LIMITS.scriptRecords) scripts.delete(scripts.keys().next().value!);
   });
   const pauses = new PauseOwner(session);
@@ -219,8 +254,11 @@ export interface PauseOptions {
   sourceFrames?: number;
   /** Characters of source kept on each side of a frame's position. */
   sourceRadius?: number;
-  /** Scripts already fetched, shared across samples of one page. */
-  sourceCache?: Map<string, string>;
+  /**
+   * What fetching each script gave, its source or its error, so a script is
+   * fetched at most once for as long as the caller keeps the cache.
+   */
+  sourceCache?: SourceCache;
   /** Defaults to STALL_CAPTURE_LIMITS.sourceCharsPerFailure for this call alone. */
   sourceBudget?: SourceBudget;
 }
@@ -228,13 +266,18 @@ export interface PauseOptions {
 /**
  * Pause the page, read its call stack and the source around the top frames,
  * then resume it. Every step is bounded; a step that fails is reported in
- * the result, never thrown. Calls on one session must not overlap.
+ * the result, never thrown. A call made while another on the same session
+ * is in flight starts when that one has finished.
  */
-export async function pauseAndReadStack(armed: ArmedDebugger, options: PauseOptions): Promise<PausedStack> {
+export function pauseAndReadStack(armed: ArmedDebugger, options: PauseOptions): Promise<PausedStack> {
+  return armed.pauses.exclusive(() => pauseAndRead(armed, options));
+}
+
+async function pauseAndRead(armed: ArmedDebugger, options: PauseOptions): Promise<PausedStack> {
   const { session, scripts, pauses } = armed;
   const sourceFrames = options.sourceFrames ?? 8;
   const radius = options.sourceRadius ?? 160;
-  const cache = options.sourceCache ?? new Map<string, string>();
+  const cache: SourceCache = options.sourceCache ?? new Map();
   const budget = options.sourceBudget ?? { remainingChars: STALL_CAPTURE_LIMITS.sourceCharsPerFailure };
   const earlierResumeErrors = pauses.takeLateResumeErrors();
   const startedAt = Date.now();
@@ -294,29 +337,52 @@ export async function pauseAndReadStack(armed: ArmedDebugger, options: PauseOpti
   }
 }
 
+/**
+ * A script's source, fetched only when its reported size fits the budget.
+ * The fetch's outcome, source or error, is cached; a refusal before fetching
+ * is not, as a later sample may have the time or the size record.
+ */
 async function scriptSource(
   armed: ArmedDebugger,
-  cache: Map<string, string>,
+  cache: SourceCache,
   budget: SourceBudget,
   scriptId: string,
   remainingMs: number,
 ): Promise<string> {
   const cached = cache.get(scriptId);
-  if (cached !== undefined) return cached;
-  if (remainingMs <= 0) throw new Error('the source time budget was spent on earlier frames');
-  const length = armed.scripts.get(scriptId)?.length;
-  if (length === undefined) throw new Error('the script has no url record, so its size is unknown and it is not fetched');
-  if (length > budget.remainingChars) {
-    throw new Error(`the script is ${length} characters and ${budget.remainingChars} of this failure's source budget are left`);
+  if (cached !== undefined) {
+    if ('error' in cached) throw new Error(cached.error);
+    return cached.source;
   }
-  budget.remainingChars -= length;
-  const result = await withDeadline(
-    armed.session.send('Debugger.getScriptSource', { scriptId }),
-    remainingMs,
-    'Debugger.getScriptSource',
-  );
-  cache.set(scriptId, result.scriptSource);
-  return result.scriptSource;
+  if (remainingMs <= 0) throw new Error('the source time budget was spent on earlier frames');
+  const record = armed.scripts.get(scriptId);
+  if (record === undefined) throw new Error('the script has no url record, so its size is unknown and it is not fetched');
+  if (record.length === undefined) throw new Error('the script\'s size was not reported when it parsed, so it is not fetched');
+  if (record.length > budget.remainingChars) {
+    throw new Error(
+      `the script is ${record.length} characters and ${budget.remainingChars} of this failure's source budget are left`,
+    );
+  }
+  // Charge the reported size now, so pages fetching at once share the
+  // budget, and settle to what was read once it arrives.
+  budget.remainingChars -= record.length;
+  let source: string;
+  try {
+    ({ scriptSource: source } = await withDeadline(
+      armed.session.send('Debugger.getScriptSource', { scriptId }),
+      remainingMs,
+      'Debugger.getScriptSource',
+    ));
+  } catch (err) {
+    // Nothing was read, so nothing is charged.
+    budget.remainingChars += record.length;
+    const error = `Debugger.getScriptSource failed: ${errorText(err)}`;
+    cache.set(scriptId, { error });
+    throw new Error(error);
+  }
+  budget.remainingChars += record.length - source.length;
+  cache.set(scriptId, { source });
+  return source;
 }
 
 /** The text around one position, found without splitting the whole script. */
@@ -350,18 +416,18 @@ export function formatStack(frames: readonly StackFrame[]): string {
 type ArmResult = { armed: ArmedDebugger } | { error: string };
 
 /**
- * Arms every page a test opens and, when the test fails, reports each open
- * page that has stopped running JavaScript.
+ * A worker's open browser contexts and their pages, each page armed when it
+ * opens. Contexts leave it when they close. Every test's capture reads it,
+ * so a page a `beforeAll` opened is captured like one the test opened.
  */
-export class StalledPageCapture {
+export class StalledPageRegistry {
   private readonly contexts = new Set<BrowserContext>();
   private readonly armed = new WeakMap<Page, Promise<ArmResult>>();
   private readonly armedNow = new WeakSet<Page>();
   /** The last thing each page did that reaches the test without its main thread's help. */
   private readonly lastActivity = new WeakMap<Page, { what: string; at: number }>();
-  private captured = false;
 
-  /** Call for each browser context created while the test runs. */
+  /** Call for each browser context the worker's browser creates. */
   trackContext(context: BrowserContext): void {
     this.contexts.add(context);
     context.on('close', () => this.contexts.delete(context));
@@ -401,36 +467,31 @@ export class StalledPageCapture {
   }
 
   /**
-   * Wait, at most STALL_ARM_MS, until the page's session is armed, so a page
-   * handed to a test cannot stall before its Debugger domain is enabled. A
-   * page that is not armed by then is reported by the capture, not here.
+   * Wait, at most STALL_ARM_MS, until the page's session is armed. A page
+   * that is not armed by then is reported as such by the capture, not here.
    */
   async untilArmed(page: Page): Promise<void> {
     const armed = this.armed.get(page);
     if (armed) await withDeadline(armed, STALL_ARM_MS, 'arming the debugger session').catch(() => undefined);
   }
 
-  /**
-   * Probe every open page the test's contexts hold and attach the stack of
-   * each that does not answer. Runs once per test; later calls return at
-   * once. Every step is bounded and none throws: a step that fails says
-   * what it tried and its error in the attachment.
-   */
-  async captureIfFailed(testInfo: TestInfo): Promise<void> {
-    // A later teardown can still fail the test, so only a capture that ran
-    // closes the door.
-    if (this.captured || testInfo.status === 'skipped' || testInfo.status === testInfo.expectedStatus) return;
-    this.captured = true;
-    const pages = [...this.contexts].flatMap((context) => context.pages()).filter((page) => !page.isClosed());
-    const budget: SourceBudget = { remainingChars: STALL_CAPTURE_LIMITS.sourceCharsPerFailure };
-    const reports = await Promise.all(pages.map((page, index) => this.capturePage(page, index, pages.length, budget)));
-    for (const report of reports) {
-      if (report === undefined) continue;
-      await testInfo.attach('stalled page', { body: report, contentType: 'text/plain' });
-    }
+  /** Every open page of the worker's open contexts. */
+  openPages(): Page[] {
+    return [...this.contexts].flatMap((context) => context.pages()).filter((page) => !page.isClosed());
   }
 
-  private async capturePage(page: Page, index: number, count: number, budget: SourceBudget): Promise<string | undefined> {
+  /**
+   * The report for one page that does not answer the probe, or undefined
+   * for one that does. Every step is bounded and none throws: a step that
+   * fails says what it tried and its error in the report.
+   */
+  async capturePage(
+    page: Page,
+    index: number,
+    count: number,
+    budget: SourceBudget,
+    sourceCache: SourceCache,
+  ): Promise<string | undefined> {
     const bounds = STALL_CAPTURE_BOUNDS;
     // The session was armed when the page opened; waiting for it shares the
     // probe's window so the bound stays as stated.
@@ -460,7 +521,7 @@ export class StalledPageCapture {
     if (!ready) {
       lines.push(
         hasCdp(page.context())
-          ? 'No debugger session was armed for this page (it was not opened while the test ran), so its stack cannot be read.'
+          ? 'No debugger session was armed for this page (its context was not created through the worker\'s browser), so its stack cannot be read.'
           : `This browser (${page.context().browser()?.browserType().name() ?? 'unknown'}) has no CDP, so its stack cannot be read.`,
       );
       return lines.join('\n');
@@ -469,7 +530,7 @@ export class StalledPageCapture {
       lines.push(`The debugger session for this page was not armed (${ready.error}), so its stack cannot be read.`);
       return lines.join('\n');
     }
-    const stack = await pauseAndReadStack(ready.armed, { ...bounds, sourceBudget: budget });
+    const stack = await pauseAndReadStack(ready.armed, { ...bounds, sourceBudget: budget, sourceCache });
     for (const error of stack.earlierResumeErrors) lines.push(`Before this capture: ${error}`);
     if (!stack.paused) {
       lines.push(
@@ -487,6 +548,46 @@ export class StalledPageCapture {
     lines.push(formatStack(stack.frames));
     if (stack.resumeError) lines.push(`Debugger.resume failed after the capture: ${stack.resumeError}`);
     return lines.join('\n');
+  }
+}
+
+/** One test's view of its worker's registry, capturing at most once. */
+export class StalledPageCapture {
+  private captured = false;
+
+  constructor(private readonly registry: StalledPageRegistry) {}
+
+  /** Whether the page's debugger session is armed at this moment. */
+  isArmed(page: Page): boolean {
+    return this.registry.isArmed(page);
+  }
+
+  /** See StalledPageRegistry.untilArmed. */
+  untilArmed(page: Page): Promise<void> {
+    return this.registry.untilArmed(page);
+  }
+
+  /**
+   * When the test failed, probe every page open in the worker at this
+   * moment and attach a report for each that does not answer. Runs once per
+   * test; later calls return at once.
+   */
+  async captureIfFailed(testInfo: TestInfo): Promise<void> {
+    // A later teardown can still fail the test, so only a capture that ran
+    // closes the door.
+    if (this.captured || testInfo.status === 'skipped' || testInfo.status === testInfo.expectedStatus) return;
+    this.captured = true;
+    const pages = this.registry.openPages();
+    // One budget and one cache for the whole failure.
+    const budget: SourceBudget = { remainingChars: STALL_CAPTURE_LIMITS.sourceCharsPerFailure };
+    const cache: SourceCache = new Map();
+    const reports = await Promise.all(
+      pages.map((page, index) => this.registry.capturePage(page, index, pages.length, budget, cache)),
+    );
+    for (const report of reports) {
+      if (report === undefined) continue;
+      await testInfo.attach('stalled page', { body: report, contentType: 'text/plain' });
+    }
   }
 }
 

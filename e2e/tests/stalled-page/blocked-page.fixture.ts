@@ -2,7 +2,7 @@
 // Each test blocks one or more pages and fails, as a test against a stalled
 // app page does; the spec reads the attachments the fixtures' stalled-page
 // capture leaves.
-import type { Page } from '@playwright/test';
+import type { BrowserContext, Page } from '@playwright/test';
 import { expect, test } from '../fixtures.js';
 import { startBlockedPageServer, type BlockedPageServer } from './blocked-page.js';
 
@@ -62,6 +62,22 @@ test('a test that passes until its page-error check fails', async ({ page, brows
     (window as unknown as { blockSoon(c: boolean): void }).blockSoon(true);
   });
   await expect.poll(() => pageErrors.length).toBe(1);
+});
+
+test.describe('a page a beforeAll opened', () => {
+  let shared: { context: BrowserContext; page: Page };
+  test.beforeAll(async ({ browser }) => {
+    const context = await browser.newContext();
+    shared = { context, page: await context.newPage() };
+  });
+  test.afterAll(async () => {
+    await shared.context.close();
+  });
+
+  test('a page a beforeAll opened blocks', async () => {
+    await block(shared.page, true);
+    await shared.page.getByRole('button').click();
+  });
 });
 
 test.describe('an afterEach that spends the shared teardown time', () => {

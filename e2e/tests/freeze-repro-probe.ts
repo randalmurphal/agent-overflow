@@ -33,6 +33,7 @@ import {
   STALL_CAPTURE_LIMITS,
   withDeadline,
   type ArmedDebugger,
+  type SourceCache,
   type StackFrame,
 } from '../src/page-stall.js';
 
@@ -238,7 +239,7 @@ async function collectPausedStacks(
 ): Promise<StackSample[]> {
   const out: StackSample[] = [];
   // One cache and one source budget for all samples of the wedge.
-  const sourceCache = new Map<string, string>();
+  const sourceCache: SourceCache = new Map();
   const sourceBudget = { remainingChars: STALL_CAPTURE_LIMITS.sourceCharsPerFailure };
   for (let i = 0; i < samples; i += 1) {
     const stack = await pauseAndReadStack(armed, {

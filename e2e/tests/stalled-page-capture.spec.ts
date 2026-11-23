@@ -89,6 +89,7 @@ const CASES: Record<string, NestedCase> = {
   'a page blocked where a pause cannot land': { status: 'timedOut', pages: 1, extraMs: 0 },
   'two pages block in one test': { status: 'timedOut', pages: 2, extraMs: 0 },
   'a test that passes until its page-error check fails': { status: 'failed', pages: 1, extraMs: 0 },
+  'a page a beforeAll opened blocks': { status: 'timedOut', pages: 1, extraMs: 0 },
   'a page blocks before the afterEach runs': { status: 'timedOut', pages: 1, extraMs: 12_000 },
 };
 
