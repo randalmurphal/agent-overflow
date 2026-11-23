@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
@@ -78,9 +77,6 @@ func (m sessionManager) updateCredentials(threadID, token string, generation uin
 }
 func (m sessionManager) updateProviderCredentials(providerName string, generation uint64, accountID string, account provider.AccountInfo) []string {
 	return m.runtime.UpdateProviderCredentials(providerName, generation, accountID, account)
-}
-func (m sessionManager) recordActivity(threadID, token string, kind provider.EventKind, content string, now time.Time) {
-	m.runtime.RecordActivity(threadID, token, kind, content, now)
 }
 func (m sessionManager) anyCodexSession() (*codex.Session, string) {
 	return m.runtime.AnyCodexSession()

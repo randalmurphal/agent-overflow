@@ -238,22 +238,6 @@ func installChainLink(t *testing.T, app *App) (release func()) {
 	}
 }
 
-// settle waits for the thread spawn i made to answer, then polls its
-// computer until it collects the answer.
-func (c *agentChain) settle(t *testing.T, i int) {
-	t.Helper()
-	waitUntil(t, 10*time.Second, func() bool {
-		receipt, found, err := c.apps[i+1].store.GetThreadRequestReceipt(c.spawns[i])
-		return err == nil && found && receipt.SettledAt != 0
-	})
-	waitUntil(t, 10*time.Second, func() bool {
-		c.apps[i].pollRemoteThreadRequests(time.Now().Add(time.Hour))
-		c.apps[i].threadRequestsWG.Wait()
-		row, found, err := c.apps[i].store.GetThreadRequest(c.spawns[i])
-		return err == nil && found && threadRequestSettled(row)
-	})
-}
-
 // held waits until the thread spawn i made ended its turn with a thread
 // it started still working, so its computer holds the spawn's request for
 // the thread's rest, and the spawner's computer has polled the request and

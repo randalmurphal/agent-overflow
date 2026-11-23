@@ -211,30 +211,6 @@ func TestGetThreadItem_ReturnsZeroValueForMissingItem(t *testing.T) {
 	}
 }
 
-func itoa(i int) string {
-	// Avoids pulling strconv into every test file's import list.
-	const digits = "0123456789"
-	if i == 0 {
-		return "0"
-	}
-	neg := i < 0
-	if neg {
-		i = -i
-	}
-	var buf [20]byte
-	n := len(buf)
-	for i > 0 {
-		n--
-		buf[n] = digits[i%10]
-		i /= 10
-	}
-	if neg {
-		n--
-		buf[n] = '-'
-	}
-	return string(buf[n:])
-}
-
 // TestListRecentTurnsBindingDelegatesToStore confirms the App binding
 // returns the same rows the store layer does, in newest-first order.
 // The binding is a one-liner pass-through, but the test protects against

@@ -4,12 +4,7 @@ import (
 	"context"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/providerdiscoveryapp"
 )
-
-func codexAccountProbeCache() *provider.ProbeCache {
-	return providerdiscoveryapp.DefaultCaches().Codex
-}
 
 // ProbeCodexAccount spawns a short-lived `codex app-server` subprocess,
 // runs the JSON-RPC initialize handshake, calls

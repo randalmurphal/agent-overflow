@@ -688,21 +688,6 @@ func (a *App) workflowMemoryProvenance(threadID, phaseID string) memory.Provenan
 	return provenance
 }
 
-// describeMemoryFindings renders draft validation for a CLI caller. The CLI
-// prints the error verbatim, so it has to name every rule broken and the value
-// that broke it.
-func describeMemoryFindings(action string, err error) error {
-	var validation *memory.ValidationError
-	if !errors.As(err, &validation) {
-		return err
-	}
-	parts := make([]string, 0, len(validation.Findings))
-	for _, finding := range validation.Findings {
-		parts = append(parts, strings.TrimPrefix(finding.Path, ".")+" "+finding.Message)
-	}
-	return fmt.Errorf("%s: %s", action, strings.Join(parts, "; "))
-}
-
 // workflowAssistantTextKind is the item kind a provider's prose is persisted
 // under. The literal matches the triage write path's own constant; store exports
 // no item-kind vocabulary, and inventing one for a single reader would widen

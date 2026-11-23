@@ -1773,24 +1773,6 @@ func TestDispatchFlush_Claude_NoActiveTurn_DefersLikeCodex(t *testing.T) {
 	}
 }
 
-// guardCompileEnsureSendMessageOptionsCompatible prevents a silent
-// drift between flushQueuePayload and SendMessageOptions: the
-// frontend writes one shape and reads the other, so the field set
-// must stay aligned. A compile-time assignment catches missing
-// fields.
-//
-//nolint:unused // compile-only guard
-func guardCompileEnsureSendMessageOptionsCompatible(p flushQueuePayload) SendMessageOptions {
-	return SendMessageOptions{
-		AttachmentIDs:                p.AttachmentIDs,
-		SourceProposedPlan:           p.SourceProposedPlan,
-		RevisionSourceProposedPlan:   p.RevisionSourceProposedPlan,
-		RevisionSourceCommentIDs:     p.RevisionSourceCommentIDs,
-		RevisionSourceDiffReview:     p.RevisionSourceDiffReview,
-		RevisionSourceDiffCommentIDs: p.RevisionSourceDiffCommentIDs,
-	}
-}
-
 // emitRecorder captures every event emitted by the App so tests can
 // assert against the post-mutation queue snapshot. Mirrors the
 // pattern used by other App-event tests but kept local to keep the

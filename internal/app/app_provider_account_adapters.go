@@ -65,10 +65,6 @@ func (a *App) accountIDForObservedIdentity(
 	return a.providerAccounts.ResolveObservedAccount(providerName, expectedAccountID, info)
 }
 
-func describeObservedAccount(info provider.AccountInfo) string {
-	return provideraccountapp.DescribeObservedAccount(info)
-}
-
 func providerAccountInfo(account provideraccounts.Account) provider.AccountInfo {
 	return provideraccountapp.AccountInfo(account)
 }
@@ -231,8 +227,4 @@ func (a *App) ensureProviderAccountManager() *provideraccountapp.Manager {
 // provider-native credential rules owned by provideraccountapp.
 func providerCredentialPolicy() provideraccounts.Policy {
 	return provideraccountapp.CredentialPolicy()
-}
-
-func providerCredentialChainPosition(providerName string, data []byte) (int64, bool) {
-	return provideraccountapp.CredentialChainPosition(providerName, data)
 }

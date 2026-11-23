@@ -293,6 +293,3 @@ func (a *App) persistedPayloadPatchSpans(threadID, kind, payloadID string) []Pat
 	}
 	return wirePatchSpanSeeds(a.highlightService().LoadPatchSpans(threadID, payloadID))
 }
-func (a *App) loadPersistedPatchSpans(threadID, payloadID string) []PatchSpanSeed {
-	return wirePatchSpanSeeds(a.highlightService().LoadPatchSpans(threadID, payloadID))
-}
