@@ -9,7 +9,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
-	"agent-overflow/internal/transport"
 )
 
 // Start tracks one single-flighted provider start.
@@ -40,16 +39,19 @@ type BrowserMCPSession struct {
 	Codex    *codex.Session
 }
 
-// ThreadProcess is one live provider process, named by the thread it
+// ThreadProcess is one live provider process root, named by the thread it
 // serves. The dev-server scan (internal/devscan) traces a listening
 // socket back to a thread through these: a dev server an agent started
 // is a descendant of one of them, or a member of its process group.
 type ThreadProcess struct {
 	ThreadID string
-	// PID is the provider subprocess. Because every spawn sets Setpgid,
-	// it is also that process's group id (provider.Session.PID says so),
-	// which is the half that survives a dev server daemonising.
+	// PID is the provider subprocess (or owned child root).
 	PID int
+	// PGID is the process group id for daemonised descendants.
+	PGID int
+	// WorkDir is the thread's workspace directory, used as a tie-breaker
+	// when multiple threads share a multiplexed provider connection.
+	WorkDir string
 }
 
 // ClaudeLiveApply is one asynchronous /effort or /fast confirmation.
@@ -78,7 +80,6 @@ type Manager struct {
 	mu sync.Mutex
 
 	sessions                            map[string]Entry
-	aoTokens                            map[string]transport.CallerScope
 	starting                            map[string]*Start
 	reconnecting                        map[string]bool
 	autoReconnectAttempted              map[string]bool
@@ -98,12 +99,12 @@ type Manager struct {
 	idleReaperWG                        sync.WaitGroup
 	retentionCleanupStop                chan struct{}
 	retentionCleanupWG                  sync.WaitGroup
+	connections                         *ConnPool
 }
 
 func New() *Manager {
 	return &Manager{
 		sessions:                   make(map[string]Entry),
-		aoTokens:                   make(map[string]transport.CallerScope),
 		starting:                   make(map[string]*Start),
 		reconnecting:               make(map[string]bool),
 		autoReconnectAttempted:     make(map[string]bool),
@@ -111,7 +112,13 @@ func New() *Manager {
 		claudeLiveApplies:          make(map[string]ClaudeLiveApply),
 		claudeLiveApplyDegraded:    make(map[liveApplyKey]struct{}),
 		claudeLiveApplyGenerations: make(map[liveApplyKey]uint64),
+		connections:                NewConnPool(),
 	}
+}
+
+// Connections returns the shared provider-connection pool owned by this manager.
+func (m *Manager) Connections() *ConnPool {
+	return m.connections
 }
 
 func (m *Manager) Get(threadID string) (Entry, bool) {
@@ -165,11 +172,9 @@ func (m *Manager) Account(threadID string) (AccountSnapshot, bool) {
 func (m *Manager) Put(threadID string, entry Entry) {
 	m.mu.Lock()
 	if displaced, ok := m.sessions[threadID]; ok {
-		m.revokeAOToken(displaced)
 		m.purgeClaudeLiveConfigState(displaced.Token)
 	}
 	m.sessions[threadID] = entry
-	m.registerAOToken(entry)
 	if start := m.starting[threadID]; start != nil {
 		start.Registered = entry
 	}
@@ -199,54 +204,7 @@ func (m *Manager) Unregister(threadID, sessionToken string) (Entry, bool) {
 
 func (m *Manager) remove(threadID string, entry Entry) {
 	delete(m.sessions, threadID)
-	m.revokeAOToken(entry)
 	m.purgeClaudeLiveConfigState(entry.Token)
-}
-
-// registerAOToken resolves the session's credential to its scope, naming
-// the session it belongs to (CallerScope.Session).
-func (m *Manager) registerAOToken(entry Entry) {
-	if entry.AOToken != "" {
-		scope := entry.AOScope
-		scope.Session = entry.Token
-		m.aoTokens[entry.AOToken] = scope
-	}
-}
-
-func (m *Manager) revokeAOToken(entry Entry) {
-	if entry.AOToken != "" {
-		delete(m.aoTokens, entry.AOToken)
-	}
-}
-
-func (m *Manager) ResolveAOToken(token string) (transport.CallerScope, bool) {
-	if token == "" {
-		return transport.CallerScope{}, false
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	scope, ok := m.aoTokens[token]
-	return scope, ok
-}
-
-func (m *Manager) AOTokenCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.aoTokens)
-}
-
-func (m *Manager) AOEnv(threadID string) map[string]string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	entry, ok := m.sessions[threadID]
-	if !ok || len(entry.AOEnv) == 0 {
-		return nil
-	}
-	env := make(map[string]string, len(entry.AOEnv))
-	for name, value := range entry.AOEnv {
-		env[name] = value
-	}
-	return env
 }
 
 func (m *Manager) BeginStart(threadID string) (*Start, bool) {
@@ -371,7 +329,12 @@ func (m *Manager) RecordActivity(threadID, sessionToken string, kind provider.Ev
 	if !ok || entry.Token != sessionToken || entry.Liveness == nil {
 		return
 	}
-	entry.Liveness.BumpActivity(now)
+	// Connection-wide broadcasts (such as account/rateLimits/updated) fan out
+	// to every session on a shared process and must not reset idle timers on
+	// quiet threads.
+	if kind != provider.EventRateLimits {
+		entry.Liveness.BumpActivity(now)
+	}
 	if kind == provider.EventTurnStart {
 		entry.Liveness.ActiveTurns.Add(1)
 	} else if kind == provider.EventTurnComplete {
@@ -455,33 +418,51 @@ func (m *Manager) BrowserMCPSessions() []BrowserMCPSession {
 	return result
 }
 
-// ThreadProcesses returns the live provider process of every registered
-// thread. Sessions are snapshotted under the manager's lock and PID is
-// read after it is released: PID takes the SESSION's own lock, and the
-// two must never be held together.
+// ThreadProcesses returns the live provider process roots of every registered
+// thread. Sessions are snapshotted under the manager's lock and process roots
+// are read after it is released so the manager mutex and a session mutex are
+// never held together.
 func (m *Manager) ThreadProcesses() []ThreadProcess {
 	type live struct {
 		threadID string
+		workDir  string
 		session  provider.Session
 	}
 	m.mu.Lock()
 	sessions := make([]live, 0, len(m.sessions))
 	for threadID, entry := range m.sessions {
 		if session := entry.ProviderSession(); session != nil {
-			sessions = append(sessions, live{threadID: threadID, session: session})
+			sessions = append(sessions, live{
+				threadID: threadID,
+				workDir:  entry.LaunchOptions.WorkDir,
+				session:  session,
+			})
 		}
 	}
 	m.mu.Unlock()
 
 	processes := make([]ThreadProcess, 0, len(sessions))
 	for _, entry := range sessions {
-		pid := entry.session.PID()
-		if pid <= 0 {
-			// A session whose process has already gone. Nothing can
-			// descend from it.
-			continue
+		owned := entry.session.OwnedProcesses()
+		for _, root := range owned {
+			if root.PID <= 0 {
+				continue
+			}
+			pgid := root.PGID
+			if pgid <= 0 {
+				pgid = root.PID
+			}
+			workDir := root.WorkDir
+			if workDir == "" {
+				workDir = entry.workDir
+			}
+			processes = append(processes, ThreadProcess{
+				ThreadID: entry.threadID,
+				PID:      root.PID,
+				PGID:     pgid,
+				WorkDir:  workDir,
+			})
 		}
-		processes = append(processes, ThreadProcess{ThreadID: entry.threadID, PID: pid})
 	}
 	return processes
 }
@@ -518,7 +499,6 @@ func (m *Manager) SnapshotAndClear() map[string]Entry {
 	result := make(map[string]Entry, len(m.sessions))
 	for threadID, entry := range m.sessions {
 		result[threadID] = entry
-		m.revokeAOToken(entry)
 		m.purgeClaudeLiveConfigState(entry.Token)
 	}
 	m.sessions = make(map[string]Entry)

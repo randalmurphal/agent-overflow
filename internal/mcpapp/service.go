@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/agyconfig"
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/codexconfig"
 	"agent-overflow/internal/eventchan"
@@ -63,6 +64,8 @@ type Deps struct {
 	ClaudeConfigPath     func() (string, error)
 	CodexConfig          *codexconfig.Store
 	CodexConfigPath      func() (string, error)
+	AgyConfig            *agyconfig.Store
+	AgyConfigPath        func() (string, error)
 	StatusCache          *mcpstatus.Cache
 	WorkspaceAuthStarter WorkspaceAuthStarter
 	ShutdownError        error
@@ -80,6 +83,9 @@ type Service struct {
 	codexConfigOnce   sync.Once
 	codexConfigStore  *codexconfig.Store
 	codexConfigErr    error
+	agyConfigOnce     sync.Once
+	agyConfigStore    *agyconfig.Store
+	agyConfigErr      error
 	statusCacheOnce   sync.Once
 	statusCache       *mcpstatus.Cache
 
@@ -97,7 +103,8 @@ func New(deps Deps) *Service {
 	return &Service{
 		deps: deps, store: deps.Store, logger: deps.Logger,
 		claudeConfigStore: deps.ClaudeConfig, codexConfigStore: deps.CodexConfig,
-		statusCache: deps.StatusCache, workspaceAuthStarter: deps.WorkspaceAuthStarter,
+		agyConfigStore: deps.AgyConfig,
+		statusCache:    deps.StatusCache, workspaceAuthStarter: deps.WorkspaceAuthStarter,
 	}
 }
 
@@ -290,4 +297,34 @@ func (a *Service) codexConfig() (*codexconfig.Store, error) {
 // integration tests and adjacent adapters.
 func (a *Service) CodexConfig() (*codexconfig.Store, error) {
 	return a.codexConfig()
+}
+
+// agyConfig returns the lazy-init Antigravity MCP JSON adapter bound to
+// ~/.gemini/config/mcp_config.json by default.
+func (a *Service) agyConfig() (*agyconfig.Store, error) {
+	if a.agyConfigStore != nil {
+		return a.agyConfigStore, nil
+	}
+	a.agyConfigOnce.Do(func() {
+		var path string
+		var err error
+		if a.deps.AgyConfigPath != nil {
+			path, err = a.deps.AgyConfigPath()
+		} else {
+			var home string
+			home, err = os.UserHomeDir()
+			if err == nil {
+				path = agyconfig.PathForHome(home)
+			}
+		}
+		if err != nil {
+			a.agyConfigErr = err
+			return
+		}
+		a.agyConfigStore = agyconfig.New(path)
+	})
+	if a.agyConfigErr != nil {
+		return nil, fmt.Errorf("agy config: %w", a.agyConfigErr)
+	}
+	return a.agyConfigStore, nil
 }

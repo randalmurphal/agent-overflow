@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
 )
 
@@ -50,15 +49,15 @@ func (r *accountReservation) settleOnFailure(retErr *error) {
 // root made under the provider home it runs against: the slots of sign-ins
 // that never saved their account. It deletes no other slot; every other slot
 // in the shared provider home is another data root's, or an earlier
-// release's. Both providers are settled whatever either reports; the error
-// joins every slot that could not be removed and every malformed
+// release's. Every managed provider is settled whatever another reports; the
+// error joins every slot that could not be removed and every malformed
 // reservation.
 func (m *Manager) SettleReservedSlots() error {
 	if !m.available() {
 		return fmt.Errorf("provider account storage is unavailable")
 	}
 	var errs []error
-	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+	for _, providerName := range ManagedAccountProviders {
 		if err := m.settleReservations(providerName, ""); err != nil {
 			errs = append(errs, err)
 		}

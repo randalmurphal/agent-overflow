@@ -60,6 +60,8 @@ func main() {
 	protocol := scenario.ProviderClaude
 	if slices.Contains(args, "app-server") {
 		protocol = scenario.ProviderCodex
+	} else if slices.Contains(args, "acp") {
+		protocol = scenario.ProviderAgy
 	}
 
 	// The app's Claude account probe (`--max-turns 0`, see
@@ -115,6 +117,9 @@ func main() {
 		}
 		base["THREAD_ID"] = threadID
 		base["SESSION_ID"] = threadID
+	case scenario.ProviderAgy:
+		sessionID := "mock-agy-" + randomHex(4)
+		base["SESSION_ID"] = sessionID
 	}
 
 	e := newEngine(src.sc, src.fixtureRoot, cwd, w, rep, base)
@@ -139,6 +144,8 @@ func main() {
 		adapter = newClaudeAdapter(e, w, args)
 	case scenario.ProviderCodex:
 		adapter = newCodexAdapter(e, w, src.sc.Codex)
+	case scenario.ProviderAgy:
+		adapter = newACPAdapter(e, w)
 	}
 	e.adapter = adapter
 

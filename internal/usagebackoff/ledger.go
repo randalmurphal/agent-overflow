@@ -99,11 +99,20 @@ func (l *Ledger) Note(providerName, accountID string, err error) {
 		l.saveLocked()
 		return
 	}
+	var retry time.Duration
 	var limited *claude.RateLimitedError
-	if !errors.As(err, &limited) {
+	type retryAfterErr interface {
+		RetryAfter() time.Duration
+	}
+	var providerLimited retryAfterErr
+	switch {
+	case errors.As(err, &limited):
+		retry = limited.RetryAfter
+	case errors.As(err, &providerLimited):
+		retry = providerLimited.RetryAfter()
+	default:
 		return
 	}
-	retry := limited.RetryAfter
 	if retry > 0 {
 		// The server named its window; the guesswork counter resets with it.
 		delete(l.headerlessStrikes, key)

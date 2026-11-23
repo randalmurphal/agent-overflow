@@ -9,6 +9,7 @@ import (
 
 	"agent-overflow/internal/mcpstatus"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 )
@@ -26,6 +27,7 @@ var ErrMCPSessionUnavailable = errors.New("mcp: thread session not available")
 const (
 	mcpProviderClaude = "claude"
 	mcpProviderCodex  = "codex"
+	mcpProviderAgy    = "agy"
 
 	// mcpEphemeralFetchTimeout bounds the one-shot `claude mcp list` /
 	// `codex mcpServerStatus/list` subprocess invocations that back the
@@ -221,6 +223,12 @@ func (a *Service) mcpStatusFetcher(prov mcpstatus.Provider, cwd string) (mcpstat
 			return nil, fmt.Errorf("mcp status: codex binary not configured")
 		}
 		return &codex.MCPStatusFetcher{Binary: bin, Cwd: cwd}, nil
+	case mcpstatus.ProviderAgy:
+		bin := a.providerBinaryPath(string(provider.Agy))
+		if bin == "" {
+			return nil, fmt.Errorf("mcp status: agy binary not configured")
+		}
+		return &agy.MCPStatusFetcher{Binary: bin, Env: a.sessionProcessEnv(string(provider.Agy)), Cwd: cwd}, nil
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrMCPProviderUnsupported, prov)
 	}
@@ -232,6 +240,8 @@ func parseMCPStatusProvider(s string) (mcpstatus.Provider, error) {
 		return mcpstatus.ProviderClaude, nil
 	case mcpProviderCodex:
 		return mcpstatus.ProviderCodex, nil
+	case mcpProviderAgy:
+		return mcpstatus.ProviderAgy, nil
 	default:
 		return "", fmt.Errorf("%w: %s", ErrMCPProviderUnsupported, s)
 	}

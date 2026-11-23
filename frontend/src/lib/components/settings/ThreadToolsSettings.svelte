@@ -18,7 +18,7 @@
       <SettingsField
         id="thread-tools.enabled"
         label="Built-in thread tools"
-        hint="Let Claude and Codex read, start and answer this computer's other conversations."
+        hint="Let agents read, start and answer this computer's other conversations."
       >
         <ToggleSwitch
           checked={settings.threadToolsEnabled}

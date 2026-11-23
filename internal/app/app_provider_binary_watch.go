@@ -114,7 +114,7 @@ func (a *App) sweepProviderBinaries() {
 	// The tick is when an install, upgrade or removal of the default codex
 	// becomes visible to everything that reads the binary.
 	a.invalidateDefaultCodexBinary()
-	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+	for _, providerName := range []string{string(provider.Claude), string(provider.Codex), string(provider.Agy)} {
 		a.refreshInstalledProviderVersion(providerName)
 	}
 	a.reconcileStaleProviderSessions()
@@ -193,6 +193,12 @@ func (a *App) recordProbedProviderVersion(providerName string, identity provider
 	log.Printf("provider binary watch: %s upgraded %s -> %s; model catalog refreshed",
 		providerName, previous.version, version)
 	a.providerBinaries.storeInstalled(providerName, providerBinaryVersion{identity: identity, version: version})
+	switch providerName {
+	case string(provider.Codex):
+		a.drainCodexConnections()
+	case string(provider.Agy):
+		a.drainAgyConnections()
+	}
 }
 
 // refreshProviderCatalogAfterUpgrade re-reads everything the app cached
@@ -217,6 +223,10 @@ func (a *App) refreshProviderCatalogAfterUpgrade(providerName string) error {
 		// answer. A version change is the one legitimate subtraction event.
 		claudecatalog.DropModelsForBinary(a.providerBinaryPath(providerName))
 		_, err := a.providerDiscoveryService().RecheckClaudeAccount()
+		return err
+	case string(provider.Agy):
+		a.refreshAgyModelCatalog()
+		_, err := a.providerDiscoveryService().RecheckAgyAccount()
 		return err
 	}
 	return fmt.Errorf("no catalog refresh for provider %q", providerName)
@@ -311,6 +321,8 @@ func liveSessionCLIVersion(entry session) string {
 		return entry.Claude.CLIVersion()
 	case entry.Codex != nil:
 		return entry.Codex.AppServerVersion()
+	case entry.ACP != nil:
+		return entry.ACP.ServerVersion()
 	default:
 		return ""
 	}

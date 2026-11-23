@@ -116,19 +116,31 @@ func (a *App) SetProviderAccountAutoSwitch(providerName, accountID string, enabl
 // no probe. Fire-and-forget like the startup probe: nothing waits on it, and
 // the runner reports failures on `provider:status`.
 func (a *App) probeSwitchedProviderAccount(providerName string) {
-	if providerName != string(provider.Claude) || a.shuttingDown.Load() {
+	if a.shuttingDown.Load() {
+		return
+	}
+	if providerName != string(provider.Claude) && providerName != string(provider.Agy) {
 		return
 	}
 	probe := a.switchedAccountProbeFn
 	if probe == nil {
-		probe = func() error {
-			_, err := a.ProbeClaudeAccount()
-			return err
+		switch providerName {
+		case string(provider.Claude):
+			probe = func() error {
+				_, err := a.ProbeClaudeAccount()
+				return err
+			}
+		case string(provider.Agy):
+			probe = func() error {
+				a.refreshAgyModelCatalog()
+				_, err := a.RecheckAgyAccount()
+				return err
+			}
 		}
 	}
 	go func() {
 		if err := probe(); err != nil {
-			log.Printf("provider accounts: probe switched claude account: %v", err)
+			log.Printf("provider accounts: probe switched %s account: %v", providerName, err)
 		}
 	}()
 }

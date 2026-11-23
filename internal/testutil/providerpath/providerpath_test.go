@@ -24,6 +24,8 @@ import (
 // provider, and one that links any can, through a direct caller added later.
 var spawnPackages = []string{
 	"agent-overflow/internal/provider",
+	"agent-overflow/internal/provider/acp",
+	"agent-overflow/internal/provider/agy",
 	"agent-overflow/internal/provider/claude",
 	"agent-overflow/internal/provider/claudetui",
 	"agent-overflow/internal/provider/codex",

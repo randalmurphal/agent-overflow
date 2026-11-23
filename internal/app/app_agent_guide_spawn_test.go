@@ -191,9 +191,11 @@ func TestGetProviderStatusesSeedsTheInstalledVersionBaseline(t *testing.T) {
 	app := newTestAppWithStore(t)
 	claudeBinary := createMockBinary(t, "2.1.284 (Claude Code)")
 	codexBinary := createMockBinary(t, "codex-cli 0.160.0")
+	agyBinary := createMockBinary(t, "agy 1.5.13")
 	if _, err := app.settings.Update(map[string]any{
 		"claudeBinaryPath": claudeBinary,
 		"codexBinaryPath":  codexBinary,
+		"agyBinaryPath":    agyBinary,
 	}); err != nil {
 		t.Fatalf("set binaries: %v", err)
 	}
@@ -205,5 +207,8 @@ func TestGetProviderStatusesSeedsTheInstalledVersionBaseline(t *testing.T) {
 	}
 	if got := app.installedProviderVersion(string(provider.Codex)); got != "0.160.0" {
 		t.Errorf("codex version after the status probe = %q, want 0.160.0", got)
+	}
+	if got := app.installedProviderVersion(string(provider.Agy)); got != "1.5.13" {
+		t.Errorf("agy version after the status probe = %q, want 1.5.13", got)
 	}
 }

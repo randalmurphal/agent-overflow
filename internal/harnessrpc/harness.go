@@ -333,30 +333,6 @@ func (h *Harness) HarnessListMethods() []string {
 	return slicesx.OrEmpty(slices.Clone(h.wireMethods))
 }
 
-// HarnessSessionEnv returns the AO_* environment a thread's LIVE provider
-// session carries, so an e2e spec can run the real `ao` binary against the real
-// backend with the real credential.
-//
-// It is a read of the live registry, never a mint: a thread with no session
-// returns nothing, which is exactly what a spawned process would see. The mock
-// provider has no exec step and could not shell out on its own, so this is how
-// the CLI path is exercised end to end without inventing a credential the app
-// would not otherwise have issued.
-func (h *Harness) HarnessSessionEnv(threadID string) (map[string]string, error) {
-	threadID = strings.TrimSpace(threadID)
-	if threadID == "" {
-		return nil, fmt.Errorf("thread id must be non-empty")
-	}
-	if h == nil || h.config.Host == nil {
-		return nil, fmt.Errorf("harness host unavailable")
-	}
-	env := h.config.Host.SessionEnv(threadID)
-	if env == nil {
-		return map[string]string{}, nil
-	}
-	return env, nil
-}
-
 // HarnessMakeAssistant makes an existing thread an assistant's current
 // thread, with the record and home New Assistant makes and no opening
 // message, and announces its row: the fixture form of a seeded

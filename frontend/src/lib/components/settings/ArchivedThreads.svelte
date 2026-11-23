@@ -14,6 +14,7 @@
   import { threadBackend } from '../../transport/entityIndex';
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { displayModelLabel } from '../../utils/modelLabels';
+  import { providerLabel } from '../../providers/catalog';
   import type { Thread } from '../../types/models';
   import { ThreadDeleteNote, hiddenAssistantThread, withDeleteNote } from '../../stores/assistants.svelte';
   import { deleteThread, reportDeleteLeftovers } from '../sidebar/threadRowActions';
@@ -119,7 +120,7 @@
             <div class="min-w-0 flex-1">
               <p class="truncate text-[0.8125rem] font-medium text-fg">{thread.title || 'Untitled'}</p>
               <p class="mt-0.5 truncate text-[0.6875rem] text-fg-subtle">
-				{thread.provider}{thread.model ? ` · ${displayModelLabel(thread.provider, thread.model)}` : ''}
+                {providerLabel(thread.provider)}{thread.model ? ` · ${displayModelLabel(thread.provider, thread.model)}` : ''}
                 {#if thread.updatedAt}
                   <span class="text-fg-hint"> · {relativeTime(thread.updatedAt, 'locale', threadBackend(thread.id) ?? HOME_BACKEND)}</span>
                 {/if}

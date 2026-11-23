@@ -169,6 +169,17 @@ func DecodeClaude(stdout []byte) (string, error) {
 	return payload.Title, nil
 }
 
+// DecodeAgy pulls the title out of an Antigravity JSON response.
+func DecodeAgy(stdout []byte) (string, error) {
+	payload, err := textgen.DecodeAgyStructured[struct {
+		Title string `json:"title"`
+	}](stdout)
+	if err != nil {
+		return "", err
+	}
+	return payload.Title, nil
+}
+
 // Sanitize trims the model's output into a well-formed title: single
 // line, no quotes, no surrounding whitespace, internal whitespace
 // collapsed, capped at MaxRunes with an ellipsis if truncated. Returns

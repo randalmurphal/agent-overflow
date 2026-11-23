@@ -253,6 +253,7 @@ describe('loadProviderAccounts', () => {
     expect(getProviderAccountGroups().map((group) => group.provider)).toEqual([
       'claude',
       'codex',
+      'agy',
     ]);
   });
 });

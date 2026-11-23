@@ -131,10 +131,6 @@ func (h *harnessHost) ConnectedClients() (int, bool) {
 	return bus.SubscriberCount(), true
 }
 
-func (h *harnessHost) SessionEnv(threadID string) map[string]string {
-	return h.app.sessionAOEnv(threadID)
-}
-
 // ListVisibleThreads reads the sidebar's rows without the bound method, so
 // a harness call is not taken for a client's first catalog read.
 func (h *harnessHost) ListVisibleThreads() ([]store.Thread, error) {
@@ -386,12 +382,19 @@ func (h *harnessHost) ResetForgeCaches() { h.app.gitCore().ResetForgeCaches() }
 
 func (h *harnessHost) ResetProviderUsage() { h.app.providerLifecycleService().Reset() }
 
+func (h *harnessHost) ResetProviderConnections() error {
+	if h.app.sessionRuntime == nil {
+		return nil
+	}
+	return h.app.sessionRuntime.Connections().Reset()
+}
+
 func (h *harnessHost) CancelProviderLogins() {
 	if h.app.providerAccounts == nil {
 		return
 	}
-	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
-		h.app.providerAccounts.CancelProviderLogin(name)
+	for _, kind := range provider.StandaloneProviders() {
+		h.app.providerAccounts.CancelProviderLogin(string(kind))
 	}
 }
 

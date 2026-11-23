@@ -801,7 +801,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'provider.switchAccount',
     label: 'Provider: Switch Account',
     description:
-      'Pick a saved Claude or Codex account and switch to it, with each account’s last-known limits.',
+      'Pick a saved provider account and switch to it, with each account’s last-known limits.',
     icon: '⇄',
     when: 'accessAdmin',
     // Matches the composer picker toggles: you reach for an account switch

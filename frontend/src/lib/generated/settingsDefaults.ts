@@ -43,13 +43,17 @@ export const SETTINGS_DEFAULTS = {
   autoPinNewThreads: true,
   claudeBinaryPath: "claude",
   codexBinaryPath: "codex",
+  agyBinaryPath: "agy",
   claudeEnabled: true,
   codexEnabled: true,
+  agyEnabled: true,
   claudeTuiEnabled: false,
   claudeHiddenModels: [],
   codexHiddenModels: [],
+  agyHiddenModels: [],
   claudeCustomEnv: [],
   codexCustomEnv: [],
+  agyCustomEnv: [],
   claudeMaxCommandTimeoutHours: 5,
   defaultThreadEnvMode: "local",
   worktreeBranchPrefix: "ao-",
@@ -121,6 +125,7 @@ export const SETTINGS_DEFAULTS = {
 export const FRONTEND_SETTINGS_KEYS = [
   "activityRunDefault",
   "activityRunWindowRows",
+  "agyHiddenModels",
   "autoPinNewThreads",
   "claudeHiddenModels",
   "codexHiddenModels",
@@ -209,6 +214,9 @@ export const FRONTEND_DEVICE_SETTINGS_KEYS = [
 export const SETTINGS_KEYS_OMITTED_WHEN_EMPTY = [
   "$schemaVersion",
   "accountAutoContinue",
+  "agyCustomEnv",
+  "agyHiddenModels",
+  "agyPromptOverrides",
   "browserAllowOutsideWorkspace",
   "browserChromiumPath",
   "claudeCustomEnv",
@@ -239,7 +247,7 @@ export const SETTINGS_KEYS_OMITTED_WHEN_EMPTY = [
 
 // The model family text generation runs the newest listed model of when
 // textGenerationModel is blank, per provider (settings.TextGenerationDefaultFamily).
-export const TEXT_GENERATION_DEFAULT_FAMILIES: Readonly<Record<string, string>> = {"claude":"claude-haiku","codex":"gpt-luna"};
+export const TEXT_GENERATION_DEFAULT_FAMILIES: Readonly<Record<string, string>> = {"agy":"gemini-4-hydrogen","claude":"claude-haiku","codex":"gpt-luna"};
 
 export const FRONTEND_SETTING_OPTIONS: Partial<Record<keyof Settings, readonly string[]>> = {
   "accountAutoSwitchStrategy": ["account-order","soonest-reset"],

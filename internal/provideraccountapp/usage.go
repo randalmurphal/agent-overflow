@@ -83,6 +83,9 @@ func (m *Manager) usageTransaction(
 		return admitErr
 	}
 	defer endWork()
+	if providerName == string(provider.Agy) {
+		return m.refreshAgyAccountUsage(ctx, accountID, backoffHold)
+	}
 	refreshMu := m.reconcileMutex(providerName)
 	if err := m.lockForUsage(ctx, refreshMu, providerName, accountID, spend); err != nil {
 		return err
@@ -440,7 +443,7 @@ func (r providerUsageRefresh) slotNeedsRotation() bool {
 // a lockfile scoped to the config home, so the selected account's refresh must
 // happen there and nowhere else — see probeSelectedClaudeRateLimits.
 func (r providerUsageRefresh) refreshesInCanonicalHome() bool {
-	return r.isSelected && r.providerName == string(provider.Claude)
+	return r.isSelected && (r.providerName == string(provider.Claude) || r.providerName == string(provider.Agy))
 }
 
 // canonicalCredential is the value the canonical native store must still hold

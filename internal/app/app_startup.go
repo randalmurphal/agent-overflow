@@ -329,6 +329,7 @@ func (a *App) startUnattendedWork() []bootStep {
 		// covered by probeStartupAccountInfo; this loop keeps the rings fresh
 		// while Codex sessions are active.
 		infallibleBootStep(a.startCodexRateLimitProbeLoop),
+		infallibleBootStep(a.startAgyRateLimitProbeLoop),
 		// Start the idle-session reaper. Walks a.sessions every
 		// IdleReapInterval and closes provider subprocesses that have been
 		// idle past IdleReapThreshold so leaked subprocesses can't pile up

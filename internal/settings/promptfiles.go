@@ -41,7 +41,7 @@ const (
 )
 
 // promptOverrideKeys are the settings keys whose entries own prompt files.
-var promptOverrideKeys = [...]string{"claudePromptOverrides", "codexPromptOverrides"}
+var promptOverrideKeys = [...]string{"claudePromptOverrides", "codexPromptOverrides", "agyPromptOverrides"}
 
 // IsPromptOverrideKey reports whether key is one of the two prompt override
 // lists.
@@ -126,7 +126,7 @@ func (s *Service) MigratePromptFiles() error {
 }
 
 func promptOverridesLackID(current Settings) bool {
-	for _, entries := range [][]PromptOverride{current.ClaudePromptOverrides, current.CodexPromptOverrides} {
+	for _, entries := range [][]PromptOverride{current.ClaudePromptOverrides, current.CodexPromptOverrides, current.AgyPromptOverrides} {
 		for _, entry := range entries {
 			if entry.ID == "" {
 				return true
@@ -153,6 +153,7 @@ func (s *Service) fillPromptFiles(current *Settings) promptLoad {
 	}{
 		{"claudePromptOverrides", &current.ClaudePromptOverrides},
 		{"codexPromptOverrides", &current.CodexPromptOverrides},
+		{"agyPromptOverrides", &current.AgyPromptOverrides},
 	} {
 		entries := slices.Clone(*list.entries)
 		total := 0
@@ -268,7 +269,7 @@ func promptFilesUnchanged(stamps []promptFileStamp) bool {
 // stampPromptFiles stats the prompt file of every entry with an id.
 func (s *Service) stampPromptFiles(current Settings) []promptFileStamp {
 	var stamps []promptFileStamp
-	for _, entries := range [][]PromptOverride{current.ClaudePromptOverrides, current.CodexPromptOverrides} {
+	for _, entries := range [][]PromptOverride{current.ClaudePromptOverrides, current.CodexPromptOverrides, current.AgyPromptOverrides} {
 		for _, entry := range entries {
 			if entry.ID == "" {
 				continue
@@ -283,7 +284,7 @@ func (s *Service) stampPromptFiles(current Settings) []promptFileStamp {
 // promptEntriesByID snapshots each entry's text and problem by id.
 func promptEntriesByID(current Settings) map[string]promptEntryState {
 	byID := make(map[string]promptEntryState)
-	for _, entries := range [][]PromptOverride{current.ClaudePromptOverrides, current.CodexPromptOverrides} {
+	for _, entries := range [][]PromptOverride{current.ClaudePromptOverrides, current.CodexPromptOverrides, current.AgyPromptOverrides} {
 		for _, entry := range entries {
 			if entry.ID != "" {
 				byID[entry.ID] = promptEntryState{prompt: entry.Prompt, problem: entry.Problem}
@@ -306,7 +307,7 @@ func promptEntriesByID(current Settings) map[string]promptEntryState {
 func (s *Service) settlePromptOverrides(prior map[string]promptEntryState, next *Settings) ([]promptFileWrite, []string) {
 	var writes []promptFileWrite
 	kept := make(map[string]bool, len(prior))
-	for _, list := range []*[]PromptOverride{&next.ClaudePromptOverrides, &next.CodexPromptOverrides} {
+	for _, list := range []*[]PromptOverride{&next.ClaudePromptOverrides, &next.CodexPromptOverrides, &next.AgyPromptOverrides} {
 		entries := slices.Clone(*list)
 		for i := range entries {
 			entry := &entries[i]
@@ -381,5 +382,6 @@ func persistedPromptOverrides(next Settings, stripPrompt bool) Settings {
 	}
 	next.ClaudePromptOverrides = strip(next.ClaudePromptOverrides)
 	next.CodexPromptOverrides = strip(next.CodexPromptOverrides)
+	next.AgyPromptOverrides = strip(next.AgyPromptOverrides)
 	return next
 }

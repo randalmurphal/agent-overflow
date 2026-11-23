@@ -25,6 +25,7 @@ import (
 const (
 	ProviderClaude = "claude"
 	ProviderCodex  = "codex"
+	ProviderAgy    = "agy"
 )
 
 // CurrentVersion is the schema version this package reads and writes.
@@ -500,8 +501,8 @@ func (s *Scenario) Validate() error {
 	if s.Name == "" {
 		return fmt.Errorf("scenario name must be non-empty")
 	}
-	if s.Provider != ProviderClaude && s.Provider != ProviderCodex {
-		return fmt.Errorf("scenario %q: provider %q must be %q or %q", s.Name, s.Provider, ProviderClaude, ProviderCodex)
+	if s.Provider != ProviderClaude && s.Provider != ProviderCodex && s.Provider != ProviderAgy {
+		return fmt.Errorf("scenario %q: provider %q must be %q, %q or %q", s.Name, s.Provider, ProviderClaude, ProviderCodex, ProviderAgy)
 	}
 	if !afterTurnsModes[s.AfterTurns] {
 		return fmt.Errorf("scenario %q: afterTurns %q must be repeatLast, silent, or exit", s.Name, s.AfterTurns)

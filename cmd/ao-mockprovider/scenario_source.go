@@ -83,10 +83,14 @@ func parseAssignedScenario(data []byte, protocol, origin string) *scenario.Scena
 const fallbackResponseText = "ao-mockprovider fallback response"
 
 func builtinScenario(protocol string) *scenario.Scenario {
-	if protocol == scenario.ProviderCodex {
+	switch protocol {
+	case scenario.ProviderCodex:
 		return builtinCodexScenario()
+	case scenario.ProviderAgy:
+		return builtinAgyScenario()
+	default:
+		return builtinClaudeScenario()
 	}
-	return builtinClaudeScenario()
 }
 
 // builtinClaudeScenario carries no system/init line — the claude
@@ -122,6 +126,19 @@ func builtinCodexScenario() *scenario.Scenario {
 			`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"${THREAD_ID}","turnId":"${TURN_ID}","item":{"id":"msg-${TURN}","type":"agentMessage","text":""}}}`,
 			`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"${THREAD_ID}","turnId":"${TURN_ID}","item":{"id":"msg-${TURN}","type":"agentMessage","text":"` + fallbackResponseText + `"}}}`,
 			`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}","status":"completed"}}}`,
+		}}}}}},
+		AfterTurns: "repeatLast",
+	}
+}
+
+func builtinAgyScenario() *scenario.Scenario {
+	return &scenario.Scenario{
+		Version:  scenario.CurrentVersion,
+		Name:     "builtin-agy-fallback",
+		Provider: scenario.ProviderAgy,
+		Turns: []scenario.Turn{{Label: "fallback", Steps: []scenario.Step{{Emit: &scenario.EmitStep{Lines: []string{
+			`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"${SESSION_ID}","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"` + fallbackResponseText + `"}}}}`,
+			`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"${SESSION_ID}","update":{"sessionUpdate":"usage_update","used":100,"size":1048576}}}`,
 		}}}}}},
 		AfterTurns: "repeatLast",
 	}

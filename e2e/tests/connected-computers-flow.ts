@@ -9,7 +9,7 @@ import { startTogether } from './launch-helpers.js';
 import { reloadAtRoot } from './compact-history-helpers.js';
 import { instrument, socketAnswers } from './offhost-helpers.js';
 import { expectProjectsMenuSays, watchProjectsQuiet } from './sidebar-quiet-helpers.js';
-import { runSessionCLI } from './session-cli-helpers.js';
+import { awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 import { randomUUID } from 'node:crypto';
 import { unusedPort } from '../src/ports.js';
 import { doneResult, humanGateWorkflow, seedWorkflow, setClaudeScenario, startWorkflow, waitForWorkflowState, type WorkflowDetail } from './workflows-helpers.js';
@@ -130,36 +130,75 @@ export function connectedComputersFlow(): void {
       await expect(page.getByTestId('thread-row').filter({ hasText: 'Created after outage' })).toBeVisible();
 
       // Backend pairing alone does not allow model commands. Toggle the real
-      // originating host's opt-in, then exercise the CLI with the credential
-      // injected into its mocked provider session (never the page's token).
+      // originating host's opt-in, then exercise ao-remote-tools MCP from a
+      // mocked provider session (never the page's token).
       await settingsPage(page, 'Agent remote tools');
       const agentAccess = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Agent remote tools', exact: true }) });
       await expect(agentAccess.getByRole('button', { name: 'Enable', exact: true })).toBeVisible();
       await agentAccess.getByRole('button', { name: 'Enable', exact: true }).click();
       await expect(agentAccess.getByRole('button', { name: 'Enabled', exact: true })).toHaveAttribute('aria-pressed', 'true');
       const sourceThread = homeSeed.projects[0].threadIds[0];
-      await home.rpc('StartSession', sourceThread);
-      const listed = await runSessionCLI(home, sourceThread, ['remote', 'list']);
-      expect(listed.code, listed.stderr).toBe(0);
-      expect(JSON.parse(listed.stdout)).toEqual(expect.arrayContaining([expect.objectContaining({ id: remoteId })]));
       const commandID = randomUUID();
-      const command = ['remote', 'run', '--computer', remoteId, '--project', remoteSeed.projects[0].projectId, '--id', commandID, '--', 'sh', '-c', 'printf peer-command-result'];
-      const started = await runSessionCLI(home, sourceThread, command);
-      expect(started.code, started.stderr).toBe(0);
-      await expect.poll(async () => {
-        const result = await runSessionCLI(home!, sourceThread, ['remote', 'status', '--computer', remoteId, commandID]);
-        expect(result.code, result.stderr).toBe(0);
-        return JSON.parse(result.stdout);
-      }).toMatchObject({ state: 'succeeded', output: 'peer-command-result', sourceThreadId: sourceThread });
+      await setScenario(home, homeSeed.projects[0].path, threadToolsScenario({
+        name: 'connected-remote-mcp',
+        provider: 'claude',
+        turns: [
+          {
+            steps: [
+              { call: { server: 'ao-remote-tools', tool: 'remote_computers', args: {} } },
+              {
+                call: {
+                  server: 'ao-remote-tools',
+                  tool: 'remote_run',
+                  args: {
+                    computer_id: remoteId,
+                    project_id: remoteSeed.projects[0].projectId,
+                    request_id: commandID,
+                    label: 'peer check',
+                    argv: ['sh', '-c', 'printf peer-command-result'],
+                    wait_seconds: 30,
+                  },
+                },
+              },
+            ],
+            text: 'Remote command finished.',
+          },
+          {
+            steps: [
+              { call: { server: 'ao-remote-tools', tool: 'remote_computers', args: {} } },
+              { call: { server: 'ao-remote-tools', tool: 'remote_status', args: { computer_id: remoteId, request_id: commandID } } },
+            ],
+            text: 'Checked after opt-out.',
+          },
+        ],
+        afterTurns: 'silent',
+      }));
+      await home.rpc('StartSession', sourceThread);
+      const firstTurn = awaitTurnCompleted(home, sourceThread);
+      const listedPromise = home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_computers', cwd: homeSeed.projects[0].path, timeoutMs: 30_000 });
+      const startedPromise = home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd: homeSeed.projects[0].path, timeoutMs: 60_000 });
+      await home.rpc('SendMessage', sourceThread, 'run a remote command', null);
+      const listed = await listedPromise;
+      expect(listed.report.isError, listed.report.result).toBeFalsy();
+      expect(JSON.parse(listed.report.result ?? '[]')).toEqual(expect.arrayContaining([expect.objectContaining({ id: remoteId })]));
+      const started = await startedPromise;
+      expect(started.report.isError, started.report.result).toBeFalsy();
+      expect(JSON.parse(started.report.result ?? '{}')).toMatchObject({ state: 'succeeded', output: 'peer-command-result', sourceThreadId: sourceThread });
+      await firstTurn;
       // Opt-out hides discovery and blocks new work while preserving receipts.
       await agentAccess.getByRole('button', { name: 'Enabled', exact: true }).click();
       await expect(agentAccess.getByRole('button', { name: 'Enable', exact: true })).toHaveAttribute('aria-pressed', 'false');
-      const disabled = await runSessionCLI(home, sourceThread, ['remote', 'list']);
-      expect(disabled.code, disabled.stderr).toBe(0);
-      expect(JSON.parse(disabled.stdout)).toEqual([]);
-      const receipt = await runSessionCLI(home, sourceThread, ['remote', 'status', '--computer', remoteId, commandID]);
-      expect(receipt.code, receipt.stderr).toBe(0);
-      expect(JSON.parse(receipt.stdout)).toMatchObject({ state: 'succeeded', output: 'peer-command-result' });
+      const secondTurn = awaitTurnCompleted(home, sourceThread);
+      const disabledPromise = home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_computers', cwd: homeSeed.projects[0].path, timeoutMs: 30_000 });
+      const receiptPromise = home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_status', cwd: homeSeed.projects[0].path, timeoutMs: 30_000 });
+      await home.rpc('SendMessage', sourceThread, 'check after opt-out', null);
+      const disabled = await disabledPromise;
+      expect(disabled.report.isError, disabled.report.result).toBeFalsy();
+      expect(JSON.parse(disabled.report.result ?? 'null')).toEqual([]);
+      const receipt = await receiptPromise;
+      expect(receipt.report.isError, receipt.report.result).toBeFalsy();
+      expect(JSON.parse(receipt.report.result ?? '{}')).toMatchObject({ state: 'succeeded', output: 'peer-command-result' });
+      await secondTurn;
 
 
       await settingsPage(page, 'Performance');

@@ -11,14 +11,13 @@ import (
 )
 
 // localListenerState is the transport's ::1 door for clients on this side
-// of a WSL boundary: provider sessions' `ao` CLI (AO_ENDPOINT) and the
-// local control file read by `pair`, `service` and a desktop window
-// adopting a running backend. The main bind stays IPv4 because Windows
-// reaches it through WSL's localhost forwarding, which carries IPv4 only;
-// in-distro clients use ::1 so they stay in the Linux kernel
-// (loopback.EphemeralIPv6). ServeAuxiliary gives it the main bind's routes,
-// credentials and session registry, and it outlives LAN rebinds. While it
-// is down those clients use the main bind.
+// of a WSL boundary: the local control file read by `pair`, `thread`,
+// `service` and a desktop window adopting a running backend. The main bind
+// stays IPv4 because Windows reaches it through WSL's localhost forwarding,
+// which carries IPv4 only; in-distro clients use ::1 so they stay in the
+// Linux kernel (loopback.EphemeralIPv6). ServeAuxiliary gives it the main
+// bind's routes, credentials and session registry, and it outlives LAN
+// rebinds. While it is down those clients use the main bind.
 type localListenerState struct {
 	mu   sync.Mutex
 	ln   net.Listener
@@ -53,10 +52,8 @@ func (a *App) startLocalListener() {
 	log.Printf("transport: local listener on %s", s.addr)
 }
 
-// localListenerFailed retires a listener whose accept loop ended, points the
-// local control file back at the main bind, and leaves AO_ENDPOINT for new
-// sessions on the main bind too. Sessions already holding the ::1 endpoint
-// fail their CLI calls visibly until they restart.
+// localListenerFailed retires a listener whose accept loop ended and points
+// the local control file back at the main bind.
 func (a *App) localListenerFailed(ln net.Listener, cause error) {
 	s := &a.localListener
 	s.mu.Lock()

@@ -39,6 +39,7 @@ func (a *App) SetProviderCustomEnvVar(
 	if err != nil {
 		return settings.Settings{}, err
 	}
+	a.drainPooledConnectionsForProvider(providerName)
 	return a.settingsForCaller(ctx, next), nil
 }
 
@@ -54,7 +55,17 @@ func (a *App) DeleteProviderCustomEnvVar(ctx context.Context, providerName, name
 	if err != nil {
 		return settings.Settings{}, err
 	}
+	a.drainPooledConnectionsForProvider(providerName)
 	return a.settingsForCaller(ctx, next), nil
+}
+
+func (a *App) drainPooledConnectionsForProvider(providerName string) {
+	switch providerName {
+	case string(provider.Codex):
+		a.drainCodexConnections()
+	case string(provider.Agy):
+		a.drainAgyConnections()
+	}
 }
 
 // claudetuiUpstream is where a take-control session's loopback gateway

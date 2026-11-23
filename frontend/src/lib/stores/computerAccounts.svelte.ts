@@ -26,7 +26,7 @@ import { clearProviderAccount, setProviderAccount } from './accountInfo.svelte';
 import { clearProviderRateLimits, setProviderRateLimits } from './rateLimitsInfo.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { recheckProviderAccount } from '../providers/actions';
-import { PROVIDER_SETTINGS_ORDER } from '../providers/catalog';
+import { standaloneProvidersWithFeature } from '../providers/catalog';
 import { hasScope, pageGrantsResolved } from '../transport/scopes';
 import { PROVIDER_IDS, type ProviderID } from '../types/providers';
 import { userFacingError } from '../utils/userFacingError';
@@ -81,7 +81,7 @@ export class ComputerAccounts {
   }
   // Providers that own native logins. claude-tui reuses Claude's credentials and
   // has no account surface of its own, so it never appears here.
-  private ACCOUNT_PROVIDERS: readonly ProviderID[] = PROVIDER_SETTINGS_ORDER;
+  private ACCOUNT_PROVIDERS: readonly ProviderID[] = standaloneProvidersWithFeature('accounts');
 
   private idleActions(): ProviderAccountActions {
     return { loggingIn: false, switchingID: '', refreshingID: '', removingID: '', spendingResetID: '' };

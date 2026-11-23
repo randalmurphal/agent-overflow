@@ -316,13 +316,6 @@ type Config struct {
 	// manifest carries no backends array. See attachedroutes.go.
 	AttachedBackends AttachedBackends
 
-	// ScopedTokens resolves a session command's credential to the scope it
-	// was minted for. The App owns the registry (a token lives exactly as
-	// long as the provider session it belongs to); this package owns the
-	// authorization table and the ScopedRPCPath route.
-	// Optional — when nil, the scoped RPC route is not registered.
-	ScopedTokens ScopedTokens
-
 	// ReadLimit caps the byte size of a single inbound WS message.
 	// Zero defaults to DefaultReadLimit (75 MiB).
 	ReadLimit int64
@@ -618,7 +611,6 @@ type Server struct {
 	// ratelimit.go.
 	bootstrapLimit *rateLimiter
 	pageURLLimit   *rateLimiter
-	scopedRPCLimit *rateLimiter
 	authLimit      *rateLimiter
 	transferLimit  *rateLimiter
 
@@ -714,7 +706,6 @@ func New(cfg Config) (*Server, error) {
 		sessionConns:   newSessionConns(),
 		bootstrapLimit: newRateLimiter("/bootstrap.json", bootstrapRateLimit),
 		pageURLLimit:   newRateLimiter(PageURLPath, pageURLRateLimit),
-		scopedRPCLimit: newRateLimiter(ScopedRPCPath, scopedRPCRateLimit),
 		authLimit:      newRateLimiter("/auth", authRateLimit),
 		transferLimit:  newRateLimiter("/transfers", rateLimit{burst: 240, perSecond: 64}),
 		wsTickets:      newSubjectTicketBook(maxOutstandingWSTickets, maxWSTicketsPerSession, wsTicketTTL),
@@ -1054,10 +1045,6 @@ func (s *Server) buildHTTPServer() *http.Server {
 	mux.HandleFunc(PageURLPath,
 		rateLimited(s.pageURLLimit, s.loopbackHostGuard(s.handlePageURL)))
 	mux.HandleFunc(HealthPath, timedRoute(stepHealth, s.loopbackHostGuard(s.handleHealthz)))
-	if s.cfg.ScopedTokens != nil {
-		mux.HandleFunc(ScopedRPCPath,
-			rateLimited(s.scopedRPCLimit, s.loopbackHostGuard(s.handleScopedRPC)))
-	}
 	// The credential routes share ONE budget, deliberately: they are
 	// alternative ways for the same peer to ask this backend for a
 	// credential, so a peer that has exhausted its patience on one must
@@ -1782,7 +1769,7 @@ const PageURLPath = "/pageurl"
 // BootstrapPath and WSPath are the two routes every client of this wire
 // reaches, and the two that were restated the most.
 //
-// Named for the reason PageURLPath and ScopedRPCPath already are: four
+// Named for the reason PageURLPath already is: four
 // packages spell these paths without linking this server —
 // `internal/relaysession` derives one from the other, `internal/clientmode`
 // proxies onto both, `internal/deviceclient` dials both, and the Windows

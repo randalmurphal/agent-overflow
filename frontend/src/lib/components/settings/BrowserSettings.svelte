@@ -38,7 +38,7 @@
 <div class="settings-sections" data-testid="settings-browser">
   <section>
     <div class="flex flex-col gap-1">
-      <SettingsField id="browser.enabled" label="Built-in browser tools" hint="Give Claude and Codex a browser in a companion pane.">
+      <SettingsField id="browser.enabled" label="Built-in browser tools" hint="Give agents a browser in a companion pane.">
         <ToggleSwitch checked={settings.browserEnabled} disabled={!hostWritable} title={hostReason} ariaLabel="Toggle Built-in Browser Tools" onToggle={(value) => updateSetting('browserEnabled', value)} />
       </SettingsField>
       <SettingsField id="browser.persist-site-data" label="Remember site data" hint="Keep encrypted cookies and local storage separately for each workspace.">

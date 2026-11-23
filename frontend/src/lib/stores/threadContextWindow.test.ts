@@ -141,4 +141,21 @@ describe('threadContextWindow', () => {
     expect(activeAutoCompactPercent(thread, 272000)).toBe(75);
     expect(activeAutoCompactPercent(thread, 1050000)).toBe(85);
   });
+
+  it('disables auto-compact thresholds for providers without autoCompact support', () => {
+    const agyThread = makeThread({
+      provider: 'agy',
+      model: 'gemini-4-neon',
+      contextWindow: 1048576,
+      autoCompactStandardPercent: 80,
+      autoCompactExtendedPercent: 90,
+    });
+
+    expect(activeAutoCompactPercent(agyThread, 1048576)).toBe(0);
+    expect(seedContextWindow(agyThread)).toEqual({
+      usedTokens: 0,
+      maxTokens: 1048576,
+      usedPercentage: 0,
+    });
+  });
 });

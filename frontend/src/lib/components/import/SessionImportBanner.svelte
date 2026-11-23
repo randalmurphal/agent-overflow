@@ -72,7 +72,7 @@
     data-testid="session-import-loading"
   >
     <SteppedSpinner size={12} />
-    Scanning Claude Code and Codex session files…
+    Scanning provider session files…
   </div>
 {:else if surface === 'error'}
   <p

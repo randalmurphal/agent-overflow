@@ -11,6 +11,7 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/acp"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadapp"
@@ -361,6 +362,19 @@ func (a *App) applyActiveModeChange(threadID string, sess session, mode provider
 				log.Printf("thread %s: apply active Claude mode %q failed: %v", threadID, mode, err)
 				return true
 			}
+		} else if sess.ACP != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), applyActiveModeTimeout)
+			defer cancel()
+			if err := sess.ACP.ApplyLiveUpdate(ctx, acp.LiveUpdate{
+				InteractionMode: mode,
+				HasInteraction:  true,
+			}); err != nil {
+				log.Printf("thread %s: apply active ACP mode %q failed: %v", threadID, mode, err)
+				return true
+			}
+			opts := sess.LaunchOptions
+			opts.Mode = mode
+			a.sessionManager().updateLaunchOpts(threadID, sess.Token, opts)
 		}
 		return false
 	default:

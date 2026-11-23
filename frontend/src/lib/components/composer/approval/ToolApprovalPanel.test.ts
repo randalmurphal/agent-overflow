@@ -228,6 +228,48 @@ describe('<ToolApprovalPanel>', () => {
     expect(response.decisionValue).toEqual(decision);
   });
 
+  it('renders ACP run_command and file tool previews from native input keys', () => {
+    const cmdView = render(ToolApprovalPanel, {
+      props: {
+        approval: bashApproval({
+          kind: 'command',
+          toolName: 'run_command',
+          input: { CommandLine: 'pnpm test' },
+        }),
+        onResolve: makeResolver(),
+      },
+    });
+    expect(cmdView.getByText('pnpm test')).toBeInTheDocument();
+    expect(cmdView.getByText('Command')).toBeInTheDocument();
+
+    const fileView = render(ToolApprovalPanel, {
+      props: {
+        approval: bashApproval({
+          kind: 'file-change',
+          toolName: 'replace_file_content',
+          input: { TargetFile: '/repo/src/app.ts' },
+        }),
+        onResolve: makeResolver(),
+      },
+    });
+    expect(fileView.getByText('/repo/src/app.ts')).toBeInTheDocument();
+    expect(fileView.getByText('File')).toBeInTheDocument();
+
+    const diffView = render(ToolApprovalPanel, {
+      props: {
+        approval: bashApproval({
+          kind: 'file-change',
+          toolName: 'Edit',
+          input: { path: '/repo/src/app.ts', diff: '@@ -1 +1 @@\n-old\n+new' },
+        }),
+        onResolve: makeResolver(),
+      },
+    });
+    expect(diffView.getByText('Diff · /repo/src/app.ts')).toBeInTheDocument();
+    expect(diffView.getByText(/-old/)).toBeInTheDocument();
+    expect(diffView.getByText(/\+new/)).toBeInTheDocument();
+  });
+
   it('renders write-stdin details and never offers input editing', () => {
     const { getByText, queryByTestId } = render(ToolApprovalPanel, {
       props: {
