@@ -83,7 +83,10 @@ func (h Home) Launch(customEnv map[string]string) (Launch, error) {
 	}
 	env := make(map[string]string, len(customEnv)+3)
 	maps.Copy(env, customEnv)
+	// HOME is reserved, never set here: the process HOME is the home the
+	// account manager reads, and agy's default home lies under it.
 	unset := []string{geminiHomeEnv, appDataDirEnv}
+	delete(env, "HOME")
 	delete(env, geminiHomeEnv)
 	delete(env, appDataDirEnv)
 	if h.fileStorage {

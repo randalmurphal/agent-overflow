@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSetProviderEnvVarRoundTripsNameValueAndSensitiveFlag(t *testing.T) {
@@ -132,6 +133,9 @@ func TestSetProviderEnvVarRejectsReservedNames(t *testing.T) {
 		{"codex", "PATH"},
 		{"codex", "CODEX_HOME"},
 		{"codex", "AO_ENDPOINT"},
+		{"agy", "GEMINI_HOME"},
+		{"agy", "AGY_APP_DATA_DIR"},
+		{"agy", "AGY_ACP_FORCE_FILE_STORAGE"},
 	}
 	for _, test := range cases {
 		t.Run(test.provider+"/"+test.varName, func(t *testing.T) {
@@ -144,6 +148,86 @@ func TestSetProviderEnvVarRejectsReservedNames(t *testing.T) {
 				t.Fatalf("error = %v, want it to say the name is reserved", err)
 			}
 		})
+	}
+}
+
+// A custom HOME would move the provider CLI's login and data and not the
+// home Agent Overflow manages them in, for every provider, so saving one is
+// refused with that reason.
+func TestSetProviderEnvVarRefusesHomeForEveryProvider(t *testing.T) {
+	for _, providerName := range []string{"claude", "claude-tui", "codex", "agy"} {
+		t.Run(providerName, func(t *testing.T) {
+			svc := NewService(t.TempDir())
+			_, err := svc.SetProviderEnvVar(providerName, "HOME", "/tmp/elsewhere", false)
+			if err == nil {
+				t.Fatalf("%s accepted HOME", providerName)
+			}
+			if !strings.Contains(err.Error(), "reserved") || !strings.Contains(err.Error(), "login and data") {
+				t.Fatalf("error = %v, want it to say HOME is reserved and why", err)
+			}
+		})
+	}
+}
+
+// A HOME saved before it was reserved is not applied after an upgrade, and
+// the load says so: the person reads which variable of which provider is not
+// applied and why, instead of the variable silently vanishing.
+func TestASavedHomeIsReportedAndNotApplied(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{
+	  "claudeCustomEnv": [{"name": "HOME", "value": "/tmp/claude-home"}, {"name": "KEEP", "value": "1"}],
+	  "codexCustomEnv": [{"name": "HOME", "value": "/tmp/codex-home"}],
+	  "agyCustomEnv": [{"name": "HOME", "value": "/tmp/agy-home"}]
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(dir)
+	got := svc.Get()
+	assertEnvVars(t, got.ClaudeCustomEnv, []ProviderEnvVar{{Name: "KEEP", Value: "1"}})
+	for _, providerName := range []string{"claude", "codex", "agy"} {
+		if _, applied := got.ProviderEnvMap(providerName)["HOME"]; applied {
+			t.Errorf("%s applies the saved HOME", providerName)
+		}
+	}
+	refused := svc.ProviderEnvRefusedAtLoad()
+	if len(refused) != 3 {
+		t.Fatalf("refused at load = %v, want the three saved HOMEs", refused)
+	}
+	for i, providerName := range []string{"claude", "codex", "agy"} {
+		text := refused[i].Error()
+		if !strings.Contains(text, "saved "+providerName+" environment variable \"HOME\" is not applied") || !strings.Contains(text, "login and data") {
+			t.Errorf("refusal %d reads %q, want it to name %s's HOME and why", i, text, providerName)
+		}
+	}
+
+	// A reload of the same file reports each once.
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "settings.json"), later, later); err != nil {
+		t.Fatal(err)
+	}
+	svc.Get()
+	if again := svc.ProviderEnvRefusedAtLoad(); len(again) != 3 {
+		t.Fatalf("refused after a reload = %v, want the same three", again)
+	}
+
+	// The next write leaves them out of the file; the report keeps them,
+	// once each, for the boot that reads it after that write.
+	mustSetEnvVar(t, svc, "claude", "KEEP_TOO", "2", false)
+	written, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(written), "HOME") {
+		t.Fatalf("settings.json after a write still holds HOME: %s", written)
+	}
+	later = later.Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "settings.json"), later, later); err != nil {
+		t.Fatal(err)
+	}
+	svc.Get()
+	if again := svc.ProviderEnvRefusedAtLoad(); len(again) != 3 {
+		t.Fatalf("refused after the write = %v, want the same three", again)
 	}
 }
 

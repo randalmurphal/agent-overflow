@@ -15,6 +15,11 @@ import "strings"
 //	PATH                — assembled by the app's sessionProcessEnv (the
 //	                      bundled `agent-overflow` CLI directory is prepended)
 //	                      and merged additively by BuildEnvironment.
+//	HOME                — not set by Agent Overflow: every provider process
+//	                      inherits the process HOME, which is the home the
+//	                      account manager reads credentials under. Reserved
+//	                      because a custom HOME would move the CLI's login
+//	                      and data and not the manager's.
 //	CLAUDE_CONFIG_DIR   — cleared, with the name below, by every Claude
 //	                      command line (claude.NewCommandLine); set to a
 //	                      temporary home by claude.StartLogin and the
@@ -151,7 +156,7 @@ import "strings"
 // control channel, the mock provider, claudetui's hook relay) is reserved by
 // prefix rather than by name and is deliberately not enumerated here.
 func ReservedEnvNames(providerName string) []string {
-	shared := []string{"PATH"}
+	shared := []string{"PATH", "HOME"}
 	switch strings.TrimSpace(providerName) {
 	case string(Claude), string(ClaudeTUI):
 		return append(shared,

@@ -561,9 +561,9 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.UsagePeriod,
 		allowedUsagePeriods,
 	)
-	current.ClaudeCustomEnv = sanitizeProviderEnvVars("claude", current.ClaudeCustomEnv)
-	current.CodexCustomEnv = sanitizeProviderEnvVars("codex", current.CodexCustomEnv)
-	current.AgyCustomEnv = sanitizeProviderEnvVars("agy", current.AgyCustomEnv)
+	for _, dropped := range sanitizeLoadedProviderEnv(&current) {
+		log.Printf("settings: %v", dropped)
+	}
 	current.ClaudePromptOverrides = sanitizePromptOverrides("claudePromptOverrides", current.ClaudePromptOverrides)
 	current.CodexPromptOverrides = sanitizePromptOverrides("codexPromptOverrides", current.CodexPromptOverrides)
 	current.AgyPromptOverrides = sanitizePromptOverrides("agyPromptOverrides", current.AgyPromptOverrides)

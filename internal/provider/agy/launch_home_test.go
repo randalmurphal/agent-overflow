@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -160,5 +161,22 @@ func TestALaunchNeedsAHomeAndASignInAnIsolatedOne(t *testing.T) {
 		Reaper: procutiltest.Reaper(),
 	}); err == nil || !strings.Contains(err.Error(), "isolated home") {
 		t.Fatalf("StartLogin on the canonical home = %v, want a refusal", err)
+	}
+}
+
+// HOME is reserved: a value in the custom environment never reaches agy, and
+// the process HOME, which agy's default home lies under, is never cleared.
+func TestALaunchKeepsTheProcessHome(t *testing.T) {
+	for _, home := range []Home{CanonicalHome(true), CanonicalHome(false)} {
+		launch, err := home.Launch(map[string]string{"HOME": "/tmp/elsewhere"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if value, set := launch.Env["HOME"]; set {
+			t.Errorf("launch sets HOME=%q, want the process HOME", value)
+		}
+		if slices.Contains(launch.Unset, "HOME") {
+			t.Errorf("launch clears HOME: %v", launch.Unset)
+		}
 	}
 }
