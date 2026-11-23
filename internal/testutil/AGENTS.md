@@ -7,9 +7,12 @@ packages. Test-specific setup stays beside the test that owns it.
   them with `internal/kerneltest` isolation to exercise provider pipelines
   without real CLIs.
 - `mockexec/` installs any test's mock executable as a link to one stable
-  wrapper, so macOS assesses a single file instead of each written script. It
-  imports only the standard library and `reporoot/`, so packages that
-  `testutil` imports can use it too.
+  wrapper, so macOS assesses a single file instead of each written script,
+  and writes an executable whose own bytes a test needs with process starts
+  held off ([conventions](../../docs/architecture/conventions.md#tests)). It
+  imports only the standard library, `procutil` and `reporoot/`, so every
+  test package but procutil's can use it, including the packages `testutil`
+  imports.
 - `reporoot/` returns the checkout's root and paths under it. Use it to read
   a repository file from a test; a path derived from `runtime.Caller` is
   module-relative under the Make targets' `-trimpath`. A test that inspects
@@ -24,8 +27,8 @@ packages. Test-specific setup stays beside the test that owns it.
   that skips login startup files, so a shell sync cannot reorder PATH. Every
   test package that links a provider spawn package installs it;
   `TestEveryTestBinaryThatCanStartAProviderInstallsThePoison` fails one that
-  does not. It imports only the standard library and internal packages
-  that do too.
+  does not. It imports only the standard library and low-level internal
+  packages (`ownedtemp`, `stringsx`, `procutil`) that import no test fixture.
 - A per-process directory a shared fixture makes in TestMain (the poison,
   store templates, the detached home) is an `internal/ownedtemp`
   directory, swept again after the run, so one left by a killed test

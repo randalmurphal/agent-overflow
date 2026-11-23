@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	_ "modernc.org/sqlite"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestPostmortemRequiresAnAbsoluteCanonicalRoot(t *testing.T) {
@@ -62,9 +64,7 @@ func TestPostmortemIsReadOnlyAndDoesNotAttach(t *testing.T) {
 func TestPostmortemAllowsTheOwnedBinarySymlink(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(t.TempDir(), "agent-overflow")
-	if err := os.WriteFile(target, []byte("binary"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, target, []byte("binary"), 0o700)
 	marker := filepath.Join(root, appDataDirName, "harness-instance.json")
 	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
 		t.Fatal(err)

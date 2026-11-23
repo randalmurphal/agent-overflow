@@ -9,17 +9,26 @@
 // ID is the wrapper's, so signals, process groups and exit codes behave as if
 // the script were executed directly.
 //
-// The package depends only on the standard library and reporoot, which does
-// too, so any test package can use it, including the packages
-// internal/testutil itself imports.
+// WriteFile and CopyFile are for an executable whose bytes must be the file
+// itself. They install it through procutil.InstallExecutable, as every
+// executable test code writes must be:
+// TestEveryTestExecutableIsWrittenWithForksHeldOff fails test code that
+// writes one any other way.
+//
+// The package depends only on the standard library, procutil and reporoot,
+// none of which imports another package of this module, so any test package
+// but procutil's can use it.
 package mockexec
 
 import (
 	"errors"
+	"hash"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/testutil/reporoot"
 )
 
@@ -46,6 +55,32 @@ func Write(t testing.TB, path, script string) string {
 		if err := os.Symlink(wrapper, path); err != nil {
 			t.Fatalf("mockexec: link wrapper: %v", err)
 		}
+	}
+	return path
+}
+
+// WriteFile installs data as the file at path with mode perm, which may be
+// executable, and returns path. Use it where the file must hold data
+// itself: a copied binary, a file whose bytes, size or mode the test reads,
+// or a script that finds files beside it through $0. Use Write for any other
+// mock script. A file or link already at path is replaced, never written
+// through, and process starts are held off while the new file is open for
+// writing (procutil.InstallExecutable).
+func WriteFile(t testing.TB, path string, data []byte, perm fs.FileMode) string {
+	t.Helper()
+	if err := procutil.InstallExecutable(path, data, perm); err != nil {
+		t.Fatalf("mockexec: %v", err)
+	}
+	return path
+}
+
+// CopyFile is WriteFile with the bytes of the regular file at src, streamed
+// rather than held in memory, for a copy of a binary. A non-nil digest
+// receives the bytes in the same pass (procutil.CopyExecutable).
+func CopyFile(t testing.TB, path, src string, perm fs.FileMode, digest hash.Hash) string {
+	t.Helper()
+	if err := procutil.CopyExecutable(path, src, perm, digest); err != nil {
+		t.Fatalf("mockexec: %v", err)
 	}
 	return path
 }

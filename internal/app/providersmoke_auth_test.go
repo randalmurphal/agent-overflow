@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestProviderSmokeAuthAcceptsClaudeWithoutIdentity(t *testing.T) {
@@ -52,8 +53,6 @@ func writeProviderSmokeAuthCLI(t *testing.T, output string, exitCode int) string
 		t.Fatal(err)
 	}
 	script := fmt.Sprintf("#!/bin/sh\n[ \"$*\" = 'auth status' ] || exit 2\ncat \"$0.json\"\nexit %d\n", exitCode)
-	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, path, []byte(script), 0700)
 	return path
 }

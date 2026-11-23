@@ -44,6 +44,7 @@ type testHost struct {
 	pushSent            []PushMessage
 	updateWorkReason    string
 	requestWaits        map[string]bool
+	threadWork          map[string]ThreadWork
 	claudeUsage         *claudefake.Usage
 	usageReadings       int
 	usageReadErr        error
@@ -137,8 +138,9 @@ func (h *testHost) RequestWaits(tokens []string) map[string]bool {
 	}
 	return out
 }
-func (h *testHost) ClaudeUsageFake() *claudefake.Usage   { return h.claudeUsage }
-func (h *testHost) ProviderUpdateFeed() *updatefake.Feed { return h.updateFeed }
+func (h *testHost) ThreadWork(threadID string) ThreadWork { return h.threadWork[threadID] }
+func (h *testHost) ClaudeUsageFake() *claudefake.Usage    { return h.claudeUsage }
+func (h *testHost) ProviderUpdateFeed() *updatefake.Feed  { return h.updateFeed }
 func (h *testHost) ReadClaudeUsage(ctx context.Context) error {
 	h.usageReadings++
 	h.usageReadDeadline, h.usageReadBounded = ctx.Deadline()

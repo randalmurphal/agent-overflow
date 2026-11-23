@@ -71,9 +71,7 @@ func newSmokeFixture(t *testing.T) smokeFixture {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(scripts, name), body, 0o700); err != nil {
-			t.Fatal(err)
-		}
+		mockexec.WriteFile(t, filepath.Join(scripts, name), body, 0o700)
 	}
 	f := smokeFixture{dir: dir, smoke: filepath.Join(scripts, "android-smoke.sh"), log: filepath.Join(dir, "calls.log"), probe: filepath.Join(dir, "substitution-probe.bash")}
 	if err := os.WriteFile(f.probe, []byte(substitutionProbe), 0o600); err != nil {
@@ -238,9 +236,7 @@ trap 'exit 130' INT
 x="$(echo substituted)"
 echo "ran to the end: $x"
 `
-			if err := os.WriteFile(f.smoke, []byte(script), 0o700); err != nil {
-				t.Fatal(err)
-			}
+			mockexec.WriteFile(t, f.smoke, []byte(script), 0o700)
 			cmd := f.command()
 			if withoutBASHPID {
 				env := filepath.Join(f.dir, "without-bashpid.bash")

@@ -2,7 +2,6 @@ package claudeapp
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +9,7 @@ import (
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestContextUsageDistinguishesMissingAndOtherProvider(t *testing.T) {
@@ -45,9 +45,7 @@ while IFS= read -r line; do
     esac
 done
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake CLI: %v", err)
-	}
+	mockexec.WriteFile(t, scriptPath, []byte(script), 0o755)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	session, err := claude.NewSession(ctx, "thread", claude.Config{Reaper: procutiltest.Reaper(), Binary: scriptPath, Retention: claude.UserHomeRetention(0)}, func(provider.ProviderEvent) {})
