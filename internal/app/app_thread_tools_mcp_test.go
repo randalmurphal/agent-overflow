@@ -2,6 +2,7 @@ package app
 
 import (
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 	"bufio"
 	"context"
@@ -205,6 +206,7 @@ func writeCodexRequestLogBinary(t *testing.T, logPath string) string {
 		"  printf '%s\\n' \"$line\" >> '" + logPath + "'\n" +
 		"  id=$(printf '%s' \"$line\" | grep -o '\"id\":[0-9]*' | head -1 | grep -o '[0-9]*')\n" +
 		"  if [ -z \"$id\" ]; then continue; fi\n" +
+		testutil.MockCodexUnsubscribeShell +
 		"  if printf '%s' \"$line\" | grep -q '\"method\":\"config/read\"'; then\n" +
 		"    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"config\":{}}}\\n' \"$id\"\n" +
 		"  else\n" +

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   __payloadCacheStatsForTest,
   __resetPayloadCacheForTest,
@@ -7,10 +7,6 @@ import {
   readPayloadCache,
   writePayloadCache,
 } from './payloadDataCache';
-
-afterEach(() => {
-  __resetPayloadCacheForTest();
-});
 
 describe('payloadDataCache', () => {
   it('round-trips an entry by (threadId, payloadId, version)', () => {

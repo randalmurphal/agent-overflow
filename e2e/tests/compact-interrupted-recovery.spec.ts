@@ -8,8 +8,8 @@
 // spec moves the clock past the deadline, and the page then retires the
 // stalled socket. The deadline's length and the tick's verdict are
 // wsClient.test.ts's.
-import { expect, type WebSocketRoute } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { type WebSocketRoute } from '@playwright/test';
+import { expect, test } from './base-test.js';
 import { launchHarness } from '../src/harness.js';
 import {
   RESULT_LINE, advance, claudeScenario, emit, seedAgentThread, startMock, textLines, waitForGate,

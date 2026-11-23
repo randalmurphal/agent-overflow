@@ -105,6 +105,7 @@
     getHostEl: () => hostEl,
     sectionOf: paneElementById,
     slotOf: paneSlotPlaceholder,
+    flowScrollMax,
     onCapture: () => reveal.cancel(),
     onRelease: () => {
       publishPaneOffsets();
@@ -456,7 +457,9 @@
   // A promoted section is laid over the strip's visible area: the host's
   // padding box at the locked scroll position. Its slot keeps the flex
   // style above. Above the dividers (z-20), below drop indicators (z-40)
-  // and the drag shield.
+  // and the drag shield. Every section is `isolate`, its own stacking
+  // context, so a layer inside a pane (the message rail's z-30) orders
+  // only within that pane and never paints over the promoted one.
   function sectionStyle(item: PaneLayoutItem): string {
     if (shownPromotedId !== item.paneId) return paneSectionStyle(item);
     return `position:absolute;top:0;bottom:0;left:${promotion.lockedLeft}px;width:100%;z-index:30`;
@@ -519,7 +522,7 @@
         <section
           style={sectionStyle(item)}
           style:clip-path={promotion.clipFor(item.paneId)}
-          class="flex min-h-0 min-w-0 shrink-0 items-center justify-center bg-surface-0 text-sm text-error"
+          class="isolate flex min-h-0 min-w-0 shrink-0 items-center justify-center bg-surface-0 text-sm text-error"
           data-pane-id={item.paneId}
           data-pane-kind={item.kind}
           data-pane-missing="true"
@@ -544,7 +547,7 @@
           style={sectionStyle(item)}
           style:clip-path={promotion.clipFor(item.paneId)}
           class={[
-            'flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70 focus:outline-none',
+            'isolate flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70 focus:outline-none',
             item.kind === 'take-control' || paired ? 'take-control-pair-top' : '',
             promoted ? 'bg-surface-0' : focusedPaneId === item.paneId ? 'bg-surface-0/40' : '',
             !companion && drag.draggingPaneId === item.paneId ? 'opacity-55' : '',

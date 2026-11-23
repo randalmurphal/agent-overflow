@@ -4,29 +4,29 @@
 // message editor) will use, so none of them is first exercised in
 // production.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { createRawSnippet, tick, type Snippet } from 'svelte';
 import ComposerInputSurface from './ComposerInputSurface.svelte';
 import type { ComposerInputSurfaceHandle } from './composerInputSurface';
 import {
   createComposerDraftStore,
-  resetComposerDraftSnapshotsForTest,
   type ComposerDraftStore,
 } from '../../stores/composerDraft.svelte';
 import { buildPane } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setAttachmentThumbnailMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
-import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import type { Attachment } from '../../types/attachment';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { ControlAccess } from '../../transport/scopes';
 
 const platform = vi.hoisted(() => ({ native: false }));
-vi.mock('../../native/platform', () => ({ isNativeShell: () => platform.native }));
+vi.mock('../../native/platform', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../native/platform')>()),
+  isNativeShell: () => platform.native,
+}));
 
 function makeAttachment(id: string): Attachment {
   return {
@@ -184,13 +184,15 @@ async function mountSurface(options: MountOptions = {}) {
 }
 
 describe('<ComposerInputSurface>', () => {
-  beforeEach(() => {
+  // Back to the desktop page before the between-test steps reset the
+  // computers, which attach the page's own by what the platform says.
+  afterEach(() => {
     platform.native = false;
-    resetBindingMocks();
-    resetComposerDraftSnapshotsForTest();
-    resetPanesForTest();
+  });
+  beforeEach(() => {
+    // The composer loads the thumbnail of each image a test uploads.
+    setAttachmentThumbnailMock();
     resetPaneLayoutForTest();
-    resetCompanionPanesForTest();
     installMocks();
   });
 

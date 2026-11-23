@@ -41,7 +41,7 @@ func TestPRCIRefreshReturnsWhenThePumpLoopPanics(t *testing.T) {
 		defer firstPolled.Do(func() { close(firstPoll) })
 		return gitops.CIPipeline{}, nil
 	}
-	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestPipelineRefreshReturnsWhenThePumpLoopPanics(t *testing.T) {
 		}
 		return pipelineWith(gitops.CIStatusSuccess), nil
 	}
-	sub, err := app.SubscribePipeline(context.Background(), testPR.Repository(), "42")
+	sub, err := app.SubscribePipeline(connCtx(t), testPR.Repository(), "42")
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}

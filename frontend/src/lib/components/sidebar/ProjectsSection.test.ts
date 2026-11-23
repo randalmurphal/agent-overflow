@@ -15,12 +15,11 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ProjectsSection from './ProjectsSection.svelte';
 import { makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { resetProjectsForTest } from '../../stores/projects.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { replaceAllThreads } from '../../stores/threads.svelte';
 import { listCatalogTreesForTest } from '../../stores/sidebarCatalogs';
 import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
-import { isSidebarSectionExpanded, resetSidebarForTest } from '../../stores/sidebar.svelte';
+import { isSidebarSectionExpanded } from '../../stores/sidebar.svelte';
 import { closeNewAssistantDialog, getNewAssistantRequest } from '../../stores/newAssistant.svelte';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { applySettingsSnapshot, resetSettingsForTest } from '../../stores/settings.svelte';
@@ -30,7 +29,6 @@ import { __resetEntityIndexForTest, noteThread } from '../../transport/entityInd
 import { HOME_BACKEND } from '../../transport/backendKey';
 import {
   isSessionImportOpen,
-  resetSessionImportForTest,
 } from '../../stores/sessionImport.svelte';
 
 function importButton(container: HTMLElement): HTMLButtonElement {
@@ -42,13 +40,11 @@ function importButton(container: HTMLElement): HTMLButtonElement {
 
 describe('ProjectsSection import trigger', () => {
   beforeEach(() => {
-    resetSessionImportForTest();
     setPageGrantsFromBootstrap(false);
   });
 
   afterEach(() => {
     setPageGrantsFromBootstrap(false);
-    resetSessionImportForTest();
   });
 
   it('renders an enabled trigger between the sort menu and Add Project', () => {
@@ -107,9 +103,6 @@ describe('ProjectsSection assistants and projects', () => {
   const plain = makeThread({ id: 'plain', title: 'Plain thread', projectId: 'p1', pinnedAt: 1 });
 
   beforeEach(async () => {
-    resetBindingMocks();
-    resetSidebarForTest();
-    resetProjectsForTest();
     setThreadFilterQuery('');
     closeNewAssistantDialog();
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));

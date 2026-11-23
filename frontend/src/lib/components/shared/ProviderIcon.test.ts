@@ -1,9 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render } from '@testing-library/svelte';
+import { describe, expect, it } from 'vitest';
+import { render } from '@testing-library/svelte';
 
 import ProviderIcon from './ProviderIcon.svelte';
-
-afterEach(() => cleanup());
 
 describe('<ProviderIcon>', () => {
   it('renders the orange Claude glyph for claude with no terminal chip', () => {

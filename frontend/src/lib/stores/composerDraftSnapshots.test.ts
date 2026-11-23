@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { Attachment } from '../types/attachment';
 import {
   cloneDraftSnapshot,
@@ -7,7 +7,6 @@ import {
   forgetDraftSnapshotIfMatches,
   getRememberedDraftSnapshot,
   rememberDraftSnapshot,
-  resetComposerDraftSnapshotStateForTest,
   queueDraftSave,
   waitForActiveDraftSaves,
   type ComposerDraftSnapshot,
@@ -48,9 +47,6 @@ function snapshot(overrides: Partial<ComposerDraftSnapshot> = {}): ComposerDraft
 }
 
 describe('composerDraftSnapshots', () => {
-  beforeEach(() => {
-    resetComposerDraftSnapshotStateForTest();
-  });
 
   it('clones nested snapshot values', () => {
     const original = snapshot();

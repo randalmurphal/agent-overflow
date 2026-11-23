@@ -48,7 +48,6 @@
   // flashing plain for the round trip.
 
   import type { EncodedLine } from '../../../utils/syntaxSpans';
-  import { resetCompletedCodeBlockRenderersForTest } from './staticCodeBlock';
 
   /** Minimum spacing between request fires. Requests serialize on the
    * in-flight one, so this floor only matters when the round trip is
@@ -88,7 +87,6 @@
   export function __resetStreamdownCodeHostForTest(): void {
     lastAdopted.clear();
     lastAdoptedChars = 0;
-    resetCompletedCodeBlockRenderersForTest();
   }
 
   export function __streamdownCodeHostStatsForTest(): { lastAdopted: number; chars: number } {
@@ -99,6 +97,7 @@
 <script lang="ts">
   import {
     acquireDocumentInteraction,
+    fenceLanguage,
     matchesProvenAppend,
     useStreamdown,
     type DocumentInteraction,
@@ -122,8 +121,9 @@
   } from './codeSpanCache';
   import {
     clearCompletedCodeBlockRenderer,
-    codeFenceInfoWord,
     codeWrapLabel,
+    codeLineNumbers,
+    codeRendererLang,
     publishCompletedCodeBlockRenderer,
     renderStaticCodeBlockHtml,
   } from './staticCodeBlock';
@@ -152,10 +152,10 @@
 
   const streamdown = useStreamdown();
 
-  // Highlight identity for this block (see infoWord above). Everything
+  // Highlight identity for this block: the fence's language. Everything
   // span-related — cache keys, pushed-span matching, RPC lang — uses this;
   // only the data-code-lang stamp keeps the full info string.
-  let highlightLang = $derived(codeFenceInfoWord(token.lang ?? ''));
+  let highlightLang = $derived(fenceLanguage(token.lang));
 
   // Resolved spans plus the exact (lang, source) they were computed
   // for. Language is part of the identity: the same text under a new
@@ -189,7 +189,7 @@
   // the start of a command, and running that is running something else.
   let runnable = $derived(
     streamdown.parseIncompleteMarkdown === false
-      && isRunnableShellLang(codeFenceInfoWord(token.lang ?? '')),
+      && isRunnableShellLang(fenceLanguage(token.lang)),
   );
 
   function runFromHost(event: MouseEvent): void {
@@ -368,7 +368,7 @@
     publishCompletedCodeBlockRenderer(
       completedRendererOwner,
       streamdown,
-      lang,
+      codeRendererLang(lang, token.firstLine),
       text,
       (staticID) =>
         renderStaticCodeBlockHtml(token, staticID, streamdown, codeLines.texts(), staticLineSpans, unwrapped),
@@ -629,13 +629,22 @@
   class="streamdown-code-host group/codeblock relative"
   data-code-source=""
   data-code-lang={token.lang ?? ''}
-  data-code-unwrapped={unwrapped ? '' : undefined}
+  data-code-unwrapped={unwrapped || token.firstLine ? '' : undefined}
 >
   <div
     data-streamdown-code={id}
     class={streamdown.theme.code.base}
   >
-    <div style="height: fit-content; width: 100%;" class={streamdown.theme.code.container}>
+    <div
+      style="height: fit-content; width: 100%;"
+      class={token.firstLine ? `${streamdown.theme.code.container} md-code-numbered` : streamdown.theme.code.container}
+    >
+      <!-- A numbered block (a file excerpt): its line numbers, chrome that
+           is never copied or found; its lines never wrap. Keep in step
+           with renderStaticCodeBlockHtml. -->
+      {#if token.firstLine}<span class="md-code-line-numbers" aria-hidden="true" data-find-skip
+          >{codeLineNumbers(token.firstLine, token.text)}</span
+        >{/if}
       <pre class={streamdown.theme.code.pre}><code
           >{#each codeLines.lines as line, lineIndex (lineIndex)}{#if lineIndex > 0}{'\n'}{/if}{#each line.segments as seg, segIndex (segIndex)}{#if seg.className}<span class={seg.className}>{seg.text}</span>{:else}{seg.text}{/if}{/each}{/each}</code
         ></pre>
@@ -656,11 +665,13 @@
         </IconButton>
       </span>
     {/if}
-    <IconButton label={codeWrapLabel(unwrapped)} size="sm" onClick={toggleWrap}>
-      {#snippet children()}
-        <Icon icon={TextWrap} size={13} />
-      {/snippet}
-    </IconButton>
+    {#if !token.firstLine}
+      <IconButton label={codeWrapLabel(unwrapped)} size="sm" onClick={toggleWrap}>
+        {#snippet children()}
+          <Icon icon={TextWrap} size={13} />
+        {/snippet}
+      </IconButton>
+    {/if}
     <CopyButton
       text={token.text}
       label="Copy code"

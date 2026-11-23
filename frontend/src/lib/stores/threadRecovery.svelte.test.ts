@@ -4,7 +4,7 @@ import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { createThreadPane } from './thread.svelte';
 import { getActiveTurn, isThreadWorking, projectTurnStarted } from './threadStatuses.svelte';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { setCarriedSessionScopes } from '../transport/scopes';
 import { noteThread } from '../transport/entityIndex';
 import { buildSendOptions } from '../utils/sendOptions';
@@ -12,7 +12,7 @@ import { itemEventQueued, itemEventsSettled } from './itemEventSettlement';
 import { getFlushedForThread, getQueueForThread, markItemsFlushed, registerQueueItem } from './sendQueue.svelte';
 
 let pane: ReturnType<typeof createThreadPane> | undefined;
-beforeEach(() => { resetStagedBackends(); installThreadPaneTestEnv(); setBindingMock('AutoResumeThread', async () => undefined); });
+beforeEach(() => { installThreadPaneTestEnv(); setBindingMock('AutoResumeThread', async () => undefined); });
 afterEach(() => { pane?.clear(); pane = undefined; });
 
 it('reconnect clears a delivered message from an authoritative empty live snapshot', async () => {

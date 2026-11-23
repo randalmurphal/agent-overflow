@@ -6,7 +6,6 @@ import {
   getFocusedPaneId,
   getPane,
   openThreadFromNavigation,
-  resetPanesForTest,
 } from './panes.svelte';
 import { REVEAL_PANE_EVENT } from './eventNames';
 import { setCompactLayoutForTest } from './layoutMode.svelte';
@@ -28,11 +27,11 @@ import {
   toggleCompanion,
 } from './companionPanes.svelte';
 import { getThreads, replaceAllThreads } from './threads.svelte';
-import { resetLayoutMetricsForTest, setPaneHostWidth } from './layoutMetrics.svelte';
+import { setPaneHostWidth } from './layoutMetrics.svelte';
 import { equalizePaneWidths } from './paneLayout.svelte';
 import { getToasts } from './toast.svelte';
 import { makeThread } from '../../test/helpers/chat';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 
 function threadItem(paneId: string, widthPx = 560): PaneLayoutItem {
   return { id: paneId, paneId, kind: 'thread', widthPx };
@@ -47,21 +46,16 @@ function paneIds(): string[] {
 }
 
 beforeEach(() => {
-  resetPanesForTest();
-  resetCompanionPanesForTest();
   resetPaneLayoutForTest();
   installCompanionPanes();
 });
 
 afterEach(() => {
-  resetCompanionPanesForTest();
-  resetPanesForTest();
   resetPaneLayoutForTest();
 });
 
 describe('companionPanes store', () => {
   describe('a thread companion beside its source', () => {
-    afterEach(() => resetLayoutMetricsForTest());
 
     it('opens into the room left on the strip, so a 1280 screen does not scroll', () => {
       // A 1280 window less the sidebar.
@@ -335,13 +329,11 @@ describe('side chat companions', () => {
   }
 
   beforeEach(() => {
-    resetBindingMocks();
     replaceAllThreads([]);
     setBindingMock('DeleteThread', async () => {});
   });
 
   afterEach(() => {
-    resetBindingMocks();
     replaceAllThreads([]);
   });
 

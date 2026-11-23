@@ -5,19 +5,16 @@ import { WORKFLOW_AUTO_ADVANCE_MS, cancelWorkflowAutoAdvance, resolveWorkflowRun
 import {
   getWorkflowReceipt,
   hydrateWorkflowAttention,
-  resetWorkflowRunsForTest,
 } from './workflowRuns.svelte';
 import {
   getWorkflowArmedAction,
   getWorkflowsOverlayRunId,
   getWorkflowsOverlayTop,
   pushWorkflowRunDetail,
-  resetWorkflowsOverlayForTest,
   setWorkflowArmedAction,
 } from './workflowsOverlay.svelte';
 import { getToasts, removeToast } from './toast.svelte';
-import { resetAppStorageForTest } from './appStorage';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { answerAsV0019 } from '../../test/helpers/olderComputer';
 
 function item(id: string, endedAt: number): WorkItem {
@@ -54,10 +51,6 @@ describe('resolveWorkflowRun', () => {
 
   beforeEach(async () => {
     vi.useFakeTimers();
-    resetBindingMocks();
-    resetAppStorageForTest();
-    resetWorkflowsOverlayForTest();
-    resetWorkflowRunsForTest();
     clearToasts();
     setBindingMock('WorkflowListUnresolvedItems', async () => parked);
     await hydrateWorkflowAttention();
@@ -66,7 +59,6 @@ describe('resolveWorkflowRun', () => {
   afterEach(() => {
     cancelWorkflowAutoAdvance();
     vi.useRealTimers();
-    resetBindingMocks();
     clearToasts();
   });
 

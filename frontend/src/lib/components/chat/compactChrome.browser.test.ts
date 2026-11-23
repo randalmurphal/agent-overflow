@@ -7,7 +7,7 @@ import ComposerWorkspaceStrip from '../composer/ComposerWorkspaceStrip.svelte';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
-import { stageBackend, resetStagedBackends } from '../../../test/helpers/backends';
+import { stageBackend } from '../../../test/helpers/backends';
 import { setCompactLayoutForTest, showCompactThread, showCompactList } from '../../stores/layoutMode.svelte';
 
 let host: HTMLDivElement;
@@ -25,7 +25,6 @@ beforeEach(() => {
 afterEach(async () => {
   for (const app of mounted.splice(0)) await unmount(app);
   host.remove();
-  resetStagedBackends();
   setCompactLayoutForTest(false);
 });
 

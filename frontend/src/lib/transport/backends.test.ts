@@ -1,7 +1,7 @@
 // The backend registry: one handle per attached backend, the `all` route's
 // fan-out and merge, and the event stamp that has to name the connection a
 // frame actually arrived on rather than "the" backend.
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { homeClient } = vi.hoisted(() => ({
   homeClient: {
@@ -21,7 +21,8 @@ const { homeClient } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('./wsClient', () => ({
+vi.mock('./wsClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./wsClient')>()),
   wsClient: homeClient,
   DisconnectedError: class extends Error {},
   TransportError: class extends Error {},
@@ -32,7 +33,6 @@ vi.mock('./wsClient', () => ({
 
 import {
   __attachBackendForTest,
-  __resetBackendsForTest,
   HOME_BACKEND,
   attachedBackends,
   backendById,
@@ -48,11 +48,9 @@ import {
 } from './backends';
 import { HOME_DESCRIPTOR } from './manifestBackends';
 import {
-  __resetBackendIdentityForTest,
   setBackendIdentityFromBootstrap,
 } from './backendIdentity';
 import {
-  __resetEntityIndexForTest,
   noteProject,
   noteTerminal,
   noteThread,
@@ -63,7 +61,7 @@ import {
   threadGroupBackend,
 } from './entityIndex';
 import { onBackendDetached, type BackendDetachment } from './backends';
-import { backendClockSkew, resetBackendClocksForTest } from './backendClock';
+import { backendClockSkew } from './backendClock';
 import { Events } from './runtime';
 import type { WSClient } from './wsClient';
 
@@ -135,11 +133,9 @@ function deliverHome(channel: string, data: unknown, sequence?: number): void {
 }
 
 beforeEach(() => {
+  // The home entry registered its clock at module load and keeps it; a
+  // detached entry drops its own (testResets.ts NOT_BETWEEN_TESTS).
   __attachBackendForTest(HOME_DESCRIPTOR, homeClient as never);
-  __resetBackendsForTest();
-  __resetBackendIdentityForTest();
-  __resetEntityIndexForTest();
-  resetBackendClocksForTest();
   homeHandlers = new Map();
   for (const fn of Object.values(homeClient)) (fn as { mockReset?: () => void }).mockReset?.();
   homeClient.getStatus.mockReturnValue({ status: 'connected', nextAttemptAt: null });
@@ -154,11 +150,6 @@ beforeEach(() => {
     set.add(handler);
     return () => set.delete(handler);
   });
-});
-
-afterEach(() => {
-  __resetBackendsForTest();
-  __resetBackendIdentityForTest();
 });
 
 describe('the registry', () => {
@@ -316,6 +307,11 @@ describe('the registry', () => {
     expect(client.setWatchedThreads).toHaveBeenCalledWith([], [scope]);
   });
 
+  it("publishes the home backend's clock from its hello", () => {
+    homeClient.getHello.mockReturnValue({ clockSkewMs: 90_000 } as never);
+    expect(backendClockSkew(HOME_BACKEND)).toBe(90_000);
+  });
+
   it('publishes an attached backend’s clock and drops it on detach', () => {
     const { client } = attachFake();
     client.getHello.mockReturnValue({ clockSkewMs: 90_000 } as never);
@@ -452,7 +448,6 @@ describe('callEveryBackend', () => {
   });
 });
 
-
 // A detached backend takes its rows with it. Both halves matter and each
 // breaks differently: an index that still resolves the thread points calls
 // at a machine this client is no longer attached to, and an index that
@@ -520,7 +515,6 @@ describe('detach forgets what the backend owned', () => {
     expect(listener).toHaveBeenCalledTimes(1);
   });
 });
-
 
 it('captures diagnostics from existing and later connections and releases detached sinks', () => {
   const sink = vi.fn();

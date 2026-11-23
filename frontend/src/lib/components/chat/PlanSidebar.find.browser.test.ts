@@ -8,12 +8,12 @@ import { userEvent } from 'vitest/browser';
 import '../../../app.css';
 import PlanSidebar from './PlanSidebar.svelte';
 import { buildPane, emitItemEventUpsert, makeItem } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { setupEventListeners } from '../../stores/events';
 import { resetProposedPlanCacheForTests } from '../../stores/proposedPlans.svelte';
 import { makePanelContext } from '../../stores/panelContext.svelte';
-import { closePaneFind, getPaneFind, openPaneFind, resetPaneFindForTest } from '../../stores/paneFind.svelte';
-import { companionForSource, installCompanionPanes, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
+import { closePaneFind, getPaneFind, openPaneFind } from '../../stores/paneFind.svelte';
+import { companionForSource, installCompanionPanes } from '../../stores/companionPanes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 
 let cleanupEvents: (() => void) | null = null;
@@ -28,10 +28,7 @@ function plan(id: string, turnIndex: number) {
 }
 
 beforeEach(() => {
-  resetBindingMocks();
   resetProposedPlanCacheForTests();
-  resetPaneFindForTest();
-  resetCompanionPanesForTest();
   installCompanionPanes();
   cleanupEvents = setupEventListeners();
 });
@@ -43,8 +40,6 @@ afterEach(() => {
   host = null;
   cleanupEvents?.();
   resetProposedPlanCacheForTests();
-  resetPaneFindForTest();
-  resetCompanionPanesForTest();
   resetPaneLayoutForTest();
 });
 

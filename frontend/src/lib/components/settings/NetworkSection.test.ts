@@ -94,7 +94,6 @@ function networkSettings(overrides: Partial<MockNetworkSettings> = {}): MockNetw
 
 describe('<NetworkSection>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     resetRunMode();
     resetToLocalPage();
     vi.useRealTimers();
@@ -107,7 +106,6 @@ describe('<NetworkSection>', () => {
     // still-mounted section would re-run its load against binding mocks
     // that are already gone.
     cleanup();
-    resetBindingMocks();
     resetRunMode();
     resetToLocalPage();
     vi.useRealTimers();

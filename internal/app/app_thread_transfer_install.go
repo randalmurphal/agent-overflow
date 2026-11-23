@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/provider/codex/rollout"
 	"agent-overflow/internal/store"
@@ -166,6 +167,8 @@ func (installer appTransferInstaller) Prepare(ctx context.Context, row store.Thr
 				return nil, err
 			}
 			targets[i].ReplaceExisting = returned["codex/"+id]
+		case "agy":
+			targets[i].ReplaceExisting = returned["agy/"+manifest.SessionRef]
 		}
 	}
 	plan.Files, err = transferfiles.PrepareInstallation(ctx, roots, targets)
@@ -271,7 +274,12 @@ func (a *App) transferInstallRoots() (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	roots := map[string]string{"claude": sessionfork.ProjectsDirForHome(home), "codex": filepath.Join(home, ".codex"), "attachments": a.attachments.Root()}
+	roots := map[string]string{
+		"claude":      sessionfork.ProjectsDirForHome(home),
+		"codex":       filepath.Join(home, ".codex"),
+		"agy":         a.agyAppDataDir(),
+		"attachments": a.attachments.Root(),
+	}
 	for _, root := range roots {
 		if err := os.MkdirAll(root, 0o700); err != nil {
 			return nil, err
@@ -328,6 +336,8 @@ func transferInstallTargets(manifest transferManifest, target store.Thread, file
 			targets = append(targets, transferfiles.InstallTarget{File: file, Root: "claude", Path: path.Join(claudeSlug, parts[1])})
 		case strings.HasPrefix(file.Name, "native/codex/"):
 			targets = append(targets, transferfiles.InstallTarget{File: file, Root: "codex", Path: strings.TrimPrefix(file.Name, "native/codex/")})
+		case strings.HasPrefix(file.Name, "native/agy/"):
+			targets = append(targets, transferfiles.InstallTarget{File: file, Root: "agy", Path: strings.TrimPrefix(file.Name, "native/agy/")})
 		}
 	}
 	if len(attachments) != 0 {
@@ -393,6 +403,18 @@ func validateTransferredNative(ctx context.Context, stage string, manifest trans
 				return "", errors.New("The native transfer includes an unrelated session.")
 			}
 			collected = source
+		case "agy":
+			if len(seen) != 1 {
+				return "", errors.New("agy transfers include only one root conversation")
+			}
+			var err error
+			collected, err = agy.ValidateStagedTransferFiles(ctx, filepath.Join(stage, "native", "agy"), manifest.SessionRef)
+			if err != nil {
+				return "", err
+			}
+			if len(collected) == 0 || collected[0].Name != manifest.NativePaths[manifest.SessionRef] {
+				return "", errors.New("staged Antigravity conversation does not match the selected native root")
+			}
 		}
 	}
 	expected := make(map[string]bool, len(collected))

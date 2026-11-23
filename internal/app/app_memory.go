@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/memory"
@@ -109,9 +110,14 @@ func (a *App) receivesMemory(current settings.Settings, lineage string, assistan
 // Overflow memory (receivesMemory): a session that does uses that memory,
 // whether or not its mode lets it write.
 func ownMemoryOff(current settings.Settings, providerName string, receives bool) bool {
-	when := current.ClaudeOwnMemoryOff
-	if providerName == string(provider.Codex) {
+	var when string
+	switch providerName {
+	case string(provider.Claude), string(provider.ClaudeTUI):
+		when = current.ClaudeOwnMemoryOff
+	case string(provider.Codex):
 		when = current.CodexOwnMemoryOff
+	default:
+		return false
 	}
 	switch when {
 	case settings.OwnMemoryOffAlways:
@@ -317,6 +323,22 @@ func (a *App) forgetMemoryRecordsAfterCut(threadID string) {
 			log.Printf("memory %s: %v", threadID, err)
 		}
 	}
+}
+
+// memoryPromptText renders a session's AO memory plan into plain text suitable
+// for providers without SessionStart CLI hooks (ACP / Antigravity).
+func memoryPromptText(mem sessionMemory) string {
+	if mem.Plan == nil {
+		return ""
+	}
+	outputs, _ := memory.Build(*mem.Plan, time.Now())
+	parts := make([]string, 0, len(outputs))
+	for _, out := range outputs {
+		if text := strings.TrimSpace(out.Text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // reportSessionMemory reports mem's problems once its session's start has

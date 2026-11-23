@@ -11,7 +11,6 @@
 // The walk, the exclusion set and the allowlist comparison are shared with
 // `themeTokens.test.ts` through `test/sourceScan.ts`.
 
-import { readFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -19,11 +18,17 @@ import {
   expectAllowlistExact,
   repoPath,
   scannedSources,
-  walkSources,
 } from '../test/sourceScan';
+import browserCompanionActions from '../../../internal/app/app_browser_companion_action.go?raw';
 import { findCompositorSourceFindings } from '../test/compositorSourceScan';
 import { findContextMenuPropagationFindings } from '../test/contextMenuSourceScan';
 import { NUMBERED_KINDS } from './stores/browserActionWire';
+
+// What this suite scans (test/sourceScan.ts).
+const SCANNED = scannedSources(import.meta.glob<string>(
+  ['/src/**/*.{ts,svelte,css}', '!/src/test/**', '!**/*.{test,spec}.{ts,js}', '!**/*.manual.ts'],
+  { query: '?raw', import: 'default', eager: true },
+));
 
 const STORES_DIR = join(SRC_ROOT, 'lib', 'stores');
 const BINDINGS_MODULE = join(STORES_DIR, 'bindings');
@@ -357,12 +362,10 @@ const AUTHORIZED_SCROLL_PRESENTATION_STATE = [
   'lib/components/chat/ProposedPlanReviewSurface.svelte|transform declaration or keyframe|style={`top: ${pendingSelection.composerTop}px; left: ${pendingSelection.composerLeft}px; transform: translate(-50%, 0);`}',
   'lib/components/chat/ProposedPlanReviewSurface.svelte|transform declaration or keyframe|style={`top: ${pendingSelection.triggerTop}px; left: ${pendingSelection.triggerLeft}px; transform: translate(-50%, -100%);`}',
   "lib/components/chat/TailClampedText.svelte|DOM transform property assignment|inner.style.transform = slideOffset > 0 ? `translateY(${slideOffset}px)` : '';",
-  "lib/components/chat/ChatHeaderActions.svelte|continuous spin animation|<Icon icon={RefreshCw} size={12} strokeWidth={2} class={regenerate.pending ? 'animate-spin' : ''} />",
-  "lib/components/chat/ThreadTitleRegenerateButton.svelte|continuous spin animation|<Icon icon={RefreshCw} size={12} strokeWidth={2} class={regenerate.pending ? 'animate-spin' : ''} />",
   'lib/components/chat/TranscriptDisclosureHeader.svelte|Tailwind transform utility|class:rotate-90={expandable && expanded}',
   "lib/components/chat/messageNavRailSync.ts|DOM transform property assignment|strip.style.transform = clip > 0 ? `translateY(${-clip}px)` : '';",
 ] as const;
-const PERFPROBE_ROOT = resolve(SRC_ROOT, '..', '..', 'scripts', 'perfprobe');
+const PERFPROBE_SOURCES = import.meta.glob<string>('../../../scripts/perfprobe/**/*.mjs', { query: '?raw', import: 'default', eager: true });
 
 // ---------------------------------------------------------------------------
 // Rule 4 — the harness bridge is reachable only by dynamic import.
@@ -709,8 +712,8 @@ describe('architecture', () => {
   // Each file's text is read, reduced to the two facts the rules need, and
   // dropped — holding ~800 whole sources for the lifetime of the suite bought
   // nothing but resident bytes.
-  const sources = scannedSources(SOURCE_EXTENSIONS).map((file) => {
-    const text = readFileSync(file, 'utf8');
+  const sources = SCANNED.files(SOURCE_EXTENSIONS).map((file) => {
+    const text = SCANNED.text(file);
     return {
       file,
       path: repoPath(file),
@@ -970,9 +973,9 @@ describe('architecture', () => {
   });
 
   it('names the check of every browser binding the window can call', () => {
-    const routes = readFileSync(join(SRC_ROOT, 'lib', 'transport', 'methodRoutes.ts'), 'utf8');
+    const routes = SCANNED.text(join(SRC_ROOT, 'lib', 'transport', 'methodRoutes.ts'));
     const methods = new Set([...routes.matchAll(/\/\/ (\w+)$/gm)].map((match) => match[1]));
-    const wrapper = readFileSync(join(SRC_ROOT, BINDINGS_WRAPPER), 'utf8');
+    const wrapper = SCANNED.text(join(SRC_ROOT, BINDINGS_WRAPPER));
     const exported = [...wrapper.matchAll(/^\s+(\w*Browser\w*),?$/gm)].map((match) => match[1]);
     const browserBindings = exported.filter((name) => methods.has(name)).sort();
     expect(browserBindings).toEqual(Object.keys(BROWSER_BINDING_CHECKS).sort());
@@ -985,7 +988,7 @@ describe('architecture', () => {
   it('numbers every wire kind that reads or changes the tab strip, on both sides', () => {
     const decided = Object.fromEntries(Object.entries(NUMBERED_WIRE_KINDS).map(([kind, [numbered]]) => [kind, numbered]));
     expect({ ...NUMBERED_KINDS }).toEqual(decided);
-    const specs = readFileSync(join(SRC_ROOT, '..', '..', 'internal', 'app', 'app_browser_companion_action.go'), 'utf8');
+    const specs = browserCompanionActions;
     const backend = new Map(
       [...specs.matchAll(/^\t+"([a-z-]+)":\s+\{kind: kind\w+[^}]*\}/gm)].map((match) => [
         match[1],
@@ -1175,12 +1178,12 @@ describe('architecture', () => {
 
   it('keeps scroll content free of authored compositor state', () => {
     const actual = new Set<string>();
-    for (const file of scannedSources(/\.(css|svelte|ts)$/)) {
+    for (const file of SCANNED.files(/\.(css|svelte|ts)$/)) {
       const path = repoPath(file);
       const inScrollPresentationTree =
         path === 'app.css'
         || SCROLL_PRESENTATION_PREFIXES.some((prefix) => path.startsWith(prefix));
-      for (const finding of findCompositorSourceFindings(readFileSync(file, 'utf8'))) {
+      for (const finding of findCompositorSourceFindings(SCANNED.text(file))) {
         const isPromotion = /^will(?:-change|Change)/.test(finding.kind);
         if (!isPromotion && !inScrollPresentationTree) continue;
         actual.add(`${path}|${finding.kind}|${finding.source}`);
@@ -1193,14 +1196,9 @@ describe('architecture', () => {
     ).toEqual([...AUTHORIZED_SCROLL_PRESENTATION_STATE].sort());
 
     const offenders = new Map<string, string[]>();
-    for (const file of walkSources(PERFPROBE_ROOT, /\.mjs$/)) {
-      const text = readFileSync(file, 'utf8');
+    for (const [file, text] of Object.entries(PERFPROBE_SOURCES)) {
       if (!text.includes('scroll-composited-content')) continue;
-      const relativePath = file
-        .slice(PERFPROBE_ROOT.length + 1)
-        .split(sep)
-        .join('/');
-      const path = `scripts/perfprobe/${relativePath}`;
+      const path = file.replace(/^(\.\.\/)+/, '');
       offenders.set(path, ['queries the deleted composited-content class']);
     }
     expectAllowlistExact(
@@ -1217,8 +1215,8 @@ describe('architecture', () => {
   it('keeps every contextmenu that stops propagation claimed first', () => {
     const offenders = new Map<string, string[]>();
     let handlersSeen = 0;
-    for (const file of scannedSources(SOURCE_EXTENSIONS)) {
-      const text = readFileSync(file, 'utf8');
+    for (const file of SCANNED.files(SOURCE_EXTENSIONS)) {
+      const text = SCANNED.text(file);
       if (text.includes('contextmenu')) handlersSeen += 1;
       const findings = findContextMenuPropagationFindings(file, text);
       if (findings.length > 0) offenders.set(repoPath(file), findings);
@@ -1244,9 +1242,9 @@ describe('architecture', () => {
   it('reads the Enter key only through the local Enter rule', () => {
     const offenders = new Map<string, string[]>();
     let enterReads = 0;
-    for (const file of scannedSources(SOURCE_EXTENSIONS)) {
+    for (const file of SCANNED.files(SOURCE_EXTENSIONS)) {
       if (repoPath(file) === 'lib/utils/localEnter.ts') continue;
-      const lines = readFileSync(file, 'utf8').split('\n');
+      const lines = SCANNED.text(file).split('\n');
       if (lines.some((line) => /\bis(?:Local)?Enter(?:Key)?\(/.test(line))) enterReads += 1;
       const findings: string[] = [];
       lines.forEach((line, index) => {
@@ -1280,8 +1278,8 @@ describe('architecture', () => {
   it('names the thread beside every workspace a ChatMarkdown is given', () => {
     const offenders = new Map<string, string[]>();
     let withWorkspace = 0;
-    for (const file of scannedSources(/\.svelte$/)) {
-      const text = readFileSync(file, 'utf8');
+    for (const file of SCANNED.files(/\.svelte$/)) {
+      const text = SCANNED.text(file);
       const findings: string[] = [];
       for (const match of text.matchAll(/<ChatMarkdown\b[^>]*?(?:\/>|>)/gs)) {
         const tag = match[0];
@@ -1312,10 +1310,10 @@ describe('architecture', () => {
     const owner = 'lib/transport/scopeRefusal.ts';
     const offenders = new Map<string, string[]>();
     let ownerCalls = 0;
-    for (const file of scannedSources(SOURCE_EXTENSIONS)) {
+    for (const file of SCANNED.files(SOURCE_EXTENSIONS)) {
       if (repoPath(file) === owner) continue;
       const findings: string[] = [];
-      readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
+      SCANNED.text(file).split('\n').forEach((line, index) => {
         if (/granted to this device/i.test(line)) findings.push(`line ${index + 1}: writes the refusal sentence itself`);
         for (const call of line.matchAll(/(\?\s*)?\bgrantBlockedTitle\(\s*(['"`])?/g)) {
           ownerCalls += 1;
@@ -1345,10 +1343,10 @@ describe('architecture', () => {
   it('keeps the yes/no grant helpers out of components', () => {
     const offenders = new Map<string, string[]>();
     let grantReads = 0;
-    for (const file of scannedSources(SOURCE_EXTENSIONS)) {
+    for (const file of SCANNED.files(SOURCE_EXTENSIONS)) {
       if (!repoPath(file).startsWith('lib/components/')) continue;
       const findings: string[] = [];
-      readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
+      SCANNED.text(file).split('\n').forEach((line, index) => {
         if (/ScopeGrant\(|\bscopeGrant\(/.test(line)) grantReads += 1;
         if (/\b(?:threadHasScope|projectHasScope|workflowItemHasScope)\b/.test(line)) {
           findings.push(`line ${index + 1}: uses an entity's yes/no grant helper`);

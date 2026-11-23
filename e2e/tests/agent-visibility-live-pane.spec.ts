@@ -33,7 +33,7 @@ const MID = 'Live note: the parser lives in internal/provider.';
 const FINAL = 'Live final: mapped every surface.';
 const THINK = 'Thinking live about the map.';
 
-/** REAL sidechain shape (docs/references/fixtures/claude/task_progress_20260822.ndjson):
+/** REAL sidechain shape (internal/provider/wirecaptures/claude/task_progress_20260822.ndjson):
  *  a subagent's text/thinking arrive as a bare `assistant` envelope with
  *  `parent_tool_use_id` and NO stream_event lifecycle. */
 function sidechainBlockLine(messageId: string, block: Record<string, unknown>, parent: string): string {

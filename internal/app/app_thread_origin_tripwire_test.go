@@ -29,7 +29,7 @@ var threadLiteralsThatDoNotSetOriginThemselves = map[string]string{
 }
 
 // packagesThatCreateThreads is every package that constructs a thread row,
-// named from the repository root (these suites chdir there; see TestMain).
+// named from the repository root.
 // A new one shows up here as a build-visible edit, which is the point.
 var packagesThatCreateThreads = []string{
 	"internal/app",

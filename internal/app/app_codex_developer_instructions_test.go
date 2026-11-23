@@ -19,7 +19,9 @@ import (
 // writeCodexInstructionsAppServer is a mock app-server that logs every
 // request to requestLog and answers the requests a session start, a fork
 // and an injection make: thread/start mints "codex-root", thread/resume
-// echoes the thread it names, thread/fork mints an id unique to the
+// echoes the thread it names, thread/memoryMode/set accepts the mode a
+// resume with Codex memories off sets, thread/read reports the thread idle
+// to the probe after a resumed start, thread/fork mints an id unique to the
 // request, and thread/turns/list reports the fork's cut as its tail.
 func writeCodexInstructionsAppServer(t *testing.T, requestLog string) string {
 	t.Helper()
@@ -40,6 +42,11 @@ while IFS= read -r line; do
     elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/resume"'; then
         thread=$(/bin/echo "$line" | /usr/bin/grep -o '"threadId":"[^"]*"' | /usr/bin/cut -d'"' -f4)
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%%s"}}}\n' "$id" "$thread"
+    elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/read"'; then
+        thread=$(/bin/echo "$line" | /usr/bin/grep -o '"threadId":"[^"]*"' | /usr/bin/cut -d'"' -f4)
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%%s","status":{"type":"idle"}}}}\n' "$id" "$thread"
+    elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/memoryMode/set"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
     elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/inject_items"'; then
         printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
     elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/fork"'; then
@@ -47,6 +54,16 @@ while IFS= read -r line; do
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"codex-fork-%%s-%%s","turns":[]}}}\n' "$id" "$$" "$id"
     elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/turns/list"'; then
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"data":[{"id":"%%s"}],"nextCursor":null}}\n' "$id" "$tail"
+    elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/backgroundTerminals/clean"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+    elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/memoryMode/set"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+    elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/unsubscribe"'; then
+        thread=$(/bin/echo "$line" | /usr/bin/grep -o '"threadId":"[^"]*"' | /usr/bin/head -1 | /usr/bin/cut -d'"' -f4)
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"status":"unloaded"}}\n' "$id"
+        if [ -n "$thread" ]; then
+            printf '{"jsonrpc":"2.0","method":"thread/closed","params":{"threadId":"%%s"}}\n' "$thread"
+        fi
     fi
 done
 `, requestLog)
@@ -304,6 +321,9 @@ while IFS= read -r line; do
     elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/resume"'; then
         thread=$(/bin/echo "$line" | /usr/bin/grep -o '"threadId":"[^"]*"' | /usr/bin/cut -d'"' -f4)
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%%s"}}}\n' "$id" "$thread"
+    elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/read"'; then
+        thread=$(/bin/echo "$line" | /usr/bin/grep -o '"threadId":"[^"]*"' | /usr/bin/cut -d'"' -f4)
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%%s","status":{"type":"idle"}}}}\n' "$id" "$thread"
     elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/inject_items"'; then
         (
             /bin/sleep 0.3
@@ -313,6 +333,12 @@ while IFS= read -r line; do
     elif /bin/echo "$line" | /usr/bin/grep -q '"method":"turn/start"'; then
         n=$((n+1))
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"turn":{"id":"turn-%%s","status":"inProgress","items":[]}}}\n' "$id" "$n"
+    elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/unsubscribe"'; then
+        thread=$(/bin/echo "$line" | /usr/bin/grep -o '"threadId":"[^"]*"' | /usr/bin/head -1 | /usr/bin/cut -d'"' -f4)
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"status":"unloaded"}}\n' "$id"
+        if [ -n "$thread" ]; then
+            printf '{"jsonrpc":"2.0","method":"thread/closed","params":{"threadId":"%%s"}}\n' "$thread"
+        fi
     elif /bin/echo "$line" | /usr/bin/grep -q '"method":"'; then
         printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
     fi

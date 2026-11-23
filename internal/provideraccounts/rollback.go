@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 // SavedCredential is one account slot's STRUCTURE captured before a
@@ -152,8 +151,8 @@ func (c *Credentials) removeAccountCredentialOnly(providerName, accountID string
 	if err != nil {
 		return err
 	}
-	if runtime.GOOS == "darwin" && providerName == "claude" {
-		return c.keychain.remove(accountDir, false)
+	if kc, ok := c.keychainFor(providerName); ok {
+		return kc.remove(accountDir, false)
 	}
 	paths, err := c.Paths(providerName)
 	if err != nil {

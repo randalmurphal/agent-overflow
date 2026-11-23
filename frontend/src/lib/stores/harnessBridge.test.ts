@@ -51,6 +51,7 @@ interface Session {
   listeners: () => number;
   replies: () => unknown[][];
   teardownReceipts: () => unknown[];
+  registrations: () => unknown[][];
 }
 
 /**
@@ -73,13 +74,14 @@ async function session(opts: { harness: boolean; remote?: boolean; queryOnRegist
   harnessMode.setHarnessSessionFromBootstrap(opts.harness);
 
   let pageId = store.__frontendPageIDForTest();
-  bindings.setBindingMock('HarnessRegisterPage', (...args: unknown[]) => {
+  const register = bindings.setBindingMock('HarnessRegisterPage', async (...args: unknown[]) => {
     // The backend can query a page the moment it registers, and the
-    // transport writes that event ahead of the registration reply.
-    if (opts.queryOnRegister) {
-      runtime.emitWailsEvent('harness:ui-query', { id: opts.queryOnRegister, spec: { v: 1, kind: 'viewport' }, pageId });
-      opts.queryOnRegister = undefined;
-    }
+    // transport delivers that event ahead of the registration reply, after
+    // the call has returned its pending reply.
+    const query = opts.queryOnRegister;
+    opts.queryOnRegister = undefined;
+    await Promise.resolve();
+    if (query) runtime.emitWailsEvent('harness:ui-query', { id: query, spec: { v: 1, kind: 'viewport' }, pageId });
     return { pageId, marker: String(args[1] ?? ''), origin: String(args[2] ?? '') };
   });
   const reply = bindings.setBindingMock('HarnessUIQueryReply', () => null);
@@ -89,6 +91,7 @@ async function session(opts: { harness: boolean; remote?: boolean; queryOnRegist
     listeners: () => runtime.wailsListenerCount('harness:ui-query'),
     replies: () => reply.mock.calls,
     teardownReceipts: () => chunk.receipts,
+    registrations: () => register.mock.calls,
   };
 }
 
@@ -215,6 +218,9 @@ describe('installHarnessBridge', () => {
     const teardown = s.install();
     await settle(() => s.replies().length > 0);
     expect(s.replies()[0]![1]).toBe('uq-register');
+    // The answer waits on the registration in flight rather than starting
+    // another one.
+    expect(s.registrations()).toHaveLength(1);
     teardown();
     await settle(() => chunk.stops > 0);
   });

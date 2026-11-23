@@ -289,11 +289,12 @@ rest of the tested bytes and the next release finds it. The job's step
 summary carries the JSON report.
 
 In CI, the `upgrade-lineage` job runs the same check with the pull
-request's build (`bin/agent-overflow`) against the newest release's corpus
-when the change touches `internal/store/`, the check's own sources and
-script, or the version bump (`build/config.yml`, `frontend/package.json`),
-and on `workflow_dispatch`; otherwise its summary records the skip. The
-coverage gate runs in `make e2e` regardless.
+request's build (`bin/agent-overflow` from the `Harness build` job) against
+the newest release's corpus when the change touches `internal/store/`, the
+check's own sources and script, or the version bump (`build/config.yml`,
+`frontend/package.json`), as `scripts/ci-suites.mjs` decides, and on
+`workflow_dispatch`. The coverage gate runs in the Playwright suite
+regardless.
 
 ## Running it
 

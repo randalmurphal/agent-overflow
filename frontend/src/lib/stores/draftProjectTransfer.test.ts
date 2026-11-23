@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { moveDraftToComputer } from './draftProjectTransfer';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { resetStagedBackends, stageBackend, REMOTE_BACKEND_UUID, type StagedBackend } from '../../test/helpers/backends';
+import { setBindingMock } from '../../test/mocks/bindings-app';
+import { stageBackend, REMOTE_BACKEND_UUID, type StagedBackend } from '../../test/helpers/backends';
 import { grantBackendScopes, resetToLocalPage, revokeBackendScopes } from '../../test/helpers/scopes';
 import { makeThread } from '../../test/helpers/chat';
-import { noteProject, noteThread, __resetEntityIndexForTest } from '../transport/entityIndex';
+import { noteProject, noteThread } from '../transport/entityIndex';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { takePinnedBackend } from '../transport/backends';
 import type { TransportHello } from '../transport/wsClient';
@@ -24,10 +24,7 @@ let operation = '';
 let staged: Record<string, StagedBackend>;
 
 beforeEach(async () => {
-  resetBindingMocks();
-  resetStagedBackends();
   resetToLocalPage();
-  __resetEntityIndexForTest();
   staged = {
     tower: stageBackend({ id: 'tower', backendId: sourceID, hello: hello(sourceID) }),
     laptop: stageBackend({ hello: hello(REMOTE_BACKEND_UUID) }),
@@ -47,7 +44,6 @@ beforeEach(async () => {
   setBindingMock('GetThread', async () => { takePinnedBackend(); return target; });
 });
 afterEach(() => {
-  resetStagedBackends();
   for (const id of ['tower', 'laptop']) revokeBackendScopes(id);
   resetToLocalPage();
   for (const toast of getToasts()) removeToast(toast.id);

@@ -5,7 +5,7 @@
 // toggle, the capped-file preview fallback, and the review promote
 // affordances.
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { tick } from 'svelte';
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import DiffFileBlock from './DiffFileBlock.svelte';
@@ -13,7 +13,6 @@ import { requestFileSpans } from '../../utils/diffSpanCache.svelte';
 import type { PatchFile, PatchLine } from '../../utils/patchFiles';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { resetSettingsForTest } from '../../stores/settings.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { makeSettings } from '../../../test/helpers/settings';
 import { buildPane, makeItem } from '../../../test/helpers/chat';
@@ -161,7 +160,6 @@ describe('<DiffFileBlock>', () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
     vi.mocked(openReviewCompanion).mockClear();
-    resetSettingsForTest();
     setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews: false }));
     await loadSettings();
   });
@@ -530,9 +528,6 @@ describe('<DiffFileBlock>', () => {
   });
 
   describe('collapse setting + per-card toggle', () => {
-    afterEach(() => {
-      resetSettingsForTest();
-    });
 
     async function enableCollapseSetting(): Promise<void> {
       setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews: true }));

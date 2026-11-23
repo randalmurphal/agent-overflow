@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import {
   TransferRefusedError,
   TransferUnavailableError,
@@ -8,12 +8,12 @@ import {
   uploadAttachmentBytes,
 } from './attachmentTransfer';
 import { HOME_BACKEND } from './backendKey';
-import { __resetHomeEndpointForTest, setHomeEndpoint, storeBackendEndpoint } from './homeEndpoint';
+import { setHomeEndpoint, storeBackendEndpoint } from './homeEndpoint';
 
-import { __resetEntityIndexForTest, noteThread, threadBackend } from './entityIndex';
+import { noteThread, threadBackend } from './entityIndex';
 import { backendById, detachBackend, takePinnedBackend, withBackendTarget } from './backends';
 import { Call } from './runtime';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 
 // These tests drive the module against a fetch of their own rather than
 // through test/mocks/attachmentTransfer.ts, because what is under test IS
@@ -38,8 +38,6 @@ function answerWith(build: (request: Request) => Response | Promise<Response>): 
 }
 
 beforeEach(() => {
-  resetBindingMocks();
-  __resetEntityIndexForTest();
   stageBackend({ id: '', backendId: '', name: 'Home' });
   requests = [];
   realFetch = globalThis.fetch;
@@ -47,7 +45,6 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = realFetch;
-  resetStagedBackends();
 });
 
 describe('uploadAttachmentBytes', () => {
@@ -264,10 +261,6 @@ describe('under a shell origin', () => {
     setHomeEndpoint(ENDPOINT);
   });
 
-  afterEach(() => {
-    __resetHomeEndpointForTest();
-  });
-
   it('puts the bytes on the endpoint and presents no cookie', async () => {
     setBindingMock('MintAttachmentUploadTicket', () => '/attachments/upload?ticket=abc');
     const seen: RequestInit[] = [];
@@ -308,9 +301,7 @@ describe('under a shell origin', () => {
   });
 });
 
-
 describe('a thread on another computer', () => {
-  afterEach(() => __resetHomeEndpointForTest());
 
   it('uploads immediately after remote thread creation without a draft edit or sidebar refresh', async () => {
     stageBackend({ id: 'phone-desk' });

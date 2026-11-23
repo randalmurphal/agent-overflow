@@ -42,7 +42,6 @@
 // next range is pinned before the last is released, so a chunk the two
 // share is read once.
 
-import type { DiffReviewComment, ReviewThread } from '../types/models';
 import { patchTextReadAheadBytes } from './patchMemory.svelte';
 import { findFilterPattern, findMatchChunk, findNeedle, flagFilterLines, LONG_TEXT } from './findMatch';
 import type { FindRun } from './findHighlights';
@@ -54,12 +53,12 @@ import {
   type ReviewFindAt, type ReviewFindFileSpot, type ReviewFindHit, type ReviewFindPlace,
 } from './reviewFindIdentity';
 import { findableBody } from './suggestionMarks';
-import { reviewInsertsByFile, type InsertRow } from './reviewRows';
+import { reviewInsertsByFile, type InsertRow, type ReviewCommentIndex } from './reviewRows';
 
 export interface ReviewFindContent {
   readonly files: readonly ReviewFile[];
-  readonly drafts: readonly DiffReviewComment[];
-  readonly prThreads: readonly ReviewThread[];
+  /** The PR threads and drafts shown. */
+  readonly comments: ReviewCommentIndex;
   /** Every run of text a PR comment's shown body renders, in walk order,
    * with whether it shows now, in the element `rowKey` names
    * (chat/markdown/markdownFindText.ts). */
@@ -289,7 +288,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
   const flags = typeof rowRule === 'string' ? null : new Int32Array(BLOCK_LINES);
   const starts = flags === null ? null : new Int32Array(BLOCK_LINES);
 
-  const inserts = reviewInsertsByFile(content.files, content.drafts, [], content.prThreads, new Set());
+  const inserts = reviewInsertsByFile(content.files, content.comments.drafts, [], content.comments.threads, new Set());
   try {
     for (let fileIndex = 0; fileIndex < content.files.length; fileIndex += 1) {
       if (spent()) await pause();
@@ -307,7 +306,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
       };
       const emitInsert = async (insert: InsertRow, line: number): Promise<boolean> => {
         if (insert.kind === 'comment-thread') {
-          const draft = content.drafts.find((comment) => comment.id === insert.threadKey);
+          const draft = content.comments.draft(insert.threadKey);
           if (!draft) return false;
           const rowKey = findDraftKey(draft.id);
           if (content.editing?.has(rowKey)) return false;
@@ -328,8 +327,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
         }
         // The thread's held replies, at its foot: shown, so revealed, with
         // the thread.
-        for (const draft of content.drafts) {
-          if (draft.status !== 'draft' || draft.replyThreadId !== thread.id) continue;
+        for (const draft of content.comments.repliesOf(thread.id)) {
           const rowKey = findDraftKey(draft.id);
           if (content.editing?.has(rowKey)) continue;
           if (spent()) await pause();

@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { describe, expect, it } from 'vitest';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
 import ThinkingBlock from './ThinkingBlock.svelte';
 import { __setSmoothingClockForTest } from '../../stores/thread.svelte';
 import type { SmoothingClock } from '../../markdown/smoothing/PerItemSmoother';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 class FakeSmoothingClock implements SmoothingClock {
   private current = 0;
@@ -28,13 +28,6 @@ class FakeSmoothingClock implements SmoothingClock {
 }
 
 describe('<ThinkingBlock>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
-
-  afterEach(() => {
-    cleanup();
-  });
 
   it('renders body text and timestamp inline; no standalone region', () => {
     const { container, queryByRole } = render(ThinkingBlock, {

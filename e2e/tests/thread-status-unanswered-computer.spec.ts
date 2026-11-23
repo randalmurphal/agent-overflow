@@ -5,8 +5,7 @@
 // names that computer under errors; the timeline row shows all three, the
 // unresolved reference as text rather than a control that opens it.
 // Specs: docs/specs/agent-thread-tools.md (`thread_status`).
-import { expect } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { test, expect } from './base-test.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { expandRow } from './ao-tool-rows-helpers.js';

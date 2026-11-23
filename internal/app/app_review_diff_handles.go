@@ -110,8 +110,10 @@ type appReviewDiffState struct {
 }
 
 type openReviewDiff struct {
-	diff  reviewDiffReader
-	owner *transport.ConnState
+	diff reviewDiffReader
+	// tie binds the diff's close to the connection that opened it; every
+	// removal of the diff unties it.
+	tie transport.Tie
 	// scope is the one the Open method required. Reading the handle
 	// requires it again, so a session narrowed after the Open stops
 	// reading.
@@ -120,10 +122,10 @@ type openReviewDiff struct {
 
 // openReviewDiff opens the patch between the sides open resolves, returns
 // its first chunk and a files handle at once, and keeps the diff open under
-// a connection-owned id when there is more to read. The handle's record is
+// an id conn owns when there is more to read. The handle's record is
 // pinned in the background (startReviewDiffPin); the open never waits for
 // it. scope is the calling Open method's //ao:scope.
-func (a *App) openReviewDiff(ctx context.Context, action string, scope transport.Scope, opts gitdiff.Options, open func(tempRoot string) (*gitdiff.Sides, error)) (ReviewDiffOpened, error) {
+func (a *App) openReviewDiff(ctx context.Context, conn *transport.ConnState, action string, scope transport.Scope, opts gitdiff.Options, open func(tempRoot string) (*gitdiff.Sides, error)) (ReviewDiffOpened, error) {
 	tempRoot, err := a.reviewDiffSnapshotRoot()
 	if err != nil {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, err)
@@ -135,22 +137,16 @@ func (a *App) openReviewDiff(ctx context.Context, action string, scope transport
 	// The pin holds the snapshot until it exits, whenever the diff closes.
 	releasePin := sides.Hold()
 	diff := sides.OpenDiff(opts)
-	owner := transport.ConnStateFromContext(ctx)
 	pinCtx, cancelPin := context.WithTimeout(context.Background(), a.reviewDiffPinWait())
-	record, evicted := a.reviewDiffFiles.reserve(sides.Workspace(), owner, scope, cancelPin)
-	if record == nil {
+	record, evicted, err := a.reviewDiffFiles.reserve(sides.Workspace(), conn, scope, cancelPin)
+	if err != nil {
 		cancelPin()
-		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, errors.Join(ErrShuttingDown, diff.Close(), releasePin()))
+		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, errors.Join(err, diff.Close(), releasePin()))
 	}
 	a.startReviewDiffPin(pinCtx, record, sides, releasePin)
 	stopReviewDiffRecords(evicted...)
-	if owner != nil && !owner.BindCleanup(reviewDiffFilesCleanupKey(record.id), func() { a.dropReviewDiffRecord(record.id) }) {
-		a.dropReviewDiffRecord(record.id)
-		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, errors.Join(errors.New("connection closing"), diff.Close()))
-	}
-	opened, err := a.holdOpenedReviewDiff(ctx, action, scope, diff)
+	opened, err := a.holdOpenedReviewDiff(ctx, conn, action, scope, diff)
 	if err != nil {
-		owner.UnbindCleanup(reviewDiffFilesCleanupKey(record.id))
 		a.dropReviewDiffRecord(record.id)
 		return ReviewDiffOpened{}, err
 	}
@@ -159,8 +155,9 @@ func (a *App) openReviewDiff(ctx context.Context, action string, scope transport
 }
 
 // holdOpenedReviewDiff reads an open diff's first chunk and, when there is
-// more, keeps the diff under a handle. The diff is closed otherwise.
-func (a *App) holdOpenedReviewDiff(ctx context.Context, action string, scope transport.Scope, diff reviewDiffReader) (ReviewDiffOpened, error) {
+// more, keeps the diff under a handle conn owns. The diff is closed
+// otherwise.
+func (a *App) holdOpenedReviewDiff(ctx context.Context, conn *transport.ConnState, action string, scope transport.Scope, diff reviewDiffReader) (ReviewDiffOpened, error) {
 	chunk, err := diff.Read(ctx, 0, reviewDiffFirstChunkBytes)
 	if err != nil || chunk.EOF {
 		closeErr := diff.Close()
@@ -170,18 +167,19 @@ func (a *App) holdOpenedReviewDiff(ctx context.Context, action string, scope tra
 		logReviewDiffCloseError(closeErr)
 		return ReviewDiffOpened{Chunk: plainReviewDiffChunk(chunk)}, nil
 	}
-	id, err := a.holdReviewDiff(ctx, diff, scope)
+	id, err := a.holdReviewDiff(conn, diff, scope)
 	if err != nil {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, err)
 	}
 	return ReviewDiffOpened{ID: id, Chunk: plainReviewDiffChunk(chunk)}, nil
 }
 
-// holdReviewDiff registers diff under a new handle owned by the calling
-// connection. On failure the diff is closed.
-func (a *App) holdReviewDiff(ctx context.Context, diff reviewDiffReader, scope transport.Scope) (string, error) {
+// holdReviewDiff registers diff under a new handle conn owns, tied to
+// conn's connection as it is published. On failure, a connection that is
+// closing among them, the diff is closed before it returns and the close's
+// error is joined to the refusal.
+func (a *App) holdReviewDiff(conn *transport.ConnState, diff reviewDiffReader, scope transport.Scope) (string, error) {
 	state := &a.reviewDiffs
-	owner := transport.ConnStateFromContext(ctx)
 	id := uuid.NewString()
 	state.mu.Lock()
 	if state.closed {
@@ -192,17 +190,18 @@ func (a *App) holdReviewDiff(ctx context.Context, diff reviewDiffReader, scope t
 		state.mu.Unlock()
 		return "", errors.Join(ErrTooManyReviewDiffs, diff.Close())
 	}
+	// Closing removes the snapshot directory, which connection teardown
+	// should not wait on.
+	tie, err := conn.Bind(reviewDiffCleanupKey(id), func() { go func() { logReviewDiffCloseError(a.dropReviewDiff(id)) }() })
+	if err != nil {
+		state.mu.Unlock()
+		return "", errors.Join(err, diff.Close())
+	}
 	if state.diffs == nil {
 		state.diffs = make(map[string]*openReviewDiff)
 	}
-	state.diffs[id] = &openReviewDiff{diff: diff, owner: owner, scope: scope}
+	state.diffs[id] = &openReviewDiff{diff: diff, tie: tie, scope: scope}
 	state.mu.Unlock()
-	// Closing removes the snapshot directory, which connection teardown
-	// should not wait on.
-	release := func() { go func() { logReviewDiffCloseError(a.dropReviewDiff(id)) }() }
-	if owner != nil && !owner.BindCleanup(reviewDiffCleanupKey(id), release) {
-		return "", errors.Join(errors.New("connection closing"), a.dropReviewDiff(id))
-	}
 	return id, nil
 }
 
@@ -264,7 +263,6 @@ func (a *App) ReleaseReviewDiff(ctx context.Context, id string) error {
 	if _, err := a.ownedReviewDiff(ctx, id); err != nil {
 		return nil
 	}
-	transport.ConnStateFromContext(ctx).UnbindCleanup(reviewDiffCleanupKey(id))
 	if err := a.dropReviewDiff(id); err != nil {
 		return fmt.Errorf("release review diff: %w", err)
 	}
@@ -276,13 +274,13 @@ func (a *App) ownedReviewDiff(ctx context.Context, id string) (*openReviewDiff, 
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	open, ok := state.diffs[id]
-	if !ok || open.owner != transport.ConnStateFromContext(ctx) {
+	if !ok || !open.tie.HeldBy(transport.ConnStateFromContext(ctx)) {
 		return nil, ErrReviewDiffNotFound
 	}
 	return open, nil
 }
 
-// dropReviewDiff forgets and closes one diff.
+// dropReviewDiff forgets and closes one diff and unties its connection.
 func (a *App) dropReviewDiff(id string) error {
 	state := &a.reviewDiffs
 	state.mu.Lock()
@@ -292,6 +290,7 @@ func (a *App) dropReviewDiff(id string) error {
 		return nil
 	}
 	delete(state.diffs, id)
+	open.tie.Untie()
 	state.closing.Add(1)
 	state.mu.Unlock()
 	defer state.closing.Done()
@@ -311,6 +310,7 @@ func (a *App) closeReviewDiffs() error {
 	state.mu.Unlock()
 	var errs []error
 	for _, open := range held {
+		open.tie.Untie()
 		errs = append(errs, open.diff.Close())
 	}
 	state.closing.Wait()

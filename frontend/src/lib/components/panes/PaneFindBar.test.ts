@@ -7,7 +7,6 @@ import {
   getPaneFind,
   openPaneFind,
   registerPaneFindProvider,
-  resetPaneFindForTest,
 } from '../../stores/paneFind.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { clearCommandRegistry, registerCommand } from '../../stores/commandRegistry.svelte';
@@ -25,7 +24,6 @@ let fallback: HTMLElement;
 let fallbackTarget: () => HTMLElement | null;
 
 beforeEach(() => {
-  resetPaneFindForTest();
   setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 }]);
   provider = fakeFindProvider();
   registerPaneFindProvider('a', provider);
@@ -37,7 +35,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  resetPaneFindForTest();
   resetPaneLayoutForTest();
   document.body.replaceChildren();
 });

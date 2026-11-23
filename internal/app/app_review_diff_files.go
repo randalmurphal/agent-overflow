@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/errorsx"
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/reviewimage"
@@ -118,13 +120,6 @@ const reviewDiffPinTimeout = 5 * time.Second
 // names at most two paths.
 const maxReviewDiffFiles = gitdiff.MaxEntryPaths / 2
 
-var (
-	// errNotImage marks bytes that are not an image a browser displays.
-	errNotImage = errors.New("not an image a browser displays")
-	// errLFSPointer marks bytes that are a Git LFS pointer.
-	errLFSPointer = errors.New("a Git LFS pointer")
-)
-
 // GetReviewDiffFileSizes answers the byte size and existence of each side of
 // the named files of an opened git-backed review diff, at most 100 per
 // call, from what the open pinned under handle. A handle that is gone
@@ -187,7 +182,7 @@ func (a *App) GetReviewDiffImage(ctx context.Context, ws WorkspaceRef, handle st
 	old, current := resolved[0].old, resolved[0].new
 	answer := ReviewDiffImage{MaxBytes: reviewDiffImageMaxBytes}
 	if old.Exists {
-		answer.Old, err = a.reviewDiffBlobSide(ctx, old, func(buf []byte) error {
+		answer.Old, err = a.reviewDiffBlobSide(ctx, sides.Workspace(), old, func(buf []byte) error {
 			return sides.ReadBlob(ctx, old.OID, buf)
 		})
 		if err != nil {
@@ -196,16 +191,20 @@ func (a *App) GetReviewDiffImage(ctx context.Context, ws WorkspaceRef, handle st
 	}
 	if current.Exists {
 		if record.blobs != nil {
-			filtered, err := sides.HasFilter(ctx, file.Path)
+			// The snapshot recorded the bytes on disk, unfiltered. Git
+			// LFS leaves on disk the image or its pointer, each of which
+			// the side's classification answers; another filter's bytes
+			// on disk are its own.
+			filter, err := sides.Filter(ctx, file.Path)
 			if err != nil {
 				return ReviewDiffImage{}, fmt.Errorf("%s: %w", action, err)
 			}
-			if filtered {
+			if filter != "" && filter != "lfs" {
 				answer.New = ReviewDiffImageSide{Exists: true, Size: current.Size, Unavailable: unavailableFilter}
 				return answer, nil
 			}
 		}
-		answer.New, err = a.reviewDiffBlobSide(ctx, current, func(buf []byte) error {
+		answer.New, err = a.reviewDiffBlobSide(ctx, sides.Workspace(), current, func(buf []byte) error {
 			if record.blobs != nil {
 				return sides.ReadWorktreeFile(file.Path, current.OID, buf)
 			}
@@ -286,7 +285,7 @@ func (a *App) GetEditDiffImage(ctx context.Context, threadID string, req EditDif
 			if err != nil {
 				return "", err
 			}
-			return displayImageMIME(buf)
+			return gitops.DisplayImageMIME(buf)
 		})
 	if err == nil {
 		size = held.Size
@@ -429,48 +428,84 @@ func resolveReviewDiffFiles(ctx context.Context, record *reviewDiffRecord, sides
 	return resolved, nil
 }
 
-// reviewDiffBlobSide answers one side of a git-backed file for display:
-// over the cap nothing is read; else its bytes, keyed by the blob the
-// record names, through the image store.
-func (a *App) reviewDiffBlobSide(ctx context.Context, entry gitdiff.Entry, read func([]byte) error) (ReviewDiffImageSide, error) {
+// reviewDiffBlobSide answers one side of a git-backed file of workspace
+// for display: over the cap nothing is read; else its bytes, keyed by the
+// blob the record names, through the image store. A side whose bytes are
+// a Git LFS pointer, a tree's blob or a working-tree file alike, is never
+// held under that key: it answers as its local object (reviewDiffLFSSide).
+func (a *App) reviewDiffBlobSide(ctx context.Context, workspace string, entry gitdiff.Entry, read func([]byte) error) (ReviewDiffImageSide, error) {
 	if entry.Size > reviewDiffImageMaxBytes {
 		return ReviewDiffImageSide{Exists: true, Size: entry.Size, OverCap: true}, nil
 	}
 	if entry.Size == 0 {
 		return ReviewDiffImageSide{Exists: true, NotImage: true}, nil
 	}
+	var pointer []byte
 	held, err := a.reviewDiffImages().Load(ctx, "blob\x00"+entry.OID, entry.Size, func(buf []byte) (string, error) {
 		if err := read(buf); err != nil {
 			return "", err
 		}
-		return displayImageMIME(buf)
+		mime, err := gitops.DisplayImageMIME(buf)
+		if errors.Is(err, gitops.ErrLFSPointer) {
+			pointer = bytes.Clone(buf)
+		}
+		return mime, err
 	})
-	return a.mintReviewDiffSide(held, entry.Size, err)
+	if !errors.Is(err, gitops.ErrLFSPointer) {
+		return a.mintReviewDiffSide(held, entry.Size, err)
+	}
+	if pointer == nil {
+		// Another read of the same blob filled the shared load; a pointer
+		// is under gitdiff.MaxLFSPointerBytes, so it is read again here.
+		pointer = make([]byte, entry.Size)
+		if err := read(pointer); err != nil {
+			return ReviewDiffImageSide{}, err
+		}
+	}
+	return a.reviewDiffLFSSide(ctx, workspace, entry.Size, pointer)
 }
 
-// displayImageMIME answers the MIME type of bytes a browser displays as an
-// image, errLFSPointer for a Git LFS pointer, errNotImage otherwise.
-func displayImageMIME(buf []byte) (string, error) {
-	if gitdiff.IsLFSPointer(buf) {
-		return "", errLFSPointer
-	}
-	mime, err := attachment.DetectDisplayImageMIME(buf)
+// reviewDiffLFSSide answers a side of size bytes, text, that is a Git LFS
+// pointer, as its object in workspace's local LFS store is on this read
+// (gitops.Core.LFSPointerImage: one lstat, presence never cached): the
+// verified object's bytes under the key prose images hold them by
+// ("lfs\x00<sha256>", GetGitBlobImage), so the two share one copy, with
+// the object's size. An object not present, not an image, over the cap or
+// failing verification is unavailableLFS, and nothing is held.
+func (a *App) reviewDiffLFSSide(ctx context.Context, workspace string, size int64, text []byte) (ReviewDiffImageSide, error) {
+	notShown := ReviewDiffImageSide{Exists: true, Size: size, Unavailable: unavailableLFS}
+	core := a.gitCore()
+	image, err := core.LFSPointerImage(ctx, workspace, text)
 	if err != nil {
-		return "", errNotImage
+		return ReviewDiffImageSide{}, err
 	}
-	if _, _, err := attachment.ValidateDisplayImage(buf, mime); err != nil {
-		return "", errNotImage
+	if !image.Displayable() {
+		return notShown, nil
 	}
-	return mime, nil
+	held, err := a.reviewDiffImages().Load(ctx, "lfs\x00"+image.LFSObject(), image.Size, func(buf []byte) (string, error) {
+		if hook := a.gitBlobHook; hook != nil {
+			hook(ctx, "read")
+		}
+		if err := core.ReadImage(ctx, workspace, image, buf); err != nil {
+			return "", err
+		}
+		return gitops.DisplayImageMIME(buf)
+	})
+	switch {
+	case errors.Is(err, gitops.ErrLFSObjectMismatch), errors.Is(err, gitops.ErrNoLocalBlob),
+		errors.Is(err, gitops.ErrNotDisplayImage), errors.Is(err, gitops.ErrLFSPointer):
+		return notShown, nil
+	}
+	return a.mintReviewDiffSide(held, image.Size, err)
 }
 
 // mintReviewDiffSide answers a load's outcome: a URL for held bytes, the
 // size and a reason for bytes that are not shown, or the load's error.
 func (a *App) mintReviewDiffSide(held reviewimage.Entry, size int64, err error) (ReviewDiffImageSide, error) {
 	switch {
-	case errors.Is(err, errNotImage):
+	case errors.Is(err, gitops.ErrNotDisplayImage):
 		return ReviewDiffImageSide{Exists: true, Size: size, NotImage: true}, nil
-	case errors.Is(err, errLFSPointer):
+	case errors.Is(err, gitops.ErrLFSPointer):
 		return ReviewDiffImageSide{Exists: true, Size: size, Unavailable: unavailableLFS}, nil
 	case err != nil:
 		return ReviewDiffImageSide{}, err

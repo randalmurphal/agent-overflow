@@ -16,15 +16,9 @@
 // that nobody is looking at while the tests run. A source grep is the cheapest
 // thing that fails instead — the same reason `themeBootStamp.test.ts` exists.
 
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import app from '../../App.svelte?raw';
 import { describe, expect, it } from 'vitest';
 
-const app = readFileSync(
-  resolve(dirname(fileURLToPath(import.meta.url)), '../../App.svelte'),
-  'utf8',
-);
 
 interface EffectOpener {
   readonly kind: 'pre' | 'user';

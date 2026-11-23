@@ -1,10 +1,7 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import { __resetParseJsonObjectCacheForTest, parseJsonObject } from './parseJsonObject';
+import { describe, expect, it } from 'vitest';
+import { parseJsonObject } from './parseJsonObject';
 
 describe('parseJsonObject', () => {
-  beforeEach(() => {
-    __resetParseJsonObjectCacheForTest();
-  });
 
   it('returns null for undefined / null / empty input', () => {
     expect(parseJsonObject(undefined)).toBeNull();

@@ -17,7 +17,7 @@ vi.mock('../chat/ChatView.svelte', async () => ({
 
 import PaneHost from './PaneHost.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { registerPaneForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import {
   beginThreadRowDrag,
@@ -55,7 +55,6 @@ afterEach(async () => {
   endThreadRowDrag();
   endToolPaneDrag();
   resetPaneLayoutForTest();
-  resetPanesForTest();
 });
 
 function strip(): HTMLElement {

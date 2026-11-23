@@ -495,7 +495,7 @@ func TestTheReaperKeepsThePageAPaneShows(t *testing.T) {
 	if _, err := manager.Visibility(t.Context(), access, boolPtr(true), PageID(shown.ID)); err != nil {
 		t.Fatal(err)
 	}
-	mount, err := manager.AttachPane(access.Caller())
+	mount, err := manager.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +532,7 @@ func TestTheReaperKeepsAPageSelectedDuringItsSuspension(t *testing.T) {
 	if _, err := manager.Visibility(t.Context(), access, boolPtr(true), PageID(shown.ID)); err != nil {
 		t.Fatal(err)
 	}
-	mount, err := manager.AttachPane(access.Caller())
+	mount, err := manager.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatal(err)
 	}

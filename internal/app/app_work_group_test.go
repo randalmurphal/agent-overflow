@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // Work may start as the last member ends while shutdown, the harness or a
@@ -128,16 +129,11 @@ func TestWorkGroupCloseJoinsAndRefuses(t *testing.T) {
 // the group.
 func TestWorkGroupMembersStartOnlyThroughGo(t *testing.T) {
 	t.Parallel()
-	// Application tests run from the repository root.
-	files, err := filepath.Glob(filepath.Join("internal", "app", "*.go"))
-	if err != nil || len(files) == 0 {
-		t.Fatalf("no package sources found: %v", err)
-	}
-	for _, file := range files {
+	for _, file := range reporoot.Files(t, "internal/app", "*.go") {
 		if strings.HasSuffix(file, "_test.go") || filepath.Base(file) == "app_work_group.go" {
 			continue
 		}
-		src, err := os.ReadFile(file)
+		src, err := os.ReadFile(reporoot.Path(t, file))
 		if err != nil {
 			t.Fatal(err)
 		}

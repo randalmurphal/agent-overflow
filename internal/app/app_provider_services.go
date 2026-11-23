@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccountapp"
@@ -41,6 +42,7 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 					Unauthenticated: request.Unauthenticated,
 					EmitUnauth:      request.EmitUnauth,
 					AfterAdopt:      request.AfterAdopt,
+					ResetCredits:    request.ResetCredits,
 				})
 			},
 			ClaudeProbe: func(binary, accountID string) (provider.ProbeCacheKey, claude.ProbeConfig) {
@@ -48,6 +50,9 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 			},
 			CodexProbe: func(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig) {
 				return a.ensureProviderAccountManager().CodexAccountProbe(binary, accountID)
+			},
+			AgyProbe: func(binary, accountID string) (provider.ProbeCacheKey, agy.ProbeConfig) {
+				return a.ensureProviderAccountManager().AgyAccountProbe(binary, accountID)
 			},
 			EmitStatus:     a.emitProviderStatus,
 			EmitRateLimits: a.emitRateLimitsSnapshot,
@@ -57,7 +62,33 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 			CheckCodexTransferAccount: func(ctx context.Context, binary string) error {
 				return a.ensureProviderAccountManager().CheckCodexTransferAccount(ctx, binary)
 			},
+			CheckAgyTransferAccount: func(ctx context.Context, binary string) error {
+				return a.ensureProviderAccountManager().CheckAgyTransferAccount(ctx, binary)
+			},
 			RememberClaudeCatalog: a.rememberClaudeCatalog,
+			ProbeAgyModels: func(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
+				if conn, release := a.borrowAgyConnForCurrentAccount(binary); conn != nil {
+					defer release()
+					return agy.ProbeCatalogOnConn(ctx, conn, providerProbeWorkDir())
+				}
+				env := a.ensureProviderAccountManager().ProbeEnv(string(provider.Agy), nil)
+				if a.hasManagedAgyCredentialFile() {
+					merged := make(map[string]string, len(env)+2)
+					for k, v := range env {
+						merged[k] = v
+					}
+					merged["AGY_ACP_FORCE_FILE_STORAGE"] = "1"
+					merged["SSH_CONNECTION"] = "127.0.0.1 0 127.0.0.1 0"
+					env = merged
+				}
+				return agy.ProbeCatalog(
+					ctx,
+					binary,
+					providerProbeWorkDir(),
+					env,
+					a.groupReaper("agy model catalog"),
+				)
+			},
 		}, caches)
 	})
 	return a.providerDiscovery

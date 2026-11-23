@@ -3,8 +3,6 @@ import { waitFor } from '@testing-library/svelte';
 import {
   ensureMarkdownCopyDelegate,
   ensurePathLinkClickDelegate,
-  __resetMarkdownCopyDelegateForTest,
-  __resetPathLinkDelegateForTest,
 } from './markdownEnhance';
 import { buildPathLinkHref } from './pathLinkExtension';
 import { setBindingMock, getBindingMock } from '../../test/mocks/bindings-app';
@@ -13,13 +11,11 @@ import { setPageGrantsFromBootstrap } from '../transport/scopes';
 describe('ensurePathLinkClickDelegate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    __resetPathLinkDelegateForTest();
     setPageGrantsFromBootstrap(false);
   });
 
   afterEach(() => {
     document.body.innerHTML = '';
-    __resetPathLinkDelegateForTest();
     setPageGrantsFromBootstrap(false);
   });
 
@@ -128,13 +124,9 @@ describe('ensurePathLinkClickDelegate', () => {
 });
 
 describe('markdown-aware copy delegate', () => {
-  beforeEach(() => {
-    __resetMarkdownCopyDelegateForTest();
-  });
 
   afterEach(() => {
     document.body.innerHTML = '';
-    __resetMarkdownCopyDelegateForTest();
   });
 
   function dispatchCopy(target: Node): ClipboardEvent {

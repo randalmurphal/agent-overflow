@@ -31,11 +31,12 @@ states its own coverage; do not maintain a duplicate spec catalog here.
 - `src/harness-launch-step.ts` bounds each step of starting a suite-owned
   process. A new launch path runs every step through `launchStep`; a bound
   that grows keeps `launchBudgetMs()` under the worker fixture timeout.
-- `tests/fixtures.ts` owns every spec's `test`: `gateTest` carries the gate's
-  run-time rules (a page sleep throws; event watches end with their test), and
-  `test` adds the worker backend, per-test reset, and the page error and CSP
-  checks. Before reset, wait until the previous context's page registration is
-  gone; a leaked page is a test failure.
+- `tests/base-test.ts` owns the `test` every spec builds on: the gate's
+  run-time rules (a page sleep throws; event watches end with their test) and
+  the stalled-page capture. A spec that launches its own harnesses imports it.
+  `tests/fixtures.ts` extends it with the worker backend, per-test reset, and
+  the page error and CSP checks. Before reset, wait until the previous
+  context's page registration is gone; a leaked page is a test failure.
 - `frontend-client-helpers.ts` owns production frontend-controller fixtures.
   Execution hosts remain separate harness processes, and cold-start cases reuse
   only the intended disposable device profile.
@@ -106,6 +107,11 @@ the namespace's, and leaves a failed test's at the `dataRoot` the launch
 record names. A backend a spec
 launches itself keeps its console in
 `<root>/agent-overflow/logs/harness-console.log` and is not copied.
+
+A failed test also gets a `stalled page` attachment for each open page that
+did not answer a trivial evaluate: its paused JavaScript stack with source,
+or why none could be read. What it does not cover is listed in
+`src/page-stall.ts`.
 
 `make e2e-mobile-browser` runs browser-lock checks in mobile Chromium and
 WebKit without the Android emulator. See
@@ -195,7 +201,7 @@ binaries.
   (`scripts/check-waits.ts`, rules in `src/wait-scan.ts`) fail the run on
   `waitForTimeout`, a timer-resolved promise, a wait whose timeout is turned
   into a value, or a `test` taken from `@playwright/test` instead of
-  `tests/fixtures.ts`; a page's `waitForTimeout` also throws at run time. A
+  `tests/base-test.ts`; a page's `waitForTimeout` also throws at run time. A
   product timer the spec crosses gets a `harnessTimers` knob, or the page
   clock (`page.clock`) when it lives in the page alone; a settle polls its
   condition; an absence ends at a barrier through `HarnessApp.watchEvents`, an

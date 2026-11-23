@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
@@ -34,6 +35,10 @@ type AccountProbeRequest struct {
 	// AfterAdopt runs once the runner has accepted and cached the identity,
 	// before it emits `provider:account` for it.
 	AfterAdopt func(provideraccounts.Account)
+	// ResetCredits, for a Codex probe, returns the resets the probe's
+	// rate-limit answer named and whether that answer arrived; the runner
+	// records them on the account it adopts (provideraccountapp.ProbeRequest).
+	ResetCredits func() (*codex.ResetCredits, bool)
 }
 
 // Deps names the root capabilities used by provider discovery. Provider-
@@ -53,28 +58,36 @@ type Deps struct {
 	RunAccountProbe            func(AccountProbeRequest) (provider.AccountInfo, error)
 	ClaudeProbe                func(binary, accountID string) (provider.ProbeCacheKey, claude.ProbeConfig)
 	CodexProbe                 func(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig)
+	AgyProbe                   func(binary, accountID string) (provider.ProbeCacheKey, agy.ProbeConfig)
 	EmitStatus                 func(providerstatus.Event)
 	EmitRateLimits             func(provider.RateLimitsSnapshot)
 	DetectProvider             func(providerName, binary string) provider.ProviderStatus
 	ProbeClaude                func(context.Context, claude.ProbeConfig) (provider.AccountInfo, error)
 	ProbeCodex                 func(context.Context, codex.ProbeConfig) (provider.AccountInfo, error)
+	ProbeAgy                   func(context.Context, agy.ProbeConfig) (provider.AccountInfo, error)
 	CheckClaudeTransferAccount func(context.Context, string) error
 	CheckCodexTransferAccount  func(context.Context, string) error
+	CheckAgyTransferAccount    func(context.Context, string) error
 	// RememberClaudeCatalog persists the model answer of the probe identity
 	// key (its adopted account included) so the next cold start serves the
 	// enriched picker before its own probe lands. Optional: a focused test
 	// may leave it nil.
 	RememberClaudeCatalog func(key provider.ProbeCacheKey, snapshot claudemodels.Snapshot)
+	// ProbeAgyModels performs a live zero-token model catalog probe against
+	// the given Antigravity binary (borrowing a pooled *acp.Conn when live).
+	ProbeAgyModels func(ctx context.Context, binary string) ([]provider.ModelInfo, error)
 }
 
 // Caches is the bounded process-wide discovery cache set. Probe answers are
-// keyed by every environment dimension and expire; Codex model rows are TTL'd
-// by binary. Sharing them avoids duplicate subprocesses when tests or startup
-// glue briefly construct more than one App in one process.
+// keyed by every environment dimension and expire; Codex and Agy model rows are
+// TTL'd by binary. Sharing them avoids duplicate subprocesses when tests or
+// startup glue briefly construct more than one App in one process.
 type Caches struct {
 	Claude      *provider.ProbeCache
 	Codex       *provider.ProbeCache
+	Agy         *provider.ProbeCache
 	CodexModels *codexmodels.Cache
+	AgyModels   *agy.CatalogCache
 }
 
 var (
@@ -106,7 +119,9 @@ func NewCaches() *Caches {
 	return &Caches{
 		Claude:      provider.NewProbeCache(claude.DefaultProbeTTL),
 		Codex:       provider.NewProbeCache(codex.DefaultProbeTTL),
+		Agy:         provider.NewProbeCache(codex.DefaultProbeTTL),
 		CodexModels: codexmodels.New(),
+		AgyModels:   agy.NewCatalogCache(),
 	}
 }
 
@@ -129,6 +144,9 @@ func New(deps Deps, caches *Caches) *Service {
 	}
 	if deps.ProbeCodex == nil {
 		deps.ProbeCodex = codex.ProbeAccount
+	}
+	if deps.ProbeAgy == nil {
+		deps.ProbeAgy = agy.ProbeAccount
 	}
 	return &Service{deps: deps, caches: caches}
 }

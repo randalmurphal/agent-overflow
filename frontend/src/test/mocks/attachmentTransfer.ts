@@ -111,6 +111,8 @@ export interface LocalImageReply {
   originalHeight?: number;
   originalBytes?: number;
   derived?: boolean;
+  /** Answered only when set, as a computer that predates it omits it. */
+  fluid?: boolean;
 }
 
 export type LocalImageHandler = (
@@ -130,27 +132,44 @@ export function mockLocalImage(handler: LocalImageHandler = () => ({})): MockedF
   installTransferFetch();
   return setBindingMock(
     'GetLocalImage',
-    async (path: string, workspacePath: string, maxWidth: number) => {
-      const reply = await handler(path, workspacePath, maxWidth);
-      const blob = reply.blob ?? new Blob([TEST_PNG_BYTES], { type: 'image/png' });
-      const ticket = issueTicket(async () => new Response(blob, {
-        status: 200,
-        headers: { 'Content-Type': blob.type || 'application/octet-stream' },
-      }));
-      const width = reply.width ?? 0;
-      const height = reply.height ?? 0;
-      return {
-        url: `/attachments/image/content-${ticket}?ticket=${ticket}`,
-        mimeType: reply.mimeType ?? (blob.type || 'image/png'),
-        width,
-        height,
-        originalWidth: reply.originalWidth ?? width,
-        originalHeight: reply.originalHeight ?? height,
-        originalBytes: reply.originalBytes ?? blob.size,
-        derived: reply.derived ?? false,
-      };
-    },
+    async (path: string, workspacePath: string, maxWidth: number) => imageAnswer(await handler(path, workspacePath, maxWidth)),
   );
+}
+
+export type GitBlobImageHandler = (
+  workspace: unknown,
+  oid: string,
+  maxWidth: number,
+) => LocalImageReply | Promise<LocalImageReply>;
+
+/** Stubs `GetGitBlobImage` and answers the GET that spends its ticket, as `mockLocalImage`. */
+export function mockGitBlobImage(handler: GitBlobImageHandler = () => ({})): MockedFn {
+  installTransferFetch();
+  return setBindingMock(
+    'GetGitBlobImage',
+    async (workspace: unknown, oid: string, maxWidth: number) => imageAnswer(await handler(workspace, oid, maxWidth)),
+  );
+}
+
+function imageAnswer(reply: LocalImageReply) {
+  const blob = reply.blob ?? new Blob([TEST_PNG_BYTES], { type: 'image/png' });
+  const ticket = issueTicket(async () => new Response(blob, {
+    status: 200,
+    headers: { 'Content-Type': blob.type || 'application/octet-stream' },
+  }));
+  const width = reply.width ?? 0;
+  const height = reply.height ?? 0;
+  return {
+    url: `/attachments/image/content-${ticket}?ticket=${ticket}`,
+    mimeType: reply.mimeType ?? (blob.type || 'image/png'),
+    width,
+    height,
+    originalWidth: reply.originalWidth ?? width,
+    originalHeight: reply.originalHeight ?? height,
+    originalBytes: reply.originalBytes ?? blob.size,
+    derived: reply.derived ?? false,
+    ...(reply.fluid === undefined ? {} : { fluid: reply.fluid }),
+  };
 }
 
 /**

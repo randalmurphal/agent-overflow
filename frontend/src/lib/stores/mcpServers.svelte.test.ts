@@ -1,4 +1,4 @@
-import { stageBackend, resetStagedBackends, REMOTE_BACKEND_UUID } from '../../test/helpers/backends';
+import { stageBackend, REMOTE_BACKEND_UUID } from '../../test/helpers/backends';
 import { setCarriedSessionScopes } from '../transport/scopes';
 import { takePinnedBackend } from '../transport/backends';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -63,7 +63,6 @@ function attach(t: MCPTarget): EntityAttachment<ThreadMCPServer[]> {
 
 afterEach(() => {
   for (const handle of held.splice(0)) handle.release();
-  resetStagedBackends();
 });
 
 describe('needsEphemeralRefresh', () => {
@@ -104,6 +103,11 @@ describe('mcpTargetFor — entity keys', () => {
   it('keys Codex app-globally — its enabled flag is global', () => {
     expect(mcpTargetFor('codex', 't1', '/a', '')?.key).toBe(MCP_CODEX_KEY);
     expect(mcpTargetFor('codex', 't2', '/b', '')?.key).toBe(MCP_CODEX_KEY);
+  });
+
+  it('keys Antigravity app-globally — its mcp_config.json is user-global', () => {
+    expect(mcpTargetFor('agy', 't1', '/a', '')?.key).toBe(' agy');
+    expect(mcpTargetFor('agy', 't2', '/b', '')?.key).toBe(' agy');
   });
 
   it('has no Claude target without a workspace to walk from', () => {
@@ -589,7 +593,6 @@ describe('mcpServers store — transport gap', () => {
     expect(list).toHaveBeenCalledTimes(1);
   });
 });
-
 
 it('keeps identically named MCP servers and their connection lifecycles on their own computers', async () => {
   const remote = stageBackend();

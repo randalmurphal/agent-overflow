@@ -24,6 +24,7 @@ const (
 	Codex56ContextWindow        = 372000
 	CodexExtendedContextWindow  = 1000000
 	CodexSparkContextWindow     = 128000
+	AgyStandardContextWindow    = 1048576
 )
 
 // ContextWindowOption describes one selectable context tier for a model.
@@ -183,7 +184,7 @@ var ClaudeModels = []ModelInfo{
 		// No reasoning efforts: the CLI's own model list on 2.1.219 reports
 		// Haiku with neither `supportsEffort` nor `supportedEffortLevels`,
 		// under both subscription and API-key auth (captured in
-		// docs/references/fixtures/claude/initialize_models_20260802.json).
+		// internal/provider/wirecaptures/claude/initialize_models_20260802.json).
 		// The catalog used to declare low/medium/high here — the one real
 		// catalog-vs-wire discrepancy the 2.7 spike turned up. An empty list
 		// is the honest encoding: internal/claudemodels would otherwise report
@@ -302,6 +303,47 @@ func ModelsForProvider(providerName string) []ModelInfo {
 	return CloneModels(models)
 }
 
+// AgyModels provides offline fallback entries until the live ACP catalog
+// probe answers from `agy acp`.
+var AgyModels = []ModelInfo{
+	{
+		Slug:             "gemini-4-neon",
+		Name:             "Gemini 4 Neon",
+		Provider:         string(Agy),
+		IsDefault:        true,
+		ContextWindows:   agyDefaultContextOptions(),
+		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortXHigh),
+	},
+	{
+		Slug:             "gemini-4-carbon",
+		Name:             "Gemini 4 Carbon",
+		Provider:         string(Agy),
+		ContextWindows:   agyDefaultContextOptions(),
+		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh),
+	},
+	{
+		Slug:             "gemini-4-argon",
+		Name:             "Gemini 4 Argon",
+		Provider:         string(Agy),
+		ContextWindows:   agyDefaultContextOptions(),
+		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh),
+	},
+	{
+		Slug:             "gemini-4-hydrogen",
+		Name:             "Gemini 4 Hydrogen",
+		Provider:         string(Agy),
+		ContextWindows:   agyDefaultContextOptions(),
+		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortXHigh),
+	},
+	{
+		Slug:             "gemini-3.8-flash",
+		Name:             "Gemini 3.8 Flash",
+		Provider:         string(Agy),
+		ContextWindows:   agyDefaultContextOptions(),
+		ReasoningEfforts: claudeEffortOptions("medium", EffortLow, EffortMedium, EffortHigh),
+	},
+}
+
 func staticModelsForProvider(providerName string) []ModelInfo {
 	switch providerName {
 	case string(Claude):
@@ -310,6 +352,8 @@ func staticModelsForProvider(providerName string) []ModelInfo {
 		return ClaudeTUIModels
 	case string(Codex):
 		return CodexModels
+	case string(Agy):
+		return AgyModels
 	default:
 		return nil
 	}
@@ -491,6 +535,8 @@ func providerDefaultReasoningEffort(providerName string) ReasoningEffort {
 		return EffortHigh
 	case string(Claude), string(ClaudeTUI):
 		return EffortHigh
+	case string(Agy):
+		return EffortHigh
 	default:
 		return DefaultReasoningEffort
 	}
@@ -507,9 +553,9 @@ func FindModel(providerName, model string) (ModelInfo, bool) {
 }
 
 func CoerceReasoningEffortForModel(providerName, model string, effort ReasoningEffort) ReasoningEffort {
-	// Stored Codex choices have already been accepted. Availability is checked
-	// by the provider on execution, not by this static projection.
-	if providerName == string(Codex) {
+	// Stored choices for live-catalog providers have already been accepted.
+	// Availability is checked by the provider on execution, not by this static projection.
+	if CapabilitiesForProvider(providerName).ModelCatalog.IsLive() {
 		return NormalizeReasoningEffort(string(effort))
 	}
 	if ReasoningEffortSupportedForModel(providerName, model, string(effort)) {
@@ -558,6 +604,9 @@ var (
 		EffortNone, EffortMinimal, EffortLow, EffortMedium, EffortHigh,
 		EffortXHigh, EffortMax, EffortUltra,
 	}
+	agyReasoningEfforts = []ReasoningEffort{
+		EffortLow, EffortMedium, EffortHigh, EffortXHigh,
+	}
 )
 
 // ReasoningEffortsForProvider returns the canonical ordered effort set for a
@@ -572,6 +621,8 @@ func ReasoningEffortsForProvider(providerName string) []ReasoningEffort {
 		return codexReasoningEfforts
 	case string(Claude), string(ClaudeTUI):
 		return claudeReasoningEfforts
+	case string(Agy):
+		return agyReasoningEfforts
 	default:
 		return nil
 	}
@@ -610,8 +661,8 @@ func ContextTierForModelWindow(providerName, model string, tokens int) string {
 }
 
 func extendedContextWindowForProvider(providerName string) int {
-	if providerName == string(Codex) {
-		return CodexExtendedContextWindow
+	if tokens := CapabilitiesForProvider(providerName).ExtendedContextWindow; tokens > 0 {
+		return tokens
 	}
 	return ClaudeExtendedContextWindow
 }
@@ -650,8 +701,8 @@ func DefaultContextWindowForModel(providerName, model string, fallback int) int 
 	if fallback > 0 {
 		return fallback
 	}
-	if providerName == string(Codex) {
-		return CodexStandardContextWindow
+	if tokens := CapabilitiesForProvider(providerName).StandardContextWindow; tokens > 0 {
+		return tokens
 	}
 	return ClaudeStandardContextWindow
 }
@@ -824,6 +875,15 @@ func codexSparkContextOptions() []ContextWindowOption {
 		Tokens:  CodexSparkContextWindow,
 		Label:   "128k",
 		Tier:    ContextTierStandard,
+		Default: true,
+	}}
+}
+
+func agyDefaultContextOptions() []ContextWindowOption {
+	return []ContextWindowOption{{
+		Tokens:  AgyStandardContextWindow,
+		Label:   "1m",
+		Tier:    ContextTierExtended,
 		Default: true,
 	}}
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { TransferUnavailableError } from '../transport/attachmentTransfer';
 import {
   acquireForgeAttachment,
@@ -7,14 +7,14 @@ import {
   fetchForgeAttachmentBytes,
   forgeAttachmentCacheKey,
 } from './forgeAttachmentCache';
-import { __resetImageTiersForTest, rememberImageTier } from './imageTiers';
-import { __resetMediaBlobCacheForTest } from './mediaBlobCache';
+import { rememberImageTier } from './imageTiers';
 import type { PRRef } from './prReference';
 
 const responses: Response[] = [];
 const fetchCalls: string[] = [];
 
-vi.mock('../transport/deviceSession', () => ({
+vi.mock('../transport/deviceSession', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../transport/deviceSession')>()),
   fetchPairedComputer: async (_backend: string, _fetcher: unknown, input: string) => {
     fetchCalls.push(input);
     const next = responses.shift();
@@ -23,7 +23,8 @@ vi.mock('../transport/deviceSession', () => ({
   },
 }));
 
-vi.mock('../transport/backends', () => ({
+vi.mock('../transport/backends', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../transport/backends')>()),
   withBackendTarget: <T>(_backend: string, run: () => T): T => run(),
 }));
 
@@ -59,9 +60,6 @@ describe('the forge attachment cache', () => {
   });
 
   afterEach(() => {
-    __resetMediaBlobCacheForTest();
-    __resetImageTiersForTest();
-    resetBindingMocks();
     vi.restoreAllMocks();
   });
 
@@ -205,9 +203,6 @@ describe('the forge attachment original', () => {
   });
 
   afterEach(() => {
-    __resetMediaBlobCacheForTest();
-    __resetImageTiersForTest();
-    resetBindingMocks();
     vi.restoreAllMocks();
   });
 
@@ -250,9 +245,6 @@ describe('the painted resolution a save or copy reuses', () => {
   });
 
   afterEach(() => {
-    __resetMediaBlobCacheForTest();
-    __resetImageTiersForTest();
-    resetBindingMocks();
     vi.restoreAllMocks();
   });
 

@@ -47,8 +47,8 @@
 // `offhost-helpers.ts`, because the preview-gateway pair pairs a browser
 // the same way and one flow with two implementations is one that drifts.
 
-import { expect, type BrowserContext, type Page } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { type BrowserContext, type Page } from '@playwright/test';
+import { expect, test } from './base-test.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import {

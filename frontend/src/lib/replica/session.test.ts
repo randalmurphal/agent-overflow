@@ -69,7 +69,6 @@ function body(overrides: Partial<ReplicaBody> = {}): ReplicaBody {
 
 describe('replica session', () => {
   beforeEach(() => {
-    __resetReplicaForTest();
     vi.restoreAllMocks();
   });
 

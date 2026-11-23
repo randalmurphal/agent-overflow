@@ -2,45 +2,22 @@ package provideraccountapp
 
 import (
 	"fmt"
-	"path/filepath"
 	"time"
-
-	"agent-overflow/internal/provider"
 )
 
-// ReconcileProviderHome binds metadata to its credential home, prunes only
-// slots owned by that pairing, and recovers crash-orphaned provider rotations.
-func (m *Manager) ReconcileProviderHome(dbDir, userHome string) error {
+// ReconcileProviderHome stamps the metadata with its credential home and
+// recovers crash-orphaned provider rotations. The slots of unfinished
+// sign-ins are SettleReservedSlots's.
+func (m *Manager) ReconcileProviderHome(userHome string) error {
 	if !m.available() {
 		return fmt.Errorf("provider account storage is unavailable")
 	}
-	claimedHome, homeMatches, err := m.store.ClaimProviderHome(userHome)
-	if err != nil {
+	if err := m.store.ClaimProviderHome(userHome); err != nil {
 		return fmt.Errorf("bind provider account metadata to credential home: %w", err)
-	}
-	if !homeMatches {
-		m.audit(
-			"prune skipped: metadata store %s is bound to provider home %s but this process resolves %s",
-			filepath.Join(dbDir, "provider-accounts.json"), claimedHome, userHome,
-		)
-	} else {
-		for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
-			keep := make(map[string]bool)
-			for _, account := range m.store.List(providerName, time.Now()) {
-				keep[account.ID] = true
-			}
-			pruned, pruneErr := m.credentials.PruneOrphanedAccounts(providerName, keep)
-			for _, accountID := range pruned {
-				m.audit("removed orphaned %s credential slot %s (no saved account references it)", providerName, accountID)
-			}
-			if pruneErr != nil {
-				return fmt.Errorf("clean orphaned %s account credentials: %w", providerName, pruneErr)
-			}
-		}
 	}
 
 	selected := make(map[string]string)
-	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+	for _, providerName := range ManagedAccountProviders {
 		if active, ok := m.store.Active(providerName, time.Now()); ok {
 			selected[providerName] = active.ID
 		}

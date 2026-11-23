@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { Call } from './runtime';
-import { __attachBackendForTest, __resetBackendsForTest } from './backends';
+import { __attachBackendForTest } from './backends';
 import { HOME_BACKEND } from './backendKey';
 import { HOME_DESCRIPTOR } from './manifestBackends';
 import * as index from './entityIndex';
@@ -38,7 +38,6 @@ beforeEach(() => {
 
 afterEach(() => {
   selection.setFocusedThreadResolver(() => null);
-  __resetBackendsForTest();
 });
 
 it('an effect issuing a selected-routed call does not re-run when the focused pane or the index changes', () => {

@@ -5,7 +5,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -26,15 +25,11 @@ import (
 // that quietly matches nothing is worse than no gate, because it reads
 // as coverage.
 //
-// Scope mirrors the Makefile's GO_PACKAGE_ROOTS, so `spike/` is outside
-// it by the same rule that keeps it out of `make go-build` — no
-// exclusion list required. Test files are excluded: a test binds a
-// throwaway port constantly and none of those are surfaces anybody
-// ships.
-
-// goSourceRoots mirrors GO_PACKAGE_ROOTS in the Makefile: the root
-// package, ./cmd/... and ./internal/....
-var goSourceRoots = []string{".", "cmd", "internal"}
+// Scope is the Makefile's GO_PACKAGE_ROOTS, as reporoot.GoFiles lists
+// them, so `spike/` is outside it by the same rule that keeps it out of
+// `make go-build` — no exclusion list required. Test files are excluded:
+// a test binds a throwaway port constantly and none of those are surfaces
+// anybody ships.
 
 // listenerPackageCalls are package-qualified calls that bind a port,
 // keyed by import path. Matched only when the qualifier resolves to that
@@ -119,52 +114,22 @@ type scanned struct {
 // roots.
 func scanSources(t *testing.T, fset *token.FileSet) []scanned {
 	t.Helper()
-	root := reporoot.Dir(t)
-
-	var paths []string
-	for _, sourceRoot := range goSourceRoots {
-		dir := filepath.Join(root, sourceRoot)
-		// The root package is the root DIRECTORY's own files and
-		// nothing below it — cmd/ and internal/ are walked on their own
-		// passes, and everything else down there (frontend/, docs/,
-		// build/, .claude/worktrees/…) holds no Go this build compiles.
-		descend := sourceRoot != "."
-		err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.IsDir() {
-				switch {
-				case path == dir:
-					return nil
-				case !descend, strings.HasPrefix(entry.Name(), "."):
-					return fs.SkipDir
-				}
-				return nil
-			}
-			name := entry.Name()
-			if strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
-				paths = append(paths, path)
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("walk %s: %v", dir, err)
+	var rels []string
+	for _, rel := range reporoot.GoFiles(t) {
+		if !strings.HasSuffix(rel, "_test.go") {
+			rels = append(rels, rel)
 		}
 	}
-	if len(paths) == 0 {
+	if len(rels) == 0 {
 		t.Fatal("no Go sources found; every gate below would pass vacuously")
 	}
 
-	sources := make([]scanned, 0, len(paths))
-	for _, path := range paths {
+	sources := make([]scanned, 0, len(rels))
+	for _, rel := range rels {
+		path := reporoot.Path(t, rel)
 		file, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			t.Fatalf("relativize %s: %v", path, err)
 		}
 		imports := make(map[string]string, len(file.Imports))
 		for _, spec := range file.Imports {
@@ -182,7 +147,7 @@ func scanSources(t *testing.T, fset *token.FileSet) []scanned {
 			imports[local] = importPath
 		}
 		sources = append(sources, scanned{
-			Rel:           filepath.ToSlash(rel),
+			Rel:           rel,
 			File:          file,
 			ImportPathFor: imports,
 		})
@@ -317,8 +282,8 @@ func routePatterns(t *testing.T, fset *token.FileSet, sources []scanned) map[str
 	patterns := map[string][]string{}
 
 	// Constants are collected per DIRECTORY, not per file: one
-	// directory is one package here, and transport's ScopedRPCPath is
-	// declared in httprpc.go but registered in server.go.
+	// directory is one package here, and route path constants may be
+	// declared in one file and registered in server.go.
 	byPackage := map[string]map[string]string{}
 	for _, source := range sources {
 		dir := packageDir(source.Rel)
@@ -390,7 +355,7 @@ func packageDir(rel string) string {
 }
 
 // stringConstants collects a file's package-level string constants,
-// which is how PageURLPath and ScopedRPCPath resolve.
+// which is how PageURLPath and sibling route path constants resolve.
 func stringConstants(file *ast.File) map[string]string {
 	consts := map[string]string{}
 	for _, decl := range file.Decls {

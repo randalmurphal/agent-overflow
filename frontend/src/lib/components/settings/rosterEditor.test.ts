@@ -43,8 +43,10 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
+// Ten task turns: setImmediate, not setTimeout(0), which waits at least
+// 1 ms per turn and made flush cost ~12 ms while nothing ran.
 async function flush(): Promise<void> {
-  for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
 }
 
 /**
@@ -105,7 +107,7 @@ class Store {
           : { status: saved ? 'saved' : 'refused', saved: this.saved };
         if (this.followLate) {
           resolve(result);
-          setTimeout(() => this.notify(), 0);
+          setImmediate(() => this.notify());
           return;
         }
         this.notify();

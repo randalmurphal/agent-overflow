@@ -6,19 +6,18 @@ import {
   installCompanionPanes,
   isCompanionOpen,
   openCompanion,
-  resetCompanionPanesForTest,
 } from './companionPanes.svelte';
 import {
   getPaneLayoutItems,
   resetPaneLayoutForTest,
   setPaneLayoutItemsForTest,
 } from './paneLayout.svelte';
-import { createPane, getPane, resetPanesForTest } from './panes.svelte';
+import { createPane, getPane } from './panes.svelte';
 import { replaceAllThreads } from './threads.svelte';
 import { getToasts } from './toast.svelte';
 import type { ThreadPane } from './thread.svelte';
 import { installPaneMocks, makeThread } from '../../test/helpers/chat';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 
 const SOURCE = makeThread({ id: 'source-thread', title: 'Ship the parser', mode: 'plan' });
 const FORK = makeThread({ id: 'fork-thread', title: 'Side chat: Ship the parser', mode: 'scratch' });
@@ -37,9 +36,6 @@ function paneIds(): string[] {
 }
 
 beforeEach(() => {
-  resetBindingMocks();
-  resetPanesForTest();
-  resetCompanionPanesForTest();
   resetPaneLayoutForTest();
   installCompanionPanes();
   replaceAllThreads([SOURCE]);
@@ -50,10 +46,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  resetCompanionPanesForTest();
-  resetPanesForTest();
   resetPaneLayoutForTest();
-  resetBindingMocks();
   replaceAllThreads([]);
 });
 

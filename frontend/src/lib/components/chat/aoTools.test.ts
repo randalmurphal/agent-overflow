@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { SRC_ROOT } from '../../../test/sourceScan';
+import schemas from '../../../../../internal/threadtools/schemas.go?raw';
 import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
 import {
   AO_TOOL_SERVERS,
@@ -109,7 +107,6 @@ describe('AO tool presentation', () => {
     const tid = '7f2c9a41-aaaa-bbbb-cccc-dddddddddddd';
 
     it('presents every tool the thread tools server lists in its own words', () => {
-      const schemas = readFileSync(join(SRC_ROOT, '..', '..', 'internal', 'threadtools', 'schemas.go'), 'utf8');
       const list = /var ToolNames = \[\]string\{([^}]*)\}/.exec(schemas)?.[1] ?? '';
       const tools = [...list.matchAll(/"(thread_[a-z_]+)"/g)].map((match) => match[1]);
       expect(tools.length).toBeGreaterThan(10);

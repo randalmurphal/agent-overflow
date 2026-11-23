@@ -6,7 +6,7 @@
 // session. The registration ceremony itself is passkey.test.ts's subject.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { setPasskeysAvailableFromBootstrap } from '../../transport/passkey';
 import { getToasts } from '../../stores/toast.svelte';
 import PasskeysBlock from './PasskeysBlock.svelte';
@@ -40,13 +40,11 @@ function installAuthenticator(): void {
 }
 
 beforeEach(() => {
-  resetBindingMocks();
   installAuthenticator();
 });
 
 afterEach(() => {
   cleanup();
-  resetBindingMocks();
   setPasskeysAvailableFromBootstrap(false);
   Reflect.deleteProperty(window, 'PublicKeyCredential');
   Reflect.deleteProperty(navigator, 'credentials');

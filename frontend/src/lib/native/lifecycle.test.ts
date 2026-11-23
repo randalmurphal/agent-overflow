@@ -17,7 +17,7 @@ import {
   showCompactList,
   showCompactThread,
 } from '../stores/layoutMode.svelte';
-import { createPane, focusPane, resetPanesForTest } from '../stores/panes.svelte';
+import { createPane, focusPane } from '../stores/panes.svelte';
 import { REVEAL_PANE_EVENT } from '../stores/eventNames';
 import {
   resetPaneLayoutForTest,
@@ -28,7 +28,6 @@ import {
   installCompanionPanes,
   isCompanionOpen,
   openCompanion,
-  resetCompanionPanesForTest,
 } from '../stores/companionPanes.svelte';
 import { registerPaneBackStep } from '../stores/paneBackSteps';
 
@@ -58,8 +57,6 @@ function rect(left: number, right: number): DOMRect {
 }
 
 beforeEach(() => {
-  resetPanesForTest();
-  resetCompanionPanesForTest();
   resetPaneLayoutForTest();
   installCompanionPanes();
   setCompactLayoutForTest(true);
@@ -71,8 +68,6 @@ afterEach(() => {
   document.body.innerHTML = '';
   setCompactLayoutForTest(false);
   showCompactList();
-  resetCompanionPanesForTest();
-  resetPanesForTest();
   resetPaneLayoutForTest();
 });
 

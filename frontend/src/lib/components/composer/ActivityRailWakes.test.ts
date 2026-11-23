@@ -3,12 +3,11 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ActivityRailHost from '../../../test/mocks/ActivityRailTestHost.svelte';
 import { buildPane } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { setupEventListeners } from '../../stores/events';
 import { noteThread } from '../../transport/entityIndex';
-import { __resetActivityRailUiPrefsForTest } from '../../stores/liveTodoState.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { ThreadWakeRow } from '../../stores/bindings';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
@@ -33,8 +32,6 @@ async function openTray(rows: ThreadWakeRow[], moreReminders = 0) {
 describe('wake rows in the background tray', () => {
   let stopEvents = () => {};
   beforeEach(() => {
-    resetBindingMocks();
-    __resetActivityRailUiPrefsForTest();
     for (const toast of getToasts().slice()) removeToast(toast.id);
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     stopEvents = setupEventListeners();

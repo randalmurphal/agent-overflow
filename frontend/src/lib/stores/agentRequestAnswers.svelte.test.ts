@@ -1,15 +1,10 @@
 import { flushSync } from 'svelte';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { describe, expect, it, vi } from 'vitest';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { __resetAgentRequestAnswersForTest, requestAnswered, watchRequestAnswer } from './agentRequestAnswers.svelte';
 import { applyThreadAgentRowsChanged } from './eventsThreadAgentRows';
 import { __setBackendStatusForTest } from './transportStatus.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
-
-afterEach(() => {
-  __resetAgentRequestAnswersForTest();
-  resetBindingMocks();
-});
 
 const settle = async () => {
   for (let i = 0; i < 5; i++) await Promise.resolve();
@@ -77,7 +72,6 @@ describe('agent request answers', () => {
     expect(requestAnswered('lead', undefined, 'tok-7')).toBe(true);
     rows.unmount();
   });
-
 
   it('keeps every token a mounted row watches, past one read, and reads none of them again', async () => {
     const tokens = Array.from({ length: 300 }, (_, i) => `tok-${i}`);

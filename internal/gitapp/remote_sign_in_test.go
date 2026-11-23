@@ -16,6 +16,7 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil"
 )
 
@@ -39,11 +40,7 @@ func TestBackgroundFetchSignInFailureReachesEveryWorkspaceStream(t *testing.T) {
 	testutil.RunGit(t, project, "worktree", "add", "-q", linked, "feature/linked")
 	testutil.RunGit(t, project, "remote", "set-url", "origin", server.URL+"/repo.git")
 
-	database, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
+	database := storetest.Clone(t)
 	now := time.Now().UnixMilli()
 	if _, err := database.CreateProject(store.Project{ID: "project", Path: project, Name: "project", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateProject: %v", err)
@@ -71,12 +68,12 @@ func TestBackgroundFetchSignInFailureReachesEveryWorkspaceStream(t *testing.T) {
 	})
 	t.Cleanup(service.CloseStatus)
 
-	root, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project"})
+	root, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project"}, untiedStatus)
 	if err != nil {
 		t.Fatalf("Subscribe root: %v", err)
 	}
 	defer service.Unsubscribe(root.ID)
-	worktree, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project", WorkspacePath: linked})
+	worktree, err := service.Subscribe(t.Context(), WorkspaceRef{ProjectID: "project", WorkspacePath: linked}, untiedStatus)
 	if err != nil {
 		t.Fatalf("Subscribe worktree: %v", err)
 	}

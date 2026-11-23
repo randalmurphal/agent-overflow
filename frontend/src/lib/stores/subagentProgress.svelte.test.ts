@@ -14,9 +14,6 @@ import {
 } from './subagentProgress.svelte';
 
 describe('subagentProgress', () => {
-  beforeEach(() => {
-    resetForTest();
-  });
 
   it('is empty for every launch until a tick lands', () => {
     expect(liveSubagentProgress('t1', 'toolu_1')).toBeUndefined();

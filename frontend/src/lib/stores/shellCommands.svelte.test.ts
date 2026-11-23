@@ -48,7 +48,6 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
-  resetShellRunsForTest();
   GetThreadShellCommands.mockReset();
   RunThreadShellCommand.mockReset();
   StopThreadShellCommand.mockReset();

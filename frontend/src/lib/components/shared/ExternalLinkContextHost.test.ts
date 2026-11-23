@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { cleanup, render, fireEvent } from '@testing-library/svelte';
 import ExternalLinkContextHost from './ExternalLinkContextHost.svelte';
 import { buildPathLinkHref } from '../../utils/pathLinkExtension';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { copyToClipboard } from '../../utils/clipboard';
 import { addToast } from '../../stores/toast.svelte';
 
-vi.mock('../../utils/clipboard', () => ({ copyToClipboard: vi.fn(async () => true) }));
+vi.mock('../../utils/clipboard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/clipboard')>()),
+  copyToClipboard: vi.fn(async () => true),
+}));
 vi.mock('../../stores/toast.svelte', () => ({ addToast: vi.fn(), addErrorToast: vi.fn() }));
 
 const copyMock = vi.mocked(copyToClipboard);
@@ -35,7 +38,6 @@ function rightClick(el: Element): MouseEvent {
 
 describe('ExternalLinkContextHost', () => {
   beforeEach(() => {
-    resetBindingMocks();
     copyMock.mockClear();
     copyMock.mockResolvedValue(true);
     toastMock.mockClear();

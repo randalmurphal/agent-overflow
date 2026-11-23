@@ -3,9 +3,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import '../../../app.css';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import ChatMarkdown from './ChatMarkdown.svelte';
-import { resetCodeSpanCacheForTest } from './markdown/codeSpanCache';
-import { resetCodeWrapStateForTest } from './markdown/codeWrapState';
-import { __resetStreamdownCodeHostForTest } from './markdown/StreamdownCodeHost.svelte';
 
 // Real-Chromium geometry for the markdown block rhythm: every pair of
 // adjacent blocks is separated by the same `--markdown-block-gap` (one body
@@ -38,9 +35,6 @@ const SOURCE = [
 ].join('\n\n');
 
 beforeEach(() => {
-  resetCodeSpanCacheForTest();
-  resetCodeWrapStateForTest();
-  __resetStreamdownCodeHostForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
   document.body.innerHTML = '';

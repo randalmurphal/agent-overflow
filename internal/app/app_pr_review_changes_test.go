@@ -52,7 +52,7 @@ func TestSubmitPRReviewRequestChangesShowsTheStateTheForgeRecorded(t *testing.T)
 			stubPRCIFetch(c.app)
 			c.app.prUpdates.interval = time.Hour
 			events := capturePRUpdates(t, c.app)
-			sub, err := c.app.SubscribePRUpdates(context.Background(), c.pr)
+			sub, err := c.app.SubscribePRUpdates(connCtx(t), c.pr)
 			if err != nil {
 				t.Fatal(err)
 			}

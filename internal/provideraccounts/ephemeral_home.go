@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/claudeconfig"
@@ -125,6 +124,10 @@ func ephemeralConfigSources(paths ProviderPaths, providerName string) []string {
 			filepath.Join(paths.SharedHome, "config.toml"),
 			filepath.Join(paths.SharedHome, "requirements.toml"),
 		}
+	case "agy":
+		return []string{
+			filepath.Join(paths.SharedHome, "settings.json"),
+		}
 	default:
 		return nil
 	}
@@ -211,8 +214,8 @@ func (h *EphemeralHome) Cleanup() error {
 		return nil
 	}
 	var cleanupErrs []error
-	if runtime.GOOS == "darwin" && h.providerName == "claude" {
-		if err := h.credentials.keychain.remove(h.Path, false); err != nil {
+	if kc, ok := h.credentials.keychainFor(h.providerName); ok {
+		if err := kc.remove(h.Path, false); err != nil {
 			cleanupErrs = append(cleanupErrs, err)
 		}
 	}

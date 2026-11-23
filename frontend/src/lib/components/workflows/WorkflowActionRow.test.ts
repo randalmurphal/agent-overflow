@@ -3,16 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkItem, WorkflowItemDetail } from '../../types/workflow';
 import WorkflowActionRow from './WorkflowActionRow.svelte';
 import { getWorkflowsActionTargetForTest } from '../../stores/workflowCommands.svelte';
-import { recordWorkflowReceipt, resetWorkflowRunsForTest } from '../../stores/workflowRuns.svelte';
+import { recordWorkflowReceipt } from '../../stores/workflowRuns.svelte';
 import {
   getWorkflowArmedAction,
   getWorkflowsOverlayDialog,
   pushWorkflowRunDetail,
-  resetWorkflowsOverlayForTest,
 } from '../../stores/workflowsOverlay.svelte';
 import { cancelWorkflowAutoAdvance } from '../../stores/workflowResolve';
-import { resetAppStorageForTest } from '../../stores/appStorage';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 
 function item(over: Partial<WorkItem> = {}): WorkItem {
@@ -53,10 +51,6 @@ function actionButton(view: ReturnType<typeof mount>, id: string): HTMLButtonEle
 
 describe('WorkflowActionRow', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetAppStorageForTest();
-    resetWorkflowsOverlayForTest();
-    resetWorkflowRunsForTest();
     setPageGrantsFromBootstrap(false);
     setBindingMock('WorkflowResolveGate', async () => undefined);
     setBindingMock('WorkflowCancelItem', async () => undefined);
@@ -69,7 +63,6 @@ describe('WorkflowActionRow', () => {
   afterEach(() => {
     cancelWorkflowAutoAdvance();
     setPageGrantsFromBootstrap(false);
-    resetBindingMocks();
   });
 
   it('renders the gate row, primary first, with its §8 key hint', () => {
@@ -101,6 +94,8 @@ describe('WorkflowActionRow', () => {
   it('takes over a failed unit through the engine edge before opening its thread', async () => {
     setBindingMock('WorkflowTakeOverUnit', async () => undefined);
     setBindingMock('GetThread', async () => ({ id: 'unit-thread', title: 'unit' }));
+    // Then it opens the unit's thread in a pane.
+    setBindingMock('SwitchThread', async () => ({ id: 'unit-thread', title: 'unit' }));
     const view = mount({ reason: 'unit-failed' }, { failedUnitId: 'port-3', failedUnitThreadId: 'unit-thread' });
     await fireEvent.click(actionButton(view, 'take-over-unit'));
     await waitFor(() => expect(getBindingMock('WorkflowTakeOverUnit')).toHaveBeenCalledWith('run-1', 'port-3'));

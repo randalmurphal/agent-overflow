@@ -1,0 +1,2420 @@
+package acp
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"agent-overflow/internal/provider"
+)
+
+const (
+	chunkCoalesceWindow = 35 * time.Millisecond
+	chunkCoalesceBytes  = 2048
+)
+
+// SessionConfig holds thread-scoped configuration for opening an ACP Session on
+// a shared or dedicated Conn.
+type SessionConfig struct {
+	WorkDir               string
+	ResumeSessionID       string
+	Model                 string
+	ReasoningEffort       string
+	RuntimeMode           provider.RuntimeMode
+	InteractionMode       provider.InteractionMode
+	SystemPrompt          string
+	AppendSystemPrompt    string
+	AdditionalDirectories []string
+	DisabledTools         []string
+	MCPServers            []MCPServerConfig
+	Flavor                Flavor
+}
+
+// LiveUpdate describes config changes that apply live on a running ACP Session
+// without restarting it.
+type LiveUpdate struct {
+	Model           string
+	ReasoningEffort string
+	RuntimeMode     provider.RuntimeMode
+	InteractionMode provider.InteractionMode
+	HasModel        bool
+	HasEffort       bool
+	HasRuntimeMode  bool
+	HasInteraction  bool
+}
+
+// PlanLiveUpdate compares launch options against target options and returns
+// (update, true) when every difference can be applied live over ACP, or
+// (zero, false) when a spawn-only axis changed and a restart is required.
+//
+// Resume, ResumeAt, and ForkSession are session lifecycle state, not config:
+// a fresh thread records its SessionRef after EventInit, so those fields
+// legitimately drift from LaunchOptions and are excluded from the comparison.
+func PlanLiveUpdate(from, to provider.SessionOptions) (LiveUpdate, bool) {
+	if from.WorkDir != to.WorkDir ||
+		from.SystemPrompt != to.SystemPrompt ||
+		!slices.Equal(from.DisabledTools, to.DisabledTools) {
+		return LiveUpdate{}, false
+	}
+	var u LiveUpdate
+	if from.Model != to.Model {
+		u.Model = to.Model
+		u.HasModel = true
+	}
+	if from.ReasoningEffort != to.ReasoningEffort {
+		u.ReasoningEffort = string(to.ReasoningEffort)
+		u.HasEffort = true
+	}
+	if from.RuntimeMode != to.RuntimeMode {
+		u.RuntimeMode = to.RuntimeMode
+		u.HasRuntimeMode = true
+	}
+	if from.Mode != to.Mode {
+		u.InteractionMode = to.Mode
+		u.HasInteraction = true
+	}
+	return u, true
+}
+
+type pendingPermission struct {
+	rpcID       json.RawMessage
+	optionByKey map[string]string
+	isUserInput bool
+}
+
+type pendingToolQuestion struct {
+	toolCallID string
+	questions  []provider.UserInputQuestion
+	answering  bool
+}
+
+type pendingPromptConfirm struct {
+	uuid      string
+	content   string
+	confirmed atomic.Bool
+}
+
+type chunkBuffer struct {
+	kind  provider.EventKind // EventTextDelta or EventThinking
+	buf   strings.Builder
+	timer *time.Timer
+}
+
+// Session represents one ACP conversation multiplexed onto a *Conn.
+// Implements provider.Session.
+type Session struct {
+	conn            *Conn
+	ownsConn        bool
+	releaseConn     func()
+	releaseConnOnce sync.Once
+
+	threadID      string
+	instanceID    string
+	workDir       string
+	flavor        Flavor
+	onEvent       func(provider.ProviderEvent)
+	approvals     provider.ApprovalRegistry
+	disabledTools map[string]struct{}
+
+	// questionActionMu serializes ask_question answer dispatch, ordinary Send
+	// replies, and Interrupt so an interrupt or Send can never steal a pending
+	// question mid-write or leave an orphaned follow-up prompt.
+	questionActionMu sync.Mutex
+
+	mu                     sync.Mutex
+	sessionID              string
+	model                  string
+	reasoningEffort        string
+	runtimeMode            provider.RuntimeMode
+	interactionMode        provider.InteractionMode
+	permissionPolicy       PermissionPolicy
+	availableModes         []SessionMode
+	configOptions          []ConfigOption
+	currentModeID          string
+	lastRequestedModeID    string
+	lastContextSize        int
+	inFlightPrompts        int
+	solePromptConfirm      *pendingPromptConfirm
+	turnOpen               bool
+	spontaneousTurnOpen    bool
+	turnSeq                int
+	activeTurnID           string
+	promptUsage            provider.TokenUsage
+	promptUsageSeen        bool
+	turnHasOutputSchema    bool
+	turnLastAssistantText  strings.Builder
+	startedTools           map[string]NormalizedToolStart
+	trackedSubagents       map[string]SubagentLaunchContext
+	activeSubagentWatchers int
+	pendingPerms           map[string]pendingPermission
+	pendingToolQuestions   map[string]pendingToolQuestion
+	chunk                  chunkBuffer
+	promptWG               sync.WaitGroup
+	subagentWG             sync.WaitGroup
+
+	sessionCtx      context.Context
+	sessionCancel   context.CancelFunc
+	closing         atomic.Bool
+	teardownEmitted atomic.Bool
+	readDone        chan struct{}
+	readDoneOnce    sync.Once
+}
+
+var _ provider.Session = (*Session)(nil)
+
+// Open attaches a new or resumed Session to this Conn. Closing the returned
+// Session closes only the conversation, leaving the Conn alive for sibling
+// sessions.
+func (c *Conn) Open(ctx context.Context, threadID string, cfg SessionConfig, onEvent func(provider.ProviderEvent)) (*Session, error) {
+	return c.open(ctx, threadID, cfg, onEvent, false, nil)
+}
+
+// OpenPooled attaches a Session to this shared Conn and invokes releaseConn
+// when the session closes (or if Open fails).
+func (c *Conn) OpenPooled(ctx context.Context, threadID string, cfg SessionConfig, onEvent func(provider.ProviderEvent), releaseConn func()) (*Session, error) {
+	return c.open(ctx, threadID, cfg, onEvent, false, releaseConn)
+}
+
+// NewSession spawns a dedicated Conn and opens one Session on it. Closing the
+// Session shuts down that Conn.
+func NewSession(ctx context.Context, threadID string, connCfg ConnConfig, sessCfg SessionConfig, onEvent func(provider.ProviderEvent)) (*Session, error) {
+	conn, err := Dial(ctx, connCfg)
+	if err != nil {
+		return nil, err
+	}
+	sess, err := conn.open(ctx, threadID, sessCfg, onEvent, true, nil)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return sess, nil
+}
+
+func (c *Conn) open(
+	ctx context.Context,
+	threadID string,
+	cfg SessionConfig,
+	onEvent func(provider.ProviderEvent),
+	ownsConn bool,
+	releaseConn func(),
+) (*Session, error) {
+	flavor := cfg.Flavor
+	if flavor == nil {
+		flavor = c.flavor
+	}
+	if flavor == nil {
+		flavor = DefaultFlavor{Kind: provider.ProviderKind(c.providerName)}
+	}
+	rtMode := provider.NormalizeRuntimeMode(string(cfg.RuntimeMode))
+	imMode := cfg.InteractionMode
+	if imMode == "" {
+		imMode = provider.ModeChat
+	}
+
+	requestedModel := strings.TrimSpace(cfg.Model)
+	requestedEffort := strings.TrimSpace(cfg.ReasoningEffort)
+	_, initialPolicy := flavor.MapRuntimeMode(rtMode, imMode, nil)
+
+	sessionCtx, sessionCancel := context.WithCancel(context.Background())
+	disabledTools := make(map[string]struct{}, len(cfg.DisabledTools))
+	for _, tool := range cfg.DisabledTools {
+		if t := strings.ToLower(strings.TrimSpace(tool)); t != "" {
+			disabledTools[t] = struct{}{}
+		}
+	}
+
+	s := &Session{
+		conn:                 c,
+		ownsConn:             ownsConn,
+		releaseConn:          releaseConn,
+		threadID:             threadID,
+		instanceID:           newSessionInstanceID(),
+		workDir:              cfg.WorkDir,
+		flavor:               flavor,
+		onEvent:              onEvent,
+		disabledTools:        disabledTools,
+		runtimeMode:          rtMode,
+		interactionMode:      imMode,
+		permissionPolicy:     initialPolicy,
+		startedTools:         make(map[string]NormalizedToolStart),
+		trackedSubagents:     make(map[string]SubagentLaunchContext),
+		pendingPerms:         make(map[string]pendingPermission),
+		pendingToolQuestions: make(map[string]pendingToolQuestion),
+		sessionCtx:           sessionCtx,
+		sessionCancel:        sessionCancel,
+		readDone:             make(chan struct{}),
+	}
+
+	mcpServers := cfg.MCPServers
+	if mcpServers == nil {
+		mcpServers = []MCPServerConfig{}
+	}
+	meta := flavor.BuildSessionMeta(cfg)
+
+	var rawOpen json.RawMessage
+	var err error
+	resuming := strings.TrimSpace(cfg.ResumeSessionID) != ""
+	if resuming {
+		// Pre-register before session/resume so immediate notifications route here,
+		// refusing atomically if a ReplayLoad currently owns this native sessionId.
+		s.mu.Lock()
+		s.sessionID = cfg.ResumeSessionID
+		s.mu.Unlock()
+		if !c.registerSession(cfg.ResumeSessionID, s) {
+			sessionCancel()
+			if releaseConn != nil {
+				s.releasePoolRef()
+			}
+			return nil, ErrSessionBusy
+		}
+
+		rawOpen, err = c.sendRequest(ctx, "session/resume", SessionResumeParams{
+			SessionID:             cfg.ResumeSessionID,
+			CWD:                   cfg.WorkDir,
+			MCPServers:            mcpServers,
+			AdditionalDirectories: cfg.AdditionalDirectories,
+			Meta:                  meta,
+		})
+	} else {
+		rawOpen, err = c.sendSessionNewRequest(ctx, SessionNewParams{
+			CWD:                   cfg.WorkDir,
+			MCPServers:            mcpServers,
+			AdditionalDirectories: cfg.AdditionalDirectories,
+			Meta:                  meta,
+		}, s)
+	}
+	cleanupOpen := func(closeRemote bool, sid string) {
+		sessionCancel()
+		// dispatchLine may already have registered a fresh sessionId on s even
+		// if ctx cancelled or decoding failed before openRes was unpacked.
+		s.mu.Lock()
+		registeredSID := s.sessionID
+		s.mu.Unlock()
+		if sid == "" {
+			sid = registeredSID
+		}
+		if sid != "" && (closeRemote || (!resuming && registeredSID != "")) {
+			closeCtx, cancel := context.WithTimeout(context.Background(), defaultCloseTimeout)
+			_, _ = c.sendRequest(closeCtx, "session/close", SessionCloseParams{SessionID: sid})
+			cancel()
+		}
+		if sid != "" {
+			c.unregisterSession(sid, s)
+		}
+		if releaseConn != nil {
+			s.releasePoolRef()
+		}
+	}
+	if err != nil {
+		cleanupOpen(false, cfg.ResumeSessionID)
+		return nil, err
+	}
+
+	var openRes SessionOpenResult
+	if err := json.Unmarshal(rawOpen, &openRes); err != nil {
+		cleanupOpen(false, cfg.ResumeSessionID)
+		return nil, fmt.Errorf("acp: decode session open response: %w", err)
+	}
+	sessionID := openRes.SessionID
+	if sessionID == "" {
+		sessionID = cfg.ResumeSessionID
+	}
+	if sessionID == "" {
+		cleanupOpen(false, "")
+		return nil, errors.New("acp: session open response missing sessionId")
+	}
+
+	s.mu.Lock()
+	s.sessionID = sessionID
+	s.configOptions = append([]ConfigOption(nil), openRes.ConfigOptions...)
+	if openRes.Modes != nil {
+		s.availableModes = append([]SessionMode(nil), openRes.Modes.AvailableModes...)
+		s.currentModeID = openRes.Modes.CurrentModeID
+	}
+	_, s.permissionPolicy = flavor.MapRuntimeMode(rtMode, imMode, s.availableModes)
+	if serverModel := currentConfigValue(s.configOptions, "model"); serverModel != "" {
+		s.model = serverModel
+	} else if openRes.Models != nil && openRes.Models.CurrentModelID != "" {
+		s.model = openRes.Models.CurrentModelID
+	}
+	if serverEffort := currentConfigValue(s.configOptions, "thought_level"); serverEffort != "" {
+		s.reasoningEffort = serverEffort
+	}
+	s.mu.Unlock()
+	c.registerSession(sessionID, s)
+
+	// Re-apply desired model, thought_level, and mode immediately (required on
+	// both fresh sessions and cold session/resume where servers reset to defaults).
+	if err := s.applyConfigAxes(ctx, requestedModel, requestedEffort, rtMode, imMode, requestedModel != "", requestedEffort != "", true, false); err != nil {
+		cleanupOpen(!resuming, sessionID)
+		return nil, fmt.Errorf("acp: apply initial session config: %w", err)
+	}
+
+	s.mu.Lock()
+	effectiveModel := s.model
+	if effectiveModel == "" {
+		effectiveModel = currentConfigValue(s.configOptions, "model")
+		if effectiveModel == "" && openRes.Models != nil {
+			effectiveModel = openRes.Models.CurrentModelID
+		}
+		s.model = effectiveModel
+	}
+	s.mu.Unlock()
+
+	initMeta, _ := json.Marshal(provider.SessionInfo{
+		SessionID: sessionID,
+		Model:     effectiveModel,
+		CWD:       cfg.WorkDir,
+		Version:   c.agentInfo.Version,
+	})
+	s.emitEvent(provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  threadID,
+		Meta:      initMeta,
+		Timestamp: time.Now(),
+	})
+
+	return s, nil
+}
+
+// SessionID returns the ACP server's sessionId.
+func (s *Session) SessionID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessionID
+}
+
+// ConfigOptions returns a copy of the latest ACP configOptions reported for this session.
+func (s *Session) ConfigOptions() []ConfigOption {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]ConfigOption(nil), s.configOptions...)
+}
+
+func (s *Session) PID() int {
+	if s == nil || s.conn == nil {
+		return 0
+	}
+	return s.conn.PID()
+}
+
+// ServerVersion returns the ACP agentInfo.version reported during initialize.
+func (s *Session) ServerVersion() string {
+	if s == nil || s.conn == nil {
+		return ""
+	}
+	return s.conn.AgentInfo().Version
+}
+
+func (s *Session) Connection() provider.Connection {
+	if s == nil {
+		return nil
+	}
+	return s.conn
+}
+
+func (s *Session) OwnedProcesses() []provider.OwnedProcess {
+	pid := s.PID()
+	if pid <= 0 {
+		return nil
+	}
+	return []provider.OwnedProcess{{PID: pid, PGID: pid, WorkDir: s.workDir}}
+}
+
+// ApplyLiveUpdate applies model, reasoning effort, runtime mode, and
+// interaction mode changes live on the running session without restarting.
+func (s *Session) ApplyLiveUpdate(ctx context.Context, u LiveUpdate) error {
+	s.mu.Lock()
+	model := s.model
+	effort := s.reasoningEffort
+	rt := s.runtimeMode
+	im := s.interactionMode
+	s.mu.Unlock()
+
+	if u.HasModel {
+		model = strings.TrimSpace(u.Model)
+	}
+	if u.HasEffort {
+		effort = strings.TrimSpace(u.ReasoningEffort)
+	}
+	if u.HasRuntimeMode {
+		rt = provider.NormalizeRuntimeMode(string(u.RuntimeMode))
+	}
+	if u.HasInteraction {
+		im = u.InteractionMode
+	}
+	return s.applyConfigAxes(ctx, model, effort, rt, im, u.HasModel, u.HasEffort || u.HasModel, u.HasRuntimeMode || u.HasInteraction, true)
+}
+
+func (s *Session) applyConfigAxes(
+	ctx context.Context,
+	model, effort string,
+	rt provider.RuntimeMode,
+	im provider.InteractionMode,
+	applyModel, applyEffort, applyMode, strict bool,
+) error {
+	s.mu.Lock()
+	sessionID := s.sessionID
+	availableModes := append([]SessionMode(nil), s.availableModes...)
+	opts := append([]ConfigOption(nil), s.configOptions...)
+	currentMode := s.currentModeID
+	s.mu.Unlock()
+
+	if sessionID == "" {
+		return nil
+	}
+
+	var errs []error
+	if applyModel && model != "" {
+		modelApplied := true
+		if currentConfigValue(opts, "model") != model {
+			newOpts, err := s.conn.SetConfigOption(ctx, sessionID, "model", model)
+			if err != nil {
+				// Fallback to legacy session/set_model if config option is unsupported.
+				if IsMethodNotFound(err) {
+					_, legacyErr := s.conn.sendRequest(ctx, "session/set_model", SessionSetModelParams{
+						SessionID: sessionID,
+						ModelID:   model,
+					})
+					if legacyErr != nil {
+						modelApplied = false
+						if !IsMethodNotFound(legacyErr) {
+							errs = append(errs, legacyErr)
+						} else if strict {
+							errs = append(errs, fmt.Errorf("acp: server does not support changing model to %q", model))
+						}
+					}
+				} else {
+					errs = append(errs, err)
+					modelApplied = false
+				}
+			} else if len(newOpts) > 0 {
+				opts = newOpts
+				s.mu.Lock()
+				s.configOptions = append([]ConfigOption(nil), newOpts...)
+				s.mu.Unlock()
+			}
+		}
+		if modelApplied {
+			s.mu.Lock()
+			s.model = model
+			s.mu.Unlock()
+		}
+	}
+
+	if applyEffort && effort != "" {
+		if optionOffered(opts, "thought_level", effort) {
+			effortApplied := true
+			if currentConfigValue(opts, "thought_level") != effort {
+				newOpts, err := s.conn.SetConfigOption(ctx, sessionID, "thought_level", effort)
+				if err != nil {
+					errs = append(errs, err)
+					effortApplied = false
+				} else if len(newOpts) > 0 {
+					s.mu.Lock()
+					s.configOptions = append([]ConfigOption(nil), newOpts...)
+					s.mu.Unlock()
+				}
+			}
+			if effortApplied {
+				s.mu.Lock()
+				s.reasoningEffort = effort
+				s.mu.Unlock()
+			}
+		} else {
+			// Server does not offer this effort (or thought_level at all):
+			// reflect the server's actual active value rather than claiming
+			// an unoffered effort took effect.
+			s.mu.Lock()
+			s.reasoningEffort = currentConfigValue(opts, "thought_level")
+			s.mu.Unlock()
+			if strict {
+				errs = append(errs, fmt.Errorf("acp: thought_level %q is not offered by server", effort))
+			}
+		}
+	}
+
+	if applyMode {
+		targetModeID, policy := s.flavor.MapRuntimeMode(rt, im, availableModes)
+		modeApplied := true
+		if targetModeID == "" && (im == provider.ModePlan || (len(availableModes) > 0 && strict)) {
+			modeApplied = false
+			errs = append(errs, fmt.Errorf("acp: server does not advertise a mode matching runtime=%s interaction=%s", rt, im))
+		} else if targetModeID != "" && targetModeID != currentMode {
+			s.mu.Lock()
+			s.lastRequestedModeID = targetModeID
+			s.mu.Unlock()
+			if _, err := s.conn.sendRequest(ctx, "session/set_mode", SessionSetModeParams{
+				SessionID: sessionID,
+				ModeID:    targetModeID,
+			}); err != nil {
+				s.mu.Lock()
+				if s.lastRequestedModeID == targetModeID {
+					s.lastRequestedModeID = ""
+				}
+				s.mu.Unlock()
+				if !IsMethodNotFound(err) || strict || im == provider.ModePlan {
+					errs = append(errs, err)
+					modeApplied = false
+				}
+			} else {
+				s.mu.Lock()
+				s.currentModeID = targetModeID
+				s.mu.Unlock()
+			}
+		}
+		if modeApplied {
+			s.mu.Lock()
+			s.runtimeMode = rt
+			s.interactionMode = im
+			s.permissionPolicy = policy
+			s.mu.Unlock()
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// Send writes a session/prompt request and returns immediately while a tracked
+// goroutine awaits the turn's response and emits EventTurnComplete. Calling
+// Send while a prompt is already in flight steers the active turn without
+// cancelling it.
+func (s *Session) Send(ctx context.Context, content string, opts provider.SendOptions) error {
+	if s.closing.Load() {
+		return errors.New("acp: session is closed")
+	}
+
+	s.questionActionMu.Lock()
+	defer s.questionActionMu.Unlock()
+
+	// Reconcile per-turn InteractionMode (chat vs plan) before sending prompt.
+	// Return the error rather than sending under the wrong mode.
+	if opts.InteractionMode != "" {
+		s.mu.Lock()
+		curIM := s.interactionMode
+		rt := s.runtimeMode
+		s.mu.Unlock()
+		if opts.InteractionMode != curIM {
+			if err := s.applyConfigAxes(ctx, "", "", rt, opts.InteractionMode, false, false, true, true); err != nil {
+				return fmt.Errorf("acp: reconcile interaction mode %s: %w", opts.InteractionMode, err)
+			}
+		}
+	}
+
+	hasOutputSchema := len(opts.OutputSchema) > 0
+	promptText := content
+	if hasOutputSchema {
+		promptText = appendOutputSchemaInstruction(content, opts.OutputSchema)
+	}
+	blocks := buildPromptBlocks(promptText, opts.Attachments)
+	if len(blocks) == 0 {
+		return errors.New("acp: cannot send empty prompt")
+	}
+
+	return s.dispatchPrompt(ctx, blocks, hasOutputSchema, strings.TrimSpace(opts.UserMessageUUID), content, true)
+}
+
+func (s *Session) startPromptRequest(sessionID string, blocks []ContentBlock) (func(context.Context) (json.RawMessage, error), error) {
+	if sessionID == "" {
+		return nil, errors.New("acp: session not initialized")
+	}
+
+	// No timeout on session/prompt: turns can run for minutes or hours.
+	wait, err := s.conn.startRequestWithTimeout("session/prompt", SessionPromptParams{
+		SessionID: sessionID,
+		Prompt:    blocks,
+	}, 0)
+	if err != nil {
+		return nil, err
+	}
+	return wait, nil
+}
+
+func (s *Session) emitPromptConfirmation(c *pendingPromptConfirm) {
+	if c == nil || c.uuid == "" || !c.confirmed.CompareAndSwap(false, true) {
+		return
+	}
+	confirmMeta, _ := json.Marshal(map[string]any{
+		"provider_item_id":                         c.uuid,
+		provider.MetaUserTextTranscriptRecordedKey: true,
+	})
+	s.emitEvent(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  s.threadID,
+		Role:      "user",
+		Content:   c.content,
+		Meta:      confirmMeta,
+		Timestamp: time.Now(),
+	})
+}
+
+func (s *Session) confirmSolePrompt() {
+	s.mu.Lock()
+	c := s.solePromptConfirm
+	if c != nil {
+		s.solePromptConfirm = nil
+	}
+	s.mu.Unlock()
+	s.emitPromptConfirmation(c)
+}
+
+func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, hasOutputSchema bool, userMsgUUID, userContent string, detachQuestions bool) error {
+	s.mu.Lock()
+	sessionID := s.sessionID
+	s.mu.Unlock()
+	if sessionID == "" {
+		return errors.New("acp: session not initialized")
+	}
+
+	// Capture any pre-prompt flavor token (e.g. agy SQLite max step idx)
+	// BEFORE registering in-flight state, detaching pending questions, or
+	// arming solePromptConfirm so neither delayed updates nor the original
+	// prompt's waiter can race this I/O window.
+	beforeToken := s.flavor.BeforePrompt(ctx, sessionID)
+
+	var confirm *pendingPromptConfirm
+	if userMsgUUID != "" {
+		confirm = &pendingPromptConfirm{uuid: userMsgUUID, content: userContent}
+	}
+
+	// Atomically detach pre-existing pending questions AND register in-flight
+	// state under the same s.mu lock BEFORE writing session/prompt so:
+	// (a) an earlier prompt's finishPrompt cannot observe 0 prompts + 0
+	//     questions and prematurely close the held turn,
+	// (b) a fast completion of this prompt cannot see the old question and
+	//     hold the turn open, and
+	// (c) early updates on the shared reader goroutine cannot open a
+	//     spontaneous wake turn.
+	//
+	// Only arm solePromptConfirm when the session is completely quiescent.
+	var openTurnID string
+	var prevOutputSchema bool
+	var detachedQuestions map[string]pendingToolQuestion
+	var detachedTools map[string]NormalizedToolStart
+	var detachTurnID string
+	s.mu.Lock()
+	if detachQuestions && len(s.pendingToolQuestions) > 0 {
+		detachedQuestions = make(map[string]pendingToolQuestion, len(s.pendingToolQuestions))
+		detachedTools = make(map[string]NormalizedToolStart, len(s.pendingToolQuestions))
+		detachTurnID = s.activeTurnID
+		for id, q := range s.pendingToolQuestions {
+			detachedQuestions[id] = q
+			if st, ok := s.startedTools[id]; ok {
+				detachedTools[id] = st
+				delete(s.startedTools, id)
+			}
+			delete(s.pendingToolQuestions, id)
+		}
+	}
+	priorInFlight := s.inFlightPrompts
+	quiescent := priorInFlight == 0 && !s.spontaneousTurnOpen && len(s.startedTools) == 0 && len(s.trackedSubagents) == 0 && s.activeSubagentWatchers == 0
+	s.inFlightPrompts++
+	if !s.turnOpen {
+		s.turnSeq++
+		s.activeTurnID = s.nextTurnID("turn")
+		s.turnOpen = true
+		s.spontaneousTurnOpen = false
+		s.promptUsage = provider.TokenUsage{}
+		s.promptUsageSeen = false
+		s.turnHasOutputSchema = hasOutputSchema
+		s.turnLastAssistantText.Reset()
+		openTurnID = s.activeTurnID
+	} else {
+		prevOutputSchema = s.turnHasOutputSchema
+		if hasOutputSchema {
+			s.turnHasOutputSchema = true
+		}
+	}
+	if quiescent {
+		s.solePromptConfirm = confirm
+	} else {
+		s.solePromptConfirm = nil
+	}
+	s.mu.Unlock()
+
+	wait, err := s.startPromptRequest(sessionID, blocks)
+	if err != nil {
+		s.mu.Lock()
+		if s.inFlightPrompts > 0 {
+			s.inFlightPrompts--
+		}
+		if s.solePromptConfirm == confirm {
+			s.solePromptConfirm = nil
+		}
+		if openTurnID != "" && s.inFlightPrompts == 0 {
+			s.turnOpen = false
+			s.turnHasOutputSchema = false
+		} else if openTurnID == "" {
+			s.turnHasOutputSchema = prevOutputSchema
+		}
+		for id, q := range detachedQuestions {
+			if _, exists := s.pendingToolQuestions[id]; !exists {
+				s.pendingToolQuestions[id] = q
+			}
+		}
+		for id, st := range detachedTools {
+			if _, exists := s.startedTools[id]; !exists {
+				s.startedTools[id] = st
+			}
+		}
+		s.mu.Unlock()
+		return err
+	}
+
+	if openTurnID != "" {
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventTurnStart,
+			ThreadID:  s.threadID,
+			TurnID:    openTurnID,
+			Timestamp: time.Now(),
+		})
+	}
+	if len(detachedQuestions) > 0 {
+		s.emitResolvedDetachedToolQuestions(detachedQuestions, detachTurnID, "answered", map[string]provider.UserInputAnswer{
+			"reply": {userContent},
+		})
+	}
+
+	s.promptWG.Add(1)
+	go func() {
+		defer s.promptWG.Done()
+		rawResp, waitErr := wait(s.sessionCtx)
+		s.finishPrompt(rawResp, waitErr, beforeToken, confirm)
+	}()
+
+	return nil
+}
+
+func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeToken any, confirm *pendingPromptConfirm) {
+	if confirm != nil {
+		s.mu.Lock()
+		if s.solePromptConfirm == confirm {
+			s.solePromptConfirm = nil
+		}
+		s.mu.Unlock()
+		if waitErr == nil {
+			// Provider accepted and completed THIS prompt; confirm its own UUID
+			// without touching any other steered prompt.
+			s.emitPromptConfirmation(confirm)
+		}
+	}
+	s.flushChunks()
+
+	var res SessionPromptResult
+	if waitErr == nil && len(rawResp) > 0 {
+		_ = json.Unmarshal(rawResp, &res)
+	}
+
+	s.mu.Lock()
+	sessionID := s.sessionID
+	model := s.model
+	if res.Usage != nil {
+		converted := s.flavor.ConvertUsage(*res.Usage, model)
+		s.promptUsage.Add(converted)
+		s.promptUsageSeen = true
+	}
+	if s.inFlightPrompts > 0 {
+		s.inFlightPrompts--
+	}
+	remaining := s.inFlightPrompts
+	turnID := s.activeTurnID
+	// When the server ends a prompt solely to pause for a pending ask_question
+	// tool (e.g. agy emitting tool_call(status="pending") + end_turn before the
+	// user's answer prompt), hold the logical turn open so triage keeps
+	// pendingUserInputs alive and does not force-close AskUserQuestion as errored.
+	holdForToolQuestion := remaining == 0 &&
+		waitErr == nil &&
+		(res.StopReason == "" || res.StopReason == "end_turn") &&
+		len(s.pendingToolQuestions) > 0
+	var totalUsage *provider.TokenUsage
+	var structuredOutput json.RawMessage
+	if remaining == 0 && !holdForToolQuestion {
+		if s.promptUsageSeen {
+			u := s.promptUsage
+			totalUsage = &u
+		}
+		if s.turnHasOutputSchema {
+			structuredOutput = extractStructuredJSONObject(s.turnLastAssistantText.String())
+		}
+		s.turnHasOutputSchema = false
+		s.turnLastAssistantText.Reset()
+		s.turnOpen = false
+		s.spontaneousTurnOpen = false
+	}
+	s.mu.Unlock()
+
+	if s.closing.Load() {
+		return
+	}
+
+	if waitErr != nil {
+		errMsg := waitErr.Error()
+		failure := &provider.FailureMeta{
+			Class:    provider.FailureFatal,
+			Boundary: provider.FailureBoundaryTurn,
+		}
+		if IsAuthRequired(waitErr) {
+			failure.Code = "authentication_failed"
+		}
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventError,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			Content:   errMsg,
+			Failure:   failure,
+			Timestamp: time.Now(),
+		})
+		if remaining > 0 {
+			return
+		}
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventTurnComplete,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			Timestamp: time.Now(),
+			TurnComplete: &provider.WireTurnCompleteMeta{
+				UsageScope:   s.usageScope(),
+				StopReason:   "error",
+				Usage:        totalUsage,
+				ModelUsage:   buildModelUsage(model, totalUsage),
+				OwnUsage:     totalUsage,
+				ErrorMessage: errMsg,
+			},
+		})
+		return
+	}
+
+	if holdForToolQuestion {
+		return
+	}
+
+	// Another steered prompt is still running for this logical turn; let its
+	// completion settle the turn with the combined usage.
+	if remaining > 0 {
+		return
+	}
+
+	stopReason := res.StopReason
+	if stopReason == "" {
+		stopReason = "end_turn"
+	}
+
+	// Check flavor out-of-band outcome override (e.g. agy silent step_type=17 errors).
+	if override := s.flavor.AfterPrompt(context.Background(), sessionID, stopReason, beforeToken); override != nil && override.ErrorMessage != "" {
+		failure := override.Failure
+		if failure == nil {
+			failure = &provider.FailureMeta{
+				Class:    provider.FailureTransient,
+				Boundary: provider.FailureBoundaryTurn,
+			}
+		}
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventError,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			Content:   override.ErrorMessage,
+			Failure:   failure,
+			Timestamp: time.Now(),
+		})
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventTurnComplete,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			Timestamp: time.Now(),
+			TurnComplete: &provider.WireTurnCompleteMeta{
+				UsageScope:   s.usageScope(),
+				StopReason:   "error",
+				Usage:        totalUsage,
+				ModelUsage:   buildModelUsage(model, totalUsage),
+				OwnUsage:     totalUsage,
+				ErrorMessage: override.ErrorMessage,
+			},
+		})
+		return
+	}
+
+	meta := &provider.WireTurnCompleteMeta{
+		UsageScope: s.usageScope(),
+		StopReason: stopReason,
+		Usage:      totalUsage,
+		ModelUsage: buildModelUsage(model, totalUsage),
+		OwnUsage:   totalUsage,
+		Aborted:    stopReason == "cancelled",
+	}
+	if stopReason == "refusal" {
+		meta.ErrorMessage = "provider refused the turn"
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventError,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			Content:   meta.ErrorMessage,
+			Failure:   &provider.FailureMeta{Class: provider.FailureFatal, Boundary: provider.FailureBoundaryTurn, Code: "refusal"},
+			Timestamp: time.Now(),
+		})
+	}
+	s.emitEvent(provider.ProviderEvent{
+		Kind:             provider.EventTurnComplete,
+		ThreadID:         s.threadID,
+		TurnID:           turnID,
+		Timestamp:        time.Now(),
+		TurnComplete:     meta,
+		StructuredOutput: structuredOutput,
+	})
+}
+
+func (s *Session) usageScope() string {
+	return fmt.Sprintf("acp:%d:%s", s.PID(), s.SessionID())
+}
+
+func buildModelUsage(model string, total *provider.TokenUsage) []provider.ModelTokenUsage {
+	if total == nil || total.IsZero() {
+		return nil
+	}
+	if model == "" {
+		model = "unknown"
+	}
+	return []provider.ModelTokenUsage{{
+		Model:      model,
+		TokenUsage: *total,
+	}}
+}
+
+// Interrupt sends the ACP session/cancel notification and drains any pending
+// approvals for this session.
+func (s *Session) Interrupt(_ context.Context) error {
+	s.questionActionMu.Lock()
+	s.mu.Lock()
+	sessionID := s.sessionID
+	heldForQuestion := s.turnOpen && s.inFlightPrompts == 0 && len(s.pendingToolQuestions) > 0
+	turnID := s.activeTurnID
+	model := s.model
+	var totalUsage *provider.TokenUsage
+	if heldForQuestion {
+		if s.promptUsageSeen {
+			u := s.promptUsage
+			totalUsage = &u
+		}
+		s.turnOpen = false
+		s.spontaneousTurnOpen = false
+		s.turnHasOutputSchema = false
+		s.turnLastAssistantText.Reset()
+	}
+	s.mu.Unlock()
+	if sessionID == "" {
+		s.questionActionMu.Unlock()
+		return nil
+	}
+	if heldForQuestion {
+		s.resolvePendingToolQuestions("declined", nil)
+		s.drainPendingApprovals("lost", false)
+		s.questionActionMu.Unlock()
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventTurnComplete,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			Timestamp: time.Now(),
+			TurnComplete: &provider.WireTurnCompleteMeta{
+				UsageScope: s.usageScope(),
+				StopReason: "cancelled",
+				Usage:      totalUsage,
+				ModelUsage: buildModelUsage(model, totalUsage),
+				OwnUsage:   totalUsage,
+			},
+		})
+	} else {
+		s.drainPendingApprovals("lost", false)
+		s.questionActionMu.Unlock()
+	}
+	return s.conn.writeNotification("session/cancel", SessionCancelParams{
+		SessionID: sessionID,
+	})
+}
+
+// RespondToApproval forwards the user's decision for a pending
+// session/request_permission callback back to the ACP server.
+func (s *Session) RespondToApproval(_ context.Context, resp provider.ApprovalResponse) error {
+	if !s.approvals.Claim(resp.RequestID, provider.EventApprovalResolved) {
+		return provider.ErrStaleInteractiveRequest
+	}
+	s.mu.Lock()
+	pending, ok := s.pendingPerms[resp.RequestID]
+	delete(s.pendingPerms, resp.RequestID)
+	sessionID := s.sessionID
+	s.mu.Unlock()
+	if !ok {
+		return provider.ErrStaleInteractiveRequest
+	}
+
+	decision := resp.Decision
+	var result RequestPermissionResult
+	if decision == "cancel" {
+		result = RequestPermissionResult{
+			Outcome: PermissionOutcome{Outcome: "cancelled"},
+		}
+	} else if optionID := pending.optionByKey[decision]; optionID != "" {
+		result = RequestPermissionResult{
+			Outcome: PermissionOutcome{
+				Outcome:  "selected",
+				OptionID: optionID,
+			},
+		}
+	} else {
+		result = RequestPermissionResult{
+			Outcome: PermissionOutcome{Outcome: "cancelled"},
+		}
+	}
+	if err := s.conn.writeResponse(pending.rpcID, result); err != nil {
+		return err
+	}
+	if decision == "cancel" && sessionID != "" {
+		_ = s.conn.writeNotification("session/cancel", SessionCancelParams{SessionID: sessionID})
+	}
+
+	norm := provider.NormalizeApprovalDecision(resp)
+	if norm == "" {
+		norm = "approved"
+	}
+	meta, _ := json.Marshal(map[string]any{
+		"requestId": resp.RequestID,
+		"decision":  norm,
+	})
+	s.emitEvent(provider.ProviderEvent{
+		Kind:             provider.EventApprovalResolved,
+		ThreadID:         s.threadID,
+		ItemID:           resp.RequestID,
+		Meta:             meta,
+		Timestamp:        time.Now(),
+		PromptOccurrence: resp.Occurrence,
+	})
+	return nil
+}
+
+// RespondToUserInput answers either an interaction_* permission question (via
+// JSON-RPC permission response) or a pending ask_question tool (via text
+// session/prompt).
+func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInputResponse) error {
+	decision, err := provider.NormalizeUserInputDecision(resp.Decision)
+	if err != nil {
+		return err
+	}
+
+	s.questionActionMu.Lock()
+	s.mu.Lock()
+	_, isPermPeek := s.pendingPerms[resp.RequestID]
+	pendingQPeek, isToolQPeek := s.pendingToolQuestions[resp.RequestID]
+	if isToolQPeek && !isPermPeek {
+		if pendingQPeek.answering {
+			s.mu.Unlock()
+			s.questionActionMu.Unlock()
+			return provider.ErrStaleInteractiveRequest
+		}
+		pendingQPeek.answering = true
+		s.pendingToolQuestions[resp.RequestID] = pendingQPeek
+	}
+	s.mu.Unlock()
+	if !isToolQPeek || isPermPeek {
+		s.questionActionMu.Unlock()
+	}
+
+	// For ask_question tool prompts, questionActionMu stays held across
+	// validation, prompt dispatch, approval Claim, and inFlightPrompts++ so
+	// neither Interrupt nor Send can steal ownership mid-write or orphan a
+	// dispatched native prompt.
+	var (
+		followUpWait   func(context.Context) (json.RawMessage, error)
+		followUpBefore any
+		replyText      string
+	)
+	if isToolQPeek && !isPermPeek {
+		defer s.questionActionMu.Unlock()
+		replyText = formatToolQuestionAnswer(pendingQPeek.questions, resp.Answers, decision)
+		if decision != "decline" && strings.TrimSpace(replyText) == "" {
+			s.mu.Lock()
+			if cur, ok := s.pendingToolQuestions[resp.RequestID]; ok {
+				cur.answering = false
+				s.pendingToolQuestions[resp.RequestID] = cur
+			}
+			s.mu.Unlock()
+			return errors.New("acp: ask_question response requires at least one answer")
+		}
+		if replyText != "" {
+			s.mu.Lock()
+			sessionID := s.sessionID
+			s.mu.Unlock()
+			if sessionID != "" {
+				followUpBefore = s.flavor.BeforePrompt(ctx, sessionID)
+			}
+			// Increment inFlightPrompts before writing so incoming updates
+			// from the follow-up prompt cannot open a spontaneous wake turn.
+			s.mu.Lock()
+			s.inFlightPrompts++
+			s.mu.Unlock()
+			followUpWait, err = s.startPromptRequest(sessionID, []ContentBlock{{Type: "text", Text: replyText}})
+			if err != nil {
+				s.mu.Lock()
+				if s.inFlightPrompts > 0 {
+					s.inFlightPrompts--
+				}
+				if cur, ok := s.pendingToolQuestions[resp.RequestID]; ok {
+					cur.answering = false
+					s.pendingToolQuestions[resp.RequestID] = cur
+				}
+				s.mu.Unlock()
+				return err
+			}
+		}
+	}
+
+	if !s.approvals.Claim(resp.RequestID, provider.EventUserInputResolved) {
+		if followUpWait != nil {
+			s.promptWG.Add(1)
+			go func() {
+				defer s.promptWG.Done()
+				rawResp, waitErr := followUpWait(s.sessionCtx)
+				s.finishPrompt(rawResp, waitErr, followUpBefore, nil)
+			}()
+		}
+		return provider.ErrStaleInteractiveRequest
+	}
+
+	s.mu.Lock()
+	pendingPerm, isPerm := s.pendingPerms[resp.RequestID]
+	if isPerm {
+		delete(s.pendingPerms, resp.RequestID)
+	}
+	pendingQ, isToolQ := s.pendingToolQuestions[resp.RequestID]
+	turnID := s.activeTurnID
+	if isToolQ {
+		delete(s.pendingToolQuestions, resp.RequestID)
+		delete(s.startedTools, pendingQ.toolCallID)
+		if followUpWait != nil && !s.turnOpen {
+			s.turnSeq++
+			s.activeTurnID = s.nextTurnID("turn")
+			s.turnOpen = true
+			s.spontaneousTurnOpen = false
+			turnID = s.activeTurnID
+		}
+	}
+	s.mu.Unlock()
+
+	resolvedDecision := "answered"
+	if decision == "decline" {
+		resolvedDecision = "declined"
+	}
+	meta, _ := json.Marshal(map[string]any{
+		"requestId": resp.RequestID,
+		"decision":  resolvedDecision,
+		"answers":   resp.Answers,
+	})
+
+	if isPerm {
+		var result RequestPermissionResult
+		if decision == "decline" {
+			result = RequestPermissionResult{Outcome: PermissionOutcome{Outcome: "cancelled"}}
+		} else {
+			optionID := resolveUserInputOptionID(resp.Answers, pendingPerm.optionByKey)
+			if optionID != "" {
+				result = RequestPermissionResult{
+					Outcome: PermissionOutcome{Outcome: "selected", OptionID: optionID},
+				}
+			} else {
+				result = RequestPermissionResult{Outcome: PermissionOutcome{Outcome: "cancelled"}}
+			}
+		}
+		if err := s.conn.writeResponse(pendingPerm.rpcID, result); err != nil {
+			return err
+		}
+		s.emitEvent(provider.ProviderEvent{
+			Kind:             provider.EventUserInputResolved,
+			ThreadID:         s.threadID,
+			ItemID:           resp.RequestID,
+			Meta:             meta,
+			Timestamp:        time.Now(),
+			PromptOccurrence: resp.Occurrence,
+		})
+		return nil
+	}
+
+	s.emitEvent(provider.ProviderEvent{
+		Kind:             provider.EventUserInputResolved,
+		ThreadID:         s.threadID,
+		ItemID:           resp.RequestID,
+		Meta:             meta,
+		Timestamp:        time.Now(),
+		PromptOccurrence: resp.Occurrence,
+	})
+
+	if isToolQ {
+		itemStatus := "completed"
+		if decision == "decline" {
+			itemStatus = "declined"
+		}
+		completeMetaFields := map[string]any{
+			"toolName":    "AskUserQuestion",
+			"item_status": itemStatus,
+			"answers":     resp.Answers,
+		}
+		if followUpWait != nil {
+			completeMetaFields["prompt_dispatched"] = true
+		}
+		completeMeta, _ := json.Marshal(completeMetaFields)
+		s.emitEvent(provider.ProviderEvent{
+			Kind:           provider.EventToolComplete,
+			ThreadID:       s.threadID,
+			TurnID:         turnID,
+			ItemID:         pendingQ.toolCallID,
+			ItemType:       "AskUserQuestion",
+			Content:        replyText,
+			ContentPresent: replyText != "",
+			Meta:           completeMeta,
+			Timestamp:      time.Now(),
+		})
+	}
+	if followUpWait != nil {
+		s.promptWG.Add(1)
+		go func() {
+			defer s.promptWG.Done()
+			rawResp, waitErr := followUpWait(s.sessionCtx)
+			s.finishPrompt(rawResp, waitErr, followUpBefore, nil)
+		}()
+	}
+	return nil
+}
+
+// Close detaches this session from its Conn (sending session/close on a shared
+// Conn) or closes the dedicated Conn when ownsConn is true.
+func (s *Session) Close() error {
+	s.closing.Store(true)
+	if s.sessionCancel != nil {
+		s.sessionCancel()
+	}
+	s.stopChunkTimer()
+
+	var err error
+	if s.ownsConn {
+		s.drainPendingApprovals("lost", true)
+		err = s.conn.Close()
+		<-s.readDone
+		s.promptWG.Wait()
+		s.subagentWG.Wait()
+		return err
+	}
+
+	s.drainPendingApprovals("lost", true)
+
+	s.mu.Lock()
+	sessionID := s.sessionID
+	inFlight := s.inFlightPrompts > 0
+	s.mu.Unlock()
+
+	connAlive := true
+	select {
+	case <-s.conn.Done():
+		connAlive = false
+	default:
+	}
+
+	if connAlive && sessionID != "" {
+		if inFlight {
+			_ = s.conn.writeNotification("session/cancel", SessionCancelParams{SessionID: sessionID})
+		}
+		closeCtx, cancel := context.WithTimeout(context.Background(), defaultCloseTimeout)
+		_, closeErr := s.conn.sendRequest(closeCtx, "session/close", SessionCloseParams{SessionID: sessionID})
+		cancel()
+		if closeErr != nil && !IsMethodNotFound(closeErr) && !IsSessionNotFound(closeErr) {
+			err = closeErr
+		}
+	}
+
+	if sessionID != "" {
+		s.conn.unregisterSession(sessionID, s)
+	}
+	s.promptWG.Wait()
+	s.subagentWG.Wait()
+	s.emitTeardownOnce(nil, true)
+	s.finishReadDone()
+	s.releasePoolRef()
+	return err
+}
+
+func (s *Session) onConnClosed(exitMeta json.RawMessage, connClosing bool) {
+	if s.sessionCancel != nil {
+		s.sessionCancel()
+	}
+	s.stopChunkTimer()
+	s.drainPendingApprovals("lost", true)
+	s.emitTeardownOnce(exitMeta, connClosing || s.closing.Load())
+	s.finishReadDone()
+}
+
+func (s *Session) releasePoolRef() {
+	if s.releaseConn != nil {
+		s.releaseConnOnce.Do(s.releaseConn)
+	}
+}
+
+func (s *Session) finishReadDone() {
+	s.readDoneOnce.Do(func() {
+		close(s.readDone)
+	})
+}
+
+func (s *Session) emitTeardownOnce(exitMeta json.RawMessage, intentional bool) {
+	if !s.teardownEmitted.CompareAndSwap(false, true) {
+		return
+	}
+	provider.EmitTeardownStatusWithMeta(s.emitEvent, s.threadID, exitMeta, intentional)
+}
+
+func (s *Session) drainPendingApprovals(decision string, closeRegistry bool) {
+	released := s.approvals.Drain(closeRegistry)
+	s.mu.Lock()
+	perms := s.pendingPerms
+	s.pendingPerms = make(map[string]pendingPermission)
+	s.pendingToolQuestions = make(map[string]pendingToolQuestion)
+	s.mu.Unlock()
+
+	for _, r := range released {
+		if p, ok := perms[r.RequestID]; ok {
+			_ = s.conn.writeResponse(p.rpcID, RequestPermissionResult{
+				Outcome: PermissionOutcome{Outcome: "cancelled"},
+			})
+		}
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      r.ResolveKind,
+			ThreadID:  s.threadID,
+			ItemID:    r.RequestID,
+			Meta:      r.Meta(decision),
+			Timestamp: time.Now(),
+		})
+	}
+}
+
+func (s *Session) emitResolvedDetachedToolQuestions(qs map[string]pendingToolQuestion, turnID, decision string, answers map[string]provider.UserInputAnswer) {
+	if len(qs) == 0 {
+		return
+	}
+	itemStatus := "completed"
+	if decision == "declined" || decision == "decline" {
+		itemStatus = "declined"
+	}
+	for id := range qs {
+		if !s.approvals.Claim(id, provider.EventUserInputResolved) {
+			continue
+		}
+		now := time.Now()
+		meta, _ := json.Marshal(map[string]any{
+			"requestId": id,
+			"decision":  decision,
+			"answers":   answers,
+		})
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventUserInputResolved,
+			ThreadID:  s.threadID,
+			ItemID:    id,
+			Meta:      meta,
+			Timestamp: now,
+		})
+		completeMeta, _ := json.Marshal(map[string]any{
+			"toolName":    "AskUserQuestion",
+			"item_status": itemStatus,
+			"answers":     answers,
+		})
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventToolComplete,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			ItemID:    id,
+			ItemType:  "AskUserQuestion",
+			Meta:      completeMeta,
+			Timestamp: now,
+		})
+	}
+}
+
+func (s *Session) snapshotPendingToolQuestionIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.pendingToolQuestions) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(s.pendingToolQuestions))
+	for id := range s.pendingToolQuestions {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func (s *Session) resolvePendingToolQuestions(decision string, answers map[string]provider.UserInputAnswer) {
+	s.resolveSpecificToolQuestions(s.snapshotPendingToolQuestionIDs(), decision, answers)
+}
+
+func (s *Session) resolveSpecificToolQuestions(targetIDs []string, decision string, answers map[string]provider.UserInputAnswer) {
+	if len(targetIDs) == 0 {
+		return
+	}
+	s.mu.Lock()
+	if len(s.pendingToolQuestions) == 0 {
+		s.mu.Unlock()
+		return
+	}
+	ids := make([]string, 0, len(targetIDs))
+	turnID := s.activeTurnID
+	for _, id := range targetIDs {
+		if _, ok := s.pendingToolQuestions[id]; !ok {
+			continue
+		}
+		ids = append(ids, id)
+		delete(s.pendingToolQuestions, id)
+		delete(s.startedTools, id)
+	}
+	s.mu.Unlock()
+
+	itemStatus := "completed"
+	if decision == "declined" || decision == "decline" {
+		itemStatus = "declined"
+	}
+	for _, id := range ids {
+		if !s.approvals.Claim(id, provider.EventUserInputResolved) {
+			continue
+		}
+		now := time.Now()
+		meta, _ := json.Marshal(map[string]any{
+			"requestId": id,
+			"decision":  decision,
+			"answers":   answers,
+		})
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventUserInputResolved,
+			ThreadID:  s.threadID,
+			ItemID:    id,
+			Meta:      meta,
+			Timestamp: now,
+		})
+		completeMeta, _ := json.Marshal(map[string]any{
+			"toolName":    "AskUserQuestion",
+			"item_status": itemStatus,
+			"answers":     answers,
+		})
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventToolComplete,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			ItemID:    id,
+			ItemType:  "AskUserQuestion",
+			Meta:      completeMeta,
+			Timestamp: now,
+		})
+	}
+}
+
+func (s *Session) handleUpdate(u SessionUpdate) {
+	switch u.SessionUpdate {
+	case "agent_thought_chunk":
+		block, ok := u.decodeContentBlock()
+		if !ok || block.Text == "" {
+			return
+		}
+		s.confirmSolePrompt()
+		s.ensureSpontaneousTurnOpen()
+		s.bufferChunk(provider.EventThinking, block.Text)
+
+	case "agent_message_chunk":
+		block, ok := u.decodeContentBlock()
+		if !ok || block.Text == "" {
+			return
+		}
+		s.confirmSolePrompt()
+		s.ensureSpontaneousTurnOpen()
+		s.mu.Lock()
+		if s.turnHasOutputSchema {
+			s.turnLastAssistantText.WriteString(block.Text)
+		}
+		s.mu.Unlock()
+		s.bufferChunk(provider.EventTextDelta, block.Text)
+
+	case "tool_call":
+		s.confirmSolePrompt()
+		s.flushChunks()
+		s.ensureSpontaneousTurnOpen()
+		s.mu.Lock()
+		if s.turnHasOutputSchema {
+			s.turnLastAssistantText.Reset()
+		}
+		s.mu.Unlock()
+		tc := u.toToolCallUpdate()
+		s.handleToolCallStart(&tc)
+
+	case "tool_call_update":
+		s.flushChunks()
+		tc := u.toToolCallUpdate()
+		switch tc.Status {
+		case "completed", "failed", "cancelled":
+			s.ensureSpontaneousTurnOpen()
+			s.handleToolCallComplete(&tc)
+		case "pending":
+			s.handleToolCallPending(&tc)
+		case "in_progress":
+			s.handleToolCallInProgress(&tc)
+		}
+
+	case "plan":
+		s.confirmSolePrompt()
+		s.flushChunks()
+		s.handlePlanUpdate(u.Entries)
+
+	case "usage_update":
+		s.flushChunks()
+		s.handleUsageUpdate(u.Used, u.Size)
+
+	case "available_commands_update":
+		s.handleAvailableCommands(u.AvailableCommands)
+
+	case "config_option_update":
+		s.mu.Lock()
+		if len(u.ConfigOptions) > 0 {
+			s.configOptions = append([]ConfigOption(nil), u.ConfigOptions...)
+			if m := currentConfigValue(s.configOptions, "model"); m != "" {
+				s.model = m
+			}
+			if e := currentConfigValue(s.configOptions, "thought_level"); e != "" {
+				s.reasoningEffort = e
+			}
+		}
+		s.mu.Unlock()
+
+	case "current_mode_update":
+		s.handleCurrentModeUpdate(u.CurrentModeID)
+
+	case "session_info_update":
+		if title := strings.TrimSpace(u.Title); title != "" {
+			s.emitEvent(provider.ProviderEvent{
+				Kind:      provider.EventThreadRenamed,
+				ThreadID:  s.threadID,
+				Content:   title,
+				Timestamp: time.Now(),
+			})
+		}
+	}
+}
+
+func (s *Session) nextTurnID(kind string) string {
+	if s.instanceID != "" {
+		return fmt.Sprintf("acp-%s-%s-%d", kind, s.instanceID, s.turnSeq)
+	}
+	return fmt.Sprintf("acp-%s-%d", kind, s.turnSeq)
+}
+
+func newSessionInstanceID() string {
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+func (s *Session) ensureSpontaneousTurnOpen() {
+	var openTurnID string
+	s.mu.Lock()
+	if !s.turnOpen && s.inFlightPrompts == 0 {
+		s.turnSeq++
+		s.activeTurnID = s.nextTurnID("wake")
+		s.turnOpen = true
+		s.spontaneousTurnOpen = true
+		openTurnID = s.activeTurnID
+	}
+	s.mu.Unlock()
+	if openTurnID != "" {
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventTurnStart,
+			ThreadID:  s.threadID,
+			TurnID:    openTurnID,
+			Timestamp: time.Now(),
+		})
+	}
+}
+
+func (s *Session) bufferChunk(kind provider.EventKind, text string) {
+	var flushKind provider.EventKind
+	var flushText string
+	var turnID string
+
+	s.mu.Lock()
+	turnID = s.activeTurnID
+	if s.chunk.buf.Len() > 0 && s.chunk.kind != kind {
+		flushKind = s.chunk.kind
+		flushText = s.chunk.buf.String()
+		s.chunk.buf.Reset()
+		if s.chunk.timer != nil {
+			s.chunk.timer.Stop()
+			s.chunk.timer = nil
+		}
+	}
+	s.chunk.kind = kind
+	s.chunk.buf.WriteString(text)
+	if s.chunk.buf.Len() >= chunkCoalesceBytes {
+		if flushText != "" {
+			// Emit the previous kind first, then flush current below.
+			curText := s.chunk.buf.String()
+			s.chunk.buf.Reset()
+			if s.chunk.timer != nil {
+				s.chunk.timer.Stop()
+				s.chunk.timer = nil
+			}
+			s.mu.Unlock()
+			s.emitChunk(flushKind, turnID, flushText)
+			s.emitChunk(kind, turnID, curText)
+			return
+		}
+		flushKind = kind
+		flushText = s.chunk.buf.String()
+		s.chunk.buf.Reset()
+		if s.chunk.timer != nil {
+			s.chunk.timer.Stop()
+			s.chunk.timer = nil
+		}
+	} else if s.chunk.timer == nil {
+		s.chunk.timer = time.AfterFunc(chunkCoalesceWindow, s.flushChunks)
+	}
+	s.mu.Unlock()
+
+	if flushText != "" {
+		s.emitChunk(flushKind, turnID, flushText)
+	}
+}
+
+func (s *Session) flushChunks() {
+	s.mu.Lock()
+	if s.chunk.timer != nil {
+		s.chunk.timer.Stop()
+		s.chunk.timer = nil
+	}
+	if s.chunk.buf.Len() == 0 {
+		s.mu.Unlock()
+		return
+	}
+	kind := s.chunk.kind
+	text := s.chunk.buf.String()
+	turnID := s.activeTurnID
+	s.chunk.buf.Reset()
+	s.mu.Unlock()
+
+	if s.closing.Load() {
+		return
+	}
+	s.emitChunk(kind, turnID, text)
+}
+
+func (s *Session) stopChunkTimer() {
+	s.mu.Lock()
+	if s.chunk.timer != nil {
+		s.chunk.timer.Stop()
+		s.chunk.timer = nil
+	}
+	s.mu.Unlock()
+}
+
+func (s *Session) emitChunk(kind provider.EventKind, turnID, text string) {
+	if text == "" {
+		return
+	}
+	s.emitEvent(provider.ProviderEvent{
+		Kind:      kind,
+		ThreadID:  s.threadID,
+		TurnID:    turnID,
+		Content:   text,
+		Timestamp: time.Now(),
+	})
+}
+
+func (s *Session) handleToolCallStart(tc *ToolCallUpdate) {
+	if tc.ToolCallID == "" {
+		return
+	}
+	norm := s.flavor.NormalizeToolStart(tc)
+
+	s.mu.Lock()
+	sessionID := s.sessionID
+	turnID := s.activeTurnID
+	if norm.SubagentLaunch && s.flavor.CanTrackSubagent(sessionID) {
+		norm.IsBackground = true
+		s.trackedSubagents[tc.ToolCallID] = SubagentLaunchContext{
+			SessionID:  sessionID,
+			ThreadID:   s.threadID,
+			TurnID:     turnID,
+			ToolCallID: tc.ToolCallID,
+			RawInput:   append(json.RawMessage(nil), tc.EffectiveInput()...),
+			Started:    norm,
+			Emit:       s.emitEvent,
+		}
+	}
+	s.startedTools[tc.ToolCallID] = norm
+	s.mu.Unlock()
+
+	meta := buildToolStartMeta(norm)
+	s.emitEvent(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  s.threadID,
+		TurnID:    turnID,
+		ItemID:    tc.ToolCallID,
+		ItemType:  norm.ItemType,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
+
+	if tc.Status == "pending" {
+		s.handleToolCallPending(tc)
+	}
+}
+
+func (s *Session) handleToolCallInProgress(tc *ToolCallUpdate) {
+	if tc.ToolCallID == "" {
+		return
+	}
+	s.mu.Lock()
+	started := s.startedTools[tc.ToolCallID]
+	turnID := s.activeTurnID
+	s.mu.Unlock()
+
+	if tc.Kind != "execute" && started.ItemType != "command_execution" {
+		return
+	}
+	norm := s.flavor.NormalizeToolComplete(tc, started)
+	if norm.CommandOut == "" {
+		return
+	}
+	cmdMeta, _ := json.Marshal(map[string]any{
+		"command":  norm.CommandLine,
+		"toolName": norm.ToolName,
+	})
+	s.emitEvent(provider.ProviderEvent{
+		Kind:      provider.EventCommandOutput,
+		ThreadID:  s.threadID,
+		TurnID:    turnID,
+		ItemID:    tc.ToolCallID,
+		ItemType:  "command_execution",
+		Content:   norm.CommandOut,
+		Meta:      cmdMeta,
+		Replace:   true,
+		Timestamp: time.Now(),
+	})
+}
+
+func (s *Session) handleToolCallPending(tc *ToolCallUpdate) {
+	if tc.ToolCallID == "" {
+		return
+	}
+	questions, ok := s.flavor.ExtractPendingQuestion(tc)
+	if !ok || len(questions) == 0 {
+		return
+	}
+	questions = provider.NormalizeUserInputQuestions(questions)
+
+	s.mu.Lock()
+	if _, already := s.pendingToolQuestions[tc.ToolCallID]; already {
+		s.mu.Unlock()
+		return
+	}
+	turnID := s.activeTurnID
+	s.pendingToolQuestions[tc.ToolCallID] = pendingToolQuestion{
+		toolCallID: tc.ToolCallID,
+		questions:  questions,
+	}
+	s.mu.Unlock()
+
+	s.approvals.Track(tc.ToolCallID, provider.EventUserInputResolved, questions)
+	req := provider.UserInputRequest{
+		RequestID: tc.ToolCallID,
+		ThreadID:  s.threadID,
+		TurnID:    turnID,
+		ToolUseID: tc.ToolCallID,
+		ToolName:  "ask_question",
+		Title:     questions[0].Question,
+		Questions: questions,
+	}
+	meta, _ := json.Marshal(req)
+	s.emitEvent(provider.ProviderEvent{
+		Kind:      provider.EventUserInputRequest,
+		ThreadID:  s.threadID,
+		TurnID:    turnID,
+		ItemID:    tc.ToolCallID,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
+}
+
+func (s *Session) handleToolCallComplete(tc *ToolCallUpdate) {
+	if tc.ToolCallID == "" {
+		return
+	}
+	s.mu.Lock()
+	started := s.startedTools[tc.ToolCallID]
+	delete(s.startedTools, tc.ToolCallID)
+	trackedLaunch, wasTracked := s.trackedSubagents[tc.ToolCallID]
+	delete(s.trackedSubagents, tc.ToolCallID)
+	watchSubagent := wasTracked && tc.Status == "completed" && !s.closing.Load()
+	if watchSubagent {
+		// Transfer ownership from trackedSubagents to activeSubagentWatchers
+		// under s.mu so there is no quiescent gap between launch completion
+		// and background watcher completion.
+		s.activeSubagentWatchers++
+	}
+	turnID := s.activeTurnID
+	s.mu.Unlock()
+
+	norm := s.flavor.NormalizeToolComplete(tc, started)
+	if watchSubagent {
+		if norm.ExtraMeta == nil {
+			norm.ExtraMeta = map[string]any{}
+		}
+		norm.ExtraMeta["is_background"] = true
+	}
+	now := time.Now()
+	for _, evt := range buildToolCompleteEvents(s.threadID, turnID, tc.ToolCallID, norm, now) {
+		s.emitEvent(evt)
+	}
+	if watchSubagent {
+		s.subagentWG.Add(1)
+		go func() {
+			defer func() {
+				s.mu.Lock()
+				if s.activeSubagentWatchers > 0 {
+					s.activeSubagentWatchers--
+				}
+				s.mu.Unlock()
+				s.subagentWG.Done()
+			}()
+			s.flavor.WatchSubagent(s.sessionCtx, trackedLaunch)
+		}()
+	}
+}
+
+// BuildToolStartMeta encodes normalized tool-start metadata for EventToolStart.
+func BuildToolStartMeta(norm NormalizedToolStart) json.RawMessage {
+	return buildToolStartMeta(norm)
+}
+
+// BuildToolCompleteEvents constructs the companion heavy-payload events and
+// terminal EventToolComplete for a normalized tool completion.
+func BuildToolCompleteEvents(threadID, turnID, toolCallID string, norm NormalizedToolComplete, now time.Time) []provider.ProviderEvent {
+	return buildToolCompleteEvents(threadID, turnID, toolCallID, norm, now)
+}
+
+func buildToolStartMeta(norm NormalizedToolStart) json.RawMessage {
+	metaFields := map[string]any{
+		"toolName": norm.ToolName,
+	}
+	if len(norm.Input) > 0 {
+		metaFields["input"] = norm.Input
+	}
+	if norm.SubagentLaunch {
+		metaFields[provider.MetaSubagentLaunchKey] = true
+	}
+	if norm.Description != "" {
+		metaFields["description"] = norm.Description
+	}
+	if norm.SubagentType != "" {
+		metaFields["subagent_type"] = norm.SubagentType
+	}
+	if norm.IsBackground {
+		metaFields["is_background"] = true
+	}
+	for k, v := range norm.ExtraMeta {
+		metaFields[k] = v
+	}
+	meta, _ := json.Marshal(metaFields)
+	return meta
+}
+
+func buildToolCompleteEvents(threadID, turnID, toolCallID string, norm NormalizedToolComplete, now time.Time) []provider.ProviderEvent {
+	var events []provider.ProviderEvent
+
+	// File-change tool rows carry structured item.changes on EventToolComplete
+	// so triage.ExtractFileChangeToolResult builds exact ToolInlineDiff previews
+	// and insertion/deletion tallies directly on the Edit/Write row. Only emit a
+	// standalone EventDiff when the tool isn't already a file_change row with
+	// structured changes.
+	if norm.DiffPatch != "" && (norm.ItemType != "file_change" || len(norm.DiffChanges) == 0) {
+		diffMeta, _ := json.Marshal(map[string]any{
+			"filePath": norm.DiffFilePath,
+			"toolName": norm.ToolName,
+		})
+		events = append(events, provider.ProviderEvent{
+			Kind:      provider.EventDiff,
+			ThreadID:  threadID,
+			TurnID:    turnID,
+			ItemID:    toolCallID,
+			ItemType:  "file_change",
+			Content:   norm.DiffPatch,
+			Meta:      diffMeta,
+			Replace:   true,
+			Timestamp: now,
+		})
+	}
+	if norm.CommandOut != "" {
+		cmdMeta := map[string]any{
+			"command":  norm.CommandLine,
+			"toolName": norm.ToolName,
+		}
+		if norm.ExitCode != nil {
+			cmdMeta["exit_code"] = *norm.ExitCode
+			cmdMeta["exitCode"] = *norm.ExitCode
+		}
+		if norm.DurationMs != nil {
+			cmdMeta["durationMs"] = *norm.DurationMs
+		}
+		encoded, _ := json.Marshal(cmdMeta)
+		events = append(events, provider.ProviderEvent{
+			Kind:      provider.EventCommandOutput,
+			ThreadID:  threadID,
+			TurnID:    turnID,
+			ItemID:    toolCallID,
+			ItemType:  "command_execution",
+			Content:   norm.CommandOut,
+			Meta:      encoded,
+			Replace:   true,
+			Timestamp: now,
+		})
+	}
+	if norm.ProposedPlan != "" {
+		events = append(events, provider.ProviderEvent{
+			Kind:      provider.EventProposedPlan,
+			ThreadID:  threadID,
+			TurnID:    turnID,
+			ItemID:    toolCallID + ":plan",
+			ItemType:  "plan",
+			Content:   norm.ProposedPlan,
+			Timestamp: now,
+		})
+	}
+
+	metaFields := map[string]any{
+		"toolName": norm.ToolName,
+		"is_error": norm.IsError,
+	}
+	if norm.CommandLine != "" {
+		metaFields["command"] = norm.CommandLine
+	}
+	if norm.ExitCode != nil {
+		metaFields["exit_code"] = *norm.ExitCode
+		metaFields["exitCode"] = *norm.ExitCode
+	}
+	if norm.DurationMs != nil {
+		metaFields["durationMs"] = *norm.DurationMs
+	}
+	if norm.ItemStatus != "" {
+		metaFields["item_status"] = norm.ItemStatus
+	}
+	if norm.ItemType == "file_change" && len(norm.DiffChanges) > 0 {
+		changes := make([]map[string]any, 0, len(norm.DiffChanges))
+		for _, ch := range norm.DiffChanges {
+			kindType := ch.Kind
+			if kindType == "" {
+				kindType = "update"
+			}
+			changes = append(changes, map[string]any{
+				"path": ch.Path,
+				"kind": map[string]string{"type": kindType},
+				"diff": ch.Diff,
+			})
+		}
+		metaFields["item"] = map[string]any{
+			"id":      toolCallID,
+			"type":    "file_change",
+			"status":  norm.ItemStatus,
+			"changes": changes,
+		}
+	}
+	for k, v := range norm.ExtraMeta {
+		metaFields[k] = v
+	}
+	meta, _ := json.Marshal(metaFields)
+	events = append(events, provider.ProviderEvent{
+		Kind:           provider.EventToolComplete,
+		ThreadID:       threadID,
+		TurnID:         turnID,
+		ItemID:         toolCallID,
+		ItemType:       norm.ItemType,
+		Content:        norm.Content,
+		ContentPresent: norm.Content != "",
+		Meta:           meta,
+		Timestamp:      now,
+	})
+	return events
+}
+
+func appendOutputSchemaInstruction(content string, schema json.RawMessage) string {
+	trimmedSchema := strings.TrimSpace(string(schema))
+	if trimmedSchema == "" {
+		return content
+	}
+	instruction := "\n\n<structured-output-schema>\nRespond in your final assistant message with ONLY a single valid JSON object matching this JSON Schema (no markdown fences, no commentary before or after):\n" + trimmedSchema + "\n</structured-output-schema>"
+	return content + instruction
+}
+
+// extractStructuredJSONObject extracts a single JSON object from assistant text
+// (accepting raw JSON, fenced ```json blocks, or a trailing JSON object).
+func extractStructuredJSONObject(text string) json.RawMessage {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return nil
+	}
+	if strings.HasPrefix(trimmed, "```") {
+		if nl := strings.IndexByte(trimmed, '\n'); nl >= 0 {
+			body := trimmed[nl+1:]
+			if end := strings.LastIndex(body, "```"); end >= 0 {
+				trimmed = strings.TrimSpace(body[:end])
+			}
+		}
+	}
+	if strings.HasPrefix(trimmed, "{") && json.Valid([]byte(trimmed)) {
+		return json.RawMessage(trimmed)
+	}
+	start := strings.IndexByte(trimmed, '{')
+	end := strings.LastIndexByte(trimmed, '}')
+	if start >= 0 && end > start {
+		candidate := strings.TrimSpace(trimmed[start : end+1])
+		if json.Valid([]byte(candidate)) {
+			return json.RawMessage(candidate)
+		}
+	}
+	return nil
+}
+
+func (s *Session) handlePlanUpdate(entries []PlanEntry) {
+	type planStep struct {
+		Step   string `json:"step"`
+		Status string `json:"status"`
+	}
+	steps := make([]planStep, 0, len(entries))
+	for _, e := range entries {
+		status := e.Status
+		if status == "in_progress" {
+			status = "inProgress"
+		}
+		steps = append(steps, planStep{Step: e.Content, Status: status})
+	}
+	meta, _ := json.Marshal(map[string]any{"plan": steps})
+	s.emitEvent(provider.ProviderEvent{
+		Kind:      provider.EventTodoUpdate,
+		ThreadID:  s.threadID,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
+}
+
+func (s *Session) handleUsageUpdate(used, size int) {
+	s.mu.Lock()
+	if size > 0 {
+		s.lastContextSize = size
+	} else {
+		size = s.lastContextSize
+	}
+	sessionID := s.sessionID
+	spontaneous := s.spontaneousTurnOpen && s.inFlightPrompts == 0
+	turnID := s.activeTurnID
+	s.mu.Unlock()
+
+	if used > 0 || size > 0 {
+		cw := provider.ContextWindow{
+			UsedTokens:     used,
+			MaxTokens:      size,
+			UsedPercentage: provider.ComputeContextPercent(s.flavor.ProviderKind(), used, size),
+		}
+		meta, _ := json.Marshal(cw)
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventTokenUsage,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			Meta:      meta,
+			Timestamp: time.Now(),
+		})
+	}
+
+	// Trailing usage_update closes a spontaneous post-prompt wake turn unless
+	// the flavor indicates another high-priority wake is still queued.
+	if spontaneous && !s.flavor.ShouldHoldSpontaneousWakeClose(context.Background(), sessionID) {
+		s.mu.Lock()
+		if s.spontaneousTurnOpen && s.inFlightPrompts == 0 {
+			s.spontaneousTurnOpen = false
+			s.turnOpen = false
+		} else {
+			spontaneous = false
+		}
+		s.mu.Unlock()
+		if spontaneous {
+			s.emitEvent(provider.ProviderEvent{
+				Kind:      provider.EventTurnComplete,
+				ThreadID:  s.threadID,
+				TurnID:    turnID,
+				Timestamp: time.Now(),
+				TurnComplete: &provider.WireTurnCompleteMeta{
+					UsageScope: s.usageScope(),
+					StopReason: "end_turn",
+				},
+			})
+		}
+	}
+}
+
+func (s *Session) handleAvailableCommands(commands []AvailableCommand) {
+	out := make([]provider.SlashCommand, 0, len(commands))
+	for _, cmd := range commands {
+		name := strings.TrimPrefix(strings.TrimSpace(cmd.Name), "/")
+		if name == "" {
+			continue
+		}
+		hint := ""
+		if cmd.Input != nil {
+			hint = strings.TrimSpace(cmd.Input.Hint)
+		}
+		out = append(out, provider.SlashCommand{
+			Name:         name,
+			Description:  strings.TrimSpace(cmd.Description),
+			ArgumentHint: hint,
+		})
+	}
+	meta, _ := json.Marshal(provider.CommandsChangedMeta{Commands: out})
+	s.emitEvent(provider.ProviderEvent{
+		Kind:      provider.EventCommandsChanged,
+		ThreadID:  s.threadID,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
+}
+
+func (s *Session) handleCurrentModeUpdate(modeID string) {
+	modeID = strings.TrimSpace(modeID)
+	if modeID == "" {
+		return
+	}
+	s.mu.Lock()
+	echo := s.lastRequestedModeID == modeID
+	if echo {
+		s.lastRequestedModeID = ""
+	}
+	s.currentModeID = modeID
+	s.mu.Unlock()
+	if echo {
+		return
+	}
+	meta, _ := json.Marshal(provider.PermissionModeChangeMeta{Mode: modeID})
+	s.emitEvent(provider.ProviderEvent{
+		Kind:      provider.EventPermissionModeChanged,
+		ThreadID:  s.threadID,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
+}
+
+func (s *Session) isToolDisabled(name string) bool {
+	if len(s.disabledTools) == 0 {
+		return false
+	}
+	_, disabled := s.disabledTools[strings.ToLower(strings.TrimSpace(name))]
+	return disabled
+}
+
+func (s *Session) handlePermissionRequest(rpcID json.RawMessage, req RequestPermissionParams) {
+	s.confirmSolePrompt()
+	s.flushChunks()
+
+	if s.isToolDisabled(req.ToolCall.Name) {
+		outcome := PermissionOutcome{Outcome: "cancelled"}
+		for _, opt := range req.Options {
+			if opt.Kind == "reject_once" || opt.Kind == "reject_always" {
+				outcome = PermissionOutcome{Outcome: "selected", OptionID: opt.OptionID}
+				break
+			}
+		}
+		_ = s.conn.writeResponse(rpcID, RequestPermissionResult{Outcome: outcome})
+		return
+	}
+
+	s.mu.Lock()
+	policy := s.permissionPolicy
+	turnID := s.activeTurnID
+	s.mu.Unlock()
+
+	requestID := permissionRequestID(rpcID, req.ToolCall.ToolCallID)
+	cls := s.flavor.ClassifyPermission(s.threadID, turnID, requestID, req, policy)
+
+	switch cls.Action {
+	case PermissionAutoAllow:
+		outcome := PermissionOutcome{Outcome: "cancelled"}
+		if cls.OptionID != "" {
+			outcome = PermissionOutcome{Outcome: "selected", OptionID: cls.OptionID}
+		}
+		_ = s.conn.writeResponse(rpcID, RequestPermissionResult{Outcome: outcome})
+
+	case PermissionAutoDeny:
+		outcome := PermissionOutcome{Outcome: "cancelled"}
+		if cls.OptionID != "" {
+			outcome = PermissionOutcome{Outcome: "selected", OptionID: cls.OptionID}
+		}
+		_ = s.conn.writeResponse(rpcID, RequestPermissionResult{Outcome: outcome})
+
+	case PermissionAskUserInput:
+		s.mu.Lock()
+		s.pendingPerms[requestID] = pendingPermission{
+			rpcID:       append(json.RawMessage(nil), rpcID...),
+			optionByKey: cls.OptionByKey,
+			isUserInput: true,
+		}
+		s.mu.Unlock()
+		s.approvals.Track(requestID, provider.EventUserInputResolved, cls.UserInput.Questions)
+		meta, _ := json.Marshal(cls.UserInput)
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventUserInputRequest,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			ItemID:    requestID,
+			Meta:      meta,
+			Timestamp: time.Now(),
+		})
+
+	case PermissionAskUser:
+		s.mu.Lock()
+		s.pendingPerms[requestID] = pendingPermission{
+			rpcID:       append(json.RawMessage(nil), rpcID...),
+			optionByKey: cls.OptionByKey,
+		}
+		s.mu.Unlock()
+		s.approvals.Track(requestID, provider.EventApprovalResolved, nil)
+		meta, _ := json.Marshal(cls.Approval)
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventApprovalRequest,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			ItemID:    requestID,
+			Meta:      meta,
+			Timestamp: time.Now(),
+		})
+	}
+}
+
+func (s *Session) emitEvent(evt provider.ProviderEvent) {
+	if s.onEvent != nil {
+		s.onEvent(evt)
+	}
+}
+
+func buildPromptBlocks(content string, attachments []provider.ImageAttachment) []ContentBlock {
+	parts := provider.SplitContentByImageMarkers(content, len(attachments))
+	blocks := make([]ContentBlock, 0, len(parts))
+	for _, part := range parts {
+		if part.ImageIndex < 0 {
+			if part.Text != "" {
+				blocks = append(blocks, ContentBlock{Type: "text", Text: part.Text})
+			}
+			continue
+		}
+		if part.ImageIndex >= len(attachments) {
+			continue
+		}
+		att := attachments[part.ImageIndex]
+		if len(att.Data) == 0 {
+			continue
+		}
+		mime := strings.TrimSpace(att.MimeType)
+		if mime == "" {
+			mime = "image/png"
+		}
+		blocks = append(blocks, ContentBlock{
+			Type:     "image",
+			Data:     base64.StdEncoding.EncodeToString(att.Data),
+			MimeType: mime,
+		})
+	}
+	return blocks
+}
+
+func permissionRequestID(rpcID json.RawMessage, toolCallID string) string {
+	raw := strings.TrimSpace(string(rpcID))
+	raw = strings.Trim(raw, `"`)
+	if raw != "" {
+		return "acp-perm-" + raw
+	}
+	if toolCallID != "" {
+		return "acp-perm-" + toolCallID
+	}
+	return fmt.Sprintf("acp-perm-%d", time.Now().UnixNano())
+}
+
+func currentConfigValue(opts []ConfigOption, id string) string {
+	for _, opt := range opts {
+		if opt.ID == id {
+			return opt.CurrentValue
+		}
+	}
+	return ""
+}
+
+func optionOffered(opts []ConfigOption, configID, value string) bool {
+	for _, opt := range opts {
+		if opt.ID != configID {
+			continue
+		}
+		for _, choice := range opt.Options {
+			if choice.Value == value {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func resolveUserInputOptionID(answers map[string]provider.UserInputAnswer, byKey map[string]string) string {
+	for _, ans := range answers {
+		for _, val := range ans {
+			if optID, ok := byKey[val]; ok && optID != "" {
+				return optID
+			}
+		}
+	}
+	return ""
+}
+
+func formatToolQuestionAnswer(questions []provider.UserInputQuestion, answers map[string]provider.UserInputAnswer, decision string) string {
+	if decision == "decline" {
+		return "Cancelled."
+	}
+	if len(questions) == 1 {
+		q := questions[0]
+		if ans := answers[q.ID]; len(ans) > 0 {
+			// Match numbered option index if possible for concise ACP answers.
+			if !q.MultiSelect && len(ans) == 1 {
+				for idx, opt := range q.Options {
+					if opt.Label == ans[0] {
+						return strconv.Itoa(idx + 1)
+					}
+				}
+			}
+			return strings.Join(ans, ", ")
+		}
+	}
+	var parts []string
+	for _, q := range questions {
+		if ans := answers[q.ID]; len(ans) > 0 {
+			parts = append(parts, fmt.Sprintf("%s: %s", q.Question, strings.Join(ans, ", ")))
+		}
+	}
+	if len(parts) == 0 {
+		for _, ans := range answers {
+			if len(ans) > 0 {
+				parts = append(parts, strings.Join(ans, ", "))
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}

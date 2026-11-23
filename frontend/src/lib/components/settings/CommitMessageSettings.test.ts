@@ -37,13 +37,13 @@ describe("<CommitMessageSettings>", () => {
     expect(getByTestId("settings-textgen-effort")).toBeTruthy();
   });
 
-  it("lists codex and claude as the provider options", async () => {
+  it("lists agy, claude, and codex as the provider options", async () => {
     const { getByTestId } = render(CommitMessageSettings);
     const select = getByTestId(
       "settings-textgen-provider",
     ) as HTMLSelectElement;
     const values = Array.from(select.options).map((o) => o.value);
-    expect(values.sort()).toEqual(["claude", "codex"]);
+    expect(values.sort()).toEqual(["agy", "claude", "codex"]);
   });
 
   it("shows the codex default model in the placeholder when provider is codex", async () => {

@@ -2,7 +2,7 @@
 // (docs/specs/agent-visibility.md § "Success criteria").
 //
 // Every Claude wire shape below is modelled on a checked-in 2026-08-22
-// capture — `docs/references/fixtures/claude/{task_progress,
+// capture — `internal/provider/wirecaptures/claude/{task_progress,
 // can_use_tool_agent_id,forked_skill,background_tasks_control}_20260822
 // .ndjson` — and the same shapes the parser's replay tests pin
 // (`internal/provider/claude/subagent_visibility_replay_test.go`). The

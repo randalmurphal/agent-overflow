@@ -10,12 +10,11 @@
 // generated module exports (superset rule, stated at the block comment in
 // the mock), and must export nothing the generated module lost, so a deleted
 // binding takes its mock line with it.
-import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
+import generatedBindings from '../../../bindings/agent-overflow/app.ts?raw';
 
-import { SRC_ROOT } from '../sourceScan';
 import * as mockBindings from './bindings-app';
+import { TransportError } from '../../lib/transport/wsClient';
 
 // Exports that are the mock's own machinery, not fakes of generated bindings.
 const mockMachinery = new Set([
@@ -24,12 +23,13 @@ const mockMachinery = new Set([
   'setAttachmentThumbnailMock',
   'getBindingMock',
   'resetBindingMocks',
-  '__bindingMocksInternal',
+  'bindingMockFor',
+  'bindingMockNames',
+  'unansweredBinding',
 ]);
 
 function generatedFunctionNames(): Set<string> {
-  const path = resolve(SRC_ROOT, '..', 'bindings', 'agent-overflow', 'app.ts');
-  const source = readFileSync(path, 'utf8');
+  const source = generatedBindings;
   // The generator emits every binding as a top-level `export function Name(`.
   return new Set(
     [...source.matchAll(/^export function (\w+)\(/gm)].map((m) => m[1]),
@@ -66,5 +66,60 @@ describe('bindings-app mock stays in sync with the generated bindings', () => {
   it('exports no binding the generated module lost', () => {
     const vanished = [...mocked].filter((name) => !generated.has(name)).sort();
     expect(vanished, 'remove these from bindings-app.ts').toEqual([]);
+  });
+});
+
+describe('bindings-app passive loads', () => {
+  it('answer as a backend with nothing recorded after a reset, until a test installs its own', async () => {
+    mockBindings.resetBindingMocks();
+    await expect(mockBindings.GetSoundFiles()).resolves.toEqual({ dir: '/tmp/sounds', sounds: [], warnings: [] });
+    await expect(mockBindings.GetProviderLoginState('claude')).resolves.toEqual({ provider: 'claude', phase: 'idle' });
+    await expect(mockBindings.ListProviderAccounts()).resolves.toEqual([]);
+    await expect(mockBindings.GetRateLimitsSnapshots()).resolves.toEqual([]);
+    await expect(mockBindings.GetThreadLiveState('t1')).resolves.toMatchObject({ threadId: 't1', queueItems: [], interactive: { approvals: [], userInputs: [] } });
+    await expect(mockBindings.GetThreadWorkerSummary('t1')).resolves.toEqual({ threadId: 't1', open: 0, needYou: 0 });
+    await expect(mockBindings.ListThreadWakes('t1')).resolves.toEqual({ rows: [], moreReminders: 0 });
+    await expect(mockBindings.AutoResumeThread('t1')).resolves.toBeUndefined();
+    mockBindings.setBindingMock('GetSoundFiles', async () => 'own');
+    await expect(mockBindings.GetSoundFiles()).resolves.toBe('own');
+    mockBindings.resetBindingMocks();
+    await expect(mockBindings.GetSoundFiles()).resolves.toEqual({ dir: '/tmp/sounds', sounds: [], warnings: [] });
+  });
+
+  it('list no MCP servers, as for a provider with no built-in servers', async () => {
+    await expect(mockBindings.ListThreadMcpServers('t1')).resolves.toEqual([]);
+    await expect(mockBindings.ListWorkspaceMcpServers('claude', '/w')).resolves.toEqual([]);
+  });
+
+  it('refuse every highlight read as a session without files:read', async () => {
+    for (const read of [
+      () => mockBindings.HighlightSchemaVersion(),
+      () => mockBindings.HighlightClassNames(),
+      () => mockBindings.HighlightCode({ lang: 'ts', source: 'x' }),
+      () => mockBindings.HighlightPatch({ path: 'a.ts', patch: '' }),
+      () => mockBindings.HighlightPatchWithContext('/w', {}),
+      () => mockBindings.HighlightEditPatchWithContext('t1', {}),
+    ]) {
+      const refusal = await (read() as Promise<unknown>).catch((error: unknown) => error);
+      expect(refusal).toBeInstanceOf(TransportError);
+      expect(refusal).toMatchObject({ code: 'scope_required', scope: 'files:read' });
+    }
+  });
+});
+
+describe('the passive loads', () => {
+  it('make no spy on a reset, and one on first use', async () => {
+    const made = vi.spyOn(vi, 'fn');
+    try {
+      mockBindings.resetBindingMocks();
+      expect(made).not.toHaveBeenCalled();
+      await mockBindings.ListProjects();
+      expect(made).toHaveBeenCalledTimes(1);
+      expect(mockBindings.getBindingMock('ListProjects')).toHaveBeenCalledTimes(1);
+      await mockBindings.ListProjects();
+      expect(made).toHaveBeenCalledTimes(1);
+    } finally {
+      made.mockRestore();
+    }
   });
 });

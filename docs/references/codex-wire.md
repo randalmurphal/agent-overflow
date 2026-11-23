@@ -330,6 +330,62 @@ not checked in per the rule below):
 - `inputTokens` includes `cachedInputTokens` on the live wire
   (in=12039, cached=9600, out=5, total=12044).
 
+### Rate-limit reset credits
+
+Source: the codex-rs app-server README (rate-limit reset credits) and its
+protocol types. Not yet captured from an installed CLI: an account with
+credits is needed for that, and spending one to prove the shape is ruled out.
+
+`account/rateLimits/read` carries `rateLimitResetCredits`, null or absent
+when the backend gave none (an older CLI, an API-key login, a failed
+lookup). Otherwise it is `{availableCount, credits}`: `availableCount` is
+authoritative, and `credits` is `null` when only the count is known, or a
+list the backend may cap. Each credit is `{id, resetType, status,
+grantedAt, expiresAt, title, description}`; `status` is `available`,
+`redeeming`, `redeemed` or `unknown`, times are Unix seconds, and
+`expiresAt`, `title` and `description` may be null.
+
+`account/rateLimitResetCredit/consume {idempotencyKey, creditId?}` spends
+one. Without `creditId` the backend picks the next available credit. It
+answers `{outcome}`: `reset`, `alreadyRedeemed` (this key's redemption
+completed earlier), `nothingToReset` or `noCredit`; only `reset` and
+`alreadyRedeemed` mean a reset happened. A `-32600`, `-32601` or `-32602`
+error spends nothing. `-32603` (the app-server's own 10-second bound on the
+backend call, among others) leaves the outcome unknown, so a retry must
+send the same `idempotencyKey`. The app-server does not refresh the
+rate-limit cache after a consume; the caller reads again.
+
+`codex.SpendReset` runs in a one-shot probe: `account/read` first, the
+consume only with the key and credit the caller admits for that login
+(`ProbeConfig.BeforeConsume`), then `account/rateLimits/read` after the
+consume's answer, so the reading describes the account after the spend.
+Every step before the consume ends by the spend's cutoff (`SendBy`): the
+probe checks it last before the write, with nothing that can wait between
+them, and a spend past it is not written (`ErrResetLate`). The steps after
+the write have `ResetSettleTimeout`. `OnConsumeWritten` runs once the write
+was attempted, and `OnConsumeAnswer` with the outcome on receipt, before the
+reading after it.
+
+AO always names the credit, so a key sent again cannot take another one. The
+admission confirms the login is the chosen saved account: the same email,
+and the same workspace on both sides (`account/read` names none, so it is the
+one the credential carries); a workspace unknown on either side is refused,
+and the person is asked to refresh the account. It then records the spend
+with its key and credit (`provideraccounts.PendingReset`) immediately before
+the consume is written, and publishes the record once the write was
+attempted; a spend past its cutoff deletes its record and sends nothing. The
+record stays until Codex answers a request under that key, and the answer
+ends it on receipt, apart from the reading after it, which can't keep it
+from settling. While it stands the account offers Finish, which sends the
+same key and credit again, and no other spend. Neither the README nor the
+protocol types say how long the backend remembers a key. The card lists each
+listed credit under its `resetType` and counts the available credits beyond
+a capped list, or with no list at all, without offering them. After a
+spend, a reading that still lists the credit the answer says is gone does
+not offer it again. The card's options and the record are in
+`internal/provideraccountapp/usage_resets.go` and
+`internal/provideraccounts/usage_resets.go`.
+
 ### Asynchronous questions
 
 Codex 0.153.1 `request_user_input_async` emits an `agentMessage` with
@@ -1299,7 +1355,7 @@ Verified against `rust-v0.153.4`.
 ### Thread unload and cold resume (verified 0.162.1)
 
 Spike 2026-10-16, codex-cli 0.162.1, `gpt-6-luna`, one connection.
-Fixture: `fixtures/codex/thread_unload_cold_resume_20261016.ndjson`.
+Fixture: `internal/provider/wirecaptures/codex/thread_unload_cold_resume_20261016.ndjson`.
 
 - `thread/unsubscribe {threadId}` answers `{status}`: `unsubscribed`,
   `notSubscribed`, or `notLoaded` once the thread is gone. It removes only
@@ -1356,7 +1412,7 @@ Same spike. Several threads on one app-server:
 Spike 2026-10-16, codex-cli 0.162.1, `gpt-5.6-luna` (`gpt-6-luna` is
 refused for a ChatGPT account: "not supported when using Codex with a
 ChatGPT account"). Fixture:
-`fixtures/codex/developer_instructions_shared_process_20261016.ndjson`.
+`internal/provider/wirecaptures/codex/developer_instructions_shared_process_20261016.ndjson`.
 Each step asked for a reply ending in the token the current instructions
 name.
 
@@ -1595,7 +1651,7 @@ Available since codex 0.140.0; verified on 0.146.0 and 0.159.1.
 ### What a kill writes (verified 0.159.1)
 
 Spike 2026-10-15, codex-cli 0.159.1, `gpt-6-luna`. Fixtures under
-`docs/references/fixtures/codex/`, one run each:
+`internal/provider/wirecaptures/codex/`, one run each:
 
 | Fixture | Case |
 |---|---|

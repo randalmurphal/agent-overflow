@@ -45,7 +45,7 @@ import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { noteThread, threadBackend } from '../transport/entityIndex';
 import { attachedBackends } from '../transport/backends';
 import { rememberedIdentity, forgetRememberedIdentity } from '../transport/rememberedIdentity';
-import { currentCatalogStamp, invalidateCatalogStamp, observeCatalogStamp, resetCatalogStampsForTest } from './catalogStamp';
+import { currentCatalogStamp, invalidateCatalogStamp, observeCatalogStamp } from './catalogStamp';
 import {
   catalogKey, makeCatalogRecord, readCatalogRecord, type CatalogKind, type CatalogRowCache, type CatalogRows,
 } from './catalog';
@@ -859,7 +859,6 @@ onPurgeClientState(async (scope) => {
 
 /** Test-only: forget every session and re-enable after a failure latch. */
 export function __resetReplicaForTest(): void {
-  resetCatalogStampsForTest();
   for (const held of sessions.values()) {
     closeSession(held);
     retoken(held);

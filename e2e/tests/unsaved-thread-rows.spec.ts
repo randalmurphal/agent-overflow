@@ -11,8 +11,8 @@
 // sees another client's dismiss live.
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { BrowserContext, Locator } from '@playwright/test';
-import { gateTest as pwTest } from './fixtures.js';
+import { type BrowserContext, type Locator } from '@playwright/test';
+import { test as pwTest } from './base-test.js';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { openThread } from './worktree-removal-helpers.js';
 import { mockSessions } from './workflows-helpers.js';

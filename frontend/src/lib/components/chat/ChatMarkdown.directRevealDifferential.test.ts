@@ -1,5 +1,6 @@
 import { render } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { seededRandom } from '../../../test/helpers/seededRandom';
 import DirectMarkdownDifferentialHarness from './DirectMarkdownDifferentialHarness.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 
@@ -235,10 +236,9 @@ const PARSER_TRANSITION_CORPUS = [
 function variableChunks(source: string, seed: number): string[] {
   const chunks: string[] = [];
   let offset = 0;
-  let state = seed >>> 0;
+  const next = seededRandom(seed);
   while (offset < source.length) {
-    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
-    const length = 1 + (state % 19);
+    const length = 1 + next(19);
     chunks.push(source.slice(offset, offset + length));
     offset += length;
   }

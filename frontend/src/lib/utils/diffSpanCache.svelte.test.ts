@@ -74,7 +74,6 @@ const OTHER_WS = { projectId: 'project-1', workspacePath: '/wt/feature' };
 const workspaceContext = { scope: 'workspace', commitSHA: '', headSHA: '', workspace: WS };
 
 beforeEach(() => {
-  resetDiffSpanCacheForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
 });

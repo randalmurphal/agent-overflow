@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { setupEventListeners } from './events';
 import { onThreadWakesChanged, type ThreadWakeChange } from './eventsThreadWakes';
-import { resetBindingMocks } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { __attachBackendForTest, detachBackend } from '../transport/backends';
 
@@ -22,7 +21,6 @@ let received: [ThreadWakeChange | null, string][] = [];
 let unsubscribe: (() => void) | null = null;
 
 beforeEach(() => {
-  resetBindingMocks();
   attachRemote();
   received = [];
   unsubscribe = onThreadWakesChanged((change, backend) => received.push([change, backend]));

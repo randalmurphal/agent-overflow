@@ -4,5 +4,7 @@
 export {
     LoginMethod,
     LoginPhase,
-    LoginState
+    LoginState,
+    ResetSpendResult,
+    UnsettledReset
 } from "./models.js";

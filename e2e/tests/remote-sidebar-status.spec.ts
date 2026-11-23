@@ -10,8 +10,8 @@
 // reported, shown still and labelled as such; until then the row is as it
 // was. The reconnect snapshot corrects it: the frames that would otherwise
 // correct it are withheld.
-import { expect, type WebSocketRoute } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { type WebSocketRoute } from '@playwright/test';
+import { expect, test } from './base-test.js';
 import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { socketAnswers } from './offhost-helpers.js';

@@ -18,9 +18,9 @@ import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { addProjectLocal, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
 import { reloadReadAloudPreferencesForTest, setReadAloudPreference } from '../../stores/readAloudPreferences.svelte';
 import { resetReadAloudSourcesForTest } from '../../stores/readAloudSource.svelte';
-import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { noteThread } from '../../transport/entityIndex';
 import { HOME_BACKEND } from '../../transport/backendKey';
-import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { REMOTE_BACKEND_UUID, stageBackend } from '../../../test/helpers/backends';
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -481,6 +481,8 @@ describe('<MessageTimeline>', () => {
   });
 
   it('renders one DiffFileBlock per file for multi-file tool_result rows', async () => {
+    // The diff blocks read the payload's preview: an empty patch.
+    setBindingMock('GetPayloadPreview', async () => ({ data: '', nextOffset: 0, totalSize: 0, isComplete: true }));
     const pane = await buildPane(undefined, [
       makeItem({
         id: 'tool-1',
@@ -768,6 +770,8 @@ describe('<MessageTimeline>', () => {
   });
 
   it('drops a row out of its run when a payloadKind takes it off the rail', async () => {
+    // The plan row reads its markdown.
+    setBindingMock('GetPayloadData', async () => ({ data: '# Ship it' }));
     const tool = makeItem({
       id: 'plan-1',
       itemIndex: 0,
@@ -1736,9 +1740,6 @@ describe('<MessageTimeline> read-aloud source', () => {
     setReadAloudPreference('enabled', true);
   });
   afterEach(() => {
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    resetReadAloudSourcesForTest();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
   });

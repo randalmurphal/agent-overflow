@@ -16,6 +16,7 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 type testModels struct{}
@@ -118,11 +119,7 @@ func (r *recentRecorder) AddRecentWorkspace(bucket, class, path string) {
 
 func newServiceFixture(t *testing.T) (*Service, *store.Store, *testModels) {
 	t.Helper()
-	database, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
+	database := storetest.Clone(t)
 	if _, err := database.CreateProject(store.Project{
 		ID: "project", Path: "/repo", Name: "repo", CreatedAt: 1, UpdatedAt: 1,
 	}); err != nil {

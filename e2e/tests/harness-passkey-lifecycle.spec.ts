@@ -75,14 +75,8 @@
 // `internal` authenticator per environment. Case 3 therefore proves the
 // step-up mechanism end to end and stops where the browser does.
 
-import {
-  chromium,
-  expect,
-  type Browser,
-  type BrowserContext,
-  type Page,
-} from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { chromium, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { expect, test } from './base-test.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { attachAuthenticator, type Authenticator, type VirtualCredential } from './passkey-helpers.js';

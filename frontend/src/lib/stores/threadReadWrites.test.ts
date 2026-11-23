@@ -1,12 +1,9 @@
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import storeThreads from '../../../../internal/store/threads.go?raw';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import {
   claimLocalReadMarker,
   pendingLocalReadMarker,
-  resetLocalReadMarkersForTest,
   withLocalReadMarker,
 } from './threadReadWrites';
 import {
@@ -36,8 +33,6 @@ function mkThread(id: string, lastReadAt: number | undefined): Thread {
 
 describe('threadReadWrites', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetLocalReadMarkersForTest();
     replaceAllThreads([]);
   });
 
@@ -177,10 +172,7 @@ describe('threadReadWrites', () => {
 // call. The Go source is the reference.
 describe('the Mark All Read split', () => {
   it('matches store.MarkThreadsReadLimit', () => {
-    const source = readFileSync(
-      resolve(dirname(fileURLToPath(import.meta.url)), '../../../../internal/store/threads.go'),
-      'utf8',
-    );
+    const source = storeThreads;
     const limit = /MarkThreadsReadLimit = (\d+)/.exec(source);
     expect(limit, 'store.MarkThreadsReadLimit is not declared in internal/store/threads.go any more').not.toBeNull();
     expect(MARK_THREADS_READ_LIMIT).toBe(Number(limit![1]));

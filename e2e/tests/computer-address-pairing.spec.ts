@@ -6,8 +6,8 @@
 // Inside the test network namespace the address is its LAN address; outside
 // it (macOS) an isolated instance stays on loopback, pairs over 127.0.0.1 and
 // says nearby discovery is off (network.IsolatedReach).
-import { expect, type Page } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { type Page } from '@playwright/test';
+import { expect, test } from './base-test.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

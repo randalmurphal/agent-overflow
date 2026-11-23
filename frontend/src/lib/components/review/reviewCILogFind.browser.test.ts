@@ -10,7 +10,7 @@ import { SvelteSet } from 'svelte/reactivity';
 import '../../../app.css';
 import ReviewCILogView from './ReviewCILogView.svelte';
 import ReviewPaneFind from './ReviewPaneFind.svelte';
-import { getPaneFindProvider, openPaneFind, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
+import { getPaneFindProvider, openPaneFind, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import type { ReviewFind } from '../../stores/reviewFind.svelte';
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 import type { CILogFindHit } from '../../utils/ciLogFind';
@@ -20,7 +20,6 @@ import { FakeCILog, numberedLines } from '../../../test/helpers/ciLog';
 import { raf, waitFor, withinFrames } from '../../../test/helpers/browserFrames';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
 import { spyScheduling } from '../../../test/helpers/schedulingSpy';
-import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
 
 const JOB: CIJob = { id: '20', name: 'unit', status: 'success', logsAvailable: true };
 const MATCH_LINE = 3000;
@@ -30,8 +29,6 @@ const mounted: (() => void)[] = [];
 
 afterEach(() => {
   for (const release of mounted.splice(0)) release();
-  resetPaneFindForTest();
-  resetScrollIntentModuleStateForTest();
 });
 
 // The long log every reveal case searches: one match, or two.

@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/reporoot"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/wake"
@@ -299,12 +300,12 @@ func TestAgentMessageLabelFixture(t *testing.T) {
 	}
 	encoded = append(encoded, '\n')
 	if os.Getenv("UPDATE_AGENT_MESSAGE_LABELS") != "" {
-		if err := os.WriteFile(agentMessageLabelsFixture, encoded, 0o644); err != nil {
+		if err := os.WriteFile(reporoot.Path(t, agentMessageLabelsFixture), encoded, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		return
 	}
-	committed, err := os.ReadFile(agentMessageLabelsFixture)
+	committed, err := os.ReadFile(reporoot.Path(t, agentMessageLabelsFixture))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,6 +16,7 @@ import {
   updateProjectLocal,
 } from '../../../stores/projects.svelte';
 import { catalogTreeListed, loadSidebarCatalogs, resetSidebarCatalogsForTest } from '../../../stores/sidebarCatalogs';
+import { COMPUTER_READ_DEADLINE_MS } from '../../../stores/computerRows';
 import {
   ensureMainPane,
   getAllPanes,
@@ -54,6 +55,18 @@ function mkProject(id: string, overrides: Partial<Project> = {}): Project {
     archived: false,
     ...overrides,
   };
+}
+
+/**
+ * A round with a computer whose tree is held answers at the read deadline.
+ * Fakes the clock and passes the deadline on it; the caller's describe
+ * restores real timers.
+ */
+async function loadPastReadDeadline(): ReturnType<typeof loadSidebarCatalogs> {
+  vi.useFakeTimers();
+  const round = loadSidebarCatalogs();
+  await vi.advanceTimersByTimeAsync(COMPUTER_READ_DEADLINE_MS);
+  return round;
 }
 
 async function settleTicks(): Promise<void> {
@@ -657,8 +670,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu' ? gpuThreads.promise : Promise.resolve(after)));
       setBindingMock('ListThreadGroups', async () => (takePinnedBackend() === 'gpu' ? [] : [group('g2')]));
       const { container } = render(ProjectsSection, { props: { pane: null } });
-      const round = loadSidebarCatalogs();
-      await round;
+      await loadPastReadDeadline();
       await settle();
       expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
       expect(catalogTreeListed('gpu')).toBe(false);
@@ -699,7 +711,7 @@ describe('<ProjectsSection> threads and their groups', () => {
         : Promise.resolve([makeThread({ id: 'ta', projectId: 'a-home' }), makeThread({ id: 'tb', projectId: 'b-home' })])));
       setBindingMock('ListThreadGroups', async () => []);
       const { container } = render(ProjectsSection, { props: { pane: null } });
-      await loadSidebarCatalogs();
+      await loadPastReadDeadline();
       await settle();
       expect(catalogTreeListed('gpu')).toBe(false);
       // B is still the newer entry: the held member's 300 is not folded in.
@@ -736,7 +748,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu' ? gpuThreads.promise : Promise.resolve([])));
       setBindingMock('ListThreadGroups', async () => []);
       const { container } = render(ProjectsSection, { props: { pane: null } });
-      await loadSidebarCatalogs();
+      await loadPastReadDeadline();
       await settle();
       expect(headers(container)).toEqual(['a-mac']);
 
@@ -1323,7 +1335,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       const refresh = vi.fn(async (id: string) => ({ ...repoProject(id, 'A', '/home/a'), identityError: '' }));
       setBindingMock('RefreshProjectIdentity', refresh);
       const { container, getByTestId, queryByTestId } = render(ProjectsSection, { props: { pane: null } });
-      await loadSidebarCatalogs();
+      await loadPastReadDeadline();
       await settle();
       expect(headers(container)).toEqual(['a-home']);
       expect(getByTestId('project-item-identity-error').getAttribute('title'))
@@ -1343,6 +1355,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(getByTestId('project-item-identity-error').getAttribute('title'))
         .toBe('Could not fully verify /gpu/a: gpu reason');
     } finally {
+      vi.useRealTimers();
       resetStagedBackends();
     }
   });
@@ -1640,8 +1653,6 @@ describe('<ProjectsSection> while a paired computer is not loaded', () => {
   });
   afterEach(() => {
     resetStagedBackends();
-    resetCatalogLoadForTest();
-    resetSidebarCatalogsForTest();
     __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
     vi.useRealTimers();
     vi.restoreAllMocks();

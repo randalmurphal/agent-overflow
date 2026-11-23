@@ -1,4 +1,4 @@
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { takePinnedBackend } from '../transport/backends';
 import { setCarriedSessionScopes } from '../transport/scopes';
 import { setSelectedBackend } from './selectedBackend.svelte';
@@ -10,6 +10,7 @@ import { getSessionImportBackend } from './sessionImport.svelte';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
+import { TransportError } from '../transport/wsClient';
 import { setPageGrantsFromBootstrap } from '../transport/scopes';
 import { getToasts, removeToast } from './toast.svelte';
 import type {
@@ -34,7 +35,6 @@ import {
   loadImportCatalog,
   markImportConnectionLost,
   openSessionImport,
-  resetSessionImportForTest,
   setProjectFilter,
   setSelection,
   setShowAlreadyRan,
@@ -114,7 +114,6 @@ function clearToasts(): void {
 }
 
 beforeEach(() => {
-  resetSessionImportForTest();
   clearToasts();
   // The `done` frame resyncs the sidebar through the real projection path
   // (mocking a dependency of a .svelte.ts module is unreliable), so give it
@@ -125,7 +124,6 @@ beforeEach(() => {
 
 afterEach(() => {
   setPageGrantsFromBootstrap(false);
-  resetSessionImportForTest();
   clearToasts();
 });
 
@@ -925,19 +923,21 @@ describe('selection', () => {
 
 describe('the unwired case', () => {
   it('fails loudly when the binding itself is missing', async () => {
-    // No mock installed for ListImportableSessions: the binding mock rejects
-    // rather than resolving empty, and the store turns that into visible
-    // state instead of an empty catalogue that looks like "nothing to do".
+    // A backend without the method refuses it, and the store turns that into
+    // visible state instead of an empty catalogue that looks like "nothing
+    // to do".
+    setBindingMock('ListImportableSessions', async () => {
+      throw new TransportError('method_not_found', 'method not registered');
+    });
     vi.spyOn(console, 'error').mockImplementation(() => {});
     await loadImportCatalog();
     expect(getSessionImportStatus()).toBe('error');
-    expect(getSessionImportError()).toMatch(/ListImportableSessions/);
+    expect(getSessionImportError()).toMatch(/method not registered/i);
   });
 });
 
-
 describe('imports stay on the computer whose catalog was opened', () => {
-  afterEach(() => { resetStagedBackends(); setSelectedBackend(''); });
+  afterEach(() => { setSelectedBackend(''); });
 
   it('pins scan, start and cancel despite frontend selection changes and ignores another computer’s frames', async () => {
     stageBackend();

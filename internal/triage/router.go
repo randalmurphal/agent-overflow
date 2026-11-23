@@ -91,6 +91,11 @@ type Router struct {
 	// progress (woke false) and right after that start ends, before the
 	// state is read again (woke true). Read under mu. Nil in production.
 	interruptWaitHook func(threadID string, woke bool)
+	// turnSettleGate is a test-only hook (SetTurnSettleGate) called right
+	// before settleTurnRow writes a turn's end, after the round is taken:
+	// the window in which the turn has ended on the wire and not in the
+	// store. Read under mu. Nil in production.
+	turnSettleGate func(threadID string)
 	// delays holds the router's debounce and throttle intervals, the
 	// production values from NewRouter. A same-package test lengthens
 	// one so its timer cannot fire inside a window that asserts what a
@@ -255,6 +260,10 @@ type Router struct {
 	// the provider read loop; implementations must not block. Wired via
 	// SetUnsavedRowObserver at router construction.
 	unsavedRows UnsavedRowObserver
+	// turnEndMu orders each write of a turn's end with the report of its
+	// outcome to unsavedRows (writeTurnEnd), so the last report is the last
+	// write's. Taken only there.
+	turnEndMu sync.Mutex
 	// codeSpanEnricher builds the persisted `codeSpans` meta value for
 	// a settled assistant text (see code_spans.go). Wired via
 	// SetCodeSpanEnricher at router construction; nil disables it.
@@ -482,6 +491,16 @@ func (r *Router) SetTurnRowWrittenGate(gate func(threadID string)) {
 	r.mu.Unlock()
 }
 
+// SetTurnSettleGate installs a test-only hook called right before
+// settleTurnRow writes a turn's end, so a test can hold a completion in the
+// window between the round's end and the row's. Production code must leave
+// this nil. Pass nil to clear.
+func (r *Router) SetTurnSettleGate(gate func(threadID string)) {
+	r.mu.Lock()
+	r.turnSettleGate = gate
+	r.mu.Unlock()
+}
+
 // SetInterruptWaitHook installs a test-only hook that SampleInterrupt
 // calls right before it waits on a turn start in progress (woke false)
 // and right after that start ends, before it reads the state again
@@ -558,7 +577,7 @@ func (r *Router) HandleSynthetic(evt provider.ProviderEvent) error {
 // of a write the store refused (reportShownHistoryRefusal).
 func (r *Router) dispatchReportingRefusals(evt provider.ProviderEvent) error {
 	err := r.dispatch(evt)
-	if reportErr := r.reportShownHistoryRefusal(evt.ThreadID, err); reportErr != nil {
+	if _, reportErr := r.reportShownHistoryRefusal(evt.ThreadID, err); reportErr != nil {
 		err = errors.Join(err, reportErr)
 	}
 	return err

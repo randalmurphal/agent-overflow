@@ -11,7 +11,6 @@ import '../../../app.css';
 import TerminalSurface from './TerminalSurface.svelte';
 import {
   getThreadTerminalState,
-  resetThreadTerminalStatesForTest,
   terminalStateKeyForPane,
   type ThreadTerminalStateHandle,
 } from './terminalStore.svelte';
@@ -23,7 +22,6 @@ import {
   closePaneFind,
   getPaneFindProvider,
   isPaneFindOpen,
-  resetPaneFindForTest,
   setPaneFindQuery,
 } from '../../stores/paneFind.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
@@ -104,8 +102,6 @@ async function openFind(): Promise<HTMLElement> {
 beforeEach(async () => {
   await page.viewport(412, 839);
   setCompactLayoutForTest(true);
-  resetThreadTerminalStatesForTest();
-  resetPaneFindForTest();
   terms.clear();
   setPaneLayoutItemsForTest([{ id: PANE, paneId: PANE, kind: 'thread', widthPx: 412 }]);
   setBindingMock('WriteTerminal', async () => {});
@@ -117,9 +113,7 @@ beforeEach(async () => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
-  resetPaneFindForTest();
   resetPaneLayoutForTest();
-  resetThreadTerminalStatesForTest();
   setCompactLayoutForTest(false);
   document.body.replaceChildren();
 });

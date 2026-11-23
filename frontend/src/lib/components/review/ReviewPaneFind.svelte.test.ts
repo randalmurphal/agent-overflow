@@ -7,13 +7,15 @@ import { render } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ReviewPaneFind from './ReviewPaneFind.svelte';
-import { getPaneFindProvider, openPaneFind, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
+import { getPaneFindProvider, openPaneFind, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import { REVIEW_FIND_REMOTE_DEBOUNCE_MS, type ReviewFind } from '../../stores/reviewFind.svelte';
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { placeCILogLine, type CILogFindHit } from '../../utils/ciLogFind';
-import type { CILogSearch, CILogSection } from '../../types/models';
+import type { CILogSearch, CILogSection, DiffReviewComment } from '../../types/models';
 import { parseReviewFiles } from '../../utils/patchParser';
 import type { ReviewFindHit, ReviewFindPlace } from '../../utils/reviewFindIdentity';
+import { indexReviewComments } from '../../utils/reviewRows';
+import { normalizeComments } from '../../stores/diffReviewComments.svelte';
 
 // The diff shows every draft as drafted and no file as an image.
 const NO_MEDIA_HOST = { renderedPaths: new Set<string>() };
@@ -54,7 +56,6 @@ function mount() {
 }
 
 afterEach(() => {
-  resetPaneFindForTest();
   vi.useRealTimers();
   document.body.innerHTML = '';
 });
@@ -122,7 +123,7 @@ describe('review find over the diff', () => {
       },
       scrollFindBy: () => {},
     };
-    const review = { shownDrafts: [], mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState;
+    const review = { mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [], commentIndex: indexReviewComments([], []), shownCommentIndex: indexReviewComments([], []), collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState;
     const root = document.createElement('div');
     document.body.append(root);
     const { rerender } = render(ReviewPaneFind, {
@@ -157,7 +158,7 @@ describe('review find over the diff', () => {
       id: 'p1', path: 'src/a.ts', line: 2, side: 'right', isResolvable: true, isResolved: resolved, isOutdated: false,
       comments: [{ id: 'n1', authorLogin: 'priya', body: 'Why beta?', createdAt: '', databaseID: 1, viewerCanEdit: false, viewerCanDelete: false }],
     };
-    const reply = {
+    const reply: DiffReviewComment = {
       id: 'd1', threadId: 't', scope: 'pr', sourceKey: 'k', filePath: 'src/a.ts', status: 'draft', side: 'reply',
       replyThreadId: 'p1', replyRootId: 1, selectedText: '', body: 'held zq reply', createdAt: 0, updatedAt: 0,
     };
@@ -173,7 +174,7 @@ describe('review find over the diff', () => {
       scrollFindBy: () => {},
     };
     const review = {
-      shownDrafts: [reply], mediaHost: NO_MEDIA_HOST, drafts: [reply], prThreads: [thread], shownPRThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: expanded, togglePRThread,
+      mediaHost: NO_MEDIA_HOST, drafts: [reply], prThreads: [thread], commentIndex: indexReviewComments([thread], [reply]), shownCommentIndex: indexReviewComments([thread], [reply]), collapsedPaths: new Set<string>(), expandedPRThreadIds: expanded, togglePRThread,
       draftEditBodyFor: () => null, sentComments: { editing: new Set<string>(), editBodyFor: () => null },
     } as unknown as ReviewPaneState;
     const root = document.createElement('div');
@@ -192,6 +193,54 @@ describe('review find over the diff', () => {
     root.remove();
   });
 
+  // The drafts list is in file order, so a reply held on z.ts before its
+  // thread moved to src/b.ts comes after one held there since.
+  it('steps through a thread\'s held replies oldest first, as the thread shows them', async () => {
+    const files = parseReviewFiles(patch('src/b.ts', ['alpha', 'beta']));
+    const thread = {
+      id: 'p1', path: 'src/b.ts', line: 2, side: 'right', isResolvable: true, isResolved: false, isOutdated: false,
+      comments: [{ id: 'n1', authorLogin: 'priya', body: 'Why beta?', createdAt: '', databaseID: 1, viewerCanEdit: false, viewerCanDelete: false }],
+    };
+    const held = (id: string, filePath: string, createdAt: number): DiffReviewComment => ({
+      id, threadId: 't', scope: 'pr', sourceKey: 'k', filePath, status: 'draft', side: 'reply',
+      replyThreadId: 'p1', replyRootId: 1, selectedText: '', body: `zq ${id}`, createdAt, updatedAt: createdAt,
+    });
+    const drafts = normalizeComments([held('before-move', 'z.ts', 1), held('after-move', 'src/b.ts', 2)]);
+    expect(drafts.map((draft) => draft.id)).toEqual(['after-move', 'before-move']);
+    const comments = indexReviewComments([thread], drafts);
+    const list = { findReadingPosition: () => null, revealFindPlace: () => true, scrollFindBy: () => {} };
+    const review = {
+      mediaHost: NO_MEDIA_HOST, drafts, prThreads: [thread], commentIndex: comments, shownCommentIndex: comments,
+      collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), togglePRThread: () => {},
+      draftEditBodyFor: () => null, sentComments: { editing: new Set<string>(), editBodyFor: () => null },
+    } as unknown as ReviewPaneState;
+    const root = document.createElement('div');
+    document.body.append(root);
+    render(ReviewPaneFind, {
+      props: { findKey: 'pane-find-held-order', title: 'Review', review, view: 'diff', files, root, diff: () => list, log: () => undefined },
+    });
+    const find = getPaneFindProvider('pane-find-held-order') as ReviewFind<ReviewFindHit>;
+    openPaneFind('pane-find-held-order');
+    setPaneFindQuery('pane-find-held-order', 'zq');
+    await vi.waitFor(() => expect([find.result.count, find.result.pending]).toEqual([2, false]));
+    // The thread row lists `repliesOf` (ReviewPRThreadRow, replyDraftsFor).
+    expect(comments.repliesOf('p1').map((draft) => draft.id)).toEqual(['before-move', 'after-move']);
+    const current = () => {
+      const at = find.hits[find.result.current].at;
+      return at.kind === 'draft' ? at.commentId : at.kind;
+    };
+    // The first match is current once counted; stepping goes on and wraps.
+    const stepped = [current()];
+    for (let step = 0; step < 2; step += 1) {
+      const before = find.result.current;
+      find.next();
+      await vi.waitFor(() => expect(find.result.current).not.toBe(before));
+      stepped.push(current());
+    }
+    expect(stepped).toEqual(['before-move', 'after-move', 'before-move']);
+    root.remove();
+  });
+
   // Hide resolved threads: find searches the threads the view shows, so
   // a hidden thread's comments are not matched.
   it('does not match a thread Hide resolved hides', async () => {
@@ -204,7 +253,7 @@ describe('review find over the diff', () => {
     // Its suggestion is not matched either.
     const hidden = thread('p2', 'resolved zq here\n\n```suggestion\nconst zq = 1;\n```', true);
     const review = {
-      shownDrafts: [], mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [shown, hidden], shownPRThreads: [shown], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(['p2']),
+      mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [shown, hidden], commentIndex: indexReviewComments([shown, hidden], []), shownCommentIndex: indexReviewComments([shown], []), collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(['p2']),
       draftEditBodyFor: () => null, sentComments: { editing: new Set<string>(), editBodyFor: () => null },
     } as unknown as ReviewPaneState;
     const list = { findReadingPosition: () => null, revealFindPlace: () => true, scrollFindBy: () => {} };

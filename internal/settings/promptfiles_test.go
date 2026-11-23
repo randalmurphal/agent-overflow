@@ -434,6 +434,7 @@ func TestMigratePromptFilesMovesInlineTextOutOfTheRow(t *testing.T) {
 		// missing but whose text is still inline.
 		"claudePromptOverrides": `[{"enabled":true,"models":["m"],"prompt":"legacy claude"}]`,
 		"codexPromptOverrides":  `[{"id":"` + withID + `","enabled":true,"models":["g"],"prompt":"legacy codex"}]`,
+		"agyPromptOverrides":    `[{"enabled":true,"models":["a"],"prompt":"legacy agy"}]`,
 	}
 	svc.InvalidateTierCache()
 	before := svc.Get()
@@ -541,7 +542,7 @@ func TestReloadPromptFilesAnnouncesBothKeysAndDropsTheCache(t *testing.T) {
 	var announced [][]TierChange
 	svc.SetChangeObserver(func(changes []TierChange) { announced = append(announced, changes) })
 	svc.ReloadPromptFiles()
-	want := []TierChange{{Tier: TierUser, Keys: []string{"claudePromptOverrides", "codexPromptOverrides"}}}
+	want := []TierChange{{Tier: TierUser, Keys: []string{"claudePromptOverrides", "codexPromptOverrides", "agyPromptOverrides"}}}
 	if len(announced) != 1 || len(announced[0]) != 1 || announced[0][0].Tier != want[0].Tier ||
 		!slices.Equal(announced[0][0].Keys, want[0].Keys) {
 		t.Fatalf("announced = %+v, want %+v", announced, want)

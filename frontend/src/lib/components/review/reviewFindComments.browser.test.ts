@@ -6,7 +6,7 @@ import { setBindingMock } from '../../../test/mocks/bindings-app';
 import ReviewCommentThread from './ReviewCommentThread.svelte';
 import ReviewThreadComments from './ReviewThreadComments.svelte';
 import ReviewPaneFind from './ReviewPaneFind.svelte';
-import { getPaneFindProvider, openPaneFind, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
+import { getPaneFindProvider, openPaneFind, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { createMarkdownFindTextCache } from '../chat/markdown/markdownFindText';
 import { createFindHighlighter, findHighlightName, type FindHighlighter, type FindRun } from '../../utils/findHighlights';
@@ -18,6 +18,12 @@ import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
 import { holdReviewFindScans } from '../../../test/helpers/reviewFindHold';
 import type { ReviewFind } from '../../stores/reviewFind.svelte';
+import { indexReviewComments } from '../../utils/reviewRows';
+import { __setResolveForgeFactsForTest, forgeFactReader, observePRFacts } from '../../stores/forgeFacts.svelte';
+import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from '../chat/markdown/forgeAttachmentContext';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { prKey, type PRRef } from '../../utils/prReference';
+import type { ForgeFact } from '../../utils/forgeFacts';
 
 // The diff shows every draft as drafted and no file as an image.
 const NO_MEDIA_HOST = { renderedPaths: new Set<string>() };
@@ -71,7 +77,6 @@ beforeEach(() => {
 afterEach(() => {
   highlighter?.dispose();
   highlighter = null;
-  resetPaneFindForTest();
 });
 
 describe('review find over comments', () => {
@@ -87,7 +92,7 @@ describe('review find over comments', () => {
     const hits: (ReviewFindHit & ReviewFindFileSpot)[] = [];
     const files = parseReviewFiles(PATCH);
     try {
-      await scanReviewFind({ files, drafts: [DRAFT], prThreads: [THREAD], commentText: commentRuns() }, query, {
+      await scanReviewFind({ files, comments: indexReviewComments([THREAD], [DRAFT]), commentText: commentRuns() }, query, {
         limit: 1000, live: () => true, emit: (hit, _file, spot) => hits.push({ ...hit, ...spot }), pause: async () => {},
       });
     } finally {
@@ -122,7 +127,7 @@ describe('review find over a draft open in its editor', () => {
     const thread = render(ReviewCommentThread, { target: host, props });
     const files = parseReviewFiles(PATCH);
     const review = {
-      shownDrafts: [DRAFT], mediaHost: NO_MEDIA_HOST, drafts: [DRAFT], prThreads: [], shownPRThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+      mediaHost: NO_MEDIA_HOST, drafts: [DRAFT], prThreads: [], commentIndex: indexReviewComments([], [DRAFT]), shownCommentIndex: indexReviewComments([], [DRAFT]), collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
       draftEditBodyFor: (id: string) => (id === DRAFT.id ? props.editBody : null),
     } as unknown as ReviewPaneState;
     render(ReviewPaneFind, {
@@ -155,6 +160,52 @@ describe('review find over a draft open in its editor', () => {
   });
 });
 
+describe('review find over a comment whose forge facts arrive', () => {
+  const GITLAB: PRRef = { forge: 'gitlab', host: 'gitlab.example.invalid', namespace: 'group', repo: 'widget', number: 7 };
+  const KEY = prKey(GITLAB);
+
+  it('recounts when a label the comment names turns out not to exist', async () => {
+    const answers: ((facts: ForgeFact[]) => void)[] = [];
+    __setResolveForgeFactsForTest((_backend, _ws, _pr, _revision, keys) => new Promise((resolve) => answers.push((facts) => resolve({ facts: facts.length ? facts : keys.map((key) => ({ key, status: 'absent' as const })) }))));
+    const thread: ReviewThread = {
+      ...THREAD,
+      comments: [{ authorLogin: 'priya', body: 'tagged ~nolabel here', createdAt: '', databaseID: 1, id: `n${1}`, viewerCanEdit: false, viewerCanDelete: false }],
+    };
+    observePRFacts(KEY, GITLAB, { detail: null, threads: [thread] });
+    const forge = () => ({ pr: GITLAB, backend: HOME_BACKEND, webBase: 'https://gitlab.example.invalid/group/widget/-/merge_requests/7', facts: forgeFactReader(KEY) });
+    const context = new Map([[FORGE_ATTACHMENT_SOURCE_CONTEXT, forge]]);
+    const host = document.createElement('div');
+    host.style.width = '700px';
+    document.body.appendChild(host);
+    render(ReviewThreadComments, { target: host, props: { thread, findKeys: true }, context });
+    // Asked: the label is a chip, which shows no tilde.
+    await waitFor(() => expect(host.querySelector('.md-label-chip')).not.toBeNull());
+    const review = {
+      mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [thread], commentIndex: indexReviewComments([thread], []), shownCommentIndex: indexReviewComments([thread], []), collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS,
+    } as unknown as ReviewPaneState;
+    const files = parseReviewFiles(PATCH);
+    onTestFinished(() => files[0].body.segments[0].store.dispose());
+    render(ReviewPaneFind, {
+      target: document.body,
+      context,
+      props: {
+        findKey: 'pane-facts', title: 'Review', review, view: 'diff', files, root: host,
+        diff: () => ({ findReadingPosition: () => null, revealFindPlace: () => false, scrollFindBy: () => {} }),
+        log: () => undefined,
+      },
+    });
+    const find = getPaneFindProvider('pane-facts')!;
+    openPaneFind('pane-facts');
+    setPaneFindQuery('pane-facts', '~nolabel');
+    await waitFor(() => expect([find.result.count, find.result.pending]).toEqual([0, false]));
+    // The forge has no such label: the comment shows the text as written.
+    expect(answers).toHaveLength(1);
+    answers[0]([]);
+    await waitFor(() => expect(host.querySelector('.md-label-chip')).toBeNull());
+    await waitFor(() => expect([find.result.count, find.result.pending]).toEqual([1, false]));
+  });
+});
+
 describe('review find over a comment its projection misreads', () => {
   const diagnostics = installDiagnosticsCapture();
 
@@ -165,7 +216,7 @@ describe('review find over a comment its projection misreads', () => {
     render(ReviewThreadComments, { target: host, props: { thread: THREAD, findKeys: true } });
     await waitFor(() => expect(host.querySelectorAll('[data-find-key^="pc:"]').length).toBe(3));
     const review = {
-      shownDrafts: [], mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [THREAD], shownPRThreads: [THREAD], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS,
+      mediaHost: NO_MEDIA_HOST, drafts: [], prThreads: [THREAD], commentIndex: indexReviewComments([THREAD], []), shownCommentIndex: indexReviewComments([THREAD], []), collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS,
     } as unknown as ReviewPaneState;
     const files = parseReviewFiles(PATCH);
     onTestFinished(() => files[0].body.segments[0].store.dispose());
@@ -193,7 +244,6 @@ describe('review find over a comment its projection misreads', () => {
     expect([find.result.count, find.result.pending]).toEqual([before, false]);
   });
 });
-
 
 describe('review find\'s current comment match across a recount held open', () => {
   // A file after the thread's with enough rows that a held recount stops
@@ -223,7 +273,7 @@ describe('review find\'s current comment match across a recount held open', () =
     await waitFor(() => expect(host.querySelectorAll('[data-find-key^="pc:"]').length).toBe(3));
     const files = [...parseReviewFiles(PATCH), ...parseReviewFiles(BIG)];
     onTestFinished(() => { for (const file of files) file.body.segments[0].store.dispose(); });
-    const review = rawProps({ shownDrafts: [] as DiffReviewComment[], mediaHost: NO_MEDIA_HOST, drafts: [] as DiffReviewComment[], prThreads: [thread], shownPRThreads: [thread], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS });
+    const review = rawProps({ mediaHost: NO_MEDIA_HOST, drafts: [] as DiffReviewComment[], prThreads: [thread], commentIndex: indexReviewComments([thread], [] as DiffReviewComment[]), shownCommentIndex: indexReviewComments([thread], [] as DiffReviewComment[]), collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), sentComments: NO_SENT_EDITS });
     render(ReviewPaneFind, {
       target: document.body,
       props: {
@@ -249,7 +299,8 @@ describe('review find\'s current comment match across a recount held open', () =
     scans.hold();
     const rest: ReviewThread = { ...thread, comments: comments.slice(1) };
     review.prThreads = [rest];
-    review.shownPRThreads = [rest];
+    review.commentIndex = indexReviewComments([rest], []);
+    review.shownCommentIndex = review.commentIndex;
     await shown.rerender({ thread: rest, findKeys: true });
     flushSync();
     // The recount waits at a pause: begun and not done through these frames.

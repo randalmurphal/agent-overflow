@@ -90,19 +90,7 @@ var threadColumns = `id, COALESCE(project_id, ''),
          AND proposed_plans.implemented_at = 0
          AND EXISTS (` + proposedPlanItemSQL() + `)
     ),
-    COALESCE((
-      SELECT CASE
-          WHEN turns.completed_at IS NULL
-            THEN (threads.last_read_at IS NULL OR threads.last_read_at < turns.started_at)
-          WHEN turns.stop_reason = 'interrupted'
-            THEN (threads.last_read_at IS NULL OR threads.last_read_at < turns.completed_at)
-          ELSE 0
-        END
-        FROM turns
-       WHERE turns.thread_id = threads.id
-       ORDER BY turns.turn_index DESC
-       LIMIT 1
-    ), 0),
+    ` + newestTurnStateSQL() + `,
     COALESCE((
       SELECT turns.stop_reason = 'error'
          AND (threads.last_read_at IS NULL OR threads.last_read_at < turns.completed_at)
@@ -203,6 +191,13 @@ func legalEffortForProvider(providerName, effort string) bool {
 		default:
 			return false
 		}
+	case "agy":
+		switch effort {
+		case "low", "medium", "high", "xhigh":
+			return true
+		default:
+			return false
+		}
 	default:
 		return false
 	}
@@ -212,18 +207,17 @@ var legalProviders = map[string]struct{}{
 	"claude":     {},
 	"codex":      {},
 	"claude-tui": {},
+	"agy":        {},
 }
 
 func validContextWindow(tokens int) bool {
 	return tokens > 0
 }
 
-// validImportSource mirrors the migration v50 CHECK. Only the two
-// importable providers are legal: claude-tui shares claude's binary but has
-// no session files of its own to import from.
+// validImportSource validates thread import provenance.
 func validImportSource(source string) bool {
 	switch source {
-	case "", "claude", "codex":
+	case "", "claude", "codex", "agy":
 		return true
 	default:
 		return false
@@ -236,7 +230,8 @@ func validAutoCompactPercent(percent int) bool {
 
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
-	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn, isDraft, askCopy int
+	var archived, fastMode, hasActionableProposedPlan, hasFailedTurn, isDraft, askCopy int
+	var newestTurn newestTurnState
 	var agentRecord sql.NullString
 	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentSupersededAt, attentionAt sql.NullInt64
 	var attentionKind, attentionReason string
@@ -252,7 +247,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.GroupID, &t.Placement,
 		&t.WorktreeSetupState, &t.ImportSource,
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
-		&hasActionableProposedPlan, &hasIncompleteTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
+		&hasActionableProposedPlan, &newestTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
 		&agentRecord, &t.PastAgentID, &agentSupersededAt, &t.HelperOfAgentID, &t.SpawnedByThreadID, &t.SpawnedByComputerID,
 		&attentionKind, &attentionReason, &attentionAt,
 		&t.SpawnInstructions, &t.SpawnLevel, &askCopy,
@@ -263,7 +258,8 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	t.AskCopy = askCopy != 0
 	t.Archived = archived != 0
 	t.HasActionableProposedPlan = hasActionableProposedPlan != 0
-	t.HasIncompleteTurn = hasIncompleteTurn != 0
+	t.HasIncompleteTurn = newestTurn == newestTurnInterruptedUnread
+	t.HasOpenTurn = newestTurn == newestTurnOpen
 	t.HasFailedTurn = hasFailedTurn != 0
 	t.IsDraft = isDraft != 0
 	if latestTurnCompletedAt.Valid {
@@ -1581,17 +1577,24 @@ func (s *Store) CompareAndSwapModelProfile(before, after Thread) (bool, error) {
 	if before.ID == "" || after.ID != before.ID {
 		return false, fmt.Errorf("store: compare-and-swap model profile requires one matching thread id")
 	}
+	if before.Provider != "" && after.Provider != "" && before.Provider != after.Provider {
+		return false, fmt.Errorf("store: compare-and-swap model profile cannot change provider from %q to %q", before.Provider, after.Provider)
+	}
 	normalized, err := normalizeThreadForUpdate(after)
 	if err != nil {
 		return false, err
 	}
+	expectedProvider := before.Provider
+	if expectedProvider == "" {
+		expectedProvider = normalized.Provider
+	}
 	result, err := s.db.Exec(
 		`UPDATE threads
 		    SET model = ?, reasoning_effort = ?, fast_mode = ?, context_window = ?
-		  WHERE id = ? AND model = ? AND reasoning_effort = ?
+		  WHERE id = ? AND provider = ? AND model = ? AND reasoning_effort = ?
 		    AND fast_mode = ? AND context_window = ?`,
 		normalized.Model, normalized.ReasoningEffort, boolToInt(normalized.FastMode), normalized.ContextWindow,
-		before.ID, before.Model, before.ReasoningEffort, boolToInt(before.FastMode), before.ContextWindow,
+		before.ID, expectedProvider, before.Model, before.ReasoningEffort, boolToInt(before.FastMode), before.ContextWindow,
 	)
 	if err != nil {
 		return false, fmt.Errorf("store: compare-and-swap model profile for %s: %w", before.ID, err)
@@ -1632,19 +1635,39 @@ func (s *Store) ClearLastTokenUsage(threadID string) error {
 	return s.UpdateLastTokenUsage(threadID, "")
 }
 
-// UpdateProvider overwrites the provider ('claude' / 'codex' / 'claude-tui').
-// Invalid values surface ErrInvalidProvider before hitting SQLite so the
-// binding can translate to a user-facing error.
+// UpdateProvider overwrites the provider ('claude' / 'codex' / 'claude-tui' /
+// 'agy') and clears reasoning_effort if the thread's existing effort tier is
+// illegal for the new provider.
 func (s *Store) UpdateProvider(threadID, prov string) error {
 	if _, ok := legalProviders[prov]; !ok {
 		return fmt.Errorf("%w: %q", ErrInvalidProvider, prov)
 	}
-	result, err := s.db.Exec(`UPDATE threads SET provider = ? WHERE id = ?`,
-		prov, threadID)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin update provider for %s: %w", threadID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var currentEffort string
+	if err := tx.QueryRow(`SELECT reasoning_effort FROM threads WHERE id = ?`, threadID).Scan(&currentEffort); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("store: update provider for %s: %w", threadID, sql.ErrNoRows)
+		}
+		return fmt.Errorf("store: read effort for provider update %s: %w", threadID, err)
+	}
+	nextEffort := normalizeEffort(currentEffort)
+	if !legalEffortForProvider(prov, nextEffort) {
+		nextEffort = normalizeEffort("")
+	}
+	result, err := tx.Exec(`UPDATE threads SET provider = ?, reasoning_effort = ? WHERE id = ?`,
+		prov, nextEffort, threadID)
 	if err != nil {
 		return fmt.Errorf("store: update provider for %s: %w", threadID, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update provider for %s", threadID))
+	if err := requireRowsAffected(result, fmt.Sprintf("store: update provider for %s", threadID)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpdateMode overwrites the thread's mode (chat, plan, terminal, or a
@@ -1673,21 +1696,33 @@ func (s *Store) UpdateReasoningEffort(threadID, effort string) (Thread, bool, er
 	if _, ok := legalEfforts[normalized]; !ok {
 		return Thread{}, false, fmt.Errorf("%w: %q", ErrInvalidEffort, effort)
 	}
-	var providerName string
-	if err := s.reader().QueryRow(`SELECT provider FROM threads WHERE id = ?`, threadID).Scan(&providerName); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Thread{}, false, fmt.Errorf("store: begin reasoning effort update %s: %w", threadID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var providerName, currentEffort string
+	if err := tx.QueryRow(`SELECT provider, reasoning_effort FROM threads WHERE id = ?`, threadID).Scan(&providerName, &currentEffort); err != nil {
 		return Thread{}, false, fmt.Errorf("store: load provider for effort update %s: %w", threadID, err)
 	}
 	if !legalEffortForProvider(providerName, normalized) {
 		return Thread{}, false, fmt.Errorf("%w: %s/%s", ErrInvalidEffort, providerName, normalized)
 	}
-	return s.applyThreadRowWrite(rowWrite{
-		Action:     fmt.Sprintf("store: update reasoning effort for %s", threadID),
-		ID:         threadID,
-		Set:        "reasoning_effort = ?",
-		SetArgs:    []any{normalized},
-		Change:     "reasoning_effort IS NOT ?",
-		ChangeArgs: []any{normalized},
-	})
+	changed := currentEffort != normalized
+	if changed {
+		if _, err := tx.Exec(`UPDATE threads SET reasoning_effort = ? WHERE id = ?`, normalized, threadID); err != nil {
+			return Thread{}, false, fmt.Errorf("store: update reasoning effort for %s: %w", threadID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Thread{}, false, fmt.Errorf("store: commit reasoning effort update %s: %w", threadID, err)
+	}
+	thread, err := s.GetThread(threadID)
+	if err != nil {
+		return Thread{}, false, fmt.Errorf("store: reload thread after effort update %s: %w", threadID, err)
+	}
+	return thread, changed, nil
 }
 
 // UpdateFastMode flips the fast-mode boolean and hands back the row it wrote.

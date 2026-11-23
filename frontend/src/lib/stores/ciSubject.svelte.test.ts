@@ -3,7 +3,7 @@
 // the sequence watermark, follows, log windows, refresh, save, and
 // dispose. The review pane's own CI tests cover the PR feed end to end.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
 import { ciKeyFor, createCISubjectState, type CISubject } from './ciSubject.svelte';
 import {
@@ -14,14 +14,14 @@ import {
   pipelineCIKeys,
   resyncPipelinesAfterGap,
 } from './pipelineCI.svelte';
-import { __resetPRReviewStoreForTest } from './prReviewStore.svelte';
+import { ciHandle } from './ciHandles';
 import { __setTransportStatusForTest } from './transportStatus.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { takePinnedBackend } from '../transport/backends';
 import type { CIPipeline } from '../types/models';
 import type { RepoRef } from '../utils/prReference';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 
 const REPO: RepoRef = { forge: 'gitlab', host: 'gitlab.com', namespace: 'group', repo: 'app' };
 const REPO_WIRE = { Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'group', Repo: 'app' };
@@ -78,14 +78,7 @@ function pipelineSubject(backend = HOME_BACKEND): CISubject {
   return { kind: 'pipeline', backend, repo: REPO, pipelineId: '77' };
 }
 
-beforeEach(() => {
-  __resetPipelineCIForTest();
-});
-
 afterEach(() => {
-  __resetPipelineCIForTest();
-  __resetPRReviewStoreForTest();
-  resetStagedBackends();
   delete (document as unknown as Record<string, unknown>).visibilityState;
 });
 
@@ -93,6 +86,20 @@ describe('ciKeyFor', () => {
   it('keys a PR by its computer PR key and a pipeline by its repository and id', () => {
     expect(ciKeyFor({ kind: 'pr', backend: HOME_BACKEND, pr: { ...REPO, number: 4 } })).toBe(' gitlab:group/app:4');
     expect(ciKeyFor(pipelineSubject('laptop'))).toBe('laptop pipeline:gitlab:group/app:77');
+  });
+});
+
+describe('the pipeline test reset', () => {
+  it("drops a held pipeline's CI handle, and calls no backend", async () => {
+    const mocks = installMocks();
+    attachPipelineCI(HOME_BACKEND, REPO, '77');
+    await flush();
+    expect(ciHandle(ciKeyFor(pipelineSubject()))).not.toBeNull();
+
+    __resetPipelineCIForTest();
+    await flush();
+    expect(ciHandle(ciKeyFor(pipelineSubject()))).toBeNull();
+    expect(mocks.unsubscribe).not.toHaveBeenCalled();
   });
 });
 

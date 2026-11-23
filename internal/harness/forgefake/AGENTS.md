@@ -247,6 +247,9 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `PUT suggestions/ID/apply` (`glab api apply suggestion`) | ApplyPRSuggestion: the note's lines replaced in the pull's `files`, the head moved, the suggestion applied (`appliedSuggestions`); 403 below developer or `viewer.push` false, 400 "A suggestion is not applicable." when not appliable, 404 for an unknown id |
 | GitLab | `GET`, `POST`, `DELETE projects/P/merge_requests/N/notes/ID/award_emoji[/AWARD]` (`glab api note award emoji`, `glab api create note award emoji`, `glab api delete note award emoji`) | SetPRCommentReaction: the note's awards paged by `X-Next-Page`; an add answers 201, a duplicate GitLab's 404 "has already been taken", a blank name 400; a delete answers 204, another user's award 403, an unknown one 404; a note not on the merge request 404 |
 | GitLab | GraphQL `MRNoteReactions(fullPath, iid, after?)` | ReadPR threads: every note (`gid://gitlab/DiffNote/N`, `Note/N` or `DiscussionNote/N`, system notes included) with its `awardEmoji`, 100 per page |
+| GitHub | GraphQL `ForgeFacts8`, `ForgeFacts32`, `ForgeFacts128` (per slot N: `oN`, `nN`, `xN`, `rN`, `uN`) | ResolveFacts: slot `rN` the repository's issue or pull by number (`__typename`, title, state, url; a missing repository or item null beside a `NOT_FOUND` at `["rN"]` or `["rN","issueOrPullRequest"]`), `uN` the host's account by login (`User` or `Organization`, null when none) |
+| GitLab | GraphQL `ForgeFacts4`, `ForgeFacts16`, `ForgeFacts32` (per slot N: `pN`, `nN`, `tN`, `sN` and the flags `qN`, `iN`, `mN`, `lN`, `msN`, `snN`, `uN`, `gN`, `eN`) | ResolveFacts: `kN` the project's issue, merge request, label (first by title), milestone (by title, a group one's `webPath` under its group) or snippet (by gid), each part only while its flag is set; `vN` the user by username; `wN` the group by path and its epic (`workItem`, state `OPEN` or `CLOSED`); a missing project, user, group or item is null, a missing label, milestone or snippet no node |
+| GitLab | GraphQL `ForgeFactsLabels(p, after)` | ResolveFacts `labels:` key: the project's `labels` by title (no group labels), 100 a page by cursor; a missing project is null |
 
 Unhandled (fail with their request): GitLab's discussion resolve PUT.
 A lost or cut-short answer is not
@@ -376,6 +379,13 @@ and then drops or truncates the response.
   comment is refused at seed). A pull's `viewer.push` overrides whether
   the viewer may push to its head, otherwise WRITE and above on a head
   that is no fork (GitHub) or developer and above (GitLab).
+- The facts reads answer from a repository's `issues` (number, title,
+  `open` or `closed`; on GitHub no number of a pull), `pulls`, `labels`
+  (a label's `textColor` defaults as GitLab derives it), `milestones`
+  (GitLab; a `group` one is an ancestor group's) and `snippets` (GitLab),
+  and from the fixture's `accounts`: a GitHub `user` or `org` or a GitLab
+  `user` or `group` login on a host, with its display `name` and a
+  group's `epics`.
 - Generated ids start at 1,000,000 and stay unique across reseeds and
   resets.
 - A GitLab job's `kind` makes it a `bridge` (its `downstream` pipeline

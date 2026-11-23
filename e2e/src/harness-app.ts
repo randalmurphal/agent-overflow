@@ -59,7 +59,7 @@ let watchScope: Set<() => void> | undefined;
 
 /**
  * Opens the running test's watch scope; the returned function ends every
- * watch the test made. tests/fixtures.ts calls it around each test.
+ * watch the test made. tests/base-test.ts calls it around each test.
  */
 export function openEventWatchScope(): () => void {
   if (watchScope) throw new Error('an event watch scope is already open: a test fixture ran twice');
@@ -468,7 +468,7 @@ export class HarnessApp {
    */
   watchEvents<T = unknown>(channel: string, predicate?: (data: T) => boolean): EventWatch {
     const scope = watchScope;
-    if (!scope) throw new Error('watchEvents is scoped to a test by tests/fixtures.ts; import test from there');
+    if (!scope) throw new Error('watchEvents is scoped to a test by tests/base-test.ts; import test from there or from tests/fixtures.ts');
     let seen = 0;
     let first = '';
     let ended = false;

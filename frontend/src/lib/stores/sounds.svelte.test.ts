@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import {
   __resetCustomSoundsForTest,
@@ -36,8 +36,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  __resetCustomSoundsForTest();
-  resetBindingMocks();
   vi.restoreAllMocks();
 });
 

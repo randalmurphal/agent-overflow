@@ -16,17 +16,14 @@
 import { render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import ChatMarkdown from './ChatMarkdown.svelte';
-import { resetBindingMocks } from '../../../test/mocks/bindings-app';
-import { emitWailsEvent, resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
+import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import {
   REMOTE_BACKEND_UUID,
-  resetStagedBackends,
   stageBackend,
 } from '../../../test/helpers/backends';
 import { grantBackendScopes, resetToLocalPage, revokeBackendScopes } from '../../../test/helpers/scopes';
-import { __resetScopesForTest } from '../../transport/scopes';
 import { forgetThread, noteThread } from '../../transport/entityIndex';
-import { initDevServers, resetDevServersForTest } from '../../stores/devServers.svelte';
+import { initDevServers } from '../../stores/devServers.svelte';
 import type { DevServerList } from '../../stores/devServers.svelte';
 
 const THREAD = 'thread-on-laptop';
@@ -46,21 +43,14 @@ function previewAnchor(container: HTMLElement): HTMLElement | null {
 
 describe('ChatMarkdown arms the preview rewrite', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetWailsMocks();
-    resetDevServersForTest();
-    resetStagedBackends();
     resetToLocalPage();
     noteThread(THREAD, 'laptop');
   });
 
   afterEach(() => {
     forgetThread(THREAD);
-    resetDevServersForTest();
-    resetStagedBackends();
     revokeBackendScopes('laptop');
     resetToLocalPage();
-    __resetScopesForTest();
   });
 
   it('leaves the link plain until that machine has answered once', async () => {

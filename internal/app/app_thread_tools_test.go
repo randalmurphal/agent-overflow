@@ -785,7 +785,7 @@ func TestThreadToolsAdapterAnswersTheCatalog(t *testing.T) {
 	if !catalog.Reachable || catalog.OS == "" {
 		t.Fatalf("catalog = %#v", catalog)
 	}
-	if len(catalog.Providers) != 2 {
+	if len(catalog.Providers) != 3 {
 		t.Fatalf("providers = %#v", catalog.Providers)
 	}
 	claudeOption := catalog.Providers[0]
@@ -802,6 +802,10 @@ func TestThreadToolsAdapterAnswersTheCatalog(t *testing.T) {
 	codexOption := catalog.Providers[1]
 	if codexOption.ID != string(provider.Codex) || codexOption.Name == "" || len(codexOption.Models) != 0 {
 		t.Fatalf("codex option = %#v", codexOption)
+	}
+	agyOption := catalog.Providers[2]
+	if agyOption.ID != string(provider.Agy) || agyOption.Name != "Antigravity" || len(agyOption.Models) == 0 || agyOption.DefaultModel == "" {
+		t.Fatalf("agy option = %#v", agyOption)
 	}
 
 	// One provider narrows the answer to that provider.

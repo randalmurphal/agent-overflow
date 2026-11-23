@@ -8,8 +8,8 @@
 // The page is a paired off-host browser: a loopback page holds host
 // presence and its composer is never disabled by a dropped socket.
 
-import { expect, type BrowserContext, type Page, type WebSocketRoute } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { type BrowserContext, type Page, type WebSocketRoute } from '@playwright/test';
+import { expect, test } from './base-test.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import {

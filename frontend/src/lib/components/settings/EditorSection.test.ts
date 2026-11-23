@@ -1,11 +1,10 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import EditorSection from './EditorSection.svelte';
-import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { setRunMode, resetRunMode } from '../../../test/runMode';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
-import { resetEditorsForTest } from '../../stores/editors.svelte';
 
 interface EditorRow {
   id: string;
@@ -23,20 +22,16 @@ const FIXTURE_EDITORS: EditorRow[] = [
 
 describe('<EditorSection>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     resetRunMode();
     setPageGrantsFromBootstrap(false);
-    resetEditorsForTest();
     // Drain the toast registry so a sibling case's error message can't
     // satisfy this case's "find this error" assertion.
     for (const toast of [...getToasts()]) removeToast(toast.id);
   });
 
   afterEach(() => {
-    resetBindingMocks();
     resetRunMode();
     setPageGrantsFromBootstrap(false);
-    resetEditorsForTest();
     for (const toast of [...getToasts()]) removeToast(toast.id);
   });
 

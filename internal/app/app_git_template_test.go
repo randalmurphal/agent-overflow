@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -13,8 +12,8 @@ import (
 	"sync"
 	"testing"
 
-	"agent-overflow/internal/ownedtemp"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/fixturedir"
 )
 
 // Each git process costs tens of milliseconds on macOS, and a fixture
@@ -36,42 +35,10 @@ type gitSnapshotTemplate struct {
 	err   error
 }
 
-var fixtureTemplateRoot struct {
-	sync.Mutex
-	dir     string
-	release func() error
-}
-
-// fixtureTemplatePrefix names the template roots, one per test process.
-const fixtureTemplatePrefix = "agent-overflow-app-fixture-templates-"
-
-// removeFixtureTemplates deletes the fixture templates, git repositories and
-// databases, built by this test binary, and the template roots of test
-// processes that exited without removing theirs (ownedtemp): killed, timed
-// out, or a helper process that ended in os.Exit. TestMain calls it after
-// the tests finish.
-func removeFixtureTemplates() error {
-	fixtureTemplateRoot.Lock()
-	defer fixtureTemplateRoot.Unlock()
-	var err error
-	if fixtureTemplateRoot.release != nil {
-		err = fixtureTemplateRoot.release()
-		fixtureTemplateRoot.dir, fixtureTemplateRoot.release = "", nil
-	}
-	return errors.Join(err, ownedtemp.Sweep("", fixtureTemplatePrefix))
-}
-
-func newFixtureTemplateDir() (string, error) {
-	fixtureTemplateRoot.Lock()
-	defer fixtureTemplateRoot.Unlock()
-	if fixtureTemplateRoot.dir == "" {
-		dir, release, err := ownedtemp.Make("", fixtureTemplatePrefix)
-		if err != nil {
-			return "", err
-		}
-		fixtureTemplateRoot.dir, fixtureTemplateRoot.release = dir, release
-	}
-	return os.MkdirTemp(fixtureTemplateRoot.dir, "repo-")
+// newFixtureTemplateDir makes a directory for one fixture template in the
+// run's fixture directory (fixturedir), which outlives every test.
+func newFixtureTemplateDir(tb testing.TB) (string, error) {
+	return os.MkdirTemp(fixturedir.Dir(tb), "repo-")
 }
 
 // clone returns the copied repositories in the order build returned the
@@ -81,7 +48,7 @@ func (tpl *gitSnapshotTemplate) clone(t *testing.T, build func(t *testing.T) []s
 	tpl.once.Do(func() {
 		sources := build(t)
 		tpl.count = len(sources)
-		tpl.dir, tpl.err = newFixtureTemplateDir()
+		tpl.dir, tpl.err = newFixtureTemplateDir(t)
 		if tpl.err == nil {
 			tpl.err = snapshotGitRepos(sources, tpl.dir)
 		}

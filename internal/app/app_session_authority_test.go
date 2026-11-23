@@ -3,8 +3,6 @@ package app
 import (
 	"encoding/json"
 	"os"
-	"slices"
-	"strings"
 	"testing"
 
 	"agent-overflow/internal/aocli"
@@ -15,141 +13,6 @@ import (
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 )
-
-// The registry is maintained by the session map's mutators, so these tests
-// drive it through those mutators — every transition, not just every state. An
-// entry that outlived its session would be a credential nothing could revoke.
-
-func aoTestSession(token string, scope transport.CallerScope) session {
-	return session{Token: "session-" + token, AOToken: token, AOScope: scope}
-}
-
-func TestAOTokenRegistryFollowsTheSessionMap(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	manager := app.sessionManager()
-	scope := transport.CallerScope{Kind: transport.ScopeKindInteractive, ThreadID: "thread", ProjectID: "project"}
-
-	assertResolves := func(label, token string, want bool) {
-		t.Helper()
-		if _, ok := app.ResolveScopedToken(token); ok != want {
-			t.Fatalf("%s: ResolveScopedToken(%q) resolved = %t, want %t", label, token, ok, want)
-		}
-	}
-
-	assertResolves("before any session", "tok-1", false)
-	manager.put("thread", aoTestSession("tok-1", scope))
-	assertResolves("after put", "tok-1", true)
-	resolved, _ := app.ResolveScopedToken("tok-1")
-	if resolved.ThreadID != "thread" || resolved.Kind != transport.ScopeKindInteractive {
-		t.Fatalf("resolved scope = %#v", resolved)
-	}
-
-	// take: the ordinary stop path.
-	if _, ok := manager.take("thread"); !ok {
-		t.Fatal("take() found no session")
-	}
-	assertResolves("after take", "tok-1", false)
-
-	// put -> put (a session replacing another in place) must not leave the
-	// displaced credential live.
-	manager.put("thread", aoTestSession("tok-2", scope))
-	manager.put("thread", aoTestSession("tok-3", scope))
-	assertResolves("displaced by a second put", "tok-2", false)
-	assertResolves("after the second put", "tok-3", true)
-
-	// unregister with a stale session token must change nothing...
-	if _, ok := manager.unregister("thread", "session-tok-2"); ok {
-		t.Fatal("unregister() matched a stale session token")
-	}
-	assertResolves("after a stale unregister", "tok-3", true)
-	// ... and with the live one must revoke.
-	if _, ok := manager.unregister("thread", "session-tok-3"); !ok {
-		t.Fatal("unregister() did not match the live session token")
-	}
-	assertResolves("after unregister", "tok-3", false)
-
-	// takeIdle: the reaper path.
-	manager.put("thread", aoTestSession("tok-4", scope))
-	if _, ok := manager.takeIdle("thread", 1<<62); !ok {
-		t.Fatal("takeIdle() found no session")
-	}
-	assertResolves("after takeIdle", "tok-4", false)
-
-	// snapshotAndClear: the shutdown path, over more than one session.
-	manager.put("a", aoTestSession("tok-5", scope))
-	manager.put("b", aoTestSession("tok-6", scope))
-	if cleared := manager.snapshotAndClear(); len(cleared) != 2 {
-		t.Fatalf("snapshotAndClear() returned %d sessions, want 2", len(cleared))
-	}
-	assertResolves("after snapshotAndClear", "tok-5", false)
-	assertResolves("after snapshotAndClear", "tok-6", false)
-	if got := app.sessionManager().runtime.AOTokenCount(); got != 0 {
-		t.Fatalf("registry retained %d entries after every session ended", got)
-	}
-
-	// A session with no credential (no transport server at mint time) must not
-	// register an empty-string key that would then resolve for a blank token.
-	manager.put("thread", session{Token: "session-bare"})
-	if _, ok := app.ResolveScopedToken(""); ok {
-		t.Fatal("the empty token resolved")
-	}
-	if got := app.sessionManager().runtime.AOTokenCount(); got != 0 {
-		t.Fatalf("a credential-less session registered: count=%d", got)
-	}
-}
-
-func TestSessionAOEnvIsLiveOnly(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	manager := app.sessionManager()
-	if env := app.sessionAOEnv("thread"); env != nil {
-		t.Fatalf("sessionAOEnv() with no session = %#v", env)
-	}
-	sess := aoTestSession("tok", transport.CallerScope{Kind: transport.ScopeKindInteractive})
-	sess.AOEnv = map[string]string{aocli.EnvEndpoint: "http://127.0.0.1:1", aocli.EnvToken: "tok"}
-	manager.put("thread", sess)
-	env := app.sessionAOEnv("thread")
-	if env[aocli.EnvToken] != "tok" {
-		t.Fatalf("sessionAOEnv() = %#v", env)
-	}
-	// The returned map is a copy: mutating it must not reach the session.
-	env[aocli.EnvToken] = "tampered"
-	if again := app.sessionAOEnv("thread"); again[aocli.EnvToken] != "tok" {
-		t.Fatalf("sessionAOEnv() handed out its own map: %#v", again)
-	}
-	manager.take("thread")
-	if env := app.sessionAOEnv("thread"); env != nil {
-		t.Fatalf("sessionAOEnv() after the session ended = %#v", env)
-	}
-}
-
-// The CLI's endpoint is built from the server's ORIGIN, not from a page
-// URL. A page URL carries a one-time ticket minted for a browser, and
-// taking one here would both spend a ticket nobody opens and put a page
-// credential into a child process's environment.
-func TestAOEndpointFromOriginIsBareAuthority(t *testing.T) {
-	t.Parallel()
-	endpoint, err := aoEndpointFromOrigin("http://127.0.0.1:54321")
-	if err != nil {
-		t.Fatalf("aoEndpointFromOrigin() error = %v", err)
-	}
-	if endpoint != "http://127.0.0.1:54321" {
-		t.Fatalf("aoEndpointFromOrigin() = %q", endpoint)
-	}
-	// Defensive: anything a caller appends is stripped, so what reaches
-	// the environment is an authority and never a credentialled URL.
-	stripped, err := aoEndpointFromOrigin("http://127.0.0.1:54321/?t=page-ticket")
-	if err != nil {
-		t.Fatalf("aoEndpointFromOrigin() error = %v", err)
-	}
-	if strings.Contains(stripped, "page-ticket") {
-		t.Fatalf("a query survived into the CLI endpoint: %q", stripped)
-	}
-	if _, err := aoEndpointFromOrigin(""); err == nil {
-		t.Fatal("an empty origin produced an endpoint")
-	}
-}
 
 func TestDeriveCallerScopeByThreadKind(t *testing.T) {
 	t.Parallel()
@@ -284,25 +147,16 @@ func TestFrozenPhaseAuthorityRefusesWorkTheSnapshotDoesNotName(t *testing.T) {
 func TestSessionProcessEnvPrecedence(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
-	app.providerExtraEnv = map[string]string{"SHARED": "extra", "EXTRA_ONLY": "yes"}
-	credential := aoSessionCredential{env: map[string]string{
-		aocli.EnvToken: "tok", "SHARED": "ao",
-	}}
-	env := app.sessionProcessEnv(string(provider.Claude), map[string]string{"SHARED": "provider", "PROVIDER_ONLY": "yes"}, credential)
-	// The AO credential wins: nothing a provider config or an extra-env setting
-	// says may replace the token a session was minted with.
-	if env["SHARED"] != "ao" {
-		t.Fatalf("SHARED = %q, want the ao credential to win", env["SHARED"])
+	app.providerExtraEnv = map[string]string{"SHARED": "extra", "EXTRA_ONLY": "yes", aocli.EnvInSession: "override"}
+	env := app.sessionProcessEnv(string(provider.Claude), map[string]string{"SHARED": "provider", "PROVIDER_ONLY": "yes"})
+	if env["SHARED"] != "extra" {
+		t.Fatalf("SHARED = %q, want providerExtraEnv to win over provider config", env["SHARED"])
 	}
-	if env[aocli.EnvToken] != "tok" || env["PROVIDER_ONLY"] != "yes" || env["EXTRA_ONLY"] != "yes" {
+	if env[aocli.EnvInSession] != "1" {
+		t.Fatalf("%s = %q, want static in-session marker \"1\"", aocli.EnvInSession, env[aocli.EnvInSession])
+	}
+	if env["PROVIDER_ONLY"] != "yes" || env["EXTRA_ONLY"] != "yes" {
 		t.Fatalf("merged env = %#v", env)
-	}
-
-	// An empty credential contributes nothing at all — no blank AO_* variables
-	// that would make the CLI believe it is inside a session it cannot reach.
-	env = app.sessionProcessEnv(string(provider.Claude), nil, aoSessionCredential{})
-	if _, present := env[aocli.EnvToken]; present {
-		t.Fatalf("a credential-less session got %s: %#v", aocli.EnvToken, env)
 	}
 }
 
@@ -349,73 +203,22 @@ func TestSessionProcessEnvPublishesTheCLIOnPath(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			app := &App{cliBinDir: test.binDir, providerExtraEnv: test.extraEnv}
-			credential := aoSessionCredential{env: map[string]string{aocli.EnvToken: "tok"}}
 			// The caller's map is an input, not a scratch buffer: mutating it
 			// would leak one session's PATH into the next config built from it,
 			// stacking the bin dir on every restart.
 			configPathBefore, hadConfigPath := test.configEnv["PATH"]
-			env := app.sessionProcessEnv(string(provider.Claude), test.configEnv, credential)
+			env := app.sessionProcessEnv(string(provider.Claude), test.configEnv)
 			if env["PATH"] != test.wantPath {
 				t.Fatalf("PATH = %q, want %q (env %#v)", env["PATH"], test.wantPath, env)
 			}
-			if env[aocli.EnvToken] != "tok" {
-				t.Fatalf("the credential did not survive: %#v", env)
+			if env[aocli.EnvInSession] != "1" {
+				t.Fatalf("the in-session marker did not survive: %#v", env)
 			}
 			after, hasConfigPath := test.configEnv["PATH"]
 			if hasConfigPath != hadConfigPath || after != configPathBefore {
 				t.Fatalf("sessionProcessEnv mutated its caller's map: PATH %q -> %q", configPathBefore, after)
 			}
 		})
-	}
-}
-
-// A session with no credential at all still gets the command: an interactive
-// thread outside a project can legitimately have no scoped token, and
-// `agent-overflow thread …` needs none.
-func TestSessionProcessEnvPublishesTheCLIWithoutACredential(t *testing.T) {
-	t.Parallel()
-	app := &App{cliBinDir: "/cfg/bin"}
-	env := app.sessionProcessEnv(string(provider.Claude), nil, aoSessionCredential{})
-	if env["PATH"] != "/cfg/bin" {
-		t.Fatalf("PATH = %q, want the published bin dir", env["PATH"])
-	}
-}
-
-// The credential carries exactly what the remaining session command reads.
-// Workflow tooling reaches a session as ao-workflow-tools, so the variables
-// only the workflow verbs read are gone: an agent finding AO_RUN_ID would go
-// looking for a command that no longer exists.
-func TestMintAOCredentialCarriesOnlyTheSessionContract(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.SetTransportServer(startTestTransportServer(t))
-	projectRow := store.Project{ID: "slug-project", Path: t.TempDir(), Name: "Repo A", CreatedAt: 1, UpdatedAt: 1}
-	if _, err := app.store.CreateProject(projectRow); err != nil {
-		t.Fatal(err)
-	}
-
-	credential, err := app.mintAOCredential(store.Thread{
-		ID: "chat", ProjectID: projectRow.ID, Mode: threadmode.ModeChat,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	keys := make([]string, 0, len(credential.env))
-	for key := range credential.env {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	if want := []string{aocli.EnvEndpoint, aocli.EnvThreadID, aocli.EnvToken}; !slices.Equal(keys, want) {
-		t.Fatalf("credential env keys = %v, want %v", keys, want)
-	}
-
-	// A projectless thread is scoped to nothing and gets no credential at all.
-	projectless, err := app.mintAOCredential(store.Thread{ID: "loose", Mode: threadmode.ModeChat})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(projectless.env) != 0 {
-		t.Fatalf("a projectless thread minted %#v", projectless.env)
 	}
 }
 

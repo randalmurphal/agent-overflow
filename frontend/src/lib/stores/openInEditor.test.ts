@@ -1,17 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { setPageGrantsFromBootstrap } from '../transport/scopes';
 import { openInEditor } from './openInEditor';
 
 describe('openInEditor', () => {
   beforeEach(() => {
-    resetBindingMocks();
     setPageGrantsFromBootstrap(false);
   });
 
   afterEach(() => {
     setPageGrantsFromBootstrap(false);
-    resetBindingMocks();
   });
 
   it('forwards every argument in a local session', async () => {

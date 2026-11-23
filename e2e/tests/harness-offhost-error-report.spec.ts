@@ -7,8 +7,8 @@
 // paired through the shipped pairing screen (`offhost-helpers.ts`). It owns
 // its backend because the LAN bind persists to the settings file, which
 // `harness.reset()` does not undo.
-import { expect, type BrowserContext, type Page } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { type BrowserContext, type Page } from '@playwright/test';
+import { expect, test } from './base-test.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { type SeedResult } from './fixtures.js';

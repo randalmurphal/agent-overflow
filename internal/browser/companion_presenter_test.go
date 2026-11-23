@@ -60,7 +60,7 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 			})
 			attach := func() string {
 				t.Helper()
-				mount, err := manager.AttachPane(access.Caller())
+				mount, err := manager.AttachPane(access.Caller(), untiedPane)
 				if err != nil {
 					t.Fatal(err)
 				}

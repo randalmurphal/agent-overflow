@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	fixtureStreamAbandonedMidblock   = "../../../docs/references/fixtures/claude/stream_abandoned_midblock_20261016.ndjson"
-	fixtureStreamAbandonedTwoblock   = "../../../docs/references/fixtures/claude/stream_abandoned_twoblock_20261016.ndjson"
-	fixtureStreamAbandonedAfterblock = "../../../docs/references/fixtures/claude/stream_abandoned_afterblock_20261016.ndjson"
+	fixtureStreamAbandonedMidblock   = "../wirecaptures/claude/stream_abandoned_midblock_20261016.ndjson"
+	fixtureStreamAbandonedTwoblock   = "../wirecaptures/claude/stream_abandoned_twoblock_20261016.ndjson"
+	fixtureStreamAbandonedAfterblock = "../wirecaptures/claude/stream_abandoned_afterblock_20261016.ndjson"
 )
 
 func decodeBlocksAbandoned(t *testing.T, evt provider.ProviderEvent) provider.BlocksAbandonedMeta {

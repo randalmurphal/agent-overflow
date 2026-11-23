@@ -408,7 +408,7 @@ own stop (`agentStopScope`, `internal/triage/agent_stops.go`;
 | Background completion card showing ack text as done | Same agent card with background pill | DELETE the ack-text rendering |
 | `parse_system.go` skip of `task_progress`, default-drop of `background_tasks_changed` | Typed progress event + change nudge | MIGRATE (parse, emit, consume) |
 | Codex `thread/tokenUsage/updated` suppressed for children (`collab_agents.go`) | Scoped child progress event | MIGRATE (unsuppress into the progress event, keep it off the parent's own meter) |
-| Background tray filter `parent_id = ''` (display query only) | Tree listing by backgrounded ancestry | MIGRATE; reaper/queue gates KEEP their top-level filter |
+| Background tray filter `parent_id = ''` (display query only) | Tree listing by backgrounded ancestry | MIGRATE; the queue gate KEEPS its top-level filter |
 | Anchor set `toolName in (Agent, Task)` | Provider-neutral launch predicate (Agent/Task, forked Skill, SendMessage-resume, Codex spawn_agent) | MIGRATE |
 
 ## Testing strategy

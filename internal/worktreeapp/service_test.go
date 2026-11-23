@@ -8,16 +8,13 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil"
 )
 
 func newTestService(t *testing.T, transient []string, background map[string]int) (*Service, *store.Store) {
 	t.Helper()
-	database, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
+	database := storetest.Clone(t)
 	service := New(Deps{
 		Store: database,
 		TransientBusyThreadIDs: func() []string {

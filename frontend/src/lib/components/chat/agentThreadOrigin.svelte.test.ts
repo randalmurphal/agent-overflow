@@ -11,7 +11,6 @@ import {
   getPane,
   openThreadInNewPane,
   openThreadInPane,
-  resetPanesForTest,
 } from '../../stores/panes.svelte';
 import { AGENT_THREAD_COMPANION_KIND, agentThreadCompanionPlacer } from '../../stores/agentThreadCompanion';
 import { companionForSource } from '../../stores/companionPanes.svelte';
@@ -20,7 +19,7 @@ import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { installPaneMocks, makeThread } from '../../../test/helpers/chat';
-import { stageBackend, resetStagedBackends, REMOTE_BACKEND_UUID } from '../../../test/helpers/backends';
+import { stageBackend, REMOTE_BACKEND_UUID } from '../../../test/helpers/backends';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { UserMessageOriginThread } from '../../utils/userMessageMeta';
 
@@ -41,11 +40,7 @@ function origin(overrides: Partial<UserMessageOriginThread> = {}): UserMessageOr
 // says — and whether it goes anywhere — is the contract here.
 describe('agentThreadOriginChip', () => {
   beforeEach(() => {
-    resetStagedBackends();
     stageBackend({ id: HOME_BACKEND, name: 'This computer', backendId: 'home-uuid' });
-  });
-  afterEach(() => {
-    resetStagedBackends();
   });
 
   it('names the thread alone when the row came from this computer', () => {
@@ -103,14 +98,12 @@ describe('agentThreadOriginChip', () => {
 
 describe('openAgentThreadOrigin', () => {
   beforeEach(() => {
-    resetPanesForTest();
     resetPaneLayoutForTest();
     installPaneMocks();
     setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 600 }]);
     createPane('main');
   });
   afterEach(() => {
-    resetPanesForTest();
     resetPaneLayoutForTest();
     replaceAllThreads([]);
     for (const toast of getToasts()) removeToast(toast.id);

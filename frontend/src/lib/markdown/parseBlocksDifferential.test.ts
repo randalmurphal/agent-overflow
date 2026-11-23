@@ -112,7 +112,7 @@ const TRANSITION_CORPUS = [
 describe('parseBlocks append differential', () => {
   it('keeps block-only list and table tokens free of render child arrays', () => {
     const list = '- first\n- second\n- third';
-    const listToken = markedListBlock.tokenizer.call(
+    const listToken = markedListBlock.tokenizer!.call(
       { lexer: { options: { gfm: true, pedantic: false } } } as never,
       list,
       [],
@@ -124,7 +124,7 @@ describe('parseBlocks append differential', () => {
     });
 
     const table = '| H | V |\n| --- | --- |\n| a | 1 |\n| b | 2 |';
-    const tableToken = markedTableBlock.tokenizer.call(
+    const tableToken = markedTableBlock.tokenizer!.call(
       {} as never,
       table,
       [],
@@ -201,13 +201,13 @@ describe('parseBlocks append differential', () => {
         .toBeUndefined();
       const footnotes = markedFootnote();
       const footnote = footnotes.find((extension) => extension.level === 'block');
-      expect(footnote?.tokenizer.call(
+      expect(footnote?.tokenizer!.call(
         { lexer: {} } as never,
         'Ordinary prose cannot open a footnote.',
         [],
       )).toBeUndefined();
       const footnoteRef = footnotes.find((extension) => extension.level === 'inline');
-      expect(footnoteRef?.tokenizer.call(
+      expect(footnoteRef?.tokenizer!.call(
         { lexer: {} } as never,
         'Ordinary prose cannot reference a footnote.',
         [],
@@ -215,13 +215,13 @@ describe('parseBlocks append differential', () => {
       const blockMath = markedMath.find((extension) => extension.level === 'block');
       const inlineMath = markedMath.find((extension) => extension.level === 'inline');
       for (const extension of [blockMath, inlineMath, markedSub, markedSup, markedBr, markedCitations]) {
-        expect(extension?.tokenizer.call(
+        expect(extension?.tokenizer!.call(
           { lexer: {} } as never,
           'Ordinary prose cannot open an inline extension.',
           [],
         )).toBeUndefined();
       }
-      expect(markedDl.tokenizer.call(
+      expect(markedDl.tokenizer!.call(
         {} as never,
         'Ordinary prose cannot open a description list.',
         [],
@@ -299,6 +299,33 @@ describe('parseBlocks append differential', () => {
     expect(blocks).toHaveLength(1);
     expectFullLexEquivalent(table);
     expect(result.paths).toContain('table-line-append');
+  });
+
+  // The table's raw carries the blank line after its last row, so the next
+  // append lands on the table's record; a `|` line there opens a new table.
+  it.each([
+    ['LF', '\n'],
+    ['CRLF', '\r\n'],
+  ])('starts a second table after a blank line, not another row of the first (%s)', (_label, eol) => {
+    const first = `| a | b |${eol}| --- | --- |${eol}| 1 | 2 |${eol}${eol}`;
+    const document = `${first}| c | d |${eol}| --- | --- |`;
+    const cache = createParseBlocksCache();
+    let previous = '';
+    for (const prefix of [first, `${first}| c`, document]) {
+      const actual = parseBlocks(prefix, [], cache, createProvenAppend(previous, prefix.slice(previous.length)));
+      expect(actual).toEqualWithFirstDivergence(parseBlocks(prefix, []));
+      previous = prefix;
+    }
+    expect(parseBlocks(`${first}| c`)).toEqual([first, '| c']);
+  });
+
+  // A lone marker lexes as an empty list item; text right after it, with no
+  // space, makes the line a paragraph, which keeps its trailing space.
+  it.each(['-', '*', '1.'])('streams a %s marker followed by text as a paragraph', (marker) => {
+    const cache = createParseBlocksCache();
+    parseBlocks(marker, [], cache, createProvenAppend('', marker));
+    const next = `${marker}m `;
+    expect(parseBlocks(next, [], cache, createProvenAppend(marker, 'm '))).toEqual(parseBlocks(next, []));
   });
 
   it.each([

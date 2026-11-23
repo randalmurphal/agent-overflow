@@ -135,7 +135,6 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const hold of holds.splice(0)) hold.release();
-  __resetWorkflowRunMapStoreForTest();
   vi.useRealTimers();
 });
 
@@ -700,12 +699,12 @@ describe('workflowRunMap — events during an outstanding fetch', () => {
     await attached();
     expect(mock.pending).toBe(1);
 
-    // The reset lands while that first fetch is still out. It re-sources the
-    // key nobody released, and THAT fetch answers.
-    __resetWorkflowRunMapStoreForTest();
-    await flush();
-    expect(mock.pending).toBe(2);
+    // The reset lands while that first fetch is still out, and the next
+    // attach's fetch answers first.
     const abandoned = mock.take();
+    __resetWorkflowRunMapStoreForTest();
+    await attached();
+    expect(mock.pending).toBe(1);
     mock.resolve(campaign());
     await flush();
     expect(peekWorkflowRunMap(ROOT)).not.toBeNull();

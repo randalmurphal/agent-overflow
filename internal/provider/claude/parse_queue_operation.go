@@ -18,7 +18,7 @@ import (
 // example because the agent's worktree is gone, and removed the
 // notification with a drop reason. No `task_started`, `task_updated` or
 // level-set frame follows. Captured live on 2.1.284 (2026-10-14,
-// fixtures/claude/local_agent_dropped_wake_20261014.ndjson).
+// wirecaptures/claude/local_agent_dropped_wake_20261014.ndjson).
 type queueOperationEntry struct {
 	Type      string          `json:"type"`
 	Operation string          `json:"operation"`

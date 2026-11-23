@@ -8,8 +8,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/providerstatus"
-
-	"github.com/google/uuid"
 )
 
 // This file owns the two halves of the native-login saga that surround the
@@ -103,6 +101,9 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 			return ManagedAccount{}, fmt.Errorf("verify %s login: %w", providerName, err)
 		}
 	}
+	if providerName == string(provider.Agy) {
+		info = m.identifyAgyCredential(m.context(), info, loginCredential.Bytes())
+	}
 	if err := attempt.cleanup(); err != nil {
 		return ManagedAccount{}, err
 	}
@@ -134,7 +135,6 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 		}
 	}()
 
-	targetID := uuid.NewString()
 	m.backfillCodexOrgIDs(providerName, info.Email)
 	existing, found, err := m.findAccountByObservedIdentity(providerName, info)
 	if err != nil {
@@ -145,8 +145,14 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 			err,
 		)
 	}
-	if found {
-		targetID = existing.ID
+	targetID := existing.ID
+	if !found {
+		reservation, err := m.reserveAccount(providerName)
+		if err != nil {
+			return ManagedAccount{}, err
+		}
+		defer reservation.settleOnFailure(&retErr)
+		targetID = reservation.ID()
 	}
 	current, hasCurrent := m.store.Active(providerName, time.Now())
 	currentID := ""

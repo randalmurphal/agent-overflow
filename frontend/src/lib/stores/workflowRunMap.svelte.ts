@@ -546,26 +546,22 @@ export function resyncWorkflowRunMapAfterGap(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Drop every entry and index, as a fresh module load would. suspend() releases
- * every unheld entry; resetAll() then lifts the suspension. An entry that
- * survives both is one a test attached and never released — resetAll
- * re-sources it against the next test's binding mocks, which is exactly the
- * noise that should make the leak findable.
+ * Drop every entry and index, as a fresh module load would, calling no
+ * backend.
  */
 export function __resetWorkflowRunMapStoreForTest(): void {
   cancelPendingInvalidations();
   keysByMember.clear();
   membersByKey.clear();
   // Retire every outstanding fetch's claim on the counters BEFORE clearing
-  // them, and strictly before resetAll re-sources: a fetch still in the air
-  // has a `finally` that will decrement, and it must not decrement a count
-  // belonging to a fetch this reset is about to start. One dropped to zero
-  // that way silently stopped recording race marks for a live key.
+  // them: a fetch still in the air has a `finally` that will decrement, and
+  // it must not decrement a count belonging to a fetch the next test starts.
+  // One dropped to zero that way silently stopped recording race marks for a
+  // live key.
   fetchEpoch += 1;
   fetchesInFlight.clear();
   racedDuringFetch.clear();
   firstLoads.clear();
   unrouted.reset();
-  store.suspend();
-  store.resetAll();
+  store.resetForTest();
 }

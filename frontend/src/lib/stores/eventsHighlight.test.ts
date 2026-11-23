@@ -3,21 +3,17 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import { contentKey } from '../utils/fnv1a';
 import {
   getCachedBlockSpans,
-  resetCodeSpanCacheForTest,
 } from '../components/chat/markdown/codeSpanCache';
 import {
   TextLineChain,
   __liveCodeSpanStatsForTest,
   applyLiveCode,
   liveCodeRow,
-  resetLiveCodeSpansForTest,
   type HighlightLiveCodeEvent,
 } from '../components/chat/markdown/liveCodeSpans.svelte';
 import {
   getSpansForLine,
-  resetDiffSpanCacheForTest,
 } from '../utils/diffSpanCache.svelte';
-import { resetSyntaxClassNamesForTest } from '../utils/syntaxSpans';
 import { requireHighlightSchema } from '../utils/highlightService';
 import { HOME_BACKEND } from '../transport/backends';
 import { parsePatchFiles } from '../utils/patchFiles';
@@ -61,10 +57,6 @@ function drain(): Promise<void> {
 }
 
 beforeEach(() => {
-  resetCodeSpanCacheForTest();
-  resetLiveCodeSpansForTest();
-  resetDiffSpanCacheForTest();
-  resetSyntaxClassNamesForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
   // Diff seeds only ingest for threads the client knows (deletion-race

@@ -70,7 +70,7 @@ const BackgroundTaskRetentionMillis = 2000
 // 38k-item thread to return between zero and eight rows, on every thread
 // switch and after every background tool completion.
 //
-// This is the DISPLAY query only. The reaper and queue gates in
+// This is the DISPLAY query only. The queue gates in
 // items_lifecycle.go (HasRunningTopLevelForegroundToolCall,
 // HasQueueBlockingBackgroundToolCall, MarkLiveBackgroundToolCallsInactive)
 // and paging.go's

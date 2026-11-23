@@ -1,17 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/svelte';
 
 import SendQueuePreview from './SendQueuePreview.svelte';
 import { buildPane } from '../../../test/helpers/chat';
-import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import {
   applyFlushedLifecycle,
   markItemsFlushed,
   replaceQueueForThread,
-  resetForTest as resetSendQueueForTest,
   type QueueItem,
 } from '../../stores/sendQueue.svelte';
-import { resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
 
 function makeQueueItem(overrides: Partial<QueueItem> = {}): QueueItem {
   return {
@@ -28,16 +25,6 @@ function makeQueueItem(overrides: Partial<QueueItem> = {}): QueueItem {
 }
 
 describe('<SendQueuePreview>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetSendQueueForTest();
-    resetThreadStatuses();
-  });
-
-  afterEach(() => {
-    resetSendQueueForTest();
-    resetThreadStatuses();
-  });
 
   it('renders nothing when no pending messages exist', async () => {
     const pane = await buildPane();

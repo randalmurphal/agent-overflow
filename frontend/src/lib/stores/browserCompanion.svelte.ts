@@ -15,13 +15,13 @@ import { applyBrowserFindEvent } from './browserFind.svelte';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { closeCompanion, companionForSource, openCompanion } from './companionPanes.svelte';
-import { addPaneThreadMountedObserver, getAllPanes } from './panes.svelte';
+import { addPaneThreadMountedObserver, getAllPanes, revealPane } from './panes.svelte';
+import { getPromotedPaneId, isPaneOnScreen } from './paneLayout.svelte';
 import { hasScope } from '../transport/scopes';
 import { isCompactLayout } from './layoutMode.svelte';
 import { createSequenceGate } from './snapshotStream';
 import { onWatchedThreadsComposed } from './watchedThreads';
 import { getTransportHelloFor } from './transportStatus.svelte';
-import { resetBrowserAddressFocusForTest } from './browserAddressFocus.svelte';
 import { getSettings } from './settings.svelte';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { userFacingError } from '../utils/userFacingError';
@@ -46,7 +46,7 @@ import { addErrorToast } from './toast.svelte';
 // (browserActions.ts), the host rect reports (browserPaneRectReports.ts),
 // the page keyboard focus intent (browserPageFocus.ts) and the chords
 // pressed in a page (browserPageChords.ts). Address bar focus
-// is a leaf it imports (browserAddressFocus.svelte.ts).
+// keeps its own state (browserAddressFocus.svelte.ts).
 
 /** The backend's id of one pane mount, minted from BrowserCompanionPaneAttach's answer. */
 export type BrowserMountId = string & { readonly __brand: 'BrowserMountId' };
@@ -302,11 +302,37 @@ export function canPresentNativeBrowser(threadId: string): boolean {
  * revealPane, which would pull a phone off its thread list for a native
  * view the compact screen never shows (docs/specs/remote-access.md,
  * "Hidden on the phone").
+ *
+ * While a pane is maximized it opens without the reveal, which would
+ * restore that pane: a state from the agent must not undo the user's
+ * maximize. A press of the user's own brings the pane into view after
+ * (revealBrowserPane).
  */
 function openBrowserCompanion(sourcePaneId: string, threadId: string): void {
   if (isCompactLayout() || !canUseNativeBrowser(threadId)) return;
   if (companionForSource(sourcePaneId, 'browser')) return;
-  openCompanion(sourcePaneId, 'browser');
+  openCompanion(sourcePaneId, 'browser', { reveal: untrack(getPromotedPaneId) === null });
+}
+
+/**
+ * Reactive: whether the thread's browser pane is in this layout and can be
+ * seen, so not under another pane that is maximized.
+ */
+export function browserPaneOnScreen(threadId: string): boolean {
+  const sourcePaneId = sourcePaneIdForThread(threadId);
+  const companion = sourcePaneId === null ? null : companionForSource(sourcePaneId, 'browser');
+  return companion !== null && isPaneOnScreen(companion.paneId);
+}
+
+/**
+ * After the user's own show or link open: brings the thread's browser pane
+ * into view when it is under a maximized pane, which restores that pane.
+ */
+export function revealBrowserPane(threadId: string): void {
+  if (isCompactLayout()) return;
+  const sourcePaneId = sourcePaneIdForThread(threadId);
+  const companion = sourcePaneId === null ? null : companionForSource(sourcePaneId, 'browser');
+  if (companion && !untrack(() => isPaneOnScreen(companion.paneId))) revealPane(companion.paneId);
 }
 
 const store = createEntityStore<BrowserPaneMount, void>({
@@ -659,8 +685,6 @@ export function resetBrowserCompanionForTest(): void {
   snapshots.reset();
   findCleanupErrors.reset();
   actionErrors.reset();
-  resetBrowserAddressFocusForTest();
   stateReads.clear();
-  store.suspend();
-  store.resetAll();
+  store.resetForTest();
 }

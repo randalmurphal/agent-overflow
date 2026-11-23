@@ -127,7 +127,7 @@ func TestClaudeCapturedUsageReconcilesModelSpellings(t *testing.T) {
 			createTestThread(t, s, "t1")
 			p := claude.NewParser()
 			defer p.Close()
-			data, err := os.ReadFile(filepath.Join("..", "..", "docs", "references", "fixtures", "claude", fixture))
+			data, err := os.ReadFile(filepath.Join("..", "provider", "wirecaptures", "claude", fixture))
 			if err != nil {
 				t.Fatal(err)
 			}

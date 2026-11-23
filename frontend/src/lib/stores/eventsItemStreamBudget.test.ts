@@ -2,7 +2,6 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { buildPane, makeItem } from '../../test/helpers/chat';
 import { FakeSmoothingClock, installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import { applyItemStreamEvent, flushItemEventQueue, resetItemEventQueue } from './eventsItemStream';
-import { resetPanesForTest } from './panes.svelte';
 import { getSettings } from './settings.svelte';
 import { __setSmoothingClockForTest } from './threadPaneShared';
 import { pendingItemEventsSettled } from './itemEventSettlement';
@@ -10,7 +9,6 @@ import { pendingItemEventsSettled } from './itemEventSettlement';
 beforeEach(installThreadPaneTestEnv);
 afterEach(() => {
   resetItemEventQueue();
-  resetPanesForTest();
   vi.useRealTimers();
   getSettings().lowPowerMode = false;
   __setSmoothingClockForTest(undefined);

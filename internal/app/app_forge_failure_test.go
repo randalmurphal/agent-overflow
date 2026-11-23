@@ -101,7 +101,7 @@ func newStaggeredScriptedPump(t *testing.T, stagger time.Duration, steps ...func
 	script := &scriptedFetch{steps: steps}
 	app.prUpdates.fetchFn = script.fetch
 	events := capturePRUpdates(t, app)
-	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestPRCIRateLimitHoldsThePipelinePollUntilResumeAt(t *testing.T) {
 			if limited.ErrorKind != forgeFailureRateLimited || !limited.Reserve || limited.ResumeAt != until.UTC().Format(time.RFC3339) {
 				t.Fatalf("CI rate limit frame = %+v", limited)
 			}
-			joined, err := f.app.SubscribePRUpdates(context.Background(), testPR)
+			joined, err := f.app.SubscribePRUpdates(connCtx(t), testPR)
 			if err != nil {
 				t.Fatalf("join: %v", err)
 			}
@@ -430,7 +430,7 @@ func TestPRUpdateGitLabNotModifiedTickIsQuiet(t *testing.T) {
 	isolatedForgeCore(t, app, handler)
 	app.prUpdates.interval = 10 * time.Millisecond
 	events := capturePRUpdates(t, app)
-	sub, err := app.SubscribePRUpdates(context.Background(), testGitLabPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testGitLabPR)
 	if err != nil || sub.Error != "" || sub.Detail.Number != 12 {
 		t.Fatalf("SubscribePRUpdates = %+v, %v", sub, err)
 	}
@@ -519,7 +519,7 @@ func TestPRCILogFollowOfALargeTraceIsCachedWhole(t *testing.T) {
 	f.app.prUpdates.ciFollowInterval = 20 * time.Millisecond
 	f.publish(pipelineWith(gitops.CIStatusRunning, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusRunning, LogsAvailable: true}), nil)
 	pr := testGitLabPR
-	sub, err := f.app.SubscribePRUpdates(context.Background(), pr)
+	sub, err := f.app.SubscribePRUpdates(connCtx(t), pr)
 	if err != nil {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}

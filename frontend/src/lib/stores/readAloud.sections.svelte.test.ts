@@ -22,7 +22,6 @@ import {
   readAloudPreviousSection,
   readAloudSectionBlocks,
   readAloudWaiting,
-  resetReadAloudForTest,
   restartReadAloud,
   resumeReadAloud,
   stopReadAloud,
@@ -30,7 +29,7 @@ import {
   watchReadAloudVoices,
 } from './readAloud.svelte';
 import { reloadReadAloudPreferencesForTest, setReadAloudPreference } from './readAloudPreferences.svelte';
-import { refreshReadAloudSource, resetReadAloudSourcesForTest } from './readAloudSource.svelte';
+import { refreshReadAloudSource } from './readAloudSource.svelte';
 
 // Three sections: blocks 0-1, block 3 (after a code block), blocks 4-5.
 const REPLY = [
@@ -57,8 +56,6 @@ describe('read-aloud by section', () => {
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
     setReadAloudPreference('enabled', true);
-    resetReadAloudForTest();
-    resetReadAloudSourcesForTest();
     device = fakeSpeechEngine();
     watchReadAloudVoices(device.engine);
     clips = fakeClipEngines();
@@ -70,8 +67,6 @@ describe('read-aloud by section', () => {
   });
 
   afterEach(() => {
-    resetReadAloudForTest();
-    resetReadAloudSourcesForTest();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
     vi.restoreAllMocks();

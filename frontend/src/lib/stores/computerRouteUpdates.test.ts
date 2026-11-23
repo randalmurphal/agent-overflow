@@ -20,7 +20,7 @@ const drain = async () => { for (let i = 0; i < 10; i++) await Promise.resolve()
 function stage(id = A) { return stageBackend({ id, backendId: id, hello: { ...hello, backendId: id } }); }
 beforeEach(() => { resetStagedBackends(); localStorage.clear(); resetBindingMocks(); refresh.mockReset().mockResolvedValue();
   setBindingMock('GetComputerRoutes', () => { throw new Error('route RPC unavailable'); }); });
-afterEach(() => { stop(); resetStagedBackends(); vi.useRealTimers(); });
+afterEach(() => { stop(); vi.useRealTimers(); });
 
 it('coalesces startup, then refreshes only the changed computer without reconnecting', async () => {
   const a = stage(); const b = stage(B);

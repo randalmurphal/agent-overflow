@@ -39,7 +39,7 @@ type ClaudeTranscriptRetention struct {
 // settings file it reads: a HOME the Claude environment sets, else the
 // provider home.
 func (a *App) claudeProcessHome() (string, error) {
-	home, set := a.sessionProcessEnv(string(provider.Claude), nil, aoSessionCredential{})["HOME"]
+	home, set := a.sessionProcessEnv(string(provider.Claude), nil)["HOME"]
 	if !set {
 		return a.providerHome()
 	}

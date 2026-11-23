@@ -15,7 +15,6 @@ import {
   installCompanionPanes,
   isCompanionOpen,
   openCompanion,
-  resetCompanionPanesForTest,
 } from './companionPanes.svelte';
 import { installCompanionStash, resetCompanionStashForTest, stashCompanions } from './companionStash';
 import { draftPlaceholderId } from './draftPlaceholderId';
@@ -30,7 +29,6 @@ import {
   getPane,
   openThreadInNewPane,
   openThreadInPane,
-  resetPanesForTest,
 } from './panes.svelte';
 import { keepSideChat } from './sideChat';
 import { removeThread, replaceAllThreads } from './threads.svelte';
@@ -38,7 +36,7 @@ import { getToasts } from './toast.svelte';
 import type { Thread } from '../types/models';
 import { TransportError } from '../transport/wsClient';
 import { installPaneMocks, makeThread } from '../../test/helpers/chat';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 
 const A = makeThread({ id: 'thread-a', title: 'A' });
 const B = makeThread({ id: 'thread-b', title: 'B' });
@@ -71,9 +69,6 @@ async function openSideChatOn(sourcePaneId: string, thread: Thread = SIDE): Prom
 }
 
 beforeEach(() => {
-  resetBindingMocks();
-  resetPanesForTest();
-  resetCompanionPanesForTest();
   resetPaneLayoutForTest();
   installCompanionPanes();
   installCompanionStash();
@@ -86,11 +81,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  resetCompanionStashForTest();
-  resetCompanionPanesForTest();
-  resetPanesForTest();
   resetPaneLayoutForTest();
-  resetBindingMocks();
   replaceAllThreads([]);
 });
 

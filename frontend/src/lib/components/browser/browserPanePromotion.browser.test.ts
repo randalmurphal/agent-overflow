@@ -17,6 +17,7 @@ import { focusPane, togglePanePromotion } from '../../stores/panes.svelte';
 import { promotedLayerClip } from '../../utils/panePromotion.svelte';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
 import { mountBrowserPaneStrip, type BrowserPaneStrip } from '../../../test/helpers/browserPaneStrip';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 const THREAD = 'thread-browser';
 const BROWSER_PANE = 'browser-main';
@@ -135,6 +136,8 @@ it('a browser pane under another pane\'s promoted layer reports itself hidden un
 // the address. It is not a control, and a ring on it would frame the native
 // view that sits exactly over it.
 it('draws no focus ring on the page area when a key moves focus there', async () => {
+  // What the address suggestions read when the field takes focus.
+  setBindingMock('BrowserCompanionRecentAddresses', async () => []);
   const address = host.querySelector<HTMLInputElement>('input[aria-label="Address"]');
   if (!address) throw new Error('no address field');
   address.focus();

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import SettingsView from './SettingsView.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
@@ -17,7 +17,7 @@ import { REMOTE_BACKEND_UUID, stageBackend } from '../../../test/helpers/backend
 import { grantBackendScopes } from '../../../test/helpers/scopes';
 import { SCOPES } from '../../transport/scopes';
 import { listenProviderUpdates } from '../../../test/helpers/providerUpdates';
-import { resetSettingsOverlayForTest, setSettingsComputer } from '../../stores/settingsOverlay.svelte';
+import { setSettingsComputer } from '../../stores/settingsOverlay.svelte';
 
 const BASE_SETTINGS: Settings = makeSettings();
 
@@ -71,7 +71,7 @@ describe('settings section map', () => {
     expect(settingsSectionGroups().map((g) => g.sections.map((s) => s.id))).toEqual([
       ['theme', 'typography', 'chat', 'sidebar', 'spinner'],
       ['threads', 'performance', 'keybindings', 'notifications', 'voice', 'updates'],
-      ['claude', 'codex', 'commit-messages', 'browser', 'thread-tools', 'assistants', 'agent-profiles', 'agent-guide', 'memory'],
+      ['claude', 'codex', 'agy', 'commit-messages', 'browser', 'thread-tools', 'assistants', 'agent-profiles', 'agent-guide', 'memory'],
       ['projects', 'git', 'editor'],
       ['systems', 'remote', 'agent-access'],
       ['observability', 'storage'],
@@ -117,6 +117,9 @@ describe('<SettingsView> tabs', () => {
   });
 
   it('names the computer the Voice page configures', async () => {
+    // The page reads the key file and voices: no key file written yet.
+    setBindingMock('OpenAIKeyFile', async () => ({ path: '/data/credentials/openai-api-key', state: 'missing' }));
+    setBindingMock('ReadAloudSource', async () => ({ available: false, voices: [] }));
     const { getByTestId, getByRole } = render(SettingsView, { onClose: vi.fn() });
     await fireEvent.click(getByRole('tab', { name: 'Voice' }));
     const header = getByTestId('settings-page-header');
@@ -125,6 +128,8 @@ describe('<SettingsView> tabs', () => {
   });
 
   it('switches to the Observability page when clicked', async () => {
+    // The page reads whether tracing is on, and was at launch: off.
+    setBindingMock('GetObservabilityTracing', async () => ({ value: false, launched: false }));
     const { getByRole, findByLabelText } = render(SettingsView, { onClose: vi.fn() });
     await fireEvent.click(getByRole('tab', { name: 'Observability' }));
 
@@ -310,7 +315,6 @@ describe('<SettingsView> search', () => {
 
 describe('settings rail: provider update dots', () => {
   beforeEach(seed);
-  afterEach(() => resetSettingsOverlayForTest());
 
   it('follows the computer the view shows', async () => {
     stageBackend();

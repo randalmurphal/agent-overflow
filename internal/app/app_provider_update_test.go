@@ -244,7 +244,7 @@ func TestProviderUpdateMethodsOnABareAppAndAfterShutdown(t *testing.T) {
 	t.Parallel()
 	app := &App{}
 	statuses, err := app.GetProviderUpdates()
-	if err != nil || len(statuses) != 2 || statuses[0].Run.Phase != providerupdate.PhaseIdle {
+	if err != nil || len(statuses) != 3 || statuses[0].Run.Phase != providerupdate.PhaseIdle {
 		t.Fatalf("GetProviderUpdates = %+v, %v", statuses, err)
 	}
 	if err := app.Shutdown(context.Background()); err != nil {

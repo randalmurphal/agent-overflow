@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { __resetPayloadCacheForTest, writePayloadCache } from './payloadDataCache';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
+import { writePayloadCache } from './payloadDataCache';
 import {
   createPayloadExpansion,
   formatPayloadSize,
@@ -36,10 +36,6 @@ function reveal(
 }
 
 describe('payloadExpansion', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    __resetPayloadCacheForTest();
-  });
 
   afterEach(() => {
     vi.useRealTimers();

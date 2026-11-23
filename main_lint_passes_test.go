@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // lintTarget is one system the exhaustive linter runs as, with the build tag
@@ -39,14 +41,15 @@ func TestExhaustiveLintPassesReachEveryFile(t *testing.T) {
 			wholeTree = append(wholeTree, target)
 		}
 	}
+	root := reporoot.Dir(t)
 	var unreached []string
-	walkErr := filepath.WalkDir(".", func(path string, entry fs.DirEntry, err error) error {
+	walkErr := reporoot.Walk(t, ".", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		name := entry.Name()
 		if entry.IsDir() {
-			if path != "." && (strings.HasPrefix(name, ".") || name == "node_modules") {
+			if path != root && strings.HasPrefix(name, ".") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -63,7 +66,8 @@ func TestExhaustiveLintPassesReachEveryFile(t *testing.T) {
 			reach = wholeTree
 		}
 		if compiledBySomeBuild(expr, reach) && !compiledBySomePass(expr, reach) {
-			unreached = append(unreached, path+": "+expr.String())
+			rel, _ := filepath.Rel(root, path)
+			unreached = append(unreached, filepath.ToSlash(rel)+": "+expr.String())
 		}
 		return nil
 	})

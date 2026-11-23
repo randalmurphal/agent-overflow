@@ -95,7 +95,6 @@ import {
   type TransportStatusSnapshot,
 } from './wsClient';
 import { DEFAULT_METHOD_BUDGET_MS, METHOD_ANSWER_MARGIN_MS, METHOD_BUDGETS_MS } from './methodRoutes';
-import { __resetRunModeForTest } from './runMode';
 import { grantedScopes, hasScope } from './scopes';
 import { getConnectionId, getDeviceId } from './clientIdentity';
 import { clearPairedSession, hasPairedSession, pairedSessionHeaders, redeemPairing } from './deviceSession';
@@ -105,7 +104,7 @@ import { clearPairedSession, hasPairedSession, pairedSessionHeaders, redeemPairi
 // drives the same client through the same fake, and two copies would be
 // two answers to what the client sends.
 import { FakeCtor, flushMicrotasks, MockWebSocket } from '../../test/helpers/mockWebSocket';
-import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
+import { setHomeEndpoint } from './homeEndpoint';
 import { DamagedTrustError } from '../native/networkTrust';
 import { MAX_REPLAY_BUFFER_CHARS } from './replayBuffer';
 
@@ -115,11 +114,9 @@ describe('WSClient', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    __resetRunModeForTest();
   });
 
   afterEach(() => {
-    __resetRunModeForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -4851,7 +4848,6 @@ describe('dormant reconnect ladder', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    __resetRunModeForTest();
     vi.useFakeTimers();
     // Longest jittered delay, so the climb below takes the fewest laps.
     vi.spyOn(Math, 'random').mockReturnValue(0.999);
@@ -4859,7 +4855,6 @@ describe('dormant reconnect ladder', () => {
   });
 
   afterEach(() => {
-    __resetRunModeForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -5166,11 +5161,9 @@ describe('lease frame', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    __resetRunModeForTest();
   });
 
   afterEach(() => {
-    __resetRunModeForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -5311,11 +5304,9 @@ describe('presence frame', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    __resetRunModeForTest();
   });
 
   afterEach(() => {
-    __resetRunModeForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -5435,12 +5426,10 @@ describe('WSClient under a shell origin', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    __resetHomeEndpointForTest();
     setHomeEndpoint(ENDPOINT);
   });
 
   afterEach(() => {
-    __resetHomeEndpointForTest();
     vi.restoreAllMocks();
   });
 
@@ -5484,13 +5473,11 @@ describe('watermark frames', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    __resetRunModeForTest();
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
   });
 
   afterEach(() => {
-    __resetRunModeForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });

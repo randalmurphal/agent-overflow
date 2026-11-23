@@ -9,8 +9,6 @@ import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { pendingAttention } from '../../utils/threadStatusPill';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import ChatView from './ChatView.svelte';
 import { applySettingsSnapshot } from '../../stores/settings.svelte';
 import { makeSettings } from '../../../test/helpers/settings';
@@ -20,7 +18,7 @@ import { makeSettings } from '../../../test/helpers/settings';
 import '../terminal/TerminalView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
-import { resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import { getThreads } from '../../stores/threads.svelte';
 import { loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
 import {
@@ -36,6 +34,7 @@ import {
 } from '../../stores/eventsMessageRevert';
 import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { installPaneMocks, installThreadSwitchMocks, makeItem } from '../../../test/helpers/chat';
 import { resetLayoutMetricsForTest } from '../../stores/layoutMetrics.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
@@ -44,11 +43,10 @@ import {
 } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { resetEditResendExecutionForTest } from './editResendFlow.svelte';
-import { SRC_ROOT } from '../../../test/sourceScan';
+import appCss from '../../../app.css?raw';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
-const appCss = readFileSync(join(SRC_ROOT, 'app.css'), 'utf8');
 
 beforeAll(() => {
   // Svelte transitions used by children call element.animate; happy-dom
@@ -83,12 +81,14 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.stubGlobal('innerWidth', 1400);
+  // The composer loads its provider's model list.
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   resetLayoutMetricsForTest();
   resetPaneLayoutForTest();
   resetCompanionPanesForTest();
   resetPanesForTest();
   resetThreadStatuses();
-  resetComposerDraftSnapshotsForTest();
+  resetComposerDraftSnapshotStateForTest();
   resetResendRevertMarkersForTest();
   // The per-thread execute lane is module-level and released on settle;
   // tests that park the destructive RPC forever never settle, so the

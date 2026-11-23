@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/svelte';
 import PrBadge from './PrBadge.svelte';
 import type { GitStatus } from '../../types/git';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 function status(overrides: Partial<GitStatus> = {}): GitStatus {
   return {
@@ -26,7 +26,6 @@ describe('<PrBadge>', () => {
   let originalOpen: typeof window.open;
 
   beforeEach(() => {
-    resetBindingMocks();
     originalOpen = window.open;
     window.open = vi.fn();
   });

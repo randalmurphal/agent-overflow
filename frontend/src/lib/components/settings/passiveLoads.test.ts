@@ -28,7 +28,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, render, waitFor } from '@testing-library/svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { resetRunMode } from '../../../test/runMode';
 import { SCOPES } from '../../transport/scopes';
@@ -38,7 +38,6 @@ import WSLSection, { resetWSLSectionCache } from './WSLSection.svelte';
 import WebviewGPUVsyncField from './WebviewGPUVsyncField.svelte';
 import NotificationsSection from './NotificationsSection.svelte';
 import SystemsSection from './SystemsSection.svelte';
-import { __resetSystemsForTest } from '../../stores/systems.svelte';
 import ClaudeSettings from './ClaudeSettings.svelte';
 import CodexSettings from './CodexSettings.svelte';
 import { seedSettingsPages } from '../../../test/helpers/settingsPages';
@@ -125,17 +124,14 @@ describe('settings sections issue no passive RPC they were not granted', () => {
   let bindings: ReturnType<typeof stubBindings>;
 
   beforeEach(() => {
-    resetBindingMocks();
     resetRunMode();
     resetWSLSectionCache();
-    __resetSystemsForTest();
     bindings = stubBindings();
   });
 
   afterEach(() => {
     cleanup();
     resetToLocalPage();
-    resetBindingMocks();
     resetRunMode();
     resetWSLSectionCache();
   });

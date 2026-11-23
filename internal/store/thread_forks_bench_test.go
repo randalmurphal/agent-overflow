@@ -20,7 +20,7 @@ func BenchmarkForkHistory(b *testing.B) {
 		}
 		b.Run(name, func(b *testing.B) {
 			path := filepath.Join(b.TempDir(), "store.sqlite")
-			if err := copyTestStoreTemplate(path); err != nil {
+			if err := copyTestStoreTemplate(b, path); err != nil {
 				b.Fatal(err)
 			}
 			s, err := New(path)

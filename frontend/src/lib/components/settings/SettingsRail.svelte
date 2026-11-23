@@ -221,7 +221,7 @@
                   class="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-accent align-middle"
                   aria-label="Update available"
                 ></span>
-              {:else if (section.id === 'claude' || section.id === 'codex') && hasProviderUpdate(section.id, computer)}
+              {:else if (section.id === 'claude' || section.id === 'codex' || section.id === 'agy') && hasProviderUpdate(section.id, computer)}
                 <span
                   class="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-accent align-middle"
                   aria-label="Update available"

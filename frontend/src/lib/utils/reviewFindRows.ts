@@ -17,7 +17,6 @@
 // was read from, and the cache dies with the file. Comments (drafts, PR
 // threads) are not part of the file and are never cached here.
 
-import type { DiffReviewComment, ReviewThread } from '../types/models';
 import type { FindRun } from './findHighlights';
 import { RowWalker, splitRowCount } from './patchRows';
 import type { ReviewFile } from './patchParser';
@@ -35,13 +34,13 @@ import {
   type ReviewFindHit,
   type ReviewFindPlace,
 } from './reviewFindIdentity';
-import { prThreadAnchor, REVIEW_LINE_HEIGHT_PX, reviewInsertsByFile, type InsertRow, type LineBlockRow, type ReviewRowsResult } from './reviewRows';
+import { isHeldReply, prThreadAnchor, REVIEW_LINE_HEIGHT_PX, reviewInsertsByFile, type InsertRow, type LineBlockRow, type ReviewCommentIndex, type ReviewRowsResult } from './reviewRows';
 
 /** The content a match is placed in. */
 export interface ReviewFindLocateContent {
   readonly files: readonly ReviewFile[];
-  readonly drafts: readonly DiffReviewComment[];
-  readonly prThreads: readonly ReviewThread[];
+  /** The PR threads and drafts shown. */
+  readonly comments: ReviewCommentIndex;
 }
 
 /** The content as shown now: what the scan reads (reviewFindScan.ts
@@ -161,13 +160,13 @@ function lineSpot(file: ReviewFile, tag: string): ReviewFindFileSpot | null {
 // whose anchor its bucket is, else after the last row.
 function commentLines(file: ReviewFile, content: ReviewFindLocateContent): Map<string, number> {
   const out = new Map<string, number>();
-  const inserts = reviewInsertsByFile([file], content.drafts, [], content.prThreads, new Set()).get(file.path);
+  const inserts = reviewInsertsByFile([file], content.comments.drafts, [], content.comments.threads, new Set()).get(file.path);
   if (!inserts) return out;
   const keysOf = (bucket: readonly InsertRow[]): string[] => bucket.flatMap((row) => {
     if (row.kind === 'comment-thread') return [findDraftKey(row.threadKey)];
     if (row.kind === 'pr-thread') {
       // The thread's comments, then its held replies at its foot.
-      const replies = content.drafts.filter((draft) => draft.status === 'draft' && draft.replyThreadId === row.thread.id).map((draft) => findDraftKey(draft.id));
+      const replies = content.comments.repliesOf(row.thread.id).map((draft) => findDraftKey(draft.id));
       return [...row.thread.comments.map((comment) => findThreadCommentKey(row.thread.id, reviewCommentKey(comment))), ...replies];
     }
     return [];
@@ -231,16 +230,18 @@ export function resolveReviewFindHit(shown: ReviewFindShown, hit: ReviewFindHit,
   }
   if (at.kind === 'draft') {
     const rowKey = findDraftKey(at.commentId);
-    const draft = shown.drafts.find((each) => each.id === at.commentId && each.status === 'draft' && each.filePath === file.path);
-    if (!draft || shown.editing.has(rowKey) || hit.run !== 0 || !has(draft.body)) return ABSENT;
-    if (!draft.replyThreadId) return present(rowKey, { kind: 'draft', commentId: at.commentId }, hit.occurrence);
-    // A held reply shows at its thread's foot, in this file's diff.
-    const thread = shown.prThreads.find((each) => each.id === draft.replyThreadId);
-    if (!thread || prThreadAnchor(thread).filePath !== file.path) return ABSENT;
+    const draft = shown.comments.draft(at.commentId);
+    if (!draft || shown.comments.shownPath(draft) !== file.path) return ABSENT;
+    if (shown.editing.has(rowKey) || hit.run !== 0 || !has(draft.body)) return ABSENT;
+    if (!isHeldReply(draft)) return present(rowKey, { kind: 'draft', commentId: at.commentId }, hit.occurrence);
+    // A held reply shows at its thread's foot; one whose thread is gone is
+    // in no file's diff.
+    const thread = shown.comments.thread(draft.replyThreadId!);
+    if (!thread) return ABSENT;
     return present(rowKey, { kind: 'thread', threadId: thread.id }, hit.occurrence);
   }
   if (at.kind === 'thread') {
-    const thread = shown.prThreads.find((each) => each.id === at.threadId);
+    const thread = shown.comments.thread(at.threadId);
     const comment = thread && prThreadAnchor(thread).filePath === file.path
       ? thread.comments.find((each) => reviewCommentKey(each) === at.comment)
       : undefined;

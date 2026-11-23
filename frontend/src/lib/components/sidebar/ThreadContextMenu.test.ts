@@ -8,13 +8,13 @@ import { tick } from 'svelte';
 import ThreadContextMenu from './ThreadContextMenu.svelte';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { answerAsV0019 } from '../../../test/helpers/olderComputer';
 import { clearThreadSelection, getSelectedThreadIds, setThreadSelection } from '../../stores/threadFilter.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { getThreadById, replaceAllThreads } from '../../stores/threads.svelte';
 import { closeAssistantProjectsDialog, getAssistantProjectsAgentId } from '../../stores/newAssistant.svelte';
-import { getPreviousThreads, resetPreviousThreadsForTest } from '../../stores/assistantPastThreads.svelte';
+import { getPreviousThreads } from '../../stores/assistantPastThreads.svelte';
 import { getPane } from '../../stores/panes.svelte';
 import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 import { buildPane } from '../../../test/helpers/chat';
@@ -22,12 +22,8 @@ import { noteThread } from '../../transport/entityIndex';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import {
   consumePendingGroupRename,
-  resetThreadGroupsForTest,
   upsertThreadGroup,
 } from '../../stores/threadGroups.svelte';
-import {
-  resetSidebarForTest,
-} from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
@@ -81,7 +77,6 @@ function confirmButton(root: HTMLElement): HTMLButtonElement | undefined {
 
 describe('<ThreadContextMenu> single-row menu', () => {
   beforeEach(() => {
-    resetBindingMocks();
     clearThreadSelection();
   });
 
@@ -168,7 +163,6 @@ describe('<ThreadContextMenu> Archive Thread', () => {
   }
 
   beforeEach(() => {
-    resetBindingMocks();
     clearThreadSelection();
   });
 
@@ -252,16 +246,13 @@ describe('<ThreadContextMenu> without threads:operate', () => {
   const INERT = 'Not granted to this device';
 
   beforeEach(async () => {
-    resetBindingMocks();
     clearThreadSelection();
-    resetThreadGroupsForTest();
     upsertThreadGroup({ id: 'g-1', projectId: 'project-1', name: 'One', createdAt: 0, updatedAt: 0 });
     await pairViewOnly();
   });
 
   afterEach(() => {
     resetToLocalPage();
-    resetThreadGroupsForTest();
   });
 
   function item(el: HTMLElement, label: string): HTMLElement {
@@ -337,7 +328,6 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
   }
 
   beforeEach(() => {
-    resetBindingMocks();
     clearThreadSelection();
     // deleteThreadAction best-effort stops the session before deleting.
     setBindingMock('StopSession', async () => {});
@@ -643,7 +633,6 @@ describe('<ThreadContextMenu> Check for Provider Updates', () => {
   // that has run a turn has a sessionRef, so that gate would offer the item
   // on threads with no source file to check.
   beforeEach(() => {
-    resetBindingMocks();
     clearThreadSelection();
     setPageGrantsFromBootstrap(false);
     setBindingMock('ListThreads', async () => []);
@@ -819,10 +808,7 @@ describe('<ThreadContextMenu> group items', () => {
   }
 
   beforeEach(() => {
-    resetBindingMocks();
     clearThreadSelection();
-    resetSidebarForTest();
-    resetThreadGroupsForTest();
     upsertThreadGroup({
       id: 'g-zebra',
       projectId: 'project-1',
@@ -1042,11 +1028,7 @@ describe('<ThreadContextMenu> group items', () => {
 
 describe('<ThreadContextMenu> standing agent', () => {
   beforeEach(() => {
-    resetBindingMocks();
     clearThreadSelection();
-    resetSidebarForTest();
-    resetThreadGroupsForTest();
-    resetPreviousThreadsForTest();
     upsertThreadGroup({ id: 'g-alpha', projectId: 'project-1', name: 'Alpha', createdAt: 0, updatedAt: 0 });
   });
 

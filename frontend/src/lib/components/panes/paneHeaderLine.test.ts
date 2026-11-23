@@ -4,7 +4,7 @@ import {
   resolvePaneHeaderLine,
   type PaneHeaderLineInput,
 } from './paneHeaderLine';
-import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { focusPane, registerPaneForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { setThreadStatus, type ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
@@ -81,7 +81,6 @@ describe('resolvePaneHeaderLine', () => {
 
 describe('paneHeaderLineFor', () => {
   beforeEach(() => {
-    resetPanesForTest();
     resetPaneLayoutForTest();
     setCompactLayoutForTest(false);
   });

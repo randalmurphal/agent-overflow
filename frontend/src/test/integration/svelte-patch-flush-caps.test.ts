@@ -228,33 +228,33 @@ describe("svelte patch: Batch.#process's own guard still aborts", () => {
   // this shape from a throw into a spin. See the coverage limit in the file
   // header for why the DESTROYED-anchor branch is unit-tested only.
 
-  // Explicit timeout, not the 5s default: svelte's guard only fires after
-  // `flush_count` passes 1000, and reaching that costs ~5s in a dev build
-  // (measured: 1001 effect runs, ~5ms each — the per-lap bookkeeping svelte
-  // does in DEV, which the production build skips). The threshold is svelte's
-  // constant, so the cost is inherent to testing this at all; the budget is
-  // sized for a loaded CI worker rather than an idle one.
-  it(
-    'a synchronously self-dirtying effect aborts instead of spinning',
-    () => {
-      const cycle = startSameBatchCycle();
+  // svelte's guard only fires after `flush_count` passes 1000. In a dev
+  // build every write past the fifth in one flush records `new Error().stack`
+  // for the guard's report, and Vitest's source-mapped stack formatting made
+  // the 1001 laps cost ~5ms each. The laps run with stacks formatted empty,
+  // which svelte's `get_error` answers with no record: the guard and its
+  // throw are the same, only its DEV console report of where the writes
+  // came from is dropped.
+  it('a synchronously self-dirtying effect aborts instead of spinning', () => {
+    const cycle = startSameBatchCycle();
+    const prepareStackTrace = Error.prepareStackTrace;
 
-      try {
-        // svelte's own error, not ours: this shape DOES accumulate
-        // `flush_count` inside one `Batch.flush()`, which is exactly why the
-        // flushSync cap had to exist separately for the one-batch-per-lap
-        // shape.
-        expect(() => flushSync()).toThrow(/effect_update_depth_exceeded/);
-        expect(cycle.runs()).toBeGreaterThan(1000);
-      } finally {
-        cycle.dispose();
-        flushSync();
-      }
+    try {
+      Error.prepareStackTrace = () => '';
+      // svelte's own error, not ours: this shape DOES accumulate
+      // `flush_count` inside one `Batch.flush()`, which is exactly why the
+      // flushSync cap had to exist separately for the one-batch-per-lap
+      // shape.
+      expect(() => flushSync()).toThrow(/effect_update_depth_exceeded/);
+      expect(cycle.runs()).toBeGreaterThan(1000);
+    } finally {
+      Error.prepareStackTrace = prepareStackTrace;
+      cycle.dispose();
+      flushSync();
+    }
 
-      expectRuntimeStillUsable();
-    },
-    30_000,
-  );
+    expectRuntimeStillUsable();
+  });
 });
 
 describe('svelte patch: an aborted flush is recorded in ui-trace', () => {

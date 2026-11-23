@@ -20,7 +20,7 @@ import (
 func capturedWireModels(t *testing.T) []claude.WireModel {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.FromSlash(
-		"../../docs/references/fixtures/claude/initialize_models_20260802.json",
+		"../provider/wirecaptures/claude/initialize_models_20260802.json",
 	))
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
@@ -855,7 +855,7 @@ func TestPickDefaultEffort(t *testing.T) {
 // merge tests must both notice.
 func TestFixtureIsTheRealEnvelope(t *testing.T) {
 	raw, err := os.ReadFile(filepath.FromSlash(
-		"../../docs/references/fixtures/claude/initialize_models_20260802.json",
+		"../provider/wirecaptures/claude/initialize_models_20260802.json",
 	))
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)

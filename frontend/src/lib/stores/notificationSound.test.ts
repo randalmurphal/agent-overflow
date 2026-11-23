@@ -4,14 +4,12 @@ import {
   applyNotificationSoundEvent,
   installNotificationSoundUnlock,
   playNotificationCue,
-  __resetNotificationSoundForTest,
   __unlockNotificationSoundForTest,
 } from './notificationSound';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
-import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import {
-  __resetCustomSoundsForTest,
   customSoundUrl,
   ensureCustomSounds,
 } from './sounds.svelte';
@@ -70,7 +68,6 @@ function totalPlays(): number {
 let clock = 0;
 
 beforeEach(() => {
-  __resetNotificationSoundForTest();
   reported.mockClear();
   FakeAudio.instances = [];
   FakeAudio.behavior = 'resolve';
@@ -82,9 +79,6 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  __resetNotificationSoundForTest();
-  __resetCustomSoundsForTest();
-  resetBindingMocks();
 });
 
 /** base64 of one byte, enough to become a Blob and an object URL. */

@@ -1,10 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   clearSubagentRunStatesForThread,
   hasLiveSubagentRunStates,
   liveSubagentRunState,
   replaceSubagentRunStates,
-  resetForTest,
 } from './subagentRunState.svelte';
 import type { SubagentRunState } from '../utils/subagentRunState';
 
@@ -12,7 +11,6 @@ const running: SubagentRunState = { state: 'running', waitingOn: 0, report: null
 const parked: SubagentRunState = { state: 'parked', waitingOn: 2, report: { id: 'r1', preview: 'Found it.' } };
 
 describe('subagentRunState store', () => {
-  afterEach(() => resetForTest());
 
   it('serves a thread’s states by launch id and drops launches a later read no longer lists', () => {
     replaceSubagentRunStates('t1', new Map([['a', running], ['b', parked]]));

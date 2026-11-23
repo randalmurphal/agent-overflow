@@ -134,6 +134,9 @@ var sessionInlineConsumedNotifications = []string{
 	// item/plan/delta feeds appendPlanDelta; the buffered text surfaces
 	// on the item/completed plan item, not on the delta itself.
 	"item/plan/delta",
+	// thread/closed confirms that a thread/unsubscribe finished releasing the
+	// thread and its writer lock on a shared app-server connection.
+	"thread/closed",
 }
 
 // emptyNotificationParams is the probe payload used to ask a classifier

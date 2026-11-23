@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { confirmBackgroundKill, pendingBackgroundKillConfirmation } from './backgroundKillConfirmation.svelte';
 import { flushSync } from 'svelte';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
@@ -27,7 +27,6 @@ import {
   projectUserInputRequest,
   projectUserInputResolution,
   projectTurnStopRequested,
-  resetForTest,
   restoreRefusedTurnStop,
   sameActiveTurn,
   settleTurnStopRequest,
@@ -38,7 +37,6 @@ import {
   getQueueForThread,
   markItemsFlushed,
   replaceQueueForThread,
-  resetForTest as resetSendQueueForTest,
   type QueueItem,
 } from './sendQueue.svelte';
 
@@ -63,7 +61,6 @@ function seedQueueItem(threadId: string, partial: Partial<QueueItem> & { message
 }
 
 describe('the optimistic clear of a Stop and its refusal', () => {
-  beforeEach(() => resetForTest());
 
   it('clears the turn as interrupted, puts it back on a refusal, and a later real completion still ends it', () => {
     projectTurnStarted('t1', 'turn-1', 0, 5);
@@ -131,10 +128,6 @@ describe('the optimistic clear of a Stop and its refusal', () => {
 });
 
 describe('threadStatuses store', () => {
-  beforeEach(() => {
-    resetForTest();
-    resetSendQueueForTest();
-  });
 
   it('compares active turns by identity fields', () => {
     expect(sameActiveTurn(null, null)).toBe(true);

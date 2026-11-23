@@ -1,7 +1,8 @@
 # Codex app-server sharing
 
-Status: design, not scheduled. Nothing here is implemented. Wire facts are
-in [codex-wire.md](../references/codex-wire.md) and
+Status: implemented on this branch (`internal/sessionruntime/connpool.go`,
+`internal/provider/codex/conn.go`, `internal/app/app_codex_pool.go`). Wire facts
+are in [codex-wire.md](../references/codex-wire.md) and
 [codex.md](../references/codex.md#app-server-process-cost-measured-01621);
 this spec cites them rather than repeating them.
 
@@ -25,7 +26,7 @@ Its fix is part of this design and can ship first.
 Each finding is verified against codex-cli 0.162.1 by source at
 `rust-v0.162.1`; the instruction, channel and unload findings also by the
 spike in
-[`fixtures/codex/developer_instructions_shared_process_20261016.ndjson`](../references/fixtures/codex/developer_instructions_shared_process_20261016.ndjson)
+[`wirecaptures/codex/developer_instructions_shared_process_20261016.ndjson`](../internal/provider/wirecaptures/codex/developer_instructions_shared_process_20261016.ndjson)
 ([wire notes](../references/codex-wire.md#developer-instructions-across-a-restart-and-per-thread-channels-verified-01621)).
 
 ### Changed developer instructions do not reach a resumed thread
@@ -385,6 +386,8 @@ restart needs no process restart: the start is a cold resume on the same
 connection.
 
 ## Identity
+
+> Note: the `agent-overflow remote` CLI and per-session `AO_ENDPOINT` / `AO_TOKEN` / `AO_THREAD_ID` credentials described in this historical section were subsequently retired. Provider processes no longer receive `AO_*` credentials in either the spawn environment or `shell_environment_policy`.
 
 At stage 1 the `ao` credential stays in the spawn environment, as today:
 the key holds one thread per process, so the environment is still that

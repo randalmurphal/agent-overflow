@@ -118,7 +118,7 @@ func expectTerminalList(t *testing.T, p *mockProc, id int, want ...string) {
 	}
 }
 
-// The captured codex-cli 0.159.1 shapes (fixtures/codex/*_20261015.ndjson):
+// The captured codex-cli 0.159.1 shapes (wirecaptures/codex/*_20261015.ndjson):
 // terminate answers, then writes the killed command's item/completed under
 // the turn it started in; a process id no running terminal has answers
 // false and writes nothing; list follows the running set, sorted by process

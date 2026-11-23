@@ -41,7 +41,7 @@ func (a *App) probeStartupAccountInfo() {
 		return
 	}
 
-	a.startupProbeWG.Add(2)
+	a.startupProbeWG.Add(3)
 	go func() {
 		defer a.startupProbeWG.Done()
 		if a.retryClaudeStartupProbe(a.lifeCtx()) {
@@ -51,6 +51,15 @@ func (a *App) probeStartupAccountInfo() {
 	go func() {
 		defer a.startupProbeWG.Done()
 		_, _ = a.ProbeCodexAccount()
+	}()
+	go func() {
+		defer a.startupProbeWG.Done()
+		lookPath := a.resolveLookPath()
+		if binary := a.providerBinaryPath(string(provider.Agy)); binary != "" && lookPath(binary) == nil {
+			if _, err := a.ProbeAgyAccount(); err == nil {
+				a.providerLifecycleService().RequestAgyUsage()
+			}
+		}
 	}()
 }
 

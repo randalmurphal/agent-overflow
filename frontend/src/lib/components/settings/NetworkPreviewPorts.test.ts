@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import NetworkPreviewPorts from './NetworkPreviewPorts.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { emitWailsEvent, resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
-import { __resetScopesForTest } from '../../transport/scopes';
-import { initDevServers, resetDevServersForTest } from '../../stores/devServers.svelte';
+import { initDevServers } from '../../stores/devServers.svelte';
 import type { DevServerList } from '../../stores/devServers.svelte';
 
 // Nothing here is applied optimistically. Sharing a port is the machine's
@@ -46,17 +45,12 @@ function attributedFrame(
 
 describe('<NetworkPreviewPorts>', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetWailsMocks();
-    resetDevServersForTest();
     resetToLocalPage();
     setBindingMock('GetDevServers', async () => frame([]));
   });
 
   afterEach(() => {
-    resetDevServersForTest();
     resetToLocalPage();
-    __resetScopesForTest();
   });
 
   it('reads the list on mount and says so while nothing is shared', async () => {

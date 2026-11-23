@@ -347,83 +347,6 @@ func TestActivateRejectsSavedCredentialSymlink(t *testing.T) {
 	}
 }
 
-func TestPruneOrphanedAccountsLeavesRegisteredSlotsUntouched(t *testing.T) {
-	credentials, err := NewCredentials(t.TempDir(), Policy{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, accountID := range []string{"keep", "remove"} {
-		if err := credentials.WriteAccountCredential(
-			"codex",
-			accountID,
-			[]byte(`{"account":"`+accountID+`"}`),
-		); err != nil {
-			t.Fatal(err)
-		}
-	}
-	keptPath, err := credentials.AccountCredentialPath("codex", "keep")
-	if err != nil {
-		t.Fatal(err)
-	}
-	unrelated := filepath.Join(filepath.Dir(keptPath), "unrelated-state")
-	if err := os.WriteFile(unrelated, []byte("leave untouched"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	pruned, err := credentials.PruneOrphanedAccounts(
-		"codex",
-		map[string]bool{"keep": true},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pruned) != 1 || pruned[0] != "remove" {
-		t.Fatalf("pruned = %v, want the orphaned slot reported", pruned)
-	}
-	assertFileContents(t, keptPath, `{"account":"keep"}`)
-	assertFileContents(t, unrelated, "leave untouched")
-	if _, err := credentials.ReadCredential("codex", "remove", false); !IsCredentialMissing(err) {
-		t.Fatalf("orphaned credential error = %v, want missing", err)
-	}
-}
-
-// An empty keep-set must prune nothing: zero registered accounts is
-// indistinguishable from a process reading a metadata store that these slots
-// do not belong to (a fresh --data-dir, a test overriding the config root but
-// not the home), and the slots hold single-use refresh tokens that cannot be
-// recovered once deleted. This is the guard against the 2026-07-29 incident,
-// where every `go test ./...` run wiped the developer's real saved logins.
-func TestPruneOrphanedAccountsRefusesEmptyKeepSet(t *testing.T) {
-	credentials, err := NewCredentials(t.TempDir(), Policy{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, accountID := range []string{"first", "second"} {
-		if err := credentials.WriteAccountCredential(
-			"claude",
-			accountID,
-			[]byte(`{"account":"`+accountID+`"}`),
-		); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	for _, keep := range []map[string]bool{nil, {}} {
-		pruned, err := credentials.PruneOrphanedAccounts("claude", keep)
-		if err != nil {
-			t.Fatalf("PruneOrphanedAccounts(%v) error = %v", keep, err)
-		}
-		if len(pruned) != 0 {
-			t.Fatalf("PruneOrphanedAccounts(%v) pruned %v, want nothing", keep, pruned)
-		}
-	}
-	for _, accountID := range []string{"first", "second"} {
-		if _, err := credentials.ReadCredential("claude", accountID, false); err != nil {
-			t.Fatalf("slot %s no longer readable after empty-keep-set prune: %v", accountID, err)
-		}
-	}
-}
-
 func TestManagedAccountMutationsRejectSymlinkedRoot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink behavior is platform-policy dependent on Windows")
@@ -451,9 +374,6 @@ func TestManagedAccountMutationsRejectSymlinkedRoot(t *testing.T) {
 	}
 	if err := credentials.RemoveAccount("codex", "victim"); err == nil {
 		t.Fatal("RemoveAccount() accepted a symlinked managed root")
-	}
-	if _, err := credentials.PruneOrphanedAccounts("codex", map[string]bool{"keep": true}); err == nil {
-		t.Fatal("PruneOrphanedAccounts() accepted a symlinked managed root")
 	}
 	assertFileContents(t, sentinel, "keep")
 }

@@ -4,7 +4,7 @@
 // scroll.test.ts; this suite drives the session against fakes so each
 // interleaving is exact.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { LoadUntilItemResult } from '../../stores/threadPaneShared';
@@ -15,7 +15,6 @@ import { createTimelineRestore } from './timelineRestore.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 import type { Item } from '../../types/models';
 import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';
-import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import {
   clearUiRenderTrace,
   getUiRenderTraceRecords,
@@ -108,9 +107,6 @@ function toastsSince(count: number) {
 
 describe('scrollToItem', () => {
   // Before the capture's own beforeEach, which installs its binding mock.
-  beforeEach(() => {
-    resetBindingMocks();
-  });
   const diagnostics = installDiagnosticsCapture();
 
   it('centers the row once its window holds it, escaping bottom follow', async () => {

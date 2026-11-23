@@ -3,11 +3,16 @@ import {
   CATALOG_WRITE_SPACING_MS, computerCatalogWriter, persistCatalogTree, resetCatalogWritesForTest,
 } from './computerCatalogWriter';
 import * as replicaSession from '../replica/session';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { detachBackend } from '../transport/backends';
-import { invalidateCatalogStamp, observeCatalogStamp, resetCatalogStampsForTest } from '../replica/catalogStamp';
+import { invalidateCatalogStamp, observeCatalogStamp } from '../replica/catalogStamp';
 import {
-  catalogProvenance, catalogTreeOf, markCatalogTree, PARTIAL_PROVENANCE, resetCatalogLoadForTest, settleCatalogAnswers, settleCatalogRead,
+  catalogProvenance,
+  catalogTreeOf,
+  markCatalogTree,
+  PARTIAL_PROVENANCE,
+  settleCatalogAnswers,
+  settleCatalogRead,
 } from './catalogLoad.svelte';
 import type { CatalogKind } from '../replica/catalog';
 import type { ProjectWithCounts, Thread, ThreadGroup } from '../types/models';
@@ -20,11 +25,7 @@ beforeEach(() => {
   vi.spyOn(replicaSession, 'replicaToken').mockImplementation(() => replica.token);
 });
 afterEach(() => {
-  resetCatalogWritesForTest();
   vi.useRealTimers();
-  resetCatalogStampsForTest();
-  resetStagedBackends();
-  resetCatalogLoadForTest();
   vi.restoreAllMocks();
   replica.tree.mockReset();
   replica.token = 1;

@@ -13,8 +13,8 @@ import { FakeSmoothingClock, flushMicrotasks, installThreadPaneTestEnv } from '.
 import { utf8Length } from '../utils/utf8Offsets';
 import { prependThread, removeThread } from './threads.svelte';
 import { getBindingMock } from '../../test/mocks/bindings-app';
-import { __attachBackendForTest, __resetBackendsForTest } from '../transport/backends';
-import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
+import { __attachBackendForTest } from '../transport/backends';
+import { noteThread } from '../transport/entityIndex';
 import {
   grantBackendScopes,
   OBSERVE_SCOPES,
@@ -871,8 +871,6 @@ describe('threadSwitchLoad', () => {
     afterEach(() => {
       revokeBackendScopes(LAPTOP);
       resetToLocalPage();
-      __resetBackendsForTest();
-      __resetEntityIndexForTest();
     });
 
     it('skips them when the thread computer withholds threads:operate that home holds', async () => {

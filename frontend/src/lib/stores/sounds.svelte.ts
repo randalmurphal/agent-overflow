@@ -238,8 +238,7 @@ export async function deleteCustomSound(id: string): Promise<void> {
 export function __resetCustomSoundsForTest(): void {
   cancelWatch?.();
   cancelWatch = null;
+  store.resetForTest();
   hold?.release();
   hold = null;
-  store.suspend();
-  store.resetAll();
 }

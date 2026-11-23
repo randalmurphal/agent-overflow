@@ -5,9 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAgentScopeView, type AgentScopeView } from './agentScopeView.svelte';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
 import { installPaneMocks, installTimelineScopeCapability, makeItem, makeThread } from '../../test/helpers/chat';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { applyItemStreamEvent, flushItemEventQueue } from './eventsItemStream';
-import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { registerPaneForTest } from './panes.svelte';
 import { cursorFromItem } from './threadItems';
 import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 import type { ItemStreamEvent } from '../types/events';
@@ -61,12 +61,10 @@ const views: AgentScopeView[] = [];
 let warn: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   installTimelineScopeCapability();
-  resetBindingMocks();
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 afterEach(() => {
   for (const view of views.splice(0)) view.dispose();
-  resetPanesForTest();
   warn.mockRestore();
 });
 

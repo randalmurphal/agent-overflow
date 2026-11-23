@@ -15,7 +15,8 @@
 // `runtime.test.ts` enforces the static-helper surface match so accidental
 // drift fails CI rather than only showing up in production.
 
-import { __bindingMocksInternal } from './bindings-app';
+import * as bindings from './bindings-app';
+import { bindingMockFor, bindingMockNames, unansweredBinding } from './bindings-app';
 import { methodId } from '../../lib/transport/methodId';
 import { getBackendIdentity } from '../../lib/transport/backendIdentity';
 import type { EventOrigin } from '../../lib/transport/handle';
@@ -122,22 +123,17 @@ export const Call = {
     // Accept 'main.App.<Method>' or a bare method name — tests may use
     // either shape via setBindingMock.
     const key = name.replace(/^main\.App\./, '');
-    const fn = __bindingMocksInternal.get(key);
-    if (!fn) {
-      return Promise.reject(
-        new Error(
-          `Call.ByName: no mock for ${name}. Install one via setBindingMock('${key}', impl).`,
-        ),
-      );
-    }
+    const fn = bindingMockFor(key);
+    if (!fn) return Promise.reject(unansweredBinding(key));
     return Promise.resolve(fn(...args));
   },
   // A wrapper that calls by id (stores/bindings.ts, ArchiveThread) reaches
   // the mock installed under the method's name, as the generated binding
   // of that name would.
   ByID(id: number, ...args: unknown[]): Promise<unknown> {
-    for (const [name, fn] of __bindingMocksInternal) {
+    for (const name of bindingMockNames()) {
       if (methodId(name) !== id) continue;
+      const fn = bindingMockFor(name)!;
       // Synchronous, as a dispatch is: the mock sees the call's routing pin.
       try {
         return Promise.resolve(fn(...args));
@@ -145,7 +141,8 @@ export const Call = {
         return Promise.reject(err);
       }
     }
-    return Promise.reject(new Error(`Call.ByID: no mock for method ${id}. Install one via setBindingMock(name, impl).`));
+    const name = Object.keys(bindings).find((each) => methodId(each) === id);
+    return Promise.reject(unansweredBinding(name ?? `the method with id ${id}`));
   },
 };
 

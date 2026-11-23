@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ModelCatalog, ModelInfo } from '../types/settings';
 import { modelCatalog } from '../../test/helpers/modelCatalog';
 import {
@@ -7,23 +7,15 @@ import {
   invalidateProviderModels,
   preloadProviderModelsForSettings,
   providerModelsPending,
-  resetProviderModelsForTest,
 } from './providerModels.svelte';
 import {
-  resetBindingMocks,
   setBindingMock,
 } from '../../test/mocks/bindings-app';
 
 describe('provider model catalog', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetProviderModelsForTest();
-  });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    resetProviderModelsForTest();
-    resetBindingMocks();
   });
 
   it('loads and reuses provider model lists', async () => {
@@ -127,6 +119,7 @@ describe('provider model catalog', () => {
       claudeEnabled: true,
       codexEnabled: false,
       claudeTuiEnabled: true,
+      agyEnabled: false,
     });
 
     expect(getModels).toHaveBeenCalledOnce();
@@ -149,6 +142,7 @@ describe('provider model catalog', () => {
       claudeEnabled: false,
       codexEnabled: false,
       claudeTuiEnabled: true,
+      agyEnabled: false,
     });
 
     expect(getModels).not.toHaveBeenCalled();
@@ -168,6 +162,7 @@ describe('provider model catalog', () => {
       claudeEnabled: false,
       codexEnabled: true,
       claudeTuiEnabled: false,
+      agyEnabled: false,
     });
 
     expect(getModels).toHaveBeenCalledOnce();
@@ -215,6 +210,7 @@ describe('provider model catalog', () => {
       claudeEnabled: false,
       codexEnabled: true,
       claudeTuiEnabled: false,
+      agyEnabled: false,
     })).resolves.toBeUndefined();
 
     expect(warn).toHaveBeenCalledWith(

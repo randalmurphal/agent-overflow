@@ -127,6 +127,10 @@ func (a *App) ListCommitFiles(ctx context.Context, ws WorkspaceRef) (CommitFiles
 //
 //ao:scope files:read
 func (a *App) OpenCommitFileDiff(ctx context.Context, ws WorkspaceRef, paths []string) (ReviewDiffOpened, error) {
+	conn, err := transport.CallerConnection(ctx)
+	if err != nil {
+		return ReviewDiffOpened{}, err
+	}
 	const action = "open commit file diff"
 	if a.shuttingDown.Load() {
 		return ReviewDiffOpened{}, ErrShuttingDown
@@ -138,7 +142,7 @@ func (a *App) OpenCommitFileDiff(ctx context.Context, ws WorkspaceRef, paths []s
 	if !gitdiff.IsGitRepository(ctx, workspace) {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: workspace is not a git repository", action)
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, gitdiff.Options{}, func(tempRoot string) (*gitdiff.Sides, error) {
+	return a.openReviewDiff(ctx, conn, action, transport.ScopeFilesRead, gitdiff.Options{}, func(tempRoot string) (*gitdiff.Sides, error) {
 		return gitdiff.WorktreeFilesSides(ctx, workspace, tempRoot, paths)
 	})
 }

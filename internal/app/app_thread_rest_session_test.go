@@ -14,7 +14,6 @@ import (
 
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/sessionruntime"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
@@ -320,22 +319,4 @@ func TestEveryAdmissionRefusesWorkOfAnEndedSession(t *testing.T) {
 			t.Fatalf("runs after the refused start = %d, %v; want the one before", len(runs), err)
 		}
 	})
-}
-
-// A session's agent-overflow credential resolves to its scope naming the
-// session, so the remote commands the CLI starts are that session's alone.
-func TestASessionCredentialNamesItsSession(t *testing.T) {
-	t.Parallel()
-	manager := sessionruntime.New()
-	manager.Put("thread", sessionruntime.Entry{Token: "session-a", AOToken: "ao-a", AOScope: transport.CallerScope{Kind: transport.ScopeKindInteractive, ThreadID: "thread"}})
-	if scope, ok := manager.ResolveAOToken("ao-a"); !ok || scope.Session != "session-a" {
-		t.Fatalf("the credential resolves to %+v, %v; want it to name session-a", scope, ok)
-	}
-	manager.Put("thread", sessionruntime.Entry{Token: "session-b", AOToken: "ao-b", AOScope: transport.CallerScope{Kind: transport.ScopeKindInteractive, ThreadID: "thread"}})
-	if _, ok := manager.ResolveAOToken("ao-a"); ok {
-		t.Fatal("the replaced session's credential still resolves")
-	}
-	if scope, ok := manager.ResolveAOToken("ao-b"); !ok || scope.Session != "session-b" {
-		t.Fatalf("the new credential resolves to %+v, %v; want it to name session-b", scope, ok)
-	}
 }

@@ -5,16 +5,13 @@ import '../../../app.css';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { createProvenAppend } from '../../markdown';
 import ChatMarkdown from './ChatMarkdown.svelte';
-import { __codeSpanCacheStatsForTest, getCachedBlockSpans, resetCodeSpanCacheForTest } from './markdown/codeSpanCache';
-import { __resetStreamdownCodeHostForTest } from './markdown/StreamdownCodeHost.svelte';
+import { __codeSpanCacheStatsForTest, getCachedBlockSpans } from './markdown/codeSpanCache';
 
 // A streaming code block in the live DOM. The DOM work of each streamed delta
 // and each highlight response must not grow with the block, and the block's
 // span requests must not grow the span cache.
 
 beforeEach(() => {
-  resetCodeSpanCacheForTest();
-  __resetStreamdownCodeHostForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
 });

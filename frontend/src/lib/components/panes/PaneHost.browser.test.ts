@@ -13,7 +13,7 @@ vi.mock('../chat/ChatView.svelte', async () => ({
 
 import PaneHost from './PaneHost.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { focusPane, registerPaneForTest, resetPanesForTest, revealPane } from '../../stores/panes.svelte';
+import { focusPane, registerPaneForTest, revealPane } from '../../stores/panes.svelte';
 import {
   compactShownPaneId,
   installLayoutMode,
@@ -42,7 +42,6 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   setCompactLayoutForTest(false);
   resetPaneLayoutForTest();
-  resetPanesForTest();
 });
 
 it('a reveal glide yields to a scroll it did not make', async () => {

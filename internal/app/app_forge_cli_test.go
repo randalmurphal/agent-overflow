@@ -1,7 +1,6 @@
 package app
 
 import (
-	"agent-overflow/internal/testutil/mockexec"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +10,8 @@ import (
 	"testing"
 
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/testutil/mockexec"
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // installForgeTraps puts gh and glab scripts first on PATH that record they
@@ -129,16 +130,12 @@ func TestIsolatedAppWithoutFakeRefusesForgeCLIs(t *testing.T) {
 // isolated boot would hold a Core that resolves gh and glab on PATH.
 func TestAppBuildsGitCoresOnlyThroughNewGitCore(t *testing.T) {
 	t.Parallel()
-	paths, err := filepath.Glob("internal/app/*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
 	direct := regexp.MustCompile(`gitops\.NewCore\(`)
-	for _, path := range paths {
+	for _, path := range reporoot.Files(t, "internal/app", "*.go") {
 		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		source, err := os.ReadFile(path)
+		source, err := os.ReadFile(reporoot.Path(t, path))
 		if err != nil {
 			t.Fatal(err)
 		}

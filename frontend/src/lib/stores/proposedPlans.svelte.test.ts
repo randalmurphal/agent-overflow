@@ -12,7 +12,7 @@ import {
   refreshThreadProposedPlans,
   resetProposedPlanCacheForTests,
 } from './proposedPlans.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { Item } from '../types/models';
 
 function planItem(overrides: Partial<Item> = {}): Item {
@@ -36,7 +36,6 @@ function planItem(overrides: Partial<Item> = {}): Item {
 
 afterEach(() => {
   resetProposedPlanCacheForTests();
-  resetBindingMocks();
 });
 
 describe('proposed-plan cache sync upsert', () => {

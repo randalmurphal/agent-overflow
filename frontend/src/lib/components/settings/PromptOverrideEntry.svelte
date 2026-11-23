@@ -42,7 +42,10 @@
   // point at the wrong control half the time.
   let inert = $derived(entryInertness(entry));
   let shadowedLabels = $derived(
-    shadowed.map((slug) => displayModelLabel(provider, slug)).join(', '),
+    shadowed.map((slug) => {
+      const match = models.find((m) => m.slug === slug);
+      return displayModelLabel(provider, slug, match?.name);
+    }).join(', '),
   );
   let fileName = $derived(entry.path ? entry.path.slice(Math.max(entry.path.lastIndexOf('/'), entry.path.lastIndexOf('\\')) + 1) : '');
 </script>

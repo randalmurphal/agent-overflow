@@ -19,7 +19,6 @@ import type { CIJob } from '../../types/models';
 import { FakeCILog, numberedLines, section } from '../../../test/helpers/ciLog';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
-import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
 import { isMacPlatform } from '../../utils/platform';
 
 const VIEWPORT_PX = 400;
@@ -41,7 +40,6 @@ afterEach(() => {
     unmount(app);
     host.remove();
   }
-  resetScrollIntentModuleStateForTest();
 });
 
 function mountLog(fake = new FakeCILog(numberedLines(FIRST_LINES))) {

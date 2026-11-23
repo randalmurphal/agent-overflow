@@ -20,11 +20,10 @@ vi.mock('../chat/ChatView.svelte', async () => ({
 import PaneHost from './PaneHost.svelte';
 // Loaded up front, so the companion's lazy import of it resolves at once.
 import '../browser/BrowserPane.svelte';
-import { createPane, resetPanesForTest } from '../../stores/panes.svelte';
+import { createPane } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
-import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
-import { resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { installCompanionPanes, openCompanion } from '../../stores/companionPanes.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeThread } from '../../../test/helpers/chat';
 import {
   encodeThreadDragPayload,
@@ -52,7 +51,6 @@ beforeEach(async () => {
   transportBefore = getTransportStatus();
   __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
   reports = [];
-  resetBrowserCompanionForTest();
   setBindingMock('BrowserCompanionPaneAttach', async () => ({
     id: 'mount-1',
     state: {
@@ -84,11 +82,7 @@ afterEach(async () => {
   sidebar.remove();
   endThreadRowDrag();
   endToolPaneDrag();
-  resetBrowserCompanionForTest();
-  resetCompanionPanesForTest();
   resetPaneLayoutForTest();
-  resetPanesForTest();
-  resetBindingMocks();
   __setTransportStatusForTest(transportBefore);
 });
 

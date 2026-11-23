@@ -8,9 +8,8 @@ import {
   hydrateAppStorage,
   isAppStorageHydrated,
   reinitAppStorageForTest,
-  resetAppStorageForTest,
 } from './appStorage';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { purgeClientState } from '../transport/clientPurge';
 
 const BUCKET_CACHE_KEY = 'agent-overflow:uistate:bucket';
@@ -18,9 +17,7 @@ const BUCKET_CACHE_KEY = 'agent-overflow:uistate:bucket';
 describe('appStorage', () => {
   beforeEach(() => {
     vi.useRealTimers();
-    resetBindingMocks();
     localStorage.clear();
-    resetAppStorageForTest();
     setBindingMock('GetUIState', async () => ({}));
   });
 

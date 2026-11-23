@@ -1,7 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import MERMAID_SOURCE from '../../../markdown/render/elements/Mermaid.svelte?raw';
 
 // The mermaid SVG cache keys on the PALETTE, not on
 // `mermaidConfig.theme`.
@@ -17,16 +15,6 @@ import { describe, expect, it } from 'vitest';
 // about behavior. If the extraction stops matching, the key builder was
 // reformatted or removed — re-read it against the ledger entry before
 // touching this file.
-const MERMAID_SOURCE = readFileSync(
-  // Resolved from this file, not from the runner's cwd: a cwd-relative
-  // path silently reads nothing (or the wrong tree) the moment vitest is
-  // invoked from anywhere but `frontend/`.
-  resolve(
-    dirname(fileURLToPath(import.meta.url)),
-    '../../../markdown/render/elements/Mermaid.svelte',
-  ),
-  'utf8',
-);
 
 function extractPaletteKeyBuilder(): (vars: unknown) => string {
   const match = MERMAID_SOURCE.match(

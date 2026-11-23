@@ -362,7 +362,13 @@ func newCodexProviderEventLogRedactor() provider.EventLogRedactor {
 }
 
 func (r *codexProviderEventLogRedactor) redact(direction string, data []byte) []byte {
-	if direction != "in" || len(data) == 0 {
+	if len(data) == 0 {
+		return data
+	}
+	if direction == "out" {
+		return redactOutboundCodexFrame(data)
+	}
+	if direction != "in" {
 		return data
 	}
 	var root map[string]json.RawMessage
@@ -417,6 +423,87 @@ func (r *codexProviderEventLogRedactor) redact(direction string, data []byte) []
 		return data
 	}
 	return redacted
+}
+
+// redactOutboundCodexFrame masks credential-bearing MCP server headers in
+// outbound thread/start, thread/resume, and thread/fork frames before they
+// reach the optional raw provider-event log.
+func redactOutboundCodexFrame(data []byte) []byte {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(data, &root) != nil {
+		return data
+	}
+	switch readRawString(root, "method") {
+	case "thread/start", "thread/resume", "thread/fork":
+	default:
+		return data
+	}
+	var params map[string]json.RawMessage
+	if json.Unmarshal(root["params"], &params) != nil {
+		return data
+	}
+	var cfg map[string]json.RawMessage
+	if json.Unmarshal(params["config"], &cfg) != nil {
+		return data
+	}
+	var servers map[string]json.RawMessage
+	if json.Unmarshal(cfg["mcp_servers"], &servers) != nil || len(servers) == 0 {
+		return data
+	}
+	changed := false
+	for name, rawServer := range servers {
+		var server map[string]json.RawMessage
+		if json.Unmarshal(rawServer, &server) != nil {
+			continue
+		}
+		serverChanged := false
+		for _, hdrKey := range []string{"http_headers", "headers"} {
+			rawHdrs, ok := server[hdrKey]
+			if !ok {
+				continue
+			}
+			var hdrs map[string]any
+			if json.Unmarshal(rawHdrs, &hdrs) != nil || len(hdrs) == 0 {
+				continue
+			}
+			for k := range hdrs {
+				hdrs[k] = "[redacted]"
+			}
+			if encoded, err := json.Marshal(hdrs); err == nil {
+				server[hdrKey] = encoded
+				serverChanged = true
+			}
+		}
+		if serverChanged {
+			if encoded, err := json.Marshal(server); err == nil {
+				servers[name] = encoded
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return data
+	}
+	encodedServers, err := json.Marshal(servers)
+	if err != nil {
+		return data
+	}
+	cfg["mcp_servers"] = encodedServers
+	encodedCfg, err := json.Marshal(cfg)
+	if err != nil {
+		return data
+	}
+	params["config"] = encodedCfg
+	encodedParams, err := json.Marshal(params)
+	if err != nil {
+		return data
+	}
+	root["params"] = encodedParams
+	encodedRoot, err := json.Marshal(root)
+	if err != nil {
+		return data
+	}
+	return encodedRoot
 }
 
 func isEncryptedCollaborationFunctionCall(item map[string]json.RawMessage, name string) bool {

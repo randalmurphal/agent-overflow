@@ -68,6 +68,7 @@ function fakeSource(variantFor: (tier: number) => Partial<MarkdownImageVariant> 
           return held.settled;
         },
         value: held.value,
+        sized: held.value.then(() => undefined, () => undefined),
         release: () => {
           if (released) return;
           released = true;
@@ -151,7 +152,6 @@ beforeEach(() => {
 
 afterEach(() => {
   closeImageLightbox();
-  __resetImageTiersForTest();
   vi.unstubAllGlobals();
 });
 
@@ -362,6 +362,19 @@ describe('<MarkdownImage>', () => {
     expect(item.width).toBe(640);
   });
 
+  it('reads no pixel size from a fluid image: no box attributes, and none for the lightbox', async () => {
+    const fake = fakeSource(() => ({ width: 16, height: 9, originalWidth: 16, originalHeight: 9, fluid: true, derived: false, mimeType: 'image/svg+xml' }));
+    const { container } = mount(fake.source);
+    __reportImageBoxForTest(700);
+    await fake.settle(720);
+    const img = container.querySelector('img')!;
+    expect(img.hasAttribute('width')).toBe(false);
+    expect(img.hasAttribute('height')).toBe(false);
+    await fireEvent.click(img);
+    const item = imageLightbox()!.images[0]!;
+    expect([item.width, item.height]).toEqual([0, 0]);
+  });
+
   it('is a named, focusable control that Enter and Space open', async () => {
     const fake = fakeSource();
     const { container } = mount(fake.source);
@@ -404,7 +417,7 @@ describe('<MarkdownImage>', () => {
     try {
       const { container } = render(MarkdownImage, {
         target: link,
-        props: { source: fake.source, alt: 'diagram' },
+        props: { source: fake.source, alt: 'diagram', linked: true },
       });
       // The inline link has no width of its own: the paragraph bounds it.
       __reportImageBoxForTest(700, paragraph);

@@ -4,6 +4,7 @@ import { StreamingBoundarySplitter } from './streamingSplitter';
 import { BoundaryDetector } from './BoundaryDetector';
 import { createProvenAppend, matchesProvenAppend } from '../index';
 import { expectedStreamingFenceTexts } from '../../../test/helpers/streamingFenceOracle';
+import { seededRandom } from '../../../test/helpers/seededRandom';
 
 function expectFenceCompletePrefix(split: BoundarySplit): void {
   expect(
@@ -239,11 +240,10 @@ describe('StreamingBoundarySplitter — incremental line cache', () => {
     ].join('\n')).join('\n\n');
 
     for (let seed = 1; seed <= 64; seed++) {
-      let state = seed;
+      const next = seededRandom(seed);
       const sizes: number[] = [];
       for (let index = 0; index < 48; index++) {
-        state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
-        sizes.push(1 + (state % 600));
+        sizes.push(1 + next(600));
       }
       assertEquivalentChunked(document, sizes);
     }

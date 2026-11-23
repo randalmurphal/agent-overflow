@@ -1,6 +1,6 @@
-import { cleanup, render, screen } from '@testing-library/svelte';
+import { render, screen } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./TakeControlTerminal.svelte', async () => ({
   default: (await import('../../../test/mocks/StubTakeControlTerminal.svelte')).default,
@@ -9,21 +9,14 @@ vi.mock('./TakeControlTerminal.svelte', async () => ({
 import TakeControlPane from './TakeControlPane.svelte';
 import { installPaneMocks, makeThread } from '../../../test/helpers/chat';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { registerPaneForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
-import { isCompanionOpen, openCompanion, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
-import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { isCompanionOpen, openCompanion } from '../../stores/companionPanes.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 describe('TakeControlPane', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetCompanionPanesForTest();
-  });
-
-  afterEach(() => {
-    cleanup();
   });
 
   async function mountWithClaudeTuiThread() {

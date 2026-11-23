@@ -915,9 +915,9 @@ while IFS= read -r line; do
     printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"takeover-provider-thread","turn":{"id":"turn-%%s","status":"completed"}}}\n' "$turn"
     continue
   fi
-  printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+%s  printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
 done
-`, capturePath, counterPath, counterPath, counterPath)
+`, capturePath, counterPath, counterPath, counterPath, testutil.MockCodexUnsubscribeShell)
 	path := filepath.Join(t.TempDir(), "workflow-takeover-codex.sh")
 	mockexec.Write(t, path, script)
 	return path

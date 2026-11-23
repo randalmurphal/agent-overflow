@@ -13,7 +13,6 @@ import { __resetEntityIndexForTest, noteProject } from '../../transport/entityIn
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import {
-  resetBindingMocks,
   setBindingMock,
   getBindingMock,
 } from '../../../test/mocks/bindings-app';
@@ -23,11 +22,9 @@ import { createProjectActions } from './projectActions.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { ProjectDeletionPreview, ProjectDeletionResult } from '../../types/workflow';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
-import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import {
   consumePendingGroupRename,
   getThreadGroupById,
-  resetThreadGroupsForTest,
 } from '../../stores/threadGroups.svelte';
 import {
   getThreadFilterQuery,
@@ -133,7 +130,6 @@ function toastMessages(): string[] {
 
 describe('<ProjectContextMenu> delete flow', () => {
   beforeEach(() => {
-    resetBindingMocks();
     setPageGrantsFromBootstrap(false);
     for (const toast of Array.from(getToasts())) removeToast(toast.id);
     setBindingMock('DeleteProject', async () => emptyResult());
@@ -449,10 +445,7 @@ describe('<ProjectContextMenu> delete flow', () => {
 
 describe('<ProjectContextMenu> New Group…', () => {
   beforeEach(() => {
-    resetBindingMocks();
     setPageGrantsFromBootstrap(false);
-    resetSidebarForTest();
-    resetThreadGroupsForTest();
     setThreadFilterQuery('');
     for (const toast of Array.from(getToasts())) removeToast(toast.id);
   });
@@ -605,10 +598,6 @@ describe('<ProjectContextMenu> project writes without the grant', () => {
   // also previews the cleanup through ProjectDeletionPreview (`git:operate`),
   // so it stays inert until both are held.
   const INERT = 'Not granted to this device';
-
-  beforeEach(() => {
-    resetBindingMocks();
-  });
 
   afterEach(() => {
     resetToLocalPage();

@@ -13,24 +13,17 @@ the binary.
 - `service` manages the host through `internal/serviceinstall` and must not
   contact an app. `pair` and `thread` talk to the local app through its
   control file, not a session credential.
-- `remote` makes one authenticated RPC to the running app from inside a
-  provider session.
-- Workflows, runs and campaign memory are not CLI verbs (D77). Agents reach
-  them through `ao-workflow-tools` (`internal/workflowtools`). Do not add
-  workflow verbs or shims here.
+- Workflows, runs, campaign memory, and remote commands are not CLI verbs.
+  Agents reach them through `ao-workflow-tools` (`internal/workflowtools`) and
+  `ao-remote-tools`. Do not add workflow or remote verbs or shims here.
 - Keep usage, flags, exit codes, and output synchronized with
   [ao-cli.md](../../docs/references/ao-cli.md).
 
-## Session and RPC contract
+## Session marker
 
-`session.go` owns `AO_ENDPOINT`, `AO_TOKEN`, and `AO_THREAD_ID`. The
-application injects them into provider sessions. One of `AO_ENDPOINT` or
-`AO_TOKEN` without the other is an invalid environment. A 401 means the scoped
-session ended; do not retry or mint credentials in the CLI.
-
-Session commands use `transport.ClientFrame` and `transport.ServerFrame` over
-`POST {AO_ENDPOINT}/rpc`. Use method names because the CLI has no generated
-numeric binding IDs.
+`EnvInSession` (`AO_IN_SESSION`) is set to `"1"` in every provider session's
+environment so `main_entry.go` refuses to boot a second app instance from inside
+a session.
 
 ## Output and parsing
 

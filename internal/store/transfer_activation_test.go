@@ -62,7 +62,7 @@ func TestTransferActivationRequiresSecretAndCompleteHistory(t *testing.T) {
 
 func TestReturningTransferReplacesHistoryWithoutDeletingLocalReferences(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "return.db")
-	if err := copyTestStoreTemplate(dbPath); err != nil {
+	if err := copyTestStoreTemplate(t, dbPath); err != nil {
 		t.Fatal(err)
 	}
 	s, err := New(dbPath)

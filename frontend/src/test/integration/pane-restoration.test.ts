@@ -341,6 +341,8 @@ describe('App integration - pane restoration', () => {
     const uiState = installUIStateWithPaneLayout(savePaneLayout([], null));
     const left = makeThread({ id: 'left-thread', title: 'Left Thread' });
     const right = makeThread({ id: 'right-thread', title: 'Right Thread' });
+    installComposerDefaults(left.id);
+    installComposerDefaults(right.id);
 
     const rendered = render(App);
     await waitFor(() => expect(rendered.getByTestId('pane-host-empty')).toBeInTheDocument());

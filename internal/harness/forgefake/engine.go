@@ -177,6 +177,9 @@ type Engine struct {
 	viewer   string
 	sshHosts map[string]string
 	repos    map[string]*Repo
+	// accounts are the seeded accounts by forge, host and login
+	// (Account.key).
+	accounts map[string]*Account
 	// offline answers every call as a forge the network cannot reach,
 	// the way gh and glab fail when DNS or the link is down.
 	offline bool
@@ -204,7 +207,7 @@ func New(opts Options) *Engine {
 	if opts.Head == nil {
 		opts.Head = gitHead
 	}
-	return &Engine{opts: opts, viewer: defaultViewer, repos: make(map[string]*Repo), traceRequests: make(map[int64]int)}
+	return &Engine{opts: opts, viewer: defaultViewer, repos: make(map[string]*Repo), accounts: make(map[string]*Account), traceRequests: make(map[int64]int)}
 }
 
 // Seed adds the fixture's repositories, replacing any already seeded
@@ -244,6 +247,10 @@ func (e *Engine) Seed(fixture Fixture) (Fixture, error) {
 		repo := fixture.Repos[i]
 		e.repos[repo.key()] = &repo
 	}
+	for i := range fixture.Accounts {
+		account := fixture.Accounts[i]
+		e.accounts[account.key()] = &account
+	}
 	return fixture.clone(), nil
 }
 
@@ -256,6 +263,7 @@ func (e *Engine) Reset() {
 	defer e.mu.Unlock()
 	e.viewer = defaultViewer
 	clear(e.repos)
+	clear(e.accounts)
 	clear(e.sshHosts)
 	e.offline = false
 	clear(e.rateLimits)

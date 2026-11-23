@@ -53,13 +53,27 @@ type Session struct {
 	parser *claude.Parser
 
 	// feed carries reconstructed envelope bytes from the wire + hook sources to
-	// the single parser goroutine. done closes on teardown to stop the loop and
-	// unblock any producer parked on feed.
-	feed chan json.RawMessage
-	done chan struct{}
+	// the single parser goroutine. A sender holds feedMu for reading across
+	// its send; teardown takes it to set feedClosed and close feed once the
+	// gateway and relay have stopped, after which a send is refused and the
+	// loop parses what was accepted and returns.
+	feed       chan json.RawMessage
+	feedMu     sync.RWMutex
+	feedClosed bool
 	// feedDone closes when the parser goroutine has returned; nil until
-	// startFeedLoop. Close waits on it before it releases parser state.
+	// startFeedLoop. teardown waits on it before it releases parser state.
 	feedDone chan struct{}
+
+	// teardownOnce runs teardown for whichever end of the session comes
+	// first: Close, the context watcher, or the PTY process ending on its own
+	// (onPTYExit). A later release waits for that run to finish.
+	teardownOnce sync.Once
+	teardownErr  error
+	// completed closes once the session has ended: after onPTYExit emitted
+	// the teardown pair when the terminal accepted the launch, else when the
+	// first Close's teardown returns. Connection().Done is it, and every
+	// Close returns after it with teardownErr.
+	completed chan struct{}
 
 	// recMu guards the reconstructor's cross-request state (turn-usage
 	// accumulation, session identity, the subagent launch registry).
@@ -88,10 +102,10 @@ type Session struct {
 	// systemPromptPath and appendSystemPromptPath are the files
 	// cfg.SystemPrompt and cfg.AppendSystemPrompt were written to for
 	// `--system-prompt-file` and `--append-system-prompt-file`, or "" for
-	// the one the session does not carry. Removed by Close — which the
-	// NewSession failure path also runs, so every failed-launch path drops
-	// them too. Each is recorded under mu the moment it is written, before
-	// the next write, so a failure between the two still removes the first.
+	// the one the session does not carry. Removed by teardown, which Close,
+	// the NewSession failure path and the process's own exit all reach.
+	// Each is recorded under mu the moment it is written, before the next
+	// write, so a failure between the two still removes the first.
 	systemPromptPath       string
 	appendSystemPromptPath string
 
@@ -103,7 +117,19 @@ type Session struct {
 	mu        sync.Mutex
 	sessionID string
 	pid       int
-	closing   bool
+	// closing means the host asked for the end (Close or the context
+	// watcher), so the teardown pair carries no "error".
+	closing bool
+	// awaited means a Close caller is waiting for the teardown's result. Set
+	// only by Close, before it releases. A teardown error is posted on the
+	// thread exactly when nobody awaits it once the teardown has run.
+	awaited bool
+	// launched is term.Open's success, set by NewSession before it returns
+	// or starts the context watcher. A launched PTY ends with onPTYExit,
+	// which signals completed; the exit path never reads launched, and every
+	// Close-initiated teardown runs after NewSession returned or in its
+	// failure path, so none reads it before its final value.
+	launched bool
 	// attachments is the set of live take-control claims, one per attaching
 	// client (the app mints one per connection). Its size is the fan-out
 	// refcount: the tee below is installed while it is non-empty and torn down
@@ -174,13 +200,13 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	}
 
 	s = &Session{
-		threadID: threadID,
-		onEvent:  onEvent,
-		parser:   newSessionParser(),
-		feed:     make(chan json.RawMessage, 256),
-		done:     make(chan struct{}),
-		logf:     log.Printf,
-		evlog:    cfg.EventLogger,
+		threadID:  threadID,
+		onEvent:   onEvent,
+		parser:    newSessionParser(),
+		feed:      make(chan json.RawMessage, 256),
+		completed: make(chan struct{}),
+		logf:      log.Printf,
+		evlog:     cfg.EventLogger,
 	}
 	// Seed the parser with the resolved model so result usage can be priced
 	// before the reconstructed init lands (mirrors the headless seed).
@@ -264,6 +290,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		return nil, fmt.Errorf("claudetui: launch interactive claude: %w", err)
 	}
 	s.mu.Lock()
+	s.launched = true
 	s.terminalID = summary.TerminalID
 	s.pid = summary.PID
 	s.mu.Unlock()
@@ -276,22 +303,41 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 }
 
 // watchContext tears the session down if the spawn context is cancelled,
-// exiting cleanly once the session closes on its own.
+// exiting cleanly once the session ends otherwise. It awaits no result, so
+// unless a Close caller does, the teardown posts its error on the thread.
 func (s *Session) watchContext(ctx context.Context) {
 	select {
 	case <-ctx.Done():
-		_ = s.Close()
-	case <-s.done:
+		_ = s.closeFrom(false)
+	case <-s.completed:
 	}
 }
 
 // feedEnvelope enqueues one reconstructed envelope for the parser goroutine.
-// Drops the envelope once the session is tearing down so a late wire/hook
-// source can't block on a drained loop.
+// Once teardown has closed admission the envelope is dropped: the gateway
+// and relay have stopped by then, so only a call into the ended session
+// (Interrupt) can still produce one.
 func (s *Session) feedEnvelope(line json.RawMessage) {
-	select {
-	case s.feed <- line:
-	case <-s.done:
+	s.feedMu.RLock()
+	defer s.feedMu.RUnlock()
+	if s.feedClosed {
+		return
+	}
+	s.feed <- line
+}
+
+// closeFeed closes admission and waits for the feed loop to parse what was
+// accepted. A sender blocked on a full feed holds feedMu for reading, and
+// the loop keeps draining, so the lock is reached.
+func (s *Session) closeFeed() {
+	s.feedMu.Lock()
+	if !s.feedClosed && s.feed != nil {
+		close(s.feed)
+	}
+	s.feedClosed = true
+	s.feedMu.Unlock()
+	if s.feedDone != nil {
+		<-s.feedDone
 	}
 }
 
@@ -310,23 +356,23 @@ func (s *Session) startFeedLoop() {
 // feedLoop local: this goroutine is its only driver, so it stays lock-free and
 // is torn down with the loop. Live streaming deltas — by far the highest
 // frequency envelope and never part of tool ordering — skip it via a byte-prefix
-// check so they pay neither the classification nor a full parse.
+// check so they pay neither the classification nor a full parse. When teardown
+// closes the feed, the loop parses what is left in it, then the completions
+// the buffer still holds, and returns.
 func (s *Session) feedLoop() {
 	defer close(s.feedDone)
 	reorder := newFeedReorder()
-	for {
-		select {
-		case line := <-s.feed:
-			if bytes.HasPrefix(line, streamEventPrefix) {
-				s.parseAndEmit(line)
-				continue
-			}
-			for _, env := range reorder.admit(line) {
-				s.parseAndEmit(env)
-			}
-		case <-s.done:
-			return
+	for line := range s.feed {
+		if bytes.HasPrefix(line, streamEventPrefix) {
+			s.parseAndEmit(line)
+			continue
 		}
+		for _, env := range reorder.admit(line) {
+			s.parseAndEmit(env)
+		}
+	}
+	for _, env := range reorder.flush() {
+		s.parseAndEmit(env)
 	}
 }
 
@@ -492,6 +538,27 @@ func (s *Session) PID() int {
 	return s.pid
 }
 
+// Connection returns the single-PTY connection backing this claude-tui session.
+func (s *Session) Connection() provider.Connection {
+	if s == nil {
+		return nil
+	}
+	return provider.FuncConnection{
+		PIDFn:   s.PID,
+		DoneCh:  s.completed,
+		CloseFn: s.Close,
+	}
+}
+
+// OwnedProcesses returns this PTY session's process root for dev-server attribution.
+func (s *Session) OwnedProcesses() []provider.OwnedProcess {
+	pid := s.PID()
+	if pid <= 0 {
+		return nil
+	}
+	return []provider.OwnedProcess{{PID: pid, PGID: pid}}
+}
+
 // SessionID returns the provider session ref, learned from the SessionStart
 // hook or the reconstructed init. Empty until one of those arrives.
 func (s *Session) SessionID() string {
@@ -500,36 +567,84 @@ func (s *Session) SessionID() string {
 	return s.sessionID
 }
 
-// Close tears down the PTY, gateway, relay, and parser. Idempotent and
-// nil-safe so the NewSession failure path can reuse it.
+// Close ends the PTY and releases the session, and returns once the session
+// has ended (completed): after the teardown pair is emitted when the
+// terminal accepted the launch. Every call, first or later, returns the
+// teardown's error. Nil-safe for the parts a failed NewSession never built,
+// which reuses it.
+//
+// The wait is bounded by the terminal: its Close returns once the process
+// has exited, and its output goroutine then drains at most a bounded tail
+// and runs onPTYExit whether or not the process group could be emptied. A
+// failed Open starts no output goroutine, so there is no onPTYExit to wait
+// for; launched is false and the teardown's return completes the session.
 func (s *Session) Close() error {
+	return s.closeFrom(true)
+}
+
+// closeFrom is the host's end of the session; awaited says the caller
+// receives the teardown's result.
+func (s *Session) closeFrom(awaited bool) error {
 	s.mu.Lock()
-	if s.closing {
-		s.mu.Unlock()
-		return nil
-	}
+	first := !s.closing
 	s.closing = true
+	if awaited {
+		s.awaited = true
+	}
+	launched := s.launched
+	s.mu.Unlock()
+	if first {
+		s.release()
+		if !launched {
+			close(s.completed)
+		}
+	}
+	<-s.completed
+	return s.teardownErr
+}
+
+// release runs teardown once; a caller that arrives while another runs it
+// waits for that run. Whichever ending runs it, a teardown error that no
+// Close caller awaits by then is posted on the thread before the run
+// returns, so it precedes the teardown pair. Close reads the error after
+// completed.
+func (s *Session) release() {
+	s.teardownOnce.Do(func() {
+		s.teardownErr = s.teardown()
+		if s.teardownErr == nil {
+			return
+		}
+		s.mu.Lock()
+		awaited := s.awaited
+		s.mu.Unlock()
+		if !awaited {
+			s.emitNonFatalError(fmt.Sprintf("release the session: %v", s.teardownErr))
+		}
+	})
+}
+
+// teardown ends the session in one order for every ending. It runs on the
+// goroutine of Close, of the context watcher, or of the terminal's output
+// (onPTYExit), and waits on none of them: the terminal's Close waits for
+// the process, not for its output goroutine.
+//
+//  1. End the PTY. After a self-exit the terminal has already dropped it
+//     and this is a no-op; a process that exits before NewSession records
+//     terminalID leaves it empty.
+//  2. Stop the gateway and the relay and join their handlers, while the
+//     feed loop still parses what they hand it.
+//  3. Close feed admission and join the loop once it has parsed everything
+//     accepted, in order.
+//  4. Settle the SessionStart delivery: nothing can arm it any more.
+//  5. Release parser state and remove the prompt files, the CLI being gone.
+//
+// Every source of events but onPTYExit has returned when it does.
+func (s *Session) teardown() error {
+	s.mu.Lock()
 	terminalID := s.terminalID
 	systemPromptPath := s.systemPromptPath
 	appendSystemPromptPath := s.appendSystemPromptPath
 	s.mu.Unlock()
-
-	// A delivery no model request settled may not have arrived, and the
-	// next session resumes without the hook: its prompts must deliver the
-	// whole memory.
-	s.sessionStartMu.Lock()
-	if after := s.sessionStart.Expecting(); after != "" {
-		s.logf("claudetui: session closed before a model request showed whether its SessionStart hooks delivered after its %s", after)
-		if warning := s.sessionStart.ForgetWhilePending(); warning != "" {
-			s.emitNonFatalError(warning)
-		}
-	}
-	s.sessionStartMu.Unlock()
-
-	// Stop the parser loop and release any producer parked on feed before
-	// shutting the proxy/relay down, so their handler goroutines don't deadlock
-	// on a feed send while Shutdown waits for them.
-	close(s.done)
 
 	var errs []error
 	if s.term != nil && terminalID != "" {
@@ -549,14 +664,24 @@ func (s *Session) Close() error {
 	}
 	// The feed loop is the parser's only driver and may be inside ParseLine:
 	// join it before releasing parser state.
-	if s.feedDone != nil {
-		<-s.feedDone
+	s.closeFeed()
+
+	// A delivery no model request settled may not have arrived, and the
+	// next session resumes without the hook: its prompts must deliver the
+	// whole memory.
+	s.sessionStartMu.Lock()
+	if after := s.sessionStart.Expecting(); after != "" {
+		s.logf("claudetui: session ended before a model request showed whether its SessionStart hooks delivered after its %s", after)
+		if warning := s.sessionStart.ForgetWhilePending(); warning != "" {
+			s.emitNonFatalError(warning)
+		}
 	}
+	s.sessionStartMu.Unlock()
+
 	if s.parser != nil {
 		s.parser.Close()
 	}
-	// After the PTY is down, so the file outlives every read the CLI could
-	// still make of it. Best-effort with a log line, same as headless.
+	// Best-effort with a log line, same as headless.
 	claude.RemoveSystemPromptFile(systemPromptPath)
 	claude.RemoveSystemPromptFile(appendSystemPromptPath)
 	return errors.Join(errs...)
@@ -582,20 +707,29 @@ func (s *Session) onPTYOutput(threadID, terminalID string, sequence uint64, data
 	}
 }
 
-// onPTYExit surfaces interactive-claude death. A non-host-initiated exit (the
-// process died or the user quit it in take-control) emits the "error"
-// session-status triage promotes to session_died + a truncated turn-complete;
-// the trailing "disconnected" clears live state. A host-initiated Close skips
-// the error and just disconnects.
+// onPTYExit releases the session and surfaces interactive-claude death. A
+// non-host-initiated exit (the process died or the user quit it in
+// take-control) emits the "error" session-status triage promotes to
+// session_died + a truncated turn-complete; the trailing "disconnected" clears
+// live state. A host-initiated Close skips the error and just disconnects.
 func (s *Session) onPTYExit(threadID, terminalID string, status terminal.ExitStatus) {
 	s.mu.Lock()
 	closing := s.closing
 	s.mu.Unlock()
 
+	// The process is gone, so the session releases what it held for it
+	// whether or not Close asked; while another ending runs the release this
+	// waits for it. The release returns with every other source of events
+	// joined, so nothing follows "disconnected".
+	s.release()
+
 	// Same two events, same order, same reason as both stdio read loops —
 	// only the meta source differs (a PTY exit status, not a subprocess
 	// exit). See provider.EmitTeardownStatus for why the pair is load-bearing.
+	// The exit path signals completion whatever launched says: this callback
+	// is the proof that the terminal accepted the launch.
 	provider.EmitTeardownStatusWithMeta(s.emit, s.threadID, ptyExitMeta(status), closing)
+	close(s.completed)
 }
 
 // onProxyError surfaces a gateway/relay infrastructure failure as a non-fatal

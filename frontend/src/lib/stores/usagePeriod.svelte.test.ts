@@ -4,20 +4,16 @@ import {
   getUsagePeriod,
   periodFromMillis,
   readPersistedPeriod,
-  resetUsagePeriodForTest,
   setUsagePeriod,
   syncUsagePeriodFromSettings,
 } from './usagePeriod.svelte';
 import { loadSettings, resetSettingsForTest } from './settings.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 
 const STORAGE_KEY = 'agent-overflow:usage:period';
 
 describe('usage period store', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetSettingsForTest();
-    resetUsagePeriodForTest();
     // setUsagePeriod writes through to Go settings; default the RPC to
     // a no-op so tests that aren't about persistence stay quiet.
     setBindingMock('UpdateSettings', async () => null);

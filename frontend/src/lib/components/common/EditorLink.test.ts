@@ -1,13 +1,12 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import EditorLink from './EditorLink.svelte';
-import { setBindingMock, getBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 
 describe('<EditorLink>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     setPageGrantsFromBootstrap(false);
     // The toast registry is a module-level singleton; drain it so a
     // toast left by a sibling describe block can't satisfy a "find

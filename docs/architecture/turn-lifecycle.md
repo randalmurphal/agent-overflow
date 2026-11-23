@@ -317,8 +317,8 @@ round's **background carrier**.
   path, with no special-casing needed there.
 
 Why: the idle-session reaper (`app_session_reaper.go`) keeps a quiet
-session alive only while `ListRunningBackgroundToolCalls` is
-non-empty. The ORIGINAL launch already has its round-1 sibling once
+session alive only while `CountLiveRunningBackgroundToolCalls` is
+above zero. The ORIGINAL launch already has its round-1 sibling once
 round 1 completes, so it can never satisfy that predicate again. If
 nothing else is backgrounded, a quiet resumed agent would get its
 whole session reaped mid-run without the carrier. The original launch
@@ -592,7 +592,7 @@ the subagent scope: the main thread's write head is a later turn
 than the one the agent's rows keep landing on, so a sibling placed
 there would sort after everything the agent writes afterwards. The
 tray renders it on its own retention clock. See
-`docs/references/fixtures/claude/ndjson_outlives.log` for a captured example.
+`internal/provider/wirecaptures/claude/ndjson_outlives.log` for a captured example.
 
 ### Desired chat-history contract
 
@@ -832,11 +832,33 @@ does not stop the boot: it is reported as a failed boot phase, which
 every client shows ([startup readiness](transport.md#startup-readiness)),
 and the next start runs it again.
 
-Post-sweep, a `completed_at=null` row during an app run means
-genuinely live provider work. The durable "interrupted" signal that
-survives restarts is `stop_reason='interrupted'`; the sidebar's boot
-pill (`Thread.HasIncompleteTurn`) covers both encodings: an unseen
-in-flight turn, or an unseen settled-interrupted turn.
+Post-sweep, a thread's newest `completed_at=null` row during an app run
+means genuinely live provider work, and every durable reader reads it
+as running (`Thread.HasOpenTurn`, `GetActiveTurn`, the rest sources).
+The row is open until `UpdateTurnCompleted` settles it. The live round
+outlasts that write: triage takes the round when the completion
+arrives and reports it as the ending round in both live-state
+snapshots while the turn's end is written, so a reader sees the turn
+running throughout. The round ends right before
+`provider:turn_completed` goes out, so what that frame starts (a
+worker's reassessment, a wait's read) finds it ended. The durable
+"interrupted" signal that survives restarts is
+`stop_reason='interrupted'`, the only thing the sidebar's boot pill
+(`Thread.HasIncompleteTurn`) reads: an unseen settled interruption.
+
+When the write of an open turn's end fails, or the boot sweep fails, the
+row stays open with nothing running its turn, and it reads as running
+until a later end of the same turn saves or a later boot's sweep records
+it as interrupted. Nothing retries the end.
+The round still ends, so the pane and sidebar read the thread idle while
+every reader of the row (the thread tools, send placement, revert,
+transfer, the Agents tally) reads it running, as long as it is the
+thread's newest row. A fork made then settles its copy of the row as
+interrupted. A failed end write reaches the user as one error entry per
+turn on the unsaved-rows surface (`triage/unsaved_rows.go`), unless it
+was a shown-history refusal whose own error row told them, and an end of
+that turn that later saves withdraws the entry; a boot sweep failure is a
+failed boot phase.
 
 The frontend still shows no active-turn spinner for any of this
 (spinner requires a live `activeTurn` push, not a DB row), and we do
@@ -1246,5 +1268,5 @@ counterpart "retry succeeded" wire signal from either provider.
 - Event taxonomy full routing: [`triage-routing.md`](triage-routing.md).
 - Data flow end-to-end: [`data-flow.md`](data-flow.md).
 - Invariants (authoritative guardrails): [`invariants.md`](invariants.md).
-- Captured wire samples: `docs/references/fixtures/claude/*.log`,
-  `docs/references/fixtures/claude/taskoutput_multi.ndjson`.
+- Captured wire samples: `internal/provider/wirecaptures/claude/*.log`,
+  `internal/provider/wirecaptures/claude/taskoutput_multi.ndjson`.

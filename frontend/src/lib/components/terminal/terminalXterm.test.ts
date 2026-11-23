@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildTerminal } from './terminalXterm';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetRunMode, setRunMode } from '../../../test/runMode';
 
 const mocks = vi.hoisted(() => {
@@ -51,7 +51,10 @@ vi.mock('@xterm/addon-webgl', () => ({
 vi.mock('../../stores/keybindings.svelte', () => ({
   eventEscapesTerminalToCommand: vi.fn(() => false),
 }));
-vi.mock('../../utils/clipboard', () => ({ copyToClipboard: vi.fn(async () => true) }));
+vi.mock('../../utils/clipboard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/clipboard')>()),
+  copyToClipboard: vi.fn(async () => true),
+}));
 vi.mock('../../stores/toast.svelte', () => ({ addToast: vi.fn(), addErrorToast: vi.fn() }));
 
 function buildAndTakeLinkHandler(): (event: MouseEvent, uri: string) => void {
@@ -68,7 +71,6 @@ function buildAndTakeLinkHandler(): (event: MouseEvent, uri: string) => void {
 // bypasses internal/externalurl and loses the WSL → Windows bridge.
 describe('buildTerminal web links', () => {
   beforeEach(() => {
-    resetBindingMocks();
     resetRunMode();
   });
 

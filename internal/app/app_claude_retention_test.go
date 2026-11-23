@@ -346,7 +346,7 @@ func TestEveryClaudeLaunchCarriesTheRetentionWindow(t *testing.T) {
 		cfg, err := app.claudeTUISessionConfig("thread", provider.SessionOptions{
 			Provider: string(provider.ClaudeTUI),
 			WorkDir:  workDir,
-		}, "", nil, aoSessionCredential{}, sessionMemory{})
+		}, "", nil, sessionMemory{})
 		if err != nil {
 			t.Fatalf("claudeTUISessionConfig: %v", err)
 		}

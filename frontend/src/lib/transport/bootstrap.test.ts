@@ -17,10 +17,10 @@ import {
   validateWsUrl,
 } from './bootstrap';
 import { clearPairedSession, redeemPairing } from './deviceSession';
-import { __resetPageHostForTest, isHostWindow } from './pageHost';
-import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
+import { isHostWindow } from './pageHost';
+import { setHomeEndpoint } from './homeEndpoint';
 import { fetchBackendManifest } from './manifestBackends';
-import { __resetHarnessModeForTest, harnessInterval } from './harnessMode';
+import { harnessInterval } from './harnessMode';
 import { BackendStartingError, STARTUP_REPORT_LIMIT_BYTES } from './startupProgress';
 
 describe('isLoopbackHostname', () => {
@@ -164,8 +164,6 @@ describe('defaultBootstrap', () => {
 
   afterEach(() => {
     setPageSearch('');
-    __resetPageHostForTest();
-    __resetHarnessModeForTest();
     vi.unstubAllGlobals();
   });
 
@@ -274,14 +272,14 @@ describe('defaultBootstrap', () => {
     await expect(defaultBootstrap()).rejects.toThrow(/unknown timer/);
   });
 
-  it('refuses harness timing this build cannot read', async () => {
-    for (const harnessTiming of [{ 'some-timer': 10 }, { 'agent-row-linger': 0 }, { 'agent-row-linger': '3s' }, [1]]) {
-      __resetHarnessModeForTest();
+  it.each([[{ 'some-timer': 10 }], [{ 'agent-row-linger': 0 }], [{ 'agent-row-linger': '3s' }], [[1]]])(
+    'refuses harness timing this build cannot read: %j',
+    async (harnessTiming) => {
       vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harness: true, harnessTiming })));
       await expect(defaultBootstrap()).rejects.toThrow(/harnessTiming/);
       expect(harnessInterval('agent-row-linger', 60_000)).toBe(60_000);
-    }
-  });
+    },
+  );
 
   // A page whose window this application owns is handed its ticket by
   // injection, so nothing credential-shaped is on its URL and there is
@@ -477,6 +475,13 @@ describe('defaultBootstrap', () => {
 
   it('fails an attached backend\'s manifest fetch that never answers', async () => {
     vi.useFakeTimers();
+    // AbortSignal.timeout runs on a timer fake timers do not reach; the
+    // same signal on setTimeout runs on the fake clock.
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException('The operation timed out.', 'TimeoutError')), ms);
+      return controller.signal;
+    });
     try {
       vi.stubGlobal('fetch', vi.fn((_input: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
@@ -488,8 +493,11 @@ describe('defaultBootstrap', () => {
       await vi.advanceTimersByTimeAsync(BACKEND_MANIFEST_TIMEOUT_MS - 1);
       expect(settled).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
       expect(await result).toMatchObject({ name: 'TimeoutError' });
+      expect(timeout).toHaveBeenCalledWith(BACKEND_MANIFEST_TIMEOUT_MS);
     } finally {
+      timeout.mockRestore();
       vi.useRealTimers();
     }
   });
@@ -537,10 +545,8 @@ describe('defaultBootstrap under a shell origin', () => {
   const ENDPOINT = 'https://desk.tail-scale.ts.net:7777';
 
   afterEach(() => {
-    __resetHomeEndpointForTest();
     // defaultBootstrap memoises whether a webview hosts the page; a later
     // case that sets ?host=webview must not read this case's answer.
-    __resetPageHostForTest();
     vi.unstubAllGlobals();
   });
 

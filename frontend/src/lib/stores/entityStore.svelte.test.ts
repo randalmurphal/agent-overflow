@@ -4,7 +4,6 @@ import { flushSync } from 'svelte';
 import { createEntityStore, DEFAULT_RETRY } from './entityStore.svelte';
 import {
   frontendErrorCaptureStateForTest,
-  resetFrontendErrorCaptureForTest,
 } from '../utils/frontendErrorCapture';
 
 // A controllable source. Each call records its args and hands back a
@@ -776,6 +775,80 @@ describe('createEntityStore — invalidate / resetAll / suspend', () => {
     expect(calls[1].signal.aborted).toBe(false);
   });
 
+  it('resetForTest drops every entry without releasing or acquiring anything', async () => {
+    const { source, calls, cleanups } = makeSource();
+    const dropped: string[] = [];
+    const store = createEntityStore<string, { tag: string }>({
+      backendForKey: () => '', name: 'test', source, onDrop: (key) => dropped.push(key),
+    });
+
+    // One key acquired and held, one still acquiring.
+    const held = store.attach('held', { tag: 'a' });
+    await flush();
+    calls[0].apply('v1');
+    calls[0].resolve();
+    store.attach('acquiring', { tag: 'b' });
+    await flush();
+
+    store.resetForTest();
+    await flush();
+    expect(store.keys()).toEqual([]);
+    expect(dropped.sort()).toEqual(['acquiring', 'held']);
+    expect(held.current).toBeNull();
+    expect(calls[1].signal.aborted).toBe(true);
+    // The acquiring key lands after the reset: its acquire belonged to the
+    // reset backend, so its release is dropped like the held key's.
+    const late = vi.fn();
+    calls[1].resolve(late);
+    held.release();
+    await flush();
+    expect(late).not.toHaveBeenCalled();
+    expect(cleanups).toEqual([]);
+    expect(calls).toHaveLength(2);
+
+    // The reset lifts a suspension, and a later attach starts a fresh life.
+    store.suspend();
+    store.resetForTest();
+    const next = store.attach('held', { tag: 'c' });
+    await flush();
+    expect(calls).toHaveLength(3);
+    calls[2].apply('v2');
+    calls[2].resolve();
+    await flush();
+    expect(next.current).toBe('v2');
+  });
+
+  it('resetForTest removes what a source installed locally and calls no backend', async () => {
+    const events = new EventTarget();
+    const received: string[] = [];
+    const unsubscribe = vi.fn(async () => {});
+    let answer!: () => void;
+    const store = createEntityStore<string, void>({
+      backendForKey: () => '',
+      name: 'test',
+      source: async ({ key, signal }) => {
+        const listener = () => received.push(key);
+        events.addEventListener('ping', listener);
+        signal.addEventListener('abort', () => events.removeEventListener('ping', listener), { once: true });
+        if (key === 'acquiring') await new Promise<void>((done) => { answer = done; });
+        return unsubscribe;
+      },
+    });
+    store.attach('held', undefined);
+    store.attach('acquiring', undefined);
+    await flush();
+    events.dispatchEvent(new Event('ping'));
+    expect(received.sort()).toEqual(['acquiring', 'held']);
+
+    store.resetForTest();
+    answer();
+    await flush();
+    received.length = 0;
+    events.dispatchEvent(new Event('ping'));
+    expect(received).toEqual([]);
+    expect(unsubscribe).not.toHaveBeenCalled();
+  });
+
   // A failed release leaks a backend resource. While somebody is still
   // holding the key that is user-facing state, not only a console line —
   // the resource they are nominally attached to was never released.
@@ -1156,12 +1229,6 @@ describe('createEntityStore — reactivity boundary', () => {
  * every gate stays green. The contract is enforced here rather than documented.
  */
 describe('createEntityStore — the rawValue replace contract', () => {
-  beforeEach(() => {
-    resetFrontendErrorCaptureForTest();
-  });
-  afterEach(() => {
-    resetFrontendErrorCaptureForTest();
-  });
 
   function rawStore() {
     const { source, calls } = makeSource<{ n: number }>();
@@ -1249,7 +1316,6 @@ describe('createEntityStore — the rawValue replace contract', () => {
     errors.mockRestore();
   });
 });
-
 
 describe('entity resources belong to a computer', () => {
   it('lets guarded routing resolve unknown ownership even without a HOME connection', async () => {

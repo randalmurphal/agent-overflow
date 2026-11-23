@@ -22,6 +22,7 @@ ARG GO_VERSION
 ARG NODE_VERSION=24.22.2
 ARG PNPM_VERSION
 ARG PLAYWRIGHT_VERSION
+ARG PLAYWRIGHT_INSTALL
 ARG GH_VERSION=2.102.0
 ARG TARGETARCH=amd64
 
@@ -65,13 +66,13 @@ ENV PATH=/opt/ao-toolchain/bin:/usr/local/go/bin:$PATH \
 RUN mkdir -p /opt/ao-toolchain/bin /var/cache/go-mod /var/cache/pnpm /var/cache/pnpm-meta /opt/ms-playwright \
     && chown runner:runner /opt/ao-toolchain/bin /var/cache/go-mod /var/cache/pnpm /var/cache/pnpm-meta /opt/ms-playwright
 
-# Playwright browsers and their OS libraries for the pinned version. The
-# suites run headless without a channel, so Chromium is the headless shell
-# only; .github/actions/setup installs the same set.
-RUN npx --yes "playwright@${PLAYWRIGHT_VERSION}" install-deps chromium webkit \
-    && rm -rf /var/lib/apt/lists/* \
-    && su runner -c "npx --yes playwright@${PLAYWRIGHT_VERSION} install --only-shell chromium webkit" \
-    && rm -rf /home/runner/.npm
+# The CI_IMAGE_BROWSERS set (build/test-inputs.mk) with its OS libraries,
+# at the pinned version, through the one installer. ci/toolchain-inputs.sh
+# puts both files' digest in the image's name.
+COPY --chown=runner:runner build/test-inputs.mk /opt/ao-browsers/build/
+COPY --chown=runner:runner scripts/playwright-browsers.sh /opt/ao-browsers/scripts/
+RUN su runner -c "PLAYWRIGHT_CLI='npx --yes playwright@${PLAYWRIGHT_VERSION}' /opt/ao-browsers/scripts/playwright-browsers.sh --with-deps CI_IMAGE_BROWSERS" \
+    && rm -rf /var/lib/apt/lists/* /home/runner/.npm /opt/ao-browsers
 
 USER runner
 

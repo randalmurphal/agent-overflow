@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import PairingScreen from './PairingScreen.svelte';
 import type { PairingPayload } from '../../transport/deviceSession';
-import { __resetHomeEndpointForTest, storedBackendEndpoint } from '../../transport/homeEndpoint';
+import { storedBackendEndpoint } from '../../transport/homeEndpoint';
 import { setPasskeysAvailableFromBootstrap } from '../../transport/passkey';
 
 // Driven through the REAL deviceSession module with a stubbed global
@@ -37,7 +37,6 @@ beforeEach(() => {
 
 afterEach(() => {
   localStorage.clear();
-  __resetHomeEndpointForTest();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.useRealTimers();

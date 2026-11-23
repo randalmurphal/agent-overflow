@@ -6,8 +6,8 @@ import { render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { readSidebarCatalogs } from '../../../../test/helpers/sidebarCatalogs';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
-import { resetProjectsForTest, touchProjectActivity } from '../../../stores/projects.svelte';
-import { resetSidebarForTest, setProjectSortMode } from '../../../stores/sidebar.svelte';
+import { touchProjectActivity } from '../../../stores/projects.svelte';
+import { setProjectSortMode } from '../../../stores/sidebar.svelte';
 import type { ProjectWithCounts } from '../../../types/models';
 
 const ranked = vi.hoisted(() => ({ calls: 0 }));
@@ -36,8 +36,6 @@ function row(index: number): ProjectWithCounts {
 }
 
 beforeEach(() => {
-  resetSidebarForTest();
-  resetProjectsForTest();
   setProjectSortMode('lastActivity');
 });
 

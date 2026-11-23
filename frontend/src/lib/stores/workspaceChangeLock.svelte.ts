@@ -344,6 +344,5 @@ export function workspaceChangeLockKeys(): string[] {
 
 /** Test seam: drop every entry, as a fresh module load would. */
 export function __resetWorkspaceChangeLockForTest(): void {
-  store.suspend();
-  store.resetAll();
+  store.resetForTest();
 }

@@ -9,7 +9,6 @@ import { setupEventListeners } from '../../stores/events';
 import { __attachBackendForTest, detachBackend } from '../../transport/backends';
 import type { Project } from '../../types/models';
 import type { ThreadWakeRow, ThreadWakes } from '../../stores/bindings';
-import { resetThreadWakesForTest } from '../../stores/threadWakes.svelte';
 
 // A second computer, so a frame's origin resolves to it.
 const remote = 'wake-owner';
@@ -36,7 +35,6 @@ describe('wake controller', () => {
     stopEvents();
     stopEvents = () => {};
     detachBackend(remote);
-    resetThreadWakesForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });

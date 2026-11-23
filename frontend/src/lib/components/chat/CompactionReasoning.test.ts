@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { describe, expect, it } from 'vitest';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import CompactionReasoning from './CompactionReasoning.svelte';
 import { __setSmoothingClockForTest } from '../../stores/thread.svelte';
 import type { SmoothingClock } from '../../markdown/smoothing/PerItemSmoother';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 class FakeSmoothingClock implements SmoothingClock {
   private current = 0;
@@ -44,13 +44,6 @@ function reasoningItem(overrides = {}) {
 }
 
 describe('<CompactionReasoning>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
-
-  afterEach(() => {
-    cleanup();
-  });
 
   it('renders the compaction (list-collapse) icon and the "compact" label', () => {
     // Its own identity — NOT the brain/think row. Discriminated by kind at the

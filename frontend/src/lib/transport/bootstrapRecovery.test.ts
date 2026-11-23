@@ -2,14 +2,13 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { BootstrapRejectedError, defaultBootstrap } from './bootstrap';
 import { clearPairedSession, hasPairedSession, redeemPairing } from './deviceSession';
 import { fetchBackendManifest } from './manifestBackends';
-import { __resetHomeEndpointForTest, setHomeEndpoint, storeBackendEndpoint } from './homeEndpoint';
+import { setHomeEndpoint, storeBackendEndpoint } from './homeEndpoint';
 
 const endpoint = 'https://phone-host.test';
 afterEach(() => {
   clearPairedSession();
   clearPairedSession('other');
   localStorage.clear();
-  __resetHomeEndpointForTest();
   vi.unstubAllGlobals();
 });
 function grant(credential: string) {

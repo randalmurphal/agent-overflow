@@ -37,6 +37,8 @@ describe('App integration — thread creation', () => {
     });
     setBindingMock('StartSession', async () => {});
     installThreadViewDefaults();
+    // The draft placeholder reads the project's new-thread defaults.
+    setBindingMock('GetThreadDefaults', async () => ({ provider: 'claude' }));
 
     const { findByTestId } = render(App);
     await flush(10);
@@ -98,6 +100,8 @@ describe('App integration — thread creation', () => {
       throw new Error('db locked');
     });
     installThreadViewDefaults();
+    // The draft placeholder reads the project's new-thread defaults.
+    setBindingMock('GetThreadDefaults', async () => ({ provider: 'claude' }));
 
     const { findByTestId, findByLabelText } = render(App);
     await flush(10);

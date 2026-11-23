@@ -152,6 +152,8 @@ External repos and tools we track, and how to use them. Under
 | [`claude-wire.md`](references/claude-wire.md) | Canonical Claude Code NDJSON shapes + pinned citations into the Python SDK. Single source of truth for parser work. |
 | [`codex.md`](references/codex.md) | Codex source + CodexMonitor: how to use them when touching Codex code. |
 | [`codex-wire.md`](references/codex-wire.md) | Canonical Codex JSON-RPC shapes + collab-agent lifecycle. Single source of truth for Codex parser work. |
+| [`acp-wire.md`](references/acp-wire.md) | Generic multiplexed ACP v1 JSON-RPC client contract (`internal/provider/acp`). |
+| [`agy-wire.md`](references/agy-wire.md) | Antigravity CLI (`agy acp`) wire contract, live config, SQLite error watcher, and fork/revert. |
 | [`codex-instructions-tools.md`](references/codex-instructions-tools.md) | Codex's own instruction blocks and tool surface, as an appendix to `codex.md`. |
 | [`codex-browser-parity.md`](references/codex-browser-parity.md) | Exact map from the bundled Codex browser skill API to AO's built-in browser MCP tools and validation. |
 | [`claude-api-error-upstream-report.md`](references/claude-api-error-upstream-report.md) | Draft upstream bug report for a Claude Code API-error shape, still unfiled. |
@@ -164,7 +166,7 @@ External repos and tools we track, and how to use them. Under
 | [`ao-cli.md`](references/ao-cli.md) | The `ao` scoped-token CLI: command tree and `--json` result shapes. |
 | [`android-emulator.md`](references/android-emulator.md) | Running the Android emulator for the shell smoke under a memory cap, the emulator 37.1 adb-proxy leak behind that rule, and WebView-driving pitfalls. |
 | [`mobile-browser-testing.md`](references/mobile-browser-testing.md) | Emulator-free Chromium/WebKit checks, real browser visibility events and the real-phone validation boundary. |
-| [`fixtures/`](references/fixtures/) | Recorded provider wire captures backing `claude-wire.md` and the parser replay tests. |
+| [`internal/provider/wirecaptures/`](../internal/provider/wirecaptures/) | Recorded provider wire captures backing `claude-wire.md` and the parser replay tests. |
 
 ## Glossary
 

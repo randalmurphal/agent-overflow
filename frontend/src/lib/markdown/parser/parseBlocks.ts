@@ -15,7 +15,8 @@ import {
     blockExtensionsOf,
     getBlockOptions,
     isKeptType,
-    sameExtensionSequence
+    sameExtensionSequence,
+    usesChatGrammar
 } from './lexer';
 import type { Extension } from './lexer';
 import type { Alignment } from './extensions/align';
@@ -41,6 +42,11 @@ import { parseListSource } from './extensions/list';
 import { parseTableBlockSource } from './extensions/tableSource';
 import { parseBlockquoteSource } from './extensions/blockquoteSource';
 const INITIAL_HEADING = /^ {0,3}#{1,6}(?:[ \t]+|$)/;
+// A blank line: a line ending, optional spaces or tabs, then another line
+// ending. A CR that begins a CRLF is not a line ending of its own.
+const BLANK_LINE = /(?:\r\n|\n|\r(?!\n))[ \t]*(?:\r\n|\n|\r)/;
+// A list item's line with text: its marker, then a space or a tab.
+const LIST_ITEM_LINE = /^ {0,3}(?:[*+-]|\d{1,9}[.)])[ \t]/;
 // Seeds a boundary without a Lexer, so only where no alignment is in force:
 // its list geometry does not stop at a closer.
 const initialBlockToken = (markdown: string, extensions: Extension[], alignStart: Alignment): BlockToken | null => {
@@ -122,6 +128,8 @@ const parseBlocksCached = (
     if (cache) {
         cache.lastBlockAppend = undefined;
         cache.lastPath = 'none';
+        cache.generation++;
+        cache.changedFrom = cache.raws.length;
         if (cache.alignStart !== alignStart) {
             cache.alignStart = alignStart;
             cache.content = '';
@@ -131,6 +139,10 @@ const parseBlocksCached = (
         }
     }
     const blockExtensions = blockExtensionsOf(extensions);
+    // The marker that turns alignment off is a block extension, so a change
+    // here changes `extKey` too and the blocks are parsed afresh.
+    if (cache)
+        cache.aligns = usesChatGrammar(extensions);
     const extKey = cache && sameExtensionSequence(cache.extKey, blockExtensions)
         ? cache.extKey
         : blockExtensions;
@@ -144,7 +156,9 @@ const parseBlocksCached = (
         cache.lastPath = 'unchanged';
         return cache.blocks;
     }
-    const appendDelta = cache && cache.extKey === extKey
+    // No sealed boundary holds while an extension that reopens sealed blocks
+    // takes part: every update is a full parse.
+    const appendDelta = cache && cache.extKey === extKey && !blockExtensions?.some(({ reopensSealedBlocks }) => reopensSealedBlocks)
         ? cache.source.update(markdown, provenAppend)
         : null;
     if (cache && cache.extKey !== extKey) cache.source.reset(markdown);
@@ -175,10 +189,15 @@ const parseBlocksCached = (
                 cache.lastPath = t.kind === 'paragraph' ? 'paragraph-append' : 'line-block-append';
                 return cache.blocks;
             }
+            // The delta extends the table's last line, or after a row's line
+            // ending starts the next row. The table grammar admits no blank
+            // line, so one in the raw is the tokenizer's trailing blank
+            // line: what follows it opens a new block.
             if (t.kind === 'table-line' &&
                 blockStart === t.blockStart &&
                 priorRaw.length >= t.prefixLen &&
                 !/[\r\n]/.test(appendDelta) &&
+                !BLANK_LINE.test(priorRaw) &&
                 (!/[\r\n]$/.test(priorRaw) || /^ {0,3}\|/.test(appendDelta)) &&
                 !extensions.some(({ level, applyInBlockParsing }) => level === 'block' && applyInBlockParsing)) {
                 const blockAppend = createProvenAppend(priorRaw, appendDelta);
@@ -205,11 +224,14 @@ const parseBlocksCached = (
                 const combinedTrailingWhitespace = trailingWhitespace === appendDelta.length
                     ? trailingWhitespace + (t.normalized ? 1 : 0)
                     : trailingWhitespace;
-                if (combinedTrailingWhitespace <= 1) {
+                const appended = t.normalized
+                    ? priorRaw.slice(0, -1) + priorSourceWhitespace + appendDelta
+                    : priorRaw + appendDelta;
+                // A lone marker is an empty item; text right after it makes
+                // the line a paragraph.
+                if (combinedTrailingWhitespace <= 1 && LIST_ITEM_LINE.test(appended)) {
                     const blockAppend = createProvenAppend(priorRaw, appendDelta);
-                    let nextRaw = t.normalized
-                        ? priorRaw.slice(0, -1) + priorSourceWhitespace + appendDelta
-                        : blockAppend.next;
+                    let nextRaw = t.normalized ? appended : blockAppend.next;
                     const normalized = combinedTrailingWhitespace === 1;
                     if (normalized) {
                         // Marked's built-in block list parser normalizes one

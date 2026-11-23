@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installOwnDeviceSync, ownDeviceConnectionsWaiting } from './ownDevices.svelte';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { stageBackend } from '../../test/helpers/backends';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { attachIntroducedBackend, awaitAttachedActivation, payloadFromLink } from '../transport/backendAttach';
 import { pairedSessionId } from '../transport/deviceSession';
@@ -29,7 +29,7 @@ function pair(id: string, ownDevice = true) {
 }
 let stop = () => {};
 beforeEach(() => {
-  resetStagedBackends(); resetBindingMocks(); localStorage.clear();
+  localStorage.clear();
   vi.mocked(attachIntroducedBackend).mockReset();
   vi.mocked(awaitAttachedActivation).mockResolvedValue('attached');
   vi.mocked(attachIntroducedBackend).mockImplementation(async (link, current) => {
@@ -39,7 +39,7 @@ beforeEach(() => {
     return { id, name: 'Computer', verificationNumber: '' };
   });
 });
-afterEach(() => { stop(); resetStagedBackends(); vi.useRealTimers(); });
+afterEach(() => { stop(); vi.useRealTimers(); });
 
 describe('own device connections', () => {
   it('introduces a third computer once across sponsors, then works without the first host', async () => {
@@ -111,6 +111,18 @@ describe('own device connections', () => {
       ? { ...group([A, B]), members: [member(A), member(B), member(C, true)] }
       : group([A, B, C]));
     const introduce = setBindingMock('IntroduceOwnDevice', async (id: string) => invite(id));
+    // A's removal of C reaches the sponsors that still list it: each merges
+    // the rows it is sent, a newer generation or, at the same one, a removal
+    // winning, and answers its list.
+    setBindingMock('SyncOwnDevices', async (members: ReturnType<typeof member>[]) => {
+      takePinnedBackend();
+      const merged = new Map(group([A, B, C]).members.map((row) => [row.keyThumbprint, row]));
+      for (const row of members) {
+        const held = merged.get(row.keyThumbprint);
+        if (!held || row.generation > held.generation || (row.generation === held.generation && row.removed)) merged.set(row.keyThumbprint, row);
+      }
+      return { ...group([A, B, C]), members: [...merged.values()] };
+    });
     stop = installOwnDeviceSync();
     await vi.waitFor(() => expect(pairedSessionId(C)).toBeNull());
     expect(ownDeviceConnectionExcluded(C)).toBe(true);

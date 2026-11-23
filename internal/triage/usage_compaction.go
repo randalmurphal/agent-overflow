@@ -249,7 +249,9 @@ func (r *Router) persistAndEmitContextWindow(threadID string, window provider.Co
 	// "X% context left" indicator (see provider.ComputeContextPercent
 	// for the formula citation). Claude/etc. use the plain ratio.
 	window.UsedPercentage = provider.ComputeContextPercent(provider.ProviderKind(providerName), window.UsedTokens, window.MaxTokens)
-	if autoCompactPercent == 0 {
+	if providerName == string(provider.Agy) {
+		autoCompactPercent = 0
+	} else if autoCompactPercent == 0 {
 		autoCompactPercent = 90
 	}
 	window.AutoCompactPercent = autoCompactPercent

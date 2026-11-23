@@ -1,9 +1,9 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/svelte';
 
 import ContextWindowMeter from './ContextWindowMeter.svelte';
 import type { Thread } from '../../types/models';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 const claudeThread: Thread = {
   id: 'thread-claude',
@@ -22,9 +22,6 @@ const claudeThread: Thread = {
 };
 
 describe('<ContextWindowMeter>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
 
   it('displays usage against the full context window when compact limit is present', async () => {
     const { getByLabelText } = render(ContextWindowMeter, {

@@ -82,6 +82,8 @@
      and the shared pairing border. Bright here so it reads against dark
      surfaces. */
   --provider-claude-tui: oklch(0.82 0.2 145);
+  /* Antigravity indigo-blue identity for dark surfaces. */
+  --provider-agy: oklch(0.72 0.16 255);
   /* VOCABULARY, and the two are not interchangeable: --overlay is the
      backdrop that dims APP CHROME behind a modal or sheet, so it varies
      with the theme (60% black here, a lighter 28% wash in light mode).
@@ -210,6 +212,7 @@ html.light {
   /* Light-mode terminal green: deeper so the glyph/text reads against the light
      surface tier. */
   --provider-claude-tui: oklch(0.55 0.16 145);
+  --provider-agy: oklch(0.52 0.17 255);
   --overlay: oklch(0.22 0.01 255 / 28%);
 
   /* Light-mode icon palette. Same hues, lower lightness so the icons
@@ -321,6 +324,7 @@ html.light {
   --color-provider-codex: var(--provider-codex);
   --color-provider-claude: var(--provider-claude);
   --color-provider-claude-tui: var(--provider-claude-tui);
+  --color-provider-agy: var(--provider-agy);
   --color-overlay: var(--overlay);
   /* Media-overlay pair — see the :root note. Used with opacity
      modifiers: bg-scrim/88, text-scrim-fg, ring-scrim-fg/70. */
@@ -524,6 +528,15 @@ pre, code, kbd, samp, .ansi-body {
   background: transparent;
 }
 
+/* The same for Firefox, which has no ::-webkit-scrollbar. Only there: an
+   engine that honors scrollbar-color drops its ::-webkit-scrollbar
+   styles, and the bar's 10px height with them. */
+@supports not selector(::-webkit-scrollbar) {
+  .pane-host-promoted {
+    scrollbar-color: transparent transparent;
+  }
+}
+
 /*
  * Pane scroll surfaces: the chat timeline and the activity-run and
  * subagent clips (MessageTimeline.svelte, ActivityRun.svelte,
@@ -701,6 +714,17 @@ input[type="search"]::-webkit-search-cancel-button {
    type missing `.md-blk` keeps its edge margin, matching the old fallback. */
 .markdown-body > :is(.md-committed, .md-volatile) > .sd-trim-first-block { margin-top: 0; }
 .markdown-body > :is(.md-committed, .md-volatile) > .sd-trim-last-block { margin-bottom: 0; }
+/* A forge body's footnotes section (ChatMarkdown), below a rule in the
+   smaller muted type both forges give it. */
+.markdown-body > .md-footnotes {
+  margin-top: var(--markdown-block-gap);
+  padding-top: var(--markdown-block-gap);
+  border-top: 1px solid var(--border-subtle);
+  font-size: 0.875em;
+  color: var(--fg-muted);
+}
+.markdown-body > .md-footnotes > .sd-first-block { margin-top: 0; }
+.markdown-body > .md-footnotes > .sd-trim-last-block { margin-bottom: 0; }
 
 /* Settle-moment scroll-flicker fix (COUPLED to the two edge resets above).
    Each timeline row renders inside [data-row-geometry-content]; the wrapper
@@ -921,6 +945,54 @@ input[type="search"]::-webkit-search-cancel-button {
   overflow-wrap: normal;
   word-break: normal;
 }
+/* A numbered code block (a file excerpt, Tokens.Code.firstLine): the line
+   numbers in a gutter beside the pre, which pans alone. Its lines never
+   wrap (the host marks it unwrapped), so each number stays beside its line
+   and a block's height is its line count's: the gutter's, whatever the
+   lines hold. The pre has no margin or border of its own and the gutter
+   the pre's padding, so the first number sits on the first line. */
+.markdown-body .md-code-numbered {
+  display: flex;
+  align-items: flex-start;
+}
+.markdown-body .md-code-numbered > pre {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  border-width: 0;
+  border-radius: 0;
+}
+.markdown-body .md-code-line-numbers {
+  flex: none;
+  white-space: pre;
+  text-align: right;
+  user-select: none;
+  color: var(--fg-hint);
+  padding: 0.75rem 0 0.75rem 0.75rem;
+}
+/* A permalink's snippet (parser/extensions/codeSnippet.ts): its header of
+   file and commit links over its code, one framed block. */
+.markdown-body .md-code-snippet {
+  margin: var(--markdown-block-gap) 0;
+  border-width: 1px;
+  border-style: solid;
+  border-color: var(--border-subtle);
+  border-radius: var(--radius-field);
+  overflow: hidden;
+}
+.markdown-body .md-code-snippet > p {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--fg-muted);
+  background: var(--surface-1);
+  border-bottom-width: 1px;
+  border-bottom-style: solid;
+  border-bottom-color: var(--border-subtle);
+}
+.markdown-body .md-code-snippet [data-streamdown-code] {
+  margin: 0;
+  border-radius: 0;
+}
 .markdown-body blockquote {
   border-left: 3px solid var(--border);
   padding-left: 0.75rem;
@@ -937,13 +1009,20 @@ input[type="search"]::-webkit-search-cancel-button {
   font-size: 0.8125rem;
   table-layout: auto;
 }
+/* A cell without a column alignment starts at the left, header cells
+   included. An authored `align` (`:---:`, `<td align>`) is a presentational
+   hint, which any rule here would override, so the default names only the
+   cells that have none. */
+.markdown-body th:not([align]),
+.markdown-body td:not([align]) {
+  text-align: left;
+}
 .markdown-body th,
 .markdown-body td {
   border-width: 1px;
   border-style: solid;
   border-color: var(--border);
   padding: 0.35rem 0.625rem;
-  text-align: left;
   vertical-align: top;
   /* break-word, not anywhere: with table-layout:auto the browser sizes each
      column from its cell's min-content width, and `anywhere` collapses that
@@ -999,10 +1078,82 @@ input[type="search"]::-webkit-search-cancel-button {
   vertical-align: baseline;
   accent-color: var(--accent);
 }
+/* A loose task item's text is a paragraph; it runs on from the box, so the
+   box sits beside the first line as in a tight item. A later paragraph or
+   nested list is a block and starts its own line. */
+.markdown-body li.md-task-list-item > p:first-of-type {
+  display: inline;
+}
 
 /* GFM strikethrough — <del> browser default is fine; tone the color to match. */
 .markdown-body del {
   color: var(--text-secondary);
+}
+
+/* GitLab's inline diff (`{+ +}`, `{- -}`): a highlight in the diff colors at
+   the diff gutter's strength (utils/diffLineTint.ts), neither underlined
+   nor struck. */
+.markdown-body .md-inline-diff {
+  color: inherit;
+  text-decoration: none;
+  border-radius: 0.1875rem;
+}
+.markdown-body .md-inline-diff-added {
+  background-color: color-mix(in oklab, var(--success) 20%, transparent);
+}
+.markdown-body .md-inline-diff-removed {
+  background-color: color-mix(in oklab, var(--error) 20%, transparent);
+}
+
+/* A color chip's swatch (parser/extensions/colorChips.ts): its fill is the
+   authored color, set inline. */
+.markdown-body [data-streamdown-color-swatch] {
+  display: inline-block;
+  width: 0.65em;
+  height: 0.65em;
+  margin-left: 0.3em;
+  border-width: 1px;
+  border-style: solid;
+  border-color: var(--border-subtle);
+  border-radius: 9999px;
+  vertical-align: middle;
+}
+
+/* A label chip (parser/extensions/labelChip.ts): the label's title on its
+   color, a scoped title's value beside it inside a border of the color.
+   Inline boxes, so the chip never changes its line's height, and every
+   length is the same whether or not the colors are known: the forge's
+   colors arrive inline and override only colors. */
+.markdown-body .md-label-chip {
+  display: inline;
+  border-width: 1px;
+  border-style: solid;
+  border-color: var(--border-subtle);
+  border-radius: 0.75em;
+  font-size: 0.875em;
+  text-decoration: none;
+  white-space: nowrap;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.markdown-body .md-label-chip:hover {
+  text-decoration: none;
+}
+.markdown-body .md-label-chip-key,
+.markdown-body .md-label-chip-value {
+  padding: 0 0.5em;
+  border-radius: 0.75em;
+}
+.markdown-body .md-label-chip-key {
+  background-color: var(--code-inline-bg);
+  color: var(--text-secondary);
+}
+.markdown-body .md-label-chip-value {
+  color: var(--text-primary);
+}
+.markdown-body .md-label-chip-scoped .md-label-chip-key {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 /* LaTeX math starts as escaped source and upgrades to KaTeX when visible. */
@@ -1104,6 +1255,21 @@ svg[data-mermaid-svg] .labelBox {
    GitHub's and GitLab's rendering, where <details> is a bare disclosure
    (CodeRabbit nests several per finding; boxed, they stack into boxes in
    boxes) and bold is plain bold rather than a highlight color. */
+/* A forge collapses blanks in a paragraph: a soft line break shows as a
+   space on GitLab (GitHub's is already a <br>), and a run of blanks as
+   one. Agent chat keeps pre-wrap paragraphs. */
+.markdown-body.review-prose p {
+  white-space: normal;
+}
+/* Text direction as a forge's `dir="auto"`: each paragraph, heading, list
+   item and table cell takes its base direction from its first strong
+   character, so Arabic or Hebrew text and the punctuation beside it read
+   right to left. The inherited `text-align: start` resolves against that
+   direction, so such a block aligns right; an authored `align` or a
+   centered wrapper still wins, and table cells keep the base rule's left. */
+.markdown-body.review-prose :is(p, h1, h2, h3, h4, h5, h6, li, td, th) {
+  unicode-bidi: plaintext;
+}
 .markdown-body.review-prose details {
   border-width: 0;
   border-style: none;
@@ -1146,6 +1312,63 @@ svg[data-mermaid-svg] .labelBox {
 }
 .markdown-body.review-prose strong {
   color: inherit;
+}
+/* A forge draws a link at its text's weight, so a reference the forge
+   answers is no target (text, utils/forgeReferenceExtension.ts) keeps the
+   width it had while it was a link. */
+.markdown-body.review-prose a[data-streamdown-link] {
+  font-weight: inherit;
+}
+/* Neither forge italicizes a quote, so emphasis inside one stays visible. */
+.markdown-body.review-prose blockquote {
+  font-style: normal;
+}
+/* A keycap, as both forges draw <kbd>; nested keys are caps in a cap. */
+.markdown-body kbd {
+  display: inline-block;
+  padding: 0.1rem 0.35rem;
+  font-family: var(--font-mono);
+  font-size: 0.8em;
+  line-height: 1.2;
+  vertical-align: middle;
+  background: var(--surface-1);
+  border-width: 1px;
+  border-style: solid;
+  border-color: var(--border);
+  border-radius: 0.25rem;
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+/* An image sits in its line, as a forge renders it: a badge row is one
+   row, an icon stays in its sentence, and only an authored `align`
+   centers anything. Chat's centered, rounded picture block is its own. */
+.markdown-body.review-prose img {
+  display: inline;
+  max-width: 100%;
+}
+.markdown-body.review-prose [data-streamdown-image],
+.markdown-body.review-prose .md-image-box {
+  display: inline-block;
+  margin: 0;
+}
+.markdown-body.review-prose [data-streamdown-image],
+.markdown-body.review-prose [data-streamdown-image] img {
+  border-radius: 0;
+}
+/* The box an image's bytes will fill (MarkdownImageBox.svelte) sits in
+   its line as the image does: inline, middle-aligned as preflight sets an
+   <img>, so the image replacing it moves nothing. */
+.markdown-body.review-prose .md-image-box-fill {
+  display: inline-block;
+  vertical-align: middle;
+  border-radius: 0;
+}
+/* An image with no pixel size and no authored width or height
+   (`data-image-fill`, utils/imageBox.ts#fillsLine), and the box that
+   reserves it, sit in their line as a bare <img>: an inline-block wrapper
+   would shrink a ratio-only image to nothing. After the wrapper rule
+   above, at its specificity, so it wins. */
+.markdown-body.review-prose [data-image-fill] {
+  display: inline;
 }
 
 .markdown-body pre { position: relative; }

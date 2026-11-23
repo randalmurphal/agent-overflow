@@ -27,5 +27,7 @@ export interface ProjectFileRules {
 export const PROJECT_FILES = {
   desktop: { testIgnore: [MANUAL_SPEC, /[\\/]compact-[^\\/]*\.spec\.ts$/] },
   compact: { testMatch: /[\\/]compact-[^\\/]*\.spec\.ts$/ },
-  'mobile-webkit': { testMatch: /[\\/]compact-browser-lock\.spec\.ts$/ },
+  // The stalled-page capture spec runs its WebKit case here, the one
+  // project whose hosts provide WebKit.
+  'mobile-webkit': { testMatch: [/[\\/]compact-browser-lock\.spec\.ts$/, /[\\/]stalled-page-capture\.spec\.ts$/] },
 } satisfies Record<string, ProjectFileRules>;

@@ -261,6 +261,25 @@ func (s *Store) Open(id string) (Content, bool) {
 	return Content{MimeType: held.mime, StoredAt: held.storedAt, ReadSeekCloser: &reader{Reader: bytes.NewReader(held.data), store: s, entry: held}}, true
 }
 
+// View runs fn over the bytes of the entry id names, holding it as a
+// reader so it is not freed meanwhile; fn must not keep or change them.
+// false when no entry has id.
+func (s *Store) View(id string, fn func(data []byte) error) (bool, error) {
+	s.mu.Lock()
+	s.dropExpiredLocked()
+	held, ok := s.byID[id]
+	if ok {
+		held.readers++
+		s.lru.MoveToFront(held.elem)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return false, nil
+	}
+	defer s.unread(held)
+	return true, fn(held.data)
+}
+
 // Clear forgets every entry; one a response is reading is freed when it
 // closes.
 func (s *Store) Clear() {
@@ -299,16 +318,27 @@ func (r *reader) Close() error {
 		return nil
 	}
 	r.closed = true
-	r.entry.readers--
+	r.store.unreadLocked(r.entry)
+	return nil
+}
+
+// unread ends one reader's hold of held.
+func (s *Store) unread(held *entry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.unreadLocked(held)
+}
+
+func (s *Store) unreadLocked(held *entry) {
+	held.readers--
 	switch {
-	case r.entry.readers > 0:
-	case !r.entry.listed:
-		r.store.dropLocked(r.entry)
+	case held.readers > 0:
+	case !held.listed:
+		s.dropLocked(held)
 	default:
 		// Still held, but evictable now: a waiting load may make room.
-		r.store.wakeLocked()
+		s.wakeLocked()
 	}
-	return nil
 }
 
 func (e *entry) public() Entry {

@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { forEachSeed, seededRandom } from '../../../test/helpers/seededRandom';
 import {
   PerItemSmoother,
   computeAdvanceEnd,
@@ -12,8 +13,6 @@ import {
   type SmoothingClock,
   __resetRevealFrameGateForTest,
 } from './PerItemSmoother';
-
-beforeEach(() => __resetRevealFrameGateForTest());
 
 class FakeClock implements SmoothingClock {
   private current = 0;
@@ -839,17 +838,13 @@ describe('PerItemSmoother — never skips (the queue is self-correcting)', () =>
     expect(concatDeltas(reveals)).toBe(source);
   });
 
-  it('preserves every cursor invariant across randomized call sequences', () => {
+  it('preserves every cursor invariant across randomized call sequences', async () => {
     const atoms = [
       'word', ' ', '  ', '\n', '\r\n', '\t', 'punctuation, ',
       '**markdown** ', 'café ', '漢字', 'e\u0301 ', 'https://example.test/a_b',
     ];
-    for (let seed = 1; seed <= 24; seed++) {
-      let state = seed >>> 0;
-      const random = () => {
-        state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
-        return state;
-      };
+    await forEachSeed((seed) => {
+      const random = seededRandom(seed);
       const initial = seed % 2 === 0 ? 'seed ' : '';
       const clock = new FakeClock();
       let immediate = false;
@@ -873,17 +868,17 @@ describe('PerItemSmoother — never skips (the queue is self-correcting)', () =>
       });
 
       for (let step = 0; step < 800; step++) {
-        switch (random() % 8) {
+        switch (random(8)) {
           case 0:
           case 1:
           case 2: {
-            const delta = atoms[random() % atoms.length];
+            const delta = atoms[random(atoms.length)];
             expectedReceived += delta;
             smoother.appendDelta(delta);
             break;
           }
           case 3:
-            clock.tickFrame(1 + (random() % 100));
+            clock.tickFrame(1 + (random(100)));
             break;
           case 4:
             smoother.pause();
@@ -922,7 +917,7 @@ describe('PerItemSmoother — never skips (the queue is self-correcting)', () =>
       clock.tickFrame(100);
       expect(smoother.getReceived()).toBe(expectedReceived);
       expect(smoother.getRevealed()).toBe(expectedReceived);
-    }
+    });
   });
 });
 

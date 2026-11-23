@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import {
   applyThreadGroupUpdated,
   getThreadGroupById,
@@ -7,13 +7,12 @@ import {
   getThreadGroupsForProject,
   NO_GROUPS,
   deleteThreadGroupLocal,
-  resetThreadGroupsForTest,
   upsertThreadGroup,
 } from './threadGroups.svelte';
 import { getThreadById, replaceAllThreads } from './threads.svelte';
 import { loadSidebarCatalogs } from './sidebarCatalogs';
 import { getToasts, removeToast } from './toast.svelte';
-import { catalogLoadState, resetCatalogLoadForTest } from './catalogLoad.svelte';
+import { catalogLoadState } from './catalogLoad.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import type { Thread, ThreadGroup } from '../types/models';
 
@@ -30,9 +29,6 @@ function mkGroup(id: string, overrides: Partial<ThreadGroup> = {}): ThreadGroup 
 
 describe('threadGroups store', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetThreadGroupsForTest();
-    resetCatalogLoadForTest();
     for (const toast of getToasts()) removeToast(toast.id);
   });
 

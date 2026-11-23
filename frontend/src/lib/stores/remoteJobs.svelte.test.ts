@@ -1,11 +1,10 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { waitFor } from '@testing-library/svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
-import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
+import { noteThread } from '../transport/entityIndex';
 import { HOME_BACKEND } from '../transport/backendKey';
 import {
-  __resetRemoteJobsForTest,
   attachRemoteJobs,
   remoteJobComputerName,
   remoteJobRecord,
@@ -26,9 +25,6 @@ describe('remoteJobs store', () => {
   });
 
   beforeEach(() => {
-    resetBindingMocks();
-    __resetEntityIndexForTest();
-    __resetRemoteJobsForTest();
     noteThread(THREAD, HOME_BACKEND);
     noteThread(OTHER, HOME_BACKEND);
   });

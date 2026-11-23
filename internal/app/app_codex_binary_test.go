@@ -218,8 +218,9 @@ func TestProviderStatusesNameTheNativeBinaryAndItsWrapper(t *testing.T) {
 	mockexec.Write(t, f.native, "#!/bin/sh\necho 'codex-cli 0.162.1'\n")
 	writeProviderBinaryFile(t, f.wrapper, "echo 'codex-cli 0.150.0-wrapper'")
 	claude := mockexec.Write(t, filepath.Join(t.TempDir(), "claude"), "#!/bin/sh\necho '2.1.100 (Claude Code)'\n")
-	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": claude}); err != nil {
-		t.Fatalf("set claude binary: %v", err)
+	agy := mockexec.Write(t, filepath.Join(t.TempDir(), "agy"), "#!/bin/sh\necho 'agy 1.5.13'\n")
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": claude, "agyBinaryPath": agy}); err != nil {
+		t.Fatalf("set claude/agy binaries: %v", err)
 	}
 	putCodexOnPath(t, app, f)
 
@@ -258,8 +259,9 @@ func TestDefaultCodexBinaryWalksPathOncePerInvalidation(t *testing.T) {
 	// bare default finds nothing either.
 	t.Setenv("PATH", t.TempDir())
 	claude := mockexec.Write(t, filepath.Join(t.TempDir(), "claude"), "#!/bin/sh\necho '2.1.100 (Claude Code)'\n")
-	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": claude}); err != nil {
-		t.Fatalf("set claude binary: %v", err)
+	agy := mockexec.Write(t, filepath.Join(t.TempDir(), "agy"), "#!/bin/sh\necho 'agy 1.5.13'\n")
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": claude, "agyBinaryPath": agy}); err != nil {
+		t.Fatalf("set claude/agy binaries: %v", err)
 	}
 	walks := 0
 	useDefaultCodexLookup(app, func(string) (string, error) {

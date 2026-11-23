@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import vectors from '../../test/fixtures/findVectors.json';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import foldTable from '../../../../internal/stringsx/findfold_table.go?raw';
 import {
   countFindMatches, FIND_FILTER_CODE_POINTS, findFilterPattern, findMatchChunk, findNeedle, flagFilterLines, foldFindText, forEachFindMatch, LONG_TEXT,
   textsMatchNeedle,
@@ -198,7 +197,7 @@ describe('find matching', () => {
 
   it('reads the table the Go side reads', () => {
     // Tests run from frontend/.
-    const go = readFileSync(resolve(process.cwd(), '../internal/stringsx/findfold_table.go'), 'utf8');
+    const go = foldTable;
     expect(go).toContain(`const FindFoldUnicodeVersion = "${FIND_FOLD_UNICODE_VERSION}"`);
     const ranges = [...go.matchAll(/^\t\{(0x[0-9A-F]+), (0x[0-9A-F]+), (-?\d+), (\d+)\},$/gm)].flatMap((m) => m.slice(1).map(Number));
     expect(ranges.length).toBeGreaterThan(100);

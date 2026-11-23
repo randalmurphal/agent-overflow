@@ -5,8 +5,7 @@ import fixture from '../../../../../internal/threadtools/testdata/agent_messages
 import servedRows from '../../../../../internal/agentmeta/testdata/served_rows.json';
 import labels from '../../../../../internal/app/testdata/agent_message_labels.json';
 import { buildPane, installAgentMessageRunMembersCapability, makeItem, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks } from '../../../test/mocks/bindings-app';
-import { stageBackend, resetStagedBackends } from '../../../test/helpers/backends';
+import { stageBackend } from '../../../test/helpers/backends';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { Item } from '../../types/models';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
@@ -52,11 +51,9 @@ function agentRow(summary: string, meta: Record<string, unknown>, overrides: Par
 
 describe('<AgentMessageRow> through TimelineLeaf', () => {
   beforeEach(() => {
-    resetBindingMocks();
     openThreadInPane.mockClear();
     stageBackend({ id: HOME_BACKEND, name: 'This computer', backendId: 'home-uuid' });
   });
-  afterEach(() => resetStagedBackends());
 
   it('renders a request as a folded row, not the user bubble, and expands into facts', async () => {
     const pane = await buildPane();
@@ -422,13 +419,11 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
 // operable there; alone, the collapsed run's header names it.
 describe('<AgentMessageRow> inside an activity run', () => {
   beforeEach(() => {
-    resetBindingMocks();
     openThreadInPane.mockClear();
     stageBackend({ id: HOME_BACKEND, name: 'This computer', backendId: 'home-uuid' });
     installAgentMessageRunMembersCapability();
   });
   afterEach(() => {
-    resetStagedBackends();
     __setTransportHelloForTest(null);
   });
 

@@ -8,7 +8,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
-	"agent-overflow/internal/transport"
 )
 
 func TestStartStateDeduplicatesByThread(t *testing.T) {
@@ -52,23 +51,9 @@ func TestRecordActivityRejectsAStaleSessionToken(t *testing.T) {
 	}
 }
 
-func TestPutAndRemovalOwnTokenAuthorityAtomically(t *testing.T) {
+func TestUnregisterStaleTokenPreservesReplacement(t *testing.T) {
 	manager := New()
-	scope := transport.CallerScope{ThreadID: "thread", ProjectID: "project"}
-	manager.Put("thread", Entry{Token: "session", AOToken: "ao-token", AOScope: scope})
-
-	if got, ok := manager.ResolveAOToken("ao-token"); !ok || got.ThreadID != scope.ThreadID {
-		t.Fatalf("live token = (%+v, %v), want registered scope", got, ok)
-	}
-	manager.Take("thread")
-	if _, ok := manager.ResolveAOToken("ao-token"); ok {
-		t.Fatal("token authority survived session removal")
-	}
-}
-
-func TestUnregisterStaleTokenPreservesReplacementAndAuthority(t *testing.T) {
-	manager := New()
-	manager.Put("thread", Entry{Token: "fresh", AOToken: "fresh-ao", AOScope: transport.CallerScope{ThreadID: "thread"}})
+	manager.Put("thread", Entry{Token: "fresh"})
 
 	if _, ok := manager.Unregister("thread", "stale"); ok {
 		t.Fatal("stale unregister removed a replacement")
@@ -76,9 +61,6 @@ func TestUnregisterStaleTokenPreservesReplacementAndAuthority(t *testing.T) {
 	entry, ok := manager.Get("thread")
 	if !ok || entry.Token != "fresh" {
 		t.Fatalf("replacement = (%+v, %v), want fresh session", entry, ok)
-	}
-	if _, ok := manager.ResolveAOToken("fresh-ao"); !ok {
-		t.Fatal("stale unregister revoked the replacement authority")
 	}
 }
 
@@ -120,6 +102,25 @@ func TestThreadIDsForProviderOrStartingIncludesStartingOnly(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("missing thread ids: %v", want)
+	}
+}
+
+// StartsInFlight lists a start from its begin until its finish, and the
+// caller's copy does not reach the manager's record.
+func TestStartsInFlightListsAStartUntilItFinishes(t *testing.T) {
+	manager := New()
+	start, _ := manager.BeginStart("starting")
+	starts := manager.StartsInFlight()
+	if len(starts) != 1 || starts["starting"] != start {
+		t.Fatalf("starts in flight = %v, want the one begun", starts)
+	}
+	delete(starts, "starting")
+	if _, ok := manager.StartState("starting"); !ok {
+		t.Fatal("deleting from the returned map removed the manager's start")
+	}
+	manager.FinishStart("starting", start)
+	if starts := manager.StartsInFlight(); len(starts) != 0 {
+		t.Fatalf("starts in flight after the finish = %v, want none", starts)
 	}
 }
 

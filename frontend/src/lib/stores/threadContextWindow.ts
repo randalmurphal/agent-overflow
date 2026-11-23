@@ -1,5 +1,5 @@
 import { threadMachine } from './attachedBackends.svelte';
-import { getProviderDefinition } from '../providers/catalog';
+import { getProviderDefinition, providerHasFeature } from '../providers/catalog';
 import type { ContextWindow } from '../types/events';
 import type { Thread } from '../types/models';
 import { getSettings } from './settings.svelte';
@@ -140,6 +140,9 @@ export function activeAutoCompactPercent(
   nextThread: Thread,
   effectiveContextWindow: number = nextThread.contextWindow ?? 0,
 ): number {
+  if (!providerHasFeature(nextThread.provider, 'autoCompact')) {
+    return 0;
+  }
   // Per-thread override wins when set (chat-meter edit flow). Otherwise
   // fall back to the per-provider Settings value, then the absolute 90%
   // safety default if Settings hasn't been loaded yet.
@@ -150,9 +153,10 @@ export function activeAutoCompactPercent(
   if (override > 0) return override;
 
   const settings = getSettings(threadMachine(nextThread.id, nextThread.projectId));
-  const providerSettings = getProviderDefinition(nextThread.provider).settings;
-  const providerSetting = isExtended
-    ? settings[providerSettings.extendedCompactKey]
-    : settings[providerSettings.standardCompactKey];
+  const providerSettings = getProviderDefinition(nextThread.provider)?.settings;
+  const compactKey = isExtended
+    ? providerSettings?.extendedCompactKey
+    : providerSettings?.standardCompactKey;
+  const providerSetting = compactKey ? settings[compactKey] : 0;
   return providerSetting > 0 ? providerSetting : 90;
 }

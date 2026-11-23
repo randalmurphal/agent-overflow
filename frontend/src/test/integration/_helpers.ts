@@ -119,10 +119,7 @@ export function installAppDefaults(): void {
   setBindingMock('GetProviderStatuses', async () => []);
   // Provider CLI update state, read on every hello this session administers.
   setBindingMock('GetProviderUpdates', async () => []);
-  setBindingMock('GetProviderLoginState', async () => null);
   setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
-  setBindingMock('GetRateLimitsSnapshots', async () => []);
-  setBindingMock('ListProviderAccounts', async () => []);
   // Sidebar fetches projects on mount. Default to an empty list — tests
   // that need visible threads should seed a project via seedProject().
   setBindingMock('ListProjects', async () => []);
@@ -135,7 +132,6 @@ export function installAppDefaults(): void {
     themes: [],
     appearance: { mode: 'system', uiTheme: 'default', codeTheme: 'github' },
   }));
-  setBindingMock('GetSoundFiles', async () => ({ dir: '/tmp/sounds', sounds: [], warnings: [] }));
   // App boot reads the legacy per-client ui_state bucket once to migrate
   // it. Default to an empty bucket; tests that assert on persisted view
   // state install their own.
@@ -260,8 +256,8 @@ export function installThreadViewDefaults(): void {
       .filter((thread) => thread.workspacePath === workspacePath)
       .map((thread) => ({ ...thread, branch: branch as string })));
   setBindingMock('GitListBranches', async () => []);
-  // The header's open-in-editor control loads the editor catalog and the
-  // saved default on mount. Default to no editors installed.
+  // The header's actions menu loads the editor catalog and the saved
+  // default on mount. Default to no editors installed.
   setBindingMock('ListAvailableEditors', async () => []);
   setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
   // Thread-wide aggregate surfaces (PlanSidebar / ActivityRail) fetch

@@ -13,12 +13,20 @@
 // drift apart.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  applyBrowserFindEvent, BROWSER_FIND_DEBOUNCE_MS, BROWSER_FIND_STOP_RETRY_MS, createBrowserFind, resetBrowserFindForTest,
+  applyBrowserFindEvent,
+  BROWSER_FIND_DEBOUNCE_MS,
+  BROWSER_FIND_STOP_RETRY_MS,
+  createBrowserFind,
 } from './browserFind.svelte';
 import { BrowserCompanionEvent, BrowserFindState } from './bindings';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import {
-  closePaneFind, isPaneFindOpen, openPaneFind, registerPaneFindProvider, resetPaneFindForTest, setPaneFindQuery, stepPaneFind,
+  closePaneFind,
+  isPaneFindOpen,
+  openPaneFind,
+  registerPaneFindProvider,
+  setPaneFindQuery,
+  stepPaneFind,
 } from './paneFind.svelte';
 import { TransportError } from '../transport/wsClient';
 import pairs from '../../test/fixtures/browserFind/pairs.json';
@@ -148,14 +156,10 @@ async function replay(script: Script): Promise<void> {
 
 beforeEach(() => {
   vi.useFakeTimers();
-  resetBrowserFindForTest();
-  resetPaneFindForTest();
 });
 
 afterEach(() => {
   vi.useRealTimers();
-  resetBrowserFindForTest();
-  resetPaneFindForTest();
 });
 
 describe.each([

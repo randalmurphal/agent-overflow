@@ -11,7 +11,7 @@ import type { IBuffer, IBufferLine, IDisposable, IMarker, Terminal } from '@xter
 import { page } from 'vitest/browser';
 import '../../../app.css';
 import { applyThemeClass } from '../../utils/theme';
-import { applyTheme, resetThemeApplyForTest } from '../../theme/themeApply.svelte';
+import { applyTheme } from '../../theme/themeApply.svelte';
 import { buildTerminal, type BuiltTerminal } from './terminalXterm';
 import { getXtermFindColors, getXtermTheme, resetXtermThemeCache } from './terminalTheme';
 import { TERMINAL_FIND_ACTIVE_CLASS, TERMINAL_FIND_MATCH_CLASS } from './terminalFindLayer';
@@ -28,7 +28,6 @@ import {
   closePaneFind,
   getPaneFindProvider,
   openPaneFind,
-  resetPaneFindForTest,
   setPaneFindQuery,
   stepPaneFind,
 } from '../../stores/paneFind.svelte';
@@ -142,8 +141,6 @@ function register(): void {
 beforeEach(() => {
   priorClass = document.documentElement.className;
   resetXtermThemeCache();
-  resetThemeApplyForTest();
-  resetPaneFindForTest();
   applyMode('dark');
 });
 
@@ -152,10 +149,8 @@ afterEach(() => {
   registration = null;
   term.dispose();
   mount.remove();
-  resetPaneFindForTest();
   document.documentElement.className = priorClass;
   resetXtermThemeCache();
-  resetThemeApplyForTest();
 });
 
 describe('terminal find on a real xterm', () => {

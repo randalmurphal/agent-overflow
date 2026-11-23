@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -18,11 +17,11 @@ import (
 	"time"
 
 	"agent-overflow/internal/orphanreaper"
+	"agent-overflow/internal/orphanreaper/orphanreapertest"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/testutil/helperproc"
 
 	"github.com/google/uuid"
-	"github.com/shirou/gopsutil/v4/process"
 )
 
 // A composer shell command ends with the backend: its group is recorded for
@@ -142,30 +141,6 @@ func TestShellCommandBackendHelper(t *testing.T) {
 	helperproc.Hold()
 }
 
-// sidecarOf returns the orphan reaper sidecar the backend started.
-func sidecarOf(t *testing.T, backend int) int {
-	t.Helper()
-	parent, err := process.NewProcess(int32(backend))
-	if err != nil {
-		t.Fatal(err)
-	}
-	children, err := parent.Children()
-	if err != nil {
-		t.Fatalf("list the backend's children: %v", err)
-	}
-	for _, child := range children {
-		if args, err := child.CmdlineSlice(); err == nil && slices.Contains(args, orphanreaper.SidecarName) {
-			// A signal to the backend's group must not end the sidecar.
-			if pgid, err := syscall.Getpgid(int(child.Pid)); err != nil || pgid != int(child.Pid) {
-				t.Fatalf("the sidecar is in group %d %v, want its own", pgid, err)
-			}
-			return int(child.Pid)
-		}
-	}
-	t.Fatal("the backend started no orphan reaper sidecar")
-	return 0
-}
-
 // A backend killed while its command runs leaves the command no way to be
 // stopped from inside. Every process of the command's group ends with the
 // backend, including one its shell started: a signal to the shell alone
@@ -208,8 +183,10 @@ func TestABackendsDeathEndsItsShellCommand(t *testing.T) {
 				t.Fatalf("the backend never started its command: %v", scanner.Err())
 			}
 			t.Cleanup(func() { _ = procutil.SignalGroup(pgid, syscall.SIGKILL) })
+			// The sidecar waits out its grace after the kill it sends.
+			sidecar := orphanreapertest.Of(t, backend.Process.Pid)
+			t.Cleanup(func() { helperproc.EndGroup(t, sidecar) })
 			if c.sidecarDies {
-				sidecar := sidecarOf(t, backend.Process.Pid)
 				if err := syscall.Kill(sidecar, syscall.SIGKILL); err != nil {
 					t.Fatal(err)
 				}

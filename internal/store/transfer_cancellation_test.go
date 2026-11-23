@@ -9,7 +9,7 @@ import (
 
 func TestTransferCancellationIntentSurvivesRestartAndPreventsRetirement(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "source.db")
-	if err := copyTestStoreTemplate(path); err != nil {
+	if err := copyTestStoreTemplate(t, path); err != nil {
 		t.Fatal(err)
 	}
 	source, err := New(path)

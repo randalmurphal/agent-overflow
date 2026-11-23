@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   CROSS_MACHINE_GROUP_REFUSAL,
   NEW_THREAD_GROUP_NAME,
@@ -14,13 +14,12 @@ import {
   consumePendingGroupRename,
   getThreadGroupById,
   getThreadGroups,
-  resetThreadGroupsForTest,
   upsertThreadGroup,
 } from '../../stores/threadGroups.svelte';
 import { getThreadById, getThreads, prependThread, removeThread } from '../../stores/threads.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { applyThreadUpdated } from '../../stores/eventsThreadRows';
-import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { noteThread } from '../../transport/entityIndex';
 import type { Thread, ThreadGroup } from '../../types/models';
 
 function mkGroup(id: string, overrides: Partial<ThreadGroup> = {}): ThreadGroup {
@@ -61,9 +60,6 @@ function errorToasts(): string {
 
 describe('threadGroupActions', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    __resetEntityIndexForTest();
-    resetThreadGroupsForTest();
     for (const t of getThreads()) removeThread(t.id);
     for (const toast of getToasts()) removeToast(toast.id);
   });

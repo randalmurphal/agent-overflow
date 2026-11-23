@@ -65,7 +65,7 @@ func newSelectionManager(t *testing.T) (*Manager, Access, []string, string) {
 	t.Helper()
 	m, access, ids := newTabsManager(t, addr("a"), addr("b"), addr("c"), addr("d"))
 	installGapClock(m)
-	mount, err := m.AttachPane(access.Caller())
+	mount, err := m.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func newPairManager(t *testing.T) (*Manager, Access, pairFixture, string) {
 	if err := m.ActivateCompanionPage(t.Context(), access, PageID(ids[1])); err != nil {
 		t.Fatal(err)
 	}
-	mount, err := m.AttachPane(access.Caller())
+	mount, err := m.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func pauseAdmissions(m *Manager, mount string) (admitted chan Numbered, resume c
 func detachAndChooseElsewhere(t *testing.T, m *Manager, access Access, f pairFixture, mount string) (string, int) {
 	t.Helper()
 	m.DetachPane(MountID(mount))
-	next, err := m.AttachPane(access.Caller())
+	next, err := m.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func newSuspendedPair(t *testing.T) (*Manager, *lifecycleEngine, Access, PageInf
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	a := mustOpen(t, m, access, addr("a"))
 	b := mustOpen(t, m, access, addr("b"))
-	mount, err := m.AttachPane(access.Caller())
+	mount, err := m.AttachPane(access.Caller(), untiedPane)
 	if err != nil {
 		t.Fatal(err)
 	}

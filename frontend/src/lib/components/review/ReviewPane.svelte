@@ -42,6 +42,7 @@
   import { filterReviewFiles } from '../../utils/reviewTree';
   import { forgeLabels } from '../../utils/forgeLabels';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from '../chat/markdown/forgeAttachmentContext';
+  import { forgeFactReader } from '../../stores/forgeFacts.svelte';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
   import { commentWriteKey } from '../../stores/reviewCommentWrites.svelte';
   import { EDITOR_PREVIEW_KEY } from '../../stores/reviewEditorPreview.svelte';
@@ -126,9 +127,12 @@
   // rather than a value: the PR reference and its web URL arrive after
   // mount, and context is set once. Non-PR scopes answer null, so a
   // workspace diff's markdown behaves exactly as it always has.
+  // The PR's facts ride along: a reader of them as of now, which changes
+  // when the PR's facts do (ChatMarkdown keys its extensions on the other
+  // fields' scalars, so a new reader rebuilds none).
   setContext(FORGE_ATTACHMENT_SOURCE_CONTEXT, () =>
     review && review.scope === 'pr' && review.prRef
-      ? { pr: review.prRef, backend: review.backend, webBase: review.prDetail?.url ?? '' }
+      ? { pr: review.prRef, backend: review.backend, webBase: review.prDetail?.url ?? '', facts: forgeFactReader(review.prEntityKey) }
       : null,
   );
   // The diff body keys scroll memory by `review.identity` (conversation,
@@ -179,7 +183,7 @@
   );
   const EMPTY_COUNTS: CommentCounts = { byFile: new Map(), tally: { unresolved: 0, drafts: 0, total: 0 } };
   const commentCounts = $derived(
-    review ? countReviewComments({ prThreads: review.prThreads, drafts: review.drafts }) : EMPTY_COUNTS,
+    review ? countReviewComments(review.commentIndex) : EMPTY_COUNTS,
   );
   // The picked commit or run, when the list holds it (branch and pr scope).
   const selectedAt = $derived(commitSelectionIndexes(review?.commits ?? [], review?.selectedCommits ?? null));

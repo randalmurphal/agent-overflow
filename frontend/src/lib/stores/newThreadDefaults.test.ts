@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { registerPaneForTest } from './panes.svelte';
 import { applyNewThreadDefaults, updatePlaceholderDefaults } from './newThreadDefaults';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { Project } from '../types/models';
@@ -21,7 +21,6 @@ function placeholderPane(paneId: string, projectId: string, register = true): Th
 }
 
 beforeEach(() => {
-  resetPanesForTest();
   setBindingMock('UpdateNewThreadDefaults', async (input: { model?: string }) => ({
     provider: 'claude',
     model: input.model ?? 'sonnet',

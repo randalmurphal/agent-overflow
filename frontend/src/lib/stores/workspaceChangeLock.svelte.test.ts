@@ -11,14 +11,13 @@ import { __setTransportStatusForTest } from './transportStatus.svelte';
 import type { Project, Thread } from '../types/models';
 import {
   getBindingMock,
-  resetBindingMocks,
   setBindingMock,
 } from '../../test/mocks/bindings-app';
-import { emitWailsEvent, resetWailsMocks } from '../../test/mocks/wailsio-runtime';
+import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { HOME_BACKEND } from '../transport/backendKey';
-import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
-import { resetShellRunsForTest, runShellCommand } from './shellCommands.svelte';
+import { noteThread } from '../transport/entityIndex';
+import { runShellCommand } from './shellCommands.svelte';
 
 const WORKSPACE = '/repo';
 const OTHER_WORKSPACE = '/repo/.worktrees/feature';
@@ -88,10 +87,6 @@ async function buildPane(thread: Thread = makeThread()): Promise<ThreadPane> {
 
 describe('createWorkspaceChangeLockState', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetWailsMocks();
-    __resetEntityIndexForTest();
-    resetShellRunsForTest();
     vi.useRealTimers();
   });
 

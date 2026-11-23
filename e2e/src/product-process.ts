@@ -5,6 +5,7 @@
 // src/ or tests/ can start a process and names a product binary, or writes a
 // script that names one.
 import { execFile as execFileCallback, type ChildProcess, type ExecFileOptions, type SpawnOptions } from 'node:child_process';
+import { accessSync, constants } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
@@ -25,6 +26,21 @@ export function productBinary(name: 'agent-overflow' | `ao-${string}`): string {
   return path.join(bin, name);
 }
 
+/**
+ * Fails, naming the path and the fix, when `binary` cannot be run: a
+ * missing build otherwise surfaces as the launch's exit 127 with no output.
+ * Checked at each launch, not when a path is resolved, so listing the suite
+ * needs no build.
+ */
+function requireExecutable(binary: string): void {
+  try {
+    accessSync(binary, constants.X_OK);
+  } catch (error) {
+    throw new Error(`${binary} is not an executable file (${(error as Error).message}); ` +
+      'build it with make harness-build, or point AO_HARNESS_BIN at a built backend');
+  }
+}
+
 /** Start a product binary under spawnContained with the launch environment plus `env`. */
 export function spawnProduct(
   binary: string,
@@ -32,6 +48,7 @@ export function spawnProduct(
   options: Omit<SpawnOptions, 'env'> & { memoryLimitBytes: number; env?: Record<string, string> },
 ): ChildProcess {
   const { env, ...spawnOptions } = options;
+  requireExecutable(binary);
   return spawnContained(binary, args, { ...spawnOptions, env: launchEnvironment(env) });
 }
 
@@ -42,6 +59,7 @@ export async function execProduct(
   options: Omit<ExecFileOptions, 'env' | 'encoding'> & { env?: Record<string, string> } = {},
 ): Promise<{ stdout: string; stderr: string }> {
   const { env, ...execOptions } = options;
+  requireExecutable(binary);
   return await execFile(binary, args, { ...execOptions, env: launchEnvironment(env), encoding: 'utf8' });
 }
 
@@ -59,6 +77,7 @@ export async function writeProductScript(
   options: { memoryLimitBytes: number; env?: Record<string, string> },
 ): Promise<void> {
   if (process.platform === 'win32') throw new Error('Windows cannot run a shebang script as an executable');
+  requireExecutable(binary);
   const command = containedCommand(binary, [], options.memoryLimitBytes);
   await writeFile(file, `#!${process.execPath}
 const { spawn } = require('node:child_process');

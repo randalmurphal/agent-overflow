@@ -3,8 +3,8 @@
 // reads, the run request, the announcement toasts and the notes modal.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { emitWailsEvent, resetWailsMocks } from '../../test/mocks/wailsio-runtime';
+import { setBindingMock } from '../../test/mocks/bindings-app';
+import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import {
   grantBackendScopes,
   pairViewOnly,
@@ -13,7 +13,7 @@ import {
   revokeBackendScopes,
 } from '../../test/helpers/scopes';
 import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../test/helpers/backends';
-import { SCOPES, __resetScopesForTest } from '../transport/scopes';
+import { SCOPES } from '../transport/scopes';
 import { takePinnedBackend } from '../transport/backends';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
@@ -89,21 +89,13 @@ const LAPTOP_HELLO = {
 
 describe('providerUpdates store', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetWailsMocks();
-    resetProviderUpdatesForTest();
-    resetStagedBackends();
     resetToLocalPage();
-    resetToastsForTest();
     localStorage.clear();
   });
 
   afterEach(() => {
-    resetProviderUpdatesForTest();
-    resetStagedBackends();
     revokeBackendScopes('laptop');
     resetToLocalPage();
-    __resetScopesForTest();
   });
 
   describe('hydration', () => {

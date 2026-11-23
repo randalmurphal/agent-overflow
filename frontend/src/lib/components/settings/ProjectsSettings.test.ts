@@ -1,22 +1,18 @@
 import { readSidebarCatalogs } from '../../../test/helpers/sidebarCatalogs';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { beforeEach, expect, it } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 import ProjectsSettings from './ProjectsSettings.svelte';
-import { stageBackend, resetStagedBackends } from '../../../test/helpers/backends';
+import { stageBackend } from '../../../test/helpers/backends';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { noteProject } from '../../transport/entityIndex';
-import { addProjectLocal, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
+import { addProjectLocal, updateProjectLocal } from '../../stores/projects.svelte';
 import type { Project } from '../../types/models';
 
 beforeEach(async () => {
-  resetStagedBackends();
-  resetProjectsForTest();
   setBindingMock('ListProjects', async () => []);
   await readSidebarCatalogs();
   setBindingMock('GetProjectWorktreeSetup', async () => ({ copy: [], run: [], timeout: '' }));
 });
-
-afterEach(() => { resetStagedBackends(); resetProjectsForTest(); });
 
 it('labels only the selected computer’s projects and updates after a rename', async () => {
   stageBackend({ id: 'remote', name: 'Remote' });

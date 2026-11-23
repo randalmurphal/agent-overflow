@@ -9,7 +9,8 @@ import type { ReviewFindFileSpot, ReviewFindHit } from './reviewFindIdentity';
 import { forgetReviewFindSpotsForTest, placeReviewFindHit, resolveReviewFindHit } from './reviewFindRows';
 import { scanReviewFind, type ReviewFindContent } from './reviewFindScan';
 import { createMarkdownFindTextCache } from '../components/chat/markdown/markdownFindText';
-import { collectScan, findContent, findDraft as draft, findThread as thread } from '../../test/helpers/reviewFindContent';
+import { collectScan, findContent, findDraft as draft, findThread as thread, type FindContentOver } from '../../test/helpers/reviewFindContent';
+import { indexReviewComments } from './reviewRows';
 import { shownOf } from '../../test/helpers/reviewFindOracle';
 import { streamPatch } from '../../test/helpers/streamedPatch';
 import type { DiffReviewComment } from '../types/models';
@@ -38,7 +39,7 @@ function files(patch = PATCH): ReviewFile[] {
   return parseReviewFiles(patch);
 }
 
-function content(over: Partial<ReviewFindContent> = {}): ReviewFindContent {
+function content(over: FindContentOver = {}): ReviewFindContent {
   return findContent(files(), over);
 }
 
@@ -47,8 +48,11 @@ type Scanned = ReviewFindHit & ReviewFindFileSpot & { fileIndex: number };
 // The scan's hits with where it read each, which the resolver, asked
 // with nothing recorded, must find the same: placed at the same line, and
 // present at the same element and painter's index (its index among the
-// element's matches in scan order).
-async function scan(source: ReviewFindContent, query: string, limit = 1000): Promise<{ hits: Scanned[]; capped: boolean; pauses: number }> {
+// element's matches in scan order). `resolves` picks the hits to resolve
+// (all of them by default); resolving one recounts its row from the start.
+async function scan(
+  source: ReviewFindContent, query: string, limit = 1000, resolves: (index: number) => boolean = () => true,
+): Promise<{ hits: Scanned[]; capped: boolean; pauses: number }> {
   const hits: Scanned[] = [];
   let pauses = 0;
   const capped = await scanReviewFind(source, query, {
@@ -58,11 +62,12 @@ async function scan(source: ReviewFindContent, query: string, limit = 1000): Pro
     pause: async () => { pauses += 1; },
   });
   const perRow = new Map<string, number>();
-  for (const hit of hits) {
-    forgetReviewFindSpotsForTest(source.files[hit.fileIndex]);
-    expect(placeReviewFindHit(source, hit), hit.identity).toEqual({ fileIndex: hit.fileIndex, line: hit.line });
+  for (const [index, hit] of hits.entries()) {
     const ordinal = perRow.get(hit.rowKey) ?? 0;
     perRow.set(hit.rowKey, ordinal + 1);
+    if (!resolves(index)) continue;
+    forgetReviewFindSpotsForTest(source.files[hit.fileIndex]);
+    expect(placeReviewFindHit(source, hit), hit.identity).toEqual({ fileIndex: hit.fileIndex, line: hit.line });
     let resolved = resolveReviewFindHit(shownOf(source), hit, findNeedle(query));
     // Text the patch budget evicted is judged once it is read back.
     if (resolved.kind === 'evicted') {
@@ -155,15 +160,15 @@ describe('scanReviewFind', () => {
     const folded = reviewFileFromPatchFile(conflictPatchFile('m.go', merged));
     const folds = new Map<number, readonly string[]>();
     conflictPatchFile('m.go', merged, { onFold: (id, lines) => folds.set(id, lines) });
-    const closed = await scan({ files: [folded], drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }], foldLines: () => folds }, 'needle');
+    const closed = await scan({ files: [folded], comments: indexReviewComments([], []), commentText: (body) => [{ text: body, shown: true }], foldLines: () => folds }, 'needle');
     expect(closed.hits.map((hit) => hit.place.kind)).toEqual(['fold', 'line']);
     const opened = reviewFileFromPatchFile(conflictPatchFile('m.go', merged, { expandedFolds: new Set([0]) }));
-    const open = await scan({ files: [opened], drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }], foldLines: () => new Map() }, 'needle');
+    const open = await scan({ files: [opened], comments: indexReviewComments([], []), commentText: (body) => [{ text: body, shown: true }], foldLines: () => new Map() }, 'needle');
     expect(open.hits.map((hit) => hit.place.kind)).toEqual(['line', 'line']);
     expect(open.hits.map((hit) => hit.identity)).toEqual(closed.hits.map((hit) => hit.identity));
     // Markers are content; the fold row's own label is not.
-    expect((await scan({ files: [folded], drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }], foldLines: () => folds }, '=======')).hits).toHaveLength(1);
-    expect((await scan({ files: [folded], drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }], foldLines: () => folds }, 'unchanged lines')).hits).toHaveLength(0);
+    expect((await scan({ files: [folded], comments: indexReviewComments([], []), commentText: (body) => [{ text: body, shown: true }], foldLines: () => folds }, '=======')).hits).toHaveLength(1);
+    expect((await scan({ files: [folded], comments: indexReviewComments([], []), commentText: (body) => [{ text: body, shown: true }], foldLines: () => folds }, 'unchanged lines')).hits).toHaveLength(0);
   });
 
   it('pauses between slices and stops when it is no longer live', async () => {
@@ -172,7 +177,7 @@ describe('scanReviewFind', () => {
     let clock = 0;
     let pauses = 0;
     const all: ReviewFindHit[] = [];
-    await scanReviewFind({ files: big, drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }] }, 'needle', {
+    await scanReviewFind({ files: big, comments: indexReviewComments([], []), commentText: (body) => [{ text: body, shown: true }] }, 'needle', {
       limit: 10_000, live: () => true, emit: (hit) => all.push(hit),
       pause: async () => { pauses += 1; }, now: () => (clock += 1), sliceMs: 0,
     });
@@ -181,7 +186,7 @@ describe('scanReviewFind', () => {
 
     let live = true;
     const some: ReviewFindHit[] = [];
-    const capped = await scanReviewFind({ files: big, drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }] }, 'needle', {
+    const capped = await scanReviewFind({ files: big, comments: indexReviewComments([], []), commentText: (body) => [{ text: body, shown: true }] }, 'needle', {
       limit: 10_000, live: () => live, emit: (hit) => some.push(hit),
       pause: async () => { live = false; }, now: () => (clock += 1), sliceMs: 10,
     });
@@ -211,14 +216,14 @@ describe('scanReviewFind', () => {
     const folds = new Map<number, readonly string[]>();
     conflictPatchFile('m.go', merged, { onFold: (id, hidden) => folds.set(id, hidden) });
     expect([...folds.values()][0].length).toBeGreaterThan(299_000);
-    const fold = await stopsInside({ files: [folded], drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }], foldLines: () => folds }, 'same');
+    const fold = await stopsInside({ files: [folded], comments: indexReviewComments([], []), commentText: (body) => [{ text: body, shown: true }], foldLines: () => folds }, 'same');
     expect(fold.pauses).toBe(1);
     expect(fold.found).toBeLessThan(1000);
 
     // One line of 8 MB with a match every kilobyte.
     const line = `${'x'.repeat(994)}needle`.repeat(8000);
     const long = files(['diff --git a/min.js b/min.js', '--- a/min.js', '+++ b/min.js', '@@ -0,0 +1,1 @@', `+${line}`, ''].join('\n'));
-    const minified = await stopsInside({ files: long, drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }] }, 'needle');
+    const minified = await stopsInside({ files: long, comments: indexReviewComments([], []), commentText: (body) => [{ text: body, shown: true }] }, 'needle');
     expect(minified.pauses).toBe(1);
     expect(minified.found).toBeLessThan(100);
 
@@ -230,7 +235,7 @@ describe('scanReviewFind', () => {
 
     // Many files with no rows: only their headers.
     const headers = Array.from({ length: 5000 }, (_, i) => reviewFileFromPatchFile({ path: `f${i}.ts`, kind: 'conflict', additions: 0, deletions: 0, lines: [] }));
-    const listed = await stopsInside({ files: headers, drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }] }, '.ts');
+    const listed = await stopsInside({ files: headers, comments: indexReviewComments([], []), commentText: (body) => [{ text: body, shown: true }] }, '.ts');
     expect(listed.pauses).toBe(1);
     expect(listed.found).toBeLessThan(1000);
   });
@@ -240,11 +245,16 @@ describe('scanReviewFind', () => {
     // the later ones.
     const body = 'x'.repeat(16_381) + 'NEEDLE' + 'y'.repeat(16_378) + 'needleneedle' + '\u{10400}'.repeat(20_000) + 'needle';
     const long = files(['diff --git a/l b/l', '--- a/l', '+++ b/l', '@@ -0,0 +1,1 @@', `+${body}`, ''].join('\n'));
-    const { hits } = await scan({ files: long, drafts: [], prThreads: [], commentText: (b) => [{ text: b, shown: true }] }, 'needle');
+    const { hits } = await scan({ files: long, comments: indexReviewComments([], []), commentText: (b) => [{ text: b, shown: true }] }, 'needle');
     expect(hits.map((hit) => hit.occurrence)).toEqual([0, 1, 2, 3]);
-    // Overlapping candidates count left to right without overlap.
+    // Overlapping candidates count left to right without overlap. Hit k
+    // starts at 1 + 2k of the line's text; the hits at and beside the slice
+    // edges at 16384 and 32768 are resolved, with the first and the last.
+    // Each resolve counts the whole row's matches, so resolving all 20,000
+    // made this case quadratic and checked the same count each time.
     const repeat = files(['diff --git a/r b/r', '--- a/r', '+++ b/r', '@@ -0,0 +1,1 @@', `+b${'a'.repeat(40_001)}`, ''].join('\n'));
-    expect((await scan({ files: repeat, drafts: [], prThreads: [], commentText: (b) => [{ text: b, shown: true }] }, 'aa', 100_000)).hits).toHaveLength(20_000);
+    const nearEdge = (index: number) => [0, 8191, 16383, 19_999].some((at) => Math.abs(index - at) <= 2);
+    expect((await scan({ files: repeat, comments: indexReviewComments([], []), commentText: (b) => [{ text: b, shown: true }] }, 'aa', 100_000, nearEdge)).hits).toHaveLength(20_000);
   });
 
   it('searches a PR comment as its markdown renders, never its markup', async () => {

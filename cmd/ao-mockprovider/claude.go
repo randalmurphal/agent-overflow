@@ -73,7 +73,7 @@ func claudeAccountForHome() claudeAccount {
 // runs at all.
 //
 // Three rows, modelled on the real 2.1.219 capture in
-// docs/references/fixtures/claude/initialize_models_20260802.json:
+// internal/provider/wirecaptures/claude/initialize_models_20260802.json:
 //
 //   - The `default` POINTER row, whose displayName names the pointer rather
 //     than a model and whose `resolvedModel` carries the `[1m]` marker.
@@ -124,7 +124,7 @@ func claudeInitializeResponsePayload() string {
 // account probe answers with this alone.
 //
 // Shaped after the real 2.1.219 capture in
-// docs/references/fixtures/claude/context_usage_control_20260803.summary.json,
+// internal/provider/wirecaptures/claude/context_usage_control_20260803.summary.json,
 // including the arithmetic the UI depends on: the deferred row is NOT part
 // of totalTokens, and the non-deferred rows sum to rawMaxTokens.
 const claudeContextUsageResponsePayload = `{"totalTokens":24028,"maxTokens":200000,"rawMaxTokens":200000,"percentage":12,"model":"claude-mock-1","isAutoCompactEnabled":true,"apiUsage":null,"categories":[` +
@@ -148,7 +148,7 @@ const claudeContextUsageResponsePayload = `{"totalTokens":24028,"maxTokens":2000
 // silently:
 //
 //   - system/init per user turn. The real CLI emits one init per user
-//     message (verified: fixtures/claude/multiturn_cost_cumulative_
+//     message (verified: wirecaptures/claude/multiturn_cost_cumulative_
 //     20260703.ndjson carries 3 inits for 3 turns). Triage opens the
 //     logical turn when init arrives with a pending send registered
 //     (triage.handleInit case 1) — without it no `turns` row is
@@ -913,7 +913,7 @@ func (a *claudeAdapter) persistTranscript(line string) {
 // claudeBackgroundTasksResponsePayload is the inner response payload for a
 // control_request{subtype:"background_tasks"} ack. The real CLI answers
 // `{backgrounded:true}` when a foreground task matched the tool_use_id
-// (verified 2.1.237 — docs/references/fixtures/claude/
+// (verified 2.1.237 — internal/provider/wirecaptures/claude/
 // background_tasks_control_20260822.ndjson), and Session.BackgroundTask
 // FAILS on a response that reports no result at all, so an empty `{}` here
 // would make every background-button click surface a provider error.

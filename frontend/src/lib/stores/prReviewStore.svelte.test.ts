@@ -20,7 +20,10 @@ import {
   prReadStart,
   prReviewKeys,
   setPRThreadResolveOverride,
+  __resetPRReviewStoreForTest,
 } from './prReviewStore.svelte';
+import { prSubscriptionId } from './prReviewSubscriptions';
+import { ciHandle } from './ciHandles';
 import { peekPRCI } from './prReviewCI.svelte';
 import {
   ensurePRConflictFile,
@@ -201,6 +204,25 @@ describe('prReviewStore — one entity, many holders', () => {
     // Settle the abandoned source so it tears its own subscription down.
     resolveSubscribe({ id: 'sub-late', prKey: KEY, detail: detailStub(), threads: [], headSHA: 'sha-a' });
     await flush();
+  });
+});
+
+describe('prReviewStore — the test reset', () => {
+  it("drops a held PR's subscription id and CI handle, and calls no backend", async () => {
+    const { unsubscribe } = installSubscribeMock();
+    const setActive = setBindingMock('SetPRUpdatesActive', async () => undefined);
+    attachPR(KEY, { ref: REF });
+    await flush();
+    expect(prSubscriptionId(KEY)).toBe('sub-1');
+    expect(ciHandle(KEY)).not.toBeNull();
+
+    __resetPRReviewStoreForTest();
+    await flush();
+    expect(prSubscriptionId(KEY)).toBeNull();
+    expect(ciHandle(KEY)).toBeNull();
+    handlePRVisibilityChange();
+    expect(setActive).not.toHaveBeenCalled();
+    expect(unsubscribe).not.toHaveBeenCalled();
   });
 });
 

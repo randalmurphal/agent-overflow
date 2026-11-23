@@ -6,7 +6,7 @@ import { expectCleanTransitions } from '../../test/helpers/transitions';
 import { __setSmoothingClockForTest } from './threadPaneShared';
 import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import type { StreamingAssistantRevealSink } from './streamingAssistantReveal';
-import { getSettings, resetSettingsForTest } from './settings.svelte';
+import { getSettings } from './settings.svelte';
 import { matchesProvenAppend } from '../markdown';
 
 class FakeSmoothingClock implements SmoothingClock {
@@ -113,7 +113,6 @@ function makeReveal(initialItems: Item[], onArm: () => void = () => {}) {
 
 afterEach(() => {
   __setSmoothingClockForTest(undefined);
-  resetSettingsForTest();
 });
 
 describe('streaming reveal live-updates toggle transitions', () => {

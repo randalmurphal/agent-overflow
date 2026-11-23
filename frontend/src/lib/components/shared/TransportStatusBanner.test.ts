@@ -40,7 +40,6 @@ import { __setBackendStatusForTest, UNREACHABLE_SETTLE_MS } from '../../stores/t
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { formatCalendarDate, formatTimeOfDay } from '../../utils/format';
 import {
-  __resetBundleNoticeForTest,
   clearBundleNotice,
   noteBundleReady,
   noteBundleTooOld,
@@ -547,11 +546,9 @@ describe('<TransportStatusBanner> and the bundle notice', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     h.snapshot = { status: 'connected', nextAttemptAt: null };
-    __resetBundleNoticeForTest();
   });
 
   afterEach(() => {
-    __resetBundleNoticeForTest();
     vi.useRealTimers();
   });
 

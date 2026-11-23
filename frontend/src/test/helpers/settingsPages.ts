@@ -13,7 +13,6 @@ export async function seedSettingsPages(): Promise<void> {
   // The provider pages check for a newer CLI on mount.
   setBindingMock('CheckProviderUpdates', async () => []);
   setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
-  setBindingMock('ListProviderAccounts', async () => []);
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('ListThreads', async () => []);
   setBindingMock('ListArchivedThreads', async () => []);
@@ -34,7 +33,6 @@ export async function seedSettingsPages(): Promise<void> {
   setBindingMock('ListAvailableEditors', async () => []);
   setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
   setBindingMock('GetSpinnerFiles', async () => ({ dir: '/tmp/spinners', sprites: [], warnings: [] }));
-  setBindingMock('GetSoundFiles', async () => ({ dir: '/tmp/sounds', sounds: [], warnings: [] }));
   // The notifications page reads the phone-push status on mount.
   setBindingMock('GetPushSenderStatus', async () => ({
     configured: false,
@@ -91,6 +89,13 @@ export async function seedSettingsPages(): Promise<void> {
   setBindingMock('GetObservabilityTracing', async () => ({ value: settings.observabilityTracingEnabled, launched: settings.observabilityTracingEnabled }));
   setBindingMock('ListBackends', async () => []);
   setBindingMock('ReadAloudSource', async () => ({ available: false, voices: [] }));
+  // The voice page reads the OpenAI key file: none written yet.
+  setBindingMock('OpenAIKeyFile', async () => ({ path: '/data/credentials/openai-api-key', state: 'missing' }));
+  // The agent profiles page checks each profile: every one runs here.
+  setBindingMock('CheckAgentProfiles', async (profiles: unknown[]) => profiles.map(() => ({})));
+  // The memory page reads each provider's own memory switch, at its default:
+  // Claude's on, Codex's off (app_memory_settings.go).
+  setBindingMock('GetNativeMemoryStatus', async () => ({ claude: { on: true, error: '' }, codex: { on: false, error: '' } }));
   resetKeybindingsStore();
   await loadSettings();
 }

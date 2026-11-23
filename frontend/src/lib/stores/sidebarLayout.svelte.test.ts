@@ -7,7 +7,6 @@ import {
   persistSidebarWidth,
   readPersistedCollapsed,
   readPersistedWidth,
-  resetSidebarLayoutForTest,
   setSidebarCollapsed,
   setSidebarWidth,
   setSidebarWidthLive,
@@ -15,8 +14,7 @@ import {
   toggleSidebarCollapsed,
 } from './sidebarLayout.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
-import { setAppShellWidth, resetLayoutMetricsForTest } from './layoutMetrics.svelte';
-import { resetBindingMocks } from '../../test/mocks/bindings-app';
+import { setAppShellWidth } from './layoutMetrics.svelte';
 
 const WIDTH_KEY = 'sidebar:width';
 const COLLAPSED_KEY = 'sidebar:collapsed';
@@ -24,11 +22,7 @@ const LEGACY_STORAGE_KEY = 'agent-overflow:sidebar:width';
 
 describe('sidebar layout store', () => {
   beforeEach(() => {
-    resetBindingMocks();
     localStorage.removeItem(LEGACY_STORAGE_KEY);
-    resetAppStorageForTest();
-    resetLayoutMetricsForTest();
-    resetSidebarLayoutForTest();
   });
 
   it('defaults to 280 when nothing is persisted', () => {

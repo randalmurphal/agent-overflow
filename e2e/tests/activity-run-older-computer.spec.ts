@@ -18,8 +18,8 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, devices, type Page } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { devices, type Page } from '@playwright/test';
+import { test, expect } from './base-test.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { pairOwnDevice } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';

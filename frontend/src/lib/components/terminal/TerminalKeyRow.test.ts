@@ -1,9 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/svelte';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import TerminalKeyRow from './TerminalKeyRow.svelte';
-
-afterEach(() => cleanup());
 
 function mount(over: { ctrlArmed?: boolean } = {}) {
   const onKey = vi.fn();

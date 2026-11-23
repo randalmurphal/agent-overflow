@@ -325,7 +325,7 @@ func TestFinishSealsTheTurn(t *testing.T) {
 
 func TestOnlyOneFinishCommits(t *testing.T) {
 	t.Parallel()
-	const key = "sk-fake-held-only-one-finish"
+	key := openaifake.Key(t, "sk-fake-held-only-one-finish")
 	release := openaifake.Hold(key)
 	defer release()
 	live, err := dial(t, key, openai.LiveTranscriptionOptions{})
@@ -364,7 +364,7 @@ func TestOnlyOneFinishCommits(t *testing.T) {
 // transcript to arrive.
 func TestACancelledSecondFinishLeavesTheOwnersTranscript(t *testing.T) {
 	t.Parallel()
-	const key = "sk-fake-held-cancelled-second-finish"
+	key := openaifake.Key(t, "sk-fake-held-cancelled-second-finish")
 	release := openaifake.Hold(key)
 	defer release()
 	live, err := dial(t, key, openai.LiveTranscriptionOptions{})

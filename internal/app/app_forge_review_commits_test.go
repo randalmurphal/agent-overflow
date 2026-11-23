@@ -183,7 +183,7 @@ func TestFailedPRReadMakesTheNextUnchangedPollEmit(t *testing.T) {
 	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
-	sub, err := app.SubscribePRUpdates(context.Background(), prRef())
+	sub, err := app.SubscribePRUpdates(connCtx(t), prRef())
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}

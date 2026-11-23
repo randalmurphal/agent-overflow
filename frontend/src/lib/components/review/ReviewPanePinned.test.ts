@@ -1,15 +1,11 @@
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it } from 'vitest';
 import ReviewPane from './ReviewPane.svelte';
-import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
 import {
   __pinnedReviewStatesForTest,
-  __resetPinnedReviewStatesForTest,
   disposePRReviewStates,
 } from '../../stores/reviewPanePinned.svelte';
-import { resetAppStorageForTest } from '../../stores/appStorage';
 import { getPaneFindProvider, hasPaneFindProvider, openPaneFind, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { stepPaneBack } from '../../stores/paneBackSteps';
 import { prReviewKeys } from '../../stores/prReviewStore.svelte';
@@ -73,10 +69,6 @@ function renderPinned() {
 }
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  __resetPinnedReviewStatesForTest();
-  __resetReviewPaneStateForTest();
-  resetPanesForTest();
   setBindingMock('SubscribePRUpdates', async () => ({
     id: 'sub-1',
     prKey: 'github:owner/repo:5',

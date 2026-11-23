@@ -7,7 +7,6 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createThreadPane } from './thread.svelte';
-import { __resetAgentPaneStateForTest } from './agentPane.svelte';
 import { createAgentScopeView } from './agentScopeView.svelte';
 import { type Item } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -27,7 +26,6 @@ describe('subagent children', () => {
   beforeEach(() => {
     installTimelineScopeCapability();
     installThreadPaneTestEnv();
-    __resetAgentPaneStateForTest();
   });
 
   describe('main window scope', () => {

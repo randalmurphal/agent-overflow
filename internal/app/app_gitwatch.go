@@ -66,34 +66,41 @@ type GitStatusEvent struct {
 //
 //ao:scope git:operate
 func (a *App) GitStatusSubscribe(ctx context.Context, ws WorkspaceRef) (GitStatusSubscriptionResult, error) {
+	conn, err := transport.CallerConnection(ctx)
+	if err != nil {
+		return GitStatusSubscriptionResult{}, err
+	}
 	if a.shuttingDown.Load() {
 		return GitStatusSubscriptionResult{}, ErrShuttingDown
 	}
-	result, err := a.gitApplication().Subscribe(ctx, ws)
+	git := a.gitApplication()
+	// The connection holds the subscription from the moment it is
+	// published until it is released, however that happens.
+	result, err := git.Subscribe(ctx, ws, func(id string) (func(), error) {
+		tie, err := conn.Bind(gitStatusCleanupKey(id), func() { git.Unsubscribe(id) })
+		if err != nil {
+			return nil, fmt.Errorf("gitwatch: %w", err)
+		}
+		return tie.Untie, nil
+	})
 	if err != nil {
 		if errors.Is(err, gitapp.ErrTooManyStatusSubscriptions) {
 			return GitStatusSubscriptionResult{}, ErrTooManyGitStatusSubscriptions
 		}
 		return GitStatusSubscriptionResult{}, err
 	}
-	if state := transport.ConnStateFromContext(ctx); state != nil {
-		if !state.BindCleanup(gitStatusCleanupKey(result.ID), func() { a.gitApplication().Unsubscribe(result.ID) }) {
-			a.gitApplication().Unsubscribe(result.ID)
-			return GitStatusSubscriptionResult{}, fmt.Errorf("gitwatch: connection closing")
-		}
-	}
 	return GitStatusSubscriptionResult(result), nil
 }
 
 // GitStatusUnsubscribe releases a subscription previously created via
-// GitStatusSubscribe. Idempotent — unknown ids and double-unsubscribes
-// are no-ops because the connection-cleanup safety net may have run
-// first on disconnect.
+// GitStatusSubscribe, from whichever connection asks; the connection that
+// opened it is untied (gitapp.StatusTie). Idempotent — unknown ids
+// and double-unsubscribes are no-ops because the connection-cleanup safety
+// net may have run first on disconnect.
 //
 //ao:scope git:operate
 //ao:route home
 func (a *App) GitStatusUnsubscribe(ctx context.Context, subscriptionID string) error {
-	transport.ConnStateFromContext(ctx).UnbindCleanup(gitStatusCleanupKey(subscriptionID))
 	a.gitApplication().Unsubscribe(subscriptionID)
 	return nil
 }

@@ -11,20 +11,16 @@ import UserMessageEditor from './UserMessageEditor.svelte';
 import type { UserMessageEditSession, UserMessageEditStage } from './userMessageActions';
 import { createUserMessageEditUiState } from './userMessageEditUi.svelte';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import {
   createComposerDraftStore,
-  resetComposerDraftSnapshotsForTest,
 } from '../../stores/composerDraft.svelte';
 import type { ComposerDraftSnapshot } from '../../stores/composerDraftSnapshots';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
-import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import {
   projectTurnCompleted,
   projectTurnStarted,
-  resetForTest as resetThreadStatuses,
 } from '../../stores/threadStatuses.svelte';
 import { restoredDraftSnapshotFromUserItem } from '../../utils/userMessageDraftSnapshot';
 import type { Attachment } from '../../types/attachment';
@@ -133,12 +129,7 @@ async function mountEditor(
 describe('<UserMessageEditor>', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resetBindingMocks();
-    resetComposerDraftSnapshotsForTest();
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetCompanionPanesForTest();
-    resetThreadStatuses();
     installMocks();
   });
 

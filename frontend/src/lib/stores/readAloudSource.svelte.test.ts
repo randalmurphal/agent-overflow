@@ -4,10 +4,10 @@
 // that computer.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { hasScope } from '../transport/scopes';
-import { __attachBackendForTest, __resetBackendsForTest, detachBackend, getPinnedBackend } from '../transport/backends';
+import { __attachBackendForTest, detachBackend, getPinnedBackend } from '../transport/backends';
 import { setupEventListeners } from './events';
 import {
   applyReadAloudSourceChanged,
@@ -17,7 +17,6 @@ import {
   readAloudSourceVoiceNames,
   readAloudSourceVoices,
   refreshReadAloudSource,
-  resetReadAloudSourcesForTest,
 } from './readAloudSource.svelte';
 
 vi.mock('../transport/scopes', async (original) => ({ ...await original<object>(), hasScope: vi.fn(() => true) }));
@@ -51,14 +50,11 @@ function heldAnswers() {
 }
 
 beforeEach(() => {
-  resetBindingMocks();
-  resetReadAloudSourcesForTest();
   attachLaptop();
 });
 
 afterEach(() => {
   vi.mocked(hasScope).mockReset().mockReturnValue(true);
-  __resetBackendsForTest();
   vi.unstubAllGlobals();
 });
 

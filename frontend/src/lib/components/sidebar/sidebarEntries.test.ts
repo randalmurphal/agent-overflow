@@ -2,7 +2,7 @@
 // device filter shows, who represents them, what the row counts and dates,
 // and when it stays the same value. Which rows form an entry and which row it
 // continues is the continuity store's (stores/sidebarEntryContinuity.test.ts).
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
 import {
   buildSidebarEntries,
@@ -15,17 +15,14 @@ import {
 import {
   addProjectLocal,
   projectCatalogPart,
-  resetProjectsForTest,
   touchProjectActivity,
   updateProjectLocal,
 } from '../../stores/projects.svelte';
-import { __resetEntityIndexForTest, noteProject } from '../../transport/entityIndex';
-import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { noteProject } from '../../transport/entityIndex';
+import { stageBackend } from '../../../test/helpers/backends';
 import { listCatalogTreesForTest, resetSidebarCatalogsForTest } from '../../stores/sidebarCatalogs';
 import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
 import type { Project } from '../../types/models';
-import { resetSidebarForTest } from '../../stores/sidebar.svelte';
-import { resetAppStorageForTest } from '../../stores/appStorage';
 
 function mkProject(id: string, overrides: Partial<Project> = {}): Project {
   return {
@@ -71,21 +68,10 @@ const onlyHome = (backend: BackendKey) => backend === HOME_BACKEND;
 const onlyLaptop = (backend: BackendKey) => backend === 'laptop';
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  resetSidebarForTest();
-  resetProjectsForTest();
-  __resetEntityIndexForTest();
-  resetStagedBackends();
   // A second computer, so a project noted on it is a checkout of its own and
   // not a second clone on this one.
   stageBackend({ id: 'laptop', backendId: 'laptop-id', name: 'Laptop' });
   listCatalogTreesForTest();
-});
-
-afterEach(() => {
-  resetProjectsForTest();
-  __resetEntityIndexForTest();
-  resetStagedBackends();
 });
 
 function entryFor(entries: readonly SidebarEntry[], id: string): SidebarEntry {

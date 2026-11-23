@@ -312,14 +312,19 @@ func TestATranscriptionStaysOwnedUntilDone(t *testing.T) {
 // An abandoned recording expires on its own timer, with no other activity
 // on the backend, and says so to whoever owns its cleanup.
 func TestAnIdleRecordingExpiresOnItsOwn(t *testing.T) {
-	recordings := New(20*time.Millisecond, 0)
+	recordings := New(time.Hour, 0)
 	id, _ := recordings.Begin("audio/webm", 0)
-	if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {
-		t.Fatal(err)
-	}
 	expired := make(chan struct{})
 	if !recordings.OnRelease(id, func() { close(expired) }) {
 		t.Fatal("OnRelease found no recording")
+	}
+	// The piece's arrival arms the timer at the idle time set here, so no
+	// step of the test has to come before a short timer fires.
+	recordings.mu.Lock()
+	recordings.idle = 20 * time.Millisecond
+	recordings.mu.Unlock()
+	if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {
+		t.Fatal(err)
 	}
 	select {
 	case <-expired:
@@ -334,14 +339,25 @@ func TestAnIdleRecordingExpiresOnItsOwn(t *testing.T) {
 	}
 }
 
-// Neither a piece being read nor a transcription expires.
+// Neither a piece being read nor a transcription expires: the idle timer
+// firing during either leaves the recording open. The test fires the
+// timer's own callback at each point, since a real timer short enough to
+// fire there can also fire between the test's steps.
 func TestWorkInProgressDoesNotExpire(t *testing.T) {
-	recordings := New(20*time.Millisecond, 0)
+	recordings := New(time.Hour, 0)
 	id, _ := recordings.Begin("audio/webm", 0)
+	recordings.mu.Lock()
+	rec := recordings.open[id]
+	recordings.mu.Unlock()
 	body := &blockedBody{release: make(chan struct{}), data: strings.NewReader("abc")}
 	done := make(chan error, 1)
 	go func() { done <- recordings.Append(id, 0, 3, body) }()
-	time.Sleep(100 * time.Millisecond)
+	waitFor(t, func() bool {
+		recordings.mu.Lock()
+		defer recordings.mu.Unlock()
+		return rec.reading > 0
+	})
+	recordings.expire(id, rec)
 	close(body.release)
 	if err := <-done; err != nil {
 		t.Fatalf("a piece read past the idle timeout was dropped: %v", err)
@@ -350,7 +366,7 @@ func TestWorkInProgressDoesNotExpire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	recordings.expire(id, rec)
 	if recordings.Open() != 1 || job.Context.Err() != nil {
 		t.Fatal("a transcription expired")
 	}

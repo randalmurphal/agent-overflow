@@ -4,9 +4,8 @@
 // a repeat has to change nothing. The Go half is internal/pagehost and
 // internal/uiwindow.DeliverPageTicket.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  __resetPageHostForTest,
   awaitInjectedPageTicket,
   clearInjectedPageTicket,
   isWebviewHosted,
@@ -38,12 +37,7 @@ function deliver(ticket: string): void {
   window.dispatchEvent(new Event(TICKET_EVENT));
 }
 
-beforeEach(() => {
-  __resetPageHostForTest();
-});
-
 afterEach(() => {
-  __resetPageHostForTest();
   setPageSearch('');
   delete hostGlobals()._wails;
   delete hostGlobals().chrome;

@@ -3,10 +3,12 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -287,6 +289,112 @@ func TestCloseTruncatesTheWAL(t *testing.T) {
 		t.Fatalf("WAL = %d bytes after Close, want 0 (was %d)", after, before)
 	}
 	t.Logf("WAL bytes across Close: %d -> %d", before, after)
+}
+
+// A read running on the pool when Close starts holds a mark on the WAL.
+// Close closes the pool, waits for that read and then truncates the WAL,
+// with no settle pause: a read that took the pool from reader() before
+// Close and starts after the pool closed fails instead of opening a read
+// transaction of its own. The read is released only once the drain is
+// seen waiting for it, so a Close that truncated without waiting would run
+// the truncate while the read is still held, on every run.
+func TestCloseWaitsForAReadInFlightBeforeTruncating(t *testing.T) {
+	dbPath := newTestStorePath(t)
+	s, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	before := growWAL(t, s, dbPath)
+	// As in TestCloseTruncatesTheWAL: the last connection's own checkpoint
+	// must not be what removes the WAL.
+	guard, err := sql.Open("sqlite", poolDSN(dbPath, readerConnPragmas))
+	if err != nil {
+		t.Fatalf("open guard: %v", err)
+	}
+	defer guard.Close()
+	if err := guard.Ping(); err != nil {
+		t.Fatalf("guard probe: %v", err)
+	}
+	late := s.reader()
+	if late != s.read {
+		t.Fatal("reads do not go to the pool")
+	}
+	inFlight, err := s.read.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := inFlight.QueryRow(`SELECT count(*) FROM ui_state`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	var held atomic.Bool
+	held.Store(true)
+	waiting := make(chan struct{}, 1)
+	drained := make(chan bool, 1)
+	s.quiesceHooks.waiting = func() {
+		select {
+		case waiting <- struct{}{}:
+		default:
+		}
+	}
+	s.quiesceHooks.drained = func() { drained <- held.Load() }
+	// A regression fails here, not at the package timeout: every wait below
+	// is bounded, and a failure still ends the read and then joins the Close
+	// it holds, registered before Close starts.
+	const bound = time.Minute
+	closed := make(chan error, 1)
+	joined := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-joined:
+		case <-time.After(bound):
+			t.Errorf("Close did not return within %s of the read's end", bound)
+		}
+	})
+	t.Cleanup(func() {
+		if err := inFlight.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			t.Errorf("end the read in flight: %v", err)
+		}
+	})
+	go func() {
+		closed <- s.Close()
+		close(joined)
+	}()
+	select {
+	case <-waiting:
+	case <-drained:
+		t.Fatal("Close went on to the truncate with a read in flight")
+	case err := <-closed:
+		t.Fatalf("Close returned (%v) with a read in flight, without waiting for it", err)
+	case <-time.After(bound):
+		t.Fatalf("Close neither waited for the read in flight nor went on within %s", bound)
+	}
+	if _, err := late.Exec(`SELECT 1`); err == nil || err.Error() != "sql: database is closed" {
+		t.Fatalf("a read on the pool after it closed: %v; want it refused", err)
+	}
+	held.Store(false)
+	if err := inFlight.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case readHeld := <-drained:
+		if readHeld {
+			t.Fatal("Close went on to the truncate with a read in flight")
+		}
+	case <-time.After(bound):
+		t.Fatalf("Close did not go on to the truncate within %s of the read's end", bound)
+	}
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	case <-time.After(bound):
+		t.Fatalf("Close did not return within %s of the read's end", bound)
+	}
+	if after := walSize(t, dbPath); after != 0 {
+		t.Fatalf("WAL = %d bytes after Close, want 0 (was %d): the truncation ran while the read held its mark", after, before)
+	}
 }
 
 // A hard-killed process leaves its WAL on disk at whatever high-water

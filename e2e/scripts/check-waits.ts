@@ -1,7 +1,7 @@
 // Runs the gate's wait rules (src/wait-scan.ts) over every spec the
 // Playwright projects run (test-files.ts, which playwright.config.ts builds
 // its projects from) and the suite files they import. The launcher
-// (cmd/ao-harness-e2e checkSuite) runs it with the typecheck, before
+// (cmd/ao-harness-e2e/typecheck.go checkSuite) runs it with the typecheck, before
 // Playwright, so a sleep or an expiring wait fails the run in about a second.
 // Exits 1 with one line per finding.
 import * as path from 'node:path';
@@ -22,7 +22,7 @@ if (problems.length > 0) {
   console.error(
     `\n${problems.length} wait rule finding(s). A spec does not sleep or wait for a timeout to pass: give the product ` +
       'timer a knob (harnessTiming over main_harness.go harnessTimers), advance the page clock, poll the condition, or end an absence at a barrier ' +
-      '(HarnessApp.watchEvents). It takes `test` from tests/fixtures.ts. See e2e/AGENTS.md "Writing specs".',
+      '(HarnessApp.watchEvents). It takes `test` from tests/base-test.ts or tests/fixtures.ts. See e2e/AGENTS.md "Writing specs".',
   );
   process.exit(1);
 }

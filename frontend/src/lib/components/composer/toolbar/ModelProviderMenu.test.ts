@@ -2,12 +2,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import ModelProviderMenu from './ModelProviderMenu.svelte';
-import { resetSettingsForTest } from '../../../stores/settings.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../../test/helpers/settingsFixture';
 import type { Item, Thread } from '../../../types/models';
 import {
   getBindingMock,
-  resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../../test/helpers/settings';
@@ -42,8 +40,6 @@ async function buildPane(thread: Thread, items: Item[] = []) {
 
 describe('<ModelProviderMenu>', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetSettingsForTest();
     setBindingMock('ListChatBarFavorites', async () => []);
     setBindingMock('SetChatBarFavorite', async () => []);
   });

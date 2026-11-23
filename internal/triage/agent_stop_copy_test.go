@@ -12,15 +12,15 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// Live 2.1.280 captures (docs/references/fixtures/claude/README.md) of a
+// Live 2.1.280 captures (internal/provider/wirecaptures/claude/README.md) of a
 // background agent that parks on its own command while the main agent is
 // mid-turn, so the CLI hands the park to the model again as XML on the
 // isReplay echo.
 const (
 	// The copy arrives while the agent is still parked.
-	fixtureParkedCopy = "../../docs/references/fixtures/claude/local_agent_parked_copy_20260925.ndjson"
+	fixtureParkedCopy = "../provider/wirecaptures/claude/local_agent_parked_copy_20260925.ndjson"
 	// The copy arrives after the command reported, before the wake.
-	fixtureCopyBeforeWake = "../../docs/references/fixtures/claude/local_agent_copy_before_wake_20260925.ndjson"
+	fixtureCopyBeforeWake = "../provider/wirecaptures/claude/local_agent_copy_before_wake_20260925.ndjson"
 )
 
 // replayCapture feeds a capture through the real parser and router, one
@@ -178,7 +178,7 @@ func TestAgentParksOnItsOwnMonitor(t *testing.T) {
 }
 
 // The live capture of an agent whose nested async child outlives it
-// (fixtures/claude/README.md): the parent's stop is final while the child
+// (wirecaptures/claude/README.md): the parent's stop is final while the child
 // runs, and the child's stop, delivered to the main session, lands at top
 // level with its report, after the parent's card.
 func TestNestedAgentThatOutlivesItsParentStopsAtTopLevel(t *testing.T) {
@@ -186,7 +186,7 @@ func TestNestedAgentThatOutlivesItsParentStopsAtTopLevel(t *testing.T) {
 		parent = "toolu_01WqNAioa7bcQx89KAmks3gf"
 		child  = "toolu_01Rq6eGzun6BM39KZSPRECCP"
 	)
-	st, _ := replayCapture(t, "../../docs/references/fixtures/claude/local_agent_nested_async_child_no_wake_20260908.ndjson")
+	st, _ := replayCapture(t, "../provider/wirecaptures/claude/local_agent_nested_async_child_no_wake_20260908.ndjson")
 	if launch := mustGetItem(t, st, "t1", child); launch.ParentID != parent {
 		t.Fatalf("child launch under %q, want the parent %s", launch.ParentID, parent)
 	}
@@ -281,7 +281,7 @@ func TestStopWhileParkedReplay(t *testing.T) {
 			agent = "toolu_016CSmSHDDAAZg7LbVUJo5GZ"
 			shell = "toolu_0123VW7nWBUoufVYzPoJr5Bu"
 		)
-		st, _ := replayCapture(t, "../../docs/references/fixtures/claude/local_agent_owned_shell_stop_wake_20260908.ndjson")
+		st, _ := replayCapture(t, "../provider/wirecaptures/claude/local_agent_owned_shell_stop_wake_20260908.ndjson")
 		parked, ending := agentStopRows(t, st, agent)
 		if len(parked) != 1 || len(ending) != 1 {
 			t.Fatalf("agent stops: parked %d, ending %d; want 1 and 1", len(parked), len(ending))
@@ -306,7 +306,7 @@ func TestStopWhileParkedReplay(t *testing.T) {
 			agent = "toolu_015fBb9Ui8ehHifGXVD1gT5q"
 			shell = "toolu_01TKknxUfLmm8UQcLmSAzAz4"
 		)
-		st, _ := replayCapture(t, "../../docs/references/fixtures/claude/local_agent_parked_stop_task_20260908.ndjson")
+		st, _ := replayCapture(t, "../provider/wirecaptures/claude/local_agent_parked_stop_task_20260908.ndjson")
 		parked, ending := agentStopRows(t, st, agent)
 		if len(parked) != 1 || len(ending) != 1 || ending[0].Status != statusKilled {
 			t.Fatalf("agent stops: parked %+v, ending %+v; want one parked and one killed", parked, ending)

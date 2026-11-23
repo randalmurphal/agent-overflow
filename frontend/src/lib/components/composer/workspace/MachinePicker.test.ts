@@ -6,19 +6,16 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import MachinePicker from './MachinePicker.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import type { Project, Thread } from '../../../types/models';
-import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../../test/helpers/chat';
 import { idleWorkspaceActivity } from '../../../../test/helpers/workspaceLock';
-import { resetPanesForTest } from '../../../stores/panes.svelte';
-import { resetProjectsForTest } from '../../../stores/projects.svelte';
-import { __resetSelectedBackendForTest, selectedBackend } from '../../../stores/selectedBackend.svelte';
-import { __resetEntityIndexForTest, noteProject, noteThread } from '../../../transport/entityIndex';
-import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../../transport/backendIdentity';
+import { selectedBackend } from '../../../stores/selectedBackend.svelte';
+import { noteProject, noteThread } from '../../../transport/entityIndex';
+import { setBackendIdentityFromBootstrap } from '../../../transport/backendIdentity';
 import { HOME_BACKEND } from '../../../transport/backendKey';
 import { grantBackendScopes, revokeBackendScopes } from '../../../../test/helpers/scopes';
 import {
   REMOTE_BACKEND_UUID,
-  resetStagedBackends,
   stageBackend,
 } from '../../../../test/helpers/backends';
 
@@ -72,23 +69,12 @@ async function seedProjects(projects: Project[]): Promise<void> {
 
 describe('<MachinePicker>', () => {
   beforeEach(async () => {
-    resetBindingMocks();
-    resetPanesForTest();
-    resetProjectsForTest();
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    __resetSelectedBackendForTest();
-    __resetBackendIdentityForTest();
     setBackendIdentityFromBootstrap(HOME_UUID, 1, 'Desk');
     await grantBackendScopes('laptop', ['threads:read', 'threads:operate', 'settings:read']);
   });
 
   afterEach(() => {
     revokeBackendScopes('laptop');
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    __resetSelectedBackendForTest();
-    __resetBackendIdentityForTest();
   });
 
   it('names the machine the pane’s project lives on, and locks once the thread has messages', async () => {
@@ -130,6 +116,10 @@ describe('<MachinePicker>', () => {
     noteProject('project-2', 'laptop');
     const pane = buildPlaceholderPane();
     const defaults = setBindingMock('GetThreadDefaults', async () => ({}));
+    // The folder picker lists the chosen computer's home folder.
+    setBindingMock('BrowseDirectory', async () => ({
+      path: '/home/me', parent: '/home', separator: '/', entries: [], truncated: false, exists: true,
+    }));
     const { getByTestId, findByRole } = render(MachinePicker, { props: { pane } });
     await fireEvent.click(getByTestId('machine-picker-trigger'));
     await fireEvent.click(await findByRole('menuitem', { name: /Laptop/ }));
@@ -166,6 +156,10 @@ describe('<MachinePicker>', () => {
     const pane = buildPlaceholderPane();
     const defaults = setBindingMock('GetThreadDefaults', async () => ({ provider: 'claude', model: 'm' }));
 
+    // The folder picker lists the chosen computer's home folder.
+    setBindingMock('BrowseDirectory', async () => ({
+      path: '/home/me', parent: '/home', separator: '/', entries: [], truncated: false, exists: true,
+    }));
     const { getByTestId, findByRole } = render(MachinePicker, { props: { pane } });
     await fireEvent.click(getByTestId('machine-picker-trigger'));
     await fireEvent.click(await findByRole('menuitem', { name: /Laptop/ }));

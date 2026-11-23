@@ -1,11 +1,10 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { warnLeftBehind } from './gitLeftBehind';
-import { getToasts, resetToastsForTest } from './toast.svelte';
+import { getToasts } from './toast.svelte';
 
 const SHA = '0123456789abcdef0123456789abcdef01234567';
 
 describe('gitLeftBehind', () => {
-  beforeEach(() => resetToastsForTest());
 
   it('names the count and the short sha the detached label shows', () => {
     warnLeftBehind({ workspacePath: '/r', branch: '', leftBehind: { count: 2, commit: SHA } });

@@ -523,7 +523,7 @@ finishes during the wait, `task_updated` fires independently for
 task B and TaskOutput's returned content contains only task A.
 
 Fresh app-style spikes under
-`docs/references/fixtures/claude/` confirmed that TaskOutput does
+`internal/provider/wirecaptures/claude/` confirmed that TaskOutput does
 not consume or replace `task_updated`: when TaskOutput blocks on a
 running task, `task_updated` lands first and the TaskOutput
 `tool_result` lands second. If a task has already completed and its

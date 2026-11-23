@@ -3,8 +3,7 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import UsageModal from './UsageModal.svelte';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { CodexAccountUsage, UsageBucket, type UsageQuery } from '../../stores/bindings';
-import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
-import { resetUsagePeriodForTest } from '../../stores/usagePeriod.svelte';
+import { addProjectLocal } from '../../stores/projects.svelte';
 
 function bucket(groupKey: string, overrides: Partial<UsageBucket> = {}): UsageBucket {
   return new UsageBucket({
@@ -26,8 +25,6 @@ describe('<UsageModal>', () => {
   let seenQueries: UsageQuery[] = [];
 
   beforeEach(() => {
-    resetUsagePeriodForTest();
-    resetProjectsForTest();
     seenQueries = [];
     addProjectLocal({
       id: 'proj-known',

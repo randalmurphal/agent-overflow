@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   HUNK_ADDED,
   HUNK_CONTEXT,
@@ -9,7 +9,6 @@ import {
   HunkBody,
   PATCH_PARSE_CACHE_MAX_ENTRY_CHARS,
   __parsePatchCacheStatsForTest,
-  __resetParsePatchCacheForTest,
   buildPatchDisplayRows,
   buildSplitDisplayRows,
   filePatchDisplayRows,
@@ -341,9 +340,6 @@ describe('stripPatchLinePrefix', () => {
 describe('parsePatchFilesCached', () => {
   // Module-global cache: reset before each test so eviction-budget math
   // never observes entries left by a prior test.
-  beforeEach(() => {
-    __resetParsePatchCacheForTest();
-  });
 
   // Builds a syntactically valid patch padded to ~chars length, with
   // the path baked in so every generated patch is distinct content.

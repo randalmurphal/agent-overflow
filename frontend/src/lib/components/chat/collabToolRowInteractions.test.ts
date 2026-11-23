@@ -2,11 +2,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { render } from '@testing-library/svelte';
 import ToolCallCard from './ToolCallCard.svelte';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { codexSubagentDisplayLabel } from '../../utils/subagentLaunch';
 
 beforeEach(() => {
-  resetBindingMocks();
   setBindingMock('GetPayloadPreview', async () => ({
     data: '', totalSize: 0, nextOffset: 0, isComplete: true,
   }));

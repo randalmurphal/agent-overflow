@@ -3,6 +3,7 @@
   import type { Thread } from '../../types/models';
   import { formatTokens } from '../../utils/format';
   import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
+  import { providerHasFeature } from '../../providers/catalog';
   import { providerSettingsSection } from '../settings/sections';
   import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
   import Icon from '../primitives/Icon.svelte';
@@ -62,7 +63,10 @@
   );
 
   function openContextSettings(): void {
-    openSettingsOverlay(thread ? providerSettingsSection(thread.provider) : 'claude');
+    const section = thread && providerHasFeature(thread.provider, 'autoCompact')
+      ? providerSettingsSection(thread.provider)
+      : 'claude';
+    openSettingsOverlay(section);
     popover.show = false;
   }
 </script>
@@ -96,7 +100,7 @@
       onmouseleave={popover.scheduleClose}
       class="relative bg-surface-1 border border-border-subtle rounded-[var(--radius-control)] shadow-menu px-3 py-2 min-w-[190px]"
     >
-      {#if thread}
+      {#if thread && providerHasFeature(thread.provider, 'autoCompact')}
         <button
           type="button"
           onclick={openContextSettings}

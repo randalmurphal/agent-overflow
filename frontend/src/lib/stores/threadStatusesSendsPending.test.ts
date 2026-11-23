@@ -10,11 +10,10 @@ import {
   isThreadWorking,
   projectThreadReverted,
   projectTurnStarted,
-  resetForTest,
 } from './threadStatuses.svelte';
-import { markItemsFlushed, registerQueueItem, replaceQueueForThread, resetForTest as resetSendQueueForTest } from './sendQueue.svelte';
+import { markItemsFlushed, registerQueueItem, replaceQueueForThread } from './sendQueue.svelte';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
-import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
+import { noteThread } from '../transport/entityIndex';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { TransportHello } from '../transport/wsClient';
 
@@ -36,9 +35,6 @@ function strandFlushedEntry(threadId: string): void {
 }
 
 beforeEach(() => {
-  resetForTest();
-  resetSendQueueForTest();
-  __resetEntityIndexForTest();
   noteThread('remote', 'gpu', 1);
 });
 afterEach(() => {

@@ -293,10 +293,11 @@ func (s *Store) ThreadNames(ids []string, now time.Time) (_ map[string]ThreadNam
 	if err != nil {
 		return nil, fmt.Errorf("store: encode thread ids for their names: %w", err)
 	}
+	tally, join := threadTallySQL("t.id", "?2")
 	rows, err := s.reader().Query(`SELECT t.id, t.title, t.provider,
 	       CASE WHEN `+unplaceableThreadSQL("t")+` THEN '' ELSE t.placement END, t.archived,
-	       `+threadTallyColumnsSQL("t.id", "?2")+`
-	  FROM json_each(?1) j CROSS JOIN threads t WHERE t.id = j.value`, string(encoded), now.UnixMilli())
+	       `+tally+`
+	  FROM json_each(?1) j CROSS JOIN threads t `+join+` WHERE t.id = j.value`, string(encoded), now.UnixMilli())
 	if err != nil {
 		return nil, fmt.Errorf("store: read thread names: %w", err)
 	}

@@ -1,19 +1,17 @@
-import { beforeEach, afterEach, expect, it, vi } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
-import { stageBackend, resetStagedBackends, REMOTE_BACKEND_UUID } from '../../test/helpers/backends';
+import { stageBackend, REMOTE_BACKEND_UUID } from '../../test/helpers/backends';
 import { attachedBackendEntry, backendDisplayName, backendNickname, setBackendNickname } from './attachedBackends.svelte';
 import { setBackendIdentityFromBootstrap, __resetBackendIdentityForTest } from '../transport/backendIdentity';
 import { readBackendDescriptors } from '../transport/manifestBackends';
-import { storeBackendEndpoint, __resetHomeEndpointForTest } from '../transport/homeEndpoint';
+import { storeBackendEndpoint } from '../transport/homeEndpoint';
 
 function reloadNames(): void {
   window.dispatchEvent(new StorageEvent('storage', { key: 'agent-overflow:frontend:computer-nicknames', storageArea: localStorage }));
 }
 beforeEach(() => {
-  resetStagedBackends(); __resetBackendIdentityForTest(); __resetHomeEndpointForTest();
   localStorage.clear(); reloadNames();
 });
-afterEach(() => { resetStagedBackends(); __resetBackendIdentityForTest(); __resetHomeEndpointForTest(); });
 
 it('replaces a phone’s saved address label with its host name, including offline restores', () => {
   storeBackendEndpoint('mac', 'https://192.168.1.55:60522');

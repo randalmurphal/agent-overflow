@@ -1,14 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  clearThreadScrollSnapshotsForTest,
   getThreadScrollSnapshot,
   setThreadScrollSnapshot,
 } from './threadScrollSnapshots';
 
 describe('threadScrollSnapshots', () => {
-  afterEach(() => {
-    clearThreadScrollSnapshotsForTest();
-  });
 
   it('round-trips a bottom snapshot', () => {
     setThreadScrollSnapshot('t1', { kind: 'bottom' });

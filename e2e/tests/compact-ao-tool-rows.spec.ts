@@ -1,14 +1,14 @@
 // AO tool rows under the compact layout, on both mock providers: every
 // row ao-tool-rows.spec.ts reads on the desktop renders its sentence header
 // inside the phone-width thread screen, opens by touch to its decoded
-// result, and the refusal shows its message and code. A tap on a toggle
-// whose center sits less than a pixel above the "Jump to bottom" chip opens
-// the row. Screenshots of every row collapsed and expanded go to the test's
-// output directory.
+// result, and the refusal shows its message and code. expandRow opens a
+// row left with its toggle's center less than a pixel above the composer,
+// where a tap reaches the composer. Screenshots of every row collapsed and
+// expanded go to the test's output directory.
 
 import { test, expect } from './fixtures.js';
 import type { Locator } from '@playwright/test';
-import { SPAWN_TITLE, TARGET_TITLE, atJumpChipEdge, driveAoToolRows, expandRow, expectRowTextWhole, firstTextFits, openLead, shootRow, toolRow } from './ao-tool-rows-helpers.js';
+import { SPAWN_TITLE, TARGET_TITLE, atOverlayEdge, driveAoToolRows, expandRow, expectRowTextWhole, firstTextFits, openLead, shootRow, toolRow } from './ao-tool-rows-helpers.js';
 
 for (const provider of ['claude', 'codex'] as const) {
   test(`${provider}: AO tool rows read on the compact thread screen`, async ({ harness, page }) => {
@@ -57,9 +57,10 @@ for (const provider of ['claude', 'codex'] as const) {
       'run-status': (row) => expect(row.getByTestId('tool-call-card-ao-link')).toHaveAttribute('data-link-kind', 'run'),
     };
     for (const [name, row] of rows) {
-      // The rows above the loop row are open, so the timeline has the room
-      // to bring it down to the chip.
-      if (name === 'loop') await atJumpChipEdge(row, () => expandRow(row));
+      // The last row, with every row above it open, as the turn leaves it
+      // when the reader has opened the rest: the timeline has the room to
+      // bring it down to the composer.
+      if (name === 'run-status') await atOverlayEdge(row, page.getByTestId('composer-root'), () => expandRow(row));
       else await expandRow(row);
       await opened[name](row);
       await fits(row);

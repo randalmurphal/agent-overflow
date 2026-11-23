@@ -10,8 +10,11 @@ import (
 	"slices"
 	"time"
 
+	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/acp"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provider/codex"
@@ -26,9 +29,8 @@ import (
 // --- Session bindings and spawn helpers ---
 //
 // These methods own the provider-session lifecycle seen by Wails
-// bindings. Start/stop plumbing that coordinates multiple in-flight
-// start attempts lives in app_session_runtime.go; thin wire façades live
-// in app_session_bindings.go. Everything in this file
+// bindings. Session runtime coordination lives in internal/sessionruntime;
+// thin wire façades live in app_session_bindings.go. Everything in this file
 // runs the actual spawn and shutdown of a provider subprocess for a
 // given thread.
 
@@ -335,14 +337,6 @@ func (a *App) startSessionNow(threadID string) error {
 	// on the resolution above (which already knows whether the override won
 	// the prompt) and never fatal to the spawn.
 	a.ensureClaudeMemoryDir(t, opts.WorkDir, promptOverride)
-	// The `ao` credential is minted here, before the spawn, because the
-	// process env is what carries it. It only becomes usable when the session
-	// is registered (sessionManager.put), so a failed spawn leaves nothing
-	// behind. See app_session_runtime.go.
-	credential, err := a.mintAOCredential(t)
-	if err != nil {
-		return fmt.Errorf("start session: %w", err)
-	}
 
 	// Retire runtime state owned by the prior Codex app-server before a new
 	// subprocess can replay or emit lifecycle events. Child ownership stays
@@ -365,7 +359,7 @@ func (a *App) startSessionNow(threadID string) error {
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
-	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, credential, agent, mem, place, onEvent)
+	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, agent, mem, place, onEvent)
 	if err != nil {
 		if codex.IsThreadNotFound(err) && agent.Block != "" {
 			// An assistant's Codex thread the provider no longer has.
@@ -421,7 +415,7 @@ func (a *App) startSessionNow(threadID string) error {
 	// user-perceivable. The pattern mirrors probeStartupProviderStatuses
 	// in ServiceStartup.
 	if newSess.Codex != nil && opts.Resume != "" {
-		go a.reconcileCodexAfterStart(threadID)
+		go a.reconcileCodexAfterStart(threadID, newSess)
 	}
 
 	return nil
@@ -527,24 +521,19 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 }
 
 // sessionProcessEnv is the ONE place a provider subprocess's environment is
-// assembled, so anything the app injects reaches Claude and Codex identically:
+// assembled, so anything the app injects reaches every provider identically:
 // the user's custom environment for that provider (settings, applied at spawn),
 // the boot-mode overrides (providerExtraEnv — the harness's mock-control
-// credentials), the session's CLI credential (AO_ENDPOINT / AO_TOKEN /
-// AO_THREAD_ID), and the
+// credentials), the static in-session marker (AO_IN_SESSION=1 so the binary
+// refuses to boot a second app instance from inside a session), and the
 // PATH entry that makes `agent-overflow` resolve to this executable (D30).
 //
 // Precedence is provider config < user custom env < boot-mode overrides < AO
-// credential. The user's environment outranks the provider config because it
-// is a deliberate override of AO's defaults; it sits below the last two because
-// those are contracts, not preferences — the AO names are how the CLI finds its
-// own app, and the harness's mock control channel must not be reconfigurable
-// from user settings. In practice the layers cannot collide: every name AO
-// injects is reserved at the settings boundary (settings.providerenv.go), so a
-// user value that would have been shadowed here is refused on save instead of
-// vanishing at spawn. The contract itself — which variable is set for which
-// kind of session, and what the CLI does when one is missing — lives in
-// internal/aocli/AGENTS.md, next to the code that reads it.
+// session marker. The user's environment outranks the provider config because
+// it is a deliberate override of AO's defaults; it sits below the last two
+// because those are contracts, not preferences. Every AO_* name is reserved at
+// the settings boundary (settings.providerenv.go), so a user value that would
+// have been shadowed here is refused on save instead of vanishing at spawn.
 //
 // PATH is the one entry that merges rather than wins: whatever a provider
 // config or boot-mode override put there is kept, with the CLI's directory in
@@ -553,17 +542,13 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 func (a *App) sessionProcessEnv(
 	providerName string,
 	env map[string]string,
-	credential aoSessionCredential,
 ) map[string]string {
 	custom := a.providerCustomEnv(providerName)
-	if len(custom) == 0 && len(a.providerExtraEnv) == 0 && len(credential.env) == 0 && a.cliBinDir == "" {
-		return env
-	}
-	merged := make(map[string]string, max(len(env), len(custom), len(a.providerExtraEnv), len(credential.env)))
+	merged := make(map[string]string)
 	maps.Copy(merged, env)
 	maps.Copy(merged, custom)
 	maps.Copy(merged, a.providerExtraEnv)
-	maps.Copy(merged, credential.env)
+	merged[aocli.EnvInSession] = "1"
 	if a.cliBinDir != "" {
 		prependCLIBinDir(merged, a.cliBinDir)
 	}
@@ -580,7 +565,6 @@ func (a *App) spawnProviderSession(
 	t store.Thread,
 	opts provider.SessionOptions,
 	mcpServers map[string]any,
-	credential aoSessionCredential,
 	agent standingAgentSession,
 	mem sessionMemory,
 	place subThreadPlace,
@@ -618,7 +602,7 @@ func (a *App) spawnProviderSession(
 		cfg.SessionStartForget = mem.Forget
 		cfg.NativeMemoryOff = mem.OwnMemoryOff
 		cfg.InstalledCLIVersion = a.installedProviderVersion(t.Provider)
-		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
+		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env)
 		if mcpServers[remoteMCPName] != nil {
 			cfg.Env = withRemoteMCPClaudeEnv(cfg.Env)
 		}
@@ -662,16 +646,13 @@ func (a *App) spawnProviderSession(
 			CredentialAccount:    accountSelection.Account,
 			Claude:               sess,
 			LaunchOptions:        opts,
-			AOToken:              credential.token,
-			AOScope:              credential.scope,
-			AOEnv:                credential.env,
 			Liveness:             liveness,
 		}, nil
 
 	case string(provider.Codex):
 		cfg := codex.ConfigFromOptions(opts)
 		cfg.Binary = a.providerBinaryPath(t.Provider)
-		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
+		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env)
 		cfg.EventLogger = a.logger
 		cfg.Reaper = a.groupReaper("codex session")
 		cfg.MCPServers = mcpServers
@@ -724,75 +705,90 @@ func (a *App) spawnProviderSession(
 			}
 			cfg.ResumeHasUnresolvedSubagents = len(cfg.ResumeCollabLaunches) > 0
 		}
-		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
+		conn, releaseConn, poolKey, err := a.acquireCodexConn(
+			a.lifeCtx(),
+			threadID,
+			cfg.Binary,
+			cfg.WorkDir,
+			cfg.Env,
+			&accountSelection,
+		)
 		if err != nil {
 			return session{}, err
 		}
-		if accountSelection.AccountID != "" {
-			accountCtx, cancelAccountRead := context.WithTimeout(
-				a.lifeCtx(),
-				codexAccountReadTimeout,
-			)
-			accountInfo, accountErr := sess.AccountInfo(accountCtx)
-			cancelAccountRead()
-			if accountErr == nil {
-				var observedAccountID string
-				var updatedAccount *provideraccounts.Account
-				observedAccountID, updatedAccount, accountErr = a.accountIDForObservedIdentity(
-					string(provider.Codex),
-					accountSelection.AccountID,
-					accountInfo,
-				)
-				if accountErr == nil && updatedAccount != nil {
-					a.emitProviderAccountIfCurrent(
-						string(provider.Codex),
-						*updatedAccount,
-						providerAccountInfo(*updatedAccount),
-					)
-				}
-				if accountErr == nil && observedAccountID != accountSelection.AccountID {
-					accountErr = fmt.Errorf(
-						"codex app-server authenticated as account %q instead of selected account %q",
-						observedAccountID,
-						accountSelection.AccountID,
-					)
-				}
-				if accountErr == nil && a.providerAccounts != nil {
-					if account, ok := a.providerAccounts.Get(
+		sess, err := conn.OpenPooled(a.lifeCtx(), threadID, cfg, onEvent, releaseConn)
+		if err != nil && errors.Is(err, codex.ErrThreadUnloadFailed) {
+			// The shared app-server could not unload the prior loaded thread;
+			// dial a dedicated process and verify the account identity BEFORE
+			// opening/resuming the thread so changed overrides take effect
+			// cleanly and no turn can start under a mismatched account.
+			log.Printf("codex: shared conn unload failed for %s (%v); spawning dedicated app-server", threadID, err)
+			poolKey = ""
+			conn = nil
+			dedicatedConn, dialErr := codex.Dial(a.lifeCtx(), codex.ConnConfig{
+				Binary:      cfg.Binary,
+				WorkDir:     cfg.WorkDir,
+				Env:         cfg.Env,
+				EventLogger: cfg.EventLogger,
+				Reaper:      cfg.Reaper,
+				ThreadID:    threadID,
+			})
+			if dialErr != nil {
+				return session{}, dialErr
+			}
+			if accountSelection.AccountID != "" {
+				accountCtx, cancelAccountRead := context.WithTimeout(a.lifeCtx(), codexAccountReadTimeout)
+				accountInfo, accountErr := dedicatedConn.AccountInfo(accountCtx)
+				cancelAccountRead()
+				if accountErr == nil {
+					var observedAccountID string
+					var updatedAccount *provideraccounts.Account
+					observedAccountID, updatedAccount, accountErr = a.accountIDForObservedIdentity(
 						string(provider.Codex),
 						accountSelection.AccountID,
-						time.Now(),
-					); ok {
-						accountSelection.Account = providerAccountInfo(account)
+						accountInfo,
+					)
+					if accountErr == nil && updatedAccount != nil {
+						a.emitProviderAccountIfCurrent(
+							string(provider.Codex),
+							*updatedAccount,
+							providerAccountInfo(*updatedAccount),
+						)
+					}
+					if accountErr == nil && observedAccountID != accountSelection.AccountID {
+						accountErr = fmt.Errorf(
+							"codex app-server authenticated as account %q instead of selected account %q",
+							observedAccountID,
+							accountSelection.AccountID,
+						)
 					}
 				}
+				if accountErr != nil {
+					return session{}, errors.Join(accountErr, dedicatedConn.Close())
+				}
 			}
-			if accountErr != nil {
-				closeErr := sess.Close()
-				return session{}, errors.Join(accountErr, closeErr)
+			dedicatedConn.SetSkillsChangedHandler(func() {
+				a.handleCodexSkillsChanged()
+			})
+			dedicatedConn.SetMCPStartupUpdateHandler(func(u codex.MCPStartupUpdate) {
+				a.handleCodexMCPStartupUpdate(u)
+			})
+			dedicatedConn.SetMCPOAuthCompletedHandler(func(_ string, serverName string, success bool, errMsg string) {
+				a.handleCodexMCPOAuthCompleted("", serverName, success, errMsg)
+			})
+			sess, err = dedicatedConn.OpenOwned(a.lifeCtx(), threadID, cfg, onEvent)
+			if err != nil {
+				return session{}, errors.Join(err, dedicatedConn.Close())
 			}
 		}
-		// Wire the OAuth-completion observer before any RPC can fly so
-		// the first `mcpServer/oauthLogin/completed` notification has a
-		// handler ready. Claude has no equivalent wire signal — its
-		// completion is internal to the CLI's loopback listener and the
-		// popup's "Refresh" path covers that side.
+		if err != nil {
+			return session{}, err
+		}
+		// Wire the per-session OAuth-completion observer; connection-wide
+		// skills/changed and mcpServer/startupStatus/updated handlers are
+		// installed once on the Conn during Dial.
 		sess.SetMCPOAuthCompletedHandler(func(serverName string, success bool, errMsg string) {
 			a.handleCodexMCPOAuthCompleted(threadID, serverName, success, errMsg)
-		})
-		// `mcpServer/startupStatus/updated` carries per-server live
-		// state during/after thread/start. Feed it into the mcpstatus
-		// cache so the popup reflects the running provider's view
-		// without an ephemeral refetch.
-		sess.SetMCPStartupUpdateHandler(func(u codex.MCPStartupUpdate) {
-			a.handleCodexMCPStartupUpdate(u)
-		})
-		// `skills/changed` is the app-server's own signal that its watched
-		// skill files moved. Drop the skills cache so the next composer
-		// render re-reads instead of offering a list that no longer
-		// matches disk.
-		sess.SetSkillsChangedHandler(func() {
-			a.handleCodexSkillsChanged()
 		})
 		return session{
 			Provider:             string(provider.Codex),
@@ -801,15 +797,14 @@ func (a *App) spawnProviderSession(
 			CredentialAccountID:  accountSelection.AccountID,
 			CredentialAccount:    accountSelection.Account,
 			Codex:                sess,
+			Conn:                 conn,
+			PoolKey:              poolKey,
 			LaunchOptions:        opts,
-			AOToken:              credential.token,
-			AOScope:              credential.scope,
-			AOEnv:                credential.env,
 			Liveness:             liveness,
 		}, nil
 
 	case string(provider.ClaudeTUI):
-		cfg, err := a.claudeTUISessionConfig(threadID, opts, prompts.claudeAppend, mcpServers, credential, mem)
+		cfg, err := a.claudeTUISessionConfig(threadID, opts, prompts.claudeAppend, mcpServers, mem)
 		if err != nil {
 			return session{}, err
 		}
@@ -822,10 +817,53 @@ func (a *App) spawnProviderSession(
 			Token:         sessionToken,
 			ClaudeTUI:     sess,
 			LaunchOptions: opts,
-			AOToken:       credential.token,
-			AOScope:       credential.scope,
-			AOEnv:         credential.env,
 			Liveness:      liveness,
+		}, nil
+
+	case string(provider.Agy):
+		binary := a.providerBinaryPath(t.Provider)
+		env := a.sessionProcessEnv(t.Provider, nil)
+		conn, releaseConn, poolKey, err := a.acquireAgyConn(
+			a.lifeCtx(),
+			threadID,
+			binary,
+			opts.WorkDir,
+			env,
+			&accountSelection,
+		)
+		if err != nil {
+			return session{}, err
+		}
+		sessCfg := acp.SessionConfig{
+			WorkDir:               opts.WorkDir,
+			ResumeSessionID:       opts.Resume,
+			Model:                 opts.Model,
+			ReasoningEffort:       string(opts.ReasoningEffort),
+			InteractionMode:       opts.Mode,
+			RuntimeMode:           opts.RuntimeMode,
+			SystemPrompt:          opts.SystemPrompt,
+			AppendSystemPrompt:    joinPromptParts(prompts.claudeAppend, memoryPromptText(mem)),
+			AdditionalDirectories: mem.Dirs,
+			DisabledTools:         opts.DisabledTools,
+			MCPServers:            agy.TranslateMCPServers(mcpServers),
+			Flavor:                agy.NewFlavor(a.agyAppDataDir()),
+		}
+		sess, err := conn.OpenPooled(a.lifeCtx(), threadID, sessCfg, onEvent, releaseConn)
+		if err != nil {
+			return session{}, err
+		}
+		return session{
+			Provider:             string(provider.Agy),
+			Token:                sessionToken,
+			CredentialGeneration: accountSelection.Generation,
+			CredentialAccountID:  accountSelection.AccountID,
+			CredentialAccount:    accountSelection.Account,
+			ACP:                  sess,
+			Session:              sess,
+			Conn:                 conn,
+			PoolKey:              poolKey,
+			LaunchOptions:        opts,
+			Liveness:             liveness,
 		}, nil
 
 	default:
@@ -840,7 +878,6 @@ func (a *App) claudeTUISessionConfig(
 	opts provider.SessionOptions,
 	appGuide string,
 	mcpServers map[string]any,
-	credential aoSessionCredential,
 	mem sessionMemory,
 ) (claudetui.Config, error) {
 	cfg := claudetui.ConfigFromOptions(opts)
@@ -873,7 +910,7 @@ func (a *App) claudeTUISessionConfig(
 	// matches the headless spawn: custom env over the setting over an
 	// inherited value.
 	cfg.Env = provider.BuildEnvironment(claude.WithCommandTimeoutEnv(
-		a.sessionProcessEnv(string(provider.ClaudeTUI), nil, credential),
+		a.sessionProcessEnv(string(provider.ClaudeTUI), nil),
 		opts.ClaudeMaxCommandTimeoutHours,
 	))
 	cfg.AdditionalDirs = a.claudeAdditionalDirs()
@@ -1469,8 +1506,10 @@ func (a *App) teardownDeadPreInitSessionLocked(threadID, sessionToken string) er
 // never had a session registered.
 //
 // Not shared with unregisterSession (readLoop disconnect): that path
-// runs after the provider subprocess has already exited, so calling
-// closeProviderSession would be redundant, and it deliberately leaves
+// runs after the provider subprocess has already exited (a Claude TUI
+// session has also released its own listeners, feed loop, parser and
+// prompt files by then), so calling closeProviderSession would be
+// redundant, and it deliberately leaves
 // triage state alone so the final wire frames have somewhere to land.
 func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 	return a.teardownSession(threadID, sess, false, dropQueue)

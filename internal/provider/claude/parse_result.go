@@ -7,7 +7,7 @@
 // value IS what the CLI's own auto-compact trigger uses
 // (compactMetadata.preTokens) — verified across five production
 // compactions; see
-// docs/references/fixtures/claude/advisor_pretokens_correlation_20260523.summary.json.
+// internal/provider/wirecaptures/claude/advisor_pretokens_correlation_20260523.summary.json.
 // The `result` envelope carries the same cumulative usage in its flat
 // `usage` and `modelUsage[parent_model]` fields, but emitting from
 // here would duplicate the meter reading the trailing message_delta

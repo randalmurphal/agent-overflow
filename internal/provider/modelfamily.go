@@ -130,6 +130,8 @@ func modelGrammarFor(kind ProviderKind) modelGrammar {
 		return readClaudeSlug
 	case Codex:
 		return readCodexSlug
+	case Agy:
+		return nil
 	}
 	return nil
 }

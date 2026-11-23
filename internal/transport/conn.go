@@ -368,9 +368,8 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// dead. Deregistration rides the SAME cleanup pass every other
 	// per-connection resource uses, rather than a parallel teardown that
 	// could disagree with it about when this connection ended.
-	if detach := settings.sessionConns.attach(
-		profile.sessionID, h.closeForRevocation(cancel),
-	); !state.RegisterCleanup(detach) {
+	detach := settings.sessionConns.attach(profile.sessionID, h.closeForRevocation(cancel))
+	if _, err := state.Bind("live-session-registry", detach); err != nil {
 		// The connection was already closing when we got here. Nothing
 		// will run the cleanup list again, so undo the attach ourselves.
 		detach()

@@ -3,7 +3,6 @@ import { tick } from 'svelte';
 import { render } from '@testing-library/svelte';
 import UseRunningElapsedHarness from './UseRunningElapsedHarness.svelte';
 import {
-  __resetRunningElapsedTickerForTest,
   __runningElapsedAcquireCountForTest,
   __runningElapsedTickerActiveForTest,
   __runningElapsedTickerSubscribersForTest,
@@ -13,11 +12,9 @@ describe('createRunningElapsed', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(5_000);
-    __resetRunningElapsedTickerForTest();
   });
 
   afterEach(() => {
-    __resetRunningElapsedTickerForTest();
     // A restored spy is restored again by every restoreAllMocks, so clear
     // the spies while their fake-timer originals are still installed.
     vi.restoreAllMocks();

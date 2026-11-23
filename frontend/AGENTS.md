@@ -9,6 +9,13 @@ not check `.svelte` files or component props. Before completion run
 Playwright specs that cover the changed behavior (root Validation). There is no
 repository formatter; preserve the surrounding style.
 
+Run the tests a change can affect with `../bin/ao-netns pnpm run test:affected
+<base>` (the unit projects) and `../bin/ao-netns pnpm run test:browser:affected
+<base>` (the browser project), where `<base>` is the branch the change goes
+into, such as `origin/main`. They run `vitest --changed <base>`, or the
+projects whole when the diff removes a file a test reads
+(`scripts/vitest-changed.mjs`).
+
 ## Navigation
 
 Area guides own the contracts for
@@ -135,16 +142,40 @@ logic. Stateful APIs need transition coverage, including repeated attach and
 detach. Browser-only geometry, focus, and scroll behavior belongs in the browser
 project.
 
+A browser-project run that stops reporting ends with a `stalled-page
+watchdog` error naming the silent file, or saying no file was running
+(`src/test/stalledPageWatchdog.ts`); `pnpm run check:stall-watchdog` checks
+the watchdog against blocked and live pages.
+
 Files in the `unit` Vitest project share a worker process, so a test must
 restore every global and prototype method it changes; prefer `vi.stubGlobal`.
 `src/test/sharedGlobals.ts` fails a file that leaves one replaced. Files that
 use `vi.mock`, `vi.doMock`, `vi.unmock` or `vi.resetModules` run in the
 `unit-isolated` project automatically.
 
+Module state is reset between tests by name: an export named
+`reset…ForTest` or `clear…ForTest` that takes no argument runs after every
+test of a file that loaded its module. `src/test/config/testResets.ts` owns
+the order, the steps that take arguments and the exceptions. Tests read
+repository files through imports (`?raw`, JSON, `import.meta.glob`), never
+`node:fs`, so `vitest --changed` selects them; oxlint enforces it.
+
+A unit test never waits on the wall clock. Pass a product timer on a fake clock
+(fake only the timers the code uses, beside real ones it needs), or wait for the
+condition; read the product's constant rather than repeating its value.
+A child process goes through `runNodeWorkload`. Randomized tests take their
+generator, seed count and loop from `src/test/helpers/seededRandom.ts`. A
+browser test whose assertion is not per painted frame drives the streaming
+reveal with `revealWithoutWaitingForFrames` (`src/test/helpers/browserFrames.ts`).
+
 Preserve unlisted exports when mocking shared modules with `importOriginal`.
-Prefer binding mocks over mocking through `.svelte.ts` import boundaries. Add
-passive-load bindings to the shared app defaults when every rendered app needs
-them.
+Prefer binding mocks over mocking through `.svelte.ts` import boundaries. A
+call to a binding with no mock fails the test that made it, even when the code
+under test catches the failure. A load that a surface or store starts with no
+user action gets a default in `src/test/mocks/bindings-app.ts` that answers as
+the Go side does for a backend with nothing recorded. The test answers what its
+own action calls. A test that needs a binding absent installs a mock that
+rejects with the backend's error.
 
 Do not edit `node_modules`. Temporary fixes for active dependencies live in
 versioned pnpm patches; adopted dormant code lives under `src/` with its license.

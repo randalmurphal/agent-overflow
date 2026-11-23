@@ -5,18 +5,13 @@ import ProjectItem from '../ProjectItem.svelte';
 import { entryFromRow } from '../../../../test/helpers/sidebarEntry';
 import type { SidebarEntry } from '../sidebarEntries';
 import { createThreadPane } from '../../../stores/thread.svelte';
-import { addProjectLocal, resetProjectsForTest } from '../../../stores/projects.svelte';
-import {
-  resetSidebarForTest,
-} from '../../../stores/sidebar.svelte';
+import { addProjectLocal } from '../../../stores/projects.svelte';
 import {
   projectTurnStarted,
-  resetForTest as resetThreadStatuses,
 } from '../../../stores/threadStatuses.svelte';
 import {
   consumePendingGroupRename,
   getThreadGroupById,
-  resetThreadGroupsForTest,
 } from '../../../stores/threadGroups.svelte';
 import {
   getThreadFilterQuery,
@@ -25,7 +20,6 @@ import {
 import type { PopoverFloatingEl } from '../../../utils/popoverOwnership';
 import type { Project, ProjectWithCounts, Thread } from '../../../types/models';
 import {
-  resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 import { entryRecordForTest, setEntryExpanded } from '../../../stores/sidebarEntryContinuity.svelte';
@@ -77,12 +71,7 @@ function thread(id: string, overrides: Partial<Thread> = {}): Thread {
 
 describe('<ProjectItem>', () => {
   beforeEach(() => {
-    resetSidebarForTest();
-    resetProjectsForTest();
-    resetThreadStatuses();
-    resetThreadGroupsForTest();
     setThreadFilterQuery('');
-    resetBindingMocks();
     setBindingMock('SwitchThread', async (threadId: string) => thread(threadId));
     setBindingMock('ListRecentTurns', async () => []);
   });

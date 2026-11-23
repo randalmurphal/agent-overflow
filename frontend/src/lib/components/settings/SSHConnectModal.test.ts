@@ -1,12 +1,11 @@
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor, cleanup } from '@testing-library/svelte';
 import SSHConnectModal from './SSHConnectModal.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { __resetSystemsForTest } from '../../stores/systems.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetToLocalPage } from '../../../test/helpers/scopes';
 
 beforeEach(() => {
-  resetBindingMocks(); __resetSystemsForTest(); resetToLocalPage();
+  resetToLocalPage();
   setBindingMock('CancelSSHConnection', async () => {});
   setBindingMock('RemoveBackend', async () => {});
 });

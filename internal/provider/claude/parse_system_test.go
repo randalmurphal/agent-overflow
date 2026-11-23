@@ -1215,7 +1215,7 @@ func TestParseSystem_ModelFallbackSubtypesShareARequestIDWithoutColliding(t *tes
 // fires one per output event of the stream it watches, all sharing one
 // task_id, so triage needs the uuid to key one row per event instead of
 // overwriting a single row. Verified present on every task_notification
-// in docs/references/fixtures/claude/interactive_outlives_taskoutput_monitor.ndjson.
+// in internal/provider/wirecaptures/claude/interactive_outlives_taskoutput_monitor.ndjson.
 func TestParseTaskNotificationEvent_CarriesEnvelopeUUIDOntoMeta(t *testing.T) {
 	parser := NewParser()
 

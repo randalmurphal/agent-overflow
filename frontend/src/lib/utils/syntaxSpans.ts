@@ -9,7 +9,7 @@
 // syntax.css owns the colors per theme, so a theme toggle costs zero
 // re-requests.
 
-import { highlightMetadata, resetHighlightServiceForTest } from './highlightService';
+import { highlightMetadata } from './highlightService';
 import type { EncodedLine } from '../../../bindings/agent-overflow/internal/highlight/models.js';
 
 export type { EncodedLine };
@@ -60,7 +60,6 @@ let classNamesPromise: Promise<void> | null = null;
 /** Test-only: drop the memoized table fetch so a test can exercise the
  * first-load path (including its rejection branch). */
 export function resetSyntaxClassNamesForTest(): void {
-  resetHighlightServiceForTest();
   classNamesPromise = null;
   classNameTable = [];
   classNamesLoaded = false;

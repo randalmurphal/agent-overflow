@@ -1,10 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildPane, makeThread } from '../../test/helpers/chat';
 import { modelCatalog } from '../../test/helpers/modelCatalog';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { resetPanesForTest } from './panes.svelte';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { getToasts, removeToast } from './toast.svelte';
-import { ensureProviderModels, getProviderModels, invalidateProviderModels, refreshProviderModels, resetProviderModelsForTest } from './providerModels.svelte';
+import { ensureProviderModels, getProviderModels, invalidateProviderModels, refreshProviderModels } from './providerModels.svelte';
 import type { ModelInfo } from '../types/settings';
 
 const available: ModelInfo = {
@@ -19,9 +18,6 @@ const opus: ModelInfo = { slug: 'claude-opus-5', name: 'Opus 5', provider: 'clau
 
 describe('catalog refresh advisories', () => {
   beforeEach(() => {
-    resetPanesForTest();
-    resetBindingMocks();
-    resetProviderModelsForTest();
     for (const toast of getToasts()) removeToast(toast.id);
   });
   afterEach(() => vi.restoreAllMocks());

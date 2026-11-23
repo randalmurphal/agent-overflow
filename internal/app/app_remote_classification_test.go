@@ -2,13 +2,12 @@ package app
 
 import (
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"path/filepath"
 	"testing"
 
 	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/deviceclient"
+	"agent-overflow/internal/testutil/reporoot"
 	"agent-overflow/internal/transport"
 
 	"github.com/google/uuid"
@@ -104,7 +103,7 @@ func TestRemoteOwnerMethodsAreClassified(t *testing.T) {
 	seen := map[string]bool{}
 	fset := token.NewFileSet()
 	for _, name := range remoteOwnerFiles {
-		file, err := parser.ParseFile(fset, filepath.Join("internal", "app", name), nil, 0)
+		file, err := reporoot.ParseGoFile(t, fset, "internal/app/"+name, 0)
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}

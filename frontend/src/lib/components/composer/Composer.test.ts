@@ -4,13 +4,13 @@ import { tick } from 'svelte';
 import Composer from './Composer.svelte';
 import {
   createComposerDraftStore,
-  resetComposerDraftSnapshotsForTest,
 } from '../../stores/composerDraft.svelte';
 import { __setSmoothingClockForTest, createThreadPane } from '../../stores/thread.svelte';
 import { FakeSmoothingClock } from '../../../test/helpers/smoothingClock';
 import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { buildPane, makeItem, makeThread as makeTestThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setAttachmentThumbnailMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../../test/helpers/scopes';
 import type { Attachment } from '../../types/attachment';
@@ -27,17 +27,14 @@ import {
 import {
   getQueueForThread,
   replaceQueueForThread,
-  resetForTest as resetSendQueueForTest,
 } from '../../stores/sendQueue.svelte';
 import {
   getActiveTurn,
   projectSendResolved,
   projectSendStarted,
-  resetForTest as resetThreadStatuses,
 } from '../../stores/threadStatuses.svelte';
 import {
   enterCreateBranchMode,
-  resetForTest as resetWorktreeIntent,
   setNewBranchBase,
   setNewBranchName,
   setThreadEnvMode,
@@ -48,17 +45,12 @@ import type { Project } from '../../types/models';
 import * as composerKeyboard from './composerKeyboard';
 import {
   notifyTerminalFocus,
-  resetTerminalFocusForTest,
 } from '../terminal/terminalStore.svelte';
-import { focusPane, getPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { focusPane, getPane, registerPaneForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
-import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { UsageBucket } from '../../stores/bindings';
-import { resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
-import { resetDirectSendsForTest } from '../../stores/threadInterrupt.svelte';
-import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRevert';
 import { __setTransportHelloForTest, UNREACHABLE_SETTLE_MS } from '../../stores/transportStatus.svelte';
 import { applySessionLive } from '../../stores/threadSessionLive.svelte';
 import { DisconnectedError, TransportError } from '../../transport/wsClient';
@@ -67,7 +59,6 @@ import {
   applyShellCommandEvent,
   dismissShellRun,
   getShellRun,
-  resetShellRunsForTest,
 } from '../../stores/shellCommands.svelte';
 import { probeReactivity } from '../../../test/helpers/reactivity.svelte';
 import { untrack } from 'svelte';
@@ -222,23 +213,16 @@ function deferred<T>() {
 
 describe('<Composer>', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetComposerDraftSnapshotsForTest();
+    // The composer loads the thumbnail of each image a test uploads.
+    setAttachmentThumbnailMock();
+    // The composer loads its provider's model list.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     resetProposedPlanCacheForTests();
-    resetWorktreeIntent();
-    resetSendQueueForTest();
-    resetThreadStatuses();
-    resetThreadInterruptStateForTest();
-    resetDirectSendsForTest();
-    resetResendRevertMarkersForTest();
-    resetTerminalFocusForTest();
     // The initial-focus gate compares against the panes store's focused
     // pane id ('main' after reset) — without this, any test that moves
     // logical focus would silently change which composers may take
     // initial focus for every later test in the file.
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetCompanionPanesForTest();
     installDraftMocks();
     setBindingMock('SendMessageWithOptions', async () => makeTestThread({ runtimeMode: 'full-access' }));
     setBindingMock('InterruptTurn', async () => {});
@@ -2876,7 +2860,7 @@ describe('<Composer>', () => {
     ]));
 
     await waitFor(() => expect(upload).toHaveBeenCalledTimes(2));
-    expect(draft.content).toBe('please inspect [Image #1] [Image #2]');
+    await waitFor(() => expect(draft.content).toBe('please inspect [Image #1] [Image #2]'));
     expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['att-1', 'att-2']);
 
     await fireEvent.click(getByTestId('composer-send'));
@@ -4513,9 +4497,6 @@ describe('<Composer>', () => {
   // card belong to stores/shellCommands; what is decided here is when a
   // draft is a command, what Enter does with it, and what stays behind.
   describe('shell mode', () => {
-    beforeEach(() => {
-      resetShellRunsForTest();
-    });
 
     it('runs a leading-! draft as a command and consumes only its text', async () => {
       const pane = await buildPane();

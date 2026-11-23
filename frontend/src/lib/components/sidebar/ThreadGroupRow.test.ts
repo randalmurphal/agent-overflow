@@ -9,16 +9,15 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadGroupRow from './ThreadGroupRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
-import { openEmptyPane, resetPanesForTest } from '../../stores/panes.svelte';
+import { addProjectLocal } from '../../stores/projects.svelte';
+import { openEmptyPane } from '../../stores/panes.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { isGroupExpanded, resetSidebarForTest, toggleGroup } from '../../stores/sidebar.svelte';
+import { isGroupExpanded, toggleGroup } from '../../stores/sidebar.svelte';
 import {
   requestGroupRename,
   upsertThreadGroup,
-  resetThreadGroupsForTest,
 } from '../../stores/threadGroups.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   beginThreadRowDrag,
   encodeThreadDragPayload,
@@ -95,11 +94,6 @@ async function flush(): Promise<void> {
 
 describe('<ThreadGroupRow>', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetProjectsForTest();
-    resetSidebarForTest();
-    resetThreadGroupsForTest();
-    resetBindingMocks();
     endThreadRowDrag();
     replaceAllThreads([mkThread('t1'), mkThread('t2')]);
     setBindingMock('GetSettings', async () => null);
@@ -375,11 +369,6 @@ describe('<ThreadGroupRow> without threads:operate', () => {
   const INERT = 'Not granted to this device';
 
   beforeEach(async () => {
-    resetPanesForTest();
-    resetProjectsForTest();
-    resetSidebarForTest();
-    resetThreadGroupsForTest();
-    resetBindingMocks();
     replaceAllThreads([mkThread('t1'), mkThread('t2')]);
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
@@ -407,10 +396,6 @@ describe('<ThreadGroupRow> without threads:operate', () => {
 
 describe('<ThreadGroupRow> compact layout', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetSidebarForTest();
-    resetThreadGroupsForTest();
-    resetBindingMocks();
     replaceAllThreads([mkThread('t1'), mkThread('t2')]);
     setBindingMock('GetSettings', async () => null);
     await loadSettings();

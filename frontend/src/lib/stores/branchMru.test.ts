@@ -1,15 +1,12 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   BRANCH_MRU_MAX_ENTRIES,
   recentBranchSelections,
   recordBranchSelection,
 } from './branchMru';
-import { appStorageSet, resetAppStorageForTest } from './appStorage';
+import { appStorageSet } from './appStorage';
 
 describe('branchMru', () => {
-  beforeEach(() => {
-    resetAppStorageForTest();
-  });
 
   it('returns empty for unknown or empty project', () => {
     expect(recentBranchSelections('proj-1')).toEqual([]);

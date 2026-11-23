@@ -6,8 +6,7 @@
 // Owns its backend: it adopts provider accounts, which is process-wide state
 // no other spec should inherit.
 
-import { expect } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { expect, test } from './base-test.js';
 
 import { launchHarness } from '../src/harness.js';
 import {

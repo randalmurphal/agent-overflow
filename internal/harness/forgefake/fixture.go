@@ -25,6 +25,10 @@ type Fixture struct {
 	Repos  []Repo `json:"repos"`
 	// SSHHosts maps an SSH alias to the hostname returned by ssh -G.
 	SSHHosts map[string]string `json:"sshHosts,omitempty"`
+	// Accounts are the users, organizations and groups the hosts know,
+	// which the facts reads answer (facts.go). Seeding one again by
+	// forge, host and login replaces it.
+	Accounts []Account `json:"accounts,omitempty"`
 }
 
 // Repo is one GitHub repository or GitLab project.
@@ -86,6 +90,11 @@ type Repo struct {
 	// NoChangeRequests is a GitLab tier without Request changes (Free):
 	// bulk_publish's reviewer_state requested_changes sets reviewed.
 	NoChangeRequests bool `json:"noChangeRequests,omitempty"`
+	// Issues, Milestones and Snippets are what the facts reads answer
+	// beside Pulls and Labels (facts.go).
+	Issues     []Issue     `json:"issues,omitempty"`
+	Milestones []Milestone `json:"milestones,omitempty"`
+	Snippets   []Snippet   `json:"snippets,omitempty"`
 }
 
 // RepoMerge is a project's merge settings (GitHub repository settings,
@@ -696,6 +705,11 @@ func (f *Fixture) normalize(ids *idSource) error {
 		}
 		seen[key] = true
 	}
+	for i := range f.Accounts {
+		if err := f.Accounts[i].normalize(); err != nil {
+			return fmt.Errorf("forge fixture: accounts[%d] (%s): %w", i, f.Accounts[i].Login, err)
+		}
+	}
 	return nil
 }
 
@@ -773,6 +787,9 @@ func (r *Repo) normalize(ids *idSource) error {
 		return err
 	}
 	if err := r.normalizeManage(ids); err != nil {
+		return err
+	}
+	if err := r.normalizeFacts(); err != nil {
 		return err
 	}
 	for i := range r.Attachments {

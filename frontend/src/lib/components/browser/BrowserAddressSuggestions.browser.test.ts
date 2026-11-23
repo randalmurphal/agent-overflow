@@ -16,7 +16,6 @@ import { clearCommandRegistry, isCommandEnabled } from '../../stores/commandRegi
 import { registerBrowserCommands } from '../../stores/browserCommands.svelte';
 import { makeCommandContext } from '../../stores/builtinCommands.svelte';
 import { applyBrowserCompanionState } from '../../stores/browserCompanion.svelte';
-import { resetDevServersForTest } from '../../stores/devServers.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { waitFor } from '../../../test/helpers/browserFrames';
 import { mountBrowserPaneStrip, type BrowserPaneStrip } from '../../../test/helpers/browserPaneStrip';
@@ -28,7 +27,6 @@ let host: HTMLDivElement;
 let reports: BrowserPaneStrip['reports'];
 
 beforeEach(async () => {
-  resetDevServersForTest();
   const state = {
     kind: 'state', threadId: THREAD, activePageId: 'a', visible: true,
     pages: [
@@ -50,7 +48,6 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await strip.teardown();
-  resetDevServersForTest();
 });
 
 function list(): HTMLElement | null {

@@ -107,8 +107,9 @@ type Policy struct {
 // (or, on macOS for Claude, identify a config-scoped native Keychain entry).
 // Unrecognized contents in registered directories are ignored.
 type Credentials struct {
-	userHome string
-	keychain claudeKeychain
+	userHome    string
+	keychain    providerKeychain
+	agyKeychain providerKeychain
 	// policy holds the provider-specific predicates this store was
 	// constructed with. The app wires them so this package need not import a
 	// provider package; activation, slot writes, and ephemeral seeding all
@@ -152,20 +153,21 @@ func NewCredentials(userHome string, policy Policy) (*Credentials, error) {
 		return nil, errors.New("provideraccounts: empty user home")
 	}
 	return &Credentials{
-		userHome: filepath.Clean(userHome),
-		keychain: defaultClaudeKeychain(),
-		policy:   policy,
+		userHome:    filepath.Clean(userHome),
+		keychain:    defaultClaudeKeychain(),
+		agyKeychain: defaultAgyKeychain(),
+		policy:      policy,
 	}, nil
 }
 
-// NewCredentialsWithFileKeychain builds Credentials whose darwin Claude
-// backend is the file-backed Keychain stand-in instead of security(1).
+// NewCredentialsWithFileKeychain builds Credentials whose darwin Keychain
+// backends are file-backed stand-ins instead of security(1).
 // The agent harness needs this: it boots the real app binary
 // (testing.Testing() is false) against a redirected $HOME, which
-// isolates every file store but NOT the Keychain — the active slot's
-// service name ignores the home entirely, so a security(1)-backed
-// harness run would read and write the developer's real Claude Code
-// login. Harness runs use mock providers only, so no real credential
+// isolates every file store but NOT the Keychain — active slots'
+// service names ignore the home entirely, so a security(1)-backed
+// harness run would read and write the developer's real logins.
+// Harness runs use mock providers only, so no real credential
 // is ever needed.
 func NewCredentialsWithFileKeychain(userHome string, policy Policy) (*Credentials, error) {
 	credentials, err := NewCredentials(userHome, policy)
@@ -173,7 +175,57 @@ func NewCredentialsWithFileKeychain(userHome string, policy Policy) (*Credential
 		return nil, err
 	}
 	credentials.keychain = fileClaudeKeychain{}
+	credentials.agyKeychain = fileAgyKeychain{}
 	return credentials, nil
+}
+
+// AgyShouldForceFileStorage reports whether launching `agy` against appDataDir
+// should set AGY_ACP_FORCE_FILE_STORAGE=1 so the subprocess reads the exact
+// same credential source that this Credentials store manages.
+//
+// When this store was constructed with file-backed credentials (e.g. `serve`,
+// harness mode, Linux/WSL, or tests), it returns true unconditionally (even
+// when the token file does not yet exist) so `agy` never falls back to the
+// host macOS desktop Keychain.
+func (c *Credentials) AgyShouldForceFileStorage(appDataDir string) bool {
+	if c != nil {
+		if _, isFile := c.agyKeychain.(fileAgyKeychain); isFile {
+			return true
+		}
+		if strings.TrimSpace(appDataDir) == "" && strings.TrimSpace(c.userHome) != "" {
+			appDataDir = filepath.Join(c.userHome, ".gemini", "antigravity-cli")
+		}
+	}
+	if strings.TrimSpace(appDataDir) == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(appDataDir, agyCredentialFileName))
+	if err != nil || info.IsDir() {
+		return false
+	}
+	if c == nil {
+		return AgyShouldForceFileStorage(appDataDir)
+	}
+	if sec, isSec := c.agyKeychain.(securityAgyKeychain); isSec && runtime.GOOS == "darwin" {
+		if present, kcErr := sec.itemPresent(); kcErr == nil && present {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Credentials) keychainFor(providerName string) (providerKeychain, bool) {
+	if runtime.GOOS != "darwin" {
+		return nil, false
+	}
+	switch providerName {
+	case "claude":
+		return c.keychain, true
+	case "agy":
+		return c.agyKeychain, true
+	default:
+		return nil, false
+	}
 }
 
 func (c *Credentials) credentialSignedOut(providerName string, data []byte) bool {
@@ -224,6 +276,11 @@ func (c *Credentials) Paths(providerName string) (ProviderPaths, error) {
 		return ProviderPaths{
 			SharedHome:     filepath.Join(c.userHome, ".codex"),
 			CredentialFile: "auth.json",
+		}, nil
+	case "agy":
+		return ProviderPaths{
+			SharedHome:     filepath.Join(c.userHome, ".gemini", "antigravity-cli"),
+			CredentialFile: "antigravity-oauth-token",
 		}, nil
 	default:
 		return ProviderPaths{}, fmt.Errorf("provideraccounts: unsupported provider %q", providerName)
@@ -339,8 +396,8 @@ func (c *Credentials) CredentialPresent(providerName, accountID string, active b
 	if err != nil {
 		return false, err
 	}
-	if runtime.GOOS == "darwin" && providerName == "claude" {
-		return c.keychain.present(home, active)
+	if kc, ok := c.keychainFor(providerName); ok {
+		return kc.present(home, active)
 	}
 	info, statErr := os.Lstat(filepath.Join(home, paths.CredentialFile))
 	if statErr != nil {
@@ -446,8 +503,8 @@ func (c *Credentials) readCredentialAt(
 	if err != nil {
 		return CredentialSnapshot{}, err
 	}
-	if runtime.GOOS == "darwin" && providerName == "claude" {
-		data, err := c.keychain.read(home, active)
+	if kc, ok := c.keychainFor(providerName); ok {
+		data, err := kc.read(home, active)
 		return NewCredentialSnapshot(data), err
 	}
 	return readCredentialSnapshot(filepath.Join(home, paths.CredentialFile))
@@ -556,8 +613,8 @@ func (c *Credentials) storeCredentialAt(
 	if err != nil {
 		return err
 	}
-	if runtime.GOOS == "darwin" && providerName == "claude" {
-		return c.keychain.write(home, active, data)
+	if kc, ok := c.keychainFor(providerName); ok {
+		return kc.write(home, active, data)
 	}
 	return atomicfile.Write(filepath.Join(home, paths.CredentialFile), data)
 }
@@ -739,7 +796,7 @@ func (c *Credentials) storeActiveCredential(providerName string, data []byte) er
 		return err
 	}
 	defer release()
-	if runtime.GOOS != "darwin" || providerName != "claude" {
+	if _, ok := c.keychainFor(providerName); !ok {
 		activePath := filepath.Join(paths.SharedHome, paths.CredentialFile)
 		if info, statErr := os.Lstat(activePath); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("provideraccounts: active credential path %s must not be a symlink", activePath)

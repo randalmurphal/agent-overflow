@@ -4,11 +4,14 @@
 	import { StreamdownContext, type StreamdownProps } from './context.svelte';
 	import {
 		lex,
+		lexCapture,
+		sameScopeReads,
 		parseBlocks,
 		blockAlignment,
 		createParseBlocksCache,
 		matchesProvenAppend,
 		type Alignment,
+		type DocumentScope,
 		type IncrementalLexObserver,
 		type IncrementalLexPath,
 		updateParseBlockStringMaterialization
@@ -25,6 +28,7 @@
 		parseIncompleteMarkdown,
 		allowedLinkPrefixes = ['*'],
 		allowedImagePrefixes = ['*'],
+		colorScheme,
 		theme,
 		mermaidConfig = {},
 		katexConfig,
@@ -36,6 +40,7 @@
 		icons,
 		children,
 		extensions,
+		document: documentContext = null,
 		mdxComponents,
 		components,
 		static: isStatic,
@@ -107,6 +112,9 @@
 		get allowedImagePrefixes() {
 			return allowedImagePrefixes;
 		},
+		get colorScheme() {
+			return colorScheme;
+		},
 		get snippets() {
 			return snippets;
 		},
@@ -133,6 +141,9 @@
 		},
 		get extensions() {
 			return extensions;
+		},
+		get document() {
+			return documentContext;
 		},
 		get icons() {
 			return icons;
@@ -273,6 +284,8 @@
 	// volatile per-word path pays nothing.
 	let lastTypedBlock: string | undefined;
 	let lastTypedExtensions: typeof streamdown.extensions | undefined;
+	let lastTypedScope: DocumentScope | null = null;
+	let lastTypedReads: ReadonlySet<string> | null = null;
 	let cachedLastBlockType: string | undefined;
 	const lastRenderedBlockType = $derived.by(() => {
 		if (isStatic || parseIncompleteMarkdown !== false) return undefined;
@@ -283,12 +296,20 @@
 		if (block === undefined) return undefined;
 		if (blockAlignment(blocksCache, index) !== null) return 'align';
 		const currentExtensions = streamdown.extensions;
-		if (block === lastTypedBlock && currentExtensions === lastTypedExtensions) {
+		const scope = documentContext?.scope(index) ?? null;
+		// A new scope keeps the type when every key the lex read resolves
+		// as before: a host fact or definition the block does not read
+		// lexes nothing.
+		if (block === lastTypedBlock && currentExtensions === lastTypedExtensions && sameScopeReads(lastTypedScope, scope, lastTypedReads)) {
+			lastTypedScope = scope;
 			return cachedLastBlockType;
 		}
 		lastTypedBlock = block;
 		lastTypedExtensions = currentExtensions;
-		cachedLastBlockType = lex(block, currentExtensions)[0]?.type;
+		lastTypedScope = scope;
+		const lexed = lexCapture(block, currentExtensions ?? [], null, null, scope);
+		lastTypedReads = lexed.reads;
+		cachedLastBlockType = lexed.tokens[0]?.type;
 		return cachedLastBlockType;
 	});
 
@@ -448,6 +469,7 @@
 				<Block
 					static={isStatic}
 					{block}
+					{index}
 					{align}
 					append={
 						index === blocksState.values.length - 1

@@ -1,4 +1,4 @@
-import { gateTest as test } from './fixtures.js';
+import { test } from './base-test.js';
 import { recoverRenewalAfterLostReply } from './session-renewal-flow.js';
 
 test('a paired browser recovers a committed renewal after losing its reply and restarting', async ({ browser, context, page }) => {

@@ -29,7 +29,7 @@ vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => {
 import ChatView from './ChatView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
-import { resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import {
   getComposerDraftForPane,
   resetComposerDraftRegistryForTest,
@@ -43,7 +43,8 @@ import { getToasts } from '../../stores/toast.svelte';
 import { DisconnectedError, TransportError } from '../../transport/wsClient';
 import { resetEditResendExecutionForTest } from './editResendFlow.svelte';
 import type { Item, Thread } from '../../types/models';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { setAttachmentThumbnailMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { mockAttachmentUpload } from '../../../test/mocks/attachmentTransfer';
 import {
   installPaneMocks,
@@ -85,6 +86,10 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  // The composer loads the thumbnail of each image a test uploads.
+  setAttachmentThumbnailMock();
+  // The composer loads its provider's model list.
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   Object.defineProperty(window, 'innerWidth', {
     configurable: true,
     writable: true,
@@ -95,7 +100,7 @@ beforeEach(() => {
   resetCompanionPanesForTest();
   resetPanesForTest();
   resetThreadStatuses();
-  resetComposerDraftSnapshotsForTest();
+  resetComposerDraftSnapshotStateForTest();
   resetComposerDraftRegistryForTest();
   resetResendRevertMarkersForTest();
   resetEditResendExecutionForTest();

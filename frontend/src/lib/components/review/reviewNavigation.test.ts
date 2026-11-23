@@ -1,7 +1,12 @@
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+
+const SOURCES = import.meta.glob<string>(['./reviewDiffKeys.ts', './ReviewDiffBody.svelte', './ReviewCILogView.svelte'], { query: '?raw', import: 'default', eager: true });
+
+function sourceOf(file: string): string {
+  const text = SOURCES[`./${file}`];
+  if (text === undefined) throw new Error(`${file} is not imported by this test`);
+  return text;
+}
 
 // Every scroll the review diff and the CI log view make is one of three
 // kinds: the reader's navigation (a jump to a file, row, comment or
@@ -86,14 +91,14 @@ function readScript(source: string): { fns: Fn[]; writes: Write[] } {
 
 describe('review surface scrolls', () => {
   it('the diff\'s keys (j/k, n/p) scroll only through the body\'s navigation', () => {
-    const source = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'reviewDiffKeys.ts'), 'utf8');
+    const source = sourceOf('reviewDiffKeys.ts');
     const lines = source.split('\n').filter((line) => !/^\s*(?:\/\/|\/\*|\*)/.test(line));
     expect(lines.filter((line) => WRITE.test(line))).toEqual([]);
     expect(lines.filter((line) => line.includes('host.navigateToIndex(')).length).toBe(2);
   });
 
   it.each(SURFACES.map((surface) => [surface.file, surface] as const))('%s: every scroll write reports the reader\'s navigation, is find\'s own, or keeps the reader\'s place', (_file, surface) => {
-    const { fns, writes } = readScript(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), surface.file), 'utf8'));
+    const { fns, writes } = readScript(sourceOf(surface.file));
     const byName = new Map(fns.map((fn) => [fn.name, fn]));
     const reports = (fn: Fn) => fn.body.includes('reportReaderNavigation(');
     // The entries that report are the listed ones, and they do report.

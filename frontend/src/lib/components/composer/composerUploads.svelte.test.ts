@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentUpload } from '../../../test/mocks/attachmentTransfer';
 import type { Attachment } from '../../types/attachment';
 import { createComposerUploads, type UploadInsertionPoint } from './composerUploads.svelte';
@@ -42,7 +42,6 @@ function makeClipboardPaste(files: File[]): ClipboardEvent {
 
 describe('createComposerUploads', () => {
   beforeEach(() => {
-    resetBindingMocks();
     vi.mocked(compressImageToFit).mockReset();
   });
 

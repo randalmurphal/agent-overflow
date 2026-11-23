@@ -1,8 +1,8 @@
 // Local/paired session recovery and paired renewal through the production SPA.
 // Injected refusal frames exercise a responsive socket; all subsequent
 // bootstrap, renewal, ticket, replay, and thread reads use the real backend.
-import { expect, type WebSocketRoute } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { type WebSocketRoute } from '@playwright/test';
+import { expect, test } from './base-test.js';
 import { launchHarness } from '../src/harness.js';
 import { confirmOnHost, mintInvite, nonLoopbackIPv4, redeemOnScreen } from './offhost-helpers.js';
 

@@ -298,6 +298,9 @@ describe('row ring (the attention states)', () => {
 // each case's Go input, this function's `liveStatus` input, and the one
 // effective state both must return.
 describe('resolveEffectiveThreadStatus against the shared Go fixture', () => {
+  // Only the fields a thread row carries to the frontend are read here:
+  // thread.hasOpenTurn and the whole live column are Go's inputs, and the
+  // frontend's live input is liveStatus.
   interface FixtureCase {
     name: string;
     thread: {
@@ -318,7 +321,9 @@ describe('resolveEffectiveThreadStatus against the shared Go fixture', () => {
 
   for (const testCase of fixture.cases) {
     it(testCase.name, () => {
-      expect(resolveEffectiveThreadStatus(t(testCase.thread), testCase.liveStatus)).toBe(testCase.want);
+      const { hasIncompleteTurn, hasFailedTurn, hasActionableProposedPlan, worktreeSetupState } = testCase.thread;
+      const thread = t({ hasIncompleteTurn, hasFailedTurn, hasActionableProposedPlan, worktreeSetupState });
+      expect(resolveEffectiveThreadStatus(thread, testCase.liveStatus)).toBe(testCase.want);
     });
   }
 });

@@ -5,7 +5,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -13,6 +12,7 @@ import (
 
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/testutil/reporoot"
 	"agent-overflow/internal/transport"
 )
 
@@ -239,7 +239,7 @@ func TestEveryDeclaredKindHasAToggleThatDefaultsOn(t *testing.T) {
 	t.Parallel()
 	const mappingPath = "internal/notify/mapping.go"
 	fileSet := token.NewFileSet()
-	parsed, err := parser.ParseFile(fileSet, mappingPath, nil, parser.SkipObjectResolution)
+	parsed, err := reporoot.ParseGoFile(t, fileSet, mappingPath, parser.SkipObjectResolution)
 	if err != nil {
 		t.Fatalf("parse %s: %v", mappingPath, err)
 	}
@@ -300,19 +300,14 @@ func TestOnlyTheHarnessBypassesTheNotificationGate(t *testing.T) {
 			"page they are looking at, which is exactly what the attended-screen gate refuses",
 		"app_harness.go": "the harness RPC, whose send must not depend on preferences or a Playwright page's focus",
 	}
-	entries, err := os.ReadDir(packageDir)
-	if err != nil {
-		t.Fatalf("read %s: %v", packageDir, err)
-	}
 	seen := map[string]bool{}
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+	for _, path := range reporoot.Files(t, packageDir, "*.go") {
+		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		path := filepath.Join(packageDir, name)
+		name := filepath.Base(path)
 		fileSet := token.NewFileSet()
-		parsed, err := parser.ParseFile(fileSet, path, nil, parser.SkipObjectResolution)
+		parsed, err := reporoot.ParseGoFile(t, fileSet, path, parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}

@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { activityRunProse, activityRunRow } from '../../test/helpers/activityRuns';
 import { serveClassifiedHistory, serveWindowedHistory, type AgentMessageRuleOf } from '../../test/helpers/activityRunBackend';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import { makeThread } from '../../test/helpers/chat';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -23,7 +23,7 @@ import type { Item } from '../types/models';
 import type { TimelineNode } from '../utils/subagentGrouping';
 import { AGENT_MESSAGE_RUN_MEMBERS_CAPABILITY } from './activityRunRule';
 import { installComputerHydration } from './computerHydration';
-import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { registerPaneForTest } from './panes.svelte';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
 import { createAgentScopeView, type AgentScopeView } from './agentScopeView.svelte';
 import { timelinePageShape } from './threadPaneShared';
@@ -117,8 +117,6 @@ afterEach(() => {
   cleanup = [];
   vi.useRealTimers();
   __setTransportHelloForTest(null);
-  resetPanesForTest();
-  resetStagedBackends();
 });
 
 async function openPane(): Promise<{ pane: ThreadPane; projection: { readonly shape: string[] } }> {
@@ -193,6 +191,9 @@ describe('a hello that changes the rule', () => {
     setBindingMock('ListThreadLiveActivity', async () => []);
     setBindingMock('GetRateLimitsSnapshots', async () => []);
     setBindingMock('ListUnsettledFlushes', async () => []);
+    // The refresh re-reads the sidebar, which does not list the open thread,
+    // so it asks the thread's computer, which still holds it.
+    setBindingMock('GetThread', async (id: string) => makeThread({ id }));
     const history = HISTORIES[name].rows();
     const backend = serveClassifiedHistory(() => history, requestedRule);
     const { pane, projection } = await openPane();
@@ -300,6 +301,7 @@ describe('a rule change over a partial window', () => {
     setBindingMock('ListThreadLiveActivity', async () => []);
     setBindingMock('GetRateLimitsSnapshots', async () => []);
     setBindingMock('ListUnsettledFlushes', async () => []);
+    setBindingMock('GetThread', async (id: string) => makeThread({ id }));
     return gpu;
   }
 

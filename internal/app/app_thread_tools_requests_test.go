@@ -83,15 +83,22 @@ func (f *requestFixture) mockClaude(t *testing.T, replies ...string) {
 	installMockClaudeReplies(t, f.app, replies...)
 }
 
-// mockClaudeAfterTheAck gives the fixture a provider whose one turn holds
-// its result until release runs. A turn that settles before a request's
-// ack is built has its answer delivered by the ack, so a test of the wake
-// that delivers it instead releases the turn after the ack, which release
-// checks carried no answer.
+// mockClaudeAfterTheAck is installMockClaudeAfterTheAck on the fixture's
+// app.
 func (f *requestFixture) mockClaudeAfterTheAck(t *testing.T, reply string) (release func(*testing.T, threadtools.RequestAck)) {
 	t.Helper()
+	return installMockClaudeAfterTheAck(t, f.app, reply)
+}
+
+// installMockClaudeAfterTheAck gives app, the one a request's thread runs
+// on, a provider whose one turn holds its result until release runs. A turn
+// that settles before a request's ack is built has its answer delivered by
+// the ack, so a test of the wake that delivers it instead releases the turn
+// after the ack, which release checks carried no answer.
+func installMockClaudeAfterTheAck(t *testing.T, app *App, reply string) (release func(*testing.T, threadtools.RequestAck)) {
+	t.Helper()
 	gate := filepath.Join(t.TempDir(), "release")
-	installMockClaudeTurns(t, f.app, [][]string{{
+	installMockClaudeTurns(t, app, [][]string{{
 		mockClaudeInitLine,
 		`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":` + quoteJSON(reply) + `}]}}`,
 		testutil.MockWaitForFile(gate),
@@ -2152,10 +2159,10 @@ func (f *requestFixture) restart(t *testing.T) *requestFixture {
 	app.keepAwakeApply = f.app.keepAwakeApply
 	app.configDir = f.app.configDir
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
-	t.Cleanup(func() {
-		app.appCancel()
-		app.threadRequestsWG.Wait()
-	})
+	// The restarted App starts sessions of its own, such as the caller's
+	// for a wake its boot sweep delivers; they end with the test, before
+	// its directories are removed.
+	tearDownTestAppAtCleanup(t, app)
 	app.installThreadRequestObserver()
 	after := &requestFixture{app: app, bus: bus, caller: f.caller, dbPath: f.dbPath}
 	// A restarted App has no dispatcher, so its start alone is held.
@@ -2866,39 +2873,50 @@ func TestDeletingTheTargetErrorsTheRequest(t *testing.T) {
 // instead of leaving requests that can never settle.
 func TestBootSweepSettlesWhatTheRestartInterrupted(t *testing.T) {
 	t.Parallel()
-	f := newRequestFixture(t)
-	f.mockClaudeHoldingTheTurn(t, "mid-thought")
-	ack := f.runningRequest(t, "keep going")
-	scratch := f.forkableThread(t, "boot-scratch")
-	if err := f.app.store.InsertScratchThread(store.ScratchThread{
-		ThreadID: scratch.ID, SourceThreadID: f.caller.ID, RequestToken: "stale-token",
-		ReturnMode: scratchReturnMode(threadmode.ModeChat), CreatedAt: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatalf("InsertScratchThread: %v", err)
-	}
+	var after *requestFixture
+	t.Run("sweep", func(t *testing.T) {
+		f := newRequestFixture(t)
+		f.mockClaudeHoldingTheTurn(t, "mid-thought")
+		ack := f.runningRequest(t, "keep going")
+		scratch := f.forkableThread(t, "boot-scratch")
+		if err := f.app.store.InsertScratchThread(store.ScratchThread{
+			ThreadID: scratch.ID, SourceThreadID: f.caller.ID, RequestToken: "stale-token",
+			ReturnMode: scratchReturnMode(threadmode.ModeChat), CreatedAt: time.Now().UnixMilli(),
+		}); err != nil {
+			t.Fatalf("InsertScratchThread: %v", err)
+		}
 
-	after := f.restart(t)
-	after.app.sweepThreadRequestsAtBoot()
-	after.app.finishThreadRequestSweepAtBoot()
+		after = f.restart(t)
+		after.app.sweepThreadRequestsAtBoot()
+		after.app.finishThreadRequestSweepAtBoot()
 
-	row := after.awaitRequestState(t, ack.Token, store.ThreadRequestInterrupted)
-	if row.State != store.ThreadRequestInterrupted {
-		t.Fatalf("request = %+v", row)
-	}
-	receipt, found, err := after.app.store.GetThreadRequestReceipt(ack.Token)
-	if err != nil || !found || receipt.State != store.ThreadReceiptInterrupted {
-		t.Fatalf("receipt = %+v found=%v err=%v", receipt, found, err)
-	}
-	if body := soloWakeBody(t, after.app, row, false); !strings.Contains(body, "was interrupted by a restart of this computer.") {
-		t.Errorf("wake = %q, want the restart as its cause", body)
-	}
-	// A scratch thread is a thread nobody can see; one left by a restart is
-	// swept with its row rather than kept forever.
-	if _, err := after.app.store.GetThread(scratch.ID); err == nil {
-		t.Errorf("scratch thread %s survived the boot sweep", scratch.ID)
-	}
-	if _, found, err := after.app.store.GetScratchThread(scratch.ID); err != nil || found {
-		t.Errorf("scratch row survived the boot sweep: found=%v err=%v", found, err)
+		row := after.awaitRequestState(t, ack.Token, store.ThreadRequestInterrupted)
+		if row.State != store.ThreadRequestInterrupted {
+			t.Fatalf("request = %+v", row)
+		}
+		receipt, found, err := after.app.store.GetThreadRequestReceipt(ack.Token)
+		if err != nil || !found || receipt.State != store.ThreadReceiptInterrupted {
+			t.Fatalf("receipt = %+v found=%v err=%v", receipt, found, err)
+		}
+		if body := soloWakeBody(t, after.app, row, false); !strings.Contains(body, "was interrupted by a restart of this computer.") {
+			t.Errorf("wake = %q, want the restart as its cause", body)
+		}
+		// A scratch thread is a thread nobody can see; one left by a restart is
+		// swept with its row rather than kept forever.
+		if _, err := after.app.store.GetThread(scratch.ID); err == nil {
+			t.Errorf("scratch thread %s survived the boot sweep", scratch.ID)
+		}
+		if _, found, err := after.app.store.GetScratchThread(scratch.ID); err != nil || found {
+			t.Errorf("scratch row survived the boot sweep: found=%v err=%v", found, err)
+		}
+		// The wake starts the caller's session on the restarted App.
+		waitUntil(t, 10*time.Second, func() bool { return len(after.app.sessionManager().runtime.Snapshot()) > 0 })
+	})
+	// The restarted App ends that session with the test, as the first App
+	// does, so no provider process outlives the test and writes into a
+	// directory its cleanup is removing.
+	if open := len(after.app.sessionManager().runtime.Snapshot()); open != 0 {
+		t.Fatalf("the restarted App holds %d sessions after its test ended", open)
 	}
 }
 
@@ -3792,7 +3810,13 @@ func TestASpawnPastTheFloorIsUnknownButKeepsItsLineage(t *testing.T) {
 		t.Fatal("the spawn names no thread")
 	}
 
-	f.app.expireThreadRequests(time.Now().AddDate(0, 0, store.ThreadRequestRetentionDays+1))
+	later := time.Now().AddDate(0, 0, store.ThreadRequestRetentionDays+1)
+	passesUntil(t, func() { f.app.expireThreadRequests(later) }, func() error {
+		if _, found, err := f.app.store.GetThreadRequest(token); err != nil || found {
+			return fmt.Errorf("the spawn's token past the floor: found %v, %v; want it cleared to its lineage", found, err)
+		}
+		return nil
+	})
 
 	adapter, caller := f.adapter(), f.callerIdentity()
 	unknown := func(tool string, err error) {

@@ -5,11 +5,9 @@ import BackgroundTaskTrayDigest from './BackgroundTaskTrayDigest.svelte';
 import { installTimelineScopeCapability, installPaneMocks, makeItem, makeThread } from '../../../test/helpers/chat';
 import { flushMicrotasks } from '../../../test/helpers/threadPane';
 import { createThreadPane, type ThreadPane } from '../../stores/thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { registerPaneForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
-import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
-import { __resetAgentPaneStateForTest } from '../../stores/agentPane.svelte';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import type { Item } from '../../types/models';
@@ -85,11 +83,7 @@ async function setup(items: Item[]): Promise<ThreadPane> {
 describe('<BackgroundTaskTrayDigest>', () => {
   beforeEach(async () => {
     installTimelineScopeCapability();
-    resetBindingMocks();
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetCompanionPanesForTest();
-    __resetAgentPaneStateForTest();
     setBindingMock('GetSettings', async () => makeSettings({ activityRunDefault: 'expanded' }));
     setBindingMock('ListSubagentDescendants', async () => []);
     await loadSettings();
@@ -97,7 +91,6 @@ describe('<BackgroundTaskTrayDigest>', () => {
 
   afterEach(() => {
     cleanup();
-    __resetAgentPaneStateForTest();
     vi.restoreAllMocks();
   });
 

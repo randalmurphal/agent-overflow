@@ -5,6 +5,7 @@ import { activityRunRow as row, activityRunStub as stub } from '../../test/helpe
 import { foldPageStub } from './activityRunStubs';
 import type { ActivityRunRecords } from './activityRunStubs';
 import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
+import { seededRandom } from '../../test/helpers/seededRandom';
 
 const bounds = { oldest: null, newest: null };
 const filter = (items: ReturnType<typeof row>[], stubs: ActivityRunStub[], previous = new Map<string, string>()) =>
@@ -59,8 +60,7 @@ it('does not rescan every run description for each loaded row', () => {
 });
 
 it('matches insertion-order lookup across overlapping ranges and turn boundaries', () => {
-  let seed = 421;
-  const random = (max: number) => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed % max; };
+  const random = seededRandom(421);
   const stubs = Array.from({ length: 100 }, (_, i) => {
     const first = random(300);
     const last = first + random(80);

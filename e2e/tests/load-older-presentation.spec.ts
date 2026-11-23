@@ -1,10 +1,5 @@
-import {
-  expect,
-  type Browser,
-  type Page,
-  type WebSocketRoute,
-} from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { type Browser, type Page, type WebSocketRoute } from '@playwright/test';
+import { test, expect } from './base-test.js';
 import { gzipSync } from 'node:zlib';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { startCompositorTrace, summarizeCompositorWindow } from '../src/compositorTrace.js';

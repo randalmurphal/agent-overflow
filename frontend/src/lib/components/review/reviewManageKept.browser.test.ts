@@ -13,12 +13,8 @@ import { mount, tick, unmount } from 'svelte';
 import { userEvent } from 'vitest/browser';
 import '../../../app.css';
 import ReviewPane from './ReviewPane.svelte';
-import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
-import { __resetPinnedReviewStatesForTest, disposePRReviewStates } from '../../stores/reviewPanePinned.svelte';
-import { resetAppStorageForTest } from '../../stores/appStorage';
-import { resetPanesForTest } from '../../stores/panes.svelte';
+import { disposePRReviewStates } from '../../stores/reviewPanePinned.svelte';
 import { __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
-import { resetForTest as resetDiffReviewComments } from '../../stores/diffReviewComments.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { PRDetail, PRManageCan } from '../../types/models';
 import type { PRRef } from '../../utils/prReference';
@@ -63,11 +59,6 @@ let app: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  __resetReviewPaneStateForTest();
-  __resetPinnedReviewStatesForTest();
-  resetPanesForTest();
-  resetDiffReviewComments();
   __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
   target = document.createElement('div');
   target.style.cssText = 'position:fixed;top:0;left:0;width:1100px;height:700px;display:flex;flex-direction:column';
@@ -91,7 +82,6 @@ afterEach(async () => {
   app = undefined;
   target.remove();
   disposePRReviewStates(OWNER);
-  __resetReviewPaneStateForTest();
 });
 
 function q<T extends Element = HTMLElement>(selector: string): T | null {
@@ -112,6 +102,16 @@ async function present<T extends Element = HTMLElement>(id: string): Promise<T> 
     expect(found, id).not.toBeNull();
     return found!;
   }, { timeout: 5_000 });
+}
+
+// Focuses a control and holds the test until the document's focus is on
+// it, so a key press goes to the control, and a focus the page refuses
+// fails here by name rather than later as a missing result.
+async function focusOn(id: string): Promise<HTMLElement> {
+  const control = await present(id);
+  control.focus();
+  await vi.waitFor(() => expect(document.activeElement, `${id} has focus`).toBe(control));
+  return control;
 }
 
 async function mountPinned(): Promise<void> {
@@ -200,7 +200,7 @@ describe('a held Enter', () => {
   it('opens the state menu and never activates the item focus moved to', async () => {
     const setState = setBindingMock('SetPRState', async () => ({ seq: 0 }));
     await mountPinned();
-    (await present('review-pr-state-menu')).focus();
+    await focusOn('review-pr-state-menu');
     await userEvent.keyboard('{Enter>6}');
     await present('review-pr-state-items');
     await frames(4);
@@ -212,7 +212,7 @@ describe('a held Enter', () => {
     const set = setBindingMock('SetPRReviewers', async () => ({ seq: 0 }));
     await mountPinned();
     await openDetails();
-    (await present('review-details-edit-reviewers')).focus();
+    await focusOn('review-details-edit-reviewers');
     await userEvent.keyboard('{Enter>6}');
     await frames(4);
     expect(document.querySelector('[data-testid="review-picker"]')).not.toBeNull();

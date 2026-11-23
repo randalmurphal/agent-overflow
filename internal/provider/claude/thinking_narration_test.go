@@ -349,7 +349,7 @@ func TestRecoveredThinkingBlockCarriesTheNarrationMarker(t *testing.T) {
 
 // The 2.1.132 capture predates the tag: replaying it marks no block.
 func TestPreTagThinkingFixtureMarksNoBlock(t *testing.T) {
-	raw, err := os.ReadFile("../../../docs/references/fixtures/claude/opus47_thinking_summarized.ndjson")
+	raw, err := os.ReadFile("../wirecaptures/claude/opus47_thinking_summarized.ndjson")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}

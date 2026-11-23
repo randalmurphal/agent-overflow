@@ -133,7 +133,7 @@ func TestMintReadAloudTicketRefusesWhatItCannotRead(t *testing.T) {
 // of exactly the fake's audio for the sentence, spoken in the voice asked.
 func TestReadAloudFetchesTheSentenceAsAWAVFile(t *testing.T) {
 	t.Parallel()
-	const key = "sk-proj-read-aloud-wav"
+	key := openaifake.Key(t, "sk-proj-read-aloud-wav")
 	const text = "The build finished in forty seconds."
 	app, base := newReadAloudTestApp(t, key)
 	url, err := app.MintReadAloudTicket(context.Background(), "  "+text+" ", "sage")
@@ -174,7 +174,7 @@ func TestReadAloudFetchesTheSentenceAsAWAVFile(t *testing.T) {
 
 func TestReadAloudSwitchedOffBeforeTheFetchRefusesIt(t *testing.T) {
 	t.Parallel()
-	const key = "sk-proj-read-aloud-switched-off"
+	key := openaifake.Key(t, "sk-proj-read-aloud-switched-off")
 	app, base := newReadAloudTestApp(t, key)
 	url, err := app.MintReadAloudTicket(context.Background(), "Hello there.", "marin")
 	if err != nil {
@@ -192,7 +192,7 @@ func TestReadAloudSwitchedOffBeforeTheFetchRefusesIt(t *testing.T) {
 
 func TestReadAloudRetriesAnAnswerOnceAndThenRefuses(t *testing.T) {
 	t.Parallel()
-	const key = "sk-proj-read-aloud-misread"
+	key := openaifake.Key(t, "sk-proj-read-aloud-misread")
 	app, base := newReadAloudTestApp(t, key)
 
 	once := "Read this sentence " + openaifake.SpeechAnswersOnce
@@ -273,7 +273,7 @@ func TestReadAloudFailuresAnswerDeliberateStatuses(t *testing.T) {
 // A client that abandons the fetch cancels the OpenAI call under it.
 func TestAnAbandonedReadAloudFetchClosesTheOpenAICall(t *testing.T) {
 	t.Parallel()
-	const key = "sk-proj-read-aloud-abandoned"
+	key := openaifake.Key(t, "sk-proj-read-aloud-abandoned")
 	app, base := newReadAloudTestApp(t, key)
 	url, err := app.MintReadAloudTicket(context.Background(), "Wait "+openaifake.SpeechStalls, "marin")
 	if err != nil {
@@ -312,7 +312,7 @@ func TestAnAbandonedReadAloudFetchClosesTheOpenAICall(t *testing.T) {
 // over reveals nothing.
 func TestTheReadAloudKeyIsZeroedOnceTheHandshakeIsDone(t *testing.T) {
 	t.Parallel()
-	const key = openaifake.SpeechConfigStallsKey
+	key := openaifake.Key(t, openaifake.SpeechConfigStallsKey)
 	held := secret.New([]byte(key))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -336,7 +336,7 @@ func TestTheReadAloudKeyIsZeroedOnceTheHandshakeIsDone(t *testing.T) {
 // before it stays refused when the switch comes back on.
 func TestSwitchingReadAloudOffEndsWhatWasAdmitted(t *testing.T) {
 	t.Parallel()
-	const key = "sk-proj-read-aloud-revoked"
+	key := openaifake.Key(t, "sk-proj-read-aloud-revoked")
 	app, base := newReadAloudTestApp(t, key)
 	speaking, err := app.MintReadAloudTicket(context.Background(), "Wait "+openaifake.SpeechStalls, "marin")
 	if err != nil {
@@ -403,7 +403,7 @@ func TestSwitchingReadAloudOffEndsWhatWasAdmitted(t *testing.T) {
 // slot free.
 func TestReleasedReadAloudSectionsFreeTheirPlaces(t *testing.T) {
 	t.Parallel()
-	const key = "sk-proj-read-aloud-released"
+	key := openaifake.Key(t, "sk-proj-read-aloud-released")
 	app, base := newReadAloudTestApp(t, key)
 	var released string
 	for range readaloud.MaxPending + 1 {

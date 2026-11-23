@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
@@ -878,9 +879,9 @@ while IFS= read -r line; do
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"turn":{"id":"turn-resent-%%s"}}}\n' "$id" "$turn"
         continue
     fi
-    printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+%s    printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
 done
-`, logForkRequest, tailExpr, mock.forkedThreadID)
+`, logForkRequest, tailExpr, mock.forkedThreadID, testutil.MockCodexUnsubscribeShell)
 
 	path := filepath.Join(t.TempDir(), "codex-resend.sh")
 	mockexec.Write(t, path, script)

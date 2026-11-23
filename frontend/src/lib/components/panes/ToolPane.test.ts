@@ -37,7 +37,7 @@ import { getCompactScreen, setCompactLayoutForTest, showCompactThread } from '..
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import { installThreadSwitchMocks, makeThread } from '../../../test/helpers/chat';
 import { prependThread } from '../../stores/threads.svelte';
-import { resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   beginThreadRowDrag,
   beginToolPaneDrag,
@@ -90,6 +90,16 @@ function paneDataTransfer(): DataTransfer {
   } as unknown as DataTransfer;
 }
 
+// The pulls tool subscribes to the PR list as it mounts: a computer with no
+// forge project answers an empty list (app_pr_list.go SubscribePRList).
+function answerPullsList(): void {
+  setBindingMock('SubscribePRList', async () => ({
+    id: 'pr-list-1',
+    snapshot: { seq: 0, fetchedAt: '2026-01-01T00:00:00Z', stale: false, projects: [] },
+  }));
+  setBindingMock('UnsubscribePRList', async () => undefined);
+}
+
 function resetAll(): void {
   resetLayoutMetricsForTest();
   resetToolPanesForTest();
@@ -103,11 +113,11 @@ describe('tool panes in the strip', () => {
   beforeEach(() => {
     vi.stubGlobal('ResizeObserver', QuietResizeObserver);
     resetAll();
+    answerPullsList();
   });
 
   afterEach(() => {
     cleanup();
-    resetBindingMocks();
     resetAll();
     setCompactLayoutForTest(false);
     vi.unstubAllGlobals();
@@ -235,12 +245,12 @@ describe('a tool dragged from the tools row', () => {
   beforeEach(() => {
     vi.stubGlobal('ResizeObserver', QuietResizeObserver);
     resetAll();
+    answerPullsList();
   });
 
   afterEach(() => {
     cleanup();
     endToolPaneDrag();
-    resetBindingMocks();
     resetAll();
     vi.unstubAllGlobals();
   });
@@ -363,6 +373,7 @@ describe('tool panes under compact', () => {
   beforeEach(() => {
     vi.stubGlobal('ResizeObserver', QuietResizeObserver);
     resetAll();
+    answerPullsList();
     setCompactLayoutForTest(true);
   });
 

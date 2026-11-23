@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { commentSnippet, countReviewComments, visibleBody } from './reviewComments';
+import { indexReviewComments } from './reviewRows';
 import type { DiffReviewComment, ReviewThread } from '../types/models';
 
 function thread(overrides: Partial<ReviewThread> = {}): ReviewThread {
@@ -147,8 +148,8 @@ describe('visibleBody', () => {
 
 describe('countReviewComments', () => {
   it('counts per file and overall, unresolved for every open resolvable thread, outdated included', () => {
-    const counts = countReviewComments({
-      prThreads: [
+    const counts = countReviewComments(indexReviewComments(
+      [
         thread({ id: 't1', path: 'src/a.ts' }),
         thread({ id: 't2', path: 'src/a.ts', isResolved: true }),
         // Outdated but open: the code moved, the question is still asked.
@@ -156,8 +157,8 @@ describe('countReviewComments', () => {
         // A PR-level comment: neutral, never unresolved.
         thread({ id: 'conv', path: '', line: null, side: '', isResolvable: false }),
       ],
-      drafts: [draft({ id: 'd1', filePath: 'src/b.ts' })],
-    });
+      [draft({ id: 'd1', filePath: 'src/b.ts' })],
+    ));
 
     expect(counts.byFile.get('src/a.ts')).toEqual({ total: 3, unresolved: 2 });
     expect(counts.byFile.get('src/b.ts')).toEqual({ total: 1, unresolved: 0 });
@@ -166,8 +167,17 @@ describe('countReviewComments', () => {
     expect(counts.tally).toEqual({ unresolved: 2, drafts: 1, total: 5 });
   });
 
+  it('counts a held reply in its thread\'s file, and in the file it was held on once the thread is gone', () => {
+    const reply = { ...draft({ id: 'r1', filePath: 'src/a.ts', side: 'reply', newLine: 0 }), replyThreadId: 't1' };
+    const moved = countReviewComments(indexReviewComments([thread({ id: 't1', path: 'src/b.ts' })], [reply]));
+    expect(moved.byFile.get('src/b.ts')).toEqual({ total: 2, unresolved: 1 });
+    expect(moved.byFile.has('src/a.ts')).toBe(false);
+    const gone = countReviewComments(indexReviewComments([], [reply]));
+    expect(gone.byFile.get('src/a.ts')).toEqual({ total: 1, unresolved: 0 });
+  });
+
   it('is empty with nothing to count', () => {
-    const counts = countReviewComments({ prThreads: [], drafts: [] });
+    const counts = countReviewComments(indexReviewComments([], []));
     expect(counts.byFile.size).toBe(0);
     expect(counts.tally).toEqual({ unresolved: 0, drafts: 0, total: 0 });
   });

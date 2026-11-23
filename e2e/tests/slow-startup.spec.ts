@@ -10,8 +10,8 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { expect, type Page } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { type Page } from '@playwright/test';
+import { test, expect } from './base-test.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import type { SeedResult } from './fixtures.js';
 

@@ -1,16 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import LazyContentBlock from './LazyContentBlock.svelte';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { MAX_INLINE_BYTES } from '../../utils/inlineThreshold';
-import { __resetPayloadCacheForTest } from '../../utils/payloadDataCache';
 import { DEFAULT_PAYLOAD_CHUNK_BYTES, DEFAULT_PAYLOAD_PREVIEW_BYTES } from '../../utils/payloadExpansion.svelte';
 
 describe('<LazyContentBlock>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    __resetPayloadCacheForTest();
-  });
 
   it('renders the preview verbatim and no toggle when preview is short', () => {
     const { getByTestId, queryByTestId } = render(LazyContentBlock, {

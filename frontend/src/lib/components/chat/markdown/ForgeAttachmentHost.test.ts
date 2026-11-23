@@ -7,7 +7,6 @@ import { buildForgeAttachmentHref } from '../../../utils/forgeAttachments';
 import { forgeImageMenuTag } from '../../../utils/imageMenuActions';
 import {
   __reportImageBoxForTest,
-  __resetImageTiersForTest,
   lastImageTier,
   rememberImageTier,
 } from '../../../utils/imageTiers';
@@ -75,6 +74,7 @@ function resolves(value: Partial<ResolvedForgeAttachment>): void {
       return landed ? resolved : undefined;
     },
     value: promise,
+    sized: promise.then(() => undefined),
     release,
   }));
 }
@@ -94,6 +94,7 @@ function landsLater(): (value: ResolvedForgeAttachment) => void {
       return landed;
     },
     value,
+    sized: value.then(() => undefined),
     release,
   }));
   return (resolved) => settle(resolved);
@@ -109,7 +110,7 @@ function tiers(): unknown[] {
 /** The cache had the bytes already: the handle answers in the same frame. */
 function settled(value: Partial<ResolvedForgeAttachment>): void {
   const resolved = attachment(value);
-  acquire.mockImplementation(() => ({ settled: resolved, value: Promise.resolve(resolved), release }));
+  acquire.mockImplementation(() => ({ settled: resolved, value: Promise.resolve(resolved), sized: Promise.resolve(undefined), release }));
 }
 
 describe('<ForgeAttachmentHost>', () => {
@@ -120,7 +121,6 @@ describe('<ForgeAttachmentHost>', () => {
   });
   afterEach(() => {
     closeImageLightbox();
-    __resetImageTiersForTest();
     vi.restoreAllMocks();
   });
 
@@ -286,6 +286,7 @@ describe('<ForgeAttachmentHost>', () => {
   it('names the failure and still offers the forge, so the reader is never stuck', async () => {
     acquire.mockImplementation(() => ({
       value: Promise.reject(new Error("GitLab CLI (`glab`) is not authenticated.")),
+      sized: Promise.resolve(undefined),
       release,
     }));
     const { container } = render(ForgeAttachmentHost, {
@@ -304,7 +305,7 @@ describe('<ForgeAttachmentHost>', () => {
   });
 
   it('offers no fallback link when the merge request web URL is unknown', async () => {
-    acquire.mockImplementation(() => ({ value: Promise.reject(new Error('nope')), release }));
+    acquire.mockImplementation(() => ({ value: Promise.reject(new Error('nope')), sized: Promise.resolve(undefined), release }));
     const { container } = render(ForgeAttachmentHost, {
       props: { token: token(hrefFor(`/uploads/${HEX}/shot.png`, '')) },
     });

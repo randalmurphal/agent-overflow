@@ -51,8 +51,8 @@ import { readFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import * as path from 'node:path';
 
-import { expect, type Page } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { type Page } from '@playwright/test';
+import { expect, test } from './base-test.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 

@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installDeviceNameSync } from '../stores/deviceNames';
 import { clientDeviceName, clientDeviceNameStatus, resetClientDeviceNameForTest, saveClientDeviceName } from '../stores/clientDeviceName.svelte';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import type { TransportHello } from './wsClient';
 import { backendById, detachBackend } from './backends';
 import { getBackendIdentity, setBackendIdentityFromBootstrap } from './backendIdentity';
-import { backendDisplayName, setBackendNickname, __resetBackendNicknamesForTest } from '../stores/attachedBackends.svelte';
+import { backendDisplayName, setBackendNickname } from '../stores/attachedBackends.svelte';
 
 const HELLO: TransportHello = { protocolVersion: 1, capabilities: ['device-name.v1'], backendId: 'local', backendName: 'Mac', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 };
 let stop = () => {};
@@ -16,12 +16,9 @@ function pairSlot(id: string): void {
 }
 
 beforeEach(() => {
-  resetStagedBackends();
   localStorage.clear();
-  resetClientDeviceNameForTest();
-  __resetBackendNicknamesForTest();
 });
-afterEach(() => { stop(); resetStagedBackends(); });
+afterEach(() => { stop(); });
 
 describe('device name publication', () => {
   it('persists a device-owned name and publishes only to JS-held pairings', async () => {

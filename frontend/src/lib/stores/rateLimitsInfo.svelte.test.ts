@@ -7,20 +7,17 @@ import {
   getComposerRateLimitWindows,
   rateLimitDisplayName,
   rateLimitWindowLabel,
-  resetForTest,
   setProviderRateLimits,
 } from './rateLimitsInfo.svelte';
 
 describe('rateLimitsInfo', () => {
   beforeEach(() => {
-    resetForTest();
     // Getters project entries whose reset boundary has passed to 0% used,
     // so the fixture epochs below (Apr 2026) must sit in the future.
     vi.useFakeTimers();
     vi.setSystemTime(new Date(1_776_000_000_000));
   });
   afterEach(() => {
-    resetForTest();
     vi.useRealTimers();
   });
 
@@ -819,6 +816,40 @@ describe('rateLimitsInfo', () => {
       });
       expect(getProviderRateLimit('claude', 300, 'idle-acct')?.usedPercent).toBe(0);
     });
+  });
+
+  it('selects the primary Gemini bucket and scoped secondary for Antigravity', () => {
+    setProviderRateLimits({
+      provider: 'agy',
+      accountId: 'agy-1',
+      limits: [
+        { limitId: '3p-5h', limitName: 'Claude & GPT (shared) · 5-hour', usedPercent: 80, windowMins: 300, resetsAt: 0 },
+        { limitId: 'gemini-5h', limitName: 'Gemini · 5-hour', usedPercent: 25, windowMins: 300, resetsAt: 0 },
+        { limitId: 'gemini-weekly', limitName: 'Gemini · Weekly', usedPercent: 10, windowMins: 10080, resetsAt: 0 },
+      ],
+      updatedAt: 1784823000,
+    });
+
+    const fiveHour = getProviderRateLimitsForWindow('agy', 300, 'agy-1');
+    expect(fiveHour.primary?.limitId).toBe('gemini-5h');
+    expect(fiveHour.secondary?.limitId).toBe('3p-5h');
+    expect(getComposerRateLimitWindows('agy', 'agy-1')).toEqual([300, 10080]);
+  });
+
+  it('prefers any gemini-* bucket over shared 3p-* buckets for Antigravity', () => {
+    setProviderRateLimits({
+      provider: 'agy',
+      accountId: 'agy-2',
+      limits: [
+        { limitId: '3p-5h', limitName: 'Claude & GPT · 5-hour', usedPercent: 70, windowMins: 300, resetsAt: 0 },
+        { limitId: 'gemini-pro-5h', limitName: 'Gemini Pro · 5-hour', usedPercent: 15, windowMins: 300, resetsAt: 0 },
+      ],
+      updatedAt: 1784823000,
+    });
+
+    const fiveHour = getProviderRateLimitsForWindow('agy', 300, 'agy-2');
+    expect(fiveHour.primary?.limitId).toBe('gemini-pro-5h');
+    expect(fiveHour.secondary?.limitId).toBe('3p-5h');
   });
 
   it('provides readable names for unnamed provider limits', () => {

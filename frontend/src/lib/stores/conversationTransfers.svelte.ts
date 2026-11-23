@@ -7,6 +7,7 @@ import {
   GetThreadTransferDestinationProject, GetThread, GetStandingAgent, ListThreadRecurringJobs,
 } from './bindings';
 import type { Thread } from '../types/models';
+import { providerHasFeature } from '../providers/catalog';
 import { type BackendKey } from '../transport/backendKey';
 import { getBackendIdentity } from '../transport/backendIdentity';
 import { backendById, withBackendTarget, attachedBackends } from '../transport/backends';
@@ -104,7 +105,7 @@ async function loadStandingAgent(request: TransferRequest): Promise<void> {
 export function canOfferConversationTransfer(thread: Thread): boolean {
   if (!remoteAccessAvailable()) return false;
   const source = threadMachine(thread.id, thread.projectId);
-  return (thread.provider === 'claude' || thread.provider === 'codex') && !thread.mode?.startsWith('workflow') &&
+  return providerHasFeature(thread.provider, 'transfer') && !thread.mode?.startsWith('workflow') &&
     supportsConversationTransfer(source) && getAttachedBackends().some((entry) => entry.id !== source && supportsConversationTransfer(entry.id));
 }
 export function closeConversationTransfer(): void {

@@ -11,7 +11,7 @@ import (
 )
 
 // The cumulative envelopes below are condensed from the live 3-turn capture
-// docs/references/fixtures/claude/multiturn_cost_cumulative_20260703.ndjson
+// internal/provider/wirecaptures/claude/multiturn_cost_cumulative_20260703.ndjson
 // (claude 2.x, haiku): total_cost_usd and modelUsage grow monotonically
 // across turns while flat usage stays per-turn.
 func cumulativeResultLine(totalCost float64, in, out, cr, cc int, modelCost float64) []byte {

@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { setBindingMock } from '../../test/mocks/bindings-app';
+import { stageBackend } from '../../test/helpers/backends';
 import { backendById, detachBackend, takePinnedBackend } from '../transport/backends';
-import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
+import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { DisconnectedError, type TransportHello } from '../transport/wsClient';
-import { assertHighlightSource, highlightMetadata, requireHighlightSchema, resetHighlightServiceForTest, withHighlightBackend, withHighlightService } from './highlightService';
-import { getCachedBlockSpans, requestBlockSpans, resetCodeSpanCacheForTest } from '../components/chat/markdown/codeSpanCache';
+import { assertHighlightSource, highlightMetadata, requireHighlightSchema, withHighlightBackend, withHighlightService } from './highlightService';
+import { getCachedBlockSpans, requestBlockSpans } from '../components/chat/markdown/codeSpanCache';
 import { getToasts } from '../stores/toast.svelte';
 import { applyHighlightLive } from '../stores/eventsHighlight';
 import { TextLineChain, liveCodeRow, resetLiveCodeSpansForTest } from '../components/chat/markdown/liveCodeSpans.svelte';
@@ -23,11 +23,6 @@ let schemaReads: string[];
 let computeReads: string[];
 
 beforeEach(() => {
-  resetStagedBackends();
-  __resetBackendIdentityForTest();
-  resetHighlightServiceForTest();
-  resetCodeSpanCacheForTest();
-  resetBindingMocks();
   detachBackend('');
   versions.clear();
   schemaReads = [];
@@ -40,7 +35,6 @@ beforeEach(() => {
   });
   setBindingMock('HighlightClassNames', async () => { takePinnedBackend(); return ['none', 'keyword']; });
 });
-afterEach(() => { resetHighlightServiceForTest(); resetStagedBackends(); __resetBackendIdentityForTest(); });
 
 function add(id: string, status: 'connected' | 'reconnecting' = 'connected') {
   return stageBackend({ id, backendId: `${id}-uuid`, status });

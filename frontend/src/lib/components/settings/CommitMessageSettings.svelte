@@ -12,7 +12,7 @@
   import type { CommitMessageStyle, ReasoningEffort } from '../../types/settings';
   import {
     getProviderDefinition,
-    PROVIDER_SETTINGS_ORDER,
+    standaloneProvidersWithFeature,
     type ProviderDefinition,
     type ProviderID,
   } from '../../providers/catalog';
@@ -20,7 +20,7 @@
   import { INPUT_CLASS, SELECT_CLASS } from './styles';
   import { TEXT_GENERATION_DEFAULT_FAMILIES } from '../../generated/settingsDefaults';
 
-  const PROVIDERS: ProviderDefinition[] = PROVIDER_SETTINGS_ORDER.map((provider) =>
+  const PROVIDERS: ProviderDefinition[] = standaloneProvidersWithFeature('textGeneration').map((provider) =>
     getProviderDefinition(provider),
   );
 

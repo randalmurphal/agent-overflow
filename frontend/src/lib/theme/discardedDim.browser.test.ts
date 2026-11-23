@@ -14,21 +14,19 @@ import {
   dimmedContrast,
   readDiscardedDimInputs,
 } from './discardedDim';
-import { USER_THEME_STYLE_ID, applyTheme, resetThemeApplyForTest } from './themeApply.svelte';
+import { USER_THEME_STYLE_ID, applyTheme } from './themeApply.svelte';
 import type { ResolvedMode } from './themeResolve';
 
 let priorClass = '';
 
 beforeEach(() => {
   priorClass = document.documentElement.className;
-  resetThemeApplyForTest();
 });
 
 afterEach(() => {
   document.documentElement.className = priorClass;
   document.getElementById(USER_THEME_STYLE_ID)?.remove();
   document.getElementById(DISCARDED_DIM_STYLE_ID)?.remove();
-  resetThemeApplyForTest();
 });
 
 const CASES: { themeId: string; mode: ResolvedMode }[] = BUILTIN_THEMES.filter((theme) => theme.axes.ui).flatMap(

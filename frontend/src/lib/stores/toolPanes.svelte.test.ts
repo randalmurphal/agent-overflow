@@ -52,7 +52,7 @@ import { prependThread, replaceAllThreads } from './threads.svelte';
 import { openDraftThreadForProject } from './threadCreation.svelte';
 import { addProjectLocal, resetProjectsForTest } from './projects.svelte';
 import { openWorkflowThreadById } from './workflowThreads';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { Project, Thread } from '../types/models';
 
 function threadItem(paneId: string, widthPx = 560): PaneLayoutItem {
@@ -133,7 +133,6 @@ beforeEach(() => {
 afterEach(() => {
   for (const pane of getAllPanes().values()) pane.clear();
   resetAll();
-  resetBindingMocks();
 });
 
 describe('opening a tool', () => {

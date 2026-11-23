@@ -173,6 +173,30 @@ func TestContinueAfterConfirmedReset(t *testing.T) {
 	}
 }
 
+// A reset spent from Settings: the reading after it already landed while
+// the refusal's mark still held the thread, so the reset itself is what
+// sends the continue, without waiting for the minute check.
+func TestContinueAfterLimitsReset(t *testing.T) {
+	f := newFakeApp("codex", "a", "a")
+	f.setReading("codex", "a", testNow, codexLimit(100, at(2*time.Hour)))
+	c := New(f.deps())
+	c.TurnRefused("codex", "t1", codexModel, "a")
+	settle(c)
+
+	f.setReading("codex", "a", testNow, codexLimit(0, at(5*time.Hour)))
+	c.ReadingUpdated("codex", "a")
+	settle(c)
+	if _, _, _, cont := f.snapshot(); len(cont) != 0 {
+		t.Fatalf("continued while the refusal's mark held: %v", cont)
+	}
+
+	c.LimitsReset("codex", "a")
+	settle(c)
+	if _, _, _, cont := f.snapshot(); !equal(cont, []string{"t1"}) {
+		t.Fatalf("continued = %v after the reset", cont)
+	}
+}
+
 func TestContinueFiveMinutesAfterReset(t *testing.T) {
 	f := newFakeApp("claude", "a", "a")
 	reset := testNow.Add(10 * time.Minute)

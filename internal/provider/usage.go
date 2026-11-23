@@ -268,8 +268,8 @@ type ModelTokenUsage struct {
 // binary and bills against the same account, so its usage must not split
 // into a separate provider bucket in aggregates.
 func UsageProviderFamily(providerName string) string {
-	if providerName == string(ClaudeTUI) {
-		return string(Claude)
+	if family := CapabilitiesForProvider(providerName).UsageFamily; family != "" {
+		return string(family)
 	}
 	return providerName
 }

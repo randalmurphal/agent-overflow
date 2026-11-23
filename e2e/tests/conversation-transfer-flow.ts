@@ -1,7 +1,6 @@
 // Real paired hosts and the production SPA. Native session bytes are an inert
 // fixture in the harness home; no real provider or developer home is reached.
-import { expect } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { expect, test } from './base-test.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

@@ -11,8 +11,7 @@
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import { expect } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { expect, test } from './base-test.js';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { claudeScenario, claudeUsageResult, emit, seedAgentThread, startMock, textLines } from './agent-visibility-helpers.js';

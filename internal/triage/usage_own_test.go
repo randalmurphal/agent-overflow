@@ -21,7 +21,7 @@ func TestADelegatingTurnTalliesItsOwnSpendAndBillsAll(t *testing.T) {
 	createTestThread(t, s, "t1")
 	p := claude.NewParser()
 	defer p.Close()
-	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "references", "fixtures", "claude", "subagent_usage_inclusion_20260703.ndjson"))
+	data, err := os.ReadFile(filepath.Join("..", "provider", "wirecaptures", "claude", "subagent_usage_inclusion_20260703.ndjson"))
 	if err != nil {
 		t.Fatal(err)
 	}

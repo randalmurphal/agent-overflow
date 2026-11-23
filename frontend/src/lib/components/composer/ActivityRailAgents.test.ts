@@ -1,16 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import ActivityRailHost from '../../../test/mocks/ActivityRailTestHost.svelte';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { setupEventListeners } from '../../stores/events';
 import { noteThread } from '../../transport/entityIndex';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
-import { __resetActivityRailUiPrefsForTest } from '../../stores/liveTodoState.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { ThreadAgentRow, ThreadAgentStop } from '../../stores/bindings';
-import { replaceQueueForThread, resetForTest as resetSendQueue, type QueueItem } from '../../stores/sendQueue.svelte';
+import { replaceQueueForThread, type QueueItem } from '../../stores/sendQueue.svelte';
 import { withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
 import { getPinnedBackend } from '../../transport/backends';
 import { HOME_BACKEND } from '../../transport/backendKey';
@@ -84,6 +84,22 @@ async function openTray(rows: (threadId: string) => ThreadAgentRow[], pastRows: 
   return { pane, view, toggle };
 }
 
+// The rail's 1 Hz clock on a fake interval, its time skewed forward by the
+// test through Date.now. `tickClock` runs one tick and renders it.
+function fakeRailClock(): { skew(ms: number): void; tickClock(): Promise<void> } {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  const realNow = Date.now.bind(Date);
+  let skew = 0;
+  vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skew);
+  return {
+    skew: (ms) => { skew += ms; },
+    tickClock: async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+      await tick();
+    },
+  };
+}
+
 function toastTexts(): string[] {
   return getToasts().map((toast) => `${toast.type}: ${toast.message}`);
 }
@@ -91,8 +107,6 @@ function toastTexts(): string[] {
 describe('the Agents segment', () => {
   let stopEvents = () => {};
   beforeEach(() => {
-    resetBindingMocks();
-    __resetActivityRailUiPrefsForTest();
     for (const toast of getToasts().slice()) removeToast(toast.id);
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
@@ -108,9 +122,9 @@ describe('the Agents segment', () => {
   });
   afterEach(() => {
     setCompactLayoutForTest(false);
-    resetSendQueue();
     stopEvents();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it('counts open rows, and its body lists them nested with title, provider, state, elapsed and what blocks them', async () => {
@@ -353,11 +367,8 @@ describe('the Agents segment', () => {
   });
 
   it("shows a spawn's runtime: its turns' time, moving while a turn is open, never back within it, the server's once it ends", async () => {
-    // The clock runs, skewed forward by the test; the rail's 1 Hz tick and
-    // its refresh read it.
-    const realNow = Date.now.bind(Date);
-    let skew = 0;
-    vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skew);
+    // The rail's 1 Hz tick and its refresh read the skewed clock.
+    const clock = fakeRailClock();
     const { pane, view, toggle } = await openTray((caller) => [
       row('worker', { callerThreadId: caller, runtimeMs: 4_000, turnOpen: true, turnStartedAt: 1_000 }),
     ]);
@@ -365,9 +376,10 @@ describe('the Agents segment', () => {
     const elapsed = () => within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-elapsed').textContent;
     // Not the 65 s since the request: the time its turns ran.
     expect(elapsed()).toBe('4s');
-    skew += 3_000;
-    // 7 s, plus the real time the tick took to come.
-    await waitFor(() => expect(elapsed()).toMatch(/^[78]s$/), { timeout: 2_500 });
+    clock.skew(3_000);
+    // 7 s, plus the real time the test took to get here.
+    await clock.tickClock();
+    expect(elapsed()).toMatch(/^[78]s$/);
 
     // A read while the turn still runs, its computer's clock behind this
     // one's: the row does not go back from what it showed.
@@ -382,16 +394,23 @@ describe('the Agents segment', () => {
     // shown as it is, below what the open turn's count reached, and it
     // stands still between turns.
     const settled = row('worker', { callerThreadId: pane.threadId!, runtimeMs: 6_500, worker: 'waiting' });
-    setBindingMock('GetThreadAgentRows', async () => [{ token: 'worker', listed: true, row: settled }]);
+    let reads = 0;
+    setBindingMock('GetThreadAgentRows', async () => {
+      reads += 1;
+      return [{ token: 'worker', listed: true, row: settled }];
+    });
     emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'worker' });
     await waitFor(() => expect(within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-state').textContent).toBe('waiting'));
     expect(elapsed()).toBe('6s');
-    skew += 60_000;
-    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    clock.skew(60_000);
+    await clock.tickClock();
     expect(elapsed()).toBe('6s');
     // A later read of the same ended turn shows the same figure.
+    const readsBefore = reads;
     emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'worker' });
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await vi.waitFor(() => expect(reads).toBe(readsBefore + 1));
+    await new Promise((resolve) => setImmediate(resolve));
+    await clock.tickClock();
     expect(elapsed()).toBe('6s');
 
     // Its next turn moves it on from its new read.
@@ -403,15 +422,14 @@ describe('the Agents segment', () => {
   });
 
   it('shows an ended turn\'s runtime as its computer read it, after the open count passed it and on a new mount', async () => {
-    const realNow = Date.now.bind(Date);
-    let skew = 0;
-    vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skew);
+    const clock = fakeRailClock();
     const settled = (caller: string) => row('worker', { callerThreadId: caller, runtimeMs: 6_500, worker: 'waiting' });
     const first = await openTray((caller) => [row('worker', { callerThreadId: caller, runtimeMs: 4_000, turnOpen: true, turnStartedAt: 1_000 })]);
     await fireEvent.click(first.toggle);
     const elapsed = (view: typeof first.view) => within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-elapsed').textContent;
-    skew += 5_000;
-    await waitFor(() => expect(elapsed(first.view)).toMatch(/^(9|10)s$/), { timeout: 2_500 });
+    clock.skew(5_000);
+    await clock.tickClock();
+    expect(elapsed(first.view)).toMatch(/^(9|10)s$/);
     // The final read comes late, after the open count went past it.
     setBindingMock('GetThreadAgentRows', async () => [{ token: 'worker', listed: true, row: settled(first.pane.threadId!) }]);
     emitWailsEvent('thread:agent_rows_changed', { threadId: first.pane.threadId, id: 'worker' });
@@ -424,16 +442,15 @@ describe('the Agents segment', () => {
   });
 
   it("starts a new turn's runtime from the server's figure though no read saw the last turn end", async () => {
-    const realNow = Date.now.bind(Date);
-    let skew = 0;
-    vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skew);
+    const clock = fakeRailClock();
     const { pane, view, toggle } = await openTray((caller) => [
       row('worker', { callerThreadId: caller, runtimeMs: 30_000, turnOpen: true, turnStartedAt: 1_000 }),
     ]);
     await fireEvent.click(toggle);
     const elapsed = () => within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-elapsed').textContent;
-    skew += 10_000;
-    await waitFor(() => expect(elapsed()).toMatch(/^4[01]s$/), { timeout: 2_500 });
+    clock.skew(10_000);
+    await clock.tickClock();
+    expect(elapsed()).toMatch(/^4[01]s$/);
     // That turn ended at 12 s of runtime and the next one has run 1 s;
     // no read saw the end between them.
     setBindingMock('GetThreadAgentRows', async () => [{

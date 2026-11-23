@@ -8,7 +8,7 @@ import { resetScrollIntentModuleStateForTest } from './intent';
 import { RETAIN_ANIMATION_DURATION_MS } from './spring';
 import { isLiveContentActive, LIVE_CONTENT_ACTIVE_HOLD_MS } from '../liveContentActivity';
 import { clearUiRenderTrace, getUiRenderTraceRecords, setUiRenderTraceEnabled } from '../uiRenderTrace';
-import { getSettings, resetSettingsForTest } from '../../stores/settings.svelte';
+import { getSettings } from '../../stores/settings.svelte';
 import {
   MockResizeObserver,
   stubGeometry,
@@ -105,7 +105,6 @@ describe('createUseStickToBottomController', () => {
   let originalRO: typeof ResizeObserver | undefined;
 
   beforeEach(() => {
-    resetScrollIntentModuleStateForTest();
     setUiRenderTraceEnabled(false);
     clearUiRenderTrace();
     MockResizeObserver.instances = [];
@@ -2484,7 +2483,6 @@ describe('createUseStickToBottomController — spring chase', () => {
   }
 
   beforeEach(() => {
-    resetScrollIntentModuleStateForTest();
     MockResizeObserver.instances = [];
     originalRO = globalThis.ResizeObserver;
     (globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver = MockResizeObserver;
@@ -2515,7 +2513,6 @@ describe('createUseStickToBottomController — spring chase', () => {
       (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = originalRO;
     }
     vi.restoreAllMocks();
-    resetSettingsForTest();
   });
 
   // The cold-thread-switch flicker: after the controller has pinned the DOM
@@ -7386,7 +7383,6 @@ describe('createUseStickToBottomController — external content-geometry source'
   }
 
   beforeEach(() => {
-    resetScrollIntentModuleStateForTest();
     setUiRenderTraceEnabled(false);
     clearUiRenderTrace();
     MockResizeObserver.instances = [];
@@ -7427,7 +7423,6 @@ describe('createUseStickToBottomController — external content-geometry source'
       (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = originalRO;
     }
     vi.restoreAllMocks();
-    resetSettingsForTest();
   });
 
   it('holds overlapping history corrections through live activity and releases back to streaming', () => {
@@ -8063,7 +8058,6 @@ describe('createUseStickToBottomController — two instances', () => {
   let originalRO: typeof ResizeObserver | undefined;
 
   beforeEach(() => {
-    resetScrollIntentModuleStateForTest();
     MockResizeObserver.instances = [];
     originalRO = globalThis.ResizeObserver;
     (globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver = MockResizeObserver;
@@ -8164,7 +8158,6 @@ describe('createUseStickToBottomController — write-refusal diagnostics wiring'
   let refusing = true;
 
   beforeEach(() => {
-    resetScrollIntentModuleStateForTest();
     setUiRenderTraceEnabled(true);
     clearUiRenderTrace();
     MockResizeObserver.instances = [];
@@ -8205,7 +8198,6 @@ describe('createUseStickToBottomController — write-refusal diagnostics wiring'
       (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = originalRO;
     }
     vi.restoreAllMocks();
-    resetSettingsForTest();
   });
 
   function refusalRecords(phase: string): Record<string, unknown>[] {

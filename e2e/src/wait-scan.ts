@@ -1,6 +1,6 @@
 // The gate's wait rules over the Node side of the suite, run by
 // scripts/check-waits.ts beside the launcher's typecheck. A page's
-// `waitForTimeout` throws at run time instead (tests/fixtures.ts); this scan
+// `waitForTimeout` throws at run time instead (tests/base-test.ts); this scan
 // covers what a fixture cannot reach. Every file of the gate, each spec the
 // Playwright config runs and every file of the suite one imports, may not:
 //
@@ -16,8 +16,9 @@
 //     named like one (`waitFor…`, `poll`, `toPass`, `expect…`) or a call
 //     handed a timeout.
 //   - declare tests with Playwright's own `test` under tests/: a spec takes
-//     `test` or `gateTest` from tests/fixtures.ts, whose fixtures make a page
-//     sleep throw and end each event watch with its test.
+//     `test` from tests/base-test.ts, or from tests/fixtures.ts, which extends
+//     it. Its fixtures make a page sleep throw, end each event watch with its
+//     test, and capture a stalled page when a test fails.
 //
 // WAIT_ALLOWED names the sites that must hold for a time, each with its
 // reason. Files are parsed one at a time and no tree outlives its scan.
@@ -69,6 +70,13 @@ export const WAIT_ALLOWED: readonly WaitAllowance[] = [
     file: 'src/harness-process.ts',
     function: 'terminateWindowsTree',
     reason: 'A Windows process tree leaving has no event; its members are probed until they are gone.',
+  },
+  {
+    file: 'src/page-stall.ts',
+    function: 'probe',
+    reason:
+      'Runs only once a test has failed: a page that does not answer within the bound is the stall the capture ' +
+      'reports, so the timer gives the verdict and a passing test never reaches it.',
   },
 ];
 
@@ -231,21 +239,27 @@ export function scanWaits(source: ts.SourceFile): WaitFinding[] {
 }
 
 /** The file that may take `test` from '@playwright/test', relative to the e2e root. */
-const FIXTURES = 'tests/fixtures.ts';
+const BASE_TEST = 'tests/base-test.ts';
 
-/** Each import of Playwright's own `test` value in `source`. */
+/**
+ * Each import in `source` that can reach Playwright's own `test` value: the
+ * named `test`, a namespace import, or the default import.
+ */
 export function bareTestImports(source: ts.SourceFile): WaitFinding[] {
   const findings: WaitFinding[] = [];
   for (const statement of source.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-    if (statement.moduleSpecifier.text !== '@playwright/test' || statement.importClause?.isTypeOnly) continue;
-    const bindings = statement.importClause?.namedBindings;
-    if (!bindings || !ts.isNamedImports(bindings)) continue;
-    for (const element of bindings.elements) {
-      if (element.isTypeOnly || (element.propertyName ?? element.name).text !== 'test') continue;
-      const { line } = source.getLineAndCharacterOfPosition(statement.getStart(source));
-      findings.push({ file: source.fileName, line: line + 1, rule: 'bare test', within: '', text: `${statement.getText(source).replace(/\s+/g, ' ')} (use ${FIXTURES})` });
-    }
+    const clause = statement.importClause;
+    if (statement.moduleSpecifier.text !== '@playwright/test' || !clause || clause.isTypeOnly) continue;
+    const bindings = clause.namedBindings;
+    const reaches =
+      clause.name !== undefined ||
+      (bindings !== undefined && ts.isNamespaceImport(bindings)) ||
+      (bindings !== undefined && ts.isNamedImports(bindings) &&
+        bindings.elements.some((element) => !element.isTypeOnly && (element.propertyName ?? element.name).text === 'test'));
+    if (!reaches) continue;
+    const { line } = source.getLineAndCharacterOfPosition(statement.getStart(source));
+    findings.push({ file: source.fileName, line: line + 1, rule: 'bare test', within: '', text: `${statement.getText(source).replace(/\s+/g, ' ')} (use ${BASE_TEST})` });
   }
   return findings;
 }
@@ -336,7 +350,7 @@ export function scanGate(
     seen.add(file);
     const source = parse(file);
     const relative = path.relative(root, file).split(path.sep).join('/');
-    if (relative.startsWith('tests/') && relative !== FIXTURES) findings.push(...bareTestImports(source));
+    if (relative.startsWith('tests/') && relative !== BASE_TEST) findings.push(...bareTestImports(source));
     for (const finding of scanWaits(source)) {
       const allowance = allowed.find((a) => a.file === relative && a.function === finding.within);
       if (allowance) used.add(allowance);
@@ -394,9 +408,12 @@ export const WAIT_SCAN_SAMPLES: { flagged: string[]; allowed: string[]; bareTest
   bareTest: [
     `import { test, expect } from '@playwright/test';`,
     `import { expect, test as pwTest, type Page } from '@playwright/test';`,
+    `import * as pw from '@playwright/test';`,
+    `import pw from '@playwright/test';`,
   ],
   fixtureTest: [
-    `import { expect, devices, type Page } from '@playwright/test';\nimport { gateTest as test } from './fixtures.js';`,
+    `import { devices, type Page } from '@playwright/test';\nimport { test, expect } from './base-test.js';`,
+    `import type * as pw from '@playwright/test';`,
     `import type { test } from '@playwright/test';`,
     `import { type test, expect } from '@playwright/test';`,
   ],

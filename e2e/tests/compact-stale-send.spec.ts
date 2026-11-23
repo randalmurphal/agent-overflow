@@ -2,8 +2,8 @@
 // sends as if the thread were idle; the backend places the message in the
 // active turn, and the phone shows that one row before the answer through
 // reload.
-import { expect, type WebSocketRoute } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { type WebSocketRoute } from '@playwright/test';
+import { expect, test } from './base-test.js';
 import { launchHarness } from '../src/harness.js';
 import { advance, seedAgentThread, startMock, waitForGate } from './agent-visibility-helpers.js';
 import { PAIRED_APP_MOUNT_MS, confirmOnHost, mintInvite, nonLoopbackIPv4, redeemOnScreen } from './offhost-helpers.js';

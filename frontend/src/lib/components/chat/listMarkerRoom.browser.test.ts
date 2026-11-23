@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { render, cleanup } from '@testing-library/svelte';
+import { cleanup, render } from '@testing-library/svelte';
 // Real production stylesheet: these assertions are cascade-coupled to
 // the `.markdown-body ul/ol { padding-left: 2em }` rule in app.css.
 import '../../../app.css';

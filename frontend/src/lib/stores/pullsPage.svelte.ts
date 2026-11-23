@@ -104,7 +104,6 @@ async function subscribeList(
   const result = await withBackendTarget(backend, () => SubscribePRList());
   const id = String(result.id);
   const cleanup = async (): Promise<void> => {
-    if (subscriptionByBackend.get(backend) === id) subscriptionByBackend.delete(backend);
     try {
       await withBackendTarget(backend, () => UnsubscribePRList(id));
     } catch (err) {
@@ -115,6 +114,9 @@ async function subscribeList(
   };
   if (signal.aborted) return cleanup;
   subscriptionByBackend.set(backend, id);
+  signal.addEventListener('abort', () => {
+    if (subscriptionByBackend.get(backend) === id) subscriptionByBackend.delete(backend);
+  }, { once: true });
   if (documentHidden()) votes.setActive(backend, id, false);
   // A frame that landed while the subscribe waited for the first tick
   // and outranks its answer already holds a newer snapshot.
@@ -448,9 +450,8 @@ export function detailOpen(paneId: string): boolean {
 // ---------------------------------------------------------------------------
 
 export function __resetPullsPageForTest(): void {
+  listStore.resetForTest();
   for (const paneId of paneEntries.keys()) detachPullsPage(paneId);
-  listStore.suspend();
-  listStore.resetAll();
   appliedSeqByBackend.clear();
   subscriptionByBackend.clear();
   sourceRunByBackend.clear();

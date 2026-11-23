@@ -50,7 +50,8 @@ type ownerActivity struct {
 }
 
 type deviceActivity struct {
-	socket             *transport.ConnState
+	// tie binds the log's end to the latest connection that asked for it.
+	tie                transport.Tie
 	version, discarded uint64
 	entries            map[string]ownerEntry
 	changed            chan struct{}
@@ -76,41 +77,44 @@ func (o *ownerActivity) dropDevice(id string) {
 	defer o.mu.Unlock()
 	if d := o.devices[id]; d != nil {
 		delete(o.devices, id)
-		d.socket.UnbindCleanup(ownerActivitySubscription)
+		d.tie.Untie()
 		d.wake()
 	}
 }
 
-// watchLocked ties the log to the latest connection that asked for it. When that
-// connection ends, the next listener starts with a full reconciliation.
+// watchLocked ties the log to the latest connection that asked for it, under
+// the revocation lock its release takes, in the same critical section that
+// publishes the log. When that connection ends, the next listener starts
+// with a full reconciliation. Every request binds: the key is the
+// connection's once for its life, so a repeat request from the connection
+// that holds the log answers its own registration, and one from a
+// connection that is closing is refused and publishes nothing.
 func (o *ownerActivity) watchLocked(id string, socket *transport.ConnState) (*deviceActivity, bool, error) {
-	if o.devices == nil {
-		o.devices = make(map[string]*deviceActivity)
-	}
 	d := o.devices[id]
 	first := d == nil
 	if first {
 		d = &deviceActivity{entries: make(map[string]ownerEntry), changed: make(chan struct{})}
-		o.devices[id] = d
 	}
-	if d.socket != socket {
-		if !socket.BindCleanup(ownerActivitySubscription, func() {
-			o.mu.Lock()
-			defer o.mu.Unlock()
-			if o.devices[id] == d && d.socket == socket {
-				delete(o.devices, id)
-				d.wake()
-			}
-		}) {
-			if first {
-				delete(o.devices, id)
-			}
-			return nil, false, context.Canceled
+	tie, err := socket.Bind(ownerActivitySubscription, func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		if o.devices[id] == d && d.tie.HeldBy(socket) {
+			delete(o.devices, id)
+			d.wake()
 		}
-		if d.socket != nil {
-			d.socket.UnbindCleanup(ownerActivitySubscription)
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if !d.tie.HeldBy(socket) {
+		d.tie.Untie()
+	}
+	d.tie = tie
+	if first {
+		if o.devices == nil {
+			o.devices = make(map[string]*deviceActivity)
 		}
-		d.socket = socket
+		o.devices[id] = d
 	}
 	return d, first, nil
 }
@@ -202,9 +206,12 @@ func (a *App) watchOwnerConnection(ctx context.Context, conn *transport.ConnStat
 //ao:budget 1m
 //ao:callerbound
 func (a *App) ThreadOwnerChanges(ctx context.Context, cursor OwnerCursor) (OwnerChanges, error) {
-	conn := transport.ConnStateFromContext(ctx)
+	conn, err := transport.CallerConnection(ctx)
+	if err != nil {
+		return OwnerChanges{}, err
+	}
 	server := a.transportServer.Load()
-	if conn == nil || server == nil {
+	if server == nil {
 		return OwnerChanges{}, fmt.Errorf("owner changes require a paired connection")
 	}
 	ctx, cancel := context.WithTimeout(ctx, ownerWaitBound)

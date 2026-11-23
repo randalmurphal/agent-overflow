@@ -1,6 +1,6 @@
-import { cleanup, render, waitFor } from '@testing-library/svelte';
+import { render, waitFor } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import CompanionPane from './CompanionPane.svelte';
 // The bodies these tests open, loaded with the file. CompanionPane imports
@@ -12,22 +12,16 @@ import '../agent/AgentPane.svelte';
 import '../review/ReviewPane.svelte';
 import { installTimelineScopeCapability, installPaneMocks, installThreadSwitchMocks, makeItem, makeThread } from '../../../test/helpers/chat';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { registerPaneForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
-import { isCompanionOpen, openCompanion, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
-import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
-import { __resetAgentPaneStateForTest, openAgentCompanion } from '../../stores/agentPane.svelte';
-import { resetBindingMocks, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { isCompanionOpen, openCompanion } from '../../stores/companionPanes.svelte';
+import { openAgentCompanion } from '../../stores/agentPane.svelte';
+import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 
 describe('CompanionPane across a source-pane thread switch', () => {
   beforeEach(() => {
     installTimelineScopeCapability();
-    resetBindingMocks();
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetCompanionPanesForTest();
-    __resetReviewPaneStateForTest();
-    __resetAgentPaneStateForTest();
     // Review-state creation kicks off a workspace-scope diff load; give
     // it the minimal backend surface so mount side effects resolve.
     setReviewDiffMock('OpenWorkspaceDiff', async () => '');
@@ -35,11 +29,6 @@ describe('CompanionPane across a source-pane thread switch', () => {
     setBindingMock('GetThread', async () => makeThread());
     setBindingMock('GitListBranches', async () => []);
     setBindingMock('AppendUIRenderTraceBatch', async () => {});
-  });
-
-  afterEach(() => {
-    cleanup();
-    __resetAgentPaneStateForTest();
   });
 
   it('mounts the agent body at the scope its companion was opened on', async () => {

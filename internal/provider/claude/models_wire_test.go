@@ -14,7 +14,7 @@ import (
 // TUI render payload are dropped; the account identity is anonymised). Kept as
 // a captured envelope rather than a hand-written literal so a wire change
 // shows up as a test failure instead of as agreement with our own guess.
-const initializeModelsFixture = "../../../docs/references/fixtures/claude/initialize_models_20260802.json"
+const initializeModelsFixture = "../wirecaptures/claude/initialize_models_20260802.json"
 
 func loadInitializeFixtureLine(t *testing.T) []byte {
 	t.Helper()

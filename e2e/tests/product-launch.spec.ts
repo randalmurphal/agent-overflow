@@ -7,8 +7,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import ts from 'typescript';
-import { expect } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { test, expect } from './base-test.js';
 
 const E2E = path.resolve(import.meta.dirname, '..');
 const HELPER = path.join('src', 'product-process.ts');

@@ -27,6 +27,7 @@ function lex(text: string, extension: ReturnType<typeof buildPathLinkExtension>)
       startBlock: [],
       startInline: [extension.start],
     },
+    destinations: [extension.destination],
     // marked's options bag carries more fields, but the inline lexer
     // only reads what we listed above.
   } as never);
@@ -96,8 +97,8 @@ function findCodespans(tokens: ReturnType<typeof lex>): string[] {
   return out;
 }
 
-function findImages(tokens: ReturnType<typeof lex>): Array<{ raw: string; href: string; text: string }> {
-  const out: Array<{ raw: string; href: string; text: string }> = [];
+function findImages(tokens: ReturnType<typeof lex>): Array<{ raw: string; href: string; text: string; inLink?: boolean }> {
+  const out: Array<{ raw: string; href: string; text: string; inLink?: boolean }> = [];
   const walk = (nodes: unknown[]) => {
     for (const node of nodes) {
       if (!node || typeof node !== 'object') continue;
@@ -106,6 +107,7 @@ function findImages(tokens: ReturnType<typeof lex>): Array<{ raw: string; href: 
         raw?: string;
         href?: string;
         text?: string;
+        inLink?: boolean;
         tokens?: unknown[];
       };
       if (
@@ -113,7 +115,7 @@ function findImages(tokens: ReturnType<typeof lex>): Array<{ raw: string; href: 
         typeof token.raw === 'string' &&
         typeof token.href === 'string'
       ) {
-        out.push({ raw: token.raw, href: token.href, text: token.text ?? '' });
+        out.push({ raw: token.raw, href: token.href, text: token.text ?? '', ...(token.inLink ? { inLink: true } : {}) });
       }
       if (Array.isArray(token.tokens)) walk(token.tokens);
     }
@@ -134,9 +136,9 @@ describe('buildPathLinkExtension', () => {
       // Prose paths are never invented without the server allowlist…
       expect(findLinks(lex('see src/foo.ts here', ext))).toHaveLength(0);
       // …but a path-shaped markdown-link href is still rewritten.
-      const links = findLinks(lex('[notes](/home/user/notes.md)', ext));
-      expect(links).toHaveLength(1);
-      expect(links[0].href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(true);
+      const links = findLinks(lex('[notes](/home/user/notes.md) [more][n] [notes]\n\n[n]: /home/user/more.md\n[notes]: /home/user/notes.md', ext));
+      expect(links).toHaveLength(3);
+      for (const link of links) expect(link.href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(true);
     }
   });
 
@@ -405,6 +407,26 @@ describe('buildPathLinkExtension', () => {
     expect(links[0].childTypes).toEqual(['text']);
     expect(links[0].href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(true);
     expect(links[0].href).toContain('line=42');
+  });
+
+  it('claims a local image inside a link label, and nothing after it in the label', () => {
+    const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }], '/workspace');
+    const tokens = lex('[![shot](shots/a.png) src/foo.ts](https://example.com/x)', ext);
+    expect(findImages(tokens).map(image => parseLocalImageHref(image.href)?.path)).toEqual(['shots/a.png']);
+    // The label's prose is not a path link.
+    expect(findLinks(tokens).filter(link => link.href.startsWith(PATH_LINK_HREF_PREFIX))).toEqual([]);
+    // The claim says it is in a link, so the host keeps the link the
+    // picture's one control; outside a link it says nothing.
+    expect(findImages(tokens).map(image => image.inLink)).toEqual([true]);
+    expect(findImages(lex('see ![shot](shots/a.png)', ext)).map(image => image.inLink)).toEqual([undefined]);
+  });
+
+  it('claims nothing as in a link when the label holds a link, which leaves the outer brackets text', () => {
+    const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }], '/workspace');
+    const tokens = lex('[![shot](shots/a.png) [b](src/foo.ts)](https://example.com/x)', ext);
+    // The inner link is the link (CommonMark), so the picture is in none.
+    expect(findImages(tokens).map(image => image.inLink)).toEqual([undefined]);
+    expect(findLinks(tokens).filter(link => link.href.startsWith(PATH_LINK_HREF_PREFIX)).map(link => link.raw)).toEqual(['[b](src/foo.ts)']);
   });
 
   it('rewrites a path-shaped markdown link even when the href is not allowlisted', () => {

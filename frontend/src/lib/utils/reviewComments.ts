@@ -1,4 +1,5 @@
-import type { DiffReviewComment, ReviewThread } from '../types/models';
+import type { ReviewThread } from '../types/models';
+import type { ReviewCommentIndex } from './reviewRows';
 
 // Comment counts and comment text helpers for the review pane: the file
 // tree badges and the toolbar tally count every PR review thread
@@ -140,10 +141,7 @@ function threadState(thread: ReviewThread): CommentItemState {
   return 'unresolved';
 }
 
-export function countReviewComments(input: {
-  prThreads: readonly ReviewThread[];
-  drafts: readonly DiffReviewComment[];
-}): CommentCounts {
+export function countReviewComments(comments: ReviewCommentIndex): CommentCounts {
   const byFile = new Map<string, CommentFileCounts>();
   const tally: CommentTally = { unresolved: 0, drafts: 0, total: 0 };
   function add(filePath: string, state: CommentItemState): void {
@@ -155,8 +153,8 @@ export function countReviewComments(input: {
     if (state === 'unresolved') tally.unresolved += 1;
     if (state === 'draft') tally.drafts += 1;
   }
-  for (const thread of input.prThreads) add(thread.path, threadState(thread));
-  for (const draft of input.drafts) add(draft.filePath, 'draft');
+  for (const thread of comments.threads) add(thread.path, threadState(thread));
+  for (const draft of comments.drafts) add(comments.shownPath(draft), 'draft');
   return { byFile, tally };
 }
 

@@ -135,3 +135,89 @@ export class LoginState {
         return new LoginState($$parsedSource as Partial<LoginState>);
     }
 }
+
+/**
+ * ResetSpendResult is the settled answer to a spend or a Finish.
+ */
+export class ResetSpendResult {
+    /**
+     * Message says what happened, in words for the person who asked.
+     */
+    "message": string;
+
+    /**
+     * Spent reports that the account's limits were reset by this spend or by
+     * the earlier request it finished.
+     */
+    "spent": boolean;
+
+    /**
+     * ReadingLanded reports that the reading after the spend was recorded,
+     * so the account's usage is current.
+     */
+    "readingLanded": boolean;
+
+    /** Creates a new ResetSpendResult instance. */
+    constructor($$source: Partial<ResetSpendResult> = {}) {
+        if (!("message" in $$source)) {
+            this["message"] = "";
+        }
+        if (!("spent" in $$source)) {
+            this["spent"] = false;
+        }
+        if (!("readingLanded" in $$source)) {
+            this["readingLanded"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ResetSpendResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ResetSpendResult {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ResetSpendResult($$parsedSource as Partial<ResetSpendResult>);
+    }
+}
+
+/**
+ * UnsettledReset is the card's view of an account's unsettled spend. The key
+ * and the credit stay in the store.
+ */
+export class UnsettledReset {
+    /**
+     * ID names the spend for Finish (FinishProviderAccountReset).
+     */
+    "id": string;
+    "label": string;
+    "refills"?: string;
+
+    /**
+     * StartedAt is Unix milliseconds.
+     */
+    "startedAt": number;
+
+    /** Creates a new UnsettledReset instance. */
+    constructor($$source: Partial<UnsettledReset> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("label" in $$source)) {
+            this["label"] = "";
+        }
+        if (!("startedAt" in $$source)) {
+            this["startedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UnsettledReset instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UnsettledReset {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UnsettledReset($$parsedSource as Partial<UnsettledReset>);
+    }
+}

@@ -13,6 +13,7 @@ import ReviewDescriptionEditor from './ReviewDescriptionEditor.svelte';
 import ReviewSendStrip from './ReviewSendStrip.svelte';
 import { createEditorPreviews } from '../../stores/reviewEditorPreview.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 let target: HTMLDivElement;
 let app: ReturnType<typeof mount> | undefined;
@@ -23,6 +24,8 @@ beforeEach(async () => {
   target = document.createElement('div');
   target.style.cssText = 'position:fixed;top:0;left:0;width:420px';
   document.body.append(target);
+  // A Preview parses its body's suggestion blocks: these bodies hold none.
+  setBindingMock('ParseCommentSuggestions', async () => []);
 });
 
 afterEach(() => {

@@ -51,7 +51,7 @@ import {
   setPaneLayoutItemsForTest,
 } from '../../lib/stores/paneLayout.svelte';
 import { resetLayoutMetricsForTest } from '../../lib/stores/layoutMetrics.svelte';
-import { resetComposerDraftSnapshotsForTest } from '../../lib/stores/composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from '../../lib/stores/composerDraftSnapshots';
 import { resetForTest as resetThreadStatuses, projectSendStarted } from '../../lib/stores/threadStatuses.svelte';
 import { __resetReviewPaneStateForTest } from '../../lib/stores/reviewPane.svelte';
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../lib/stores/diffReviewComments.svelte';
@@ -142,7 +142,7 @@ beforeEach(() => {
   resetPaneLayoutForTest();
   resetLayoutMetricsForTest();
   resetThreadStatuses();
-  resetComposerDraftSnapshotsForTest();
+  resetComposerDraftSnapshotStateForTest();
   resetAccountInfoForTest();
 });
 

@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
@@ -555,7 +556,7 @@ while IFS= read -r line; do
         printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"fresh-rollout"}}}\n' "$id"
         continue
     fi
-    printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+` + testutil.MockCodexUnsubscribeShell + `    printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
 done
 `
 	path := filepath.Join(t.TempDir(), "codex-no-rollout.sh")

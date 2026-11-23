@@ -41,7 +41,6 @@ describe('<BrowserPane> suspended pages', () => {
     setBindingMock('BrowserCompanionPaneDetach', async () => undefined);
     setBindingMock('BrowserCompanionPaneRect', async () => undefined);
   });
-  afterEach(() => resetBrowserCompanionForTest());
 
   it('restores a suspended active page by presenting it, once', async () => {
     setBindingMock('BrowserCompanionPaneAttach', async () => ({ id: 'mount-1', state: state([page('a', true), page('b', false)]) }));
@@ -87,6 +86,8 @@ describe('<BrowserPane> suspended pages', () => {
 
   it('takes no address until it knows the page it shows, then navigates that page', async () => {
     let attach!: () => void;
+    // What the address suggestions read when the field takes focus.
+    setBindingMock('BrowserCompanionRecentAddresses', async () => []);
     setBindingMock('BrowserCompanionPaneAttach', () => new Promise((resolve) => {
       attach = () => resolve({ id: 'mount-1', state: state([page('a', false)]) });
     }));

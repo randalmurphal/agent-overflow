@@ -1,33 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
+import { modelCatalog } from '../../test/helpers/modelCatalog';
 import { setupEventListeners } from './events';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { createThreadPane } from './thread.svelte';
-import { findPaneShowingThread, registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { findPaneShowingThread, registerPaneForTest } from './panes.svelte';
 import {
   getActiveTurn,
   getThreadStatus,
   hasPendingSend,
   projectSendStarted,
-  resetForTest as resetThreadStatuses,
 } from './threadStatuses.svelte';
-import { resetForTest as resetSendQueue, markItemsFlushed, getFlushedForThread, registerQueueItem } from './sendQueue.svelte';
-import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
+import { markItemsFlushed, getFlushedForThread, registerQueueItem } from './sendQueue.svelte';
 import { addThreadRemovedObserver, getThreads, getThreadLiveActivityAt } from './threads.svelte';
 import { loadSidebarCatalogs } from './sidebarCatalogs';
 import { hasUnread } from '../utils/threadStatusPill';
 import { sidebarListsThread } from '../components/sidebar/sidebarBuckets';
-import { claimLocalReadMarker, resetLocalReadMarkersForTest } from './threadReadWrites';
+import { claimLocalReadMarker } from './threadReadWrites';
 import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import { getToasts } from './toast.svelte';
-import { getProjectLiveActivityAt, getProjects, resetProjectsForTest } from './projects.svelte';
+import { getProjectLiveActivityAt, getProjects } from './projects.svelte';
 import {
   getProviderRateLimit,
   resetForTest as resetRateLimitsInfo,
 } from './rateLimitsInfo.svelte';
 import {
   getProviderStatus,
-  resetForTest as resetProviderStatuses,
 } from './providerStatus.svelte';
 import { transportGapChannel } from '../transport/wsClient';
 import { attachPR } from './prReviewStore.svelte';
@@ -37,8 +35,8 @@ import { prKey } from '../utils/prReference';
 import { setPullsReceiver } from './pullsStore.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { getConnectionId } from '../transport/clientIdentity';
-import { emitWailsEvent, resetWailsMocks, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { emitWailsEvent, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import {
   buildPane,
   installPaneMocks,
@@ -100,19 +98,9 @@ describe('setupEventListeners', () => {
   let cleanup: () => void;
 
   beforeEach(() => {
-    resetWailsMocks();
-    resetBindingMocks();
-    resetThreadStatuses();
-    resetSendQueue();
-    resetLiveUsageSnapshotsForTest();
-    resetLocalReadMarkersForTest();
-    resetProjectsForTest();
-    resetRateLimitsInfo();
-    resetProviderStatuses();
     setBindingMock('AutoResumeThread', async () => {});
     setBindingMock('GetRateLimitsSnapshots', async () => []);
     setBindingMock('ListProviderAccounts', async () => []);
-    resetPanesForTest();
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
     cleanup = setupEventListeners();
@@ -120,9 +108,6 @@ describe('setupEventListeners', () => {
 
   afterEach(() => {
     cleanup();
-    resetPanesForTest();
-    resetThreadStatuses();
-    resetSendQueue();
   });
 
   it('registers and unregisters the unified listener set', () => {
@@ -1142,6 +1127,8 @@ describe('setupEventListeners', () => {
     let releaseSnapshot!: (value: unknown) => void;
     setBindingMock('SwitchThread', async (threadId: unknown) =>
       makeThread({ id: typeof threadId === 'string' ? threadId : 'thread-1' }));
+    // The live snapshot fails, so the pane takes the pending-request fallback.
+    setBindingMock('GetThreadLiveState', async () => { throw new Error('live state unavailable'); });
     setBindingMock('ListPendingInteractiveRequests', () => new Promise((resolve) => {
       releaseSnapshot = resolve;
     }));
@@ -3102,6 +3089,8 @@ describe('setupEventListeners', () => {
   it('hydrates accountInfo store from provider:account', async () => {
     const accountInfo = await import('./accountInfo.svelte');
     accountInfo.resetForTest();
+    // An account change reads the provider's model list again.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
 
     emitWailsEvent('provider:account', {
       provider: 'claude',
@@ -3126,6 +3115,8 @@ describe('setupEventListeners', () => {
   it('clears selected account state from a provider:account removal event', async () => {
     const accountInfo = await import('./accountInfo.svelte');
     accountInfo.resetForTest();
+    // An account change reads the provider's model list again.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     accountInfo.setProviderAccount('claude', { subscriptionType: 'Claude Max' }, 'account-one');
 
     emitWailsEvent('provider:account', {
@@ -3136,6 +3127,24 @@ describe('setupEventListeners', () => {
 
     expect(accountInfo.getProviderAccount('claude')).toBeNull();
     accountInfo.resetForTest();
+  });
+
+  // A card's resets changing re-reads the listing and nothing that follows the
+  // saved set: provider:accounts_changed also re-asks dictation.
+  it('re-lists accounts on provider:account_listing without the set change effects', async () => {
+    const dictation = await import('./dictation.svelte');
+    const sources = setBindingMock('DictationSources', async () => ({ live: false, subscription: false, chatGPTSignIn: false }));
+    await dictation.refreshDictationSources(HOME_BACKEND);
+    const list = setBindingMock('ListProviderAccounts', async () => []);
+    const asked = sources.mock.calls.length;
+
+    emitWailsEvent('provider:account_listing', null);
+    await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+    expect(sources.mock.calls.length).toBe(asked);
+
+    emitWailsEvent('provider:accounts_changed', null);
+    await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(sources.mock.calls.length).toBe(asked + 1));
   });
 
   it('clears retired account limits from provider:usage', async () => {
@@ -3196,6 +3205,8 @@ describe('setupEventListeners', () => {
   it('drops malformed provider:account events before hitting the store', async () => {
     const accountInfo = await import('./accountInfo.svelte');
     accountInfo.resetForTest();
+    // An account change reads the provider's model list again.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
 
     // Unknown provider name — should be ignored, not silently inserted.
     emitWailsEvent('provider:account', {

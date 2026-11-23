@@ -36,7 +36,7 @@ import {
   SubscribePRUpdates,
   UnsubscribePRUpdates,
 } from './bindings';
-import { __resetCIHandlesForTest, clearCIHandle, setCIHandle, type CIHandle } from './ciHandles';
+import { clearCIHandle, setCIHandle, type CIHandle } from './ciHandles';
 import { createPumpVotes } from './pumpVotes';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
@@ -45,7 +45,6 @@ import { createEntityStore } from './entityStore.svelte';
 import { isTransportClassError, onBackendStatusChange } from './transportStatus.svelte';
 import { forgeFailureFrom, type ForgeFailure, type ForgeFailureWire } from '../utils/forgeFailure';
 import {
-  __resetPRCIForTest,
   applyPRCIUpdated,
   dropPRCI,
   ensurePRCI,
@@ -54,23 +53,22 @@ import {
   type PRCIUpdatedEvent,
 } from './prReviewCI.svelte';
 import {
-  __resetPRCIFollowsForTest,
   applyPRCILogFrame,
   dropPRCIFollows,
   resendPRCILogFollows,
 } from './prReviewCIFollows.svelte';
 import {
-  __resetPRSubscriptionsForTest,
   clearPRSubscriptionId,
   prSubscriptions,
   setPRSubscriptionId,
 } from './prReviewSubscriptions';
 import {
-  __resetPRConflictsForTest,
   dropPRConflicts,
   reconcileConflictsWithHead,
 } from './prReviewConflicts.svelte';
 import { documentHidden } from '../utils/pageVisibility';
+import { dropForgeFacts, noteForgeFactsWorkspace, observePRFacts } from './forgeFacts.svelte';
+import type { WorkspaceRef } from '../types/git';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import type { CIPipeline, PRDetail, ReviewComment, ReviewEvent, ReviewThread } from '../types/models';
@@ -94,6 +92,9 @@ export interface PRSnapshot {
 /** What a source needs from whoever is holding the key. */
 export interface PRCtx {
   ref: PRRef;
+  /** The checkout of the pane holding it, where the PR's forge facts are
+   * read (forgeFacts.svelte.ts); the first holder's. */
+  workspace?: WorkspaceRef;
 }
 
 // Wire payload shape for "pr:updated". Wails generates no TS type for
@@ -138,11 +139,11 @@ export interface PRUpdatedEvent {
 // every `pr:*` frame routes through the map, the same shape gitStatusStore
 // uses for canonical cwds.
 //
-// The owner stamp is what makes it safe under re-sourcing: a superseded
-// run (invalidate, reconnect, retry) resolves late and then runs its own
-// cleanup; without ownership that cleanup deletes the alias the live run
-// installed, and the key goes on holding a subscription whose pushes route
-// nowhere.
+// The owner stamp is what makes it safe under re-sourcing: a run removes
+// its alias when it is aborted (invalidate, reconnect, retry, release), and
+// the stamp keeps that removal from deleting an alias a later run
+// installed, which would leave the key holding a subscription whose pushes
+// route nowhere.
 type AliasOwner = symbol;
 const localKeysByWireKey = new Map<string, Map<string, AliasOwner>>();
 
@@ -358,9 +359,6 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
         appliedSeq: () => appliedSeqByKey.get(key) ?? 0,
       };
       const cleanup = async (): Promise<void> => {
-        removeAlias(wireKey, key, owner);
-        clearPRSubscriptionId(key, id);
-        clearCIHandle(key, ciHandle);
         try {
           await withBackendTarget(backend, () => UnsubscribePRUpdates(id));
         } catch (err) {
@@ -379,6 +377,11 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
       addAlias(wireKey, key, owner);
       setPRSubscriptionId(key, id);
       setCIHandle(key, ciHandle);
+      signal.addEventListener('abort', () => {
+        removeAlias(wireKey, key, owner);
+        clearPRSubscriptionId(key, id);
+        clearCIHandle(key, ciHandle);
+      }, { once: true });
       // The result IS this key's applied state, so it is the watermark every
       // frame from here on is ranked against — the replay below included.
       appliedSeqByKey.set(key, Number(result.seq ?? 0));
@@ -426,6 +429,8 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
   onApply: (key, value) => {
     reconcileConflictsWithHead(key, refByKey.get(key), value.detail, value.headSHA);
     reconcileResolveOverrides(key, value.threads);
+    // The facts its bodies name, asked for before any body mounts.
+    observePRFacts(key, refByKey.get(key), value);
     notifySnapshotApplied(key, value);
   },
   // The state kept beside the snapshot: CI (with the log follows) and the
@@ -447,6 +452,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
     dropPRCIFollows(key);
     dropPRCI(key);
     dropPRConflicts(key);
+    dropForgeFacts(key);
     rejectReady(key, new Error('PR updates released'));
   },
 });
@@ -836,6 +842,7 @@ export interface PRAttachment {
 
 export function attachPR(key: string, ctx: PRCtx): PRAttachment {
   refByKey.set(key, ctx.ref);
+  noteForgeFactsWorkspace(key, ctx.workspace);
   // Before the attach can source the key: the subscribe result seeds it.
   ensurePRCI(key);
   const handle = store.attach(key, ctx);
@@ -905,29 +912,17 @@ export function resyncPRReviewAfterGap(backend: BackendKey = HOME_BACKEND): void
 
 /**
  * Drop every entry, subscription, and derived cache, as a fresh module load
- * would. suspend() releases every unheld entry; resetAll() then lifts the
- * suspension. An entry that survives both is one a test attached and never
- * released — resetAll re-sources it against the next test's binding mocks,
- * which is exactly the noise that should make the leak findable.
+ * would, calling no backend.
  */
 export function __resetPRReviewStoreForTest(): void {
-  store.suspend();
-  store.resetAll();
+  store.resetForTest();
   for (const key of readyByKey.keys()) rejectReady(key, new Error('store reset'));
   refByKey.clear();
   failureByKey.clear();
-  __resetPRSubscriptionsForTest();
   localKeysByWireKey.clear();
   resolveOverridesByKey.clear();
   bufferedFrameByWireKey.clear();
   appliedSeqByKey.clear();
   pumpVotes.resetForTest();
-  __resetCIHandlesForTest();
   snapshotAppliedObservers = [];
-  // onDrop clears these for every key an entry existed for; a test that
-  // seeded CI or opened conflicts without ever attaching has no entry to
-  // drop, so the caches are reset directly too.
-  __resetPRCIFollowsForTest();
-  __resetPRCIForTest();
-  __resetPRConflictsForTest();
 }

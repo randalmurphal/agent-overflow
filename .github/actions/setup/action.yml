@@ -8,25 +8,25 @@ description: >-
 
 inputs:
   go:
-    description: Provide Go (version from go.mod) with the module cache and a per-job build cache.
+    description: Provide Go (version from go.mod) with the module cache and a per-job build cache. A job that sets it ends with .github/actions/cache-save.
     default: "false"
   gtk:
     description: Provide the GTK4 and WebKitGTK headers the cgo webview needs.
     default: "false"
   node:
-    description: Provide pnpm and Node with the package store cache.
+    description: Provide pnpm and Node; off the image, with the package store cache, which .github/actions/cache-save saves.
     default: "false"
   frontend-deps:
     description: Install frontend dependencies (frontend/).
     default: "false"
   frontend-dist:
-    description: Build frontend/dist, which the Go root package embeds; Go builds, vet and tests need it.
+    description: Provide frontend/dist, which the Go root package embeds, for a job that compiles the root package; restored when a push to main built the same frontend/ tree, built otherwise.
     default: "false"
   e2e-deps:
     description: Install e2e dependencies (e2e/).
     default: "false"
   browsers:
-    description: Playwright browsers to provide, space separated (chromium, webkit), with OS dependencies. Empty provides none.
+    description: A browser set of build/test-inputs.mk to provide, with its OS libraries. Empty provides none.
     default: ""
   netns:
     description: Allow the isolated test network namespace (unprivileged user namespaces, dummy link type).
@@ -83,71 +83,118 @@ runs:
         go-version-file: go.mod
         cache: false
 
-    - name: Restore the Go module cache
-      if: inputs.go == 'true' && steps.image.outputs.baked != 'true'
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ~/go/pkg/mod
-        key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
-        restore-keys: |
-          go-mod-${{ runner.os }}-
-
-    # The build cache holds compiled packages and passed test results, so a
-    # warm job rebuilds and retests only what a change touched. Its path
-    # differs per OS (Library/Caches on macOS). Each slot's cache is several
-    # hundred megabytes against a 10 GB repository budget, so only pushes to
-    # main save one; a pull request restores the newest main cache for its
-    # slot through the prefix key.
-    - name: Locate the Go build cache
-      if: inputs.go == 'true'
-      id: go-cache
-      shell: bash
-      run: |
-        go version
-        echo "path=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
-
-    - name: Restore and save the Go build cache
-      if: inputs.go == 'true' && github.event_name == 'push'
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ steps.go-cache.outputs.path }}
-        key: go-build-${{ inputs.cache-name }}-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
-        restore-keys: |
-          go-build-${{ inputs.cache-name }}-${{ runner.os }}-${{ hashFiles('go.sum') }}-
-          go-build-${{ inputs.cache-name }}-${{ runner.os }}-
-
-    - name: Restore the Go build cache
-      if: inputs.go == 'true' && github.event_name != 'push'
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ steps.go-cache.outputs.path }}
-        key: go-build-${{ inputs.cache-name }}-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
-        restore-keys: |
-          go-build-${{ inputs.cache-name }}-${{ runner.os }}-${{ hashFiles('go.sum') }}-
-          go-build-${{ inputs.cache-name }}-${{ runner.os }}-
-
     - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       if: inputs.node == 'true' && steps.image.outputs.baked != 'true'
 
+    # setup-node's own pnpm cache saves on every event, so the store is
+    # cached below under the one rule instead.
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       if: inputs.node == 'true' && steps.image.outputs.baked != 'true'
       with:
         node-version-file: frontend/package.json
-        cache: pnpm
-        cache-dependency-path: |
-          frontend/pnpm-lock.yaml
-          e2e/pnpm-lock.yaml
+
+    # Every cache this action restores follows one rule: every job restores,
+    # and only a push to main saves, through .github/actions/cache-save as
+    # the job's last step. A pull request's own save could serve only that
+    # pull request, and its size would push main's caches out of GitHub's
+    # 10 GB. scripts/ci-cache.mjs names each cache's key, restore prefix and
+    # path once, into AO_CACHE_<NAME>_KEY, _RESTORE and _PATH, which the
+    # restores here and the saves read. The image carries the module cache
+    # and the pnpm store, so only a job off it caches them.
+    - name: Name the caches
+      shell: bash
+      env:
+        GO_BUILD: ${{ inputs.go == 'true' && inputs.cache-name || '' }}
+        GO_MOD: ${{ inputs.go == 'true' && steps.image.outputs.baked != 'true' }}
+        PNPM: ${{ inputs.node == 'true' && steps.image.outputs.baked != 'true' }}
+        FRONTEND_DIST: ${{ inputs.frontend-dist == 'true' }}
+      run: |
+        set -euo pipefail
+        flags=()
+        if [[ -n "$GO_BUILD" ]]; then flags+=(--go-build "$GO_BUILD"); fi
+        if [[ "$GO_MOD" == true ]]; then flags+=(--go-mod); fi
+        if [[ "$PNPM" == true ]]; then flags+=(--pnpm); fi
+        if [[ "$FRONTEND_DIST" == true ]]; then flags+=(--frontend-dist); fi
+        if [[ ${#flags[@]} -gt 0 ]]; then node scripts/ci-cache.mjs name "${flags[@]}"; fi
+
+    - name: Restore the Go module cache
+      if: env.AO_CACHE_GO_MOD_KEY != ''
+      id: go-mod
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.AO_CACHE_GO_MOD_PATH }}
+        key: ${{ env.AO_CACHE_GO_MOD_KEY }}
+        restore-keys: ${{ env.AO_CACHE_GO_MOD_RESTORE }}
+
+    # The build cache holds compiled packages and passed test results, so a
+    # warm job rebuilds and retests only what a change touched. A slot's key
+    # ends in the commit; a job restores the newest main entry of its slot.
+    - name: Restore the Go build cache
+      if: env.AO_CACHE_GO_BUILD_KEY != ''
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.AO_CACHE_GO_BUILD_PATH }}
+        key: ${{ env.AO_CACHE_GO_BUILD_KEY }}
+        restore-keys: ${{ env.AO_CACHE_GO_BUILD_RESTORE }}
+
+    - name: Restore the pnpm store
+      if: env.AO_CACHE_PNPM_KEY != ''
+      id: pnpm-restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.AO_CACHE_PNPM_PATH }}
+        key: ${{ env.AO_CACHE_PNPM_KEY }}
+        restore-keys: ${{ env.AO_CACHE_PNPM_RESTORE }}
+
+    # The build reads frontend/ and nothing outside it, but a build that is
+    # not a release stamps its version with the build time, so two builds
+    # of one tree differ. The bundle a push to main built is restored for
+    # exactly the files the build reads, guide files aside
+    # (scripts/ci-cache.mjs bundleSource). When this job's files match one,
+    # the job skips the install and the build; otherwise it builds as
+    # before.
+    - name: Restore the frontend bundle
+      if: env.AO_CACHE_FRONTEND_DIST_KEY != ''
+      id: frontend-dist
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.AO_CACHE_FRONTEND_DIST_PATH }}
+        key: ${{ env.AO_CACHE_FRONTEND_DIST_KEY }}
+
+    # The save skips a cache whose exact key this job restored.
+    - name: Record the exact cache hits
+      shell: bash
+      env:
+        GO_MOD: ${{ steps.go-mod.outputs.cache-hit }}
+        PNPM: ${{ steps.pnpm-restore.outputs.cache-hit }}
+        FRONTEND_DIST: ${{ steps.frontend-dist.outputs.cache-hit }}
+      run: |
+        {
+          echo "AO_CACHE_GO_MOD_HIT=$GO_MOD"
+          echo "AO_CACHE_PNPM_HIT=$PNPM"
+          echo "AO_CACHE_FRONTEND_DIST_HIT=$FRONTEND_DIST"
+        } >> "$GITHUB_ENV"
+
+    # A push saves only the build cache entries the job used
+    # (scripts/ci-go-cache.mjs): restored entries are set two hours back
+    # here, and the save deletes the ones Go did not refresh.
+    - name: Age the restored Go build cache
+      if: env.AO_CACHE_GO_BUILD_KEY != '' && github.event_name == 'push'
+      shell: bash
+      run: |
+        mkdir -p "$AO_CACHE_GO_BUILD_PATH"
+        node scripts/ci-go-cache.mjs backdate "$AO_CACHE_GO_BUILD_PATH" "$RUNNER_TEMP/go-cache-state.json"
 
     # pnpm switches itself to the packageManager pin, so a bumped pin still
     # installs in the image; the baked store answers what the lockfile
     # names and the registry supplies the rest.
     - name: Install frontend dependencies
-      if: inputs.frontend-deps == 'true' || inputs.frontend-dist == 'true'
+      if: inputs.frontend-deps == 'true' || (inputs.frontend-dist == 'true' && steps.frontend-dist.outputs.cache-hit != 'true')
       shell: bash
       run: pnpm --dir frontend install --frozen-lockfile
 
     - name: Build the frontend bundle
-      if: inputs.frontend-dist == 'true'
+      if: inputs.frontend-dist == 'true' && steps.frontend-dist.outputs.cache-hit != 'true'
       shell: bash
       run: pnpm --dir frontend run build
 
@@ -156,36 +203,12 @@ runs:
       shell: bash
       run: pnpm --dir e2e install --frozen-lockfile
 
-    - name: Restore Playwright browsers
-      if: inputs.browsers != '' && steps.image.outputs.baked != 'true'
-      id: browsers
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ~/.cache/ms-playwright
-        key: playwright-${{ runner.os }}-${{ inputs.browsers }}-${{ hashFiles('e2e/pnpm-lock.yaml', 'frontend/pnpm-lock.yaml') }}
-
+    # The one installer (scripts/playwright-browsers.sh): in the image the
+    # set is present and this downloads nothing; off it, or past its pin,
+    # it downloads what is missing and the OS libraries that needs.
     - name: Provide Playwright browsers
       if: inputs.browsers != ''
       shell: bash
       env:
         BROWSERS: ${{ inputs.browsers }}
-        CACHED: ${{ steps.browsers.outputs.cache-hit }}
-      run: |
-        set -euo pipefail
-        # The frontend and e2e lockfiles pin the same Playwright; the e2e
-        # package owns the CLI here. The suites run headless without a
-        # channel, so Chromium is the headless shell only, as in the image.
-        # `install` is a no-op for a browser build that is already present
-        # and downloads a missing one, after which the OS libraries that
-        # build needs are installed too.
-        dir=e2e
-        if [[ ! -d e2e/node_modules ]]; then dir=frontend; fi
-        root=${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}
-        before=$(ls -1 "$root" 2>/dev/null | sort || true)
-        # shellcheck disable=SC2086
-        pnpm --dir "$dir" exec playwright install --only-shell $BROWSERS
-        after=$(ls -1 "$root" | sort)
-        if [[ "$CACHED" == "true" || "$before" != "$after" ]]; then
-          # shellcheck disable=SC2086
-          pnpm --dir "$dir" exec playwright install-deps $BROWSERS
-        fi
+      run: scripts/playwright-browsers.sh --with-deps "$BROWSERS"

@@ -25,6 +25,8 @@ async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
 describe('<PerformanceSettings>', () => {
   beforeEach(async () => {
     await seed();
+    // The vsync field asks whether this computer is WSL: it is not.
+    setBindingMock('IsWSL', async () => false);
   });
 
   it('dispatches lowPowerMode patch when the toggle is clicked', async () => {

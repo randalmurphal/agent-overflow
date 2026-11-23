@@ -17,7 +17,13 @@ import (
 // of them.
 func assertPlanSearches(t *testing.T, s *Store, what, table string, allowed []string, query string, args ...any) {
 	t.Helper()
-	plan := explainPlan(t, s, query, args...)
+	assertSearches(t, explainPlan(t, s, query, args...), what, table, allowed)
+}
+
+// assertSearches is assertPlanSearches over a plan already explained, for a
+// test that checks several tables of one statement's plan.
+func assertSearches(t *testing.T, plan []planRow, what, table string, allowed []string) {
+	t.Helper()
 	text := planText(plan)
 	reads := 0
 	for _, r := range plan {
@@ -93,11 +99,14 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 			arm := []string{"idx_thread_requests_open_created", "idx_thread_requests_caller_settled",
 				"idx_thread_requests_open_below", "sqlite_autoindex_thread_requests_1", "idx_thread_requests_nested_caller",
 				"idx_thread_requests_run_open"}
-			assertPlanSearches(t, s, name, "r", []string{"sqlite_autoindex_thread_requests_1"}, read.query, read.args...)
-			assertPlanSearches(t, s, name, "c", arm, read.query, read.args...)
+			// One plan per read: explaining compiles the whole statement.
+			plan := explainPlan(t, s, read.query, read.args...)
+			text := planText(plan)
+			assertSearches(t, plan, name, "r", []string{"sqlite_autoindex_thread_requests_1"})
+			assertSearches(t, plan, name, "c", arm)
 			// The held work's spawns, a parked request's and a live
 			// thread's alike, are each a search of the spawn link.
-			assertPlanSearches(t, s, name, "ps", []string{"idx_thread_requests_spawn_link"}, read.query, read.args...)
+			assertSearches(t, plan, name, "ps", []string{"idx_thread_requests_spawn_link"})
 			// A row's run, its worker's newest run and a send's spawn are
 			// each a search by key: one request per run (ru, rs), the
 			// request a row shows (h, su, ss, sh) and the row a send falls
@@ -118,16 +127,15 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 				keyed["lm"] = []string{"idx_thread_requests_run_token", "idx_thread_requests_open_created"}
 			}
 			for alias, indexes := range keyed {
-				assertPlanSearches(t, s, name, alias, indexes, read.query, read.args...)
+				assertSearches(t, plan, name, alias, indexes)
 			}
-			if text := planText(explainPlan(t, s, read.query, read.args...)); !strings.Contains(text, "SEARCH uo USING INDEX idx_thread_requests_open_created (caller_thread_id=?)") {
+			if !strings.Contains(text, "SEARCH uo USING INDEX idx_thread_requests_open_created (caller_thread_id=?)") {
 				t.Errorf("%s does not read a spawn's untracked open sends among its caller's open requests:\n%s", name, text)
 			}
-			text := planText(explainPlan(t, s, read.query, read.args...))
 			if read.name == "threadAgentTreeSQL" {
-				assertPlanSearches(t, s, name, "a", arm, read.query, read.args...)
+				assertSearches(t, plan, name, "a", arm)
 			} else {
-				assertPlanSearches(t, s, name, "sp", []string{"idx_thread_requests_spawn_link"}, read.query, read.args...)
+				assertSearches(t, plan, name, "sp", []string{"idx_thread_requests_spawn_link"})
 			}
 			if strings.Contains(text, "settled_at<?") {
 				t.Errorf("%s reads the settled history:\n%s", name, text)
@@ -142,15 +150,14 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 		// and those of its rows' arms, and climbs the held work by the
 		// spawn link.
 		name := fmt.Sprintf("threadAgentStateSQL (analyzed %v)", analyzed)
-		stateArgs := []any{chief, "[]", since}
-		assertPlanSearches(t, s, name, "o", []string{"idx_thread_requests_open_created", "idx_thread_requests_nested_caller",
-			"idx_thread_requests_open_below"}, threadAgentStateSQL, stateArgs...)
-		assertPlanSearches(t, s, name, "c", []string{"idx_thread_requests_open_created", "idx_thread_requests_caller_settled",
+		state := explainPlan(t, s, threadAgentStateSQL, chief, "[]", since)
+		assertSearches(t, state, name, "o", []string{"idx_thread_requests_open_created", "idx_thread_requests_nested_caller",
+			"idx_thread_requests_open_below"})
+		assertSearches(t, state, name, "c", []string{"idx_thread_requests_open_created", "idx_thread_requests_caller_settled",
 			"idx_thread_requests_open_below", "sqlite_autoindex_thread_requests_1", "idx_thread_requests_nested_caller",
-			"idx_thread_requests_run_open"},
-			threadAgentStateSQL, stateArgs...)
-		assertPlanSearches(t, s, name, "ps", []string{"idx_thread_requests_spawn_link"}, threadAgentStateSQL, stateArgs...)
-		if text := planText(explainPlan(t, s, threadAgentStateSQL, stateArgs...)); strings.Contains(text, "settled_at<?") {
+			"idx_thread_requests_run_open"})
+		assertSearches(t, state, name, "ps", []string{"idx_thread_requests_spawn_link"})
+		if text := planText(state); strings.Contains(text, "settled_at<?") {
 			t.Errorf("%s reads the settled history:\n%s", name, text)
 		}
 	}
@@ -160,10 +167,11 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 		"idx_thread_requests_open_below", "sqlite_autoindex_thread_requests_1", "idx_thread_requests_nested_caller",
 		"idx_thread_requests_run_open"}
 	stopRows := threadAgentStopRowsSQL(128)
-	stopArgs := []any{chief, "[]", since, nil, 0, int64(100), "recent-000050"}
-	assertPlanSearches(t, s, "threadAgentStopRowsSQL", "a", stopArms, stopRows, stopArgs...)
-	assertPlanSearches(t, s, "threadAgentStopRowsSQL", "r", []string{"sqlite_autoindex_thread_requests_1"}, stopRows, stopArgs...)
-	stopText := planText(explainPlan(t, s, stopRows, stopArgs...))
+	stop := explainPlan(t, s, stopRows, chief, "[]", since, nil, 0, int64(100), "recent-000050")
+	assertSearches(t, stop, "threadAgentStopRowsSQL", "a", stopArms)
+	assertSearches(t, stop, "threadAgentStopRowsSQL", "r", []string{"sqlite_autoindex_thread_requests_1"})
+	assertSearches(t, stop, "threadAgentStopRowsSQL", "ps", []string{"idx_thread_requests_spawn_link"})
+	stopText := planText(stop)
 	if strings.Contains(stopText, "settled_at<?") {
 		t.Errorf("threadAgentStopRowsSQL reads the settled history:\n%s", stopText)
 	}
@@ -179,7 +187,6 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 	assertPlanSearches(t, s, "SpawnLinkOf", "link", []string{"idx_thread_requests_spawn_link"}, spawnLinkOfSQL, "child")
 	assertPlanSearches(t, s, "threadAgentRowFramesSQL", "link", []string{"idx_thread_requests_spawn_link"},
 		threadAgentRowFramesSQL, "[]", `["child"]`, "local", "[]", 4)
-	assertPlanSearches(t, s, "threadAgentStopRowsSQL", "ps", []string{"idx_thread_requests_spawn_link"}, stopRows, stopArgs...)
 }
 
 // Neither tree statement compiles again on a rebind once ANALYZE has
@@ -189,16 +196,11 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 // column, and a plan that read one expires at every rebind.
 func TestThreadAgentTreeCompilesOnceWithStatistics(t *testing.T) {
 	t.Parallel()
-	for _, shape := range []agentTreeShape{
-		{history: 5_000, open: 2_000, spawns: 2_000},
-		{history: 50_000, open: 200, spawns: 5_000, openSpawns: 2_000, deep: 500, busy: 2_000},
-	} {
-		for _, namedFirst := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%v, named first %v", shape, namedFirst), func(t *testing.T) {
-				t.Parallel()
-				compilesOnceWithStatistics(t, shape, namedFirst)
-			})
-		}
+	for _, namedFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("named first %v", namedFirst), func(t *testing.T) {
+			t.Parallel()
+			compilesOnceWithStatistics(t, agentTreeEveryKind, namedFirst)
+		})
 	}
 }
 

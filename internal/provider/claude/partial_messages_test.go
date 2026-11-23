@@ -962,7 +962,7 @@ func TestParseStreamEventSubagentMessageDeltaEndTurnDoesNotEmitParentSoftTurnCom
 // b951a768): preTokens matched top-level within 1-2% on every
 // turn — including advisor turns where the last-iteration snapshot
 // was ~2× lower. See
-// docs/references/fixtures/claude/advisor_pretokens_correlation_20260523.summary.json
+// internal/provider/wirecaptures/claude/advisor_pretokens_correlation_20260523.summary.json
 // for the per-compaction table.
 //
 // Earlier the parser extracted `usage.iterations[-1].(type=message)`

@@ -6,7 +6,6 @@ import { trace } from './trace';
 import { SpringMotion, SPRING_MAX_CATCHUP_STEPS } from './motion';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import {
-  __resetAnimationFrameCoordinatorForTest,
   createAnimationFrameBatcher,
 } from '../animationFrameBatcher';
 import type { ScrollWriteCaller } from './types';
@@ -68,7 +67,6 @@ let springFrameBatcher = createAnimationFrameBatcher(
 );
 
 export function __resetSpringFrameBatcherForTest(): void {
-  __resetAnimationFrameCoordinatorForTest();
   springFrameBatcher = createAnimationFrameBatcher(
     'scroll-spring',
     'before-dom-update',

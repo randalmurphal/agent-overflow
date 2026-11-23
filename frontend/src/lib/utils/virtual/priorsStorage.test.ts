@@ -10,7 +10,7 @@ import {
   type SizePriorsBucket,
   type SizePriorsGeometry,
 } from './priors';
-import { __resetSizePriorsStorageForTest, installSizePriorsPersistence } from './priorsStorage';
+import { installSizePriorsPersistence } from './priorsStorage';
 
 const V3_PREFIX = 'agent-overflow.sizePriors.v3.';
 
@@ -32,8 +32,6 @@ const bucket = (overrides: Partial<SizePriorsBucket> = {}): SizePriorsBucket => 
 
 beforeEach(() => {
   vi.useFakeTimers();
-  clearAllThreadSizePriorsForTest();
-  __resetSizePriorsStorageForTest();
   installSizePriorsPersistence();
 });
 
@@ -41,7 +39,6 @@ afterEach(() => {
   // Restore before reset: a test that failed mid-body leaves its throwing
   // setItem mock installed, which would poison every later test.
   vi.restoreAllMocks();
-  __resetSizePriorsStorageForTest();
   vi.useRealTimers();
 });
 

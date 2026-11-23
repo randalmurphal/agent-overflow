@@ -5,12 +5,11 @@ import {
   getPaneDensityMode,
   setPaneDensityMode,
 } from './paneDensity.svelte';
-import { loadSettings, resetSettingsForTest } from './settings.svelte';
+import { loadSettings } from './settings.svelte';
 import { makeSettings } from '../../test/helpers/settings';
 
 describe('paneDensity store', () => {
   beforeEach(() => {
-    resetSettingsForTest();
     setBindingMock('UpdateSettings', async (patch: unknown) => ({
       ...makeSettings(),
       ...(patch as Partial<ReturnType<typeof makeSettings>>),

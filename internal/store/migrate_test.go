@@ -2,12 +2,15 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -241,13 +244,25 @@ func TestThreadsModeCheckRejectsBogusValue(t *testing.T) {
 func TestThreadsProviderCheckRejectsBogusValue(t *testing.T) {
 	s := newTestStore(t)
 
-	_, err := s.db.Exec(`
-		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
-			created_at, updated_at, archived, mode)
-		VALUES ('t-bogus-prov', ?, 'Bogus', 'xyz', '/tmp', '', 1, 1, 0, 'chat')
-	`, defaultTestProjectID)
-	if err == nil {
-		t.Fatal("INSERT with provider='xyz' must violate CHECK constraint")
+	// Migration v159 widens the SQLite CHECK to non-empty trimmed strings;
+	// provider allowlist enforcement lives in Store.CreateThread.
+	for _, blank := range []string{"", "   "} {
+		if _, err := s.db.Exec(`
+			INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+				created_at, updated_at, archived, mode)
+			VALUES ('t-blank-prov', ?, 'Blank', ?, '/tmp', '', 1, 1, 0, 'chat')
+		`, defaultTestProjectID, blank); err == nil {
+			t.Fatalf("INSERT with provider=%q must violate CHECK constraint", blank)
+		}
+	}
+	if err := s.CreateThread(Thread{
+		ID:            "t-bogus-prov",
+		ProjectID:     defaultTestProjectID,
+		Title:         "Bogus",
+		Provider:      "xyz",
+		WorkspacePath: "/tmp",
+	}); err == nil {
+		t.Fatal("CreateThread with provider='xyz' must fail")
 	}
 
 	for _, p := range []string{"claude", "codex", "claude-tui"} {
@@ -260,8 +275,8 @@ func TestThreadsProviderCheckRejectsBogusValue(t *testing.T) {
 		}
 	}
 
-	if _, err := s.db.Exec(`UPDATE threads SET provider = 'nope' WHERE id = 't-ok-claude'`); err == nil {
-		t.Error("UPDATE to bogus provider must fail")
+	if _, err := s.db.Exec(`UPDATE threads SET provider = '  ' WHERE id = 't-ok-claude'`); err == nil {
+		t.Error("UPDATE to blank provider must fail")
 	}
 }
 
@@ -341,12 +356,25 @@ func TestThreadsReasoningEffortCheck(t *testing.T) {
 			t.Errorf("INSERT codex reasoning_effort=%q: %v", eff, err)
 		}
 	}
+	// Migration v159 decouples SQLite's effort CHECK from provider names;
+	// SQLite rejects unknown efforts and Store.CreateThread enforces the
+	// per-provider subset.
 	if _, err := s.db.Exec(`
 		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
 			created_at, updated_at, archived, mode, reasoning_effort)
-		VALUES ('t-claude-minimal', ?, 'Bad', 'claude', '/tmp', '', 1, 1, 0, 'chat', 'minimal')
+		VALUES ('t-claude-bogus', ?, 'Bad', 'claude', '/tmp', '', 1, 1, 0, 'chat', 'bogus')
 	`, defaultTestProjectID); err == nil {
-		t.Fatal("INSERT claude with reasoning_effort='minimal' must violate CHECK constraint")
+		t.Fatal("INSERT with reasoning_effort='bogus' must violate CHECK constraint")
+	}
+	if err := s.CreateThread(Thread{
+		ID:              "t-claude-minimal",
+		ProjectID:       defaultTestProjectID,
+		Title:           "Bad",
+		Provider:        "claude",
+		WorkspacePath:   "/tmp",
+		ReasoningEffort: "minimal",
+	}); err == nil {
+		t.Fatal("CreateThread claude with reasoning_effort='minimal' must fail")
 	}
 }
 
@@ -1080,12 +1108,14 @@ func TestChatBarFavoritesAndProfilesCHECK(t *testing.T) {
 	); err != nil {
 		t.Fatalf("codex profile with ultra effort must satisfy CHECK: %v", err)
 	}
-	if _, err := s.db.Exec(
-		`INSERT INTO chat_model_profiles (
-			provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at
-		) VALUES ('claude', 'claude-opus-4-7', 'ultra', 0, 1000000, 'full-access', 1)`,
-	); err == nil {
-		t.Fatal("claude profile with codex-only effort 'ultra' must violate coupling CHECK")
+	if err := s.UpsertChatModelProfile(ChatModelProfile{
+		Provider:        "claude",
+		Model:           "claude-opus-4-7",
+		ReasoningEffort: "ultra",
+		ContextWindow:   1000000,
+		RuntimeMode:     "full-access",
+	}); err == nil {
+		t.Fatal("UpsertChatModelProfile claude with codex-only effort 'ultra' must fail")
 	}
 
 	// claude-tui shares claude's effort set and is a first-class provider on
@@ -1103,12 +1133,14 @@ func TestChatBarFavoritesAndProfilesCHECK(t *testing.T) {
 	); err != nil {
 		t.Fatalf("claude-tui profile with valid effort must satisfy CHECK: %v", err)
 	}
-	if _, err := s.db.Exec(
-		`INSERT INTO chat_model_profiles (
-			provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at
-		) VALUES ('claude-tui', 'claude-sonnet-4-6', 'minimal', 0, 1000000, 'full-access', 1)`,
-	); err == nil {
-		t.Fatal("claude-tui profile with codex-only effort 'minimal' must violate coupling CHECK")
+	if err := s.UpsertChatModelProfile(ChatModelProfile{
+		Provider:        "claude-tui",
+		Model:           "claude-sonnet-4-6",
+		ReasoningEffort: "minimal",
+		ContextWindow:   1000000,
+		RuntimeMode:     "full-access",
+	}); err == nil {
+		t.Fatal("UpsertChatModelProfile claude-tui with codex-only effort 'minimal' must fail")
 	}
 }
 
@@ -1695,25 +1727,77 @@ func TestV12ChannelMaxTurnsColumn(t *testing.T) {
 // migrateThrough opens an in-memory DB configured like production
 // (SetMaxOpenConns(1), so the single shared :memory: connection is reused
 // across calls and the rebuild migration's pinned-connection FK toggle
-// lands on it) and applies every migration up to and including target. It
-// is the pre-image builder for migration-transition tests: seed against
-// the schema at `target`, then drive the next migration.
+// lands on it) holding the schema every migration up to and including
+// target leaves. It is the pre-image builder for migration-transition
+// tests: seed against the schema at `target`, then drive the next
+// migration. The database is a copy of migratedImage(target), so the
+// chain up to a version runs once per test process, not once per test.
 func migrateThrough(t *testing.T, target int) *sql.DB {
+	t.Helper()
+	image := migratedImage(t, target)
+	db := openMigrationDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	if err := deserialize(db, image); err != nil {
+		t.Fatalf("copy the v%d image: %v", target, err)
+	}
+	return db
+}
+
+// openMigrationDB is the one-connection :memory: database migrateThrough
+// hands out and builds its images on.
+func openMigrationDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", poolDSN(":memory:", writerConnPragmas))
 	if err != nil {
 		t.Fatalf("open sqlite db: %v", err)
 	}
 	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
 
-	if err := configureDatabase(db, writerConnPragmas); err != nil {
-		t.Fatalf("configure database: %v", err)
+// migratedImages are the serialized databases the chain leaves at each
+// version a test asked migrateThrough for, built from the nearest lower
+// one. mu is held while one is built, so a version is built once.
+var migratedImages struct {
+	mu        sync.Mutex
+	byVersion map[int][]byte
+}
+
+// migratedImage is the database every migration up to and including
+// target leaves on a new in-memory database, serialized.
+func migratedImage(t *testing.T, target int) []byte {
+	t.Helper()
+	migratedImages.mu.Lock()
+	defer migratedImages.mu.Unlock()
+	if image, ok := migratedImages.byVersion[target]; ok {
+		return image
 	}
-	if err := ensureMigrationTable(db); err != nil {
-		t.Fatalf("ensure migration table: %v", err)
+	base := 0
+	for version := range migratedImages.byVersion {
+		if version < target && version > base {
+			base = version
+		}
+	}
+	db := openMigrationDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close the v%d image's database: %v", target, err)
+		}
+	}()
+	if base == 0 {
+		if err := configureDatabase(db, writerConnPragmas); err != nil {
+			t.Fatalf("configure database: %v", err)
+		}
+		if err := ensureMigrationTable(db); err != nil {
+			t.Fatalf("ensure migration table: %v", err)
+		}
+	} else if err := deserialize(db, migratedImages.byVersion[base]); err != nil {
+		t.Fatalf("copy the v%d image: %v", base, err)
 	}
 	for _, m := range migrations {
+		if m.Version <= base {
+			continue
+		}
 		if m.Version > target {
 			break
 		}
@@ -1725,7 +1809,65 @@ func migrateThrough(t *testing.T, target int) *sql.DB {
 			t.Fatalf("apply migration v%d: %v", m.Version, err)
 		}
 	}
-	return db
+	image, err := serialize(db)
+	if err != nil {
+		t.Fatalf("serialize the v%d database: %v", target, err)
+	}
+	if migratedImages.byVersion == nil {
+		migratedImages.byVersion = map[int][]byte{}
+	}
+	migratedImages.byVersion[target] = image
+	return image
+}
+
+// serializer is modernc.org/sqlite's connection: it copies its main
+// database out of and into memory.
+type serializer interface {
+	Serialize() ([]byte, error)
+	Deserialize([]byte) error
+}
+
+// serialize and deserialize copy the main database of db's one connection
+// out of and into memory.
+func serialize(db *sql.DB) ([]byte, error) {
+	var image []byte
+	err := rawConn(db, func(c serializer) error {
+		var err error
+		image, err = c.Serialize()
+		return err
+	})
+	return image, err
+}
+
+// deserialize replaces the main database, which resets the settings SQLite
+// keeps per database, such as synchronous, to their defaults; it applies the
+// writer's pragmas again and verifies them, so the connection is configured
+// as openMigrationDB opened it.
+func deserialize(db *sql.DB, image []byte) error {
+	if err := rawConn(db, func(c serializer) error { return c.Deserialize(image) }); err != nil {
+		return err
+	}
+	for _, p := range writerConnPragmas {
+		if _, err := db.Exec("PRAGMA " + p.name + "=" + p.dsnValue); err != nil {
+			return fmt.Errorf("apply PRAGMA %s: %w", p.name, err)
+		}
+	}
+	return verifyConnPragmas(db, writerConnPragmas)
+}
+
+func rawConn(db *sql.DB, fn func(serializer) error) error {
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		return err
+	}
+	err = conn.Raw(func(driverConn any) error {
+		c, ok := driverConn.(serializer)
+		if !ok {
+			return fmt.Errorf("driver connection %T cannot serialize", driverConn)
+		}
+		return fn(c)
+	})
+	return errors.Join(err, conn.Close())
 }
 
 // migratedDB is migrateThrough to the last migration for a test that
@@ -1853,7 +1995,7 @@ func migrationByVersion(t *testing.T, v int) Migration {
 	return Migration{}
 }
 
-func mustExec(t *testing.T, db *sql.DB, query string, args ...any) {
+func mustExec(t testing.TB, db *sql.DB, query string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(query, args...); err != nil {
 		t.Fatalf("exec %q: %v", query, err)
@@ -2544,7 +2686,20 @@ func TestReasoningEffortSetsMatchProvider(t *testing.T) {
 		}
 	}
 
-	for _, providerName := range []string{"claude", "claude-tui", "codex"} {
+	// legalProviders must match provider.AllProviders() in both directions.
+	for _, kind := range provider.AllProviders() {
+		if _, ok := legalProviders[string(kind)]; !ok {
+			t.Errorf("provider.AllProviders() declares %q but store's legalProviders does not", kind)
+		}
+	}
+	for name := range legalProviders {
+		if !provider.IsKnownProvider(name) {
+			t.Errorf("store's legalProviders declares %q which is not in provider.AllProviders()", name)
+		}
+	}
+
+	for _, kind := range provider.AllProviders() {
+		providerName := string(kind)
 		t.Run(providerName, func(t *testing.T) {
 			canonical := provider.ReasoningEffortsForProvider(providerName)
 			if len(canonical) == 0 {
@@ -2560,29 +2715,40 @@ func TestReasoningEffortSetsMatchProvider(t *testing.T) {
 				}
 
 				key := providerName + "-" + name
-				_, threadErr := s.db.Exec(`
-					INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
-						created_at, updated_at, archived, mode, reasoning_effort)
-					VALUES (?, ?, 'Effort', ?, '/tmp', '', 1, 1, 0, 'chat', ?)
-				`, "t-eff-"+key, defaultTestProjectID, providerName, name)
+				threadErr := s.CreateThread(Thread{
+					ID:              "t-eff-" + key,
+					ProjectID:       defaultTestProjectID,
+					Title:           "Effort",
+					Provider:        providerName,
+					WorkspacePath:   "/tmp",
+					Mode:            "chat",
+					ReasoningEffort: name,
+					ContextWindow:   200000,
+					RuntimeMode:     "full-access",
+					CreatedAt:       1,
+					UpdatedAt:       1,
+				})
 				if want && threadErr != nil {
-					t.Errorf("threads CHECK rejects %s/%s, which the provider package calls canonical — a migration is missing: %v",
+					t.Errorf("CreateThread rejects %s/%s, which the provider package calls canonical: %v",
 						providerName, name, threadErr)
 				}
 				if !want && threadErr == nil {
-					t.Errorf("threads CHECK accepted %s/%s, which the provider package does not offer", providerName, name)
+					t.Errorf("CreateThread accepted %s/%s, which the provider package does not offer", providerName, name)
 				}
 
-				_, profileErr := s.db.Exec(`
-					INSERT INTO chat_model_profiles (
-						provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at
-					) VALUES (?, ?, ?, 0, 272000, 'full-access', 1)
-				`, providerName, "model-"+key, name)
+				profileErr := s.UpsertChatModelProfile(ChatModelProfile{
+					Provider:        providerName,
+					Model:           "model-" + key,
+					ReasoningEffort: name,
+					ContextWindow:   272000,
+					RuntimeMode:     "full-access",
+					UpdatedAt:       1,
+				})
 				if want && profileErr != nil {
-					t.Errorf("chat_model_profiles CHECK rejects %s/%s: %v", providerName, name, profileErr)
+					t.Errorf("UpsertChatModelProfile rejects %s/%s: %v", providerName, name, profileErr)
 				}
 				if !want && profileErr == nil {
-					t.Errorf("chat_model_profiles CHECK accepted %s/%s, which the provider package does not offer", providerName, name)
+					t.Errorf("UpsertChatModelProfile accepted %s/%s, which the provider package does not offer", providerName, name)
 				}
 			}
 		})

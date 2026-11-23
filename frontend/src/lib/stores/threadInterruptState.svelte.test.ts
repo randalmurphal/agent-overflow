@@ -1,13 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   beginThreadInterrupt,
   finishThreadInterrupt,
   isThreadInterruptPending,
-  resetThreadInterruptStateForTest,
 } from './threadInterruptState.svelte';
 
 describe('threadInterruptState', () => {
-  beforeEach(() => resetThreadInterruptStateForTest());
 
   it('allows one interrupt transaction per thread', () => {
     const token = beginThreadInterrupt('thread-a');

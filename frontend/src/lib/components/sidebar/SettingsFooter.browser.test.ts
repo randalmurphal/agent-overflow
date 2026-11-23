@@ -3,7 +3,7 @@ import { cleanup, render } from '@testing-library/svelte';
 import '../../../app.css';
 import SettingsFooter from './SettingsFooter.svelte';
 import { SIDEBAR_MIN_WIDTH } from '../../stores/sidebarLayout.svelte';
-import { getUpdateState, resetForTest as resetUpdatesForTest } from '../../stores/updates.svelte';
+import { getUpdateState } from '../../stores/updates.svelte';
 import { resetToLocalPage } from '../../../test/helpers/scopes';
 
 // The footer is one row that never wraps. With the Update button in it the
@@ -12,7 +12,6 @@ import { resetToLocalPage } from '../../../test/helpers/scopes';
 let host: HTMLDivElement;
 beforeEach(() => {
   resetToLocalPage();
-  resetUpdatesForTest();
   host = document.createElement('div');
   host.style.cssText = 'background:var(--color-surface-0);color:var(--color-fg)';
   document.body.append(host);
@@ -20,7 +19,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   host.remove();
-  resetUpdatesForTest();
 });
 
 // Every control sits inside the footer, none overlaps the next, and no
@@ -37,7 +35,6 @@ function expectRowFits(footer: HTMLElement): void {
     previousRight = rect.right;
   }
 }
-
 
 it.each([SIDEBAR_MIN_WIDTH, 232, 256, 280, 360])(
   'fits Settings, Update and the toggles in a %ipx sidebar',

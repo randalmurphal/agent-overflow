@@ -2,10 +2,14 @@
 // added. Its answer is what says it lacks one: nothing is written there for a
 // key it lacks, by a page or by this window's mirror of its own preferences,
 // which v0.0.19 would class host tier and refuse for want of a step-up.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
-  applySettingsSnapshot, computerHasSetting, loadSettings, mirrorFrontendPreferences,
-  resetSettingsForTest, updateSetting, updateSettingsPatch,
+  applySettingsSnapshot,
+  computerHasSetting,
+  loadSettings,
+  mirrorFrontendPreferences,
+  updateSetting,
+  updateSettingsPatch,
 } from './settings.svelte';
 import { getPinnedBackend } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
@@ -18,7 +22,7 @@ import AgentProfilesSettings from '../components/settings/AgentProfilesSettings.
 import MemorySettings from '../components/settings/MemorySettings.svelte';
 import type { TransportHello } from '../transport/wsClient';
 import type { Settings } from '../types/settings';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { makeSettings } from '../../test/helpers/settings';
 import { SETTINGS_AFTER_V0_0_19, settingsAsV0019 } from '../../test/helpers/olderComputer';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
@@ -36,7 +40,6 @@ async function settle(): Promise<void> {
 
 describe('a computer on v0.0.19, by its settings answer', () => {
   beforeEach(async () => {
-    resetSettingsForTest();
     sent = [];
     setBindingMock('GetSettings', async () => (getPinnedBackend() === 'laptop' ? settingsAsV0019() : makeSettings()));
     setBindingMock('UpdateSettings', async (patch: unknown) => {
@@ -46,11 +49,6 @@ describe('a computer on v0.0.19, by its settings answer', () => {
     await loadSettings();
     stageBackend({ id: 'laptop', hello: { backendId: 'laptop' } as TransportHello });
     setCarriedSessionScopes('laptop', ['settings:read', 'settings:write']);
-  });
-
-  afterEach(() => {
-    resetStagedBackends();
-    resetSettingsForTest();
   });
 
   it('lacks each key its answer does not name, and has one it omits when empty', async () => {
@@ -96,12 +94,9 @@ describe('a computer on v0.0.19, by its settings answer', () => {
 // be on v0.0.19: home's pages and assistants follow home's answer.
 describe('a home computer on v0.0.19', () => {
   beforeEach(() => {
-    resetSettingsForTest();
     setBindingMock('GetSettings', async () => settingsAsV0019());
     setBindingMock('UpdateSettings', async () => settingsAsV0019());
   });
-
-  afterEach(() => resetSettingsForTest());
 
   it('reads assistants as off and offers no editor on the pages for keys it lacks', async () => {
     await loadSettings();

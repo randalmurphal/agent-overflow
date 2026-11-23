@@ -4,14 +4,11 @@ package app
 
 import (
 	"os"
-	"slices"
 	"syscall"
 	"testing"
 	"time"
 
-	"agent-overflow/internal/orphanreaper"
-
-	"github.com/shirou/gopsutil/v4/process"
+	"agent-overflow/internal/orphanreaper/orphanreapertest"
 )
 
 // The sidecar Start spawns exits cleanly on the control pipe's EOF, and Close
@@ -25,7 +22,10 @@ func TestOrphanReaperSidecarExitsOnClose(t *testing.T) {
 	if a.orphanReaper == nil {
 		t.Fatal("startOrphanReaper left no sidecar")
 	}
-	sidecars := reaperSidecarPIDs(t)
+	sidecars := orphanreapertest.Sidecars(t, os.Getpid())
+	if len(sidecars) == 0 {
+		t.Fatal("found no reaper sidecar among this process's children")
+	}
 	closed := make(chan error, 1)
 	go func() { closed <- a.orphanReaper.Close() }()
 	select {
@@ -42,31 +42,4 @@ func TestOrphanReaperSidecarExitsOnClose(t *testing.T) {
 		}
 		t.Fatal("the sidecar did not exit on EOF")
 	}
-}
-
-func reaperSidecarPIDs(t *testing.T) []int {
-	t.Helper()
-	self, err := process.NewProcess(int32(os.Getpid()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	children, err := self.Children()
-	if err != nil {
-		t.Fatalf("list child processes: %v", err)
-	}
-	var pids []int
-	for _, child := range children {
-		args, err := child.CmdlineSlice()
-		if err != nil {
-			// Another test's child that exited meanwhile is not the sidecar.
-			continue
-		}
-		if slices.Contains(args, orphanreaper.SidecarName) {
-			pids = append(pids, int(child.Pid))
-		}
-	}
-	if len(pids) == 0 {
-		t.Fatal("found no reaper sidecar among this process's children")
-	}
-	return pids
 }

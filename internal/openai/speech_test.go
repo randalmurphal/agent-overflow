@@ -38,7 +38,7 @@ func speak(ctx context.Context, client *http.Client, key string, request openai.
 
 func TestSpeakReturnsTheVoicesAudioAndTranscript(t *testing.T) {
 	t.Parallel()
-	const key = "sk-proj-speech-success"
+	key := openaifake.Key(t, "sk-proj-speech-success")
 	const text = "The build finished in forty seconds, and all twelve checks passed."
 	speech, err := speakWith(t, fakeClient(), key, openai.SpeechRequest{Text: text, Voice: "cedar"})
 	if err != nil {
@@ -100,7 +100,7 @@ func TestSpeakReturnsWhatWasSpokenEvenWhenItIsNotTheText(t *testing.T) {
 
 func TestSpeakRefusesAnUnknownVoiceOrNoTextWithoutAsking(t *testing.T) {
 	t.Parallel()
-	const key = "sk-proj-speech-refusals"
+	key := openaifake.Key(t, "sk-proj-speech-refusals")
 	for _, request := range []openai.SpeechRequest{
 		{Text: "Hi.", Voice: ""}, {Text: "Hi.", Voice: "nova"}, {Text: "Hi.", Voice: "Marin"}, {Text: " \n", Voice: "marin"},
 	} {
@@ -198,7 +198,7 @@ func (h *headerAudit) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func TestTheKeyTravelsOnlyInTheAuthorizationHeader(t *testing.T) {
 	t.Parallel()
-	const key = "sk-proj-speech-header-audit"
+	key := openaifake.Key(t, "sk-proj-speech-header-audit")
 	audit := &headerAudit{key: key}
 	client := &http.Client{Transport: audit}
 	if _, err := speakWith(t, client, key, openai.SpeechRequest{Text: "Hello there.", Voice: "marin"}); err != nil {
@@ -221,18 +221,19 @@ func TestSpeakGivesUpOnAConfigurationNeverAccepted(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	_, err := speak(ctx, fakeClient(), openaifake.SpeechConfigStallsKey, openai.SpeechRequest{Text: "Hello there.", Voice: "marin"})
+	key := openaifake.Key(t, openaifake.SpeechConfigStallsKey)
+	_, err := speak(ctx, fakeClient(), key, openai.SpeechRequest{Text: "Hello there.", Voice: "marin"})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Speak = %v, want context.DeadlineExceeded", err)
 	}
-	eventually(t, "the fake to see the connection close", func() bool { return openaifake.OpenSpeechSessions(openaifake.SpeechConfigStallsKey) == 0 })
+	eventually(t, "the fake to see the connection close", func() bool { return openaifake.OpenSpeechSessions(key) == 0 })
 }
 
 // Cancelling the caller's context ends a reading OpenAI never answers, and
 // leaves no goroutine or open session behind. Counts process-wide
 // goroutines, so it runs serially.
 func TestCancellingSpeakLeavesNothingRunning(t *testing.T) {
-	const key = "sk-proj-speech-cancel"
+	key := openaifake.Key(t, "sk-proj-speech-cancel")
 	before := runtime.NumGoroutine()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

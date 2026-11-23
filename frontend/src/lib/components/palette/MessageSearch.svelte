@@ -1,3 +1,11 @@
+<script module lang="ts">
+  // Debounce window for re-querying as the user types. The global search is a
+  // full table scan; firing one per keystroke piled scans onto the store's
+  // single write connection during a live stream. One scan per typing pause is
+  // plenty for an interactive dialog.
+  export const MESSAGE_SEARCH_DEBOUNCE_MS = 150;
+</script>
+
 <script lang="ts">
   import { isLocalEnter } from '../../utils/localEnter';
   import { navigateToThreadItem } from '../../stores/threadItemNavigation';
@@ -42,11 +50,6 @@
   // with >50 matches should narrow their query.
   const LIMIT = 50;
 
-  // Debounce window for re-querying as the user types. The global search is a
-  // full table scan; firing one per keystroke piled scans onto the store's
-  // single write connection during a live stream. One scan per typing pause is
-  // plenty for an interactive dialog.
-  const SEARCH_DEBOUNCE_MS = 150;
 
   let searchSeq = 0;
   async function runSearch(q: string): Promise<void> {
@@ -93,7 +96,7 @@
       void runSearch(q);
       return;
     }
-    debounceTimer = setTimeout(() => void runSearch(q), SEARCH_DEBOUNCE_MS);
+    debounceTimer = setTimeout(() => void runSearch(q), MESSAGE_SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(debounceTimer);
   });
 

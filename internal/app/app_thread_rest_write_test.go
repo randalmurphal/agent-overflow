@@ -8,10 +8,12 @@ package app
 // connection.
 
 import (
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -88,13 +90,15 @@ func TestRestDecisionsCompleteOnOneConnection(t *testing.T) {
 		}
 	}
 	later := time.Now().AddDate(0, 0, store.ThreadRequestRetentionDays+1)
-	completes("the retention sweep", func() { f.app.expireThreadRequests(later) })
-	if !changed.Load() {
-		t.Fatal("the sweep never read the worker's rest")
-	}
-	if _, found, err := f.app.store.GetThreadRequest(ack.Token); err != nil || found {
-		t.Fatalf("the spawn's token after the sweep: found %v, %v; want it cleared to its lineage", found, err)
-	}
+	passesUntil(t, func() { completes("the retention sweep", func() { f.app.expireThreadRequests(later) }) }, func() error {
+		if !changed.Load() {
+			t.Fatal("the sweep never read the worker's rest")
+		}
+		if _, found, err := f.app.store.GetThreadRequest(ack.Token); err != nil || found {
+			return fmt.Errorf("the spawn's token after the sweep: found %v, %v; want it cleared to its lineage", found, err)
+		}
+		return nil
+	})
 }
 
 // A change to what memory holds of a thread below, made once the turn end
@@ -107,16 +111,29 @@ func TestAMemoryChangeBelowVetoesTheSettlement(t *testing.T) {
 	worker, token, gate, below := f.heldWorker(t, 1)
 	letGo := f.holdAgentRowsDrain(t)
 	var changed atomic.Bool
+	// The change only bumps the revision, so the pass the veto starts reads
+	// the subtree at rest and settles; that read waits until the request
+	// has been seen held.
+	seen := make(chan struct{})
+	var seenOnce sync.Once
+	sawHeld := func() { seenOnce.Do(func() { close(seen) }) }
+	t.Cleanup(sawHeld)
 	f.app.restReadForTest = func(roots []string) {
-		if slices.Contains(roots, worker) && changed.CompareAndSwap(false, true) {
-			f.app.noteThreadRestChange(below[0].ID)
+		if !slices.Contains(roots, worker) {
+			return
 		}
+		if changed.CompareAndSwap(false, true) {
+			f.app.noteThreadRestChange(below[0].ID)
+			return
+		}
+		<-seen
 	}
 	f.endWorkerTurn(t, worker, gate)
 	if !changed.Load() {
 		t.Fatal("the turn end never read the worker's rest")
 	}
 	f.expectHeld(t, worker, token, "though memory of a thread below changed before the write")
+	sawHeld()
 	letGo()
 	f.expectFinished(t, token)
 }

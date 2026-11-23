@@ -1,5 +1,4 @@
-import { expect } from '@playwright/test';
-import { gateTest as test } from './fixtures.js';
+import { test, expect } from './base-test.js';
 import { launchHarness } from '../src/harness.js';
 import { seedAgentThread } from './agent-visibility-helpers.js';
 import { PAIRED_APP_MOUNT_MS, confirmOnHost, mintInvite, nonLoopbackIPv4, redeemOnScreen, socketAnswers } from './offhost-helpers.js';
