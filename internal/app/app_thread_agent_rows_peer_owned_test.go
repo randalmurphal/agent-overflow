@@ -302,7 +302,10 @@ func TestAPromptRoutedBackOneComputerUpIsAThreadsThereFurtherUp(t *testing.T) {
 		return row
 	}
 	var second, first, onSecond ThreadAgentRow
-	waitUntil(t, 15*time.Second, func() bool {
+	// The rows arrive through the peer cache: a listing that misses its
+	// timeout backs that computer off (threadAgentPeerBackoffFirst, then
+	// doubling), so the wait is the test budget, not a fixed span.
+	waitUntil(t, testutil.WaitBudget(t), func() bool {
 		second = rowOn(c.apps[1], c.threads[0], c.spawns[1])
 		first = rowOn(c.apps[0], c.caller.ID, c.spawns[1])
 		onSecond = rowOn(c.apps[0], c.caller.ID, c.spawns[0])
