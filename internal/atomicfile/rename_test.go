@@ -35,7 +35,7 @@ func TestRenameNoReplaceKeepsExistingEmptyDirectoryAndSymlink(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := RenameNoReplace(from, to); err == nil {
+			if _, err := RenameNoReplace(from, to); err == nil {
 				t.Fatal("overwrote another destination")
 			}
 			after, err := os.Lstat(to)
@@ -65,7 +65,7 @@ func TestRenameNoReplaceHasExactlyOneConcurrentPublisher(t *testing.T) {
 		}
 		workers.Go(func() {
 			<-start
-			if RenameNoReplace(from, to) == nil {
+			if _, err := RenameNoReplace(from, to); err == nil {
 				successes.Add(1)
 			}
 		})

@@ -32,7 +32,13 @@ func writeRaw(t *testing.T, path, content string) {
 // temporary file is left behind.
 func expectRefused(t *testing.T, path, want string, before os.FileInfo) {
 	t.Helper()
-	committed, err := WriteIfUnchanged(path, []byte("mine"), before)
+	expectRefusedWith(t, systemOps(), path, want, before)
+}
+
+// expectRefusedWith is expectRefused through ops.
+func expectRefusedWith(t *testing.T, ops fileOps, path, want string, before os.FileInfo) {
+	t.Helper()
+	committed, err := writeIfUnchanged(ops, path, []byte("mine"), before)
 	if err != nil || committed {
 		t.Fatalf("WriteIfUnchanged = %v, %v; want refused", committed, err)
 	}
@@ -137,10 +143,10 @@ func TestWriteIfUnchangedReportsACommittedWriteWhoseDirectorySyncFailed(t *testi
 	writeRaw(t, path, "v1")
 	before := readVersion(t, path)
 	failure := errors.New("injected sync failure")
-	syncPublished = func(string) error { return failure }
-	t.Cleanup(func() { syncPublished = SyncDir })
+	ops := systemOps()
+	ops.syncDir = func(string) error { return failure }
 
-	committed, err := WriteIfUnchanged(path, []byte("mine"), before)
+	committed, err := writeIfUnchanged(ops, path, []byte("mine"), before)
 	if !committed || !errors.Is(err, failure) {
 		t.Fatalf("WriteIfUnchanged = %v, %v; want committed with the directory sync's failure", committed, err)
 	}
@@ -157,26 +163,26 @@ func TestWriteIfUnchangedRefusesAVisibleChangeBeforeStaging(t *testing.T) {
 	writeRaw(t, path, "v1")
 	before := readVersion(t, path)
 	staged := 0
-	stageWrite = func(path string, data []byte) (string, error) {
+	ops := systemOps()
+	ops.stage = func(path string, data []byte) (string, error) {
 		staged++
 		return stage(path, data)
 	}
-	t.Cleanup(func() { stageWrite = stage })
 
 	writeRaw(t, path, "theirs, longer")
-	expectRefused(t, path, "theirs, longer", before)
+	expectRefusedWith(t, ops, path, "theirs, longer", before)
 	if staged != 0 {
 		t.Fatalf("a refused write staged %d candidates, want none", staged)
 	}
 
 	// Changed after the early check, while the candidate is staged.
 	before = readVersion(t, path)
-	stageWrite = func(target string, data []byte) (string, error) {
+	ops.stage = func(target string, data []byte) (string, error) {
 		staged++
 		writeRaw(t, target, "theirs again, longer still")
 		return stage(target, data)
 	}
-	expectRefused(t, path, "theirs again, longer still", before)
+	expectRefusedWith(t, ops, path, "theirs again, longer still", before)
 	if staged != 1 {
 		t.Fatalf("staged %d candidates, want the one the late check refused", staged)
 	}
@@ -188,17 +194,18 @@ func TestWriteIfUnchangedRefusesAVisibleChangeBeforeStaging(t *testing.T) {
 func TestReadWithStatPairsTheBytesWithTheFileItOpened(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config")
 	writeRaw(t, path, "old")
-	openedForRead = func() {
-		openedForRead = nil
+	ops := systemOps()
+	ops.open = func(name string) (*os.File, error) {
+		file, err := os.Open(name)
 		replacement := path + ".new"
 		writeRaw(t, replacement, "new version")
 		if err := os.Rename(replacement, path); err != nil {
 			t.Fatal(err)
 		}
+		return file, err
 	}
-	t.Cleanup(func() { openedForRead = nil })
 
-	data, info, err := ReadWithStat(path)
+	data, info, err := readWithStat(ops, path)
 	if err != nil || string(data) != "old" || info.Size() != int64(len("old")) {
 		t.Fatalf("ReadWithStat = %q, %v, %v; want the opened file's bytes and info", data, info, err)
 	}

@@ -12,6 +12,8 @@ import (
 	"strconv"
 
 	"golang.org/x/sys/unix"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 // linkFile is the link a placement makes (linkDownload): linkat following
@@ -72,7 +74,7 @@ func placeHeld(source placeSource, dir placeDir, where string, name func(i int) 
 			}
 			return filepath.Join(dir.path, public), source.info, nil
 		case errors.Is(err, fs.ErrExist):
-		case linksRefused(err):
+		case atomicfile.LinkRefused(err):
 			return "", nil, errNoHeldLink
 		case errors.Is(err, fs.ErrNotExist):
 			// The checked file has no name left (Linux links no file whose

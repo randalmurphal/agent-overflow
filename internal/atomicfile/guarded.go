@@ -21,9 +21,13 @@ import (
 // open file in place during the read changes its size or time, and the
 // read is retried a bounded number of times.
 func ReadWithStat(path string) ([]byte, os.FileInfo, error) {
+	return readWithStat(systemOps(), path)
+}
+
+func readWithStat(ops fileOps, path string) ([]byte, os.FileInfo, error) {
 	const maxAttempts = 5
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		data, info, stable, err := readOpenFile(path)
+		data, info, stable, err := readOpenFile(ops, path)
 		if err != nil || stable {
 			return data, info, err
 		}
@@ -34,10 +38,10 @@ func ReadWithStat(path string) ([]byte, os.FileInfo, error) {
 // readOpenFile is one attempt of ReadWithStat: the bytes and info of the
 // file path opens, and whether the file kept its size and time while it
 // was read.
-func readOpenFile(path string) (data []byte, info os.FileInfo, stable bool, err error) {
-	file, err := os.Open(path)
+func readOpenFile(ops fileOps, path string) (data []byte, info os.FileInfo, stable bool, err error) {
+	file, err := ops.open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		link, err := os.Lstat(path)
+		link, err := ops.lstat(path)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
 			return nil, nil, true, nil
@@ -54,9 +58,6 @@ func readOpenFile(path string) (data []byte, info os.FileInfo, stable bool, err 
 	}
 	// A read-only descriptor's close reports nothing the read did not.
 	defer func() { _ = file.Close() }()
-	if openedForRead != nil {
-		openedForRead()
-	}
 	before, err := file.Stat()
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("stat %s: %w", path, err)
@@ -111,45 +112,46 @@ func sameVersion(a, b os.FileInfo) bool {
 // such window. On Windows os.SameFile reads both identities from the path
 // when compared, so the identity half of the check adds nothing there; the
 // app runs on Windows through WSL, where this is Linux.
+//
+// Where the create is published by a hard link (ExclusiveRename) and the
+// staged copy's name cannot be removed, the removal is tried once more; a
+// copy that still remains is reported as the committed write's error.
 func WriteIfUnchanged(path string, data []byte, before os.FileInfo) (bool, error) {
+	return writeIfUnchanged(systemOps(), path, data, before)
+}
+
+func writeIfUnchanged(ops fileOps, path string, data []byte, before os.FileInfo) (bool, error) {
 	// A change already visible is refused before the file is staged, so a
 	// caller retrying against a busy writer does not write and sync a whole
 	// candidate each time. The check before the rename stays the real one.
-	if changed, err := changedSince(path, before); err != nil || changed {
+	if changed, err := changedSince(ops, path, before); err != nil || changed {
 		return false, err
 	}
-	tmpPath, err := stageWrite(path, data)
+	tmpPath, err := ops.stage(path, data)
 	if err != nil {
 		return false, err
 	}
-	published, err := publishIfUnchanged(tmpPath, path, before)
+	published, leftover, err := publishIfUnchanged(ops, tmpPath, path, before)
 	if err != nil || !published {
-		_ = os.Remove(tmpPath)
+		_ = ops.remove(tmpPath)
 		return false, err
 	}
-	if err := syncPublished(filepath.Dir(path)); err != nil {
-		return true, err
+	var leftoverErr error
+	if leftover != "" {
+		if err := ops.remove(leftover); err != nil {
+			leftoverErr = fmt.Errorf("atomicfile: %s is written, but its staged copy %s remains: %w", path, leftover, err)
+		}
 	}
-	return true, nil
+	return true, errors.Join(ops.syncDir(filepath.Dir(path)), leftoverErr)
 }
-
-// Test seams: syncPublished is SyncDir, replaced to fail the sync after a
-// write committed; stageWrite is stage, replaced to see whether a write
-// staged its file; openedForRead, when set, runs just after ReadWithStat
-// opened the file.
-var (
-	syncPublished = SyncDir
-	stageWrite    = stage
-	openedForRead func()
-)
 
 // changedSince reports whether path is no longer the version before
 // names: a file that appeared since a read of none (anything at the path,
 // a link included), or one that disappeared or was replaced since a read
 // of one.
-func changedSince(path string, before os.FileInfo) (bool, error) {
+func changedSince(ops fileOps, path string, before os.FileInfo) (bool, error) {
 	if before == nil {
-		_, err := os.Lstat(path)
+		_, err := ops.lstat(path)
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
 		}
@@ -158,7 +160,7 @@ func changedSince(path string, before os.FileInfo) (bool, error) {
 		}
 		return true, nil
 	}
-	current, err := os.Stat(path)
+	current, err := ops.stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return true, nil
 	}
@@ -169,22 +171,24 @@ func changedSince(path string, before os.FileInfo) (bool, error) {
 }
 
 // publishIfUnchanged renames the staged tmpPath onto path when path is
-// still the version before names, and reports whether it did.
-func publishIfUnchanged(tmpPath, path string, before os.FileInfo) (bool, error) {
+// still the version before names, and reports whether it did and the
+// staged name a hard-link publish left behind (ExclusiveRename).
+func publishIfUnchanged(ops fileOps, tmpPath, path string, before os.FileInfo) (bool, string, error) {
 	if before == nil {
-		if err := ExclusiveRename(tmpPath, path); err != nil {
-			if errors.Is(err, os.ErrExist) {
-				return false, nil
-			}
-			return false, fmt.Errorf("atomicfile: publish %s: %w", path, err)
+		leftover, err := exclusiveMove(ops, tmpPath, path)
+		if errors.Is(err, os.ErrExist) {
+			return false, "", nil
 		}
-		return true, nil
+		if err != nil {
+			return false, "", fmt.Errorf("atomicfile: publish %s: %w", path, err)
+		}
+		return true, leftover, nil
 	}
-	if changed, err := changedSince(path, before); err != nil || changed {
-		return false, err
+	if changed, err := changedSince(ops, path, before); err != nil || changed {
+		return false, "", err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return false, fmt.Errorf("atomicfile: rename %s -> %s: %w", tmpPath, path, err)
+	if err := ops.rename(tmpPath, path); err != nil {
+		return false, "", fmt.Errorf("atomicfile: rename %s -> %s: %w", tmpPath, path, err)
 	}
-	return true, nil
+	return true, "", nil
 }

@@ -1,9 +1,8 @@
 package codexconfig
 
 import (
-	"bytes"
 	"errors"
-	"log"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -304,17 +303,15 @@ enabled = "false"
 func TestModifyTreatsAWriteWhoseDirectorySyncFailedAsDone(t *testing.T) {
 	store := newStoreWithFile(t, "model = \"x\"\n")
 	failure := errors.New("injected sync failure")
-	writeIfUnchanged = func(path string, data []byte, before os.FileInfo) (bool, error) {
+	store.writeIfUnchanged = func(path string, data []byte, before os.FileInfo) (bool, error) {
 		committed, err := atomicfile.WriteIfUnchanged(path, data, before)
 		if !committed || err != nil {
 			t.Errorf("the real write = %v, %v", committed, err)
 		}
 		return true, failure
 	}
-	t.Cleanup(func() { writeIfUnchanged = atomicfile.WriteIfUnchanged })
-	var logged bytes.Buffer
-	log.SetOutput(&logged)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	var logged strings.Builder
+	store.logf = func(format string, args ...any) { fmt.Fprintf(&logged, format, args...) }
 
 	if err := store.modify(func(data []byte) ([]byte, error) {
 		return append(data, []byte("[mine]\nbar = true\n")...), nil

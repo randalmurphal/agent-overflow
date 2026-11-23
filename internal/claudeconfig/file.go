@@ -10,10 +10,6 @@ import (
 	"agent-overflow/internal/atomicfile"
 )
 
-// writeIfUnchanged is atomicfile.WriteIfUnchanged; a test replaces it to
-// report a committed write whose directory sync failed.
-var writeIfUnchanged = atomicfile.WriteIfUnchanged
-
 // ErrConcurrentWrite reports that another writer kept changing the file
 // between our read and our write across every attempt.
 var ErrConcurrentWrite = errors.New("claudeconfig: concurrent write detected")
@@ -27,6 +23,10 @@ type Store struct {
 	// home is the ~/.claude directory derived from path's parent —
 	// claude.json lives at $HOME/.claude.json, next to $HOME/.claude/.
 	home string
+	// writeIfUnchanged is atomicfile.WriteIfUnchanged and logf is
+	// log.Printf; a test builds a store with fakes.
+	writeIfUnchanged func(path string, data []byte, before os.FileInfo) (bool, error)
+	logf             func(format string, args ...any)
 }
 
 // New returns a Store bound to the given file path. A non-existent
@@ -34,8 +34,10 @@ type Store struct {
 // (and its parent directory) on first write.
 func New(path string) *Store {
 	return &Store{
-		path: path,
-		home: filepath.Join(filepath.Dir(path), ".claude"),
+		path:             path,
+		home:             filepath.Join(filepath.Dir(path), ".claude"),
+		writeIfUnchanged: atomicfile.WriteIfUnchanged,
+		logf:             log.Printf,
 	}
 }
 
@@ -115,12 +117,12 @@ func (s *Store) modifyReporting(fn func(*orderedJSON) (bool, error)) (bool, erro
 		if err != nil {
 			return false, fmt.Errorf("marshal: %w", err)
 		}
-		committed, err := writeIfUnchanged(s.path, out, snap.stat)
+		committed, err := s.writeIfUnchanged(s.path, out, snap.stat)
 		if committed {
 			if err != nil {
 				// The new config is in place; only its directory entry may
 				// not survive a power loss. The caller goes on as written.
-				log.Printf("claudeconfig: %v", err)
+				s.logf("claudeconfig: %v", err)
 			}
 			return true, nil
 		}

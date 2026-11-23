@@ -15,10 +15,6 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// writeIfUnchanged is atomicfile.WriteIfUnchanged; a test replaces it to
-// report a committed write whose directory sync failed.
-var writeIfUnchanged = atomicfile.WriteIfUnchanged
-
 // Transport mirrors Codex's discriminator on RawMcpServerConfig — the
 // presence of `command` selects stdio, presence of `url` selects
 // streamable_http. AO normalises to a single Transport field on the
@@ -56,13 +52,17 @@ var bareKey = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // path via the constructor — the package never reads $HOME directly.
 type Store struct {
 	path string
+	// writeIfUnchanged is atomicfile.WriteIfUnchanged and logf is
+	// log.Printf; a test builds a store with fakes.
+	writeIfUnchanged func(path string, data []byte, before os.FileInfo) (bool, error)
+	logf             func(format string, args ...any)
 }
 
 // New returns a Store bound to the given file path. A non-existent
 // file is treated as empty on Load; the first Save creates the file
 // (and its parent directory).
 func New(path string) *Store {
-	return &Store{path: path}
+	return &Store{path: path, writeIfUnchanged: atomicfile.WriteIfUnchanged, logf: log.Printf}
 }
 
 // PathForHome returns `<home>/.codex/config.toml`. The home is INJECTED,
@@ -268,12 +268,12 @@ func (s *Store) modify(fn func([]byte) ([]byte, error)) error {
 		if err != nil {
 			return err
 		}
-		committed, err := writeIfUnchanged(s.path, nextData, snap.stat)
+		committed, err := s.writeIfUnchanged(s.path, nextData, snap.stat)
 		if committed {
 			if err != nil {
 				// The new config is in place; only its directory entry may
 				// not survive a power loss. The caller goes on as written.
-				log.Printf("codexconfig: %v", err)
+				s.logf("codexconfig: %v", err)
 			}
 			return nil
 		}

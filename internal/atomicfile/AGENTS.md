@@ -17,12 +17,21 @@ and 0700 directories.
 
 RenameNoReplace must never use a check-then-rename fallback. It refuses an
 existing destination and unsupported platforms, stays on one filesystem, and
-syncs both parent directories. Where the filesystem refuses the exclusive
-rename (NFS, 9p), a file is published by a hard link, which also refuses an
-existing destination, and its staged name is removed; a directory cannot be
-published there. ExclusiveRename is that move without the directory syncs,
-for a caller that does not need durability (browser downloads). Callers handle the possibility that rename
-succeeded before a later sync error.
+syncs both parent directories. ExclusiveRename is that move without the
+directory syncs, for a caller that does not need durability (browser
+downloads). Where the filesystem refuses the exclusive rename (NFS, 9p), a
+file is published by a hard link, which also refuses an existing
+destination, and its staged name is removed; a directory is never linked.
+The move's error means nothing was published: ErrNoExclusiveMove when the
+filesystem offers no exclusive way, any other link failure as itself. A
+published file whose staged name could not be removed is the returned
+leftover, never an error, and the caller removes or reports it.
+LinkRefused is the one test for a filesystem that refuses hard links.
+Callers of RenameNoReplace handle the possibility that the move succeeded
+before a later sync error.
+
+Test seams are arguments, not package variables: the exported functions call
+unexported ones that take a fileOps of the system calls they use.
 
 Schemas and large or hot data do not belong here. SyncRootDir preserves the
 same durability while remaining confined to a caller-owned os.Root.

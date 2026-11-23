@@ -125,7 +125,8 @@ func (a *Artifact) Stage(layout Layout, version string) error {
 	if err := syncArtifactDirs(a.dir); err != nil {
 		return err
 	}
-	if err := atomicfile.RenameNoReplace(a.dir, target); err != nil {
+	// A directory is never published by a link, so no name is left over.
+	if _, err := atomicfile.RenameNoReplace(a.dir, target); err != nil {
 		if existing, readErr := os.ReadFile(filepath.Join(target, artifactDigestName)); readErr == nil && string(existing) == a.digest {
 			return nil
 		}

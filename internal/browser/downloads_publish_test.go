@@ -92,7 +92,7 @@ func TestALinkRefusedFallsBackToANoReplaceRename(t *testing.T) {
 		return &os.LinkError{Op: "link", Old: staged, New: candidate, Err: syscall.EPERM}
 	}
 	var theirs string
-	renameDownload = func(staged, candidate string) error {
+	renameDownload = func(staged, candidate string) (string, error) {
 		if theirs == "" && !placing(candidate) {
 			theirs = candidate
 			if err := os.WriteFile(candidate, []byte("theirs"), 0o600); err != nil {
@@ -118,6 +118,68 @@ func TestALinkRefusedFallsBackToANoReplaceRename(t *testing.T) {
 	}
 	if _, err := os.Lstat(staged); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the staged file is still there: %v", err)
+	}
+}
+
+// A rename that published by a link and could not remove the name it moved
+// from (atomicfile.ExclusiveRename's leftover) leaves that name holding the
+// file: the source's at the private step, the private one at the public
+// step. A download that completes keeps no private name, and one whose
+// public step fails removes the private name instead of moving the file
+// back onto a name that still holds it.
+func TestAPublishHandlesTheNameARenameLeft(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		failPublic bool
+	}{
+		{"completed", false},
+		{"public step failed", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, _, access, page := newDownloadManager(t)
+			linkDownload = func(from, to string) error {
+				return &os.LinkError{Op: "link", Old: from, New: to, Err: syscall.EPERM}
+			}
+			var privates []string
+			renameDownload = func(from, to string) (string, error) {
+				if placing(to) {
+					privates = append(privates, to)
+				} else if tc.failPublic {
+					return "", &os.LinkError{Op: "link", Old: from, New: to, Err: syscall.ENOSPC}
+				}
+				if err := os.Link(from, to); err != nil {
+					return "", err
+				}
+				return from, nil
+			}
+			t.Cleanup(func() { linkDownload, renameDownload = linkFile, atomicfile.ExclusiveRename })
+			var staged string
+			manager.engine.(*fakeEngine).beforeFinishReport = func(file string) { staged = file }
+			startDownload(t, manager, access, page, "left.bin", 10)
+
+			item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
+			if tc.failPublic {
+				if item.State != downloadStateFailed || !strings.Contains(item.Error, "no space left on device") {
+					t.Fatalf("the download lists as %+v, want it failed for the space", item.ThreadDownload)
+				}
+			} else {
+				data, err := os.ReadFile(item.path)
+				if item.State != downloadStateCompleted || err != nil || !bytes.Equal(data, make([]byte, 10)) {
+					t.Fatalf("the download lists as %+v and reads %q, %v", item.ThreadDownload, data, err)
+				}
+			}
+			if len(privates) == 0 {
+				t.Fatal("the placement made no private name")
+			}
+			for _, private := range privates {
+				if _, err := os.Lstat(private); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("the private name %s stayed: %v", private, err)
+				}
+			}
+			if _, err := os.Lstat(staged); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the staged file is still there: %v", err)
+			}
+		})
 	}
 }
 
@@ -197,7 +259,9 @@ func TestAPublishThatCannotMoveFailsTheRow(t *testing.T) {
 		rename error
 		reason string
 	}{
-		{"neither", syscall.EPERM, syscall.EINVAL, "supports neither hard links nor renames"},
+		{"neither", syscall.EPERM, fmt.Errorf("%w: refused by the test", atomicfile.ErrNoExclusiveMove), "supports neither hard links nor renames"},
+		// The rename's own link failed for a reason the user can act on.
+		{"no space", syscall.EPERM, &os.LinkError{Op: "link", Err: syscall.ENOSPC}, "no space left on device"},
 		{"another filesystem", syscall.EXDEV, nil, "cross-device"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -206,13 +270,14 @@ func TestAPublishThatCannotMoveFailsTheRow(t *testing.T) {
 			linkDownload = func(staged, candidate string) error {
 				return &os.LinkError{Op: "link", Old: staged, New: candidate, Err: tc.link}
 			}
-			renameDownload = func(string, string) error { return tc.rename }
+			renameDownload = func(string, string) (string, error) { return "", tc.rename }
 			t.Cleanup(func() { linkDownload, renameDownload = linkFile, atomicfile.ExclusiveRename })
 			var staged string
 			manager.engine.(*fakeEngine).beforeFinishReport = func(file string) { staged = file }
 			startDownload(t, manager, access, page, "stuck.bin", 10)
 			got := threadDownloads(manager, access)[0]
-			if got.State != downloadStateFailed || !strings.Contains(got.Error, tc.reason) {
+			if got.State != downloadStateFailed || !strings.Contains(got.Error, tc.reason) ||
+				(tc.name != "neither" && strings.Contains(got.Error, "supports neither")) {
 				t.Fatalf("the download lists as %+v, want a failure saying %q", got, tc.reason)
 			}
 			if _, err := os.Lstat(staged); !errors.Is(err, os.ErrNotExist) {
@@ -409,36 +474,39 @@ func TestAStagedFileSwappedAsItIsPublishedNeverHasAPublicName(t *testing.T) {
 			var staged, aside string
 			manager.engine.(*fakeEngine).beforeFinishReport = func(file string) { staged = file }
 			swapped := false
-			move := func(real func(string, string) error) func(string, string) error {
-				return func(from, to string) error {
-					// The placement's first move, after its check of the
-					// staged file.
-					if !swapped {
-						swapped = true
-						if tc.keepAside {
-							aside = filepath.Join(t.TempDir(), "kept")
-							if err := os.Link(staged, aside); err != nil {
-								t.Error(err)
-							}
-						}
-						replacement := staged + ".swap"
-						if err := os.WriteFile(replacement, []byte("not the download"), 0o600); err != nil {
-							t.Error(err)
-						}
-						if err := os.Rename(replacement, staged); err != nil {
+			// swap runs at the placement's first move, after its check of
+			// the staged file.
+			swap := func() {
+				if !swapped {
+					swapped = true
+					if tc.keepAside {
+						aside = filepath.Join(t.TempDir(), "kept")
+						if err := os.Link(staged, aside); err != nil {
 							t.Error(err)
 						}
 					}
-					return real(from, to)
+					replacement := staged + ".swap"
+					if err := os.WriteFile(replacement, []byte("not the download"), 0o600); err != nil {
+						t.Error(err)
+					}
+					if err := os.Rename(replacement, staged); err != nil {
+						t.Error(err)
+					}
 				}
 			}
 			if tc.linking {
-				linkDownload = move(linkFile)
+				linkDownload = func(from, to string) error {
+					swap()
+					return linkFile(from, to)
+				}
 			} else {
 				linkDownload = func(from, to string) error {
 					return &os.LinkError{Op: "link", Old: from, New: to, Err: syscall.EPERM}
 				}
-				renameDownload = move(atomicfile.ExclusiveRename)
+				renameDownload = func(from, to string) (string, error) {
+					swap()
+					return atomicfile.ExclusiveRename(from, to)
+				}
 			}
 			t.Cleanup(func() { linkDownload, renameDownload = linkFile, atomicfile.ExclusiveRename })
 			startDownload(t, manager, access, page, "published.txt", 10)
@@ -600,7 +668,7 @@ func TestAPublishMakesItsPrivateNameBesideItsSource(t *testing.T) {
 			linkDownload = func(from, to string) error {
 				return &os.LinkError{Op: "link", Old: from, New: to, Err: syscall.EPERM}
 			}
-			renameDownload = func(from, to string) error {
+			renameDownload = func(from, to string) (string, error) {
 				if placing(to) {
 					private, source = to, from
 				}
