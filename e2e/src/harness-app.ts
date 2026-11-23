@@ -83,6 +83,8 @@ export interface HarnessMockReport {
   sessionRef?: string;
   gate?: string;
   openGate?: string;
+  /** Set when the report is about the scenario's startupGate rather than a step gate. */
+  startup?: boolean;
   /** Set on `mcp_result`: the text the tool returned, or the error text. */
   result?: string;
   /** Set on `mcp_result`: whether the call failed. */

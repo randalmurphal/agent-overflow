@@ -63,11 +63,13 @@ type Scenario struct {
 
 	// StartupGate makes the app's COLD-START window drivable: the adapter
 	// holds the first frame that proves the provider is up (Claude's first
-	// per-turn `system/init`, Codex's `initialize` response) behind a gate
-	// of this name, reported as waiting_signal and released by an advance
-	// naming it, as a waitSignal step is. Once per process, not per turn:
-	// the thing under test is a slow provider launch, not slow turns. A
-	// gate nothing releases holds until the app stops the process.
+	// per-turn `system/init`, Codex's and ACP's `initialize` response)
+	// behind a gate of this name, reported as waiting_signal with Startup
+	// set. Once per process, not per turn: the thing under test is a slow
+	// provider launch, not slow turns. The first advance naming it releases
+	// it whenever it arrives, and no waitSignal step may share the name. A
+	// mock loaded from a file without a control channel refuses it, since
+	// nothing could release it.
 	//
 	// Empty (the default) holds nothing.
 	StartupGate string `json:"startupGate,omitempty"`
@@ -518,9 +520,12 @@ func (s *Scenario) Validate() error {
 	if len(s.Turns) == 0 && len(s.OnStart) == 0 {
 		return fmt.Errorf("scenario %q: needs at least one turn or onStart step", s.Name)
 	}
-	holdsInput := s.Provider == ProviderClaude && s.Claude != nil && s.Claude.HoldQueuedInput
+	rules := stepRules{
+		holdsInput:  s.Provider == ProviderClaude && s.Claude != nil && s.Claude.HoldQueuedInput,
+		startupGate: s.StartupGate,
+	}
 	for i, step := range s.OnStart {
-		if err := step.validate(holdsInput); err != nil {
+		if err := step.validate(rules); err != nil {
 			return fmt.Errorf("scenario %q: onStart step %d: %w", s.Name, i+1, err)
 		}
 	}
@@ -529,7 +534,7 @@ func (s *Scenario) Validate() error {
 			return fmt.Errorf("scenario %q: turn %d has no steps", s.Name, ti+1)
 		}
 		for si, step := range turn.Steps {
-			if err := step.validate(holdsInput); err != nil {
+			if err := step.validate(rules); err != nil {
 				return fmt.Errorf("scenario %q: turn %d step %d: %w", s.Name, ti+1, si+1, err)
 			}
 		}
@@ -537,9 +542,18 @@ func (s *Scenario) Validate() error {
 	return nil
 }
 
-// validate checks one step; holdsInput says whether the scenario holds
-// queued input for a drainQueuedInput step to consume.
-func (st *Step) validate(holdsInput bool) error {
+// stepRules is what a step's validity depends on beyond the step itself.
+type stepRules struct {
+	// holdsInput: the scenario holds queued input for a drainQueuedInput
+	// step to consume.
+	holdsInput bool
+	// startupGate is the scenario's startupGate, whose name only the
+	// startup hold answers to.
+	startupGate string
+}
+
+// validate checks one step against the scenario's rules.
+func (st *Step) validate(rules stepRules) error {
 	set := 0
 	if st.Emit != nil {
 		set++
@@ -585,18 +599,21 @@ func (st *Step) validate(holdsInput bool) error {
 			return fmt.Errorf("approval: toolName must be non-empty")
 		}
 		for i, sub := range st.Approval.OnAllow {
-			if err := sub.validate(holdsInput); err != nil {
+			if err := sub.validate(rules); err != nil {
 				return fmt.Errorf("approval onAllow step %d: %w", i+1, err)
 			}
 		}
 		for i, sub := range st.Approval.OnDeny {
-			if err := sub.validate(holdsInput); err != nil {
+			if err := sub.validate(rules); err != nil {
 				return fmt.Errorf("approval onDeny step %d: %w", i+1, err)
 			}
 		}
 	}
 	if st.WaitSignal != nil {
 		set++
+		if rules.startupGate != "" && st.WaitSignal.Name == rules.startupGate {
+			return fmt.Errorf("waitSignal: %q is the startupGate's name, and an advance naming it releases only the startup gate", st.WaitSignal.Name)
+		}
 	}
 	if st.Stall != nil {
 		set++
@@ -613,7 +630,7 @@ func (st *Step) validate(holdsInput bool) error {
 			return fmt.Errorf("repeat: steps must be non-empty")
 		}
 		for i, sub := range st.Repeat.Steps {
-			if err := sub.validate(holdsInput); err != nil {
+			if err := sub.validate(rules); err != nil {
 				return fmt.Errorf("repeat step %d: %w", i+1, err)
 			}
 		}
@@ -666,13 +683,13 @@ func (st *Step) validate(holdsInput bool) error {
 	}
 	if st.DrainQueuedInput {
 		set++
-		if !holdsInput {
+		if !rules.holdsInput {
 			return fmt.Errorf("drainQueuedInput: needs provider %q with claude.holdQueuedInput", ProviderClaude)
 		}
 	}
 	if st.CancelQueuedInput {
 		set++
-		if !holdsInput {
+		if !rules.holdsInput {
 			return fmt.Errorf("cancelQueuedInput: needs provider %q with claude.holdQueuedInput", ProviderClaude)
 		}
 	}
@@ -752,6 +769,9 @@ func Parse(data []byte) (*Scenario, error) {
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&s); err != nil {
+		if strings.Contains(err.Error(), `unknown field "startupDelayMs"`) {
+			return nil, fmt.Errorf("parse scenario: startupDelayMs is gone; hold the first provider frame with startupGate and release it with an advance naming the gate")
+		}
 		return nil, fmt.Errorf("parse scenario: %w", err)
 	}
 	if err := s.Validate(); err != nil {
