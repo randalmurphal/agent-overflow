@@ -79,8 +79,9 @@
   // to send. With a non-empty draft mid-round, the button stays in Send
   // mode so the user can queue the message — `Composer.send()` picks
   // the enqueue branch internally when `isTurnActive` is true.
-  // Interrupt is still reachable through the working-indicator's stop
-  // button, which is dedicated to interrupt regardless of draft state.
+  // While the button shows Send or the pending spinner, no button here or
+  // in the working indicator interrupts the turn; only the
+  // `thread.interrupt` command (Escape by default) does.
   let operationBlocked = $derived(Boolean(disabledReason));
   let showPending = $derived(sendPending && !canSend);
   let showStop = $derived(!operationBlocked && !showPending && (isTurnActive || sendInFlight) && !canSend);

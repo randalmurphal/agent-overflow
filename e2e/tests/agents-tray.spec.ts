@@ -25,7 +25,7 @@
 // and joins Past itself once the worker rests. The cross-computer rows are
 // thread-tools-paired.spec.ts's.
 import { test, expect, type SeedResult } from './fixtures.js';
-import type { HarnessApp } from '../src/harness.js';
+import type { HarnessApp, HarnessMockEventData } from '../src/harness.js';
 import { rename } from 'node:fs/promises';
 import { advanceGate, awaitGate, awaitMockInput, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
 import { capture } from './wake-rows-helpers.js';
@@ -49,14 +49,12 @@ import {
   seedAgentsTree,
   startTree,
 } from './agents-tray-helpers.js';
-import type { MockInfo } from './workflows-helpers.js';
 
 const USER_STOP = 'The user stopped it from the Agents tray';
 
-/** Whether a provider session runs in cwd: a mock that registered there and has not exited. */
-async function liveIn(harness: HarnessApp, cwd: string): Promise<boolean> {
-  const mocks = await harness.rpc<(MockInfo & { exited: boolean })[]>('HarnessListMocks');
-  return mocks.some((mock) => mock.registration.cwd === cwd && !mock.exited);
+/** How many provider sessions have started in cwd: each start registers a new mock there. */
+function sessionStarts(harness: HarnessApp, cwd: string): number {
+  return harness.countEvents<HarnessMockEventData>('harness:mock', (ev) => ev.report.kind === 'registered' && ev.cwd === cwd);
 }
 
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
@@ -141,10 +139,16 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const grandInterrupted = mockInterrupt(harness, tree.grandPath);
     const leadWoken = awaitMockInput(harness, { cwd: tree.leadPath, includes: [started.childToken, USER_STOP] });
     const childWoken = awaitMockInput(harness, { cwd: tree.childPath, includes: [started.grandToken], timeoutMs: 20_000 }).then(() => true, () => false);
+    const startsAtStop = sessionStarts(harness, tree.childPath);
     await child.getByTestId('agent-tray-row-stop').click();
     await expect(page.getByTestId('toast-message').filter({ hasText: `Stopped ${CHILD}` }))
       .toHaveText(`Stopped ${CHILD}: its turn, 1 background task and 1 agent of its own.`, { timeout: 30_000 });
-    await childInterrupted;
+    // The mock that reported the interrupt is the child's session; the rest
+    // ends it, so that process exits.
+    const original = (await childInterrupted).mockId;
+    const originalExited = harness.waitForEvent<HarnessMockEventData>(
+      'harness:mock', (ev) => ev.mockId === original && ev.report.kind === 'exiting', 30_000,
+    );
     await grandInterrupted;
     await leadWoken;
     const lead = ledgerRow(harness, started.childToken)!;
@@ -166,15 +170,22 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText('2');
     expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
     // The child is at rest: its session ended with its shell, and nothing
-    // brought it back. A later message starts it again and is answered.
-    await expect.poll(() => liveIn(harness, tree.childPath), { message: 'the stopped child came back', timeout: 30_000 }).toBe(false);
+    // started another one. A later message starts exactly one and is answered.
+    await originalExited;
+    expect(sessionStarts(harness, tree.childPath), 'the stopped child came back').toBe(startsAtStop);
     await setScenario(harness, tree.childPath, threadToolsScenario({
       name: `agents-${provider}-child-again`, provider, echoUserMessage: true, turns: [{ text: 'Back on it.' }],
     }));
     const answered = awaitTurnCompleted(harness, started.child);
+    expect(sessionStarts(harness, tree.childPath), 'a session started before the message').toBe(startsAtStop);
     await harness.rpc('SendMessage', started.child, 'one more thing', null);
     await answered;
-    await expect.poll(() => liveIn(harness, tree.childPath), { timeout: 30_000 }).toBe(true);
+    // The registration report rides its own path to the event stream, so
+    // it can land after the turn's completion.
+    await harness.waitForEvent<HarnessMockEventData>(
+      'harness:mock', (ev) => ev.report.kind === 'registered' && ev.cwd === tree.childPath && ev.mockId !== original, 30_000,
+    );
+    expect(sessionStarts(harness, tree.childPath), 'the message started one session').toBe(startsAtStop + 1);
   });
 
   test(`${provider}: Stop All brings each spawn to rest; Background's Stop All and the thread's own Stop leave the rows`, async ({ harness, page }) => {

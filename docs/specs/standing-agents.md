@@ -1257,7 +1257,7 @@ thread:
    None is queued again.
 5. Under the action lock every send and start takes, cuts its turn with
    the stop row (`Stopped by user`, or `Stopped by thread "<title>"`)
-   and ends its session as End Session does, a thread with no session
+   and ends its session as `StopSession` does, a thread with no session
    included: the provider process and everything it runs (background
    shells, subagents, terminals and provider timers) end, its background
    items read as ended, its open prompts close and its unanswered async
@@ -1568,13 +1568,15 @@ instead and arrives once the thread is unarchived
 request's queued answer or reminder goes back to its request, owed and
 disarmed, as the archive leaves the thread's undelivered requests
 ([agent-thread-tools.md](agent-thread-tools.md)). An Interrupt stops the turn and leaves the queue, which is delivered
-after it. An End Session or a revert drops the whole queue, and returns
+after it. A session teardown (a rest, a workflow's Pause and End
+Sessions, an archive or a delete) or a revert drops the whole queue, and
+returns
 these two kinds the same way once the queue is gone: an answer or reminder to its request, owed and
 disarmed, so `thread_status` still returns it; a remote job's
 completion to its watch, whose watcher delivers it again and starts the
 session for it, as for a completion that finishes after the session ended. Ending the
-session does not quiet later wakes. An End Session or an archive that
-ends a session holding such an answer or completion, handed to the provider
+session does not quiet later wakes. A session teardown that ends a
+session holding such an answer or completion, handed to the provider
 and not confirmed, returns it too; a person's text joined with it stays
 dropped. A session that ends, or a Codex resend that fails, without
 taking in such an answer or completion, and a restart that finds one
@@ -1587,8 +1589,8 @@ given back may already be in the conversation the next session resumes,
 so it can reach the agent twice. The confirmation is the app's own write
 after the provider's echo, while the provider records the message in its
 session file on its own, so a crash or a session death between the two
-leaves a message the agent holds reading unconfirmed. An End Session or
-an archive drops the unconfirmed sends before it closes the provider, which
+leaves a message the agent holds reading unconfirmed. A session
+teardown drops the unconfirmed sends before it closes the provider, which
 has three seconds to exit once its input closes, and an echo the
 provider sends in that window arrives after the drop and is discarded.
 That cost is accepted: a request that reads owed and a watch that reads
@@ -1599,8 +1601,8 @@ ladder a request's undelivered wake is retried on, doubling from half
 a minute towards ten minutes for eight attempts, so a session that keeps
 ending before it takes the completion in is not restarted every few
 seconds; after the last attempt the watch is dismissed with the reason,
-and `remote_jobs` still returns the result. One that an End Session, an
-archive, a revert or a restart returned is delivered at the watcher's
+and `remote_jobs` still returns the result. One that a session
+teardown, a revert or a restart returned is delivered at the watcher's
 next poll. A session teardown and a revert drop the queue under the
 thread's mutation lock, which every queue write takes, so a message queued
 during the drop is either dropped with it or queued after it.
@@ -1636,8 +1638,8 @@ unconfirmed by a session that ended, is discarded and its row records
 (capped at 64 KiB), which `thread_status` shows, so the agent can
 recover the event at its next wake; a loop needs nothing beyond the
 row. An outside `thread send` message is handled the same way, with a
-`not delivered` row in the thread's timeline; so is one an End Session, an
-archive or a revert takes out of the queue. When Claude
+`not delivered` row in the thread's timeline; so is one a session
+teardown or a revert takes out of the queue. When Claude
 received a wake or an outside send joined with a person's queued
 message and the session ended before taking it in, the join is split:
 the person's own text goes back to the composer, and the wake and send
@@ -2217,9 +2219,11 @@ closes up their spacing so the row holds at a phone width.
   read is not stopped. The Stops of rows
   here start at once, beside those that wait on a paired computer.
   Background's `Stop All` and Stop background work leave Agents rows
-  alone. The thread's own Interrupt leaves its requests and its queue,
-  the incoming rows with it; End Session clears the incoming rows with
-  the rest of the queue, given back as a queue drop does.
+  alone. The composer's Stop interrupts the turn and leaves the thread's
+  requests and its queue, the incoming rows with it; a session teardown
+  (a rest, a workflow's Pause and End Sessions, an archive or a delete)
+  clears the incoming rows with the rest of the queue, given back as a
+  queue drop does.
 - **Other computers.** A spawn on a paired computer lists and stops as a
   local one: the forwarded `agent_rows` and `agent_stop` calls
   ([reaching another computer](agent-thread-tools.md#reaching-another-computer)) nest that
