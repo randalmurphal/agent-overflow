@@ -1,8 +1,8 @@
 // A push's last job, and the one place entries are deleted: keeps each
 // slot's newest entry, retires the rest, the cache key shapes this pipeline
-// used before its namespace and entries of a slot it no longer has, and
-// fails loudly when two generations of its caches would not fit beside
-// everything else under GitHub's 10 GB cap.
+// used before its namespace and entries of a slot it no longer has. It
+// fails when what it keeps does not fit beside everything else under
+// GitHub's 10 GB cap, and warns when two generations would not.
 //
 //   node scripts/ci-cache-cleanup.mjs   (CI, a push to main; needs GH_TOKEN
 //                                        with actions: write)
@@ -15,10 +15,14 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { deleteCache, knownSlot, legacyShapes, listCaches, prefix, repositoryAndRun, slotOf, superseded } from './ci-cache.mjs';
 
-// capBytes is GitHub's cache cap for a repository. A push's jobs each save a
-// new entry while the previous one stays until this job retires it, so two
-// generations of this pipeline's caches must fit beside the others; past
-// that, GitHub evicts entries the next jobs restore.
+// capBytes is GitHub's cache cap for a repository. Past it GitHub evicts
+// entries, the one accessed longest ago first. Kept entries that do not fit
+// beside the others are evicted on every push and the jobs that restore
+// them run cold, so that fails this job (over). A push's jobs each save a
+// new entry while the previous one stays until this job retires it; when
+// two generations do not fit, the previous one, which this job retires
+// anyway, is evicted early, and a run that starts in that window can miss
+// it. That costs one cold job, so it is a warning (tight).
 export const capBytes = 10e9;
 
 export function plan(caches, runStartedAt) {
@@ -56,7 +60,10 @@ export function plan(caches, runStartedAt) {
   const bytes = list => list.reduce((sum, cache) => sum + cache.size_in_bytes, 0);
   const managedBytes = bytes(keep);
   const otherBytes = bytes(other);
-  return { keep, other, remove, warnings, managedBytes, otherBytes, over: 2 * managedBytes + otherBytes > capBytes };
+  return {
+    keep, other, remove, warnings, managedBytes, otherBytes,
+    over: managedBytes + otherBytes > capBytes, tight: 2 * managedBytes + otherBytes > capBytes,
+  };
 }
 
 const gb = n => `${(n / 1e9).toFixed(2)} GB`;
@@ -68,11 +75,15 @@ function main() {
   for (const cache of result.remove) deleteCache(repository, cache);
   for (const cache of result.keep.sort((a, b) => b.size_in_bytes - a.size_in_bytes)) console.log(`kept ${cache.key} (${gb(cache.size_in_bytes)})`);
   for (const cache of result.other) console.log(`not this pipeline's: ${cache.key} (${gb(cache.size_in_bytes)}, ${cache.ref})`);
-  const peak = `2 x ${gb(result.managedBytes)} (this pipeline's ${result.keep.length} entries, held twice while a push saves) + ${gb(result.otherBytes)} (other caches) = ${gb(2 * result.managedBytes + result.otherBytes)}`;
-  console.log(`ci-cache-cleanup: ${peak} of GitHub's ${gb(capBytes)} cap`);
+  const held = `${gb(result.managedBytes)} (this pipeline's ${result.keep.length} entries) + ${gb(result.otherBytes)} (other caches) = ${gb(result.managedBytes + result.otherBytes)}`;
+  const peak = `2 x ${gb(result.managedBytes)} (this pipeline's entries, held twice while a push saves) + ${gb(result.otherBytes)} (other caches) = ${gb(2 * result.managedBytes + result.otherBytes)}`;
+  const remedy = 'shrink the largest slots above, drop a slot, or remove the other caches';
+  console.log(`ci-cache-cleanup: ${held}; ${peak}; GitHub's cap is ${gb(capBytes)}`);
   if (result.over) {
-    throw new Error(`${peak}, over GitHub's ${gb(capBytes)} cap, so a push's saves make GitHub evict entries the next jobs restore; ` +
-      'shrink the largest slots above, drop a slot, or remove the other caches');
+    throw new Error(`${held}, over GitHub's ${gb(capBytes)} cap, so GitHub evicts entries the next jobs restore; ${remedy}`);
+  }
+  if (result.tight) {
+    console.log(`::warning title=Actions caches near the cap::${peak}, over GitHub's ${gb(capBytes)} cap, so a push evicts the previous entries before this job retires them and a run that starts meanwhile can miss one; ${remedy}`);
   }
 }
 

@@ -216,9 +216,10 @@ and `internal/netisolate` rerun on every run: their tests read
 test binary the tag changes ([noremote build](noremote-build.md#testing)).
 `cache-cleanup` keeps each slot's newest entry, retires the rest, the key
 shapes this pipeline used before `ao-ci-` and entries of a slot it no
-longer names, never another key, and fails when two generations of this
-pipeline's caches plus all others pass GitHub's 10 GB: a push's saves
-hold both generations until it runs (`scripts/ci-cache-cleanup.mjs`). `codeql.yml` scans Go and
+longer names, never another key. It fails when the entries it keeps plus
+all others pass GitHub's 10 GB, and warns when two generations of this
+pipeline's caches would: a push's saves hold both until it runs
+(`scripts/ci-cache-cleanup.mjs`). `codeql.yml` scans Go and
 TypeScript; `dependabot.yml` opens only security updates for Go, npm,
 Gradle and actions; `dependency-review-action` checks pull request
 dependency changes.

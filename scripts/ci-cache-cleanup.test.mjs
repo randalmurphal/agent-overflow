@@ -55,17 +55,21 @@ test('a managed entry from another ref is deleted and named', () => {
   assert.match(result.warnings[0], /refs\/pull\/7\/merge saved ao-ci-go-build-lint/);
 });
 
-test('two generations of the pipeline caches and the others must fit under the cap', () => {
-  // The 11 entries this repository held on 2026-11-22: one generation of
-  // the pipeline's slots is 9.05 GB of them, held twice while a push saves.
+test('kept entries over the cap fail, and two generations over it warn', () => {
+  assert.equal(capBytes, 10e9);
+  const verdict = caches => { const { over, tight } = plan(caches, start); return { over, tight }; };
+  const lint = size => entry(`ao-ci-go-build-lint-Linux-${sha(1)}`, '2026-11-21T10:00:00Z', size);
+  const other = size => entry('setup-go-Linux-x64-abc', '2026-11-21T10:00:00Z', size, 'refs/heads/release');
+  // Two generations fit: 2 x 4 GB.
+  assert.deepEqual(verdict([lint(4e9)]), { over: false, tight: false });
+  // One generation fits and two do not: the 9.05 GB of one generation this
+  // repository held on 2026-11-22, before a save kept only what a job used.
   const measured = [659.13, 1691.02, 803.98, 777.39, 4206.93, 215.76, 71.05, 12.99, 485.93, 119.57].map(mb => mb * 1e6)
     .reduce((sum, size) => sum + size, 0);
-  assert.equal(capBytes, 10e9);
-  assert.equal(plan([entry(`ao-ci-go-build-lint-Linux-${sha(1)}`, '2026-11-21T10:00:00Z', measured)], start).over, true);
-  const half = entry(`ao-ci-go-build-lint-Linux-${sha(1)}`, '2026-11-21T10:00:00Z', 4e9);
-  assert.equal(plan([half], start).over, false);
-  // Others count once: 2 x 4 GB + 2.5 GB is over.
-  assert.equal(plan([half, entry('setup-go-Linux-x64-abc', '2026-11-21T10:00:00Z', 2.5e9, 'refs/heads/release')], start).over, true);
+  assert.deepEqual(verdict([lint(measured)]), { over: false, tight: true });
+  // Others count once in each: 2 x 4 GB + 2.5 GB warns, 8 GB + 2.5 GB fails.
+  assert.deepEqual(verdict([lint(4e9), other(2.5e9)]), { over: false, tight: true });
+  assert.deepEqual(verdict([lint(8e9), other(2.5e9)]), { over: true, tight: true });
 });
 
 test('a run start that is not a time fails', () => {
