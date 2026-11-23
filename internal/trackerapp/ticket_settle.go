@@ -27,6 +27,10 @@ import (
 // whole, errs by pump (errOf), over when every pump read ended.
 type ticketsResult struct {
 	failed bool
+	// historyDue reports that the read found an issue of the connection
+	// due a history read (detailsRead.historyDue); historyWanted that a
+	// round's read wants the history unit run (roundRead).
+	historyDue, historyWanted bool
 	// errs holds, at a pump's index, what the read answers the person who
 	// asked for that ticket (askerErr); nil when no ticket has one.
 	errs []error
@@ -143,7 +147,7 @@ func (s *Service) ticketReads(pumps []*ticketPump, full bool) (began uint64, rea
 // ends every pump. Each pump's asker is answered its own ticket's outcome
 // (ticketsResult.errOf).
 func (s *Service) settleTickets(ctx context.Context, conn string, pumps []*ticketPump, began uint64, reads []*ticketRead, res detailsRead, err error, at int64) ticketsResult {
-	var out ticketsResult
+	out := ticketsResult{historyDue: res.historyDue}
 	end := readEnd{kind: res.kind, at: at, ok: !slices.ContainsFunc(reads, (*ticketRead).failed)}
 	stopped := err != nil && ctx.Err() != nil
 	ended := errors.Is(err, errEnded) || errors.Is(err, ErrDisabled) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrStopped)
@@ -304,7 +308,7 @@ func (s *Service) installViewLocked(tp *ticketPump, v *DetailView, digest uint64
 	if loaded != tp.view.loaded || digest != tp.view.digest {
 		tp.changed, tp.pending = true, true
 	}
-	tp.view = toldView{loaded: loaded, digest: digest, docs: tp.docs, at: at}
+	tp.view = toldView{loaded: loaded, sinceKnown: loaded && v.Card.StatusSince != 0, digest: digest, docs: tp.docs, at: at}
 	tp.held = nil
 	if loaded && tp.check != nil && tp.check.held != nil {
 		tp.held = &heldDetail{view: *v, readAt: readAt}

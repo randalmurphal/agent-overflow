@@ -68,13 +68,17 @@ type ticketRead struct {
 // classified by the connection's kind as the run held it, with the time a
 // rate limit lifts. The failure is the outcome of the tickets the read did
 // not answer (ticketRead.answered); each answered one has its own.
+// historyDue is the sync state's report, read before the read's writes,
+// that an issue of the connection is due a history read
+// (store MirrorSync.HistoryDue).
 type detailsRead struct {
-	ch      Changes
-	root    int64
-	gen     uint64
-	kind    string
-	failure *Failure
-	retryAt time.Time
+	ch         Changes
+	root       int64
+	gen        uint64
+	kind       string
+	failure    *Failure
+	retryAt    time.Time
+	historyDue bool
 }
 
 // readDetails reads reads, tickets of connection id, as the tracker says
@@ -102,6 +106,7 @@ func (s *Service) readDetails(ctx context.Context, id string, reads []*ticketRea
 		readErr = r.readState()
 	}
 	if readErr == nil {
+		out.historyDue = r.state.HistoryDue
 		out.ch, readErr = r.verifiedDetails(reads, openedAt)
 	}
 	out.root, out.gen, out.kind = r.root, r.gen, r.row.Kind

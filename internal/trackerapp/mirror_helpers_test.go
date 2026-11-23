@@ -348,7 +348,25 @@ func newMirrorFixtureOn(t *testing.T, f *fixture) *mirrorFixture {
 	m := &mirrorFixture{fixture: f, conn: f.addJira(), p: p}
 	f.listBoards(m.conn.ID, testBoards...)
 	p.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) { return webStructure(b), nil }
+	// A ticket round whose ticket shows no time in its status reads the
+	// due histories (roundHistory); by default the tracker holds none.
+	p.history = func(tracker.HistoryQuery) (tracker.History, error) { return tracker.History{}, nil }
 	return m
+}
+
+// refuseKeeps makes the store refuse every keep of an open ticket from
+// now on (keepRefused).
+func (m *mirrorFixture) refuseKeeps() {
+	m.svc.store = keepRefused{m.st}
+}
+
+// keepRefused is a store whose keep of an open ticket fails, as a failing
+// write does, so the ticket works as one of an issue the mirror does not
+// keep: its pump holds its content (keepTicket).
+type keepRefused struct{ *store.Store }
+
+func (keepRefused) KeepMirrorTicket(int64, string, int64, int64) error {
+	return errors.New("test: the store refused the keep")
 }
 
 // testBoards are the boards a mirror fixture's connection lists.

@@ -189,3 +189,13 @@ func (c *countingStore) ListMirrorWorklogs(root int64, author, from, to string) 
 	c.count("ListMirrorWorklogs")
 	return c.Store.ListMirrorWorklogs(root, author, from, to)
 }
+
+func (c *countingStore) KeepMirrorTicket(root int64, issue string, session, pump int64) error {
+	c.count("KeepMirrorTicket")
+	return c.Store.KeepMirrorTicket(root, issue, session, pump)
+}
+
+func (c *countingStore) DropMirrorTicket(session, pump int64) error {
+	c.count("DropMirrorTicket")
+	return c.Store.DropMirrorTicket(session, pump)
+}

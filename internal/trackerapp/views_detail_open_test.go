@@ -169,7 +169,12 @@ func capFixture(t *testing.T) (m *mirrorFixture, evict func()) {
 	m.p.changedRows = pagedDelta(t, pages...)
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
 	m.p.detail = func(id tracker.IssueID) (tracker.Detail, error) {
-		return tracker.Detail{Card: card(string(id), 1_799_000_000_000)}, nil
+		// A history final for the card's update: the ticket shows the time
+		// in its status from its document, so no round reads the mirror's
+		// histories for it (roundHistory).
+		d := enteredAtStatusBegan(tracker.Detail{Card: card(string(id), 1_799_000_000_000)})
+		d.HistoryTo = d.Card.Updated
+		return d, nil
 	}
 	m.openDetail(t, "40000")
 	return m, func() { m.publishRaw(m.evictUntold(t)) }

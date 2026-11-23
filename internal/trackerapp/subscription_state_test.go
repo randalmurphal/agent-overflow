@@ -131,12 +131,13 @@ func TestARenameDuringATicketReadStillTellsTheBoard(t *testing.T) {
 
 // Which of the mirror and the pump holds an open ticket's content is
 // decided on every successful read: when the mirror stops keeping the
-// issue the ticket is told it is not loaded and read at once, its pump
-// holds what that read found, and it is told loaded again; a read that
-// finds the same document keeps the view and tells nothing.
+// issue of a ticket whose own keep failed, the ticket is told it is not
+// loaded and read at once, its pump holds what that read found, and it is
+// told loaded again; a read that finds the same document keeps the view
+// and tells nothing.
 func TestAnOpenTicketKeepsItsViewWhenTheMirrorDropsTheIssue(t *testing.T) {
 	t.Parallel()
-	m, _, issues, subs := newRoundFixture(t, 1, false)
+	m, _, issues, subs := newRoundFixtureThen(t, 1, false, (*mirrorFixture).refuseKeeps)
 	events := m.issueEventCount()
 	m.tracks(nil)
 	must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))

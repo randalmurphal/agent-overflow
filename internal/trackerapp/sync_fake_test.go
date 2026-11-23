@@ -47,6 +47,13 @@ type fakeScenario struct {
 
 func newFakeScenario(t *testing.T, seed func(at time.Time) trackerfake.Fixture, sites ...string) *fakeScenario {
 	t.Helper()
+	return newFakeScenarioWith(t, Cadence{}, seed, sites...)
+}
+
+// newFakeScenarioWith is newFakeScenario with the service's sync
+// intervals cad.
+func newFakeScenarioWith(t *testing.T, cad Cadence, seed func(at time.Time) trackerfake.Fixture, sites ...string) *fakeScenario {
+	t.Helper()
 	// The providers read history as final through a time behind the
 	// wall clock, so the fake's clock and the service's are the wall
 	// clock's.
@@ -61,7 +68,7 @@ func newFakeScenario(t *testing.T, seed func(at time.Time) trackerfake.Fixture, 
 		t.Fatal(err)
 	}
 	t.Cleanup(srv.Close)
-	f := newFixture(t)
+	f := newFixtureWith(t, cad)
 	f.svc.now = time.Now
 	f.origin = func(kind, site string) (string, error) {
 		if kind == store.TrackerKindLinear {

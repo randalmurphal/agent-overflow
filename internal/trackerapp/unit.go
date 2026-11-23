@@ -149,14 +149,15 @@ func (s *Service) hold(id string) (*run, error) {
 	case !row.Enabled:
 		return nil, fmt.Errorf("%w: %w: %s", errEnded, ErrDisabled, id)
 	}
-	root, _, err := s.store.GetOrCreateMirrorRoot(id)
+	gen := s.gen(id)
+	root, err := s.mirrorRootLocked(id, gen)
 	switch {
 	case errors.Is(err, store.ErrTrackerCacheGone), errors.Is(err, sql.ErrNoRows):
 		return nil, fmt.Errorf("%w: %w", errEnded, err)
 	case err != nil:
 		return nil, fmt.Errorf("trackerapp: the mirror of connection %s: %w", id, err)
 	}
-	r := &run{s: s, row: row, root: root, gen: s.gen(id)}
+	r := &run{s: s, row: row, root: root, gen: gen}
 	p, c, err := s.providerLocked(row)
 	if _, ok := errors.AsType[*ClientError](err); ok {
 		// No client means no call: the connection's problem is why.
@@ -178,15 +179,16 @@ func (s *Service) hold(id string) (*run, error) {
 // or off and on again), the root is the old connection's mirror and so
 // are the run's provider and settlement stamp, and the run ends
 // (errEnded). Only a root gone within the generation (a restore emptied
-// the mirror) is replaced. A connection turned off meanwhile ends the run
-// the same way.
+// the mirror) is replaced, and the open tickets are kept again under the
+// new one (mirrorRootLocked). A connection turned off meanwhile ends the
+// run the same way.
 func (s *Service) rehold(id string, stale int64, gen uint64, gone error) (int64, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	if s.gen(id) != gen {
 		return 0, fmt.Errorf("%w: the connection's mirror ended since the run began: %w", errEnded, gone)
 	}
-	root, _, err := s.store.GetOrCreateMirrorRoot(id)
+	root, err := s.mirrorRootLocked(id, gen)
 	switch {
 	case errors.Is(err, store.ErrTrackerCacheGone), errors.Is(err, sql.ErrNoRows):
 		delete(s.holds, id)
@@ -198,6 +200,20 @@ func (s *Service) rehold(id string, stale int64, gen uint64, gone error) (int64,
 		h.root = root
 	}
 	return root, nil
+}
+
+// mirrorRootLocked is connection id's mirror root, made when it has none
+// (store GetOrCreateMirrorRoot), for a run of generation gen. A root made
+// while open tickets of gen are kept replaces one a restore emptied, with
+// their rows: they are kept again under it (keepTicketsAgainLocked). The
+// first root of a connection, or one made after it was turned on again,
+// has no kept ticket of its generation. The caller holds opMu.
+func (s *Service) mirrorRootLocked(id string, gen uint64) (int64, error) {
+	root, created, err := s.store.GetOrCreateMirrorRoot(id)
+	if err == nil && created {
+		s.keepTicketsAgainLocked(id, gen, root)
+	}
+	return root, err
 }
 
 // gen is connection id's mirror generation (genLocked). Read under opMu

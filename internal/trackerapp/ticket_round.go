@@ -114,7 +114,9 @@ func (s *Service) runTicketRound(rd *ticketRound) {
 			return
 		case <-rd.wake:
 		case <-timer.C:
-			s.roundRead(rd, at, false)
+			if res := s.roundRead(rd, at, false); res.historyWanted {
+				s.roundHistory(rd)
+			}
 		}
 	}
 }
@@ -139,7 +141,10 @@ func (s *Service) roundAt(rd *ticketRound) (at time.Time, ok bool) {
 // roundRead reads the connection's shown tickets due at at (the timer's
 // time, which counts as now when the clock reads earlier), or every shown
 // ticket when all is set, together. One whose first read has not settled
-// is its pump's to read.
+// is its pump's to read. The result's historyWanted reports a read that
+// found an issue of the connection due a history read while a ticket it
+// read shows no time in its status, for which the round runs the history
+// unit after it (roundHistory).
 func (s *Service) roundRead(rd *ticketRound, at time.Time, all bool) ticketsResult {
 	s.subMu.Lock()
 	now := s.now()
@@ -157,7 +162,30 @@ func (s *Service) roundRead(rd *ticketRound, at time.Time, all bool) ticketsResu
 		return ticketsResult{}
 	}
 	slices.SortFunc(members, func(a, b *ticketPump) int { return cmp.Compare(a.key.issue, b.key.issue) })
-	return s.readTickets(rd.ctx, rd.conn, members, Background, false, false)
+	res := s.readTickets(rd.ctx, rd.conn, members, Background, false, false)
+	if res.historyWanted = res.historyDue && !res.failed; res.historyWanted {
+		s.subMu.Lock()
+		res.historyWanted = slices.ContainsFunc(members, func(tp *ticketPump) bool { return tp.view.loaded && !tp.view.sinceKnown })
+		s.subMu.Unlock()
+	}
+	return res
+}
+
+// roundHistory runs the linked history unit of rd's connection (SyncLinked)
+// after a round whose read wants one (roundRead): an open ticket's issue
+// is due a history read once its first card is stored, so a ticket whose
+// document does not settle the time in its status (statusSinceOf) has it
+// stored within a round of the opening when the read is final, and a
+// round after its settle margin when it was not (sync_history.go). It
+// costs no statement of its own when no issue is due: the read's sync
+// state says so. The unit reads every issue of the connection that is
+// due, as the linked loop would; the next tick of a board or loop finds
+// those read. It records its outcome as the linked loop's does; an error
+// the outcome does not hold is logged.
+func (s *Service) roundHistory(rd *ticketRound) {
+	if _, err := s.SyncLinked(rd.ctx, rd.conn, LinkedDue{History: true}, Background); err != nil && rd.ctx.Err() == nil {
+		s.logf("trackerapp: the history of the open tickets of %s: %v", rd.conn, err)
+	}
 }
 
 // readNowLocked makes tp due a read at once (a stored card of its issue

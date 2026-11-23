@@ -147,6 +147,13 @@ func (s *trackerState) setGone(id tracker.IssueID, gone bool) {
 // retries an hour later.
 func newRoundFixture(t *testing.T, n int, jira bool) (*mirrorFixture, *trackerState, []tracker.IssueID, []TicketSubscription) {
 	t.Helper()
+	return newRoundFixtureThen(t, n, jira, func(*mirrorFixture) {})
+}
+
+// newRoundFixtureThen is newRoundFixture with beforeOpen run once the
+// board is read, before the tickets open.
+func newRoundFixtureThen(t *testing.T, n int, jira bool, beforeOpen func(*mirrorFixture)) (*mirrorFixture, *trackerState, []tracker.IssueID, []TicketSubscription) {
+	t.Helper()
 	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour, RetryBase: time.Hour})
 	st := &trackerState{cards: map[tracker.IssueID]tracker.Card{}, comments: map[tracker.IssueID]string{},
 		links: map[tracker.IssueID]tracker.IssueID{}, gone: map[tracker.IssueID]bool{}}
@@ -166,6 +173,7 @@ func newRoundFixture(t *testing.T, n int, jira bool) (*mirrorFixture, *trackerSt
 	if jira {
 		m.p.updatedMovesWithDetail(st.cardsRead)
 	}
+	beforeOpen(m)
 	var subs []TicketSubscription
 	for i, id := range issues {
 		sub, err := m.svc.SubscribeTicket(m.conn.ID, id)

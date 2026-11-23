@@ -279,9 +279,9 @@ to the computer and are rows in `tracker_connections`.
 
 ## Tables
 
-All tracker tables are created by one migration while the feature is
-unshipped, so a renumbering after a merge changes one version constant and
-one frozen hash.
+The tracker tables are created by migration v162, frozen, and v163, which
+adds `tracker_cache_open_tickets`; a later tracker table is a later
+migration.
 
 Durable records, restored and kept like other application records:
 
@@ -322,6 +322,7 @@ classification:
 | `tracker_cache_worklogs` | Logged time by issue, author and day. A Tempo connection has no mirror of its own; its worklogs are in its Jira connection's. |
 | `tracker_cache_worklog_days` | The latest read of an author's day, an unchanged or empty day included; a replace from an earlier read leaves the day. |
 | `tracker_cache_sync` | Per scope: the provider's cursor, last read, last reconcile, last failure. The linked-issues scope has no cursor: it reads its cards by ID. |
+| `tracker_cache_open_tickets` | One row per open ticket's pump, named by the process's session and the pump's number: the issue it keeps in the mirror while the ticket is open. |
 
 Metric queries will read versioned views over these tables, never the
 tables; no view is built yet.
@@ -346,10 +347,11 @@ For each board some app project lists:
   their issue does. A query that needs a value from before an issue's
   changes are complete gets none and shows the issue as not counted.
 
-Plus, per connection: the issues linked to threads, and the detail of the
-200 most recently opened issues the mirror holds. An issue outside every
-listed board is read from the tracker when asked for and is not kept unless
-a thread links it.
+Plus, per connection: the issues linked to threads, the issues open as
+tickets, and the detail of the 200 most recently opened issues the mirror
+holds. An issue outside every listed board is read from the tracker when
+asked for and is kept only while a thread links it or a person has its
+ticket open.
 
 A stored detail is current only when the tracker says so in the read that
 shows it (`IssueDetail`, or an open ticket's read). Where the issue's
@@ -379,11 +381,30 @@ answers; a detail another read rewrote between its read and its opening
 is read again, so it answers not mirrored only when the mirror holds
 none.
 
-An issue stays while it is on a listed board or a thread this computer owns
-links it on that connection's site. It is absent to every read at once
-when its last row on a shown board goes and no link keeps it;
-`FinishMirrorCleanup` deletes it, its changes first, in bounded
-transactions. No caller prunes.
+An issue stays while it is on a listed board, a thread this computer owns
+links it on that connection's site, or its ticket is open
+(`mirrorIssueKept`, the one rule every read and write uses). It is absent
+to every read at once when its last keep goes; `FinishMirrorCleanup`
+deletes it, its changes first, in bounded transactions. No caller prunes.
+
+An open ticket keeps its issue through one row of
+`tracker_cache_open_tickets` per ticket pump, whatever brought the person
+to it: a search, a parent or a link opened from another ticket, a done
+issue older than the window, an issue a reconcile dropped from its board,
+or one on a board not read yet. The pump's goroutine writes the row before
+its first read and deletes it as it returns, the one place each end of the
+pump comes to (its last subscription released, its connection turned off
+or removed, `Stop`); each is one statement and one row
+(`TestOpenTicketKeepCosts`). A pump has one row, so the table holds at
+most the cap of open tickets (64) of the live process. Rows a process left
+when it ended without deleting them are deleted by the next boot's
+`StartLinkedSync`, and the cleanup then removes what nothing else keeps.
+A restore empties the table with the mirror while pumps live: the run
+that makes the connection's new root keeps the open tickets of its mirror
+generation again (`trackerapp.mirrorRootLocked`), and a ticket opened
+before any run did keeps itself under the new root. A keep that fails is
+logged and leaves the ticket working as one the mirror does not keep: its
+pump holds its document.
 
 A board whose last listing goes is retired: absent to reads and writes,
 its sync state deleted, its rows drained by `FinishMirrorCleanup`. Listed
@@ -461,8 +482,9 @@ the document shows and the document's history does not contradict it;
 otherwise none. A document is stored only beside the card of its
 version, so the time stands across an edit on every read of a kept
 issue: a Jira round's check, a full read, a refresh, a write's re-read
-and every Linear ticket read. A ticket of an issue the mirror does not
-keep shows the time its document's history gives. For the settle window
+and every Linear ticket read. A detail of an issue the mirror does not
+keep (an `IssueDetail` read with no ticket open, or a ticket whose keep
+failed) shows the time its document's history gives. For the settle window
 after an issue leaves its status and comes back, a board card can show
 the earlier stay's time while the open ticket shows the newer one: the
 ticket's document holds the return before a history read stores it.
@@ -664,6 +686,14 @@ round's timer is the earliest due
 time of the shown tickets, and it reads every shown ticket then due in
 one read, so one delta that changes N shown tickets costs one read. A
 hidden ticket keeps its due time and is read when shown if it passed.
+When the read's sync state reports an issue of the connection due a
+history read and a ticket it read shows no time in its status, the round
+then runs the linked history unit (`roundHistory`): a ticket whose
+document cannot settle the time (an issue never moved, or one that moved
+inside the settle margin) shows it from the round after its opening, and
+a read that was not final is read again a round after its settle margin.
+No history being due costs no statement: the sync state the read takes
+says so.
 
 A ticket's view is built from its document and from what the mirror
 holds of other things: the mirror's card of the issue and its status

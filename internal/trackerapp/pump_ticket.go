@@ -23,8 +23,11 @@ type ticketPump struct {
 	core pump.Core[readRequest]
 	key  ticketKey
 	// number names the pump within the service's session: its row in the
-	// mirror's open tickets (keepTicket).
+	// mirror's open tickets (keepTicket). kept reports that the row is
+	// written, from the keep to the drop; it is under opMu, as is every
+	// write of the row.
 	number int64
+	kept   bool
 	// gen is the mirror generation the pump shows (genLocked).
 	gen uint64
 	// every is the connection's round interval, the answer's PollEvery.
@@ -69,13 +72,15 @@ type ticketPump struct {
 }
 
 // toldView is what a ticket's subscribers were last told of its view:
-// whether it is loaded and a digest of its content, and what it was built
-// from: the document (ticketPump.docs) and the stamp its build began at,
-// which a later change of another input outdates.
+// whether it is loaded, whether it shows the time in its status, and a
+// digest of its content, and what it was built from: the document
+// (ticketPump.docs) and the stamp its build began at, which a later change
+// of another input outdates.
 type toldView struct {
-	loaded   bool
-	digest   uint64
-	docs, at uint64
+	loaded     bool
+	sinceKnown bool
+	digest     uint64
+	docs, at   uint64
 }
 
 // heldDetail is a view a ticket pump holds, with when its read began.
@@ -362,35 +367,86 @@ func (s *Service) endTicketLocked(tp *ticketPump) {
 
 // keepTicket makes the mirror keep tp's issue (store KeepMirrorTicket) in
 // the root of tp's connection, and returns what ends the keep (store
-// DropMirrorTicket), which the pump's goroutine runs as it returns. A
-// pump of a mirror generation that ended keeps nothing: it is ending. A
-// keep that fails leaves the ticket working as one of an issue the mirror
-// does not keep (its pump holds its document, and it shows no time in its
-// status), and is logged; so is a drop that fails, whose row the next
-// boot drops (StartLinkedSync).
+// DropMirrorTicket), which the pump's goroutine runs as it returns, the
+// one place every end of the pump comes to. A root a restore emptied
+// since the run took it is replaced (rehold) and the keep made under the
+// new one; a root made after the keep, within the pump's generation,
+// keeps it again (keepTicketsAgainLocked). A pump of a mirror generation
+// that ended keeps nothing: it is ending. A keep that fails leaves the
+// ticket working as one of an issue the mirror does not keep (its pump
+// holds its document), and is logged; so is a drop that fails, whose row
+// the next boot drops (StartLinkedSync).
 func (s *Service) keepTicket(tp *ticketPump) (drop func()) {
-	none := func() {}
+	drop = func() {
+		s.opMu.Lock()
+		defer s.opMu.Unlock()
+		if !tp.kept {
+			return
+		}
+		tp.kept = false
+		if err := s.store.DropMirrorTicket(s.session, tp.number); err != nil {
+			s.logf("trackerapp: drop the open ticket %s of connection %s: %v; the next boot drops it", tp.key.issue, tp.key.connection, err)
+		}
+	}
 	r, err := s.start(tp.core.Context(), tp.key.connection, Background)
 	switch {
 	case errors.Is(err, errEnded), errors.Is(err, ErrStopped), errors.Is(err, context.Canceled):
-		return none
+		return drop
 	case err != nil:
 		s.logf("trackerapp: keep the open ticket %s of connection %s: %v", tp.key.issue, tp.key.connection, err)
-		return none
+		return drop
 	}
 	defer r.finish()
 	if r.gen != tp.gen {
-		return none
+		return drop
 	}
-	if err := s.store.KeepMirrorTicket(r.root, string(tp.key.issue), s.session, tp.number); err != nil {
-		if !errors.Is(err, store.ErrTrackerCacheGone) {
-			s.logf("trackerapp: keep the open ticket %s of connection %s: %v", tp.key.issue, tp.key.connection, err)
+	err = s.keepTicketLocking(tp, r.root)
+	if errors.Is(err, store.ErrTrackerCacheGone) {
+		var root int64
+		if root, err = s.rehold(tp.key.connection, r.root, r.gen, err); err == nil {
+			err = s.keepTicketLocking(tp, root)
 		}
-		return none
 	}
-	return func() {
-		if err := s.store.DropMirrorTicket(s.session, tp.number); err != nil {
-			s.logf("trackerapp: drop the open ticket %s of connection %s: %v; the next boot drops it", tp.key.issue, tp.key.connection, err)
+	if err != nil && !errors.Is(err, errEnded) {
+		s.logf("trackerapp: keep the open ticket %s of connection %s: %v", tp.key.issue, tp.key.connection, err)
+	}
+	return drop
+}
+
+// keepTicketLocking writes tp's keep under root, taking opMu.
+func (s *Service) keepTicketLocking(tp *ticketPump, root int64) error {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	return s.keepTicketLocked(tp, root)
+}
+
+// keepTicketLocked writes tp's keep under root (store KeepMirrorTicket).
+// The caller holds opMu.
+func (s *Service) keepTicketLocked(tp *ticketPump, root int64) error {
+	if err := s.store.KeepMirrorTicket(root, string(tp.key.issue), s.session, tp.number); err != nil {
+		return err
+	}
+	tp.kept = true
+	return nil
+}
+
+// keepTicketsAgainLocked keeps the open tickets of connection id's
+// generation gen that were kept under root, a root made in place of one a
+// restore emptied (mirrorRootLocked): the restore emptied their rows with
+// the mirror. A keep that fails is logged, as a pump's own is
+// (keepTicket). The caller holds opMu.
+func (s *Service) keepTicketsAgainLocked(id string, gen uint64, root int64) {
+	s.subMu.Lock()
+	var kept []*ticketPump
+	for k, tp := range s.subs.tickets {
+		if k.connection == id && tp.gen == gen && tp.kept {
+			kept = append(kept, tp)
+		}
+	}
+	s.subMu.Unlock()
+	for _, tp := range kept {
+		if err := s.keepTicketLocked(tp, root); err != nil {
+			s.logf("trackerapp: keep the open ticket %s of connection %s again after its mirror was emptied: %v", tp.key.issue, id, err)
 		}
 	}
 }
