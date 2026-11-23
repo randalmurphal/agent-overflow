@@ -41,6 +41,11 @@ the developer's running app; goals that launch an app (`make dev`,
 under `bin/ao-netns`, whose private temp directory and on-disk Go work
 directory are described with the
 [isolation](../specs/testing-harness.md#isolation-network-temp-directory-and-priority).
+`go-test` starts `go test` through `cmd/ao-gotest` inside the namespace: a
+package whose TestMain calls `testshard.Select` runs as one process per
+core, each running the top-level tests whose names hash to it, and the
+other packages run in one `go test` as before. With one core, `-run`, or a
+flag the command does not split on, it runs that one `go test`.
 Go trims its build cache only by age, so `go-build`, `go-test` and
 `test-race` run a `cmd/ao-gocache-trim` pass before their build or test and
 another when it ends. A pass walks the cache at most every five minutes,
