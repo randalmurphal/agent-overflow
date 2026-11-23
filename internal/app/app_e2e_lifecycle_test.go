@@ -293,11 +293,74 @@ func setupE2EAppOn(t *testing.T, dbPath, settingsDir string) (*App, *capturedEve
 	// defaults. See isolateE2EProviderSpawns.
 	isolateE2EProviderSpawns(t, app)
 
-	// Ensure any sessions that remain open at test end are torn down, in
-	// Shutdown's order: joinBackgroundWorkAtCleanup, registered after
-	// this and so run before it, has refused new request work; session
-	// starts are refused before the close, and any settlement still in
-	// flight finishes before the store closes.
+	tearDownTestAppAtCleanup(t, app)
+	return app, bus
+}
+
+// Every App fixture's teardown ends what a test leaves running, as Shutdown
+// does: it closes the sessions the App still holds, and it joins the notice
+// work and request settlements, so none of them uses the store after it
+// closes or writes into a temporary directory being removed. The fixtures
+// share one teardown, so each kind of work is started on one fixture of its
+// own: the settlement join also outlasts notice work started beside it.
+func TestAppFixtureTeardownEndsBackgroundWorkAndSessions(t *testing.T) {
+	t.Parallel()
+	e2eApp := func(t *testing.T) *App { app, _ := setupE2EApp(t); return app }
+	for _, tc := range []struct {
+		name  string
+		app   func(t *testing.T) *App
+		start func(app *App, work func()) bool
+	}{
+		{"setupE2EApp notice work", e2eApp, func(app *App, work func()) bool { return app.goAgentNoticeWork("teardown", work) }},
+		{"setupE2EApp request settlement", e2eApp, (*App).goThreadRequestSettling},
+		{"newTestApp", newTestApp, nil},
+		{"newTestAppWithStore", newTestAppWithStore, nil},
+		{"setupCascadeApp", func(t *testing.T) *App { app, _, _ := setupCascadeApp(t); return app }, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var (
+				app     *App
+				done    bool
+				readErr error
+			)
+			t.Run("test", func(t *testing.T) {
+				app = tc.app(t)
+				app.sessionManager().put("teardown-thread", session{Provider: "claude"})
+				// The work outlasts the test body, so it is still running
+				// when the teardown begins.
+				if tc.start != nil && !tc.start(app, func() {
+					time.Sleep(200 * time.Millisecond)
+					_, readErr = app.store.ListProjects()
+					done = true
+				}) {
+					t.Fatal("the work was refused before the test ended")
+				}
+			})
+			if tc.start != nil && (!done || readErr != nil) {
+				t.Errorf("the teardown did not wait for the work (finished %v, store read %v)", done, readErr)
+			}
+			if open := len(app.sessionManager().runtime.Snapshot()); open != 0 {
+				t.Errorf("the App holds %d sessions after its test ended", open)
+			}
+		})
+	}
+}
+
+// tearDownTestAppAtCleanup ends, when the test ends, what an App the test
+// built still runs, in Shutdown's order. First it cancels the App and joins
+// its session-starting background work: thread request settlements, wake
+// deliveries, and the flush dispatch workers that start a session for a
+// message queued without one. Then it refuses notice work and waits out what
+// is in flight, closes the sessions the App holds, drains their events and
+// waits for the settlements they started. Work that outlived the test would
+// run against its removed directories and closed store, and a session left
+// open keeps its provider process writing into them.
+//
+// Every App fixture calls it once, after the cleanups that close its store
+// and remove its directories are registered, so it runs before them.
+func tearDownTestAppAtCleanup(t *testing.T, app *App) {
+	t.Helper()
 	t.Cleanup(func() {
 		app.stopAgentNoticeWork()
 		sessions := make([]session, 0, len(app.sessionManager().runtime.Snapshot()))
@@ -315,56 +378,6 @@ func setupE2EAppOn(t *testing.T, dbPath, settingsDir string) (*App, *capturedEve
 		}
 		app.threadRequestSettling.Wait()
 	})
-
-	joinBackgroundWorkAtCleanup(t, app)
-
-	return app, bus
-}
-
-// The fixture's teardown joins the notice work and request settlements a
-// test leaves running, as Shutdown does, so none of them uses the store
-// after it closes or writes into a temporary directory being removed.
-func TestE2EFixtureTeardownJoinsBackgroundWork(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name  string
-		start func(app *App, work func()) bool
-	}{
-		{"notice work", func(app *App, work func()) bool { return app.goAgentNoticeWork("teardown", work) }},
-		{"request settlement", func(app *App, work func()) bool { app.goThreadRequestSettling(work); return true }},
-	} {
-		var (
-			done    bool
-			readErr error
-		)
-		t.Run(tc.name, func(t *testing.T) {
-			app, _ := setupE2EApp(t)
-			// The work outlasts the test body, so it is still running when
-			// the teardown begins.
-			if !tc.start(app, func() {
-				time.Sleep(200 * time.Millisecond)
-				_, readErr = app.store.ListProjects()
-				done = true
-			}) {
-				t.Fatal("the work was refused before the test ended")
-			}
-		})
-		if !done || readErr != nil {
-			t.Errorf("%s: the teardown did not wait for it (finished %v, store read %v)", tc.name, done, readErr)
-		}
-	}
-}
-
-// joinBackgroundWorkAtCleanup ends the App's session-starting background
-// work when the test ends, as Shutdown does: thread request settlements and
-// wake deliveries, and the flush dispatch workers that start a session for a
-// message queued without one. Work that outlived the test would run against
-// its removed directories and closed store.
-//
-// Call it after the fixture's other cleanups are registered, so it runs
-// before the store closes and before sessions are torn down.
-func joinBackgroundWorkAtCleanup(t *testing.T, app *App) {
-	t.Helper()
 	t.Cleanup(func() {
 		if app.appCancel != nil {
 			app.appCancel()
