@@ -214,10 +214,10 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 		mustSyncWrite(t, step.name, changed, err, step.want)
 	}
 	var structureAt int64
-	if err := s.db.QueryRow(`SELECT read_at FROM tracker_cache_boards WHERE root_id = ? AND board_id = '10'`, root).Scan(&structureAt); err != nil || structureAt == 0 {
+	if err := s.db.QueryRow(`SELECT structure_wall FROM tracker_cache_boards WHERE root_id = ? AND board_id = '10'`, root).Scan(&structureAt); err != nil || structureAt == 0 {
 		t.Fatalf("structure read at %d: %v", structureAt, err)
 	}
-	want := MirrorSync{Lifetime: currentLifetime(s, root, "10"), Sweep: 1, StructureReadAt: structureAt, Cursor: []byte("c1"), ReadAt: 10, ReconciledAt: 20, Failure: MirrorSyncFailure{At: 30, Kind: MirrorFailureRateLimited, Message: "The tracker asked to wait."}}
+	want := MirrorSync{Lifetime: currentLifetime(s, root, "10"), Sweep: 1, StructureWall: structureAt, Cursor: []byte("c1"), ReadAt: 10, ReconciledAt: 20, ReconciledWall: 20, Failure: MirrorSyncFailure{At: 30, Kind: MirrorFailureRateLimited, Message: "The tracker asked to wait."}}
 	if got, ok, err := s.GetMirrorSync(root, "10", testNow); err != nil || !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("state = %+v, %v, %v\nwant %+v", got, ok, err, want)
 	}
@@ -243,7 +243,7 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 	next := webPage("10")
 	next.ReadAt = mirrorReadAt(60)
 	mustWriteRowPage(t, s, root, next, []byte("c2"))
-	want = MirrorSync{Lifetime: want.Lifetime, Sweep: 1, StructureReadAt: structureAt, Cursor: []byte("c2"), ReadAt: 60, ReconciledAt: 55}
+	want = MirrorSync{Lifetime: want.Lifetime, Sweep: 1, StructureWall: structureAt, Cursor: []byte("c2"), ReadAt: 60, ReconciledAt: 55, ReconciledWall: 55}
 	if got, _, err := s.GetMirrorSync(root, "10", testNow); err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("state = %+v, %v\nwant %+v", got, err, want)
 	}

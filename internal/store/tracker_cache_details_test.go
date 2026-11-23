@@ -206,7 +206,7 @@ func TestMirrorDetailFollowsItsReadOrder(t *testing.T) {
 	mustDetailWrite(t, "earlier document", got, err, MirrorDetailWrite{Stored: true, Superseded: true})
 	got, err = storeDetail(t, s, root, currentSweep(s, root), "10001", 0, 170, []byte(`{"v":1}`))
 	mustDetailWrite(t, "identical earlier document", got, err, MirrorDetailWrite{Stored: true})
-	if d, ok, err := s.GetMirrorDetail(root, "10001"); err != nil || !ok || !reflect.DeepEqual(d, MirrorDetail{IssueID: "10001", OpenedAt: 100, ReadAt: 180,
+	if d, ok, err := s.GetMirrorDetail(root, "10001"); err != nil || !ok || !reflect.DeepEqual(d, MirrorDetail{IssueID: "10001", OpenedAt: 100, ReadAt: 180, ReadWall: 180,
 		Data: []byte(`{"v":1}`), CardUpdatedAt: 5, row: d.row, sweep: currentSweep(s, root)}) || d.row <= 0 {
 		t.Fatalf("detail = %+v, %v, %v", d, ok, err)
 	}

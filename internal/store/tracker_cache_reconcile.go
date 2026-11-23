@@ -53,8 +53,13 @@ const (
 )
 
 // ReconcileMirrorBoard compares a listing of the issues on a board, read
-// from read, with the board's rows; readAt below is read's time and
-// settledAt is readAt less lag. It returns the listed issues that
+// from read, with the board's rows; readAt below is read's order time and
+// settledAt is readAt less lag. Order times run with the wall clock, and
+// only ahead of it while it is behind them (BeginMirrorRead), when they
+// count a millisecond a read: a row's age by them is never more than its
+// age by the wall clock but for a burst of reads, so no row read within
+// lag is settled, after a restart or a clock step included. It returns
+// the listed issues that
 // have no row, marks listed the rows it names that no listing marked, and,
 // only when the listing judges the board's rows, removes the rows it does
 // not list that a listing marked and reads begun no later than settledAt
@@ -78,7 +83,11 @@ const (
 // rows those transactions removed and no Missing or Unsettled: the caller
 // tells the removals whatever it does about the error.
 func (s *Store) ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, read MirrorRead, lag time.Duration) (result MirrorReconcile, err error) {
-	readAt, settledAt := read.at, read.at-lag.Milliseconds()
+	times, err := read.in(rootID)
+	if err != nil {
+		return MirrorReconcile{}, err
+	}
+	readAt, settledAt := times.at, times.at-lag.Milliseconds()
 	switch {
 	case readAt <= 0:
 		return MirrorReconcile{}, fmt.Errorf("%w: a listing needs the time its read began", ErrInvalidTrackerCache)

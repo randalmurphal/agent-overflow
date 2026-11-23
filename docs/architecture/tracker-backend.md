@@ -280,8 +280,10 @@ to the computer and are rows in `tracker_connections`.
 ## Tables
 
 The tracker tables are created by migration v162, frozen, v163, which
-adds `tracker_cache_open_tickets`, v164, which adds
-`tracker_cache_read_leases`, and v165, which adds
+adds `tracker_cache_open_tickets`, and v164, which adds the wall times
+of the reads an interval is measured from
+(`tracker_cache_boards.structure_wall`, `tracker_cache_sync.reconciled_wall`,
+`tracker_cache_issue_details.read_wall`) and
 `tracker_cache_issues.sprint_set`; a later tracker table or column is a
 later migration.
 
@@ -325,7 +327,6 @@ classification:
 | `tracker_cache_worklog_days` | The latest read of an author's day, an unchanged or empty day included; a replace from an earlier read leaves the day. |
 | `tracker_cache_sync` | Per scope: the provider's cursor, last read, last reconcile, last failure. The linked-issues scope has no cursor: it reads its cards by ID. |
 | `tracker_cache_open_tickets` | One row per open ticket's pump, named by the process's session and the pump's number: the issue it keeps in the mirror while the ticket is open. |
-| `tracker_cache_read_leases` | Per root, a time after every read its clock began, so a process's first read of the root begins after every read the root stored. |
 
 Metric queries will read versioned views over these tables, never the
 tables; no view is built yet.
@@ -465,19 +466,25 @@ update time the card owns the fields it holds (key, title, status,
 assignee, priority, labels, parent, sprints, type and times) and the
 document owns the rest, so a ticket shows the mirror's card in place of
 its document's (`shownDetailOf`): a key rename a board read stores shows
-on the open ticket with no full read. A read's begin time comes
+on the open ticket with no full read. A read's order time comes
 from its root's one clock (`store.BeginMirrorRead`), the only maker of
-the `store.MirrorRead` every write that orders by it takes: now, or a
-millisecond after the root's last read when that is later, so two reads
-are ordered as they began whatever their path, process or wall clock.
-The root's lease (`tracker_cache_read_leases`) is stored a minute past
-the newest read before a read passes it, one statement and one row per
-root per minute of reading, and a process's first read of the root
-begins after it. A person's opening of a detail is such a read. The
+the `store.MirrorRead` every write that orders by it takes, and every
+writer refuses a read of another root: now, or a millisecond after the
+root's last read when that is later, so two reads are ordered as they
+began whatever their path, process or wall clock. A process's first read
+of a root seeds the clock from the highest read time the root stores
+(`mirrorReadTimeColumns`, held to the schema by a test), so a read begun
+after a restart, a crash included, orders after every stored read; later
+reads touch no row. A person's opening of a detail is such a read. The
 service's elapsed-time decisions, and the clock each reads, are listed
-beside `Service.sinceRead`: an interval since a stored read is measured
-by the wall clock, so after the clock steps back it stretches by the
-step, reading nothing sooner and refusing no write. An issue's row on
+beside `Service.sinceWall`: an interval since a stored read is measured
+from the wall time the read began at, stored beside its order time, and
+is due when none is stored, when the clock is behind it or when it
+passed, so a clock step either way reads the scope once. Order times
+run ahead of the wall clock only while it is behind them, a millisecond
+a read, so a reconcile's settled bound (its order time less the
+listing's lag) leaves a row read less than the lag ago to a read by ID,
+after a restart or a step back too. An issue's row on
 a board records whether a listing has named it (`listed`): a delta page,
 which is a search of the same index, or a listing a reconcile was given.
 A section page carries the board's revision; continuing it at another

@@ -120,7 +120,7 @@ func TestDetachMirrorThenCleanupDrainsInBatches(t *testing.T) {
 // board.
 func TestMirrorDrainCoversEveryTable(t *testing.T) {
 	t.Parallel()
-	db := migrateThrough(t, trackerReadLeasesMigrationVersion)
+	db := migrateThrough(t, trackerMirrorClockMigrationVersion)
 	tables, err := queryIDs(db, `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'tracker\_cache\_%' ESCAPE '\'
 		AND name <> 'tracker_cache_roots' ORDER BY name`)
 	if err != nil {
@@ -174,28 +174,28 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"UpsertMirrorCards": func(root int64) error {
-			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 6)}, MirrorCatalog{}, mirrorReadAt(1))
+			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 6)}, MirrorCatalog{}, mirrorReadOf(root, 1))
 			return err
 		},
 		"ReconcileMirrorBoard": func(root int64) error {
-			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"10001"}, true, mirrorReadAt(1), 0)
+			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"10001"}, true, mirrorReadOf(root, 1), 0)
 			return err
 		},
 		"ReplaceMirrorHistories": func(root int64) error {
-			_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10001"}, {IssueID: "10009"}}), MirrorCatalog{}, mirrorReadAt(0))
+			_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10001"}, {IssueID: "10009"}}), MirrorCatalog{}, mirrorReadOf(root, 0))
 			return err
 		},
 		"ReplaceMirrorHistories staged": func(root int64) error {
-			_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{statusHistory("10001", clearMirrorChunk+100)}), MirrorCatalog{}, mirrorReadAt(0))
+			_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{statusHistory("10001", clearMirrorChunk+100)}), MirrorCatalog{}, mirrorReadOf(root, 0))
 			return err
 		},
 		"UpsertMirrorCards regroup": func(root int64) error {
-			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{{ID: "1", Name: "To Do", Group: MirrorGroupDone}}}, mirrorReadAt(2))
+			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{{ID: "1", Name: "To Do", Group: MirrorGroupDone}}}, mirrorReadOf(root, 2))
 			return err
 		},
 		"StoreMirrorDetails": func(root int64) error {
 			_, err := s.StoreMirrorDetails(root, currentSweep(s, root), []MirrorDetailDoc{
-				{IssueID: "10001", Data: []byte(`{"v":2}`), CardUpdatedAt: 5}, {IssueID: "10002", Data: []byte(`{}`), CardUpdatedAt: 5}}, mirrorReadAt(9), mirrorReadAt(9))
+				{IssueID: "10001", Data: []byte(`{"v":2}`), CardUpdatedAt: 5}, {IssueID: "10002", Data: []byte(`{}`), CardUpdatedAt: 5}}, mirrorReadOf(root, 9), mirrorReadOf(root, 9))
 			return err
 		},
 		"ConfirmMirrorDetail": func(root int64) error {
@@ -207,31 +207,31 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 				// A gone root holds none: the detail as a live root read it.
 				d = MirrorDetail{IssueID: "10001", ReadAt: 7, row: 1, sweep: 1}
 			}
-			_, err = s.ConfirmMirrorDetail(root, d, mirrorReadAt(9))
+			_, err = s.ConfirmMirrorDetail(root, d, mirrorReadOf(root, 9))
 			return err
 		},
 		"StoreMirrorDetail": func(root int64) error {
-			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), MirrorDetailDoc{IssueID: "10001", Data: []byte(`{}`), CardUpdatedAt: 5}, mirrorReadAt(0), mirrorReadAt(9))
+			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), MirrorDetailDoc{IssueID: "10001", Data: []byte(`{}`), CardUpdatedAt: 5}, mirrorReadOf(root, 0), mirrorReadOf(root, 9))
 			return err
 		},
 		"StoreMirrorDetail opened": func(root int64) error {
-			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), MirrorDetailDoc{IssueID: "10001", Data: []byte(`{}`), CardUpdatedAt: 5}, mirrorReadAt(20), mirrorReadAt(7))
+			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), MirrorDetailDoc{IssueID: "10001", Data: []byte(`{}`), CardUpdatedAt: 5}, mirrorReadOf(root, 20), mirrorReadOf(root, 7))
 			return err
 		},
 		"ReplaceMirrorWorklogs": func(root int64) error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-06", mirrorReadAt(1), nil)
+			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-06", mirrorReadOf(root, 1), nil)
 			return err
 		},
 		"RecordMirrorSyncAttempt": func(root int64) error {
-			_, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: mirrorReadAt(9)}))
+			_, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: mirrorReadOf(root, 9)}))
 			return err
 		},
 		"RecordMirrorSyncAttempt reconcile": func(root int64) error {
-			_, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", MirrorSyncAttempt{ReconciledAt: mirrorReadAt(9)}))
+			_, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", MirrorSyncAttempt{ReconciledAt: mirrorReadOf(root, 9)}))
 			return err
 		},
 		"RecordMirrorSyncAttempt failure": func(root int64) error {
-			_, err := s.RecordMirrorSyncAttempt(root, "11", currentAttempt(s, root, "11", MirrorSyncAttempt{ReadAt: mirrorReadAt(8), Failure: MirrorAttemptFailure{At: mirrorReadAt(9), Kind: MirrorFailureTransient, Message: "timed out"}}))
+			_, err := s.RecordMirrorSyncAttempt(root, "11", currentAttempt(s, root, "11", MirrorSyncAttempt{ReadAt: mirrorReadOf(root, 8), Failure: MirrorAttemptFailure{At: mirrorReadOf(root, 9), Kind: MirrorFailureTransient, Message: "timed out"}}))
 			return err
 		},
 		"KeepMirrorTicket": func(root int64) error { return s.KeepMirrorTicket(root, "10001", 2, 1) },
@@ -374,7 +374,7 @@ func mirrorCascadeViolations(t *testing.T, db *sql.DB) []string {
 // table.
 func TestTrackerCacheTablesCascadeFromTheRoot(t *testing.T) {
 	t.Parallel()
-	db := migrateThrough(t, trackerReadLeasesMigrationVersion)
+	db := migrateThrough(t, trackerMirrorClockMigrationVersion)
 	if violations := mirrorCascadeViolations(t, db); len(violations) > 0 {
 		t.Fatalf("schema violations:\n%s", strings.Join(violations, "\n"))
 	}

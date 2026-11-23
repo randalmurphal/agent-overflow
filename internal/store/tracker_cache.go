@@ -127,14 +127,18 @@ func (s *Store) GetMirrorRoot(connectionID string) (rootID int64, ok bool, err e
 // fails with ErrTrackerCacheGone, and so do GetMirrorSync and
 // ReadMirrorRefreshTargets; every other read of it is empty, and
 // GetOrCreateMirrorRoot makes a new root. FinishMirrorCleanup deletes the
-// detached root's rows. A connection's removal detaches its root the same
-// way, through the schema.
+// detached root's rows. The root's read clock is removed, and no read of it
+// begins again (BeginMirrorRead). A connection's removal detaches its root
+// the same way, through the schema (DeleteTrackerConnection).
 func (s *Store) DetachMirror(connectionID string) (detached bool, err error) {
-	detached, err = execChangedTx(s.db, `UPDATE tracker_cache_roots SET connection_id = NULL WHERE connection_id = ? RETURNING id`, connectionID)
+	roots, err := queryInt64s(s.db, `UPDATE tracker_cache_roots SET connection_id = NULL WHERE connection_id = ? RETURNING id`, connectionID)
 	if err != nil {
 		return false, fmt.Errorf("store: detach tracker mirror of connection %s: %w", connectionID, err)
 	}
-	return detached, nil
+	for _, root := range roots {
+		s.forgetMirrorRead(root)
+	}
+	return len(roots) > 0, nil
 }
 
 // mirrorWrite runs fn in one write transaction after checking that rootID

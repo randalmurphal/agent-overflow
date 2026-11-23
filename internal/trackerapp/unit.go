@@ -285,17 +285,18 @@ func (r *run) beginRead() (store.MirrorRead, error) {
 
 // The service's elapsed-time decisions, and the clock each reads:
 //
-//   - Since a read the root stored began (Service.sinceRead): the board's
+//   - Since a read the root stored began (Service.sinceWall): the board's
 //     structure and reconcile intervals (boardDue) and a document's age
-//     (checkDetails, detailMaxAge). The wall clock against the stored
-//     begin time, which BeginMirrorRead keeps at or after the wall clock
-//     the read began at. After the wall clock steps back, a stored read
-//     is no time ago until the clock passes it again, so each interval
-//     stretches by the step: nothing is read sooner, and no write is
-//     refused, every read beginning after the stored ones. A person's
-//     refresh still reads in full. After a forward step an interval ends
-//     early: one read sooner. A burst of reads runs a millisecond a read
-//     ahead of the clock, which a stored read's age reads short by.
+//     (checkDetails, detailMaxAge). The wall clock against the wall time
+//     the stored read began at (store MirrorRead.Wall, stored beside its
+//     order time). An interval is due when no wall time is stored (none
+//     read, or read before the column existed), when the clock is behind
+//     it (it stepped back), or when the interval passed: after a step
+//     either way the scope is read once and measured from that read. The
+//     order times stay ordered across the step and a restart
+//     (BeginMirrorRead), and a reconcile's settled bound counts no row
+//     read within the listing's lag as settled (store
+//     ReconcileMirrorBoard), so a step back removes no row.
 //   - The history wait (store MirrorHistory.AnsweredAt and Wait, the now
 //     of GetMirrorSync and ListMirrorHistoryDue, historyFinal): the steady
 //     clock (Service.steady), monotonic within the process. A wait an
@@ -309,10 +310,13 @@ func (r *run) beginRead() (store.MirrorRead, error) {
 //     and CompleteTo against the card's update time): the tracker's own
 //     clock on both sides.
 //
-// sinceRead is how long ago at, the begin time of a read the root stored,
-// was by the wall clock: zero while the clock is behind it.
-func (s *Service) sinceRead(at int64) time.Duration {
-	return max(s.now().Sub(time.UnixMilli(at)), 0)
+// sinceWall is how long ago wall, the wall time a read the root stored
+// began at, was by the wall clock, and false when the clock is behind it.
+// An interval is due when it is unknown. None stored is zero, decades ago,
+// so it is due.
+func (s *Service) sinceWall(wall int64) (time.Duration, bool) {
+	since := s.now().Sub(time.UnixMilli(wall))
+	return since, since >= 0
 }
 
 // steadyAt is now by the clock the history wait is measured on

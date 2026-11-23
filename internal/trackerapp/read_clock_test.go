@@ -3,6 +3,7 @@ package trackerapp
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -44,11 +45,52 @@ func TestAReadAfterTheClockStepsBackAndARestartIsStored(t *testing.T) {
 	}
 }
 
-// After the wall clock steps back, a board's structure and listing are
-// read again only once their interval has passed since their stored reads
-// by the clock: the step stretches the interval, and nothing is read
-// sooner.
-func TestAClockStepBackReadsNothingSooner(t *testing.T) {
+// After the wall clock steps back past a board's stored reads, the board's
+// structure and listing are read again once, at the next tick, and the
+// intervals are measured from those reads: the tick after reads neither.
+// The listing, which does not show yet an issue a delta read just before
+// the step, removes no row: the issue was read less than the listing's lag
+// ago by the wall clock, so it is left to a read by ID and stays.
+func TestAClockStepBackRefreshesOnceAndRemovesNothing(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Reconcile: time.Hour, Structure: time.Hour})
+	const updated = 1_799_000_000_000
+	m.tracks([]tracker.Row{row("10001", updated, "a")})
+	p := idlePump(m)
+	tick := func(what string) {
+		t.Helper()
+		if res := m.svc.boardTick(p, false, Background); res.failed {
+			t.Fatalf("%s: the tick failed: %+v", what, res)
+		}
+	}
+	reads := func() string {
+		return fmt.Sprintf("%d structure reads, %d listings", m.p.count("Structure"), m.p.count("BoardIssues"))
+	}
+	tick("the first tick")
+	m.tracks([]tracker.Row{row("10001", updated, "a"), row("10002", updated+1, "b")})
+	m.p.set(func(p *scripted) {
+		p.boardIssues = func(tracker.BoardID, time.Time) (tracker.Listing, error) {
+			return tracker.Listing{IDs: ids("10001"), Complete: true}, nil
+		}
+	})
+	tick("the delta of a new issue")
+	both := []string{"10001", "10002"}
+	if got := m.rowIDs(testBoard); !slices.Equal(got, both) || reads() != "1 structure reads, 1 listings" {
+		t.Fatalf("before the step: rows %v, %s", got, reads())
+	}
+	m.pass(-2 * time.Hour)
+	for _, what := range []string{"right after the step back", "the tick after"} {
+		tick(what)
+		if got := m.rowIDs(testBoard); reads() != "2 structure reads, 2 listings" || !slices.Equal(got, both) {
+			t.Fatalf("%s: %s, rows %v; want each read again once and rows %v", what, reads(), got, both)
+		}
+	}
+}
+
+// After the wall clock steps forward an hour, the interval of a board's
+// structure and listing, the board's structure and listing are read again
+// once, and the intervals are measured from those reads.
+func TestAForwardClockStepOfAnHourRefreshesOnce(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Reconcile: time.Hour, Structure: time.Hour})
 	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
@@ -59,27 +101,14 @@ func TestAClockStepBackReadsNothingSooner(t *testing.T) {
 	if res := m.svc.boardTick(p, false, Background); res.failed {
 		t.Fatalf("the first tick failed: %+v", res)
 	}
-	first := reads()
-	for _, step := range []struct {
-		pass time.Duration
-		what string
-	}{{-2 * time.Hour, "right after the step back"}, {2*time.Hour + 59*time.Minute, "59 minutes after the stored reads"}} {
-		m.pass(step.pass)
+	m.pass(time.Hour)
+	for _, what := range []string{"right after the step", "the tick after"} {
 		if res := m.svc.boardTick(p, false, Background); res.failed {
-			t.Fatalf("%s: the tick failed: %+v", step.what, res)
+			t.Fatalf("%s: the tick failed: %+v", what, res)
 		}
-		if got := reads(); got != first {
-			t.Fatalf("%s: %s; want the first tick's %s", step.what, got, first)
+		if got := reads(); got != "2 structure reads, 2 listings" {
+			t.Fatalf("%s: %s; want each read again once", what, got)
 		}
-	}
-	// The first tick's reads began a few milliseconds apart on the frozen
-	// clock: a second covers them.
-	m.pass(time.Minute + time.Second)
-	if res := m.svc.boardTick(p, false, Background); res.failed {
-		t.Fatalf("an hour after the stored reads: the tick failed: %+v", res)
-	}
-	if m.p.count("Structure") != 2 || m.p.count("BoardIssues") != 2 {
-		t.Fatalf("an hour after the stored reads: %s; want each read again once", reads())
 	}
 }
 

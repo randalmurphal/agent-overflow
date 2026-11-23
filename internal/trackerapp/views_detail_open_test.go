@@ -366,10 +366,11 @@ func TestAStoredDetailPastTheAgeBoundIsRead(t *testing.T) {
 	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
 	m.openDetail(t, "10001")
 	m.p.updatedMovesWithDetail(cardsAnswering(&c))
-	// When the stored detail's read began, by the service's one counter of
-	// read begins, which the board's seeding moved past the frozen clock.
+	// When the stored detail's read began by the wall clock, which its
+	// order time, moved past the frozen clock by the board's seeding, is
+	// not.
 	stored, _, _ := m.storedDetail(t, "10001")
-	read := time.UnixMilli(stored.ReadAt)
+	read := time.UnixMilli(stored.ReadWall)
 	at := func(d time.Duration) { m.svc.now = func() time.Time { return read.Add(d) } }
 	at(detailMaxAge)
 	m.openDetail(t, "10001")

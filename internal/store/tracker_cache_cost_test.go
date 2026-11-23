@@ -97,6 +97,11 @@ func countMirrorStatements(t *testing.T, fn func()) int {
 func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root int64) {
 	t.Helper()
 	seedFullMirror(t, s, root)
+	// A process's first read of the root seeds its clock.
+	s.forgetMirrorReads()
+	if _, err := s.BeginMirrorRead(root, 1); err != nil {
+		t.Fatal(err)
+	}
 	linkIssue(t, s, "linked", "10001")
 	for name, write := range mirrorWriters(s) {
 		if err := write(root); err != nil {
@@ -252,6 +257,8 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 			"and the listed rows no listing marked: a listing's misses, not the board"},
 	{"ORDER BY position, sprint_id LIMIT", "USE TEMP B-TREE FOR ORDER BY", "one board's sprints, at most mirrorMaxSprints"},
 	{`DELETE FROM main."tracker_cache_`, "", "a restore empties each mirror table whole"},
+	{"SELECT max(0, (SELECT coalesce(max(read_at), 0) FROM tracker_cache_users WHERE root_id = ?1)", "",
+		"the read clock's seed (mirrorReadSeedSQL) walks the root's rows of each table holding a read time, once per root per process, at its first read"},
 	{" LIMIT 500) AND EXISTS (SELECT 1 FROM tracker_cache_roots WHERE id = ?1 AND connection_id IS NULL)", "",
 		"a detached root's batch reads at most clearMirrorChunk rows of the root"},
 	{"ORDER BY opened_at DESC, issue_id DESC LIMIT -1 OFFSET", "SEARCH tracker_cache_issue_details USING COVERING INDEX idx_tracker_cache_issue_details_opened (root_id=?)",

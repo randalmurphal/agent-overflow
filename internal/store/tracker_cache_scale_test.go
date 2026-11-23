@@ -467,6 +467,24 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		}
 		return err
 	})
+	// A process's first read of the root, which seeds the root's clock
+	// from the read times it stores: the rows it walks, its VM steps and
+	// its plan.
+	var seedSteps int
+	out["first read of the root (seed)"] = measureScale(t, rec, func(int) { s.forgetMirrorReads() }, func(int) error {
+		var err error
+		seedSteps = countMirrorVMSteps(t, func() { _, err = s.BeginMirrorRead(root, testNow) })
+		return err
+	})
+	walked := map[string]int{}
+	for _, tc := range mirrorReadTimeColumns {
+		var n int
+		if err := s.db.QueryRow(`SELECT count(*) FROM `+tc.table+` WHERE root_id = ?`, root).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		walked[tc.table] = n
+	}
+	t.Logf("first read of the root (seed): %d VM steps, rows of the root walked %v, plan:\n%s", seedSteps, walked, explainMirror(t, s, mirrorReadSeedSQL))
 	return out
 }
 

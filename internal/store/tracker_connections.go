@@ -256,7 +256,8 @@ func (s *Store) SetTrackerConnectionTokenExpiry(id string, expiresAt int64) (Tra
 // It returns the IDs it deleted, the connection's first, so the caller can
 // delete their key files; none when the connection did not exist. The
 // connection's mirror root is detached in the same statement (ON DELETE
-// SET NULL); FinishMirrorCleanup deletes its rows.
+// SET NULL), and its read clock removed; FinishMirrorCleanup deletes its
+// rows.
 func (s *Store) DeleteTrackerConnection(id string) (deleted []string, err error) {
 	action := fmt.Sprintf("store: delete tracker connection %s", id)
 	tx, err := s.db.Begin()
@@ -268,6 +269,10 @@ func (s *Store) DeleteTrackerConnection(id string) (deleted []string, err error)
 	if err != nil {
 		return nil, fmt.Errorf("%s: list the connections it owns: %w", action, err)
 	}
+	var root sql.NullInt64
+	if err := tx.QueryRow(`SELECT id FROM tracker_cache_roots WHERE connection_id = ?`, id).Scan(&root); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%s: read its mirror root: %w", action, err)
+	}
 	gone, err := queryIDs(tx, `DELETE FROM tracker_connections WHERE id = ? RETURNING id`, id)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
@@ -277,6 +282,9 @@ func (s *Store) DeleteTrackerConnection(id string) (deleted []string, err error)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	if root.Valid {
+		s.forgetMirrorRead(root.Int64)
 	}
 	return append(gone, children...), nil
 }

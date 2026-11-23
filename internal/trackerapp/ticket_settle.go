@@ -419,7 +419,7 @@ func (s *Service) rebuiltView(key ticketKey, held *tracker.Detail, heldAt int64)
 		return DetailView{}, tracker.Detail{}, detailCheck{}, false, err
 	case isStored && (held == nil || m.ReadAt > heldAt):
 		d = stored
-		mirrored = detailCheck{readAt: m.ReadAt, updated: millis(stored.Card.Updated), doc: maphash.Bytes(s.digestSeed, m.Data)}
+		mirrored = detailCheck{readAt: m.ReadAt, wall: m.ReadWall, updated: millis(stored.Card.Updated), doc: maphash.Bytes(s.digestSeed, m.Data)}
 	case held != nil:
 		d = *held
 	default:

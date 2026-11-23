@@ -35,7 +35,6 @@ var mirrorTableKeys = []struct{ table, keys string }{
 	{"tracker_cache_changes", "issue_id, gen, kind, seq"},
 	{"tracker_cache_issue_details", "rowid"},
 	{"tracker_cache_open_tickets", "session, pump"},
-	{"tracker_cache_read_leases", "rowid"},
 	{"tracker_cache_board_column_statuses", "board_id, status_id"},
 	{"tracker_cache_board_columns", "board_id, position"},
 	{"tracker_cache_sprints", "board_id, sprint_id"},
@@ -207,7 +206,8 @@ func (s *Store) drainMirrorChunks(query string, between func() error, args ...an
 	}
 }
 
-// drainMirrorRoot deletes a detached root's rows in batches, then the root.
+// drainMirrorRoot deletes a detached root's rows in batches, then the root
+// and its read clock.
 func (s *Store) drainMirrorRoot(rootID int64, between func() error) error {
 	for _, t := range mirrorTableKeys {
 		if err := s.drainMirrorChunks(mirrorRootChunkSQL[t.table], between, rootID); err != nil {
@@ -220,6 +220,7 @@ func (s *Store) drainMirrorRoot(rootID int64, between func() error) error {
 	if _, err := s.db.Exec(`DELETE FROM tracker_cache_roots WHERE id = ? AND connection_id IS NULL`, rootID); err != nil {
 		return fmt.Errorf("delete detached tracker mirror %d: %w", rootID, err)
 	}
+	s.forgetMirrorRead(rootID)
 	return nil
 }
 

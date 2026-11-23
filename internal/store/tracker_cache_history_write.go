@@ -32,7 +32,11 @@ import (
 // say nothing.
 func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHistory, catalog MirrorCatalog,
 	read MirrorRead) (results []MirrorHistoryResult, catalogChanged bool, err error) {
-	readAt := read.at
+	times, err := read.in(rootID)
+	if err != nil {
+		return nil, false, err
+	}
+	readAt := times.at
 	named := len(catalog.Users)+len(catalog.Statuses) > 0
 	switch {
 	case len(histories) > mirrorHistoryBatch || sweep <= 0:

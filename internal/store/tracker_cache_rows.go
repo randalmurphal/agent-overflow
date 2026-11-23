@@ -30,9 +30,9 @@ type MirrorRowPage struct {
 	ReadAt          MirrorRead
 }
 
-func (p MirrorRowPage) check() error {
+func (p MirrorRowPage) check(readAt int64) error {
 	switch {
-	case p.BoardID == "" || p.ReadAt.at <= 0 || p.EstimateResetAt < 0:
+	case p.BoardID == "" || readAt <= 0 || p.EstimateResetAt < 0:
 		return fmt.Errorf("%w: rows need their board and the time their read began", ErrInvalidTrackerCache)
 	case len(p.Rows)+len(p.Missing) > mirrorMaxPageRows:
 		return fmt.Errorf("%w: a page of %d rows and %d missing issues, over %d", ErrInvalidTrackerCache, len(p.Rows), len(p.Missing), mirrorMaxPageRows)
@@ -148,7 +148,12 @@ var (
 )
 
 func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor bool, cursor []byte) (changes MirrorChanges, err error) {
-	if err := page.check(); err != nil {
+	read, err := page.ReadAt.in(rootID)
+	if err != nil {
+		return MirrorChanges{}, err
+	}
+	readAt := read.at
+	if err := page.check(readAt); err != nil {
 		return MirrorChanges{}, err
 	}
 	rows := make([]mirrorCardRow, len(page.Rows))
@@ -162,29 +167,29 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 	}
 	action := fmt.Sprintf("store: write tracker mirror %d board %s rows", rootID, page.BoardID)
 	err = s.mirrorBoardWrite(rootID, page.BoardID, page.Lifetime, action, true, func(tx *sql.Tx, board mirrorBoard) error {
-		addsRows := page.ReadAt.at >= board.rowsRemovedAt
+		addsRows := readAt >= board.rowsRemovedAt
 		var err error
-		if changes.Catalog, err = upsertMirrorCatalogTx(tx, rootID, page.Catalog, page.ReadAt.at); err != nil {
+		if changes.Catalog, err = upsertMirrorCatalogTx(tx, rootID, page.Catalog, readAt); err != nil {
 			return err
 		}
 		if len(rows) > 0 {
-			if err := writeMirrorRowsTx(tx, rootID, page, rows, encoded, addsRows, withCursor, board, &changes); err != nil {
+			if err := writeMirrorRowsTx(tx, rootID, page, readAt, rows, encoded, addsRows, withCursor, board, &changes); err != nil {
 				return err
 			}
 		} else {
 			changes.StructureDue = board.structureDueAt() > 0
 		}
-		if err := removeMirrorRowsTx(tx, rootID, page, board, &changes); err != nil {
+		if err := removeMirrorRowsTx(tx, rootID, page, readAt, board, &changes); err != nil {
 			return err
 		}
 		switch {
 		case !withCursor:
 			return nil
-		case page.EstimateResetAt != board.estimateResetAt || page.ReadAt.at <= board.estimateResetAt || len(changes.Refused) > 0:
+		case page.EstimateResetAt != board.estimateResetAt || readAt <= board.estimateResetAt || len(changes.Refused) > 0:
 			changes.CursorRefused = true
 			return nil
 		}
-		return writeMirrorCursorTx(tx, rootID, page.BoardID, cursor, page.ReadAt.at)
+		return writeMirrorCursorTx(tx, rootID, page.BoardID, cursor, readAt)
 	})
 	if err != nil {
 		return MirrorChanges{}, err
@@ -203,11 +208,11 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 // unexplained marks it pending on the page's board (mirrorCardMarkSQL),
 // which makes the board due a structure read when the page began no
 // earlier than the structure's read.
-func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, rows []mirrorCardRow, encoded string, addsRows, listing bool,
+func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, readAt int64, rows []mirrorCardRow, encoded string, addsRows, listing bool,
 	board mirrorBoard, changes *MirrorChanges) error {
 	var write bool
 	var advance, advancing []string
-	err := scanMirrorRows(tx, mirrorRowsStateSQL, []any{rootID, encoded, page.BoardID, page.ReadAt.at, addsRows, listing}, func(r rowScanner) error {
+	err := scanMirrorRows(tx, mirrorRowsStateSQL, []any{rootID, encoded, page.BoardID, readAt, addsRows, listing}, func(r rowScanner) error {
 		var id string
 		var superseded, writes, advances, cardAdvances, fresh sql.NullBool
 		if err := r.Scan(&id, &superseded, &writes, &advances, &cardAdvances, &fresh); err != nil {
@@ -235,13 +240,13 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, rows []mirr
 		return fmt.Errorf("sort rows: %w", err)
 	}
 	slices.Sort(advancing)
-	stored, err := storeMirrorCardsTx(tx, mirrorRowCards, rootID, rows, encoded, page.ReadAt.at, advancing, page.BoardID, addsRows)
+	stored, err := storeMirrorCardsTx(tx, mirrorRowCards, rootID, rows, encoded, readAt, advancing, page.BoardID, addsRows)
 	if err != nil {
 		return err
 	}
 	changes.Cards = stored.changed
 	if write {
-		if changes.Rows, err = queryIDs(tx, mirrorRowsUpsertSQL, rootID, encoded, page.BoardID, page.ReadAt.at, addsRows, listing); err != nil {
+		if changes.Rows, err = queryIDs(tx, mirrorRowsUpsertSQL, rootID, encoded, page.BoardID, readAt, addsRows, listing); err != nil {
 			return fmt.Errorf("upsert rows: %w", err)
 		}
 		slices.Sort(changes.Rows)
@@ -251,12 +256,12 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, rows []mirr
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(mirrorRowsAdvanceSQL, rootID, list, page.BoardID, page.ReadAt.at, listing); err != nil {
+		if _, err := tx.Exec(mirrorRowsAdvanceSQL, rootID, list, page.BoardID, readAt, listing); err != nil {
 			return fmt.Errorf("record the rows' read: %w", err)
 		}
 	}
 	_, marked := slices.BinarySearch(stored.marked, page.BoardID)
-	changes.StructureDue = board.structureDueAt() > 0 || marked && page.ReadAt.at >= board.readAt
+	changes.StructureDue = board.structureDueAt() > 0 || marked && readAt >= board.readAt
 	return nil
 }
 
@@ -267,7 +272,7 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, rows []mirr
 // the listing may have named the rows, so each it would have removed is
 // owed a read from after the listing (Refused). Such a page records no
 // removal, the listing's being later.
-func removeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, board mirrorBoard, changes *MirrorChanges) error {
+func removeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, readAt int64, board mirrorBoard, changes *MirrorChanges) error {
 	if len(page.Missing) == 0 {
 		return nil
 	}
@@ -275,14 +280,14 @@ func removeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, board mirr
 	if err != nil {
 		return err
 	}
-	refused := page.ReadAt.at < board.listingReadAt
+	refused := readAt < board.listingReadAt
 	if !refused {
-		if changes.Removed, err = queryIDs(tx, mirrorRowsRemoveSQL, rootID, encoded, page.BoardID, page.ReadAt.at); err != nil {
+		if changes.Removed, err = queryIDs(tx, mirrorRowsRemoveSQL, rootID, encoded, page.BoardID, readAt); err != nil {
 			return fmt.Errorf("remove rows: %w", err)
 		}
 		slices.Sort(changes.Removed)
-		if page.ReadAt.at > board.rowsRemovedAt {
-			if _, err := tx.Exec(mirrorRowsRemovedAtSQL, rootID, page.ReadAt.at, page.BoardID); err != nil {
+		if readAt > board.rowsRemovedAt {
+			if _, err := tx.Exec(mirrorRowsRemovedAtSQL, rootID, readAt, page.BoardID); err != nil {
 				return fmt.Errorf("record the removal: %w", err)
 			}
 		}
@@ -290,7 +295,7 @@ func removeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, board mirr
 	if !refused && len(changes.Removed) == len(page.Missing) {
 		return nil
 	}
-	err = scanMirrorRows(tx, mirrorRowsKeptSQL, []any{rootID, encoded, page.BoardID, page.ReadAt.at}, func(r rowScanner) error {
+	err = scanMirrorRows(tx, mirrorRowsKeptSQL, []any{rootID, encoded, page.BoardID, readAt}, func(r rowScanner) error {
 		var id string
 		var owed bool
 		if err := r.Scan(&id, &owed); err != nil {

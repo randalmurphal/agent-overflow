@@ -182,6 +182,25 @@ func TestARoundReadsADetailPastTheAgeBound(t *testing.T) {
 	}
 }
 
+// After the wall clock steps back past a stored detail's read, a round
+// reads the ticket in full once, and checks it again after.
+func TestARoundReadsADetailOnceAfterTheClockStepsBack(t *testing.T) {
+	t.Parallel()
+	m, _, issues, _ := newRoundFixture(t, 1, true)
+	m.round(t)
+	m.pass(-2 * time.Hour)
+	calls := len(m.p.callsInOrder())
+	m.round(t)
+	if got := countsOf(m.p.callsInOrder()[calls:]); describeCounts(got) != "Details:1" || !slices.Equal(m.lastDetailsRead(), issues) {
+		t.Fatalf("after the step back the round called %s", describeCounts(got))
+	}
+	calls = len(m.p.callsInOrder())
+	m.round(t)
+	if got := countsOf(m.p.callsInOrder()[calls:]); describeCounts(got) != "Cards:1" {
+		t.Fatalf("after the read the round called %s", describeCounts(got))
+	}
+}
+
 // A shown ticket whose stored detail the cap dropped is told it is not
 // loaded, read in full at once by its round and held by its pump (a
 // background read opens nothing), told loaded again, then checked against

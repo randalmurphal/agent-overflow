@@ -14,11 +14,14 @@ import (
 const mirrorDetailCap = 200
 
 // MirrorDetail is an issue's stored detail document: when the issue was
-// last opened, when the document's read began, and the document, with the
-// update time of the mirror's card of the issue as the same read found it.
+// last opened and the document's read (order times), the wall time that
+// read began at (ReadWall, which a document's age is measured from), and
+// the document, with the update time of the mirror's card of the issue as
+// the same read found it.
 type MirrorDetail struct {
 	IssueID          string
 	OpenedAt, ReadAt int64
+	ReadWall         int64
 	Data             []byte
 	CardUpdatedAt    int64
 	// row and sweep name the document for ConfirmMirrorDetail: its row,
@@ -67,16 +70,16 @@ var (
 		FROM json_each(?2) l
 		LEFT JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = l.value
 		LEFT JOIN tracker_cache_issue_details d ON d.root_id = ?1 AND d.issue_id = l.value`
-	// mirrorDetailStoreSQL stores the document ?4 read from ?3 and moves the
-	// opening forward to ?5 (zero: none). Only an opening starts a detail,
+	// mirrorDetailStoreSQL stores the document ?4 read from ?3, begun at
+	// wall time ?6, and moves the opening forward to ?5 (zero: none). Only an opening starts a detail,
 	// and the opening is the new detail's read watermark: its document is
 	// stored only from a read that began no earlier. A write that is no
 	// opening reaches the insert for a held detail alone, whose conflict
 	// keeps its opening, so its inserted 1 only meets the CHECK, which
 	// SQLite applies before the conflict.
-	mirrorDetailStoreSQL = `INSERT INTO tracker_cache_issue_details(root_id, issue_id, opened_at, read_at, data)
-		VALUES (?1, ?2, max(?5, 1), max(?3, ?5), iif(?3 >= ?5, ?4, NULL))
-		ON CONFLICT(root_id, issue_id) DO UPDATE SET read_at = ?3, data = ?4, opened_at = max(opened_at, ?5)`
+	mirrorDetailStoreSQL = `INSERT INTO tracker_cache_issue_details(root_id, issue_id, opened_at, read_at, read_wall, data)
+		VALUES (?1, ?2, max(?5, 1), max(?3, ?5), ?6, iif(?3 >= ?5, ?4, NULL))
+		ON CONFLICT(root_id, issue_id) DO UPDATE SET read_at = ?3, read_wall = ?6, data = ?4, opened_at = max(opened_at, ?5)`
 	// mirrorDetailConfirmSQL is whether the detail is still row ?3 holding
 	// the document read from ?4 of a kept issue, and its opening.
 	mirrorDetailConfirmSQL = `SELECT d.rowid = ?3 AND d.read_at = ?4 AND d.data IS NOT NULL AND ` + mirrorIssueKept("?1", "?2") + `,
@@ -84,9 +87,10 @@ var (
 	// mirrorDetailOpenSQL moves the opening forward to ?3.
 	mirrorDetailOpenSQL = `UPDATE tracker_cache_issue_details SET opened_at = max(opened_at, ?3) WHERE root_id = ?1 AND issue_id = ?2`
 	// mirrorDetailMoveSQL moves the read time of the held details of the
-	// issues of the JSON list ?2 to ?3 and their opening to ?4, each only
-	// forward, leaving the documents.
-	mirrorDetailMoveSQL = `UPDATE tracker_cache_issue_details SET read_at = max(read_at, ?3), opened_at = max(opened_at, ?4)
+	// issues of the JSON list ?2 to ?3, with its wall time ?5, and their
+	// opening to ?4, each only forward, leaving the documents.
+	mirrorDetailMoveSQL = `UPDATE tracker_cache_issue_details SET read_at = max(read_at, ?3),
+		read_wall = iif(read_at < ?3, ?5, read_wall), opened_at = max(opened_at, ?4)
 		WHERE root_id = ?1 AND issue_id IN (SELECT value FROM json_each(?2))`
 )
 
@@ -140,7 +144,11 @@ func readMirrorDetailStatesTx(tx *sql.Tx, rootID int64, docs []MirrorDetailDoc) 
 // d's document, which may predate a sweep. It never adds a detail, so it
 // drops none, and it never changes a document: only a detail read does.
 func (s *Store) ConfirmMirrorDetail(rootID int64, d MirrorDetail, opened MirrorRead) (result MirrorDetailWrite, err error) {
-	openedAt := opened.at
+	opening, err := opened.in(rootID)
+	if err != nil {
+		return MirrorDetailWrite{}, err
+	}
+	openedAt := opening.at
 	if d.IssueID == "" || d.row <= 0 || d.sweep <= 0 || d.ReadAt <= 0 || openedAt <= 0 {
 		return MirrorDetailWrite{}, fmt.Errorf("%w: a confirmation needs a detail GetMirrorDetail read and the time it was opened", ErrInvalidTrackerCache)
 	}
@@ -235,7 +243,15 @@ func (s *Store) StoreMirrorDetail(rootID, sweep int64, doc MirrorDetailDoc, open
 // the committed state: a document the cap dropped, by an opening of the
 // same write or another, is not Stored.
 func (s *Store) StoreMirrorDetails(rootID, sweep int64, docs []MirrorDetailDoc, opened, read MirrorRead) (out MirrorDetailWrites, err error) {
-	openedAt, readAt := opened.at, read.at
+	opening, err := opened.in(rootID)
+	if err != nil {
+		return MirrorDetailWrites{}, err
+	}
+	times, err := read.in(rootID)
+	if err != nil {
+		return MirrorDetailWrites{}, err
+	}
+	openedAt, readAt := opening.at, times.at
 	if len(docs) == 0 || readAt <= 0 || openedAt < 0 || sweep <= 0 {
 		return MirrorDetailWrites{}, fmt.Errorf("%w: a detail write needs documents, the time their read began and the root's sweep", ErrInvalidTrackerCache)
 	}
@@ -258,7 +274,7 @@ func (s *Store) StoreMirrorDetails(rootID, sweep int64, docs []MirrorDetailDoc, 
 		var moved []string
 		for i, d := range docs {
 			var move bool
-			if started[i], move, err = storeMirrorDetailTx(tx, rootID, d, openedAt, readAt, states[i], &out.Docs[i]); err != nil {
+			if started[i], move, err = storeMirrorDetailTx(tx, rootID, d, openedAt, times, states[i], &out.Docs[i]); err != nil {
 				return fmt.Errorf("issue %s: %w", d.IssueID, err)
 			}
 			if move {
@@ -270,7 +286,7 @@ func (s *Store) StoreMirrorDetails(rootID, sweep int64, docs []MirrorDetailDoc, 
 			if err != nil {
 				return err
 			}
-			if _, err := tx.Exec(mirrorDetailMoveSQL, rootID, list, readAt, openedAt); err != nil {
+			if _, err := tx.Exec(mirrorDetailMoveSQL, rootID, list, readAt, openedAt, times.wall); err != nil {
 				return fmt.Errorf("record the details' read: %w", err)
 			}
 		}
@@ -307,9 +323,9 @@ func (s *Store) StoreMirrorDetails(rootID, sweep int64, docs []MirrorDetailDoc, 
 // a detail the mirror did not hold and whether the held detail's read
 // time or opening is to move, which the caller does for every such
 // document in one statement.
-func storeMirrorDetailTx(tx *sql.Tx, rootID int64, doc MirrorDetailDoc, openedAt, readAt int64, st mirrorDetailState,
+func storeMirrorDetailTx(tx *sql.Tx, rootID int64, doc MirrorDetailDoc, openedAt int64, read mirrorReadTimes, st mirrorDetailState,
 	result *MirrorDetailWrite) (started, move bool, err error) {
-	data := mirrorData(doc.Data)
+	data, readAt := mirrorData(doc.Data), read.at
 	switch {
 	case !st.kept || (!st.held && openedAt == 0):
 		return false, false, nil
@@ -331,7 +347,7 @@ func storeMirrorDetailTx(tx *sql.Tx, rootID int64, doc MirrorDetailDoc, openedAt
 			}
 			return false, false, nil
 		}
-		if _, err := tx.Exec(mirrorDetailStoreSQL, rootID, doc.IssueID, readAt, nil, openedAt); err != nil {
+		if _, err := tx.Exec(mirrorDetailStoreSQL, rootID, doc.IssueID, readAt, nil, openedAt, read.wall); err != nil {
 			return false, false, fmt.Errorf("record the opening: %w", err)
 		}
 		return true, false, nil
@@ -342,7 +358,7 @@ func storeMirrorDetailTx(tx *sql.Tx, rootID int64, doc MirrorDetailDoc, openedAt
 		result.Stored, result.Superseded = true, st.readAt > readAt && st.differs
 		return false, st.readAt < readAt || st.openedAt < openedAt, nil
 	}
-	if _, err := tx.Exec(mirrorDetailStoreSQL, rootID, doc.IssueID, readAt, data, openedAt); err != nil {
+	if _, err := tx.Exec(mirrorDetailStoreSQL, rootID, doc.IssueID, readAt, data, openedAt, read.wall); err != nil {
 		return false, false, fmt.Errorf("write detail: %w", err)
 	}
 	result.Stored, result.Changed = true, st.held || readAt >= openedAt
@@ -355,11 +371,11 @@ func storeMirrorDetailTx(tx *sql.Tx, rootID int64, doc MirrorDetailDoc, openedAt
 // in one statement.
 func (s *Store) GetMirrorDetail(rootID int64, issueID string) (MirrorDetail, bool, error) {
 	d := MirrorDetail{IssueID: issueID}
-	err := s.reader().QueryRow(`SELECT d.rowid, r.sweep, d.opened_at, d.read_at, d.data, i.updated_at FROM tracker_cache_issue_details d
+	err := s.reader().QueryRow(`SELECT d.rowid, r.sweep, d.opened_at, d.read_at, d.read_wall, d.data, i.updated_at FROM tracker_cache_issue_details d
 		JOIN tracker_cache_issues i ON i.root_id = d.root_id AND i.issue_id = d.issue_id
 		JOIN tracker_cache_roots r ON r.id = d.root_id
 		WHERE d.root_id = ?1 AND d.issue_id = ?2 AND d.data IS NOT NULL AND `+mirrorIssueKept("?1", "?2"),
-		rootID, issueID).Scan(&d.row, &d.sweep, &d.OpenedAt, &d.ReadAt, &d.Data, &d.CardUpdatedAt)
+		rootID, issueID).Scan(&d.row, &d.sweep, &d.OpenedAt, &d.ReadAt, &d.ReadWall, &d.Data, &d.CardUpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MirrorDetail{}, false, nil
 	}
@@ -372,7 +388,7 @@ func (s *Store) GetMirrorDetail(rootID int64, issueID string) (MirrorDetail, boo
 // mirrorDetailStatesSQL is the stored detail of each issue of the JSON
 // list ?2 that the mirror keeps, without its document, probing the
 // details' key per issue.
-var mirrorDetailStatesSQL = `SELECT d.issue_id, d.rowid, r.sweep, d.opened_at, d.read_at, i.updated_at
+var mirrorDetailStatesSQL = `SELECT d.issue_id, d.rowid, r.sweep, d.opened_at, d.read_at, d.read_wall, i.updated_at
 	FROM json_each(?2) l
 	CROSS JOIN tracker_cache_issue_details d ON d.root_id = ?1 AND d.issue_id = l.value
 	JOIN tracker_cache_issues i ON i.root_id = d.root_id AND i.issue_id = d.issue_id
@@ -396,7 +412,7 @@ func (s *Store) ListMirrorDetailStates(rootID int64, issueIDs []string) ([]Mirro
 	var out []MirrorDetail
 	err = scanMirrorRows(s.reader(), mirrorDetailStatesSQL, []any{rootID, list}, func(r rowScanner) error {
 		var d MirrorDetail
-		if err := r.Scan(&d.IssueID, &d.row, &d.sweep, &d.OpenedAt, &d.ReadAt, &d.CardUpdatedAt); err != nil {
+		if err := r.Scan(&d.IssueID, &d.row, &d.sweep, &d.OpenedAt, &d.ReadAt, &d.ReadWall, &d.CardUpdatedAt); err != nil {
 			return err
 		}
 		out = append(out, d)

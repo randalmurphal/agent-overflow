@@ -509,7 +509,11 @@ func storeMirrorCardsTx(tx *sql.Tx, statements mirrorCardStatements, rootID int6
 // when the read began, which orders the cards and the catalog, and sweep
 // the root's sweep captured before it (ErrTrackerCacheSwept).
 func (s *Store) UpsertMirrorCards(rootID, sweep int64, cards []MirrorCard, catalog MirrorCatalog, read MirrorRead) (changes MirrorChanges, err error) {
-	readAt := read.at
+	times, err := read.in(rootID)
+	if err != nil {
+		return MirrorChanges{}, err
+	}
+	readAt := times.at
 	if readAt <= 0 || sweep <= 0 || len(cards) > mirrorMaxPageRows {
 		return MirrorChanges{}, fmt.Errorf("%w: %d cards, over %d, or no read time or sweep", ErrInvalidTrackerCache, len(cards), mirrorMaxPageRows)
 	}

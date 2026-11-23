@@ -415,11 +415,14 @@ func (s *Service) boardDue(r *run) BoardDue {
 	if !r.stored || st.ReadAt == 0 {
 		return BoardDue{Structure: true, Delta: true, Reconcile: true, History: true}
 	}
-	passed := func(at int64, every time.Duration) bool { return s.sinceRead(at) >= every }
+	passed := func(wall int64, every time.Duration) bool {
+		since, known := s.sinceWall(wall)
+		return !known || since >= every
+	}
 	return BoardDue{
-		Structure: r.structureDue || st.StructureReadAt == 0 || passed(st.StructureReadAt, s.cadence.Structure),
+		Structure: r.structureDue || passed(st.StructureWall, s.cadence.Structure),
 		Delta:     true,
-		Reconcile: passed(st.ReconciledAt, s.cadence.Reconcile) || r.pass.openIn(st.Lifetime),
+		Reconcile: passed(st.ReconciledWall, s.cadence.Reconcile) || r.pass.openIn(st.Lifetime),
 		History:   st.HistoryDue,
 	}
 }

@@ -349,7 +349,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 		}},
 		{"detail, older than the age bound", func(t *testing.T) {
 			sd, _, _ := m.storedDetail(t, string(issue))
-			later := time.UnixMilli(sd.ReadAt).Add(detailMaxAge + time.Millisecond)
+			later := time.UnixMilli(sd.ReadWall).Add(detailMaxAge + time.Millisecond)
 			m.svc.now = func() time.Time { return later }
 			detail(t)
 		}, costOf{

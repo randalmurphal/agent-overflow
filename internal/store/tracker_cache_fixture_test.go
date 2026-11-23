@@ -217,6 +217,7 @@ func currentStructure(s *Store, root int64, st MirrorStructure) MirrorStructure 
 	if st.Lifetime == 0 {
 		st.Lifetime = currentLifetime(s, root, st.Board.ID)
 	}
+	st.ReadAt = readOfRoot(st.ReadAt, root)
 	return st
 }
 
@@ -225,6 +226,7 @@ func currentPage(s *Store, root int64, p MirrorRowPage) MirrorRowPage {
 		p.Lifetime = currentLifetime(s, root, p.BoardID)
 		p.EstimateResetAt = currentEstimateReset(s, root, p.BoardID)
 	}
+	p.ReadAt = readOfRoot(p.ReadAt, root)
 	return p
 }
 
@@ -232,7 +234,18 @@ func currentAttempt(s *Store, root int64, board string, a MirrorSyncAttempt) Mir
 	if a.Lifetime == 0 && board != "" {
 		a.Lifetime = currentLifetime(s, root, board)
 	}
+	a.ReadAt, a.ReconciledAt, a.Failure.At = readOfRoot(a.ReadAt, root), readOfRoot(a.ReconciledAt, root), readOfRoot(a.Failure.At, root)
 	return a
+}
+
+// readOfRoot is read as a read of root when it is a fixture's read of
+// root 1 (mirrorReadAt), so the fixtures that capture a write's state for
+// another root (current*) write it there; any other read is left as it is.
+func readOfRoot(read MirrorRead, root int64) MirrorRead {
+	if read.root == 1 {
+		read.root = root
+	}
+	return read
 }
 
 func mustReplaceStructure(t *testing.T, s *Store, root int64, st MirrorStructure, want bool) {
@@ -294,9 +307,6 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 		t.Fatal(err)
 	}
 	if err := s.KeepMirrorTicket(root, "10001", 1, 1); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.BeginMirrorRead(root, 1); err != nil {
 		t.Fatal(err)
 	}
 	for table, n := range countMirrorRows(t, s.db) {

@@ -1,10 +1,8 @@
 package store
 
 // Migration v162 creates every table of the issue tracker integration
-// (docs/architecture/tracker-backend.md#tables). While the feature is
-// unshipped the tracker schema stays in this one migration, so a later
-// tracker table amends trackerV162SQL here, with its frozen hash, instead
-// of adding a version.
+// (docs/architecture/tracker-backend.md#tables). It is shipped and
+// frozen: a later change to these tables is a later migration.
 //
 // The durable records:
 //

@@ -17,11 +17,13 @@ import (
 
 // detailCheck is what a ticket's next read checks it against without
 // decoding a document: the document the ticket shows, named by when its
-// read began (the stored document's MirrorDetail.ReadAt), or held when the
+// read began (the stored document's MirrorDetail.ReadAt, an order time,
+// with ReadWall, the wall time its age is measured from), or held when the
 // mirror holds none of it; its card's update time; and a digest of its
 // encoding, which tells a changed document from the same one.
 type detailCheck struct {
 	readAt  int64
+	wall    int64
 	updated int64
 	held    *tracker.Detail
 	doc     uint64
@@ -265,8 +267,9 @@ func (r *run) checkDetails(reads []*ticketRead, opening store.MirrorRead, out *C
 		return nil, err
 	}
 	for _, rd := range reads {
+		age, known := r.s.sinceWall(rd.check.wall)
 		switch {
-		case rd.full, rd.check == (detailCheck{}), r.s.sinceRead(rd.check.readAt) > detailMaxAge:
+		case rd.full, rd.check == (detailCheck{}), !known, age > detailMaxAge:
 			toRead = append(toRead, rd)
 		default:
 			checked = append(checked, rd)
@@ -370,7 +373,7 @@ func (r *run) priorCheck(rd *ticketRead) error {
 		return nil
 	}
 	rd.detail, rd.mirrored = &d, &m
-	rd.check = detailCheck{readAt: m.ReadAt, updated: millis(d.Card.Updated), doc: maphash.Bytes(r.s.digestSeed, m.Data)}
+	rd.check = detailCheck{readAt: m.ReadAt, wall: m.ReadWall, updated: millis(d.Card.Updated), doc: maphash.Bytes(r.s.digestSeed, m.Data)}
 	rd.full = m.CardUpdatedAt > rd.check.updated
 	return nil
 }
@@ -463,7 +466,7 @@ func (r *run) details(reads []*ticketRead, opening store.MirrorRead) (Changes, e
 		docs = append(docs, store.MirrorDetailDoc{IssueID: string(d.Card.ID), Data: data, CardUpdatedAt: millis(d.Card.Updated)})
 		read = append(read, rd)
 		rd.err, rd.detail = nil, d
-		rd.check = detailCheck{readAt: began.At(), updated: millis(d.Card.Updated), doc: maphash.Bytes(r.s.digestSeed, data)}
+		rd.check = detailCheck{readAt: began.At(), wall: began.Wall(), updated: millis(d.Card.Updated), doc: maphash.Bytes(r.s.digestSeed, data)}
 	}
 	for _, rd := range reads {
 		if rd.err == nil && !slices.Contains(read, rd) {
