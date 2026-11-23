@@ -90,8 +90,7 @@ var threadColumns = `id, COALESCE(project_id, ''),
          AND proposed_plans.implemented_at = 0
          AND EXISTS (` + proposedPlanItemSQL() + `)
     ),
-    ` + newestTurnInterruptedUnreadSQL() + `,
-    COALESCE(` + newestTurnSQL("threads.id", turnOpenSQL) + `, 0),
+    ` + newestTurnStateSQL() + `,
     COALESCE((
       SELECT turns.stop_reason = 'error'
          AND (threads.last_read_at IS NULL OR threads.last_read_at < turns.completed_at)
@@ -225,7 +224,8 @@ func validAutoCompactPercent(percent int) bool {
 
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
-	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasOpenTurn, hasFailedTurn, isDraft, askCopy int
+	var archived, fastMode, hasActionableProposedPlan, hasFailedTurn, isDraft, askCopy int
+	var newestTurn newestTurnState
 	var agentRecord sql.NullString
 	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentSupersededAt, attentionAt sql.NullInt64
 	var attentionKind, attentionReason string
@@ -241,7 +241,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.GroupID, &t.Placement,
 		&t.WorktreeSetupState, &t.ImportSource,
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
-		&hasActionableProposedPlan, &hasIncompleteTurn, &hasOpenTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
+		&hasActionableProposedPlan, &newestTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
 		&agentRecord, &t.PastAgentID, &agentSupersededAt, &t.HelperOfAgentID, &t.SpawnedByThreadID, &t.SpawnedByComputerID,
 		&attentionKind, &attentionReason, &attentionAt,
 		&t.SpawnInstructions, &t.SpawnLevel, &askCopy,
@@ -252,8 +252,8 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	t.AskCopy = askCopy != 0
 	t.Archived = archived != 0
 	t.HasActionableProposedPlan = hasActionableProposedPlan != 0
-	t.HasIncompleteTurn = hasIncompleteTurn != 0
-	t.HasOpenTurn = hasOpenTurn != 0
+	t.HasIncompleteTurn = newestTurn == newestTurnInterruptedUnread
+	t.HasOpenTurn = newestTurn == newestTurnOpen
 	t.HasFailedTurn = hasFailedTurn != 0
 	t.IsDraft = isDraft != 0
 	if latestTurnCompletedAt.Valid {

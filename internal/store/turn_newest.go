@@ -1,5 +1,7 @@
 package store
 
+import "strconv"
+
 // A thread's newest turn row is the record of whether a turn runs there.
 // Its open state (completed_at IS NULL) is the turn in flight, from the
 // row's insert at the turn's start until the one UPDATE that settles it
@@ -34,9 +36,28 @@ func newestOpenTurnJoinSQL(thread, alias string) string {
 // turnOpenSQL is true for a newest turn row that is still in flight.
 const turnOpenSQL = `nt.completed_at IS NULL`
 
-// newestTurnInterruptedUnreadSQL is true for a threads row whose newest
-// turn settled as interrupted after the user last read the thread.
-func newestTurnInterruptedUnreadSQL() string {
-	return `COALESCE(` + newestTurnSQL("threads.id", `nt.stop_reason = 'interrupted' AND NOT (`+turnOpenSQL+`)
-	      AND (threads.last_read_at IS NULL OR threads.last_read_at < nt.completed_at)`) + `, 0)`
+// newestTurnState is what a threads row reads of its newest turn row. The
+// states exclude one another, so a row is never both open and interrupted.
+type newestTurnState int
+
+const (
+	// newestTurnAtRest: no turn, or one that settled and is not an unread
+	// interruption.
+	newestTurnAtRest newestTurnState = iota
+	// newestTurnOpen: the row is still in flight.
+	newestTurnOpen
+	// newestTurnInterruptedUnread: the row settled as interrupted after the
+	// user last read the thread.
+	newestTurnInterruptedUnread
+)
+
+// newestTurnStateSQL is a threads row's newestTurnState, one probe of its
+// newest turn row.
+func newestTurnStateSQL() string {
+	return `COALESCE(` + newestTurnSQL("threads.id", `CASE
+	        WHEN `+turnOpenSQL+` THEN `+strconv.Itoa(int(newestTurnOpen))+`
+	        WHEN nt.stop_reason = 'interrupted'
+	         AND (threads.last_read_at IS NULL OR threads.last_read_at < nt.completed_at)
+	          THEN `+strconv.Itoa(int(newestTurnInterruptedUnread))+`
+	        ELSE `+strconv.Itoa(int(newestTurnAtRest))+` END`) + `, ` + strconv.Itoa(int(newestTurnAtRest)) + `)`
 }
