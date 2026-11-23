@@ -466,3 +466,10 @@ func TestHarnessRegisterPageBelongsToItsConnection(t *testing.T) {
 		t.Fatal("the page outlived the connection that holds it")
 	}
 }
+
+// pending reports how many queries are parked.
+func (b *harnessUIBridge) pending() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.waiters)
+}

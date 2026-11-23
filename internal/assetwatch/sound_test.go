@@ -98,19 +98,23 @@ func TestSoundWatcherSuppressesItsOwnWrites(t *testing.T) {
 // EXTENSION is `.tmp-123` rather than `.wav`, so a cue write's temp file is
 // outside relevant() before suppression is even consulted.
 func TestSoundWatcherIgnoresAtomicfileTempNames(t *testing.T) {
-	watcher := &SoundWatcher{core: &watcher{dir: filepath.Clean(t.TempDir())}}
+	watcher, err := NewSoundWatcher(t.TempDir(), func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = watcher.Close() })
 
 	for _, base := range []string{soundlib.ReferenceFileName, "desk-bell.wav"} {
 		name := base + ".tmp-2148294417"
-		if watcher.relevant(filepath.Join(watcher.core.dir, name)) {
+		if watcher.core.relevant(filepath.Join(watcher.core.dir, name)) {
 			t.Fatalf("%s is treated as a cue file", name)
 		}
 	}
-	if watcher.relevant(filepath.Join(watcher.core.dir, soundlib.ReferenceFileName)) {
+	if watcher.core.relevant(filepath.Join(watcher.core.dir, soundlib.ReferenceFileName)) {
 		t.Fatal("the generated reference is treated as a cue file")
 	}
 	for _, name := range []string{"desk-bell.wav", "PING.WAV"} {
-		if !watcher.relevant(filepath.Join(watcher.core.dir, name)) {
+		if !watcher.core.relevant(filepath.Join(watcher.core.dir, name)) {
 			t.Fatalf("%s is not relevant", name)
 		}
 	}

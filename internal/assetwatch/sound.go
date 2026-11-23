@@ -48,10 +48,6 @@ func (w *SoundWatcher) Close() error {
 	return w.core.Close()
 }
 
-func (w *SoundWatcher) relevant(path string) bool {
-	return w != nil && w.core != nil && relevantInDir(w.core.dir, path, soundFileRelevant)
-}
-
 // soundFileRelevant admits cue files only. The seeded reference page is not
 // one, so it needs no exclusion by name the way themes' schema and spinners'
 // SPINNERS.md do.

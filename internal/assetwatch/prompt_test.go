@@ -71,13 +71,17 @@ func TestPromptWatcherDebouncesWritesAndIgnoresNonPromptFiles(t *testing.T) {
 }
 
 func TestPromptWatcherIgnoresAtomicfileTempNames(t *testing.T) {
-	watcher := &PromptWatcher{core: &watcher{dir: filepath.Clean(t.TempDir())}}
+	watcher, err := NewPromptWatcher(t.TempDir(), func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = watcher.Close() })
 
 	name := testPromptName + ".tmp-2148294417"
-	if watcher.relevant(filepath.Join(watcher.core.dir, name)) {
+	if watcher.core.relevant(filepath.Join(watcher.core.dir, name)) {
 		t.Fatalf("%s is treated as a prompt file; an atomic write would echo back", name)
 	}
-	if !watcher.relevant(filepath.Join(watcher.core.dir, testPromptName)) {
+	if !watcher.core.relevant(filepath.Join(watcher.core.dir, testPromptName)) {
 		t.Fatal("a real prompt file is not relevant")
 	}
 }

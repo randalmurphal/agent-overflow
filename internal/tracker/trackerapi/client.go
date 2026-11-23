@@ -251,12 +251,6 @@ func (p *connections) leave() {
 	}
 }
 
-// newClient builds a Client on transport, which every hop goes through,
-// closing nothing at Close.
-func newClient(opts Options, transport http.RoundTripper) (*Client, error) {
-	return newClientOn(opts, &connections{transport: transport, closeIdle: func() {}, users: 1})
-}
-
 // newClientOn builds a Client on conns, which it leaves at Close.
 func newClientOn(opts Options, conns *connections) (*Client, error) {
 	baseURL, err := checkOptions(opts)

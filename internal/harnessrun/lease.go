@@ -30,9 +30,6 @@ type Lease struct {
 
 func leasePath(root string) string { return filepath.Join(root, LeaseFileName) }
 
-// LeasePath returns the exclusive lease path for a data root.
-func LeasePath(root string) string { return leasePath(root) }
-
 // AcquireLease takes the data-root lease using O_EXCL. Existing stale leases
 // are removed and retried. The operation is safe against concurrent callers:
 // only one O_EXCL create can win after stale cleanup.
@@ -153,15 +150,6 @@ func (r LeaseRecord) heartbeat() time.Time {
 		return r.HeartbeatAt
 	}
 	return r.AcquiredAt
-}
-
-func (l *Lease) Record() LeaseRecord {
-	if l == nil {
-		return LeaseRecord{}
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.record
 }
 
 // Verify proves that this lease token still owns the root. It does not

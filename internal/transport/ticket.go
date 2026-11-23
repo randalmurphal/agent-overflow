@@ -169,11 +169,3 @@ func (b *ticketBook) hasLive() bool {
 	b.dropLapsed(b.now().UnixNano())
 	return len(b.entries) != 0
 }
-
-// outstanding reports how many tickets are minted but unspent. For tests,
-// and for the bound's own assertions.
-func (b *ticketBook) outstanding() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return len(b.entries)
-}

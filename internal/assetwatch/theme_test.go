@@ -189,16 +189,20 @@ func TestThemeWatcherSuppressionExpiresAndPrunes(t *testing.T) {
 // property belongs to atomicfile's naming, which this package does not
 // own.
 func TestThemeWatcherIgnoresAtomicfileTempNames(t *testing.T) {
-	watcher := &ThemeWatcher{core: &watcher{dir: filepath.Clean(t.TempDir())}}
+	watcher, err := NewThemeWatcher(t.TempDir(), func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = watcher.Close() })
 
 	for _, base := range []string{theme.AppearanceFileName, theme.SchemaFileName, theme.TokensFileName, "tokyo-night.json"} {
 		name := base + ".tmp-2148294417"
-		if watcher.relevant(filepath.Join(watcher.core.dir, name)) {
+		if watcher.core.relevant(filepath.Join(watcher.core.dir, name)) {
 			t.Fatalf("%s is treated as a theme file; an atomic write would echo back as an external change", name)
 		}
 	}
 	// The destination of that same write still is one.
-	if !watcher.relevant(filepath.Join(watcher.core.dir, "tokyo-night.json")) {
+	if !watcher.core.relevant(filepath.Join(watcher.core.dir, "tokyo-night.json")) {
 		t.Fatal("a real theme file is not relevant")
 	}
 }

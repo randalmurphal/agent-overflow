@@ -540,3 +540,10 @@ func TestADeletedCacheDirectoryIsRecreated(t *testing.T) {
 		t.Fatalf("a deleted directory logged %q, want nothing", lines)
 	}
 }
+
+// bytes reports the charged total of the indexed files.
+func (s *diskStore) bytes() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.total
+}

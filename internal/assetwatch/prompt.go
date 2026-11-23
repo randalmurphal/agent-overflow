@@ -37,10 +37,6 @@ func (w *PromptWatcher) Close() error {
 	return w.core.Close()
 }
 
-func (w *PromptWatcher) relevant(path string) bool {
-	return w != nil && w.core != nil && relevantInDir(w.core.dir, path, promptFileRelevant)
-}
-
 // promptFileRelevant admits prompt texts. A .md file no entry names is
 // still relevant here: the settings reload it triggers is cheap, and only
 // the settings service knows which ids are live.

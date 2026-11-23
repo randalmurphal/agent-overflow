@@ -42,7 +42,7 @@ type watcher struct {
 	after func(time.Duration) <-chan time.Time
 	emit  func()
 	// relevantName answers whether one BASE NAME in dir is content this
-	// app reads. The dir check is the core's (see relevantInDir); the
+	// app reads. The dir check is the core's (see relevant); the
 	// predicate never sees a path.
 	relevantName func(name string) bool
 
@@ -201,24 +201,17 @@ func (w *watcher) nowOrDefault() time.Time {
 }
 
 // relevant reports whether an event path names content this watcher's
-// directory holds.
-func (w *watcher) relevant(path string) bool {
-	return relevantInDir(w.dir, path, w.relevantName)
-}
-
-// relevantInDir is the dir half of the relevance rule, split out so the
-// per-directory watchers can express their own `relevant` method without
-// restating it. Anything in a SUBDIRECTORY is excluded: the watch is not
+// directory holds. Anything in a SUBDIRECTORY is excluded: the watch is not
 // recursive, but a rename can still name a nested path.
-func relevantInDir(dir, path string, relevantName func(name string) bool) bool {
-	if relevantName == nil {
+func (w *watcher) relevant(path string) bool {
+	if w.relevantName == nil {
 		return false
 	}
 	clean := filepath.Clean(path)
-	if filepath.Dir(clean) != filepath.Clean(dir) {
+	if filepath.Dir(clean) != filepath.Clean(w.dir) {
 		return false
 	}
-	return relevantName(filepath.Base(clean))
+	return w.relevantName(filepath.Base(clean))
 }
 
 // rearm re-creates the watched directory and re-registers the watch after

@@ -36,10 +36,6 @@ func (w *SpinnerWatcher) Close() error {
 	return w.core.Close()
 }
 
-func (w *SpinnerWatcher) relevant(path string) bool {
-	return w != nil && w.core != nil && relevantInDir(w.core.dir, path, spinnerFileRelevant)
-}
-
 func spinnerFileRelevant(name string) bool {
 	extension := strings.ToLower(filepath.Ext(name))
 	if extension != ".png" && extension != ".json" {

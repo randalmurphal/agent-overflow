@@ -72,16 +72,10 @@ func (a *Service) NoteThreadCost(threadID, sessionToken string) {
 	}()
 }
 
-// claimCodexThreadCostRead takes the per-thread read slot, or marks the
+// claimThreadCostReadLocked takes the per-thread read slot, or marks the
 // holder dirty when one is already out. False means "someone else will
 // re-read for you"; the returned epoch is the fence the winning read must
-// still hold when it comes back.
-func (a *Service) claimThreadCostRead(threadID, sessionToken string) (uint64, bool) {
-	a.costMu.Lock()
-	defer a.costMu.Unlock()
-	return a.claimThreadCostReadLocked(threadID, sessionToken)
-}
-
+// still hold when it comes back. The caller holds costMu.
 func (a *Service) claimThreadCostReadLocked(threadID, sessionToken string) (uint64, bool) {
 	if a.costClosed {
 		return 0, false
@@ -177,21 +171,13 @@ func (a *Service) waitThreadCostRead(ctx context.Context, threadID string, epoch
 	return slot.token, slot.epoch, true, newTurn
 }
 
-// codexThreadCostReadIsCurrent reports whether a read that started at epoch
-// may still be written back. False after forgetCodexThreadCost bumped the
-// fence: the answer in hand describes a provider thread this AO thread has
-// since stopped being.
-//
-// Observation only. A caller that is about to WRITE must not ask this and then
-// write — the rollback can bump the fence and delete the row in the gap, and
-// the write would resurrect it. persistCodexThreadCostIfCurrent is the one
-// that answers and writes without a gap.
-func (a *Service) threadCostReadIsCurrent(threadID string, epoch uint64) bool {
-	a.costMu.Lock()
-	defer a.costMu.Unlock()
-	return a.threadCostReadIsCurrentLocked(threadID, epoch)
-}
-
+// threadCostReadIsCurrentLocked reports whether a read that started at epoch
+// may still be written back. False after ForgetThreadCost bumped the fence:
+// the answer in hand describes a provider thread this AO thread has since
+// stopped being. The caller holds costMu, and writes under the same hold
+// (persistThreadCostIfCurrent): asking and then writing after a release lets
+// the rollback bump the fence and delete the row in the gap, and the write
+// would resurrect it.
 func (a *Service) threadCostReadIsCurrentLocked(threadID string, epoch uint64) bool {
 	slot, ok := a.costInflight[threadID]
 	return ok && slot.epoch == epoch

@@ -228,3 +228,9 @@ func hang(r *http.Request) {
 	_, _ = io.Copy(io.Discard, r.Body)
 	<-r.Context().Done()
 }
+
+// newClient builds a Client on transport, which every hop goes through,
+// closing nothing at Close.
+func newClient(opts Options, transport http.RoundTripper) (*Client, error) {
+	return newClientOn(opts, &connections{transport: transport, closeIdle: func() {}, users: 1})
+}

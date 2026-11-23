@@ -430,3 +430,11 @@ func TestTheBrowsersCloseRemovesParkedArtifacts(t *testing.T) {
 		})
 	}
 }
+
+// adoptPopup announces popup and adopts it in the caller's goroutine, the
+// synchronous form of popupOpened.
+func (m *Manager) adoptPopup(popup enginePopup) {
+	if m.announcePopup(popup) {
+		m.runAdoption(popup)
+	}
+}

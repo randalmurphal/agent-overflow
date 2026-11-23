@@ -116,21 +116,25 @@ func TestSpinnerWatcherRearmsAfterTheDirectoryIsRemoved(t *testing.T) {
 // writes outside relevant() without a suppression call, and the property
 // belongs to atomicfile's naming, which this package does not own.
 func TestSpinnerWatcherIgnoresAtomicfileTempNames(t *testing.T) {
-	watcher := &SpinnerWatcher{core: &watcher{dir: filepath.Clean(t.TempDir())}}
+	watcher, err := NewSpinnerWatcher(t.TempDir(), func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = watcher.Close() })
 
 	for _, base := range []string{spinner.ReferenceFileName, "robo-papers.png", "robo-papers.json"} {
 		name := base + ".tmp-2148294417"
-		if watcher.relevant(filepath.Join(watcher.core.dir, name)) {
+		if watcher.core.relevant(filepath.Join(watcher.core.dir, name)) {
 			t.Fatalf("%s is treated as a sprite file; an atomic write would echo back as an external change", name)
 		}
 	}
 	// The generated reference is never a sprite, under any casing.
-	if watcher.relevant(filepath.Join(watcher.core.dir, spinner.ReferenceFileName)) {
+	if watcher.core.relevant(filepath.Join(watcher.core.dir, spinner.ReferenceFileName)) {
 		t.Fatal("the generated reference is treated as a sprite file")
 	}
 	// Both halves of a real pair still are.
 	for _, name := range []string{"robo-papers.png", "robo-papers.json", "ORB.PNG"} {
-		if !watcher.relevant(filepath.Join(watcher.core.dir, name)) {
+		if !watcher.core.relevant(filepath.Join(watcher.core.dir, name)) {
 			t.Fatalf("%s is not relevant", name)
 		}
 	}

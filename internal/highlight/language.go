@@ -79,23 +79,3 @@ func buildEngine(lang Lang) (*engine, error) {
 		inj:          inj,
 	}, nil
 }
-
-// Preflight forces every wired-up grammar's engine build and returns
-// the first failure. Tests gate on it; callers that want a loud
-// startup check can too.
-func Preflight() error {
-	for _, name := range grammars.Names() {
-		lang := LangFromName(name)
-		if lang == LangPlaintext {
-			return fmt.Errorf("grammar %q has no Lang registry entry", name)
-		}
-		engineFor(lang)
-		engineTable.mu.Lock()
-		err := engineTable.errs[lang]
-		engineTable.mu.Unlock()
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}

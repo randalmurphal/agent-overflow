@@ -49,10 +49,6 @@ func (w *ThemeWatcher) Close() error {
 	return w.core.Close()
 }
 
-func (w *ThemeWatcher) relevant(path string) bool {
-	return w != nil && w.core != nil && relevantInDir(w.core.dir, path, themeFileRelevant)
-}
-
 func themeFileRelevant(name string) bool {
 	if !strings.EqualFold(filepath.Ext(name), ".json") {
 		return false

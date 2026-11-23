@@ -174,13 +174,6 @@ func (c *factCache[V]) clear() {
 	c.flights = nil
 }
 
-// held reports the entries and estimated bytes the cache holds.
-func (c *factCache[V]) held() (entries int, bytes int64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.lru.Len(), c.bytes
-}
-
 func (c *factCache[V]) removeLocked(element *list.Element) {
 	entry := element.Value.(*factEntry[V])
 	c.lru.Remove(element)

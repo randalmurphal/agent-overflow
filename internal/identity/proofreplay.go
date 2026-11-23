@@ -95,12 +95,3 @@ func (g *proofReplay) admit(jti string, now int64) bool {
 	g.current[jti] = struct{}{}
 	return true
 }
-
-// tracked reports how many identifiers are held, for tests and for the
-// bound this file argues. Not exported: the count is an implementation
-// property, not a fact any caller should branch on.
-func (g *proofReplay) tracked() int {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return len(g.current) + len(g.previous)
-}

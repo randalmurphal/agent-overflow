@@ -264,3 +264,16 @@ func TestClassDefaultKeysEnumeratesEveryRow(t *testing.T) {
 		}
 	}
 }
+
+// classDefaultKeys is every key named by any class row, sorted. Test-facing
+// today; it exists so a guard can enumerate the table without reaching into
+// its internals and without a second spelling of the traversal.
+func classDefaultKeys() []string {
+	keys := map[string]struct{}{}
+	for _, overrides := range classDefaults {
+		for key := range overrides {
+			keys[key] = struct{}{}
+		}
+	}
+	return slices.Sorted(maps.Keys(keys))
+}
