@@ -856,10 +856,7 @@ thread's newest row. A fork made then settles its copy of the row as
 interrupted. A failed end write reaches the user as one error entry per
 turn on the unsaved-rows surface (`triage/unsaved_rows.go`), unless it
 was a shown-history refusal, which writes its own error row; a boot sweep
-failure is a failed boot phase. A turn open (a start, a queued
-message's echo, or a soft-closed turn's continuation) that a replacement
-session's commit refuses after it wrote its row open settles that row as
-interrupted (`endRefusedOpen`).
+failure is a failed boot phase.
 
 The frontend still shows no active-turn spinner for any of this
 (spinner requires a live `activeTurn` push, not a DB row), and we do

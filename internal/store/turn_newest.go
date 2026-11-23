@@ -12,12 +12,10 @@ import "strconv"
 // never inferred from a live provider round having ended.
 //
 // The row stays open when nothing will settle it at runtime: its settle
-// write failed or the boot sweep failed. It reads as running until the
-// next boot's sweep records it as interrupted, as GetActiveTurn reads it
-// for send placement and revert, so a wait on that thread runs to its
-// timeout. Triage tells the user of a failed settle write
-// (triage/unsaved_rows.go); the boot sweep's failure is a failed boot
-// phase.
+// write failed, the boot sweep failed, or a start was refused after it
+// wrote the row. It reads as running until the next boot's sweep records it
+// as interrupted, as GetActiveTurn reads it for send placement and revert,
+// so a wait on that thread runs to its timeout.
 
 // newestTurnSQL selects expr from thread's newest turn row, one probe of
 // turns_thread_index; NULL when the thread has no turn. expr reads the row

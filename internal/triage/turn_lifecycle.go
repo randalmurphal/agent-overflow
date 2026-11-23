@@ -68,7 +68,7 @@ func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, erro
 	// bookkeeping seeded on the pre-reconcile index would then name a
 	// row this turn does not own — id-allocating counters, the span, and
 	// the round snapshot all key off it.
-	turnIndex, inserted := r.upsertTurnRow(store.Turn{
+	turnIndex = r.upsertTurnRow(store.Turn{
 		TurnID:    resolveTurnID(evt, turnIndex),
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
@@ -91,7 +91,6 @@ func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, erro
 	opened, openErr := r.setOpenTurn(evt.ThreadID, turnIndex, evt.SessionToken)
 	started()
 	if !opened {
-		r.endRefusedOpen(evt.ThreadID, turnIndex, inserted, false)
 		return openErr
 	}
 	r.releaseDeliveriesAtTurnStart(evt.ThreadID, turnIndex, evt.SessionToken)
@@ -109,53 +108,10 @@ func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, erro
 		StartedAt: startedAt,
 	}
 	if !r.setOpenRoundSnapshot(snapshot, evt.SessionToken) {
-		r.endRefusedOpen(evt.ThreadID, turnIndex, inserted, true)
 		return openErr
 	}
 	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
 	return openErr
-}
-
-// endRefusedOpen ends the turn a retired session's frame was opening when
-// the replacement's commit (MarkThreadActive) refused it partway: the
-// frame passed the open's admission, then lost the thread before its open
-// turn (setOpenTurn) or its round (setOpenRoundSnapshot) was set. Every
-// turn open can be cut this way: a start, a queued message's echo and a
-// soft-closed turn's continuation. No later frame of that session is
-// admitted, and the replacement's own end of the replaced turn
-// (EndReplacedSessionTurn) ran before the commit, so nothing else would
-// settle the row. wrote is the row this open made open, inserted or
-// reopened; it settles as interrupted, the end EndReplacedSessionTurn
-// gives a turn that got one step further. A row the open found already
-// open was opened by an earlier open of the same turn, which owns its end:
-// it is left alone. opened reports that the frame set the open turn before
-// the refusal; the open turn is cleared only when it still names this
-// turn, so no later start settles the row a second time as its
-// predecessor.
-func (r *Router) endRefusedOpen(threadID string, turnIndex int, wrote string, opened bool) {
-	if wrote == "" {
-		return
-	}
-	if opened {
-		r.mu.Lock()
-		cleared := false
-		if st := r.threadStateIfPresent(threadID); st != nil && st.openTurnSet && st.openTurn == turnIndex {
-			st.openTurn, st.openTurnSet = 0, false
-			cleared = true
-		}
-		r.mu.Unlock()
-		if cleared {
-			r.finishTurnSpan(threadID, completedTurnOutcome(turnCompleteMeta{StopReason: "interrupted"}, nil))
-		}
-	}
-	// The failure is reported to the user and logged inside writeTurnEnd;
-	// the caller returns the start's own error. A saved end changes the
-	// row's derived state (hasIncompleteTurn) with no provider:turn_completed
-	// to carry it, since the refused open announced no round, so the row is
-	// announced for a client with no pane on the thread.
-	if r.writeTurnEnd(threadID, wrote, time.Now().UnixMilli(), "interrupted", "", "", "", "end the refused open of turn "+wrote) == nil {
-		r.emitThreadRow(threadID)
-	}
 }
 
 // resolveTurnIndexOnStart picks the right turn index for an incoming
@@ -283,10 +239,7 @@ func resolveTurnID(evt provider.ProviderEvent, turnIndex int) string {
 // Returns the turn index the row ACTUALLY occupies. It differs from
 // turn.TurnIndex only when a different logical turn already stands
 // there, and the caller's open-turn bookkeeping must follow the return
-// value rather than what it asked for. inserted is the id of the row
-// this call wrote, "" when it found or adopted one or its insert failed:
-// a start refused after it wrote its row settles that row
-// (endRefusedOpen), and only that row.
+// value rather than what it asked for.
 //
 // One logical turn can be asked for under two ids, which is why the
 // identity probe is not `GetTurn` alone: openQueuedEchoTurn mints the
@@ -297,7 +250,7 @@ func resolveTurnID(evt provider.ProviderEvent, turnIndex int) string {
 // which this used to log and swallow, leaving a turn with no row of its
 // own (2026-08-24). So the probe also asks by INDEX, and two ids at one
 // index are reconciled rather than raced.
-func (r *Router) upsertTurnRow(turn store.Turn) (turnIndex int, inserted string) {
+func (r *Router) upsertTurnRow(turn store.Turn) int {
 	_, found, err := r.store.GetTurn(turn.TurnID)
 	if err != nil {
 		log.Printf("triage: turn start get %s: %v", turn.TurnID, err)
@@ -308,27 +261,26 @@ func (r *Router) upsertTurnRow(turn store.Turn) (turnIndex int, inserted string)
 		// and completed_at. Refreshing started_at would show a
 		// later clock on the working indicator each time the
 		// provider re-initialises.
-		return turn.TurnIndex, ""
+		return turn.TurnIndex
 	}
-	if resolved, relocated, done := r.reconcileTurnIndexCollision(turn); done {
-		return resolved, relocated
+	if resolved, done := r.reconcileTurnIndexCollision(turn); done {
+		return resolved
 	}
 	if err := r.store.InsertTurn(turn); err != nil {
 		if !isTurnIndexCollisionError(err) {
 			log.Printf("triage: turn start insert %s: %v", turn.TurnID, err)
-			return turn.TurnIndex, ""
+			return turn.TurnIndex
 		}
 		// A row landed at this index between the probe above and this
 		// insert. Same reconciliation, now with the winner visible.
 		log.Printf("triage: turn start insert %s raced another row at %s/%d — re-resolving",
 			turn.TurnID, turn.ThreadID, turn.TurnIndex)
-		if resolved, relocated, done := r.reconcileTurnIndexCollision(turn); done {
-			return resolved, relocated
+		if resolved, done := r.reconcileTurnIndexCollision(turn); done {
+			return resolved
 		}
 		log.Printf("triage: turn start insert %s: %v", turn.TurnID, err)
-		return turn.TurnIndex, ""
 	}
-	return turn.TurnIndex, turn.TurnID
+	return turn.TurnIndex
 }
 
 // reconcileTurnIndexCollision decides what to do about a row already
@@ -354,16 +306,14 @@ func (r *Router) upsertTurnRow(turn store.Turn) (turnIndex int, inserted string)
 //     very function relies on (a blank always reads as "adopt") and
 //     the Codex fork/revert anchor. First-write-wins in the store, so
 //     the backfill can never displace a real id.
-//
-// relocated is the id of the row a relocation inserted, "" otherwise.
-func (r *Router) reconcileTurnIndexCollision(turn store.Turn) (turnIndex int, relocated string, done bool) {
+func (r *Router) reconcileTurnIndexCollision(turn store.Turn) (int, bool) {
 	existing, found, err := r.store.GetTurnByThreadIndex(turn.ThreadID, turn.TurnIndex)
 	if err != nil {
 		log.Printf("triage: turn start lookup %s/%d: %v", turn.ThreadID, turn.TurnIndex, err)
-		return turn.TurnIndex, "", false
+		return turn.TurnIndex, false
 	}
 	if !found || existing.TurnID == turn.TurnID {
-		return turn.TurnIndex, "", false
+		return turn.TurnIndex, false
 	}
 	incomingProvider := strings.TrimSpace(turn.ProviderTurnID)
 	standingProvider := strings.TrimSpace(existing.ProviderTurnID)
@@ -375,18 +325,17 @@ func (r *Router) reconcileTurnIndexCollision(turn store.Turn) (turnIndex int, re
 				r.providerWriteFailed(turn.ThreadID, fmt.Sprintf("backfill provider turn id %s onto %s", incomingProvider, existing.TurnID), err)
 			}
 		}
-		return existing.TurnIndex, "", true
+		return existing.TurnIndex, true
 	}
-	moved := turn
-	moved.TurnIndex = r.nextFreeTurnIndex(turn.ThreadID, turn.TurnIndex)
-	moved.TurnID = store.ScopedTurnID(turn.ThreadID, turn.ProviderTurnID, moved.TurnIndex)
+	relocated := turn
+	relocated.TurnIndex = r.nextFreeTurnIndex(turn.ThreadID, turn.TurnIndex)
+	relocated.TurnID = store.ScopedTurnID(turn.ThreadID, turn.ProviderTurnID, relocated.TurnIndex)
 	log.Printf("triage: turn index collision on %s/%d — %s (provider turn %s) already holds it, relocating %s (provider turn %s) to turn %d",
-		turn.ThreadID, turn.TurnIndex, existing.TurnID, standingProvider, turn.TurnID, incomingProvider, moved.TurnIndex)
-	if err := r.store.InsertTurn(moved); err != nil {
-		log.Printf("triage: turn start insert %s at relocated index %d: %v", moved.TurnID, moved.TurnIndex, err)
-		return moved.TurnIndex, "", true
+		turn.ThreadID, turn.TurnIndex, existing.TurnID, standingProvider, turn.TurnID, incomingProvider, relocated.TurnIndex)
+	if err := r.store.InsertTurn(relocated); err != nil {
+		log.Printf("triage: turn start insert %s at relocated index %d: %v", relocated.TurnID, relocated.TurnIndex, err)
 	}
-	return moved.TurnIndex, moved.TurnID, true
+	return relocated.TurnIndex, true
 }
 
 // nextFreeTurnIndex finds the first index at or after the allocator's
@@ -808,13 +757,10 @@ func (r *Router) reopenSoftClosedTurn(evt provider.ProviderEvent) (bool, error) 
 	defer opening()
 	r.mu.Unlock()
 
-	turnID := r.persistedTurnID(evt, turnIndex)
-	reopened := ""
-	err := r.store.ReopenTurn(turnID)
+	err := r.store.ReopenTurn(r.persistedTurnID(evt, turnIndex))
 	if err != nil {
 		err = fmt.Errorf("reopen soft-closed turn %s/%d: %w", evt.ThreadID, turnIndex, err)
 	} else {
-		reopened = turnID
 		// After the row is open again: a reader told this turn answers a
 		// send must not find the completion the soft close wrote.
 		r.releaseDeliveriesAtTurnStart(evt.ThreadID, turnIndex, evt.SessionToken)
@@ -828,8 +774,6 @@ func (r *Router) reopenSoftClosedTurn(evt provider.ProviderEvent) (bool, error) 
 	}
 	if r.setOpenRoundSnapshot(snapshot, evt.SessionToken) {
 		r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
-	} else {
-		r.endRefusedOpen(evt.ThreadID, turnIndex, reopened, true)
 	}
 	return true, err
 }
@@ -1564,7 +1508,7 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	// relocation would leave that state naming a row this turn does not
 	// own, and a silent divergence is exactly the shape the index
 	// reconciliation exists to stop being silent.
-	placedIndex, inserted := r.upsertTurnRow(store.Turn{
+	placedIndex := r.upsertTurnRow(store.Turn{
 		TurnID:    fmt.Sprintf("%s:%d", threadID, turnIndex),
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
@@ -1591,7 +1535,6 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 		StartedAt: startedAt,
 	}
 	if !r.setOpenRoundSnapshot(snapshot, sessionToken) {
-		r.endRefusedOpen(threadID, turnIndex, inserted, true)
 		return
 	}
 	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
