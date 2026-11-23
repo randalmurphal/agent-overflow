@@ -935,17 +935,19 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 }
 
 // writeTurnEnd writes turnID's end. Every write of a turn's end goes
-// through it, so a failure reaches the user the same way whichever path
-// wrote it (reportUnsavedTurnEnd). Nothing retries the write: its row stays
-// open until a later end of the same turn saves or the next boot's sweep
-// settles it as interrupted (turn-lifecycle.md §Crash behavior). The
-// failure is reported here and returned.
+// through it, so the user hears of a failure the same way whichever path
+// wrote it (reportUnsavedTurnEnd), and a later end of the same turn that
+// saves withdraws what the user was told (reportSavedTurnEnd). Nothing
+// retries the write: an open row stays open until a later end saves or the
+// next boot's sweep settles it as interrupted (turn-lifecycle.md §Crash
+// behavior). The failure is reported here and returned.
 func (r *Router) writeTurnEnd(threadID, turnID string, completedAt int64, stopReason, assistantMessageID, tokenUsageJSON, errorMessage, what string) error {
 	if err := r.store.UpdateTurnCompleted(turnID, completedAt, stopReason, assistantMessageID, tokenUsageJSON, errorMessage); err != nil {
-		r.providerWriteFailed(threadID, what, err)
-		r.reportUnsavedTurnEnd(threadID, turnID, err)
+		told := r.providerWriteFailed(threadID, what, err)
+		r.reportUnsavedTurnEnd(threadID, turnID, err, told)
 		return fmt.Errorf("%s: %w", what, err)
 	}
+	r.reportSavedTurnEnd(threadID, turnID)
 	return nil
 }
 

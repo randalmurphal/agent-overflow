@@ -573,7 +573,7 @@ func (r *Router) HandleSynthetic(evt provider.ProviderEvent) error {
 // of a write the store refused (reportShownHistoryRefusal).
 func (r *Router) dispatchReportingRefusals(evt provider.ProviderEvent) error {
 	err := r.dispatch(evt)
-	if reportErr := r.reportShownHistoryRefusal(evt.ThreadID, err); reportErr != nil {
+	if _, reportErr := r.reportShownHistoryRefusal(evt.ThreadID, err); reportErr != nil {
 		err = errors.Join(err, reportErr)
 	}
 	return err

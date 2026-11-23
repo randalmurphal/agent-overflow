@@ -320,6 +320,54 @@ func TestAnUnsavedTurnEndIsOneEntry(t *testing.T) {
 	}
 }
 
+// handleTurn starts and completes turn turnIndex of threadID.
+func handleTurn(t *testing.T, app *App, threadID string, turnIndex int) {
+	t.Helper()
+	for _, evt := range []provider.ProviderEvent{
+		{Kind: provider.EventTurnStart, ThreadID: threadID, TurnIndex: turnIndex},
+		{Kind: provider.EventTurnComplete, ThreadID: threadID, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}},
+	} {
+		evt.Timestamp = time.Now()
+		if err := app.triage.Handle(evt); err != nil {
+			t.Fatalf("%s: %v", evt.Kind, err)
+		}
+	}
+}
+
+// A turn whose end saves after an earlier end of it failed leaves the
+// list: the provider re-initialises the turn and completes it once the
+// fault cleared.
+func TestASavedTurnEndLeavesTheList(t *testing.T) {
+	t.Parallel()
+	app, dbPath, _ := newUnsavedRowApp(t, "thread-turn-end")
+	execOnFile(t, dbPath, `CREATE TRIGGER fail_turn_end BEFORE UPDATE OF completed_at ON turns WHEN NEW.completed_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END`)
+	handleTurn(t, app, "thread-turn-end", 1)
+	if live := liveUnsavedRows(t, app, "thread-turn-end"); live == nil || len(live.Rows) != 1 {
+		t.Fatalf("live unsaved rows = %+v, want the unsaved turn end", live)
+	}
+	execOnFile(t, dbPath, `DROP TRIGGER fail_turn_end`)
+
+	handleTurn(t, app, "thread-turn-end", 1)
+
+	if live := liveUnsavedRows(t, app, "thread-turn-end"); live != nil && len(live.Rows) != 0 {
+		t.Fatalf("live unsaved rows = %+v, want the saved turn end gone", live)
+	}
+}
+
+// Two turns whose ends fail are two entries.
+func TestTwoUnsavedTurnEndsAreTwoEntries(t *testing.T) {
+	t.Parallel()
+	app, dbPath, _ := newUnsavedRowApp(t, "thread-turn-ends")
+	execOnFile(t, dbPath, `CREATE TRIGGER fail_turn_end BEFORE UPDATE OF completed_at ON turns WHEN NEW.completed_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END`)
+
+	handleTurn(t, app, "thread-turn-ends", 1)
+	handleTurn(t, app, "thread-turn-ends", 2)
+
+	if live := liveUnsavedRows(t, app, "thread-turn-ends"); live == nil || len(live.Rows) != 2 {
+		t.Fatalf("live unsaved rows = %+v, want one entry for each turn", live)
+	}
+}
+
 func failNoticeRowWrites(t *testing.T, dbPath string) {
 	t.Helper()
 	execOnFile(t, dbPath, `CREATE TRIGGER fail_notice_row BEFORE INSERT ON items WHEN NEW.kind = 'notification' BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END`)

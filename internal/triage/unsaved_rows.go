@@ -19,9 +19,9 @@ import (
 // through the funnel, so none has to remember this.
 //
 // A turn's end the store refused is told to the observer the same way, as
-// an error entry of its own (reportUnsavedTurnEnd): the end is no row of
-// the timeline, but the user must know that the thread's newest turn row
-// still reads as running.
+// an error entry of its own (reportUnsavedTurnEnd), and every end it saves
+// is told too (reportSavedTurnEnd): the end is no row of the timeline, but
+// the user must know that the thread's turn may still read as running.
 
 // UnsavedRow is an error or notification row, as the user sees it.
 type UnsavedRow struct {
@@ -83,32 +83,44 @@ func (r *Router) reportSavedRow(item store.Item) {
 }
 
 // UnsavedTurnEndSummary is the entry of a turn whose end the store
-// refused. The row stays open, so every reader of the thread's newest turn
-// row (the thread tools, send placement, revert) reads it as running while
-// it is the newest, and the next boot's sweep settles it as interrupted.
-const UnsavedTurnEndSummary = "The provider finished this turn, but its end could not be saved. " +
-	"While it is the thread's latest turn, agents and tools see the thread as still running, " +
-	"and after the app restarts the turn reads as interrupted."
+// refused. It holds whatever the row was: a row still open reads as
+// running to every reader of the thread's newest turn row (the thread
+// tools, send placement, revert) while it is the newest, and a row an
+// earlier end completed keeps that end. It promises nothing about a
+// restart, whose sweep can fail as well.
+const UnsavedTurnEndSummary = "This turn is over, but the app could not save how it ended. " +
+	"Agents and tools may still see the thread as running."
 
 // unsavedTurnEndRow is the observer's entry for turnID's unsaved end: one
 // per turn, whichever path wrote the end and however often it failed, so a
-// second failure replaces the entry rather than adding one. Like every entry
-// it leaves when the user dismisses it, when the thread is deleted, or with
-// the process. A later end of the same turn that saves does not withdraw
-// it: successful ends are not told to the observer.
+// second failure replaces the entry rather than adding one. It leaves when
+// an end of the same turn saves (reportSavedTurnEnd), and like every entry
+// when the user dismisses it, when the thread is deleted, or with the
+// process.
 func unsavedTurnEndRow(threadID, turnID string) UnsavedRow {
 	return UnsavedRow{ThreadID: threadID, ItemID: "turn-end:" + turnID, Severity: UnsavedSeverityError, Summary: UnsavedTurnEndSummary}
 }
 
-// reportUnsavedTurnEnd tells the observer that turnID's end was not saved.
-// A shown-history refusal already reached the thread as its own error row
-// (reportShownHistoryRefusal), and a missing row leaves nothing open, so
-// neither is told again.
-func (r *Router) reportUnsavedTurnEnd(threadID, turnID string, err error) {
-	if r.unsavedRows == nil || threadID == "" || store.IsShownHistoryRefusal(err) || errors.Is(err, sql.ErrNoRows) {
+// reportUnsavedTurnEnd tells the observer that turnID's end was not saved,
+// unless the user was already told of err (told, from
+// reportShownHistoryRefusal) or err found no row, which leaves nothing
+// open.
+func (r *Router) reportUnsavedTurnEnd(threadID, turnID string, err error, told bool) {
+	if r.unsavedRows == nil || threadID == "" || told || errors.Is(err, sql.ErrNoRows) {
 		return
 	}
 	r.unsavedRows.RowRefused(unsavedTurnEndRow(threadID, turnID), err)
+}
+
+// reportSavedTurnEnd tells the observer that turnID's end saved, so an
+// entry an earlier failure left is withdrawn. It runs on every saved end;
+// for a thread with no entries the app's answer is a clamp of the summary
+// and one map lookup under its lock (App.withdrawSavedThreadRow).
+func (r *Router) reportSavedTurnEnd(threadID, turnID string) {
+	if r.unsavedRows == nil || threadID == "" {
+		return
+	}
+	r.unsavedRows.RowSaved(unsavedTurnEndRow(threadID, turnID))
 }
 
 // observedRow is the item as the observer sees it; false for a kind the
