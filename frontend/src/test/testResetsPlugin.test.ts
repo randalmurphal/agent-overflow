@@ -77,17 +77,6 @@ describe('registration', () => {
     expect(seen).toEqual([[key, { resetOtherForTest: 3, __setTransportStatusForTest: 1 }, ['resetOtherForTest']]]);
   });
 
-  it('rejects a reset that calls another module\'s reset', () => {
-    const code = [
-      "import { count, resetForTest as resetLeafForTest } from './leaf';",
-      'export function resetCountForTest() { count(); resetLeafForTest(); }',
-    ].join('\n');
-    expect(() => registration(STORE, code)).toThrow(
-      `${STORE}: resetCountForTest calls resetLeafForTest from ./leaf; the registry runs that module's reset itself, so a reset resets its own module only`,
-    );
-    expect(registration(STORE, "import { count } from './leaf';\nexport function resetCountForTest() { count(); }")).not.toBeNull();
-  });
-
   it('has a source module without resets say when it has loaded, and leaves a package alone', () => {
     const line = registration(STORE, 'export function count() {}');
     let settled = 0;

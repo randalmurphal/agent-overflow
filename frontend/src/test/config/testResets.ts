@@ -12,9 +12,9 @@
 // registration (a listener, a step or a source another module installed,
 // at its load or when it made something that outlives these steps), and
 // it calls no backend. It resets its own module only; another module's
-// state is that module's own reset's, and the transform fails a reset
-// that calls another module's reset export. An export that cannot keep the
-// contract is listed in NOT_BETWEEN_TESTS with the reason. An
+// state is that module's own reset's. Resets are idempotent, so a reset
+// that also calls another module's reset repeats work and changes nothing.
+// An export that cannot keep the contract is listed in NOT_BETWEEN_TESTS with the reason. An
 // export that requires an argument is never called by name; a module opts
 // it in by naming it in POSTURE or FIRST below with a `run` that passes the
 // argument.

@@ -36,26 +36,6 @@ function requiresArgument(fn: Node): boolean {
   return (fn.params as Node[]).some((param) => param.type !== 'AssignmentPattern' && param.type !== 'RestElement');
 }
 
-/** Whether `node` or anything under it is an identifier in `names`. */
-function references(node: unknown, names: ReadonlySet<string>): string | null {
-  if (node === null || typeof node !== 'object') return null;
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      const hit = references(child, names);
-      if (hit !== null) return hit;
-    }
-    return null;
-  }
-  const typed = node as Node;
-  if (typed.type === 'Identifier' && names.has(typed.name as string)) return typed.name as string;
-  for (const [field, child] of Object.entries(typed)) {
-    if (field === 'type') continue;
-    const hit = references(child, names);
-    if (hit !== null) return hit;
-  }
-  return null;
-}
-
 /** The line that runs `call` on the registry, failing when it is missing. */
 function registryLine(key: string, call: string): string {
   const missing = `the test reset registry is not installed: the setup file must import src/test/resetRegistry.ts before ${key} loads`;
@@ -86,17 +66,7 @@ export function registration(key: string, code: string): string | null {
   const declared = new Map<string, Node>();
   // Exported name to local name, for exports with a local binding.
   const exported = new Map<string, string>();
-  // Local names of another module's reset exports, to the module.
-  const importedResets = new Map<string, string>();
   for (const statement of program.body) {
-    if (statement.type === 'ImportDeclaration') {
-      for (const specifier of statement.specifiers as Node[]) {
-        const imported = specifier.imported as Node | undefined;
-        if (imported !== undefined && RESET_NAME.test((imported.name ?? imported.value) as string)) {
-          importedResets.set((specifier.local as Node).name as string, (statement.source as Node).value as string);
-        }
-      }
-    }
     const declaration = (statement.type === 'ExportNamedDeclaration' ? statement.declaration : statement) as Node | null;
     if (declaration?.type === 'FunctionDeclaration' || declaration?.type === 'ClassDeclaration') {
       const name = (declaration.id as Node).name as string;
@@ -119,13 +89,6 @@ export function registration(key: string, code: string): string | null {
     }
   }
   const resets = packaged ? [] : [...exported.keys()].filter((name) => RESET_NAME.test(name));
-  for (const name of resets) {
-    const fn = functionOf(declared.get(exported.get(name)!), declared, name);
-    const called = references(fn.body, new Set(importedResets.keys()));
-    if (called !== null) {
-      throw new Error(`${key}: ${name} calls ${called} from ${importedResets.get(called)}; the registry runs that module's reset itself, so a reset resets its own module only`);
-    }
-  }
   const auto = resets.filter((name) =>
     !named?.has(name) && !requiresArgument(functionOf(declared.get(exported.get(name)!), declared, name)));
   for (const name of named ?? []) {
