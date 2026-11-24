@@ -303,7 +303,7 @@ func (a *App) probeAgentComputers(ctx context.Context, rows []AgentComputer) []A
 				out[i].Environment = &environment
 			} else {
 				var remote *rpcclient.Error
-				if !errors.As(err, &remote) || remote.Code != transport.ErrCodeMethodNotFound || !remote.DispatchRefusal() {
+				if !errors.As(err, &remote) || !remote.Unsupported() {
 					out[i].EnvironmentError = remoteErrorText(a.remoteOperationError("inspect environment", out[i].ID, "", err))
 				}
 			}

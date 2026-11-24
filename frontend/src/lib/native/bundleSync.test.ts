@@ -84,6 +84,7 @@ describe('decideBundleSync', () => {
     expect(decideBundleSync(input())).toEqual({
       kind: 'download',
       id: OFFERED,
+      version: '1.2.3',
       backend: HOME_BACKEND,
     });
   });

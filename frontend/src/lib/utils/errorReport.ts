@@ -24,6 +24,14 @@ export interface ErrorReport {
   readonly facts: readonly (readonly [string, string])[];
   /** When the report was built, in Unix milliseconds. */
   readonly at: number;
+  /**
+   * Set when the failure is a computer's refusal of the call itself
+   * (transport/dispatchRefusal.ts): the reason, which says what to do. A
+   * surface shows it whole beside its headline (`shownBesideHeadline`) and
+   * keeps it up until the person dismisses it, because the call site's
+   * headline alone cannot say which computer to update.
+   */
+  readonly refusal?: string;
 }
 
 export interface ErrorReportContext {
@@ -35,9 +43,12 @@ const MAX_CAUSE_DEPTH = 8;
 
 export function errorReport(err: unknown, { context, facts = [] }: ErrorReportContext = {}): ErrorReport {
   const detail = err instanceof TransportError ? err.detail : undefined;
+  const reason = userFacingError(err);
+  const refused = err instanceof TransportError && (err.dispatchRefusal !== undefined || err.forwardedRefusal !== undefined);
   return {
     context: context?.trim() || undefined,
-    reason: userFacingError(err),
+    reason,
+    refusal: refused ? reason : undefined,
     code: err instanceof TransportError ? err.code : undefined,
     detail,
     chain: detail && detail.chain.length > 0 ? [] : causeChain(err),
@@ -50,6 +61,15 @@ export function errorReport(err: unknown, { context, facts = [] }: ErrorReportCo
 /** The headline a surface shows: the call site's context, else the reason. */
 export function errorHeadline(report: ErrorReport): string {
   return report.context ?? report.reason;
+}
+
+/**
+ * The refusal a surface shows whole under `headline`, or undefined when
+ * the report is no refusal or the headline already says it.
+ */
+export function shownBesideHeadline(report: ErrorReport, headline: string): string | undefined {
+  if (report.refusal === undefined || saysAlready(headline, report.refusal)) return undefined;
+  return report.refusal;
 }
 
 /**

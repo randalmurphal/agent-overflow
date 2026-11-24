@@ -438,7 +438,7 @@ test('desktop: an action the older computer does not have says what happened', a
     await chooseRowMenuItem(view, 'desktop', worker, 'Remove from Sidebar');
     const sentence = 'Old computer does not support this action.'
       + ` Old computer runs the same version of Agent Overflow as this page (${release}).`
-      + ' Copy the details of this error and report it.';
+      + ' Report this as a bug in Agent Overflow.';
     await expect(view.getByTestId('toast')).toContainText(sentence);
     expect(surfaced.errorToasts).toHaveLength(1);
     expect(surfaced.errorToasts[0]).toContain(sentence);

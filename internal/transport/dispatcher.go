@@ -288,10 +288,7 @@ func (d *Dispatcher) ResolveForOrigin(id uint32, name string, isLoopback bool) (
 		}
 	}
 	if method == nil {
-		return nil, &FrameError{
-			Code:    ErrCodeMethodNotFound,
-			Message: dispatchrefusal.Unsupported,
-		}
+		return nil, unsupportedCall()
 	}
 	if !isLoopback && method.LocalOnly {
 		// Wire shape matches an unrelated method-not-found rather than a
@@ -304,10 +301,7 @@ func (d *Dispatcher) ResolveForOrigin(id uint32, name string, isLoopback bool) (
 		// records the actual method name so an admin can recognise
 		// repeated probing.
 		log.Printf("transport: refused %s for non-loopback peer (host-tooling receiver)", method.Name)
-		return nil, &FrameError{
-			Code:    ErrCodeMethodNotFound,
-			Message: dispatchrefusal.Unsupported,
-		}
+		return nil, unsupportedCall()
 	}
 	return method, nil
 }
@@ -339,7 +333,7 @@ func (d *Dispatcher) Invoke(ctx context.Context, m *Method, params []json.RawMes
 	}()
 
 	if len(params) > MaxRPCParams {
-		return nil, unreadableParams(m, fmt.Sprintf("%d params, more than %d", len(params), MaxRPCParams))
+		return nil, unreadableParams(m, dispatchrefusal.CountRefusal(m.Name, MaxRPCParams, len(params), false, true))
 	}
 	// Every call path reaches the method here, so this is where a build
 	// without remote access refuses the methods marked //ao:remote.
@@ -382,10 +376,10 @@ func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.Raw
 		// existing param assembly logic below.
 		minParams := expectedParams - 1
 		if len(params) < minParams {
-			return nil, unreadableParams(m, fmt.Sprintf("variadic expects at least %d params, got %d", minParams, len(params)))
+			return nil, unreadableParams(m, dispatchrefusal.CountRefusal(m.Name, minParams, len(params), true, false))
 		}
 	} else if len(params) != expectedParams {
-		return nil, unreadableParams(m, fmt.Sprintf("expected %d params, got %d", expectedParams, len(params)))
+		return nil, unreadableParams(m, dispatchrefusal.CountRefusal(m.Name, expectedParams, len(params), false, false))
 	}
 
 	args := make([]reflect.Value, 0, len(m.inputTypes))
@@ -408,8 +402,7 @@ func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.Raw
 			for ; wireIdx < len(params); wireIdx++ {
 				ptr := reflect.New(elemType)
 				if err := json.Unmarshal(params[wireIdx], ptr.Interface()); err != nil {
-					return nil, loggedFailure(m, ErrCodeBadParams, dispatchrefusal.Unreadable,
-						fmt.Sprintf("%s param %d (variadic)", m.FQN, wireIdx), err)
+					return nil, undecodableParam(m, wireIdx, err)
 				}
 				slice = reflect.Append(slice, ptr.Elem())
 			}
@@ -419,8 +412,7 @@ func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.Raw
 
 		ptr := reflect.New(declType)
 		if err := json.Unmarshal(params[wireIdx], ptr.Interface()); err != nil {
-			return nil, loggedFailure(m, ErrCodeBadParams, dispatchrefusal.Unreadable,
-				fmt.Sprintf("%s param %d", m.FQN, wireIdx), err)
+			return nil, undecodableParam(m, wireIdx, err)
 		}
 		args = append(args, ptr.Elem())
 		wireIdx++
@@ -544,14 +536,34 @@ func loggedFailure(m *Method, code, message, what string, err error) *FrameError
 	return &FrameError{Code: code, Message: message, Detail: methodErrorDetail(m, cid, err)}
 }
 
-// unreadableParams is the dispatcher's refusal of a call whose arguments do
-// not fit m: what the caller's build sends and what this one declares
-// differ. It carries no detail, like every refusal the dispatcher gives
-// before a method runs (internal/dispatchrefusal), and the log keeps what
-// did not fit.
-func unreadableParams(m *Method, why string) *FrameError {
-	log.Printf("transport: refused %s: %s", m.FQN, why)
-	return &FrameError{Code: ErrCodeBadParams, Message: dispatchrefusal.Unreadable}
+// unsupportedCall is the dispatcher's refusal of a call this computer does
+// not have, or hides from this caller: one frame for both.
+func unsupportedCall() *FrameError {
+	return &FrameError{Code: ErrCodeMethodNotFound, Message: dispatchrefusal.Unsupported, Dispatch: dispatchrefusal.UnsupportedRefusal()}
+}
+
+// unreadableParams is the dispatcher's refusal of a call to m with the
+// wrong number of arguments: what the caller's build sends and what this
+// one declares differ.
+func unreadableParams(m *Method, refusal *dispatchrefusal.Refusal) *FrameError {
+	log.Printf("transport: refused %s: %s", m.FQN, refusal.Problem)
+	return &FrameError{Code: ErrCodeBadParams, Message: dispatchrefusal.Unreadable, Dispatch: refusal}
+}
+
+// undecodableParam is the dispatcher's refusal of a call to m whose
+// argument at wireIdx (0-based) did not decode. The decoder's own text can
+// repeat the value refused, so it goes only to the log, under the
+// reference the detail carries; the frame says what did not fit only from
+// the type mismatch's fields.
+func undecodableParam(m *Method, wireIdx int, err error) *FrameError {
+	cid := newCorrelationID()
+	log.Printf("transport: %s param %d (id: %s): %v", m.FQN, wireIdx, cid, err)
+	return &FrameError{
+		Code:     ErrCodeBadParams,
+		Message:  dispatchrefusal.Unreadable,
+		Detail:   methodErrorDetail(m, cid, nil),
+		Dispatch: dispatchrefusal.DecodeRefusal(m.Name, wireIdx+1, err),
+	}
 }
 
 // CallerAnswer is what a caller is told about a method's error.

@@ -440,12 +440,12 @@ const RANDOM_ID_OWNER = 'lib/utils/randomId.ts';
 // A CALL, not the word: the comments at the converted call sites name the API
 // they no longer reach for, and must not read as offenders.
 const RANDOM_UUID_CALL = /\brandomUUID\s*\(/;
-// The wire text a computer answers a call it does not have with
-// (internal/transport/dispatcher.go). Production code neither matches nor
-// shows it: the code is the discriminator and the message is the sentence.
-// The wire text of a dispatcher refusal from a computer before this
-// release: a call it does not have, or one whose arguments did not fit.
+// The wire text of a dispatcher refusal from a release before the frame's
+// "dispatch" field: a call it does not have, or one whose arguments did not
+// fit. Only the legacy table in its owner matches it; everything else reads
+// the transport's verdict, and the message is already the sentence.
 const DISPATCH_REFUSAL_TEXT = /method not registered|params, got \d|too many parameters|bad parameter \d/;
+const DISPATCH_REFUSAL_OWNER = 'lib/transport/dispatchRefusal.ts';
 const RANDOM_ID_ALLOWLIST: Record<string, string> = {};
 
 // 7. A send is built by the one builder that mints its idempotency id.
@@ -1144,7 +1144,7 @@ describe('architecture', () => {
   it('words a refusal by the computer\'s dispatcher only through the transport', () => {
     const offenders = new Map<string, string[]>();
     for (const source of sources) {
-      if (!source.namesDispatchRefusalText) continue;
+      if (!source.namesDispatchRefusalText || source.path === DISPATCH_REFUSAL_OWNER) continue;
       offenders.set(source.path, ['matches or shows the wire text of a dispatcher refusal']);
     }
     expectAllowlistExact(
@@ -1154,6 +1154,7 @@ describe('architecture', () => {
       'Branch on the code with isMethodUnavailableError; the error\'s message is already the'
       + ' sentence for the refusal (transport/dispatchRefusal.ts).',
     );
+    expect(sources.some((source) => source.path === DISPATCH_REFUSAL_OWNER && source.namesDispatchRefusalText), `${DISPATCH_REFUSAL_OWNER} holds the legacy table`).toBe(true);
     const main = readFileSync(join(SRC_ROOT, 'main.ts'), 'utf8');
     expect(main, 'src/main.ts installs the named wording (stores/versionMismatch.ts)').toMatch(/^installVersionMismatchWording\(\);$/m);
   });

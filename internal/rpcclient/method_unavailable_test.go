@@ -45,26 +45,29 @@ func answerOnce(t *testing.T, ctx context.Context, refusal *transport.FrameError
 }
 
 // A computer's dispatcher refusal reads, wherever its error is shown, as
-// the sentence a person can act on, whatever text that computer's release
-// sent, and keeps its wire text. A failure a method there returned under
-// the same code, which carries detail, keeps its own message: it is about
-// whatever that method called, not about the computer this reached.
+// the sentence a person can act on followed by what did not fit, whatever
+// release that computer runs, and keeps its wire text. Who refused is the
+// frame's dispatch mark, or an older release's exact text: a failure a
+// method returned under the same code keeps its own message, detail or not.
 func TestADispatcherRefusalReadsAsTheSentence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	detail := &transport.ErrorDetail{Ref: "r1", Method: "ReadThreadRemoteLog", At: 1}
+	count := dispatchrefusal.CountRefusal("HarnessInfo", 0, 1, false, false)
 	for _, tc := range []struct {
-		name      string
-		refusal   *transport.FrameError
-		want      string
-		refused   bool
-		wireLater string
+		name    string
+		refusal *transport.FrameError
+		want    string
+		refused string
 	}{
-		{"a release that sent the old text for a missing method", &transport.FrameError{Code: transport.ErrCodeMethodNotFound, Message: "method not registered"}, dispatchrefusal.Unsupported, true, "method not registered"},
-		{"a release that sent the old text for arguments it could not read", &transport.FrameError{Code: transport.ErrCodeBadParams, Message: "main.App.GitPush: expected 1 params, got 2"}, dispatchrefusal.Unreadable, true, "main.App.GitPush: expected 1 params, got 2"},
-		{"a method's failure forwarded under the same code", &transport.FrameError{Code: transport.ErrCodeMethodNotFound, Message: "Could not read the log on Nexus.", Detail: detail}, "Could not read the log on Nexus.", false, "Could not read the log on Nexus."},
-		{"a method's own refusal of its arguments", &transport.FrameError{Code: transport.ErrCodeBadParams, Message: "Choose at least one project.", Detail: detail}, "Choose at least one project.", false, "Choose at least one project."},
-		{"any other refusal", &transport.FrameError{Code: transport.ErrCodeMethodError, Message: "disk full", Detail: detail}, "disk full", false, "disk full"},
+		{"this release, a missing method", &transport.FrameError{Code: transport.ErrCodeMethodNotFound, Message: dispatchrefusal.Unsupported, Dispatch: dispatchrefusal.UnsupportedRefusal()}, dispatchrefusal.Unsupported, "unsupported"},
+		{"this release, the argument count", &transport.FrameError{Code: transport.ErrCodeBadParams, Message: dispatchrefusal.Unreadable, Dispatch: count}, dispatchrefusal.Unreadable + " (HarnessInfo: expected 0 arguments, got 1)", "unreadable"},
+		{"v0.0.19, a missing method", &transport.FrameError{Code: transport.ErrCodeMethodNotFound, Message: "method not registered"}, dispatchrefusal.Unsupported, "unsupported"},
+		{"v0.0.18, the argument count", &transport.FrameError{Code: transport.ErrCodeBadParams, Message: "main.App.GitPush: expected 1 params, got 2"}, dispatchrefusal.Unreadable + " (main.App.GitPush: expected 1 params, got 2)", "unreadable"},
+		{"v0.0.17, an argument that did not decode", &transport.FrameError{Code: transport.ErrCodeBadParams, Message: "bad parameter 2", Detail: detail}, dispatchrefusal.Unreadable + " (bad parameter 2)", "unreadable"},
+		{"v0.0.16, a method's failure forwarded under the same code", &transport.FrameError{Code: transport.ErrCodeMethodNotFound, Message: "Could not read the log on Nexus."}, "Could not read the log on Nexus.", ""},
+		{"a method's own refusal of its arguments", &transport.FrameError{Code: transport.ErrCodeBadParams, Message: "Choose at least one project.", Detail: detail}, "Choose at least one project.", ""},
+		{"any other refusal", &transport.FrameError{Code: transport.ErrCodeMethodError, Message: "disk full", Detail: detail}, "disk full", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := answerOnce(t, ctx, tc.refusal).Call(ctx, "Anything", nil)
@@ -75,8 +78,15 @@ func TestADispatcherRefusalReadsAsTheSentence(t *testing.T) {
 			if got := err.Error(); got != tc.want {
 				t.Fatalf("Error() = %q, want %q", got, tc.want)
 			}
-			if refused.DispatchRefusal() != tc.refused || refused.Message != tc.wireLater || refused.Code != tc.refusal.Code {
-				t.Fatalf("refusal = %+v dispatch %v, want the wire code and text kept and dispatch %v", refused, refused.DispatchRefusal(), tc.refused)
+			kind := ""
+			if r := refused.DispatchRefusal(); r != nil {
+				kind = r.Kind
+			}
+			if kind != tc.refused || refused.Message != tc.refusal.Message || refused.Code != tc.refusal.Code {
+				t.Fatalf("refusal = %+v kind %q, want the wire code and text kept and kind %q", refused, kind, tc.refused)
+			}
+			if refused.Unsupported() != (tc.refused == "unsupported") {
+				t.Fatalf("Unsupported = %v", refused.Unsupported())
 			}
 		})
 	}

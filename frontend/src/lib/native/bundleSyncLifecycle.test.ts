@@ -8,17 +8,25 @@ const mocks = vi.hoisted(() => ({
   hello: null as ((backend: BackendKey, hello: TransportHello | null) => void) | null,
   state: {} as BundleState,
   fetch: vi.fn(), stage: vi.fn(), discard: vi.fn(), ready: vi.fn(), clear: vi.fn(),
+  downloading: vi.fn(), stopped: vi.fn(), stateFails: false,
 }));
 vi.mock('./platform', () => ({ isNativeShell: () => true }));
 vi.mock('./plugins', () => ({ bundlePlugin: async () => ({
-  state: async () => ({ ...mocks.state }), ready: async () => {},
+  state: async () => {
+    if (mocks.stateFails) throw new Error('the native store did not answer');
+    return { ...mocks.state };
+  },
+  ready: async () => {},
   stage: mocks.stage, discardPending: mocks.discard,
 }) }));
 vi.mock('../stores/transportStatus.svelte', () => ({ onBackendHelloChange: (listener: typeof mocks.hello) => {
   mocks.hello = listener;
   return () => { mocks.hello = null; };
 } }));
-vi.mock('../stores/bundleNotice.svelte', () => ({ noteBundleReady: mocks.ready, clearBundleNotice: mocks.clear, noteBundleTooOld: vi.fn() }));
+vi.mock('../stores/bundleNotice.svelte', () => ({
+  noteBundleReady: mocks.ready, clearBundleNotice: mocks.clear, noteBundleTooOld: vi.fn(),
+  noteBundleDownloading: mocks.downloading, noteBundleDownloadStopped: mocks.stopped,
+}));
 vi.mock('../transport/lease', () => ({ clientLease: () => 'active', onClientLeaseChange: () => () => {} }));
 vi.mock('../transport/networkFetch', () => ({ networkFetch: mocks.fetch }));
 vi.mock('../transport/deviceSession', () => ({
@@ -35,6 +43,7 @@ function hello(bundleId = NEXT, bundleVersion = '1.1.0') {
 }
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.stateFails = false;
   mocks.state = { current: CURRENT, next: '', pendingHealth: '', lastKnownGood: CURRENT,
     rolledBack: [], versionCode: 9, orderedUpdates: true, packagedVersion: '1.0.0', currentVersion: '1.0.0', nextVersion: '' };
   mocks.fetch.mockImplementation(async (url: string) => url.endsWith('manifest.json')
@@ -101,6 +110,31 @@ describe('bundle selection across asynchronous boundaries', () => {
     await vi.waitFor(() => expect(mocks.clear).toHaveBeenCalled());
     expect(mocks.discard).toHaveBeenCalledExactlyOnceWith({ id: NEXT });
     expect(mocks.state.next).toBe('');
+  });
+
+  // What a refusal on the phone tells the person to do comes from these
+  // (stores/versionMismatch.ts): each must hold only while it is true.
+  it('says a release is downloading until it is staged, and not after a failed fetch', async () => {
+    let drop!: (err: Error) => void;
+    const archive = new Promise<Response>((_resolve, reject) => { drop = reject; });
+    mocks.fetch.mockImplementation(async (url: string) => url.endsWith('manifest.json')
+      ? Response.json({ id: NEXT, version: '1.1.0', minShellBuild: 9, files: [] }) : archive);
+    hello();
+    await vi.waitFor(() => expect(mocks.downloading).toHaveBeenCalledExactlyOnceWith('1.1.0'));
+    expect(mocks.stopped).not.toHaveBeenCalled();
+    drop(new Error('the connection dropped'));
+    await vi.waitFor(() => expect(mocks.stopped).toHaveBeenCalledOnce());
+    expect(mocks.ready).not.toHaveBeenCalled();
+  });
+
+  it('stops promising a staged release once it is being discarded, even if the store does not answer after', async () => {
+    hello();
+    await vi.waitFor(() => expect(mocks.ready).toHaveBeenCalledWith('1.1.0'));
+    mocks.clear.mockClear();
+    mocks.stateFails = true;
+    hello(CURRENT, '1.0.0');
+    await vi.waitFor(() => expect(mocks.discard).toHaveBeenCalledExactlyOnceWith({ id: NEXT }));
+    expect(mocks.clear).toHaveBeenCalled();
   });
 
   it('requires the manifest version to match the selected offer', async () => {

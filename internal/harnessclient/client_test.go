@@ -131,6 +131,21 @@ func TestCallSurfacesTheServersErrorCode(t *testing.T) {
 	}
 }
 
+// A call with the wrong arguments prints the correction beside the
+// sentence, as `ao-harness rpc HarnessInfo 1` does against its own build.
+func TestCallPrintsWhatDidNotFit(t *testing.T) {
+	backend := newFakeBackend(t)
+	backend.handle = func(frame transport.ClientFrame) (json.RawMessage, *transport.FrameError) {
+		return nil, &transport.FrameError{Code: transport.ErrCodeBadParams, Message: dispatchrefusal.Unreadable,
+			Dispatch: dispatchrefusal.CountRefusal("HarnessInfo", 0, 1, false, false)}
+	}
+	client := backend.dial(t)
+	_, err := client.Call(testContext(t), "HarnessInfo", 1)
+	if want := "HarnessInfo: bad_params: " + dispatchrefusal.Unreadable + " (HarnessInfo: expected 0 arguments, got 1)"; err == nil || err.Error() != want {
+		t.Fatalf("Call error = %v, want %q", err, want)
+	}
+}
+
 func TestWaitForEventScansHistoryBeforeWaiting(t *testing.T) {
 	backend := newFakeBackend(t)
 	client := backend.dial(t)

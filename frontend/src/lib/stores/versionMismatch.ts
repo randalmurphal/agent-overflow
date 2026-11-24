@@ -5,12 +5,14 @@
 // asks the wording installed here when the refusal's message is first read,
 // so no surface words it again.
 //
-// The facts are ones the page already holds in memory: its own release
-// (PAGE_VERSION), each computer's release from its hello (`bundleVersion`,
-// which a computer before v0.0.15, or one that cannot build its bundle,
-// does not send), the computer's name, the release the phone app has
-// staged for its next start (stores/bundleNotice.svelte.ts), and where this
-// page's code came from, which decides the remedy:
+// The facts are ones the page already holds in memory. The refusing
+// computer's name and release (its hello's `bundleVersion`, which a
+// computer before v0.0.15, or one that cannot build its bundle, does not
+// send) are captured when its refusal arrives, so a reconnect or detach
+// before the message is read does not change what it says. Read when the
+// message is built: the page's own release (PAGE_VERSION), what the phone's
+// bundle updater has confirmed (stores/bundleNotice.svelte.ts), and where
+// this page's code came from, which decides the remedy:
 //
 //   served  the computer that answered this page's address served it (the
 //           desktop window, a browser on a share link). Reloading loads that
@@ -27,12 +29,16 @@ import { compareBundleVersions } from '../native/bundleVersion';
 import { isNativeShell } from '../native/platform';
 import { PAGE_VERSION } from '../pageVersion';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
-import { installDispatchRefusalWording, type DispatchRefusalKind } from '../transport/dispatchRefusal';
+import {
+  installDispatchRefusalWording,
+  type DispatchRefusalKind,
+  type RefusingComputer,
+} from '../transport/dispatchRefusal';
 import { hasHomeEndpoint } from '../transport/homeEndpoint';
 import { isWebviewHosted } from '../transport/pageHost';
 import { isClientMode } from '../transport/runMode';
 import { attachedBackendNameNow } from './attachedBackends.svelte';
-import { stagedBundleVersion } from './bundleNotice.svelte';
+import { bundleUpdate, type BundleUpdate } from './bundleNotice.svelte';
 import { getTransportHelloFor } from './transportStatus.svelte';
 
 export type PageSource = 'served' | 'local' | 'device';
@@ -53,8 +59,9 @@ export interface VersionMismatchFacts {
   /** For `served` when another computer served this page: its name and
    * its release now, or '' when it sent none. Read only when needed. */
   server: () => { name: string; version: string };
-  /** For `device`: the release the app loads at its next start, or ''. */
-  stagedVersion: string;
+  /** For `device`: what the bundle updater has confirmed about the next
+   * release (stores/bundleNotice.svelte.ts). */
+  update: BundleUpdate;
 }
 
 const PAGE_NOUN = { window: 'this window', page: 'this page', app: 'this app' } as const;
@@ -75,7 +82,7 @@ export function versionMismatchSentence(facts: VersionMismatchFacts): string {
       : `${lead} ${check}`;
   }
   if (order === 0) {
-    return `${lead} ${computer} runs the same version of Agent Overflow as ${here} (${pageVersion}). Copy the details of this error and report it.`;
+    return `${lead} ${computer} runs the same version of Agent Overflow as ${here} (${pageVersion}). Report this as a bug in Agent Overflow.`;
   }
   const now = facts.computerServedPage ? 'now runs' : 'runs';
   const relation = order < 0 ? 'older' : 'newer';
@@ -95,10 +102,13 @@ export function versionMismatchSentence(facts: VersionMismatchFacts): string {
     }
     case 'local':
       return `${what} Update Agent Overflow on this computer.`;
-    case 'device':
-      return (compareBundleVersions(facts.stagedVersion, computerVersion) ?? -1) >= 0
-        ? `${what} Close and reopen the app to load ${facts.stagedVersion}.`
-        : `${what} Install a newer version of the Agent Overflow app on this device.`;
+    case 'device': {
+      const { update } = facts;
+      const enough = update.kind !== 'none' && (compareBundleVersions(update.version, computerVersion) ?? -1) >= 0;
+      if (enough && update.kind === 'ready') return `${what} Close and reopen the app to load ${update.version}.`;
+      if (enough) return `${what} Agent Overflow ${update.version} is downloading. When the app says it is ready, close and reopen it.`;
+      return `${what} Install a newer version of the Agent Overflow app on this device.`;
+    }
   }
 }
 
@@ -113,20 +123,29 @@ function pageSource(): PageSource {
 }
 
 /**
- * The sentence for a refusal of `kind` from `backend`, or null when that
- * computer has detached, which leaves the transport's nameless sentence.
- * Looks up at most two names, the refusing computer's and, only when the
- * remedy needs it, the one that served this page, by key from memory.
+ * The refusing computer's name and release when its refusal arrived: one
+ * name, by key, from memory.
  */
-export function versionMismatchMessage(kind: DispatchRefusalKind, backend: BackendKey): string | null {
-  const computer = attachedBackendNameNow(backend);
-  if (computer === null) return null;
+export function captureRefusingComputer(backend: BackendKey): RefusingComputer {
+  return { backend, name: attachedBackendNameNow(backend), version: getTransportHelloFor(backend)?.bundleVersion ?? '' };
+}
+
+/**
+ * The sentence for a refusal of `kind` by `computer`, or null when that
+ * computer was no longer attached, which leaves the transport's nameless
+ * sentence. What it was is as captured; what the person can do now (which
+ * computer served this page, what the phone has staged) is read now, and
+ * the name of the computer that served the page only when the remedy
+ * needs it.
+ */
+export function versionMismatchMessage(kind: DispatchRefusalKind, computer: RefusingComputer): string | null {
+  if (computer.name === null) return null;
   const source = pageSource();
   return versionMismatchSentence({
     kind,
-    computer,
-    computerVersion: getTransportHelloFor(backend)?.bundleVersion ?? '',
-    computerServedPage: source === 'served' && backend === HOME_BACKEND,
+    computer: computer.name,
+    computerVersion: computer.version,
+    computerServedPage: source === 'served' && computer.backend === HOME_BACKEND,
     pageVersion: PAGE_VERSION,
     page: isNativeShell() ? 'app' : isWebviewHosted() ? 'window' : 'page',
     source,
@@ -134,11 +153,11 @@ export function versionMismatchMessage(kind: DispatchRefusalKind, backend: Backe
       name: attachedBackendNameNow(HOME_BACKEND) ?? 'the computer that served this page',
       version: getTransportHelloFor(HOME_BACKEND)?.bundleVersion ?? '',
     }),
-    stagedVersion: source === 'device' ? stagedBundleVersion() : '',
+    update: source === 'device' ? bundleUpdate() : { kind: 'none' },
   });
 }
 
 /** Called once at boot by `src/main.ts`. */
 export function installVersionMismatchWording(): void {
-  installDispatchRefusalWording(versionMismatchMessage);
+  installDispatchRefusalWording({ capture: captureRefusingComputer, word: versionMismatchMessage });
 }

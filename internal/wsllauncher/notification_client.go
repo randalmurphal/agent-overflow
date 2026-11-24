@@ -1,6 +1,7 @@
 package wsllauncher
 
 import (
+	"agent-overflow/internal/dispatchrefusal"
 	"context"
 	"encoding/json"
 	"errors"
@@ -655,11 +656,9 @@ type notificationClientFrame struct {
 }
 
 type notificationFrameError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	// Detail is read only for whether it is there: a dispatcher refusal
-	// carries none (internal/dispatchrefusal).
-	Detail json.RawMessage `json:"detail,omitempty"`
+	Code     string                   `json:"code"`
+	Message  string                   `json:"message"`
+	Dispatch *dispatchrefusal.Refusal `json:"dispatch,omitempty"`
 }
 
 type notificationEvent struct {

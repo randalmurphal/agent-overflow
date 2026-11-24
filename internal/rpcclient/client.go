@@ -135,22 +135,32 @@ func (c *Client) Advertises(capability string) bool {
 }
 
 // Error is a refusal the far side answered: its wire code and message, and
-// whether it carried the diagnostic detail a method's failure carries.
+// the frame's mark of its dispatcher refusing before any method ran, when
+// it sent one.
 type Error struct {
 	Code, Message string
-	Detailed      bool
+	Dispatch      *dispatchrefusal.Refusal
 }
 
 // Error is what a person reads: the far side's message, except for a
 // refusal its dispatcher gave before any method ran, which reads as
-// dispatchrefusal words it whatever text that computer sent. Message keeps
-// the wire text for logs and diagnosis.
-func (e *Error) Error() string { return dispatchrefusal.Message(e.Code, e.Message, e.Detailed) }
+// dispatchrefusal words it whatever release that computer runs. Message
+// keeps the wire text for logs and diagnosis.
+func (e *Error) Error() string { return dispatchrefusal.Message(e.Code, e.Message, e.Dispatch) }
 
-// DispatchRefusal reports whether the far side's dispatcher refused the
-// call before any method ran: it does not have the method, or could not
-// read its arguments. Such a call did not run there.
-func (e *Error) DispatchRefusal() bool { return dispatchrefusal.Is(e.Code, e.Detailed) }
+// DispatchRefusal is the far side's dispatcher refusing the call before
+// any method ran (it does not have the method, or could not read its
+// arguments), or nil for any other answer. Such a call did not run there.
+func (e *Error) DispatchRefusal() *dispatchrefusal.Refusal {
+	return dispatchrefusal.Read(e.Code, e.Message, e.Dispatch)
+}
+
+// Unsupported reports whether the far side does not have the method: the
+// answer an older release gives for a call it predates.
+func (e *Error) Unsupported() bool {
+	refusal := e.DispatchRefusal()
+	return refusal != nil && refusal.Kind == dispatchrefusal.KindUnsupported
+}
 
 // NotSentError marks a failed call whose request frame never reached the
 // socket, so the far side cannot have acted on it. Every other failure of
@@ -246,7 +256,7 @@ func (c *Client) await(ctx context.Context, id string, result any) error {
 			continue
 		}
 		if frame.Error != nil {
-			return &Error{Code: frame.Error.Code, Message: frame.Error.Message, Detailed: frame.Error.Detail != nil}
+			return &Error{Code: frame.Error.Code, Message: frame.Error.Message, Dispatch: frame.Error.Dispatch}
 		}
 		if result == nil {
 			return nil

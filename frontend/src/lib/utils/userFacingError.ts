@@ -22,7 +22,6 @@
 // message, which the transport clamps. A reviewed message
 // (errorsx.Public) is already the sentence to show and is not split.
 
-import { dispatchRefusalKind } from '../transport/dispatchRefusal';
 import { scopeRefusalMessage } from '../transport/scopeRefusal';
 import { TransportError } from '../transport/wsClient';
 
@@ -41,7 +40,11 @@ export function userFacingError(err: unknown, fallback = 'Something went wrong.'
   // already wrote the whole sentence (transport/dispatchRefusal.ts), and a
   // computer's name in it may hold a colon or an id the trimming below
   // would cut.
-  if (err instanceof TransportError && dispatchRefusalKind(err.code, err.detail) !== null) return err.message;
+  if (err instanceof TransportError && err.dispatchRefusal !== undefined) return err.message;
+  // An older computer passing on another computer's dispatcher refusal: its
+  // message names that computer and carries the advice its release could
+  // not give, so it is shown whole.
+  if (err instanceof TransportError && err.forwardedRefusal !== undefined) return err.message;
   let raw = '';
   if (err instanceof Error) {
     raw = err.message;

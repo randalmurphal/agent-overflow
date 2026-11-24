@@ -79,7 +79,7 @@ func TestRegisterLocalOnlyReceiver(t *testing.T) {
 		// Identical, field for field, to a method this computer does not
 		// have at all.
 		_, missing := d.ResolveForOrigin(0, "NoSuchMethod", false)
-		if !reflect.DeepEqual(fe, missing) || fe.Message != dispatchrefusal.Unsupported {
+		if !reflect.DeepEqual(fe, missing) || fe.Message != dispatchrefusal.Unsupported || fe.Dispatch == nil || fe.Dispatch.Kind != dispatchrefusal.KindUnsupported {
 			t.Fatalf("refusal by %s = %+v, want the unregistered method's %+v", probe.by, fe, missing)
 		}
 	}

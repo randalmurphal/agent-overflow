@@ -75,36 +75,47 @@ func TestNotificationClientShutdownPostsTheBackendDoor(t *testing.T) {
 // did not run, so the caller must be able to tell that from a lost call
 // and close the Job Object instead.
 func TestNotificationClientShutdownSurfacesRefusal(t *testing.T) {
-	wsURL := startBridgeStub(t, func(ctx context.Context, conn *websocket.Conn, _ int) error {
-		if err := expectSubscribeAndReplay(ctx, conn); err != nil {
-			return err
-		}
-		frame, err := readClientFrame(ctx, conn)
-		if err != nil {
-			return err
-		}
-		return writeServerFrame(ctx, conn, notificationServerFrame{
-			Type:  "rpc",
-			ID:    frame.ID,
-			Error: &notificationFrameError{Code: "method_not_found", Message: "method not registered"},
+	for _, tc := range []struct {
+		name    string
+		refusal notificationFrameError
+		want    string
+	}{
+		// A backend still sending the old text reads as the version sentence.
+		{"a release before the dispatch mark", notificationFrameError{Code: "method_not_found", Message: "method not registered"},
+			RPCShutdownBackend + " RPC method_not_found: " + dispatchrefusal.Unsupported},
+		// A current backend says what did not fit beside it.
+		{"this release", notificationFrameError{Code: "bad_params", Message: dispatchrefusal.Unreadable, Dispatch: dispatchrefusal.CountRefusal(RPCShutdownBackend, 0, 1, false, false)},
+			RPCShutdownBackend + " RPC bad_params: " + dispatchrefusal.Unreadable + " (ShutdownBackend: expected 0 arguments, got 1)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			refusal := tc.refusal
+			wsURL := startBridgeStub(t, func(ctx context.Context, conn *websocket.Conn, _ int) error {
+				if err := expectSubscribeAndReplay(ctx, conn); err != nil {
+					return err
+				}
+				frame, err := readClientFrame(ctx, conn)
+				if err != nil {
+					return err
+				}
+				return writeServerFrame(ctx, conn, notificationServerFrame{Type: "rpc", ID: frame.ID, Error: &refusal})
+			})
+
+			client, _ := newTestBridgeClient(t, wsURL, func(selfupdate.InstallDirective) {})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			go client.Run(ctx)
+
+			err := client.Shutdown(ctx)
+			var refused *RPCRefusedError
+			if !errors.As(err, &refused) {
+				t.Fatalf("Shutdown error = %v, want an *RPCRefusedError", err)
+			}
+			if refused.Method != RPCShutdownBackend || refused.Code != refusal.Code || refused.Message != refusal.Message {
+				t.Fatalf("refusal = %+v, want the shutdown door refused, its wire code and text kept", refused)
+			}
+			if err.Error() != tc.want {
+				t.Fatalf("Error() = %q, want %q", err.Error(), tc.want)
+			}
 		})
-	})
-
-	client, _ := newTestBridgeClient(t, wsURL, func(selfupdate.InstallDirective) {})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	go client.Run(ctx)
-
-	err := client.Shutdown(ctx)
-	var refused *RPCRefusedError
-	if !errors.As(err, &refused) {
-		t.Fatalf("Shutdown error = %v, want an *RPCRefusedError", err)
-	}
-	if refused.Method != RPCShutdownBackend || refused.Code != "method_not_found" || refused.Message != "method not registered" {
-		t.Fatalf("refusal = %+v, want the shutdown door refused as method_not_found, its wire text kept", refused)
-	}
-	// A backend still sending the old text reads as the version sentence.
-	if want := RPCShutdownBackend + " RPC method_not_found: " + dispatchrefusal.Unsupported; err.Error() != want {
-		t.Fatalf("Error() = %q, want %q", err.Error(), want)
 	}
 }

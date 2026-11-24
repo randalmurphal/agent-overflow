@@ -1,6 +1,8 @@
 package dispatchrefusal
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,20 +49,91 @@ func TestTheFrontendSaysTheSameSentences(t *testing.T) {
 	}
 }
 
-func TestOnlyTheDispatchersOwnRefusalIsWorded(t *testing.T) {
+// The frames below are what the releases named sent, before any method ran
+// (internal/transport/dispatcher.go at each tag), and what a method sent
+// under the same codes.
+func TestWhoRefusedIsReadFromTheFieldOrAnOlderReleasesExactText(t *testing.T) {
+	count := CountRefusal("GitPush", 1, 2, false, false)
 	for _, tc := range []struct {
-		code     string
-		detailed bool
-		want     string
+		name, code, message string
+		field               *Refusal
+		want                string
 	}{
-		{CodeMethodNotFound, false, unsupported},
-		{CodeBadParams, false, unreadable},
-		{CodeMethodNotFound, true, "wire"},
-		{CodeBadParams, true, "wire"},
-		{"method_error", false, "wire"},
+		{"this release, a missing method", CodeMethodNotFound, Unsupported, UnsupportedRefusal(), unsupported},
+		{"this release, the argument count", CodeBadParams, Unreadable, count, unreadable + " (GitPush: expected 1 arguments, got 2)"},
+		{"this release, an argument that did not decode", CodeBadParams, Unreadable, &Refusal{Kind: KindUnreadable, Method: "ListPRCommits", Param: 2}, unreadable + " (ListPRCommits argument 2 could not be read)"},
+		{"v0.0.19, a missing method", CodeMethodNotFound, "method not registered", nil, unsupported},
+		{"v0.0.18, the argument count", CodeBadParams, "main.App.GitPush: expected 1 params, got 2", nil, unreadable + " (main.App.GitPush: expected 1 params, got 2)"},
+		{"v0.0.17, ListPRCommits' revision", CodeBadParams, "bad parameter 2", nil, unreadable + " (bad parameter 2)"},
+		{"v0.0.15, a page of history", CodeBadParams, "bad parameter 3", nil, unreadable + " (bad parameter 3)"},
+		{"v0.0.14, too many arguments", CodeBadParams, "too many parameters", nil, unreadable + " (too many parameters)"},
+		{"v0.0.19, a variadic method", CodeBadParams, "main.App.Notify: variadic expects at least 1 params, got 0", nil, unreadable + " (main.App.Notify: variadic expects at least 1 params, got 0)"},
+		{"a method's own validation", CodeBadParams, "Choose at least one project for the assistant, or all projects.", nil, "Choose at least one project for the assistant, or all projects."},
+		{"v0.0.16 forwarding another computer's refusal", CodeMethodNotFound, `Could not read the log of "build" on Nexus: The destination could not complete the request. Its reported error: method not registered. If it is running an older AO build, update it for detailed command errors.`, nil, `Could not read the log of "build" on Nexus: The destination could not complete the request. Its reported error: method not registered. If it is running an older AO build, update it for detailed command errors.`},
+		{"another code", "method_error", "method not registered", nil, "method not registered"},
 	} {
-		if got := Message(tc.code, "wire", tc.detailed); got != tc.want {
-			t.Fatalf("Message(%s, detailed %v) = %q, want %q", tc.code, tc.detailed, got, tc.want)
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Message(tc.code, tc.message, tc.field); got != tc.want {
+				t.Fatalf("Message = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// What did not fit comes from a closed set of shapes: a decoder's own text
+// can repeat the value it refused, and never reaches the frame.
+func TestADecodeRefusalSaysOnlyTypesAndKinds(t *testing.T) {
+	var revision string
+	mismatch := json.Unmarshal([]byte(`{"sha":"secret-value"}`), &revision)
+	if got := DecodeRefusal("ListPRCommits", 2, mismatch); got.Problem != "expected string, got object" || got.Method != "ListPRCommits" || got.Param != 2 {
+		t.Fatalf("type mismatch = %+v", got)
+	}
+	var count int
+	number := json.Unmarshal([]byte(`-5.5`), &count)
+	if got := DecodeRefusal("X", 1, number); got.Problem != "expected int, got number" {
+		t.Fatalf("number = %+v", got)
+	}
+	var nested struct {
+		Rev struct {
+			SHA string `json:"sha"`
+		} `json:"rev"`
+	}
+	field := json.Unmarshal([]byte(`{"rev":{"sha":7}}`), &nested)
+	if got := DecodeRefusal("X", 1, field); got.Problem != "expected string at rev.sha, got number" {
+		t.Fatalf("nested = %+v", got)
+	}
+	var refuses echoing
+	custom := json.Unmarshal([]byte(`"secret-value"`), &refuses)
+	got := DecodeRefusal("SetThing", 1, custom)
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Problem != "" || strings.Contains(string(encoded), "secret-value") {
+		t.Fatalf("a custom decoder's rejection = %s, want no problem text", encoded)
+	}
+	if got.Diagnostic() != "SetThing argument 1 could not be read" {
+		t.Fatalf("diagnostic = %q", got.Diagnostic())
+	}
+}
+
+// echoing rejects every value, repeating it, as a careless decoder would.
+type echoing struct{}
+
+func (*echoing) UnmarshalJSON(raw []byte) error {
+	return fmt.Errorf("not a valid thing: %s", raw)
+}
+
+// The frontend reads frames without the field from the same table.
+func TestTheFrontendHasTheSameLegacyTable(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "frontend", "src", "lib", "transport", "dispatchRefusal.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range legacy {
+		want := fmt.Sprintf("{ code: '%s', kind: '%s', text: /%s/ }", entry.code, entry.kind, entry.text.String())
+		if !strings.Contains(string(source), want) {
+			t.Fatalf("frontend/src/lib/transport/dispatchRefusal.ts lacks %s", want)
 		}
 	}
 }

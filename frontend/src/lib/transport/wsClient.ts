@@ -1,6 +1,17 @@
 import { presentAuthReason } from './authReason';
 import { parseErrorDetail, type ErrorDetail } from './errorDetail';
-import { dispatchRefusalKind, dispatchRefusalMessage, UNREADABLE_SENTENCE, UNSUPPORTED_SENTENCE } from './dispatchRefusal';
+import {
+  captureRefusingComputer,
+  dispatchDiagnostic,
+  dispatchRefusalKind,
+  dispatchRefusalMessage,
+  FORWARDED_ADVICE,
+  forwardedRefusalKind,
+  parseDispatchMark,
+  UNREADABLE_SENTENCE,
+  UNSUPPORTED_SENTENCE,
+  type DispatchRefusalKind,
+} from './dispatchRefusal';
 import { createNetworkSocket } from './networkSocket';
 import { networkFetch } from './networkFetch';
 import { DamagedTrustError } from '../native/networkTrust';
@@ -505,26 +516,51 @@ export class TransportError extends Error {
   // detail is the backend's diagnostic record of a failure: its log
   // reference, method and, for a same-machine caller, the wrap chain.
   detail?: ErrorDetail;
+  // dispatchRefusal is set when the computer's dispatcher refused the call
+  // before any method ran (./dispatchRefusal.ts): the one place a surface
+  // reads that from.
+  dispatchRefusal?: DispatchRefusalKind;
+  // forwardedRefusal is set when a computer on v0.0.15 to v0.0.19 passed on
+  // another computer's dispatcher refusal: its message is the one sent,
+  // with FORWARDED_ADVICE after it.
+  forwardedRefusal?: DispatchRefusalKind;
   constructor(code: string, message: string, fields: TransportErrorFields = {}) {
-    const { reason, scope, transfer, backgroundAgents, reserve, resumeAt, detail, backend = HOME_BACKEND } = fields;
+    const { reason, scope, transfer, backgroundAgents, reserve, resumeAt, detail, dispatch, backend = HOME_BACKEND } = fields;
     const parsedDetail = parseErrorDetail(detail, backend);
-    const refusal = dispatchRefusalKind(code, parsedDetail);
+    const mark = parseDispatchMark(dispatch);
+    const refusal = dispatchRefusalKind(code, message, mark);
     // The dispatcher's own refusal is worded once here for every surface
-    // (./dispatchRefusal.ts), with the wire text as the cause, which
-    // Details and a copied report list. The sentence is built when the
-    // message is first read: a caller that recovers from the refusal never
-    // reads it, and nothing the wording does can stop the call settling.
+    // (./dispatchRefusal.ts). What did not fit, or an older release's own
+    // text, is the cause, which Details and a copied report list. The
+    // sentence is built when the message is first read: a caller that
+    // recovers from the refusal never reads it, and nothing the wording
+    // does can stop the call settling.
     if (refusal !== null) {
-      super(refusal === 'unsupported' ? UNSUPPORTED_SENTENCE : UNREADABLE_SENTENCE, { cause: message });
+      const diagnostic = mark === undefined ? '' : dispatchDiagnostic(mark);
+      super(refusal === 'unsupported' ? UNSUPPORTED_SENTENCE : UNREADABLE_SENTENCE, { cause: mark === undefined ? message : diagnostic || undefined });
+      // Facts about the computer as it was when it refused: a reconnect on
+      // another release, or a detach, before the message is read does not
+      // change what it says about that refusal.
+      const computer = captureRefusingComputer(backend);
       let worded: string | undefined;
       Object.defineProperty(this, 'message', {
         configurable: true,
         enumerable: false,
-        get: () => (worded ??= dispatchRefusalMessage(refusal, backend)),
+        get: () => (worded ??= dispatchRefusalMessage(refusal, computer)),
         set: (value: string) => { worded = value; },
       });
+      this.dispatchRefusal = refusal;
     } else {
-      super(code === 'auth_failed' ? presentAuthReason(reason).title : message);
+      // An older computer passing on another computer's dispatcher refusal
+      // keeps its message, which names that computer, and gains the advice
+      // its release could not give; the wire text stays as the cause.
+      const forwarded = forwardedRefusalKind(code, message, mark);
+      if (forwarded !== null) {
+        super(`${message} ${FORWARDED_ADVICE}`, { cause: message });
+        this.forwardedRefusal = forwarded;
+      } else {
+        super(code === 'auth_failed' ? presentAuthReason(reason).title : message);
+      }
     }
     this.name = 'TransportError';
     this.code = code;
@@ -556,6 +592,7 @@ export function transportErrorFromFrame(error: NonNullable<ServerRPCFrame['error
     reserve: error.reserve,
     resumeAt: error.resumeAt,
     detail: error.detail,
+    dispatch: error.dispatch,
     backend,
   });
 }
@@ -569,6 +606,8 @@ export interface TransportErrorFields {
   reserve?: unknown;
   resumeAt?: unknown;
   detail?: unknown;
+  /** The dispatcher's mark of its own refusal (./dispatchRefusal.ts). */
+  dispatch?: unknown;
   /** The backend that answered, stamped onto detail. Defaults to HOME. */
   backend?: BackendKey;
 }

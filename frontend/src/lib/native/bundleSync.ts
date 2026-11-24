@@ -11,7 +11,13 @@ import { networkFetch } from '../transport/networkFetch';
 // with its notice. Neither reconnection nor hash differences imply an upgrade.
 
 import { onBackendHelloChange } from '../stores/transportStatus.svelte';
-import { clearBundleNotice, noteBundleReady, noteBundleTooOld } from '../stores/bundleNotice.svelte';
+import {
+  clearBundleNotice,
+  noteBundleDownloading,
+  noteBundleDownloadStopped,
+  noteBundleReady,
+  noteBundleTooOld,
+} from '../stores/bundleNotice.svelte';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { fetchPairedComputer, pairedSessionHeaders } from '../transport/deviceSession';
 import type { LeaseState } from '../transport/frames';
@@ -103,8 +109,8 @@ export type BundleDecision =
   | { kind: 'joined'; id: string }
   /** A different id is downloading. Reconsider when it settles. */
   | { kind: 'busy'; id: string }
-  /** Fetch it. */
-  | { kind: 'download'; id: string; backend: BackendKey };
+  /** Fetch it: release `version`, from `backend`. */
+  | { kind: 'download'; id: string; version: string; backend: BackendKey };
 
 /**
  * One decision, from facts alone.
@@ -158,7 +164,7 @@ export function decideBundleSync(input: BundleSyncInput): BundleDecision {
   // end. A different id resets the count, and so does a relaunch.
   if (input.attempts >= MAX_ATTEMPTS_PER_BUNDLE) return { kind: 'exhausted', id };
 
-  return { kind: 'download', id, backend: target.backend };
+  return { kind: 'download', id, version: target.bundleVersion, backend: target.backend };
 }
 
 /** Highest known release wins; home breaks equal-version ties. */
@@ -369,15 +375,16 @@ function evaluate(): void {
       noteBundleTooOld(decision.backendName);
       return;
     case 'download':
-      void run(decision.id, decision.backend);
+      void run(decision.id, decision.version, decision.backend);
       return;
   }
 }
 
-async function run(id: string, backend: BackendKey): Promise<void> {
+async function run(id: string, version: string, backend: BackendKey): Promise<void> {
   const launch = generation;
   const bridge = plugin!;
   inFlight = id;
+  noteBundleDownloading(version);
   const attempt = (attemptsById.get(id) ?? 0) + 1;
   attemptsById.set(id, attempt);
   // Named apart from the module-level `installed` listener list on purpose:
@@ -413,6 +420,7 @@ async function run(id: string, backend: BackendKey): Promise<void> {
   } finally {
     if (launch === generation) {
       inFlight = '';
+      if (!staged) noteBundleDownloadStopped();
       if (!selected(id)) evaluate();
     }
   }
@@ -433,12 +441,14 @@ async function discardPending(id: string): Promise<void> {
   const launch = generation;
   const bridge = plugin!;
   inFlight = id;
+  // The staged release is obsolete whether or not the native store confirms
+  // the discard: nothing may promise that a restart loads it.
+  clearBundleNotice();
   try {
     await bridge.discardPending({ id });
     const state = await bridge.state();
     if (launch !== generation) return;
     nativeState = state;
-    clearBundleNotice();
   } catch (error) {
     if (launch !== generation) return;
     console.warn('bundleSync: could not discard obsolete pending update', error);

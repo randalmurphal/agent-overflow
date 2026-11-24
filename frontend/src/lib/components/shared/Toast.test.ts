@@ -40,6 +40,39 @@ describe('<Toast> error reports', () => {
     delete (navigator as { clipboard?: unknown }).clipboard;
   });
 
+  // A computer's refusal of the call: the caller's headline cannot say
+  // which computer to update, so the reason shows whole beside it, and the
+  // toast stays until dismissed (v0.0.15 refusing "Failed to load older
+  // messages" used to leave after five seconds, its remedy under Details).
+  it('shows a computer\'s refusal beside the headline and keeps it up', async () => {
+    vi.useFakeTimers();
+    const refusal = new TransportError('bad_params', 'bad parameter 3');
+    addErrorToast('Failed to load older messages', refusal);
+    const { getByTestId } = render(Toast);
+    expect(getByTestId('toast-message').textContent).toBe('Failed to load older messages');
+    expect(getByTestId('toast-refusal').textContent).toBe(refusal.message);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(getToasts()).toHaveLength(1);
+  });
+
+  it('shows a refusal passed as its own headline once, whole', () => {
+    const refusal = new TransportError('method_not_found', 'method not registered');
+    addErrorToast(refusal.message, refusal);
+    const { getByTestId, queryByTestId } = render(Toast);
+    expect(getByTestId('toast-message').textContent).toBe(refusal.message);
+    expect(getByTestId('toast-message').className).not.toContain('line-clamp');
+    expect(queryByTestId('toast-refusal')).toBeNull();
+  });
+
+  it('keeps its usual delay and adds nothing for any other failure', async () => {
+    vi.useFakeTimers();
+    addErrorToast('Could not save', new TransportError('bad_params', 'Choose at least one project for the assistant, or all projects.'));
+    const { queryByTestId } = render(Toast);
+    expect(queryByTestId('toast-refusal')).toBeNull();
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(getToasts()).toHaveLength(0);
+  });
+
   it('expands the error chain and stays up while expanded', async () => {
     vi.useFakeTimers();
     addErrorToast('Could not resend the edited message', revertFailure(), 1000);

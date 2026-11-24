@@ -5,8 +5,9 @@
 // sentences are pinned to the Go side's in internal/dispatchrefusal.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { TransportError, type TransportHello } from '../transport/wsClient';
+import { TransportError, transportErrorFromFrame, type TransportHello } from '../transport/wsClient';
 import {
+  FORWARDED_ADVICE,
   UNREADABLE_SENTENCE,
   UNSUPPORTED_SENTENCE,
   installDispatchRefusalWording,
@@ -18,7 +19,13 @@ import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { __resetPageHostForTest, setHostWindowFromBootstrap } from '../transport/pageHost';
 import { installVersionMismatchWording, versionMismatchSentence, type VersionMismatchFacts } from './versionMismatch';
-import { __resetBundleNoticeForTest, noteBundleReady } from './bundleNotice.svelte';
+import {
+  __resetBundleNoticeForTest,
+  clearBundleNotice,
+  noteBundleDownloading,
+  noteBundleDownloadStopped,
+  noteBundleReady,
+} from './bundleNotice.svelte';
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
 import { errorReport, errorReportText } from '../utils/errorReport';
 import { userFacingError } from '../utils/userFacingError';
@@ -35,7 +42,7 @@ function facts(overrides: Partial<VersionMismatchFacts>): VersionMismatchFacts {
     page: 'window',
     source: 'served',
     server: () => ({ name: 'Desk', version: '0.0.20' }),
-    stagedVersion: '',
+    update: { kind: 'none' },
     ...overrides,
   };
 }
@@ -67,14 +74,18 @@ describe('the sentences for a refusal', () => {
       'Studio does not support this action. Studio runs Agent Overflow 0.0.21, newer than this window (0.0.20). Update Agent Overflow on this computer.'],
     ['a paired computer newer, nothing newer staged on the phone', { computerVersion: '0.0.21', source: 'device', page: 'app' },
       'Studio does not support this action. Studio runs Agent Overflow 0.0.21, newer than this app (0.0.20). Install a newer version of the Agent Overflow app on this device.'],
-    ['a paired computer newer, an older release staged on the phone', { computerVersion: '0.0.22', source: 'device', page: 'app', stagedVersion: '0.0.21' },
+    ['a paired computer newer, an older release staged on the phone', { computerVersion: '0.0.22', source: 'device', page: 'app', update: { kind: 'ready', version: '0.0.21' } },
       'Studio does not support this action. Studio runs Agent Overflow 0.0.22, newer than this app (0.0.20). Install a newer version of the Agent Overflow app on this device.'],
-    ['a paired computer newer, its release staged on the phone', { computerVersion: '0.0.21', source: 'device', page: 'app', stagedVersion: '0.0.21' },
+    ['a paired computer newer, its release downloading on the phone', { computerVersion: '0.0.21', source: 'device', page: 'app', update: { kind: 'downloading', version: '0.0.21' } },
+      'Studio does not support this action. Studio runs Agent Overflow 0.0.21, newer than this app (0.0.20). Agent Overflow 0.0.21 is downloading. When the app says it is ready, close and reopen it.'],
+    ['a paired computer newer, an older release downloading on the phone', { computerVersion: '0.0.22', source: 'device', page: 'app', update: { kind: 'downloading', version: '0.0.21' } },
+      'Studio does not support this action. Studio runs Agent Overflow 0.0.22, newer than this app (0.0.20). Install a newer version of the Agent Overflow app on this device.'],
+    ['a paired computer newer, its release staged on the phone', { computerVersion: '0.0.21', source: 'device', page: 'app', update: { kind: 'ready', version: '0.0.21' } },
       'Studio does not support this action. Studio runs Agent Overflow 0.0.21, newer than this app (0.0.20). Close and reopen the app to load 0.0.21.'],
     ['a paired computer of unknown version', { computerVersion: '' },
       'Studio does not support this action. This window cannot tell which version of Agent Overflow Studio runs. Check that Studio and this window run the same version, and update whichever is older.'],
     ['a paired computer reporting the page\'s own version', { computerVersion: '0.0.20' },
-      'Studio does not support this action. Studio runs the same version of Agent Overflow as this window (0.0.20). Copy the details of this error and report it.'],
+      'Studio does not support this action. Studio runs the same version of Agent Overflow as this window (0.0.20). Report this as a bug in Agent Overflow.'],
     ['the home computer, updated under an open page', { computerServedPage: true, computerVersion: '0.0.21', page: 'page' },
       'Studio does not support this action. Studio now runs Agent Overflow 0.0.21, newer than this page (0.0.20). Reload the page.'],
     ['the home computer, downgraded under an open window', { computerServedPage: true },
@@ -82,7 +93,7 @@ describe('the sentences for a refusal', () => {
     ['the home computer, version unknown', { computerServedPage: true, computerVersion: 'not-a-version', page: 'page' },
       'Studio does not support this action. This page cannot tell which version of Agent Overflow Studio runs. Check that Studio and this page run the same version, and update whichever is older. If Studio was updated while this page was open, reload the page.'],
     ['the home computer, the page\'s own version', { computerServedPage: true, computerVersion: '0.0.20', page: 'page' },
-      'Studio does not support this action. Studio runs the same version of Agent Overflow as this page (0.0.20). Copy the details of this error and report it.'],
+      'Studio does not support this action. Studio runs the same version of Agent Overflow as this page (0.0.20). Report this as a bug in Agent Overflow.'],
   ])('%s', (_case, overrides, sentence) => {
     expect(versionMismatchSentence(facts(overrides))).toBe(sentence);
     // A person's toast on a release before this one keeps the text after
@@ -132,17 +143,93 @@ describe('a refused call as every surface reads it', () => {
 
   it('words arguments the computer could not read, from a computer that still sends the old text', () => {
     stageBackend({ id: 'studio', name: 'Studio' }).setHello(hello('0.0.1'));
-    const err = new TransportError('bad_params', 'App.GitPush: expected 1 params, got 2', { backend: 'studio' });
+    const err = new TransportError('bad_params', 'main.App.GitPush: expected 1 params, got 2', { backend: 'studio' });
     expect(userFacingError(err)).toBe(`Studio could not read this request. Studio runs Agent Overflow 0.0.1, older than this page (${PAGE_VERSION}). Update Agent Overflow on Studio.`);
-    expect(err.cause).toBe('App.GitPush: expected 1 params, got 2');
+    expect(err.cause).toBe('main.App.GitPush: expected 1 params, got 2');
   });
 
-  it('leaves a refusal a method returned as the method said it', () => {
-    const detail = { ref: 'ref-1', method: 'ReadThreadRemoteLog', at: 1, chain: [] };
-    const forwarded = new TransportError('method_not_found', 'Could not read the log of "build" on Nexus: method not registered', { detail });
-    expect(forwarded.message).toBe('Could not read the log of "build" on Nexus: method not registered');
-    const invalid = new TransportError('bad_params', 'Use a label of 80 characters or fewer.', { detail });
-    expect(userFacingError(invalid)).toBe('Use a label of 80 characters or fewer.');
+  // The real frames of the releases named, as their dispatchers sent them
+  // before any method ran (internal/transport/dispatcher.go at each tag).
+  it.each<[string, string, string, Record<string, unknown>, 'unsupported' | 'unreadable', string]>([
+    ['v0.0.17 refusing ListPRCommits\' revision, with detail', 'bad_params', 'bad parameter 2',
+      { detail: { ref: 'ref-1', method: 'ListPRCommits', at: 1, chain: ['json: cannot unmarshal object into Go value of type string'] } }, 'unreadable', 'bad parameter 2'],
+    ['v0.0.15 refusing a page of history', 'bad_params', 'bad parameter 3', {}, 'unreadable', 'bad parameter 3'],
+    ['v0.0.19 without the method', 'method_not_found', 'method not registered', {}, 'unsupported', 'method not registered'],
+  ])('words %s as the refusal it is', (_case, code, message, fields, kind, cause) => {
+    stageBackend({ id: 'studio', name: 'Studio' }).setHello(hello('0.0.1'));
+    const err = new TransportError(code, message, { ...fields, backend: 'studio' });
+    const lead = kind === 'unsupported' ? 'Studio does not support this action.' : 'Studio could not read this request.';
+    expect(userFacingError(err)).toBe(`${lead} Studio runs Agent Overflow 0.0.1, older than this page (${PAGE_VERSION}). Update Agent Overflow on Studio.`);
+    expect(err.dispatchRefusal).toBe(kind);
+    expect(err.cause).toBe(cause);
+  });
+
+  it('words this release\'s marked refusal and puts what did not fit in Details', () => {
+    stageBackend({ id: 'studio', name: 'Studio' }).setHello(hello('0.0.1'));
+    const err = transportErrorFromFrame({ code: 'bad_params', message: UNREADABLE_SENTENCE,
+      dispatch: { refusal: 'unreadable', method: 'GitPush', problem: 'expected 1 arguments, got 2' } }, 'studio');
+    expect(err.message).toBe(`Studio could not read this request. Studio runs Agent Overflow 0.0.1, older than this page (${PAGE_VERSION}). Update Agent Overflow on Studio.`);
+    expect(errorReportText(errorReport(err, { context: 'Could not push' }))).toContain('2. GitPush: expected 1 arguments, got 2');
+    const decode = transportErrorFromFrame({ code: 'bad_params', message: UNREADABLE_SENTENCE,
+      dispatch: { refusal: 'unreadable', method: 'ListPRCommits', param: 2 } }, 'studio');
+    expect(decode.cause).toBe('ListPRCommits argument 2 could not be read');
+  });
+
+  // The field comes from whichever computer answered: what does not fit
+  // the dispatcher's own bounds is left out of Details, and a kind this
+  // page does not know is a method's failure, shown as sent.
+  it('keeps out of Details what a marked refusal holds beyond the dispatcher\'s bounds', () => {
+    const oversized = transportErrorFromFrame({ code: 'bad_params', message: UNREADABLE_SENTENCE,
+      dispatch: { refusal: 'unreadable', method: 'M'.repeat(129), param: 65, problem: 'p'.repeat(161) } }, 'studio');
+    expect(oversized.dispatchRefusal).toBe('unreadable');
+    expect(oversized.cause).toBeUndefined();
+    const partly = transportErrorFromFrame({ code: 'bad_params', message: UNREADABLE_SENTENCE,
+      dispatch: { refusal: 'unreadable', method: 'GitPush', param: 0, problem: 'p'.repeat(161) } }, 'studio');
+    expect(partly.cause).toBe('GitPush could not be read');
+    const later = transportErrorFromFrame({ code: 'bad_params', message: 'A later release says this.',
+      dispatch: { refusal: 'unforeseen' } }, 'studio');
+    expect(later.dispatchRefusal).toBeUndefined();
+    expect(later.message).toBe('A later release says this.');
+  });
+
+  it('leaves a method\'s own failure under the same codes as the method said it', () => {
+    const detail = { ref: 'ref-1', method: 'SetAssistantProjects', at: 1, chain: [] };
+    const invalid = new TransportError('bad_params', 'Choose at least one project for the assistant, or all projects.', { detail });
+    expect(invalid.dispatchRefusal).toBeUndefined();
+    expect(userFacingError(invalid)).toBe('Choose at least one project for the assistant, or all projects.');
+    const bare = new TransportError('bad_params', 'Choose at least one project for the assistant, or all projects.');
+    expect(userFacingError(bare)).toBe('Choose at least one project for the assistant, or all projects.');
+    // A current computer forwarding a refusal sends its own code.
+    const forwarded = new TransportError('remote_unsupported', 'Could not read the log of "build" on Nexus: That computer does not support this action.', { detail });
+    expect(userFacingError(forwarded)).toBe(forwarded.message);
+  });
+
+  // v0.0.16's Desk read Nexus' log for this page and Nexus lacked the
+  // method: Desk ran its own method and passed the refusal on, with no
+  // detail, under Nexus' code.
+  it('keeps an older computer\'s forwarded refusal as it said it, with the advice its release could not give', () => {
+    const message = 'Could not read the log of "build" on Nexus: The destination could not complete the request. Its reported error: method not registered. If it is running an older AO build, update it for detailed command errors.';
+    const err = new TransportError('method_not_found', message);
+    expect(err.dispatchRefusal).toBeUndefined();
+    expect(err.message).toBe(`${message} ${FORWARDED_ADVICE}`);
+    expect(userFacingError(err)).toBe(`${message} ${FORWARDED_ADVICE}`);
+    expect(err.cause).toBe(message);
+    const arguments_ = new TransportError('bad_params', message.replace('method not registered', 'main.App.RemoteCommandReadLog: expected 3 params, got 4'));
+    expect(arguments_.forwardedRefusal).toBe('unreadable');
+    const other = new TransportError('method_not_found', message.replace('method not registered', 'not a git repository'));
+    expect(userFacingError(other)).not.toContain(FORWARDED_ADVICE);
+  });
+
+  // Stop All holds one rejection while others settle; by the time its
+  // message is read the computer may have reconnected on another release,
+  // or detached.
+  it('says what the computer was when it refused, not what it is when read', () => {
+    const studio = stageBackend({ id: 'studio', name: 'Studio' });
+    studio.setHello(hello('0.0.1'));
+    const refused = new TransportError('method_not_found', 'method not registered', { backend: 'studio' });
+    studio.setHello(hello(PAGE_VERSION));
+    resetStagedBackends();
+    expect(refused.message).toBe(`Studio does not support this action. Studio runs Agent Overflow 0.0.1, older than this page (${PAGE_VERSION}). Update Agent Overflow on Studio.`);
   });
 
   it('shows a computer name holding a colon whole', () => {
@@ -173,15 +260,20 @@ describe('a refused call as every surface reads it', () => {
     expect(err.message).toBe(`Desk does not support this action. Desk runs Agent Overflow 999.0.0, newer than this page (${PAGE_VERSION}). Update Agent Overflow on this computer.`);
   });
 
-  it('takes the phone\'s remedy from what the bundle updater has staged', () => {
+  it('takes the phone\'s remedy from what the bundle updater has confirmed', () => {
     setHomeEndpoint('https://desk.example:4443');
     __setTransportHelloForTest(hello('999.0.0'));
     const what = `Desk does not support this action. Desk runs Agent Overflow 999.0.0, newer than this page (${PAGE_VERSION}).`;
-    expect(new TransportError('method_not_found', 'method not registered').message)
-      .toBe(`${what} Install a newer version of the Agent Overflow app on this device.`);
+    const read = () => new TransportError('method_not_found', 'method not registered').message;
+    expect(read()).toBe(`${what} Install a newer version of the Agent Overflow app on this device.`);
+    noteBundleDownloading('999.0.0');
+    expect(read()).toBe(`${what} Agent Overflow 999.0.0 is downloading. When the app says it is ready, close and reopen it.`);
+    noteBundleDownloadStopped();
+    expect(read()).toBe(`${what} Install a newer version of the Agent Overflow app on this device.`);
     noteBundleReady('999.0.0');
-    expect(new TransportError('method_not_found', 'method not registered').message)
-      .toBe(`${what} Close and reopen the app to load 999.0.0.`);
+    expect(read()).toBe(`${what} Close and reopen the app to load 999.0.0.`);
+    clearBundleNotice();
+    expect(read()).toBe(`${what} Install a newer version of the Agent Overflow app on this device.`);
   });
 
   it('keeps the code and the wire text for Details and a copied report', () => {
@@ -198,7 +290,7 @@ describe('a refused call as every surface reads it', () => {
   it('says the nameless sentences when no wording is installed', () => {
     installDispatchRefusalWording(null);
     expect(new TransportError('method_not_found', 'method not registered', { backend: 'studio' }).message).toBe(UNSUPPORTED_SENTENCE);
-    expect(new TransportError('bad_params', 'expected 1 params, got 2').message).toBe(UNREADABLE_SENTENCE);
+    expect(new TransportError('bad_params', 'main.App.GitPush: expected 1 params, got 2').message).toBe(UNREADABLE_SENTENCE);
   });
 
   it('says the nameless sentence for a computer that has detached', () => {
@@ -209,20 +301,20 @@ describe('a refused call as every surface reads it', () => {
   it('reports a wording that throws and still says the nameless sentence', () => {
     const sink = vi.fn();
     setDispatchRefusalDiagnosticsSink(sink);
-    installDispatchRefusalWording(() => { throw new Error('no names'); });
+    installDispatchRefusalWording({ capture: () => { throw new Error('no names'); }, word: () => { throw new Error('no words'); } });
     const err = new TransportError('method_not_found', 'method not registered');
     expect(err.message).toBe(UNSUPPORTED_SENTENCE);
     expect(sink).toHaveBeenCalledWith('transport: dispatch refusal wording failed', 'no names');
   });
 
   it('words a refusal only when its message is read, once', () => {
-    const wording = vi.fn(() => 'worded');
-    installDispatchRefusalWording(wording);
+    const word = vi.fn(() => 'worded');
+    installDispatchRefusalWording({ capture: (backend) => ({ backend, name: 'Desk', version: '' }), word });
     const err = new TransportError('method_not_found', 'method not registered');
-    expect(wording).not.toHaveBeenCalled();
+    expect(word).not.toHaveBeenCalled();
     expect(err.message).toBe('worded');
     expect(err.message).toBe('worded');
-    expect(wording).toHaveBeenCalledOnce();
+    expect(word).toHaveBeenCalledOnce();
   });
 
   // Right after a computer's identity changes, the sidebar's display names

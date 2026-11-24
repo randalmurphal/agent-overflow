@@ -53,9 +53,9 @@ type RPCRefusedError struct {
 	Method  string
 	Code    string
 	Message string
-	// Detailed says the refusal carried a method failure's diagnostic
-	// detail, which a dispatcher refusal never does.
-	Detailed bool
+	// Dispatch is the frame's mark of the backend's dispatcher refusing
+	// before any method ran (internal/dispatchrefusal), when it sent one.
+	Dispatch *dispatchrefusal.Refusal
 }
 
 // RPCShutdownBackend is the backend method that begins an authenticated
@@ -81,7 +81,7 @@ func (c *NotificationClient) Shutdown(ctx context.Context) error {
 // Error names the method and code, and words a dispatcher refusal as
 // dispatchrefusal does whatever text the backend's release sent.
 func (e *RPCRefusedError) Error() string {
-	return fmt.Sprintf("%s RPC %s: %s", e.Method, e.Code, dispatchrefusal.Message(e.Code, e.Message, e.Detailed))
+	return fmt.Sprintf("%s RPC %s: %s", e.Method, e.Code, dispatchrefusal.Message(e.Code, e.Message, e.Dispatch))
 }
 
 // Activate posts the validated target back to the backend's local-only
@@ -224,7 +224,7 @@ func (c *NotificationClient) resolveRPC(frame notificationServerFrame) {
 			Method:   call.method,
 			Code:     frame.Error.Code,
 			Message:  frame.Error.Message,
-			Detailed: dispatchrefusal.Detailed(frame.Error.Detail),
+			Dispatch: frame.Error.Dispatch,
 		}}
 		return
 	}

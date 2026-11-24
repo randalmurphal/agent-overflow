@@ -1589,4 +1589,3 @@ export function ResolveForgeFacts(
 ): Promise<ForgeFactsClass | null> {
   return orOlder(() => ResolveForgeFactsRaw(ws, pr, rev, keys, fresh), () => null);
 }
-

@@ -9,7 +9,10 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
 
+	"agent-overflow/internal/dispatchrefusal"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/rpcclient"
@@ -135,12 +138,14 @@ func remoteErrorDetails(action string, err error) (code, message string, uncerta
 	if !known && errors.As(err, &remote) {
 		code = remote.Code
 		switch {
-		case remote.DispatchRefusal():
+		case remote.DispatchRefusal() != nil:
 			// The destination's dispatcher refused before any method ran:
 			// it lacks the method or cannot read its arguments. The code
-			// is this computer's own, so a reader of this failure never
-			// takes it for a refusal by the computer it reached.
-			code, message = "remote_unsupported", remote.Error()
+			// is this computer's own and the frame carries no dispatch
+			// mark, so a reader never takes it for a refusal by the
+			// computer it reached. What did not fit stays in the wrapped
+			// cause, which the frame's detail lists.
+			code, message = "remote_unsupported", dispatchrefusal.Forwarded(remote.DispatchRefusal().Kind)
 		case strings.HasPrefix(code, "remote_"), code == "workspace_not_registered":
 			message = remote.Message
 		case code == transport.ErrCodeScopeRequired:
@@ -207,15 +212,50 @@ func (a *App) remoteUserError(verb, computerID, requestID string, err error) err
 	}
 	ref := a.remoteRef(computerID, requestID)
 	code, message, _ := remoteErrorDetails(verb, err)
-	subject := "the remote job"
-	if ref.Label != "" {
-		subject = strconv.Quote(ref.Label)
-	}
+	return errorsx.Public(code, remoteUserMessage(verb, ref.Label, ref.ComputerName, message), err)
+}
+
+// pageMessageLimit is how much of an RPC error's message a page shows: it
+// clamps the rest (LOG_STRING_MAX in frontend/src/lib/transport/frames.ts,
+// counted in UTF-16 code units).
+const pageMessageLimit = 256
+
+// remoteUserNameMax bounds the computer's name in a person's error, which
+// the computer's owner chose.
+const remoteUserNameMax = 40
+
+// remoteUserMessage is "Could not <verb> <job> on <computer>: <message>",
+// with the job's label shortened so the whole fits what a page shows and
+// message, which says what to do, is never cut. A label with no room left
+// reads as "the remote job".
+func remoteUserMessage(verb, label, computer, message string) string {
 	where := ""
-	if ref.ComputerName != "" {
-		where = " on " + ref.ComputerName
+	if computer != "" {
+		where = " on " + truncateRunes(computer, remoteUserNameMax)
 	}
-	return errorsx.Public(code, fmt.Sprintf("Could not %s %s%s: %s", verb, subject, where, message), err)
+	compose := func(subject string) string {
+		return fmt.Sprintf("Could not %s %s%s: %s", verb, subject, where, message)
+	}
+	if label == "" {
+		return compose("the remote job")
+	}
+	room := pageMessageLimit - utf16Len(compose(`""`))
+	for runes := utf8.RuneCountInString(label); room > 1 && runes > 0; runes-- {
+		subject := strconv.Quote(truncateRunes(label, runes))
+		if utf16Len(subject)-2 <= room {
+			return compose(subject)
+		}
+	}
+	return compose("the remote job")
+}
+
+// utf16Len is text's length as a page counts it.
+func utf16Len(text string) int {
+	n := 0
+	for _, r := range text {
+		n += utf16.RuneLen(r)
+	}
+	return n
 }
 
 func remoteErrorText(err error) string {

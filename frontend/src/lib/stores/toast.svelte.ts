@@ -44,7 +44,10 @@ export function addToast(
 
 /**
  * An error toast that keeps the error it reports: `message` is what the
- * toast reads, and `err` is what its details and copy actions describe.
+ * toast reads, and `err` is what its details and copy actions describe. A
+ * computer's refusal of the call stays until dismissed, its reason shown
+ * whole beside `message` (ToastItem.svelte): it says what to do, which
+ * takes longer to read than a toast's usual delay.
  */
 export function addErrorToast(
   message: string,
@@ -52,7 +55,8 @@ export function addErrorToast(
   duration = 5000,
   action?: ToastAction,
 ): string {
-  return addToast('error', message, duration, action, captureError(err, { context: message }));
+  const captured = captureError(err, { context: message });
+  return addToast('error', message, captured.report.refusal === undefined ? duration : 0, action, captured);
 }
 
 /**

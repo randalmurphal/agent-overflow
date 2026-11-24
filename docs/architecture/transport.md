@@ -230,7 +230,8 @@ wrap layers outermost first (`errorsx.Chain`). Every caller is an
 authenticated session that was allowed to make the call, so the message and
 chain are the method's own on every origin (`transport.CallerError`, the
 one rule for what a caller is told about an error). A panic's value stays
-in the log; its frame carries only the reference. `already_handled` carries no detail.
+in the log; its frame carries only the reference, and so does an argument
+the dispatcher could not decode. `already_handled` carries no detail.
 A `forge_rate_limited` failure also carries `reserve` (the forge's quota was
 kept for the user's own actions rather than spent) and `resumeAt` (RFC 3339,
 when the forge may be asked again), from `forgeapi.RateLimitedError`, so a
@@ -241,22 +242,42 @@ does not have answers `method_not_found` (identically for an unregistered
 method and one hidden from a non-loopback origin), and a call whose
 arguments do not fit the method answers `bad_params`. Either way the call
 did not run, and the caller was usually built from a different release.
-Neither refusal carries `detail`; a failure a method returned always does,
-so a method that forwards another computer's refusal is never read as this
-computer's own. The message is a sentence a person can act on
+Only the dispatcher sets the frame's `dispatch` field
+(`dispatchrefusal.Refusal`), and every reader takes it as the answer to who
+refused. `{"refusal":"unsupported"}` names nothing. An `unreadable`
+refusal names the method, the 1-based argument that did not decode, and a
+`problem` built only from argument counts or from a JSON type mismatch's
+expected Go type and received JSON kind. Any other decoder error, which can
+repeat the value refused, stays in the log, and the frame's `detail`
+carries only its reference. The message is a sentence a person can act on
 (`internal/dispatchrefusal`), so a page or client already shipped shows it
-as it is. Every reader of a refusal words it once, where the refusal becomes
-an error, and keeps the code for branching and the wire text for diagnosis,
-so a computer that still sends the old wire text reads the same. In Go that
-is `dispatchrefusal.Message`, used by `rpcclient.Error`, the Windows
-launcher's client and the harness client. In the frontend it is the
-`TransportError` constructor (`frontend/src/lib/transport/dispatchRefusal.ts`),
-whose message, built when it is first read, names the computer, says what the
-page knows about the two versions (the page's own `PAGE_VERSION` against the
-computer's hello `bundleVersion`) and gives the remedy that knowledge supports
-(`frontend/src/lib/stores/versionMismatch.ts`); the wire text is the error's
-`cause`. A computer that forwards another computer's dispatcher refusal
-answers `remote_unsupported`, with a message that names the destination. Nothing matches the wire text.
+as it is.
+
+A frame without the field comes from a release before it (v0.0.14 to
+v0.0.19). One legacy table per side holds the exact texts those
+dispatchers sent: `dispatchrefusal`'s `legacy` and
+`LEGACY_DISPATCH_REFUSALS` in
+`frontend/src/lib/transport/dispatchRefusal.ts`, pinned to each other. A
+frame whose whole message matches the table is that dispatcher's refusal.
+Any other fieldless frame is a method's own failure, shown as sent, except
+that the page adds version advice to a v0.0.15 to v0.0.19 forwarder's
+message ending in a refusal from the table.
+
+Every reader words a refusal once, where it becomes an error, and keeps the
+code for branching. In Go that is `dispatchrefusal.Message`, used by
+`rpcclient.Error`, the Windows launcher's client and the harness client: the
+sentence, then what did not fit. In the frontend it is the `TransportError`
+constructor. Its message, built when first read, names the computer and
+says what the page knows about the two versions (the page's own
+`PAGE_VERSION` against the computer's hello `bundleVersion`, captured when
+the refusal arrived). It gives the remedy that knowledge supports
+(`frontend/src/lib/stores/versionMismatch.ts`). What did not fit, or an
+older release's own text, is the error's `cause`. The shared error surfaces
+show the refusal whole beside the caller's headline, and its toast stays
+until dismissed. A computer that forwards another computer's dispatcher
+refusal answers `remote_unsupported` without the field. Its message names
+the destination and keeps the refusal's kind, and its `detail` keeps what
+did not fit.
 
 The backend retains its recent log lines in memory (`logging.Output`).
 `GetErrorLogLines` (scope `threads:operate`, the grant that already lets a
