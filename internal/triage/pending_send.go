@@ -812,6 +812,41 @@ func (r *Router) ClearPendingSendForFailure(threadID, aoItemID string) {
 	}
 }
 
+// ClearPendingSendByProviderItemID removes a single matching unconfirmed
+// pending send keyed by ExpectedProviderItemID when an async provider RPC
+// rejects a prompt after Send returned nil (e.g. ACP session/prompt JSON-RPC
+// error). Prevents wedging pendingSends, revert, and idle reaping.
+func (r *Router) ClearPendingSendByProviderItemID(threadID, providerItemID string) {
+	if threadID == "" || providerItemID == "" {
+		return
+	}
+	anchor := r.flushAnchor(threadID)
+	anchor.Lock()
+	defer anchor.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || len(st.pendingSends) == 0 {
+		return
+	}
+	queue := st.pendingSends
+	for i, entry := range queue {
+		if entry.ExpectedProviderItemID != providerItemID {
+			continue
+		}
+		nextLen := len(queue) - 1
+		if nextLen == 0 {
+			st.pendingSends = nil
+		} else {
+			next := make([]pendingSend, 0, nextLen)
+			next = append(next, queue[:i]...)
+			next = append(next, queue[i+1:]...)
+			st.pendingSends = next
+		}
+		r.noteSendsPendingLocked(threadID)
+		return
+	}
+}
 // MaxPendingSendTurnIndex returns the highest TurnIndex across all
 // pending send entries for threadID. Returns (0, false) when no entries
 // exist. Used by the flush dispatch turn allocator to avoid assigning

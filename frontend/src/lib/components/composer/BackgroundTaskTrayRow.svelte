@@ -262,6 +262,7 @@
       />
     {:else if presentation.kind === 'agent'}
       <AgentRow
+        {pane}
         agentLayout
         headerMetrics={toolCountLabel || tokensLabel ? metrics : undefined}
         headerDetails={activityLine ? activity : undefined}

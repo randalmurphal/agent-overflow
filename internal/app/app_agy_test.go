@@ -643,3 +643,27 @@ for raw in sys.stdin:
 	}
 	_ = app.StopSession(thread.ID)
 }
+
+func TestAgyMidTurnFlushPlacementDefersUntilEcho(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	thread, err := createTestThread(t, app, string(provider.Agy), t.TempDir(), "gemini-3.1-pro-high", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "t-active",
+		ThreadID:  thread.ID,
+		TurnIndex: 2,
+		StartedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	placement, err := app.resolveUserMessagePlacement(thread, messageFlush)
+	if err != nil {
+		t.Fatalf("resolveUserMessagePlacement: %v", err)
+	}
+	if placement.persistence != messageDeferUntilEcho || placement.displayTurn != 2 || placement.responseTurn != 2 || !placement.joinsActiveTurn {
+		t.Fatalf("unexpected agy mid-turn flush placement: %+v", placement)
+	}
+}

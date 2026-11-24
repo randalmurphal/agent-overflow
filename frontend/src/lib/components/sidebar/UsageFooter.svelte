@@ -124,7 +124,7 @@
         <span class="text-fg-subtle" data-testid="usage-footer-empty">{waiting ? 'Loading usage…' : 'No usage in this selection'}</span>
       {/if}
       {#each rows as row (row.provider)}
-        <span class="grid grid-cols-[minmax(3.5rem,auto)_1fr] items-center gap-2" data-testid="usage-footer-row">
+        <span class="grid grid-cols-[minmax(5.75rem,auto)_1fr] items-center gap-2" data-testid="usage-footer-row">
           <span class="text-fg-subtle uppercase tracking-[0.12em] truncate">{providerLabel(row.provider)}</span>
           <span class="text-center tabular-nums whitespace-pre truncate">{row.valueLabel}</span>
         </span>

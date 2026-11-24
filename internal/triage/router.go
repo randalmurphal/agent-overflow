@@ -1124,6 +1124,9 @@ func (r *Router) handleRateLimits(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) handleError(evt provider.ProviderEvent) error {
+	if failedID := failedProviderItemID(evt.Meta); failedID != "" {
+		r.ClearPendingSendByProviderItemID(evt.ThreadID, failedID)
+	}
 	now := eventTimestampMillis(evt)
 	// A subagent's error lands on its LAUNCH's turn (invariant 10), which
 	// is the thread's current turn while the agent streams live but not
@@ -1176,6 +1179,19 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 	}
 
 	return nil
+}
+
+func failedProviderItemID(meta json.RawMessage) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	var m struct {
+		FailedProviderItemID string `json:"failed_provider_item_id"`
+	}
+	if json.Unmarshal(meta, &m) != nil {
+		return ""
+	}
+	return strings.TrimSpace(m.FailedProviderItemID)
 }
 
 // persistProviderErrorItem builds and persists a system error item

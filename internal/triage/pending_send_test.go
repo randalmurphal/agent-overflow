@@ -1,9 +1,12 @@
 package triage
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -506,5 +509,37 @@ func TestConsumeMatchingPendingSend_HeadWithoutExpectedID_FIFOPop(t *testing.T) 
 	got, ok := router.consumeMatchingPendingSend("t1", "codex_item_7", "")
 	if !ok || got.AOItemID != "user:0" {
 		t.Fatalf("FIFO pop for id-less head: got ok=%v entry=%+v", ok, got)
+	}
+}
+
+func TestHandleErrorClearsPendingSendByFailedProviderItemID(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{ProviderItemID: "uuid-fail"})
+	router.RegisterPendingSendWithExpectation("t1", "user:2", 2, PendingSendExpectation{ProviderItemID: "uuid-keep"})
+
+	errMeta, err := json.Marshal(map[string]any{
+		"failed_provider_item_id": "uuid-fail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventError,
+		ThreadID:  "t1",
+		Content:   "request failed",
+		Meta:      errMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle(EventError): %v", err)
+	}
+
+	got, ok := router.consumeMatchingPendingSend("t1", "uuid-keep")
+	if !ok || got.AOItemID != "user:2" {
+		t.Fatalf("remaining pending send = ok:%v %+v, want user:2", ok, got)
+	}
+	if router.HasPendingSendForThread("t1") {
+		t.Fatal("failed pending send uuid-fail should have been cleared by EventError")
 	}
 }

@@ -145,6 +145,8 @@ func (a *App) resolveBackgroundTaskOutputPath(path string) (string, error) {
 		return resolved, nil
 	} else if resolvedAgy, agyErr := a.resolveAgyTaskOutputPath(path); agyErr == nil {
 		return resolvedAgy, nil
+	} else if errors.Is(agyErr, os.ErrNotExist) {
+		return "", agyErr
 	} else {
 		return "", err
 	}
@@ -162,8 +164,35 @@ func (a *App) resolveAgyTaskOutputPath(path string) (string, error) {
 	if appDataDir == "" {
 		return "", fmt.Errorf("agy app data dir unavailable")
 	}
+	brainRoot := filepath.Join(appDataDir, "brain")
+	resolvedRoot, rootErr := filepath.EvalSymlinks(brainRoot)
+	if rootErr != nil {
+		resolvedRoot = filepath.Clean(brainRoot)
+	}
+	checkLayout := func(candidate string) error {
+		rel, relErr := filepath.Rel(resolvedRoot, candidate)
+		if relErr != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+			return fmt.Errorf("output_file path is outside agy brain root")
+		}
+		parts := strings.Split(filepath.ToSlash(rel), "/")
+		// Expected layout: <sessionId>/.system_generated/tasks/<task>.log
+		if len(parts) != 4 || parts[0] == "" || parts[1] != ".system_generated" || parts[2] != "tasks" || parts[3] == "" {
+			return fmt.Errorf("output_file path is not an agy task log")
+		}
+		return nil
+	}
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// Verify the non-existent path would sit inside the agy tasks
+			// directory before returning os.ErrNotExist so unrelated missing
+			// paths do not mask Claude's root check while valid agy logs keep
+			// polling until flushed to disk.
+			if layoutErr := checkLayout(filepath.Clean(path)); layoutErr != nil {
+				return "", layoutErr
+			}
+			return "", err
+		}
 		return "", err
 	}
 	info, err := os.Stat(resolved)
@@ -173,19 +202,8 @@ func (a *App) resolveAgyTaskOutputPath(path string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("output_file path is not a regular file")
 	}
-	brainRoot := filepath.Join(appDataDir, "brain")
-	resolvedRoot, err := filepath.EvalSymlinks(brainRoot)
-	if err != nil {
-		resolvedRoot = filepath.Clean(brainRoot)
-	}
-	rel, err := filepath.Rel(resolvedRoot, resolved)
-	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
-		return "", fmt.Errorf("output_file path is outside agy brain root")
-	}
-	parts := strings.Split(filepath.ToSlash(rel), "/")
-	// Expected layout: <sessionId>/.system_generated/tasks/<task>.log
-	if len(parts) != 4 || parts[0] == "" || parts[1] != ".system_generated" || parts[2] != "tasks" || parts[3] == "" {
-		return "", fmt.Errorf("output_file path is not an agy task log")
+	if err := checkLayout(resolved); err != nil {
+		return "", err
 	}
 	return resolved, nil
 }

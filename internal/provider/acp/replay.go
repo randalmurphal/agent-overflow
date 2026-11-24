@@ -18,7 +18,9 @@ func ReplayUpdatesToEvents(updates []SessionUpdate, flavor Flavor) []provider.Pr
 	var textBuf strings.Builder
 	startedTools := make(map[string]NormalizedToolStart)
 	completedTools := make(map[string]bool)
-	now := time.Now()
+	// Leave event timestamps zero so sessionimport stamps monotonic historical
+	// timestamps from the session's activity clock rather than time.Now().
+	var zeroTime time.Time
 	flush := func() {
 		if textBuf.Len() == 0 {
 			return
@@ -31,7 +33,7 @@ func ReplayUpdatesToEvents(updates []SessionUpdate, flavor Flavor) []provider.Pr
 			Kind:      textKind,
 			Role:      role,
 			Content:   textBuf.String(),
-			Timestamp: now,
+			Timestamp: zeroTime,
 		})
 		textBuf.Reset()
 		textKind = ""
@@ -53,7 +55,7 @@ func ReplayUpdatesToEvents(updates []SessionUpdate, flavor Flavor) []provider.Pr
 		if !turnOpen {
 			events = append(events, provider.ProviderEvent{
 				Kind:      provider.EventTurnStart,
-				Timestamp: now,
+				Timestamp: zeroTime,
 			})
 			turnOpen = true
 			turnHasResponse = false
@@ -65,7 +67,7 @@ func ReplayUpdatesToEvents(updates []SessionUpdate, flavor Flavor) []provider.Pr
 			events = append(events, provider.ProviderEvent{
 				Kind:         provider.EventTurnComplete,
 				TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
-				Timestamp:    now,
+				Timestamp:    zeroTime,
 			})
 			turnOpen = false
 			turnHasResponse = false
@@ -114,14 +116,14 @@ func ReplayUpdatesToEvents(updates []SessionUpdate, flavor Flavor) []provider.Pr
 				ItemID:    tc.ToolCallID,
 				ItemType:  norm.ItemType,
 				Meta:      buildToolStartMeta(norm),
-				Timestamp: now,
+				Timestamp: zeroTime,
 			})
 			// In real ACP `session/load` replay, providers like `agy` emit a
 			// single `tool_call` frame already carrying its terminal status and
 			// rawOutput/content without a separate `tool_call_update`.
 			if tc.Status == "completed" || tc.Status == "failed" || tc.Status == "cancelled" {
 				doneNorm := flavor.NormalizeToolComplete(&tc, norm)
-				events = append(events, buildToolCompleteEvents("", "", tc.ToolCallID, doneNorm, now)...)
+				events = append(events, buildToolCompleteEvents("", "", tc.ToolCallID, doneNorm, zeroTime)...)
 				completedTools[tc.ToolCallID] = true
 			} else {
 				startedTools[tc.ToolCallID] = norm
@@ -142,7 +144,7 @@ func ReplayUpdatesToEvents(updates []SessionUpdate, flavor Flavor) []provider.Pr
 			delete(startedTools, tc.ToolCallID)
 			completedTools[tc.ToolCallID] = true
 			norm := flavor.NormalizeToolComplete(&tc, started)
-			events = append(events, buildToolCompleteEvents("", "", tc.ToolCallID, norm, now)...)
+			events = append(events, buildToolCompleteEvents("", "", tc.ToolCallID, norm, zeroTime)...)
 		case "usage_update":
 			flush()
 		}

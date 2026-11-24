@@ -2,6 +2,7 @@ package agy
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,7 +17,12 @@ import (
 
 // cortexStepTypeErrorMessage is agy's CORTEX_STEP_TYPE_ERROR_MESSAGE enum value
 // stored in conversations/<sessionId>.db `steps.step_type`.
-const cortexStepTypeErrorMessage = 17
+const (
+	cortexStepTypePlannerResponse = 15
+	cortexStepTypeErrorMessage    = 17
+	cortexStepTypeCheckpoint      = 23
+	maxErrorPayloadScanBytes      = 64 * 1024
+)
 
 var (
 	reQuotaExhausted     = regexp.MustCompile(`(?i)QUOTA_EXHAUSTED|quota\s+exhausted`)
@@ -61,8 +67,9 @@ func openConversationDBReadOnly(path string) (*sql.DB, error) {
 	return sql.Open("sqlite", sqliteFileDSN(path, "mode=ro&_pragma=busy_timeout(100)"))
 }
 
-// readMaxStepIndex returns the highest `idx` in `steps` before a prompt starts,
-// or (0, false) if the conversation DB does not exist yet or cannot be read.
+// readMaxStepIndex returns the highest `idx` in `steps` before a prompt starts.
+// When the conversation DB does not exist yet (brand-new session before Turn 1),
+// it returns (-1, true) so Turn 1 step_type=17 errors at idx >= 0 are still caught.
 func readMaxStepIndex(appDataDir, sessionID string) (int, bool) {
 	dbPath, err := conversationDBPath(appDataDir, sessionID)
 	if err != nil {
@@ -70,6 +77,9 @@ func readMaxStepIndex(appDataDir, sessionID string) (int, bool) {
 	}
 	db, err := openConversationDBReadOnly(dbPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return -1, true
+		}
 		return 0, false
 	}
 	defer func() { _ = db.Close() }()
@@ -82,6 +92,52 @@ func readMaxStepIndex(appDataDir, sessionID string) (int, bool) {
 		return -1, true
 	}
 	return int(maxIdx.Int64), true
+}
+
+// readMaxCheckpointIndex returns the highest `idx` of a compaction checkpoint
+// (step_type = 23) in conversations/<sessionId>.db, or -1 if none exists yet.
+func readMaxCheckpointIndex(appDataDir, sessionID string) int {
+	dbPath, err := conversationDBPath(appDataDir, sessionID)
+	if err != nil {
+		return -1
+	}
+	db, err := openConversationDBReadOnly(dbPath)
+	if err != nil {
+		return -1
+	}
+	defer func() { _ = db.Close() }()
+
+	var maxIdx sql.NullInt64
+	if err := db.QueryRow(`SELECT MAX(idx) FROM steps WHERE step_type = ?`, cortexStepTypeCheckpoint).Scan(&maxIdx); err != nil || !maxIdx.Valid {
+		return -1
+	}
+	return int(maxIdx.Int64)
+}
+
+// detectNewCheckpoint checks whether agy wrote a compaction CHECKPOINT step
+// (step_type = 23) with idx > afterIdx.
+func detectNewCheckpoint(appDataDir, sessionID string, afterIdx int) (int, *acp.CompactionEvent) {
+	dbPath, err := conversationDBPath(appDataDir, sessionID)
+	if err != nil {
+		return afterIdx, nil
+	}
+	db, err := openConversationDBReadOnly(dbPath)
+	if err != nil {
+		return afterIdx, nil
+	}
+	defer func() { _ = db.Close() }()
+
+	var idx sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT MAX(idx) FROM steps WHERE step_type = ? AND idx > ?`,
+		cortexStepTypeCheckpoint, afterIdx,
+	).Scan(&idx); err != nil || !idx.Valid {
+		return afterIdx, nil
+	}
+	newIdx := int(idx.Int64)
+	return newIdx, &acp.CompactionEvent{
+		ItemID: fmt.Sprintf("agy-compact-%d", newIdx),
+	}
 }
 
 // inspectTurnErrorStep checks whether agy wrote a CORTEX_STEP_TYPE_ERROR_MESSAGE
@@ -112,6 +168,15 @@ func inspectTurnErrorStep(appDataDir, sessionID string, sinceIdx int) *acp.Promp
 	var idx, stepType int
 	var errDetails, stepPayload []byte
 	if err := rows.Scan(&idx, &stepType, &errDetails, &stepPayload); err != nil {
+		return nil
+	}
+	// If agy retried and succeeded with a subsequent planner response after
+	// this error step, do not mark the whole turn failed.
+	var laterPlanner sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT MAX(idx) FROM steps WHERE idx > ? AND step_type = ?`,
+		idx, cortexStepTypePlannerResponse,
+	).Scan(&laterPlanner); err == nil && laterPlanner.Valid {
 		return nil
 	}
 	raw := errDetails
@@ -183,7 +248,10 @@ func extractReadableErrorText(raw []byte) string {
 	if len(raw) == 0 {
 		return ""
 	}
-	matches := reHumanReadableASCII.FindAllString(string(raw), 16)
+	if len(raw) > maxErrorPayloadScanBytes {
+		raw = raw[:maxErrorPayloadScanBytes]
+	}
+	matches := reHumanReadableASCII.FindAllString(string(raw), -1)
 	if len(matches) == 0 {
 		return ""
 	}

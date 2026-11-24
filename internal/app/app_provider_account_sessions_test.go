@@ -1,13 +1,18 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 func TestSessionRateLimitsStayAttributedToOriginalAccount(t *testing.T) {
@@ -319,6 +324,112 @@ func TestCodexAccountSelectionTracksSelectedIdentityOnly(t *testing.T) {
 	selection := app.captureProviderAccountSelection(string(provider.Codex))
 	if selection.AccountID != "second" {
 		t.Fatalf("selection = %+v, want second account", selection)
+	}
+}
+
+// Reconnecting to apply a pending account switch while a multi-item flush batch
+// is dispatching must not call stopSessionForRestart/restoreUnconfirmedQueue:
+// doing so bumped dispatchGeneration, restored all queued messages (including
+// the one being sent) to the composer draft, sent the first item anyway, and
+// aborted the rest of the batch.
+func TestFlushDispatchBatchSurvivesAccountSwitchReconnect(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	logPath := filepath.Join(t.TempDir(), "wire.log")
+	binary := writeSharedPoolAgyBinary(t, logPath)
+	if _, err := app.settings.Update(map[string]any{"agyBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+
+	thread, err := createTestThread(t, app, string(provider.Agy), t.TempDir(), "gemini-3.1-pro-high", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestProviderAccounts(t, app, string(provider.Agy))
+
+	// Start a real session first, then roll its stored CredentialGeneration
+	// back to simulate an account switch that landed while the session lived.
+	if err := app.StartSession(thread.ID); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	oldSess, ok := app.sessionManager().get(thread.ID)
+	if !ok {
+		t.Fatal("expected live session after StartSession")
+	}
+	oldSess.CredentialGeneration = 1
+	oldSess.CredentialAccountID = "first"
+	app.sessionManager().put(thread.ID, oldSess)
+
+	// Persist and enqueue 3 messages as one batch (as happens when a turn ends
+	// while messages waited on a pending account switch).
+	now := time.Now().UnixMilli()
+	batch := make([]triage.QueuedFlushItem, 0, 3)
+	for i, msg := range []string{"queued-one", "queued-two", "queued-three"} {
+		id := "q-" + msg
+		if err := app.store.InsertFlushQueueItem(store.FlushQueueItem{
+			ID:         id,
+			ThreadID:   thread.ID,
+			SendID:     "send-" + msg,
+			Message:    msg,
+			Payload:    []byte(`{"sendId":"send-` + msg + `"}`),
+			EnqueuedAt: now + int64(i),
+		}); err != nil {
+			t.Fatalf("InsertFlushQueueItem(%s): %v", msg, err)
+		}
+		batch = append(batch, triage.QueuedFlushItem{
+			ID:                 id,
+			Message:            msg,
+			Payload:            []byte(`{"sendId":"send-` + msg + `"}`),
+			EnqueuedAt:         now + int64(i),
+			DispatchGeneration: app.currentFlushDispatchGeneration(thread.ID),
+		})
+	}
+
+	app.enqueueFlushDispatch(thread.ID, batch)
+	if err := app.drainFlushDispatch(context.Background(), 10*time.Second); err != nil {
+		t.Fatalf("drainFlushDispatch: %v", err)
+	}
+
+	// Verify session reconnected to the new account generation.
+	newSess, ok := app.sessionManager().get(thread.ID)
+	if !ok {
+		t.Fatal("expected live session after account-switch reconnect")
+	}
+	if newSess.Token == oldSess.Token {
+		t.Fatalf("session token did not change across account switch: %q", newSess.Token)
+	}
+	if newSess.CredentialAccountID != "second" {
+		t.Fatalf("reconnected account = %q, want second", newSess.CredentialAccountID)
+	}
+
+	// Verify ALL 3 queued messages were dispatched on the wire (wait briefly
+	// for the mock bash script's read loop to append the final line to logPath).
+	var wire string
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		wireBytes, err := os.ReadFile(logPath)
+		if err == nil {
+			wire = string(wireBytes)
+			if strings.Contains(wire, "queued-one") && strings.Contains(wire, "queued-two") && strings.Contains(wire, "queued-three") {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for _, msg := range []string{"queued-one", "queued-two", "queued-three"} {
+		if !strings.Contains(wire, msg) {
+			t.Errorf("wire log missing dispatched queued message %q:\n%s", msg, wire)
+		}
+	}
+
+	// Verify NOTHING was restored back to the composer draft.
+	draft, _, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadDraft: %v", err)
+	}
+	if strings.TrimSpace(draft.Content) != "" {
+		t.Fatalf("queued messages were unexpectedly restored to composer draft: %q", draft.Content)
 	}
 }
 

@@ -42,6 +42,7 @@ func agyPoolKey(
 	}
 	writePart("binary", strings.TrimSpace(binary))
 	writePart("resolved", identity.path)
+	writePart("fileID", fmt.Sprintf("%+v", identity.fileID))
 	writePart("size", fmt.Sprintf("%d", identity.size))
 	writePart("mtime", fmt.Sprintf("%d", identity.modUnixNano))
 	writePart("account", accountID)

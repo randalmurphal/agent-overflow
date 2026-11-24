@@ -207,7 +207,7 @@ type Conn struct {
 	pendingMu          sync.Mutex
 	pending            map[int64]chan json.RawMessage
 	pendingSessionOpen map[int64]*pendingOpenEntry
-	pendingOnResponse  map[int64]func()
+	pendingOnResponse  map[int64]func(rawLine []byte)
 
 	routesMu sync.Mutex
 	sessions map[string]*Session
@@ -276,7 +276,7 @@ func Dial(ctx context.Context, cfg ConnConfig) (*Conn, error) {
 		terminalHandler:    cfg.TerminalHandler,
 		pending:            make(map[int64]chan json.RawMessage),
 		pendingSessionOpen: make(map[int64]*pendingOpenEntry),
-		pendingOnResponse:  make(map[int64]func()),
+		pendingOnResponse:  make(map[int64]func(rawLine []byte)),
 		sessions:           make(map[string]*Session),
 		replays:            make(map[string]*replayCapture),
 		done:               make(chan struct{}),
@@ -575,7 +575,7 @@ func (c *Conn) startRequestWithTimeout(method string, params any, timeout time.D
 	return c.startRequestWithHooks(method, params, timeout, nil, false, nil)
 }
 
-func (c *Conn) startRequestWithOnResponse(method string, params any, timeout time.Duration, onResponse func()) (func(context.Context) (json.RawMessage, error), error) {
+func (c *Conn) startRequestWithOnResponse(method string, params any, timeout time.Duration, onResponse func(rawLine []byte)) (func(context.Context) (json.RawMessage, error), error) {
 	return c.startRequestWithHooks(method, params, timeout, nil, false, onResponse)
 }
 
@@ -583,7 +583,7 @@ func (c *Conn) startRequestWithSessionOpen(method string, params any, timeout ti
 	return c.startRequestWithHooks(method, params, timeout, openSess, trackOrphanClose, nil)
 }
 
-func (c *Conn) startRequestWithHooks(method string, params any, timeout time.Duration, openSess *Session, trackOrphanClose bool, onResponse func()) (func(context.Context) (json.RawMessage, error), error) {
+func (c *Conn) startRequestWithHooks(method string, params any, timeout time.Duration, openSess *Session, trackOrphanClose bool, onResponse func(rawLine []byte)) (func(context.Context) (json.RawMessage, error), error) {
 	id := c.nextID.Add(1)
 	ch := make(chan json.RawMessage, 1)
 
@@ -888,7 +888,7 @@ func (c *Conn) dispatchLine(line []byte) {
 		delete(c.pendingOnResponse, numericID)
 		c.pendingMu.Unlock()
 		if onResp != nil {
-			onResp()
+			onResp(line)
 		}
 		if openEntry != nil {
 			var openResp struct {

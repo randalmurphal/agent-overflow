@@ -347,7 +347,7 @@
   <section>
     <SettingsHeader
       title="Choosing notes"
-      description="Advice a thread reads with the profiles when it picks one. A note can be shown only when both Claude and Codex run on the computer, or only when one of them does."
+      description="Advice a thread reads with the profiles when it picks one. A note can be shown for all available providers or scoped to a specific provider."
     />
     <div
       class="flex flex-col gap-3"

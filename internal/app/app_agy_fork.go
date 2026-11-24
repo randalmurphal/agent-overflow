@@ -11,11 +11,14 @@ import (
 
 // isAgyNativePromptItem reports whether item corresponds to a native
 // Antigravity USER_INPUT step (step_type=14) in the conversation SQLite DB:
-// either a visible user_text row or a resolved AskUserQuestion whose answer
-// dispatched a follow-up session/prompt.
+// either a top-level completed visible user_text row or a top-level resolved
+// AskUserQuestion whose answer dispatched a follow-up session/prompt.
 func isAgyNativePromptItem(item store.Item) bool {
+	if strings.TrimSpace(item.ParentID) != "" {
+		return false
+	}
 	if item.Kind == "user_text" && item.Role == "user" && !store.IsWireOnlyUserItem(item) {
-		return true
+		return item.Status == "" || item.Status == "completed"
 	}
 	if item.Kind == "tool_call" && strings.TrimSpace(item.ToolName) == "AskUserQuestion" && item.Meta != "" {
 		var meta struct {
@@ -37,6 +40,15 @@ func isAgyNativePromptItem(item store.Item) bool {
 // fork cannot leak into the cloned DB.
 func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int, preCutMaxIdx *int) (forkResumeState, error) {
 	if source.SessionRef == "" {
+		items, err := a.store.ListItems(source.ID)
+		if err != nil {
+			return forkResumeState{}, fmt.Errorf("fork agy thread: list items: %w", err)
+		}
+		for _, item := range items {
+			if isAgyNativePromptItem(item) {
+				return forkResumeState{}, fmt.Errorf("fork agy thread: source thread %q has conversation history but no Antigravity session ref", source.ID)
+			}
+		}
 		return forkResumeState{}, nil
 	}
 	appDataDir := a.agyAppDataDir()
@@ -73,6 +85,12 @@ func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int
 	}
 	cutIdx := agy.CutKeepAll
 	if preCutMaxIdx != nil {
+		if *preCutMaxIdx < 0 {
+			// Source session has no committed steps on disk yet (e.g. forked
+			// before Turn 1 wrote to SQLite); start the fork fresh rather than
+			// failing with ENOENT on a non-existent conversation DB.
+			return forkResumeState{}, nil
+		}
 		cutIdx = *preCutMaxIdx
 	} else if strings.TrimSpace(forkID) != "" {
 		// Fallback when no pre-cut max step index was provided: resolve
@@ -137,8 +155,8 @@ func (a *App) forkAgyThreadBeforeMessage(source store.Thread, _ store.MessageAnc
 // userItem by cloning and slicing the conversation DB and repointing SessionRef.
 func (a *App) rollbackAgyThreadToMessage(thread store.Thread, _ store.MessageAnchor, userItem store.Item) error {
 	a.dropFlushQueue(thread.ID)
-	if thread.SessionRef == "" {
-		return a.writeSessionRef(thread.ID, "")
+	if latest, err := a.store.GetThread(thread.ID); err == nil {
+		thread = latest
 	}
 	userOrdinal, err := a.agyUserOrdinalBeforeItem(thread.ID, userItem.ID)
 	if err != nil {
@@ -147,15 +165,11 @@ func (a *App) rollbackAgyThreadToMessage(thread store.Thread, _ store.MessageAnc
 	if userOrdinal == 0 {
 		return a.writeSessionRef(thread.ID, "")
 	}
+	if thread.SessionRef == "" {
+		return fmt.Errorf("agy rollback: thread %s has prior history but no Antigravity session ref", thread.ID)
+	}
 	appDataDir := a.agyAppDataDir()
-	cutIdx, hasPrefix, err := agy.FindCutIndexBeforeUserTurn(appDataDir, thread.SessionRef, userOrdinal)
-	if err != nil {
-		return fmt.Errorf("agy rollback: locate cut index: %w", err)
-	}
-	if !hasPrefix {
-		return a.writeSessionRef(thread.ID, "")
-	}
-	newSessionID, cleanup, err := agy.ForkConversation(appDataDir, thread.SessionRef, cutIdx)
+	newSessionID, cleanup, err := agy.ForkConversationAtUserTurn(appDataDir, thread.SessionRef, userOrdinal)
 	if err != nil {
 		return fmt.Errorf("agy rollback: clone sliced conversation: %w", err)
 	}
@@ -181,5 +195,5 @@ func (a *App) agyUserOrdinalBeforeItem(threadID, targetItemID string) (int, erro
 		}
 		ordinal++
 	}
-	return ordinal, nil
+	return 0, fmt.Errorf("target user message %s not found in thread %s", targetItemID, threadID)
 }

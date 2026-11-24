@@ -68,6 +68,8 @@ func TestPublishedGeminiRates(t *testing.T) {
 		{"gemini-4-argon", dec1, 24.2},
 		{"gemini-3.8-flash", nov24, 4.575},
 		{"gemini-3.8-flash", jan1, 9.15},
+		{"gemini-4-neon-high", nov24, 18.15},
+		{"gemini-4-hydrogen-tiered-xhigh", nov24, 9.075},
 	} {
 		got, ok := Price(c.model, c.at, 1_000_000, 1_000_000, 1_000_000, 0)
 		if !ok || !almostEqual(got, c.want, 0.000001) {

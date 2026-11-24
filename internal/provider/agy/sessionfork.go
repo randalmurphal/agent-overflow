@@ -94,7 +94,10 @@ func forkConversation(appDataDir, srcSessionID string, cutIdx int, cutBeforeUser
 	if err != nil {
 		return "", nil, fmt.Errorf("agy fork: %w", err)
 	}
-	srcDB, err := openConversationDBReadOnly(srcPath)
+	if _, err := os.Stat(srcPath); err != nil {
+		return "", nil, fmt.Errorf("agy fork: open source conversation %s: %w", srcSessionID, err)
+	}
+	srcDB, err := sql.Open("sqlite", sqliteFileDSN(srcPath, "mode=ro&_pragma=busy_timeout(5000)"))
 	if err != nil {
 		return "", nil, fmt.Errorf("agy fork: open source conversation %s: %w", srcSessionID, err)
 	}
@@ -148,7 +151,7 @@ func forkConversation(appDataDir, srcSessionID string, cutIdx int, cutBeforeUser
 }
 
 func rewriteClonedConversationDB(dstPath, newSessionID string, cutIdx int, cutBeforeUserTurn int) error {
-	dstDB, err := sql.Open("sqlite", sqliteFileDSN(dstPath, "_pragma=busy_timeout(200)"))
+	dstDB, err := sql.Open("sqlite", sqliteFileDSN(dstPath, "_pragma=busy_timeout(5000)"))
 	if err != nil {
 		return fmt.Errorf("agy fork: open cloned conversation: %w", err)
 	}
@@ -331,8 +334,11 @@ func FindCutIndexBeforeUserTurn(appDataDir, sessionID string, beforeUserTurnInde
 	if err := rows.Err(); err != nil {
 		return -1, false, err
 	}
-	if beforeUserTurnIndex >= len(userIdxs) {
-		// Target is past the last recorded user turn: keep everything.
+	if beforeUserTurnIndex > len(userIdxs) {
+		return -1, false, fmt.Errorf("agy fork: user turn ordinal %d exceeds recorded user prompts (%d)", beforeUserTurnIndex, len(userIdxs))
+	}
+	if beforeUserTurnIndex == len(userIdxs) {
+		// Target is immediately past the last recorded user turn: keep everything.
 		var maxIdx sql.NullInt64
 		if err := db.QueryRow(`SELECT MAX(idx) FROM steps`).Scan(&maxIdx); err != nil {
 			return -1, false, err

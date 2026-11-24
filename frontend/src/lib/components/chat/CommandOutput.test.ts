@@ -912,12 +912,13 @@ describe('<CommandOutput> background button (agent-visibility)', () => {
     resetBindingMocks();
   });
 
-  // Minimal pane: canBackground only asks for presence; the expansion
+  // Minimal pane: canBackground checks provider === 'claude'; the expansion
   // registry is exercised through the pane branch.
-  function fakePane() {
+  function fakePane(provider: string = 'claude') {
     const handles = new Map<string, unknown>();
     return {
       paneId: 'pane-1',
+      thread: { provider },
       expansionStateFor(item: { id: string }) {
         let h = handles.get(item.id);
         if (!h) {
@@ -962,7 +963,7 @@ describe('<CommandOutput> background button (agent-visibility)', () => {
     }
   });
 
-  it('hides the button once the launch is already backgrounded, settled, or Codex', () => {
+  it('hides the button once the launch is already backgrounded, settled, Codex, or Agy', () => {
     const backgrounded = makeItem({ id: 'b1', kind: 'tool_call', status: 'running', toolName: 'Bash', isBackground: true });
     const settled = makeItem({ id: 'b2', kind: 'tool_call', status: 'completed', toolName: 'Bash' });
     const codex = makeItem({ id: 'b3', kind: 'tool_call', status: 'running', toolName: 'command_execution' });
@@ -973,6 +974,12 @@ describe('<CommandOutput> background button (agent-visibility)', () => {
       expect(queryByTestId('command-output-background-button')).toBeNull();
       unmount();
     }
+    const agyBash = makeItem({ id: 'b4', kind: 'tool_call', status: 'running', toolName: 'Bash' });
+    const { queryByTestId, unmount } = render(CommandOutput, {
+      props: { pane: fakePane('agy'), item: agyBash, meta: commandMeta() },
+    });
+    expect(queryByTestId('command-output-background-button')).toBeNull();
+    unmount();
   });
 
   it('surfaces a failed background request inline', async () => {

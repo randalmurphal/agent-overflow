@@ -262,7 +262,7 @@ func (a *App) applyBrowserSettings(next settings.Settings) {
 	// deliver that skipped enable transition to live provider sessions.
 	if a.browser.liveEnabled.Swap(next.BrowserEnabled) != next.BrowserEnabled {
 		a.refreshLiveBrowserMCP(next.BrowserEnabled)
-		for _, providerName := range []mcpstatus.Provider{mcpstatus.ProviderClaude, mcpstatus.ProviderCodex} {
+		for _, providerName := range []mcpstatus.Provider{mcpstatus.ProviderClaude, mcpstatus.ProviderCodex, mcpstatus.ProviderAgy} {
 			a.mcpStatus().Invalidate(mcpstatus.Key{Provider: providerName, Name: appbrowser.ServerName})
 		}
 	}

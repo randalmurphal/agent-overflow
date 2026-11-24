@@ -170,6 +170,7 @@
   // not offered the control (hidden, like the other rows this button has).
   let canBackground = $derived(
     pane !== undefined &&
+      pane.thread?.provider === 'claude' &&
       isRunning &&
       threadScopeGrant('threads:operate', item.threadId) === 'granted' &&
       !isBackgroundedLaunch &&

@@ -444,4 +444,19 @@ func TestAgyQuotaBucketPolicyAndAutoSwitch(t *testing.T) {
 	if got := providerTitle("agy"); got != "Antigravity" {
 		t.Fatalf("providerTitle(agy) = %q, want Antigravity", got)
 	}
+
+	// StrategySoonestReset must order agy candidates by active window reset,
+	// preferring the account whose window resets sooner instead of returning 0.
+	dSoonest := decide(decideInput{
+		provider: "agy", selectedID: "a",
+		accounts: []candidate{
+			cand("a", gemini5h(100, at(4*time.Hour))),
+			cand("b", gemini5h(10, at(5*time.Hour))),
+			cand("c", gemini5h(10, at(1*time.Hour))),
+		},
+		demand: buildDemand("agy", []string{"gemini-4-neon"}), strategy: StrategySoonestReset, threshold: 95, now: testNow,
+	})
+	if dSoonest.to.ID != "c" {
+		t.Fatalf("agy StrategySoonestReset target = %q, want c (sooner reset)", dSoonest.to.ID)
+	}
 }

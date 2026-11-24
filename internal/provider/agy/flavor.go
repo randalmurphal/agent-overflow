@@ -27,8 +27,9 @@ type Flavor struct {
 	// out-of-band subagent transcript tracking.
 	AppDataDir string
 
-	subagentMu      sync.Mutex
-	subagentParents map[string]*parentSubagentCoordinator
+	subagentMu            sync.Mutex
+	subagentLaunchByChild map[string]string
+	subagentChildByLaunch map[string]string
 
 	// mcpTrustMu guards session-registered AO server membership and whether
 	// any colliding third-party MCP server name exists (in session config or
@@ -42,7 +43,6 @@ type Flavor struct {
 	// Optional overrides for deterministic unit tests (zero uses defaults).
 	subagentPollInterval     time.Duration
 	subagentDiscoveryTimeout time.Duration
-	subagentSettleGrace      time.Duration
 }
 
 // NewFlavor constructs an Antigravity ACP flavor bound to appDataDir.
@@ -542,15 +542,23 @@ func (f *Flavor) NormalizeToolStart(u *acp.ToolCallUpdate) acp.NormalizedToolSta
 func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.NormalizedToolStart) acp.NormalizedToolComplete {
 	norm := f.DefaultFlavor.NormalizeToolComplete(u, started)
 	rawName := strings.ToLower(strings.TrimSpace(u.Name))
+	if rawName == "" {
+		rawName = strings.ToLower(strings.TrimSpace(started.ToolName))
+	}
 	rawIn := u.EffectiveInput()
+	if len(rawIn) == 0 {
+		rawIn = started.Input
+	}
 
 	// Plan-mode artifact write_file/edit_file carries ArtifactMetadata.RequestFeedback=true,
 	// and edit/write/replace tools get a fallback inline diff when ACP omitted content[{type:"diff"}].
 	if rawName == "write_file" || rawName == "write_to_file" || rawName == "edit_file" ||
-		rawName == "replace_file_content" || rawName == "multi_replace_file_content" {
+		rawName == "replace_file_content" || rawName == "multi_replace_file_content" ||
+		started.ItemType == "file_change" {
 		var params struct {
 			Path               string `json:"Path"`
 			TargetFile         string `json:"TargetFile"`
+			FilePath           string `json:"file_path"`
 			Content            string `json:"Content"`
 			CodeContent        string `json:"CodeContent"`
 			Target             string `json:"Target"`
@@ -567,16 +575,29 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 			} `json:"ArtifactMetadata"`
 		}
 		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
-			body := firstNonEmpty(params.Content, params.CodeContent, params.Replacement, params.ReplacementContent)
-			if params.ArtifactMetadata != nil && params.ArtifactMetadata.RequestFeedback && strings.TrimSpace(body) != "" {
-				norm.ProposedPlan = body
+			path := extractLocationOrInputPath(u, rawIn, "Path", "TargetFile", "file_path", "path")
+			if params.ArtifactMetadata != nil && params.ArtifactMetadata.RequestFeedback {
+				body := firstNonEmpty(params.Content, params.CodeContent)
+				// For edit_file / replace_file_content / multi_replace_file_content,
+				// read the full updated artifact file from disk so ProposedPlan is
+				// never truncated to a single hunk or dropped on multi-chunk edits.
+				if body == "" && path != "" && filepath.IsAbs(path) {
+					if data, err := os.ReadFile(path); err == nil && len(data) > 0 && len(data) <= 512*1024 {
+						body = string(data)
+					}
+				}
+				if body == "" {
+					body = firstNonEmpty(params.Replacement, params.ReplacementContent)
+				}
+				if strings.TrimSpace(body) != "" {
+					norm.ProposedPlan = body
+				}
 			}
 			// Fallback inline diff when an ACP update omitted content[{type:"diff"}].
 			if len(norm.DiffChanges) == 0 && norm.ItemType == "file_change" {
-				path := extractLocationOrInputPath(u, rawIn, "Path", "TargetFile", "file_path", "path")
 				if path != "" {
 					switch rawName {
-					case "write_file", "write_to_file":
+					case "write_file", "write_to_file", "write":
 						if content := firstNonEmpty(params.Content, params.CodeContent); content != "" {
 							if patch := acp.BuildUnifiedDiff(path, "", content); patch != "" {
 								norm.DiffPatch = patch
@@ -584,7 +605,7 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 								norm.DiffChanges = []acp.FileDiffChange{{Path: path, Kind: "add", Diff: content}}
 							}
 						}
-					case "edit_file", "replace_file_content":
+					case "edit_file", "replace_file_content", "edit":
 						oldStr := firstNonEmpty(params.Target, params.TargetContent)
 						newStr := firstNonEmpty(params.Replacement, params.ReplacementContent)
 						if oldStr != "" || newStr != "" {
@@ -652,9 +673,9 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 	}
 
 	// Detect run_command transitioning to an asynchronous background task after
-	// WaitMsBeforeAsync expires so AO adds it to the background tray and tails
-	// its task log file while it runs.
-	if u.Status == "in_progress" && (rawName == "run_command" || started.ItemType == "command_execution") {
+	// WaitMsBeforeAsync expires (or IsDaemon: true) so AO adds it to the
+	// background tray and tails its task log file while it runs.
+	if (u.Status == "in_progress" || u.Status == "completed") && (rawName == "run_command" || started.ItemType == "command_execution") {
 		if taskID, logPath, ok := parseAgyBackgroundTaskOutput(firstNonEmpty(norm.CommandOut, norm.Content)); ok {
 			norm.IsBackground = true
 			norm.BackgroundTaskID = taskID
@@ -895,7 +916,6 @@ func (f *Flavor) BeforePrompt(_ context.Context, sessionID string) any {
 	if f.AppDataDir == "" || sessionID == "" {
 		return nil
 	}
-	f.seedExistingSubagents(sessionID)
 	maxIdx, ok := readMaxStepIndex(f.AppDataDir, sessionID)
 	if !ok {
 		return nil
@@ -916,10 +936,24 @@ func (f *Flavor) AfterPrompt(_ context.Context, sessionID string, stopReason str
 	return inspectTurnErrorStep(f.AppDataDir, sessionID, sinceIdx)
 }
 
+func (f *Flavor) InitCompactionCursor(_ context.Context, sessionID string) int {
+	if f.AppDataDir == "" || sessionID == "" {
+		return -1
+	}
+	return readMaxCheckpointIndex(f.AppDataDir, sessionID)
+}
+
+func (f *Flavor) DetectCompaction(_ context.Context, sessionID string, afterIdx int) (int, *acp.CompactionEvent) {
+	if f.AppDataDir == "" || sessionID == "" {
+		return afterIdx, nil
+	}
+	return detectNewCheckpoint(f.AppDataDir, sessionID, afterIdx)
+}
+
 // ShouldHoldSpontaneousWakeClose checks `<appDataDir>/brain/<sessionId>/.system_generated/messages/`
 // for unread MESSAGE_PRIORITY_HIGH wake messages queued behind the current wake.
 func (f *Flavor) ShouldHoldSpontaneousWakeClose(_ context.Context, sessionID string) bool {
-	if f.AppDataDir == "" || sessionID == "" {
+	if f.AppDataDir == "" || validateConversationSessionID(sessionID) != nil {
 		return false
 	}
 	msgDir := filepath.Join(f.AppDataDir, "brain", sessionID, ".system_generated", "messages")
@@ -1155,7 +1189,21 @@ func extractConversationID(rawOut json.RawMessage, content string) string {
 	return ""
 }
 
-var imageFilePathRe = regexp.MustCompile(`(?i)(?:file://)?((?:/|[A-Za-z]:[\\/])[^\s"'` + "`" + `<>)\]]+\.(?:png|jpe?g|webp|gif))`)
+var (
+	imageFilePathQuotedRe = regexp.MustCompile(`(?i)["'` + "`" + `](?:file://)?((?:/|[A-Za-z]:[\\/])[^"'` + "`" + `\r\n<>]+\.(?:png|jpe?g|webp|gif))["'` + "`" + `]`)
+	imageFilePathRe       = regexp.MustCompile(`(?i)(?:file://)?((?:/|[A-Za-z]:[\\/])[^\s"'` + "`" + `<>)\]]+\.(?:png|jpe?g|webp|gif))`)
+)
+
+func normalizeImagePath(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(raw), "file://") {
+		return resolveTranscriptURI(raw, "")
+	}
+	return raw
+}
 
 func extractGeneratedImageFields(rawIn, startedIn, rawOut json.RawMessage, content string) (path, prompt string) {
 	readInput := func(raw json.RawMessage) (p, pr string) {
@@ -1194,7 +1242,7 @@ func extractGeneratedImageFields(rawIn, startedIn, rawOut json.RawMessage, conte
 				"image_path", "imagePath",
 			} {
 				if s, ok := obj[k].(string); ok && strings.TrimSpace(s) != "" {
-					path = strings.TrimSpace(s)
+					path = normalizeImagePath(s)
 					break
 				}
 			}
@@ -1202,7 +1250,7 @@ func extractGeneratedImageFields(rawIn, startedIn, rawOut json.RawMessage, conte
 				for _, k := range []string{"paths", "saved_paths", "savedPaths"} {
 					if arr, ok := obj[k].([]any); ok && len(arr) > 0 {
 						if s, ok := arr[0].(string); ok && strings.TrimSpace(s) != "" {
-							path = strings.TrimSpace(s)
+							path = normalizeImagePath(s)
 							break
 						}
 					}
@@ -1211,12 +1259,14 @@ func extractGeneratedImageFields(rawIn, startedIn, rawOut json.RawMessage, conte
 		}
 	}
 	if path == "" && content != "" {
-		if m := imageFilePathRe.FindStringSubmatch(content); len(m) > 1 {
-			path = strings.TrimSpace(m[1])
+		if m := imageFilePathQuotedRe.FindStringSubmatch(content); len(m) > 1 {
+			path = normalizeImagePath(m[1])
+		} else if m := imageFilePathRe.FindStringSubmatch(content); len(m) > 1 {
+			path = normalizeImagePath(m[1])
 		}
 	}
 	if path == "" {
-		path = firstNonEmpty(inPath, stPath)
+		path = normalizeImagePath(firstNonEmpty(inPath, stPath))
 	}
 	return path, prompt
 }

@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	chunkCoalesceWindow = 35 * time.Millisecond
-	chunkCoalesceBytes  = 2048
+	chunkCoalesceWindow    = 35 * time.Millisecond
+	chunkCoalesceBytes     = 2048
+	interruptSettleTimeout = 5 * time.Second
 )
 
 // SessionConfig holds thread-scoped configuration for opening an ACP Session on
@@ -142,19 +143,29 @@ type Session struct {
 	currentModeID          string
 	lastRequestedModeID    string
 	lastContextSize        int
+	lastUsedTokens         int
+	lastCompactionIdx      int
+	lastPromptCompact      bool
 	inFlightPrompts        int
 	wireInFlightPrompts    int
+	cancelling             bool
+	inFlightZeroCh         chan struct{}
 	inFlightConfirms       []*pendingPromptConfirm
-	solePromptConfirm      *pendingPromptConfirm
+	armedConfirm           *pendingPromptConfirm
 	turnOpen               bool
 	spontaneousTurnOpen    bool
 	turnSeq                int
 	activeTurnID           string
+	turnBeforeToken        any
+	turnBeforeSet          bool
 	promptUsage            provider.TokenUsage
 	promptUsageSeen        bool
 	turnHasOutputSchema    bool
 	turnLastAssistantText  strings.Builder
+	activeBlockKind        provider.EventKind
 	startedTools           map[string]NormalizedToolStart
+	childStartedTools      map[string]NormalizedToolStart
+	childLaunchByConvID    map[string]string
 	trackedSubagents       map[string]SubagentLaunchContext
 	activeSubagentWatchers int
 	pendingPerms           map[string]pendingPermission
@@ -230,7 +241,10 @@ func (c *Conn) open(
 		runtimeMode:          rtMode,
 		interactionMode:      imMode,
 		permissionPolicy:     initialPolicy,
+		lastCompactionIdx:    -1,
 		startedTools:         make(map[string]NormalizedToolStart),
+		childStartedTools:    make(map[string]NormalizedToolStart),
+		childLaunchByConvID:  make(map[string]string),
 		trackedSubagents:     make(map[string]SubagentLaunchContext),
 		pendingPerms:         make(map[string]pendingPermission),
 		pendingToolQuestions: make(map[string]pendingToolQuestion),
@@ -306,7 +320,7 @@ func (c *Conn) open(
 
 	var openRes SessionOpenResult
 	if err := json.Unmarshal(rawOpen, &openRes); err != nil {
-		cleanupOpen(false, cfg.ResumeSessionID)
+		cleanupOpen(true, cfg.ResumeSessionID)
 		return nil, fmt.Errorf("acp: decode session open response: %w", err)
 	}
 	sessionID := openRes.SessionID
@@ -314,7 +328,7 @@ func (c *Conn) open(
 		sessionID = cfg.ResumeSessionID
 	}
 	if sessionID == "" {
-		cleanupOpen(false, "")
+		cleanupOpen(true, "")
 		return nil, errors.New("acp: session open response missing sessionId")
 	}
 
@@ -339,12 +353,15 @@ func (c *Conn) open(
 
 	// Re-apply desired model, thought_level, and mode immediately (required on
 	// both fresh sessions and cold session/resume where servers reset to defaults).
-	if err := s.applyConfigAxes(ctx, requestedModel, requestedEffort, rtMode, imMode, requestedModel != "", requestedEffort != "", true, false); err != nil {
-		cleanupOpen(!resuming, sessionID)
+	if err := s.applyConfigAxes(ctx, requestedModel, requestedEffort, rtMode, imMode, requestedModel != "", requestedEffort != "", true, false, false); err != nil {
+		cleanupOpen(true, sessionID)
 		return nil, fmt.Errorf("acp: apply initial session config: %w", err)
 	}
 
+	compactionCursor := flavor.InitCompactionCursor(ctx, sessionID)
+
 	s.mu.Lock()
+	s.lastCompactionIdx = compactionCursor
 	effectiveModel := s.model
 	if effectiveModel == "" {
 		effectiveModel = currentConfigValue(s.configOptions, "model")
@@ -437,7 +454,7 @@ func (s *Session) ApplyLiveUpdate(ctx context.Context, u LiveUpdate) error {
 	if u.HasInteraction {
 		im = u.InteractionMode
 	}
-	return s.applyConfigAxes(ctx, model, effort, rt, im, u.HasModel, u.HasEffort || u.HasModel, u.HasRuntimeMode || u.HasInteraction, true)
+	return s.applyConfigAxes(ctx, model, effort, rt, im, u.HasModel, u.HasEffort || u.HasModel, u.HasRuntimeMode || u.HasInteraction, true, u.HasEffort)
 }
 
 func (s *Session) applyConfigAxes(
@@ -445,7 +462,7 @@ func (s *Session) applyConfigAxes(
 	model, effort string,
 	rt provider.RuntimeMode,
 	im provider.InteractionMode,
-	applyModel, applyEffort, applyMode, strict bool,
+	applyModel, applyEffort, applyMode, strict, strictEffort bool,
 ) error {
 	s.mu.Lock()
 	sessionID := s.sessionID
@@ -496,35 +513,44 @@ func (s *Session) applyConfigAxes(
 		}
 	}
 
-	if applyEffort && effort != "" {
-		if optionOffered(opts, "thought_level", effort) {
-			effortApplied := true
-			if currentConfigValue(opts, "thought_level") != effort {
-				newOpts, err := s.conn.SetConfigOption(ctx, sessionID, "thought_level", effort)
-				if err != nil {
-					errs = append(errs, err)
-					effortApplied = false
-				} else if len(newOpts) > 0 {
+	if applyEffort {
+		if effort != "" {
+			if optionOffered(opts, "thought_level", effort) {
+				effortApplied := true
+				if currentConfigValue(opts, "thought_level") != effort {
+					newOpts, err := s.conn.SetConfigOption(ctx, sessionID, "thought_level", effort)
+					if err != nil {
+						errs = append(errs, err)
+						effortApplied = false
+					} else if len(newOpts) > 0 {
+						s.mu.Lock()
+						s.configOptions = append([]ConfigOption(nil), newOpts...)
+						s.mu.Unlock()
+					}
+				}
+				if effortApplied {
 					s.mu.Lock()
-					s.configOptions = append([]ConfigOption(nil), newOpts...)
+					s.reasoningEffort = effort
 					s.mu.Unlock()
 				}
-			}
-			if effortApplied {
+			} else {
+				// Server does not offer this effort (or thought_level at all):
+				// reflect the server's actual active value rather than claiming
+				// an unoffered effort took effect. Only fail when the caller
+				// explicitly asked to change thought_level; a model switch onto
+				// a model without that tier falls back to the model's default
+				// without forcing a session restart.
 				s.mu.Lock()
-				s.reasoningEffort = effort
+				s.reasoningEffort = currentConfigValue(opts, "thought_level")
 				s.mu.Unlock()
+				if strict && strictEffort {
+					errs = append(errs, fmt.Errorf("acp: thought_level %q is not offered by server", effort))
+				}
 			}
 		} else {
-			// Server does not offer this effort (or thought_level at all):
-			// reflect the server's actual active value rather than claiming
-			// an unoffered effort took effect.
 			s.mu.Lock()
 			s.reasoningEffort = currentConfigValue(opts, "thought_level")
 			s.mu.Unlock()
-			if strict {
-				errs = append(errs, fmt.Errorf("acp: thought_level %q is not offered by server", effort))
-			}
 		}
 	}
 
@@ -574,12 +600,32 @@ func (s *Session) applyConfigAxes(
 // Send while a prompt is already in flight steers the active turn without
 // cancelling it.
 func (s *Session) Send(ctx context.Context, content string, opts provider.SendOptions) error {
+	return s.sendPrompt(ctx, content, opts, false)
+}
+
+// Steer sends a mid-turn prompt into the currently active turn. Returns
+// ErrNoActiveTurn when no turn is active (or while an interrupt is settling)
+// so the flush dispatcher can start a fresh turn instead.
+func (s *Session) Steer(ctx context.Context, content string, opts provider.SendOptions) error {
+	return s.sendPrompt(ctx, content, opts, true)
+}
+
+func (s *Session) sendPrompt(ctx context.Context, content string, opts provider.SendOptions, requireActiveTurn bool) error {
 	if s.closing.Load() {
 		return errors.New("acp: session is closed")
 	}
 
 	s.questionActionMu.Lock()
 	defer s.questionActionMu.Unlock()
+
+	if requireActiveTurn {
+		s.mu.Lock()
+		active := s.turnOpen && !s.cancelling
+		s.mu.Unlock()
+		if !active {
+			return ErrNoActiveTurn
+		}
+	}
 
 	// Reconcile per-turn InteractionMode (chat vs plan) before sending prompt.
 	// Return the error rather than sending under the wrong mode.
@@ -589,7 +635,7 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		rt := s.runtimeMode
 		s.mu.Unlock()
 		if opts.InteractionMode != curIM {
-			if err := s.applyConfigAxes(ctx, "", "", rt, opts.InteractionMode, false, false, true, true); err != nil {
+			if err := s.applyConfigAxes(ctx, "", "", rt, opts.InteractionMode, false, false, true, true, false); err != nil {
 				return fmt.Errorf("acp: reconcile interaction mode %s: %w", opts.InteractionMode, err)
 			}
 		}
@@ -608,7 +654,7 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	return s.dispatchPrompt(ctx, blocks, hasOutputSchema, strings.TrimSpace(opts.UserMessageUUID), content, true)
 }
 
-func (s *Session) startPromptRequest(sessionID string, blocks []ContentBlock, onResponse func()) (func(context.Context) (json.RawMessage, error), error) {
+func (s *Session) startPromptRequest(sessionID string, blocks []ContentBlock, onResponse func(rawLine []byte)) (func(context.Context) (json.RawMessage, error), error) {
 	if sessionID == "" {
 		return nil, errors.New("acp: session not initialized")
 	}
@@ -625,7 +671,7 @@ func (s *Session) startPromptRequest(sessionID string, blocks []ContentBlock, on
 }
 
 func (s *Session) emitPromptConfirmation(c *pendingPromptConfirm) {
-	if c == nil || c.uuid == "" || !c.confirmed.CompareAndSwap(false, true) {
+	if c == nil || c.uuid == "" || s.closing.Load() || !c.confirmed.CompareAndSwap(false, true) {
 		return
 	}
 	confirmMeta, _ := json.Marshal(map[string]any{
@@ -643,7 +689,7 @@ func (s *Session) emitPromptConfirmation(c *pendingPromptConfirm) {
 }
 
 func (s *Session) removeInFlightConfirmLocked(c *pendingPromptConfirm) {
-	if c == nil || len(s.inFlightConfirms) == 0 {
+	if len(s.inFlightConfirms) == 0 {
 		return
 	}
 	for i, entry := range s.inFlightConfirms {
@@ -654,45 +700,85 @@ func (s *Session) removeInFlightConfirmLocked(c *pendingPromptConfirm) {
 	}
 }
 
-func (s *Session) rearmSolePromptConfirmLocked() {
-	if s.wireInFlightPrompts == 1 && len(s.inFlightConfirms) == 1 && !s.spontaneousTurnOpen {
-		c := s.inFlightConfirms[0]
-		if c != nil && !c.confirmed.Load() {
-			s.solePromptConfirm = c
+func responseWasCancelledOrError(rawLine []byte) bool {
+	if len(rawLine) == 0 {
+		return true
+	}
+	var env struct {
+		Error  *json.RawMessage `json:"error"`
+		Result *struct {
+			StopReason string `json:"stopReason"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(rawLine, &env) != nil {
+		return true
+	}
+	if env.Error != nil && string(*env.Error) != "null" {
+		return true
+	}
+	if env.Result != nil && env.Result.StopReason == "cancelled" {
+		return true
+	}
+	return false
+}
+
+func (s *Session) rearmNextConfirmLocked(armNext bool) {
+	if !armNext || s.cancelling || s.spontaneousTurnOpen {
+		s.armedConfirm = nil
+		return
+	}
+	if len(s.inFlightConfirms) > 0 {
+		head := s.inFlightConfirms[0]
+		if head != nil && !head.confirmed.Load() {
+			s.armedConfirm = head
 			return
 		}
 	}
-	if s.wireInFlightPrompts != 1 {
-		s.solePromptConfirm = nil
-	}
+	s.armedConfirm = nil
 }
 
-func (s *Session) makeWirePromptSettler(confirm *pendingPromptConfirm) func() {
+func (s *Session) makeWirePromptSettler(confirm *pendingPromptConfirm) func(rawLine []byte) {
 	var once sync.Once
-	return func() {
+	return func(rawLine []byte) {
 		once.Do(func() {
+			armNext := len(rawLine) > 0 && !responseWasCancelledOrError(rawLine)
 			s.mu.Lock()
+			wasHead := len(s.inFlightConfirms) > 0 && s.inFlightConfirms[0] == confirm
 			s.removeInFlightConfirmLocked(confirm)
-			if s.solePromptConfirm == confirm {
-				s.solePromptConfirm = nil
+			if s.armedConfirm == confirm {
+				s.armedConfirm = nil
 			}
 			if s.wireInFlightPrompts > 0 {
 				s.wireInFlightPrompts--
 			}
-			s.rearmSolePromptConfirmLocked()
+			if wasHead || s.wireInFlightPrompts == 1 {
+				s.rearmNextConfirmLocked(armNext)
+			}
 			s.mu.Unlock()
 		})
 	}
 }
 
-func (s *Session) confirmSolePrompt() {
+func (s *Session) confirmArmedPrompt() {
 	s.mu.Lock()
-	c := s.solePromptConfirm
+	c := s.armedConfirm
 	if c != nil {
-		s.solePromptConfirm = nil
+		s.armedConfirm = nil
 	}
 	s.mu.Unlock()
 	s.emitPromptConfirmation(c)
+}
+
+func (s *Session) signalInFlightZeroLocked() {
+	if s.inFlightZeroCh != nil {
+		close(s.inFlightZeroCh)
+		s.inFlightZeroCh = nil
+	}
+}
+
+func isCompactPromptText(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return trimmed == "/compact" || strings.HasPrefix(trimmed, "/compact ")
 }
 
 func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, hasOutputSchema bool, userMsgUUID, userContent string, detachQuestions bool) error {
@@ -705,14 +791,12 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 
 	// Capture any pre-prompt flavor token (e.g. agy SQLite max step idx)
 	// BEFORE registering in-flight state, detaching pending questions, or
-	// arming solePromptConfirm so neither delayed updates nor the original
+	// arming armedConfirm so neither delayed updates nor the original
 	// prompt's waiter can race this I/O window.
 	beforeToken := s.flavor.BeforePrompt(ctx, sessionID)
 
-	var confirm *pendingPromptConfirm
-	if userMsgUUID != "" {
-		confirm = &pendingPromptConfirm{uuid: userMsgUUID, content: userContent}
-	}
+	confirm := &pendingPromptConfirm{uuid: userMsgUUID, content: userContent}
+	isCompact := isCompactPromptText(userContent)
 
 	// Atomically detach pre-existing pending questions AND register in-flight
 	// state under the same s.mu lock BEFORE writing session/prompt so:
@@ -722,8 +806,6 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 	//     hold the turn open, and
 	// (c) early updates on the shared reader goroutine cannot open a
 	//     spontaneous wake turn.
-	//
-	// Only arm solePromptConfirm when the session is completely quiescent.
 	var openTurnID string
 	var prevOutputSchema bool
 	var detachedQuestions map[string]pendingToolQuestion
@@ -743,12 +825,17 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 			delete(s.pendingToolQuestions, id)
 		}
 	}
-	priorInFlight := s.inFlightPrompts
-	quiescent := priorInFlight == 0 && !s.spontaneousTurnOpen && len(s.startedTools) == 0 && len(s.trackedSubagents) == 0 && s.activeSubagentWatchers == 0
+	priorWireInFlight := s.wireInFlightPrompts
 	s.inFlightPrompts++
 	s.wireInFlightPrompts++
-	if confirm != nil {
-		s.inFlightConfirms = append(s.inFlightConfirms, confirm)
+	s.cancelling = false
+	if isCompact {
+		s.lastPromptCompact = true
+	}
+	s.inFlightConfirms = append(s.inFlightConfirms, confirm)
+	if !s.turnBeforeSet {
+		s.turnBeforeToken = beforeToken
+		s.turnBeforeSet = true
 	}
 	if !s.turnOpen {
 		s.turnSeq++
@@ -766,20 +853,32 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 			s.turnHasOutputSchema = true
 		}
 	}
-	if quiescent {
-		s.solePromptConfirm = confirm
+	// Arm immediately when no other wire prompt or spontaneous wake is active.
+	// Background commands/subagents do not prevent confirming this user prompt
+	// on the first parent-scope response update.
+	if priorWireInFlight == 0 && !s.spontaneousTurnOpen && confirm.uuid != "" {
+		s.armedConfirm = confirm
+	} else if priorWireInFlight > 0 {
+		// Leave any already-armed predecessor confirm intact; do not overwrite
+		// with a newly steered prompt until its predecessor resolves.
 	} else {
-		s.solePromptConfirm = nil
+		s.armedConfirm = nil
 	}
 	s.mu.Unlock()
 
 	settleWire := s.makeWirePromptSettler(confirm)
 	wait, err := s.startPromptRequest(sessionID, blocks, settleWire)
 	if err != nil {
-		settleWire()
+		settleWire(nil)
 		s.mu.Lock()
 		if s.inFlightPrompts > 0 {
 			s.inFlightPrompts--
+		}
+		if s.inFlightPrompts == 0 {
+			s.turnBeforeToken = nil
+			s.turnBeforeSet = false
+			s.lastPromptCompact = false
+			s.signalInFlightZeroLocked()
 		}
 		if openTurnID != "" && s.inFlightPrompts == 0 {
 			s.turnOpen = false
@@ -819,7 +918,7 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 	go func() {
 		defer s.promptWG.Done()
 		rawResp, waitErr := wait(s.sessionCtx)
-		settleWire()
+		settleWire(nil)
 		s.finishPrompt(rawResp, waitErr, beforeToken, confirm)
 	}()
 
@@ -827,18 +926,22 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 }
 
 func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeToken any, confirm *pendingPromptConfirm) {
-	if confirm != nil {
-		if waitErr == nil {
-			// Provider accepted and completed THIS prompt; confirm its own UUID
-			// without touching any other steered prompt.
-			s.emitPromptConfirmation(confirm)
-		}
-	}
-	s.flushChunks()
-
 	var res SessionPromptResult
 	if waitErr == nil && len(rawResp) > 0 {
 		_ = json.Unmarshal(rawResp, &res)
+	}
+
+	closing := s.closing.Load()
+	if !closing {
+		// Fallback confirmation for prompts that completed cleanly without
+		// emitting any intermediate parent update (e.g. /compact or empty reply).
+		// Never confirm cancelled or errored prompts.
+		if confirm != nil && waitErr == nil && res.StopReason != "cancelled" {
+			s.emitPromptConfirmation(confirm)
+		}
+		s.closeActiveContentBlock()
+	} else {
+		s.stopChunkTimer()
 	}
 
 	s.mu.Lock()
@@ -854,6 +957,11 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 	}
 	remaining := s.inFlightPrompts
 	turnID := s.activeTurnID
+	effectiveBeforeToken := beforeToken
+	if s.turnBeforeSet {
+		effectiveBeforeToken = s.turnBeforeToken
+	}
+	wasCompact := s.lastPromptCompact
 	// When the server ends a prompt solely to pause for a pending ask_question
 	// tool (e.g. agy emitting tool_call(status="pending") + end_turn before the
 	// user's answer prompt), hold the logical turn open so triage keeps
@@ -864,6 +972,10 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 		len(s.pendingToolQuestions) > 0
 	var totalUsage *provider.TokenUsage
 	var structuredOutput json.RawMessage
+	if remaining == 0 {
+		s.cancelling = false
+		s.signalInFlightZeroLocked()
+	}
 	if remaining == 0 && !holdForToolQuestion {
 		if s.promptUsageSeen {
 			u := s.promptUsage
@@ -872,14 +984,19 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 		if s.turnHasOutputSchema {
 			structuredOutput = extractStructuredJSONObject(s.turnLastAssistantText.String())
 		}
+		s.promptUsage = provider.TokenUsage{}
+		s.promptUsageSeen = false
 		s.turnHasOutputSchema = false
 		s.turnLastAssistantText.Reset()
+		s.turnBeforeToken = nil
+		s.turnBeforeSet = false
+		s.lastPromptCompact = false
 		s.turnOpen = false
 		s.spontaneousTurnOpen = false
 	}
 	s.mu.Unlock()
 
-	if s.closing.Load() {
+	if closing || s.closing.Load() {
 		return
 	}
 
@@ -889,14 +1006,24 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 			Class:    provider.FailureFatal,
 			Boundary: provider.FailureBoundaryTurn,
 		}
+		errMetaFields := map[string]any{}
 		if IsAuthRequired(waitErr) {
 			failure.Code = "authentication_failed"
+			errMetaFields["error"] = "authentication_failed"
+		}
+		if confirm != nil && confirm.uuid != "" && !confirm.confirmed.Load() {
+			errMetaFields["failed_provider_item_id"] = confirm.uuid
+		}
+		var errMeta json.RawMessage
+		if len(errMetaFields) > 0 {
+			errMeta, _ = json.Marshal(errMetaFields)
 		}
 		s.emitEvent(provider.ProviderEvent{
 			Kind:      provider.EventError,
 			ThreadID:  s.threadID,
 			TurnID:    turnID,
 			Content:   errMsg,
+			Meta:      errMeta,
 			Failure:   failure,
 			Timestamp: time.Now(),
 		})
@@ -930,13 +1057,17 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 		return
 	}
 
+	if wasCompact {
+		s.maybeEmitCompaction(sessionID, turnID, "manual")
+	}
+
 	stopReason := res.StopReason
 	if stopReason == "" {
 		stopReason = "end_turn"
 	}
 
 	// Check flavor out-of-band outcome override (e.g. agy silent step_type=17 errors).
-	if override := s.flavor.AfterPrompt(context.Background(), sessionID, stopReason, beforeToken); override != nil && override.ErrorMessage != "" {
+	if override := s.flavor.AfterPrompt(context.Background(), sessionID, stopReason, effectiveBeforeToken); override != nil && override.ErrorMessage != "" {
 		failure := override.Failure
 		if failure == nil {
 			failure = &provider.FailureMeta{
@@ -944,11 +1075,16 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 				Boundary: provider.FailureBoundaryTurn,
 			}
 		}
+		var errMeta json.RawMessage
+		if failure.Code != "" {
+			errMeta, _ = json.Marshal(map[string]any{"error": failure.Code})
+		}
 		s.emitEvent(provider.ProviderEvent{
 			Kind:      provider.EventError,
 			ThreadID:  s.threadID,
 			TurnID:    turnID,
 			Content:   override.ErrorMessage,
+			Meta:      errMeta,
 			Failure:   failure,
 			Timestamp: time.Now(),
 		})
@@ -1015,25 +1151,43 @@ func buildModelUsage(model string, total *provider.TokenUsage) []provider.ModelT
 	}}
 }
 
-// Interrupt sends the ACP session/cancel notification and drains any pending
-// approvals for this session.
-func (s *Session) Interrupt(_ context.Context) error {
+// Interrupt sends the ACP session/cancel notification, drains pending approvals,
+// and waits briefly for in-flight prompts to settle so a subsequent resend
+// after Stop does not race into the cancelling turn.
+func (s *Session) Interrupt(ctx context.Context) error {
+	s.closeActiveContentBlock()
 	s.questionActionMu.Lock()
 	s.mu.Lock()
 	sessionID := s.sessionID
 	heldForQuestion := s.turnOpen && s.inFlightPrompts == 0 && len(s.pendingToolQuestions) > 0
+	spontaneousOnly := s.spontaneousTurnOpen && s.inFlightPrompts == 0 && !heldForQuestion
+	hasInFlight := s.inFlightPrompts > 0
 	turnID := s.activeTurnID
 	model := s.model
+	s.armedConfirm = nil
+	var waitCh chan struct{}
+	if hasInFlight {
+		s.cancelling = true
+		if s.inFlightZeroCh == nil {
+			s.inFlightZeroCh = make(chan struct{})
+		}
+		waitCh = s.inFlightZeroCh
+	}
 	var totalUsage *provider.TokenUsage
-	if heldForQuestion {
+	if heldForQuestion || spontaneousOnly {
 		if s.promptUsageSeen {
 			u := s.promptUsage
 			totalUsage = &u
 		}
+		s.promptUsage = provider.TokenUsage{}
+		s.promptUsageSeen = false
 		s.turnOpen = false
 		s.spontaneousTurnOpen = false
 		s.turnHasOutputSchema = false
 		s.turnLastAssistantText.Reset()
+		s.turnBeforeToken = nil
+		s.turnBeforeSet = false
+		s.lastPromptCompact = false
 	}
 	s.mu.Unlock()
 	if sessionID == "" {
@@ -1055,26 +1209,63 @@ func (s *Session) Interrupt(_ context.Context) error {
 				Usage:      totalUsage,
 				ModelUsage: buildModelUsage(model, totalUsage),
 				OwnUsage:   totalUsage,
+				Aborted:    true,
+			},
+		})
+	} else if spontaneousOnly {
+		s.drainPendingApprovals("lost", false)
+		s.questionActionMu.Unlock()
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventTurnComplete,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			Timestamp: time.Now(),
+			TurnComplete: &provider.WireTurnCompleteMeta{
+				UsageScope: s.usageScope(),
+				StopReason: "cancelled",
+				Usage:      totalUsage,
+				ModelUsage: buildModelUsage(model, totalUsage),
+				OwnUsage:   totalUsage,
+				Aborted:    true,
 			},
 		})
 	} else {
 		s.drainPendingApprovals("lost", false)
 		s.questionActionMu.Unlock()
 	}
-	return s.conn.writeNotification("session/cancel", SessionCancelParams{
+	writeErr := s.conn.writeNotification("session/cancel", SessionCancelParams{
 		SessionID: sessionID,
 	})
+	if writeErr != nil {
+		s.mu.Lock()
+		s.cancelling = false
+		s.mu.Unlock()
+		return writeErr
+	}
+	if waitCh != nil {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		timer := time.NewTimer(interruptSettleTimeout)
+		defer timer.Stop()
+		select {
+		case <-waitCh:
+		case <-s.sessionCtx.Done():
+		case <-ctx.Done():
+		case <-timer.C:
+			s.mu.Lock()
+			s.cancelling = false
+			s.mu.Unlock()
+		}
+	}
+	return nil
 }
 
 // RespondToApproval forwards the user's decision for a pending
 // session/request_permission callback back to the ACP server.
 func (s *Session) RespondToApproval(_ context.Context, resp provider.ApprovalResponse) error {
-	if !s.approvals.Claim(resp.RequestID, provider.EventApprovalResolved) {
-		return provider.ErrStaleInteractiveRequest
-	}
 	s.mu.Lock()
 	pending, ok := s.pendingPerms[resp.RequestID]
-	delete(s.pendingPerms, resp.RequestID)
 	sessionID := s.sessionID
 	s.mu.Unlock()
 	if !ok {
@@ -1099,29 +1290,20 @@ func (s *Session) RespondToApproval(_ context.Context, resp provider.ApprovalRes
 			Outcome: PermissionOutcome{Outcome: "cancelled"},
 		}
 	}
+	if !s.approvals.Claim(resp.RequestID, provider.EventApprovalResolved) {
+		return provider.ErrStaleInteractiveRequest
+	}
 	if err := s.conn.writeResponse(pending.rpcID, result); err != nil {
+		// Re-track so the caller can retry after a transient write failure.
+		s.approvals.Track(resp.RequestID, provider.EventApprovalResolved, nil)
 		return err
 	}
+	s.mu.Lock()
+	delete(s.pendingPerms, resp.RequestID)
+	s.mu.Unlock()
 	if decision == "cancel" && sessionID != "" {
 		_ = s.conn.writeNotification("session/cancel", SessionCancelParams{SessionID: sessionID})
 	}
-
-	norm := provider.NormalizeApprovalDecision(resp)
-	if norm == "" {
-		norm = "approved"
-	}
-	meta, _ := json.Marshal(map[string]any{
-		"requestId": resp.RequestID,
-		"decision":  norm,
-	})
-	s.emitEvent(provider.ProviderEvent{
-		Kind:             provider.EventApprovalResolved,
-		ThreadID:         s.threadID,
-		ItemID:           resp.RequestID,
-		Meta:             meta,
-		Timestamp:        time.Now(),
-		PromptOccurrence: resp.Occurrence,
-	})
 	return nil
 }
 
@@ -1136,7 +1318,7 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 
 	s.questionActionMu.Lock()
 	s.mu.Lock()
-	_, isPermPeek := s.pendingPerms[resp.RequestID]
+	pendingPermPeek, isPermPeek := s.pendingPerms[resp.RequestID]
 	pendingQPeek, isToolQPeek := s.pendingToolQuestions[resp.RequestID]
 	if isToolQPeek && !isPermPeek {
 		if pendingQPeek.answering {
@@ -1152,80 +1334,105 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 		s.questionActionMu.Unlock()
 	}
 
-	// For ask_question tool prompts, questionActionMu stays held across
-	// validation, prompt dispatch, approval Claim, and inFlightPrompts++ so
-	// neither Interrupt nor Send can steal ownership mid-write or orphan a
-	// dispatched native prompt.
+	if isPermPeek {
+		var result RequestPermissionResult
+		if decision == "decline" {
+			result = RequestPermissionResult{Outcome: PermissionOutcome{Outcome: "cancelled"}}
+		} else {
+			optionID := resolveUserInputOptionID(resp.Answers, pendingPermPeek.optionByKey)
+			if optionID != "" {
+				result = RequestPermissionResult{
+					Outcome: PermissionOutcome{Outcome: "selected", OptionID: optionID},
+				}
+			} else {
+				result = RequestPermissionResult{Outcome: PermissionOutcome{Outcome: "cancelled"}}
+			}
+		}
+		if !s.approvals.Claim(resp.RequestID, provider.EventUserInputResolved) {
+			return provider.ErrStaleInteractiveRequest
+		}
+		if err := s.conn.writeResponse(pendingPermPeek.rpcID, result); err != nil {
+			s.approvals.Track(resp.RequestID, provider.EventUserInputResolved, nil)
+			return err
+		}
+		s.mu.Lock()
+		delete(s.pendingPerms, resp.RequestID)
+		s.mu.Unlock()
+		return nil
+	}
+
+	if !isToolQPeek {
+		return provider.ErrStaleInteractiveRequest
+	}
+	defer s.questionActionMu.Unlock()
+
+	replyText := formatToolQuestionAnswer(pendingQPeek.questions, resp.Answers, decision)
+	if decision != "decline" && strings.TrimSpace(replyText) == "" {
+		s.mu.Lock()
+		if cur, ok := s.pendingToolQuestions[resp.RequestID]; ok {
+			cur.answering = false
+			s.pendingToolQuestions[resp.RequestID] = cur
+		}
+		s.mu.Unlock()
+		return errors.New("acp: ask_question response requires at least one answer")
+	}
+
+	// Claim BEFORE dispatching the follow-up prompt so a concurrent drain
+	// cannot invalidate our claim after we already wrote to the wire.
+	if !s.approvals.Claim(resp.RequestID, provider.EventUserInputResolved) {
+		s.mu.Lock()
+		if cur, ok := s.pendingToolQuestions[resp.RequestID]; ok {
+			cur.answering = false
+			s.pendingToolQuestions[resp.RequestID] = cur
+		}
+		s.mu.Unlock()
+		return provider.ErrStaleInteractiveRequest
+	}
+
 	var (
 		followUpWait   func(context.Context) (json.RawMessage, error)
-		followUpSettle func()
+		followUpSettle func(rawLine []byte)
 		followUpBefore any
-		replyText      string
 	)
-	if isToolQPeek && !isPermPeek {
-		defer s.questionActionMu.Unlock()
-		replyText = formatToolQuestionAnswer(pendingQPeek.questions, resp.Answers, decision)
-		if decision != "decline" && strings.TrimSpace(replyText) == "" {
+	if replyText != "" {
+		s.mu.Lock()
+		sessionID := s.sessionID
+		s.mu.Unlock()
+		if sessionID != "" {
+			followUpBefore = s.flavor.BeforePrompt(ctx, sessionID)
+		}
+		s.mu.Lock()
+		s.inFlightPrompts++
+		s.wireInFlightPrompts++
+		s.armedConfirm = nil
+		if !s.turnBeforeSet {
+			s.turnBeforeToken = followUpBefore
+			s.turnBeforeSet = true
+		}
+		s.mu.Unlock()
+		followUpSettle = s.makeWirePromptSettler(nil)
+		followUpWait, err = s.startPromptRequest(sessionID, []ContentBlock{{Type: "text", Text: replyText}}, followUpSettle)
+		if err != nil {
+			followUpSettle(nil)
 			s.mu.Lock()
+			if s.inFlightPrompts > 0 {
+				s.inFlightPrompts--
+			}
+			if s.inFlightPrompts == 0 {
+				s.signalInFlightZeroLocked()
+			}
 			if cur, ok := s.pendingToolQuestions[resp.RequestID]; ok {
 				cur.answering = false
 				s.pendingToolQuestions[resp.RequestID] = cur
 			}
 			s.mu.Unlock()
-			return errors.New("acp: ask_question response requires at least one answer")
-		}
-		if replyText != "" {
-			s.mu.Lock()
-			sessionID := s.sessionID
-			s.mu.Unlock()
-			if sessionID != "" {
-				followUpBefore = s.flavor.BeforePrompt(ctx, sessionID)
-			}
-			// Increment inFlightPrompts before writing so incoming updates
-			// from the follow-up prompt cannot open a spontaneous wake turn.
-			s.mu.Lock()
-			s.inFlightPrompts++
-			s.wireInFlightPrompts++
-			s.solePromptConfirm = nil
-			s.mu.Unlock()
-			followUpSettle = s.makeWirePromptSettler(nil)
-			followUpWait, err = s.startPromptRequest(sessionID, []ContentBlock{{Type: "text", Text: replyText}}, followUpSettle)
-			if err != nil {
-				followUpSettle()
-				s.mu.Lock()
-				if s.inFlightPrompts > 0 {
-					s.inFlightPrompts--
-				}
-				if cur, ok := s.pendingToolQuestions[resp.RequestID]; ok {
-					cur.answering = false
-					s.pendingToolQuestions[resp.RequestID] = cur
-				}
-				s.mu.Unlock()
-				return err
-			}
+			s.approvals.Track(resp.RequestID, provider.EventUserInputResolved, pendingQPeek.questions)
+			return err
 		}
 	}
 
-	if !s.approvals.Claim(resp.RequestID, provider.EventUserInputResolved) {
-		if followUpWait != nil {
-			s.promptWG.Add(1)
-			go func() {
-				defer s.promptWG.Done()
-				rawResp, waitErr := followUpWait(s.sessionCtx)
-				if followUpSettle != nil {
-					followUpSettle()
-				}
-				s.finishPrompt(rawResp, waitErr, followUpBefore, nil)
-			}()
-		}
-		return provider.ErrStaleInteractiveRequest
-	}
-
+	var openedTurnID string
 	s.mu.Lock()
-	pendingPerm, isPerm := s.pendingPerms[resp.RequestID]
-	if isPerm {
-		delete(s.pendingPerms, resp.RequestID)
-	}
 	pendingQ, isToolQ := s.pendingToolQuestions[resp.RequestID]
 	turnID := s.activeTurnID
 	if isToolQ {
@@ -1236,57 +1443,22 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 			s.activeTurnID = s.nextTurnID("turn")
 			s.turnOpen = true
 			s.spontaneousTurnOpen = false
+			s.promptUsage = provider.TokenUsage{}
+			s.promptUsageSeen = false
 			turnID = s.activeTurnID
+			openedTurnID = turnID
 		}
 	}
 	s.mu.Unlock()
 
-	resolvedDecision := "answered"
-	if decision == "decline" {
-		resolvedDecision = "declined"
-	}
-	meta, _ := json.Marshal(map[string]any{
-		"requestId": resp.RequestID,
-		"decision":  resolvedDecision,
-		"answers":   resp.Answers,
-	})
-
-	if isPerm {
-		var result RequestPermissionResult
-		if decision == "decline" {
-			result = RequestPermissionResult{Outcome: PermissionOutcome{Outcome: "cancelled"}}
-		} else {
-			optionID := resolveUserInputOptionID(resp.Answers, pendingPerm.optionByKey)
-			if optionID != "" {
-				result = RequestPermissionResult{
-					Outcome: PermissionOutcome{Outcome: "selected", OptionID: optionID},
-				}
-			} else {
-				result = RequestPermissionResult{Outcome: PermissionOutcome{Outcome: "cancelled"}}
-			}
-		}
-		if err := s.conn.writeResponse(pendingPerm.rpcID, result); err != nil {
-			return err
-		}
+	if openedTurnID != "" {
 		s.emitEvent(provider.ProviderEvent{
-			Kind:             provider.EventUserInputResolved,
-			ThreadID:         s.threadID,
-			ItemID:           resp.RequestID,
-			Meta:             meta,
-			Timestamp:        time.Now(),
-			PromptOccurrence: resp.Occurrence,
+			Kind:      provider.EventTurnStart,
+			ThreadID:  s.threadID,
+			TurnID:    openedTurnID,
+			Timestamp: time.Now(),
 		})
-		return nil
 	}
-
-	s.emitEvent(provider.ProviderEvent{
-		Kind:             provider.EventUserInputResolved,
-		ThreadID:         s.threadID,
-		ItemID:           resp.RequestID,
-		Meta:             meta,
-		Timestamp:        time.Now(),
-		PromptOccurrence: resp.Occurrence,
-	})
 
 	if isToolQ {
 		itemStatus := "completed"
@@ -1320,7 +1492,7 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 			defer s.promptWG.Done()
 			rawResp, waitErr := followUpWait(s.sessionCtx)
 			if followUpSettle != nil {
-				followUpSettle()
+				followUpSettle(nil)
 			}
 			s.finishPrompt(rawResp, waitErr, followUpBefore, nil)
 		}()
@@ -1374,12 +1546,17 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) onConnClosed(exitMeta json.RawMessage, connClosing bool) {
+	wasClosing := s.closing.Swap(true)
 	if s.sessionCancel != nil {
 		s.sessionCancel()
 	}
+	s.mu.Lock()
+	s.cancelling = false
+	s.signalInFlightZeroLocked()
+	s.mu.Unlock()
 	s.stopChunkTimer()
 	s.drainPendingApprovals("lost", true)
-	s.emitTeardownOnce(exitMeta, connClosing || s.closing.Load())
+	s.emitTeardownOnce(exitMeta, connClosing || wasClosing)
 	s.finishReadDone()
 }
 
@@ -1551,7 +1728,7 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		if !ok || block.Text == "" {
 			return
 		}
-		s.confirmSolePrompt()
+		s.confirmArmedPrompt()
 		s.ensureSpontaneousTurnOpen()
 		s.bufferChunk(provider.EventThinking, block.Text)
 
@@ -1560,7 +1737,7 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		if !ok || block.Text == "" {
 			return
 		}
-		s.confirmSolePrompt()
+		s.confirmArmedPrompt()
 		s.ensureSpontaneousTurnOpen()
 		s.mu.Lock()
 		if s.turnHasOutputSchema {
@@ -1570,37 +1747,71 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		s.bufferChunk(provider.EventTextDelta, block.Text)
 
 	case "tool_call":
-		s.confirmSolePrompt()
-		s.flushChunks()
-		s.ensureSpontaneousTurnOpen()
-		s.mu.Lock()
-		if s.turnHasOutputSchema {
-			s.turnLastAssistantText.Reset()
-		}
-		s.mu.Unlock()
 		tc := u.toToolCallUpdate()
-		s.handleToolCallStart(&tc)
+		parentID, isChild, drop := s.resolveChildParentToolUseID(tc.ToolCallID)
+		if drop {
+			return
+		}
+		if !isChild {
+			s.confirmArmedPrompt()
+			s.closeActiveContentBlock()
+			s.ensureSpontaneousTurnOpen()
+			s.mu.Lock()
+			if s.turnHasOutputSchema {
+				s.turnLastAssistantText.Reset()
+			}
+			s.mu.Unlock()
+		}
+		s.handleToolCallStart(&tc, parentID)
 
 	case "tool_call_update":
-		s.flushChunks()
 		tc := u.toToolCallUpdate()
+		parentID, isChild, drop := s.resolveChildParentToolUseID(tc.ToolCallID)
+		if drop {
+			return
+		}
+		if !isChild {
+			s.flushChunks()
+		}
 		switch tc.Status {
 		case "completed", "failed", "cancelled":
-			s.ensureSpontaneousTurnOpen()
-			s.handleToolCallComplete(&tc)
+			s.handleToolCallComplete(&tc, parentID)
 		case "pending":
-			s.handleToolCallPending(&tc)
+			if !isChild {
+				s.closeActiveContentBlock()
+				s.ensureSpontaneousTurnOpen()
+				s.handleToolCallPending(&tc)
+			}
 		case "in_progress":
-			s.handleToolCallInProgress(&tc)
+			s.handleToolCallInProgress(&tc, parentID)
 		}
 
 	case "plan":
-		s.confirmSolePrompt()
-		s.flushChunks()
+		s.confirmArmedPrompt()
+		s.closeActiveContentBlock()
 		s.handlePlanUpdate(u.Entries)
 
+	case "compaction_update":
+		s.closeActiveContentBlock()
+		s.mu.Lock()
+		turnID := s.activeTurnID
+		preTokens := s.lastUsedTokens
+		s.mu.Unlock()
+		meta, _ := json.Marshal(map[string]any{
+			"trigger":    "auto",
+			"pre_tokens": preTokens,
+		})
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventCompactBoundary,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			Content:   "Context compacted",
+			Meta:      meta,
+			Timestamp: time.Now(),
+		})
+
 	case "usage_update":
-		s.flushChunks()
+		s.closeActiveContentBlock()
 		s.handleUsageUpdate(u.Used, u.Size)
 
 	case "available_commands_update":
@@ -1613,9 +1824,7 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 			if m := currentConfigValue(s.configOptions, "model"); m != "" {
 				s.model = m
 			}
-			if e := currentConfigValue(s.configOptions, "thought_level"); e != "" {
-				s.reasoningEffort = e
-			}
+			s.reasoningEffort = currentConfigValue(s.configOptions, "thought_level")
 		}
 		s.mu.Unlock()
 
@@ -1657,6 +1866,8 @@ func (s *Session) ensureSpontaneousTurnOpen() {
 		s.activeTurnID = s.nextTurnID("wake")
 		s.turnOpen = true
 		s.spontaneousTurnOpen = true
+		s.promptUsage = provider.TokenUsage{}
+		s.promptUsageSeen = false
 		openTurnID = s.activeTurnID
 	}
 	s.mu.Unlock()
@@ -1673,49 +1884,83 @@ func (s *Session) ensureSpontaneousTurnOpen() {
 func (s *Session) bufferChunk(kind provider.EventKind, text string) {
 	var flushKind provider.EventKind
 	var flushText string
+	var stopPrevKind provider.EventKind
 	var turnID string
 
 	s.mu.Lock()
 	turnID = s.activeTurnID
-	if s.chunk.buf.Len() > 0 && s.chunk.kind != kind {
-		flushKind = s.chunk.kind
-		flushText = s.chunk.buf.String()
-		s.chunk.buf.Reset()
-		if s.chunk.timer != nil {
-			s.chunk.timer.Stop()
-			s.chunk.timer = nil
-		}
-	}
-	s.chunk.kind = kind
-	s.chunk.buf.WriteString(text)
-	if s.chunk.buf.Len() >= chunkCoalesceBytes {
-		if flushText != "" {
-			// Emit the previous kind first, then flush current below.
-			curText := s.chunk.buf.String()
+	if s.activeBlockKind != "" && s.activeBlockKind != kind {
+		stopPrevKind = s.activeBlockKind
+		if s.chunk.buf.Len() > 0 {
+			flushKind = s.chunk.kind
+			flushText = s.chunk.buf.String()
 			s.chunk.buf.Reset()
 			if s.chunk.timer != nil {
 				s.chunk.timer.Stop()
 				s.chunk.timer = nil
 			}
-			s.mu.Unlock()
-			s.emitChunk(flushKind, turnID, flushText)
-			s.emitChunk(kind, turnID, curText)
-			return
 		}
-		flushKind = kind
-		flushText = s.chunk.buf.String()
+	}
+	s.activeBlockKind = kind
+	s.chunk.kind = kind
+	s.chunk.buf.WriteString(text)
+	if s.chunk.buf.Len() >= chunkCoalesceBytes {
+		curText := s.chunk.buf.String()
 		s.chunk.buf.Reset()
 		if s.chunk.timer != nil {
 			s.chunk.timer.Stop()
 			s.chunk.timer = nil
 		}
-	} else if s.chunk.timer == nil {
+		s.mu.Unlock()
+		if flushText != "" {
+			s.emitChunk(flushKind, turnID, flushText)
+		}
+		if stopPrevKind != "" {
+			s.emitContentBlockStop(stopPrevKind, turnID)
+		}
+		s.emitChunk(kind, turnID, curText)
+		return
+	}
+	if s.chunk.timer == nil {
 		s.chunk.timer = time.AfterFunc(chunkCoalesceWindow, s.flushChunks)
 	}
 	s.mu.Unlock()
 
 	if flushText != "" {
 		s.emitChunk(flushKind, turnID, flushText)
+	}
+	if stopPrevKind != "" {
+		s.emitContentBlockStop(stopPrevKind, turnID)
+	}
+}
+
+func (s *Session) emitContentBlockStop(kind provider.EventKind, turnID string) {
+	if s.closing.Load() || kind == "" {
+		return
+	}
+	blockType := "text"
+	if kind == provider.EventThinking {
+		blockType = "thinking"
+	}
+	meta, _ := json.Marshal(map[string]any{"blockType": blockType})
+	s.emitEvent(provider.ProviderEvent{
+		Kind:      provider.EventContentBlockStop,
+		ThreadID:  s.threadID,
+		TurnID:    turnID,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
+}
+
+func (s *Session) closeActiveContentBlock() {
+	s.flushChunks()
+	s.mu.Lock()
+	kind := s.activeBlockKind
+	turnID := s.activeTurnID
+	s.activeBlockKind = ""
+	s.mu.Unlock()
+	if kind != "" {
+		s.emitContentBlockStop(kind, turnID)
 	}
 }
 
@@ -1763,7 +2008,68 @@ func (s *Session) emitChunk(kind provider.EventKind, turnID, text string) {
 	})
 }
 
-func (s *Session) handleToolCallStart(tc *ToolCallUpdate) {
+func looksLikeUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < 36; i++ {
+		c := s[i]
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+			continue
+		}
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !isHex {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Session) registerChildLaunch(childConvID, launchToolCallID string) {
+	if childConvID == "" || launchToolCallID == "" {
+		return
+	}
+	s.mu.Lock()
+	s.childLaunchByConvID[childConvID] = launchToolCallID
+	s.mu.Unlock()
+}
+
+// resolveChildParentToolUseID detects subagent tool calls forwarded by an ACP
+// server onto the parent stream with IDs shaped "<childConversationId>:<callId>".
+// When correlated to an invoke_subagent launch, it returns that launch's
+// ToolCallID as parentID so the call nests inside the subagent's pane. When a
+// foreign child UUID cannot be correlated, drop is true so child work never
+// leaks into the main timeline.
+func (s *Session) resolveChildParentToolUseID(toolCallID string) (parentID string, isChild bool, drop bool) {
+	colon := strings.IndexByte(toolCallID, ':')
+	if colon <= 0 {
+		return "", false, false
+	}
+	prefix := toolCallID[:colon]
+	if !looksLikeUUID(prefix) {
+		return "", false, false
+	}
+	s.mu.Lock()
+	sessionID := s.sessionID
+	cached := s.childLaunchByConvID[prefix]
+	s.mu.Unlock()
+	if prefix == sessionID {
+		return "", false, false
+	}
+	if cached != "" {
+		return cached, true, false
+	}
+	if launchID, ok := s.flavor.ResolveSubagentLaunch(s.sessionCtx, sessionID, prefix); ok && launchID != "" {
+		s.registerChildLaunch(prefix, launchID)
+		return launchID, true, false
+	}
+	return "", true, true
+}
+
+func (s *Session) handleToolCallStart(tc *ToolCallUpdate, parentToolUseID string) {
 	if tc.ToolCallID == "" {
 		return
 	}
@@ -1772,43 +2078,61 @@ func (s *Session) handleToolCallStart(tc *ToolCallUpdate) {
 	s.mu.Lock()
 	sessionID := s.sessionID
 	turnID := s.activeTurnID
-	if norm.SubagentLaunch && s.flavor.CanTrackSubagent(sessionID) {
-		norm.IsBackground = true
-		s.trackedSubagents[tc.ToolCallID] = SubagentLaunchContext{
-			SessionID:  sessionID,
-			ThreadID:   s.threadID,
-			TurnID:     turnID,
-			ToolCallID: tc.ToolCallID,
-			RawInput:   append(json.RawMessage(nil), tc.EffectiveInput()...),
-			Started:    norm,
-			Emit:       s.emitEvent,
+	parentModel := s.model
+	parentEffort := s.reasoningEffort
+	if parentToolUseID == "" {
+		if norm.SubagentLaunch && s.flavor.CanTrackSubagent(sessionID) {
+			norm.IsBackground = true
+			launchCallID := tc.ToolCallID
+			s.trackedSubagents[tc.ToolCallID] = SubagentLaunchContext{
+				SessionID:    sessionID,
+				ThreadID:     s.threadID,
+				TurnID:       turnID,
+				ToolCallID:   launchCallID,
+				RawInput:     append(json.RawMessage(nil), tc.EffectiveInput()...),
+				Started:      norm,
+				ParentModel:  parentModel,
+				ParentEffort: parentEffort,
+				Emit:         s.emitEvent,
+				OnChildDiscovered: func(childConvID string) {
+					s.registerChildLaunch(childConvID, launchCallID)
+				},
+			}
 		}
+		s.startedTools[tc.ToolCallID] = norm
+	} else {
+		s.childStartedTools[tc.ToolCallID] = norm
 	}
-	s.startedTools[tc.ToolCallID] = norm
 	s.mu.Unlock()
 
 	meta := buildToolStartMeta(norm)
 	s.emitEvent(provider.ProviderEvent{
-		Kind:      provider.EventToolStart,
-		ThreadID:  s.threadID,
-		TurnID:    turnID,
-		ItemID:    tc.ToolCallID,
-		ItemType:  norm.ItemType,
-		Meta:      meta,
-		Timestamp: time.Now(),
+		Kind:            provider.EventToolStart,
+		ThreadID:        s.threadID,
+		TurnID:          turnID,
+		ItemID:          tc.ToolCallID,
+		ItemType:        norm.ItemType,
+		ParentToolUseID: parentToolUseID,
+		Meta:            meta,
+		Timestamp:       time.Now(),
 	})
 
-	if tc.Status == "pending" {
+	if parentToolUseID == "" && tc.Status == "pending" {
 		s.handleToolCallPending(tc)
 	}
 }
 
-func (s *Session) handleToolCallInProgress(tc *ToolCallUpdate) {
+func (s *Session) handleToolCallInProgress(tc *ToolCallUpdate, parentToolUseID string) {
 	if tc.ToolCallID == "" {
 		return
 	}
 	s.mu.Lock()
-	started := s.startedTools[tc.ToolCallID]
+	var started NormalizedToolStart
+	if parentToolUseID == "" {
+		started = s.startedTools[tc.ToolCallID]
+	} else {
+		started = s.childStartedTools[tc.ToolCallID]
+	}
 	turnID := s.activeTurnID
 	s.mu.Unlock()
 
@@ -1816,7 +2140,7 @@ func (s *Session) handleToolCallInProgress(tc *ToolCallUpdate) {
 		return
 	}
 	norm := s.flavor.NormalizeToolComplete(tc, started)
-	if norm.IsBackground {
+	if parentToolUseID == "" && norm.IsBackground {
 		var emitBgMeta bool
 		s.mu.Lock()
 		cur, exists := s.startedTools[tc.ToolCallID]
@@ -1851,12 +2175,13 @@ func (s *Session) handleToolCallInProgress(tc *ToolCallUpdate) {
 				bgFields["output_file"] = norm.OutputFile
 			}
 			bgMeta, _ := json.Marshal(bgFields)
+			// Omit ItemType on meta_update_only so triage preserves the
+			// existing Bash command summary instead of rewriting it.
 			s.emitEvent(provider.ProviderEvent{
 				Kind:      provider.EventToolStart,
 				ThreadID:  s.threadID,
 				TurnID:    turnID,
 				ItemID:    tc.ToolCallID,
-				ItemType:  "command_execution",
 				Meta:      bgMeta,
 				Timestamp: time.Now(),
 			})
@@ -1870,15 +2195,16 @@ func (s *Session) handleToolCallInProgress(tc *ToolCallUpdate) {
 		"toolName": norm.ToolName,
 	})
 	s.emitEvent(provider.ProviderEvent{
-		Kind:      provider.EventCommandOutput,
-		ThreadID:  s.threadID,
-		TurnID:    turnID,
-		ItemID:    tc.ToolCallID,
-		ItemType:  "command_execution",
-		Content:   norm.CommandOut,
-		Meta:      cmdMeta,
-		Replace:   true,
-		Timestamp: time.Now(),
+		Kind:            provider.EventCommandOutput,
+		ThreadID:        s.threadID,
+		TurnID:          turnID,
+		ItemID:          tc.ToolCallID,
+		ItemType:        "command_execution",
+		ParentToolUseID: parentToolUseID,
+		Content:         norm.CommandOut,
+		Meta:            cmdMeta,
+		Replace:         true,
+		Timestamp:       time.Now(),
 	})
 }
 
@@ -1886,7 +2212,19 @@ func (s *Session) handleToolCallPending(tc *ToolCallUpdate) {
 	if tc.ToolCallID == "" {
 		return
 	}
-	questions, ok := s.flavor.ExtractPendingQuestion(tc)
+	effectiveTC := *tc
+	if effectiveTC.Name == "" || len(effectiveTC.EffectiveInput()) == 0 {
+		s.mu.Lock()
+		started := s.startedTools[tc.ToolCallID]
+		s.mu.Unlock()
+		if effectiveTC.Name == "" {
+			effectiveTC.Name = started.ToolName
+		}
+		if len(effectiveTC.EffectiveInput()) == 0 && len(started.Input) > 0 {
+			effectiveTC.RawInput = started.Input
+		}
+	}
+	questions, ok := s.flavor.ExtractPendingQuestion(&effectiveTC)
 	if !ok || len(questions) == 0 {
 		return
 	}
@@ -1925,21 +2263,27 @@ func (s *Session) handleToolCallPending(tc *ToolCallUpdate) {
 	})
 }
 
-func (s *Session) handleToolCallComplete(tc *ToolCallUpdate) {
+func (s *Session) handleToolCallComplete(tc *ToolCallUpdate, parentToolUseID string) {
 	if tc.ToolCallID == "" {
 		return
 	}
 	s.mu.Lock()
-	started := s.startedTools[tc.ToolCallID]
-	delete(s.startedTools, tc.ToolCallID)
-	trackedLaunch, wasTracked := s.trackedSubagents[tc.ToolCallID]
-	delete(s.trackedSubagents, tc.ToolCallID)
-	watchSubagent := wasTracked && tc.Status == "completed" && !s.closing.Load()
-	if watchSubagent {
-		// Transfer ownership from trackedSubagents to activeSubagentWatchers
-		// under s.mu so there is no quiescent gap between launch completion
-		// and background watcher completion.
-		s.activeSubagentWatchers++
+	var started NormalizedToolStart
+	var trackedLaunch SubagentLaunchContext
+	var wasTracked bool
+	var watchSubagent bool
+	if parentToolUseID == "" {
+		started = s.startedTools[tc.ToolCallID]
+		delete(s.startedTools, tc.ToolCallID)
+		trackedLaunch, wasTracked = s.trackedSubagents[tc.ToolCallID]
+		delete(s.trackedSubagents, tc.ToolCallID)
+		watchSubagent = wasTracked && tc.Status == "completed" && !s.closing.Load()
+		if watchSubagent {
+			s.activeSubagentWatchers++
+		}
+	} else {
+		started = s.childStartedTools[tc.ToolCallID]
+		delete(s.childStartedTools, tc.ToolCallID)
 	}
 	turnID := s.activeTurnID
 	s.mu.Unlock()
@@ -1953,6 +2297,7 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate) {
 	}
 	now := time.Now()
 	for _, evt := range buildToolCompleteEvents(s.threadID, turnID, tc.ToolCallID, norm, now) {
+		evt.ParentToolUseID = parentToolUseID
 		s.emitEvent(evt)
 	}
 	if watchSubagent {
@@ -2087,6 +2432,15 @@ func buildToolCompleteEvents(threadID, turnID, toolCallID string, norm Normalize
 	if norm.ItemStatus != "" {
 		metaFields["item_status"] = norm.ItemStatus
 	}
+	if norm.IsBackground {
+		metaFields["is_background"] = true
+	}
+	if norm.BackgroundTaskID != "" {
+		metaFields["task_id"] = norm.BackgroundTaskID
+	}
+	if norm.OutputFile != "" {
+		metaFields["output_file"] = norm.OutputFile
+	}
 	if norm.ItemType == "file_change" && len(norm.DiffChanges) > 0 {
 		changes := make([]map[string]any, 0, len(norm.DiffChanges))
 		for _, ch := range norm.DiffChanges {
@@ -2152,12 +2506,17 @@ func extractStructuredJSONObject(text string) json.RawMessage {
 	if strings.HasPrefix(trimmed, "{") && json.Valid([]byte(trimmed)) {
 		return json.RawMessage(trimmed)
 	}
-	start := strings.IndexByte(trimmed, '{')
-	end := strings.LastIndexByte(trimmed, '}')
-	if start >= 0 && end > start {
-		candidate := strings.TrimSpace(trimmed[start : end+1])
-		if json.Valid([]byte(candidate)) {
-			return json.RawMessage(candidate)
+	// Scan candidate JSON objects from the end so prose containing '{' before
+	// the trailing JSON object does not invalidate extraction.
+	for end := strings.LastIndexByte(trimmed, '}'); end > 0; end = strings.LastIndexByte(trimmed[:end], '}') {
+		for start := strings.LastIndexByte(trimmed[:end], '{'); start >= 0; start = strings.LastIndexByte(trimmed[:start], '{') {
+			candidate := strings.TrimSpace(trimmed[start : end+1])
+			if json.Valid([]byte(candidate)) {
+				return json.RawMessage(candidate)
+			}
+			if start == 0 {
+				break
+			}
 		}
 	}
 	return nil
@@ -2185,6 +2544,58 @@ func (s *Session) handlePlanUpdate(entries []PlanEntry) {
 	})
 }
 
+func (s *Session) maybeEmitCompaction(sessionID, turnID, defaultTrigger string) {
+	if sessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	afterIdx := s.lastCompactionIdx
+	preTokens := s.lastUsedTokens
+	s.mu.Unlock()
+
+	nextIdx, ev := s.flavor.DetectCompaction(context.Background(), sessionID, afterIdx)
+	if ev == nil {
+		return
+	}
+	s.mu.Lock()
+	if nextIdx <= s.lastCompactionIdx {
+		s.mu.Unlock()
+		return
+	}
+	s.lastCompactionIdx = nextIdx
+	s.mu.Unlock()
+
+	trigger := ev.Trigger
+	if trigger == "" {
+		trigger = defaultTrigger
+	}
+	if trigger == "" {
+		trigger = "auto"
+	}
+	if ev.PreTokens > 0 {
+		preTokens = ev.PreTokens
+	}
+	metaFields := map[string]any{
+		"trigger": trigger,
+	}
+	if preTokens > 0 {
+		metaFields["pre_tokens"] = preTokens
+	}
+	if ev.Summary != "" {
+		metaFields["summary"] = ev.Summary
+	}
+	meta, _ := json.Marshal(metaFields)
+	s.emitEvent(provider.ProviderEvent{
+		Kind:      provider.EventCompactBoundary,
+		ThreadID:  s.threadID,
+		TurnID:    turnID,
+		ItemID:    ev.ItemID,
+		Content:   "Context compacted",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
+}
+
 func (s *Session) handleUsageUpdate(used, size int) {
 	s.mu.Lock()
 	if size > 0 {
@@ -2192,10 +2603,29 @@ func (s *Session) handleUsageUpdate(used, size int) {
 	} else {
 		size = s.lastContextSize
 	}
+	prevUsed := s.lastUsedTokens
+	wasCompact := s.lastPromptCompact
 	sessionID := s.sessionID
-	spontaneous := s.spontaneousTurnOpen && s.inFlightPrompts == 0
+	spontaneous := s.spontaneousTurnOpen && s.inFlightPrompts == 0 &&
+		len(s.startedTools) == 0 && len(s.pendingPerms) == 0 && len(s.pendingToolQuestions) == 0
 	turnID := s.activeTurnID
 	s.mu.Unlock()
+
+	// Detect out-of-band compaction (e.g. agy CHECKPOINT step_type=23) when
+	// context occupancy drops sharply or right after an explicit /compact.
+	if (used > 0 && prevUsed > 0 && used < prevUsed) || wasCompact {
+		trigger := "auto"
+		if wasCompact {
+			trigger = "manual"
+		}
+		s.maybeEmitCompaction(sessionID, turnID, trigger)
+	}
+
+	if used > 0 {
+		s.mu.Lock()
+		s.lastUsedTokens = used
+		s.mu.Unlock()
+	}
 
 	if used > 0 || size > 0 {
 		cw := provider.ContextWindow{
@@ -2213,13 +2643,17 @@ func (s *Session) handleUsageUpdate(used, size int) {
 		})
 	}
 
-	// Trailing usage_update closes a spontaneous post-prompt wake turn unless
-	// the flavor indicates another high-priority wake is still queued.
+	// Trailing usage_update closes a spontaneous post-prompt wake turn once no
+	// parent tools, permissions, or questions remain open and the flavor reports
+	// no queued high-priority wake.
 	if spontaneous && !s.flavor.ShouldHoldSpontaneousWakeClose(context.Background(), sessionID) {
 		s.mu.Lock()
-		if s.spontaneousTurnOpen && s.inFlightPrompts == 0 {
+		if s.spontaneousTurnOpen && s.inFlightPrompts == 0 &&
+			len(s.startedTools) == 0 && len(s.pendingPerms) == 0 && len(s.pendingToolQuestions) == 0 {
 			s.spontaneousTurnOpen = false
 			s.turnOpen = false
+			s.promptUsage = provider.TokenUsage{}
+			s.promptUsageSeen = false
 		} else {
 			spontaneous = false
 		}
@@ -2276,6 +2710,23 @@ func (s *Session) handleCurrentModeUpdate(modeID string) {
 		s.lastRequestedModeID = ""
 	}
 	s.currentModeID = modeID
+	if !echo {
+		switch modeID {
+		case "plan":
+			s.interactionMode = provider.ModePlan
+		case "accept-edits":
+			s.interactionMode = provider.ModeChat
+			s.runtimeMode = provider.RuntimeAutoAcceptEdits
+		case "auto":
+			s.interactionMode = provider.ModeChat
+			s.runtimeMode = provider.RuntimeAuto
+		case "default", "ask":
+			if s.interactionMode == provider.ModePlan {
+				s.interactionMode = provider.ModeChat
+			}
+		}
+		_, s.permissionPolicy = s.flavor.MapRuntimeMode(s.runtimeMode, s.interactionMode, s.availableModes)
+	}
 	s.mu.Unlock()
 	if echo {
 		return
@@ -2298,8 +2749,12 @@ func (s *Session) isToolDisabled(name string) bool {
 }
 
 func (s *Session) handlePermissionRequest(rpcID json.RawMessage, req RequestPermissionParams) {
-	s.confirmSolePrompt()
-	s.flushChunks()
+	_, isChild, _ := s.resolveChildParentToolUseID(req.ToolCall.ToolCallID)
+	if !isChild {
+		s.confirmArmedPrompt()
+		s.closeActiveContentBlock()
+		s.ensureSpontaneousTurnOpen()
+	}
 
 	if s.isToolDisabled(req.ToolCall.Name) {
 		outcome := PermissionOutcome{Outcome: "cancelled"}

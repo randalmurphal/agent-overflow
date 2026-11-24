@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 
@@ -38,6 +39,60 @@ var runtimeModeLabels = map[provider.RuntimeMode]string{
 // Shutdown joins it (permissionModeFollowWG).
 func (a *App) followClaudePermissionMode(threadID, sessionToken string) {
 	a.permissionModeFollowWG.Go(func() { a.applyClaudePermissionMode(threadID, sessionToken) })
+}
+
+func (a *App) followAgyPermissionMode(threadID, sessionToken string, meta json.RawMessage) {
+	var parsed provider.PermissionModeChangeMeta
+	if len(meta) == 0 || json.Unmarshal(meta, &parsed) != nil || parsed.Mode == "" {
+		return
+	}
+	a.permissionModeFollowWG.Go(func() { a.applyAgyPermissionMode(threadID, sessionToken, parsed.Mode) })
+}
+
+func (a *App) applyAgyPermissionMode(threadID, sessionToken, modeID string) {
+	unlockThread, err := a.threadApplication().LockMutable(a.lifeCtx(), threadID)
+	if err != nil {
+		log.Printf("thread %s: follow agy permission mode: %v", threadID, err)
+		return
+	}
+	defer unlockThread()
+	unlock := a.configApplyLocks().Lock(threadID)
+	defer unlock()
+	if a.lifeCtx().Err() != nil {
+		return
+	}
+	sess, ok := a.sessionManager().get(threadID)
+	if !ok || sess.Token != sessionToken || sess.ACP == nil {
+		return
+	}
+	var nextRT provider.RuntimeMode
+	var hasRT bool
+	switch modeID {
+	case "accept-edits":
+		nextRT, hasRT = provider.RuntimeAutoAcceptEdits, true
+	case "auto":
+		nextRT, hasRT = provider.RuntimeAuto, true
+	case "default", "ask":
+		nextRT, hasRT = provider.RuntimeApprovalRequired, true
+	}
+	if !hasRT {
+		return
+	}
+	prev := provider.NormalizeRuntimeMode(string(sess.LaunchOptions.RuntimeMode))
+	if nextRT == prev {
+		return
+	}
+	opts := sess.LaunchOptions
+	opts.RuntimeMode = nextRT
+	a.sessionManager().updateLaunchOpts(threadID, sessionToken, opts)
+	changed, err := a.store.SwapRuntimeMode(threadID, string(prev), string(nextRT))
+	if err != nil {
+		log.Printf("thread %s: follow agy permission mode %q: %v", threadID, modeID, err)
+		return
+	}
+	if changed {
+		a.emitRuntimeModeChanged(threadID, nextRT)
+	}
 }
 
 // applyClaudePermissionMode converges the session's launch options and the

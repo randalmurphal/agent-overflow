@@ -20,6 +20,8 @@ const (
 	PolicyPrompt PermissionPolicy = iota
 	// PolicyDenyMutating auto-denies mutating requests (RuntimeReadOnly).
 	PolicyDenyMutating
+	// PolicyAutoAcceptEdits auto-allows file edit requests (RuntimeAutoAcceptEdits).
+	PolicyAutoAcceptEdits
 	// PolicyAutoAllowNonQuestion auto-allows non-question requests (RuntimeFullAccess).
 	PolicyAutoAllowNonQuestion
 )
@@ -95,17 +97,27 @@ type PromptOutcomeOverride struct {
 	Failure      *provider.FailureMeta
 }
 
+// CompactionEvent describes a detected context compaction boundary.
+type CompactionEvent struct {
+	ItemID    string
+	Trigger   string // "auto" or "manual"
+	PreTokens int
+	Summary   string
+}
+
 // SubagentLaunchContext carries the parent session context for a flavor that
-// tracks an asynchronous subagent out of band (for example, agy writing child
-// transcript.jsonl files outside the parent ACP stream).
+// tracks an asynchronous subagent out of band.
 type SubagentLaunchContext struct {
-	SessionID  string
-	ThreadID   string
-	TurnID     string
-	ToolCallID string
-	RawInput   json.RawMessage
-	Started    NormalizedToolStart
-	Emit       func(provider.ProviderEvent)
+	SessionID         string
+	ThreadID          string
+	TurnID            string
+	ToolCallID        string
+	RawInput          json.RawMessage
+	Started           NormalizedToolStart
+	ParentModel       string
+	ParentEffort      string
+	Emit              func(provider.ProviderEvent)
+	OnChildDiscovered func(childConversationID string)
 }
 
 // Flavor isolates provider-specific ACP conventions (metadata extensions,
@@ -125,6 +137,9 @@ type Flavor interface {
 	ShouldHoldSpontaneousWakeClose(ctx context.Context, sessionID string) bool
 	CanTrackSubagent(sessionID string) bool
 	WatchSubagent(ctx context.Context, launch SubagentLaunchContext)
+	ResolveSubagentLaunch(ctx context.Context, sessionID, childConversationID string) (string, bool)
+	InitCompactionCursor(ctx context.Context, sessionID string) int
+	DetectCompaction(ctx context.Context, sessionID string, afterIdx int) (nextIdx int, ev *CompactionEvent)
 }
 
 // DefaultFlavor implements spec-standard ACP v1 behavior for all Flavor hooks.
@@ -168,7 +183,7 @@ func (DefaultFlavor) MapRuntimeMode(rt provider.RuntimeMode, im provider.Interac
 	case provider.RuntimeApprovalRequired:
 		return pickMode(available, "default", "ask"), PolicyPrompt
 	case provider.RuntimeAutoAcceptEdits:
-		return pickMode(available, "accept-edits", "default", "ask"), PolicyPrompt
+		return pickMode(available, "accept-edits", "default", "ask"), PolicyAutoAcceptEdits
 	case provider.RuntimeAuto:
 		return pickMode(available, "auto", "default", "ask"), PolicyPrompt
 	case provider.RuntimeFullAccess:
@@ -392,6 +407,10 @@ func (DefaultFlavor) ClassifyPermission(threadID, turnID, requestID string, req 
 		if allowAnyOpt != "" {
 			return PermissionClassification{Action: PermissionAutoAllow, OptionID: allowAnyOpt}
 		}
+	case PolicyAutoAcceptEdits:
+		if isEditToolKind(req.ToolCall.Kind, req.ToolCall.Name) && allowAnyOpt != "" {
+			return PermissionClassification{Action: PermissionAutoAllow, OptionID: allowAnyOpt}
+		}
 	case PolicyDenyMutating:
 		// Fail closed in read-only mode: only explicitly read-only tool kinds
 		// and names are auto-allowed; unknown or "other" tools are denied.
@@ -600,6 +619,31 @@ func (DefaultFlavor) CanTrackSubagent(string) bool {
 }
 
 func (DefaultFlavor) WatchSubagent(context.Context, SubagentLaunchContext) {}
+
+func (DefaultFlavor) ResolveSubagentLaunch(context.Context, string, string) (string, bool) {
+	return "", false
+}
+
+func (DefaultFlavor) InitCompactionCursor(context.Context, string) int {
+	return -1
+}
+
+func (DefaultFlavor) DetectCompaction(context.Context, string, int) (int, *CompactionEvent) {
+	return -1, nil
+}
+
+func isEditToolKind(kind, name string) bool {
+	if strings.EqualFold(strings.TrimSpace(kind), "edit") {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "edit", "write", "edit_file", "write_file", "write_to_file",
+		"replace_file_content", "multi_replace_file_content", "notebook_edit":
+		return true
+	default:
+		return false
+	}
+}
 
 func findPermissionOption(options []PermissionOption, preferredKind, fallbackKind string) string {
 	for _, opt := range options {

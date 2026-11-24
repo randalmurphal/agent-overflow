@@ -83,6 +83,31 @@ func (a *App) StopBackgroundTasks(threadID string, launchIDs []string) ([]Backgr
 		}
 	case string(provider.Codex):
 		results = a.stopCodexBackgroundTasks(threadID, rows, named)
+	case string(provider.Agy):
+		liveByID := make(map[string]bool, len(rows))
+		settled := make(map[string]bool, len(rows))
+		for _, r := range rows {
+			if r.CompletionOf != "" {
+				settled[r.CompletionOf] = true
+			}
+		}
+		for _, r := range rows {
+			if r.Status == statusRunningBackgroundWork && !settled[r.ID] {
+				liveByID[r.ID] = true
+			}
+		}
+		results = make([]BackgroundTaskStop, 0, len(named))
+		for _, id := range named {
+			if !liveByID[id] {
+				results = append(results, BackgroundTaskStop{LaunchItemID: id, Outcome: BackgroundStopEnded})
+				continue
+			}
+			results = append(results, BackgroundTaskStop{
+				LaunchItemID: id,
+				Outcome:      BackgroundStopFailed,
+				Error:        "Antigravity does not support stopping individual background tasks; stop the turn or session instead.",
+			})
+		}
 	default:
 		return nil, fmt.Errorf("stop background tasks: thread %s has provider %q", threadID, kind)
 	}
