@@ -451,7 +451,7 @@ func encodeCodexAgentMeta(row CodexAgentRow) (string, error) {
 	if _, tagged := row.Meta[CodexExecutionTurnMetaKey]; tagged {
 		return "", fmt.Errorf("store: append Codex agent row %s: the execution tag is ExecutionTurnID's", row.ID)
 	}
-	meta := make(map[string]json.RawMessage, len(row.Meta)+1)
+	meta := make(map[string]json.RawMessage, len(row.Meta))
 	maps.Copy(meta, row.Meta)
 	if row.ExecutionTurnID != "" {
 		tag, err := json.Marshal(row.ExecutionTurnID)
