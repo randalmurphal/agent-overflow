@@ -318,6 +318,36 @@ func TestCodexPermissionApprovalWaitsForUserResponseWithoutTimeout(t *testing.T)
 	}
 }
 
+// A server request nothing can serve gets a -32601 error reply, and the read
+// loop keeps dispatching after it: each line is fed twice. A request without
+// a threadId is rejected by the connection before any session sees it.
+func TestCodexHandleServerRequestUnknown(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		line    string
+		id      float64
+		message string
+	}{
+		{"unknown method without threadId", `{"jsonrpc":"2.0","id":1,"method":"unknown/request","params":{}}`, 1, "unsupported connection request: unknown/request"},
+		{"dynamic tool call without handler", `{"jsonrpc":"2.0","id":14,"method":"item/tool/call","params":{"threadId":"codex-thread-1","tool":"orphan_tool"}}`, 14, "no handler registered for dynamic tool call: item/tool/call"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, _ := newTestCodexSession(t)
+			fx := fixtureFor(t, s)
+			for range 2 {
+				feed(t, s, []byte(tc.line))
+				reply := fx.nextWrite()
+				rpcErr, _ := reply["error"].(map[string]any)
+				if reply["id"] != tc.id || rpcErr["code"] != float64(-32601) || rpcErr["message"] != tc.message {
+					t.Fatalf("reply = %v, want id %v, code -32601, message %q", reply, tc.id, tc.message)
+				}
+			}
+		})
+	}
+}
+
 // -- SetDynamicToolHandler / handleDynamicToolCall tests --
 
 func TestSetDynamicToolHandlerNil(t *testing.T) {
