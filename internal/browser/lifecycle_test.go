@@ -10,8 +10,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"agent-overflow/internal/testutil"
 )
 
 // lifecycleEngine is the recording pane host with gates on the engine work
@@ -241,13 +239,11 @@ func (l *eventLog) waitFor(t *testing.T, what string, match func(CompanionEvent)
 	}
 }
 
-// receive waits for one value on ch for the shared test budget: a crowded
-// machine makes the event late, so a failure here means it was lost.
 func receive(t *testing.T, ch <-chan struct{}, what string) {
 	t.Helper()
 	select {
 	case <-ch:
-	case <-time.After(testutil.WaitBudget(t)):
+	case <-time.After(5 * time.Second):
 		t.Fatalf("never reached: %s", what)
 	}
 }
@@ -275,13 +271,12 @@ func async[T any](fn func() T) <-chan T {
 	return ch
 }
 
-// await is receive for a value.
 func await[T any](t *testing.T, ch <-chan T, what string) T {
 	t.Helper()
 	select {
 	case value := <-ch:
 		return value
-	case <-time.After(testutil.WaitBudget(t)):
+	case <-time.After(5 * time.Second):
 		t.Fatalf("never finished: %s", what)
 	}
 	panic("unreachable")

@@ -53,18 +53,24 @@ const (
 const (
 	threadAgentPeerListTimeout = 5 * time.Second
 	threadAgentPeerStopTimeout = 45 * time.Second
-	// threadAgentPeerServeTimeout bounds the listing an agent_rows answer
-	// reads from a computer further on: the computer that asked gives the
-	// whole answer threadAgentPeerListTimeout, and a computer that does not
-	// answer there must not use it all up.
-	threadAgentPeerServeTimeout = threadAgentPeerListTimeout / 2
 )
 
 // threadAgentPeerListBound is the bound on a forwarded listing:
 // threadAgentPeerListTimeout, or what a test set
 // (threadAgentPeerListOverride).
 func (a *App) threadAgentPeerListBound() time.Duration {
-	return giveUpBound(a.threadAgentPeerListOverride, threadAgentPeerListTimeout)
+	if a.threadAgentPeerListOverride > 0 {
+		return a.threadAgentPeerListOverride
+	}
+	return threadAgentPeerListTimeout
+}
+
+// threadAgentPeerServeBound bounds the listing an agent_rows answer reads
+// from a computer further on: half the listing bound, because the computer
+// that asked gives the whole answer that bound, and a computer that does
+// not answer there must not use it all up.
+func (a *App) threadAgentPeerServeBound() time.Duration {
+	return a.threadAgentPeerListBound() / 2
 }
 
 // threadAgentPeerArgs are the forwarded Agents tools' arguments.
@@ -130,7 +136,7 @@ func (a *App) callThreadAgentPeer(ctx context.Context, method, computerID, sourc
 	}
 	tool, timeout := threadAgentPeerRows, a.threadAgentPeerListBound()
 	if method == "ThreadToolCall" {
-		tool, timeout = threadAgentPeerStop, giveUpBound(0, threadAgentPeerStopTimeout)
+		tool, timeout = threadAgentPeerStop, threadAgentPeerStopTimeout
 	}
 	call, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

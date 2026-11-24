@@ -15,6 +15,7 @@ import "testing"
 // and an update run would replace the developer's installed CLI.
 func isolateE2EProviderSpawns(t *testing.T, app *App) {
 	t.Helper()
+	waitOutOtherParties(t, app)
 	isolateProviderUpdates(app)
 }
 

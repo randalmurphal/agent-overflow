@@ -380,11 +380,6 @@ when it sets the environment, replaces a package-level variable such as a
 the global logger, counts process-wide goroutines or memory, or must act
 inside a fixed real-time window such as a triage flush timer.
 
-A limit after which the app stops waiting for another goroutine, process or
-computer reads through `giveUpBound` (`app_give_up.go`): in this package's
-tests it waits the patience `TestMain` sets, so a test of a limit sets that
-limit itself, small.
-
 Application tests run in the package directory, where go test starts them,
 since the test cache records each file a test opens by that directory; a
 test reads a file elsewhere in the checkout, such as a committed fixture or

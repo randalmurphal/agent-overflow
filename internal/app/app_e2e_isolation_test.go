@@ -72,6 +72,7 @@ func TestAFixtureWithoutItsSettingsResolvesNoProviderOnPath(t *testing.T) {
 // `make provider-smoke`, and documents that it spends real tokens.
 func isolateE2EProviderSpawns(t *testing.T, app *App) {
 	t.Helper()
+	waitOutOtherParties(t, app)
 
 	isolation := kerneltest.IsolateProcessSpawns(t)
 	// Repository identity enrichment must not run a real forge CLI.
