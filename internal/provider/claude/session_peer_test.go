@@ -236,7 +236,7 @@ func TestRenamePeerSessionSkipsARedundantRename(t *testing.T) {
 				peerSessionName:       "AO Thread One",
 				peerRenameSettledName: "AO Thread One",
 			},
-			request: "  AO Thread​One  ",
+			request: "  AO Thread\u200bOne  ",
 		},
 		{
 			// The case the confirmed/requested split exists for: the CLI

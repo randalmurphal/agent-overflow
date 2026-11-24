@@ -15,7 +15,7 @@ import { getToasts, removeToast } from './toast.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 
 function clearToasts(): void {
-  for (const toast of [...getToasts()]) removeToast(toast.id);
+  for (const toast of getToasts()) removeToast(toast.id);
 }
 
 describe('threadTitleGeneration', () => {

@@ -35,7 +35,7 @@ function toasts() {
 
 describe('Stop All in the background tray', () => {
   beforeEach(() => {
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of getToasts()) removeToast(toast.id);
   });
 
   it('renders each launch\'s result: a failed stop on its row, an ended task in a notice', async () => {

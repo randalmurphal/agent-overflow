@@ -34,7 +34,7 @@ const THREAD_NEW_ROWS = [
 describe('<KeybindingsSettings>', () => {
   beforeEach(() => {
     resetKeybindingsStore();
-    for (const t of [...getToasts()]) removeToast(t.id);
+    for (const t of getToasts()) removeToast(t.id);
   });
 
   it('rebinds duplicate command/context rows by default identity', async () => {
@@ -115,7 +115,7 @@ describe('<KeybindingsSettings> unreadable keybindings file', () => {
 
   beforeEach(() => {
     resetKeybindingsStore();
-    for (const t of [...getToasts()]) removeToast(t.id);
+    for (const t of getToasts()) removeToast(t.id);
   });
 
   it('warns with the backend reason and says a save replaces the file', async () => {
@@ -191,7 +191,7 @@ describe('<KeybindingsSettings> unbound bindings', () => {
 
   beforeEach(() => {
     resetKeybindingsStore();
-    for (const t of [...getToasts()]) removeToast(t.id);
+    for (const t of getToasts()) removeToast(t.id);
   });
 
   it('clears a row to unbound with its identity, then restores the default by dropping the override', async () => {
@@ -332,7 +332,7 @@ describe('<KeybindingsSettings> chord capture vs. global dispatch', () => {
   beforeEach(() => {
     resetKeybindingsStore();
     clearCommandRegistry();
-    for (const t of [...getToasts()]) removeToast(t.id);
+    for (const t of getToasts()) removeToast(t.id);
     registerCommand({
       id: 'sidebar.toggle',
       label: 'Sidebar: Toggle',

@@ -62,7 +62,7 @@ function liveQuery(): FakeQuery {
 function changeDevicePixelRatio(ratio: number): void {
   const query = liveQuery();
   vi.stubGlobal('devicePixelRatio', ratio);
-  for (const listener of [...query.listeners]) listener(new Event('change'));
+  for (const listener of Array.from(query.listeners)) listener(new Event('change'));
 }
 
 function observer(): FakeResizeObserver {

@@ -139,7 +139,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       zeroStepTicks: 0,
       sentinelTicks: 0,
       maxGapMs: 0,
-      gapBuckets: new Array<number>(CHASE_GAP_BUCKET_BOUNDS_MS.length + 1).fill(0),
+      gapBuckets: Array.from({ length: CHASE_GAP_BUCKET_BOUNDS_MS.length + 1 }, () => 0),
       catchupClamps: 0,
       distanceJumps: 0,
       targetChanges: 0,

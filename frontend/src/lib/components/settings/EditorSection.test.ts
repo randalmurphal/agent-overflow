@@ -26,13 +26,13 @@ describe('<EditorSection>', () => {
     setPageGrantsFromBootstrap(false);
     // Drain the toast registry so a sibling case's error message can't
     // satisfy this case's "find this error" assertion.
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of getToasts()) removeToast(toast.id);
   });
 
   afterEach(() => {
     resetRunMode();
     setPageGrantsFromBootstrap(false);
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of getToasts()) removeToast(toast.id);
   });
 
   it('renders the editor list with installed/uninstalled markers', async () => {

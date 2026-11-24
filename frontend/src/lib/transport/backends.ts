@@ -995,7 +995,7 @@ export function __resetBackendsForTest(): void {
   for (const entry of entries.slice()) {
     if (!entry.home) detachBackend(entry.id);
   }
-  for (const id of [...stagedClients.keys()]) {
+  for (const id of stagedClients.keys()) {
     if (id !== HOME_BACKEND) stagedClients.delete(id);
   }
   installedProver = null;

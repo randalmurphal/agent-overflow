@@ -16,7 +16,7 @@ async function seed(overrides: Partial<Settings> = {}): Promise<void> {
   setBindingMock('GetSettings', async () => merged);
   setBindingMock('UpdateSettings', async (patch: unknown) => ({
     ...merged,
-    ...((patch as Record<string, unknown>) ?? {}),
+    ...(patch as Record<string, unknown>),
   }));
   await loadSettings();
 }

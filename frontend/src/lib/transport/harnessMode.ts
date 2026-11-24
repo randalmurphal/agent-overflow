@@ -58,7 +58,7 @@ export function setHarnessSessionFromBootstrap(value: boolean): void {
   harness = true;
   // Each waiter arms exactly once; taking it out of the set before the
   // call means a waiter that throws cannot be re-run by a later manifest.
-  for (const waiter of [...waiting]) {
+  for (const waiter of waiting) {
     waiting.delete(waiter);
     waiter();
   }

@@ -52,7 +52,7 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 // anything else, a repeat of a send it made before an upgrade included.
 func (a *App) sendClientMessage(ctx context.Context, threadID string, content string, opts SendMessageOptions, admission sendAdmission, onPlaced func()) (store.Item, error) {
 	if !opts.ReconcileBySendID {
-		return store.Item{}, errors.New(dispatchrefusal.Unreadable)
+		return store.Item{}, errors.New(dispatchrefusal.Unreadable) //nolint:staticcheck // ST1005: the user sees this sentence as written.
 	}
 	if a.shuttingDown.Load() {
 		return store.Item{}, ErrShuttingDown

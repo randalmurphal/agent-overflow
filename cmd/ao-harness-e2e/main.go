@@ -110,13 +110,13 @@ func run(args []string, stdout, stderr *os.File) int {
 
 	if opts.mode == modeTypecheck {
 		if code, err := checkSuite(testDir, stdout, stderr); err != nil {
-			fmt.Fprintln(stderr, "ao-harness-e2e:", err)
+			_, _ = fmt.Fprintln(stderr, "ao-harness-e2e:", err)
 			return code
 		}
 		return 0
 	}
 	if code, err := ensureSuiteChecked(testDir, stdout, stderr); err != nil {
-		fmt.Fprintln(stderr, "ao-harness-e2e:", err)
+		_, _ = fmt.Fprintln(stderr, "ao-harness-e2e:", err)
 		return code
 	}
 	isolate := needsIsolation(opts.hostNetwork, netisolate.Inside())

@@ -121,7 +121,9 @@ jobs:
     needs: toolchain
     if: fromJSON(needs.toolchain.outputs.plan || '{}')['build-macos']
     runs-on: macos-latest
-    timeout-minutes: 30
+    # A change that touches most packages builds and lints with nothing
+    # cached: 8 minutes of build and over 21 of lint on this runner.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup

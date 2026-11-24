@@ -131,7 +131,9 @@ func TestEventBus_ReplayFromCursor(t *testing.T) {
 			bus := NewEventBus(tc.capacity)
 			defer bus.Close()
 			for i := 1; i <= 5; i++ {
-				bus.Emit("ch1", i)
+				if _, err := bus.Emit("ch1", i); err != nil {
+					t.Fatal(err)
+				}
 			}
 			out := bus.Replay(map[string]uint64{"ch1": tc.cursor})
 			if len(out) != len(tc.wantSeqs) {

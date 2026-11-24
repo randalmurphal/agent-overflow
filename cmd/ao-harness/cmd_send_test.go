@@ -129,7 +129,7 @@ func newRecordingDevtools(t *testing.T) *recordingDevtools {
 		if err != nil {
 			return
 		}
-		defer conn.CloseNow()
+		defer func() { _ = conn.CloseNow() }()
 		for {
 			_, data, err := conn.Read(r.Context())
 			if err != nil {

@@ -8,7 +8,7 @@ import (
 // One name is one handle, so a pin made from a boot map and a pin made from a
 // constant collide in EnvInput.Pins instead of producing the variable twice.
 func TestAOEnvInternsEachName(t *testing.T) {
-	if AOEnv("AO_TEST_INTERN") != AOEnv("AO_TEST_INTERN") {
+	if first, second := AOEnv("AO_TEST_INTERN"), AOEnv("AO_TEST_INTERN"); first != second {
 		t.Fatal("one name produced two handles")
 	}
 	pins := AOPins(map[string]string{"AO_TEST_INTERN": "boot"})

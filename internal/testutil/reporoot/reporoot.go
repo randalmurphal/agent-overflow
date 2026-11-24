@@ -119,7 +119,7 @@ func packageRoots(makefile []byte) ([]string, error) {
 			case tree && strings.HasPrefix(field, "./") && fs.ValidPath(dir) && dir != "." && !strings.Contains(dir, "$"):
 				dirs = append(dirs, dir)
 			default:
-				return nil, fmt.Errorf("reporoot: GO_PACKAGE_ROOTS names %q; a root is . or ./dir/...", field)
+				return nil, fmt.Errorf("reporoot: GO_PACKAGE_ROOTS names %q, which is neither . nor a ./dir/... root", field)
 			}
 		}
 		if !rootPackage {

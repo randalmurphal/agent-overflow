@@ -198,7 +198,7 @@ func TestReadLoopEmitsErrorStatusOnUnexpectedExit(t *testing.T) {
 
 			var gotError, gotDisconnected bool
 			timeout := time.After(5 * time.Second)
-			for !(gotError && gotDisconnected) {
+			for !gotError || !gotDisconnected {
 				select {
 				case evt := <-eventCh:
 					if evt.Kind != provider.EventSessionStatus {

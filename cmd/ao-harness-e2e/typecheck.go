@@ -45,7 +45,7 @@ var suiteChecks = []struct {
 // typecheckedEnv says this revision was checked already.
 func ensureSuiteChecked(testDir string, stdout, stderr io.Writer) (int, error) {
 	if os.Getenv(typecheckedEnv) == "1" {
-		fmt.Fprintf(stdout, "ao-harness-e2e: skipping the E2E TypeScript check and wait rules: %s=1 says this revision's harness build ran them\n", typecheckedEnv)
+		_, _ = fmt.Fprintf(stdout, "ao-harness-e2e: skipping the E2E TypeScript check and wait rules: %s=1 says this revision's harness build ran them\n", typecheckedEnv)
 		return 0, nil
 	}
 	return checkSuite(testDir, stdout, stderr)

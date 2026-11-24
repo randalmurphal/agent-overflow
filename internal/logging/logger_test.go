@@ -132,7 +132,7 @@ func TestRotationTriggersAtMaxBytes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewLogger: %v", err)
 			}
-			defer lg.Close()
+			defer func() { _ = lg.Close() }()
 			for i := 0; i < tc.entries; i++ {
 				if err := lg.Log(LogEntry{Level: "info", Component: "test", Message: tc.message}); err != nil {
 					t.Fatalf("Log %d: %v", i, err)
@@ -333,10 +333,10 @@ func TestRotateReopensLoggerWhenRenameFails(t *testing.T) {
 			if err != nil {
 				t.Fatalf("OpenFile: %v", err)
 			}
-			defer file.Close()
+			defer func() { _ = file.Close() }()
 			path := filepath.Join(append([]string{dir}, tc.path...)...)
 			lg := &Logger{file: file, maxBytes: 1, path: path}
-			defer lg.Close()
+			defer func() { _ = lg.Close() }()
 
 			err = lg.rotate()
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {

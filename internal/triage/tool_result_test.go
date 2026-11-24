@@ -610,7 +610,7 @@ func TestBuildInlineDiffFromChangesStoresLineBoundedFilePreviews(t *testing.T) {
 				if i > 1 {
 					largeContent.WriteByte('\n')
 				}
-				largeContent.WriteString(fmt.Sprintf(tc.lineFormat, i))
+				fmt.Fprintf(&largeContent, tc.lineFormat, i)
 			}
 
 			inlineDiff, combinedDiff := buildInlineDiffFromChanges([]fileChange{

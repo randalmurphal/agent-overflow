@@ -48,7 +48,7 @@ function makeFakeMatchMedia(initialDark: boolean): FakeMediaQueryList {
     fire(matches: boolean) {
       list.matches = matches;
       const e = { matches } as unknown as MediaQueryListEvent;
-      for (const h of [...handlers]) h(e);
+      for (const h of handlers.slice()) h(e);
     },
   };
   return list;

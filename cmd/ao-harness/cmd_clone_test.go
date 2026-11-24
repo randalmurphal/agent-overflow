@@ -783,7 +783,7 @@ func TestCloneScrubsAndRelocatesADefaultSource(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		projectPaths := make(map[string]string)
 		for rows.Next() {
 			var id, path string
@@ -914,7 +914,7 @@ func TestCloneScrubsAndRelocatesADefaultSource(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer rw.Close()
+		defer func() { _ = rw.Close() }()
 		// Claim an id from one row, then claim the same id from the other:
 		// the second write is exactly what the update trigger exists to abort.
 		if _, err := rw.Exec(`UPDATE thread_import_state SET source_session_id = 'claimed' WHERE thread_id = 't1'`); err != nil {

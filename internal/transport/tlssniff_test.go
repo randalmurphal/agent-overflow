@@ -175,7 +175,7 @@ func TestBootstrapOverTLSNamesWSSAndSetsASecureCookie(t *testing.T) {
 			if err != nil {
 				t.Fatalf("bootstrap over %s: %v", tc.scheme, err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("bootstrap over %s = %d, want 200", tc.scheme, resp.StatusCode)
 			}

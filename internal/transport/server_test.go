@@ -370,7 +370,7 @@ func TestServer_BootstrapRejectsBadToken(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			// Indistinguishable from "no such path": 404, not 401, so a LAN
 			// scanner can't fingerprint the agent-overflow server.
 			if resp.StatusCode != http.StatusNotFound {

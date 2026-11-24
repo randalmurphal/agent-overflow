@@ -461,6 +461,6 @@ func ReadLatestProfile(ctx context.Context, path string) (importir.ModelProfile,
 	if err != nil {
 		return importir.ModelProfile{}, fmt.Errorf("rollout: open %s for profile: %w", path, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	return ReadLatestProfileAt(ctx, file, path)
 }
