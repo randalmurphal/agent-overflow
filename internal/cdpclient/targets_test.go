@@ -48,35 +48,38 @@ func page(url, ws string) Target {
 }
 
 func TestSelectPageTargetPicksTheInstancePage(t *testing.T) {
-	targets := []Target{
-		{Type: "service_worker", URL: "http://127.0.0.1:4321/sw.js", WebSocketDebuggerURL: "ws://sw"},
-		page("https://example.com/", "ws://other"),
-		page("http://127.0.0.1:4321/?token=abc", "ws://instance"),
-	}
-	got, err := selectPageTarget(targets, "http://127.0.0.1:4321/?token=abc", "")
-	if err != nil {
-		t.Fatalf("selectPageTarget: %v", err)
-	}
-	if got.WebSocketDebuggerURL != "ws://instance" {
-		t.Fatalf("picked %q, want the instance page", got.WebSocketDebuggerURL)
-	}
-}
-
-// The page is opened as localhost, the instance publishes 127.0.0.1, and
-// the token query never matches — origin equality has to reconcile the
-// loopback spellings or the match silently falls through to "the only
-// page", which is the wrong answer as soon as a second tab exists.
-func TestSelectPageTargetReconcilesLoopbackSpellings(t *testing.T) {
-	targets := []Target{
-		page("http://localhost:4321/?token=abc", "ws://instance"),
-		page("https://example.com/", "ws://other"),
-	}
-	got, err := selectPageTarget(targets, "http://127.0.0.1:4321/?token=abc", "")
-	if err != nil {
-		t.Fatalf("selectPageTarget: %v", err)
-	}
-	if got.WebSocketDebuggerURL != "ws://instance" {
-		t.Fatalf("picked %q, want the instance page", got.WebSocketDebuggerURL)
+	for _, tc := range []struct {
+		name, instanceURL, pageID, want string
+		targets                         []Target
+	}{
+		{name: "the instance page", instanceURL: "http://127.0.0.1:4321/?token=abc", want: "ws://instance", targets: []Target{
+			{Type: "service_worker", URL: "http://127.0.0.1:4321/sw.js", WebSocketDebuggerURL: "ws://sw"},
+			page("https://example.com/", "ws://other"),
+			page("http://127.0.0.1:4321/?token=abc", "ws://instance"),
+		}},
+		// The page is opened as localhost, the instance publishes 127.0.0.1,
+		// and the token query never matches — origin equality has to
+		// reconcile the loopback spellings or the match silently falls
+		// through to "the only page", which is the wrong answer as soon as a
+		// second tab exists.
+		{name: "loopback spellings", instanceURL: "http://127.0.0.1:4321/?token=abc", want: "ws://instance", targets: []Target{
+			page("http://localhost:4321/?token=abc", "ws://instance"),
+			page("https://example.com/", "ws://other"),
+		}},
+		{name: "page id among same-origin pages", instanceURL: "http://127.0.0.1:4321/?page=instance-marker", pageID: "wanted", want: "ws://wanted", targets: []Target{
+			page("http://127.0.0.1:4321/?page=instance-marker&pageId=other", "ws://other"),
+			page("http://127.0.0.1:4321/?page=instance-marker&pageId=wanted", "ws://wanted"),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := selectPageTarget(tc.targets, tc.instanceURL, tc.pageID)
+			if err != nil {
+				t.Fatalf("selectPageTarget: %v", err)
+			}
+			if got.WebSocketDebuggerURL != tc.want {
+				t.Fatalf("picked %q, want %q", got.WebSocketDebuggerURL, tc.want)
+			}
+		})
 	}
 }
 
@@ -145,19 +148,5 @@ func TestSelectPageTargetRefusesWrongPageMarker(t *testing.T) {
 	targets := []Target{page("http://127.0.0.1:4321/?page=instance-marker", "ws://instance")}
 	if _, err := selectPageTarget(targets, "http://127.0.0.1:4321/?page=other-marker", ""); err == nil {
 		t.Fatal("a page with the wrong marker must not be selected")
-	}
-}
-
-func TestSelectPageTargetForPageDisambiguatesSameOriginPages(t *testing.T) {
-	targets := []Target{
-		page("http://127.0.0.1:4321/?page=instance-marker&pageId=other", "ws://other"),
-		page("http://127.0.0.1:4321/?page=instance-marker&pageId=wanted", "ws://wanted"),
-	}
-	got, err := selectPageTarget(targets, "http://127.0.0.1:4321/?page=instance-marker", "wanted")
-	if err != nil {
-		t.Fatalf("selectPageTarget: %v", err)
-	}
-	if got.WebSocketDebuggerURL != "ws://wanted" {
-		t.Fatalf("picked %q, want ws://wanted", got.WebSocketDebuggerURL)
 	}
 }
