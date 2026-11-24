@@ -65,26 +65,14 @@ describe('<CopyButton>', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('async value'));
   });
 
-  it('is a no-op when text resolves empty', async () => {
-    const { getByRole } = render(CopyButton, { props: { text: '' } });
+  it.each([
+    { form: 'text', text: '' },
+    { form: 'a sync getter', text: () => '' },
+    { form: 'an async getter', text: () => Promise.resolve('') },
+  ])('is a no-op when $form resolves empty', async ({ text }) => {
+    const { getByRole } = render(CopyButton, { props: { text } });
     await fireEvent.click(getByRole('button'));
     // Wait a tick to ensure the click handler ran fully.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(writeText).not.toHaveBeenCalled();
-  });
-
-  it('is a no-op when a sync getter resolves empty', async () => {
-    const { getByRole } = render(CopyButton, { props: { text: () => '' } });
-    await fireEvent.click(getByRole('button'));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(writeText).not.toHaveBeenCalled();
-  });
-
-  it('is a no-op when an async getter resolves empty', async () => {
-    const { getByRole } = render(CopyButton, {
-      props: { text: () => Promise.resolve('') },
-    });
-    await fireEvent.click(getByRole('button'));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(writeText).not.toHaveBeenCalled();
   });

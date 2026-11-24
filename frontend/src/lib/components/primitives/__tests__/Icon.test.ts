@@ -29,18 +29,14 @@ describe('<Icon>', () => {
     expect(span!.getAttribute('style') ?? '').toMatch(/mask-image:\s*url\(/);
   });
 
-  it('defaults to size=16', () => {
-    const { container } = render(Icon, { props: { icon: Search } });
+  it.each([
+    { name: 'defaults to size=16', props: { icon: Search }, px: 16 },
+    { name: 'forwards a custom size as inline px width/height', props: { icon: Search, size: 12 }, px: 12 },
+  ])('$name', ({ props, px }) => {
+    const { container } = render(Icon, { props });
     const style = container.querySelector('span.lucide-icon')!.getAttribute('style') ?? '';
-    expect(style).toContain('width: 16px');
-    expect(style).toContain('height: 16px');
-  });
-
-  it('forwards a custom size as inline px width/height', () => {
-    const { container } = render(Icon, { props: { icon: Search, size: 12 } });
-    const style = container.querySelector('span.lucide-icon')!.getAttribute('style') ?? '';
-    expect(style).toContain('width: 12px');
-    expect(style).toContain('height: 12px');
+    expect(style).toContain(`width: ${px}px`);
+    expect(style).toContain(`height: ${px}px`);
   });
 
   it('forwards a custom strokeWidth into the registered sprite mask', () => {

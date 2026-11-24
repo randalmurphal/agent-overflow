@@ -1,6 +1,7 @@
 // Covers the Popover primitive's behaviour contract:
 //   - renders the floating surface only when `open` is true.
-//   - Escape (on document) calls `onClose`.
+//   - Escape on the document closes the innermost popover (the single
+//     popover case is `../PopoverEscape.test.ts`).
 //   - outside mousedown calls `onClose`; mousedown on the anchor or the
 //     floating element does not.
 //   - `role` prop maps to the floating element's ARIA role; `role="none"`
@@ -79,12 +80,6 @@ describe('<Popover>', () => {
     expect(queryByTestId('popover-content')).toBeNull();
   });
 
-  it('renders the floating content when open', async () => {
-    const { getByTestId } = render(Harness, { props: { open: true } });
-    await tick();
-    expect(getByTestId('popover-content')).toBeInTheDocument();
-  });
-
   // Command gates read the overlay list: a popover open while it stops
   // taking the keyboard must leave it, and one that starts must join it.
   it('follows takesKeyboard changing while open, both ways, on the same element', async () => {
@@ -100,15 +95,6 @@ describe('<Popover>', () => {
     expect(airspaceSurfaces()).toEqual([floating]);
     await rerender({ open: false, takesKeyboard: true });
     expect(airspaceSurfaces()).toEqual([]);
-  });
-
-  it('Escape on the document calls onClose with reason "escape"', async () => {
-    const onClose = vi.fn();
-    render(Harness, { props: { open: true, onClose } });
-    await tick();
-    const ev = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true });
-    document.dispatchEvent(ev);
-    expect(onClose).toHaveBeenCalledWith('escape');
   });
 
   it('outside mousedown calls onClose with reason "outside-click"', async () => {

@@ -31,19 +31,6 @@ describe('<MenuSubmenuItem>', () => {
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('ArrowRight on the trigger opens the submenu immediately', async () => {
-    render(Harness);
-    await flushMicrotasks();
-    const trigger = submenuTrigger();
-    trigger.focus();
-    await fireEvent.keyDown(trigger, { key: 'ArrowRight' });
-    await flushMicrotasks();
-    expect(trigger.getAttribute('aria-expanded')).toBe('true');
-    // Nested items render inside a menu role.
-    const menus = document.querySelectorAll('[role="menu"]');
-    expect(menus.length).toBe(2);
-  });
-
   it('Enter on the trigger opens the submenu immediately', async () => {
     render(Harness);
     await flushMicrotasks();
@@ -66,7 +53,7 @@ describe('<MenuSubmenuItem>', () => {
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('ArrowLeft on the trigger closes an open submenu', async () => {
+  it('ArrowRight on the trigger opens the submenu immediately and ArrowLeft closes it', async () => {
     render(Harness);
     await flushMicrotasks();
     const trigger = submenuTrigger();
@@ -74,6 +61,8 @@ describe('<MenuSubmenuItem>', () => {
     await fireEvent.keyDown(trigger, { key: 'ArrowRight' });
     await flushMicrotasks();
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    // Nested items render inside a menu role.
+    expect(document.querySelectorAll('[role="menu"]')).toHaveLength(2);
     await fireEvent.keyDown(trigger, { key: 'ArrowLeft' });
     await flushMicrotasks();
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
