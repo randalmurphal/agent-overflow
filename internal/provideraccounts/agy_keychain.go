@@ -2,6 +2,7 @@ package provideraccounts
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/atomicfile"
 )
@@ -35,31 +37,6 @@ func defaultAgyKeychain() providerKeychain {
 	return securityAgyKeychain{}
 }
 
-// AgyShouldForceFileStorage reports whether launching `agy` against appDataDir
-// should set AGY_ACP_FORCE_FILE_STORAGE=1 so the subprocess reads the exact
-// same credential source that provideraccounts reads.
-//
-// On macOS production runs, provideraccounts prefers the macOS Keychain item
-// and falls back to <appDataDir>/antigravity-oauth-token only when Keychain
-// has no item. Forcing file storage only when Keychain is absent (or on
-// non-macOS / tests) prevents the UI and subprocess from using different
-// accounts when both a Keychain item and a stale token file exist.
-func AgyShouldForceFileStorage(appDataDir string) bool {
-	if strings.TrimSpace(appDataDir) == "" {
-		return false
-	}
-	info, err := os.Stat(filepath.Join(appDataDir, agyCredentialFileName))
-	if err != nil || info.IsDir() {
-		return false
-	}
-	if runtime.GOOS == "darwin" && !testing.Testing() {
-		if present, kcErr := (securityAgyKeychain{}).itemPresent(); kcErr == nil && present {
-			return false
-		}
-	}
-	return true
-}
-
 // securityAgyKeychain is the production macOS backend for Antigravity (`agy`).
 //
 // Unlike Claude Code (which scopes non-default config dirs into hashed Keychain
@@ -75,10 +52,16 @@ func AgyShouldForceFileStorage(appDataDir string) bool {
 //     <configHome>/antigravity-oauth-token directly.
 type securityAgyKeychain struct{}
 
-func (securityAgyKeychain) read(configHome string, active bool) ([]byte, error) {
+func (s securityAgyKeychain) read(configHome string, active bool) ([]byte, error) {
 	if !active {
 		return fileAgyKeychain{}.read(configHome, false)
 	}
+	return s.readItem(configHome)
+}
+
+// readItem reads the Keychain item, and the fallback file when security(1)
+// finds no item.
+func (securityAgyKeychain) readItem(configHome string) ([]byte, error) {
 	cmd, cmdErr := securityCommand("find-generic-password", "-a", agyKeychainAccount, "-w", "-s", agyKeychainService)
 	if cmdErr != nil {
 		return nil, cmdErr
@@ -108,14 +91,60 @@ func (securityAgyKeychain) read(configHome string, active bool) ([]byte, error) 
 	return decoded, nil
 }
 
-func (securityAgyKeychain) itemPresent() (bool, error) {
-	cmd, cmdErr := securityCommand("find-generic-password", "-a", agyKeychainAccount, "-s", agyKeychainService)
+// agyKeychainQueryTimeout bounds one attribute-only Keychain query (no -w,
+// so it reads no secret and shows no access prompt): the presence check that
+// picks the store an agy process for the canonical login runs on, and
+// present. It answers in well under a second; the bound keeps a stuck
+// security(1) from holding a launch, which then fails as a failed query. The
+// credential read (readItem, with -w) has no bound: it can wait on a
+// Keychain unlock prompt.
+const agyKeychainQueryTimeout = 10 * time.Second
+
+// canonicalFileStorage reports whether an agy process for the canonical
+// login runs on the file store (true) or the Keychain (false): the store
+// readItem reads that login from. That is the Keychain item when there is
+// one, else the fallback file; with no fallback file it is the Keychain and
+// security(1) is not asked. A fallback file the reader would refuse
+// (readCredentialSnapshot) is an error here too, and so is a Keychain query
+// that fails or gets no answer within timeout: neither is answered as a
+// store.
+func (s securityAgyKeychain) canonicalFileStorage(ctx context.Context, configHome string, timeout time.Duration) (bool, error) {
+	path := fileAgyKeychain{}.path(configHome)
+	_, fileErr := readCredentialSnapshot(path)
+	if errors.Is(fileErr, os.ErrNotExist) {
+		return false, nil
+	}
+	itemPresent, err := s.itemPresent(ctx, timeout)
+	if err != nil {
+		return false, err
+	}
+	if itemPresent {
+		return false, nil
+	}
+	if fileErr != nil {
+		return false, fmt.Errorf("provideraccounts: the Keychain holds no Antigravity login and its fallback file cannot be read: %w", fileErr)
+	}
+	return true, nil
+}
+
+// itemPresent asks security(1) whether the Keychain item exists, without
+// reading it, and gives up after timeout.
+func (securityAgyKeychain) itemPresent(ctx context.Context, timeout time.Duration) (bool, error) {
+	ctx, cancel := context.WithTimeoutCause(ctx, timeout, errAgyKeychainQueryDeadline)
+	defer cancel()
+	cmd, cmdErr := securityCommandContext(ctx, "find-generic-password", "-a", agyKeychainAccount, "-s", agyKeychainService)
 	if cmdErr != nil {
 		return false, cmdErr
 	}
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	err := cmd.Run()
+	if ctx.Err() != nil {
+		if errors.Is(context.Cause(ctx), errAgyKeychainQueryDeadline) {
+			return false, fmt.Errorf("provideraccounts: query Antigravity Keychain credential: security(1) gave no answer within %s", timeout)
+		}
+		return false, fmt.Errorf("provideraccounts: query Antigravity Keychain credential: %w", context.Cause(ctx))
+	}
 	if err == nil {
 		return true, nil
 	}
@@ -126,11 +155,13 @@ func (securityAgyKeychain) itemPresent() (bool, error) {
 	return false, fmt.Errorf("provideraccounts: query Antigravity Keychain credential: %v", err)
 }
 
+var errAgyKeychainQueryDeadline = errors.New("the Antigravity Keychain query ran out of time")
+
 func (s securityAgyKeychain) present(configHome string, active bool) (bool, error) {
 	if !active {
 		return fileAgyKeychain{}.present(configHome, false)
 	}
-	itemPresent, err := s.itemPresent()
+	itemPresent, err := s.itemPresent(context.Background(), agyKeychainQueryTimeout)
 	if err != nil || itemPresent {
 		return itemPresent, err
 	}

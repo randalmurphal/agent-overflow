@@ -284,7 +284,7 @@ for line in sys.stdin:
 `
 	bin := filepath.Join(t.TempDir(), "fake-agy-catalog.py")
 	mockexec.WriteFile(t, bin, []byte(script), 0o755)
-	models, err := ProbeCatalog(context.Background(), bin, t.TempDir(), nil, procutiltest.Reaper())
+	models, err := ProbeCatalog(context.Background(), bin, t.TempDir(), canonical(t, "", true).Source(), nil, procutiltest.Reaper())
 	if err != nil {
 		t.Fatalf("ProbeCatalog: %v", err)
 	}

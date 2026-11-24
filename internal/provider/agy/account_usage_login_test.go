@@ -141,12 +141,15 @@ printf '{"token":{"access_token":"ya29.fresh","refresh_token":"1//fresh-ref"}}\n
 	bin := filepath.Join(t.TempDir(), "fake-agy-login.sh")
 	mockexec.Write(t, bin, script)
 
+	home, err := IsolatedHome(filepath.Join(geminiDir, "antigravity-cli"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	sess, err := StartLogin(context.Background(), LoginConfig{
-		Binary:        bin,
-		WorkDir:       t.TempDir(),
-		GeminiDir:     geminiDir,
-		AppDataSubdir: "antigravity-cli",
-		Reaper:        procutiltest.Reaper(),
+		Binary:  bin,
+		WorkDir: t.TempDir(),
+		Home:    home,
+		Reaper:  procutiltest.Reaper(),
 	})
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)

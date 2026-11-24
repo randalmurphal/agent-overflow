@@ -155,7 +155,7 @@ func TestEveryChangeOfTheSelectedAccountEndsTheRunningUsesFirst(t *testing.T) {
 			}
 		}},
 		{"the first sign-in", emptyClaudeRig, "", func(t *testing.T, manager *Manager) {
-			if _, err := manager.adoptLogin(completedLogin(t, manager, manager.credentials, fresh)); err != nil {
+			if _, err := manager.adoptLogin(context.Background(), completedLogin(t, manager, manager.credentials, fresh)); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -177,7 +177,7 @@ func TestEveryChangeOfTheSelectedAccountEndsTheRunningUsesFirst(t *testing.T) {
 			manager, _, _, _ := signInManager(t)
 			return manager
 		}, "", func(t *testing.T, manager *Manager) {
-			if _, err := manager.adoptLogin(completedLogin(t, manager, manager.credentials, fresh)); err != nil {
+			if _, err := manager.adoptLogin(context.Background(), completedLogin(t, manager, manager.credentials, fresh)); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -261,7 +261,7 @@ func TestAChangeThatKeepsTheSelectedAccountLeavesTheRunningUses(t *testing.T) {
 		}},
 		{"signing in to an inactive account", func(t *testing.T, manager *Manager) {
 			login := claudeLoginAs("other@example.com", "other-new", soon)
-			if _, err := manager.adoptLogin(completedLogin(t, manager, manager.credentials, login)); err != nil {
+			if _, err := manager.adoptLogin(context.Background(), completedLogin(t, manager, manager.credentials, login)); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -272,7 +272,7 @@ func TestAChangeThatKeepsTheSelectedAccountLeavesTheRunningUses(t *testing.T) {
 		}},
 		{"signing the selected account in again", func(t *testing.T, manager *Manager) {
 			login := claudeLoginAs("current@example.com", "current-new", soon)
-			if _, err := manager.adoptLogin(completedLogin(t, manager, manager.credentials, login)); err != nil {
+			if _, err := manager.adoptLogin(context.Background(), completedLogin(t, manager, manager.credentials, login)); err != nil {
 				t.Fatal(err)
 			}
 		}},

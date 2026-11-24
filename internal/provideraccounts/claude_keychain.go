@@ -2,6 +2,7 @@ package provideraccounts
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -116,6 +117,11 @@ type securityClaudeKeychain struct{}
 // developer's real login keychain (incident 2026-08-01). This makes
 // that mistake fail loudly instead of executing.
 func securityCommand(args ...string) (*exec.Cmd, error) {
+	return securityCommandContext(context.Background(), args...)
+}
+
+// securityCommandContext is securityCommand, ended when ctx ends.
+func securityCommandContext(ctx context.Context, args ...string) (*exec.Cmd, error) {
 	if testing.Testing() {
 		resolved, err := exec.LookPath("security")
 		if err != nil {
@@ -130,7 +136,7 @@ func securityCommand(args ...string) (*exec.Cmd, error) {
 			}
 		}
 	}
-	return exec.Command("security", args...), nil
+	return exec.CommandContext(ctx, "security", args...), nil
 }
 
 func (securityClaudeKeychain) read(configHome string, active bool) ([]byte, error) {
