@@ -47,32 +47,24 @@ func TestBuildElicitationMeta_WithServerName(t *testing.T) {
 	}
 }
 
-func TestBuildElicitationMeta_WithMessage(t *testing.T) {
+func TestBuildElicitationMeta_Description(t *testing.T) {
 	t.Parallel()
-	params := json.RawMessage(`{"serverName":"srv","message":"Please confirm access to the database"}`)
-	meta := buildElicitationMeta("t1", "turn-2", 10, params)
-
-	var approval provider.ApprovalRequest
-	if err := json.Unmarshal(meta, &approval); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	// When message is present, it takes precedence over serverName-derived description.
-	if approval.Description != "Please confirm access to the database" {
-		t.Errorf("description: got %q, want %q", approval.Description, "Please confirm access to the database")
-	}
-}
-
-func TestBuildElicitationMeta_NoServerNameNoMessage(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(`{}`)
-	meta := buildElicitationMeta("t1", "", 1, params)
-
-	var approval provider.ApprovalRequest
-	if err := json.Unmarshal(meta, &approval); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if approval.Description != "MCP server elicitation" {
-		t.Errorf("description: got %q, want %q", approval.Description, "MCP server elicitation")
+	for _, tc := range []struct {
+		name, params, want string
+	}{
+		// A message takes precedence over the serverName-derived description.
+		{"message beats serverName", `{"serverName":"srv","message":"Please confirm access to the database"}`, "Please confirm access to the database"},
+		{"no serverName and no message", `{}`, "MCP server elicitation"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var approval provider.ApprovalRequest
+			if err := json.Unmarshal(buildElicitationMeta("t1", "", 1, json.RawMessage(tc.params)), &approval); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if approval.Description != tc.want {
+				t.Errorf("description: got %q, want %q", approval.Description, tc.want)
+			}
+		})
 	}
 }
 
@@ -173,53 +165,24 @@ func TestBuildElicitationMeta_URLMode_Explicit(t *testing.T) {
 	}
 }
 
-// Adversarial: `mode` omitted but URL present. Parser must infer URL mode.
-func TestBuildElicitationMeta_InferURLFromPayload(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(`{"message":"Open link","url":"https://x.test","elicitationId":"e1"}`)
-	meta := buildElicitationMeta("t1", "", 1, params)
-
-	var approval provider.ApprovalRequest
-	if err := json.Unmarshal(meta, &approval); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if approval.Elicitation == nil || approval.Elicitation.Mode != "url" {
-		t.Errorf("expected inferred url mode, got %+v", approval.Elicitation)
-	}
-	if approval.Elicitation.URL != "https://x.test" {
-		t.Errorf("url not preserved: %q", approval.Elicitation.URL)
-	}
-}
-
-// Adversarial: `mode` omitted but schema present. Parser must infer form mode.
-func TestBuildElicitationMeta_InferFormFromPayload(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(`{"message":"m","requestedSchema":{"type":"object"}}`)
-	meta := buildElicitationMeta("t1", "", 1, params)
-
-	var approval provider.ApprovalRequest
-	if err := json.Unmarshal(meta, &approval); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if approval.Elicitation == nil || approval.Elicitation.Mode != "form" {
-		t.Errorf("expected inferred form mode, got %+v", approval.Elicitation)
-	}
-}
-
-// Adversarial: `mode` is present but not one of the known values. Falls back
-// to shape-based inference, then to "form" as last resort.
+// Adversarial: `mode` is absent, or present but not one of the known values.
+// Falls back to shape-based inference, then to "form" as last resort. An
+// inferred url mode keeps the URL.
 func TestBuildElicitationMeta_UnknownModeFallsBack(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name     string
 		params   string
 		wantMode string
+		wantURL  string
 	}{
-		{"garbage mode, url present", `{"mode":"??","url":"https://x.test"}`, "url"},
-		{"garbage mode, schema present", `{"mode":"??","requestedSchema":{"type":"object"}}`, "form"},
-		{"garbage mode, nothing else", `{"mode":"??"}`, "form"},
-		{"empty mode string", `{"mode":""}`, "form"},
-		{"numeric mode (type mismatch)", `{"mode":7}`, "form"},
+		{"no mode, url present", `{"message":"Open link","url":"https://x.test","elicitationId":"e1"}`, "url", "https://x.test"},
+		{"no mode, schema present", `{"message":"m","requestedSchema":{"type":"object"}}`, "form", ""},
+		{"garbage mode, url present", `{"mode":"??","url":"https://x.test"}`, "url", "https://x.test"},
+		{"garbage mode, schema present", `{"mode":"??","requestedSchema":{"type":"object"}}`, "form", ""},
+		{"garbage mode, nothing else", `{"mode":"??"}`, "form", ""},
+		{"empty mode string", `{"mode":""}`, "form", ""},
+		{"numeric mode (type mismatch)", `{"mode":7}`, "form", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -229,50 +192,38 @@ func TestBuildElicitationMeta_UnknownModeFallsBack(t *testing.T) {
 				t.Fatalf("unmarshal: %v", err)
 			}
 			if approval.Elicitation == nil || approval.Elicitation.Mode != tc.wantMode {
-				t.Errorf("got %+v, want mode=%q", approval.Elicitation, tc.wantMode)
+				t.Fatalf("got %+v, want mode=%q", approval.Elicitation, tc.wantMode)
+			}
+			if approval.Elicitation.URL != tc.wantURL {
+				t.Errorf("url = %q, want %q", approval.Elicitation.URL, tc.wantURL)
 			}
 		})
 	}
 }
 
-// Adversarial: entirely invalid JSON. Must not panic; must still produce a
-// renderable approval with form mode + empty schema.
+// Adversarial: a payload that is not a JSON object. Must not panic; must
+// still produce a renderable approval with form mode + empty schema.
 func TestBuildElicitationMeta_MalformedJSONIsSafe(t *testing.T) {
 	t.Parallel()
-	params := json.RawMessage(`not even close to json`)
-	meta := buildElicitationMeta("t1", "", 1, params)
-
-	var approval provider.ApprovalRequest
-	if err := json.Unmarshal(meta, &approval); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if approval.Kind != "mcp-elicitation" {
-		t.Errorf("kind must still be mcp-elicitation on malformed input, got %q", approval.Kind)
-	}
-	if approval.Elicitation == nil {
-		t.Fatal("Elicitation must be non-nil on malformed input")
-	}
-	if approval.Elicitation.Mode != "form" {
-		t.Errorf("expected fallback form mode, got %q", approval.Elicitation.Mode)
-	}
-	if len(approval.Elicitation.RequestedSchema) != 0 {
-		t.Errorf("expected no schema on malformed input, got %s", approval.Elicitation.RequestedSchema)
-	}
-}
-
-// Adversarial: null JSON literal as the whole payload.
-func TestBuildElicitationMeta_NullParams(t *testing.T) {
-	t.Parallel()
-	meta := buildElicitationMeta("t1", "", 1, json.RawMessage(`null`))
-	var approval provider.ApprovalRequest
-	if err := json.Unmarshal(meta, &approval); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if approval.Elicitation == nil {
-		t.Fatal("Elicitation must be non-nil even on null params")
-	}
-	if approval.Elicitation.Mode != "form" {
-		t.Errorf("expected fallback form mode, got %q", approval.Elicitation.Mode)
+	for _, params := range []string{`not even close to json`, `null`} {
+		t.Run(params, func(t *testing.T) {
+			var approval provider.ApprovalRequest
+			if err := json.Unmarshal(buildElicitationMeta("t1", "", 1, json.RawMessage(params)), &approval); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if approval.Kind != "mcp-elicitation" {
+				t.Errorf("kind must still be mcp-elicitation, got %q", approval.Kind)
+			}
+			if approval.Elicitation == nil {
+				t.Fatal("Elicitation must be non-nil")
+			}
+			if approval.Elicitation.Mode != "form" {
+				t.Errorf("expected fallback form mode, got %q", approval.Elicitation.Mode)
+			}
+			if len(approval.Elicitation.RequestedSchema) != 0 {
+				t.Errorf("expected no schema, got %s", approval.Elicitation.RequestedSchema)
+			}
+		})
 	}
 }
 
@@ -469,26 +420,30 @@ func TestApprovalKindForMethod(t *testing.T) {
 	}
 }
 
-// -- buildApprovalMeta with neither command nor filePath (default kind) --
-
-func TestBuildApprovalMetaUnknownMethod(t *testing.T) {
+func TestBuildApprovalMetaToolAndDescription(t *testing.T) {
 	t.Parallel()
-	params := json.RawMessage(`{"someField":"value"}`)
-	meta := buildApprovalMeta("t1", "", "custom/approval", 77, params)
-
-	var approval provider.ApprovalRequest
-	if err := json.Unmarshal(meta, &approval); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	// When there's no command or filePath, toolName and description default to the method.
-	if approval.ToolName != "custom/approval" {
-		t.Errorf("toolName: got %q, want %q", approval.ToolName, "custom/approval")
-	}
-	if approval.Description != "custom/approval" {
-		t.Errorf("description: got %q, want %q", approval.Description, "custom/approval")
-	}
-	if approval.Kind != "" {
-		t.Errorf("kind: got %q, want empty", approval.Kind)
+	for _, tc := range []struct {
+		name, method, params, wantTool, wantDescription, wantKind string
+	}{
+		// With no command or filePath, toolName and description default to the method.
+		{"unknown method", "custom/approval", `{"someField":"value"}`, "custom/approval", "custom/approval", ""},
+		{"file change", "item/fileChange/requestApproval", `{"filePath":"/tmp/test.go"}`, "file_change", "/tmp/test.go", "file-change"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var approval provider.ApprovalRequest
+			if err := json.Unmarshal(buildApprovalMeta("t1", "", tc.method, 77, json.RawMessage(tc.params)), &approval); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if approval.ToolName != tc.wantTool {
+				t.Errorf("toolName: got %q, want %q", approval.ToolName, tc.wantTool)
+			}
+			if approval.Description != tc.wantDescription {
+				t.Errorf("description: got %q, want %q", approval.Description, tc.wantDescription)
+			}
+			if approval.Kind != tc.wantKind {
+				t.Errorf("kind: got %q, want %q", approval.Kind, tc.wantKind)
+			}
+		})
 	}
 }
 
@@ -520,27 +475,21 @@ func TestParseUserInputQuestions_NormalizesMissingAndReservedIDs(t *testing.T) {
 	}
 }
 
-func TestParseUserInputQuestions_InvalidJSON(t *testing.T) {
+func TestParseUserInputQuestions_NoQuestions(t *testing.T) {
 	t.Parallel()
-	questions := parseUserInputQuestions(json.RawMessage(`not json`))
-	if questions != nil {
-		t.Errorf("expected nil for invalid JSON, got %v", questions)
-	}
-}
-
-func TestParseUserInputQuestions_EmptyQuestions(t *testing.T) {
-	t.Parallel()
-	questions := parseUserInputQuestions(json.RawMessage(`{"questions":[]}`))
-	if len(questions) != 0 {
-		t.Errorf("len = %d, want 0", len(questions))
-	}
-}
-
-func TestParseUserInputQuestions_NoQuestionsField(t *testing.T) {
-	t.Parallel()
-	questions := parseUserInputQuestions(json.RawMessage(`{"other":"data"}`))
-	if questions != nil {
-		t.Errorf("expected nil for missing questions field, got %v", questions)
+	for _, tc := range []struct {
+		name, params string
+		want         []provider.UserInputQuestion
+	}{
+		{"invalid JSON", `not json`, nil},
+		{"empty questions", `{"questions":[]}`, []provider.UserInputQuestion{}},
+		{"no questions field", `{"other":"data"}`, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseUserInputQuestions(json.RawMessage(tc.params)); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("parseUserInputQuestions = %#v, want %#v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -566,55 +515,39 @@ func TestParsePermissionRequest_Valid(t *testing.T) {
 	}
 }
 
-func TestParsePermissionRequest_InvalidJSON(t *testing.T) {
+func TestParsePermissionRequest_NoUsableFields(t *testing.T) {
 	t.Parallel()
-	reason, perms := parsePermissionRequest(json.RawMessage(`not json`))
-	if reason != "" || perms != nil {
-		t.Errorf("expected empty/nil for invalid JSON, got %q, %v", reason, perms)
-	}
-}
-
-func TestParsePermissionRequest_EmptyObject(t *testing.T) {
-	t.Parallel()
-	reason, perms := parsePermissionRequest(json.RawMessage(`{}`))
-	if reason != "" {
-		t.Errorf("reason: got %q, want empty", reason)
-	}
-	if perms != nil {
-		t.Errorf("expected nil permissions for empty object, got %v", perms)
+	for _, params := range []string{`not json`, `{}`} {
+		t.Run(params, func(t *testing.T) {
+			if reason, perms := parsePermissionRequest(json.RawMessage(params)); reason != "" || perms != nil {
+				t.Errorf("parsePermissionRequest = %q, %v; want empty reason and nil permissions", reason, perms)
+			}
+		})
 	}
 }
 
 // -- buildThreadParams edge cases --
 
-func TestBuildThreadParamsReadOnly(t *testing.T) {
+func TestBuildThreadParamsSandboxAndApprovalPolicy(t *testing.T) {
 	t.Parallel()
-	params := buildThreadParams(Config{
-		Reaper:         procutiltest.Reaper(),
-		Sandbox:        "read-only",
-		ApprovalPolicy: "on-request",
-	}, "")
-	if params["sandbox"] != "read-only" {
-		t.Errorf("sandbox: got %v, want %q", params["sandbox"], "read-only")
-	}
-	if params["approvalPolicy"] != "on-request" {
-		t.Errorf("approvalPolicy: got %v, want %q", params["approvalPolicy"], "on-request")
-	}
-}
-
-func TestBuildThreadParamsUnknownSandbox(t *testing.T) {
-	t.Parallel()
-	// Unknown sandbox value falls through to the safest thread-start value.
-	params := buildThreadParams(Config{
-		Reaper:         procutiltest.Reaper(),
-		Sandbox:        "custom-sandbox",
-		ApprovalPolicy: "untrusted",
-	}, "")
-	if params["sandbox"] != "read-only" {
-		t.Errorf("sandbox: got %v, want %q", params["sandbox"], "read-only")
-	}
-	if params["approvalPolicy"] != "untrusted" {
-		t.Errorf("approvalPolicy: got %v, want %q", params["approvalPolicy"], "untrusted")
+	for _, tc := range []struct {
+		name, sandbox, policy, wantSandbox, wantPolicy string
+	}{
+		{"read-only", "read-only", "on-request", "read-only", "on-request"},
+		// An unknown sandbox falls through to the safest thread-start value.
+		{"unknown sandbox", "custom-sandbox", "untrusted", "read-only", "untrusted"},
+		// Danger mode with no policy pairs with never.
+		{"danger mode", "danger-full-access", "", "danger-full-access", "never"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			params := buildThreadParams(Config{Reaper: procutiltest.Reaper(), Sandbox: tc.sandbox, ApprovalPolicy: tc.policy}, "")
+			if params["sandbox"] != tc.wantSandbox {
+				t.Errorf("sandbox: got %v, want %q", params["sandbox"], tc.wantSandbox)
+			}
+			if params["approvalPolicy"] != tc.wantPolicy {
+				t.Errorf("approvalPolicy: got %v, want %q", params["approvalPolicy"], tc.wantPolicy)
+			}
+		})
 	}
 }
 
@@ -732,26 +665,22 @@ func TestBuildThreadParamsIncludesMCPServers(t *testing.T) {
 	}
 }
 
-// -- readRouteFields edge cases --
-
-func TestReadRouteFieldsEmpty(t *testing.T) {
+func TestReadRouteFields(t *testing.T) {
 	t.Parallel()
-	turnID, itemID := readRouteFields(json.RawMessage(`{}`))
-	if turnID != "" || itemID != "" {
-		t.Errorf("expected empty strings, got turnID=%q, itemID=%q", turnID, itemID)
-	}
-}
-
-func TestReadRouteFieldsMixedSources(t *testing.T) {
-	t.Parallel()
-	// turnId at top level, item.id nested.
-	params := json.RawMessage(`{"turnId":"turn-top","item":{"id":"item-nested"}}`)
-	turnID, itemID := readRouteFields(params)
-	if turnID != "turn-top" {
-		t.Errorf("turnID: got %q, want %q", turnID, "turn-top")
-	}
-	if itemID != "item-nested" {
-		t.Errorf("itemID: got %q, want %q", itemID, "item-nested")
+	for _, tc := range []struct {
+		name, params, wantTurn, wantItem string
+	}{
+		{"empty", `{}`, "", ""},
+		{"nested", `{"turn":{"id":"turn-7"},"item":{"id":"item-4"}}`, "turn-7", "item-4"},
+		{"top level", `{"turnId":"turn-9","itemId":"item-2"}`, "turn-9", "item-2"},
+		{"top-level turnId, nested item.id", `{"turnId":"turn-top","item":{"id":"item-nested"}}`, "turn-top", "item-nested"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			turnID, itemID := readRouteFields(json.RawMessage(tc.params))
+			if turnID != tc.wantTurn || itemID != tc.wantItem {
+				t.Errorf("readRouteFields = (%q, %q), want (%q, %q)", turnID, itemID, tc.wantTurn, tc.wantItem)
+			}
+		})
 	}
 }
 
@@ -778,19 +707,6 @@ func TestBuildThreadParams(t *testing.T) {
 	}
 	if params["baseInstructions"] != "Be helpful" {
 		t.Errorf("baseInstructions: got %v, want %q", params["baseInstructions"], "Be helpful")
-	}
-}
-
-func TestBuildThreadParamsDangerMode(t *testing.T) {
-	t.Parallel()
-	cfg := Config{Reaper: procutiltest.Reaper(), Sandbox: "danger-full-access"}
-	params := buildThreadParams(cfg, "")
-
-	if params["approvalPolicy"] != "never" {
-		t.Errorf("approvalPolicy: got %v, want %q", params["approvalPolicy"], "never")
-	}
-	if params["sandbox"] != "danger-full-access" {
-		t.Errorf("sandbox: got %v, want %q", params["sandbox"], "danger-full-access")
 	}
 }
 
@@ -865,48 +781,6 @@ func TestBuildApprovalMetaDistinguishesMissingAndEmptyAvailableDecisions(t *test
 				t.Fatalf("available decision count = %d, want %d", len(*approval.AvailableDecisions), tc.count)
 			}
 		})
-	}
-}
-
-func TestBuildApprovalMetaFileChange(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(`{"filePath":"/tmp/test.go"}`)
-	meta := buildApprovalMeta("t1", "", "item/fileChange/requestApproval", 99, params)
-
-	var approval provider.ApprovalRequest
-	json.Unmarshal(meta, &approval)
-
-	if approval.ToolName != "file_change" {
-		t.Errorf("toolName: got %q, want %q", approval.ToolName, "file_change")
-	}
-	if approval.Description != "/tmp/test.go" {
-		t.Errorf("description: got %q, want %q", approval.Description, "/tmp/test.go")
-	}
-}
-
-func TestReadRouteFields(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(`{"turn":{"id":"turn-7"},"item":{"id":"item-4"}}`)
-	turnID, itemID := readRouteFields(params)
-
-	if turnID != "turn-7" {
-		t.Errorf("turnID: got %q, want %q", turnID, "turn-7")
-	}
-	if itemID != "item-4" {
-		t.Errorf("itemID: got %q, want %q", itemID, "item-4")
-	}
-}
-
-func TestReadRouteFieldsTopLevelFallback(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(`{"turnId":"turn-9","itemId":"item-2"}`)
-	turnID, itemID := readRouteFields(params)
-
-	if turnID != "turn-9" {
-		t.Errorf("turnID: got %q, want %q", turnID, "turn-9")
-	}
-	if itemID != "item-2" {
-		t.Errorf("itemID: got %q, want %q", itemID, "item-2")
 	}
 }
 

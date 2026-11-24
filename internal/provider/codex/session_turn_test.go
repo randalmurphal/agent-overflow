@@ -189,31 +189,23 @@ func interruptFrame(t *testing.T, activeTurnID string) map[string]any {
 	return params
 }
 
-func TestCodexInterruptStartupSendsEmptyTurnID(t *testing.T) {
-	t.Parallel()
-	// Codex's wire protocol treats an empty turn_id as a "startup
-	// interrupt" — the app-server submits Op::Interrupt to the core
-	// and responds immediately with `{}`. We must NOT gate on a
-	// non-empty activeTurnID; just send the RPC and let upstream
-	// handle the dispatch-window case. See
-	// codex-rs/app-server/src/codex_message_processor.rs:7790-7849.
-	params := interruptFrame(t, "")
-	if params["threadId"] != "codex-thread-1" {
-		t.Fatalf("threadId = %v, want codex-thread-1", params["threadId"])
-	}
-	if turnID, _ := params["turnId"].(string); turnID != "" {
-		t.Fatalf("turnId = %q, want empty (startup interrupt sentinel)", turnID)
-	}
-}
-
+// Codex's wire protocol treats an empty turn_id as a "startup interrupt" —
+// the app-server submits Op::Interrupt to the core and responds immediately
+// with `{}`. We must NOT gate on a non-empty activeTurnID; just send the RPC
+// and let upstream handle the dispatch-window case. See
+// codex-rs/app-server/src/codex_message_processor.rs:7790-7849.
 func TestCodexInterruptSendsThreadAndTurnID(t *testing.T) {
 	t.Parallel()
-	params := interruptFrame(t, "turn-1")
-	if params["threadId"] != "codex-thread-1" {
-		t.Fatalf("params.threadId = %v, want codex-thread-1", params["threadId"])
-	}
-	if params["turnId"] != "turn-1" {
-		t.Fatalf("params.turnId = %v, want turn-1", params["turnId"])
+	for _, activeTurnID := range []string{"turn-1", ""} {
+		t.Run("active turn "+activeTurnID, func(t *testing.T) {
+			params := interruptFrame(t, activeTurnID)
+			if params["threadId"] != "codex-thread-1" {
+				t.Fatalf("params.threadId = %v, want codex-thread-1", params["threadId"])
+			}
+			if turnID, _ := params["turnId"].(string); turnID != activeTurnID {
+				t.Fatalf("params.turnId = %v, want %q", params["turnId"], activeTurnID)
+			}
+		})
 	}
 }
 

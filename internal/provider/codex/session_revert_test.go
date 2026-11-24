@@ -195,50 +195,37 @@ func TestSessionRevertSendsBeforeTurnIdAndAwaitsEcho(t *testing.T) {
 	}
 }
 
-// TestSessionRevertRefusesBelowTheVersionFloor pins the gate as a PRE-RPC
-// one: a 0.147 app-server must never see the request at all, because its
+// TestSessionRevertRefusesAnUnsupportedVersionOrHistory pins the gate as a
+// PRE-RPC one: the app-server must never see the request at all, because its
 // answer would be an error and the caller's fallback would then have to
 // reason about whether anything was mutated.
-func TestSessionRevertRefusesBelowTheVersionFloor(t *testing.T) {
+//   - A 0.147 app-server is below the version floor.
+//   - A legacy-history thread is the gate that matters most in practice: AO
+//     does not pass `historyMode` on thread/start, upstream defaults to
+//     legacy, and upstream refuses a legacy revert.
+func TestSessionRevertRefusesAnUnsupportedVersionOrHistory(t *testing.T) {
 	t.Parallel()
-	capture := t.TempDir() + "/revert-request.json"
-	binary := revertFakeScript(t,
-		"codex_cli_rs/0.147.0 (Ubuntu 24.04; x86_64) some/1.0",
-		"codex-thread-revert", "paginated", revertOKReply, capture, true)
+	for _, tc := range []struct{ name, userAgent, historyMode string }{
+		{"below the version floor", "codex_cli_rs/0.147.0 (Ubuntu 24.04; x86_64) some/1.0", "paginated"},
+		{"legacy history thread", "codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0", "legacy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			capture := t.TempDir() + "/revert-request.json"
+			binary := revertFakeScript(t, tc.userAgent, "codex-thread-revert", tc.historyMode, revertOKReply, capture, true)
 
-	s := newRevertSession(t, binary)
-	if s.SupportsThreadRevert() {
-		t.Fatal("SupportsThreadRevert() = true on a 0.147 app-server")
-	}
-	_, err := s.Revert(context.Background(), "turn-c")
-	if !errors.Is(err, ErrThreadRevertUnsupported) {
-		t.Fatalf("Revert error = %v, want ErrThreadRevertUnsupported", err)
-	}
-	if _, statErr := os.Stat(capture); statErr == nil {
-		t.Fatal("a below-floor Revert sent thread/revert anyway")
-	}
-}
-
-// TestSessionRevertRefusesLegacyHistoryThreads is the gate that matters most
-// in practice: AO does not pass `historyMode` on thread/start, upstream
-// defaults to legacy, and upstream refuses a legacy revert.
-func TestSessionRevertRefusesLegacyHistoryThreads(t *testing.T) {
-	t.Parallel()
-	capture := t.TempDir() + "/revert-request.json"
-	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
-		"codex-thread-revert", "legacy", revertOKReply, capture, true)
-
-	s := newRevertSession(t, binary)
-	if s.SupportsThreadRevert() {
-		t.Fatal("SupportsThreadRevert() = true on a legacy thread")
-	}
-	_, err := s.Revert(context.Background(), "turn-c")
-	if !errors.Is(err, ErrThreadRevertUnsupported) {
-		t.Fatalf("Revert error = %v, want ErrThreadRevertUnsupported", err)
-	}
-	if _, statErr := os.Stat(capture); statErr == nil {
-		t.Fatal("a legacy-history Revert sent thread/revert anyway")
+			s := newRevertSession(t, binary)
+			if s.SupportsThreadRevert() {
+				t.Fatal("SupportsThreadRevert() = true")
+			}
+			_, err := s.Revert(context.Background(), "turn-c")
+			if !errors.Is(err, ErrThreadRevertUnsupported) {
+				t.Fatalf("Revert error = %v, want ErrThreadRevertUnsupported", err)
+			}
+			if _, statErr := os.Stat(capture); statErr == nil {
+				t.Fatal("the refused Revert sent thread/revert anyway")
+			}
+		})
 	}
 }
 
@@ -267,33 +254,13 @@ func TestSessionRevertTreatsAnAbsentHistoryModeAsUnsupported(t *testing.T) {
 	}
 }
 
-// TestSessionRevertAllowsMidTurn pins the upstream contract: thread/revert
-// owns active-turn shutdown and history replacement as one server-side
-// operation.
-func TestSessionRevertAllowsMidTurn(t *testing.T) {
-	t.Parallel()
-	capture := t.TempDir() + "/revert-request.json"
-	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
-		"codex-thread-revert", "paginated", revertOKReply, capture, true)
-
-	s := newRevertSession(t, binary)
-	s.mu.Lock()
-	s.turn.activeTurnID = "turn-live"
-	s.mu.Unlock()
-
-	if _, err := s.Revert(context.Background(), "turn-c"); err != nil {
-		t.Fatalf("Revert with active turn: %v", err)
-	}
-	if _, statErr := os.Stat(capture); statErr != nil {
-		t.Fatalf("mid-turn Revert did not send thread/revert: %v", statErr)
-	}
-}
-
 // TestSessionRevertAfterInterruptAckDoesNotWaitForClientQuiescence covers the
 // ordered race where another caller won controlMu first. The interrupt answer
 // does not promise persistence is idle, but thread/revert owns the remaining
-// shutdown barrier and must still be sent without a client-side wait.
+// shutdown barrier and must still be sent without a client-side wait. The
+// interrupt leaves the turn active, so this is also the mid-turn revert:
+// upstream owns active-turn shutdown and history replacement as one
+// server-side operation.
 func TestSessionRevertAfterInterruptAckDoesNotWaitForClientQuiescence(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
@@ -331,49 +298,39 @@ func TestSessionRevertRequiresAnAnchor(t *testing.T) {
 	}
 }
 
-// TestSessionRevertRejectsAForeignThreadEcho: the identity echo is the one
-// validation this response supports (`turns` is always empty), and it is the
-// load-bearing one — the caller keeps its SessionRef pointed at this thread.
-func TestSessionRevertTreatsAForeignThreadIdentityAsAnAppliedCut(t *testing.T) {
+// TestSessionRevertTreatsAnUnmatchedResponseAsAnAppliedCut: the identity
+// echo is the one validation this response supports (`turns` is always
+// empty), and it is the load-bearing one — the caller keeps its SessionRef
+// pointed at this thread. Upstream only answers with a result after the
+// replacement rollout is written and the pointer has moved, so a body naming
+// another thread, or one AO cannot read, is a wire fault to log — never a
+// reason to abandon a cut that already happened and leave AO's history wider
+// than the provider's.
+//
+// echo=true: a real server sends the notification right after the response,
+// so the mismatch under test is the RESPONSE body, not a missing echo.
+func TestSessionRevertTreatsAnUnmatchedResponseAsAnAppliedCut(t *testing.T) {
 	t.Parallel()
-	capture := t.TempDir() + "/revert-request.json"
-	reply := `"result":{"thread":{"id":"some-other-thread","turns":[]}}`
-	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
-		// echo=true: a real server sends the notification right after
-		// the response, so the mismatch under test is the RESPONSE body,
-		// not a missing echo.
-		"codex-thread-revert", "paginated", reply, capture, true)
+	for _, tc := range []struct{ name, reply string }{
+		{"foreign thread identity", `"result":{"thread":{"id":"some-other-thread","turns":[]}}`},
+		{"undecodable body", `"result":{"unexpected":true}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			capture := t.TempDir() + "/revert-request.json"
+			binary := revertFakeScript(t,
+				"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+				"codex-thread-revert", "paginated", tc.reply, capture, true)
 
-	s := newRevertSession(t, binary)
-	reverted, err := s.Revert(context.Background(), "turn-c")
-	if err != nil {
-		t.Fatalf("Revert: %v, want the mismatched echo treated as a wire fault, not a divergence", err)
-	}
-	if reverted.ThreadID != "codex-thread-revert" {
-		t.Fatalf("ThreadID = %q, want the thread the REQUEST asserted", reverted.ThreadID)
-	}
-}
-
-// TestSessionRevertTreatsAnUndecodableResponseAsAnAppliedCut is the same
-// rule from the other side: upstream only answers with a result after the
-// replacement rollout is written and the pointer has moved, so a body AO
-// cannot read is a wire fault to log — never a reason to abandon a cut
-// that already happened and leave AO's history wider than the provider's.
-func TestSessionRevertTreatsAnUndecodableResponseAsAnAppliedCut(t *testing.T) {
-	t.Parallel()
-	capture := t.TempDir() + "/revert-request.json"
-	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
-		"codex-thread-revert", "paginated", `"result":{"unexpected":true}`, capture, true)
-
-	s := newRevertSession(t, binary)
-	reverted, err := s.Revert(context.Background(), "turn-c")
-	if err != nil {
-		t.Fatalf("Revert: %v, want an undecodable body treated as an applied cut", err)
-	}
-	if reverted.ThreadID != "codex-thread-revert" {
-		t.Fatalf("ThreadID = %q, want the thread the REQUEST asserted", reverted.ThreadID)
+			s := newRevertSession(t, binary)
+			reverted, err := s.Revert(context.Background(), "turn-c")
+			if err != nil {
+				t.Fatalf("Revert: %v, want the response treated as an applied cut", err)
+			}
+			if reverted.ThreadID != "codex-thread-revert" {
+				t.Fatalf("ThreadID = %q, want the thread the REQUEST asserted", reverted.ThreadID)
+			}
+		})
 	}
 }
 
@@ -448,7 +405,9 @@ func TestSessionRevertRefusesAConcurrentCut(t *testing.T) {
 // TestSessionRevertMapsUpstreamPaginatedRefusal covers the version-skew case
 // the local gate cannot: a server that reported a paginated thread but still
 // refuses. The refusal is raised before upstream mutates anything, so it maps
-// to the state error the caller falls back on.
+// to the state error the caller falls back on, and the expectation is
+// forgotten: no cut happened, so a later `thread/reverted` really is somebody
+// else's and must reach the alarm.
 func TestSessionRevertMapsUpstreamPaginatedRefusal(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/revert-request.json"
@@ -461,6 +420,9 @@ func TestSessionRevertMapsUpstreamPaginatedRefusal(t *testing.T) {
 	_, err := s.Revert(context.Background(), "turn-c")
 	if !errors.Is(err, ErrThreadRevertUnsupported) {
 		t.Fatalf("Revert error = %v, want ErrThreadRevertUnsupported", err)
+	}
+	if got := s.pendingRevert.Load(); got != nil {
+		t.Fatalf("pendingRevert = %+v after a failed cut, want it cleared", got)
 	}
 }
 
@@ -575,16 +537,6 @@ func TestDispatchThreadRevertedIgnoresUnsolicitedEchoes(t *testing.T) {
 	s.dispatchThreadReverted(json.RawMessage(`{"threadId":"codex-thread-revert"}`))
 }
 
-// TestAwaitRevertEchoIsNonFatal pins the contract that a missing echo is a
-// warning: the wait ends, and the caller keeps the successful response.
-func TestAwaitRevertEchoIsNonFatal(t *testing.T) {
-	t.Parallel()
-	s := &Session{}
-	if s.awaitRevertEcho(canceledContext(), &revertExpectation{echo: make(chan struct{})}) {
-		t.Fatal("awaitRevertEcho reported a confirmation it never received")
-	}
-}
-
 // TestSessionRevertKeepsTheExpectationArmedForALateEcho: the cut
 // succeeded, so a `thread/reverted` that arrives after the wait gave up
 // is AO's own echo, not a foreign writer's — the expectation has to
@@ -617,26 +569,6 @@ func TestSessionRevertKeepsTheExpectationArmedForALateEcho(t *testing.T) {
 	s.dispatchThreadReverted(json.RawMessage(`{"threadId":"codex-thread-revert"}`))
 	if !pending.closed {
 		t.Fatal("the late echo was not matched to the pending cut")
-	}
-}
-
-// TestSessionRevertForgetsTheExpectationWhenTheCutFailed: no cut
-// happened, so a later `thread/reverted` really is somebody else's and
-// must reach the alarm.
-func TestSessionRevertForgetsTheExpectationWhenTheCutFailed(t *testing.T) {
-	t.Parallel()
-	capture := t.TempDir() + "/revert-request.json"
-	reply := `"error":{"code":-32600,"message":"thread/revert only supports paginated threads"}`
-	binary := revertFakeScript(t,
-		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
-		"codex-thread-revert", "paginated", reply, capture, false)
-
-	s := newRevertSession(t, binary)
-	if _, err := s.Revert(context.Background(), "turn-c"); err == nil {
-		t.Fatal("expected the refusal to fail the call")
-	}
-	if got := s.pendingRevert.Load(); got != nil {
-		t.Fatalf("pendingRevert = %+v after a failed cut, want it cleared", got)
 	}
 }
 
@@ -725,6 +657,12 @@ func TestVerifyRevertBoundaryReportsAnAlreadyCutThread(t *testing.T) {
 // It is NOT an error: the caller's fallback is `thread/fork { lastTurnId:
 // turn-b }`, which is anchored on the surviving turn and produces exactly
 // the requested prefix whether or not turn-x exists.
+//
+// The same shape with NO kept turn named is the second row: AO cannot say
+// what the tail should be, so the anchor's absence is all the proof there is
+// and the verdict stays "applied". Pinned so the tail row cannot be
+// tightened into refusing every cut whose kept turn AO never recorded. The
+// probe is read-only, so both rows ask one session.
 func TestVerifyRevertBoundaryRefusesAKeptTurnThatIsNotTheTail(t *testing.T) {
 	t.Parallel()
 	capture := t.TempDir() + "/turns-list.json"
@@ -732,30 +670,25 @@ func TestVerifyRevertBoundaryRefusesAKeptTurnThatIsNotTheTail(t *testing.T) {
 	page1 := `{"data":[{"id":"turn-x"},{"id":"turn-b"}],"nextCursor":null}`
 	s := newRevertSession(t, turnsListFakeScript(t, "codex-thread-revert", page1, page1, capture))
 
-	verified, applied, err := s.VerifyRevertBoundary(context.Background(), "turn-b", "turn-c")
-	if err != nil {
-		t.Fatalf("VerifyRevertBoundary: %v — a tail that moved on is a caller decision, not a failure", err)
-	}
-	if applied {
-		t.Fatal("applied = true while the provider tail is turn-x, not the requested turn-b")
-	}
-	if verified.ThreadID != "codex-thread-revert" {
-		t.Fatalf("ThreadID = %q, want the probed thread so the caller can fork on it", verified.ThreadID)
-	}
-}
-
-// The same shape with NO kept turn named: AO cannot say what the tail
-// should be, so the anchor's absence is all the proof there is and the
-// verdict stays "applied". Pinned so the tail test above cannot be
-// tightened into refusing every cut whose kept turn AO never recorded.
-func TestVerifyRevertBoundaryAcceptsAnAnchorGoneCutWithNoKeptTurn(t *testing.T) {
-	t.Parallel()
-	capture := t.TempDir() + "/turns-list.json"
-	page := `{"data":[{"id":"turn-x"},{"id":"turn-b"}],"nextCursor":null}`
-	s := newRevertSession(t, turnsListFakeScript(t, "codex-thread-revert", page, page, capture))
-
-	if _, applied, err := s.VerifyRevertBoundary(context.Background(), "", "turn-c"); err != nil || !applied {
-		t.Fatalf("VerifyRevertBoundary = (%v, %v), want the anchor-gone verdict", applied, err)
+	for _, tc := range []struct {
+		name, keptTurn string
+		wantApplied    bool
+	}{
+		{"kept turn is not the tail", "turn-b", false},
+		{"no kept turn named", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			verified, applied, err := s.VerifyRevertBoundary(context.Background(), tc.keptTurn, "turn-c")
+			if err != nil {
+				t.Fatalf("VerifyRevertBoundary: %v — a tail that moved on is a caller decision, not a failure", err)
+			}
+			if applied != tc.wantApplied {
+				t.Fatalf("applied = %v, want %v (provider tail is turn-x)", applied, tc.wantApplied)
+			}
+			if verified.ThreadID != "codex-thread-revert" {
+				t.Fatalf("ThreadID = %q, want the probed thread so the caller can fork on it", verified.ThreadID)
+			}
+		})
 	}
 }
 

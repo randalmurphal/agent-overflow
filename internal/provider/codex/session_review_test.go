@@ -168,39 +168,33 @@ func TestStartReviewForTurnSendsTheWireFrameWithoutDelivery(t *testing.T) {
 }
 
 // A server that answers with a different thread ran the review somewhere this
-// Session cannot scope or interrupt. The call must name that thread and close
-// the process so the billed review does not continue invisibly.
-func TestStartReviewForTurnRefusesAReviewOnAnotherThread(t *testing.T) {
+// Session cannot scope or interrupt; one that answers with no reviewThreadId
+// leaves AO unable to verify where the review runs. The call must refuse,
+// naming what it got, and close the process so the billed review does not
+// continue invisibly.
+func TestStartReviewForTurnRefusesAnUnverifiableReviewThread(t *testing.T) {
 	t.Parallel()
-	s, _ := newCapturingSession(t, "codex-thread-own")
+	for _, tc := range []struct{ name, threadID, reply, wantErr string }{
+		{"review on another thread", "codex-thread-own",
+			`{"turn":{"id":"turn-2","items":[],"status":"inProgress"},"reviewThreadId":"review-thread-9"}`, "review-thread-9"},
+		{"missing reviewThreadId", "codex-thread-noid",
+			`{"turn":{"id":"turn-3","items":[],"status":"inProgress"}}`, "reviewThreadId"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, _ := newCapturingSession(t, tc.threadID)
 
-	answerer, done := startReviewForTurnAsync(t, s, ReviewUncommittedChanges())
-	answerer.answer(t, `{"turn":{"id":"turn-2","items":[],"status":"inProgress"},
-		"reviewThreadId":"review-thread-9"}`)
+			answerer, done := startReviewForTurnAsync(t, s, ReviewUncommittedChanges())
+			answerer.answer(t, tc.reply)
 
-	got := <-done
-	if got.err == nil || !strings.Contains(got.err.Error(), "review-thread-9") {
-		t.Fatalf("StartReviewForTurn on another thread = %+v, %v; want a refusal naming it", got.started, got.err)
-	}
-	if !s.closing.Load() {
-		t.Error("session left open after the review landed on another thread")
-	}
-}
-
-func TestStartReviewForTurnRefusesMissingReviewThreadID(t *testing.T) {
-	t.Parallel()
-	s, _ := newCapturingSession(t, "codex-thread-noid")
-
-	answerer, done := startReviewForTurnAsync(t, s, ReviewUncommittedChanges())
-	answerer.answer(t, `{"turn":{"id":"turn-3","items":[],"status":"inProgress"}}`)
-
-	got := <-done
-	// Without the returned id AO cannot verify where the review runs.
-	if got.err == nil || !strings.Contains(got.err.Error(), "reviewThreadId") {
-		t.Fatalf("StartReviewForTurn without a reviewThreadId = %v, want a refusal", got.err)
-	}
-	if !s.closing.Load() {
-		t.Error("session left open after an unverifiable review start")
+			got := <-done
+			if got.err == nil || !strings.Contains(got.err.Error(), tc.wantErr) {
+				t.Fatalf("StartReviewForTurn = %+v, %v; want a refusal naming %q", got.started, got.err, tc.wantErr)
+			}
+			if !s.closing.Load() {
+				t.Error("session left open after an unverifiable review start")
+			}
+		})
 	}
 }
 

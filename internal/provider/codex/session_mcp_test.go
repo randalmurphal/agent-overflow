@@ -21,39 +21,29 @@ func TestDispatchMCPOAuthCompletion_FiresHandler(t *testing.T) {
 		success bool
 		errMsg  string
 	}
-	var got []call
-	s := newMCPTestSession(t, nil)
-	s.SetMCPOAuthCompletedHandler(func(name string, success bool, errMsg string) {
-		got = append(got, call{name, success, errMsg})
-	})
+	for _, tc := range []struct {
+		name, params string
+		want         call
+	}{
+		{"success", `{"name":"linear","success":true}`, call{name: "linear", success: true}},
+		{"failure carries its error", `{"name":"github","success":false,"error":"user cancelled"}`, call{name: "github", errMsg: "user cancelled"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []call
+			s := newMCPTestSession(t, nil)
+			s.SetMCPOAuthCompletedHandler(func(name string, success bool, errMsg string) {
+				got = append(got, call{name, success, errMsg})
+			})
 
-	line := []byte(`{"jsonrpc":"2.0","method":"mcpServer/oauthLogin/completed","params":{"name":"linear","success":true}}`)
-	feed(t, s, line)
+			feed(t, s, []byte(`{"jsonrpc":"2.0","method":"mcpServer/oauthLogin/completed","params":`+tc.params+`}`))
 
-	if len(got) != 1 {
-		t.Fatalf("handler fired %d times, want 1", len(got))
-	}
-	if got[0] != (call{name: "linear", success: true}) {
-		t.Errorf("handler got %+v", got[0])
-	}
-}
-
-func TestDispatchMCPOAuthCompletion_PropagatesFailure(t *testing.T) {
-	t.Parallel()
-	var (
-		gotName, gotErr string
-		gotSuccess      bool
-	)
-	s := newMCPTestSession(t, func(provider.ProviderEvent) {})
-	s.SetMCPOAuthCompletedHandler(func(name string, success bool, errMsg string) {
-		gotName, gotSuccess, gotErr = name, success, errMsg
-	})
-
-	line := []byte(`{"jsonrpc":"2.0","method":"mcpServer/oauthLogin/completed","params":{"name":"github","success":false,"error":"user cancelled"}}`)
-	feed(t, s, line)
-
-	if gotName != "github" || gotSuccess || gotErr != "user cancelled" {
-		t.Fatalf("got name=%q success=%v err=%q", gotName, gotSuccess, gotErr)
+			if len(got) != 1 {
+				t.Fatalf("handler fired %d times, want 1", len(got))
+			}
+			if got[0] != tc.want {
+				t.Errorf("handler got %+v, want %+v", got[0], tc.want)
+			}
+		})
 	}
 }
 
@@ -168,13 +158,6 @@ func TestDispatchMCPStartupUpdate_FiresHandler(t *testing.T) {
 	if got[1].Name != "broken" || got[1].State != "failed" || got[1].Error != "timeout" {
 		t.Errorf("second call: %+v", got[1])
 	}
-}
-
-func TestDispatchMCPStartupUpdate_NoHandlerIsNoop(t *testing.T) {
-	t.Parallel()
-	s := newMCPTestSession(t, nil)
-	line := []byte(`{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"github","status":"ready"}}`)
-	feed(t, s, line)
 }
 
 func TestDispatchMCPStartupUpdate_MissingNameIsDropped(t *testing.T) {
