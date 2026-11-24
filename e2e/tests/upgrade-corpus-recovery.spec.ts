@@ -393,6 +393,17 @@ async function stageFixtures(rig: Sandbox, s: Staged): Promise<void> {
     -- The run of the link's source thread on that thread, still open.
     INSERT INTO thread_request_receipts (token, owner_device_id, kind, target_thread_id, state, created_at, updated_at, run_open)
       VALUES ('rcpt-run-open', 'dev-pending-only', 'send', '${s.draftId}', 'finished', ${now}, ${now}, 1);
+    -- A link from another source thread to the thread whose turn the crash
+    -- left open, and that source thread's open run there, both still
+    -- running at the crash: the release ends the run with the open turn's
+    -- span, and the receipt sweep then settles both.
+    INSERT INTO thread_request_receipts (token, owner_device_id, kind, target_thread_id, source_thread_id, state, created_at, updated_at, spawn_link, run_open)
+      VALUES ('rcpt-link-running', 'dev-pending-only', 'spawn', '${s.threadId}', 'source-running', 'running', ${now}, ${now}, 1, 0),
+             ('rcpt-run-running', 'dev-pending-only', 'send', '${s.threadId}', 'source-running', 'running', ${now}, ${now}, 0, 1);
+    -- A running receipt of the device that only tracks its spawn: the end
+    -- stops the tracking, and the sweep then settles it.
+    INSERT INTO thread_request_receipts (token, owner_device_id, kind, target_thread_id, state, created_at, updated_at, track_spawn)
+      VALUES ('rcpt-tracked', 'dev-pending-only', 'spawn', '${s.draftId}', 'running', ${now}, ${now}, 1);
     INSERT INTO thread_receipt_nudges (token, link_token, target_thread_id, started_at, run_open, run_base_tool_calls, run_base_tokens, run_base_turn_ms, ended_at)
       VALUES ('nudge-spawn-linked', 'rcpt-spawn-linked', '${s.draftId}', ${now}, 0, 0, 0, 0, ${now});
     UPDATE threads SET placement = 'owned' WHERE id = '${s.draftId}';
@@ -497,7 +508,9 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       'unsettled-review-claims diff_review_comments': 1,
       'replacement-draft-recoveries thread_draft_recoveries': 1,
       'replacement-drafts thread_drafts': 1,
-      'open-receipts thread_request_receipts': 1,
+      // The three running receipts of the device whose last session ended
+      // count under the end's rules and the sweep's.
+      'open-receipts thread_request_receipts': 4,
       'open-local-requests thread_requests': 1,
       'background-terminal-stashes pending_background_task_terminals': 1,
       'running-remote-jobs remote_jobs': 1,
@@ -509,10 +522,12 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       'own-admission-members own_devices': 1,
       'own-admission-revocations sessions': 1,
       'pending-link-sessions sessions': 3,
-      'ended-device-spawn-links thread_request_receipts': 1,
-      'ended-device-spawn-runs thread_request_receipts': 1,
+      'ended-device-spawn-links thread_request_receipts': 2,
+      'ended-device-spawn-tracking thread_request_receipts': 1,
+      'ended-device-spawn-runs thread_request_receipts': 2,
       'ended-device-nudges thread_receipt_nudges': 1,
-      'ended-device-spawn-revisions spawn_revisions': 1,
+      // One for each tracked receipt to the draft thread its placement wrote.
+      'ended-device-spawn-revisions spawn_revisions': 2,
       'ended-device-placements threads': 1,
       'expired-sessions sessions': 1,
       'expired-refresh-secrets refresh_secrets': 1,
@@ -598,6 +613,23 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
         sql: `UPDATE thread_request_receipts SET run_tokens = run_tokens + 1 WHERE token = 'rcpt-run-open'` },
       { rule: 'ended-device-spawn-runs: a run closed with another runtime', table: 'thread_request_receipts',
         sql: `UPDATE thread_request_receipts SET run_turn_ms = run_turn_ms + 1 WHERE token = 'rcpt-run-open'` },
+      // The running receipt the sweep settled after the release: every
+      // column the release writes is still checked under the sweep's
+      // wildcard.
+      { rule: 'ended-device-spawn-runs: a settled run left open', table: 'thread_request_receipts',
+        sql: `UPDATE thread_request_receipts SET run_open = 1 WHERE token = 'rcpt-run-running'` },
+      { rule: 'ended-device-spawn-runs: a settled run with other tool calls', table: 'thread_request_receipts',
+        sql: `UPDATE thread_request_receipts SET run_tool_calls = run_tool_calls + 1 WHERE token = 'rcpt-run-running'` },
+      { rule: 'ended-device-spawn-runs: a settled run with other tokens', table: 'thread_request_receipts',
+        sql: `UPDATE thread_request_receipts SET run_tokens = run_tokens + 1 WHERE token = 'rcpt-run-running'` },
+      { rule: 'ended-device-spawn-runs: a settled run without its settled runtime', table: 'thread_request_receipts',
+        sql: `UPDATE thread_request_receipts SET run_turn_ms = (SELECT turn_ms - 1 FROM snap.thread_tallies WHERE thread_id = '${threadId}') WHERE token = 'rcpt-run-running'` },
+      { rule: 'ended-device-spawn-runs: a settled run past the latest release', table: 'thread_request_receipts',
+        sql: `UPDATE thread_request_receipts SET run_turn_ms = run_turn_ms + 86400000 WHERE token = 'rcpt-run-running'` },
+      { rule: 'ended-device-spawn-links: a settled link left linked', table: 'thread_request_receipts',
+        sql: `UPDATE thread_request_receipts SET spawn_link = 1 WHERE token = 'rcpt-link-running'` },
+      { rule: 'ended-device-spawn-tracking: a settled receipt still tracking', table: 'thread_request_receipts',
+        sql: `UPDATE thread_request_receipts SET track_spawn = 1 WHERE token = 'rcpt-tracked'` },
       { rule: 'ended-device-nudges', table: 'thread_receipt_nudges',
         sql: `INSERT INTO thread_receipt_nudges (token, link_token, target_thread_id, started_at, run_open, run_base_tool_calls, run_base_tokens, run_base_turn_ms, ended_at)
           SELECT token, link_token, target_thread_id, started_at + 1, run_open, run_base_tool_calls, run_base_tokens, run_base_turn_ms, ended_at FROM snap.thread_receipt_nudges` },
