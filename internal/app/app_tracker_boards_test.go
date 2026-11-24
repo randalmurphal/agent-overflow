@@ -443,9 +443,12 @@ func TestABootFinishesTheLastRunsTrackerCleanup(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer db.Close()
 		var n int
-		if err := db.QueryRow(`SELECT count(*) FROM tracker_cache_roots`).Scan(&n); err != nil {
+		err = db.QueryRow(`SELECT count(*) FROM tracker_cache_roots`).Scan(&n)
+		if closeErr := db.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
 			t.Fatal(err)
 		}
 		return n
