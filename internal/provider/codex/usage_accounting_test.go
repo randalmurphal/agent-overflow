@@ -95,21 +95,6 @@ func TestUsageAccounting_CacheWriteDeltasAcrossTurns(t *testing.T) {
 	}
 }
 
-// TestUsageAccounting_CacheWriteResumeSeedIsHistory — the resume seed
-// baselines cache writes with the rest of the breakdown, so the first
-// post-resume turn accounts its own writes rather than the thread's.
-func TestUsageAccounting_CacheWriteResumeSeedIsHistory(t *testing.T) {
-	t.Parallel()
-	a := newUsageAccounting(true)
-	a.observe(tokenUsageParams(wireTotals{total: 90000, input: 70000, cached: 60000, cacheWrite: 5000, output: 20000}, 258400))
-	a.onTurnStart()
-	a.observe(tokenUsageParams(wireTotals{total: 95000, input: 74000, cached: 64000, cacheWrite: 5300, output: 21000}, 258400))
-	got := a.settleTurn()
-	if got.CacheCreationInputTokens != 300 {
-		t.Fatalf("resumed turn cache creation: %+v", got)
-	}
-}
-
 // TestUsageAccounting_CacheWriteAbsentKeyIsZero — app-servers older than
 // the field's introduction omit the key entirely; that reads as zero
 // writes, not as a decode failure or a shifted component.
@@ -143,16 +128,18 @@ func TestUsageAccounting_NoObservationsSettlesZero(t *testing.T) {
 
 // TestUsageAccounting_ResumeSeedBeforeFirstTurn — the rollout-seeded
 // cumulative arriving BEFORE the first turn is history, not this
-// process's spend; the first turn accounts only its own growth.
+// process's spend; the first turn accounts only its own growth, cache
+// writes included.
 func TestUsageAccounting_ResumeSeedBeforeFirstTurn(t *testing.T) {
 	t.Parallel()
 	a := newUsageAccounting(true)
-	a.observe(tokenUsageParams(wireTotals{total: 90000, input: 70000, cached: 60000, output: 20000, reasoning: 3000}, 258400)) // historical seed
+	a.observe(tokenUsageParams(wireTotals{total: 90000, input: 70000, cached: 60000, cacheWrite: 5000, output: 20000, reasoning: 3000}, 258400)) // historical seed
 	a.onTurnStart()
-	a.observe(tokenUsageParams(wireTotals{total: 95000, input: 74000, cached: 64000, output: 21000, reasoning: 3100}, 258400))
+	a.observe(tokenUsageParams(wireTotals{total: 95000, input: 74000, cached: 64000, cacheWrite: 5300, output: 21000, reasoning: 3100}, 258400))
 	got := a.settleTurn()
-	if got.OutputTokens != 1000 || got.CacheReadInputTokens != 4000 {
-		t.Fatalf("resumed turn delta: %+v", got)
+	want := provider.TokenUsage{CacheReadInputTokens: 4000, CacheCreationInputTokens: 300, OutputTokens: 1000, ReasoningOutputTokens: 100}
+	if got != want {
+		t.Fatalf("resumed turn delta: %+v, want %+v", got, want)
 	}
 }
 
@@ -198,22 +185,6 @@ func TestUsageAccounting_ExceededSentinelRebaselines(t *testing.T) {
 	}
 }
 
-// Stale totals cannot produce a new delta or lower the accounted baseline.
-func TestUsageAccounting_BackwardsCumulativeIgnored(t *testing.T) {
-	t.Parallel()
-	a := newUsageAccounting(false)
-	a.onTurnStart()
-	a.observe(tokenUsageParams(wireTotals{total: 5000, input: 4000, cached: 3000, output: 1000}, 258400))
-	if got := a.settleTurn(); got.IsZero() {
-		t.Fatalf("turn 1 should account")
-	}
-	a.onTurnStart()
-	a.observe(tokenUsageParams(wireTotals{total: 2000, input: 1500, cached: 1000, output: 500}, 258400))
-	if got := a.settleTurn(); !got.IsZero() {
-		t.Fatalf("backwards cumulative must be ignored, got %+v", got)
-	}
-}
-
 // TestAttachTurnUsage_StampsAggregateAndModel — the session hook writes
 // both the aggregate and the single-model attribution onto the wire meta.
 func TestAttachTurnUsage_StampsAggregateAndModel(t *testing.T) {
@@ -249,6 +220,7 @@ func TestAttachTurnUsage_StampsAggregateAndModel(t *testing.T) {
 	}
 }
 
+// Stale totals cannot produce a new delta or lower the accounted baseline.
 func TestUsageAccountingStaleCumulativeDoesNotRebill(t *testing.T) {
 	t.Parallel()
 	a := newUsageAccounting(false)
@@ -257,7 +229,7 @@ func TestUsageAccountingStaleCumulativeDoesNotRebill(t *testing.T) {
 		a.observe(tokenUsageParams(wireTotals{total: 2 * n, input: n, output: n}, 258400))
 		got := a.settleTurn()
 		want := []int{100, 0, 0, 20}[i]
-		if got.InputTokens != want || got.OutputTokens != want {
+		if got != (provider.TokenUsage{InputTokens: want, OutputTokens: want}) {
 			t.Fatalf("report %d: %+v, want %d", n, got, want)
 		}
 	}

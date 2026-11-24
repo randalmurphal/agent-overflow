@@ -46,70 +46,35 @@ func TestDispatchLineSubagentNotificationUsesAgentPathMapping(t *testing.T) {
 
 // -- subagent notification parser tests --
 
-// TestParseSubagentNotifications_SingleTag pins the canonical wire
-// shape emitted by codex-source
-// (core/src/session_prefix.rs::format_subagent_notification_message):
-// a single
-// <subagent_notification>{"agent_path":..,"status":..}</subagent_notification>
-// block whose JSON body round-trips to a subagentNotification value.
+// TestParseSubagentNotifications_SingleTag pins one tag's JSON body
+// round-tripping to a subagentNotification, with the identity and
+// status keys in their own fields and never left in Extra. The
+// canonical wire shape comes from codex-source
+// (core/src/session_prefix.rs::format_subagent_notification_message).
 func TestParseSubagentNotifications_SingleTag(t *testing.T) {
 	t.Parallel()
-	text := `<subagent_notification>{"agent_path":"child-1","status":"completed"}</subagent_notification>`
-	got := parseSubagentNotifications(text)
-	if len(got) != 1 {
-		t.Fatalf("len=%d, want 1 (got=%+v)", len(got), got)
-	}
-	if got[0].AgentPath != "child-1" {
-		t.Errorf("AgentPath: got %q, want %q", got[0].AgentPath, "child-1")
-	}
-	if got[0].Status != "completed" {
-		t.Errorf("Status: got %q, want %q", got[0].Status, "completed")
-	}
-}
-
-// TestParseSubagentNotifications_LegacyAgentIDFallback pins the
-// backward-compat branch: older (pre-rename) Codex builds emit
-// `agent_id` instead of `agent_path`. The parser accepts either so a
-// fleet straddling the rename doesn't silently drop notifications.
-// Production wire is `agent_path` and is the fast path.
-func TestParseSubagentNotifications_LegacyAgentIDFallback(t *testing.T) {
-	t.Parallel()
-	text := `<subagent_notification>{"agent_id":"legacy-child","status":"completed"}</subagent_notification>`
-	got := parseSubagentNotifications(text)
-	if len(got) != 1 {
-		t.Fatalf("len=%d, want 1 (got=%+v)", len(got), got)
-	}
-	if got[0].AgentPath != "legacy-child" {
-		t.Errorf("AgentPath: got %q, want %q (agent_id fallback)", got[0].AgentPath, "legacy-child")
-	}
-	if got[0].Status != "completed" {
-		t.Errorf("Status: got %q, want %q", got[0].Status, "completed")
-	}
-	// Legacy key must not leak into Extra — it has its own logical slot.
-	if _, dup := got[0].Extra["agent_id"]; dup {
-		t.Errorf("Extra should not preserve the legacy agent_id key: %+v", got[0].Extra)
-	}
-}
-
-// TestParseSubagentNotifications_AgentPathWinsOverAgentID locks the
-// precedence rule: when both the production key (`agent_path`) and the
-// legacy key (`agent_id`) are present (a weird mixed build but cheap
-// to define), the production key wins and neither key leaks into Extra.
-func TestParseSubagentNotifications_AgentPathWinsOverAgentID(t *testing.T) {
-	t.Parallel()
-	text := `<subagent_notification>{"agent_path":"new","agent_id":"old","status":"completed"}</subagent_notification>`
-	got := parseSubagentNotifications(text)
-	if len(got) != 1 {
-		t.Fatalf("len=%d, want 1 (got=%+v)", len(got), got)
-	}
-	if got[0].AgentPath != "new" {
-		t.Errorf("AgentPath: got %q, want %q (agent_path takes precedence over agent_id)", got[0].AgentPath, "new")
-	}
-	if _, dup := got[0].Extra["agent_id"]; dup {
-		t.Errorf("Extra should not preserve the legacy agent_id key: %+v", got[0].Extra)
-	}
-	if _, dup := got[0].Extra["agent_path"]; dup {
-		t.Errorf("Extra should not duplicate agent_path: %+v", got[0].Extra)
+	for _, tc := range []struct {
+		name, text, wantPath, wantStatus string
+	}{
+		{"canonical", `<subagent_notification>{"agent_path":"child-1","status":"completed"}</subagent_notification>`, "child-1", "completed"},
+		// Older (pre-rename) Codex builds emit `agent_id`; a fleet straddling
+		// the rename must not drop notifications.
+		{"legacy agent_id fallback", `<subagent_notification>{"agent_id":"legacy-child","status":"completed"}</subagent_notification>`, "legacy-child", "completed"},
+		{"agent_path wins over agent_id", `<subagent_notification>{"agent_path":"new","agent_id":"old","status":"completed"}</subagent_notification>`, "new", "completed"},
+		{"whitespace around the body", "<subagent_notification>\n  {\"agent_path\":\"child-3\",\"status\":\"interrupted\"}\n</subagent_notification>", "child-3", "interrupted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseSubagentNotifications(tc.text)
+			if len(got) != 1 {
+				t.Fatalf("len=%d, want 1 (got=%+v)", len(got), got)
+			}
+			if got[0].AgentPath != tc.wantPath || got[0].Status != tc.wantStatus {
+				t.Errorf("got (%q, %q), want (%q, %q)", got[0].AgentPath, got[0].Status, tc.wantPath, tc.wantStatus)
+			}
+			if len(got[0].Extra) != 0 {
+				t.Errorf("Extra must not keep agent_path, agent_id or status: %+v", got[0].Extra)
+			}
+		})
 	}
 }
 
@@ -136,22 +101,6 @@ More prose.
 	}
 	if got[1].AgentPath != "child-2" || got[1].Status != "errored" {
 		t.Errorf("entry 1: got %+v", got[1])
-	}
-}
-
-// TestParseSubagentNotifications_WhitespaceLenient verifies the regex
-// tolerates leading/trailing whitespace around the JSON body. Codex's
-// tests pin a tight shape but the refactor plan flagged "be lenient on
-// whitespace" as a correctness criterion.
-func TestParseSubagentNotifications_WhitespaceLenient(t *testing.T) {
-	t.Parallel()
-	text := "<subagent_notification>\n  {\"agent_path\":\"child-3\",\"status\":\"interrupted\"}\n</subagent_notification>"
-	got := parseSubagentNotifications(text)
-	if len(got) != 1 {
-		t.Fatalf("len=%d, want 1 (got=%+v)", len(got), got)
-	}
-	if got[0].AgentPath != "child-3" || got[0].Status != "interrupted" {
-		t.Errorf("got %+v", got[0])
 	}
 }
 
@@ -258,42 +207,25 @@ func TestExtractSubagentNotificationsFromUserMessage_WireShape(t *testing.T) {
 }
 
 // TestExtractSubagentNotificationsFromUserMessage_NotUserMessage
-// guards the filter: assistant and reasoning items must not trigger
-// the parser. This matters because the parser walks the full content
-// array — running it on every item would waste allocations on every
-// turn.
+// guards the item filters: an assistant item must not reach the parser,
+// and in a userMessage only the UserInput `text` variant is concatenated
+// (an image or mention entry's fields carry different semantics).
 func TestExtractSubagentNotificationsFromUserMessage_NotUserMessage(t *testing.T) {
 	t.Parallel()
-	params := json.RawMessage(`{
-		"item":{
-			"id":"asst-1",
-			"type":"agentMessage",
-			"text":"<subagent_notification>{\"agent_path\":\"child-1\",\"status\":\"completed\"}</subagent_notification>"
-		}
-	}`)
-	if got := extractSubagentNotificationsFromUserMessage(params); got != nil {
-		t.Errorf("non-userMessage: got %+v, want nil", got)
-	}
-}
-
-// TestExtractSubagentNotificationsFromUserMessage_NonTextContent
-// confirms the UserInput tagged union filter: image / mention / skill
-// entries must not be text-concatenated (their `text` field, if any,
-// carries different semantics).
-func TestExtractSubagentNotificationsFromUserMessage_NonTextContent(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(`{
-		"item":{
-			"id":"user-msg-1",
-			"type":"userMessage",
-			"content":[
-				{"type":"image","url":"https://example.test/image.png"},
-				{"type":"mention","name":"file","path":"/tmp/a"}
-			]
-		}
-	}`)
-	if got := extractSubagentNotificationsFromUserMessage(params); got != nil {
-		t.Errorf("non-text content: got %+v, want nil", got)
+	for _, tc := range []struct {
+		name   string
+		params string
+	}{
+		{"agentMessage item", `{"item":{"id":"asst-1","type":"agentMessage",` +
+			`"text":"<subagent_notification>{\"agent_path\":\"child-1\",\"status\":\"completed\"}</subagent_notification>"}}`},
+		{"non-text content", `{"item":{"id":"user-msg-1","type":"userMessage","content":[` +
+			`{"type":"image","url":"https://example.test/image.png"},{"type":"mention","name":"file","path":"/tmp/a"}]}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractSubagentNotificationsFromUserMessage(json.RawMessage(tc.params)); got != nil {
+				t.Errorf("got %+v, want nil", got)
+			}
+		})
 	}
 }
 
@@ -321,9 +253,17 @@ func TestDispatchLineSubagentNotificationEmitsEvent(t *testing.T) {
 
 	var notif *provider.ProviderEvent
 	for i := range events {
-		if events[i].Kind == provider.EventSubagentNotification {
-			notif = &events[i]
-			break
+		switch events[i].Kind {
+		case provider.EventSubagentNotification:
+			if events[i].ItemID != "call-collab-1" {
+				t.Errorf("ItemID: got %q, want call-collab-1", events[i].ItemID)
+			}
+			if notif == nil {
+				notif = &events[i]
+			}
+		case provider.EventUserText:
+			// The carrier is consumed by the notification it carries.
+			t.Fatalf("carrier userMessage emitted EventUserText: %+v", events[i])
 		}
 	}
 	if notif == nil {
@@ -397,186 +337,60 @@ func TestDispatchLineRawInterAgentSubagentNotificationEmitsEvent(t *testing.T) {
 	}
 }
 
-func TestDispatchLineRawInterAgentSubagentNotificationWithoutPhaseIgnored(t *testing.T) {
+// TestDispatchLineRawSubagentNotificationCarrierIgnored pins the raw
+// carriers that must not emit a control event even though their text holds
+// a mapped child's notification tag: the wrong phase, author, thread or
+// block type, or a tag mixed with ordinary text.
+func TestDispatchLineRawSubagentNotificationCarrierIgnored(t *testing.T) {
 	t.Parallel()
-	var events []provider.ProviderEvent
-	s := fixtureSession(t, "parent-thread", "parent-provider-thread", func(evt provider.ProviderEvent) {
-		events = append(events, evt)
-	})
-	s.collab = sessionCollabState{
-		childParentByAgentPath: map[string]string{
-			"/root/researcher": "call-collab-1",
-		},
+	researcher := map[string]any{"agent_path": "/root/researcher", "status": "completed"}
+	researcherTag := subagentNotificationTag(t, researcher)
+	childDoneTag := subagentNotificationTag(t, map[string]any{"agent_path": "child-done", "status": "completed"})
+	byPath := func(path string) sessionCollabState {
+		return sessionCollabState{childParentByAgentPath: map[string]string{path: "call-collab-1"}}
 	}
-
-	line := rawInterAgentSubagentNotificationLineForThreadAndPhase(t, "parent-provider-thread", "", map[string]any{
-		"agent_path": "/root/researcher",
-		"status":     "completed",
-	})
-	feed(t, s, line)
-
-	for _, evt := range events {
-		if evt.Kind == provider.EventSubagentNotification {
-			t.Fatalf("no-phase raw carrier must not emit control event: %+v", events)
-		}
+	byThread := func(thread string) sessionCollabState {
+		return sessionCollabState{childParentByThread: map[string]string{thread: "call-collab-1"}}
 	}
-}
-
-func TestDispatchLineRawInterAgentSubagentNotificationMixedContentIgnored(t *testing.T) {
-	t.Parallel()
-	var events []provider.ProviderEvent
-	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
-		events = append(events, evt)
-	})
-	s.collab = sessionCollabState{
-		childParentByAgentPath: map[string]string{
-			"/root/researcher": "call-collab-1",
-		},
-	}
-
-	line := rawInterAgentMessageLine(t, "ordinary note\n"+subagentNotificationTag(t, map[string]any{
-		"agent_path": "/root/researcher",
-		"status":     "completed",
-	}))
-	feed(t, s, line)
-
-	for _, evt := range events {
-		if evt.Kind == provider.EventSubagentNotification {
-			t.Fatalf("mixed raw inter-agent content must not emit control event: %+v", events)
-		}
-	}
-}
-
-func TestDispatchLineRawInterAgentSubagentNotificationAuthorMismatchIgnored(t *testing.T) {
-	t.Parallel()
-	var events []provider.ProviderEvent
-	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
-		events = append(events, evt)
-	})
-	s.collab = sessionCollabState{
-		childParentByAgentPath: map[string]string{
-			"/root/other": "call-collab-1",
-		},
-	}
-
-	line := rawInterAgentSubagentNotificationLine(t, map[string]any{
-		"agent_path": "/root/other",
-		"status":     "completed",
-	})
-	feed(t, s, line)
-
-	for _, evt := range events {
-		if evt.Kind == provider.EventSubagentNotification {
-			t.Fatalf("author-mismatched raw inter-agent content must not emit control event: %+v", events)
-		}
-	}
-}
-
-func TestDispatchLineRawInterAgentSubagentNotificationFromChildThreadIgnored(t *testing.T) {
-	t.Parallel()
-	var events []provider.ProviderEvent
-	s := fixtureSession(t, "parent-thread", "parent-provider-thread", func(evt provider.ProviderEvent) {
-		events = append(events, evt)
-	})
-	s.collab = sessionCollabState{
-		childParentByThread: map[string]string{
-			"child-provider-thread": "call-collab-1",
-		},
-		childParentByAgentPath: map[string]string{
-			"/root/researcher": "call-collab-1",
-		},
-	}
-
-	line := rawInterAgentSubagentNotificationLineForThread(t, "child-provider-thread", map[string]any{
-		"agent_path": "/root/researcher",
-		"status":     "completed",
-	})
-	feed(t, s, line)
-
-	for _, evt := range events {
-		if evt.Kind == provider.EventSubagentNotification {
-			t.Fatalf("child-thread raw inter-agent content must not emit parent-observed completion: %+v", events)
-		}
-	}
-}
-
-func TestDispatchLineRawUserSubagentNotificationMixedContentIgnored(t *testing.T) {
-	t.Parallel()
-	var events []provider.ProviderEvent
-	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
-		events = append(events, evt)
-	})
-	s.collab = sessionCollabState{
-		childParentByThread: map[string]string{
-			"child-done": "call-collab-1",
-		},
-	}
-
-	line := rawUserMessageLineForThread(t, "parent-thread", "ordinary note\n"+subagentNotificationTag(t, map[string]any{
-		"agent_path": "child-done",
-		"status":     "completed",
-	}))
-	feed(t, s, line)
-
-	for _, evt := range events {
-		if evt.Kind == provider.EventSubagentNotification {
-			t.Fatalf("mixed raw user content must not emit control event: %+v", events)
-		}
-	}
-}
-
-func TestDispatchLineRawUserSubagentNotificationWrongBlockTypeIgnored(t *testing.T) {
-	t.Parallel()
-	for _, blockType := range []string{"output_text", "text"} {
-		t.Run(blockType, func(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		rootThread string
+		collab     sessionCollabState
+		line       []byte
+	}{
+		{"inter-agent without phase", "parent-provider-thread", byPath("/root/researcher"),
+			rawInterAgentSubagentNotificationLineForThreadAndPhase(t, "parent-provider-thread", "", researcher)},
+		{"inter-agent mixed content", "", byPath("/root/researcher"),
+			rawInterAgentMessageLine(t, "ordinary note\n"+researcherTag)},
+		{"inter-agent author mismatch", "", byPath("/root/other"),
+			rawInterAgentSubagentNotificationLine(t, map[string]any{"agent_path": "/root/other", "status": "completed"})},
+		{"inter-agent from child thread", "parent-provider-thread", sessionCollabState{
+			childParentByThread:    map[string]string{"child-provider-thread": "call-collab-1"},
+			childParentByAgentPath: map[string]string{"/root/researcher": "call-collab-1"},
+		}, rawInterAgentSubagentNotificationLineForThread(t, "child-provider-thread", researcher)},
+		{"inter-agent input_text block", "", byPath("/root/researcher"),
+			rawInterAgentMessageLineForThreadAndPhaseAndBlockType(t, "parent-thread", "commentary", researcherTag, "input_text")},
+		{"inter-agent text block", "", byPath("/root/researcher"),
+			rawInterAgentMessageLineForThreadAndPhaseAndBlockType(t, "parent-thread", "commentary", researcherTag, "text")},
+		{"user mixed content", "", byThread("child-done"),
+			rawUserMessageLineForThread(t, "parent-thread", "ordinary note\n"+childDoneTag)},
+		{"user output_text block", "", byThread("child-done"),
+			rawUserMessageLineForThreadAndBlockType(t, "parent-thread", "output_text", childDoneTag)},
+		{"user text block", "", byThread("child-done"),
+			rawUserMessageLineForThreadAndBlockType(t, "parent-thread", "text", childDoneTag)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			var events []provider.ProviderEvent
-			s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+			s := fixtureSession(t, "parent-thread", tc.rootThread, func(evt provider.ProviderEvent) {
 				events = append(events, evt)
 			})
-			s.collab = sessionCollabState{
-				childParentByThread: map[string]string{
-					"child-done": "call-collab-1",
-				},
-			}
-
-			line := rawUserMessageLineForThreadAndBlockType(t, "parent-thread", blockType, subagentNotificationTag(t, map[string]any{
-				"agent_path": "child-done",
-				"status":     "completed",
-			}))
-			feed(t, s, line)
+			s.collab = tc.collab
+			feed(t, s, tc.line)
 
 			for _, evt := range events {
 				if evt.Kind == provider.EventSubagentNotification {
-					t.Fatalf("raw user %s block must not emit control event: %+v", blockType, events)
-				}
-			}
-		})
-	}
-}
-
-func TestDispatchLineRawInterAgentSubagentNotificationWrongBlockTypeIgnored(t *testing.T) {
-	t.Parallel()
-	for _, blockType := range []string{"input_text", "text"} {
-		t.Run(blockType, func(t *testing.T) {
-			var events []provider.ProviderEvent
-			s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
-				events = append(events, evt)
-			})
-			s.collab = sessionCollabState{
-				childParentByAgentPath: map[string]string{
-					"/root/researcher": "call-collab-1",
-				},
-			}
-
-			line := rawInterAgentMessageLineForThreadAndPhaseAndBlockType(t, "parent-thread", "commentary", subagentNotificationTag(t, map[string]any{
-				"agent_path": "/root/researcher",
-				"status":     "completed",
-			}), blockType)
-			feed(t, s, line)
-
-			for _, evt := range events {
-				if evt.Kind == provider.EventSubagentNotification {
-					t.Fatalf("raw assistant %s block must not emit control event: %+v", blockType, events)
+					t.Fatalf("raw carrier emitted a control event: %+v", events)
 				}
 			}
 		})
@@ -595,35 +409,6 @@ func TestDispatchLineRawAssistantMessageDoesNotEmitSubagentNotification(t *testi
 
 	if len(events) != 0 {
 		t.Fatalf("ordinary raw assistant message should stay non-visual, got %+v", events)
-	}
-}
-
-func TestDispatchLineSubagentNotificationCarrierDoesNotEmitUserTextWhenMapped(t *testing.T) {
-	t.Parallel()
-	var events []provider.ProviderEvent
-	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
-		events = append(events, evt)
-	})
-	s.collab = sessionCollabState{
-		childParentByThread: map[string]string{"child-done": "call-collab-1"},
-	}
-
-	line := []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_path\":\"child-done\",\"status\":\"completed\"}</subagent_notification>"}]}}}`)
-	feed(t, s, line)
-
-	var sawNotification bool
-	for _, evt := range events {
-		if evt.Kind == provider.EventSubagentNotification {
-			sawNotification = true
-			if evt.ItemID != "call-collab-1" {
-				t.Fatalf("notification ItemID = %q, want call-collab-1", evt.ItemID)
-			}
-		} else if evt.Kind == provider.EventUserText {
-			t.Fatalf("carrier userMessage emitted EventUserText: %+v", evt)
-		}
-	}
-	if !sawNotification {
-		t.Fatalf("expected EventSubagentNotification, got %+v", events)
 	}
 }
 
