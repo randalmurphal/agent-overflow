@@ -2,7 +2,6 @@ package editor
 
 import (
 	"context"
-	"errors"
 	"os"
 	"testing"
 )
@@ -193,111 +192,51 @@ ELECTRON="/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/Code.exe"
 	t.Fatalf("code not in catalog output: %+v", got)
 }
 
-func TestDetectEditors_FallsBackToMntCUserInstall(t *testing.T) {
-	// Inside WSL with no PATH-resolved code, detection must walk
-	// /mnt/c/Users/<user>/AppData/Local/Programs/... and pick the
-	// vendor install.
-	userInstall := "/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/bin/code"
-	fs := &fakeFS{
-		files: map[string][]byte{
-			wslOSReleasePath: []byte("5.15.146.1-microsoft-standard-WSL2"),
-			userInstall:      []byte("#!/bin/bash\n"),
-		},
-		dirs: map[string][]string{
-			"/mnt/c/Users": {"alice", "Default", "Public"},
-		},
+// TestDetectEditors_FallsBackToMntCInstall pins the /mnt/c walk inside
+// WSL when PATH has no code: the per-user install wins over the system
+// one (that's where extensions live), template profiles are never
+// probed, and a missing /mnt/c/Users (drive not auto-mounted yet) falls
+// through to the system install.
+func TestDetectEditors_FallsBackToMntCInstall(t *testing.T) {
+	const (
+		userInstall        = "/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/bin/code"
+		defaultUserInstall = "/mnt/c/Users/Default/AppData/Local/Programs/Microsoft VS Code/bin/code"
+		systemInstall      = "/mnt/c/Program Files/Microsoft VS Code/bin/code"
+	)
+	cases := []struct {
+		name     string
+		installs []string
+		users    []string // nil: no /mnt/c/Users, so readDir returns ErrNotExist
+		want     string
+	}{
+		{"user install", []string{userInstall}, []string{"alice", "Default", "Public"}, userInstall},
+		{"user install preferred over system", []string{userInstall, systemInstall}, []string{"alice"}, userInstall},
+		{"system install when users dir missing", []string{systemInstall}, nil, systemInstall},
+		{"default user directories skipped", []string{defaultUserInstall, systemInstall}, []string{"Default", "Public", "All Users", "Default User"}, systemInstall},
 	}
-	env := newDetectEnv(fs, pathTable{}, nil)
-
-	got := detectEditorsWithEnv(context.Background(), env)
-
-	for _, e := range got {
-		if e.ID == "code" {
-			if !e.Available || e.ResolvedPath != userInstall {
-				t.Fatalf("expected user install resolved; got %+v", e)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := &fakeFS{
+				files: map[string][]byte{wslOSReleasePath: []byte("5.15.146.1-microsoft-standard-WSL2")},
+				dirs:  map[string][]string{},
 			}
-			return
-		}
-	}
-	t.Fatalf("code missing from catalog output")
-}
-
-func TestDetectEditors_UserInstallPreferredOverSystem(t *testing.T) {
-	// When both paths exist, the user-relative install must win —
-	// that's the per-user editor environment, where extensions live.
-	userInstall := "/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/bin/code"
-	systemInstall := "/mnt/c/Program Files/Microsoft VS Code/bin/code"
-	fs := &fakeFS{
-		files: map[string][]byte{
-			wslOSReleasePath: []byte("microsoft"),
-			userInstall:      []byte(""),
-			systemInstall:    []byte(""),
-		},
-		dirs: map[string][]string{
-			"/mnt/c/Users": {"alice"},
-		},
-	}
-	env := newDetectEnv(fs, pathTable{}, nil)
-	got := detectEditorsWithEnv(context.Background(), env)
-	for _, e := range got {
-		if e.ID == "code" {
-			if e.ResolvedPath != userInstall {
-				t.Fatalf("expected user install; got %q", e.ResolvedPath)
+			for _, p := range tc.installs {
+				fs.files[p] = []byte("#!/bin/bash\n")
 			}
-			return
-		}
-	}
-	t.Fatalf("code missing")
-}
-
-func TestDetectEditors_FallsBackToSystemInstallWhenUsersMissing(t *testing.T) {
-	systemInstall := "/mnt/c/Program Files/Microsoft VS Code/bin/code"
-	fs := &fakeFS{
-		files: map[string][]byte{
-			wslOSReleasePath: []byte("microsoft"),
-			systemInstall:    []byte(""),
-		},
-		// no /mnt/c/Users in dirs → readDir returns ErrNotExist
-	}
-	env := newDetectEnv(fs, pathTable{}, nil)
-	got := detectEditorsWithEnv(context.Background(), env)
-	for _, e := range got {
-		if e.ID == "code" {
-			if !e.Available || e.ResolvedPath != systemInstall {
-				t.Fatalf("expected system install fallback; got %+v", e)
+			if tc.users != nil {
+				fs.dirs["/mnt/c/Users"] = tc.users
 			}
-			return
-		}
-	}
-	t.Fatalf("code missing")
-}
-
-func TestDetectEditors_SkipsDefaultUserDirectories(t *testing.T) {
-	// Only Default/Public/All Users/Default User exist — none should
-	// be probed, and the system fallback should win.
-	systemInstall := "/mnt/c/Program Files/Microsoft VS Code/bin/code"
-	defaultUserInstall := "/mnt/c/Users/Default/AppData/Local/Programs/Microsoft VS Code/bin/code"
-	fs := &fakeFS{
-		files: map[string][]byte{
-			wslOSReleasePath:   []byte("microsoft"),
-			defaultUserInstall: []byte(""),
-			systemInstall:      []byte(""),
-		},
-		dirs: map[string][]string{
-			"/mnt/c/Users": {"Default", "Public", "All Users", "Default User"},
-		},
-	}
-	env := newDetectEnv(fs, pathTable{}, nil)
-	got := detectEditorsWithEnv(context.Background(), env)
-	for _, e := range got {
-		if e.ID == "code" {
-			if e.ResolvedPath != systemInstall {
-				t.Fatalf("expected system install; the Default-user install must be skipped. got %q", e.ResolvedPath)
+			for _, e := range detectEditorsWithEnv(context.Background(), newDetectEnv(fs, pathTable{}, nil)) {
+				if e.ID == "code" {
+					if !e.Available || e.ResolvedPath != tc.want {
+						t.Fatalf("expected code resolved to %q; got %+v", tc.want, e)
+					}
+					return
+				}
 			}
-			return
-		}
+			t.Fatalf("code missing from catalog output")
+		})
 	}
-	t.Fatalf("code missing")
 }
 
 func TestDetectEditors_EnvFallback(t *testing.T) {
@@ -388,10 +327,6 @@ func TestLiveDetectEnv_LookupErrorMapping(t *testing.T) {
 	if got {
 		t.Fatalf("expected ok=false for missing path")
 	}
-
-	if !errors.Is(os.ErrNotExist, os.ErrNotExist) {
-		t.Fatal("os.ErrNotExist sentinel changed")
-	}
 }
 
 func availableMap(editors []Editor) map[string]bool {
@@ -407,6 +342,11 @@ func availableMap(editors []Editor) map[string]bool {
 // on WSL); subsequent calls within detectionCacheTTL return the cached
 // result without re-walking. The cache is process-global because
 // DetectEditors is called from multiple App entry points.
+//
+// It then covers the manual-refresh path the App-side SetEditorSettings
+// binding uses after a deliberate preference change. Without
+// RefreshEditors the picker would show stale availability for up to
+// detectionCacheTTL after the change.
 func TestDetectEditors_CachesWithinTTL(t *testing.T) {
 	// Reset before AND after so the test doesn't pollute follow-on tests
 	// in this package.
@@ -420,6 +360,9 @@ func TestDetectEditors_CachesWithinTTL(t *testing.T) {
 	first := DetectEditors(context.Background())
 	if first == nil {
 		t.Fatalf("first DetectEditors returned nil")
+	}
+	if cached, ok := readDetectionCache(); !ok || len(cached) == 0 {
+		t.Fatalf("cache should be populated after first detect")
 	}
 
 	// Mutate the returned slice in place — the cache stores a defensive
@@ -435,25 +378,6 @@ func TestDetectEditors_CachesWithinTTL(t *testing.T) {
 	}
 	if len(second) > 0 && second[0].Name == "MUTATED" {
 		t.Fatalf("cache was mutated by caller — defensive copy failed")
-	}
-}
-
-// TestRefreshEditors_InvalidatesCache covers the manual-refresh path
-// the App-side SetEditorSettings binding uses after a deliberate
-// preference change. Without RefreshEditors the picker would show
-// stale availability for up to detectionCacheTTL after the change.
-func TestRefreshEditors_InvalidatesCache(t *testing.T) {
-	RefreshEditors()
-	t.Cleanup(RefreshEditors)
-
-	first := DetectEditors(context.Background())
-	if first == nil {
-		t.Fatalf("first DetectEditors returned nil")
-	}
-
-	// Confirm the cache is populated.
-	if cached, ok := readDetectionCache(); !ok || len(cached) == 0 {
-		t.Fatalf("cache should be populated after first detect")
 	}
 
 	RefreshEditors()
