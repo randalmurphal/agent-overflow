@@ -1761,20 +1761,6 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     viewing();
     a.release();
   });
-
-  it('drops conflict state when the last holder leaves', async () => {
-    installSubscribeMock();
-    installConflictMocks();
-    const a = attachPR(KEY, { ref: REF });
-    await flush();
-    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
-    expect(peekPRConflicts(KEY, CONFLICT_WS).state).not.toBeNull();
-
-    a.release();
-    await flush();
-    expect(peekPRConflicts(KEY, CONFLICT_WS).state).toBeNull();
-    expect(peekPRConflicts(KEY, CONFLICT_WS).contentByPath.size).toBe(0);
-  });
 });
 
 describe('prReviewStore — merge conflicts per checkout', () => {
@@ -1875,6 +1861,9 @@ describe('prReviewStore — merge conflicts per checkout', () => {
     await flush();
     await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
     await openPRConflicts(KEY, OTHER_WS, REF, detailStub());
+    for (const ws of [CONFLICT_WS, OTHER_WS]) {
+      expect(peekPRConflicts(KEY, ws).state).not.toBeNull();
+    }
 
     a.release();
     await flush();

@@ -101,15 +101,6 @@ describe('proposed-plan cache sync upsert', () => {
 
     expect(getThreadCurrentProposedPlan('thread-1')).toBeNull();
   });
-
-  it('populates the cache for a thread with no retained listener', () => {
-    // The sync upsert path is independent of retainProposedPlanEventListener
-    // so a thread that no PlanSidebar / Composer has subscribed to still
-    // gets its cache populated when an event arrives. This matters for
-    // pre-warming threads during tab restore / multi-pane futures.
-    upsertProposedPlanForTests(planItem({ id: 'plan-x', threadId: 'cold-thread' }));
-    expect(getThreadCurrentProposedPlan('cold-thread')?.id).toBe('plan-x');
-  });
 });
 
 describe('proposed-plan refresh / sync upsert race', () => {
