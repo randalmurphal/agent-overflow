@@ -253,17 +253,18 @@ func TestDispatchLineSubagentNotificationEmitsEvent(t *testing.T) {
 
 	var notif *provider.ProviderEvent
 	for i := range events {
-		switch events[i].Kind {
-		case provider.EventSubagentNotification:
-			if events[i].ItemID != "call-collab-1" {
-				t.Errorf("ItemID: got %q, want call-collab-1", events[i].ItemID)
-			}
-			if notif == nil {
-				notif = &events[i]
-			}
-		case provider.EventUserText:
+		if events[i].Kind == provider.EventUserText {
 			// The carrier is consumed by the notification it carries.
 			t.Fatalf("carrier userMessage emitted EventUserText: %+v", events[i])
+		}
+		if events[i].Kind != provider.EventSubagentNotification {
+			continue
+		}
+		if events[i].ItemID != "call-collab-1" {
+			t.Errorf("ItemID: got %q, want call-collab-1", events[i].ItemID)
+		}
+		if notif == nil {
+			notif = &events[i]
 		}
 	}
 	if notif == nil {
