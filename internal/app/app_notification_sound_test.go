@@ -180,18 +180,6 @@ func TestAHiddenThreadIsSilentOnTheSpeakerUntilOptedIn(t *testing.T) {
 	wantOneCue(t, recorder, notify.SoundTurnComplete, settings.NotifyCueSwoosh)
 }
 
-// A retraction removes a banner; there is nothing to hear about a moment
-// being taken back.
-func TestARetractionPlaysNoCue(t *testing.T) {
-	t.Parallel()
-	app, recorder := soundApp(t)
-	send := kindSend(notify.KindTurnComplete)
-	send.Retract = true
-
-	_ = app.notifyOS(send)
-	wantNoCue(t, recorder, "retraction")
-}
-
 func TestNotificationSoundCueInIsTotal(t *testing.T) {
 	t.Parallel()
 	current := settings.DefaultSettings
@@ -204,19 +192,6 @@ func TestNotificationSoundCueInIsTotal(t *testing.T) {
 			t.Fatalf("master off, %s = %q, %v; want silence", event, cue, ok)
 		}
 	}
-}
-
-// The system sound is carried by the banner, so choosing it publishes no
-// frame: a "system" cue on the wire would be a value no player has a file for.
-func TestTheSystemCuePublishesNoFrame(t *testing.T) {
-	t.Parallel()
-	app, recorder := soundApp(t)
-	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": settings.NotifyCueSystem})
-
-	if err := app.notifyOS(kindSend(notify.KindTurnComplete)); err != nil {
-		t.Fatalf("notifyOS with the system cue: %v", err)
-	}
-	wantNoCue(t, recorder, "system cue chosen")
 }
 
 // EXACTLY ONE SOUND. A notification can be heard twice — the cue frame and
@@ -312,7 +287,8 @@ func TestPreviewNotificationSoundPlaysACustomCue(t *testing.T) {
 }
 
 // The system cue is the one choice that means "let the banner make the
-// noise": no frame, and the banner keeps the platform sound.
+// noise": the banner keeps the platform sound and no frame is published, since
+// a "system" cue on the wire would be a value no player has a file for.
 func TestTheSystemCueLeavesTheBannerAudible(t *testing.T) {
 	t.Parallel()
 	app, recorder := soundApp(t)
@@ -363,11 +339,12 @@ func TestAnEventWithItsSoundOffSilencesTheBanner(t *testing.T) {
 	wantSilent(t, sender.snapshot(), true, "turn-complete sound off")
 }
 
-// A retraction carries no sound answer at all: there is no banner to attach
-// one to, and ValidateSend refuses a retraction that claims otherwise.
+// A retraction removes a banner, so there is nothing to hear and no sound
+// answer at all: there is no banner to attach one to, and ValidateSend
+// refuses a retraction that claims otherwise.
 func TestARetractionCarriesNoSoundAnswer(t *testing.T) {
 	t.Parallel()
-	app, _ := soundApp(t)
+	app, recorder := soundApp(t)
 	sender := app.osNotifications.(*recordingNotificationSender)
 	send := kindSend(notify.KindTurnComplete)
 	send.Retract = true
@@ -377,6 +354,7 @@ func TestARetractionCarriesNoSoundAnswer(t *testing.T) {
 	if err := app.notifyOS(send); err != nil {
 		t.Fatalf("notifyOS retraction: %v", err)
 	}
+	wantNoCue(t, recorder, "retraction")
 	got := sender.snapshot()
 	if len(got) != 1 || !got[0].Retract {
 		t.Fatalf("presenter sends = %+v, want one retraction", got)

@@ -113,20 +113,29 @@ func TestInterruptNoticesAClaudeTUIMessageStoppedBeforeAReply(t *testing.T) {
 func TestClaudeTUIStopDiscardsMessageReadsTheTurnRows(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name string
-		rows []store.Item
-		want bool
+		name          string
+		rows          []store.Item
+		turn, pending int
+		want          bool
 	}{
-		{name: "message only", want: true},
-		{name: "api_retry", rows: []store.Item{{Kind: "api_retry", Role: "system"}}, want: true},
-		{name: "api_error", rows: []store.Item{{Kind: "api_error"}}, want: true},
-		{name: "error", rows: []store.Item{{Kind: "error", Role: "system"}}, want: true},
-		{name: "steered messages", rows: []store.Item{{Kind: "user_text", Role: "user"}}, want: true},
-		{name: "assistant_text", rows: []store.Item{{Kind: "assistant_text"}}},
-		{name: "notification", rows: []store.Item{{Kind: "notification", Role: "system"}}},
-		{name: "compaction", rows: []store.Item{{Kind: "compaction", Role: "system"}}},
-		{name: "wire-only user_text", rows: []store.Item{{Kind: "user_text", Role: "user", Meta: `{"wire_only":true}`}}},
-		{name: "subagent prompt", rows: []store.Item{{Kind: "user_text", Role: "user", ParentID: "task:0"}}},
+		{name: "message only", pending: -1, want: true},
+		{name: "api_retry", rows: []store.Item{{Kind: "api_retry", Role: "system"}}, pending: -1, want: true},
+		{name: "api_error", rows: []store.Item{{Kind: "api_error"}}, pending: -1, want: true},
+		{name: "error", rows: []store.Item{{Kind: "error", Role: "system"}}, pending: -1, want: true},
+		{name: "steered messages", rows: []store.Item{{Kind: "user_text", Role: "user"}}, pending: -1, want: true},
+		{name: "assistant_text", rows: []store.Item{{Kind: "assistant_text"}}, pending: -1},
+		{name: "notification", rows: []store.Item{{Kind: "notification", Role: "system"}}, pending: -1},
+		{name: "compaction", rows: []store.Item{{Kind: "compaction", Role: "system"}}, pending: -1},
+		{name: "wire-only user_text", rows: []store.Item{{Kind: "user_text", Role: "user", Meta: `{"wire_only":true}`}}, pending: -1},
+		{name: "subagent prompt", rows: []store.Item{{Kind: "user_text", Role: "user", ParentID: "task:0"}}, pending: -1},
+		{name: "no open turn", turn: anyOpenTurn, pending: -1},
+		// A queued message's row waits for its echo, so its pending send is
+		// the only sign of the message until then.
+		{name: "pending send whose row is deferred", turn: anyOpenTurn, pending: 1, want: true},
+		{name: "pending send on a turn with agent output", rows: []store.Item{{Kind: "assistant_text"}}, turn: anyOpenTurn, pending: 0},
+		// The pending send is sampled first, so a turn that opened since is
+		// the one read.
+		{name: "an open turn outranks the pending send", rows: []store.Item{{Kind: "assistant_text"}}, turn: 0, pending: 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -144,53 +153,11 @@ func TestClaudeTUIStopDiscardsMessageReadsTheTurnRows(t *testing.T) {
 				appendTurnRow(t, app.store, row)
 			}
 			sess := session{Provider: string(provider.ClaudeTUI)}
-			if got := app.claudeTUIStopDiscardsMessage(thread.ID, sess, 0, -1); got != tc.want {
+			if got := app.claudeTUIStopDiscardsMessage(thread.ID, sess, tc.turn, tc.pending); got != tc.want {
 				t.Fatalf("discards = %v, want %v", got, tc.want)
 			}
 		})
 	}
-	t.Run("no open turn", func(t *testing.T) {
-		t.Parallel()
-		app := newTestApp(t)
-		thread := createAppTestThread(t, app, "tui-no-turn", string(provider.ClaudeTUI), t.TempDir())
-		insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
-		if app.claudeTUIStopDiscardsMessage(thread.ID, session{Provider: string(provider.ClaudeTUI)}, anyOpenTurn, -1) {
-			t.Fatal("a stop with no open turn noticed a discarded message")
-		}
-	})
-	// A queued message's row waits for its echo, so its pending send is the
-	// only sign of the message until then.
-	t.Run("pending send whose row is deferred", func(t *testing.T) {
-		t.Parallel()
-		app := newTestApp(t)
-		thread := createAppTestThread(t, app, "tui-deferred", string(provider.ClaudeTUI), t.TempDir())
-		insertUserItem(t, app.store, thread.ID, "u:0", 0, "answered long ago")
-		if !app.claudeTUIStopDiscardsMessage(thread.ID, session{Provider: string(provider.ClaudeTUI)}, anyOpenTurn, 1) {
-			t.Fatal("a stop of a pending send with no row yet noticed nothing")
-		}
-	})
-	t.Run("pending send on a turn with agent output", func(t *testing.T) {
-		t.Parallel()
-		app := newTestApp(t)
-		thread := createAppTestThread(t, app, "tui-pending-output", string(provider.ClaudeTUI), t.TempDir())
-		insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
-		appendTurnRow(t, app.store, store.Item{ID: "a:0", ThreadID: thread.ID, ItemIndex: 1, Kind: "assistant_text"})
-		if app.claudeTUIStopDiscardsMessage(thread.ID, session{Provider: string(provider.ClaudeTUI)}, anyOpenTurn, 0) {
-			t.Fatal("a pending send on a turn the agent answered noticed a discarded message")
-		}
-	})
-	// The pending send is sampled first, so a turn that opened since is the
-	// one read.
-	t.Run("an open turn outranks the pending send", func(t *testing.T) {
-		t.Parallel()
-		app := newTestApp(t)
-		thread := createAppTestThread(t, app, "tui-open-wins", string(provider.ClaudeTUI), t.TempDir())
-		insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
-		appendTurnRow(t, app.store, store.Item{ID: "a:0", ThreadID: thread.ID, ItemIndex: 1, Kind: "assistant_text"})
-		if app.claudeTUIStopDiscardsMessage(thread.ID, session{Provider: string(provider.ClaudeTUI)}, 0, 1) {
-			t.Fatal("the pending send's turn was read while a turn was open")
-		}
-	})
 	t.Run("no message", func(t *testing.T) {
 		t.Parallel()
 		app := newTestApp(t)
