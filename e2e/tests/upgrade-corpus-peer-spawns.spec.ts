@@ -7,10 +7,15 @@
 // and requires the step to be waiting on that worker's turn and not to have
 // returned or gone on; released, the step returns with every thread it
 // made at rest.
+//
+// The step runs on a backend of the spec's own, not the worker's: it pairs
+// that backend as an own device of a peer, which connects it back to the
+// peer for good, and a reset keeps pairings. On the worker's backend every
+// later page would list a computer that never answers.
 import { randomBytes } from 'node:crypto';
 import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { HarnessApp } from '../src/harness.js';
+import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test } from './fixtures.js';
 import { writePeerSpawns } from './upgrade-corpus-topup-records.js';
 import { assertAtRest, storeThreads } from './upgrade-corpus-topup.js';
@@ -74,39 +79,44 @@ function threadByTitle(harness: HarnessApp, title: string): string {
   }
 }
 
-test('the paired-spawn step returns only once the turns it held for open runs have ended', async ({ harness }) => {
+test('the paired-spawn step returns only once the turns it held for open runs have ended', async () => {
   test.setTimeout(6 * 60_000);
-  const nonce = randomBytes(3).toString('hex');
-  const version = `0.0.0-peer${nonce}`;
-  const hold = { spawn: `peer-spawn-${nonce}`, nudge: `peer-nudge-${nonce}` };
-  const inherited = storeThreads(harness);
-  const held = (gate: string) => harness.waitForEvent<MockEvent>('harness:mock',
-    (ev) => ev.report.kind === 'waiting_signal' && ev.report.detail === gate, HELD_TIMEOUT_MS);
-  const spawnHeld = held(hold.spawn);
-  const nudgeHeld = held(hold.nudge);
-  const watched = watchTurnWaits(harness);
-  let returned = false;
-  const run = writePeerSpawns(watched.harness, version, nonce, hold).finally(() => { returned = true; });
-  const returnedFirst = run.then(() => 'returned' as const);
-  run.catch(() => undefined);
+  const harness = await launchHarness();
+  try {
+    const nonce = randomBytes(3).toString('hex');
+    const version = `0.0.0-peer${nonce}`;
+    const hold = { spawn: `peer-spawn-${nonce}`, nudge: `peer-nudge-${nonce}` };
+    const inherited = storeThreads(harness);
+    const held = (gate: string) => harness.waitForEvent<MockEvent>('harness:mock',
+      (ev) => ev.report.kind === 'waiting_signal' && ev.report.detail === gate, HELD_TIMEOUT_MS);
+    const spawnHeld = held(hold.spawn);
+    const nudgeHeld = held(hold.nudge);
+    const watched = watchTurnWaits(harness);
+    let returned = false;
+    const run = writePeerSpawns(watched.harness, version, nonce, hold).finally(() => { returned = true; });
+    const returnedFirst = run.then(() => 'returned' as const);
+    run.catch(() => undefined);
 
-  const spawn = await Promise.race([spawnHeld, run.then(() => undefined)]);
-  if (!spawn) throw new Error('writePeerSpawns returned before the Codex worker reached its gate');
-  const codex = threadByTitle(harness, `Top-up v${version}: a spawn whose run stays open`);
-  expect(await Promise.race([watched.waitingOn(codex), returnedFirst, nudgeHeld.then(() => 'went on to the nudges' as const)]),
-    "writePeerSpawns did not wait for the Codex worker's held spawn turn").toBe('waiting');
-  expect(returned).toBe(false);
-  await harness.rpc('HarnessMockCommand', spawn.mockId, { type: 'advance', name: hold.spawn });
+    const spawn = await Promise.race([spawnHeld, run.then(() => undefined)]);
+    if (!spawn) throw new Error('writePeerSpawns returned before the Codex worker reached its gate');
+    const codex = threadByTitle(harness, `Top-up v${version}: a spawn whose run stays open`);
+    expect(await Promise.race([watched.waitingOn(codex), returnedFirst, nudgeHeld.then(() => 'went on to the nudges' as const)]),
+      "writePeerSpawns did not wait for the Codex worker's held spawn turn").toBe('waiting');
+    expect(returned).toBe(false);
+    await harness.rpc('HarnessMockCommand', spawn.mockId, { type: 'advance', name: hold.spawn });
 
-  const nudge = await Promise.race([nudgeHeld, run.then(() => undefined)]);
-  if (!nudge) throw new Error('writePeerSpawns returned before the nudged worker reached its gate');
-  const nudged = threadByTitle(harness, `Top-up v${version}: a spawn the person nudges`);
-  expect(await Promise.race([watched.waitingOn(nudged), returnedFirst]),
-    "writePeerSpawns did not wait for the nudged worker's held turn").toBe('waiting');
-  expect(returned).toBe(false);
-  await harness.rpc('HarnessMockCommand', nudge.mockId, { type: 'advance', name: hold.nudge });
+    const nudge = await Promise.race([nudgeHeld, run.then(() => undefined)]);
+    if (!nudge) throw new Error('writePeerSpawns returned before the nudged worker reached its gate');
+    const nudged = threadByTitle(harness, `Top-up v${version}: a spawn the person nudges`);
+    expect(await Promise.race([watched.waitingOn(nudged), returnedFirst]),
+      "writePeerSpawns did not wait for the nudged worker's held turn").toBe('waiting');
+    expect(returned).toBe(false);
+    await harness.rpc('HarnessMockCommand', nudge.mockId, { type: 'advance', name: hold.nudge });
 
-  const result = await run;
-  expect(result.threadIds).toEqual(expect.arrayContaining([codex, nudged]));
-  await assertAtRest(harness, 'writePeerSpawns', inherited);
+    const result = await run;
+    expect(result.threadIds).toEqual(expect.arrayContaining([codex, nudged]));
+    await assertAtRest(harness, 'writePeerSpawns', inherited);
+  } finally {
+    await harness.close();
+  }
 });
