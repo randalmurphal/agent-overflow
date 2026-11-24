@@ -362,6 +362,8 @@ func TestThreadAgentRowsDoNotWaitOnAComputerThatDoesNotAnswer(t *testing.T) {
 	if want := parent.Computer + " did not answer; its agents are not shown"; parent.NestedUnavailable != want {
 		t.Fatalf("the spawn row says %q, want %q", parent.NestedUnavailable, want)
 	}
+	// A Stop that waited on a listing would now wait its product bound.
+	pair.source.threadAgentPeerListOverride = threadAgentPeerListTimeout
 	start = time.Now()
 	stop, err := pair.source.StopThreadAgentRow(t.Context(), pair.caller.ID, pair.spawn.Token)
 	if err != nil || stop.Outcome != threadAgentStopped {
