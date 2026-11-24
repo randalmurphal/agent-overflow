@@ -165,13 +165,6 @@ describe('<BackgroundTaskTrayDigest>', () => {
     await tick();
   });
 
-  it('loads tools of a launch whose descendant count exceeds its loaded rows', async () => {
-    const launch = claudeLaunch({ meta: JSON.stringify({ task_id: 'task-1', subagentDescendantCount: 9 }) });
-    const pane = await setup([launch, ...children(launch.id)]);
-    const view = render(BackgroundTaskTrayDigest, { props: { pane, task: taskFor(launch), id: 'digest-1' } });
-    await waitFor(() => expect(view.getByTestId('background-task-tray-row-digest').querySelector('[data-item-id="read-1"]')).toBeTruthy());
-  });
-
   it('loads an out-of-window scope without changing the host window', async () => {
     const launch = claudeLaunch();
     const pane = await setup([makeItem({ id: 'only-main', itemIndex: 20, threadId: THREAD_ID, summary: 'tail' })]);

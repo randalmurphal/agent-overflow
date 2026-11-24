@@ -58,25 +58,13 @@ describe('<ComposerMentionPopover>', () => {
     expect(onSelect).toHaveBeenCalledWith(results[1]);
   });
 
-  it('renders empty state when no results and not loading', () => {
+  it.each([
+    { name: 'renders empty state when no results and not loading', query: 'zzz', loading: undefined, text: /No matches/ },
+    { name: 'renders loading state', query: 'abc', loading: true, text: /Searching/ },
+  ])('$name', ({ query, loading, text }) => {
     const { getByText } = render(ComposerMentionPopover, {
-      props: { backend: '', anchor: anchor(), open: true, query: 'zzz', results: [], activeIndex: 0, onSelect: vi.fn() },
+      props: { backend: '', anchor: anchor(), open: true, query, results: [], activeIndex: 0, loading, onSelect: vi.fn() },
     });
-    expect(getByText(/No matches/)).toBeInTheDocument();
-  });
-
-  it('renders loading state', () => {
-    const { getByText } = render(ComposerMentionPopover, {
-      props: { backend: '',
-        anchor: anchor(),
-        open: true,
-        query: 'abc',
-        results: [],
-        activeIndex: 0,
-        loading: true,
-        onSelect: vi.fn(),
-      },
-    });
-    expect(getByText(/Searching/)).toBeInTheDocument();
+    expect(getByText(text)).toBeInTheDocument();
   });
 });

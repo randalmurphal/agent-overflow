@@ -100,7 +100,7 @@ describe('<ComposerPendingUserInputPanel>', () => {
       .toHaveLength(2);
   });
 
-  it('does not auto-submit when the user clicks an option', async () => {
+  it('does not auto-submit when the user clicks an option, and submits via the explicit Submit button', async () => {
     // Mouse click should select only — auto-advance/auto-submit is the
     // keyboard fast path. The user has to click the explicit submit
     // button to send. Regression guard for "I clicked an option and
@@ -122,33 +122,15 @@ describe('<ComposerPendingUserInputPanel>', () => {
 
     await fireEvent.click(getByTestId('user-input-option-2'));
     await vi.advanceTimersByTimeAsync(500);
-
     expect(onResolve).not.toHaveBeenCalled();
-    vi.useRealTimers();
-  });
 
-  it('submits via the explicit Submit button after a mouse click', async () => {
-    // The post-click commit path: select with mouse, then click
-    // "Submit answer(s)". The resolve carries the selected option.
-    const onResolve = vi.fn<(response: UserInputResponse) => Promise<void>>(async () => {});
-    const { getByTestId } = render(ComposerPendingUserInputPanel, {
-      props: {
-        request: request(),
-        customAnswer: '',
-        submitSignal: 0,
-        setCustomAnswerText: vi.fn(),
-        onResolve,
-        onResolved: vi.fn(),
-        onError: vi.fn(),
-        threadId: 'thread-1',
-      },
-    });
-
-    await fireEvent.click(getByTestId('user-input-option-2'));
+    // The post-click commit path: "Submit answer(s)" resolves with the
+    // selected option.
     await fireEvent.click(getByTestId('user-input-submit'));
 
     expect(onResolve).toHaveBeenCalledTimes(1);
     expect(onResolve.mock.calls[0][0].answers).toEqual({ framework: 'Svelte' });
+    vi.useRealTimers();
   });
 
   // The composer's access for answers: while it is not granted (here the
@@ -282,25 +264,31 @@ describe('<ComposerPendingUserInputPanel>', () => {
     expect(onResolve.mock.calls[0][0].answers).toEqual({ name: 'Alex' });
   });
 
-  it('renders a side-by-side preview pane when an option carries preview', async () => {
-    // Side-by-side layout switches on the moment any option in a
-    // single-select question has non-empty `preview`. Multi-select
-    // questions never trigger the side-by-side per upstream spec.
-    const { getByTestId, queryByTestId } = render(ComposerPendingUserInputPanel, {
+  // Side-by-side layout switches on the moment any option in a
+  // single-select question has non-empty `preview`. Per the upstream tool
+  // spec, multi-select questions ignore the `preview` field: checkbox-style
+  // toggling against a single shared preview pane confuses "which option
+  // am I previewing right now." The options render in every layout.
+  const previewOptions = [
+    { label: 'A', description: '', preview: 'first preview' },
+    { label: 'B', description: '', preview: 'second preview' },
+  ];
+  it.each([
+    {
+      name: 'renders a side-by-side preview pane when an option carries preview',
+      questions: [{ id: 'layout', header: 'Layout', question: 'Pick one', options: previewOptions }],
+      preview: true,
+    },
+    { name: 'does not render the preview pane when no option has preview', questions: request().questions, preview: false },
+    {
+      name: 'suppresses the preview pane on multi-select even when options carry preview',
+      questions: [{ id: 'features', header: 'Features', question: 'Pick any', multiSelect: true, options: previewOptions }],
+      preview: false,
+    },
+  ])('$name', ({ questions, preview }) => {
+    const { queryByTestId } = render(ComposerPendingUserInputPanel, {
       props: {
-        request: request({
-          questions: [
-            {
-              id: 'layout',
-              header: 'Layout',
-              question: 'Pick one',
-              options: [
-                { label: 'A', description: '', preview: 'first preview' },
-                { label: 'B', description: '', preview: 'second preview' },
-              ],
-            },
-          ],
-        }),
+        request: request({ questions }),
         customAnswer: '',
         submitSignal: 0,
         setCustomAnswerText: vi.fn(),
@@ -311,8 +299,8 @@ describe('<ComposerPendingUserInputPanel>', () => {
       },
     });
 
-    expect(getByTestId('user-input-preview')).toBeTruthy();
-    expect(queryByTestId('user-input-options')).toBeTruthy();
+    expect(queryByTestId('user-input-options')).not.toBeNull();
+    expect(queryByTestId('user-input-preview') !== null).toBe(preview);
   });
 
   it('rewrites local file links inside option previews', async () => {
@@ -352,60 +340,6 @@ describe('<ComposerPendingUserInputPanel>', () => {
       expect(anchor).not.toBeNull();
       expect(anchor?.getAttribute('href')).toContain('line=42');
     });
-  });
-
-  it('does not render the preview pane when no option has preview', async () => {
-    const { queryByTestId } = render(ComposerPendingUserInputPanel, {
-      props: {
-        request: request(),
-        customAnswer: '',
-        submitSignal: 0,
-        setCustomAnswerText: vi.fn(),
-        onResolve: vi.fn(),
-        onResolved: vi.fn(),
-        onError: vi.fn(),
-        threadId: 'thread-1',
-      },
-    });
-
-    expect(queryByTestId('user-input-preview')).toBeNull();
-  });
-
-  it('suppresses the preview pane on multi-select even when options carry preview', async () => {
-    // Per the upstream tool spec, the side-by-side preview layout is
-    // single-select only — multi-select questions ignore the
-    // `preview` field. Otherwise checkbox-style toggling against a
-    // single shared preview pane confuses "which option am I
-    // previewing right now."
-    const { queryByTestId, getByTestId } = render(ComposerPendingUserInputPanel, {
-      props: {
-        request: request({
-          questions: [
-            {
-              id: 'features',
-              header: 'Features',
-              question: 'Pick any',
-              multiSelect: true,
-              options: [
-                { label: 'A', description: '', preview: 'first preview' },
-                { label: 'B', description: '', preview: 'second preview' },
-              ],
-            },
-          ],
-        }),
-        customAnswer: '',
-        submitSignal: 0,
-        setCustomAnswerText: vi.fn(),
-        onResolve: vi.fn(),
-        onResolved: vi.fn(),
-        onError: vi.fn(),
-        threadId: 'thread-1',
-      },
-    });
-
-    // Options still render (single-column layout) — preview pane does not.
-    expect(getByTestId('user-input-options')).toBeTruthy();
-    expect(queryByTestId('user-input-preview')).toBeNull();
   });
 
   it('moves the focused option with ArrowDown / ArrowUp', async () => {

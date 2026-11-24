@@ -369,10 +369,11 @@ describe('the Agents segment', () => {
   it("shows a spawn's runtime: its turns' time, moving while a turn is open, never back within it, the server's once it ends", async () => {
     // The rail's 1 Hz tick and its refresh read the skewed clock.
     const clock = fakeRailClock();
-    const { pane, view, toggle } = await openTray((caller) => [
+    const first = await openTray((caller) => [
       row('worker', { callerThreadId: caller, runtimeMs: 4_000, turnOpen: true, turnStartedAt: 1_000 }),
     ]);
-    await fireEvent.click(toggle);
+    let { pane, view } = first;
+    await fireEvent.click(first.toggle);
     const elapsed = () => within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-elapsed').textContent;
     // Not the 65 s since the request: the time its turns ran.
     expect(elapsed()).toBe('4s');
@@ -413,32 +414,17 @@ describe('the Agents segment', () => {
     await clock.tickClock();
     expect(elapsed()).toBe('6s');
 
+    // A new mount shows the same figure; the segment stays open across it.
+    view.unmount();
+    ({ pane, view } = await openTray((caller) => [row('worker', { callerThreadId: caller, runtimeMs: 6_500, worker: 'waiting' })]));
+    await waitFor(() => expect(elapsed()).toBe('6s'));
+
     // Its next turn moves it on from its new read.
     setBindingMock('GetThreadAgentRows', async () => [{
       token: 'worker', listed: true, row: row('worker', { callerThreadId: pane.threadId!, runtimeMs: 9_000, turnOpen: true, turnStartedAt: 2_000 }),
     }]);
     emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'worker' });
     await waitFor(() => expect(elapsed()).toBe('9s'));
-  });
-
-  it('shows an ended turn\'s runtime as its computer read it, after the open count passed it and on a new mount', async () => {
-    const clock = fakeRailClock();
-    const settled = (caller: string) => row('worker', { callerThreadId: caller, runtimeMs: 6_500, worker: 'waiting' });
-    const first = await openTray((caller) => [row('worker', { callerThreadId: caller, runtimeMs: 4_000, turnOpen: true, turnStartedAt: 1_000 })]);
-    await fireEvent.click(first.toggle);
-    const elapsed = (view: typeof first.view) => within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-elapsed').textContent;
-    clock.skew(5_000);
-    await clock.tickClock();
-    expect(elapsed(first.view)).toMatch(/^(9|10)s$/);
-    // The final read comes late, after the open count went past it.
-    setBindingMock('GetThreadAgentRows', async () => [{ token: 'worker', listed: true, row: settled(first.pane.threadId!) }]);
-    emitWailsEvent('thread:agent_rows_changed', { threadId: first.pane.threadId, id: 'worker' });
-    await waitFor(() => expect(elapsed(first.view)).toBe('6s'));
-    first.view.unmount();
-
-    // The segment stays open across the mount.
-    const again = await openTray((caller) => [settled(caller)]);
-    await waitFor(() => expect(elapsed(again.view)).toBe('6s'));
   });
 
   it("starts a new turn's runtime from the server's figure though no read saw the last turn end", async () => {
