@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/servercert"
 )
@@ -107,6 +108,7 @@ func TestResolveConnectionReportsAnUnreadablePairingLink(t *testing.T) {
 // A computer that limits pairing attempts answers before it judges the link,
 // and `--connect` tells the person to wait for the time it named.
 func TestResolveConnectionSaysToWaitWhenTheComputerLimitsPairing(t *testing.T) {
+	remotetest.Require(t)
 	previous := dataDirRoot
 	dataDirRoot = t.TempDir()
 	t.Cleanup(func() { dataDirRoot = previous })
