@@ -106,6 +106,7 @@ describe('pending', () => {
     setBindingMock('SetPRState', async () => ({ seq: 1 }));
     await view.setState('reopen');
     expect(view.pending).toBeNull();
+    expect(view.waitCountForTest()).toBe(0);
   });
 
   it('gives the wait up with a new launch or a failing pump', async () => {
@@ -184,6 +185,8 @@ describe('the description editor', () => {
     expect(edit).toHaveBeenCalledWith(expect.anything(), { description: 'Mine', expectedDescription: 'Opened' });
     expect(view.descriptionDraft).toBe('Mine');
     expect(view.descriptionError?.message).toBe(sentence);
+    // The failure shows in the editor while the state lives, not as a toast.
+    expect(getToasts()).toHaveLength(0);
   });
 
   it('keeps the text in the state, and discards it on cancel', () => {
@@ -418,15 +421,6 @@ describe('a title or description save that fails after the pane closed', () => {
       }
     });
   }
-
-  it('keeps a failure in the editor while the state lives', async () => {
-    setBindingMock('EditPR', async () => { throw new TransportError('forge_refused', 'GitHub refused the edit.'); });
-    view.openDescription('Old');
-    view.setDescriptionDraft('Mine');
-    await view.saveDescription();
-    expect(view.descriptionError?.message).toBe('GitHub refused the edit.');
-    expect(getToasts()).toHaveLength(0);
-  });
 });
 
 describe("where a picker's failure shows, decided when the answer arrives", () => {
@@ -602,12 +596,7 @@ describe('the waits for the pump', () => {
   }
 
   it('stores no wait that is already settled', async () => {
-    setBindingMock('SetPRState', async () => ({ seq: 0 }));
-    await view.setState('close');
-    setBindingMock('SetPRState', async () => ({ seq: 1 }));
-    await view.setState('reopen');
-    expect(view.waitCountForTest()).toBe(0);
-    // Nor a seq 0 answer for a PR the pane has left.
+    // A seq 0 answer for a PR the pane has left is settled too.
     const call = deferred<{ seq: number }>();
     setBindingMock('SetPRState', () => call.promise);
     const closing = view.setState('close');

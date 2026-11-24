@@ -349,13 +349,19 @@ describe('pane layout persistence', () => {
     expect(getFocusedPaneId()).toBe('left');
   });
 
-  it('rejects a persisted THREAD pane whose id is shaped like a side chat companion id', async () => {
+  // A THREAD pane whose id would collide with the deterministic companion id
+  // minted when a companion later opens for a pane named 'main'.
+  it.each([
+    ['side chat', 'side-chat-main'],
+    ['agent', 'agent-main'],
+    ['plan', 'plan-main'],
+  ])('rejects a persisted THREAD pane whose id is shaped like a %s companion id', async (_kind, paneId) => {
     const good = makeThread({ id: 'good-thread' });
     const impostor = makeThread({ id: 'impostor-thread' });
     await installUIStateMock(makeSavedLayout([
       { paneId: 'main', threadId: good.id, widthPx: 1 },
-      { paneId: 'side-chat-main', kind: 'thread', threadId: impostor.id, widthPx: 1 },
-    ], 'side-chat-main'));
+      { paneId, kind: 'thread', threadId: impostor.id, widthPx: 1 },
+    ], paneId));
     installPaneMocks();
 
     await loadPersistedPaneLayout([good, impostor]);
@@ -541,38 +547,6 @@ describe('pane layout persistence', () => {
     }
   });
 
-  it('rejects a persisted THREAD pane whose id is shaped like an agent companion id', async () => {
-    const good = makeThread({ id: 'good-thread' });
-    const impostor = makeThread({ id: 'impostor-thread' });
-    await installUIStateMock(makeSavedLayout([
-      { paneId: 'main', threadId: good.id, widthPx: 1 },
-      { paneId: 'agent-main', kind: 'thread', threadId: impostor.id, widthPx: 1 },
-    ], 'agent-main'));
-    installPaneMocks();
-
-    await loadPersistedPaneLayout([good, impostor]);
-
-    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['main']);
-    expect(getFocusedPaneId()).toBe('main');
-  });
-
-  it('rejects a persisted THREAD pane whose id is shaped like a companion id', async () => {
-    const good = makeThread({ id: 'good-thread' });
-    const impostor = makeThread({ id: 'impostor-thread' });
-    await installUIStateMock(makeSavedLayout([
-      { paneId: 'main', threadId: good.id, widthPx: 1 },
-      // Would collide with the deterministic companion id minted when a
-      // plan companion later opens for a pane named 'main'.
-      { paneId: 'plan-main', kind: 'thread', threadId: impostor.id, widthPx: 1 },
-    ], 'plan-main'));
-    installPaneMocks();
-
-    await loadPersistedPaneLayout([good, impostor]);
-
-    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['main']);
-    expect(getFocusedPaneId()).toBe('main');
-  });
-
   it('hydrates restored panes through the normal switchThread path', async () => {
     const thread = makeThread({ id: 'restored-thread' });
     const restoredItem = makeItem({ id: 'restored-item', threadId: thread.id, summary: 'Loaded history' });
@@ -586,18 +560,31 @@ describe('pane layout persistence', () => {
     expect(getAllPanes().get('main')?.items.map((item) => item.id)).toContain('restored-item');
   });
 
-  it('parses v1 persisted panes as thread panes, migrating ratios to widths', async () => {
-    const thread = makeThread({ id: 'v1-thread' });
-    await installUIStateMock(makeSavedLayoutV1([
-      { paneId: 'main', threadId: thread.id, ratio: 1.5 },
-    ], 'main'));
+  // Ratios are multiples of the compact density minimum (560).
+  it.each([
+    [
+      'parses v1 persisted panes as thread panes, migrating ratios to widths',
+      makeSavedLayoutV1([{ paneId: 'main', threadId: 'migrated-thread', ratio: 1.5 }], 'main'),
+      840,
+    ],
+    [
+      'migrates v2 persisted ratios to widths',
+      {
+        version: 2,
+        focusedPaneId: 'main',
+        panes: [{ paneId: 'main', kind: 'thread', threadId: 'migrated-thread', ratio: 2 }],
+      },
+      1120,
+    ],
+  ])('%s', async (_name, saved, widthPx) => {
+    const thread = makeThread({ id: 'migrated-thread' });
+    await installUIStateMock(saved);
     installPaneMocks();
 
     await loadPersistedPaneLayout([thread]);
 
-    // 1.5 x the compact density minimum (560).
     expect(getPaneLayoutItems()).toEqual([
-      { id: 'main', paneId: 'main', kind: 'thread', widthPx: 840 },
+      { id: 'main', paneId: 'main', kind: 'thread', widthPx },
     ]);
     expect(getAllPanes().get('main')?.threadId).toBe(thread.id);
     expect(getFocusedPaneId()).toBe('main');
@@ -616,23 +603,6 @@ describe('pane layout persistence', () => {
 
     expect(getPaneLayoutItems()).toEqual([
       { id: 'main', paneId: 'main', kind: 'thread', widthPx: 560 },
-    ]);
-  });
-
-  it('migrates v2 persisted ratios to widths', async () => {
-    const thread = makeThread({ id: 'v2-thread' });
-    await installUIStateMock({
-      version: 2,
-      focusedPaneId: 'main',
-      panes: [{ paneId: 'main', kind: 'thread', threadId: thread.id, ratio: 2 }],
-    });
-    installPaneMocks();
-
-    await loadPersistedPaneLayout([thread]);
-
-    // 2 x the compact density minimum (560).
-    expect(getPaneLayoutItems()).toEqual([
-      { id: 'main', paneId: 'main', kind: 'thread', widthPx: 1120 },
     ]);
   });
 

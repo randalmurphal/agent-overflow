@@ -169,15 +169,19 @@ describe('notification activation queue', () => {
     await vi.waitFor(() => expect(runs).toEqual(['run-1', 'run-2']));
   });
 
-  it('logs a workflow deep-link failure without dropping the queue', async () => {
+  it.each([
+    ['a workflow deep-link failure', 'openWorkflowRun', { kind: 'workflow-item', workItemId: 'run-1' }],
+    ['an activation failure', 'getThreadById', { kind: 'thread', threadId: 'thread-1' }],
+  ] as const)('logs %s without dropping the queue', async (_name, failing, target) => {
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const failingQueue = createNotificationActivationQueue({
       getThreadById: () => undefined,
       openThread: async () => undefined,
-      openWorkflowRun: async () => { throw new Error('private backend detail'); },
+      openWorkflowRun: async () => undefined,
       console: logger,
+      [failing]: async () => { throw new Error('private backend detail'); },
     });
-    failingQueue.receive({ kind: 'workflow-item', workItemId: 'run-1' });
+    failingQueue.receive(target);
     await failingQueue.markHydrated();
     expect(logger.error).toHaveBeenCalledTimes(1);
     expect(failingQueue.pendingCount()).toBe(0);
@@ -203,20 +207,6 @@ describe('notification activation queue', () => {
   it('rejects a backendId that is not a bounded string', () => {
     expect(parseNotificationTarget({ kind: 'none', backendId: 'x'.repeat(257) })).toBeNull();
     expect(parseNotificationTarget({ kind: 'none', backendId: 42 })).toBeNull();
-  });
-
-  it('logs an activation failure without dropping the queue', async () => {
-    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const failingQueue = createNotificationActivationQueue({
-      getThreadById: async () => { throw new Error('private backend detail'); },
-      openThread: async () => undefined,
-      openWorkflowRun: async () => undefined,
-      console: logger,
-    });
-    failingQueue.receive({ kind: 'thread', threadId: 'thread-1' });
-    await failingQueue.markHydrated();
-    expect(logger.error).toHaveBeenCalledTimes(1);
-    expect(failingQueue.pendingCount()).toBe(0);
   });
 });
 

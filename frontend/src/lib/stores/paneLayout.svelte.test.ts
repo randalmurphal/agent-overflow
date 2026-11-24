@@ -361,34 +361,25 @@ describe('paneLayout store', () => {
     expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([560, 560]);
   });
 
-  it('re-anchors fit-mode widths so the smallest pane sits at the minimum', () => {
+  // Dividers are zero-width overlays, so a total that fits the host exactly
+  // is fit mode — reserving per-pane strip width there would misread it as
+  // overflow and skip the anchor.
+  it.each([
+    ['re-anchors fit-mode widths so the smallest pane sits at the minimum', 5000],
+    ['re-anchors a layout that fits the host exactly (dividers take no width)', 3360],
+  ])('%s', (_name, hostWidth) => {
     setPaneLayoutItemsForTest([
       { id: 'a', paneId: 'a', kind: 'thread', widthPx: 1120 },
       { id: 'b', paneId: 'b', kind: 'thread', widthPx: 2240 },
     ]);
 
-    setPaneHostWidth(5000);
+    setPaneHostWidth(hostWidth);
     minAnchorPaneLayoutWidths(560);
 
     expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([560, 1120]);
 
     // Already anchored: no-op.
     minAnchorPaneLayoutWidths(560);
-    expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([560, 1120]);
-  });
-
-  it('re-anchors a layout that fits the host exactly (dividers take no width)', () => {
-    setPaneLayoutItemsForTest([
-      { id: 'a', paneId: 'a', kind: 'thread', widthPx: 1120 },
-      { id: 'b', paneId: 'b', kind: 'thread', widthPx: 2240 },
-    ]);
-
-    // Dividers are zero-width overlays, so an exactly-fitting total is
-    // fit mode — reserving per-pane strip width here would misread it
-    // as overflow and skip the anchor.
-    setPaneHostWidth(3360);
-    minAnchorPaneLayoutWidths(560);
-
     expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([560, 1120]);
   });
 
