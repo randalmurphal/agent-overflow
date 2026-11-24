@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -160,118 +161,66 @@ func TestReadLoopEmitsErrorOnOversizedLine(t *testing.T) {
 	}
 }
 
-// TestReadLoopEmitsErrorStatusOnCleanUnexpectedExit pins the
-// quiet-disconnect bug fix: a subprocess that exits with status 0
-// while we still expected it to be running is just as much an
-// abnormal exit as one that returned a non-zero code. The previous
-// gate (`if exitErr != nil`) skipped the "error" event whenever
-// WaitProcessExitErr returned nil — either because the process
-// exited cleanly (exit code 0) or because the 100ms wait timed out
-// before the OS reaped the child. Without the "error" event, triage's
-// handleSessionDied never ran, so the FE working indicator stayed
-// stranded until the user manually clicked Reconnect. The triage side
-// (handleSessionDied's truncated complete for an open turn) is pinned by
-// TestSessionStatusErrorSynthesizesAfterSelfWake.
-//
-// After the fix, !s.closing is the only gate: any time the read loop
-// exits without the host asking us to close, "error" fires.
-func TestReadLoopEmitsErrorStatusOnCleanUnexpectedExit(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args:   []string{"-c", "sleep 0.05; exit 0"},
-	})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-
-	eventCh := make(chan provider.ProviderEvent, 100)
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		onEvent: func(evt provider.ProviderEvent) {
-			eventCh <- evt
-		},
-		cancel:   cancel,
-		readDone: make(chan struct{}),
-	}
-	go s.readLoop()
-
-	var gotError, gotDisconnected bool
-	timeout := time.After(5 * time.Second)
-	for !(gotError && gotDisconnected) {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind != provider.EventSessionStatus {
-				continue
-			}
-			switch evt.Content {
-			case "error":
-				gotError = true
-				// Clean-exit case: meta still round-trips (Reason field
-				// carries the generic "exited unexpectedly" string when
-				// the exit error itself is nil). The exact reason is not
-				// pinned here — it can be either the zero-error generic
-				// string or a real ExitError when Wait beats the 100ms
-				// timeout — but the event MUST fire.
-			case "disconnected":
-				gotDisconnected = true
-			}
-		case <-timeout:
-			t.Fatalf("timeout waiting for error+disconnected on clean unexpected exit (gotError=%v gotDisconnected=%v)", gotError, gotDisconnected)
-		}
-	}
-}
-
+// TestReadLoopEmitsErrorStatusOnUnexpectedExit pins that any read-loop
+// exit the host did not ask for (!s.closing is the only gate) emits the
+// "error" status, exit code 0 included. The previous gate
+// (`if exitErr != nil`) skipped it whenever WaitProcessExitErr returned
+// nil — a clean exit, or the 100ms wait timing out before the OS reaped
+// the child. Without the "error" event, triage's handleSessionDied never
+// ran, so the FE working indicator stayed stranded until the user clicked
+// Reconnect. The triage side (handleSessionDied's truncated complete for
+// an open turn) is pinned by TestSessionStatusErrorSynthesizesAfterSelfWake.
 func TestReadLoopEmitsErrorStatusOnUnexpectedExit(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	for _, code := range []int{0, 7} {
+		t.Run(fmt.Sprintf("exit %d", code), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args:   []string{"-c", "sleep 0.05; exit 7"},
-	})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-
-	eventCh := make(chan provider.ProviderEvent, 100)
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		onEvent: func(evt provider.ProviderEvent) {
-			eventCh <- evt
-		},
-		cancel:   cancel,
-		readDone: make(chan struct{}),
-	}
-	go s.readLoop()
-
-	var gotError, gotDisconnected bool
-	timeout := time.After(5 * time.Second)
-	for !(gotError && gotDisconnected) {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind != provider.EventSessionStatus {
-				continue
+			proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
+				Binary: "sh",
+				Args:   []string{"-c", fmt.Sprintf("sleep 0.05; exit %d", code)},
+			})
+			if err != nil {
+				t.Fatalf("spawn: %v", err)
 			}
-			switch evt.Content {
-			case "error":
-				gotError = true
-				var meta provider.ProcessExitInfo
-				if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-					t.Fatalf("unmarshal exit meta: %v", err)
-				}
-				if meta.ExitCode != 7 {
-					t.Fatalf("exitCode = %d, want 7", meta.ExitCode)
-				}
-			case "disconnected":
-				gotDisconnected = true
+
+			eventCh := make(chan provider.ProviderEvent, 100)
+			s := &Session{
+				proc:     proc,
+				threadID: testThread,
+				onEvent: func(evt provider.ProviderEvent) {
+					eventCh <- evt
+				},
+				cancel:   cancel,
+				readDone: make(chan struct{}),
 			}
-		case <-timeout:
-			t.Fatal("timeout waiting for unexpected-exit events")
-		}
+			go s.readLoop()
+
+			var gotError, gotDisconnected bool
+			timeout := time.After(5 * time.Second)
+			for !(gotError && gotDisconnected) {
+				select {
+				case evt := <-eventCh:
+					if evt.Kind != provider.EventSessionStatus {
+						continue
+					}
+					switch evt.Content {
+					case "error":
+						gotError = true
+						var meta provider.ProcessExitInfo
+						if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+							t.Fatalf("unmarshal exit meta: %v", err)
+						}
+						if meta.ExitCode != code {
+							t.Fatalf("exitCode = %d, want %d", meta.ExitCode, code)
+						}
+					case "disconnected":
+						gotDisconnected = true
+					}
+				case <-timeout:
+					t.Fatalf("timeout waiting for error+disconnected on unexpected exit (gotError=%v gotDisconnected=%v)", gotError, gotDisconnected)
+				}
+			}
+		})
 	}
 }

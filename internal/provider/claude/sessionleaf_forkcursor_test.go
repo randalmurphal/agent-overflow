@@ -61,25 +61,6 @@ func TestForkResumeCursorDanglingToolUsePinRepairsBackwardOnly(t *testing.T) {
 	}
 }
 
-// A pin absent from the file is the stdout-to-disk append gap:
-// PinOnDisk=false so the caller can wait it out, with Cursor holding
-// the deepest survivor of the file as it stands (the exhaustion
-// fallback — always EARLIER than the pin).
-func TestForkResumeCursorMissingPinReportsAppendGap(t *testing.T) {
-	transcript := strings.Join([]string{
-		`{"type":"user","uuid":"u1","parentUuid":null,"message":{"role":"user","content":"start"}}`,
-		`{"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"reply 1"}]}}`,
-	}, "\n")
-
-	got := forkCursorFromTranscript(t, transcript, "a2-not-yet-flushed")
-	if got.PinOnDisk {
-		t.Fatalf("PinOnDisk = true for a uuid the file does not hold: %+v", got)
-	}
-	if got.Cursor != "a1" {
-		t.Fatalf("cursor = %q, want a1 (deepest on-disk survivor)", got.Cursor)
-	}
-}
-
 // Rows with unresolved server-side tools are excluded from cursor
 // candidacy — the CLI's filters keep them but the API rejects a resume
 // onto one (same screen repairLeafForActiveBranch applies).
@@ -144,6 +125,10 @@ func TestResolveForkResumeCursorReadsSessionFile(t *testing.T) {
 		t.Fatalf("cursor = %+v, want {Cursor:a1 PinOnDisk:true}", got)
 	}
 
+	// A pin absent from the file is the stdout-to-disk append gap:
+	// PinOnDisk=false so the caller can wait it out, with Cursor holding
+	// the deepest survivor of the file as it stands (the exhaustion
+	// fallback — always EARLIER than the pin).
 	got, err = ResolveForkResumeCursor(sessionfork.ProjectsDirForHome(home), "sess-forkpin", workspace, "a2-not-flushed")
 	if err != nil {
 		t.Fatalf("ResolveForkResumeCursor(pin missing): %v", err)

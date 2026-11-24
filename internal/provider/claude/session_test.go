@@ -11,35 +11,6 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 )
 
-func TestNewSessionWithMock(t *testing.T) {
-	// NewSession passes CLI flags (--input-format, --output-format, --verbose)
-	// that real `cat` rejects. Use a bash one-liner that ignores args and echoes.
-	ctx := context.Background()
-	eventCh := make(chan provider.ProviderEvent, 100)
-	s, err := NewSession(ctx, testThread, Config{
-		Reaper:    procutiltest.Reaper(),
-		Retention: UserHomeRetention(0),
-		Binary:    "bash",
-		Model:     "", // keep args minimal
-	}, func(evt provider.ProviderEvent) {
-		eventCh <- evt
-	})
-
-	// NewSession spawns bash with args: --input-format stream-json --output-format stream-json --verbose
-	// bash doesn't understand these either. Use a different approach:
-	// override the binary to a script that ignores args.
-	if err != nil {
-		// Expected: bash doesn't understand Claude CLI flags.
-		// Test NewSession more directly via the helper instead.
-		t.Skipf("NewSession with bash fails as expected: %v", err)
-	}
-	defer s.Close()
-
-	if s.threadID != testThread {
-		t.Errorf("threadID: got %q, want %q", s.threadID, testThread)
-	}
-}
-
 func TestNewSessionSpawnsAndRunsReadLoop(t *testing.T) {
 	// Create a script that ignores args and acts like cat.
 	scriptDir := t.TempDir()

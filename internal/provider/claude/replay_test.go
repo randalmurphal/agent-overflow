@@ -833,78 +833,59 @@ func TestReplay_LocalAgentOutlives(t *testing.T) {
 	}
 }
 
-// TestReplay_LocalAgentUserInputDuringWait validates that the parser
-// handles the same scenario when the host injects a new user message
-// via stdin during the parent's end_turn → result wait window. The
-// captured fixture has THREE parent message_delta stop_reason=end_turn
-// signals across three rounds, but only ONE wire `result` envelope at
-// the very end. The parser must emit a soft EventTurnComplete for each
-// parent end_turn so the frontend's working indicator cycles correctly
-// per round, and must NOT fire soft on the intermediate tool_use
-// stop_reason that ends the parent's first message of round 1.
-func TestReplay_LocalAgentUserInputDuringWait(t *testing.T) {
-	events := replayFixture(t, fixtureLocalAgentUserInputMid)
+// TestReplay_LocalAgentCascadeTurnCompletes covers two local_agent
+// cascades whose wire `result` is withheld until the subagent finishes:
+//   - user input during wait: the host injects a new user message via
+//     stdin during the parent's end_turn → result wait window. THREE
+//     parent end_turn rounds, and the intermediate tool_use stop_reason
+//     that ends the parent's first message of round 1 must NOT fire soft.
+//   - plus bg bash: a parent that launches both a bg Bash AND a bg
+//     local_agent. The result-delay is keyed on `local_agent` (the
+//     subagent dominates); soft fires for the initial end_turn and for
+//     the ones after the bash's and the subagent's completions wake the
+//     parent.
+//
+// Both emit a soft EventTurnComplete per parent end_turn, so the working
+// indicator cycles per round, and exactly ONE result-driven complete at
+// the end of the cascade.
+func TestReplay_LocalAgentCascadeTurnCompletes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fixture string
+	}{
+		{"user input during wait", fixtureLocalAgentUserInputMid},
+		{"plus bg bash", fixtureLocalAgentPlusBgBash},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := replayFixture(t, tc.fixture)
 
-	var softCount, resultCount int
-	for _, evt := range filterKinds(events, provider.EventTurnComplete) {
-		if evt.ParentToolUseID != "" {
-			t.Errorf("EventTurnComplete from subagent — should never fire from subagent end_turn")
-		}
-		switch meta := evt.TurnComplete.(type) {
-		case *provider.SoftRoundCloseMeta:
-			if meta == nil {
-				t.Fatal("nil soft turn-complete meta")
+			var softCount, resultCount int
+			for _, evt := range filterKinds(events, provider.EventTurnComplete) {
+				if evt.ParentToolUseID != "" {
+					t.Errorf("EventTurnComplete from subagent — should never fire from subagent end_turn")
+				}
+				switch meta := evt.TurnComplete.(type) {
+				case *provider.SoftRoundCloseMeta:
+					if meta == nil {
+						t.Fatal("nil soft turn-complete meta")
+					}
+					if meta.StopReason != "end_turn" && meta.StopReason != "stop_sequence" && meta.StopReason != "refusal" {
+						t.Errorf("soft fired with disallowed stop_reason %q", meta.StopReason)
+					}
+					softCount++
+				case *provider.WireTurnCompleteMeta:
+					resultCount++
+				default:
+					t.Fatalf("turn-complete meta type = %T", evt.TurnComplete)
+				}
 			}
-			if meta.StopReason != "end_turn" && meta.StopReason != "stop_sequence" && meta.StopReason != "refusal" {
-				t.Errorf("soft fired with disallowed stop_reason %q", meta.StopReason)
+			if softCount != 3 {
+				t.Errorf("expected exactly 3 soft EventTurnComplete (one per parent end_turn round), got %d", softCount)
 			}
-			softCount++
-		case *provider.WireTurnCompleteMeta:
-			resultCount++
-		default:
-			t.Fatalf("turn-complete meta type = %T", evt.TurnComplete)
-		}
-	}
-	if softCount != 3 {
-		t.Errorf("expected exactly 3 soft EventTurnComplete (one per parent end_turn round), got %d", softCount)
-	}
-	if resultCount != 1 {
-		t.Errorf("expected exactly 1 result-driven EventTurnComplete (the wire `result` at cascade end), got %d", resultCount)
-	}
-}
-
-// TestReplay_LocalAgentPlusBgBash confirms the result-delay is keyed
-// on `local_agent` specifically: a parent that launches both a bg
-// Bash AND a bg local_agent has only ONE wire `result` envelope at
-// the end of the entire cascade (subagent dominates), while emitting
-// a soft EventTurnComplete for each parent end_turn, including the
-// ones after the bash's and the subagent's completions wake the parent.
-func TestReplay_LocalAgentPlusBgBash(t *testing.T) {
-	events := replayFixture(t, fixtureLocalAgentPlusBgBash)
-
-	var softCount, resultCount int
-	for _, evt := range filterKinds(events, provider.EventTurnComplete) {
-		if evt.ParentToolUseID != "" {
-			t.Errorf("EventTurnComplete from subagent — should never fire from subagent end_turn")
-		}
-		switch evt.TurnComplete.(type) {
-		case *provider.SoftRoundCloseMeta:
-			softCount++
-		case *provider.WireTurnCompleteMeta:
-			resultCount++
-		default:
-			t.Fatalf("turn-complete meta type = %T", evt.TurnComplete)
-		}
-	}
-	// Three soft completes (one per parent end_turn: the initial one,
-	// the one after the bash completion's wake, the one after the
-	// subagent completion's wake) and exactly one result-driven complete
-	// at the end.
-	if softCount != 3 {
-		t.Errorf("expected exactly 3 soft EventTurnComplete, got %d", softCount)
-	}
-	if resultCount != 1 {
-		t.Errorf("expected exactly 1 result-driven EventTurnComplete, got %d", resultCount)
+			if resultCount != 1 {
+				t.Errorf("expected exactly 1 result-driven EventTurnComplete (the wire `result` at cascade end), got %d", resultCount)
+			}
+		})
 	}
 }
 

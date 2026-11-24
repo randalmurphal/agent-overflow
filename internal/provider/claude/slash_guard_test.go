@@ -124,54 +124,6 @@ func TestGuardOutboundSlashCommand(t *testing.T) {
 	}
 }
 
-// TestGuardOutboundSlashCommandTransitions covers the on->off->on sequence an
-// AO composer command introduces. The guard is a pure function of its
-// arguments, so no forced-prose send may leave residue behind.
-func TestGuardOutboundSlashCommandTransitions(t *testing.T) {
-	const content = "/workflow run nightly"
-	sequence := []struct {
-		guard bool
-		want  string
-	}{
-		{guard: false, want: content},
-		{guard: true, want: "\n" + content},
-		{guard: false, want: content},
-		{guard: true, want: "\n" + content},
-	}
-	for i, step := range sequence {
-		if got := guardOutboundSlashCommand(content, step.guard); got != step.want {
-			t.Fatalf("step %d (guard=%v): got %q, want %q", i, step.guard, got, step.want)
-		}
-	}
-}
-
-func TestBuildUserMessageBlocksGuardsSlashCommand(t *testing.T) {
-	blocks, err := buildUserMessageBlocks("/workflow run nightly\n\n[appended block]", nil, true)
-	if err != nil {
-		t.Fatalf("buildUserMessageBlocks: %v", err)
-	}
-	if len(blocks) != 1 {
-		t.Fatalf("blocks = %d, want 1", len(blocks))
-	}
-	text, _ := blocks[0]["text"].(string)
-	if !strings.HasPrefix(text, "\n/workflow") {
-		t.Fatalf("text = %q, want a leading newline before the command", text)
-	}
-}
-
-func TestBuildUserMessageBlocksPreservesNativeSlashCommand(t *testing.T) {
-	blocks, err := buildUserMessageBlocks("/usage", nil, false)
-	if err != nil {
-		t.Fatalf("buildUserMessageBlocks: %v", err)
-	}
-	if len(blocks) != 1 {
-		t.Fatalf("blocks = %d, want 1", len(blocks))
-	}
-	if text, _ := blocks[0]["text"].(string); text != "/usage" {
-		t.Fatalf("text = %q, want the raw command", text)
-	}
-}
-
 // TestBuildUserMessageBlocksGuardComposesWithImageMarkers pins the composition
 // rule: the guard prefixes the WHOLE content before the image split, so marker
 // offsets are computed against the string that actually goes out and inline
