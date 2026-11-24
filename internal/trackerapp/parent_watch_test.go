@@ -134,22 +134,10 @@ func (f *parentFixture) tick(t *testing.T) {
 // rename (the same view again).
 func (f *parentFixture) titleGoesBackIsTold(t *testing.T, original string) {
 	t.Helper()
-	// A read in flight takes the changes told meanwhile (buildShown): let
-	// it end.
+	// A read in flight or due takes the changes told meanwhile
+	// (buildShown): let the reads run and wait for every one to end.
 	f.letReads()
-	tp := f.svc.ticketPumpOf(f.conn.ID, "10001")
-	for deadline := time.Now().Add(10 * time.Second); ; {
-		f.svc.subMu.Lock()
-		behind := tp.dirty != tp.built || tp.building > 0 || tp.reading > 0
-		f.svc.subMu.Unlock()
-		if !behind {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the ticket's view stayed behind its inputs")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	quiet(t, f.svc)
 	_, issues, _ := f.events.snapshot()
 	told := len(issues)
 	f.st.edit("10002", func(c *tracker.Card) { c.Title = original })
@@ -157,6 +145,7 @@ func (f *parentFixture) titleGoesBackIsTold(t *testing.T, original string) {
 	f.events.waitFor(t, "the ticket told its parent's title went back", func(_ []BoardEvent, is []IssueEvent, _ []error) bool {
 		return slices.ContainsFunc(is[told:], func(e IssueEvent) bool { return e.Issue == "10001" && e.Changed })
 	})
+	quiet(t, f.svc)
 	if v := f.ticketView(t, f.sub.ID); v.Detail == nil || v.Detail.Card.Parent == nil || v.Detail.Card.Parent.Title != original {
 		t.Fatalf("the ticket shows its parent as %+v; want %q", v.Detail, original)
 	}
