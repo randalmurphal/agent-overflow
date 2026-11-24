@@ -347,10 +347,15 @@ func keyedLookups(th string) []keyedLookup {
 			roots := []string{"launch-1"}
 			must[map[string]subagentAnchorAggregate](t, "aggregates")(subagentAggregatesByRound(q, th, roots, subagentRoundBoundsFor(roots, named, nil)))
 			must[int](t, "completed child index")(s.SubagentCompletedChildIndex(th, "launch-1"))
-			if _, tools, err := s.SnapshotSubagentExecutionMeta(th, "launch-1", "{}", 1, 1, 6); err != nil || tools != 1 {
+			if _, tools, err := s.SnapshotSubagentExecutionMeta(th, "launch-1", "", "{}", 1, 1, 6); err != nil || tools != 1 {
 				t.Errorf("execution tools of launch-1 = %d, %v; want child-1", tools, err)
 			}
-			if count, last, err := s.SubagentExecutionToolCallsAfter(th, "launch-1", 1, 1); err != nil || count != 1 || last != 2 {
+			// An execution with an id reads each direct row's execution tag
+			// (forEachCodexExecutionRow).
+			if _, tools, err := s.SnapshotSubagentExecutionMeta(th, "launch-1", "run-1", "{}", 1, 1, 6); err != nil || tools != 1 {
+				t.Errorf("execution run-1 tools of launch-1 = %d, %v; want child-1", tools, err)
+			}
+			if count, last, err := s.SubagentExecutionToolCallsAfter(th, "launch-1", "", 1, 1); err != nil || count != 1 || last != 2 {
 				t.Errorf("live tools of launch-1 = %d through %d, %v; want child-1", count, last, err)
 			}
 			must[int](t, "tool calls since completion")(s.SubagentToolCallsSinceCompletion(th, "launch-1", 1_800_000_000_000))
@@ -449,6 +454,18 @@ func keyedLookups(th string) []keyedLookup {
 		// Writes run last, in an order that leaves each one its target.
 		{name: "AppendItem", turn: true, run: func(t *testing.T, s *Store) {
 			must[int](t, "append")(s.AppendItem(Item{ID: "appended-1", ThreadID: th, TurnIndex: 1, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "late"}))
+		}},
+		{name: "AppendCodexAgentRow", turn: true, run: func(t *testing.T, s *Store) {
+			if err := s.WithSubagentCard(th, "launch-1", func(card *SubagentCard) error {
+				_, written, err := s.AppendCodexAgentRow(CodexAgentRow{ThreadID: th, ParentID: "launch-1", ID: "scoped-append-1", Status: "completed", Summary: "cmd", Card: card,
+					Output: &CodexAgentOutput{Data: []byte("out")}})
+				if err == nil && !written {
+					t.Errorf("append under launch-1 wrote nothing")
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
 		}},
 		{name: "UpsertItemAtTurnHead", turn: true, run: func(t *testing.T, s *Store) {
 			must[Item](t, "head")(s.UpsertItemAtTurnHead(Item{ID: "head-1", ThreadID: th, TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed", Summary: "head"}))
@@ -603,7 +620,7 @@ func TestKeyedReadsUseTheirLocalKeyIndex(t *testing.T) {
 			// in its turn, not over the thread or the launch's whole subtree.
 			name: "execution tool count",
 			run: func() {
-				if _, _, err := s.SubagentExecutionToolCallsAfter(keyedThreadID, "launch-1", 1, 1); err != nil {
+				if _, _, err := s.SubagentExecutionToolCallsAfter(keyedThreadID, "launch-1", "", 1, 1); err != nil {
 					t.Error(err)
 				}
 			},

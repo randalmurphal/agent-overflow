@@ -10,6 +10,13 @@ export function withinDigestExecution(item: Item, digest: TimelineDigestContext 
   if (digest.before && compareCursors(item, digest.before) >= 0) return false;
   if (digest.startedAfter != null && item.createdAt <= digest.startedAfter) return false;
   if (digest.completedAt != null && item.createdAt > digest.completedAt) return false;
+  // A Codex agent's background command can exit during a later execution;
+  // its row is tagged with the execution that started it (store
+  // CodexExecutionTurnMetaKey) and belongs to that execution's card only.
+  if (digest.executionTurnId && item.meta?.includes('codex_execution_turn_id')) {
+    const tag = parseJsonObject(item.meta)?.codex_execution_turn_id;
+    if (typeof tag === 'string' && tag !== '' && tag !== digest.executionTurnId) return false;
+  }
   return true;
 }
 

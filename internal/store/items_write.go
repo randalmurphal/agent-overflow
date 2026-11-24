@@ -2,8 +2,10 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 )
 
@@ -300,6 +302,212 @@ func (s *Store) UpsertItemWithInputPayload(item Item, resultPayload, inputPayloa
 // or enrich it. Existing running/streaming items may still settle normally.
 func (s *Store) UpsertUnsettledItem(item Item, resultPayload, inputPayload *Payload) (Item, error) {
 	return s.upsertItemWithInputPayload(item, resultPayload, inputPayload, true)
+}
+
+// ErrItemNotAppended refuses a row AppendCodexAgentRow does not append.
+var ErrItemNotAppended = errors.New("store: item not appended under its parent")
+
+// CodexAgentRow is a row AppendCodexAgentRow adds under a Codex agent: the
+// agent's background command, or a stdin interaction with it. It names
+// nothing stored but its parent: the store fixes the row's kind, tool name,
+// role, turn and index, encodes its meta, writes its execution tag, and
+// names the command's output payload from the row's id (AttachedPayloadID).
+type CodexAgentRow struct {
+	ThreadID, ParentID, ID string
+	// Interaction makes the row a stdin interaction (terminal_interaction);
+	// otherwise it is the command, a command_execution tool_call.
+	Interaction bool
+	Status      string
+	Summary     string
+	// Meta is the provider's record of the row, decoded: the store encodes
+	// it, so the row is stored in the one representation its readers and
+	// this write's checks see. It may not hold a transcript root
+	// (metaKeyTranscriptRootID), the one meta key the insert resolves to
+	// another row for a tool_call, nor an execution tag, which only
+	// ExecutionTurnID writes.
+	Meta map[string]json.RawMessage
+	// ExecutionTurnID is the agent execution the row belongs to, written as
+	// its CodexExecutionTurnMetaKey; "" writes none.
+	ExecutionTurnID      string
+	CreatedAt, UpdatedAt int64
+	// Output is the command's output; nil stores none. An interaction has
+	// none.
+	Output *CodexAgentOutput
+	// Card is the parent's open subagent card.
+	Card *SubagentCard
+}
+
+// CodexAgentOutput is a command's output, stored whole as payload
+// AttachedPayloadID("command_output", row ID).
+type CodexAgentOutput struct {
+	Meta      string
+	Data      []byte
+	CreatedAt int64
+}
+
+// AttachedPayloadID is the deterministic id of the blob of kind payloadKind
+// (diff, command output, proposed plan) attached to the row itemID. Every
+// writer of such a blob names it so (triage's attached payloads, the session
+// import, AppendCodexAgentRow), so the writers agree and a repeated import
+// hashes the same.
+func AttachedPayloadID(payloadKind, itemID string) string {
+	return payloadKind + ":" + itemID
+}
+
+// AppendCodexAgentRow appends row as a new row under its parent, in the
+// parent's turn, while the parent row is in the thread's history. It keeps
+// two things true: it never changes stored data, and it never writes a row
+// under a parent ItemParentProblem rejects. Every input that could name
+// stored data is either left out of CodexAgentRow (kind, tool name, role,
+// background flag, completion and input payload ids, the payload id) or
+// refused with ErrItemNotAppended, writing nothing: an id or output payload
+// id already stored anywhere in the thread's history, a meta naming a
+// transcript root, and a rejected parent. The checks and the insert share
+// one transaction, so a conversation cut either precedes the parent check
+// (nothing is written; written is false) or follows the insert (the cut
+// removes the row with its parent).
+func (s *Store) AppendCodexAgentRow(row CodexAgentRow) (persisted Item, written bool, err error) {
+	if strings.TrimSpace(row.ParentID) == "" {
+		return Item{}, false, fmt.Errorf("store: append Codex agent row %s: no parent", row.ID)
+	}
+	if row.Interaction && row.Output != nil {
+		return Item{}, false, fmt.Errorf("store: append Codex agent row %s: an interaction has no output", row.ID)
+	}
+	meta, err := encodeCodexAgentMeta(row)
+	if err != nil {
+		return Item{}, false, err
+	}
+	item := Item{
+		ID: row.ID, ThreadID: row.ThreadID, ParentID: row.ParentID, Role: "assistant",
+		Kind: "tool_call", ToolName: "command_execution",
+		Status: row.Status, Summary: row.Summary, Meta: meta,
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, SubagentCard: row.Card,
+	}
+	if row.Interaction {
+		item.Kind, item.ToolName = "terminal_interaction", ""
+	}
+	applyItemDefaults(&item)
+	err = s.groupWriteItems(item.ThreadID, item.SubagentCard, "append Codex agent row", func(tx *sql.Tx, w *cardWrite) error {
+		parent, found, err := itemLinkTx(tx, item.ThreadID, item.ParentID)
+		if err != nil || !found {
+			return err
+		}
+		if _, stored, err := itemLinkTx(tx, item.ThreadID, item.ID); err != nil {
+			return err
+		} else if stored {
+			return fmt.Errorf("%w: %s/%s is already stored", ErrItemNotAppended, item.ThreadID, item.ID)
+		}
+		problem, err := ItemParentProblem(item.ID, item.ParentID, func(id string) (ItemParentLink, bool, error) {
+			if id == item.ParentID {
+				return parent.ItemParentLink, true, nil
+			}
+			link, found, err := itemLinkTx(tx, item.ThreadID, id)
+			return link.ItemParentLink, found, err
+		})
+		if err != nil {
+			return err
+		}
+		if problem != "" {
+			return fmt.Errorf("%w: %s/%s under %s: %s", ErrItemNotAppended, item.ThreadID, item.ID, item.ParentID, problem)
+		}
+		if row.Output != nil {
+			payloadID := AttachedPayloadID("command_output", item.ID)
+			if stored, err := payloadStoredTx(tx, item.ThreadID, payloadID); err != nil {
+				return err
+			} else if stored {
+				return fmt.Errorf("%w: %s/%s's output payload %s is already stored", ErrItemNotAppended, item.ThreadID, item.ID, payloadID)
+			}
+			payload := Payload{ID: payloadID, Kind: "command_output", Meta: row.Output.Meta, Data: row.Output.Data, CreatedAt: row.Output.CreatedAt}
+			if err := insertPayloadTx(tx, item.ThreadID, payload, "store: append Codex agent output "+payloadID); err != nil {
+				return err
+			}
+			item.PayloadID = payloadID
+		}
+		item.TurnIndex = parent.turnIndex
+		if err := insertNewItem(tx, w, &item, nextItemIndexTx); err != nil {
+			return err
+		}
+		if err := w.finish(); err != nil {
+			return err
+		}
+		persisted, err = readBackUpsertedItem(tx, item.ThreadID, item.ID)
+		written = err == nil
+		return err
+	})
+	if err != nil {
+		return Item{}, false, err
+	}
+	return persisted, written, nil
+}
+
+// encodeCodexAgentMeta encodes row's meta with its execution tag. It refuses
+// a meta holding a transcript root (ErrItemNotAppended) or an execution tag.
+// encoding/json writes each key once, in one spelling, so what the stored
+// row's SQL readers extract is what this check saw.
+func encodeCodexAgentMeta(row CodexAgentRow) (string, error) {
+	if _, named := row.Meta[metaKeyTranscriptRootID]; named {
+		return "", fmt.Errorf("%w: %s/%s names a transcript root", ErrItemNotAppended, row.ThreadID, row.ID)
+	}
+	if _, tagged := row.Meta[CodexExecutionTurnMetaKey]; tagged {
+		return "", fmt.Errorf("store: append Codex agent row %s: the execution tag is ExecutionTurnID's", row.ID)
+	}
+	meta := make(map[string]json.RawMessage, len(row.Meta))
+	maps.Copy(meta, row.Meta)
+	if row.ExecutionTurnID != "" {
+		tag, err := json.Marshal(row.ExecutionTurnID)
+		if err != nil {
+			return "", fmt.Errorf("store: encode execution tag of %s: %w", row.ID, err)
+		}
+		meta[CodexExecutionTurnMetaKey] = tag
+	}
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		return "", fmt.Errorf("store: encode meta of %s: %w", row.ID, err)
+	}
+	return string(encoded), nil
+}
+
+// payloadStoredTx reports whether threadID's history holds payloadID: the
+// thread itself, local or imported, or an ancestor it forks from.
+func payloadStoredTx(tx *sql.Tx, threadID, payloadID string) (bool, error) {
+	var stored bool
+	err := tx.QueryRow(`SELECT `+payloadHeldBySQL("?1", "?2")+`
+		OR EXISTS (SELECT 1 FROM thread_fork_lineage l
+		            WHERE l.thread_id = ?1 AND `+payloadHeldBySQL("l.ancestor_id", "?2")+`)`,
+		threadID, payloadID).Scan(&stored)
+	if err != nil {
+		return false, fmt.Errorf("store: probe payload %s on %s: %w", payloadID, threadID, err)
+	}
+	return stored, nil
+}
+
+// itemLink is what AppendCodexAgentRow reads of a row: its parent link
+// and its turn.
+type itemLink struct {
+	ItemParentLink
+	turnIndex int
+}
+
+// itemLinkTx reads the parent link and turn of the row id shows in the
+// thread's history, local, imported or inherited, and nothing else.
+func itemLinkTx(q sqlQueryer, threadID, id string) (itemLink, bool, error) {
+	query, args, err := timelineArms(q, threadID, timelineSelection{
+		Columns:  func(string, string) string { return "items.kind, items.parent_id, items.turn_index" },
+		KeyFirst: true,
+		Where:    "items.id = ?", WhereArgs: []any{id},
+	})
+	if err != nil {
+		return itemLink{}, false, err
+	}
+	var link itemLink
+	err = q.QueryRow(query, args...).Scan(&link.Kind, &link.ParentID, &link.turnIndex)
+	if errors.Is(err, sql.ErrNoRows) {
+		return itemLink{}, false, nil
+	}
+	if err != nil {
+		return itemLink{}, false, fmt.Errorf("store: read item link %s/%s: %w", threadID, id, err)
+	}
+	return link, true, nil
 }
 
 func (s *Store) upsertItemWithInputPayload(item Item, resultPayload, inputPayload *Payload, preserveTerminal bool) (Item, error) {

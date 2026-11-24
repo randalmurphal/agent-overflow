@@ -2628,6 +2628,110 @@ func TestCodexUnifiedExecSubagentCommandDoesNotEnterMainBackgroundTray(t *testin
 	}
 }
 
+// TestCodexUnifiedExecAgentCommandCompletionLandsOnAgentTurn: an agent's
+// background command that completes after the root's turn ended is saved on
+// the agent's turn, whether the root is running a later turn or idle. A
+// revert of the later turn keeps it; a revert of the agent's turn removes it
+// with the agent. Top-level commands keep the Codex TUI rule
+// (TestCodexUnifiedExecIdleCompletionAfterTurnCompleteClearsTransientStateWithoutHistory,
+// TestCodexUnifiedExecCompletionDuringLaterActiveTurnPersistsAtObservedTurn).
+func TestCodexUnifiedExecAgentCommandCompletionLandsOnAgentTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		rootRunning bool
+	}{
+		{name: "root running a later turn", rootRunning: true},
+		{name: "root idle", rootRunning: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st, emissions := newTestRouter(t)
+			createCodexBackgroundTestThread(t, st, "t1")
+			seedOpenTurn(t, router, st, "t1", 0)
+			now := time.Now().UnixMilli()
+			if err := st.InsertItem(store.Item{
+				ID: "spawn-agent", ThreadID: "t1", TurnIndex: 0, Kind: itemKindToolCall,
+				Role: "assistant", Status: statusCompleted, Summary: "spawn_agent", ToolName: "collab_agent",
+				Meta:      `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-1"]}}`,
+				CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				t.Fatalf("seed spawn parent: %v", err)
+			}
+			if err := router.Handle(provider.ProviderEvent{
+				Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "child-cmd",
+				ItemType: "commandExecution", TurnID: "t1:0", ParentToolUseID: "spawn-agent",
+				Meta: buildUnifiedExecStartMeta(t, "pid-child", "sleep 60"), Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("child command start: %v", err)
+			}
+			if err := router.Handle(provider.ProviderEvent{
+				Kind: provider.EventTurnComplete, ThreadID: "t1", TurnID: "t1:0",
+				TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("turn complete: %v", err)
+			}
+			if tc.rootRunning {
+				seedOpenTurn(t, router, st, "t1", 1)
+			} else if err := st.InsertTurn(store.Turn{
+				// The root's later turn has ended: the newest turn is 1, so a
+				// newest-turn fallback would be visible.
+				TurnID: "t1:1", ThreadID: "t1", TurnIndex: 1, StartedAt: now,
+			}); err != nil {
+				t.Fatalf("insert later turn row: %v", err)
+			}
+
+			if err := router.Handle(provider.ProviderEvent{
+				Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "child-cmd",
+				ItemType: "commandExecution", TurnID: "child-turn", ParentToolUseID: "spawn-agent",
+				Content: "done\n", Meta: buildUnifiedExecCompleteMeta(t, "completed", "pid-child", "sleep 60", 0),
+				Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("child command complete: %v", err)
+			}
+
+			row, found, err := st.GetThreadItem("t1", "child-cmd")
+			if err != nil || !found {
+				t.Fatalf("agent command row missing: found=%v err=%v", found, err)
+			}
+			if row.TurnIndex != 0 || row.ParentID != "spawn-agent" {
+				t.Fatalf("agent command row turn=%d parent=%q, want the agent's turn 0 under spawn-agent", row.TurnIndex, row.ParentID)
+			}
+			if row.Status != statusCompleted || row.PayloadKind != "command_output" {
+				t.Fatalf("agent command row status/payload = %+v", row)
+			}
+			upserted := false
+			for _, item := range filterItemEventUpserts(emissions.snapshot()) {
+				if item.ID == "child-cmd" {
+					upserted = true
+					if item.TurnIndex != 0 {
+						t.Fatalf("agent command upsert turn = %d, want 0", item.TurnIndex)
+					}
+				}
+			}
+			if !upserted {
+				t.Fatalf("agent command completion emitted no upsert")
+			}
+			if codexTrackerPresent(router, "t1", "child-cmd") {
+				t.Fatalf("completion kept the command's tracker")
+			}
+
+			if _, _, err := st.DeleteConversationFromTurn("t1", 1); err != nil {
+				t.Fatalf("revert later turn: %v", err)
+			}
+			if _, found, err := st.GetThreadItem("t1", "child-cmd"); err != nil || !found {
+				t.Fatalf("revert of the later turn removed the agent's command: found=%v err=%v", found, err)
+			}
+			if _, _, err := st.DeleteConversationFromTurn("t1", 0); err != nil {
+				t.Fatalf("revert agent turn: %v", err)
+			}
+			for _, id := range []string{"spawn-agent", "child-cmd"} {
+				if _, found, err := st.GetThreadItem("t1", id); err != nil || found {
+					t.Fatalf("revert of the agent's turn kept %s: found=%v err=%v", id, found, err)
+				}
+			}
+		})
+	}
+}
+
 func countEvents(emissions []emitted, name string) int {
 	count := 0
 	for _, e := range emissions {

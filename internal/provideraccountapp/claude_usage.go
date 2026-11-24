@@ -233,7 +233,7 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 	// that answer the rotation is not attributed here: it stays in the
 	// canonical store, and the changed fingerprint sends the next
 	// reconciliation to identify it.
-	info, identifyErr := m.identifyClaudeCredential(info, refreshed.Bytes())
+	info, identifyErr := m.identifyClaudeCredential(m.context(), info, refreshed.Bytes())
 	if identifyErr != nil {
 		return provider.RateLimitsSnapshot{}, nil, identifyErr
 	}

@@ -16,8 +16,14 @@ import (
 
 func newTestManager(t *testing.T) (*Manager, *provideraccounts.Store, *provideraccounts.Credentials) {
 	t.Helper()
+	return newTestManagerAt(t, t.TempDir())
+}
+
+// newTestManagerAt is newTestManager whose account store lives in dir.
+func newTestManagerAt(t *testing.T, dir string) (*Manager, *provideraccounts.Store, *provideraccounts.Credentials) {
+	t.Helper()
 	isolation := kerneltest.IsolateSpawns(t)
-	store, err := provideraccounts.NewStore(t.TempDir())
+	store, err := provideraccounts.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

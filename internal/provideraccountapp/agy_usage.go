@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -180,7 +178,7 @@ func (m *Manager) refreshSelectedAgyCanonicalToken(
 	}
 
 	binary := m.providerBinaryPath(providerName)
-	if _, refreshErr := agy.ProbeAccount(ctx, m.agyProbeConfig(binary, "", "", nil)); refreshErr != nil {
+	if _, refreshErr := m.probeCanonicalAgy(ctx, binary, m.providerCustomEnv(providerName)); refreshErr != nil {
 		return nil, fmt.Errorf("refresh Antigravity OAuth token: %w", refreshErr)
 	}
 	refreshed, present, readErr := m.readCanonicalCredentialIfPresent(providerName)
@@ -247,12 +245,4 @@ func (m *Manager) identifyAgyCredential(
 		return info, fmt.Errorf("look up the Google account of the Antigravity login: %w", lookupErr)
 	}
 	return info, nil
-}
-
-func splitAgyEphemeralHome(home string) (geminiDir, appDataSubdir string) {
-	cleaned := filepath.Clean(strings.TrimSpace(home))
-	if cleaned == "" || cleaned == "." {
-		return "", ""
-	}
-	return filepath.Dir(cleaned), filepath.Base(cleaned)
 }
