@@ -113,8 +113,11 @@ type Carrier struct {
 	bytes *httputil.ReverseProxy
 
 	// stall is a carried download's stall window
-	// (transport.TransferStallWindow); a field so a test can shorten it.
-	stall time.Duration
+	// (transport.TransferStallWindow) and transferWindow an upload's bytes'
+	// window for its length (transport.AttachmentTransferWindowFor);
+	// fields so a test can shorten them.
+	stall          time.Duration
+	transferWindow func(size int64) time.Duration
 
 	// session is the upstream backend's local page-channel credential,
 	// forwarded on every carried upgrade so a same-host hop names a
@@ -185,12 +188,13 @@ func New(cfg Config) (*Carrier, error) {
 		session = relaysession.New(bootstrapURL, cfg.Token, client)
 	}
 	c := &Carrier{
-		cfg:          cfg,
-		session:      session,
-		client:       client,
-		bootstrapURL: bootstrapURL,
-		remote:       !loopback.EndpointAuthority(parsed.Host),
-		stall:        transport.TransferStallWindow,
+		cfg:            cfg,
+		session:        session,
+		client:         client,
+		bootstrapURL:   bootstrapURL,
+		remote:         !loopback.EndpointAuthority(parsed.Host),
+		stall:          transport.TransferStallWindow,
+		transferWindow: transport.AttachmentTransferWindowFor,
 	}
 	if c.ws, err = c.newWSProxy(); err != nil {
 		return nil, fmt.Errorf("backendproxy: build websocket proxy: %w", err)
@@ -319,23 +323,25 @@ func logUpgradeStep(ctx context.Context, outcome string) {
 // mounted these routes under, which is this process's own addressing and
 // means nothing upstream.
 func (c *Carrier) CarryTransfer(w http.ResponseWriter, r *http.Request) {
-	// A download (a request with no body) is bounded by its progress, as
+	// A download (a request with no body; DownloadByProgress refuses any
+	// other, which goes on as an upload) is bounded by its progress, as
 	// the backend bounds its own downloads: a total would cut a large file
 	// on a slow link, and a read deadline would cut it at once
 	// (transport.DownloadByProgress).
-	if r.ContentLength == 0 {
-		c.bytes.ServeHTTP(transport.DownloadByProgress(w, c.stall), r)
+	if download, err := transport.DownloadByProgress(w, r, c.stall); err == nil {
+		c.bytes.ServeHTTP(download, r)
 		return
 	}
-	// An upload gets the window the backend gives itself. Without this a
-	// caller's own read and write timeouts would cut a transfer the
-	// upstream was willing to finish, and the page would see the hop fail
-	// rather than the backend refuse. Sized from the declared length the
-	// same way the backend sizes it from the ticket. Its answer must
-	// arrive within it: one that comes later, after a slow upload and the
-	// tracker's processing, is cut here (docs/architecture/transport.md).
+	// An upload gets the time the backend gives it, its answer included
+	// (transport.UploadWindow). Without this a caller's own read and write
+	// timeouts would cut a transfer the upstream was willing to finish,
+	// and the page would see the hop fail rather than the backend refuse.
+	// Sized from the declared length the way the backend sizes it from the
+	// ticket. Read and write alike: a read deadline that passes while the
+	// answer is awaited ends the request through net/http's background
+	// read, and with it the answer, as a write deadline would.
 	controller := http.NewResponseController(w)
-	deadline := time.Now().Add(transport.AttachmentTransferWindowFor(r.ContentLength))
+	deadline := time.Now().Add(transport.UploadWindow(c.transferWindow(r.ContentLength)))
 	if err := controller.SetReadDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		c.logf("extend attachment read deadline: %v", err)
 	}

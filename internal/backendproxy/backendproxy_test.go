@@ -161,6 +161,46 @@ func TestCarryTransfer_ADownloadIsBoundedByItsProgress(t *testing.T) {
 	}
 }
 
+// TestCarryTransfer_AnUploadsLateAnswerArrives — an upload's answer that
+// comes after its bytes' window, as a tracker's after a slow upload does,
+// reaches the page: the relay gives the answer its own time
+// (transport.UploadWindow). The bytes' window is shortened here.
+func TestCarryTransfer_AnUploadsLateAnswerArrives(t *testing.T) {
+	const window = 300 * time.Millisecond
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			return
+		}
+		time.Sleep(3 * window)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"parts":[{"state":"applied"}]}`))
+	}))
+	defer upstream.Close()
+	carrier, err := New(Config{
+		WSURL: "ws://" + strings.TrimPrefix(upstream.URL, "http://") + "/ws",
+		Token: "upstream-launch-token",
+	})
+	if err != nil {
+		t.Fatalf("new carrier: %v", err)
+	}
+	carrier.transferWindow = func(int64) time.Duration { return window }
+	relay := httptest.NewServer(http.HandlerFunc(carrier.CarryTransfer))
+	defer relay.Close()
+	req, err := http.NewRequest(http.MethodPut, relay.URL+"/attachments/tracker/upload?ticket=single-use", strings.NewReader("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("an answer %s after the bytes' %s window: %v", 3*window, window, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusOK || string(body) != `{"parts":[{"state":"applied"}]}` {
+		t.Fatalf("an answer after the bytes' window: %d %q %v", resp.StatusCode, body, err)
+	}
+}
+
 // TestFetchBootstrap_PresentsTheConfiguredCredential — the status is the
 // verdict on whether that credential is still honoured, which is the one
 // question a page cannot ask for itself.

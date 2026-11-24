@@ -380,12 +380,13 @@ func (r errReader) Read([]byte) (int, error) { return 0, r.err }
 // then blocks, as a client that stops sending does, until it is closed.
 type stalledContent struct {
 	first  []byte
+	parked chan struct{} // receives once a Read blocks
 	closed chan struct{}
 	once   atomic.Bool
 }
 
 func newStalledContent(first string) *stalledContent {
-	return &stalledContent{first: []byte(first), closed: make(chan struct{})}
+	return &stalledContent{first: []byte(first), parked: make(chan struct{}, 1), closed: make(chan struct{})}
 }
 
 func (s *stalledContent) Read(p []byte) (int, error) {
@@ -394,8 +395,22 @@ func (s *stalledContent) Read(p []byte) (int, error) {
 		s.first = s.first[n:]
 		return n, nil
 	}
+	select {
+	case s.parked <- struct{}{}:
+	default:
+	}
 	<-s.closed
 	return 0, errors.New("the client's body was closed")
+}
+
+// awaitParked waits for a Read of s to block.
+func (s *stalledContent) awaitParked(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.parked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the upload never read past its content's first bytes")
+	}
 }
 
 func (s *stalledContent) Close() error {
@@ -450,14 +465,14 @@ func TestUploadOfAStalledContentEndsWithItsAttempt(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	content := newStalledContent("abc")
 	done := upload(c, ctx, content, 10)
-	time.Sleep(100 * time.Millisecond)
+	content.awaitParked(t)
 	cancel()
 	ended("the call's context ended", done, content)
 
 	closing, _ := loopbackClient(t, testOptions(tr.url()))
 	content = newStalledContent("abc")
 	done = upload(closing, t.Context(), content, 10)
-	time.Sleep(100 * time.Millisecond)
+	content.awaitParked(t)
 	closed := make(chan struct{})
 	go func() {
 		closing.Close()

@@ -306,19 +306,31 @@ harness receivers stay local-only.
 ## Byte route deadlines
 
 The ticketed byte routes under `/attachments/` replace the server's 60 s
-read and write timeouts per request. An upload, and a thread
+read and write timeouts per request. An upload's bytes, and a thread
 attachment's download, get the transfer window for their length
 (`AttachmentTransferWindow`, a 5 minute floor at 35 KiB/s;
-`AttachmentTransferWindowFor`). The tracker's download route and every
-download a relay carries (`backendproxy.CarryTransfer`, a request with
-no body) are bounded by progress instead (`DownloadByProgress`): no read
-deadline, since net/http's background read fails at one and ends the
-request's context while bytes still move, and a write deadline moved
-to 90 s past each write (`TransferStallWindow`), at most once a second.
-Such a download that stops moving ends 89 to 90 s after its last byte,
-and one that keeps moving has no total. A relayed upload keeps the
-window for its length, so an answer that comes after it, such as a
-tracker's to a slow upload, is cut at the relay.
+`AttachmentTransferWindowFor`). A tracker upload's answer, which comes
+after the tracker's answer and the refresh, gets the whole upload's
+time (`UploadWindow`: the window, `UploadAnswerAllowance` and a minute
+to write it), and every relay (`backendproxy.CarryTransfer`) gives an
+upload it carries that time for its read and write deadlines alike,
+since a read deadline that passes while the answer is awaited ends the
+request through net/http's background read. The other uploads it
+carries answer at once, so for them the longer time only lets a page
+that stopped sending hold the relay longer.
+
+The tracker's download route and every download a relay carries (a
+request with no body; `DownloadByProgress` refuses one that declares a
+body) are bounded by progress instead: no read deadline, for the same
+reason, and a write deadline moved to 90 s past each write
+(`TransferStallWindow`), at most once a second. Such a download that
+stops moving ends 89 to 90 s after its last byte, and one that keeps
+moving has no total. A relayed download whose backend stops sending
+ends when the backend does: the tracker client's own 90 s stall ends
+the backend's response, which the relay carries as a cut. A link that
+dies silently ends through TCP keepalive on the relay's dial (30 s idle,
+then 9 probes 15 s apart: about 165 s; `net/http.DefaultTransport`,
+`deviceclient.pinnedDialer`).
 
 ## Method metadata and routing
 

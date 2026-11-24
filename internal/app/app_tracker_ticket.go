@@ -10,7 +10,6 @@ import (
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/tracker"
-	"agent-overflow/internal/tracker/trackerapi"
 	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
 )
@@ -168,15 +167,16 @@ func (t trackerTransfer) AttachTrackerFile(upload transport.TrackerUpload) (json
 }
 
 // trackerAttachBound is the whole run of an attach of size bytes: the
-// window the route gives the file's transfer for its size, the tracker's
-// wait for its answer after the last byte, and a write's budget for the
-// refresh after it. 13 minutes up to 10 MiB; about 17 hours for 2 GB,
+// window the route gives the file's transfer for its size and the
+// allowance every hop gives its answer (transport.UploadAnswerAllowance:
+// the tracker's wait for its answer after the last byte and a write's
+// budget for the refresh after it). 13 minutes up to 10 MiB; about 17 hours for 2 GB,
 // nearly all of it the transfer at its slowest rate.
 func (a *App) trackerAttachBound(size int64) time.Duration {
 	if a.trackerBudget > 0 {
 		return a.trackerBudget
 	}
-	return transport.AttachmentTransferWindowFor(size) + trackerapi.AnswerTimeout + trackerWriteBudget
+	return transport.AttachmentTransferWindowFor(size) + transport.UploadAnswerAllowance
 }
 
 // DownloadTrackerAttachment streams one attachment to to, ending with ctx.

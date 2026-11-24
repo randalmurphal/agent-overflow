@@ -502,32 +502,62 @@ func extendTransferDeadline(w http.ResponseWriter, window time.Duration) {
 	}
 }
 
+// UploadAnswerAllowance is how long an upload's answer may take after its
+// last byte: the tracker client's wait for the tracker's answer
+// (trackerapi.AnswerTimeout, 5 minutes) and a write's refresh after it
+// (its 3 minute budget). The app bounds an attach by the transfer window
+// plus this, and pins that it covers both (app's
+// TestTheUploadAnswerAllowanceCoversTheAttach). A thread attachment's or
+// a dictation's backend answers at once, so for them it only lengthens
+// how long a page that stopped sending holds a relay.
+const UploadAnswerAllowance = 8 * time.Minute
+
+// uploadAnswerWrite is the write of an upload's answer, a few KB of JSON.
+const uploadAnswerWrite = time.Minute
+
+// UploadWindow is how long a whole upload may take, its answer written,
+// when its bytes have transfer: the time the backend gives an attach and
+// every relay gives the upload it carries, read and write alike, since a
+// read deadline that passes while the answer is awaited ends the
+// request.
+func UploadWindow(transfer time.Duration) time.Duration {
+	return transfer + UploadAnswerAllowance + uploadAnswerWrite
+}
+
 // TransferStallWindow is how long a download bounded by its progress may
-// go without a byte written before it ends: the tracker client's own
-// stall window toward the tracker, so one number bounds every hop.
+// go without a byte written before it ends. The tracker client's stall
+// window toward the tracker (trackerapi's stallTimeout) is the same 90
+// seconds, set there on its own: neither package may import the other.
 const TransferStallWindow = 90 * time.Second
 
 // deadlineMoveEvery is how often a download's progress moves its write
 // deadline: a move per write would cost a deadline change per 32 KiB.
 const deadlineMoveEvery = time.Second
 
-// DownloadByProgress prepares w for the answer to a request with no body,
-// bounded by its progress and by no total: it clears the read deadline,
-// which with no body to read would only cut the answer (net/http's
-// background read fails at it and ends the request's context), and the
-// writer it returns moves the write deadline to stall past now as bytes
-// are written, at most once every deadlineMoveEvery. A write blocked for
-// stall, a client that stopped reading, fails, so a download that stops
-// moving ends between stall-deadlineMoveEvery and stall after its last
-// byte. A deadline the writer cannot set (http.ErrNotSupported) leaves the
-// server's own in place.
-func DownloadByProgress(w http.ResponseWriter, stall time.Duration) http.ResponseWriter {
+// DownloadByProgress prepares w for the answer to r, a request with no
+// body, bounded by its progress and by no total: it clears the read
+// deadline, which with no body to read would only cut the answer
+// (net/http's background read fails at it and ends the request's
+// context), and the writer it returns moves the write deadline to stall
+// past now as bytes are written, at most once every deadlineMoveEvery. A
+// write blocked for stall, a client that stopped reading, fails, so a
+// download that stops moving ends between stall-deadlineMoveEvery and
+// stall after its last byte. A deadline the writer cannot set
+// (http.ErrNotSupported) leaves the server's own in place.
+//
+// A request that declares a body, or sends one chunked, is refused with
+// the deadlines as they were: with no read deadline, the server's discard
+// of a body the client withholds would wait for ever.
+func DownloadByProgress(w http.ResponseWriter, r *http.Request, stall time.Duration) (http.ResponseWriter, error) {
+	if r.ContentLength != 0 {
+		return nil, fmt.Errorf("transport: a download request declares a body (length %d)", r.ContentLength)
+	}
 	p := &progressWriter{ResponseWriter: w, rc: http.NewResponseController(w), stall: stall}
 	if err := p.rc.SetReadDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		log.Printf("transport: clear a download's read deadline: %v", err)
 	}
 	p.move(time.Now())
-	return p
+	return p, nil
 }
 
 // progressWriter is DownloadByProgress's writer.

@@ -394,3 +394,26 @@ func TestTrackerDownloadIsBoundedByItsProgress(t *testing.T) {
 		t.Fatalf("a download whose client stopped reading was still writing %s later, past its %s stall window", 3*stall, stall)
 	}
 }
+
+// A download that declares a body, and withholds it, is refused before
+// anything is read or its deadlines change: with its read deadline
+// cleared, the server's discard of that body would wait for ever.
+func TestTrackerDownloadRefusesADeclaredBody(t *testing.T) {
+	stub := &stubTracker{content: "x"}
+	f := trackerFixture(t, stub)
+	relative, err := f.srv.MintTrackerDownloadTicket("conn-1", "10101", "501", "a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := rawRequest(t, f.srv.Addr(), "GET "+relative+" HTTP/1.1\r\nHost: "+f.srv.Addr()+"\r\nContent-Length: 1\r\n\r\n", nil)
+	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("no answer: %v", err)
+	}
+	if got := readTransferError(t, resp); resp.StatusCode != http.StatusBadRequest || got.Code != "tracker_download_has_body" || len(stub.downloads) != 0 {
+		t.Fatalf("a download declaring a body: status %d, %+v, downloads %v", resp.StatusCode, got, stub.downloads)
+	}
+}

@@ -11,7 +11,9 @@ import (
 
 const (
 	// stallTimeout is how long a transfer may go without a byte moving
-	// while it sends or receives.
+	// while it sends or receives. The app's own hops bound a download by
+	// the same 90 seconds (transport.TransferStallWindow), set there on
+	// its own: neither package may import the other.
 	stallTimeout = 90 * time.Second
 )
 

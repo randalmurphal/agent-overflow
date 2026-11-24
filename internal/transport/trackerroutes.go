@@ -176,17 +176,18 @@ func (s *Server) handleTrackerUpload(w http.ResponseWriter, r *http.Request) {
 			fmt.Errorf("transport: an upload ticketed for %d bytes declared %d", upload.Size, r.ContentLength)))
 		return
 	}
-	extendTransferDeadline(w, s.trackerUploadWindow(upload.Size))
+	// The bytes get the transfer window for their size; the answer, which
+	// comes after the tracker's answer and the refresh, the whole upload's
+	// window (UploadWindow), as every relay gives it.
+	window := s.trackerUploadWindow(upload.Size)
+	extendTransferDeadline(w, window)
 	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Now().Add(UploadWindow(window))); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		log.Printf("transport: extend the attach's answer deadline: %v", err)
+	}
 	upload.Body = &trackerUploadBody{Reader: http.MaxBytesReader(w, r.Body, upload.Size), rc: rc}
 	upload.Context = r.Context()
 	view, err := transfer.AttachTrackerFile(upload)
-	// The write is bounded by more than the transfer's window (the
-	// tracker's answer and the refresh), so the answer gets a deadline of
-	// its own from now.
-	if err := rc.SetWriteDeadline(time.Now().Add(trackerAnswerWrite)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		log.Printf("transport: move the attach's answer deadline: %v", err)
-	}
 	if err != nil {
 		s.writeTrackerTransferError(w, "attach a file to "+upload.Issue, err)
 		return
@@ -197,10 +198,6 @@ func (s *Server) handleTrackerUpload(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Type", "application/json")
 	_, _ = w.Write(view)
 }
-
-// trackerAnswerWrite bounds the write of an attach's answer, a few KB of
-// JSON.
-const trackerAnswerWrite = time.Minute
 
 // trackerUploadBody is an upload's request body whose Close moves the
 // request's read deadline to now, once: net/http gives a handler no other
@@ -245,7 +242,16 @@ func (s *Server) handleTrackerDownload(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w = DownloadByProgress(w, s.trackerStall)
+	progress, err := DownloadByProgress(w, r, s.trackerStall)
+	if err != nil {
+		// Closed after the answer: net/http would otherwise read the body
+		// before answering, and its client may withhold it.
+		w.Header().Set("Connection", "close")
+		s.writeTrackerTransferError(w, "download attachment "+d.attachment+" of "+d.issue,
+			errorsx.Public("tracker_download_has_body", "a download sends no body; ask for the attachment again without one", err))
+		return
+	}
+	w = progress
 	held := &heldResponse{w: w, begin: func(h http.Header) {
 		WriteSecurityHeaders(h, s.csp)
 		h.Set("Cache-Control", "no-store")
@@ -254,7 +260,7 @@ func (s *Server) handleTrackerDownload(w http.ResponseWriter, r *http.Request) {
 		h.Set("Content-Type", "application/octet-stream")
 		h.Set("Content-Disposition", attachmentDisposition(d.filename))
 	}}
-	err := transfer.DownloadTrackerAttachment(r.Context(), d.connection, d.issue, d.attachment, held)
+	err = transfer.DownloadTrackerAttachment(r.Context(), d.connection, d.issue, d.attachment, held)
 	switch {
 	case err == nil:
 		held.start()
