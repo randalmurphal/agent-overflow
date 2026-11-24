@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/pump"
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
@@ -216,9 +217,10 @@ func (a *App) SetTrackerSubscriptionVisible(ctx context.Context, subscriptionID 
 // RefreshTrackerSubscription reads the subscribed board from the tracker
 // now, as the person's action, and returns when the read ran. What it
 // found, a failure of the tracker included, arrives as events. The wait
-// is bounded by the method's budget: the board's pump may still be in a
-// read of its own, or this one may be long, and either goes on after the
-// answer, its events arriving as they land.
+// is bounded by the method's budget. If the board's pump was still in a
+// read of its own all that time, this refresh never ran and the answer
+// says to refresh again; if this refresh's own read is long, it goes on
+// after the answer, its events arriving as they land.
 //
 //ao:scope tracker:read
 //ao:route home
@@ -230,7 +232,11 @@ func (a *App) RefreshTrackerSubscription(ctx context.Context, subscriptionID str
 	ctx, cancel := context.WithTimeoutCause(ctx, transport.MethodBudget("RefreshTrackerSubscription"), errTrackerRefreshWait)
 	defer cancel()
 	err = svc.RefreshSubscription(ctx, subscriptionID)
-	if err != nil && errors.Is(context.Cause(ctx), errTrackerRefreshWait) {
+	switch {
+	case err == nil || !errors.Is(context.Cause(ctx), errTrackerRefreshWait):
+	case errors.Is(err, pump.ErrNotTaken):
+		return errorsx.Public("tracker_refresh_not_run", "the board was busy with an earlier read from the tracker, so this refresh did not run; refresh again", err)
+	default:
 		return errorsx.Public("tracker_refresh_waiting", "the board is still reading from the tracker; it updates as each read finishes, so refresh again if what you expect does not appear", err)
 	}
 	return trackerError(err)

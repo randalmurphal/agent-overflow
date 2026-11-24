@@ -123,6 +123,7 @@ func (a *App) initTrackers() error {
 			log.Printf("tracker: an issue event of connection %s has no channel to its clients", e.Connection)
 		},
 		Settled: a.awaitFirstReadsSettled,
+		Cadence: a.trackerCadence,
 		ClientConnected: func() bool {
 			bus := a.eventBus.Load()
 			return bus != nil && bus.SubscriberCount() > 0

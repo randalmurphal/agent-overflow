@@ -1150,7 +1150,10 @@ method wraps (see [Build order](#build-order)).
   `subscription`); the board's scope comes from the handle
   (`SubscriptionBoard`). A release of an unknown handle is a no-op, since
   the connection's end may have released it first.
-- **A refresh's wait is bounded** by its method's budget. A wait cut there
+- **A refresh's wait is bounded** by its method's budget. A wait cut
+  while the board's pump was still busy with an earlier read never ran
+  the refresh (`pump.ErrNotTaken`) and answers `tracker_refresh_not_run`,
+  which says to refresh again. A wait cut after the pump took the refresh
   answers `tracker_refresh_waiting`; the read goes on and its events
   arrive as it lands.
 - **Refusals** a person can cause or see carry a code and a sentence of

@@ -1118,6 +1118,9 @@ type App struct {
 	// when it names none. Nil is the desktop behavior, except inside a
 	// test binary (trackerOrigin). Set once before Start.
 	trackerOriginOverride trackerapp.Origin
+	// trackerCadence is the tracker service's sync intervals; the zero
+	// value is production's, and tests shorten them.
+	trackerCadence trackerapp.Cadence
 	// trackers owns the tracker connections; built by initTrackers during
 	// Start and stopped by Shutdown before the store closes.
 	trackers *trackerapp.Service

@@ -69,12 +69,12 @@ func TestATrackerPickerListEndsAtItsBudget(t *testing.T) {
 		site.Projects = append(site.Projects, trackerfake.JiraProject{ID: fmt.Sprint(20000 + i), Key: fmt.Sprintf("K%03d", i), Name: fmt.Sprintf("Project %d", i)})
 	}
 	const route = "GET rest/api/3/project/search"
-	origin := trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: "example.atlassian.net"}
+	origin := trackerBoardOrigin
 	var e *trackerfake.Engine
 	var armed sync.Once
 	held := make(chan struct{})
 	var heldOnce sync.Once
-	f := newTrackerBoardFixtureOn(t, trackerfake.Options{OnRequest: func(r trackerfake.Request) {
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site, engine: trackerfake.Options{OnRequest: func(r trackerfake.Request) {
 		switch {
 		case r.Route != route:
 		case r.Held:
@@ -86,7 +86,7 @@ func TestATrackerPickerListEndsAtItsBudget(t *testing.T) {
 				}
 			})
 		}
-	}}, site)
+	}}})
 	e = f.e
 	t.Cleanup(func() { e.ClearFaults(origin, route) })
 	reqs := e.Requests(0).Requests
@@ -116,6 +116,9 @@ func TestATrackerPickerListEndsAtItsBudget(t *testing.T) {
 		t.Fatalf("the connection after the cut list: %+v, %v", conns, err)
 	}
 }
+
+// trackerBoardOrigin is trackerBoardSite's origin in the fake.
+var trackerBoardOrigin = trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: "example.atlassian.net"}
 
 // trackerBoardSite is the fake Jira site the board tests seed: one scrum
 // board of project WEB with an active sprint and three issues.
@@ -150,13 +153,21 @@ type trackerBoardFixture struct {
 
 func newTrackerBoardFixture(t *testing.T) *trackerBoardFixture {
 	t.Helper()
-	return newTrackerBoardFixtureOn(t, trackerfake.Options{}, trackerBoardSite())
+	return newTrackerBoardFixtureOn(t, trackerBoardSetup{site: trackerBoardSite()})
 }
 
-// newTrackerBoardFixtureOn is newTrackerBoardFixture whose engine takes
-// opts and serves site, which keeps trackerBoardSite's board 1.
-func newTrackerBoardFixtureOn(t *testing.T, opts trackerfake.Options, site trackerfake.JiraSite) *trackerBoardFixture {
+// trackerBoardSetup is what a board test changes of the fixture: the
+// engine's options, the site, whose every board the project lists, board
+// 1 first and opening first, and the service's sync intervals.
+type trackerBoardSetup struct {
+	engine  trackerfake.Options
+	site    trackerfake.JiraSite
+	cadence trackerapp.Cadence
+}
+
+func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoardFixture {
 	t.Helper()
+	opts, site := setup.engine, setup.site
 	e := trackerfake.New(opts)
 	t.Cleanup(e.Close)
 	if err := e.Seed(trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}); err != nil {
@@ -176,6 +187,7 @@ func newTrackerBoardFixtureOn(t *testing.T, opts trackerfake.Options, site track
 		ConfigureIsolation(a, IsolationConfig{TrackerOrigin: func(_, site string) (string, error) {
 			return srv.JiraURL(strings.TrimPrefix(site, "https://")), nil
 		}})
+		a.trackerCadence = setup.cadence
 	})
 	bus := transport.NewEventBus(64)
 	t.Cleanup(bus.Close)
@@ -197,7 +209,10 @@ func newTrackerBoardFixtureOn(t *testing.T, opts trackerfake.Options, site track
 	if _, err := a.store.CreateProject(project); err != nil {
 		t.Fatal(err)
 	}
-	listed := []trackerapp.ProjectBoard{{Connection: conn.ID, Board: "1", OpensFirst: true}}
+	var listed []trackerapp.ProjectBoard
+	for i, b := range site.Boards {
+		listed = append(listed, trackerapp.ProjectBoard{Connection: conn.ID, Board: fmt.Sprint(b.ID), OpensFirst: i == 0})
+	}
 	if got, err := a.SetProjectTrackerBoards(ctx, project.ID, listed); err != nil || !slices.Equal(got, listed) {
 		t.Fatalf("SetProjectTrackerBoards = %+v, %v", got, err)
 	}
@@ -247,8 +262,8 @@ func (f *trackerBoardFixture) boardHandles() (handles, pumps int) {
 
 // A board is reached end to end from a client: the project's list, the
 // subscribe, the event of its first read, a page, a change made in the
-// tracker reaching the client as an event and a patch, visibility, and
-// the release, through the bound methods with the real providers and
+// tracker reaching the client as an event and a patch, and the release,
+// through the bound methods with the real providers and
 // clients against the fake tracker.
 func TestATrackerBoardReachesItsClient(t *testing.T) {
 	t.Parallel()
@@ -268,6 +283,11 @@ func TestATrackerBoardReachesItsClient(t *testing.T) {
 		t.Fatalf("ProjectTrackerBoards = %+v, %v", listed, err)
 	}
 
+	// The board's first read waits in the fake until the board is seen
+	// unread.
+	if err := f.e.AddFault(trackerfake.Fault{Origin: trackerBoardOrigin, Kind: trackerfake.FaultHold}); err != nil {
+		t.Fatal(err)
+	}
 	sub := f.subscribe(t, ctx)
 	if sub.ID == "" || sub.Loaded {
 		t.Fatalf("the first subscribe of a board never read = %+v", sub)
@@ -275,6 +295,7 @@ func TestATrackerBoardReachesItsClient(t *testing.T) {
 	if _, err := f.a.TrackerBoard(ctx, sub.ID, nil); !hasCode(err, "tracker_board_not_read") {
 		t.Fatalf("TrackerBoard before the first read = %v", err)
 	}
+	f.e.ClearFaults(trackerBoardOrigin, "")
 	first := f.boardEvent(t, "for the first read", func(e trackerapp.BoardEvent) bool { return e.ReadAgain && e.Seq > sub.Seq })
 	if first.Scope.Board != "1" || first.Sync.ReadAt == 0 {
 		t.Fatalf("the first read's event %+v", first)
@@ -310,9 +331,6 @@ func TestATrackerBoardReachesItsClient(t *testing.T) {
 		t.Fatalf("a rename that moved no total sent the totals: %+v", patch.Totals)
 	}
 
-	if err := f.a.SetTrackerSubscriptionVisible(ctx, sub.ID, false); err != nil {
-		t.Fatal(err)
-	}
 	if err := f.a.ReleaseTrackerSubscription(ctx, sub.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -331,6 +349,143 @@ func TestATrackerBoardReachesItsClient(t *testing.T) {
 	}
 	if err := f.a.ReleaseTrackerSubscription(ctx, sub.ID); err != nil {
 		t.Fatalf("a second release = %v", err)
+	}
+}
+
+// boardReads counts the delta reads the fake answers per board, for a
+// test whose shown board is its clock.
+type boardReads struct {
+	mu   sync.Mutex
+	n    map[string]int
+	read chan struct{}
+}
+
+func newBoardReads() *boardReads {
+	return &boardReads{n: map[string]int{}, read: make(chan struct{}, 1)}
+}
+
+// observe is the engine's OnRequest: it counts an answered read of a
+// board's issues.
+func (r *boardReads) observe(req trackerfake.Request) {
+	if req.Route != "GET rest/software/1.0/board/{board}/issue" || req.Status == 0 {
+		return
+	}
+	board := strings.Split(strings.TrimPrefix(req.Path, "/rest/software/1.0/board/"), "/")[0]
+	r.mu.Lock()
+	r.n[board]++
+	r.mu.Unlock()
+	select {
+	case r.read <- struct{}{}:
+	default:
+	}
+}
+
+func (r *boardReads) of(board string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.n[board]
+}
+
+// waitFor waits until board has more than n reads.
+func (r *boardReads) waitFor(t *testing.T, board string, n int, what string) {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for r.of(board) <= n {
+		select {
+		case <-r.read:
+		case <-deadline:
+			t.Fatalf("%s: board %s read %d times, want more than %d", what, board, r.of(board), n)
+		}
+	}
+}
+
+// A board a client hides is not read while another board keeps reading,
+// and is read when the client shows it again.
+func TestAHiddenTrackerBoardIsNotRead(t *testing.T) {
+	t.Parallel()
+	site := trackerBoardSite()
+	clockBoard := site.Boards[0]
+	clockBoard.ID, clockBoard.Name = 2, "WEB board 2"
+	site.Boards = append(site.Boards, clockBoard)
+	reads := newBoardReads()
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{
+		site: site, engine: trackerfake.Options{OnRequest: reads.observe},
+		cadence: trackerapp.Cadence{Delta: 50 * time.Millisecond},
+	})
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
+	sub := f.subscribe(t, ctx)
+	if _, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "2", nil); err != nil {
+		t.Fatal(err)
+	}
+	clock := func(n int) {
+		t.Helper()
+		for range n {
+			reads.waitFor(t, "2", reads.of("2"), "the shown board's clock")
+		}
+	}
+	reads.waitFor(t, "1", 1, "the board before it is hidden")
+	if err := f.a.SetTrackerSubscriptionVisible(ctx, sub.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	clock(2) // a read of board 1 under way at the hide ends
+	hidden := reads.of("1")
+	clock(5)
+	if got := reads.of("1"); got != hidden {
+		t.Fatalf("the hidden board was read %d times over five reads of the shown one", got-hidden)
+	}
+	if err := f.a.SetTrackerSubscriptionVisible(ctx, sub.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	reads.waitFor(t, "1", hidden, "the board shown again")
+}
+
+// A refresh that waited its whole budget says whether it ran: one the
+// board's pump never took, busy with its own read, did not run and is
+// to be made again; one it took is still reading and its events follow.
+func TestARefreshCutAtItsBudgetSaysWhetherItRan(t *testing.T) {
+	t.Parallel()
+	held := make(chan struct{}, 16)
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: trackerBoardSite(), engine: trackerfake.Options{OnRequest: func(r trackerfake.Request) {
+		if r.Held {
+			held <- struct{}{}
+		}
+	}}})
+	t.Cleanup(func() { f.e.ClearFaults(trackerBoardOrigin, "") })
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
+	hold := func() {
+		t.Helper()
+		if err := f.e.AddFault(trackerfake.Fault{Origin: trackerBoardOrigin, Kind: trackerfake.FaultHold}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refresh := func(id string, beforeCut func()) error {
+		run, end := testutil.DeadlineContext(ctx)
+		answer := make(chan error, 1)
+		go func() { answer <- f.a.RefreshTrackerSubscription(run, id) }()
+		beforeCut()
+		end(errTrackerRefreshWait)
+		return <-answer
+	}
+
+	// The pump's first read is held, so the refresh waits to be taken.
+	hold()
+	sub := f.subscribe(t, ctx)
+	<-held
+	err := refresh(sub.ID, func() {})
+	if !hasCode(err, "tracker_refresh_not_run") {
+		t.Fatalf("a refresh the busy pump never took = %v, want tracker_refresh_not_run", err)
+	}
+	f.e.ClearFaults(trackerBoardOrigin, "")
+	f.boardEvent(t, "for the first read", func(e trackerapp.BoardEvent) bool { return e.ReadAgain && e.Seq > sub.Seq })
+
+	// The pump is idle: it takes the refresh, whose read is held.
+	for len(held) > 0 {
+		<-held
+	}
+	hold()
+	err = refresh(sub.ID, func() { <-held })
+	if !hasCode(err, "tracker_refresh_waiting") {
+		t.Fatalf("a refresh the pump took and is still reading = %v, want tracker_refresh_waiting", err)
 	}
 }
 
