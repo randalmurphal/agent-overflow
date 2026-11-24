@@ -252,24 +252,14 @@ describe('embedded HTML', () => {
     expect(tokens.map((t) => t.type)).toEqual(['html']);
   });
 
-  it('claims a <video> and consumes through its closing tag', () => {
-    const source = `<video src="/uploads/${HEX}/clip.mp4" controls></video>`;
+  it.each([
+    ['claims a <video> and consumes through its closing tag', `<video src="/uploads/${HEX}/clip.mp4" controls></video>`],
+    ['reads the first <source> when the video element carries no src', `<video controls><source src="/uploads/${HEX}/clip.mp4" type="video/mp4"></video>`],
+    ['consumes only the open tag of an unpaired <video>', `<video src="/uploads/${HEX}/clip.mp4">`],
+  ])('%s', (_name, source) => {
     const [token] = claimed(lex(`x ${source}`, fullStack(GITLAB_MR)));
     expect(token.raw).toBe(source);
     expect(token.href).toBe(`/uploads/${HEX}/clip.mp4`);
-  });
-
-  it('reads the first <source> when the video element carries no src', () => {
-    const source = `<video controls><source src="/uploads/${HEX}/clip.mp4" type="video/mp4"></video>`;
-    const [token] = claimed(lex(`x ${source}`, fullStack(GITLAB_MR)));
-    expect(token.raw).toBe(source);
-    expect(token.href).toBe(`/uploads/${HEX}/clip.mp4`);
-  });
-
-  it('consumes only the open tag of an unpaired <video>', () => {
-    const source = `<video src="/uploads/${HEX}/clip.mp4">`;
-    const [token] = claimed(lex(`x ${source}`, fullStack(GITLAB_MR)));
-    expect(token.raw).toBe(source);
   });
 
   it('leaves a video the forge does not serve to the sanitizer', () => {
@@ -381,9 +371,14 @@ describe('inside link text', () => {
     ['an <img>', `<img src="${PRIVATE}" alt="shot">`],
     ['a markdown image', `![shot](${PRIVATE})`],
   ])('claims %s', (_name, inner) => {
-    const links = linked(lex(`[${inner}](https://example.com)`, fullStack(GITHUB_PR)));
+    const tokens = lex(`[${inner}](https://example.com)`, fullStack(GITHUB_PR));
+    const links = linked(tokens);
     expect(links.map((each) => each.link)).toEqual(['https://example.com']);
     expect(links[0].claims.map((each) => [each.type, each.href, each.raw])).toEqual([['image', PRIVATE, inner]]);
+    // The host renders no control inside the author's link (R1), so the
+    // claim says where it is; a claim outside a link says nothing.
+    expect(inLinkOf(tokens)).toEqual([true]);
+    expect(inLinkOf(lex(`see ${inner} here`, fullStack(GITHUB_PR)))).toEqual([false]);
   });
 
   it('claims a gitlab upload image', () => {
@@ -392,18 +387,9 @@ describe('inside link text', () => {
     expect(link.claims.map((each) => each.raw)).toEqual([inner]);
   });
 
-  // The host renders no control inside the author's link (R1), so the
-  // claim says where it is; a claim outside a link says nothing.
-  it.each([
-    ['a <picture>', `<picture><img src="${PRIVATE}"></picture>`],
-    ['an <img>', `<img src="${PRIVATE}" alt="shot">`],
-    ['a markdown image', `![shot](${PRIVATE})`],
-    ['an <a href> around an <img>', `<a href="https://example.com/x"><img src="${PRIVATE}"></a>`],
-  ])('marks %s claimed in link text as inLink', (_name, inner) => {
-    const source = inner.startsWith('<a ') ? `see ${inner} here` : `[${inner}](https://example.com)`;
-    const images = inLinkOf(lex(source, fullStack(GITHUB_PR)));
-    expect(images).toEqual([true]);
-    expect(inLinkOf(lex(`see ${inner.startsWith('<a ') ? `<img src="${PRIVATE}">` : inner} here`, fullStack(GITHUB_PR)))).toEqual([false]);
+  it('marks an <a href> around an <img> claimed in link text as inLink', () => {
+    expect(inLinkOf(lex(`see <a href="https://example.com/x"><img src="${PRIVATE}"></a> here`, fullStack(GITHUB_PR)))).toEqual([true]);
+    expect(inLinkOf(lex(`see <img src="${PRIVATE}"> here`, fullStack(GITHUB_PR)))).toEqual([false]);
     expect(inLinkOf(lex(`${ASSET}`, fullStack(GITHUB_PR)))).toEqual([false]);
   });
 

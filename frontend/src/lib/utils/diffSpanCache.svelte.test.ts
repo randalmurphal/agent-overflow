@@ -1041,28 +1041,6 @@ describe('seedPayloadPatchSpans', () => {
     expect(getSpansForLine(file, file.lines[2])?.r).toEqual(['const l = 1;'.length, 1]);
   });
 
-  it('aborts ingest when the thread is evicted during the class-table await', async () => {
-    resetSyntaxClassNamesForTest();
-    const file = makeFile('src/evicted.ts', ['const e = 1;']);
-    let releaseTable!: () => void;
-    const tableGate = new Promise<void>((resolve) => { releaseTable = resolve; });
-    setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
-    setBindingMock('HighlightClassNames', async () => {
-      await tableGate;
-      return ['none', 'keyword'];
-    });
-
-    const ingest = seedPayloadPatchSpans('thread-1', [seedFor(file)]);
-    evictDiffSpansForThread('thread-1');
-    releaseTable();
-    await ingest;
-
-    // The eviction already swept this thread; a post-await insert
-    // would strand entries cleanup can no longer remove.
-    expect(__diffSpanCacheStatsForTest().entries).toBe(0);
-    expect(__diffSpanCacheStatsForTest().ownerKeys).toBe(0);
-  });
-
   it('retains eviction epochs only for threads with a pending ingest', async () => {
     // No ingest awaiting the class table: eviction records nothing —
     // there is no in-flight registration to invalidate, and recording
@@ -1093,10 +1071,13 @@ describe('seedPayloadPatchSpans', () => {
     releaseTable();
     await ingest;
     // The thread's last pending ingest deletes its epoch on the way
-    // out; the eviction still aborted the ingest's registration.
+    // out; the eviction still aborted the ingest's registration. The
+    // eviction already swept this thread, so a post-await insert would
+    // strand entries cleanup can no longer remove.
     expect(__diffSpanCacheStatsForTest().evictEpochs).toBe(0);
     expect(__diffSpanCacheStatsForTest().pendingIngestThreads).toBe(0);
     expect(__diffSpanCacheStatsForTest().entries).toBe(0);
+    expect(__diffSpanCacheStatsForTest().ownerKeys).toBe(0);
   });
 
   it('a test reset mid-await invalidates the pre-reset ingest', async () => {

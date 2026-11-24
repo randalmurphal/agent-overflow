@@ -24,9 +24,9 @@ describe('commit selections', () => {
     expect(commitSelectionBetween(COMMITS, 6, sha('d'), sha('d'))).toEqual({ first: sha('d'), last: sha('d') });
   });
 
-  it('turns a run over the whole list into All commits, but keeps a one-commit list\'s commit', () => {
-    expect(commitSelectionBetween(COMMITS, 6, sha('a'), sha('f'))).toBeNull();
-    expect(commitSelectionFromHere(COMMITS, 6, sha('a'))).toBeNull();
+  // A run over the whole of a longer list is All commits: the 'complete'
+  // row of the table below.
+  it('keeps a one-commit list\'s commit rather than reading it as All commits', () => {
     const only = [COMMITS[0]];
     expect(commitSelectionBetween(only, 1, sha('f'), sha('f'))).toEqual({ first: sha('f'), last: sha('f') });
   });

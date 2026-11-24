@@ -11,32 +11,16 @@ import {
 } from './claudeSubagentLabel';
 
 describe('titleCaseClaudeSubagentToken', () => {
-  it('returns "" for empty input so callers can fall through without a guard', () => {
-    expect(titleCaseClaudeSubagentToken('')).toBe('');
-  });
-
-  it('title-cases a single lowercase token', () => {
-    expect(titleCaseClaudeSubagentToken('explore')).toBe('Explore');
-  });
-
-  it('splits kebab-case into capitalized words', () => {
-    expect(titleCaseClaudeSubagentToken('general-purpose')).toBe('General Purpose');
-  });
-
-  it('splits snake_case into capitalized words', () => {
-    expect(titleCaseClaudeSubagentToken('code_reviewer')).toBe('Code Reviewer');
-  });
-
-  it('splits CamelCase boundaries into capitalized words', () => {
-    expect(titleCaseClaudeSubagentToken('spawnAgent')).toBe('Spawn Agent');
-  });
-
-  it('collapses runs of mixed delimiters and skips empties', () => {
-    expect(titleCaseClaudeSubagentToken(' code__reviewer--lead ')).toBe('Code Reviewer Lead');
-  });
-
-  it('leaves already-capitalised tokens untouched', () => {
-    expect(titleCaseClaudeSubagentToken('Explore')).toBe('Explore');
+  it.each([
+    ['returns "" for empty input so callers can fall through without a guard', '', ''],
+    ['title-cases a single lowercase token', 'explore', 'Explore'],
+    ['splits kebab-case into capitalized words', 'general-purpose', 'General Purpose'],
+    ['splits snake_case into capitalized words', 'code_reviewer', 'Code Reviewer'],
+    ['splits CamelCase boundaries into capitalized words', 'spawnAgent', 'Spawn Agent'],
+    ['collapses runs of mixed delimiters and skips empties', ' code__reviewer--lead ', 'Code Reviewer Lead'],
+    ['leaves already-capitalised tokens untouched', 'Explore', 'Explore'],
+  ])('%s', (_name, raw, want) => {
+    expect(titleCaseClaudeSubagentToken(raw)).toBe(want);
   });
 });
 

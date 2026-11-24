@@ -92,13 +92,16 @@ describe('handleExternalURL', () => {
     resetRunMode();
   });
 
-  it('routes supported URLs through the OpenExternalURL binding', async () => {
+  it.each([
+    ['a supported URL', 'https://example.com/docs'],
+    ['a handler-scheme URL', 'mailto:test@example.com'],
+  ])('routes %s through the OpenExternalURL binding', async (_name, url) => {
     const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
 
-    const handled = await handleExternalURL('https://example.com/docs');
+    const handled = await handleExternalURL(url);
 
     expect(handled).toBe(true);
-    expect(open).toHaveBeenCalledWith('https://example.com/docs');
+    expect(open).toHaveBeenCalledWith(url);
     expect(window.open).not.toHaveBeenCalled();
   });
 
@@ -109,15 +112,6 @@ describe('handleExternalURL', () => {
 
     expect(handled).toBe(false);
     expect(open).not.toHaveBeenCalled();
-  });
-
-  it('routes a handler-scheme URL through the OpenExternalURL binding', async () => {
-    const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
-
-    const handled = await handleExternalURL('mailto:test@example.com');
-
-    expect(handled).toBe(true);
-    expect(open).toHaveBeenCalledWith('mailto:test@example.com');
   });
 
   it('uses browser-native opening in client mode', async () => {
@@ -530,69 +524,33 @@ describe('mod+click on an ordinary external link', () => {
     expect(act).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to the plain behaviour off host, where there is no pane to open', async () => {
-    // A paired device holds no `host`: the companion pane is a native view
-    // the host process paints, which no remote client renders. Which of
-    // the two plain doors that page then uses is the run mode's answer,
-    // not this branch's, so the assertion is that the click took the
-    // ordinary external path at all.
-    await pairWithScopes(OBSERVE_SCOPES);
-    const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
-    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ threadId: 'thread-1', kind: 'state', pages: [] })));
-
-    expect(modClick(linkInThread())).toBe(false);
-    await waitFor(() =>
-      expect(openedExternally(systemOpen, 'https://example.com/docs')).toBe(true),
-    );
-    expect(act).not.toHaveBeenCalled();
-  });
-
-  it('falls back to the plain behaviour in a page that is not the host window', async () => {
-    // A browser tab on the host holds `host` but not the native view, so a
-    // page minted from here would show only in the host's own window.
-    setHostWindowFromBootstrap(false);
-    try {
-      const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
-      const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ threadId: 'thread-1', kind: 'state', pages: [] })));
-
-      expect(modClick(linkInThread())).toBe(false);
-      await waitFor(() =>
-        expect(openedExternally(systemOpen, 'https://example.com/docs')).toBe(true),
-      );
-      expect(act).not.toHaveBeenCalled();
-    } finally {
-      setHostWindowFromBootstrap(true);
-    }
-  });
-
-  it('falls back to the plain behaviour when the thread runs on another machine', async () => {
-    // `host` in hand says nothing about WHERE the pane would open:
-    // `browserCompanionAct` routes to the thread's backend, so on a thread
-    // attached to another machine the tab would be minted in an engine
-    // this window cannot paint, and the person would see nothing happen.
-    noteThread('thread-1', 'laptop');
-    const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
-    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ threadId: 'thread-1', kind: 'state', pages: [] })));
-
-    expect(modClick(linkInThread())).toBe(false);
-    await waitFor(() =>
-      expect(openedExternally(systemOpen, 'https://example.com/docs')).toBe(true),
-    );
-    expect(act).not.toHaveBeenCalled();
-  });
-
-  // The click can show no tab: no engine on the home backend, the browser
-  // turned off, or a compact layout, which shows no browser pane. The link
-  // still opens, the ordinary way.
+  // The click can show no tab, and the link still opens the ordinary way.
+  // Which of the two plain doors the page then uses is the run mode's
+  // answer, not this branch's, so the assertion is that the click took the
+  // ordinary external path at all.
   for (const [name, arrange] of [
+    // A paired device holds no `host`: the companion pane is a native view
+    // the host process paints, which no remote client renders.
+    ['off host, where there is no pane to open', () => pairWithScopes(OBSERVE_SCOPES)],
+    // A browser tab on the host holds `host` but not the native view, so a
+    // page minted from here would show only in the host's own window. The
+    // between-test reset (testResets.ts) restores the host window.
+    ['in a page that is not the host window', () => setHostWindowFromBootstrap(false)],
+    // No engine on the home backend, the browser turned off, or a compact
+    // layout, which shows no browser pane.
     ['with no browser engine', () => __setTransportHelloForTest({ protocolVersion: 1, capabilities: [],
       backendId: '', backendName: '', serverTimeMs: 0, clockSkewMs: 0,
       bundleId: '', bundleVersion: '', minShellBuild: 0 })],
     ['with the browser turned off', () => applySettingsSnapshot({ browserEnabled: false })],
     ['under compact layout', () => setCompactLayoutForTest(true)],
+    // `host` in hand says nothing about WHERE the pane would open:
+    // `browserCompanionAct` routes to the thread's backend, so on a thread
+    // attached to another machine the tab would be minted in an engine
+    // this window cannot paint, and the person would see nothing happen.
+    ['when the thread runs on another machine', () => noteThread('thread-1', 'laptop')],
   ] as const) {
     it(`falls back to the plain behaviour ${name}`, async () => {
-      arrange();
+      await arrange();
       const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
       const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ threadId: 'thread-1', kind: 'state', pages: [] })));
 

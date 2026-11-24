@@ -425,11 +425,11 @@ describe('trayTaskLabel', () => {
 describe('deriveTrayTasks', () => {
   const RETENTION_MS = 2_000;
 
-  it('pairs launch with completion and emits the completion status', () => {
+  it.each(['completed', 'killed'] as const)('pairs launch with a %s completion and emits its status', (status) => {
     const launch = makeItem({ id: 'L', status: 'running', createdAt: 100, updatedAt: 100 });
     const completion = makeItem({
       id: 'C',
-      status: 'completed',
+      status,
       completionOf: 'L',
       createdAt: 500,
       updatedAt: 500,
@@ -438,25 +438,10 @@ describe('deriveTrayTasks', () => {
     const out = deriveTrayTasks([launch, completion], 600, RETENTION_MS);
     expect(out).toHaveLength(1);
     expect(out[0].rowId).toBe('L');
-    expect(out[0].status).toBe('completed');
+    expect(out[0].status).toBe(status);
     expect(out[0].launch?.id).toBe('L');
     expect(out[0].completion?.id).toBe('C');
     expect(out[0].elapsedMs).toBe(500);
-  });
-
-  it('maps a killed completion through to the killed status', () => {
-    const launch = makeItem({ id: 'L', status: 'running', createdAt: 100, updatedAt: 100 });
-    const completion = makeItem({
-      id: 'C',
-      status: 'killed',
-      completionOf: 'L',
-      createdAt: 500,
-      updatedAt: 500,
-      isBackground: false,
-    });
-    const out = deriveTrayTasks([launch, completion], 600, RETENTION_MS);
-    expect(out).toHaveLength(1);
-    expect(out[0].status).toBe('killed');
   });
 
   it('running launch without completion stays in the list and reports elapsed', () => {
