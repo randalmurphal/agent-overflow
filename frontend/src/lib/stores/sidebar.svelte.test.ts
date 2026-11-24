@@ -104,21 +104,6 @@ describe('sidebar store', () => {
       setProjectSortMode('createdAt');
       expect(getProjectSortMode()).toBe('createdAt');
     });
-
-    it('falls back to lastActivity when persisted value is unknown', () => {
-      localStorage.setItem('agent-overflow:sidebar:projectSortMode', 'bogus');
-      resetSidebarForTest();
-      // Setting and reading immediately uses the in-memory $state, but
-      // the read function is called via getProjectSortMode which reads
-      // the current state — verify the fallback path through a fresh read.
-      localStorage.setItem('agent-overflow:sidebar:projectSortMode', 'bogus');
-      // The store's read happens at module init; this test guards the
-      // PROJECT_SORT_MODES.includes check within readProjectSortMode.
-      // Call setProjectSortMode to a valid value to confirm the writer
-      // path doesn't accept invalid input:
-      setProjectSortMode('lastActivity');
-      expect(getProjectSortMode()).toBe('lastActivity');
-    });
   });
 
   describe('syncSidebarFromSettings', () => {
@@ -148,42 +133,23 @@ describe('sidebar store', () => {
       expect(updateMock!.mock.calls.length).toBe(0);
     });
 
-    it('the frontend keeps its choice when the host has another value', async () => {
+    // The upgrade row: memory holds a non-default value (populated from
+    // localStorage at module init), but Go settings are at the factory
+    // default because the field did not exist before this version.
+    it.each([
+      ['the frontend keeps its choice when the host has another value', 'createdAt', { projectSortMode: 'manual' }],
+      ['pushes the localStorage sort mode to Go when Go has the default but memory does not (upgrade migration)', 'manual', {}],
+    ] as const)('%s', async (_name, local, host) => {
       setBindingMock('UpdateSettings', async () => null);
-      setProjectSortMode('createdAt');
+      setProjectSortMode(local);
 
-      const serverSettings = makeSettings({ projectSortMode: 'manual' });
+      const serverSettings = makeSettings(host);
       setBindingMock('GetSettings', async () => serverSettings);
       const updateMock = setBindingMock('UpdateSettings', async () => serverSettings);
       await loadSettings();
 
       syncSidebarFromSettings();
-      expect(getProjectSortMode()).toBe('createdAt');
-      expect(updateMock!.mock.calls.length).toBe(0);
-    });
-
-    it('pushes the localStorage sort mode to Go when Go has the default but memory does not (upgrade migration)', async () => {
-      // Simulate the upgrade scenario: user has a non-default value in
-      // memory (populated from localStorage at module init), but Go
-      // settings are at the factory default because the field didn't
-      // exist before this version.
-      setBindingMock('UpdateSettings', async () => null);
-      setProjectSortMode('manual');
-      expect(getProjectSortMode()).toBe('manual');
-
-      const defaultGoSettings = makeSettings();
-      setBindingMock('GetSettings', async () => defaultGoSettings);
-      const updateMock = setBindingMock('UpdateSettings', async (patch: Partial<typeof defaultGoSettings>) => ({
-        ...defaultGoSettings,
-        ...patch,
-      }));
-      await loadSettings();
-
-      syncSidebarFromSettings();
-
-      // The in-memory value should NOT be overwritten with the default.
-      expect(getProjectSortMode()).toBe('manual');
-
+      expect(getProjectSortMode()).toBe(local);
       expect(updateMock!.mock.calls.length).toBe(0);
     });
 

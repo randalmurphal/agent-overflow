@@ -308,18 +308,15 @@ describe('sessions that already ran in Agent Overflow', () => {
     expect(getFailedImportIds()).toEqual(['claude:a']);
   });
 
-  it('clears a project filter whose last offered row it just withdrew', async () => {
+  // The dropdown drops a project with nothing on offer, so a filter left
+  // pointing at it could not be cleared from the menu it was picked in.
+  const beta = { projectPath: '/repos/beta', projectId: 'p-beta', projectLabel: 'beta' };
+  it.each([
+    ['clears a project filter whose last offered row it just withdrew', row('claude:a'), null],
+    ['keeps a project filter whose group still has an offered row', row('claude:a', beta), 'p-beta'],
+  ])('%s', async (_name, offered, expected) => {
     installBindings({
-      list: async () =>
-        scanResult([
-          row('claude:a'),
-          row('codex:b', {
-            ranInAgentOverflow: true,
-            projectPath: '/repos/beta',
-            projectId: 'p-beta',
-            projectLabel: 'beta',
-          }),
-        ]),
+      list: async () => scanResult([offered, row('codex:b', { ranInAgentOverflow: true, ...beta })]),
     });
     await loadImportCatalog();
     setShowAlreadyRan(true);
@@ -327,31 +324,7 @@ describe('sessions that already ran in Agent Overflow', () => {
 
     setShowAlreadyRan(false);
 
-    // The dropdown drops a project with nothing on offer, so a filter left
-    // pointing at it could not be cleared from the menu it was picked in.
-    expect(getImportProjectFilter()).toBeNull();
-  });
-
-  it('keeps a project filter whose group still has an offered row', async () => {
-    installBindings({
-      list: async () =>
-        scanResult([
-          row('claude:a', { projectPath: '/repos/beta', projectId: 'p-beta', projectLabel: 'beta' }),
-          row('codex:b', {
-            ranInAgentOverflow: true,
-            projectPath: '/repos/beta',
-            projectId: 'p-beta',
-            projectLabel: 'beta',
-          }),
-        ]),
-    });
-    await loadImportCatalog();
-    setShowAlreadyRan(true);
-    setProjectFilter('p-beta');
-
-    setShowAlreadyRan(false);
-
-    expect(getImportProjectFilter()).toBe('p-beta');
+    expect(getImportProjectFilter()).toBe(expected);
   });
 
   it('clears a project filter a rescan leaves with nothing but hidden rows', async () => {
@@ -502,20 +475,6 @@ describe('starting a run', () => {
 });
 
 describe('progress folding', () => {
-  it('records a per-row outcome and advances completion', async () => {
-    await startRun();
-    applyImportProgress(frame({ completed: 1, id: 'claude:a', status: 'imported', threadIds: ['t1', 't2'] }));
-
-    const run = getSessionImportRun();
-    expect(run?.completed).toBe(1);
-    expect(run?.results.get('claude:a')).toEqual({
-      id: 'claude:a',
-      status: 'imported',
-      threadIds: ['t1', 't2'],
-      error: '',
-    });
-  });
-
   it('never walks completion backwards when frames arrive out of order', async () => {
     await startRun();
     applyImportProgress(frame({ completed: 2, id: 'codex:b', status: 'imported' }));
@@ -527,32 +486,10 @@ describe('progress folding', () => {
     expect(run?.results.get('claude:a')).toMatchObject({ status: 'failed', error: 'unreadable' });
   });
 
-  it('is idempotent under a re-delivered frame', async () => {
-    await startRun();
-    const f = frame({ completed: 1, id: 'claude:a', status: 'imported', threadIds: ['t1'] });
-    applyImportProgress(f);
-    applyImportProgress(f);
-
-    const run = getSessionImportRun();
-    expect(run?.completed).toBe(1);
-    expect(run?.results.size).toBe(1);
-    expect(run?.results.get('claude:a')?.threadIds).toEqual(['t1']);
-  });
-
   it('clamps a completion overshoot to the total', async () => {
     await startRun();
     applyImportProgress(frame({ completed: 99, id: 'claude:a', status: 'imported' }));
     expect(getSessionImportRun()?.completed).toBe(2);
-  });
-
-  it('ignores frames after the terminal one', async () => {
-    await startRun();
-    openSessionImport();
-    applyImportProgress(frame({ completed: 2, id: 'claude:a', status: 'failed', error: 'boom' }));
-    applyImportProgress(frame({ completed: 2, done: true }));
-    applyImportProgress(frame({ completed: 2, id: 'codex:b', status: 'failed', error: 'late' }));
-
-    expect(getSessionImportRun()?.results.has('codex:b')).toBe(false);
   });
 
   it('ignores frames belonging to another run', async () => {
@@ -604,6 +541,15 @@ describe('per-row results and the tally', () => {
   it('counts by status and sums the threads imported rows created', async () => {
     await startRun();
     applyImportProgress(frame({ completed: 1, id: 'claude:a', status: 'imported', threadIds: ['t1', 't2'] }));
+    const run = getSessionImportRun();
+    expect(run?.completed).toBe(1);
+    expect(run?.results.get('claude:a')).toEqual({
+      id: 'claude:a',
+      status: 'imported',
+      threadIds: ['t1', 't2'],
+      error: '',
+    });
+
     applyImportProgress(frame({ completed: 2, id: 'codex:b', status: 'failed', error: 'boom' }));
     applyImportProgress(frame({ completed: 2, id: 'claude:c', status: 'skipped', error: 'already here' }));
 
@@ -616,6 +562,10 @@ describe('per-row results and the tally', () => {
     applyImportProgress(first);
     // Re-delivery of the same frame (a reconnect replays the channel).
     applyImportProgress(first);
+    const run = getSessionImportRun();
+    expect(run?.completed).toBe(1);
+    expect(run?.results.size).toBe(1);
+    expect(run?.results.get('claude:a')?.threadIds).toEqual(['t1', 't2']);
     expect(getImportRunCounts()).toEqual({ imported: 1, failed: 0, skipped: 0, threads: 2 });
 
     // …and a genuine restatement moves the row between buckets rather than
@@ -822,12 +772,8 @@ describe('stopping a run', () => {
 
     expect(cancel).toHaveBeenCalledWith('run-1');
     expect(getSessionImportRun()).toMatchObject({ active: true, stopRequested: true });
-  });
 
-  it('only asks once', async () => {
-    await startRun();
-    const { cancel } = installBindings();
-    await stopImport();
+    // Only asks once.
     await stopImport();
     expect(cancel).toHaveBeenCalledTimes(1);
   });

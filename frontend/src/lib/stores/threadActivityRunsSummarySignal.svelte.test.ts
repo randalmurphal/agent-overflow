@@ -40,27 +40,21 @@ describe('membershipEpoch', () => {
     expect(trimmed).toBeGreaterThan(grown);
   });
 
-  it('moves when a member is REPLACED at the same count', () => {
-    // The count-only stamp this replaced could not see a swap. The run
-    // keeps its identity because the surrounding members still match.
+  // REPLACED: the count-only stamp this replaced could not see a swap. The
+  // run keeps its identity because the surrounding members still match.
+  // Reordered: membership is ordered, not a set. The summary's running label
+  // is the last active member in iteration order, so a reorder is a
+  // different summary even though nothing joined or left. A set-equality
+  // test read this as unchanged and left the header naming a tool that had
+  // already stopped being the one in flight.
+  it.each([
+    ['moves when a member is REPLACED at the same count', ['a', 'x', 'c']],
+    ['moves when the SAME members arrive in a different order', ['a', 'c', 'b']],
+  ])('%s', (_name, next) => {
     const runs = registry();
     const before = pass(runs, [['a', 'b', 'c']])[0];
 
-    const after = pass(runs, [['a', 'x', 'c']])[0];
-    expect(after.runId).toBe(before.runId);
-    expect(after.membershipEpoch).toBeGreaterThan(before.membershipEpoch);
-  });
-
-  it('moves when the SAME members arrive in a different order', () => {
-    // Membership is ordered, not a set: the summary's running label is the
-    // last active member in iteration order, so a reorder is a different
-    // summary even though nothing joined or left. A set-equality test read
-    // this as unchanged and left the header naming a tool that had already
-    // stopped being the one in flight.
-    const runs = registry();
-    const before = pass(runs, [['a', 'b', 'c']])[0];
-
-    const after = pass(runs, [['a', 'c', 'b']])[0];
+    const after = pass(runs, [next])[0];
     expect(after.runId).toBe(before.runId);
     expect(after.membershipEpoch).toBeGreaterThan(before.membershipEpoch);
   });
