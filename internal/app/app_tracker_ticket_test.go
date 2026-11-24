@@ -270,13 +270,18 @@ func TestATrackerUploadCutShortAttachesNothing(t *testing.T) {
 	}
 }
 
-// Every hop gives an upload's answer transport.UploadAnswerAllowance after
-// its last byte, and the attach is bounded by it: it covers what the
-// attach does then, the tracker's answer and the refresh.
-func TestTheUploadAnswerAllowanceCoversTheAttach(t *testing.T) {
+// Every hop gives a carried transfer's answer transport.AnswerAllowance to
+// begin, and the attach is bounded by it: it covers what an attach does
+// after its last byte (the tracker's answer and the refresh) and what a
+// download waits for its first byte (the tracker's answer and its first
+// body byte).
+func TestTheAnswerAllowanceCoversTheTracker(t *testing.T) {
 	t.Parallel()
-	if need := trackerapi.AnswerTimeout + trackerWriteBudget; transport.UploadAnswerAllowance < need {
-		t.Fatalf("UploadAnswerAllowance %s is shorter than the tracker's answer and the refresh, %s", transport.UploadAnswerAllowance, need)
+	if need := trackerapi.AnswerTimeout + trackerWriteBudget; transport.AnswerAllowance < need {
+		t.Errorf("AnswerAllowance %s is shorter than an attach's answer and refresh, %s", transport.AnswerAllowance, need)
+	}
+	if need := trackerapi.AnswerTimeout + transport.TransferStallWindow; transport.AnswerAllowance < need {
+		t.Errorf("AnswerAllowance %s is shorter than a download's wait for its first byte, %s", transport.AnswerAllowance, need)
 	}
 }
 

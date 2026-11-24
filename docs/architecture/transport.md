@@ -306,31 +306,35 @@ harness receivers stay local-only.
 ## Byte route deadlines
 
 The ticketed byte routes under `/attachments/` replace the server's 60 s
-read and write timeouts per request. An upload's bytes, and a thread
-attachment's download, get the transfer window for their length
-(`AttachmentTransferWindow`, a 5 minute floor at 35 KiB/s;
+read and write timeouts per request. On the backend, an upload's bytes,
+and a thread attachment's download, get the transfer window for their
+length (`AttachmentTransferWindow`, a 5 minute floor at 35 KiB/s;
 `AttachmentTransferWindowFor`). A tracker upload's answer, which comes
-after the tracker's answer and the refresh, gets the whole upload's
-time (`UploadWindow`: the window, `UploadAnswerAllowance` and a minute
-to write it), and every relay (`backendproxy.CarryTransfer`) gives an
-upload it carries that time for its read and write deadlines alike,
-since a read deadline that passes while the answer is awaited ends the
-request through net/http's background read. The other uploads it
-carries answer at once, so for them the longer time only lets a page
-that stopped sending hold the relay longer.
+after the tracker's answer and the refresh, gets the whole upload's time
+(`UploadWindow`: the window, `AnswerAllowance` and a minute to write it).
 
-The tracker's download route and every download a relay carries (a
-request with no body; `DownloadByProgress` refuses one that declares a
-body) are bounded by progress instead: no read deadline, for the same
-reason, and a write deadline moved to 90 s past each write
-(`TransferStallWindow`), at most once a second. Such a download that
-stops moving ends 89 to 90 s after its last byte, and one that keeps
-moving has no total. A relayed download whose backend stops sending
-ends when the backend does: the tracker client's own 90 s stall ends
-the backend's response, which the relay carries as a cut. A link that
-dies silently ends through TCP keepalive on the relay's dial (30 s idle,
-then 9 probes 15 s apart: about 165 s; `net/http.DefaultTransport`,
-`deviceclient.pinnedDialer`).
+The tracker's download route is bounded by progress instead (a request
+with no body; `DownloadByProgress` refuses one that declares a body): no
+read deadline, since a read deadline that passes while the answer is
+awaited ends the request through net/http's background read, and a write
+deadline moved to 90 s past each write (`TransferStallWindow`), at most
+once a second (`ProgressEvery`). Such a download that stops moving ends
+89 to 90 s after its last byte, and one that keeps moving has no total.
+
+A relay (`backendproxy.CarryTransfer`) carries every byte route with one
+rule, owned by one timer per request (`internal/backendproxy/transfer.go`):
+the transfer ends when no byte moves for `TransferStallWindow`, in either
+direction, except that the upstream has `AnswerAllowance` (8 min) from the
+request's last byte to its answer's headers. Nothing is sized from a
+declared length, and nothing relies on the backend's timers or on a
+dialer's keepalive, since the backend may be another computer on another
+version. A page that stops sending is answered 408, and an upstream that
+stops taking the body, does not begin its answer in time, or stops
+sending before its headers are written is answered 504, each with a
+plain-text reason the page quotes. An upstream that stops after its
+headers has the page's answer cut. An upstream that answers before the
+body's end has its answer carried at once: the relay ends its read of the
+page rather than wait for the rest of the body.
 
 ## Method metadata and routing
 

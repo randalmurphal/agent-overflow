@@ -178,7 +178,7 @@ func (s *Server) handleTrackerUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	// The bytes get the transfer window for their size; the answer, which
 	// comes after the tracker's answer and the refresh, the whole upload's
-	// window (UploadWindow), as every relay gives it.
+	// window (UploadWindow).
 	window := s.trackerUploadWindow(upload.Size)
 	extendTransferDeadline(w, window)
 	rc := http.NewResponseController(w)

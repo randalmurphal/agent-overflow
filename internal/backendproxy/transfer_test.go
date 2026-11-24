@@ -1,0 +1,353 @@
+package backendproxy
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// carrierFor is a carrier of upstream with its windows shortened.
+func carrierFor(t *testing.T, upstream *httptest.Server, stall, allowance time.Duration) *Carrier {
+	t.Helper()
+	c, err := New(Config{
+		WSURL: "ws://" + strings.TrimPrefix(upstream.URL, "http://") + "/ws",
+		Token: "upstream-launch-token",
+	})
+	if err != nil {
+		t.Fatalf("new carrier: %v", err)
+	}
+	c.stall, c.allowance = stall, allowance
+	return c
+}
+
+// relayOf serves c as the relay a page reaches. It closes after every
+// connection a test opened to it, so a relay still blocked on one fails
+// the test rather than hanging it.
+func relayOf(t *testing.T, c *Carrier) *httptest.Server {
+	t.Helper()
+	relay := httptest.NewServer(http.HandlerFunc(c.CarryTransfer))
+	t.Cleanup(relay.Close)
+	return relay
+}
+
+// sendRaw writes head and body to the relay over a connection of its own,
+// which then sends nothing more, and answers it.
+func sendRaw(t *testing.T, relay *httptest.Server, head string, body []byte) net.Conn {
+	t.Helper()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(relay.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := conn.Write(append([]byte(head), body...)); err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+// readAnswer reads the whole answer on conn within within.
+func readAnswer(t *testing.T, conn net.Conn, within time.Duration, what string) (*http.Response, string) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(within)); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("%s: no answer within %s: %v", what, within, err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("%s: the answer's body: %v", what, err)
+	}
+	return resp, string(body)
+}
+
+// TestCarryTransfer_AnEarlyAnswerReachesAStalledPage — a page that sent half
+// its body and stopped gets the answer the upstream gave early, whole, at
+// once: the relay does not wait out the body's read.
+func TestCarryTransfer_AnEarlyAnswerReachesAStalledPage(t *testing.T) {
+	const answer = `{"parts":[{"state":"not_sent"}]}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.ReadFull(r.Body, make([]byte, 5)); err != nil {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Connection", "close")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, answer)
+	}))
+	t.Cleanup(upstream.Close)
+	relay := relayOf(t, carrierFor(t, upstream, time.Minute, time.Minute))
+	conn := sendRaw(t, relay, "PUT /attachments/tracker/upload?ticket=t HTTP/1.1\r\nHost: relay\r\nContent-Length: 100000\r\n\r\n", make([]byte, 50000))
+	resp, body := readAnswer(t, conn, 5*time.Second, "an early answer to a stalled page")
+	if resp.StatusCode != http.StatusOK || body != answer {
+		t.Fatalf("an early answer to a stalled page: %d %q", resp.StatusCode, body)
+	}
+}
+
+// TestCarryTransfer_APageThatStopsSendingIsAnswered — a page that stops
+// sending is answered once the stall window passes, with what happened and
+// what to do, and the upstream request ends with it.
+func TestCarryTransfer_APageThatStopsSendingIsAnswered(t *testing.T) {
+	ended := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(ended)
+		_, _ = io.Copy(io.Discard, r.Body)
+	}))
+	t.Cleanup(upstream.Close)
+	relay := relayOf(t, carrierFor(t, upstream, 2*time.Second, time.Minute))
+	conn := sendRaw(t, relay, "PUT /attachments/upload?ticket=t HTTP/1.1\r\nHost: relay\r\nContent-Length: 65536\r\n\r\n", make([]byte, 32768))
+	resp, body := readAnswer(t, conn, 8*time.Second, "a page that stopped sending")
+	if resp.StatusCode != http.StatusRequestTimeout || !strings.Contains(body, "the file stopped arriving at this computer for 2 seconds, so it was not sent on; send it again") {
+		t.Fatalf("a page that stopped sending: %d %q", resp.StatusCode, body)
+	}
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the upstream request outlived the page's stall")
+	}
+}
+
+// TestCarryTransfer_AnUpstreamThatWithholdsItsHeaders — an upstream that
+// takes the request and never begins its answer is ended at the answer
+// allowance, and the page is told.
+func TestCarryTransfer_AnUpstreamThatWithholdsItsHeaders(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	defer close(release)
+	relay := relayOf(t, carrierFor(t, upstream, time.Minute, 2*time.Second))
+	conn := sendRaw(t, relay, "GET /attachments/tracker/501?ticket=t HTTP/1.1\r\nHost: relay\r\n\r\n", nil)
+	resp, body := readAnswer(t, conn, 8*time.Second, "an upstream withholding its headers")
+	if resp.StatusCode != http.StatusGatewayTimeout || !strings.Contains(body, "the computer that holds it did not begin to answer within 2 seconds; try again") {
+		t.Fatalf("an upstream withholding its headers: %d %q", resp.StatusCode, body)
+	}
+}
+
+// TestCarryTransfer_AnUpstreamThatStopsMidAnswer — an upstream that sends its
+// headers and one chunk and then nothing has the page's answer cut once the
+// stall window passes.
+func TestCarryTransfer_AnUpstreamThatStopsMidAnswer(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 1024))
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	defer close(release)
+	relay := relayOf(t, carrierFor(t, upstream, 2*time.Second, time.Minute))
+	conn := sendRaw(t, relay, "GET /attachments/tracker/501?ticket=t HTTP/1.1\r\nHost: relay\r\n\r\n", nil)
+	if err := conn.SetReadDeadline(time.Now().Add(8 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("no headers: %v", err)
+	}
+	got, err := io.ReadAll(resp.Body)
+	var timeout net.Error
+	if err == nil || errors.As(err, &timeout) && timeout.Timeout() {
+		t.Fatalf("an upstream that stopped after %d bytes: the answer was not cut within 8s (%v)", len(got), err)
+	}
+}
+
+// TestCarryTransfer_AnUploadOfNoDeclaredLength — an upload that declares no
+// length is bounded by its progress alone, and its answer has the allowance
+// from its last byte: one that moves for longer than both windows together
+// and is answered late still reaches the page.
+func TestCarryTransfer_AnUploadOfNoDeclaredLength(t *testing.T) {
+	const answer = `{"parts":[{"state":"applied"}]}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			return
+		}
+		time.Sleep(1500 * time.Millisecond)
+		_, _ = io.WriteString(w, answer)
+	}))
+	t.Cleanup(upstream.Close)
+	relay := relayOf(t, carrierFor(t, upstream, 2*time.Second, 2*time.Second))
+	pr, pw := io.Pipe()
+	go func() {
+		for range 10 {
+			if _, err := pw.Write(make([]byte, 1024)); err != nil {
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		_ = pw.Close()
+	}()
+	req, err := http.NewRequest(http.MethodPut, relay.URL+"/attachments/tracker/upload?ticket=t", pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.ContentLength = -1
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("an upload of no declared length moving for 5s: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusOK || string(body) != answer {
+		t.Fatalf("an upload of no declared length: %d %q %v", resp.StatusCode, body, err)
+	}
+}
+
+// TestCarryTransfer_AnUpstreamThatStopsTakingTheBody — an upstream that stops
+// reading an upload leaves no read of the page waiting; the stall window
+// still ends the transfer, and the page is told which side stopped.
+func TestCarryTransfer_AnUpstreamThatStopsTakingTheBody(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	defer close(release)
+	relay := relayOf(t, carrierFor(t, upstream, 2*time.Second, time.Minute))
+	conn := sendRaw(t, relay, "PUT /attachments/upload?ticket=t HTTP/1.1\r\nHost: relay\r\nContent-Length: 1073741824\r\n\r\n", nil)
+	// The page keeps sending until the relay stops reading it; the
+	// upstream's socket buffers fill first.
+	go func() {
+		chunk := make([]byte, 64<<10)
+		for {
+			if _, err := conn.Write(chunk); err != nil {
+				return
+			}
+		}
+	}()
+	resp, body := readAnswer(t, conn, 10*time.Second, "an upstream that stopped taking the body")
+	if resp.StatusCode != http.StatusGatewayTimeout || !strings.Contains(body, "the computer that holds it stopped taking the file for 2 seconds; send it again") {
+		t.Fatalf("an upstream that stopped taking the body: %d %q", resp.StatusCode, body)
+	}
+}
+
+// TestCarryTransfer_AServerShuttingDownEndsAStalledUpload — the server's
+// own context ending (transport's BaseContext at shutdown) ends a read of
+// a page that stopped sending at once, so the shutdown's join does not
+// wait out the stall window.
+func TestCarryTransfer_AServerShuttingDownEndsAStalledUpload(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+	}))
+	t.Cleanup(upstream.Close)
+	c := carrierFor(t, upstream, time.Minute, time.Minute)
+	root, shutdown := context.WithCancel(context.Background())
+	defer shutdown()
+	reading, returned := make(chan struct{}), make(chan struct{})
+	relay := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(returned)
+		close(reading)
+		c.CarryTransfer(w, r)
+	}))
+	relay.Config.BaseContext = func(net.Listener) context.Context { return root }
+	relay.Start()
+	t.Cleanup(relay.Close)
+	sendRaw(t, relay, "PUT /attachments/upload?ticket=t HTTP/1.1\r\nHost: relay\r\nContent-Length: 65536\r\n\r\n", make([]byte, 1024))
+	<-reading
+	shutdown()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a stalled upload outlived the server's context by 5s")
+	}
+}
+
+// TestCarryTransfer_APageThatCannotSetDeadlines — a writer with no read
+// deadline still has the upstream bounded, and says so once.
+func TestCarryTransfer_APageThatCannotSetDeadlines(t *testing.T) {
+	var logged bytes.Buffer
+	var mu sync.Mutex
+	saved := log.Writer()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return logged.Write(p)
+	}))
+	t.Cleanup(func() { log.SetOutput(saved) })
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	t.Cleanup(upstream.Close)
+	c := carrierFor(t, upstream, time.Minute, time.Second)
+	for range 2 {
+		rec := httptest.NewRecorder()
+		c.CarryTransfer(rec, httptest.NewRequest(http.MethodGet, "/attachments/tracker/501?ticket=t", nil))
+		if rec.Code != http.StatusGatewayTimeout {
+			t.Fatalf("an upstream withholding its headers to a writer with no deadlines: %d %q", rec.Code, rec.Body)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if n := strings.Count(logged.String(), "cannot end a blocked read of the page"); n != 1 {
+		t.Fatalf("logged %d times: %q", n, logged.String())
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// The timer's firing and a phase switch exclude each other: a fire that
+// meets the body's end or the upstream's headers either ends the transfer
+// with the phase it fired in, or finds the window restarted and does
+// nothing.
+func TestCarriedTransferFireRacesAPhaseSwitch(t *testing.T) {
+	for _, sw := range []struct {
+		name  string
+		do    func(*carriedTransfer)
+		after phase
+	}{
+		{"the body's end", (*carriedTransfer).bodyEnded, phaseAwaiting},
+		{"the upstream's headers", (*carriedTransfer).answered, phaseAnswering},
+	} {
+		for range 200 {
+			c := &Carrier{stall: time.Minute, allowance: time.Minute}
+			ctx, cancel := context.WithCancelCause(context.Background())
+			tr := &carriedTransfer{c: c, rc: http.NewResponseController(httptest.NewRecorder()), cancel: cancel,
+				phase: phaseBody, window: time.Millisecond, moved: time.Now().Add(-time.Second)}
+			tr.reading.Store(true)
+			tr.timer = time.AfterFunc(time.Hour, func() {})
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			wg.Go(func() { <-start; tr.fire() })
+			wg.Go(func() { <-start; sw.do(tr) })
+			close(start)
+			wg.Wait()
+			tr.mu.Lock()
+			p := tr.phase
+			tr.mu.Unlock()
+			ended, isEnded := errors.AsType[*transferEnded](context.Cause(ctx))
+			switch {
+			case p == phaseDone && isEnded && ended.status == http.StatusRequestTimeout:
+			case p == sw.after && ctx.Err() == nil:
+				tr.fire() // a stale fire after the switch does nothing
+				if ctx.Err() != nil {
+					t.Fatalf("%s: a fire after the switch ended the transfer", sw.name)
+				}
+			default:
+				t.Fatalf("%s: phase %d, cause %v", sw.name, p, context.Cause(ctx))
+			}
+			tr.timer.Stop()
+		}
+	}
+}

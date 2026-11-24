@@ -27,6 +27,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/logging"
@@ -112,12 +113,13 @@ type Carrier struct {
 	// query untouched and no credential added. Built once.
 	bytes *httputil.ReverseProxy
 
-	// stall is a carried download's stall window
-	// (transport.TransferStallWindow) and transferWindow an upload's bytes'
-	// window for its length (transport.AttachmentTransferWindowFor);
-	// fields so a test can shorten them.
-	stall          time.Duration
-	transferWindow func(size int64) time.Duration
+	// stall and allowance are a carried transfer's stall window
+	// (transport.TransferStallWindow) and answer allowance
+	// (transport.AnswerAllowance); fields so a test can shorten them.
+	stall, allowance time.Duration
+	// readDeadlineOnce logs a page listener that cannot set a read
+	// deadline once (readDeadlineFailed).
+	readDeadlineOnce sync.Once
 
 	// session is the upstream backend's local page-channel credential,
 	// forwarded on every carried upgrade so a same-host hop names a
@@ -188,13 +190,13 @@ func New(cfg Config) (*Carrier, error) {
 		session = relaysession.New(bootstrapURL, cfg.Token, client)
 	}
 	c := &Carrier{
-		cfg:            cfg,
-		session:        session,
-		client:         client,
-		bootstrapURL:   bootstrapURL,
-		remote:         !loopback.EndpointAuthority(parsed.Host),
-		stall:          transport.TransferStallWindow,
-		transferWindow: transport.AttachmentTransferWindowFor,
+		cfg:          cfg,
+		session:      session,
+		client:       client,
+		bootstrapURL: bootstrapURL,
+		remote:       !loopback.EndpointAuthority(parsed.Host),
+		stall:        transport.TransferStallWindow,
+		allowance:    transport.AnswerAllowance,
 	}
 	if c.ws, err = c.newWSProxy(); err != nil {
 		return nil, fmt.Errorf("backendproxy: build websocket proxy: %w", err)
@@ -323,31 +325,10 @@ func logUpgradeStep(ctx context.Context, outcome string) {
 // mounted these routes under, which is this process's own addressing and
 // means nothing upstream.
 func (c *Carrier) CarryTransfer(w http.ResponseWriter, r *http.Request) {
-	// A download (a request with no body; DownloadByProgress refuses any
-	// other, which goes on as an upload) is bounded by its progress, as
-	// the backend bounds its own downloads: a total would cut a large file
-	// on a slow link, and a read deadline would cut it at once
-	// (transport.DownloadByProgress).
-	if download, err := transport.DownloadByProgress(w, r, c.stall); err == nil {
-		c.bytes.ServeHTTP(download, r)
-		return
-	}
-	// An upload gets the time the backend gives it, its answer included
-	// (transport.UploadWindow). Without this a caller's own read and write
-	// timeouts would cut a transfer the upstream was willing to finish,
-	// and the page would see the hop fail rather than the backend refuse.
-	// Sized from the declared length the way the backend sizes it from the
-	// ticket. Read and write alike: a read deadline that passes while the
-	// answer is awaited ends the request through net/http's background
-	// read, and with it the answer, as a write deadline would.
-	controller := http.NewResponseController(w)
-	deadline := time.Now().Add(transport.UploadWindow(c.transferWindow(r.ContentLength)))
-	if err := controller.SetReadDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		c.logf("extend attachment read deadline: %v", err)
-	}
-	if err := controller.SetWriteDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		c.logf("extend attachment write deadline: %v", err)
-	}
+	// Bounded by its progress, not by a total or a declared length
+	// (transfer.go).
+	t, w, r := c.carry(w, r)
+	defer t.finish()
 	c.bytes.ServeHTTP(w, r)
 }
 
@@ -522,11 +503,18 @@ func (c *Carrier) newByteProxy() (*httputil.ReverseProxy, error) {
 			pr.Out.Header.Del("Authorization")
 			pr.Out.Header.Del(relaysession.Header)
 		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+		ModifyResponse: modifyResponse,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			c.logf("attachment proxy: %v", err)
+			// A transfer its timer ended says why, in the plain line the
+			// page quotes (attachmentTransfer.ts, transferFailure).
+			if ended, ok := errors.AsType[*transferEnded](context.Cause(r.Context())); ok {
+				http.Error(w, ended.message, ended.status)
+				return
+			}
 			// An unreachable upstream is a page's ordinary outage; the
 			// composer's own failure path reports it. Same shape the
 			// upgrade relay answers with.
-			c.logf("attachment proxy: %v", err)
 			http.Error(w, "backend unreachable", http.StatusServiceUnavailable)
 		},
 	}

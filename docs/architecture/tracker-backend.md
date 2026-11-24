@@ -1217,13 +1217,14 @@ selected computer.
   now. The write runs with the request's values and not its end, so a
   client that leaves after its last byte still has the file attached,
   and its whole run is bounded by the transfer window for the file's
-  size plus the answer's allowance (`transport.UploadAnswerAllowance`:
+  size plus the answer's allowance (`transport.AnswerAllowance`:
   the 5 minutes Jira has to answer, `trackerapi.AnswerTimeout`, and a
   write's 3 minute budget for the refresh; `trackerAttachBound`): 13
   minutes up to 10 MiB, about 17 hours for 2 GB. The answer is the
-  write's `WriteView` as JSON, written within `transport.UploadWindow`,
-  which every relay gives the upload it carries too, so an answer that
-  comes late still reaches the page. A download that declares a body is
+  write's `WriteView` as JSON, written within `transport.UploadWindow`;
+  a relay gives that answer the same allowance from the upload's last
+  byte, so an answer that comes late still reaches the page
+  ([byte route deadlines](transport.md#byte-route-deadlines)). A download that declares a body is
   refused (`tracker_download_has_body`) and its connection closed.
 - **An attachment is saved** through `GET /attachments/tracker/{attachmentID}`.
   The mint asks the tracker nothing: the attachment must be on the
@@ -1233,7 +1234,8 @@ selected computer.
   disposition and no declared length, read up to the largest file the
   tracker stores, and bounded by its progress, not a total
   (`transport.DownloadByProgress`): it ends 90 seconds after its last
-  byte moved, here and on each relay. Its status waits for the first
+  byte moved, here and on each relay, and a relay ends one whose first
+  byte has not come `transport.AnswerAllowance` after the request. Its status waits for the first
   byte, so a failure before it answers the refusal's code and sentence
   as JSON; one after it ends the response short, which the relays carry
   as a cut transfer.

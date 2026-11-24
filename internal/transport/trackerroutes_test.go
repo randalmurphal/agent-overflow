@@ -343,7 +343,7 @@ func TestTrackerUploadAnsweredAfterItsWindow(t *testing.T) {
 // reading ends within the stall window. The window is shortened here, and
 // the moving one moves for 2.5 of it.
 func TestTrackerDownloadIsBoundedByItsProgress(t *testing.T) {
-	// Longer than deadlineMoveEvery, as production's is.
+	// Longer than ProgressEvery, as production's is.
 	const stall = 2 * time.Second
 	ended := make(chan error, 1)
 	moving := true
