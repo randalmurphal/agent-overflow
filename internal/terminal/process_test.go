@@ -104,34 +104,6 @@ func TestProcessWriteInput(t *testing.T) {
 	}
 }
 
-// TestProcessResize invokes Resize and confirms no error. We can't easily
-// observe the new size without running stty inside, so we run stty -a in the
-// PTY and check the visible columns match.
-func TestProcessResize(t *testing.T) {
-	p, err := Start(ProcessConfig{
-		Reaper: procutiltest.Reaper(),
-		Shell:  "/bin/sh",
-		Args:   []string{"-c", "stty -a; sleep 0.1; exit 0"},
-		Cwd:    t.TempDir(),
-		Rows:   24,
-		Cols:   80,
-	})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() { _ = p.Kill() })
-
-	if err := p.Resize(30, 120); err != nil {
-		t.Fatalf("Resize: %v", err)
-	}
-
-	select {
-	case <-p.Done():
-	case <-time.After(3 * time.Second):
-		t.Fatal("process did not exit")
-	}
-}
-
 // winchSizeReporter is a shell that reports `stty size` after every winsize
 // change. bash, which may be /bin/sh, discards a WINCH that arrives while the
 // WINCH trap is still running, so a trap that ran `stty size` itself would

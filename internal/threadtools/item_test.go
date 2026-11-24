@@ -86,18 +86,21 @@ func TestItemOffsetPastTheEndIsAnEmptyRead(t *testing.T) {
 	}
 }
 
-// TestItemReadsALineRange in every spelling the schema documents.
+// TestItemReadsALineRange in every spelling the schema documents. eof is
+// what tells the agent there is nothing after the range, so it follows the
+// bytes the walk consumed rather than the chunk it happened to read them
+// from: a range that stops short of the end is not eof.
 func TestItemReadsALineRange(t *testing.T) {
 	app := itemApp("Laptop", localThreadID, "i3", "tool_output", "one\ntwo\nthree\nfour\n")
 	server := New(app)
 
 	span := call(t, server, localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3","lines":"2-3"}`)
-	if span["text"] != "two\nthree\n" || span["first_line"] != float64(2) || span["last_line"] != float64(3) {
+	if span["text"] != "two\nthree\n" || span["first_line"] != float64(2) || span["last_line"] != float64(3) || span["eof"] != false {
 		t.Fatalf("lines 2-3 = %v", span)
 	}
 	one := call(t, server, localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3","lines":"4"}`)
-	if one["text"] != "four\n" {
-		t.Fatalf("lines 4 = %v", one["text"])
+	if one["text"] != "four\n" || one["eof"] != true {
+		t.Fatalf("lines 4 = %v", one)
 	}
 	toEnd := call(t, server, localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3","lines":"3-"}`)
 	if toEnd["text"] != "three\nfour\n" || toEnd["eof"] != true {
@@ -280,23 +283,6 @@ func TestItemQueryFindsMatchesPastAChunkBoundary(t *testing.T) {
 	}
 	if result["more"] != nil || result["eof"] != true {
 		t.Errorf("a complete scan reported more=%v eof=%v", result["more"], result["eof"])
-	}
-}
-
-// TestItemLineRangeThatStopsShortIsNotEOF: eof is what tells the agent
-// there is nothing after the range, so it follows the bytes the walk
-// consumed rather than the chunk it happened to read them from.
-func TestItemLineRangeThatStopsShortIsNotEOF(t *testing.T) {
-	app := itemApp("Laptop", localThreadID, "i3", "tool_output", "one\ntwo\nthree\nfour\n")
-	server := New(app)
-
-	middle := call(t, server, localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3","lines":"2-3"}`)
-	if middle["text"] != "two\nthree\n" || middle["eof"] != false {
-		t.Fatalf("lines 2-3 of a four-line item = %v", middle)
-	}
-	last := call(t, server, localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3","lines":"4"}`)
-	if last["text"] != "four\n" || last["eof"] != true {
-		t.Fatalf("the last line = %v", last)
 	}
 }
 

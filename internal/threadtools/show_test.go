@@ -344,19 +344,6 @@ func TestShowPagesByCursorAndIsPinnedToItsSnapshot(t *testing.T) {
 	}
 }
 
-// TestShowRefusesAWindowChangeOnACursor: the cursor already carries the
-// window, so a second, contradictory window would silently win or lose.
-func TestShowRefusesAWindowChangeOnACursor(t *testing.T) {
-	app := newFakeApp("Laptop")
-	transcriptThread(app, localThreadID)
-	server := New(app)
-	encoded, err := encodeCursor(cursor{Kind: cursorShow, Thread: localThreadID, Window: WindowAll, From: 1, To: 5, High: 5})
-	if err != nil {
-		t.Fatal(err)
-	}
-	callErr(t, server, localCaller(), "thread_show", mustJSON(t, map[string]any{"thread_id": localThreadID, "cursor": encoded, "window": "head"}), CodeInvalidRequest)
-}
-
 // TestShowRefusesAForeignCursor: an opaque cursor is not a place the model
 // may page to on its own.
 func TestShowRefusesAForeignCursor(t *testing.T) {

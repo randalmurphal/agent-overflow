@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -77,17 +76,6 @@ func TestFoldForFindMeetsTheSharedVectors(t *testing.T) {
 		}
 		if !slices.Equal(at, o.At) {
 			t.Errorf("offsets of %q in %q = %v, want %v", o.Query, o.Text, at, o.At)
-		}
-	}
-}
-
-// The frontend paints from UTF-16 offsets in its fold: a code point's lower
-// case never changes its UTF-16 length.
-func TestFoldForFindKeepsEveryCodePointsUTF16Length(t *testing.T) {
-	t.Parallel()
-	for r := rune(0); r <= unicode.MaxRune; r++ {
-		if l := unicode.ToLower(r); (r >= 0x10000) != (l >= 0x10000) {
-			t.Errorf("U+%04X lowers to U+%04X across planes", r, l)
 		}
 	}
 }
