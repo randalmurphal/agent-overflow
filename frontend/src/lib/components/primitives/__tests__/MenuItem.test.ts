@@ -18,18 +18,15 @@ describe('<MenuItem>', () => {
     expect(item.textContent).toMatch(/Apple/);
   });
 
-  it('click calls onSelect', async () => {
+  it.each([
+    { name: 'click calls onSelect', event: 'click' as const, init: {} },
+    { name: 'Enter key activates onSelect', event: 'keyDown' as const, init: { key: 'Enter' } },
+    { name: 'Space key activates onSelect', event: 'keyDown' as const, init: { key: ' ' } },
+  ])('$name', async ({ event, init }) => {
     const onSelect = vi.fn();
     const { getByRole } = render(Harness, { props: { label: 'Apple', onSelect } });
-    await fireEvent.click(getByRole('menuitem'));
+    await fireEvent[event](getByRole('menuitem'), init);
     expect(onSelect).toHaveBeenCalledTimes(1);
-  });
-
-  it('Enter key activates onSelect', async () => {
-    const onSelect = vi.fn();
-    const { getByRole } = render(Harness, { props: { label: 'Apple', onSelect } });
-    await fireEvent.keyDown(getByRole('menuitem'), { key: 'Enter' });
-    expect(onSelect).toHaveBeenCalled();
   });
 
   // Enter with Alt, Ctrl or Meta is an app chord (alt+shift+enter maximizes
@@ -45,13 +42,6 @@ describe('<MenuItem>', () => {
     expect(onSelect).not.toHaveBeenCalled();
     await fireEvent.keyDown(getByRole('menuitem'), { key: 'Enter', shiftKey: true });
     expect(onSelect).toHaveBeenCalledTimes(1);
-  });
-
-  it('Space key activates onSelect', async () => {
-    const onSelect = vi.fn();
-    const { getByRole } = render(Harness, { props: { label: 'Apple', onSelect } });
-    await fireEvent.keyDown(getByRole('menuitem'), { key: ' ' });
-    expect(onSelect).toHaveBeenCalled();
   });
 
   it('dispatches a bubbling menuitem-select CustomEvent after onSelect', async () => {
@@ -97,10 +87,13 @@ describe('<MenuItem>', () => {
     expect(onAction).toHaveBeenCalledTimes(1);
   });
 
-  it('actionDisabled blocks onAction independently of the row', async () => {
+  it.each([
+    { name: 'actionDisabled blocks onAction independently of the row', props: { label: 'Apple', showAction: true } },
+    { name: 'actionDisabled blocks a text action too', props: { label: 'atlassian', actionText: 'Sign in' } },
+  ])('$name', async ({ props }) => {
     const onAction = vi.fn();
     const { getByLabelText } = render(Harness, {
-      props: { label: 'Apple', onAction, showAction: true, actionDisabled: true },
+      props: { ...props, onAction, actionDisabled: true },
     });
     const action = getByLabelText('Row action');
     expect(action).toBeDisabled();
@@ -145,31 +138,14 @@ describe('<MenuItem>', () => {
     expect(getByRole('menuitem').tagName).toBe('BUTTON');
   });
 
-  it('actionDisabled blocks a text action too', async () => {
-    const onAction = vi.fn();
-    const { getByLabelText } = render(Harness, {
-      props: { label: 'atlassian', actionText: 'Sign in', onAction, actionDisabled: true },
-    });
-    const action = getByLabelText('Row action');
-    expect(action).toBeDisabled();
-    await fireEvent.click(action);
-    expect(onAction).not.toHaveBeenCalled();
-  });
-
-  it('renders the check glyph when checked=true', () => {
-    const { container } = render(Harness, { props: { label: 'Apple', checked: true } });
-    // 10003 is U+2713 CHECK MARK.
-    expect(container.textContent).toContain('\u2713');
-  });
-
-  it('renders the kbd hint when provided', () => {
-    const { container } = render(Harness, { props: { label: 'Apple', kbd: 'mod+K' } });
-    expect(container.textContent).toContain('mod+K');
-  });
-
-  it('renders the suffix hint when provided', () => {
-    const { container } = render(Harness, { props: { label: 'Apple', suffix: 'remote' } });
-    expect(container.textContent).toContain('remote');
+  it.each([
+    // U+2713 CHECK MARK.
+    { name: 'renders the check glyph when checked=true', props: { checked: true }, text: '\u2713' },
+    { name: 'renders the kbd hint when provided', props: { kbd: 'mod+K' }, text: 'mod+K' },
+    { name: 'renders the suffix hint when provided', props: { suffix: 'remote' }, text: 'remote' },
+  ])('$name', ({ props, text }) => {
+    const { container } = render(Harness, { props: { label: 'Apple', ...props } });
+    expect(container.textContent).toContain(text);
   });
 
   it('applies title when provided', () => {

@@ -45,18 +45,14 @@ describe('<IconButton>', () => {
     expect(onClick).not.toHaveBeenCalled();
   });
 
-  it('applies sm size class when size="sm"', () => {
-    const { getByRole } = render(Harness, { props: { label: 'x', size: 'sm' } });
+  it.each([
+    { name: 'applies sm size class when size="sm"', props: { label: 'x', size: 'sm' as const }, h: 'h-7', w: 'w-7' },
+    { name: 'applies md size class by default', props: { label: 'x' }, h: 'h-8', w: 'w-8' },
+  ])('$name', ({ props, h, w }) => {
+    const { getByRole } = render(Harness, { props });
     const cls = getByRole('button').className;
-    expect(cls).toContain('h-7');
-    expect(cls).toContain('w-7');
-  });
-
-  it('applies md size class by default', () => {
-    const { getByRole } = render(Harness, { props: { label: 'x' } });
-    const cls = getByRole('button').className;
-    expect(cls).toContain('h-8');
-    expect(cls).toContain('w-8');
+    expect(cls).toContain(h);
+    expect(cls).toContain(w);
   });
 
   it('switches background class for variant="subtle"', () => {

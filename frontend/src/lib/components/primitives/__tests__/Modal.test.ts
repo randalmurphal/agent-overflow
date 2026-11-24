@@ -220,52 +220,30 @@ describe('<Modal>', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('focus trap wraps Shift+Tab from first focusable back to the last', async () => {
+  it.each([
+    { name: 'focus trap wraps Shift+Tab from first focusable back to the last', from: 'modal-first', shiftKey: true, to: 'modal-last' },
+    { name: 'focus trap wraps Tab from last focusable back to the first', from: 'modal-last', shiftKey: false, to: 'modal-first' },
+  ])('$name', async ({ from, shiftKey, to }) => {
     const { getByTestId } = render(Harness, { props: {} });
     await flushFocus();
-    const first = getByTestId('modal-first') as HTMLInputElement;
-    const last = getByTestId('modal-last') as HTMLButtonElement;
-    first.focus();
-    expect(document.activeElement).toBe(first);
-    const ev = new KeyboardEvent('keydown', {
-      key: 'Tab',
-      shiftKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
-    first.dispatchEvent(ev);
+    const start = getByTestId(from);
+    start.focus();
+    expect(document.activeElement).toBe(start);
+    const ev = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+    start.dispatchEvent(ev);
     expect(ev.defaultPrevented).toBe(true);
-    expect(document.activeElement).toBe(last);
+    expect(document.activeElement).toBe(getByTestId(to));
   });
 
-  it('focus trap wraps Tab from last focusable back to the first', async () => {
-    const { getByTestId } = render(Harness, { props: {} });
-    await flushFocus();
-    const first = getByTestId('modal-first') as HTMLInputElement;
-    const last = getByTestId('modal-last') as HTMLButtonElement;
-    last.focus();
-    const ev = new KeyboardEvent('keydown', {
-      key: 'Tab',
-      bubbles: true,
-      cancelable: true,
-    });
-    last.dispatchEvent(ev);
-    expect(ev.defaultPrevented).toBe(true);
-    expect(document.activeElement).toBe(first);
-  });
-
-  it('width="sm" maps to max-w-[380px]', async () => {
-    render(Harness, { props: { width: 'sm' } });
+  it.each([
+    { width: 'sm' as const, cls: 'max-w-[380px]' },
+    { width: 'lg' as const, cls: 'max-w-[800px]' },
+    { width: 'xl' as const, cls: 'max-w-[960px]' },
+  ])('width="$width" maps to $cls', async ({ width, cls }) => {
+    render(Harness, { props: { width } });
     await flushFocus();
     const panel = document.querySelector('[data-modal-panel]');
-    expect(panel?.className).toContain('max-w-[380px]');
-  });
-
-  it('width="lg" maps to max-w-[800px]', async () => {
-    render(Harness, { props: { width: 'lg' } });
-    await flushFocus();
-    const panel = document.querySelector('[data-modal-panel]');
-    expect(panel?.className).toContain('max-w-[800px]');
+    expect(panel?.className).toContain(cls);
   });
 
   it('renders the footer snippet when provided', async () => {
@@ -280,14 +258,7 @@ describe('<Modal>', () => {
     expect(document.querySelector('footer')).toBeNull();
   });
 
-  // --- New in Stage 1 redesign: xl width, padding variants, headerActions ---
-
-  it('width="xl" maps to max-w-[960px]', async () => {
-    render(Harness, { props: { width: 'xl' } });
-    await flushFocus();
-    const panel = document.querySelector('[data-modal-panel]');
-    expect(panel?.className).toContain('max-w-[960px]');
-  });
+  // --- New in Stage 1 redesign: padding variants, headerActions ---
 
   it('panel uses the redesigned radius + shadow tokens', async () => {
     render(Harness);
@@ -306,30 +277,18 @@ describe('<Modal>', () => {
     expect(backdrop.className).toContain('backdrop-blur-md');
   });
 
-  it('padding="tight" reduces the body padding', async () => {
-    render(Harness, { props: { padding: 'tight' } });
+  it.each([
+    { name: 'padding="tight" reduces the body padding', props: { padding: 'tight' as const }, px: 'px-4', py: 'py-3' },
+    { name: 'padding="loose" enlarges the body padding', props: { padding: 'loose' as const }, px: 'px-6', py: 'py-5' },
+    { name: 'padding defaults to "comfortable"', props: {}, px: 'px-5', py: 'py-4' },
+  ])('$name', async ({ props, px, py }) => {
+    render(Harness, { props });
     await flushFocus();
     // Body is the div containing the children snippet — between header
     // and footer. Find by class signature rather than testid.
     const body = document.querySelector('[data-modal-panel] > div:nth-of-type(1)')!;
-    expect(body.className).toContain('px-4');
-    expect(body.className).toContain('py-3');
-  });
-
-  it('padding="loose" enlarges the body padding', async () => {
-    render(Harness, { props: { padding: 'loose' } });
-    await flushFocus();
-    const body = document.querySelector('[data-modal-panel] > div:nth-of-type(1)')!;
-    expect(body.className).toContain('px-6');
-    expect(body.className).toContain('py-5');
-  });
-
-  it('padding defaults to "comfortable"', async () => {
-    render(Harness);
-    await flushFocus();
-    const body = document.querySelector('[data-modal-panel] > div:nth-of-type(1)')!;
-    expect(body.className).toContain('px-5');
-    expect(body.className).toContain('py-4');
+    expect(body.className).toContain(px);
+    expect(body.className).toContain(py);
   });
 
   it('renders headerActions snippet when supplied', async () => {

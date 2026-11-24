@@ -8,6 +8,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
+import type { ComponentProps } from 'svelte';
 import Harness from './ButtonHarness.svelte';
 
 describe('<Button>', () => {
@@ -18,79 +19,39 @@ describe('<Button>', () => {
     expect(btn.getAttribute('type')).toBe('button');
   });
 
-  it('defaults to variant=secondary and size=sm', () => {
-    const { getByRole } = render(Harness);
+  // `lacks` uses toMatch so a pattern can say "not filled" without also
+  // rejecting the hover and opacity forms of the same token.
+  it.each<{ name: string; props: ComponentProps<typeof Harness>; has: string[]; lacks?: (string | RegExp)[] }>([
+    { name: 'the defaults, variant=secondary and size=sm', props: {}, has: ['border-border-subtle', 'h-7', 'text-xs'] },
+    { name: 'primary', props: { variant: 'primary' }, has: ['bg-accent', 'text-surface-0'] },
+    { name: 'ghost', props: { variant: 'ghost' }, has: ['bg-transparent', 'text-fg-muted'] },
+    { name: 'danger', props: { variant: 'danger' }, has: ['bg-error'] },
+    {
+      name: 'danger-outline (outlined error, not filled)',
+      props: { variant: 'danger-outline' },
+      has: ['border-error/40', 'text-error/90'],
+      lacks: [/(?<!\/)bg-error(?![-/])/],
+    },
+    {
+      name: 'warning-outline (outlined warning, not filled)',
+      props: { variant: 'warning-outline' },
+      has: ['border-warning/50', 'text-warning'],
+      lacks: [/(?<![:/])bg-warning(?![-/])/],
+    },
+    {
+      name: 'danger-ghost (error text, transparent rest)',
+      props: { variant: 'danger-ghost' },
+      has: ['text-error/80', 'bg-transparent'],
+      lacks: ['border-error'],
+    },
+    { name: 'tinted (soft-accent fill)', props: { variant: 'tinted' }, has: ['bg-accent/15', 'text-accent'] },
+    { name: 'xs size', props: { size: 'xs' }, has: ['h-6', 'text-[0.6875rem]'] },
+    { name: 'md size', props: { size: 'md' }, has: ['h-8', 'text-sm'] },
+  ])('applies the classes of $name', ({ props, has, lacks = [] }) => {
+    const { getByRole } = render(Harness, { props });
     const cls = getByRole('button').className;
-    // secondary variant signature
-    expect(cls).toContain('border-border-subtle');
-    // sm size signature
-    expect(cls).toContain('h-7');
-    expect(cls).toContain('text-xs');
-  });
-
-  it('applies primary variant classes', () => {
-    const { getByRole } = render(Harness, { props: { variant: 'primary' } });
-    const cls = getByRole('button').className;
-    expect(cls).toContain('bg-accent');
-    expect(cls).toContain('text-surface-0');
-  });
-
-  it('applies ghost variant classes', () => {
-    const { getByRole } = render(Harness, { props: { variant: 'ghost' } });
-    const cls = getByRole('button').className;
-    expect(cls).toContain('bg-transparent');
-    expect(cls).toContain('text-fg-muted');
-  });
-
-  it('applies danger variant classes', () => {
-    const { getByRole } = render(Harness, { props: { variant: 'danger' } });
-    const cls = getByRole('button').className;
-    expect(cls).toContain('bg-error');
-  });
-
-  it('applies danger-outline variant (outlined error, not filled)', () => {
-    const { getByRole } = render(Harness, { props: { variant: 'danger-outline' } });
-    const cls = getByRole('button').className;
-    expect(cls).toContain('border-error/40');
-    expect(cls).toContain('text-error/90');
-    expect(cls).not.toMatch(/(?<!\/)bg-error(?![-/])/); // not filled
-  });
-
-  it('applies warning-outline variant (outlined warning, not filled)', () => {
-    const { getByRole } = render(Harness, { props: { variant: 'warning-outline' } });
-    const cls = getByRole('button').className;
-    expect(cls).toContain('border-warning/50');
-    expect(cls).toContain('text-warning');
-    expect(cls).not.toMatch(/(?<![:/])bg-warning(?![-/])/); // not filled
-  });
-
-  it('applies danger-ghost variant (error text, transparent rest)', () => {
-    const { getByRole } = render(Harness, { props: { variant: 'danger-ghost' } });
-    const cls = getByRole('button').className;
-    expect(cls).toContain('text-error/80');
-    expect(cls).toContain('bg-transparent');
-    expect(cls).not.toContain('border-error');
-  });
-
-  it('applies tinted variant (soft-accent fill)', () => {
-    const { getByRole } = render(Harness, { props: { variant: 'tinted' } });
-    const cls = getByRole('button').className;
-    expect(cls).toContain('bg-accent/15');
-    expect(cls).toContain('text-accent');
-  });
-
-  it('applies xs size', () => {
-    const { getByRole } = render(Harness, { props: { size: 'xs' } });
-    const cls = getByRole('button').className;
-    expect(cls).toContain('h-6');
-    expect(cls).toContain('text-[0.6875rem]');
-  });
-
-  it('applies md size', () => {
-    const { getByRole } = render(Harness, { props: { size: 'md' } });
-    const cls = getByRole('button').className;
-    expect(cls).toContain('h-8');
-    expect(cls).toContain('text-sm');
+    for (const token of has) expect(cls).toContain(token);
+    for (const token of lacks) expect(cls).not.toMatch(token);
   });
 
   it('propagates type="submit"', () => {

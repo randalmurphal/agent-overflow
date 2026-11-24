@@ -34,50 +34,42 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe('<Menu>', () => {
-  it('exposes role=menu with vertical orientation', async () => {
-    const { getByRole } = render(Harness);
+  it('mounts as a vertical menu with focus and the roving tabindex on the first enabled item', async () => {
+    const { getByRole, getAllByRole } = render(Harness);
     await flushMicrotasks();
     const menu = getByRole('menu');
     expect(menu.getAttribute('aria-orientation')).toBe('vertical');
-  });
-
-  it('focuses the first enabled menuitem on mount', async () => {
-    render(Harness);
-    await flushMicrotasks();
     expect(activeLabel()).toBe('Apple');
+    const zeroTabIndex = getAllByRole('menuitem').filter((i) => i.tabIndex === 0);
+    expect(zeroTabIndex).toHaveLength(1);
+    expect(zeroTabIndex[0].textContent?.trim()).toBe('Apple');
+    // Stage 1 redesign: the container uses the shared token scale so every
+    // menu surface reads at the same radius + shadow as its consumers.
+    expect(menu.className).toContain('rounded-[var(--radius-control)]');
+    expect(menu.className).toContain('shadow-menu');
+    expect(menu.className).toContain('border-border-subtle');
+    // Legacy classes should be gone so the old look can't sneak back in.
+    expect(menu.className).not.toContain('rounded-lg');
+    expect(menu.className).not.toContain('shadow-xl');
   });
 
-  it('ArrowDown moves focus forward and wraps', async () => {
+  // Each step presses a key and names the item that holds focus after it.
+  // Focus starts on Apple; the items are Apple, Banana, Cherry, Date.
+  it.each([
+    { name: 'ArrowDown moves focus forward and wraps', steps: [['ArrowDown', 'Banana'], ['ArrowDown', 'Cherry'], ['ArrowDown', 'Date'], ['ArrowDown', 'Apple']] },
+    { name: 'ArrowUp moves focus backwards and wraps', steps: [['ArrowUp', 'Date']] },
+    { name: 'Home / End jump to first and last items', steps: [['End', 'Date'], ['Home', 'Apple']] },
+    { name: 'plain j moves focus forward like ArrowDown', steps: [['j', 'Banana'], ['j', 'Cherry']] },
+    { name: 'plain k moves focus backwards like ArrowUp', steps: [['k', 'Date']] },
+    { name: 'does not typeahead — single letters other than j/k are inert', steps: [['c', 'Apple']] },
+  ])('$name', async ({ steps }) => {
     const { getByRole } = render(Harness);
     await flushMicrotasks();
     const menu = getByRole('menu');
-    await pressKey(menu, 'ArrowDown');
-    expect(activeLabel()).toBe('Banana');
-    await pressKey(menu, 'ArrowDown');
-    expect(activeLabel()).toBe('Cherry');
-    await pressKey(menu, 'ArrowDown');
-    expect(activeLabel()).toBe('Date');
-    await pressKey(menu, 'ArrowDown');
-    // Wrap.
-    expect(activeLabel()).toBe('Apple');
-  });
-
-  it('ArrowUp moves focus backwards and wraps', async () => {
-    const { getByRole } = render(Harness);
-    await flushMicrotasks();
-    const menu = getByRole('menu');
-    await pressKey(menu, 'ArrowUp');
-    expect(activeLabel()).toBe('Date');
-  });
-
-  it('Home / End jump to first and last items', async () => {
-    const { getByRole } = render(Harness);
-    await flushMicrotasks();
-    const menu = getByRole('menu');
-    await pressKey(menu, 'End');
-    expect(activeLabel()).toBe('Date');
-    await pressKey(menu, 'Home');
-    expect(activeLabel()).toBe('Apple');
+    for (const [key, label] of steps) {
+      await pressKey(menu, key);
+      expect(activeLabel()).toBe(label);
+    }
   });
 
   it('skips disabled items during arrow navigation', async () => {
@@ -97,57 +89,6 @@ describe('<Menu>', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('plain j moves focus forward like ArrowDown', async () => {
-    const { getByRole } = render(Harness);
-    await flushMicrotasks();
-    const menu = getByRole('menu');
-    await pressKey(menu, 'j');
-    expect(activeLabel()).toBe('Banana');
-    await pressKey(menu, 'j');
-    expect(activeLabel()).toBe('Cherry');
-  });
-
-  it('plain k moves focus backwards like ArrowUp', async () => {
-    const { getByRole } = render(Harness);
-    await flushMicrotasks();
-    const menu = getByRole('menu');
-    await pressKey(menu, 'k');
-    expect(activeLabel()).toBe('Date');
-  });
-
-  it('does not typeahead — single letters other than j/k are inert', async () => {
-    const { getByRole } = render(Harness);
-    await flushMicrotasks();
-    const menu = getByRole('menu');
-    const before = activeLabel();
-    await pressKey(menu, 'c');
-    expect(activeLabel()).toBe(before);
-  });
-
-  it('applies roving tabindex — only one menuitem has tabindex=0 at a time', async () => {
-    const { getAllByRole } = render(Harness);
-    await flushMicrotasks();
-    const items = getAllByRole('menuitem');
-    const zeroTabIndex = items.filter((i) => i.tabIndex === 0);
-    expect(zeroTabIndex).toHaveLength(1);
-    // First enabled item gets the zero.
-    expect(zeroTabIndex[0].textContent?.trim()).toBe('Apple');
-  });
-
-  // Stage 1 redesign: menu container now uses the new token scale so
-  // every menu surface reads at the same radius + shadow as its
-  // consumers.
-  it('container uses the redesigned radius + shadow + subtle border tokens', () => {
-    const { getByRole } = render(Harness);
-    const menu = getByRole('menu');
-    expect(menu.className).toContain('rounded-[var(--radius-control)]');
-    expect(menu.className).toContain('shadow-menu');
-    expect(menu.className).toContain('border-border-subtle');
-    // Legacy classes should be gone so the old look can't sneak back in.
-    expect(menu.className).not.toContain('rounded-lg');
-    expect(menu.className).not.toContain('shadow-xl');
-  });
-
   // Regression: a cold-cache ProviderModelsSubmenu renders a loading
   // placeholder first, then swaps in the real MenuItems after an async
   // binding round-trip. The old one-shot
@@ -158,7 +99,7 @@ describe('<Menu>', () => {
   // added children and lands focus on the first real item when it
   // appears.
   describe('async-hydrated items', () => {
-    it('focuses the first item once it mounts (MutationObserver path)', async () => {
+    it('focuses the first item once it mounts (MutationObserver path) and does not re-steal focus on subsequent mutations', async () => {
       const { rerender, getByRole, queryByRole } = render(AsyncHarness, {
         props: { hydrated: false },
       });
@@ -178,20 +119,9 @@ describe('<Menu>', () => {
       const first = getByRole('menuitem', { name: 'Alpha' });
       expect(first.tabIndex).toBe(0);
       expect(document.activeElement).toBe(first);
-    });
-
-    it('does not re-steal focus on subsequent mutations', async () => {
-      const { rerender, getByRole } = render(AsyncHarness, {
-        props: { hydrated: false },
-      });
-      await flushMicrotasks();
-      await rerender({ hydrated: true });
-      await flushMicrotasks();
-      await flushMicrotasks();
 
       // Move focus with ArrowDown.
-      const menu = getByRole('menu');
-      await pressKey(menu, 'ArrowDown');
+      await pressKey(getByRole('menu'), 'ArrowDown');
       expect(activeLabel()).toBe('Bravo');
 
       // A subsequent rerender (simulating an upstream prop change

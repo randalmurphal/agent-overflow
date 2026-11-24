@@ -30,16 +30,11 @@ describe('<ContextMenu>', () => {
     expect(document.querySelector('[data-context-menu]')).toBeNull();
   });
 
-  it('anchors to the point on the desktop', () => {
-    render(Harness, { props: { x: 40, y: 60 } });
-    const el = surface();
-    expect(el.dataset.placement).toBe('point');
-    expect(el.style.left).toBe('40px');
-    expect(el.style.top).toBe('60px');
-  });
-
-  it('anchors to the point under the compact layout too', () => {
-    setCompactLayoutForTest(true);
+  it.each([
+    { layout: 'on the desktop', compact: false },
+    { layout: 'under the compact layout too', compact: true },
+  ])('anchors to the point $layout', ({ compact }) => {
+    setCompactLayoutForTest(compact);
     render(Harness, { props: { x: 40, y: 60 } });
     const el = surface();
     expect(el.dataset.placement).toBe('point');
