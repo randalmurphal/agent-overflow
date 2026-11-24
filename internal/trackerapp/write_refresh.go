@@ -156,8 +156,7 @@ func (r *run) refreshMirrored(f *refreshed, p refreshPlan) (stop error) {
 			f.covered(tracker.StructureOf(b))
 			continue
 		}
-		ch, err := r.structure(b)
-		f.ch.add(ch)
+		_, err := r.structure(b)
 		switch {
 		case err == nil:
 			f.covered(tracker.StructureOf(b))
@@ -230,8 +229,7 @@ func (r *run) refreshRows(f *refreshed, p refreshPlan, t store.MirrorRefreshTarg
 	returned := map[tracker.IssueID]bool{}
 	for _, b := range slices.Sorted(maps.Keys(asked)) {
 		ids := sortedUnique(asked[b])
-		ch, read, unread, err := r.boardRows(b, ids, tracker.Eligibility{})
-		f.ch.add(ch)
+		_, read, unread, err := r.boardRows(b, ids, tracker.Eligibility{})
 		for _, id := range read {
 			returned[id] = true
 		}
@@ -268,8 +266,7 @@ func (r *run) refreshRows(f *refreshed, p refreshPlan, t store.MirrorRefreshTarg
 	if len(unread) == 0 {
 		return nil
 	}
-	ch, left, err := r.cards(unread)
-	f.ch.add(ch)
+	_, left, err := r.cards(unread)
 	f.covered(cardResources(unread[:len(unread)-len(left)])...)
 	if err != nil {
 		return r.failedRead(f, err, cardResources(left)...)
@@ -295,11 +292,8 @@ func (r *run) refreshDetails(f *refreshed, open []*ticketPump, cached []string, 
 	if len(f.reads) == 0 {
 		return nil
 	}
-	var ch Changes
-	r.tell = func(stored Changes) { ch.add(stored) }
 	err := r.boundDetails(f.reads, false)
-	f.ch.add(ch)
-	f.details = detailsRead{root: r.root, gen: r.gen, kind: r.row.Kind}
+	f.details = detailsRead{root: r.root, kind: r.row.Kind}
 	// A detail whose own read succeeded is refreshed however the others'
 	// did, and one whose own read failed (its bind) is stale with that
 	// failure (ticketRead.failed); the rest owe the read that failed.

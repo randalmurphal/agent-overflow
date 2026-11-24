@@ -17,8 +17,9 @@ import (
 // stores the check's cards (the cards read by ID) with each ticket's
 // record, and a second the changed tickets read in full. Linear: one write
 // stores every ticket, card and body, read in full. Both then read the
-// changed tickets' bodies, cards and the catalog they name for their
-// views, which are built from the record. Every
+// changed tickets' bodies, each with its card, and the catalog they name
+// for their views, which are built from the record and show no other
+// issue. Every
 // ticket write brings the catalog its cards name, here 4 users and 3
 // statuses (a Jira round's two writes each stamp them), and stamps each entry with its read (read_at), one row each
 // whether or not it changed: the stamp orders the entry's later reads, so
@@ -40,8 +41,8 @@ func TestChangedRoundStatements(t *testing.T) {
 	}
 	stamped := map[string]int{"tracker_cache_users": 4, "tracker_cache_statuses": 3}
 	pinned := map[string]cost{
-		"a Jira round":         {28, map[string]int{"tracker_cache_issue_bodies": 10, "tracker_cache_issues": 60, "tracker_cache_users": 8, "tracker_cache_statuses": 6}},
-		"a Linear round":       {21, map[string]int{"tracker_cache_issue_bodies": 10, "tracker_cache_issues": 60}},
+		"a Jira round":         {27, map[string]int{"tracker_cache_issue_bodies": 10, "tracker_cache_issues": 60, "tracker_cache_users": 8, "tracker_cache_statuses": 6}},
+		"a Linear round":       {20, map[string]int{"tracker_cache_issue_bodies": 10, "tracker_cache_issues": 60}},
 		"an idle Jira round":   {8, map[string]int{"tracker_cache_issues": 50}},
 		"an idle Linear round": {8, map[string]int{"tracker_cache_issues": 50}},
 	}
@@ -128,7 +129,6 @@ func TestChangedRoundStatements(t *testing.T) {
 				}
 				if !idle {
 					call("ListMirrorBodies", func() error { _, err := s.ListMirrorBodies(root, changed); return err })
-					call("ListMirrorCards", func() error { _, err := s.ListMirrorCards(root, changed); return err })
 					call("GetMirrorCatalog", func() error {
 						_, err := s.GetMirrorCatalog(root, []string{"acc-user1"}, []string{"1"})
 						return err

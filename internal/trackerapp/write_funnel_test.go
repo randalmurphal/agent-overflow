@@ -150,13 +150,20 @@ func TestAFailedRefreshOfAnOpenTicketIsRetried(t *testing.T) {
 	})
 	f.answer(appliedEdit)
 	f.state.set(testBoard, writeRow("10001", 1, "a"))
+	// The retry's read waits for the refresh's event: a retry that settles
+	// while the refresh's build is in flight would leave its outcome, not
+	// the refresh's, to that build's event.
+	retry := holdNth(f.p, "Details", 2)
 	if _, err := f.svc.Edit(t.Context(), f.conn.ID, EditRequest{Issue: "10001", Fields: []FieldEditInput{{Field: "title", Typed: []string{"New"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	got := f.events.issueEvents(t, 3)[1:]
-	if got[0].Failure == nil || got[0].Failure.Kind != string(FailureTransient) || !got[0].Changed ||
-		got[1].Failure != nil || !got[1].Changed {
-		t.Fatalf("events %+v", got)
+	if got := f.events.issueEvents(t, 2)[1]; got.Failure == nil || got.Failure.Kind != string(FailureTransient) || !got.Changed {
+		t.Fatalf("the refresh told %+v", got)
+	}
+	waitClosed(t, "the retry's read", retry.arrived)
+	close(retry.release)
+	if got := f.events.issueEvents(t, 3)[2]; got.Failure != nil || !got.Changed {
+		t.Fatalf("the retry told %+v", got)
 	}
 	f.settledTickets(t)
 	quiet(t, f.svc)
@@ -166,9 +173,9 @@ func TestAFailedRefreshOfAnOpenTicketIsRetried(t *testing.T) {
 }
 
 // A write's refresh of an open ticket is the ticket's read from its start:
-// the card its first board's rows read stores reaches the ticket only as
-// the refresh settles, in one event with its outcome, though the pump took
-// the change's nudge while the second board's rows were read.
+// the card its first board's rows read stores is counted against the
+// ticket and reaches it only as the refresh settles, in one event with its
+// outcome; no build of it is made while the second board's rows are read.
 func TestARefreshTellsAnOpenTicketOnceWhenItSettles(t *testing.T) {
 	t.Parallel()
 	f := newWriteFixture(t)
@@ -188,17 +195,23 @@ func TestARefreshTellsAnOpenTicketOnceWhenItSettles(t *testing.T) {
 	}()
 	waitClosed(t, "the held call", call.arrived)
 	tp := f.svc.ticketPumpOf(f.conn.ID, "10001")
+	// Any build a nudge asked for ends before the hold is judged.
 	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(time.Millisecond) {
 		f.svc.subMu.Lock()
 		idle := len(tp.viewChanged) == 0 && tp.building == 0
-		told := tp.dirty != tp.built
 		f.svc.subMu.Unlock()
-		if idle && told {
+		if idle {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the first board's card was not told to the ticket")
+			t.Fatal("the ticket's build did not end")
 		}
+	}
+	f.svc.subMu.Lock()
+	owed := tp.dirty != tp.built
+	f.svc.subMu.Unlock()
+	if !owed {
+		t.Fatal("the first board's card was built into the ticket's view before the refresh settled")
 	}
 	if got := f.issueEventsSince(events); len(got) != 0 {
 		t.Fatalf("the ticket was told %+v before the refresh settled", got)

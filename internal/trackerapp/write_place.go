@@ -129,6 +129,5 @@ func (r *run) storePlaced(f *refreshed, br tracker.BoardRow, cat tracker.Catalog
 	}
 	r.markStructureDue(stored)
 	r.told(br.Board, changesOf(stored))
-	f.ch.add(changesOf(stored))
 	return !slices.Contains(stored.Superseded, string(br.Row.Card.ID)), nil
 }

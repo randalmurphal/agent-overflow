@@ -18,15 +18,19 @@ import (
 // the last such change, so no view built before a change it misses
 // outlives it.
 
-// tellTicketLocked counts in tp's dirty, and nudges it to build, a stored
-// change in ch to an input of its view (affectsLocked). The caller holds
-// subMu.
+// tellTicketLocked counts in tp's dirty a stored change in ch to an input
+// of its view (affectsLocked), and nudges tp to build unless a read of it
+// is in flight: that read's settlement claims the ticket's build
+// (settleTickets). A build in flight is nudged all the same, since one
+// that fails claims nothing again (buildClaimed). The caller holds subMu.
 func (s *Service) tellTicketLocked(tp *ticketPump, ch Changes) {
 	if tp.over || tp.core.DeadLocked() || !affectsLocked(tp, ch) {
 		return
 	}
 	tp.dirty++
-	nudge(tp.viewChanged)
+	if tp.reading == 0 {
+		nudge(tp.viewChanged)
+	}
 }
 
 // affectsLocked reports whether ch, what one store write changed, moves an
@@ -150,19 +154,22 @@ func (s *Service) buildClaimed(conn string, root int64, claimed []*ticketPump, c
 }
 
 // recordView is a view built from the record: the view (nil for a ticket
-// whose record holds no body this version reads), the other issues it
-// shows (showsOf), and the bookkeeping of the body it was built from.
+// whose record holds no body this version reads) with its digest
+// (digestOf), the other issues it shows (showsOf), and the bookkeeping of
+// the body it was built from.
 type recordView struct {
-	view  *DetailView
-	shows []tracker.IssueID
-	body  store.MirrorBodyState
+	view   *DetailView
+	digest uint64
+	shows  []tracker.IssueID
+	body   store.MirrorBodyState
 }
 
 // recordViews builds the views of pumps, open tickets of connection conn,
 // from their records under root (zero: the connection's root now, none
-// when it has no mirror), in the order of pumps. The bodies are read store.MirrorMaxBodies a statement,
-// and the cards and names of each such batch's views together
-// (detailViews).
+// when it has no mirror), in the order of pumps. The bodies are read
+// store.MirrorMaxBodies a statement, each with its issue's card, and the
+// other cards and the names of each such batch's views together
+// (detailViews). Each view is encoded and hashed here, outside subMu.
 func (s *Service) recordViews(conn string, root int64, pumps []*ticketPump) ([]recordView, error) {
 	if root == 0 {
 		var err error
@@ -212,7 +219,7 @@ func (s *Service) recordViews(conn string, root int64, pumps []*ticketPump) ([]r
 			return nil, err
 		}
 		for k, i := range at {
-			out[i].view, out[i].shows = &views[k], shows[k]
+			out[i].view, out[i].digest, out[i].shows = &views[k], s.digestOf(views[k]), shows[k]
 		}
 	}
 	return out, nil
@@ -234,11 +241,10 @@ func (s *Service) installViewLocked(tp *ticketPump, b recordView, nudged bool) {
 		}
 		return
 	}
-	digest := s.digestOf(*v)
-	if tp.view.detail == nil || digest != tp.view.digest {
+	if tp.view.detail == nil || b.digest != tp.view.digest {
 		tp.changed, tp.pending = true, true
 	}
-	tp.view = toldView{detail: v, digest: digest, shows: b.shows, body: b.body}
+	tp.view = toldView{detail: v, digest: b.digest, shows: b.shows, body: b.body}
 	if v.BodyBehind && v.Card.Updated > tp.owedFor && tp.failure == nil {
 		tp.owedFor = v.Card.Updated
 		s.readNowLocked(tp)

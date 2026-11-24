@@ -168,14 +168,14 @@ func mirrorBody(d tracker.Detail) ([]byte, error) {
 }
 
 // bodyOf is the ticket b holds, shown with the record's card it was read
-// with; ok is false when its blob is a miss.
+// with (ticketDoc.record); ok is false when its blob is a miss.
 func bodyOf(b store.MirrorBody) (ticketDoc, bool) {
 	var blob bodyBlob
 	if !decodeBlob(b.Data, bodyBlobVersion, &blob, &blob.V) || b.Card.IssueID != b.IssueID {
 		return ticketDoc{}, false
 	}
 	blob.Detail.Card, _ = cardOf(b.Card)
-	return ticketDoc{d: blob.Detail, version: b.UpdatedAt}, true
+	return ticketDoc{d: blob.Detail, version: b.UpdatedAt, record: true, since: b.Card.StatusSince}, true
 }
 
 // statusEvidence is what d, read from a tracker whose history may lack a

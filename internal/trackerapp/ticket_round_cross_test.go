@@ -316,6 +316,8 @@ func TestABuildIsToldAChangeToAnIssueItAddsToTheView(t *testing.T) {
 // ticket, after the ticket's read failed: the change waits for the read,
 // which builds the view as it settles, so one event carries the recovery
 // with the new view, never the new view with the failure the read clears.
+// A build of the connection's views made meanwhile (another ticket's
+// nudge, a pane shown again) leaves the ticket to its read.
 func TestAChangeDuringAReadIsToldWithTheReadsOutcome(t *testing.T) {
 	t.Parallel()
 	f := newCrossFixture(t)
@@ -331,13 +333,16 @@ func TestAChangeDuringAReadIsToldWithTheReadsOutcome(t *testing.T) {
 	go func() { done <- f.round(t) }()
 	waitClosed(t, "the held call", call.arrived)
 	f.rename(t, "10002", "Renamed")
-	// The ticket's own pump takes the change's nudge and builds nothing: a
-	// read of it is in flight.
 	tp := f.svc.ticketPumpOf(f.conn.ID, "10001")
-	for deadline := time.Now().Add(20 * time.Second); len(tp.viewChanged) > 0; time.Sleep(time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the pump did not take its nudge")
-		}
+	f.svc.subMu.Lock()
+	owed := tp.dirty != tp.built
+	f.svc.subMu.Unlock()
+	if !owed {
+		t.Fatal("the change was not counted")
+	}
+	f.svc.buildShown(f.conn.ID)
+	if got := f.issueEventsSince(events); len(got) != 0 {
+		t.Fatalf("a build while the read is in flight told %+v", got)
 	}
 	close(call.release)
 	if res := <-done; res.failed {

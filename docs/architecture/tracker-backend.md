@@ -420,8 +420,9 @@ not move with the detail. An open ticket due a read because another read
 stored its card is read in full when that card is newer than its body,
 with no cards read, and checked otherwise. No body is written outside
 such a full read. A view shows its parent's key and title and each linked
-issue's key, title and status from the mirror's cards, read with the
-issue's own card in one `ListMirrorCards`. A linked issue the mirror
+issue's key, title and status from the mirror's cards, read in one
+`ListMirrorCards`, with the issue's own card unless the body came from
+the record, whose statement read that card with it. A linked issue the mirror
 keeps no card of shows as the body holds it, at most 30 minutes old; a
 parent it keeps no card of shows its ID alone. A failed check leaves the
 stored body as it is. An open ticket's first paint is its view built
@@ -881,9 +882,11 @@ no tell came since, and builds again otherwise. While a build is in
 flight every card, row and keep change of the connection counts, since
 the view it builds may show an issue the installed view does not. A
 late or repeated tell costs a build, never a view older than the record.
-One build reads the bodies of up to 16 tickets in one statement
-(`store.ListMirrorBodies`) and the cards and names of their views in one
-more each. Whether the view is loaded is part of what is told.
+One build reads the bodies of up to 16 tickets, each with its issue's
+card, in one statement (`store.ListMirrorBodies`), then the cards of the
+other issues their views show, when any, and their names in one more
+each, and encodes and hashes each view before it takes the subscription
+lock. Whether the view is loaded is part of what is told.
 
 A change told while a read of the ticket is in flight is left to that
 read: its settlement builds the view as it settles the outcome, so one
@@ -934,13 +937,14 @@ structure read for. A ticket that changed adds its own full read.
 
 | Round of 50 tickets, 10 changed | Requests | Store calls | Statements | Rows written |
 |---|---|---|---|---|
-| Jira | 21 | 6 | 28 | 60 issue rows (50 read times, then the 10 read in full), 10 bodies, 8 users and 6 statuses (read times, stamped by each of the two writes) |
-| Linear | 5 | 5 | 21 | 60 issue rows, 10 bodies, 4 users and 3 statuses (read times) |
+| Jira | 21 | 5 | 27 | 60 issue rows (50 read times, then the 10 read in full), 10 bodies, 8 users and 6 statuses (read times, stamped by each of the two writes) |
+| Linear | 5 | 4 | 20 | 60 issue rows, 10 bodies, 4 users and 3 statuses (read times) |
 
 On Jira the 20 requests past the check are each changed issue and its
 comments; Linear's 5 details reads read the changed tickets already,
 cards and bodies in one write. Both rounds' store calls include the
-bodies, cards and catalog reads that build the 10 changed views. The table is of
+bodies read (each with its card) and the catalog read that build the 10
+changed views, which show no other issue. The table is of
 tickets whose boards no one shows; a shown board of the connection adds
 the change funnel's lookup of the changed cards' boards, one more store
 call per write that changed any (`ListMirrorIssueBoards`, derived from

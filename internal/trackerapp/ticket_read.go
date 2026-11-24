@@ -30,14 +30,15 @@ type ticketRead struct {
 	// prior is the bookkeeping of the record's body a check starts from
 	// (UpdatedAt zero: none), and behind whether that body is of an older
 	// version than its card: the pump's view's (ticketReads), or the
-	// record's for a read no pump makes (storedBodies), which keeps the body
-	// it read (stored) to show when the check confirms it.
+	// record's for a read no pump makes (storedBodies), which keeps the
+	// body it read, decoded (stored), to show when the check confirms it.
 	prior  store.MirrorBodyState
 	behind bool
-	stored *store.MirrorBody
+	stored *ticketDoc
 
-	// detail is the document a full read found, which IssueDetail shows;
-	// held is the record's body as the read's write left it.
+	// detail is the document a full read no pump makes found, which
+	// IssueDetail shows; held is the record's body as the read's write
+	// left it.
 	detail *ticketDoc
 	held   store.MirrorBodyState
 	// unsettled reports an issue the mirror keeps whose record's status
@@ -74,7 +75,6 @@ var errBodyNotKept = errors.New("trackerapp: the mirror did not keep the body th
 type detailsRead struct {
 	ch         Changes
 	root       int64
-	gen        uint64
 	kind       string
 	failure    *Failure
 	retryAt    time.Time
@@ -109,7 +109,7 @@ func (s *Service) readDetails(ctx context.Context, id string, reads []*ticketRea
 		out.historyDue = r.state.HistoryDue
 		readErr = r.boundDetails(reads, opened)
 	}
-	out.root, out.gen, out.kind = r.root, r.gen, r.row.Kind
+	out.root, out.kind = r.root, r.row.Kind
 	var o Outcome
 	callErr, stop, err := r.failed(&o, readErr)
 	if stop && err == nil {
@@ -243,7 +243,7 @@ func (r *run) checkDetails(reads []*ticketRead, opening store.MirrorRead) ([]*ti
 				// card is of another (a board read stored a later one while the
 				// tracker answered this).
 				toRead = append(toRead, rd)
-			case rd.stored != nil && w.Held.ReadAt != rd.stored.ReadAt:
+			case rd.stored != nil && w.Held.ReadAt != rd.prior.ReadAt:
 				toRead = append(toRead, rd)
 			default:
 				rd.held, rd.unsettled, rd.answered = w.Held, !w.StatusFinal, true
@@ -255,7 +255,8 @@ func (r *run) checkDetails(reads []*ticketRead, opening store.MirrorRead) ([]*ti
 
 // storedBodies reads from the record, in one read, the bodies of the reads
 // of reads no pump makes and none asks in full (prior, stored): what their
-// checks start from.
+// checks start from. A body this version does not read (bodyOf) is none:
+// its read is made in full.
 func (r *run) storedBodies(reads []*ticketRead) error {
 	var ids []string
 	for _, rd := range reads {
@@ -268,12 +269,15 @@ func (r *run) storedBodies(reads []*ticketRead) error {
 		if err != nil {
 			return fmt.Errorf("trackerapp: read the bodies of %d issues from the mirror: %w", len(batch), err)
 		}
-		for i := range bodies {
-			b := &bodies[i]
+		for _, b := range bodies {
+			doc, ok := bodyOf(b)
+			if !ok {
+				continue
+			}
 			for _, rd := range reads {
 				if rd.tp == nil && !rd.full && string(rd.issue) == b.IssueID {
 					rd.prior = store.MirrorBodyState{UpdatedAt: b.UpdatedAt, ReadAt: b.ReadAt, Wall: b.Wall}
-					rd.behind, rd.stored = b.Card.UpdatedAt > b.UpdatedAt, b
+					rd.behind, rd.stored = b.Card.UpdatedAt > b.UpdatedAt, &doc
 				}
 			}
 		}
@@ -392,7 +396,10 @@ func (r *run) details(reads []*ticketRead, opening store.MirrorRead) error {
 		tickets = append(tickets, store.MirrorTicket{Card: card, Body: body, Status: &evidence, Bind: rd.bind})
 		read = append(read, rd)
 		cardNames(&named, d)
-		rd.err, rd.detail = nil, &ticketDoc{d: d, version: millis(d.Card.Updated), status: &evidence}
+		rd.err = nil
+		if rd.tp == nil {
+			rd.detail = &ticketDoc{d: d, version: millis(d.Card.Updated), status: &evidence}
+		}
 	}
 	for _, rd := range reads {
 		if rd.err == nil && !slices.Contains(read, rd) {

@@ -27,11 +27,12 @@ func (s *ticketStore) StoreMirrorTickets(root, sweep int64, tickets []store.Mirr
 	return s.Store.StoreMirrorTickets(root, sweep, tickets, catalog, opened, read)
 }
 
-func (s *ticketStore) ListMirrorCards(root int64, issues []string) ([]store.MirrorCard, error) {
+// ListMirrorBodies is the first read of a view's build.
+func (s *ticketStore) ListMirrorBodies(root int64, issues []string) ([]store.MirrorBody, error) {
 	if s.failViews.Load() {
 		return nil, errStoreDown
 	}
-	return s.Store.ListMirrorCards(root, issues)
+	return s.Store.ListMirrorBodies(root, issues)
 }
 
 // pumpOf is the pump of issue's open ticket on m's connection.

@@ -165,11 +165,7 @@ func (s *Service) issueDetail(ctx context.Context, id string, issue tracker.Issu
 	doc := rd.detail
 	if doc == nil {
 		// The check confirmed the body the record held when the read began.
-		d, ok := bodyOf(*rd.stored)
-		if !ok {
-			return DetailView{}, ch, fmt.Errorf("trackerapp: the stored detail of %s of %s is of a form this version does not read", issue, id)
-		}
-		doc = &d
+		doc = rd.stored
 	}
 	if err := s.enter(); err != nil {
 		return DetailView{}, ch, err
@@ -186,11 +182,16 @@ func (s *Service) issueDetail(ctx context.Context, id string, issue tracker.Issu
 // ticketDoc is a ticket's document: its detail, the update time of the
 // read that brought its body (version), and the evidence of its status
 // time when the detail was read and is held in memory (status; nil for a
-// body the mirror holds, whose record decides it).
+// body the mirror holds, whose record decides it). A body the mirror
+// holds (record) carries its issue record's card, read in the statement
+// that read the body (bodyOf), with the time its status began (since):
+// the view shows that card, and reads no other of the issue.
 type ticketDoc struct {
 	d       tracker.Detail
 	version int64
 	status  *store.MirrorStatusEvidence
+	record  bool
+	since   int64
 }
 
 // viewRow is connection id's row as its views read it (urlOf): the hold's
@@ -227,8 +228,10 @@ func (s *Service) detailView(root int64, row store.TrackerConnection, doc ticket
 
 // detailViews is each of docs as a view of connection row. The card is
 // the issue record's when the mirror keeps the issue, with the time its
-// status began as the record decided it; else the document's own, with
-// that time from the read's evidence (store.MirrorStatusSince). Its names
+// status began as the record decided it: for a body the mirror holds, the
+// one read with it (ticketDoc.record), which is not read again; else the
+// document's own, with that time from the read's evidence
+// (store.MirrorStatusSince). Its names
 // are the mirror's shared catalog's and, for the IDs that leaves out (a
 // comment's author no card names), its own catalog's; its parent's key
 // and title, and each linked issue's key, title and status, from the
@@ -245,7 +248,9 @@ func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ti
 	var all idSet
 	for i, doc := range docs {
 		d := doc.d
-		wants[i] = append(wants[i], string(d.Card.ID))
+		if !doc.record {
+			wants[i] = append(wants[i], string(d.Card.ID))
+		}
 		for _, id := range showsOf(d) {
 			if len(wants[i]) == readBatch {
 				break
@@ -277,7 +282,7 @@ func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ti
 	for i, doc := range docs {
 		// The parent shown is the shown card's (recordCard).
 		p := string(doc.d.Card.Parent)
-		if m, ok := recordCard(doc, mirrored); ok {
+		if m, ok := recordCard(doc, mirrored); ok && !doc.record {
 			p = m.ParentID
 		}
 		if p != "" && !slices.Contains(wants[i], p) {
@@ -342,12 +347,14 @@ func recordCard(doc ticketDoc, mirrored map[string]store.MirrorCard) (store.Mirr
 func shownDetailOf(doc ticketDoc, want []string, mirrored map[string]store.MirrorCard) shownDetail {
 	d := doc.d
 	out := shownDetail{d: d, links: slices.Clone(d.Links)}
-	if doc.status != nil {
-		out.since, _ = store.MirrorStatusSince(*doc.status)
-	}
-	if m, ok := recordCard(doc, mirrored); ok {
+	switch m, ok := recordCard(doc, mirrored); {
+	case doc.record:
+		out.since = doc.since
+	case ok:
 		out.d.Card, _ = cardOf(m)
 		out.since = m.StatusSince
+	case doc.status != nil:
+		out.since, _ = store.MirrorStatusSince(*doc.status)
 	}
 	cards := make(map[tracker.IssueID]tracker.Card, len(want))
 	for _, id := range want {

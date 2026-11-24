@@ -47,8 +47,8 @@ func TestAnEvictedTicketKeepsItsViewAndIsReadAgain(t *testing.T) {
 }
 
 // An eviction told while the ticket's read is in flight is left to that
-// read: no build is made for it, the read stores the body again and
-// settles, and the ticket is read once.
+// read: a build made meanwhile asks for no read, the read stores the body
+// again and settles, and the ticket is read once.
 func TestAnEvictionDuringAReadIsLeftToTheRead(t *testing.T) {
 	t.Parallel()
 	m, evict := capFixture(t)
@@ -64,11 +64,9 @@ func TestAnEvictionDuringAReadIsLeftToTheRead(t *testing.T) {
 	}()
 	waitClosed(t, "the held call", call.arrived)
 	evict()
-	for deadline := time.Now().Add(20 * time.Second); len(tp.viewChanged) > 0; time.Sleep(time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the pump did not take its nudge")
-		}
-	}
+	// A build of the connection's views made meanwhile leaves the ticket to
+	// its read: it asks for no read of its own.
+	m.svc.buildShown(m.conn.ID)
 	close(call.release)
 	if res := <-done; res.failed {
 		t.Fatalf("the read %+v", res)
@@ -316,5 +314,21 @@ func TestABodyLeftToTheSweepIsNotShown(t *testing.T) {
 	quiet(t, m.svc)
 	if v := m.ticketView(t, sub.ID); !v.Loaded || v.Failure != nil {
 		t.Fatalf("after its first read the ticket shows %+v", v)
+	}
+}
+
+// A change told to a ticket whose read is in flight is counted and wakes
+// no build: the read's settlement claims the ticket's build
+// (settleTickets). One told to a ticket with no read in flight wakes its
+// pump.
+func TestATellDuringAReadWakesNoBuild(t *testing.T) {
+	t.Parallel()
+	s := &Service{}
+	for _, reading := range []int{1, 0} {
+		tp := &ticketPump{key: ticketKey{connection: "c", issue: "10001"}, viewChanged: make(chan struct{}, 1), reading: reading}
+		s.tellTicketLocked(tp, Changes{Cards: []tracker.IssueID{"10001"}})
+		if tp.dirty != 1 || (len(tp.viewChanged) == 1) != (reading == 0) {
+			t.Fatalf("a tell with %d reads in flight: dirty %d, %d nudges", reading, tp.dirty, len(tp.viewChanged))
+		}
 	}
 }

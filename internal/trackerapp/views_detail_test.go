@@ -453,3 +453,34 @@ func getMirrorBody(st bodyLister, root int64, issue string) (store.MirrorBody, b
 	}
 	return bodies[0], true, nil
 }
+
+// A stored body this version cannot read (another version's form) is no
+// body to a direct Jira read's check: with the tracker's card unchanged,
+// the read is made in full and answers the tracker's document.
+func TestADirectReadOfAnUnreadableStoredBodyReadsInFull(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.seedBoard(t)
+	c := card("10001", 1_799_000_000_000)
+	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
+	m.p.updatedMovesWithDetail(cardsAnswering(&c))
+	m.openDetail(t, "10001")
+	m.pass(time.Minute)
+	at := m.read()
+	ticket := store.MirrorTicket{Card: must[store.MirrorCard](t)(mirrorCard(c)), Body: []byte(`{"v":0}`)}
+	if _, err := m.st.StoreMirrorTickets(m.root(), m.sync("").Sweep, []store.MirrorTicket{ticket}, store.MirrorCatalog{}, at, at); err != nil {
+		t.Fatal(err)
+	}
+	b, ok := must2[store.MirrorBody, bool](t)(getMirrorBody(m.st, m.root(), "10001"))
+	if _, readable := bodyOf(b); !ok || readable {
+		t.Fatalf("the record holds a body %v, readable %v; want an unreadable one", ok, readable)
+	}
+	calls := len(m.p.callsInOrder())
+	v, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
+	if err != nil || v.Description != "Body" {
+		t.Fatalf("a direct read over an unreadable body: %q, %v", v.Description, err)
+	}
+	if got := describeCounts(countsOf(m.p.callsInOrder()[calls:])); got != "Details:1" {
+		t.Fatalf("the read called %s; want the full read alone", got)
+	}
+}
