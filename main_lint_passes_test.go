@@ -62,11 +62,12 @@ func TestExhaustiveLintPassesReachEveryFile(t *testing.T) {
 }
 
 // The macOS pass lints only the packages whose files differ on macOS (`make
-// go-lint-host-files`). A constant of an exported type in a file only macOS
-// compiles would be an enum member that a switch in another package has to
-// name, in a package neither that pass nor the Linux passes read as macOS
-// compiles it. No such file declares one.
-func TestNoFileOnlyMacOSCompilesAddsAnExportedEnumConstant(t *testing.T) {
+// go-lint-host-files`). An exported constant in a file only macOS compiles
+// can be an enum member that a switch in another package has to name, in a
+// package neither that pass nor the Linux passes read as macOS compiles it:
+// the linter takes a constant's type from the compiler, whatever the
+// declaration spells. So no such file declares an exported constant.
+func TestNoFileOnlyMacOSCompilesDeclaresAnExportedConstant(t *testing.T) {
 	var linux, macOS []lintTarget
 	for _, target := range exhaustiveLintTargets(t) {
 		switch target.goos {
@@ -90,38 +91,21 @@ func TestNoFileOnlyMacOSCompilesAddsAnExportedEnumConstant(t *testing.T) {
 			if !ok || group.Tok != token.CONST {
 				continue
 			}
-			// A spec with neither type nor value repeats the one before it.
-			var typ ast.Expr
 			for _, spec := range group.Specs {
-				value := spec.(*ast.ValueSpec)
-				if value.Type != nil || len(value.Values) > 0 {
-					typ = value.Type
-					if conversion, ok := firstCall(value.Values); typ == nil && ok {
-						typ = conversion.Fun
+				for _, name := range spec.(*ast.ValueSpec).Names {
+					if name.IsExported() {
+						found = append(found, rel+": "+name.Name)
 					}
-				}
-				if named, ok := typ.(*ast.Ident); ok && named.IsExported() {
-					found = append(found, rel+": "+value.Names[0].Name+" "+named.Name)
 				}
 			}
 		}
 	})
 	if len(found) > 0 {
-		t.Fatalf("these files only macOS compiles declare a constant of an exported type, which a switch "+
-			"in a package `make go-lint-host-files` does not lint would have to name; declare it in a file "+
+		t.Fatalf("these files only macOS compiles declare an exported constant, which a switch in a package "+
+			"`make go-lint-host-files` does not lint may have to name; unexport it, declare it in a file "+
 			"Linux compiles too, or widen that recipe to the packages that import these:\n%s",
 			strings.Join(found, "\n"))
 	}
-}
-
-// firstCall returns the call a constant's first value is, as a conversion
-// to a named type is.
-func firstCall(values []ast.Expr) (*ast.CallExpr, bool) {
-	if len(values) == 0 {
-		return nil, false
-	}
-	call, ok := values[0].(*ast.CallExpr)
-	return call, ok
 }
 
 // eachConstrainedGoFile calls visit for every Go file of the tree whose name

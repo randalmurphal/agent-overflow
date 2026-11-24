@@ -340,9 +340,9 @@ go-lint-whole-tree: $(GOLANGCI_LINT_BUILD)
 # CI's macOS job runs it. It lints every package this host compiles whose
 # file set (GO_FILE_SET) differs from linux/amd64's, so a package gains or
 # loses the pass with its files. A switch outside those packages over an
-# enum that gains a constant in a file only this host compiles is not read;
-# TestNoFileOnlyMacOSCompilesAddsAnExportedEnumConstant fails for such a
-# constant.
+# enum that gains a constant in a file only this host compiles is not read,
+# so TestNoFileOnlyMacOSCompilesDeclaresAnExportedConstant fails for any
+# exported constant in such a file.
 GO_HAS_FILES := {{if or .GoFiles .CgoFiles .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}
 go-lint-host-files: $(GOLANGCI_LINT_BUILD)
 	@set -e; \

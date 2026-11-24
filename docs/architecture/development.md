@@ -263,8 +263,8 @@ launcher's packages as Windows compiles them. The macOS job runs the linter
 with no build tag over the packages whose files differ between macOS and
 Linux (`make go-lint-host-files`), which hold every file only macOS
 compiles. It does not read a switch in another package, so a file only
-macOS compiles declares no constant of an exported type
-(`TestNoFileOnlyMacOSCompilesAddsAnExportedEnumConstant`). A Windows-only
+macOS compiles declares no exported constant
+(`TestNoFileOnlyMacOSCompilesDeclaresAnExportedConstant`). A Windows-only
 file outside the
 launcher's packages is compiled by no job and is not checked.
 
