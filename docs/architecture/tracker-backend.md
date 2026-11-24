@@ -694,16 +694,23 @@ and writes share:
   set at that request; a failed sign-in check that proves the answer is
   not one), the cause not judged (a sprint deleted since the listing
   answers 400 on the board issue list).
-  On it the pass ends, the rows stored before it standing, and the board
-  lists again in the same tick unless the pump listed again for a
-  refusal within the last reconcile interval; then the pump holds the
-  refusal, every reconcile until that interval has passed fails with it
-  and makes no request, so the board's failure stays shown, and the next
-  listing follows the interval; a pass that completes, or a new board
-  lifetime, clears it (`TestAPersistentRefusalListsAgainOnceAnInterval`). Every other failed
-  rows read keeps the pass's candidates, a failed bulk read included, so
-  a refusal costs at most one more listing a reconcile interval (about 4
-  Jira pages at 20,000 issues) and no other request. Linear refuses no rule: its issue filter answers a cycle ID
+  On it the pass ends, the rows stored before it standing, and the
+  refusal is the reconcile's failure, which the board's sync row keeps in
+  a slot of its own (`MirrorSyncOutcome.ReconcileFailure`, refused, with
+  the wall time the refused call returned): only a reconcile that
+  completes clears it, a read's success does not, and success wins a tie
+  in either slot. The board does not list again in that tick: its
+  reconcile waits a reconcile interval from the refusal
+  (`Service.refusalWaits`), the board's view showing the newer of the two
+  failures meanwhile and its ticks running the other units without
+  failing, so a reopen or a restart inside the wait lists nothing; a
+  person's refresh lists at once, and a new board lifetime starts clean.
+  A refusal that persists costs one listing a reconcile interval (about 4
+  Jira pages at 20,000 issues) and no other request
+  (`TestARefusalThatPersistsListsOnceAnInterval`). Every tick records
+  the units that finished before it failed or stopped, so a completed
+  reconcile clears the refusal whatever ends the tick. Every other failed
+  rows read keeps the pass's candidates, a failed bulk read included. Linear refuses no rule: its issue filter answers a cycle ID
   that names nothing with no issues and no error (measured 2026-11-23:
   `issues(filter: {cycle: {id: {in: [...]}}}, first: 1)` with a
   well-formed UUID that never named a cycle answered HTTP 200 with data,
