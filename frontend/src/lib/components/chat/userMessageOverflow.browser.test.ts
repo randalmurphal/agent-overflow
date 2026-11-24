@@ -64,22 +64,14 @@ function bubbleOverflowPx(host: HTMLElement): number {
 }
 
 describe('user message horizontal containment', () => {
-  it('contains a pasted plaintext table with unbroken border runs', async () => {
-    const border = `+${'-'.repeat(160)}+`;
-    const row = `|${' cell '.padEnd(80, ' ')}|${' another cell '.padEnd(79, ' ')}|`;
-    const table = [border, row, border, row, border].join('\n');
-    const host = await mountMessage(`check this out\n\n${table}`);
-    expect(bubbleOverflowPx(host)).toBeLessThanOrEqual(0);
-  });
-
-  it('contains NBSP-padded lines (no soft-wrap opportunities)', async () => {
-    const nbspLine = ('col1' + '\u00a0'.repeat(3) + 'value' + '\u00a0'.repeat(3)).repeat(20);
-    const host = await mountMessage(nbspLine);
-    expect(bubbleOverflowPx(host)).toBeLessThanOrEqual(0);
-  });
-
-  it('contains a single long unbroken token (URL/path)', async () => {
-    const host = await mountMessage(`https://example.com/${'a'.repeat(400)}`);
+  const border = `+${'-'.repeat(160)}+`;
+  const row = `|${' cell '.padEnd(80, ' ')}|${' another cell '.padEnd(79, ' ')}|`;
+  it.each([
+    ['a pasted plaintext table with unbroken border runs', `check this out\n\n${[border, row, border, row, border].join('\n')}`],
+    ['NBSP-padded lines (no soft-wrap opportunities)', ('col1' + '\u00a0'.repeat(3) + 'value' + '\u00a0'.repeat(3)).repeat(20)],
+    ['a single long unbroken token (URL/path)', `https://example.com/${'a'.repeat(400)}`],
+  ])('contains %s', async (_name, summary) => {
+    const host = await mountMessage(summary);
     expect(bubbleOverflowPx(host)).toBeLessThanOrEqual(0);
   });
 
