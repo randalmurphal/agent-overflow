@@ -60,14 +60,12 @@ func TestDispatchLineSuppressesChildTurnLifecycle(t *testing.T) {
 	}
 }
 
-// TestDispatchLineChildTokenUsageBecomesScopedProgress replaces the old
-// TestDispatchLineSuppressesChildTokenUsage. A child's
-// `thread/tokenUsage/updated` is still forbidden from reaching the
+// A child's `thread/tokenUsage/updated` is forbidden from reaching the
 // PARENT's meter (ADR-002: Codex subagents flatten onto the parent, so
-// the child's window would overwrite it) — but dropping it entirely also
-// threw away the only live signal Codex gives for a running child. It is
-// now re-emitted as a scoped EventSubagentProgress naming the spawn
-// tool_use (docs/specs/agent-visibility.md).
+// the child's window would overwrite it), but it is the only live signal
+// Codex gives for a running child, so it is re-emitted as a scoped
+// EventSubagentProgress naming the spawn tool_use
+// (docs/specs/agent-visibility.md).
 func TestDispatchLineChildTokenUsageBecomesScopedProgress(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
