@@ -116,8 +116,9 @@ launches itself keeps its console in
 `<root>/agent-overflow/logs/harness-console.log` and is not copied.
 
 A run takes no screenshots unless `AO_E2E_SCREENSHOTS=1`; every capture
-goes through `src/screenshot.ts`, and the steps a capture helper takes
-before its shot run either way.
+goes through `src/screenshot.ts`. The checks a capture helper makes
+before its shot run either way; work done only for the picture runs only
+with screenshots on.
 
 A failed test also gets a `stalled page` attachment for each open page that
 did not answer a trivial evaluate: its paused JavaScript stack with source,
