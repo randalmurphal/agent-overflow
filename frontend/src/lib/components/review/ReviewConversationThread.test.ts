@@ -112,29 +112,17 @@ describe('<ReviewConversationThread> state', () => {
     expect(view.getByTestId('review-thread-outdated').getAttribute('title')).toBe('Written against an earlier revision, at line 9 then');
   });
 
-  it('resolves a live thread from the footer', async () => {
-    const t = thread();
+  it.each([
+    ['resolves a live thread from the footer', {}, 'Resolve', true],
+    ['unresolves a resolved thread', { isResolved: true }, 'Unresolve', false],
+    ['resolves an outdated thread: the code moved, the question is still open', { isOutdated: true }, 'Resolve', true],
+  ])('%s', async (_name, overrides, label, resolved) => {
+    const t = thread(overrides);
     const view = renderCard(t);
     const resolve = view.getByTestId('review-thread-resolve');
-    expect(resolve.textContent?.trim()).toBe('Resolve');
+    expect(resolve.textContent?.trim()).toBe(label);
     await fireEvent.click(resolve);
-    expect(view.review.setPRThreadResolved).toHaveBeenCalledWith(t, true);
-  });
-
-  it('unresolves a resolved thread', async () => {
-    const t = thread({ isResolved: true });
-    const view = renderCard(t);
-    const resolve = view.getByTestId('review-thread-resolve');
-    expect(resolve.textContent?.trim()).toBe('Unresolve');
-    await fireEvent.click(resolve);
-    expect(view.review.setPRThreadResolved).toHaveBeenCalledWith(t, false);
-  });
-
-  it('resolves an outdated thread: the code moved, the question is still open', async () => {
-    const t = thread({ isOutdated: true });
-    const view = renderCard(t);
-    await fireEvent.click(view.getByTestId('review-thread-resolve'));
-    expect(view.review.setPRThreadResolved).toHaveBeenCalledWith(t, true);
+    expect(view.review.setPRThreadResolved).toHaveBeenCalledWith(t, resolved);
   });
 
   it('omits the resolve control when the thread is not resolvable', () => {

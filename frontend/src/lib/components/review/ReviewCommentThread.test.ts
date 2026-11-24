@@ -42,22 +42,14 @@ async function setupEditing() {
 }
 
 describe('<ReviewCommentThread> edit keyboard save', () => {
-  it('saves on Ctrl+Enter', async () => {
+  it.each([
+    ['saves on Ctrl+Enter', { ctrlKey: true }, [['c1', 'original body']]],
+    ['saves on Cmd+Enter (macOS)', { metaKey: true }, [['c1', 'original body']]],
+    ['does not save on plain Enter', {}, []],
+  ])('%s', async (_name, modifier, saves) => {
     const { onUpdate, textarea } = await setupEditing();
-    await fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
-    expect(onUpdate).toHaveBeenCalledWith('c1', 'original body');
-  });
-
-  it('saves on Cmd+Enter (macOS)', async () => {
-    const { onUpdate, textarea } = await setupEditing();
-    await fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true });
-    expect(onUpdate).toHaveBeenCalledWith('c1', 'original body');
-  });
-
-  it('does not save on plain Enter', async () => {
-    const { onUpdate, textarea } = await setupEditing();
-    await fireEvent.keyDown(textarea, { key: 'Enter' });
-    expect(onUpdate).not.toHaveBeenCalled();
+    await fireEvent.keyDown(textarea, { key: 'Enter', ...modifier });
+    expect(onUpdate.mock.calls).toEqual(saves);
   });
 });
 

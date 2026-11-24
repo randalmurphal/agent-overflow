@@ -179,30 +179,21 @@ describe('a reader scrolled into the Conversation feed', () => {
     expect(testid('review-conversation-new')!.textContent).toContain('1 new');
   });
 
-  it('keeps the top card where it was when a reply grows a card above it', async () => {
+  const n12 = INITIAL[11];
+  it.each([
+    ['a reply', note('n12', 12, 3)],
+    ['a reaction', { ...n12, comments: [{ ...n12.comments[0], reactions: [{ name: 'thumbsup', count: 2, viewerReacted: false }] }] }],
+  ])('keeps the top card where it was when %s grows a card above it', async (_change, grown) => {
     await openConversation();
     const top = await scrollIntoFeed();
     const before = offsetOf(top);
     const heightBefore = entry('n12').getBoundingClientRect().height;
 
-    push(threads.map((each) => (each.id === 'n12' ? note('n12', 12, 3) : each)));
+    push(threads.map((each) => (each.id === 'n12' ? grown : each)));
     await frames(3);
     expect(entry('n12').getBoundingClientRect().height).toBeGreaterThan(heightBefore);
     expect(Math.abs(offsetOf(top) - before)).toBeLessThanOrEqual(1);
     expect(testid('review-conversation-new')).toBeNull();
-  });
-
-  it('keeps the top card where it was when a reaction grows a card above it', async () => {
-    await openConversation();
-    const top = await scrollIntoFeed();
-    const before = offsetOf(top);
-    const heightBefore = entry('n12').getBoundingClientRect().height;
-    push(threads.map((each) => (each.id === 'n12'
-      ? { ...each, comments: [{ ...each.comments[0], reactions: [{ name: 'thumbsup', count: 2, viewerReacted: false }] }] }
-      : each)));
-    await frames(3);
-    expect(entry('n12').getBoundingClientRect().height).toBeGreaterThan(heightBefore);
-    expect(Math.abs(offsetOf(top) - before)).toBeLessThanOrEqual(1);
   });
 
   it('keeps the top card where it was when the reactions notice shows above the feed', async () => {
