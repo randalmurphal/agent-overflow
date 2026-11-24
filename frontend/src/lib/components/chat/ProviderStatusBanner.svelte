@@ -299,16 +299,30 @@
     }
   }
 
-  // Recheck is also exposed on `not_found` so a user who just ran
-  // `npm i -g @anthropic-ai/claude-code` can clear the banner without
-  // restarting the app. Re-running the binary detection emits the
-  // refreshed provider:status which the store consumes — same path
-  // the boot probe takes.
+  // Recheck on an install banner (not found, unsupported or unreadable
+  // version) re-runs the binary detection on the thread's computer. The
+  // backend publishes only a failing status, so a provider that is ready
+  // now is read from the call's answer: it records ready for that provider
+  // on that computer and clears the pane's banner, as handleRecheckAuth
+  // does. A failing answer arrives as the provider:status event.
   async function handleRecheckBinary() {
-    if (rechecking || accountsUngranted) return;
+    const status = providerStatus;
+    if (!status || rechecking || accountsUngranted) return;
+    const target = backend;
+    const threadID = pane.threadId;
     rechecking = true;
     try {
-      await withBackendTarget(backend, () => GetProviderStatuses());
+      const statuses = await withBackendTarget(target, () => GetProviderStatuses());
+      const current = statuses?.find((entry) => entry.provider === status.provider);
+      if (current?.status === 'ready') {
+        recordProviderStatus({
+          provider: status.provider,
+          status: 'ready',
+          message: '',
+          actionable: false,
+        }, target);
+        if (pane.threadId === threadID) pane.setProviderBanner(status.threadId ? null : undefined);
+      }
     } catch (err) {
       console.error('Failed to recheck provider status:', err);
     } finally {
@@ -432,7 +446,7 @@
       <p class="text-xs flex-1 line-clamp-2" title={providerBannerMessage}>
         {providerBannerMessage}
       </p>
-      {#if providerStatus?.status === 'not_found'}
+      {#if providerStatus?.status === 'not_found' || providerStatus?.status === 'version_too_old' || providerStatus?.status === 'error'}
         <button
           onclick={handleRecheckBinary}
           disabled={rechecking || accountsUngranted}

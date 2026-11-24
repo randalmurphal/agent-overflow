@@ -3,9 +3,16 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ProviderStatusBanner from './ProviderStatusBanner.svelte';
 import {
+  getProviderStatus,
+  recordProviderStatus,
   resetForTest as resetProviderStatuses,
   type ProviderStatusEvent,
 } from '../../stores/providerStatus.svelte';
+import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
+import { getPinnedBackend } from '../../transport/backends';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { setCarriedSessionScopes } from '../../transport/scopes';
+import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { setupEventListeners } from '../../stores/events';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { emitWailsEvent, resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
@@ -179,6 +186,107 @@ describe('<ProviderStatusBanner>', () => {
 
     await waitFor(() => {
       expect(queryByTestId('provider-status-banner')).toBeNull();
+    });
+  });
+
+  // The backend publishes only failing install statuses, so Recheck reads
+  // a ready provider from the call's own answer, on the thread's computer.
+  describe('install recheck', () => {
+    afterEach(() => {
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+    });
+
+    const installCases: Array<[string, Partial<ProviderStatusEvent>]> = [
+      ['not found, then installed', { status: 'not_found', message: 'Codex CLI not found' }],
+      ['an old version, then updated', {
+        status: 'version_too_old',
+        message: 'Codex v0.153.4 (/usr/bin/codex) is installed; Agent Overflow needs v0.154.0 or newer. Update Codex.',
+      }],
+      ['an unreadable version, then updated', {
+        status: 'error',
+        message: 'Agent Overflow could not read the version of Codex (/usr/bin/codex). Update Codex to v0.154.0 or newer.',
+      }],
+    ];
+
+    function readyAnswer(): unknown[] {
+      return [
+        { provider: 'claude', status: 'not_found', installed: false, message: 'Claude CLI not found' },
+        { provider: 'codex', status: 'ready', installed: true, version: 'codex-cli 0.154.0' },
+      ];
+    }
+
+    for (const [label, failing] of installCases) {
+      it(`clears on Recheck for ${label}, on this computer`, async () => {
+        const pane = await buildPane(makeThread({ provider: 'codex', model: 'gpt-5.4-mini' }));
+        const targets: Array<BackendKey | null> = [];
+        setBindingMock('GetProviderStatuses', async () => {
+          targets.push(getPinnedBackend());
+          return readyAnswer();
+        });
+        emitWailsEvent('provider:status', statusEvent({ provider: 'codex', actionUrl: '', ...failing }));
+
+        const { getByTestId, queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
+        await fireEvent.click(getByTestId('provider-status-recheck'));
+
+        await waitFor(() => expect(queryByTestId('provider-status-banner')).toBeNull());
+        expect(targets).toEqual([HOME_BACKEND]);
+        expect(getProviderStatus('codex', HOME_BACKEND)?.status).toBe('ready');
+      });
+
+      it(`clears on Recheck for ${label}, on a paired computer`, async () => {
+        stageBackend({ id: 'desk', backendId: REMOTE_BACKEND_UUID, name: 'Desk' });
+        setCarriedSessionScopes('desk', ['session', 'access:admin', 'threads:operate']);
+        noteThread('thread-1', 'desk');
+        const pane = await buildPane(makeThread({ provider: 'codex', model: 'gpt-5.4-mini' }));
+        const targets: Array<BackendKey | null> = [];
+        setBindingMock('GetProviderStatuses', async () => {
+          targets.push(getPinnedBackend());
+          return readyAnswer();
+        });
+        // The same failure on this computer stays: Recheck answered for Desk.
+        recordProviderStatus(statusEvent({ provider: 'codex', actionUrl: '', ...failing }), HOME_BACKEND);
+        recordProviderStatus(statusEvent({ provider: 'codex', actionUrl: '', ...failing }), 'desk');
+
+        const { getByTestId, queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
+        await fireEvent.click(getByTestId('provider-status-recheck'));
+
+        await waitFor(() => expect(queryByTestId('provider-status-banner')).toBeNull());
+        expect(targets).toEqual(['desk']);
+        expect(getProviderStatus('codex', 'desk')?.status).toBe('ready');
+        expect(getProviderStatus('codex', HOME_BACKEND)?.status).toBe(failing.status);
+      });
+    }
+
+    it('keeps the banner when the recheck still answers a failure', async () => {
+      const pane = await buildPane(makeThread({ provider: 'codex', model: 'gpt-5.4-mini' }));
+      setBindingMock('GetProviderStatuses', async () => [
+        { provider: 'codex', status: 'version_too_old', installed: true, message: 'still old' },
+      ]);
+      emitWailsEvent('provider:status', statusEvent({
+        provider: 'codex', status: 'version_too_old', message: 'old', actionUrl: '',
+      }));
+
+      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      await fireEvent.click(getByTestId('provider-status-recheck'));
+      await tick();
+      await tick();
+
+      expect(getByTestId('provider-status-banner').dataset.status).toBe('version_too_old');
+      expect(getProviderStatus('codex', HOME_BACKEND)?.status).toBe('version_too_old');
+    });
+
+    it('reads only the banner\'s own provider from the answer', async () => {
+      const pane = await buildPane();
+      setBindingMock('GetProviderStatuses', async () => readyAnswer());
+      emitWailsEvent('provider:status', statusEvent());
+
+      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      await fireEvent.click(getByTestId('provider-status-recheck'));
+      await tick();
+      await tick();
+
+      expect(getByTestId('provider-status-banner').dataset.status).toBe('not_found');
     });
   });
 
