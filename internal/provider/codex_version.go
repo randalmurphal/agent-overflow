@@ -9,7 +9,10 @@ import (
 	"unicode/utf8"
 )
 
-// MinimumCodexCLIVersion is the oldest Codex AO runs. AO shares one
+// MinimumCodexCLIVersion is the oldest Codex app-server AO talks to: every
+// client that completes `initialize` refuses an older one
+// (codex.admitInitialize), and detection reports it. One-shot `codex exec`
+// text generation (textgen) is not checked against it. AO shares one
 // app-server per account and launches it with `thread_unload_delay_secs=0`
 // (codex/launch.go) so a thread unloads the moment its last subscriber
 // leaves; the setting first ships in rust-v0.154.0. An older app-server
