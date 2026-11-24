@@ -221,14 +221,6 @@ export const Events = {
       if (current.size === 0) listeners.delete(name);
     };
   },
-
-  /**
-   * Emit an event into the mock bus. Not something the real runtime exposes
-   * this way, but tests synthesise events through `emitWailsEvent()`.
-   */
-  Emit(_event: { name: string; data: unknown }): void {
-    // No-op in tests unless a specific suite wants to mock-track emits.
-  },
 };
 
 /**

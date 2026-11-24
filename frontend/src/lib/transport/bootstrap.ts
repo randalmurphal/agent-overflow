@@ -463,13 +463,12 @@ function wsUrlMatchesPageOrigin(
 // wave's whole change here. Origin still means "the one authority this
 // manifest is allowed to describe" — it is just that a shell page's
 // backend is not the page's own origin, and an ATTACHED backend's is
-// neither. `expected` defaults to the home backend's
-// (./homeEndpoint.ts, which answers this document's origin whenever no
-// endpoint is set), so every existing call is unchanged; the attached
-// fetcher below passes that backend's own.
+// neither. Each caller passes the authority it fetched the manifest
+// from, falling back to the home backend's (./homeEndpoint.ts, which
+// answers this document's origin whenever no endpoint is set).
 export function validateWsUrl(
   wsUrl: string,
-  expected: { protocol: string; host: string } | null = homeOriginParts(),
+  expected: { protocol: string; host: string } | null,
 ): void {
   let parsed: URL;
   try {

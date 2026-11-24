@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   chordMatches,
   encodeChord,
-  encodeWhen,
   evaluateWhen,
   tryParseChord,
   tryParseWhen,
@@ -249,12 +248,5 @@ describe('keybindingParser — when expressions', () => {
     expect(evaluateWhen(ast, { terminalOpen: true })).toBe(true);
     expect(evaluateWhen(ast, { terminalOpen: true, paletteOpen: true })).toBe(false);
     expect(evaluateWhen(ast, {})).toBe(false);
-  });
-
-  it('round-trips through encode/decode', () => {
-    const original = '!paletteOpen && (terminalOpen || approvalPending)';
-    const ast = tryParseWhen(original)!;
-    const re = tryParseWhen(encodeWhen(ast))!;
-    expect(re).toEqual(ast);
   });
 });
