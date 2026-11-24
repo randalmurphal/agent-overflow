@@ -53,6 +53,7 @@ import { basename, errorToasts, harnessGit, listWorktrees, openThread, samePath,
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { screenshot } from '../src/screenshot.js';
 
 const POLL_MS = 400;
 
@@ -104,7 +105,7 @@ for (const forge of ['github', 'gitlab'] as Forge[]) {
     await expect(notice).toHaveClass(/text-fg-subtle/);
     await expect(notice).not.toHaveClass(/text-warning/);
     await expect(notice.locator('a, button')).toHaveCount(0);
-    if (forge === 'github') await notice.screenshot({ path: testInfo.outputPath('merged-notice-removed.png') });
+    if (forge === 'github') await screenshot(notice, { path: testInfo.outputPath('merged-notice-removed.png') });
 
     // Settled once: the repository is not read again.
     await expectNoMoreStateReads(harness, POLL_MS);
@@ -212,7 +213,7 @@ test('uncommitted changes keep the merged PR\'s worktree with one warning notice
   await expect(notice).toHaveText('MR !12 merged. Kept worktree dirty-branch: 2 uncommitted files.');
   await expect(notice).toHaveClass(/text-warning/);
   await expect(notice.locator('a, button')).toHaveCount(0);
-  await notice.screenshot({ path: testInfo.outputPath('merged-notice-kept.png') });
+  await screenshot(notice, { path: testInfo.outputPath('merged-notice-kept.png') });
   await expectWorktreeKept(harness, threadId, fixture);
 
   // Later polls neither read it again nor repeat the notice.

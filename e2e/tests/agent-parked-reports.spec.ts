@@ -55,6 +55,7 @@ import {
   type Item,
   type ScenarioStep,
 } from './agent-visibility-helpers.js';
+import { attachScreenshot, screenshot } from '../src/screenshot.js';
 
 const AGENT = { task_id: 'task-bg', task_type: 'local_agent', description: 'gate watcher' };
 const OUTPUT_FILE = '${CWD}/gate-output.jsonl';
@@ -293,11 +294,8 @@ test('every stop of a background agent is a card at its own position, and a resu
     await expect(final1.getByTestId('subagent-group-preview')).toHaveText(FINAL_1);
     await expect(timeline.getByTestId('notification-row')).toHaveCount(0);
 
-    await testInfo.attach('parked-cards', {
-      body: await timeline.screenshot(),
-      contentType: 'image/png',
-    });
-    await page.screenshot({ path: testInfo.outputPath('parked-cards.png') });
+    await attachScreenshot(testInfo, 'parked-cards', timeline);
+    await screenshot(page, { path: testInfo.outputPath('parked-cards.png') });
 
     // Expanding a parked card loads the full report above its run's digest.
     await expect(parked1.getByTestId('subagent-group-parked-report')).toHaveCount(0);

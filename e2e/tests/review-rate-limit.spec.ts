@@ -84,7 +84,9 @@ test('an exhausted GitHub rate limit pauses the review pane until the reset, the
     await review.getByTestId('review-close').click();
     await expect(page.locator('section[data-pane-kind="review"]')).toHaveCount(0);
 
-    const reset = resetIn(10);
+    // Far enough out for the reopened pane to show the banner first; with
+    // a poll every second, several polls are withheld before it.
+    const reset = resetIn(6);
     await setForgeRateLimit(harness, { forge: 'github', pool: 'graphql', remaining: 0, reset });
     await page.getByTestId('chat-header-pr-badge').click();
     const reopened = page.locator('section[data-pane-kind="review"]');

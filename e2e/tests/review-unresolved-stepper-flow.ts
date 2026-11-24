@@ -25,6 +25,7 @@ import {
   publishPullRequest,
   type ForgeRepo,
 } from './forge-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 export interface StepperSurface {
   /** The compact project: taps, a 32px control, no hover. */
@@ -479,14 +480,14 @@ export function unresolvedStepperFlow({ compact }: StepperSurface): void {
     const review = await openReview(page, compact);
     await recordPulses(page);
     const press = (target: Locator) => (compact ? target.tap() : target.click());
-    const shot = (name: string) => page.screenshot({ path: testInfo.outputPath(`${name}.png`) });
+    const shot = (name: string) => screenshot(page, { path: testInfo.outputPath(`${name}.png`) });
     const headerShot = async (name: string) => {
       const box = (await review.getByTestId('review-pr-header').boundingBox())!;
-      await page.screenshot({ path: testInfo.outputPath(`${name}.png`), clip: { x: box.x, y: box.y, width: box.width, height: box.height } });
+      await screenshot(page, { path: testInfo.outputPath(`${name}.png`), clip: { x: box.x, y: box.y, width: box.width, height: box.height } });
     };
     const chipShot = async (name: string) => {
       const box = (await review.getByTestId('review-pr-conversation').locator('[data-testid="review-conversation-open-count"]').boundingBox())!;
-      await page.screenshot({ path: testInfo.outputPath(`${name}.png`), clip: { x: box.x - 160, y: box.y - 12, width: box.width + 180, height: box.height + 24 } });
+      await screenshot(page, { path: testInfo.outputPath(`${name}.png`), clip: { x: box.x - 160, y: box.y - 12, width: box.width + 180, height: box.height + 24 } });
     };
     const card = (id: string) => cardOf(review.locator(`[data-testid="review-conversation-thread"][data-thread-id="${id}"]`));
     const row = (text: string) => review.locator('[data-testid="review-pr-thread"]').filter({ hasText: text });

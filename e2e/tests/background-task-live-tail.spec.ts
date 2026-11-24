@@ -29,6 +29,7 @@ import {
   waitForGate,
   type ScenarioStep,
 } from './agent-visibility-helpers.js';
+import { attachScreenshot } from '../src/screenshot.js';
 
 const TASK = { task_id: 'task-bg', task_type: 'local_bash', description: 'Build in the background' };
 const COMMAND = 'make -j8 build 2>&1 | tee build.log';
@@ -114,9 +115,7 @@ async function useTheme(page: Page, theme: 'dark' | 'light'): Promise<void> {
 async function shoot(page: Page, testInfo: TestInfo, state: string): Promise<void> {
   for (const theme of ['dark', 'light'] as const) {
     await useTheme(page, theme);
-    const path = testInfo.outputPath(`tail-${state}-${theme}.png`);
-    await page.screenshot({ path });
-    await testInfo.attach(`tail-${state}-${theme}`, { path, contentType: 'image/png' });
+    await attachScreenshot(testInfo, `tail-${state}-${theme}`, page);
   }
   await useTheme(page, 'dark');
 }

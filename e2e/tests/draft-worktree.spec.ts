@@ -103,7 +103,7 @@ async function stageNewWorktree(page: Page): Promise<void> {
   await expect(stripLabels(page).env).toHaveText('New Worktree');
 }
 
-test('worktree selection materializes a draft and create binds it to an existing branch', async ({
+test('worktree selection materializes a draft, create binds it to an existing branch, and a send from it reuses that thread', async ({
   harness,
   page,
 }) => {
@@ -138,33 +138,14 @@ test('worktree selection materializes a draft and create binds it to an existing
   await expect(stripLabels(page).branch).toHaveText(EXISTING_BRANCH);
   await expect(page.getByTestId('apply-worktree-intent-button')).toHaveCount(0);
 
-  const rows = await threadRows(harness);
-  expect(rows).toHaveLength(1);
-  await expectSameFilesystemPath(rows[0].workspacePath, worktree!.path);
-  await expectSameFilesystemPath(rows[0].worktreePath, worktree!.path);
-  expect(rows[0].branch).toBe(EXISTING_BRANCH);
-});
-
-test('sending from that draft reuses the thread already bound to the worktree', async ({
-  harness,
-  page,
-}) => {
-  const projectId = await seedProject(harness);
-  await openFreshDraft(harness, page);
-
-  await stageNewWorktree(page);
-  await page.getByTestId('branch-picker-trigger').click();
-  await page.getByRole('menuitem', { name: EXISTING_BRANCH }).click();
-  await page.getByTestId('apply-worktree-intent-button').click();
-  await expect(
-    page.getByRole('alert').filter({ hasText: `Created worktree on ${EXISTING_BRANCH}` }),
-  ).toBeVisible();
-  const worktree = await registeredWorktree(harness, projectId, EXISTING_BRANCH);
-  expect(worktree).toBeDefined();
   const rowsBeforeSend = await threadRows(harness);
   expect(rowsBeforeSend).toHaveLength(1);
+  await expectSameFilesystemPath(rowsBeforeSend[0].workspacePath, worktree!.path);
+  await expectSameFilesystemPath(rowsBeforeSend[0].worktreePath, worktree!.path);
+  expect(rowsBeforeSend[0].branch).toBe(EXISTING_BRANCH);
   const rowBeforeSend = rowsBeforeSend[0]!;
 
+  // Sending from that draft reuses the thread already bound to the worktree.
   await page.getByLabel('Message Input').fill('Where am I running?');
   await page.getByTestId('composer-send').click();
 
@@ -194,6 +175,7 @@ test('sending from that draft reuses the thread already bound to the worktree', 
   await expect(stripLabels(page).branch).toHaveText(EXISTING_BRANCH);
   await expect(page.getByTestId('thread-row')).toHaveCount(1);
 });
+
 
 test('a fresh draft binds its materialized row to a new worktree branch', async ({
   harness,

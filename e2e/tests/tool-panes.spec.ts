@@ -16,6 +16,7 @@ import {
   startWorkflow,
   waitForWorkflowState,
 } from './workflows-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 function sections(page: Page): Locator {
   return page.locator('[data-testid="pane-host"] > section[data-pane-id]');
@@ -64,7 +65,7 @@ async function useDarkTheme(page: Page): Promise<void> {
 }
 
 async function shoot(target: Page | Locator, testInfo: TestInfo, name: string): Promise<void> {
-  await target.screenshot({ path: testInfo.outputPath(`${name}.png`) });
+  await screenshot(target, { path: testInfo.outputPath(`${name}.png`) });
 }
 
 test('the tools row opens a tool in the focused pane\'s place, or beside it with ctrl or cmd', async ({ harness, page }) => {

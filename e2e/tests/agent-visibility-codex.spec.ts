@@ -240,7 +240,7 @@ async function startSpawnTurn(
   return mockId;
 }
 
-test('a Codex spawn_agent child keeps its launched row, opens the same pane, and gets its card at the completion', async ({
+test('a Codex spawn_agent child keeps its launched row, opens the same pane, and gets its card at the completion, whose answer renders once', async ({
   harness,
   page,
 }) => {
@@ -331,43 +331,25 @@ test('a Codex spawn_agent child keeps its launched row, opens the same pane, and
   expect(cardBox!.y).toBeGreaterThan(spawnBox!.y + spawnBox!.height - 1);
   // The launch row is still the launch row.
   await expect(spawnRow.getByTestId('collab-tool-row')).toHaveCount(1);
-});
 
-// Regression pin — a Codex child's answer renders ONCE, as its own
-// message, formatted and whole.
-//
-// The answer exists in three places: the child's own assistant row
-// (parented to the spawn), the FINAL_ANSWER envelope that puts it into
-// the parent's model context, and the 240-char `payloadMeta.preview` on
-// the completion sibling. Only the first is a message. The preview is
-// the COLLAPSED one-liner and nothing else — rendering it in the body
-// too showed the same text twice, unformatted and cut mid-word (user
-// ruling 2026-08-23).
-test('a Codex child\u2019s answer renders once, as a normal message', async ({
-  harness,
-  page,
-}) => {
-  const mockId = await startSpawnTurn(harness, page, 'codex-answer-app', 'Codex answer');
-  await waitForGate(harness, 'tokens');
-  await advance(harness, mockId, 'tokens');
-  await waitForGate(harness, 'tools');
-  await advance(harness, mockId, 'tools');
-  await waitForGate(harness, 'answer');
-  await advance(harness, mockId, 'answer');
-  await harness.waitForEvent('provider:turn_completed');
-
-  const timeline = page.getByTestId('message-timeline-scroll');
-  const card = timeline.getByTestId('subagent-group').first();
+  // --- The answer renders ONCE, as its own message, formatted and whole
+  // The answer exists in three places: the child's own assistant row
+  // (parented to the spawn), the FINAL_ANSWER envelope that puts it into
+  // the parent's model context, and the 240-char `payloadMeta.preview` on
+  // the completion sibling. Only the first is a message. The preview is
+  // the COLLAPSED one-liner and nothing else — rendering it in the body
+  // too showed the same text twice, unformatted and cut mid-word (user
+  // ruling 2026-08-23).
   await expect(card.getByTestId('subagent-group-preview')).toContainText(FINAL_ANSWER);
-
   await card.getByTestId('subagent-group-toggle').first().click();
   const body = card.getByTestId('subagent-group-body');
   await expect(body).toContainText(FINAL_ANSWER);
   await expect(card.getByTestId('subagent-group-final-answer')).toHaveCount(0);
   await expect(body.getByText(FINAL_ANSWER, { exact: false })).toHaveCount(1);
-
+  // The card's own door opens the child's pane with the answer in it.
+  await pane.getByTestId('agent-pane-close').click();
+  await expect(pane).toHaveCount(0);
   await card.getByTestId('subagent-group-open-pane').first().click();
-  const pane = page.getByTestId('companion-pane-agent-body');
   await expect(pane.getByTestId('agent-pane-timeline')).toContainText(FINAL_ANSWER);
   await expect(pane.getByTestId('agent-pane-final-answer')).toHaveCount(0);
   await expect(pane.getByTestId('agent-pane-empty')).toHaveCount(0);

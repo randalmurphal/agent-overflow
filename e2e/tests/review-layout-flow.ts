@@ -28,6 +28,7 @@ import {
   publishPullRequest,
   type ForgeRepo,
 } from './forge-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 export interface LayoutSurface {
   /** The compact project: taps, the rail over the diff. */
@@ -170,10 +171,10 @@ export function reviewLayoutFlow({ compact }: LayoutSurface): void {
     await harness.open(page);
     const review = await openReview(page, compact);
     const press = (target: Locator) => (compact ? target.tap() : target.click());
-    const shot = (name: string) => page.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-${name}.png`) });
+    const shot = (name: string) => screenshot(page, { path: testInfo.outputPath(`${testInfo.project.name}-${name}.png`) });
     const paneShot = async (name: string) => {
       const box = (await review.boundingBox())!;
-      await page.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-${name}.png`), clip: box });
+      await screenshot(page, { path: testInfo.outputPath(`${testInfo.project.name}-${name}.png`), clip: box });
     };
 
     // The title bar: four lines, each saying one thing.

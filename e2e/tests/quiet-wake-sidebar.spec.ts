@@ -10,6 +10,7 @@ import { expect, test, type SeedResult } from './fixtures.js';
 import { awaitSidebarSettled, wakeLoopNow } from './wake-rows-helpers.js';
 import { assistantRow, assistantShell, rowIn, shellIn } from './sidebar-sections-helpers.js';
 import { awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 /** What the sidebar shows of one thread row. */
 interface RowState {
@@ -136,7 +137,7 @@ for (const provider of ['claude', 'codex'] as const) {
     });
     expect(flagged[ticker].index).toBeLessThan(flagged[neighbor].index);
     expect(flagged[neighbor]).toMatchObject({ bold: false, status: null, attention: null });
-    await row.screenshot({ path: test.info().outputPath(`${provider}-attention-row.png`) });
+    await screenshot(row, { path: test.info().outputPath(`${provider}-attention-row.png`) });
 
     // ---- Opening the thread reads the flag.
     await rowIn(page, ticker).click();
@@ -196,5 +197,5 @@ test('a flagged assistant row stacks its lines without covering one another', as
     above = next;
     tuck = 2;
   }
-  await card.screenshot({ path: test.info().outputPath('flagged-card.png') });
+  await screenshot(card, { path: test.info().outputPath('flagged-card.png') });
 });

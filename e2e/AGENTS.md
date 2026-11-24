@@ -115,6 +115,10 @@ record names. A backend a spec
 launches itself keeps its console in
 `<root>/agent-overflow/logs/harness-console.log` and is not copied.
 
+A run takes no screenshots unless `AO_E2E_SCREENSHOTS=1`; every capture
+goes through `src/screenshot.ts`, and the steps a capture helper takes
+before its shot run either way.
+
 A failed test also gets a `stalled page` attachment for each open page that
 did not answer a trivial evaluate: its paused JavaScript stack with source,
 or why none could be read. What it does not cover is listed in

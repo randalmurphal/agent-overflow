@@ -9,6 +9,7 @@ import { expect, test } from './fixtures.js';
 import { expectEveryForgeCallHandled, forgeRouteCalls } from './forge-helpers.js';
 import { centre, closeAll, openEditor, openPinned, openReply, ROUTES, thread } from './review-comment-actions-flow.js';
 import { longPress } from './touch-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 const FORGE = 'gitlab';
 
@@ -24,7 +25,7 @@ test('on compact, comment actions are one menu, and reply, draft, edit and delet
     await expect(mine.getByTestId('review-comment-menu')).toBeVisible();
     await expect(mine.getByTestId('review-comment-edit')).toHaveCount(0);
     await centre(card);
-    await card.screenshot({ path: testInfo.outputPath('compact-comment-actions.png') });
+    await screenshot(card, { path: testInfo.outputPath('compact-comment-actions.png') });
 
     // Reply now.
     const composer = await openReply(review, 'Why start at one?', true);
@@ -69,7 +70,7 @@ test('on compact, comment actions are one menu, and reply, draft, edit and delet
       expect(box.y + box.height).toBeLessThanOrEqual(header.y + header.height + 0.5);
     }
     await centre(card);
-    await card.screenshot({ path: testInfo.outputPath('compact-delete-confirm.png') });
+    await screenshot(card, { path: testInfo.outputPath('compact-delete-confirm.png') });
     await confirm.getByTestId('review-comment-confirm-yes').tap();
     await expect(card.getByTestId('review-thread-comment').filter({ hasText: 'Counting starts at one.' })).toHaveCount(0, { timeout: 30_000 });
     expect(await forgeRouteCalls(harness, ROUTES[FORGE].delete)).toHaveLength(1);

@@ -6,13 +6,15 @@
 // too). seedLeadWithWorker is the companion pane specs' one
 // assistant with one held worker. seedPastWithAsk, seedSettledWorkers,
 // seedAssistantWithHelper and failAgentReads set up the Past, paging,
-// helper and failed-read cases the desktop and compact specs share.
+// helper and failed-read cases the desktop and compact specs share. Their
+// `test` runs over a worker backend whose settled rows linger
+// AGENT_ROW_LINGER_MS.
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Locator, Page } from '@playwright/test';
 
-import { expect, type SeedResult } from './fixtures.js';
-import type { HarnessApp, HarnessMockEventData } from '../src/harness.js';
+import { HARNESS_WORKER_TIMEOUT_MS, expect, test as base, type SeedResult } from './fixtures.js';
+import { harnessTiming, launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import {
   assistantHome,
   awaitToolAnswer,
@@ -29,6 +31,25 @@ import {
   toolUseLine,
 } from './agent-visibility-helpers.js';
 import { methodIdByName } from './offhost-helpers.js';
+
+/**
+ * How long a settled Agents row lingers on these specs' backend: the
+ * tray's AGENT_ROW_SETTLED_LINGER_MS (8 s) through its harness knob, so a
+ * spec that waits a row out waits this instead.
+ */
+export const AGENT_ROW_LINGER_MS = 4_000;
+
+/** The gate's fixtures over a worker backend whose settled rows linger AGENT_ROW_LINGER_MS. */
+export const test = base.extend<object, { harnessWorker: HarnessApp }>({
+  harnessWorker: [
+    async ({}, use) => {
+      const app = await launchHarness({ env: harnessTiming({ 'agent-row-linger': `${AGENT_ROW_LINGER_MS}ms` }) });
+      await use(app);
+      await app.close();
+    },
+    { scope: 'worker', timeout: HARNESS_WORKER_TIMEOUT_MS },
+  ],
+});
 
 export const LEAD = 'Release lead';
 export const CHILD = 'Child worker';

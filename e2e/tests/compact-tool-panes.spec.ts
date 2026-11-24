@@ -13,6 +13,7 @@ import {
   startWorkflow,
   waitForWorkflowState,
 } from './workflows-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 function screen(page: Page) {
   return page.locator('html');
@@ -41,7 +42,7 @@ test('Workflows is a full-width pane and Back steps detail, home, then list', as
 
   await page.getByTestId('workflow-run-row').filter({ hasText: 'Parked on a phone' }).click();
   await expect(page.getByTestId('workflow-run-detail')).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath('compact-workflows-run-dark.png') });
+  await screenshot(page, { path: testInfo.outputPath('compact-workflows-run-dark.png') });
 
   // Browser Back: the run detail first, the pane second.
   await page.goBack();
@@ -61,10 +62,10 @@ test('Workflows is a full-width pane and Back steps detail, home, then list', as
   await expect(section.getByTestId('compact-back')).toHaveCount(0);
   await section.getByTestId('workflows-back').click();
   await expect(page.getByTestId('workflow-project-group')).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath('compact-workflows-home-dark.png') });
+  await screenshot(page, { path: testInfo.outputPath('compact-workflows-home-dark.png') });
   await section.getByTestId('compact-back').click();
   await expect(screen(page)).toHaveAttribute('data-compact-screen', 'list');
-  await page.screenshot({ path: testInfo.outputPath('compact-list-tools-row-dark.png') });
+  await screenshot(page, { path: testInfo.outputPath('compact-list-tools-row-dark.png') });
 
   // Pull requests, whose list has no detail step yet: Back goes straight to
   // the list.

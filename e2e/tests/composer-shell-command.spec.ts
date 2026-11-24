@@ -25,6 +25,7 @@ import {
   textLines,
   waitForGate,
 } from './agent-visibility-helpers.js';
+import { attachScreenshot } from '../src/screenshot.js';
 
 function nextUserInput(harness: HarnessApp, containing: string): Promise<HarnessMockEventData> {
   return harness.waitForEvent<HarnessMockEventData>(
@@ -47,9 +48,7 @@ async function shoot(page: Page, testInfo: TestInfo, state: string): Promise<voi
     await page.evaluate(() => Promise.all(
       document.getAnimations().filter((a) => a instanceof CSSTransition).map((a) => a.finished.catch(() => undefined)),
     ));
-    const path = testInfo.outputPath(`shell-${state}-${theme}.png`);
-    await page.screenshot({ path });
-    await testInfo.attach(`shell-${state}-${theme}`, { path, contentType: 'image/png' });
+    await attachScreenshot(testInfo, `shell-${state}-${theme}`, page);
   }
   await page.emulateMedia({ colorScheme: 'dark' });
 }

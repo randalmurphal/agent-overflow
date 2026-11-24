@@ -11,6 +11,7 @@ import type { Page, TestInfo } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { mockSessions, type MockInfo, type MockSessionConfig } from './workflows-helpers.js';
 import type { HarnessApp } from '../src/harness.js';
+import { screenshot } from '../src/screenshot.js';
 
 const seededTurn = { userText: 'hello', items: [{ kind: 'assistant_text', summary: 'Ready.' }] };
 
@@ -45,7 +46,7 @@ async function shootRow(page: Page, testInfo: TestInfo, what: string): Promise<v
   const row = page.getByTestId('settings-claude-command-timeout-row');
   for (const theme of ['light', 'dark'] as const) {
     await page.emulateMedia({ colorScheme: theme });
-    await row.screenshot({ path: testInfo.outputPath(`timeout-${what}-${theme}.png`) });
+    await screenshot(row, { path: testInfo.outputPath(`timeout-${what}-${theme}.png`) });
   }
   await page.emulateMedia({ colorScheme: 'light' });
 }

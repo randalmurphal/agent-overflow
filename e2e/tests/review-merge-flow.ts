@@ -40,6 +40,7 @@ import {
   seedForge,
   type ForgeRepo,
 } from './forge-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 export interface MergeSurface {
   /** The compact project: taps, the phone viewport. */
@@ -202,7 +203,7 @@ export function reviewMergeFlow({ compact }: MergeSurface): void {
       await harness.open(page);
       const review = await openReview(page, title, forge, compact);
       const press = (target: Locator) => (compact ? target.tap() : target.click());
-      const shot = (target: Locator, name: string) => target.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-${forge}-${name}.png`) });
+      const shot = (target: Locator, name: string) => screenshot(target, { path: testInfo.outputPath(`${testInfo.project.name}-${forge}-${name}.png`) });
 
       // Blocked: the pill counts the blockers and opens the section.
       const pill = review.getByTestId('review-pr-readiness');
@@ -387,7 +388,7 @@ export function reviewMergeFlow({ compact }: MergeSurface): void {
     await expect(armed).toContainText('Added by ao-viewer');
     await expect(trigger).toContainText(compact ? 'Queued' : 'In merge train');
     await expect(pill).toHaveText('Ready to merge');
-    await armed.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-merge-train.png`) });
+    await screenshot(armed, { path: testInfo.outputPath(`${testInfo.project.name}-merge-train.png`) });
     await press(armed.getByTestId('review-merge-row-cancel-auto'));
     await expect(armed).toHaveCount(0);
     await expect(trigger).toContainText(compact ? 'Add to train' : 'Add to merge train');

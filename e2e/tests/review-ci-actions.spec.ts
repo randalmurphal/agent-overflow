@@ -31,6 +31,7 @@ import {
   seedThreadProject,
 } from './forge-helpers.js';
 import { registerCIActionsFlow } from './ci-actions-flow.js';
+import { screenshot } from '../src/screenshot.js';
 
 const TITLE = 'CI actions thread';
 
@@ -87,7 +88,7 @@ test('GitLab: a refused retry reads as its sentence, a retried job is followed t
   await expect(log.getByTestId('review-ci-log-status')).toHaveText('pending');
   await expect(retry).toHaveCount(0);
   await expect(log.getByTestId('review-ci-log-cancel_job')).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath('ci-actions-gitlab-retried.png') });
+  await screenshot(page, { path: testInfo.outputPath('ci-actions-gitlab-retried.png') });
 
   // Running: Cancel pipeline from the CI header's menu ends it.
   await advanceForgeJob(harness, { forge: 'gitlab', project, job: 'unit', status: 'running', log: 'unit again\n' });
@@ -114,7 +115,7 @@ test('GitLab: a refused retry reads as its sentence, a retried job is followed t
   await review.getByTestId('review-ci-chip').filter({ hasText: 'deploy' }).click();
   const deploy = jobRow(page, 'deploy');
   await deploy.row.hover();
-  await page.screenshot({ path: testInfo.outputPath('ci-actions-gitlab-row-hover.png') });
+  await screenshot(page, { path: testInfo.outputPath('ci-actions-gitlab-row-hover.png') });
   await deploy.actions.getByTestId('review-ci-job-play_job').click();
   await expect(deploy.row.getByTestId('review-ci-job')).toContainText('pending');
   await expect(deploy.actions.getByTestId('review-ci-job-play_job')).toHaveCount(0);
@@ -222,7 +223,7 @@ test('GitHub: a refused artifacts read keeps the jobs and chips, and the CI head
     await expect(page.getByTestId('review-ci-pipeline-unavailable')).toHaveText(
       `Artifact downloads are not shown: this login cannot read the Actions artifacts of ${project} on GitHub.`,
     );
-    await page.screenshot({ path: testInfo.outputPath('ci-actions-github-unavailable.png') });
+    await screenshot(page, { path: testInfo.outputPath('ci-actions-github-unavailable.png') });
     expect((await forgeInvocations(harness)).map((call) => call.route)).toContain('gh api run artifacts');
     await expectEveryForgeCallHandled(harness);
   } finally {

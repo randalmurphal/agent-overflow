@@ -21,6 +21,7 @@ import {
   publishPullRequest,
   type ForgeStep,
 } from './forge-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 const TITLE = 'Large CI log thread';
 // CI_LOG_BLOCK_CACHE_MAX in frontend/src/lib/stores/ciLogBlocks.svelte.ts.
@@ -141,7 +142,7 @@ test('a GitHub log over 16 MB reads from its top a block at a time, saves whole,
   await expect.poll(() => placeholdersInView(scroll)).toBeGreaterThan(0);
   const holder = log.getByTestId('review-ci-log-block-placeholder').first();
   expect((await holder.boundingBox())?.height).toBe(200 * 18);
-  await page.screenshot({ path: testInfo.outputPath('ci-log-store-large-log-placeholders.png') });
+  await screenshot(page, { path: testInfo.outputPath('ci-log-store-large-log-placeholders.png') });
 
   lines.release();
   await expect(scroll).toContainText('run_make_test_1 line 9 ');

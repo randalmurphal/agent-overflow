@@ -15,6 +15,7 @@
 import { expect, test } from './fixtures.js';
 import { expandReviewSection, expectEveryForgeCallHandled, forgeInvocations, forgeRouteCalls, refuseForgeRoute } from './forge-helpers.js';
 import { centre, chip, closeAll, line, openEditor, openPinned, ROUTES, SUGGEST_ID, thread } from './review-suggestions-reactions-flow.js';
+import { screenshot } from '../src/screenshot.js';
 
 for (const forge of ['github', 'gitlab'] as const) {
   const routes = ROUTES[forge];
@@ -40,7 +41,7 @@ for (const forge of ['github', 'gitlab'] as const) {
       expect(await text.evaluate((el: HTMLTextAreaElement) => el.value.slice(0, el.selectionStart))).toBe('Fold these:\n```suggestion\nexport const two = 2;\nexport const half = 2.5;\nexport const three = 3;');
       await text.fill('Fold these:\n```suggestion\nexport const two = 2;\nexport const three = 3;\n```');
       await centre(editor);
-      await editor.screenshot({ path: testInfo.outputPath(`${forge}-editor-suggestion.png`) });
+      await screenshot(editor, { path: testInfo.outputPath(`${forge}-editor-suggestion.png`) });
 
       // Preview renders the block as the diff it will become, and keeps
       // the editor's height; off returns the text and the caret.
@@ -55,7 +56,7 @@ for (const forge of ['github', 'gitlab'] as const) {
       // The fence is the diff, not also a code block.
       await expect(preview.locator('pre')).toHaveCount(0);
       expect((await preview.boundingBox())!.height).toBeGreaterThanOrEqual(height - 0.5);
-      await editor.screenshot({ path: testInfo.outputPath(`${forge}-editor-preview.png`) });
+      await screenshot(editor, { path: testInfo.outputPath(`${forge}-editor-preview.png`) });
       await editor.getByTestId('review-editor-preview-toggle').click();
       await expect(text).toBeFocused();
       expect(await text.evaluate((el: HTMLTextAreaElement) => [el.selectionStart, el.selectionEnd])).toEqual([5, 5]);
@@ -99,12 +100,12 @@ for (const forge of ['github', 'gitlab'] as const) {
         await expect(applied.getByTestId('review-suggestion-applied')).toBeVisible();
         await expect(applied.getByTestId('review-suggestion-apply')).toHaveCount(0);
         await centre(applied);
-        await applied.screenshot({ path: testInfo.outputPath(`${forge}-suggestion-applied.png`) });
+        await screenshot(applied, { path: testInfo.outputPath(`${forge}-suggestion-applied.png`) });
       }
       await centre(outdated);
-      await outdated.screenshot({ path: testInfo.outputPath(`${forge}-suggestion-outdated.png`) });
+      await screenshot(outdated, { path: testInfo.outputPath(`${forge}-suggestion-outdated.png`) });
       await centre(card);
-      await card.screenshot({ path: testInfo.outputPath(`${forge}-suggestion-apply.png`) });
+      await screenshot(card, { path: testInfo.outputPath(`${forge}-suggestion-apply.png`) });
 
       // The forge refuses the first apply: its sentence under the
       // suggestion, nothing written.
@@ -116,7 +117,7 @@ for (const forge of ['github', 'gitlab'] as const) {
       await expect(error).not.toBeEmpty({ timeout: 30_000 });
       await expect(review.getByTestId('review-pr-stale')).toHaveCount(0);
       await centre(card);
-      await card.screenshot({ path: testInfo.outputPath(`${forge}-suggestion-refused.png`) });
+      await screenshot(card, { path: testInfo.outputPath(`${forge}-suggestion-refused.png`) });
 
       // The second goes through: the fake commits it to the pull's origin,
       // the head moves and the pane's stale-head banner takes over.
@@ -138,7 +139,7 @@ for (const forge of ['github', 'gitlab'] as const) {
         await expect(card.getByTestId('review-suggestion-apply')).toHaveCount(0);
       }
       await centre(line(review, 'export const half = 5 / 2;'));
-      await page.screenshot({ path: testInfo.outputPath(`${forge}-after-apply.png`) });
+      await screenshot(page, { path: testInfo.outputPath(`${forge}-after-apply.png`) });
       await expectEveryForgeCallHandled(harness);
     } finally {
       await closeAll(page, harness);
@@ -181,11 +182,11 @@ for (const forge of ['github', 'gitlab'] as const) {
       await expect(actions.locator('button')).toHaveCount(labels.length);
       expect(await actions.locator('button').evaluateAll((els) => els.map((el) => el.getAttribute('aria-label')))).toEqual(labels);
       await centre(card);
-      await card.screenshot({ path: testInfo.outputPath(`${forge}-reactions-hover.png`) });
+      await screenshot(card, { path: testInfo.outputPath(`${forge}-reactions-hover.png`) });
       await actions.getByTestId('review-comment-react').click();
       const picker = page.getByTestId('review-reaction-picker');
       await expect(picker.getByTestId('review-reaction-option')).toHaveCount(8);
-      await page.screenshot({ path: testInfo.outputPath(`${forge}-reaction-popover.png`) });
+      await screenshot(page, { path: testInfo.outputPath(`${forge}-reaction-popover.png`) });
       await picker.locator('[data-reaction="rocket"]').click();
       await expect(picker).toHaveCount(0);
       await expect(chip(card, 'rocket')).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 });
@@ -226,10 +227,10 @@ for (const forge of ['github', 'gitlab'] as const) {
       await body.fill('Values, *reworked*.');
       // No Write and Preview tabs: one toggle in the button row.
       await expect(description.getByTestId('review-description-write')).toHaveCount(0);
-      await description.getByTestId('review-description-editor').screenshot({ path: testInfo.outputPath(`${forge}-description-editor.png`) });
+      await screenshot(description.getByTestId('review-description-editor'), { path: testInfo.outputPath(`${forge}-description-editor.png`) });
       await description.getByTestId('review-description-preview').click();
       await expect(description.getByTestId('review-description-preview-body').locator('em')).toHaveText('reworked');
-      await description.getByTestId('review-description-editor').screenshot({ path: testInfo.outputPath(`${forge}-description-preview.png`) });
+      await screenshot(description.getByTestId('review-description-editor'), { path: testInfo.outputPath(`${forge}-description-preview.png`) });
       await description.getByTestId('review-description-preview').click();
       await expect(body).toHaveValue('Values, *reworked*.');
       await description.getByTestId('review-description-cancel').click();
@@ -268,7 +269,7 @@ test('with a thread in the Conversation and the diff, a reaction picked from eit
       await expect(chip(card, 'rocket')).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 });
     }
     expect(await forgeRouteCalls(harness, routes.react)).toHaveLength(1);
-    await listed.screenshot({ path: testInfo.outputPath('github-reaction-two-copies.png') });
+    await screenshot(listed, { path: testInfo.outputPath('github-reaction-two-copies.png') });
 
     // Open from the diff's copy: picking it again removes it, once.
     await pick(inDiff, 'rocket');
@@ -296,7 +297,7 @@ test('on gitlab, a refused reactions read shows one line and the threads stay', 
     await expect(note).toHaveText("Reactions are not shown: GitLab's reactions could not be read.");
     expect((await forgeInvocations(harness)).some((call) => call.via === 'http' && call.route === ROUTES.gitlab.reactionsRead && call.status === 403)).toBe(true);
     await expect(conversation.getByTestId('review-conversation-thread').first()).toBeVisible();
-    await conversation.screenshot({ path: testInfo.outputPath('gitlab-reactions-unavailable.png') });
+    await screenshot(conversation, { path: testInfo.outputPath('gitlab-reactions-unavailable.png') });
     await expectEveryForgeCallHandled(harness);
   } finally {
     await closeAll(page, harness);

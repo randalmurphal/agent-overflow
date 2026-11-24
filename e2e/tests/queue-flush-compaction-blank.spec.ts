@@ -36,6 +36,7 @@ import {
   setScenario,
   threadToolsScenario,
 } from './thread-tools-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 const QUEUED = 'Queued mid-turn: also consider the unpaired case.';
 const AGENTS = 5;
@@ -343,7 +344,7 @@ for (const order of ['send-during-compaction', 'send-after-boundary'] as const) 
       const blank = longestBlankRun(samples);
       console.log(`[probe ${order}] frames=${samples.length} longestBlankMs=${Math.round(blank.ms)} at=${JSON.stringify(blank.at)} last=${JSON.stringify(samples[samples.length - 1])}`);
     }
-    await page.screenshot({ path: `test-results/flush-compact-${order}.png`, fullPage: false });
+    await screenshot(page, { path: `test-results/flush-compact-${order}.png`, fullPage: false });
     const blank = longestBlankRun(samples);
     expect(blank.ms, `timeline painted no rows for ${Math.round(blank.ms)}ms starting at ${JSON.stringify(blank.at)}`).toBeLessThan(BLANK_LIMIT_MS);
     await expect(page.getByText(QUEUED, { exact: true })).toHaveCount(1);

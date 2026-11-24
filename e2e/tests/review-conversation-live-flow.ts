@@ -30,6 +30,7 @@ import {
   type ForgeRepo,
 } from './forge-helpers.js';
 import { openPage, openPinnedReview, pickFilter, row } from './pulls-page-flow.js';
+import { screenshot } from '../src/screenshot.js';
 
 export interface ConversationSurface {
   /** The compact project: taps, the review full width. */
@@ -167,7 +168,7 @@ export function conversationLiveFlow({ compact }: ConversationSurface): void {
         await expect(pane.getByTestId('pulls-sort')).toHaveAttribute('data-sort', 'created');
         await expect(age).toContainText('3d');
         await expect(age).toHaveAttribute('title', /^Opened .+ · Updated .+$/);
-        await page.screenshot({ path: testInfo.outputPath(`list-sorted-created-${layout}.png`) });
+        await screenshot(page, { path: testInfo.outputPath(`list-sorted-created-${layout}.png`) });
         await press(pane.getByTestId('pulls-sort'));
         await press(page.getByTestId('pulls-sort-updated'));
         await expect(age).toContainText('2h');
@@ -199,7 +200,7 @@ export function conversationLiveFlow({ compact }: ConversationSurface): void {
         await expect(chip).toHaveText(/1 new/, { timeout: 20_000 });
         await expect(chip.locator('.lucide-arrow-up')).toHaveCount(1);
         expect(Math.abs((await offsetOf(review, before.id)) - before.offset)).toBeLessThanOrEqual(1);
-        await review.getByTestId('review-pr-conversation').screenshot({ path: testInfo.outputPath(`new-chip-${layout}.png`) });
+        await screenshot(review.getByTestId('review-pr-conversation'), { path: testInfo.outputPath(`new-chip-${layout}.png`) });
         await press(chip);
         await expect(chip).toHaveCount(0);
         await expect(card(review, 'Arrived above you.')).toBeInViewport();
@@ -239,7 +240,7 @@ export function conversationLiveFlow({ compact }: ConversationSurface): void {
       const menu = page.locator('[data-popover]').last();
       const toggle = menu.getByTestId('review-hide-resolved-toggle');
       await expect(toggle).toHaveAttribute('aria-checked', 'false');
-      await page.screenshot({ path: testInfo.outputPath(`view-options-${layout}.png`) });
+      await screenshot(page, { path: testInfo.outputPath(`view-options-${layout}.png`) });
       await press(toggle);
       await expect(resolvedCard).toHaveCount(0);
       await expect(resolvedRow).toHaveCount(0);
@@ -247,7 +248,7 @@ export function conversationLiveFlow({ compact }: ConversationSurface): void {
       const hidden = review.getByTestId('review-conversation-hidden-resolved');
       await expect(hidden).toHaveText('1 resolved hidden');
       await hidden.scrollIntoViewIfNeeded();
-      await conversation.screenshot({ path: testInfo.outputPath(`resolved-hidden-${layout}.png`) });
+      await screenshot(conversation, { path: testInfo.outputPath(`resolved-hidden-${layout}.png`) });
       await press(review.getByTestId('review-view-options'));
       await expect(page.locator('[data-popover]').last().getByTestId('review-hide-resolved-toggle')).toHaveAttribute('aria-checked', 'true');
       await page.keyboard.press('Escape');

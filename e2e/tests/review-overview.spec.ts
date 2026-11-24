@@ -21,6 +21,7 @@ import {
   publishPullRequest,
   type ForgeRepo,
 } from './forge-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 const TITLE = 'Overview thread';
 // Enough rows that the overview row is unmounted, not just off screen,
@@ -203,24 +204,24 @@ test('the overview heads the diff, its cards read every thread state, and the ti
   await expect(card(review, 'T_outdated').getByTestId('review-thread-resolve')).toHaveText('Resolve');
   await expect(card(review, 'T_nit')).toHaveAttribute('data-state', 'unresolved');
   await expect(review.getByTestId('review-conversation-open-count')).toContainText('3 unresolved');
-  await page.screenshot({ path: testInfo.outputPath('overview-open.png') });
+  await screenshot(page, { path: testInfo.outputPath('overview-open.png') });
   // Newest first: the verdicts and the oldest (outdated) thread sit
   // further down the section's own scroller.
   await review.getByTestId('review-conversation').evaluate((el) => { el.parentElement!.scrollTop = el.parentElement!.scrollHeight; });
   await expect(card(review, 'T_outdated')).toBeInViewport();
-  await page.screenshot({ path: testInfo.outputPath('overview-end.png') });
+  await screenshot(page, { path: testInfo.outputPath('overview-end.png') });
   await review.getByTestId('review-conversation').evaluate((el) => { el.parentElement!.scrollTop = 0; });
 
   // The code a thread was written against folds under its header.
   await card(review, 'T_bot').getByTestId('review-thread-context').locator('button[aria-expanded]').click();
   await expect(card(review, 'T_bot').getByTestId('review-thread-context')).toContainText('token12 = parse(input, 12)');
-  await page.screenshot({ path: testInfo.outputPath('overview-context.png') });
+  await screenshot(page, { path: testInfo.outputPath('overview-context.png') });
 
   // The description opens as its own section above the conversation.
   await review.getByTestId('review-pr-description').locator('button[aria-expanded]').first().click();
   await expect(review.getByTestId('review-pr-description')).toHaveAttribute('data-open', 'true');
   await expect(review.getByTestId('review-pr-description')).toContainText('Guards the parser');
-  await page.screenshot({ path: testInfo.outputPath('overview-description.png') });
+  await screenshot(page, { path: testInfo.outputPath('overview-description.png') });
 
   // A section's own scroll position is part of the reading state.
   await review.getByTestId('review-conversation').evaluate((el) => { el.parentElement!.scrollTop = 140; });
@@ -233,7 +234,7 @@ test('the overview heads the diff, its cards read every thread state, and the ti
   await scrollPastOverview(review);
   expect((await review.getByTestId('review-pr-header').boundingBox())!.height).toBe(barHeightBefore);
   await expect(review.getByTestId('review-peek-conversation')).toContainText('3 unresolved');
-  await page.screenshot({ path: testInfo.outputPath('diff-scrolled.png') });
+  await screenshot(page, { path: testInfo.outputPath('diff-scrolled.png') });
 
   // The stepper lands on the newest open thread's diff row, expanded.
   await review.getByTestId('review-unresolved-stepper-bar').getByRole('button', { name: 'Next unresolved thread' }).click();
@@ -242,14 +243,14 @@ test('the overview heads the diff, its cards read every thread state, and the ti
   await expect(botRow).toBeInViewport();
   await expect(botRow.locator('button[aria-expanded]').first()).toHaveAttribute('aria-expanded', 'true');
   await expect(botRow).toContainText('Guard against a null token');
-  await page.screenshot({ path: testInfo.outputPath('diff-thread-row.png') });
+  await screenshot(page, { path: testInfo.outputPath('diff-thread-row.png') });
 
   // The actions sit at the foot of the card as on the forge: the reply
   // field opens the composer in place, with Copy and Resolve beside it.
   await botRow.getByTestId('review-thread-reply').click();
   await expect(botRow.getByTestId('review-thread-composer')).toBeVisible();
   await expect(botRow.getByTestId('review-thread-resolve')).toHaveText('Resolve');
-  await page.screenshot({ path: testInfo.outputPath('diff-thread-composer.png') });
+  await screenshot(page, { path: testInfo.outputPath('diff-thread-composer.png') });
   await page.keyboard.press('Escape');
   await expect(botRow.getByTestId('review-thread-composer')).toHaveCount(0);
   await expect(botRow.getByTestId('review-thread-reply')).toBeVisible();

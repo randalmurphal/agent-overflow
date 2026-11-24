@@ -82,6 +82,7 @@ import {
   threadRows,
   threadToolsScenario,
 } from './thread-tools-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -1261,7 +1262,7 @@ test('the Agents segment nests a spawn on the other computer and its Stop cascad
   await expect(grandRow).toHaveAttribute('data-depth', '1');
   await expect(grandRow.getByTestId('agent-tray-row-title')).toHaveText('Remote grandchild');
   await expect(grandRow.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
-  await body.screenshot({ path: test.info().outputPath('agents-remote-nested.png'), animations: 'disabled' });
+  await screenshot(body, { path: test.info().outputPath('agents-remote-nested.png'), animations: 'disabled' });
 
   const childInterrupted = remote.waitForEvent<HarnessMockEventData>(
     'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === child.path, 90_000);

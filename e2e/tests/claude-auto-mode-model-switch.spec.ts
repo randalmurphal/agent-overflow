@@ -28,6 +28,7 @@ import { mockSessions } from './workflows-helpers.js';
 import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import type { SeedResult } from './fixtures.js';
+import { screenshot } from '../src/screenshot.js';
 
 const SONNET_46 = 'claude-sonnet-4-6';
 const DROP_NOTICE = `Claude Code turned off Auto on ${SONNET_46}. This thread's access is now Supervised.`;
@@ -102,7 +103,7 @@ async function screenshots(page: Page, name: string) {
     await page.emulateMedia({ colorScheme: scheme });
     // The scheme change fades colors in; capture after it settles.
     await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'));
-    await page.screenshot({ path: test.info().outputPath(`${name}-${scheme}.png`) });
+    await screenshot(page, { path: test.info().outputPath(`${name}-${scheme}.png`) });
   }
 }
 

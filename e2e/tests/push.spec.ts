@@ -178,7 +178,7 @@ test.describe.serial('phone push', () => {
     return phone;
   }
 
-  test('a registered phone is woken by a completed turn, and told almost nothing', async ({
+  test('a registered phone is woken by a completed turn, told almost nothing, and the wake is withdrawn under the same tag when the thread works again', async ({
     harness,
   }) => {
     const client = await pairedPhone(harness);
@@ -237,27 +237,22 @@ test.describe.serial('phone push', () => {
     // The route travels as ONE document, because `Target`'s own JSON
     // spells a `kind` and so does the notification's (`push.KeyTarget`).
     expect(JSON.parse(woken.data.target)).toMatchObject({ kind: 'thread', threadId });
-  });
 
-  test('working the thread again withdraws the wake under the same tag', async ({ harness }) => {
-    // Paired, registered and still live from the case above: this one is
-    // about the WITHDRAWAL, not about arriving again.
-    await pairedPhone(harness);
-    const threadId = await stagedThread(harness, 'push-retraction', 'Withdrawn thread');
-    await askAndSettle(harness, threadId, 'first question');
+    // Working the thread again withdraws the wake under the same tag.
     await askAndWithdraw(harness, threadId, 'second question');
-
-    const recorded = await wakes(harness, 2);
-    const retraction = recorded.find((message) => message.data.retract === '1');
-    expect(retraction, 'a retraction must reach the phone as its own message').toBeTruthy();
-    expect(retraction!.tag).toBe(`thread:${threadId}`);
-    expect(retraction!.data.id).toBe(`thread:${threadId}`);
-    expect(retraction!.data.backend, 'the withdrawal names the backend, or cancel finds nothing').toBeTruthy();
-    // Nothing to render and nowhere to go: the narrower contract
-    // `notify.ValidateSend` holds a retraction to.
-    expect(retraction!.data.title).toBeUndefined();
-    expect(retraction!.data.body).toBeUndefined();
-    expect(retraction!.data.target).toBeUndefined();
+    const recorded = await wakes(harness, 3);
+    const retractions = recorded.filter((message) => message.data.retract === '1');
+    expect(retractions.length, 'each turn start reaches the phone as its own retraction').toBe(2);
+    for (const retraction of retractions) {
+      expect(retraction.tag).toBe(`thread:${threadId}`);
+      expect(retraction.data.id).toBe(`thread:${threadId}`);
+      expect(retraction.data.backend, 'the withdrawal names the backend, or cancel finds nothing').toBeTruthy();
+      // Nothing to render and nowhere to go: the narrower contract
+      // `notify.ValidateSend` holds a retraction to.
+      expect(retraction.data.title).toBeUndefined();
+      expect(retraction.data.body).toBeUndefined();
+      expect(retraction.data.target).toBeUndefined();
+    }
     // One tag for both, which is what makes the phone REPLACE rather than
     // stack, and what lets the withdrawal cancel exactly the right one.
     expect(new Set(recorded.map((message) => message.tag)).size).toBe(1);
