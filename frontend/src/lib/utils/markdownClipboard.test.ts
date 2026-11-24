@@ -83,13 +83,9 @@ describe('copyMarkdownToClipboard — rich path', () => {
     await expect(textOf(item['text/html'])).resolves.toBe(
       '<h1>Title</h1><p>Some <strong>bold</strong> text.</p>',
     );
-  });
-
-  it('labels each blob with its own MIME type', async () => {
-    installClipboard();
-    await copyMarkdownToClipboard(MARKDOWN);
-    expect(constructed[0]['text/plain'].type).toBe('text/plain');
-    expect(constructed[0]['text/html'].type).toBe('text/html');
+    // Each blob carries its own MIME type.
+    expect(item['text/plain'].type).toBe('text/plain');
+    expect(item['text/html'].type).toBe('text/html');
   });
 });
 
@@ -119,23 +115,15 @@ describe('copyMarkdownToClipboard — degraded environments', () => {
     expect(constructed).toHaveLength(0);
   });
 
-  it('falls back to a plain-text write when the rich write rejects', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+  it('surfaces a rejected rich write and falls back to a plain-text write', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { write, writeText } = installClipboard({ writeSucceeds: false });
 
     await expect(copyMarkdownToClipboard(MARKDOWN)).resolves.toBe(true);
 
     expect(write).toHaveBeenCalledTimes(1);
-    expect(writeText).toHaveBeenCalledWith(MARKDOWN);
-  });
-
-  it('surfaces a rejected rich write rather than swallowing it', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    installClipboard({ writeSucceeds: false });
-
-    await copyMarkdownToClipboard(MARKDOWN);
-
     expect(errorSpy).toHaveBeenCalled();
+    expect(writeText).toHaveBeenCalledWith(MARKDOWN);
   });
 
   it('skips the html flavor when there is nothing renderable to carry', async () => {

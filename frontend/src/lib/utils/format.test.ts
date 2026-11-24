@@ -102,31 +102,21 @@ describe('formatResetCountdown', () => {
 
   // A passed boundary says nothing about when the next window ends: it
   // starts at the account's next request.
-  it('renders past timestamps as nothing', () => {
-    expect(formatResetCountdown(NOW_SEC - 1)).toBe('');
-    expect(formatResetCountdown(NOW_SEC - 3600)).toBe('');
-    expect(formatResetCountdown(NOW_SEC)).toBe('');
-  });
-
-  it('returns empty string for unset / non-finite inputs', () => {
-    expect(formatResetCountdown(0)).toBe('');
-    expect(formatResetCountdown(-1)).toBe('');
-    expect(formatResetCountdown(Number.NaN)).toBe('');
-    expect(formatResetCountdown(Number.POSITIVE_INFINITY)).toBe('');
+  it.each([
+    ['renders past timestamps as nothing', [NOW_SEC - 1, NOW_SEC - 3600, NOW_SEC]],
+    ['returns empty string for unset / non-finite inputs', [0, -1, Number.NaN, Number.POSITIVE_INFINITY]],
+  ])('%s', (_name, inputs) => {
+    for (const resetsAt of inputs) expect(formatResetCountdown(resetsAt), String(resetsAt)).toBe('');
   });
 });
 
 describe('formatGiB', () => {
-  it('formats zero as "0.0"', () => {
-    expect(formatGiB(0)).toBe('0.0');
-  });
-
-  it('formats one gibibyte exactly as "1.0"', () => {
-    expect(formatGiB(1024 ** 3)).toBe('1.0');
-  });
-
-  it('formats a typical 16-GiB stick as "16.0"', () => {
-    expect(formatGiB(16 * 1024 ** 3)).toBe('16.0');
+  it.each([
+    ['formats zero as "0.0"', 0, '0.0'],
+    ['formats one gibibyte exactly as "1.0"', 1024 ** 3, '1.0'],
+    ['formats a typical 16-GiB stick as "16.0"', 16 * 1024 ** 3, '16.0'],
+  ])('%s', (_name, bytes, want) => {
+    expect(formatGiB(bytes)).toBe(want);
   });
 
   it('rounds to one decimal place', () => {

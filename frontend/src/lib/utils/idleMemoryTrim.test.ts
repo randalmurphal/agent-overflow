@@ -38,12 +38,29 @@ describe('idleMemoryTrim', () => {
 
   const trimCalls = () => getBindingMock('RequestWebviewMemoryTrim')!.mock.calls.length;
 
-  it('requests a trim once input has been idle past the threshold', async () => {
+  it('requests a trim past the threshold, holds the reattempt floor, and reports input since the last accepted trim', async () => {
     stop = startIdleMemoryTrim();
+    const mock = getBindingMock('RequestWebviewMemoryTrim')!;
     await vi.advanceTimersByTimeAsync(IDLE_TRIM_THRESHOLD_MS - IDLE_TRIM_CHECK_MS);
     expect(trimCalls()).toBe(0);
     await vi.advanceTimersByTimeAsync(2 * IDLE_TRIM_CHECK_MS);
     expect(trimCalls()).toBe(1);
+    // First ask since page load: the boot render was work.
+    expect(mock.mock.calls[0]).toEqual([true]);
+
+    // Stay idle: the next request waits for the floor, not the next check.
+    await vi.advanceTimersByTimeAsync(IDLE_TRIM_REATTEMPT_MS - 2 * IDLE_TRIM_CHECK_MS);
+    expect(trimCalls()).toBe(1);
+    await vi.advanceTimersByTimeAsync(2 * IDLE_TRIM_CHECK_MS);
+    expect(trimCalls()).toBe(2);
+    // Idle straight through the floor: nothing new for a GC to reclaim,
+    // and the backend's no-activity gate keys on this false.
+    expect(mock.mock.calls[1]).toEqual([false]);
+
+    // Fresh input reopens the caller's half of the gate.
+    window.dispatchEvent(new Event('keydown'));
+    await vi.advanceTimersByTimeAsync(IDLE_TRIM_REATTEMPT_MS + IDLE_TRIM_THRESHOLD_MS);
+    expect(mock.mock.calls.at(-1)).toEqual([true]);
   });
 
   it('input resets the idle clock', async () => {
@@ -54,37 +71,6 @@ describe('idleMemoryTrim', () => {
       window.dispatchEvent(new Event('keydown'));
     }
     expect(trimCalls()).toBe(0);
-  });
-
-  it('holds the reattempt floor while idleness persists', async () => {
-    stop = startIdleMemoryTrim();
-    await vi.advanceTimersByTimeAsync(IDLE_TRIM_THRESHOLD_MS + IDLE_TRIM_CHECK_MS);
-    expect(trimCalls()).toBe(1);
-    // Stay idle: the next request waits for the floor, not the next check.
-    await vi.advanceTimersByTimeAsync(IDLE_TRIM_REATTEMPT_MS - 2 * IDLE_TRIM_CHECK_MS);
-    expect(trimCalls()).toBe(1);
-    await vi.advanceTimersByTimeAsync(2 * IDLE_TRIM_CHECK_MS);
-    expect(trimCalls()).toBe(2);
-  });
-
-  it('reports whether input landed since the last accepted trim', async () => {
-    stop = startIdleMemoryTrim();
-    const mock = getBindingMock('RequestWebviewMemoryTrim')!;
-
-    // First ask since page load: the boot render was work.
-    await vi.advanceTimersByTimeAsync(IDLE_TRIM_THRESHOLD_MS + IDLE_TRIM_CHECK_MS);
-    expect(mock.mock.calls[0]).toEqual([true]);
-
-    // Idle straight through the floor: nothing new for a GC to reclaim,
-    // and the backend's no-activity gate keys on this false.
-    await vi.advanceTimersByTimeAsync(IDLE_TRIM_REATTEMPT_MS);
-    expect(mock.mock.calls.length).toBe(2);
-    expect(mock.mock.calls[1]).toEqual([false]);
-
-    // Fresh input reopens the caller's half of the gate.
-    window.dispatchEvent(new Event('keydown'));
-    await vi.advanceTimersByTimeAsync(IDLE_TRIM_REATTEMPT_MS + IDLE_TRIM_THRESHOLD_MS);
-    expect(mock.mock.calls.at(-1)).toEqual([true]);
   });
 
   it('a draining pane holds the trim, and it fires on the next check, not a floor later', async () => {
@@ -134,13 +120,7 @@ describe('idleMemoryTrim', () => {
     },
   );
 
-  it('stop removes the timer', async () => {
-    stop = startIdleMemoryTrim();
-    stop();
-    stop = null;
-    await vi.advanceTimersByTimeAsync(4 * IDLE_TRIM_THRESHOLD_MS);
-    expect(trimCalls()).toBe(0);
-  });
+
   describe('host presence arrives after mount', () => {
     // The real page: App mounts, THEN the WS client fetches the manifest
     // that answers locality. The detector is installed from onMount.

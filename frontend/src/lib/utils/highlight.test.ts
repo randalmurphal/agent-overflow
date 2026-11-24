@@ -47,80 +47,33 @@ describe.each([
   ['searchHighlightSegments', searchHighlightSegments],
   ['lowerCaseHighlightSegments', lowerCaseHighlightSegments],
 ])('%s', (_name, computeHighlightSegments) => {
-  it('returns a single text segment for an empty query', () => {
-    expect(computeHighlightSegments('hello world', '')).toEqual([
-      { type: 'text', value: 'hello world' },
-    ]);
-  });
-
-  it('returns a single text segment for a whitespace-only query', () => {
-    expect(computeHighlightSegments('hello', '  \t\n')).toEqual([
-      { type: 'text', value: 'hello' },
-    ]);
-  });
-
-  it('returns [] for an empty input text', () => {
-    expect(computeHighlightSegments('', 'x')).toEqual([]);
-  });
-
-  it('splits a single match in the middle', () => {
-    expect(computeHighlightSegments('foo bar baz', 'bar')).toEqual([
-      { type: 'text', value: 'foo ' },
-      { type: 'match', value: 'bar' },
-      { type: 'text', value: ' baz' },
-    ]);
-  });
-
-  it('splits a match at the start', () => {
-    expect(computeHighlightSegments('bar baz', 'bar')).toEqual([
-      { type: 'match', value: 'bar' },
-      { type: 'text', value: ' baz' },
-    ]);
-  });
-
-  it('splits a match at the end', () => {
-    expect(computeHighlightSegments('foo bar', 'bar')).toEqual([
-      { type: 'text', value: 'foo ' },
-      { type: 'match', value: 'bar' },
-    ]);
-  });
-
-  it('handles an exact match that equals the whole text', () => {
-    expect(computeHighlightSegments('bar', 'bar')).toEqual([
-      { type: 'match', value: 'bar' },
-    ]);
-  });
-
-  it('case-insensitive but preserves the original casing in the output', () => {
-    expect(computeHighlightSegments('Hello WORLD', 'world')).toEqual([
-      { type: 'text', value: 'Hello ' },
-      { type: 'match', value: 'WORLD' },
-    ]);
-  });
-
-  it('returns only a text segment when the query is not found', () => {
-    expect(computeHighlightSegments('hello', 'xyz')).toEqual([
-      { type: 'text', value: 'hello' },
-    ]);
-  });
-
-  it('highlights every occurrence of a repeated match', () => {
-    expect(computeHighlightSegments('abXabXab', 'ab')).toEqual([
-      { type: 'match', value: 'ab' },
-      { type: 'text', value: 'X' },
-      { type: 'match', value: 'ab' },
-      { type: 'text', value: 'X' },
-      { type: 'match', value: 'ab' },
-    ]);
-  });
-
-  it('does not double-highlight overlapping matches', () => {
+  const text = (value: string) => ({ type: 'text', value });
+  const match = (value: string) => ({ type: 'match', value });
+  it.each([
+    ['returns a single text segment for an empty query', 'hello world', '', [text('hello world')]],
+    ['returns a single text segment for a whitespace-only query', 'hello', '  \t\n', [text('hello')]],
+    ['returns [] for an empty input text', '', 'x', []],
+    ['splits a single match in the middle', 'foo bar baz', 'bar', [text('foo '), match('bar'), text(' baz')]],
+    ['splits a match at the start', 'bar baz', 'bar', [match('bar'), text(' baz')]],
+    ['splits a match at the end', 'foo bar', 'bar', [text('foo '), match('bar')]],
+    ['handles an exact match that equals the whole text', 'bar', 'bar', [match('bar')]],
+    ['case-insensitive but preserves the original casing in the output', 'Hello WORLD', 'world', [text('Hello '), match('WORLD')]],
+    ['returns only a text segment when the query is not found', 'hello', 'xyz', [text('hello')]],
+    [
+      'highlights every occurrence of a repeated match',
+      'abXabXab',
+      'ab',
+      [match('ab'), text('X'), match('ab'), text('X'), match('ab')],
+    ],
     // "aaa" searching for "aa" matches at index 0 but advances past that
     // span, so it does NOT match again at index 1.
-    expect(computeHighlightSegments('aaa', 'aa')).toEqual([
-      { type: 'match', value: 'aa' },
-      { type: 'text', value: 'a' },
-    ]);
+    ['does not double-highlight overlapping matches', 'aaa', 'aa', [match('aa'), text('a')]],
+    // Users often paste queries with stray whitespace; trim keeps the
+    // matching contract predictable.
+    ['leaves the query intact when whitespace surrounds it (trimmed)', 'foo bar', '  bar  ', [text('foo '), match('bar')]],
+    ['trims the query but internal whitespace is part of the match', 'a b c', 'b ', [text('a '), match('b'), text(' c')]],
+  ])('%s', (_name, input, query, want) => {
+    expect(computeHighlightSegments(input, query)).toEqual(want);
   });
 
   it('preserves unicode in both text and match segments', () => {
@@ -130,23 +83,6 @@ describe.each([
     expect(computeHighlightSegments('こんにちは 世界', '世界')).toEqual([
       { type: 'text', value: 'こんにちは ' },
       { type: 'match', value: '世界' },
-    ]);
-  });
-
-  it('leaves the query intact when whitespace surrounds it (trimmed)', () => {
-    // Users often paste queries with stray whitespace; trim keeps the
-    // matching contract predictable.
-    expect(computeHighlightSegments('foo bar', '  bar  ')).toEqual([
-      { type: 'text', value: 'foo ' },
-      { type: 'match', value: 'bar' },
-    ]);
-  });
-
-  it('trims the query but internal whitespace is part of the match', () => {
-    expect(computeHighlightSegments('a b c', 'b ')).toEqual([
-      { type: 'text', value: 'a ' },
-      { type: 'match', value: 'b' },
-      { type: 'text', value: ' c' },
     ]);
   });
 });
