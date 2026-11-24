@@ -17,7 +17,13 @@ const completed = frame('turn/completed', { turn: { id: '${TURN_ID}', status: 'c
 
 interface Question { itemId: string; index: number; state: string; answer: string; userItemId: string }
 
-export function asyncQuestionsFlow(): void {
+/**
+ * The desktop project's alone: a backend crash and restart keep a pending
+ * question and restore its unsent answer into the draft. Nothing in it
+ * branches on the layout; the phone's picker, composer and reload are
+ * asyncQuestionsFlow's, which both projects run.
+ */
+export function asyncQuestionsCrashFlow(): void {
   test('abrupt backend loss preserves pending questions and restores unsent answers once', async ({ page }) => {
     const root = await mkdtemp(join(tmpdir(), 'ao-question-crash-'));
     let host: HarnessApp | undefined;
@@ -66,7 +72,9 @@ export function asyncQuestionsFlow(): void {
       await rm(root, { recursive: true, force: true });
     }
   });
+}
 
+export function asyncQuestionsFlow(): void {
   test('blocking questions survive reload, accept multiple answers, and cancel on interrupt', async ({ harness, page }) => {
     const request = (id: number, questions: unknown[]) => JSON.stringify({ jsonrpc: '2.0', id, method: 'item/tool/requestUserInput', params: {
       threadId: '${THREAD_ID}', turnId: '${TURN_ID}', itemId: `blocking-${id}`, isBlocking: true, autoResolutionMs: 1, questions,

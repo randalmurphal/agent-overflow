@@ -1,8 +1,8 @@
 // Shared setup for the ao-workflow-tools specs (workflows-agent-tools.spec.ts
 // and compact-workflows-agent-tools.spec.ts): a project with a workflow and
 // an interactive thread, scenarios whose turns make REAL MCP calls against
-// the app's workflow tools (the mock's `mcpCall` / `mcpList` steps), and the
-// answer each call got.
+// the app's workflow tools (the mock's `mcpCall` / `mcpList` steps), the
+// answer each call got, and the migrator run whose rest wakes the thread.
 
 import type { Page } from '@playwright/test';
 
@@ -12,14 +12,13 @@ import {
   advanceGate,
   awaitGate,
   awaitTurnCompleted,
-  setScenario,
-  threadToolsScenario,
   type ProviderName,
   type ScriptedTurn,
   type ToolAnswer,
 } from './thread-tools-helpers.js';
 import { doneEnvelope, doneResult } from './workflows-helpers.js';
 import { openRunsFor } from './standing-agent-wake-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 export const WORKFLOW_TOOLS_SERVER = 'ao-workflow-tools';
 
@@ -252,7 +251,7 @@ export interface StartAnswer {
 export const HELD_PHASE_GATE = 'migration';
 
 /** An input a mock received. */
-type MockInput = { scenario: string; report: { kind: string; input?: string } };
+export type MockInput = { scenario: string; report: { kind: string; input?: string } };
 
 /** The scenario the interactive thread's session runs. */
 export function threadScenario(provider: ProviderName): string {
@@ -274,110 +273,76 @@ export function inputsNaming(harness: HarnessApp, provider: ProviderName, runId:
   );
 }
 
-export interface ThreadRuns {
-  tools: string[];
-  instructions: string;
-  /** importer: run_start waited and returned the rest. */
-  rested: StartAnswer;
-  restedOutput: Record<string, unknown>;
-  /** migrator: run_start's wait ended first, and the rest came as a wake. */
-  backgrounded: StartAnswer;
-  backgroundedOutput: Record<string, unknown>;
+/** The message that starts `migrator` (migratorTurns). */
+export const MIGRATION_MESSAGE = 'Now start the migration and let me know when it is done.';
+
+/**
+ * The interactive thread's turns for `migrator`: the first starts it with a
+ * wait that ends first, and the second, the one its rest wakes, reads its
+ * outputs.
+ */
+export function migratorTurns(): ScriptedTurn[] {
+  const W = WORKFLOW_TOOLS_SERVER;
+  return [
+    {
+      steps: [
+        {
+          call: {
+            server: W,
+            tool: 'run_start',
+            args: { workflow_id: 'migrator', goal: 'Migrate the schema', seeds: { goal: 'Migrate the schema' }, wait_seconds: 2 },
+            timeoutMs: 30_000,
+          },
+        },
+        { capture: { var: 'RUN2', from: '${MCP_RESULT}', pattern: START_RUN_PATTERN } },
+      ],
+      text: 'The migration is still running; its result will arrive here.',
+    },
+    {
+      steps: [{ call: { server: W, tool: 'run_output', args: { run_id: '${RUN2}' } } }],
+      text: 'The migration finished and its outputs are in.',
+    },
+  ];
 }
 
 /**
- * Drives one interactive thread through two runs, the two ways a rest
- * reaches it. Turn 1 lists the tools, starts `importer` and waits for its
- * rest, then reads its outputs: the call is the delivery, so no wake follows.
- * Turn 2 starts `migrator`, whose phase holds on HELD_PHASE_GATE, with a short
- * wait that ends first. Releasing the gate lets the run rest, the rest wakes
- * the thread exactly once, and turn 3 (the wake's) reads its outputs.
+ * Holds every phase of `provider`'s other provider on HELD_PHASE_GATE and
+ * sends MIGRATION_MESSAGE; returns once the thread's session received it.
  */
-export async function startAndWatchFromThread(
+export async function sendMigration(
   harness: HarnessApp,
   provider: ProviderName,
   project: { path: string; threadId: string },
-): Promise<ThreadRuns> {
-  const W = WORKFLOW_TOOLS_SERVER;
+): Promise<void> {
   const phaseProvider = otherProvider(provider);
-  await answerPhasesDone(harness, phaseProvider);
-  await setScenario(
-    harness,
-    project.path,
-    threadToolsScenario({
-      name: threadScenario(provider),
-      provider,
-      echoUserMessage: true,
-      turns: [
-        {
-          steps: [
-            { list: { server: W } },
-            {
-              call: {
-                server: W,
-                tool: 'run_start',
-                args: { workflow_id: 'importer', goal: 'Ship the importer', seeds: { goal: 'Ship the importer' }, wait_seconds: 120 },
-                timeoutMs: 150_000,
-              },
-            },
-            { capture: { var: 'RUN', from: '${MCP_RESULT}', pattern: START_RUN_PATTERN } },
-            { call: { server: W, tool: 'run_output', args: { run_id: '${RUN}' } } },
-          ],
-          text: 'The importer ran to completion while I waited.',
-        },
-        {
-          steps: [
-            {
-              call: {
-                server: W,
-                tool: 'run_start',
-                args: { workflow_id: 'migrator', goal: 'Migrate the schema', seeds: { goal: 'Migrate the schema' }, wait_seconds: 2 },
-                timeoutMs: 30_000,
-              },
-            },
-            { capture: { var: 'RUN2', from: '${MCP_RESULT}', pattern: START_RUN_PATTERN } },
-          ],
-          text: 'The migration is still running; its result will arrive here.',
-        },
-        {
-          steps: [{ call: { server: W, tool: 'run_output', args: { run_id: '${RUN2}' } } }],
-          text: 'The migration finished and its outputs are in.',
-        },
-      ],
-      afterTurns: 'repeatLast',
-    }),
-  );
-  await harness.startSession(project.threadId);
-  await harness.send(project.threadId, 'Run the importer workflow and tell me how it went.');
-
-  const listing = await harness.awaitMcpTools({ server: W, cwd: project.path, timeoutMs: 60_000 });
-  expect(listing.isError, listing.error).toBe(false);
-  const rested = await awaitWorkflowAnswer<StartAnswer>(harness, 'run_start', { cwd: project.path, timeoutMs: 180_000 });
-  expect(rested.isError, rested.text).toBe(false);
-  const restedOutput = await awaitWorkflowAnswer(harness, 'run_output', { cwd: project.path });
-  expect(restedOutput.isError, restedOutput.text).toBe(false);
-  await awaitTurnCompleted(harness, project.threadId);
-
-  // The migrator's phase holds until the spec releases it, so the wait in
-  // turn 2 ends first.
   await setPhaseScenario(harness, phaseProvider, `${phaseProvider}-phases-held`, [{ gate: HELD_PHASE_GATE }], { complete: true });
-  const second = 'Now start the migration and let me know when it is done.';
-  await harness.send(project.threadId, second);
-  // The barrier for the absence below: a wake for the importer's rest would
-  // have been queued during turn 1, so the thread takes it in before this
-  // message or with it.
+  await harness.send(project.threadId, MIGRATION_MESSAGE);
   await harness.waitForEvent<MockInput>(
     'harness:mock',
     (event) =>
       event.scenario === threadScenario(provider) &&
       event.report.kind === 'user_input' &&
-      (event.report.input ?? '').includes(second),
+      (event.report.input ?? '').includes(MIGRATION_MESSAGE),
     60_000,
   );
-  // Counted over the whole event log rather than a watch: the importer's
-  // run id is known only once its wait answered, and a wake could be taken
-  // in before that answer reached this spec.
-  expect(inputsNaming(harness, provider, rested.value!.start.itemId), 'the importer rest the wait returned also woke the thread').toBe(0);
+}
+
+export interface Migration {
+  /** run_start's wait ended first. */
+  backgrounded: StartAnswer;
+  /** What the turn the rest woke read with run_output. */
+  output: Record<string, unknown>;
+}
+
+/**
+ * After sendMigration: run_start's wait ends first, the held phase is let
+ * go, the run's rest wakes the thread, and the wake's turn reads its outputs.
+ */
+export async function finishMigration(
+  harness: HarnessApp,
+  provider: ProviderName,
+  project: { path: string; threadId: string },
+): Promise<Migration> {
   const backgrounded = await awaitWorkflowAnswer<StartAnswer>(harness, 'run_start', { cwd: project.path, timeoutMs: 60_000 });
   expect(backgrounded.isError, backgrounded.text).toBe(false);
   await awaitTurnCompleted(harness, project.threadId);
@@ -393,18 +358,10 @@ export async function startAndWatchFromThread(
       (event.report.input ?? '').includes(runId),
     60_000,
   );
-  const backgroundedOutput = await awaitWorkflowAnswer(harness, 'run_output', { cwd: project.path });
-  expect(backgroundedOutput.isError, backgroundedOutput.text).toBe(false);
+  const output = await awaitWorkflowAnswer(harness, 'run_output', { cwd: project.path });
+  expect(output.isError, output.text).toBe(false);
   await awaitTurnCompleted(harness, project.threadId);
-
-  return {
-    tools: listing.tools,
-    instructions: listing.instructions,
-    rested: rested.value!,
-    restedOutput: restedOutput.value!,
-    backgrounded: backgrounded.value!,
-    backgroundedOutput: backgroundedOutput.value!,
-  };
+  return { backgrounded: backgrounded.value!, output: output.value! };
 }
 
 /**
@@ -448,7 +405,7 @@ export async function captureRunFromThread(
   // The sidebar's system footer shows the host machine's own CPU and memory
   // once its first sample lands, which a longer run reaches and a shorter one
   // does not. It is not part of the evidence, so no capture shows it.
-  await page.screenshot({
+  await screenshot(page, {
     path: test.info().outputPath(name),
     animations: 'disabled',
     style: '[data-testid="sidebar-system-stats"] { display: none !important; }',
