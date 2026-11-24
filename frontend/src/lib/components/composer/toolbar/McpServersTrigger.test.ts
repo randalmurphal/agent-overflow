@@ -45,20 +45,18 @@ describe('<McpServersTrigger>', () => {
     expect(getBindingMock('RefreshMcpServerStatus')).not.toHaveBeenCalled();
   });
 
-  it('two panes on one workspace share a single listing', async () => {
+  it.each([
+    { name: 'two panes on one workspace share a single listing', secondPath: '/repo', listed: ['thread-a'] },
+    // Claude walks `.mcp.json` from the cwd out, so a worktree's membership
+    // is its own answer — sharing the root checkout's key would render one
+    // worktree's servers in the other.
+    { name: 'lists two worktrees of one project independently', secondPath: '/repo/.wt/a', listed: ['thread-a', 'thread-b'] },
+  ])('$name', async ({ secondPath, listed }) => {
     const list = setBindingMock('ListThreadMcpServers', async () => [row({ name: 'a' })]);
-    const first_ = await buildPane(
-      makeThread({ id: 'thread-a', workspacePath: '/repo' }),
-      [],
-      'main',
-    );
-    const second = await buildPane(
-      makeThread({ id: 'thread-b', workspacePath: '/repo' }),
-      [],
-      'pane-1',
-    );
+    const first = await buildPane(makeThread({ id: 'thread-a', workspacePath: '/repo' }), [], 'main');
+    const second = await buildPane(makeThread({ id: 'thread-b', workspacePath: secondPath }), [], 'pane-1');
 
-    const view = render(McpServersTrigger, { props: { pane: first_ } });
+    const view = render(McpServersTrigger, { props: { pane: first } });
     render(McpServersTrigger, { props: { pane: second } });
 
     await waitFor(() => {
@@ -66,30 +64,7 @@ describe('<McpServersTrigger>', () => {
       expect(badges).toHaveLength(2);
       for (const badge of badges) expect(badge).toHaveAttribute('data-enabled-count', '1');
     });
-    expect(list).toHaveBeenCalledTimes(1);
-  });
-
-  it('lists two worktrees of one project independently', async () => {
-    // Claude walks `.mcp.json` from the cwd out, so a worktree's membership
-    // is its own answer — sharing the root checkout's key would render one
-    // worktree's servers in the other.
-    const list = setBindingMock('ListThreadMcpServers', async () => [row({ name: 'a' })]);
-    const root = await buildPane(
-      makeThread({ id: 'thread-root', workspacePath: '/repo' }),
-      [],
-      'main',
-    );
-    const worktree = await buildPane(
-      makeThread({ id: 'thread-wt', workspacePath: '/repo/.wt/a' }),
-      [],
-      'pane-1',
-    );
-
-    render(McpServersTrigger, { props: { pane: root } });
-    render(McpServersTrigger, { props: { pane: worktree } });
-
-    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
-    expect(list.mock.calls.map((c) => c[0]).sort()).toEqual(['thread-root', 'thread-wt']);
+    expect(list.mock.calls.map((c) => c[0]).sort()).toEqual(listed);
   });
 
   it('does NOT re-list when the pane switches threads inside one workspace', async () => {
@@ -132,12 +107,19 @@ describe('<McpServersTrigger>', () => {
     });
   });
 
-  it('offers Sign in again on a failed OAuth-credentialed row and shows the real error', async () => {
+  it.each([
     // The incident shape end to end: a Codex server whose startup failed
     // with a revoked refresh token lists as failed + authStatus oAuth
     // (Codex deterministically omits failureReason for this case). The row
     // must show the provider's error and offer the sign-in, never
     // "Starting…".
+    { name: 'offers Sign in again on a failed OAuth-credentialed row and shows the real error', source: 'session' },
+    // The inactive-thread path: no live session, so the row comes from
+    // config + the status cache — which records authStatus from the
+    // ephemeral probe. The remedy must not depend on the thread being
+    // live.
+    { name: 'offers Sign in again on a failed OAuth-credentialed CONFIG row too', source: 'config' },
+  ])('$name', async ({ source }) => {
     setBindingMock('ListThreadMcpServers', async () => [
       row({
         provider: 'codex',
@@ -145,7 +127,7 @@ describe('<McpServersTrigger>', () => {
         status: 'failed',
         authStatus: 'oAuth',
         error: 'invalid_grant: Invalid refresh token',
-        source: 'session',
+        source,
       }),
     ]);
     const auth = setBindingMock('TriggerMcpAuth', async () => ({
@@ -168,37 +150,6 @@ describe('<McpServersTrigger>', () => {
 
     await waitFor(() => expect(auth).toHaveBeenCalledWith('thread-1', 'atlassian'));
     await waitFor(() => expect(openURL).toHaveBeenCalledWith('https://example.test/oauth'));
-  });
-
-  it('offers Sign in again on a failed OAuth-credentialed CONFIG row too', async () => {
-    // The inactive-thread path: no live session, so the row comes from
-    // config + the status cache — which records authStatus from the
-    // ephemeral probe. The remedy must not depend on the thread being
-    // live.
-    setBindingMock('ListThreadMcpServers', async () => [
-      row({
-        provider: 'codex',
-        name: 'atlassian',
-        status: 'failed',
-        authStatus: 'oAuth',
-        error: 'invalid_grant: Invalid refresh token',
-        source: 'config',
-      }),
-    ]);
-    const auth = setBindingMock('TriggerMcpAuth', async () => ({
-      authUrl: 'https://example.test/oauth',
-      provider: 'codex',
-      requiresUserAction: true,
-    }));
-    setBindingMock('OpenExternalURL', async () => {});
-    const pane = await buildPane(makeThread({ provider: 'codex' }));
-
-    const { getByTestId, findByRole } = render(McpServersTrigger, { props: { pane } });
-    await fireEvent.click(getByTestId('composer-mcp-trigger'));
-
-    const signIn = await findByRole('button', { name: 'Sign in to atlassian again' });
-    await fireEvent.click(signIn);
-    await waitFor(() => expect(auth).toHaveBeenCalledWith('thread-1', 'atlassian'));
   });
 
   it('signs in from a draft placeholder without materializing a thread', async () => {
