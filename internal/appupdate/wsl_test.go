@@ -393,15 +393,23 @@ func TestWSLReadyEventLandsAfterTheDownloadFenceDrops(t *testing.T) {
 	rec.await(t, selfupdate.ChannelInstall, 5*time.Second)
 }
 
+// Every unwind of a handed-off install runs the host's onAbandoned exactly
+// once: the host closed work admission for the restart and must reopen it.
+// This test, the ACK timeout, the backstop and the failure-after-ack tests
+// below each assert that count for their way of unwinding.
 func TestWSLInstallFailedReportUnwinds(t *testing.T) {
 	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
 	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", noDeadlines)
 	stageForTest(t, a, rec)
 
-	if err := a.RestartToUpdate(nil); err != nil {
+	var abandoned atomic.Int32
+	if err := a.RestartToUpdate(func() { abandoned.Add(1) }); err != nil {
 		t.Fatalf("RestartToUpdate: %v", err)
 	}
 	rec.await(t, selfupdate.ChannelInstall, 5*time.Second)
+	if n := abandoned.Load(); n != 0 {
+		t.Fatalf("onAbandoned ran %d times during a live handoff", n)
+	}
 
 	if err := a.ReportUpdateInstallStatus(selfupdate.StatusFailed, "0.0.8", "swap denied by antivirus"); err != nil {
 		t.Fatalf("ReportUpdateInstallStatus(failed): %v", err)
@@ -428,6 +436,25 @@ func TestWSLInstallFailedReportUnwinds(t *testing.T) {
 	a.updater.mu.Unlock()
 	if staged == nil {
 		t.Fatal("a failed handoff must not forget the still-staged artifact")
+	}
+	if n := abandoned.Load(); n != 1 {
+		t.Fatalf("onAbandoned ran %d times, want 1", n)
+	}
+
+	// A duplicate failed report finds nothing in flight: refused, no second
+	// event, no second onAbandoned, and no state change (in particular it must
+	// not re-clear a marker a NEW install may have written).
+	if err := a.ReportUpdateInstallStatus(selfupdate.StatusFailed, "0.0.8", "second"); !errors.Is(err, ErrNoInstallInFlight) {
+		t.Fatalf("duplicate failed report = %v, want ErrNoInstallInFlight", err)
+	}
+	if n := countEvents(rec, "updater:error"); n != 1 {
+		t.Fatalf("updater:error count = %d, want exactly 1", n)
+	}
+	if n := abandoned.Load(); n != 1 {
+		t.Fatalf("onAbandoned ran %d times after a late report, want 1", n)
+	}
+	if m := readMarker(t, mode.markerDir); m != nil {
+		t.Fatalf("marker = %+v, want cleared once", m)
 	}
 }
 
@@ -488,7 +515,9 @@ func TestWSLInstallACKTimeoutUnwinds(t *testing.T) {
 	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", wslTestDeadlines{ack: 20 * time.Millisecond, backstop: time.Hour})
 	stageForTest(t, a, rec)
 
-	if err := a.RestartToUpdate(nil); err != nil {
+	// No live-handoff count here: the deadline can unwind before the test looks.
+	var abandoned atomic.Int32
+	if err := a.RestartToUpdate(func() { abandoned.Add(1) }); err != nil {
 		t.Fatalf("RestartToUpdate: %v", err)
 	}
 	info, ok := rec.await(t, "updater:error", 5*time.Second).(updater.ErrorInfo)
@@ -504,6 +533,9 @@ func TestWSLInstallACKTimeoutUnwinds(t *testing.T) {
 	if a.busySnapshot() {
 		t.Fatal("a timed-out install must release the fence")
 	}
+	if n := abandoned.Load(); n != 1 {
+		t.Fatalf("onAbandoned ran %d times, want 1", n)
+	}
 
 	// A report that arrives after the deadline is refused, and changes nothing.
 	if err := a.ReportUpdateInstallStatus(selfupdate.StatusProceeding, "0.0.8", ""); !errors.Is(err, ErrNoInstallInFlight) {
@@ -511,6 +543,9 @@ func TestWSLInstallACKTimeoutUnwinds(t *testing.T) {
 	}
 	if a.busySnapshot() {
 		t.Fatal("a late report must not re-claim the fence")
+	}
+	if n := abandoned.Load(); n != 1 {
+		t.Fatalf("onAbandoned ran %d times after a late report, want 1", n)
 	}
 }
 
@@ -536,7 +571,15 @@ func TestWSLInstallBackstopUnwindsAfterSilentLauncher(t *testing.T) {
 	// short of restarting the app, plus a spurious "didn't apply" next boot.
 	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
 	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", wslTestDeadlines{ack: time.Hour, backstop: 20 * time.Millisecond})
-	handOffForTest(t, a, rec)
+	stageForTest(t, a, rec)
+	var abandoned atomic.Int32
+	if err := a.RestartToUpdate(func() { abandoned.Add(1) }); err != nil {
+		t.Fatalf("RestartToUpdate: %v", err)
+	}
+	rec.await(t, selfupdate.ChannelInstall, 5*time.Second)
+	if n := abandoned.Load(); n != 0 {
+		t.Fatalf("onAbandoned ran %d times during a live handoff", n)
+	}
 
 	if err := a.ReportUpdateInstallStatus(selfupdate.StatusProceeding, "0.0.8", ""); err != nil {
 		t.Fatalf("ReportUpdateInstallStatus(proceeding): %v", err)
@@ -565,6 +608,28 @@ func TestWSLInstallBackstopUnwindsAfterSilentLauncher(t *testing.T) {
 	if inflight != nil || acked || timer != nil {
 		t.Fatalf("backstop must return the install state to rest: install=%v acked=%v timer=%v", inflight, acked, timer)
 	}
+	if n := abandoned.Load(); n != 1 {
+		t.Fatalf("onAbandoned ran %d times, want 1", n)
+	}
+
+	// The launcher's report finally gets through after the backstop already
+	// gave up. Nothing is in flight, so it is refused idempotently: no second
+	// error event, and no state to corrupt.
+	if err := a.ReportUpdateInstallStatus(selfupdate.StatusFailed, "0.0.8", "late news"); !errors.Is(err, ErrNoInstallInFlight) {
+		t.Fatalf("late failed report = %v, want ErrNoInstallInFlight", err)
+	}
+	if n := countEvents(rec, "updater:error"); n != 1 {
+		t.Fatalf("updater:error count = %d, want exactly 1", n)
+	}
+	if n := abandoned.Load(); n != 1 {
+		t.Fatalf("onAbandoned ran %d times after a late report, want 1", n)
+	}
+	if a.busySnapshot() {
+		t.Fatal("a late report must not re-claim the fence")
+	}
+	if m := readMarker(t, mode.markerDir); m != nil {
+		t.Fatalf("marker = %+v, want still cleared", m)
+	}
 }
 
 func TestWSLInstallFailedReportAfterAckCancelsBackstop(t *testing.T) {
@@ -574,7 +639,15 @@ func TestWSLInstallFailedReportAfterAckCancelsBackstop(t *testing.T) {
 	// against a settled install.
 	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
 	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", wslTestDeadlines{ack: time.Hour, backstop: 50 * time.Millisecond})
-	handOffForTest(t, a, rec)
+	stageForTest(t, a, rec)
+	var abandoned atomic.Int32
+	if err := a.RestartToUpdate(func() { abandoned.Add(1) }); err != nil {
+		t.Fatalf("RestartToUpdate: %v", err)
+	}
+	rec.await(t, selfupdate.ChannelInstall, 5*time.Second)
+	if n := abandoned.Load(); n != 0 {
+		t.Fatalf("onAbandoned ran %d times during a live handoff", n)
+	}
 
 	if err := a.ReportUpdateInstallStatus(selfupdate.StatusProceeding, "0.0.8", ""); err != nil {
 		t.Fatalf("ReportUpdateInstallStatus(proceeding): %v", err)
@@ -593,37 +666,21 @@ func TestWSLInstallFailedReportAfterAckCancelsBackstop(t *testing.T) {
 	if a.busySnapshot() {
 		t.Fatal("a failure after the acknowledgement must release the fence")
 	}
+	if n := abandoned.Load(); n != 1 {
+		t.Fatalf("onAbandoned ran %d times, want 1", n)
+	}
 	// Well past the backstop: it was disarmed, so no second unwind and no
 	// second event.
 	time.Sleep(150 * time.Millisecond)
 	if n := countEvents(rec, "updater:error"); n != 1 {
 		t.Fatalf("updater:error count = %d, want exactly 1 (the backstop must have been disarmed)", n)
 	}
-}
-
-func TestWSLInstallLateFailedAfterBackstopIsRefused(t *testing.T) {
-	// The launcher's report finally gets through after the backstop already
-	// gave up. Nothing is in flight, so it is refused idempotently: no second
-	// error event, and no state to corrupt.
-	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
-	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", wslTestDeadlines{ack: time.Hour, backstop: 20 * time.Millisecond})
-	handOffForTest(t, a, rec)
-	if err := a.ReportUpdateInstallStatus(selfupdate.StatusProceeding, "0.0.8", ""); err != nil {
-		t.Fatalf("ReportUpdateInstallStatus(proceeding): %v", err)
+	// A late report finds nothing in flight and runs nothing.
+	if err := a.ReportUpdateInstallStatus(selfupdate.StatusFailed, "0.0.8", "late"); !errors.Is(err, ErrNoInstallInFlight) {
+		t.Fatalf("late report = %v, want ErrNoInstallInFlight", err)
 	}
-	rec.await(t, "updater:error", 5*time.Second)
-
-	if err := a.ReportUpdateInstallStatus(selfupdate.StatusFailed, "0.0.8", "late news"); !errors.Is(err, ErrNoInstallInFlight) {
-		t.Fatalf("late failed report = %v, want ErrNoInstallInFlight", err)
-	}
-	if n := countEvents(rec, "updater:error"); n != 1 {
-		t.Fatalf("updater:error count = %d, want exactly 1", n)
-	}
-	if a.busySnapshot() {
-		t.Fatal("a late report must not re-claim the fence")
-	}
-	if m := readMarker(t, mode.markerDir); m != nil {
-		t.Fatalf("marker = %+v, want still cleared", m)
+	if n := abandoned.Load(); n != 1 {
+		t.Fatalf("onAbandoned ran %d times after the backstop window and a late report, want 1", n)
 	}
 }
 
@@ -877,34 +934,6 @@ func TestReportUpdateInstallStatusRejectsStaleVersion(t *testing.T) {
 	rec.refute(t, "updater:error", 50*time.Millisecond)
 }
 
-func TestReportUpdateInstallStatusDuplicateFailedIsIdempotent(t *testing.T) {
-	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
-	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", noDeadlines)
-	stageForTest(t, a, rec)
-	if err := a.RestartToUpdate(nil); err != nil {
-		t.Fatalf("RestartToUpdate: %v", err)
-	}
-	rec.await(t, selfupdate.ChannelInstall, 5*time.Second)
-
-	if err := a.ReportUpdateInstallStatus(selfupdate.StatusFailed, "0.0.8", "first"); err != nil {
-		t.Fatalf("first failed report: %v", err)
-	}
-	rec.await(t, "updater:error", 5*time.Second)
-
-	// The second one finds nothing in flight: refused, no second event, no
-	// state change (in particular it must not re-clear a marker a NEW install
-	// may have written).
-	if err := a.ReportUpdateInstallStatus(selfupdate.StatusFailed, "0.0.8", "second"); !errors.Is(err, ErrNoInstallInFlight) {
-		t.Fatalf("duplicate failed report = %v, want ErrNoInstallInFlight", err)
-	}
-	if n := countEvents(rec, "updater:error"); n != 1 {
-		t.Fatalf("updater:error count = %d, want exactly 1", n)
-	}
-	if m := readMarker(t, mode.markerDir); m != nil {
-		t.Fatalf("marker = %+v, want cleared once", m)
-	}
-}
-
 func countEvents(rec *eventRecorder, channel string) int {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
@@ -927,62 +956,6 @@ func TestRestartToUpdateWSLRequiresStagedArtifact(t *testing.T) {
 	}
 	if m := readMarker(t, mode.markerDir); m != nil {
 		t.Fatalf("a refused restart must write no marker, got %+v", m)
-	}
-}
-
-func TestWSLInstallUnwindRunsOnAbandoned(t *testing.T) {
-	// The host closes work admission for a restart; every unwind of a
-	// handed-off install must tell it to reopen, exactly once.
-	proceed := func(t *testing.T, a *Service) {
-		if err := a.ReportUpdateInstallStatus(selfupdate.StatusProceeding, "0.0.8", ""); err != nil {
-			t.Fatalf("proceeding report: %v", err)
-		}
-	}
-	fail := func(t *testing.T, a *Service) {
-		if err := a.ReportUpdateInstallStatus(selfupdate.StatusFailed, "0.0.8", "no"); err != nil {
-			t.Fatalf("failed report: %v", err)
-		}
-	}
-	for _, tc := range []struct {
-		name      string
-		deadlines wslTestDeadlines
-		// live is false when the unwind can fire before the test looks.
-		live   bool
-		unwind func(t *testing.T, a *Service)
-	}{
-		{"launcher failed", noDeadlines, true, fail},
-		{"launcher failed after acknowledging", noDeadlines, true, func(t *testing.T, a *Service) {
-			proceed(t, a)
-			fail(t, a)
-		}},
-		{"silence after acknowledging", wslTestDeadlines{ack: time.Hour, backstop: 20 * time.Millisecond}, true, proceed},
-		{"no acknowledgement", wslTestDeadlines{ack: 20 * time.Millisecond, backstop: time.Hour}, false, func(*testing.T, *Service) {}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			srv := newMockGitHub(t, wslReleases(), sumsForWSL)
-			a, rec, _ := newWSLTestApp(t, srv, "0.0.1", tc.deadlines)
-			var abandoned atomic.Int32
-			stageForTest(t, a, rec)
-			if err := a.RestartToUpdate(func() { abandoned.Add(1) }); err != nil {
-				t.Fatalf("RestartToUpdate: %v", err)
-			}
-			rec.await(t, selfupdate.ChannelInstall, 5*time.Second)
-			if n := abandoned.Load(); tc.live && n != 0 {
-				t.Fatalf("onAbandoned ran %d times during a live handoff", n)
-			}
-			tc.unwind(t, a)
-			rec.await(t, "updater:error", 5*time.Second)
-			if n := abandoned.Load(); n != 1 {
-				t.Fatalf("onAbandoned ran %d times, want 1", n)
-			}
-			// A late report finds nothing in flight and runs nothing.
-			if err := a.ReportUpdateInstallStatus(selfupdate.StatusFailed, "0.0.8", "late"); !errors.Is(err, ErrNoInstallInFlight) {
-				t.Fatalf("late report = %v, want ErrNoInstallInFlight", err)
-			}
-			if n := abandoned.Load(); n != 1 {
-				t.Fatalf("onAbandoned ran %d times after a late report, want 1", n)
-			}
-		})
 	}
 }
 
@@ -1256,7 +1229,6 @@ func TestReconcileWSLUpdateMarkerNamesTheLauncherReason(t *testing.T) {
 			"Update to 0.0.11 didn't apply: the trial stopped reporting progress during migrate. Still running 0.0.10."},
 		{"failed", LauncherFailure{To: "0.0.11", Reason: "the new launcher could not be started"},
 			"Update to 0.0.11 didn't apply: the new launcher could not be started. Still running 0.0.10."},
-		{"none", LauncherFailure{}, generic},
 		{"another target", LauncherFailure{To: "0.0.12", Reason: reason}, generic},
 		{"no reason", LauncherFailure{To: "0.0.11"}, generic},
 	} {

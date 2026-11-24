@@ -390,39 +390,25 @@ func TestTargetableProviderResolveTagRejectsInvalidTag(t *testing.T) {
 	}
 }
 
-func TestTargetableProviderResolveTagNoPlatformAsset(t *testing.T) {
-	srv := newMockGitHub(t, []relSpec{
-		{tag: "v0.0.5", withBogus: true, withChecksum: true}, // no matching asset
-	}, sumsForPlatform)
-	tp := newTestTargetable(srv, "0.0.8")
-	tp.SetTarget("v0.0.5")
-	if _, err := tp.Check(context.Background(), platformRequest()); err == nil {
-		t.Fatal("expected error when no asset matches the platform, got nil")
-	}
-}
-
-func TestTargetableProviderResolveTagMissingChecksumEntry(t *testing.T) {
-	srv := newMockGitHub(t, []relSpec{
-		{tag: "v0.0.5", withPlatform: true, withChecksum: true},
-	}, func(string) string {
-		// Sidecar exists but lists a different file — no entry for our asset.
-		return testValidDigestHex + "  some-other-file.zip\n"
-	})
-	tp := newTestTargetable(srv, "0.0.8")
-	tp.SetTarget("v0.0.5")
-	if _, err := tp.Check(context.Background(), platformRequest()); err == nil {
-		t.Fatal("expected error when the checksum sidecar has no entry for the asset, got nil")
-	}
-}
-
-func TestTargetableProviderResolveTagNoChecksumSidecar(t *testing.T) {
-	srv := newMockGitHub(t, []relSpec{
-		{tag: "v0.0.5", withPlatform: true}, // no SHASUMS256 asset at all
-	}, sumsForPlatform)
-	tp := newTestTargetable(srv, "0.0.8")
-	tp.SetTarget("v0.0.5")
-	if _, err := tp.Check(context.Background(), platformRequest()); err == nil {
-		t.Fatal("expected error when the release ships no checksum sidecar, got nil")
+func TestTargetableProviderResolveTagRefusesUninstallableRelease(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		spec relSpec
+		sums func(string) string
+	}{
+		{"no platform asset", relSpec{tag: "v0.0.5", withBogus: true, withChecksum: true}, sumsForPlatform},
+		// The sidecar exists but lists a different file.
+		{"missing checksum entry", relSpec{tag: "v0.0.5", withPlatform: true, withChecksum: true},
+			func(string) string { return testValidDigestHex + "  some-other-file.zip\n" }},
+		{"no checksum sidecar", relSpec{tag: "v0.0.5", withPlatform: true}, sumsForPlatform},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tp := newTestTargetable(newMockGitHub(t, []relSpec{tc.spec}, tc.sums), "0.0.8")
+			tp.SetTarget("v0.0.5")
+			if _, err := tp.Check(context.Background(), platformRequest()); err == nil {
+				t.Fatal("expected an error resolving the release, got nil")
+			}
+		})
 	}
 }
 
@@ -615,29 +601,27 @@ func TestConfigureForwardsRelaunchArgumentValidation(t *testing.T) {
 	}
 }
 
-func TestDownloadUpdateRejectsInvalidTag(t *testing.T) {
-	a := &Service{updater: appUpdaterState{handle: newConfiguredUpdater(t)}}
-	if err := a.DownloadUpdate("bad tag with spaces"); !errors.Is(err, ErrInvalidReleaseTag) {
-		t.Fatalf("DownloadUpdate(invalid) = %v, want ErrInvalidReleaseTag", err)
-	}
-}
-
-func TestDownloadUpdateEmptyTagRequiresPending(t *testing.T) {
-	// No prior check has staged a pending release (updater sits at StateIdle),
-	// so an empty-tag download must fail fast rather than launch a no-op flow.
-	a := &Service{updater: appUpdaterState{handle: newConfiguredUpdater(t)}}
-	if err := a.DownloadUpdate(""); !errors.Is(err, ErrNoUpdateToDownload) {
-		t.Fatalf("DownloadUpdate(\"\") with no pending release = %v, want ErrNoUpdateToDownload", err)
-	}
-}
-
-func TestDownloadUpdateRejectedWhileBusy(t *testing.T) {
-	// A second download while one is already in flight must fail fast — the
-	// updater installs one at a time.
-	a := &Service{updater: appUpdaterState{handle: newConfiguredUpdater(t)}}
-	a.updater.busy = true
-	if err := a.DownloadUpdate("v0.0.6"); !errors.Is(err, ErrUpdateBusy) {
-		t.Fatalf("DownloadUpdate while busy = %v, want ErrUpdateBusy", err)
+func TestDownloadUpdateRefusesBeforeStarting(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tag  string
+		busy bool
+		want error
+	}{
+		{"invalid tag", "bad tag with spaces", false, ErrInvalidReleaseTag},
+		// No prior check has staged a pending release (updater sits at
+		// StateIdle), so an empty-tag download must fail fast rather than
+		// launch a no-op flow.
+		{"empty tag with nothing pending", "", false, ErrNoUpdateToDownload},
+		// The updater installs one at a time.
+		{"while busy", "v0.0.6", true, ErrUpdateBusy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Service{updater: appUpdaterState{handle: newConfiguredUpdater(t), busy: tc.busy}}
+			if err := a.DownloadUpdate(tc.tag); !errors.Is(err, tc.want) {
+				t.Fatalf("DownloadUpdate(%q) = %v, want %v", tc.tag, err, tc.want)
+			}
+		})
 	}
 }
 
@@ -748,7 +732,9 @@ func TestAFailedCheckForUpdateEmitsNoError(t *testing.T) {
 }
 
 // A by-tag download whose resolve fails ends with exactly one updater:error,
-// the service's own, after the busy fence drops.
+// the service's own, after the busy fence drops. The library's Check returns
+// that failure rather than emitting it, so without the service's event a UI
+// already showing "downloading" would hang.
 func TestDownloadUpdateByTagResolveFailureEmitsOneErrorAfterBusyDrops(t *testing.T) {
 	for name, host := range bridgingHosts {
 		t.Run(name, func(t *testing.T) {
@@ -809,45 +795,6 @@ func TestALibraryVerifyErrorStillBridges(t *testing.T) {
 				t.Fatalf("updater:error = %+v, want the library's verify error", got)
 			}
 		})
-	}
-}
-
-func TestDownloadUpdateByTagResolveFailureEmitsError(t *testing.T) {
-	// The requested tag has no release → resolveTag 404s → the updater's Check
-	// returns an error (not an event). DownloadUpdate's goroutine must surface
-	// updater:error itself, or the UI — already flipped to "downloading" —
-	// would hang with no terminal event.
-	srv := newMockGitHub(t, []relSpec{
-		{tag: "v0.0.8", withPlatform: true, withChecksum: true}, // latest exists; v9.9.9 does not
-	}, sumsForPlatform)
-	a, _ := newUpdaterApp(t, srv, "0.0.1")
-
-	got := make(chan updater.ErrorInfo, 1)
-	a.deps.Emit = func(name eventchan.Channel, data any) {
-		if name != "updater:error" {
-			return
-		}
-		if info, ok := data.(updater.ErrorInfo); ok {
-			select {
-			case got <- info:
-			default:
-			}
-		}
-	}
-
-	if err := a.DownloadUpdate("v9.9.9"); err != nil {
-		t.Fatalf("DownloadUpdate returned a synchronous error: %v", err)
-	}
-	select {
-	case info := <-got:
-		if info.Stage != updater.StageCheck {
-			t.Fatalf("emitted error stage = %q, want %q", info.Stage, updater.StageCheck)
-		}
-		if info.Provider != "github" {
-			t.Fatalf("emitted error provider = %q, want github", info.Provider)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for updater:error from a failed by-tag resolve")
 	}
 }
 
