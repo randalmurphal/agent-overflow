@@ -398,7 +398,8 @@ describe('rateLimitsInfo', () => {
     const group = getProviderRateLimitsForWindow('claude', 10080);
     expect(group.primary?.limitId).toBe('weekly_all');
     expect(group.limits.map((entry) => [entry.limitId, entry.usedPercent])).toEqual(listed);
-    expect(group.secondary?.limitId ?? null).toBe(secondary);
+    // `&&` keeps an absent secondary exactly null: undefined would fail.
+    expect(group.secondary && group.secondary.limitId).toBe(secondary);
   });
 
   it('gives the composer the weekly meter alone before an account has a reading', () => {
