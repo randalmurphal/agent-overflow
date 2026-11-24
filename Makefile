@@ -299,8 +299,9 @@ GOLANGCI_LINT_BUILD := $(filter $(GOLANGCI_LINT_BUILT),$(GOLANGCI_LINT))
 $(GOLANGCI_LINT_BUILT):
 	GOBIN=$(abspath $(dir $@)) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 GO_LINT_FLAGS ?=
+GO_LINT_TIMEOUT ?= 20m
 go-lint: $(GOLANGCI_LINT_BUILD)
-	$(GOLANGCI_LINT) run --timeout 20m $(GO_LINT_FLAGS) ./...
+	$(GOLANGCI_LINT) run --timeout $(GO_LINT_TIMEOUT) $(GO_LINT_FLAGS) ./...
 
 # go-lint-whole-tree runs the two linters that have no backlog over the
 # whole tree, not only a change's lines: exhaustive reports at the switch,

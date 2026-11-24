@@ -14,9 +14,10 @@ import (
 // file fail with "text file busy". InstallExecutable's hold keeps a child
 // from being forked in that window. The write here is deliberately raw, and
 // TestEveryTestExecutableIsWrittenWithForksHeldOff requires that it find it,
-// and only it.
+// and only it. The test is not parallel: a child another test forked while
+// the file was open would hold the descriptor until its own exec, past the
+// last run here.
 func TestAChildHoldingTheWriteDescriptorMakesTheExecutableBusy(t *testing.T) {
-	t.Parallel()
 	path := filepath.Join(t.TempDir(), "tool")
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o755)
 	if err != nil {
