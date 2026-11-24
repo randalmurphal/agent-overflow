@@ -4647,9 +4647,10 @@ export function RefreshTerminal(terminalID: string): $CancellablePromise<void> {
  * RefreshTrackerSubscription reads the subscribed board from the tracker
  * now, as the person's action, and returns when the read ran. What it
  * found, a failure of the tracker included, arrives as events. The wait
- * is bounded by the method's budget: the board's pump may still be in a
- * read of its own, or this one may be long, and either goes on after the
- * answer, its events arriving as they land.
+ * is bounded by the method's budget. If the board's pump was still in a
+ * read of its own all that time, this refresh never ran and the answer
+ * says to refresh again; if this refresh's own read is long, it goes on
+ * after the answer, its events arriving as they land.
  */
 export function RefreshTrackerSubscription(subscriptionID: string): $CancellablePromise<void> {
     return $Call.ByID(247632441, subscriptionID);
@@ -6585,7 +6586,8 @@ export function TrackerBoardPatch(subscriptionID: string, sections: trackerapp$0
 
 /**
  * TrackerBoards lists a tracker project's boards (a Linear team's one),
- * for choosing a project's boards. It asks the tracker.
+ * for choosing a project's boards. It asks the tracker, bounded as
+ * TrackerProjects is.
  */
 export function TrackerBoards(connectionID: string, project: string): $CancellablePromise<trackerapp$0.BoardInfoView[]> {
     return $Call.ByID(2450480430, connectionID, project).then(($result: any) => {
@@ -6607,7 +6609,9 @@ export function TrackerConnections(): $CancellablePromise<app$0.TrackerConnectio
 /**
  * TrackerProjects lists the tracker projects (Linear teams) the
  * connection's user can see, for choosing a project's boards. It asks
- * the tracker.
+ * the tracker, a page at a time, and the whole walk ends at the method's
+ * budget (trackerCatalogRun). Its context reaches the network, so it is
+ * not caller-bound.
  */
 export function TrackerProjects(connectionID: string): $CancellablePromise<trackerapp$0.ProjectView[]> {
     return $Call.ByID(2816087609, connectionID).then(($result: any) => {
