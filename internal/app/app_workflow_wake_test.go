@@ -275,6 +275,17 @@ func TestWorkflowWakeDeliversToAnIdleBoundThread(t *testing.T) {
 	}
 }
 
+// A wake into a thread with a live session is queued, attributed to the
+// workflow. A wake recorded as delivered must be either durably queued or
+// actually dispatched — never merely registered. The flush queue lives in
+// process memory until the dispatch worker writes the message to the
+// provider, so a record written at register time survives a message that a
+// crash, a session teardown, or a rollback then discards. That record
+// suppresses the identical wake FOREVER (the coalescing rule spends it only
+// when somebody acts on the run), so the failure it opens is not a late
+// message but a run nobody is told about again.
+//
+// The trade is the one the guidance slot makes: redeliver over lose.
 func TestWorkflowWakeQueuesIntoABusyBoundThread(t *testing.T) {
 	t.Parallel()
 	h := newWakeHarness(t)
@@ -315,6 +326,38 @@ func TestWorkflowWakeQueuesIntoABusyBoundThread(t *testing.T) {
 		facts.BodyOf(queued[0]) != strings.TrimLeft(strings.TrimPrefix(queued[0], notice+"\n"), "\n") ||
 		!strings.HasPrefix(queued[0], notice+"\n") {
 		t.Fatalf("queued wake facts = %+v over %q, want the data after the notice as the body", wake.OriginWake.Facts, queued[0])
+	}
+
+	// Queued and never dispatched, the message is gone with the queue, so the
+	// row may hold only a CLAIM — never a delivered signature, which would
+	// suppress the ask from here on.
+	claim, err := h.app.store.WorkItemWakeSignature(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(claim, wakeQueuedPrefix) {
+		t.Fatalf("a message still sitting in the queue was recorded as delivered: %q", claim)
+	}
+
+	// So the same ask composes again rather than being suppressed into silence.
+	h.park(item.ID, item.ProjectID, engine.StateNeedsHuman)
+	if _, queued, _, _ := h.snapshot(); len(queued) != 2 {
+		t.Fatalf("queued wakes = %d, want the undelivered ask re-composed", len(queued))
+	}
+
+	// Once the worker writes them to the provider, the claim is promoted to the
+	// real record — and the coalescing rule takes over from there.
+	h.dispatchQueued()
+	signature, err := h.app.store.WorkItemWakeSignature(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signature == "" || strings.HasPrefix(signature, wakeQueuedPrefix) {
+		t.Fatalf("a dispatched wake left no delivered record: %q", signature)
+	}
+	h.park(item.ID, item.ProjectID, engine.StateNeedsHuman)
+	if _, queued, _, _ := h.snapshot(); len(queued) != 2 {
+		t.Fatalf("queued wakes = %d, want the repeat of a DELIVERED ask suppressed", len(queued))
 	}
 }
 
@@ -1537,62 +1580,6 @@ func TestWorkflowWakeOmitsTheAttemptDigestOutsideAGate(t *testing.T) {
 	}
 	if strings.Contains(sends[0], "What the parked attempt produced") {
 		t.Fatalf("a stuck park carried a gate digest:\n%s", sends[0])
-	}
-}
-
-// A wake recorded as delivered must be either durably queued or actually
-// dispatched — never merely registered. The flush queue lives in process memory
-// until the dispatch worker writes the message to the provider, so a record
-// written at register time survives a message that a crash, a session teardown,
-// or a rollback then discards. That record suppresses the identical wake
-// FOREVER (the coalescing rule spends it only when somebody acts on the run), so
-// the failure it opens is not a late message but a run nobody is told about
-// again.
-//
-// The trade is the one the guidance slot makes: redeliver over lose.
-func TestWorkflowWakeRecordsALiveDeliveryOnlyOnceItDispatches(t *testing.T) {
-	t.Parallel()
-	h := newWakeHarness(t)
-	thread := h.chatThread(t, "origin-durable")
-	h.app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "live"})
-	item := h.boundRun(t, "durable-run", thread.ID, engine.StateNeedsHuman, engine.ReasonQuestion)
-	h.phase(t, item.ID, "plan", 1, "parked", "phase-thread",
-		json.RawMessage(`{"status":"question","question":"Which base branch?"}`))
-
-	// One park, queued and never dispatched: the message is gone with the queue,
-	// so the row may hold only a CLAIM — never a delivered signature, which
-	// would suppress the ask from here on.
-	h.park(item.ID, item.ProjectID, engine.StateNeedsHuman)
-	if _, queued, _, _ := h.snapshot(); len(queued) != 1 {
-		t.Fatalf("queued wakes = %d, want 1", len(queued))
-	}
-	claim, err := h.app.store.WorkItemWakeSignature(item.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(claim, wakeQueuedPrefix) {
-		t.Fatalf("a message still sitting in the queue was recorded as delivered: %q", claim)
-	}
-
-	// So the same ask composes again rather than being suppressed into silence.
-	h.park(item.ID, item.ProjectID, engine.StateNeedsHuman)
-	if _, queued, _, _ := h.snapshot(); len(queued) != 2 {
-		t.Fatalf("queued wakes = %d, want the undelivered ask re-composed", len(queued))
-	}
-
-	// Once the worker writes them to the provider, the claim is promoted to the
-	// real record — and the coalescing rule takes over from there.
-	h.dispatchQueued()
-	signature, err := h.app.store.WorkItemWakeSignature(item.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if signature == "" || strings.HasPrefix(signature, wakeQueuedPrefix) {
-		t.Fatalf("a dispatched wake left no delivered record: %q", signature)
-	}
-	h.park(item.ID, item.ProjectID, engine.StateNeedsHuman)
-	if _, queued, _, _ := h.snapshot(); len(queued) != 2 {
-		t.Fatalf("queued wakes = %d, want the repeat of a DELIVERED ask suppressed", len(queued))
 	}
 }
 
