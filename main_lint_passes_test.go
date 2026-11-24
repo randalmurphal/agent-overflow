@@ -89,9 +89,14 @@ func exhaustiveLintTargets(t *testing.T) []lintTarget {
 	recipe := makefileRecipe(t, "go-lint-whole-tree")
 
 	var host [][]string
-	hostPass := regexp.MustCompile(`(?m)^\t\$\(GO_LINT_WHOLE_TREE\) --enable-only exhaustive(?:,unused)?(?: --build-tags (\S+))? \./\.\.\.$`)
+	hostPass := regexp.MustCompile(`(?m)^\t\$\(GO_LINT_WHOLE_TREE\) --enable-only exhaustive(,unused)?(?: --build-tags (\S+))? \./\.\.\.$`)
 	for _, match := range hostPass.FindAllStringSubmatch(recipe, -1) {
-		host = append(host, splitTags(match[1]))
+		tags := splitTags(match[2])
+		// unused reads one file set: the untagged pass, and only it.
+		if (match[1] != "") != (len(tags) == 0) {
+			t.Fatalf("go-lint-whole-tree runs unused on the untagged pass only; the pass with tags %v has unused=%v", tags, match[1] != "")
+		}
+		host = append(host, tags)
 	}
 	if !slices.ContainsFunc(host, func(tags []string) bool { return len(tags) == 0 }) {
 		t.Fatalf("the go-lint-whole-tree recipe has no exhaustive pass without build tags:\n%s", recipe)

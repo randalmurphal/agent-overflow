@@ -38,6 +38,11 @@ func TestAnIntroductionCutWhileWaitingEndsAndItsRetryConnects(t *testing.T) {
 			t.Fatal("the introduction never checked the other computer's address")
 		}
 	}
+	select {
+	case err := <-introduction:
+		t.Fatalf("the introduction answered %v while the person's pairing was in flight; want it to wait", err)
+	case <-time.After(200 * time.Millisecond):
+	}
 	cut()
 	select {
 	case <-introduction:

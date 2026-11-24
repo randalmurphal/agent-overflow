@@ -180,7 +180,10 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.remoteWatchPoll = config.RemoteWatchPoll
 	a.wakeRetryBaseOverride = config.ThreadWakeRetryBase
 	a.agentSettledWindowOverride = config.AgentSettledWindow
-	a.providerEvents.drainStall = config.ProviderEventDrainStall
+	// Unset keeps what the App has: a test fixture's own budget.
+	if config.ProviderEventDrainStall > 0 {
+		a.providerEvents.drainStall = config.ProviderEventDrainStall
+	}
 	a.mergedPRs.interval = config.MergedPRPollInterval
 	// The mock provider's credential carries a mock bearer. The Claude usage
 	// probe would send it to the real API: on hosts without network

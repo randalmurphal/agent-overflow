@@ -2157,6 +2157,7 @@ func (f *requestFixture) restart(t *testing.T) *requestFixture {
 	app.keepAwakeApply = f.app.keepAwakeApply
 	app.configDir = f.app.configDir
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
+	waitOutOtherParties(t, app)
 	// The restarted App starts sessions of its own, such as the caller's
 	// for a wake its boot sweep delivers; they end with the test, before
 	// its directories are removed.
