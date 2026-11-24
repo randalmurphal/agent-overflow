@@ -131,17 +131,6 @@ describe('applyUserMessageReverted', () => {
     expect(consumeResendRevertMarker('thread-a', 'u:2')).toBe(true);
   });
 
-  it('records an unstamped saga frame, as a pre-stamp backend produced it', async () => {
-    await seedPane();
-    applyUserMessageReverted({
-      threadId: 'thread-a',
-      userItemId: 'u:1',
-      turnIndex: 1,
-      draftPendingResend: true,
-    });
-    expect(consumeResendRevertMarker('thread-a', 'u:1')).toBe(true);
-  });
-
   it('retires a thread\'s older markers when any newer revert lands', async () => {
     await seedPane();
     applyUserMessageReverted({

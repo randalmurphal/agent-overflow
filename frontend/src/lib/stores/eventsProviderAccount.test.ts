@@ -26,42 +26,27 @@ describe('provider:account refreshes the model catalog', () => {
   // that probe finishes seconds after the composer has already loaded the
   // pre-probe list. Without this refresh the picker would keep serving the
   // un-enriched catalog for the rest of the session.
-  it('picks up models that only exist after the probe lands', async () => {
-    let models = [model('claude-opus-5')];
+  it.each([
+    [
+      'picks up models that only exist after the probe lands',
+      { provider: 'claude', accountId: 'account-1', generation: 1, account: { subscriptionType: 'Claude Max' } },
+      ['claude-opus-5'],
+      ['claude-opus-5', 'claude-opus-6'],
+    ],
+    ['refreshes on an account being cleared too', { provider: 'claude', cleared: true, generation: 2 }, ['claude-opus-6'], ['claude-opus-5']],
+  ])('%s', async (_name, frame, before, after) => {
+    let models = before.map(model);
     setBindingMock('GetModelsForProvider', async () => modelCatalog(models));
-
     await ensureProviderModels('claude');
-    expect(getProviderModels('claude').map((m) => m.slug)).toEqual(['claude-opus-5']);
+    expect(getProviderModels('claude').map((m) => m.slug)).toEqual(before);
 
-    models = [model('claude-opus-5'), model('claude-opus-6')];
-    applyProviderAccount({
-      provider: 'claude',
-      accountId: 'account-1',
-      generation: 1,
-      account: { subscriptionType: 'Claude Max' },
-    } as never);
-
+    models = after.map(model);
+    applyProviderAccount(frame as never);
     // Refresh, not invalidate: the store is never empty in between, because the
     // composer's trigger labels read it synchronously.
     await Promise.resolve();
     await Promise.resolve();
-    expect(getProviderModels('claude').map((m) => m.slug)).toEqual([
-      'claude-opus-5',
-      'claude-opus-6',
-    ]);
-  });
-
-  it('refreshes on an account being cleared too', async () => {
-    let models = [model('claude-opus-6')];
-    setBindingMock('GetModelsForProvider', async () => modelCatalog(models));
-    await ensureProviderModels('claude');
-
-    models = [model('claude-opus-5')];
-    applyProviderAccount({ provider: 'claude', cleared: true, generation: 2 } as never);
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(getProviderModels('claude').map((m) => m.slug)).toEqual(['claude-opus-5']);
+    expect(getProviderModels('claude').map((m) => m.slug)).toEqual(after);
   });
 
   it('ignores an event for an unknown provider', async () => {

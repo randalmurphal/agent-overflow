@@ -584,14 +584,12 @@ describe('keybindings store — loading', () => {
 });
 
 describe('keybindings store — display formatting', () => {
-  it('formats mod as Ctrl on non-macOS hosts', () => {
-    expect(formatChord('mod+k', false)).toBe('Ctrl+K');
-    expect(formatChord('mod+shift+g', false)).toBe('Ctrl+Shift+G');
-  });
-
-  it('formats mod as Command on macOS hosts', () => {
-    expect(formatChord('mod+k', true)).toBe('⌘K');
-    expect(formatChord('mod+shift+g', true)).toBe('⇧⌘G');
+  it.each([
+    ['Ctrl on non-macOS hosts', false, 'Ctrl+K', 'Ctrl+Shift+G'],
+    ['Command on macOS hosts', true, '⌘K', '⇧⌘G'],
+  ])('formats mod as %s', (_name, isMac, plain, shifted) => {
+    expect(formatChord('mod+k', isMac)).toBe(plain);
+    expect(formatChord('mod+shift+g', isMac)).toBe(shifted);
   });
 });
 

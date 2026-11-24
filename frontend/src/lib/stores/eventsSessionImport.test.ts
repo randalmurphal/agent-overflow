@@ -47,13 +47,13 @@ function toastMessages(): string[] {
 }
 
 beforeEach(() => {
-  for (const toast of [...getToasts()]) removeToast(toast.id);
+  for (const toast of getToasts()) removeToast(toast.id);
   setBindingMock('ListThreads', async () => []);
   setBindingMock('ListProjects', async () => []);
 });
 
 afterEach(() => {
-  for (const toast of [...getToasts()]) removeToast(toast.id);
+  for (const toast of getToasts()) removeToast(toast.id);
   vi.restoreAllMocks();
 });
 
@@ -92,6 +92,7 @@ describe('frame validation', () => {
     ['a non-string error', frame({ id: 'claude:a', status: 'failed', error: { msg: 'x' } })],
     ['a non-array threadIds', frame({ id: 'claude:a', status: 'imported', threadIds: 't1' })],
     ['a threadIds entry that is not a string', frame({ id: 'claude:a', status: 'imported', threadIds: [3] })],
+    ['an error longer than the cap', frame({ id: 'claude:a', status: 'failed', error: 'x'.repeat(4_001) })],
   ])('rejects %s without touching the run', async (_label, payload) => {
     await startRun();
     const before = getSessionImportRun();
@@ -102,13 +103,6 @@ describe('frame validation', () => {
     expect(after?.results.size).toBe(0);
     expect(after?.completed).toBe(before?.completed);
     expect(after?.active).toBe(true);
-  });
-
-  it('rejects prose longer than the cap rather than stamping it onto a row', async () => {
-    await startRun();
-    const payload = frame({ id: 'claude:a', status: 'failed', error: 'x'.repeat(4_001) });
-    expect(applySessionImportProgress(payload)).toBe(false);
-    expect(getSessionImportRun()?.results.size).toBe(0);
   });
 
   it('forwards only the contract fields, never extras the frame smuggled in', async () => {

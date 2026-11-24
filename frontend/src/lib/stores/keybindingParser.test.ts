@@ -10,29 +10,23 @@ import {
 import { KEYBINDING_DEFAULTS } from '../generated/keybindingDefaults';
 
 describe('keybindingParser — chords', () => {
-  it('parses a plain key', () => {
-    const c = tryParseChord('k')!;
-    expect(c).toMatchObject({ key: 'k', metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, modKey: false });
-  });
-
-  it('parses modifier aliases (cmd/ctrl/alt/option/shift/meta)', () => {
-    expect(tryParseChord('cmd+k')).toMatchObject({ key: 'k', metaKey: true });
-    expect(tryParseChord('meta+k')).toMatchObject({ key: 'k', metaKey: true });
-    expect(tryParseChord('ctrl+k')).toMatchObject({ key: 'k', ctrlKey: true });
-    expect(tryParseChord('control+k')).toMatchObject({ key: 'k', ctrlKey: true });
-    expect(tryParseChord('alt+k')).toMatchObject({ key: 'k', altKey: true });
-    expect(tryParseChord('option+k')).toMatchObject({ key: 'k', altKey: true });
-    expect(tryParseChord('shift+k')).toMatchObject({ key: 'k', shiftKey: true });
-  });
-
-  it('parses mod+ as the platform modifier', () => {
-    const c = tryParseChord('mod+j')!;
-    expect(c).toMatchObject({ key: 'j', modKey: true });
-  });
-
-  it('treats trailing + as the "+" key', () => {
-    const c = tryParseChord('shift++')!;
-    expect(c).toMatchObject({ key: '+', shiftKey: true });
+  // Modifier aliases, mod+ as the platform modifier, a trailing + as the "+"
+  // key, and the space and esc aliases.
+  it.each([
+    ['k', { key: 'k', metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, modKey: false }],
+    ['cmd+k', { key: 'k', metaKey: true }],
+    ['meta+k', { key: 'k', metaKey: true }],
+    ['ctrl+k', { key: 'k', ctrlKey: true }],
+    ['control+k', { key: 'k', ctrlKey: true }],
+    ['alt+k', { key: 'k', altKey: true }],
+    ['option+k', { key: 'k', altKey: true }],
+    ['shift+k', { key: 'k', shiftKey: true }],
+    ['mod+j', { key: 'j', modKey: true }],
+    ['shift++', { key: '+', shiftKey: true }],
+    ['space', { key: ' ' }],
+    ['esc', { key: 'escape' }],
+  ])('parses %s', (spelling, expected) => {
+    expect(tryParseChord(spelling)).toMatchObject(expected);
   });
 
   it('returns null for unparseable input', () => {
@@ -43,11 +37,6 @@ describe('keybindingParser — chords', () => {
     expect(tryParseChord('garbage garbage')).toBeNull();
     // Explicit empty middle token via double-plus.
     expect(tryParseChord('cmd++j')).toBeNull();
-  });
-
-  it('parses "space" and "esc" aliases', () => {
-    expect(tryParseChord('space')).toMatchObject({ key: ' ' });
-    expect(tryParseChord('esc')).toMatchObject({ key: 'escape' });
   });
 
   it('encodes back to a canonical form', () => {
@@ -71,16 +60,13 @@ describe('keybindingParser — chordMatches', () => {
     ...mods,
   });
 
-  it('matches mod+k on macOS against cmd', () => {
+  it.each([
+    ['on macOS against cmd', true, { metaKey: true }, { ctrlKey: true }],
+    ['on non-mac against ctrl', false, { ctrlKey: true }, { metaKey: true }],
+  ])('matches mod+k %s', (_name, isMac, held, other) => {
     const chord = tryParseChord('mod+k')!;
-    expect(chordMatches(chord, ev('k', { metaKey: true }), true)).toBe(true);
-    expect(chordMatches(chord, ev('k', { ctrlKey: true }), true)).toBe(false);
-  });
-
-  it('matches mod+k on non-mac against ctrl', () => {
-    const chord = tryParseChord('mod+k')!;
-    expect(chordMatches(chord, ev('k', { ctrlKey: true }), false)).toBe(true);
-    expect(chordMatches(chord, ev('k', { metaKey: true }), false)).toBe(false);
+    expect(chordMatches(chord, ev('k', held), isMac)).toBe(true);
+    expect(chordMatches(chord, ev('k', other), isMac)).toBe(false);
   });
 
   it('rejects when an unwanted modifier is held', () => {
@@ -195,24 +181,11 @@ describe('keybindingParser — chordMatches', () => {
   // ctrl (no mod normalization) so a future "tidy to mod" can't silently break
   // it on macOS.
   describe('terminal tab-switch chords (literal ctrl+tab)', () => {
-    it('parses ctrl+tab as literal ctrl, not mod', () => {
-      expect(tryParseChord('ctrl+tab')).toMatchObject({
-        key: 'tab',
-        ctrlKey: true,
-        modKey: false,
-        metaKey: false,
-        shiftKey: false,
-        altKey: false,
-      });
-    });
-
-    it('parses ctrl+shift+tab with shift and literal ctrl', () => {
-      expect(tryParseChord('ctrl+shift+tab')).toMatchObject({
-        key: 'tab',
-        ctrlKey: true,
-        shiftKey: true,
-        modKey: false,
-      });
+    it.each([
+      ['ctrl+tab', { key: 'tab', ctrlKey: true, modKey: false, metaKey: false, shiftKey: false, altKey: false }],
+      ['ctrl+shift+tab', { key: 'tab', ctrlKey: true, shiftKey: true, modKey: false }],
+    ])('parses %s as literal ctrl, not mod', (spelling, expected) => {
+      expect(tryParseChord(spelling)).toMatchObject(expected);
     });
 
     it('matches Ctrl+Tab on both mac and non-mac, but never Cmd+Tab', () => {
