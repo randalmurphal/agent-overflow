@@ -194,31 +194,21 @@ describe('<KeybindingsSettings> unbound bindings', () => {
     for (const t of [...getToasts()]) removeToast(t.id);
   });
 
-  it('clears a row to unbound and persists the sentinel with its identity', async () => {
-    const { update } = mockBackend(THREAD_NEW_ROWS);
-
-    const { findByRole, getByRole } = render(KeybindingsSettings);
-    await findByRole('button', { name: 'Ctrl+N' });
-
-    await click(() => getByRole('button', { name: 'Clear the Ctrl+N shortcut for thread.new' }));
-
-    expect(update).toHaveBeenCalledTimes(1);
-    expect(update.mock.calls[0]?.[0]).toMatchObject([
-      { key: '', command: 'thread.new', defaultId: 'thread.new.primary', defaultKey: 'mod+n' },
-    ]);
-    // The chord is gone from the table, and the row is still there.
-    await waitFor(() => expect(getByRole('button', { name: 'Unbound' })).toBeInTheDocument());
-    expect(getByRole('button', { name: 'Ctrl+Shift+O' })).toBeInTheDocument();
-  });
-
-  it('restores the default after a clear, dropping the override entirely', async () => {
+  it('clears a row to unbound with its identity, then restores the default by dropping the override', async () => {
     const backend = mockBackend(THREAD_NEW_ROWS);
 
     const { findByRole, getByRole, queryByRole } = render(KeybindingsSettings);
     await findByRole('button', { name: 'Ctrl+N' });
 
     await click(() => getByRole('button', { name: 'Clear the Ctrl+N shortcut for thread.new' }));
+
+    expect(backend.update).toHaveBeenCalledTimes(1);
+    expect(backend.update.mock.calls[0]?.[0]).toMatchObject([
+      { key: '', command: 'thread.new', defaultId: 'thread.new.primary', defaultKey: 'mod+n' },
+    ]);
+    // The chord is gone from the table, and the row is still there.
     await waitFor(() => expect(getByRole('button', { name: 'Unbound' })).toBeInTheDocument());
+    expect(getByRole('button', { name: 'Ctrl+Shift+O' })).toBeInTheDocument();
 
     await click(() =>
       getByRole('button', { name: 'Restore thread.new to its default shortcut Ctrl+N' }));

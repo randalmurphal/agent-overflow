@@ -96,51 +96,27 @@ describe('<ClaudeDisabledToolsEditor>', () => {
     expect(getByTestId('settings-claude-tool-Workflow')).toBeTruthy();
   });
 
-  it('refuses a name with whitespace instead of letting the save fail', async () => {
+  it.each([
+    ['a name with whitespace instead of letting the save fail', 'Web Search', 'whitespace'],
+    ['a leading dash the CLI would parse as a flag', '-Workflow', 'start with'],
+    ['a name past the byte cap', 'a'.repeat(129), 'limited to'],
+  ])('refuses %s', async (_name, typed, reason) => {
     await seed();
     const { getByTestId } = render(ClaudeDisabledToolsEditor, {
       props: { provider: CLAUDE },
     });
     const input = getByTestId('settings-claude-tool-input') as HTMLInputElement;
 
-    await fireEvent.input(input, { target: { value: 'Web Search' } });
+    await fireEvent.input(input, { target: { value: typed } });
     await waitFor(() =>
-      expect(getByTestId('settings-claude-tool-error').textContent).toContain('whitespace'),
+      expect(getByTestId('settings-claude-tool-error').textContent).toContain(reason),
     );
     expect((getByTestId('settings-claude-tool-add') as HTMLButtonElement).disabled).toBe(true);
 
-    // Enter must not smuggle it past the disabled button either.
+    // Neither the button nor Enter may smuggle it past the refusal.
+    await fireEvent.click(getByTestId('settings-claude-tool-add'));
     await fireEvent.keyDown(input, { key: 'Enter' });
     expect(getBindingMock('UpdateSettings')?.mock.calls.length ?? 0).toBe(0);
-  });
-
-  it('refuses a leading dash the CLI would parse as a flag', async () => {
-    await seed();
-    const { getByTestId } = render(ClaudeDisabledToolsEditor, {
-      props: { provider: CLAUDE },
-    });
-    const input = getByTestId('settings-claude-tool-input') as HTMLInputElement;
-
-    await fireEvent.input(input, { target: { value: '-Workflow' } });
-    await waitFor(() =>
-      expect(getByTestId('settings-claude-tool-error').textContent).toContain('start with'),
-    );
-    await fireEvent.click(getByTestId('settings-claude-tool-add'));
-    expect(getBindingMock('UpdateSettings')?.mock.calls.length ?? 0).toBe(0);
-  });
-
-  it('refuses a name past the byte cap', async () => {
-    await seed();
-    const { getByTestId } = render(ClaudeDisabledToolsEditor, {
-      props: { provider: CLAUDE },
-    });
-    const input = getByTestId('settings-claude-tool-input') as HTMLInputElement;
-
-    await fireEvent.input(input, { target: { value: 'a'.repeat(129) } });
-    await waitFor(() =>
-      expect(getByTestId('settings-claude-tool-error').textContent).toContain('limited to'),
-    );
-    expect((getByTestId('settings-claude-tool-add') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('clears the refusal once the name is valid', async () => {
