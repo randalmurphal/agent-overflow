@@ -9,9 +9,9 @@ import (
 
 // minimumCodexCLIVersion is the first stable Codex release that honors
 // `thread_unload_delay_secs`, which the shared app-server is started with
-// (codex.codexSharedAppServerArgs) so a closed thread unloads at once. An
-// older Codex ignores the setting and keeps a closed thread loaded, with its
-// writer lock and MCP children.
+// (codex.codexSharedAppServerArgs) so a closed thread unloads at once. The
+// stable releases before it ignore the setting and keep a closed thread
+// loaded, with its writer lock and MCP children.
 const minimumCodexCLIVersion = "0.154.0"
 
 var codexVersionPattern = regexp.MustCompile(`\bv?(\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?)\b`)
