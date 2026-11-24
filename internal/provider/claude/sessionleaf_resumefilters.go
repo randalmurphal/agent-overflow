@@ -65,7 +65,7 @@ import (
 // the extra pass does not run, and this mirror stays exact.
 //
 // That is not left to chance: the name is reserved for the Claude providers
-// in `internal/settings/providerenv.go`, which refuses a custom environment
+// in `internal/provider/envtable.go`, which refuses a custom environment
 // that sets it, with that reason, so it cannot turn on behind the mirror's
 // back.
 // It is the only entry on that list reserved for THIS file's benefit

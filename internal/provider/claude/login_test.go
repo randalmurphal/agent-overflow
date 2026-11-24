@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -158,12 +159,12 @@ func TestStartLoginCarriesTheConfiguredEnvironmentUnderTheHomePin(t *testing.T) 
 		Reaper:    procutiltest.Reaper(),
 		Binary:    fake.binary,
 		ConfigDir: fake.configDir,
-		Env: map[string]string{
+		Env: provider.EnvInput{Custom: map[string]string{
 			"ANTHROPIC_BASE_URL": "https://backend.example.test",
 			// The pin outranks whatever the caller's map says, so a stale
 			// value here can never land a credential in the canonical home.
 			"CLAUDE_CONFIG_DIR": "/should/not/win",
-		},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)

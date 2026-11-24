@@ -207,7 +207,7 @@ type ProbeConfig struct {
 	WorkDir       string
 	GeminiDir     string
 	AppDataSubdir string
-	Env           map[string]string
+	Env           provider.EnvInput
 	Reaper        procutil.Reaper
 	ForceFileAuth bool
 }
@@ -228,19 +228,16 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 		workDir = "."
 	}
 
-	extra := map[string]string{}
+	launchEnv := LaunchEnv(cfg.Env)
 	if cfg.ForceFileAuth || strings.TrimSpace(cfg.GeminiDir) != "" {
-		extra["AGY_ACP_FORCE_FILE_STORAGE"] = "1"
-		extra["SSH_CONNECTION"] = "127.0.0.1 0 127.0.0.1 0"
+		launchEnv = WithFileStorage(launchEnv)
 	}
-	launchEnv, unset := LaunchEnv(cfg.Env, extra)
 
 	conn, err := acp.Dial(probeCtx, acp.ConnConfig{
 		Binary:       binary,
 		Args:         LaunchArgs(cfg.GeminiDir, cfg.AppDataSubdir),
 		WorkDir:      workDir,
 		Env:          launchEnv,
-		UnsetEnv:     unset,
 		Reaper:       cfg.Reaper,
 		ThreadID:     "agy-account-probe",
 		ProviderName: string(provider.Agy),

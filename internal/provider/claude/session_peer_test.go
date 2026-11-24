@@ -278,7 +278,7 @@ done
 		Binary:              scriptPath,
 		CrossSessionEnabled: true,
 		PeerSessionName:     "old-name",
-		Env:                 map[string]string{"CAPTURE_FILE": capturePath},
+		Env:                 provider.EnvInput{Custom: map[string]string{"CAPTURE_FILE": capturePath}},
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

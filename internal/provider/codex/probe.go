@@ -41,7 +41,7 @@ type ProbeConfig struct {
 	// must be absolute — see provider.ValidateProbeWorkDir for why an
 	// inherited cwd is not an acceptable default here.
 	WorkDir string
-	Env     map[string]string
+	Env     provider.EnvInput
 	Timeout time.Duration // default: 20s, mirroring the Claude probe.
 
 	// OnSnapshot, when non-nil, fires once with the rate-limit snapshot
@@ -173,11 +173,10 @@ func runAccountProbe(ctx context.Context, cfg ProbeConfig, spend bool) (_ provid
 	}
 
 	spawnCfg, cleanup, err := prepareAccountProcess(provider.SpawnConfig{
-		Binary:   binary,
-		Args:     buildProbeArgs(),
-		Dir:      cfg.WorkDir,
-		Env:      cfg.Env,
-		UnsetEnv: []string{"CODEX_HOME"},
+		Binary: binary,
+		Args:   buildProbeArgs(),
+		Dir:    cfg.WorkDir,
+		Env:    cfg.Env.Clear(provider.CodexHomeEnv),
 		// The probe runs under a deadline and drives the CLI's own token
 		// refresh; a SIGKILL between the token endpoint answering and the
 		// credential write ends the account's chain (see GracefulCancel).

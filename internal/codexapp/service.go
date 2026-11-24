@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/codexskills"
 	"agent-overflow/internal/codexusage"
 	"agent-overflow/internal/procutil"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/slicesx"
 )
@@ -46,7 +47,7 @@ type Deps struct {
 	AnySession       func() (session *codex.Session, accountID string)
 	Binary           func() string
 	CustomEnv        func() map[string]string
-	ProbeEnv         func() map[string]string
+	ProbeEnv         func() provider.EnvInput
 	ProbeWorkDir     func() string
 	LifeContext      func() context.Context
 	ActiveAccount    func() AccountSelection
@@ -175,7 +176,7 @@ func (s *Service) readSkills(ctx context.Context, binary, cwd string, forceReloa
 	if s.deps.CustomEnv != nil {
 		env = s.deps.CustomEnv()
 	}
-	fetcher := &codex.SkillsFetcher{Binary: binary, WorkDir: cwd, Env: env, Reaper: s.deps.Reaper}
+	fetcher := &codex.SkillsFetcher{Binary: binary, WorkDir: cwd, Env: provider.EnvInput{Custom: env}, Reaper: s.deps.Reaper}
 	entries, err := fetcher.Fetch(ctx, cwds, forceReload)
 	if err != nil {
 		return codexskills.CwdSkills{}, err
@@ -264,7 +265,7 @@ func (s *Service) readAccountUsage(ctx context.Context, binary, accountID string
 	if s.deps.ProbeWorkDir != nil {
 		workDir = s.deps.ProbeWorkDir()
 	}
-	env := map[string]string(nil)
+	var env provider.EnvInput
 	if s.deps.ProbeEnv != nil {
 		env = s.deps.ProbeEnv()
 	}

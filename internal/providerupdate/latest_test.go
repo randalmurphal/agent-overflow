@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 )
 
@@ -33,8 +34,8 @@ func TestClaudeLatestFollowsTheDoctorChannel(t *testing.T) {
 				t.Errorf("claude = %+v", claude)
 			}
 			doctor := r.runner.lastOf("doctor")
-			want := Command{Binary: "/opt/claude", Args: []string{"doctor"}, Env: map[string]string{"PROXY_FOR": ProviderClaude}, Dir: "/home/u"}
-			if doctor.Binary != want.Binary || !slices.Equal(doctor.Args, want.Args) || !maps.Equal(doctor.Env, want.Env) || doctor.Dir != want.Dir {
+			want := Command{Binary: "/opt/claude", Args: []string{"doctor"}, Env: provider.EnvInput{Custom: map[string]string{"PROXY_FOR": ProviderClaude}}, Dir: "/home/u"}
+			if doctor.Binary != want.Binary || !slices.Equal(doctor.Args, want.Args) || !maps.Equal(doctor.Env.Custom, want.Env.Custom) || doctor.Dir != want.Dir {
 				t.Errorf("doctor ran %+v, want %+v", doctor, want)
 			}
 			if got := r.hosts.count(ClaudeChannelURL(tc.channel)); got != 1 {
@@ -127,9 +128,13 @@ func TestAStandaloneCodexInstallsTheReleaseItsCheckOffered(t *testing.T) {
 		t.Fatalf("run = %+v", status.Run)
 	}
 	update := r.runner.lastOf("update")
-	want := map[string]string{"PROXY_FOR": ProviderCodex, "CODEX_RELEASE": "0.169.0"}
-	if update.Binary != standaloneCodex.Path || !slices.Equal(update.Args, []string{"update"}) || !maps.Equal(update.Env, want) {
-		t.Fatalf("ran %+v, want %s update with %v", update, standaloneCodex.Path, want)
+	want := provider.EnvInput{
+		Custom: map[string]string{"PROXY_FOR": ProviderCodex},
+		Pins:   map[provider.ReservedEnv]string{provider.CodexReleaseEnv: "0.169.0"},
+	}
+	if update.Binary != standaloneCodex.Path || !slices.Equal(update.Args, []string{"update"}) ||
+		!maps.Equal(update.Env.Custom, want.Custom) || !maps.Equal(update.Env.Pins, want.Pins) {
+		t.Fatalf("ran %+v, want %s update with %+v", update, standaloneCodex.Path, want)
 	}
 	if len(userEnv) != 1 {
 		t.Errorf("the pin was written into the user's environment: %v", userEnv)
@@ -411,7 +416,7 @@ func TestClaudeCommandsCarryTheTranscriptRetention(t *testing.T) {
 	for _, command := range commands {
 		block := []string{"--settings", `{"cleanupPeriodDays":90}`}
 		if command.Binary != "/opt/claude" {
-			if slices.Contains(command.Args, "--settings") || len(command.UnsetEnv) != 0 {
+			if slices.Contains(command.Args, "--settings") || len(command.Env.Clears) != 0 || command.Env.Pins != nil {
 				t.Errorf("%s %q carries Claude's launch rules", command.Binary, command.Args)
 			}
 			continue
@@ -420,12 +425,12 @@ func TestClaudeCommandsCarryTheTranscriptRetention(t *testing.T) {
 		if !slices.Equal(command.Args, append(block, verb(command))) {
 			t.Errorf("claude %s args = %q, want the block first", verb(command), command.Args)
 		}
-		for _, name := range claude.ConfigHomeUnsetEnv() {
-			if !slices.Contains(command.UnsetEnv, name) {
-				t.Errorf("claude %s keeps an inherited %s", verb(command), name)
+		for _, env := range []provider.ReservedEnv{provider.ClaudeConfigDirEnv, provider.ClaudeSecureStorageConfigDirEnv} {
+			if !slices.Contains(command.Env.Clears, env) {
+				t.Errorf("claude %s keeps an inherited %s", verb(command), env.Name())
 			}
 		}
-		if command.Env["PROXY_FOR"] != ProviderClaude {
+		if command.Env.Custom["PROXY_FOR"] != ProviderClaude {
 			t.Errorf("claude %s lost its environment: %v", verb(command), command.Env)
 		}
 	}

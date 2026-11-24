@@ -31,8 +31,7 @@ import (
 //
 // So the CALLER converts. internal/app already holds both packages, and
 // TestSettingsDeviceClassesMirrorTheIdentityVocabulary there fails in both
-// directions on drift, which is the same shape as the provider deny-list's
-// root-package cross-check.
+// directions on drift.
 type DeviceClass string
 
 const (

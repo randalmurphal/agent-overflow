@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 )
 
@@ -43,11 +44,10 @@ type Binary struct {
 type Command struct {
 	Binary string
 	Args   []string
-	// Env overrides the inherited environment.
-	Env map[string]string
-	// UnsetEnv names inherited variables the command must not see.
-	UnsetEnv []string
-	Dir      string
+	// Env is what the command's environment is built from
+	// (provider.BuildEnvironment).
+	Env provider.EnvInput
+	Dir string
 	// Done, when set, is asked about the output so far as it arrives. Once
 	// it answers true the command has said what its caller needs: the
 	// Runner stops it and returns that output with no error.
@@ -346,7 +346,7 @@ func (s *Service) command(providerName, executable string, env map[string]string
 	if err != nil {
 		return Command{}, fmt.Errorf("resolve the directory to run %s in: %w", providerName, err)
 	}
-	return Command{Binary: executable, Args: args, Env: env, Dir: dir}, nil
+	return Command{Binary: executable, Args: args, Env: provider.EnvInput{Custom: env}, Dir: dir}, nil
 }
 
 // claudeCommand builds one invocation of the Claude CLI: command's rules
@@ -366,6 +366,6 @@ func (s *Service) claudeCommand(claudeBinary string, env map[string]string, args
 	if err != nil {
 		return Command{}, err
 	}
-	command.Args, command.Env, command.UnsetEnv = line.Args(), line.Env(env), line.UnsetEnv()
+	command.Args, command.Env = line.Args(), line.Env(command.Env)
 	return command, nil
 }

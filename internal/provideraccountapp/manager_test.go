@@ -1,7 +1,8 @@
 package provideraccountapp
 
 import (
-	"maps"
+	"reflect"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/kerneltest"
@@ -82,16 +83,21 @@ func TestLoginSpawnEnvStacksConfigurationUnderBootModeUnderThePin(t *testing.T) 
 			}}
 		},
 		LoginSpawnEnv: func() map[string]string {
-			return map[string]string{"SHARED": "boot", "AO_HARNESS_CONTROL": "127.0.0.1:1"}
+			return map[string]string{"AO_HARNESS_CONTROL": "127.0.0.1:1"}
 		},
 	})
 
-	env := manager.providerLoginEnv(string(provider.Claude), map[string]string{"CLAUDE_CONFIG_DIR": "/pinned", "SHARED": "pin"})
+	built := provider.BuildEnvironment(manager.providerLoginEnv(string(provider.Claude), map[provider.ReservedEnv]string{provider.ClaudeConfigDirEnv: "/pinned"}))
+	env := make(map[string]string, len(built))
+	for _, entry := range built {
+		name, value, _ := strings.Cut(entry, "=")
+		env[name] = value
+	}
 	for name, want := range map[string]string{
 		"ANTHROPIC_BASE_URL": "https://backend.example.test",
 		"AO_HARNESS_CONTROL": "127.0.0.1:1",
 		"CLAUDE_CONFIG_DIR":  "/pinned",
-		"SHARED":             "pin",
+		"SHARED":             "configured",
 	} {
 		if env[name] != want {
 			t.Errorf("%s = %q, want %q", name, env[name], want)
@@ -111,10 +117,10 @@ func TestLoginSpawnEnvWithoutABootLayerIsTheProbeEnvironment(t *testing.T) {
 		},
 	})
 
-	pins := map[string]string{"CODEX_HOME": "/pinned"}
+	pins := map[provider.ReservedEnv]string{provider.CodexHomeEnv: "/pinned"}
 	got := manager.providerLoginEnv(string(provider.Codex), pins)
 	want := manager.providerProbeEnv(string(provider.Codex), pins)
-	if !maps.Equal(got, want) {
-		t.Fatalf("providerLoginEnv = %v, want the probe environment %v", got, want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("providerLoginEnv = %+v, want the probe environment %+v", got, want)
 	}
 }

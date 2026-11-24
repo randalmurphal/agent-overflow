@@ -12,8 +12,7 @@ import (
 // internal/settings mirrors identity.DeviceClass as plain strings rather than
 // importing it, so that package stays free of a database dependency
 // (classdefaults.go argues the direction). This package holds both, which
-// makes it the one place the two sets can be compared — the same shape as the
-// provider deny-list's root-package cross-check.
+// makes it the one place the two sets can be compared.
 //
 // It fails in BOTH directions on purpose. A class added to identity and not
 // mirrored here has no row in the defaults table; a class mirrored here that

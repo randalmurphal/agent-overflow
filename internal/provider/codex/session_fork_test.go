@@ -84,7 +84,7 @@ done
 		Binary:  scriptPath,
 		Model:   "test-model",
 		WorkDir: "/tmp",
-		Env:     map[string]string{"FORK_REQUEST_FILE": capture.request, "FORK_TURNS_REQUEST_FILE": capture.turns},
+		Env:     provider.EnvInput{Custom: map[string]string{"FORK_REQUEST_FILE": capture.request, "FORK_TURNS_REQUEST_FILE": capture.turns}},
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

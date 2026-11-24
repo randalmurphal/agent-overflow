@@ -51,8 +51,8 @@ func ProbeCacheKeyForAccountEnv(binary, accountID string, customEnv map[string]s
 	return providerProbeCacheKeyForAccountEnv(binary, accountID, customEnv)
 }
 
-// providerCustomEnv is the user's configured environment for a provider, as
-// the override map every spawn path consumes. nil when nothing is configured.
+// providerCustomEnv is the user's configured environment for a provider, the
+// EnvInput.Custom of every spawn path. nil when nothing is configured.
 //
 // claude-tui resolves to Claude's list (one binary, one backend); unknown
 // providers get nil.
@@ -64,31 +64,18 @@ func (m *Manager) providerCustomEnv(providerName string) map[string]string {
 // specific probe needs (a temporary CLAUDE_CONFIG_DIR / CODEX_HOME). Pins win:
 // they name the credential home the probe exists to interrogate, and the
 // settings layer already refuses to let a user configure those names.
-//
-// Returns nil when both sides are empty so probes keep their "inherit the
-// process environment" fast path.
-func (m *Manager) providerProbeEnv(providerName string, pins map[string]string) map[string]string {
+func (m *Manager) providerProbeEnv(providerName string, pins map[provider.ReservedEnv]string) provider.EnvInput {
 	return probeEnvWith(m.providerCustomEnv(providerName), pins)
 }
 
 // probeEnvWith is providerProbeEnv for a custom environment already read.
-func probeEnvWith(custom, pins map[string]string) map[string]string {
-	if len(custom) == 0 && len(pins) == 0 {
-		return nil
-	}
-	merged := make(map[string]string, len(custom)+len(pins))
-	for k, v := range custom {
-		merged[k] = v
-	}
-	for k, v := range pins {
-		merged[k] = v
-	}
-	return merged
+func probeEnvWith(custom map[string]string, pins map[provider.ReservedEnv]string) provider.EnvInput {
+	return provider.EnvInput{Custom: custom, Pins: pins}
 }
 
 // ProbeEnv merges current user configuration with manager-owned credential
 // home pins for the few root leaf probes that add provider-specific hooks.
-func (m *Manager) ProbeEnv(providerName string, pins map[string]string) map[string]string {
+func (m *Manager) ProbeEnv(providerName string, pins map[provider.ReservedEnv]string) provider.EnvInput {
 	return m.providerProbeEnv(providerName, pins)
 }
 
@@ -103,20 +90,20 @@ func (m *Manager) ProbeEnv(providerName string, pins map[string]string) map[stri
 // defaults, a boot contract outranks a preference, and the pin naming the
 // isolated login home outranks everything because the flow must not land in
 // the canonical one.
-func (m *Manager) providerLoginEnv(providerName string, pins map[string]string) map[string]string {
+func (m *Manager) providerLoginEnv(providerName string, pins map[provider.ReservedEnv]string) provider.EnvInput {
 	var boot map[string]string
 	if m.deps.LoginSpawnEnv != nil {
 		boot = m.deps.LoginSpawnEnv()
 	}
-	if len(boot) == 0 {
-		return m.providerProbeEnv(providerName, pins)
+	merged := provider.AOPins(boot)
+	if len(pins) > 0 {
+		merged = maps.Clone(merged)
+		if merged == nil {
+			merged = make(map[provider.ReservedEnv]string, len(pins))
+		}
+		maps.Copy(merged, pins)
 	}
-	custom := m.providerCustomEnv(providerName)
-	merged := make(map[string]string, len(custom)+len(boot)+len(pins))
-	maps.Copy(merged, custom)
-	maps.Copy(merged, boot)
-	maps.Copy(merged, pins)
-	return merged
+	return probeEnvWith(m.providerCustomEnv(providerName), merged)
 }
 
 // claudeProbeConfig is the ONE constructor for a Claude probe invocation:
@@ -128,13 +115,13 @@ func (m *Manager) providerLoginEnv(providerName string, pins map[string]string) 
 // environment reach the session but not the probe — which is precisely the
 // failure this feature must not have, because an ANTHROPIC_BASE_URL that
 // changes which backend answers must change who the probe reports.
-func (m *Manager) claudeProbeConfig(binary string, pins map[string]string) claude.ProbeConfig {
+func (m *Manager) claudeProbeConfig(binary string, pins map[provider.ReservedEnv]string) claude.ProbeConfig {
 	return m.claudeProbeConfigWith(binary, m.providerCustomEnv(string(provider.Claude)), pins)
 }
 
 // claudeProbeConfigWith is claudeProbeConfig for a custom environment
 // already read.
-func (m *Manager) claudeProbeConfigWith(binary string, custom, pins map[string]string) claude.ProbeConfig {
+func (m *Manager) claudeProbeConfigWith(binary string, custom map[string]string, pins map[provider.ReservedEnv]string) claude.ProbeConfig {
 	return claude.ProbeConfig{
 		Binary:         binary,
 		WorkDir:        providerProbeWorkDir(),
@@ -157,7 +144,7 @@ func (m *Manager) claudeRetention(workDir string) claude.Retention {
 }
 
 // ClaudeProbeConfig constructs the canonical account probe configuration.
-func (m *Manager) ClaudeProbeConfig(binary string, pins map[string]string) claude.ProbeConfig {
+func (m *Manager) ClaudeProbeConfig(binary string, pins map[provider.ReservedEnv]string) claude.ProbeConfig {
 	return m.claudeProbeConfig(binary, pins)
 }
 
@@ -188,7 +175,7 @@ func (m *Manager) ClaudeAccountProbe(binary, accountID string) (provider.ProbeCa
 // "nothing to rotate". The macOS Keychain reports absence as
 // ErrCredentialMissing, which the probe would otherwise treat as unreadable
 // and hold every CLI open for the full rotation settle window.
-func (m *Manager) claudeProbeCredentialReader(pins map[string]string) func() ([]byte, error) {
+func (m *Manager) claudeProbeCredentialReader(pins map[provider.ReservedEnv]string) func() ([]byte, error) {
 	credentials := m.credentials
 	if credentials == nil {
 		return nil
@@ -196,7 +183,7 @@ func (m *Manager) claudeProbeCredentialReader(pins map[string]string) func() ([]
 	read := func() (provideraccounts.CredentialSnapshot, error) {
 		return credentials.ReadCredentialSnapshot(string(provider.Claude), "", true)
 	}
-	if home := pins["CLAUDE_CONFIG_DIR"]; home != "" {
+	if home := pins[provider.ClaudeConfigDirEnv]; home != "" {
 		read = func() (provideraccounts.CredentialSnapshot, error) {
 			return credentials.ReadCredentialAtHome(string(provider.Claude), home)
 		}
@@ -211,13 +198,13 @@ func (m *Manager) claudeProbeCredentialReader(pins map[string]string) func() ([]
 }
 
 // codexProbeConfig is the Codex counterpart to claudeProbeConfig.
-func (m *Manager) codexProbeConfig(binary string, pins map[string]string) codex.ProbeConfig {
+func (m *Manager) codexProbeConfig(binary string, pins map[provider.ReservedEnv]string) codex.ProbeConfig {
 	return m.codexProbeConfigWith(binary, m.providerCustomEnv(string(provider.Codex)), pins)
 }
 
 // codexProbeConfigWith is codexProbeConfig for a custom environment already
 // read.
-func (m *Manager) codexProbeConfigWith(binary string, custom, pins map[string]string) codex.ProbeConfig {
+func (m *Manager) codexProbeConfigWith(binary string, custom map[string]string, pins map[provider.ReservedEnv]string) codex.ProbeConfig {
 	return codex.ProbeConfig{
 		Binary:  binary,
 		WorkDir: providerProbeWorkDir(),
@@ -227,7 +214,7 @@ func (m *Manager) codexProbeConfigWith(binary string, custom, pins map[string]st
 }
 
 // CodexProbeConfig constructs the canonical account probe configuration.
-func (m *Manager) CodexProbeConfig(binary string, pins map[string]string) codex.ProbeConfig {
+func (m *Manager) CodexProbeConfig(binary string, pins map[provider.ReservedEnv]string) codex.ProbeConfig {
 	return m.codexProbeConfig(binary, pins)
 }
 
@@ -237,11 +224,11 @@ func (m *Manager) CodexAccountProbe(binary, accountID string) (provider.ProbeCac
 	return providerProbeCacheKeyForAccountEnv(binary, accountID, custom), m.codexProbeConfigWith(binary, custom, nil)
 }
 
-func (m *Manager) agyProbeConfig(binary, geminiDir, appDataSubdir string, pins map[string]string) agy.ProbeConfig {
+func (m *Manager) agyProbeConfig(binary, geminiDir, appDataSubdir string, pins map[provider.ReservedEnv]string) agy.ProbeConfig {
 	return m.agyProbeConfigWith(binary, geminiDir, appDataSubdir, m.providerCustomEnv(string(provider.Agy)), pins)
 }
 
-func (m *Manager) agyProbeConfigWith(binary, geminiDir, appDataSubdir string, custom, pins map[string]string) agy.ProbeConfig {
+func (m *Manager) agyProbeConfigWith(binary, geminiDir, appDataSubdir string, custom map[string]string, pins map[provider.ReservedEnv]string) agy.ProbeConfig {
 	forceFile := strings.TrimSpace(geminiDir) != ""
 	if !forceFile && m != nil && m.credentials != nil {
 		forceFile = m.credentials.AgyShouldForceFileStorage("")
@@ -258,7 +245,7 @@ func (m *Manager) agyProbeConfigWith(binary, geminiDir, appDataSubdir string, cu
 }
 
 // AgyProbeConfig constructs the canonical Antigravity account probe configuration.
-func (m *Manager) AgyProbeConfig(binary string, pins map[string]string) agy.ProbeConfig {
+func (m *Manager) AgyProbeConfig(binary string, pins map[provider.ReservedEnv]string) agy.ProbeConfig {
 	return m.agyProbeConfig(binary, "", "", pins)
 }
 

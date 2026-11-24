@@ -230,10 +230,10 @@ done
 	mockexec.Write(t, scriptPath, script)
 
 	cfg.Binary = scriptPath
-	if cfg.Env == nil {
-		cfg.Env = map[string]string{}
+	if cfg.Env.Custom == nil {
+		cfg.Env.Custom = map[string]string{}
 	}
-	cfg.Env["CAPTURE_FILE"] = capturePath
+	cfg.Env.Custom["CAPTURE_FILE"] = capturePath
 
 	s, err := NewSession(context.Background(), testThread, withTestRetention(cfg), func(provider.ProviderEvent) {})
 	if err != nil {

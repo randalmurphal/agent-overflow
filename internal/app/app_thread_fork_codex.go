@@ -128,7 +128,7 @@ func (a *App) forkCodexThreadAt(ctx context.Context, source store.Thread, lastTu
 	return codex.ForkThread(cut, codex.ForkSpec{
 		Binary:          a.providerBinaryPath(source.Provider),
 		WorkDir:         source.WorkspacePath,
-		Env:             a.sessionProcessEnv(source.Provider, nil),
+		Env:             a.sessionProcessEnv(source.Provider),
 		SourceThreadID:  source.SessionRef,
 		LastTurnID:      lastTurnID,
 		NativeMemoryOff: memoryOff,
@@ -181,7 +181,7 @@ func (a *App) withCodexThreadSessionPreparedBy(
 		// Boot-mode overrides only, deliberately no `ao` credential: this is a
 		// throwaway app-server used to issue one fork request, not a session an
 		// agent takes a turn in.
-		Env:             a.sessionProcessEnv(source.Provider, nil),
+		Env:             a.sessionProcessEnv(source.Provider),
 		EventLogger:     a.logger,
 		NativeMemoryOff: memoryOff,
 		Reaper:          a.groupReaper("codex fork session"),

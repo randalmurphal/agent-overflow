@@ -131,7 +131,7 @@ type Config struct {
 	// message and thread-title generation would be the one surface that
 	// silently kept talking to the vendor default. Applied over the process
 	// environment by ExecCLI.
-	Env map[string]string
+	Env provider.EnvInput
 	// ClaudeRetention answers the transcript sweep for a Claude run in
 	// workspace. A run outlives the few seconds the CLI waits before its
 	// sweep, so it carries what a session in that workspace does
@@ -154,16 +154,12 @@ type CLISpec struct {
 	Args   []string
 	Cwd    string
 	Stdin  string
-	// Env are environment overrides applied over the current process
-	// environment (nil applies none), through the same
+	// Env is applied over the current process environment through the same
 	// provider.BuildEnvironment rule every provider subprocess gets — one env
 	// rule across every CLI Agent Overflow spawns, so an injected variable
 	// cannot go missing on one of them, and so the AppImage launch artifacts
 	// that rule scrubs are gone from this CLI's environment too.
-	Env map[string]string
-	// UnsetEnv names inherited variables removed from the child's
-	// environment.
-	UnsetEnv []string
+	Env provider.EnvInput
 	// Admit, when set, runs immediately before the process starts. The
 	// process starts only if it returns nil, and release runs once no
 	// process of the run's group is left, or once its start failed:
@@ -214,7 +210,7 @@ func ExecCLI(ctx context.Context, reaper procutil.Reaper, spec CLISpec) (CLIResu
 			// Unconditional: with no overrides this is the inherited
 			// environment scrubbed of the AppImage launch artifacts, which a
 			// provider CLI must not resolve its own runtime against.
-			Env:            provider.BuildEnvironment(spec.Env, spec.UnsetEnv...),
+			Env:            provider.BuildEnvironment(spec.Env),
 			Argv:           append([]string{spec.Binary}, spec.Args...),
 			Stdin:          strings.NewReader(spec.Stdin),
 			Output:         &stdout,
@@ -472,11 +468,10 @@ func RunCodex(
 		Args:   args,
 		Cwd:    workspace,
 		Stdin:  stdin,
-		Env:    cfg.Env,
 		// AO owns Codex's home: the run authenticates from the one every
 		// other Codex launch uses.
-		UnsetEnv: []string{"CODEX_HOME"},
-		Admit:    cfg.Admit,
+		Env:   cfg.Env.Clear(provider.CodexHomeEnv),
+		Admit: cfg.Admit,
 	})
 	if err != nil {
 		return nil, TranslateCLINotFound("codex", timeout, err)
@@ -536,11 +531,10 @@ func RunClaude(
 		Args:   line.Args(),
 		Cwd:    workspace,
 		Stdin:  stdin,
-		Env:    line.Env(cfg.Env),
 		// The run uses the config home every other Claude launch uses, the
 		// one its retention period was resolved against.
-		UnsetEnv: line.UnsetEnv(),
-		Admit:    cfg.Admit,
+		Env:   line.Env(cfg.Env),
+		Admit: cfg.Admit,
 	})
 	if err != nil {
 		return nil, TranslateCLINotFound("claude", timeout, err)
@@ -584,15 +578,12 @@ func RunAgy(
 	args = append(args, extraArgs...)
 	args = append(args, "--print="+stdin)
 
-	env, unsetEnv := agy.LaunchEnv(cfg.Env, nil)
-
 	result, err := cfg.Exec(ctx, CLISpec{
-		Binary:   cfg.Binary,
-		Args:     args,
-		Cwd:      workspace,
-		Env:      env,
-		UnsetEnv: unsetEnv,
-		Admit:    cfg.Admit,
+		Binary: cfg.Binary,
+		Args:   args,
+		Cwd:    workspace,
+		Env:    agy.LaunchEnv(cfg.Env),
+		Admit:  cfg.Admit,
 	})
 	if err != nil {
 		return nil, TranslateCLINotFound("agy", timeout, err)

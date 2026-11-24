@@ -43,8 +43,8 @@ import (
 //
 // Discovery is keyed on a SHARED `CLAUDE_CONFIG_DIR` — the peer registry
 // is `<CLAUDE_CONFIG_DIR>/sessions/<pid>.json`. Agent Overflow's Claude
-// sessions deliberately CLEAR that variable (claude.NewSession's
-// `UnsetEnv`), so they land in the user's own `~/.claude` and can see —
+// sessions deliberately CLEAR that variable (the clears
+// claude.NewCommandLine adds), so they land in the user's own `~/.claude` and can see —
 // and be seen by — the user's terminal sessions, provided those also run
 // with the gate open.
 type ClaudeCrossSession struct {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -69,7 +70,6 @@ func newCodexLoginFake(t *testing.T) *codexLoginFake {
 		logPath:  filepath.Join(dir, "requests"),
 	}
 	fake.env = map[string]string{
-		"CODEX_HOME":          fake.home,
 		"AO_CODEX_LOGIN_ARGV": fake.argvPath,
 		"AO_CODEX_LOGIN_LOG":  fake.logPath,
 		// Pinned empty so nothing inherited steers the script.
@@ -85,7 +85,10 @@ func (f *codexLoginFake) start(t *testing.T) *LoginSession {
 		Reaper:  procutiltest.Reaper(),
 		Binary:  f.binary,
 		WorkDir: t.TempDir(),
-		Env:     maps.Clone(f.env),
+		Env: provider.EnvInput{
+			Custom: maps.Clone(f.env),
+			Pins:   map[provider.ReservedEnv]string{provider.CodexHomeEnv: f.home},
+		},
 	})
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
@@ -135,7 +138,7 @@ func TestStartLoginRefusesWithoutAnIsolatedHome(t *testing.T) {
 	if _, err := StartLogin(t.Context(), LoginConfig{
 		Reaper: procutiltest.Reaper(),
 		Binary: fake.binary,
-		Env:    map[string]string{"CODEX_API_KEY": "unused"},
+		Env:    provider.EnvInput{Custom: map[string]string{"CODEX_API_KEY": "unused"}},
 	}); err == nil {
 		t.Fatal("StartLogin without CODEX_HOME succeeded")
 	}

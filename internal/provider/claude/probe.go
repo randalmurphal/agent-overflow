@@ -21,7 +21,7 @@ type ProbeConfig struct {
 	// must be absolute — see provider.ValidateProbeWorkDir for why an
 	// inherited cwd is not an acceptable default here.
 	WorkDir string
-	Env     map[string]string
+	Env     provider.EnvInput
 	Timeout time.Duration // default: DefaultProbeTimeout
 
 	// ReadCredential reads the credential the CLI this probe spawns will
@@ -180,11 +180,10 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 		return provider.AccountInfo{}, err
 	}
 	proc, err := provider.Spawn(spawnCtx, provider.Bounded(cfg.Reaper), provider.SpawnConfig{
-		Binary:   binary,
-		Args:     line.Args(),
-		Dir:      cfg.WorkDir,
-		Env:      line.Env(cfg.Env),
-		UnsetEnv: line.UnsetEnv(),
+		Binary: binary,
+		Args:   line.Args(),
+		Dir:    cfg.WorkDir,
+		Env:    line.Env(cfg.Env),
 		// The probe runs under a deadline and drives the CLI's own token
 		// refresh; a SIGKILL between the token endpoint answering and the
 		// credential write ends the account's chain (see GracefulCancel).

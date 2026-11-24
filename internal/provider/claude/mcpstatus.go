@@ -25,7 +25,7 @@ import (
 // point at a mock script under t.TempDir() without env-var trickery.
 type MCPStatusFetcher struct {
 	Binary  string
-	Env     []string
+	Env     provider.EnvInput
 	Cwd     string
 	Timeout time.Duration // 0 → DefaultMCPStatusTimeout
 }
@@ -66,7 +66,7 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	if f.Cwd != "" {
 		cmd.Dir = f.Cwd
 	}
-	cmd.Env = provider.FilterEnvironment(f.Env, line.UnsetEnv()...)
+	cmd.Env = provider.BuildEnvironment(line.Env(f.Env))
 	// TERM at the deadline, KILL only after WaitDelay — never exec's default
 	// instant SIGKILL. This runs in the canonical home under a tight timeout,
 	// and the CLI may be mid OAuth refresh when the deadline lands; Anthropic

@@ -105,7 +105,7 @@ func TestSession_Interrupt_WireEnvelopeShape(t *testing.T) {
 			reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
 			printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"
 		`},
-		Env: map[string]string{"CAPTURE_PATH": capturePath},
+		Env: provider.EnvInput{Custom: map[string]string{"CAPTURE_PATH": capturePath}},
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -254,7 +254,7 @@ func TestInterruptAckFlowsIntoResultClassification(t *testing.T) {
 			printf '%s\n' "$RESULT_LINE"
 			cat >/dev/null
 		`},
-		Env: map[string]string{"RESULT_LINE": ede2_1_170InterruptResultLine},
+		Env: provider.EnvInput{Custom: map[string]string{"RESULT_LINE": ede2_1_170InterruptResultLine}},
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -327,7 +327,7 @@ func TestStopTaskAckFollowsTheFramesBeforeIt(t *testing.T) {
 					printf '{"type":"system","subtype":"background_tasks_changed","tasks":[]}\n'
 					cat >/dev/null
 				`},
-				Env: map[string]string{"SUBTYPE": subtype},
+				Env: provider.EnvInput{Custom: map[string]string{"SUBTYPE": subtype}},
 			})
 			if err != nil {
 				t.Fatalf("spawn: %v", err)
@@ -390,9 +390,9 @@ func TestSessionSend(t *testing.T) {
 	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
-		Env: map[string]string{
+		Env: provider.EnvInput{Custom: map[string]string{
 			"CAPTURE": capturePath,
-		},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("spawn capture process: %v", err)
@@ -441,7 +441,7 @@ func TestSessionSendStampsUserMessageUUID(t *testing.T) {
 	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
-		Env:    map[string]string{"CAPTURE": capturePath},
+		Env:    provider.EnvInput{Custom: map[string]string{"CAPTURE": capturePath}},
 	})
 	if err != nil {
 		t.Fatalf("spawn capture process: %v", err)
@@ -480,7 +480,7 @@ func TestSessionSendOmitsUUIDWhenEmpty(t *testing.T) {
 	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
-		Env:    map[string]string{"CAPTURE": capturePath},
+		Env:    provider.EnvInput{Custom: map[string]string{"CAPTURE": capturePath}},
 	})
 	if err != nil {
 		t.Fatalf("spawn capture process: %v", err)
@@ -512,7 +512,7 @@ func TestSessionSendRejectsMalformedUUID(t *testing.T) {
 	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
-		Env:    map[string]string{"CAPTURE": capturePath},
+		Env:    provider.EnvInput{Custom: map[string]string{"CAPTURE": capturePath}},
 	})
 	if err != nil {
 		t.Fatalf("spawn capture process: %v", err)
@@ -546,7 +546,7 @@ func TestSessionSendRejectsNonCanonicalUUID(t *testing.T) {
 	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
-		Env:    map[string]string{"CAPTURE": capturePath},
+		Env:    provider.EnvInput{Custom: map[string]string{"CAPTURE": capturePath}},
 	})
 	if err != nil {
 		t.Fatalf("spawn capture process: %v", err)
@@ -595,9 +595,9 @@ done
 		Binary:             scriptPath,
 		BasePermissionMode: "default",
 		InteractionMode:    provider.ModePlan,
-		Env: map[string]string{
+		Env: provider.EnvInput{Custom: map[string]string{
 			"CAPTURE_FILE": capturePath,
-		},
+		}},
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -680,9 +680,9 @@ done
 				Binary:             scriptPath,
 				BasePermissionMode: baseMode,
 				InteractionMode:    provider.ModeChat,
-				Env: map[string]string{
+				Env: provider.EnvInput{Custom: map[string]string{
 					"CAPTURE_FILE": capturePath,
-				},
+				}},
 			}, func(provider.ProviderEvent) {})
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)

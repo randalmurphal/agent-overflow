@@ -208,7 +208,7 @@ func (a *App) codexAppDeps() codexapp.Deps {
 		CustomEnv: func() map[string]string {
 			return a.providerCustomEnv(string(provider.Codex))
 		},
-		ProbeEnv: func() map[string]string {
+		ProbeEnv: func() provider.EnvInput {
 			return a.providerProbeEnv(string(provider.Codex), nil)
 		},
 		ProbeWorkDir: providerProbeWorkDir,

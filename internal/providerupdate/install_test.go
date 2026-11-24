@@ -83,7 +83,7 @@ func TestTheUpdaterRunsWithTheCheckedEnvironment(t *testing.T) {
 	if status := r.waitRunSettled(mark, ProviderClaude); status.Run.Phase != PhaseSucceeded {
 		t.Fatalf("run = %+v", status.Run)
 	}
-	if env := r.runner.lastOf("update").Env; !maps.Equal(env, map[string]string{"PROXY_FOR": ProviderClaude}) {
+	if env := r.runner.lastOf("update").Env.Custom; !maps.Equal(env, map[string]string{"PROXY_FOR": ProviderClaude}) {
 		t.Errorf("the updater ran with %v, want the checked environment", env)
 	}
 }

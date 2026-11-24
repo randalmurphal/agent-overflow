@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -33,7 +32,7 @@ func agyPoolKey(
 	identity providerBinaryIdentity,
 	accountID string,
 	accountGen uint64,
-	env map[string]string,
+	env provider.EnvInput,
 	isolateThreadID string,
 ) string {
 	h := sha256.New()
@@ -49,14 +48,7 @@ func agyPoolKey(
 	if isolateThreadID != "" {
 		writePart("thread", isolateThreadID)
 	}
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		writePart("env:"+k, env[k])
-	}
+	writePart("env", env.Fingerprint())
 	return fmt.Sprintf("agy|%s|%s", strings.TrimSpace(binary), hex.EncodeToString(h.Sum(nil)[:16]))
 }
 
@@ -68,7 +60,7 @@ func (a *App) acquireAgyConn(
 	threadID string,
 	binary string,
 	workDir string,
-	env map[string]string,
+	env provider.EnvInput,
 	accountSelection *providerAccountSelection,
 ) (*acp.Conn, func(), string, error) {
 	identity, _ := a.resolveProviderBinaryIdentity(string(provider.Agy))
@@ -89,10 +81,9 @@ func (a *App) acquireAgyConn(
 	resolvedBinary := agy.ResolveBinary(binary)
 	key := agyPoolKey(resolvedBinary, identity, selection.AccountID, selection.Generation, env, isolateThreadID)
 
-	extra := map[string]string{}
+	launchEnv := agy.LaunchEnv(env)
 	if a.hasManagedAgyCredentialFile() {
-		extra["AGY_ACP_FORCE_FILE_STORAGE"] = "1"
-		extra["SSH_CONNECTION"] = "127.0.0.1 0 127.0.0.1 0"
+		launchEnv = agy.WithFileStorage(launchEnv)
 	}
 
 	rawConn, release, err := a.sessionManager().runtime.Connections().Acquire(
@@ -100,13 +91,11 @@ func (a *App) acquireAgyConn(
 		key,
 		idleGrace,
 		func(dialCtx context.Context) (provider.Connection, error) {
-			launchEnv, unset := agy.LaunchEnv(env, extra)
 			return acp.Dial(dialCtx, acp.ConnConfig{
 				Binary:       resolvedBinary,
 				Args:         agy.LaunchArgs("", ""),
 				WorkDir:      connWorkDir,
 				Env:          launchEnv,
-				UnsetEnv:     unset,
 				EventLogger:  a.logger,
 				Reaper:       a.groupReaper("agy session"),
 				ThreadID:     "agy-conn",
@@ -145,8 +134,8 @@ func (a *App) borrowAgyConnForCurrentAccount(binary string) (*acp.Conn, func()) 
 	resolvedBinary := agy.ResolveBinary(binary)
 	identity, _ := a.resolveProviderBinaryIdentity(string(provider.Agy))
 	selection := a.captureProviderAccountSelection(string(provider.Agy))
-	// acquireAgyConn keys live pooled connections with sessionProcessEnv(agy, nil).
-	sessionEnv := a.sessionProcessEnv(string(provider.Agy), nil)
+	// acquireAgyConn keys live pooled connections with sessionProcessEnv(agy).
+	sessionEnv := a.sessionProcessEnv(string(provider.Agy))
 	wantKey := agyPoolKey(resolvedBinary, identity, selection.AccountID, selection.Generation, sessionEnv, "")
 	conn, release, ok := a.sessionRuntime.Connections().BorrowMatching(func(key string, c provider.Connection) bool {
 		if key != wantKey {
@@ -204,20 +193,15 @@ func (a *App) withAgyImportConn(ctx context.Context, appDataDir, avoidSessionID 
 		geminiDir = filepath.Dir(cleaned)
 		appDataSubdir = filepath.Base(cleaned)
 	}
-	var extra map[string]string
+	env := agy.LaunchEnv(a.ensureProviderAccountManager().ProbeEnv(string(provider.Agy), nil))
 	if geminiDir != "" || a.hasManagedAgyCredentialFileAt(appDataDir) {
-		extra = map[string]string{
-			"AGY_ACP_FORCE_FILE_STORAGE": "1",
-			"SSH_CONNECTION":             "127.0.0.1 0 127.0.0.1 0",
-		}
+		env = agy.WithFileStorage(env)
 	}
-	env, unset := agy.LaunchEnv(a.ensureProviderAccountManager().ProbeEnv(string(provider.Agy), nil), extra)
 	conn, err := acp.Dial(ctx, acp.ConnConfig{
 		Binary:       agy.ResolveBinary(binary),
 		Args:         agy.LaunchArgs(geminiDir, appDataSubdir),
 		WorkDir:      providerProbeWorkDir(),
 		Env:          env,
-		UnsetEnv:     unset,
 		Reaper:       a.groupReaper("agy session import"),
 		ProviderName: string(provider.Agy),
 	})

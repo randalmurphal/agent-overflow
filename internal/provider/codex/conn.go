@@ -36,7 +36,7 @@ var _ provider.Connection = (*Conn)(nil)
 type ConnConfig struct {
 	Binary      string
 	WorkDir     string
-	Env         map[string]string
+	Env         provider.EnvInput
 	EventLogger *logging.Logger
 	Reaper      procutil.Reaper
 	// ThreadID labels process-level event logs; shared connections pass a
@@ -117,8 +117,7 @@ func Dial(ctx context.Context, cfg ConnConfig) (*Conn, error) {
 		Binary:           binary,
 		Args:             codexSharedAppServerArgs(),
 		Dir:              cfg.WorkDir,
-		Env:              cfg.Env,
-		UnsetEnv:         []string{"CODEX_HOME"},
+		Env:              cfg.Env.Clear(provider.CodexHomeEnv),
 		EventLogger:      cfg.EventLogger,
 		EventLogRedactor: newCodexProviderEventLogRedactor(),
 		ThreadID:         logLabel,

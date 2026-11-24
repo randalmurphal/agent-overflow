@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider"
 )
 
 func TestMCPAuthFlowUsesThreadlessAppServerThroughCompletion(t *testing.T) {
@@ -42,7 +43,7 @@ done
 		Reaper:         procutiltest.Reaper(),
 		Binary:         binary,
 		WorkDir:        t.TempDir(),
-		Env:            map[string]string{"TRACE_PATH": tracePath},
+		Env:            provider.EnvInput{Custom: map[string]string{"TRACE_PATH": tracePath}},
 		RequestTimeout: time.Second,
 	}, "atlassian")
 	if err != nil {

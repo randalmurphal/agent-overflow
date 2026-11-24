@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -25,7 +24,7 @@ func codexPoolKey(
 	binary string,
 	identity providerBinaryIdentity,
 	accountSelection providerAccountSelection,
-	env map[string]string,
+	env provider.EnvInput,
 	isolateThreadID string,
 ) string {
 	h := sha256.New()
@@ -41,14 +40,7 @@ func codexPoolKey(
 	if isolateThreadID != "" {
 		writePart("thread", isolateThreadID)
 	}
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		writePart("env:"+k, env[k])
-	}
+	writePart("env", env.Fingerprint())
 	// Prefix places provider and account id before the hash so DrainPrefix and
 	// BorrowMatching never misparse binary paths containing '|'.
 	return fmt.Sprintf("codex|%s|%s", accountSelection.AccountID, hex.EncodeToString(h.Sum(nil)[:16]))
@@ -63,7 +55,7 @@ func (a *App) acquireCodexConn(
 	threadID string,
 	binary string,
 	workDir string,
-	env map[string]string,
+	env provider.EnvInput,
 	accountSelection *providerAccountSelection,
 ) (*codex.Conn, func(), string, error) {
 	identity, _ := a.resolveProviderBinaryIdentity(string(provider.Codex))

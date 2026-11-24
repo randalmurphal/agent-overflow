@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccountapp"
@@ -227,10 +228,9 @@ func startCodexLoginMock(t *testing.T) (*codex.LoginSession, *control.Server, st
 		Reaper:  procutiltest.Reaper(),
 		Binary:  mockBin,
 		WorkDir: t.TempDir(),
-		Env: map[string]string{
-			"CODEX_HOME":     home,
-			control.EnvAddr:  srv.Addr(),
-			control.EnvToken: srv.Token(),
+		Env: provider.EnvInput{
+			Custom: map[string]string{control.EnvAddr: srv.Addr(), control.EnvToken: srv.Token()},
+			Pins:   map[provider.ReservedEnv]string{provider.CodexHomeEnv: home},
 		},
 	})
 	if err != nil {
@@ -273,7 +273,7 @@ func TestCodexDeviceSignInMockCompletesOnTheControlTrigger(t *testing.T) {
 		Reaper:  procutiltest.Reaper(),
 		Binary:  mockBin,
 		WorkDir: t.TempDir(),
-		Env:     map[string]string{"CODEX_HOME": home},
+		Env:     provider.EnvInput{Pins: map[provider.ReservedEnv]string{provider.CodexHomeEnv: home}},
 	})
 	if err != nil {
 		t.Fatalf("ProbeAccount after sign-in: %v", err)

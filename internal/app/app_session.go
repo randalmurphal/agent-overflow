@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"maps"
 	"slices"
 	"time"
 
@@ -528,31 +527,22 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 // refuses to boot a second app instance from inside a session), and the
 // PATH entry that makes `agent-overflow` resolve to this executable (D30).
 //
-// Precedence is provider config < user custom env < boot-mode overrides < AO
-// session marker. The user's environment outranks the provider config because
-// it is a deliberate override of AO's defaults; it sits below the last two
-// because those are contracts, not preferences. Every AO_* name is reserved at
-// the settings boundary (settings.providerenv.go), so a user value that would
-// have been shadowed here is refused on save instead of vanishing at spawn.
-//
-// PATH is the one entry that merges rather than wins: whatever a provider
-// config or boot-mode override put there is kept, with the CLI's directory in
-// front. A session that can reach the command but lost its own PATH would be a
-// worse trade than the other way round.
-func (a *App) sessionProcessEnv(
-	providerName string,
-	env map[string]string,
-) map[string]string {
-	custom := a.providerCustomEnv(providerName)
-	merged := make(map[string]string)
-	maps.Copy(merged, env)
-	maps.Copy(merged, custom)
-	maps.Copy(merged, a.providerExtraEnv)
-	merged[aocli.EnvInSession] = "1"
-	if a.cliBinDir != "" {
-		prependCLIBinDir(merged, a.cliBinDir)
+// The boot-mode overrides and the marker are pins, over the user's custom
+// environment: they are contracts, not preferences. Every AO_* name is
+// reserved at the settings boundary, so a user value that would have been
+// shadowed is refused on save instead of vanishing at spawn. The CLI's
+// directory goes in front of the inherited PATH.
+func (a *App) sessionProcessEnv(providerName string) provider.EnvInput {
+	pins := provider.AOPins(a.providerExtraEnv)
+	if pins == nil {
+		pins = make(map[provider.ReservedEnv]string, 1)
 	}
-	return merged
+	pins[provider.AOEnv(aocli.EnvInSession)] = "1"
+	return provider.EnvInput{
+		Custom:      a.providerCustomEnv(providerName),
+		Pins:        pins,
+		PathPrepend: a.cliBinDir,
+	}
 }
 
 // spawnProviderSession builds the provider-specific Config via
@@ -602,7 +592,7 @@ func (a *App) spawnProviderSession(
 		cfg.SessionStartForget = mem.Forget
 		cfg.NativeMemoryOff = mem.OwnMemoryOff
 		cfg.InstalledCLIVersion = a.installedProviderVersion(t.Provider)
-		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env)
+		cfg.Env = a.sessionProcessEnv(t.Provider)
 		if mcpServers[remoteMCPName] != nil {
 			cfg.Env = withRemoteMCPClaudeEnv(cfg.Env)
 		}
@@ -652,7 +642,7 @@ func (a *App) spawnProviderSession(
 	case string(provider.Codex):
 		cfg := codex.ConfigFromOptions(opts)
 		cfg.Binary = a.providerBinaryPath(t.Provider)
-		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env)
+		cfg.Env = a.sessionProcessEnv(t.Provider)
 		cfg.EventLogger = a.logger
 		cfg.Reaper = a.groupReaper("codex session")
 		cfg.MCPServers = mcpServers
@@ -822,7 +812,7 @@ func (a *App) spawnProviderSession(
 
 	case string(provider.Agy):
 		binary := a.providerBinaryPath(t.Provider)
-		env := a.sessionProcessEnv(t.Provider, nil)
+		env := a.sessionProcessEnv(t.Provider)
 		conn, releaseConn, poolKey, err := a.acquireAgyConn(
 			a.lifeCtx(),
 			threadID,
@@ -891,10 +881,10 @@ func (a *App) claudeTUISessionConfig(
 	cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
 	cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
 	cfg.AgentLaunchByTask = a.claudeAgentLaunchLookup(threadID)
-	// claudetui's Config carries a whole environment rather than an
-	// override map, so the shared rule is applied here instead of inside
-	// the provider package. Skipping this branch would leave one provider
-	// silently without the boot-mode overrides and the ao credential.
+	// claudetui builds its child environment itself (buildEnv) rather than
+	// through Spawn, from the same sessionProcessEnv input every provider
+	// gets. Skipping this branch would leave one provider silently without
+	// the boot-mode values and the ao credential.
 	//
 	// The TUI shares Claude's custom environment (one binary, one backend),
 	// with one variable it cannot take through the process env:
@@ -905,14 +895,12 @@ func (a *App) claudeTUISessionConfig(
 	// would silently run take-control sessions against api.anthropic.com
 	// while every other Claude surface used the user's endpoint.
 	//
-	// The command timeout ceiling is applied to the override map here,
-	// before the host environment is merged under it, so its precedence
-	// matches the headless spawn: custom env over the setting over an
-	// inherited value.
-	cfg.Env = provider.BuildEnvironment(claude.WithCommandTimeoutEnv(
-		a.sessionProcessEnv(string(provider.ClaudeTUI), nil),
+	// The command timeout ceiling is a default, as on the headless spawn:
+	// custom env over the setting over an inherited value.
+	cfg.Env = claude.WithCommandTimeoutEnv(
+		a.sessionProcessEnv(string(provider.ClaudeTUI)),
 		opts.ClaudeMaxCommandTimeoutHours,
-	))
+	)
 	cfg.AdditionalDirs = a.claudeAdditionalDirs()
 	cfg.AccessDirs = mem.Dirs
 	cfg.MCPServers, cfg.AllowedTools = claudeTUIMCPServers(mcpServers)

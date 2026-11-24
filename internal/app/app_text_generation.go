@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/claudemodels"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/settings"
@@ -80,7 +81,7 @@ func (a *App) resolveTextGenerationConfig(ctx context.Context) (textgen.Config, 
 	// preferred one: after a substitution the run talks to the other backend,
 	// and carrying the first provider's endpoint across would point it at a
 	// gateway that has never heard of it.
-	cfg.Env = a.providerCustomEnv(chosen)
+	cfg.Env = provider.EnvInput{Custom: a.providerCustomEnv(chosen)}
 
 	switch chosen {
 	case string(provider.Codex):
@@ -131,7 +132,7 @@ func (a *App) resolveTextGenerationConfigFor(ctx context.Context, providerName s
 	cfg := textgen.Config{
 		Provider: providerName,
 		Effort:   effort,
-		Env:      a.providerCustomEnv(providerName),
+		Env:      provider.EnvInput{Custom: a.providerCustomEnv(providerName)},
 		Admit:    a.textGenerationAdmission(providerName),
 		Exec:     a.resolveTextGenerationExecutor(),
 	}
@@ -167,17 +168,11 @@ func (a *App) resolveTextGenerationConfigFor(ctx context.Context, providerName s
 	return cfg, true
 }
 
-func (a *App) agyTextGenEnv(base map[string]string) map[string]string {
+func (a *App) agyTextGenEnv(base provider.EnvInput) provider.EnvInput {
 	if !a.hasManagedAgyCredentialFile() {
 		return base
 	}
-	out := make(map[string]string)
-	for k, v := range base {
-		out[k] = v
-	}
-	out["AGY_ACP_FORCE_FILE_STORAGE"] = "1"
-	out["SSH_CONNECTION"] = "127.0.0.1 0 127.0.0.1 0"
-	return out
+	return agy.WithFileStorage(base)
 }
 
 // textGenerationDefaultModel is the catalog row of the model a run on

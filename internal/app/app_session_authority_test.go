@@ -2,10 +2,10 @@ package app
 
 import (
 	"encoding/json"
-	"os"
 	"testing"
 
 	"agent-overflow/internal/aocli"
+	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
@@ -144,88 +144,47 @@ func TestFrozenPhaseAuthorityRefusesWorkTheSnapshotDoesNotName(t *testing.T) {
 	}
 }
 
+// The boot-mode values and the in-session marker are pins, and the marker
+// is AO's own: a boot value for the same name does not replace it.
 func TestSessionProcessEnvPrecedence(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
-	app.providerExtraEnv = map[string]string{"SHARED": "extra", "EXTRA_ONLY": "yes", aocli.EnvInSession: "override"}
-	env := app.sessionProcessEnv(string(provider.Claude), map[string]string{"SHARED": "provider", "PROVIDER_ONLY": "yes"})
-	if env["SHARED"] != "extra" {
-		t.Fatalf("SHARED = %q, want providerExtraEnv to win over provider config", env["SHARED"])
+	app.providerExtraEnv = map[string]string{control.EnvAddr: "extra", aocli.EnvInSession: "override"}
+	env := app.sessionProcessEnv(string(provider.Claude))
+	if got := env.Pins[provider.AOEnv(control.EnvAddr)]; got != "extra" {
+		t.Fatalf("%s = %q, want the boot-mode value pinned", control.EnvAddr, got)
 	}
-	if env[aocli.EnvInSession] != "1" {
-		t.Fatalf("%s = %q, want static in-session marker \"1\"", aocli.EnvInSession, env[aocli.EnvInSession])
+	if got := env.Pins[provider.AOEnv(aocli.EnvInSession)]; got != "1" {
+		t.Fatalf("%s = %q, want static in-session marker \"1\"", aocli.EnvInSession, got)
 	}
-	if env["PROVIDER_ONLY"] != "yes" || env["EXTRA_ONLY"] != "yes" {
-		t.Fatalf("merged env = %#v", env)
+	if len(env.Pins) != 2 {
+		t.Fatalf("pins = %v, want the boot value and the marker", env.Pins)
 	}
 }
 
 // D30: every session, of every provider, gets the directory holding the
-// canonical-name link at the front of its PATH — that is how `agent-overflow`
-// resolves inside an agent's shell. The table walks the shapes a provider
-// config actually arrives in.
+// canonical-name link at the front of its PATH, which is how
+// `agent-overflow` resolves inside an agent's shell.
 func TestSessionProcessEnvPublishesTheCLIOnPath(t *testing.T) {
 	t.Parallel()
-	separator := string(os.PathListSeparator)
-	tests := []struct {
-		name      string
-		binDir    string
-		extraEnv  map[string]string
-		configEnv map[string]string
-		wantPath  string
-	}{
-		{
-			name:     "a config with no PATH gains one",
-			binDir:   "/cfg/bin",
-			wantPath: "/cfg/bin",
-		},
-		{
-			name:      "a config PATH keeps its entries behind ours",
-			binDir:    "/cfg/bin",
-			configEnv: map[string]string{"PATH": "/opt/tools"},
-			wantPath:  "/cfg/bin" + separator + "/opt/tools",
-		},
-		{
-			name:     "a boot-mode PATH override keeps its entries behind ours",
-			binDir:   "/cfg/bin",
-			extraEnv: map[string]string{"PATH": "/harness/bin"},
-			wantPath: "/cfg/bin" + separator + "/harness/bin",
-		},
-		{
-			// A boot that could not publish the command must not invent a PATH
-			// entry pointing at nothing.
-			name:      "an unpublished command leaves PATH alone",
-			binDir:    "",
-			configEnv: map[string]string{"PATH": "/opt/tools"},
-			wantPath:  "/opt/tools",
-		},
+	published := (&App{cliBinDir: "/cfg/bin"}).sessionProcessEnv(string(provider.Claude))
+	if published.PathPrepend != "/cfg/bin" {
+		t.Fatalf("PathPrepend = %q, want /cfg/bin", published.PathPrepend)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			app := &App{cliBinDir: test.binDir, providerExtraEnv: test.extraEnv}
-			// The caller's map is an input, not a scratch buffer: mutating it
-			// would leak one session's PATH into the next config built from it,
-			// stacking the bin dir on every restart.
-			configPathBefore, hadConfigPath := test.configEnv["PATH"]
-			env := app.sessionProcessEnv(string(provider.Claude), test.configEnv)
-			if env["PATH"] != test.wantPath {
-				t.Fatalf("PATH = %q, want %q (env %#v)", env["PATH"], test.wantPath, env)
-			}
-			if env[aocli.EnvInSession] != "1" {
-				t.Fatalf("the in-session marker did not survive: %#v", env)
-			}
-			after, hasConfigPath := test.configEnv["PATH"]
-			if hasConfigPath != hadConfigPath || after != configPathBefore {
-				t.Fatalf("sessionProcessEnv mutated its caller's map: PATH %q -> %q", configPathBefore, after)
-			}
-		})
+	if published.Pins[provider.AOEnv(aocli.EnvInSession)] != "1" {
+		t.Fatalf("the in-session marker did not survive: %v", published.Pins)
+	}
+	// A boot that could not publish the command must not invent a PATH entry
+	// pointing at nothing.
+	if unpublished := (&App{}).sessionProcessEnv(string(provider.Claude)); unpublished.PathPrepend != "" {
+		t.Fatalf("PathPrepend = %q with no published command, want none", unpublished.PathPrepend)
 	}
 }
 
 // The provider env helper is shared, so pin that it merges rather than replaces.
 func TestBuildEnvironmentMergesOverrides(t *testing.T) {
 	t.Parallel()
-	env := provider.BuildEnvironment(map[string]string{"AO_TEST_ONLY": "1"})
+	env := provider.BuildEnvironment(provider.EnvInput{Custom: map[string]string{"AO_TEST_ONLY": "1"}})
 	var found bool
 	for _, entry := range env {
 		if entry == "AO_TEST_ONLY=1" {

@@ -292,14 +292,12 @@ func ProbeCatalogOnConn(ctx context.Context, conn *acp.Conn, workDir string) ([]
 
 // ProbeCatalog dials a temporary agy acp server when no pooled connection is
 // live, probes the model catalog, and closes the temporary server.
-func ProbeCatalog(ctx context.Context, binary, workDir string, customEnv map[string]string, reaper procutil.Reaper) ([]provider.ModelInfo, error) {
-	env, unset := LaunchEnv(customEnv, nil)
+func ProbeCatalog(ctx context.Context, binary, workDir string, env provider.EnvInput, reaper procutil.Reaper) ([]provider.ModelInfo, error) {
 	conn, err := acp.Dial(ctx, acp.ConnConfig{
 		Binary:       ResolveBinary(binary),
 		Args:         LaunchArgs("", ""),
 		WorkDir:      workDir,
-		Env:          env,
-		UnsetEnv:     unset,
+		Env:          LaunchEnv(env),
 		Reaper:       reaper,
 		ProviderName: string(provider.Agy),
 	})

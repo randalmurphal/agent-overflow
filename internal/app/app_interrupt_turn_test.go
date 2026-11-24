@@ -225,7 +225,7 @@ func newClaudeTUIInterruptThread(t *testing.T, closed bool) (*App, store.Thread)
 		Retention: claude.UserHomeRetention(0),
 		Binary:    binary,
 		WorkDir:   dir,
-		Env:       []string{"HOME=" + dir, "PATH=" + os.Getenv("PATH")},
+		Env:       provider.EnvInput{Custom: map[string]string{"HOME": dir}},
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("claudetui.NewSession: %v", err)

@@ -285,7 +285,7 @@ for line in sys.stdin:
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	models, err := ProbeCatalog(context.Background(), bin, t.TempDir(), nil, procutiltest.Reaper())
+	models, err := ProbeCatalog(context.Background(), bin, t.TempDir(), provider.EnvInput{}, procutiltest.Reaper())
 	if err != nil {
 		t.Fatalf("ProbeCatalog: %v", err)
 	}

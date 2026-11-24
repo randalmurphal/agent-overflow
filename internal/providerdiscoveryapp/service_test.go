@@ -567,10 +567,10 @@ func TestAClaudeProbeFilesItsAnswerUnderTheEnvironmentItRanIn(t *testing.T) {
 		},
 		ClaudeProbe: func(binary, accountID string) (provider.ProbeCacheKey, claude.ProbeConfig) {
 			return provider.ProbeCacheKey{Binary: binary, AccountID: accountID, WorkDir: "/tmp", EnvFingerprint: env},
-				claude.ProbeConfig{Reaper: procutiltest.Reaper(), Env: map[string]string{"ENV": env}}
+				claude.ProbeConfig{Reaper: procutiltest.Reaper(), Env: provider.EnvInput{Custom: map[string]string{"ENV": env}}}
 		},
 		ProbeClaude: func(_ context.Context, cfg claude.ProbeConfig) (provider.AccountInfo, error) {
-			ranWith = cfg.Env["ENV"]
+			ranWith = cfg.Env.Custom["ENV"]
 			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
 			// And again while the probe runs.
 			env = "E2"
@@ -619,10 +619,10 @@ func TestACodexProbeRunsWithTheEnvironmentItsKeyNames(t *testing.T) {
 		},
 		CodexProbe: func(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig) {
 			return provider.ProbeCacheKey{Binary: binary, AccountID: accountID, WorkDir: "/tmp", EnvFingerprint: env},
-				codex.ProbeConfig{Reaper: procutiltest.Reaper(), Env: map[string]string{"ENV": env}}
+				codex.ProbeConfig{Reaper: procutiltest.Reaper(), Env: provider.EnvInput{Custom: map[string]string{"ENV": env}}}
 		},
 		ProbeCodex: func(_ context.Context, cfg codex.ProbeConfig) (provider.AccountInfo, error) {
-			ranWith = cfg.Env["ENV"]
+			ranWith = cfg.Env.Custom["ENV"]
 			return provider.AccountInfo{Email: "codex@example.com"}, nil
 		},
 	}, testCaches())

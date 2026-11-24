@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -149,20 +148,11 @@ func remoteMCPServerConfig(providerName string, config any) any {
 	return out
 }
 
-// claudeMCPAutoBackgroundEnvVar is Claude Code's threshold for moving an MCP
-// call into its own background task. Raised above the ceiling so AO's wait,
-// not Claude's task list, owns a parked remote_run. An operator override in
-// the environment wins.
-const claudeMCPAutoBackgroundEnvVar = "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS"
-
-func withRemoteMCPClaudeEnv(env map[string]string) map[string]string {
-	if _, set := env[claudeMCPAutoBackgroundEnvVar]; set {
-		return env
-	}
-	out := make(map[string]string, len(env))
-	maps.Copy(out, env)
-	out[claudeMCPAutoBackgroundEnvVar] = strconv.FormatInt(remoteMCPCallCeiling.Milliseconds(), 10)
-	return out
+// withRemoteMCPClaudeEnv defaults Claude Code's threshold for moving an MCP
+// call into its own background task above the ceiling, so AO's wait, not
+// Claude's task list, owns a parked remote_run. A custom value wins.
+func withRemoteMCPClaudeEnv(env provider.EnvInput) provider.EnvInput {
+	return env.Default(provider.ClaudeMCPAutoBackgroundEnv, strconv.FormatInt(remoteMCPCallCeiling.Milliseconds(), 10))
 }
 
 // Every tool refusal leaves through remoteOperationError: reviewed public

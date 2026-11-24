@@ -2,10 +2,13 @@ package settings
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/provider"
 )
 
 func TestSetProviderEnvVarRoundTripsNameValueAndSensitiveFlag(t *testing.T) {
@@ -161,7 +164,7 @@ func TestReservedNamesAreScopedToTheirProvider(t *testing.T) {
 
 // ANTHROPIC_BASE_URL is the feature's primary use case. claude-tui pins the
 // child's copy, but that pin is routed to the gateway upstream instead of
-// reserving the name — see deniedProviderEnvNames.
+// reserving the name — see provider.ClaudeBaseURLEnv.
 func TestBaseURLIsNotReserved(t *testing.T) {
 	svc := NewService(t.TempDir())
 	if _, err := svc.SetProviderEnvVar("claude", "ANTHROPIC_BASE_URL", "https://gw.test", false); err != nil {
@@ -329,4 +332,76 @@ func assertEnvVars(t *testing.T, got, want []ProviderEnvVar) {
 			t.Fatalf("env var[%d] = %+v, want %+v", i, got[i], want[i])
 		}
 	}
+}
+
+// TestEveryReservedNameIsRefusedBySettings walks provider's table: a row with
+// a refusal is refused for its provider with that reason, a row without one
+// is accepted, and a provider-scoped row binds only that provider.
+func TestEveryReservedNameIsRefusedBySettings(t *testing.T) {
+	entries := provider.ReservedEnvEntries()
+	if len(entries) == 0 {
+		t.Fatal("the reserved table is empty")
+	}
+	for _, entry := range entries {
+		providers := []string{"claude", "codex", "agy"}
+		if entry.Provider != "" {
+			providers = []string{entry.Provider}
+		}
+		for _, providerName := range providers {
+			t.Run(providerName+"/"+entry.Name, func(t *testing.T) {
+				svc := NewService(t.TempDir())
+				_, err := svc.SetProviderEnvVar(providerName, entry.Name, "v", false)
+				if entry.Refusal == "" {
+					if err != nil {
+						t.Fatalf("%s refused %q, which the table allows: %v", providerName, entry.Name, err)
+					}
+					return
+				}
+				want := fmt.Sprintf("settings: %q is reserved: %s", entry.Name, entry.Refusal)
+				if err == nil || err.Error() != want {
+					t.Fatalf("error = %v, want %q", err, want)
+				}
+			})
+		}
+	}
+	svc := NewService(t.TempDir())
+	if _, err := svc.SetProviderEnvVar("claude", "AO_NEW_CONTRACT", "v", false); err == nil {
+		t.Fatal("claude accepted a name under the reserved prefix")
+	}
+}
+
+// A saved custom variable whose name is reserved keeps its exact refusal at
+// save and its exact log line at load.
+func TestReservedCustomVariableKeepsItsSaveErrorAndLoadLog(t *testing.T) {
+	const configHomeReason = `"CLAUDE_CONFIG_DIR" is reserved: Agent Overflow owns Claude's config home: every spawn clears this variable, and managed-account probes set it to a temporary home. Claude treats its PRESENCE (not its value) as "non-default home", which on macOS hashes into a different Keychain service`
+	const prefixReason = `"AO_TOKEN" is reserved: the AO_ prefix is how Agent Overflow passes its own session, harness, and hook-relay contract to provider processes`
+
+	svc := NewService(t.TempDir())
+	for name, reason := range map[string]string{"CLAUDE_CONFIG_DIR": configHomeReason, "AO_TOKEN": prefixReason} {
+		_, err := svc.SetProviderEnvVar("claude", name, "v", false)
+		if err == nil || err.Error() != "settings: "+reason {
+			t.Fatalf("save %s: error = %v, want %q", name, err, "settings: "+reason)
+		}
+	}
+
+	dir := t.TempDir()
+	raw := `{"claudeCustomEnv": [
+	  {"name": "GOOD", "value": "1"},
+	  {"name": "CLAUDE_CONFIG_DIR", "value": "/tmp/hijack"},
+	  {"name": "AO_TOKEN", "value": "stolen"}
+	]}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got Settings
+	logged := captureLog(t, func() { got = NewService(dir).Get() })
+	for _, line := range []string{
+		`settings: dropping invalid claudeCustomEnv entry "CLAUDE_CONFIG_DIR": ` + configHomeReason,
+		`settings: dropping invalid claudeCustomEnv entry "AO_TOKEN": ` + prefixReason,
+	} {
+		if !strings.Contains(logged, line+"\n") {
+			t.Errorf("load log = %q, want the line %q", logged, line)
+		}
+	}
+	assertEnvVars(t, got.ClaudeCustomEnv, []ProviderEnvVar{{Name: "GOOD", Value: "1"}})
 }

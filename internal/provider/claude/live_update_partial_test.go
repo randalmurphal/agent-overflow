@@ -43,11 +43,11 @@ done
 `
 	mockexec.Write(t, scriptPath, script)
 	cfg.Binary = scriptPath
-	if cfg.Env == nil {
-		cfg.Env = map[string]string{}
+	if cfg.Env.Custom == nil {
+		cfg.Env.Custom = map[string]string{}
 	}
-	cfg.Env["CAPTURE_FILE"] = capturePath
-	cfg.Env["FAIL_SUBTYPE"] = failSubtype
+	cfg.Env.Custom["CAPTURE_FILE"] = capturePath
+	cfg.Env.Custom["FAIL_SUBTYPE"] = failSubtype
 
 	s, err := NewSession(context.Background(), testThread, withTestRetention(cfg), func(provider.ProviderEvent) {})
 	if err != nil {

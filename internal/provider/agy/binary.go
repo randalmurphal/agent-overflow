@@ -3,31 +3,19 @@
 package agy
 
 import (
-	"maps"
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
+
+	"agent-overflow/internal/provider"
 )
 
 const (
 	DefaultBinaryName  = "agy"
 	DefaultAppDataName = "antigravity-cli"
 )
-
-// ambientCredentialEnvVars are scrubbed from agy subprocess environments unless
-// explicitly configured by the user so ambient shell GCP/Gemini API exports do
-// not hijack Google OAuth sessions.
-var ambientCredentialEnvVars = []string{
-	"GEMINI_API_KEY",
-	"GOOGLE_API_KEY",
-	"GOOGLE_APPLICATION_CREDENTIALS",
-	"GOOGLE_CLOUD_PROJECT",
-	"GOOGLE_CLOUD_LOCATION",
-	"GOOGLE_GENAI_USE_VERTEXAI",
-	"GCLOUD_PROJECT",
-	"CLOUDSDK_CORE_PROJECT",
-}
 
 // LaunchArgs returns the CLI arguments for spawning a shared multiplexed
 // `agy acp` server. Intentionally omits `--process-per-session` (measured 16x
@@ -45,22 +33,23 @@ func LaunchArgs(geminiDir, appDataSubdir string) []string {
 	return args
 }
 
-// LaunchEnv returns the merged environment map and unset list for spawning an
-// `agy acp` process. Disables CLI auto-update so AO's providerupdate service
-// owns upgrades.
-func LaunchEnv(customEnv map[string]string, extraEnv map[string]string) (env map[string]string, unset []string) {
-	env = make(map[string]string)
-	maps.Copy(env, customEnv)
-	maps.Copy(env, extraEnv)
-	if _, exists := env["AGY_CLI_DISABLE_AUTO_UPDATE"]; !exists {
-		env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "1"
-	}
-	for _, key := range ambientCredentialEnvVars {
-		if _, userSet := customEnv[key]; !userSet {
-			unset = append(unset, key)
-		}
-	}
-	return env, unset
+// LaunchEnv adds what every `agy acp` process runs with to in: CLI
+// auto-update pinned off, so AO's providerupdate service owns upgrades, and
+// the ambient GCP/Gemini credentials a shell exports cleared unless the
+// user's custom environment names them, so they cannot hijack a Google OAuth
+// session.
+func LaunchEnv(in provider.EnvInput) provider.EnvInput {
+	in = in.Pin(provider.AgyDisableAutoUpdateEnv, "1")
+	in.ClearUnlessCustom = append(slices.Clip(in.ClearUnlessCustom), provider.AgyAmbientCredentialEnvs...)
+	return in
+}
+
+// WithFileStorage pins file-backed OAuth token storage, so a managed or
+// isolated account's token lands in its app-data directory instead of the
+// user's global OS keyring slot.
+func WithFileStorage(in provider.EnvInput) provider.EnvInput {
+	return in.Pin(provider.AgyForceFileStorageEnv, "1").
+		Pin(provider.AgySSHConnectionEnv, "127.0.0.1 0 127.0.0.1 0")
 }
 
 // ResolveBinary returns the configured agy binary path, falling back to PATH

@@ -669,12 +669,12 @@ func (m *Manager) probeProviderAccountAtHome(providerName, binary, home string) 
 	case string(provider.Claude):
 		return claude.ProbeAccount(m.context(), m.claudeProbeConfig(
 			binary,
-			map[string]string{"CLAUDE_CONFIG_DIR": home},
+			map[provider.ReservedEnv]string{provider.ClaudeConfigDirEnv: home},
 		))
 	case string(provider.Codex):
 		return codex.ProbeAccount(m.context(), m.codexProbeConfig(
 			binary,
-			map[string]string{"CODEX_HOME": home},
+			map[provider.ReservedEnv]string{provider.CodexHomeEnv: home},
 		))
 	case string(provider.Agy):
 		geminiDir, appDataSubdir := splitAgyEphemeralHome(home)

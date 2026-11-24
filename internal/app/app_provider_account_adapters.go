@@ -29,11 +29,11 @@ func (a *App) providerCustomEnv(providerName string) map[string]string {
 	return a.currentSettings().ProviderEnvMap(providerName)
 }
 
-func (a *App) providerProbeEnv(providerName string, pins map[string]string) map[string]string {
+func (a *App) providerProbeEnv(providerName string, pins map[provider.ReservedEnv]string) provider.EnvInput {
 	return a.providerAccounts.ProbeEnv(providerName, pins)
 }
 
-func (a *App) codexProbeConfig(binary string, pins map[string]string) codex.ProbeConfig {
+func (a *App) codexProbeConfig(binary string, pins map[provider.ReservedEnv]string) codex.ProbeConfig {
 	return a.ensureProviderAccountManager().CodexProbeConfig(binary, pins)
 }
 

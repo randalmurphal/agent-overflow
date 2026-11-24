@@ -874,7 +874,7 @@ type Config struct {
 	// app-server process, merged over the inherited environment. The
 	// agent test harness scopes its mock-provider control credentials
 	// to provider spawns through this instead of the process env.
-	Env         map[string]string
+	Env         provider.EnvInput
 	EventLogger *logging.Logger
 	// Reaper ends the session's process group if the backend dies first
 	// (provider.SpawnConfig.Reaper).

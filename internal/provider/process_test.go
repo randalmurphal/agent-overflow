@@ -207,7 +207,7 @@ func TestSpawnWithEnv(t *testing.T) {
 	p, err := Spawn(ctx, testLifetime, SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", "echo $TEST_VAR"},
-		Env:    map[string]string{"TEST_VAR": "hello_from_test"},
+		Env:    EnvInput{Custom: map[string]string{"TEST_VAR": "hello_from_test"}},
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -257,47 +257,176 @@ func TestSpawnInvalidBinary(t *testing.T) {
 	}
 }
 
-func TestBuildEnvironmentRemovesInheritedProviderHomeAndAppliesOverride(t *testing.T) {
-	t.Setenv("CODEX_HOME", "/tmp/inherited-codex-home")
-	t.Setenv("AGENT_OVERFLOW_ENV_TEST", "inherited")
-
-	env := BuildEnvironment(
-		map[string]string{"AGENT_OVERFLOW_ENV_TEST": "override"},
-		"CODEX_HOME",
-	)
+func envValues(env []string) map[string]string {
 	values := make(map[string]string, len(env))
 	for _, entry := range env {
 		key, value, ok := strings.Cut(entry, "=")
 		if ok {
+			if _, dup := values[key]; dup {
+				panic("duplicate variable " + key)
+			}
 			values[key] = value
 		}
 	}
+	return values
+}
 
-	if _, exists := values["CODEX_HOME"]; exists {
-		t.Fatal("CODEX_HOME remained in filtered environment")
-	}
-	if got := values["AGENT_OVERFLOW_ENV_TEST"]; got != "override" {
-		t.Fatalf("AGENT_OVERFLOW_ENV_TEST = %q, want override", got)
+// One input of each kind against an inherited value of each name shows the
+// whole precedence: clears remove, defaults sit under the user's custom value
+// and over an inherited one, pins sit over both, and a clear-unless-custom
+// name survives only as the user's own value.
+func TestBuildEnvironmentAppliesEachKindInPrecedenceOrder(t *testing.T) {
+	for name, value := range map[string]string{
+		CodexHomeEnv.Name():                 "/inherited/codex-home",
+		ClaudeTodoToolsEnv.Name():           "inherited",
+		ClaudeTodoReminderModeEnv.Name():    "inherited",
+		ClaudeBaseURLEnv.Name():             "inherited",
+		AgyAmbientCredentialEnvs[0].Name():  "inherited-key",
+		AgyAmbientCredentialEnvs[1].Name():  "inherited-key",
+		"AGENT_OVERFLOW_ENV_TEST_INHERITED": "kept",
+	} {
+		t.Setenv(name, value)
 	}
 
-	inherited := FilterEnvironment([]string{}, "CODEX_HOME")
-	if !slices.Contains(inherited, "AGENT_OVERFLOW_ENV_TEST=inherited") {
-		t.Fatal("empty explicit environment did not preserve inherited values")
+	values := envValues(BuildEnvironment(EnvInput{
+		Custom: map[string]string{
+			ClaudeTodoReminderModeEnv.Name(): "user",
+			// A pin wins over a custom value spelled in another case.
+			"anthropic_base_url":               "user",
+			AgyAmbientCredentialEnvs[1].Name(): "user-key",
+		},
+		Defaults: map[ReservedEnv]string{
+			ClaudeTodoToolsEnv:        "default",
+			ClaudeTodoReminderModeEnv: "default",
+		},
+		Pins:              map[ReservedEnv]string{ClaudeBaseURLEnv: "pinned"},
+		Clears:            []ReservedEnv{CodexHomeEnv},
+		ClearUnlessCustom: AgyAmbientCredentialEnvs[:2],
+	}))
+
+	want := map[string]string{
+		ClaudeTodoToolsEnv.Name():           "default",
+		ClaudeTodoReminderModeEnv.Name():    "user",
+		ClaudeBaseURLEnv.Name():             "pinned",
+		AgyAmbientCredentialEnvs[1].Name():  "user-key",
+		"AGENT_OVERFLOW_ENV_TEST_INHERITED": "kept",
+	}
+	for name, value := range want {
+		if got, ok := values[name]; !ok || got != value {
+			t.Errorf("%s = %q (present %v), want %q", name, got, ok, value)
+		}
+	}
+	for _, name := range []string{CodexHomeEnv.Name(), AgyAmbientCredentialEnvs[0].Name(), "anthropic_base_url"} {
+		if got, ok := values[name]; ok {
+			t.Errorf("%s = %q, want it absent", name, got)
+		}
 	}
 }
 
-// The override names join the removal list in a copy: a caller's unset
-// slice with spare capacity keeps its bytes past the names it passed.
-func TestBuildEnvironmentLeavesTheCallersUnsetSliceAlone(t *testing.T) {
-	backing := []string{"CODEX_HOME", "KEEP_ME"}
-	BuildEnvironment(map[string]string{"AGENT_OVERFLOW_ENV_TEST": "override"}, backing[:1]...)
-	if backing[1] != "KEEP_ME" {
-		t.Fatalf("caller's unset slice = %q, want its second entry untouched", backing)
+// A default the input also pins is the pin; the variable appears once.
+func TestBuildEnvironmentPinOverridesItsOwnDefault(t *testing.T) {
+	values := envValues(BuildEnvironment(EnvInput{}.
+		Default(ClaudeTodoToolsEnv, "default").
+		Pin(ClaudeTodoToolsEnv, "pinned")))
+	if got := values[ClaudeTodoToolsEnv.Name()]; got != "pinned" {
+		t.Fatalf("%s = %q, want pinned", ClaudeTodoToolsEnv.Name(), got)
+	}
+}
+
+// Pin, Default and Clear return a copy: a derived input never writes into the
+// input it came from, including a Clears slice with spare capacity.
+func TestEnvInputBuildersLeaveTheOriginalAlone(t *testing.T) {
+	backing := []ReservedEnv{CodexHomeEnv, ClaudeConfigDirEnv}
+	base := EnvInput{
+		Pins:     map[ReservedEnv]string{ClaudeBaseURLEnv: "base"},
+		Defaults: map[ReservedEnv]string{ClaudeTodoToolsEnv: "base"},
+		Clears:   backing[:1],
+	}
+	derived := base.Pin(ClaudeBaseURLEnv, "derived").
+		Default(ClaudeTodoToolsEnv, "derived").
+		Clear(ClaudeSecureStorageConfigDirEnv)
+
+	if backing[1] != ClaudeConfigDirEnv {
+		t.Fatalf("caller's Clears backing = %v, want its second entry untouched", backing)
+	}
+	if base.Pins[ClaudeBaseURLEnv] != "base" || base.Defaults[ClaudeTodoToolsEnv] != "base" {
+		t.Fatalf("base input changed: pins %v, defaults %v", base.Pins, base.Defaults)
+	}
+	if derived.Pins[ClaudeBaseURLEnv] != "derived" || derived.Defaults[ClaudeTodoToolsEnv] != "derived" || len(derived.Clears) != 2 {
+		t.Fatalf("derived input = %+v", derived)
+	}
+}
+
+// A pool key must not let two sessions share a process whose environments
+// differ, and the same name and value under two kinds builds two different
+// environments.
+func TestEnvInputFingerprintSeparatesKinds(t *testing.T) {
+	inputs := map[string]EnvInput{
+		"empty":   {},
+		"custom":  {Custom: map[string]string{ClaudeTodoToolsEnv.Name(): "1"}},
+		"default": EnvInput{}.Default(ClaudeTodoToolsEnv, "1"),
+		"pin":     EnvInput{}.Pin(ClaudeTodoToolsEnv, "1"),
+		"clear":   EnvInput{}.Clear(ClaudeTodoToolsEnv),
+		"unless":  {ClearUnlessCustom: []ReservedEnv{ClaudeTodoToolsEnv}},
+		"path":    {PathPrepend: "/opt/ao/bin"},
+	}
+	seen := map[string]string{}
+	for label, in := range inputs {
+		fp := in.Fingerprint()
+		if other, dup := seen[fp]; dup {
+			t.Errorf("%s and %s share fingerprint %q", label, other, fp)
+		}
+		seen[fp] = label
+	}
+	again := EnvInput{}.Default(ClaudeTodoToolsEnv, "1")
+	if again.Fingerprint() != inputs["default"].Fingerprint() {
+		t.Error("equal inputs have different fingerprints")
+	}
+}
+
+// PathPrepend goes in front of whatever PATH the child would inherit, under
+// any spelling of the name. Serial: it sets the process environment.
+func TestBuildEnvironmentPrependsToTheInheritedPath(t *testing.T) {
+	separator := string(os.PathListSeparator)
+	unset := func(t *testing.T, name string) {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		name    string
+		inherit map[string]string
+		want    string
+	}{
+		{name: "no inherited PATH gets one", want: "/cfg/bin"},
+		{name: "an inherited PATH keeps its entries behind ours", inherit: map[string]string{"PATH": "/usr/bin" + separator + "/bin"}, want: "/cfg/bin" + separator + "/usr/bin" + separator + "/bin"},
+		// A Windows-style environment spells it Path; the removal is
+		// case-insensitive, so the extended value is the only one left.
+		{name: "a differently cased PATH is the one extended", inherit: map[string]string{"Path": "/usr/bin"}, want: "/cfg/bin" + separator + "/usr/bin"},
+		{name: "an empty PATH is replaced rather than left with a trailing separator", inherit: map[string]string{"PATH": ""}, want: "/cfg/bin"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			unset(t, "PATH")
+			unset(t, "Path")
+			for name, value := range test.inherit {
+				t.Setenv(name, value)
+			}
+			var paths []string
+			for _, entry := range BuildEnvironment(EnvInput{PathPrepend: "/cfg/bin"}) {
+				if name, value, _ := strings.Cut(entry, "="); strings.EqualFold(name, "PATH") {
+					paths = append(paths, name+"="+value)
+				}
+			}
+			if !slices.Equal(paths, []string{"PATH=" + test.want}) {
+				t.Fatalf("PATH entries = %q, want only PATH=%s", paths, test.want)
+			}
+		})
 	}
 }
 
 // TestProviderEnvironmentAppliesTheAppImageScrub pins the integration with
-// internal/appimage at both env entry points, including the one place the
+// internal/appimage at the env entry point, including the one place the
 // mount could re-enter after the scrub: BuildEnvironment's additive PATH
 // merge, which must read the inherited half back off the SCRUBBED base.
 // (The scrub's own semantics are covered in internal/appimage.)
@@ -324,11 +453,10 @@ func TestProviderEnvironmentAppliesTheAppImageScrub(t *testing.T) {
 		}
 	}
 
-	assertScrubbed(t, "BuildEnvironment(nil)", BuildEnvironment(nil), "/usr/bin")
-	assertScrubbed(t, "FilterEnvironment(nil)", FilterEnvironment(nil), "/usr/bin")
+	assertScrubbed(t, "BuildEnvironment(empty)", BuildEnvironment(EnvInput{}), "/usr/bin")
 	assertScrubbed(t,
-		"BuildEnvironment(PATH override)",
-		BuildEnvironment(map[string]string{"PATH": "/opt/ao/bin"}),
+		"BuildEnvironment(PathPrepend)",
+		BuildEnvironment(EnvInput{PathPrepend: "/opt/ao/bin"}),
 		"/opt/ao/bin"+string(os.PathListSeparator)+"/usr/bin",
 	)
 }

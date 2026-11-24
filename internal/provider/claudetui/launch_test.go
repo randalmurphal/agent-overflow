@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 )
 
@@ -193,67 +194,109 @@ func countEnv(env []string, key string) (int, string) {
 	return count, last
 }
 
-// TestBuildEnvDefaultsTodoToolsOptIn pins the claude ≥2.1.233 adaptation on
-// the TUI path: the session defaults into the todo tool surface, but a
-// caller-provided value — the user's custom provider environment — wins.
+// tuiEnv is the environment buildEnv gives a TUI child for cfg.
+func tuiEnv(cfg Config) []string {
+	line, err := claude.NewCommandLine(claude.UserHomeRetention(0), "")
+	if err != nil {
+		panic(err)
+	}
+	cfg.Reaper = procutiltest.Reaper()
+	return buildEnv(line, cfg, "http://gw", "http://hook", "tok")
+}
+
+// unsetForTest removes name from the process environment for t, so a value
+// the host exported cannot stand in for the default under test.
+func unsetForTest(t *testing.T, name string) {
+	t.Helper()
+	t.Setenv(name, "")
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// custom is a Config.Env holding only the user's custom environment.
+func custom(kv ...string) provider.EnvInput {
+	m := make(map[string]string, len(kv)/2)
+	for i := 0; i+1 < len(kv); i += 2 {
+		m[kv[i]] = kv[i+1]
+	}
+	return provider.EnvInput{Custom: m}
+}
+
+// TestBuildEnvDefaultsTodoToolsOptIn pins the claude >=2.1.233 adaptation on
+// the TUI path: the session defaults into the todo tool surface, but a value
+// in the user's custom provider environment wins. Serial: it sets the process
+// environment.
 func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
+	todoTools := provider.ClaudeTodoToolsEnv.Name()
+	unsetForTest(t, todoTools)
 	t.Run("default applied when absent", func(t *testing.T) {
-		env := buildEnv(testUnsetEnv(), Config{Reaper: procutiltest.Reaper(), Env: []string{"FOO=bar"}}, "http://gw", "http://hook", "tok")
-		if n, v := countEnv(env, todoToolsEnvVar); n != 1 || v != "true" {
-			t.Fatalf("%s: got %d entries (last %q), want exactly one =true; env %v", todoToolsEnvVar, n, v, env)
+		env := tuiEnv(Config{Env: custom("FOO", "bar")})
+		if n, v := countEnv(env, todoTools); n != 1 || v != "true" {
+			t.Fatalf("%s: got %d entries (last %q), want exactly one =true", todoTools, n, v)
 		}
 	})
 
 	t.Run("user opt-out survives without a duplicate", func(t *testing.T) {
-		env := buildEnv(
-			testUnsetEnv(),
-			Config{Reaper: procutiltest.Reaper(), Env: []string{"FOO=bar", todoToolsEnvVar + "=false"}},
-			"http://gw", "http://hook", "tok",
-		)
-		if n, v := countEnv(env, todoToolsEnvVar); n != 1 || v != "false" {
-			t.Fatalf("%s: got %d entries (last %q), want exactly the caller's =false; env %v", todoToolsEnvVar, n, v, env)
+		env := tuiEnv(Config{Env: custom("FOO", "bar", todoTools, "false")})
+		if n, v := countEnv(env, todoTools); n != 1 || v != "false" {
+			t.Fatalf("%s: got %d entries (last %q), want exactly the caller's =false", todoTools, n, v)
 		}
 	})
 
 	t.Run("owned gateway keys still replaced", func(t *testing.T) {
-		env := buildEnv(
-			testUnsetEnv(),
-			Config{Reaper: procutiltest.Reaper(), Env: []string{BaseURLEnv + "=https://dirty.example"}},
-			"http://gw", "http://hook", "tok",
-		)
-		if n, v := countEnv(env, BaseURLEnv); n != 1 || v != "http://gw" {
-			t.Fatalf("%s: got %d entries (last %q), want exactly the gateway URL; env %v", BaseURLEnv, n, v, env)
+		baseURL := provider.ClaudeBaseURLEnv.Name()
+		env := tuiEnv(Config{Env: custom(baseURL, "https://dirty.example")})
+		if n, v := countEnv(env, baseURL); n != 1 || v != "http://gw" {
+			t.Fatalf("%s: got %d entries (last %q), want exactly the gateway URL", baseURL, n, v)
 		}
 	})
 }
 
+// The one place claude-tui's environment differs from headless Claude's: a
+// todo variable exported in the shell Agent Overflow runs under outranks the
+// TUI's default, where headless Claude's default outranks it. Serial: it
+// sets the process environment.
+func TestBuildEnvLeavesAnInheritedTodoValueOverItsDefault(t *testing.T) {
+	todoTools := provider.ClaudeTodoToolsEnv.Name()
+	reminder := provider.ClaudeTodoReminderModeEnv.Name()
+	t.Setenv(todoTools, "false")
+	t.Setenv(reminder, "baseline")
+
+	env := tuiEnv(Config{DisableTodoReminders: true})
+	if n, v := countEnv(env, todoTools); n != 1 || v != "false" {
+		t.Fatalf("%s: got %d entries (last %q), want the inherited =false", todoTools, n, v)
+	}
+	if n, v := countEnv(env, reminder); n != 1 || v != "baseline" {
+		t.Fatalf("%s: got %d entries (last %q), want the inherited =baseline", reminder, n, v)
+	}
+}
+
 // TestBuildEnvTodoReminderMode pins the Settings nudge toggle's TUI leg:
 // disabling reminders exports CLAUDE_CODE_TODO_REMINDER_MODE=off, leaving
-// it enabled exports nothing (the CLI owns its default), and a base-env
-// value outranks the setting.
+// it enabled exports nothing (the CLI owns its default), and a custom value
+// outranks the setting. Serial: it sets the process environment.
 func TestBuildEnvTodoReminderMode(t *testing.T) {
+	reminder := provider.ClaudeTodoReminderModeEnv.Name()
+	unsetForTest(t, reminder)
 	t.Run("disabled exports off", func(t *testing.T) {
-		env := buildEnv(testUnsetEnv(), Config{Reaper: procutiltest.Reaper(), Env: []string{"FOO=bar"}, DisableTodoReminders: true}, "http://gw", "http://hook", "tok")
-		if n, v := countEnv(env, todoReminderModeEnvVar); n != 1 || v != "off" {
-			t.Fatalf("%s: got %d entries (last %q), want exactly one =off; env %v", todoReminderModeEnvVar, n, v, env)
+		env := tuiEnv(Config{Env: custom("FOO", "bar"), DisableTodoReminders: true})
+		if n, v := countEnv(env, reminder); n != 1 || v != "off" {
+			t.Fatalf("%s: got %d entries (last %q), want exactly one =off", reminder, n, v)
 		}
 	})
 
 	t.Run("enabled exports nothing", func(t *testing.T) {
-		env := buildEnv(testUnsetEnv(), Config{Reaper: procutiltest.Reaper(), Env: []string{"FOO=bar"}}, "http://gw", "http://hook", "tok")
-		if n, v := countEnv(env, todoReminderModeEnvVar); n != 0 {
-			t.Fatalf("%s: got %d entries (last %q), want none; env %v", todoReminderModeEnvVar, n, v, env)
+		env := tuiEnv(Config{Env: custom("FOO", "bar")})
+		if n, v := countEnv(env, reminder); n != 0 {
+			t.Fatalf("%s: got %d entries (last %q), want none", reminder, n, v)
 		}
 	})
 
 	t.Run("user value survives without a duplicate", func(t *testing.T) {
-		env := buildEnv(
-			testUnsetEnv(),
-			Config{Reaper: procutiltest.Reaper(), Env: []string{todoReminderModeEnvVar + "=baseline"}, DisableTodoReminders: true},
-			"http://gw", "http://hook", "tok",
-		)
-		if n, v := countEnv(env, todoReminderModeEnvVar); n != 1 || v != "baseline" {
-			t.Fatalf("%s: got %d entries (last %q), want exactly the caller's =baseline; env %v", todoReminderModeEnvVar, n, v, env)
+		env := tuiEnv(Config{Env: custom(reminder, "baseline"), DisableTodoReminders: true})
+		if n, v := countEnv(env, reminder); n != 1 || v != "baseline" {
+			t.Fatalf("%s: got %d entries (last %q), want exactly the caller's =baseline", reminder, n, v)
 		}
 	})
 }
@@ -261,27 +304,22 @@ func TestBuildEnvTodoReminderMode(t *testing.T) {
 // TestBuildEnvOwnsTheTaskListID pins the TUI leg of the thread-keyed task
 // list: the variable is stated from Config.TaskListID and an inherited value
 // is dropped whether or not there is one to state, so a host that exported
-// it can never key a thread's tasks to someone else's list.
+// it can never key a thread's tasks to someone else's list. Serial: it sets
+// the process environment.
 func TestBuildEnvOwnsTheTaskListID(t *testing.T) {
+	taskList := provider.ClaudeTaskListIDEnv.Name()
+	t.Setenv(taskList, "inherited")
 	t.Run("stated from the config", func(t *testing.T) {
-		env := buildEnv(
-			testUnsetEnv(),
-			Config{Reaper: procutiltest.Reaper(), Env: []string{claude.TaskListIDEnv + "=inherited", "FOO=bar"}, TaskListID: "thread-1"},
-			"http://gw", "http://hook", "tok",
-		)
-		if n, v := countEnv(env, claude.TaskListIDEnv); n != 1 || v != "thread-1" {
-			t.Fatalf("%s: got %d entries (last %q), want exactly one =thread-1; env %v", claude.TaskListIDEnv, n, v, env)
+		env := tuiEnv(Config{Env: custom("FOO", "bar"), TaskListID: "thread-1"})
+		if n, v := countEnv(env, taskList); n != 1 || v != "thread-1" {
+			t.Fatalf("%s: got %d entries (last %q), want exactly one =thread-1", taskList, n, v)
 		}
 	})
 
 	t.Run("inherited value dropped when the config has none", func(t *testing.T) {
-		env := buildEnv(
-			testUnsetEnv(),
-			Config{Reaper: procutiltest.Reaper(), Env: []string{claude.TaskListIDEnv + "=inherited", "FOO=bar"}},
-			"http://gw", "http://hook", "tok",
-		)
-		if n, v := countEnv(env, claude.TaskListIDEnv); n != 0 {
-			t.Fatalf("%s: got %d entries (last %q), want none; env %v", claude.TaskListIDEnv, n, v, env)
+		env := tuiEnv(Config{Env: custom("FOO", "bar")})
+		if n, v := countEnv(env, taskList); n != 0 {
+			t.Fatalf("%s: got %d entries (last %q), want none", taskList, n, v)
 		}
 	})
 }
@@ -382,32 +420,18 @@ func withTestRetention(cfg Config) Config {
 	return cfg
 }
 
-// testUnsetEnv is the UnsetEnv of a TUI command line.
-func testUnsetEnv() []string {
-	line, err := claude.NewCommandLine(claude.UserHomeRetention(0), "")
-	if err != nil {
-		panic(err)
-	}
-	return line.UnsetEnv()
-}
-
-// B18, TUI half. The PTY launch assembles a full []string environment
-// instead of the override map Spawn takes, so it has to remove the inherited
-// gate itself. A host that exported CLAUDE_CODE_HARBOR_KITE must not bind the
-// peer inbox for a session whose setting says off — refusing inbound messages
-// does not undo being discoverable in every peer's ListAgents.
+// B18, TUI half. A host that exported CLAUDE_CODE_HARBOR_KITE must not bind
+// the peer inbox for a session whose setting says off: refusing inbound
+// messages does not undo being discoverable in every peer's ListAgents.
+// Serial: it sets the process environment.
 func TestBuildEnvDropsAnInheritedCrossSessionGateWhenDisabled(t *testing.T) {
-	base := []string{
-		claude.CrossSessionGateEnv + "=1",
-		"CLAUDE_CODE_SESSION_NAME=someone-elses-name",
-		"HOME=/home/test",
-	}
-	env := buildEnv(testUnsetEnv(), Config{Reaper: procutiltest.Reaper(), Env: base}, "http://gw", "http://hook", "tok")
+	gate, name := provider.ClaudeCrossSessionGateEnv.Name(), provider.ClaudePeerSessionNameEnv.Name()
+	t.Setenv(gate, "1")
+	t.Setenv(name, "someone-elses-name")
+	t.Setenv("HOME", "/home/test")
+	env := tuiEnv(Config{})
 
-	if value, found := envValueIn(env, claude.CrossSessionGateEnv); found {
-		t.Fatalf("%s = %q, want it absent — the setting says off", claude.CrossSessionGateEnv, value)
-	}
-	for _, key := range claude.CrossSessionUnsetEnv() {
+	for _, key := range []string{gate, name} {
 		if value, found := envValueIn(env, key); found {
 			t.Fatalf("%s = %q survived, want it owned and dropped", key, value)
 		}
@@ -419,16 +443,17 @@ func TestBuildEnvDropsAnInheritedCrossSessionGateWhenDisabled(t *testing.T) {
 
 // The TUI runs in the config home the headless session uses: an inherited
 // override would move it, and its transcript sweep, to a home the launch's
-// retention period was not resolved against.
+// retention period was not resolved against. Serial: it sets the process
+// environment.
 func TestBuildEnvDropsAnInheritedConfigHome(t *testing.T) {
-	base := []string{
-		"CLAUDE_CONFIG_DIR=/alternate",
-		"CLAUDE_SECURESTORAGE_CONFIG_DIR=/alternate",
-		"HOME=/home/test",
+	keys := []string{provider.ClaudeConfigDirEnv.Name(), provider.ClaudeSecureStorageConfigDirEnv.Name()}
+	for _, key := range keys {
+		t.Setenv(key, "/alternate")
 	}
-	env := buildEnv(testUnsetEnv(), Config{Reaper: procutiltest.Reaper(), Env: base}, "http://gw", "http://hook", "tok")
+	t.Setenv("HOME", "/home/test")
+	env := tuiEnv(Config{})
 
-	for _, key := range claude.ConfigHomeUnsetEnv() {
+	for _, key := range keys {
 		if value, found := envValueIn(env, key); found {
 			t.Fatalf("%s = %q survived, want it dropped", key, value)
 		}
@@ -439,17 +464,14 @@ func TestBuildEnvDropsAnInheritedConfigHome(t *testing.T) {
 }
 
 // Enabled states the gate explicitly, overriding whatever the host carried.
+// Serial: it sets the process environment.
 func TestBuildEnvStatesTheCrossSessionGateWhenEnabled(t *testing.T) {
-	base := []string{claude.CrossSessionGateEnv + "=totally-bogus", "HOME=/home/test"}
-	env := buildEnv(testUnsetEnv(), Config{Reaper: procutiltest.Reaper(), Env: base, CrossSessionEnabled: true}, "http://gw", "http://hook", "tok")
+	gate := provider.ClaudeCrossSessionGateEnv.Name()
+	t.Setenv(gate, "totally-bogus")
+	env := tuiEnv(Config{CrossSessionEnabled: true})
 
-	if value, found := envValueIn(env, claude.CrossSessionGateEnv); !found || value != "1" {
-		t.Fatalf("%s = %q (present=%v), want \"1\"", claude.CrossSessionGateEnv, value, found)
-	}
-	if count := slices.IndexFunc(env, func(kv string) bool {
-		return strings.HasPrefix(kv, claude.CrossSessionGateEnv+"=totally-bogus")
-	}); count >= 0 {
-		t.Fatalf("the inherited gate value survived beside the stated one: %v", env)
+	if n, v := countEnv(env, gate); n != 1 || v != "1" {
+		t.Fatalf("%s: got %d entries (last %q), want exactly one =1", gate, n, v)
 	}
 }
 

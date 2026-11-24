@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 )
 
@@ -577,9 +578,9 @@ func TestRunClaude_CarriesCleanupPeriodDays(t *testing.T) {
 				t.Fatalf("RunClaude: %v", err)
 			}
 			assertFlagValue(t, got.Args, "--settings", tc.want)
-			for _, name := range []string{"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"} {
-				if !slices.Contains(got.UnsetEnv, name) {
-					t.Fatalf("UnsetEnv = %v, want it to drop %s", got.UnsetEnv, name)
+			for _, env := range []provider.ReservedEnv{provider.ClaudeConfigDirEnv, provider.ClaudeSecureStorageConfigDirEnv} {
+				if !slices.Contains(got.Env.Clears, env) {
+					t.Fatalf("clears = %v, want them to drop %s", got.Env.Clears, env.Name())
 				}
 			}
 		})
@@ -614,8 +615,8 @@ func TestRunCodex_DropsAnInheritedCodexHome(t *testing.T) {
 	if _, err := RunCodex(context.Background(), cfg, t.TempDir(), `{"type":"object"}`, nil, "prompt", time.Minute); err != nil {
 		t.Fatalf("RunCodex: %v", err)
 	}
-	if !slices.Contains(got.UnsetEnv, "CODEX_HOME") {
-		t.Fatalf("UnsetEnv = %v, want it to drop CODEX_HOME", got.UnsetEnv)
+	if !slices.Contains(got.Env.Clears, provider.CodexHomeEnv) {
+		t.Fatalf("clears = %v, want them to drop CODEX_HOME", got.Env.Clears)
 	}
 }
 
@@ -764,14 +765,14 @@ func TestRunners_PassTheAdmissionToTheExecutor(t *testing.T) {
 	}
 }
 
-// ExecCLI removes the variables a spec names from the child's environment.
-func TestExecCLI_DropsUnsetEnv(t *testing.T) {
+// ExecCLI removes the variables a spec clears from the child's environment.
+func TestExecCLI_AppliesTheSpecsClears(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "/alternate")
 	t.Setenv("AO_TEXTGEN_KEPT", "kept")
 	result, err := ExecCLI(context.Background(), procutiltest.Reaper(), CLISpec{
-		Binary:   "/bin/sh",
-		Args:     []string{"-c", `printf '%s|%s' "${CLAUDE_CONFIG_DIR-unset}" "${AO_TEXTGEN_KEPT-unset}"`},
-		UnsetEnv: []string{"CLAUDE_CONFIG_DIR"},
+		Binary: "/bin/sh",
+		Args:   []string{"-c", `printf '%s|%s' "${CLAUDE_CONFIG_DIR-unset}" "${AO_TEXTGEN_KEPT-unset}"`},
+		Env:    provider.EnvInput{Clears: []provider.ReservedEnv{provider.ClaudeConfigDirEnv}},
 	})
 	if err != nil {
 		t.Fatalf("ExecCLI: %v", err)
@@ -867,8 +868,8 @@ func TestRunAgyAndDecodeStructured(t *testing.T) {
 	if got.Stdin != "" {
 		t.Errorf("agy stdin = %q, want empty (prompt rides --print=...)", got.Stdin)
 	}
-	if got.Env["AGY_CLI_DISABLE_AUTO_UPDATE"] != "1" {
-		t.Errorf("AGY_CLI_DISABLE_AUTO_UPDATE = %q, want 1", got.Env["AGY_CLI_DISABLE_AUTO_UPDATE"])
+	if got.Env.Pins[provider.AgyDisableAutoUpdateEnv] != "1" {
+		t.Errorf("AGY_CLI_DISABLE_AUTO_UPDATE = %q, want 1", got.Env.Pins[provider.AgyDisableAutoUpdateEnv])
 	}
 
 	type titlePayload struct {

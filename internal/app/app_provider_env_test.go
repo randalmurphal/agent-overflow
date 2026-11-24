@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/providerdiscoveryapp"
 	"context"
@@ -11,7 +12,6 @@ import (
 
 	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
 )
@@ -22,8 +22,8 @@ import (
 func TestClaudeBaseURLIsConfigurableOnEveryClaudeSurface(t *testing.T) {
 	t.Parallel()
 	for _, providerName := range []string{string(provider.Claude), string(provider.ClaudeTUI)} {
-		if err := settings.ValidateProviderEnvVarName(providerName, claudetui.BaseURLEnv); err != nil {
-			t.Fatalf("%s rejected %s: %v", providerName, claudetui.BaseURLEnv, err)
+		if err := settings.ValidateProviderEnvVarName(providerName, provider.ClaudeBaseURLEnv.Name()); err != nil {
+			t.Fatalf("%s rejected %s: %v", providerName, provider.ClaudeBaseURLEnv.Name(), err)
 		}
 	}
 }
@@ -35,7 +35,7 @@ func TestSessionProcessEnvFollowsCustomEnvAcrossTransitions(t *testing.T) {
 	app := newTestAppWithStore(t)
 
 	// Off: nothing injected.
-	if got := app.sessionProcessEnv(string(provider.Claude), nil); got["ANTHROPIC_BASE_URL"] != "" {
+	if got := app.sessionProcessEnv(string(provider.Claude)).Custom; got["ANTHROPIC_BASE_URL"] != "" {
 		t.Fatalf("unset custom env leaked %q", got["ANTHROPIC_BASE_URL"])
 	}
 
@@ -44,12 +44,12 @@ func TestSessionProcessEnvFollowsCustomEnvAcrossTransitions(t *testing.T) {
 		t.Fatalf("SetProviderCustomEnvVar() error = %v", err)
 	}
 	for _, providerName := range []string{string(provider.Claude), string(provider.ClaudeTUI)} {
-		got := app.sessionProcessEnv(providerName, nil)
+		got := app.sessionProcessEnv(providerName).Custom
 		if got["ANTHROPIC_BASE_URL"] != "https://gw.test" {
 			t.Fatalf("%s env = %#v, want the custom base URL", providerName, got)
 		}
 	}
-	if got := app.sessionProcessEnv(string(provider.Codex), nil); got["ANTHROPIC_BASE_URL"] != "" {
+	if got := app.sessionProcessEnv(string(provider.Codex)).Custom; got["ANTHROPIC_BASE_URL"] != "" {
 		t.Fatalf("Claude's custom env leaked into Codex: %#v", got)
 	}
 
@@ -57,10 +57,10 @@ func TestSessionProcessEnvFollowsCustomEnvAcrossTransitions(t *testing.T) {
 	if _, err := app.SetProviderCustomEnvVar(context.Background(), "codex", "HTTPS_PROXY", "http://proxy.test:8080", false); err != nil {
 		t.Fatalf("SetProviderCustomEnvVar() error = %v", err)
 	}
-	if got := app.sessionProcessEnv(string(provider.Codex), nil); got["HTTPS_PROXY"] != "http://proxy.test:8080" {
+	if got := app.sessionProcessEnv(string(provider.Codex)).Custom; got["HTTPS_PROXY"] != "http://proxy.test:8080" {
 		t.Fatalf("codex env = %#v, want the proxy", got)
 	}
-	if got := app.sessionProcessEnv(string(provider.Claude), nil); got["HTTPS_PROXY"] != "" {
+	if got := app.sessionProcessEnv(string(provider.Claude)).Custom; got["HTTPS_PROXY"] != "" {
 		t.Fatalf("Codex's custom env leaked into Claude: %#v", got)
 	}
 
@@ -69,41 +69,36 @@ func TestSessionProcessEnvFollowsCustomEnvAcrossTransitions(t *testing.T) {
 		t.Fatalf("DeleteProviderCustomEnvVar() error = %v", err)
 	}
 	for _, providerName := range []string{string(provider.Claude), string(provider.ClaudeTUI)} {
-		got := app.sessionProcessEnv(providerName, nil)
+		got := app.sessionProcessEnv(providerName).Custom
 		if _, present := got["ANTHROPIC_BASE_URL"]; present {
 			t.Fatalf("%s kept the removed variable: %#v", providerName, got)
 		}
 	}
 	// The other provider is untouched by the removal.
-	if got := app.sessionProcessEnv(string(provider.Codex), nil); got["HTTPS_PROXY"] == "" {
+	if got := app.sessionProcessEnv(string(provider.Codex)).Custom; got["HTTPS_PROXY"] == "" {
 		t.Fatalf("removing a Claude variable cleared Codex's: %#v", got)
 	}
 }
 
-// The custom environment sits above the provider config and below the two
-// contracts. The reserved names make a real collision impossible, so this pins
-// the layering itself rather than a reachable conflict.
+// The custom environment sits below the two contracts: the boot-mode values
+// and the in-session marker are pins. The reserved names make a real collision
+// impossible, so this pins the layering of what the child receives.
 func TestSessionProcessEnvPrecedenceAroundCustomEnv(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", "SHARED", "user", false); err != nil {
 		t.Fatal(err)
 	}
-	got := app.sessionProcessEnv(
-		string(provider.Claude),
-		map[string]string{"SHARED": "provider-config"},
-	)
-	if got["SHARED"] != "user" {
-		t.Fatalf("SHARED = %q, want the user's value to outrank the provider config", got["SHARED"])
+	app.providerExtraEnv = map[string]string{control.EnvAddr: "harness"}
+	got := map[string]string{}
+	for _, entry := range provider.BuildEnvironment(app.sessionProcessEnv(string(provider.Claude))) {
+		name, value, _ := strings.Cut(entry, "=")
+		got[name] = value
 	}
-
-	app.providerExtraEnv = map[string]string{"SHARED": "harness"}
-	got = app.sessionProcessEnv(string(provider.Claude), nil)
-	if got["SHARED"] != "harness" {
-		t.Fatalf("SHARED = %q, want the boot-mode override to outrank user settings", got["SHARED"])
-	}
-	if got[aocli.EnvInSession] != "1" {
-		t.Fatalf("the in-session marker did not survive: %#v", got)
+	for name, want := range map[string]string{"SHARED": "user", control.EnvAddr: "harness", aocli.EnvInSession: "1"} {
+		if got[name] != want {
+			t.Errorf("%s = %q, want %q", name, got[name], want)
+		}
 	}
 }
 
@@ -121,7 +116,7 @@ func TestProbeConfigsCarryCustomEnvWithPinsWinning(t *testing.T) {
 	}
 
 	claudeCfg := app.ensureProviderAccountManager().ClaudeProbeConfig("claude", nil)
-	if claudeCfg.Env["ANTHROPIC_BASE_URL"] != "https://gw.test" {
+	if claudeCfg.Env.Custom["ANTHROPIC_BASE_URL"] != "https://gw.test" {
 		t.Fatalf("claude probe env = %#v, want the custom base URL", claudeCfg.Env)
 	}
 	if claudeCfg.WorkDir != providerProbeWorkDir() {
@@ -129,25 +124,25 @@ func TestProbeConfigsCarryCustomEnvWithPinsWinning(t *testing.T) {
 	}
 
 	codexCfg := app.codexProbeConfig("codex", nil)
-	if codexCfg.Env["HTTPS_PROXY"] != "http://proxy.test:8080" {
+	if codexCfg.Env.Custom["HTTPS_PROXY"] != "http://proxy.test:8080" {
 		t.Fatalf("codex probe env = %#v, want the custom proxy", codexCfg.Env)
 	}
 
 	// A probe that pins a temporary credential home keeps it: the pin names
 	// the account the probe exists to interrogate.
-	pinned := app.codexProbeConfig("codex", map[string]string{"CODEX_HOME": "/tmp/ephemeral"})
-	if pinned.Env["CODEX_HOME"] != "/tmp/ephemeral" {
+	pinned := app.codexProbeConfig("codex", map[provider.ReservedEnv]string{provider.CodexHomeEnv: "/tmp/ephemeral"})
+	if pinned.Env.Pins[provider.CodexHomeEnv] != "/tmp/ephemeral" {
 		t.Fatalf("codex probe env = %#v, want the pinned home", pinned.Env)
 	}
-	if pinned.Env["HTTPS_PROXY"] != "http://proxy.test:8080" {
+	if pinned.Env.Custom["HTTPS_PROXY"] != "http://proxy.test:8080" {
 		t.Fatalf("codex probe env = %#v, want the custom proxy alongside the pin", pinned.Env)
 	}
 
 	// With nothing configured and nothing pinned, probes keep inheriting the
-	// process environment rather than being handed an empty override map.
+	// process environment with nothing added.
 	clean := newTestAppWithStore(t)
-	if env := clean.ensureProviderAccountManager().ClaudeProbeConfig("claude", nil).Env; env != nil {
-		t.Fatalf("probe env = %#v, want nil when nothing is configured", env)
+	if env := clean.ensureProviderAccountManager().ClaudeProbeConfig("claude", nil).Env; env.Custom != nil || env.Pins != nil {
+		t.Fatalf("probe env = %#v, want nothing set when nothing is configured", env)
 	}
 }
 
@@ -244,13 +239,13 @@ func TestClaudeTUIRoutesCustomBaseURLToTheGatewayUpstream(t *testing.T) {
 	if got := app.claudetuiUpstream(); got != "" {
 		t.Fatalf("claudetuiUpstream() = %q, want the real API by default", got)
 	}
-	if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", claudetui.BaseURLEnv, "https://gw.test", false); err != nil {
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", provider.ClaudeBaseURLEnv.Name(), "https://gw.test", false); err != nil {
 		t.Fatal(err)
 	}
 	if got := app.claudetuiUpstream(); got != "https://gw.test" {
 		t.Fatalf("claudetuiUpstream() = %q, want the configured endpoint", got)
 	}
-	if _, err := app.DeleteProviderCustomEnvVar(context.Background(), "claude", claudetui.BaseURLEnv); err != nil {
+	if _, err := app.DeleteProviderCustomEnvVar(context.Background(), "claude", provider.ClaudeBaseURLEnv.Name()); err != nil {
 		t.Fatal(err)
 	}
 	if got := app.claudetuiUpstream(); got != "" {
@@ -282,7 +277,7 @@ func TestTextGenerationCarriesTheChosenProvidersCustomEnv(t *testing.T) {
 	if cfg.Provider != string(provider.Claude) {
 		t.Fatalf("provider = %q, want claude", cfg.Provider)
 	}
-	if cfg.Env["ANTHROPIC_BASE_URL"] != "https://claude.test" {
+	if cfg.Env.Custom["ANTHROPIC_BASE_URL"] != "https://claude.test" {
 		t.Fatalf("textgen env = %#v, want Claude's custom environment", cfg.Env)
 	}
 
@@ -298,10 +293,10 @@ func TestTextGenerationCarriesTheChosenProvidersCustomEnv(t *testing.T) {
 	if cfg.Provider != string(provider.Codex) {
 		t.Fatalf("provider = %q, want the codex substitution", cfg.Provider)
 	}
-	if cfg.Env["HTTPS_PROXY"] != "http://proxy.test:8080" {
+	if cfg.Env.Custom["HTTPS_PROXY"] != "http://proxy.test:8080" {
 		t.Fatalf("textgen env = %#v, want Codex's custom environment", cfg.Env)
 	}
-	if _, leaked := cfg.Env["ANTHROPIC_BASE_URL"]; leaked {
+	if _, leaked := cfg.Env.Custom["ANTHROPIC_BASE_URL"]; leaked {
 		t.Fatalf("textgen env = %#v, want Claude's endpoint left behind", cfg.Env)
 	}
 
@@ -310,7 +305,7 @@ func TestTextGenerationCarriesTheChosenProvidersCustomEnv(t *testing.T) {
 	if !ok {
 		t.Fatal("resolveTextGenerationConfigFor(codex) reported unavailable")
 	}
-	if explicit.Env["HTTPS_PROXY"] != "http://proxy.test:8080" {
+	if explicit.Env.Custom["HTTPS_PROXY"] != "http://proxy.test:8080" {
 		t.Fatalf("textgen env = %#v, want Codex's custom environment", explicit.Env)
 	}
 }

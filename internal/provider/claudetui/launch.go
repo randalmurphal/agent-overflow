@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/stringsx"
 	"agent-overflow/internal/terminal"
@@ -139,7 +140,7 @@ func buildLaunchOptions(cfg Config, systemPromptPath, appendSystemPromptPath, ga
 		Shell:  cfg.Binary,
 		Args:   line.Args(),
 		Cwd:    cfg.WorkDir,
-		Env:    buildEnv(line.UnsetEnv(), cfg, gatewayURL, hookURL, hookToken),
+		Env:    buildEnv(line, cfg, gatewayURL, hookURL, hookToken),
 		Rows:   cfg.rows(),
 		Cols:   cfg.cols(),
 		Reaper: cfg.Reaper,
@@ -245,91 +246,38 @@ func hookCommand(cfg Config) (string, error) {
 	return stringsx.ShellQuote(exe) + " " + HookSubcommand, nil
 }
 
-// BaseURLEnv is the variable that points Claude Code at an API endpoint. This
-// provider OWNS the child's copy — it must resolve to the per-session loopback
-// gateway — so a caller with a user-configured endpoint passes it as
-// Config.Upstream instead, and the gateway forwards there. Exported so the app
-// layer names the same variable this package strips.
-const BaseURLEnv = "ANTHROPIC_BASE_URL"
+// The child's ANTHROPIC_BASE_URL (provider.ClaudeBaseURLEnv) is this
+// provider's: it must resolve to the per-session loopback gateway, so a
+// caller with a user-configured endpoint passes it as Config.Upstream
+// instead, and the gateway forwards there.
 
-// todoToolsEnvVar opts the TUI session into the TodoWrite / Task* tool
-// surface that claude ≥2.1.233 removes for modern models. Same rationale
-// and same posture as the headless provider's claudeTodoToolsEnvVar
-// (internal/provider/claude/session.go): AO's activity-rail todo list
-// rides those tools' events, so the session defaults in — but as a
-// DEFAULT, not an owned key. A user value in the custom environment
-// (which lands in Config.Env before buildEnv runs) survives, so setting
-// it to "false" restores the vendor's stock TUI tool surface.
-const todoToolsEnvVar = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
-
-// todoReminderModeEnvVar controls the CLI's periodic "track your work
-// with the todo tools" nudge; "off" silences it while keeping the tools.
-// Appended only when the session asked for it (Config.DisableTodoReminders,
-// from the Settings toggle), with the same default-not-pin posture as the
-// opt-in above: a value already in the base environment wins.
-const todoReminderModeEnvVar = "CLAUDE_CODE_TODO_REMINDER_MODE"
-
-// buildEnv layers the per-session gateway + relay env onto cfg.Env,
-// stripping any inherited values for the keys we own so a dirty parent env
-// can't redirect Claude away from our gateway, and fills in the todo-tools
-// defaults the base carries no value of its own for. unset is the command
-// line's UnsetEnv, which the TUI owns as well.
-func buildEnv(unset []string, cfg Config, gatewayURL, hookURL, hookToken string) []string {
-	base := cfg.Env
-	if len(base) == 0 {
-		// Honor the documented "empty means inherit" Config.Env contract for an
-		// empty-but-non-nil slice too, not just nil.
-		base = os.Environ()
-	}
-	owned := map[string]struct{}{
-		BaseURLEnv:   {},
-		envHookURL:   {},
-		envHookToken: {},
-	}
-	// The command line's unset list is OWNED here, not inherited: the config
-	// home every Claude launch uses; the peer-inbox gate and peer-visible name
-	// (CLAUDE_CODE_HARBOR_KITE is a parsed boolean the CLI reads before any
-	// settings layer, so a value in AO's own environment would make the TUI
-	// join the machine-wide registry while the setting says off, and refusing
-	// INBOUND messages does not undo being discoverable); and the task-list
-	// key, the thread's identity (Config.TaskListID), dropped even when cfg
-	// carries none to state.
-	for _, key := range unset {
-		owned[key] = struct{}{}
-	}
-	out := make([]string, 0, len(base))
-	haveTodoOptIn := false
-	haveReminderMode := false
-	for _, kv := range base {
-		if key, _, ok := strings.Cut(kv, "="); ok {
-			if _, isOwned := owned[key]; isOwned {
-				continue
-			}
-			switch key {
-			case todoToolsEnvVar:
-				haveTodoOptIn = true
-			case todoReminderModeEnvVar:
-				haveReminderMode = true
-			}
-		}
-		out = append(out, kv)
-	}
-	out = append(out,
-		BaseURLEnv+"="+gatewayURL,
-		envHookURL+"="+hookURL,
-		envHookToken+"="+hookToken,
-	)
+// buildEnv adds the session's own variables to cfg.Env: the gateway and
+// relay pins, the command line's clears and pins (the config home every
+// Claude launch uses; the peer-inbox gate and peer-visible name, since
+// CLAUDE_CODE_HARBOR_KITE is a parsed boolean the CLI reads before any
+// settings layer; and the task-list key, the thread's identity), and the
+// todo-tools defaults.
+//
+// The todo defaults are the one place this environment differs from the
+// headless provider's: here a value the user's shell exports sits over the
+// default, so the default is left out when the inherited environment names
+// it. Headless Claude's default sits over an inherited value.
+func buildEnv(line claude.CommandLine, cfg Config, gatewayURL, hookURL, hookToken string) []string {
+	in := line.Env(cfg.Env).
+		Pin(provider.ClaudeBaseURLEnv, gatewayURL).
+		Pin(provider.AOEnv(envHookURL), hookURL).
+		Pin(provider.AOEnv(envHookToken), hookToken)
 	if cfg.CrossSessionEnabled {
-		out = append(out, claude.CrossSessionGateEnv+"=1")
+		in = in.Pin(provider.ClaudeCrossSessionGateEnv, "1")
 	}
 	if cfg.TaskListID != "" {
-		out = append(out, claude.TaskListIDEnv+"="+cfg.TaskListID)
+		in = in.Pin(provider.ClaudeTaskListIDEnv, cfg.TaskListID)
 	}
-	if !haveTodoOptIn {
-		out = append(out, todoToolsEnvVar+"=true")
+	if _, inherited := os.LookupEnv(provider.ClaudeTodoToolsEnv.Name()); !inherited {
+		in = in.Default(provider.ClaudeTodoToolsEnv, "true")
 	}
-	if cfg.DisableTodoReminders && !haveReminderMode {
-		out = append(out, todoReminderModeEnvVar+"=off")
+	if _, inherited := os.LookupEnv(provider.ClaudeTodoReminderModeEnv.Name()); cfg.DisableTodoReminders && !inherited {
+		in = in.Default(provider.ClaudeTodoReminderModeEnv, "off")
 	}
-	return out
+	return provider.BuildEnvironment(in)
 }

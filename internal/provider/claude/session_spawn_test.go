@@ -4,9 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider"
 )
 
 // -- Session unit tests (wire format verification) --
@@ -247,97 +249,115 @@ func TestBuildArgsDangerousSkipPermissions(t *testing.T) {
 // unless the session opts back in (claudeTodoToolsEnvVar's comment has
 // the gate details).
 func TestWithClaudeSessionEnvDefaults(t *testing.T) {
-	t.Run("nil env gets both defaults set", func(t *testing.T) {
-		got := withClaudeSessionEnvDefaults(nil, false)
+	child := func(custom map[string]string, disableTodoReminders bool) map[string]string {
+		env := provider.BuildEnvironment(withClaudeSessionEnvDefaults(provider.EnvInput{Custom: custom}, disableTodoReminders))
+		values := make(map[string]string, len(env))
+		for _, entry := range env {
+			name, value, _ := strings.Cut(entry, "=")
+			values[name] = value
+		}
+		return values
+	}
+
+	t.Run("an empty custom environment gets every default", func(t *testing.T) {
+		got := child(nil, false)
 		if got["CLAUDE_CODE_ENTRYPOINT"] != "agent-overflow" {
 			t.Fatalf("CLAUDE_CODE_ENTRYPOINT = %q, want agent-overflow", got["CLAUDE_CODE_ENTRYPOINT"])
 		}
 		if got["CLAUDE_CODE_ENABLE_TODO_TOOLS"] != "true" {
 			t.Fatalf("CLAUDE_CODE_ENABLE_TODO_TOOLS = %q, want true", got["CLAUDE_CODE_ENABLE_TODO_TOOLS"])
 		}
+		if got["CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH"] != "16384" {
+			t.Fatalf("CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = %q, want 16384", got["CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH"])
+		}
 	})
 
-	t.Run("preserves caller-provided keys", func(t *testing.T) {
-		got := withClaudeSessionEnvDefaults(map[string]string{"FOO": "bar"}, false)
+	t.Run("preserves custom variables", func(t *testing.T) {
+		got := child(map[string]string{"FOO": "bar"}, false)
 		if got["FOO"] != "bar" {
 			t.Errorf("FOO clobbered: got %q, want bar", got["FOO"])
 		}
 		if got["CLAUDE_CODE_ENTRYPOINT"] != "agent-overflow" {
 			t.Errorf("CLAUDE_CODE_ENTRYPOINT not added: got %q", got["CLAUDE_CODE_ENTRYPOINT"])
 		}
+	})
+
+	// The entrypoint is what keeps the session in `claude --resume`, so it
+	// is pinned; settings refuses the name in the custom environment.
+	t.Run("the entrypoint is pinned over a custom value", func(t *testing.T) {
+		got := child(map[string]string{"CLAUDE_CODE_ENTRYPOINT": "test-override"}, false)
+		if got["CLAUDE_CODE_ENTRYPOINT"] != "agent-overflow" {
+			t.Errorf("CLAUDE_CODE_ENTRYPOINT = %q, want agent-overflow", got["CLAUDE_CODE_ENTRYPOINT"])
+		}
 		if got["CLAUDE_CODE_ENABLE_TODO_TOOLS"] != "true" {
 			t.Errorf("CLAUDE_CODE_ENABLE_TODO_TOOLS not added: got %q", got["CLAUDE_CODE_ENABLE_TODO_TOOLS"])
 		}
 	})
 
-	t.Run("respects caller-provided overrides per variable", func(t *testing.T) {
-		got := withClaudeSessionEnvDefaults(map[string]string{
-			"CLAUDE_CODE_ENTRYPOINT": "test-override",
-		}, false)
-		if got["CLAUDE_CODE_ENTRYPOINT"] != "test-override" {
-			t.Errorf("entrypoint override clobbered: got %q, want test-override", got["CLAUDE_CODE_ENTRYPOINT"])
-		}
-		// The other default still applies — opting out of one variable
-		// must not opt out of the rest.
-		if got["CLAUDE_CODE_ENABLE_TODO_TOOLS"] != "true" {
-			t.Errorf("CLAUDE_CODE_ENABLE_TODO_TOOLS not added alongside an entrypoint override: got %q", got["CLAUDE_CODE_ENABLE_TODO_TOOLS"])
-		}
-	})
-
 	t.Run("user can disable the todo opt-in", func(t *testing.T) {
-		got := withClaudeSessionEnvDefaults(map[string]string{
-			"CLAUDE_CODE_ENABLE_TODO_TOOLS": "false",
-		}, false)
+		got := child(map[string]string{"CLAUDE_CODE_ENABLE_TODO_TOOLS": "false"}, false)
 		if got["CLAUDE_CODE_ENABLE_TODO_TOOLS"] != "false" {
 			t.Errorf("todo opt-out clobbered: got %q, want false", got["CLAUDE_CODE_ENABLE_TODO_TOOLS"])
 		}
 	})
 
-	t.Run("returns the same map when every default is present", func(t *testing.T) {
-		input := map[string]string{
-			"CLAUDE_CODE_ENTRYPOINT":                 "x",
-			"CLAUDE_CODE_ENABLE_TODO_TOOLS":          "false",
-			"CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH": "4096",
-		}
-		got := withClaudeSessionEnvDefaults(input, false)
-		// Maps are reference types: a write through the return proves it
-		// is the caller's map, not a pointless copy.
-		got["PROBE"] = "1"
-		if input["PROBE"] != "1" {
-			t.Errorf("expected the input map back unchanged when nothing is missing")
+	t.Run("user can lower the MCP description cap", func(t *testing.T) {
+		got := child(map[string]string{"CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH": "4096"}, false)
+		if got["CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH"] != "4096" {
+			t.Errorf("MCP description cap clobbered: got %q, want 4096", got["CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH"])
 		}
 	})
 
-	t.Run("does not mutate caller's map", func(t *testing.T) {
-		input := map[string]string{"FOO": "bar"}
-		_ = withClaudeSessionEnvDefaults(input, false)
-		if len(input) != 1 {
-			t.Errorf("input map was mutated; helper must return a copy")
+	t.Run("does not mutate the caller's input", func(t *testing.T) {
+		input := provider.EnvInput{Custom: map[string]string{"FOO": "bar"}}
+		_ = withClaudeSessionEnvDefaults(input, true)
+		if len(input.Custom) != 1 || input.Pins != nil || input.Defaults != nil {
+			t.Errorf("input was mutated: %+v", input)
 		}
 	})
 
 	t.Run("reminders disabled exports the off mode", func(t *testing.T) {
-		got := withClaudeSessionEnvDefaults(nil, true)
+		got := child(nil, true)
 		if got["CLAUDE_CODE_TODO_REMINDER_MODE"] != "off" {
 			t.Fatalf("CLAUDE_CODE_TODO_REMINDER_MODE = %q with reminders disabled, want off", got["CLAUDE_CODE_TODO_REMINDER_MODE"])
 		}
 	})
 
 	t.Run("reminders enabled leaves the mode to the CLI", func(t *testing.T) {
-		got := withClaudeSessionEnvDefaults(nil, false)
-		if v, ok := got["CLAUDE_CODE_TODO_REMINDER_MODE"]; ok {
-			t.Fatalf("CLAUDE_CODE_TODO_REMINDER_MODE = %q with reminders enabled, want unset (the CLI owns its default)", v)
+		got := withClaudeSessionEnvDefaults(provider.EnvInput{}, false)
+		if v, ok := got.Defaults[provider.ClaudeTodoReminderModeEnv]; ok {
+			t.Fatalf("CLAUDE_CODE_TODO_REMINDER_MODE defaulted to %q with reminders enabled, want unset (the CLI owns its default)", v)
+		}
+		if _, ok := got.Pins[provider.ClaudeTodoReminderModeEnv]; ok {
+			t.Fatal("CLAUDE_CODE_TODO_REMINDER_MODE pinned with reminders enabled")
 		}
 	})
 
 	t.Run("user reminder-mode value outranks the setting", func(t *testing.T) {
-		got := withClaudeSessionEnvDefaults(map[string]string{
-			"CLAUDE_CODE_TODO_REMINDER_MODE": "baseline",
-		}, true)
+		got := child(map[string]string{"CLAUDE_CODE_TODO_REMINDER_MODE": "baseline"}, true)
 		if got["CLAUDE_CODE_TODO_REMINDER_MODE"] != "baseline" {
 			t.Errorf("user reminder mode clobbered: got %q, want baseline", got["CLAUDE_CODE_TODO_REMINDER_MODE"])
 		}
 	})
+}
+
+// Headless Claude's todo defaults outrank a value exported in the shell Agent
+// Overflow runs under; claude-tui's do not (claudetui's
+// TestBuildEnvLeavesAnInheritedTodoValueOverItsDefault). Serial: it sets the
+// process environment.
+func TestSessionTodoDefaultsOutrankAnInheritedValue(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_ENABLE_TODO_TOOLS", "false")
+	t.Setenv("CLAUDE_CODE_TODO_REMINDER_MODE", "baseline")
+	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7"})
+	cfg.DisableTodoReminders = true
+
+	env := claudeChildEnv(cfg)
+	if value, _ := envLookup(env, "CLAUDE_CODE_ENABLE_TODO_TOOLS"); value != "true" {
+		t.Fatalf("CLAUDE_CODE_ENABLE_TODO_TOOLS = %q, want the default true over the inherited false", value)
+	}
+	if value, _ := envLookup(env, "CLAUDE_CODE_TODO_REMINDER_MODE"); value != "off" {
+		t.Fatalf("CLAUDE_CODE_TODO_REMINDER_MODE = %q, want the default off over the inherited baseline", value)
+	}
 }
 
 // One `--add-dir <dir>` per entry, and always before PermissionFlags so a

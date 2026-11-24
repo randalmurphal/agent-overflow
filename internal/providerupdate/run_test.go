@@ -45,7 +45,7 @@ func TestARunThatInstallsTheUpdateSucceeds(t *testing.T) {
 	}
 	update := r.runner.lastOf("update")
 	if update.Binary != "/opt/claude" || !slices.Equal(update.Args, []string{"update"}) || update.Dir != "/home/u" ||
-		update.Env["PROXY_FOR"] != ProviderClaude {
+		update.Env.Custom["PROXY_FOR"] != ProviderClaude {
 		t.Errorf("update ran %+v", update)
 	}
 	r.mu.Lock()

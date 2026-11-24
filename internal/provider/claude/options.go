@@ -263,19 +263,7 @@ const (
 // GrowthBook experiment that binds the cross-session peer inbox
 // (`function jh(){if(q.CLAUDE_CODE_HARBOR_KITE)return!0; ...}`, 2.1.237).
 // It is a PARSED BOOLEAN on the CLI side, so "0" and "" read as off.
-const claudeHarborKiteEnv = "CLAUDE_CODE_HARBOR_KITE"
-
-// CrossSessionGateEnv is claudeHarborKiteEnv under its exported name, for
-// internal/provider/claudetui — which assembles a full []string environment
-// for its PTY launch rather than the override map Spawn takes, and so has to
-// set the gate itself. One constant, so the two Claude transports cannot
-// disagree about which variable binds the inbox.
-const CrossSessionGateEnv = claudeHarborKiteEnv
-
-// TaskListIDEnv is claudeTaskListIDEnvVar under its exported name, for
-// internal/provider/claudetui's PTY environment — same one-constant reasoning
-// as CrossSessionGateEnv.
-const TaskListIDEnv = claudeTaskListIDEnvVar
+var claudeHarborKiteEnv = provider.ClaudeCrossSessionGateEnv.Name()
 
 // withClaudeCrossSessionEnv adds the inbox gate variable to a session's
 // environment when the setting asks for it.
@@ -288,7 +276,7 @@ const TaskListIDEnv = claudeTaskListIDEnvVar
 // bind. The plain variable is what the spike drove and what worked
 // (2026-08-21, 2.1.237, /tmp/spike-xsession) — `system/init` then carries
 // `messaging_socket_path` and `ListAgents` joins `tools[]`. Reserving the
-// name (internal/settings/providerenv.go) is what keeps a user's custom
+// name (internal/provider/envtable.go) is what keeps a user's custom
 // environment from setting it behind the setting's back.
 //
 // Absent when off — never "0". The variable's presence is the signal a
@@ -296,24 +284,21 @@ const TaskListIDEnv = claudeTaskListIDEnvVar
 // invite the belief that AO ever turns the gate off for a CLI that had it
 // on by experiment. "Absent" is not free, though: the child INHERITS the
 // host environment, so absence has to be produced — see
-// CrossSessionUnsetEnv, which every Claude spawn passes to UnsetEnv.
-func withClaudeCrossSessionEnv(env map[string]string, cfg Config) map[string]string {
+// crossSessionClears, which every Claude spawn clears.
+func withClaudeCrossSessionEnv(env provider.EnvInput, cfg Config) provider.EnvInput {
 	if !cfg.CrossSessionEnabled {
 		return env
 	}
-	merged := make(map[string]string, len(env))
-	maps.Copy(merged, env)
-	merged[claudeHarborKiteEnv] = "1"
-	return merged
+	return env.Pin(provider.ClaudeCrossSessionGateEnv, "1")
 }
 
 // claudePeerSessionNameEnv is the CLI's environment spelling of the
 // peer-visible name. AO always states the name as `--name` instead
 // (peerSessionNameArgs), which is why it is a reserved name a user's custom
-// environment may not set (internal/settings/providerenv.go).
-const claudePeerSessionNameEnv = "CLAUDE_CODE_SESSION_NAME"
+// environment may not set (internal/provider/envtable.go).
+var claudePeerSessionNameEnv = provider.ClaudePeerSessionNameEnv.Name()
 
-// CrossSessionUnsetEnv names the INHERITED variables a Claude spawn must
+// crossSessionClears names the INHERITED variables a Claude spawn must
 // remove for AO's cross-session setting to be the answer.
 //
 // Both are removed unconditionally, for two different reasons:
@@ -332,8 +317,8 @@ const claudePeerSessionNameEnv = "CLAUDE_CODE_SESSION_NAME"
 //   - CLAUDE_CODE_SESSION_NAME is removed in both states because AO owns the
 //     name: an inherited value would name a thread something the app never
 //     chose, and the app's own `--name` is what the peer registry must show.
-func CrossSessionUnsetEnv() []string {
-	return []string{claudeHarborKiteEnv, claudePeerSessionNameEnv}
+func crossSessionClears() []provider.ReservedEnv {
+	return []provider.ReservedEnv{provider.ClaudeCrossSessionGateEnv, provider.ClaudePeerSessionNameEnv}
 }
 
 // peerSessionNameArgs renders the `--name` flag, which is what makes a
@@ -569,14 +554,14 @@ const claudeAutoPermissionMode = "auto"
 // (managedEnv.ts → applySafeConfigEnvironmentVariables), so a value put
 // in the child's real environment can be silently overwritten while one
 // put here cannot. All of them are reserved names
-// (internal/settings/providerenv.go), so a user's custom environment cannot
+// (internal/provider/envtable.go), so a user's custom environment cannot
 // fight the setting that renders them.
-const (
-	claudeAutoCompactPctEnv    = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
-	claudeAutoCompactWindowEnv = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
-	claudeMaxSpawnDepthEnv     = "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"
-	claudeMaxConcurrentSubEnv  = "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"
-	claudeToolMemoryLimitEnv   = "CLAUDE_CODE_TOOL_MEMORY_LIMIT"
+var (
+	claudeAutoCompactPctEnv    = provider.ClaudeAutoCompactPctEnv.Name()
+	claudeAutoCompactWindowEnv = provider.ClaudeAutoCompactWindowEnv.Name()
+	claudeMaxSpawnDepthEnv     = provider.ClaudeMaxSubagentSpawnDepthEnv.Name()
+	claudeMaxConcurrentSubEnv  = provider.ClaudeMaxConcurrentSubagentsEnv.Name()
+	claudeToolMemoryLimitEnv   = provider.ClaudeToolMemoryLimitEnv.Name()
 )
 
 // cliInlineSettings is the JSON shape projected into the `--settings`

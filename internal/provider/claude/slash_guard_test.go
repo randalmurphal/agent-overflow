@@ -22,7 +22,7 @@ func captureSentUserLine(t *testing.T, content string, opts provider.SendOptions
 	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
-		Env:    map[string]string{"CAPTURE": capturePath},
+		Env:    provider.EnvInput{Custom: map[string]string{"CAPTURE": capturePath}},
 	})
 	if err != nil {
 		t.Fatalf("spawn capture process: %v", err)

@@ -58,9 +58,9 @@ func (a *App) GetNativeMemoryStatus() (NativeMemoryStatus, error) {
 	if err != nil {
 		return NativeMemoryStatus{}, err
 	}
-	// The variable as a Claude session gets it: what the app sets in the
-	// session's environment (sessionProcessEnv), else what it inherits.
-	env, set := a.sessionProcessEnv(string(provider.Claude), nil)[claude.AutoMemoryOffEnv]
+	// The variable as a Claude session gets it: what the user's custom
+	// environment sets, else what it inherits.
+	env, set := a.providerCustomEnv(string(provider.Claude))[claude.AutoMemoryOffEnv]
 	if !set {
 		env, set = os.LookupEnv(claude.AutoMemoryOffEnv)
 	}

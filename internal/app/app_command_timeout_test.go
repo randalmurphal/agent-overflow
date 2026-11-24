@@ -90,8 +90,8 @@ func startClaudeTUIRecordingTimeout(t *testing.T, app *App, id string) string {
 	}
 }
 
-// The claude-tui spawn composes a whole environment rather than an
-// override map, so its precedence is proven on the real process: the
+// The claude-tui spawn builds its environment itself rather than through
+// Spawn, so its precedence is proven on the real process: the
 // setting outranks a value inherited from the host, and a value in the
 // provider's custom environment outranks the setting. Serial: it sets the
 // process environment.

@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/mcpapp"
 	"agent-overflow/internal/mcpstatus"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 )
@@ -136,8 +137,8 @@ func (a *App) mcpDeps() mcpapp.Deps {
 			return out
 		},
 		ProviderBinary: a.providerBinaryPath,
-		SessionProcessEnv: func(providerName string) map[string]string {
-			return a.sessionProcessEnv(providerName, nil)
+		SessionProcessEnv: func(providerName string) provider.EnvInput {
+			return a.sessionProcessEnv(providerName)
 		},
 		ClaudeRetention:      a.claudeRetention,
 		ReadClaudeCredential: a.readClaudeMCPCredential,

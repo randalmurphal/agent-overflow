@@ -463,24 +463,24 @@ func TestProviderUpdateClaudeCommandsCarryTheRetentionWindow(t *testing.T) {
 		if !slices.Equal(command.Args, want) {
 			t.Errorf("claude %s args = %q, want %q", subcommand, command.Args, want)
 		}
-		for _, name := range claude.ConfigHomeUnsetEnv() {
-			if !slices.Contains(command.UnsetEnv, name) {
-				t.Errorf("claude %s keeps an inherited %s (unset %q)", subcommand, name, command.UnsetEnv)
+		for _, env := range []provider.ReservedEnv{provider.ClaudeConfigDirEnv, provider.ClaudeSecureStorageConfigDirEnv} {
+			if !slices.Contains(command.Env.Clears, env) {
+				t.Errorf("claude %s keeps an inherited %s (clears %v)", subcommand, env.Name(), command.Env.Clears)
 			}
 		}
 	}
 }
 
-// The update runner removes what a command's UnsetEnv names from the
+// The update runner removes what a command's environment clears from the
 // environment the command runs with.
-func TestRunProviderUpdateGroupDropsUnsetEnv(t *testing.T) {
+func TestRunProviderUpdateGroupAppliesTheCommandsClears(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "/alternate")
 	t.Setenv("AO_PROVIDER_UPDATE_KEPT", "kept")
 	out, err := runProviderUpdateGroup(context.Background(), (&App{}).groupReaper("provider update"), providerupdate.Command{
-		Binary:   "/bin/sh",
-		Args:     []string{"-c", `printf '%s|%s' "${CLAUDE_CONFIG_DIR-unset}" "${AO_PROVIDER_UPDATE_KEPT-unset}"`},
-		UnsetEnv: []string{"CLAUDE_CONFIG_DIR"},
-		Dir:      t.TempDir(),
+		Binary: "/bin/sh",
+		Args:   []string{"-c", `printf '%s|%s' "${CLAUDE_CONFIG_DIR-unset}" "${AO_PROVIDER_UPDATE_KEPT-unset}"`},
+		Env:    provider.EnvInput{Clears: []provider.ReservedEnv{provider.ClaudeConfigDirEnv}},
+		Dir:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("runProviderUpdateGroup: %v", err)

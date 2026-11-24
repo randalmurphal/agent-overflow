@@ -68,7 +68,7 @@ type LoginConfig struct {
 	// there: an ANTHROPIC_BASE_URL that changes which backend answers must
 	// change which backend the person signs in TO, or the account adopted is
 	// not the account they authenticated. ConfigDir is applied over it.
-	Env map[string]string
+	Env provider.EnvInput
 }
 
 // LoginURLs are the two addresses one flow hands back. They carry the SAME
@@ -146,7 +146,6 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 		Binary:   binary,
 		Args:     line.Args(),
 		Env:      line.Env(cfg.Env),
-		UnsetEnv: line.UnsetEnv(),
 		Provider: "claude",
 	})
 	if err != nil {

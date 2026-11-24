@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/mcpstatus"
 	"agent-overflow/internal/procutil"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
@@ -50,7 +51,7 @@ type Deps struct {
 	CodexSessions     func() []CodexLiveSession
 	ClaudeSessions    func(workspacePath string) []ClaudeLiveSession
 	ProviderBinary    func(providerName string) string
-	SessionProcessEnv func(providerName string) map[string]string
+	SessionProcessEnv func(providerName string) provider.EnvInput
 	// ClaudeRetention is a Claude sign-in process's answer to the
 	// transcript sweep (claude.Config.Retention).
 	ClaudeRetention      func(workDir string) claude.Retention
@@ -128,9 +129,9 @@ func (a *Service) providerBinaryPath(providerName string) string {
 	return a.deps.ProviderBinary(providerName)
 }
 
-func (a *Service) sessionProcessEnv(providerName string) map[string]string {
+func (a *Service) sessionProcessEnv(providerName string) provider.EnvInput {
 	if a == nil || a.deps.SessionProcessEnv == nil {
-		return nil
+		return provider.EnvInput{}
 	}
 	return a.deps.SessionProcessEnv(providerName)
 }

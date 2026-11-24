@@ -40,7 +40,7 @@ func (l *limitedBuffer) String() string { return l.buf.String() }
 // statuses into AO's shared mcpstatus cache.
 type MCPStatusFetcher struct {
 	Binary  string
-	Env     map[string]string
+	Env     provider.EnvInput
 	Cwd     string
 	Timeout time.Duration
 }
@@ -62,8 +62,7 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	if strings.TrimSpace(f.Cwd) != "" {
 		cmd.Dir = f.Cwd
 	}
-	launchEnv, unset := LaunchEnv(f.Env, nil)
-	cmd.Env = provider.BuildEnvironment(launchEnv, unset...)
+	cmd.Env = provider.BuildEnvironment(LaunchEnv(f.Env))
 	cmd.Cancel = func() error {
 		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 			return cmd.Process.Kill()

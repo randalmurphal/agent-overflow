@@ -2,8 +2,9 @@ package provider
 
 // Child-environment assembly: the one env rule every provider subprocess is
 // built through, whichever entry point spawns it. Lives apart from the process
-// lifecycle in process.go because its callers are not all Spawn — claudetui
-// and textgen assemble full []string environments directly.
+// lifecycle in process.go because its callers are not all Spawn — claudetui,
+// textgen, the provider update runner and the MCP status checks assemble full
+// []string environments directly.
 
 import (
 	"maps"
@@ -14,36 +15,144 @@ import (
 	"agent-overflow/internal/appimage"
 )
 
+// EnvInput is everything a provider child's environment is built from, kept
+// apart by kind so the precedence is one rule rather than each caller's merge
+// order. Every name AO sets or clears is a ReservedEnv from the table in
+// envtable.go; only the user's custom environment is free-form.
+type EnvInput struct {
+	// Custom is the user's custom environment for the provider
+	// (settings.ProviderEnvMap), already refused for every reserved name.
+	Custom map[string]string
+	// Defaults apply where Custom does not name the variable, over an
+	// inherited value.
+	Defaults map[ReservedEnv]string
+	// Pins apply over Custom and every inherited value.
+	Pins map[ReservedEnv]string
+	// Clears remove an inherited value.
+	Clears []ReservedEnv
+	// ClearUnlessCustom remove an inherited value unless Custom names the
+	// variable, so the user's own value is the only one the child can see.
+	ClearUnlessCustom []ReservedEnv
+	// PathPrepend, when set, goes in front of the inherited PATH.
+	PathPrepend string
+}
+
+// Pin returns a copy of in with env pinned to value.
+func (in EnvInput) Pin(env ReservedEnv, value string) EnvInput {
+	in.Pins = withEntry(in.Pins, env, value)
+	return in
+}
+
+// Default returns a copy of in with value as env's default.
+func (in EnvInput) Default(env ReservedEnv, value string) EnvInput {
+	in.Defaults = withEntry(in.Defaults, env, value)
+	return in
+}
+
+// Clear returns a copy of in that also clears envs.
+func (in EnvInput) Clear(envs ...ReservedEnv) EnvInput {
+	in.Clears = append(slices.Clip(in.Clears), envs...)
+	return in
+}
+
+// Fingerprint identifies what in sets and clears: two inputs with one
+// fingerprint build the same environment from the same host environment.
+// Pool keys use it so a connection is shared only by sessions whose process
+// would have been started with the same environment.
+func (in EnvInput) Fingerprint() string {
+	parts := make(map[string]string, len(in.Custom)+len(in.Defaults)+len(in.Pins)+len(in.Clears)+len(in.ClearUnlessCustom)+1)
+	for name, value := range in.Custom {
+		parts["custom:"+name] = value
+	}
+	for env, value := range in.Defaults {
+		parts["default:"+env.Name()] = value
+	}
+	for env, value := range in.Pins {
+		parts["pin:"+env.Name()] = value
+	}
+	for _, env := range in.Clears {
+		parts["clear:"+env.Name()] = ""
+	}
+	for _, env := range in.ClearUnlessCustom {
+		parts["clearUnlessCustom:"+env.Name()] = ""
+	}
+	if in.PathPrepend != "" {
+		parts["pathPrepend"] = in.PathPrepend
+	}
+	return EnvFingerprint(parts)
+}
+
+func withEntry(m map[ReservedEnv]string, env ReservedEnv, value string) map[ReservedEnv]string {
+	out := make(map[ReservedEnv]string, len(m)+1)
+	maps.Copy(out, m)
+	out[env] = value
+	return out
+}
+
 // BuildEnvironment returns the current process environment, scrubbed of the
-// AppImage launch artifacts, with the requested variables removed and explicit
-// overrides applied. PATH overrides are additive so provider-specific binary
-// directories do not hide the user's normal command search path — and the
-// inherited half of that merge is read back off the scrubbed base, so the
-// mount's bin directory cannot re-enter through the override path.
+// AppImage launch artifacts, with in applied: Clears and ClearUnlessCustom
+// remove inherited values, Defaults apply where Custom does not name the
+// variable, then Custom, then Pins. Each variable appears once; removal is
+// case-insensitive so a Windows-style `Path` collides with `PATH`. The PATH
+// prefix is read against the scrubbed base, so the mount's bin directory
+// cannot re-enter through it.
 //
-// This is the ONE env rule every provider process gets, and it is exported for
-// that reason: providers whose Config carries an override map reach it through
-// Spawn, and the ones whose Config carries a full []string environment
-// (claudetui, which launches a real TUI) call it directly. Two different env
-// rules across providers is exactly how an injected variable goes missing on
-// one of them — which is why an override also *replaces* the inherited value
-// rather than being appended after it. Appending happens to work under
-// exec.Cmd's last-wins rule and does not under every consumer of a []string
-// environment, so the duplicate never gets to exist.
-func BuildEnvironment(overrides map[string]string, unset ...string) []string {
+// This is the ONE env rule every provider process gets: Spawn applies it, and
+// the paths that launch a process themselves call it directly. Two env rules
+// across providers is how an injected variable goes missing on one of them.
+func BuildEnvironment(in EnvInput) []string {
 	base := appimage.Scrub(os.Environ())
-	// Clipped so the override names land in a copy, never in the spare
-	// capacity of a caller's unset slice.
-	env := filterEnvironment(base, slices.AppendSeq(slices.Clip(unset), maps.Keys(overrides))...)
-	for key, value := range overrides {
-		if strings.EqualFold(key, "PATH") {
-			if existing := envValue(base, "PATH"); existing != "" {
-				value += string(os.PathListSeparator) + existing
+	set := make([]string, 0, len(in.Defaults)+len(in.Custom)+len(in.Pins)+1)
+	named := make(map[string]struct{}, len(in.Custom))
+	for name := range in.Custom {
+		named[strings.ToUpper(name)] = struct{}{}
+	}
+	for env, value := range in.Defaults {
+		if _, overridden := named[strings.ToUpper(env.Name())]; !overridden {
+			if _, pinned := in.Pins[env]; !pinned {
+				set = append(set, env.Name()+"="+value)
 			}
 		}
-		env = append(env, key+"="+value)
 	}
-	return env
+	for name, value := range in.Custom {
+		if !pinsName(in.Pins, name) {
+			set = append(set, name+"="+value)
+		}
+	}
+	for env, value := range in.Pins {
+		set = append(set, env.Name()+"="+value)
+	}
+	if in.PathPrepend != "" {
+		value := in.PathPrepend
+		if existing := envValue(base, PathEnv.Name()); existing != "" {
+			value += string(os.PathListSeparator) + existing
+		}
+		set = append(set, PathEnv.Name()+"="+value)
+	}
+
+	removed := make([]string, 0, len(in.Clears)+len(in.ClearUnlessCustom)+len(set))
+	for _, env := range in.Clears {
+		removed = append(removed, env.Name())
+	}
+	for _, env := range in.ClearUnlessCustom {
+		if _, userSet := named[strings.ToUpper(env.Name())]; !userSet {
+			removed = append(removed, env.Name())
+		}
+	}
+	for _, entry := range set {
+		name, _, _ := strings.Cut(entry, "=")
+		removed = append(removed, name)
+	}
+	return append(filterEnvironment(base, removed...), set...)
+}
+
+func pinsName(pins map[ReservedEnv]string, name string) bool {
+	for env := range pins {
+		if strings.EqualFold(env.Name(), name) {
+			return true
+		}
+	}
+	return false
 }
 
 // envValue returns the value of key in env, last entry wins. Lookup is
@@ -61,29 +170,9 @@ func envValue(env []string, key string) string {
 	return value
 }
 
-// FilterEnvironment removes named variables from env and scrubs the AppImage
-// launch artifacts out of what remains. An empty env means inherit the current
-// process environment, matching exec.Cmd's default and the previous fetcher
-// behavior. Matching is case-insensitive so this helper is also safe for
-// Windows-style environments.
-//
-// The scrub lives here rather than at each call site because every caller is
-// assembling a child environment: a provider CLI must resolve its binaries and
-// libraries against the user's real system, not against a squashfs mount that
-// disappears when Agent Overflow exits. It is marker-gated and idempotent, so
-// a non-AppImage launch is untouched and an already-scrubbed env passed back
-// in stays as it is.
-func FilterEnvironment(env []string, unset ...string) []string {
-	if len(env) == 0 {
-		env = os.Environ()
-	}
-	return filterEnvironment(appimage.Scrub(env), unset...)
-}
-
-// filterEnvironment is FilterEnvironment's removal half, over an environment
-// the caller has already scrubbed. Splitting the two is what lets
-// BuildEnvironment scrub exactly once, before it reads PATH back out for the
-// additive merge.
+// filterEnvironment removes named variables from an already scrubbed env.
+// Matching is case-insensitive so it is also safe for Windows-style
+// environments.
 func filterEnvironment(env []string, unset ...string) []string {
 	if len(unset) == 0 {
 		return append([]string(nil), env...)

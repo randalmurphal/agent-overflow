@@ -126,9 +126,9 @@ func TestFullAccessToolRequestAutoApprovesRegularTools(t *testing.T) {
 	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; done`},
-		Env: map[string]string{
+		Env: provider.EnvInput{Custom: map[string]string{
 			"CAPTURE": capturePath,
-		},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("spawn capture process: %v", err)
@@ -214,9 +214,9 @@ func TestSessionRespondToUserInputIncludesQuestionsInUpdatedInput(t *testing.T) 
 	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; done`},
-		Env: map[string]string{
+		Env: provider.EnvInput{Custom: map[string]string{
 			"CAPTURE": capturePath,
-		},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("spawn capture process: %v", err)

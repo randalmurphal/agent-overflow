@@ -34,7 +34,7 @@ type LoginConfig struct {
 	WorkDir       string
 	GeminiDir     string
 	AppDataSubdir string
-	Env           map[string]string
+	Env           provider.EnvInput
 	Reaper        procutil.Reaper
 }
 
@@ -70,17 +70,13 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 	// Force file-backed OAuth token storage so the isolated login lands in
 	// `<GeminiDir>/<AppDataSubdir>/antigravity-oauth-token` instead of overwriting
 	// the user's global OS keyring slot.
-	launchEnv, unset := LaunchEnv(cfg.Env, map[string]string{
-		"AGY_ACP_FORCE_FILE_STORAGE": "1",
-		"SSH_CONNECTION":             "127.0.0.1 0 127.0.0.1 0",
-	})
+	launchEnv := WithFileStorage(LaunchEnv(cfg.Env))
 
 	proc, err := provider.Spawn(ctx, provider.Watched(cfg.Reaper), provider.SpawnConfig{
 		Binary:         binary,
 		Args:           args,
 		Dir:            workDir,
 		Env:            launchEnv,
-		UnsetEnv:       unset,
 		Provider:       string(provider.Agy),
 		ThreadID:       "agy-login",
 		GracefulCancel: true,
