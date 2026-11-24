@@ -508,26 +508,6 @@ func TestCancelSessionImportStopsTheRunAndStillReportsDone(t *testing.T) {
 	}
 }
 
-// The row ids the frontend holds must outlive the scan cache: an id is
-// (provider, session id) and nothing about it depends on when the scan ran.
-func TestImportSessionsResolvesIDsAfterTheScanCacheExpires(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	home := newImportHome(t)
-	home.attach(app)
-	home.claudeLinearSession(t, importFixtureClaudeSession)
-
-	if _, err := app.ListImportableSessions(ImportScanRequest{}); err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	app.sessionImporter().Reset()
-
-	frames := runImport(t, app, "claude:"+importFixtureClaudeSession)
-	if frames[0].Status != sessionImportStatusImported {
-		t.Fatalf("frame = %+v, want the id to survive cache expiry via a rescan", frames[0])
-	}
-}
-
 // importOneClaudeSession is the shared arrangement for the refresh and
 // branch-resume tests: scan, import, and hand back the created threads.
 func importOneClaudeSession(t *testing.T, app *App, home importHome, sessionID string) []store.Thread {

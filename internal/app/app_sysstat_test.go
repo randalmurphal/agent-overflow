@@ -52,53 +52,43 @@ func TestEmitSystemStats_HappyPath(t *testing.T) {
 	}
 }
 
-// TestEmitSystemStats_SkipsOnShutdown pins the shuttingDown guard. A
-// regression that drops the guard would push stats after Shutdown
-// begins, racing the transport teardown.
-func TestEmitSystemStats_SkipsOnShutdown(t *testing.T) {
-	app := newTestAppWithStore(t)
-	app.shuttingDown.Store(true)
-
-	origSample := systemStatsSampleFn
-	t.Cleanup(func() { systemStatsSampleFn = origSample })
-	sampleCalled := false
-	systemStatsSampleFn = func(context.Context) (sysstat.Reading, error) {
-		sampleCalled = true
-		return sysstat.Reading{}, nil
-	}
-
-	emitted := false
-	app.testEmitHook = func(string, any) { emitted = true }
-
-	app.emitSystemStats(context.Background())
-
-	if sampleCalled {
-		t.Error("Sample should not run after shuttingDown is set")
-	}
-	if emitted {
-		t.Error("emit should not fire after shuttingDown is set")
-	}
-}
-
-// TestEmitSystemStats_SkipsOnSampleError pins the error-skip branch.
-// gopsutil errors are rare but recoverable; emitting a zero-valued
+// TestEmitSystemStats_SkipsOnShutdownOrSampleError pins the two skips. The shuttingDown
+// guard stops a sample before it runs: a regression that drops it would push
+// stats after Shutdown begins, racing the transport teardown. A sampler error
+// skips the emit: gopsutil errors are rare but recoverable, and a zero-valued
 // payload would push a misleading "0% / 0 GB" reading to the sidebar.
-func TestEmitSystemStats_SkipsOnSampleError(t *testing.T) {
-	app := newTestAppWithStore(t)
-
+func TestEmitSystemStats_SkipsOnShutdownOrSampleError(t *testing.T) {
 	origSample := systemStatsSampleFn
 	t.Cleanup(func() { systemStatsSampleFn = origSample })
-	systemStatsSampleFn = func(context.Context) (sysstat.Reading, error) {
-		return sysstat.Reading{}, errors.New("gopsutil boom")
-	}
+	for _, tc := range []struct {
+		name         string
+		shuttingDown bool
+		sampleErr    error
+		wantSampled  bool
+	}{
+		{name: "shutting down", shuttingDown: true},
+		{name: "sample error", sampleErr: errors.New("gopsutil boom"), wantSampled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newTestAppWithStore(t)
+			app.shuttingDown.Store(tc.shuttingDown)
+			sampled := false
+			systemStatsSampleFn = func(context.Context) (sysstat.Reading, error) {
+				sampled = true
+				return sysstat.Reading{}, tc.sampleErr
+			}
+			emitted := false
+			app.testEmitHook = func(string, any) { emitted = true }
 
-	emitted := false
-	app.testEmitHook = func(string, any) { emitted = true }
+			app.emitSystemStats(context.Background())
 
-	app.emitSystemStats(context.Background())
-
-	if emitted {
-		t.Error("emit should be skipped on sampler error")
+			if sampled != tc.wantSampled {
+				t.Errorf("sampled = %v, want %v", sampled, tc.wantSampled)
+			}
+			if emitted {
+				t.Error("system stats were emitted")
+			}
+		})
 	}
 }
 

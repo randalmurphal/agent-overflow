@@ -270,85 +270,64 @@ func TestArchiveThreadMidTurnSettlesTheOpenTurn(t *testing.T) {
 	}
 }
 
-// TestArchiveThreadKeepsSessionWhenATurnStartedAfterTheRequest is the
-// stop-time re-check. ArchiveThread stamps the request instant before it
-// queues on the per-thread action lock, and a send already holding that
-// lock can start a turn while the archive waits — the archive is stale
-// by the time it runs, and must not kill work the reader asked for after
-// they archived.
+// TestArchiveThreadStopsOnlyATurnStartedBeforeTheRequest is the stop-time
+// re-check. ArchiveThread stamps the request instant before it queues on the
+// per-thread action lock, and a send already holding that lock can start a
+// turn while the archive waits: the archive is stale by the time it runs, and
+// must not kill work the reader asked for after they archived. A turn that
+// was already running when the reader archived is exactly what archive
+// exists to stop, so its presence must not read as re-engagement. Either
+// way the archive itself stands: re-engagement cancels the stop, not the
+// reader's statement about where the thread belongs.
 //
 // The gap itself is a lock wait and not addressable from a test, so the
 // turn carries a start ahead of the request instant, which is the same
 // fact the re-check reads.
-func TestArchiveThreadKeepsSessionWhenATurnStartedAfterTheRequest(t *testing.T) {
+func TestArchiveThreadStopsOnlyATurnStartedBeforeTheRequest(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-archive-reengaged")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	if err := app.store.InsertTurn(store.Turn{
-		TurnID:    "turn-after",
-		ThreadID:  thread.ID,
-		TurnIndex: 0,
-		StartedAt: time.Now().Add(time.Minute).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("InsertTurn: %v", err)
-	}
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Codex),
-		Token:    "tok",
-		Liveness: newSessionLiveness(time.Now()),
-	})
+	for _, tc := range []struct {
+		name     string
+		started  time.Duration
+		wantLive bool
+	}{
+		{"started before", -time.Minute, false},
+		{"started after", time.Minute, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			thread := testThread("thread-archive-turn-started")
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread: %v", err)
+			}
+			if err := app.store.InsertTurn(store.Turn{
+				TurnID:    "turn-0",
+				ThreadID:  thread.ID,
+				TurnIndex: 0,
+				StartedAt: time.Now().Add(tc.started).UnixMilli(),
+			}); err != nil {
+				t.Fatalf("InsertTurn: %v", err)
+			}
+			app.sessionManager().put(thread.ID, session{
+				Provider: string(provider.Codex),
+				Token:    "tok",
+				Liveness: newSessionLiveness(time.Now()),
+			})
 
-	if err := archiveThread(app, thread.ID); err != nil {
-		t.Fatalf("ArchiveThread: %v", err)
-	}
-
-	if _, live := app.sessionManager().get(thread.ID); !live {
-		t.Fatal("a stale archive killed a session whose turn started after the archive request")
-	}
-	// The archive itself still stands: re-engagement cancels the stop,
-	// not the reader's statement about where the thread belongs.
-	archived, err := app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-	if !archived.Archived {
-		t.Fatal("re-engagement wrongly cancelled the archive flag")
-	}
-}
-
-// TestArchiveThreadStopsSessionWhoseTurnStartedBeforeTheRequest is the
-// other half of the same discriminator. A turn that was already running
-// when the reader archived is exactly what archive exists to stop, so
-// its presence must not read as re-engagement.
-func TestArchiveThreadStopsSessionWhoseTurnStartedBeforeTheRequest(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-archive-midflight")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	if err := app.store.InsertTurn(store.Turn{
-		TurnID:    "turn-before",
-		ThreadID:  thread.ID,
-		TurnIndex: 0,
-		StartedAt: time.Now().Add(-time.Minute).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("InsertTurn: %v", err)
-	}
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Codex),
-		Token:    "tok",
-		Liveness: newSessionLiveness(time.Now()),
-	})
-
-	if err := archiveThread(app, thread.ID); err != nil {
-		t.Fatalf("ArchiveThread: %v", err)
-	}
-	if _, live := app.sessionManager().get(thread.ID); live {
-		t.Fatal("archive left a session running whose turn predates the archive request")
+			if err := archiveThread(app, thread.ID); err != nil {
+				t.Fatalf("ArchiveThread: %v", err)
+			}
+			if _, live := app.sessionManager().get(thread.ID); live != tc.wantLive {
+				t.Fatalf("session live after the archive = %v, want %v", live, tc.wantLive)
+			}
+			archived, err := app.store.GetThread(thread.ID)
+			if err != nil {
+				t.Fatalf("GetThread: %v", err)
+			}
+			if !archived.Archived {
+				t.Fatal("the archive flag was not set")
+			}
+		})
 	}
 }
 

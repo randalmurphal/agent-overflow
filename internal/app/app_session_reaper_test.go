@@ -190,37 +190,6 @@ func TestRecordSessionActivityIgnoresStaleToken(t *testing.T) {
 	}
 }
 
-// TestReapIdleSessionsClosesStaleSession is the load-bearing test for
-// the fix. A session with last activity older than the threshold and
-// zero active turns must be evicted from a.sessions when the reaper
-// sweeps.
-func TestReapIdleSessionsClosesStaleSession(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-stale-session")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
-	now := time.Now()
-	past := now.Add(-idleReapThreshold - time.Minute)
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Codex),
-		Token:    "tok",
-		Liveness: newSessionLiveness(past),
-		// claude + codex left nil — closeProviderSession is a no-op
-		// when providerSession() returns nil, which is what we want
-		// for a pure liveness/eviction test.
-	})
-
-	app.reapIdleSessions(now)
-
-	_, present := app.sessionManager().get(thread.ID)
-	if present {
-		t.Fatal("expected idle session to be reaped")
-	}
-}
-
 // The reaper holds the thread's mutation lock from its checks through the
 // teardown, so the teardown's queue drop, which a Stop runs under that lock,
 // must not take it again: the lock is not reentrant.
@@ -765,7 +734,10 @@ func staleSession() session {
 
 // TestReapIdleSessionsSkipsPendingApproval verifies that a session
 // waiting for the user to respond to a permission prompt is never
-// reaped, regardless of how long the user takes to answer.
+// reaped, regardless of how long the user takes to answer, and that once
+// the approval resolves the session becomes reapable again. Without the
+// second half, a resolved approval would shield a session from the reaper
+// forever.
 func TestReapIdleSessionsSkipsPendingApproval(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithTriage(t)
@@ -796,6 +768,33 @@ func TestReapIdleSessionsSkipsPendingApproval(t *testing.T) {
 	_, present := app.sessionManager().get(thread.ID)
 	if !present {
 		t.Fatal("session with pending approval was reaped")
+	}
+
+	resolveMeta, _ := json.Marshal(map[string]any{
+		"requestId": "req-1",
+		"decision":  "approved",
+	})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventApprovalResolved,
+		ThreadID:  thread.ID,
+		ItemID:    "req-1",
+		Meta:      resolveMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle approval resolved: %v", err)
+	}
+
+	// Re-stamp stale liveness — triage.Handle doesn't touch session
+	// liveness (that's recordSessionActivity's job via the provider
+	// event loop), so force a stale timestamp to make the reaper
+	// consider this session reapable.
+	sess, _ := app.sessionManager().get(thread.ID)
+	sess.Liveness.LastActivityUnixNano.Store(time.Now().Add(-idleReapThreshold - time.Minute).UnixNano())
+
+	app.reapIdleSessions(time.Now())
+
+	if _, present := app.sessionManager().get(thread.ID); present {
+		t.Fatal("session with resolved approval was not reaped")
 	}
 }
 
@@ -885,63 +884,6 @@ func TestReapIdleSessionsSkipsPendingSend(t *testing.T) {
 	_, present := app.sessionManager().get(thread.ID)
 	if !present {
 		t.Fatal("session with pending send was reaped")
-	}
-}
-
-// TestReapIdleSessionsReapsAfterApprovalResolves confirms that once
-// all pending work clears, the session becomes reapable again. Without
-// this, a resolved approval would shield a session from the reaper
-// forever.
-func TestReapIdleSessionsReapsAfterApprovalResolves(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithTriage(t)
-	thread := testThread("thread-resolved-approval")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	app.sessionManager().put(thread.ID, staleSession())
-
-	reqMeta, _ := json.Marshal(provider.ApprovalRequest{
-		RequestID: "req-3",
-		ThreadID:  thread.ID,
-		ToolName:  "Bash",
-	})
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventApprovalRequest,
-		ThreadID:  thread.ID,
-		ItemID:    "req-3",
-		Meta:      reqMeta,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("Handle approval request: %v", err)
-	}
-
-	resolveMeta, _ := json.Marshal(map[string]any{
-		"requestId": "req-3",
-		"decision":  "approved",
-	})
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventApprovalResolved,
-		ThreadID:  thread.ID,
-		ItemID:    "req-3",
-		Meta:      resolveMeta,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("Handle approval resolved: %v", err)
-	}
-
-	// Re-stamp stale liveness — triage.Handle doesn't touch session
-	// liveness (that's recordSessionActivity's job via the provider
-	// event loop), so force a stale timestamp to make the reaper
-	// consider this session reapable.
-	sess, _ := app.sessionManager().get(thread.ID)
-	sess.Liveness.LastActivityUnixNano.Store(time.Now().Add(-idleReapThreshold - time.Minute).UnixNano())
-
-	app.reapIdleSessions(time.Now())
-
-	_, present := app.sessionManager().get(thread.ID)
-	if present {
-		t.Fatal("session with resolved approval was not reaped")
 	}
 }
 

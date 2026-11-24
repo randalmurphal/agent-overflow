@@ -270,47 +270,35 @@ func TestUpdateThreadModelRefusesAClaudeAlias(t *testing.T) {
 
 func TestUpdateThreadReasoningEffortValidates(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread, err := createTestThread(t, app, "claude", "/tmp/te", "claude-sonnet-4-6", "")
-	if err != nil {
-		t.Fatalf("createTestThread: %v", err)
-	}
-
-	updated, err := app.UpdateThreadReasoningEffort(thread.ID, "high")
-	if err != nil {
-		t.Fatalf("UpdateThreadReasoningEffort: %v", err)
-	}
-	if updated.ReasoningEffort != "high" {
-		t.Fatalf("ReasoningEffort = %q, want high", updated.ReasoningEffort)
-	}
-
-	if _, err := app.UpdateThreadReasoningEffort(thread.ID, "ultranope"); err == nil {
-		t.Fatal("UpdateThreadReasoningEffort(ultranope) error = nil, want validation error")
-	}
-}
-
-func TestUpdateThreadReasoningEffortAcceptsCodexMaxAndUltra(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread, err := createTestThread(t, app, "codex", "/tmp/tcmax", "gpt-5.6-sol", "")
-	if err != nil {
-		t.Fatalf("createTestThread: %v", err)
-	}
-
-	updated, err := app.UpdateThreadReasoningEffort(thread.ID, "max")
-	if err != nil {
-		t.Fatalf("UpdateThreadReasoningEffort(max): %v", err)
-	}
-	if updated.ReasoningEffort != "max" {
-		t.Fatalf("ReasoningEffort = %q, want max", updated.ReasoningEffort)
-	}
-
-	updated, err = app.UpdateThreadReasoningEffort(thread.ID, "ultra")
-	if err != nil {
-		t.Fatalf("UpdateThreadReasoningEffort(ultra): %v", err)
-	}
-	if updated.ReasoningEffort != "ultra" {
-		t.Fatalf("ReasoningEffort = %q, want ultra", updated.ReasoningEffort)
+	for _, tc := range []struct {
+		provider, workspace, model string
+		accepted, rejected         []string
+	}{
+		{"claude", "/tmp/te", "claude-sonnet-4-6", []string{"high"}, []string{"ultranope"}},
+		{"codex", "/tmp/tcmax", "gpt-5.6-sol", []string{"max", "ultra"}, nil},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			thread, err := createTestThread(t, app, tc.provider, tc.workspace, tc.model, "")
+			if err != nil {
+				t.Fatalf("createTestThread: %v", err)
+			}
+			for _, effort := range tc.accepted {
+				updated, err := app.UpdateThreadReasoningEffort(thread.ID, effort)
+				if err != nil {
+					t.Fatalf("UpdateThreadReasoningEffort(%s): %v", effort, err)
+				}
+				if updated.ReasoningEffort != effort {
+					t.Fatalf("ReasoningEffort = %q, want %s", updated.ReasoningEffort, effort)
+				}
+			}
+			for _, effort := range tc.rejected {
+				if _, err := app.UpdateThreadReasoningEffort(thread.ID, effort); err == nil {
+					t.Fatalf("UpdateThreadReasoningEffort(%s) error = nil, want validation error", effort)
+				}
+			}
+		})
 	}
 }
 

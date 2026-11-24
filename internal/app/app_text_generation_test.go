@@ -480,49 +480,33 @@ func TestResolveTextGenerationConfig_KeepsUserModelWhenProviderUnchanged(t *test
 	}
 }
 
+// A Codex model's catalog decides the text-generation effort: gpt-5.5 has
+// no ultra and falls to its default, gpt-5.6-sol keeps it.
 func TestResolveTextGenerationConfig_CoercesEffortForKnownCodexModel(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.settings = settings.NewService(t.TempDir())
-	resetProviderBinarySettings(t, app)
-	if _, err := app.settings.Update(map[string]any{
-		"textGenerationProvider":        "codex",
-		"textGenerationModel":           "gpt-5.5",
-		"textGenerationReasoningEffort": "ultra",
-	}); err != nil {
-		t.Fatalf("update settings: %v", err)
-	}
-	app.lookPathFn = fakeLookPath("codex")
+	for _, tc := range []struct{ model, wantEffort string }{
+		{"gpt-5.5", string(provider.EffortMedium)},
+		{"gpt-5.6-sol", string(provider.EffortUltra)},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			app.settings = settings.NewService(t.TempDir())
+			resetProviderBinarySettings(t, app)
+			if _, err := app.settings.Update(map[string]any{
+				"textGenerationProvider":        "codex",
+				"textGenerationModel":           tc.model,
+				"textGenerationReasoningEffort": "ultra",
+			}); err != nil {
+				t.Fatalf("update settings: %v", err)
+			}
+			app.lookPathFn = fakeLookPath("codex")
 
-	cfg := textGenConfig(t, app)
-	if cfg.Model != "gpt-5.5" {
-		t.Fatalf("model = %q, want gpt-5.5", cfg.Model)
-	}
-	if cfg.Effort != string(provider.EffortMedium) {
-		t.Fatalf("effort = %q, want medium (gpt-5.5 default)", cfg.Effort)
-	}
-}
-
-func TestResolveTextGenerationConfig_PreservesUltraForSol(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.settings = settings.NewService(t.TempDir())
-	resetProviderBinarySettings(t, app)
-	if _, err := app.settings.Update(map[string]any{
-		"textGenerationProvider":        "codex",
-		"textGenerationModel":           "gpt-5.6-sol",
-		"textGenerationReasoningEffort": "ultra",
-	}); err != nil {
-		t.Fatalf("update settings: %v", err)
-	}
-	app.lookPathFn = fakeLookPath("codex")
-
-	cfg := textGenConfig(t, app)
-	if cfg.Model != "gpt-5.6-sol" {
-		t.Fatalf("model = %q, want gpt-5.6-sol", cfg.Model)
-	}
-	if cfg.Effort != string(provider.EffortUltra) {
-		t.Fatalf("effort = %q, want ultra", cfg.Effort)
+			cfg := textGenConfig(t, app)
+			if cfg.Model != tc.model || cfg.Effort != tc.wantEffort {
+				t.Fatalf("config = %s at %q, want %s at %q", cfg.Model, cfg.Effort, tc.model, tc.wantEffort)
+			}
+		})
 	}
 }
 
