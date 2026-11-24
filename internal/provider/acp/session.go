@@ -794,6 +794,19 @@ func removeConfirmSliceLocked(dst []*pendingPromptConfirm, c *pendingPromptConfi
 	return dst
 }
 
+func containsConfirmLocked(dst []*pendingPromptConfirm, c *pendingPromptConfirm) bool {
+	for _, existing := range dst {
+		if existing == c {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Session) shouldStageSteerLocked() bool {
+	return s.hasForegroundStartedToolsLocked()
+}
+
 func (s *Session) promoteStagedSteersLocked() {
 	if len(s.stagedSteerConfirms) == 0 || s.cancelling || s.spontaneousTurnOpen {
 		return
@@ -810,13 +823,19 @@ func (s *Session) promoteStagedSteersLocked() {
 func (s *Session) rearmNextConfirmLocked(armNext bool) {
 	if !armNext || s.cancelling || s.spontaneousTurnOpen {
 		s.armedConfirms = nil
-		s.stagedSteerConfirms = nil
+		if s.cancelling || s.spontaneousTurnOpen {
+			s.stagedSteerConfirms = nil
+		}
 		return
 	}
 	if len(s.inFlightConfirms) > 0 {
 		head := s.inFlightConfirms[0]
 		if head != nil && !head.confirmed.Load() {
-			s.armedConfirms = appendUniqueConfirmLocked(s.armedConfirms, head)
+			if s.shouldStageSteerLocked() {
+				s.stagedSteerConfirms = appendUniqueConfirmLocked(s.stagedSteerConfirms, head)
+			} else {
+				s.armedConfirms = appendUniqueConfirmLocked(s.armedConfirms, head)
+			}
 			return
 		}
 	}
@@ -828,14 +847,16 @@ func (s *Session) makeWirePromptSettler(confirm *pendingPromptConfirm) func(rawL
 		once.Do(func() {
 			s.mu.Lock()
 			isHead := len(s.inFlightConfirms) > 0 && s.inFlightConfirms[0] == confirm
+			hasPendingSteer := len(s.inFlightConfirms) > 1
+			deferBlockClose := hasPendingSteer && s.shouldStageSteerLocked()
 			s.mu.Unlock()
-			if len(rawLine) > 0 && isHead {
+			if len(rawLine) > 0 && isHead && !deferBlockClose {
 				// Synchronously flush and close the settling head prompt's
 				// buffered content block on the read loop BEFORE arming the
 				// next steered prompt so Prompt #1's tail cannot leak below
-				// User Message #2. Do NOT close Prompt #1's active block when
-				// an early-returning steered Prompt #2 settles while Prompt #1
-				// is still streaming.
+				// User Message #2. Skip closing when agy's FinishSteer settles
+				// Prompt #1 mid-step while foreground tools or agy streaming
+				// output are still in progress.
 				s.closeActiveContentBlock()
 			}
 			// Do not arm the next steered prompt on session/cancel (which cancels
@@ -844,20 +865,22 @@ func (s *Session) makeWirePromptSettler(confirm *pendingPromptConfirm) func(rawL
 			armNext := len(rawLine) > 0 && !responseWasCancelled(rawLine)
 			s.mu.Lock()
 			wasHead := len(s.inFlightConfirms) > 0 && s.inFlightConfirms[0] == confirm
+			wasStaged := containsConfirmLocked(s.stagedSteerConfirms, confirm)
 			s.removeInFlightConfirmLocked(confirm)
 			s.armedConfirms = removeConfirmSliceLocked(s.armedConfirms, confirm)
-			s.stagedSteerConfirms = removeConfirmSliceLocked(s.stagedSteerConfirms, confirm)
+			keepStaged := armNext && wasHead && wasStaged && confirm != nil && !confirm.confirmed.Load()
+			if !keepStaged {
+				s.stagedSteerConfirms = removeConfirmSliceLocked(s.stagedSteerConfirms, confirm)
+			}
 			if s.wireInFlightPrompts > 0 {
 				s.wireInFlightPrompts--
 			}
 			if wasHead {
 				s.rearmNextConfirmLocked(armNext)
 			} else if armNext && confirm != nil && confirm.uuid != "" && !confirm.confirmed.Load() && s.wireInFlightPrompts > 0 {
-				// agy 1.5.16 accepts a steered session/prompt into the running
-				// cascade and returns its RPC immediately while Prompt #1 keeps
-				// streaming. Keep the steered prompt staged above the composer
-				// until the running foreground tool/block finishes and the model
-				// begins its next step reacting to it.
+				// Keep an early-returning steered prompt staged above the
+				// composer until the running foreground tool/block finishes
+				// and the model begins its next step reacting to it.
 				if s.hasForegroundStartedToolsLocked() || s.activeBlockKind != "" {
 					s.stagedSteerConfirms = appendUniqueConfirmLocked(s.stagedSteerConfirms, confirm)
 				} else {
