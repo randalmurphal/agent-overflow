@@ -234,14 +234,11 @@ describe('forward-skip exemption', () => {
     expect(result.delivered).toBe(2);
   });
 
-  it('keeps the skip resync on an entity-filtered channel before a filter is armed', async () => {
-    const result = await skipProbe(FILTERED, false);
-    expect(result.gaps).toBe(1);
-  });
-
-  it('keeps the skip resync on an unfiltered channel even while armed', async () => {
-    const result = await skipProbe(UNFILTERED, true);
-    expect(result.gaps).toBe(1);
+  it.each([
+    ['on an entity-filtered channel before a filter is armed', FILTERED, false],
+    ['on an unfiltered channel even while armed', UNFILTERED, true],
+  ])('keeps the skip resync %s', async (_name, channel, arm) => {
+    expect((await skipProbe(channel, arm)).gaps).toBe(1);
   });
 
   it('still honours an explicit gap marker on an entity-filtered channel', async () => {

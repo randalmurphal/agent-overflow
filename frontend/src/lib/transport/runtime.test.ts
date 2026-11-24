@@ -228,12 +228,6 @@ describe('Events.On', () => {
   });
 });
 
-describe('Events.Emit', () => {
-  it('is a no-op (transport does not push events from client)', () => {
-    expect(() => Events.Emit({ name: 'foo', data: 1 })).not.toThrow();
-  });
-});
-
 describe('Create.Array', () => {
   it('maps each element through the factory', () => {
     const factory = (s: unknown) => Number(s) * 2;

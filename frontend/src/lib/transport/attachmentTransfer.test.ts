@@ -57,6 +57,14 @@ describe('uploadAttachmentBytes', () => {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     }));
+    // A Request reads back 'same-origin' when nothing was set, so the
+    // credentials are taken from what the module handed fetch.
+    const answer = globalThis.fetch;
+    let credentials: RequestCredentials | undefined;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      credentials = init?.credentials;
+      return answer(input, init);
+    }) as typeof globalThis.fetch;
     const file = new File([PNG], 'shot.png', { type: 'image/png' });
 
     const record = await uploadAttachmentBytes('thr-1', file);
@@ -68,63 +76,27 @@ describe('uploadAttachmentBytes', () => {
 
     const sent = requests[0];
     expect(sent?.method).toBe('PUT');
-    expect(new URL(sent!.url).pathname + new URL(sent!.url).search)
-      .toBe('/attachments/upload?ticket=abc');
+    // The URL stays relative and the browser resolves it against the page:
+    // the SPA is served from three different origins across the boots it
+    // supports and does not know which one it is in, so anything this
+    // module did to the URL would be right in at most one of the three.
+    expect(sent?.url).toBe('http://page.test/attachments/upload?ticket=abc');
     expect(new Uint8Array(await sent!.arrayBuffer())).toEqual(PNG);
-  });
-
-  it('asks for a relative URL, never an absolute one', async () => {
-    // The SPA is served from three different origins across the boots it
-    // supports, and it does not know which one it is in. A minted URL is
-    // resolved by the browser against the page; anything this module did
-    // to it would be right in at most one of the three.
-    setBindingMock('MintAttachmentUploadTicket', () => '/attachments/upload?ticket=abc');
-    answerWith(() => new Response('{}', { status: 200 }));
-
-    await uploadAttachmentBytes('thr-1', new File([PNG], 'a.png', { type: 'image/png' }));
-
-    expect(new URL(requests[0]!.url).origin).toBe('http://page.test');
-  });
-
-  it('sends same-origin credentials, which the --connect stub requires', async () => {
-    setBindingMock('MintAttachmentUploadTicket', () => '/attachments/upload?ticket=abc');
-    let credentials: RequestCredentials | undefined;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      credentials = init?.credentials;
-      return new Response('{}', { status: 200 });
-    }) as typeof globalThis.fetch;
-
-    await uploadAttachmentBytes('thr-1', new File([PNG], 'a.png', { type: 'image/png' }));
-
+    // Same-origin credentials, which the --connect stub requires.
     expect(credentials).toBe('same-origin');
   });
 
-  it('reports an over-cap refusal in words a person can act on', async () => {
+  it.each([
+    ['an over-cap refusal in words a person can act on', 413, 'attachment too large', /larger than this backend accepts/],
+    ['a spent or unknown ticket as something to retry', 404, '404 page not found', /no longer available/],
+    ['a short refusal line', 400, 'attachment rejected', /attachment rejected/],
+    ['a long refusal body as its status alone', 400, 'x'.repeat(5000), /^Upload failed \(400\)\.$/],
+  ])('reports %s', async (_name, status, body, expected) => {
     setBindingMock('MintAttachmentUploadTicket', () => '/attachments/upload?ticket=abc');
-    answerWith(() => new Response('attachment too large', { status: 413 }));
+    answerWith(() => new Response(body, { status }));
 
     await expect(uploadAttachmentBytes('thr-1', new File([PNG], 'a.png', { type: 'image/png' })))
-      .rejects.toThrow(/larger than this backend accepts/);
-  });
-
-  it('reports a spent or unknown ticket as something to retry', async () => {
-    setBindingMock('MintAttachmentUploadTicket', () => '/attachments/upload?ticket=abc');
-    answerWith(() => new Response('404 page not found', { status: 404 }));
-
-    await expect(uploadAttachmentBytes('thr-1', new File([PNG], 'a.png', { type: 'image/png' })))
-      .rejects.toThrow(/no longer available/);
-  });
-
-  it('surfaces a short refusal line and never a long body', async () => {
-    setBindingMock('MintAttachmentUploadTicket', () => '/attachments/upload?ticket=abc');
-    answerWith(() => new Response('attachment rejected', { status: 400 }));
-    await expect(uploadAttachmentBytes('thr-1', new File([PNG], 'a.png', { type: 'image/png' })))
-      .rejects.toThrow(/attachment rejected/);
-
-    requests = [];
-    answerWith(() => new Response('x'.repeat(5000), { status: 400 }));
-    await expect(uploadAttachmentBytes('thr-1', new File([PNG], 'a.png', { type: 'image/png' })))
-      .rejects.toThrow(/^Upload failed \(400\)\.$/);
+      .rejects.toThrow(expected);
   });
 
   it('lets a failed mint through untouched', async () => {
@@ -228,20 +200,17 @@ describe('fetchTicketedBytes', () => {
       answerWith(() => new Response(body, { status }));
       return fetchTicketedBytes(HOME_BACKEND, url, prefix).then(() => new Error('the fetch succeeded'), (err: unknown) => err as Error);
     };
-    expect((await failure('OpenAI did not read the text as written', 502, null)).message)
-      .toBe('OpenAI did not read the text as written');
+    // The unprefixed reasons, a 404's included, are the rows of the test
+    // above.
     expect((await failure('OpenAI did not read the text as written', 502, 'Could not load image')).message)
       .toBe('Could not load image: OpenAI did not read the text as written');
     expect((await failure('', 500, null)).message).toBe('the computer answered 500.');
     expect((await failure('', 500, 'Could not load image')).message).toBe('Could not load image (500).');
 
-    // Without a prefix a 404 with a reason of its own is quoted; the plain
-    // ticket 404 is not, and with a prefix no 404 body is.
+    // With a prefix no 404 body is quoted, and without one the plain ticket
+    // 404 is not.
     expect((await failure('not found', 404, 'Could not load image')).message)
       .toBe('Could not load image: this transfer is no longer available. Try again.');
-    const expired = await failure('this section was already read aloud or has expired', 404, null);
-    expect(expired).toBeInstanceOf(TransferUnavailableError);
-    expect(expired.message).toBe('this section was already read aloud or has expired');
     const spent = await failure('404 page not found', 404, null);
     expect(spent).toBeInstanceOf(TransferUnavailableError);
     expect(spent.message).toBe('this transfer is no longer available. Try again.');

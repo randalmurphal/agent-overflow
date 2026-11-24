@@ -242,6 +242,7 @@ describe('backendAttach', () => {
       storeSessionFor(LAPTOP);
       const staged = stageMachine();
       expect(backendById(LAPTOP)).toBeDefined();
+      expect(storedBackendDescriptors().map((d) => d.id)).toEqual([LAPTOP]);
 
       detachAttachedBackend(LAPTOP);
 
@@ -251,19 +252,9 @@ describe('backendAttach', () => {
       expect(backendById(LAPTOP)).toBeUndefined();
       expect(hasPairedSession(LAPTOP)).toBe(false);
       expect(storedBackendEndpoint(LAPTOP)).toBe('');
-    });
-
-    it('forgets the address, so the next boot does not re-attach it', () => {
-      storeBackendEndpoint(LAPTOP, ENDPOINT);
-      storeSessionFor(LAPTOP);
-      stageMachine();
-      expect(storedBackendDescriptors().map((d) => d.id)).toEqual([LAPTOP]);
-
-      detachAttachedBackend(LAPTOP);
-
       // `storedBackendDescriptors` is what the registry's source answers on
       // a shell, so an entry left here is a machine `syncAttachedBackends()`
-      // re-opens.
+      // re-opens on the next boot.
       expect(storedBackendDescriptors()).toEqual([]);
     });
 
