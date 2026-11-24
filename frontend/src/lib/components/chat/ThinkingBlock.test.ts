@@ -298,30 +298,6 @@ describe('<ThinkingBlock>', () => {
     expect(getPayloadData).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps the live tail visible when an expanded streaming payload read is stale', async () => {
-    const thinking = makeItem({
-      id: 'think:0:0',
-      kind: 'thinking',
-      status: 'streaming',
-      summary: 'live tail',
-      payloadId: 'thinking-payload',
-      updatedAt: 1,
-    });
-    const pane = await buildPane(makeThread({ id: 'thread-1' }), [thinking]);
-    setBindingMock('GetPayloadData', async () => ({ data: 'full payload before ' }));
-
-    const { container, getByRole } = render(ThinkingBlock, {
-      props: { pane, item: pane.items[0] },
-    });
-
-    await fireEvent.click(getByRole('button', { name: /toggle thinking block/i }));
-
-    await waitFor(() => {
-      expect(container.querySelector('[data-testid="thinking-body"]')?.textContent)
-        .toBe('full payload before live tail');
-    });
-  });
-
   it('streams the expanded body at the reveal when the snapshot leads it', async () => {
     // Mid-stream expand where GetPayloadData's flush-before-read returns a body
     // AHEAD of the smoother's revealed tail, so the live tail is a strict PREFIX

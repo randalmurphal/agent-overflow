@@ -171,7 +171,7 @@ describe('<SubagentGroup>', () => {
     expect(label).toContain('Opus 4.7');
 
     expect(getByTestId('subagent-group-description').textContent).toContain('Find foo');
-    expect(getByTestId('subagent-group-preview').textContent).toContain('Initializing...');
+    expect(getByTestId('subagent-group-preview').textContent?.trim()).toBe('Initializing...');
   });
 
   it('renders a Codex review as an awaited Code review agent with its review model', () => {
@@ -282,7 +282,25 @@ describe('<SubagentGroup>', () => {
     }
   });
 
-  it('says the session ended when the completion sibling was written by session death, not "stopped"', () => {
+  // A killed completion written by session death says the session ended, not
+  // "stopped"; an errored one whose wake Claude dropped says Claude could not
+  // resume the parked agent, not "failed".
+  it.each([
+    {
+      status: 'killed' as const,
+      source: 'session_died',
+      says: 'Session ended before the agent finished',
+      otherSource: 'host_exit',
+      otherSays: 'Agent stopped',
+    },
+    {
+      status: 'errored' as const,
+      source: 'wake_dropped',
+      says: 'Claude could not resume the agent',
+      otherSource: 'task_updated',
+      otherSays: 'Agent failed',
+    },
+  ])('says why a $source completion ended, not "$otherSays"', ({ status, source, says, otherSource, otherSays }) => {
     const launch = mkAgentParent('bg', {
       status: 'running',
       isBackground: true,
@@ -292,50 +310,22 @@ describe('<SubagentGroup>', () => {
       id: 'complete:bg',
       kind: 'tool_completion',
       toolName: 'Agent',
-      status: 'killed',
+      status,
       completionOf: 'bg',
       completionLaunch: launch,
       meta: JSON.stringify({ task_id: 'task-bg', status_source: statusSource }),
     });
-    const died = render(SubagentGroupTestHarness, {
-      props: { group: mkGroup({ parentId: 'bg', parentItem: launch, completion: completionFor('session_died') }) },
+    const named = render(SubagentGroupTestHarness, {
+      props: { group: mkGroup({ parentId: 'bg', parentItem: launch, completion: completionFor(source) }) },
     });
-    expect(died.getByTestId('subagent-group-status').querySelector('[data-testid="indicator"]')?.getAttribute('data-state')).toBe('error');
-    expect(died.getByTestId('subagent-group-error').textContent).toContain('Session ended before the agent finished');
-    died.unmount();
+    expect(named.getByTestId('subagent-group-status').querySelector('[data-testid="indicator"]')?.getAttribute('data-state')).toBe('error');
+    expect(named.getByTestId('subagent-group-error').textContent).toContain(says);
+    named.unmount();
 
-    const stopped = render(SubagentGroupTestHarness, {
-      props: { group: mkGroup({ parentId: 'bg', parentItem: launch, completion: completionFor('host_exit') }) },
+    const other = render(SubagentGroupTestHarness, {
+      props: { group: mkGroup({ parentId: 'bg', parentItem: launch, completion: completionFor(otherSource) }) },
     });
-    expect(stopped.getByTestId('subagent-group-error').textContent).toContain('Agent stopped');
-  });
-
-  it('says Claude could not resume a parked agent whose wake it dropped, not "failed"', () => {
-    const launch = mkAgentParent('bg', {
-      status: 'running',
-      isBackground: true,
-      input: { description: 'Bg subagent', subagent_type: 'Explore' },
-    });
-    const completionFor = (statusSource: string) => mkItem({
-      id: 'complete:bg',
-      kind: 'tool_completion',
-      toolName: 'Agent',
-      status: 'errored',
-      completionOf: 'bg',
-      completionLaunch: launch,
-      meta: JSON.stringify({ task_id: 'task-bg', status_source: statusSource }),
-    });
-    const dropped = render(SubagentGroupTestHarness, {
-      props: { group: mkGroup({ parentId: 'bg', parentItem: launch, completion: completionFor('wake_dropped') }) },
-    });
-    expect(dropped.getByTestId('subagent-group-status').querySelector('[data-testid="indicator"]')?.getAttribute('data-state')).toBe('error');
-    expect(dropped.getByTestId('subagent-group-error').textContent).toContain('Claude could not resume the agent');
-    dropped.unmount();
-
-    const failed = render(SubagentGroupTestHarness, {
-      props: { group: mkGroup({ parentId: 'bg', parentItem: launch, completion: completionFor('task_updated') }) },
-    });
-    expect(failed.getByTestId('subagent-group-error').textContent).toContain('Agent failed');
+    expect(other.getByTestId('subagent-group-error').textContent).toContain(otherSays);
   });
 
   it('keeps the status slot wrapper present in both running and completed states', () => {
@@ -661,20 +651,8 @@ describe('<SubagentGroup>', () => {
     expect(second.getByTestId('subagent-group-preview').textContent?.trim()).toBe('Initializing...');
     second.unmount();
 
-    // An explicit run_in_background:false in the tool input is
-    // launch-time proof — the placeholder shows immediately.
-    const explicitForeground = mkGroup({
-      parentId: 'p-fg',
-      parentItem: mkAgentParent('p-fg', {
-        input: { description: 'Sync agent', subagent_type: 'Explore', run_in_background: false },
-      }),
-      children: [],
-      descendantCount: 0,
-      latestChildSummary: '',
-    });
-    const third = render(SubagentGroupTestHarness, { props: { group: explicitForeground } });
-    expect(third.getByTestId('subagent-group-preview').textContent?.trim()).toBe('Initializing...');
-    third.unmount();
+    // An explicit run_in_background:false in the tool input is launch-time
+    // proof; the title test above shows the placeholder for it.
 
     // A settled card with no child text has nothing to say — the
     // placeholder must not stick to finished agents forever.

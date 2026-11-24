@@ -79,14 +79,8 @@ describe('<MeterRing>', () => {
   // NaN and Infinity are separate cases on purpose: a regression
   // narrowing the guard to !Number.isNaN would pass the NaN test but
   // leak Infinity into the dash math.
-  it('treats a NaN percentage as 0 so a wire glitch cannot break the dash math', () => {
-    const { container } = renderRing({ percentage: NaN });
-    const arc = container.querySelectorAll('svg circle')[1];
-    expect(Number(arc.getAttribute('stroke-dashoffset'))).toBeCloseTo(CIRCUMFERENCE, 6);
-  });
-
-  it('treats an Infinity percentage as 0', () => {
-    const { container } = renderRing({ percentage: Infinity });
+  it.each([NaN, Infinity])('treats a non-finite percentage (%s) as 0 so a wire glitch cannot break the dash math', (percentage) => {
+    const { container } = renderRing({ percentage });
     const arc = container.querySelectorAll('svg circle')[1];
     expect(Number(arc.getAttribute('stroke-dashoffset'))).toBeCloseTo(CIRCUMFERENCE, 6);
   });

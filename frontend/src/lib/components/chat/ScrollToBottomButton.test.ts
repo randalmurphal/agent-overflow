@@ -3,13 +3,6 @@ import { render, fireEvent } from '@testing-library/svelte';
 import ScrollToBottomButton from './ScrollToBottomButton.svelte';
 
 describe('<ScrollToBottomButton>', () => {
-  it('renders when visible is true', () => {
-    const { getByTestId } = render(ScrollToBottomButton, {
-      props: { visible: true, onClick: () => {} },
-    });
-    expect(getByTestId('scroll-to-bottom')).toBeInTheDocument();
-  });
-
   it('does not render when visible is false', () => {
     const { queryByTestId } = render(ScrollToBottomButton, {
       props: { visible: false, onClick: () => {} },

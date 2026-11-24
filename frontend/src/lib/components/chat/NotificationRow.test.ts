@@ -121,43 +121,34 @@ describe('<NotificationRow> permission notices', () => {
     expect(row.querySelector('.lucide-icon')?.getAttribute('class')).toContain('inbox');
   });
 
-  // A downgraded Codex leaves messages parked in the app-server's own queue
-  // with no API to read, purge or run them. Nothing is lost, but nothing
-  // happens either until the user upgrades — so unlike external_queue this one
-  // carries the warning tone, or a standing request for action reads as
-  // chatter.
-  it('gives a codex_queue_unsupported notice the warning tone', () => {
-    const { getByTestId } = render(NotificationRow, {
-      props: {
-        item: makeNotification(
-          { kind: 'codex_queue_unsupported' },
-          "2 queued messages were handed to Codex 0.148+ and this Codex version can't see them. They run when Codex is upgraded.",
-        ),
-      },
-    });
+  it.each([
+    // A downgraded Codex leaves messages parked in the app-server's own queue
+    // with no API to read, purge or run them. Nothing is lost, but nothing
+    // happens either until the user upgrades — so unlike external_queue this
+    // one carries the warning tone, or a standing request for action reads as
+    // chatter.
+    {
+      kind: 'codex_queue_unsupported',
+      summary: "2 queued messages were handed to Codex 0.148+ and this Codex version can't see them. They run when Codex is upgraded.",
+    },
+    // The other half of the same family: Codex has the queue API, but this
+    // session could not read it, so a message AO handed over can be neither
+    // confirmed nor handed back. Same warning tone for the same reason — the
+    // user has a message in limbo and reopening the thread is what resolves it.
+    {
+      kind: 'codex_queue_unreconciled',
+      summary: "Codex couldn't be asked about its message queue when this thread reopened, so 1 queued message can't be confirmed. It runs if Codex still has it; reopen the thread later to check.",
+    },
+    {
+      kind: 'transcript_mirror_degraded',
+      summary: "Some early agent activity could not be shown because Claude's transcript mirror exceeded Agent Overflow's safety bound.",
+    },
+  ])('gives a $kind notice the warning tone', ({ kind, summary }) => {
+    const { getByTestId } = render(NotificationRow, { props: { item: makeNotification({ kind }, summary) } });
     const row = getByTestId('notification-row');
-    expect(row.textContent).toContain('They run when Codex is upgraded.');
+    expect(row.textContent).toContain(summary);
     expect(row.className).toContain('text-warning');
     expect(row.getAttribute('role')).toBe('status');
-    expect(row.querySelector('.lucide-icon')?.getAttribute('class')).toContain('triangle');
-  });
-
-  // The other half of the same family: Codex has the queue API, but this
-  // session could not read it, so a message AO handed over can be neither
-  // confirmed nor handed back. Same warning tone for the same reason — the
-  // user has a message in limbo and reopening the thread is what resolves it.
-  it('gives a codex_queue_unreconciled notice the warning tone', () => {
-    const { getByTestId } = render(NotificationRow, {
-      props: {
-        item: makeNotification(
-          { kind: 'codex_queue_unreconciled' },
-          "Codex couldn't be asked about its message queue when this thread reopened, so 1 queued message can't be confirmed. It runs if Codex still has it; reopen the thread later to check.",
-        ),
-      },
-    });
-    const row = getByTestId('notification-row');
-    expect(row.textContent).toContain('reopen the thread later to check');
-    expect(row.className).toContain('text-warning');
     expect(row.querySelector('.lucide-icon')?.getAttribute('class')).toContain('triangle');
   });
 
@@ -192,21 +183,6 @@ describe('<NotificationRow> permission notices', () => {
     const keptRow = kept.getByTestId('notification-row');
     expect(keptRow.className).toContain('text-warning');
     expect(keptRow.querySelector('a, button')).toBeNull();
-  });
-
-  it('surfaces transcript mirror data loss as a warning', () => {
-    const { getByTestId } = render(NotificationRow, {
-      props: {
-        item: makeNotification(
-          { kind: 'transcript_mirror_degraded' },
-          "Some early agent activity could not be shown because Claude's transcript mirror exceeded Agent Overflow's safety bound.",
-        ),
-      },
-    });
-    const row = getByTestId('notification-row');
-    expect(row.className).toContain('text-warning');
-    expect(row.getAttribute('role')).toBe('status');
-    expect(row.querySelector('.lucide-icon')?.getAttribute('class')).toContain('triangle');
   });
 
   it('lists the commands a permission_retry re-allowed, without the warning tone', () => {

@@ -29,30 +29,17 @@ describe('<SessionDiedNotification>', () => {
     );
   });
 
-  it('renders the signal-killed detail line when meta.signal is present', () => {
-    const { getByText } = render(SessionDiedNotification, {
-      props: { item: makeNotification({ signal: 'SIGKILL' }) },
-    });
-    expect(getByText(/Killed by signal SIGKILL/)).toBeInTheDocument();
-  });
-
-  it('renders the exit-code detail line when meta.exitCode is present', () => {
-    const { getByText } = render(SessionDiedNotification, {
-      props: { item: makeNotification({ exitCode: 137 }) },
-    });
-    expect(getByText(/Exited with code 137/)).toBeInTheDocument();
-  });
-
-  it('renders the captured stderr tail when meta.stderrTail is present', () => {
-    const { getByText } = render(SessionDiedNotification, {
-      props: {
-        item: makeNotification({
-          exitCode: 1,
-          stderrTail: "error: unknown option '--thinking-display'",
-        }),
-      },
-    });
-    expect(getByText(/unknown option '--thinking-display'/)).toBeInTheDocument();
+  it.each([
+    { line: 'the signal-killed detail line', meta: { signal: 'SIGKILL' }, text: /Killed by signal SIGKILL/ },
+    { line: 'the exit-code detail line', meta: { exitCode: 137 }, text: /Exited with code 137/ },
+    {
+      line: 'the captured stderr tail',
+      meta: { exitCode: 1, stderrTail: "error: unknown option '--thinking-display'" },
+      text: /unknown option '--thinking-display'/,
+    },
+  ])('renders $line from meta', ({ meta, text }) => {
+    const { getByText } = render(SessionDiedNotification, { props: { item: makeNotification(meta) } });
+    expect(getByText(text)).toBeInTheDocument();
   });
 
   it('forwards meta.reason as the wrapper title for hover', () => {
