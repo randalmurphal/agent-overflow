@@ -246,7 +246,7 @@ func TestBuildArgsDangerousSkipPermissions(t *testing.T) {
 // override in the binary that rewrites the literal string `"cli"` to
 // `"sdk-cli"` — any other preset value survives. The todo opt-in exists
 // because claude ≥2.1.233 removes TodoWrite/Task* for modern models
-// unless the session opts back in (claudeTodoToolsEnvVar's comment has
+// unless the session opts back in (withClaudeSessionEnvDefaults's comment has
 // the gate details).
 func TestWithClaudeSessionEnvDefaults(t *testing.T) {
 	child := func(custom map[string]string, disableTodoReminders bool) map[string]string {

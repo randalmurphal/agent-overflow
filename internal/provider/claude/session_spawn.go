@@ -101,17 +101,17 @@ type Config struct {
 	DisallowedTools []string
 	// DisableTodoReminders exports CLAUDE_CODE_TODO_REMINDER_MODE=off so
 	// the CLI stops nudging the model to use the todo tools (see
-	// claudeTodoReminderModeEnvVar). Spawn-time only, like every session
+	// withClaudeSessionEnvDefaults). Spawn-time only, like every session
 	// env value; a change lands on the next session, and PlanLiveUpdate's
 	// trailing DeepEqual reports it as a restart.
 	DisableTodoReminders bool
 	// CommandTimeoutHours exports BASH_MAX_TIMEOUT_MS (hours in ms) as the
 	// ceiling on a Bash/PowerShell command's timeout, background commands
-	// included (see claudeBashMaxTimeoutEnvVar). Zero exports nothing.
+	// included (see WithCommandTimeoutEnv). Zero exports nothing.
 	// Spawn-time only, like DisableTodoReminders.
 	CommandTimeoutHours int
 	// TaskListID keys the CLI's Task* list (`~/.claude/tasks/<id>/`) and is
-	// exported as CLAUDE_CODE_TASK_LIST_ID (claudeTaskListIDEnvVar). Always
+	// exported as CLAUDE_CODE_TASK_LIST_ID (withClaudeTaskListEnv). Always
 	// the AO thread id via ConfigFromOptions; empty only for a Config built
 	// by hand, which leaves the CLI keying the list by session id.
 	TaskListID string
@@ -284,6 +284,16 @@ func NativeMemoryOffEnv(off bool) map[string]string {
 // overriding any caller value: the id is the thread's identity, not a
 // preference, and a reserved name (internal/provider/envtable.go). An
 // empty id leaves env alone.
+//
+// CLAUDE_CODE_TASK_LIST_ID names the directory the CLI keeps a session's
+// Task* list in (`~/.claude/tasks/<id>/`, sanitized to [A-Za-z0-9_-]).
+// Unset, the CLI keys the list by session id, so any path that mints a
+// new session id for the same thread (AO's rollback slice, a provider
+// round-trip) would orphan the list while the thread's activity rail and
+// threads.live_todo still described it. Pinned to the AO thread id on both
+// Claude spawn paths, the list follows the thread. The CLI reads the
+// variable ahead of its team-name and session-id fallbacks (2.1.257
+// binary analysis; honored end to end since the 2.1.233 spike).
 func withClaudeTaskListEnv(env provider.EnvInput, taskListID string) provider.EnvInput {
 	if taskListID == "" {
 		return env
@@ -291,7 +301,35 @@ func withClaudeTaskListEnv(env provider.EnvInput, taskListID string) provider.En
 	return env.Pin(provider.ClaudeTaskListIDEnv, taskListID)
 }
 
-// claudeCodeEntrypointEnv tags spawned `claude` processes so the
+// WithCommandTimeoutEnv returns env with BASH_MAX_TIMEOUT_MS defaulted to
+// hours in ms, unless hours is not positive. As a default the setting
+// outranks an inherited host value and a custom value outranks the setting.
+// Exported for the claude-tui spawn, which the app configures.
+//
+// BASH_MAX_TIMEOUT_MS is the CLI's ceiling on a Bash/PowerShell command's
+// timeout in ms (2.1.300). Unset, a foreground command may ask for at most
+// 10 min, and a headless session (2.1.285+) stops a background command at
+// its timeout: 30 min by default, at most 2 h. Set, the foreground ceiling
+// becomes the value and the background ceiling max(2 h, value), clamped at
+// 2147483647 ms, and the Bash tool description tells the model the new
+// maximum. claude-tui is interactive, so there it is the foreground ceiling
+// only.
+//
+// A default, not a pin, like CLAUDE_CODE_TODO_REMINDER_MODE: a user value in
+// the provider's custom environment wins over the setting.
+func WithCommandTimeoutEnv(env provider.EnvInput, hours int) provider.EnvInput {
+	if hours <= 0 {
+		return env
+	}
+	return env.Default(provider.ClaudeBashMaxTimeoutEnv, strconv.FormatInt(int64(hours)*3_600_000, 10))
+}
+
+// withClaudeSessionEnvDefaults returns a copy of env with the entrypoint
+// marker pinned and AO's session-environment defaults added; a default
+// applies only where the custom environment does not name it, so a user can
+// opt out per variable.
+//
+// CLAUDE_CODE_ENTRYPOINT tags spawned `claude` processes so the
 // resulting session JSONL header records `entrypoint: agent-overflow`
 // instead of the auto-detected `sdk-cli` (which the CLI's resume
 // picker filters out — see [docs/references/claude.md](../../../docs/references/claude.md)).
@@ -305,9 +343,8 @@ func withClaudeTaskListEnv(env provider.EnvInput, taskListID string) provider.En
 // The value itself is `provider.ClaudeEntrypointOrigin`: the session
 // importer reads it back out of transcripts, so writer and reader share
 // one declaration rather than two literals that can drift apart.
-var claudeCodeEntrypointEnvVar = provider.ClaudeEntrypointEnv.Name()
-
-// claudeTodoToolsEnvVar opts the session into the TodoWrite / Task*
+//
+// CLAUDE_CODE_ENABLE_TODO_TOOLS opts the session into the TodoWrite / Task*
 // tool surface. Claude ≥2.1.233 removes those tools for modern models
 // (opus ≥4.8; sonnet/fable/mythos ≥5 — older families keep them
 // unconditionally) unless the session opts back in: this variable
@@ -323,9 +360,8 @@ var claudeCodeEntrypointEnvVar = provider.ClaudeEntrypointEnv.Name()
 // refusal, so a user who wants the vendor's stock tool surface can set it
 // to "false" in the provider's custom environment, which outranks the
 // default withClaudeSessionEnvDefaults adds.
-var claudeTodoToolsEnvVar = provider.ClaudeTodoToolsEnv.Name()
-
-// claudeTodoReminderModeEnvVar controls the CLI's periodic "track your
+//
+// CLAUDE_CODE_TODO_REMINDER_MODE controls the CLI's periodic "track your
 // work with the todo tools" nudge. "off" silences it while keeping the
 // tools; unset, the CLI defaults the mode from a remote feature gate
 // (baseline = nudge every 10 turns without a task write, verified on
@@ -333,47 +369,6 @@ var claudeTodoToolsEnvVar = provider.ClaudeTodoToolsEnv.Name()
 // user turned reminders off in Settings (Config.DisableTodoReminders),
 // and like the opt-in above it is a default, not a pin: a user value in
 // the provider's custom environment wins.
-var claudeTodoReminderModeEnvVar = provider.ClaudeTodoReminderModeEnv.Name()
-
-// claudeTaskListIDEnvVar names the directory the CLI keeps a session's
-// Task* list in (`~/.claude/tasks/<id>/`, sanitized to [A-Za-z0-9_-]).
-// Unset, the CLI keys the list by session id, so any path that mints a
-// new session id for the same thread (AO's rollback slice, a provider
-// round-trip) would orphan the list while the thread's activity rail and
-// threads.live_todo still described it. Pinned to the AO thread id on both
-// Claude spawn paths, the list follows the thread. The CLI reads the
-// variable ahead of its team-name and session-id fallbacks (2.1.257
-// binary analysis; honored end to end since the 2.1.233 spike).
-var claudeTaskListIDEnvVar = provider.ClaudeTaskListIDEnv.Name()
-
-// BashMaxTimeoutEnv is the CLI's ceiling on a Bash/PowerShell command's
-// timeout in ms (2.1.300). Unset, a foreground command may ask for at most
-// 10 min, and a headless session (2.1.285+) stops a background command at
-// its timeout: 30 min by default, at most 2 h. Set, the foreground ceiling
-// becomes the value and the background ceiling max(2 h, value), clamped at
-// 2147483647 ms, and the Bash tool description tells the model the new
-// maximum. claude-tui is interactive, so there it is the foreground ceiling
-// only.
-//
-// A default, not a pin, like CLAUDE_CODE_TODO_REMINDER_MODE: a user value in
-// the provider's custom environment wins over the setting.
-var BashMaxTimeoutEnv = provider.ClaudeBashMaxTimeoutEnv.Name()
-
-// WithCommandTimeoutEnv returns env with BASH_MAX_TIMEOUT_MS defaulted to
-// hours in ms, unless hours is not positive. As a default the setting
-// outranks an inherited host value and a custom value outranks the setting.
-// Exported for the claude-tui spawn, which the app configures.
-func WithCommandTimeoutEnv(env provider.EnvInput, hours int) provider.EnvInput {
-	if hours <= 0 {
-		return env
-	}
-	return env.Default(provider.ClaudeBashMaxTimeoutEnv, strconv.FormatInt(int64(hours)*3_600_000, 10))
-}
-
-// withClaudeSessionEnvDefaults returns a copy of env with the entrypoint
-// marker pinned and AO's session-environment defaults added; a default
-// applies only where the custom environment does not name it, so a user can
-// opt out per variable.
 func withClaudeSessionEnvDefaults(env provider.EnvInput, disableTodoReminders bool) provider.EnvInput {
 	env = env.Pin(provider.ClaudeEntrypointEnv, provider.ClaudeEntrypointOrigin)
 	env = env.Default(provider.ClaudeTodoToolsEnv, "true")

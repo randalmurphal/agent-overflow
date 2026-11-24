@@ -11,7 +11,7 @@ import (
 // yields to a value in the caller's env (the provider's custom
 // environment). Serial: it sets the process environment.
 func TestCommandTimeoutReachesTheSpawnEnvironment(t *testing.T) {
-	t.Setenv(BashMaxTimeoutEnv, "60000")
+	t.Setenv(provider.ClaudeBashMaxTimeoutEnv.Name(), "60000")
 
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:                     "claude",
@@ -22,14 +22,14 @@ func TestCommandTimeoutReachesTheSpawnEnvironment(t *testing.T) {
 		t.Fatalf("CommandTimeoutHours = %d, want 5", cfg.CommandTimeoutHours)
 	}
 	env := claudeChildEnv(cfg)
-	if value, found := envLookup(env, BashMaxTimeoutEnv); !found || value != "18000000" {
-		t.Fatalf("%s = %q (present=%v), want 18000000 over the inherited value", BashMaxTimeoutEnv, value, found)
+	if value, found := envLookup(env, provider.ClaudeBashMaxTimeoutEnv.Name()); !found || value != "18000000" {
+		t.Fatalf("%s = %q (present=%v), want 18000000 over the inherited value", provider.ClaudeBashMaxTimeoutEnv.Name(), value, found)
 	}
 
-	cfg.Env = provider.EnvInput{Custom: map[string]string{BashMaxTimeoutEnv: "99999999"}}
+	cfg.Env = provider.EnvInput{Custom: map[string]string{provider.ClaudeBashMaxTimeoutEnv.Name(): "99999999"}}
 	env = claudeChildEnv(cfg)
-	if value, _ := envLookup(env, BashMaxTimeoutEnv); value != "99999999" {
-		t.Fatalf("%s = %q, want the custom environment's value", BashMaxTimeoutEnv, value)
+	if value, _ := envLookup(env, provider.ClaudeBashMaxTimeoutEnv.Name()); value != "99999999" {
+		t.Fatalf("%s = %q, want the custom environment's value", provider.ClaudeBashMaxTimeoutEnv.Name(), value)
 	}
 }
 

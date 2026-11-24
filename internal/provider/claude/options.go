@@ -259,12 +259,6 @@ const (
 	crossSessionInboundRefuse = "refuse"
 )
 
-// claudeHarborKiteEnv is the CLI's one environment override for the
-// GrowthBook experiment that binds the cross-session peer inbox
-// (`function jh(){if(q.CLAUDE_CODE_HARBOR_KITE)return!0; ...}`, 2.1.237).
-// It is a PARSED BOOLEAN on the CLI side, so "0" and "" read as off.
-var claudeHarborKiteEnv = provider.ClaudeCrossSessionGateEnv.Name()
-
 // withClaudeCrossSessionEnv adds the inbox gate variable to a session's
 // environment when the setting asks for it.
 //
@@ -285,18 +279,17 @@ var claudeHarborKiteEnv = provider.ClaudeCrossSessionGateEnv.Name()
 // on by experiment. "Absent" is not free, though: the child INHERITS the
 // host environment, so absence has to be produced — see
 // crossSessionClears, which every Claude spawn clears.
+//
+// CLAUDE_CODE_HARBOR_KITE is the CLI's one environment override for the
+// GrowthBook experiment that binds the cross-session peer inbox
+// (`function jh(){if(q.CLAUDE_CODE_HARBOR_KITE)return!0; ...}`, 2.1.237).
+// It is a PARSED BOOLEAN on the CLI side, so "0" and "" read as off.
 func withClaudeCrossSessionEnv(env provider.EnvInput, cfg Config) provider.EnvInput {
 	if !cfg.CrossSessionEnabled {
 		return env
 	}
 	return env.Pin(provider.ClaudeCrossSessionGateEnv, "1")
 }
-
-// claudePeerSessionNameEnv is the CLI's environment spelling of the
-// peer-visible name. AO always states the name as `--name` instead
-// (peerSessionNameArgs), which is why it is a reserved name a user's custom
-// environment may not set (internal/provider/envtable.go).
-var claudePeerSessionNameEnv = provider.ClaudePeerSessionNameEnv.Name()
 
 // crossSessionClears names the INHERITED variables a Claude spawn must
 // remove for AO's cross-session setting to be the answer.
@@ -317,6 +310,11 @@ var claudePeerSessionNameEnv = provider.ClaudePeerSessionNameEnv.Name()
 //   - CLAUDE_CODE_SESSION_NAME is removed in both states because AO owns the
 //     name: an inherited value would name a thread something the app never
 //     chose, and the app's own `--name` is what the peer registry must show.
+//
+// CLAUDE_CODE_SESSION_NAME is the CLI's environment spelling of the
+// peer-visible name. AO always states the name as `--name` instead
+// (peerSessionNameArgs), which is why it is a reserved name a user's custom
+// environment may not set (internal/provider/envtable.go).
 func crossSessionClears() []provider.ReservedEnv {
 	return []provider.ReservedEnv{provider.ClaudeCrossSessionGateEnv, provider.ClaudePeerSessionNameEnv}
 }

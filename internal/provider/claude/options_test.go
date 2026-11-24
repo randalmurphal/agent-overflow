@@ -836,20 +836,20 @@ func envLookup(env []string, key string) (string, bool) {
 // `crossSessionInbound: "refuse"` does not cover that; it blocks DELIVERY,
 // not discovery.
 func TestCrossSessionGateIsNotInheritedWhenDisabled(t *testing.T) {
-	t.Setenv(claudeHarborKiteEnv, "1")
-	t.Setenv(claudePeerSessionNameEnv, "someone-elses-name")
+	t.Setenv(provider.ClaudeCrossSessionGateEnv.Name(), "1")
+	t.Setenv(provider.ClaudePeerSessionNameEnv.Name(), "someone-elses-name")
 
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7"})
 	cfg.Reaper = procutiltest.Reaper()
 	env := claudeChildEnv(cfg)
 
-	if value, found := envLookup(env, claudeHarborKiteEnv); found {
-		t.Fatalf("%s = %q in the child environment, want it absent — the setting says off", claudeHarborKiteEnv, value)
+	if value, found := envLookup(env, provider.ClaudeCrossSessionGateEnv.Name()); found {
+		t.Fatalf("%s = %q in the child environment, want it absent — the setting says off", provider.ClaudeCrossSessionGateEnv.Name(), value)
 	}
 	// The name is AO's to state, in both directions: an inherited one would
 	// register a thread under a label the app never chose.
-	if value, found := envLookup(env, claudePeerSessionNameEnv); found {
-		t.Fatalf("%s = %q in the child environment, want it absent", claudePeerSessionNameEnv, value)
+	if value, found := envLookup(env, provider.ClaudePeerSessionNameEnv.Name()); found {
+		t.Fatalf("%s = %q in the child environment, want it absent", provider.ClaudePeerSessionNameEnv.Name(), value)
 	}
 }
 
@@ -863,10 +863,10 @@ func TestTaskListIDIsPinnedToTheThread(t *testing.T) {
 	if cfg.TaskListID != "thread-1" {
 		t.Fatalf("TaskListID = %q, want thread-1", cfg.TaskListID)
 	}
-	cfg.Env = provider.EnvInput{Custom: map[string]string{claudeTaskListIDEnvVar: "someone-elses-list", "FOO": "bar"}}
+	cfg.Env = provider.EnvInput{Custom: map[string]string{provider.ClaudeTaskListIDEnv.Name(): "someone-elses-list", "FOO": "bar"}}
 	env := claudeChildEnv(cfg)
-	if value, found := envLookup(env, claudeTaskListIDEnvVar); !found || value != "thread-1" {
-		t.Fatalf("%s = %q (present=%v), want thread-1", claudeTaskListIDEnvVar, value, found)
+	if value, found := envLookup(env, provider.ClaudeTaskListIDEnv.Name()); !found || value != "thread-1" {
+		t.Fatalf("%s = %q (present=%v), want thread-1", provider.ClaudeTaskListIDEnv.Name(), value, found)
 	}
 	if value, _ := envLookup(env, "FOO"); value != "bar" {
 		t.Fatalf("FOO = %q, want the caller's value untouched", value)
@@ -883,8 +883,8 @@ func TestTaskListIDIsPinnedToTheThread(t *testing.T) {
 // explicitly rather than relying on what it happened to inherit, so the value
 // is exactly "1" no matter what the host exported.
 func TestCrossSessionGateIsStatedExplicitlyWhenEnabled(t *testing.T) {
-	t.Setenv(claudeHarborKiteEnv, "totally-bogus")
-	t.Setenv(claudePeerSessionNameEnv, "someone-elses-name")
+	t.Setenv(provider.ClaudeCrossSessionGateEnv.Name(), "totally-bogus")
+	t.Setenv(provider.ClaudePeerSessionNameEnv.Name(), "someone-elses-name")
 
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:           "claude",
@@ -893,11 +893,11 @@ func TestCrossSessionGateIsStatedExplicitlyWhenEnabled(t *testing.T) {
 	})
 	env := claudeChildEnv(cfg)
 
-	if value, found := envLookup(env, claudeHarborKiteEnv); !found || value != "1" {
-		t.Fatalf("%s = %q (present=%v), want \"1\"", claudeHarborKiteEnv, value, found)
+	if value, found := envLookup(env, provider.ClaudeCrossSessionGateEnv.Name()); !found || value != "1" {
+		t.Fatalf("%s = %q (present=%v), want \"1\"", provider.ClaudeCrossSessionGateEnv.Name(), value, found)
 	}
-	if value, found := envLookup(env, claudePeerSessionNameEnv); found {
-		t.Fatalf("%s = %q, want it absent — AO passes the name as --name", claudePeerSessionNameEnv, value)
+	if value, found := envLookup(env, provider.ClaudePeerSessionNameEnv.Name()); found {
+		t.Fatalf("%s = %q, want it absent — AO passes the name as --name", provider.ClaudePeerSessionNameEnv.Name(), value)
 	}
 }
 
