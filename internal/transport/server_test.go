@@ -177,19 +177,15 @@ func TestServer_RPCRoundTrip(t *testing.T) {
 
 func TestServer_AuthRequiresToken(t *testing.T) {
 	f := newServerFixture(t)
-	url := "ws://" + f.srv.Addr() + "/ws"
-	_, _, err := websocket.Dial(context.Background(), url, nil)
-	if err == nil {
-		t.Fatalf("dial without token should fail")
-	}
-}
-
-func TestServer_AuthRejectsWrongToken(t *testing.T) {
-	f := newServerFixture(t)
-	url := "ws://" + f.srv.Addr() + "/ws?token=wrong"
-	_, _, err := websocket.Dial(context.Background(), url, nil)
-	if err == nil {
-		t.Fatalf("dial with wrong token should fail")
+	for _, tc := range []struct{ name, query string }{
+		{"no token", ""},
+		{"wrong token", "?token=wrong"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := websocket.Dial(context.Background(), "ws://"+f.srv.Addr()+"/ws"+tc.query, nil); err == nil {
+				t.Fatal("dial should fail")
+			}
+		})
 	}
 }
 
@@ -231,36 +227,25 @@ func TestServer_BootstrapEndpoint(t *testing.T) {
 	}
 }
 
+// The loopback peer is TestServer_BootstrapEndpoint, over a real socket.
 func TestServer_BootstrapRemoteUsesPeerLocality(t *testing.T) {
 	f := newServerFixture(t)
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/bootstrap.json", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.RemoteAddr = "192.168.1.25:54321"
+	recorder := httptest.NewRecorder()
 
-	for _, tc := range []struct {
-		name       string
-		remoteAddr string
-		wantRemote bool
-	}{
-		{name: "loopback", remoteAddr: "127.0.0.1:54321", wantRemote: false},
-		{name: "non-loopback", remoteAddr: "192.168.1.25:54321", wantRemote: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "http://example.test/bootstrap.json", nil)
-			req.Header.Set("Authorization", "Bearer test-token")
-			req.RemoteAddr = tc.remoteAddr
-			recorder := httptest.NewRecorder()
+	f.srv.handleBootstrap(recorder, req)
 
-			f.srv.handleBootstrap(recorder, req)
-
-			if recorder.Code != http.StatusOK {
-				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
-			}
-			var bootstrap Bootstrap
-			if err := json.NewDecoder(recorder.Body).Decode(&bootstrap); err != nil {
-				t.Fatalf("decode bootstrap: %v", err)
-			}
-			if bootstrap.Remote != tc.wantRemote {
-				t.Fatalf("Remote = %v, want %v", bootstrap.Remote, tc.wantRemote)
-			}
-		})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	var bootstrap Bootstrap
+	if err := json.NewDecoder(recorder.Body).Decode(&bootstrap); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if !bootstrap.Remote {
+		t.Fatal("non-loopback peer's bootstrap not marked remote")
 	}
 }
 
@@ -433,15 +418,22 @@ func TestServer_BootstrapReportsARefusalToMigrateLive(t *testing.T) {
 
 func TestServer_BootstrapRejectsBadToken(t *testing.T) {
 	f := newServerFixture(t)
-	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=wrong", f.srv.Addr()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	// Indistinguishable from "no such path" — 404, not 401, so a LAN
-	// scanner can't fingerprint the agent-overflow server.
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	for _, tc := range []struct{ name, query string }{
+		{"wrong ticket", "?t=wrong"},
+		{"no credential", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json%s", f.srv.Addr(), tc.query))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			// Indistinguishable from "no such path": 404, not 401, so a LAN
+			// scanner can't fingerprint the agent-overflow server.
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("expected 404, got %d", resp.StatusCode)
+			}
+		})
 	}
 }
 
@@ -497,18 +489,6 @@ func TestServer_BootstrapAdmitsALiveSessionWithoutAPageCredential(t *testing.T) 
 	defer refused.Body.Close()
 	if refused.StatusCode != http.StatusNotFound {
 		t.Fatalf("refused session bootstrap = %d, want 404", refused.StatusCode)
-	}
-}
-
-func TestServer_BootstrapRejectsEmptyToken(t *testing.T) {
-	f := newServerFixture(t)
-	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json", f.srv.Addr()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", resp.StatusCode)
 	}
 }
 
@@ -1432,77 +1412,48 @@ func TestServer_ShutdownWithoutStart(t *testing.T) {
 }
 
 // TestRebind_InvalidAddrLeavesStateIntact pins the state-intact
-// contract: a Rebind that fails to acquire its listener (here an
-// invalid host) MUST leave the server's observable state exactly as
-// it was. Without the contract, callers would have to maintain their
-// own rollback bookkeeping on top of a partially-mutated server.
+// contract: a Rebind that fails to acquire its listener MUST leave the
+// server's observable state exactly as it was. Without the contract,
+// callers would have to maintain their own rollback bookkeeping on top of
+// a partially-mutated server.
 func TestRebind_InvalidAddrLeavesStateIntact(t *testing.T) {
-	f := newServerFixture(t)
-	preAddr := f.srv.Addr()
-	conn := f.dial(t)
-
-	// 999.999.999.999 is not a valid IPv4 — net.Listen rejects it before
-	// any state is mutated.
-	err := f.srv.Rebind("999.999.999.999:0", nil)
-	if err == nil {
-		t.Fatalf("expected rebind to fail on invalid addr")
-	}
-
-	if got := f.srv.Addr(); got != preAddr {
-		t.Fatalf("Addr changed after failed rebind: pre=%q post=%q", preAddr, got)
-	}
-
-	// Original WS connection still works — the failed rebind didn't
-	// touch the live http.Server / listener pair.
-	resp := f.rpc(t, conn, 0, "Greet", "still-alive")
-	if resp.Error != nil {
-		t.Fatalf("rpc on original conn errored after failed rebind: %+v", resp.Error)
-	}
-	if string(resp.Result) != `"hello, still-alive"` {
-		t.Fatalf("unexpected result on original conn: %s", string(resp.Result))
-	}
-}
-
-// TestRebind_ForeignHolderDifferentPortLeavesStateIntact pins that an
-// address held by another socket fails the rebind with the existing
-// listener exactly as it was.
-func TestRebind_ForeignHolderDifferentPortLeavesStateIntact(t *testing.T) {
-	f := newServerFixture(t)
-	preAddr := f.srv.Addr()
-	conn := f.dial(t)
-
-	// Pre-rebind RPC must work.
-	resp := f.rpc(t, conn, 0, "Greet", "before")
-	if resp.Error != nil {
-		t.Fatalf("rpc pre-rebind: %+v", resp.Error)
-	}
-
-	// Stage a foreign holder on a fresh ephemeral port (different from
-	// f.srv's port), so the bind returns EADDRINUSE.
+	// A foreign holder on a fresh ephemeral port, different from any
+	// fixture's, so the bind returns EADDRINUSE.
 	foreign, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("stage foreign listener: %v", err)
 	}
 	defer foreign.Close()
-	foreignAddr := foreign.Addr().String()
 
-	err = f.srv.Rebind(foreignAddr, nil)
-	if err == nil {
-		t.Fatalf("expected rebind to fail when target addr is held by a foreign listener")
-	}
+	for _, tc := range []struct{ name, addr string }{
+		// Not a valid IPv4: net.Listen rejects it before any state is mutated.
+		{"invalid host", "999.999.999.999:0"},
+		{"held by a foreign listener", foreign.Addr().String()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newServerFixture(t)
+			preAddr := f.srv.Addr()
+			conn := f.dial(t)
+			if resp := f.rpc(t, conn, 0, "Greet", "before"); resp.Error != nil {
+				t.Fatalf("rpc pre-rebind: %+v", resp.Error)
+			}
 
-	// Addr unchanged.
-	if got := f.srv.Addr(); got != preAddr {
-		t.Fatalf("Addr changed after failed rebind: pre=%q post=%q", preAddr, got)
-	}
-
-	// Pre-rebind hijacked WS connection still works.
-	resp = f.rpc(t, conn, 0, "Greet", "still-alive")
-	if resp.Error != nil {
-		t.Fatalf("rpc on pre-rebind conn after failed rebind: %+v", resp.Error)
-	}
-	if string(resp.Result) != `"hello, still-alive"` {
-		t.Fatalf("unexpected result: %s", string(resp.Result))
+			if err := f.srv.Rebind(tc.addr, nil); err == nil {
+				t.Fatalf("expected rebind to %s to fail", tc.addr)
+			}
+			if got := f.srv.Addr(); got != preAddr {
+				t.Fatalf("Addr changed after failed rebind: pre=%q post=%q", preAddr, got)
+			}
+			// The original WS connection still works: the failed rebind did
+			// not touch the live http.Server / listener pair.
+			resp := f.rpc(t, conn, 0, "Greet", "still-alive")
+			if resp.Error != nil {
+				t.Fatalf("rpc on original conn errored after failed rebind: %+v", resp.Error)
+			}
+			if string(resp.Result) != `"hello, still-alive"` {
+				t.Fatalf("unexpected result on original conn: %s", string(resp.Result))
+			}
+		})
 	}
 }
 
