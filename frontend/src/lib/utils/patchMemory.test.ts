@@ -230,11 +230,12 @@ describe('patch text past the memory budget', () => {
     expect(patchTextVersion()).toBeGreaterThan(before);
   });
 
-  it('dispose releases the source once and stops counting the text', () => {
+  it('keeps the source of a patch with text evicted until dispose, which releases it once and stops counting the text', () => {
     const base = patchTextHeldBytes();
     setPatchTextBudgetForTest(1600);
     const { parser, source } = stream(patchOf(20, 6), 160);
     expect(patchTextHeldBytes()).toBeGreaterThan(base);
+    expect(source.release).not.toHaveBeenCalled();
 
     parser.store.dispose();
     parser.store.dispose();
@@ -287,14 +288,6 @@ describe('patch text past the memory budget', () => {
     setPatchTextBudgetForTest(1);
     stream(patchOf(4, 6), 160);
     expect(parser.files.every(resident)).toBe(true);
-    parser.store.dispose();
-    expect(source.release).toHaveBeenCalledTimes(1);
-  });
-
-  it('keeps the source of a patch that ended with text evicted until it is disposed', () => {
-    setPatchTextBudgetForTest(1600);
-    const { parser, source } = stream(patchOf(20, 6), 160);
-    expect(source.release).not.toHaveBeenCalled();
     parser.store.dispose();
     expect(source.release).toHaveBeenCalledTimes(1);
   });

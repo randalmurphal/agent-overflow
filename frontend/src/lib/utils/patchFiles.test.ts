@@ -14,6 +14,7 @@ import {
   parsePatchFiles,
   parsePatchFilesCached,
   stripPatchLinePrefix,
+  type PatchLine,
 } from './patchFiles';
 import { buildPatchDisplayRows } from '../../test/helpers/patchDisplayRows';
 
@@ -310,25 +311,15 @@ new file mode 100644
 });
 
 describe('stripPatchLinePrefix', () => {
-  it('strips the leading + from add lines', () => {
-    expect(stripPatchLinePrefix({ type: 'add', content: '+const x = 1;' })).toBe('const x = 1;');
-  });
-
-  it('strips the leading - from del lines', () => {
-    expect(stripPatchLinePrefix({ type: 'del', content: '-const x = 1;' })).toBe('const x = 1;');
-  });
-
-  it('returns meta lines unchanged', () => {
-    expect(stripPatchLinePrefix({ type: 'meta', content: '@@ -1,3 +1,4 @@' })).toBe('@@ -1,3 +1,4 @@');
-  });
-
-  it('returns context lines unchanged including the leading space', () => {
-    expect(stripPatchLinePrefix({ type: 'context', content: ' unchanged' })).toBe(' unchanged');
-  });
-
-  it('handles a bare "+" or "-" (empty source line)', () => {
-    expect(stripPatchLinePrefix({ type: 'add', content: '+' })).toBe('');
-    expect(stripPatchLinePrefix({ type: 'del', content: '-' })).toBe('');
+  it.each<[string, PatchLine, string]>([
+    ['strips the leading + from add lines', { type: 'add', content: '+const x = 1;' }, 'const x = 1;'],
+    ['strips the leading - from del lines', { type: 'del', content: '-const x = 1;' }, 'const x = 1;'],
+    ['returns meta lines unchanged', { type: 'meta', content: '@@ -1,3 +1,4 @@' }, '@@ -1,3 +1,4 @@'],
+    ['returns context lines unchanged including the leading space', { type: 'context', content: ' unchanged' }, ' unchanged'],
+    ['handles a bare "+" (empty source line)', { type: 'add', content: '+' }, ''],
+    ['handles a bare "-" (empty source line)', { type: 'del', content: '-' }, ''],
+  ])('%s', (_name, line, expected) => {
+    expect(stripPatchLinePrefix(line)).toBe(expected);
   });
 });
 

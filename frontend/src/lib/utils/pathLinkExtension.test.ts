@@ -221,10 +221,17 @@ describe('buildPathLinkExtension', () => {
     expect(links[0].href).not.toContain('col=');
   });
 
-  it('ignores paths NOT in the allowlist (server validation is authoritative)', () => {
-    const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }], '');
-    const links = findLinks(lex('See src/other/bar.ts here.', ext));
-    expect(links).toHaveLength(0);
+  it.each([
+    ['ignores paths NOT in the allowlist (server validation is authoritative)', 'src/foo.ts', 'See src/other/bar.ts here.'],
+    ['skips matches inside fenced code blocks', 'src/foo.ts', 'Pre:\n```\nsrc/foo.ts:42\n```\n'],
+    // `name@src/foo.ts` — the `@` is preceded by `e` (alphanumeric).
+    // Old DOM walker rejected this; the marked extension must too.
+    ['does NOT linkify when an alphanumeric immediately precedes (email-like)', 'src/foo.ts', 'Email name@src/foo.ts here.'],
+    // `xfoo.ts` — the `f` is preceded by `x` which is alphanumeric.
+    ['does NOT linkify when a path is glued to a longer non-boundary prefix', 'foo.ts', 'See xfoo.ts here.'],
+  ])('%s', (_name, path, text) => {
+    const ext = buildPathLinkExtension([{ path }], '');
+    expect(findLinks(lex(text, ext))).toHaveLength(0);
   });
 
   // Backtick-wrapped allowlisted paths linkify AS code spans — the
@@ -307,50 +314,25 @@ describe('buildPathLinkExtension', () => {
   // tokenizer branches sequentially. A future refactor that shares
   // regex state between branches would regress here even if each
   // branch were tested in isolation.
-  it('linkifies bare and wrapped paths in the same paragraph', () => {
-    const ext = buildPathLinkExtension(
-      [{ path: 'src/foo.ts' }, { path: 'internal/router.go' }],
-      '',
-    );
-    const links = findLinks(
-      lex('See src/foo.ts and `internal/router.go` together.', ext),
-    );
-    expect(links).toHaveLength(2);
-    expect(links[0].raw).toBe('src/foo.ts');
-    expect(links[0].childTypes).toEqual(['text']);
-    expect(links[1].raw).toBe('`internal/router.go`');
-    expect(links[1].childTypes).toEqual(['codespan']);
-  });
-
-  it('linkifies two wrapped paths in the same paragraph', () => {
-    const ext = buildPathLinkExtension(
-      [{ path: 'src/foo.ts' }, { path: 'internal/router.go' }],
-      '',
-    );
-    const links = findLinks(
-      lex('Compare `src/foo.ts` with `internal/router.go` here.', ext),
-    );
-    expect(links).toHaveLength(2);
-    expect(links[0].raw).toBe('`src/foo.ts`');
-    expect(links[1].raw).toBe('`internal/router.go`');
-    expect(links.every((l) => l.childTypes[0] === 'codespan')).toBe(true);
-  });
-
-  it('skips matches inside fenced code blocks', () => {
-    const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }], '');
-    const tokens = lex('Pre:\n```\nsrc/foo.ts:42\n```\n', ext);
-    expect(findLinks(tokens)).toHaveLength(0);
-  });
-
-  it('linkifies multiple paths in one paragraph', () => {
-    const ext = buildPathLinkExtension(
-      [{ path: 'src/foo.ts' }, { path: 'internal/router.go' }],
-      '',
-    );
-    const links = findLinks(lex('Both src/foo.ts and internal/router.go matter.', ext));
-    expect(links).toHaveLength(2);
-    expect(links[0].raw).toBe('src/foo.ts');
-    expect(links[1].raw).toBe('internal/router.go');
+  it.each<[string, string, [string, string[]][]]>([
+    [
+      'linkifies bare and wrapped paths in the same paragraph',
+      'See src/foo.ts and `internal/router.go` together.',
+      [['src/foo.ts', ['text']], ['`internal/router.go`', ['codespan']]],
+    ],
+    [
+      'linkifies two wrapped paths in the same paragraph',
+      'Compare `src/foo.ts` with `internal/router.go` here.',
+      [['`src/foo.ts`', ['codespan']], ['`internal/router.go`', ['codespan']]],
+    ],
+    [
+      'linkifies multiple paths in one paragraph',
+      'Both src/foo.ts and internal/router.go matter.',
+      [['src/foo.ts', ['text']], ['internal/router.go', ['text']]],
+    ],
+  ])('%s', (_name, text, expected) => {
+    const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }, { path: 'internal/router.go' }], '');
+    expect(findLinks(lex(text, ext)).map((link) => [link.raw, link.childTypes])).toEqual(expected);
   });
 
   it('rewrites an allowlisted markdown link href to the open-in-editor scheme', () => {
@@ -601,21 +583,6 @@ describe('buildPathLinkExtension', () => {
     const links = findLinks(lex('Mention @src/foo.ts here.', ext));
     expect(links).toHaveLength(1);
     expect(links[0].raw).toBe('@src/foo.ts');
-  });
-
-  it('does NOT linkify when an alphanumeric immediately precedes (email-like)', () => {
-    const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }], '');
-    // `name@src/foo.ts` — the `@` is preceded by `e` (alphanumeric).
-    // Old DOM walker rejected this; the marked extension must too.
-    const links = findLinks(lex('Email name@src/foo.ts here.', ext));
-    expect(links).toHaveLength(0);
-  });
-
-  it('does NOT linkify when a path is glued to a longer non-boundary prefix', () => {
-    const ext = buildPathLinkExtension([{ path: 'foo.ts' }], '');
-    // `xfoo.ts` — the `f` is preceded by `x` which is alphanumeric.
-    const links = findLinks(lex('See xfoo.ts here.', ext));
-    expect(links).toHaveLength(0);
   });
 
   it('prefers the longest allowlisted path when paths nest', () => {

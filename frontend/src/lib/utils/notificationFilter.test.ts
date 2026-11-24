@@ -149,20 +149,15 @@ describe('filterRedundantNotifications', () => {
     expect(ids(filterRedundantNotifications(items))).toEqual(['completion']);
   });
 
-  it('hides against a completed foreground tool_call with equal text', () => {
+  // Legacy history and the foreground case: a completed lifecycle row
+  // with the same task_id hides the bell regardless of caption or
+  // summary text.
+  it.each([
+    ['hides against a completed foreground tool_call with equal text', BELL],
+    ['hides a notification against a completed tool_call with different text', 'Bash: sleep 30'],
+  ])('%s', (_name, fgSummary) => {
     const items = [
-      mkItem({ id: 'fg', kind: 'tool_call', status: 'completed', summary: BELL, meta: withTaskId('T2') }),
-      mkItem({ id: 'notif', itemIndex: 1, kind: 'notification', summary: BELL, meta: withTaskId('T2') }),
-    ];
-    expect(ids(filterRedundantNotifications(items))).toEqual(['fg']);
-  });
-
-  it('hides a notification against a completed tool_call with different text', () => {
-    // Legacy history and the foreground case: a completed lifecycle row
-    // with the same task_id hides the bell regardless of caption or
-    // summary text.
-    const items = [
-      mkItem({ id: 'fg', kind: 'tool_call', status: 'completed', summary: 'Bash: sleep 30', meta: withTaskId('T2') }),
+      mkItem({ id: 'fg', kind: 'tool_call', status: 'completed', summary: fgSummary, meta: withTaskId('T2') }),
       mkItem({ id: 'notif', itemIndex: 1, kind: 'notification', summary: BELL, meta: withTaskId('T2') }),
     ];
     expect(ids(filterRedundantNotifications(items))).toEqual(['fg']);
@@ -203,28 +198,17 @@ describe('filterRedundantNotifications', () => {
     expect(ids(filterRedundantNotifications(items))).toEqual(['completion-other', 'notif-T2']);
   });
 
-  it('preserves a notification while the matching tool_call is still running', () => {
+  // Pins the narrow "completed" rule: a running, failed, or killed
+  // tool_call does NOT suppress the bell. The user still wants the
+  // explicit failure ping.
+  it.each([
+    ['preserves a notification while the matching tool_call is still running', 'running'],
+    ['preserves a notification when the matching tool_call ended in errored', 'errored'],
+    ['preserves a notification when the matching tool_call was killed by the user', 'killed'],
+  ] as const)('%s', (_name, status) => {
     const items = [
-      mkItem({ id: 'launch', kind: 'tool_call', status: 'running', summary: BELL, meta: withTaskId('T3') }),
+      mkItem({ id: 'launch', kind: 'tool_call', status, summary: BELL, meta: withTaskId('T3') }),
       mkItem({ id: 'notif', itemIndex: 1, kind: 'notification', summary: BELL, meta: withTaskId('T3') }),
-    ];
-    expect(ids(filterRedundantNotifications(items))).toEqual(['launch', 'notif']);
-  });
-
-  it('preserves a notification when the matching tool_call ended in errored', () => {
-    // Pins the narrow "completed" rule: a failed tool_call does NOT
-    // suppress the bell. The user still wants the explicit failure ping.
-    const items = [
-      mkItem({ id: 'launch', kind: 'tool_call', status: 'errored', summary: BELL, meta: withTaskId('T4') }),
-      mkItem({ id: 'notif', itemIndex: 1, kind: 'notification', summary: BELL, meta: withTaskId('T4') }),
-    ];
-    expect(ids(filterRedundantNotifications(items))).toEqual(['launch', 'notif']);
-  });
-
-  it('preserves a notification when the matching tool_call was killed by the user', () => {
-    const items = [
-      mkItem({ id: 'launch', kind: 'tool_call', status: 'killed', summary: BELL, meta: withTaskId('T5') }),
-      mkItem({ id: 'notif', itemIndex: 1, kind: 'notification', summary: BELL, meta: withTaskId('T5') }),
     ];
     expect(ids(filterRedundantNotifications(items))).toEqual(['launch', 'notif']);
   });
