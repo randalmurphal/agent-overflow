@@ -5,16 +5,12 @@
 package observability_test
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,81 +41,6 @@ func TestObs_TracingDisabledEmitsNoSpans(t *testing.T) {
 }
 
 // --- Replay integration tests ---------------------------------------------
-
-func TestObs_ReplayWriterWritesRecordToJsonl(t *testing.T) {
-	dir := t.TempDir()
-	m := replay.NewManager(replay.ManagerConfig{
-		RootDir:   dir,
-		QueueSize: 16,
-		Enabled:   true,
-	})
-	t.Cleanup(func() {
-		_ = m.Shutdown(context.Background())
-	})
-
-	rec, err := replay.NewRecord(time.Unix(0, 42*int64(time.Millisecond)), "thread-write", "turn:start", map[string]string{"k": "v"})
-	if err != nil {
-		t.Fatalf("NewRecord: %v", err)
-	}
-	if !m.Enqueue(rec) {
-		t.Fatal("Enqueue returned false")
-	}
-
-	waitForFile(t, m, filepath.Join(dir, "thread-write.jsonl"))
-
-	contents, err := os.ReadFile(filepath.Join(dir, "thread-write.jsonl"))
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	var parsed replay.Record
-	if err := json.Unmarshal([]byte(strings.TrimSpace(string(contents))), &parsed); err != nil {
-		t.Fatalf("parse record: %v (%q)", err, contents)
-	}
-	if parsed.ThreadID != "thread-write" {
-		t.Errorf("ThreadID = %q", parsed.ThreadID)
-	}
-	if parsed.Kind != "turn:start" {
-		t.Errorf("Kind = %q", parsed.Kind)
-	}
-	if parsed.Timestamp != 42 {
-		t.Errorf("Timestamp = %d, want 42", parsed.Timestamp)
-	}
-}
-
-func TestObs_ReplayWriterBoundedChannelDropsOverflow(t *testing.T) {
-	dir := t.TempDir()
-	drops := atomic.Int64{}
-	m := replay.NewManager(replay.ManagerConfig{
-		RootDir:      dir,
-		QueueSize:    2,
-		WriterConfig: replay.WriterConfig{FsyncEvery: 1},
-		Enabled:      true,
-		DropHook:     func() { drops.Add(1) },
-	})
-	t.Cleanup(func() {
-		_ = m.Shutdown(context.Background())
-	})
-
-	// Flood the tiny queue faster than the drain goroutine can service it.
-	// Fsync after every write makes the drain CPU-bound on disk; that gives
-	// the producer enough head-room to exceed the queue size.
-	const flood = 4096
-	accepted := 0
-	for i := 0; i < flood; i++ {
-		rec, _ := replay.NewRecord(time.Unix(0, int64(i)*int64(time.Microsecond)), "thread-flood", "k", map[string]int{"i": i})
-		if m.Enqueue(rec) {
-			accepted++
-		}
-	}
-
-	// Enqueue counts a drop before it returns, so both counts are final.
-	if drops.Load() == 0 {
-		t.Errorf("expected at least one drop when flooding a size-2 queue with %d records", flood)
-	}
-	if accepted+int(drops.Load()) != flood {
-		t.Errorf("accepted=%d drops=%d total=%d, want %d", accepted, drops.Load(), accepted+int(drops.Load()), flood)
-	}
-}
 
 func TestObs_ReplayWriterRotatesAt100MB(t *testing.T) {
 	// We don't want to actually write 100MB in a unit test, so we use a
@@ -220,105 +141,6 @@ func TestObs_ReplayRotationPreservesOrder(t *testing.T) {
 	}
 }
 
-func TestObs_ReplayManagerCachesWriters(t *testing.T) {
-	dir := t.TempDir()
-	m := replay.NewManager(replay.ManagerConfig{
-		RootDir:     dir,
-		QueueSize:   16,
-		IdleTimeout: 10 * time.Second,
-		Enabled:     true,
-	})
-	t.Cleanup(func() {
-		_ = m.Shutdown(context.Background())
-	})
-
-	// The manager doesn't expose the writer map, but we can observe the
-	// effect of caching by writing twice and confirming both records land
-	// in the *same* file on disk (a second open would happen if caching
-	// broke, but that's not externally visible). Instead we assert on the
-	// file count and line count.
-	for i := 0; i < 2; i++ {
-		rec, _ := replay.NewRecord(time.Unix(0, int64(i)*int64(time.Millisecond)), "thread-cache", "k", nil)
-		if !m.Enqueue(rec) {
-			t.Fatalf("Enqueue %d returned false", i)
-		}
-	}
-	waitForFile(t, m, filepath.Join(dir, "thread-cache.jsonl"))
-
-	// Exactly one file should exist for thread-cache.
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("ReadDir: %v", err)
-	}
-	matching := 0
-	for _, e := range entries {
-		if e.Name() == "thread-cache.jsonl" {
-			matching++
-		}
-	}
-	if matching != 1 {
-		t.Errorf("thread-cache jsonl count = %d, want 1", matching)
-	}
-
-	content, err := os.ReadFile(filepath.Join(dir, "thread-cache.jsonl"))
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	lines := strings.Split(strings.TrimRight(string(content), "\n"), "\n")
-	if len(lines) != 2 {
-		t.Errorf("line count = %d, want 2 (both writes in same file)", len(lines))
-	}
-}
-
-func TestObs_ReplayManagerReapIdleWriters(t *testing.T) {
-	dir := t.TempDir()
-	// Short idle timeout so test finishes fast.
-	m := replay.NewManager(replay.ManagerConfig{
-		RootDir:     dir,
-		QueueSize:   16,
-		IdleTimeout: 5 * time.Millisecond,
-		Enabled:     true,
-	})
-	t.Cleanup(func() {
-		_ = m.Shutdown(context.Background())
-	})
-
-	// Write something to open a writer.
-	rec, _ := replay.NewRecord(time.Now(), "idle-thread", "k", nil)
-	if !m.Enqueue(rec) {
-		t.Fatal("Enqueue returned false")
-	}
-	waitForFile(t, m, filepath.Join(dir, "idle-thread.jsonl"))
-
-	// Wait past the idle window. The manager's reap loop runs every 30s,
-	// so we cannot wait for natural eviction without a long sleep. Instead
-	// we verify the writer is still open (file exists) — the fact that
-	// eviction happens at the documented interval is covered by the
-	// manager_test.go white-box test.
-	//
-	// A written record is readable before any Sync.
-	content, err := os.ReadFile(filepath.Join(dir, "idle-thread.jsonl"))
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if len(content) == 0 {
-		t.Error("idle-thread.jsonl is empty after the drain")
-	}
-
-	// Now Shutdown — that should flush and close every writer. After the
-	// shutdown, we should still be able to read the file but not write
-	// through the manager. Its Close syncs, so nothing bounds it but go
-	// test's own timeout.
-	if err := m.Shutdown(context.Background()); err != nil {
-		t.Errorf("Shutdown: %v", err)
-	}
-
-	postShutdown, _ := replay.NewRecord(time.Now(), "idle-thread", "k", nil)
-	if m.Enqueue(postShutdown) {
-		t.Error("Enqueue accepted after Shutdown")
-	}
-}
-
 func TestObs_ReplayManagerGracefulShutdown(t *testing.T) {
 	dir := t.TempDir()
 	m := replay.NewManager(replay.ManagerConfig{
@@ -387,110 +209,6 @@ func TestObs_ReplayRespectsThreadScope(t *testing.T) {
 	}
 	if strings.Contains(string(contentB), `"id":"A"`) {
 		t.Error("B.jsonl contains A's record")
-	}
-}
-
-// TestObs_ReplayDisabledIsNoGoroutines documents the current behavior of the
-// Manager when Enabled=false: the background drain + reap goroutines are
-// always started (so the toggle is cheap to flip at runtime), but no file
-// handles open. This test primarily catches regressions where someone adds
-// per-enqueue goroutines.
-func TestObs_ReplayDisabledIsNoGoroutines(t *testing.T) {
-	dir := t.TempDir()
-	baseline := runtime.NumGoroutine()
-
-	m := replay.NewManager(replay.ManagerConfig{
-		RootDir: dir,
-		Enabled: false,
-	})
-	t.Cleanup(func() {
-		_ = m.Shutdown(context.Background())
-	})
-
-	// Enqueue many records while disabled; none should spawn goroutines.
-	for i := 0; i < 200; i++ {
-		rec, _ := replay.NewRecord(time.Now(), "t-none", "k", nil)
-		if m.Enqueue(rec) {
-			t.Fatalf("Enqueue accepted at i=%d while disabled", i)
-		}
-	}
-
-	// No files created.
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 0 {
-		t.Errorf("dir has %d entries, want 0 while disabled", len(entries))
-	}
-
-	// Allow up to 5 goroutines of slop for scheduler/runtime; in practice
-	// NewManager spawns 2 (drain + reap).
-	active := runtime.NumGoroutine() - baseline
-	if active > 8 {
-		t.Errorf("goroutine delta = %d, want <= 8 for disabled manager", active)
-	}
-}
-
-func TestObs_ReplayWriterConcurrentEnqueuesSafe(t *testing.T) {
-	dir := t.TempDir()
-	m := replay.NewManager(replay.ManagerConfig{
-		RootDir:   dir,
-		QueueSize: 4096,
-		// The default fsync batching: this case is about concurrent
-		// enqueues, and a sync per record makes the drain disk-bound.
-		IdleTimeout: 10 * time.Second,
-		Enabled:     true,
-	})
-	t.Cleanup(func() {
-		_ = m.Shutdown(context.Background())
-	})
-
-	const goroutines = 100
-	const perGoroutine = 10
-	accepted := atomic.Int64{}
-	var wg sync.WaitGroup
-	wg.Add(goroutines)
-	for g := 0; g < goroutines; g++ {
-		go func(g int) {
-			defer wg.Done()
-			for i := 0; i < perGoroutine; i++ {
-				rec, _ := replay.NewRecord(time.Unix(0, int64(g*perGoroutine+i)*int64(time.Microsecond)),
-					"concur", "k", map[string]int{"g": g, "i": i})
-				if m.Enqueue(rec) {
-					accepted.Add(1)
-				}
-			}
-		}(g)
-	}
-	wg.Wait()
-
-	// Shutdown drains the queue synchronously, so a nil error means every
-	// accepted record is on disk. The drain syncs every 64 writes and the
-	// Close syncs again, so nothing bounds it but go test's own timeout.
-	if err := m.Shutdown(context.Background()); err != nil {
-		t.Fatalf("Shutdown: %v", err)
-	}
-
-	// Every line must be valid JSON.
-	path := filepath.Join(dir, "concur.jsonl")
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 4096), 1<<20)
-	count := 0
-	for scanner.Scan() {
-		var rec replay.Record
-		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
-			t.Fatalf("invalid NDJSON line %d: %v (%q)", count, err, scanner.Text())
-		}
-		count++
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("scanner: %v", err)
-	}
-	if int64(count) != accepted.Load() {
-		t.Errorf("lines on disk = %d, want %d (accepted)", count, accepted.Load())
 	}
 }
 

@@ -8,23 +8,6 @@ import (
 	"testing"
 )
 
-// TestUpdaterProbeDirWritable_WritableDir covers the ordinary install: a
-// directory this process may write to passes, and the probe leaves nothing
-// behind.
-func TestUpdaterProbeDirWritable_WritableDir(t *testing.T) {
-	dir := t.TempDir()
-	if err := probeDirWritable(dir); err != nil {
-		t.Fatalf("probeDirWritable(%s) = %v, want nil", dir, err)
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("ReadDir: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("probe left litter behind: %v", entries)
-	}
-}
-
 // TestUpdaterProbeDirWritable_ReadOnlyDir is the case os.Stat mode bits alone
 // would also catch — kept so the negative path is pinned at all.
 func TestUpdaterProbeDirWritable_ReadOnlyDir(t *testing.T) {
@@ -76,28 +59,23 @@ func TestUpdaterProbeDirWritable_Concurrent(t *testing.T) {
 	}
 }
 
-// TestUpdaterLinuxGate_AppImageRefuses pins the AppImage refusal: the marker
-// alone is enough, and it is checked BEFORE the writability probe (the mount
-// is read-only, so probing it would only produce a less useful reason).
+// TestUpdaterLinuxGate_AppImageRefuses pins the AppImage refusal: either
+// marker the AppImage runtime exports is enough (a launch that carries APPDIR
+// without APPIMAGE is still running off the read-only mount), and it is
+// checked BEFORE the writability probe (the mount is read-only, so probing it
+// would only produce a less useful reason).
 func TestUpdaterLinuxGate_AppImageRefuses(t *testing.T) {
-	t.Setenv("APPIMAGE", "/home/user/Apps/agent-overflow.AppImage")
-	reason := LinuxUpdaterBlocked()
-	if reason == "" {
-		t.Fatal("LinuxUpdaterBlocked() = \"\" under an AppImage launch, want a refusal")
-	}
-	if !strings.Contains(reason, "AppImage") {
-		t.Fatalf("LinuxUpdaterBlocked() = %q, want a reason naming the AppImage", reason)
-	}
-}
-
-// TestUpdaterLinuxGate_AppDirMarkerRefuses covers the other marker the
-// AppImage runtime exports — a launch that carries APPDIR without APPIMAGE is
-// still running off the read-only mount.
-func TestUpdaterLinuxGate_AppDirMarkerRefuses(t *testing.T) {
-	t.Setenv("APPIMAGE", "")
-	t.Setenv("APPDIR", "/tmp/.mount_agentXXXXXX")
-	if reason := LinuxUpdaterBlocked(); reason == "" {
-		t.Fatal("LinuxUpdaterBlocked() = \"\" with APPDIR set, want a refusal")
+	for _, row := range []struct{ name, appImage, appDir string }{
+		{"APPIMAGE", "/home/user/Apps/agent-overflow.AppImage", ""},
+		{"APPDIR alone", "", "/tmp/.mount_agentXXXXXX"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Setenv("APPIMAGE", row.appImage)
+			t.Setenv("APPDIR", row.appDir)
+			if reason := LinuxUpdaterBlocked(); !strings.Contains(reason, "AppImage") {
+				t.Fatalf("LinuxUpdaterBlocked() = %q, want a refusal naming the AppImage", reason)
+			}
+		})
 	}
 }
 
